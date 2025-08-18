@@ -138,6 +138,11 @@ pub fn deriveInitialSecretV2(dcid: []const u8) [H.digest_length]u8 {
     return extract(&initial_salt_v2, dcid);
 }
 
+/// Derive initial_secret from DCID for the given QUIC version.
+pub fn deriveInitialSecret(version_v2: bool, dcid: []const u8) [H.digest_length]u8 {
+    return if (version_v2) deriveInitialSecretV2(dcid) else deriveInitialSecretV1(dcid);
+}
+
 /// Derive client/server initial secrets from initial_secret.
 pub fn deriveClientServerInitial(initial_secret: [H.digest_length]u8) struct { client: [H.digest_length]u8, server: [H.digest_length]u8 } {
     var client: [H.digest_length]u8 = undefined;

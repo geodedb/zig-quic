@@ -54,3 +54,19 @@ Date: 2025-08-18
 - Add `tools/update_gap.zig` and `tools/doccheck.zig` stubs and wire into CI later.
 - Introduce `docs/DESIGN.md` and expand README with build/run instructions.
 - Begin `src/quic/tls/key_schedule.zig` with labeled HKDF per RFC 9001 and add real KATs.
+
+---
+
+Update 2025-08-18T12:00Z:
+
+- Wired QUIC v2 (RFC 9369) initial salt and labels; added `deriveInitialSecretV2` and `deriveKeyIvHpV2` with KATs.
+- `QuicConfig.version` now selects v1/v2 secrets at runtime via `deriveInitialSecretsForConfig`.
+- Added event loop backends: `io/loop_epoll.zig`, `io/loop_kqueue.zig`, `io/loop_iocp.zig` and API `defaultLoopBackend()`.
+- Added initial packet crypto scaffolding: helper to derive initial keys in `packet.zig`.
+- Build fixed for Zig 0.14 runner; tests pass for TLS KATs including v2.
+
+Next:
+
+- Implement AEAD and header protection for Initial packets using std.crypto.
+- Integrate event loop with UDP endpoint and timers; drive `api.poll`.
+- Begin TLS handshake message scaffolding and X.509 parser stubs.

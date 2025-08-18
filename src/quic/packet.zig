@@ -1,7 +1,8 @@
 //! QUIC packet encoding helpers (simplified). RFC 9000 long/short headers.
-// MIT License
+//! MIT License
 const std = @import("std");
 const varint = @import("varint.zig");
+const ks = @import("tls/key_schedule.zig");
 
 pub const PacketNumber = u64;
 
@@ -83,3 +84,16 @@ pub const ShortHeader = struct {
         return total;
     }
 };
+
+/// Compute initial client/server traffic keys for QUIC v1/v2 given DCID bytes.
+pub fn derive_initial_keys(version_v2: bool, dcid: []const u8) struct {
+    client: struct { key: [16]u8, iv: [12]u8, hp: [16]u8 },
+    server: struct { key: [16]u8, iv: [12]u8, hp: [16]u8 },
+} {
+    const initial = ks.deriveInitialSecret(version_v2, dcid);
+    const pair = ks.deriveClientServerInitial(initial);
+    return .{
+        .client = if (version_v2) ks.deriveKeyIvHpV2(pair.client) else ks.deriveKeyIvHp(pair.client),
+        .server = if (version_v2) ks.deriveKeyIvHpV2(pair.server) else ks.deriveKeyIvHp(pair.server),
+    };
+}
