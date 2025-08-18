@@ -590,7 +590,8 @@ pub const Packet = struct {
                 .ping => 1,
                 .stream => |s| {
                     // type byte + stream_id + optional offset + length field + data
-                    return 1 + 8 + (if (s.offset != null) 8 else 0) + 8 + s.data.len;
+                    const extra: usize = 1 + 8 + (if (s.offset != null) 8 else 0) + 8 + s.data.len;
+                    extra
                 },
                 .ack => 1 + 8 * 4,
                 .reset_stream => 1 + 8 * 3,
