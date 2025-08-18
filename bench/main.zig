@@ -1,5 +1,5 @@
 const std = @import("std");
-const varint = @import("../src/quic/varint.zig");
+const varint = @import("quic_varint");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

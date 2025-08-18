@@ -168,3 +168,39 @@ jobs:
             zig build tools
             ./zig-out/bin/update-gap --summary "CI: code changed in PR"
           fi
+
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+        zig: [0.14.1]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: ${{ matrix.zig }}
+      - name: Build
+        run: zig build -Drelease-safe=false
+      - name: Run tests
+        run: zig build test
+      - name: Build fuzzers
+        run: zig build fuzz
+      - name: Build bench
+        run: zig build bench
+      - name: Build tools
+        run: zig build tools
+      - name: Doccheck
+        run: ./zig-out/bin/doccheck
+      - name: Ensure GAP updated on code changes
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        run: |
+          if git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.sha }} | grep -E '\.(zig|zon|md|yml)$' >/dev/null; then
+            if ! git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.sha }} | grep -E '^docs/GAP.md$' >/dev/null; then
+              echo "GAP.md not updated for code changes" >&2
+              exit 1
+            fi
+          fi

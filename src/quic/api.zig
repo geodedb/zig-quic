@@ -4,6 +4,7 @@ const std = @import("std");
 const ks = @import("tls/key_schedule.zig");
 const endpoint_mod = @import("endpoint.zig");
 const lb = @import("loop_backend.zig");
+const conn_mod = @import("conn.zig");
 
 pub const QuicVersion = enum { v1, v2 };
 pub const Role = enum { Client, Server };
@@ -66,9 +67,11 @@ pub fn endpointDeinit(ep: *QuicEndpoint) void {
 }
 
 pub fn connect(ep: *QuicEndpoint, server_addr: []const u8, sni: []const u8) !*QuicConnection {
-    _ = ep;
-    _ = server_addr;
-    _ = sni;
+    _ = sni; // TODO: TLS handshake will use this
+    const c = try ep.connectTo(server_addr);
+    // For now return an opaque pointer aliasing the stack-allocated connection is unsafe.
+    // TODO: allocate and manage Connection objects once connection manager exists.
+    _ = c;
     return error.NotImplemented;
 }
 pub fn accept(ep: *QuicEndpoint) !*QuicConnection {
@@ -119,15 +122,15 @@ pub fn closeConnection(conn: *QuicConnection, app_error_code: u64) !void {
 
 /// Drives IO & timers; returns after timeout_ms or earlier when events handled.
 pub fn poll(ep: *QuicEndpoint, timeout_ms: u32) !void {
-    return ep.poll(@as(i32, @intCast(timeout_ms)));
+    return ep.*.poll(@as(i32, @intCast(timeout_ms)));
 }
 
 /// Schedule a one-shot timer on the endpoint; returns the timer id.
 pub fn scheduleTimer(ep: *QuicEndpoint, delay_ms: u32) !u64 {
-    return ep.scheduleTimer(delay_ms);
+    return ep.*.scheduleTimer(delay_ms);
 }
 
 /// Cancel a previously scheduled endpoint timer.
 pub fn cancelTimer(ep: *QuicEndpoint, id: u64) bool {
-    return ep.cancelTimer(id);
+    return ep.*.cancelTimer(id);
 }

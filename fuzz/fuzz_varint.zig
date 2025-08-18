@@ -1,5 +1,5 @@
 const std = @import("std");
-const varint = @import("../src/quic/varint.zig");
+const varint = @import("quic_varint");
 
 pub fn main() !void {
     // Simple standalone fuzzer harness compatible with libFuzzer-like runners.

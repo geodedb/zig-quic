@@ -2,16 +2,33 @@
 //! MIT License
 const std = @import("std");
 const api = @import("api.zig");
+const conn_mod = @import("conn.zig");
 
 const posix = std.posix;
 
 const Timer = struct { deadline_ms: i64, id: u64 };
+
+const Key = struct { peer_hash: u64, dcid_hash: u64 };
+
+fn hashBytes(b: []const u8) u64 {
+    var h = std.hash.Wyhash.init(0);
+    h.update(b);
+    return h.final();
+}
+
+fn hashSockaddr(sa: *const posix.sockaddr.storage, len: u32) u64 {
+    const bytes = @as([*]const u8, @ptrCast(sa))[0..len];
+    return hashBytes(bytes);
+}
 
 pub const Endpoint = struct {
     sock_fd: posix.fd_t,
     loop_backend: api.LoopBackend,
     allocator: *std.mem.Allocator,
     timers: std.ArrayList(Timer),
+    conns: std.AutoHashMap(Key, *conn_mod.Connection),
+    // Next timer identifier for scheduleTimer
+    next_timer_id: u64 = 1,
 
     pub fn init(alloc: *std.mem.Allocator, bind_addr: []const u8) !Endpoint {
         // Parse bind address of the form host:port and bind an IPv4 UDP socket.
@@ -27,6 +44,10 @@ pub const Endpoint = struct {
         var yes: i32 = 1;
         _ = posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, std.mem.asBytes(&yes)) catch {};
 
+        // Nonblocking (optional): skip; use MSG.DONTWAIT on recvfrom
+        // const cur = posix.fcntl(fd, posix.F.GETFL, 0) catch 0;
+        // _ = posix.fcntl(fd, posix.F.SETFL, cur | posix.O.NONBLOCK) catch {};
+
         var sa: posix.sockaddr.in = .{
             .family = posix.AF.INET,
             .port = std.mem.nativeToBig(u16, port),
@@ -35,37 +56,64 @@ pub const Endpoint = struct {
         };
         try posix.bind(fd, @ptrCast(&sa), @sizeOf(posix.sockaddr.in));
 
-        return .{ .sock_fd = fd, .loop_backend = api.defaultLoopBackend(), .allocator = alloc, .timers = std.ArrayList(Timer).init(alloc.*) };
+        return .{
+            .sock_fd = fd,
+            .loop_backend = api.defaultLoopBackend(),
+            .allocator = alloc,
+            .timers = std.ArrayList(Timer).init(alloc.*),
+            .conns = std.AutoHashMap(Key, *conn_mod.Connection).init(alloc.*),
+            .next_timer_id = 1,
+        };
     }
 
     pub fn deinit(self: *Endpoint) void {
+        // Free connections
+        var it = self.conns.iterator();
+        while (it.next()) |entry| {
+            const c = entry.value_ptr.*;
+            self.allocator.destroy(c);
+        }
+        self.conns.deinit();
         self.timers.deinit();
         posix.close(self.sock_fd);
     }
 
-    pub fn sendTo(self: *Endpoint, addr: std.net.Address, data: []const u8) !usize {
-        // Minimal IPv4-only implementation. Extend to IPv6 later.
-        _ = self;
-        _ = addr;
-        _ = data;
-        return error.Unsupported;
+    pub fn sendTo(self: *Endpoint, peer: conn_mod.SockAddr, data: []const u8) !usize {
+        const sa_ptr: *const posix.sockaddr = @ptrCast(&peer.storage);
+        return posix.sendto(self.sock_fd, data, 0, sa_ptr, peer.len);
     }
 
-    pub fn recvFrom(self: *Endpoint, buf: []u8) !struct { n: usize, addr: std.net.Address } {
-        _ = self;
-        _ = buf;
-        return error.Unsupported;
+    pub fn recvFrom(self: *Endpoint, buf: []u8) !struct { n: usize, peer: conn_mod.SockAddr } {
+        var peer = conn_mod.SockAddr{};
+        peer.len = @intCast(@sizeOf(posix.sockaddr.storage));
+        const n = try posix.recvfrom(self.sock_fd, buf, 0, @ptrCast(&peer.storage), &peer.len);
+        return .{ .n = n, .peer = peer };
     }
 
-    /// Schedule a timer to fire after delay_ms. Returns assigned id.
+    /// Create a Connection object for an incoming datagram's peer.
+    pub fn acceptFrom(self: *Endpoint, peer: conn_mod.SockAddr) conn_mod.Connection {
+        return .{ .id = 0, .role = .Server, .sock_fd = self.sock_fd, .peer = peer };
+    }
+
+    /// Resolve and create a Connection object for an explicit remote address.
+    pub fn connectTo(self: *Endpoint, hostport: []const u8) !conn_mod.Connection {
+        const ai = try resolveAny(hostport, .udp);
+        defer posix.freeaddrinfo(ai);
+        const peer = conn_mod.SockAddr.setFrom(ai);
+        return .{ .id = 0, .role = .Client, .sock_fd = self.sock_fd, .peer = peer };
+    }
+
+    /// Schedule a one-shot timer to fire after delay_ms; returns timer id.
     pub fn scheduleTimer(self: *Endpoint, delay_ms: u32) !u64 {
+        const id = self.next_timer_id;
+        self.next_timer_id +%= 1;
         const now_ms: i64 = std.time.milliTimestamp();
-        const id: u64 = @intCast(self.timers.items.len + 1);
-        try self.timers.append(.{ .deadline_ms = now_ms + @as(i64, delay_ms), .id = id });
+        const deadline: i64 = now_ms + @as(i64, @intCast(delay_ms));
+        try self.timers.append(.{ .deadline_ms = deadline, .id = id });
         return id;
     }
 
-    /// Cancel a previously scheduled timer by id. Returns true if found and removed.
+    /// Cancel a previously scheduled timer by id; returns true if removed.
     pub fn cancelTimer(self: *Endpoint, id: u64) bool {
         var i: usize = 0;
         while (i < self.timers.items.len) : (i += 1) {
@@ -75,6 +123,84 @@ pub const Endpoint = struct {
             }
         }
         return false;
+    }
+
+    /// Drive IO using platform loop backend. timeout_ms < 0 means infinite.
+    pub fn poll(self: *Endpoint, timeout_ms: i32) !void {
+        const now_ms: i64 = std.time.milliTimestamp();
+        const eff_timeout = self.nextTimeoutFromTimers(now_ms, timeout_ms);
+        switch (self.loop_backend) {
+            .epoll => try poll_epoll(self, eff_timeout),
+            .kqueue => {
+                if (@import("builtin").target.os.tag == .linux) {
+                    // Fallback to epoll on Linux builds where kqueue is unavailable
+                    try poll_epoll(self, eff_timeout);
+                } else {
+                    try poll_kqueue(self, eff_timeout);
+                }
+            },
+            .iocp => {
+                if (@import("builtin").target.os.tag == .windows) {
+                    try poll_iocp(self, eff_timeout);
+                } else {
+                    // Fallback no-op wait via epoll on non-Windows (Linux) for uniformity
+                    try poll_epoll(self, eff_timeout);
+                }
+            },
+        }
+        // Drain readable datagrams (nonblocking)
+        var buf: [2048]u8 = undefined;
+        while (true) {
+            var peer = conn_mod.SockAddr{};
+            peer.len = @intCast(@sizeOf(posix.sockaddr.storage));
+            const n_or_err = posix.recvfrom(self.sock_fd, buf[0..], posix.MSG.DONTWAIT, @ptrCast(&peer.storage), &peer.len);
+            if (n_or_err) |n| {
+                self.processIncomingDatagram(peer, buf[0..n]);
+            } else |err| {
+                switch (err) {
+                    error.WouldBlock => break,
+                    error.ConnectionResetByPeer => break,
+                    else => break,
+                }
+            }
+        }
+        // After IO wait, process timers that have expired.
+        self.processExpiredTimers(std.time.milliTimestamp());
+    }
+
+    fn processIncomingDatagram(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8) void {
+        if (bytes.len < 7) return;
+        const first = bytes[0];
+        const is_long = (first & 0x80) != 0;
+        if (!is_long) return; // handle short later
+        const ty = (first >> 4) & 0x03;
+        if (ty != 0) return; // only Initial for now
+        // Version
+        const version: u32 = (@as(u32, bytes[1]) << 24) | (@as(u32, bytes[2]) << 16) | (@as(u32, bytes[3]) << 8) | @as(u32, bytes[4]);
+        _ = version; // TODO: VN handling
+        var i: usize = 5;
+        if (i >= bytes.len) return;
+        const dcid_len = bytes[i];
+        i += 1;
+        if (i + dcid_len > bytes.len) return;
+        const dcid = bytes[i .. i + dcid_len];
+        i += dcid_len;
+        if (i >= bytes.len) return;
+        const scid_len = bytes[i];
+        i += 1;
+        if (i + scid_len > bytes.len) return;
+        _ = bytes[i .. i + scid_len];
+        // Key connection by peer and dcid
+        const key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(dcid) };
+        if (!self.conns.contains(key)) {
+            const c = self.allocator.create(conn_mod.Connection) catch return;
+            c.* = .{ .id = 0, .role = .Server, .sock_fd = self.sock_fd, .peer = peer };
+            _ = self.conns.put(key, c) catch {
+                self.allocator.destroy(c);
+                return;
+            };
+        }
+        // TODO: derive Initial keys from dcid and attempt unprotect/decrypt to feed CRYPTO to TLS.
     }
 
     fn nextTimeoutFromTimers(self: *Endpoint, now_ms: i64, requested_timeout_ms: i32) i32 {
@@ -105,33 +231,6 @@ pub const Endpoint = struct {
                 i += 1;
             }
         }
-    }
-
-    /// Drive IO using platform loop backend. timeout_ms < 0 means infinite.
-    pub fn poll(self: *Endpoint, timeout_ms: i32) !void {
-        const now_ms: i64 = std.time.milliTimestamp();
-        const eff_timeout = self.nextTimeoutFromTimers(now_ms, timeout_ms);
-        switch (self.loop_backend) {
-            .epoll => try poll_epoll(self, eff_timeout),
-            .kqueue => {
-                if (@import("builtin").target.os.tag == .linux) {
-                    // Fallback to epoll on Linux builds where kqueue is unavailable
-                    try poll_epoll(self, eff_timeout);
-                } else {
-                    try poll_kqueue(self, eff_timeout);
-                }
-            },
-            .iocp => {
-                if (@import("builtin").target.os.tag == .windows) {
-                    try poll_iocp(self, eff_timeout);
-                } else {
-                    // Fallback no-op wait via epoll on non-Windows (Linux) for uniformity
-                    try poll_epoll(self, eff_timeout);
-                }
-            },
-        }
-        // After IO wait, process timers that have expired.
-        self.processExpiredTimers(std.time.milliTimestamp());
     }
 };
 
@@ -174,4 +273,24 @@ fn parseIpv4(s: []const u8) !u32 {
     }
     const host_val: u32 = (@as(u32, octets[0]) << 24) | (@as(u32, octets[1]) << 16) | (@as(u32, octets[2]) << 8) | @as(u32, octets[3]);
     return std.mem.nativeToBig(u32, host_val);
+}
+
+fn resolveAny(hostport: []const u8, proto: enum { udp }) !*posix.addrinfo {
+    _ = proto;
+    var parts = std.mem.splitScalar(u8, hostport, ':');
+    const host = parts.next() orelse return error.InvalidAddress;
+    const port = parts.next() orelse return error.InvalidAddress;
+    var hints: posix.addrinfo = .{
+        .flags = 0,
+        .family = posix.AF.UNSPEC,
+        .socktype = posix.SOCK.DGRAM,
+        .protocol = 0,
+        .addrlen = 0,
+        .canonname = null,
+        .addr = null,
+        .next = null,
+    };
+    var res: *posix.addrinfo = undefined;
+    try posix.getaddrinfo(host, port, &hints, &res);
+    return res;
 }

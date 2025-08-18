@@ -1,6 +1,6 @@
 const std = @import("std");
-const frame = @import("../src/quic/frame.zig");
-const varint = @import("../src/quic/varint.zig");
+const frame = @import("quic_frame");
+const varint = @import("quic_varint");
 
 // Minimal parser for the subset we write (padding/ping/stream)
 fn parseFrame(data: []const u8) void {
