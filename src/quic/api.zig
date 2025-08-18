@@ -3,12 +3,13 @@
 const std = @import("std");
 const ks = @import("tls/key_schedule.zig");
 const endpoint_mod = @import("endpoint.zig");
+const lb = @import("loop_backend.zig");
 
 pub const QuicVersion = enum { v1, v2 };
 pub const Role = enum { Client, Server };
 
 /// Global event loop backend chosen per OS.
-pub const LoopBackend = enum { epoll, kqueue, iocp };
+pub const LoopBackend = lb.LoopBackend;
 
 /// Configuration for a QUIC endpoint and connections.
 pub const QuicConfig = struct {
@@ -49,12 +50,7 @@ pub fn deriveInitialSecretsForConfig(cfg: *const QuicConfig, dcid: []const u8) s
 
 /// Platform event loop selection.
 pub fn defaultLoopBackend() LoopBackend {
-    return switch (std.Target.current.os.tag) {
-        .linux => .epoll,
-        .macos, .ios, .tvos, .watchos, .freebsd, .netbsd, .openbsd, .dragonfly => .kqueue,
-        .windows => .iocp,
-        else => .epoll,
-    };
+    return lb.defaultLoopBackend();
 }
 
 /// Initialize an endpoint bound to the provided address.

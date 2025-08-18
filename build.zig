@@ -116,6 +116,13 @@ pub fn build(b: *std.Build) void {
     const run_test_rfc_a3 = b.addRunArtifact(test_rfc_a3);
     test_step.dependOn(&run_test_rfc_a3.step);
 
+    // Timer tests
+    const quic_api_mod = mkModule(b, "src/quic/api.zig");
+    const test_timers = b.addTest(.{ .root_source_file = rp("tests/test_timers.zig"), .target = target, .optimize = optimize });
+    test_timers.root_module.addImport("quic_api", quic_api_mod);
+    const run_test_timers = b.addRunArtifact(test_timers);
+    test_step.dependOn(&run_test_timers.step);
+
     // Fuzzers: build executables
     const fuzz_varint = b.addExecutable(.{ .name = "fuzz_varint", .root_source_file = rp("fuzz/fuzz_varint.zig"), .target = target, .optimize = optimize });
     const fuzz_frame = b.addExecutable(.{ .name = "fuzz_frame_parse", .root_source_file = rp("fuzz/fuzz_frame_parse.zig"), .target = target, .optimize = optimize });

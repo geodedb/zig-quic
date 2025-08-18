@@ -260,10 +260,16 @@ pub fn protectInitial(
 
     const ct_len = try aeadEncrypt(suite, aead_key, aead_iv, packet_number, aad, plaintext, out_cipher);
 
-    // HP sample: first 16 bytes of the protected payload (ciphertext)
+    // HP sample: for AES, start at (4 - pn_len); for ChaCha, start at 0.
     if (ct_len < 16) return error.AuthenticationFailed;
     var sample16: [16]u8 = undefined;
-    @memcpy(sample16[0..], out_cipher[0..16]);
+    const pn_len: usize = pn_bytes.len;
+    const offset: usize = switch (suite) {
+        .aes_128_gcm => (4 - pn_len),
+        .chacha20_poly1305 => 0,
+    };
+    if (offset + 16 > out_cipher.len) return error.AuthenticationFailed;
+    @memcpy(sample16[0..], out_cipher[offset .. offset + 16]);
     try headerProtect(suite, hp_key, &sample16, header_first, pn_bytes);
 
     return ct_len;
@@ -284,7 +290,13 @@ pub fn unprotectInitial(
 ) !usize {
     if (ciphertext_and_tag.len < 16) return error.AuthenticationFailed;
     var sample16: [16]u8 = undefined;
-    @memcpy(sample16[0..], ciphertext_and_tag[0..16]);
+    const pn_len: usize = pn_bytes.len;
+    const offset: usize = switch (suite) {
+        .aes_128_gcm => (4 - pn_len),
+        .chacha20_poly1305 => 0,
+    };
+    if (offset + 16 > ciphertext_and_tag.len) return error.AuthenticationFailed;
+    @memcpy(sample16[0..], ciphertext_and_tag[offset .. offset + 16]);
     try headerUnprotect(suite, hp_key, &sample16, header_first, pn_bytes);
 
     // AAD recomputed with unprotected header_first and pn_bytes

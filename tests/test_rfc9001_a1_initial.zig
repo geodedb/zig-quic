@@ -130,7 +130,7 @@ test "rfc9001_a3_server_initial_byte_exact" {
     const packet_bytes = try pkt.encodeInitialProtected(
         gpa,
         0x00000001,
-        &client_dcid, // DCID in server Initial is client-chosen DCID from Client Initial
+        &[_]u8{}, // DCID is zero-length in server Initial sample
         &server_scid, // SCID is server-provided connection ID
         &[_]u8{},
         1, // PN

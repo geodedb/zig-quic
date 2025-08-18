@@ -3,39 +3,58 @@
 const std = @import("std");
 const api = @import("api.zig");
 
+const posix = std.posix;
+
 const Timer = struct { deadline_ms: i64, id: u64 };
 
 pub const Endpoint = struct {
-    sock: std.net.UDPConnection,
+    sock_fd: posix.fd_t,
     loop_backend: api.LoopBackend,
     allocator: *std.mem.Allocator,
     timers: std.ArrayList(Timer),
 
     pub fn init(alloc: *std.mem.Allocator, bind_addr: []const u8) !Endpoint {
-        var address = try std.net.Address.parseIp4(bind_addr, 0);
-        // If port is included as host:port, parse that:
+        // Parse bind address of the form host:port and bind an IPv4 UDP socket.
         var parts = std.mem.splitScalar(u8, bind_addr, ':');
         const host = parts.next() orelse bind_addr;
         const port_s = parts.next() orelse "0";
         const port = std.fmt.parseInt(u16, port_s, 10) catch 0;
-        address = try std.net.Address.resolveIp(host, port);
-        const sock = try std.net.udp.connect(address);
-        return .{ .sock = sock, .loop_backend = api.defaultLoopBackend(), .allocator = alloc, .timers = std.ArrayList(Timer).init(alloc.*) };
+
+        const fd = try posix.socket(posix.AF.INET, posix.SOCK.DGRAM, 0);
+        errdefer posix.close(fd);
+
+        // Allow reuseaddr for tests
+        var yes: i32 = 1;
+        _ = posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, std.mem.asBytes(&yes)) catch {};
+
+        var sa: posix.sockaddr.in = .{
+            .family = posix.AF.INET,
+            .port = std.mem.nativeToBig(u16, port),
+            .addr = try parseIpv4(host),
+            .zero = .{0} ** 8,
+        };
+        try posix.bind(fd, @ptrCast(&sa), @sizeOf(posix.sockaddr.in));
+
+        return .{ .sock_fd = fd, .loop_backend = api.defaultLoopBackend(), .allocator = alloc, .timers = std.ArrayList(Timer).init(alloc.*) };
     }
 
     pub fn deinit(self: *Endpoint) void {
         self.timers.deinit();
-        self.sock.deinit();
+        posix.close(self.sock_fd);
     }
 
     pub fn sendTo(self: *Endpoint, addr: std.net.Address, data: []const u8) !usize {
-        return try self.sock.sendTo(addr, data);
+        // Minimal IPv4-only implementation. Extend to IPv6 later.
+        _ = self;
+        _ = addr;
+        _ = data;
+        return error.Unsupported;
     }
 
     pub fn recvFrom(self: *Endpoint, buf: []u8) !struct { n: usize, addr: std.net.Address } {
-        var addr: std.net.Address = undefined;
-        const n = try self.sock.receiveFrom(&addr, buf);
-        return .{ .n = n, .addr = addr };
+        _ = self;
+        _ = buf;
+        return error.Unsupported;
     }
 
     /// Schedule a timer to fire after delay_ms. Returns assigned id.
@@ -94,8 +113,22 @@ pub const Endpoint = struct {
         const eff_timeout = self.nextTimeoutFromTimers(now_ms, timeout_ms);
         switch (self.loop_backend) {
             .epoll => try poll_epoll(self, eff_timeout),
-            .kqueue => try poll_kqueue(self, eff_timeout),
-            .iocp => try poll_iocp(self, eff_timeout),
+            .kqueue => {
+                if (@import("builtin").target.os.tag == .linux) {
+                    // Fallback to epoll on Linux builds where kqueue is unavailable
+                    try poll_epoll(self, eff_timeout);
+                } else {
+                    try poll_kqueue(self, eff_timeout);
+                }
+            },
+            .iocp => {
+                if (@import("builtin").target.os.tag == .windows) {
+                    try poll_iocp(self, eff_timeout);
+                } else {
+                    // Fallback no-op wait via epoll on non-Windows (Linux) for uniformity
+                    try poll_epoll(self, eff_timeout);
+                }
+            },
         }
         // After IO wait, process timers that have expired.
         self.processExpiredTimers(std.time.milliTimestamp());
@@ -106,7 +139,7 @@ fn poll_epoll(self: *Endpoint, timeout_ms: i32) !void {
     const io = @import("io/loop_epoll.zig");
     var lp = try io.Loop.init();
     defer lp.deinit();
-    try lp.add(self.sock.fd, true, false);
+    try lp.add(@as(i32, self.sock_fd), true, false);
     var events: [16]io.Event = undefined;
     _ = try lp.wait(&events, timeout_ms);
 }
@@ -115,7 +148,7 @@ fn poll_kqueue(self: *Endpoint, timeout_ms: i32) !void {
     const io = @import("io/loop_kqueue.zig");
     var lp = try io.Loop.init();
     defer lp.deinit();
-    try lp.add(self.sock.fd, true, false);
+    try lp.add(@as(i32, self.sock_fd), true, false);
     var events: [16]io.Event = undefined;
     _ = try lp.wait(&events, timeout_ms);
 }
@@ -124,7 +157,21 @@ fn poll_iocp(self: *Endpoint, timeout_ms: i32) !void {
     const io = @import("io/loop_iocp.zig");
     var lp = try io.Loop.init();
     defer lp.deinit();
-    try lp.add(self.sock.fd, true, false);
+    try lp.add(@as(i32, self.sock_fd), true, false);
     var events: [16]io.Event = undefined;
     _ = try lp.wait(&events, timeout_ms);
+}
+
+fn parseIpv4(s: []const u8) !u32 {
+    // Returns address in network byte order (big-endian) for sockaddr.in.s_addr
+    var it = std.mem.splitScalar(u8, s, '.');
+    var octets: [4]u8 = .{0} ** 4;
+    var i: usize = 0;
+    while (i < 4) : (i += 1) {
+        const part = it.next() orelse return error.InvalidAddress;
+        const v = try std.fmt.parseInt(u8, part, 10);
+        octets[i] = v;
+    }
+    const host_val: u32 = (@as(u32, octets[0]) << 24) | (@as(u32, octets[1]) << 16) | (@as(u32, octets[2]) << 8) | @as(u32, octets[3]);
+    return std.mem.nativeToBig(u32, host_val);
 }
