@@ -1,7 +1,8 @@
 // MIT License
 // Minimal TLS 1.3 handshake helpers for QUIC (no record layer)
 // Scope: transcript hash, Derive-Secret helpers, handshake traffic secrets,
-// and a tiny state container to consume/produce CRYPTO bytes.
+// a tiny state container to consume/produce CRYPTO bytes, and minimal
+// handshake message encode/parse helpers for ClientHello/ServerHello envelopes.
 const std = @import("std");
 const ks = @import("quic_tls");
 
@@ -18,6 +19,29 @@ pub const HsType = enum(u8) {
     certificate_verify = 15,
     finished = 20,
 };
+
+/// Encode a single TLS Handshake message (type + 3-byte length + body).
+pub fn encodeHandshake(alloc: std.mem.Allocator, typ: HsType, body: []const u8) ![]u8 {
+    var out = try alloc.alloc(u8, 4 + body.len);
+    out[0] = @intFromEnum(typ);
+    const L: u32 = @intCast(body.len);
+    out[1] = @intCast((L >> 16) & 0xff);
+    out[2] = @intCast((L >> 8) & 0xff);
+    out[3] = @intCast(L & 0xff);
+    @memcpy(out[4..], body);
+    return out;
+}
+
+/// Attempt to parse a Handshake message from data. Returns null if not enough bytes.
+pub fn parseHandshakeOne(data: []const u8) !?struct { typ: HsType, body: []const u8, n: usize } {
+    if (data.len < 4) return null;
+    const t_byte = data[0];
+    const typ: HsType = std.meta.intToEnum(HsType, t_byte) catch return error.UnknownHandshakeType;
+    const L: usize = (@as(usize, data[1]) << 16) | (@as(usize, data[2]) << 8) | @as(usize, data[3]);
+    const need = 4 + L;
+    if (data.len < need) return null;
+    return .{ .typ = typ, .body = data[4 .. 4 + L], .n = need };
+}
 
 /// Small transcript helper; accumulates handshake messages as-is.
 pub const Transcript = struct {
@@ -91,16 +115,31 @@ pub const Engine = struct {
     ecdhe_secret: ?[]const u8 = null,
     /// Buffer for producing outbound CRYPTO data (e.g., ClientHello).
     outbox: std.ArrayList(u8),
+    /// Tracking flags for minimal handshake state.
+    ch_sent: bool = false,
+    sh_seen: bool = false,
 
     pub fn init(alloc: std.mem.Allocator, role: Role) Engine {
-        return .{ .role = role, .transcript = Transcript.init(), .ecdhe_secret = null, .outbox = std.ArrayList(u8).init(alloc) };
+        return .{ .role = role, .transcript = Transcript.init(), .ecdhe_secret = null, .outbox = std.ArrayList(u8).init(alloc), .ch_sent = false, .sh_seen = false };
     }
     pub fn deinit(self: *Engine) void {
         self.outbox.deinit();
     }
 
-    /// Append received CRYPTO bytes into transcript (assumes complete handshake messages)
+    /// Append received CRYPTO bytes into transcript. Attempts to parse handshake messages
+    /// to update simple state, but always feeds the transcript with raw bytes.
     pub fn onCryptoRecv(self: *Engine, data: []const u8) void {
+        // Best-effort parse to notice a ServerHello in the stream.
+        var off: usize = 0;
+        while (true) {
+            const parsed = parseHandshakeOne(data[off..]) catch null;
+            if (parsed) |p| {
+                off += p.n;
+                if (p.typ == .server_hello) self.sh_seen = true;
+                // For completeness, mark ClientHello seen if we're in server role
+                if (p.typ == .client_hello) self.ch_sent = true;
+            } else break;
+        }
         self.transcript.update(data);
     }
 
@@ -108,8 +147,21 @@ pub const Engine = struct {
     pub fn queueCrypto(self: *Engine, data: []const u8) !void {
         try self.outbox.appendSlice(data);
         self.transcript.update(data);
+        // If this was a proper handshake ClientHello record, flip flag
+        if (data.len >= 1 and data[0] == @intFromEnum(HsType.client_hello)) {
+            self.ch_sent = true;
+        }
     }
 
+    /// Build and queue a minimal ClientHello handshake envelope with a synthetic body.
+    /// This is NOT wire-compatible TLS; it's a placeholder to exercise the pipeline.
+    pub fn queueMinimalClientHello(self: *Engine) !void {
+        const tmp = try encodeHandshake(self.outbox.allocator, .client_hello, "CHLO");
+        defer self.outbox.allocator.free(tmp);
+        try self.queueCrypto(tmp);
+    }
+
+    /// Drain outbox into caller buffer. Returns number of bytes copied.
     pub fn takeOut(self: *Engine, buf: []u8) usize {
         const n = @min(buf.len, self.outbox.items.len);
         @memcpy(buf[0..n], self.outbox.items[0..n]);
@@ -122,8 +174,14 @@ pub const Engine = struct {
     /// Drives key schedule after both sides' hello are in transcript and ecdhe_secret is set.
     pub fn computeHandshakeSecrets(self: *Engine) ?struct { client: [H.digest_length]u8, server: [H.digest_length]u8 } {
         if (self.ecdhe_secret == null) return null;
+        // In a future slice, we could require both CH and SH presence; keep permissive for tests.
         const th = self.transcript.finalize();
         const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th);
         return .{ .client = hs.client_hs, .server = hs.server_hs };
+    }
+
+    /// Convenience alias for draining outbound CRYPTO intended for QUIC Handshake pkts.
+    pub fn popCrypto(self: *Engine, out: []u8) usize {
+        return self.takeOut(out);
     }
 };

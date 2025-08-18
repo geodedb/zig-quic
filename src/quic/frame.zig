@@ -57,6 +57,20 @@ pub const Frame = union(enum) {
                 try w.writeByte(@intFromEnum(FrameType.PING));
                 return 1;
             },
+            .crypto => |c| {
+                try w.writeByte(@intFromEnum(FrameType.CRYPTO));
+                var written: usize = 1;
+                var tmp: [16]u8 = undefined;
+                const off_len = try varint.encode(c.offset, &tmp);
+                try w.writeAll(tmp[0..off_len]);
+                written += off_len;
+                const len_len = try varint.encode(c.data.len, &tmp);
+                try w.writeAll(tmp[0..len_len]);
+                written += len_len;
+                try w.writeAll(c.data);
+                written += c.data.len;
+                return written;
+            },
             .stream => |s| {
                 const OFF: u8 = 0x04;
                 const LEN: u8 = 0x02;
