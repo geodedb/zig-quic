@@ -247,29 +247,41 @@ pub fn protectInitial(
     packet_number: u64,
     header_first: *u8,
     pn_bytes: []u8,
-    header_prefix: []const u8,
+    header_prefix: []const u8, // bytes after first header byte up to PN
     plaintext: []const u8,
     out_cipher: []u8,
 ) !usize {
-    // Build AAD: header_prefix || pn_bytes (pre-HP)
-    var aad_buf = std.ArrayList(u8).init(std.heap.page_allocator);
-    defer aad_buf.deinit();
-    try aad_buf.appendSlice(header_prefix);
-    try aad_buf.appendSlice(pn_bytes);
-    const aad = aad_buf.items;
+    // Build AAD: header_first || header_prefix || pn_bytes (pre-HP)
+    var aad_stack: [1024]u8 = undefined;
+    const aad_len = 1 + header_prefix.len + pn_bytes.len;
+    if (aad_len > aad_stack.len) return error.MessageTooLong;
+    aad_stack[0] = header_first.*;
+    @memcpy(aad_stack[1 .. 1 + header_prefix.len], header_prefix);
+    @memcpy(aad_stack[1 + header_prefix.len .. aad_len], pn_bytes);
+    const aad = aad_stack[0..aad_len];
 
     const ct_len = try aeadEncrypt(suite, aead_key, aead_iv, packet_number, aad, plaintext, out_cipher);
 
-    // HP sample: for AES, start at (4 - pn_len); for ChaCha, start at 0.
+    // Build HP sample per RFC 9001:
+    // - AES: 16 bytes starting 4 bytes after start of PN -> relative to ciphertext (which starts after PN), offset = 4 - pn_len
+    // - ChaCha: 16 bytes starting at start of PN -> compose from PN bytes + first (16 - pn_len) bytes of ciphertext
     if (ct_len < 16) return error.AuthenticationFailed;
     var sample16: [16]u8 = undefined;
     const pn_len: usize = pn_bytes.len;
-    const offset: usize = switch (suite) {
-        .aes_128_gcm => (4 - pn_len),
-        .chacha20_poly1305 => 0,
-    };
-    if (offset + 16 > out_cipher.len) return error.AuthenticationFailed;
-    @memcpy(sample16[0..], out_cipher[offset .. offset + 16]);
+    switch (suite) {
+        .aes_128_gcm => {
+            const offset: usize = (4 - pn_len);
+            if (offset + 16 > out_cipher.len) return error.AuthenticationFailed;
+            @memcpy(sample16[0..], out_cipher[offset .. offset + 16]);
+        },
+        .chacha20_poly1305 => {
+            if (pn_len > 4) return error.InvalidPacketNumberLength;
+            // sample = PN bytes || first (16 - pn_len) bytes of ciphertext
+            if ((16 - pn_len) > out_cipher.len) return error.AuthenticationFailed;
+            @memcpy(sample16[0..pn_len], pn_bytes);
+            @memcpy(sample16[pn_len..], out_cipher[0 .. 16 - pn_len]);
+        },
+    }
     try headerProtect(suite, hp_key, &sample16, header_first, pn_bytes);
 
     return ct_len;
@@ -281,30 +293,31 @@ pub fn unprotectInitial(
     aead_key: []const u8,
     aead_iv: []const u8,
     hp_key: []const u8,
-    packet_number: u64,
     header_first: *u8,
     pn_bytes: []u8,
-    header_prefix: []const u8,
+    header_prefix: []const u8, // bytes after first header byte up to PN
+    hp_sample16: *const [16]u8,
     ciphertext_and_tag: []const u8,
     out_plaintext: []u8,
 ) !usize {
     if (ciphertext_and_tag.len < 16) return error.AuthenticationFailed;
-    var sample16: [16]u8 = undefined;
-    const pn_len: usize = pn_bytes.len;
-    const offset: usize = switch (suite) {
-        .aes_128_gcm => (4 - pn_len),
-        .chacha20_poly1305 => 0,
-    };
-    if (offset + 16 > ciphertext_and_tag.len) return error.AuthenticationFailed;
-    @memcpy(sample16[0..], ciphertext_and_tag[offset .. offset + 16]);
-    try headerUnprotect(suite, hp_key, &sample16, header_first, pn_bytes);
+
+    // Remove header protection using provided sample
+    try headerUnprotect(suite, hp_key, hp_sample16, header_first, pn_bytes);
 
     // AAD recomputed with unprotected header_first and pn_bytes
-    var aad_buf = std.ArrayList(u8).init(std.heap.page_allocator);
-    defer aad_buf.deinit();
-    try aad_buf.appendSlice(header_prefix);
-    try aad_buf.appendSlice(pn_bytes);
-    const aad = aad_buf.items;
+    var aad_stack: [1024]u8 = undefined;
+    const aad_len = 1 + header_prefix.len + pn_bytes.len;
+    if (aad_len > aad_stack.len) return error.MessageTooLong;
+    aad_stack[0] = header_first.*;
+    @memcpy(aad_stack[1 .. 1 + header_prefix.len], header_prefix);
+    @memcpy(aad_stack[1 + header_prefix.len .. aad_len], pn_bytes);
+    const aad = aad_stack[0..aad_len];
 
-    return try aeadDecrypt(suite, aead_key, aead_iv, packet_number, aad, ciphertext_and_tag, out_plaintext);
+    // Derive packet_number from unmasked pn_bytes (big-endian truncated). For tests, this equals full PN.
+    var pn_val: u64 = 0;
+    var i: usize = 0;
+    while (i < pn_bytes.len) : (i += 1) pn_val = (pn_val << 8) | pn_bytes[i];
+
+    return try aeadDecrypt(suite, aead_key, aead_iv, pn_val, aad, ciphertext_and_tag, out_plaintext);
 }

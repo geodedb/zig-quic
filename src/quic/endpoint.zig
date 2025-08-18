@@ -3,6 +3,11 @@
 const std = @import("std");
 const api = @import("api.zig");
 const conn_mod = @import("conn.zig");
+const packet = @import("packet.zig");
+const frame = @import("quic_frame");
+const ks = @import("tls/key_schedule.zig");
+const crypto = @import("quic_crypto");
+const varint = @import("quic_varint");
 
 const posix = std.posix;
 
@@ -44,10 +49,6 @@ pub const Endpoint = struct {
         var yes: i32 = 1;
         _ = posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, std.mem.asBytes(&yes)) catch {};
 
-        // Nonblocking (optional): skip; use MSG.DONTWAIT on recvfrom
-        // const cur = posix.fcntl(fd, posix.F.GETFL, 0) catch 0;
-        // _ = posix.fcntl(fd, posix.F.SETFL, cur | posix.O.NONBLOCK) catch {};
-
         var sa: posix.sockaddr.in = .{
             .family = posix.AF.INET,
             .port = std.mem.nativeToBig(u16, port),
@@ -71,6 +72,7 @@ pub const Endpoint = struct {
         var it = self.conns.iterator();
         while (it.next()) |entry| {
             const c = entry.value_ptr.*;
+            c.deinit();
             self.allocator.destroy(c);
         }
         self.conns.deinit();
@@ -92,7 +94,7 @@ pub const Endpoint = struct {
 
     /// Create a Connection object for an incoming datagram's peer.
     pub fn acceptFrom(self: *Endpoint, peer: conn_mod.SockAddr) conn_mod.Connection {
-        return .{ .id = 0, .role = .Server, .sock_fd = self.sock_fd, .peer = peer };
+        return .{ .id = 0, .role = .Server, .sock_fd = self.sock_fd, .peer = peer, .tls_inbox = std.ArrayList(u8).init(self.allocator.*) };
     }
 
     /// Resolve and create a Connection object for an explicit remote address.
@@ -100,7 +102,7 @@ pub const Endpoint = struct {
         const ai = try resolveAny(hostport, .udp);
         defer posix.freeaddrinfo(ai);
         const peer = conn_mod.SockAddr.setFrom(ai);
-        return .{ .id = 0, .role = .Client, .sock_fd = self.sock_fd, .peer = peer };
+        return .{ .id = 0, .role = .Client, .sock_fd = self.sock_fd, .peer = peer, .tls_inbox = std.ArrayList(u8).init(self.allocator.*) };
     }
 
     /// Schedule a one-shot timer to fire after delay_ms; returns timer id.
@@ -192,15 +194,78 @@ pub const Endpoint = struct {
         _ = bytes[i .. i + scid_len];
         // Key connection by peer and dcid
         const key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(dcid) };
-        if (!self.conns.contains(key)) {
+        const c_ptr = self.conns.getPtr(key) orelse blk: {
             const c = self.allocator.create(conn_mod.Connection) catch return;
-            c.* = .{ .id = 0, .role = .Server, .sock_fd = self.sock_fd, .peer = peer };
+            c.init(self.allocator, .Server, self.sock_fd, peer);
             _ = self.conns.put(key, c) catch {
+                c.deinit();
                 self.allocator.destroy(c);
                 return;
             };
+            break :blk self.conns.getPtr(key).?;
+        };
+        const conn = c_ptr.*;
+
+        // Derive Initial keys for server (we are receiving client's Initial)
+        const v2 = false; // TODO: parse version and map to v2 set
+        const initial = ks.deriveInitialSecret(v2, dcid);
+        const pair = ks.deriveClientServerInitial(initial);
+        const sk = if (v2) ks.deriveKeyIvHpV2(pair.server) else ks.deriveKeyIvHp(pair.server);
+        const keys: packet.InitialKeys = .{ .key = sk.key, .iv = sk.iv, .hp = sk.hp };
+
+        // Attempt to unprotect and decrypt
+        var header_first = first;
+        // Need header_prefix and pn_len
+        var j: usize = 5 + 1 + dcid_len + 1 + scid_len;
+        // token length varint
+        const tok = varint.decode(bytes[j..]) catch return;
+        j += tok.n + @as(usize, tok.value);
+        const len_dec = varint.decode(bytes[j..]) catch return;
+        j += len_dec.n;
+        const header_prefix = bytes[1..j];
+        const pn_len: u3 = @as(u3, @intCast(first & 0x03)) + 1;
+        if (j + pn_len > bytes.len) return;
+        var pn = [_]u8{0} ** 4;
+        @memcpy(pn[0..pn_len], bytes[j .. j + pn_len]);
+        const ct = bytes[j + pn_len .. j + @as(usize, len_dec.value)];
+        if (ct.len < 16) return;
+        var payload = std.ArrayList(u8).init(self.allocator.*);
+        defer payload.deinit();
+        payload.ensureTotalCapacity(ct.len - 16) catch return;
+        payload.appendNTimesAssumeCapacity(0, ct.len - 16);
+        const pt = payload.items;
+
+        // Build HP sample (AES Initials): offset (4 - pn_len) into ciphertext
+        var sample16: [16]u8 = undefined;
+        const offset_hp: usize = (4 - pn_len);
+        if (offset_hp + 16 > ct.len) return;
+        @memcpy(sample16[0..], ct[offset_hp .. offset_hp + 16]);
+
+        const ok = crypto.unprotectInitial(
+            .aes_128_gcm,
+            &keys.key,
+            &keys.iv,
+            &keys.hp,
+            &header_first,
+            pn[0..pn_len],
+            header_prefix,
+            &sample16,
+            ct,
+            pt,
+        ) catch return;
+        _ = ok;
+
+        // Walk frames and push CRYPTO to inbox
+        var off: usize = 0;
+        while (off < pt.len) {
+            const r = frame.decodeOne(pt[off..]) catch break;
+            off += r.n;
+            switch (r.f) {
+                .crypto => |cr| conn.pushCrypto(cr.data) catch {},
+                .padding => {},
+                else => {},
+            }
         }
-        // TODO: derive Initial keys from dcid and attempt unprotect/decrypt to feed CRYPTO to TLS.
     }
 
     fn nextTimeoutFromTimers(self: *Endpoint, now_ms: i64, requested_timeout_ms: i32) i32 {

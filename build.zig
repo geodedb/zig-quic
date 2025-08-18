@@ -77,6 +77,12 @@ pub fn build(b: *std.Build) void {
     quic_packet_mod.addImport("quic_tls", quic_tls_mod);
     quic_packet_mod.addImport("quic_crypto", quic_crypto_mod);
 
+    // Provide varint module for frame decoding to avoid duplicate include
+    const quic_varint_mod = mkModule(b, "src/quic/varint.zig");
+    const quic_frame_mod = mkModule(b, "src/quic/frame.zig");
+    quic_frame_mod.addImport("quic_varint", quic_varint_mod);
+    quic_packet_mod.addImport("quic_varint", quic_varint_mod);
+
     // Special-case: if filtering for the TLS KAT, only run that test file.
     if (test_filter) |f| {
         if (std.mem.containsAtLeast(u8, f, 1, "tls_key_schedule_kat")) {
@@ -118,8 +124,21 @@ pub fn build(b: *std.Build) void {
         const run_test_rfc_a3 = b.addRunArtifact(test_rfc_a3);
         test_step.dependOn(&run_test_rfc_a3.step);
 
+        // CRYPTO extraction from Initial payload
+        const test_crypto_extract = b.addTest(.{ .root_source_file = rp("tests/test_crypto_extract.zig"), .target = target, .optimize = optimize });
+        test_crypto_extract.root_module.addImport("quic_tls", quic_tls_mod);
+        test_crypto_extract.root_module.addImport("quic_crypto", quic_crypto_mod);
+        test_crypto_extract.root_module.addImport("quic_packet", quic_packet_mod);
+        test_crypto_extract.root_module.addImport("quic_frame", quic_frame_mod);
+        const run_test_crypto_extract = b.addRunArtifact(test_crypto_extract);
+        test_step.dependOn(&run_test_crypto_extract.step);
+
         // Timer tests
         const quic_api_mod = mkModule(b, "src/quic/api.zig");
+        // api -> endpoint -> @import("quic_crypto") and frame
+        quic_api_mod.addImport("quic_crypto", quic_crypto_mod);
+        quic_api_mod.addImport("quic_frame", quic_frame_mod);
+        quic_api_mod.addImport("quic_varint", quic_varint_mod);
         const test_timers = b.addTest(.{ .root_source_file = rp("tests/test_timers.zig"), .target = target, .optimize = optimize });
         test_timers.root_module.addImport("quic_api", quic_api_mod);
         const run_test_timers = b.addRunArtifact(test_timers);
@@ -136,8 +155,6 @@ pub fn build(b: *std.Build) void {
     const fuzz_frame = b.addExecutable(.{ .name = "fuzz_frame_parse", .root_source_file = rp("fuzz/fuzz_frame_parse.zig"), .target = target, .optimize = optimize });
 
     // Provide modules to fuzzers
-    const quic_varint_mod = mkModule(b, "src/quic/varint.zig");
-    const quic_frame_mod = mkModule(b, "src/quic/frame.zig");
     fuzz_varint.root_module.addImport("quic_varint", quic_varint_mod);
     fuzz_frame.root_module.addImport("quic_frame", quic_frame_mod);
     fuzz_frame.root_module.addImport("quic_varint", quic_varint_mod);

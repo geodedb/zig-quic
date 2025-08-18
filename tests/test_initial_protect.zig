@@ -32,8 +32,10 @@ test "initial_protect_roundtrip_chacha" {
 
     var header_first: u8 = 0xc3; // Long header, Initial, pnlen=2
     var pn: [2]u8 = .{ 0x00, 0x01 };
-    const header_prefix = try hexToBytesDyn(alloc, "00000001" ++ "088394c8f03e515708" ++ "0801020304050607" ++ "00" ++ "02");
-    defer alloc.free(header_prefix);
+    const header_prefix_full = try hexToBytesDyn(alloc, "00000001" ++ "088394c8f03e515708" ++ "0801020304050607" ++ "00" ++ "02");
+    defer alloc.free(header_prefix_full);
+    // Our crypto expects header_prefix to exclude the first byte; the test vector here already excludes it.
+    const header_prefix = header_prefix_full;
 
     var plain: [4]u8 = .{ 1, 2, 3, 4 };
     var cipher: [4 + 16]u8 = undefined;
@@ -44,7 +46,10 @@ test "initial_protect_roundtrip_chacha" {
     var header_first2 = header_first;
     var pn2 = pn;
     var out_plain: [4]u8 = undefined;
-    const pt_len = try crypto_quic.unprotectInitial(.aes_128_gcm, &keys.key, &keys.iv, &keys.hp, 1, &header_first2, &pn2, header_prefix, cipher[0..ct_len], &out_plain);
+    var sample16: [16]u8 = undefined;
+    // For AES and pn_len=2, offset = 4 - 2 = 2 into ciphertext
+    @memcpy(sample16[0..], cipher[2..18]);
+    const pt_len = try crypto_quic.unprotectInitial(.aes_128_gcm, &keys.key, &keys.iv, &keys.hp, &header_first2, &pn2, header_prefix, &sample16, cipher[0..ct_len], &out_plain);
     try std.testing.expectEqual(@as(usize, 4), pt_len);
     try std.testing.expectEqualSlices(u8, &plain, &out_plain);
 }

@@ -1,7 +1,7 @@
 //! QUIC packet encoding helpers (simplified). RFC 9000 long/short headers.
 //! MIT License
 const std = @import("std");
-const varint = @import("varint.zig");
+const varint = @import("quic_varint");
 const ks = @import("quic_tls");
 const crypto = @import("quic_crypto");
 
@@ -152,8 +152,8 @@ pub fn encodeInitialProtected(
     const ll = try varint.encode(length_value, &lbuf);
     try w.writeAll(lbuf[0..ll]);
 
-    // Remember header_prefix slice (start of buffer to end of length varint)
-    const header_prefix = buf.items;
+    // Remember header_prefix length (after first header byte) to end of length varint
+    const header_prefix_len = buf.items.len - 1; // exclude first byte
 
     // PN bytes big-endian truncated to packet_number_len
     var pn_be_full: [4]u8 = .{
@@ -174,7 +174,6 @@ pub fn encodeInitialProtected(
 
     // Protect payload and apply header protection (mutates first byte and PN in-place)
     var header_first: u8 = first;
-    // header_first is at items[0]; We'll let crypto mutate header_first then write it back.
     var pn_mut: [4]u8 = .{0} ** 4;
     @memcpy(pn_mut[0..packet_number_len], pn_slice);
 
@@ -188,7 +187,7 @@ pub fn encodeInitialProtected(
         packet_number,
         &header_first,
         pn_mut[0..packet_number_len],
-        header_prefix,
+        buf.items[1 .. 1 + header_prefix_len],
         payload_plaintext,
         out_cipher,
     );
@@ -196,7 +195,8 @@ pub fn encodeInitialProtected(
 
     // Write back mutated header first byte and PN
     buf.items[0] = header_first;
-    @memcpy(buf.items[header_prefix.len .. header_prefix.len + packet_number_len], pn_mut[0..packet_number_len]);
+    const pn_offset = 1 + header_prefix_len; // after first + header_prefix
+    @memcpy(buf.items[pn_offset .. pn_offset + packet_number_len], pn_mut[0..packet_number_len]);
 
     return buf.toOwnedSlice();
 }
@@ -221,7 +221,7 @@ pub fn decodeInitialProtected(
     const first = packet_bytes[i];
     i += 1;
     if ((first & 0x80) == 0) return error.InvalidHeader; // not long header
-    const pn_len: u3 = @as(u3, (first & 0x03)) + 1;
+    const pn_len: u3 = @as(u3, @intCast(first & 0x03)) + 1;
 
     // Version
     if (i + 4 > packet_bytes.len) return error.Truncated;
@@ -256,7 +256,7 @@ pub fn decodeInitialProtected(
     const len_dec = try varint.decode(rem2);
     i += len_dec.n;
 
-    const header_prefix = packet_bytes[0..i];
+    const header_prefix = packet_bytes[1..i]; // after first byte up to PN
 
     // PN bytes (masked)
     if (i + pn_len > packet_bytes.len) return error.Truncated;
@@ -270,6 +270,7 @@ pub fn decodeInitialProtected(
     var header_first = first;
     var aad = std.ArrayList(u8).init(alloc);
     defer aad.deinit();
+    try aad.appendSlice(packet_bytes[0..1]);
     try aad.appendSlice(header_prefix);
     try aad.appendSlice(pn_mut[0..pn_len]);
 
@@ -277,17 +278,21 @@ pub fn decodeInitialProtected(
     errdefer alloc.free(pt);
 
     _ = aad.items; // not used directly; unprotectInitial rebuilds AAD; keep for clarity
+
+    // Build HP sample for AES (Appendix A uses AES); keep suite fixed here.
+    var sample16: [16]u8 = undefined;
+    const offset: usize = (4 - pn_len);
+    @memcpy(sample16[0..], ct_and_tag[offset .. offset + 16]);
+
     _ = try crypto.unprotectInitial(
         crypto.AeadSuite.aes_128_gcm,
         &keys.key,
         &keys.iv,
         &keys.hp,
-        @as(u64, @intCast(
-        // Recover pseudo-full PN from truncated; for tests, PN < 2^32 and given directly.
-        (@as(u32, pn_mut[0]) << 24) | (@as(u32, pn_mut[1]) << 16) | (@as(u32, pn_mut[2]) << 8) | (@as(u32, pn_mut[3])))),
         &header_first,
         pn_mut[0..pn_len],
         header_prefix,
+        &sample16,
         ct_and_tag,
         pt,
     );
