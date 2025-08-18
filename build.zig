@@ -56,6 +56,14 @@ pub fn build(b: *std.Build) void {
 
     const step_update_gap = b.step("update-gap", "Install update-gap tool");
     step_update_gap.dependOn(&install_update_gap.step);
+    // Also provide a run step to append to GAP.md when a -Dgap-summary option is passed.
+    const gap_summary = b.option([]const u8, "gap-summary", "Summary string to append to GAP.md");
+    if (gap_summary) |summary| {
+        const run_update = b.addRunArtifact(update_gap);
+        run_update.addArg("--summary");
+        run_update.addArg(summary);
+        step_update_gap.dependOn(&run_update.step);
+    }
 
     // Tests
     const test_step = b.step("test", "Run unit tests");
@@ -75,6 +83,9 @@ pub fn build(b: *std.Build) void {
     // Expose TLS key schedule as a module for tests
     const quic_tls_mod = mkModule(b, "src/quic/tls/key_schedule.zig");
     const quic_crypto_mod = mkModule(b, "src/quic/crypto_quic.zig");
+    const quic_packet_mod = mkModule(b, "src/quic/packet.zig");
+    quic_packet_mod.addImport("quic_tls", quic_tls_mod);
+    quic_packet_mod.addImport("quic_crypto", quic_crypto_mod);
 
     const test_tls = b.addTest(.{ .root_source_file = rp("tests/test_tls_key_schedule.zig"), .target = target, .optimize = optimize });
     test_tls.root_module.addImport("quic_tls", quic_tls_mod);
@@ -88,6 +99,14 @@ pub fn build(b: *std.Build) void {
     test_initial.root_module.addImport("quic_crypto", quic_crypto_mod);
     const run_test_initial = b.addRunArtifact(test_initial);
     test_step.dependOn(&run_test_initial.step);
+
+    // RFC 9001 Appendix A Initial byte-exact test
+    const test_rfc_a1 = b.addTest(.{ .root_source_file = rp("tests/test_rfc9001_a1_initial.zig"), .target = target, .optimize = optimize });
+    test_rfc_a1.root_module.addImport("quic_tls", quic_tls_mod);
+    test_rfc_a1.root_module.addImport("quic_crypto", quic_crypto_mod);
+    test_rfc_a1.root_module.addImport("quic_packet", quic_packet_mod);
+    const run_test_rfc_a1 = b.addRunArtifact(test_rfc_a1);
+    test_step.dependOn(&run_test_rfc_a1.step);
 
     // Fuzzers: build executables
     const fuzz_varint = b.addExecutable(.{ .name = "fuzz_varint", .root_source_file = rp("fuzz/fuzz_varint.zig"), .target = target, .optimize = optimize });

@@ -260,10 +260,10 @@ pub fn protectInitial(
 
     const ct_len = try aeadEncrypt(suite, aead_key, aead_iv, packet_number, aad, plaintext, out_cipher);
 
-    // HP sample: 16 bytes starting 4 bytes after PN, i.e., at out_cipher[4..20]
-    if (ct_len < 20) return error.AuthenticationFailed;
+    // HP sample: first 16 bytes of the protected payload (ciphertext)
+    if (ct_len < 16) return error.AuthenticationFailed;
     var sample16: [16]u8 = undefined;
-    @memcpy(sample16[0..], out_cipher[4..20]);
+    @memcpy(sample16[0..], out_cipher[0..16]);
     try headerProtect(suite, hp_key, &sample16, header_first, pn_bytes);
 
     return ct_len;
@@ -282,9 +282,9 @@ pub fn unprotectInitial(
     ciphertext_and_tag: []const u8,
     out_plaintext: []u8,
 ) !usize {
-    if (ciphertext_and_tag.len < 20) return error.AuthenticationFailed;
+    if (ciphertext_and_tag.len < 16) return error.AuthenticationFailed;
     var sample16: [16]u8 = undefined;
-    @memcpy(sample16[0..], ciphertext_and_tag[4..20]);
+    @memcpy(sample16[0..], ciphertext_and_tag[0..16]);
     try headerUnprotect(suite, hp_key, &sample16, header_first, pn_bytes);
 
     // AAD recomputed with unprotected header_first and pn_bytes
