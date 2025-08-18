@@ -9,14 +9,14 @@ test "endpoint_timer_fire" {
     const ep = try api.endpointInit(&gpa, "127.0.0.1:0", &cfg);
     defer api.endpointDeinit(ep);
 
-    _ = try api.scheduleTimer(ep, 10);
+    _ = try api.scheduleTimer(ep, 20);
     const t0 = std.time.milliTimestamp();
     try api.poll(ep, 200);
     const dt = std.time.milliTimestamp() - t0;
 
     // Should have waited at least a few milliseconds, but much less than the full poll timeout.
     try std.testing.expect(dt >= 5);
-    try std.testing.expect(dt < 1000);
+    try std.testing.expect(dt < 500);
 
     // Timer should be consumed.
     try std.testing.expect(ep.timers.items.len == 0);
@@ -28,8 +28,8 @@ test "endpoint_timer_cancel" {
     const ep = try api.endpointInit(&gpa, "127.0.0.1:0", &cfg);
     defer api.endpointDeinit(ep);
 
-    _ = try api.scheduleTimer(ep, 1000);
-    const id2 = try api.scheduleTimer(ep, 1000);
+    _ = try api.scheduleTimer(ep, 200);
+    const id2 = try api.scheduleTimer(ep, 200);
     try std.testing.expect(ep.timers.items.len == 2);
 
     try std.testing.expect(api.cancelTimer(ep, id2));
@@ -40,6 +40,6 @@ test "endpoint_timer_cancel" {
     try std.testing.expect(ep.timers.items.len == 1);
 
     // Now poll long enough for it to expire and be removed.
-    try api.poll(ep, 1100);
+    try api.poll(ep, 300);
     try std.testing.expect(ep.timers.items.len == 0);
 }

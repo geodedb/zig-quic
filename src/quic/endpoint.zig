@@ -213,33 +213,45 @@ pub const Endpoint = struct {
         const sk = if (v2) ks.deriveKeyIvHpV2(pair.server) else ks.deriveKeyIvHp(pair.server);
         const keys: packet.InitialKeys = .{ .key = sk.key, .iv = sk.iv, .hp = sk.hp };
 
-        // Attempt to unprotect and decrypt
-        var header_first = first;
-        // Need header_prefix and pn_len
-        var j: usize = 5 + 1 + dcid_len + 1 + scid_len;
-        // token length varint
+        // Parse long header variable fields up to PN start
+        var j: usize = 5 + 1 + dcid_len + 1 + scid_len; // after SCID len+value
+        // token length varint and token bytes
         const tok = varint.decode(bytes[j..]) catch return;
         j += tok.n + @as(usize, tok.value);
+        // length varint (payload length includes pn+payload+tag)
         const len_dec = varint.decode(bytes[j..]) catch return;
         j += len_dec.n;
         const header_prefix = bytes[1..j];
-        const pn_len: u3 = @as(u3, @intCast(first & 0x03)) + 1;
-        if (j + pn_len > bytes.len) return;
-        var pn = [_]u8{0} ** 4;
-        @memcpy(pn[0..pn_len], bytes[j .. j + pn_len]);
-        const ct = bytes[j + pn_len .. j + @as(usize, len_dec.value)];
-        if (ct.len < 16) return;
+        // PN masked bytes follow; ciphertext starts after PN
+        const pn_len_masked: u3 = @as(u3, @intCast(first & 0x03)) + 1;
+        if (j + pn_len_masked > bytes.len) return;
+        const pn_start = j;
+        const ct_and_tag = bytes[pn_start + pn_len_masked .. j + @as(usize, len_dec.value)];
+        if (ct_and_tag.len < 16) return;
+
+        // Build HP sample at absolute PN+4 (RFC 9001 §5.4.3)
+        var sample16: [16]u8 = undefined;
+        if (pn_start + 4 + 16 > bytes.len) return;
+        @memcpy(sample16[0..], bytes[pn_start + 4 .. pn_start + 4 + 16]);
+
+        // Unmask header first byte and PN bytes in place copies
+        var header_first = first;
+        var pn_buf: [4]u8 = .{0} ** 4;
+        // Copy up to 4 masked PN bytes so helper can xor in place
+        const copy_pn_len = @min(@as(usize, pn_len_masked), 4);
+        @memcpy(pn_buf[0..copy_pn_len], bytes[pn_start .. pn_start + copy_pn_len]);
+        const pn_len = crypto.unmaskLongHeaderAndPn(.aes_128_gcm, &keys.hp, &sample16, &header_first, &pn_buf) catch return;
+
+        // Rebuild AAD and decrypt
+        const pn_bytes = pn_buf[0..pn_len];
+        // ciphertext_and_tag starts immediately after PN (actual pn_len after unmask)
+        const ct = bytes[pn_start + pn_len .. j + @as(usize, len_dec.value)];
         var payload = std.ArrayList(u8).init(self.allocator.*);
         defer payload.deinit();
+        if (ct.len < 16) return;
         payload.ensureTotalCapacity(ct.len - 16) catch return;
         payload.appendNTimesAssumeCapacity(0, ct.len - 16);
         const pt = payload.items;
-
-        // Build HP sample (AES Initials): offset (4 - pn_len) into ciphertext
-        var sample16: [16]u8 = undefined;
-        const offset_hp: usize = (4 - pn_len);
-        if (offset_hp + 16 > ct.len) return;
-        @memcpy(sample16[0..], ct[offset_hp .. offset_hp + 16]);
 
         const ok = crypto.unprotectInitial(
             .aes_128_gcm,
@@ -247,7 +259,7 @@ pub const Endpoint = struct {
             &keys.iv,
             &keys.hp,
             &header_first,
-            pn[0..pn_len],
+            pn_bytes,
             header_prefix,
             &sample16,
             ct,

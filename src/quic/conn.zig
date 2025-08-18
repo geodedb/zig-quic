@@ -2,6 +2,7 @@
 // Minimal QUIC connection handle and socket address utils
 const std = @import("std");
 const posix = std.posix;
+const tls13 = @import("tls/tls13.zig");
 
 pub const Role = enum { Client, Server };
 
@@ -50,6 +51,10 @@ pub const Connection = struct {
     sock_fd: posix.fd_t,
     peer: SockAddr,
     tls_inbox: std.ArrayList(u8),
+    tls: tls13.Engine,
+    // Derived handshake traffic secrets (once both hellos present)
+    hs_client: ?[tls13.H.digest_length]u8 = null,
+    hs_server: ?[tls13.H.digest_length]u8 = null,
 
     pub fn init(self: *Connection, alloc: *std.mem.Allocator, role: Role, sock_fd: posix.fd_t, peer: SockAddr) void {
         self.id = 0;
@@ -57,10 +62,14 @@ pub const Connection = struct {
         self.sock_fd = sock_fd;
         self.peer = peer;
         self.tls_inbox = std.ArrayList(u8).init(alloc.*);
+        self.tls = tls13.Engine.init(alloc.*, if (role == .Client) .Client else .Server);
+        self.hs_client = null;
+        self.hs_server = null;
     }
 
     pub fn deinit(self: *Connection) void {
         self.tls_inbox.deinit();
+        self.tls.deinit();
     }
 
     /// Send a datagram to the connection's peer.
@@ -69,8 +78,14 @@ pub const Connection = struct {
         return posix.sendto(self.sock_fd, data, 0, sa_ptr, self.peer.len);
     }
 
-    /// Append CRYPTO stream bytes into the inbox (TLS will consume later).
+    /// Append CRYPTO stream bytes into the inbox and feed TLS engine.
     pub fn pushCrypto(self: *Connection, data: []const u8) !void {
         try self.tls_inbox.appendSlice(data);
+        self.tls.onCryptoRecv(data);
+        // Attempt to compute handshake secrets if test ecdhe_secret has been set
+        if (self.tls.computeHandshakeSecrets()) |hs| {
+            self.hs_client = hs.client;
+            self.hs_server = hs.server;
+        }
     }
 };

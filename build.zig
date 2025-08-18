@@ -77,6 +77,15 @@ pub fn build(b: *std.Build) void {
     quic_packet_mod.addImport("quic_tls", quic_tls_mod);
     quic_packet_mod.addImport("quic_crypto", quic_crypto_mod);
 
+    // New TLS modules available to tests
+    const tls13_mod = mkModule(b, "src/quic/tls/tls13.zig");
+    // Allow '@import("key_schedule.zig")' inside tls13 to resolve via local path
+    tls13_mod.addImport("quic_tls", quic_tls_mod);
+    const asn1_mod = mkModule(b, "src/quic/tls/asn1.zig");
+    const x509_mod = mkModule(b, "src/quic/tls/x509.zig");
+    _ = asn1_mod;
+    _ = x509_mod;
+
     // Provide varint module for frame decoding to avoid duplicate include
     const quic_varint_mod = mkModule(b, "src/quic/varint.zig");
     const quic_frame_mod = mkModule(b, "src/quic/frame.zig");
@@ -91,6 +100,18 @@ pub fn build(b: *std.Build) void {
             const run_test_tls_only = b.addRunArtifact(test_tls_only);
             test_step.dependOn(&run_test_tls_only.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "timers")) {
+            const quic_api_mod = mkModule(b, "src/quic/api.zig");
+            quic_api_mod.addImport("quic_crypto", quic_crypto_mod);
+            quic_api_mod.addImport("quic_frame", quic_frame_mod);
+            quic_api_mod.addImport("quic_varint", quic_varint_mod);
+            quic_api_mod.addImport("tls/key_schedule.zig", quic_tls_mod);
+            quic_api_mod.addImport("quic_tls", quic_tls_mod);
+            const test_timers_only = b.addTest(.{ .root_source_file = rp("tests/test_timers.zig"), .target = target, .optimize = optimize });
+            test_timers_only.root_module.addImport("quic_api", quic_api_mod);
+            const run_test_timers_only = b.addRunArtifact(test_timers_only);
+            test_step.dependOn(&run_test_timers_only.step);
+            return;
         }
     }
 
@@ -100,6 +121,13 @@ pub fn build(b: *std.Build) void {
         test_tls.root_module.addImport("quic_tls", quic_tls_mod);
         const run_test_tls = b.addRunArtifact(test_tls);
         test_step.dependOn(&run_test_tls.step);
+
+        // Handshake secrets transition test
+        const test_tls_hs = b.addTest(.{ .root_source_file = rp("tests/test_tls_handshake_secrets.zig"), .target = target, .optimize = optimize });
+        test_tls_hs.root_module.addImport("quic_tls13", tls13_mod);
+        test_tls_hs.root_module.addImport("quic_tls", quic_tls_mod);
+        const run_test_tls_hs = b.addRunArtifact(test_tls_hs);
+        test_step.dependOn(&run_test_tls_hs.step);
 
         // Initial protection roundtrip test
         const test_initial = b.addTest(.{ .root_source_file = rp("tests/test_initial_protect.zig"), .target = target, .optimize = optimize });
@@ -139,6 +167,9 @@ pub fn build(b: *std.Build) void {
         quic_api_mod.addImport("quic_crypto", quic_crypto_mod);
         quic_api_mod.addImport("quic_frame", quic_frame_mod);
         quic_api_mod.addImport("quic_varint", quic_varint_mod);
+        // Provide tls key_schedule under both names used by deps
+        quic_api_mod.addImport("tls/key_schedule.zig", quic_tls_mod);
+        quic_api_mod.addImport("quic_tls", quic_tls_mod);
         const test_timers = b.addTest(.{ .root_source_file = rp("tests/test_timers.zig"), .target = target, .optimize = optimize });
         test_timers.root_module.addImport("quic_api", quic_api_mod);
         const run_test_timers = b.addRunArtifact(test_timers);
