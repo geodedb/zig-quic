@@ -101,7 +101,6 @@ pub const Frame = union(enum) {
                 written += s.data.len;
                 return written;
             },
-            else => return error.NotImplemented,
         }
     }
 };

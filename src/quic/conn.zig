@@ -3,6 +3,7 @@
 const std = @import("std");
 const posix = std.posix;
 const tls13 = @import("tls/tls13.zig");
+const packet = @import("packet.zig");
 
 pub const Role = enum { Client, Server };
 
@@ -45,6 +46,11 @@ pub const SockAddr = struct {
     }
 };
 
+pub const Cid = struct {
+    len: u8 = 0,
+    bytes: [20]u8 = undefined,
+};
+
 pub const Connection = struct {
     id: u64,
     role: Role,
@@ -55,6 +61,14 @@ pub const Connection = struct {
     // Derived handshake traffic secrets (once both hellos present)
     hs_client: ?[tls13.H.digest_length]u8 = null,
     hs_server: ?[tls13.H.digest_length]u8 = null,
+    // Cached QUIC Handshake keys for RX/TX once derived
+    hs_rx_keys: ?packet.InitialKeys = null,
+    hs_tx_keys: ?packet.InitialKeys = null,
+    // PN counters per space (simplified)
+    pn_handshake_tx: u32 = 1,
+    // Peer-provided Initial DCID/SCID from first Initial we saw (for reply headers)
+    peer_initial_dcid: Cid = .{},
+    peer_initial_scid: Cid = .{},
 
     pub fn init(self: *Connection, alloc: *std.mem.Allocator, role: Role, sock_fd: posix.fd_t, peer: SockAddr) void {
         self.id = 0;
@@ -65,6 +79,11 @@ pub const Connection = struct {
         self.tls = tls13.Engine.init(alloc.*, if (role == .Client) .Client else .Server);
         self.hs_client = null;
         self.hs_server = null;
+        self.hs_rx_keys = null;
+        self.hs_tx_keys = null;
+        self.pn_handshake_tx = 1;
+        self.peer_initial_dcid = .{};
+        self.peer_initial_scid = .{};
     }
 
     pub fn deinit(self: *Connection) void {
@@ -86,6 +105,28 @@ pub const Connection = struct {
         if (self.tls.computeHandshakeSecrets()) |hs| {
             self.hs_client = hs.client;
             self.hs_server = hs.server;
+            self.deriveHandshakeKeys(false);
         }
+    }
+
+    fn deriveHandshakeKeys(self: *Connection, version_v2: bool) void {
+        if (self.hs_client == null or self.hs_server == null) return;
+        // Assign rx/tx according to role
+        const rx_secret = if (self.role == .Server) self.hs_client.? else self.hs_server.?;
+        const tx_secret = if (self.role == .Server) self.hs_server.? else self.hs_client.?;
+        const rx = tls13.deriveQuicHandshakeKeys(rx_secret, version_v2);
+        const tx = tls13.deriveQuicHandshakeKeys(tx_secret, version_v2);
+        self.hs_rx_keys = .{ .key = rx.key, .iv = rx.iv, .hp = rx.hp };
+        self.hs_tx_keys = .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp };
+    }
+
+    /// Record peer's Initial DCID/SCID (copied) for use in reply headers.
+    pub fn setPeerInitialCids(self: *Connection, dcid: []const u8, scid: []const u8) void {
+        const dl: u8 = @intCast(@min(dcid.len, self.peer_initial_dcid.bytes.len));
+        self.peer_initial_dcid.len = dl;
+        if (dl > 0) @memcpy(self.peer_initial_dcid.bytes[0..dl], dcid[0..dl]);
+        const sl: u8 = @intCast(@min(scid.len, self.peer_initial_scid.bytes.len));
+        self.peer_initial_scid.len = sl;
+        if (sl > 0) @memcpy(self.peer_initial_scid.bytes[0..sl], scid[0..sl]);
     }
 };

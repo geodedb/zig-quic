@@ -166,7 +166,12 @@ pub const Engine = struct {
         const n = @min(buf.len, self.outbox.items.len);
         @memcpy(buf[0..n], self.outbox.items[0..n]);
         if (n > 0) {
-            _ = self.outbox.orderedRemoveRange(0, n);
+            // Manually remove first n bytes: shift left and shrink.
+            const remain = self.outbox.items.len - n;
+            if (remain > 0) {
+                std.mem.copyForwards(u8, self.outbox.items[0..remain], self.outbox.items[n..]);
+            }
+            _ = self.outbox.resize(self.outbox.items.len - n) catch {};
         }
         return n;
     }

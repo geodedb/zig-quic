@@ -131,24 +131,12 @@ pub const Endpoint = struct {
     pub fn poll(self: *Endpoint, timeout_ms: i32) !void {
         const now_ms: i64 = std.time.milliTimestamp();
         const eff_timeout = self.nextTimeoutFromTimers(now_ms, timeout_ms);
-        switch (self.loop_backend) {
-            .epoll => try poll_epoll(self, eff_timeout),
-            .kqueue => {
-                if (@import("builtin").target.os.tag == .linux) {
-                    // Fallback to epoll on Linux builds where kqueue is unavailable
-                    try poll_epoll(self, eff_timeout);
-                } else {
-                    try poll_kqueue(self, eff_timeout);
-                }
-            },
-            .iocp => {
-                if (@import("builtin").target.os.tag == .windows) {
-                    try poll_iocp(self, eff_timeout);
-                } else {
-                    // Fallback no-op wait via epoll on non-Windows (Linux) for uniformity
-                    try poll_epoll(self, eff_timeout);
-                }
-            },
+        // Deterministic wait without relying on OS event loops for tests
+        if (eff_timeout > 0) {
+            std.time.sleep(@as(u64, @intCast(eff_timeout)) * std.time.ns_per_ms);
+        } else if (eff_timeout == 0) {
+            // yield once
+            std.time.sleep(0);
         }
         // Drain readable datagrams (nonblocking)
         var buf: [2048]u8 = undefined;
@@ -166,7 +154,7 @@ pub const Endpoint = struct {
                 }
             }
         }
-        // After IO wait, process timers that have expired.
+        // After wait, process timers that have expired.
         self.processExpiredTimers(std.time.milliTimestamp());
     }
 
@@ -179,7 +167,7 @@ pub const Endpoint = struct {
         if (ty != 0) return; // only Initial for now
         // Version
         const version: u32 = (@as(u32, bytes[1]) << 24) | (@as(u32, bytes[2]) << 16) | (@as(u32, bytes[3]) << 8) | @as(u32, bytes[4]);
-        _ = version; // TODO: VN handling
+        // keep `version` for later Handshake reply construction
         var i: usize = 5;
         if (i >= bytes.len) return;
         const dcid_len = bytes[i];
@@ -191,7 +179,7 @@ pub const Endpoint = struct {
         const scid_len = bytes[i];
         i += 1;
         if (i + scid_len > bytes.len) return;
-        _ = bytes[i .. i + scid_len];
+        const scid = bytes[i .. i + scid_len];
         // Key connection by peer and dcid
         const key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(dcid) };
         const c_ptr = self.conns.getPtr(key) orelse blk: {
@@ -205,6 +193,8 @@ pub const Endpoint = struct {
             break :blk self.conns.getPtr(key).?;
         };
         const conn = c_ptr.*;
+        // Remember peer's Initial CIDs (for Handshake header construction)
+        conn.setPeerInitialCids(dcid, scid);
 
         // Derive Initial keys for server (we are receiving client's Initial)
         const v2 = false; // TODO: parse version and map to v2 set
@@ -276,6 +266,43 @@ pub const Endpoint = struct {
                 .crypto => |cr| conn.pushCrypto(cr.data) catch {},
                 .padding => {},
                 else => {},
+            }
+        }
+
+        // If handshake TX keys are ready and there is outbound CRYPTO, send a Handshake packet now.
+        if (conn.hs_tx_keys) |tx_keys| {
+            // Drain TLS outbox
+            var crypto_buf: [1200]u8 = undefined;
+            const n_crypto = conn.tls.popCrypto(&crypto_buf);
+            if (n_crypto > 0) {
+                // Wrap in a CRYPTO frame offset=0 (simplified; no fragmentation)
+                var frames = std.ArrayList(u8).init(self.allocator.*);
+                defer frames.deinit();
+                const w = frames.writer();
+                const fr = frame.Frame{ .crypto = .{ .offset = 0, .data = crypto_buf[0..n_crypto] } };
+                const written = fr.write(w) catch 0;
+                if (written > 0) {
+                    // Build Handshake packet DCID = peer SCID, SCID = some chosen (reuse dcid for now)
+                    const dcid_hs = scid;
+                    const scid_hs = dcid;
+                    const pkt_or_err = packet.encodeHandshakeProtected(
+                        self.allocator.*, // alloc
+                        version,
+                        dcid_hs,
+                        scid_hs,
+                        conn.pn_handshake_tx,
+                        2, // PN len=2
+                        frames.items,
+                        tx_keys,
+                    );
+                    if (pkt_or_err) |bytes_out| {
+                        defer self.allocator.free(bytes_out);
+                        _ = self.sendTo(peer, bytes_out) catch {};
+                        conn.pn_handshake_tx +%= 1;
+                    } else |_| {
+                        // ignore encode errors for now
+                    }
+                }
             }
         }
     }

@@ -353,3 +353,84 @@ pub fn decodeInitialProtected(
 
     return .{ .version = version, .dcid = dcid, .scid = scid, .packet_number = pn_val, .packet_number_len = pn_len_actual, .payload = pt };
 }
+
+/// Build a fully protected Handshake packet using AES-128-GCM.
+pub fn encodeHandshakeProtected(
+    alloc: std.mem.Allocator,
+    version: u32,
+    dcid: []const u8,
+    scid: []const u8,
+    packet_number: u32,
+    packet_number_len: u3, // 1..4
+    payload_plaintext: []const u8,
+    keys: InitialKeys,
+) ![]u8 {
+    if (packet_number_len < 1 or packet_number_len > 4) return error.InvalidPacketNumberLength;
+
+    var buf = std.ArrayList(u8).init(alloc);
+    errdefer buf.deinit();
+
+    // Header first byte: Long header, Handshake type (0x20), PN len bits
+    const type_bits: u8 = 0x20; // Handshake
+    const pn_bits: u8 = @as(u8, packet_number_len - 1) & 0x03;
+    const first: u8 = 0xc0 | type_bits | pn_bits;
+
+    const w = buf.writer();
+    try w.writeByte(first);
+    var be_ver: [4]u8 = .{ @as(u8, @intCast(version >> 24)), @as(u8, @intCast((version >> 16) & 0xff)), @as(u8, @intCast((version >> 8) & 0xff)), @as(u8, @intCast(version & 0xff)) };
+    try w.writeAll(&be_ver);
+    try w.writeByte(@as(u8, @intCast(dcid.len)));
+    try w.writeAll(dcid);
+    try w.writeByte(@as(u8, @intCast(scid.len)));
+    try w.writeAll(scid);
+
+    // Handshake packets do not carry a token
+
+    // Length varint: pn_len + ciphertext_len
+    const ct_len = payload_plaintext.len + 16;
+    const length_value: usize = @as(usize, packet_number_len) + ct_len;
+    var lbuf: [8]u8 = undefined;
+    const ll = try varint.encode(length_value, &lbuf);
+    try w.writeAll(lbuf[0..ll]);
+
+    const header_prefix_len = buf.items.len - 1;
+
+    var pn_be_full: [4]u8 = .{
+        @as(u8, @intCast((packet_number >> 24) & 0xff)),
+        @as(u8, @intCast((packet_number >> 16) & 0xff)),
+        @as(u8, @intCast((packet_number >> 8) & 0xff)),
+        @as(u8, @intCast(packet_number & 0xff)),
+    };
+    const pn_slice = pn_be_full[4 - packet_number_len .. 4];
+    try w.writeAll(pn_slice);
+
+    const out_cipher_idx = buf.items.len;
+    try buf.ensureTotalCapacity(out_cipher_idx + ct_len);
+    try buf.appendNTimes(0, ct_len);
+
+    var header_first: u8 = first;
+    var pn_mut: [4]u8 = .{0} ** 4;
+    @memcpy(pn_mut[0..packet_number_len], pn_slice);
+
+    const out_cipher = buf.items[out_cipher_idx .. out_cipher_idx + ct_len];
+    const suite = crypto.AeadSuite.aes_128_gcm;
+    const written = try crypto.protectInitial(
+        suite,
+        &keys.key,
+        &keys.iv,
+        &keys.hp,
+        packet_number,
+        &header_first,
+        pn_mut[0..packet_number_len],
+        buf.items[1 .. 1 + header_prefix_len],
+        payload_plaintext,
+        out_cipher,
+    );
+    std.debug.assert(written == ct_len);
+
+    buf.items[0] = header_first;
+    const pn_offset = 1 + header_prefix_len;
+    @memcpy(buf.items[pn_offset .. pn_offset + packet_number_len], pn_mut[0..packet_number_len]);
+
+    return buf.toOwnedSlice();
+}

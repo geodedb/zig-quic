@@ -42,7 +42,7 @@ pub const Loop = struct {
 
     pub fn wait(self: *Loop, events: []Event, timeout_ms: i32) !usize {
         var raw: [64]linux.epoll_event = undefined;
-        const n: usize = posix.epoll_wait(self.ep, &raw, timeout_ms);
+        const n: usize = posix.epoll_wait(self.ep, raw[0..], timeout_ms);
         const out_n = @min(events.len, n);
         var i: usize = 0;
         while (i < out_n) : (i += 1) {
