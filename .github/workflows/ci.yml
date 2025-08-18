@@ -159,6 +159,12 @@ jobs:
       - name: Ensure GAP updated when code changes
         if: github.event_name == 'pull_request'
         run: |
-          if git diff --name-only origin/${{ github.base_ref }}... | grep -E '\.(zig|zon|yml)$' >/dev/null; then
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}... | grep -E '\.(zig|zon|yml)$' || true)
+          if [ -n "$CHANGED" ]; then
+            echo "Code changes detected:"
+            echo "$CHANGED"
+            echo "Checking GAP.md update..."
             git diff --name-only origin/${{ github.base_ref }}... | grep -q docs/GAP.md || { echo "GAP.md not updated"; exit 1; }
+            zig build tools
+            ./zig-out/bin/update-gap --summary "CI: code changed in PR"
           fi
