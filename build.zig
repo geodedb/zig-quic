@@ -35,6 +35,12 @@ pub fn build(b: *std.Build) void {
     tools_step.dependOn(&install_update_gap.step);
     tools_step.dependOn(&install_doccheck.step);
 
+    const step_doccheck = b.step("doccheck", "Run documentation checker");
+    step_doccheck.dependOn(&install_doccheck.step);
+
+    const step_update_gap = b.step("update-gap", "Install update-gap tool");
+    step_update_gap.dependOn(&install_update_gap.step);
+
     // Tests
     const test_step = b.step("test", "Run unit tests");
     const test_filter = b.option([]const u8, "test-filter", "Filter tests by substring");

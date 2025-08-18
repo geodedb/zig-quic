@@ -2,8 +2,10 @@
 // QUIC varint utilities (RFC 9000 §16)
 const std = @import("std");
 
+/// Errors for varint encoding/decoding.
 pub const Error = error{ Truncated, Overflow };
 
+/// Decode a QUIC varint from the front of data. Returns bytes consumed and value.
 pub fn decode(data: []const u8) Error!struct { n: usize, value: u64 } {
     if (data.len == 0) return Error.Truncated;
     const first = data[0];
@@ -28,11 +30,11 @@ pub fn decode(data: []const u8) Error!struct { n: usize, value: u64 } {
     return .{ .n = len, .value = v };
 }
 
+/// Encode value using QUIC varint into out. Returns bytes written.
 pub fn encode(value: u64, out: []u8) Error!usize {
     if (value > ((1 << 62) - 1)) return Error.Overflow;
     const len: usize = if (value < (1 << 6)) 1 else if (value < (1 << 14)) 2 else if (value < (1 << 30)) 4 else 8;
     if (out.len < len) return Error.Truncated;
-    inline for (.{len}) |_| {}
     const toU8 = struct {
         fn f(v: u64) u8 {
             return @as(u8, @intCast(v));

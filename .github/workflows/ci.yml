@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, "**"]
+    branches: [main, '**']
   pull_request:
-    branches: ["**"]
+    branches: ['**']
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -18,7 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        zig: ["0.14.1"]
+        zig: ['0.14.1']
 
     steps:
       - name: Checkout
@@ -43,7 +43,7 @@ jobs:
         uses: cachix/cachix-action@v16
         with:
           name: spyder
-          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
 
       - name: Cache build artifacts
         uses: actions/cache@v4
@@ -82,7 +82,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        zig: ["0.14.1"]
+        zig: ['0.14.1']
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -106,7 +106,7 @@ jobs:
         uses: cachix/cachix-action@v16
         with:
           name: spyder
-          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
 
       - name: Cache build artifacts
         uses: actions/cache@v4
@@ -133,3 +133,32 @@ jobs:
             zig-out/lib/
             include/
           retention-days: 7
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Zig 0.13.0
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.13.0
+      - name: Build
+        run: zig build
+      - name: Unit tests
+        run: zig build test
+      - name: Build fuzzers
+        run: zig build fuzz
+      - name: Build bench
+        run: zig build bench
+      - name: Doccheck
+        run: zig build tools && ./zig-out/bin/doccheck
+      - name: Ensure GAP updated when code changes
+        if: github.event_name == 'pull_request'
+        run: |
+          if git diff --name-only origin/${{ github.base_ref }}... | grep -E '\.(zig|zon|yml)$' >/dev/null; then
+            git diff --name-only origin/${{ github.base_ref }}... | grep -q docs/GAP.md || { echo "GAP.md not updated"; exit 1; }
+          fi
