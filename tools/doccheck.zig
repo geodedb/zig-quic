@@ -12,17 +12,43 @@ fn hasImmediateDoc(lines: []const []const u8, idx: usize) bool {
     return false;
 }
 
+fn collectPaths(alloc: std.mem.Allocator, base: []const u8, out: *std.ArrayList([]const u8)) !void {
+    var dir = try std.fs.cwd().openDir(base, .{ .iterate = true });
+    defer dir.close();
+    var it = dir.iterate();
+    while (try it.next()) |e| {
+        const child_path = try std.fs.path.join(alloc, &.{ base, e.name });
+        switch (e.kind) {
+            .file => {
+                if (std.mem.endsWith(u8, child_path, ".zig")) {
+                    try out.append(child_path);
+                } else {
+                    alloc.free(child_path);
+                }
+            },
+            .directory => {
+                try collectPaths(alloc, child_path, out);
+                alloc.free(child_path);
+            },
+            else => alloc.free(child_path),
+        }
+    }
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
-    var it = try std.fs.cwd().openIterableDir("src/quic", .{ .recursor = true });
-    defer it.close();
-    var walker = it.walk();
-    while (try walker.next()) |e| {
-        if (e.kind != .file) continue;
-        if (!std.mem.endsWith(u8, e.path, ".zig")) continue;
-        var file = try e.dir.openFile(e.path, .{});
+
+    var files = std.ArrayList([]const u8).init(alloc);
+    defer {
+        for (files.items) |p| alloc.free(p);
+        files.deinit();
+    }
+    try collectPaths(alloc, "src/quic", &files);
+
+    for (files.items) |path| {
+        var file = try std.fs.cwd().openFile(path, .{});
         defer file.close();
         const contents = try file.readToEndAlloc(alloc, 1 << 20);
         defer alloc.free(contents);
@@ -35,7 +61,7 @@ pub fn main() !void {
             const t = std.mem.trim(u8, line, " \t\r");
             if (std.mem.startsWith(u8, t, "pub const") or std.mem.startsWith(u8, t, "pub fn") or std.mem.startsWith(u8, t, "pub struct") or std.mem.startsWith(u8, t, "pub var")) {
                 if (!hasImmediateDoc(arr, idx)) {
-                    std.debug.print("doccheck: missing doc comment in {s}:{d}\n", .{ e.path, idx + 1 });
+                    std.debug.print("doccheck: missing doc comment in {s}:{d}\n", .{ path, idx + 1 });
                     std.process.exit(1);
                 }
             }

@@ -70,3 +70,17 @@ Next:
 - Implement AEAD and header protection for Initial packets using std.crypto.
 - Integrate event loop with UDP endpoint and timers; drive `api.poll`.
 - Begin TLS handshake message scaffolding and X.509 parser stubs.
+
+Update 2025-08-18T12:35Z:
+
+- Implemented ChaCha20-based header protection (RFC 9001 §5.4.4) in `src/quic/crypto_quic.zig`.
+- Left AES-based header protection (ECB single-block) as TODO; will target next slice for Initial packets.
+- Wired public API to endpoint: `src/quic/api.zig` now exposes `endpointInit/endpointDeinit/poll` via `endpoint.zig`.
+- Ported `tools/doccheck.zig` to Zig 0.14 directory APIs; builds on Linux.
+- Re-verified acceptance: varint CLI exact outputs and TLS KATs passing.
+
+Next:
+
+- Implement AES-based header protection per RFC 9001 §5.4.3 and integrate full Initial packet protection path (AAD, nonce XOR, tag).
+- Hook header protection into packet encode/decode helpers; add unit tests against RFC Appendix A samples.
+- Begin timers and drive `api.poll` end-to-end through `endpoint`.

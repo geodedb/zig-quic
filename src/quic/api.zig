@@ -2,6 +2,7 @@
 //! MIT License
 const std = @import("std");
 const ks = @import("tls/key_schedule.zig");
+const endpoint_mod = @import("endpoint.zig");
 
 pub const QuicVersion = enum { v1, v2 };
 pub const Role = enum { Client, Server };
@@ -25,7 +26,9 @@ pub const QuicConfig = struct {
     allow_insecure: bool = false, // for tests only
 };
 
-pub const QuicEndpoint = opaque {};
+/// Concrete endpoint type.
+pub const QuicEndpoint = endpoint_mod.Endpoint;
+/// Placeholder concrete connection type.
 pub const QuicConnection = opaque {};
 pub const QuicStreamId = u64;
 
@@ -54,14 +57,16 @@ pub fn defaultLoopBackend() LoopBackend {
     };
 }
 
+/// Initialize an endpoint bound to the provided address.
 pub fn endpointInit(alloc: *std.mem.Allocator, bind_addr: []const u8, cfg: *const QuicConfig) !*QuicEndpoint {
-    _ = alloc;
-    _ = bind_addr;
-    _ = cfg;
-    return error.NotImplemented;
+    _ = cfg; // For later socket options
+    const ep = try alloc.create(QuicEndpoint);
+    ep.* = try QuicEndpoint.init(alloc, bind_addr);
+    return ep;
 }
+/// Deinitialize endpoint and free resources.
 pub fn endpointDeinit(ep: *QuicEndpoint) void {
-    _ = ep;
+    ep.deinit();
 }
 
 pub fn connect(ep: *QuicEndpoint, server_addr: []const u8, sni: []const u8) !*QuicConnection {
@@ -118,7 +123,5 @@ pub fn closeConnection(conn: *QuicConnection, app_error_code: u64) !void {
 
 /// Drives IO & timers; returns after timeout_ms or earlier when events handled.
 pub fn poll(ep: *QuicEndpoint, timeout_ms: u32) !void {
-    _ = ep;
-    _ = timeout_ms;
-    return error.NotImplemented;
+    return ep.poll(@as(i32, @intCast(timeout_ms)));
 }
