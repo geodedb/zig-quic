@@ -2,6 +2,7 @@
 // QUIC Initial packet AEAD and Header Protection helpers (RFC 9001/9369)
 const std = @import("std");
 const core = std.crypto.core;
+const builtin = @import("builtin");
 
 /// Supported AEAD suites for QUIC-TLS binding.
 pub const AeadSuite = enum { aes_128_gcm, chacha20_poly1305 };
@@ -238,7 +239,7 @@ fn aesEcbEncrypt128(out: *[16]u8, key16: [16]u8, block16: [16]u8) !void {
 /// - pn_bytes: packet number bytes (1..4), mutated by HP
 /// - header_prefix: bytes before PN (e.g., long header fields up to Length varint end)
 /// - plaintext -> ciphertext+tag written to out_cipher (len = plaintext.len+16)
-/// AAD = header_prefix || pn_bytes (pre-HP). HP sample is 16 bytes starting 4 bytes after PN, i.e., out_cipher[4..20].
+/// AAD = header_first || header_prefix || pn_bytes (pre-HP). HP sample is 16 bytes starting 4 bytes after PN, i.e., out_cipher[4..20].
 pub fn protectInitial(
     suite: AeadSuite,
     aead_key: []const u8,
@@ -260,6 +261,17 @@ pub fn protectInitial(
     @memcpy(aad_stack[1 + header_prefix.len .. aad_len], pn_bytes);
     const aad = aad_stack[0..aad_len];
 
+    // Debug dumps
+    if (builtin.is_test) {
+        dumpBytes("ENC aead_key", aead_key);
+        dumpBytes("ENC aead_iv", aead_iv);
+        dumpBytes("ENC aad", aad);
+        var ndbg: [12]u8 = undefined;
+        xorNonce(&ndbg, aead_iv, packet_number);
+        dumpBytes("ENC nonce", &ndbg);
+        dumpBytes("ENC pn_bytes", pn_bytes);
+    }
+
     const ct_len = try aeadEncrypt(suite, aead_key, aead_iv, packet_number, aad, plaintext, out_cipher);
 
     // Build HP sample per RFC 9001:
@@ -276,12 +288,13 @@ pub fn protectInitial(
         },
         .chacha20_poly1305 => {
             if (pn_len > 4) return error.InvalidPacketNumberLength;
-            // sample = PN bytes || first (16 - pn_len) bytes of ciphertext
             if ((16 - pn_len) > out_cipher.len) return error.AuthenticationFailed;
             @memcpy(sample16[0..pn_len], pn_bytes);
             @memcpy(sample16[pn_len..], out_cipher[0 .. 16 - pn_len]);
         },
     }
+    if (builtin.is_test) dumpBytes("ENC hp_sample", sample16[0..]);
+
     try headerProtect(suite, hp_key, &sample16, header_first, pn_bytes);
 
     return ct_len;
@@ -302,6 +315,11 @@ pub fn unprotectInitial(
 ) !usize {
     if (ciphertext_and_tag.len < 16) return error.AuthenticationFailed;
 
+    if (builtin.is_test) {
+        dumpBytes("DEC hp_sample", hp_sample16.*[0..]);
+        dumpBytes("DEC hp_key", hp_key);
+    }
+
     // Remove header protection using provided sample
     try headerUnprotect(suite, hp_key, hp_sample16, header_first, pn_bytes);
 
@@ -319,5 +337,63 @@ pub fn unprotectInitial(
     var i: usize = 0;
     while (i < pn_bytes.len) : (i += 1) pn_val = (pn_val << 8) | pn_bytes[i];
 
+    if (builtin.is_test) {
+        dumpBytes("DEC aead_key", aead_key);
+        dumpBytes("DEC aead_iv", aead_iv);
+        dumpBytes("DEC aad", aad);
+        var ndbg: [12]u8 = undefined;
+        xorNonce(&ndbg, aead_iv, pn_val);
+        dumpBytes("DEC nonce", &ndbg);
+        dumpBytes("DEC pn_bytes", pn_bytes);
+    }
+
     return try aeadDecrypt(suite, aead_key, aead_iv, pn_val, aad, ciphertext_and_tag, out_plaintext);
+}
+
+/// Unmask long header first byte and up to 4 PN bytes using the given hp_key and sample.
+/// Returns the actual packet number length (1..4) after unmasking the header.
+pub fn unmaskLongHeaderAndPn(
+    suite: AeadSuite,
+    hp_key: []const u8,
+    sample16: *const [16]u8,
+    header_first: *u8,
+    pn_buf: *[4]u8, // contains 4 masked bytes from packet at PN start
+) !u3 {
+    var out_block: [16]u8 = undefined;
+    switch (suite) {
+        .aes_128_gcm => {
+            if (hp_key.len != 16) return error.InvalidKey;
+            try aesEcbEncrypt128(&out_block, hp_key[0..16].*, sample16.*);
+        },
+        .chacha20_poly1305 => {
+            if (hp_key.len != 32) return error.InvalidKey;
+            var nonce: [12]u8 = undefined;
+            @memcpy(nonce[0..], sample16.*[4..16]);
+            var block: [64]u8 = undefined;
+            chacha20Block(&block, hp_key[0..32].*, nonce, 0);
+            @memcpy(out_block[0..16], block[0..16]);
+        },
+    }
+    const is_long = (header_first.* & 0x80) != 0;
+    const hdr_mask: u8 = if (is_long) 0x0f else 0x1f;
+    header_first.* ^= (out_block[0] & hdr_mask);
+    const pn_len: u3 = @as(u3, @intCast((header_first.* & 0x03))) + 1;
+    var i: usize = 0;
+    while (i < pn_len) : (i += 1) pn_buf.*[i] ^= out_block[i + 1];
+    return pn_len;
+}
+
+fn dumpBytes(label: []const u8, bytes: []const u8) void {
+    if (!builtin.is_test) return;
+    var buf: [256]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    const a = fba.allocator();
+    var list = std.ArrayList(u8).init(a);
+    defer list.deinit();
+    var i: usize = 0;
+    while (i < bytes.len) : (i += 1) {
+        _ = list.writer().print("{x:0>2}", .{bytes[i]}) catch break;
+        if (i + 1 < bytes.len) _ = list.append(' ') catch break;
+    }
+    std.debug.print("{s}: {s}\n", .{ label, list.items });
 }

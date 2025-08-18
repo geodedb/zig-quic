@@ -4,6 +4,22 @@ const std = @import("std");
 const varint = @import("quic_varint");
 const ks = @import("quic_tls");
 const crypto = @import("quic_crypto");
+const builtin = @import("builtin");
+
+fn dumpBytes(label: []const u8, bytes: []const u8) void {
+    if (!builtin.is_test) return;
+    var buf: [256]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    const a = fba.allocator();
+    var list = std.ArrayList(u8).init(a);
+    defer list.deinit();
+    var i: usize = 0;
+    while (i < bytes.len) : (i += 1) {
+        _ = list.writer().print("{x:0>2}", .{bytes[i]}) catch break;
+        if (i + 1 < bytes.len) _ = list.append(' ') catch break;
+    }
+    std.debug.print("{s}: {s}\n", .{ label, list.items });
+}
 
 pub const PacketNumber = u64;
 
@@ -221,7 +237,6 @@ pub fn decodeInitialProtected(
     const first = packet_bytes[i];
     i += 1;
     if ((first & 0x80) == 0) return error.InvalidHeader; // not long header
-    const pn_len: u3 = @as(u3, @intCast(first & 0x03)) + 1;
 
     // Version
     if (i + 4 > packet_bytes.len) return error.Truncated;
@@ -258,49 +273,83 @@ pub fn decodeInitialProtected(
 
     const header_prefix = packet_bytes[1..i]; // after first byte up to PN
 
-    // PN bytes (masked)
-    if (i + pn_len > packet_bytes.len) return error.Truncated;
-    var pn_mut = [_]u8{0} ** 4;
-    @memcpy(pn_mut[0..pn_len], packet_bytes[i .. i + pn_len]);
-    i += pn_len;
+    // PN bytes (masked) begin here
+    const pn_offset = i;
+    if (pn_offset + 1 > packet_bytes.len) return error.Truncated;
 
-    const ct_and_tag = packet_bytes[i .. i + (len_dec.value - pn_len)];
+    // Copy up to 4 masked PN bytes (may include ciphertext bytes beyond actual PN)
+    var pn_masked4 = [_]u8{0} ** 4;
+    const avail = @min(@as(usize, 4), packet_bytes.len - pn_offset);
+    @memcpy(pn_masked4[0..avail], packet_bytes[pn_offset .. pn_offset + avail]);
 
-    // Unprotect header to recover PN and first byte
+    // Build AES HP sample: 16 bytes starting at PN start + 4 (RFC 9001 §5.4.3)
+    const sample_start = pn_offset + 4;
+    const end_total = pn_offset + @as(usize, len_dec.value);
+    if (sample_start + 16 > end_total or end_total > packet_bytes.len) return error.Truncated;
+    var sample16: [16]u8 = undefined;
+    @memcpy(sample16[0..], packet_bytes[sample_start .. sample_start + 16]);
+
+    // Unmask to recover header_first and actual PN bytes/length
     var header_first = first;
+    const pn_len_actual: u3 = try crypto.unmaskLongHeaderAndPn(
+        crypto.AeadSuite.aes_128_gcm,
+        &keys.hp,
+        &sample16,
+        &header_first,
+        &pn_masked4,
+    );
+
+    // Compute ciphertext+tag slice using actual PN length
+    const ct_begin = pn_offset + pn_len_actual;
+    const ct_end = end_total;
+    if (ct_end < ct_begin + 16) return error.Truncated;
+    const ct_and_tag = packet_bytes[ct_begin..ct_end];
+
+    // AAD = unmasked first byte || header_prefix || unmasked PN bytes
     var aad = std.ArrayList(u8).init(alloc);
     defer aad.deinit();
-    try aad.appendSlice(packet_bytes[0..1]);
+    try aad.append(header_first);
     try aad.appendSlice(header_prefix);
-    try aad.appendSlice(pn_mut[0..pn_len]);
+    try aad.appendSlice(pn_masked4[0..pn_len_actual]);
+
+    // Compute PN value (big-endian truncated)
+    var pn_val: u32 = 0;
+    var j2: usize = 0;
+    while (j2 < pn_len_actual) : (j2 += 1) pn_val = (pn_val << 8) | pn_masked4[j2];
+
+    if (builtin.is_test) {
+        dumpBytes("DEC aad", aad.items);
+        var nonce: [12]u8 = undefined;
+        // Compute nonce = iv XOR pn_val (big-endian in last 8 bytes)
+        @memcpy(nonce[0..], &keys.iv);
+        var pn_be: [12]u8 = .{0} ** 12;
+        const pn64: u64 = @as(u64, pn_val);
+        pn_be[4] = @as(u8, @truncate(pn64 >> 56));
+        pn_be[5] = @as(u8, @truncate(pn64 >> 48));
+        pn_be[6] = @as(u8, @truncate(pn64 >> 40));
+        pn_be[7] = @as(u8, @truncate(pn64 >> 32));
+        pn_be[8] = @as(u8, @truncate(pn64 >> 24));
+        pn_be[9] = @as(u8, @truncate(pn64 >> 16));
+        pn_be[10] = @as(u8, @truncate(pn64 >> 8));
+        pn_be[11] = @as(u8, @truncate(pn64));
+        var k: usize = 0;
+        while (k < 12) : (k += 1) nonce[k] ^= pn_be[k];
+        dumpBytes("DEC nonce", &nonce);
+        dumpBytes("DEC pn_bytes", pn_masked4[0..pn_len_actual]);
+    }
 
     const pt = try alloc.alloc(u8, ct_and_tag.len - 16);
     errdefer alloc.free(pt);
 
-    _ = aad.items; // not used directly; unprotectInitial rebuilds AAD; keep for clarity
-
-    // Build HP sample for AES (Appendix A uses AES); keep suite fixed here.
-    var sample16: [16]u8 = undefined;
-    const offset: usize = (4 - pn_len);
-    @memcpy(sample16[0..], ct_and_tag[offset .. offset + 16]);
-
-    _ = try crypto.unprotectInitial(
+    _ = try crypto.aeadDecrypt(
         crypto.AeadSuite.aes_128_gcm,
         &keys.key,
         &keys.iv,
-        &keys.hp,
-        &header_first,
-        pn_mut[0..pn_len],
-        header_prefix,
-        &sample16,
+        pn_val,
+        aad.items,
         ct_and_tag,
         pt,
     );
 
-    // Compute PN value from unmasked pn_mut bytes (big-endian)
-    var pn_val: u32 = 0;
-    var j: usize = 0;
-    while (j < pn_len) : (j += 1) pn_val = (pn_val << 8) | pn_mut[j];
-
-    return .{ .version = version, .dcid = dcid, .scid = scid, .packet_number = pn_val, .packet_number_len = pn_len, .payload = pt };
+    return .{ .version = version, .dcid = dcid, .scid = scid, .packet_number = pn_val, .packet_number_len = pn_len_actual, .payload = pt };
 }
