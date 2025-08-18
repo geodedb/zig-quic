@@ -1,0 +1,3 @@
+[submodule "examples/quic-go"]
+	path = examples/quic-go
+	url = git@github.com:quic-go/quic-go.git

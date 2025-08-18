@@ -1,0 +1,35 @@
+name: Format
+
+on:
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: de-vri-es/setup-git-credentials@v2
+        with:
+          credentials: ${{secrets.GIT_CREDENTIALS}}
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          upstream-cache: https://spyder.cachix.org
+      - uses: DeterminateSystems/flake-checker-action@main
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v16
+        with:
+          name: spyder
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+      - name: Check formatting
+        run: zig fmt --check .
