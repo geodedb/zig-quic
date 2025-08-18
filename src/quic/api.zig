@@ -125,3 +125,13 @@ pub fn closeConnection(conn: *QuicConnection, app_error_code: u64) !void {
 pub fn poll(ep: *QuicEndpoint, timeout_ms: u32) !void {
     return ep.poll(@as(i32, @intCast(timeout_ms)));
 }
+
+/// Schedule a one-shot timer on the endpoint; returns the timer id.
+pub fn scheduleTimer(ep: *QuicEndpoint, delay_ms: u32) !u64 {
+    return ep.scheduleTimer(delay_ms);
+}
+
+/// Cancel a previously scheduled endpoint timer.
+pub fn cancelTimer(ep: *QuicEndpoint, id: u64) bool {
+    return ep.cancelTimer(id);
+}

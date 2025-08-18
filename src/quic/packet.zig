@@ -283,9 +283,8 @@ pub fn decodeInitialProtected(
         &keys.iv,
         &keys.hp,
         @as(u64, @intCast(
-            // Recover pseudo-full PN from truncated; for tests, PN < 2^32 and given directly.
-            (@as(u32, pn_mut[0]) << 24) | (@as(u32, pn_mut[1]) << 16) | (@as(u32, pn_mut[2]) << 8) | (@as(u32, pn_mut[3]))
-        )),
+        // Recover pseudo-full PN from truncated; for tests, PN < 2^32 and given directly.
+        (@as(u32, pn_mut[0]) << 24) | (@as(u32, pn_mut[1]) << 16) | (@as(u32, pn_mut[2]) << 8) | (@as(u32, pn_mut[3])))),
         &header_first,
         pn_mut[0..pn_len],
         header_prefix,

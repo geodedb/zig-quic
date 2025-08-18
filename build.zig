@@ -108,6 +108,14 @@ pub fn build(b: *std.Build) void {
     const run_test_rfc_a1 = b.addRunArtifact(test_rfc_a1);
     test_step.dependOn(&run_test_rfc_a1.step);
 
+    // RFC 9001 Appendix A.3 Server Initial byte-exact test
+    const test_rfc_a3 = b.addTest(.{ .root_source_file = rp("tests/test_rfc9001_a3_server_initial.zig"), .target = target, .optimize = optimize });
+    test_rfc_a3.root_module.addImport("quic_tls", quic_tls_mod);
+    test_rfc_a3.root_module.addImport("quic_crypto", quic_crypto_mod);
+    test_rfc_a3.root_module.addImport("quic_packet", quic_packet_mod);
+    const run_test_rfc_a3 = b.addRunArtifact(test_rfc_a3);
+    test_step.dependOn(&run_test_rfc_a3.step);
+
     // Fuzzers: build executables
     const fuzz_varint = b.addExecutable(.{ .name = "fuzz_varint", .root_source_file = rp("fuzz/fuzz_varint.zig"), .target = target, .optimize = optimize });
     const fuzz_frame = b.addExecutable(.{ .name = "fuzz_frame_parse", .root_source_file = rp("fuzz/fuzz_frame_parse.zig"), .target = target, .optimize = optimize });

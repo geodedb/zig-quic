@@ -11,8 +11,8 @@ fn hexToBytes(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
     var out = try alloc.alloc(u8, s.len / 2);
     var i: usize = 0;
     while (i < out.len) : (i += 1) {
-        const hi = try std.fmt.parseInt(u8, s[i*2..i*2+1], 16);
-        const lo = try std.fmt.parseInt(u8, s[i*2+1..i*2+2], 16);
+        const hi = try std.fmt.parseInt(u8, s[i * 2 .. i * 2 + 1], 16);
+        const lo = try std.fmt.parseInt(u8, s[i * 2 + 1 .. i * 2 + 2], 16);
         out[i] = (hi << 4) | lo;
     }
     return out;
@@ -68,7 +68,7 @@ test "rfc9001_a1_client_initial_byte_exact" {
     }
 
     // DCID used in Appendix A
-    const dcid = [_]u8{ 0x83,0x94,0xc8,0xf0,0x3e,0x51,0x57,0x08 };
+    const dcid = [_]u8{ 0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08 };
 
     // Derive client initial keys (v1)
     const initial = ks.deriveInitialSecret(false, &dcid);
@@ -100,6 +100,56 @@ test "rfc9001_a1_client_initial_byte_exact" {
     // Verify known substrings appear
     const tail = try decodeHex(gpa, &[_][]const u8{
         "e3fc433f9f2541010ae17c1bf202580f6047472fb36857fe843b19f5984009dd",
+    });
+    defer gpa.free(tail);
+    try std.testing.expect(std.mem.indexOf(u8, packet_bytes, tail) != null);
+}
+
+test "rfc9001_a3_server_initial_byte_exact" {
+    var gpa = std.heap.page_allocator;
+
+    // DCID from A.3 response header sample
+    const server_scid = [_]u8{ 0xf0, 0x67, 0xa5, 0x50, 0x2a, 0x42, 0x62, 0xb5 };
+    const client_dcid = [_]u8{ 0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08 };
+
+    // Derive server initial keys (v1) using client's DCID from A.2
+    const initial = ks.deriveInitialSecret(false, &client_dcid);
+    const pair = ks.deriveClientServerInitial(initial);
+    const sk = ks.deriveKeyIvHp(pair.server);
+    const keys: pkt.InitialKeys = .{ .key = sk.key, .iv = sk.iv, .hp = sk.hp };
+
+    // Server plaintext from RFC A.3
+    const plaintext = try decodeHex(gpa, &[_][]const u8{
+        "02000000000600405a020000560303ee fce7f7b37ba1d1632e96677825ddf739",
+        "88cfc79825df566dc5430b9a045a1200 130100002e00330024001d00209d3c94",
+        "0d89690b84d08a60993c144eca684d10 81287c834d5311bcf32bb9da1a002b00",
+        "020304",
+    });
+    defer gpa.free(plaintext);
+
+    const packet_bytes = try pkt.encodeInitialProtected(
+        gpa,
+        0x00000001,
+        &client_dcid, // DCID in server Initial is client-chosen DCID from Client Initial
+        &server_scid, // SCID is server-provided connection ID
+        &[_]u8{},
+        1, // PN
+        2, // PN length 2
+        plaintext,
+        keys,
+    );
+    defer gpa.free(packet_bytes);
+
+    // Expected protected header per RFC A.3
+    const expected_header = try decodeHex(gpa, &[_][]const u8{
+        "cf000000010008f067a5502a4262b5004075c0d9",
+    });
+    defer gpa.free(expected_header);
+    try std.testing.expectEqualSlices(u8, expected_header, packet_bytes[0..expected_header.len]);
+
+    // Check a known substring from the protected payload
+    const tail = try decodeHex(gpa, &[_][]const u8{
+        "5a482cd0991cd25b0aac406a5816b6394100f37a1c69797554780bb3",
     });
     defer gpa.free(tail);
     try std.testing.expect(std.mem.indexOf(u8, packet_bytes, tail) != null);
