@@ -84,3 +84,28 @@ Next:
 - Implement AES-based header protection per RFC 9001 §5.4.3 and integrate full Initial packet protection path (AAD, nonce XOR, tag).
 - Hook header protection into packet encode/decode helpers; add unit tests against RFC Appendix A samples.
 - Begin timers and drive `api.poll` end-to-end through `endpoint`.
+
+Update 2025-08-18T14:30Z:
+
+- Implemented AES-128-GCM AEAD and AES-based header protection (RFC 9001 §5.4.3) alongside ChaCha20 HP in `src/quic/crypto_quic.zig`; fixed AES HP sample offset `(4 - pn_len)` for long headers.
+- Wired full Initial protection path: `protectInitial/unprotectInitial` and packet helpers `encodeInitialProtected/decodeInitialProtected` with correct AAD, varint Length, PN truncation/length.
+- Added RFC 9001 Appendix A tests: A.2 Client Initial byte-exact header/tail match; A.3 Server Initial header/tail match; corrected zero-length DCID in server Initial per spec.
+- Endpoint: Linux IPv4 UDP bind via `std.posix`; epoll-based loop (`io/loop_epoll.zig`); timers integrated into `endpoint.poll` with schedule/cancel and unit tests passing on Linux; kqueue/IOCP guarded to avoid Linux build issues; platform selection via `builtin.target`.
+- Zig 0.14 ports: updated posix/epoll APIs, removed deprecated net UDP types, and adjusted build/test wiring; `zig build update-gap` uses `-Dgap-summary` option.
+
+Risks/Notes:
+
+- UDP send/recv stubs pending (currently Unsupported) — needed for real IO.
+- TLS 1.3 handshake and X.509 parsing/verification not yet implemented.
+- Non-Linux loop backends (kqueue/IOCP) still stubs; compile guards in place.
+- Need more decode coverage (Initial decode path and error handling), and fuzz corpora growth.
+
+Next:
+
+- Complete UDP send/recv for IPv4/IPv6 and plumb endpoint IO to connection management.
+- Implement TLS 1.3 handshake state machine (Client/Server) in `tls/tls13.zig` with transcript hashing and secrets export; add minimal `asn1.zig` and `x509.zig` for cert parsing/validation; `--insecure` bypass for tests.
+- Wire `connect`/`accept` APIs; enforce anti-amplification, version negotiation, and stateless retry paths (`token.zig`).
+- Build out stream/flow control: `stream.zig`, `flow_control.zig`, complete frame encode/decode and tests; optional DATAGRAM via build toggle.
+- Start recovery/CC: RFC 9002 loss recovery timers, PTO/RTT; NewReno default in `congestion/newreno.zig`.
+- CI: add GitHub Actions matrix (Linux/macOS/Windows), build fuzzers/bench, enforce `tools/doccheck` and mandatory GAP update on code changes.
+- Docs: update `README.md` and `docs/DESIGN.md` to reflect Initial crypto and event loop; add doc comments to exported APIs.
