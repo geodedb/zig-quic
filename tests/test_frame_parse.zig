@@ -3,7 +3,7 @@ const frame = @import("../src/quic/frame.zig");
 const varint = @import("../src/quic/varint.zig");
 
 test "parse ping and padding" {
-    var buf = [_]u8{0x00, 0x01};
+    var buf = [_]u8{ 0x00, 0x01 };
     var r = try frame.parse(buf[0..]);
     try std.testing.expect(std.mem.eql(u8, @tagName(r.frame), "padding"));
     r = try frame.parse(buf[1..]);

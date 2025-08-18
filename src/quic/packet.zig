@@ -14,12 +14,15 @@ pub const LongHeader = struct {
     scid: []const u8,
     packet_number: PacketNumber = 1,
     token: []const u8 = &[_]u8{}, // Initial only
-    payload: []const u8,          // already-encoded frames
+    payload: []const u8, // already-encoded frames
 
     pub fn encode(self: LongHeader, w: anytype) !usize {
         // First byte: Long Header (1), Fixed bit (1), Type (2 bits), PN length (2 bits)
         // Types: Initial=0, Handshake=2
-        const type_bits: u8 = switch (self.ty) { .Initial => 0x00, .Handshake => 0x20 };
+        const type_bits: u8 = switch (self.ty) {
+            .Initial => 0x00,
+            .Handshake => 0x20,
+        };
         const pn_len_bits: u8 = 0x01; // 2-byte PN (encoded as 01 -> length 2)
         const first = 0xc0 | type_bits | pn_len_bits; // 1100_0000 | type | pnlen
         try w.writeByte(first);

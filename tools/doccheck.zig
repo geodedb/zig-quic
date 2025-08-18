@@ -13,7 +13,8 @@ fn hasImmediateDoc(lines: []const []const u8, idx: usize) bool {
 }
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){}; defer _ = gpa.deinit();
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     var it = try std.fs.cwd().openIterableDir("src/quic", .{ .recursor = true });
     defer it.close();
