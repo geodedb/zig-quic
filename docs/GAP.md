@@ -26,16 +26,16 @@ Implemented (partial):
 - §17 Frames: PADDING, PING, CRYPTO, STREAM (subset), ACK with ranges (write/decode). Types enumerated for some control frames.
 - §17 ACK ranges and largest acknowledged: aggregated from a recent PN bitset window.
 - §12/§19 Packet formats: Initial, Handshake, Short header paths; DCID/SCID handling for server; PN length determination; header protection application.
-- §14.2 Packet number encoding/decoding: PN length recovery on decode for protected packets (no full PN expansion across epochs).
+- §14.2 Packet number encoding/decoding: PN length recovery on decode; PN expansion wired for Initial/Handshake/1-RTT using per-space expected next (RFC 9000 §12.3).
 - §10/§11 Socket and datagram processing: single-socket endpoint; demux by DCID for Short; basic intake loop.
+- §13 ACK generation per PN space: Initial/Handshake/App have separate trackers and ACK builders.
+- §7.4 Transport Parameters: minimal encode/decode; plumbed as opaque blob through TLS engine for exchange.
 
 Not yet implemented / incomplete (priority gaps):
 
-- Version Negotiation packet (VN) and downgrade protection (RFC 9368 compatibility optional): not implemented.
+- Version Negotiation packet (VN) and downgrade protection (RFC 9368 compatibility optional): encode exists; decode/handling not implemented.
 - Retry packet and stateless token validation (anti-amplification): token encoding/verification is a stub; no Retry flow.
 - Stateless Reset: not implemented.
-- Packet Number Spaces separation (Initial/Handshake/1-RTT) and PN expansion relative to expected: simplified; decode uses truncated PN only; no full expansion logic.
-- Transport Parameters: encode/decode/validation not present.
 - Connection establishment plumbing: no connection manager, accept/connect API plumbing, no coalescing.
 - Flow Control: connection and stream flow control, MAX_DATA/MAX_STREAM_DATA, BLOCKED frames, accounting and enforcement: not implemented.
 - Stream subsystem: stream state machine, ID allocation, ordering, reassembly, FIN handling beyond frame codec: not implemented.
@@ -57,10 +57,11 @@ Implemented (partial):
 - Finished verification and generation.
 - RSA-PSS-SHA256 CertificateVerify verification (in-repo), gated by `allow_insecure`.
 - Minimal X.509 parsing (DER): validity, SAN dNSName, CN fallback; DNS match helper.
+- Transport Parameters exchange: opaque TP blob carried in CH/SH via TLS engine hooks (minimal placeholder format).
 
 Not yet implemented / incomplete:
 
-- Interoperable TLS 1.3 handshake message parsing/encoding (ClientHello, ServerHello, EncryptedExtensions, Certificate, CertificateVerify, Finished) and extension negotiation (ALPN, SNI, SIG_ALGs, key_share, supported_groups, etc.). Current envelopes are non-wire-compatible.
+- Interoperable TLS 1.3 handshake message parsing/encoding and extension negotiation (ALPN, SNI, SIG_ALGs, key_share, supported_groups, etc.). Current envelopes are non-wire-compatible.
 - ECDSA (P-256/P-384) CertificateVerify verification (SEC1 parsing, curve math) and signature algorithm selection: unsupported.
 - Certificate chain validation and path building, signature verification of TBSCertificate, basic constraints, key usage, SAN wildcards, name constraints, and trust store integration: minimal to none (only leaf validity/name check).
 - Cipher suites: CHACHA20-POLY1305 integration (AEAD + HP) not plumbed; only AES-128-GCM used in code paths.
@@ -110,12 +111,6 @@ Not yet implemented / incomplete:
 
 ## Actionable Next Slices
 
-1. PN expansion + ACK/rx polish (RFC 9000)
-
-   - Implement PN expansion (short + long) using largest received and expected next per space.
-   - Separate PN spaces and state (Initial/Handshake/1-RTT) in connection.
-   - Encode/decode Transport Parameters scaffolding.
-
 1. Loss recovery skeleton (RFC 9002)
 
    - Add RTT estimator and PTO per space; basic loss detection; wire into endpoint timers.
@@ -124,12 +119,12 @@ Not yet implemented / incomplete:
 1. TLS/X.509 hardening (RFC 9001)
 
    - Implement ECDSA P-256 verify; add positive/negative KATs.
-   - Begin real TLS handshake message encode/parse (ClientHello key_share/sig_algs, ServerHello) sufficient to carry real SPKI/signatures over CRYPTO.
+   - Begin real TLS handshake message encode/parse sufficient to carry TP extension and CRYPTO streams interoperably.
    - Expand X.509: basic constraints and SPKI signature verify of leaf -> self/issuer.
 
 1. Transport features
 
-   - Retry/token and anti-amplification; stateless reset; CONNECTION_CLOSE/HANDSHAKE_DONE.
+   - Retry/token and anti-amplification; Stateless Reset; CONNECTION_CLOSE/HANDSHAKE_DONE.
    - Stream manager + flow control (MAX_DATA/MAX_STREAM_DATA/BLOCKED) with unit tests.
 
 1. Tooling/CI

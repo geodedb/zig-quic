@@ -2,7 +2,7 @@
 // Minimal QUIC connection handle and socket address utils
 const std = @import("std");
 const posix = std.posix;
-const tls13 = @import("tls/tls13.zig");
+const tls13 = @import("quic_tls13");
 const packet = @import("packet.zig");
 const frame = @import("quic_frame");
 
@@ -103,19 +103,38 @@ const PnWindow = struct {
 };
 
 fn expandTruncatedPn(trunc_val: u64, pn_len: u3, expected: u64) u64 {
-    // RFC 9000 §12.3
+    // RFC 9000 §12.3. Avoid under/overflow for edge cases.
     const nbits: u6 = @as(u6, pn_len) * 8;
     const pn_win: u64 = @as(u64, 1) << nbits;
     const pn_hwin: u64 = pn_win / 2;
     const pn_mask: u64 = pn_win - 1;
     var candidate: u64 = (expected & ~pn_mask) | trunc_val;
-    if (candidate + pn_hwin <= expected - 1) {
+
+    // If no history, return truncation as-is (expected == 0), matching first-packet semantics.
+    if (expected == 0) return trunc_val;
+
+    // Compare using thresholds to avoid overflow in candidate + pn_hwin and expected + pn_hwin
+    var threshold_low: u64 = 0;
+    const em1: u64 = expected - 1; // safe because expected > 0 here
+    if (em1 >= pn_hwin) {
+        threshold_low = em1 - pn_hwin;
+    } else {
+        threshold_low = 0;
+    }
+
+    if (candidate <= threshold_low) {
         candidate += pn_win;
-    } else if (candidate > expected + pn_hwin) {
-        candidate -= pn_win;
+    } else {
+        const max_u64: u64 = std.math.maxInt(u64);
+        const threshold_high: u64 = if (expected > max_u64 - pn_hwin) max_u64 else expected + pn_hwin;
+        if (candidate > threshold_high) {
+            candidate -= pn_win;
+        }
     }
     return candidate;
 }
+
+const AckDesc = struct { largest: u64, first_range: u64, ranges: []const frame.AckRange };
 
 pub const Connection = struct {
     id: u64,
@@ -134,6 +153,7 @@ pub const Connection = struct {
     app_rx_keys: ?packet.AeadKeys = null,
     app_tx_keys: ?packet.AeadKeys = null,
     // PN counters per space (simplified)
+    pn_initial_tx: u32 = 1,
     pn_handshake_tx: u32 = 1,
     pn_app_tx: u32 = 1,
     // Peer-provided Initial DCID/SCID from first Initial we saw (for reply headers)
@@ -166,6 +186,7 @@ pub const Connection = struct {
         self.hs_tx_keys = null;
         self.app_rx_keys = null;
         self.app_tx_keys = null;
+        self.pn_initial_tx = 1;
         self.pn_handshake_tx = 1;
         self.pn_app_tx = 1;
         self.peer_initial_dcid = .{};
@@ -289,10 +310,23 @@ pub const Connection = struct {
         self.pn_app.track(pn);
     }
 
-    /// Generate an aggregated ACK description from tracked PN window (App space only for now).
-    pub fn buildAck(self: *Connection) struct { largest: u64, first_range: u64, ranges: []const frame.AckRange } {
-        const largest: u64 = self.pn_app.max;
-        const res = self.pn_app.buildAckRanges(&self.ack_ranges_buf);
+    fn buildAckFrom(self: *Connection, win: *const PnWindow) AckDesc {
+        if (!win.have_any) return .{ .largest = 0, .first_range = 0, .ranges = self.ack_ranges_buf[0..0] };
+        const largest: u64 = win.max;
+        const res = win.buildAckRanges(&self.ack_ranges_buf);
         return .{ .largest = largest, .first_range = res.first_range, .ranges = self.ack_ranges_buf[0..res.ranges_len] };
+    }
+
+    /// Generate an aggregated ACK description from tracked PN window (App space).
+    pub fn buildAckApp(self: *Connection) AckDesc {
+        return self.buildAckFrom(&self.pn_app);
+    }
+    /// Generate ACK description for Initial space.
+    pub fn buildAckInitial(self: *Connection) AckDesc {
+        return self.buildAckFrom(&self.pn_initial);
+    }
+    /// Generate ACK description for Handshake space.
+    pub fn buildAckHandshake(self: *Connection) AckDesc {
+        return self.buildAckFrom(&self.pn_handshake);
     }
 };

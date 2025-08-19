@@ -191,12 +191,17 @@ pub const Engine = struct {
     finished_verified: bool = false,
     /// Leaf certificate SPKI (DER) cached on Certificate message, owned by Engine
     leaf_spki: ?[]u8 = null,
+    /// QUIC Transport Parameters (encoded blobs) carried in CRYPTO
+    local_tp: ?[]u8 = null,
+    peer_tp: ?[]u8 = null,
 
     pub fn init(alloc: std.mem.Allocator, role: Role) Engine {
-        return .{ .role = role, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .outbox = std.ArrayList(u8).init(alloc), .ch_sent = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .leaf_spki = null };
+        return .{ .role = role, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .outbox = std.ArrayList(u8).init(alloc), .ch_sent = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .leaf_spki = null, .local_tp = null, .peer_tp = null };
     }
     pub fn deinit(self: *Engine) void {
         if (self.leaf_spki) |spki| self.outbox.allocator.free(spki);
+        if (self.local_tp) |b| self.outbox.allocator.free(b);
+        if (self.peer_tp) |b| self.outbox.allocator.free(b);
         self.outbox.deinit();
     }
 
@@ -252,6 +257,15 @@ pub const Engine = struct {
                         .client_hello => if (self.role == .Server) self.tryComputeShared(),
                         .server_hello => if (self.role == .Client) self.tryComputeShared(),
                         else => {},
+                    }
+                }
+                // Minimal hook: extract a tagged TP block if present at start of body: "TP" || varint_len || bytes
+                if (p.body.len >= 2 and p.body[0] == 'T' and p.body[1] == 'P') {
+                    // [2].. contains an opaque transport parameters blob (already encoded at QUIC level)
+                    if (p.body.len > 2) {
+                        const tp_bytes = p.body[2..];
+                        if (self.peer_tp) |old| self.outbox.allocator.free(old);
+                        self.peer_tp = self.outbox.allocator.dupe(u8, tp_bytes) catch null;
                     }
                 }
                 // Minimal X.509 certificate body handling (single DER cert)
@@ -333,94 +347,108 @@ pub const Engine = struct {
         }
     }
 
-    /// Build and queue a minimal ClientHello handshake envelope with a synthetic body.
-    /// This is NOT wire-compatible TLS; it's a placeholder to exercise the pipeline.
+    /// Attach local Transport Parameters to be sent in next handshake message.
+    /// The Engine will prefix with a simple marker "TP" and include bytes as-is.
+    pub fn setLocalTransportParameters(self: *Engine, tp_encoded: []const u8) !void {
+        if (self.local_tp) |old| self.outbox.allocator.free(old);
+        self.local_tp = try self.outbox.allocator.dupe(u8, tp_encoded);
+    }
+
+    /// Build and queue a minimal ClientHello handshake envelope with optional TP.
     pub fn queueMinimalClientHello(self: *Engine) !void {
-        const tmp = try encodeHandshake(self.outbox.allocator, .client_hello, "CHLO");
+        var body = std.ArrayList(u8).init(self.outbox.allocator);
+        defer body.deinit();
+        // Base CH body
+        try body.appendSlice("CHLO");
+        // Optionally append TP marker and bytes
+        if (self.local_tp) |tp| {
+            try body.appendSlice("TP");
+            try body.appendSlice(tp);
+        }
+        const tmp = try encodeHandshake(self.outbox.allocator, .client_hello, body.items);
         defer self.outbox.allocator.free(tmp);
         try self.queueCrypto(tmp);
     }
 
-    /// Build and queue a minimal ClientHello with provided X25519 pub
-    pub fn queueMinimalClientHelloX25519(self: *Engine, client_pub: [32]u8) !void {
-        const msg = try encodeMinimalClientHello(self.outbox.allocator, client_pub);
-        defer self.outbox.allocator.free(msg);
-        try self.queueCrypto(msg);
-    }
-
-    /// Build and queue a minimal ServerHello with provided X25519 pub
-    pub fn queueMinimalServerHelloX25519(self: *Engine, server_pub: [32]u8) !void {
-        const msg = try encodeMinimalServerHello(self.outbox.allocator, server_pub);
-        defer self.outbox.allocator.free(msg);
-        try self.queueCrypto(msg);
-    }
-
-    /// Auto-generate keypair (if needed) and queue minimal ClientHello carrying our pubkey.
-    pub fn queueMinimalClientHelloAuto(self: *Engine) ![32]u8 {
-        self.ensureKeypair();
-        const pubk = self.my_pub.?;
-        try self.queueMinimalClientHelloX25519(pubk);
-        return pubk;
-    }
-
-    /// Auto-generate keypair (if needed) and queue minimal ServerHello carrying our pubkey.
-    pub fn queueMinimalServerHelloAuto(self: *Engine) ![32]u8 {
-        self.ensureKeypair();
-        const pubk = self.my_pub.?;
-        try self.queueMinimalServerHelloX25519(pubk);
-        return pubk;
-    }
-
-    /// Drain outbox into caller buffer. Returns number of bytes copied.
-    pub fn takeOut(self: *Engine, buf: []u8) usize {
-        const n = @min(buf.len, self.outbox.items.len);
-        @memcpy(buf[0..n], self.outbox.items[0..n]);
-        if (n > 0) {
-            // Manually remove first n bytes: shift left and shrink.
-            const remain = self.outbox.items.len - n;
-            if (remain > 0) {
-                std.mem.copyForwards(u8, self.outbox.items[0..remain], self.outbox.items[n..]);
-            }
-            _ = self.outbox.resize(self.outbox.items.len - n) catch {};
+    /// Build and queue a minimal ServerHello with optional TP.
+    pub fn queueMinimalServerHello(self: *Engine) !void {
+        var body = std.ArrayList(u8).init(self.outbox.allocator);
+        defer body.deinit();
+        try body.appendSlice("SHLO");
+        if (self.local_tp) |tp| {
+            try body.appendSlice("TP");
+            try body.appendSlice(tp);
         }
-        return n;
+        const msg = try encodeHandshake(self.outbox.allocator, .server_hello, body.items);
+        defer self.outbox.allocator.free(msg);
+        try self.queueCrypto(msg);
     }
 
-    /// Drives key schedule after both sides' hello are in transcript and ecdhe_secret is set.
+    /// Accessor for peer transport parameters (encoded), if any.
+    pub fn getPeerTransportParameters(self: *Engine) ?[]const u8 {
+        return self.peer_tp;
+    }
+
+    // --- Compatibility helpers used by existing tests ---
+    /// Compute handshake traffic secrets when both CH and SH are present and ECDHE is known.
     pub fn computeHandshakeSecrets(self: *Engine) ?struct { client: [H.digest_length]u8, server: [H.digest_length]u8 } {
         if (self.ecdhe_secret == null) return null;
-        // Harden: require both CH and SH observed
-        if (!self.ch_sent or !self.sh_seen) return null;
+        if (!(self.ch_sent and self.sh_seen)) return null;
         const th = self.transcript.finalize();
         const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th);
         return .{ .client = hs.client_hs, .server = hs.server_hs };
     }
 
-    /// After handshakes secrets, compute application traffic secrets directly.
+    /// Compute application traffic secrets using the current transcript and ECDHE.
     pub fn computeApplicationSecrets(self: *Engine) ?struct { client: [H.digest_length]u8, server: [H.digest_length]u8 } {
         if (self.ecdhe_secret == null) return null;
-        if (!self.ch_sent or !self.sh_seen) return null;
+        if (!(self.ch_sent and self.sh_seen)) return null;
         const th = self.transcript.finalize();
-        const ap = deriveApplicationTrafficFromEcdhe(self.ecdhe_secret.?, th);
-        return .{ .client = ap.client_app, .server = ap.server_app };
+        const app = deriveApplicationTrafficFromEcdhe(self.ecdhe_secret.?, th);
+        return .{ .client = app.client_app, .server = app.server_app };
     }
 
-    /// Convenience alias for draining outbound CRYPTO intended for QUIC Handshake pkts.
-    pub fn popCrypto(self: *Engine, out: []u8) usize {
-        return self.takeOut(out);
+    /// Pop queued CRYPTO bytes into the provided buffer and remove them from the outbox.
+    pub fn popCrypto(self: *Engine, buf: []u8) usize {
+        const avail = self.outbox.items.len;
+        if (avail == 0 or buf.len == 0) return 0;
+        const n: usize = @min(avail, buf.len);
+        @memcpy(buf[0..n], self.outbox.items[0..n]);
+        // Remove n bytes from front of outbox by shifting the tail down.
+        if (n == avail) {
+            self.outbox.clearRetainingCapacity();
+        } else {
+            const remaining = avail - n;
+            std.mem.copyForwards(u8, self.outbox.items[0..remaining], self.outbox.items[n..avail]);
+            self.outbox.shrinkRetainingCapacity(remaining);
+        }
+        return n;
     }
 
-    /// Queue a minimal TLS Finished message with verify_data against current transcript.
-    pub fn queueFinished(self: *Engine) !void {
-        if (self.ecdhe_secret == null or !self.ch_sent or !self.sh_seen) return error.HandshakeNotReady;
-        const th = self.transcript.finalize();
-        const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th);
-        const my = if (self.role == .Client) hs.client_hs else hs.server_hs;
-        const verify = deriveFinishedVerifyData(my, th);
-        const msg = try encodeHandshake(self.outbox.allocator, .finished, verify[0..]);
+    /// Client-side helper to queue a minimal CH carrying our X25519 key share (auto keypair).
+    pub fn queueMinimalClientHelloAuto(self: *Engine) !void {
+        self.ensureKeypair();
+        const pk_auto = self.my_pub orelse blk: {
+            var tmp: [32]u8 = .{0} ** 32;
+            tmp[0] = 1;
+            break :blk tmp;
+        };
+        const msg = try encodeMinimalClientHello(self.outbox.allocator, pk_auto);
         defer self.outbox.allocator.free(msg);
         try self.queueCrypto(msg);
-        self.finished_sent = true;
+    }
+
+    /// Server-side helper to queue a minimal SH carrying our X25519 key share (auto keypair).
+    pub fn queueMinimalServerHelloAuto(self: *Engine) !void {
+        self.ensureKeypair();
+        const pk_auto = self.my_pub orelse blk: {
+            var tmp: [32]u8 = .{0} ** 32;
+            tmp[0] = 1;
+            break :blk tmp;
+        };
+        const msg = try encodeMinimalServerHello(self.outbox.allocator, pk_auto);
+        defer self.outbox.allocator.free(msg);
+        try self.queueCrypto(msg);
     }
 };
 

@@ -107,6 +107,15 @@ pub fn build(b: *std.Build) void {
     quic_frame_mod.addImport("quic_varint", quic_varint_mod);
     quic_packet_mod.addImport("quic_varint", quic_varint_mod);
 
+    // Expose selected modules directly for tests that import source files
+    const quic_conn_mod = mkModule(b, "src/quic/conn.zig");
+    quic_conn_mod.addImport("quic_packet", quic_packet_mod);
+    quic_conn_mod.addImport("quic_frame", quic_frame_mod);
+    quic_conn_mod.addImport("quic_tls13", tls13_mod);
+    quic_conn_mod.addImport("quic_varint", quic_varint_mod);
+    const quic_transport_params_mod = mkModule(b, "src/quic/transport_params.zig");
+    quic_transport_params_mod.addImport("quic_varint", quic_varint_mod);
+
     // Special-case: if filtering for the TLS KAT, only run that test file.
     if (filter) |f| {
         if (std.mem.containsAtLeast(u8, f, 1, "tls_key_schedule_kat")) {
@@ -122,6 +131,7 @@ pub fn build(b: *std.Build) void {
             quic_api_mod.addImport("quic_varint", quic_varint_mod);
             quic_api_mod.addImport("tls/key_schedule.zig", quic_tls_mod);
             quic_api_mod.addImport("quic_tls", quic_tls_mod);
+            quic_api_mod.addImport("quic_tls13", tls13_mod);
             const test_timers_only = b.addTest(.{ .root_source_file = rp("tests/test_timers.zig"), .target = target, .optimize = optimize });
             test_timers_only.root_module.addImport("quic_api", quic_api_mod);
             const run_test_timers_only = b.addRunArtifact(test_timers_only);
@@ -195,6 +205,20 @@ pub fn build(b: *std.Build) void {
         const run_test_sh = b.addRunArtifact(test_sh);
         test_step.dependOn(&run_test_sh.step);
 
+        // Packet number expansion edge cases
+        const test_pn = b.addTest(.{ .root_source_file = rp("tests/test_pn_expansion.zig"), .target = target, .optimize = optimize });
+        // conn.zig uses tls13.Engine; provide module import path as in others
+        test_pn.root_module.addImport("quic_tls13", tls13_mod);
+        test_pn.root_module.addImport("quic_conn", quic_conn_mod);
+        const run_test_pn = b.addRunArtifact(test_pn);
+        test_step.dependOn(&run_test_pn.step);
+
+        // Transport Parameters roundtrip
+        const test_tp = b.addTest(.{ .root_source_file = rp("tests/test_transport_params.zig"), .target = target, .optimize = optimize });
+        test_tp.root_module.addImport("quic_transport_params", quic_transport_params_mod);
+        const run_test_tp = b.addRunArtifact(test_tp);
+        test_step.dependOn(&run_test_tp.step);
+
         // Timer tests (now enabled by default)
         const quic_api_mod = mkModule(b, "src/quic/api.zig");
         quic_api_mod.addImport("quic_crypto", quic_crypto_mod);
@@ -202,6 +226,7 @@ pub fn build(b: *std.Build) void {
         quic_api_mod.addImport("quic_varint", quic_varint_mod);
         quic_api_mod.addImport("tls/key_schedule.zig", quic_tls_mod);
         quic_api_mod.addImport("quic_tls", quic_tls_mod);
+        quic_api_mod.addImport("quic_tls13", tls13_mod);
         const test_timers = b.addTest(.{ .root_source_file = rp("tests/test_timers.zig"), .target = target, .optimize = optimize });
         test_timers.root_module.addImport("quic_api", quic_api_mod);
         const run_test_timers = b.addRunArtifact(test_timers);
