@@ -69,6 +69,10 @@ pub const Connection = struct {
     // Peer-provided Initial DCID/SCID from first Initial we saw (for reply headers)
     peer_initial_dcid: Cid = .{},
     peer_initial_scid: Cid = .{},
+    // Our chosen SCID to advertise in server flight
+    our_scid: Cid = .{},
+    // Switch flag to drop Initial keys/processing once Handshake packets are seen
+    initial_keys_dropped: bool = false,
 
     pub fn init(self: *Connection, alloc: *std.mem.Allocator, role: Role, sock_fd: posix.fd_t, peer: SockAddr) void {
         self.id = 0;
@@ -84,6 +88,13 @@ pub const Connection = struct {
         self.pn_handshake_tx = 1;
         self.peer_initial_dcid = .{};
         self.peer_initial_scid = .{};
+        self.our_scid = .{};
+        self.initial_keys_dropped = false;
+        // Generate a simple random SCID (8 bytes) for server role.
+        if (role == .Server) {
+            self.our_scid.len = 8;
+            std.crypto.random.bytes(self.our_scid.bytes[0..self.our_scid.len]);
+        }
     }
 
     pub fn deinit(self: *Connection) void {

@@ -173,146 +173,226 @@ pub const Endpoint = struct {
         const is_long = (first & 0x80) != 0;
         if (!is_long) return; // handle short later
         const ty = (first >> 4) & 0x03;
-        if (ty != 0) return; // only Initial for now
         // Version
         const version: u32 = (@as(u32, bytes[1]) << 24) | (@as(u32, bytes[2]) << 16) | (@as(u32, bytes[3]) << 8) | @as(u32, bytes[4]);
         // keep `version` for later Handshake reply construction
-        var i: usize = 5;
-        if (i >= bytes.len) return;
-        const dcid_len = bytes[i];
-        i += 1;
-        if (i + dcid_len > bytes.len) return;
-        const dcid = bytes[i .. i + dcid_len];
-        i += dcid_len;
-        if (i >= bytes.len) return;
-        const scid_len = bytes[i];
-        i += 1;
-        if (i + scid_len > bytes.len) return;
-        const scid = bytes[i .. i + scid_len];
-        // Key connection by peer and dcid
-        const key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(dcid) };
-        const c_ptr = self.conns.getPtr(key) orelse blk: {
-            const c = self.allocator.create(conn_mod.Connection) catch return;
-            c.init(self.allocator, .Server, self.sock_fd, peer);
-            _ = self.conns.put(key, c) catch {
-                c.deinit();
-                self.allocator.destroy(c);
-                return;
+        if (ty == 0) {
+            // Initial
+            var i: usize = 5;
+            if (i >= bytes.len) return;
+            const dcid_len = bytes[i];
+            i += 1;
+            if (i + dcid_len > bytes.len) return;
+            const dcid = bytes[i .. i + dcid_len];
+            i += dcid_len;
+            if (i >= bytes.len) return;
+            const scid_len = bytes[i];
+            i += 1;
+            if (i + scid_len > bytes.len) return;
+            const scid = bytes[i .. i + scid_len];
+            // Key connection by peer and dcid
+            const key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(dcid) };
+            const c_ptr = self.conns.getPtr(key) orelse blk: {
+                const c = self.allocator.create(conn_mod.Connection) catch return;
+                c.init(self.allocator, .Server, self.sock_fd, peer);
+                _ = self.conns.put(key, c) catch {
+                    c.deinit();
+                    self.allocator.destroy(c);
+                    return;
+                };
+                // Also map our chosen SCID to this connection for Handshake DCID lookup.
+                const our_key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(c.our_scid.bytes[0..c.our_scid.len]) };
+                _ = self.conns.put(our_key, c) catch {};
+                break :blk self.conns.getPtr(key).?;
             };
-            break :blk self.conns.getPtr(key).?;
-        };
-        const conn = c_ptr.*;
-        // Remember peer's Initial CIDs (for Handshake header construction)
-        conn.setPeerInitialCids(dcid, scid);
+            const conn = c_ptr.*;
+            // If we've switched away from Initial, ignore any late Initials
+            if (conn.initial_keys_dropped) return;
+            // Remember peer's Initial CIDs (for Handshake header construction)
+            conn.setPeerInitialCids(dcid, scid);
 
-        // Derive Initial keys for server (we are receiving client's Initial)
-        const v2 = false; // TODO: parse version and map to v2 set
-        const initial = ks.deriveInitialSecret(v2, dcid);
-        const pair = ks.deriveClientServerInitial(initial);
-        const sk = if (v2) ks.deriveKeyIvHpV2(pair.server) else ks.deriveKeyIvHp(pair.server);
-        const keys: packet.InitialKeys = .{ .key = sk.key, .iv = sk.iv, .hp = sk.hp };
+            // Derive Initial keys for server (we are receiving client's Initial)
+            const v2 = false; // TODO: parse version and map to v2 set
+            const initial = ks.deriveInitialSecret(v2, dcid);
+            const pair = ks.deriveClientServerInitial(initial);
+            const sk = if (v2) ks.deriveKeyIvHpV2(pair.server) else ks.deriveKeyIvHp(pair.server);
+            const keys: packet.InitialKeys = .{ .key = sk.key, .iv = sk.iv, .hp = sk.hp };
 
-        // Parse long header variable fields up to PN start
-        var j: usize = 5 + 1 + dcid_len + 1 + scid_len; // after SCID len+value
-        // token length varint and token bytes
-        const tok = varint.decode(bytes[j..]) catch return;
-        j += tok.n + @as(usize, tok.value);
-        // length varint (payload length includes pn+payload+tag)
-        const len_dec = varint.decode(bytes[j..]) catch return;
-        j += len_dec.n;
-        const header_prefix = bytes[1..j];
-        // PN masked bytes follow; ciphertext starts after PN
-        const pn_len_masked: u3 = @as(u3, @intCast(first & 0x03)) + 1;
-        if (j + pn_len_masked > bytes.len) return;
-        const pn_start = j;
-        const ct_and_tag = bytes[pn_start + pn_len_masked .. j + @as(usize, len_dec.value)];
-        if (ct_and_tag.len < 16) return;
+            // Parse long header variable fields up to PN start
+            var j: usize = 5 + 1 + dcid_len + 1 + scid_len; // after SCID len+value
+            // token length varint and token bytes
+            const tok = varint.decode(bytes[j..]) catch return;
+            j += tok.n + @as(usize, tok.value);
+            // length varint (payload length includes pn+payload+tag)
+            const len_dec = varint.decode(bytes[j..]) catch return;
+            j += len_dec.n;
+            const header_prefix = bytes[1..j];
+            // PN masked bytes follow; ciphertext starts after PN
+            const pn_len_masked: u3 = @as(u3, @intCast(first & 0x03)) + 1;
+            if (j + pn_len_masked > bytes.len) return;
+            const pn_start = j;
+            const ct_and_tag = bytes[pn_start + pn_len_masked .. j + @as(usize, len_dec.value)];
+            if (ct_and_tag.len < 16) return;
 
-        // Build HP sample at absolute PN+4 (RFC 9001 §5.4.3)
-        var sample16: [16]u8 = undefined;
-        if (pn_start + 4 + 16 > bytes.len) return;
-        @memcpy(sample16[0..], bytes[pn_start + 4 .. pn_start + 4 + 16]);
+            // Build HP sample at absolute PN+4 (RFC 9001 §5.4.3)
+            var sample16: [16]u8 = undefined;
+            if (pn_start + 4 + 16 > bytes.len) return;
+            @memcpy(sample16[0..], bytes[pn_start + 4 .. pn_start + 4 + 16]);
 
-        // Unmask header first byte and PN bytes in place copies
-        var header_first = first;
-        var pn_buf: [4]u8 = .{0} ** 4;
-        // Copy up to 4 masked PN bytes so helper can xor in place
-        const copy_pn_len = @min(@as(usize, pn_len_masked), 4);
-        @memcpy(pn_buf[0..copy_pn_len], bytes[pn_start .. pn_start + copy_pn_len]);
-        const pn_len = crypto.unmaskLongHeaderAndPn(.aes_128_gcm, &keys.hp, &sample16, &header_first, &pn_buf) catch return;
+            // Unmask header first byte and PN bytes in place copies
+            var header_first = first;
+            var pn_buf: [4]u8 = .{0} ** 4;
+            const copy_pn_len = @min(@as(usize, pn_len_masked), 4);
+            @memcpy(pn_buf[0..copy_pn_len], bytes[pn_start .. pn_start + copy_pn_len]);
+            const pn_len = crypto.unmaskLongHeaderAndPn(.aes_128_gcm, &keys.hp, &sample16, &header_first, &pn_buf) catch return;
 
-        // Rebuild AAD and decrypt
-        const pn_bytes = pn_buf[0..pn_len];
-        // ciphertext_and_tag starts immediately after PN (actual pn_len after unmask)
-        const ct = bytes[pn_start + pn_len .. j + @as(usize, len_dec.value)];
-        var payload = std.ArrayList(u8).init(self.allocator.*);
-        defer payload.deinit();
-        if (ct.len < 16) return;
-        payload.ensureTotalCapacity(ct.len - 16) catch return;
-        payload.appendNTimesAssumeCapacity(0, ct.len - 16);
-        const pt = payload.items;
+            // Rebuild AAD and decrypt
+            const pn_bytes = pn_buf[0..pn_len];
+            const ct = bytes[pn_start + pn_len .. j + @as(usize, len_dec.value)];
+            var payload = std.ArrayList(u8).init(self.allocator.*);
+            defer payload.deinit();
+            if (ct.len < 16) return;
+            payload.ensureTotalCapacity(ct.len - 16) catch return;
+            payload.appendNTimesAssumeCapacity(0, ct.len - 16);
+            const pt = payload.items;
 
-        const ok = crypto.unprotectInitial(
-            .aes_128_gcm,
-            &keys.key,
-            &keys.iv,
-            &keys.hp,
-            &header_first,
-            pn_bytes,
-            header_prefix,
-            &sample16,
-            ct,
-            pt,
-        ) catch return;
-        _ = ok;
+            const ok = crypto.unprotectInitial(
+                .aes_128_gcm,
+                &keys.key,
+                &keys.iv,
+                &keys.hp,
+                &header_first,
+                pn_bytes,
+                header_prefix,
+                &sample16,
+                ct,
+                pt,
+            ) catch return;
+            _ = ok;
 
-        // Walk frames and push CRYPTO to inbox
-        var off: usize = 0;
-        while (off < pt.len) {
-            const r = frame.decodeOne(pt[off..]) catch break;
-            off += r.n;
-            switch (r.f) {
-                .crypto => |cr| conn.pushCrypto(cr.data) catch {},
-                .padding => {},
-                else => {},
+            // Walk frames and push CRYPTO to inbox
+            var off: usize = 0;
+            while (off < pt.len) {
+                const r = frame.decodeOne(pt[off..]) catch break;
+                off += r.n;
+                switch (r.f) {
+                    .crypto => |cr| conn.pushCrypto(cr.data) catch {},
+                    .padding => {},
+                    else => {},
+                }
             }
-        }
 
-        // If handshake TX keys are ready and there is outbound CRYPTO, send a Handshake packet now.
-        if (conn.hs_tx_keys) |tx_keys| {
-            // Drain TLS outbox
-            var crypto_buf: [1200]u8 = undefined;
-            const n_crypto = conn.tls.popCrypto(&crypto_buf);
-            if (n_crypto > 0) {
-                // Wrap in a CRYPTO frame offset=0 (simplified; no fragmentation)
-                var frames = std.ArrayList(u8).init(self.allocator.*);
-                defer frames.deinit();
-                const w = frames.writer();
-                const fr = frame.Frame{ .crypto = .{ .offset = 0, .data = crypto_buf[0..n_crypto] } };
-                const written = fr.write(w) catch 0;
-                if (written > 0) {
-                    // Build Handshake packet DCID = peer SCID, SCID = some chosen (reuse dcid for now)
-                    const dcid_hs = scid;
-                    const scid_hs = dcid;
-                    const pkt_or_err = packet.encodeHandshakeProtected(
-                        self.allocator.*, // alloc
-                        version,
-                        dcid_hs,
-                        scid_hs,
-                        conn.pn_handshake_tx,
-                        2, // PN len=2
-                        frames.items,
-                        tx_keys,
-                    );
-                    if (pkt_or_err) |bytes_out| {
-                        defer self.allocator.free(bytes_out);
-                        _ = self.sendTo(peer, bytes_out) catch {};
-                        conn.pn_handshake_tx +%= 1;
-                    } else |_| {
-                        // ignore encode errors for now
+            // If handshake TX keys are ready and there is outbound CRYPTO, send a Handshake packet now.
+            if (conn.hs_tx_keys) |tx_keys| {
+                var crypto_buf: [1200]u8 = undefined;
+                const n_crypto = conn.tls.popCrypto(&crypto_buf);
+                if (n_crypto > 0) {
+                    var frames = std.ArrayList(u8).init(self.allocator.*);
+                    defer frames.deinit();
+                    const w = frames.writer();
+                    const fr = frame.Frame{ .crypto = .{ .offset = 0, .data = crypto_buf[0..n_crypto] } };
+                    const written = fr.write(w) catch 0;
+                    if (written > 0) {
+                        // RFC-correct DCID/SCID for server Handshake: DCID = client's Initial SCID; SCID = our chosen SCID
+                        const dcid_hs = scid;
+                        const scid_hs = conn.our_scid.bytes[0..conn.our_scid.len];
+                        const pkt_or_err = packet.encodeHandshakeProtected(
+                            self.allocator.*, // alloc
+                            version,
+                            dcid_hs,
+                            scid_hs,
+                            conn.pn_handshake_tx,
+                            2, // PN len=2
+                            frames.items,
+                            tx_keys,
+                        );
+                        if (pkt_or_err) |bytes_out| {
+                            defer self.allocator.free(bytes_out);
+                            _ = self.sendTo(peer, bytes_out) catch {};
+                            conn.pn_handshake_tx +%= 1;
+                            // Once we send Handshake, drop Initial keys to avoid processing further Initials.
+                            conn.initial_keys_dropped = true;
+                        } else |_| {}
                     }
                 }
             }
+        } else if (ty == 2) {
+            // Handshake RX path: attempt to unprotect and feed CRYPTO using hs_rx_keys
+            var i: usize = 5;
+            if (i >= bytes.len) return;
+            const dcid_len = bytes[i];
+            i += 1;
+            if (i + dcid_len > bytes.len) return;
+            const dcid = bytes[i .. i + dcid_len];
+            i += dcid_len;
+            if (i >= bytes.len) return;
+            const scid_len = bytes[i];
+            i += 1;
+            if (i + scid_len > bytes.len) return;
+            const scid = bytes[i .. i + scid_len];
+            // Lookup connection keyed by peer + initial dcid hash (use stored mapping if any)
+            const key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(dcid) };
+            const c_ptr = self.conns.getPtr(key) orelse return;
+            const conn = c_ptr.*;
+            if (conn.hs_rx_keys) |rx_keys| {
+                // Parse length varint up to PN
+                var j: usize = 5 + 1 + dcid_len + 1 + scid_len;
+                const len_dec = varint.decode(bytes[j..]) catch return; // Handshake has no token
+                j += len_dec.n;
+                const header_prefix = bytes[1..j];
+                const pn_len_masked: u3 = @as(u3, @intCast(first & 0x03)) + 1;
+                if (j + pn_len_masked > bytes.len) return;
+                const pn_start = j;
+                // HP sample at PN+4
+                var sample16: [16]u8 = undefined;
+                if (pn_start + 4 + 16 > bytes.len) return;
+                @memcpy(sample16[0..], bytes[pn_start + 4 .. pn_start + 4 + 16]);
+
+                var header_first = first;
+                var pn_buf: [4]u8 = .{0} ** 4;
+                const copy_pn_len = @min(@as(usize, pn_len_masked), 4);
+                @memcpy(pn_buf[0..copy_pn_len], bytes[pn_start .. pn_start + copy_pn_len]);
+                const pn_len = crypto.unmaskLongHeaderAndPn(.aes_128_gcm, &rx_keys.hp, &sample16, &header_first, &pn_buf) catch return;
+                const pn_bytes = pn_buf[0..pn_len];
+                const end_total = j + @as(usize, (varint.decode(bytes[j..]) catch return).value); // recompute length? This is messy; use earlier len_dec
+                _ = end_total;
+                const ct = bytes[pn_start + pn_len .. j + @as(usize, len_dec.value)];
+                if (ct.len < 16) return;
+                var payload = std.ArrayList(u8).init(self.allocator.*);
+                defer payload.deinit();
+                payload.ensureTotalCapacity(ct.len - 16) catch return;
+                payload.appendNTimesAssumeCapacity(0, ct.len - 16);
+                const pt = payload.items;
+                const ok = crypto.unprotectInitial(
+                    .aes_128_gcm,
+                    &rx_keys.key,
+                    &rx_keys.iv,
+                    &rx_keys.hp,
+                    &header_first,
+                    pn_bytes,
+                    header_prefix,
+                    &sample16,
+                    ct,
+                    pt,
+                ) catch return;
+                _ = ok;
+                // Feed CRYPTO frames
+                var off: usize = 0;
+                while (off < pt.len) {
+                    const r = frame.decodeOne(pt[off..]) catch break;
+                    off += r.n;
+                    switch (r.f) {
+                        .crypto => |cr| conn.pushCrypto(cr.data) catch {},
+                        .padding => {},
+                        else => {},
+                    }
+                }
+                // After seeing a valid Handshake, drop Initial keys
+                conn.initial_keys_dropped = true;
+            }
+            _ = scid;
+        } else {
+            return; // ignore other long header types for now
         }
     }
 
