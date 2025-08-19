@@ -109,3 +109,68 @@ Next:
 - Start recovery/CC: RFC 9002 loss recovery timers, PTO/RTT; NewReno default in `congestion/newreno.zig`.
 - CI: add GitHub Actions matrix (Linux/macOS/Windows), build fuzzers/bench, enforce `tools/doccheck` and mandatory GAP update on code changes.
 - Docs: update `README.md` and `docs/DESIGN.md` to reflect Initial crypto and event loop; add doc comments to exported APIs.
+
+---
+
+Update 2025-08-19T12:00Z:
+
+Highlights this slice:
+
+- Timers stabilized and re-enabled by default:
+
+  - Fixed monotonic time math: use `@divTrunc` on `std.time.nanoTimestamp()` to avoid Zig 0.14 signed division trap.
+  - Resolved `endpoint_timer_cancel` hang; both timer tests (fire/cancel) pass consistently.
+  - `build.zig`: removed `-Denable-timer-tests` gating; timer tests are part of default suite.
+
+- QUIC Handshake progress:
+
+  - Server Handshake TX path: when Handshake TX keys present and TLS outbox has CRYPTO, build Long Header Handshake packet and protect with derived Handshake keys.
+  - Inbound Handshake RX path: unmask header+PN with `hs_rx_keys.hp`, decrypt payload with `hs_rx_keys`, parse CRYPTO frames, feed TLS engine.
+  - Per-RFC DCID/SCID selection for server Handshake: DCID = client's Initial SCID; SCID = server-chosen `our_scid`.
+  - Connection routing: added secondary map entry keyed by server `our_scid` so Handshake DCID lookup finds the connection.
+  - Key phase switch: set `initial_keys_dropped = true` after first valid Handshake seen/sent to ignore late Initials.
+
+- Maintenance fixes:
+  - `io/loop_epoll.zig`: pass slice to `epoll_wait` correctly.
+  - `frame.zig`: removed unreachable switch default.
+  - `tls13.Engine.takeOut`: replaced deprecated `orderedRemoveRange` with manual copy+resize for Zig 0.14.
+
+Remaining gaps/risk:
+
+- TLS 1.3 handshake still a stub: no real ClientHello/ServerHello, key shares, Finished, certs, or verification.
+- Handshake RX length parsing is simplistic; needs hardened varint handling and bounds checks across all long headers.
+- 1-RTT not implemented: short header protect/unprotect, app data keys, key update, streams/flow control, ACK/loss recovery, CC.
+- Event loop currently uses a sleep-based wait in `poll()` for determinism; need to restore epoll/kqueue/IOCP-backed waits and integrate timers cleanly.
+- DCID manager and lifecycle (issue/retire, stateless reset) not yet present; version negotiation/retry absent.
+
+Next steps (proposed slices):
+
+1. Handshake robustness & tests
+
+- Harden long-header parse (Initial/Handshake): correct varint length usage, PN length validation, strict bounds.
+- Add unit tests that simulate Client Initial → Server processes → Server Handshake → Server accepts Handshake RX (loopback within process).
+
+1. Minimal real TLS messages
+
+- Use `std.crypto.dh.X25519` to derive an ephemeral ECDHE secret.
+- Encode a minimally valid ClientHello/ServerHello envelope with realistic body placeholders; update transcript boundaries; compute real HS secrets via transcript hash KATs.
+
+1. 1-RTT bootstrap
+
+- Derive 1-RTT keys from TLS traffic secrets; implement Short Header encode/protect/unprotect.
+- Open a single bidirectional stream; implement CRYPTO/STREAM write path and simple read; add ACK+PING frames for liveness.
+
+1. Event loop & timers
+
+- Replace sleep-based wait with proper epoll/kqueue/IOCP integration; unify timer scheduling with a min-heap for O(log n) performance.
+- Re-run timer tests under the real loop; add regression tests for cancel/replace behavior.
+
+1. Routing & version negotiation
+
+- Implement a Connection ID manager (issue/retire) and stateless reset token stub.
+- Add Compatible Version Negotiation (RFC 9368) and Retry basics; grease VN as an option.
+
+1. Docs/CI
+
+- Update `README.md` and `docs/DESIGN.md` to reflect Handshake TX/RX and timers.
+- Add GitHub Actions matrix; run `doccheck` and enforce GAP timestamp update on code changes.

@@ -190,6 +190,8 @@ pub const Endpoint = struct {
             i += 1;
             if (i + scid_len > bytes.len) return;
             const scid = bytes[i .. i + scid_len];
+            i += scid_len;
+
             // Key connection by peer and dcid
             const key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(dcid) };
             const c_ptr = self.conns.getPtr(key) orelse blk: {
@@ -219,19 +221,23 @@ pub const Endpoint = struct {
             const keys: packet.InitialKeys = .{ .key = sk.key, .iv = sk.iv, .hp = sk.hp };
 
             // Parse long header variable fields up to PN start
-            var j: usize = 5 + 1 + dcid_len + 1 + scid_len; // after SCID len+value
+            var j: usize = i; // after SCID value
             // token length varint and token bytes
             const tok = varint.decode(bytes[j..]) catch return;
-            j += tok.n + @as(usize, tok.value);
+            j += tok.n;
+            if (j + @as(usize, tok.value) > bytes.len) return;
+            j += @as(usize, tok.value);
             // length varint (payload length includes pn+payload+tag)
             const len_dec = varint.decode(bytes[j..]) catch return;
             j += len_dec.n;
+            const end_total = j + @as(usize, len_dec.value);
+            if (end_total > bytes.len) return;
             const header_prefix = bytes[1..j];
             // PN masked bytes follow; ciphertext starts after PN
             const pn_len_masked: u3 = @as(u3, @intCast(first & 0x03)) + 1;
             if (j + pn_len_masked > bytes.len) return;
             const pn_start = j;
-            const ct_and_tag = bytes[pn_start + pn_len_masked .. j + @as(usize, len_dec.value)];
+            const ct_and_tag = bytes[pn_start + pn_len_masked .. end_total];
             if (ct_and_tag.len < 16) return;
 
             // Build HP sample at absolute PN+4 (RFC 9001 §5.4.3)
@@ -248,7 +254,7 @@ pub const Endpoint = struct {
 
             // Rebuild AAD and decrypt
             const pn_bytes = pn_buf[0..pn_len];
-            const ct = bytes[pn_start + pn_len .. j + @as(usize, len_dec.value)];
+            const ct = bytes[pn_start + pn_len .. end_total];
             var payload = std.ArrayList(u8).init(self.allocator.*);
             defer payload.deinit();
             if (ct.len < 16) return;
@@ -330,15 +336,18 @@ pub const Endpoint = struct {
             i += 1;
             if (i + scid_len > bytes.len) return;
             const scid = bytes[i .. i + scid_len];
+            i += scid_len;
             // Lookup connection keyed by peer + initial dcid hash (use stored mapping if any)
             const key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(dcid) };
             const c_ptr = self.conns.getPtr(key) orelse return;
             const conn = c_ptr.*;
             if (conn.hs_rx_keys) |rx_keys| {
-                // Parse length varint up to PN
-                var j: usize = 5 + 1 + dcid_len + 1 + scid_len;
-                const len_dec = varint.decode(bytes[j..]) catch return; // Handshake has no token
+                // Parse length varint up to PN (Handshake has no token)
+                var j: usize = i;
+                const len_dec = varint.decode(bytes[j..]) catch return;
                 j += len_dec.n;
+                const end_total = j + @as(usize, len_dec.value);
+                if (end_total > bytes.len) return;
                 const header_prefix = bytes[1..j];
                 const pn_len_masked: u3 = @as(u3, @intCast(first & 0x03)) + 1;
                 if (j + pn_len_masked > bytes.len) return;
@@ -354,9 +363,7 @@ pub const Endpoint = struct {
                 @memcpy(pn_buf[0..copy_pn_len], bytes[pn_start .. pn_start + copy_pn_len]);
                 const pn_len = crypto.unmaskLongHeaderAndPn(.aes_128_gcm, &rx_keys.hp, &sample16, &header_first, &pn_buf) catch return;
                 const pn_bytes = pn_buf[0..pn_len];
-                const end_total = j + @as(usize, (varint.decode(bytes[j..]) catch return).value); // recompute length? This is messy; use earlier len_dec
-                _ = end_total;
-                const ct = bytes[pn_start + pn_len .. j + @as(usize, len_dec.value)];
+                const ct = bytes[pn_start + pn_len .. end_total];
                 if (ct.len < 16) return;
                 var payload = std.ArrayList(u8).init(self.allocator.*);
                 defer payload.deinit();

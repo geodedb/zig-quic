@@ -102,6 +102,139 @@ pub const ShortHeader = struct {
     }
 };
 
+/// Keys used for any protected packet (Initial/Handshake/1-RTT)
+pub const AeadKeys = struct { key: [16]u8, iv: [12]u8, hp: [16]u8 };
+
+/// Encode a protected short-header packet carrying payload with given PN length (1..4).
+pub fn encodeShortProtected(
+    alloc: std.mem.Allocator,
+    dcid: []const u8,
+    packet_number: u32,
+    packet_number_len: u3,
+    payload_plaintext: []const u8,
+    keys: AeadKeys,
+) ![]u8 {
+    if (packet_number_len < 1 or packet_number_len > 4) return error.InvalidPacketNumberLength;
+
+    var buf = std.ArrayList(u8).init(alloc);
+    errdefer buf.deinit();
+
+    const pn_bits: u8 = @as(u8, packet_number_len - 1) & 0x03;
+    var header_first: u8 = 0x40 | pn_bits; // short header with pn len bits
+
+    const w = buf.writer();
+    try w.writeByte(header_first);
+    // header_prefix for short = DCID (QUIC short header carries DCID)
+    try w.writeAll(dcid);
+    const header_prefix_len = dcid.len;
+
+    // PN BE truncated
+    var pn_be_full: [4]u8 = .{
+        @as(u8, @intCast((packet_number >> 24) & 0xff)),
+        @as(u8, @intCast((packet_number >> 16) & 0xff)),
+        @as(u8, @intCast((packet_number >> 8) & 0xff)),
+        @as(u8, @intCast(packet_number & 0xff)),
+    };
+    const pn_slice = pn_be_full[4 - packet_number_len .. 4];
+    var pn_mut: [4]u8 = .{0} ** 4;
+    @memcpy(pn_mut[0..packet_number_len], pn_slice);
+    try w.writeAll(pn_slice);
+
+    // AEAD encrypt payload
+    const ct_len = payload_plaintext.len + 16;
+    const out_cipher_idx = buf.items.len;
+    try buf.ensureTotalCapacity(out_cipher_idx + ct_len);
+    try buf.appendNTimes(0, ct_len);
+    const out_cipher = buf.items[out_cipher_idx .. out_cipher_idx + ct_len];
+
+    const suite = crypto.AeadSuite.aes_128_gcm;
+    const written = try crypto.protectInitial(
+        suite,
+        &keys.key,
+        &keys.iv,
+        &keys.hp,
+        packet_number,
+        &header_first,
+        pn_mut[0..packet_number_len],
+        buf.items[1 .. 1 + header_prefix_len],
+        payload_plaintext,
+        out_cipher,
+    );
+    std.debug.assert(written == ct_len);
+
+    // Write back mutated header and PN
+    buf.items[0] = header_first;
+    const pn_offset = 1 + header_prefix_len;
+    @memcpy(buf.items[pn_offset .. pn_offset + packet_number_len], pn_mut[0..packet_number_len]);
+
+    return buf.toOwnedSlice();
+}
+
+pub const DecodedShort = struct {
+    packet_number: u32,
+    packet_number_len: u3,
+    payload: []u8,
+};
+
+/// Decode and unprotect a short-header packet given dcid_len for header parsing.
+pub fn decodeShortProtected(
+    alloc: std.mem.Allocator,
+    packet_bytes: []const u8,
+    dcid_len: usize,
+    keys: AeadKeys,
+) !DecodedShort {
+    if (packet_bytes.len < 1 + dcid_len + 1) return error.Truncated;
+    var i: usize = 0;
+    var header_first = packet_bytes[0];
+    if ((header_first & 0x80) != 0) return error.InvalidHeader; // not short
+    i += 1;
+    const header_prefix = packet_bytes[i .. i + dcid_len];
+    i += dcid_len;
+
+    // Read masked PN bytes (up to 4)
+    const pn_len_masked: u3 = @as(u3, @intCast(header_first & 0x03)) + 1;
+    if (i + pn_len_masked > packet_bytes.len) return error.Truncated;
+    const pn_start = i;
+    var pn_buf: [4]u8 = .{0} ** 4;
+    @memcpy(pn_buf[0..pn_len_masked], packet_bytes[pn_start .. pn_start + pn_len_masked]);
+
+    // Sample at PN+4
+    if (pn_start + 4 + 16 > packet_bytes.len) return error.Truncated;
+    var sample16: [16]u8 = undefined;
+    @memcpy(sample16[0..], packet_bytes[pn_start + 4 .. pn_start + 4 + 16]);
+
+    // Unmask
+    const pn_len = try crypto.unmaskLongHeaderAndPn(.aes_128_gcm, &keys.hp, &sample16, &header_first, &pn_buf);
+
+    // ct to end
+    const ct = packet_bytes[pn_start + pn_len ..];
+    if (ct.len < 16) return error.Truncated;
+
+    // AAD = header_first || header_prefix || pn_bytes
+    const payload = try alloc.alloc(u8, ct.len - 16);
+    errdefer alloc.free(payload);
+
+    _ = try crypto.unprotectInitial(
+        .aes_128_gcm,
+        &keys.key,
+        &keys.iv,
+        &keys.hp,
+        &header_first,
+        pn_buf[0..pn_len],
+        header_prefix,
+        &sample16,
+        ct,
+        payload,
+    );
+
+    // PN value
+    var pn_val: u32 = 0;
+    var j: usize = 0;
+    while (j < pn_len) : (j += 1) pn_val = (pn_val << 8) | pn_buf[j];
+
+    return .{ .packet_number = pn_val, .packet_number_len = pn_len, .payload = payload };
+}
+
 /// Compute initial client/server traffic keys for QUIC v1/v2 given DCID bytes.
 pub fn derive_initial_keys(version_v2: bool, dcid: []const u8) struct {
     client: struct { key: [16]u8, iv: [12]u8, hp: [16]u8 },

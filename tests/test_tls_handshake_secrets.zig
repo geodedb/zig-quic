@@ -29,17 +29,23 @@ test "tls13 handshake traffic secrets transition (deterministic input)" {
     const ecdhe = hex(32, "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20");
     eng.ecdhe_secret = &ecdhe;
 
-    const ch = "CHLO"; // placeholder ClientHello bytes
-    const sh = "SHLO"; // placeholder ServerHello bytes
-    eng.queueCrypto(ch) catch unreachable;
-    eng.onCryptoRecv(sh);
+    // Build proper TLS Handshake envelopes for CH/SH to trip state machine
+    const ch_body = "CHLO";
+    const sh_body = "SHLO";
+    const ch_msg = try tls13.encodeHandshake(alloc, .client_hello, ch_body);
+    defer alloc.free(ch_msg);
+    const sh_msg = try tls13.encodeHandshake(alloc, .server_hello, sh_body);
+    defer alloc.free(sh_msg);
+
+    eng.queueCrypto(ch_msg) catch unreachable;
+    eng.onCryptoRecv(sh_msg);
 
     const hs = eng.computeHandshakeSecrets() orelse return error.TestExpectedSecrets;
 
     // Independently compute expected via transcript + deriveHandshakeTraffic
     var t = tls13.Transcript.init();
-    t.update(ch);
-    t.update(sh);
+    t.update(ch_msg);
+    t.update(sh_msg);
     const th = t.finalize();
     const hs2 = tls13.deriveHandshakeTraffic(&ecdhe, th);
 

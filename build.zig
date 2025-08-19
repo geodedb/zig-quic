@@ -161,6 +161,17 @@ pub fn build(b: *std.Build) void {
         const run_test_crypto_extract = b.addRunArtifact(test_crypto_extract);
         test_step.dependOn(&run_test_crypto_extract.step);
 
+        // New end-to-end Initial->Handshake loop test
+        const test_loop = b.addTest(.{ .root_source_file = rp("tests/test_initial_handshake_loop.zig"), .target = target, .optimize = optimize });
+        test_loop.root_module.addImport("quic_tls", quic_tls_mod);
+        test_loop.root_module.addImport("quic_crypto", quic_crypto_mod);
+        test_loop.root_module.addImport("quic_packet", quic_packet_mod);
+        test_loop.root_module.addImport("quic_frame", quic_frame_mod);
+        test_loop.root_module.addImport("quic_tls13", tls13_mod);
+        test_loop.root_module.addImport("quic_varint", quic_varint_mod);
+        const run_test_loop = b.addRunArtifact(test_loop);
+        test_step.dependOn(&run_test_loop.step);
+
         // Timer tests (now enabled by default)
         const quic_api_mod = mkModule(b, "src/quic/api.zig");
         quic_api_mod.addImport("quic_crypto", quic_crypto_mod);
