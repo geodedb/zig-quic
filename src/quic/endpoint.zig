@@ -246,8 +246,9 @@ pub const Endpoint = struct {
             if (conn.app_rx_keys) |rx_keys| {
                 const dec = packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }) catch return;
                 defer self.allocator.free(dec.payload);
-                // Track received PN for ACK building
-                conn.trackRecvPn(dec.packet_number);
+                // Expand truncated PN to full value per RFC 9000 §12.3 and track in app space
+                const pn_full: u64 = conn.expandPnApp(@intCast(dec.packet_number), dec.packet_number_len);
+                conn.trackRecvPnApp(pn_full);
                 // Walk frames; respond with ACK for any PN
                 var off2: usize = 0;
                 var saw_any: bool = false;

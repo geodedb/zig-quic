@@ -52,6 +52,71 @@ pub const Cid = struct {
     bytes: [20]u8 = undefined,
 };
 
+const PnWindow = struct {
+    max: u64 = 0,
+    have_any: bool = false,
+    win: std.bit_set.IntegerBitSet(256) = std.bit_set.IntegerBitSet(256).initEmpty(),
+
+    fn track(this: *PnWindow, pn: u64) void {
+        if (!this.have_any or pn > this.max) {
+            this.max = pn;
+            this.have_any = true;
+        }
+        const span: u64 = 256;
+        if (pn + 1 >= span) {
+            const base: u64 = pn + 1 - span;
+            const idx: u8 = @intCast(pn - base);
+            this.win.set(idx);
+        } else {
+            const idx: u8 = @intCast(pn);
+            this.win.set(idx);
+        }
+    }
+
+    fn buildAckRanges(this: *const PnWindow, out_buf: []frame.AckRange) struct { first_range: u64, ranges_len: usize } {
+        if (!this.have_any) return .{ .first_range = 0, .ranges_len = 0 };
+        const largest: u64 = this.max;
+        const span: u64 = 256;
+        const base: u64 = if (largest + 1 >= span) largest + 1 - span else 0;
+        const largest_idx: usize = @intCast(largest - base);
+        var first_len: u64 = 0;
+        var i_desc: i64 = @intCast(largest_idx);
+        while (i_desc >= 0) : (i_desc -= 1) {
+            if (this.win.isSet(@intCast(i_desc))) first_len += 1 else break;
+        }
+        const first_range: u64 = if (first_len == 0) 0 else (first_len - 1);
+        var out_len: usize = 0;
+        var pos: i64 = i_desc;
+        while (pos >= 0 and out_len < out_buf.len) {
+            var zeros: u64 = 0;
+            while (pos >= 0 and !this.win.isSet(@intCast(pos))) : (pos -= 1) zeros += 1;
+            if (pos < 0) break;
+            var ones: u64 = 0;
+            while (pos >= 0 and this.win.isSet(@intCast(pos))) : (pos -= 1) ones += 1;
+            const gap_val: u64 = if (zeros == 0) 0 else (zeros - 1);
+            const len_val: u64 = if (ones == 0) 0 else (ones - 1);
+            out_buf[out_len] = .{ .gap = gap_val, .len = len_val };
+            out_len += 1;
+        }
+        return .{ .first_range = first_range, .ranges_len = out_len };
+    }
+};
+
+fn expandTruncatedPn(trunc_val: u64, pn_len: u3, expected: u64) u64 {
+    // RFC 9000 §12.3
+    const nbits: u6 = @as(u6, pn_len) * 8;
+    const pn_win: u64 = @as(u64, 1) << nbits;
+    const pn_hwin: u64 = pn_win / 2;
+    const pn_mask: u64 = pn_win - 1;
+    var candidate: u64 = (expected & ~pn_mask) | trunc_val;
+    if (candidate + pn_hwin <= expected - 1) {
+        candidate += pn_win;
+    } else if (candidate > expected + pn_hwin) {
+        candidate -= pn_win;
+    }
+    return candidate;
+}
+
 pub const Connection = struct {
     id: u64,
     role: Role,
@@ -78,9 +143,11 @@ pub const Connection = struct {
     our_scid: Cid = .{},
     // Switch flag to drop Initial keys/processing once Handshake packets are seen
     initial_keys_dropped: bool = false,
+    // Packet number spaces (recv tracking)
+    pn_initial: PnWindow = .{},
+    pn_handshake: PnWindow = .{},
+    pn_app: PnWindow = .{},
     // Recovery/ACK tracking (simplified)
-    recv_pn_max: u64 = 0,
-    recv_pn_acked: std.bit_set.IntegerBitSet(256), // window bitmap for recent PN
     sent_time: std.AutoHashMap(u64, i128), // pn -> send time (ns)
     largest_acked: u64 = 0,
     // Buffer to return ACK ranges without heap allocs
@@ -105,8 +172,9 @@ pub const Connection = struct {
         self.peer_initial_scid = .{};
         self.our_scid = .{};
         self.initial_keys_dropped = false;
-        self.recv_pn_max = 0;
-        self.recv_pn_acked = std.bit_set.IntegerBitSet(256).initEmpty();
+        self.pn_initial = .{};
+        self.pn_handshake = .{};
+        self.pn_app = .{};
         self.sent_time = std.AutoHashMap(u64, i128).init(alloc.*);
         self.largest_acked = 0;
         // Generate a simple random SCID (8 bytes) for server role.
@@ -196,57 +264,35 @@ pub const Connection = struct {
         // TODO: PTO, RTT update based on ack timing
     }
 
-    /// Track received packet numbers for building ACK ranges.
-    pub fn trackRecvPn(self: *Connection, pn: u64) void {
-        if (pn > self.recv_pn_max) self.recv_pn_max = pn;
-        const span: u64 = 256;
-        if (pn + 1 >= span) {
-            const base: u64 = pn + 1 - span;
-            const idx: u8 = @intCast(pn - base);
-            self.recv_pn_acked.set(idx);
-        } else {
-            const idx: u8 = @intCast(pn);
-            self.recv_pn_acked.set(idx);
-        }
+    /// Expand a truncated PN (given pn_len bytes) against expected next for the given space
+    pub fn expandPnInitial(self: *Connection, trunc_pn: u64, pn_len: u3) u64 {
+        const expected: u64 = if (self.pn_initial.have_any) self.pn_initial.max + 1 else 0;
+        return expandTruncatedPn(trunc_pn, pn_len, expected);
+    }
+    pub fn expandPnHandshake(self: *Connection, trunc_pn: u64, pn_len: u3) u64 {
+        const expected: u64 = if (self.pn_handshake.have_any) self.pn_handshake.max + 1 else 0;
+        return expandTruncatedPn(trunc_pn, pn_len, expected);
+    }
+    pub fn expandPnApp(self: *Connection, trunc_pn: u64, pn_len: u3) u64 {
+        const expected: u64 = if (self.pn_app.have_any) self.pn_app.max + 1 else 0;
+        return expandTruncatedPn(trunc_pn, pn_len, expected);
     }
 
-    /// Generate an aggregated ACK description from tracked PN window.
+    /// Track received packet numbers per space.
+    pub fn trackRecvPnInitial(self: *Connection, pn: u64) void {
+        self.pn_initial.track(pn);
+    }
+    pub fn trackRecvPnHandshake(self: *Connection, pn: u64) void {
+        self.pn_handshake.track(pn);
+    }
+    pub fn trackRecvPnApp(self: *Connection, pn: u64) void {
+        self.pn_app.track(pn);
+    }
+
+    /// Generate an aggregated ACK description from tracked PN window (App space only for now).
     pub fn buildAck(self: *Connection) struct { largest: u64, first_range: u64, ranges: []const frame.AckRange } {
-        const largest: u64 = self.recv_pn_max;
-        const span: u64 = 256;
-        const base: u64 = if (largest + 1 >= span) largest + 1 - span else 0;
-        const largest_idx: usize = @intCast(largest - base);
-
-        // Count first contiguous block length L1
-        var first_len: u64 = 0;
-        var i_desc: i64 = @intCast(largest_idx);
-        while (i_desc >= 0) : (i_desc -= 1) {
-            if (self.recv_pn_acked.isSet(@intCast(i_desc))) first_len += 1 else break;
-        }
-        const first_range: u64 = if (first_len == 0) 0 else (first_len - 1);
-
-        // Build subsequent ranges limited by buffer capacity
-        var out_len: usize = 0;
-        var pos: i64 = i_desc; // currently at first unset bit just below first range
-        while (pos >= 0 and out_len < self.ack_ranges_buf.len) {
-            // count zeros (gap) between blocks
-            var zeros: u64 = 0;
-            while (pos >= 0 and !self.recv_pn_acked.isSet(@intCast(pos))) : (pos -= 1) {
-                zeros += 1;
-            }
-            if (pos < 0) break; // no more set bits
-            // count ones for next block
-            var ones: u64 = 0;
-            while (pos >= 0 and self.recv_pn_acked.isSet(@intCast(pos))) : (pos -= 1) {
-                ones += 1;
-            }
-            // encode as (gap = zeros-1, len = ones-1) per RFC 9000
-            const gap_val: u64 = if (zeros == 0) 0 else (zeros - 1);
-            const len_val: u64 = if (ones == 0) 0 else (ones - 1);
-            self.ack_ranges_buf[out_len] = .{ .gap = gap_val, .len = len_val };
-            out_len += 1;
-        }
-
-        return .{ .largest = largest, .first_range = first_range, .ranges = self.ack_ranges_buf[0..out_len] };
+        const largest: u64 = self.pn_app.max;
+        const res = self.pn_app.buildAckRanges(&self.ack_ranges_buf);
+        return .{ .largest = largest, .first_range = res.first_range, .ranges = self.ack_ranges_buf[0..res.ranges_len] };
     }
 };

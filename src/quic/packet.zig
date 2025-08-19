@@ -576,3 +576,35 @@ pub fn encodeHandshakeProtected(
 
     return buf.toOwnedSlice();
 }
+
+/// Encode a Version Negotiation packet (Version=0) listing supported versions.
+pub fn encodeVersionNegotiation(
+    alloc: std.mem.Allocator,
+    dcid: []const u8,
+    scid: []const u8,
+    versions: []const u32,
+) ![]u8 {
+    var buf = std.ArrayList(u8).init(alloc);
+    errdefer buf.deinit();
+    const w = buf.writer();
+    // VN first byte: long header form (0x80); fixed bit 1; rest ignored by VN parser
+    try w.writeByte(0x80);
+    // Version = 0x00000000
+    try w.writeAll(&[_]u8{ 0x00, 0x00, 0x00, 0x00 });
+    // DCID Len + DCID, SCID Len + SCID
+    try w.writeByte(@intCast(dcid.len));
+    try w.writeAll(dcid);
+    try w.writeByte(@intCast(scid.len));
+    try w.writeAll(scid);
+    // Sequence of supported versions (big-endian u32)
+    for (versions) |v| {
+        const be: [4]u8 = .{
+            @as(u8, @intCast((v >> 24) & 0xff)),
+            @as(u8, @intCast((v >> 16) & 0xff)),
+            @as(u8, @intCast((v >> 8) & 0xff)),
+            @as(u8, @intCast(v & 0xff)),
+        };
+        try w.writeAll(&be);
+    }
+    return buf.toOwnedSlice();
+}
