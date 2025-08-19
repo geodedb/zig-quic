@@ -18,7 +18,10 @@ fn mkModule(b: *std.Build, path: []const u8) *std.Build.Module {
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    const optimize_base = b.standardOptimizeOption(.{});
+    // Allow a convenience flag to request ReleaseSafe builds, matching docs/acceptance instructions.
+    const release_safe = b.option(bool, "release-safe", "Build with ReleaseSafe optimization (convenience flag)") orelse false;
+    const optimize: std.builtin.OptimizeMode = if (release_safe) .ReleaseSafe else optimize_base;
 
     // CLI tool: quic-varint
     const varint_exe = b.addExecutable(.{
