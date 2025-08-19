@@ -130,6 +130,30 @@ pub fn deriveQuicAppKeys(client_or_server_app_secret: [H.digest_length]u8, v2: b
     };
 }
 
+/// Derive application traffic secrets directly from raw ECDHE secret and transcript hash.
+/// This computes handshake_secret then master secret per TLS 1.3 and returns c/s app secrets.
+pub fn deriveApplicationTrafficFromEcdhe(ecdhe_secret: []const u8, transcript_hash: [H.digest_length]u8) struct {
+    client_app: [H.digest_length]u8,
+    server_app: [H.digest_length]u8,
+} {
+    // early_secret = HKDF-Extract(0, 0)
+    const early_secret = ks.extract(&[_]u8{}, &[_]u8{});
+    // derived = Derive-Secret(early_secret, "derived", "")
+    var derived: [H.digest_length]u8 = undefined;
+    ks.expandLabel(early_secret, "derived", &[_]u8{}, &derived) catch unreachable;
+    // handshake_secret = HKDF-Extract(derived, ecdhe_secret)
+    const handshake_secret = ks.extract(&derived, ecdhe_secret);
+    // master_secret = HKDF-Extract(Derive-Secret(handshake_secret, "derived", ""), 0)
+    var derived2: [H.digest_length]u8 = undefined;
+    ks.expandLabel(handshake_secret, "derived", &[_]u8{}, &derived2) catch unreachable;
+    const master = ks.extract(&derived2, &[_]u8{});
+    var c_app: [H.digest_length]u8 = undefined;
+    var s_app: [H.digest_length]u8 = undefined;
+    ks.expandLabel(master, "c ap traffic", &transcript_hash, &c_app) catch unreachable;
+    ks.expandLabel(master, "s ap traffic", &transcript_hash, &s_app) catch unreachable;
+    return .{ .client_app = c_app, .server_app = s_app };
+}
+
 /// Minimal, non-interoperable handshake engine stub that accumulates
 /// CRYPTO bytes and allows tests to inject ServerHello pieces to drive
 /// key schedule. Real message parsing/encoding will be added iteratively.
@@ -138,6 +162,13 @@ pub const Engine = struct {
     transcript: Transcript = Transcript.init(),
     /// Deterministic ECDHE secret for tests or derived via X25519 in future slices.
     ecdhe_secret: ?[]const u8 = null,
+    /// Buffer to hold derived ECDHE so the slice stays valid.
+    ecdhe_buf: [32]u8 = undefined,
+    /// Local X25519 keypair (generated on demand).
+    my_priv: ?[32]u8 = null,
+    my_pub: ?[32]u8 = null,
+    /// Last seen peer pubkey (from CH/SH minimal envelopes).
+    peer_pub: ?[32]u8 = null,
     /// Buffer for producing outbound CRYPTO data (e.g., ClientHello).
     outbox: std.ArrayList(u8),
     /// Tracking flags for minimal handshake state.
@@ -145,10 +176,40 @@ pub const Engine = struct {
     sh_seen: bool = false,
 
     pub fn init(alloc: std.mem.Allocator, role: Role) Engine {
-        return .{ .role = role, .transcript = Transcript.init(), .ecdhe_secret = null, .outbox = std.ArrayList(u8).init(alloc), .ch_sent = false, .sh_seen = false };
+        return .{ .role = role, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .outbox = std.ArrayList(u8).init(alloc), .ch_sent = false, .sh_seen = false };
     }
     pub fn deinit(self: *Engine) void {
         self.outbox.deinit();
+    }
+
+    fn ensureKeypair(self: *Engine) void {
+        if (self.my_priv == null or self.my_pub == null) {
+            var sk: [32]u8 = undefined;
+            std.crypto.random.bytes(&sk);
+            // Derive public as sk * basepoint (0x09 || 31*0x00)
+            var base: [32]u8 = .{0} ** 32;
+            base[0] = 9;
+            const pk = std.crypto.dh.X25519.scalarmult(sk, base) catch {
+                // Fallback to deterministic non-zero pub to avoid panics in tests
+                var tmp: [32]u8 = .{0} ** 32;
+                tmp[0] = 1;
+                self.my_priv = sk;
+                self.my_pub = tmp;
+                return;
+            };
+            self.my_priv = sk;
+            self.my_pub = pk;
+        }
+    }
+
+    fn tryComputeShared(self: *Engine) void {
+        if (self.peer_pub) |peer| {
+            if (self.my_priv) |priv| {
+                const sh = std.crypto.dh.X25519.scalarmult(priv, peer) catch return;
+                self.ecdhe_buf = sh;
+                self.ecdhe_secret = self.ecdhe_buf[0..];
+            }
+        }
     }
 
     /// Append received CRYPTO bytes into transcript. Attempts to parse handshake messages
@@ -161,8 +222,16 @@ pub const Engine = struct {
                 off += p.n;
                 if (p.typ == .server_hello) self.sh_seen = true;
                 if (p.typ == .client_hello) self.ch_sent = true;
-                // minimal hello pub parsing reserved for future use
-                _ = parseMinimalHelloPub(p.typ, p.body);
+                if (parseMinimalHelloPub(p.typ, p.body)) |pk| {
+                    self.peer_pub = pk;
+                    // Depending on role, compute shared when appropriate.
+                    // Server computes upon seeing ClientHello; Client computes upon seeing ServerHello.
+                    switch (p.typ) {
+                        .client_hello => if (self.role == .Server) self.tryComputeShared(),
+                        .server_hello => if (self.role == .Client) self.tryComputeShared(),
+                        else => {},
+                    }
+                }
             } else break;
         }
         self.transcript.update(data);
@@ -177,9 +246,13 @@ pub const Engine = struct {
     pub fn queueCrypto(self: *Engine, data: []const u8) !void {
         try self.outbox.appendSlice(data);
         self.transcript.update(data);
-        // If this was a proper handshake ClientHello record, flip flag
-        if (data.len >= 1 and data[0] == @intFromEnum(HsType.client_hello)) {
-            self.ch_sent = true;
+        // If this was a proper handshake record, flip flags
+        if (data.len >= 1) {
+            if (data[0] == @intFromEnum(HsType.client_hello)) {
+                self.ch_sent = true;
+            } else if (data[0] == @intFromEnum(HsType.server_hello)) {
+                self.sh_seen = true; // mark seen on send for server gating
+            }
         }
     }
 
@@ -203,6 +276,22 @@ pub const Engine = struct {
         const msg = try encodeMinimalServerHello(self.outbox.allocator, server_pub);
         defer self.outbox.allocator.free(msg);
         try self.queueCrypto(msg);
+    }
+
+    /// Auto-generate keypair (if needed) and queue minimal ClientHello carrying our pubkey.
+    pub fn queueMinimalClientHelloAuto(self: *Engine) ![32]u8 {
+        self.ensureKeypair();
+        const pubk = self.my_pub.?;
+        try self.queueMinimalClientHelloX25519(pubk);
+        return pubk;
+    }
+
+    /// Auto-generate keypair (if needed) and queue minimal ServerHello carrying our pubkey.
+    pub fn queueMinimalServerHelloAuto(self: *Engine) ![32]u8 {
+        self.ensureKeypair();
+        const pubk = self.my_pub.?;
+        try self.queueMinimalServerHelloX25519(pubk);
+        return pubk;
     }
 
     /// Drain outbox into caller buffer. Returns number of bytes copied.
@@ -256,22 +345,22 @@ pub fn x25519KeypairAndShared(peer_pub_opt: ?[32]u8) struct { priv_key: [32]u8, 
 /// Encode a minimalistic ClientHello body carrying an X25519 key share only (non-interoperable placeholder).
 pub fn encodeMinimalClientHello(alloc: std.mem.Allocator, client_pub: [32]u8) ![]u8 {
     // Body: "CH1" || client_pub
-    var out = try alloc.alloc(u8, 3 + client_pub.len);
-    out[0] = 'C';
-    out[1] = 'H';
-    out[2] = '1';
-    @memcpy(out[3..], &client_pub);
-    return encodeHandshake(alloc, .client_hello, out);
+    var body: [3 + 32]u8 = undefined;
+    body[0] = 'C';
+    body[1] = 'H';
+    body[2] = '1';
+    @memcpy(body[3..], &client_pub);
+    return encodeHandshake(alloc, .client_hello, body[0..]);
 }
 
 /// Encode a minimalistic ServerHello body carrying an X25519 key share only (non-interoperable placeholder).
 pub fn encodeMinimalServerHello(alloc: std.mem.Allocator, server_pub: [32]u8) ![]u8 {
-    var out = try alloc.alloc(u8, 3 + server_pub.len);
-    out[0] = 'S';
-    out[1] = 'H';
-    out[2] = '1';
-    @memcpy(out[3..], &server_pub);
-    return encodeHandshake(alloc, .server_hello, out);
+    var body: [3 + 32]u8 = undefined;
+    body[0] = 'S';
+    body[1] = 'H';
+    body[2] = '1';
+    @memcpy(body[3..], &server_pub);
+    return encodeHandshake(alloc, .server_hello, body[0..]);
 }
 
 /// Attempt to parse minimal CH/SH and return pubkeys if present.

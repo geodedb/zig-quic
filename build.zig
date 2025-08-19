@@ -172,6 +172,14 @@ pub fn build(b: *std.Build) void {
         const run_test_loop = b.addRunArtifact(test_loop);
         test_step.dependOn(&run_test_loop.step);
 
+        // Short-header 1-RTT roundtrip test
+        const test_sh = b.addTest(.{ .root_source_file = rp("tests/test_shortrtt_roundtrip.zig"), .target = target, .optimize = optimize });
+        test_sh.root_module.addImport("quic_tls13", tls13_mod);
+        test_sh.root_module.addImport("quic_packet", quic_packet_mod);
+        test_sh.root_module.addImport("quic_crypto", quic_crypto_mod);
+        const run_test_sh = b.addRunArtifact(test_sh);
+        test_step.dependOn(&run_test_sh.step);
+
         // Timer tests (now enabled by default)
         const quic_api_mod = mkModule(b, "src/quic/api.zig");
         quic_api_mod.addImport("quic_crypto", quic_crypto_mod);

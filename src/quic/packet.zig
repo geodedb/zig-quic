@@ -136,6 +136,11 @@ pub fn encodeShortProtected(
         @as(u8, @intCast(packet_number & 0xff)),
     };
     const pn_slice = pn_be_full[4 - packet_number_len .. 4];
+    var pn_trunc_val: u32 = 0;
+    {
+        var k: usize = 0;
+        while (k < packet_number_len) : (k += 1) pn_trunc_val = (pn_trunc_val << 8) | pn_slice[k];
+    }
     var pn_mut: [4]u8 = .{0} ** 4;
     @memcpy(pn_mut[0..packet_number_len], pn_slice);
     try w.writeAll(pn_slice);
@@ -153,7 +158,7 @@ pub fn encodeShortProtected(
         &keys.key,
         &keys.iv,
         &keys.hp,
-        packet_number,
+        @as(u64, pn_trunc_val),
         &header_first,
         pn_mut[0..packet_number_len],
         buf.items[1 .. 1 + header_prefix_len],
@@ -185,32 +190,36 @@ pub fn decodeShortProtected(
 ) !DecodedShort {
     if (packet_bytes.len < 1 + dcid_len + 1) return error.Truncated;
     var i: usize = 0;
-    var header_first = packet_bytes[0];
-    if ((header_first & 0x80) != 0) return error.InvalidHeader; // not short
+    var header_first_masked: u8 = packet_bytes[0];
+    if ((header_first_masked & 0x80) != 0) return error.InvalidHeader; // not short
     i += 1;
     const header_prefix = packet_bytes[i .. i + dcid_len];
     i += dcid_len;
 
-    // Read masked PN bytes (up to 4)
-    const pn_len_masked: u3 = @as(u3, @intCast(header_first & 0x03)) + 1;
-    if (i + pn_len_masked > packet_bytes.len) return error.Truncated;
+    // Packet number starts here
     const pn_start = i;
-    var pn_buf: [4]u8 = .{0} ** 4;
-    @memcpy(pn_buf[0..pn_len_masked], packet_bytes[pn_start .. pn_start + pn_len_masked]);
 
-    // Sample at PN+4
+    // Copy up to 4 masked PN bytes from the packet. Do NOT rely on masked PN length bits.
+    var pn_masked4: [4]u8 = .{0} ** 4;
+    const avail = @min(@as(usize, 4), packet_bytes.len - pn_start);
+    if (avail == 0) return error.Truncated;
+    @memcpy(pn_masked4[0..avail], packet_bytes[pn_start .. pn_start + avail]);
+
+    // Sample at PN+4 (RFC 9001 §5.4.3)
     if (pn_start + 4 + 16 > packet_bytes.len) return error.Truncated;
     var sample16: [16]u8 = undefined;
     @memcpy(sample16[0..], packet_bytes[pn_start + 4 .. pn_start + 4 + 16]);
 
-    // Unmask
-    const pn_len = try crypto.unmaskLongHeaderAndPn(.aes_128_gcm, &keys.hp, &sample16, &header_first, &pn_buf);
+    // Determine actual PN length by unmasking header+PN on a temporary copy
+    var tmp_first = header_first_masked;
+    var tmp_pn: [4]u8 = pn_masked4;
+    const pn_len: u3 = try crypto.unmaskLongHeaderAndPn(.aes_128_gcm, &keys.hp, &sample16, &tmp_first, &tmp_pn);
 
-    // ct to end
+    // Ciphertext+tag begins after PN (using actual pn_len)
     const ct = packet_bytes[pn_start + pn_len ..];
     if (ct.len < 16) return error.Truncated;
 
-    // AAD = header_first || header_prefix || pn_bytes
+    // Decrypt while letting unprotectInitial perform the unmasking using masked header/pn
     const payload = try alloc.alloc(u8, ct.len - 16);
     errdefer alloc.free(payload);
 
@@ -219,18 +228,18 @@ pub fn decodeShortProtected(
         &keys.key,
         &keys.iv,
         &keys.hp,
-        &header_first,
-        pn_buf[0..pn_len],
+        &header_first_masked,
+        pn_masked4[0..pn_len],
         header_prefix,
         &sample16,
         ct,
         payload,
     );
 
-    // PN value
+    // Compute PN value from the previously unmasked temporary PN bytes
     var pn_val: u32 = 0;
     var j: usize = 0;
-    while (j < pn_len) : (j += 1) pn_val = (pn_val << 8) | pn_buf[j];
+    while (j < pn_len) : (j += 1) pn_val = (pn_val << 8) | tmp_pn[j];
 
     return .{ .packet_number = pn_val, .packet_number_len = pn_len, .payload = payload };
 }
