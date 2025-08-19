@@ -43,3 +43,30 @@ test "endpoint_timer_cancel" {
     try api.poll(ep, 300);
     try std.testing.expect(ep.timers.items.len == 0);
 }
+
+test "endpoint_pto_schedule_and_expire_flag" {
+    var gpa = std.heap.page_allocator;
+    const cfg = api.QuicConfig{ .alpn = &[_][]const u8{"h3"} };
+    const ep = try api.endpointInit(&gpa, "127.0.0.1:0", &cfg);
+    defer api.endpointDeinit(ep);
+
+    // Build a minimal connection object and set a non-zero smoothed RTT so PTO computes
+    var conn: @import("quic_conn").Connection = undefined;
+    conn.init(&gpa, .Server, ep.sock_fd, @import("quic_conn").SockAddr.ipv4(127, 0, 0, 1, 4433));
+    defer conn.deinit();
+
+    // Seed RTT so PTO > 0
+    conn.rtt_app.have_sample = true;
+    conn.rtt_app.smoothed_rtt_ns = 50 * std.time.ns_per_ms;
+    conn.rtt_app.rttvar_ns = 10 * std.time.ns_per_ms;
+
+    // Arm PTO and ensure a timer is created
+    conn.computeAndMaybeArmPto(ep);
+    try std.testing.expect(conn.pto_app_active);
+    try std.testing.expect(ep.timers.items.len >= 1);
+
+    // Deterministically expire all timers and verify PTO flag clears
+    ep.forceExpireAllTimers();
+    try std.testing.expect(!conn.pto_app_active);
+    try std.testing.expect(ep.timers.items.len == 0);
+}

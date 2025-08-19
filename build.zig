@@ -136,8 +136,14 @@ pub fn build(b: *std.Build) void {
             quic_api_mod.addImport("tls/key_schedule.zig", quic_tls_mod);
             quic_api_mod.addImport("quic_tls", quic_tls_mod);
             quic_api_mod.addImport("quic_tls13", tls13_mod);
+            // Provide connection and packet modules to api (endpoint imports them by name)
+            quic_api_mod.addImport("quic_conn", quic_conn_mod);
+            quic_api_mod.addImport("quic_packet", quic_packet_mod);
             const test_timers_only = b.addTest(.{ .root_source_file = rp("tests/test_timers.zig"), .target = target, .optimize = optimize });
             test_timers_only.root_module.addImport("quic_api", quic_api_mod);
+            // Also expose modules the test may import directly
+            test_timers_only.root_module.addImport("quic_conn", quic_conn_mod);
+            test_timers_only.root_module.addImport("quic_tls13", tls13_mod);
             const run_test_timers_only = b.addRunArtifact(test_timers_only);
             test_step.dependOn(&run_test_timers_only.step);
             return;
@@ -238,8 +244,13 @@ pub fn build(b: *std.Build) void {
         quic_api_mod.addImport("tls/key_schedule.zig", quic_tls_mod);
         quic_api_mod.addImport("quic_tls", quic_tls_mod);
         quic_api_mod.addImport("quic_tls13", tls13_mod);
+        // Provide connection and packet modules to api (endpoint imports them by name)
+        quic_api_mod.addImport("quic_conn", quic_conn_mod);
+        quic_api_mod.addImport("quic_packet", quic_packet_mod);
         const test_timers = b.addTest(.{ .root_source_file = rp("tests/test_timers.zig"), .target = target, .optimize = optimize });
         test_timers.root_module.addImport("quic_api", quic_api_mod);
+        test_timers.root_module.addImport("quic_conn", quic_conn_mod);
+        test_timers.root_module.addImport("quic_tls13", tls13_mod);
         const run_test_timers = b.addRunArtifact(test_timers);
         test_step.dependOn(&run_test_timers.step);
     } else {

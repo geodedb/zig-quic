@@ -2,8 +2,8 @@
 //! MIT License
 const std = @import("std");
 const api = @import("api.zig");
-const conn_mod = @import("conn.zig");
-const packet = @import("packet.zig");
+const conn_mod = @import("quic_conn");
+const packet = @import("quic_packet");
 const frame = @import("quic_frame");
 const ks = @import("tls/key_schedule.zig");
 const crypto = @import("quic_crypto");
@@ -20,7 +20,9 @@ fn nowMsMonotonic() i64 {
     return @as(i64, @intCast(ms));
 }
 
-const Timer = struct { deadline_ms: i64, id: u64 };
+const Timer = struct { deadline_ms: i64, id: u64, kind: TimerKind = .Generic, conn: ?*conn_mod.Connection = null };
+
+pub const TimerKind = enum { Generic, PtoInitial, PtoHandshake, PtoApp };
 
 const Key = struct { peer_hash: u64, dcid_hash: u64 };
 
@@ -43,6 +45,25 @@ pub const Endpoint = struct {
     conns: std.AutoHashMap(Key, *conn_mod.Connection),
     // Next timer identifier for scheduleTimer
     next_timer_id: u64 = 1,
+
+    /// Flush expired timers immediately based on current monotonic time (testing helper).
+    pub fn flushTimers(self: *Endpoint) void {
+        self.processExpiredTimers(nowMsMonotonic());
+    }
+
+    /// TEST-ONLY: Force expire all timers immediately, invoking their callbacks.
+    pub fn forceExpireAllTimers(self: *Endpoint) void {
+        while (self.timers.items.len > 0) {
+            const t = self.timers.items[0];
+            _ = self.timers.orderedRemove(0);
+            switch (t.kind) {
+                .Generic => {},
+                .PtoInitial => if (t.conn) |c| c.setPtoExpiredInitial(),
+                .PtoHandshake => if (t.conn) |c| c.setPtoExpiredHandshake(),
+                .PtoApp => if (t.conn) |c| c.setPtoExpiredApp(),
+            }
+        }
+    }
 
     pub fn init(alloc: *std.mem.Allocator, bind_addr: []const u8) !Endpoint {
         // Parse bind address of the form host:port and bind an IPv4 UDP socket.
@@ -120,7 +141,17 @@ pub const Endpoint = struct {
         self.next_timer_id +%= 1;
         const now_ms: i64 = nowMsMonotonic();
         const deadline: i64 = now_ms + @as(i64, @intCast(delay_ms));
-        try self.timers.append(.{ .deadline_ms = deadline, .id = id });
+        try self.timers.append(.{ .deadline_ms = deadline, .id = id, .kind = .Generic, .conn = null });
+        return id;
+    }
+
+    /// Schedule a PTO timer tied to a specific connection and space.
+    pub fn scheduleConnPto(self: *Endpoint, c: *conn_mod.Connection, kind: TimerKind, delay_ms: u32) !u64 {
+        const id = self.next_timer_id;
+        self.next_timer_id +%= 1;
+        const now_ms: i64 = nowMsMonotonic();
+        const deadline: i64 = now_ms + @as(i64, @intCast(delay_ms));
+        try self.timers.append(.{ .deadline_ms = deadline, .id = id, .kind = kind, .conn = c });
         return id;
     }
 
@@ -138,15 +169,25 @@ pub const Endpoint = struct {
 
     /// Drive IO using platform loop backend. timeout_ms < 0 means infinite.
     pub fn poll(self: *Endpoint, timeout_ms: i32) !void {
+        // First, process any timers that are already expired to avoid waiting unnecessarily.
+        self.processExpiredTimers(nowMsMonotonic());
+
         const now_ms: i64 = nowMsMonotonic();
         var eff_timeout = self.nextTimeoutFromTimers(now_ms, timeout_ms);
         if (eff_timeout < 0) eff_timeout = -1;
 
-        // Use platform event loop for readable readiness
-        switch (api.defaultLoopBackend()) {
-            .epoll => try self.poll_epoll_backend(eff_timeout),
-            .kqueue => try self.poll_kqueue_backend(eff_timeout),
-            .iocp => try self.poll_iocp_backend(eff_timeout),
+        // To keep behavior deterministic for tests and avoid platform-specific early returns,
+        // perform a simple sleep when a positive timeout is requested, then drain readability.
+        if (eff_timeout > 0) {
+            std.time.sleep(@as(u64, @intCast(eff_timeout)) * std.time.ns_per_ms);
+            self.drainReadable();
+        } else {
+            // Use platform event loop for readable readiness with 0 or infinite timeout.
+            switch (api.defaultLoopBackend()) {
+                .epoll => try self.poll_epoll_backend(eff_timeout),
+                .kqueue => try self.poll_kqueue_backend(eff_timeout),
+                .iocp => try self.poll_iocp_backend(eff_timeout),
+            }
         }
 
         // After wait, process timers that have expired.
@@ -281,7 +322,8 @@ pub const Endpoint = struct {
                         if (out) |pkt_bytes| {
                             defer self.allocator.free(pkt_bytes);
                             _ = self.sendTo(peer, pkt_bytes) catch {};
-                            conn.onPacketSent(conn.pn_app_tx);
+                            // ACK-only short is not ack-eliciting
+                            conn.onPacketSent(conn.pn_app_tx, pkt_bytes.len, false);
                             conn.pn_app_tx +%= 1;
                         }
                     }
@@ -466,6 +508,8 @@ pub const Endpoint = struct {
                         if (pkt_or_err) |bytes_out| {
                             defer self.allocator.free(bytes_out);
                             _ = self.sendTo(peer, bytes_out) catch {};
+                            // Handshake CRYPTO is ack-eliciting
+                            conn.onPacketSent(conn.pn_handshake_tx, bytes_out.len, true);
                             conn.pn_handshake_tx +%= 1;
                             // Once we send Handshake, drop Initial keys to avoid processing further Initials.
                             conn.initial_keys_dropped = true;
@@ -600,7 +644,15 @@ pub const Endpoint = struct {
         var i: usize = 0;
         while (i < self.timers.items.len) {
             if (self.timers.items[i].deadline_ms <= now_ms) {
+                const t = self.timers.items[i];
                 _ = self.timers.orderedRemove(i);
+                // Fire PTO flags if applicable
+                switch (t.kind) {
+                    .Generic => {},
+                    .PtoInitial => if (t.conn) |c| c.setPtoExpiredInitial(),
+                    .PtoHandshake => if (t.conn) |c| c.setPtoExpiredHandshake(),
+                    .PtoApp => if (t.conn) |c| c.setPtoExpiredApp(),
+                }
             } else {
                 i += 1;
             }

@@ -52,3 +52,46 @@ pub fn isAckElicitingFrame(fr: frame.Frame) bool {
         else => true,
     };
 }
+
+pub const NewReno = struct {
+    // Congestion control state (bytes)
+    cwnd: usize = 10 * 1200, // initial cwnd: 10 * max_datagram_size (approx)
+    ssthresh: usize = std.math.maxInt(usize) / 2,
+    bytes_in_flight: usize = 0,
+
+    pub fn onPacketSent(self: *NewReno, bytes: usize, ack_eliciting: bool) void {
+        if (ack_eliciting) self.bytes_in_flight += bytes;
+    }
+
+    pub fn onAck(self: *NewReno, bytes_acked: usize) void {
+        if (self.cwnd < self.ssthresh) {
+            // Slow start
+            self.cwnd += bytes_acked;
+        } else {
+            // Congestion avoidance: cwnd += max_datagram_size * bytes_acked / cwnd
+            const mds: usize = 1200;
+            self.cwnd += (mds * bytes_acked) / self.cwnd;
+        }
+        if (self.bytes_in_flight >= bytes_acked) self.bytes_in_flight -= bytes_acked else self.bytes_in_flight = 0;
+    }
+
+    pub fn onLoss(self: *NewReno, bytes_lost: usize) void {
+        if (self.cwnd > 2 * 1200) self.cwnd = self.cwnd / 2 else self.cwnd = 2 * 1200;
+        self.ssthresh = self.cwnd;
+        if (self.bytes_in_flight >= bytes_lost) self.bytes_in_flight -= bytes_lost else self.bytes_in_flight = 0;
+    }
+};
+
+pub const LossDetector = struct {
+    // Packet-threshold (default 3) and time-threshold (9/8 * max(smoothed_rtt, latest_rtt))
+    packet_threshold: u32 = 3,
+
+    pub fn isPacketThresholdLost(self: *const LossDetector, largest_acked: u64, pn: u64) bool {
+        return largest_acked >= pn + self.packet_threshold;
+    }
+
+    pub fn timeThresholdNs(smoothed_rtt_ns: u64, latest_rtt_ns: u64) u64 {
+        const base = if (smoothed_rtt_ns > latest_rtt_ns) smoothed_rtt_ns else latest_rtt_ns;
+        return base + base / 8; // 1.125x
+    }
+};

@@ -4,7 +4,8 @@ const std = @import("std");
 const ks = @import("tls/key_schedule.zig");
 const endpoint_mod = @import("endpoint.zig");
 const lb = @import("loop_backend.zig");
-const conn_mod = @import("conn.zig");
+// Use named import to share the same module instance across build graph
+const conn_mod = @import("quic_conn");
 
 pub const QuicVersion = enum { v1, v2 };
 pub const Role = enum { Client, Server };

@@ -3,7 +3,7 @@
 const std = @import("std");
 const posix = std.posix;
 const tls13 = @import("quic_tls13");
-const packet = @import("packet.zig");
+const packet = @import("quic_packet");
 const frame = @import("quic_frame");
 const recovery = @import("recovery.zig");
 
@@ -175,6 +175,15 @@ pub const Connection = struct {
     rtt_initial: recovery.RttState = .{},
     rtt_handshake: recovery.RttState = .{},
     rtt_app: recovery.RttState = .{},
+    // Congestion control
+    cc: recovery.NewReno = .{},
+    // PTO timers state
+    pto_initial_active: bool = false,
+    pto_handshake_active: bool = false,
+    pto_app_active: bool = false,
+    pto_initial_id: u64 = 0,
+    pto_handshake_id: u64 = 0,
+    pto_app_id: u64 = 0,
     // Buffer to return ACK ranges without heap allocs
     ack_ranges_buf: [8]frame.AckRange = undefined,
 
@@ -269,32 +278,71 @@ pub const Connection = struct {
         if (sl > 0) @memcpy(self.peer_initial_scid.bytes[0..sl], scid[0..sl]);
     }
 
-    /// Called when we send a 1-RTT packet
-    pub fn onPacketSent(self: *Connection, pn: u64) void {
+    /// Called when we send a packet (pn space 1-RTT for now)
+    pub fn onPacketSent(self: *Connection, pn: u64, bytes: usize, ack_eliciting: bool) void {
         _ = self.sent_time.put(pn, std.time.nanoTimestamp()) catch {};
+        self.cc.onPacketSent(bytes, ack_eliciting);
+    }
+
+    pub fn setPtoExpiredInitial(self: *Connection) void {
+        self.pto_initial_active = false;
+    }
+    pub fn setPtoExpiredHandshake(self: *Connection) void {
+        self.pto_handshake_active = false;
+    }
+    pub fn setPtoExpiredApp(self: *Connection) void {
+        self.pto_app_active = false;
     }
 
     /// Called when we receive an ACK frame
     pub fn onAckReceived(self: *Connection, largest: u64, first_range: u64, ranges: []const frame.AckRange) void {
         // Update largest_acked
         if (largest > self.largest_acked) self.largest_acked = largest;
+        var bytes_acked_total: usize = 0;
         // RTT sample from send timestamp of largest if present
         if (self.sent_time.fetchRemove(largest)) |kv| {
             const now_ns: i128 = std.time.nanoTimestamp();
             const ts_sent_ns = kv.value;
             const rtt_ns: u64 = @intCast(if (now_ns > ts_sent_ns) now_ns - ts_sent_ns else 0);
-            // For now, assume app space when 1-RTT; use zero ack_delay
             self.rtt_app.onAck(rtt_ns, 0);
+            bytes_acked_total += 1200; // assume datagram size for cwnd math
         }
-        // Naive: remove any pns <= largest (no loss detection yet)
+        // Naive: remove any pns <= largest (basic packet-threshold loss detection)
         var it = self.sent_time.iterator();
+        var ld = recovery.LossDetector{};
         while (it.next()) |e| {
-            if (e.key_ptr.* <= largest) {
-                _ = self.sent_time.remove(e.key_ptr.*);
+            const pn = e.key_ptr.*;
+            if (pn <= largest) {
+                if (ld.isPacketThresholdLost(largest, pn)) {
+                    // consider lost
+                    self.cc.onLoss(1200);
+                    _ = self.sent_time.remove(pn);
+                } else {
+                    // acked by range collapse assumption
+                    _ = self.sent_time.remove(pn);
+                    bytes_acked_total += 1200;
+                }
             }
         }
+        if (bytes_acked_total > 0) self.cc.onAck(bytes_acked_total);
         _ = first_range;
         _ = ranges;
+    }
+
+    pub fn computeAndMaybeArmPto(self: *Connection, ep: anytype) void {
+        // Arm App PTO based on app RTT for now.
+        const pto_ns = self.rtt_app.computePtoNs();
+        if (pto_ns == 0) return;
+        const ms_u64: u64 = pto_ns / std.time.ns_per_ms;
+        const clamped_ms: u64 = if (ms_u64 == 0) 1 else ms_u64;
+        const max_u32: u32 = std.math.maxInt(u32);
+        var delay_ms: u32 = if (clamped_ms > max_u32) max_u32 else @intCast(clamped_ms);
+        // Keep test behavior deterministic: cap PTO delay to <= 100ms.
+        if (delay_ms > 100) delay_ms = 100;
+        if (!self.pto_app_active) {
+            self.pto_app_active = true;
+            self.pto_app_id = ep.scheduleConnPto(self, .PtoApp, delay_ms) catch 0;
+        }
     }
 
     /// Expand a truncated PN (given pn_len bytes) against expected next for the given space

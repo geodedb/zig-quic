@@ -77,14 +77,16 @@ Implemented (initial scaffolding):
 
 - Packet sent-time tracking map; largest_acked tracking; simple onAckReceived/onPacketSent hooks.
 - Endpoint timers and wake-up integration.
+- RTT estimator with min_rtt/smoothed/rttvar and PTO computation helper; ack delay handling placeholder.
+- Per-space PTO timer kinds (Initial/Handshake/App) and endpoint integration that toggles connection PTO flags.
+- Basic packet-threshold loss detection (threshold=3) and cwnd/ssthresh/bytes-in-flight updates for NewReno on ACK/loss.
+- Ack-eliciting classification helper; send path marks ack-eliciting and accounts bytes_in_flight; unit tests for RTT/PTO and classification.
 
 Not yet implemented / incomplete:
 
-- RTT estimation (smoothed_rtt, rttvar), ack delay incorporation, min_rtt tracking.
-- Loss detection across PN spaces, time-threshold and packet-threshold loss.
-- Probe Timeout (PTO) calculation and management per epoch; handshake/app distinct timers.
-- Congestion control (NewReno default, CUBIC optional) and pacing; bytes-in-flight accounting, cwnd/ssthresh updates.
-- Ack-eliciting detection; ECN accounting.
+- Handshake and Initial distinct RTT/PTO paths; time-threshold loss and probe packets generation.
+- Full loss recovery loop (marking, retransmission scheduling), ECN, and pacing.
+- Proper bytes_acked accounting using actual sent sizes per packet; per-space separation for cc.
 
 ---
 
@@ -113,8 +115,8 @@ Not yet implemented / incomplete:
 
 1. Loss recovery skeleton (RFC 9002)
 
-   - Add RTT estimator and PTO per space; basic loss detection; wire into endpoint timers.
-   - Add NewReno cwnd/bif accounting; ack-eliciting detection.
+   - Add RTT estimator and PTO per space; basic loss detection; wire into endpoint timers. [PARTIAL — RTT/PTO helper, PTO timer wiring, pkt-threshold loss, NewReno scaffolding, tests]
+   - Add NewReno cwnd/bif accounting; ack-eliciting detection. [PARTIAL — basic cwnd/bif implemented; ack-eliciting on send path]
 
 1. TLS/X.509 hardening (RFC 9001)
 
