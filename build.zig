@@ -107,6 +107,10 @@ pub fn build(b: *std.Build) void {
     quic_frame_mod.addImport("quic_varint", quic_varint_mod);
     quic_packet_mod.addImport("quic_varint", quic_varint_mod);
 
+    // Recovery module (RTT/PTO helpers)
+    const quic_recovery_mod = mkModule(b, "src/quic/recovery.zig");
+    quic_recovery_mod.addImport("quic_frame", quic_frame_mod);
+
     // Expose selected modules directly for tests that import source files
     const quic_conn_mod = mkModule(b, "src/quic/conn.zig");
     quic_conn_mod.addImport("quic_packet", quic_packet_mod);
@@ -185,6 +189,13 @@ pub fn build(b: *std.Build) void {
         test_crypto_extract.root_module.addImport("quic_frame", quic_frame_mod);
         const run_test_crypto_extract = b.addRunArtifact(test_crypto_extract);
         test_step.dependOn(&run_test_crypto_extract.step);
+
+        // Recovery unit tests
+        const test_recovery = b.addTest(.{ .root_source_file = rp("tests/test_recovery.zig"), .target = target, .optimize = optimize });
+        test_recovery.root_module.addImport("quic_recovery", quic_recovery_mod);
+        test_recovery.root_module.addImport("quic_frame", quic_frame_mod);
+        const run_test_recovery = b.addRunArtifact(test_recovery);
+        test_step.dependOn(&run_test_recovery.step);
 
         // New end-to-end Initial->Handshake loop test
         const test_loop = b.addTest(.{ .root_source_file = rp("tests/test_initial_handshake_loop.zig"), .target = target, .optimize = optimize });

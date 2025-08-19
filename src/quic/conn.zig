@@ -5,6 +5,7 @@ const posix = std.posix;
 const tls13 = @import("quic_tls13");
 const packet = @import("packet.zig");
 const frame = @import("quic_frame");
+const recovery = @import("recovery.zig");
 
 pub const Role = enum { Client, Server };
 
@@ -170,6 +171,10 @@ pub const Connection = struct {
     // Recovery/ACK tracking (simplified)
     sent_time: std.AutoHashMap(u64, i128), // pn -> send time (ns)
     largest_acked: u64 = 0,
+    // RTT estimators per space (Initial/Handshake/App)
+    rtt_initial: recovery.RttState = .{},
+    rtt_handshake: recovery.RttState = .{},
+    rtt_app: recovery.RttState = .{},
     // Buffer to return ACK ranges without heap allocs
     ack_ranges_buf: [8]frame.AckRange = undefined,
 
@@ -273,6 +278,14 @@ pub const Connection = struct {
     pub fn onAckReceived(self: *Connection, largest: u64, first_range: u64, ranges: []const frame.AckRange) void {
         // Update largest_acked
         if (largest > self.largest_acked) self.largest_acked = largest;
+        // RTT sample from send timestamp of largest if present
+        if (self.sent_time.fetchRemove(largest)) |kv| {
+            const now_ns: i128 = std.time.nanoTimestamp();
+            const ts_sent_ns = kv.value;
+            const rtt_ns: u64 = @intCast(if (now_ns > ts_sent_ns) now_ns - ts_sent_ns else 0);
+            // For now, assume app space when 1-RTT; use zero ack_delay
+            self.rtt_app.onAck(rtt_ns, 0);
+        }
         // Naive: remove any pns <= largest (no loss detection yet)
         var it = self.sent_time.iterator();
         while (it.next()) |e| {
@@ -282,7 +295,6 @@ pub const Connection = struct {
         }
         _ = first_range;
         _ = ranges;
-        // TODO: PTO, RTT update based on ack timing
     }
 
     /// Expand a truncated PN (given pn_len bytes) against expected next for the given space

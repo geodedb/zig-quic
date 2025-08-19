@@ -334,8 +334,9 @@ pub const Endpoint = struct {
             const v2 = false; // TODO: parse version and map to v2 set
             const initial = ks.deriveInitialSecret(v2, dcid);
             const pair = ks.deriveClientServerInitial(initial);
-            const sk = if (v2) ks.deriveKeyIvHpV2(pair.server) else ks.deriveKeyIvHp(pair.server);
-            const keys: packet.InitialKeys = .{ .key = sk.key, .iv = sk.iv, .hp = sk.hp };
+            // RX path for server must use CLIENT initial keys (to decrypt client's Initial)
+            const rxk = if (v2) ks.deriveKeyIvHpV2(pair.client) else ks.deriveKeyIvHp(pair.client);
+            const keys: packet.InitialKeys = .{ .key = rxk.key, .iv = rxk.iv, .hp = rxk.hp };
 
             // Parse long header variable fields up to PN start
             var j: usize = i; // after SCID value
@@ -426,9 +427,9 @@ pub const Endpoint = struct {
                 const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = 0, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges } };
                 _ = ack.write(w) catch 0;
                 if (conn.hs_tx_keys == null) {
-                    // Respond in Initial space using server initial keys (TX direction)
-                    const ck = if (v2) ks.deriveKeyIvHpV2(pair.client) else ks.deriveKeyIvHp(pair.client);
-                    const tx_keys: packet.InitialKeys = .{ .key = ck.key, .iv = ck.iv, .hp = ck.hp };
+                    // Respond in Initial space using SERVER initial keys (TX direction)
+                    const txk = if (v2) ks.deriveKeyIvHpV2(pair.server) else ks.deriveKeyIvHp(pair.server);
+                    const tx_keys: packet.InitialKeys = .{ .key = txk.key, .iv = txk.iv, .hp = txk.hp };
                     const out = packet.encodeInitialProtected(self.allocator.*, version, scid, conn.our_scid.bytes[0..conn.our_scid.len], &[_]u8{}, conn.pn_initial_tx, 2, frames_buf.items, tx_keys) catch null;
                     if (out) |pkt_bytes| {
                         defer self.allocator.free(pkt_bytes);
