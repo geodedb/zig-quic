@@ -11,6 +11,14 @@ const varint = @import("quic_varint");
 
 const posix = std.posix;
 
+fn nowMsMonotonic() i64 {
+    // Prefer a monotonic source; nanoTimestamp is monotonic on supported platforms.
+    // Use explicit truncating integer division for signed integers (Zig 0.14 requirement).
+    const ns: i128 = std.time.nanoTimestamp();
+    const ms: i128 = @divTrunc(ns, std.time.ns_per_ms);
+    return @as(i64, @intCast(ms));
+}
+
 const Timer = struct { deadline_ms: i64, id: u64 };
 
 const Key = struct { peer_hash: u64, dcid_hash: u64 };
@@ -109,7 +117,7 @@ pub const Endpoint = struct {
     pub fn scheduleTimer(self: *Endpoint, delay_ms: u32) !u64 {
         const id = self.next_timer_id;
         self.next_timer_id +%= 1;
-        const now_ms: i64 = std.time.milliTimestamp();
+        const now_ms: i64 = nowMsMonotonic();
         const deadline: i64 = now_ms + @as(i64, @intCast(delay_ms));
         try self.timers.append(.{ .deadline_ms = deadline, .id = id });
         return id;
@@ -129,8 +137,9 @@ pub const Endpoint = struct {
 
     /// Drive IO using platform loop backend. timeout_ms < 0 means infinite.
     pub fn poll(self: *Endpoint, timeout_ms: i32) !void {
-        const now_ms: i64 = std.time.milliTimestamp();
-        const eff_timeout = self.nextTimeoutFromTimers(now_ms, timeout_ms);
+        const now_ms: i64 = nowMsMonotonic();
+        var eff_timeout = self.nextTimeoutFromTimers(now_ms, timeout_ms);
+        if (eff_timeout < 0) eff_timeout = -1;
         // Deterministic wait without relying on OS event loops for tests
         if (eff_timeout > 0) {
             std.time.sleep(@as(u64, @intCast(eff_timeout)) * std.time.ns_per_ms);
@@ -155,7 +164,7 @@ pub const Endpoint = struct {
             }
         }
         // After wait, process timers that have expired.
-        self.processExpiredTimers(std.time.milliTimestamp());
+        self.processExpiredTimers(nowMsMonotonic());
     }
 
     fn processIncomingDatagram(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8) void {
@@ -328,9 +337,7 @@ pub const Endpoint = struct {
         var i: usize = 0;
         while (i < self.timers.items.len) {
             if (self.timers.items[i].deadline_ms <= now_ms) {
-                // In a future slice, dispatch to connection-level handlers.
                 _ = self.timers.orderedRemove(i);
-                // do not increment i, as items shift left
             } else {
                 i += 1;
             }
