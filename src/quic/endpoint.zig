@@ -10,6 +10,7 @@ const crypto = @import("quic_crypto");
 const varint = @import("quic_varint");
 
 const posix = std.posix;
+const builtin = @import("builtin");
 
 fn nowMsMonotonic() i64 {
     // Prefer a monotonic source; nanoTimestamp is monotonic on supported platforms.
@@ -140,14 +141,19 @@ pub const Endpoint = struct {
         const now_ms: i64 = nowMsMonotonic();
         var eff_timeout = self.nextTimeoutFromTimers(now_ms, timeout_ms);
         if (eff_timeout < 0) eff_timeout = -1;
-        // Deterministic wait without relying on OS event loops for tests
-        if (eff_timeout > 0) {
-            std.time.sleep(@as(u64, @intCast(eff_timeout)) * std.time.ns_per_ms);
-        } else if (eff_timeout == 0) {
-            // yield once
-            std.time.sleep(0);
+
+        // Use platform event loop for readable readiness
+        switch (api.defaultLoopBackend()) {
+            .epoll => try self.poll_epoll_backend(eff_timeout),
+            .kqueue => try self.poll_kqueue_backend(eff_timeout),
+            .iocp => try self.poll_iocp_backend(eff_timeout),
         }
-        // Drain readable datagrams (nonblocking)
+
+        // After wait, process timers that have expired.
+        self.processExpiredTimers(nowMsMonotonic());
+    }
+
+    fn drainReadable(self: *Endpoint) void {
         var buf: [2048]u8 = undefined;
         while (true) {
             var peer = conn_mod.SockAddr{};
@@ -157,21 +163,101 @@ pub const Endpoint = struct {
                 self.processIncomingDatagram(peer, buf[0..n]);
             } else |err| {
                 switch (err) {
-                    error.WouldBlock => break,
-                    error.ConnectionResetByPeer => break,
-                    else => break,
+                    error.WouldBlock => return,
+                    error.ConnectionResetByPeer => return,
+                    else => return,
                 }
             }
         }
-        // After wait, process timers that have expired.
-        self.processExpiredTimers(nowMsMonotonic());
+    }
+
+    fn poll_epoll_backend(self: *Endpoint, timeout_ms: i32) !void {
+        const io = @import("io/loop_epoll.zig");
+        var lp = try io.Loop.init();
+        defer lp.deinit();
+        try lp.add(@as(i32, self.sock_fd), true, false);
+        var events: [8]io.Event = undefined;
+        const n = try lp.wait(&events, timeout_ms);
+        if (n > 0) self.drainReadable();
+    }
+
+    fn poll_kqueue_backend(self: *Endpoint, timeout_ms: i32) !void {
+        // On non-kqueue platforms, just perform a sleep-based fallback
+        if (builtin.target.os.tag != .macos and builtin.target.os.tag != .freebsd and builtin.target.os.tag != .netbsd and builtin.target.os.tag != .openbsd and builtin.target.os.tag != .dragonfly) {
+            if (timeout_ms > 0) std.time.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
+            self.drainReadable();
+            return;
+        }
+        const io = @import("io/loop_kqueue.zig");
+        var lp = try io.Loop.init();
+        defer lp.deinit();
+        try lp.add(@as(i32, self.sock_fd), true, false);
+        var events: [8]io.Event = undefined;
+        const n = try lp.wait(&events, timeout_ms);
+        if (n > 0) self.drainReadable();
+    }
+
+    fn poll_iocp_backend(self: *Endpoint, timeout_ms: i32) !void {
+        if (builtin.target.os.tag != .windows) {
+            if (timeout_ms > 0) std.time.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
+            self.drainReadable();
+            return;
+        }
+        const io = @import("io/loop_iocp.zig");
+        var lp = try io.Loop.init();
+        defer lp.deinit();
+        try lp.add(@as(i32, self.sock_fd), true, false);
+        var events: [8]io.Event = undefined;
+        const n = try lp.wait(&events, timeout_ms);
+        if (n > 0) self.drainReadable();
     }
 
     fn processIncomingDatagram(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8) void {
-        if (bytes.len < 7) return;
+        if (bytes.len < 1) return;
         const first = bytes[0];
         const is_long = (first & 0x80) != 0;
-        if (!is_long) return; // handle short later
+        if (!is_long) {
+            // Short header 1-RTT path: locate connection by DCID hash and unprotect payload, handle ACK
+            // For demo purposes, assume 8-byte DCID and try lookup.
+            const dcid_len_guess: usize = 8;
+            if (1 + dcid_len_guess > bytes.len) return;
+            const dcid = bytes[1 .. 1 + dcid_len_guess];
+            const key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(dcid) };
+            const c_ptr = self.conns.getPtr(key) orelse return;
+            const conn = c_ptr.*;
+            if (conn.app_rx_keys) |rx_keys| {
+                const dec = packet.decodeShortProtected(self.allocator.*, bytes, dcid.len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }) catch return;
+                defer self.allocator.free(dec.payload);
+                // Walk frames; respond with ACK for any PN
+                var off2: usize = 0;
+                while (off2 < dec.payload.len) {
+                    const fr = frame.decodeOne(dec.payload[off2..]) catch break;
+                    off2 += fr.n;
+                    switch (fr.f) {
+                        .ping => {},
+                        .stream => |s| {
+                            _ = s; // application would consume
+                        },
+                        else => {},
+                    }
+                }
+                // Immediately send a minimal ACK for the received PN
+                if (conn.app_tx_keys) |tx_keys| {
+                    var frames_buf = std.ArrayList(u8).init(self.allocator.*);
+                    defer frames_buf.deinit();
+                    const w = frames_buf.writer();
+                    const ack = frame.Frame{ .ack = .{ .largest = dec.packet_number, .ack_delay = 0 } };
+                    _ = ack.write(w) catch 0;
+                    const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], conn.pn_app_tx, 2, frames_buf.items, .{ .key = tx_keys.key, .iv = tx_keys.iv, .hp = tx_keys.hp }) catch null;
+                    if (out) |pkt_bytes| {
+                        defer self.allocator.free(pkt_bytes);
+                        _ = self.sendTo(peer, pkt_bytes) catch {};
+                        conn.pn_app_tx +%= 1;
+                    }
+                }
+            }
+            return;
+        }
         const ty = (first >> 4) & 0x03;
         // Version
         const version: u32 = (@as(u32, bytes[1]) << 24) | (@as(u32, bytes[2]) << 16) | (@as(u32, bytes[3]) << 8) | @as(u32, bytes[4]);

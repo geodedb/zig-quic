@@ -64,8 +64,12 @@ pub const Connection = struct {
     // Cached QUIC Handshake keys for RX/TX once derived
     hs_rx_keys: ?packet.InitialKeys = null,
     hs_tx_keys: ?packet.InitialKeys = null,
+    // 1-RTT application keys
+    app_rx_keys: ?packet.AeadKeys = null,
+    app_tx_keys: ?packet.AeadKeys = null,
     // PN counters per space (simplified)
     pn_handshake_tx: u32 = 1,
+    pn_app_tx: u32 = 1,
     // Peer-provided Initial DCID/SCID from first Initial we saw (for reply headers)
     peer_initial_dcid: Cid = .{},
     peer_initial_scid: Cid = .{},
@@ -85,7 +89,10 @@ pub const Connection = struct {
         self.hs_server = null;
         self.hs_rx_keys = null;
         self.hs_tx_keys = null;
+        self.app_rx_keys = null;
+        self.app_tx_keys = null;
         self.pn_handshake_tx = 1;
+        self.pn_app_tx = 1;
         self.peer_initial_dcid = .{};
         self.peer_initial_scid = .{};
         self.our_scid = .{};
@@ -118,6 +125,10 @@ pub const Connection = struct {
             self.hs_server = hs.server;
             self.deriveHandshakeKeys(false);
         }
+        // Attempt to compute application secrets
+        if (self.tls.computeApplicationSecrets()) |ap| {
+            self.deriveAppKeys(ap.client, ap.server, false);
+        }
     }
 
     fn deriveHandshakeKeys(self: *Connection, version_v2: bool) void {
@@ -129,6 +140,16 @@ pub const Connection = struct {
         const tx = tls13.deriveQuicHandshakeKeys(tx_secret, version_v2);
         self.hs_rx_keys = .{ .key = rx.key, .iv = rx.iv, .hp = rx.hp };
         self.hs_tx_keys = .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp };
+    }
+
+    fn deriveAppKeys(self: *Connection, client_app: [tls13.H.digest_length]u8, server_app: [tls13.H.digest_length]u8, version_v2: bool) void {
+        // Assign rx/tx according to role
+        const rx_secret = if (self.role == .Server) client_app else server_app;
+        const tx_secret = if (self.role == .Server) server_app else client_app;
+        const rx = tls13.deriveQuicAppKeys(rx_secret, version_v2);
+        const tx = tls13.deriveQuicAppKeys(tx_secret, version_v2);
+        self.app_rx_keys = .{ .key = rx.key, .iv = rx.iv, .hp = rx.hp };
+        self.app_tx_keys = .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp };
     }
 
     /// Record peer's Initial DCID/SCID (copied) for use in reply headers.

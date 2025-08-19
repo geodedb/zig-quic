@@ -29,18 +29,42 @@ pub const Certificate = struct {
     spki: []const u8,
 };
 
+fn isLeap(year: u16) bool {
+    return (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0);
+}
+
+fn daysBeforeMonth(year: u16, month: u8) i64 {
+    const mdays = [_]u8{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    var d: i64 = 0;
+    var m: u8 = 1;
+    while (m < month) : (m += 1) {
+        if (m == 2 and isLeap(year)) d += 29 else d += mdays[m - 1];
+    }
+    return d;
+}
+
+fn unixSecondsFromYMDHMS(year: u16, month: u8, day: u8, hh: u8, mm: u8, ss: u8) i64 {
+    if (year < 1970) return 0; // clamp for simplicity
+    var days: i64 = 0;
+    var y: u16 = 1970;
+    while (y < year) : (y += 1) days += if (isLeap(y)) 366 else 365;
+    days += daysBeforeMonth(year, month);
+    days += (@as(i64, day) - 1);
+    return days * 86400 + @as(i64, hh) * 3600 + @as(i64, mm) * 60 + @as(i64, ss);
+}
+
 fn parseTime(bytes: []const u8) !i64 {
     // Accept the subset: YYYYMMDDHHMMSSZ or YYMMDDHHMMSSZ; return unix seconds
     if (bytes.len == 13 and bytes[12] == 'Z') {
         // UTCTime: YYMMDDHHMMSSZ -> assume 1950..2049 window
         const yy = try std.fmt.parseInt(u8, bytes[0..2], 10);
-        const year: u16 = if (yy >= 50) 1900 + yy else 2000 + yy;
+        const year: u16 = if (yy >= 50) (@as(u16, 1900) + @as(u16, yy)) else (@as(u16, 2000) + @as(u16, yy));
         const month = try std.fmt.parseInt(u8, bytes[2..4], 10);
         const day = try std.fmt.parseInt(u8, bytes[4..6], 10);
         const hh = try std.fmt.parseInt(u8, bytes[6..8], 10);
         const mm = try std.fmt.parseInt(u8, bytes[8..10], 10);
         const ss = try std.fmt.parseInt(u8, bytes[10..12], 10);
-        return std.time.epoch.DaySecond.fromDateTime(.{ .year = year, .month = month, .day = day, .hour = hh, .minute = mm, .second = ss }).toUnixSeconds();
+        return unixSecondsFromYMDHMS(year, month, day, hh, mm, ss);
     }
     if (bytes.len == 15 and bytes[14] == 'Z') {
         // GeneralizedTime: YYYYMMDDHHMMSSZ
@@ -50,7 +74,7 @@ fn parseTime(bytes: []const u8) !i64 {
         const hh = try std.fmt.parseInt(u8, bytes[8..10], 10);
         const mm = try std.fmt.parseInt(u8, bytes[10..12], 10);
         const ss = try std.fmt.parseInt(u8, bytes[12..14], 10);
-        return std.time.epoch.DaySecond.fromDateTime(.{ .year = year, .month = month, .day = day, .hour = hh, .minute = mm, .second = ss }).toUnixSeconds();
+        return unixSecondsFromYMDHMS(year, month, day, hh, mm, ss);
     }
     return error.UnsupportedTimeFormat;
 }

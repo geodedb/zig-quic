@@ -5,6 +5,7 @@
 // handshake message encode/parse helpers for ClientHello/ServerHello envelopes.
 const std = @import("std");
 const ks = @import("quic_tls");
+const x509 = @import("x509.zig");
 
 pub const H = ks.H; // sha256
 
@@ -182,9 +183,14 @@ pub const Engine = struct {
     /// Tracking flags for minimal handshake state.
     ch_sent: bool = false,
     sh_seen: bool = false,
+    /// Security / verification state (minimal)
+    allow_insecure: bool = true,
+    peer_cert_ok: bool = false,
+    finished_sent: bool = false,
+    finished_verified: bool = false,
 
     pub fn init(alloc: std.mem.Allocator, role: Role) Engine {
-        return .{ .role = role, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .outbox = std.ArrayList(u8).init(alloc), .ch_sent = false, .sh_seen = false };
+        return .{ .role = role, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .outbox = std.ArrayList(u8).init(alloc), .ch_sent = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false };
     }
     pub fn deinit(self: *Engine) void {
         self.outbox.deinit();
@@ -227,17 +233,50 @@ pub const Engine = struct {
         while (true) {
             const parsed = parseHandshakeOne(data[off..]) catch null;
             if (parsed) |p| {
+                // Snapshot transcript up to the start of this message for Finished verification
+                var snap = self.transcript;
+                snap.update(data[0..off]);
+                const th_before = snap.finalize();
+
                 off += p.n;
                 if (p.typ == .server_hello) self.sh_seen = true;
                 if (p.typ == .client_hello) self.ch_sent = true;
                 if (parseMinimalHelloPub(p.typ, p.body)) |pk| {
                     self.peer_pub = pk;
                     // Depending on role, compute shared when appropriate.
-                    // Server computes upon seeing ClientHello; Client computes upon seeing ServerHello.
                     switch (p.typ) {
                         .client_hello => if (self.role == .Server) self.tryComputeShared(),
                         .server_hello => if (self.role == .Client) self.tryComputeShared(),
                         else => {},
+                    }
+                }
+                // Minimal X.509 certificate body handling (single DER cert)
+                if (p.typ == .certificate) {
+                    if (self.allow_insecure) {
+                        self.peer_cert_ok = true;
+                    } else {
+                        const cert_val = x509.parseCert(self.outbox.allocator, p.body) catch null;
+                        if (cert_val) |c| {
+                            self.peer_cert_ok = true;
+                            x509.checkValidity(std.time.timestamp(), &c) catch {
+                                self.peer_cert_ok = false;
+                            };
+                        } else {
+                            self.peer_cert_ok = false;
+                        }
+                    }
+                }
+                // Finished verification
+                if (p.typ == .finished and self.ecdhe_secret != null) {
+                    const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th_before);
+                    const expect = switch (self.role) {
+                        .Client => deriveFinishedVerifyData(hs.server_hs, th_before),
+                        .Server => deriveFinishedVerifyData(hs.client_hs, th_before),
+                    };
+                    if (p.body.len == expect.len and std.mem.eql(u8, p.body, &expect)) {
+                        self.finished_verified = true;
+                    } else {
+                        self.finished_verified = false;
                     }
                 }
             } else break;
@@ -339,6 +378,19 @@ pub const Engine = struct {
     /// Convenience alias for draining outbound CRYPTO intended for QUIC Handshake pkts.
     pub fn popCrypto(self: *Engine, out: []u8) usize {
         return self.takeOut(out);
+    }
+
+    /// Queue a minimal TLS Finished message with verify_data against current transcript.
+    pub fn queueFinished(self: *Engine) !void {
+        if (self.ecdhe_secret == null or !self.ch_sent or !self.sh_seen) return error.HandshakeNotReady;
+        const th = self.transcript.finalize();
+        const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th);
+        const my = if (self.role == .Client) hs.client_hs else hs.server_hs;
+        const verify = deriveFinishedVerifyData(my, th);
+        const msg = try encodeHandshake(self.outbox.allocator, .finished, verify[0..]);
+        defer self.outbox.allocator.free(msg);
+        try self.queueCrypto(msg);
+        self.finished_sent = true;
     }
 };
 
