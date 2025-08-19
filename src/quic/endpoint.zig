@@ -217,42 +217,67 @@ pub const Endpoint = struct {
         const first = bytes[0];
         const is_long = (first & 0x80) != 0;
         if (!is_long) {
-            // Short header 1-RTT path: locate connection by DCID hash and unprotect payload, handle ACK
-            // For demo purposes, assume 8-byte DCID and try lookup.
-            const dcid_len_guess: usize = 8;
-            if (1 + dcid_len_guess > bytes.len) return;
-            const dcid = bytes[1 .. 1 + dcid_len_guess];
-            const key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(dcid) };
-            const c_ptr = self.conns.getPtr(key) orelse return;
-            const conn = c_ptr.*;
+            // Short header 1-RTT path: locate connection by matching the DCID prefix length
+            // against any known connection's our_scid for this peer. Short headers carry the
+            // Destination Connection ID equal to the receiver's chosen SCID.
+            if (bytes.len < 1) return;
+            const peer_h = hashSockaddr(&peer.storage, peer.len);
+            var found: ?*conn_mod.Connection = null;
+            var dcid_len: usize = 0;
+            var it = self.conns.iterator();
+            while (it.next()) |entry| {
+                if (entry.key_ptr.*.peer_hash != peer_h) continue;
+                const c = entry.value_ptr.*;
+                const l: usize = c.our_scid.len;
+                if (1 + l > bytes.len) continue;
+                if (l == 0) {
+                    // zero-length DCID match
+                    found = c;
+                    dcid_len = 0;
+                    break;
+                }
+                if (std.mem.eql(u8, c.our_scid.bytes[0..l], bytes[1 .. 1 + l])) {
+                    found = c;
+                    dcid_len = l;
+                    break;
+                }
+            }
+            const conn = found orelse return;
             if (conn.app_rx_keys) |rx_keys| {
-                const dec = packet.decodeShortProtected(self.allocator.*, bytes, dcid.len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }) catch return;
+                const dec = packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }) catch return;
                 defer self.allocator.free(dec.payload);
                 // Walk frames; respond with ACK for any PN
                 var off2: usize = 0;
+                var saw_any: bool = false;
                 while (off2 < dec.payload.len) {
                     const fr = frame.decodeOne(dec.payload[off2..]) catch break;
                     off2 += fr.n;
                     switch (fr.f) {
-                        .ping => {},
+                        .ping => saw_any = true,
                         .stream => |s| {
                             _ = s; // application would consume
+                            saw_any = true;
+                        },
+                        .ack => |a| {
+                            _ = a; // TODO: hook into recovery
                         },
                         else => {},
                     }
                 }
-                // Immediately send a minimal ACK for the received PN
-                if (conn.app_tx_keys) |tx_keys| {
-                    var frames_buf = std.ArrayList(u8).init(self.allocator.*);
-                    defer frames_buf.deinit();
-                    const w = frames_buf.writer();
-                    const ack = frame.Frame{ .ack = .{ .largest = dec.packet_number, .ack_delay = 0 } };
-                    _ = ack.write(w) catch 0;
-                    const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], conn.pn_app_tx, 2, frames_buf.items, .{ .key = tx_keys.key, .iv = tx_keys.iv, .hp = tx_keys.hp }) catch null;
-                    if (out) |pkt_bytes| {
-                        defer self.allocator.free(pkt_bytes);
-                        _ = self.sendTo(peer, pkt_bytes) catch {};
-                        conn.pn_app_tx +%= 1;
+                // Immediately send a minimal ACK for the received PN when we saw frames
+                if (saw_any) {
+                    if (conn.app_tx_keys) |tx_keys| {
+                        var frames_buf = std.ArrayList(u8).init(self.allocator.*);
+                        defer frames_buf.deinit();
+                        const w = frames_buf.writer();
+                        const ack = frame.Frame{ .ack = .{ .largest = dec.packet_number, .ack_delay = 0 } };
+                        _ = ack.write(w) catch 0;
+                        const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], conn.pn_app_tx, 2, frames_buf.items, .{ .key = tx_keys.key, .iv = tx_keys.iv, .hp = tx_keys.hp }) catch null;
+                        if (out) |pkt_bytes| {
+                            defer self.allocator.free(pkt_bytes);
+                            _ = self.sendTo(peer, pkt_bytes) catch {};
+                            conn.pn_app_tx +%= 1;
+                        }
                     }
                 }
             }
