@@ -95,7 +95,8 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
     _ = try ti.readTLV(); // version or serial
     _ = try ti.readTLV(); // maybe version/serial/signature
     _ = try ti.readTLV(); // signature or serial/signature
-    _ = try ti.readTLV(); // issuer
+    const issuer = try ti.readTLV();
+    _ = issuer;
     const validity = try ti.readSequence();
     var vd = asn1.Decoder.init(validity);
     const not_before_tlv = try vd.readTLV();
@@ -103,16 +104,64 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
     const not_before = try parseTime(not_before_tlv.val);
     const not_after = try parseTime(not_after_tlv.val);
     const subject_seq = try ti.readSequence();
-    _ = subject_seq; // TODO: parse CN
+    // Parse subject for CN (very shallow: look for UTF8String in RDNs)
+    var subj_cn: ?[]const u8 = null;
+    {
+        var sdec = asn1.Decoder.init(subject_seq);
+        // subject is a sequence of sets of sequences; we do a simple scan for any UTF8String
+        while (true) {
+            const tlv = sdec.readTLV() catch break;
+            if (asn1.tagClass(tlv.tag) == .universal and asn1.tagNumber(tlv.tag) == 12) {
+                subj_cn = tlv.val;
+                break;
+            }
+        }
+    }
     const spki_tlv = try ti.readTLV();
 
-    // Minimal fields collected
-    const subject: Name = .{};
-    const san: ?SubjectAltName = null;
+    // Try to find extensions sequence and parse SAN if present
+    var san_result: ?SubjectAltName = null;
+    while (true) {
+        const tlv = ti.readTLV() catch break;
+        // Look for [3] EXPLICIT Extensions (context-specific constructed)
+        if (asn1.tagClass(tlv.tag) == .context and asn1.isConstructed(tlv.tag)) {
+            var ed = asn1.Decoder.init(tlv.val);
+            const exts_seq = ed.readSequence() catch continue;
+            var exd = asn1.Decoder.init(exts_seq);
+            while (true) {
+                const ext = exd.readSequence() catch break;
+                var one = asn1.Decoder.init(ext);
+                const oid = one.readOID() catch continue;
+                const critical_or_val = one.readTLV() catch continue;
+                var val = critical_or_val.val;
+                // If next is value, adjust
+                if (one.readTLV() catch null) |v2| val = v2.val;
+                // id-ce-subjectAltName = 2.5.29.17 (we match by length/prefix loosely)
+                if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x11) {
+                    var vd2 = asn1.Decoder.init(val);
+                    const san_seq = vd2.readSequence() catch continue;
+                    var dns_list: [8][]const u8 = undefined;
+                    var dns_len: usize = 0;
+                    var s2 = asn1.Decoder.init(san_seq);
+                    while (dns_len < dns_list.len) {
+                        const gn = s2.readTLV() catch break;
+                        // dNSName is [2] IA5String; context-specific primitive tag 2
+                        if (asn1.tagClass(gn.tag) == .context and asn1.tagNumber(gn.tag) == 2) {
+                            dns_list[dns_len] = gn.val;
+                            dns_len += 1;
+                        }
+                    }
+                    if (dns_len > 0) san_result = .{ .dns = dns_list[0..dns_len] };
+                }
+            }
+        }
+    }
+
+    const subject: Name = .{ .cn = subj_cn };
+    const san: ?SubjectAltName = san_result;
     const basic: ?BasicConstraints = null;
     const ku: ?KeyUsage = null;
 
-    // Store TBSCertificate slice
     const tbs_start: usize = @intCast(tbs_off_begin);
     const tbs_bytes = der[tbs_start .. tbs_start + tbs_len];
     return .{
@@ -137,7 +186,6 @@ pub fn matchDnsName(cert: *const Certificate, name: []const u8) bool {
         for (san.dns) |d| if (std.mem.eql(u8, d, name)) return true;
         return false;
     }
-    // Fallback to CN if SAN missing
     if (cert.subject.cn) |cn| return std.mem.eql(u8, cn, name);
     return false;
 }

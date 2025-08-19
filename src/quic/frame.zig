@@ -36,7 +36,7 @@ pub const Frame = union(enum) {
     ping: void,
     crypto: struct { offset: u64, data: []const u8 },
     stream: struct { stream_id: u64, offset: ?u64, fin: bool, data: []const u8 },
-    ack: struct { largest: u64, ack_delay: u64, first_range: u64 = 0, range_count: u64 = 0 },
+    ack: struct { largest: u64, ack_delay: u64, first_range: u64 = 0, ranges: []const AckRange = &[_]AckRange{} },
     // ... more frames as needed ...
 
     /// Encode this frame to the writer. Returns bytes written.
@@ -103,8 +103,6 @@ pub const Frame = union(enum) {
                 return written;
             },
             .ack => |a| {
-                // For now, emit only minimal ACK (no extra ranges). If caller provided
-                // non-zero range_count, it will be ignored until range encoding is added.
                 try w.writeByte(@intFromEnum(FrameType.ACK));
                 var written: usize = 1;
                 var tmp: [16]u8 = undefined;
@@ -114,12 +112,22 @@ pub const Frame = union(enum) {
                 const ad = try varint.encode(a.ack_delay, &tmp);
                 try w.writeAll(tmp[0..ad]);
                 written += ad;
-                const rc = try varint.encode(0, &tmp);
+                const rc_val: u64 = @intCast(a.ranges.len);
+                const rc = try varint.encode(rc_val, &tmp);
                 try w.writeAll(tmp[0..rc]);
                 written += rc;
-                const fr = try varint.encode(0, &tmp);
+                const fr = try varint.encode(a.first_range, &tmp);
                 try w.writeAll(tmp[0..fr]);
                 written += fr;
+                // additional ranges: each (gap, len)
+                for (a.ranges) |r| {
+                    const g = try varint.encode(r.gap, &tmp);
+                    try w.writeAll(tmp[0..g]);
+                    written += g;
+                    const rl = try varint.encode(r.len, &tmp);
+                    try w.writeAll(tmp[0..rl]);
+                    written += rl;
+                }
                 return written;
             },
         }
@@ -182,7 +190,7 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
             i += lenv.n;
             if (i > buf.len) return error.Truncated;
         }
-        return .{ .f = Frame{ .ack = .{ .largest = largest.value, .ack_delay = ack_delay.value, .first_range = first_range.value, .range_count = range_count.value } }, .n = i };
+        return .{ .f = Frame{ .ack = .{ .largest = largest.value, .ack_delay = ack_delay.value, .first_range = first_range.value, .ranges = &[_]AckRange{} } }, .n = i };
     }
     // STREAM frames 0x08..0x0f
     if ((t & 0xf8) == @intFromEnum(FrameType.STREAM)) {

@@ -4,6 +4,7 @@ const std = @import("std");
 const posix = std.posix;
 const tls13 = @import("tls/tls13.zig");
 const packet = @import("packet.zig");
+const frame = @import("quic_frame");
 
 pub const Role = enum { Client, Server };
 
@@ -77,6 +78,11 @@ pub const Connection = struct {
     our_scid: Cid = .{},
     // Switch flag to drop Initial keys/processing once Handshake packets are seen
     initial_keys_dropped: bool = false,
+    // Recovery/ACK tracking (simplified)
+    recv_pn_max: u64 = 0,
+    recv_pn_acked: std.bit_set.IntegerBitSet(256), // window bitmap for recent PN
+    sent_time: std.AutoHashMap(u64, i128), // pn -> send time (ns)
+    largest_acked: u64 = 0,
 
     pub fn init(self: *Connection, alloc: *std.mem.Allocator, role: Role, sock_fd: posix.fd_t, peer: SockAddr) void {
         self.id = 0;
@@ -97,6 +103,10 @@ pub const Connection = struct {
         self.peer_initial_scid = .{};
         self.our_scid = .{};
         self.initial_keys_dropped = false;
+        self.recv_pn_max = 0;
+        self.recv_pn_acked = std.bit_set.IntegerBitSet(256).initEmpty();
+        self.sent_time = std.AutoHashMap(u64, i128).init(alloc.*);
+        self.largest_acked = 0;
         // Generate a simple random SCID (8 bytes) for server role.
         if (role == .Server) {
             self.our_scid.len = 8;
@@ -107,6 +117,7 @@ pub const Connection = struct {
     pub fn deinit(self: *Connection) void {
         self.tls_inbox.deinit();
         self.tls.deinit();
+        self.sent_time.deinit();
     }
 
     /// Send a datagram to the connection's peer.
@@ -160,5 +171,55 @@ pub const Connection = struct {
         const sl: u8 = @intCast(@min(scid.len, self.peer_initial_scid.bytes.len));
         self.peer_initial_scid.len = sl;
         if (sl > 0) @memcpy(self.peer_initial_scid.bytes[0..sl], scid[0..sl]);
+    }
+
+    /// Called when we send a 1-RTT packet
+    pub fn onPacketSent(self: *Connection, pn: u64) void {
+        _ = self.sent_time.put(pn, std.time.nanoTimestamp()) catch {};
+    }
+
+    /// Called when we receive an ACK frame
+    pub fn onAckReceived(self: *Connection, largest: u64, first_range: u64, ranges: []const frame.AckRange) void {
+        // Update largest_acked
+        if (largest > self.largest_acked) self.largest_acked = largest;
+        // Naive: remove any pns <= largest (no loss detection yet)
+        var it = self.sent_time.iterator();
+        while (it.next()) |e| {
+            if (e.key_ptr.* <= largest) {
+                _ = self.sent_time.remove(e.key_ptr.*);
+            }
+        }
+        _ = first_range;
+        _ = ranges;
+        // TODO: PTO, RTT update based on ack timing
+    }
+
+    /// Track received packet numbers for building ACK ranges.
+    pub fn trackRecvPn(self: *Connection, pn: u64) void {
+        if (pn > self.recv_pn_max) self.recv_pn_max = pn;
+        const span: u64 = 256;
+        if (pn + 1 >= span) {
+            const base: u64 = pn + 1 - span;
+            const idx: u8 = @intCast(pn - base);
+            self.recv_pn_acked.set(idx);
+        } else {
+            const idx: u8 = @intCast(pn);
+            self.recv_pn_acked.set(idx);
+        }
+    }
+
+    /// Generate a basic ACK description from tracked PN window.
+    pub fn buildAck(self: *Connection) struct { largest: u64, first_range: u64, ranges: []const frame.AckRange } {
+        const largest: u64 = self.recv_pn_max;
+        var first_len: u64 = 0;
+        // Count contiguous set bits descending from largest within window
+        const span: u64 = 256;
+        const base: u64 = if (largest + 1 >= span) largest + 1 - span else 0;
+        var i: i64 = @intCast(largest - base);
+        while (i >= 0) : (i -= 1) {
+            if (self.recv_pn_acked.isSet(@intCast(i))) first_len += 1 else break;
+        }
+        const first_range: u64 = if (first_len == 0) 0 else (first_len - 1);
+        return .{ .largest = largest, .first_range = first_range, .ranges = &[_]frame.AckRange{} };
     }
 };

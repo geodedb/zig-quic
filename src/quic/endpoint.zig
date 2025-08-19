@@ -246,6 +246,8 @@ pub const Endpoint = struct {
             if (conn.app_rx_keys) |rx_keys| {
                 const dec = packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }) catch return;
                 defer self.allocator.free(dec.payload);
+                // Track received PN for ACK building
+                conn.trackRecvPn(dec.packet_number);
                 // Walk frames; respond with ACK for any PN
                 var off2: usize = 0;
                 var saw_any: bool = false;
@@ -259,23 +261,26 @@ pub const Endpoint = struct {
                             saw_any = true;
                         },
                         .ack => |a| {
-                            _ = a; // TODO: hook into recovery
+                            const empty: [0]frame.AckRange = .{};
+                            conn.onAckReceived(a.largest, a.first_range, empty[0..]);
                         },
                         else => {},
                     }
                 }
-                // Immediately send a minimal ACK for the received PN when we saw frames
+                // Immediately send an ACK aggregated from our PN tracker
                 if (saw_any) {
                     if (conn.app_tx_keys) |tx_keys| {
                         var frames_buf = std.ArrayList(u8).init(self.allocator.*);
                         defer frames_buf.deinit();
                         const w = frames_buf.writer();
-                        const ack = frame.Frame{ .ack = .{ .largest = dec.packet_number, .ack_delay = 0 } };
+                        const ack_desc = conn.buildAck();
+                        const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = 0, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges } };
                         _ = ack.write(w) catch 0;
                         const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], conn.pn_app_tx, 2, frames_buf.items, .{ .key = tx_keys.key, .iv = tx_keys.iv, .hp = tx_keys.hp }) catch null;
                         if (out) |pkt_bytes| {
                             defer self.allocator.free(pkt_bytes);
                             _ = self.sendTo(peer, pkt_bytes) catch {};
+                            conn.onPacketSent(conn.pn_app_tx);
                             conn.pn_app_tx +%= 1;
                         }
                     }
