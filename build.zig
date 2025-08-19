@@ -23,6 +23,17 @@ pub fn build(b: *std.Build) void {
     const release_safe = b.option(bool, "release-safe", "Build with ReleaseSafe optimization (convenience flag)") orelse false;
     const optimize: std.builtin.OptimizeMode = if (release_safe) .ReleaseSafe else optimize_base;
 
+    // Parse optional user args to support `zig build test --test-filter <substr>`.
+    const raw_args = b.args orelse &[_][]const u8{};
+    var user_filter: ?[]const u8 = null;
+    var i: usize = 0;
+    while (i < raw_args.len) : (i += 1) {
+        if (std.mem.eql(u8, raw_args[i], "--test-filter")) {
+            if (i + 1 < raw_args.len) user_filter = raw_args[i + 1];
+            break;
+        }
+    }
+
     // CLI tool: quic-varint
     const varint_exe = b.addExecutable(.{
         .name = "quic-varint",
@@ -70,7 +81,8 @@ pub fn build(b: *std.Build) void {
 
     // Tests
     const test_step = b.step("test", "Run unit tests");
-    const test_filter = b.option([]const u8, "test-filter", "Filter tests by substring");
+    const filter_opt = b.option([]const u8, "test-filter", "Filter tests by substring");
+    const filter = user_filter orelse (filter_opt orelse null);
     const legacy_tests = b.option(bool, "legacy-tests", "Run legacy tests in quic.zig") orelse false;
 
     // Expose TLS/crypto/packet modules
@@ -96,7 +108,7 @@ pub fn build(b: *std.Build) void {
     quic_packet_mod.addImport("quic_varint", quic_varint_mod);
 
     // Special-case: if filtering for the TLS KAT, only run that test file.
-    if (test_filter) |f| {
+    if (filter) |f| {
         if (std.mem.containsAtLeast(u8, f, 1, "tls_key_schedule_kat")) {
             const test_tls_only = b.addTest(.{ .root_source_file = rp("tests/test_tls_key_schedule.zig"), .target = target, .optimize = optimize });
             test_tls_only.root_module.addImport("quic_tls", quic_tls_mod);

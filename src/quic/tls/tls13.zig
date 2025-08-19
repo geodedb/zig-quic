@@ -189,11 +189,14 @@ pub const Engine = struct {
     peer_cert_ok: bool = false,
     finished_sent: bool = false,
     finished_verified: bool = false,
+    /// Leaf certificate SPKI (DER) cached on Certificate message, owned by Engine
+    leaf_spki: ?[]u8 = null,
 
     pub fn init(alloc: std.mem.Allocator, role: Role) Engine {
-        return .{ .role = role, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .outbox = std.ArrayList(u8).init(alloc), .ch_sent = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false };
+        return .{ .role = role, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .outbox = std.ArrayList(u8).init(alloc), .ch_sent = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .leaf_spki = null };
     }
     pub fn deinit(self: *Engine) void {
+        if (self.leaf_spki) |spki| self.outbox.allocator.free(spki);
         self.outbox.deinit();
     }
 
@@ -259,6 +262,9 @@ pub const Engine = struct {
                         const cert_val = x509.parseCert(self.outbox.allocator, p.body) catch null;
                         if (cert_val) |c| {
                             self.peer_cert_ok = true;
+                            // Cache SPKI (DER) for CertificateVerify
+                            if (self.leaf_spki) |old| self.outbox.allocator.free(old);
+                            self.leaf_spki = self.outbox.allocator.dupe(u8, c.spki) catch null;
                             x509.checkValidity(std.time.timestamp(), &c) catch {
                                 self.peer_cert_ok = false;
                             };
@@ -269,8 +275,7 @@ pub const Engine = struct {
                 }
                 // CertificateVerify: toy format for now -> first byte = alg id, rest = signature
                 if (p.typ == .certificate_verify and !self.allow_insecure) {
-                    if (!self.peer_cert_ok) {
-                        // Require that certificate parsing succeeded first
+                    if (!self.peer_cert_ok or self.leaf_spki == null) {
                         self.peer_cert_ok = false;
                     } else {
                         if (p.body.len > 1) {
@@ -281,12 +286,12 @@ pub const Engine = struct {
                                 0x40 => .ecdsa_secp256r1_sha256,
                                 0x41 => .ecdsa_secp384r1_sha384,
                                 0x50 => .rsa_pss_sha256,
-                                else => blk: { self.peer_cert_ok = false; break :blk .rsa_pss_sha256; },
+                                else => blk: {
+                                    self.peer_cert_ok = false;
+                                    break :blk .rsa_pss_sha256;
+                                },
                             };
-                            // For demo, use the previously parsed certificate from the certificate message body present in transcript.
-                            // In a real parser we'd cache the leaf cert DER when p.typ == .certificate.
-                            const cert_der_in_body = p.body; // placeholder; not correct without caching
-                            const ok = sig.verifyCertificateVerify(alg, cert_der_in_body, signature, "TLS 1.3, server CertificateVerify", &th) catch false;
+                            const ok = sig.verifyCertificateVerify(alg, self.leaf_spki.?, signature, "TLS 1.3, server CertificateVerify", &th) catch false;
                             self.peer_cert_ok = ok;
                         } else self.peer_cert_ok = false;
                     }
