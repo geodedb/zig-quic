@@ -154,6 +154,14 @@ pub fn deriveApplicationTrafficFromEcdhe(ecdhe_secret: []const u8, transcript_ha
     return .{ .client_app = c_app, .server_app = s_app };
 }
 
+/// TLS Finished helpers (minimal): finished_key = Expand(traffic_secret, "finished");
+/// verify_data = HMAC(finished_key, transcript_hash)
+pub fn deriveFinishedVerifyData(traffic_secret: [H.digest_length]u8, transcript_hash: [H.digest_length]u8) [H.digest_length]u8 {
+    var finished_key: [H.digest_length]u8 = undefined;
+    ks.expandLabel(traffic_secret, "finished", &[_]u8{}, &finished_key) catch unreachable;
+    return ks.hmacSha256(&finished_key, &transcript_hash);
+}
+
 /// Minimal, non-interoperable handshake engine stub that accumulates
 /// CRYPTO bytes and allows tests to inject ServerHello pieces to drive
 /// key schedule. Real message parsing/encoding will be added iteratively.
@@ -317,6 +325,15 @@ pub const Engine = struct {
         const th = self.transcript.finalize();
         const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th);
         return .{ .client = hs.client_hs, .server = hs.server_hs };
+    }
+
+    /// After handshakes secrets, compute application traffic secrets directly.
+    pub fn computeApplicationSecrets(self: *Engine) ?struct { client: [H.digest_length]u8, server: [H.digest_length]u8 } {
+        if (self.ecdhe_secret == null) return null;
+        if (!self.ch_sent or !self.sh_seen) return null;
+        const th = self.transcript.finalize();
+        const ap = deriveApplicationTrafficFromEcdhe(self.ecdhe_secret.?, th);
+        return .{ .client = ap.client_app, .server = ap.server_app };
     }
 
     /// Convenience alias for draining outbound CRYPTO intended for QUIC Handshake pkts.

@@ -86,6 +86,11 @@ fn hmac_sha256(key: []const u8, data: []const u8) [H.digest_length]u8 {
     return sha256(buf_outer.items);
 }
 
+/// Public HMAC helper for TLS Finished and other KATs.
+pub fn hmacSha256(key: []const u8, data: []const u8) [H.digest_length]u8 {
+    return hmac_sha256(key, data);
+}
+
 fn hkdfExtractRaw(salt: ?[]const u8, ikm: []const u8) [H.digest_length]u8 {
     var zeros: [H.digest_length]u8 = .{0} ** H.digest_length;
     const s = salt orelse zeros[0..];

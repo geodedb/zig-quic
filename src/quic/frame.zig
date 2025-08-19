@@ -36,6 +36,7 @@ pub const Frame = union(enum) {
     ping: void,
     crypto: struct { offset: u64, data: []const u8 },
     stream: struct { stream_id: u64, offset: ?u64, fin: bool, data: []const u8 },
+    ack: struct { largest: u64, ack_delay: u64 }, // minimal, no ranges
     // ... more frames as needed ...
 
     /// Encode this frame to the writer. Returns bytes written.
@@ -101,6 +102,25 @@ pub const Frame = union(enum) {
                 written += s.data.len;
                 return written;
             },
+            .ack => |a| {
+                // Minimal ACK: type 0x02, largest, ack_delay, range_count=0, first_ack_range=0
+                try w.writeByte(@intFromEnum(FrameType.ACK));
+                var written: usize = 1;
+                var tmp: [16]u8 = undefined;
+                const la = try varint.encode(a.largest, &tmp);
+                try w.writeAll(tmp[0..la]);
+                written += la;
+                const ad = try varint.encode(a.ack_delay, &tmp);
+                try w.writeAll(tmp[0..ad]);
+                written += ad;
+                const rc = try varint.encode(0, &tmp);
+                try w.writeAll(tmp[0..rc]);
+                written += rc;
+                const fr = try varint.encode(0, &tmp);
+                try w.writeAll(tmp[0..fr]);
+                written += fr;
+                return written;
+            },
         }
     }
 };
@@ -140,6 +160,20 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
         if (need > buf.len) return error.Truncated;
         const data = buf[i..need];
         return .{ .f = Frame{ .crypto = .{ .offset = off_dec.value, .data = data } }, .n = need };
+    }
+    // Minimal ACK (no ranges)
+    if (t == @intFromEnum(FrameType.ACK)) {
+        var i: usize = 1;
+        const largest = try varint.decode(buf[i..]);
+        i += largest.n;
+        const ack_delay = try varint.decode(buf[i..]);
+        i += ack_delay.n;
+        const range_count = try varint.decode(buf[i..]);
+        i += range_count.n;
+        const first_range = try varint.decode(buf[i..]);
+        i += first_range.n;
+        if (range_count.value != 0 or first_range.value != 0) return error.UnsupportedAckRanges;
+        return .{ .f = Frame{ .ack = .{ .largest = largest.value, .ack_delay = ack_delay.value } }, .n = i };
     }
     // STREAM frames 0x08..0x0f
     if ((t & 0xf8) == @intFromEnum(FrameType.STREAM)) {
