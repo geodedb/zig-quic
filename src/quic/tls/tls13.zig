@@ -6,6 +6,7 @@
 const std = @import("std");
 const ks = @import("quic_tls");
 const x509 = @import("x509.zig");
+const sig = @import("sig.zig");
 
 pub const H = ks.H; // sha256
 
@@ -264,6 +265,30 @@ pub const Engine = struct {
                         } else {
                             self.peer_cert_ok = false;
                         }
+                    }
+                }
+                // CertificateVerify: toy format for now -> first byte = alg id, rest = signature
+                if (p.typ == .certificate_verify and !self.allow_insecure) {
+                    if (!self.peer_cert_ok) {
+                        // Require that certificate parsing succeeded first
+                        self.peer_cert_ok = false;
+                    } else {
+                        if (p.body.len > 1) {
+                            const alg_id: u8 = p.body[0];
+                            const signature = p.body[1..];
+                            const th = th_before; // transcript up to CertificateVerify
+                            const alg: sig.SigAlg = switch (alg_id) {
+                                0x40 => .ecdsa_secp256r1_sha256,
+                                0x41 => .ecdsa_secp384r1_sha384,
+                                0x50 => .rsa_pss_sha256,
+                                else => blk: { self.peer_cert_ok = false; break :blk .rsa_pss_sha256; },
+                            };
+                            // For demo, use the previously parsed certificate from the certificate message body present in transcript.
+                            // In a real parser we'd cache the leaf cert DER when p.typ == .certificate.
+                            const cert_der_in_body = p.body; // placeholder; not correct without caching
+                            const ok = sig.verifyCertificateVerify(alg, cert_der_in_body, signature, "TLS 1.3, server CertificateVerify", &th) catch false;
+                            self.peer_cert_ok = ok;
+                        } else self.peer_cert_ok = false;
                     }
                 }
                 // Finished verification

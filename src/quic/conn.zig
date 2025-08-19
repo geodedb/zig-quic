@@ -83,6 +83,8 @@ pub const Connection = struct {
     recv_pn_acked: std.bit_set.IntegerBitSet(256), // window bitmap for recent PN
     sent_time: std.AutoHashMap(u64, i128), // pn -> send time (ns)
     largest_acked: u64 = 0,
+    // Buffer to return ACK ranges without heap allocs
+    ack_ranges_buf: [8]frame.AckRange = undefined,
 
     pub fn init(self: *Connection, alloc: *std.mem.Allocator, role: Role, sock_fd: posix.fd_t, peer: SockAddr) void {
         self.id = 0;
@@ -208,18 +210,43 @@ pub const Connection = struct {
         }
     }
 
-    /// Generate a basic ACK description from tracked PN window.
+    /// Generate an aggregated ACK description from tracked PN window.
     pub fn buildAck(self: *Connection) struct { largest: u64, first_range: u64, ranges: []const frame.AckRange } {
         const largest: u64 = self.recv_pn_max;
-        var first_len: u64 = 0;
-        // Count contiguous set bits descending from largest within window
         const span: u64 = 256;
         const base: u64 = if (largest + 1 >= span) largest + 1 - span else 0;
-        var i: i64 = @intCast(largest - base);
-        while (i >= 0) : (i -= 1) {
-            if (self.recv_pn_acked.isSet(@intCast(i))) first_len += 1 else break;
+        const largest_idx: usize = @intCast(largest - base);
+
+        // Count first contiguous block length L1
+        var first_len: u64 = 0;
+        var i_desc: i64 = @intCast(largest_idx);
+        while (i_desc >= 0) : (i_desc -= 1) {
+            if (self.recv_pn_acked.isSet(@intCast(i_desc))) first_len += 1 else break;
         }
         const first_range: u64 = if (first_len == 0) 0 else (first_len - 1);
-        return .{ .largest = largest, .first_range = first_range, .ranges = &[_]frame.AckRange{} };
+
+        // Build subsequent ranges limited by buffer capacity
+        var out_len: usize = 0;
+        var pos: i64 = i_desc; // currently at first unset bit just below first range
+        while (pos >= 0 and out_len < self.ack_ranges_buf.len) {
+            // count zeros (gap) between blocks
+            var zeros: u64 = 0;
+            while (pos >= 0 and !self.recv_pn_acked.isSet(@intCast(pos))) : (pos -= 1) {
+                zeros += 1;
+            }
+            if (pos < 0) break; // no more set bits
+            // count ones for next block
+            var ones: u64 = 0;
+            while (pos >= 0 and self.recv_pn_acked.isSet(@intCast(pos))) : (pos -= 1) {
+                ones += 1;
+            }
+            // encode as (gap = zeros-1, len = ones-1) per RFC 9000
+            const gap_val: u64 = if (zeros == 0) 0 else (zeros - 1);
+            const len_val: u64 = if (ones == 0) 0 else (ones - 1);
+            self.ack_ranges_buf[out_len] = .{ .gap = gap_val, .len = len_val };
+            out_len += 1;
+        }
+
+        return .{ .largest = largest, .first_range = first_range, .ranges = self.ack_ranges_buf[0..out_len] };
     }
 };
