@@ -1,20 +1,34 @@
 # GAP Analysis — RFCs 9000/9001/9002 (+ options)
 
-Date: 2025-08-19
+Date: 2025-08-20
 
-This document compares the current codebase against the relevant QUIC RFCs in `specs/` and summarizes what is implemented vs. still required for a production baseline.
+## Quick Status
 
-## Snapshot: What Works Today (high level)
+- Completed (summary):
 
-- QUIC packets: Initial, Handshake, and Short (1-RTT) encode/decode with AES-128-GCM and AES-based header protection (server and client directions), including HP sample, PN mask/unmask (RFC 9001 §5.4).
-- TLS 1.3 helpers: transcript hash, HKDF label functions, Initial/Handshake/App secret derivation (v1/v2 key schedule), Finished compute/verify.
-- X25519 ephemeral and deterministic test paths; minimal TLS engine that tracks CH/SH, transcript, and Finished; non-interoperable placeholder CH/SH envelopes for tests.
-- X.509 (minimal): DER parsing of validity, subject CN, SAN dNSName; name match helper; validity window checks; insecure mode gating.
-- CertificateVerify: RSA-PSS-SHA256 verification implemented in-repo (MGF1-SHA256, saltLen=32). ECDSA currently unsupported.
-- Frames: PADDING, PING, CRYPTO, STREAM (LEN, optional OFF, FIN), ACK with ranges (encode/decode).
-- Endpoint: single UDP socket, basic event loop backends (epoll/kqueue/IOCP stubs), draining readable, simple timer wheel with tests.
-- Initial → Handshake key transition for server; reply Handshake packet construction.
-- Tools/fuzz/bench: varint CLI passes acceptance; fuzzers and bench build.
+  - QUIC packet paths: Initial, Handshake, Short (1-RTT) encode/decode; AES-128-GCM AEAD and AES HP; PN unmask; PN expansion wired per space; per-space ACK builders.
+  - TLS helpers: transcript hashing, HKDF label, Initial/Handshake/App secret derivation (v1/v2), Finished compute/verify; minimal TLS engine for tests.
+  - X.509 (minimal): DER parsing for validity, SAN/CN match; insecure-gated verification.
+  - Frames: PADDING, PING, CRYPTO, STREAM (LEN, OFF?, FIN), ACK with ranges (encode/decode).
+  - Endpoint: UDP socket, epoll/kqueue/IOCP stubs, readable draining; timers with per-space PTO kinds; deterministic helpers flushTimers()/forceExpireAllTimers().
+  - Recovery (RFC 9002 scaffolding): RTT estimator; PTO compute with exponential backoff helper; packet-threshold + time-threshold loss marking; NewReno cwnd/bytes_in_flight; ack-eliciting classification; PTO probe generation in Initial/Handshake; per-space PTO counters and cancel-on-ACK wiring.
+  - Tooling: varint CLI; fuzzers/bench build.
+
+- Open Gaps (undone items only):
+  - Version Negotiation handling (decode/process) and downgrade protection; RFC 9368 optional mode.
+  - Retry + anti-amplification; stateless token encode/verify; Stateless Reset.
+  - Connection lifecycle: accept/connect API, connection manager, packet coalescing; closing/draining; CONNECTION_CLOSE/HANDSHAKE_DONE.
+  - Flow control: connection/stream windows, MAX_DATA/MAX_STREAM_DATA/BLOCKED enforcement.
+  - Stream subsystem: IDs, bidi/uni, state machine, reassembly/FIN handling beyond codec.
+  - Path validation/migration/PMTUD; ECN + Spin Bit (optional); GREASE (optional); DATAGRAM API (RFC 9221 optional).
+  - TLS 1.3 interop handshake (CH/SH encode/parse, extensions: ALPN, SNI, SIG_ALGs, key_share, groups); ECDSA P-256/384 verify; certificate chain/path building and validation (basic constraints, key usage, SAN wildcards, name constraints, trust store integration).
+  - CHACHA20-POLY1305 integration (AEAD + HP); key update; 0-RTT.
+  - Recovery: full retransmission queue/scheduler; per-space separation in CC; pacing token-bucket; ECN reactions.
+  - API: streams/datagrams read/write; endpoint/connection public API completion.
+  - CLI: quic-client/quic-server with echo/throughput; insecure toggle for testing.
+  - CI: matrix build/test, doc gate (doccheck + GAP timestamp), egress controls and caches; cross-compile artifacts.
+  - Security: zeroization of secrets, strict parsing audit; anti-amplification & rate limits for tokens/resets pending.
+  - Performance: zero-alloc hot paths post-warmup; benches validating loopback P50 <= 50µs.
 
 ---
 
@@ -113,32 +127,48 @@ Not yet implemented / incomplete:
 
 ## Actionable Next Slices
 
-1. Loss recovery skeleton (RFC 9002)
+### Next Steps (plan)
 
-   - Status: Phase 1 scaffolding in place (RTT estimator + PTO helper, endpoint PTO timers, basic packet-threshold loss, NewReno cwnd/bytes-in-flight, ack-eliciting classification). Deterministic test helper added for timers.
-   - Next (Phase 2):
-     - Per-space RTT/PTO usage (Initial/Handshake/App) and correct arming/cancel semantics per space.
-     - Time-threshold loss detection and marking; integrate with packet-threshold decisions.
-     - PTO probe packets and exponential backoff; cap as per RFC 9002 guidance; reset on ACK.
-     - Retransmission queue and scheduler hooks; accurate bytes_acked/lost accounting by actual packet size.
-     - Pacing stub (token-bucket) and ECN plumbing scaffolding.
-     - Strengthen tests: probe/backoff KATs; property tests for PN loss marking; fuzz loss detector inputs.
+1. Loss Recovery Phase 2 completion
 
-1. TLS/X.509 hardening (RFC 9001)
+   - Ensure per-space PTO arming/cancel is exercised on all ack-eliciting sends and any ACK in that space; finalize probe generation and backoff reset semantics; add KATs for PTO backoff/probes; stabilize timer tests.
+   - Introduce retransmission queue and accurate bytes_acked/lost accounting using tracked sent sizes; mark and schedule retransmits on time/packet-threshold loss.
+   - Add pacing scaffold (token-bucket) hooks; stub ECN accounting.
 
-   - Implement ECDSA P-256 verify; add positive/negative KATs.
-   - Begin real TLS handshake message encode/parse sufficient to carry TP extension and CRYPTO streams interoperably.
-   - Expand X.509: basic constraints and SPKI signature verify of leaf -> self/issuer.
+2. Transport features
 
-1. Transport features
-
-   - Retry/token and anti-amplification; Stateless Reset; CONNECTION_CLOSE/HANDSHAKE_DONE.
+   - Version Negotiation decode/handling + downgrade protection (optionally RFC 9368); Retry + token encode/verify + anti-amplification limits; Stateless Reset; CONNECTION_CLOSE/HANDSHAKE_DONE.
    - Stream manager + flow control (MAX_DATA/MAX_STREAM_DATA/BLOCKED) with unit tests.
 
-1. Tooling/CI
+3. TLS/X.509 hardening and interop
 
-   - Add `cmd/quic-client.zig`/`cmd/quic-server.zig` minimal echo interop (insecure mode).
-   - Set up `.github/workflows/ci.yml` (linux/windows/macos), run `doccheck`, enforce GAP timestamp.
+   - Implement ECDSA P-256 verify and KATs; begin interoperable TLS 1.3 handshake encode/parse sufficient for CH/SH with TP extension and CRYPTO streams.
+   - Expand X.509: basic constraints, key usage checks, simple path building; plumb allow_insecure for tests.
+   - Add CHACHA20-POLY1305 option and key schedule plumbing.
+
+4. API and CLI
+
+   - Flesh out public API for endpoint/connection/streams/datagrams; implement cmd/quic-client and cmd/quic-server minimal echo/throughput (insecure mode allowed for tests).
+
+5. CI and tooling
+
+   - Add GitHub Actions matrix (ubuntu-latest, windows-latest, macos-14); run zig build/test, fuzz/bench build; enforce doccheck and GAP timestamp bump; no Internet egress for unit tests; cache Zig; cross-compile artifacts for x86_64/aarch64/riscv64.
+
+6. Interop (manual/optional initially)
+
+   - Status: Scaffolded (manual harness under examples/interop with Go client/server, Zig CLI wrappers, cert generator, run script). Not wired to CI and handshake likely not yet interoperable.
+   - How to run (developer-only):
+     - Generate certs: `bash ./examples/interop/certs/generate.sh`
+     - Build CLIs/tools: `zig build cli tools`
+     - Prime Go deps (first time): `cd examples/interop && go mod tidy`
+     - Run helper: `bash ./examples/interop/run.sh`
+   - Goal: validate both directions once TLS/streams are wired:
+     - Start this Zig QUIC server (insecure, fixed cert/key) listening on 127.0.0.1:4433 with ALPN=h3.
+     - Use quic-go (Go) as client to connect, perform handshake, send a STREAM payload, expect echo.
+     - Reverse: start quic-go server, connect with this Zig client and validate handshake + data.
+
+7. Performance/security polish
+   - Zeroize secret material; audit constant-time code paths; reduce heap allocs on hot paths; add microbenchmarks validating latency targets.
 
 ---
 
