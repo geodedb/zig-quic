@@ -5,7 +5,7 @@ const api = @import("api.zig");
 const conn_mod = @import("quic_conn");
 const packet = @import("quic_packet");
 const frame = @import("quic_frame");
-const ks = @import("tls/key_schedule.zig");
+const ks = @import("quic_tls");
 const crypto = @import("quic_crypto");
 const varint = @import("quic_varint");
 
@@ -58,8 +58,14 @@ pub const Endpoint = struct {
             _ = self.timers.orderedRemove(0);
             switch (t.kind) {
                 .Generic => {},
-                .PtoInitial => if (t.conn) |c| c.setPtoExpiredInitial(),
-                .PtoHandshake => if (t.conn) |c| c.setPtoExpiredHandshake(),
+                .PtoInitial => if (t.conn) |c| {
+                    c.setPtoExpiredInitial();
+                    self.sendPtoProbe(c, .PtoInitial) catch {};
+                },
+                .PtoHandshake => if (t.conn) |c| {
+                    c.setPtoExpiredHandshake();
+                    self.sendPtoProbe(c, .PtoHandshake) catch {};
+                },
                 .PtoApp => if (t.conn) |c| c.setPtoExpiredApp(),
             }
         }
@@ -305,6 +311,12 @@ pub const Endpoint = struct {
                         .ack => |a| {
                             const empty: [0]frame.AckRange = .{};
                             conn.onAckReceived(a.largest, a.first_range, empty[0..]);
+                            // Reset app PTO backoff and cancel timer on ACK in app space
+                            conn.pto_app_count = 0;
+                            if (conn.pto_app_active) {
+                                _ = self.cancelTimer(conn.pto_app_id);
+                                conn.pto_app_active = false;
+                            }
                         },
                         else => {},
                     }
@@ -367,6 +379,8 @@ pub const Endpoint = struct {
                 break :blk self.conns.getPtr(key).?;
             };
             const conn = c_ptr.*;
+            // Remember version for PTO probes and transitions
+            conn.initial_version = version;
             // If we've switched away from Initial, ignore any late Initials
             if (conn.initial_keys_dropped) return;
             // Remember peer's Initial CIDs (for Handshake header construction)
@@ -476,6 +490,8 @@ pub const Endpoint = struct {
                     if (out) |pkt_bytes| {
                         defer self.allocator.free(pkt_bytes);
                         _ = self.sendTo(peer, pkt_bytes) catch {};
+                        // ACK-only Initial is not ack-eliciting
+                        conn.onPacketSent(conn.pn_initial_tx, pkt_bytes.len, false);
                         conn.pn_initial_tx +%= 1;
                     }
                 }
@@ -510,6 +526,8 @@ pub const Endpoint = struct {
                             _ = self.sendTo(peer, bytes_out) catch {};
                             // Handshake CRYPTO is ack-eliciting
                             conn.onPacketSent(conn.pn_handshake_tx, bytes_out.len, true);
+                            // Arm Handshake PTO when sending ack-eliciting Handshake
+                            conn.computeAndMaybeArmPtoHandshake(self);
                             conn.pn_handshake_tx +%= 1;
                             // Once we send Handshake, drop Initial keys to avoid processing further Initials.
                             conn.initial_keys_dropped = true;
@@ -585,7 +603,7 @@ pub const Endpoint = struct {
                 const pn_full: u64 = conn.expandPnHandshake(pn_val_be, pn_len);
                 conn.trackRecvPnHandshake(pn_full);
 
-                // Feed CRYPTO frames
+                // Feed CRYPTO frames and handle ACK frames for PTO reset
                 var off: usize = 0;
                 var saw_any: bool = false;
                 while (off < pt.len) {
@@ -595,6 +613,14 @@ pub const Endpoint = struct {
                         .crypto => |cr| {
                             conn.pushCrypto(cr.data) catch {};
                             saw_any = true;
+                        },
+                        .ack => {
+                            // Reset handshake PTO backoff and cancel active timer on ACK in this space
+                            conn.pto_handshake_count = 0;
+                            if (conn.pto_handshake_active) {
+                                _ = self.cancelTimer(conn.pto_handshake_id);
+                                conn.pto_handshake_active = false;
+                            }
                         },
                         .padding => {},
                         else => {},
@@ -613,6 +639,7 @@ pub const Endpoint = struct {
                         if (pkt) |bytes_out| {
                             defer self.allocator.free(bytes_out);
                             _ = self.sendTo(peer, bytes_out) catch {};
+                            // ACK-only Handshake is not ack-eliciting; no PTO arm
                             conn.pn_handshake_tx +%= 1;
                         }
                     }
@@ -646,16 +673,66 @@ pub const Endpoint = struct {
             if (self.timers.items[i].deadline_ms <= now_ms) {
                 const t = self.timers.items[i];
                 _ = self.timers.orderedRemove(i);
-                // Fire PTO flags if applicable
+                // Fire PTO flags if applicable and generate probes
                 switch (t.kind) {
                     .Generic => {},
-                    .PtoInitial => if (t.conn) |c| c.setPtoExpiredInitial(),
-                    .PtoHandshake => if (t.conn) |c| c.setPtoExpiredHandshake(),
+                    .PtoInitial => if (t.conn) |c| {
+                        c.setPtoExpiredInitial();
+                        // Generate a PING probe in Initial space
+                        self.sendPtoProbe(c, .PtoInitial) catch {};
+                    },
+                    .PtoHandshake => if (t.conn) |c| {
+                        c.setPtoExpiredHandshake();
+                        self.sendPtoProbe(c, .PtoHandshake) catch {};
+                    },
                     .PtoApp => if (t.conn) |c| c.setPtoExpiredApp(),
                 }
             } else {
                 i += 1;
             }
+        }
+    }
+
+    fn sendPtoProbe(self: *Endpoint, conn: *conn_mod.Connection, kind: TimerKind) !void {
+        switch (kind) {
+            .PtoInitial => {
+                if (conn.initial_keys_dropped) return; // no more Initial
+                const dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
+                const scid = conn.our_scid.bytes[0..conn.our_scid.len];
+                if (dcid.len == 0) return;
+                // Derive server Initial TX keys from peer Initial DCID
+                const v2 = false; // TODO: map version
+                const initial = ks.deriveInitialSecret(v2, conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len]);
+                const pair = ks.deriveClientServerInitial(initial);
+                const txk = if (v2) ks.deriveKeyIvHpV2(pair.server) else ks.deriveKeyIvHp(pair.server);
+                const tx_keys: packet.InitialKeys = .{ .key = txk.key, .iv = txk.iv, .hp = txk.hp };
+                // Build a PING probe (ack-eliciting)
+                var frames = std.ArrayList(u8).init(self.allocator.*);
+                defer frames.deinit();
+                frames.append(@intFromEnum(frame.FrameType.PING)) catch {};
+                const pkt = packet.encodeInitialProtected(self.allocator.*, if (conn.initial_version == 0) 0x00000001 else conn.initial_version, dcid, scid, &[_]u8{}, conn.pn_initial_tx, 4, frames.items, tx_keys) catch return;
+                defer self.allocator.free(pkt);
+                _ = self.sendTo(conn.peer, pkt) catch {};
+                conn.onPacketSent(conn.pn_initial_tx, pkt.len, true);
+                conn.pn_initial_tx +%= 1;
+                // Do not re-arm here; processExpiredTimers will handle re-arming. This prevents test helper forceExpireAllTimers from looping.
+            },
+            .PtoHandshake => {
+                if (conn.hs_tx_keys) |tx_keys| {
+                    const dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
+                    const scid = conn.our_scid.bytes[0..conn.our_scid.len];
+                    var frames = std.ArrayList(u8).init(self.allocator.*);
+                    defer frames.deinit();
+                    frames.append(@intFromEnum(frame.FrameType.PING)) catch {};
+                    const pkt = packet.encodeHandshakeProtected(self.allocator.*, if (conn.initial_version == 0) 0x00000001 else conn.initial_version, dcid, scid, conn.pn_handshake_tx, 4, frames.items, tx_keys) catch return;
+                    defer self.allocator.free(pkt);
+                    _ = self.sendTo(conn.peer, pkt) catch {};
+                    conn.onPacketSent(conn.pn_handshake_tx, pkt.len, true);
+                    conn.pn_handshake_tx +%= 1;
+                    // No re-arm here; normal timer loop handles it.
+                }
+            },
+            else => return,
         }
     }
 };

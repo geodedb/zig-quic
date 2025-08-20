@@ -1,7 +1,7 @@
 //! Public QUIC API skeleton. Zig 0.13.0
 //! MIT License
 const std = @import("std");
-const ks = @import("tls/key_schedule.zig");
+const ks = @import("quic_tls");
 const endpoint_mod = @import("endpoint.zig");
 const lb = @import("loop_backend.zig");
 // Use named import to share the same module instance across build graph

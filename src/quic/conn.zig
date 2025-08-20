@@ -6,6 +6,7 @@ const tls13 = @import("quic_tls13");
 const packet = @import("quic_packet");
 const frame = @import("quic_frame");
 const recovery = @import("recovery.zig");
+const ks = @import("quic_tls");
 
 pub const Role = enum { Client, Server };
 
@@ -144,6 +145,7 @@ pub const Connection = struct {
     peer: SockAddr,
     tls_inbox: std.ArrayList(u8),
     tls: tls13.Engine,
+    allocator: *std.mem.Allocator,
     // Derived handshake traffic secrets (once both hellos present)
     hs_client: ?[tls13.H.digest_length]u8 = null,
     hs_server: ?[tls13.H.digest_length]u8 = null,
@@ -162,6 +164,10 @@ pub const Connection = struct {
     peer_initial_scid: Cid = .{},
     // Our chosen SCID to advertise in server flight
     our_scid: Cid = .{},
+    // Version context
+    version: u32 = 0,
+    version_v2: bool = false,
+    initial_version: u32 = 0,
     // Switch flag to drop Initial keys/processing once Handshake packets are seen
     initial_keys_dropped: bool = false,
     // Packet number spaces (recv tracking)
@@ -194,6 +200,45 @@ pub const Connection = struct {
     // Track sent sizes for accurate bytes_acked/lost accounting
     sent_sizes: std.AutoHashMap(u64, u16),
 
+    // Expand truncated PN for Initial space
+    pub fn expandPnInitial(self: *const Connection, trunc_val: u64, pn_len: u3) u64 {
+        const expected: u64 = if (self.pn_initial.have_any) self.pn_initial.max + 1 else 0;
+        return expandTruncatedPn(trunc_val, pn_len, expected);
+    }
+    // Expand truncated PN for Handshake space
+    pub fn expandPnHandshake(self: *const Connection, trunc_val: u64, pn_len: u3) u64 {
+        const expected: u64 = if (self.pn_handshake.have_any) self.pn_handshake.max + 1 else 0;
+        return expandTruncatedPn(trunc_val, pn_len, expected);
+    }
+    // Expand truncated PN for App space
+    pub fn expandPnApp(self: *const Connection, trunc_val: u64, pn_len: u3) u64 {
+        const expected: u64 = if (self.pn_app.have_any) self.pn_app.max + 1 else 0;
+        return expandTruncatedPn(trunc_val, pn_len, expected);
+    }
+
+    pub fn trackRecvPnInitial(self: *Connection, pn_full: u64) void {
+        self.pn_initial.track(pn_full);
+    }
+    pub fn trackRecvPnHandshake(self: *Connection, pn_full: u64) void {
+        self.pn_handshake.track(pn_full);
+    }
+    pub fn trackRecvPnApp(self: *Connection, pn_full: u64) void {
+        self.pn_app.track(pn_full);
+    }
+
+    pub fn buildAckInitial(self: *Connection) AckDesc {
+        const desc = self.pn_initial.buildAckRanges(self.ack_ranges_buf[0..]);
+        return .{ .largest = self.pn_initial.max, .first_range = desc.first_range, .ranges = self.ack_ranges_buf[0..desc.ranges_len] };
+    }
+    pub fn buildAckHandshake(self: *Connection) AckDesc {
+        const desc = self.pn_handshake.buildAckRanges(self.ack_ranges_buf[0..]);
+        return .{ .largest = self.pn_handshake.max, .first_range = desc.first_range, .ranges = self.ack_ranges_buf[0..desc.ranges_len] };
+    }
+    pub fn buildAckApp(self: *Connection) AckDesc {
+        const desc = self.pn_app.buildAckRanges(self.ack_ranges_buf[0..]);
+        return .{ .largest = self.pn_app.max, .first_range = desc.first_range, .ranges = self.ack_ranges_buf[0..desc.ranges_len] };
+    }
+
     pub fn init(self: *Connection, alloc: *std.mem.Allocator, role: Role, sock_fd: posix.fd_t, peer: SockAddr) void {
         self.id = 0;
         self.role = role;
@@ -201,6 +246,7 @@ pub const Connection = struct {
         self.peer = peer;
         self.tls_inbox = std.ArrayList(u8).init(alloc.*);
         self.tls = tls13.Engine.init(alloc.*, if (role == .Client) .Client else .Server);
+        self.allocator = alloc;
         self.hs_client = null;
         self.hs_server = null;
         self.hs_rx_keys = null;
@@ -220,6 +266,8 @@ pub const Connection = struct {
         self.sent_time = std.AutoHashMap(u64, i128).init(alloc.*);
         self.sent_sizes = std.AutoHashMap(u64, u16).init(alloc.*);
         self.largest_acked = 0;
+        self.version = 0;
+        self.version_v2 = false;
         // Generate a simple random SCID (8 bytes) for server role.
         if (role == .Server) {
             self.our_scid.len = 8;
@@ -305,6 +353,66 @@ pub const Connection = struct {
     pub fn setPtoExpiredApp(self: *Connection) void {
         self.pto_app_active = false;
         self.pto_app_count +%= 1;
+    }
+
+    /// Per-space ACK handlers used to update RTT and reset PTO backoff
+    pub fn onAckReceivedInitial(self: *Connection, largest: u64, ep: anytype) void {
+        if (self.sent_time.fetchRemove(largest)) |kv| {
+            const now_ns: i128 = std.time.nanoTimestamp();
+            const ts_sent_ns = kv.value;
+            const rtt_ns: u64 = @intCast(if (now_ns > ts_sent_ns) now_ns - ts_sent_ns else 0);
+            self.rtt_initial.onAck(rtt_ns, 0);
+            self.pto_initial_count = 0;
+            if (self.pto_initial_active) {
+                _ = ep.cancelTimer(self.pto_initial_id);
+                self.pto_initial_active = false;
+            }
+        }
+    }
+    pub fn onAckReceivedHandshake(self: *Connection, largest: u64, ep: anytype) void {
+        if (self.sent_time.fetchRemove(largest)) |kv| {
+            const now_ns: i128 = std.time.nanoTimestamp();
+            const ts_sent_ns = kv.value;
+            const rtt_ns: u64 = @intCast(if (now_ns > ts_sent_ns) now_ns - ts_sent_ns else 0);
+            self.rtt_handshake.onAck(rtt_ns, 0);
+            self.pto_handshake_count = 0;
+            if (self.pto_handshake_active) {
+                _ = ep.cancelTimer(self.pto_handshake_id);
+                self.pto_handshake_active = false;
+            }
+        }
+    }
+
+    pub fn resetPtoBackoffInitial(self: *Connection) void {
+        self.pto_initial_count = 0;
+    }
+    pub fn resetPtoBackoffHandshake(self: *Connection) void {
+        self.pto_handshake_count = 0;
+    }
+    pub fn resetPtoBackoffApp(self: *Connection) void {
+        self.pto_app_count = 0;
+    }
+
+    pub fn cancelPtoInitial(self: *Connection, ep: anytype) void {
+        if (self.pto_initial_active) {
+            if (self.pto_initial_id != 0) _ = ep.cancelTimer(self.pto_initial_id);
+            self.pto_initial_active = false;
+        }
+        self.resetPtoBackoffInitial();
+    }
+    pub fn cancelPtoHandshake(self: *Connection, ep: anytype) void {
+        if (self.pto_handshake_active) {
+            if (self.pto_handshake_id != 0) _ = ep.cancelTimer(self.pto_handshake_id);
+            self.pto_handshake_active = false;
+        }
+        self.resetPtoBackoffHandshake();
+    }
+    pub fn cancelPtoApp(self: *Connection, ep: anytype) void {
+        if (self.pto_app_active) {
+            if (self.pto_app_id != 0) _ = ep.cancelTimer(self.pto_app_id);
+            self.pto_app_active = false;
+        }
+        self.resetPtoBackoffApp();
     }
 
     /// Called when we receive an ACK frame
@@ -409,48 +517,82 @@ pub const Connection = struct {
         }
     }
 
-    /// Expand a truncated PN (given pn_len bytes) against expected next for the given space
-    pub fn expandPnInitial(self: *Connection, trunc_pn: u64, pn_len: u3) u64 {
-        const expected: u64 = if (self.pn_initial.have_any) self.pn_initial.max + 1 else 0;
-        return expandTruncatedPn(trunc_pn, pn_len, expected);
-    }
-    pub fn expandPnHandshake(self: *Connection, trunc_pn: u64, pn_len: u3) u64 {
-        const expected: u64 = if (self.pn_handshake.have_any) self.pn_handshake.max + 1 else 0;
-        return expandTruncatedPn(trunc_pn, pn_len, expected);
-    }
-    pub fn expandPnApp(self: *Connection, trunc_pn: u64, pn_len: u3) u64 {
-        const expected: u64 = if (self.pn_app.have_any) self.pn_app.max + 1 else 0;
-        return expandTruncatedPn(trunc_pn, pn_len, expected);
+    /// Send a minimal PTO probe for the given space (PING frame)
+    pub fn sendPtoProbeInitial(self: *Connection) void {
+        if (self.initial_keys_dropped) return;
+        // Derive server initial TX keys on demand
+        const initial = ks.deriveInitialSecret(self.version_v2, self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len]);
+        const pair = ks.deriveClientServerInitial(initial);
+        const txk = if (self.version_v2) ks.deriveKeyIvHpV2(pair.server) else ks.deriveKeyIvHp(pair.server);
+        var frames = std.ArrayList(u8).init(self.allocator.*);
+        defer frames.deinit();
+        const w = frames.writer();
+        _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
+        const token_empty: [0]u8 = .{};
+        const out = packet.encodeInitialProtected(
+            self.allocator.*,
+            self.version,
+            // DCID = client's Initial SCID; SCID = our chosen SCID
+            self.peer_initial_scid.bytes[0..self.peer_initial_scid.len],
+            self.our_scid.bytes[0..self.our_scid.len],
+            token_empty[0..],
+            self.pn_initial_tx,
+            2,
+            frames.items,
+            .{ .key = txk.key, .iv = txk.iv, .hp = txk.hp },
+        ) catch null;
+        if (out) |bytes_out| {
+            defer self.allocator.free(bytes_out);
+            _ = self.send(bytes_out) catch {};
+            self.onPacketSent(self.pn_initial_tx, bytes_out.len, true);
+            self.pn_initial_tx +%= 1;
+        }
     }
 
-    /// Track received packet numbers per space.
-    pub fn trackRecvPnInitial(self: *Connection, pn: u64) void {
-        self.pn_initial.track(pn);
-    }
-    pub fn trackRecvPnHandshake(self: *Connection, pn: u64) void {
-        self.pn_handshake.track(pn);
-    }
-    pub fn trackRecvPnApp(self: *Connection, pn: u64) void {
-        self.pn_app.track(pn);
+    pub fn sendPtoProbeHandshake(self: *Connection) void {
+        const tx = self.hs_tx_keys orelse return;
+        var frames = std.ArrayList(u8).init(self.allocator.*);
+        defer frames.deinit();
+        const w = frames.writer();
+        _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
+        const out = packet.encodeHandshakeProtected(
+            self.allocator.*,
+            self.version,
+            // DCID = client's Initial SCID; SCID = our chosen SCID
+            self.peer_initial_scid.bytes[0..self.peer_initial_scid.len],
+            self.our_scid.bytes[0..self.our_scid.len],
+            self.pn_handshake_tx,
+            2,
+            frames.items,
+            tx,
+        ) catch null;
+        if (out) |bytes_out| {
+            defer self.allocator.free(bytes_out);
+            _ = self.send(bytes_out) catch {};
+            self.onPacketSent(self.pn_handshake_tx, bytes_out.len, true);
+            self.pn_handshake_tx +%= 1;
+        }
     }
 
-    fn buildAckFrom(self: *Connection, win: *const PnWindow) AckDesc {
-        if (!win.have_any) return .{ .largest = 0, .first_range = 0, .ranges = self.ack_ranges_buf[0..0] };
-        const largest: u64 = win.max;
-        const res = win.buildAckRanges(&self.ack_ranges_buf);
-        return .{ .largest = largest, .first_range = res.first_range, .ranges = self.ack_ranges_buf[0..res.ranges_len] };
-    }
-
-    /// Generate an aggregated ACK description from tracked PN window (App space).
-    pub fn buildAckApp(self: *Connection) AckDesc {
-        return self.buildAckFrom(&self.pn_app);
-    }
-    /// Generate ACK description for Initial space.
-    pub fn buildAckInitial(self: *Connection) AckDesc {
-        return self.buildAckFrom(&self.pn_initial);
-    }
-    /// Generate ACK description for Handshake space.
-    pub fn buildAckHandshake(self: *Connection) AckDesc {
-        return self.buildAckFrom(&self.pn_handshake);
+    pub fn sendPtoProbeApp(self: *Connection) void {
+        const tx = self.app_tx_keys orelse return;
+        var frames = std.ArrayList(u8).init(self.allocator.*);
+        defer frames.deinit();
+        const w = frames.writer();
+        _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
+        const out = packet.encodeShortProtected(
+            self.allocator.*,
+            self.our_scid.bytes[0..self.our_scid.len], // DCID per simplified mapping
+            self.pn_app_tx,
+            2,
+            frames.items,
+            .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
+        ) catch null;
+        if (out) |bytes_out| {
+            defer self.allocator.free(bytes_out);
+            _ = self.send(bytes_out) catch {};
+            self.onPacketSent(self.pn_app_tx, bytes_out.len, true);
+            self.pn_app_tx +%= 1;
+        }
     }
 };
