@@ -184,8 +184,15 @@ pub const Connection = struct {
     pto_initial_id: u64 = 0,
     pto_handshake_id: u64 = 0,
     pto_app_id: u64 = 0,
+    // PTO backoff counters per space and timer granularity
+    pto_initial_count: u32 = 0,
+    pto_handshake_count: u32 = 0,
+    pto_app_count: u32 = 0,
+    timer_granularity_ns: u64 = std.time.ns_per_ms,
     // Buffer to return ACK ranges without heap allocs
     ack_ranges_buf: [8]frame.AckRange = undefined,
+    // Track sent sizes for accurate bytes_acked/lost accounting
+    sent_sizes: std.AutoHashMap(u64, u16),
 
     pub fn init(self: *Connection, alloc: *std.mem.Allocator, role: Role, sock_fd: posix.fd_t, peer: SockAddr) void {
         self.id = 0;
@@ -211,6 +218,7 @@ pub const Connection = struct {
         self.pn_handshake = .{};
         self.pn_app = .{};
         self.sent_time = std.AutoHashMap(u64, i128).init(alloc.*);
+        self.sent_sizes = std.AutoHashMap(u64, u16).init(alloc.*);
         self.largest_acked = 0;
         // Generate a simple random SCID (8 bytes) for server role.
         if (role == .Server) {
@@ -223,6 +231,7 @@ pub const Connection = struct {
         self.tls_inbox.deinit();
         self.tls.deinit();
         self.sent_time.deinit();
+        self.sent_sizes.deinit();
     }
 
     /// Send a datagram to the connection's peer.
@@ -281,17 +290,21 @@ pub const Connection = struct {
     /// Called when we send a packet (pn space 1-RTT for now)
     pub fn onPacketSent(self: *Connection, pn: u64, bytes: usize, ack_eliciting: bool) void {
         _ = self.sent_time.put(pn, std.time.nanoTimestamp()) catch {};
+        _ = self.sent_sizes.put(pn, @intCast(@min(bytes, @as(usize, std.math.maxInt(u16))))) catch {};
         self.cc.onPacketSent(bytes, ack_eliciting);
     }
 
     pub fn setPtoExpiredInitial(self: *Connection) void {
         self.pto_initial_active = false;
+        self.pto_initial_count +%= 1;
     }
     pub fn setPtoExpiredHandshake(self: *Connection) void {
         self.pto_handshake_active = false;
+        self.pto_handshake_count +%= 1;
     }
     pub fn setPtoExpiredApp(self: *Connection) void {
         self.pto_app_active = false;
+        self.pto_app_count +%= 1;
     }
 
     /// Called when we receive an ACK frame
@@ -305,7 +318,10 @@ pub const Connection = struct {
             const ts_sent_ns = kv.value;
             const rtt_ns: u64 = @intCast(if (now_ns > ts_sent_ns) now_ns - ts_sent_ns else 0);
             self.rtt_app.onAck(rtt_ns, 0);
-            bytes_acked_total += 1200; // assume datagram size for cwnd math
+            // account bytes for this pn if tracked
+            if (self.sent_sizes.fetchRemove(largest)) |kv2| bytes_acked_total += kv2.value else bytes_acked_total += 1200;
+            // any acked data resets app PTO backoff
+            self.pto_app_count = 0;
         }
         // Naive: remove any pns <= largest (basic packet-threshold loss detection)
         var it = self.sent_time.iterator();
@@ -315,12 +331,36 @@ pub const Connection = struct {
             if (pn <= largest) {
                 if (ld.isPacketThresholdLost(largest, pn)) {
                     // consider lost
-                    self.cc.onLoss(1200);
+                    const lost_bytes: usize = blk: {
+                        if (self.sent_sizes.fetchRemove(pn)) |kv2| break :blk kv2.value else break :blk 1200;
+                    };
+                    self.cc.onLoss(lost_bytes);
                     _ = self.sent_time.remove(pn);
                 } else {
                     // acked by range collapse assumption
                     _ = self.sent_time.remove(pn);
-                    bytes_acked_total += 1200;
+                    const ackb: usize = blk: {
+                        if (self.sent_sizes.fetchRemove(pn)) |kv2| break :blk kv2.value else break :blk 1200;
+                    };
+                    bytes_acked_total += ackb;
+                }
+            }
+        }
+        // Time-threshold loss for remaining outstanding
+        const thr_ns: u64 = recovery.LossDetector.timeThresholdNs(self.rtt_app.smoothed_rtt_ns, self.rtt_app.latest_rtt_ns);
+        const now_ns2: i128 = std.time.nanoTimestamp();
+        var it2 = self.sent_time.iterator();
+        while (it2.next()) |e| {
+            const pn2 = e.key_ptr.*;
+            const ts_sent_ns2: i128 = e.value_ptr.*;
+            if (now_ns2 > ts_sent_ns2) {
+                const age_ns: u64 = @intCast(now_ns2 - ts_sent_ns2);
+                if (age_ns >= thr_ns) {
+                    const lost_b: usize = blk: {
+                        if (self.sent_sizes.fetchRemove(pn2)) |kv3| break :blk kv3.value else break :blk 1200;
+                    };
+                    self.cc.onLoss(lost_b);
+                    _ = self.sent_time.remove(pn2);
                 }
             }
         }
@@ -330,8 +370,8 @@ pub const Connection = struct {
     }
 
     pub fn computeAndMaybeArmPto(self: *Connection, ep: anytype) void {
-        // Arm App PTO based on app RTT for now.
-        const pto_ns = self.rtt_app.computePtoNs();
+        // Arm App PTO based on app RTT with exponential backoff.
+        const pto_ns = self.rtt_app.computePtoNsWithBackoff(self.pto_app_count, self.timer_granularity_ns);
         if (pto_ns == 0) return;
         const ms_u64: u64 = pto_ns / std.time.ns_per_ms;
         const clamped_ms: u64 = if (ms_u64 == 0) 1 else ms_u64;
@@ -342,6 +382,30 @@ pub const Connection = struct {
         if (!self.pto_app_active) {
             self.pto_app_active = true;
             self.pto_app_id = ep.scheduleConnPto(self, .PtoApp, delay_ms) catch 0;
+        }
+    }
+
+    pub fn computeAndMaybeArmPtoInitial(self: *Connection, ep: anytype) void {
+        const pto_ns = self.rtt_initial.computePtoNsWithBackoff(self.pto_initial_count, self.timer_granularity_ns);
+        if (pto_ns == 0) return;
+        const ms = @max(@as(u64, 1), pto_ns / std.time.ns_per_ms);
+        var delay_ms: u32 = @intCast(@min(ms, @as(u64, std.math.maxInt(u32))));
+        if (delay_ms > 100) delay_ms = 100;
+        if (!self.pto_initial_active) {
+            self.pto_initial_active = true;
+            self.pto_initial_id = ep.scheduleConnPto(self, .PtoInitial, delay_ms) catch 0;
+        }
+    }
+
+    pub fn computeAndMaybeArmPtoHandshake(self: *Connection, ep: anytype) void {
+        const pto_ns = self.rtt_handshake.computePtoNsWithBackoff(self.pto_handshake_count, self.timer_granularity_ns);
+        if (pto_ns == 0) return;
+        const ms = @max(@as(u64, 1), pto_ns / std.time.ns_per_ms);
+        var delay_ms: u32 = @intCast(@min(ms, @as(u64, std.math.maxInt(u32))));
+        if (delay_ms > 100) delay_ms = 100;
+        if (!self.pto_handshake_active) {
+            self.pto_handshake_active = true;
+            self.pto_handshake_id = ep.scheduleConnPto(self, .PtoHandshake, delay_ms) catch 0;
         }
     }
 

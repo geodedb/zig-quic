@@ -115,8 +115,14 @@ Not yet implemented / incomplete:
 
 1. Loss recovery skeleton (RFC 9002)
 
-   - Add RTT estimator and PTO per space; basic loss detection; wire into endpoint timers. [PARTIAL — RTT/PTO helper, PTO timer wiring, pkt-threshold loss, NewReno scaffolding, tests]
-   - Add NewReno cwnd/bif accounting; ack-eliciting detection. [PARTIAL — basic cwnd/bif implemented; ack-eliciting on send path]
+   - Status: Phase 1 scaffolding in place (RTT estimator + PTO helper, endpoint PTO timers, basic packet-threshold loss, NewReno cwnd/bytes-in-flight, ack-eliciting classification). Deterministic test helper added for timers.
+   - Next (Phase 2):
+     - Per-space RTT/PTO usage (Initial/Handshake/App) and correct arming/cancel semantics per space.
+     - Time-threshold loss detection and marking; integrate with packet-threshold decisions.
+     - PTO probe packets and exponential backoff; cap as per RFC 9002 guidance; reset on ACK.
+     - Retransmission queue and scheduler hooks; accurate bytes_acked/lost accounting by actual packet size.
+     - Pacing stub (token-bucket) and ECN plumbing scaffolding.
+     - Strengthen tests: probe/backoff KATs; property tests for PN loss marking; fuzz loss detector inputs.
 
 1. TLS/X.509 hardening (RFC 9001)
 
@@ -136,8 +142,17 @@ Not yet implemented / incomplete:
 
 ---
 
+## Recent Slice (2025-08-19)
+
+- Wired ACK generation per PN space and PN expansion for Initial/Handshake.
+- Added RFC 9002 recovery scaffolding: RTT estimator, PTO calculation helper; NewReno cwnd/bytes-in-flight; basic packet-threshold loss.
+- Integrated PTO timers into endpoint; added test-only `Endpoint.forceExpireAllTimers()` for deterministic expiry; stabilized timers tests.
+- Fixed PTO delay conversions and clamped extremes to avoid casts; adjusted endpoint poll to pre/post process timers and provide deterministic sleep fallback for tests.
+
+---
+
 ## Risks
 
 - TLS/X.509 correctness (ECDSA, chain verify) and interop.
-- Loss recovery correctness (timers, PTO) leading to flakiness.
+- Loss recovery correctness (timers, PTO) leading to flakiness. Deterministic timer helper mitigates test flake; runtime behavior still needs robust backoff/probe logic.
 - Packet number expansion and header protection corner cases.

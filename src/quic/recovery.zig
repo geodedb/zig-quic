@@ -40,6 +40,17 @@ pub const RttState = struct {
         // PTO = smoothed + 4*rttvar + max_ack_delay
         return self.smoothed_rtt_ns + (self.rttvar_ns * 4) + self.max_ack_delay_ns;
     }
+
+    pub fn computePtoNsWithBackoff(self: *const RttState, pto_count: u32, granularity_ns: u64) u64 {
+        // RFC 9002: PTO_base + timer_granularity, scaled by 2^pto_count
+        const base = self.computePtoNs();
+        const max_u64: u64 = std.math.maxInt(u64);
+        const plus = if (base > (max_u64 - granularity_ns)) max_u64 else base + granularity_ns;
+        const shift: u6 = @intCast(if (pto_count > 63) 63 else pto_count);
+        if (shift == 63) return max_u64;
+        if (plus > (max_u64 >> shift)) return max_u64;
+        return plus << shift;
+    }
 };
 
 /// Classify whether a frame is ack-eliciting (RFC 9002 §2).
