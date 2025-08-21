@@ -12,7 +12,7 @@ Date: 2025-08-20
   - Frames: PADDING, PING, CRYPTO, STREAM (LEN, OFF?, FIN), ACK with ranges (encode/decode).
   - Endpoint: UDP socket, epoll/kqueue/IOCP stubs, readable draining; timers with per-space PTO kinds; deterministic helpers flushTimers()/forceExpireAllTimers().
   - Recovery (RFC 9002 scaffolding): RTT estimator; PTO compute with exponential backoff helper; packet-threshold + time-threshold loss marking; NewReno cwnd/bytes_in_flight; ack-eliciting classification; PTO probe generation in Initial/Handshake; per-space PTO counters and cancel-on-ACK wiring.
-  - Tooling: varint CLI; fuzzers/bench build.
+  - Tooling/interop: varint CLI; fuzzers/bench build; interop-runner tool (scenario list/run); Go harness (server/client with datagram/retry/version flags); minimal Zig CLI stubs (quic-client/quic-server) wired in build.
 
 - Open Gaps (undone items only):
   - Version Negotiation handling (decode/process) and downgrade protection; RFC 9368 optional mode.
@@ -25,7 +25,7 @@ Date: 2025-08-20
   - CHACHA20-POLY1305 integration (AEAD + HP); key update; 0-RTT.
   - Recovery: full retransmission queue/scheduler; per-space separation in CC; pacing token-bucket; ECN reactions.
   - API: streams/datagrams read/write; endpoint/connection public API completion.
-  - CLI: quic-client/quic-server with echo/throughput; insecure toggle for testing.
+  - CLI: server/client are stubs; echo/throughput modes and proper lifecycle not implemented.
   - CI: matrix build/test, doc gate (doccheck + GAP timestamp), egress controls and caches; cross-compile artifacts.
   - Security: zeroization of secrets, strict parsing audit; anti-amplification & rate limits for tokens/resets pending.
   - Performance: zero-alloc hot paths post-warmup; benches validating loopback P50 <= 50µs.
@@ -117,7 +117,7 @@ Not yet implemented / incomplete:
 ## Library/API/Tooling Gaps
 
 - Public API (`src/quic/api.zig`): endpoint/connection/stream APIs mostly `error.NotImplemented`; no real accept/connect lifecycle, no stream open/read/write, no datagrams.
-- CLI tools: `quic-client`/`quic-server` absent; only varint tool exists.
+- CLI tools: server/client exist as stubs; echo/throughput modes and I/O paths pending.
 - CI: matrix build/test and doc gate not configured under `.github/workflows/`.
 - Docs process: `doccheck`/`update-gap` exist; enforcement via CI missing.
 - Security hygiene: zeroization of secrets, strict parsing audit, anti-amplification & rate limits for tokens/resets pending.
@@ -127,62 +127,57 @@ Not yet implemented / incomplete:
 
 ## Actionable Next Slices
 
-### Next Steps (plan)
+### Immediate (next PR)
 
-1. Loss Recovery Phase 2 completion
+1. Interop scenarios (no wire changes)
 
-   - Ensure per-space PTO arming/cancel is exercised on all ack-eliciting sends and any ACK in that space; finalize probe generation and backoff reset semantics; add KATs for PTO backoff/probes; stabilize timer tests.
-   - Introduce retransmission queue and accurate bytes_acked/lost accounting using tracked sent sizes; mark and schedule retransmits on time/packet-threshold loss.
-   - Add pacing scaffold (token-bucket) hooks; stub ECN accounting.
+- Add ALPN-mismatch scenario to interop-runner (expect TLS/handshake failure with clear error).
+- Add version-negotiation scenarios using Go harness flags:
+  - Overlap (client v2,v1; server v1) → expect v1 negotiated.
+  - Mismatch (client v2 only; server v1 only) → expect VN handling or clear failure.
+- Extend output assertions (use go-client --print-version) and list/run-all.
 
-2. Transport features
+1. Version Negotiation handling (transport)
 
-   - Version Negotiation decode/handling + downgrade protection (optionally RFC 9368); Retry + token encode/verify + anti-amplification limits; Stateless Reset; CONNECTION_CLOSE/HANDSHAKE_DONE.
-   - Stream manager + flow control (MAX_DATA/MAX_STREAM_DATA/BLOCKED) with unit tests.
+- Implement VN packet decode/processing and basic downgrade protection per RFC 9000 §6 + RFC 9368 optional mode (toggle).
+- Unit tests for VN packet parsing and negotiation outcome; fuzz VN parser.
 
-3. TLS/X.509 hardening and interop
+### Near-term
 
-   - Implement ECDSA P-256 verify and KATs; begin interoperable TLS 1.3 handshake encode/parse sufficient for CH/SH with TP extension and CRYPTO streams.
-   - Expand X.509: basic constraints, key usage checks, simple path building; plumb allow_insecure for tests.
-   - Add CHACHA20-POLY1305 option and key schedule plumbing.
+1. TLS interop subset
 
-4. API and CLI
+- Implement wire-compatible TLS 1.3 ClientHello/ServerHello (X25519 key_share, SNI, ALPN, supported_groups, sig_algs); map into QUIC-TLS (no record layer); keep AES-128-GCM initially.
+- Minimal certificate verify path in allow_insecure mode to unblock interop; follow with ECDSA P-256 verification KATs.
 
-   - Flesh out public API for endpoint/connection/streams/datagrams; implement cmd/quic-client and cmd/quic-server minimal echo/throughput (insecure mode allowed for tests).
+1. API/CLI wiring
 
-5. CI and tooling
+- Fill minimal stream open/write/read and datagram send/recv to back CLI echo modes; basic flow control stubs.
+- Harden endpoint accept/connect lifecycle; add CONNECTION_CLOSE/HANDSHAKE_DONE basics.
 
-   - Add GitHub Actions matrix (ubuntu-latest, windows-latest, macos-14); run zig build/test, fuzz/bench build; enforce doccheck and GAP timestamp bump; no Internet egress for unit tests; cache Zig; cross-compile artifacts for x86_64/aarch64/riscv64.
+1. Recovery/pacing
 
-6. Interop (manual/optional initially)
+- Introduce retransmission queue and bytes_acked accounting; add time-threshold loss tests; token-bucket pacing stub.
 
-   - Status: Scaffolded (manual harness under examples/interop with Go client/server, Zig CLI wrappers, cert generator, run script). Not wired to CI and handshake likely not yet interoperable.
-   - How to run (developer-only):
-     - Generate certs: `bash ./examples/interop/certs/generate.sh`
-     - Build CLIs/tools: `zig build cli tools`
-     - Prime Go deps (first time): `cd examples/interop && go mod tidy`
-     - Run helper: `bash ./examples/interop/run.sh`
-   - Goal: validate both directions once TLS/streams are wired:
-     - Start this Zig QUIC server (insecure, fixed cert/key) listening on 127.0.0.1:4433 with ALPN=h3.
-     - Use quic-go (Go) as client to connect, perform handshake, send a STREAM payload, expect echo.
-     - Reverse: start quic-go server, connect with this Zig client and validate handshake + data.
+1. CI/doc gates
 
-7. Performance/security polish
-   - Zeroize secret material; audit constant-time code paths; reduce heap allocs on hot paths; add microbenchmarks validating latency targets.
+- Add GitHub Actions matrix (ubuntu-latest, windows-latest, macos-14); run build, test, fuzz/bench build.
+- Enforce `doccheck` and GAP timestamp bump when code changes.
 
 ---
 
-## Recent Slice (2025-08-19)
+## Recent Slice (2025-08-20)
 
-- Wired ACK generation per PN space and PN expansion for Initial/Handshake.
-- Added RFC 9002 recovery scaffolding: RTT estimator, PTO calculation helper; NewReno cwnd/bytes-in-flight; basic packet-threshold loss.
-- Integrated PTO timers into endpoint; added test-only `Endpoint.forceExpireAllTimers()` for deterministic expiry; stabilized timers tests.
-- Fixed PTO delay conversions and clamped extremes to avoid casts; adjusted endpoint poll to pre/post process timers and provide deterministic sleep fallback for tests.
+- Added interop-runner tool with scenarios: go_echo_smoke, go_echo_datagram, go_retry_smoke (MUST PASS) and Zig↔Go XFAIL placeholders.
+- Added Go harness (examples/interop/go-server, go-client) with flags: --datagram, --retry, --versions, and cert generator; local replace of quic-go for offline.
+- Wired build aliases: `interop-list` and `interop-run -Dscenario=...`; stabilized runner allocator (page allocator) for child processes.
+- Introduced minimal `cmd/quic-client` and `cmd/quic-server` stubs; integrated in build.
+- Updated this GAP with status and next steps.
 
 ---
 
 ## Risks
 
 - TLS/X.509 correctness (ECDSA, chain verify) and interop.
-- Loss recovery correctness (timers, PTO) leading to flakiness. Deterministic timer helper mitigates test flake; runtime behavior still needs robust backoff/probe logic.
-- Packet number expansion and header protection corner cases.
+- Loss recovery correctness (timers, PTO) leading to flakiness; mitigated by deterministic timer helpers, needs probe/backoff KATs.
+- Version Negotiation and Retry corner cases; downgrade protection.
+- Performance targets unmet until pacing/alloc reductions are implemented.

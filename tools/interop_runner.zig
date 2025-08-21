@@ -56,10 +56,11 @@ const Runner = struct {
         if (!(term == .Exited and term.Exited == 0)) return error.GoBuildFailed;
     }
 
-    fn spawnServer(self: *Runner, bin: []const u8, addr: []const u8) !std.process.Child {
+    fn spawnServer(self: *Runner, bin: []const u8, addr: []const u8, extra: []const []const u8) !std.process.Child {
         var args = std.ArrayList([]const u8).init(self.alloc);
         defer args.deinit();
         try args.appendSlice(&.{ bin, "--addr", addr, "--alpn", "h3", "--cert", "examples/interop/certs/cert.pem", "--key", "examples/interop/certs/key.pem" });
+        try args.appendSlice(extra);
         var child = std.process.Child.init(args.items, self.alloc);
         child.stdin_behavior = .Ignore;
         child.stdout_behavior = .Pipe;
@@ -76,7 +77,7 @@ const Runner = struct {
         const client_bin = "zig-out/bin/go-interop-client";
         try self.goBuild("./examples/interop/go-server", server_bin);
         try self.goBuild("./examples/interop/go-client", client_bin);
-        var srv = try self.spawnServer(server_bin, "127.0.0.1:4433");
+        var srv = try self.spawnServer(server_bin, "127.0.0.1:4433", &.{});
         defer {
             _ = srv.kill() catch {};
             _ = srv.wait() catch {};
@@ -102,21 +103,12 @@ const Runner = struct {
         const client_bin = "zig-out/bin/go-interop-client";
         try self.goBuild("./examples/interop/go-server", server_bin);
         try self.goBuild("./examples/interop/go-client", client_bin);
-        // Start server with datagram enabled
-        var args_srv = std.ArrayList([]const u8).init(self.alloc);
-        defer args_srv.deinit();
-        try args_srv.appendSlice(&.{ server_bin, "--addr", "127.0.0.1:4433", "--alpn", "h3", "--cert", "examples/interop/certs/cert.pem", "--key", "examples/interop/certs/key.pem", "--datagram" });
-        var srv = std.process.Child.init(args_srv.items, self.alloc);
-        srv.stdin_behavior = .Ignore;
-        srv.stdout_behavior = .Pipe;
-        srv.stderr_behavior = .Pipe;
-        try srv.spawn();
+        var srv = try self.spawnServer(server_bin, "127.0.0.1:4433", &.{"--datagram"});
         defer {
             _ = srv.kill() catch {};
             _ = srv.wait() catch {};
         }
         std.time.sleep(200 * std.time.ns_per_ms);
-        // Run client with datagram send/receive
         var args_cli = std.ArrayList([]const u8).init(self.alloc);
         defer args_cli.deinit();
         try args_cli.appendSlice(&.{ client_bin, "--addr", "127.0.0.1:4433", "--alpn", "h3", "--sni", "test.local", "--insecure", "--datagram", "--dmsg", "ping" });
@@ -138,21 +130,12 @@ const Runner = struct {
         const client_bin = "zig-out/bin/go-interop-client";
         try self.goBuild("./examples/interop/go-server", server_bin);
         try self.goBuild("./examples/interop/go-client", client_bin);
-        // Start server with Retry enabled
-        var args_srv = std.ArrayList([]const u8).init(self.alloc);
-        defer args_srv.deinit();
-        try args_srv.appendSlice(&.{ server_bin, "--addr", "127.0.0.1:4433", "--alpn", "h3", "--cert", "examples/interop/certs/cert.pem", "--key", "examples/interop/certs/key.pem", "--retry" });
-        var srv = std.process.Child.init(args_srv.items, self.alloc);
-        srv.stdin_behavior = .Ignore;
-        srv.stdout_behavior = .Pipe;
-        srv.stderr_behavior = .Pipe;
-        try srv.spawn();
+        var srv = try self.spawnServer(server_bin, "127.0.0.1:4433", &.{"--retry"});
         defer {
             _ = srv.kill() catch {};
             _ = srv.wait() catch {};
         }
         std.time.sleep(200 * std.time.ns_per_ms);
-        // Run client as usual, expect success
         var args_cli = std.ArrayList([]const u8).init(self.alloc);
         defer args_cli.deinit();
         try args_cli.appendSlice(&.{ client_bin, "--addr", "127.0.0.1:4433", "--alpn", "h3", "--sni", "test.local", "--insecure", "--msg", "hello" });
@@ -167,12 +150,88 @@ const Runner = struct {
         if (std.mem.indexOf(u8, out_bytes, "echo: hello") == null) return error.BadEcho;
     }
 
+    fn runGoAlpnMismatch(self: *Runner) !void {
+        if (!self.haveGo()) return error.GoMissing;
+        try self.ensureCerts();
+        const server_bin = "zig-out/bin/go-interop-server";
+        const client_bin = "zig-out/bin/go-interop-client";
+        try self.goBuild("./examples/interop/go-server", server_bin);
+        try self.goBuild("./examples/interop/go-client", client_bin);
+        var srv = try self.spawnServer(server_bin, "127.0.0.1:4433", &.{});
+        defer {
+            _ = srv.kill() catch {};
+            _ = srv.wait() catch {};
+        }
+        std.time.sleep(150 * std.time.ns_per_ms);
+        var args_cli = std.ArrayList([]const u8).init(self.alloc);
+        defer args_cli.deinit();
+        try args_cli.appendSlice(&.{ client_bin, "--addr", "127.0.0.1:4433", "--alpn", "hq-interop", "--sni", "test.local", "--insecure" });
+        var child = std.process.Child.init(args_cli.items, self.alloc);
+        child.stdin_behavior = .Ignore;
+        child.stdout_behavior = .Pipe;
+        child.stderr_behavior = .Pipe;
+        const term = try child.spawnAndWait();
+        // Expect failure
+        if (term == .Exited and term.Exited == 0) return error.ExpectedFail;
+    }
+
+    fn runGoVersionNegotiationOverlap(self: *Runner) !void {
+        if (!self.haveGo()) return error.GoMissing;
+        try self.ensureCerts();
+        const server_bin = "zig-out/bin/go-interop-server";
+        const client_bin = "zig-out/bin/go-interop-client";
+        try self.goBuild("./examples/interop/go-server", server_bin);
+        try self.goBuild("./examples/interop/go-client", client_bin);
+        var srv = try self.spawnServer(server_bin, "127.0.0.1:4433", &.{ "--versions", "v1" });
+        defer {
+            _ = srv.kill() catch {};
+            _ = srv.wait() catch {};
+        }
+        std.time.sleep(150 * std.time.ns_per_ms);
+        var args_cli = std.ArrayList([]const u8).init(self.alloc);
+        defer args_cli.deinit();
+        try args_cli.appendSlice(&.{ client_bin, "--addr", "127.0.0.1:4433", "--alpn", "h3", "--sni", "test.local", "--insecure", "--versions", "v2,v1", "--print-version" });
+        var child = std.process.Child.init(args_cli.items, self.alloc);
+        child.stdin_behavior = .Ignore;
+        child.stdout_behavior = .Pipe;
+        child.stderr_behavior = .Pipe;
+        const term = try child.spawnAndWait();
+        if (!(term == .Exited and term.Exited == 0)) return error.ClientFailed;
+        const out_bytes = try child.stdout.?.reader().readAllAlloc(self.alloc, 64 * 1024);
+        defer self.alloc.free(out_bytes);
+        if (std.mem.indexOf(u8, out_bytes, "version: v1") == null) return error.BadVersionNegotiation;
+    }
+
+    fn runGoVersionNegotiationMismatch(self: *Runner) !void {
+        if (!self.haveGo()) return error.GoMissing;
+        try self.ensureCerts();
+        const server_bin = "zig-out/bin/go-interop-server";
+        const client_bin = "zig-out/bin/go-interop-client";
+        try self.goBuild("./examples/interop/go-server", server_bin);
+        try self.goBuild("./examples/interop/go-client", client_bin);
+        var srv = try self.spawnServer(server_bin, "127.0.0.1:4433", &.{ "--versions", "v1" });
+        defer {
+            _ = srv.kill() catch {};
+            _ = srv.wait() catch {};
+        }
+        std.time.sleep(150 * std.time.ns_per_ms);
+        var args_cli = std.ArrayList([]const u8).init(self.alloc);
+        defer args_cli.deinit();
+        try args_cli.appendSlice(&.{ client_bin, "--addr", "127.0.0.1:4433", "--alpn", "h3", "--sni", "test.local", "--insecure", "--versions", "v2", "--print-version" });
+        var child = std.process.Child.init(args_cli.items, self.alloc);
+        child.stdin_behavior = .Ignore;
+        child.stdout_behavior = .Pipe;
+        child.stderr_behavior = .Pipe;
+        const term = try child.spawnAndWait();
+        if (term == .Exited and term.Exited == 0) return error.ExpectedFail;
+    }
+
     fn runZigClientVsGoServer(self: *Runner) !void {
         if (!self.haveGo()) return error.GoMissing;
         try self.ensureCerts();
         const server_bin = "zig-out/bin/go-interop-server";
         try self.goBuild("./examples/interop/go-server", server_bin);
-        var srv = try self.spawnServer(server_bin, "127.0.0.1:4433");
+        var srv = try self.spawnServer(server_bin, "127.0.0.1:4433", &.{});
         defer {
             _ = srv.kill() catch {};
             _ = srv.wait() catch {};
@@ -230,6 +289,9 @@ pub fn main() !void {
             "- go_echo_smoke (MUST PASS)\n" ++
             "- go_echo_datagram (MUST PASS)\n" ++
             "- go_retry_smoke (MUST PASS)\n" ++
+            "- go_alpn_mismatch (MUST FAIL)\n" ++
+            "- go_vn_overlap (MUST PASS)\n" ++
+            "- go_vn_mismatch (MUST FAIL)\n" ++
             "- zig_client_vs_go_server (XFAIL until handshake/streams)\n" ++
             "- zig_server_vs_go_client (XFAIL until handshake/streams)\n";
         try std.io.getStdOut().writer().print("{s}", .{out});
@@ -245,6 +307,15 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, scenario, "go_retry_smoke")) {
             try r.runGoRetrySmoke();
             return;
+        } else if (std.mem.eql(u8, scenario, "go_alpn_mismatch")) {
+            try r.runGoAlpnMismatch();
+            return;
+        } else if (std.mem.eql(u8, scenario, "go_vn_overlap")) {
+            try r.runGoVersionNegotiationOverlap();
+            return;
+        } else if (std.mem.eql(u8, scenario, "go_vn_mismatch")) {
+            try r.runGoVersionNegotiationMismatch();
+            return;
         } else if (std.mem.eql(u8, scenario, "zig_client_vs_go_server")) {
             return r.runZigClientVsGoServer();
         } else if (std.mem.eql(u8, scenario, "zig_server_vs_go_client")) {
@@ -254,15 +325,12 @@ pub fn main() !void {
         }
     } else if (std.mem.eql(u8, cmd, "run-all")) {
         var failures: usize = 0;
-        if (r.runGoEchoSmoke()) |_| {} else |err| {
-            if (err != error.GoMissing) failures += 1;
-        }
-        if (r.runGoEchoDatagram()) |_| {} else |err| {
-            if (err != error.GoMissing) failures += 1;
-        }
-        if (r.runGoRetrySmoke()) |_| {} else |err| {
-            if (err != error.GoMissing) failures += 1;
-        }
+        if (r.runGoEchoSmoke()) |_| {} else |err| if (err != error.GoMissing) failures += 1;
+        if (r.runGoEchoDatagram()) |_| {} else |err| if (err != error.GoMissing) failures += 1;
+        if (r.runGoRetrySmoke()) |_| {} else |err| if (err != error.GoMissing) failures += 1;
+        if (r.runGoAlpnMismatch()) |_| {} else |err| if (err != error.GoMissing) failures += 1;
+        if (r.runGoVersionNegotiationOverlap()) |_| {} else |err| if (err != error.GoMissing) failures += 1;
+        if (r.runGoVersionNegotiationMismatch()) |_| {} else |err| if (err != error.GoMissing) failures += 1;
         _ = r.runZigClientVsGoServer() catch {};
         _ = r.runZigServerVsGoClient() catch {};
         if (failures > 0) return error.InteropFailures;

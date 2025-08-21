@@ -608,3 +608,60 @@ pub fn encodeVersionNegotiation(
     }
     return buf.toOwnedSlice();
 }
+
+pub const DecodedVN = struct {
+    dcid: []const u8,
+    scid: []const u8,
+    versions: []const u32,
+};
+
+/// Decode a Version Negotiation (VN) packet (Version=0x00000000).
+/// Returns slices into the original packet_bytes; caller must keep it alive.
+pub fn decodeVersionNegotiation(alloc: std.mem.Allocator, packet_bytes: []const u8) !DecodedVN {
+    if (packet_bytes.len < 7) return error.Truncated;
+    var i: usize = 0;
+    const first = packet_bytes[i];
+    i += 1;
+    if ((first & 0x80) == 0) return error.InvalidHeader; // must be long form
+    // Version must be 0
+    if (i + 4 > packet_bytes.len) return error.Truncated;
+    const ver: u32 = (@as(u32, packet_bytes[i]) << 24) | (@as(u32, packet_bytes[i + 1]) << 16) | (@as(u32, packet_bytes[i + 2]) << 8) | @as(u32, packet_bytes[i + 3]);
+    i += 4;
+    if (ver != 0) return error.NotVersionNegotiation;
+    // DCID
+    if (i >= packet_bytes.len) return error.Truncated;
+    const dcid_len: usize = packet_bytes[i];
+    i += 1;
+    if (i + dcid_len > packet_bytes.len) return error.Truncated;
+    const dcid = packet_bytes[i .. i + dcid_len];
+    i += dcid_len;
+    // SCID
+    if (i >= packet_bytes.len) return error.Truncated;
+    const scid_len: usize = packet_bytes[i];
+    i += 1;
+    if (i + scid_len > packet_bytes.len) return error.Truncated;
+    const scid = packet_bytes[i .. i + scid_len];
+    i += scid_len;
+    // Versions: 4-byte big-endian values till end
+    if ((packet_bytes.len - i) % 4 != 0) return error.MalformedVersions;
+    const count = (packet_bytes.len - i) / 4;
+    var vers = try alloc.alloc(u32, count);
+    errdefer alloc.free(vers);
+    var idx: usize = 0;
+    while (idx < count) : (idx += 1) {
+        const o = i + idx * 4;
+        vers[idx] = (@as(u32, packet_bytes[o]) << 24) | (@as(u32, packet_bytes[o + 1]) << 16) | (@as(u32, packet_bytes[o + 2]) << 8) | @as(u32, packet_bytes[o + 3]);
+    }
+    return .{ .dcid = dcid, .scid = scid, .versions = vers };
+}
+
+/// Basic downgrade protection per RFC 9000 §6.1: ignore VN if it lists the
+/// version originally attempted by the client.
+pub fn shouldAcceptVersionNegotiation(original_version: u32, vn_versions: []const u32) bool {
+    for (vn_versions) |v| if (v == original_version) return false;
+    return true;
+}
+
+/// Common QUIC version constants
+pub const QUIC_V1: u32 = 0x00000001;
+pub const QUIC_V2: u32 = 0x709a50c4;

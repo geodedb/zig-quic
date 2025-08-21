@@ -266,6 +266,11 @@ pub fn build(b: *std.Build) void {
         test_timers.root_module.addImport("quic_tls13", tls13_mod);
         const run_test_timers = b.addRunArtifact(test_timers);
         test_step.dependOn(&run_test_timers.step);
+
+        const test_vn = b.addTest(.{ .root_source_file = rp("tests/test_version_negotiation.zig"), .target = target, .optimize = optimize });
+        test_vn.root_module.addImport("quic_packet", quic_packet_mod);
+        const run_test_vn = b.addRunArtifact(test_vn);
+        test_step.dependOn(&run_test_vn.step);
     } else {
         const test_quic = b.addTest(.{ .root_source_file = rp("quic.zig"), .target = target, .optimize = optimize });
         const run_test_quic = b.addRunArtifact(test_quic);
