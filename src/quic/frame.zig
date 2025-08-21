@@ -41,6 +41,14 @@ pub const Frame = union(enum) {
     stream: struct { stream_id: u64, offset: ?u64, fin: bool, data: []const u8 },
     ack: struct { largest: u64, ack_delay: u64, first_range: u64 = 0, ranges: []const AckRange = &[_]AckRange{} },
     datagram: struct { data: []const u8 },
+    max_data: struct { max: u64 },
+    max_stream_data: struct { stream_id: u64, max: u64 },
+    max_streams_bidi: struct { max: u64 },
+    max_streams_uni: struct { max: u64 },
+    data_blocked: struct { limit: u64 },
+    stream_data_blocked: struct { stream_id: u64, limit: u64 },
+    streams_blocked_bidi: struct { max: u64 },
+    streams_blocked_uni: struct { max: u64 },
     // ... more frames as needed ...
 
     /// Encode this frame to the writer. Returns bytes written.
@@ -144,6 +152,64 @@ pub const Frame = union(enum) {
                 try w.writeAll(d.data);
                 written += d.data.len;
                 return written;
+            },
+            .max_data => |m| {
+                try w.writeByte(@intFromEnum(FrameType.MAX_DATA));
+                var tmp: [16]u8 = undefined;
+                const ml = try varint.encode(m.max, &tmp);
+                try w.writeAll(tmp[0..ml]);
+                return 1 + ml;
+            },
+            .max_stream_data => |m| {
+                try w.writeByte(@intFromEnum(FrameType.MAX_STREAM_DATA));
+                var tmp: [24]u8 = undefined;
+                const idl = try varint.encode(m.stream_id, tmp[0..16]);
+                const ml = try varint.encode(m.max, tmp[idl..]);
+                try w.writeAll(tmp[0 .. idl + ml]);
+                return 1 + idl + ml;
+            },
+            .max_streams_bidi => |m| {
+                try w.writeByte(@intFromEnum(FrameType.MAX_STREAMS_BIDI));
+                var tmp: [16]u8 = undefined;
+                const ml = try varint.encode(m.max, &tmp);
+                try w.writeAll(tmp[0..ml]);
+                return 1 + ml;
+            },
+            .max_streams_uni => |m| {
+                try w.writeByte(@intFromEnum(FrameType.MAX_STREAMS_UNI));
+                var tmp: [16]u8 = undefined;
+                const ml = try varint.encode(m.max, &tmp);
+                try w.writeAll(tmp[0..ml]);
+                return 1 + ml;
+            },
+            .data_blocked => |m| {
+                try w.writeByte(@intFromEnum(FrameType.DATA_BLOCKED));
+                var tmp: [16]u8 = undefined;
+                const ml = try varint.encode(m.limit, &tmp);
+                try w.writeAll(tmp[0..ml]);
+                return 1 + ml;
+            },
+            .stream_data_blocked => |m| {
+                try w.writeByte(@intFromEnum(FrameType.STREAM_DATA_BLOCKED));
+                var tmp: [24]u8 = undefined;
+                const idl = try varint.encode(m.stream_id, tmp[0..16]);
+                const ml = try varint.encode(m.limit, tmp[idl..]);
+                try w.writeAll(tmp[0 .. idl + ml]);
+                return 1 + idl + ml;
+            },
+            .streams_blocked_bidi => |m| {
+                try w.writeByte(@intFromEnum(FrameType.STREAMS_BLOCKED_BIDI));
+                var tmp: [16]u8 = undefined;
+                const ml = try varint.encode(m.max, &tmp);
+                try w.writeAll(tmp[0..ml]);
+                return 1 + ml;
+            },
+            .streams_blocked_uni => |m| {
+                try w.writeByte(@intFromEnum(FrameType.STREAMS_BLOCKED_UNI));
+                var tmp: [16]u8 = undefined;
+                const ml = try varint.encode(m.max, &tmp);
+                try w.writeAll(tmp[0..ml]);
+                return 1 + ml;
             },
         }
     }
@@ -249,6 +315,59 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
         if (i + nbytes > buf.len) return error.Truncated;
         const data = buf[i .. i + nbytes];
         return .{ .f = Frame{ .datagram = .{ .data = data } }, .n = i + nbytes };
+    }
+    // Flow control and blocked frames
+    if (t == @intFromEnum(FrameType.MAX_DATA)) {
+        var i: usize = 1;
+        const max = try varint.decode(buf[i..]);
+        i += max.n;
+        return .{ .f = Frame{ .max_data = .{ .max = max.value } }, .n = i };
+    }
+    if (t == @intFromEnum(FrameType.MAX_STREAM_DATA)) {
+        var i: usize = 1;
+        const sid = try varint.decode(buf[i..]);
+        i += sid.n;
+        const max = try varint.decode(buf[i..]);
+        i += max.n;
+        return .{ .f = Frame{ .max_stream_data = .{ .stream_id = sid.value, .max = max.value } }, .n = i };
+    }
+    if (t == @intFromEnum(FrameType.MAX_STREAMS_BIDI)) {
+        var i: usize = 1;
+        const max = try varint.decode(buf[i..]);
+        i += max.n;
+        return .{ .f = Frame{ .max_streams_bidi = .{ .max = max.value } }, .n = i };
+    }
+    if (t == @intFromEnum(FrameType.MAX_STREAMS_UNI)) {
+        var i: usize = 1;
+        const max = try varint.decode(buf[i..]);
+        i += max.n;
+        return .{ .f = Frame{ .max_streams_uni = .{ .max = max.value } }, .n = i };
+    }
+    if (t == @intFromEnum(FrameType.DATA_BLOCKED)) {
+        var i: usize = 1;
+        const lim = try varint.decode(buf[i..]);
+        i += lim.n;
+        return .{ .f = Frame{ .data_blocked = .{ .limit = lim.value } }, .n = i };
+    }
+    if (t == @intFromEnum(FrameType.STREAM_DATA_BLOCKED)) {
+        var i: usize = 1;
+        const sid = try varint.decode(buf[i..]);
+        i += sid.n;
+        const lim = try varint.decode(buf[i..]);
+        i += lim.n;
+        return .{ .f = Frame{ .stream_data_blocked = .{ .stream_id = sid.value, .limit = lim.value } }, .n = i };
+    }
+    if (t == @intFromEnum(FrameType.STREAMS_BLOCKED_BIDI)) {
+        var i: usize = 1;
+        const max = try varint.decode(buf[i..]);
+        i += max.n;
+        return .{ .f = Frame{ .streams_blocked_bidi = .{ .max = max.value } }, .n = i };
+    }
+    if (t == @intFromEnum(FrameType.STREAMS_BLOCKED_UNI)) {
+        var i: usize = 1;
+        const max = try varint.decode(buf[i..]);
+        i += max.n;
+        return .{ .f = Frame{ .streams_blocked_uni = .{ .max = max.value } }, .n = i };
     }
     // Minimal support for now
     return error.Unsupported;

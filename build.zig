@@ -115,6 +115,8 @@ pub fn build(b: *std.Build) void {
     const quic_packet_mod = mkModule(b, "src/quic/packet.zig");
     quic_packet_mod.addImport("quic_tls", quic_tls_mod);
     quic_packet_mod.addImport("quic_crypto", quic_crypto_mod);
+    // Ensure crypto module can import the key schedule
+    quic_crypto_mod.addImport("quic_tls", quic_tls_mod);
 
     // TLS/X.509 modules
     const tls13_mod = mkModule(b, "src/quic/tls/tls13.zig");
@@ -301,6 +303,15 @@ pub fn build(b: *std.Build) void {
         test_retry.root_module.addImport("quic_frame", quic_frame_mod);
         const run_test_retry = b.addRunArtifact(test_retry);
         test_step.dependOn(&run_test_retry.step);
+
+        const test_retry_tamper = b.addTest(.{ .root_source_file = rp("tests/test_retry_tamper.zig"), .target = target, .optimize = optimize });
+        test_retry_tamper.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        test_retry_tamper.root_module.addImport("quic_packet", quic_packet_mod);
+        test_retry_tamper.root_module.addImport("quic_varint", quic_varint_mod);
+        test_retry_tamper.root_module.addImport("quic_tls", quic_tls_mod);
+        test_retry_tamper.root_module.addImport("quic_frame", quic_frame_mod);
+        const run_test_retry_tamper = b.addRunArtifact(test_retry_tamper);
+        test_step.dependOn(&run_test_retry_tamper.step);
 
         const test_amp = b.addTest(.{ .root_source_file = rp("tests/test_amplification.zig"), .target = target, .optimize = optimize });
         test_amp.root_module.addImport("quic_endpoint", quic_endpoint_mod);

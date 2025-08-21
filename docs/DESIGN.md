@@ -1,6 +1,6 @@
 # Design Overview
 
-This project targets a production-grade QUIC (RFC 9000/9001/9002) library and CLI tools in Zig 0.13.0 using only the Zig standard library.
+This project targets a production-grade QUIC (RFC 9000/9001/9002) library and CLI tools in Zig 0.14.1 using only the Zig standard library.
 
 Key principles:
 

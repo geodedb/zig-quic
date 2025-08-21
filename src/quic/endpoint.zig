@@ -60,123 +60,92 @@ pub const Endpoint = struct {
     // TEST-ONLY: runtime flag to enable outbound capture in tests
     test_capture_enabled: bool = false,
 
-    /// Flush expired timers immediately based on current monotonic time (testing helper).
-    pub fn flushTimers(self: *Endpoint) void {
-        self.processExpiredTimers(nowMsMonotonic());
-    }
-
-    /// TEST-ONLY: number of captured outbound datagrams.
-    pub fn captureLen(self: *const Endpoint) usize {
-        return self.captures.items.len;
-    }
-
-    /// TEST-ONLY: pop first captured datagram. Caller owns returned bytes and must free.
-    pub fn capturePop(self: *Endpoint) ?OutCaptured {
-        if (self.captures.items.len == 0) return null;
-        return self.captures.orderedRemove(0);
-    }
-
-    /// TEST-ONLY: clear all captured datagrams (frees bytes).
-    pub fn captureClear(self: *Endpoint) void {
-        while (self.captures.items.len > 0) {
-            const cap = self.captures.orderedRemove(0);
-            self.allocator.free(cap.bytes);
-        }
-    }
-
-    /// TEST-ONLY: Force expire all timers immediately, invoking their callbacks.
-    pub fn forceExpireAllTimers(self: *Endpoint) void {
-        while (self.timers.items.len > 0) {
-            const t = self.timers.items[0];
-            _ = self.timers.orderedRemove(0);
-            switch (t.kind) {
-                .Generic => {},
-                .PtoInitial => if (t.conn) |c| {
-                    c.setPtoExpiredInitial();
-                    self.sendPtoProbe(c, .PtoInitial) catch {};
-                },
-                .PtoHandshake => if (t.conn) |c| {
-                    c.setPtoExpiredHandshake();
-                    self.sendPtoProbe(c, .PtoHandshake) catch {};
-                },
-                .PtoApp => if (t.conn) |c| c.setPtoExpiredApp(),
-            }
-        }
-    }
-
-    /// Initialize endpoint, bind to bind_addr (host:port), and return value-semantic Endpoint.
+    /// Initialize a UDP endpoint bound to bind_addr (e.g., "127.0.0.1:0").
     pub fn init(alloc: *std.mem.Allocator, bind_addr: []const u8, cfg: *const api.QuicConfig) !Endpoint {
-        // Parse bind address of the form host:port and bind an IPv4 UDP socket.
-        var parts = std.mem.splitScalar(u8, bind_addr, ':');
-        const host = parts.next() orelse bind_addr;
-        const port_s = parts.next() orelse "0";
-        const port = std.fmt.parseInt(u16, port_s, 10) catch 0;
-
-        const fd = try posix.socket(posix.AF.INET, posix.SOCK.DGRAM, 0);
+        // Resolve and bind IPv4 socket for tests; port 0 lets OS choose a free port.
+        var ep_addr = try resolveAny(bind_addr, .udp);
+        const fd = try posix.socket(posix.AF.INET, posix.SOCK.DGRAM, posix.IPPROTO.UDP);
         errdefer posix.close(fd);
+        // Allow fast rebinding in tests
+        var one: i32 = 1;
+        _ = posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, std.mem.asBytes(&one)) catch {};
+        const sa_ptr: *const posix.sockaddr = @ptrCast(&ep_addr.storage);
+        try posix.bind(fd, sa_ptr, ep_addr.len);
 
-        // Allow reuseaddr for tests
-        var yes: i32 = 1;
-        _ = posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, std.mem.asBytes(&yes)) catch {};
-
-        var sa: posix.sockaddr.in = .{
-            .family = posix.AF.INET,
-            .port = std.mem.nativeToBig(u16, port),
-            .addr = try parseIpv4(host),
-            .zero = .{0} ** 8,
-        };
-        try posix.bind(fd, @ptrCast(&sa), @sizeOf(posix.sockaddr.in));
-
-        return .{
+        return Endpoint{
             .sock_fd = fd,
             .loop_backend = api.defaultLoopBackend(),
             .allocator = alloc,
             .timers = std.ArrayList(Timer).init(alloc.*),
             .conns = std.AutoHashMap(Key, *conn_mod.Connection).init(alloc.*),
             .next_timer_id = 1,
-            .cfg = cfg.*, // copy
+            .cfg = cfg.*,
             .accepted = std.ArrayList(*conn_mod.Connection).init(alloc.*),
             .captures = std.ArrayList(OutCaptured).init(alloc.*),
+            .test_capture_enabled = false,
         };
     }
 
-    /// Release resources, close socket, and destroy owned connections.
+    /// Release resources: close socket, free timers, capture buffers, and destroy connections.
     pub fn deinit(self: *Endpoint) void {
-        // Free connections (de-duplicate pointers across multiple map keys)
-        var visited = std.AutoHashMap(*conn_mod.Connection, void).init(self.allocator.*);
-        defer visited.deinit();
-        var it = self.conns.iterator();
-        while (it.next()) |entry| {
-            const c = entry.value_ptr.*;
-            if (visited.contains(c)) continue;
-            _ = visited.put(c, {}) catch {};
-            c.deinit();
-            self.allocator.destroy(c);
-        }
-        self.conns.deinit();
-        self.timers.deinit();
-        self.accepted.deinit();
-        // Free captured datagrams (if any)
-        while (self.captures.items.len > 0) {
-            const cap = self.captures.orderedRemove(0);
+        // Free captured payloads
+        var i: usize = 0;
+        while (i < self.captures.items.len) : (i += 1) {
+            const cap = self.captures.items[i];
             self.allocator.free(cap.bytes);
         }
         self.captures.deinit();
-        posix.close(self.sock_fd);
+        // Destroy unique connections referenced by map values
+        var seen = std.AutoHashMap(*conn_mod.Connection, void).init(self.allocator.*);
+        defer seen.deinit();
+        var it = self.conns.iterator();
+        while (it.next()) |e| {
+            const c = e.value_ptr.*;
+            if (!seen.contains(c)) {
+                _ = seen.put(c, {}) catch {};
+                c.deinit();
+                self.allocator.destroy(c);
+            }
+        }
+        self.conns.deinit();
+        self.accepted.deinit();
+        self.timers.deinit();
+        // Close socket
+        _ = posix.close(self.sock_fd);
+    }
+
+    /// Flush expired timers immediately based on current monotonic time (testing helper).
+    pub fn flushTimers(self: *Endpoint) void {
+        self.processExpiredTimers(nowMsMonotonic());
+    }
+
+    /// TEST-ONLY: clear capture ring and free owned buffers.
+    pub fn captureClear(self: *Endpoint) void {
+        var i: usize = 0;
+        while (i < self.captures.items.len) : (i += 1) self.allocator.free(self.captures.items[i].bytes);
+        self.captures.clearRetainingCapacity();
+    }
+    /// TEST-ONLY: current number of captured datagrams.
+    pub fn captureLen(self: *Endpoint) usize {
+        return self.captures.items.len;
+    }
+    /// TEST-ONLY: pop oldest capture entry, transferring ownership of bytes to caller.
+    pub fn capturePop(self: *Endpoint) ?OutCaptured {
+        if (self.captures.items.len == 0) return null;
+        return self.captures.orderedRemove(0);
     }
 
     /// Send a datagram to peer address.
     pub fn sendTo(self: *Endpoint, peer: conn_mod.SockAddr, data: []const u8) !usize {
-        const sa_ptr: *const posix.sockaddr = @ptrCast(&peer.storage);
-        const n = try posix.sendto(self.sock_fd, data, 0, sa_ptr, peer.len);
         if (self.test_capture_enabled) {
-            const copy = self.allocator.alloc(u8, data.len) catch return n;
-            @memcpy(copy, data);
-            _ = self.captures.append(.{ .peer = peer, .bytes = copy }) catch {
-                self.allocator.free(copy);
-            };
+            // Capture: make an owned copy of data and enqueue
+            const owned = try self.allocator.alloc(u8, data.len);
+            @memcpy(owned, data);
+            _ = self.captures.append(.{ .peer = peer, .bytes = owned }) catch {};
+            // Also send to socket for integration if desired
         }
-        return n;
+        const sa_ptr: *const posix.sockaddr = @ptrCast(&peer.storage);
+        return posix.sendto(self.sock_fd, data, 0, sa_ptr, peer.len);
     }
 
     /// Receive a datagram; returns size and source address.
@@ -626,13 +595,14 @@ pub const Endpoint = struct {
 
             // If address still not validated after parsing, consider issuing Retry per config
             if (!conn.address_validated and self.cfg.enable_retry) {
-                // Build Retry: version as received; DCID = client's SCID; SCID = server-chosen (reuse our_scid); token = MAC(client_ip, client Initial DCID)
+                // Build Retry: version as received; DCID = client's SCID; SCID = server-chosen; token bound to client ip+odcid
                 const client_ip_bytes = @as([*]const u8, @ptrCast(&peer.storage))[0..peer.len];
                 const secret = self.cfg.token_secret orelse "default-retry-secret-16";
                 const retry_tok = token_mod.encode(self.allocator.*, client_ip_bytes, dcid, secret, self.cfg.token_expiry_ms) catch null;
                 if (retry_tok) |tbytes| {
                     defer self.allocator.free(tbytes);
-                    const out = packet.encodeRetry(self.allocator.*, version, scid, conn.our_scid.bytes[0..conn.our_scid.len], tbytes) catch null;
+                    // For Retry integrity, ODCID is client's Initial DCID = dcid here.
+                    const out = packet.encodeRetry(self.allocator.*, version, scid, conn.our_scid.bytes[0..conn.our_scid.len], dcid, tbytes) catch null;
                     if (out) |retry_bytes| {
                         defer self.allocator.free(retry_bytes);
                         _ = self.sendTo(peer, retry_bytes) catch {};
@@ -787,7 +757,7 @@ pub const Endpoint = struct {
                 }
             }
         } else if (ty == 3) {
-            // Retry (client handling only). Parse fields and store token; resend Initial with token.
+            // Retry (client handling only). Parse fields, verify integrity using ODCID, then store token; resend Initial with token.
             var i: usize = 5;
             if (i >= bytes.len) return;
             const dcid_len = bytes[i];
@@ -802,7 +772,7 @@ pub const Endpoint = struct {
             i += scid_len;
             if (bytes.len < 16 or i >= bytes.len - 16) return; // need room for integrity tag at end
             const token_bytes = bytes[i .. bytes.len - 16];
-            // Lookup a matching client connection for this peer
+            // Lookup a matching client connection for this peer to access ODCID
             const ph = hashSockaddr(&peer.storage, peer.len);
             var itc = self.conns.iterator();
             var c_found: ?*conn_mod.Connection = null;
@@ -812,6 +782,13 @@ pub const Endpoint = struct {
                 break;
             }
             const c = c_found orelse return;
+            // Verify Retry integrity using ODCID = client's Initial DCID stored in conn.peer_initial_dcid
+            const odcid = c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len];
+            if (odcid.len == 0) return;
+            if (!packet.verifyRetry(odcid, bytes)) {
+                // Drop invalid Retry per RFC 9001 §5.8
+                return;
+            }
             // Store token for next Initial
             c.initial_token.clearRetainingCapacity();
             _ = c.initial_token.appendSlice(token_bytes) catch {};
@@ -980,6 +957,16 @@ pub const Endpoint = struct {
                 i += 1;
             }
         }
+    }
+
+    /// TEST-ONLY: force all timers to expire immediately and process them once.
+    pub fn forceExpireAllTimers(self: *Endpoint) void {
+        const now_ms = nowMsMonotonic();
+        var i: usize = 0;
+        while (i < self.timers.items.len) : (i += 1) {
+            self.timers.items[i].deadline_ms = now_ms;
+        }
+        self.processExpiredTimers(now_ms);
     }
 
     fn sendPtoProbe(self: *Endpoint, conn: *conn_mod.Connection, kind: TimerKind) !void {

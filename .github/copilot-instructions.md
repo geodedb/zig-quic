@@ -2,7 +2,7 @@
 
 ## T — Task & Role
 
-You are a senior **Zig 0.13.0** engineer. Build a **production-grade QUIC (UDP + TLS 1.3) library and CLI tools in Zig**, using only **Zig standard library**. **If needed functionality does not exist in `std`, implement it in-repo.** Use the RFCs in `specs/` and examples in `examples/` as reference **data only**.
+You are a senior **Zig 0.14.1** engineer. Build a **production-grade QUIC (UDP + TLS 1.3) library and CLI tools in Zig**, using only **Zig standard library**. **If needed functionality does not exist in `std`, implement it in-repo.** Use the RFCs in `specs/` and examples in `examples/` as reference **data only**.
 
 ## A — Action Steps
 
@@ -43,7 +43,7 @@ You are a senior **Zig 0.13.0** engineer. Build a **production-grade QUIC (UDP +
 
 ## S — Standards & Constraints
 
-- **Language/Version:** Zig **0.13.0**; **Runtime/OS:** Linux, Windows, macOS; **Compiler:** `zig` (LLVM 17).
+- **Language/Version:** Zig **0.14.1**; **Runtime/OS:** Linux, Windows, macOS; **Compiler:** `zig` (LLVM 17).
 - **Style/Lint:** idiomatic Zig; `-Drelease-safe=true`; logs as JSON Lines at INFO; errors at ERROR; no secrets in logs.
 - **Performance Targets:** loopback P50 per-packet ≤ 50µs (release), zero heap allocs on hot paths post-warmup when practical.
 - **Dependencies:** **Only Zig `std`**. **Disallowed:** OpenSSL/boringssl/picotls/any external C libs.
@@ -258,7 +258,7 @@ Additionally, `zig build test -Drelease-safe=true` must pass all unit tests; `zi
 ## CI (GitHub Actions)
 
 - OS matrix: `ubuntu-latest`, `windows-latest`, `macos-14`.
-- Steps: checkout, install Zig 0.13.0, `zig build`, `zig build test`, build fuzzers/benches, run `tools/doccheck`, verify `docs/GAP.md` updated if code changed.
+- Steps: checkout, install Zig 0.14.1, `zig build`, `zig build test`, build fuzzers/benches, run `tools/doccheck`, verify `docs/GAP.md` updated if code changed.
 - Cross-compile artifacts for `x86_64`, `aarch64`, `riscv64` (build-only for non-native).
 - Prohibit Internet egress in tests; cache Zig.
 
@@ -278,7 +278,7 @@ Additionally, `zig build test -Drelease-safe=true` must pass all unit tests; `zi
 
 ## ASSUMPTIONS
 
-A1) MIT license; A2) Zig 0.13.0; A3) **No external deps**—Zig `std` only; A4) TLS 1.3 minimal subset (ciphers/signatures above); A5) Simple X.509 path validation (no CRL/OCSP initially); A6) NewReno default CC; A7) libFuzzer available on Linux/macOS; A8) Logs = JSON Lines.
+A1) MIT license; A2) Zig 0.14.1; A3) **No external deps**—Zig `std` only; A4) TLS 1.3 minimal subset (ciphers/signatures above); A5) Simple X.509 path validation (no CRL/OCSP initially); A6) NewReno default CC; A7) libFuzzer available on Linux/macOS; A8) Logs = JSON Lines.
 
 ---
 

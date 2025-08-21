@@ -13,7 +13,7 @@ Date: 2025-08-21
   - DATAGRAM API and server echo path.
   - Stateless tokens + anti-amplification: HMAC-based stateless token format (IP + ODCID hash + expiry), server verifies token to lift 3x limit; server can issue Retry packets with tokens; client handles Retry and re-sends Initial with token.
   - Tests tightened: outbound capture hook added to Endpoint; Retry test now asserts long header type=Retry, DCID==client SCID, token present; amplification test enforces 3x gating.
-  - CI/docs: matrices for Zig 0.13.0/0.14.1; doccheck + GAP gates; README updated with acceptance tests and process helpers; module export documented.
+  - CI/docs: matrices for Zig 0.14.1/0.14.1; doccheck + GAP gates; README updated with acceptance tests and process helpers; module export documented.
 
 - Open Gaps vs requirements:
 

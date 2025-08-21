@@ -1,4 +1,4 @@
-//! Public QUIC API skeleton. Zig 0.13.0
+//! Public QUIC API skeleton. Zig 0.14.1
 //! MIT License
 const std = @import("std");
 const ks = @import("quic_tls");

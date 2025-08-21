@@ -3,6 +3,7 @@
 const std = @import("std");
 const core = std.crypto.core;
 const builtin = @import("builtin");
+const ks = @import("quic_tls");
 
 /// Supported AEAD suites for QUIC-TLS binding.
 pub const AeadSuite = enum { aes_128_gcm, chacha20_poly1305 };
@@ -232,6 +233,57 @@ fn aesEcbEncrypt128(out: *[16]u8, key16: [16]u8, block16: [16]u8) !void {
     const Aes128 = core.aes.Aes128;
     var ctx = Aes128.initEnc(key16);
     ctx.encrypt(out, &block16);
+}
+
+// --- Retry Integrity Tag helpers (RFC 9001 §5.8, RFC 9369 §3.3.3) ---
+const retry_secret_v1: [32]u8 = .{
+    0xd9, 0xc9, 0x94, 0x3e, 0x61, 0x01, 0xfd, 0x20,
+    0x00, 0x21, 0x50, 0x6b, 0xcc, 0x02, 0x81, 0x4c,
+    0x73, 0x03, 0x0f, 0x25, 0xc7, 0x9d, 0x71, 0xce,
+    0x87, 0x6e, 0xca, 0x87, 0x6e, 0x6f, 0xca, 0x8e,
+};
+const retry_secret_v2: [32]u8 = .{
+    0xc4, 0xdd, 0x24, 0x84, 0xd6, 0x81, 0xae, 0xfa,
+    0x4f, 0xf4, 0xd6, 0x9c, 0x2c, 0x20, 0x29, 0x99,
+    0x84, 0xa7, 0x65, 0xa5, 0xd3, 0xc3, 0x19, 0x82,
+    0xf3, 0x8f, 0xc7, 0x41, 0x62, 0x15, 0x5e, 0x9f,
+};
+
+fn deriveRetryKeyIv(version_v2: bool) struct { key: [16]u8, iv: [12]u8 } {
+    var key: [16]u8 = undefined;
+    var iv: [12]u8 = undefined;
+    if (version_v2) {
+        ks.expandLabel(retry_secret_v2, "quicv2 key", &[_]u8{}, &key) catch unreachable;
+        ks.expandLabel(retry_secret_v2, "quicv2 iv", &[_]u8{}, &iv) catch unreachable;
+    } else {
+        ks.expandLabel(retry_secret_v1, "quic key", &[_]u8{}, &key) catch unreachable;
+        ks.expandLabel(retry_secret_v1, "quic iv", &[_]u8{}, &iv) catch unreachable;
+    }
+    return .{ .key = key, .iv = iv };
+}
+
+/// Compute the Retry Integrity Tag over the provided pseudo-packet AAD using AES-128-GCM with fixed key/nonce.
+fn aesGcmTagFixedNonce(key16: [16]u8, nonce12: [12]u8, aad: []const u8) [16]u8 {
+    const Aes128Gcm = std.crypto.aead.aes_gcm.Aes128Gcm;
+    var tag: [Aes128Gcm.tag_length]u8 = undefined;
+    // Empty plaintext; ciphertext buffer can be zero-length
+    const ct: []u8 = ct_empty[0..0];
+    Aes128Gcm.encrypt(ct, &tag, ct_empty[0..0], aad, nonce12, key16);
+    return tag;
+}
+
+var ct_empty: [1]u8 = .{0};
+
+/// Public helper: compute Retry Integrity Tag for QUIC v1/v2.
+pub fn computeRetryIntegrityTag(version_v2: bool, odcid: []const u8, retry_without_tag: []const u8) [16]u8 {
+    const kiv = deriveRetryKeyIv(version_v2);
+    // Build AAD = ODCID Len (1) || ODCID || retry_without_tag
+    var buf = std.ArrayList(u8).init(std.heap.page_allocator);
+    defer buf.deinit();
+    buf.append(@as(u8, @intCast(odcid.len))) catch unreachable;
+    buf.appendSlice(odcid) catch unreachable;
+    buf.appendSlice(retry_without_tag) catch unreachable;
+    return aesGcmTagFixedNonce(kiv.key, kiv.iv, buf.items);
 }
 
 /// Protect an Initial-like packet payload and apply header protection using the provided keys.

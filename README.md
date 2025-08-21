@@ -1,6 +1,6 @@
 # QUIC
 
-Zig std-only QUIC workspace (target Zig 0.13.0/0.14.x). Includes:
+Zig std-only QUIC workspace (target Zig 0.14.1/0.14.x). Includes:
 
 - Varint/frames utilities and tests.
 - AES-128-GCM AEAD, AES/ChaCha header protection for QUIC Initial/Handshake/Short helpers.
@@ -110,7 +110,7 @@ pub fn main() !void {
 
 Notes:
 
-- Target Zig 0.13.0 for compatibility (ReleaseSafe recommended for production).
+- Target Zig 0.14.1 for compatibility (ReleaseSafe recommended for production).
 - The module name is `quic`; no additional deps are required.
 
 ## Process helpers
@@ -122,12 +122,11 @@ Notes:
 
 ## CI
 
-GitHub Actions matrix builds on ubuntu, windows, macOS. One job pins Zig 0.13.0 for compatibility; another runs on 0.14.1. Doccheck enforces public symbol docs and GAP.md must be bumped when code changes.
+GitHub Actions matrix builds on ubuntu, windows, macOS. One job pins Zig 0.14.1 for compatibility; another runs on 0.14.1. Doccheck enforces public symbol docs and GAP.md must be bumped when code changes.
 
 ## Next
 
-- Implement RFC 9001 Retry integrity (pseudo-packet AEAD) and client-side validation.
-- Lift anti-amplification upon token validation; add KATs for token encode/verify.
-- TLS 1.3 handshake expansion (Finished, certs, X.509 verification) and 1-RTT streams/ACKs polish.
-- Optional features: Spin Bit, GREASE, CUBIC (-Dcc=cubic), QUIC v2, DATAGRAM refinements.
-- Performance/bench: JSON-lines logging, loopback P50 target, zero-alloc hot paths.
+- TLS 1.3 CH/SH/Finished wiring into QUIC handshake (X.25519 + Finished verify; X.509 minimal; allow_insecure).
+- Flow control frames: MAX*DATA, MAX_STREAM_DATA, MAX_STREAMS*{BIDI,UNI}, DATA*BLOCKED, STREAM_DATA_BLOCKED, STREAMS_BLOCKED*{BIDI,UNI}.
+- CUBIC toggle and pacing hooks; path validation; spin bit and GREASE.
+- More KATs and fuzz corpora (Retry tamper covered by new test).

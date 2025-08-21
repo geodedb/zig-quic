@@ -677,17 +677,20 @@ pub const QUIC_V1: u32 = 0x00000001;
 /// QUIC v2 Version value per RFC 9369.
 pub const QUIC_V2: u32 = 0x709a50c4;
 
-/// Encode a Retry packet (no integrity check for now; tag is zeroed for tests).
-pub fn encodeRetry(alloc: std.mem.Allocator, version: u32, dcid: []const u8, scid: []const u8, token: []const u8) ![]u8 {
+/// Encode a Retry packet with integrity tag per RFC 9001/9369.
+/// dcid = Destination Connection ID field in Retry (must equal client's Initial SCID)
+/// scid = Source Connection ID chosen by server
+/// odcid = client's Original DCID (from the Initial that prompted this Retry)
+pub fn encodeRetry(alloc: std.mem.Allocator, version: u32, dcid: []const u8, scid: []const u8, odcid: []const u8, token: []const u8) ![]u8 {
     var buf = std.ArrayList(u8).init(alloc);
     errdefer buf.deinit();
     const w = buf.writer();
-    // First byte: Long header, Retry type (0x30), PN len bits zeroed per spec
-    try w.writeByte(0xf0 | 0x30); // 1111_0000 with type=3, fixed bit set
+    // First byte: Long header, Retry type (0x30); PN length bits are 0 for Retry
+    try w.writeByte(0xf0 | 0x30);
     // Version
     var be_ver: [4]u8 = .{ @as(u8, @intCast(version >> 24)), @as(u8, @intCast((version >> 16) & 0xff)), @as(u8, @intCast((version >> 8) & 0xff)), @as(u8, @intCast(version & 0xff)) };
     try w.writeAll(&be_ver);
-    // DCID Len + DCID
+    // DCID Len + DCID (equals client's SCID)
     try w.writeByte(@as(u8, @intCast(dcid.len)));
     try w.writeAll(dcid);
     // SCID Len + SCID
@@ -695,8 +698,45 @@ pub fn encodeRetry(alloc: std.mem.Allocator, version: u32, dcid: []const u8, sci
     try w.writeAll(scid);
     // Token
     try w.writeAll(token);
-    // Integrity tag (dummy zeros 16 bytes)
-    var tag: [16]u8 = .{0} ** 16;
+
+    // Build Retry Pseudo-Packet AAD: ODCID Len + ODCID + (retry_without_tag)
+    const retry_without_tag = buf.items[0..];
+
+    // Compute version-specific Retry key/iv and tag
+    const version_v2 = (version == QUIC_V2);
+    const tag = crypto.computeRetryIntegrityTag(version_v2, odcid, retry_without_tag);
+
     try w.writeAll(&tag);
     return buf.toOwnedSlice();
+}
+
+/// Verify a received Retry packet integrity tag given the client's Original DCID.
+/// Returns true if tag is valid for v1/v2 based on the Version field in the packet.
+pub fn verifyRetry(odcid: []const u8, retry_packet: []const u8) bool {
+    if (retry_packet.len < 5 + 1 + 1 + 16) return false;
+    // Parse minimal fields to get Version, DCID/SCID lengths and locate tag
+    const first = retry_packet[0];
+    if ((first & 0x80) == 0) return false; // must be long
+    // type must be Retry (0x30 in bits 4..5)
+    const ty: u2 = @intCast((first >> 4) & 0x03);
+    if (ty != 3) return false;
+    const version: u32 = (@as(u32, retry_packet[1]) << 24) | (@as(u32, retry_packet[2]) << 16) | (@as(u32, retry_packet[3]) << 8) | @as(u32, retry_packet[4]);
+    var i: usize = 5;
+    if (i >= retry_packet.len) return false;
+    const dcid_len = retry_packet[i];
+    i += 1;
+    if (i + dcid_len > retry_packet.len) return false;
+    i += dcid_len;
+    if (i >= retry_packet.len) return false;
+    const scid_len = retry_packet[i];
+    i += 1;
+    if (i + scid_len > retry_packet.len) return false;
+    i += scid_len;
+    if (retry_packet.len < 16 or i > retry_packet.len - 16) return false;
+    const end_wo_tag = retry_packet.len - 16;
+    const retry_wo_tag = retry_packet[0..end_wo_tag];
+    const tag = retry_packet[end_wo_tag..];
+    const version_v2 = (version == QUIC_V2);
+    const calc = crypto.computeRetryIntegrityTag(version_v2, odcid, retry_wo_tag);
+    return std.mem.eql(u8, &calc, tag);
 }

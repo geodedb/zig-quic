@@ -86,10 +86,15 @@ test "server_issues_retry_and_client_retries" {
     try std.testing.expectEqual(@as(usize, c.our_scid.len), dcid.len);
     try std.testing.expect(std.mem.eql(u8, dcid, c.our_scid.bytes[0..c.our_scid.len]));
 
-    // Token must be non-empty; last 16 bytes are the integrity tag placeholder (zeros for now)
+    // Token must be non-empty; last 16 bytes are the integrity tag (non-zero)
     try std.testing.expect(b.len >= 16 and i <= b.len - 16);
     const token_bytes = b[i .. b.len - 16];
     try std.testing.expect(token_bytes.len > 0);
     const tag = b[b.len - 16 .. b.len];
-    try std.testing.expect(std.mem.allEqual(u8, tag, 0));
+    // Tag should not be all zeros now that integrity is implemented
+    try std.testing.expect(!std.mem.allEqual(u8, tag, 0));
+
+    // Verify integrity using ODCID = client's Initial DCID
+    const odcid = c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len];
+    try std.testing.expect(packet.verifyRetry(odcid, b));
 }
