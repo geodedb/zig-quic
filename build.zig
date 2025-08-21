@@ -280,14 +280,18 @@ pub fn build(b: *std.Build) void {
     // Fuzzers
     const fuzz_varint = b.addExecutable(.{ .name = "fuzz_varint", .root_source_file = rp("fuzz/fuzz_varint.zig"), .target = target, .optimize = optimize });
     const fuzz_frame = b.addExecutable(.{ .name = "fuzz_frame_parse", .root_source_file = rp("fuzz/fuzz_frame_parse.zig"), .target = target, .optimize = optimize });
+    const fuzz_vn = b.addExecutable(.{ .name = "fuzz_vn_parse", .root_source_file = rp("fuzz/fuzz_vn_parse.zig"), .target = target, .optimize = optimize });
     fuzz_varint.root_module.addImport("quic_varint", quic_varint_mod);
     fuzz_frame.root_module.addImport("quic_frame", quic_frame_mod);
     fuzz_frame.root_module.addImport("quic_varint", quic_varint_mod);
+    fuzz_vn.root_module.addImport("quic_packet", quic_packet_mod);
     const install_fuzz_varint = b.addInstallArtifact(fuzz_varint, .{});
     const install_fuzz_frame = b.addInstallArtifact(fuzz_frame, .{});
+    const install_fuzz_vn = b.addInstallArtifact(fuzz_vn, .{});
     const fuzz_step = b.step("fuzz", "Build fuzzers");
     fuzz_step.dependOn(&install_fuzz_varint.step);
     fuzz_step.dependOn(&install_fuzz_frame.step);
+    fuzz_step.dependOn(&install_fuzz_vn.step);
 
     // Benchmarks
     const bench = b.addExecutable(.{ .name = "quic-bench", .root_source_file = rp("bench/main.zig"), .target = target, .optimize = optimize });

@@ -37,6 +37,7 @@ pub const Frame = union(enum) {
     crypto: struct { offset: u64, data: []const u8 },
     stream: struct { stream_id: u64, offset: ?u64, fin: bool, data: []const u8 },
     ack: struct { largest: u64, ack_delay: u64, first_range: u64 = 0, ranges: []const AckRange = &[_]AckRange{} },
+    datagram: struct { data: []const u8 },
     // ... more frames as needed ...
 
     /// Encode this frame to the writer. Returns bytes written.
@@ -128,6 +129,17 @@ pub const Frame = union(enum) {
                     try w.writeAll(tmp[0..rl]);
                     written += rl;
                 }
+                return written;
+            },
+            .datagram => |d| {
+                try w.writeByte(@intFromEnum(FrameType.DATAGRAM));
+                var written: usize = 1;
+                var tmp: [16]u8 = undefined;
+                const dl = try varint.encode(d.data.len, &tmp);
+                try w.writeAll(tmp[0..dl]);
+                written += dl;
+                try w.writeAll(d.data);
+                written += d.data.len;
                 return written;
             },
         }
@@ -222,6 +234,16 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
             const data = buf[i..];
             return .{ .f = Frame{ .stream = .{ .stream_id = id_dec.value, .offset = off_val, .fin = fin, .data = data } }, .n = buf.len };
         }
+    }
+    // DATAGRAM (length-prefixed variant)
+    if (t == @intFromEnum(FrameType.DATAGRAM)) {
+        var i: usize = 1;
+        const dl = try varint.decode(buf[i..]);
+        i += dl.n;
+        const nbytes: usize = @intCast(dl.value);
+        if (i + nbytes > buf.len) return error.Truncated;
+        const data = buf[i .. i + nbytes];
+        return .{ .f = Frame{ .datagram = .{ .data = data } }, .n = i + nbytes };
     }
     // Minimal support for now
     return error.Unsupported;

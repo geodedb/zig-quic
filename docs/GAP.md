@@ -1,21 +1,23 @@
 # GAP Analysis — RFCs 9000/9001/9002 (+ options)
 
-Date: 2025-08-20
+Date: 2025-08-21
 
 ## Quick Status
 
 - Completed (summary):
 
   - QUIC packet paths: Initial, Handshake, Short (1-RTT) encode/decode; AES-128-GCM AEAD and AES HP; PN unmask; PN expansion wired per space; per-space ACK builders.
+  - Version Negotiation: encoder existed; now added decode + downgrade-protection helper; unit tests cover parsing and malformed versions list.
   - TLS helpers: transcript hashing, HKDF label, Initial/Handshake/App secret derivation (v1/v2), Finished compute/verify; minimal TLS engine for tests.
   - X.509 (minimal): DER parsing for validity, SAN/CN match; insecure-gated verification.
   - Frames: PADDING, PING, CRYPTO, STREAM (LEN, OFF?, FIN), ACK with ranges (encode/decode).
   - Endpoint: UDP socket, epoll/kqueue/IOCP stubs, readable draining; timers with per-space PTO kinds; deterministic helpers flushTimers()/forceExpireAllTimers().
   - Recovery (RFC 9002 scaffolding): RTT estimator; PTO compute with exponential backoff helper; packet-threshold + time-threshold loss marking; NewReno cwnd/bytes_in_flight; ack-eliciting classification; PTO probe generation in Initial/Handshake; per-space PTO counters and cancel-on-ACK wiring.
   - Tooling/interop: varint CLI; fuzzers/bench build; interop-runner tool (scenario list/run); Go harness (server/client with datagram/retry/version flags); minimal Zig CLI stubs (quic-client/quic-server) wired in build.
+  - Interop scenarios added: ALPN mismatch (expect fail), Version Negotiation overlap (expect v1), VN mismatch (expect VN/fail); runner asserts via go-client --print-version.
 
 - Open Gaps (undone items only):
-  - Version Negotiation handling (decode/process) and downgrade protection; RFC 9368 optional mode.
+  - VN processing integration: transport path wiring to react to VN (restart with offered version) and optional RFC 9368 Compatible VN toggle.
   - Retry + anti-amplification; stateless token encode/verify; Stateless Reset.
   - Connection lifecycle: accept/connect API, connection manager, packet coalescing; closing/draining; CONNECTION_CLOSE/HANDSHAKE_DONE.
   - Flow control: connection/stream windows, MAX_DATA/MAX_STREAM_DATA/BLOCKED enforcement.
@@ -44,10 +46,10 @@ Implemented (partial):
 - §10/§11 Socket and datagram processing: single-socket endpoint; demux by DCID for Short; basic intake loop.
 - §13 ACK generation per PN space: Initial/Handshake/App have separate trackers and ACK builders.
 - §7.4 Transport Parameters: minimal encode/decode; plumbed as opaque blob through TLS engine for exchange.
+- §6 Version Negotiation: VN encode, decode, and downgrade-protection helper implemented; unit tests added.
 
 Not yet implemented / incomplete (priority gaps):
 
-- Version Negotiation packet (VN) and downgrade protection (RFC 9368 compatibility optional): encode exists; decode/handling not implemented.
 - Retry packet and stateless token validation (anti-amplification): token encoding/verification is a stub; no Retry flow.
 - Stateless Reset: not implemented.
 - Connection establishment plumbing: no connection manager, accept/connect API plumbing, no coalescing.
@@ -107,10 +109,22 @@ Not yet implemented / incomplete:
 ## Optional RFCs (compile-time toggles)
 
 - RFC 9221 Datagram: NOT IMPLEMENTED (frame enum present only).
-- RFC 9368 Compatible Version Negotiation: NOT IMPLEMENTED.
-- RFC 9369 QUIC v2: Key schedule available; VN/Version handling and invariants NOT IMPLEMENTED.
+- RFC 9368 Compatible Version Negotiation: NOT IMPLEMENTED (VN decode helper exists; toggle and processing path pending).
+- RFC 9369 QUIC v2: Key schedule available; VN/version handling and invariants NOT COMPLETE.
 - RFC 9287 Grease for QUIC: NOT IMPLEMENTED.
 - RFC 9312 Spin Bit: NOT IMPLEMENTED.
+
+---
+
+## Standards & Constraints Compliance Check
+
+- Zig version: Requirement pins 0.13.0; current dev/builds use 0.14.x. Gap: adjust CI/tooling to install 0.13.0 and ensure compatibility, or formally update the pin with justification.
+- Dependencies: std-only honored; no external C libraries used. OK.
+- Security: constant-time crypto via std.crypto; zeroization and strict parsing audit pending; anti-amplification and rate-limits pending. Gap.
+- Logging: JSON Lines at INFO/ERROR required; logging format not enforced yet. Gap.
+- Performance: target P50 <= 50µs; benches exist but not validating target; zero-alloc hot path not enforced. Gap.
+- Limits: RSS <= 512 MiB in tests not explicitly enforced. Gap.
+- Reproducibility: fuzzers/tests have fixed seeds in examples; CI gating absent. Gap.
 
 ---
 
@@ -125,53 +139,66 @@ Not yet implemented / incomplete:
 
 ---
 
+## Acceptance Tests Status
+
+- Varint tool:
+  - encode 64 → "40 40" (OK)
+  - decode 7f ff → "16383" (OK)
+  - decode 40 → stderr contains "VARINT_UNDERFLOW", exit 2 (OK)
+- TLS KAT: test name contains "tls_key_schedule_kat" passes. Build runner uses `-Dtest-filter=tls_key_schedule_kat` due to Zig 0.14 CLI; add convenience step or CI wrapper to meet exact invocation if pinning 0.13.0.
+
+---
+
 ## Actionable Next Slices
 
 ### Immediate (next PR)
 
-1. Interop scenarios (no wire changes)
+1. Wire Version Negotiation into connection/endpoint handshake
 
-- Add ALPN-mismatch scenario to interop-runner (expect TLS/handshake failure with clear error).
-- Add version-negotiation scenarios using Go harness flags:
-  - Overlap (client v2,v1; server v1) → expect v1 negotiated.
-  - Mismatch (client v2 only; server v1 only) → expect VN handling or clear failure.
-- Extend output assertions (use go-client --print-version) and list/run-all.
+- On receiving VN: validate downgrade; if acceptable, restart with a mutually supported version; guard with optional RFC 9368 toggle.
+- Add VN parser fuzz target; corpus with malformed version lists and edge DCID/SCID lengths.
 
-1. Version Negotiation handling (transport)
+1. TLS 1.3 interop subset
 
-- Implement VN packet decode/processing and basic downgrade protection per RFC 9000 §6 + RFC 9368 optional mode (toggle).
-- Unit tests for VN packet parsing and negotiation outcome; fuzz VN parser.
+- Implement wire-compatible CH/SH (X25519 key_share, SNI, ALPN, supported_groups, sig_algs) within QUIC-TLS binding (no record layer), AES-128-GCM only.
+- Start with `allow_insecure` verification to unblock interop; add ECDSA P-256 verification KATs subsequently.
 
-### Near-term
+1. Minimal streams/datagrams and CLI echo
 
-1. TLS interop subset
+- Implement openStream/writeStream/readStream and DATAGRAM send/recv; basic flow-control stubs.
+- Update CLI server/client to echo over a bidi stream and optional datagram echo.
 
-- Implement wire-compatible TLS 1.3 ClientHello/ServerHello (X25519 key_share, SNI, ALPN, supported_groups, sig_algs); map into QUIC-TLS (no record layer); keep AES-128-GCM initially.
-- Minimal certificate verify path in allow_insecure mode to unblock interop; follow with ECDSA P-256 verification KATs.
+1. CI/doc gates and version pin
 
-1. API/CLI wiring
+- Add GitHub Actions matrix (ubuntu-latest, windows-latest, macos-14); run build, test, fuzz/bench build; enforce `doccheck` and GAP timestamp bump on code changes.
+- Ensure Zig 0.13.0 toolchain install and build pass; or update the documented pin and adjust acceptance instructions accordingly.
 
-- Fill minimal stream open/write/read and datagram send/recv to back CLI echo modes; basic flow control stubs.
-- Harden endpoint accept/connect lifecycle; add CONNECTION_CLOSE/HANDSHAKE_DONE basics.
+### Near-term (subsequent PRs)
+
+1. Retry and anti-amplification
+
+- Implement Retry packet flow and stateless token encode/verify; enforce anti-amplification prior to address validation; add tests.
 
 1. Recovery/pacing
 
-- Introduce retransmission queue and bytes_acked accounting; add time-threshold loss tests; token-bucket pacing stub.
+- Retransmission queue and scheduler; accurate bytes_acked; time-threshold loss KATs; token-bucket pacing stub.
 
-1. CI/doc gates
+1. Optional features toggles
 
-- Add GitHub Actions matrix (ubuntu-latest, windows-latest, macos-14); run build, test, fuzz/bench build.
-- Enforce `doccheck` and GAP timestamp bump when code changes.
+- Wire build flags for: RFC 9221 DATAGRAM, RFC 9368 Compatible VN, RFC 9369 QUIC v2, RFC 9287 Grease, RFC 9312 Spin Bit; defaults per spec.
+
+1. Security & X.509
+
+- ECDSA P-256 verification; expand X.509 validation (basic constraints, KU/EKU, SAN wildcards) and trust store stub; zeroize keying material.
 
 ---
 
-## Recent Slice (2025-08-20)
+## Recent Slice (2025-08-21)
 
-- Added interop-runner tool with scenarios: go_echo_smoke, go_echo_datagram, go_retry_smoke (MUST PASS) and Zig↔Go XFAIL placeholders.
-- Added Go harness (examples/interop/go-server, go-client) with flags: --datagram, --retry, --versions, and cert generator; local replace of quic-go for offline.
-- Wired build aliases: `interop-list` and `interop-run -Dscenario=...`; stabilized runner allocator (page allocator) for child processes.
-- Introduced minimal `cmd/quic-client` and `cmd/quic-server` stubs; integrated in build.
-- Updated this GAP with status and next steps.
+- Added ALPN-mismatch and Version Negotiation interop scenarios; runner assertions for negotiated version via go-client.
+- Implemented VN decode and downgrade-protection helper; created unit tests, including malformed versions length.
+- Kept interop-list/run steps; CLI stubs unchanged pending streams/datagrams integration.
+- Fixed GAP date and expanded compliance section vs requirements (Zig pin, CI, logging, performance).
 
 ---
 
@@ -179,5 +206,5 @@ Not yet implemented / incomplete:
 
 - TLS/X.509 correctness (ECDSA, chain verify) and interop.
 - Loss recovery correctness (timers, PTO) leading to flakiness; mitigated by deterministic timer helpers, needs probe/backoff KATs.
-- Version Negotiation and Retry corner cases; downgrade protection.
-- Performance targets unmet until pacing/alloc reductions are implemented.
+- Version Negotiation and Retry corner cases; downgrade protection; migration/NAT rebinding.
+- Performance targets unmet until pacing/alloc reductions are implemented; logging format compliance pending.
