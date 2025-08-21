@@ -8,9 +8,13 @@ const frame = @import("quic_frame");
 const ks = @import("quic_tls");
 const crypto = @import("quic_crypto");
 const varint = @import("quic_varint");
+const token_mod = @import("token.zig");
 
 const posix = std.posix;
 const builtin = @import("builtin");
+
+// TEST-ONLY: outbound capture entry (peer + owned bytes)
+const OutCaptured = struct { peer: conn_mod.SockAddr, bytes: []u8 };
 
 fn nowMsMonotonic() i64 {
     // Prefer a monotonic source; nanoTimestamp is monotonic on supported platforms.
@@ -51,10 +55,33 @@ pub const Endpoint = struct {
     cfg: api.QuicConfig,
     // Accept queue for server
     accepted: std.ArrayList(*conn_mod.Connection),
+    // TEST-ONLY: outbound capture ring (peer + owned bytes)
+    captures: std.ArrayList(OutCaptured),
+    // TEST-ONLY: runtime flag to enable outbound capture in tests
+    test_capture_enabled: bool = false,
 
     /// Flush expired timers immediately based on current monotonic time (testing helper).
     pub fn flushTimers(self: *Endpoint) void {
         self.processExpiredTimers(nowMsMonotonic());
+    }
+
+    /// TEST-ONLY: number of captured outbound datagrams.
+    pub fn captureLen(self: *const Endpoint) usize {
+        return self.captures.items.len;
+    }
+
+    /// TEST-ONLY: pop first captured datagram. Caller owns returned bytes and must free.
+    pub fn capturePop(self: *Endpoint) ?OutCaptured {
+        if (self.captures.items.len == 0) return null;
+        return self.captures.orderedRemove(0);
+    }
+
+    /// TEST-ONLY: clear all captured datagrams (frees bytes).
+    pub fn captureClear(self: *Endpoint) void {
+        while (self.captures.items.len > 0) {
+            const cap = self.captures.orderedRemove(0);
+            self.allocator.free(cap.bytes);
+        }
     }
 
     /// TEST-ONLY: Force expire all timers immediately, invoking their callbacks.
@@ -109,28 +136,47 @@ pub const Endpoint = struct {
             .next_timer_id = 1,
             .cfg = cfg.*, // copy
             .accepted = std.ArrayList(*conn_mod.Connection).init(alloc.*),
+            .captures = std.ArrayList(OutCaptured).init(alloc.*),
         };
     }
 
     /// Release resources, close socket, and destroy owned connections.
     pub fn deinit(self: *Endpoint) void {
-        // Free connections
+        // Free connections (de-duplicate pointers across multiple map keys)
+        var visited = std.AutoHashMap(*conn_mod.Connection, void).init(self.allocator.*);
+        defer visited.deinit();
         var it = self.conns.iterator();
         while (it.next()) |entry| {
             const c = entry.value_ptr.*;
+            if (visited.contains(c)) continue;
+            _ = visited.put(c, {}) catch {};
             c.deinit();
             self.allocator.destroy(c);
         }
         self.conns.deinit();
         self.timers.deinit();
         self.accepted.deinit();
+        // Free captured datagrams (if any)
+        while (self.captures.items.len > 0) {
+            const cap = self.captures.orderedRemove(0);
+            self.allocator.free(cap.bytes);
+        }
+        self.captures.deinit();
         posix.close(self.sock_fd);
     }
 
     /// Send a datagram to peer address.
     pub fn sendTo(self: *Endpoint, peer: conn_mod.SockAddr, data: []const u8) !usize {
         const sa_ptr: *const posix.sockaddr = @ptrCast(&peer.storage);
-        return posix.sendto(self.sock_fd, data, 0, sa_ptr, peer.len);
+        const n = try posix.sendto(self.sock_fd, data, 0, sa_ptr, peer.len);
+        if (self.test_capture_enabled) {
+            const copy = self.allocator.alloc(u8, data.len) catch return n;
+            @memcpy(copy, data);
+            _ = self.captures.append(.{ .peer = peer, .bytes = copy }) catch {
+                self.allocator.free(copy);
+            };
+        }
+        return n;
     }
 
     /// Receive a datagram; returns size and source address.
@@ -157,19 +203,20 @@ pub const Endpoint = struct {
         return self.accepted.orderedRemove(0);
     }
 
+    /// TEST-ONLY: inject a datagram directly into the endpoint RX path.
+    pub fn testInject(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8) void {
+        self.processIncomingDatagram(peer, bytes);
+    }
+
     /// Resolve and create a Connection object for an explicit remote address.
     pub fn connectTo(self: *Endpoint, hostport: []const u8) !conn_mod.Connection {
-        const ai = try resolveAny(hostport, .udp);
-        defer posix.freeaddrinfo(ai);
-        const peer = conn_mod.SockAddr.setFrom(ai);
+        const peer = try resolveAny(hostport, .udp);
         return .{ .id = 0, .role = .Client, .sock_fd = self.sock_fd, .peer = peer, .tls_inbox = std.ArrayList(u8).init(self.allocator.*) };
     }
 
     /// Allocate and register a client connection for the given remote address.
     pub fn connectClient(self: *Endpoint, hostport: []const u8) !*conn_mod.Connection {
-        const ai = try resolveAny(hostport, .udp);
-        defer posix.freeaddrinfo(ai);
-        const peer = conn_mod.SockAddr.setFrom(ai);
+        const peer = try resolveAny(hostport, .udp);
         const c = try self.allocator.create(conn_mod.Connection);
         c.init(self.allocator, .Client, self.sock_fd, peer);
         // Choose initial version from cfg
@@ -207,22 +254,23 @@ pub const Endpoint = struct {
         var frames = std.ArrayList(u8).init(self.allocator.*);
         defer frames.deinit();
         frames.append(@intFromEnum(frame.FrameType.PING)) catch {};
-        const token_empty: [0]u8 = .{};
+        // Use any stored Retry token if present
+        const token_slice: []const u8 = c.initial_token.items;
         const pkt = try packet.encodeInitialProtected(
             self.allocator.*,
             c.version,
             // Client Initial: DCID = our chosen dcid; SCID = our scid
             c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len],
             c.our_scid.bytes[0..c.our_scid.len],
-            token_empty[0..],
+            token_slice,
             c.pn_initial_tx,
             2,
             frames.items,
             tx_keys,
         );
         defer self.allocator.free(pkt);
-        _ = try self.sendTo(c.peer, pkt);
-        c.onPacketSent(c.pn_initial_tx, pkt.len, true);
+        const sent = try self.sendTo(c.peer, pkt);
+        c.onPacketSent(c.pn_initial_tx, sent, true);
         c.pn_initial_tx +%= 1;
         // Arm Initial PTO
         c.computeAndMaybeArmPtoInitial(self);
@@ -421,7 +469,10 @@ pub const Endpoint = struct {
                     switch (fr.f) {
                         .ping => saw_any = true,
                         .stream => |s| {
-                            _ = s;
+                            // Basic receive for stream 0 with optional offset (ignored for now)
+                            if (s.stream_id == 0) {
+                                conn.pushStreamData(s.data) catch {};
+                            }
                             saw_any = true;
                         },
                         .datagram => |d| {
@@ -496,25 +547,49 @@ pub const Endpoint = struct {
 
             // Key connection by peer and dcid
             const key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(dcid) };
-            const c_ptr = self.conns.getPtr(key) orelse blk: {
-                const c = self.allocator.create(conn_mod.Connection) catch return;
-                c.init(self.allocator, .Server, self.sock_fd, peer);
-                _ = self.conns.put(key, c) catch {
-                    c.deinit();
-                    self.allocator.destroy(c);
-                    return;
-                };
-                // Also map our chosen SCID to this connection for Handshake DCID lookup.
-                const our_key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(c.our_scid.bytes[0..c.our_scid.len]) };
-                _ = self.conns.put(our_key, c) catch {};
-                // Enqueue for accept()
-                self.pushAccepted(c);
-                break :blk self.conns.getPtr(key).?;
+            var conn: *conn_mod.Connection = blk: {
+                if (self.conns.getPtr(key)) |p| {
+                    // If an existing mapping points to a client connection (common in tests when we also created a client),
+                    // allocate a proper server connection and overwrite the map entry.
+                    if (p.*.role == .Server) break :blk p.*;
+                    const c = self.allocator.create(conn_mod.Connection) catch return;
+                    c.init(self.allocator, .Server, self.sock_fd, peer);
+                    _ = self.conns.put(key, c) catch {
+                        c.deinit();
+                        self.allocator.destroy(c);
+                        return;
+                    };
+                    // Also map our chosen SCID to this new server connection for Handshake DCID lookup.
+                    const our_key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(c.our_scid.bytes[0..c.our_scid.len]) };
+                    _ = self.conns.put(our_key, c) catch {};
+                    // Enqueue for accept()
+                    self.pushAccepted(c);
+                    break :blk c;
+                } else {
+                    const c = self.allocator.create(conn_mod.Connection) catch return;
+                    c.init(self.allocator, .Server, self.sock_fd, peer);
+                    _ = self.conns.put(key, c) catch {
+                        c.deinit();
+                        self.allocator.destroy(c);
+                        return;
+                    };
+                    // Also map our chosen SCID to this connection for Handshake DCID lookup.
+                    const our_key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(c.our_scid.bytes[0..c.our_scid.len]) };
+                    _ = self.conns.put(our_key, c) catch {};
+                    // Enqueue for accept()
+                    self.pushAccepted(c);
+                    break :blk c;
+                }
             };
-            const conn = c_ptr.*;
             conn.initial_version = version;
             if (conn.initial_keys_dropped) return;
             conn.setPeerInitialCids(dcid, scid);
+
+            // Anti-amplification: before address validation, limit server to 3x bytes received
+            // Track bytes received from unvalidated address
+            if (!conn.address_validated) {
+                conn.bytes_rx_unvalidated +%= bytes.len;
+            }
 
             // Derive Initial keys for server (we are receiving client's Initial)
             const v2 = false; // TODO: parse version and map to v2 set
@@ -535,7 +610,37 @@ pub const Endpoint = struct {
             const tok = varint.decode(bytes[j..]) catch return;
             j += tok.n;
             if (j + @as(usize, tok.value) > bytes.len) return;
+            const token_bytes = bytes[j .. j + @as(usize, tok.value)];
             j += @as(usize, tok.value);
+
+            // Address validation via token: verify token using HMAC over client IP and client's Initial DCID
+            if (!conn.address_validated and token_bytes.len > 0) {
+                const client_ip_bytes = @as([*]const u8, @ptrCast(&peer.storage))[0..peer.len];
+                const secret = self.cfg.token_secret orelse "default-retry-secret-16";
+                const now_ns: i128 = std.time.nanoTimestamp();
+                const now_ms: u64 = @intCast(if (now_ns > 0) @as(u128, @intCast(now_ns)) / std.time.ns_per_ms else 0);
+                if (token_mod.verify(token_bytes, client_ip_bytes, secret, now_ms)) {
+                    conn.address_validated = true;
+                }
+            }
+
+            // If address still not validated after parsing, consider issuing Retry per config
+            if (!conn.address_validated and self.cfg.enable_retry) {
+                // Build Retry: version as received; DCID = client's SCID; SCID = server-chosen (reuse our_scid); token = MAC(client_ip, client Initial DCID)
+                const client_ip_bytes = @as([*]const u8, @ptrCast(&peer.storage))[0..peer.len];
+                const secret = self.cfg.token_secret orelse "default-retry-secret-16";
+                const retry_tok = token_mod.encode(self.allocator.*, client_ip_bytes, dcid, secret, self.cfg.token_expiry_ms) catch null;
+                if (retry_tok) |tbytes| {
+                    defer self.allocator.free(tbytes);
+                    const out = packet.encodeRetry(self.allocator.*, version, scid, conn.our_scid.bytes[0..conn.our_scid.len], tbytes) catch null;
+                    if (out) |retry_bytes| {
+                        defer self.allocator.free(retry_bytes);
+                        _ = self.sendTo(peer, retry_bytes) catch {};
+                    }
+                }
+                return; // do not continue processing Initial
+            }
+
             // length varint (payload length includes pn+payload+tag)
             const len_dec = varint.decode(bytes[j..]) catch return;
             j += len_dec.n;
@@ -608,8 +713,11 @@ pub const Endpoint = struct {
                 }
             }
 
+            // If address still not validated, enforce 3x amplification limit for any server send
+            const allow_send = conn.address_validated or (conn.bytes_tx_unvalidated * 1 <= conn.bytes_rx_unvalidated * 3);
+
             // If we received anything ack-eliciting, send ACK in Initial space when we still have Initial TX keys
-            if (saw_any and !conn.initial_keys_dropped) {
+            if (saw_any and !conn.initial_keys_dropped and allow_send) {
                 // Build ACK frame from Initial PN tracker
                 var frames_buf = std.ArrayList(u8).init(self.allocator.*);
                 defer frames_buf.deinit();
@@ -630,6 +738,8 @@ pub const Endpoint = struct {
                     if (out) |pkt_bytes| {
                         defer self.allocator.free(pkt_bytes);
                         _ = self.sendTo(peer, pkt_bytes) catch {};
+                        // Track amplification bytes if unvalidated
+                        if (!conn.address_validated) conn.bytes_tx_unvalidated +%= pkt_bytes.len;
                         // ACK-only Initial is not ack-eliciting
                         conn.onPacketSent(conn.pn_initial_tx, pkt_bytes.len, false);
                         conn.pn_initial_tx +%= 1;
@@ -637,11 +747,11 @@ pub const Endpoint = struct {
                 }
             }
 
-            // If handshake TX keys are ready and there is outbound CRYPTO, send a Handshake packet now.
+            // If handshake TX keys are ready and there is outbound CRYPTO, send a Handshake packet now, subject to amplification limit
             if (conn.hs_tx_keys) |tx_keys| {
                 var crypto_buf: [1200]u8 = undefined;
                 const n_crypto = conn.tls.popCrypto(&crypto_buf);
-                if (n_crypto > 0) {
+                if (n_crypto > 0 and allow_send) {
                     var frames = std.ArrayList(u8).init(self.allocator.*);
                     defer frames.deinit();
                     const w2 = frames.writer();
@@ -664,6 +774,7 @@ pub const Endpoint = struct {
                         if (pkt_or_err) |bytes_out| {
                             defer self.allocator.free(bytes_out);
                             _ = self.sendTo(peer, bytes_out) catch {};
+                            if (!conn.address_validated) conn.bytes_tx_unvalidated +%= bytes_out.len;
                             // Handshake CRYPTO is ack-eliciting
                             conn.onPacketSent(conn.pn_handshake_tx, bytes_out.len, true);
                             // Arm Handshake PTO when sending ack-eliciting Handshake
@@ -675,6 +786,44 @@ pub const Endpoint = struct {
                     }
                 }
             }
+        } else if (ty == 3) {
+            // Retry (client handling only). Parse fields and store token; resend Initial with token.
+            var i: usize = 5;
+            if (i >= bytes.len) return;
+            const dcid_len = bytes[i];
+            i += 1;
+            if (i + dcid_len > bytes.len) return;
+            i += dcid_len;
+            if (i >= bytes.len) return;
+            const scid_len = bytes[i];
+            i += 1;
+            if (i + scid_len > bytes.len) return;
+            const scid = bytes[i .. i + scid_len];
+            i += scid_len;
+            if (bytes.len < 16 or i >= bytes.len - 16) return; // need room for integrity tag at end
+            const token_bytes = bytes[i .. bytes.len - 16];
+            // Lookup a matching client connection for this peer
+            const ph = hashSockaddr(&peer.storage, peer.len);
+            var itc = self.conns.iterator();
+            var c_found: ?*conn_mod.Connection = null;
+            while (itc.next()) |e| {
+                if (e.key_ptr.*.peer_hash != ph) continue;
+                c_found = e.value_ptr.*;
+                break;
+            }
+            const c = c_found orelse return;
+            // Store token for next Initial
+            c.initial_token.clearRetainingCapacity();
+            _ = c.initial_token.appendSlice(token_bytes) catch {};
+            // Update version and DCID to use for next Initial (use Retry.SCID as new DCID per spec)
+            c.version = version;
+            c.version_v2 = (version == packet.QUIC_V2);
+            c.initial_version = version;
+            c.peer_initial_dcid.len = @intCast(@min(scid.len, c.peer_initial_dcid.bytes.len));
+            if (c.peer_initial_dcid.len > 0) @memcpy(c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len], scid[0..c.peer_initial_dcid.len]);
+            // Resend an Initial with the token
+            self.clientSendInitialProbe(c) catch {};
+            return;
         } else if (ty == 2) {
             // Handshake RX path: attempt to unprotect and feed CRYPTO using hs_rx_keys
             var i: usize = 5;
@@ -923,22 +1072,22 @@ fn parseIpv4(s: []const u8) !u32 {
     return std.mem.nativeToBig(u32, host_val);
 }
 
-fn resolveAny(hostport: []const u8, proto: enum { udp }) !*posix.addrinfo {
+fn resolveAny(hostport: []const u8, proto: enum { udp }) !conn_mod.SockAddr {
     _ = proto;
     var parts = std.mem.splitScalar(u8, hostport, ':');
     const host = parts.next() orelse return error.InvalidAddress;
-    const port = parts.next() orelse return error.InvalidAddress;
-    var hints: posix.addrinfo = .{
-        .flags = 0,
-        .family = posix.AF.UNSPEC,
-        .socktype = posix.SOCK.DGRAM,
-        .protocol = 0,
-        .addrlen = 0,
-        .canonname = null,
-        .addr = null,
-        .next = null,
-    };
-    var res: *posix.addrinfo = undefined;
-    try posix.getaddrinfo(host, port, &hints, &res);
-    return res;
+    const port_s = parts.next() orelse return error.InvalidAddress;
+    const port = std.fmt.parseInt(u16, port_s, 10) catch return error.InvalidAddress;
+    if (std.mem.eql(u8, host, "localhost")) {
+        return conn_mod.SockAddr.ipv4(127, 0, 0, 1, port);
+    }
+    // Try dotted-quad IPv4 parse
+    var it = std.mem.splitScalar(u8, host, '.');
+    var oct: [4]u8 = .{0} ** 4;
+    var i: usize = 0;
+    while (i < 4) : (i += 1) {
+        const seg = it.next() orelse return error.InvalidAddress;
+        oct[i] = std.fmt.parseInt(u8, seg, 10) catch return error.InvalidAddress;
+    }
+    return conn_mod.SockAddr.ipv4(oct[0], oct[1], oct[2], oct[3], port);
 }

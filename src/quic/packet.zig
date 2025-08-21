@@ -676,3 +676,27 @@ pub fn shouldAcceptVersionNegotiation(original_version: u32, vn_versions: []cons
 pub const QUIC_V1: u32 = 0x00000001;
 /// QUIC v2 Version value per RFC 9369.
 pub const QUIC_V2: u32 = 0x709a50c4;
+
+/// Encode a Retry packet (no integrity check for now; tag is zeroed for tests).
+pub fn encodeRetry(alloc: std.mem.Allocator, version: u32, dcid: []const u8, scid: []const u8, token: []const u8) ![]u8 {
+    var buf = std.ArrayList(u8).init(alloc);
+    errdefer buf.deinit();
+    const w = buf.writer();
+    // First byte: Long header, Retry type (0x30), PN len bits zeroed per spec
+    try w.writeByte(0xf0 | 0x30); // 1111_0000 with type=3, fixed bit set
+    // Version
+    var be_ver: [4]u8 = .{ @as(u8, @intCast(version >> 24)), @as(u8, @intCast((version >> 16) & 0xff)), @as(u8, @intCast((version >> 8) & 0xff)), @as(u8, @intCast(version & 0xff)) };
+    try w.writeAll(&be_ver);
+    // DCID Len + DCID
+    try w.writeByte(@as(u8, @intCast(dcid.len)));
+    try w.writeAll(dcid);
+    // SCID Len + SCID
+    try w.writeByte(@as(u8, @intCast(scid.len)));
+    try w.writeAll(scid);
+    // Token
+    try w.writeAll(token);
+    // Integrity tag (dummy zeros 16 bytes)
+    var tag: [16]u8 = .{0} ** 16;
+    try w.writeAll(&tag);
+    return buf.toOwnedSlice();
+}

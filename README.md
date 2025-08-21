@@ -26,17 +26,99 @@ Zig std-only QUIC workspace (target Zig 0.13.0/0.14.x). Includes:
 - Filtered TLS KAT only: `zig build -Dtest-filter=tls_key_schedule_kat test`
 - Short-header 1-RTT roundtrip is included in default test run.
 
+### Acceptance tests (exact outputs)
+
+- Cmd 1:
+  - Run: `zig build tools && ./zig-out/bin/quic-varint encode 64`
+  - Expect stdout: `40 40`
+  - Exit: `0`
+- Cmd 2:
+  - Run: `./zig-out/bin/quic-varint decode 7f ff`
+  - Expect stdout: `16383`
+  - Exit: `0`
+- Cmd 3:
+  - Run: `./zig-out/bin/quic-varint decode 40`
+  - Expect stderr contains: `VARINT_UNDERFLOW`
+  - Exit: `2`
+- Cmd 4:
+  - Run: `zig build test --test-filter "tls_key_schedule_kat"`
+  - Expect stdout contains: `PASSED tls_key_schedule_kat`
+  - Exit: `0`
+
 ## CLI
 
-- Server: `./zig-out/bin/quic-server --bind 0.0.0.0:4433 --alpn h3 --datagram=true --compatible-vn`
+- Server: `./zig-out/bin/quic-server --bind 0.0.0.0:4433 --alpn h3 --datagram=true --compatible-vn --retry true --token-expiry-ms 60000`
 - Client: `./zig-out/bin/quic-client --connect 127.0.0.1:4433 --sni test.local --alpn h3 --datagram=true --compatible-vn`
 
-With datagram enabled, the server will echo any DATAGRAM payloads.
+With datagram enabled, the server will echo any DATAGRAM payloads. When `--retry true` is set, the server will issue a QUIC Retry with a stateless token bound to the client address; the client will re-send Initial with the token.
 
 ## Docs
 
 - Gap analysis: `docs/GAP.md`
 - Design: `docs/DESIGN.md`
+
+## Using from another Zig project
+
+This repo exports a module named `quic`. Consumers can import it via `@import("quic")`.
+
+1. Add dependency (build.zig.zon)
+
+```zig
+.dependencies = .{
+    // Use a pinned commit tarball
+    .quic = .{
+        .url = "https://github.com/spyderorg/quic/archive/<commit>.tar.gz",
+        .hash = "<sha256>",
+    },
+    // Or for local development
+    // .quic = .{ .path = "../quic" },
+};
+```
+
+2. Wire the module (build.zig)
+
+```zig
+const quic_dep = b.dependency("quic", .{ .target = target, .optimize = optimize });
+exe.root_module.addImport("quic", quic_dep.module("quic"));
+```
+
+3. Use in code (src/main.zig)
+
+```zig
+const std = @import("std");
+const quic = @import("quic");
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const alloc = gpa.allocator();
+
+    var cfg = quic.QuicConfig{
+        .alpn = &[_][]const u8{ "h3" },
+        .enable_datagram = true,
+    };
+    const ep = try quic.endpointInit(&alloc, "0.0.0.0:0", &cfg);
+    defer quic.endpointDeinit(ep);
+
+    const conn = try quic.connect(ep, "127.0.0.1:4433", "test.local");
+    defer _ = quic.closeConnection(conn, 0);
+
+    // Drive IO & timers
+    try quic.poll(ep, 10);
+}
+```
+
+Notes:
+
+- Target Zig 0.13.0 for compatibility (ReleaseSafe recommended for production).
+- The module name is `quic`; no additional deps are required.
+
+## Process helpers
+
+- Update GAP after a slice: `zig build update-gap --summary "Finished <slice>"`
+- Doc completeness check (CI gate): `zig build doccheck`
+- Fuzzers build: `zig build fuzz`
+- Benches build: `zig build bench && ./zig-out/bin/quic-bench`
 
 ## CI
 
@@ -44,4 +126,8 @@ GitHub Actions matrix builds on ubuntu, windows, macOS. One job pins Zig 0.13.0 
 
 ## Next
 
-- Expand TLS 1.3 handshake (Finished, certs), enable 1-RTT streams/ACKs, wire UDP IO and event loop.
+- Implement RFC 9001 Retry integrity (pseudo-packet AEAD) and client-side validation.
+- Lift anti-amplification upon token validation; add KATs for token encode/verify.
+- TLS 1.3 handshake expansion (Finished, certs, X.509 verification) and 1-RTT streams/ACKs polish.
+- Optional features: Spin Bit, GREASE, CUBIC (-Dcc=cubic), QUIC v2, DATAGRAM refinements.
+- Performance/bench: JSON-lines logging, loopback P50 target, zero-alloc hot paths.

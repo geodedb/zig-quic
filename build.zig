@@ -143,6 +143,16 @@ pub fn build(b: *std.Build) void {
     const quic_transport_params_mod = mkModule(b, "src/quic/transport_params.zig");
     quic_transport_params_mod.addImport("quic_varint", quic_varint_mod);
 
+    // Endpoint module for socket/event-loop tests
+    const quic_endpoint_mod = mkModule(b, "src/quic/endpoint.zig");
+    quic_endpoint_mod.addImport("quic_conn", quic_conn_mod);
+    quic_endpoint_mod.addImport("quic_packet", quic_packet_mod);
+    quic_endpoint_mod.addImport("quic_frame", quic_frame_mod);
+    quic_endpoint_mod.addImport("quic_tls13", tls13_mod);
+    quic_endpoint_mod.addImport("quic_crypto", quic_crypto_mod);
+    quic_endpoint_mod.addImport("quic_varint", quic_varint_mod);
+    quic_endpoint_mod.addImport("quic_tls", quic_tls_mod);
+
     // Public API module (reuse everywhere)
     const quic_api_mod = mkModule(b, "src/quic/api.zig");
     quic_api_mod.addImport("quic_crypto", quic_crypto_mod);
@@ -153,6 +163,16 @@ pub fn build(b: *std.Build) void {
     quic_api_mod.addImport("quic_tls13", tls13_mod);
     quic_api_mod.addImport("quic_conn", quic_conn_mod);
     quic_api_mod.addImport("quic_packet", quic_packet_mod);
+
+    // Export named module for dependents: @import("quic")
+    const quic_mod = b.addModule("quic", .{ .root_source_file = rp("src/quic/api.zig") });
+    quic_mod.addImport("quic_crypto", quic_crypto_mod);
+    quic_mod.addImport("quic_frame", quic_frame_mod);
+    quic_mod.addImport("quic_varint", quic_varint_mod);
+    quic_mod.addImport("quic_tls", quic_tls_mod);
+    quic_mod.addImport("quic_tls13", tls13_mod);
+    quic_mod.addImport("quic_conn", quic_conn_mod);
+    quic_mod.addImport("quic_packet", quic_packet_mod);
 
     // CLI binaries (scaffold): quic-client, quic-server
     const quic_client = b.addExecutable(.{ .name = "quic-client", .root_source_file = rp("cmd/quic-client.zig"), .target = target, .optimize = optimize });
@@ -271,6 +291,26 @@ pub fn build(b: *std.Build) void {
         test_vn.root_module.addImport("quic_packet", quic_packet_mod);
         const run_test_vn = b.addRunArtifact(test_vn);
         test_step.dependOn(&run_test_vn.step);
+
+        // New: Retry issuance and amplification gating tests
+        const test_retry = b.addTest(.{ .root_source_file = rp("tests/test_retry.zig"), .target = target, .optimize = optimize });
+        test_retry.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        test_retry.root_module.addImport("quic_packet", quic_packet_mod);
+        test_retry.root_module.addImport("quic_varint", quic_varint_mod);
+        test_retry.root_module.addImport("quic_tls", quic_tls_mod);
+        test_retry.root_module.addImport("quic_frame", quic_frame_mod);
+        const run_test_retry = b.addRunArtifact(test_retry);
+        test_step.dependOn(&run_test_retry.step);
+
+        const test_amp = b.addTest(.{ .root_source_file = rp("tests/test_amplification.zig"), .target = target, .optimize = optimize });
+        test_amp.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        test_amp.root_module.addImport("quic_packet", quic_packet_mod);
+        test_amp.root_module.addImport("quic_varint", quic_varint_mod);
+        test_amp.root_module.addImport("quic_tls", quic_tls_mod);
+        test_amp.root_module.addImport("quic_frame", quic_frame_mod);
+        test_amp.root_module.addImport("quic_crypto", quic_crypto_mod);
+        const run_test_amp = b.addRunArtifact(test_amp);
+        test_step.dependOn(&run_test_amp.step);
     } else {
         const test_quic = b.addTest(.{ .root_source_file = rp("quic.zig"), .target = target, .optimize = optimize });
         const run_test_quic = b.addRunArtifact(test_quic);

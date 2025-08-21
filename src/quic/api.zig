@@ -25,6 +25,12 @@ pub const QuicConfig = struct {
     grease: bool = true,
     // RFC 9368 Compatible Version Negotiation toggle
     compatible_vn: bool = false,
+    // Enable sending QUIC Retry on first Initial without a valid token (server only)
+    enable_retry: bool = false,
+    // Secret used to MAC stateless Retry tokens (server). If null, a default built-in secret is used.
+    token_secret: ?[]const u8 = null,
+    // Token expiry in milliseconds from issuance (server)
+    token_expiry_ms: u32 = 60000,
     max_idle_timeout_ms: u32 = 30000,
     max_udp_payload: u16 = 1350,
     cert_path: ?[]const u8 = null, // server
@@ -96,30 +102,23 @@ pub fn accept(ep: *QuicEndpoint) !*QuicConnection {
 
 /// Open a stream on a connection (not yet implemented).
 pub fn openStream(conn: *QuicConnection, bidi: bool) !QuicStreamId {
-    _ = conn;
-    _ = bidi;
-    return error.NotImplemented;
+    const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
+    return c.openStream(bidi);
 }
 /// Write to a stream on a connection (not yet implemented).
 pub fn writeStream(conn: *QuicConnection, id: QuicStreamId, data: []const u8) !usize {
-    _ = conn;
-    _ = id;
-    _ = data;
-    return error.NotImplemented;
+    const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
+    return c.writeStream(id, data);
 }
 /// Read from a stream on a connection (not yet implemented).
 pub fn readStream(conn: *QuicConnection, id: QuicStreamId, buf: []u8) !usize {
-    _ = conn;
-    _ = id;
-    _ = buf;
-    return error.NotImplemented;
+    const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
+    return c.readStream(id, buf);
 }
 /// Close a stream with an application error (not yet implemented).
 pub fn closeStream(conn: *QuicConnection, id: QuicStreamId, app_error_code: u64) !void {
-    _ = conn;
-    _ = id;
-    _ = app_error_code;
-    return error.NotImplemented;
+    const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
+    return c.closeStream(id, app_error_code);
 }
 
 /// Send a QUIC DATAGRAM over a connection.

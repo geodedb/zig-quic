@@ -16,6 +16,9 @@ pub fn main() !void {
     var key_path: ?[]const u8 = null;
     var datagram = false;
     var compat_vn = false;
+    var enable_retry = false;
+    var token_secret: ?[]const u8 = null;
+    var token_expiry_ms: u32 = 60000;
     while (args.next()) |a| {
         if (std.mem.eql(u8, a, "--bind")) {
             bind = args.next().?;
@@ -32,6 +35,14 @@ pub fn main() !void {
             datagram = std.mem.eql(u8, v, "true");
         } else if (std.mem.eql(u8, a, "--compatible-vn")) {
             compat_vn = true;
+        } else if (std.mem.eql(u8, a, "--retry")) {
+            const v = args.next().?;
+            enable_retry = std.mem.eql(u8, v, "true");
+        } else if (std.mem.eql(u8, a, "--token-secret")) {
+            token_secret = args.next().?;
+        } else if (std.mem.eql(u8, a, "--token-expiry-ms")) {
+            const v = args.next().?;
+            token_expiry_ms = std.fmt.parseInt(u32, v, 10) catch token_expiry_ms;
         }
     }
 
@@ -42,6 +53,9 @@ pub fn main() !void {
         .key_path = key_path,
         .enable_datagram = datagram,
         .compatible_vn = compat_vn,
+        .enable_retry = enable_retry,
+        .token_secret = token_secret,
+        .token_expiry_ms = token_expiry_ms,
     };
     const ep = try api.endpointInit(&alloc, bind, &cfg);
     defer api.endpointDeinit(ep);

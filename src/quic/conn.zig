@@ -208,6 +208,19 @@ pub const Connection = struct {
     sent_sizes: std.AutoHashMap(u64, u16),
     // Minimal DATAGRAM inbox (FIFO of owned payloads)
     dgram_inbox: std.ArrayList([]u8) = undefined,
+    // Minimal streams: single bidi stream (id 0) with basic flow control
+    stream_inbox: std.ArrayList(u8) = undefined,
+    stream_opened: bool = false,
+    stream_send_off: u64 = 0,
+    stream_recv_off: u64 = 0,
+    local_max_stream_data: u64 = 64 * 1024, // bytes we can receive on stream 0
+    peer_max_stream_data: u64 = 64 * 1024, // naive peer window we assume for sending
+    // Address validation / anti-amplification (server-side):
+    address_validated: bool = false,
+    bytes_rx_unvalidated: usize = 0,
+    bytes_tx_unvalidated: usize = 0,
+    // Client-held Retry token (if any) for next Initial
+    initial_token: std.ArrayList(u8) = undefined,
 
     /// Expand a truncated PN in Initial space using expected next PN.
     pub fn expandPnInitial(self: *const Connection, trunc_val: u64, pn_len: u3) u64 {
@@ -298,6 +311,14 @@ pub const Connection = struct {
         self.timer_granularity_ns = std.time.ns_per_ms;
         // Init DATAGRAM inbox
         self.dgram_inbox = std.ArrayList([]u8).init(alloc.*);
+        // Init stream inbox
+        self.stream_inbox = std.ArrayList(u8).init(alloc.*);
+        // Init address validation tracking
+        self.address_validated = (role == .Client); // clients are not amplification-limited
+        self.bytes_rx_unvalidated = 0;
+        self.bytes_tx_unvalidated = 0;
+        // Init Retry token buffer
+        self.initial_token = std.ArrayList(u8).init(alloc.*);
     }
 
     /// Release resources held by this Connection (payloads, maps, TLS state).
@@ -312,6 +333,10 @@ pub const Connection = struct {
             self.allocator.free(p);
         }
         self.dgram_inbox.deinit();
+        // Stream inbox
+        self.stream_inbox.deinit();
+        // Retry token buffer
+        self.initial_token.deinit();
     }
 
     /// Send a datagram to the connection's peer using 1-RTT short header.
@@ -336,11 +361,97 @@ pub const Connection = struct {
         self.computeAndMaybeArmPto(self);
     }
 
+    /// Open a bidi stream; only stream id 0 is supported in this minimal slice.
+    pub fn openStream(self: *Connection, bidi: bool) !u64 {
+        if (!bidi) return error.Unsupported;
+        if (self.stream_opened) return error.OutOfStreams;
+        self.stream_opened = true;
+        return 0;
+    }
+
+    /// Write bytes on stream id 0 using a Short header STREAM frame with LEN+OFF.
+    pub fn writeStream(self: *Connection, id: u64, data: []const u8) !usize {
+        if (id != 0) return error.InvalidStream;
+        const tx = self.app_tx_keys orelse return error.KeysNotReady;
+        if (data.len == 0) return 0;
+        // Enforce a naive peer window
+        if (self.stream_send_off >= self.peer_max_stream_data) return error.FlowControlBlocked;
+        const window_left: u64 = self.peer_max_stream_data - self.stream_send_off;
+        const max_payload: usize = 1000; // keep within typical path-MTU
+        const to_send: usize = @intCast(@min(@min(window_left, @as(u64, data.len)), @as(u64, max_payload)));
+        if (to_send == 0) return error.FlowControlBlocked;
+        var frames = std.ArrayList(u8).init(self.allocator.*);
+        defer frames.deinit();
+        const w = frames.writer();
+        _ = (frame.Frame{ .stream = .{ .stream_id = 0, .offset = self.stream_send_off, .fin = false, .data = data[0..to_send] } }).write(w) catch 0;
+        const pkt = try packet.encodeShortProtected(
+            self.allocator.*,
+            self.our_scid.bytes[0..self.our_scid.len],
+            self.pn_app_tx,
+            2,
+            frames.items,
+            .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
+        );
+        defer self.allocator.free(pkt);
+        _ = try self.send(pkt);
+        self.onPacketSent(self.pn_app_tx, pkt.len, true);
+        self.pn_app_tx +%= 1;
+        self.computeAndMaybeArmPto(self);
+        self.stream_send_off += to_send;
+        return to_send;
+    }
+
+    /// Read bytes from stream id 0 into buf. Returns bytes copied (0 if none).
+    pub fn readStream(self: *Connection, id: u64, buf: []u8) !usize {
+        if (id != 0) return error.InvalidStream;
+        if (self.stream_inbox.items.len == 0) return 0;
+        const n: usize = @min(buf.len, self.stream_inbox.items.len);
+        @memcpy(buf[0..n], self.stream_inbox.items[0..n]);
+        // shift remaining
+        const rem = self.stream_inbox.items.len - n;
+        if (rem > 0) {
+            std.mem.copy(u8, self.stream_inbox.items[0..rem], self.stream_inbox.items[n..self.stream_inbox.items.len]);
+        }
+        self.stream_inbox.shrinkRetainingCapacity(rem) catch {};
+        return n;
+    }
+
+    /// Send a FIN (no data) on stream id 0.
+    pub fn closeStream(self: *Connection, id: u64, app_error_code: u64) !void {
+        _ = app_error_code; // not surfaced yet in transport close
+        if (id != 0) return error.InvalidStream;
+        const tx = self.app_tx_keys orelse return error.KeysNotReady;
+        var frames = std.ArrayList(u8).init(self.allocator.*);
+        defer frames.deinit();
+        const w = frames.writer();
+        _ = (frame.Frame{ .stream = .{ .stream_id = 0, .offset = self.stream_send_off, .fin = true, .data = &[_]u8{} } }).write(w) catch 0;
+        const pkt = try packet.encodeShortProtected(
+            self.allocator.*,
+            self.our_scid.bytes[0..self.our_scid.len],
+            self.pn_app_tx,
+            2,
+            frames.items,
+            .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
+        );
+        defer self.allocator.free(pkt);
+        _ = try self.send(pkt);
+        self.onPacketSent(self.pn_app_tx, pkt.len, true);
+        self.pn_app_tx +%= 1;
+        self.computeAndMaybeArmPto(self);
+    }
+
     /// Push a received DATAGRAM payload into the inbox (makes a copy).
     pub fn pushDatagram(self: *Connection, data: []const u8) !void {
         const copy = try self.allocator.alloc(u8, data.len);
         @memcpy(copy, data);
         try self.dgram_inbox.append(copy);
+    }
+
+    /// Push received STREAM bytes into the stream inbox and advance recv offset.
+    pub fn pushStreamData(self: *Connection, data: []const u8) !void {
+        try self.stream_inbox.appendSlice(data);
+        self.stream_recv_off += data.len;
+        // TODO: send MAX_STREAM_DATA when crossing thresholds
     }
 
     /// Pop a DATAGRAM payload into caller buffer, returning bytes copied.
