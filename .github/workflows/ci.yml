@@ -21,38 +21,11 @@ jobs:
         zig: ['0.14.1']
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - uses: de-vri-es/setup-git-credentials@v2
+      - uses: actions/checkout@v4
+      - name: Setup Zig 0.14.1
+        uses: goto-bus-stop/setup-zig@v2
         with:
-          credentials: ${{secrets.GIT_CREDENTIALS}}
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-        with:
-          extra_nix_config: |
-            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
-      - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
-        with:
-          upstream-cache: https://spyder.cachix.org
-      - uses: DeterminateSystems/flake-checker-action@main
-
-      - name: Setup Cachix
-        uses: cachix/cachix-action@v16
-        with:
-          name: spyder
-          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
-
-      - name: Cache build artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            zig-cache
-          key: ${{ runner.os }}-zig-${{ matrix.zig }}-${{ hashFiles('build.zig', 'src/**/*.zig', 'tests/**/*.zig') }}
-          restore-keys: |
-            ${{ runner.os }}-zig-${{ matrix.zig }}-
+          version: 0.14.1
 
       - name: Zig version
         run: zig version
@@ -84,38 +57,11 @@ jobs:
       matrix:
         zig: ['0.14.1']
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - uses: de-vri-es/setup-git-credentials@v2
+      - uses: actions/checkout@v4
+      - name: Setup Zig 0.14.1
+        uses: goto-bus-stop/setup-zig@v2
         with:
-          credentials: ${{secrets.GIT_CREDENTIALS}}
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-        with:
-          extra_nix_config: |
-            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
-      - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
-        with:
-          upstream-cache: https://spyder.cachix.org
-      - uses: DeterminateSystems/flake-checker-action@main
-
-      - name: Setup Cachix
-        uses: cachix/cachix-action@v16
-        with:
-          name: spyder
-          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
-
-      - name: Cache build artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            zig-cache
-          key: linux-zig-${{ matrix.zig }}-xdp-${{ hashFiles('build.zig', 'src/**/*.zig', 'tests/**/*.zig') }}
-          restore-keys: |
-            linux-zig-${{ matrix.zig }}-xdp-
+          version: 0.14.1
 
       - name: Zig version
         run: zig version
