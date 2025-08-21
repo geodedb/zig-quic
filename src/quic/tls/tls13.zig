@@ -202,16 +202,19 @@ pub const Engine = struct {
     /// QUIC Transport Parameters (encoded blobs) carried in CRYPTO
     local_tp: ?[]u8 = null,
     peer_tp: ?[]u8 = null,
+    /// Negotiated ALPN (opaque protocol id)
+    alpn: ?[]u8 = null,
 
     /// Initialize a TLS 1.3 Engine with allocator and role.
     pub fn init(alloc: std.mem.Allocator, role: Role) Engine {
-        return .{ .role = role, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .outbox = std.ArrayList(u8).init(alloc), .ch_sent = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .leaf_spki = null, .local_tp = null, .peer_tp = null };
+        return .{ .role = role, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .outbox = std.ArrayList(u8).init(alloc), .ch_sent = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null };
     }
     /// Release any owned resources and buffers.
     pub fn deinit(self: *Engine) void {
         if (self.leaf_spki) |spki| self.outbox.allocator.free(spki);
         if (self.local_tp) |b| self.outbox.allocator.free(b);
         if (self.peer_tp) |b| self.outbox.allocator.free(b);
+        if (self.alpn) |a| self.outbox.allocator.free(a);
         self.outbox.deinit();
     }
 
@@ -269,11 +272,22 @@ pub const Engine = struct {
                         else => {},
                     }
                 }
-                // Minimal hook: extract a tagged TP block if present at start of body: "TP" || varint_len || bytes
-                if (p.body.len >= 2 and p.body[0] == 'T' and p.body[1] == 'P') {
-                    // [2].. contains an opaque transport parameters blob (already encoded at QUIC level)
-                    if (p.body.len > 2) {
-                        const tp_bytes = p.body[2..];
+                // Minimal hook: parse EncryptedExtensions body for ALPN and/or TP markers
+                if (p.typ == .encrypted_extensions) {
+                    // Body format: optional "ALPN" || u8_len || protocol_id || optional "TP" || tp
+                    var i: usize = 0;
+                    if (p.body.len >= 5 and std.mem.eql(u8, p.body[0..4], "ALPN")) {
+                        i = 4;
+                        const n: usize = p.body[i];
+                        i += 1;
+                        if (i + n <= p.body.len) {
+                            if (self.alpn) |old| self.outbox.allocator.free(old);
+                            self.alpn = self.outbox.allocator.dupe(u8, p.body[i .. i + n]) catch null;
+                            i += n;
+                        }
+                    }
+                    if (i + 2 <= p.body.len and p.body[i] == 'T' and p.body[i + 1] == 'P') {
+                        const tp_bytes = p.body[i + 2 ..];
                         if (self.peer_tp) |old| self.outbox.allocator.free(old);
                         self.peer_tp = self.outbox.allocator.dupe(u8, tp_bytes) catch null;
                     }

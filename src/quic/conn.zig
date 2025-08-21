@@ -144,6 +144,23 @@ fn expandTruncatedPn(trunc_val: u64, pn_len: u3, expected: u64) u64 {
 
 const AckDesc = struct { largest: u64, first_range: u64, ranges: []const frame.AckRange };
 
+// Reassembly support
+const Segment = struct { off: u64, data: []u8 };
+const StreamRx = struct {
+    recv_off: u64 = 0,
+    inbox: std.ArrayList(u8),
+    bufs: std.ArrayList(Segment),
+
+    fn init(alloc: *std.mem.Allocator) StreamRx {
+        return .{ .recv_off = 0, .inbox = std.ArrayList(u8).init(alloc.*), .bufs = std.ArrayList(Segment).init(alloc.*) };
+    }
+    fn deinit(self: *StreamRx, alloc: *std.mem.Allocator) void {
+        for (self.bufs.items) |seg| alloc.free(seg.data);
+        self.bufs.deinit();
+        self.inbox.deinit();
+    }
+};
+
 /// Connection state and helpers for QUIC handshake, recovery, and 1-RTT.
 pub const Connection = struct {
     id: u64,
@@ -188,8 +205,10 @@ pub const Connection = struct {
     rtt_initial: recovery.RttState = .{},
     rtt_handshake: recovery.RttState = .{},
     rtt_app: recovery.RttState = .{},
-    // Congestion control
-    cc: recovery.NewReno = .{},
+    // Congestion control selection
+    use_cubic: bool = false,
+    cc_nr: recovery.NewReno = .{},
+    cc_cubic: recovery.Cubic = .{},
     // PTO timers state
     pto_initial_active: bool = false,
     pto_handshake_active: bool = false,
@@ -208,19 +227,35 @@ pub const Connection = struct {
     sent_sizes: std.AutoHashMap(u64, u16),
     // Minimal DATAGRAM inbox (FIFO of owned payloads)
     dgram_inbox: std.ArrayList([]u8) = undefined,
-    // Minimal streams: single bidi stream (id 0) with basic flow control
-    stream_inbox: std.ArrayList(u8) = undefined,
-    stream_opened: bool = false,
-    stream_send_off: u64 = 0,
-    stream_recv_off: u64 = 0,
-    local_max_stream_data: u64 = 64 * 1024, // bytes we can receive on stream 0
-    peer_max_stream_data: u64 = 64 * 1024, // naive peer window we assume for sending
+    // Streams RX/TX state
+    streams_rx: std.AutoHashMap(u64, StreamRx) = undefined,
+    stream_opened: bool = false, // only for stream 0 compatibility
+    stream_send_off: u64 = 0, // stream 0 send offset
+    // Per-stream default local receive window and peer stream window
+    local_max_stream_data: u64 = 64 * 1024,
+    peer_max_stream_data: u64 = 64 * 1024,
+    // Connection-level flow control and stream count limits
+    local_max_data: u64 = 256 * 1024,
+    peer_max_data: u64 = 256 * 1024,
+    peer_max_streams_bidi: u64 = 16,
+    peer_max_streams_uni: u64 = 16,
+    opened_bidi: u64 = 0,
+    opened_uni: u64 = 0,
+    // Connection-level accounting for sent/received app data
+    conn_send_off: u64 = 0,
+    conn_recv_total: u64 = 0,
     // Address validation / anti-amplification (server-side):
     address_validated: bool = false,
     bytes_rx_unvalidated: usize = 0,
     bytes_tx_unvalidated: usize = 0,
     // Client-held Retry token (if any) for next Initial
     initial_token: std.ArrayList(u8) = undefined,
+    // Path validation (migration / NAT rebinding) minimal state
+    path_validation_pending: bool = false,
+    path_challenge_data: [8]u8 = .{0} ** 8,
+    // Server NEW_TOKEN issuance state
+    new_token_pending: bool = false,
+    new_token_sent: bool = false,
 
     /// Expand a truncated PN in Initial space using expected next PN.
     pub fn expandPnInitial(self: *const Connection, trunc_val: u64, pn_len: u3) u64 {
@@ -251,20 +286,18 @@ pub const Connection = struct {
         self.pn_app.track(pn_full);
     }
 
-    /// Build ACK ranges for Initial space using the sliding window.
+    /// Build ACK ranges for Initial/Handshake/App space using the sliding window.
     pub fn buildAckInitial(self: *Connection) AckDesc {
-        const desc = self.pn_initial.buildAckRanges(self.ack_ranges_buf[0..]);
-        return .{ .largest = self.pn_initial.max, .first_range = desc.first_range, .ranges = self.ack_ranges_buf[0..desc.ranges_len] };
+        const d = self.pn_initial.buildAckRanges(self.ack_ranges_buf[0..]);
+        return .{ .largest = self.pn_initial.max, .first_range = d.first_range, .ranges = self.ack_ranges_buf[0..d.ranges_len] };
     }
-    /// Build ACK ranges for Handshake space using the sliding window.
     pub fn buildAckHandshake(self: *Connection) AckDesc {
-        const desc = self.pn_handshake.buildAckRanges(self.ack_ranges_buf[0..]);
-        return .{ .largest = self.pn_handshake.max, .first_range = desc.first_range, .ranges = self.ack_ranges_buf[0..desc.ranges_len] };
+        const d = self.pn_handshake.buildAckRanges(self.ack_ranges_buf[0..]);
+        return .{ .largest = self.pn_handshake.max, .first_range = d.first_range, .ranges = self.ack_ranges_buf[0..d.ranges_len] };
     }
-    /// Build ACK ranges for App space using the sliding window.
     pub fn buildAckApp(self: *Connection) AckDesc {
-        const desc = self.pn_app.buildAckRanges(self.ack_ranges_buf[0..]);
-        return .{ .largest = self.pn_app.max, .first_range = desc.first_range, .ranges = self.ack_ranges_buf[0..desc.ranges_len] };
+        const d = self.pn_app.buildAckRanges(self.ack_ranges_buf[0..]);
+        return .{ .largest = self.pn_app.max, .first_range = d.first_range, .ranges = self.ack_ranges_buf[0..d.ranges_len] };
     }
 
     /// Initialize a Connection in the given role bound to a socket and peer address.
@@ -311,14 +344,35 @@ pub const Connection = struct {
         self.timer_granularity_ns = std.time.ns_per_ms;
         // Init DATAGRAM inbox
         self.dgram_inbox = std.ArrayList([]u8).init(alloc.*);
-        // Init stream inbox
-        self.stream_inbox = std.ArrayList(u8).init(alloc.*);
+        // Init streams map
+        self.streams_rx = std.AutoHashMap(u64, StreamRx).init(alloc.*);
+        self.stream_opened = false;
+        self.stream_send_off = 0;
+        self.local_max_stream_data = 64 * 1024;
+        self.peer_max_stream_data = 64 * 1024;
+        self.local_max_data = 256 * 1024;
+        self.peer_max_data = 256 * 1024;
+        self.peer_max_streams_bidi = 16;
+        self.peer_max_streams_uni = 16;
+        self.opened_bidi = 0;
+        self.opened_uni = 0;
+        self.conn_send_off = 0;
+        self.conn_recv_total = 0;
         // Init address validation tracking
         self.address_validated = (role == .Client); // clients are not amplification-limited
         self.bytes_rx_unvalidated = 0;
         self.bytes_tx_unvalidated = 0;
         // Init Retry token buffer
         self.initial_token = std.ArrayList(u8).init(alloc.*);
+        // Flow control connection-level defaults already set via field initializers
+        self.path_validation_pending = false;
+        self.path_challenge_data = .{0} ** 8;
+        self.new_token_pending = false;
+        self.new_token_sent = false;
+        // CC default to NewReno; endpoint can flip use_cubic
+        self.use_cubic = false;
+        self.cc_nr = .{};
+        self.cc_cubic = .{};
     }
 
     /// Release resources held by this Connection (payloads, maps, TLS state).
@@ -333,10 +387,80 @@ pub const Connection = struct {
             self.allocator.free(p);
         }
         self.dgram_inbox.deinit();
-        // Stream inbox
-        self.stream_inbox.deinit();
+        // Deinit all streams
+        var it = self.streams_rx.iterator();
+        while (it.next()) |e| {
+            var s = e.value_ptr.*;
+            s.deinit(self.allocator);
+        }
+        self.streams_rx.deinit();
         // Retry token buffer
         self.initial_token.deinit();
+    }
+
+    /// Update peer address (used for NAT rebinding / migration detection).
+    pub fn setPeer(self: *Connection, peer: SockAddr) void {
+        self.peer = peer;
+    }
+
+    /// Set congestion controller mode (true=cubic, false=newreno)
+    pub fn setUseCubic(self: *Connection, cubic_on: bool) void {
+        self.use_cubic = cubic_on;
+    }
+
+    fn ccOnPacketSent(self: *Connection, bytes: usize, ack_eliciting: bool) void {
+        if (self.use_cubic) self.cc_cubic.onPacketSent(bytes, ack_eliciting) else self.cc_nr.onPacketSent(bytes, ack_eliciting);
+    }
+    fn ccOnAck(self: *Connection, bytes_acked: usize) void {
+        if (self.use_cubic) self.cc_cubic.onAck(bytes_acked) else self.cc_nr.onAck(bytes_acked);
+    }
+    fn ccOnLoss(self: *Connection, bytes_lost: usize) void {
+        if (self.use_cubic) self.cc_cubic.onLoss(bytes_lost) else self.cc_nr.onLoss(bytes_lost);
+    }
+
+    /// Send a PATH_CHALLENGE on the 1-RTT path to validate current peer path.
+    pub fn sendPathChallenge(self: *Connection) void {
+        const tx = self.app_tx_keys orelse return;
+        // Generate opaque 8-byte data and remember for validation
+        std.crypto.random.bytes(&self.path_challenge_data);
+        self.path_validation_pending = true;
+        var frames = std.ArrayList(u8).init(self.allocator.*);
+        defer frames.deinit();
+        const w = frames.writer();
+        _ = (frame.Frame{ .path_challenge = self.path_challenge_data }).write(w) catch 0;
+        const out = packet.encodeShortProtected(
+            self.allocator.*,
+            self.our_scid.bytes[0..self.our_scid.len],
+            self.pn_app_tx,
+            2,
+            frames.items,
+            .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
+        ) catch null;
+        if (out) |pkt| {
+            defer self.allocator.free(pkt);
+            _ = self.send(pkt) catch {};
+            self.onPacketSent(self.pn_app_tx, pkt.len, true);
+            self.pn_app_tx +%= 1;
+        }
+    }
+
+    /// Helper: send one or more control frames (ACK-eliciting) in a short header packet if keys ready.
+    fn sendControlFrames(self: *Connection, frames_bytes: []const u8) void {
+        const tx = self.app_tx_keys orelse return;
+        const pkt = packet.encodeShortProtected(
+            self.allocator.*,
+            self.our_scid.bytes[0..self.our_scid.len],
+            self.pn_app_tx,
+            2,
+            frames_bytes,
+            .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
+        ) catch null;
+        if (pkt) |bytes_out| {
+            defer self.allocator.free(bytes_out);
+            _ = self.send(bytes_out) catch {};
+            self.onPacketSent(self.pn_app_tx, bytes_out.len, true);
+            self.pn_app_tx +%= 1;
+        }
     }
 
     /// Send a datagram to the connection's peer using 1-RTT short header.
@@ -364,8 +488,21 @@ pub const Connection = struct {
     /// Open a bidi stream; only stream id 0 is supported in this minimal slice.
     pub fn openStream(self: *Connection, bidi: bool) !u64 {
         if (!bidi) return error.Unsupported;
+        // Enforce peer MAX_STREAMS_BIDI
+        if (self.opened_bidi >= self.peer_max_streams_bidi) {
+            // Attempt to signal STREAMS_BLOCKED_BIDI
+            var fb = std.ArrayList(u8).init(self.allocator.*);
+            defer fb.deinit();
+            const w = fb.writer();
+            _ = (frame.Frame{ .streams_blocked_bidi = .{ .max = self.peer_max_streams_bidi } }).write(w) catch 0;
+            self.sendControlFrames(fb.items);
+            return error.OutOfStreams;
+        }
         if (self.stream_opened) return error.OutOfStreams;
         self.stream_opened = true;
+        self.opened_bidi += 1;
+        // Ensure RX state for stream 0 exists
+        _ = self.ensureStreamRx(0);
         return 0;
     }
 
@@ -374,16 +511,37 @@ pub const Connection = struct {
         if (id != 0) return error.InvalidStream;
         const tx = self.app_tx_keys orelse return error.KeysNotReady;
         if (data.len == 0) return 0;
-        // Enforce a naive peer window
-        if (self.stream_send_off >= self.peer_max_stream_data) return error.FlowControlBlocked;
-        const window_left: u64 = self.peer_max_stream_data - self.stream_send_off;
+        // Enforce stream-level window
+        if (self.stream_send_off >= self.peer_max_stream_data) {
+            // Signal STREAM_DATA_BLOCKED
+            var fb1 = std.ArrayList(u8).init(self.allocator.*);
+            defer fb1.deinit();
+            const w1 = fb1.writer();
+            _ = (frame.Frame{ .stream_data_blocked = .{ .stream_id = id, .limit = self.peer_max_stream_data } }).write(w1) catch 0;
+            self.sendControlFrames(fb1.items);
+            return error.FlowControlBlocked;
+        }
+        // Enforce connection-level MAX_DATA
+        if (self.conn_send_off >= self.peer_max_data) {
+            // Signal DATA_BLOCKED
+            var fb2 = std.ArrayList(u8).init(self.allocator.*);
+            defer fb2.deinit();
+            const w2 = fb2.writer();
+            _ = (frame.Frame{ .data_blocked = .{ .limit = self.peer_max_data } }).write(w2) catch 0;
+            self.sendControlFrames(fb2.items);
+            return error.FlowControlBlocked;
+        }
+        const window_left_stream: u64 = self.peer_max_stream_data - self.stream_send_off;
+        const window_left_conn: u64 = self.peer_max_data - self.conn_send_off;
+        const window_left: u64 = if (window_left_stream < window_left_conn) window_left_stream else window_left_conn;
         const max_payload: usize = 1000; // keep within typical path-MTU
-        const to_send: usize = @intCast(@min(@min(window_left, @as(u64, data.len)), @as(u64, max_payload)));
+        const to_send_u64: u64 = @min(window_left, @as(u64, data.len));
+        const to_send: usize = @intCast(@min(to_send_u64, @as(u64, max_payload)));
         if (to_send == 0) return error.FlowControlBlocked;
         var frames = std.ArrayList(u8).init(self.allocator.*);
         defer frames.deinit();
         const w = frames.writer();
-        _ = (frame.Frame{ .stream = .{ .stream_id = 0, .offset = self.stream_send_off, .fin = false, .data = data[0..to_send] } }).write(w) catch 0;
+        _ = (frame.Frame{ .stream = .{ .stream_id = id, .offset = self.stream_send_off, .fin = false, .data = data[0..to_send] } }).write(w) catch 0;
         const pkt = try packet.encodeShortProtected(
             self.allocator.*,
             self.our_scid.bytes[0..self.our_scid.len],
@@ -398,21 +556,19 @@ pub const Connection = struct {
         self.pn_app_tx +%= 1;
         self.computeAndMaybeArmPto(self);
         self.stream_send_off += to_send;
+        self.conn_send_off += to_send;
         return to_send;
     }
 
-    /// Read bytes from stream id 0 into buf. Returns bytes copied (0 if none).
+    /// Read bytes from stream id into buf. Returns bytes copied (0 if none).
     pub fn readStream(self: *Connection, id: u64, buf: []u8) !usize {
-        if (id != 0) return error.InvalidStream;
-        if (self.stream_inbox.items.len == 0) return 0;
-        const n: usize = @min(buf.len, self.stream_inbox.items.len);
-        @memcpy(buf[0..n], self.stream_inbox.items[0..n]);
-        // shift remaining
-        const rem = self.stream_inbox.items.len - n;
-        if (rem > 0) {
-            std.mem.copy(u8, self.stream_inbox.items[0..rem], self.stream_inbox.items[n..self.stream_inbox.items.len]);
-        }
-        self.stream_inbox.shrinkRetainingCapacity(rem) catch {};
+        const s = self.streams_rx.getPtr(id) orelse return error.InvalidStream;
+        if (s.inbox.items.len == 0) return 0;
+        const n: usize = @min(buf.len, s.inbox.items.len);
+        @memcpy(buf[0..n], s.inbox.items[0..n]);
+        const rem = s.inbox.items.len - n;
+        if (rem > 0) std.mem.copy(u8, s.inbox.items[0..rem], s.inbox.items[n..]);
+        s.inbox.shrinkRetainingCapacity(rem) catch {};
         return n;
     }
 
@@ -447,21 +603,82 @@ pub const Connection = struct {
         try self.dgram_inbox.append(copy);
     }
 
-    /// Push received STREAM bytes into the stream inbox and advance recv offset.
-    pub fn pushStreamData(self: *Connection, data: []const u8) !void {
-        // Enforce local receive window for stream 0
-        if (self.stream_recv_off >= self.local_max_stream_data) return error.FlowControlViolation;
-        const capacity: u64 = self.local_max_stream_data - self.stream_recv_off;
-        const to_copy: usize = @intCast(@min(capacity, @as(u64, data.len)));
-        if (to_copy == 0) return error.FlowControlViolation;
-        try self.stream_inbox.appendSlice(data[0..to_copy]);
-        self.stream_recv_off += to_copy;
-        // Optionally, grow window and signal MAX_STREAM_DATA when crossing 50% threshold
-        const half: u64 = self.local_max_stream_data / 2;
-        if (self.stream_recv_off >= half) {
-            self.local_max_stream_data +%= half; // naive auto-tune
-            // In a full implementation, schedule a MAX_STREAM_DATA frame to peer
+    /// Ensure a StreamRx exists and return pointer.
+    fn ensureStreamRx(self: *Connection, id: u64) *StreamRx {
+        if (self.streams_rx.getPtr(id)) |p| return p;
+        const sr = StreamRx.init(self.allocator);
+        _ = self.streams_rx.put(id, sr) catch unreachable;
+        return self.streams_rx.getPtr(id).?;
+    }
+
+    /// Push received STREAM bytes for a given stream with optional offset; performs reassembly.
+    pub fn pushStreamFrame(self: *Connection, id: u64, off_opt: ?u64, data: []const u8, fin: bool) !void {
+        var s = self.ensureStreamRx(id);
+        const off: u64 = off_opt orelse s.recv_off;
+        // Enforce connection and stream receive windows based on bytes we will accept
+        var start: usize = 0;
+        if (off < s.recv_off) {
+            const delta = s.recv_off - off;
+            if (delta >= data.len) return; // entirely before window
+            start = @intCast(delta);
         }
+        const eff_off: u64 = off + @as(u64, start);
+        var remaining: usize = data.len - start;
+        if (remaining == 0) return;
+        // Enforce connection-level receive limit
+        const conn_left: u64 = if (self.conn_recv_total >= self.local_max_data) 0 else (self.local_max_data - self.conn_recv_total);
+        if (conn_left == 0) return error.FlowControlViolation;
+        if (remaining > conn_left) remaining = @intCast(conn_left);
+        // Enforce per-stream receive limit (uses shared default)
+        const stream_left: u64 = if (s.recv_off >= self.local_max_stream_data) 0 else (self.local_max_stream_data - s.recv_off);
+        if (stream_left == 0) return error.FlowControlViolation;
+        if (remaining > stream_left) remaining = @intCast(stream_left);
+        const seg_len: usize = remaining;
+        if (seg_len == 0) return;
+        // Make owned copy for buffering
+        const copy = try self.allocator.alloc(u8, seg_len);
+        @memcpy(copy, data[start .. start + seg_len]);
+        // Insert ordered by offset
+        var inserted = false;
+        var idx: usize = 0;
+        while (idx < s.bufs.items.len) : (idx += 1) {
+            if (eff_off < s.bufs.items[idx].off) {
+                _ = try s.bufs.insert(idx, .{ .off = eff_off, .data = copy });
+                inserted = true;
+                break;
+            }
+        }
+        if (!inserted) try s.bufs.append(.{ .off = eff_off, .data = copy });
+        // Attempt to deliver contiguous from recv_off
+        var advanced = true;
+        while (advanced) {
+            advanced = false;
+            var j: usize = 0;
+            while (j < s.bufs.items.len) : (j += 1) {
+                const seg = s.bufs.items[j];
+                if (seg.off == s.recv_off) {
+                    // deliver
+                    try s.inbox.appendSlice(seg.data);
+                    s.recv_off += seg.data.len;
+                    self.conn_recv_total += seg.data.len;
+                    self.allocator.free(seg.data);
+                    _ = s.bufs.orderedRemove(j);
+                    advanced = true;
+                    break;
+                }
+            }
+        }
+        _ = fin; // TODO: FIN handling
+        // Auto-tune local windows: grow when passing 50%
+        const half_stream: u64 = self.local_max_stream_data / 2;
+        if (s.recv_off >= half_stream) self.local_max_stream_data +%= half_stream;
+        const half_conn: u64 = self.local_max_data / 2;
+        if (self.conn_recv_total >= half_conn) self.local_max_data +%= half_conn;
+    }
+
+    /// Back-compat: push received bytes on stream 0 assuming in-order; now forwards to reassembly API.
+    pub fn pushStreamData(self: *Connection, data: []const u8) !void {
+        try self.pushStreamFrame(0, null, data, false);
     }
 
     /// Pop a DATAGRAM payload into caller buffer, returning bytes copied.
@@ -536,20 +753,18 @@ pub const Connection = struct {
     pub fn onPacketSent(self: *Connection, pn: u64, bytes: usize, ack_eliciting: bool) void {
         _ = self.sent_time.put(pn, std.time.nanoTimestamp()) catch {};
         _ = self.sent_sizes.put(pn, @intCast(@min(bytes, @as(usize, std.math.maxInt(u16))))) catch {};
-        self.cc.onPacketSent(bytes, ack_eliciting);
+        self.ccOnPacketSent(bytes, ack_eliciting);
     }
 
-    /// Mark Initial PTO as expired and increase backoff counter.
+    /// Mark Initial/Handshake/App PTO expired and increase backoff counter.
     pub fn setPtoExpiredInitial(self: *Connection) void {
         self.pto_initial_active = false;
         self.pto_initial_count +%= 1;
     }
-    /// Mark Handshake PTO as expired and increase backoff counter.
     pub fn setPtoExpiredHandshake(self: *Connection) void {
         self.pto_handshake_active = false;
         self.pto_handshake_count +%= 1;
     }
-    /// Mark App PTO as expired and increase backoff counter.
     pub fn setPtoExpiredApp(self: *Connection) void {
         self.pto_app_active = false;
         self.pto_app_count +%= 1;
@@ -584,20 +799,18 @@ pub const Connection = struct {
         }
     }
 
-    /// Reset Initial PTO backoff counter to zero.
+    /// Reset PTO backoff helpers
     pub fn resetPtoBackoffInitial(self: *Connection) void {
         self.pto_initial_count = 0;
     }
-    /// Reset Handshake PTO backoff counter to zero.
     pub fn resetPtoBackoffHandshake(self: *Connection) void {
         self.pto_handshake_count = 0;
     }
-    /// Reset App PTO backoff counter to zero.
     pub fn resetPtoBackoffApp(self: *Connection) void {
         self.pto_app_count = 0;
     }
 
-    /// Cancel Initial PTO timer and reset backoff.
+    /// Cancel PTO helpers
     pub fn cancelPtoInitial(self: *Connection, ep: anytype) void {
         if (self.pto_initial_active) {
             if (self.pto_initial_id != 0) _ = ep.cancelTimer(self.pto_initial_id);
@@ -605,7 +818,6 @@ pub const Connection = struct {
         }
         self.resetPtoBackoffInitial();
     }
-    /// Cancel Handshake PTO timer and reset backoff.
     pub fn cancelPtoHandshake(self: *Connection, ep: anytype) void {
         if (self.pto_handshake_active) {
             if (self.pto_handshake_id != 0) _ = ep.cancelTimer(self.pto_handshake_id);
@@ -613,7 +825,6 @@ pub const Connection = struct {
         }
         self.resetPtoBackoffHandshake();
     }
-    /// Cancel App PTO timer and reset backoff.
     pub fn cancelPtoApp(self: *Connection, ep: anytype) void {
         if (self.pto_app_active) {
             if (self.pto_app_id != 0) _ = ep.cancelTimer(self.pto_app_id);
@@ -649,10 +860,9 @@ pub const Connection = struct {
                     const lost_bytes: usize = blk: {
                         if (self.sent_sizes.fetchRemove(pn)) |kv2| break :blk kv2.value else break :blk 1200;
                     };
-                    self.cc.onLoss(lost_bytes);
+                    self.ccOnLoss(lost_bytes);
                     _ = self.sent_time.remove(pn);
                 } else {
-                    // acked by range collapse assumption
                     _ = self.sent_time.remove(pn);
                     const ackb: usize = blk: {
                         if (self.sent_sizes.fetchRemove(pn)) |kv2| break :blk kv2.value else break :blk 1200;
@@ -674,12 +884,12 @@ pub const Connection = struct {
                     const lost_b: usize = blk: {
                         if (self.sent_sizes.fetchRemove(pn2)) |kv3| break :blk kv3.value else break :blk 1200;
                     };
-                    self.cc.onLoss(lost_b);
+                    self.ccOnLoss(lost_b);
                     _ = self.sent_time.remove(pn2);
                 }
             }
         }
-        if (bytes_acked_total > 0) self.cc.onAck(bytes_acked_total);
+        if (bytes_acked_total > 0) self.ccOnAck(bytes_acked_total);
         _ = first_range;
         _ = ranges;
     }
@@ -701,7 +911,7 @@ pub const Connection = struct {
         }
     }
 
-    /// Compute PTO for Initial space and arm timer if not active.
+    /// Compute PTO for Initial/Handshake space and arm timer if not active.
     pub fn computeAndMaybeArmPtoInitial(self: *Connection, ep: anytype) void {
         const pto_ns = self.rtt_initial.computePtoNsWithBackoff(self.pto_initial_count, self.timer_granularity_ns);
         if (pto_ns == 0) return;
@@ -713,8 +923,6 @@ pub const Connection = struct {
             self.pto_initial_id = ep.scheduleConnPto(self, .PtoInitial, delay_ms) catch 0;
         }
     }
-
-    /// Compute PTO for Handshake space and arm timer if not active.
     pub fn computeAndMaybeArmPtoHandshake(self: *Connection, ep: anytype) void {
         const pto_ns = self.rtt_handshake.computePtoNsWithBackoff(self.pto_handshake_count, self.timer_granularity_ns);
         if (pto_ns == 0) return;
@@ -727,7 +935,7 @@ pub const Connection = struct {
         }
     }
 
-    /// Send a minimal PTO probe for the Initial space (PING frame).
+    /// Send a minimal PTO probe for the Initial/Handshake/App space (PING frame).
     pub fn sendPtoProbeInitial(self: *Connection) void {
         if (self.initial_keys_dropped) return;
         // Derive server initial TX keys on demand
@@ -758,8 +966,6 @@ pub const Connection = struct {
             self.pn_initial_tx +%= 1;
         }
     }
-
-    /// Send a minimal PTO probe for the Handshake space (PING frame).
     pub fn sendPtoProbeHandshake(self: *Connection) void {
         const tx = self.hs_tx_keys orelse return;
         var frames = std.ArrayList(u8).init(self.allocator.*);
@@ -784,8 +990,6 @@ pub const Connection = struct {
             self.pn_handshake_tx +%= 1;
         }
     }
-
-    /// Send a minimal PTO probe for the App space (PING frame).
     pub fn sendPtoProbeApp(self: *Connection) void {
         const tx = self.app_tx_keys orelse return;
         var frames = std.ArrayList(u8).init(self.allocator.*);

@@ -189,6 +189,9 @@ pub const Endpoint = struct {
         const peer = try resolveAny(hostport, .udp);
         const c = try self.allocator.create(conn_mod.Connection);
         c.init(self.allocator, .Client, self.sock_fd, peer);
+        // Apply config flags
+        c.setUseCubic(self.cfg.cc == .cubic);
+        c.tls.allow_insecure = self.cfg.allow_insecure;
         // Choose initial version from cfg
         c.version = if (self.cfg.version == .v2) packet.QUIC_V2 else packet.QUIC_V1;
         c.version_v2 = (c.version == packet.QUIC_V2);
@@ -432,6 +435,27 @@ pub const Endpoint = struct {
                     break;
                 }
             }
+            // NAT rebinding / migration fallback: try match by DCID across all entries
+            if (found == null) {
+                var it2 = self.conns.iterator();
+                while (it2.next()) |entry| {
+                    const c = entry.value_ptr.*;
+                    const l: usize = c.our_scid.len;
+                    if (1 + l > bytes.len) continue;
+                    if (l == 0) continue;
+                    if (std.mem.eql(u8, c.our_scid.bytes[0..l], bytes[1 .. 1 + l])) {
+                        found = c;
+                        dcid_len = l;
+                        // Update peer address and map entry for new peer hash
+                        c.setPeer(peer);
+                        const new_key = Key{ .peer_hash = peer_h, .dcid_hash = hashBytes(c.our_scid.bytes[0..l]) };
+                        _ = self.conns.put(new_key, c) catch {};
+                        // Trigger path validation if keys are ready
+                        c.sendPathChallenge();
+                        break;
+                    }
+                }
+            }
             const conn = found orelse return;
             if (conn.app_rx_keys) |rx_keys| {
                 const dec = packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }) catch return;
@@ -446,12 +470,8 @@ pub const Endpoint = struct {
                     switch (fr.f) {
                         .ping => saw_any = true,
                         .stream => |s| {
-                            if (s.stream_id == 0) {
-                                // Enforce FC and buffer; ignore FIN for now
-                                if (conn.pushStreamData(s.data)) |_| {} else |_| {
-                                    // Flow control violation; could close connection. For now, ignore excess.
-                                }
-                            }
+                            // Use robust reassembly across streams
+                            conn.pushStreamFrame(s.stream_id, s.offset, s.data, s.fin) catch {};
                             saw_any = true;
                         },
                         .datagram => |d| {
@@ -487,14 +507,44 @@ pub const Endpoint = struct {
                                 conn.peer_max_stream_data = m.max;
                             }
                         },
-                        .stream_data_blocked => |_| {
-                            // Peer is blocked on our advertised window; send MAX_STREAM_DATA soon
+                        .max_data => |md| {
+                            conn.peer_max_data = md.max;
                         },
+                        .max_streams_bidi => |msb| {
+                            conn.peer_max_streams_bidi = msb.max;
+                        },
+                        .max_streams_uni => |msu| {
+                            conn.peer_max_streams_uni = msu.max;
+                        },
+                        .stream_data_blocked => |_| {},
                         .path_challenge => |pcv| {
                             // Echo PATH_RESPONSE with same data (opaque 8 bytes), if keys ready
-                            _ = pcv; // TODO: parse and hold payload in frame struct in future slice
+                            if (conn.app_tx_keys) |txk| {
+                                var fb = std.ArrayList(u8).init(self.allocator.*);
+                                defer fb.deinit();
+                                const w = fb.writer();
+                                _ = (frame.Frame{ .path_response = pcv }).write(w) catch 0;
+                                const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], conn.pn_app_tx, 2, fb.items, txk) catch null;
+                                if (out) |pkt_bytes| {
+                                    defer self.allocator.free(pkt_bytes);
+                                    _ = self.sendTo(peer, pkt_bytes) catch {};
+                                    conn.onPacketSent(conn.pn_app_tx, pkt_bytes.len, true);
+                                    conn.pn_app_tx +%= 1;
+                                }
+                            }
                         },
-                        .path_response => |_| {},
+                        .path_response => |prv| {
+                            // Validate PATH_RESPONSE matches our outstanding PATH_CHALLENGE
+                            if (conn.path_validation_pending and std.mem.eql(u8, &conn.path_challenge_data, &prv)) {
+                                conn.path_validation_pending = false;
+                                conn.address_validated = true;
+                                conn.bytes_rx_unvalidated = 0;
+                                conn.bytes_tx_unvalidated = 0;
+                            }
+                        },
+                        .new_token => |_| {
+                            // client may cache for future
+                        },
                         else => {},
                     }
                 }
@@ -506,8 +556,9 @@ pub const Endpoint = struct {
                         const ack_desc = conn.buildAckApp();
                         const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = 0, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges } };
                         _ = ack.write(w) catch 0;
-                        // Opportunistically advertise receive window growth
+                        // Advertise receive window growth for stream and connection
                         _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = conn.local_max_stream_data } }).write(w) catch {};
+                        _ = (frame.Frame{ .max_data = .{ .max = conn.local_max_data } }).write(w) catch {};
                         const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], conn.pn_app_tx, 2, frames_buf.items, tx_keys) catch null;
                         if (out) |pkt_bytes| {
                             defer self.allocator.free(pkt_bytes);
@@ -520,6 +571,7 @@ pub const Endpoint = struct {
             }
             return;
         }
+        // Detect NAT rebinding or migration: if we have a known connection for dcid but peer address changed, update and trigger validation
         const ty = (first >> 4) & 0x03;
         const version: u32 = (@as(u32, bytes[1]) << 24) | (@as(u32, bytes[2]) << 16) | (@as(u32, bytes[3]) << 8) | @as(u32, bytes[4]);
         if (ty == 0) {
@@ -547,6 +599,9 @@ pub const Endpoint = struct {
                     if (p.*.role == .Server) break :blk p.*;
                     const c = self.allocator.create(conn_mod.Connection) catch return;
                     c.init(self.allocator, .Server, self.sock_fd, peer);
+                    // Apply config to server connection
+                    c.setUseCubic(self.cfg.cc == .cubic);
+                    c.tls.allow_insecure = self.cfg.allow_insecure;
                     _ = self.conns.put(key, c) catch {
                         c.deinit();
                         self.allocator.destroy(c);
@@ -561,6 +616,8 @@ pub const Endpoint = struct {
                 } else {
                     const c = self.allocator.create(conn_mod.Connection) catch return;
                     c.init(self.allocator, .Server, self.sock_fd, peer);
+                    c.setUseCubic(self.cfg.cc == .cubic);
+                    c.tls.allow_insecure = self.cfg.allow_insecure;
                     _ = self.conns.put(key, c) catch {
                         c.deinit();
                         self.allocator.destroy(c);
@@ -614,6 +671,8 @@ pub const Endpoint = struct {
                 const now_ms: u64 = @intCast(if (now_ns > 0) @as(u128, @intCast(now_ns)) / std.time.ns_per_ms else 0);
                 if (token_mod.verify(token_bytes, client_ip_bytes, secret, now_ms)) {
                     conn.address_validated = true;
+                    // Mark that we can send NEW_TOKEN after handshake completes (1-RTT)
+                    conn.new_token_pending = true;
                 }
             }
 
@@ -931,6 +990,28 @@ pub const Endpoint = struct {
                             _ = self.sendTo(peer, bytes_out) catch {};
                             // ACK-only Handshake is not ack-eliciting; no PTO arm
                             conn.pn_handshake_tx +%= 1;
+                        }
+                    }
+                }
+                // If peer has validated address (CH contained token) and we are server, consider sending NEW_TOKEN on 1-RTT after HS done
+                if (conn.address_validated and conn.app_tx_keys != null and conn.new_token_pending and !conn.new_token_sent) {
+                    // Issue a fresh token bound to current peer IP and ODCID (peer_initial_dcid)
+                    const client_ip_bytes = @as([*]const u8, @ptrCast(&peer.storage))[0..peer.len];
+                    const secret = self.cfg.token_secret orelse "default-retry-secret-16";
+                    const tok = token_mod.encode(self.allocator.*, client_ip_bytes, conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len], secret, self.cfg.token_expiry_ms) catch null;
+                    if (tok) |tbytes| {
+                        defer self.allocator.free(tbytes);
+                        var fb = std.ArrayList(u8).init(self.allocator.*);
+                        defer fb.deinit();
+                        const w = fb.writer();
+                        _ = (frame.Frame{ .new_token = .{ .token = tbytes } }).write(w) catch 0;
+                        const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], conn.pn_app_tx, 2, fb.items, conn.app_tx_keys.?) catch null;
+                        if (out) |pkt_bytes| {
+                            defer self.allocator.free(pkt_bytes);
+                            _ = self.sendTo(peer, pkt_bytes) catch {};
+                            conn.onPacketSent(conn.pn_app_tx, pkt_bytes.len, true);
+                            conn.pn_app_tx +%= 1;
+                            conn.new_token_sent = true;
                         }
                     }
                 }

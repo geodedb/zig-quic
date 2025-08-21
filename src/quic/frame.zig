@@ -51,6 +51,8 @@ pub const Frame = union(enum) {
     streams_blocked_uni: struct { max: u64 },
     path_challenge: [8]u8,
     path_response: [8]u8,
+    // NEW: server-issued token for future connections (1-RTT only)
+    new_token: struct { token: []const u8 },
     // ... more frames as needed ...
 
     /// Encode this frame to the writer. Returns bytes written.
@@ -223,6 +225,14 @@ pub const Frame = union(enum) {
                 try w.writeAll(&v);
                 return 1 + 8;
             },
+            .new_token => |nt| {
+                try w.writeByte(@intFromEnum(FrameType.NEW_TOKEN));
+                var tmp: [16]u8 = undefined;
+                const tl = try varint.encode(nt.token.len, &tmp);
+                try w.writeAll(tmp[0..tl]);
+                try w.writeAll(nt.token);
+                return 1 + tl + nt.token.len;
+            },
         }
     }
 };
@@ -353,7 +363,7 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
         var i: usize = 1;
         const max = try varint.decode(buf[i..]);
         i += max.n;
-        return .{ .f = Frame{ .max_streams_uni = .{ .max = max.value } }, .n = i };
+        return .{ .f = Frame{ .streams_blocked_uni = .{ .max = max.value } }, .n = i };
     }
     if (t == @intFromEnum(FrameType.DATA_BLOCKED)) {
         var i: usize = 1;
@@ -392,6 +402,15 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
         var data8: [8]u8 = undefined;
         @memcpy(&data8, buf[1 .. 1 + 8]);
         return .{ .f = Frame{ .path_response = data8 }, .n = 1 + 8 };
+    }
+    if (t == @intFromEnum(FrameType.NEW_TOKEN)) {
+        var i: usize = 1;
+        const dl = try varint.decode(buf[i..]);
+        i += dl.n;
+        const nbytes: usize = @intCast(dl.value);
+        if (i + nbytes > buf.len) return error.Truncated;
+        const tok = buf[i .. i + nbytes];
+        return .{ .f = Frame{ .new_token = .{ .token = tok } }, .n = i + nbytes };
     }
     // Minimal support for now
     return error.Unsupported;
