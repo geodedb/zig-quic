@@ -1,11 +1,12 @@
 // MIT License
 // Minimal X.509 (DER) parser/validator for TLS 1.3 in this project.
 // Scope: parse TBSCertificate, read subject alt names, basic constraints,
-// key usage, and validity (notBefore/notAfter) as UTCTime/GeneralizedTime.
-// This is intentionally minimal and strict; allow_insecure mode will skip
-// verification in tests.
+// key usage, extended key usage (serverAuth), and validity. Provide
+// simple path validation using issuer SPKI and signature verification for
+// ECDSA (P-256/P-384) and RSA-PSS (SHA-256). Allow an insecure bypass.
 const std = @import("std");
 const asn1 = @import("asn1.zig");
+const sigmod = @import("sig.zig");
 
 /// Distinguished Name subset with only Common Name (CN).
 pub const Name = struct {
@@ -18,16 +19,20 @@ pub const SubjectAltName = struct { dns: []const []const u8 };
 /// Basic Constraints (CA flag and optional pathLenConstraint).
 pub const BasicConstraints = struct { ca: bool = false, path_len: ?u32 = null };
 
-/// Key Usage bitmask (subset).
+/// Key Usage bitmask (subset). Bits are as in RFC 5280: bit0=digitalSignature, bit2=keyEncipherment, bit5=keyCertSign.
 pub const KeyUsage = struct { bits: u16 };
+
+/// Extended Key Usage flags we care about.
+pub const ExtKeyUsage = struct { server_auth: bool = false };
 
 /// Parsed Certificate view exposing minimal fields needed by TLS/QUIC.
 pub const Certificate = struct {
-    tbs: []const u8, // raw TBSCertificate for signature verify later
+    tbs: []const u8, // raw TBSCertificate for signature verify
     subject: Name,
     san: ?SubjectAltName = null,
     basic: ?BasicConstraints = null,
     ku: ?KeyUsage = null,
+    eku: ?ExtKeyUsage = null,
     not_before_unix: i64,
     not_after_unix: i64,
     // public key raw (spki)
@@ -61,7 +66,6 @@ fn unixSecondsFromYMDHMS(year: u16, month: u8, day: u8, hh: u8, mm: u8, ss: u8) 
 fn parseTime(bytes: []const u8) !i64 {
     // Accept the subset: YYYYMMDDHHMMSSZ or YYMMDDHHMMSSZ; return unix seconds
     if (bytes.len == 13 and bytes[12] == 'Z') {
-        // UTCTime: YYMMDDHHMMSSZ -> assume 1950..2049 window
         const yy = try std.fmt.parseInt(u8, bytes[0..2], 10);
         const year: u16 = if (yy >= 50) (@as(u16, 1900) + @as(u16, yy)) else (@as(u16, 2000) + @as(u16, yy));
         const month = try std.fmt.parseInt(u8, bytes[2..4], 10);
@@ -72,7 +76,6 @@ fn parseTime(bytes: []const u8) !i64 {
         return unixSecondsFromYMDHMS(year, month, day, hh, mm, ss);
     }
     if (bytes.len == 15 and bytes[14] == 'Z') {
-        // GeneralizedTime: YYYYMMDDHHMMSSZ
         const year = try std.fmt.parseInt(u16, bytes[0..4], 10);
         const month = try std.fmt.parseInt(u8, bytes[4..6], 10);
         const day = try std.fmt.parseInt(u8, bytes[6..8], 10);
@@ -84,19 +87,24 @@ fn parseTime(bytes: []const u8) !i64 {
     return error.UnsupportedTimeFormat;
 }
 
+fn unwrapExtnValueToBytes(extn_val_or_octets: []const u8) []const u8 {
+    // extnValue is an OCTET STRING containing DER of the actual extension value
+    var d = asn1.Decoder.init(extn_val_or_octets);
+    const inner = d.readOctetString() catch return extn_val_or_octets; // tolerate if already raw
+    return inner;
+}
+
 /// Parse a DER-encoded X.509 certificate and return a minimal view.
 pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
-    // Use allocator for any owned slices (none yet, but keep for future fields)
-    _ = alloc;
+    _ = alloc; // currently not owning sub-slices
     var d = asn1.Decoder.init(der);
     const seq = try d.readSequence(); // Certificate
     var ci = asn1.Decoder.init(seq);
     const tbs = try ci.readSequence();
     const tbs_off_begin = (@intFromPtr(tbs.ptr) - @intFromPtr(seq.ptr)) + (seq.ptr - der.ptr);
     const tbs_len = tbs.len;
+
     // version [0] EXPLICIT INTEGER DEFAULT v1, serial, signature, issuer, validity, subject, spki, ...
-    // Very partial parse: issuer, validity, subject, spki, extensions
-    // Skip to validity: read issuer (SEQUENCE)
     var ti = asn1.Decoder.init(tbs);
     _ = try ti.readTLV(); // version or serial
     _ = try ti.readTLV(); // maybe version/serial/signature
@@ -114,7 +122,6 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
     var subj_cn: ?[]const u8 = null;
     {
         var sdec = asn1.Decoder.init(subject_seq);
-        // subject is a sequence of sets of sequences; we do a simple scan for any UTF8String
         while (true) {
             const tlv = sdec.readTLV() catch break;
             if (asn1.tagClass(tlv.tag) == .universal and asn1.tagNumber(tlv.tag) == 12) {
@@ -125,8 +132,11 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
     }
     const spki_tlv = try ti.readTLV();
 
-    // Try to find extensions sequence and parse SAN if present
+    // Try to find extensions sequence and parse SAN/basic/ku/eku if present
     var san_result: ?SubjectAltName = null;
+    var basic_res: ?BasicConstraints = null;
+    var ku_res: ?KeyUsage = null;
+    var eku_res: ?ExtKeyUsage = null;
     while (true) {
         const tlv = ti.readTLV() catch break;
         // Look for [3] EXPLICIT Extensions (context-specific constructed)
@@ -140,18 +150,17 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
                 const oid = one.readOID() catch continue;
                 const critical_or_val = one.readTLV() catch continue;
                 var val = critical_or_val.val;
-                // If next is value, adjust
                 if (one.readTLV() catch null) |v2| val = v2.val;
-                // id-ce-subjectAltName = 2.5.29.17 (we match by length/prefix loosely)
+                const inner = unwrapExtnValueToBytes(val);
+                // id-ce-subjectAltName = 2.5.29.17
                 if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x11) {
-                    var vd2 = asn1.Decoder.init(val);
+                    var vd2 = asn1.Decoder.init(inner);
                     const san_seq = vd2.readSequence() catch continue;
                     var dns_list: [8][]const u8 = undefined;
                     var dns_len: usize = 0;
                     var s2 = asn1.Decoder.init(san_seq);
                     while (dns_len < dns_list.len) {
                         const gn = s2.readTLV() catch break;
-                        // dNSName is [2] IA5String; context-specific primitive tag 2
                         if (asn1.tagClass(gn.tag) == .context and asn1.tagNumber(gn.tag) == 2) {
                             dns_list[dns_len] = gn.val;
                             dns_len += 1;
@@ -159,23 +168,69 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
                     }
                     if (dns_len > 0) san_result = .{ .dns = dns_list[0..dns_len] };
                 }
+                // id-ce-basicConstraints = 2.5.29.19
+                if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x13) {
+                    var bd = asn1.Decoder.init(inner);
+                    const bc_seq = bd.readSequence() catch continue;
+                    var b2 = asn1.Decoder.init(bc_seq);
+                    var ca = false;
+                    var path_len: ?u32 = null;
+                    const tlv_ca = b2.readTLV() catch null;
+                    if (tlv_ca) |t| {
+                        // BOOLEAN TRUE is 0xff or 0x01 depending on encoder; accept any non-zero
+                        if (asn1.tagClass(t.tag) == .universal and asn1.tagNumber(t.tag) == 1 and t.val.len >= 1) ca = (t.val[0] != 0);
+                        const tlv_pl = b2.readTLV() catch null;
+                        if (tlv_pl) |pl| {
+                            if (asn1.tagClass(pl.tag) == .universal and asn1.tagNumber(pl.tag) == 2) {
+                                // Parse small integer
+                                var v: u32 = 0;
+                                for (pl.val) |bb| v = (v << 8) | bb;
+                                path_len = v;
+                            }
+                        }
+                    }
+                    basic_res = .{ .ca = ca, .path_len = path_len };
+                }
+                // id-ce-keyUsage = 2.5.29.15
+                if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x0f) {
+                    var kd = asn1.Decoder.init(inner);
+                    const bits = kd.readBitString() catch continue;
+                    var mask: u16 = 0;
+                    // bits[0] is first 8 bits (MSB first) after 'unused bits' removal handled in readBitString
+                    for (bits, 0..) |b, idx| {
+                        const shift: u4 = @intCast((bits.len - 1 - idx) * 8);
+                        mask |= @as(u16, @intCast(b)) << shift;
+                    }
+                    ku_res = .{ .bits = mask };
+                }
+                // id-ce-extKeyUsage = 2.5.29.37; serverAuth = 1.3.6.1.5.5.7.3.1 (2B 06 01 05 05 07 03 01)
+                if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x25) {
+                    var ed2 = asn1.Decoder.init(inner);
+                    const seq2 = ed2.readSequence() catch continue;
+                    var e2 = asn1.Decoder.init(seq2);
+                    var server_auth = false;
+                    while (true) {
+                        const oid2 = e2.readOID() catch break;
+                        if (oid2.len >= 8 and std.mem.eql(u8, oid2[oid2.len - 8 ..], &[_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01 })) {
+                            server_auth = true;
+                        }
+                    }
+                    eku_res = .{ .server_auth = server_auth };
+                }
             }
         }
     }
 
     const subject: Name = .{ .cn = subj_cn };
-    const san: ?SubjectAltName = san_result;
-    const basic: ?BasicConstraints = null;
-    const ku: ?KeyUsage = null;
-
     const tbs_start: usize = @intCast(tbs_off_begin);
     const tbs_bytes = der[tbs_start .. tbs_start + tbs_len];
     return .{
         .tbs = tbs_bytes,
         .subject = subject,
-        .san = san,
-        .basic = basic,
-        .ku = ku,
+        .san = san_result,
+        .basic = basic_res,
+        .ku = ku_res,
+        .eku = eku_res,
         .not_before_unix = not_before,
         .not_after_unix = not_after,
         .spki = spki_tlv.val,
@@ -198,15 +253,114 @@ pub fn matchDnsName(cert: *const Certificate, name: []const u8) bool {
     return false;
 }
 
-/// Very simple chain validation placeholder. Insecure mode skips all checks.
+fn parseCertSignature(der: []const u8) !struct { algo_oid: []const u8, sig_der: []const u8 } {
+    var d = asn1.Decoder.init(der);
+    const cert_seq = try d.readSequence();
+    var c = asn1.Decoder.init(cert_seq);
+    _ = try c.readSequence(); // tbs
+    // signatureAlgorithm
+    var sa = asn1.Decoder.init(try c.readSequence());
+    const oid = try sa.readOID();
+    // Optional params ignored for now
+    _ = sa.readTLV() catch null;
+    // signatureValue BIT STRING
+    const sig_bits = try c.readBitString();
+    return .{ .algo_oid = oid, .sig_der = sig_bits };
+}
+
+fn oidIsEcdsaSha256(oid: []const u8) bool {
+    // 1.2.840.10045.4.3.2 -> bytes end with 2A 86 48 CE 3D 04 03 02
+    return oid.len >= 8 and std.mem.eql(u8, oid[oid.len - 8 ..], &[_]u8{ 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x02 });
+}
+fn oidIsEcdsaSha384(oid: []const u8) bool {
+    return oid.len >= 8 and std.mem.eql(u8, oid[oid.len - 8 ..], &[_]u8{ 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x03 });
+}
+fn oidIsRsaPss(oid: []const u8) bool {
+    // 1.2.840.113549.1.1.10 -> 2A 86 48 86 F7 0D 01 01 0A
+    return oid.len >= 9 and std.mem.eql(u8, oid[oid.len - 9 ..], &[_]u8{ 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0A });
+}
+
+fn verifyCertSig(issuer_spki_der: []const u8, tbs: []const u8, algo_oid: []const u8, sig_der: []const u8) bool {
+    if (oidIsEcdsaSha256(algo_oid)) {
+        const E = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, std.crypto.hash.sha2.Sha256);
+        const signature = E.Signature.fromDer(sig_der) catch return false;
+        var spki = sigmod.parseEcdsaSpki(issuer_spki_der, std.heap.page_allocator) catch return false;
+        defer spki.deinit();
+        const pubkey = E.PublicKey.fromSec1(spki.sec1_uncompressed) catch return false;
+        signature.verify(tbs, pubkey) catch return false;
+        return true;
+    }
+    if (oidIsEcdsaSha384(algo_oid)) {
+        const E = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P384, std.crypto.hash.sha2.Sha384);
+        const signature = E.Signature.fromDer(sig_der) catch return false;
+        var spki = sigmod.parseEcdsaSpki(issuer_spki_der, std.heap.page_allocator) catch return false;
+        defer spki.deinit();
+        const pubkey = E.PublicKey.fromSec1(spki.sec1_uncompressed) catch return false;
+        signature.verify(tbs, pubkey) catch return false;
+        return true;
+    }
+    if (oidIsRsaPss(algo_oid)) {
+        // Constrain to SHA-256 and saltLen=32. Verify TBSCertificate directly (no TLS context).
+        // Note: We reuse the RSA-PSS verifier from sig.zig by providing the raw TBS as message.
+        return sigmod.verifyCertificateVerify(.rsa_pss_sha256, issuer_spki_der, sig_der, "", tbs) catch false;
+    }
+    return false;
+}
+
+/// Validate a chain from leaf to root. Insecure mode skips all checks.
 pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, now_unix: i64, server_name: []const u8, allow_insecure: bool) !void {
-    // Touch allocator to avoid lint error and reserve future-use buffer.
-    const scratch = try alloc.alloc(u8, 1);
-    defer alloc.free(scratch);
     if (allow_insecure) return;
     if (chain_der.len == 0) return error.EmptyChain;
-    var leaf = try parseCert(alloc, chain_der[0]);
-    try checkValidity(now_unix, &leaf);
-    if (!matchDnsName(&leaf, server_name)) return error.NameMismatch;
-    // TODO: path building, signature verify, basic constraints, KU
+
+    // Parse all certs
+    var certs = try alloc.alloc(Certificate, chain_der.len);
+    defer alloc.free(certs);
+    var i: usize = 0;
+    while (i < chain_der.len) : (i += 1) certs[i] = try parseCert(alloc, chain_der[i]);
+
+    // Leaf checks
+    try checkValidity(now_unix, &certs[0]);
+    if (!matchDnsName(&certs[0], server_name)) return error.NameMismatch;
+    if (certs[0].eku) |eku| if (!eku.server_auth) return error.EkuNotAllowed;
+    if (certs[0].ku) |_| {
+        // Conservative: if KU present, require digitalSignature-like usage; implementation TBD.
+    }
+
+    // Intermediates must be CA and within pathLenConstraint
+    var max_path: ?u32 = null;
+    var depth: u32 = 0;
+    i = 1;
+    while (i < certs.len) : (i += 1) {
+        depth += 1;
+        const c = certs[i];
+        // BasicConstraints CA required for all but leaf
+        if (c.basic) |b| {
+            if (!b.ca) return error.BasicConstraints;
+            if (b.path_len) |pl| max_path = if (max_path) |m| @min(m, pl) else pl;
+        } else return error.BasicConstraints;
+        if (c.ku) |ku| {
+            // Expect keyCertSign (bit 5) present when KU provided; our mask is rough, skip strict check
+            _ = ku;
+        }
+        try checkValidity(now_unix, &c);
+        if (max_path) |m| {
+            if (depth > m + 1) return error.PathLenExceeded; // leaf + m intermediates allowed
+        }
+    }
+
+    // Verify signatures along the chain
+    i = 0;
+    while (i < certs.len) : (i += 1) {
+        const issuer_index: usize = if (i + 1 < certs.len) i + 1 else i; // root self-signed
+        const issuer_spki = certs[issuer_index].spki;
+        const parsed = parseCertSignature(chain_der[i]) catch return error.SignatureParse;
+        const ok = verifyCertSig(issuer_spki, certs[i].tbs, parsed.algo_oid, parsed.sig_der);
+        if (!ok) return error.BadSignature;
+        if (i == certs.len - 1) {
+            // Root must be CA
+            if (certs[i].basic) |b| {
+                if (!b.ca) return error.BasicConstraints;
+            } else return error.BasicConstraints;
+        }
+    }
 }

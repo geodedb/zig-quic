@@ -170,6 +170,8 @@ pub const Connection = struct {
     tls_inbox: std.ArrayList(u8),
     tls: tls13.Engine,
     allocator: *std.mem.Allocator,
+    // Allowed ALPNs configured on endpoint
+    allowed_alpns: []const []const u8 = &[_][]const u8{},
     // Derived handshake traffic secrets (once both hellos present)
     hs_client: ?[tls13.H.digest_length]u8 = null,
     hs_server: ?[tls13.H.digest_length]u8 = null,
@@ -309,6 +311,7 @@ pub const Connection = struct {
         self.tls_inbox = std.ArrayList(u8).init(alloc.*);
         self.tls = tls13.Engine.init(alloc.*, if (role == .Client) .Client else .Server);
         self.allocator = alloc;
+        self.allowed_alpns = &[_][]const u8{};
         self.hs_client = null;
         self.hs_server = null;
         self.hs_rx_keys = null;
@@ -701,6 +704,23 @@ pub const Connection = struct {
     pub fn pushCrypto(self: *Connection, data: []const u8) !void {
         try self.tls_inbox.appendSlice(data);
         self.tls.onCryptoRecv(data);
+        // Enforce ALPN if negotiated and not in insecure mode
+        if (!self.tls.allow_insecure) {
+            if (self.tls.alpn) |alp| {
+                var ok = false;
+                var i: usize = 0;
+                while (i < self.allowed_alpns.len) : (i += 1) {
+                    if (std.mem.eql(u8, alp, self.allowed_alpns[i])) {
+                        ok = true;
+                        break;
+                    }
+                }
+                if (!ok and self.allowed_alpns.len > 0) {
+                    // In a full implementation, we would abort the handshake. For now, mark finished_verified false.
+                    self.tls.finished_verified = false;
+                }
+            }
+        }
         // Attempt to compute handshake secrets if test ecdhe_secret has been set
         if (self.tls.computeHandshakeSecrets()) |hs| {
             self.hs_client = hs.client;
@@ -754,6 +774,11 @@ pub const Connection = struct {
         _ = self.sent_time.put(pn, std.time.nanoTimestamp()) catch {};
         _ = self.sent_sizes.put(pn, @intCast(@min(bytes, @as(usize, std.math.maxInt(u16))))) catch {};
         self.ccOnPacketSent(bytes, ack_eliciting);
+    }
+
+    /// Accessor for negotiated ALPN (opaque protocol id), if any.
+    pub fn getNegotiatedAlpn(self: *Connection) ?[]const u8 {
+        return self.tls.alpn;
     }
 
     /// Mark Initial/Handshake/App PTO expired and increase backoff counter.
@@ -946,14 +971,13 @@ pub const Connection = struct {
         defer frames.deinit();
         const w = frames.writer();
         _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
-        const token_empty: [0]u8 = .{};
         const out = packet.encodeInitialProtected(
             self.allocator.*,
             self.version,
             // DCID = client's Initial SCID; SCID = our chosen SCID
             self.peer_initial_scid.bytes[0..self.peer_initial_scid.len],
             self.our_scid.bytes[0..self.our_scid.len],
-            token_empty[0..],
+            &[_]u8{},
             self.pn_initial_tx,
             2,
             frames.items,

@@ -192,6 +192,7 @@ pub const Endpoint = struct {
         // Apply config flags
         c.setUseCubic(self.cfg.cc == .cubic);
         c.tls.allow_insecure = self.cfg.allow_insecure;
+        c.allowed_alpns = self.cfg.alpn;
         // Choose initial version from cfg
         c.version = if (self.cfg.version == .v2) packet.QUIC_V2 else packet.QUIC_V1;
         c.version_v2 = (c.version == packet.QUIC_V2);
@@ -604,6 +605,7 @@ pub const Endpoint = struct {
                     // Apply config to server connection
                     c.setUseCubic(self.cfg.cc == .cubic);
                     c.tls.allow_insecure = self.cfg.allow_insecure;
+                    c.allowed_alpns = self.cfg.alpn;
                     _ = self.conns.put(key, c) catch {
                         c.deinit();
                         self.allocator.destroy(c);
@@ -620,6 +622,7 @@ pub const Endpoint = struct {
                     c.init(self.allocator, .Server, self.sock_fd, peer);
                     c.setUseCubic(self.cfg.cc == .cubic);
                     c.tls.allow_insecure = self.cfg.allow_insecure;
+                    c.allowed_alpns = self.cfg.alpn;
                     _ = self.conns.put(key, c) catch {
                         c.deinit();
                         self.allocator.destroy(c);
@@ -961,8 +964,8 @@ pub const Endpoint = struct {
                     const r = frame.decodeOne(pt[off..]) catch break;
                     off += r.n;
                     switch (r.f) {
-                        .crypto => |cr| {
-                            conn.pushCrypto(cr.data) catch {};
+                        .crypto => {
+                            conn.pushCrypto(r.f.crypto.data) catch {};
                             saw_any = true;
                         },
                         .ack => {

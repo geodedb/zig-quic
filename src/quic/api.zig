@@ -79,9 +79,12 @@ pub fn endpointDeinit(ep: *QuicEndpoint) void {
 
 /// Create a client connection and kick Initial probe to elicit VN or SH.
 pub fn connect(ep: *QuicEndpoint, server_addr: []const u8, sni: []const u8) !*QuicConnection {
-    _ = sni; // TODO: TLS handshake will use this
     // Allocate and register a client Connection with an Initial probe to drive VN
     const c = try ep.connectClient(server_addr);
+    // Propagate SNI into TLS engine for certificate name checks
+    if (sni.len > 0) {
+        c.tls.setServerName(sni) catch {};
+    }
     // Kick an Initial PING to elicit VN or SH
     try ep.clientSendInitialProbe(c);
     // Return as opaque pointer
@@ -130,6 +133,12 @@ pub fn sendDatagram(conn: *QuicConnection, payload: []const u8) !void {
 pub fn recvDatagram(conn: *QuicConnection, buf: []u8) !usize {
     const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
     return c.popDatagram(buf);
+}
+
+/// Return negotiated ALPN (protocol id) if handshake selected one.
+pub fn getNegotiatedAlpn(conn: *QuicConnection) ?[]const u8 {
+    const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
+    return c.getNegotiatedAlpn();
 }
 
 /// Close a connection with an application error (not yet implemented).

@@ -204,10 +204,12 @@ pub const Engine = struct {
     peer_tp: ?[]u8 = null,
     /// Negotiated ALPN (opaque protocol id)
     alpn: ?[]u8 = null,
+    /// Server Name Indication for certificate name checks (client-side). Owned by engine.
+    server_name: ?[]u8 = null,
 
     /// Initialize a TLS 1.3 Engine with allocator and role.
     pub fn init(alloc: std.mem.Allocator, role: Role) Engine {
-        return .{ .role = role, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .outbox = std.ArrayList(u8).init(alloc), .ch_sent = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null };
+        return .{ .role = role, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .outbox = std.ArrayList(u8).init(alloc), .ch_sent = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null };
     }
     /// Release any owned resources and buffers.
     pub fn deinit(self: *Engine) void {
@@ -215,6 +217,7 @@ pub const Engine = struct {
         if (self.local_tp) |b| self.outbox.allocator.free(b);
         if (self.peer_tp) |b| self.outbox.allocator.free(b);
         if (self.alpn) |a| self.outbox.allocator.free(a);
+        if (self.server_name) |s| self.outbox.allocator.free(s);
         self.outbox.deinit();
     }
 
@@ -306,6 +309,14 @@ pub const Engine = struct {
                             x509.checkValidity(std.time.timestamp(), &c) catch {
                                 self.peer_cert_ok = false;
                             };
+                            // If we have a server_name configured, perform chain validation (single-cert chain acceptable here)
+                            if (self.peer_cert_ok) {
+                                if (self.server_name) |sni| {
+                                    x509.validateChain(self.outbox.allocator, &[_][]const u8{p.body}, std.time.timestamp(), sni, self.allow_insecure) catch {
+                                        self.peer_cert_ok = false;
+                                    };
+                                }
+                            }
                         } else {
                             self.peer_cert_ok = false;
                         }
@@ -376,6 +387,12 @@ pub const Engine = struct {
     pub fn setLocalTransportParameters(self: *Engine, tp_encoded: []const u8) !void {
         if (self.local_tp) |old| self.outbox.allocator.free(old);
         self.local_tp = try self.outbox.allocator.dupe(u8, tp_encoded);
+    }
+
+    /// Set the expected server name (SNI) for certificate validation on client.
+    pub fn setServerName(self: *Engine, name: []const u8) !void {
+        if (self.server_name) |old| self.outbox.allocator.free(old);
+        self.server_name = try self.outbox.allocator.dupe(u8, name);
     }
 
     /// Build and queue a minimal ClientHello handshake envelope with optional TP.

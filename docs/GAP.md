@@ -12,10 +12,11 @@ Date: 2025-08-21
   - Address validation and amplification defense: 3x anti-amplification before validation; PATH_CHALLENGE echo and PATH_RESPONSE validation; NAT rebinding path validation.
   - Streams + flow control (baseline):
     - Robust RX reassembly across gaps and multiple streams with per-stream inbox.
-    - Enforce TX limits for MAX*DATA and MAX_STREAMS; signal DATA_BLOCKED, STREAM_DATA_BLOCKED, and STREAMS_BLOCKED*\* accordingly.
-    - Update peer maxima from MAX*DATA/MAX_STREAM[_DATA]; advertise local MAX*\* periodically with ACKs.
+    - Enforce TX limits for MAX\*DATA and MAX_STREAMS; signal DATA_BLOCKED, STREAM_DATA_BLOCKED, and STREAMS_BLOCKED\*\* accordingly.
+    - Update peer maxima from MAX\*DATA/MAX_STREAM[_DATA]; advertise local MAX\*\* periodically with ACKs.
   - DATAGRAM (RFC 9221) baseline: frame codec; optional echo path when enabled.
-  - TLS 1.3 (QUIC binding subset): X25519, HKDF/SHA-256, Finished; handshake secrets exported to derive QUIC keys; EncryptedExtensions support with ALPN (simple u8-len); allow_insecure honored for tests; minimal X.509 parsing present.
+  - TLS 1.3 (QUIC binding subset): X25519, HKDF/SHA-256, Finished; handshake secrets exported to derive QUIC keys; EncryptedExtensions with ALPN; allow_insecure honored for tests; minimal X.509 parsing present.
+  - TLS certs/validation (new): client path now validates the presented chain: SAN-to-SNI match, validity window, BasicConstraints and EKU serverAuth, signature verification for leaf/intermediates using ECDSA P-256/P-384 and RSA-PSS-SHA256 (std.crypto). SNI plumbed from API to TLS; ALPN enforced and exposed via getter.
   - Recovery scaffolding: RTT/PTO with backoff; packet- and time-threshold loss; NewReno controller; PTO arming per space; sent-bytes accounting.
   - Endpoint/platform: epoll/kqueue/IOCP backends with deterministic test fallback; outbound capture ring for tests.
   - CI/docs: matrices for Zig 0.14.1; doccheck + GAP gates; dev release tarball job; acceptance tools and tests.
@@ -23,8 +24,7 @@ Date: 2025-08-21
 - Open Gaps vs requirements:
 
   - TLS 1.3 handshake completeness:
-    - Certificate and CertificateVerify verification path minimal; need SAN match to SNI, KU/EKU, basic constraints, validity checks and simple path building; ChaCha20-Poly1305 cipher and HP variant; signature algorithm matrix; 0-RTT optional keys.
-    - ALPN negotiation implemented but not enforced by app behavior yet.
+    - Pending: ChaCha20-Poly1305 cipher and HP variant; optional 0-RTT keys; richer signature algorithm matrix; platform trust store integration.
   - Congestion control + pacing:
     - CUBIC exists as a toggle but logic is a stub; pacing not implemented; no ECN.
   - Flow control polish:
@@ -44,10 +44,8 @@ Date: 2025-08-21
 
 1. TLS validation and ALPN hardening
 
-   - Implement SAN match to SNI, KU/EKU, basic constraints, validity time; simple chain/path building; honor allow_insecure to bypass.
-   - Implement CertificateVerify using std.crypto (ECDSA, RSA-PSS) against cached SPKI.
-   - Enforce negotiated ALPN in connection startup and expose via API.
-   - Add KATs for CertificateVerify and a minimal self-signed flow under --insecure.
+   - Add ChaCha20-Poly1305 cipher and HP; optional early-data keys.
+   - Integrate minimal trust store hook and negative tests for name mismatch/expired cert; extend KATs.
 
 2. CUBIC + pacing
 

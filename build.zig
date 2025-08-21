@@ -326,6 +326,14 @@ pub fn build(b: *std.Build) void {
         test_amp.root_module.addImport("quic_crypto", quic_crypto_mod);
         const run_test_amp = b.addRunArtifact(test_amp);
         test_step.dependOn(&run_test_amp.step);
+
+        // ALPN enforcement and getter tests
+        const test_alpn = b.addTest(.{ .root_source_file = rp("tests/test_alpn.zig"), .target = target, .optimize = optimize });
+        test_alpn.root_module.addImport("quic_api", quic_api_mod);
+        test_alpn.root_module.addImport("quic_conn", quic_conn_mod);
+        test_alpn.root_module.addImport("quic_tls13", tls13_mod);
+        const run_test_alpn = b.addRunArtifact(test_alpn);
+        test_step.dependOn(&run_test_alpn.step);
     } else {
         const test_quic = b.addTest(.{ .root_source_file = rp("quic.zig"), .target = target, .optimize = optimize });
         const run_test_quic = b.addRunArtifact(test_quic);

@@ -118,6 +118,7 @@ fn der_decode_ecdsa_sig(sig_der: []const u8, r_out: []u8, s_out: []u8) !void {
 // ---- RSA-PSS (SHA-256) verification helpers ----
 
 const Sha256 = std.crypto.hash.sha2.Sha256;
+const Sha384 = std.crypto.hash.sha2.Sha384;
 
 fn mgf1_sha256(seed: []const u8, out: []u8) void {
     var counter: u32 = 0;
@@ -382,6 +383,31 @@ pub fn verifyCertificateVerify(alg: SigAlg, pubkey_spki_der: []const u8, sig: []
             defer std.heap.page_allocator.free(sc);
             return rsa_pss_verify_sha256(pubkey_spki_der, sc, sig, 32);
         },
-        .ecdsa_secp256r1_sha256, .ecdsa_secp384r1_sha384 => return error.Unsupported,
+        .ecdsa_secp256r1_sha256 => {
+            // Parse SPKI and use std.crypto ECDSA (P-256/SHA-256)
+            var spki = try parseEcdsaSpki(pubkey_spki_der, std.heap.page_allocator);
+            defer spki.deinit();
+            if (!spki.curve_p256) return false;
+            const Ecdsa = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, Sha256);
+            const signature = Ecdsa.Signature.fromDer(sig) catch return false;
+            const pubkey = Ecdsa.PublicKey.fromSec1(spki.sec1_uncompressed) catch return false;
+            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash);
+            defer std.heap.page_allocator.free(sc);
+            signature.verify(sc, pubkey) catch return false;
+            return true;
+        },
+        .ecdsa_secp384r1_sha384 => {
+            // Parse SPKI and use std.crypto ECDSA (P-384/SHA-384)
+            var spki = try parseEcdsaSpki(pubkey_spki_der, std.heap.page_allocator);
+            defer spki.deinit();
+            if (spki.curve_p256) return false; // expect P-384
+            const Ecdsa384 = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P384, Sha384);
+            const signature = Ecdsa384.Signature.fromDer(sig) catch return false;
+            const pubkey = Ecdsa384.PublicKey.fromSec1(spki.sec1_uncompressed) catch return false;
+            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash);
+            defer std.heap.page_allocator.free(sc);
+            signature.verify(sc, pubkey) catch return false;
+            return true;
+        },
     }
 }
