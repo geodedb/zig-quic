@@ -6,66 +6,88 @@ Date: 2025-08-21
 
 - Completed (summary):
 
-  - Added minimal Streams: single bidi stream (id 0) with LEN+OFF STREAM frames TX/RX, basic recv buffer, naive peer/local windows; API wired (open/write/read/close).
-  - QUIC packet paths: Initial, Handshake, Short (1-RTT) encode/decode; AES-128-GCM AEAD and AES HP; PN unmask; PN expansion per space; per-space ACK builders.
-  - VN: encoder/decoder + downgrade-protection; integrated with optional Compatible VN toggle.
-  - Recovery scaffolding: RTT/PTO with backoff; packet-threshold/time-threshold loss; NewReno; accurate bytes_acked/lost accounting via sent_sizes map; PTO init fix.
-  - DATAGRAM API and server echo path.
-  - Stateless tokens + anti-amplification: HMAC-based stateless token format (IP + ODCID hash + expiry), server verifies token to lift 3x limit; server can issue Retry packets with tokens; client handles Retry and re-sends Initial with token.
-  - TLS 1.3 wiring: transcript helper, X25519 minimal CH/SH helpers, and Finished helpers; Engine gains queueFinished with verify_data; Handshake secrets drive QUIC Handshake key derivation; minimal Certificate/Verify stubs with allow_insecure toggle.
-  - Flow control: enforce local MAX_STREAM_DATA on incoming stream 0; update peer_max_stream_data from MAX_STREAM_DATA; opportunistic MAX_STREAM_DATA emission; blocked frame placeholders.
-  - Path: add PATH_CHALLENGE/PATH_RESPONSE frame codecs and RX hooks (echo TODO); groundwork for validation.
-  - Tests tightened: outbound capture hook added to Endpoint; Retry test asserts Retry format; amplification test enforces 3x gating.
-  - CI/docs: matrices for Zig 0.14.1; doccheck + GAP gates; README acceptance tests; dev-release job fixed to update/create tag 'dev' and attach tarball.
+  - QUIC packet paths: Initial, Handshake, Short (1-RTT) encode/decode; AES-128-GCM AEAD, AES header protection; PN unmask + expansion per space; per-space ACK builders.
+  - Version Negotiation: VN encoder/decoder with downgrade protection; Compatible VN toggle honored.
+  - Retry: Integrity generation/verification wired (v1/v2), stateless HMAC tokens (bound to client IP + ODCID + expiry); server issues Retry as needed; client validates and retries with token.
+  - Address validation and amplification defense: 3x anti-amplification before validation; PATH_CHALLENGE echo and PATH_RESPONSE validation; NAT rebinding path validation.
+  - Streams + flow control (baseline):
+    - Robust RX reassembly across gaps and multiple streams with per-stream inbox.
+    - Enforce TX limits for MAX*DATA and MAX_STREAMS; signal DATA_BLOCKED, STREAM_DATA_BLOCKED, and STREAMS_BLOCKED*\* accordingly.
+    - Update peer maxima from MAX*DATA/MAX_STREAM[_DATA]; advertise local MAX*\* periodically with ACKs.
+  - DATAGRAM (RFC 9221) baseline: frame codec; optional echo path when enabled.
+  - TLS 1.3 (QUIC binding subset): X25519, HKDF/SHA-256, Finished; handshake secrets exported to derive QUIC keys; EncryptedExtensions support with ALPN (simple u8-len); allow_insecure honored for tests; minimal X.509 parsing present.
+  - Recovery scaffolding: RTT/PTO with backoff; packet- and time-threshold loss; NewReno controller; PTO arming per space; sent-bytes accounting.
+  - Endpoint/platform: epoll/kqueue/IOCP backends with deterministic test fallback; outbound capture ring for tests.
+  - CI/docs: matrices for Zig 0.14.1; doccheck + GAP gates; dev release tarball job; acceptance tools and tests.
 
 - Open Gaps vs requirements:
 
-  - TLS 1.3 handshake: CH/SH/Finished plumbing exists, but full TLS message formats, cert chain validation, and CertificateVerify are minimal; no EncryptedExtensions; no ALPN; no record layer (by design); ChaCha20-Poly1305 not wired yet.
-  - Retry integrity: Retry Pseudo-Packet AEAD verify/sign still pending (client verify stubbed in endpoint; compute in packet.encodeRetry pending).
-  - Flow control: still missing MAX_DATA/MAX_STREAMS and proper blocked signaling; stream reassembly and gap handling naive; no per-connection flow control yet.
-  - Recovery details: pacing hooks not implemented; ECN not implemented; CUBIC optional cc not added; more tests needed.
-  - Lifecycle: HANDSHAKE_DONE, CONNECTION_CLOSE mapping and app error propagation incomplete; key update missing; 0-RTT optional not implemented.
-  - Path: validation echo wiring pending; migration + NAT rebinding handling minimal; NEW_TOKEN persistence not implemented; PMTUD not implemented.
-  - Options toggles: Spin Bit, GREASE, QUIC v2 compile-time toggles partially wired but not fully exercised; DATAGRAM lacks FC interaction tests.
-  - Security/process: JSON-lines logging not consistently applied; zeroization audit pending; fuzz corpora to be extended.
+  - TLS 1.3 handshake completeness:
+    - Certificate and CertificateVerify verification path minimal; need SAN match to SNI, KU/EKU, basic constraints, validity checks and simple path building; ChaCha20-Poly1305 cipher and HP variant; signature algorithm matrix; 0-RTT optional keys.
+    - ALPN negotiation implemented but not enforced by app behavior yet.
+  - Congestion control + pacing:
+    - CUBIC exists as a toggle but logic is a stub; pacing not implemented; no ECN.
+  - Flow control polish:
+    - FIN handling in reassembly; proactive MAX\_\* growth thresholds; stream- and connection-level autotuning; broader tests.
+  - Connection lifecycle:
+    - HANDSHAKE_DONE emission/handling; CONNECTION_CLOSE mapping to app errors; Key Update; application close semantics.
+  - Tokens:
+    - Client-side NEW_TOKEN caching/persistence and pre-CH usage; rotation/expiry policy tests.
+  - Options/telemetry:
+    - Spin Bit, GREASE behaviors and toggles; QUIC v2 compile-time path and KATs; DATAGRAM robustness tests.
+  - Security/process:
+    - Zeroize secrets; constant-time audit of critical paths; JSON Lines logging consistently applied; expand fuzz corpora beyond varint/frames/packets (e.g., Retry, VN, TLS CRYPTO sequences).
+  - Performance:
+    - P50 ≤ 50µs loopback target not yet measured; hot paths still allocate in places; benches need realistic scenarios; PMTUD not implemented.
 
-## Next Slice (actionable)
+## Next Slices (actionable, in order)
 
-1. Retry integrity + client validation
+1. TLS validation and ALPN hardening
 
-- Implement RFC 9001 Retry integrity: compute tag using Initial secrets and pseudo-packet (per spec); update packet.encodeRetry to produce real tag.
-- Client: verify tag; drop invalid Retry; add unit tests (tamper tag → drop; valid → accept and resend Initial with token).
+   - Implement SAN match to SNI, KU/EKU, basic constraints, validity time; simple chain/path building; honor allow_insecure to bypass.
+   - Implement CertificateVerify using std.crypto (ECDSA, RSA-PSS) against cached SPKI.
+   - Enforce negotiated ALPN in connection startup and expose via API.
+   - Add KATs for CertificateVerify and a minimal self-signed flow under --insecure.
 
-1. TLS 1.3 CH/SH handshake subset
+2. CUBIC + pacing
 
-- Implement ClientHello/ServerHello, transcript, ECDHE X25519, HKDF traffic secrets, Finished verify; export handshake secrets per RFC 9001.
-- Minimal X.509: load cert/key for server from paths; verify chain (basic constraints, KU/EKU, SAN, validity) with allow_insecure flag.
+   - Implement a production CUBIC controller (RFC 9438 lineage) with bytes_in_flight integration; maintain NewReno default.
+   - Add basic packet pacing using cwnd/rtt and timers; benches to compare NR vs CUBIC on loopback.
 
-1. Flow control and streams polish
+3. Flow control completeness
 
-- Implement MAX_DATA/MAX_STREAMS and blocked signaling; proper recv reassembly; tests for backpressure.
+   - Handle FIN in reassembly; emit MAX\_\* on threshold crossings; tests for DATA_BLOCKED/STREAM_DATA_BLOCKED/STREAMS_BLOCKED triggering and recovery.
+   - Tighten connection-level accounting and window growth.
 
-1. Recovery + pacing
+4. Tokens lifecycle
 
-- Add simple packet pacing; add CUBIC via -Dcc=cubic; benches.
+   - Persist NEW_TOKEN on client and use on subsequent connections; add expiry/rotation tests and replay protection checks.
 
-1. Path validation + migration
+5. Lifecycle frames and key management
 
-- Implement PATH_CHALLENGE echo and PATH_RESPONSE generation; add NEW_TOKEN issuance and tests.
+   - Emit/handle HANDSHAKE_DONE; implement CONNECTION_CLOSE mapping; add Key Update.
 
-1. Logging/bench/fuzz
+6. Options and versioning
 
-- JSON-lines structured logs; zeroize secrets; extend fuzzers with Retry/Handshake corpora.
+   - Finalize Spin Bit and GREASE behaviors; validate QUIC v2 path under -Dversion=v2; add KATs.
+
+7. Fuzzing, logging, and performance
+
+   - Extend fuzzers for Retry/VN/TLS CRYPTO sequences; adopt fixed seeds in CI.
+   - Implement JSON Lines logging at INFO/ERROR; redact secrets.
+   - Optimize hot path allocations and measure P50 with benches; add PMTUD planning.
 
 ## Risks
 
-- TLS/X.509 correctness and interop complexity; mitigated by KATs, fuzzing, and incremental wiring.
-- Retry integrity errors can cause handshake failure; ensure extensive tests.
-- Timing/pacing cross-platform differences across epoll/kqueue/IOCP.
+- TLS/X.509 correctness and interop remain complex; mitigate with KATs, golden traces, and fuzzing.
+- Pacing and CUBIC cross-platform timer precision may vary; isolate with deterministic tests.
+- Token misuse or weak binding risks; ensure MAC binding and expiry enforcement, especially across NATs.
 
-## Done Criteria for this iteration
+## Done Criteria for the next iteration
 
-- Retry packets carry valid integrity tag; client verifies and resends Initial with token; tests cover accept/reject paths.
-- TLS handshake subset completes CH/SH/Finished; keys exported and used for Handshake/1-RTT; server cert served and verified (with --insecure bypass for tests).
-- Flow-control enforced with MAX_STREAM_DATA growth signaling; basic PATH validation echo works.
-- All unit tests pass with `zig build test` and in release-safe; fuzz/bench build.
+- TLS: EE + Certificate + CertificateVerify verified against local CA or with --insecure; ALPN enforced and surfaced to app; ChaCha20-Poly1305 available.
+- CC: CUBIC functional with pacing; benches run and compare cwnd evolution; default remains NewReno.
+- Flow control: FIN handling + threshold-based MAX\_\*; comprehensive blocked signaling tests pass.
+- Tokens: client caches NEW_TOKEN and uses it on subsequent handshakes; tests cover expiry and invalid token rejection.
+- Lifecycle: HANDSHAKE_DONE and graceful CONNECTION_CLOSE wired; basic Key Update.
+- All unit tests pass in debug and -Drelease-safe; fuzzers/benches build; GAP updated and doccheck passes.

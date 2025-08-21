@@ -542,8 +542,10 @@ pub const Endpoint = struct {
                                 conn.bytes_tx_unvalidated = 0;
                             }
                         },
-                        .new_token => |_| {
-                            // client may cache for future
+                        .new_token => |nt| {
+                            // Cache token for future Initials (client-side)
+                            conn.initial_token.clearRetainingCapacity();
+                            _ = conn.initial_token.appendSlice(nt.token) catch {};
                         },
                         else => {},
                     }
