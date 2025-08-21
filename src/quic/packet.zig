@@ -6,6 +6,7 @@ const ks = @import("quic_tls");
 const crypto = @import("quic_crypto");
 const builtin = @import("builtin");
 
+/// Debug helper: dump bytes when running inside tests.
 fn dumpBytes(label: []const u8, bytes: []const u8) void {
     if (!builtin.is_test) return;
     var buf: [256]u8 = undefined;
@@ -21,10 +22,13 @@ fn dumpBytes(label: []const u8, bytes: []const u8) void {
     std.debug.print("{s}: {s}\n", .{ label, list.items });
 }
 
+/// Packet number type alias.
 pub const PacketNumber = u64;
 
+/// Long header type discriminator used when encoding/decoding.
 pub const LongHeaderType = enum { Initial, Handshake };
 
+/// Serializable Long Header structure used by helpers for tests/tools.
 pub const LongHeader = struct {
     ty: LongHeaderType,
     version: u32,
@@ -34,6 +38,7 @@ pub const LongHeader = struct {
     token: []const u8 = &[_]u8{}, // Initial only
     payload: []const u8, // already-encoded frames
 
+    /// Serialize this long header into the provided writer; returns bytes written.
     pub fn encode(self: LongHeader, w: anytype) !usize {
         // First byte: Long Header (1), Fixed bit (1), Type (2 bits), PN length (2 bits)
         // Types: Initial=0, Handshake=2
@@ -81,11 +86,13 @@ pub const LongHeader = struct {
     }
 };
 
+/// Serializable Short Header structure used by helpers for tests/tools.
 pub const ShortHeader = struct {
     dcid: []const u8 = &[_]u8{},
     packet_number: PacketNumber = 1,
     payload: []const u8,
 
+    /// Serialize this short header into the provided writer; returns bytes written.
     pub fn encode(self: ShortHeader, w: anytype) !usize {
         // First byte short header: 0b0100_0000 (fixed bit set)
         const first: u8 = 0x40;
@@ -175,6 +182,7 @@ pub fn encodeShortProtected(
     return buf.toOwnedSlice();
 }
 
+/// Result of decoding a protected short header packet.
 pub const DecodedShort = struct {
     packet_number: u32,
     packet_number_len: u3,
@@ -257,6 +265,7 @@ pub fn derive_initial_keys(version_v2: bool, dcid: []const u8) struct {
     };
 }
 
+/// Initial/Handshake key material used by long header helpers.
 pub const InitialKeys = struct { key: [16]u8, iv: [12]u8, hp: [16]u8 };
 
 /// Build a fully protected Initial packet (byte-exact) using AES-128-GCM.
@@ -359,6 +368,7 @@ pub fn encodeInitialProtected(
     return buf.toOwnedSlice();
 }
 
+/// Result of decoding an Initial packet.
 pub const DecodedInitial = struct {
     version: u32,
     dcid: []const u8,
@@ -577,28 +587,34 @@ pub fn encodeHandshakeProtected(
     return buf.toOwnedSlice();
 }
 
-/// Encode a Version Negotiation packet (Version=0) listing supported versions.
-pub fn encodeVersionNegotiation(
-    alloc: std.mem.Allocator,
+/// Decoded representation of a Version Negotiation packet.
+pub const DecodedVN = struct {
     dcid: []const u8,
     scid: []const u8,
     versions: []const u32,
-) ![]u8 {
+};
+
+/// Encode a Version Negotiation (VN) packet with Version=0 and provided version list.
+/// Returned slice is owned by alloc.
+pub fn encodeVersionNegotiation(alloc: std.mem.Allocator, dcid: []const u8, scid: []const u8, versions: []const u32) ![]u8 {
     var buf = std.ArrayList(u8).init(alloc);
     errdefer buf.deinit();
     const w = buf.writer();
-    // VN first byte: long header form (0x80); fixed bit 1; rest ignored by VN parser
+    // Simplest VN first byte with Long Header bit set and fixed bit set (0x80)
     try w.writeByte(0x80);
     // Version = 0x00000000
-    try w.writeAll(&[_]u8{ 0x00, 0x00, 0x00, 0x00 });
-    // DCID Len + DCID, SCID Len + SCID
-    try w.writeByte(@intCast(dcid.len));
+    try w.writeAll(&[_]u8{ 0, 0, 0, 0 });
+    // DCID Len + DCID
+    try w.writeByte(@as(u8, @intCast(dcid.len)));
     try w.writeAll(dcid);
-    try w.writeByte(@intCast(scid.len));
+    // SCID Len + SCID
+    try w.writeByte(@as(u8, @intCast(scid.len)));
     try w.writeAll(scid);
-    // Sequence of supported versions (big-endian u32)
-    for (versions) |v| {
-        const be: [4]u8 = .{
+    // Supported versions (4-byte big-endian each)
+    var i: usize = 0;
+    while (i < versions.len) : (i += 1) {
+        const v = versions[i];
+        var be: [4]u8 = .{
             @as(u8, @intCast((v >> 24) & 0xff)),
             @as(u8, @intCast((v >> 16) & 0xff)),
             @as(u8, @intCast((v >> 8) & 0xff)),
@@ -608,12 +624,6 @@ pub fn encodeVersionNegotiation(
     }
     return buf.toOwnedSlice();
 }
-
-pub const DecodedVN = struct {
-    dcid: []const u8,
-    scid: []const u8,
-    versions: []const u32,
-};
 
 /// Decode a Version Negotiation (VN) packet (Version=0x00000000).
 /// Returns slices into the original packet_bytes; caller must keep it alive.
@@ -664,4 +674,5 @@ pub fn shouldAcceptVersionNegotiation(original_version: u32, vn_versions: []cons
 
 /// Common QUIC version constants
 pub const QUIC_V1: u32 = 0x00000001;
+/// QUIC v2 Version value per RFC 9369.
 pub const QUIC_V2: u32 = 0x709a50c4;

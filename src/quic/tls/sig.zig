@@ -1,6 +1,7 @@
 const std = @import("std");
 const asn1 = @import("asn1.zig");
 
+/// Supported TLS 1.3 signature algorithms used by this implementation.
 pub const SigAlg = enum { ecdsa_secp256r1_sha256, ecdsa_secp384r1_sha384, rsa_pss_sha256 };
 
 /// Minimal ECDSA public key extracted from SubjectPublicKeyInfo
@@ -9,6 +10,7 @@ pub const EcdsaSpki = struct {
     /// SEC1 uncompressed point (0x04 || X || Y)
     sec1_uncompressed: []const u8,
     allocator: std.mem.Allocator,
+    /// Free allocated buffers and invalidate the struct.
     pub fn deinit(self: *EcdsaSpki) void {
         self.allocator.free(self.sec1_uncompressed);
         self.* = undefined;
@@ -20,6 +22,7 @@ pub const RsaSpki = struct {
     modulus: []const u8, // big-endian
     exponent: u64, // limited to 64-bit for simplicity
     allocator: std.mem.Allocator,
+    /// Free allocated buffers and invalidate the struct.
     pub fn deinit(self: *RsaSpki) void {
         self.allocator.free(self.modulus);
         self.* = undefined;
@@ -369,6 +372,8 @@ fn rsa_pss_verify_sha256(pubkey_spki_der: []const u8, msg_signed_content: []cons
     return std.mem.eql(u8, H, &Hp);
 }
 
+/// Verify a TLS 1.3 CertificateVerify signature given algorithm, SPKI (DER), signature,
+/// the TLS context string, and transcript hash; returns true on success.
 pub fn verifyCertificateVerify(alg: SigAlg, pubkey_spki_der: []const u8, sig: []const u8, context: []const u8, transcript_hash: []const u8) !bool {
     switch (alg) {
         .rsa_pss_sha256 => {

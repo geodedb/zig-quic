@@ -7,16 +7,21 @@
 const std = @import("std");
 const asn1 = @import("asn1.zig");
 
+/// Distinguished Name subset with only Common Name (CN).
 pub const Name = struct {
     cn: ?[]const u8 = null,
 };
 
+/// Subject Alternative Name extension with a list of DNS names.
 pub const SubjectAltName = struct { dns: []const []const u8 };
 
+/// Basic Constraints (CA flag and optional pathLenConstraint).
 pub const BasicConstraints = struct { ca: bool = false, path_len: ?u32 = null };
 
+/// Key Usage bitmask (subset).
 pub const KeyUsage = struct { bits: u16 };
 
+/// Parsed Certificate view exposing minimal fields needed by TLS/QUIC.
 pub const Certificate = struct {
     tbs: []const u8, // raw TBSCertificate for signature verify later
     subject: Name,
@@ -79,6 +84,7 @@ fn parseTime(bytes: []const u8) !i64 {
     return error.UnsupportedTimeFormat;
 }
 
+/// Parse a DER-encoded X.509 certificate and return a minimal view.
 pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
     // Use allocator for any owned slices (none yet, but keep for future fields)
     _ = alloc;
@@ -176,11 +182,13 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
     };
 }
 
+/// Check if 'now' is within the certificate validity window.
 pub fn checkValidity(now_unix: i64, cert: *const Certificate) !void {
     if (now_unix < cert.not_before_unix) return error.NotYetValid;
     if (now_unix > cert.not_after_unix) return error.Expired;
 }
 
+/// Match a DNS name against SAN entries or the subject CN fallback.
 pub fn matchDnsName(cert: *const Certificate, name: []const u8) bool {
     if (cert.san) |san| {
         for (san.dns) |d| if (std.mem.eql(u8, d, name)) return true;

@@ -3,6 +3,7 @@
 const std = @import("std");
 const frame = @import("quic_frame");
 
+/// Round-trip time estimator state and PTO computation helpers (RFC 9002 §5-6).
 pub const RttState = struct {
     // All values are in nanoseconds for monotonic arithmetic
     have_sample: bool = false,
@@ -12,6 +13,7 @@ pub const RttState = struct {
     rttvar_ns: u64 = 0,
     max_ack_delay_ns: u64 = 0, // app space only; keep 0 for Initial/Handshake
 
+    /// Update RTT estimator on ACK reception with measured RTT and ACK delay.
     pub fn onAck(self: *RttState, measured_rtt_ns: u64, ack_delay_ns: u64) void {
         // RFC 9002 §5: Adjusted RTT = max(measured_rtt - ack_delay, min_rtt)
         if (!self.have_sample) {
@@ -36,11 +38,13 @@ pub const RttState = struct {
         self.smoothed_rtt_ns = ((self.smoothed_rtt_ns * 7) / 8) + (adjusted / 8);
     }
 
+    /// PTO = smoothed + 4*rttvar + max_ack_delay
     pub fn computePtoNs(self: *const RttState) u64 {
         // PTO = smoothed + 4*rttvar + max_ack_delay
         return self.smoothed_rtt_ns + (self.rttvar_ns * 4) + self.max_ack_delay_ns;
     }
 
+    /// Compute PTO with exponential backoff and timer granularity.
     pub fn computePtoNsWithBackoff(self: *const RttState, pto_count: u32, granularity_ns: u64) u64 {
         // RFC 9002: PTO_base + timer_granularity, scaled by 2^pto_count
         const base = self.computePtoNs();
@@ -64,16 +68,19 @@ pub fn isAckElicitingFrame(fr: frame.Frame) bool {
     };
 }
 
+/// NewReno congestion controller (bytes-based) with slow start and CA phases.
 pub const NewReno = struct {
     // Congestion control state (bytes)
     cwnd: usize = 10 * 1200, // initial cwnd: 10 * max_datagram_size (approx)
     ssthresh: usize = std.math.maxInt(usize) / 2,
     bytes_in_flight: usize = 0,
 
+    /// Track bytes in flight for ack-eliciting packets when sent.
     pub fn onPacketSent(self: *NewReno, bytes: usize, ack_eliciting: bool) void {
         if (ack_eliciting) self.bytes_in_flight += bytes;
     }
 
+    /// Increase cwnd on ACK and exit slow start to congestion avoidance.
     pub fn onAck(self: *NewReno, bytes_acked: usize) void {
         if (self.cwnd < self.ssthresh) {
             // Slow start
@@ -86,6 +93,7 @@ pub const NewReno = struct {
         if (self.bytes_in_flight >= bytes_acked) self.bytes_in_flight -= bytes_acked else self.bytes_in_flight = 0;
     }
 
+    /// Halve cwnd on loss and set ssthresh accordingly.
     pub fn onLoss(self: *NewReno, bytes_lost: usize) void {
         if (self.cwnd > 2 * 1200) self.cwnd = self.cwnd / 2 else self.cwnd = 2 * 1200;
         self.ssthresh = self.cwnd;
@@ -93,14 +101,17 @@ pub const NewReno = struct {
     }
 };
 
+/// Loss detection helpers implementing packet- and time-threshold logic (RFC 9002 §6-7).
 pub const LossDetector = struct {
     // Packet-threshold (default 3) and time-threshold (9/8 * max(smoothed_rtt, latest_rtt))
     packet_threshold: u32 = 3,
 
+    /// Return true if pn is considered lost using packet threshold relative to largest_acked.
     pub fn isPacketThresholdLost(self: *const LossDetector, largest_acked: u64, pn: u64) bool {
         return largest_acked >= pn + self.packet_threshold;
     }
 
+    /// Time threshold as 1.125x of the larger of smoothed/latest RTT.
     pub fn timeThresholdNs(smoothed_rtt_ns: u64, latest_rtt_ns: u64) u64 {
         const base = if (smoothed_rtt_ns > latest_rtt_ns) smoothed_rtt_ns else latest_rtt_ns;
         return base + base / 8; // 1.125x

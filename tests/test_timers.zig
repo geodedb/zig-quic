@@ -62,11 +62,13 @@ test "endpoint_pto_schedule_and_expire_flag" {
 
     // Arm PTO and ensure a timer is created
     conn.computeAndMaybeArmPto(ep);
+    std.debug.print("DEBUG app: active={any} timers={d} pto_count={d}\n", .{ conn.pto_app_active, ep.timers.items.len, conn.pto_app_count });
     try std.testing.expect(conn.pto_app_active);
     try std.testing.expect(ep.timers.items.len >= 1);
 
     // Deterministically expire all timers and verify PTO flag clears
     ep.forceExpireAllTimers();
+    std.debug.print("DEBUG app after expire: active={any} timers={d} pto_count={d}\n", .{ conn.pto_app_active, ep.timers.items.len, conn.pto_app_count });
     try std.testing.expect(!conn.pto_app_active);
     try std.testing.expect(ep.timers.items.len == 0);
 }
@@ -98,12 +100,14 @@ test "initial_space_pto_arm_and_probe_on_expire" {
 
     // Arm Initial PTO
     conn.computeAndMaybeArmPtoInitial(ep);
+    std.debug.print("DEBUG init: active={any} timers={d} pn_tx={d} count={d}\n", .{ conn.pto_initial_active, ep.timers.items.len, conn.pn_initial_tx, conn.pto_initial_count });
     try std.testing.expect(conn.pto_initial_active);
 
     // Expire timers deterministically; this should send a PING probe
     const pn_before = conn.pn_initial_tx;
     const count_before = conn.pto_initial_count;
     ep.forceExpireAllTimers();
+    std.debug.print("DEBUG init after expire: active={any} timers={d} pn_tx={d}->{d} count={d}->{d}\n", .{ conn.pto_initial_active, ep.timers.items.len, pn_before, conn.pn_initial_tx, count_before, conn.pto_initial_count });
     try std.testing.expect(!conn.pto_initial_active);
     try std.testing.expect(conn.pn_initial_tx > pn_before);
     try std.testing.expect(conn.pto_initial_count > count_before);
@@ -136,12 +140,14 @@ test "handshake_space_pto_arm_cancel_on_ack_and_probe_on_expire" {
 
     // Arm Handshake PTO
     conn.computeAndMaybeArmPtoHandshake(ep);
+    std.debug.print("DEBUG hs: active={any} timers={d} pn_tx={d} count={d}\n", .{ conn.pto_handshake_active, ep.timers.items.len, conn.pn_handshake_tx, conn.pto_handshake_count });
     try std.testing.expect(conn.pto_handshake_active);
 
     // Expire timers deterministically; should send a PING probe
     const pn_before = conn.pn_handshake_tx;
     const count_before = conn.pto_handshake_count;
     ep.forceExpireAllTimers();
+    std.debug.print("DEBUG hs after expire: active={any} timers={d} pn_tx={d}->{d} count={d}->{d}\n", .{ conn.pto_handshake_active, ep.timers.items.len, pn_before, conn.pn_handshake_tx, count_before, conn.pto_handshake_count });
     try std.testing.expect(!conn.pto_handshake_active);
     try std.testing.expect(conn.pn_handshake_tx > pn_before);
     try std.testing.expect(conn.pto_handshake_count > count_before);

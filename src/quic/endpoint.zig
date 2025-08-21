@@ -22,6 +22,7 @@ fn nowMsMonotonic() i64 {
 
 const Timer = struct { deadline_ms: i64, id: u64, kind: TimerKind = .Generic, conn: ?*conn_mod.Connection = null };
 
+/// Endpoint timer kinds, including per-space PTO timers.
 pub const TimerKind = enum { Generic, PtoInitial, PtoHandshake, PtoApp };
 
 const Key = struct { peer_hash: u64, dcid_hash: u64 };
@@ -37,6 +38,7 @@ fn hashSockaddr(sa: *const posix.sockaddr.storage, len: u32) u64 {
     return hashBytes(bytes);
 }
 
+/// UDP endpoint container with timer wheel and connection map; single-socket.
 pub const Endpoint = struct {
     sock_fd: posix.fd_t,
     loop_backend: api.LoopBackend,
@@ -45,6 +47,10 @@ pub const Endpoint = struct {
     conns: std.AutoHashMap(Key, *conn_mod.Connection),
     // Next timer identifier for scheduleTimer
     next_timer_id: u64 = 1,
+    // Config copy
+    cfg: api.QuicConfig,
+    // Accept queue for server
+    accepted: std.ArrayList(*conn_mod.Connection),
 
     /// Flush expired timers immediately based on current monotonic time (testing helper).
     pub fn flushTimers(self: *Endpoint) void {
@@ -71,7 +77,8 @@ pub const Endpoint = struct {
         }
     }
 
-    pub fn init(alloc: *std.mem.Allocator, bind_addr: []const u8) !Endpoint {
+    /// Initialize endpoint, bind to bind_addr (host:port), and return value-semantic Endpoint.
+    pub fn init(alloc: *std.mem.Allocator, bind_addr: []const u8, cfg: *const api.QuicConfig) !Endpoint {
         // Parse bind address of the form host:port and bind an IPv4 UDP socket.
         var parts = std.mem.splitScalar(u8, bind_addr, ':');
         const host = parts.next() orelse bind_addr;
@@ -100,9 +107,12 @@ pub const Endpoint = struct {
             .timers = std.ArrayList(Timer).init(alloc.*),
             .conns = std.AutoHashMap(Key, *conn_mod.Connection).init(alloc.*),
             .next_timer_id = 1,
+            .cfg = cfg.*, // copy
+            .accepted = std.ArrayList(*conn_mod.Connection).init(alloc.*),
         };
     }
 
+    /// Release resources, close socket, and destroy owned connections.
     pub fn deinit(self: *Endpoint) void {
         // Free connections
         var it = self.conns.iterator();
@@ -113,14 +123,17 @@ pub const Endpoint = struct {
         }
         self.conns.deinit();
         self.timers.deinit();
+        self.accepted.deinit();
         posix.close(self.sock_fd);
     }
 
+    /// Send a datagram to peer address.
     pub fn sendTo(self: *Endpoint, peer: conn_mod.SockAddr, data: []const u8) !usize {
         const sa_ptr: *const posix.sockaddr = @ptrCast(&peer.storage);
         return posix.sendto(self.sock_fd, data, 0, sa_ptr, peer.len);
     }
 
+    /// Receive a datagram; returns size and source address.
     pub fn recvFrom(self: *Endpoint, buf: []u8) !struct { n: usize, peer: conn_mod.SockAddr } {
         var peer = conn_mod.SockAddr{};
         peer.len = @intCast(@sizeOf(posix.sockaddr.storage));
@@ -133,12 +146,86 @@ pub const Endpoint = struct {
         return .{ .id = 0, .role = .Server, .sock_fd = self.sock_fd, .peer = peer, .tls_inbox = std.ArrayList(u8).init(self.allocator.*) };
     }
 
+    /// Enqueue accepted server connection for accept().
+    fn pushAccepted(self: *Endpoint, c: *conn_mod.Connection) void {
+        self.accepted.append(c) catch {};
+    }
+
+    /// Pop accepted connection pointer if present.
+    pub fn popAccepted(self: *Endpoint) ?*conn_mod.Connection {
+        if (self.accepted.items.len == 0) return null;
+        return self.accepted.orderedRemove(0);
+    }
+
     /// Resolve and create a Connection object for an explicit remote address.
     pub fn connectTo(self: *Endpoint, hostport: []const u8) !conn_mod.Connection {
         const ai = try resolveAny(hostport, .udp);
         defer posix.freeaddrinfo(ai);
         const peer = conn_mod.SockAddr.setFrom(ai);
         return .{ .id = 0, .role = .Client, .sock_fd = self.sock_fd, .peer = peer, .tls_inbox = std.ArrayList(u8).init(self.allocator.*) };
+    }
+
+    /// Allocate and register a client connection for the given remote address.
+    pub fn connectClient(self: *Endpoint, hostport: []const u8) !*conn_mod.Connection {
+        const ai = try resolveAny(hostport, .udp);
+        defer posix.freeaddrinfo(ai);
+        const peer = conn_mod.SockAddr.setFrom(ai);
+        const c = try self.allocator.create(conn_mod.Connection);
+        c.init(self.allocator, .Client, self.sock_fd, peer);
+        // Choose initial version from cfg
+        c.version = if (self.cfg.version == .v2) packet.QUIC_V2 else packet.QUIC_V1;
+        c.version_v2 = (c.version == packet.QUIC_V2);
+        c.initial_version = c.version;
+        // Client chooses DCID and SCID
+        var dcid: [8]u8 = undefined;
+        std.crypto.random.bytes(&dcid);
+        c.peer_initial_dcid.len = @intCast(dcid.len);
+        @memcpy(c.peer_initial_dcid.bytes[0..dcid.len], &dcid);
+        c.our_scid.len = 8;
+        std.crypto.random.bytes(c.our_scid.bytes[0..c.our_scid.len]);
+        // Map by both dcid and scid to find VN/HS
+        const ph = hashSockaddr(&peer.storage, peer.len);
+        const key_d = Key{ .peer_hash = ph, .dcid_hash = hashBytes(c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]) };
+        const key_s = Key{ .peer_hash = ph, .dcid_hash = hashBytes(c.our_scid.bytes[0..c.our_scid.len]) };
+        _ = self.conns.put(key_d, c) catch {};
+        _ = self.conns.put(key_s, c) catch {};
+        return c;
+    }
+
+    /// Send a minimal client Initial PING to elicit VN or SH.
+    pub fn clientSendInitialProbe(self: *Endpoint, c: *conn_mod.Connection) !void {
+        const v2 = (c.version == packet.QUIC_V2);
+        const initial = ks.deriveInitialSecret(v2, c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]);
+        const pair = ks.deriveClientServerInitial(initial);
+        const tx_keys: packet.InitialKeys = if (v2) blk: {
+            const t = ks.deriveKeyIvHpV2(pair.client);
+            break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
+        } else blk: {
+            const t = ks.deriveKeyIvHp(pair.client);
+            break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
+        };
+        var frames = std.ArrayList(u8).init(self.allocator.*);
+        defer frames.deinit();
+        frames.append(@intFromEnum(frame.FrameType.PING)) catch {};
+        const token_empty: [0]u8 = .{};
+        const pkt = try packet.encodeInitialProtected(
+            self.allocator.*,
+            c.version,
+            // Client Initial: DCID = our chosen dcid; SCID = our scid
+            c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len],
+            c.our_scid.bytes[0..c.our_scid.len],
+            token_empty[0..],
+            c.pn_initial_tx,
+            2,
+            frames.items,
+            tx_keys,
+        );
+        defer self.allocator.free(pkt);
+        _ = try self.sendTo(c.peer, pkt);
+        c.onPacketSent(c.pn_initial_tx, pkt.len, true);
+        c.pn_initial_tx +%= 1;
+        // Arm Initial PTO
+        c.computeAndMaybeArmPtoInitial(self);
     }
 
     /// Schedule a one-shot timer to fire after delay_ms; returns timer id.
@@ -263,10 +350,42 @@ pub const Endpoint = struct {
         if (bytes.len < 1) return;
         const first = bytes[0];
         const is_long = (first & 0x80) != 0;
+        if (is_long) {
+            // Long header: check Version for VN/Initial/Handshake
+            if (bytes.len < 5) return;
+            const version: u32 = (@as(u32, bytes[1]) << 24) | (@as(u32, bytes[2]) << 16) | (@as(u32, bytes[3]) << 8) | @as(u32, bytes[4]);
+            if (version == 0) {
+                // Version Negotiation handling (client side)
+                var arena = std.heap.ArenaAllocator.init(self.allocator.*);
+                defer arena.deinit();
+                const aa = arena.allocator();
+                const vn = packet.decodeVersionNegotiation(aa, bytes) catch return;
+                const ph = hashSockaddr(&peer.storage, peer.len);
+                var found: ?*conn_mod.Connection = null;
+                const k1 = Key{ .peer_hash = ph, .dcid_hash = hashBytes(vn.dcid) };
+                const k2 = Key{ .peer_hash = ph, .dcid_hash = hashBytes(vn.scid) };
+                if (self.conns.getPtr(k1)) |e| found = e.* else if (self.conns.getPtr(k2)) |e2| found = e2.*;
+                const c = found orelse return;
+                if (!self.cfg.compatible_vn) return; // ignore VN when disabled
+                if (!packet.shouldAcceptVersionNegotiation(c.initial_version, vn.versions)) return;
+                var chosen: u32 = 0;
+                var i_sel: usize = 0;
+                while (i_sel < vn.versions.len) : (i_sel += 1) {
+                    const v = vn.versions[i_sel];
+                    if (v == packet.QUIC_V1 or v == packet.QUIC_V2) {
+                        chosen = v;
+                        break;
+                    }
+                }
+                if (chosen == 0) return;
+                c.version = chosen;
+                c.version_v2 = (chosen == packet.QUIC_V2);
+                self.clientSendInitialProbe(c) catch {};
+                return;
+            }
+        }
         if (!is_long) {
-            // Short header 1-RTT path: locate connection by matching the DCID prefix length
-            // against any known connection's our_scid for this peer. Short headers carry the
-            // Destination Connection ID equal to the receiver's chosen SCID.
+            // Short header 1-RTT path
             if (bytes.len < 1) return;
             const peer_h = hashSockaddr(&peer.storage, peer.len);
             var found: ?*conn_mod.Connection = null;
@@ -278,7 +397,6 @@ pub const Endpoint = struct {
                 const l: usize = c.our_scid.len;
                 if (1 + l > bytes.len) continue;
                 if (l == 0) {
-                    // zero-length DCID match
                     found = c;
                     dcid_len = 0;
                     break;
@@ -293,10 +411,8 @@ pub const Endpoint = struct {
             if (conn.app_rx_keys) |rx_keys| {
                 const dec = packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }) catch return;
                 defer self.allocator.free(dec.payload);
-                // Expand truncated PN to full value and track in app space
                 const pn_full: u64 = conn.expandPnApp(@intCast(dec.packet_number), dec.packet_number_len);
                 conn.trackRecvPnApp(pn_full);
-                // Walk frames; respond with ACK for any PN
                 var off2: usize = 0;
                 var saw_any: bool = false;
                 while (off2 < dec.payload.len) {
@@ -305,13 +421,32 @@ pub const Endpoint = struct {
                     switch (fr.f) {
                         .ping => saw_any = true,
                         .stream => |s| {
-                            _ = s; // application would consume
+                            _ = s;
                             saw_any = true;
+                        },
+                        .datagram => |d| {
+                            conn.pushDatagram(d.data) catch {};
+                            saw_any = true;
+                            // Minimal echo: server echos back immediately when enabled and keys ready
+                            if (self.cfg.enable_datagram) {
+                                if (conn.app_tx_keys) |txk| {
+                                    var fb = std.ArrayList(u8).init(self.allocator.*);
+                                    defer fb.deinit();
+                                    const w = fb.writer();
+                                    _ = (frame.Frame{ .datagram = .{ .data = d.data } }).write(w) catch 0;
+                                    const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], conn.pn_app_tx, 2, fb.items, txk) catch null;
+                                    if (out) |pkt_bytes| {
+                                        defer self.allocator.free(pkt_bytes);
+                                        _ = self.sendTo(peer, pkt_bytes) catch {};
+                                        conn.onPacketSent(conn.pn_app_tx, pkt_bytes.len, true);
+                                        conn.pn_app_tx +%= 1;
+                                    }
+                                }
+                            }
                         },
                         .ack => |a| {
                             const empty: [0]frame.AckRange = .{};
                             conn.onAckReceived(a.largest, a.first_range, empty[0..]);
-                            // Reset app PTO backoff and cancel timer on ACK in app space
                             conn.pto_app_count = 0;
                             if (conn.pto_app_active) {
                                 _ = self.cancelTimer(conn.pto_app_id);
@@ -321,7 +456,6 @@ pub const Endpoint = struct {
                         else => {},
                     }
                 }
-                // Immediately send an ACK aggregated from our PN tracker
                 if (saw_any) {
                     if (conn.app_tx_keys) |tx_keys| {
                         var frames_buf = std.ArrayList(u8).init(self.allocator.*);
@@ -330,11 +464,10 @@ pub const Endpoint = struct {
                         const ack_desc = conn.buildAckApp();
                         const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = 0, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges } };
                         _ = ack.write(w) catch 0;
-                        const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], conn.pn_app_tx, 2, frames_buf.items, .{ .key = tx_keys.key, .iv = tx_keys.iv, .hp = tx_keys.hp }) catch null;
+                        const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], conn.pn_app_tx, 2, frames_buf.items, tx_keys) catch null;
                         if (out) |pkt_bytes| {
                             defer self.allocator.free(pkt_bytes);
                             _ = self.sendTo(peer, pkt_bytes) catch {};
-                            // ACK-only short is not ack-eliciting
                             conn.onPacketSent(conn.pn_app_tx, pkt_bytes.len, false);
                             conn.pn_app_tx +%= 1;
                         }
@@ -344,9 +477,7 @@ pub const Endpoint = struct {
             return;
         }
         const ty = (first >> 4) & 0x03;
-        // Version
         const version: u32 = (@as(u32, bytes[1]) << 24) | (@as(u32, bytes[2]) << 16) | (@as(u32, bytes[3]) << 8) | @as(u32, bytes[4]);
-        // keep `version` for later Handshake reply construction
         if (ty == 0) {
             // Initial
             var i: usize = 5;
@@ -376,14 +507,13 @@ pub const Endpoint = struct {
                 // Also map our chosen SCID to this connection for Handshake DCID lookup.
                 const our_key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(c.our_scid.bytes[0..c.our_scid.len]) };
                 _ = self.conns.put(our_key, c) catch {};
+                // Enqueue for accept()
+                self.pushAccepted(c);
                 break :blk self.conns.getPtr(key).?;
             };
             const conn = c_ptr.*;
-            // Remember version for PTO probes and transitions
             conn.initial_version = version;
-            // If we've switched away from Initial, ignore any late Initials
             if (conn.initial_keys_dropped) return;
-            // Remember peer's Initial CIDs (for Handshake header construction)
             conn.setPeerInitialCids(dcid, scid);
 
             // Derive Initial keys for server (we are receiving client's Initial)
@@ -391,8 +521,13 @@ pub const Endpoint = struct {
             const initial = ks.deriveInitialSecret(v2, dcid);
             const pair = ks.deriveClientServerInitial(initial);
             // RX path for server must use CLIENT initial keys (to decrypt client's Initial)
-            const rxk = if (v2) ks.deriveKeyIvHpV2(pair.client) else ks.deriveKeyIvHp(pair.client);
-            const keys: packet.InitialKeys = .{ .key = rxk.key, .iv = rxk.iv, .hp = rxk.hp };
+            const keys: packet.InitialKeys = if (v2) blk: {
+                const t = ks.deriveKeyIvHpV2(pair.client);
+                break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
+            } else blk: {
+                const t = ks.deriveKeyIvHp(pair.client);
+                break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
+            };
 
             // Parse long header variable fields up to PN start
             var j: usize = i; // after SCID value
@@ -484,8 +619,13 @@ pub const Endpoint = struct {
                 _ = ack.write(w) catch 0;
                 if (conn.hs_tx_keys == null) {
                     // Respond in Initial space using SERVER initial keys (TX direction)
-                    const txk = if (v2) ks.deriveKeyIvHpV2(pair.server) else ks.deriveKeyIvHp(pair.server);
-                    const tx_keys: packet.InitialKeys = .{ .key = txk.key, .iv = txk.iv, .hp = txk.hp };
+                    const tx_keys: packet.InitialKeys = if (v2) blk: {
+                        const t = ks.deriveKeyIvHpV2(pair.server);
+                        break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
+                    } else blk: {
+                        const t = ks.deriveKeyIvHp(pair.server);
+                        break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
+                    };
                     const out = packet.encodeInitialProtected(self.allocator.*, version, scid, conn.our_scid.bytes[0..conn.our_scid.len], &[_]u8{}, conn.pn_initial_tx, 2, frames_buf.items, tx_keys) catch null;
                     if (out) |pkt_bytes| {
                         defer self.allocator.free(pkt_bytes);
@@ -704,8 +844,13 @@ pub const Endpoint = struct {
                 const v2 = false; // TODO: map version
                 const initial = ks.deriveInitialSecret(v2, conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len]);
                 const pair = ks.deriveClientServerInitial(initial);
-                const txk = if (v2) ks.deriveKeyIvHpV2(pair.server) else ks.deriveKeyIvHp(pair.server);
-                const tx_keys: packet.InitialKeys = .{ .key = txk.key, .iv = txk.iv, .hp = txk.hp };
+                const tx_keys: packet.InitialKeys = if (v2) blk: {
+                    const t = ks.deriveKeyIvHpV2(pair.server);
+                    break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
+                } else blk: {
+                    const t = ks.deriveKeyIvHp(pair.server);
+                    break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
+                };
                 // Build a PING probe (ack-eliciting)
                 var frames = std.ArrayList(u8).init(self.allocator.*);
                 defer frames.deinit();

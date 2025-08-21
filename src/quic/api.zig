@@ -7,7 +7,9 @@ const lb = @import("loop_backend.zig");
 // Use named import to share the same module instance across build graph
 const conn_mod = @import("quic_conn");
 
+/// Supported QUIC wire versions exposed to users.
 pub const QuicVersion = enum { v1, v2 };
+/// Role of an endpoint used by connection APIs.
 pub const Role = enum { Client, Server };
 
 /// Global event loop backend chosen per OS.
@@ -21,6 +23,8 @@ pub const QuicConfig = struct {
     enable_datagram: bool = false,
     enable_spin_bit: bool = false,
     grease: bool = true,
+    // RFC 9368 Compatible Version Negotiation toggle
+    compatible_vn: bool = false,
     max_idle_timeout_ms: u32 = 30000,
     max_udp_payload: u16 = 1350,
     cert_path: ?[]const u8 = null, // server
@@ -31,8 +35,9 @@ pub const QuicConfig = struct {
 
 /// Concrete endpoint type.
 pub const QuicEndpoint = endpoint_mod.Endpoint;
-/// Placeholder concrete connection type.
+/// Public opaque connection handle
 pub const QuicConnection = opaque {};
+/// Stream identifier type.
 pub const QuicStreamId = u64;
 
 /// Compute the Initial secrets and key/iv/hp for the configured QUIC version.
@@ -57,9 +62,8 @@ pub fn defaultLoopBackend() LoopBackend {
 
 /// Initialize an endpoint bound to the provided address.
 pub fn endpointInit(alloc: *std.mem.Allocator, bind_addr: []const u8, cfg: *const QuicConfig) !*QuicEndpoint {
-    _ = cfg; // For later socket options
     const ep = try alloc.create(QuicEndpoint);
-    ep.* = try QuicEndpoint.init(alloc, bind_addr);
+    ep.* = try QuicEndpoint.init(alloc, bind_addr, cfg);
     return ep;
 }
 /// Deinitialize endpoint and free resources.
@@ -67,36 +71,50 @@ pub fn endpointDeinit(ep: *QuicEndpoint) void {
     ep.deinit();
 }
 
+/// Create a client connection and kick Initial probe to elicit VN or SH.
 pub fn connect(ep: *QuicEndpoint, server_addr: []const u8, sni: []const u8) !*QuicConnection {
     _ = sni; // TODO: TLS handshake will use this
-    const c = try ep.connectTo(server_addr);
-    // For now return an opaque pointer aliasing the stack-allocated connection is unsafe.
-    // TODO: allocate and manage Connection objects once connection manager exists.
-    _ = c;
-    return error.NotImplemented;
+    // Allocate and register a client Connection with an Initial probe to drive VN
+    const c = try ep.connectClient(server_addr);
+    // Kick an Initial PING to elicit VN or SH
+    try ep.clientSendInitialProbe(c);
+    // Return as opaque pointer
+    const anyp: *anyopaque = @ptrCast(c);
+    return @ptrCast(anyp);
 }
+/// Accept a server-side connection from the endpoint accept queue.
 pub fn accept(ep: *QuicEndpoint) !*QuicConnection {
-    _ = ep;
-    return error.NotImplemented;
+    // Blockingly poll until a server-side Connection is accepted.
+    while (true) {
+        if (ep.popAccepted()) |pc| {
+            const anyp: *anyopaque = @ptrCast(pc);
+            return @ptrCast(anyp);
+        }
+        try ep.poll(10);
+    }
 }
 
+/// Open a stream on a connection (not yet implemented).
 pub fn openStream(conn: *QuicConnection, bidi: bool) !QuicStreamId {
     _ = conn;
     _ = bidi;
     return error.NotImplemented;
 }
+/// Write to a stream on a connection (not yet implemented).
 pub fn writeStream(conn: *QuicConnection, id: QuicStreamId, data: []const u8) !usize {
     _ = conn;
     _ = id;
     _ = data;
     return error.NotImplemented;
 }
+/// Read from a stream on a connection (not yet implemented).
 pub fn readStream(conn: *QuicConnection, id: QuicStreamId, buf: []u8) !usize {
     _ = conn;
     _ = id;
     _ = buf;
     return error.NotImplemented;
 }
+/// Close a stream with an application error (not yet implemented).
 pub fn closeStream(conn: *QuicConnection, id: QuicStreamId, app_error_code: u64) !void {
     _ = conn;
     _ = id;
@@ -104,17 +122,18 @@ pub fn closeStream(conn: *QuicConnection, id: QuicStreamId, app_error_code: u64)
     return error.NotImplemented;
 }
 
+/// Send a QUIC DATAGRAM over a connection.
 pub fn sendDatagram(conn: *QuicConnection, payload: []const u8) !void {
-    _ = conn;
-    _ = payload;
-    return error.NotImplemented;
+    const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
+    try c.sendDatagram(payload);
 }
+/// Receive a QUIC DATAGRAM into the provided buffer.
 pub fn recvDatagram(conn: *QuicConnection, buf: []u8) !usize {
-    _ = conn;
-    _ = buf;
-    return error.NotImplemented;
+    const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
+    return c.popDatagram(buf);
 }
 
+/// Close a connection with an application error (not yet implemented).
 pub fn closeConnection(conn: *QuicConnection, app_error_code: u64) !void {
     _ = conn;
     _ = app_error_code;

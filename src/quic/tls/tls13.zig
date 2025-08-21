@@ -8,10 +8,13 @@ const ks = @import("quic_tls");
 const x509 = @import("x509.zig");
 const sig = @import("sig.zig");
 
+/// Hash used for TLS 1.3 in this implementation (SHA-256).
 pub const H = ks.H; // sha256
 
+/// TLS handshake role.
 pub const Role = enum { Client, Server };
 
+/// TLS Handshake message types used by helpers.
 pub const HsType = enum(u8) {
     client_hello = 1,
     server_hello = 2,
@@ -48,12 +51,15 @@ pub fn parseHandshakeOne(data: []const u8) !?struct { typ: HsType, body: []const
 pub const Transcript = struct {
     hasher: H = H.init(.{}),
 
+    /// Initialize a new transcript hash helper.
     pub fn init() Transcript {
         return .{ .hasher = H.init(.{}) };
     }
+    /// Update transcript with raw bytes (handshake messages).
     pub fn update(self: *Transcript, msg: []const u8) void {
         self.hasher.update(msg);
     }
+    /// Finalize and return current transcript hash without consuming internal state.
     pub fn finalize(self: *Transcript) [H.digest_length]u8 {
         var out: [H.digest_length]u8 = undefined;
         var tmp = self.hasher; // copy
@@ -88,6 +94,7 @@ pub fn deriveHandshakeTraffic(ecdhe_secret: []const u8, transcript_hash: [H.dige
 /// QUIC key material derived from a TLS traffic secret.
 pub const QuicKeys = struct { key: [16]u8, iv: [12]u8, hp: [16]u8 };
 
+/// Derive QUIC handshake keys from a handshake traffic secret.
 pub fn deriveQuicHandshakeKeys(client_or_server_hs_secret: [H.digest_length]u8, v2: bool) QuicKeys {
     var key: [16]u8 = undefined;
     var iv: [12]u8 = undefined;
@@ -122,6 +129,7 @@ pub fn deriveApplicationTraffic(handshake_secret: [H.digest_length]u8, transcrip
     return .{ .client_app = c_app, .server_app = s_app };
 }
 
+/// Derive QUIC 1-RTT keys from an application traffic secret.
 pub fn deriveQuicAppKeys(client_or_server_app_secret: [H.digest_length]u8, v2: bool) QuicKeys {
     return if (v2) blk: {
         const t = ks.deriveKeyIvHpV2(client_or_server_app_secret);
@@ -195,9 +203,11 @@ pub const Engine = struct {
     local_tp: ?[]u8 = null,
     peer_tp: ?[]u8 = null,
 
+    /// Initialize a TLS 1.3 Engine with allocator and role.
     pub fn init(alloc: std.mem.Allocator, role: Role) Engine {
         return .{ .role = role, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .outbox = std.ArrayList(u8).init(alloc), .ch_sent = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .leaf_spki = null, .local_tp = null, .peer_tp = null };
     }
+    /// Release any owned resources and buffers.
     pub fn deinit(self: *Engine) void {
         if (self.leaf_spki) |spki| self.outbox.allocator.free(spki);
         if (self.local_tp) |b| self.outbox.allocator.free(b);

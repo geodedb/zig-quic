@@ -4,24 +4,29 @@ const std = @import("std");
 const posix = std.posix;
 const linux = std.os.linux;
 
+/// One readiness event for a monitored fd.
 pub const Event = struct {
     fd: i32,
     readable: bool,
     writable: bool,
 };
 
+/// epoll-backed event loop wrapper matching the generic Loop API shape.
 pub const Loop = struct {
     ep: posix.fd_t,
 
+    /// Create an epoll instance.
     pub fn init() !Loop {
         const fd = try posix.epoll_create1(linux.EPOLL.CLOEXEC);
         return .{ .ep = fd };
     }
 
+    /// Close the epoll fd.
     pub fn deinit(self: *Loop) void {
         _ = posix.close(self.ep);
     }
 
+    /// Register interest in read/write readiness for fd.
     pub fn add(self: *Loop, fd: i32, read: bool, write: bool) !void {
         var ev: linux.epoll_event = .{ .events = 0, .data = .{ .fd = fd } };
         if (read) ev.events |= linux.EPOLL.IN;
@@ -29,6 +34,7 @@ pub const Loop = struct {
         try posix.epoll_ctl(self.ep, linux.EPOLL.CTL_ADD, fd, &ev);
     }
 
+    /// Modify interest for fd.
     pub fn mod(self: *Loop, fd: i32, read: bool, write: bool) !void {
         var ev: linux.epoll_event = .{ .events = 0, .data = .{ .fd = fd } };
         if (read) ev.events |= linux.EPOLL.IN;
@@ -36,10 +42,12 @@ pub const Loop = struct {
         try posix.epoll_ctl(self.ep, linux.EPOLL.CTL_MOD, fd, &ev);
     }
 
+    /// Remove interest for fd.
     pub fn del(self: *Loop, fd: i32) !void {
         try posix.epoll_ctl(self.ep, linux.EPOLL.CTL_DEL, fd, null);
     }
 
+    /// Wait for readiness and populate up to events.len results; returns count.
     pub fn wait(self: *Loop, events: []Event, timeout_ms: i32) !usize {
         var raw: [64]linux.epoll_event = undefined;
         const n: usize = posix.epoll_wait(self.ep, raw[0..], timeout_ms);

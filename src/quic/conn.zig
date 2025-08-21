@@ -8,12 +8,15 @@ const frame = @import("quic_frame");
 const recovery = @import("recovery.zig");
 const ks = @import("quic_tls");
 
+/// Role of this endpoint for a connection.
 pub const Role = enum { Client, Server };
 
+/// Portable socket address wrapper used by endpoint/connection.
 pub const SockAddr = struct {
     storage: posix.sockaddr.storage = undefined,
     len: u32 = 0,
 
+    /// Initialize from a POSIX addrinfo entry.
     pub fn setFrom(ai: *const posix.addrinfo) SockAddr {
         var s: SockAddr = .{};
         const src = ai.addr.?.*;
@@ -22,10 +25,12 @@ pub const SockAddr = struct {
         return s;
     }
 
+    /// Return address family (AF.INET/AF.INET6).
     pub fn family(self: *const SockAddr) u16 {
         return self.storage.family;
     }
 
+    /// Compare two socket addresses for byte-wise equality.
     pub fn eq(a: *const SockAddr, b: *const SockAddr) bool {
         if (a.len != b.len) return false;
         if (a.storage.family != b.storage.family) return false;
@@ -49,6 +54,7 @@ pub const SockAddr = struct {
     }
 };
 
+/// Fixed-size Connection ID used in tests/internals.
 pub const Cid = struct {
     len: u8 = 0,
     bytes: [20]u8 = undefined,
@@ -138,6 +144,7 @@ fn expandTruncatedPn(trunc_val: u64, pn_len: u3, expected: u64) u64 {
 
 const AckDesc = struct { largest: u64, first_range: u64, ranges: []const frame.AckRange };
 
+/// Connection state and helpers for QUIC handshake, recovery, and 1-RTT.
 pub const Connection = struct {
     id: u64,
     role: Role,
@@ -199,46 +206,55 @@ pub const Connection = struct {
     ack_ranges_buf: [8]frame.AckRange = undefined,
     // Track sent sizes for accurate bytes_acked/lost accounting
     sent_sizes: std.AutoHashMap(u64, u16),
+    // Minimal DATAGRAM inbox (FIFO of owned payloads)
+    dgram_inbox: std.ArrayList([]u8) = undefined,
 
-    // Expand truncated PN for Initial space
+    /// Expand a truncated PN in Initial space using expected next PN.
     pub fn expandPnInitial(self: *const Connection, trunc_val: u64, pn_len: u3) u64 {
         const expected: u64 = if (self.pn_initial.have_any) self.pn_initial.max + 1 else 0;
         return expandTruncatedPn(trunc_val, pn_len, expected);
     }
-    // Expand truncated PN for Handshake space
+    /// Expand a truncated PN in Handshake space using expected next PN.
     pub fn expandPnHandshake(self: *const Connection, trunc_val: u64, pn_len: u3) u64 {
         const expected: u64 = if (self.pn_handshake.have_any) self.pn_handshake.max + 1 else 0;
         return expandTruncatedPn(trunc_val, pn_len, expected);
     }
-    // Expand truncated PN for App space
+    /// Expand a truncated PN in 1-RTT App space using expected next PN.
     pub fn expandPnApp(self: *const Connection, trunc_val: u64, pn_len: u3) u64 {
         const expected: u64 = if (self.pn_app.have_any) self.pn_app.max + 1 else 0;
         return expandTruncatedPn(trunc_val, pn_len, expected);
     }
 
+    /// Track a received PN in Initial space for ACK generation.
     pub fn trackRecvPnInitial(self: *Connection, pn_full: u64) void {
         self.pn_initial.track(pn_full);
     }
+    /// Track a received PN in Handshake space for ACK generation.
     pub fn trackRecvPnHandshake(self: *Connection, pn_full: u64) void {
         self.pn_handshake.track(pn_full);
     }
+    /// Track a received PN in App space for ACK generation.
     pub fn trackRecvPnApp(self: *Connection, pn_full: u64) void {
         self.pn_app.track(pn_full);
     }
 
+    /// Build ACK ranges for Initial space using the sliding window.
     pub fn buildAckInitial(self: *Connection) AckDesc {
         const desc = self.pn_initial.buildAckRanges(self.ack_ranges_buf[0..]);
         return .{ .largest = self.pn_initial.max, .first_range = desc.first_range, .ranges = self.ack_ranges_buf[0..desc.ranges_len] };
     }
+    /// Build ACK ranges for Handshake space using the sliding window.
     pub fn buildAckHandshake(self: *Connection) AckDesc {
         const desc = self.pn_handshake.buildAckRanges(self.ack_ranges_buf[0..]);
         return .{ .largest = self.pn_handshake.max, .first_range = desc.first_range, .ranges = self.ack_ranges_buf[0..desc.ranges_len] };
     }
+    /// Build ACK ranges for App space using the sliding window.
     pub fn buildAckApp(self: *Connection) AckDesc {
         const desc = self.pn_app.buildAckRanges(self.ack_ranges_buf[0..]);
         return .{ .largest = self.pn_app.max, .first_range = desc.first_range, .ranges = self.ack_ranges_buf[0..desc.ranges_len] };
     }
 
+    /// Initialize a Connection in the given role bound to a socket and peer address.
     pub fn init(self: *Connection, alloc: *std.mem.Allocator, role: Role, sock_fd: posix.fd_t, peer: SockAddr) void {
         self.id = 0;
         self.role = role;
@@ -259,6 +275,9 @@ pub const Connection = struct {
         self.peer_initial_dcid = .{};
         self.peer_initial_scid = .{};
         self.our_scid = .{};
+        self.version = 0;
+        self.version_v2 = false;
+        self.initial_version = 0;
         self.initial_keys_dropped = false;
         self.pn_initial = .{};
         self.pn_handshake = .{};
@@ -266,23 +285,75 @@ pub const Connection = struct {
         self.sent_time = std.AutoHashMap(u64, i128).init(alloc.*);
         self.sent_sizes = std.AutoHashMap(u64, u16).init(alloc.*);
         self.largest_acked = 0;
-        self.version = 0;
-        self.version_v2 = false;
-        // Generate a simple random SCID (8 bytes) for server role.
-        if (role == .Server) {
-            self.our_scid.len = 8;
-            std.crypto.random.bytes(self.our_scid.bytes[0..self.our_scid.len]);
-        }
+        // Initialize PTO state deterministically
+        self.pto_initial_active = false;
+        self.pto_handshake_active = false;
+        self.pto_app_active = false;
+        self.pto_initial_id = 0;
+        self.pto_handshake_id = 0;
+        self.pto_app_id = 0;
+        self.pto_initial_count = 0;
+        self.pto_handshake_count = 0;
+        self.pto_app_count = 0;
+        self.timer_granularity_ns = std.time.ns_per_ms;
+        // Init DATAGRAM inbox
+        self.dgram_inbox = std.ArrayList([]u8).init(alloc.*);
     }
 
+    /// Release resources held by this Connection (payloads, maps, TLS state).
     pub fn deinit(self: *Connection) void {
         self.tls_inbox.deinit();
         self.tls.deinit();
         self.sent_time.deinit();
         self.sent_sizes.deinit();
+        // Free inbox payloads
+        while (self.dgram_inbox.items.len > 0) {
+            const p = self.dgram_inbox.orderedRemove(0);
+            self.allocator.free(p);
+        }
+        self.dgram_inbox.deinit();
     }
 
-    /// Send a datagram to the connection's peer.
+    /// Send a datagram to the connection's peer using 1-RTT short header.
+    pub fn sendDatagram(self: *Connection, data: []const u8) !void {
+        const tx = self.app_tx_keys orelse return error.KeysNotReady;
+        var frames = std.ArrayList(u8).init(self.allocator.*);
+        defer frames.deinit();
+        const w = frames.writer();
+        _ = (frame.Frame{ .datagram = .{ .data = data } }).write(w) catch 0;
+        const pkt = try packet.encodeShortProtected(
+            self.allocator.*,
+            self.our_scid.bytes[0..self.our_scid.len],
+            self.pn_app_tx,
+            2,
+            frames.items,
+            tx,
+        );
+        defer self.allocator.free(pkt);
+        _ = try self.send(pkt);
+        self.onPacketSent(self.pn_app_tx, pkt.len, true);
+        self.pn_app_tx +%= 1;
+        self.computeAndMaybeArmPto(self);
+    }
+
+    /// Push a received DATAGRAM payload into the inbox (makes a copy).
+    pub fn pushDatagram(self: *Connection, data: []const u8) !void {
+        const copy = try self.allocator.alloc(u8, data.len);
+        @memcpy(copy, data);
+        try self.dgram_inbox.append(copy);
+    }
+
+    /// Pop a DATAGRAM payload into caller buffer, returning bytes copied.
+    pub fn popDatagram(self: *Connection, out: []u8) !usize {
+        if (self.dgram_inbox.items.len == 0) return error.NoDatagram;
+        const p = self.dgram_inbox.orderedRemove(0);
+        defer self.allocator.free(p);
+        const n = @min(out.len, p.len);
+        @memcpy(out[0..n], p[0..n]);
+        return n;
+    }
+
+    /// Send raw bytes to the connection's peer via UDP.
     pub fn send(self: *const Connection, data: []const u8) !usize {
         const sa_ptr: *const posix.sockaddr = @ptrCast(&self.peer.storage);
         return posix.sendto(self.sock_fd, data, 0, sa_ptr, self.peer.len);
@@ -335,27 +406,30 @@ pub const Connection = struct {
         if (sl > 0) @memcpy(self.peer_initial_scid.bytes[0..sl], scid[0..sl]);
     }
 
-    /// Called when we send a packet (pn space 1-RTT for now)
+    /// Note a sent packet for recovery/cc accounting.
     pub fn onPacketSent(self: *Connection, pn: u64, bytes: usize, ack_eliciting: bool) void {
         _ = self.sent_time.put(pn, std.time.nanoTimestamp()) catch {};
         _ = self.sent_sizes.put(pn, @intCast(@min(bytes, @as(usize, std.math.maxInt(u16))))) catch {};
         self.cc.onPacketSent(bytes, ack_eliciting);
     }
 
+    /// Mark Initial PTO as expired and increase backoff counter.
     pub fn setPtoExpiredInitial(self: *Connection) void {
         self.pto_initial_active = false;
         self.pto_initial_count +%= 1;
     }
+    /// Mark Handshake PTO as expired and increase backoff counter.
     pub fn setPtoExpiredHandshake(self: *Connection) void {
         self.pto_handshake_active = false;
         self.pto_handshake_count +%= 1;
     }
+    /// Mark App PTO as expired and increase backoff counter.
     pub fn setPtoExpiredApp(self: *Connection) void {
         self.pto_app_active = false;
         self.pto_app_count +%= 1;
     }
 
-    /// Per-space ACK handlers used to update RTT and reset PTO backoff
+    /// Per-space ACK handlers used to update RTT and reset PTO backoff.
     pub fn onAckReceivedInitial(self: *Connection, largest: u64, ep: anytype) void {
         if (self.sent_time.fetchRemove(largest)) |kv| {
             const now_ns: i128 = std.time.nanoTimestamp();
@@ -369,6 +443,7 @@ pub const Connection = struct {
             }
         }
     }
+    /// ACK handler for Handshake space; updates RTT and PTO backoff.
     pub fn onAckReceivedHandshake(self: *Connection, largest: u64, ep: anytype) void {
         if (self.sent_time.fetchRemove(largest)) |kv| {
             const now_ns: i128 = std.time.nanoTimestamp();
@@ -383,16 +458,20 @@ pub const Connection = struct {
         }
     }
 
+    /// Reset Initial PTO backoff counter to zero.
     pub fn resetPtoBackoffInitial(self: *Connection) void {
         self.pto_initial_count = 0;
     }
+    /// Reset Handshake PTO backoff counter to zero.
     pub fn resetPtoBackoffHandshake(self: *Connection) void {
         self.pto_handshake_count = 0;
     }
+    /// Reset App PTO backoff counter to zero.
     pub fn resetPtoBackoffApp(self: *Connection) void {
         self.pto_app_count = 0;
     }
 
+    /// Cancel Initial PTO timer and reset backoff.
     pub fn cancelPtoInitial(self: *Connection, ep: anytype) void {
         if (self.pto_initial_active) {
             if (self.pto_initial_id != 0) _ = ep.cancelTimer(self.pto_initial_id);
@@ -400,6 +479,7 @@ pub const Connection = struct {
         }
         self.resetPtoBackoffInitial();
     }
+    /// Cancel Handshake PTO timer and reset backoff.
     pub fn cancelPtoHandshake(self: *Connection, ep: anytype) void {
         if (self.pto_handshake_active) {
             if (self.pto_handshake_id != 0) _ = ep.cancelTimer(self.pto_handshake_id);
@@ -407,6 +487,7 @@ pub const Connection = struct {
         }
         self.resetPtoBackoffHandshake();
     }
+    /// Cancel App PTO timer and reset backoff.
     pub fn cancelPtoApp(self: *Connection, ep: anytype) void {
         if (self.pto_app_active) {
             if (self.pto_app_id != 0) _ = ep.cancelTimer(self.pto_app_id);
@@ -415,7 +496,7 @@ pub const Connection = struct {
         self.resetPtoBackoffApp();
     }
 
-    /// Called when we receive an ACK frame
+    /// Called when we receive an ACK frame.
     pub fn onAckReceived(self: *Connection, largest: u64, first_range: u64, ranges: []const frame.AckRange) void {
         // Update largest_acked
         if (largest > self.largest_acked) self.largest_acked = largest;
@@ -477,6 +558,7 @@ pub const Connection = struct {
         _ = ranges;
     }
 
+    /// Compute PTO for App space and arm timer if not active.
     pub fn computeAndMaybeArmPto(self: *Connection, ep: anytype) void {
         // Arm App PTO based on app RTT with exponential backoff.
         const pto_ns = self.rtt_app.computePtoNsWithBackoff(self.pto_app_count, self.timer_granularity_ns);
@@ -493,6 +575,7 @@ pub const Connection = struct {
         }
     }
 
+    /// Compute PTO for Initial space and arm timer if not active.
     pub fn computeAndMaybeArmPtoInitial(self: *Connection, ep: anytype) void {
         const pto_ns = self.rtt_initial.computePtoNsWithBackoff(self.pto_initial_count, self.timer_granularity_ns);
         if (pto_ns == 0) return;
@@ -505,6 +588,7 @@ pub const Connection = struct {
         }
     }
 
+    /// Compute PTO for Handshake space and arm timer if not active.
     pub fn computeAndMaybeArmPtoHandshake(self: *Connection, ep: anytype) void {
         const pto_ns = self.rtt_handshake.computePtoNsWithBackoff(self.pto_handshake_count, self.timer_granularity_ns);
         if (pto_ns == 0) return;
@@ -517,7 +601,7 @@ pub const Connection = struct {
         }
     }
 
-    /// Send a minimal PTO probe for the given space (PING frame)
+    /// Send a minimal PTO probe for the Initial space (PING frame).
     pub fn sendPtoProbeInitial(self: *Connection) void {
         if (self.initial_keys_dropped) return;
         // Derive server initial TX keys on demand
@@ -549,6 +633,7 @@ pub const Connection = struct {
         }
     }
 
+    /// Send a minimal PTO probe for the Handshake space (PING frame).
     pub fn sendPtoProbeHandshake(self: *Connection) void {
         const tx = self.hs_tx_keys orelse return;
         var frames = std.ArrayList(u8).init(self.allocator.*);
@@ -574,6 +659,7 @@ pub const Connection = struct {
         }
     }
 
+    /// Send a minimal PTO probe for the App space (PING frame).
     pub fn sendPtoProbeApp(self: *Connection) void {
         const tx = self.app_tx_keys orelse return;
         var frames = std.ArrayList(u8).init(self.allocator.*);

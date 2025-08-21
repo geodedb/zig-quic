@@ -3,6 +3,7 @@
 const std = @import("std");
 const varint = @import("quic_varint");
 
+/// Transport Parameter identifiers used in TLS QUIC handshake.
 pub const Id = enum(u64) {
     original_destination_connection_id = 0x00,
     max_idle_timeout = 0x01,
@@ -16,6 +17,7 @@ pub const Id = enum(u64) {
     active_connection_id_limit = 0x0e,
 };
 
+/// Parsed QUIC Transport Parameters (subset) with encode/decode helpers.
 pub const TransportParams = struct {
     // Greasing and other fields omitted for now.
     original_destination_connection_id: ?[]u8 = null, // owned
@@ -29,11 +31,13 @@ pub const TransportParams = struct {
     disable_active_migration: bool = false,
     active_connection_id_limit: ?u64 = null,
 
+    /// Free any owned fields and poison the struct.
     pub fn deinit(self: *TransportParams, alloc: std.mem.Allocator) void {
         if (self.original_destination_connection_id) |b| alloc.free(b);
         self.* = undefined;
     }
 
+    /// Encode to the TLS transport parameters extension format.
     pub fn encode(self: *const TransportParams, alloc: std.mem.Allocator) ![]u8 {
         var out = std.ArrayList(u8).init(alloc);
         errdefer out.deinit();
@@ -102,6 +106,7 @@ pub const TransportParams = struct {
         return out.toOwnedSlice();
     }
 
+    /// Decode from the TLS transport parameters extension format.
     pub fn decode(alloc: std.mem.Allocator, bytes: []const u8) !TransportParams {
         var tp: TransportParams = .{};
         var i: usize = 0;

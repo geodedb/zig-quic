@@ -2,20 +2,24 @@
 // kqueue-based event loop abstraction (BSD/macOS)
 const std = @import("std");
 
+/// One readiness event returned by the loop.
 pub const Event = struct {
     ident: usize,
     readable: bool,
     writable: bool,
 };
 
+/// kqueue-backed event loop wrapper matching the generic Loop API shape.
 pub const Loop = struct {
     kq: std.posix.fd_t,
 
+    /// Create a new kqueue handle.
     pub fn init() !Loop {
         const fd = try std.posix.kqueue();
         return .{ .kq = fd };
     }
 
+    /// Close the kqueue descriptor.
     pub fn deinit(self: *Loop) void {
         _ = std.posix.close(self.kq);
     }
@@ -24,6 +28,7 @@ pub const Loop = struct {
         ch.* = .{ .ident = ident, .filter = filter, .flags = flags, .fflags = 0, .data = 0, .udata = 0 };
     }
 
+    /// Register interest in read/write readiness for fd.
     pub fn add(self: *Loop, fd: i32, read: bool, write: bool) !void {
         var changes: [2]std.posix.Kevent = undefined;
         var n: usize = 0;
@@ -38,10 +43,12 @@ pub const Loop = struct {
         _ = try std.posix.kevent(self.kq, changes[0..n], &[_]std.posix.Kevent{}, null);
     }
 
+    /// Modify readiness interest; implemented as re-add.
     pub fn mod(self: *Loop, fd: i32, read: bool, write: bool) !void {
         return add(self, fd, read, write);
     }
 
+    /// Remove all interests for fd.
     pub fn del(self: *Loop, fd: i32) !void {
         var changes: [2]std.posix.Kevent = undefined;
         evSet(&changes[0], @as(usize, @intCast(fd)), std.posix.EVFILT_READ, std.posix.EV_DELETE);
@@ -49,6 +56,7 @@ pub const Loop = struct {
         _ = try std.posix.kevent(self.kq, &changes, &[_]std.posix.Kevent{}, null);
     }
 
+    /// Wait for readiness and write up to events.len entries; returns count.
     pub fn wait(self: *Loop, events: []Event, timeout_ms: i32) !usize {
         var evs: [64]std.posix.Kevent = undefined;
         var ts: ?std.posix.timespec = null;

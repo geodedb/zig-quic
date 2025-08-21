@@ -2,8 +2,10 @@
 // Minimal ASN.1 DER decoder utilities used by X.509 parsing.
 const std = @import("std");
 
+/// ASN.1 tag class categories for DER TLV headers.
 pub const TagClass = enum { universal, application, context, private };
 
+/// Return the tag class from a TLV tag byte.
 pub fn tagClass(b: u8) TagClass {
     return switch (b >> 6) {
         0 => .universal,
@@ -12,17 +14,21 @@ pub fn tagClass(b: u8) TagClass {
         else => .private,
     };
 }
+/// Whether a TLV tag denotes a constructed form.
 pub fn isConstructed(b: u8) bool {
     return (b & 0x20) != 0;
 }
+/// Return the tag number (low 5 bits) from a TLV tag byte.
 pub fn tagNumber(b: u8) u8 {
     return b & 0x1f;
 }
 
+/// A streaming DER decoder over a byte slice with helpers for common universal types.
 pub const Decoder = struct {
     buf: []const u8,
     off: usize = 0,
 
+    /// Initialize a decoder over buf starting at offset 0.
     pub fn init(buf: []const u8) Decoder {
         return .{ .buf = buf, .off = 0 };
     }
@@ -48,6 +54,7 @@ pub const Decoder = struct {
         return val;
     }
 
+    /// Read the next TLV header returning tag, content length and header length.
     pub fn nextHeader(self: *Decoder) !struct { tag: u8, len: usize, hdr_len: usize } {
         const start = self.off;
         const tag = try self.readByte();
@@ -55,6 +62,7 @@ pub const Decoder = struct {
         return .{ .tag = tag, .len = len, .hdr_len = self.off - start };
     }
 
+    /// Read one complete TLV returning the tag and the value (content slice).
     pub fn readTLV(self: *Decoder) !struct { tag: u8, val: []const u8 } {
         const h = try self.nextHeader();
         if (self.off + h.len > self.buf.len) return error.Truncated;
@@ -63,6 +71,7 @@ pub const Decoder = struct {
         return .{ .tag = h.tag, .val = val };
     }
 
+    /// Read a SEQUENCE value and return its content bytes (to be decoded by a nested Decoder).
     pub fn readSequence(self: *Decoder) ![]const u8 {
         const tlv = try self.readTLV();
         if (tagClass(tlv.tag) != .universal or tagNumber(tlv.tag) != 16 or !isConstructed(tlv.tag))
@@ -70,6 +79,7 @@ pub const Decoder = struct {
         return tlv.val;
     }
 
+    /// Read an INTEGER and return it as u64 (only non-negative up to 64 bits supported).
     pub fn readInteger(self: *Decoder) !u64 {
         const tlv = try self.readTLV();
         if (tagClass(tlv.tag) != .universal or tagNumber(tlv.tag) != 2)
@@ -82,6 +92,7 @@ pub const Decoder = struct {
         return v;
     }
 
+    /// Read an OCTET STRING and return a view of its bytes.
     pub fn readOctetString(self: *Decoder) ![]const u8 {
         const tlv = try self.readTLV();
         if (tagClass(tlv.tag) != .universal or tagNumber(tlv.tag) != 4)
@@ -89,6 +100,7 @@ pub const Decoder = struct {
         return tlv.val;
     }
 
+    /// Read a BIT STRING and return its payload (without the leading 'unused bits' byte).
     pub fn readBitString(self: *Decoder) ![]const u8 {
         const tlv = try self.readTLV();
         if (tagClass(tlv.tag) != .universal or tagNumber(tlv.tag) != 3)
@@ -100,6 +112,7 @@ pub const Decoder = struct {
         return tlv.val[1..];
     }
 
+    /// Read an OBJECT IDENTIFIER and return its bytes.
     pub fn readOID(self: *Decoder) ![]const u8 {
         const tlv = try self.readTLV();
         if (tagClass(tlv.tag) != .universal or tagNumber(tlv.tag) != 6)
@@ -107,6 +120,7 @@ pub const Decoder = struct {
         return tlv.val; // caller interprets if needed
     }
 
+    /// Read a UTF8String and return a view of its bytes.
     pub fn readUtf8String(self: *Decoder) ![]const u8 {
         const tlv = try self.readTLV();
         if (tagClass(tlv.tag) != .universal or tagNumber(tlv.tag) != 12)
@@ -114,6 +128,7 @@ pub const Decoder = struct {
         return tlv.val;
     }
 
+    /// Read an IA5String and return a view of its bytes.
     pub fn readIa5String(self: *Decoder) ![]const u8 {
         const tlv = try self.readTLV();
         if (tagClass(tlv.tag) != .universal or tagNumber(tlv.tag) != 22)

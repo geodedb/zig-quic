@@ -3,6 +3,7 @@
 const std = @import("std");
 const varint = @import("quic_varint");
 
+/// Known QUIC frame type bytes (subset).
 pub const FrameType = enum(u8) {
     PADDING = 0x00,
     PING = 0x01,
@@ -29,8 +30,10 @@ pub const FrameType = enum(u8) {
     DATAGRAM = 0x30, // RFC 9221 (optional)
 };
 
+/// Ack range element used inside ACK frames (gap,len VarInts).
 pub const AckRange = struct { gap: u64, len: u64 };
 
+/// Frame union with encode helper for a subset used in tests/tools.
 pub const Frame = union(enum) {
     padding: usize,
     ping: void,
@@ -146,12 +149,14 @@ pub const Frame = union(enum) {
     }
 };
 
+/// Placeholder for a future streaming encoder API.
 pub fn encode(frame: Frame, w: anytype) !void {
     _ = frame;
     _ = w;
     return error.NotImplemented;
 }
 
+/// Placeholder for a future streaming decoder API.
 pub fn decode(r: anytype, alloc: std.mem.Allocator) !Frame {
     _ = r;
     _ = alloc;

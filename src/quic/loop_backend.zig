@@ -3,8 +3,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+/// Supported event loop backends per platform.
 pub const LoopBackend = enum { epoll, kqueue, iocp };
 
+/// Choose a reasonable default loop backend based on OS.
 pub fn defaultLoopBackend() LoopBackend {
     return switch (builtin.target.os.tag) {
         .linux => .epoll,
