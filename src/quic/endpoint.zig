@@ -69,6 +69,7 @@ pub const Endpoint = struct {
         // Allow fast rebinding in tests
         var one: i32 = 1;
         _ = posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, std.mem.asBytes(&one)) catch {};
+        // Note: do not rely on O.NONBLOCK here; use MSG.DONTWAIT on Linux in recv loop for portability
         const sa_ptr: *const posix.sockaddr = @ptrCast(&ep_addr.storage);
         try posix.bind(fd, sa_ptr, ep_addr.len);
 
@@ -309,7 +310,8 @@ pub const Endpoint = struct {
         while (true) {
             var peer = conn_mod.SockAddr{};
             peer.len = @intCast(@sizeOf(posix.sockaddr.storage));
-            const n_or_err = posix.recvfrom(self.sock_fd, buf[0..], posix.MSG.DONTWAIT, @ptrCast(&peer.storage), &peer.len);
+            const flags: u32 = if (builtin.target.os.tag == .linux) posix.MSG.DONTWAIT else 0;
+            const n_or_err = posix.recvfrom(self.sock_fd, buf[0..], flags, @ptrCast(&peer.storage), &peer.len);
             if (n_or_err) |n| {
                 self.processIncomingDatagram(peer, buf[0..n]);
             } else |err| {
@@ -323,6 +325,12 @@ pub const Endpoint = struct {
     }
 
     fn poll_epoll_backend(self: *Endpoint, timeout_ms: i32) !void {
+        // On non-Linux platforms, fallback to a simple sleep + drain to avoid epoll dependency
+        if (builtin.target.os.tag != .linux) {
+            if (timeout_ms > 0) std.time.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
+            self.drainReadable();
+            return;
+        }
         const io = @import("io/loop_epoll.zig");
         var lp = try io.Loop.init();
         defer lp.deinit();
@@ -438,16 +446,17 @@ pub const Endpoint = struct {
                     switch (fr.f) {
                         .ping => saw_any = true,
                         .stream => |s| {
-                            // Basic receive for stream 0 with optional offset (ignored for now)
                             if (s.stream_id == 0) {
-                                conn.pushStreamData(s.data) catch {};
+                                // Enforce FC and buffer; ignore FIN for now
+                                if (conn.pushStreamData(s.data)) |_| {} else |_| {
+                                    // Flow control violation; could close connection. For now, ignore excess.
+                                }
                             }
                             saw_any = true;
                         },
                         .datagram => |d| {
                             conn.pushDatagram(d.data) catch {};
                             saw_any = true;
-                            // Minimal echo: server echos back immediately when enabled and keys ready
                             if (self.cfg.enable_datagram) {
                                 if (conn.app_tx_keys) |txk| {
                                     var fb = std.ArrayList(u8).init(self.allocator.*);
@@ -473,6 +482,19 @@ pub const Endpoint = struct {
                                 conn.pto_app_active = false;
                             }
                         },
+                        .max_stream_data => |m| {
+                            if (m.stream_id == 0) {
+                                conn.peer_max_stream_data = m.max;
+                            }
+                        },
+                        .stream_data_blocked => |_| {
+                            // Peer is blocked on our advertised window; send MAX_STREAM_DATA soon
+                        },
+                        .path_challenge => |pcv| {
+                            // Echo PATH_RESPONSE with same data (opaque 8 bytes), if keys ready
+                            _ = pcv; // TODO: parse and hold payload in frame struct in future slice
+                        },
+                        .path_response => |_| {},
                         else => {},
                     }
                 }
@@ -484,6 +506,8 @@ pub const Endpoint = struct {
                         const ack_desc = conn.buildAckApp();
                         const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = 0, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges } };
                         _ = ack.write(w) catch 0;
+                        // Opportunistically advertise receive window growth
+                        _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = conn.local_max_stream_data } }).write(w) catch {};
                         const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], conn.pn_app_tx, 2, frames_buf.items, tx_keys) catch null;
                         if (out) |pkt_bytes| {
                             defer self.allocator.free(pkt_bytes);

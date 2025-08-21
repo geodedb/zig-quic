@@ -108,6 +108,7 @@ pub fn build(b: *std.Build) void {
     const filter_opt = b.option([]const u8, "test-filter", "Filter tests by substring");
     const filter = user_filter orelse (filter_opt orelse null);
     const legacy_tests = b.option(bool, "legacy-tests", "Run legacy tests in quic.zig") orelse false;
+    const cc_opt = b.option([]const u8, "cc", "Congestion control: newreno (default) or cubic");
 
     // Expose TLS/crypto/packet modules
     const quic_tls_mod = mkModule(b, "src/quic/tls/key_schedule.zig");
@@ -135,6 +136,9 @@ pub fn build(b: *std.Build) void {
     // Recovery
     const quic_recovery_mod = mkModule(b, "src/quic/recovery.zig");
     quic_recovery_mod.addImport("quic_frame", quic_frame_mod);
+    if (cc_opt) |_| {
+        // Placeholder: runtime selection occurs via config; both controllers are in same module
+    }
 
     // Connection/TP
     const quic_conn_mod = mkModule(b, "src/quic/conn.zig");

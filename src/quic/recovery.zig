@@ -101,6 +101,21 @@ pub const NewReno = struct {
     }
 };
 
+/// CUBIC congestion controller (stub): forwards to an internal NewReno for now.
+pub const Cubic = struct {
+    inner: NewReno = .{},
+
+    pub fn onPacketSent(self: *Cubic, bytes: usize, ack_eliciting: bool) void {
+        self.inner.onPacketSent(bytes, ack_eliciting);
+    }
+    pub fn onAck(self: *Cubic, bytes_acked: usize) void {
+        self.inner.onAck(bytes_acked);
+    }
+    pub fn onLoss(self: *Cubic, bytes_lost: usize) void {
+        self.inner.onLoss(bytes_lost);
+    }
+};
+
 /// Loss detection helpers implementing packet- and time-threshold logic (RFC 9002 §6-7).
 pub const LossDetector = struct {
     // Packet-threshold (default 3) and time-threshold (9/8 * max(smoothed_rtt, latest_rtt))
@@ -117,3 +132,11 @@ pub const LossDetector = struct {
         return base + base / 8; // 1.125x
     }
 };
+
+/// Optional pacing hook: given cwnd and bytes_in_flight, return an inter-packet pacing delay in ns.
+/// This minimal implementation returns 0 (no pacing). Future slices may compute pacing based on BDP.
+pub fn computePacingDelayNs(cwnd: usize, bytes_in_flight: usize) u64 {
+    _ = cwnd;
+    _ = bytes_in_flight;
+    return 0;
+}

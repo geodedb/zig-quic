@@ -449,9 +449,19 @@ pub const Connection = struct {
 
     /// Push received STREAM bytes into the stream inbox and advance recv offset.
     pub fn pushStreamData(self: *Connection, data: []const u8) !void {
-        try self.stream_inbox.appendSlice(data);
-        self.stream_recv_off += data.len;
-        // TODO: send MAX_STREAM_DATA when crossing thresholds
+        // Enforce local receive window for stream 0
+        if (self.stream_recv_off >= self.local_max_stream_data) return error.FlowControlViolation;
+        const capacity: u64 = self.local_max_stream_data - self.stream_recv_off;
+        const to_copy: usize = @intCast(@min(capacity, @as(u64, data.len)));
+        if (to_copy == 0) return error.FlowControlViolation;
+        try self.stream_inbox.appendSlice(data[0..to_copy]);
+        self.stream_recv_off += to_copy;
+        // Optionally, grow window and signal MAX_STREAM_DATA when crossing 50% threshold
+        const half: u64 = self.local_max_stream_data / 2;
+        if (self.stream_recv_off >= half) {
+            self.local_max_stream_data +%= half; // naive auto-tune
+            // In a full implementation, schedule a MAX_STREAM_DATA frame to peer
+        }
     }
 
     /// Pop a DATAGRAM payload into caller buffer, returning bytes copied.
@@ -479,6 +489,11 @@ pub const Connection = struct {
             self.hs_client = hs.client;
             self.hs_server = hs.server;
             self.deriveHandshakeKeys(false);
+            // Queue a Finished for our role once HS secrets are ready (minimal subset)
+            if (!self.tls.finished_sent) {
+                const my_hs = if (self.role == .Server) hs.server else hs.client;
+                self.tls.queueFinished(my_hs) catch {};
+            }
         }
         // Attempt to compute application secrets
         if (self.tls.computeApplicationSecrets()) |ap| {

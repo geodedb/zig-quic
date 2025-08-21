@@ -31,7 +31,8 @@ pub const Loop = struct {
         var ev: linux.epoll_event = .{ .events = 0, .data = .{ .fd = fd } };
         if (read) ev.events |= linux.EPOLL.IN;
         if (write) ev.events |= linux.EPOLL.OUT;
-        try posix.epoll_ctl(self.ep, linux.EPOLL.CTL_ADD, fd, &ev);
+        var pev: posix.system.epoll_event = ev; // same memory layout
+        try posix.epoll_ctl(self.ep, linux.EPOLL.CTL_ADD, fd, &pev);
     }
 
     /// Modify interest for fd.
@@ -39,7 +40,8 @@ pub const Loop = struct {
         var ev: linux.epoll_event = .{ .events = 0, .data = .{ .fd = fd } };
         if (read) ev.events |= linux.EPOLL.IN;
         if (write) ev.events |= linux.EPOLL.OUT;
-        try posix.epoll_ctl(self.ep, linux.EPOLL.CTL_MOD, fd, &ev);
+        var pev: posix.system.epoll_event = ev;
+        try posix.epoll_ctl(self.ep, linux.EPOLL.CTL_MOD, fd, &pev);
     }
 
     /// Remove interest for fd.

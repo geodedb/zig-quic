@@ -49,6 +49,8 @@ pub const Frame = union(enum) {
     stream_data_blocked: struct { stream_id: u64, limit: u64 },
     streams_blocked_bidi: struct { max: u64 },
     streams_blocked_uni: struct { max: u64 },
+    path_challenge: [8]u8,
+    path_response: [8]u8,
     // ... more frames as needed ...
 
     /// Encode this frame to the writer. Returns bytes written.
@@ -211,6 +213,16 @@ pub const Frame = union(enum) {
                 try w.writeAll(tmp[0..ml]);
                 return 1 + ml;
             },
+            .path_challenge => |v| {
+                try w.writeByte(@intFromEnum(FrameType.PATH_CHALLENGE));
+                try w.writeAll(&v);
+                return 1 + 8;
+            },
+            .path_response => |v| {
+                try w.writeByte(@intFromEnum(FrameType.PATH_RESPONSE));
+                try w.writeAll(&v);
+                return 1 + 8;
+            },
         }
     }
 };
@@ -368,6 +380,18 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
         const max = try varint.decode(buf[i..]);
         i += max.n;
         return .{ .f = Frame{ .streams_blocked_uni = .{ .max = max.value } }, .n = i };
+    }
+    if (t == @intFromEnum(FrameType.PATH_CHALLENGE)) {
+        if (buf.len < 1 + 8) return error.Truncated;
+        var data8: [8]u8 = undefined;
+        @memcpy(&data8, buf[1 .. 1 + 8]);
+        return .{ .f = Frame{ .path_challenge = data8 }, .n = 1 + 8 };
+    }
+    if (t == @intFromEnum(FrameType.PATH_RESPONSE)) {
+        if (buf.len < 1 + 8) return error.Truncated;
+        var data8: [8]u8 = undefined;
+        @memcpy(&data8, buf[1 .. 1 + 8]);
+        return .{ .f = Frame{ .path_response = data8 }, .n = 1 + 8 };
     }
     // Minimal support for now
     return error.Unsupported;
