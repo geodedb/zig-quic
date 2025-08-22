@@ -8,6 +8,17 @@ const std = @import("std");
 const asn1 = @import("asn1.zig");
 const sigmod = @import("sig.zig");
 
+/// Pluggable trust store hook. If set, root must be trusted via callback.
+pub const TrustStore = struct {
+    isTrustedSpki: *const fn (spki_der: []const u8) bool,
+};
+var g_trust_store: ?TrustStore = null;
+
+/// Install or clear the global trust store hook.
+pub fn setTrustStore(ts: ?TrustStore) void {
+    g_trust_store = ts;
+}
+
 /// Distinguished Name subset with only Common Name (CN).
 pub const Name = struct {
     cn: ?[]const u8 = null,
@@ -243,13 +254,55 @@ pub fn checkValidity(now_unix: i64, cert: *const Certificate) !void {
     if (now_unix > cert.not_after_unix) return error.Expired;
 }
 
+fn toLowerAscii(b: u8) u8 {
+    return if (b >= 'A' and b <= 'Z') b + 32 else b;
+}
+
+fn endsWithAsciiCI(hay: []const u8, suf: []const u8) bool {
+    if (hay.len < suf.len) return false;
+    const off = hay.len - suf.len;
+    var i: usize = 0;
+    while (i < suf.len) : (i += 1) {
+        if (toLowerAscii(hay[off + i]) != toLowerAscii(suf[i])) return false;
+    }
+    return true;
+}
+
+fn containsDot(s: []const u8) bool {
+    for (s) |c| if (c == '.') return true;
+    return false;
+}
+
+fn wildcardMatch(host: []const u8, pattern: []const u8) bool {
+    // Only support "*.example.com" with exactly one extra label on the left.
+    if (pattern.len < 3 or pattern[0] != '*' or pattern[1] != '.') return false;
+    const suffix = pattern[1..]; // includes leading '.'
+    if (!endsWithAsciiCI(host, suffix)) return false;
+    const prefix_len = host.len - suffix.len;
+    if (prefix_len == 0) return false;
+    const prefix = host[0..prefix_len];
+    // Exactly one label on the left: no additional dots allowed in prefix
+    if (containsDot(prefix)) return false;
+    return true;
+}
+
 /// Match a DNS name against SAN entries or the subject CN fallback.
 pub fn matchDnsName(cert: *const Certificate, name: []const u8) bool {
+    // Exact byte match (case-sensitive) for simplicity; wildcard support for leading label.
     if (cert.san) |san| {
-        for (san.dns) |d| if (std.mem.eql(u8, d, name)) return true;
+        for (san.dns) |d| {
+            if (std.mem.eql(u8, d, name)) return true;
+            if (d.len >= 2 and d[0] == '*' and d[1] == '.') {
+                if (wildcardMatch(name, d)) return true;
+            }
+        }
         return false;
     }
-    if (cert.subject.cn) |cn| return std.mem.eql(u8, cn, name);
+    if (cert.subject.cn) |cn| {
+        if (std.mem.eql(u8, cn, name)) return true;
+        if (cn.len >= 2 and cn[0] == '*' and cn[1] == '.') return wildcardMatch(name, cn);
+        return false;
+    }
     return false;
 }
 
@@ -357,10 +410,13 @@ pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, no
         const ok = verifyCertSig(issuer_spki, certs[i].tbs, parsed.algo_oid, parsed.sig_der);
         if (!ok) return error.BadSignature;
         if (i == certs.len - 1) {
-            // Root must be CA
+            // Root must be CA and trusted if trust store provided
             if (certs[i].basic) |b| {
                 if (!b.ca) return error.BasicConstraints;
             } else return error.BasicConstraints;
+            if (g_trust_store) |ts| {
+                if (!ts.isTrustedSpki(certs[i].spki)) return error.UntrustedRoot;
+            }
         }
     }
 }

@@ -6,13 +6,15 @@ Date: 2025-08-21
 
 - Added TLS/X.509 SNI negative tests and allow_insecure bypass tests; wired into build.zig and CI gates.
 - Fixed build wiring for tests using proper module imports; all tests pass in Debug and -Drelease-safe.
+- Implemented std-only ChaCha20-Poly1305 AEAD and ChaCha header protection (RFC 9001/8439) with fallback using std.crypto primitives; added roundtrip test for Initial protect/unprotect.
+- Validated acceptance tools (varint encode/decode); clarified test filter usage via -Dtest-filter.
 - GAP.md updated; doccheck and GAP gating continue to enforce docs discipline.
 
 ## Quick Status
 
 - Completed (summary):
 
-  - QUIC packet paths: Initial, Handshake, Short (1-RTT) encode/decode; AES-128-GCM AEAD, AES header protection; PN unmask + expansion per space; per-space ACK builders.
+  - QUIC packet paths: Initial, Handshake, Short (1-RTT) encode/decode; AES-128-GCM and ChaCha20-Poly1305 AEAD; AES and ChaCha header protection; PN unmask + expansion per space; per-space ACK builders.
   - Version Negotiation: VN encoder/decoder with downgrade protection; Compatible VN toggle honored (RFC 9368).
   - Retry: Integrity generation/verification wired (v1/v2), stateless HMAC tokens (bound to client IP + ODCID + expiry); server issues Retry as needed; client validates and retries with token.
   - Address validation and amplification defense: 3x anti-amplification before validation; PATH_CHALLENGE echo and PATH_RESPONSE validation; NAT rebinding path validation.
@@ -30,7 +32,7 @@ Date: 2025-08-21
 - Open Gaps vs requirements:
 
   - TLS 1.3 and QUIC-TLS (RFC 9001):
-    - Pending cipher: ChaCha20-Poly1305 AEAD + header protection variant.
+    - Formal KATs for ChaCha20-Poly1305 AEAD and header protection; cipher negotiation coverage across suites.
     - Optional 0-RTT (early data) key schedule and acceptance tests.
     - Key Update.
     - Platform trust store integration hook; more KATs (expired, not-yet-valid, EKU/KU mismatches).
@@ -60,36 +62,37 @@ Date: 2025-08-21
 
 ## Next Slices (actionable, in order)
 
-1. TLS crypto parity and validation hardening
+1. TLS validation hardening and KATs
 
-- Implement ChaCha20-Poly1305 AEAD + HP and cipher negotiation; add KATs.
+- Add known-answer tests (KATs) for ChaCha20-Poly1305 AEAD and header protection; add cipher negotiation tests covering AES-GCM and ChaCha.
 - Add certificate expiry/not-yet-valid KATs; expand name matching cases (wildcards, IDNA punycode minimal handling if needed for tests).
-- Expose trust store hook with stub default; add allow_insecure test toggles already present.
+- Expose trust store hook with stub default; retain allow_insecure toggles already present.
+- Optional: scaffold 0-RTT early data key schedule tests.
 
-2. Lifecycle frames and key management
+1. Lifecycle frames and key management
 
 - Emit/handle HANDSHAKE_DONE; wire CONNECTION_CLOSE mapping; implement Key Update.
 - Unit tests for each; integrate into initial handshake loop tests.
 
-3. CUBIC + pacing
+1. CUBIC + pacing
 
 - Implement CUBIC controller (bytes-based) and pacing using timers; ensure -Dcc=cubic switches logic.
 - Benchmarks: NR vs CUBIC on loopback; capture P50 and allocation counts.
 
-4. Flow control completeness
+1. Flow control completeness
 
 - FIN-aware reassembly; threshold-based MAX\_\* emission; tests for BLOCKED signaling.
 - Implement STOP_SENDING/RESET_STREAM with state machine coverage.
 
-5. Tokens lifecycle
+1. Tokens lifecycle
 
 - Persist NEW_TOKEN on client; use pre-CH when available; add rotation/expiry tests and replay defenses.
 
-6. Options and versions
+1. Options and versions
 
 - Implement Spin Bit and GREASE toggles; add QUIC v2 path and KATs under -Dversion=v2.
 
-7. Fuzzing, logging, and performance
+1. Fuzzing, logging, and performance
 
 - Extend fuzzers (Retry, TLS CRYPTO ordering, malformed DER); fix seeds in CI.
 - Implement JSON Lines logging consistently (INFO/ERROR); ensure no secrets in release logs.
@@ -103,7 +106,7 @@ Date: 2025-08-21
 
 ## Done Criteria for the next iteration
 
-- ChaCha20-Poly1305 supported and selected when negotiated; KATs pass.
+- ChaCha20-Poly1305 KATs and cipher negotiation tests pass; AES/ChaCha parity validated.
 - HANDSHAKE_DONE + CONNECTION_CLOSE + Key Update wired with tests.
 - CUBIC functional with pacing; benches compare NR vs CUBIC; default remains NewReno.
 - FIN handling + threshold-based MAX\_\* + STOP_SENDING/RESET_STREAM tests pass.

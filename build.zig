@@ -339,6 +339,12 @@ pub fn build(b: *std.Build) void {
         test_tls_sni.root_module.addImport("quic_x509", x509_mod);
         const run_test_tls_sni = b.addRunArtifact(test_tls_sni);
         test_step.dependOn(&run_test_tls_sni.step);
+
+        // TLS validity window KATs
+        const test_tls_validity = b.addTest(.{ .root_source_file = rp("tests/test_tls_validity.zig"), .target = target, .optimize = optimize });
+        test_tls_validity.root_module.addImport("quic_x509", x509_mod);
+        const run_test_tls_validity = b.addRunArtifact(test_tls_validity);
+        test_step.dependOn(&run_test_tls_validity.step);
     } else {
         const test_quic = b.addTest(.{ .root_source_file = rp("quic.zig"), .target = target, .optimize = optimize });
         const run_test_quic = b.addRunArtifact(test_quic);
