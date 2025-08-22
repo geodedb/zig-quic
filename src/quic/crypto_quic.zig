@@ -539,3 +539,19 @@ fn dumpBytes(label: []const u8, bytes: []const u8) void {
     }
     std.debug.print("{s}: {s}\n", .{ label, list.items });
 }
+
+/// Decode QUIC short header key phase bit and pn length from first byte.
+/// Returns (key_phase: bool, pn_len: u3)
+pub fn decodeShortHeaderKeyPhaseAndPnLen(first: u8) struct { key_phase: bool, pn_len: u3 } {
+    // Short header format: 0b0100_?0?? where bit 2 is Key Phase, bits 0..1 are PN length-1
+    const key_phase = ((first >> 2) & 0x01) == 1;
+    const pn_len: u3 = @as(u3, @intCast(first & 0x03)) + 1;
+    return .{ .key_phase = key_phase, .pn_len = pn_len };
+}
+
+/// Derive next 1-RTT AeadKeys from current application traffic secret (client or server).
+pub fn deriveNextAppKeys(current_app_secret: [ks.H.digest_length]u8, version_v2: bool) struct { next_secret: [ks.H.digest_length]u8, keys: struct { key: [16]u8, iv: [12]u8, hp: [16]u8 } } {
+    const next = ks.updateTrafficSecret(current_app_secret);
+    const mat = if (version_v2) ks.deriveKeyIvHpV2(next) else ks.deriveKeyIvHp(next);
+    return .{ .next_secret = next, .keys = .{ .key = mat.key, .iv = mat.iv, .hp = mat.hp } };
+}

@@ -53,6 +53,10 @@ pub const Frame = union(enum) {
     path_response: [8]u8,
     // NEW: server-issued token for future connections (1-RTT only)
     new_token: struct { token: []const u8 },
+    // NEW: handshake done signal (server -> client, 1-RTT only)
+    handshake_done: void,
+    // NEW: transport CONNECTION_CLOSE (subset: transport close only, no application close here)
+    connection_close: struct { error_code: u64, frame_type: u64 = 0, reason: []const u8 = &[_]u8{} },
     // ... more frames as needed ...
 
     /// Encode this frame to the writer. Returns bytes written.
@@ -233,6 +237,29 @@ pub const Frame = union(enum) {
                 try w.writeAll(nt.token);
                 return 1 + tl + nt.token.len;
             },
+            .handshake_done => {
+                try w.writeByte(@intFromEnum(FrameType.HANDSHAKE_DONE));
+                return 1;
+            },
+            .connection_close => |cc| {
+                try w.writeByte(@intFromEnum(FrameType.CONNECTION_CLOSE));
+                var written: usize = 1;
+                var tmp: [32]u8 = undefined;
+                const el = try varint.encode(cc.error_code, &tmp);
+                try w.writeAll(tmp[0..el]);
+                written += el;
+                const ft = try varint.encode(cc.frame_type, &tmp);
+                try w.writeAll(tmp[0..ft]);
+                written += ft;
+                const rl = try varint.encode(cc.reason.len, &tmp);
+                try w.writeAll(tmp[0..rl]);
+                written += rl;
+                if (cc.reason.len > 0) {
+                    try w.writeAll(cc.reason);
+                    written += cc.reason.len;
+                }
+                return written;
+            },
         }
     }
 };
@@ -411,6 +438,22 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
         if (i + nbytes > buf.len) return error.Truncated;
         const tok = buf[i .. i + nbytes];
         return .{ .f = Frame{ .new_token = .{ .token = tok } }, .n = i + nbytes };
+    }
+    if (t == @intFromEnum(FrameType.HANDSHAKE_DONE)) {
+        return .{ .f = Frame{ .handshake_done = {} }, .n = 1 };
+    }
+    if (t == @intFromEnum(FrameType.CONNECTION_CLOSE)) {
+        var i: usize = 1;
+        const ec = try varint.decode(buf[i..]);
+        i += ec.n;
+        const ft = try varint.decode(buf[i..]);
+        i += ft.n;
+        const rl = try varint.decode(buf[i..]);
+        i += rl.n;
+        if (i + rl.value > buf.len) return error.Truncated;
+        const reason = buf[i .. i + @as(usize, rl.value)];
+        i += @as(usize, rl.value);
+        return .{ .f = Frame{ .connection_close = .{ .error_code = ec.value, .frame_type = ft.value, .reason = reason } }, .n = i };
     }
     // Minimal support for now
     return error.Unsupported;

@@ -178,3 +178,11 @@ pub fn deriveKeyIvHpV2(secret: [H.digest_length]u8) struct { key: [16]u8, iv: [1
     expandLabel(secret, "quicv2 hp", &[_]u8{}, &hp) catch unreachable;
     return .{ .key = key, .iv = iv, .hp = hp };
 }
+
+/// TLS 1.3 traffic secret update: Derive next application traffic secret.
+/// next_secret = HKDF-Expand-Label(current_secret, "traffic upd", "")
+pub fn updateTrafficSecret(current_secret: [H.digest_length]u8) [H.digest_length]u8 {
+    var next: [H.digest_length]u8 = undefined;
+    expandLabel(current_secret, "traffic upd", &[_]u8{}, &next) catch unreachable;
+    return next;
+}

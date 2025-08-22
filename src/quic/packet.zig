@@ -120,6 +120,7 @@ pub fn encodeShortProtected(
     packet_number_len: u3,
     payload_plaintext: []const u8,
     keys: AeadKeys,
+    key_phase: bool,
 ) ![]u8 {
     if (packet_number_len < 1 or packet_number_len > 4) return error.InvalidPacketNumberLength;
 
@@ -128,6 +129,7 @@ pub fn encodeShortProtected(
 
     const pn_bits: u8 = @as(u8, packet_number_len - 1) & 0x03;
     var header_first: u8 = 0x40 | pn_bits; // short header with pn len bits
+    if (key_phase) header_first |= 0x04; // key phase bit (bit 2)
 
     const w = buf.writer();
     try w.writeByte(header_first);

@@ -145,6 +145,7 @@ pub fn build(b: *std.Build) void {
     quic_conn_mod.addImport("quic_frame", quic_frame_mod);
     quic_conn_mod.addImport("quic_tls13", tls13_mod);
     quic_conn_mod.addImport("quic_varint", quic_varint_mod);
+    quic_conn_mod.addImport("quic_tls", quic_tls_mod);
     const quic_transport_params_mod = mkModule(b, "src/quic/transport_params.zig");
     quic_transport_params_mod.addImport("quic_varint", quic_varint_mod);
 
@@ -358,6 +359,15 @@ pub fn build(b: *std.Build) void {
         test_hp_aead.root_module.addImport("quic_tls", quic_tls_mod);
         const run_test_hp_aead = b.addRunArtifact(test_hp_aead);
         test_step.dependOn(&run_test_hp_aead.step);
+
+        // RX Key Update acceptance tests
+        const test_rx_ku = b.addTest(.{ .root_source_file = rp("tests/test_rx_key_update_accept.zig"), .target = target, .optimize = optimize });
+        test_rx_ku.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        test_rx_ku.root_module.addImport("quic_packet", quic_packet_mod);
+        test_rx_ku.root_module.addImport("quic_tls13", tls13_mod);
+        test_rx_ku.root_module.addImport("quic_tls", quic_tls_mod);
+        const run_test_rx_ku = b.addRunArtifact(test_rx_ku);
+        test_step.dependOn(&run_test_rx_ku.step);
     } else {
         const test_quic = b.addTest(.{ .root_source_file = rp("quic.zig"), .target = target, .optimize = optimize });
         const run_test_quic = b.addRunArtifact(test_quic);

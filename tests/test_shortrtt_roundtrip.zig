@@ -63,7 +63,7 @@ test "short-header 1-RTT STREAM+PING roundtrip" {
     const dcid = "servercid";
     const pn: u32 = 0x11223344;
     const pn_len: u3 = 3;
-    const sh_bytes = try pkt.encodeShortProtected(alloc, dcid, pn, pn_len, payload, .{ .key = cli_tx.key, .iv = cli_tx.iv, .hp = cli_tx.hp });
+    const sh_bytes = try pkt.encodeShortProtected(alloc, dcid, pn, pn_len, payload, .{ .key = cli_tx.key, .iv = cli_tx.iv, .hp = cli_tx.hp }, false);
     defer alloc.free(sh_bytes);
 
     // Decode short at server

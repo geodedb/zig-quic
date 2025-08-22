@@ -237,7 +237,7 @@ pub const Endpoint = struct {
             c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len],
             c.our_scid.bytes[0..c.our_scid.len],
             token_slice,
-            c.pn_initial_tx,
+            @as(u32, @truncate(c.pn_initial_tx)),
             2,
             frames.items,
             tx_keys,
@@ -459,20 +459,89 @@ pub const Endpoint = struct {
             }
             const conn = found orelse return;
             if (conn.app_rx_keys) |rx_keys| {
-                const dec = packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }) catch return;
-                defer self.allocator.free(dec.payload);
-                const pn_full: u64 = conn.expandPnApp(@intCast(dec.packet_number), dec.packet_number_len);
+                // Attempt decode using current RX keys first. On failure, try derived NEXT keys, then previous keys.
+                var used_next: bool = false;
+                var used_prev: bool = false;
+                var dec_res = packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }) catch blk_dec: {
+                    // Try derived NEXT keys if we have a RX traffic secret
+                    if (conn.app_rx_secret) |cur_rx_secret| {
+                        const next_secret = ks.updateTrafficSecret(cur_rx_secret);
+                        var mat: packet.AeadKeys = undefined;
+                        if (conn.version_v2) {
+                            const t2 = ks.deriveKeyIvHpV2(next_secret);
+                            mat = .{ .key = t2.key, .iv = t2.iv, .hp = t2.hp };
+                        } else {
+                            const t2 = ks.deriveKeyIvHp(next_secret);
+                            mat = .{ .key = t2.key, .iv = t2.iv, .hp = t2.hp };
+                        }
+                        const try_next = packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = mat.key, .iv = mat.iv, .hp = mat.hp }) catch blk_prev: {
+                            // Finally, if we have previous RX keys during transition, try them
+                            if (conn.rx_prev_keys) |kp| {
+                                used_prev = true;
+                                break :blk_prev packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = kp.key, .iv = kp.iv, .hp = kp.hp }) catch return;
+                            }
+                            return;
+                        };
+                        // Promote to NEXT keys on success
+                        used_next = true;
+                        // Preserve current keys as previous (zeroize any older prev first)
+                        if (conn.rx_prev_keys) |*old_prev| {
+                            @memset(&old_prev.key, 0);
+                            @memset(&old_prev.iv, 0);
+                            @memset(&old_prev.hp, 0);
+                        }
+                        conn.rx_prev_keys = rx_keys;
+                        conn.rx_prev_allow = 16; // bounded window for reordering
+                        conn.app_rx_keys = .{ .key = mat.key, .iv = mat.iv, .hp = mat.hp };
+                        conn.app_rx_secret = next_secret;
+                        conn.rx_key_phase = !conn.rx_key_phase;
+                        break :blk_dec try_next;
+                    }
+                    // No secret available for deriving NEXT; try previous only
+                    if (conn.rx_prev_keys) |kp2| {
+                        used_prev = true;
+                        break :blk_dec packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = kp2.key, .iv = kp2.iv, .hp = kp2.hp }) catch return;
+                    }
+                    return;
+                };
+                defer self.allocator.free(dec_res.payload);
+                const pn_full: u64 = conn.expandPnApp(@intCast(dec_res.packet_number), dec_res.packet_number_len);
                 conn.trackRecvPnApp(pn_full);
+                // If we decoded with previous keys, decrement allowance and drop them when exhausted
+                if (used_prev) {
+                    if (conn.rx_prev_allow > 0) {
+                        conn.rx_prev_allow -= 1;
+                        if (conn.rx_prev_allow == 0) {
+                            if (conn.rx_prev_keys) |*to_zero| {
+                                @memset(&to_zero.key, 0);
+                                @memset(&to_zero.iv, 0);
+                                @memset(&to_zero.hp, 0);
+                            }
+                            conn.rx_prev_keys = null;
+                        }
+                    } else {
+                        // Safety: if allowance already zero, drop prev immediately
+                        if (conn.rx_prev_keys) |*to_zero2| {
+                            @memset(&to_zero2.key, 0);
+                            @memset(&to_zero2.iv, 0);
+                            @memset(&to_zero2.hp, 0);
+                        }
+                        conn.rx_prev_keys = null;
+                    }
+                }
+                // Parse frames from payload
                 var off2: usize = 0;
                 var saw_any: bool = false;
-                while (off2 < dec.payload.len) {
-                    const fr = frame.decodeOne(dec.payload[off2..]) catch break;
+                var saw_hs_done: bool = false;
+                var saw_close: ?frame.Frame = null;
+                while (off2 < dec_res.payload.len) {
+                    const fr = frame.decodeOne(dec_res.payload[off2..]) catch break;
                     off2 += fr.n;
                     switch (fr.f) {
                         .ping => saw_any = true,
                         .stream => |s| {
-                            // Use robust reassembly across streams
-                            conn.pushStreamFrame(s.stream_id, s.offset, s.data, s.fin) catch {};
+                            const off: u64 = s.offset orelse 0;
+                            conn.pushStreamFrame(s.stream_id, off, s.data, s.fin) catch {};
                             saw_any = true;
                         },
                         .datagram => |d| {
@@ -484,12 +553,11 @@ pub const Endpoint = struct {
                                     defer fb.deinit();
                                     const w = fb.writer();
                                     _ = (frame.Frame{ .datagram = .{ .data = d.data } }).write(w) catch 0;
-                                    const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], conn.pn_app_tx, 2, fb.items, txk) catch null;
+                                    const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, txk, conn.tx_key_phase) catch null;
                                     if (out) |pkt_bytes| {
                                         defer self.allocator.free(pkt_bytes);
                                         _ = self.sendTo(peer, pkt_bytes) catch {};
-                                        conn.onPacketSent(conn.pn_app_tx, pkt_bytes.len, true);
-                                        conn.pn_app_tx +%= 1;
+                                        conn.onShortHeaderPacketSent(pkt_bytes.len, true);
                                     }
                                 }
                             }
@@ -502,6 +570,12 @@ pub const Endpoint = struct {
                                 _ = self.cancelTimer(conn.pto_app_id);
                                 conn.pto_app_active = false;
                             }
+                        },
+                        .handshake_done => {
+                            saw_hs_done = true;
+                        },
+                        .connection_close => {
+                            saw_close = fr.f;
                         },
                         .max_stream_data => |m| {
                             if (m.stream_id == 0) {
@@ -519,23 +593,20 @@ pub const Endpoint = struct {
                         },
                         .stream_data_blocked => |_| {},
                         .path_challenge => |pcv| {
-                            // Echo PATH_RESPONSE with same data (opaque 8 bytes), if keys ready
                             if (conn.app_tx_keys) |txk| {
                                 var fb = std.ArrayList(u8).init(self.allocator.*);
                                 defer fb.deinit();
                                 const w = fb.writer();
                                 _ = (frame.Frame{ .path_response = pcv }).write(w) catch 0;
-                                const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], conn.pn_app_tx, 2, fb.items, txk) catch null;
+                                const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, txk, conn.tx_key_phase) catch null;
                                 if (out) |pkt_bytes| {
                                     defer self.allocator.free(pkt_bytes);
                                     _ = self.sendTo(peer, pkt_bytes) catch {};
-                                    conn.onPacketSent(conn.pn_app_tx, pkt_bytes.len, true);
-                                    conn.pn_app_tx +%= 1;
+                                    conn.onShortHeaderPacketSent(pkt_bytes.len, true);
                                 }
                             }
                         },
                         .path_response => |prv| {
-                            // Validate PATH_RESPONSE matches our outstanding PATH_CHALLENGE
                             if (conn.path_validation_pending and std.mem.eql(u8, &conn.path_challenge_data, &prv)) {
                                 conn.path_validation_pending = false;
                                 conn.address_validated = true;
@@ -544,12 +615,20 @@ pub const Endpoint = struct {
                             }
                         },
                         .new_token => |nt| {
-                            // Cache token for future Initials (client-side)
                             conn.initial_token.clearRetainingCapacity();
                             _ = conn.initial_token.appendSlice(nt.token) catch {};
                         },
                         else => {},
                     }
+                }
+                if (saw_hs_done) {
+                    // Client: drop Handshake keys after HANDSHAKE_DONE
+                    conn.hs_rx_keys = null;
+                    conn.hs_tx_keys = null;
+                }
+                if (saw_close) |_| {
+                    conn.closed = true;
+                    return; // stop processing further
                 }
                 if (saw_any) {
                     if (conn.app_tx_keys) |tx_keys| {
@@ -559,15 +638,13 @@ pub const Endpoint = struct {
                         const ack_desc = conn.buildAckApp();
                         const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = 0, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges } };
                         _ = ack.write(w) catch 0;
-                        // Advertise receive window growth for stream and connection
                         _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = conn.local_max_stream_data } }).write(w) catch {};
                         _ = (frame.Frame{ .max_data = .{ .max = conn.local_max_data } }).write(w) catch {};
-                        const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], conn.pn_app_tx, 2, frames_buf.items, tx_keys) catch null;
+                        const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_app_tx)), 2, frames_buf.items, tx_keys, conn.tx_key_phase) catch null;
                         if (out) |pkt_bytes| {
                             defer self.allocator.free(pkt_bytes);
                             _ = self.sendTo(peer, pkt_bytes) catch {};
-                            conn.onPacketSent(conn.pn_app_tx, pkt_bytes.len, false);
-                            conn.pn_app_tx +%= 1;
+                            conn.onShortHeaderPacketSent(pkt_bytes.len, false);
                         }
                     }
                 }
@@ -792,7 +869,9 @@ pub const Endpoint = struct {
                         const t = ks.deriveKeyIvHp(pair.server);
                         break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
                     };
-                    const out = packet.encodeInitialProtected(self.allocator.*, version, scid, conn.our_scid.bytes[0..conn.our_scid.len], &[_]u8{}, conn.pn_initial_tx, 2, frames_buf.items, tx_keys) catch null;
+                    const out = packet.encodeInitialProtected(self.allocator.*, version, scid, conn.our_scid.bytes[0..conn.our_scid.len], &[_]u8{}, @as(u32, @truncate(conn.pn_initial_tx)), 2, frames_buf.items, tx_keys) catch null;
+                    // cast packet numbers where needed
+
                     if (out) |pkt_bytes| {
                         defer self.allocator.free(pkt_bytes);
                         _ = self.sendTo(peer, pkt_bytes) catch {};
@@ -824,7 +903,7 @@ pub const Endpoint = struct {
                             version,
                             dcid_hs,
                             scid_hs,
-                            conn.pn_handshake_tx,
+                            @as(u32, @truncate(conn.pn_handshake_tx)),
                             2, // PN len=2
                             frames.items,
                             tx_keys,
@@ -989,7 +1068,7 @@ pub const Endpoint = struct {
                         const ack_desc = conn.buildAckHandshake();
                         const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = 0, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges } };
                         _ = ack.write(w) catch 0;
-                        const pkt = packet.encodeHandshakeProtected(self.allocator.*, version, scid, conn.our_scid.bytes[0..conn.our_scid.len], conn.pn_handshake_tx, 2, frames_buf.items, tx_keys) catch null;
+                        const pkt = packet.encodeHandshakeProtected(self.allocator.*, version, scid, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_handshake_tx)), 2, frames_buf.items, tx_keys) catch null;
                         if (pkt) |bytes_out| {
                             defer self.allocator.free(bytes_out);
                             _ = self.sendTo(peer, bytes_out) catch {};
@@ -1010,7 +1089,7 @@ pub const Endpoint = struct {
                         defer fb.deinit();
                         const w = fb.writer();
                         _ = (frame.Frame{ .new_token = .{ .token = tbytes } }).write(w) catch 0;
-                        const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], conn.pn_app_tx, 2, fb.items, conn.app_tx_keys.?) catch null;
+                        const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, conn.app_tx_keys.?, conn.tx_key_phase) catch null;
                         if (out) |pkt_bytes| {
                             defer self.allocator.free(pkt_bytes);
                             _ = self.sendTo(peer, pkt_bytes) catch {};
@@ -1101,7 +1180,7 @@ pub const Endpoint = struct {
                 var frames = std.ArrayList(u8).init(self.allocator.*);
                 defer frames.deinit();
                 frames.append(@intFromEnum(frame.FrameType.PING)) catch {};
-                const pkt = packet.encodeInitialProtected(self.allocator.*, if (conn.initial_version == 0) 0x00000001 else conn.initial_version, dcid, scid, &[_]u8{}, conn.pn_initial_tx, 4, frames.items, tx_keys) catch return;
+                const pkt = packet.encodeInitialProtected(self.allocator.*, if (conn.initial_version == 0) 0x00000001 else conn.initial_version, dcid, scid, &[_]u8{}, @as(u32, @truncate(conn.pn_initial_tx)), 4, frames.items, tx_keys) catch return;
                 defer self.allocator.free(pkt);
                 _ = self.sendTo(conn.peer, pkt) catch {};
                 conn.onPacketSent(conn.pn_initial_tx, pkt.len, true);
@@ -1115,7 +1194,7 @@ pub const Endpoint = struct {
                     var frames = std.ArrayList(u8).init(self.allocator.*);
                     defer frames.deinit();
                     frames.append(@intFromEnum(frame.FrameType.PING)) catch {};
-                    const pkt = packet.encodeHandshakeProtected(self.allocator.*, if (conn.initial_version == 0) 0x00000001 else conn.initial_version, dcid, scid, conn.pn_handshake_tx, 4, frames.items, tx_keys) catch return;
+                    const pkt = packet.encodeHandshakeProtected(self.allocator.*, if (conn.initial_version == 0) 0x00000001 else conn.initial_version, dcid, scid, @as(u32, @truncate(conn.pn_handshake_tx)), 4, frames.items, tx_keys) catch return;
                     defer self.allocator.free(pkt);
                     _ = self.sendTo(conn.peer, pkt) catch {};
                     conn.onPacketSent(conn.pn_handshake_tx, pkt.len, true);

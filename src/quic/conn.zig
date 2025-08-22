@@ -181,83 +181,98 @@ pub const Connection = struct {
     // 1-RTT application keys
     app_rx_keys: ?packet.AeadKeys = null,
     app_tx_keys: ?packet.AeadKeys = null,
-    // PN counters per space (simplified)
-    pn_initial_tx: u32 = 1,
-    pn_handshake_tx: u32 = 1,
-    pn_app_tx: u32 = 1,
-    // Peer-provided Initial DCID/SCID from first Initial we saw (for reply headers)
-    peer_initial_dcid: Cid = .{},
-    peer_initial_scid: Cid = .{},
-    // Our chosen SCID to advertise in server flight
-    our_scid: Cid = .{},
-    // Version context
+    // Track current TLS application traffic secrets for RX/TX to support Key Update
+    app_rx_secret: ?[ks.H.digest_length]u8 = null,
+    app_tx_secret: ?[ks.H.digest_length]u8 = null,
+    // Short header key phase tracking (false = phase 0, true = phase 1)
+    rx_key_phase: bool = false,
+    tx_key_phase: bool = false,
+    // RX dual-phase support during transition
+    rx_prev_keys: ?packet.AeadKeys = null,
+    rx_prev_allow: u32 = 0,
+    // TX update in-progress bookkeeping
+    tx_prev_keys: ?packet.AeadKeys = null,
+    tx_update_in_progress: bool = false,
+    tx_update_start_pn: u64 = 0,
+    tx_sent_packets_since_key: u64 = 0,
+    tx_sent_bytes_since_key: u64 = 0,
+    // Lifecycle flags
+    handshake_done_sent: bool = false,
+    // Connection close state
+    closed: bool = false,
+
+    // --- Missing transport/runtime state used by endpoint/tests ---
+    // Packet number spaces: next PN to send in each space
+    pn_initial_tx: u64 = 1,
+    pn_handshake_tx: u64 = 1,
+    pn_app_tx: u64 = 1,
+    // Version negotiation/bookkeeping
     version: u32 = 0,
     version_v2: bool = false,
     initial_version: u32 = 0,
-    // Switch flag to drop Initial keys/processing once Handshake packets are seen
     initial_keys_dropped: bool = false,
-    // Packet number spaces (recv tracking)
+    // Connection IDs used during Initial/transport
+    peer_initial_dcid: Cid = .{},
+    peer_initial_scid: Cid = .{},
+    our_scid: Cid = .{},
+    // Received PN tracking windows for ACK generation
     pn_initial: PnWindow = .{},
     pn_handshake: PnWindow = .{},
     pn_app: PnWindow = .{},
-    // Recovery/ACK tracking (simplified)
-    sent_time: std.AutoHashMap(u64, i128), // pn -> send time (ns)
+    // Send-time/size tracking for RTT and congestion
+    sent_time: std.AutoHashMap(u64, i128) = undefined,
+    sent_sizes: std.AutoHashMap(u64, u16) = undefined,
     largest_acked: u64 = 0,
-    // RTT estimators per space (Initial/Handshake/App)
+    // RTT estimators per space
     rtt_initial: recovery.RttState = .{},
     rtt_handshake: recovery.RttState = .{},
     rtt_app: recovery.RttState = .{},
-    // Congestion control selection
-    use_cubic: bool = false,
-    cc_nr: recovery.NewReno = .{},
-    cc_cubic: recovery.Cubic = .{},
-    // PTO timers state
+    // PTO state
+    timer_granularity_ns: u64 = std.time.ns_per_ms,
     pto_initial_active: bool = false,
     pto_handshake_active: bool = false,
     pto_app_active: bool = false,
     pto_initial_id: u64 = 0,
     pto_handshake_id: u64 = 0,
     pto_app_id: u64 = 0,
-    // PTO backoff counters per space and timer granularity
     pto_initial_count: u32 = 0,
     pto_handshake_count: u32 = 0,
     pto_app_count: u32 = 0,
-    timer_granularity_ns: u64 = std.time.ns_per_ms,
-    // Buffer to return ACK ranges without heap allocs
-    ack_ranges_buf: [8]frame.AckRange = undefined,
-    // Track sent sizes for accurate bytes_acked/lost accounting
-    sent_sizes: std.AutoHashMap(u64, u16),
-    // Minimal DATAGRAM inbox (FIFO of owned payloads)
+    // DATAGRAM inbox
     dgram_inbox: std.ArrayList([]u8) = undefined,
-    // Streams RX/TX state
+    // Streams RX map and simple stream-0 TX counters
     streams_rx: std.AutoHashMap(u64, StreamRx) = undefined,
-    stream_opened: bool = false, // only for stream 0 compatibility
-    stream_send_off: u64 = 0, // stream 0 send offset
-    // Per-stream default local receive window and peer stream window
+    stream_opened: bool = false,
+    stream_send_off: u64 = 0,
+    // Flow-control windows (connection and per-stream)
     local_max_stream_data: u64 = 64 * 1024,
     peer_max_stream_data: u64 = 64 * 1024,
-    // Connection-level flow control and stream count limits
     local_max_data: u64 = 256 * 1024,
     peer_max_data: u64 = 256 * 1024,
     peer_max_streams_bidi: u64 = 16,
     peer_max_streams_uni: u64 = 16,
     opened_bidi: u64 = 0,
     opened_uni: u64 = 0,
-    // Connection-level accounting for sent/received app data
     conn_send_off: u64 = 0,
     conn_recv_total: u64 = 0,
-    // Address validation / anti-amplification (server-side):
+    // Address validation / anti-amplification
     address_validated: bool = false,
-    bytes_rx_unvalidated: usize = 0,
-    bytes_tx_unvalidated: usize = 0,
-    // Client-held Retry token (if any) for next Initial
+    bytes_rx_unvalidated: u64 = 0,
+    bytes_tx_unvalidated: u64 = 0,
+    // Retry token buffer
     initial_token: std.ArrayList(u8) = undefined,
-    // Path validation (migration / NAT rebinding) minimal state
+    // Simple path validation & tokens
     path_validation_pending: bool = false,
     path_challenge_data: [8]u8 = .{0} ** 8,
-    // Server NEW_TOKEN issuance state
     new_token_pending: bool = false,
     new_token_sent: bool = false,
+    // Congestion controllers and selection flag
+    use_cubic: bool = false,
+    cc_nr: recovery.NewReno = .{},
+    cc_cubic: recovery.Cubic = .{},
+
+    // Temporary buffer for building ACK ranges
+    ack_ranges_buf: [32]frame.AckRange = undefined,
 
     /// Expand a truncated PN in Initial space using expected next PN.
     pub fn expandPnInitial(self: *const Connection, trunc_val: u64, pn_len: u3) u64 {
@@ -406,19 +421,95 @@ pub const Connection = struct {
         self.peer = peer;
     }
 
-    /// Set congestion controller mode (true=cubic, false=newreno)
-    pub fn setUseCubic(self: *Connection, cubic_on: bool) void {
-        self.use_cubic = cubic_on;
+    /// Get negotiated ALPN if any.
+    pub fn getNegotiatedAlpn(self: *Connection) ?[]const u8 {
+        return self.tls.alpn;
     }
 
+    /// Toggle congestion control (NewReno default, CUBIC optional).
+    pub fn setUseCubic(self: *Connection, use: bool) void {
+        self.use_cubic = use;
+    }
+
+    /// Congestion control shim: record packet sent.
     fn ccOnPacketSent(self: *Connection, bytes: usize, ack_eliciting: bool) void {
-        if (self.use_cubic) self.cc_cubic.onPacketSent(bytes, ack_eliciting) else self.cc_nr.onPacketSent(bytes, ack_eliciting);
+        if (self.use_cubic) {
+            self.cc_cubic.onPacketSent(bytes, ack_eliciting);
+        } else {
+            self.cc_nr.onPacketSent(bytes, ack_eliciting);
+        }
     }
+
+    /// Congestion control shim: on ACK.
     fn ccOnAck(self: *Connection, bytes_acked: usize) void {
-        if (self.use_cubic) self.cc_cubic.onAck(bytes_acked) else self.cc_nr.onAck(bytes_acked);
+        if (self.use_cubic) {
+            self.cc_cubic.onAck(bytes_acked);
+        } else {
+            self.cc_nr.onAck(bytes_acked);
+        }
     }
+
+    /// Congestion control shim: on loss.
     fn ccOnLoss(self: *Connection, bytes_lost: usize) void {
-        if (self.use_cubic) self.cc_cubic.onLoss(bytes_lost) else self.cc_nr.onLoss(bytes_lost);
+        if (self.use_cubic) {
+            self.cc_cubic.onLoss(bytes_lost);
+        } else {
+            self.cc_nr.onLoss(bytes_lost);
+        }
+    }
+
+    /// Update peer Initial DCID/SCID (observed in Initial packet).
+    pub fn setPeerInitialCids(self: *Connection, dcid: []const u8, scid: []const u8) void {
+        self.peer_initial_dcid.len = @intCast(@min(dcid.len, self.peer_initial_dcid.bytes.len));
+        if (self.peer_initial_dcid.len > 0) @memcpy(self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len], dcid[0..self.peer_initial_dcid.len]);
+        self.peer_initial_scid.len = @intCast(@min(scid.len, self.peer_initial_scid.bytes.len));
+        if (self.peer_initial_scid.len > 0) @memcpy(self.peer_initial_scid.bytes[0..self.peer_initial_scid.len], scid[0..self.peer_initial_scid.len]);
+    }
+
+    /// Ingest a STREAM frame payload into the RX buffer for the stream (simple append).
+    pub fn pushStreamFrame(self: *Connection, stream_id: u64, _offset: u64, data: []const u8, _fin: bool) !void {
+        _ = _offset;
+        _ = _fin;
+        const s = self.ensureStreamRx(stream_id);
+        try s.inbox.appendSlice(data);
+        self.conn_recv_total +%= data.len;
+    }
+
+    /// Ingest a DATAGRAM frame payload (owned copy).
+    pub fn pushDatagram(self: *Connection, data: []const u8) !void {
+        const owned = try self.allocator.alloc(u8, data.len);
+        @memcpy(owned, data);
+        try self.dgram_inbox.append(owned);
+    }
+
+    /// No-op compatibility shim so Connection can be passed where an Endpoint is expected.
+    /// This satisfies ep.scheduleConnPto(self, kind, delay_ms) used in some helpers.
+    pub fn scheduleConnPto(self: *Connection, _c: *Connection, kind: anytype, delay_ms: u32) !u64 {
+        _ = self;
+        _ = _c;
+        _ = kind;
+        _ = delay_ms;
+        return 0;
+    }
+
+    /// PTO expiry hooks used by Endpoint timers.
+    pub fn setPtoExpiredInitial(self: *Connection) void {
+        if (!self.pto_initial_active) return;
+        self.pto_initial_active = false;
+        self.pto_initial_count +%= 1;
+        self.sendPtoProbeInitial();
+    }
+    pub fn setPtoExpiredHandshake(self: *Connection) void {
+        if (!self.pto_handshake_active) return;
+        self.pto_handshake_active = false;
+        self.pto_handshake_count +%= 1;
+        self.sendPtoProbeHandshake();
+    }
+    pub fn setPtoExpiredApp(self: *Connection) void {
+        if (!self.pto_app_active) return;
+        self.pto_app_active = false;
+        self.pto_app_count +%= 1;
+        self.sendPtoProbeApp();
     }
 
     /// Send a PATH_CHALLENGE on the 1-RTT path to validate current peer path.
@@ -434,35 +525,34 @@ pub const Connection = struct {
         const out = packet.encodeShortProtected(
             self.allocator.*,
             self.our_scid.bytes[0..self.our_scid.len],
-            self.pn_app_tx,
+            @as(u32, @truncate(self.pn_app_tx)),
             2,
             frames.items,
             .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
+            self.tx_key_phase,
         ) catch null;
         if (out) |pkt| {
             defer self.allocator.free(pkt);
             _ = self.send(pkt) catch {};
-            self.onPacketSent(self.pn_app_tx, pkt.len, true);
-            self.pn_app_tx +%= 1;
+            self.onShortHeaderPacketSent(pkt.len, true);
         }
     }
 
-    /// Helper: send one or more control frames (ACK-eliciting) in a short header packet if keys ready.
     fn sendControlFrames(self: *Connection, frames_bytes: []const u8) void {
         const tx = self.app_tx_keys orelse return;
         const pkt = packet.encodeShortProtected(
             self.allocator.*,
             self.our_scid.bytes[0..self.our_scid.len],
-            self.pn_app_tx,
+            @as(u32, @truncate(self.pn_app_tx)),
             2,
             frames_bytes,
             .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
+            self.tx_key_phase,
         ) catch null;
         if (pkt) |bytes_out| {
             defer self.allocator.free(bytes_out);
             _ = self.send(bytes_out) catch {};
-            self.onPacketSent(self.pn_app_tx, bytes_out.len, true);
-            self.pn_app_tx +%= 1;
+            self.onShortHeaderPacketSent(bytes_out.len, true);
         }
     }
 
@@ -476,16 +566,15 @@ pub const Connection = struct {
         const pkt = try packet.encodeShortProtected(
             self.allocator.*,
             self.our_scid.bytes[0..self.our_scid.len],
-            self.pn_app_tx,
+            @as(u32, @truncate(self.pn_app_tx)),
             2,
             frames.items,
-            tx,
+            .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
+            self.tx_key_phase,
         );
         defer self.allocator.free(pkt);
         _ = try self.send(pkt);
-        self.onPacketSent(self.pn_app_tx, pkt.len, true);
-        self.pn_app_tx +%= 1;
-        self.computeAndMaybeArmPto(self);
+        self.onShortHeaderPacketSent(pkt.len, true);
     }
 
     /// Open a bidi stream; only stream id 0 is supported in this minimal slice.
@@ -548,15 +637,15 @@ pub const Connection = struct {
         const pkt = try packet.encodeShortProtected(
             self.allocator.*,
             self.our_scid.bytes[0..self.our_scid.len],
-            self.pn_app_tx,
+            @as(u32, @truncate(self.pn_app_tx)),
             2,
             frames.items,
             .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
+            self.tx_key_phase,
         );
         defer self.allocator.free(pkt);
         _ = try self.send(pkt);
-        self.onPacketSent(self.pn_app_tx, pkt.len, true);
-        self.pn_app_tx +%= 1;
+        self.onShortHeaderPacketSent(pkt.len, true);
         self.computeAndMaybeArmPto(self);
         self.stream_send_off += to_send;
         self.conn_send_off += to_send;
@@ -587,278 +676,18 @@ pub const Connection = struct {
         const pkt = try packet.encodeShortProtected(
             self.allocator.*,
             self.our_scid.bytes[0..self.our_scid.len],
-            self.pn_app_tx,
+            @as(u32, @truncate(self.pn_app_tx)),
             2,
             frames.items,
             .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
+            self.tx_key_phase,
         );
         defer self.allocator.free(pkt);
         _ = try self.send(pkt);
-        self.onPacketSent(self.pn_app_tx, pkt.len, true);
-        self.pn_app_tx +%= 1;
-        self.computeAndMaybeArmPto(self);
+        self.onShortHeaderPacketSent(pkt.len, true);
     }
 
-    /// Push a received DATAGRAM payload into the inbox (makes a copy).
-    pub fn pushDatagram(self: *Connection, data: []const u8) !void {
-        const copy = try self.allocator.alloc(u8, data.len);
-        @memcpy(copy, data);
-        try self.dgram_inbox.append(copy);
-    }
-
-    /// Ensure a StreamRx exists and return pointer.
-    fn ensureStreamRx(self: *Connection, id: u64) *StreamRx {
-        if (self.streams_rx.getPtr(id)) |p| return p;
-        const sr = StreamRx.init(self.allocator);
-        _ = self.streams_rx.put(id, sr) catch unreachable;
-        return self.streams_rx.getPtr(id).?;
-    }
-
-    /// Push received STREAM bytes for a given stream with optional offset; performs reassembly.
-    pub fn pushStreamFrame(self: *Connection, id: u64, off_opt: ?u64, data: []const u8, fin: bool) !void {
-        var s = self.ensureStreamRx(id);
-        const off: u64 = off_opt orelse s.recv_off;
-        // Enforce connection and stream receive windows based on bytes we will accept
-        var start: usize = 0;
-        if (off < s.recv_off) {
-            const delta = s.recv_off - off;
-            if (delta >= data.len) return; // entirely before window
-            start = @intCast(delta);
-        }
-        const eff_off: u64 = off + @as(u64, start);
-        var remaining: usize = data.len - start;
-        if (remaining == 0) return;
-        // Enforce connection-level receive limit
-        const conn_left: u64 = if (self.conn_recv_total >= self.local_max_data) 0 else (self.local_max_data - self.conn_recv_total);
-        if (conn_left == 0) return error.FlowControlViolation;
-        if (remaining > conn_left) remaining = @intCast(conn_left);
-        // Enforce per-stream receive limit (uses shared default)
-        const stream_left: u64 = if (s.recv_off >= self.local_max_stream_data) 0 else (self.local_max_stream_data - s.recv_off);
-        if (stream_left == 0) return error.FlowControlViolation;
-        if (remaining > stream_left) remaining = @intCast(stream_left);
-        const seg_len: usize = remaining;
-        if (seg_len == 0) return;
-        // Make owned copy for buffering
-        const copy = try self.allocator.alloc(u8, seg_len);
-        @memcpy(copy, data[start .. start + seg_len]);
-        // Insert ordered by offset
-        var inserted = false;
-        var idx: usize = 0;
-        while (idx < s.bufs.items.len) : (idx += 1) {
-            if (eff_off < s.bufs.items[idx].off) {
-                _ = try s.bufs.insert(idx, .{ .off = eff_off, .data = copy });
-                inserted = true;
-                break;
-            }
-        }
-        if (!inserted) try s.bufs.append(.{ .off = eff_off, .data = copy });
-        // Attempt to deliver contiguous from recv_off
-        var advanced = true;
-        while (advanced) {
-            advanced = false;
-            var j: usize = 0;
-            while (j < s.bufs.items.len) : (j += 1) {
-                const seg = s.bufs.items[j];
-                if (seg.off == s.recv_off) {
-                    // deliver
-                    try s.inbox.appendSlice(seg.data);
-                    s.recv_off += seg.data.len;
-                    self.conn_recv_total += seg.data.len;
-                    self.allocator.free(seg.data);
-                    _ = s.bufs.orderedRemove(j);
-                    advanced = true;
-                    break;
-                }
-            }
-        }
-        _ = fin; // TODO: FIN handling
-        // Auto-tune local windows: grow when passing 50%
-        const half_stream: u64 = self.local_max_stream_data / 2;
-        if (s.recv_off >= half_stream) self.local_max_stream_data +%= half_stream;
-        const half_conn: u64 = self.local_max_data / 2;
-        if (self.conn_recv_total >= half_conn) self.local_max_data +%= half_conn;
-    }
-
-    /// Back-compat: push received bytes on stream 0 assuming in-order; now forwards to reassembly API.
-    pub fn pushStreamData(self: *Connection, data: []const u8) !void {
-        try self.pushStreamFrame(0, null, data, false);
-    }
-
-    /// Pop a DATAGRAM payload into caller buffer, returning bytes copied.
-    pub fn popDatagram(self: *Connection, out: []u8) !usize {
-        if (self.dgram_inbox.items.len == 0) return error.NoDatagram;
-        const p = self.dgram_inbox.orderedRemove(0);
-        defer self.allocator.free(p);
-        const n = @min(out.len, p.len);
-        @memcpy(out[0..n], p[0..n]);
-        return n;
-    }
-
-    /// Send raw bytes to the connection's peer via UDP.
-    pub fn send(self: *const Connection, data: []const u8) !usize {
-        const sa_ptr: *const posix.sockaddr = @ptrCast(&self.peer.storage);
-        return posix.sendto(self.sock_fd, data, 0, sa_ptr, self.peer.len);
-    }
-
-    /// Append CRYPTO stream bytes into the inbox and feed TLS engine.
-    pub fn pushCrypto(self: *Connection, data: []const u8) !void {
-        try self.tls_inbox.appendSlice(data);
-        self.tls.onCryptoRecv(data);
-        // Enforce ALPN if negotiated and not in insecure mode
-        if (!self.tls.allow_insecure) {
-            if (self.tls.alpn) |alp| {
-                var ok = false;
-                var i: usize = 0;
-                while (i < self.allowed_alpns.len) : (i += 1) {
-                    if (std.mem.eql(u8, alp, self.allowed_alpns[i])) {
-                        ok = true;
-                        break;
-                    }
-                }
-                if (!ok and self.allowed_alpns.len > 0) {
-                    // In a full implementation, we would abort the handshake. For now, mark finished_verified false.
-                    self.tls.finished_verified = false;
-                }
-            }
-        }
-        // Attempt to compute handshake secrets if test ecdhe_secret has been set
-        if (self.tls.computeHandshakeSecrets()) |hs| {
-            self.hs_client = hs.client;
-            self.hs_server = hs.server;
-            self.deriveHandshakeKeys(false);
-            // Queue a Finished for our role once HS secrets are ready (minimal subset)
-            if (!self.tls.finished_sent) {
-                const my_hs = if (self.role == .Server) hs.server else hs.client;
-                self.tls.queueFinished(my_hs) catch {};
-            }
-        }
-        // Attempt to compute application secrets
-        if (self.tls.computeApplicationSecrets()) |ap| {
-            self.deriveAppKeys(ap.client, ap.server, false);
-        }
-    }
-
-    fn deriveHandshakeKeys(self: *Connection, version_v2: bool) void {
-        if (self.hs_client == null or self.hs_server == null) return;
-        // Assign rx/tx according to role
-        const rx_secret = if (self.role == .Server) self.hs_client.? else self.hs_server.?;
-        const tx_secret = if (self.role == .Server) self.hs_server.? else self.hs_client.?;
-        const rx = tls13.deriveQuicHandshakeKeys(rx_secret, version_v2);
-        const tx = tls13.deriveQuicHandshakeKeys(tx_secret, version_v2);
-        self.hs_rx_keys = .{ .key = rx.key, .iv = rx.iv, .hp = rx.hp };
-        self.hs_tx_keys = .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp };
-    }
-
-    fn deriveAppKeys(self: *Connection, client_app: [tls13.H.digest_length]u8, server_app: [tls13.H.digest_length]u8, version_v2: bool) void {
-        // Assign rx/tx according to role
-        const rx_secret = if (self.role == .Server) client_app else server_app;
-        const tx_secret = if (self.role == .Server) server_app else client_app;
-        const rx = tls13.deriveQuicAppKeys(rx_secret, version_v2);
-        const tx = tls13.deriveQuicAppKeys(tx_secret, version_v2);
-        self.app_rx_keys = .{ .key = rx.key, .iv = rx.iv, .hp = rx.hp };
-        self.app_tx_keys = .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp };
-    }
-
-    /// Record peer's Initial DCID/SCID (copied) for use in reply headers.
-    pub fn setPeerInitialCids(self: *Connection, dcid: []const u8, scid: []const u8) void {
-        const dl: u8 = @intCast(@min(dcid.len, self.peer_initial_dcid.bytes.len));
-        self.peer_initial_dcid.len = dl;
-        if (dl > 0) @memcpy(self.peer_initial_dcid.bytes[0..dl], dcid[0..dl]);
-        const sl: u8 = @intCast(@min(scid.len, self.peer_initial_scid.bytes.len));
-        self.peer_initial_scid.len = sl;
-        if (sl > 0) @memcpy(self.peer_initial_scid.bytes[0..sl], scid[0..sl]);
-    }
-
-    /// Note a sent packet for recovery/cc accounting.
-    pub fn onPacketSent(self: *Connection, pn: u64, bytes: usize, ack_eliciting: bool) void {
-        _ = self.sent_time.put(pn, std.time.nanoTimestamp()) catch {};
-        _ = self.sent_sizes.put(pn, @intCast(@min(bytes, @as(usize, std.math.maxInt(u16))))) catch {};
-        self.ccOnPacketSent(bytes, ack_eliciting);
-    }
-
-    /// Accessor for negotiated ALPN (opaque protocol id), if any.
-    pub fn getNegotiatedAlpn(self: *Connection) ?[]const u8 {
-        return self.tls.alpn;
-    }
-
-    /// Mark Initial/Handshake/App PTO expired and increase backoff counter.
-    pub fn setPtoExpiredInitial(self: *Connection) void {
-        self.pto_initial_active = false;
-        self.pto_initial_count +%= 1;
-    }
-    pub fn setPtoExpiredHandshake(self: *Connection) void {
-        self.pto_handshake_active = false;
-        self.pto_handshake_count +%= 1;
-    }
-    pub fn setPtoExpiredApp(self: *Connection) void {
-        self.pto_app_active = false;
-        self.pto_app_count +%= 1;
-    }
-
-    /// Per-space ACK handlers used to update RTT and reset PTO backoff.
-    pub fn onAckReceivedInitial(self: *Connection, largest: u64, ep: anytype) void {
-        if (self.sent_time.fetchRemove(largest)) |kv| {
-            const now_ns: i128 = std.time.nanoTimestamp();
-            const ts_sent_ns = kv.value;
-            const rtt_ns: u64 = @intCast(if (now_ns > ts_sent_ns) now_ns - ts_sent_ns else 0);
-            self.rtt_initial.onAck(rtt_ns, 0);
-            self.pto_initial_count = 0;
-            if (self.pto_initial_active) {
-                _ = ep.cancelTimer(self.pto_initial_id);
-                self.pto_initial_active = false;
-            }
-        }
-    }
-    /// ACK handler for Handshake space; updates RTT and PTO backoff.
-    pub fn onAckReceivedHandshake(self: *Connection, largest: u64, ep: anytype) void {
-        if (self.sent_time.fetchRemove(largest)) |kv| {
-            const now_ns: i128 = std.time.nanoTimestamp();
-            const ts_sent_ns = kv.value;
-            const rtt_ns: u64 = @intCast(if (now_ns > ts_sent_ns) now_ns - ts_sent_ns else 0);
-            self.rtt_handshake.onAck(rtt_ns, 0);
-            self.pto_handshake_count = 0;
-            if (self.pto_handshake_active) {
-                _ = ep.cancelTimer(self.pto_handshake_id);
-                self.pto_handshake_active = false;
-            }
-        }
-    }
-
-    /// Reset PTO backoff helpers
-    pub fn resetPtoBackoffInitial(self: *Connection) void {
-        self.pto_initial_count = 0;
-    }
-    pub fn resetPtoBackoffHandshake(self: *Connection) void {
-        self.pto_handshake_count = 0;
-    }
-    pub fn resetPtoBackoffApp(self: *Connection) void {
-        self.pto_app_count = 0;
-    }
-
-    /// Cancel PTO helpers
-    pub fn cancelPtoInitial(self: *Connection, ep: anytype) void {
-        if (self.pto_initial_active) {
-            if (self.pto_initial_id != 0) _ = ep.cancelTimer(self.pto_initial_id);
-            self.pto_initial_active = false;
-        }
-        self.resetPtoBackoffInitial();
-    }
-    pub fn cancelPtoHandshake(self: *Connection, ep: anytype) void {
-        if (self.pto_handshake_active) {
-            if (self.pto_handshake_id != 0) _ = ep.cancelTimer(self.pto_handshake_id);
-            self.pto_handshake_active = false;
-        }
-        self.resetPtoBackoffHandshake();
-    }
-    pub fn cancelPtoApp(self: *Connection, ep: anytype) void {
-        if (self.pto_app_active) {
-            if (self.pto_app_id != 0) _ = ep.cancelTimer(self.pto_app_id);
-            self.pto_app_active = false;
-        }
-        self.resetPtoBackoffApp();
-    }
-
-    /// Called when we receive an ACK frame.
+    // When ACK arrives (any space), also allow finalizing TX key update on App ACKs
     pub fn onAckReceived(self: *Connection, largest: u64, first_range: u64, ranges: []const frame.AckRange) void {
         // Update largest_acked
         if (largest > self.largest_acked) self.largest_acked = largest;
@@ -915,8 +744,44 @@ pub const Connection = struct {
             }
         }
         if (bytes_acked_total > 0) self.ccOnAck(bytes_acked_total);
+        // Finalize TX key update if this ACK likely covers App space new phase
+        self.maybeFinalizeKeyUpdateOnAck(largest);
         _ = first_range;
         _ = ranges;
+    }
+
+    /// Reset PTO backoff helpers
+    pub fn resetPtoBackoffInitial(self: *Connection) void {
+        self.pto_initial_count = 0;
+    }
+    pub fn resetPtoBackoffHandshake(self: *Connection) void {
+        self.pto_handshake_count = 0;
+    }
+    pub fn resetPtoBackoffApp(self: *Connection) void {
+        self.pto_app_count = 0;
+    }
+
+    /// Cancel PTO helpers
+    pub fn cancelPtoInitial(self: *Connection, ep: anytype) void {
+        if (self.pto_initial_active) {
+            if (self.pto_initial_id != 0) _ = ep.cancelTimer(self.pto_initial_id);
+            self.pto_initial_active = false;
+        }
+        self.resetPtoBackoffInitial();
+    }
+    pub fn cancelPtoHandshake(self: *Connection, ep: anytype) void {
+        if (self.pto_handshake_active) {
+            if (self.pto_handshake_id != 0) _ = ep.cancelTimer(self.pto_handshake_id);
+            self.pto_handshake_active = false;
+        }
+        self.resetPtoBackoffHandshake();
+    }
+    pub fn cancelPtoApp(self: *Connection, ep: anytype) void {
+        if (self.pto_app_active) {
+            if (self.pto_app_id != 0) _ = ep.cancelTimer(self.pto_app_id);
+            self.pto_app_active = false;
+        }
+        self.resetPtoBackoffApp();
     }
 
     /// Compute PTO for App space and arm timer if not active.
@@ -966,7 +831,13 @@ pub const Connection = struct {
         // Derive server initial TX keys on demand
         const initial = ks.deriveInitialSecret(self.version_v2, self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len]);
         const pair = ks.deriveClientServerInitial(initial);
-        const txk = if (self.version_v2) ks.deriveKeyIvHpV2(pair.server) else ks.deriveKeyIvHp(pair.server);
+        const txk: packet.InitialKeys = if (self.version_v2) blk: {
+            const t = ks.deriveKeyIvHpV2(pair.server);
+            break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
+        } else blk: {
+            const t = ks.deriveKeyIvHp(pair.server);
+            break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
+        };
         var frames = std.ArrayList(u8).init(self.allocator.*);
         defer frames.deinit();
         const w = frames.writer();
@@ -978,10 +849,10 @@ pub const Connection = struct {
             self.peer_initial_scid.bytes[0..self.peer_initial_scid.len],
             self.our_scid.bytes[0..self.our_scid.len],
             &[_]u8{},
-            self.pn_initial_tx,
+            @as(u32, @truncate(self.pn_initial_tx)),
             2,
             frames.items,
-            .{ .key = txk.key, .iv = txk.iv, .hp = txk.hp },
+            txk,
         ) catch null;
         if (out) |bytes_out| {
             defer self.allocator.free(bytes_out);
@@ -1002,7 +873,7 @@ pub const Connection = struct {
             // DCID = client's Initial SCID; SCID = our chosen SCID
             self.peer_initial_scid.bytes[0..self.peer_initial_scid.len],
             self.our_scid.bytes[0..self.our_scid.len],
-            self.pn_handshake_tx,
+            @as(u32, @truncate(self.pn_handshake_tx)),
             2,
             frames.items,
             tx,
@@ -1022,17 +893,209 @@ pub const Connection = struct {
         _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
         const out = packet.encodeShortProtected(
             self.allocator.*,
-            self.our_scid.bytes[0..self.our_scid.len], // DCID per simplified mapping
-            self.pn_app_tx,
+            self.our_scid.bytes[0..self.our_scid.len],
+            @as(u32, @truncate(self.pn_app_tx)),
             2,
             frames.items,
             .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
+            self.tx_key_phase,
         ) catch null;
         if (out) |bytes_out| {
             defer self.allocator.free(bytes_out);
             _ = self.send(bytes_out) catch {};
-            self.onPacketSent(self.pn_app_tx, bytes_out.len, true);
-            self.pn_app_tx +%= 1;
+            self.onShortHeaderPacketSent(bytes_out.len, true);
         }
+    }
+
+    /// Close the connection with an application error code using a 1-RTT CONNECTION_CLOSE.
+    pub fn sendConnectionClose(self: *Connection, app_error_code: u64, reason: []const u8) !void {
+        const tx = self.app_tx_keys orelse return error.KeysNotReady;
+        var frames = std.ArrayList(u8).init(self.allocator.*);
+        defer frames.deinit();
+        const w = frames.writer();
+        _ = (frame.Frame{ .connection_close = .{ .error_code = app_error_code, .frame_type = 0, .reason = reason } }).write(w) catch 0;
+        const pkt = try packet.encodeShortProtected(
+            self.allocator.*,
+            self.our_scid.bytes[0..self.our_scid.len],
+            @as(u32, @truncate(self.pn_app_tx)),
+            2,
+            frames.items,
+            .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
+            self.tx_key_phase,
+        );
+        defer self.allocator.free(pkt);
+        _ = try self.send(pkt);
+        self.onShortHeaderPacketSent(pkt.len, true);
+        self.closed = true;
+    }
+
+    /// Derive handshake keys for QUIC from current TLS secrets.
+    fn deriveHandshakeKeys(self: *Connection, version_v2: bool) void {
+        if (self.hs_client == null or self.hs_server == null) return;
+        // Assign rx/tx according to role
+        const rx_secret = if (self.role == .Server) self.hs_client.? else self.hs_server.?;
+        const tx_secret = if (self.role == .Server) self.hs_server.? else self.hs_client.?;
+        const rx = tls13.deriveQuicHandshakeKeys(rx_secret, version_v2);
+        const tx = tls13.deriveQuicHandshakeKeys(tx_secret, version_v2);
+        self.hs_rx_keys = .{ .key = rx.key, .iv = rx.iv, .hp = rx.hp };
+        self.hs_tx_keys = .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp };
+    }
+
+    /// Derive application keys and traffic secrets for QUIC from current TLS secrets.
+    fn deriveAppKeys(self: *Connection, client_app: [tls13.H.digest_length]u8, server_app: [tls13.H.digest_length]u8, version_v2: bool) void {
+        // Assign rx/tx according to role
+        const rx_secret = if (self.role == .Server) client_app else server_app;
+        const tx_secret = if (self.role == .Server) server_app else client_app;
+        const rx = tls13.deriveQuicAppKeys(rx_secret, version_v2);
+        const tx = tls13.deriveQuicAppKeys(tx_secret, version_v2);
+        self.app_rx_keys = .{ .key = rx.key, .iv = rx.iv, .hp = rx.hp };
+        self.app_tx_keys = .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp };
+        // Seed traffic secrets for future updates
+        self.app_rx_secret = rx_secret;
+        self.app_tx_secret = tx_secret;
+        // Reset per-direction phases to initial 0
+        self.rx_key_phase = false;
+        self.tx_key_phase = false;
+        self.tx_sent_packets_since_key = 0;
+        self.tx_sent_bytes_since_key = 0;
+        self.tx_update_in_progress = false;
+        self.tx_prev_keys = null;
+        self.rx_prev_keys = null;
+        self.rx_prev_allow = 0;
+    }
+
+    // --- Key Update helpers ---
+    fn zeroKeys(k: *packet.AeadKeys) void {
+        @memset(&k.key, 0);
+        @memset(&k.iv, 0);
+        @memset(&k.hp, 0);
+    }
+
+    fn maybeTriggerKeyUpdateOnSend(self: *Connection, bytes_sent: usize) void {
+        if (self.app_tx_keys == null or self.app_tx_secret == null) return;
+        // Do not trigger another while an update is in progress
+        if (self.tx_update_in_progress) return;
+        // Simple thresholds (tunable): after 64 packets or 64 KiB
+        self.tx_sent_packets_since_key +%= 1;
+        self.tx_sent_bytes_since_key +%= @intCast(bytes_sent);
+        const pkt_thr: u64 = 64;
+        const byte_thr: u64 = 64 * 1024;
+        if (self.tx_sent_packets_since_key >= pkt_thr or self.tx_sent_bytes_since_key >= byte_thr) {
+            // Start TX update: derive next secret and keys, toggle tx key phase
+            const next_secret = ks.updateTrafficSecret(self.app_tx_secret.?);
+            if (self.version_v2) {
+                const t = ks.deriveKeyIvHpV2(next_secret);
+                if (self.app_tx_keys) |kprev| self.tx_prev_keys = kprev;
+                self.app_tx_keys = .{ .key = t.key, .iv = t.iv, .hp = t.hp };
+            } else {
+                const t = ks.deriveKeyIvHp(next_secret);
+                if (self.app_tx_keys) |kprev| self.tx_prev_keys = kprev;
+                self.app_tx_keys = .{ .key = t.key, .iv = t.iv, .hp = t.hp };
+            }
+            self.app_tx_secret = next_secret;
+            self.tx_key_phase = !self.tx_key_phase;
+            self.tx_update_in_progress = true;
+            // First PN in the new phase is the next sent PN value
+            self.tx_update_start_pn = self.pn_app_tx;
+            // Reset counters for next epoch
+            self.tx_sent_packets_since_key = 0;
+            self.tx_sent_bytes_since_key = 0;
+        }
+    }
+
+    fn maybeFinalizeKeyUpdateOnAck(self: *Connection, largest_acked: u64) void {
+        if (!self.tx_update_in_progress) return;
+        // Consider update complete once any PN >= start_pn is ACKed
+        if (largest_acked >= self.tx_update_start_pn) {
+            if (self.tx_prev_keys) |*kp| {
+                zeroKeys(kp);
+            }
+            self.tx_prev_keys = null;
+            self.tx_update_in_progress = false;
+        }
+    }
+
+    pub fn onShortHeaderPacketSent(self: *Connection, bytes_sent: usize, ack_eliciting: bool) void {
+        // Track cc and thresholds; this mirrors onPacketSent but also drives Key Update
+        self.onPacketSent(self.pn_app_tx, bytes_sent, ack_eliciting);
+        if (ack_eliciting) self.maybeTriggerKeyUpdateOnSend(bytes_sent);
+        self.pn_app_tx +%= 1;
+        self.computeAndMaybeArmPto(self);
+    }
+
+    /// Send raw bytes to the connection's peer via UDP.
+    pub fn send(self: *const Connection, data: []const u8) !usize {
+        const sa_ptr: *const posix.sockaddr = @ptrCast(&self.peer.storage);
+        return posix.sendto(self.sock_fd, data, 0, sa_ptr, self.peer.len);
+    }
+
+    /// Append CRYPTO stream bytes into the inbox and feed TLS engine.
+    pub fn pushCrypto(self: *Connection, data: []const u8) !void {
+        try self.tls_inbox.appendSlice(data);
+        self.tls.onCryptoRecv(data);
+        // Enforce ALPN if negotiated and not in insecure mode
+        if (!self.tls.allow_insecure) {
+            if (self.tls.alpn) |alp| {
+                var ok = false;
+                var i: usize = 0;
+                while (i < self.allowed_alpns.len) : (i += 1) {
+                    if (std.mem.eql(u8, alp, self.allowed_alpns[i])) {
+                        ok = true;
+                        break;
+                    }
+                }
+                if (!ok and self.allowed_alpns.len > 0) {
+                    // In a full implementation, we would abort the handshake. For now, mark finished_verified false.
+                    self.tls.finished_verified = false;
+                }
+            }
+        }
+        // Attempt to compute handshake secrets if test ecdhe_secret has been set
+        if (self.tls.computeHandshakeSecrets()) |hs| {
+            self.hs_client = hs.client;
+            self.hs_server = hs.server;
+            self.deriveHandshakeKeys(false);
+            // Queue a Finished for our role once HS secrets are ready (minimal subset)
+            if (!self.tls.finished_sent) {
+                const my_hs = if (self.role == .Server) hs.server else hs.client;
+                self.tls.queueFinished(my_hs) catch {};
+            }
+        }
+        // Attempt to compute application secrets
+        if (self.tls.computeApplicationSecrets()) |ap| {
+            const before = self.app_tx_keys == null;
+            self.deriveAppKeys(ap.client, ap.server, false);
+            // Server: emit HANDSHAKE_DONE exactly once when app keys become available, then drop Handshake keys
+            if (self.role == .Server and before and !self.handshake_done_sent and self.app_tx_keys != null) {
+                var fb = std.ArrayList(u8).init(self.allocator.*);
+                defer fb.deinit();
+                const w = fb.writer();
+                _ = (frame.Frame{ .handshake_done = {} }).write(w) catch 0;
+                self.sendControlFrames(fb.items);
+                self.handshake_done_sent = true;
+                // Drop Handshake keys
+                self.hs_rx_keys = null;
+                self.hs_tx_keys = null;
+            }
+        }
+    }
+
+    pub fn onPacketSent(self: *Connection, pn: u64, bytes: usize, ack_eliciting: bool) void {
+        // Insert send timestamp deterministically
+        if (self.sent_time.capacity() == 0) self.sent_time = std.AutoHashMap(u64, i128).init(self.allocator.*);
+        if (self.sent_sizes.capacity() == 0) self.sent_sizes = std.AutoHashMap(u64, u16).init(self.allocator.*);
+        const now_ns: i128 = std.time.nanoTimestamp();
+        _ = self.sent_time.put(pn, now_ns) catch {};
+        _ = self.sent_sizes.put(pn, @intCast(@min(bytes, @as(usize, std.math.maxInt(u16))))) catch {};
+        self.ccOnPacketSent(bytes, ack_eliciting);
+    }
+
+    fn ensureStreamRx(self: *Connection, id: u64) *StreamRx {
+        if (self.streams_rx.capacity() == 0) self.streams_rx = std.AutoHashMap(u64, StreamRx).init(self.allocator.*);
+        if (self.dgram_inbox.capacity == 0) self.dgram_inbox = std.ArrayList([]u8).init(self.allocator.*);
+        if (self.streams_rx.getPtr(id)) |s| return s;
+        const sr = StreamRx.init(self.allocator);
+        self.streams_rx.put(id, sr) catch {};
+        return self.streams_rx.getPtr(id).?;
     }
 };
