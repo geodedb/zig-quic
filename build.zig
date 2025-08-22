@@ -345,6 +345,19 @@ pub fn build(b: *std.Build) void {
         test_tls_validity.root_module.addImport("quic_x509", x509_mod);
         const run_test_tls_validity = b.addRunArtifact(test_tls_validity);
         test_step.dependOn(&run_test_tls_validity.step);
+
+        // TLS KU/EKU and malformed DER tests
+        const test_kus_ekus = b.addTest(.{ .root_source_file = rp("tests/test_tls_kus_ekus.zig"), .target = target, .optimize = optimize });
+        test_kus_ekus.root_module.addImport("quic_x509", x509_mod);
+        const run_test_kus_ekus = b.addRunArtifact(test_kus_ekus);
+        test_step.dependOn(&run_test_kus_ekus.step);
+
+        // AEAD/HP KATs
+        const test_hp_aead = b.addTest(.{ .root_source_file = rp("tests/test_hp_aead_kats.zig"), .target = target, .optimize = optimize });
+        test_hp_aead.root_module.addImport("quic_crypto", quic_crypto_mod);
+        test_hp_aead.root_module.addImport("quic_tls", quic_tls_mod);
+        const run_test_hp_aead = b.addRunArtifact(test_hp_aead);
+        test_step.dependOn(&run_test_hp_aead.step);
     } else {
         const test_quic = b.addTest(.{ .root_source_file = rp("quic.zig"), .target = target, .optimize = optimize });
         const run_test_quic = b.addRunArtifact(test_quic);

@@ -375,8 +375,10 @@ pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, no
     try checkValidity(now_unix, &certs[0]);
     if (!matchDnsName(&certs[0], server_name)) return error.NameMismatch;
     if (certs[0].eku) |eku| if (!eku.server_auth) return error.EkuNotAllowed;
-    if (certs[0].ku) |_| {
-        // Conservative: if KU present, require digitalSignature-like usage; implementation TBD.
+    if (certs[0].ku) |ku| {
+        // Require digitalSignature bit when KeyUsage present (RFC 5280 §4.2.1.3)
+        // Our bitstring packs MSB of first byte as highest mask bit (0x8000 when 2 bytes).
+        if ((ku.bits & 0x8000) == 0) return error.KuNotAllowed;
     }
 
     // Intermediates must be CA and within pathLenConstraint

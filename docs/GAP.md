@@ -26,8 +26,8 @@ Date: 2025-08-21 21:30 UTC
   - Address validation and amplification defense: 3x anti-amplification before validation; PATH_CHALLENGE echo and PATH_RESPONSE validation; NAT rebinding path validation.
   - Streams + flow control (baseline):
     - RX reassembly across gaps; per-stream inbox.
-    - Enforce TX limits for MAX**DATA and MAX_STREAMS; send DATA_BLOCKED, STREAM_DATA_BLOCKED, STREAMS_BLOCKED.
-    - Update peer maxima; advertise local MAX** periodically with ACKs.
+    - Enforce TX limits for MAX\*\*DATA and MAX_STREAMS; send DATA_BLOCKED, STREAM_DATA_BLOCKED, STREAMS_BLOCKED.
+    - Update peer maxima; advertise local MAX\*\* periodically with ACKs.
   - DATAGRAM (RFC 9221) baseline: frame codec; optional echo path when enabled.
   - TLS 1.3 (QUIC binding subset): X25519, HKDF/SHA-256, Finished; handshake secrets exported to derive QUIC keys; EncryptedExtensions with ALPN; allow_insecure for tests; minimal X.509 parsing.
   - TLS certs/validation (client): SAN-to-SNI match, validity window (+ KATs for NotYetValid/Expired), wildcard DNS matching, BasicConstraints and EKU serverAuth, signature verification for leaf/intermediates using ECDSA P-256/P-384 and RSA-PSS-SHA256 (std.crypto). Trust store hook exposed. SNI plumbed from API; ALPN enforced and exposed via getter; negative SNI tests added.
@@ -55,7 +55,7 @@ Date: 2025-08-21 21:30 UTC
   - Congestion control:
     - CUBIC implementation behind -Dcc=cubic; maintain NewReno default. Benchmarks to compare cwnd evolution.
   - Flow control and stream lifecycle:
-    - FIN handling in reassembly; proactive MAX_\* growth thresholds/autotuning.
+    - FIN handling in reassembly; proactive MAX\_\* growth thresholds/autotuning.
     - STOP_SENDING and RESET_STREAM semantics and tests.
   - Tokens lifecycle:
     - Client-side NEW_TOKEN persistence and reuse on subsequent connections; rotation/expiry policy; replay checks.
@@ -87,7 +87,7 @@ Date: 2025-08-21 21:30 UTC
 
 1. Flow control completeness
 
-- FIN-aware reassembly; threshold-based MAX_\* emission; tests for BLOCKED signaling.
+- FIN-aware reassembly; threshold-based MAX\_\* emission; tests for BLOCKED signaling.
 - Implement STOP_SENDING/RESET_STREAM with state machine coverage.
 
 1. Tokens lifecycle
@@ -115,6 +115,6 @@ Date: 2025-08-21 21:30 UTC
 - ChaCha20-Poly1305 KATs and cipher negotiation tests pass; AES/ChaCha parity validated.
 - HANDSHAKE_DONE + CONNECTION_CLOSE + Key Update wired with tests.
 - CUBIC functional with pacing; benches compare NR vs CUBIC; default remains NewReno.
-- FIN handling + threshold-based MAX_\* + STOP_SENDING/RESET_STREAM tests pass.
+- FIN handling + threshold-based MAX\_\* + STOP_SENDING/RESET_STREAM tests pass.
 - NEW_TOKEN persisted and used on subsequent connections; expiry/replay tests in place.
 - All unit tests pass (debug and -Drelease-safe); fuzzers/benches build; GAP updated; doccheck passes.
