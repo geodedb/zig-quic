@@ -24,14 +24,30 @@ pub fn aeadEncrypt(
         .chacha20_poly1305 => {
             if (key.len != 32 or iv.len != 12) return error.InvalidKeyIv;
             const has_chacha = @hasDecl(std.crypto.aead, "chacha20poly1305");
-            if (!has_chacha) return error.NotImplemented;
-            const ChaCha = std.crypto.aead.chacha20poly1305.ChaCha20Poly1305;
-            var nonce: [12]u8 = undefined;
-            xorNonce(&nonce, iv, packet_number);
-            var tag: [ChaCha.tag_length]u8 = undefined;
-            ChaCha.encrypt(out[0..plaintext.len], &tag, plaintext, aad, nonce, key[0..32].*);
-            @memcpy(out[plaintext.len .. plaintext.len + tag.len], tag[0..]);
-            return plaintext.len + tag.len;
+            if (has_chacha) {
+                const ChaCha = std.crypto.aead.chacha20poly1305.ChaCha20Poly1305;
+                var nonce: [12]u8 = undefined;
+                xorNonce(&nonce, iv, packet_number);
+                var tag: [ChaCha.tag_length]u8 = undefined;
+                ChaCha.encrypt(out[0..plaintext.len], &tag, plaintext, aad, nonce, key[0..32].*);
+                @memcpy(out[plaintext.len .. plaintext.len + tag.len], tag[0..]);
+                return plaintext.len + tag.len;
+            } else {
+                // Fallback: RFC 8439 AEAD_CHACHA20_POLY1305 (IETF 96-bit nonce)
+                var nonce: [12]u8 = undefined;
+                xorNonce(&nonce, iv, packet_number);
+                // Derive one-time Poly1305 key: chacha20 block with counter=0
+                var otk_block: [64]u8 = undefined;
+                chacha20Block(&otk_block, key[0..32].*, nonce, 0);
+                var otk: [32]u8 = undefined;
+                @memcpy(otk[0..], otk_block[0..32]);
+                // Encrypt plaintext with counter=1
+                chacha20Xor(out[0..plaintext.len], plaintext, key[0..32].*, nonce, 1);
+                // Compute Poly1305 tag over AAD || pad16 || CT || pad16 || len(aad) || len(ct)
+                const tag = try poly1305TagRfc8439(aad, out[0..plaintext.len], &otk);
+                @memcpy(out[plaintext.len .. plaintext.len + 16], tag[0..]);
+                return plaintext.len + 16;
+            }
         },
         .aes_128_gcm => {
             if (key.len != 16 or iv.len != 12) return error.InvalidKeyIv;
@@ -67,13 +83,24 @@ pub fn aeadDecrypt(
         .chacha20_poly1305 => {
             if (key.len != 32 or iv.len != 12) return error.InvalidKeyIv;
             const has_chacha = @hasDecl(std.crypto.aead, "chacha20poly1305");
-            if (!has_chacha) return error.NotImplemented;
-            const ChaCha = std.crypto.aead.chacha20poly1305.ChaCha20Poly1305;
             var nonce: [12]u8 = undefined;
             xorNonce(&nonce, iv, packet_number);
-            if (!ChaCha.decrypt(out_plaintext[0..ct.len], ct, tag_arr, aad, nonce, key[0..32].*))
-                return error.AuthenticationFailed;
-            return ct.len;
+            if (has_chacha) {
+                const ChaCha = std.crypto.aead.chacha20poly1305.ChaCha20Poly1305;
+                if (!ChaCha.decrypt(out_plaintext[0..ct.len], ct, tag_arr, aad, nonce, key[0..32].*))
+                    return error.AuthenticationFailed;
+                return ct.len;
+            } else {
+                // Fallback: verify tag then decrypt with counter=1
+                var otk_block: [64]u8 = undefined;
+                chacha20Block(&otk_block, key[0..32].*, nonce, 0);
+                var otk: [32]u8 = undefined;
+                @memcpy(otk[0..], otk_block[0..32]);
+                const tag = try poly1305TagRfc8439(aad, ct, &otk);
+                if (!std.mem.eql(u8, &tag_arr, &tag)) return error.AuthenticationFailed;
+                chacha20Xor(out_plaintext[0..ct.len], ct, key[0..32].*, nonce, 1);
+                return ct.len;
+            }
         },
         .aes_128_gcm => {
             if (key.len != 16 or iv.len != 12) return error.InvalidKeyIv;
@@ -433,6 +460,69 @@ pub fn unmaskLongHeaderAndPn(
     var i: usize = 0;
     while (i < pn_len) : (i += 1) pn_buf.*[i] ^= out_block[i + 1];
     return pn_len;
+}
+
+// XOR ChaCha20 keystream (starting from given counter) with input into out
+fn chacha20Xor(out: []u8, input: []const u8, key32: [32]u8, nonce12: [12]u8, counter: u32) void {
+    var ctr = counter;
+    var off: usize = 0;
+    var block: [64]u8 = undefined;
+    while (off < input.len) {
+        chacha20Block(&block, key32, nonce12, ctr);
+        ctr +%= 1;
+        const n = @min(input.len - off, block.len);
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            out[off + i] = input[off + i] ^ block[i];
+        }
+        off += n;
+    }
+}
+
+inline fn pad16Len(len: usize) usize {
+    return (16 - (len % 16)) % 16;
+}
+
+fn le64(x: u64) [8]u8 {
+    return .{
+        @as(u8, @truncate(x)),
+        @as(u8, @truncate(x >> 8)),
+        @as(u8, @truncate(x >> 16)),
+        @as(u8, @truncate(x >> 24)),
+        @as(u8, @truncate(x >> 32)),
+        @as(u8, @truncate(x >> 40)),
+        @as(u8, @truncate(x >> 48)),
+        @as(u8, @truncate(x >> 56)),
+    };
+}
+
+fn poly1305TagRfc8439(aad: []const u8, ciphertext: []const u8, otk32: *const [32]u8) ![16]u8 {
+    // Prefer std Poly1305 if available
+    const have_poly = @hasDecl(std.crypto.onetimeauth, "Poly1305");
+    if (have_poly) {
+        const Poly1305 = std.crypto.onetimeauth.Poly1305;
+        var mac = Poly1305.init(otk32);
+        // AAD
+        mac.update(aad);
+        var zeros16: [16]u8 = .{0} ** 16;
+        var pad_len = pad16Len(aad.len);
+        if (pad_len != 0) mac.update(zeros16[0..pad_len]);
+        // Ciphertext
+        mac.update(ciphertext);
+        pad_len = pad16Len(ciphertext.len);
+        if (pad_len != 0) mac.update(zeros16[0..pad_len]);
+        // Lengths (64-bit little endian each)
+        const a_len_le = le64(@intCast(aad.len));
+        const c_len_le = le64(@intCast(ciphertext.len));
+        mac.update(&a_len_le);
+        mac.update(&c_len_le);
+        var tag: [16]u8 = undefined;
+        mac.final(&tag);
+        return tag;
+    } else {
+        // Minimal in-repo Poly1305 (slow fallback) — not implemented yet.
+        return error.NotImplemented;
+    }
 }
 
 fn dumpBytes(label: []const u8, bytes: []const u8) void {

@@ -125,7 +125,6 @@ pub fn build(b: *std.Build) void {
     const asn1_mod = mkModule(b, "src/quic/tls/asn1.zig");
     const x509_mod = mkModule(b, "src/quic/tls/x509.zig");
     _ = asn1_mod;
-    _ = x509_mod;
 
     // Varint/frame
     const quic_varint_mod = mkModule(b, "src/quic/varint.zig");
@@ -334,6 +333,12 @@ pub fn build(b: *std.Build) void {
         test_alpn.root_module.addImport("quic_tls13", tls13_mod);
         const run_test_alpn = b.addRunArtifact(test_alpn);
         test_step.dependOn(&run_test_alpn.step);
+
+        // TLS SNI negative/allow_insecure tests
+        const test_tls_sni = b.addTest(.{ .root_source_file = rp("tests/test_tls_sni.zig"), .target = target, .optimize = optimize });
+        test_tls_sni.root_module.addImport("quic_x509", x509_mod);
+        const run_test_tls_sni = b.addRunArtifact(test_tls_sni);
+        test_step.dependOn(&run_test_tls_sni.step);
     } else {
         const test_quic = b.addTest(.{ .root_source_file = rp("quic.zig"), .target = target, .optimize = optimize });
         const run_test_quic = b.addRunArtifact(test_quic);
