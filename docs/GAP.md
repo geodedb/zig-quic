@@ -1,13 +1,19 @@
 # GAP Analysis — RFCs 9000/9001/9002 (+ options)
 
-Date: 2025-08-21
+Date: 2025-08-21 21:30 UTC
 
 ## Latest slice (status bump)
+
+- Completed TLS KU/EKU enforcement KATs: corrected minimal DER builders (OCTET-wrapped extension values, proper TBS layout); validateChain now rejects missing digitalSignature via KuNotAllowed before signature parse; tests pass.
+- Fixed header protection KAT compile issue by using concrete zeroed hp keys; AEAD/HP round-trips verified.
+- Full suite green in Debug and -Drelease-safe; acceptance varint tools verified.
+- GAP.md timestamp bumped; docs gate remains enabled.
 
 - Added TLS/X.509 SNI negative tests and allow_insecure bypass tests; wired into build.zig and CI gates.
 - Fixed build wiring for tests using proper module imports; all tests pass in Debug and -Drelease-safe.
 - Implemented std-only ChaCha20-Poly1305 AEAD and ChaCha header protection (RFC 9001/8439) with fallback using std.crypto primitives; added roundtrip test for Initial protect/unprotect.
 - Validated acceptance tools (varint encode/decode); clarified test filter usage via -Dtest-filter.
+- Added certificate validity KATs (NotYetValid, Expired) and wired them; implemented wildcard DNS matching and exposed a trust store hook.
 - GAP.md updated; doccheck and GAP gating continue to enforce docs discipline.
 
 ## Quick Status
@@ -20,11 +26,11 @@ Date: 2025-08-21
   - Address validation and amplification defense: 3x anti-amplification before validation; PATH_CHALLENGE echo and PATH_RESPONSE validation; NAT rebinding path validation.
   - Streams + flow control (baseline):
     - RX reassembly across gaps; per-stream inbox.
-    - Enforce TX limits for MAX\*DATA and MAX_STREAMS; send DATA_BLOCKED, STREAM_DATA_BLOCKED, STREAMS_BLOCKED.
-    - Update peer maxima; advertise local MAX\*\* periodically with ACKs.
+    - Enforce TX limits for MAX**DATA and MAX_STREAMS; send DATA_BLOCKED, STREAM_DATA_BLOCKED, STREAMS_BLOCKED.
+    - Update peer maxima; advertise local MAX** periodically with ACKs.
   - DATAGRAM (RFC 9221) baseline: frame codec; optional echo path when enabled.
   - TLS 1.3 (QUIC binding subset): X25519, HKDF/SHA-256, Finished; handshake secrets exported to derive QUIC keys; EncryptedExtensions with ALPN; allow_insecure for tests; minimal X.509 parsing.
-  - TLS certs/validation (client): SAN-to-SNI match, validity window, BasicConstraints and EKU serverAuth, signature verification for leaf/intermediates using ECDSA P-256/P-384 and RSA-PSS-SHA256 (std.crypto). SNI plumbed from API; ALPN enforced and exposed via getter; negative SNI tests added.
+  - TLS certs/validation (client): SAN-to-SNI match, validity window (+ KATs for NotYetValid/Expired), wildcard DNS matching, BasicConstraints and EKU serverAuth, signature verification for leaf/intermediates using ECDSA P-256/P-384 and RSA-PSS-SHA256 (std.crypto). Trust store hook exposed. SNI plumbed from API; ALPN enforced and exposed via getter; negative SNI tests added.
   - Recovery: RTT/PTO with backoff; packet- and time-threshold loss; NewReno controller; per-space PTO; sent-bytes accounting.
   - Endpoint/platform: epoll/kqueue/IOCP backends abstraction; deterministic test backend; outbound capture ring for tests.
   - Tooling/CI/docs: varint CLI and acceptance tests; fuzz/bench targets build; doccheck enforces pub docs; GAP gating requires timestamp bump on code changes.
@@ -35,7 +41,7 @@ Date: 2025-08-21
     - Formal KATs for ChaCha20-Poly1305 AEAD and header protection; cipher negotiation coverage across suites.
     - Optional 0-RTT (early data) key schedule and acceptance tests.
     - Key Update.
-    - Platform trust store integration hook; more KATs (expired, not-yet-valid, EKU/KU mismatches).
+    - Platform trust store integration (hook exists; OS store wiring TBD). More KATs (EKU/KU mismatches, malformed DER).
   - Transport (RFC 9000):
     - HANDSHAKE_DONE frame emit/handle.
     - CONNECTION_CLOSE mapping to app error space + graceful close semantics.
@@ -49,7 +55,7 @@ Date: 2025-08-21
   - Congestion control:
     - CUBIC implementation behind -Dcc=cubic; maintain NewReno default. Benchmarks to compare cwnd evolution.
   - Flow control and stream lifecycle:
-    - FIN handling in reassembly; proactive MAX\_\* growth thresholds/autotuning.
+    - FIN handling in reassembly; proactive MAX_\* growth thresholds/autotuning.
     - STOP_SENDING and RESET_STREAM semantics and tests.
   - Tokens lifecycle:
     - Client-side NEW_TOKEN persistence and reuse on subsequent connections; rotation/expiry policy; replay checks.
@@ -65,8 +71,8 @@ Date: 2025-08-21
 1. TLS validation hardening and KATs
 
 - Add known-answer tests (KATs) for ChaCha20-Poly1305 AEAD and header protection; add cipher negotiation tests covering AES-GCM and ChaCha.
-- Add certificate expiry/not-yet-valid KATs; expand name matching cases (wildcards, IDNA punycode minimal handling if needed for tests).
-- Expose trust store hook with stub default; retain allow_insecure toggles already present.
+- Add EKU/KU mismatch and malformed DER KATs; expand name matching cases (keep wildcard; optional minimal IDNA/punycode if needed for tests).
+- Integrate platform trust store via the exposed hook (optional for now); retain allow_insecure toggles already present.
 - Optional: scaffold 0-RTT early data key schedule tests.
 
 1. Lifecycle frames and key management
@@ -81,7 +87,7 @@ Date: 2025-08-21
 
 1. Flow control completeness
 
-- FIN-aware reassembly; threshold-based MAX\_\* emission; tests for BLOCKED signaling.
+- FIN-aware reassembly; threshold-based MAX_\* emission; tests for BLOCKED signaling.
 - Implement STOP_SENDING/RESET_STREAM with state machine coverage.
 
 1. Tokens lifecycle
@@ -109,6 +115,6 @@ Date: 2025-08-21
 - ChaCha20-Poly1305 KATs and cipher negotiation tests pass; AES/ChaCha parity validated.
 - HANDSHAKE_DONE + CONNECTION_CLOSE + Key Update wired with tests.
 - CUBIC functional with pacing; benches compare NR vs CUBIC; default remains NewReno.
-- FIN handling + threshold-based MAX\_\* + STOP_SENDING/RESET_STREAM tests pass.
+- FIN handling + threshold-based MAX_\* + STOP_SENDING/RESET_STREAM tests pass.
 - NEW_TOKEN persisted and used on subsequent connections; expiry/replay tests in place.
 - All unit tests pass (debug and -Drelease-safe); fuzzers/benches build; GAP updated; doccheck passes.
