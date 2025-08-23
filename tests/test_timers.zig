@@ -60,6 +60,12 @@ test "endpoint_pto_schedule_and_expire_flag" {
     conn.rtt_app.smoothed_rtt_ns = 50 * std.time.ns_per_ms;
     conn.rtt_app.rttvar_ns = 10 * std.time.ns_per_ms;
 
+    // With Recovery-based PTO, timers are only armed when there is an outstanding
+    // ack-eliciting packet. Record one such send now.
+    const now_ns_i128 = std.time.nanoTimestamp();
+    const now_ns_u64: u64 = @intCast(@max(@as(i128, 0), now_ns_i128));
+    try conn.rec.onPacketSent(.Application, 1, 1200, true, now_ns_u64);
+
     // Arm PTO and ensure a timer is created
     conn.computeAndMaybeArmPto(ep);
     std.debug.print("DEBUG app: active={any} timers={d} pto_count={d}\n", .{ conn.pto_app_active, ep.timers.items.len, conn.pto_app_count });
@@ -97,6 +103,11 @@ test "initial_space_pto_arm_and_probe_on_expire" {
     conn.our_scid.len = 4;
     @memcpy(conn.our_scid.bytes[0..4], "WXYZ");
     conn.initial_version = 0x00000001;
+
+    // Recovery-driven PTO requires at least one in-flight ack-eliciting packet.
+    // Record a synthetic Initial send and advance PN so the probe uses the next PN.
+    conn.onPacketSent(.Initial, conn.pn_initial_tx, 1200, true);
+    conn.pn_initial_tx +%= 1;
 
     // Arm Initial PTO
     conn.computeAndMaybeArmPtoInitial(ep);
@@ -137,6 +148,10 @@ test "handshake_space_pto_arm_cancel_on_ack_and_probe_on_expire" {
     conn.our_scid.len = 4;
     @memcpy(conn.our_scid.bytes[0..4], "WXYZ");
     conn.initial_version = 0x00000001;
+
+    // Recovery-driven PTO requires an outstanding ack-eliciting packet in Handshake space
+    conn.onPacketSent(.Handshake, conn.pn_handshake_tx, 1200, true);
+    conn.pn_handshake_tx +%= 1;
 
     // Arm Handshake PTO
     conn.computeAndMaybeArmPtoHandshake(ep);

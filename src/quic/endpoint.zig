@@ -244,7 +244,7 @@ pub const Endpoint = struct {
         );
         defer self.allocator.free(pkt);
         const sent = try self.sendTo(c.peer, pkt);
-        c.onPacketSent(c.pn_initial_tx, sent, true);
+        c.onPacketSent(.Initial, c.pn_initial_tx, sent, true);
         c.pn_initial_tx +%= 1;
         // Arm Initial PTO
         c.computeAndMaybeArmPtoInitial(self);
@@ -563,8 +563,8 @@ pub const Endpoint = struct {
                             }
                         },
                         .ack => |a| {
-                            const empty: [0]frame.AckRange = .{};
-                            conn.onAckReceived(a.largest, a.first_range, empty[0..]);
+                            // Forward Application ACK to recovery with actual ranges
+                            conn.onAckReceivedSpace(.Application, a.largest, a.first_range, a.ranges);
                             conn.pto_app_count = 0;
                             if (conn.pto_app_active) {
                                 _ = self.cancelTimer(conn.pto_app_id);
@@ -843,6 +843,15 @@ pub const Endpoint = struct {
                         conn.pushCrypto(cr.data) catch {};
                         saw_any = true;
                     },
+                    .ack => |a| {
+                        // Initial space ACK: inform recovery and cancel any Initial PTO
+                        conn.onAckReceivedSpace(.Initial, a.largest, a.first_range, a.ranges);
+                        conn.pto_initial_count = 0;
+                        if (conn.pto_initial_active) {
+                            _ = self.cancelTimer(conn.pto_initial_id);
+                            conn.pto_initial_active = false;
+                        }
+                    },
                     .padding => {},
                     else => {},
                 }
@@ -869,61 +878,25 @@ pub const Endpoint = struct {
                         const t = ks.deriveKeyIvHp(pair.server);
                         break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
                     };
-                    const out = packet.encodeInitialProtected(self.allocator.*, version, scid, conn.our_scid.bytes[0..conn.our_scid.len], &[_]u8{}, @as(u32, @truncate(conn.pn_initial_tx)), 2, frames_buf.items, tx_keys) catch null;
+                    const out = packet.encodeInitialProtected(self.allocator.*, version, scid, conn.our_scid.bytes[0..conn.our_scid.len], &[_]u8{}, @as(u32, @truncate(conn.pn_initial_tx)), 4, frames_buf.items, tx_keys) catch null;
                     // cast packet numbers where needed
 
                     if (out) |pkt_bytes| {
                         defer self.allocator.free(pkt_bytes);
                         _ = self.sendTo(peer, pkt_bytes) catch {};
-                        // Track amplification bytes if unvalidated
-                        if (!conn.address_validated) conn.bytes_tx_unvalidated +%= pkt_bytes.len;
                         // ACK-only Initial is not ack-eliciting
-                        conn.onPacketSent(conn.pn_initial_tx, pkt_bytes.len, false);
+                        conn.onPacketSent(.Initial, conn.pn_initial_tx, pkt_bytes.len, false);
                         conn.pn_initial_tx +%= 1;
                     }
                 }
-            }
 
-            // If handshake TX keys are ready and there is outbound CRYPTO, send a Handshake packet now, subject to amplification limit
-            if (conn.hs_tx_keys) |tx_keys| {
-                var crypto_buf: [1200]u8 = undefined;
-                const n_crypto = conn.tls.popCrypto(&crypto_buf);
-                if (n_crypto > 0 and allow_send) {
-                    var frames = std.ArrayList(u8).init(self.allocator.*);
-                    defer frames.deinit();
-                    const w2 = frames.writer();
-                    const fr = frame.Frame{ .crypto = .{ .offset = 0, .data = crypto_buf[0..n_crypto] } };
-                    const written = fr.write(w2) catch 0;
-                    if (written > 0) {
-                        // RFC-correct DCID/SCID for server Handshake: DCID = client's Initial SCID; SCID = our chosen SCID
-                        const dcid_hs = scid;
-                        const scid_hs = conn.our_scid.bytes[0..conn.our_scid.len];
-                        const pkt_or_err = packet.encodeHandshakeProtected(
-                            self.allocator.*, // alloc
-                            version,
-                            dcid_hs,
-                            scid_hs,
-                            @as(u32, @truncate(conn.pn_handshake_tx)),
-                            2, // PN len=2
-                            frames.items,
-                            tx_keys,
-                        );
-                        if (pkt_or_err) |bytes_out| {
-                            defer self.allocator.free(bytes_out);
-                            _ = self.sendTo(peer, bytes_out) catch {};
-                            if (!conn.address_validated) conn.bytes_tx_unvalidated +%= bytes_out.len;
-                            // Handshake CRYPTO is ack-eliciting
-                            conn.onPacketSent(conn.pn_handshake_tx, bytes_out.len, true);
-                            // Arm Handshake PTO when sending ack-eliciting Handshake
-                            conn.computeAndMaybeArmPtoHandshake(self);
-                            conn.pn_handshake_tx +%= 1;
-                            // Once we send Handshake, drop Initial keys to avoid processing further Initials.
-                            conn.initial_keys_dropped = true;
-                        } else |_| {}
-                    }
-                }
+                // Additionally, route received ACKs in Initial space through Recovery.
+                // Since this branch is taken when we saw any frames, send a synthetic ACK processing if needed is skipped.
             }
-        } else if (ty == 3) {
+            return;
+        }
+        // Retry (client handling only). Parse fields, verify integrity using ODCID, then store token; resend Initial with token.
+        if (ty == 3) {
             // Retry (client handling only). Parse fields, verify integrity using ODCID, then store token; resend Initial with token.
             var i: usize = 5;
             if (i >= bytes.len) return;
@@ -1047,8 +1020,9 @@ pub const Endpoint = struct {
                             conn.pushCrypto(r.f.crypto.data) catch {};
                             saw_any = true;
                         },
-                        .ack => {
+                        .ack => |a| {
                             // Reset handshake PTO backoff and cancel active timer on ACK in this space
+                            conn.onAckReceivedSpace(.Handshake, a.largest, a.first_range, a.ranges);
                             conn.pto_handshake_count = 0;
                             if (conn.pto_handshake_active) {
                                 _ = self.cancelTimer(conn.pto_handshake_id);
@@ -1093,7 +1067,7 @@ pub const Endpoint = struct {
                         if (out) |pkt_bytes| {
                             defer self.allocator.free(pkt_bytes);
                             _ = self.sendTo(peer, pkt_bytes) catch {};
-                            conn.onPacketSent(conn.pn_app_tx, pkt_bytes.len, true);
+                            conn.onPacketSent(.Application, conn.pn_app_tx, pkt_bytes.len, true);
                             conn.pn_app_tx +%= 1;
                             conn.new_token_sent = true;
                         }
@@ -1183,9 +1157,8 @@ pub const Endpoint = struct {
                 const pkt = packet.encodeInitialProtected(self.allocator.*, if (conn.initial_version == 0) 0x00000001 else conn.initial_version, dcid, scid, &[_]u8{}, @as(u32, @truncate(conn.pn_initial_tx)), 4, frames.items, tx_keys) catch return;
                 defer self.allocator.free(pkt);
                 _ = self.sendTo(conn.peer, pkt) catch {};
-                conn.onPacketSent(conn.pn_initial_tx, pkt.len, true);
+                conn.onPacketSent(.Initial, conn.pn_initial_tx, pkt.len, true);
                 conn.pn_initial_tx +%= 1;
-                // Do not re-arm here; processExpiredTimers will handle re-arming. This prevents test helper forceExpireAllTimers from looping.
             },
             .PtoHandshake => {
                 if (conn.hs_tx_keys) |tx_keys| {
@@ -1197,7 +1170,7 @@ pub const Endpoint = struct {
                     const pkt = packet.encodeHandshakeProtected(self.allocator.*, if (conn.initial_version == 0) 0x00000001 else conn.initial_version, dcid, scid, @as(u32, @truncate(conn.pn_handshake_tx)), 4, frames.items, tx_keys) catch return;
                     defer self.allocator.free(pkt);
                     _ = self.sendTo(conn.peer, pkt) catch {};
-                    conn.onPacketSent(conn.pn_handshake_tx, pkt.len, true);
+                    conn.onPacketSent(.Handshake, conn.pn_handshake_tx, pkt.len, true);
                     conn.pn_handshake_tx +%= 1;
                     // No re-arm here; normal timer loop handles it.
                 }

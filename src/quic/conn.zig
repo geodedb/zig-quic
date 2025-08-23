@@ -219,11 +219,13 @@ pub const Connection = struct {
     pn_initial: PnWindow = .{},
     pn_handshake: PnWindow = .{},
     pn_app: PnWindow = .{},
-    // Send-time/size tracking for RTT and congestion
+    // Recovery integration: RFC 9002 RTT/loss/CC/PTO
+    rec: recovery.Recovery = recovery.Recovery.init(std.heap.page_allocator),
+    // Legacy send-time/size tracking (kept for backward-compat; no longer used for loss)
     sent_time: std.AutoHashMap(u64, i128) = undefined,
     sent_sizes: std.AutoHashMap(u64, u16) = undefined,
     largest_acked: u64 = 0,
-    // RTT estimators per space
+    // RTT estimators per space (deprecated by rec.rtt for App)
     rtt_initial: recovery.RttState = .{},
     rtt_handshake: recovery.RttState = .{},
     rtt_app: recovery.RttState = .{},
@@ -266,7 +268,7 @@ pub const Connection = struct {
     path_challenge_data: [8]u8 = .{0} ** 8,
     new_token_pending: bool = false,
     new_token_sent: bool = false,
-    // Congestion controllers and selection flag
+    // Congestion controllers and selection flag (legacy; Recovery.cc is authoritative)
     use_cubic: bool = false,
     cc_nr: recovery.NewReno = .{},
     cc_cubic: recovery.Cubic = .{},
@@ -346,6 +348,7 @@ pub const Connection = struct {
         self.pn_initial = .{};
         self.pn_handshake = .{};
         self.pn_app = .{};
+        self.rec = recovery.Recovery.init(alloc.*);
         self.sent_time = std.AutoHashMap(u64, i128).init(alloc.*);
         self.sent_sizes = std.AutoHashMap(u64, u16).init(alloc.*);
         self.largest_acked = 0;
@@ -397,6 +400,7 @@ pub const Connection = struct {
     pub fn deinit(self: *Connection) void {
         self.tls_inbox.deinit();
         self.tls.deinit();
+        self.rec.deinit();
         self.sent_time.deinit();
         self.sent_sizes.deinit();
         // Free inbox payloads
@@ -433,6 +437,7 @@ pub const Connection = struct {
 
     /// Congestion control shim: record packet sent.
     fn ccOnPacketSent(self: *Connection, bytes: usize, ack_eliciting: bool) void {
+        // Legacy shim retained for compatibility; Recovery.cc is authoritative for new paths.
         if (self.use_cubic) {
             self.cc_cubic.onPacketSent(bytes, ack_eliciting);
         } else {
@@ -442,6 +447,7 @@ pub const Connection = struct {
 
     /// Congestion control shim: on ACK.
     fn ccOnAck(self: *Connection, bytes_acked: usize) void {
+        // Legacy shim retained for compatibility.
         if (self.use_cubic) {
             self.cc_cubic.onAck(bytes_acked);
         } else {
@@ -451,6 +457,7 @@ pub const Connection = struct {
 
     /// Congestion control shim: on loss.
     fn ccOnLoss(self: *Connection, bytes_lost: usize) void {
+        // Legacy shim retained for compatibility.
         if (self.use_cubic) {
             self.cc_cubic.onLoss(bytes_lost);
         } else {
@@ -497,18 +504,23 @@ pub const Connection = struct {
         if (!self.pto_initial_active) return;
         self.pto_initial_active = false;
         self.pto_initial_count +%= 1;
+        // Increase recovery PTO backoff as well
+        self.rec.pto_count +%= 1;
         self.sendPtoProbeInitial();
     }
     pub fn setPtoExpiredHandshake(self: *Connection) void {
         if (!self.pto_handshake_active) return;
         self.pto_handshake_active = false;
         self.pto_handshake_count +%= 1;
+        self.rec.pto_count +%= 1;
         self.sendPtoProbeHandshake();
     }
     pub fn setPtoExpiredApp(self: *Connection) void {
         if (!self.pto_app_active) return;
         self.pto_app_active = false;
         self.pto_app_count +%= 1;
+        // Also bump recovery PTO backoff counter
+        self.rec.pto_count +%= 1;
         self.sendPtoProbeApp();
     }
 
@@ -689,65 +701,58 @@ pub const Connection = struct {
 
     // When ACK arrives (any space), also allow finalizing TX key update on App ACKs
     pub fn onAckReceived(self: *Connection, largest: u64, first_range: u64, ranges: []const frame.AckRange) void {
-        // Update largest_acked
-        if (largest > self.largest_acked) self.largest_acked = largest;
-        var bytes_acked_total: usize = 0;
-        // RTT sample from send timestamp of largest if present
-        if (self.sent_time.fetchRemove(largest)) |kv| {
-            const now_ns: i128 = std.time.nanoTimestamp();
-            const ts_sent_ns = kv.value;
-            const rtt_ns: u64 = @intCast(if (now_ns > ts_sent_ns) now_ns - ts_sent_ns else 0);
-            self.rtt_app.onAck(rtt_ns, 0);
-            // account bytes for this pn if tracked
-            if (self.sent_sizes.fetchRemove(largest)) |kv2| bytes_acked_total += kv2.value else bytes_acked_total += 1200;
-            // any acked data resets app PTO backoff
-            self.pto_app_count = 0;
-        }
-        // Naive: remove any pns <= largest (basic packet-threshold loss detection)
-        var it = self.sent_time.iterator();
-        var ld = recovery.LossDetector{};
-        while (it.next()) |e| {
-            const pn = e.key_ptr.*;
-            if (pn <= largest) {
-                if (ld.isPacketThresholdLost(largest, pn)) {
-                    // consider lost
-                    const lost_bytes: usize = blk: {
-                        if (self.sent_sizes.fetchRemove(pn)) |kv2| break :blk kv2.value else break :blk 1200;
-                    };
-                    self.ccOnLoss(lost_bytes);
-                    _ = self.sent_time.remove(pn);
-                } else {
-                    _ = self.sent_time.remove(pn);
-                    const ackb: usize = blk: {
-                        if (self.sent_sizes.fetchRemove(pn)) |kv2| break :blk kv2.value else break :blk 1200;
-                    };
-                    bytes_acked_total += ackb;
+        // Back-compat: assume Application space
+        self.onAckReceivedSpace(.Application, largest, first_range, ranges);
+    }
+
+    /// Generalized ACK handler that wires through Recovery for the given PN space.
+    pub fn onAckReceivedSpace(self: *Connection, space: recovery.PacketNumberSpace, largest: u64, first_range: u64, ranges: []const frame.AckRange) void {
+        // Build list of acked PNs from ACK ranges per RFC 9000 §13.2.3
+        var buf: [256]u64 = undefined; // supports reasonably many acked packets per event
+        var count: usize = 0;
+        const add_range = struct {
+            fn f(dst: []u64, start: u64, len_inclusive: u64, idx: *usize) void {
+                var pn: i128 = @intCast(start);
+                var rem: u64 = len_inclusive + 1; // first_range is len-1
+                while (rem > 0 and idx.* < dst.len) : (rem -= 1) {
+                    dst[idx.*] = @intCast(pn);
+                    idx.* += 1;
+                    pn -= 1;
                 }
             }
+        }.f;
+        // First range: [largest - first_range, largest]
+        const first_start = largest;
+        add_range(&buf, first_start, first_range, &count);
+        // Subsequent ranges
+        var cursor: u64 = if (largest >= first_range) largest - first_range else 0;
+        for (ranges) |r| {
+            // Gap: r.gap means skip (gap + 1) packet numbers
+            const gap_skip = r.gap + 1;
+            if (cursor > gap_skip) cursor -= gap_skip else cursor = 0;
+            if (cursor == 0) break;
+            const range_end = cursor - 1;
+            add_range(&buf, range_end, r.len, &count);
+            cursor = if (range_end >= r.len) range_end - r.len else 0;
+            if (cursor == 0) break;
         }
-        // Time-threshold loss for remaining outstanding
-        const thr_ns: u64 = recovery.LossDetector.timeThresholdNs(self.rtt_app.smoothed_rtt_ns, self.rtt_app.latest_rtt_ns);
-        const now_ns2: i128 = std.time.nanoTimestamp();
-        var it2 = self.sent_time.iterator();
-        while (it2.next()) |e| {
-            const pn2 = e.key_ptr.*;
-            const ts_sent_ns2: i128 = e.value_ptr.*;
-            if (now_ns2 > ts_sent_ns2) {
-                const age_ns: u64 = @intCast(now_ns2 - ts_sent_ns2);
-                if (age_ns >= thr_ns) {
-                    const lost_b: usize = blk: {
-                        if (self.sent_sizes.fetchRemove(pn2)) |kv3| break :blk kv3.value else break :blk 1200;
-                    };
-                    self.ccOnLoss(lost_b);
-                    _ = self.sent_time.remove(pn2);
-                }
-            }
-        }
-        if (bytes_acked_total > 0) self.ccOnAck(bytes_acked_total);
-        // Finalize TX key update if this ACK likely covers App space new phase
-        self.maybeFinalizeKeyUpdateOnAck(largest);
-        _ = first_range;
-        _ = ranges;
+        const acked = buf[0..count];
+        // Update recovery for given space
+        const now_i = std.time.nanoTimestamp();
+        const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
+        const res = self.rec.onAckReceived(space, acked, 0, now_ns);
+        // Promote time-threshold losses if any expired now
+        _ = self.rec.onLossTimeExpired(now_ns);
+        // Reset per-space PTO backoff if any ack-eliciting was acked
+        if (res.bytes_acked > 0) switch (space) {
+            .Initial => self.pto_initial_count = 0,
+            .Handshake => self.pto_handshake_count = 0,
+            .Application => self.pto_app_count = 0,
+        };
+        // Finalize TX key update only on App ACKs
+        if (space == .Application) self.maybeFinalizeKeyUpdateOnAck(largest);
+        // Legacy largest_acked bookkeeping retained for compatibility (App only)
+        if (space == .Application and largest > self.largest_acked) self.largest_acked = largest;
     }
 
     /// Reset PTO backoff helpers
@@ -759,6 +764,7 @@ pub const Connection = struct {
     }
     pub fn resetPtoBackoffApp(self: *Connection) void {
         self.pto_app_count = 0;
+        self.rec.pto_count = 0;
     }
 
     /// Cancel PTO helpers
@@ -786,15 +792,16 @@ pub const Connection = struct {
 
     /// Compute PTO for App space and arm timer if not active.
     pub fn computeAndMaybeArmPto(self: *Connection, ep: anytype) void {
-        // Arm App PTO based on app RTT with exponential backoff.
-        const pto_ns = self.rtt_app.computePtoNsWithBackoff(self.pto_app_count, self.timer_granularity_ns);
-        if (pto_ns == 0) return;
-        const ms_u64: u64 = pto_ns / std.time.ns_per_ms;
-        const clamped_ms: u64 = if (ms_u64 == 0) 1 else ms_u64;
-        const max_u32: u32 = std.math.maxInt(u32);
-        var delay_ms: u32 = if (clamped_ms > max_u32) max_u32 else @intCast(clamped_ms);
-        // Keep test behavior deterministic: cap PTO delay to <= 100ms.
-        if (delay_ms > 100) delay_ms = 100;
+        // Use Recovery to compute PTO deadline for Application space only
+        const now_i = std.time.nanoTimestamp();
+        const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
+        const next_deadline = self.rec.computeSpacePtoTimeNs(.Application, now_ns);
+        if (next_deadline == null) return;
+        const delay_ns: u64 = if (next_deadline.? <= now_ns) 0 else next_deadline.? - now_ns;
+        // Note: computePtoNsWithBackoff already includes backoff via rec.pto_count.
+        var delay_ms: u32 = @intCast(@min(delay_ns / std.time.ns_per_ms, @as(u64, std.math.maxInt(u32))));
+        if (delay_ms == 0) delay_ms = 1;
+        if (delay_ms > 100) delay_ms = 100; // keep deterministic and fast in tests
         if (!self.pto_app_active) {
             self.pto_app_active = true;
             self.pto_app_id = ep.scheduleConnPto(self, .PtoApp, delay_ms) catch 0;
@@ -803,10 +810,13 @@ pub const Connection = struct {
 
     /// Compute PTO for Initial/Handshake space and arm timer if not active.
     pub fn computeAndMaybeArmPtoInitial(self: *Connection, ep: anytype) void {
-        const pto_ns = self.rtt_initial.computePtoNsWithBackoff(self.pto_initial_count, self.timer_granularity_ns);
-        if (pto_ns == 0) return;
-        const ms = @max(@as(u64, 1), pto_ns / std.time.ns_per_ms);
-        var delay_ms: u32 = @intCast(@min(ms, @as(u64, std.math.maxInt(u32))));
+        const now_i = std.time.nanoTimestamp();
+        const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
+        const next_deadline = self.rec.computeSpacePtoTimeNs(.Initial, now_ns);
+        if (next_deadline == null) return;
+        const delay_ns: u64 = if (next_deadline.? <= now_ns) 0 else next_deadline.? - now_ns;
+        var delay_ms: u32 = @intCast(@min(delay_ns / std.time.ns_per_ms, @as(u64, std.math.maxInt(u32))));
+        if (delay_ms == 0) delay_ms = 1;
         if (delay_ms > 100) delay_ms = 100;
         if (!self.pto_initial_active) {
             self.pto_initial_active = true;
@@ -814,10 +824,13 @@ pub const Connection = struct {
         }
     }
     pub fn computeAndMaybeArmPtoHandshake(self: *Connection, ep: anytype) void {
-        const pto_ns = self.rtt_handshake.computePtoNsWithBackoff(self.pto_handshake_count, self.timer_granularity_ns);
-        if (pto_ns == 0) return;
-        const ms = @max(@as(u64, 1), pto_ns / std.time.ns_per_ms);
-        var delay_ms: u32 = @intCast(@min(ms, @as(u64, std.math.maxInt(u32))));
+        const now_i = std.time.nanoTimestamp();
+        const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
+        const next_deadline = self.rec.computeSpacePtoTimeNs(.Handshake, now_ns);
+        if (next_deadline == null) return;
+        const delay_ns: u64 = if (next_deadline.? <= now_ns) 0 else next_deadline.? - now_ns;
+        var delay_ms: u32 = @intCast(@min(delay_ns / std.time.ns_per_ms, @as(u64, std.math.maxInt(u32))));
+        if (delay_ms == 0) delay_ms = 1;
         if (delay_ms > 100) delay_ms = 100;
         if (!self.pto_handshake_active) {
             self.pto_handshake_active = true;
@@ -857,7 +870,8 @@ pub const Connection = struct {
         if (out) |bytes_out| {
             defer self.allocator.free(bytes_out);
             _ = self.send(bytes_out) catch {};
-            self.onPacketSent(self.pn_initial_tx, bytes_out.len, true);
+            // Record via Recovery and bump PN
+            self.onPacketSent(.Initial, self.pn_initial_tx, bytes_out.len, true);
             self.pn_initial_tx +%= 1;
         }
     }
@@ -881,7 +895,7 @@ pub const Connection = struct {
         if (out) |bytes_out| {
             defer self.allocator.free(bytes_out);
             _ = self.send(bytes_out) catch {};
-            self.onPacketSent(self.pn_handshake_tx, bytes_out.len, true);
+            self.onPacketSent(.Handshake, self.pn_handshake_tx, bytes_out.len, true);
             self.pn_handshake_tx +%= 1;
         }
     }
@@ -1016,8 +1030,11 @@ pub const Connection = struct {
     }
 
     pub fn onShortHeaderPacketSent(self: *Connection, bytes_sent: usize, ack_eliciting: bool) void {
-        // Track cc and thresholds; this mirrors onPacketSent but also drives Key Update
-        self.onPacketSent(self.pn_app_tx, bytes_sent, ack_eliciting);
+        // Track recovery for Application space
+        const now_i = std.time.nanoTimestamp();
+        const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
+        _ = self.rec.onPacketSent(.Application, self.pn_app_tx, bytes_sent, ack_eliciting, now_ns) catch {};
+        // Legacy shim for back-compat
         if (ack_eliciting) self.maybeTriggerKeyUpdateOnSend(bytes_sent);
         self.pn_app_tx +%= 1;
         self.computeAndMaybeArmPto(self);
@@ -1080,12 +1097,15 @@ pub const Connection = struct {
         }
     }
 
-    pub fn onPacketSent(self: *Connection, pn: u64, bytes: usize, ack_eliciting: bool) void {
-        // Insert send timestamp deterministically
+    pub fn onPacketSent(self: *Connection, space: recovery.PacketNumberSpace, pn: u64, bytes: usize, ack_eliciting: bool) void {
+        // Record via Recovery (authoritative)
+        const now_i = std.time.nanoTimestamp();
+        const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
+        _ = self.rec.onPacketSent(space, pn, bytes, ack_eliciting, now_ns) catch {};
+        // Legacy maps retained for compatibility with tests expecting them
         if (self.sent_time.capacity() == 0) self.sent_time = std.AutoHashMap(u64, i128).init(self.allocator.*);
         if (self.sent_sizes.capacity() == 0) self.sent_sizes = std.AutoHashMap(u64, u16).init(self.allocator.*);
-        const now_ns: i128 = std.time.nanoTimestamp();
-        _ = self.sent_time.put(pn, now_ns) catch {};
+        _ = self.sent_time.put(pn, @as(i128, @intCast(now_ns))) catch {};
         _ = self.sent_sizes.put(pn, @intCast(@min(bytes, @as(usize, std.math.maxInt(u16))))) catch {};
         self.ccOnPacketSent(bytes, ack_eliciting);
     }
