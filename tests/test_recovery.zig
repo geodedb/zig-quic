@@ -144,3 +144,35 @@ test "persistent_congestion_reduces_cwnd_to_min" {
     // Upon persistent congestion, cwnd collapses to 2 * max_datagram_size (assume 1200)
     try std.testing.expectEqual(@as(usize, 2400), r.cc.cwnd);
 }
+
+test "ack_driven_persistent_congestion_packet_threshold" {
+    var r = rec.Recovery.init(std.testing.allocator);
+    defer r.deinit();
+
+    // Seed RTT to 50ms for a stable PTO base.
+    r.rtt.onAck(ms(50), 0);
+    const pto_base = r.rtt.computePtoNsWithBackoff(0, r.timer_granularity_ns);
+    const pc_window = pto_base * r.k_pc_threshold;
+
+    const space = rec.PacketNumberSpace.Application;
+
+    // Construct a span of packets such that the earliest and a near-latest packet
+    // that become lost by packet-threshold cover > pc_window in send time.
+    const t0: u64 = 1;
+    const t_last: u64 = t0 + pc_window + ms(1);
+
+    // Earliest packet in the span
+    try r.onPacketSent(space, 1, 1200, true, t0);
+    // A near-last packet that will be declared lost when we ACK a much larger PN
+    try r.onPacketSent(space, 197, 1200, true, t_last);
+    // The largest packet which we will ACK to trigger packet-threshold loss
+    try r.onPacketSent(space, 200, 1200, true, t_last);
+
+    // ACK only the largest packet to trigger packet-threshold loss of PN<=197.
+    const res = r.onAckReceived(space, &[_]u64{200}, 0, t_last + ms(50));
+    // At least two packets (1 and 197) are lost, i.e., >= 2400 bytes.
+    try std.testing.expect(res.bytes_lost >= 2400);
+
+    // The span between first and last lost packets exceeds the PC window, so PC triggers.
+    try std.testing.expectEqual(@as(usize, 2 * r.cc.mds), r.cc.cwnd);
+}

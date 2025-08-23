@@ -31,6 +31,10 @@ pub const QuicConfig = struct {
     token_secret: ?[]const u8 = null,
     // Token expiry in milliseconds from issuance (server)
     token_expiry_ms: u32 = 60000,
+    // Optional pacing: when enabled, sender may sleep briefly to pace bursts
+    enable_pacing: bool = false,
+    // Congestion-control max_datagram_size used for initial cwnd and min window (RFC 9002). Default 1200.
+    max_datagram_size: u16 = 1200,
     max_idle_timeout_ms: u32 = 30000,
     max_udp_payload: u16 = 1350,
     cert_path: ?[]const u8 = null, // server

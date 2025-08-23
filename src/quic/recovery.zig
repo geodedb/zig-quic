@@ -71,7 +71,9 @@ pub fn isAckElicitingFrame(fr: frame.Frame) bool {
 /// NewReno congestion controller (bytes-based) with slow start and CA phases.
 pub const NewReno = struct {
     // Congestion control state (bytes)
-    cwnd: usize = 10 * 1200, // initial cwnd: 10 * max_datagram_size (approx)
+    // Configurable max datagram size (RFC 9002 "max_datagram_size").
+    mds: usize = 1200,
+    cwnd: usize = 10 * 1200, // initial cwnd: 10 * mds (default 1200)
     ssthresh: usize = std.math.maxInt(usize) / 2,
     bytes_in_flight: usize = 0,
 
@@ -86,16 +88,17 @@ pub const NewReno = struct {
             // Slow start
             self.cwnd += bytes_acked;
         } else {
-            // Congestion avoidance: cwnd += max_datagram_size * bytes_acked / cwnd
-            const mds: usize = 1200;
-            self.cwnd += (mds * bytes_acked) / self.cwnd;
+            // Congestion avoidance: cwnd += mds * bytes_acked / cwnd
+            const mds_local: usize = self.mds;
+            self.cwnd += (mds_local * bytes_acked) / self.cwnd;
         }
         if (self.bytes_in_flight >= bytes_acked) self.bytes_in_flight -= bytes_acked else self.bytes_in_flight = 0;
     }
 
     /// Halve cwnd on loss and set ssthresh accordingly.
     pub fn onLoss(self: *NewReno, bytes_lost: usize) void {
-        if (self.cwnd > 2 * 1200) self.cwnd = self.cwnd / 2 else self.cwnd = 2 * 1200;
+        const min_wnd = 2 * self.mds;
+        if (self.cwnd > min_wnd) self.cwnd = self.cwnd / 2 else self.cwnd = min_wnd;
         self.ssthresh = self.cwnd;
         if (self.bytes_in_flight >= bytes_lost) self.bytes_in_flight -= bytes_lost else self.bytes_in_flight = 0;
     }
@@ -290,7 +293,7 @@ pub const Recovery = struct {
                 const pc_period = pto_base * self.k_pc_threshold;
                 if (last_lost_time.? - first_lost_time.? >= pc_period) {
                     // Enter persistent congestion: reduce cwnd to minimum window (2 * max_datagram_size)
-                    const min_window: usize = 2 * 1200;
+                    const min_window: usize = 2 * self.cc.mds;
                     self.cc.cwnd = min_window;
                     self.cc.ssthresh = min_window;
                 }
@@ -371,7 +374,7 @@ pub const Recovery = struct {
                 const pto_base = self.rtt.computePtoNsWithBackoff(0, self.timer_granularity_ns);
                 const pc_period = pto_base * self.k_pc_threshold;
                 if (last_lost_time.? - first_lost_time.? >= pc_period) {
-                    const min_window: usize = 2 * 1200;
+                    const min_window: usize = 2 * self.cc.mds;
                     self.cc.cwnd = min_window;
                     self.cc.ssthresh = min_window;
                 }

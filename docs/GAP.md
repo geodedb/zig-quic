@@ -1,17 +1,19 @@
 # GAP Analysis — RFCs 9000/9001/9002 (+ options)
 
-Date: 2025-08-22 03:15 UTC
+Date: 2025-08-23 00:00 UTC
 
 ## Latest slice (status bump)
 
-- Integrated Recovery into Connection:
-  - Replaced naive send/ack/loss/PTO tracking with recovery.Recovery for Application space.
-  - Endpoint and Connection now pass PacketNumberSpace when recording sends.
-  - ACK handling builds PN lists from ACK ranges and feeds Recovery.onAckReceived.
-  - PTO for App uses Recovery.computeNextPtoTimeNs; backoff tied to rec.pto_count.
-  - Time-threshold loss promotion runs on timer via Recovery.onLossTimeExpired.
-- Kept Initial/Handshake PTO on legacy estimators temporarily; App space authoritative via Recovery.
-- All unit tests continue to pass locally; timers tests updated to remain deterministic.
+- Pacing wiring and configurability
+  - Added optional pacing hook usage in connection send path; controlled via QuicConfig.enable_pacing.
+  - Exposed configurable max_datagram_size; propagated to NewReno.mds and used for cwnd minima and CA increments.
+  - Added micro-benchmarks for pacing delay computation to bench/ and wired recovery module into bench target.
+- Persistent congestion tests
+  - Extended recovery tests with ACK-driven persistent congestion case using packet-threshold path.
+  - Existing time-threshold PC test retained; both pass in Debug and ReleaseSafe.
+- Build/Test
+  - zig build, zig build test, and zig build -Doptimize=ReleaseSafe test pass locally.
+  - Doccheck passes; bench target builds.
 
 ## Coverage vs Requirements (snapshot)
 
@@ -66,5 +68,4 @@ Date: 2025-08-22 03:15 UTC
 
 - Recovery covers all spaces with persistent congestion; single PTO scheduler; tests/benches added; docs updated.
 
-
-### 1755903354 — Wired Recovery-driven PTO for Initial/Handshake/Application; updated timers tests; added Application PTO probe; validated in debug and -Drelease-safe; fuzz/bench build OK
+### 1755993600 — Wired pacing option, configurable MDS; added pacing bench and ACK-driven PC test; all tests green

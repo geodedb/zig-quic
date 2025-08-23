@@ -146,6 +146,7 @@ pub fn build(b: *std.Build) void {
     quic_conn_mod.addImport("quic_tls13", tls13_mod);
     quic_conn_mod.addImport("quic_varint", quic_varint_mod);
     quic_conn_mod.addImport("quic_tls", quic_tls_mod);
+    quic_conn_mod.addImport("quic_recovery", quic_recovery_mod);
     const quic_transport_params_mod = mkModule(b, "src/quic/transport_params.zig");
     quic_transport_params_mod.addImport("quic_varint", quic_varint_mod);
 
@@ -158,6 +159,7 @@ pub fn build(b: *std.Build) void {
     quic_endpoint_mod.addImport("quic_crypto", quic_crypto_mod);
     quic_endpoint_mod.addImport("quic_varint", quic_varint_mod);
     quic_endpoint_mod.addImport("quic_tls", quic_tls_mod);
+    quic_endpoint_mod.addImport("quic_recovery", quic_recovery_mod);
 
     // Public API module (reuse everywhere)
     const quic_api_mod = mkModule(b, "src/quic/api.zig");
@@ -169,6 +171,8 @@ pub fn build(b: *std.Build) void {
     quic_api_mod.addImport("quic_tls13", tls13_mod);
     quic_api_mod.addImport("quic_conn", quic_conn_mod);
     quic_api_mod.addImport("quic_packet", quic_packet_mod);
+    // Ensure submodule endpoint.zig (imported relatively by api.zig) can import recovery
+    quic_api_mod.addImport("quic_recovery", quic_recovery_mod);
 
     // Export named module for dependents: @import("quic")
     const quic_mod = b.addModule("quic", .{ .root_source_file = rp("src/quic/api.zig") });
@@ -393,6 +397,7 @@ pub fn build(b: *std.Build) void {
     // Benchmarks
     const bench = b.addExecutable(.{ .name = "quic-bench", .root_source_file = rp("bench/main.zig"), .target = target, .optimize = optimize });
     bench.root_module.addImport("quic_varint", quic_varint_mod);
+    bench.root_module.addImport("quic_recovery", quic_recovery_mod);
     const install_bench = b.addInstallArtifact(bench, .{});
     const bench_step = b.step("bench", "Build benchmarks");
     bench_step.dependOn(&install_bench.step);

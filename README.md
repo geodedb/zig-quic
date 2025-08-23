@@ -75,14 +75,14 @@ This repo exports a module named `quic`. Consumers can import it via `@import("q
 };
 ```
 
-2. Wire the module (build.zig)
+1. Wire the module (build.zig)
 
 ```zig
 const quic_dep = b.dependency("quic", .{ .target = target, .optimize = optimize });
 exe.root_module.addImport("quic", quic_dep.module("quic"));
 ```
 
-3. Use in code (src/main.zig)
+1. Use in code (src/main.zig)
 
 ```zig
 const std = @import("std");
@@ -96,6 +96,9 @@ pub fn main() !void {
     var cfg = quic.QuicConfig{
         .alpn = &[_][]const u8{ "h3" },
         .enable_datagram = true,
+        // Optional pacing and max datagram size
+        .enable_pacing = false,
+        .max_datagram_size = 1200,
     };
     const ep = try quic.endpointInit(&alloc, "0.0.0.0:0", &cfg);
     defer quic.endpointDeinit(ep);

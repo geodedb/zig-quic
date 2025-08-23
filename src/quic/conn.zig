@@ -5,7 +5,7 @@ const posix = std.posix;
 const tls13 = @import("quic_tls13");
 const packet = @import("quic_packet");
 const frame = @import("quic_frame");
-const recovery = @import("recovery.zig");
+const recovery = @import("quic_recovery");
 const ks = @import("quic_tls");
 
 /// Role of this endpoint for a connection.
@@ -59,6 +59,9 @@ pub const Cid = struct {
     len: u8 = 0,
     bytes: [20]u8 = undefined,
 };
+
+// Sender callback used by Endpoint to provide paced sending.
+pub const SendFn = *const fn (ctx: *anyopaque, c: *Connection, data: []const u8) anyerror!usize;
 
 const PnWindow = struct {
     max: u64 = 0,
@@ -172,6 +175,11 @@ pub const Connection = struct {
     allocator: *std.mem.Allocator,
     // Allowed ALPNs configured on endpoint
     allowed_alpns: []const []const u8 = &[_][]const u8{},
+    // Optional pacing flag (from endpoint cfg)
+    enable_pacing: bool = false,
+    // Optional sender callback (set by Endpoint) for paced sending
+    sender_ctx: ?*anyopaque = null,
+    sender_fn: ?SendFn = null,
     // Derived handshake traffic secrets (once both hellos present)
     hs_client: ?[tls13.H.digest_length]u8 = null,
     hs_server: ?[tls13.H.digest_length]u8 = null,
@@ -329,6 +337,9 @@ pub const Connection = struct {
         self.tls = tls13.Engine.init(alloc.*, if (role == .Client) .Client else .Server);
         self.allocator = alloc;
         self.allowed_alpns = &[_][]const u8{};
+        self.enable_pacing = false;
+        self.sender_ctx = null;
+        self.sender_fn = null;
         self.hs_client = null;
         self.hs_server = null;
         self.hs_rx_keys = null;
@@ -423,6 +434,12 @@ pub const Connection = struct {
     /// Update peer address (used for NAT rebinding / migration detection).
     pub fn setPeer(self: *Connection, peer: SockAddr) void {
         self.peer = peer;
+    }
+
+    /// Install a custom sender callback (typically provided by Endpoint) for paced sending.
+    pub fn setSender(self: *Connection, ctx: *anyopaque, f: SendFn) void {
+        self.sender_ctx = ctx;
+        self.sender_fn = f;
     }
 
     /// Get negotiated ALPN if any.
@@ -1042,6 +1059,11 @@ pub const Connection = struct {
 
     /// Send raw bytes to the connection's peer via UDP.
     pub fn send(self: *const Connection, data: []const u8) !usize {
+        // Delegate to Endpoint-provided sender when available (for pacing),
+        // otherwise fallback to direct socket send.
+        if (self.sender_fn) |f| {
+            return f(self.sender_ctx.?, @constCast(self), data);
+        }
         const sa_ptr: *const posix.sockaddr = @ptrCast(&self.peer.storage);
         return posix.sendto(self.sock_fd, data, 0, sa_ptr, self.peer.len);
     }

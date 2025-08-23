@@ -9,6 +9,7 @@ const ks = @import("quic_tls");
 const crypto = @import("quic_crypto");
 const varint = @import("quic_varint");
 const token_mod = @import("token.zig");
+const recovery = @import("quic_recovery");
 
 const posix = std.posix;
 const builtin = @import("builtin");
@@ -24,7 +25,15 @@ fn nowMsMonotonic() i64 {
     return @as(i64, @intCast(ms));
 }
 
-const Timer = struct { deadline_ms: i64, id: u64, kind: TimerKind = .Generic, conn: ?*conn_mod.Connection = null };
+const Timer = struct {
+    deadline_ms: i64,
+    id: u64,
+    kind: TimerKind = .Generic,
+    conn: ?*conn_mod.Connection = null,
+    // Pacing payload support (Generic kind): when paced is true and payload!=null, send on expiry
+    paced: bool = false,
+    payload: ?[]u8 = null,
+};
 
 /// Endpoint timer kinds, including per-space PTO timers.
 pub const TimerKind = enum { Generic, PtoInitial, PtoHandshake, PtoApp };
@@ -96,6 +105,14 @@ pub const Endpoint = struct {
             self.allocator.free(cap.bytes);
         }
         self.captures.deinit();
+        // Free any pending paced payloads in timers
+        var j: usize = 0;
+        while (j < self.timers.items.len) : (j += 1) {
+            const t = self.timers.items[j];
+            if (t.paced) {
+                if (t.payload) |p| self.allocator.free(p);
+            }
+        }
         // Destroy unique connections referenced by map values
         var seen = std.AutoHashMap(*conn_mod.Connection, void).init(self.allocator.*);
         defer seen.deinit();
@@ -193,6 +210,11 @@ pub const Endpoint = struct {
         c.setUseCubic(self.cfg.cc == .cubic);
         c.tls.allow_insecure = self.cfg.allow_insecure;
         c.allowed_alpns = self.cfg.alpn;
+        // Enable optional pacing and set CC max_datagram_size
+        c.enable_pacing = self.cfg.enable_pacing;
+        c.rec.cc.mds = @intCast(self.cfg.max_datagram_size);
+        // Install paced sender callback
+        c.setSender(@ptrCast(self), senderPaced);
         // Choose initial version from cfg
         c.version = if (self.cfg.version == .v2) packet.QUIC_V2 else packet.QUIC_V1;
         c.version_v2 = (c.version == packet.QUIC_V2);
@@ -267,6 +289,19 @@ pub const Endpoint = struct {
         const now_ms: i64 = nowMsMonotonic();
         const deadline: i64 = now_ms + @as(i64, @intCast(delay_ms));
         try self.timers.append(.{ .deadline_ms = deadline, .id = id, .kind = kind, .conn = c });
+        return id;
+    }
+
+    /// Schedule a paced send for a connection after delay_ns.
+    fn schedulePaced(self: *Endpoint, c: *conn_mod.Connection, delay_ns: u64, owned_bytes: []u8) !u64 {
+        const id = self.next_timer_id;
+        self.next_timer_id +%= 1;
+        const now_ms: i64 = nowMsMonotonic();
+        var delay_ms_u64: u64 = delay_ns / std.time.ns_per_ms;
+        if (delay_ms_u64 == 0) delay_ms_u64 = 1; // minimum 1ms to avoid busy spinning
+        if (delay_ms_u64 > 100) delay_ms_u64 = 100; // keep deterministic and fast in tests
+        const deadline: i64 = now_ms + @as(i64, @intCast(@min(delay_ms_u64, @as(u64, std.math.maxInt(u32)))));
+        try self.timers.append(.{ .deadline_ms = deadline, .id = id, .kind = .Generic, .conn = c, .paced = true, .payload = owned_bytes });
         return id;
     }
 
@@ -683,6 +718,11 @@ pub const Endpoint = struct {
                     c.setUseCubic(self.cfg.cc == .cubic);
                     c.tls.allow_insecure = self.cfg.allow_insecure;
                     c.allowed_alpns = self.cfg.alpn;
+                    // Enable optional pacing and set CC max_datagram_size
+                    c.enable_pacing = self.cfg.enable_pacing;
+                    c.rec.cc.mds = @intCast(self.cfg.max_datagram_size);
+                    // Install paced sender callback
+                    c.setSender(@ptrCast(self), senderPaced);
                     _ = self.conns.put(key, c) catch {
                         c.deinit();
                         self.allocator.destroy(c);
@@ -700,6 +740,11 @@ pub const Endpoint = struct {
                     c.setUseCubic(self.cfg.cc == .cubic);
                     c.tls.allow_insecure = self.cfg.allow_insecure;
                     c.allowed_alpns = self.cfg.alpn;
+                    // Enable optional pacing and set CC max_datagram_size
+                    c.enable_pacing = self.cfg.enable_pacing;
+                    c.rec.cc.mds = @intCast(self.cfg.max_datagram_size);
+                    // Install paced sender callback
+                    c.setSender(@ptrCast(self), senderPaced);
                     _ = self.conns.put(key, c) catch {
                         c.deinit();
                         self.allocator.destroy(c);
@@ -1104,7 +1149,17 @@ pub const Endpoint = struct {
                 _ = self.timers.orderedRemove(i);
                 // Fire PTO flags if applicable and generate probes
                 switch (t.kind) {
-                    .Generic => {},
+                    .Generic => {
+                        if (t.paced) {
+                            if (t.conn) |c| {
+                                if (t.payload) |bytes| {
+                                    // Send the paced payload now and free it
+                                    _ = self.sendTo(c.peer, bytes) catch {};
+                                    self.allocator.free(bytes);
+                                }
+                            }
+                        }
+                    },
                     .PtoInitial => if (t.conn) |c| {
                         c.setPtoExpiredInitial();
                         // Generate a PING probe in Initial space
@@ -1179,6 +1234,25 @@ pub const Endpoint = struct {
         }
     }
 };
+
+// Sender callback used by Connection for timer-driven pacing
+fn senderPaced(ctx: *anyopaque, c: *conn_mod.Connection, data: []const u8) !usize {
+    const self: *Endpoint = @ptrCast(@alignCast(ctx));
+    // If pacing disabled, send directly
+    if (!c.enable_pacing) {
+        return self.sendTo(c.peer, data);
+    }
+    const delay_ns = recovery.computePacingDelayNs(c.rec.cc.cwnd, c.rec.cc.bytes_in_flight);
+    if (delay_ns == 0) {
+        return self.sendTo(c.peer, data);
+    }
+    // Own the payload and schedule a paced timer
+    const owned = try self.allocator.alloc(u8, data.len);
+    @memcpy(owned, data);
+    _ = try self.schedulePaced(c, delay_ns, owned);
+    // Report bytes as accepted; actual socket send happens when the timer fires.
+    return data.len;
+}
 
 fn poll_epoll(self: *Endpoint, timeout_ms: i32) !void {
     const io = @import("io/loop_epoll.zig");
