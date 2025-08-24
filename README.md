@@ -120,7 +120,7 @@ Notes:
 
 ## Process helpers
 
-- Update GAP after a slice: `zig build update-gap -- all --summary "Finished <slice>"`
+- Update GAP after a slice: `zig build tools && ./zig-out/bin/update-gap --summary "Finished <slice>"`
 - Doc completeness check (CI gate): `zig build tools && ./zig-out/bin/doccheck`
 - Fuzzers build: `zig build fuzz`
 - Benches build: `zig build bench && ./zig-out/bin/quic-bench [rtt_ns] [bdp_packets] [loss_every]`
@@ -128,7 +128,10 @@ Notes:
 ### CC bench examples
 
 - Default: `./zig-out/bin/quic-bench`
-- RTT=200us, BDP=100 packets, no loss: `./zig-out/bin/quic-bench 200000 100 0`
+- Single scenario: RTT=200us, BDP=100 packets, no loss: `./zig-out/bin/quic-bench 200000 100 0`
+- Grid of scenarios: `./zig-out/bin/quic-bench --grid`
+- CSV output (single): `./zig-out/bin/quic-bench 200000 100 0 --csv`
+- CSV + grid: `./zig-out/bin/quic-bench --grid --csv` (prints header and rows)
 - RTT=1ms, BDP=200 packets, drop every 50th pkt: `./zig-out/bin/quic-bench 1000000 200 50`
 
 ## CI

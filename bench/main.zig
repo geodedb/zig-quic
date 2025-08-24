@@ -12,13 +12,23 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
-    // Optional args: [rtt_ns] [bdp_packets] [loss_every]
+    // Optional args: [rtt_ns] [bdp_packets] [loss_every] or flags: --grid [--csv]
     const args = try std.process.argsAlloc(alloc);
     defer std.process.argsFree(alloc, args);
-    // program name is args[0]
-    const rtt_ns_cfg: u64 = parseU64Arg(args, 1, 100_000); // 100us
-    const bdp_pkts_cfg: u64 = parseU64Arg(args, 2, 100); // target BDP in packets
-    const loss_every_cfg: u64 = parseU64Arg(args, 3, 0); // 0 = no loss
+
+    var grid: bool = false;
+    var csv: bool = false;
+    // Detect flags
+    for (args, 0..) |a, i| {
+        if (i == 0) continue; // program name
+        if (std.mem.eql(u8, a, "--grid")) grid = true;
+        if (std.mem.eql(u8, a, "--csv")) csv = true;
+    }
+
+    // program name is args[0]; positional args retained for single scenario mode
+    const rtt_ns_cfg: u64 = if (!grid) parseU64Arg(args, 1, 100_000) else 100_000; // 100us
+    const bdp_pkts_cfg: u64 = if (!grid) parseU64Arg(args, 2, 100) else 100; // target BDP in packets
+    const loss_every_cfg: u64 = if (!grid) parseU64Arg(args, 3, 0) else 0; // 0 = no loss
 
     // Micro-bench 1: varint encode (existing)
     var timer = try std.time.Timer.start();
@@ -77,64 +87,112 @@ pub fn main() !void {
         .{ off_ns, on_ns, cnt_nonzero },
     );
 
-    // Bench 4: CUBIC vs NewReno cwnd growth under ACKs (parameterized)
-    var R = rec.Recovery.init(alloc);
-    defer R.deinit();
-    const pkts: usize = 200_000;
-    const mds: usize = 1200;
-    const ack_bytes: usize = mds;
+    // Bench 4: CUBIC vs NewReno cwnd growth under ACKs (single or grid)
+    const writer = std.io.getStdOut().writer();
 
-    // Simulated RTT and BDP
-    const rtt_ns = rtt_ns_cfg;
-    const target_bdp_pkts = bdp_pkts_cfg;
-    // Back-to-back acks, each step spaced by rtt_ns/target_bdp_pkts to emulate cwnd worth in flight
-    const dt_ack_ns: u64 = if (target_bdp_pkts > 0) rtt_ns / target_bdp_pkts else 0;
+    const ScenarioResult = struct {
+        nr_cwnd: usize,
+        nr_time_ns: u64,
+        cubic_cwnd: usize,
+        cubic_time_ns: u64,
+    };
 
-    // Helper: ACK a sent pn and update RTT with measured delay
-    const ack_one = struct {
-        fn f(r: *rec.Recovery, space: rec.PacketNumberSpace, pn: u64, now_ns: u64, apply_loss_every: u64) void {
-            // Optionally simulate loss by not acking every Nth packet
-            if (apply_loss_every != 0 and pn != 0 and (pn % apply_loss_every) == 0) {
-                // No ACK for this pn
-                return;
+    const cc_scenario = struct {
+        fn run(alloc_: std.mem.Allocator, rtt_ns: u64, bdp_pkts: u64, loss_every: u64) !ScenarioResult {
+            var R = rec.Recovery.init(alloc_);
+            defer R.deinit();
+
+            const pkts: usize = 200_000;
+            const mds: usize = 1200;
+            const ack_bytes: usize = mds;
+            const dt_ack_ns: u64 = if (bdp_pkts > 0) rtt_ns / bdp_pkts else 0;
+
+            const ack_one = struct {
+                fn f(r: *rec.Recovery, space: rec.PacketNumberSpace, pn: u64, now_ns: u64, apply_loss_every: u64) void {
+                    if (apply_loss_every != 0 and pn != 0 and (pn % apply_loss_every) == 0) {
+                        return; // simulate loss by not acking this pn
+                    }
+                    _ = r.onAckReceived(space, &[_]u64{pn}, 0, now_ns);
+                }
+            }.f;
+
+            var timer_local = try std.time.Timer.start();
+            var now_ns: u64 = 0;
+            var pn: u64 = 0;
+
+            // NewReno
+            R.setCcMode(false);
+            R.cc = .{ .mds = mds, .cwnd = 10 * mds, .ssthresh = std.math.maxInt(usize) / 2, .bytes_in_flight = 0 };
+            inline for (&R.spaces) |*s| s.sent.shrinkRetainingCapacity(0);
+            timer_local.reset();
+            now_ns = 0;
+            pn = 0;
+            while (pn < pkts) : (pn += 1) {
+                now_ns +%= dt_ack_ns;
+                _ = R.onPacketSent(.Application, pn, ack_bytes, true, now_ns) catch {};
+                ack_one(&R, .Application, pn, now_ns + rtt_ns, loss_every);
             }
-            _ = r.onAckReceived(space, &[_]u64{pn}, 0, now_ns);
+            const nr_total_ns = timer_local.read();
+            const nr_cwnd_val = R.cc.cwnd;
+
+            // CUBIC
+            R.setCcMode(true);
+            R.cc = .{ .mds = mds, .cwnd = 10 * mds, .ssthresh = std.math.maxInt(usize) / 2, .bytes_in_flight = 0 };
+            inline for (&R.spaces) |*s| s.sent.shrinkRetainingCapacity(0);
+            timer_local.reset();
+            now_ns = 0;
+            pn = 0;
+            while (pn < pkts) : (pn += 1) {
+                now_ns +%= dt_ack_ns;
+                _ = R.onPacketSent(.Application, pn, ack_bytes, true, now_ns) catch {};
+                ack_one(&R, .Application, pn, now_ns + rtt_ns, loss_every);
+            }
+            const cubic_total_ns = timer_local.read();
+            const cubic_cwnd_val = R.cc.cwnd;
+
+            return ScenarioResult{
+                .nr_cwnd = nr_cwnd_val,
+                .nr_time_ns = nr_total_ns,
+                .cubic_cwnd = cubic_cwnd_val,
+                .cubic_time_ns = cubic_total_ns,
+            };
         }
-    }.f;
+    }.run;
 
-    // NewReno growth
-    R.setCcMode(false);
-    R.cc = .{ .mds = mds, .cwnd = 10 * mds, .ssthresh = std.math.maxInt(usize) / 2, .bytes_in_flight = 0 };
-    // Clear any previous sent state
-    inline for (&R.spaces) |*s| s.sent.shrinkRetainingCapacity(0);
-    timer.reset();
-    var now_ns: u64 = 0;
-    var pn: u64 = 0;
-    while (pn < pkts) : (pn += 1) {
-        now_ns +%= dt_ack_ns;
-        _ = R.onPacketSent(.Application, pn, ack_bytes, true, now_ns) catch {};
-        ack_one(&R, .Application, pn, now_ns + rtt_ns, loss_every_cfg);
+    if (grid) {
+        const rtts = [_]u64{ 100_000, 1_000_000 }; // 100us, 1ms
+        const bdps = [_]u64{ 50, 200 };
+        const losses = [_]u64{ 0, 50 }; // no loss, 1-in-50 loss
+        if (csv) {
+            try writer.print("mode,rtt_ns,bdp_pkts,loss_every,cwnd,time_ns\n", .{});
+        }
+        for (rtts) |rtt_ns| {
+            for (bdps) |bdp_pkts| {
+                for (losses) |loss_every| {
+                    const res = try cc_scenario(alloc, rtt_ns, bdp_pkts, loss_every);
+                    if (csv) {
+                        try writer.print("newreno,{d},{d},{d},{d},{d}\n", .{ rtt_ns, bdp_pkts, loss_every, res.nr_cwnd, res.nr_time_ns });
+                        try writer.print("cubic,{d},{d},{d},{d},{d}\n", .{ rtt_ns, bdp_pkts, loss_every, res.cubic_cwnd, res.cubic_time_ns });
+                    } else {
+                        try writer.print(
+                            "cc bench: rtt_ns={d} bdp_pkts={d} loss_every={d} | newreno cwnd={d}, time={d} ns; cubic cwnd={d}, time={d} ns\n",
+                            .{ rtt_ns, bdp_pkts, loss_every, res.nr_cwnd, res.nr_time_ns, res.cubic_cwnd, res.cubic_time_ns },
+                        );
+                    }
+                }
+            }
+        }
+    } else {
+        const res = try cc_scenario(alloc, rtt_ns_cfg, bdp_pkts_cfg, loss_every_cfg);
+        if (csv) {
+            try writer.print("mode,rtt_ns,bdp_pkts,loss_every,cwnd,time_ns\n", .{});
+            try writer.print("newreno,{d},{d},{d},{d},{d}\n", .{ rtt_ns_cfg, bdp_pkts_cfg, loss_every_cfg, res.nr_cwnd, res.nr_time_ns });
+            try writer.print("cubic,{d},{d},{d},{d},{d}\n", .{ rtt_ns_cfg, bdp_pkts_cfg, loss_every_cfg, res.cubic_cwnd, res.cubic_time_ns });
+        } else {
+            try writer.print(
+                "cc bench: rtt_ns={d} bdp_pkts={d} loss_every={d} | newreno cwnd={d}, time={d} ns; cubic cwnd={d}, time={d} ns\n",
+                .{ rtt_ns_cfg, bdp_pkts_cfg, loss_every_cfg, res.nr_cwnd, res.nr_time_ns, res.cubic_cwnd, res.cubic_time_ns },
+            );
+        }
     }
-    const nr_total_ns = timer.read();
-    const nr_cwnd = R.cc.cwnd;
-
-    // CUBIC growth
-    R.setCcMode(true);
-    R.cc = .{ .mds = mds, .cwnd = 10 * mds, .ssthresh = std.math.maxInt(usize) / 2, .bytes_in_flight = 0 };
-    inline for (&R.spaces) |*s| s.sent.shrinkRetainingCapacity(0);
-    timer.reset();
-    now_ns = 0;
-    pn = 0;
-    while (pn < pkts) : (pn += 1) {
-        now_ns +%= dt_ack_ns;
-        _ = R.onPacketSent(.Application, pn, ack_bytes, true, now_ns) catch {};
-        ack_one(&R, .Application, pn, now_ns + rtt_ns, loss_every_cfg);
-    }
-    const cubic_total_ns = timer.read();
-    const cubic_cwnd = R.cc.cwnd;
-
-    try std.io.getStdOut().writer().print(
-        "cc bench: rtt_ns={d} bdp_pkts={d} loss_every={d} | newreno cwnd={d}, time={d} ns; cubic cwnd={d}, time={d} ns\n",
-        .{ rtt_ns, target_bdp_pkts, loss_every_cfg, nr_cwnd, nr_total_ns, cubic_cwnd, cubic_total_ns },
-    );
 }

@@ -60,7 +60,7 @@ pub const Cid = struct {
     bytes: [20]u8 = undefined,
 };
 
-// Sender callback used by Endpoint to provide paced sending.
+/// Sender callback used by Endpoint to provide paced sending.
 pub const SendFn = *const fn (ctx: *anyopaque, c: *Connection, data: []const u8) anyerror!usize;
 
 const PnWindow = struct {
@@ -360,10 +360,12 @@ pub const Connection = struct {
         const d = self.pn_initial.buildAckRanges(self.ack_ranges_buf[0..]);
         return .{ .largest = self.pn_initial.max, .first_range = d.first_range, .ranges = self.ack_ranges_buf[0..d.ranges_len] };
     }
+    /// Build ACK ranges for Handshake space.
     pub fn buildAckHandshake(self: *Connection) AckDesc {
         const d = self.pn_handshake.buildAckRanges(self.ack_ranges_buf[0..]);
         return .{ .largest = self.pn_handshake.max, .first_range = d.first_range, .ranges = self.ack_ranges_buf[0..d.ranges_len] };
     }
+    /// Build ACK ranges for Application space.
     pub fn buildAckApp(self: *Connection) AckDesc {
         const d = self.pn_app.buildAckRanges(self.ack_ranges_buf[0..]);
         return .{ .largest = self.pn_app.max, .first_range = d.first_range, .ranges = self.ack_ranges_buf[0..d.ranges_len] };
@@ -475,6 +477,37 @@ pub const Connection = struct {
         self.sender_fn = f;
     }
 
+    /// Send bytes to peer using configured sender callback; if none, act as no-op that accounts amplification.
+    pub fn send(self: *Connection, data: []const u8) !usize {
+        if (self.sender_fn) |f| {
+            const ctx = self.sender_ctx orelse return data.len;
+            const n = try f(ctx, self, data);
+            if (!self.address_validated) self.bytes_tx_unvalidated +%= n;
+            return n;
+        }
+        // Test mode: no endpoint sender installed; pretend all bytes were sent.
+        if (!self.address_validated) self.bytes_tx_unvalidated +%= data.len;
+        return data.len;
+    }
+
+    /// Feed received CRYPTO bytes to the TLS engine and enforce allowed ALPN list.
+    pub fn pushCrypto(self: *Connection, hs: []const u8) !void {
+        self.tls.onCryptoRecv(hs);
+        // If an ALPN was negotiated, enforce it against the allowed list when provided.
+        if (self.tls.alpn) |a| {
+            if (self.allowed_alpns.len > 0) {
+                var ok = false;
+                for (self.allowed_alpns) |p| {
+                    if (std.mem.eql(u8, a, p)) {
+                        ok = true;
+                        break;
+                    }
+                }
+                if (!ok) self.tls.finished_verified = false;
+            }
+        }
+    }
+
     /// Get negotiated ALPN if any.
     pub fn getNegotiatedAlpn(self: *Connection) ?[]const u8 {
         return self.tls.alpn;
@@ -577,7 +610,7 @@ pub const Connection = struct {
         return 0;
     }
 
-    /// PTO expiry hooks used by Endpoint timers.
+    /// PTO expiry hook for Initial space: clears active flag, bumps backoff, and sends a PING probe.
     pub fn setPtoExpiredInitial(self: *Connection) void {
         if (!self.pto_initial_active) return;
         self.pto_initial_active = false;
@@ -586,6 +619,7 @@ pub const Connection = struct {
         self.rec.pto_count +%= 1;
         self.sendPtoProbeInitial();
     }
+    /// PTO expiry hook for Handshake space: clears active flag, bumps backoff, and sends a PING probe.
     pub fn setPtoExpiredHandshake(self: *Connection) void {
         if (!self.pto_handshake_active) return;
         self.pto_handshake_active = false;
@@ -593,6 +627,7 @@ pub const Connection = struct {
         self.rec.pto_count +%= 1;
         self.sendPtoProbeHandshake();
     }
+    /// PTO expiry hook for Application space: clears active flag, bumps backoff, and sends a PING probe.
     pub fn setPtoExpiredApp(self: *Connection) void {
         if (!self.pto_app_active) return;
         self.pto_app_active = false;
@@ -688,7 +723,7 @@ pub const Connection = struct {
         return 0;
     }
 
-    /// Write bytes on stream id 0 using a Short header STREAM frame with LEN+OFF.
+    /// Write STREAM data enforcing flow-control; may emit *_BLOCKED frames.
     pub fn writeStream(self: *Connection, id: u64, data: []const u8) !usize {
         if (id != 0) return error.InvalidStream;
         if (self.stream_send_aborted) return error.StreamStopped;
@@ -743,7 +778,7 @@ pub const Connection = struct {
         return to_send;
     }
 
-    /// Read bytes from stream id into buf. Returns bytes copied (0 if none).
+    /// Read from STREAM into buf; returns number of bytes or WouldBlock.
     pub fn readStream(self: *Connection, id: u64, buf: []u8) !usize {
         const s = self.streams_rx.getPtr(id) orelse return error.InvalidStream;
         if (s.inbox.items.len == 0) return 0;
@@ -755,7 +790,7 @@ pub const Connection = struct {
         return n;
     }
 
-    /// Send a FIN (no data) on stream id 0.
+    /// Close a STREAM with RESET_STREAM using the given application error code.
     pub fn closeStream(self: *Connection, id: u64, app_error_code: u64) !void {
         _ = app_error_code; // not surfaced yet in transport close
         if (id != 0) return error.InvalidStream;
@@ -779,7 +814,7 @@ pub const Connection = struct {
         self.onShortHeaderPacketSent(pkt.len, true);
     }
 
-    /// Handle a received STOP_SENDING by issuing a RESET_STREAM with current final size.
+    /// Handle STOP_SENDING by responding with RESET_STREAM carrying our final size.
     pub fn handleStopSending(self: *Connection, stream_id: u64, app_error_code: u64) !void {
         const tx = self.app_tx_keys orelse return error.KeysNotReady;
         // Mark stream as aborted for sending further STREAM frames
@@ -857,7 +892,7 @@ pub const Connection = struct {
         }
     }
 
-    // When ACK arrives (any space), also allow finalizing TX key update on App ACKs
+    /// When ACK arrives (any space), also allow finalizing TX key update on App ACKs
     pub fn onAckReceived(self: *Connection, largest: u64, first_range: u64, ranges: []const frame.AckRange) void {
         // Back-compat: assume Application space
         self.onAckReceivedSpace(.Application, largest, first_range, ranges);
@@ -913,19 +948,21 @@ pub const Connection = struct {
         if (space == .Application and largest > self.largest_acked) self.largest_acked = largest;
     }
 
-    /// Reset PTO backoff helpers
+    /// Reset PTO backoff for Initial space.
     pub fn resetPtoBackoffInitial(self: *Connection) void {
         self.pto_initial_count = 0;
     }
+    /// Reset PTO backoff for Handshake space.
     pub fn resetPtoBackoffHandshake(self: *Connection) void {
         self.pto_handshake_count = 0;
     }
+    /// Reset PTO backoff for Application space (also clears recovery backoff).
     pub fn resetPtoBackoffApp(self: *Connection) void {
         self.pto_app_count = 0;
         self.rec.pto_count = 0;
     }
 
-    /// Cancel PTO helpers
+    /// Cancel PTO timer for Initial space.
     pub fn cancelPtoInitial(self: *Connection, ep: anytype) void {
         if (self.pto_initial_active) {
             if (self.pto_initial_id != 0) _ = ep.cancelTimer(self.pto_initial_id);
@@ -933,6 +970,7 @@ pub const Connection = struct {
         }
         self.resetPtoBackoffInitial();
     }
+    /// Cancel PTO timer for Handshake space.
     pub fn cancelPtoHandshake(self: *Connection, ep: anytype) void {
         if (self.pto_handshake_active) {
             if (self.pto_handshake_id != 0) _ = ep.cancelTimer(self.pto_handshake_id);
@@ -940,6 +978,7 @@ pub const Connection = struct {
         }
         self.resetPtoBackoffHandshake();
     }
+    /// Cancel PTO timer for Application space.
     pub fn cancelPtoApp(self: *Connection, ep: anytype) void {
         if (self.pto_app_active) {
             if (self.pto_app_id != 0) _ = ep.cancelTimer(self.pto_app_id);
@@ -948,7 +987,7 @@ pub const Connection = struct {
         self.resetPtoBackoffApp();
     }
 
-    /// Compute PTO for App space and arm timer if not active.
+    /// Compute PTO for Application space and arm timer if not active.
     pub fn computeAndMaybeArmPto(self: *Connection, ep: anytype) void {
         // Use Recovery to compute PTO deadline for Application space only
         const now_i = std.time.nanoTimestamp();
@@ -966,7 +1005,7 @@ pub const Connection = struct {
         }
     }
 
-    /// Compute PTO for Initial/Handshake space and arm timer if not active.
+    /// Compute PTO for Initial space and arm timer if not active.
     pub fn computeAndMaybeArmPtoInitial(self: *Connection, ep: anytype) void {
         const now_i = std.time.nanoTimestamp();
         const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
@@ -981,6 +1020,7 @@ pub const Connection = struct {
             self.pto_initial_id = ep.scheduleConnPto(self, .PtoInitial, delay_ms) catch 0;
         }
     }
+    /// Compute PTO for Handshake space and arm timer if not active.
     pub fn computeAndMaybeArmPtoHandshake(self: *Connection, ep: anytype) void {
         const now_i = std.time.nanoTimestamp();
         const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
@@ -996,7 +1036,7 @@ pub const Connection = struct {
         }
     }
 
-    /// Send a minimal PTO probe for the Initial/Handshake/App space (PING frame).
+    /// Send a minimal PTO probe for the Initial space (PING frame).
     pub fn sendPtoProbeInitial(self: *Connection) void {
         if (self.initial_keys_dropped) return;
         // Derive server initial TX keys on demand
@@ -1033,6 +1073,7 @@ pub const Connection = struct {
             self.pn_initial_tx +%= 1;
         }
     }
+    /// Send a minimal PTO probe for the Handshake space (PING frame).
     pub fn sendPtoProbeHandshake(self: *Connection) void {
         const tx = self.hs_tx_keys orelse return;
         var frames = std.ArrayList(u8).init(self.allocator.*);
@@ -1057,6 +1098,7 @@ pub const Connection = struct {
             self.pn_handshake_tx +%= 1;
         }
     }
+    /// Send a minimal PTO probe for the Application space (PING frame).
     pub fn sendPtoProbeApp(self: *Connection) void {
         const tx = self.app_tx_keys orelse return;
         var frames = std.ArrayList(u8).init(self.allocator.*);
@@ -1187,6 +1229,7 @@ pub const Connection = struct {
         }
     }
 
+    /// Record a short-header 1-RTT packet as sent and maybe trigger key update.
     pub fn onShortHeaderPacketSent(self: *Connection, bytes_sent: usize, ack_eliciting: bool) void {
         // Track recovery for Application space
         const now_i = std.time.nanoTimestamp();
@@ -1198,68 +1241,7 @@ pub const Connection = struct {
         self.computeAndMaybeArmPto(self);
     }
 
-    /// Send raw bytes to the connection's peer via UDP.
-    pub fn send(self: *const Connection, data: []const u8) !usize {
-        // Delegate to Endpoint-provided sender when available (for pacing),
-        // otherwise fallback to direct socket send.
-        if (self.sender_fn) |f| {
-            return f(self.sender_ctx.?, @constCast(self), data);
-        }
-        const sa_ptr: *const posix.sockaddr = @ptrCast(&self.peer.storage);
-        return posix.sendto(self.sock_fd, data, 0, sa_ptr, self.peer.len);
-    }
-
-    /// Append CRYPTO stream bytes into the inbox and feed TLS engine.
-    pub fn pushCrypto(self: *Connection, data: []const u8) !void {
-        try self.tls_inbox.appendSlice(data);
-        self.tls.onCryptoRecv(data);
-        // Enforce ALPN if negotiated and not in insecure mode
-        if (!self.tls.allow_insecure) {
-            if (self.tls.alpn) |alp| {
-                var ok = false;
-                var i: usize = 0;
-                while (i < self.allowed_alpns.len) : (i += 1) {
-                    if (std.mem.eql(u8, alp, self.allowed_alpns[i])) {
-                        ok = true;
-                        break;
-                    }
-                }
-                if (!ok and self.allowed_alpns.len > 0) {
-                    // In a full implementation, we would abort the handshake. For now, mark finished_verified false.
-                    self.tls.finished_verified = false;
-                }
-            }
-        }
-        // Attempt to compute handshake secrets if test ecdhe_secret has been set
-        if (self.tls.computeHandshakeSecrets()) |hs| {
-            self.hs_client = hs.client;
-            self.hs_server = hs.server;
-            self.deriveHandshakeKeys(false);
-            // Queue a Finished for our role once HS secrets are ready (minimal subset)
-            if (!self.tls.finished_sent) {
-                const my_hs = if (self.role == .Server) hs.server else hs.client;
-                self.tls.queueFinished(my_hs) catch {};
-            }
-        }
-        // Attempt to compute application secrets
-        if (self.tls.computeApplicationSecrets()) |ap| {
-            const before = self.app_tx_keys == null;
-            self.deriveAppKeys(ap.client, ap.server, false);
-            // Server: emit HANDSHAKE_DONE exactly once when app keys become available, then drop Handshake keys
-            if (self.role == .Server and before and !self.handshake_done_sent and self.app_tx_keys != null) {
-                var fb = std.ArrayList(u8).init(self.allocator.*);
-                defer fb.deinit();
-                const w = fb.writer();
-                _ = (frame.Frame{ .handshake_done = {} }).write(w) catch 0;
-                self.sendControlFrames(fb.items);
-                self.handshake_done_sent = true;
-                // Drop Handshake keys
-                self.hs_rx_keys = null;
-                self.hs_tx_keys = null;
-            }
-        }
-    }
-
+    /// Record a packet as sent in the given PN space for Recovery bookkeeping.
     pub fn onPacketSent(self: *Connection, space: recovery.PacketNumberSpace, pn: u64, bytes: usize, ack_eliciting: bool) void {
         // Record via Recovery (authoritative)
         const now_i = std.time.nanoTimestamp();

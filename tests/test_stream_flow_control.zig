@@ -156,3 +156,72 @@ test "MAX_* thresholds bump on receive" {
 
     try std.testing.expectEqual(init_conn + half_conn, c.local_max_data);
 }
+
+test "reset_stream rx trims buffered beyond final_size and finishes" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const A = gpa.allocator();
+
+    var c = makeConn(&gpa.allocator());
+    defer c.deinit();
+
+    // Ensure stream 0 RX exists; insert out-of-order segment first so it stays buffered.
+    const seg = try A.alloc(u8, 4);
+    defer A.free(seg);
+    @memset(seg, 'X');
+    try c.pushStreamFrame(0, 5, seg, false); // offset 5, will not drain (recv_off=0)
+
+    // Now deliver a RESET_STREAM with final_size=3
+    c.handleResetStream(0, 999, 3);
+
+    try std.testing.expect(c.stream_recv_aborted);
+    try std.testing.expect(c.stream_recv_fin);
+
+    // Nothing should be readable (inbox empty), but recv_off should be treated as final_size.
+    var tmp: [16]u8 = undefined;
+    const n = c.readStream(0, &tmp) catch |e| switch (e) {
+        error.InvalidStream => 0, // if teardown happened elsewhere this would be fine too
+        else => return e,
+    };
+    try std.testing.expectEqual(@as(usize, 0), n);
+
+    // Further STREAM data must be ignored after reset
+    const more = try A.alloc(u8, 10);
+    defer A.free(more);
+    @memset(more, 'Y');
+    // pushStreamFrame returns error? It returns !void; our implementation early-returns when aborted.
+    try c.pushStreamFrame(0, 0, more, false);
+    const n2 = c.readStream(0, &tmp) catch 0;
+    try std.testing.expectEqual(@as(usize, 0), n2);
+}
+
+test "teardownStream clears RX state and flags allowing reopen" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+
+    var c = makeConn(&gpa.allocator());
+    defer c.deinit();
+
+    // Open stream 0 and send some bytes to set flags and counters
+    c.stream_opened = true;
+    c.stream_send_off = 42;
+    try c.pushStreamFrame(0, 0, "hello", false);
+
+    // Teardown
+    c.teardownStream(0);
+
+    // Reading now should report InvalidStream
+    var buf: [8]u8 = undefined;
+    const err = c.readStream(0, &buf) catch |e| e;
+    try std.testing.expect(err == error.InvalidStream);
+
+    // Flags reset and counters cleared for stream 0
+    try std.testing.expect(!c.stream_opened);
+    try std.testing.expect(!c.stream_recv_aborted);
+    try std.testing.expect(!c.stream_recv_fin);
+    try std.testing.expectEqual(@as(u64, 0), c.stream_send_off);
+
+    // Re-open should succeed
+    const sid = c.openStream(true) catch |e| return e;
+    try std.testing.expectEqual(@as(u64, 0), sid);
+}

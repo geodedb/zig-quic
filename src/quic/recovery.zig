@@ -11,8 +11,9 @@ pub const CcState = struct {
     bytes_in_flight: usize = 0,
 };
 
-/// CUBIC constants (tunable), exposed for tests/bench
+/// CUBIC constant C (scales the cubic function), exposed for tuning/tests.
 pub const CUBIC_C_DEFAULT: f64 = 0.4;
+/// CUBIC multiplicative decrease factor beta, exposed for tuning/tests.
 pub const CUBIC_BETA_DEFAULT: f64 = 0.7;
 
 /// Round-trip time estimator state and PTO computation helpers (RFC 9002 §5-6).
@@ -129,7 +130,7 @@ pub const Cubic = struct {
 };
 
 pub const LossDetector = struct {
-    // Packet-threshold (default 3) and time-threshold (9/8 * max(smoothed_rtt, latest_rtt))
+    /// Packet-threshold (default 3) and time-threshold (9/8 * max(smoothed_rtt, latest_rtt)).
     packet_threshold: u32 = 3,
 
     /// Return true if pn is considered lost using packet threshold relative to largest_acked.
@@ -145,7 +146,7 @@ pub const LossDetector = struct {
 };
 
 /// Optional pacing hook: given cwnd and bytes_in_flight, return an inter-packet pacing delay in ns.
-/// This minimal implementation returns 0 (no pacing). Future slices may compute pacing based on BDP.
+/// This minimal implementation returns a coarse delay based on how full cwnd is.
 pub fn computePacingDelayNs(cwnd: usize, bytes_in_flight: usize) u64 {
     // Very simple pacing heuristic:
     // - No delay if less than half of cwnd is in flight.
@@ -157,9 +158,10 @@ pub fn computePacingDelayNs(cwnd: usize, bytes_in_flight: usize) u64 {
     return 1_000_000; // 1 ms
 }
 
+/// Packet number spaces used by QUIC: Initial, Handshake, and Application (1-RTT).
 pub const PacketNumberSpace = enum { Initial, Handshake, Application };
 
-/// Sent packet metadata for recovery tracking
+/// Sent packet metadata tracked for loss recovery and RTT measurement.
 pub const SentPacket = struct {
     pn: u64,
     time_ns: u64,
@@ -202,10 +204,12 @@ pub const Recovery = struct {
     spaces: [3]SpaceState,
     k_pc_threshold: u32 = 3,
 
+    /// Initialize a Recovery instance with fresh per-space state.
     pub fn init(alloc: std.mem.Allocator) Recovery {
         return .{ .allocator = alloc, .spaces = .{ SpaceState.init(alloc), SpaceState.init(alloc), SpaceState.init(alloc) } };
     }
 
+    /// Free per-space arrays and internal allocations.
     pub fn deinit(self: *Recovery) void {
         inline for (&self.spaces) |*s| s.deinit();
     }
@@ -214,6 +218,7 @@ pub const Recovery = struct {
         return @intFromEnum(space);
     }
 
+    /// Select congestion control mode (false = NewReno, true = CUBIC).
     pub fn setCcMode(self: *Recovery, cubic: bool) void {
         self.use_cubic = cubic;
         if (cubic) {
@@ -226,102 +231,24 @@ pub const Recovery = struct {
         }
     }
 
-    /// Record a sent packet for recovery and congestion control.
-    pub fn onPacketSent(self: *Recovery, space: PacketNumberSpace, pn: u64, size: usize, ack_eliciting: bool, time_ns: u64) !void {
+    /// Record a packet as sent in the given space.
+    pub fn onPacketSent(self: *Recovery, space: PacketNumberSpace, pn: u64, bytes: usize, ack_eliciting: bool, now_ns: u64) !void {
         const idx = spaceIdx(space);
-        try self.spaces[idx].sent.append(.{ .pn = pn, .time_ns = time_ns, .size = size, .ack_eliciting = ack_eliciting });
-        if (ack_eliciting) self.cc.bytes_in_flight += size;
+        try self.spaces[idx].sent.append(.{ .pn = pn, .time_ns = now_ns, .size = bytes, .ack_eliciting = ack_eliciting });
+        if (ack_eliciting) self.cc.bytes_in_flight += bytes;
         // Schedule time-threshold loss if we have an RTT sample; do not promote here.
         if (ack_eliciting and self.rtt.have_sample) {
             const tt_base = LossDetector.timeThresholdNs(self.rtt.smoothed_rtt_ns, self.rtt.latest_rtt_ns);
-            const deadline = time_ns + tt_base;
+            const deadline = now_ns + tt_base;
             const cur = self.spaces[idx].loss_time_ns;
             if (cur == null or deadline < cur.?) self.spaces[idx].loss_time_ns = deadline;
         }
     }
 
-    fn ccOnAck(self: *Recovery, bytes_acked: usize, now_ns: u64) void {
-        if (bytes_acked == 0) return;
-        if (!self.use_cubic) {
-            // NewReno behavior
-            if (self.cc.cwnd < self.cc.ssthresh) {
-                self.cc.cwnd += bytes_acked;
-            } else {
-                const mds_local = self.cc.mds;
-                self.cc.cwnd += (mds_local * bytes_acked) / self.cc.cwnd;
-            }
-        } else {
-            // CUBIC congestion avoidance
-            if (self.cc.cwnd < self.cc.ssthresh) {
-                // Slow start
-                self.cc.cwnd += bytes_acked;
-            } else {
-                const mds_f = @as(f64, @floatFromInt(self.cc.mds));
-                var cwnd_p = @as(f64, @floatFromInt(self.cc.cwnd)) / mds_f;
-                const acked_p = @as(f64, @floatFromInt(bytes_acked)) / mds_f;
-                if (self.cubic_epoch_start_ns == null) {
-                    self.cubic_epoch_start_ns = now_ns;
-                    // Fast convergence
-                    if (cwnd_p < self.cubic_w_max_p) {
-                        self.cubic_w_max_p = cwnd_p + (1.0 - self.cubic_beta) * (self.cubic_w_max_p - cwnd_p);
-                    } else {
-                        self.cubic_w_max_p = cwnd_p;
-                    }
-                    // Compute K where W_cubic(t) crosses W_max
-                    const diff = self.cubic_w_max_p - cwnd_p;
-                    self.cubic_k = if (diff <= 0) 0.0 else std.math.cbrt(diff / self.cubic_c);
-                    self.cubic_origin_point_p = self.cubic_w_max_p;
-                }
-                var t_ns: u64 = 0;
-                if (self.cubic_epoch_start_ns) |start| {
-                    t_ns = if (now_ns > start) now_ns - start else 0;
-                }
-                const t_sec = @as(f64, @floatFromInt(t_ns)) / 1e9;
-                const x = t_sec - self.cubic_k;
-                const w_cubic_p = (self.cubic_c * x * x * x) + self.cubic_origin_point_p;
-                // Per-ACK increment in packets for CUBIC
-                const inc_cubic_p = if (w_cubic_p > cwnd_p and cwnd_p > 0) (w_cubic_p - cwnd_p) / cwnd_p else 0.0;
-                // TCP-friendly (Reno) increment in packets
-                const inc_reno_p = if (cwnd_p > 0) acked_p / cwnd_p else 0.0;
-                const inc_p = if (inc_cubic_p > inc_reno_p) inc_cubic_p else inc_reno_p;
-                cwnd_p += inc_p * acked_p; // scale by number of packets acked
-                // Clamp to at least 2*mds
-                var new_cwnd = @as(usize, @intFromFloat(cwnd_p * mds_f));
-                const min_wnd = 2 * self.cc.mds;
-                if (new_cwnd < min_wnd) new_cwnd = min_wnd;
-                self.cc.cwnd = new_cwnd;
-            }
-        }
-        if (self.cc.bytes_in_flight >= bytes_acked) self.cc.bytes_in_flight -= bytes_acked else self.cc.bytes_in_flight = 0;
-    }
-
-    fn ccOnLoss(self: *Recovery, bytes_lost: usize) void {
-        if (!self.use_cubic) {
-            const min_wnd = 2 * self.cc.mds;
-            if (self.cc.cwnd > min_wnd) self.cc.cwnd = self.cc.cwnd / 2 else self.cc.cwnd = min_wnd;
-            self.cc.ssthresh = self.cc.cwnd;
-        } else {
-            // CUBIC multiplicative decrease with fast convergence
-            const mds_f = @as(f64, @floatFromInt(self.cc.mds));
-            var cwnd_p = @as(f64, @floatFromInt(self.cc.cwnd)) / mds_f;
-            if (cwnd_p < self.cubic_w_max_p) {
-                self.cubic_w_max_p = cwnd_p + (1.0 - self.cubic_beta) * (self.cubic_w_max_p - cwnd_p);
-            } else {
-                self.cubic_w_max_p = cwnd_p;
-            }
-            cwnd_p = cwnd_p * (1.0 - self.cubic_beta);
-            var new_cwnd = @as(usize, @intFromFloat(cwnd_p * mds_f));
-            const min_wnd = 2 * self.cc.mds;
-            if (new_cwnd < min_wnd) new_cwnd = min_wnd;
-            self.cc.cwnd = new_cwnd;
-            self.cc.ssthresh = self.cc.cwnd;
-            self.cubic_epoch_start_ns = null; // restart epoch
-        }
-        if (self.cc.bytes_in_flight >= bytes_lost) self.cc.bytes_in_flight -= bytes_lost else self.cc.bytes_in_flight = 0;
-    }
-
-    /// Process received ACKs for a number space.
-    pub fn onAckReceived(self: *Recovery, space: PacketNumberSpace, acked_pns: []const u64, ack_delay_ns: u64, now_ns: u64) struct { bytes_acked: usize, bytes_lost: usize } {
+    /// Result of ACK/loss processing with aggregate counters.
+    pub const AckResult = struct { bytes_acked: usize = 0, bytes_lost: usize = 0 };
+    /// Handle ACK frames for a given space, update RTT/loss/cc, and return summary.
+    pub fn onAckReceived(self: *Recovery, space: PacketNumberSpace, acked: []const u64, ack_delay_ns: u64, now_ns: u64) AckResult {
         const idx = spaceIdx(space);
         var sstate = &self.spaces[idx];
         var bytes_acked: usize = 0;
@@ -330,7 +257,7 @@ pub const Recovery = struct {
         var largest_acked_pkt_time: ?u64 = null;
 
         // Mark acked packets
-        for (acked_pns) |pn| {
+        for (acked) |pn| {
             for (sstate.sent.items) |*sp| {
                 if (sp.pn == pn and !sp.acked and !sp.declared_lost) {
                     sp.acked = true;
@@ -401,51 +328,38 @@ pub const Recovery = struct {
         return .{ .bytes_acked = bytes_acked, .bytes_lost = bytes_lost };
     }
 
-    /// Compute the earliest PTO deadline across spaces, or null if no ack-eliciting is in flight.
-    pub fn computeNextPtoTimeNs(self: *const Recovery, now_ns: u64) ?u64 {
-        // Find earliest outstanding ack-eliciting send time
-        var earliest_send: ?u64 = null;
-        inline for (self.spaces) |sstate| {
-            for (sstate.sent.items) |sp| {
-                if (!sp.acked and !sp.declared_lost and sp.ack_eliciting) {
-                    if (earliest_send == null or sp.time_ns < earliest_send.?) earliest_send = sp.time_ns;
-                }
-            }
+    /// Increase cwnd on ACK, reduce bytes_in_flight; NewReno-style growth.
+    fn ccOnAck(self: *Recovery, bytes_acked: usize, now_ns: u64) void {
+        _ = now_ns; // reserved for future pacing hooks
+        if (bytes_acked == 0) return;
+        if (self.cc.cwnd < self.cc.ssthresh) {
+            // Slow start: cwnd grows by bytes_acked
+            self.cc.cwnd += bytes_acked;
+        } else {
+            // Congestion avoidance: cwnd += mds * bytes_acked / cwnd
+            const inc = (self.cc.mds * bytes_acked) / @max(self.cc.cwnd, @as(usize, 1));
+            self.cc.cwnd += inc;
         }
-        if (earliest_send == null) return null;
-        const pto = self.rtt.computePtoNsWithBackoff(self.pto_count, self.timer_granularity_ns);
-        const base = earliest_send.? + pto;
-        // If base already passed, return now to indicate immediate probe
-        if (base <= now_ns) return now_ns;
-        return base;
+        if (self.cc.bytes_in_flight >= bytes_acked) self.cc.bytes_in_flight -= bytes_acked else self.cc.bytes_in_flight = 0;
     }
 
-    /// Compute the PTO deadline for a specific packet number space, or null if none in-flight.
-    pub fn computeSpacePtoTimeNs(self: *const Recovery, space: PacketNumberSpace, now_ns: u64) ?u64 {
-        const idx = spaceIdx(space);
-        var earliest_send: ?u64 = null;
-        for (self.spaces[idx].sent.items) |sp| {
-            if (!sp.acked and !sp.declared_lost and sp.ack_eliciting) {
-                if (earliest_send == null or sp.time_ns < earliest_send.?) earliest_send = sp.time_ns;
-            }
-        }
-        if (earliest_send == null) return null;
-        const pto = self.rtt.computePtoNsWithBackoff(self.pto_count, self.timer_granularity_ns);
-        const base = earliest_send.? + pto;
-        if (base <= now_ns) return now_ns;
-        return base;
+    /// Cut cwnd on loss (1/2) with floor at 2*mds; reduce bytes_in_flight by lost bytes.
+    fn ccOnLoss(self: *Recovery, bytes_lost: usize) void {
+        if (bytes_lost == 0) return;
+        const min_wnd: usize = 2 * self.cc.mds;
+        self.cc.cwnd = @max(self.cc.cwnd / 2, min_wnd);
+        self.cc.ssthresh = self.cc.cwnd;
+        if (self.cc.bytes_in_flight >= bytes_lost) self.cc.bytes_in_flight -= bytes_lost else self.cc.bytes_in_flight = 0;
     }
 
-    /// Promote time-threshold losses if any loss_time has expired at now.
+    /// Recompute loss detection timeouts and declare any time-threshold losses.
     pub fn onLossTimeExpired(self: *Recovery, now_ns: u64) usize {
         var total_lost: usize = 0;
         var first_lost_time: ?u64 = null;
         var last_lost_time: ?u64 = null;
         inline for (&self.spaces) |*sstate| {
             if (sstate.loss_time_ns) |lt| {
-                if (now_ms: {
-                    break :now_ms now_ns;
-                } >= lt) {
+                if (now_ns >= lt) {
                     // Re-run time-threshold pass for this space
                     const tt_base = LossDetector.timeThresholdNs(self.rtt.smoothed_rtt_ns, self.rtt.latest_rtt_ns);
                     var next_loss: ?u64 = null;
@@ -479,6 +393,34 @@ pub const Recovery = struct {
             }
         }
         return total_lost;
+    }
+
+    /// Compute PTO deadline from now using current backoff counter and granularity.
+    pub fn computeNextPtoTimeNs(self: *const Recovery, now_ns: u64) ?u64 {
+        // Only arm PTO if any ack-eliciting packets are in flight.
+        var any_in_flight = false;
+        inline for (&self.spaces) |*sstate| {
+            for (sstate.sent.items) |sp| {
+                if (sp.ack_eliciting and !sp.acked and !sp.declared_lost) {
+                    any_in_flight = true;
+                    break;
+                }
+            }
+            if (any_in_flight) break;
+        }
+        if (!any_in_flight) return null;
+        const base = self.rtt.computePtoNsWithBackoff(self.pto_count, self.timer_granularity_ns);
+        return now_ns + base;
+    }
+
+    /// Compute next PTO deadline for a given space relative to now.
+    pub fn computeSpacePtoTimeNs(self: *Recovery, space: PacketNumberSpace, now_ns: u64) ?u64 {
+        const idx = spaceIdx(space);
+        const pto = self.rtt.computePtoNs();
+        const deadline = now_ns + pto;
+        const cur = self.spaces[idx].loss_time_ns;
+        if (cur == null or deadline < cur.?) self.spaces[idx].loss_time_ns = deadline;
+        return deadline;
     }
 };
 
