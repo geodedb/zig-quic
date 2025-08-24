@@ -153,14 +153,52 @@ const StreamRx = struct {
     recv_off: u64 = 0,
     inbox: std.ArrayList(u8),
     bufs: std.ArrayList(Segment),
+    fin_off: ?u64 = null,
 
     fn init(alloc: *std.mem.Allocator) StreamRx {
-        return .{ .recv_off = 0, .inbox = std.ArrayList(u8).init(alloc.*), .bufs = std.ArrayList(Segment).init(alloc.*) };
+        return .{ .recv_off = 0, .inbox = std.ArrayList(u8).init(alloc.*), .bufs = std.ArrayList(Segment).init(alloc.*), .fin_off = null };
     }
     fn deinit(self: *StreamRx, alloc: *std.mem.Allocator) void {
         for (self.bufs.items) |seg| alloc.free(seg.data);
         self.bufs.deinit();
         self.inbox.deinit();
+    }
+
+    fn insert(self: *StreamRx, alloc: *std.mem.Allocator, off: u64, data: []const u8) void {
+        // store a copy of segment
+        const owned = alloc.alloc(u8, data.len) catch return;
+        @memcpy(owned, data);
+        self.bufs.append(.{ .off = off, .data = owned }) catch {
+            alloc.free(owned);
+            return;
+        };
+    }
+
+    fn tryDrain(self: *StreamRx, alloc: *std.mem.Allocator) void {
+        var progressed = true;
+        while (progressed) {
+            progressed = false;
+            var i: usize = 0;
+            while (i < self.bufs.items.len) {
+                const seg = self.bufs.items[i];
+                if (seg.off == self.recv_off) {
+                    // append to inbox and advance
+                    _ = self.inbox.appendSlice(seg.data) catch {};
+                    self.recv_off +%= seg.data.len;
+                    alloc.free(seg.data);
+                    _ = self.bufs.orderedRemove(i);
+                    progressed = true;
+                    // restart scan
+                    i = 0;
+                    continue;
+                }
+                i += 1;
+            }
+        }
+    }
+
+    fn isFinished(self: *const StreamRx) bool {
+        return if (self.fin_off) |f| self.recv_off >= f else false;
     }
 };
 
@@ -254,6 +292,10 @@ pub const Connection = struct {
     streams_rx: std.AutoHashMap(u64, StreamRx) = undefined,
     stream_opened: bool = false,
     stream_send_off: u64 = 0,
+    // Stream state flags (stream 0 in this slice)
+    stream_send_aborted: bool = false,
+    stream_recv_aborted: bool = false,
+    stream_recv_fin: bool = false,
     // Flow-control windows (connection and per-stream)
     local_max_stream_data: u64 = 64 * 1024,
     peer_max_stream_data: u64 = 64 * 1024,
@@ -380,23 +422,10 @@ pub const Connection = struct {
         self.streams_rx = std.AutoHashMap(u64, StreamRx).init(alloc.*);
         self.stream_opened = false;
         self.stream_send_off = 0;
-        self.local_max_stream_data = 64 * 1024;
-        self.peer_max_stream_data = 64 * 1024;
-        self.local_max_data = 256 * 1024;
-        self.peer_max_data = 256 * 1024;
-        self.peer_max_streams_bidi = 16;
-        self.peer_max_streams_uni = 16;
-        self.opened_bidi = 0;
-        self.opened_uni = 0;
-        self.conn_send_off = 0;
-        self.conn_recv_total = 0;
-        // Init address validation tracking
-        self.address_validated = (role == .Client); // clients are not amplification-limited
-        self.bytes_rx_unvalidated = 0;
-        self.bytes_tx_unvalidated = 0;
-        // Init Retry token buffer
-        self.initial_token = std.ArrayList(u8).init(alloc.*);
-        // Flow control connection-level defaults already set via field initializers
+        self.stream_send_aborted = false;
+        self.stream_recv_aborted = false;
+        self.stream_recv_fin = false;
+        // Flow-control connection-level defaults already set via field initializers
         self.path_validation_pending = false;
         self.path_challenge_data = .{0} ** 8;
         self.new_token_pending = false;
@@ -405,6 +434,10 @@ pub const Connection = struct {
         self.use_cubic = false;
         self.cc_nr = .{};
         self.cc_cubic = .{};
+        // ensure recovery knows CC mode
+        self.rec.setCcMode(false);
+        // Initialize retry token buffer to match deinit symmetry
+        self.initial_token = std.ArrayList(u8).init(alloc.*);
     }
 
     /// Release resources held by this Connection (payloads, maps, TLS state).
@@ -450,6 +483,7 @@ pub const Connection = struct {
     /// Toggle congestion control (NewReno default, CUBIC optional).
     pub fn setUseCubic(self: *Connection, use: bool) void {
         self.use_cubic = use;
+        self.rec.setCcMode(use);
     }
 
     /// Congestion control shim: record packet sent.
@@ -490,13 +524,30 @@ pub const Connection = struct {
         if (self.peer_initial_scid.len > 0) @memcpy(self.peer_initial_scid.bytes[0..self.peer_initial_scid.len], scid[0..self.peer_initial_scid.len]);
     }
 
-    /// Ingest a STREAM frame payload into the RX buffer for the stream (simple append).
-    pub fn pushStreamFrame(self: *Connection, stream_id: u64, _offset: u64, data: []const u8, _fin: bool) !void {
-        _ = _offset;
-        _ = _fin;
+    /// Ingest a STREAM frame payload into the RX buffer for the stream with reassembly.
+    pub fn pushStreamFrame(self: *Connection, stream_id: u64, offset: u64, data: []const u8, fin: bool) !void {
+        if (self.stream_recv_aborted) return; // ignore further data after RESET_STREAM
         const s = self.ensureStreamRx(stream_id);
-        try s.inbox.appendSlice(data);
+        if (fin) {
+            const end_off: u64 = offset + @as(u64, data.len);
+            s.fin_off = end_off;
+            self.stream_recv_fin = true;
+        }
+        if (data.len > 0) {
+            s.insert(self.allocator, offset, data);
+            s.tryDrain(self.allocator);
+        }
+        // Update connection RX accounting
         self.conn_recv_total +%= data.len;
+        // Flow-control: if we've consumed more than 50% of advertised windows, bump and let endpoint send MAX_* on next ACK
+        const half_stream = self.local_max_stream_data / 2;
+        if (s.recv_off >= half_stream) {
+            self.local_max_stream_data +%= half_stream;
+        }
+        const half_conn = self.local_max_data / 2;
+        if (self.conn_recv_total >= half_conn) {
+            self.local_max_data +%= half_conn;
+        }
     }
 
     /// Ingest a DATAGRAM frame payload (owned copy).
@@ -504,6 +555,16 @@ pub const Connection = struct {
         const owned = try self.allocator.alloc(u8, data.len);
         @memcpy(owned, data);
         try self.dgram_inbox.append(owned);
+    }
+
+    /// Pop a DATAGRAM payload into buf; returns length copied or error if none.
+    pub fn popDatagram(self: *Connection, buf: []u8) !usize {
+        if (self.dgram_inbox.items.len == 0) return error.WouldBlock;
+        const p = self.dgram_inbox.orderedRemove(0);
+        const n = @min(buf.len, p.len);
+        @memcpy(buf[0..n], p[0..n]);
+        self.allocator.free(p);
+        return n;
     }
 
     /// No-op compatibility shim so Connection can be passed where an Endpoint is expected.
@@ -630,6 +691,7 @@ pub const Connection = struct {
     /// Write bytes on stream id 0 using a Short header STREAM frame with LEN+OFF.
     pub fn writeStream(self: *Connection, id: u64, data: []const u8) !usize {
         if (id != 0) return error.InvalidStream;
+        if (self.stream_send_aborted) return error.StreamStopped;
         const tx = self.app_tx_keys orelse return error.KeysNotReady;
         if (data.len == 0) return 0;
         // Enforce stream-level window
@@ -697,6 +759,7 @@ pub const Connection = struct {
     pub fn closeStream(self: *Connection, id: u64, app_error_code: u64) !void {
         _ = app_error_code; // not surfaced yet in transport close
         if (id != 0) return error.InvalidStream;
+        if (self.stream_send_aborted) return error.StreamStopped;
         const tx = self.app_tx_keys orelse return error.KeysNotReady;
         var frames = std.ArrayList(u8).init(self.allocator.*);
         defer frames.deinit();
@@ -714,6 +777,84 @@ pub const Connection = struct {
         defer self.allocator.free(pkt);
         _ = try self.send(pkt);
         self.onShortHeaderPacketSent(pkt.len, true);
+    }
+
+    /// Handle a received STOP_SENDING by issuing a RESET_STREAM with current final size.
+    pub fn handleStopSending(self: *Connection, stream_id: u64, app_error_code: u64) !void {
+        const tx = self.app_tx_keys orelse return error.KeysNotReady;
+        // Mark stream as aborted for sending further STREAM frames
+        self.stream_send_aborted = true;
+        var frames = std.ArrayList(u8).init(self.allocator.*);
+        defer frames.deinit();
+        const w = frames.writer();
+        _ = (frame.Frame{ .reset_stream = .{ .stream_id = stream_id, .error_code = app_error_code, .final_size = self.stream_send_off } }).write(w) catch 0;
+        const pkt = try packet.encodeShortProtected(
+            self.allocator.*,
+            self.our_scid.bytes[0..self.our_scid.len],
+            @as(u32, @truncate(self.pn_app_tx)),
+            2,
+            frames.items,
+            .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
+            self.tx_key_phase,
+        ) catch null;
+        if (pkt) |bytes_out| {
+            defer self.allocator.free(bytes_out);
+            _ = self.send(bytes_out) catch {};
+            self.onShortHeaderPacketSent(bytes_out.len, true);
+        }
+    }
+
+    /// Handle a received RESET_STREAM for RX-side teardown. Marks RX aborted, caps final size,
+    /// discards any buffered segments beyond final_size, and treats the stream as finished.
+    pub fn handleResetStream(self: *Connection, stream_id: u64, app_error_code: u64, final_size: u64) void {
+        _ = app_error_code; // surfaced to app layer out of scope here
+        // Only stream 0 supported in this slice, but apply generically.
+        var s = self.ensureStreamRx(stream_id);
+        self.stream_recv_aborted = true;
+        s.fin_off = final_size;
+        // Drop any buffered segment that starts at or beyond final_size
+        var i: usize = 0;
+        while (i < s.bufs.items.len) {
+            const seg = s.bufs.items[i];
+            if (seg.off >= final_size) {
+                self.allocator.free(seg.data);
+                _ = s.bufs.orderedRemove(i);
+                continue;
+            }
+            // If a segment overlaps beyond final_size, trim it
+            const seg_end = seg.off + @as(u64, seg.data.len);
+            if (seg_end > final_size) {
+                const keep_len: usize = @intCast(final_size - seg.off);
+                // shrinkRetainingCapacity keeps first keep_len bytes
+                _ = s.bufs.items[i];
+                s.bufs.items[i].data = s.bufs.items[i].data[0..keep_len];
+            }
+            i += 1;
+        }
+        // If current contiguous received offset is behind final_size but contiguous data exists,
+        // try to drain up to final_size to allow app to read buffered bytes.
+        s.tryDrain(self.allocator);
+        if (s.recv_off < final_size) {
+            // We didn't have contiguous data up to final_size; treat the gap as discarded.
+            s.recv_off = final_size;
+        }
+        self.stream_recv_fin = true;
+    }
+
+    /// Explicitly tear down stream RX state and clear flags for the given stream.
+    /// Safe to call multiple times; no-op if stream not present.
+    pub fn teardownStream(self: *Connection, stream_id: u64) void {
+        if (self.streams_rx.getPtr(stream_id)) |sr| {
+            sr.deinit(self.allocator);
+            _ = self.streams_rx.remove(stream_id);
+        }
+        if (stream_id == 0) {
+            self.stream_opened = false;
+            self.stream_send_aborted = false;
+            self.stream_recv_aborted = false;
+            self.stream_recv_fin = false;
+            self.stream_send_off = 0;
+        }
     }
 
     // When ACK arrives (any space), also allow finalizing TX key update on App ACKs

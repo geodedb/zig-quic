@@ -57,6 +57,9 @@ pub const Frame = union(enum) {
     handshake_done: void,
     // NEW: transport CONNECTION_CLOSE (subset: transport close only, no application close here)
     connection_close: struct { error_code: u64, frame_type: u64 = 0, reason: []const u8 = &[_]u8{} },
+    // NEW: stop sending (peer requests sender to stop), and reset stream (sender aborts stream)
+    stop_sending: struct { stream_id: u64, error_code: u64 },
+    reset_stream: struct { stream_id: u64, error_code: u64, final_size: u64 },
     // ... more frames as needed ...
 
     /// Encode this frame to the writer. Returns bytes written.
@@ -260,6 +263,23 @@ pub const Frame = union(enum) {
                 }
                 return written;
             },
+            .stop_sending => |s| {
+                try w.writeByte(@intFromEnum(FrameType.STOP_SENDING));
+                var tmp: [32]u8 = undefined;
+                const idl = try varint.encode(s.stream_id, tmp[0..16]);
+                const el = try varint.encode(s.error_code, tmp[idl..]);
+                try w.writeAll(tmp[0 .. idl + el]);
+                return 1 + idl + el;
+            },
+            .reset_stream => |r| {
+                try w.writeByte(@intFromEnum(FrameType.RESET_STREAM));
+                var tmp: [48]u8 = undefined;
+                const idl = try varint.encode(r.stream_id, tmp[0..16]);
+                const el = try varint.encode(r.error_code, tmp[idl..]);
+                const fl = try varint.encode(r.final_size, tmp[idl + el ..]);
+                try w.writeAll(tmp[0 .. idl + el + fl]);
+                return 1 + idl + el + fl;
+            },
         }
     }
 };
@@ -454,6 +474,24 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
         const reason = buf[i .. i + @as(usize, rl.value)];
         i += @as(usize, rl.value);
         return .{ .f = Frame{ .connection_close = .{ .error_code = ec.value, .frame_type = ft.value, .reason = reason } }, .n = i };
+    }
+    if (t == @intFromEnum(FrameType.STOP_SENDING)) {
+        var i: usize = 1;
+        const sid = try varint.decode(buf[i..]);
+        i += sid.n;
+        const ec = try varint.decode(buf[i..]);
+        i += ec.n;
+        return .{ .f = Frame{ .stop_sending = .{ .stream_id = sid.value, .error_code = ec.value } }, .n = i };
+    }
+    if (t == @intFromEnum(FrameType.RESET_STREAM)) {
+        var i: usize = 1;
+        const sid = try varint.decode(buf[i..]);
+        i += sid.n;
+        const ec = try varint.decode(buf[i..]);
+        i += ec.n;
+        const fs = try varint.decode(buf[i..]);
+        i += fs.n;
+        return .{ .f = Frame{ .reset_stream = .{ .stream_id = sid.value, .error_code = ec.value, .final_size = fs.value } }, .n = i };
     }
     // Minimal support for now
     return error.Unsupported;

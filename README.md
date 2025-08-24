@@ -7,6 +7,8 @@ Zig std-only QUIC workspace (target Zig 0.14.1/0.14.x). Includes:
 - Minimal TLS 1.3 key schedule + X25519 ECDHE hooks and tests.
 - CLI tool `quic-varint`.
 - Optional RFC 9368 Compatible Version Negotiation toggle and minimal DATAGRAM echo path.
+- Streams flow control basics: RX reassembly, STOP*SENDING→RESET_STREAM handling, MAX*\* threshold bumps.
+- Recovery/CC per RFC 9002 with NewReno by default, CUBIC optional, simple pacing heuristic.
 
 ## Build
 
@@ -118,10 +120,16 @@ Notes:
 
 ## Process helpers
 
-- Update GAP after a slice: `zig build update-gap --summary "Finished <slice>"`
-- Doc completeness check (CI gate): `zig build doccheck`
+- Update GAP after a slice: `zig build update-gap -- all --summary "Finished <slice>"`
+- Doc completeness check (CI gate): `zig build tools && ./zig-out/bin/doccheck`
 - Fuzzers build: `zig build fuzz`
-- Benches build: `zig build bench && ./zig-out/bin/quic-bench`
+- Benches build: `zig build bench && ./zig-out/bin/quic-bench [rtt_ns] [bdp_packets] [loss_every]`
+
+### CC bench examples
+
+- Default: `./zig-out/bin/quic-bench`
+- RTT=200us, BDP=100 packets, no loss: `./zig-out/bin/quic-bench 200000 100 0`
+- RTT=1ms, BDP=200 packets, drop every 50th pkt: `./zig-out/bin/quic-bench 1000000 200 50`
 
 ## CI
 
@@ -129,7 +137,8 @@ GitHub Actions matrix builds on ubuntu, windows, macOS. One job pins Zig 0.14.1 
 
 ## Next
 
-- TLS 1.3 CH/SH/Finished wiring into QUIC handshake (X.25519 + Finished verify; X.509 minimal; allow_insecure).
-- Flow control frames: MAX*DATA, MAX_STREAM_DATA, MAX_STREAMS*{BIDI,UNI}, DATA*BLOCKED, STREAM_DATA_BLOCKED, STREAMS_BLOCKED*{BIDI,UNI}.
-- CUBIC toggle and pacing hooks; path validation; spin bit and GREASE.
-- More KATs and fuzz corpora (Retry tamper covered by new test).
+- Complete RX-side RESET_STREAM handling and lifecycle tests (done in this slice), extend stream teardown paths.
+- Parameterized CC benches across RTT/BDP/loss scenarios, document findings.
+- TLS 1.3 CH/SH/Finished wiring into QUIC handshake (X25519 + Finished verify; X.509 minimal; allow_insecure).
+- Spin bit and GREASE toggles.
+- More KATs and fuzz corpora.
