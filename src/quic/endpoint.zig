@@ -1,7 +1,8 @@
 //! Endpoint skeleton with UDP send/recv (single socket, single-thread).
 //! MIT License
 const std = @import("std");
-const api = @import("api.zig");
+const cfg = @import("config.zig");
+const lb = @import("loop_backend.zig");
 const conn_mod = @import("quic_conn");
 const packet = @import("quic_packet");
 const frame = @import("quic_frame");
@@ -35,8 +36,8 @@ const Timer = struct {
     payload: ?[]u8 = null,
 };
 
-/// Endpoint timer kinds, including per-space PTO timers.
-pub const TimerKind = enum { Generic, PtoInitial, PtoHandshake, PtoApp };
+/// Endpoint timer kinds, including per-space PTO timers and DPLPMTUD.
+pub const TimerKind = enum { Generic, PtoInitial, PtoHandshake, PtoApp, Pmtud };
 
 const Key = struct { peer_hash: u64, dcid_hash: u64 };
 
@@ -54,14 +55,14 @@ fn hashSockaddr(sa: *const posix.sockaddr.storage, len: u32) u64 {
 /// UDP endpoint container with timer wheel and connection map; single-socket.
 pub const Endpoint = struct {
     sock_fd: posix.fd_t,
-    loop_backend: api.LoopBackend,
+    loop_backend: lb.LoopBackend,
     allocator: *std.mem.Allocator,
     timers: std.ArrayList(Timer),
     conns: std.AutoHashMap(Key, *conn_mod.Connection),
     // Next timer identifier for scheduleTimer
     next_timer_id: u64 = 1,
     // Config copy
-    cfg: api.QuicConfig,
+    cfg: cfg.QuicConfig,
     // Accept queue for server
     accepted: std.ArrayList(*conn_mod.Connection),
     // TEST-ONLY: outbound capture ring (peer + owned bytes)
@@ -70,7 +71,7 @@ pub const Endpoint = struct {
     test_capture_enabled: bool = false,
 
     /// Initialize a UDP endpoint bound to bind_addr (e.g., "127.0.0.1:0").
-    pub fn init(alloc: *std.mem.Allocator, bind_addr: []const u8, cfg: *const api.QuicConfig) !Endpoint {
+    pub fn init(alloc: *std.mem.Allocator, bind_addr: []const u8, cfgp: *const cfg.QuicConfig) !Endpoint {
         // Resolve and bind IPv4 socket for tests; port 0 lets OS choose a free port.
         var ep_addr = try resolveAny(bind_addr, .udp);
         const fd = try posix.socket(posix.AF.INET, posix.SOCK.DGRAM, posix.IPPROTO.UDP);
@@ -78,18 +79,33 @@ pub const Endpoint = struct {
         // Allow fast rebinding in tests
         var one: i32 = 1;
         _ = posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, std.mem.asBytes(&one)) catch {};
+        // Linux: enable reception of TOS/TCLASS via ancillary data to read ECN bits per datagram
+        if (builtin.target.os.tag == .linux) {
+            var enable: i32 = 1;
+            // Zig std may not expose IP.RECVTOS; use the Linux value (IP_RECVTOS = 13)
+            const IP_RECVTOS: i32 = 13;
+            _ = posix.setsockopt(fd, posix.IPPROTO.IP, IP_RECVTOS, std.mem.asBytes(&enable)) catch {};
+            // Also request IPv6 traffic class delivery (IPV6_RECVTCLASS = 66)
+            const IPV6_RECVTCLASS: i32 = 66;
+            _ = posix.setsockopt(fd, posix.IPPROTO.IPV6, IPV6_RECVTCLASS, std.mem.asBytes(&enable)) catch {};
+            // Enable Linux error queue reception for ICMP PTB (IPv4/IPv6)
+            const IP_RECVERR: i32 = 11;
+            _ = posix.setsockopt(fd, posix.IPPROTO.IP, IP_RECVERR, std.mem.asBytes(&enable)) catch {};
+            const IPV6_RECVERR: i32 = 25;
+            _ = posix.setsockopt(fd, posix.IPPROTO.IPV6, IPV6_RECVERR, std.mem.asBytes(&enable)) catch {};
+        }
         // Note: do not rely on O.NONBLOCK here; use MSG.DONTWAIT on Linux in recv loop for portability
         const sa_ptr: *const posix.sockaddr = @ptrCast(&ep_addr.storage);
         try posix.bind(fd, sa_ptr, ep_addr.len);
 
         return Endpoint{
             .sock_fd = fd,
-            .loop_backend = api.defaultLoopBackend(),
+            .loop_backend = lb.defaultLoopBackend(),
             .allocator = alloc,
             .timers = std.ArrayList(Timer).init(alloc.*),
             .conns = std.AutoHashMap(Key, *conn_mod.Connection).init(alloc.*),
             .next_timer_id = 1,
-            .cfg = cfg.*,
+            .cfg = cfgp.*,
             .accepted = std.ArrayList(*conn_mod.Connection).init(alloc.*),
             .captures = std.ArrayList(OutCaptured).init(alloc.*),
             .test_capture_enabled = false,
@@ -192,7 +208,12 @@ pub const Endpoint = struct {
 
     /// TEST-ONLY: inject a datagram directly into the endpoint RX path.
     pub fn testInject(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8) void {
-        self.processIncomingDatagram(peer, bytes);
+        self.processIncomingDatagram(peer, bytes, null);
+    }
+
+    /// TEST-ONLY: inject a datagram with explicit ECN bits (low 2 bits of IP TOS)
+    pub fn testInjectWithEcn(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8, ecn_bits: u8) void {
+        self.processIncomingDatagram(peer, bytes, ecn_bits);
     }
 
     /// Resolve and create a Connection object for an explicit remote address.
@@ -321,6 +342,8 @@ pub const Endpoint = struct {
     pub fn poll(self: *Endpoint, timeout_ms: i32) !void {
         // First, process any timers that are already expired to avoid waiting unnecessarily.
         self.processExpiredTimers(nowMsMonotonic());
+        // Drain any pending error queue notifications (ICMP PTB, etc.) before waiting.
+        self.drainErrorQueue();
 
         const now_ms: i64 = nowMsMonotonic();
         var eff_timeout = self.nextTimeoutFromTimers(now_ms, timeout_ms);
@@ -333,7 +356,7 @@ pub const Endpoint = struct {
             self.drainReadable();
         } else {
             // Use platform event loop for readable readiness with 0 or infinite timeout.
-            switch (api.defaultLoopBackend()) {
+            switch (lb.defaultLoopBackend()) {
                 .epoll => try self.poll_epoll_backend(eff_timeout),
                 .kqueue => try self.poll_kqueue_backend(eff_timeout),
                 .iocp => try self.poll_iocp_backend(eff_timeout),
@@ -350,17 +373,181 @@ pub const Endpoint = struct {
             var peer = conn_mod.SockAddr{};
             peer.len = @intCast(@sizeOf(posix.sockaddr.storage));
             const flags: u32 = if (builtin.target.os.tag == .linux) posix.MSG.DONTWAIT else 0;
-            const n_or_err = posix.recvfrom(self.sock_fd, buf[0..], flags, @ptrCast(&peer.storage), &peer.len);
+            // Linux: prefer recvmsg to extract ECN via ancillary when available; fallback elsewhere.
+            if (builtin.target.os.tag == .linux and @hasDecl(std.posix, "recvmsg")) {
+                var iov = [1]posix.iovec{.{ .base = buf[0..].ptr, .len = buf.len }};
+                var ctrl: [64]u8 = undefined;
+                var msg: posix.msghdr = .{
+                    .name = @ptrCast(&peer.storage),
+                    .namelen = peer.len,
+                    .iov = &iov,
+                    .iovlen = 1,
+                    .control = &ctrl,
+                    .controllen = ctrl.len,
+                    .flags = 0,
+                };
+                const n_or_err = posix.recvmsg(self.sock_fd, &msg, flags);
+                if (n_or_err) |n| {
+                    // Extract ECN from ancillary: IP_TOS (level IPPROTO_IP, type IP_TOS)
+                    var ecn_bits: ?u8 = null;
+                    var off: usize = 0;
+                    while (off + @sizeOf(posix.cmsghdr) <= msg.controllen) {
+                        const cmsg_ptr: *const posix.cmsghdr = @ptrCast(@alignCast(@as(*const anyopaque, @ptrFromInt(@intFromPtr(msg.control) + off))));
+                        const clen = cmsg_ptr.len;
+                        if (clen < @sizeOf(posix.cmsghdr) or off + clen > msg.controllen) break;
+                        const level = cmsg_ptr.level;
+                        const ctype = cmsg_ptr.type;
+                        // CMSG data starts immediately after header
+                        const data_ptr = @as([*]const u8, @ptrFromInt(@intFromPtr(cmsg_ptr) + @sizeOf(posix.cmsghdr)));
+                        // IPPROTO_IP == posix.IPPROTO.IP; IP_TOS constant is 1 on Linux
+                        if (level == posix.IPPROTO.IP and ctype == 1 and clen >= @sizeOf(posix.cmsghdr) + 1) {
+                            const tos = data_ptr[0];
+                            ecn_bits = tos & 0x03; // low 2 bits per RFC 3168
+                        }
+                        // IPv6: level IPPROTO_IPV6 with type IPV6_TCLASS (67) carries traffic class
+                        if (level == posix.IPPROTO.IPV6 and ctype == 67 and clen >= @sizeOf(posix.cmsghdr) + 1) {
+                            const tclass = data_ptr[0];
+                            ecn_bits = tclass & 0x03;
+                        }
+                        // Align to next header (CMSG_ALIGN)
+                        const align_sz: usize = 8;
+                        const adv = (clen + (align_sz - 1)) & ~(align_sz - 1);
+                        off += adv;
+                    }
+                    self.processIncomingDatagram(peer, buf[0..@intCast(n)], ecn_bits);
+                } else |err| {
+                    switch (err) {
+                        error.WouldBlock => return,
+                        error.ConnectionResetByPeer => return,
+                        else => return,
+                    }
+                }
+            } else {
+                const n_or_err = posix.recvfrom(self.sock_fd, buf[0..], flags, @ptrCast(&peer.storage), &peer.len);
+                if (n_or_err) |n| {
+                    self.processIncomingDatagram(peer, buf[0..n], null);
+                } else |err| {
+                    switch (err) {
+                        error.WouldBlock => return,
+                        error.ConnectionResetByPeer => return,
+                        else => return,
+                    }
+                }
+            }
+        }
+    }
+
+    /// Linux-only: drain MSG_ERRQUEUE to handle ICMP PTB and apply DPLPMTUD clamps.
+    fn drainErrorQueue(self: *Endpoint) void {
+        if (builtin.target.os.tag != .linux) return;
+        if (!@hasDecl(std.posix, "recvmsg")) return;
+        // Constants for extended error origin and ICMP types
+        const SO_EE_ORIGIN_ICMP: u8 = 2;
+        const SO_EE_ORIGIN_ICMP6: u8 = 3;
+        const ICMP_DEST_UNREACH: u8 = 3; // IPv4
+        const ICMP_FRAG_NEEDED: u8 = 4; // IPv4 code for PTB
+        const ICMPV6_PKT_TOOBIG: u8 = 2; // IPv6 type
+
+        // Linux struct sock_extended_err
+        const ExtendedErr = extern struct {
+            ee_errno: i32,
+            ee_origin: u8,
+            ee_type: u8,
+            ee_code: u8,
+            ee_pad: u8,
+            ee_info: u32, // MTU for EMSGSIZE
+            ee_data: u32,
+        };
+
+        while (true) {
+            var peer = conn_mod.SockAddr{};
+            peer.len = @intCast(@sizeOf(posix.sockaddr.storage));
+            var iov_buf: [2048]u8 = undefined;
+            var iov = [1]posix.iovec{.{ .base = &iov_buf, .len = iov_buf.len }};
+            var ctrl: [128]u8 = undefined;
+            var msg: posix.msghdr = .{
+                .name = @ptrCast(&peer.storage),
+                .namelen = peer.len,
+                .iov = &iov,
+                .iovlen = 1,
+                .control = &ctrl,
+                .controllen = ctrl.len,
+                .flags = 0,
+            };
+            const flags: u32 = 0x2000; // MSG_ERRQUEUE
+            const n_or_err = posix.recvmsg(self.sock_fd, &msg, flags);
             if (n_or_err) |n| {
-                self.processIncomingDatagram(peer, buf[0..n]);
+                _ = n;
+                var mtu: ?u16 = null;
+                var origin_icmp: bool = false;
+                // Walk control headers to find extended error
+                var off: usize = 0;
+                while (off + @sizeOf(posix.cmsghdr) <= msg.controllen) {
+                    const cmsg_ptr: *const posix.cmsghdr = @ptrCast(@alignCast(@as(*const anyopaque, @ptrFromInt(@intFromPtr(msg.control) + off))));
+                    const clen = cmsg_ptr.len;
+                    if (clen < @sizeOf(posix.cmsghdr) or off + clen > msg.controllen) break;
+                    const level = cmsg_ptr.level;
+                    const ctype = cmsg_ptr.type;
+                    const data_ptr = @as([*]const u8, @ptrFromInt(@intFromPtr(cmsg_ptr) + @sizeOf(posix.cmsghdr)));
+                    if ((level == posix.IPPROTO.IP and ctype == 11) or (level == posix.IPPROTO.IPV6 and ctype == 25)) {
+                        // IP_RECVERR/IPV6_RECVERR data is sock_extended_err
+                        if (clen >= @sizeOf(posix.cmsghdr) + @sizeOf(ExtendedErr)) {
+                            const ee: *const ExtendedErr = @ptrCast(@alignCast(data_ptr));
+                            if (ee.ee_origin == SO_EE_ORIGIN_ICMP and ee.ee_type == ICMP_DEST_UNREACH and ee.ee_code == ICMP_FRAG_NEEDED) {
+                                origin_icmp = true;
+                                mtu = @intCast(@min(ee.ee_info, @as(u32, 0xFFFF)));
+                            } else if (ee.ee_origin == SO_EE_ORIGIN_ICMP6 and ee.ee_type == ICMPV6_PKT_TOOBIG) {
+                                origin_icmp = true;
+                                mtu = @intCast(@min(ee.ee_info, @as(u32, 0xFFFF)));
+                            }
+                        }
+                    }
+                    // Align to next header
+                    const align_sz: usize = 8;
+                    const adv = (clen + (align_sz - 1)) & ~(align_sz - 1);
+                    off += adv;
+                }
+                if (origin_icmp and mtu) |mtu_v| {
+                    // Attempt to spoof-check by matching a short-header QUIC with our DCID present
+                    const quoted = iov_buf[0..];
+                    self.handleIcmpPtb(peer, quoted, mtu_v);
+                }
             } else |err| {
                 switch (err) {
                     error.WouldBlock => return,
-                    error.ConnectionResetByPeer => return,
                     else => return,
                 }
             }
         }
+    }
+
+    /// Apply ICMP PTB with spoofing checks: accept only if a known connection's DCID
+    /// appears in a plausible short-header QUIC at some reasonable offset.
+    fn handleIcmpPtb(self: *Endpoint, peer: conn_mod.SockAddr, quoted_udp_payload: []const u8, reported_mtu: u16) void {
+        const ph = hashSockaddr(&peer.storage, peer.len);
+        var it = self.conns.iterator();
+        while (it.next()) |e| {
+            const c = e.value_ptr.*;
+            if (e.key_ptr.*.peer_hash != ph) continue;
+            const dcid_len: usize = c.our_scid.len;
+            if (dcid_len == 0 or quoted_udp_payload.len < 1 + dcid_len) continue;
+            // Scan first 64 bytes for a plausible short header match
+            const scan_max: usize = @min(quoted_udp_payload.len, 64);
+            var off: usize = 0;
+            while (off + 1 + dcid_len <= scan_max) : (off += 1) {
+                const first = quoted_udp_payload[off];
+                if ((first & 0x80) != 0) continue; // not short header
+                if (std.mem.eql(u8, c.our_scid.bytes[0..dcid_len], quoted_udp_payload[off + 1 .. off + 1 + dcid_len])) {
+                    c.onIcmpPacketTooBig(reported_mtu);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// TEST-ONLY: inject a synthetic ICMP PTB quote for a given peer and UDP payload.
+    pub fn testInjectIcmpPtb(self: *Endpoint, peer: conn_mod.SockAddr, quoted_udp_payload: []const u8, reported_mtu: u16) void {
+        self.handleIcmpPtb(peer, quoted_udp_payload, reported_mtu);
     }
 
     fn poll_epoll_backend(self: *Endpoint, timeout_ms: i32) !void {
@@ -410,7 +597,7 @@ pub const Endpoint = struct {
         if (n > 0) self.drainReadable();
     }
 
-    fn processIncomingDatagram(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8) void {
+    fn processIncomingDatagram(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8, ecn_bits: ?u8) void {
         if (bytes.len < 1) return;
         const first = bytes[0];
         const is_long = (first & 0x80) != 0;
@@ -493,6 +680,7 @@ pub const Endpoint = struct {
                 }
             }
             const conn = found orelse return;
+            if (ecn_bits) |e| conn.onEcnMark(.Application, e);
             if (conn.app_rx_keys) |rx_keys| {
                 // Attempt decode using current RX keys first. On failure, try derived NEXT keys, then previous keys.
                 var used_next: bool = false;
@@ -599,12 +787,14 @@ pub const Endpoint = struct {
                         },
                         .ack => |a| {
                             // Forward Application ACK to recovery with actual ranges
-                            conn.onAckReceivedSpace(.Application, a.largest, a.first_range, a.ranges);
+                            conn.onAckReceivedSpace(.Application, a.largest, a.first_range, a.ranges, a.ecn);
                             conn.pto_app_count = 0;
                             if (conn.pto_app_active) {
                                 _ = self.cancelTimer(conn.pto_app_id);
                                 conn.pto_app_active = false;
                             }
+                            // Allow PMTUD state machine to progress upon probe ACK
+                            conn.pmtudOnAckProgress(self);
                         },
                         .handshake_done => {
                             saw_hs_done = true;
@@ -671,7 +861,8 @@ pub const Endpoint = struct {
                         defer frames_buf.deinit();
                         const w = frames_buf.writer();
                         const ack_desc = conn.buildAckApp();
-                        const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = 0, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges } };
+                        const ack_ecn = conn.getAckEcn(.Application);
+                        const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = 0, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges, .ecn = ack_ecn } };
                         _ = ack.write(w) catch 0;
                         _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = conn.local_max_stream_data } }).write(w) catch {};
                         _ = (frame.Frame{ .max_data = .{ .max = conn.local_max_data } }).write(w) catch {};
@@ -759,6 +950,7 @@ pub const Endpoint = struct {
                 }
             };
             conn.initial_version = version;
+            if (ecn_bits) |e| conn.onEcnMark(.Initial, e);
             if (conn.initial_keys_dropped) return;
             conn.setPeerInitialCids(dcid, scid);
 
@@ -890,7 +1082,7 @@ pub const Endpoint = struct {
                     },
                     .ack => |a| {
                         // Initial space ACK: inform recovery and cancel any Initial PTO
-                        conn.onAckReceivedSpace(.Initial, a.largest, a.first_range, a.ranges);
+                        conn.onAckReceivedSpace(.Initial, a.largest, a.first_range, a.ranges, a.ecn);
                         conn.pto_initial_count = 0;
                         if (conn.pto_initial_active) {
                             _ = self.cancelTimer(conn.pto_initial_id);
@@ -912,7 +1104,8 @@ pub const Endpoint = struct {
                 defer frames_buf.deinit();
                 const w = frames_buf.writer();
                 const ack_desc = conn.buildAckInitial();
-                const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = 0, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges } };
+                const ack_ecn = conn.getAckEcn(.Initial);
+                const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = 0, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges, .ecn = ack_ecn } };
                 _ = ack.write(w) catch 0;
                 if (conn.hs_tx_keys == null) {
                     // Respond in Initial space using SERVER initial keys (TX direction)
@@ -1005,6 +1198,7 @@ pub const Endpoint = struct {
             const key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(dcid) };
             const c_ptr = self.conns.getPtr(key) orelse return;
             const conn = c_ptr.*;
+            if (ecn_bits) |e| conn.onEcnMark(.Handshake, e);
             if (conn.hs_rx_keys) |rx_keys| {
                 // Parse length varint up to PN (Handshake has no token)
                 var j: usize = i;
@@ -1067,7 +1261,7 @@ pub const Endpoint = struct {
                         },
                         .ack => |a| {
                             // Reset handshake PTO backoff and cancel active timer on ACK in this space
-                            conn.onAckReceivedSpace(.Handshake, a.largest, a.first_range, a.ranges);
+                            conn.onAckReceivedSpace(.Handshake, a.largest, a.first_range, a.ranges, a.ecn);
                             conn.pto_handshake_count = 0;
                             if (conn.pto_handshake_active) {
                                 _ = self.cancelTimer(conn.pto_handshake_id);
@@ -1085,7 +1279,8 @@ pub const Endpoint = struct {
                         defer frames_buf.deinit();
                         const w = frames_buf.writer();
                         const ack_desc = conn.buildAckHandshake();
-                        const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = 0, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges } };
+                        const ack_ecn = conn.getAckEcn(.Handshake);
+                        const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = 0, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges, .ecn = ack_ecn } };
                         _ = ack.write(w) catch 0;
                         const pkt = packet.encodeHandshakeProtected(self.allocator.*, version, scid, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_handshake_tx)), 2, frames_buf.items, tx_keys) catch null;
                         if (pkt) |bytes_out| {
@@ -1170,6 +1365,10 @@ pub const Endpoint = struct {
                         self.sendPtoProbe(c, .PtoHandshake) catch {};
                     },
                     .PtoApp => if (t.conn) |c| c.setPtoExpiredApp(),
+                    .Pmtud => if (t.conn) |c| {
+                        // Drive DPLPMTUD state machine timer
+                        c.pmtudOnTimer(self);
+                    },
                 }
             } else {
                 i += 1;

@@ -202,6 +202,14 @@ const StreamRx = struct {
     }
 };
 
+// Per-space ECN counters for ACK_ECN emission
+const EcnCounter = struct {
+    ect0: u64 = 0,
+    ect1: u64 = 0,
+    ce: u64 = 0,
+    seen_any: bool = false,
+};
+
 /// Connection state and helpers for QUIC handshake, recovery, and 1-RTT.
 pub const Connection = struct {
     id: u64,
@@ -325,6 +333,23 @@ pub const Connection = struct {
 
     // Temporary buffer for building ACK ranges
     ack_ranges_buf: [32]frame.AckRange = undefined,
+
+    // --- ECN accounting (per packet number space) ---
+    ecn_initial: EcnCounter = .{},
+    ecn_handshake: EcnCounter = .{},
+    ecn_app: EcnCounter = .{},
+
+    // --- DPLPMTUD (RFC 9000 §14.2–§14.4) minimal state ---
+    /// Current believed path MTU (UDP payload size), never below 1200.
+    path_mtu: u16 = 1200,
+    /// Pending probe PN (Application space) awaiting ACK to validate path MTU.
+    probe_pending_pn: ?u64 = null,
+    /// Target size of the pending probe (UDP payload size).
+    probe_pending_size: u16 = 0,
+    /// DPLPMTUD phase and timer
+    pmtud_state: PmtudState = .Disabled,
+    pmtud_timer_active: bool = false,
+    pmtud_timer_id: u64 = 0,
 
     /// Expand a truncated PN in Initial space using expected next PN.
     pub fn expandPnInitial(self: *const Connection, trunc_val: u64, pn_len: u3) u64 {
@@ -469,6 +494,36 @@ pub const Connection = struct {
     /// Update peer address (used for NAT rebinding / migration detection).
     pub fn setPeer(self: *Connection, peer: SockAddr) void {
         self.peer = peer;
+    }
+
+    /// Record an ECN mark observed on an incoming datagram for the given PN space.
+    /// ecn_bits: least-significant two bits of the IP ECN field (00=Not-ECT, 10=ECT(0), 01=ECT(1), 11=CE).
+    pub fn onEcnMark(self: *Connection, space: recovery.PacketNumberSpace, ecn_bits: u8) void {
+        const b: u8 = ecn_bits & 0x03;
+        var ctr: *EcnCounter = switch (space) {
+            .Initial => &self.ecn_initial,
+            .Handshake => &self.ecn_handshake,
+            .Application => &self.ecn_app,
+        };
+        switch (b) {
+            0x01 => ctr.ect1 +%= 1, // ECT(1)
+            0x02 => ctr.ect0 +%= 1, // ECT(0)
+            0x03 => ctr.ce +%= 1, // CE
+            else => {},
+        }
+        if (b != 0) ctr.seen_any = true;
+    }
+
+    /// Return ECN counts for ACK_ECN emission in the given PN space if any ECN
+    /// marks were observed; otherwise return null to emit a plain ACK.
+    pub fn getAckEcn(self: *const Connection, space: recovery.PacketNumberSpace) ?frame.EcnCounts {
+        const ctr: *const EcnCounter = switch (space) {
+            .Initial => &self.ecn_initial,
+            .Handshake => &self.ecn_handshake,
+            .Application => &self.ecn_app,
+        };
+        if (!ctr.seen_any) return null;
+        return .{ .ect0 = ctr.ect0, .ect1 = ctr.ect1, .ce = ctr.ce };
     }
 
     /// Install a custom sender callback (typically provided by Endpoint) for paced sending.
@@ -895,11 +950,11 @@ pub const Connection = struct {
     /// When ACK arrives (any space), also allow finalizing TX key update on App ACKs
     pub fn onAckReceived(self: *Connection, largest: u64, first_range: u64, ranges: []const frame.AckRange) void {
         // Back-compat: assume Application space
-        self.onAckReceivedSpace(.Application, largest, first_range, ranges);
+        self.onAckReceivedSpace(.Application, largest, first_range, ranges, null);
     }
 
     /// Generalized ACK handler that wires through Recovery for the given PN space.
-    pub fn onAckReceivedSpace(self: *Connection, space: recovery.PacketNumberSpace, largest: u64, first_range: u64, ranges: []const frame.AckRange) void {
+    pub fn onAckReceivedSpace(self: *Connection, space: recovery.PacketNumberSpace, largest: u64, first_range: u64, ranges: []const frame.AckRange, ecn: ?frame.EcnCounts) void {
         // Build list of acked PNs from ACK ranges per RFC 9000 §13.2.3
         var buf: [256]u64 = undefined; // supports reasonably many acked packets per event
         var count: usize = 0;
@@ -933,7 +988,7 @@ pub const Connection = struct {
         // Update recovery for given space
         const now_i = std.time.nanoTimestamp();
         const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
-        const res = self.rec.onAckReceived(space, acked, 0, now_ns);
+        const res = self.rec.onAckReceivedWithEcn(space, acked, 0, now_ns, ecn);
         // Promote time-threshold losses if any expired now
         _ = self.rec.onLossTimeExpired(now_ns);
         // Reset per-space PTO backoff if any ack-eliciting was acked
@@ -944,6 +999,26 @@ pub const Connection = struct {
         };
         // Finalize TX key update only on App ACKs
         if (space == .Application) self.maybeFinalizeKeyUpdateOnAck(largest);
+        // DPLPMTUD: if a pending probe PN was ACKed, validate and raise path_mtu
+        if (space == .Application) {
+            if (self.probe_pending_pn) |ppn| {
+                var i: usize = 0;
+                var got: bool = false;
+                while (i < acked.len) : (i += 1) {
+                    if (acked[i] == ppn) {
+                        got = true;
+                        break;
+                    }
+                }
+                if (got) {
+                    // Accept new MTU but never below 1200 (defensive)
+                    const new_sz: u16 = @max(@as(u16, 1200), self.probe_pending_size);
+                    self.path_mtu = new_sz;
+                    self.probe_pending_pn = null;
+                    self.probe_pending_size = 0;
+                }
+            }
+        }
         // Legacy largest_acked bookkeeping retained for compatibility (App only)
         if (space == .Application and largest > self.largest_acked) self.largest_acked = largest;
     }
@@ -1002,6 +1077,61 @@ pub const Connection = struct {
         if (!self.pto_app_active) {
             self.pto_app_active = true;
             self.pto_app_id = ep.scheduleConnPto(self, .PtoApp, delay_ms) catch 0;
+        }
+    }
+
+    // --- DPLPMTUD state machine ---
+    pub const PmtudState = enum { Disabled, ProbeStart, ProbeSearch };
+
+    /// Begin DPLPMTUD probing from base (1200) upward. Requires app_tx_keys.
+    pub fn pmtudStart(self: *Connection, ep: anytype) void {
+        if (self.app_tx_keys == null) return;
+        self.pmtud_state = .ProbeStart;
+        self.pmtudArm(ep, 15); // 15 ms short delay in tests
+    }
+
+    /// Arm PMTUD timer if not active (or re-arm with new delay).
+    fn pmtudArm(self: *Connection, ep: anytype, delay_ms: u32) void {
+        if (self.pmtud_timer_active and self.pmtud_timer_id != 0) {
+            _ = ep.cancelTimer(self.pmtud_timer_id);
+        }
+        self.pmtud_timer_active = true;
+        self.pmtud_timer_id = ep.scheduleConnPto(self, .Pmtud, delay_ms) catch 0;
+    }
+
+    /// Called by endpoint when PMTUD timer expires; sends next probe per state.
+    pub fn pmtudOnTimer(self: *Connection, ep: anytype) void {
+        self.pmtud_timer_active = false;
+        if (self.app_tx_keys == null) return;
+        switch (self.pmtud_state) {
+            .Disabled => return,
+            .ProbeStart => {
+                // Try a conservative step first, e.g., 1280
+                const target: u16 = 1280;
+                _ = self.sendPmtudProbe(target) catch {};
+                // Re-arm for search follow-up
+                self.pmtud_state = .ProbeSearch;
+                self.pmtudArm(ep, 20);
+            },
+            .ProbeSearch => {
+                // If last probe validated, try increasing further toward typical 1500
+                var next: u16 = self.path_mtu;
+                if (next < 1400) next = 1400 else if (next < 1472) next = 1472 else if (next < 1492) next = 1492 else if (next < 1500) next = 1500;
+                if (next > self.path_mtu) {
+                    _ = self.sendPmtudProbe(next) catch {};
+                }
+                // Re-arm periodic check until stable
+                self.pmtudArm(ep, 25);
+            },
+        }
+    }
+
+    /// Notify state machine when ACK progress happens in App space.
+    pub fn pmtudOnAckProgress(self: *Connection, ep: anytype) void {
+        // If a pending probe was ACKed, onAckReceivedSpace already raised path_mtu.
+        // Here we can shorten the next timer to continue search more quickly in tests.
+        if (self.pmtud_state != .Disabled) {
+            self.pmtudArm(ep, 10);
         }
     }
 
@@ -1239,6 +1369,57 @@ pub const Connection = struct {
         if (ack_eliciting) self.maybeTriggerKeyUpdateOnSend(bytes_sent);
         self.pn_app_tx +%= 1;
         self.computeAndMaybeArmPto(self);
+    }
+
+    /// Build and send a DPLPMTUD probe at the requested UDP payload size using
+    /// an ack-eliciting PING followed by PADDING to reach target. Returns bytes sent.
+    pub fn sendPmtudProbe(self: *Connection, target_udp_payload: u16) !usize {
+        const tx = self.app_tx_keys orelse return error.KeysNotReady;
+        // Minimum QUIC/UDP payload size is 1200 (RFC 9000 §14.1)
+        if (target_udp_payload < 1200) return error.InvalidProbeSize;
+        // Compute short-header overhead: 1 (first byte) + DCID length + PN length (2)
+        const dcid_len: usize = self.our_scid.len;
+        const header_overhead: usize = 1 + dcid_len + 2;
+        const aead_tag: usize = 16;
+        // Frames: 1 byte for PING + N bytes of PADDING
+        if (target_udp_payload < header_overhead + aead_tag + 1) return error.InvalidProbeSize;
+        const needed_padding: usize = target_udp_payload - header_overhead - aead_tag - 1;
+        var frames = std.ArrayList(u8).init(self.allocator.*);
+        defer frames.deinit();
+        const w = frames.writer();
+        _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
+        if (needed_padding > 0) {
+            // Frame.padding counts total padding bytes to emit (writes that many 0x00)
+            _ = (frame.Frame{ .padding = needed_padding }).write(w) catch 0;
+        }
+        // Record pending probe PN before send
+        self.probe_pending_pn = self.pn_app_tx;
+        self.probe_pending_size = target_udp_payload;
+        const pkt = try packet.encodeShortProtected(
+            self.allocator.*,
+            self.our_scid.bytes[0..dcid_len],
+            @as(u32, @truncate(self.pn_app_tx)),
+            2,
+            frames.items,
+            .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
+            self.tx_key_phase,
+        );
+        defer self.allocator.free(pkt);
+        const n = try self.send(pkt);
+        self.onShortHeaderPacketSent(pkt.len, true);
+        return n;
+    }
+
+    /// Handle an ICMP/ICMPv6 Packet-Too-Big (PTB) signal by clamping path_mtu.
+    /// Reported MTU is validated to never drop below 1200.
+    pub fn onIcmpPacketTooBig(self: *Connection, reported_mtu: u16) void {
+        const clamp: u16 = if (reported_mtu < 1200) 1200 else reported_mtu;
+        if (clamp < self.path_mtu) self.path_mtu = clamp;
+        // Clear any pending probe if it exceeds the new clamp
+        if (self.probe_pending_pn != null and self.probe_pending_size > clamp) {
+            self.probe_pending_pn = null;
+            self.probe_pending_size = 0;
+        }
     }
 
     /// Record a packet as sent in the given PN space for Recovery bookkeeping.

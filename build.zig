@@ -151,6 +151,8 @@ pub fn build(b: *std.Build) void {
     quic_transport_params_mod.addImport("quic_varint", quic_varint_mod);
 
     // Endpoint module for socket/event-loop tests
+    const loop_backend_mod = mkModule(b, "src/quic/loop_backend.zig");
+    const quic_config_mod = mkModule(b, "src/quic/config.zig");
     const quic_endpoint_mod = mkModule(b, "src/quic/endpoint.zig");
     quic_endpoint_mod.addImport("quic_conn", quic_conn_mod);
     quic_endpoint_mod.addImport("quic_packet", quic_packet_mod);
@@ -160,9 +162,14 @@ pub fn build(b: *std.Build) void {
     quic_endpoint_mod.addImport("quic_varint", quic_varint_mod);
     quic_endpoint_mod.addImport("quic_tls", quic_tls_mod);
     quic_endpoint_mod.addImport("quic_recovery", quic_recovery_mod);
+    quic_endpoint_mod.addImport("config.zig", quic_config_mod);
+    quic_endpoint_mod.addImport("loop_backend.zig", loop_backend_mod);
 
     // Public API module (reuse everywhere)
     const quic_api_mod = mkModule(b, "src/quic/api.zig");
+    quic_api_mod.addImport("config.zig", quic_config_mod);
+    quic_api_mod.addImport("loop_backend.zig", loop_backend_mod);
+    quic_api_mod.addImport("quic_endpoint", quic_endpoint_mod);
     quic_api_mod.addImport("quic_crypto", quic_crypto_mod);
     quic_api_mod.addImport("quic_frame", quic_frame_mod);
     quic_api_mod.addImport("quic_varint", quic_varint_mod);
@@ -176,6 +183,7 @@ pub fn build(b: *std.Build) void {
 
     // Export named module for dependents: @import("quic")
     const quic_mod = b.addModule("quic", .{ .root_source_file = rp("src/quic/api.zig") });
+    quic_mod.addImport("quic_endpoint", quic_endpoint_mod);
     quic_mod.addImport("quic_crypto", quic_crypto_mod);
     quic_mod.addImport("quic_frame", quic_frame_mod);
     quic_mod.addImport("quic_varint", quic_varint_mod);
@@ -372,6 +380,18 @@ pub fn build(b: *std.Build) void {
         test_rx_ku.root_module.addImport("quic_tls", quic_tls_mod);
         const run_test_rx_ku = b.addRunArtifact(test_rx_ku);
         test_step.dependOn(&run_test_rx_ku.step);
+
+        // PMTUD/DPLPMTUD probe sizing + ICMP clamp tests
+        const test_pmtud = b.addTest(.{ .root_source_file = rp("tests/test_pmtud.zig"), .target = target, .optimize = optimize });
+        test_pmtud.root_module.addImport("quic_api", quic_api_mod);
+        test_pmtud.root_module.addImport("quic_conn", quic_conn_mod);
+        test_pmtud.root_module.addImport("quic_packet", quic_packet_mod);
+        test_pmtud.root_module.addImport("quic_frame", quic_frame_mod);
+        test_pmtud.root_module.addImport("quic_tls13", tls13_mod);
+        test_pmtud.root_module.addImport("quic_tls", quic_tls_mod);
+        test_pmtud.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        const run_test_pmtud = b.addRunArtifact(test_pmtud);
+        test_step.dependOn(&run_test_pmtud.step);
     } else {
         const test_quic = b.addTest(.{ .root_source_file = rp("quic.zig"), .target = target, .optimize = optimize });
         const run_test_quic = b.addRunArtifact(test_quic);

@@ -2,6 +2,7 @@ const std = @import("std");
 const conn_mod = @import("quic_conn");
 const pkt = @import("quic_packet");
 const fr = @import("quic_frame");
+const endpoint = @import("quic_endpoint");
 
 const Capture = struct {
     alloc: std.mem.Allocator,
@@ -130,7 +131,6 @@ test "MAX_* thresholds bump on receive" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
-
     var c = makeConn(&gpa.allocator());
     defer c.deinit();
 
@@ -224,4 +224,142 @@ test "teardownStream clears RX state and flags allowing reopen" {
     // Re-open should succeed
     const sid = c.openStream(true) catch |e| return e;
     try std.testing.expectEqual(@as(u64, 0), sid);
+}
+
+test "fin-aware reassembly drains when hole filled and FIN marks completion" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+
+    var c = makeConn(&gpa.allocator());
+    defer c.deinit();
+
+    // Ensure RX stream exists; deliver out-of-order segment first, then in-order, then FIN.
+    try c.pushStreamFrame(0, 5, "world", false); // buffered (recv_off=0)
+    try c.pushStreamFrame(0, 0, "hello", false); // drains "hello" and then "world"
+
+    // Before FIN, reading should yield the contiguous data only.
+    var buf: [16]u8 = undefined;
+    var n = try c.readStream(0, &buf);
+    try std.testing.expectEqualStrings("helloworld", buf[0..n]);
+
+    // Now mark FIN at final size (offset 10 with zero-length FIN).
+    try c.pushStreamFrame(0, 10, &[_]u8{}, true);
+    try std.testing.expect(c.stream_recv_fin);
+
+    // No more data to read now; stream considered complete at recv_off == fin_off.
+    n = try c.readStream(0, &buf);
+    try std.testing.expectEqual(@as(usize, 0), n);
+}
+
+test "endpoint ACK includes updated MAX_* after threshold bumps" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const A = gpa.allocator();
+
+    // Spin up endpoint with capture
+    var ep = try endpoint.Endpoint.init(&A, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
+    defer ep.deinit();
+    ep.test_capture_enabled = true;
+    ep.captureClear();
+
+    // Create a client-side connection mapping and install all-zero 1-RTT keys for tests
+    var c = try ep.connectClient("127.0.0.1:1");
+    const key = [_]u8{0} ** 16;
+    const iv = [_]u8{0} ** 12;
+    const hp = [_]u8{0} ** 16;
+    c.app_rx_keys = .{ .key = key, .iv = iv, .hp = hp };
+    c.app_tx_keys = .{ .key = key, .iv = iv, .hp = hp };
+
+    // Helper to encode and inject a single short packet containing given frames
+    const inject = struct {
+        fn go(alloc_: std.mem.Allocator, ep_: *endpoint.Endpoint, c_: *conn_mod.Connection, frames_bytes: []const u8) !void {
+            const pkt_bytes = try pkt.encodeShortProtected(alloc_, c_.our_scid.bytes[0..c_.our_scid.len], 1, 2, frames_bytes, .{ .key = key, .iv = iv, .hp = hp }, false);
+            defer alloc_.free(pkt_bytes);
+            ep_.testInject(c_.peer, pkt_bytes);
+        }
+    }.go;
+
+    // Record initial advertised maxima
+    const init_stream_max = c.local_max_stream_data;
+    const init_conn_max = c.local_max_data;
+
+    // 1) Cross the stream-level half-window to trigger a MAX_STREAM_DATA bump, but keep below connection half-window.
+    const half_stream: usize = @intCast(init_stream_max / 2);
+    const payload1 = try A.alloc(u8, half_stream + 100);
+    defer A.free(payload1);
+    @memset(payload1, 'A');
+    var fb1 = std.ArrayList(u8).init(A);
+    defer fb1.deinit();
+    _ = (fr.Frame{ .stream = .{ .stream_id = 0, .offset = 0, .fin = false, .data = payload1 } }).write(fb1.writer()) catch 0;
+    try inject(A, &ep, &c, fb1.items);
+
+    // Expect a captured ACK+MAX_*; decode and assert max_stream_data matches connection's bumped value.
+    try std.testing.expect(ep.captureLen() > 0);
+    const cap1_opt = ep.capturePop();
+    try std.testing.expect(cap1_opt != null);
+    const cap1 = cap1_opt.?;
+    defer A.free(cap1.bytes);
+    const dec1 = try pkt.decodeShortProtected(A, cap1.bytes, c.our_scid.len, .{ .key = key, .iv = iv, .hp = hp });
+    defer A.free(dec1.payload);
+    var off: usize = 0;
+    var saw_msd1 = false;
+    var saw_md1 = false;
+    while (off < dec1.payload.len) {
+        const pr = try fr.decodeOne(dec1.payload[off..]);
+        off += pr.n;
+        switch (pr.f) {
+            .max_stream_data => |msd| {
+                if (msd.stream_id == 0) {
+                    try std.testing.expectEqual(c.local_max_stream_data, msd.max);
+                    saw_msd1 = true;
+                }
+            },
+            .max_data => |md| {
+                try std.testing.expectEqual(init_conn_max, md.max);
+                saw_md1 = true;
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_msd1 and saw_md1);
+
+    // 2) Cross the connection-level half-window to trigger MAX_DATA; also advance stream offset.
+    const half_conn: usize = @intCast(init_conn_max / 2);
+    const payload2 = try A.alloc(u8, half_conn + 1024);
+    defer A.free(payload2);
+    @memset(payload2, 'B');
+    var fb2 = std.ArrayList(u8).init(A);
+    defer fb2.deinit();
+    _ = (fr.Frame{ .stream = .{ .stream_id = 0, .offset = payload1.len, .fin = false, .data = payload2 } }).write(fb2.writer()) catch 0;
+    try inject(A, &ep, &c, fb2.items);
+
+    // Inspect second captured packet
+    try std.testing.expect(ep.captureLen() > 0);
+    const cap2_opt = ep.capturePop();
+    try std.testing.expect(cap2_opt != null);
+    const cap2 = cap2_opt.?;
+    defer A.free(cap2.bytes);
+    const dec2 = try pkt.decodeShortProtected(A, cap2.bytes, c.our_scid.len, .{ .key = key, .iv = iv, .hp = hp });
+    defer A.free(dec2.payload);
+    off = 0;
+    var saw_msd2 = false;
+    var saw_md2 = false;
+    while (off < dec2.payload.len) {
+        const pr = try fr.decodeOne(dec2.payload[off..]);
+        off += pr.n;
+        switch (pr.f) {
+            .max_stream_data => |msd| {
+                if (msd.stream_id == 0) {
+                    try std.testing.expectEqual(c.local_max_stream_data, msd.max);
+                    saw_msd2 = true;
+                }
+            },
+            .max_data => |md| {
+                try std.testing.expectEqual(c.local_max_data, md.max);
+                saw_md2 = true;
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_msd2 and saw_md2);
 }

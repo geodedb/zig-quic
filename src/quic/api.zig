@@ -2,7 +2,7 @@
 //! MIT License
 const std = @import("std");
 const ks = @import("quic_tls");
-const endpoint_mod = @import("endpoint.zig");
+const cfg = @import("config.zig");
 const lb = @import("loop_backend.zig");
 // Use named import to share the same module instance across build graph
 const conn_mod = @import("quic_conn");
@@ -16,48 +16,24 @@ pub const Role = enum { Client, Server };
 pub const LoopBackend = lb.LoopBackend;
 
 /// Configuration for a QUIC endpoint and connections.
-pub const QuicConfig = struct {
-    version: QuicVersion = .v1,
-    alpn: []const []const u8,
-    cc: enum { newreno, cubic } = .newreno,
-    enable_datagram: bool = false,
-    enable_spin_bit: bool = false,
-    grease: bool = true,
-    // RFC 9368 Compatible Version Negotiation toggle
-    compatible_vn: bool = false,
-    // Enable sending QUIC Retry on first Initial without a valid token (server only)
-    enable_retry: bool = false,
-    // Secret used to MAC stateless Retry tokens (server). If null, a default built-in secret is used.
-    token_secret: ?[]const u8 = null,
-    // Token expiry in milliseconds from issuance (server)
-    token_expiry_ms: u32 = 60000,
-    // Optional pacing: when enabled, sender may sleep briefly to pace bursts
-    enable_pacing: bool = false,
-    // Congestion-control max_datagram_size used for initial cwnd and min window (RFC 9002). Default 1200.
-    max_datagram_size: u16 = 1200,
-    max_idle_timeout_ms: u32 = 30000,
-    max_udp_payload: u16 = 1350,
-    cert_path: ?[]const u8 = null, // server
-    key_path: ?[]const u8 = null, // server
-    ca_path: ?[]const u8 = null, // client trust store (optional)
-    allow_insecure: bool = false, // for tests only
-};
+pub const QuicConfig = cfg.QuicConfig;
 
 /// Concrete endpoint type.
-pub const QuicEndpoint = endpoint_mod.Endpoint;
+// Endpoint is provided by the endpoint module; expose alias via re-export helper
+pub const QuicEndpoint = @import("quic_endpoint").Endpoint;
 /// Public opaque connection handle
 pub const QuicConnection = opaque {};
 /// Stream identifier type.
 pub const QuicStreamId = u64;
 
 /// Compute the Initial secrets and key/iv/hp for the configured QUIC version.
-pub fn deriveInitialSecretsForConfig(cfg: *const QuicConfig, dcid: []const u8) struct {
+pub fn deriveInitialSecretsForConfig(conf: *const QuicConfig, dcid: []const u8) struct {
     client: [ks.H.digest_length]u8,
     server: [ks.H.digest_length]u8,
     client_keys: struct { key: [16]u8, iv: [12]u8, hp: [16]u8 },
     server_keys: struct { key: [16]u8, iv: [12]u8, hp: [16]u8 },
 } {
-    const v2 = cfg.version == .v2;
+    const v2 = conf.version == .v2;
     const initial = ks.deriveInitialSecret(v2, dcid);
     const pair = ks.deriveClientServerInitial(initial);
     const ck = if (v2) ks.deriveKeyIvHpV2(pair.client) else ks.deriveKeyIvHp(pair.client);
@@ -71,9 +47,9 @@ pub fn defaultLoopBackend() LoopBackend {
 }
 
 /// Initialize an endpoint bound to the provided address.
-pub fn endpointInit(alloc: *std.mem.Allocator, bind_addr: []const u8, cfg: *const QuicConfig) !*QuicEndpoint {
+pub fn endpointInit(alloc: *std.mem.Allocator, bind_addr: []const u8, cfgp: *const QuicConfig) !*QuicEndpoint {
     const ep = try alloc.create(QuicEndpoint);
-    ep.* = try QuicEndpoint.init(alloc, bind_addr, cfg);
+    ep.* = try QuicEndpoint.init(alloc, bind_addr, cfgp);
     return ep;
 }
 /// Deinitialize endpoint and free resources.

@@ -175,6 +175,9 @@ const SpaceState = struct {
     sent: std.ArrayList(SentPacket),
     largest_acked: ?u64 = null,
     loss_time_ns: ?u64 = null,
+    // Last observed ECN counters from peer's ACK_ECN for this space
+    ecn_last: frame.EcnCounts = .{ .ect0 = 0, .ect1 = 0, .ce = 0 },
+    ecn_seen_any: bool = false,
 
     fn init(alloc: std.mem.Allocator) SpaceState {
         return .{ .sent = std.ArrayList(SentPacket).init(alloc) };
@@ -247,8 +250,13 @@ pub const Recovery = struct {
 
     /// Result of ACK/loss processing with aggregate counters.
     pub const AckResult = struct { bytes_acked: usize = 0, bytes_lost: usize = 0 };
-    /// Handle ACK frames for a given space, update RTT/loss/cc, and return summary.
+    /// Handle ACK frames (no ECN) for a given space, update RTT/loss/cc, and return summary.
     pub fn onAckReceived(self: *Recovery, space: PacketNumberSpace, acked: []const u64, ack_delay_ns: u64, now_ns: u64) AckResult {
+        return self.onAckReceivedWithEcn(space, acked, ack_delay_ns, now_ns, null);
+    }
+
+    /// Handle ACK frames for a given space with optional ECN counters.
+    pub fn onAckReceivedWithEcn(self: *Recovery, space: PacketNumberSpace, acked: []const u64, ack_delay_ns: u64, now_ns: u64, ecn: ?frame.EcnCounts) AckResult {
         const idx = spaceIdx(space);
         var sstate = &self.spaces[idx];
         var bytes_acked: usize = 0;
@@ -311,6 +319,18 @@ pub const Recovery = struct {
 
         // Congestion control accounting
         if (bytes_acked > 0) self.ccOnAck(bytes_acked, now_ns);
+        // ECN processing: on ACK_ECN monotonic counters, reduce cwnd if CE increased
+        if (ecn) |counts| {
+            // Ignore if counters decreased (reordering or counter reset)
+            if ((!sstate.ecn_seen_any) or (counts.ect0 >= sstate.ecn_last.ect0 and counts.ect1 >= sstate.ecn_last.ect1 and counts.ce >= sstate.ecn_last.ce)) {
+                const ce_delta: u64 = if (counts.ce > sstate.ecn_last.ce) counts.ce - sstate.ecn_last.ce else 0;
+                sstate.ecn_last = counts;
+                sstate.ecn_seen_any = true;
+                if (ce_delta > 0) {
+                    self.ccOnEcn();
+                }
+            }
+        }
         if (bytes_lost > 0) {
             self.ccOnLoss(bytes_lost);
             if (first_lost_time != null and last_lost_time != null) {
@@ -350,6 +370,13 @@ pub const Recovery = struct {
         self.cc.cwnd = @max(self.cc.cwnd / 2, min_wnd);
         self.cc.ssthresh = self.cc.cwnd;
         if (self.cc.bytes_in_flight >= bytes_lost) self.cc.bytes_in_flight -= bytes_lost else self.cc.bytes_in_flight = 0;
+    }
+
+    /// React to ECN-CE by reducing cwnd like a loss event (without changing bytes_in_flight).
+    fn ccOnEcn(self: *Recovery) void {
+        const min_wnd: usize = 2 * self.cc.mds;
+        self.cc.cwnd = @max(self.cc.cwnd / 2, min_wnd);
+        self.cc.ssthresh = self.cc.cwnd;
     }
 
     /// Recompute loss detection timeouts and declare any time-threshold losses.

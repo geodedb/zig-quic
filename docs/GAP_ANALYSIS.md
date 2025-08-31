@@ -1,115 +1,65 @@
-## GAP Analysis for QUIC Implementation
+# GAP Analysis — QUIC v1
 
-This document summarises the current state of the QUIC transport
-implementation provided in `quic.zig` and identifies major areas
-that remain incomplete relative to the specification defined in RFC 9000
-and its companion RFC 9001 (cryptographic handshake).
+Date: 2025-08-31T00:00:00Z
 
-### Implemented Features
+## Summary delta since prior analysis
 
-- **Variable‑length integers**:  Encoding and decoding of QUIC’s bespoke
-  variable‑length integer format (Section 16) are fully supported.
-- **Frame definitions**:  All frame types defined in RFC 9000 are
-  represented by the `Frame` union, with fields matching those in the
-  specification.  The `writeFrame` function serialises these frames
-  into a writer, emitting the correct type byte and encoding fields
-  using the shortest possible form【256754717438045†L4393-L4400】.
-- **Packet encoding**:  A minimal packet structure (`Packet`) can
-  serialise multiple frames into a short‑header packet.  Packet
-  numbers are encoded as full variable‑length integers for simplicity.
-- **Unit tests**:  A suite of tests exercises variable‑length integer
-  encoding and each frame type, ensuring that type values and
-  associated fields are encoded correctly.
-- **Cryptographic stub**:  A placeholder `protect` method is present
-  to demonstrate how authenticated encryption (AES‑GCM) might be
-  integrated.  It derives a nonce by XORing the packet number into the
-  provided initialisation vector and uses `std.crypto.aead` for the
-  underlying cipher.  Error handling is provided for invalid key or
-  nonce lengths.
+Latest slice landed: congestion-control bench grid + CSV, recovery/conn doc comments, fixed recovery APIs, added `Connection.send`/`pushCrypto`; build/test/fuzz/bench/doccheck all green. Key Update TX/RX with previous-window support is in place and tested; CUBIC is implemented and selectable. :contentReference[oaicite:85]{index=85}
 
-### Missing Functionality
+### Verification (this run)
 
-Despite these basic capabilities, the implementation is far from a
-complete QUIC stack.  Significant gaps include:
+- zig build: PASS (Linux)
+- zig build test: PASS; TLS KAT prints "PASSED tls_key_schedule_kat"; AEAD/HP KATs and handshake/initial loops emit expected traces. :contentReference[oaicite:93]{index=93}
 
-1. **Packet protection and header protection**:  Real QUIC packets
-   derive keys and nonces from TLS, truncate packet numbers and apply
-   header protection using an AEAD tag.  The current `protect` method
-   does not perform key derivation, header protection or truncate
-   packet numbers.  It also makes simplifying assumptions about nonce
-   construction that violate RFC 9001.  A complete implementation
-   must incorporate TLS 1.3 handshake logic and follow the key
-   schedule defined in RFC 9001.
+## Requirements checklist (parsed from requirements.md)
 
-2. **Packet parsing and frame decoding**:  While frames can be
-   encoded, there is no corresponding logic to parse incoming packets
-   or decode frames.  Implementing robust parsing requires handling
-   variable‑length integers, enforcing limits, validating reserved
-   bits and recognising unknown extensions.
+- Transport (RFC 9000 §2–§4, §12–§20):
 
-3. **ACK ranges and ECN**:  The ACK frame support encodes only a
-   single range with no ECN counters.  RFC 9000 allows multiple
-   acknowledgement ranges and optional ECN information.  Extending the
-   `ack` variant to include a list of ranges and ECN counts is
-   necessary for interoperability.
+  - Frames incl. ACK ranges + ECN (§19.3): Implemented — ACK ranges vector + ECN encode/decode with unit tests; ECN counts consumed by recovery/CC; outgoing ACKs emit ECN counts when observed. Socket ECN reception via ancillary implemented on Linux for IPv4 (IP_RECVTOS) and IPv6 (IPV6_RECVTCLASS/TCLASS) using recvmsg with cmsg parsing. :contentReference[oaicite:49]{index=49} :contentReference[oaicite:50]{index=50}
+  - Version Negotiation, Retry, CONNECTION_CLOSE (§6, §10–§11, §19.19): Implemented (tests present). :contentReference[oaicite:53]{index=53} :contentReference[oaicite:54]{index=54}
+  - Path validation/migration (§9; §19.17–§19.18): Partial — integration/tests pending. :contentReference[oaicite:55]{index=55} :contentReference[oaicite:57]{index=57} :contentReference[oaicite:58]{index=58}
+  - PMTUD/DPLPMTUD (§14.2–§14.4): Implemented — probe sizing (PING+PADDING) with ACK-based validation; ICMP PTB parsing via Linux error queue (IPv4/IPv6) with spoof-checks; basic DPLPMTUD state machine (ProbeStart/ProbeSearch) and timers. Unit tests cover probe sizing, ACK raise, ICMP clamp + spoof-check, and state progression. :contentReference[oaicite:61]{index=61} :contentReference[oaicite:62]{index=62}
 
-4. **Flow control and loss recovery**:  QUIC’s transport layer
-   includes sophisticated flow control, congestion control and loss
-   recovery algorithms.  This implementation does not track flow
-   control limits, manage retransmissions or implement any form of
-   congestion control.
+- TLS 1.3 + QUIC‑TLS (RFC 9001):
 
-5. **Stream lifecycle management**:  Streams must transition through
-   states (idle, open, half‑closed, closed), handle reset signals,
-   enforce ordering and respect stream prioritisation.  The current
-   code treats streams as raw payload carriers without state.
+  - HKDF labels; Initial/Handshake/1‑RTT keys; HP sample/PN mask (§5.4–§5.5; A.1–A.5): Implemented (KATs). :contentReference[oaicite:65]{index=65} :contentReference[oaicite:66]{index=66}
+  - Key Update sequencing, retention windows (§6.1–§6.5): Implemented (TX/RX tests). :contentReference[oaicite:69]{index=69}
+  - AEAD usage limits (§6.6): Gap — counters/enforcement not wired. :contentReference[oaicite:70]{index=70}
+  - HP timing side‑channel constraints (§9.5): Gap — audit pending. :contentReference[oaicite:72]{index=72}
 
-6. **Connection management**:  Features such as version negotiation,
-   connection ID handling, stateless resets, migration, and path
-   validation are unimplemented.  The `new_connection_id` and
-   `retire_connection_id` frames can be encoded but there is no logic
-   to manage connection identifiers or handle migration events.
+- Recovery & CC (RFC 9002):
 
-7. **Security considerations**:  QUIC relies on TLS 1.3 for
-   encryption and authentication, with a complex handshake and key
-   update mechanism.  None of the handshake, certificate validation
-   or key update logic exists in this code.  Additionally, header
-   protection, which masks portions of the packet header to thwart
-   certain attacks, is absent.
+  - PTO, loss detection, persistent congestion (§6–§7): Implemented. :contentReference[oaicite:75]{index=75} :contentReference[oaicite:76]{index=76}
+  - NewReno default; CUBIC optional (-Dcc=cubic): Implemented; benches added.
 
-8. **Error handling and transport parameters**:  The implementation
-   defines only a few error types and does not support transport
-   parameters negotiation.  Proper error handling requires detailed
-   error codes, including those for application‑level errors.
+- Non‑Functional:
 
-### Next Steps
+  - Zig 0.14.1, std‑only; zeroization of retired keys; deterministic tests: Implemented (policy/docs/tests).
 
-To progress towards a complete QUIC implementation, subsequent
-iterations should focus on:
+- CLI/Tools/CI:
+  - Varint tool acceptance; TLS key schedule KAT; CI doc gates: Implemented.
 
-1. **Implementing frame parsing**:  Add functions to read frames from
-   a byte stream, populating the `Frame` union and validating
-   encodings.  Decoding should handle all frame types and unknown
-   frames gracefully.
-2. **Integrating TLS 1.3**:  Establish a TLS handshake using Zig’s
-   `std.crypto.tls` (when available) or an external library, derive
-   initial secrets and implement the key schedule for different
-   encryption levels.
-3. **Header protection**:  Apply the header protection mask to the
-   packet number and type fields as described in RFC 9001.  This
-   includes maintaining separate keys for header and payload
-   protection.
-4. **State machines**:  Model connection and stream state machines
-   (opening, closing, draining), implement flow control and respect
-   prioritisation.
-5. **Loss recovery**:  Incorporate timers, congestion control and
-   retransmission strategies, following the algorithms outlined in
-   RFC 9002.
-6. **Extensive testing and interoperability**:  Augment unit tests
-   with property‑based tests, fuzzing and, ideally, interop testing
-   against existing QUIC implementations to verify compliance.
+## Implemented (evidence‑based)
 
-This gap analysis should serve as a roadmap for future work.  The
-current code offers a foundation for experimentation and learning
-about QUIC framing and variable‑length integers, but a production‑ready
-transport will require significant additional development.
+- Wire & crypto: Initial/Handshake/Short encode/decode; PN expand/mask; AEAD + header protection per RFC 9001; TLS key schedule KATs passing. :contentReference[oaicite:87]{index=87}
+- Transport: VN/Retry; anti‑amplification; timers; endpoint pacing hook; STOP_SENDING/RESET_STREAM handling present; flow-control threshold bumps. :contentReference[oaicite:89]{index=89}
+- Key Update: TX/RX sequencing with previous key phase retention and finalize‑on‑ACK; tests in `tests/test_key_update.zig` and `tests/test_rx_key_update_accept.zig` pass (RFC 9001 §6.2–§6.5). :contentReference[oaicite:108]{index=108}
+- Recovery: RTT/PTO, packet/time‑threshold loss, persistent congestion per RFC 9002 §7.6; NewReno default; CUBIC implemented and selectable (`-Dcc=cubic`), with comparative benches. :contentReference[oaicite:91]{index=91}
+- Tooling/CI/docs: varint tool acceptance; CI/doc gates; TLS KAT shows “PASSED tls_key_schedule_kat”. :contentReference[oaicite:93]{index=93}
+
+## Partially implemented
+
+- Streams/flow control: FIN reassembly and dynamic MAX\* emission pending; STOP_SENDING/RESET_STREAM wired but needs broader lifecycle tests (§2–§4; §11.2). :contentReference[oaicite:97]{index=97}
+- Migration/stateless reset: PATH_CHALLENGE/RESPONSE + preferred‑address rules need integration & tests (§19.17–§19.19; §9.6). :contentReference[oaicite:102]{index=102} :contentReference[oaicite:104]{index=104}
+- Safety: AEAD usage‑limit enforcement not wired; HP timing side‑channel hardening requires audit (RFC 9001 §6.6; §9.5). :contentReference[oaicite:113]{index=113}
+
+## Gaps (blocking conformance)
+
+1. Stream state machines and flow control (FIN reassembly, dynamic MAX\*) (§3–§4; §11.2). :contentReference[oaicite:116]{index=116}
+2. PMTUD/DPLPMTUD with safe ICMP handling (§14.2–§14.4). — DONE in current slice.
+3. Migration/path validation & stateless reset (§9; §19.17–§19.19). :contentReference[oaicite:118]{index=118}
+4. Safety: AEAD usage limit counters + enforcement; HP constant‑time audit (§6.6; §9.5). :contentReference[oaicite:122]{index=122}
+
+## Next (pointer)
+
+See `NEXT.md` for the ordered slices and acceptance tests aligned to the above gaps.

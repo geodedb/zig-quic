@@ -8,6 +8,7 @@ pub const FrameType = enum(u8) {
     PADDING = 0x00,
     PING = 0x01,
     ACK = 0x02,
+    ACK_ECN = 0x03,
     RESET_STREAM = 0x04,
     STOP_SENDING = 0x05,
     CRYPTO = 0x06,
@@ -32,6 +33,8 @@ pub const FrameType = enum(u8) {
 
 /// Ack range element used inside ACK frames (gap,len VarInts).
 pub const AckRange = struct { gap: u64, len: u64 };
+/// ECN counters carried by ACK_ECN (RFC 9000 §19.3.2)
+pub const EcnCounts = struct { ect0: u64, ect1: u64, ce: u64 };
 
 /// Frame union with encode helper for a subset used in tests/tools.
 pub const Frame = union(enum) {
@@ -39,7 +42,17 @@ pub const Frame = union(enum) {
     ping: void,
     crypto: struct { offset: u64, data: []const u8 },
     stream: struct { stream_id: u64, offset: ?u64, fin: bool, data: []const u8 },
-    ack: struct { largest: u64, ack_delay: u64, first_range: u64 = 0, ranges: []const AckRange = &[_]AckRange{} },
+    ack: struct {
+        largest: u64,
+        ack_delay: u64,
+        first_range: u64 = 0,
+        ranges: []const AckRange = &[_]AckRange{},
+        // When present, encode as ACK_ECN (0x03) and append ECT0/ECT1/CE counts
+        ecn: ?EcnCounts = null,
+        // Internal storage for parsed ranges (decodeOne fills this and points ranges to it)
+        ranges_buf: [16]AckRange = undefined,
+        ranges_len: usize = 0,
+    },
     datagram: struct { data: []const u8 },
     max_data: struct { max: u64 },
     max_stream_data: struct { stream_id: u64, max: u64 },
@@ -126,7 +139,9 @@ pub const Frame = union(enum) {
                 return written;
             },
             .ack => |a| {
-                try w.writeByte(@intFromEnum(FrameType.ACK));
+                // Choose type based on whether ECN counts are present
+                const ty: u8 = if (a.ecn != null) @intFromEnum(FrameType.ACK_ECN) else @intFromEnum(FrameType.ACK);
+                try w.writeByte(ty);
                 var written: usize = 1;
                 var tmp: [16]u8 = undefined;
                 const la = try varint.encode(a.largest, &tmp);
@@ -150,6 +165,18 @@ pub const Frame = union(enum) {
                     const rl = try varint.encode(r.len, &tmp);
                     try w.writeAll(tmp[0..rl]);
                     written += rl;
+                }
+                // Optional ECN counts (when ACK_ECN)
+                if (a.ecn) |e| {
+                    const e0 = try varint.encode(e.ect0, &tmp);
+                    try w.writeAll(tmp[0..e0]);
+                    written += e0;
+                    const e1 = try varint.encode(e.ect1, &tmp);
+                    try w.writeAll(tmp[0..e1]);
+                    written += e1;
+                    const ce = try varint.encode(e.ce, &tmp);
+                    try w.writeAll(tmp[0..ce]);
+                    written += ce;
                 }
                 return written;
             },
@@ -322,8 +349,8 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
         const data = buf[i..need];
         return .{ .f = Frame{ .crypto = .{ .offset = off_dec.value, .data = data } }, .n = need };
     }
-    // Minimal ACK (no ranges)
-    if (t == @intFromEnum(FrameType.ACK)) {
+    // ACK / ACK_ECN (with ranges)
+    if (t == @intFromEnum(FrameType.ACK) or t == @intFromEnum(FrameType.ACK_ECN)) {
         var i: usize = 1;
         const largest = try varint.decode(buf[i..]);
         i += largest.n;
@@ -333,7 +360,9 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
         i += range_count.n;
         const first_range = try varint.decode(buf[i..]);
         i += first_range.n;
-        // Skip any additional ack ranges if present (gap,len pairs)
+        // Parse additional ack ranges if present (gap,len pairs) up to a small fixed cap
+        var ranges_buf: [16]AckRange = undefined;
+        var out_len: usize = 0;
         var rc_left: u64 = range_count.value;
         while (rc_left > 0) : (rc_left -= 1) {
             const gap = try varint.decode(buf[i..]);
@@ -341,8 +370,37 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
             const lenv = try varint.decode(buf[i..]);
             i += lenv.n;
             if (i > buf.len) return error.Truncated;
+            if (out_len < ranges_buf.len) {
+                ranges_buf[out_len] = .{ .gap = gap.value, .len = lenv.value };
+                out_len += 1;
+            }
         }
-        return .{ .f = Frame{ .ack = .{ .largest = largest.value, .ack_delay = ack_delay.value, .first_range = first_range.value, .ranges = &[_]AckRange{} } }, .n = i };
+        var ecn_counts: ?EcnCounts = null;
+        if (t == @intFromEnum(FrameType.ACK_ECN)) {
+            const ect0 = try varint.decode(buf[i..]);
+            i += ect0.n;
+            const ect1 = try varint.decode(buf[i..]);
+            i += ect1.n;
+            const ce = try varint.decode(buf[i..]);
+            i += ce.n;
+            ecn_counts = .{ .ect0 = ect0.value, .ect1 = ect1.value, .ce = ce.value };
+        }
+        // Build frame with embedded ranges buffer populated; point ranges slice to that storage.
+        var ackf = Frame{
+            .ack = .{
+                .largest = largest.value,
+                .ack_delay = ack_delay.value,
+                .first_range = first_range.value,
+                .ranges = &[_]AckRange{}, // temporary; will be replaced after copying
+                .ecn = ecn_counts,
+            },
+        };
+        // Copy into embedded buffer and expose as slice
+        var j: usize = 0;
+        while (j < out_len) : (j += 1) ackf.ack.ranges_buf[j] = ranges_buf[j];
+        ackf.ack.ranges_len = out_len;
+        ackf.ack.ranges = ackf.ack.ranges_buf[0..out_len];
+        return .{ .f = ackf, .n = i };
     }
     // STREAM frames 0x08..0x0f
     if ((t & 0xf8) == @intFromEnum(FrameType.STREAM)) {

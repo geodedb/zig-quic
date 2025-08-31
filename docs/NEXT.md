@@ -1,50 +1,35 @@
 # NEXT — Near‑term Plan (rolling)
 
-Date: 2025-08-23 12:00 UTC
+Date: 2025‑08‑31
 
-This document tracks the next actionable slices, matching RFC 9000/9001/9002 scope and repo process rules.
+## 1) ACK multi‑range + ECN — DONE (codec + recovery + ACK_ECN emission + Linux+IPv6 ancillary)
 
-## 1) CUBIC + benches
+- Implemented: ACK ranges vector + ECN counters; encode/decode; unit test `tests/test_ack_ranges_ecn.zig`; ECN counts plumbed to recovery/CC with CE response; endpoint emits ACK_ECN when ECN counters observed per space; Linux ancillary ECN reception (IPv4 IP_RECVTOS + recvmsg, IPv6 IPV6_RECVTCLASS/IPV6_TCLASS) and `tests/test_ack_ecn_emit.zig`.
+- Acceptance: unit tests pass; overall test suite green (Debug). :contentReference[oaicite:125]{index=125}
 
-- Implement CUBIC controller alongside NewReno; select via `-Dcc=cubic`.
-- Benchmarks: NR vs CUBIC across fixed BDP/RTT/loss profiles; record throughput/RTT.
-- Acceptance:
-  - `zig build bench` succeeds, benches print comparative results.
-  - Unit tests cover CUBIC growth/epoch transitions.
+## 2) Streams & flow control (MVP)
 
-## 2) Streams and flow control basics
+- FIN‑aware reassembly; STOP_SENDING/RESET_STREAM end‑to‑end; dynamic MAX_DATA/MAX_STREAM_DATA thresholds.
+- Acceptance: lifecycle tests and transport error mapping per §11.1–§11.2; flow‑control threshold bump tests. :contentReference[oaicite:127]{index=127}
 
-- FIN-aware reassembly and readable byte accounting.
-- STOP_SENDING/RESET_STREAM handling.
-- Emit MAX_DATA/MAX_STREAM_DATA on thresholds.
-- Acceptance:
-  - New unit tests for FIN, reset, and MAX\* emissions pass in Debug/ReleaseSafe.
+## 3) PMTUD/DPLPMTUD — DONE (ICMP PTB + DPLPMTUD basic state machine)
 
-## 3) Extensions to CLI and wire toggles
+- Implemented: Minimal probe sizing (PING+PADDING to exact UDP payload), per‑path MTU state, ACK‑based validation and path_mtu raise; ICMP PTB clamp helper wired via endpoint Linux error queue (IPv4/IPv6) with spoof‑checks; basic DPLPMTUD state machine (ProbeStart/ProbeSearch) with timer integration and ACK‑progression hooks.
+- Tests: `tests/test_pmtud.zig` covers probe sizing, ACK validation, ICMP PTB clamp, spoof‑check rejection, and state‑machine progression.
+- Acceptance: unit tests pass; endpoint timer dispatch includes `.Pmtud` kind; overall test suite green (Debug). :contentReference[oaicite:133]{index=133}
 
-- Wire RFC 9221 DATAGRAM to CLI client/server.
-- Add Spin Bit and GREASE toggles; plumb to packet formatting.
-- Groundwork for Compatible VN and QUIC v2 vectors.
-- Acceptance:
-  - CLI flags work; DATAGRAM echo roundtrip in tests.
+## 4) Migration / stateless reset
 
-## 4) Migration and tokens
+- PATH_CHALLENGE/RESPONSE integration; NAT rebinding handling; preferred‑address probe; stateless reset detector.
+- Acceptance: migration tests per §9; frame semantics §19.17–§19.19 validated. :contentReference[oaicite:134]{index=134} :contentReference[oaicite:136]{index=136} :contentReference[oaicite:137]{index=137}
 
-- Persist NEW_TOKEN and use on reconnect.
-- Path validation/migration (NAT rebinding); stateless reset detector.
-- Acceptance:
-  - Unit tests that simulate token use, rebinding, and stateless reset recognition.
+## 5) Safety hardening
 
-## 5) Event loop parity + logging
+- AEAD usage‑limit counters and enforcement; audit HP/PN recovery paths for constant‑time where applicable.
+- Acceptance: unit tests assert counter thresholds per RFC 9001 §6.6; review checklist notes constant‑time adherence for HP timing (§9.5). :contentReference[oaicite:130]{index=130} :contentReference[oaicite:131]{index=131}
 
-- Validate pacing across epoll/kqueue/IOCP; tune pacing policy.
-- Add JSON Lines logs (INFO/ERROR); pin deterministic seeds in CI.
-- Acceptance:
-  - CI remains green on ubuntu/macos/windows; logs are structured JSON.
+## Process gates (each slice)
 
-## Process gates for each slice
-
-- Update `docs/GAP.md` (status bump + risks + next slice).
-- Update `docs/DESIGN.md` where public APIs or tricky logic change.
-- `zig build` / `zig build test` must pass; `zig build fuzz` and `zig build bench` must build.
-- Run `./zig-out/bin/doccheck` and fix missing doc comments.
+- Update `docs/GAP.md` + `docs/GAP_ANALYSIS.md`; update `docs/DESIGN.md` if APIs change.
+- `zig build`, `zig build test` green; fuzz/bench build.
+- Doccheck passes; no Internet egress in tests. (Carry‑over from copilot instructions.) :contentReference[oaicite:141]{index=141}
