@@ -4,64 +4,55 @@ Date: 2025-09-01T00:00:00Z
 
 ## Summary delta since prior analysis
 
-Latest slice landed: control-frame coalescing/pacing (suppressed _*BLOCKED spam; paced MAX*_ emission), key update stress + OOO PN-gap acceptance window tests, PMTUD IPv6 EH offset acceptance, and PMTUD cwnd-aware probe gating with PTO backoff assertions. Added PMTUD pacing tests parameterized over NewReno and CUBIC, asserting single-outstanding behavior and PTO backoff under blackhole conditions. Anti-amplification hardening retained. All tests green. :contentReference[oaicite:85]{index=85}
+- ECN longitudinal test added across Initial/Handshake/Application under reordering and one loss. Short‑header demux refined to prefer connections with 1‑RTT RX keys and avoid zero‑length DCID. Deterministic PN length (4) enforced for HP sampling stability. Handshake made deterministic in tests.
 
 ### Verification (this run)
 
 - zig build: PASS (Linux)
-- zig build test: PASS; TLS KAT prints "PASSED tls_key_schedule_kat"; AEAD/HP KATs and handshake/initial loops emit expected traces; new PMTUD pacing/CC tests pass. :contentReference[oaicite:93]{index=93}
-- CI rehearsal: `act -W .github/workflows/ci.yml` PASS (all jobs) — required before push.
+- zig build test: 59/60 PASS. One failing test: tests/test_ecn_longitudinal.zig — Application‑space ACK_ECN not observed (ACK encoded without ECN counts). TLS KAT still prints “PASSED tls_key_schedule_kat”.
+- CI rehearsal: not executed in this run; keep `act -W .github/workflows/ci.yml` as a required pre‑push rehearsal.
 
-## Requirements checklist (parsed from requirements.md)
+## Requirements checklist (from requirements.md)
 
 - Transport (RFC 9000 §2–§4, §12–§20):
 
-  - Frames incl. ACK ranges + ECN (§19.3): Implemented — ACK ranges vector + ECN encode/decode with unit tests; ECN counts consumed by recovery/CC; outgoing ACKs emit ECN counts when observed. Socket ECN reception via ancillary implemented on Linux for IPv4 (IP_RECVTOS) and IPv6 (IPV6_RECVTCLASS/TCLASS) using recvmsg with cmsg parsing. Longitudinal E2E test across spaces under reordering/loss added (`tests/test_ecn_longitudinal.zig`). :contentReference[oaicite:49]{index=49} :contentReference[oaicite:50]{index=50}
-  - Version Negotiation, Retry, CONNECTION_CLOSE (§6, §10–§11, §19.19): Implemented (tests present). :contentReference[oaicite:53]{index=53} :contentReference[oaicite:54]{index=54}
-  - Path validation/migration (§9; §19.17–§19.18): Partial → Expanded — tests cover back‑to‑back rebinds, preferred‑address validation, PTO‑gated retries, and reordering races (see `tests/test_migration_scenarios.zig`). Further integration for concurrent path candidates remains. :contentReference[oaicite:55]{index=55} :contentReference[oaicite:57]{index=57} :contentReference[oaicite:58]{index=58}
-  - PMTUD/DPLPMTUD (§14.2–§14.4): Implemented — probe sizing (PING+PADDING) with ACK-based validation; ICMP PTB parsing via Linux error queue (IPv4/IPv6) with spoof-checks; basic DPLPMTUD state machine (ProbeStart/ProbeSearch) and timers. Unit tests cover probe sizing, ACK raise, ICMP clamp + spoof-check, and state progression. :contentReference[oaicite:61]{index=61} :contentReference[oaicite:62]{index=62}
-    - Spoof-check corner handling: undersized ICMP quotes are ignored; DCID mismatch quotes are rejected (tests in `tests/test_pmtud.zig`).
-    - Probe overwrite policy: only one outstanding probe is tracked; sending a new probe overwrites prior pending PN/size; path_mtu is raised only on ACK of the latest pending.
-    - Pacing/cwnd interaction: probes are gated by cwnd (no send when cwnd < bytes_in_flight + probe_size), and PTO backoff is reflected in recovery timers (tests in `tests/test_pmtud.zig`).
+  - ACK ranges + ECN (§19.3.2): Codec and recovery integration implemented; per‑space ECN counters and outgoing ACK_ECN emission present. Gap: longitudinal E2E Application‑space case fails under reordering/loss; likely interaction with anti‑amplification gating (§8.1) or demux selection; classify as Partial pending fix.
+  - Version Negotiation, Retry, CONNECTION_CLOSE (§6, §10–§11, §19.19): Implemented (tests present).
+  - Path validation/migration (§9; §19.17–§19.18): Partial — NAT rebinding/validation and preferred‑address basics exist; more race/validation coverage pending.
+  - PMTUD/DPLPMTUD (§14.2–§14.4): Implemented — probe sizing (PING+PADDING), ACK‑driven raise, ICMP PTB clamp with spoof‑checks; DPLPMTUD timers.
 
 - TLS 1.3 + QUIC‑TLS (RFC 9001):
 
-  - HKDF labels; Initial/Handshake/1‑RTT keys; HP sample/PN mask (§5.4–§5.5; A.1–A.5): Implemented (KATs). :contentReference[oaicite:65]{index=65} :contentReference[oaicite:66]{index=66}
-  - Key Update sequencing, retention windows (§6.1–§6.5): Implemented. Tests include RX promotion, bounded previous-key acceptance, OOO across PN gaps within a limited window, and TX finalize/zeroize on ACK. Fuzz corpus includes key‑phase toggle seeds.
-  - AEAD usage limits (§6.6): Implemented — counters and enforcement (integrity close; confidentiality counter) with config overrides and a unit test. :contentReference[oaicite:70]{index=70}
-  - HP timing side‑channel constraints (§9.5): Gap — audit in progress; micro‑benchmark added in `bench/main.zig` to monitor decode timing variance across key phases; docs carry audit notes. :contentReference[oaicite:72]{index=72}
+  - HP/AEAD/PN masking (§5.4–§5.5; A.1–A.5): Implemented (KATs).
+  - Key Update sequencing (§6.1–§6.5): Implemented; RX promotion/prev‑window and TX finalize‑on‑ACK.
+  - AEAD usage limits (§6.6): Implemented (counters; integrity close path; config overrides).
+  - HP timing side‑channels (§9.5): Gap — audit ongoing; micro‑bench present.
 
-- Recovery & CC (RFC 9002):
+- Recovery & CC (RFC 9002): PTO/loss/PC implemented; NewReno default; CUBIC optional.
 
-  - PTO, loss detection, persistent congestion (§6–§7): Implemented. :contentReference[oaicite:75]{index=75} :contentReference[oaicite:76]{index=76}
-  - NewReno default; CUBIC optional (-Dcc=cubic): Implemented; benches added.
+- Non‑Functional: Zig 0.14.1; std‑only; zeroization; deterministic tests.
 
-- Non‑Functional:
+## Implemented (evidence)
 
-  - Zig 0.14.1, std‑only; zeroization of retired keys; deterministic tests: Implemented (policy/docs/tests).
+- Wire/crypto: Initial/Handshake/Short encode/decode; PN expand/mask; KATs.
+- Transport: VN/Retry; anti‑amplification (3×) (§8.1); timers; pacing hook; ACK_ECN encode/decode.
+- PMTUD/DPLPMTUD: ACK‑raise; ICMP error‑queue parsing; spoof‑checks; timers.
+- Key Update: RX/TX paths with bounded prev‑window; finalize/zeroize on ACK.
+- Recovery/CC: RTT/PTO; threshold loss; persistent congestion; CUBIC selectable.
 
-- CLI/Tools/CI:
-  - Varint tool acceptance; TLS key schedule KAT; CI doc gates: Implemented.
+## Partial
 
-## Implemented (evidence‑based)
+- ECN longitudinal (Application): ACK_ECN missing in one E2E scenario (under reordering/loss). Suspects: ACK‑only suppressed by 3× amplification gate (§8.1) or demux picks a conn without app_tx_keys; fix tracked in NEXT.
+- Migration/stateless reset: expand tests for concurrent path candidates and preferred‑address handshake.
+- Streams/flow control: more lifecycle/edge cases.
+- Safety: HP timing audit (§9.5).
 
-- Wire & crypto: Initial/Handshake/Short encode/decode; PN expand/mask; AEAD + header protection per RFC 9001; TLS key schedule KATs passing. :contentReference[oaicite:87]{index=87}
-- Transport: VN/Retry; anti‑amplification; timers; endpoint pacing hook; STOP_SENDING/RESET_STREAM handling present; flow-control threshold bumps. :contentReference[oaicite:89]{index=89}
-- Key Update: TX/RX sequencing with previous key phase retention and finalize‑on‑ACK; tests in `tests/test_key_update.zig` and `tests/test_rx_key_update_accept.zig` pass (RFC 9001 §6.2–§6.5). :contentReference[oaicite:108]{index=108}
-- Recovery: RTT/PTO, packet/time‑threshold loss, persistent congestion per RFC 9002 §7.6; NewReno default; CUBIC implemented and selectable (`-Dcc=cubic`), with comparative benches. :contentReference[oaicite:91]{index=91}
-- Tooling/CI/docs: varint tool acceptance; CI/doc gates; TLS KAT shows “PASSED tls_key_schedule_kat”. :contentReference[oaicite:93]{index=93}
+## Gaps (blocking)
 
-## Partially implemented
+1. Longitudinal ECN Application ACK_ECN conformance (§19.3.2) — failing test to fix.
+2. Migration/path validation scenarios (§9; §19.17–§19.19) — broaden coverage and implementation.
+3. HP constant‑time audit (§9.5).
 
-- Streams/flow control: FIN reassembly and dynamic MAX\* emission implemented with coalescing/pacing; more lifecycle matrix coverage desirable (§2–§4; §11.2). :contentReference[oaicite:97]{index=97}
-- Migration/stateless reset: PATH_CHALLENGE/RESPONSE + preferred‑address rules need integration & tests (§19.17–§19.19; §9.6). :contentReference[oaicite:102]{index=102} :contentReference[oaicite:104]{index=104}
-- Safety: HP timing side‑channel hardening requires audit (RFC 9001 §9.5). :contentReference[oaicite:113]{index=113}
+## Notes
 
-## Gaps (blocking conformance)
-
-1. Migration/path validation & stateless reset (§9; §19.17–§19.19): concurrent path candidate handling and preferred‑address active migration handshake tests. :contentReference[oaicite:118]{index=118}
-2. Safety: HP constant‑time audit (§9.5): extend analysis beyond guardrail bench; side‑channel review checklist. :contentReference[oaicite:122]{index=122}
-
-## Next (pointer)
-
-See `NEXT.md` for the ordered slices and acceptance tests aligned to the above gaps.
+- Keep CI rehearsal with `act` in the process gates. Document anti‑amplification nuances (division‑based compare) and ACK‑only behavior when address isn’t validated (§8.1).
