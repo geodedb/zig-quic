@@ -11,6 +11,7 @@ const crypto = @import("quic_crypto");
 const varint = @import("quic_varint");
 const token_mod = @import("token.zig");
 const recovery = @import("quic_recovery");
+const tp = @import("transport_params.zig");
 
 const posix = std.posix;
 const builtin = @import("builtin");
@@ -236,6 +237,8 @@ pub const Endpoint = struct {
         c.rec.cc.mds = @intCast(self.cfg.max_datagram_size);
         // Install paced sender callback
         c.setSender(@ptrCast(self), senderPaced);
+        // Apply AEAD usage limit overrides
+        c.setAeadUsageLimits(self.cfg.aead_confidentiality_limit_override, self.cfg.aead_integrity_limit_override);
         // Choose initial version from cfg
         c.version = if (self.cfg.version == .v2) packet.QUIC_V2 else packet.QUIC_V1;
         c.version_v2 = (c.version == packet.QUIC_V2);
@@ -669,23 +672,26 @@ pub const Endpoint = struct {
                     if (std.mem.eql(u8, c.our_scid.bytes[0..l], bytes[1 .. 1 + l])) {
                         found = c;
                         dcid_len = l;
-                        // Update peer address and map entry for new peer hash
-                        c.setPeer(peer);
-                        const new_key = Key{ .peer_hash = peer_h, .dcid_hash = hashBytes(c.our_scid.bytes[0..l]) };
-                        _ = self.conns.put(new_key, c) catch {};
-                        // Trigger path validation if keys are ready
-                        c.sendPathChallenge();
+                        // Centralized handling for path change and validation
+                        self.onPathAddressChanged(c, peer, peer_h, l);
                         break;
                     }
                 }
             }
             const conn = found orelse return;
             if (ecn_bits) |e| conn.onEcnMark(.Application, e);
+            // Track bytes received from unvalidated address for amplification gating
+            conn.addRxUnvalidated(bytes.len);
             if (conn.app_rx_keys) |rx_keys| {
                 // Attempt decode using current RX keys first. On failure, try derived NEXT keys, then previous keys.
                 var used_next: bool = false;
                 var used_prev: bool = false;
                 var dec_res = packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }) catch blk_dec: {
+                    // If decryption fails outright, check for stateless reset token match to fail fast.
+                    if (conn.looksLikeStatelessReset(bytes)) {
+                        conn.closed = true;
+                        return;
+                    }
                     // Try derived NEXT keys if we have a RX traffic secret
                     if (conn.app_rx_secret) |cur_rx_secret| {
                         const next_secret = ks.updateTrafficSecret(cur_rx_secret);
@@ -703,6 +709,8 @@ pub const Endpoint = struct {
                                 used_prev = true;
                                 break :blk_prev packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = kp.key, .iv = kp.iv, .hp = kp.hp }) catch return;
                             }
+                            // Authentication failed across current/next/prev keys
+                            conn.onAeadAuthFailure();
                             return;
                         };
                         // Promote to NEXT keys on success
@@ -725,6 +733,7 @@ pub const Endpoint = struct {
                         used_prev = true;
                         break :blk_dec packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = kp2.key, .iv = kp2.iv, .hp = kp2.hp }) catch return;
                     }
+                    conn.onAeadAuthFailure();
                     return;
                 };
                 defer self.allocator.free(dec_res.payload);
@@ -762,6 +771,11 @@ pub const Endpoint = struct {
                     off2 += fr.n;
                     switch (fr.f) {
                         .ping => saw_any = true,
+                        .new_connection_id => |ncid| {
+                            // Record stateless reset token for later detection
+                            conn.onNewConnectionId(ncid.sequence, ncid.retire_prior_to, ncid.stateless_reset_token);
+                            saw_any = true;
+                        },
                         .stream => |s| {
                             const off: u64 = s.offset orelse 0;
                             conn.pushStreamFrame(s.stream_id, off, s.data, s.fin) catch {};
@@ -833,10 +847,7 @@ pub const Endpoint = struct {
                         },
                         .path_response => |prv| {
                             if (conn.path_validation_pending and std.mem.eql(u8, &conn.path_challenge_data, &prv)) {
-                                conn.path_validation_pending = false;
-                                conn.address_validated = true;
-                                conn.bytes_rx_unvalidated = 0;
-                                conn.bytes_tx_unvalidated = 0;
+                                self.onPathValidated(conn);
                             }
                         },
                         .new_token => |nt| {
@@ -855,6 +866,27 @@ pub const Endpoint = struct {
                     conn.closed = true;
                     return; // stop processing further
                 }
+                // Enforce AEAD integrity limit: if connection has been marked closed due to limit, send CONNECTION_CLOSE once.
+                if (conn.closed) {
+                    if (conn.app_tx_keys) |tx_keys| {
+                        var fb = std.ArrayList(u8).init(self.allocator.*);
+                        defer fb.deinit();
+                        const w = fb.writer();
+                        // AEAD_LIMIT_REACHED = 0x0f per RFC 9000 §20
+                        _ = (frame.Frame{ .connection_close = .{ .error_code = 0x0f, .frame_type = 0, .reason = "AEAD integrity limit reached" } }).write(w) catch 0;
+                        // Amplification gating: only send if validated or within 3x limit
+                        const allow_send = conn.canSendUnderAmplification();
+                        if (allow_send) {
+                            const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, tx_keys, conn.tx_key_phase) catch null;
+                            if (out) |pkt_bytes| {
+                                defer self.allocator.free(pkt_bytes);
+                                _ = self.sendTo(peer, pkt_bytes) catch {};
+                                conn.onShortHeaderPacketSent(pkt_bytes.len, true);
+                            }
+                        }
+                    }
+                    return;
+                }
                 if (saw_any) {
                     if (conn.app_tx_keys) |tx_keys| {
                         var frames_buf = std.ArrayList(u8).init(self.allocator.*);
@@ -866,11 +898,14 @@ pub const Endpoint = struct {
                         _ = ack.write(w) catch 0;
                         _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = conn.local_max_stream_data } }).write(w) catch {};
                         _ = (frame.Frame{ .max_data = .{ .max = conn.local_max_data } }).write(w) catch {};
-                        const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_app_tx)), 2, frames_buf.items, tx_keys, conn.tx_key_phase) catch null;
-                        if (out) |pkt_bytes| {
-                            defer self.allocator.free(pkt_bytes);
-                            _ = self.sendTo(peer, pkt_bytes) catch {};
-                            conn.onShortHeaderPacketSent(pkt_bytes.len, false);
+                        const allow_send = conn.canSendUnderAmplification();
+                        if (allow_send) {
+                            const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_app_tx)), 2, frames_buf.items, tx_keys, conn.tx_key_phase) catch null;
+                            if (out) |pkt_bytes| {
+                                defer self.allocator.free(pkt_bytes);
+                                _ = self.sendTo(peer, pkt_bytes) catch {};
+                                conn.onShortHeaderPacketSent(pkt_bytes.len, false);
+                            }
                         }
                     }
                 }
@@ -919,6 +954,8 @@ pub const Endpoint = struct {
                         self.allocator.destroy(c);
                         return;
                     };
+                    // Apply AEAD limits overrides for server-side
+                    c.setAeadUsageLimits(self.cfg.aead_confidentiality_limit_override, self.cfg.aead_integrity_limit_override);
                     // Also map our chosen SCID to this new server connection for Handshake DCID lookup.
                     const our_key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(c.our_scid.bytes[0..c.our_scid.len]) };
                     _ = self.conns.put(our_key, c) catch {};
@@ -941,6 +978,8 @@ pub const Endpoint = struct {
                         self.allocator.destroy(c);
                         return;
                     };
+                    // Apply AEAD limits overrides for server-side
+                    c.setAeadUsageLimits(self.cfg.aead_confidentiality_limit_override, self.cfg.aead_integrity_limit_override);
                     // Also map our chosen SCID to this connection for Handshake DCID lookup.
                     const our_key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(c.our_scid.bytes[0..c.our_scid.len]) };
                     _ = self.conns.put(our_key, c) catch {};
@@ -956,9 +995,7 @@ pub const Endpoint = struct {
 
             // Anti-amplification: before address validation, limit server to 3x bytes received
             // Track bytes received from unvalidated address
-            if (!conn.address_validated) {
-                conn.bytes_rx_unvalidated +%= bytes.len;
-            }
+            conn.addRxUnvalidated(bytes.len);
 
             // Derive Initial keys for server (we are receiving client's Initial)
             const v2 = false; // TODO: parse version and map to v2 set
@@ -1059,7 +1096,11 @@ pub const Endpoint = struct {
                 &sample16,
                 ct,
                 pt,
-            ) catch return;
+            ) catch {
+                // AEAD auth failure counts toward integrity limit when we have a mapped connection
+                conn.onAeadAuthFailure();
+                return;
+            };
             _ = ok;
 
             // Expand truncated PN against Initial space expectation and track
@@ -1095,7 +1136,7 @@ pub const Endpoint = struct {
             }
 
             // If address still not validated, enforce 3x amplification limit for any server send
-            const allow_send = conn.address_validated or (conn.bytes_tx_unvalidated * 1 <= conn.bytes_rx_unvalidated * 3);
+            const allow_send = conn.canSendUnderAmplification();
 
             // If we received anything ack-eliciting, send ACK in Initial space when we still have Initial TX keys
             if (saw_any and !conn.initial_keys_dropped and allow_send) {
@@ -1239,7 +1280,10 @@ pub const Endpoint = struct {
                     &sample16,
                     ct,
                     pt,
-                ) catch return;
+                ) catch {
+                    conn.onAeadAuthFailure();
+                    return;
+                };
                 _ = ok;
                 // Expand truncated PN and track in Handshake space
                 var pn_val_be: u64 = 0;
@@ -1317,6 +1361,29 @@ pub const Endpoint = struct {
         } else {
             return; // ignore other long header types for now
         }
+    }
+
+    /// Single source-of-truth for path change handling: updates peer address,
+    /// resets validation state and counters, installs new map key, and triggers validation.
+    fn onPathAddressChanged(self: *Endpoint, c: *conn_mod.Connection, new_peer: conn_mod.SockAddr, new_peer_hash: u64, dcid_len: usize) void {
+        c.setPeer(new_peer);
+        c.address_validated = false;
+        c.bytes_rx_unvalidated = 0;
+        c.bytes_tx_unvalidated = 0;
+        // Insert/refresh mapping keyed by new peer and our DCID
+        const new_key = Key{ .peer_hash = new_peer_hash, .dcid_hash = hashBytes(c.our_scid.bytes[0..dcid_len]) };
+        _ = self.conns.put(new_key, c) catch {};
+        // Trigger PATH_CHALLENGE if 1-RTT keys are available
+        c.sendPathChallenge();
+    }
+
+    /// Mark path validated and clear unvalidated counters consistently.
+    fn onPathValidated(self: *Endpoint, c: *conn_mod.Connection) void {
+        _ = self; // unused
+        c.path_validation_pending = false;
+        c.address_validated = true;
+        c.bytes_rx_unvalidated = 0;
+        c.bytes_tx_unvalidated = 0;
     }
 
     fn nextTimeoutFromTimers(self: *Endpoint, now_ms: i64, requested_timeout_ms: i32) i32 {

@@ -32,4 +32,7 @@ pub const QuicConfig = struct {
     ca_path: ?[]const u8 = null,
     // Allow insecure (skip cert verify) — tests only
     allow_insecure: bool = false,
+    // AEAD usage limit overrides (tests/dev). When null, use RFC defaults.
+    aead_confidentiality_limit_override: ?u64 = null,
+    aead_integrity_limit_override: ?u64 = null,
 };

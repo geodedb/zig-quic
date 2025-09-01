@@ -1,10 +1,10 @@
 # GAP Analysis — QUIC v1
 
-Date: 2025-08-31T00:00:00Z
+Date: 2025-09-01T00:00:00Z
 
 ## Summary delta since prior analysis
 
-Latest slice landed: congestion-control bench grid + CSV, recovery/conn doc comments, fixed recovery APIs, added `Connection.send`/`pushCrypto`; build/test/fuzz/bench/doccheck all green. Key Update TX/RX with previous-window support is in place and tested; CUBIC is implemented and selectable. :contentReference[oaicite:85]{index=85}
+Latest slice landed: congestion-control bench grid + CSV, recovery/conn doc comments, fixed recovery APIs, added `Connection.send`/`pushCrypto`; build/test/fuzz/bench/doccheck all green. Key Update TX/RX with previous-window support is in place and tested; CUBIC is implemented and selectable. Anti-amplification hardening: replaced `tx > 3*rx` with overflow-safe `(tx/3) > rx`, centralized gating in helpers, and added saturating counter updates. :contentReference[oaicite:85]{index=85}
 
 ### Verification (this run)
 
@@ -24,7 +24,7 @@ Latest slice landed: congestion-control bench grid + CSV, recovery/conn doc comm
 
   - HKDF labels; Initial/Handshake/1‑RTT keys; HP sample/PN mask (§5.4–§5.5; A.1–A.5): Implemented (KATs). :contentReference[oaicite:65]{index=65} :contentReference[oaicite:66]{index=66}
   - Key Update sequencing, retention windows (§6.1–§6.5): Implemented (TX/RX tests). :contentReference[oaicite:69]{index=69}
-  - AEAD usage limits (§6.6): Gap — counters/enforcement not wired. :contentReference[oaicite:70]{index=70}
+  - AEAD usage limits (§6.6): Implemented — counters and enforcement (integrity close; confidentiality counter) with config overrides and a unit test. :contentReference[oaicite:70]{index=70}
   - HP timing side‑channel constraints (§9.5): Gap — audit pending. :contentReference[oaicite:72]{index=72}
 
 - Recovery & CC (RFC 9002):
@@ -51,14 +51,13 @@ Latest slice landed: congestion-control bench grid + CSV, recovery/conn doc comm
 
 - Streams/flow control: FIN reassembly and dynamic MAX\* emission pending; STOP_SENDING/RESET_STREAM wired but needs broader lifecycle tests (§2–§4; §11.2). :contentReference[oaicite:97]{index=97}
 - Migration/stateless reset: PATH_CHALLENGE/RESPONSE + preferred‑address rules need integration & tests (§19.17–§19.19; §9.6). :contentReference[oaicite:102]{index=102} :contentReference[oaicite:104]{index=104}
-- Safety: AEAD usage‑limit enforcement not wired; HP timing side‑channel hardening requires audit (RFC 9001 §6.6; §9.5). :contentReference[oaicite:113]{index=113}
+- Safety: HP timing side‑channel hardening requires audit (RFC 9001 §9.5). :contentReference[oaicite:113]{index=113}
 
 ## Gaps (blocking conformance)
 
 1. Stream state machines and flow control (FIN reassembly, dynamic MAX\*) (§3–§4; §11.2). :contentReference[oaicite:116]{index=116}
-2. PMTUD/DPLPMTUD with safe ICMP handling (§14.2–§14.4). — DONE in current slice.
-3. Migration/path validation & stateless reset (§9; §19.17–§19.19). :contentReference[oaicite:118]{index=118}
-4. Safety: AEAD usage limit counters + enforcement; HP constant‑time audit (§6.6; §9.5). :contentReference[oaicite:122]{index=122}
+2. Migration/path validation & stateless reset (§9; §19.17–§19.19). :contentReference[oaicite:118]{index=118}
+3. Safety: HP constant‑time audit (§9.5). :contentReference[oaicite:122]{index=122}
 
 ## Next (pointer)
 

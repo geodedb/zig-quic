@@ -38,6 +38,28 @@ Initial slices build bottom-up: varint, frames, key schedule KATs, then handshak
   - All key material is zeroized when retired. No secrets are logged.
   - Promotion occurs only on successful decryption/authentication of a short packet using derived-next keys.
 
+## AEAD usage limits (RFC 9001 §6.6)
+
+- Counters and limits:
+  - Each connection tracks the total number of encrypted application packets sent (confidentiality usage) and the total number of packets that failed authentication on receive (integrity failures).
+  - Defaults follow RFC 9001 guidance (e.g., AES-GCM): confidentiality ~2^23 packets; integrity ~2^52 failures. Config overrides allow lowering these for tests.
+- Enforcement:
+  - RX: On any AEAD authentication failure (Initial/Handshake/1-RTT), the endpoint calls `Connection.onAeadAuthFailure()`, incrementing the integrity counter. When exceeding the integrity limit, the connection is marked closed and the endpoint emits a CONNECTION_CLOSE with AEAD_LIMIT_REACHED (0x0f) and a short reason.
+  - TX: Short-header send path increments the encrypted-packet counter. Approaching the confidentiality limit biases an immediate Key Update; if updating is not feasible in future, closing is preferable to exceeding limits.
+- Safety:
+  - Counters are monotonic per connection. All enforcement and state changes occur without logging secrets, and retired keys are zeroized.
+
+## Address validation & anti-amplification (3x limit)
+
+- Policy:
+  - Before a path is validated, a server must not send more than 3x the bytes it has received from that address (RFC 9000 §8.1). Validation is achieved by a Retry/Token, or by PATH_CHALLENGE/PATH_RESPONSE at 1-RTT.
+- Implementation:
+  - `Connection.canSendUnderAmplification()` and `Connection.overAmplification()` are the only gates used by both the connection and endpoint. They compare using `(tx/3) <= rx` to avoid 64-bit overflow.
+  - Counters are updated via saturating helpers `addRxUnvalidated(n)` and `addTxUnvalidated(n)` to avoid wrap. When the address is validated, both counters are reset to 0.
+  - Endpoint centralizes path-change transitions in `Endpoint.onPathAddressChanged(...)` and successful validation in `Endpoint.onPathValidated(...)`. These helpers update the peer address, reset counters and flags, refresh the map key for the new peer hash, and trigger/complete PATH validation.
+- Notes:
+  - The division-based compare has a floor bias of at most 2 bytes relative to the exact `tx > 3*rx` inequality. This bias is acceptable and intentional to prevent overflow when counters approach `u64::MAX`.
+
 ## PMTUD and DPLPMTUD
 
 - Probing: Connection can generate MTU probes as exact-size UDP payloads using PING + PADDING. A pending probe records PN and size.

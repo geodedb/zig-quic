@@ -1,6 +1,6 @@
 # NEXT — Near‑term Plan (rolling)
 
-Date: 2025‑08‑31
+Date: 2025‑09‑01
 
 ## 1) ACK multi‑range + ECN — DONE (codec + recovery + ACK_ECN emission + Linux+IPv6 ancillary)
 
@@ -25,7 +25,8 @@ Date: 2025‑08‑31
 
 ## 5) Safety hardening
 
-- AEAD usage‑limit counters and enforcement; audit HP/PN recovery paths for constant‑time where applicable.
+- AEAD usage‑limit counters and enforcement — DONE; integrity limit close with AEAD_LIMIT_REACHED, confidentiality counters + config overrides, unit test added.
+- HP/PN timing: audit header protection/PN decode paths for constant‑time behavior where applicable — PENDING.
 - Acceptance: unit tests assert counter thresholds per RFC 9001 §6.6; review checklist notes constant‑time adherence for HP timing (§9.5). :contentReference[oaicite:130]{index=130} :contentReference[oaicite:131]{index=131}
 
 ## Process gates (each slice)

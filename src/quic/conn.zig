@@ -326,6 +326,8 @@ pub const Connection = struct {
     path_challenge_data: [8]u8 = .{0} ** 8,
     new_token_pending: bool = false,
     new_token_sent: bool = false,
+    // Stateless reset tokens advertised by peer via NEW_CONNECTION_ID
+    reset_tokens: std.ArrayList([16]u8) = undefined,
     // Congestion controllers and selection flag (legacy; Recovery.cc is authoritative)
     use_cubic: bool = false,
     cc_nr: recovery.NewReno = .{},
@@ -350,6 +352,15 @@ pub const Connection = struct {
     pmtud_state: PmtudState = .Disabled,
     pmtud_timer_active: bool = false,
     pmtud_timer_id: u64 = 0,
+
+    // --- AEAD usage limits (RFC 9001 §6.6) ---
+    /// Total number of 1-RTT packets encrypted with current TX keys (confidentiality limit counter).
+    aead_tx_encrypted_count: u64 = 0,
+    /// Total number of packets that failed authentication on RX (integrity limit counter).
+    aead_rx_invalid_count: u64 = 0,
+    /// Applied limits (derived from cipher suite and optionally overridden by config).
+    aead_confidentiality_limit: u64 = (1 << 23), // AES-GCM default
+    aead_integrity_limit: u64 = (1 << 52),
 
     /// Expand a truncated PN in Initial space using expected next PN.
     pub fn expandPnInitial(self: *const Connection, trunc_val: u64, pn_len: u3) u64 {
@@ -457,6 +468,7 @@ pub const Connection = struct {
         self.path_challenge_data = .{0} ** 8;
         self.new_token_pending = false;
         self.new_token_sent = false;
+        self.reset_tokens = std.ArrayList([16]u8).init(alloc.*);
         // CC default to NewReno; endpoint can flip use_cubic
         self.use_cubic = false;
         self.cc_nr = .{};
@@ -489,11 +501,44 @@ pub const Connection = struct {
         self.streams_rx.deinit();
         // Retry token buffer
         self.initial_token.deinit();
+        self.reset_tokens.deinit();
     }
 
     /// Update peer address (used for NAT rebinding / migration detection).
     pub fn setPeer(self: *Connection, peer: SockAddr) void {
         self.peer = peer;
+    }
+
+    /// Update/reset stateless reset tokens based on NEW_CONNECTION_ID retire_prior_to.
+    pub fn onNewConnectionId(self: *Connection, sequence: u64, retire_prior_to: u64, stateless_reset_token: [16]u8) void {
+        // Retire tokens with index < retire_prior_to
+        var i: usize = 0;
+        while (i < self.reset_tokens.items.len) {
+            if (@as(u64, @intCast(i)) < retire_prior_to) {
+                _ = self.reset_tokens.orderedRemove(i);
+                continue;
+            }
+            i += 1;
+        }
+        // Ensure capacity up to sequence index and store/replace
+        if (sequence >= self.reset_tokens.items.len) {
+            const need = sequence + 1 - self.reset_tokens.items.len;
+            var k: usize = 0;
+            while (k < need) : (k += 1) self.reset_tokens.append(.{0} ** 16) catch break;
+        }
+        if (sequence < self.reset_tokens.items.len) self.reset_tokens.items[@intCast(sequence)] = stateless_reset_token;
+    }
+
+    /// Check if a trailing 16-byte token matches any known stateless reset token.
+    pub fn looksLikeStatelessReset(self: *const Connection, pkt: []const u8) bool {
+        if (pkt.len < 5 + 16) return false; // need at least short header + token
+        // Per RFC 9000 §10.3, stateless reset is short header with random looking body and 16-byte token at end
+        const tail = pkt[pkt.len - 16 ..];
+        var i: usize = 0;
+        while (i < self.reset_tokens.items.len) : (i += 1) {
+            if (std.mem.eql(u8, &self.reset_tokens.items[i], tail)) return true;
+        }
+        return false;
     }
 
     /// Record an ECN mark observed on an incoming datagram for the given PN space.
@@ -532,16 +577,61 @@ pub const Connection = struct {
         self.sender_fn = f;
     }
 
+    /// Configure AEAD usage limits based on endpoint config (optional overrides).
+    pub fn setAeadUsageLimits(self: *Connection, conf_limit: ?u64, integ_limit: ?u64) void {
+        if (conf_limit) |v| self.aead_confidentiality_limit = v;
+        if (integ_limit) |v| self.aead_integrity_limit = v;
+    }
+
+    /// Return true if sending is allowed under the anti-amplification limit.
+    /// Uses division (tx/3 <= rx) to avoid overflow for very large counters.
+    pub fn canSendUnderAmplification(self: *const Connection) bool {
+        if (self.address_validated) return true;
+        return (self.bytes_tx_unvalidated / 3) <= self.bytes_rx_unvalidated;
+    }
+
+    /// Return true if we are currently over the anti-amplification limit.
+    pub fn overAmplification(self: *const Connection) bool {
+        if (self.address_validated) return false;
+        return (self.bytes_tx_unvalidated / 3) > self.bytes_rx_unvalidated;
+    }
+
+    /// Saturating add to RX unvalidated counter to avoid wrap.
+    pub fn addRxUnvalidated(self: *Connection, n: usize) void {
+        if (self.address_validated or n == 0) return;
+        const max = std.math.maxInt(u64);
+        const add: u64 = @intCast(n);
+        if (self.bytes_rx_unvalidated > max - add) {
+            self.bytes_rx_unvalidated = max;
+        } else {
+            self.bytes_rx_unvalidated += add;
+        }
+    }
+
+    /// Saturating add to TX unvalidated counter to avoid wrap.
+    pub fn addTxUnvalidated(self: *Connection, n: usize) void {
+        if (self.address_validated or n == 0) return;
+        const max = std.math.maxInt(u64);
+        const add: u64 = @intCast(n);
+        if (self.bytes_tx_unvalidated > max - add) {
+            self.bytes_tx_unvalidated = max;
+        } else {
+            self.bytes_tx_unvalidated += add;
+        }
+    }
+
     /// Send bytes to peer using configured sender callback; if none, act as no-op that accounts amplification.
     pub fn send(self: *Connection, data: []const u8) !usize {
+        // Amplification guard: if address not validated and we already exceeded 3x budget, refuse to send
+        if (self.overAmplification()) return error.WouldBlock;
         if (self.sender_fn) |f| {
             const ctx = self.sender_ctx orelse return data.len;
             const n = try f(ctx, self, data);
-            if (!self.address_validated) self.bytes_tx_unvalidated +%= n;
+            self.addTxUnvalidated(n);
             return n;
         }
         // Test mode: no endpoint sender installed; pretend all bytes were sent.
-        if (!self.address_validated) self.bytes_tx_unvalidated +%= data.len;
+        self.addTxUnvalidated(data.len);
         return data.len;
     }
 
@@ -1369,6 +1459,23 @@ pub const Connection = struct {
         if (ack_eliciting) self.maybeTriggerKeyUpdateOnSend(bytes_sent);
         self.pn_app_tx +%= 1;
         self.computeAndMaybeArmPto(self);
+        // AEAD usage counting: increment total encrypted count for confidentiality limit
+        self.aead_tx_encrypted_count +%= 1;
+        // Proactive trigger: when within 1% of the limit, bias an immediate key update on next ack-eliciting
+        const near_limit: u64 = self.aead_confidentiality_limit - (self.aead_confidentiality_limit / 100);
+        if (self.aead_tx_encrypted_count >= near_limit and !self.tx_update_in_progress) {
+            self.tx_sent_packets_since_key = 64;
+            self.tx_sent_bytes_since_key = 64 * 1024;
+        }
+        if (self.aead_tx_encrypted_count >= self.aead_confidentiality_limit) {
+            // RFC 9001 §6.6: MUST initiate a key update before exceeding the limit; if not possible, close.
+            // Attempt to trigger a TX key update immediately; if already in progress, allow it to finalize; otherwise close.
+            if (!self.tx_update_in_progress) {
+                // Force a key update on next ack-eliciting send by faking thresholds
+                self.tx_sent_packets_since_key = 64;
+                self.tx_sent_bytes_since_key = 64 * 1024;
+            }
+        }
     }
 
     /// Build and send a DPLPMTUD probe at the requested UDP payload size using
@@ -1419,6 +1526,15 @@ pub const Connection = struct {
         if (self.probe_pending_pn != null and self.probe_pending_size > clamp) {
             self.probe_pending_pn = null;
             self.probe_pending_size = 0;
+        }
+    }
+
+    /// Called by endpoint when an incoming packet fails AEAD authentication; enforces integrity limit.
+    pub fn onAeadAuthFailure(self: *Connection) void {
+        self.aead_rx_invalid_count +%= 1;
+        if (self.aead_rx_invalid_count >= self.aead_integrity_limit) {
+            // Enter closed state; in a full implementation we would send CONNECTION_CLOSE with AEAD_LIMIT_REACHED.
+            self.closed = true;
         }
     }
 

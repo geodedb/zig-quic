@@ -457,8 +457,9 @@ pub fn unmaskLongHeaderAndPn(
     const hdr_mask: u8 = if (is_long) 0x0f else 0x1f;
     header_first.* ^= (out_block[0] & hdr_mask);
     const pn_len: u3 = @as(u3, @intCast((header_first.* & 0x03))) + 1;
+    // Constant-time-ish: always xor 4 bytes to avoid data-dependent timing; callers will slice by pn_len.
     var i: usize = 0;
-    while (i < pn_len) : (i += 1) pn_buf.*[i] ^= out_block[i + 1];
+    while (i < 4) : (i += 1) pn_buf.*[i] ^= out_block[i + 1];
     return pn_len;
 }
 

@@ -4,19 +4,17 @@ Date: 2025-08-23 12:00 UTC
 
 ## Latest slice (status bump)
 
-- PMTUD/DPLPMTUD ICMP + state machine
-  - Endpoint drains Linux error queue and parses ICMP PTB (IPv4 Frag Needed / IPv6 Packet Too Big) with quoted-packet spoof checks; connection clamps path_mtu via onIcmpPacketTooBig.
-  - Basic DPLPMTUD state machine added (ProbeStart/ProbeSearch) with timer integration and ACK progression hooks; probes are PING+PADDING to exact UDP payload sizes.
-  - IPv6 ECN ancillary reception (IPV6_RECVTCLASS/TCLASS) confirmed; ACK_ECN emission wired when counters observed.
-- Build/Test
-  - zig build, zig build test PASS on Linux; `tests/test_pmtud.zig` validates probe sizing, ACK raise, ICMP clamp, spoof-check, and state-machine.
-  - TLS key schedule KAT prints "PASSED tls_key_schedule_kat".
+- AEAD usage limits (RFC 9001 §6.6)
+  - Added connection-level counters for TX-encrypted packets (confidentiality) and RX auth failures (integrity) with configurable limits; default thresholds follow RFC guidance.
+  - Endpoint calls into the connection on decryption/authentication failures across all spaces; when integrity limit is exceeded, we send CONNECTION_CLOSE with AEAD_LIMIT_REACHED (0x0f).
+  - Tests: new unit test asserts integrity-limit close behavior; full suite remains green. TLS key schedule KAT still prints "PASSED tls_key_schedule_kat".
+  - Follow-up: audit HP timing behavior (§9.5) and refine proactive key update near confidentiality limits.
 
 ## Coverage vs Requirements (snapshot)
 
 - Library (src/):
-  - Implemented: varint; frames (PING/ACK/ACK_ECN/CRYPTO/STREAM/MAX**/BLOCKED/PATH**/NEW_TOKEN/DATAGRAM/HANDSHAKE_DONE/CONNECTION_CLOSE); packet encode/decode (Initial/Handshake/Short), PN mask/unmask + expansion; AEAD (AES-128-GCM, ChaCha20-Poly1305), HP (AES/ChaCha); recovery with RTT/PTO, packet- and time-threshold loss, persistent congestion; NewReno + CUBIC option; QUIC-TLS key schedule (HKDF-SHA256; v1/v2 salts; Retry tag); TLS 1.3 subset; X.509 minimal parser/validation; endpoint with timers, ECN ancillary (IPv4/IPv6), ICMP error-queue parsing (PTB) with spoof-checks; anti-amplification; version negotiation and retry helpers; timer-driven pacing hook; basic DPLPMTUD state machine (ProbeStart/ProbeSearch).
-  - Partial: stream reassembly/FIN; flow control auto-tuning; DATAGRAM end-to-end surfacing; migration/NAT rebinding; stateless reset; QUIC v2 flow; Compatible VN (RFC 9368), GREASE (RFC 9287), Spin Bit (RFC 9312); 0-RTT; pacing policy tuning across OS backends.
+  - Implemented: varint; frames (PING/ACK/ACK_ECN/CRYPTO/STREAM/MAX**/BLOCKED/PATH**/NEW_TOKEN/DATAGRAM/HANDSHAKE_DONE/CONNECTION_CLOSE); packet encode/decode (Initial/Handshake/Short), PN mask/unmask + expansion; AEAD (AES-128-GCM, ChaCha20-Poly1305), HP (AES/ChaCha); recovery with RTT/PTO, packet- and time-threshold loss, persistent congestion; NewReno + CUBIC option; QUIC-TLS key schedule (HKDF-SHA256; v1/v2 salts; Retry tag); TLS 1.3 subset; X.509 minimal parser/validation; endpoint with timers, ECN ancillary (IPv4/IPv6), ICMP error-queue parsing (PTB) with spoof-checks; anti-amplification; version negotiation and retry helpers; timer-driven pacing hook; basic DPLPMTUD state machine (ProbeStart/ProbeSearch); AEAD usage-limit enforcement (integrity close, confidentiality counter).
+  - Partial: stream reassembly/FIN; flow control auto-tuning; DATAGRAM end-to-end surfacing; migration/NAT rebinding; QUIC v2 flow; Compatible VN (RFC 9368), GREASE (RFC 9287), Spin Bit (RFC 9312); 0-RTT; pacing policy tuning across OS backends.
 - CLI/tools:
   - Implemented: varint tool; client/server scaffolds build.
   - Partial: CLI flags for DATAGRAM/spin-bit/grease/cc; certificate/CA wiring; JSON Lines logging.
@@ -32,8 +30,8 @@ Date: 2025-08-23 12:00 UTC
 - Congestion control: add CUBIC implementation and selection via -Dcc=cubic; validate with benches.
 - Streams/flow control: FIN-aware reassembly, STOP_SENDING/RESET_STREAM, dynamic MAX\* emission, per-stream/connection windows.
 - Extensions/toggles: RFC 9221 DATAGRAM API to CLI; RFC 9368 Compatible VN; RFC 9369 v2; RFC 9287 GREASE; RFC 9312 Spin Bit.
-- Migration/security: NEW_TOKEN persistence/use; path migration and NAT rebinding; stateless reset detection; amplification limits/backoff coverage.
-- TLS 1.3: optional 0-RTT; trust store provider; additional X.509 validation variants.
+- Migration/security: NEW_TOKEN persistence/use; path migration and NAT rebinding; amplification limits/backoff coverage.
+- TLS 1.3: optional 0-RTT; trust store provider; additional X.509 validation variants; HP timing audit (§9.5).
 - Event loop/UDP: finalize epoll/kqueue/IOCP parity; pacing timers on Windows/macOS; non-blocking UDP path perf; pacing policy tuning.
 - Logging/observability: JSON Lines logs (INFO/ERROR), counters, structured trace points.
 
@@ -46,8 +44,10 @@ Date: 2025-08-23 12:00 UTC
 3. Extensions to CLI and wire toggles
    - Wire DATAGRAM to CLI; add spin-bit and grease toggles; groundwork for Compatible VN and v2 vectors.
 4. Migration/token handling
-   - Persist NEW_TOKEN; path validation/migration; stateless reset detector; tests for amplification backoff.
-5. Event loop parity + logging
+
+- Persist NEW_TOKEN; path validation/migration; tests for amplification backoff.
+
+1. Event loop parity + logging
    - Validate pacing across epoll/kqueue/IOCP; add JSON Lines logs; pin deterministic seeds in CI.
 
 ## Risks

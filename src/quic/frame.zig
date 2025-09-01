@@ -42,6 +42,15 @@ pub const Frame = union(enum) {
     ping: void,
     crypto: struct { offset: u64, data: []const u8 },
     stream: struct { stream_id: u64, offset: ?u64, fin: bool, data: []const u8 },
+    // NEW_CONNECTION_ID per RFC 9000 §19.15
+    new_connection_id: struct {
+        sequence: u64,
+        retire_prior_to: u64,
+        connection_id: []const u8,
+        stateless_reset_token: [16]u8,
+    },
+    // RETIRE_CONNECTION_ID per RFC 9000 §19.16
+    retire_connection_id: struct { sequence: u64 },
     ack: struct {
         largest: u64,
         ack_delay: u64,
@@ -137,6 +146,34 @@ pub const Frame = union(enum) {
                 try w.writeAll(s.data);
                 written += s.data.len;
                 return written;
+            },
+            .new_connection_id => |ncid| {
+                try w.writeByte(@intFromEnum(FrameType.NEW_CONNECTION_ID));
+                var written: usize = 1;
+                var tmp: [32]u8 = undefined;
+                const sl = try varint.encode(ncid.sequence, tmp[0..16]);
+                try w.writeAll(tmp[0..sl]);
+                written += sl;
+                const rpl = try varint.encode(ncid.retire_prior_to, tmp[0..16]);
+                try w.writeAll(tmp[0..rpl]);
+                written += rpl;
+                // Connection ID length (1 byte)
+                try w.writeByte(@as(u8, @intCast(ncid.connection_id.len)));
+                written += 1;
+                // Connection ID bytes
+                try w.writeAll(ncid.connection_id);
+                written += ncid.connection_id.len;
+                // Stateless reset token (16 bytes)
+                try w.writeAll(&ncid.stateless_reset_token);
+                written += 16;
+                return written;
+            },
+            .retire_connection_id => |rc| {
+                try w.writeByte(@intFromEnum(FrameType.RETIRE_CONNECTION_ID));
+                var tmp: [16]u8 = undefined;
+                const sl = try varint.encode(rc.sequence, &tmp);
+                try w.writeAll(tmp[0..sl]);
+                return 1 + sl;
             },
             .ack => |a| {
                 // Choose type based on whether ECN counts are present
@@ -442,6 +479,29 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
         if (i + nbytes > buf.len) return error.Truncated;
         const data = buf[i .. i + nbytes];
         return .{ .f = Frame{ .datagram = .{ .data = data } }, .n = i + nbytes };
+    }
+    if (t == @intFromEnum(FrameType.NEW_CONNECTION_ID)) {
+        var i: usize = 1;
+        const seq = try varint.decode(buf[i..]);
+        i += seq.n;
+        const rpto = try varint.decode(buf[i..]);
+        i += rpto.n;
+        if (i >= buf.len) return error.Truncated;
+        const cid_len: usize = buf[i];
+        i += 1;
+        if (i + cid_len + 16 > buf.len) return error.Truncated;
+        const cid = buf[i .. i + cid_len];
+        i += cid_len;
+        var tok: [16]u8 = undefined;
+        @memcpy(&tok, buf[i .. i + 16]);
+        i += 16;
+        return .{ .f = Frame{ .new_connection_id = .{ .sequence = seq.value, .retire_prior_to = rpto.value, .connection_id = cid, .stateless_reset_token = tok } }, .n = i };
+    }
+    if (t == @intFromEnum(FrameType.RETIRE_CONNECTION_ID)) {
+        var i: usize = 1;
+        const seq = try varint.decode(buf[i..]);
+        i += seq.n;
+        return .{ .f = Frame{ .retire_connection_id = .{ .sequence = seq.value } }, .n = i };
     }
     // Flow control and blocked frames
     if (t == @intFromEnum(FrameType.MAX_DATA)) {
