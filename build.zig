@@ -372,6 +372,17 @@ pub fn build(b: *std.Build) void {
         const run_test_hp_aead = b.addRunArtifact(test_hp_aead);
         test_step.dependOn(&run_test_hp_aead.step);
 
+        // ECN longitudinal multi-ACK across spaces
+        const test_ecn_long = b.addTest(.{ .root_source_file = rp("tests/test_ecn_longitudinal.zig"), .target = target, .optimize = optimize });
+        test_ecn_long.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        test_ecn_long.root_module.addImport("quic_packet", quic_packet_mod);
+        test_ecn_long.root_module.addImport("quic_frame", quic_frame_mod);
+        test_ecn_long.root_module.addImport("quic_tls", quic_tls_mod);
+        test_ecn_long.root_module.addImport("quic_crypto", quic_crypto_mod);
+        test_ecn_long.root_module.addImport("quic_varint", quic_varint_mod);
+        const run_test_ecn_long = b.addRunArtifact(test_ecn_long);
+        test_step.dependOn(&run_test_ecn_long.step);
+
         // RX Key Update acceptance tests
         const test_rx_ku = b.addTest(.{ .root_source_file = rp("tests/test_rx_key_update_accept.zig"), .target = target, .optimize = optimize });
         test_rx_ku.root_module.addImport("quic_endpoint", quic_endpoint_mod);
@@ -402,22 +413,29 @@ pub fn build(b: *std.Build) void {
     const fuzz_varint = b.addExecutable(.{ .name = "fuzz_varint", .root_source_file = rp("fuzz/fuzz_varint.zig"), .target = target, .optimize = optimize });
     const fuzz_frame = b.addExecutable(.{ .name = "fuzz_frame_parse", .root_source_file = rp("fuzz/fuzz_frame_parse.zig"), .target = target, .optimize = optimize });
     const fuzz_vn = b.addExecutable(.{ .name = "fuzz_vn_parse", .root_source_file = rp("fuzz/fuzz_vn_parse.zig"), .target = target, .optimize = optimize });
+    const fuzz_short = b.addExecutable(.{ .name = "fuzz_short_decode", .root_source_file = rp("fuzz/fuzz_short_decode.zig"), .target = target, .optimize = optimize });
     fuzz_varint.root_module.addImport("quic_varint", quic_varint_mod);
     fuzz_frame.root_module.addImport("quic_frame", quic_frame_mod);
     fuzz_frame.root_module.addImport("quic_varint", quic_varint_mod);
     fuzz_vn.root_module.addImport("quic_packet", quic_packet_mod);
+    fuzz_short.root_module.addImport("quic_packet", quic_packet_mod);
     const install_fuzz_varint = b.addInstallArtifact(fuzz_varint, .{});
     const install_fuzz_frame = b.addInstallArtifact(fuzz_frame, .{});
     const install_fuzz_vn = b.addInstallArtifact(fuzz_vn, .{});
+    const install_fuzz_short = b.addInstallArtifact(fuzz_short, .{});
     const fuzz_step = b.step("fuzz", "Build fuzzers");
     fuzz_step.dependOn(&install_fuzz_varint.step);
     fuzz_step.dependOn(&install_fuzz_frame.step);
     fuzz_step.dependOn(&install_fuzz_vn.step);
+    fuzz_step.dependOn(&install_fuzz_short.step);
 
     // Benchmarks
     const bench = b.addExecutable(.{ .name = "quic-bench", .root_source_file = rp("bench/main.zig"), .target = target, .optimize = optimize });
     bench.root_module.addImport("quic_varint", quic_varint_mod);
     bench.root_module.addImport("quic_recovery", quic_recovery_mod);
+    bench.root_module.addImport("quic_packet", quic_packet_mod);
+    bench.root_module.addImport("quic_crypto", quic_crypto_mod);
+    bench.root_module.addImport("quic_tls", quic_tls_mod);
     const install_bench = b.addInstallArtifact(bench, .{});
     const bench_step = b.step("bench", "Build benchmarks");
     bench_step.dependOn(&install_bench.step);

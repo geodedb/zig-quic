@@ -644,22 +644,31 @@ pub const Endpoint = struct {
             const peer_h = hashSockaddr(&peer.storage, peer.len);
             var found: ?*conn_mod.Connection = null;
             var dcid_len: usize = 0;
+            // Prefer a match that already has App RX keys installed (test setups may
+            // hold both a client and a server connection object for the same peer/DCID).
+            var preferred: ?*conn_mod.Connection = null;
+            var preferred_len: usize = 0;
             var it = self.conns.iterator();
             while (it.next()) |entry| {
                 if (entry.key_ptr.*.peer_hash != peer_h) continue;
                 const c = entry.value_ptr.*;
                 const l: usize = c.our_scid.len;
+                if (l == 0) continue; // do not match ambiguous zero-length DCID
                 if (1 + l > bytes.len) continue;
-                if (l == 0) {
-                    found = c;
-                    dcid_len = 0;
-                    break;
-                }
                 if (std.mem.eql(u8, c.our_scid.bytes[0..l], bytes[1 .. 1 + l])) {
-                    found = c;
-                    dcid_len = l;
-                    break;
+                    if (c.app_rx_keys != null) {
+                        preferred = c;
+                        preferred_len = l;
+                        break;
+                    } else if (found == null) {
+                        found = c;
+                        dcid_len = l;
+                    }
                 }
+            }
+            if (preferred) |p| {
+                found = p;
+                dcid_len = preferred_len;
             }
             // NAT rebinding / migration fallback: try match by DCID across all entries
             if (found == null) {
@@ -896,8 +905,15 @@ pub const Endpoint = struct {
                         const ack_ecn = conn.getAckEcn(.Application);
                         const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = 0, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges, .ecn = ack_ecn } };
                         _ = ack.write(w) catch 0;
-                        _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = conn.local_max_stream_data } }).write(w) catch {};
-                        _ = (frame.Frame{ .max_data = .{ .max = conn.local_max_data } }).write(w) catch {};
+                        // Pace MAX_* emission: include only when values increased since last sent
+                        if (conn.local_max_stream_data > conn.last_sent_max_stream_data) {
+                            _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = conn.local_max_stream_data } }).write(w) catch {};
+                            conn.last_sent_max_stream_data = conn.local_max_stream_data;
+                        }
+                        if (conn.local_max_data > conn.last_sent_max_data) {
+                            _ = (frame.Frame{ .max_data = .{ .max = conn.local_max_data } }).write(w) catch {};
+                            conn.last_sent_max_data = conn.local_max_data;
+                        }
                         const allow_send = conn.canSendUnderAmplification();
                         if (allow_send) {
                             const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_app_tx)), 2, frames_buf.items, tx_keys, conn.tx_key_phase) catch null;

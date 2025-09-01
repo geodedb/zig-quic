@@ -249,6 +249,12 @@ pub const Connection = struct {
     tx_update_in_progress: bool = false,
     tx_update_start_pn: u64 = 0,
     tx_sent_packets_since_key: u64 = 0,
+    /// Coalesce sustained *_BLOCKED noise: remember last advertised limits we signaled
+    last_stream_data_blocked_limit: u64 = 0,
+    last_data_blocked_limit: u64 = 0,
+    /// Pace MAX_* emission: remember last maxima we sent
+    last_sent_max_stream_data: u64 = 0,
+    last_sent_max_data: u64 = 0,
     tx_sent_bytes_since_key: u64 = 0,
     // Lifecycle flags
     handshake_done_sent: bool = false,
@@ -876,22 +882,28 @@ pub const Connection = struct {
         if (data.len == 0) return 0;
         // Enforce stream-level window
         if (self.stream_send_off >= self.peer_max_stream_data) {
-            // Signal STREAM_DATA_BLOCKED
-            var fb1 = std.ArrayList(u8).init(self.allocator.*);
-            defer fb1.deinit();
-            const w1 = fb1.writer();
-            _ = (frame.Frame{ .stream_data_blocked = .{ .stream_id = id, .limit = self.peer_max_stream_data } }).write(w1) catch 0;
-            self.sendControlFrames(fb1.items);
+            // Signal STREAM_DATA_BLOCKED (coalesced: only once per limit value)
+            if (self.last_stream_data_blocked_limit != self.peer_max_stream_data) {
+                self.last_stream_data_blocked_limit = self.peer_max_stream_data;
+                var fb1 = std.ArrayList(u8).init(self.allocator.*);
+                defer fb1.deinit();
+                const w1 = fb1.writer();
+                _ = (frame.Frame{ .stream_data_blocked = .{ .stream_id = id, .limit = self.peer_max_stream_data } }).write(w1) catch 0;
+                self.sendControlFrames(fb1.items);
+            }
             return error.FlowControlBlocked;
         }
         // Enforce connection-level MAX_DATA
         if (self.conn_send_off >= self.peer_max_data) {
-            // Signal DATA_BLOCKED
-            var fb2 = std.ArrayList(u8).init(self.allocator.*);
-            defer fb2.deinit();
-            const w2 = fb2.writer();
-            _ = (frame.Frame{ .data_blocked = .{ .limit = self.peer_max_data } }).write(w2) catch 0;
-            self.sendControlFrames(fb2.items);
+            // Signal DATA_BLOCKED (coalesced: only once per limit value)
+            if (self.last_data_blocked_limit != self.peer_max_data) {
+                self.last_data_blocked_limit = self.peer_max_data;
+                var fb2 = std.ArrayList(u8).init(self.allocator.*);
+                defer fb2.deinit();
+                const w2 = fb2.writer();
+                _ = (frame.Frame{ .data_blocked = .{ .limit = self.peer_max_data } }).write(w2) catch 0;
+                self.sendControlFrames(fb2.items);
+            }
             return error.FlowControlBlocked;
         }
         const window_left_stream: u64 = self.peer_max_stream_data - self.stream_send_off;
@@ -1484,6 +1496,13 @@ pub const Connection = struct {
         const tx = self.app_tx_keys orelse return error.KeysNotReady;
         // Minimum QUIC/UDP payload size is 1200 (RFC 9000 §14.1)
         if (target_udp_payload < 1200) return error.InvalidProbeSize;
+        // CC-aware pacing guard: do not send a probe if it would exceed cwnd.
+        // This keeps PMTUD probing from competing with data under tight congestion windows.
+        const bif: usize = self.rec.cc.bytes_in_flight;
+        const cwnd: usize = self.rec.cc.cwnd;
+        if (bif + target_udp_payload > cwnd) {
+            return error.WouldBlock;
+        }
         // Compute short-header overhead: 1 (first byte) + DCID length + PN length (2)
         const dcid_len: usize = self.our_scid.len;
         const header_overhead: usize = 1 + dcid_len + 2;

@@ -43,6 +43,8 @@ Keep this tree valid and green in CI. :contentReference[oaicite:37]{index=37}
 
 1. Finish a coherent slice → 2) Update `docs/GAP.md` + `docs/GAP_ANALYSIS.md` → 3) Update `docs/DESIGN.md` APIs → 4) `zig build`, `zig build test`, build fuzz/bench → 5) fix all failures → 6) commit with `docs:`/`tests:` scopes. :contentReference[oaicite:39]{index=39}
 
+- CI rehearsal: Before pushing, run GitHub Actions locally with `act` to validate workflows (e.g., `act -W .github/workflows/ci.yml`). Ensure all jobs pass locally to keep main green.
+
 ## Acceptance (must pass, exact)
 
 - **Varint tool:** Cmds + outputs exactly as specified (encode/decode/underflow). :contentReference[oaicite:41]{index=41}

@@ -195,4 +195,48 @@ pub fn main() !void {
             );
         }
     }
+
+    // Micro-bench 5: header protection decode timing guardrail
+    // Measure decodeShortProtected and decodeInitialProtected over random inputs and two key phases.
+    const pkt = @import("quic_packet");
+    var prng = std.Random.DefaultPrng.init(0x12345678);
+    const rng = prng.random();
+    const dcid = "HPBM";
+    const keys = pkt.AeadKeys{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
+    var frames = std.ArrayList(u8).init(alloc);
+    defer frames.deinit();
+    _ = (std.io.getStdOut().writer()).write("hp bench: generating...\n") catch {};
+    frames.clearRetainingCapacity();
+    _ = (pkt.ShortHeader{ .dcid = dcid, .packet_number = 1, .payload = &[_]u8{0x01} }).encode(frames.writer()) catch {};
+    const payload = frames.items[frames.items.len - 1 ..];
+    // Build two short protected packets for phase 0/1
+    const sp0 = try pkt.encodeShortProtected(alloc, dcid, 1, 2, payload, keys, false);
+    defer alloc.free(sp0);
+    const sp1 = try pkt.encodeShortProtected(alloc, dcid, 2, 2, payload, keys, true);
+    defer alloc.free(sp1);
+    // Build an Initial packet too
+    const ik = pkt.derive_initial_keys(false, dcid);
+    var fbi = std.ArrayList(u8).init(alloc);
+    defer fbi.deinit();
+    _ = fbi.writer().writeByte(0x01) catch {};
+    const ip = try pkt.encodeInitialProtected(alloc, pkt.QUIC_V1, dcid, "S", &[_]u8{}, 1, 2, fbi.items, .{ .key = ik.client.key, .iv = ik.client.iv, .hp = ik.client.hp });
+    defer alloc.free(ip);
+    // Time decode loops
+    timer.reset();
+    var total_ns: u64 = 0;
+    const loops: usize = 10000;
+    for (0..loops) |i| {
+        const which = rng.int(u1);
+        if (which == 0) {
+            const phase = (i & 1) == 0;
+            const pkt_bytes = if (phase) sp1 else sp0;
+            const d = pkt.decodeShortProtected(alloc, pkt_bytes, dcid.len, keys) catch continue;
+            alloc.free(d.payload);
+        } else {
+            const d2 = pkt.decodeInitialProtected(alloc, ip, .{ .key = ik.server.key, .iv = ik.server.iv, .hp = ik.server.hp }) catch continue;
+            alloc.free(d2.payload);
+        }
+    }
+    total_ns = timer.read();
+    try std.io.getStdOut().writer().print("hp decode timing: {d} ns total for {d} ops\n", .{ total_ns, loops });
 }

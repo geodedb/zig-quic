@@ -66,7 +66,7 @@ Date: 2025-08-23 12:00 UTC
 
 - Streams: Implemented RX-side RESET_STREAM handling and stream teardown API. Emits RESET_STREAM on STOP_SENDING with final_size of bytes sent. RX path caps final_size, trims buffered data, marks finished.
 - Flow control: Threshold bumps for MAX_DATA and MAX_STREAM_DATA when consumption crosses 50% of current window; blocked signaling for STREAM_DATA_BLOCKED/DATA_BLOCKED.
-- Recovery/CC: Parameterized CUBIC vs NewReno benchmark over RTT/BDP/loss; simple pacing heuristic benchmarked.
+- Recovery/CC: Parameterized CUBIC vs NewReno benchmark over RTT/BDP/loss; simple pacing heuristic benchmarked. Added PMTUD tests that validate cwnd-aware gating and pacing behavior under both NewReno and CUBIC modes, including blackhole backoff single‑outstanding invariant.
 - CI/build: Tooling and benches compile on Zig 0.14.1; acceptance tests pass.
 
 ### Next slice (preview)

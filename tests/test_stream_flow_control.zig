@@ -363,3 +363,116 @@ test "endpoint ACK includes updated MAX_* after threshold bumps" {
     }
     try std.testing.expect(saw_msd2 and saw_md2);
 }
+
+test "sustained blocked coalesces STREAM_DATA_BLOCKED and DATA_BLOCKED until limits change" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const A = gpa.allocator();
+
+    var cap = Capture.init(A);
+    defer cap.deinit();
+
+    var c = makeConn(&gpa.allocator());
+    defer c.deinit();
+    c.setSender(@ptrCast(&cap), captureSender);
+    c.stream_opened = true;
+
+    // Stream-level block and coalescing
+    c.peer_max_stream_data = 5;
+    c.peer_max_data = 1_000_000;
+    const _e1 = c.writeStream(0, "0123456789") catch {};
+    _ = _e1; // ignore
+    try std.testing.expect(cap.bufs.items.len >= 1);
+    const first_count = cap.bufs.items.len;
+    // Repeated attempts while limit unchanged should not send more *_BLOCKED
+    var i: usize = 0;
+    while (i < 3) : (i += 1) {
+        _ = c.writeStream(0, "xxxx") catch {};
+    }
+    try std.testing.expectEqual(first_count, cap.bufs.items.len);
+    // Increase stream limit but still below data size; should re-send sdb at new limit
+    c.peer_max_stream_data = 8;
+    _ = c.writeStream(0, "abcdefghij") catch {};
+    try std.testing.expect(cap.bufs.items.len >= first_count + 1);
+
+    // Connection-level block and coalescing
+    cap.bufs.clearRetainingCapacity();
+    c.stream_send_off = 0;
+    c.conn_send_off = 0;
+    c.peer_max_stream_data = 1_000_000;
+    c.peer_max_data = 7;
+    const _e2 = c.writeStream(0, "abcdefghij") catch {};
+    _ = _e2;
+    try std.testing.expect(cap.bufs.items.len >= 1);
+    const first2 = cap.bufs.items.len;
+    // More attempts shouldn't add more frames until limit changes
+    _ = c.writeStream(0, "moremore") catch {};
+    _ = c.writeStream(0, "moremore") catch {};
+    try std.testing.expectEqual(first2, cap.bufs.items.len);
+    // Raise conn limit slightly; still blocked by stream window? Ensure another DATA_BLOCKED goes out
+    c.peer_max_data = 9;
+    _ = c.writeStream(0, "ABCDEFGHIJ") catch {};
+    try std.testing.expect(cap.bufs.items.len >= first2 + 1);
+}
+
+test "endpoint ACK does not include redundant MAX_* when values unchanged" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const A = gpa.allocator();
+
+    var ep = try endpoint.Endpoint.init(&A, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
+    defer ep.deinit();
+    ep.test_capture_enabled = true;
+    ep.captureClear();
+
+    var c = try ep.connectClient("127.0.0.1:2");
+    const key = [_]u8{0} ** 16;
+    const iv = [_]u8{0} ** 12;
+    const hp = [_]u8{0} ** 16;
+    c.app_rx_keys = .{ .key = key, .iv = iv, .hp = hp };
+    c.app_tx_keys = .{ .key = key, .iv = iv, .hp = hp };
+
+    // Helper to inject frames
+    const inject = struct {
+        fn go(a: std.mem.Allocator, e: *endpoint.Endpoint, cn: *conn_mod.Connection, frames_bytes: []const u8) !void {
+            const pkt_bytes = try pkt.encodeShortProtected(a, cn.our_scid.bytes[0..cn.our_scid.len], 1, 2, frames_bytes, .{ .key = key, .iv = iv, .hp = hp }, cn.rx_key_phase);
+            defer a.free(pkt_bytes);
+            e.testInject(cn.peer, pkt_bytes);
+        }
+    }.go;
+
+    // Cross a threshold once to cause MAX emission
+    const half_stream: usize = @intCast(c.local_max_stream_data / 2);
+    var fb = std.ArrayList(u8).init(A);
+    defer fb.deinit();
+    const payload = try A.alloc(u8, half_stream + 16);
+    defer A.free(payload);
+    @memset(payload, 'Z');
+    _ = (fr.Frame{ .stream = .{ .stream_id = 0, .offset = 0, .fin = false, .data = payload } }).write(fb.writer()) catch 0;
+    try inject(A, &ep, &c, fb.items);
+    // Pop first captured ack (with MAX_*)
+    const cap1 = ep.capturePop().?;
+    A.free(cap1.bytes);
+
+    // Send another small packet that doesn't increase windows
+    fb.clearRetainingCapacity();
+    _ = (fr.Frame{ .ping = {} }).write(fb.writer()) catch 0;
+    try inject(A, &ep, &c, fb.items);
+    const cap2 = ep.capturePop().?;
+    defer A.free(cap2.bytes);
+    const dec2 = try pkt.decodeShortProtected(A, cap2.bytes, c.our_scid.len, .{ .key = key, .iv = iv, .hp = hp });
+    defer A.free(dec2.payload);
+    var off: usize = 0;
+    var saw_msd = false;
+    var saw_md = false;
+    while (off < dec2.payload.len) {
+        const pr = try fr.decodeOne(dec2.payload[off..]);
+        off += pr.n;
+        switch (pr.f) {
+            .max_stream_data => saw_msd = true,
+            .max_data => saw_md = true,
+            else => {},
+        }
+    }
+    try std.testing.expect(!saw_msd and !saw_md);
+}

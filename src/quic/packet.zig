@@ -256,15 +256,26 @@ pub fn decodeShortProtected(
 
 /// Compute initial client/server traffic keys for QUIC v1/v2 given DCID bytes.
 pub fn derive_initial_keys(version_v2: bool, dcid: []const u8) struct {
-    client: struct { key: [16]u8, iv: [12]u8, hp: [16]u8 },
-    server: struct { key: [16]u8, iv: [12]u8, hp: [16]u8 },
+    client: InitialKeys,
+    server: InitialKeys,
 } {
     const initial = ks.deriveInitialSecret(version_v2, dcid);
     const pair = ks.deriveClientServerInitial(initial);
-    return .{
-        .client = if (version_v2) ks.deriveKeyIvHpV2(pair.client) else ks.deriveKeyIvHp(pair.client),
-        .server = if (version_v2) ks.deriveKeyIvHpV2(pair.server) else ks.deriveKeyIvHp(pair.server),
+    const client_keys: InitialKeys = if (version_v2) blk: {
+        const t = ks.deriveKeyIvHpV2(pair.client);
+        break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
+    } else blk: {
+        const t = ks.deriveKeyIvHp(pair.client);
+        break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
     };
+    const server_keys: InitialKeys = if (version_v2) blk: {
+        const t = ks.deriveKeyIvHpV2(pair.server);
+        break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
+    } else blk: {
+        const t = ks.deriveKeyIvHp(pair.server);
+        break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
+    };
+    return .{ .client = client_keys, .server = server_keys };
 }
 
 /// Initial/Handshake key material used by long header helpers.
