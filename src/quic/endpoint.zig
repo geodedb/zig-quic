@@ -873,6 +873,10 @@ pub const Endpoint = struct {
                         else => {},
                     }
                 }
+                // Test-only debug: record whether we saw any ack-eliciting frames
+                if (self.test_capture_enabled) {
+                    std.debug.print("APP saw_any={s}\n", .{if (saw_any) "y" else "n"});
+                }
                 if (saw_hs_done) {
                     // Client: drop Handshake keys after HANDSHAKE_DONE
                     conn.hs_rx_keys = null;
@@ -904,9 +908,16 @@ pub const Endpoint = struct {
                     return;
                 }
                 if (saw_any) {
+                    // Test-only debug: confirm whether we have TX keys at ACK time
+                    if (self.test_capture_enabled) {
+                        std.debug.print("APP have_tx_keys={s}\n", .{if (conn.app_tx_keys != null) "y" else "n"});
+                    }
                     if (conn.app_tx_keys) |tx_keys| {
                         // Build ACK (+ optional MAX_* when allowed) and honor anti-amplification.
                         const allow_send = conn.canSendUnderAmplification();
+                        if (self.test_capture_enabled) {
+                            std.debug.print("APP allow_send={s} rx_unval={d} tx_unval={d} validated={s}\n", .{ if (allow_send) "y" else "n", conn.bytes_rx_unvalidated, conn.bytes_tx_unvalidated, if (conn.address_validated) "y" else "n" });
+                        }
                         if (allow_send) {
                             var frames_buf = std.ArrayList(u8).init(self.allocator.*);
                             defer frames_buf.deinit();
@@ -975,6 +986,7 @@ pub const Endpoint = struct {
                                 }
                             }
                             if (self.test_capture_enabled) {
+                                std.debug.print("APP ack-only branch\n", .{});
                                 if (ack_ecn2) |e2| {
                                     std.debug.print("APP ACK_ECN ack-only ce={d} ect0={d} ect1={d}\n", .{ e2.ce, e2.ect0, e2.ect1 });
                                 } else {
@@ -990,6 +1002,10 @@ pub const Endpoint = struct {
                                 // ACK-only is not ack-eliciting
                                 conn.onShortHeaderPacketSent(pkt_bytes2.len, false);
                             }
+                        }
+                    } else {
+                        if (self.test_capture_enabled) {
+                            std.debug.print("APP skip ACK: no tx_keys\n", .{});
                         }
                     }
                 }
