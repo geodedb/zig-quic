@@ -573,7 +573,9 @@ pub const Connection = struct {
             .Handshake => &self.ecn_handshake,
             .Application => &self.ecn_app,
         };
-        if (!ctr.seen_any) return null;
+        // Emit ACK_ECN only when at least one ECN mark was observed in this space.
+        // Use counters directly to avoid relying on the seen_any latch in edge-ordering cases.
+        if (ctr.ect0 == 0 and ctr.ect1 == 0 and ctr.ce == 0) return null;
         return .{ .ect0 = ctr.ect0, .ect1 = ctr.ect1, .ce = ctr.ce };
     }
 
