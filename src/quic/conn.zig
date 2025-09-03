@@ -318,6 +318,9 @@ pub const Connection = struct {
     peer_max_streams_bidi: u64 = 16,
     peer_max_streams_uni: u64 = 16,
     opened_bidi: u64 = 0,
+    local_max_streams_bidi: u64 = 16,
+    local_max_streams_uni: u64 = 0,
+    last_sent_max_streams_bidi: u64 = 0,
     opened_uni: u64 = 0,
     conn_send_off: u64 = 0,
     conn_recv_total: u64 = 0,
@@ -348,6 +351,16 @@ pub const Connection = struct {
     ecn_app: EcnCounter = .{},
     // Pending ACK_ECN emission hint for Application space
     ecn_app_ack_pending: bool = false,
+
+    // --- CRYPTO stream offsets (Initial and Handshake) ---
+    crypto_tx_off_initial: u64 = 0,
+    crypto_tx_off_handshake: u64 = 0,
+    crypto_rx_off_initial: u64 = 0,
+    crypto_rx_off_handshake: u64 = 0,
+    crypto_retx_initial: ?[]u8 = null,
+    crypto_retx_initial_off: u64 = 0,
+    crypto_retx_handshake: ?[]u8 = null,
+    crypto_retx_handshake_off: u64 = 0,
 
     // --- DPLPMTUD (RFC 9000 §14.2–§14.4) minimal state ---
     /// Current believed path MTU (UDP payload size), never below 1200.
@@ -656,6 +669,26 @@ pub const Connection = struct {
     /// Feed received CRYPTO bytes to the TLS engine and enforce allowed ALPN list.
     pub fn pushCrypto(self: *Connection, hs: []const u8) !void {
         self.tls.onCryptoRecv(hs);
+        // Server: upon receiving ClientHello, immediately queue a ServerHello
+        if (self.role == .Server and !self.tls.sh_seen) {
+            _ = self.tls.queueMinimalServerHelloAuto() catch {};
+        }
+        // If we can compute handshake secrets now, install Handshake keys once
+        if (self.hs_client == null or self.hs_server == null) {
+            if (self.tls.computeHandshakeSecrets()) |hs_secrets| {
+                self.hs_client = hs_secrets.client;
+                self.hs_server = hs_secrets.server;
+                self.deriveHandshakeKeys(self.version_v2);
+            }
+        }
+        // If we can compute application secrets and Finished verified, install 1-RTT keys once
+        if (self.app_tx_keys == null) {
+            if (self.tls.finished_verified) {
+                if (self.tls.computeApplicationSecrets()) |app_secrets| {
+                    self.deriveAppKeys(app_secrets.client, app_secrets.server, self.version_v2);
+                }
+            }
+        }
         // If an ALPN was negotiated, enforce it against the allowed list when provided.
         if (self.tls.alpn) |a| {
             if (self.allowed_alpns.len > 0) {
@@ -844,6 +877,31 @@ pub const Connection = struct {
         }
     }
 
+    pub fn advertiseInitialFlowControl(self: *Connection) void {
+        if (self.app_tx_keys == null) return;
+        if (!self.canSendUnderAmplification()) return;
+        var frames = std.ArrayList(u8).init(self.allocator.*);
+        defer frames.deinit();
+        const w = frames.writer();
+        var wrote: bool = false;
+        if (self.local_max_stream_data > self.last_sent_max_stream_data) {
+            _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = self.local_max_stream_data } }).write(w) catch 0;
+            self.last_sent_max_stream_data = self.local_max_stream_data;
+            wrote = true;
+        }
+        if (self.local_max_data > self.last_sent_max_data) {
+            _ = (frame.Frame{ .max_data = .{ .max = self.local_max_data } }).write(w) catch 0;
+            self.last_sent_max_data = self.local_max_data;
+            wrote = true;
+        }
+        if (self.local_max_streams_bidi > self.last_sent_max_streams_bidi) {
+            _ = (frame.Frame{ .max_streams_bidi = .{ .max = self.local_max_streams_bidi } }).write(w) catch 0;
+            self.last_sent_max_streams_bidi = self.local_max_streams_bidi;
+            wrote = true;
+        }
+        if (wrote) self.sendControlFrames(frames.items);
+    }
+
     /// Send a datagram to the connection's peer using 1-RTT short header.
     pub fn sendDatagram(self: *Connection, data: []const u8) !void {
         const tx = self.app_tx_keys orelse return error.KeysNotReady;
@@ -954,8 +1012,8 @@ pub const Connection = struct {
         const n: usize = @min(buf.len, s.inbox.items.len);
         @memcpy(buf[0..n], s.inbox.items[0..n]);
         const rem = s.inbox.items.len - n;
-        if (rem > 0) std.mem.copy(u8, s.inbox.items[0..rem], s.inbox.items[n..]);
-        s.inbox.shrinkRetainingCapacity(rem) catch {};
+        if (rem > 0) std.mem.copyForwards(u8, s.inbox.items[0..rem], s.inbox.items[n..]);
+        s.inbox.shrinkRetainingCapacity(rem);
         return n;
     }
 
@@ -1421,6 +1479,24 @@ pub const Connection = struct {
         self.tx_prev_keys = null;
         self.rx_prev_keys = null;
         self.rx_prev_allow = 0;
+        // After 1-RTT keys are ready, proactively advertise initial flow-control if allowed
+        self.advertiseInitialFlowControl();
+        // Drop Initial and Handshake keys upon entering 1-RTT
+        self.initial_keys_dropped = true;
+        self.hs_rx_keys = null;
+        self.hs_tx_keys = null;
+        // Server: send HANDSHAKE_DONE and reaffirm initial MAX_* once
+        if (self.role == .Server and !self.handshake_done_sent) {
+            var frames = std.ArrayList(u8).init(self.allocator.*);
+            defer frames.deinit();
+            const w = frames.writer();
+            _ = (frame.Frame{ .handshake_done = {} }).write(w) catch 0;
+            _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = self.local_max_stream_data } }).write(w) catch 0;
+            _ = (frame.Frame{ .max_data = .{ .max = self.local_max_data } }).write(w) catch 0;
+            _ = (frame.Frame{ .max_streams_bidi = .{ .max = self.local_max_streams_bidi } }).write(w) catch 0;
+            self.sendControlFrames(frames.items);
+            self.handshake_done_sent = true;
+        }
     }
 
     // --- Key Update helpers ---

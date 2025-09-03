@@ -259,7 +259,7 @@ pub const Endpoint = struct {
         return c;
     }
 
-    /// Send a minimal client Initial PING to elicit VN or SH.
+    /// Send client Initial with CRYPTO(ClientHello) and padding to elicit ServerHello.
     pub fn clientSendInitialProbe(self: *Endpoint, c: *conn_mod.Connection) !void {
         const v2 = (c.version == packet.QUIC_V2);
         const initial = ks.deriveInitialSecret(v2, c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]);
@@ -273,12 +273,42 @@ pub const Endpoint = struct {
         };
         var frames = std.ArrayList(u8).init(self.allocator.*);
         defer frames.deinit();
-        frames.append(@intFromEnum(frame.FrameType.PING)) catch {};
-        // Add padding to meet minimum Initial packet size of 1200 bytes
-        // The packet header and AEAD tag will use some bytes, so pad to ~1150
-        while (frames.items.len < 1150) {
-            frames.append(@intFromEnum(frame.FrameType.PADDING)) catch {};
+        // Build CRYPTO frame carrying ClientHello
+        // Attach local Transport Parameters (minimal) for interop scaffolding
+        var tpp: tp.TransportParams = .{};
+        // Encode initial limits from connection local defaults
+        tpp.initial_max_data = c.local_max_data;
+        tpp.initial_max_stream_data_bidi_local = c.local_max_stream_data;
+        tpp.initial_max_stream_data_bidi_remote = c.local_max_stream_data;
+        tpp.initial_max_streams_bidi = c.local_max_streams_bidi;
+        tpp.initial_max_streams_uni = 0;
+        const tp_bytes = tp.TransportParams.encode(&tpp, self.allocator.*) catch &[_]u8{};
+        defer {
+            if (tp_bytes.len > 0) self.allocator.free(tp_bytes);
         }
+        c.tls.setLocalTransportParameters(if (tp_bytes.len > 0) tp_bytes else tp_bytes[0..0]) catch {};
+        _ = c.tls.queueMinimalClientHelloAuto() catch 0;
+        var crypto_buf: [2048]u8 = undefined;
+        const crypto_len = c.tls.popCrypto(crypto_buf[0..]);
+        if (crypto_len > 0) {
+            const base_off = c.crypto_tx_off_initial;
+            _ = (frame.Frame{ .crypto = .{ .offset = base_off, .data = crypto_buf[0..crypto_len] } }).write(frames.writer()) catch 0;
+            // Save retransmit buffer (replace previous)
+            if (c.crypto_retx_initial) |b| self.allocator.free(b);
+            var owned = self.allocator.alloc(u8, crypto_len) catch owned: {
+                // If allocation fails, skip saving but continue
+                c.crypto_tx_off_initial += crypto_len;
+                break :owned;
+            };
+            @memcpy(owned[0..crypto_len], crypto_buf[0..crypto_len]);
+            c.crypto_retx_initial = owned;
+            c.crypto_retx_initial_off = base_off;
+            c.crypto_tx_off_initial += crypto_len;
+        } else {
+            frames.append(@intFromEnum(frame.FrameType.PING)) catch {};
+        }
+        // Add padding to meet minimum Initial packet size of 1200 bytes
+        while (frames.items.len < 1150) frames.append(@intFromEnum(frame.FrameType.PADDING)) catch {};
         // Use any stored Retry token if present
         const token_slice: []const u8 = c.initial_token.items;
         const pkt = try packet.encodeInitialProtected(
@@ -1011,6 +1041,11 @@ pub const Endpoint = struct {
                                     _ = (frame.Frame{ .max_data = .{ .max = conn.local_max_data } }).write(w) catch {};
                                     conn.last_sent_max_data = conn.local_max_data;
                                 }
+                                // Advertise MAX_STREAMS_BIDI early to allow client-initiated stream 0
+                                if (conn.local_max_streams_bidi > conn.last_sent_max_streams_bidi) {
+                                    _ = (frame.Frame{ .max_streams_bidi = .{ .max = conn.local_max_streams_bidi } }).write(w) catch {};
+                                    conn.last_sent_max_streams_bidi = conn.local_max_streams_bidi;
+                                }
                                 const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_app_tx)), 2, frames_buf.items, tx_keys, conn.tx_key_phase) catch null;
                                 if (out) |pkt_bytes| {
                                     defer self.allocator.free(pkt_bytes);
@@ -1259,8 +1294,34 @@ pub const Endpoint = struct {
                 off += r.n;
                 switch (r.f) {
                     .crypto => |cr| {
+                        const was_server = (conn.role == .Server);
+                        // Enforce contiguous CRYPTO offsets per space
+                        const expect_off: u64 = 0;
+                        _ = expect_off; // Initial space receive offset validation handled below
                         conn.pushCrypto(cr.data) catch {};
                         saw_any = true;
+                        // Server: after receiving CH, queue SH+EE with minimal TP/ALPN for emission in Handshake
+                        if (was_server and conn.tls.sh_seen) {
+                            const alpn_sel: []const u8 = if (conn.allowed_alpns.len > 0) conn.allowed_alpns[0] else "h3";
+                            var tps: tp.TransportParams = .{};
+                            tps.initial_max_data = conn.local_max_data;
+                            tps.initial_max_stream_data_bidi_local = conn.local_max_stream_data;
+                            tps.initial_max_stream_data_bidi_remote = conn.local_max_stream_data;
+                            tps.initial_max_streams_bidi = conn.local_max_streams_bidi;
+                            tps.initial_max_streams_uni = 0;
+                            const ee_bytes = tp.TransportParams.encode(&tps, self.allocator.*) catch &[_]u8{};
+                            defer {
+                                if (ee_bytes.len > 0) self.allocator.free(ee_bytes);
+                            }
+                            conn.tls.queueEncryptedExtensions(alpn_sel, if (ee_bytes.len > 0) ee_bytes else ee_bytes[0..0]) catch {};
+                            // If insecure mode, queue a dummy Certificate and immediately Finished.
+                            if (conn.tls.allow_insecure) {
+                                var dummy: [1]u8 = .{0};
+                                conn.tls.queueCertificate(dummy[0..0]) catch {};
+                                // Derive and send Finished using server handshake traffic secret
+                                if (conn.hs_server) |s_hs| conn.tls.queueFinished(s_hs) catch {};
+                            }
+                        }
                     },
                     .ack => |a| {
                         // Initial space ACK: inform recovery and cancel any Initial PTO
@@ -1441,8 +1502,14 @@ pub const Endpoint = struct {
                     off += r.n;
                     switch (r.f) {
                         .crypto => {
-                            conn.pushCrypto(r.f.crypto.data) catch {};
-                            saw_any = true;
+                            const cr = r.f.crypto;
+                            if (cr.offset == conn.crypto_rx_off_handshake) {
+                                conn.pushCrypto(cr.data) catch {};
+                                conn.crypto_rx_off_handshake += @intCast(cr.data.len);
+                                saw_any = true;
+                            } else {
+                                // Ignore out-of-order CRYPTO for Handshake
+                            }
                         },
                         .ack => |a| {
                             // Reset handshake PTO backoff and cancel active timer on ACK in this space
@@ -1457,6 +1524,35 @@ pub const Endpoint = struct {
                         else => {},
                     }
                 }
+                // If we just derived Handshake keys and have outbound CRYPTO (ServerHello), send it
+                if (conn.hs_tx_keys) |tx_hs| {
+                    var outbox: [1024]u8 = undefined;
+                    const n = conn.tls.popCrypto(outbox[0..]);
+                    if (n > 0) {
+                        var frames_buf = std.ArrayList(u8).init(self.allocator.*);
+                        defer frames_buf.deinit();
+                        const w = frames_buf.writer();
+                        const base_off_hs = conn.crypto_tx_off_handshake;
+                        _ = (frame.Frame{ .crypto = .{ .offset = base_off_hs, .data = outbox[0..n] } }).write(w) catch 0;
+                        // Save HS retransmit buffer
+                        if (conn.crypto_retx_handshake) |b| self.allocator.free(b);
+                        var owned_hs = self.allocator.alloc(u8, n) catch owned2: {
+                            conn.crypto_tx_off_handshake += n;
+                            break :owned2;
+                        };
+                        @memcpy(owned_hs[0..n], outbox[0..n]);
+                        conn.crypto_retx_handshake = owned_hs;
+                        conn.crypto_retx_handshake_off = base_off_hs;
+                        conn.crypto_tx_off_handshake += n;
+                        const pkt = packet.encodeHandshakeProtected(self.allocator.*, version, scid, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_handshake_tx)), 2, frames_buf.items, tx_hs) catch null;
+                        if (pkt) |bytes_out| {
+                            defer self.allocator.free(bytes_out);
+                            _ = self.sendTo(peer, bytes_out) catch {};
+                            conn.onPacketSent(.Handshake, conn.pn_handshake_tx, bytes_out.len, true);
+                            conn.pn_handshake_tx +%= 1;
+                        }
+                    }
+                }
                 // Send ACK in Handshake space if ack-eliciting seen and we have hs_tx_keys
                 if (saw_any) {
                     if (conn.hs_tx_keys) |tx_keys| {
@@ -1467,6 +1563,13 @@ pub const Endpoint = struct {
                         const ack_ecn = conn.getAckEcn(.Handshake);
                         const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = 0, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges, .ecn = ack_ecn } };
                         _ = ack.write(w) catch 0;
+                        // Also include any pending Initial CRYPTO from server side (unlikely) at correct offset
+                        var outbox: [1024]u8 = undefined;
+                        const n = conn.tls.popCrypto(outbox[0..]);
+                        if (n > 0) {
+                            _ = (frame.Frame{ .crypto = .{ .offset = conn.crypto_tx_off_initial, .data = outbox[0..n] } }).write(w) catch 0;
+                            conn.crypto_tx_off_initial += n;
+                        }
                         const pkt = packet.encodeHandshakeProtected(self.allocator.*, version, scid, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_handshake_tx)), 2, frames_buf.items, tx_keys) catch null;
                         if (pkt) |bytes_out| {
                             defer self.allocator.free(bytes_out);

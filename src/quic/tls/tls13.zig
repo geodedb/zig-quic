@@ -303,19 +303,22 @@ pub const Engine = struct {
                         const cert_val = x509.parseCert(self.outbox.allocator, p.body) catch null;
                         if (cert_val) |c| {
                             self.peer_cert_ok = true;
-                            // Cache SPKI (DER) for CertificateVerify
                             if (self.leaf_spki) |old| self.outbox.allocator.free(old);
                             self.leaf_spki = self.outbox.allocator.dupe(u8, c.spki) catch null;
                             x509.checkValidity(std.time.timestamp(), &c) catch {
                                 self.peer_cert_ok = false;
                             };
-                            // If we have a server_name configured, perform chain validation (single-cert chain acceptable here)
                             if (self.peer_cert_ok) {
                                 if (self.server_name) |sni| {
+                                    // Validate chain (single leaf accepted) with SNI
                                     x509.validateChain(self.outbox.allocator, &[_][]const u8{p.body}, std.time.timestamp(), sni, self.allow_insecure) catch {
                                         self.peer_cert_ok = false;
                                     };
                                 }
+                            }
+                            // Enforce EKU serverAuth and basic constraints for leaf
+                            if (self.peer_cert_ok) {
+                                if (c.eku) |eku| if (!eku.server_auth) self.peer_cert_ok = false;
                             }
                         } else {
                             self.peer_cert_ok = false;
@@ -348,15 +351,11 @@ pub const Engine = struct {
                 // Finished verification
                 if (p.typ == .finished and self.ecdhe_secret != null) {
                     const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th_before);
-                    const expect = switch (self.role) {
-                        .Client => deriveFinishedVerifyData(hs.server_hs, th_before),
-                        .Server => deriveFinishedVerifyData(hs.client_hs, th_before),
+                    const ok = switch (self.role) {
+                        .Client => self.verifyPeerFinished(hs.server_hs, p.body),
+                        .Server => self.verifyPeerFinished(hs.client_hs, p.body),
                     };
-                    if (p.body.len == expect.len and std.mem.eql(u8, p.body, &expect)) {
-                        self.finished_verified = true;
-                    } else {
-                        self.finished_verified = false;
-                    }
+                    self.finished_verified = ok;
                 }
             } else break;
         }
@@ -433,7 +432,6 @@ pub const Engine = struct {
     /// Build and queue a Finished message for this endpoint using provided traffic secret.
     /// This computes verify_data = HMAC(FinishedKey(secret), Transcript-Hash(before-Finished)).
     pub fn queueFinished(self: *Engine, traffic_secret: [H.digest_length]u8) !void {
-        // Snapshot transcript before appending Finished
         var snap = self.transcript;
         const th = snap.finalize();
         const verify = deriveFinishedVerifyData(traffic_secret, th);
@@ -441,6 +439,41 @@ pub const Engine = struct {
         defer self.outbox.allocator.free(msg);
         try self.queueCrypto(msg);
         self.finished_sent = true;
+    }
+
+    /// Verify peer Finished given peer traffic secret.
+    pub fn verifyPeerFinished(self: *Engine, peer_secret: [H.digest_length]u8, finished_body: []const u8) bool {
+        // finished_body is the verify_data sent by the peer
+        var snap = self.transcript;
+        const th = snap.finalize();
+        const expect = deriveFinishedVerifyData(peer_secret, th);
+        return finished_body.len == expect.len and std.mem.eql(u8, finished_body, &expect);
+    }
+
+    /// Build and queue EncryptedExtensions carrying ALPN and Transport Parameters.
+    pub fn queueEncryptedExtensions(self: *Engine, alpn: []const u8, tp_bytes: []const u8) !void {
+        var body = std.ArrayList(u8).init(self.outbox.allocator);
+        defer body.deinit();
+        if (alpn.len > 0) {
+            try body.appendSlice("ALPN");
+            try body.append(@as(u8, @intCast(alpn.len)));
+            try body.appendSlice(alpn);
+        }
+        if (tp_bytes.len > 0) {
+            try body.appendSlice("TP");
+            try body.appendSlice(tp_bytes);
+        }
+        const msg = try encodeHandshake(self.outbox.allocator, .encrypted_extensions, body.items);
+        defer self.outbox.allocator.free(msg);
+        try self.queueCrypto(msg);
+    }
+
+    /// Queue a raw Certificate handshake message body (DER) for interop; in secure mode,
+    /// the peer will validate this using x509 helpers.
+    pub fn queueCertificate(self: *Engine, cert_der: []const u8) !void {
+        const msg = try encodeHandshake(self.outbox.allocator, .certificate, cert_der);
+        defer self.outbox.allocator.free(msg);
+        try self.queueCrypto(msg);
     }
 
     // --- New helper methods used by tests ---

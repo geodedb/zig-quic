@@ -60,8 +60,38 @@ pub fn main() !void {
     const ep = try api.endpointInit(&alloc, bind, &cfg);
     defer api.endpointDeinit(ep);
 
-    // Minimal loop: just poll with a timeout to drive timers/IO.
+    std.debug.print("listening on {s}\n", .{bind});
+
     while (true) {
         try api.poll(ep, 10);
+        if (api.accept(ep) catch null) |conn| {
+            std.debug.print("accepted connection\n", .{});
+            var stream_opened = false;
+            var dgram_buf: [2048]u8 = undefined;
+            var buf: [4096]u8 = undefined;
+            var iter: usize = 0;
+            while (iter < 10000) : (iter += 1) {
+                try api.poll(ep, 5);
+                if (datagram) {
+                    const dn = api.recvDatagram(conn, &dgram_buf) catch 0;
+                    if (dn > 0) {
+                        _ = api.sendDatagram(conn, dgram_buf[0..dn]) catch 0;
+                    }
+                }
+                if (!stream_opened) {
+                    // Client-initiated bidi stream 0
+                    const n = api.readStream(conn, 0, buf[0..]) catch 0;
+                    if (n > 0) {
+                        stream_opened = true;
+                        _ = api.writeStream(conn, 0, buf[0..n]) catch 0;
+                    }
+                } else {
+                    const n = api.readStream(conn, 0, buf[0..]) catch 0;
+                    if (n > 0) {
+                        _ = api.writeStream(conn, 0, buf[0..n]) catch 0;
+                    }
+                }
+            }
+        }
     }
 }

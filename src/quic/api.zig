@@ -54,7 +54,9 @@ pub fn endpointInit(alloc: *std.mem.Allocator, bind_addr: []const u8, cfgp: *con
 }
 /// Deinitialize endpoint and free resources.
 pub fn endpointDeinit(ep: *QuicEndpoint) void {
+    const alloc = ep.allocator;
     ep.deinit();
+    alloc.destroy(ep);
 }
 
 /// Create a client connection and kick Initial probe to elicit VN or SH.
