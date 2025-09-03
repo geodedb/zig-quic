@@ -346,6 +346,8 @@ pub const Connection = struct {
     ecn_initial: EcnCounter = .{},
     ecn_handshake: EcnCounter = .{},
     ecn_app: EcnCounter = .{},
+    // Pending ACK_ECN emission hint for Application space
+    ecn_app_ack_pending: bool = false,
 
     // --- DPLPMTUD (RFC 9000 §14.2–§14.4) minimal state ---
     /// Current believed path MTU (UDP payload size), never below 1200.
@@ -469,6 +471,11 @@ pub const Connection = struct {
         self.stream_send_aborted = false;
         self.stream_recv_aborted = false;
         self.stream_recv_fin = false;
+        // Initialize ECN counters
+        self.ecn_initial = .{};
+        self.ecn_handshake = .{};
+        self.ecn_app = .{};
+        self.ecn_app_ack_pending = false;
         // Flow-control connection-level defaults already set via field initializers
         self.path_validation_pending = false;
         self.path_challenge_data = .{0} ** 8;
@@ -563,6 +570,9 @@ pub const Connection = struct {
             else => {},
         }
         if (b != 0) ctr.seen_any = true;
+        if (space == .Application and b != 0) {
+            self.ecn_app_ack_pending = true;
+        }
     }
 
     /// Return ECN counts for ACK_ECN emission in the given PN space if any ECN
@@ -1104,6 +1114,7 @@ pub const Connection = struct {
         // Finalize TX key update only on App ACKs
         if (space == .Application) self.maybeFinalizeKeyUpdateOnAck(largest);
         // DPLPMTUD: if a pending probe PN was ACKed, validate and raise path_mtu
+        // Note: This branch also serves as the authoritative place to advance PMTUD state on App acks.
         if (space == .Application) {
             if (self.probe_pending_pn) |ppn| {
                 var i: usize = 0;

@@ -221,6 +221,40 @@ pub fn build(b: *std.Build) void {
             const run_test_timers_only = b.addRunArtifact(test_timers_only);
             test_step.dependOn(&run_test_timers_only.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "stream_fc") or std.mem.containsAtLeast(u8, f, 1, "streams")) {
+            const test_stream_fc = b.addTest(.{ .root_source_file = rp("tests/test_stream_flow_control.zig"), .target = target, .optimize = optimize });
+            test_stream_fc.root_module.addImport("quic_api", quic_api_mod);
+            test_stream_fc.root_module.addImport("quic_conn", quic_conn_mod);
+            const run_test_stream_fc = b.addRunArtifact(test_stream_fc);
+            test_step.dependOn(&run_test_stream_fc.step);
+            const test_stream_edges = b.addTest(.{ .root_source_file = rp("tests/test_stream_edge_cases.zig"), .target = target, .optimize = optimize });
+            test_stream_edges.root_module.addImport("quic_conn", quic_conn_mod);
+            const run_test_stream_edges = b.addRunArtifact(test_stream_edges);
+            test_step.dependOn(&run_test_stream_edges.step);
+            return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "migration_path") or std.mem.containsAtLeast(u8, f, 1, "path_reset")) {
+            const test_migration = b.addTest(.{ .root_source_file = rp("tests/test_migration_scenarios.zig"), .target = target, .optimize = optimize });
+            test_migration.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+            test_migration.root_module.addImport("quic_packet", quic_packet_mod);
+            const run_test_migration = b.addRunArtifact(test_migration);
+            test_step.dependOn(&run_test_migration.step);
+            const test_nat_amp = b.addTest(.{ .root_source_file = rp("tests/test_nat_rebinding_amplification.zig"), .target = target, .optimize = optimize });
+            test_nat_amp.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+            test_nat_amp.root_module.addImport("quic_packet", quic_packet_mod);
+            const run_test_nat_amp = b.addRunArtifact(test_nat_amp);
+            test_step.dependOn(&run_test_nat_amp.step);
+            const test_sr = b.addTest(.{ .root_source_file = rp("tests/test_stateless_reset.zig"), .target = target, .optimize = optimize });
+            test_sr.root_module.addImport("quic_conn", quic_conn_mod);
+            const run_test_sr = b.addRunArtifact(test_sr);
+            test_step.dependOn(&run_test_sr.step);
+            return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "bench_hp")) {
+            // No separate test file; run a small subset to validate HP paths quickly
+            const test_hp = b.addTest(.{ .root_source_file = rp("tests/test_hp_sample_offsets.zig"), .target = target, .optimize = optimize });
+            test_hp.root_module.addImport("quic_packet", quic_packet_mod);
+            const run_test_hp = b.addRunArtifact(test_hp);
+            test_step.dependOn(&run_test_hp.step);
+            return;
         }
     }
 
