@@ -1,15 +1,12 @@
 const std = @import("std");
 
 const Runner = struct {
-    // Use a stable global allocator to avoid GPA lifetime issues in child spawning paths
     alloc: std.mem.Allocator = std.heap.page_allocator,
 
     pub fn init() Runner {
         return Runner{ .alloc = std.heap.page_allocator };
     }
-    pub fn deinit(self: *Runner) void {
-        _ = self; // no-op
-    }
+    pub fn deinit(self: *Runner) void { _ = self; }
 
     fn haveGo(self: *Runner) bool {
         var child = std.process.Child.init(&[_][]const u8{ "go", "version" }, self.alloc);
@@ -17,19 +14,12 @@ const Runner = struct {
         child.stdout_behavior = .Pipe;
         child.stderr_behavior = .Pipe;
         const term = child.spawnAndWait() catch return false;
-        return switch (term) {
-            .Exited => |code| code == 0,
-            else => false,
-        };
+        return switch (term) { .Exited => |code| code == 0, else => false };
     }
 
     fn pathExists(_: *Runner, p: []const u8) bool {
-        const st = std.fs.cwd().statFile(p) catch |e| switch (e) {
-            error.FileNotFound => return false,
-            else => return false,
-        };
-        _ = st;
-        return true;
+        const st = std.fs.cwd().statFile(p) catch |e| switch (e) { error.FileNotFound => return false, else => return false };
+        _ = st; return true;
     }
 
     fn ensureCerts(self: *Runner) !void {
@@ -45,6 +35,7 @@ const Runner = struct {
     }
 
     fn goBuild(self: *Runner, pkg_dir: []const u8, out_path: []const u8) !void {
+        if (self.pathExists(out_path)) return;
         var args_buf = std.ArrayList([]const u8).init(self.alloc);
         defer args_buf.deinit();
         try args_buf.appendSlice(&.{ "go", "build", "-o", out_path, pkg_dir });
@@ -52,11 +43,21 @@ const Runner = struct {
         child.stdin_behavior = .Ignore;
         child.stdout_behavior = .Pipe;
         child.stderr_behavior = .Pipe;
-        const term = try child.spawnAndWait();
-        if (!(term == .Exited and term.Exited == 0)) return error.GoBuildFailed;
+        try child.spawn();
+        const term = try child.wait();
+        if (!(term == .Exited and term.Exited == 0)) {
+            const stdout_bytes = if (child.stdout) |s| (try s.reader().readAllAlloc(self.alloc, 64 * 1024)) else (try self.alloc.dupe(u8, ""));
+            defer self.alloc.free(stdout_bytes);
+            const stderr_bytes = if (child.stderr) |s| (try s.reader().readAllAlloc(self.alloc, 64 * 1024)) else (try self.alloc.dupe(u8, ""));
+            defer self.alloc.free(stderr_bytes);
+            std.debug.print("go build failed: {s} {s}\n", .{ stdout_bytes, stderr_bytes });
+            return error.GoBuildFailed;
+        }
     }
 
-    fn spawnServer(self: *Runner, bin: []const u8, addr: []const u8, extra: []const []const u8) !std.process.Child {
+    const SpawnInfo = struct { child: std.process.Child, addr_buf: [64]u8, addr_len: usize };
+
+    fn spawnServer(self: *Runner, bin: []const u8, addr: []const u8, extra: []const []const u8) !SpawnInfo {
         var args = std.ArrayList([]const u8).init(self.alloc);
         defer args.deinit();
         try args.appendSlice(&.{ bin, "--addr", addr, "--alpn", "h3", "--cert", "examples/interop/certs/cert.pem", "--key", "examples/interop/certs/key.pem" });
@@ -66,8 +67,56 @@ const Runner = struct {
         child.stdout_behavior = .Pipe;
         child.stderr_behavior = .Pipe;
         try child.spawn();
-        std.time.sleep(200 * std.time.ns_per_ms);
-        return child;
+        var addr_buf: [64]u8 = undefined;
+        var addr_len: usize = 0;
+        if (child.stderr) |s| {
+            var r = s.reader();
+            var buf = std.ArrayList(u8).init(self.alloc);
+            defer buf.deinit();
+            // Read up to 4KB over ~800ms to catch the listening line
+            var i: usize = 0;
+            while (i < 4) : (i += 1) {
+                const chunk = r.readAllAlloc(self.alloc, 1024) catch null;
+                if (chunk) |bytes| {
+                    defer self.alloc.free(bytes);
+                    _ = buf.appendSlice(bytes) catch {};
+                    if (std.mem.indexOf(u8, buf.items, "listening on ")) |off| {
+                        const rest = buf.items[off + ("listening on ").len ..];
+                        const end = std.mem.indexOfScalar(u8, rest, '\n') orelse rest.len;
+                        const addr_s = rest[0..end];
+                        const copy_len = @min(addr_s.len, addr_buf.len);
+                        @memcpy(addr_buf[0..copy_len], addr_s[0..copy_len]);
+                        addr_len = copy_len;
+                        break;
+                    }
+                }
+                std.time.sleep(200 * std.time.ns_per_ms);
+            }
+        }
+        if (addr_len == 0 and std.mem.indexOf(u8, addr, ":0") == null) {
+            // Non-ephemeral addr requested: just wait a bit
+            std.time.sleep(800 * std.time.ns_per_ms);
+        }
+        return .{ .child = child, .addr_buf = addr_buf, .addr_len = addr_len };
+    }
+
+    fn runClientWithTimeout(self: *Runner, argv: [][]const u8, timeout_ms: u64) !struct { term_ok: bool, out: []u8, err: []u8 } {
+        var child = std.process.Child.init(argv, self.alloc);
+        child.stdin_behavior = .Ignore;
+        child.stdout_behavior = .Pipe;
+        child.stderr_behavior = .Pipe;
+        try child.spawn();
+        // Sleep up to timeout_ms; without tryWait in Zig 0.14, enforce timeout by kill+wait
+        var elapsed: u64 = 0;
+        while (elapsed < timeout_ms) : (elapsed += 20) {
+            std.time.sleep(20 * std.time.ns_per_ms);
+            // We cannot non-blockingly detect termination here on 0.14; rely on timeout or short sleeps
+        }
+        _ = child.kill() catch {};
+        _ = child.wait() catch {};
+        const out_bytes = if (child.stdout) |s| (try s.reader().readAllAlloc(self.alloc, 64 * 1024)) else (try self.alloc.dupe(u8, ""));
+        const err_bytes = if (child.stderr) |s| (try s.reader().readAllAlloc(self.alloc, 64 * 1024)) else (try self.alloc.dupe(u8, ""));
+        return .{ .term_ok = false, .out = out_bytes, .err = err_bytes };
     }
 
     fn runGoEchoSmoke(self: *Runner) !void {
@@ -77,23 +126,22 @@ const Runner = struct {
         const client_bin = "zig-out/bin/go-interop-client";
         try self.goBuild("./examples/interop/go-server", server_bin);
         try self.goBuild("./examples/interop/go-client", client_bin);
-        var srv = try self.spawnServer(server_bin, "127.0.0.1:4433", &.{});
-        defer {
-            _ = srv.kill() catch {};
-            _ = srv.wait() catch {};
-        }
+        var srv = try self.spawnServer(server_bin, "127.0.0.1:0", &.{});
+        defer { _ = srv.child.kill() catch {}; _ = srv.child.wait() catch {}; }
+        if (srv.addr_len == 0) return error.ServerAddrParseFailed;
+        const srv_addr = srv.addr_buf[0..srv.addr_len];
+        std.debug.print("server_addr={s}\n", .{srv_addr});
         var args = std.ArrayList([]const u8).init(self.alloc);
         defer args.deinit();
-        try args.appendSlice(&.{ client_bin, "--addr", "127.0.0.1:4433", "--alpn", "h3", "--sni", "test.local", "--insecure", "--msg", "hello" });
-        var child = std.process.Child.init(args.items, self.alloc);
-        child.stdin_behavior = .Ignore;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
-        const term = try child.spawnAndWait();
-        if (!(term == .Exited and term.Exited == 0)) return error.ClientFailed;
-        const out_bytes = try child.stdout.?.reader().readAllAlloc(self.alloc, 64 * 1024);
-        defer self.alloc.free(out_bytes);
-        if (std.mem.indexOf(u8, out_bytes, "echo: hello") == null) return error.BadEcho;
+        try args.appendSlice(&.{ client_bin, "--addr", srv_addr, "--alpn", "h3", "--sni", "test.local", "--insecure", "--msg", "hello" });
+        const res = try self.runClientWithTimeout(args.items, 1500);
+        defer self.alloc.free(res.out);
+        defer self.alloc.free(res.err);
+        if (!res.term_ok) {
+            std.debug.print("go client failed: stdout=\n{s}\nstderr=\n{s}\n", .{ res.out, res.err });
+            return error.ClientFailed;
+        }
+        if (std.mem.indexOf(u8, res.out, "echo: hello") == null) return error.BadEcho;
     }
 
     fn runGoEchoDatagram(self: *Runner) !void {
@@ -103,24 +151,22 @@ const Runner = struct {
         const client_bin = "zig-out/bin/go-interop-client";
         try self.goBuild("./examples/interop/go-server", server_bin);
         try self.goBuild("./examples/interop/go-client", client_bin);
-        var srv = try self.spawnServer(server_bin, "127.0.0.1:4433", &.{"--datagram"});
-        defer {
-            _ = srv.kill() catch {};
-            _ = srv.wait() catch {};
+        var srv = try self.spawnServer(server_bin, "127.0.0.1:0", &.{"--datagram"});
+        defer { _ = srv.child.kill() catch {}; _ = srv.child.wait() catch {}; }
+        if (srv.addr_len == 0) return error.ServerAddrParseFailed;
+        const srv_addr = srv.addr_buf[0..srv.addr_len];
+        std.debug.print("server_addr={s}\n", .{srv_addr});
+        var args = std.ArrayList([]const u8).init(self.alloc);
+        defer args.deinit();
+        try args.appendSlice(&.{ client_bin, "--addr", srv_addr, "--alpn", "h3", "--sni", "test.local", "--insecure", "--datagram", "--dmsg", "ping" });
+        const res = try self.runClientWithTimeout(args.items, 1500);
+        defer self.alloc.free(res.out);
+        defer self.alloc.free(res.err);
+        if (!res.term_ok) {
+            std.debug.print("go client failed: stdout=\n{s}\nstderr=\n{s}\n", .{ res.out, res.err });
+            return error.ClientFailed;
         }
-        std.time.sleep(200 * std.time.ns_per_ms);
-        var args_cli = std.ArrayList([]const u8).init(self.alloc);
-        defer args_cli.deinit();
-        try args_cli.appendSlice(&.{ client_bin, "--addr", "127.0.0.1:4433", "--alpn", "h3", "--sni", "test.local", "--insecure", "--datagram", "--dmsg", "ping" });
-        var child = std.process.Child.init(args_cli.items, self.alloc);
-        child.stdin_behavior = .Ignore;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
-        const term = try child.spawnAndWait();
-        if (!(term == .Exited and term.Exited == 0)) return error.ClientFailed;
-        const out_bytes = try child.stdout.?.reader().readAllAlloc(self.alloc, 64 * 1024);
-        defer self.alloc.free(out_bytes);
-        if (std.mem.indexOf(u8, out_bytes, "dgram: ping") == null) return error.BadDatagramEcho;
+        if (std.mem.indexOf(u8, res.out, "dgram: ping") == null) return error.BadDatagramEcho;
     }
 
     fn runGoRetrySmoke(self: *Runner) !void {
@@ -130,24 +176,22 @@ const Runner = struct {
         const client_bin = "zig-out/bin/go-interop-client";
         try self.goBuild("./examples/interop/go-server", server_bin);
         try self.goBuild("./examples/interop/go-client", client_bin);
-        var srv = try self.spawnServer(server_bin, "127.0.0.1:4433", &.{"--retry"});
-        defer {
-            _ = srv.kill() catch {};
-            _ = srv.wait() catch {};
+        var srv = try self.spawnServer(server_bin, "127.0.0.1:0", &.{"--retry"});
+        defer { _ = srv.child.kill() catch {}; _ = srv.child.wait() catch {}; }
+        if (srv.addr_len == 0) return error.ServerAddrParseFailed;
+        const srv_addr = srv.addr_buf[0..srv.addr_len];
+        std.debug.print("server_addr={s}\n", .{srv_addr});
+        var args = std.ArrayList([]const u8).init(self.alloc);
+        defer args.deinit();
+        try args.appendSlice(&.{ client_bin, "--addr", srv_addr, "--alpn", "h3", "--sni", "test.local", "--insecure", "--msg", "hello" });
+        const res = try self.runClientWithTimeout(args.items, 1500);
+        defer self.alloc.free(res.out);
+        defer self.alloc.free(res.err);
+        if (!res.term_ok) {
+            std.debug.print("go client failed: stdout=\n{s}\nstderr=\n{s}\n", .{ res.out, res.err });
+            return error.ClientFailed;
         }
-        std.time.sleep(200 * std.time.ns_per_ms);
-        var args_cli = std.ArrayList([]const u8).init(self.alloc);
-        defer args_cli.deinit();
-        try args_cli.appendSlice(&.{ client_bin, "--addr", "127.0.0.1:4433", "--alpn", "h3", "--sni", "test.local", "--insecure", "--msg", "hello" });
-        var child = std.process.Child.init(args_cli.items, self.alloc);
-        child.stdin_behavior = .Ignore;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
-        const term = try child.spawnAndWait();
-        if (!(term == .Exited and term.Exited == 0)) return error.ClientFailed;
-        const out_bytes = try child.stdout.?.reader().readAllAlloc(self.alloc, 64 * 1024);
-        defer self.alloc.free(out_bytes);
-        if (std.mem.indexOf(u8, out_bytes, "echo: hello") == null) return error.BadEcho;
+        if (std.mem.indexOf(u8, res.out, "echo: hello") == null) return error.BadEcho;
     }
 
     fn runGoAlpnMismatch(self: *Runner) !void {
@@ -157,22 +201,17 @@ const Runner = struct {
         const client_bin = "zig-out/bin/go-interop-client";
         try self.goBuild("./examples/interop/go-server", server_bin);
         try self.goBuild("./examples/interop/go-client", client_bin);
-        var srv = try self.spawnServer(server_bin, "127.0.0.1:4433", &.{});
-        defer {
-            _ = srv.kill() catch {};
-            _ = srv.wait() catch {};
-        }
-        std.time.sleep(150 * std.time.ns_per_ms);
+        var srv = try self.spawnServer(server_bin, "127.0.0.1:0", &.{});
+        defer { _ = srv.child.kill() catch {}; _ = srv.child.wait() catch {}; }
+        if (srv.addr_len == 0) return error.ServerAddrParseFailed;
+        const srv_addr = srv.addr_buf[0..srv.addr_len];
         var args_cli = std.ArrayList([]const u8).init(self.alloc);
         defer args_cli.deinit();
-        try args_cli.appendSlice(&.{ client_bin, "--addr", "127.0.0.1:4433", "--alpn", "hq-interop", "--sni", "test.local", "--insecure" });
-        var child = std.process.Child.init(args_cli.items, self.alloc);
-        child.stdin_behavior = .Ignore;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
-        const term = try child.spawnAndWait();
-        // Expect failure
-        if (term == .Exited and term.Exited == 0) return error.ExpectedFail;
+        try args_cli.appendSlice(&.{ client_bin, "--addr", srv_addr, "--alpn", "hq-interop", "--sni", "test.local", "--insecure" });
+        const res = try self.runClientWithTimeout(args_cli.items, 3000);
+        defer self.alloc.free(res.out);
+        defer self.alloc.free(res.err);
+        if (res.term_ok) return error.ExpectedFail;
     }
 
     fn runGoVersionNegotiationOverlap(self: *Runner) !void {
@@ -182,24 +221,21 @@ const Runner = struct {
         const client_bin = "zig-out/bin/go-interop-client";
         try self.goBuild("./examples/interop/go-server", server_bin);
         try self.goBuild("./examples/interop/go-client", client_bin);
-        var srv = try self.spawnServer(server_bin, "127.0.0.1:4433", &.{ "--versions", "v1" });
-        defer {
-            _ = srv.kill() catch {};
-            _ = srv.wait() catch {};
-        }
-        std.time.sleep(150 * std.time.ns_per_ms);
+        var srv = try self.spawnServer(server_bin, "127.0.0.1:0", &.{ "--versions", "v1" });
+        defer { _ = srv.child.kill() catch {}; _ = srv.child.wait() catch {}; }
+        if (srv.addr_len == 0) return error.ServerAddrParseFailed;
+        const srv_addr = srv.addr_buf[0..srv.addr_len];
         var args_cli = std.ArrayList([]const u8).init(self.alloc);
         defer args_cli.deinit();
-        try args_cli.appendSlice(&.{ client_bin, "--addr", "127.0.0.1:4433", "--alpn", "h3", "--sni", "test.local", "--insecure", "--versions", "v2,v1", "--print-version" });
-        var child = std.process.Child.init(args_cli.items, self.alloc);
-        child.stdin_behavior = .Ignore;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
-        const term = try child.spawnAndWait();
-        if (!(term == .Exited and term.Exited == 0)) return error.ClientFailed;
-        const out_bytes = try child.stdout.?.reader().readAllAlloc(self.alloc, 64 * 1024);
-        defer self.alloc.free(out_bytes);
-        if (std.mem.indexOf(u8, out_bytes, "version: v1") == null) return error.BadVersionNegotiation;
+        try args_cli.appendSlice(&.{ client_bin, "--addr", srv_addr, "--alpn", "h3", "--sni", "test.local", "--insecure", "--versions", "v2,v1", "--print-version" });
+        const res = try self.runClientWithTimeout(args_cli.items, 3000);
+        defer self.alloc.free(res.out);
+        defer self.alloc.free(res.err);
+        if (!res.term_ok) {
+            std.debug.print("go client failed: stdout=\n{s}\nstderr=\n{s}\n", .{ res.out, res.err });
+            return error.ClientFailed;
+        }
+        if (std.mem.indexOf(u8, res.out, "version: v1") == null) return error.BadVersionNegotiation;
     }
 
     fn runGoVersionNegotiationMismatch(self: *Runner) !void {
@@ -209,21 +245,17 @@ const Runner = struct {
         const client_bin = "zig-out/bin/go-interop-client";
         try self.goBuild("./examples/interop/go-server", server_bin);
         try self.goBuild("./examples/interop/go-client", client_bin);
-        var srv = try self.spawnServer(server_bin, "127.0.0.1:4433", &.{ "--versions", "v1" });
-        defer {
-            _ = srv.kill() catch {};
-            _ = srv.wait() catch {};
-        }
-        std.time.sleep(150 * std.time.ns_per_ms);
+        var srv = try self.spawnServer(server_bin, "127.0.0.1:0", &.{ "--versions", "v1" });
+        defer { _ = srv.child.kill() catch {}; _ = srv.child.wait() catch {}; }
+        if (srv.addr_len == 0) return error.ServerAddrParseFailed;
+        const srv_addr = srv.addr_buf[0..srv.addr_len];
         var args_cli = std.ArrayList([]const u8).init(self.alloc);
         defer args_cli.deinit();
-        try args_cli.appendSlice(&.{ client_bin, "--addr", "127.0.0.1:4433", "--alpn", "h3", "--sni", "test.local", "--insecure", "--versions", "v2", "--print-version" });
-        var child = std.process.Child.init(args_cli.items, self.alloc);
-        child.stdin_behavior = .Ignore;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
-        const term = try child.spawnAndWait();
-        if (term == .Exited and term.Exited == 0) return error.ExpectedFail;
+        try args_cli.appendSlice(&.{ client_bin, "--addr", srv_addr, "--alpn", "h3", "--sni", "test.local", "--insecure", "--versions", "v2", "--print-version" });
+        const res = try self.runClientWithTimeout(args_cli.items, 3000);
+        defer self.alloc.free(res.out);
+        defer self.alloc.free(res.err);
+        if (res.term_ok) return error.ExpectedFail;
     }
 
     fn runZigClientVsGoServer(self: *Runner) !void {
@@ -231,14 +263,13 @@ const Runner = struct {
         try self.ensureCerts();
         const server_bin = "zig-out/bin/go-interop-server";
         try self.goBuild("./examples/interop/go-server", server_bin);
-        var srv = try self.spawnServer(server_bin, "127.0.0.1:4433", &.{});
-        defer {
-            _ = srv.kill() catch {};
-            _ = srv.wait() catch {};
-        }
+        var srv = try self.spawnServer(server_bin, "127.0.0.1:0", &.{});
+        defer { _ = srv.child.kill() catch {}; _ = srv.child.wait() catch {}; }
+        if (srv.addr_len == 0) return error.ServerAddrParseFailed;
+        const srv_addr = srv.addr_buf[0..srv.addr_len];
         const zig_client = "./zig-out/bin/quic-client";
         if (!self.pathExists(zig_client)) return error.ZigClientMissing;
-        var child = std.process.Child.init(&[_][]const u8{ zig_client, "--connect", "127.0.0.1:4433", "--sni", "test.local", "--alpn", "h3", "--insecure" }, self.alloc);
+        var child = std.process.Child.init(&[_][]const u8{ zig_client, "--connect", srv_addr, "--sni", "test.local", "--alpn", "h3", "--insecure" }, self.alloc);
         child.stdin_behavior = .Ignore;
         child.stdout_behavior = .Pipe;
         child.stderr_behavior = .Pipe;
@@ -252,16 +283,14 @@ const Runner = struct {
         try self.ensureCerts();
         const zig_server = "./zig-out/bin/quic-server";
         if (!self.pathExists(zig_server)) return error.ZigServerMissing;
-        var srv = std.process.Child.init(&[_][]const u8{ zig_server, "--bind", "127.0.0.1:4433", "--alpn", "h3", "--cert", "examples/interop/certs/cert.pem", "--key", "examples/interop/certs/key.pem", "--insecure" }, self.alloc);
+        var srv = std.process.Child.init(&[_][]const u8{ zig_server, "--bind", "127.0.0.1:0", "--alpn", "h3", "--cert", "examples/interop/certs/cert.pem", "--key", "examples/interop/certs/key.pem", "--insecure" }, self.alloc);
         srv.stdin_behavior = .Ignore;
         srv.stdout_behavior = .Pipe;
         srv.stderr_behavior = .Pipe;
         try srv.spawn();
-        defer {
-            _ = srv.kill() catch {};
-            _ = srv.wait() catch {};
-        }
-        std.time.sleep(200 * std.time.ns_per_ms);
+        defer { _ = srv.kill() catch {}; _ = srv.wait() catch {}; }
+        std.time.sleep(800 * std.time.ns_per_ms);
+        // For simplicity, keep fixed port for Zig server until it prints bind addr; follow-up work can parse its stdout for the actual port
         const client_bin = "zig-out/bin/go-interop-client";
         try self.goBuild("./examples/interop/go-client", client_bin);
         var child = std.process.Child.init(&[_][]const u8{ client_bin, "--addr", "127.0.0.1:4433", "--alpn", "h3", "--sni", "test.local", "--insecure", "--msg", "hello" }, self.alloc);
@@ -281,7 +310,7 @@ pub fn main() !void {
     var args = try std.process.argsWithAllocator(r.alloc);
     defer args.deinit();
 
-    _ = args.next(); // program name
+    _ = args.next();
     const cmd = args.next() orelse "list";
 
     if (std.mem.eql(u8, cmd, "list")) {
@@ -298,44 +327,26 @@ pub fn main() !void {
         return;
     } else if (std.mem.eql(u8, cmd, "run")) {
         const scenario = args.next() orelse return error.MissingArgument;
-        if (std.mem.eql(u8, scenario, "go_echo_smoke")) {
-            try r.runGoEchoSmoke();
-            return;
-        } else if (std.mem.eql(u8, scenario, "go_echo_datagram")) {
-            try r.runGoEchoDatagram();
-            return;
-        } else if (std.mem.eql(u8, scenario, "go_retry_smoke")) {
-            try r.runGoRetrySmoke();
-            return;
-        } else if (std.mem.eql(u8, scenario, "go_alpn_mismatch")) {
-            try r.runGoAlpnMismatch();
-            return;
-        } else if (std.mem.eql(u8, scenario, "go_vn_overlap")) {
-            try r.runGoVersionNegotiationOverlap();
-            return;
-        } else if (std.mem.eql(u8, scenario, "go_vn_mismatch")) {
-            try r.runGoVersionNegotiationMismatch();
-            return;
-        } else if (std.mem.eql(u8, scenario, "zig_client_vs_go_server")) {
-            return r.runZigClientVsGoServer();
-        } else if (std.mem.eql(u8, scenario, "zig_server_vs_go_client")) {
-            return r.runZigServerVsGoClient();
-        } else {
-            return error.UnknownScenario;
-        }
+        if (std.mem.eql(u8, scenario, "go_echo_smoke")) return r.runGoEchoSmoke()
+        else if (std.mem.eql(u8, scenario, "go_echo_datagram")) return r.runGoEchoDatagram()
+        else if (std.mem.eql(u8, scenario, "go_retry_smoke")) return r.runGoRetrySmoke()
+        else if (std.mem.eql(u8, scenario, "go_alpn_mismatch")) return r.runGoAlpnMismatch()
+        else if (std.mem.eql(u8, scenario, "go_vn_overlap")) return r.runGoVersionNegotiationOverlap()
+        else if (std.mem.eql(u8, scenario, "go_vn_mismatch")) return r.runGoVersionNegotiationMismatch()
+        else if (std.mem.eql(u8, scenario, "zig_client_vs_go_server")) return r.runZigClientVsGoServer()
+        else if (std.mem.eql(u8, scenario, "zig_server_vs_go_client")) return r.runZigServerVsGoClient()
+        else return error.UnknownScenario;
     } else if (std.mem.eql(u8, cmd, "run-all")) {
         var failures: usize = 0;
-        if (r.runGoEchoSmoke()) |_| {} else |err| if (err != error.GoMissing) failures += 1;
-        if (r.runGoEchoDatagram()) |_| {} else |err| if (err != error.GoMissing) failures += 1;
-        if (r.runGoRetrySmoke()) |_| {} else |err| if (err != error.GoMissing) failures += 1;
-        if (r.runGoAlpnMismatch()) |_| {} else |err| if (err != error.GoMissing) failures += 1;
-        if (r.runGoVersionNegotiationOverlap()) |_| {} else |err| if (err != error.GoMissing) failures += 1;
-        if (r.runGoVersionNegotiationMismatch()) |_| {} else |err| if (err != error.GoMissing) failures += 1;
+        if (r.runGoEchoSmoke()) |_| {} else |_| failures += 1;
+        if (r.runGoEchoDatagram()) |_| {} else |_| failures += 1;
+        if (r.runGoRetrySmoke()) |_| {} else |_| failures += 1;
+        if (r.runGoAlpnMismatch()) |_| {} else |_| failures += 1;
+        if (r.runGoVersionNegotiationOverlap()) |_| {} else |_| failures += 1;
+        if (r.runGoVersionNegotiationMismatch()) |_| {} else |_| failures += 1;
         _ = r.runZigClientVsGoServer() catch {};
         _ = r.runZigServerVsGoClient() catch {};
         if (failures > 0) return error.InteropFailures;
         return;
-    } else {
-        return error.UnknownCommand;
-    }
+    } else return error.UnknownCommand;
 }

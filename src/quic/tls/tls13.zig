@@ -310,15 +310,17 @@ pub const Engine = struct {
                             };
                             if (self.peer_cert_ok) {
                                 if (self.server_name) |sni| {
-                                    // Validate chain (single leaf accepted) with SNI
                                     x509.validateChain(self.outbox.allocator, &[_][]const u8{p.body}, std.time.timestamp(), sni, self.allow_insecure) catch {
                                         self.peer_cert_ok = false;
                                     };
                                 }
                             }
-                            // Enforce EKU serverAuth and basic constraints for leaf
                             if (self.peer_cert_ok) {
-                                if (c.eku) |eku| if (!eku.server_auth) self.peer_cert_ok = false;
+                                if (c.eku) |eku| {
+                                    if (!eku.server_auth) {
+                                        self.peer_cert_ok = false;
+                                    }
+                                }
                             }
                         } else {
                             self.peer_cert_ok = false;

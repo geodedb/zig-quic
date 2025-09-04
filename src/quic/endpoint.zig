@@ -295,10 +295,13 @@ pub const Endpoint = struct {
             _ = (frame.Frame{ .crypto = .{ .offset = base_off, .data = crypto_buf[0..crypto_len] } }).write(frames.writer()) catch 0;
             // Save retransmit buffer (replace previous)
             if (c.crypto_retx_initial) |b| self.allocator.free(b);
-            var owned = self.allocator.alloc(u8, crypto_len) catch owned: {
-                // If allocation fails, skip saving but continue
+            var owned = self.allocator.alloc(u8, crypto_len) catch {
                 c.crypto_tx_off_initial += crypto_len;
-                break :owned;
+                // Skip saving retransmit buffer on allocation failure
+                // Proceed without setting crypto_retx_initial
+                // simply do not set c.crypto_retx_initial
+                // continue building packet
+                return; // exit clientSendInitialProbe early on OOM for retransmit buffer
             };
             @memcpy(owned[0..crypto_len], crypto_buf[0..crypto_len]);
             c.crypto_retx_initial = owned;
@@ -1536,9 +1539,9 @@ pub const Endpoint = struct {
                         _ = (frame.Frame{ .crypto = .{ .offset = base_off_hs, .data = outbox[0..n] } }).write(w) catch 0;
                         // Save HS retransmit buffer
                         if (conn.crypto_retx_handshake) |b| self.allocator.free(b);
-                        var owned_hs = self.allocator.alloc(u8, n) catch owned2: {
+                        var owned_hs = self.allocator.alloc(u8, n) catch {
                             conn.crypto_tx_off_handshake += n;
-                            break :owned2;
+                            return; // abort sending HS CRYPTO chunk if we cannot save retransmit buffer
                         };
                         @memcpy(owned_hs[0..n], outbox[0..n]);
                         conn.crypto_retx_handshake = owned_hs;
