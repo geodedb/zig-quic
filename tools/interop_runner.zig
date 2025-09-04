@@ -6,7 +6,9 @@ const Runner = struct {
     pub fn init() Runner {
         return Runner{ .alloc = std.heap.page_allocator };
     }
-    pub fn deinit(self: *Runner) void { _ = self; }
+    pub fn deinit(self: *Runner) void {
+        _ = self;
+    }
 
     fn haveGo(self: *Runner) bool {
         var child = std.process.Child.init(&[_][]const u8{ "go", "version" }, self.alloc);
@@ -14,12 +16,19 @@ const Runner = struct {
         child.stdout_behavior = .Pipe;
         child.stderr_behavior = .Pipe;
         const term = child.spawnAndWait() catch return false;
-        return switch (term) { .Exited => |code| code == 0, else => false };
+        return switch (term) {
+            .Exited => |code| code == 0,
+            else => false,
+        };
     }
 
     fn pathExists(_: *Runner, p: []const u8) bool {
-        const st = std.fs.cwd().statFile(p) catch |e| switch (e) { error.FileNotFound => return false, else => return false };
-        _ = st; return true;
+        const st = std.fs.cwd().statFile(p) catch |e| switch (e) {
+            error.FileNotFound => return false,
+            else => return false,
+        };
+        _ = st;
+        return true;
     }
 
     fn ensureCerts(self: *Runner) !void {
@@ -127,7 +136,10 @@ const Runner = struct {
         try self.goBuild("./examples/interop/go-server", server_bin);
         try self.goBuild("./examples/interop/go-client", client_bin);
         var srv = try self.spawnServer(server_bin, "127.0.0.1:0", &.{});
-        defer { _ = srv.child.kill() catch {}; _ = srv.child.wait() catch {}; }
+        defer {
+            _ = srv.child.kill() catch {};
+            _ = srv.child.wait() catch {};
+        }
         if (srv.addr_len == 0) return error.ServerAddrParseFailed;
         const srv_addr = srv.addr_buf[0..srv.addr_len];
         std.debug.print("server_addr={s}\n", .{srv_addr});
@@ -152,7 +164,10 @@ const Runner = struct {
         try self.goBuild("./examples/interop/go-server", server_bin);
         try self.goBuild("./examples/interop/go-client", client_bin);
         var srv = try self.spawnServer(server_bin, "127.0.0.1:0", &.{"--datagram"});
-        defer { _ = srv.child.kill() catch {}; _ = srv.child.wait() catch {}; }
+        defer {
+            _ = srv.child.kill() catch {};
+            _ = srv.child.wait() catch {};
+        }
         if (srv.addr_len == 0) return error.ServerAddrParseFailed;
         const srv_addr = srv.addr_buf[0..srv.addr_len];
         std.debug.print("server_addr={s}\n", .{srv_addr});
@@ -177,7 +192,10 @@ const Runner = struct {
         try self.goBuild("./examples/interop/go-server", server_bin);
         try self.goBuild("./examples/interop/go-client", client_bin);
         var srv = try self.spawnServer(server_bin, "127.0.0.1:0", &.{"--retry"});
-        defer { _ = srv.child.kill() catch {}; _ = srv.child.wait() catch {}; }
+        defer {
+            _ = srv.child.kill() catch {};
+            _ = srv.child.wait() catch {};
+        }
         if (srv.addr_len == 0) return error.ServerAddrParseFailed;
         const srv_addr = srv.addr_buf[0..srv.addr_len];
         std.debug.print("server_addr={s}\n", .{srv_addr});
@@ -202,7 +220,10 @@ const Runner = struct {
         try self.goBuild("./examples/interop/go-server", server_bin);
         try self.goBuild("./examples/interop/go-client", client_bin);
         var srv = try self.spawnServer(server_bin, "127.0.0.1:0", &.{});
-        defer { _ = srv.child.kill() catch {}; _ = srv.child.wait() catch {}; }
+        defer {
+            _ = srv.child.kill() catch {};
+            _ = srv.child.wait() catch {};
+        }
         if (srv.addr_len == 0) return error.ServerAddrParseFailed;
         const srv_addr = srv.addr_buf[0..srv.addr_len];
         var args_cli = std.ArrayList([]const u8).init(self.alloc);
@@ -222,7 +243,10 @@ const Runner = struct {
         try self.goBuild("./examples/interop/go-server", server_bin);
         try self.goBuild("./examples/interop/go-client", client_bin);
         var srv = try self.spawnServer(server_bin, "127.0.0.1:0", &.{ "--versions", "v1" });
-        defer { _ = srv.child.kill() catch {}; _ = srv.child.wait() catch {}; }
+        defer {
+            _ = srv.child.kill() catch {};
+            _ = srv.child.wait() catch {};
+        }
         if (srv.addr_len == 0) return error.ServerAddrParseFailed;
         const srv_addr = srv.addr_buf[0..srv.addr_len];
         var args_cli = std.ArrayList([]const u8).init(self.alloc);
@@ -246,7 +270,10 @@ const Runner = struct {
         try self.goBuild("./examples/interop/go-server", server_bin);
         try self.goBuild("./examples/interop/go-client", client_bin);
         var srv = try self.spawnServer(server_bin, "127.0.0.1:0", &.{ "--versions", "v1" });
-        defer { _ = srv.child.kill() catch {}; _ = srv.child.wait() catch {}; }
+        defer {
+            _ = srv.child.kill() catch {};
+            _ = srv.child.wait() catch {};
+        }
         if (srv.addr_len == 0) return error.ServerAddrParseFailed;
         const srv_addr = srv.addr_buf[0..srv.addr_len];
         var args_cli = std.ArrayList([]const u8).init(self.alloc);
@@ -264,7 +291,10 @@ const Runner = struct {
         const server_bin = "zig-out/bin/go-interop-server";
         try self.goBuild("./examples/interop/go-server", server_bin);
         var srv = try self.spawnServer(server_bin, "127.0.0.1:0", &.{});
-        defer { _ = srv.child.kill() catch {}; _ = srv.child.wait() catch {}; }
+        defer {
+            _ = srv.child.kill() catch {};
+            _ = srv.child.wait() catch {};
+        }
         if (srv.addr_len == 0) return error.ServerAddrParseFailed;
         const srv_addr = srv.addr_buf[0..srv.addr_len];
         const zig_client = "./zig-out/bin/quic-client";
@@ -288,7 +318,10 @@ const Runner = struct {
         srv.stdout_behavior = .Pipe;
         srv.stderr_behavior = .Pipe;
         try srv.spawn();
-        defer { _ = srv.kill() catch {}; _ = srv.wait() catch {}; }
+        defer {
+            _ = srv.kill() catch {};
+            _ = srv.wait() catch {};
+        }
         std.time.sleep(800 * std.time.ns_per_ms);
         // For simplicity, keep fixed port for Zig server until it prints bind addr; follow-up work can parse its stdout for the actual port
         const client_bin = "zig-out/bin/go-interop-client";
@@ -321,21 +354,14 @@ pub fn main() !void {
             "- go_alpn_mismatch (MUST FAIL)\n" ++
             "- go_vn_overlap (MUST PASS)\n" ++
             "- go_vn_mismatch (MUST FAIL)\n" ++
+            "- go_net_echo_smoke (XFAIL until real TLS interop)\n" ++
             "- zig_client_vs_go_server (XFAIL until handshake/streams)\n" ++
             "- zig_server_vs_go_client (XFAIL until handshake/streams)\n";
         try std.io.getStdOut().writer().print("{s}", .{out});
         return;
     } else if (std.mem.eql(u8, cmd, "run")) {
         const scenario = args.next() orelse return error.MissingArgument;
-        if (std.mem.eql(u8, scenario, "go_echo_smoke")) return r.runGoEchoSmoke()
-        else if (std.mem.eql(u8, scenario, "go_echo_datagram")) return r.runGoEchoDatagram()
-        else if (std.mem.eql(u8, scenario, "go_retry_smoke")) return r.runGoRetrySmoke()
-        else if (std.mem.eql(u8, scenario, "go_alpn_mismatch")) return r.runGoAlpnMismatch()
-        else if (std.mem.eql(u8, scenario, "go_vn_overlap")) return r.runGoVersionNegotiationOverlap()
-        else if (std.mem.eql(u8, scenario, "go_vn_mismatch")) return r.runGoVersionNegotiationMismatch()
-        else if (std.mem.eql(u8, scenario, "zig_client_vs_go_server")) return r.runZigClientVsGoServer()
-        else if (std.mem.eql(u8, scenario, "zig_server_vs_go_client")) return r.runZigServerVsGoClient()
-        else return error.UnknownScenario;
+        if (std.mem.eql(u8, scenario, "go_echo_smoke")) return r.runGoEchoSmoke() else if (std.mem.eql(u8, scenario, "go_echo_datagram")) return r.runGoEchoDatagram() else if (std.mem.eql(u8, scenario, "go_retry_smoke")) return r.runGoRetrySmoke() else if (std.mem.eql(u8, scenario, "go_alpn_mismatch")) return r.runGoAlpnMismatch() else if (std.mem.eql(u8, scenario, "go_vn_overlap")) return r.runGoVersionNegotiationOverlap() else if (std.mem.eql(u8, scenario, "go_vn_mismatch")) return r.runGoVersionNegotiationMismatch() else if (std.mem.eql(u8, scenario, "go_net_echo_smoke")) return runGoNetEchoSmoke(&r) else if (std.mem.eql(u8, scenario, "zig_client_vs_go_server")) return r.runZigClientVsGoServer() else if (std.mem.eql(u8, scenario, "zig_server_vs_go_client")) return r.runZigServerVsGoClient() else return error.UnknownScenario;
     } else if (std.mem.eql(u8, cmd, "run-all")) {
         var failures: usize = 0;
         if (r.runGoEchoSmoke()) |_| {} else |_| failures += 1;
@@ -344,9 +370,36 @@ pub fn main() !void {
         if (r.runGoAlpnMismatch()) |_| {} else |_| failures += 1;
         if (r.runGoVersionNegotiationOverlap()) |_| {} else |_| failures += 1;
         if (r.runGoVersionNegotiationMismatch()) |_| {} else |_| failures += 1;
+        _ = runGoNetEchoSmoke(&r) catch {};
         _ = r.runZigClientVsGoServer() catch {};
         _ = r.runZigServerVsGoClient() catch {};
         if (failures > 0) return error.InteropFailures;
         return;
     } else return error.UnknownCommand;
+}
+
+// New scenarios (golang.org/x/net/quic) – XFAIL until real TLS interop implemented
+fn runGoNetEchoSmoke(self: *Runner) !void {
+    if (!self.haveGo()) return error.GoMissing;
+    try self.ensureCerts();
+    const server_bin = "zig-out/bin/go-net-interop-server";
+    const client_bin = "zig-out/bin/go-net-interop-client";
+    try self.goBuild("./examples/interop/go-net-server", server_bin);
+    try self.goBuild("./examples/interop/go-net-client", client_bin);
+    var srv = try self.spawnServer(server_bin, "127.0.0.1:0", &.{});
+    defer {
+        _ = srv.child.kill() catch {};
+        _ = srv.child.wait() catch {};
+    }
+    if (srv.addr_len == 0) return error.ServerAddrParseFailed;
+    const srv_addr = srv.addr_buf[0..srv.addr_len];
+    var args = std.ArrayList([]const u8).init(self.alloc);
+    defer args.deinit();
+    try args.appendSlice(&.{ client_bin, "--addr", srv_addr, "--alpn", "h3", "--sni", "test.local", "--insecure", "--msg", "hello" });
+    const res = try self.runClientWithTimeout(args.items, 1500);
+    defer self.alloc.free(res.out);
+    defer self.alloc.free(res.err);
+    // Expect failure until real TLS implemented; treat success as unexpected
+    if (res.term_ok) return error.ExpectedFail;
+    return error.ExpectedFail; // Mark XFAIL consistently
 }

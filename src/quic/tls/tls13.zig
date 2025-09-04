@@ -197,6 +197,11 @@ pub const Engine = struct {
     peer_cert_ok: bool = false,
     finished_sent: bool = false,
     finished_verified: bool = false,
+    /// Whether EncryptedExtensions has been sent (server) or received (client) in real mode
+    ee_sent: bool = false,
+    /// Stored handshake traffic secrets (derived immediately after SH) for correct Finished verification
+    handshake_client_secret: ?[H.digest_length]u8 = null,
+    handshake_server_secret: ?[H.digest_length]u8 = null,
     /// Leaf certificate SPKI (DER) cached on Certificate message, owned by Engine
     leaf_spki: ?[]u8 = null,
     /// QUIC Transport Parameters (encoded blobs) carried in CRYPTO
@@ -206,10 +211,16 @@ pub const Engine = struct {
     alpn: ?[]u8 = null,
     /// Server Name Indication for certificate name checks (client-side). Owned by engine.
     server_name: ?[]u8 = null,
+    /// Enable real (spec-oriented) handshake mode (currently client CH builder only)
+    real_mode: bool = false,
+    /// Stored server certificate (DER) and private key (for future Certificate + CertificateVerify emission)
+    server_cert_der: ?[]u8 = null,
+    server_priv_key: ?[]u8 = null,
+    server_sig_alg: ?sig.SigAlg = null,
 
     /// Initialize a TLS 1.3 Engine with allocator and role.
     pub fn init(alloc: std.mem.Allocator, role: Role) Engine {
-        return .{ .role = role, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .outbox = std.ArrayList(u8).init(alloc), .ch_sent = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null };
+        return .{ .role = role, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .outbox = std.ArrayList(u8).init(alloc), .ch_sent = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .ee_sent = false, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .real_mode = false, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null };
     }
     /// Release any owned resources and buffers.
     pub fn deinit(self: *Engine) void {
@@ -218,7 +229,14 @@ pub const Engine = struct {
         if (self.peer_tp) |b| self.outbox.allocator.free(b);
         if (self.alpn) |a| self.outbox.allocator.free(a);
         if (self.server_name) |s| self.outbox.allocator.free(s);
+        if (self.server_cert_der) |c| self.outbox.allocator.free(c);
+        if (self.server_priv_key) |k| self.outbox.allocator.free(k);
         self.outbox.deinit();
+    }
+
+    /// Activate real handshake mode (experimental). Currently only affects ClientHello generation.
+    pub fn enableReal(self: *Engine) void {
+        self.real_mode = true;
     }
 
     fn ensureKeypair(self: *Engine) void {
@@ -266,33 +284,89 @@ pub const Engine = struct {
                 off += p.n;
                 if (p.typ == .server_hello) self.sh_seen = true;
                 if (p.typ == .client_hello) self.ch_sent = true;
-                if (parseMinimalHelloPub(p.typ, p.body)) |pk| {
+                // If we just processed a real ServerHello, derive handshake secrets immediately (spec: hash includes CH+SH)
+                if (self.real_mode and p.typ == .server_hello and self.handshake_client_secret == null and self.ecdhe_secret != null) {
+                    // transcript hash for messages up to and including this server_hello is data[0..off]
+                    var th_tr = Transcript.init();
+                    th_tr.update(data[0..off]);
+                    const th_hash = th_tr.finalize();
+                    const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th_hash);
+                    self.handshake_client_secret = hs.client_hs;
+                    self.handshake_server_secret = hs.server_hs;
+                }
+                var extracted: ?[32]u8 = null;
+                if (self.real_mode) {
+                    switch (p.typ) {
+                        .client_hello => extracted = parseRealClientHello(p.body),
+                        .server_hello => extracted = parseRealServerHello(p.body),
+                        else => {},
+                    }
+                }
+                if (extracted == null) {
+                    if (parseMinimalHelloPub(p.typ, p.body)) |pk_min| extracted = pk_min;
+                }
+                if (extracted) |pk| {
                     self.peer_pub = pk;
-                    // Depending on role, compute shared when appropriate.
                     switch (p.typ) {
                         .client_hello => if (self.role == .Server) self.tryComputeShared(),
                         .server_hello => if (self.role == .Client) self.tryComputeShared(),
                         else => {},
                     }
                 }
-                // Minimal hook: parse EncryptedExtensions body for ALPN and/or TP markers
+                // Parse EncryptedExtensions (real or legacy placeholder)
                 if (p.typ == .encrypted_extensions) {
-                    // Body format: optional "ALPN" || u8_len || protocol_id || optional "TP" || tp
-                    var i: usize = 0;
-                    if (p.body.len >= 5 and std.mem.eql(u8, p.body[0..4], "ALPN")) {
-                        i = 4;
-                        const n: usize = p.body[i];
-                        i += 1;
-                        if (i + n <= p.body.len) {
-                            if (self.alpn) |old| self.outbox.allocator.free(old);
-                            self.alpn = self.outbox.allocator.dupe(u8, p.body[i .. i + n]) catch null;
-                            i += n;
+                    if (self.real_mode) {
+                        self.ee_sent = true; // mark seen (client)
+                        if (p.body.len >= 2) {
+                            const total = readU16(p.body[0..2]);
+                            if (2 + total <= p.body.len) {
+                                var pos2: usize = 2;
+                                while (pos2 + 4 <= 2 + total) : (pos2 += 4 + readU16(p.body[pos2 + 2 .. pos2 + 4])) {
+                                    const etype = readU16(p.body[pos2 .. pos2 + 2]);
+                                    const elen = readU16(p.body[pos2 + 2 .. pos2 + 4]);
+                                    if (pos2 + 4 + elen > 2 + total) break;
+                                    const edata = p.body[pos2 + 4 .. pos2 + 4 + elen];
+                                    switch (etype) {
+                                        0x0010 => { // ALPN
+                                            if (elen >= 3) {
+                                                if (elen >= 2) {
+                                                    const list_len = readU16(edata[0..2]);
+                                                    if (2 + list_len <= edata.len and list_len > 0) {
+                                                        const name_len = edata[2];
+                                                        if (3 + name_len <= edata.len and name_len > 0) {
+                                                            if (self.alpn) |old| self.outbox.allocator.free(old);
+                                                            self.alpn = self.outbox.allocator.dupe(u8, edata[3 .. 3 + name_len]) catch null;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        0x0039 => { // QUIC TP
+                                            if (self.peer_tp) |old| self.outbox.allocator.free(old);
+                                            self.peer_tp = self.outbox.allocator.dupe(u8, edata) catch null;
+                                        },
+                                        else => {},
+                                    }
+                                }
+                            }
                         }
-                    }
-                    if (i + 2 <= p.body.len and p.body[i] == 'T' and p.body[i + 1] == 'P') {
-                        const tp_bytes = p.body[i + 2 ..];
-                        if (self.peer_tp) |old| self.outbox.allocator.free(old);
-                        self.peer_tp = self.outbox.allocator.dupe(u8, tp_bytes) catch null;
+                    } else {
+                        var i: usize = 0;
+                        if (p.body.len >= 5 and std.mem.eql(u8, p.body[0..4], "ALPN")) {
+                            i = 4;
+                            const n: usize = p.body[i];
+                            i += 1;
+                            if (i + n <= p.body.len) {
+                                if (self.alpn) |old| self.outbox.allocator.free(old);
+                                self.alpn = self.outbox.allocator.dupe(u8, p.body[i .. i + n]) catch null;
+                                i += n;
+                            }
+                        }
+                        if (i + 2 <= p.body.len and p.body[i] == 'T' and p.body[i + 1] == 'P') {
+                            const tp_bytes = p.body[i + 2 ..];
+                            if (self.peer_tp) |old| self.outbox.allocator.free(old);
+                            self.peer_tp = self.outbox.allocator.dupe(u8, tp_bytes) catch null;
+                        }
                     }
                 }
                 // Minimal X.509 certificate body handling (single DER cert)
@@ -352,16 +426,27 @@ pub const Engine = struct {
                 }
                 // Finished verification
                 if (p.typ == .finished and self.ecdhe_secret != null) {
-                    const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th_before);
-                    const ok = switch (self.role) {
-                        .Client => self.verifyPeerFinished(hs.server_hs, p.body),
-                        .Server => self.verifyPeerFinished(hs.client_hs, p.body),
+                    var peer_secret_opt: ?[H.digest_length]u8 = null;
+                    if (self.handshake_client_secret != null and self.handshake_server_secret != null) {
+                        peer_secret_opt = switch (self.role) {
+                            .Client => self.handshake_server_secret.?,
+                            .Server => self.handshake_client_secret.?,
+                        };
+                    }
+                    const ok = if (peer_secret_opt) |ps| self.verifyPeerFinished(ps, p.body) else blk: {
+                        // Fallback (should not happen in real mode past this point)
+                        const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th_before);
+                        break :blk switch (self.role) {
+                            .Client => self.verifyPeerFinished(hs.server_hs, p.body),
+                            .Server => self.verifyPeerFinished(hs.client_hs, p.body),
+                        };
                     };
                     self.finished_verified = ok;
                 }
             } else break;
         }
         self.transcript.update(data);
+        self.maybeAutoProgress();
     }
 
     /// Provide ECDHE shared secret directly (used in tests after X25519 exchange).
@@ -398,6 +483,7 @@ pub const Engine = struct {
 
     /// Build and queue a minimal ClientHello handshake envelope with optional TP.
     pub fn queueMinimalClientHello(self: *Engine) !void {
+        if (self.real_mode) return self.queueRealClientHello();
         var body = std.ArrayList(u8).init(self.outbox.allocator);
         defer body.deinit();
         // Base CH body
@@ -412,8 +498,84 @@ pub const Engine = struct {
         try self.queueCrypto(tmp);
     }
 
+    /// Build a minimally spec-compliant TLS 1.3 ClientHello (QUIC) with:
+    /// - cipher_suites: TLS_AES_128_GCM_SHA256 only
+    /// - groups: x25519
+    /// - key_share: x25519
+    /// - supported_versions: TLS 1.3
+    /// - signature_algorithms: a small set
+    /// - alpn (if set via setServerName?) / local alpn not yet; will be extended
+    /// - quic transport parameters extension (0x0039) if local_tp present
+    fn queueRealClientHello(self: *Engine) !void {
+        self.ensureKeypair();
+        const pubkey = self.my_pub orelse return error.Internal;
+        // Buffers
+        var body = std.ArrayList(u8).init(self.outbox.allocator);
+        defer body.deinit();
+        // legacy_version 0x0303
+        try body.appendSlice(&.{ 0x03, 0x03 });
+        // random 32 bytes
+        var rnd: [32]u8 = undefined;
+        std.crypto.random.bytes(&rnd);
+        try body.appendSlice(&rnd);
+        // session id (empty vector length 0)
+        try body.append(0); // length
+        // cipher_suites vector (length 2, then suite 0x1301)
+        try body.appendSlice(&.{ 0x00, 0x02, 0x13, 0x01 });
+        // legacy_compression_methods (length=1 then 0)
+        try body.appendSlice(&.{ 0x01, 0x00 });
+        // Build extensions into temp buffer
+        var ext_buf = std.ArrayList(u8).init(self.outbox.allocator);
+        defer ext_buf.deinit();
+        // supported_versions (43 / 0x002b)
+        try ext_buf.appendSlice(&.{ 0x00, 0x2b, 0x00, 0x03, 0x02, 0x03, 0x04 }); // len=3(0x0003), list length=2, version 0x0304
+        // supported_groups (10 / 0x000a) -> length 2 list containing x25519 (0x001d)
+        try ext_buf.appendSlice(&.{ 0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x1d });
+        // signature_algorithms (13 / 0x000d) list length 6 (3 algorithms)
+        try ext_buf.appendSlice(&.{ 0x00, 0x0d, 0x00, 0x08, 0x00, 0x06, 0x04, 0x03, 0x08, 0x04, 0x08, 0x07 });
+        // key_share (51 / 0x0033) group x25519(0x001d) key length 32
+        try ext_buf.appendSlice(&.{ 0x00, 0x33 });
+        const key_share_len: u16 = 2 + 2 + 32; // group(2)+key_len(2)+key(32)
+        const total_key_share_len: u16 = @intCast(key_share_len + 2); // plus vector length field (u16)
+        try ext_buf.appendSlice(&.{ @intCast(total_key_share_len >> 8), @intCast(total_key_share_len & 0xff) });
+        // inner vector length
+        try ext_buf.appendSlice(&.{ @intCast(key_share_len >> 8), @intCast(key_share_len & 0xff) });
+        // group
+        try ext_buf.appendSlice(&.{ 0x00, 0x1d });
+        // key length (32)
+        try ext_buf.appendSlice(&.{ 0x00, 32 });
+        try ext_buf.appendSlice(pubkey[0..]);
+        // ALPN if configured (reuse self.alpn if already set via test harness) - ALPN ext type 16
+        if (self.alpn) |alpn_vec| {
+            // Extension type 0x0010
+            // Format: type(2)|len(2)|list_len(2)|proto_len(1)|proto
+            const list_len: usize = 1 + alpn_vec.len; // one entry
+            const ext_len: usize = 2 + list_len; // list length field + list
+            try ext_buf.appendSlice(&.{ 0x00, 0x10, @intCast(ext_len >> 8), @intCast(ext_len & 0xff), @intCast(list_len >> 8), @intCast(list_len & 0xff), @intCast(alpn_vec.len) });
+            try ext_buf.appendSlice(alpn_vec);
+        }
+        // QUIC Transport Parameters extension (0x0039) if local_tp present
+        if (self.local_tp) |tp| {
+            const tp_len: usize = tp.len;
+            try ext_buf.appendSlice(&.{ 0x00, 0x39, @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
+            try ext_buf.appendSlice(tp);
+        }
+        // Now write extensions length
+        const exts = ext_buf.items;
+        const exts_len: u16 = @intCast(exts.len);
+        try body.appendSlice(&.{ @intCast(exts_len >> 8), @intCast(exts_len & 0xff) });
+        try body.appendSlice(exts);
+        const msg = try encodeHandshake(self.outbox.allocator, .client_hello, body.items);
+        defer self.outbox.allocator.free(msg);
+        try self.queueCrypto(msg);
+    }
+
     /// Build and queue a minimal ServerHello with optional TP.
     pub fn queueMinimalServerHello(self: *Engine) !void {
+        if (self.real_mode) {
+            try self.queueRealServerHello();
+            return;
+        }
         var body = std.ArrayList(u8).init(self.outbox.allocator);
         defer body.deinit();
         try body.appendSlice("SHLO");
@@ -454,6 +616,36 @@ pub const Engine = struct {
 
     /// Build and queue EncryptedExtensions carrying ALPN and Transport Parameters.
     pub fn queueEncryptedExtensions(self: *Engine, alpn: []const u8, tp_bytes: []const u8) !void {
+        if (self.real_mode) {
+            // Encode standard TLS EncryptedExtensions extension vector
+            var ext_list = std.ArrayList(u8).init(self.outbox.allocator);
+            defer ext_list.deinit();
+            if (alpn.len > 0) {
+                // ALPN extension (0x0010)
+                const proto_list_len: u16 = @intCast(1 + alpn.len); // one entry
+                const ext_data_len: u16 = @intCast(2 + proto_list_len);
+                try ext_list.appendSlice(&.{ 0x00, 0x10, @intCast(ext_data_len >> 8), @intCast(ext_data_len & 0xff), @intCast(proto_list_len >> 8), @intCast(proto_list_len & 0xff), @intCast(alpn.len) });
+                try ext_list.appendSlice(alpn);
+            }
+            if (tp_bytes.len > 0) {
+                const tp_len: u16 = @intCast(tp_bytes.len);
+                try ext_list.appendSlice(&.{ 0x00, 0x39, @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
+                try ext_list.appendSlice(tp_bytes);
+            }
+            const all_ext = ext_list.items;
+            const total_len: u16 = @intCast(all_ext.len);
+            var body = std.ArrayList(u8).init(self.outbox.allocator);
+            defer body.deinit();
+            try body.appendSlice(&.{ @intCast(total_len >> 8), @intCast(total_len & 0xff) });
+            try body.appendSlice(all_ext);
+            const msg = try encodeHandshake(self.outbox.allocator, .encrypted_extensions, body.items);
+            defer self.outbox.allocator.free(msg);
+            try self.queueCrypto(msg);
+            self.ee_sent = true; // mark sent (server)
+            self.maybeAutoProgress();
+            return;
+        }
+        // Legacy minimal placeholder encoding
         var body = std.ArrayList(u8).init(self.outbox.allocator);
         defer body.deinit();
         if (alpn.len > 0) {
@@ -510,6 +702,10 @@ pub const Engine = struct {
 
     /// Queue a minimalistic ServerHello with an auto-generated X25519 key share.
     pub fn queueMinimalServerHelloAuto(self: *Engine) !usize {
+        if (self.real_mode) {
+            try self.queueRealServerHello();
+            return 0;
+        }
         self.ensureKeypair();
         const pubkey = self.my_pub orelse return error.Internal;
         const msg = try encodeMinimalServerHello(self.outbox.allocator, pubkey);
@@ -525,6 +721,110 @@ pub const Engine = struct {
         // Clear the outbox after pop
         self.outbox.clearRetainingCapacity();
         return n;
+    }
+
+    /// Build a minimally spec-compliant TLS 1.3 ServerHello (real mode)
+    pub fn queueRealServerHello(self: *Engine) !void {
+        self.ensureKeypair();
+        const pubkey = self.my_pub orelse return error.Internal;
+        var body = std.ArrayList(u8).init(self.outbox.allocator);
+        defer body.deinit();
+        try body.appendSlice(&.{ 0x03, 0x03 }); // legacy_version
+        var rnd: [32]u8 = undefined;
+        std.crypto.random.bytes(&rnd);
+        try body.appendSlice(&rnd);
+        try body.append(0); // session id length
+        try body.appendSlice(&.{ 0x13, 0x01 }); // cipher suite
+        try body.append(0); // compression method
+        var ext = std.ArrayList(u8).init(self.outbox.allocator);
+        defer ext.deinit();
+        // supported_versions
+        try ext.appendSlice(&.{ 0x00, 0x2b, 0x00, 0x02, 0x03, 0x04 });
+        // key_share
+        try ext.appendSlice(&.{ 0x00, 0x33 });
+        const ks_len: u16 = 2 + 2 + 32; // group + key_len + key
+        try ext.appendSlice(&.{ @intCast(ks_len >> 8), @intCast(ks_len & 0xff) });
+        try ext.appendSlice(&.{ 0x00, 0x1d }); // group x25519
+        try ext.appendSlice(&.{ 0x00, 32 });
+        try ext.appendSlice(pubkey[0..]);
+        const exts_bytes = ext.items;
+        const exts_len: u16 = @intCast(exts_bytes.len);
+        try body.appendSlice(&.{ @intCast(exts_len >> 8), @intCast(exts_len & 0xff) });
+        try body.appendSlice(exts_bytes);
+        const msg = try encodeHandshake(self.outbox.allocator, .server_hello, body.items);
+        defer self.outbox.allocator.free(msg);
+        try self.queueCrypto(msg);
+        self.tryComputeShared();
+        // Derive handshake traffic secrets immediately after SH (CH already in transcript)
+        if (self.ecdhe_secret != null and self.handshake_client_secret == null) {
+            var snap = self.transcript;
+            const th = snap.finalize(); // includes CH + SH only at this point
+            const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th);
+            self.handshake_client_secret = hs.client_hs;
+            self.handshake_server_secret = hs.server_hs;
+        }
+    }
+    /// Internal: auto-send Finished when conditions satisfied (real mode only)
+    fn maybeAutoProgress(self: *Engine) void {
+        if (!self.real_mode) return;
+        if (self.finished_sent) return;
+        if (self.ecdhe_secret == null) return;
+        if (self.role == .Server) {
+            // Authenticated path: if a server certificate is configured and not yet sent, emit Certificate + CertificateVerify
+            if (self.ee_sent and self.handshake_server_secret != null) {
+                if (self.server_cert_der != null and self.server_priv_key != null and !self.allow_insecure) {
+                    // Check if Certificate already in transcript by scanning for finished_sent flag only; use finished_sent as barrier.
+                    // If Finished not yet sent, we can still add cert flight.
+                    // Queue Certificate
+                    self.queueCertificate(self.server_cert_der.?) catch {};
+                    // Build CertificateVerify signature
+                    var snap = self.transcript; // includes cert now
+                    const th = snap.finalize();
+                    const alg = self.server_sig_alg orelse .ecdsa_secp256r1_sha256;
+                    const sig_bytes = sig.signCertificateVerify(alg, self.server_priv_key.?, "TLS 1.3, server CertificateVerify", &th, self.outbox.allocator) catch null;
+                    if (sig_bytes) |sb| {
+                        // toy encoding: alg id byte + DER signature
+                        var body = std.ArrayList(u8).init(self.outbox.allocator);
+                        defer body.deinit();
+                        const alg_id: u8 = switch (alg) {
+                            .ecdsa_secp256r1_sha256 => 0x40,
+                            .ecdsa_secp384r1_sha384 => 0x41,
+                            .rsa_pss_sha256 => 0x50,
+                        };
+                        body.append(alg_id) catch {};
+                        body.appendSlice(sb) catch {};
+                        const msg = encodeHandshake(self.outbox.allocator, .certificate_verify, body.items) catch null;
+                        if (msg) |m| {
+                            self.queueCrypto(m) catch {};
+                            self.outbox.allocator.free(m);
+                        }
+                        self.outbox.allocator.free(sb);
+                    }
+                }
+                // After (optionally) sending certificate flight, send Finished
+                self.queueFinished(self.handshake_server_secret.?) catch {};
+            }
+            return;
+        } else { // Client
+            // Client waits for Finished verification; in authenticated mode also ensures peer_cert_ok
+            if (self.finished_verified and self.handshake_client_secret != null) {
+                if (!self.allow_insecure and !self.peer_cert_ok) return; // wait for cert validation
+                self.queueFinished(self.handshake_client_secret.?) catch {};
+            }
+        }
+    }
+    /// Public: handshake complete when both sides' Finished exchanged.
+    pub fn handshakeComplete(self: *Engine) bool {
+        return self.finished_sent and self.finished_verified;
+    }
+    /// Install server certificate and private key (ECDSA P-256 for now). Stored for future emission.
+    pub fn setServerCertificate(self: *Engine, cert_der: []const u8, priv_key: []const u8, alg: sig.SigAlg) !void {
+        if (self.role != .Server) return error.WrongRole;
+        if (self.server_cert_der) |c| self.outbox.allocator.free(c);
+        if (self.server_priv_key) |k| self.outbox.allocator.free(k);
+        self.server_cert_der = try self.outbox.allocator.dupe(u8, cert_der);
+        self.server_priv_key = try self.outbox.allocator.dupe(u8, priv_key);
+        self.server_sig_alg = alg;
     }
 };
 
@@ -581,3 +881,117 @@ pub fn parseMinimalHelloPub(typ: HsType, body: []const u8) ?[32]u8 {
     }
     return null;
 }
+
+// --- Real TLS 1.3 ClientHello / ServerHello parsing helpers (minimal) ---
+
+fn readU16(be: []const u8) u16 {
+    return (@as(u16, be[0]) << 8) | be[1];
+}
+
+/// Attempt to parse a real (spec-like) TLS 1.3 ClientHello and extract the first X25519 key share.
+/// Returns pubkey if successful; otherwise null. Does not perform deep validation beyond bounds.
+fn parseRealClientHello(body: []const u8) ?[32]u8 {
+    if (body.len < 2 + 32 + 1) return null; // version + random + session id len
+    var pos: usize = 0;
+    // legacy_version
+    pos += 2;
+    // random
+    pos += 32;
+    if (pos >= body.len) return null;
+    // session id
+    const sid_len: usize = body[pos];
+    pos += 1;
+    if (pos + sid_len > body.len) return null;
+    pos += sid_len;
+    if (pos + 2 > body.len) return null;
+    const cs_len = readU16(body[pos .. pos + 2]);
+    pos += 2;
+    if (pos + cs_len > body.len) return null;
+    pos += cs_len; // skip cipher_suites
+    if (pos >= body.len) return null;
+    const comp_len: usize = body[pos];
+    pos += 1;
+    if (pos + comp_len > body.len) return null;
+    pos += comp_len;
+    if (pos + 2 > body.len) return null;
+    const exts_len = readU16(body[pos .. pos + 2]);
+    pos += 2;
+    if (pos + exts_len > body.len) return null;
+    const exts_end = pos + exts_len;
+    var pk: ?[32]u8 = null;
+    while (pos + 4 <= exts_end) {
+        const etype = readU16(body[pos .. pos + 2]);
+        const elen = readU16(body[pos + 2 .. pos + 4]);
+        pos += 4;
+        if (pos + elen > exts_end) return null;
+        if (etype == 0x0033) { // key_share
+            if (elen < 2) return null;
+            if (pos + 2 > exts_end) return null;
+            const list_len = readU16(body[pos .. pos + 2]);
+            pos += 2;
+            if (pos + list_len > exts_end) return null;
+            var lp: usize = pos;
+            const list_end = pos + list_len;
+            while (lp + 4 <= list_end) {
+                const group = readU16(body[lp .. lp + 2]);
+                const klen = readU16(body[lp + 2 .. lp + 4]);
+                lp += 4;
+                if (lp + klen > list_end) return null;
+                if (group == 0x001d and klen == 32) {
+                    var out: [32]u8 = undefined;
+                    @memcpy(&out, body[lp .. lp + 32]);
+                    pk = out;
+                    break;
+                }
+                lp += klen;
+            }
+            // We don't parse further extensions once key_share found.
+        }
+        pos += elen; // advance to next extension
+    }
+    return pk;
+}
+
+/// Attempt to parse a real (spec-like) TLS 1.3 ServerHello and extract the X25519 key share.
+fn parseRealServerHello(body: []const u8) ?[32]u8 {
+    if (body.len < 2 + 32 + 1 + 2 + 1 + 2) return null; // minimal size
+    var pos: usize = 0;
+    pos += 2; // legacy version
+    pos += 32; // random
+    if (pos >= body.len) return null;
+    const sid_len: usize = body[pos];
+    pos += 1;
+    if (pos + sid_len > body.len) return null;
+    pos += sid_len; // session id
+    if (pos + 3 > body.len) return null;
+    pos += 2; // cipher suite
+    pos += 1; // compression method
+    if (pos + 2 > body.len) return null;
+    const exts_len = readU16(body[pos .. pos + 2]);
+    pos += 2;
+    if (pos + exts_len > body.len) return null;
+    const exts_end = pos + exts_len;
+    while (pos + 4 <= exts_end) {
+        const etype = readU16(body[pos .. pos + 2]);
+        const elen = readU16(body[pos + 2 .. pos + 4]);
+        pos += 4;
+        if (pos + elen > exts_end) return null;
+        if (etype == 0x0033) { // key_share (server format)
+            if (elen < 4 + 32) return null;
+            const group = readU16(body[pos .. pos + 2]);
+            const klen = readU16(body[pos + 2 .. pos + 4]);
+            if (group == 0x001d and klen == 32 and pos + 4 + 32 <= pos + elen) {
+                var out: [32]u8 = undefined;
+                @memcpy(&out, body[pos + 4 .. pos + 4 + 32]);
+                return out;
+            }
+        }
+        pos += elen;
+    }
+    return null;
+}
+
+// Build a minimally spec-compliant TLS 1.3 ServerHello with:
+// - cipher_suite TLS_AES_128_GCM_SHA256
+// - supported_versions (selected 1.3)
+// - key_share (x25519)

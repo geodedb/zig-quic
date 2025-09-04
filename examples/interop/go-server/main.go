@@ -71,15 +71,20 @@ func main() {
 	if err != nil {
 		log.Fatalf("listen udp: %v", err)
 	}
-	tr := &quic.Transport{
-		Conn: udpConn,
-		VerifySourceAddress: func(net.Addr) bool { return *retry },
+	tr := &quic.Transport{Conn: udpConn}
+	if *retry {
+		tr.VerifySourceAddress = func(net.Addr) bool { return true }
 	}
 	ln, err := tr.Listen(conf, qconf)
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
-	log.Printf("listening on %s", *addr)
+	la := udpConn.LocalAddr()
+	if la != nil {
+		log.Printf("listening on %s", la.String())
+	} else {
+		log.Printf("listening on %s", *addr)
+	}
 	for {
 		conn, err := ln.Accept(context.Background())
 		if err != nil {

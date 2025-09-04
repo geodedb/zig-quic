@@ -287,7 +287,15 @@ pub const Endpoint = struct {
             if (tp_bytes.len > 0) self.allocator.free(tp_bytes);
         }
         c.tls.setLocalTransportParameters(if (tp_bytes.len > 0) tp_bytes else tp_bytes[0..0]) catch {};
-        _ = c.tls.queueMinimalClientHelloAuto() catch 0;
+        if (self.cfg.real_tls) {
+            c.tls.enableReal();
+            // Use queueMinimalClientHello (will dispatch to real builder when real_mode true)
+            c.tls.queueMinimalClientHello() catch {
+                _ = c.tls.queueMinimalClientHelloAuto() catch 0;
+            };
+        } else {
+            _ = c.tls.queueMinimalClientHelloAuto() catch 0;
+        }
         var crypto_buf: [2048]u8 = undefined;
         const crypto_len = c.tls.popCrypto(crypto_buf[0..]);
         if (crypto_len > 0) {
@@ -1122,6 +1130,12 @@ pub const Endpoint = struct {
                     // Apply config to server connection
                     c.setUseCubic(self.cfg.cc == .cubic);
                     c.tls.allow_insecure = self.cfg.allow_insecure;
+                    if (self.cfg.real_tls) {
+                        c.tls.enableReal();
+                        if (self.cfg.inline_server_cert_der != null and self.cfg.inline_server_priv_p256 != null) {
+                            c.tls.setServerCertificate(self.cfg.inline_server_cert_der.?, self.cfg.inline_server_priv_p256.?, .ecdsa_secp256r1_sha256) catch {};
+                        }
+                    }
                     c.allowed_alpns = self.cfg.alpn;
                     // Enable optional pacing and set CC max_datagram_size
                     c.enable_pacing = self.cfg.enable_pacing;
@@ -1146,6 +1160,12 @@ pub const Endpoint = struct {
                     c.init(self.allocator, .Server, self.sock_fd, peer);
                     c.setUseCubic(self.cfg.cc == .cubic);
                     c.tls.allow_insecure = self.cfg.allow_insecure;
+                    if (self.cfg.real_tls) {
+                        c.tls.enableReal();
+                        if (self.cfg.inline_server_cert_der != null and self.cfg.inline_server_priv_p256 != null) {
+                            c.tls.setServerCertificate(self.cfg.inline_server_cert_der.?, self.cfg.inline_server_priv_p256.?, .ecdsa_secp256r1_sha256) catch {};
+                        }
+                    }
                     c.allowed_alpns = self.cfg.alpn;
                     // Enable optional pacing and set CC max_datagram_size
                     c.enable_pacing = self.cfg.enable_pacing;

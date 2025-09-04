@@ -411,3 +411,198 @@ pub fn verifyCertificateVerify(alg: SigAlg, pubkey_spki_der: []const u8, sig: []
         },
     }
 }
+
+/// Sign a TLS 1.3 CertificateVerify for given algorithm using a DER private key blob (currently supports raw PKCS#8 EC for P-256) and transcript hash.
+pub fn signCertificateVerify(alg: SigAlg, privkey_der: []const u8, context: []const u8, transcript_hash: []const u8, alloc: std.mem.Allocator) ![]u8 {
+    switch (alg) {
+        .ecdsa_secp256r1_sha256 => {
+            // Preferred: parse PKCS#8 -> ECPrivateKey -> scalar. Fallback to legacy pattern scan.
+            var sk: [32]u8 = undefined;
+            if (parsePkcs8EcdsaP256PrivateKey(privkey_der, &sk)) |ok| {
+                _ = ok; // already written into sk
+            } else |err| switch (err) {
+                error.BadKey, error.Unsupported, error.Parse => {
+                    // Legacy heuristic fallback (scan for 0x04 0x20 <32-bytes>) used by early tests.
+                    if (privkey_der.len < 34) return error.BadKey;
+                    var idx: ?usize = null;
+                    var i: usize = 0;
+                    while (i + 34 <= privkey_der.len) : (i += 1) {
+                        if (privkey_der[i] == 0x04 and privkey_der[i + 1] == 0x20) {
+                            idx = i + 2;
+                            break;
+                        }
+                    }
+                    const off = idx orelse return error.BadKey;
+                    @memcpy(sk[0..], privkey_der[off .. off + 32]);
+                },
+                else => return err,
+            }
+            const Ecdsa = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, Sha256);
+            // Build signing context content
+            const to_sign = try tls13_build_context_and_hash(alg, context, transcript_hash);
+            defer alloc.free(to_sign);
+            const secret = try Ecdsa.SecretKey.fromBytes(sk);
+            const key_pair = try Ecdsa.KeyPair.fromSecretKey(secret);
+            // Pass message then optional random noise (null => deterministic per RFC6979)
+            const signature = try key_pair.sign(to_sign, null);
+
+            // Manually DER-encode (SEQUENCE { r INTEGER, s INTEGER }) per RFC 3279/5480
+            const r_full = signature.r; // [32]u8
+            const s_full = signature.s; // [32]u8
+
+            // Trim leading zeros but keep at least one byte
+            const r_trim = trimLeading(&r_full);
+            const s_trim = trimLeading(&s_full);
+            const r_need_pad: bool = (r_trim[0] & 0x80) != 0;
+            const s_need_pad: bool = (s_trim[0] & 0x80) != 0;
+            // Use @intFromBool to avoid comptime_int dependency on runtime control flow
+            const r_len: usize = r_trim.len + @intFromBool(r_need_pad);
+            const s_len: usize = s_trim.len + @intFromBool(s_need_pad);
+            const seq_len: usize = 2 + r_len + 2 + s_len; // INTEGER headers + values
+            if (seq_len + 2 >= 128) return error.Encode; // should never happen for P-256
+            var out = try alloc.alloc(u8, 2 + seq_len);
+            var o: usize = 0;
+            out[o] = 0x30;
+            o += 1; // SEQUENCE
+            out[o] = @intCast(seq_len);
+            o += 1;
+            out[o] = 0x02;
+            o += 1; // INTEGER r
+            out[o] = @intCast(r_len);
+            o += 1;
+            if (r_need_pad) {
+                out[o] = 0x00;
+                o += 1;
+            }
+            @memcpy(out[o .. o + r_trim.len], r_trim);
+            o += r_trim.len;
+            out[o] = 0x02;
+            o += 1; // INTEGER s
+            out[o] = @intCast(s_len);
+            o += 1;
+            if (s_need_pad) {
+                out[o] = 0x00;
+                o += 1;
+            }
+            @memcpy(out[o .. o + s_trim.len], s_trim);
+            o += s_trim.len;
+            std.debug.assert(o == out.len);
+            return out;
+        },
+        else => return error.Unsupported,
+    }
+}
+
+fn trimLeading(x: []const u8) []const u8 {
+    var j: usize = 0;
+    while (j + 1 < x.len and x[j] == 0) : (j += 1) {}
+    return x[j..];
+}
+
+// ---- Minimal PKCS#8 / ECPrivateKey parsing (P-256 only) ----
+// Returns error.BadKey on generic structural or OID mismatch, error.Parse on malformed DER.
+// Writes 32-byte scalar into out and returns void on success.
+fn parsePkcs8EcdsaP256PrivateKey(der: []const u8, out: *[32]u8) !void {
+    if (der.len < 16) return error.Parse;
+    var i: usize = 0;
+    const T = struct {
+        fn need(n: usize, total: usize) !void {
+            if (n > total) return error.Parse;
+        }
+        fn readLen(data: []const u8, idx: *usize) !usize {
+            var pos = idx.*;
+            if (pos >= data.len) return error.Parse;
+            const b = data[pos];
+            pos += 1;
+            if ((b & 0x80) == 0) {
+                idx.* = pos;
+                return b;
+            } // short form
+            const nbytes = b & 0x7f;
+            if (nbytes == 0 or nbytes > 2) return error.Parse; // limit length size
+            if (pos + nbytes > data.len) return error.Parse;
+            var l: usize = 0;
+            var j: usize = 0;
+            while (j < nbytes) : (j += 1) {
+                l = (l << 8) | data[pos + j];
+            }
+            pos += nbytes;
+            idx.* = pos;
+            return l;
+        }
+    };
+
+    // PrivateKeyInfo ::= SEQUENCE
+    if (der[i] != 0x30) return error.Parse;
+    i += 1;
+    const seq_len = try T.readLen(der, &i);
+    if (i + seq_len != der.len) return error.Parse;
+
+    // version INTEGER (expect 0)
+    if (der[i] != 0x02) return error.Parse;
+    i += 1;
+    const ver_len = try T.readLen(der, &i);
+    if (ver_len != 1 or i + ver_len > der.len) return error.Parse;
+    if (der[i] != 0x00) return error.BadKey; // version must be 0
+    i += ver_len;
+
+    // algorithm AlgorithmIdentifier = SEQUENCE
+    if (der[i] != 0x30) return error.Parse;
+    i += 1;
+    const alg_len = try T.readLen(der, &i);
+    if (i + alg_len > der.len) return error.Parse;
+    const alg_end = i + alg_len;
+    // OID ecPublicKey
+    if (i >= alg_end or der[i] != 0x06) return error.Parse;
+    i += 1;
+    const oid1_len = try T.readLen(der, &i);
+    if (i + oid1_len > alg_end) return error.Parse;
+    const oid_ec = der[i .. i + oid1_len];
+    i += oid1_len;
+    // parameters OID namedCurve
+    if (i >= alg_end or der[i] != 0x06) return error.Parse;
+    i += 1;
+    const oid2_len = try T.readLen(der, &i);
+    if (i + oid2_len > alg_end) return error.Parse;
+    const oid_curve = der[i .. i + oid2_len];
+    i += oid2_len;
+    if (i != alg_end) return error.Parse;
+    // id-ecPublicKey 1.2.840.10045.2.1  -> DER: 06 07 2A 86 48 CE 3D 02 01
+    const ec_pub_const = [_]u8{ 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01 };
+    if (!std.mem.eql(u8, oid_ec, &ec_pub_const)) return error.BadKey;
+    // prime256v1 / secp256r1 1.2.840.10045.3.1.7 -> 06 08 2A 86 48 CE 3D 03 01 07
+    const p256_const = [_]u8{ 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07 };
+    if (!std.mem.eql(u8, oid_curve, &p256_const)) return error.Unsupported; // not P-256
+
+    // privateKey OCTET STRING containing ECPrivateKey structure
+    if (der[i] != 0x04) return error.Parse;
+    i += 1;
+    const pk_oct_len = try T.readLen(der, &i);
+    if (i + pk_oct_len > der.len) return error.Parse;
+    const pk_oct = der[i .. i + pk_oct_len];
+    i += pk_oct_len;
+    // ignore optional attributes / publicKey
+
+    // Parse ECPrivateKey inside pk_oct
+    var j: usize = 0;
+    if (pk_oct.len < 4) return error.Parse;
+    if (pk_oct[j] != 0x30) return error.Parse;
+    j += 1;
+    const ec_seq_len = try T.readLen(pk_oct, &j);
+    if (j + ec_seq_len != pk_oct.len) return error.Parse;
+    // version INTEGER (expect 1)
+    if (pk_oct[j] != 0x02) return error.Parse;
+    j += 1;
+    const ec_ver_len = try T.readLen(pk_oct, &j);
+    if (ec_ver_len != 1 or j + ec_ver_len > pk_oct.len) return error.Parse;
+    if (pk_oct[j] != 0x01) return error.BadKey; // expect 1
+    j += ec_ver_len;
+    // privateKey OCTET STRING (expect 32 bytes)
+    if (pk_oct[j] != 0x04) return error.Parse;
+    j += 1;
+    const sk_len = try T.readLen(pk_oct, &j);
+    if (sk_len != 32 or j + sk_len > pk_oct.len) return error.BadKey;
+    @memcpy(out[0..], pk_oct[j .. j + sk_len]);
+    // success
+    return;
+}

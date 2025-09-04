@@ -35,4 +35,9 @@ pub const QuicConfig = struct {
     // AEAD usage limit overrides (tests/dev). When null, use RFC defaults.
     aead_confidentiality_limit_override: ?u64 = null,
     aead_integrity_limit_override: ?u64 = null,
+    // Enable experimental real TLS 1.3 handshake (ClientHello generation now; server TBD)
+    real_tls: bool = false,
+    // Inline test/server certificate and raw P-256 private key (DER cert, 32-byte scalar)
+    inline_server_cert_der: ?[]const u8 = null,
+    inline_server_priv_p256: ?[]const u8 = null,
 };

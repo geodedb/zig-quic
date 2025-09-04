@@ -10,6 +10,14 @@ HOST=${HOST:-127.0.0.1}
 # Generate certs
 bash ./examples/interop/certs/generate.sh
 
+# Build Go interop binaries if missing
+if [[ ! -x ./zig-out/bin/go-interop-server || ! -x ./zig-out/bin/go-interop-client ]]; then
+  echo "building go interop shims..." >&2
+  mkdir -p ./zig-out/bin
+  ( cd examples/interop/go-server && go build -o ../../../zig-out/bin/go-interop-server . )
+  ( cd examples/interop/go-client && go build -o ../../../zig-out/bin/go-interop-client . )
+fi
+
 # Start server on ephemeral port and capture stderr
 ./zig-out/bin/go-interop-server \
   --addr "${HOST}:${PORT}" \

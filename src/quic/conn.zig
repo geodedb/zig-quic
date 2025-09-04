@@ -503,6 +503,9 @@ pub const Connection = struct {
         self.rec.setCcMode(false);
         // Initialize retry token buffer to match deinit symmetry
         self.initial_token = std.ArrayList(u8).init(alloc.*);
+        // Explicitly initialize crypto retransmit buffers (field defaults not applied on reuse)
+        self.crypto_retx_initial = null;
+        self.crypto_retx_handshake = null;
     }
 
     /// Release resources held by this Connection (payloads, maps, TLS state).
@@ -671,7 +674,14 @@ pub const Connection = struct {
         self.tls.onCryptoRecv(hs);
         // Server: upon receiving ClientHello, immediately queue a ServerHello
         if (self.role == .Server and !self.tls.sh_seen) {
-            _ = self.tls.queueMinimalServerHelloAuto() catch {};
+            // Attempt real ServerHello if engine in real_mode; fallback to minimal auto.
+            if (self.tls.real_mode) {
+                self.tls.queueMinimalServerHello() catch {
+                    _ = self.tls.queueMinimalServerHelloAuto() catch {};
+                };
+            } else {
+                _ = self.tls.queueMinimalServerHelloAuto() catch {};
+            }
         }
         // If we can compute handshake secrets now, install Handshake keys once
         if (self.hs_client == null or self.hs_server == null) {

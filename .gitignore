@@ -1,5 +1,6 @@
 *cweb.log
 *.tmp
+core
 
 external/
 dist/

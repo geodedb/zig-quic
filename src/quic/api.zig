@@ -123,6 +123,12 @@ pub fn getNegotiatedAlpn(conn: *QuicConnection) ?[]const u8 {
     return c.getNegotiatedAlpn();
 }
 
+/// Return true if handshake Finished messages exchanged.
+pub fn handshakeComplete(conn: *QuicConnection) bool {
+    const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
+    return c.tls.handshakeComplete();
+}
+
 /// Close a connection with an application error (not yet implemented).
 pub fn closeConnection(conn: *QuicConnection, app_error_code: u64) !void {
     _ = conn;

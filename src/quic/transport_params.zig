@@ -7,14 +7,21 @@ const varint = @import("quic_varint");
 pub const Id = enum(u64) {
     original_destination_connection_id = 0x00,
     max_idle_timeout = 0x01,
+    stateless_reset_token = 0x02,
+    max_udp_payload_size = 0x03,
     initial_max_data = 0x04,
     initial_max_stream_data_bidi_local = 0x05,
     initial_max_stream_data_bidi_remote = 0x06,
     initial_max_stream_data_uni = 0x07,
     initial_max_streams_bidi = 0x08,
     initial_max_streams_uni = 0x09,
+    ack_delay_exponent = 0x0a,
+    max_ack_delay = 0x0b,
     disable_active_migration = 0x0c,
+    preferred_address = 0x0d,
     active_connection_id_limit = 0x0e,
+    initial_source_connection_id = 0x0f,
+    retry_source_connection_id = 0x10,
 };
 
 /// Parsed QUIC Transport Parameters (subset) with encode/decode helpers.
@@ -22,18 +29,28 @@ pub const TransportParams = struct {
     // Greasing and other fields omitted for now.
     original_destination_connection_id: ?[]u8 = null, // owned
     max_idle_timeout: ?u64 = null,
+    stateless_reset_token: ?[16]u8 = null,
+    max_udp_payload_size: ?u64 = null,
     initial_max_data: ?u64 = null,
     initial_max_stream_data_bidi_local: ?u64 = null,
     initial_max_stream_data_bidi_remote: ?u64 = null,
     initial_max_stream_data_uni: ?u64 = null,
     initial_max_streams_bidi: ?u64 = null,
     initial_max_streams_uni: ?u64 = null,
+    ack_delay_exponent: ?u64 = null,
+    max_ack_delay: ?u64 = null,
     disable_active_migration: bool = false,
     active_connection_id_limit: ?u64 = null,
+    initial_source_connection_id: ?[]u8 = null, // owned
+    retry_source_connection_id: ?[]u8 = null, // owned
+    preferred_address_raw: ?[]u8 = null, // owned raw bytes (structure parse deferred)
 
     /// Free any owned fields and poison the struct.
     pub fn deinit(self: *TransportParams, alloc: std.mem.Allocator) void {
         if (self.original_destination_connection_id) |b| alloc.free(b);
+        if (self.initial_source_connection_id) |b| alloc.free(b);
+        if (self.retry_source_connection_id) |b| alloc.free(b);
+        if (self.preferred_address_raw) |b| alloc.free(b);
         self.* = undefined;
     }
 
@@ -66,6 +83,10 @@ pub const TransportParams = struct {
             const n = try varint.encode(v, &tmp);
             break :blk tmp[0..n];
         }, w);
+        if (self.max_udp_payload_size) |v| try writeTlv.raw(.max_udp_payload_size, blk: {
+            const n = try varint.encode(v, &tmp);
+            break :blk tmp[0..n];
+        }, w);
         if (self.initial_max_stream_data_bidi_local) |v| try writeTlv.raw(.initial_max_stream_data_bidi_local, blk: {
             const n = try varint.encode(v, &tmp);
             break :blk tmp[0..n];
@@ -86,6 +107,14 @@ pub const TransportParams = struct {
             const n = try varint.encode(v, &tmp);
             break :blk tmp[0..n];
         }, w);
+        if (self.ack_delay_exponent) |v| try writeTlv.raw(.ack_delay_exponent, blk: {
+            const n = try varint.encode(v, &tmp);
+            break :blk tmp[0..n];
+        }, w);
+        if (self.max_ack_delay) |v| try writeTlv.raw(.max_ack_delay, blk: {
+            const n = try varint.encode(v, &tmp);
+            break :blk tmp[0..n];
+        }, w);
         if (self.active_connection_id_limit) |v| try writeTlv.raw(.active_connection_id_limit, blk: {
             const n = try varint.encode(v, &tmp);
             break :blk tmp[0..n];
@@ -102,6 +131,12 @@ pub const TransportParams = struct {
         if (self.original_destination_connection_id) |v| {
             try writeTlv.raw(.original_destination_connection_id, v, w);
         }
+        if (self.initial_source_connection_id) |v| try writeTlv.raw(.initial_source_connection_id, v, w);
+        if (self.retry_source_connection_id) |v| try writeTlv.raw(.retry_source_connection_id, v, w);
+        if (self.stateless_reset_token) |tok| {
+            try writeTlv.raw(.stateless_reset_token, &tok, w);
+        }
+        if (self.preferred_address_raw) |v| try writeTlv.raw(.preferred_address, v, w);
 
         return out.toOwnedSlice();
     }
@@ -127,17 +162,41 @@ pub const TransportParams = struct {
                     tp.original_destination_connection_id = try alloc.dupe(u8, val);
                 },
                 @intFromEnum(Id.max_idle_timeout) => tp.max_idle_timeout = try readVarint(val),
+                @intFromEnum(Id.stateless_reset_token) => {
+                    if (val.len != 16) return error.Malformed;
+                    if (tp.stateless_reset_token != null) return error.Duplicate;
+                    var tok: [16]u8 = undefined;
+                    @memcpy(&tok, val[0..16]);
+                    tp.stateless_reset_token = tok;
+                },
+                @intFromEnum(Id.max_udp_payload_size) => tp.max_udp_payload_size = try readVarint(val),
                 @intFromEnum(Id.initial_max_data) => tp.initial_max_data = try readVarint(val),
                 @intFromEnum(Id.initial_max_stream_data_bidi_local) => tp.initial_max_stream_data_bidi_local = try readVarint(val),
                 @intFromEnum(Id.initial_max_stream_data_bidi_remote) => tp.initial_max_stream_data_bidi_remote = try readVarint(val),
                 @intFromEnum(Id.initial_max_stream_data_uni) => tp.initial_max_stream_data_uni = try readVarint(val),
                 @intFromEnum(Id.initial_max_streams_bidi) => tp.initial_max_streams_bidi = try readVarint(val),
                 @intFromEnum(Id.initial_max_streams_uni) => tp.initial_max_streams_uni = try readVarint(val),
+                @intFromEnum(Id.ack_delay_exponent) => tp.ack_delay_exponent = try readVarint(val),
+                @intFromEnum(Id.max_ack_delay) => tp.max_ack_delay = try readVarint(val),
                 @intFromEnum(Id.disable_active_migration) => {
                     if (val.len != 0) return error.Malformed;
                     tp.disable_active_migration = true;
                 },
                 @intFromEnum(Id.active_connection_id_limit) => tp.active_connection_id_limit = try readVarint(val),
+                @intFromEnum(Id.initial_source_connection_id) => {
+                    if (tp.initial_source_connection_id != null) return error.Duplicate;
+                    tp.initial_source_connection_id = try alloc.dupe(u8, val);
+                },
+                @intFromEnum(Id.retry_source_connection_id) => {
+                    if (tp.retry_source_connection_id != null) return error.Duplicate;
+                    tp.retry_source_connection_id = try alloc.dupe(u8, val);
+                },
+                @intFromEnum(Id.preferred_address) => {
+                    if (tp.preferred_address_raw != null) return error.Duplicate;
+                    // Minimal structural check: must be at least IPv4+port+IPv6+port+cid_len+token (4+2+16+2+1+16=41)
+                    if (val.len < 41) return error.Malformed;
+                    tp.preferred_address_raw = try alloc.dupe(u8, val);
+                },
                 else => {
                     // Unknown: ignore for now per RFC (MAY ignore unknown/grease)
                 },

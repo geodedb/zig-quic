@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"strings"
 	"time"
@@ -106,9 +105,23 @@ func main() {
 	if err := stream.Close(); err != nil {
 		log.Printf("stream close: %v", err)
 	}
-	b, err := io.ReadAll(stream)
-	if err != nil {
-		log.Fatalf("read: %v", err)
+	// Be tolerant of remote connection close after echo: read up to len(msg)
+	expected := len(*msg)
+	buf := make([]byte, expected)
+	n := 0
+	readDeadline := time.Now().Add(3 * time.Second)
+	_ = stream.SetReadDeadline(readDeadline)
+	for n < expected {
+		m, rerr := stream.Read(buf[n:])
+		if m > 0 {
+			n += m
+		}
+		if rerr != nil {
+			if n >= expected {
+				break
+			}
+			log.Fatalf("read: %v", rerr)
+		}
 	}
-	fmt.Printf("echo: %s\n", string(b))
+	fmt.Printf("echo: %s\n", string(buf[:n]))
 }

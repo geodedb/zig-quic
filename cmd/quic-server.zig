@@ -19,6 +19,7 @@ pub fn main() !void {
     var enable_retry = false;
     var token_secret: ?[]const u8 = null;
     var token_expiry_ms: u32 = 60000;
+    var real_tls = false;
     while (args.next()) |a| {
         if (std.mem.eql(u8, a, "--bind")) {
             bind = args.next().?;
@@ -43,6 +44,8 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, a, "--token-expiry-ms")) {
             const v = args.next().?;
             token_expiry_ms = std.fmt.parseInt(u32, v, 10) catch token_expiry_ms;
+        } else if (std.mem.eql(u8, a, "--real-tls")) {
+            real_tls = true;
         }
     }
 
@@ -56,6 +59,7 @@ pub fn main() !void {
         .enable_retry = enable_retry,
         .token_secret = token_secret,
         .token_expiry_ms = token_expiry_ms,
+        .real_tls = real_tls,
     };
     const ep = try api.endpointInit(&alloc, bind, &cfg);
     defer api.endpointDeinit(ep);

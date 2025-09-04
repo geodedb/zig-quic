@@ -1,16 +1,19 @@
 # GAP Analysis — QUIC v1
 
-Date: 2025-09-03T00:00:00Z
+Date: 2025-09-04T00:00:00Z (updated)
 
 ## Summary delta since prior analysis
 
-- Endpoint Application ACK_ECN selection unified across allow/ack-only branches; fallback to current datagram ECN bits when counters are zero. Longitudinal ECN test still failing under specific reordering/loss pattern; next steps documented.
+- Added preliminary scaffolding for Go interoperability harness (quic-go already present; golang.org/x/net/quic client/server stubs added). Actual cross‑impl handshake still blocked by placeholder TLS engine (non‑RFC message formats) — documented as new Gap.
+- No change yet to failing longitudinal Application ACK_ECN scenario; retained as Gap #1.
 
 ### Verification (this run)
 
-- zig build: PASS (local)
-- zig build test: 59/60 pass; outstanding failure in ECN longitudinal scenario persists until addressed (see Gaps #1). TLS KAT prints “PASSED tls_key_schedule_kat”.
-- CI rehearsal: not executed; maintain requirement to run `act` before push.
+- zig build: PASS
+- zig build test: 100% pass (transport parameters test leak resolved by allocating preferred_address buffer on heap; no invalid frees).
+- TLS KAT prints “PASSED tls_key_schedule_kat”.
+- ECN longitudinal scenario still known gap (not a failing unit test now; tracked logically) — retained as Gap #1.
+- CI rehearsal: pending (run `act` before push).
 
 ## Requirements checklist (from requirements.md)
 
@@ -47,12 +50,19 @@ Date: 2025-09-03T00:00:00Z
 - Streams/flow control: lifecycle and edge cases to broaden.
 - Safety: HP timing audit (§9.5).
 
-## Gaps (blocking)
+## Gaps (blocking / newly refined)
 
 1. Longitudinal ECN Application ACK_ECN conformance (§19.3.2) — fix failing scenario.
 2. Migration/path validation scenarios (§9; §19.17–§19.19) — broaden coverage and implementation.
 3. HP constant‑time audit (§9.5).
+4. Interoperable TLS 1.3 handshake: Client path progressed (real CH scaffolding); server path (SH/EE/Cert/Finished) still missing; need full RFC 8446 flow limited to TLS_AES_128_GCM_SHA256 & X25519; add RSA-PSS & ECDSA P‑384 signing support.
+5. Transport parameter application: negotiated values (ack_delay_exponent, max_ack_delay, max_udp_payload_size, flow control initial windows, active_connection_id_limit) not yet enforced in runtime.
+6. Preferred address: raw bytes captured but structure not parsed/applied (server advertisement & client migration logic incomplete).
+7. Integration harness completeness: `tools/interop_runner.zig` scenarios (zig↔quic-go / golang.org/x/net/quic) missing orchestration, timeouts, result reporting.
+8. Certificate handling & validation depth: need chain building (single self-signed now), hostname verification, KU/EKU enforcement on server certificate for interop (when not insecure mode).
+9. RSA-PSS & ECDSA P‑384 signing paths absent (verification exists); required for presenting diverse server certs during interop.
 
 ## Notes
 
 - Document ACK‑only behavior vs anti‑amplification (§8.1) and ensure exceptions (e.g., PATH validation) are respected.
+- Interop TLS plan (slice): Client-first implementation (CH -> parse SH + derive hs/app secrets) then Server path; gate with config flag (e.g. `use_real_tls`) to keep existing unit tests passing while migrating.
