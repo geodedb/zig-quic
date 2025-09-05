@@ -1,0 +1,27 @@
+client: deriving Initial keys with dcid=B140F0FCBE0DD34B len=8
+client: built Initial pn=1 dcid=B140F0FCBE0DD34B scid=382B1DB5FC9456AD payload_len=1150
+connecting to 127.0.0.1:43217
+Processing Initial packet from peer
+AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=55)
+AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=14250)
+AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=3648252)
+AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=933952660)
+Failed to decrypt Initial packet
+destroy(): removed 1 map keys for connection
+error(gpa): memory address 0x6e776d960000 leaked: 
+/home/benji/src/spyder/quic/src/quic/endpoint.zig:286:44: 0x110081f in connectClient (quic-client)
+        const c = try self.allocator.create(conn_mod.Connection);
+                                           ^
+/home/benji/src/spyder/quic/src/quic/api.zig:67:35: 0x111fca3 in connect (quic-client)
+    const c = try ep.connectClient(server_addr);
+                                  ^
+/home/benji/src/spyder/quic/cmd/quic-client.zig:51:33: 0x1126f12 in main (quic-client)
+    const conn = try api.connect(ep, connect, sni);
+                                ^
+/nix/store/mnc0qw3sa3a7arwwi7spi1xyrdd6h2g2-zig-0.14.1/lib/zig/std/start.zig:660:37: 0x10fea3a in posixCallMainAndExit (quic-client)
+            const result = root.main() catch |err| {
+                                    ^
+/nix/store/mnc0qw3sa3a7arwwi7spi1xyrdd6h2g2-zig-0.14.1/lib/zig/std/start.zig:271:5: 0x10fe5ed in _start (quic-client)
+    asm volatile (switch (native_arch) {
+    ^
+

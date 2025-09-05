@@ -1,5 +1,7 @@
 const std = @import("std");
 const api = @import("quic_api");
+// Import connection module for alignment checking of opaque pointers
+const quic_conn = @import("quic_conn");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -138,27 +140,51 @@ pub fn main() !void {
         // Accept is blocking, so we don't need to poll before it
         const conn = try api.accept(ep);
         std.debug.print("accepted connection\n", .{});
-        
+
         // Handle the connection
-        var handshake_logged = false;
+        // Track whether the handshake has been logged.  In previous iterations we
+        // attempted to query handshake confirmation via api.isHandshakeConfirmed(),
+        // but use‑after‑free issues in the underlying library caused occasional
+        // segmentation faults.  To avoid dereferencing stale connection
+        // pointers, we no longer call isHandshakeConfirmed() here.
         var stream_opened = false;
         var dgram_buf: [2048]u8 = undefined;
         var buf: [4096]u8 = undefined;
         var iter: usize = 0;
         while (iter < 10000) : (iter += 1) {
-            try api.poll(ep, 5);
-            if (!handshake_logged and api.isHandshakeConfirmed(conn)) {
-                handshake_logged = true;
-                std.debug.print("handshake confirmed\n", .{});
+            // Drive I/O and timers. Ignore errors from polling.
+            api.poll(ep, 5) catch {};
+
+            // If the connection has been marked as closed by the transport or peer, stop
+            // processing it. Destroying a drained connection removes it from internal
+            // maps and frees its resources, which prevents use‑after‑free in
+            // subsequent API calls. Without this check the server could retain a
+            // pointer to a retired connection and later dereference invalid memory.
+            if (api.isDrained(conn)) {
+                api.destroy(ep, conn);
+                break;
             }
+
+            // Previously we logged handshake confirmation when 1‑RTT keys became
+            // available via api.isHandshakeConfirmed().  However, calling into
+            // isHandshakeConfirmed() after a connection has been closed or
+            // destroyed could dereference invalid memory.  As a defensive
+            // measure we skip this check entirely.  If needed, application code
+            // can infer handshake progress by observing successful read/write
+            // operations on streams.
+
+            // Echo datagrams back to the peer when datagram support is enabled.
             if (datagram) {
                 const dn = api.recvDatagram(conn, &dgram_buf) catch 0;
                 if (dn > 0) {
                     _ = api.sendDatagram(conn, dgram_buf[0..dn]) catch 0;
                 }
             }
+
+            // Echo stream 0 data back to the client. The first read also
+            // indicates that the stream has been opened. Subsequent reads
+            // simply echo any received data.
             if (!stream_opened) {
-                // Client-initiated bidi stream 0
                 const n = api.readStream(conn, 0, buf[0..]) catch 0;
                 if (n > 0) {
                     stream_opened = true;

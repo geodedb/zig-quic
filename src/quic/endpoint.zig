@@ -297,6 +297,7 @@ pub const Endpoint = struct {
         // Apply AEAD usage limit overrides
         c.setAeadUsageLimits(self.cfg.aead_confidentiality_limit_override, self.cfg.aead_integrity_limit_override);
         // Choose initial version from cfg
+        // For now always use QUIC v1 unless explicitly configured for v2.
         c.version = if (self.cfg.version == .v2) packet.QUIC_V2 else packet.QUIC_V1;
         c.version_v2 = (c.version == packet.QUIC_V2);
         c.initial_version = c.version;
@@ -321,6 +322,9 @@ pub const Endpoint = struct {
         const v2 = (c.version == packet.QUIC_V2);
         const initial = ks.deriveInitialSecret(v2, c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]);
         const pair = ks.deriveClientServerInitial(initial);
+        std.debug.print("client: deriving Initial keys with dcid=", .{});
+        for (c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]) |b| std.debug.print("{X:0>2}", .{b});
+        std.debug.print(" len={}\n", .{c.peer_initial_dcid.len});
         const tx_keys: packet.InitialKeys = if (v2) blk: {
             const t = ks.deriveKeyIvHpV2(pair.client);
             break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
@@ -380,6 +384,11 @@ pub const Endpoint = struct {
             frames.items,
             tx_keys,
         );
+        std.debug.print("client: built Initial pn={} dcid=", .{c.pn_initial_tx});
+        for (c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]) |b| std.debug.print("{X:0>2}", .{b});
+        std.debug.print(" scid=", .{});
+        for (c.our_scid.bytes[0..c.our_scid.len]) |b| std.debug.print("{X:0>2}", .{b});
+        std.debug.print(" payload_len={}\n", .{frames.items.len});
         defer self.allocator.free(pkt);
         const sent = try self.sendTo(c.peer, pkt);
         c.onPacketSent(.Initial, c.pn_initial_tx, sent, true);
@@ -1329,55 +1338,63 @@ pub const Endpoint = struct {
             const end_total = j + @as(usize, len_dec.value);
             if (end_total > bytes.len) return;
             const header_prefix = bytes[1..j];
-            // PN masked bytes follow; ciphertext starts after PN
-            const pn_len_masked: u3 = @as(u3, @intCast(first & 0x03)) + 1;
-            if (j + pn_len_masked > bytes.len) return;
             const pn_start = j;
-            const ct_and_tag = bytes[pn_start + pn_len_masked .. end_total];
-            if (ct_and_tag.len < 16) return;
-
-            // Build HP sample at absolute PN+4 (RFC 9001 §5.4.3)
-            var sample16: [16]u8 = undefined;
-            if (pn_start + 4 + 16 > bytes.len) return;
-            @memcpy(sample16[0..], bytes[pn_start + 4 .. pn_start + 4 + 16]);
-
-            // Unmask header first byte and PN bytes in place copies
+            // Capture up to 4 masked PN bytes (ciphertext begins immediately after PN).
             var header_first = first;
-            var pn_buf: [4]u8 = .{0} ** 4;
-            const copy_pn_len = @min(@as(usize, pn_len_masked), 4);
-            @memcpy(pn_buf[0..copy_pn_len], bytes[pn_start .. pn_start + copy_pn_len]);
-            const pn_len = crypto.unmaskLongHeaderAndPn(.aes_128_gcm, &keys.hp, &sample16, &header_first, &pn_buf) catch return;
-
-            // Rebuild AAD and decrypt
-            const pn_bytes = pn_buf[0..pn_len];
-            const ct = bytes[pn_start + pn_len .. end_total];
-            var payload = std.ArrayList(u8).init(self.allocator.*);
-            defer payload.deinit();
-            payload.ensureTotalCapacity(ct.len - 16) catch return;
-            payload.appendNTimesAssumeCapacity(0, ct.len - 16);
-            const pt = payload.items;
-
-            const ok = crypto.unprotectInitialAutoSample(
-                .aes_128_gcm,
-                &keys.key,
-                &keys.iv,
-                &keys.hp,
-                &header_first,
-                pn_bytes,
-                header_prefix,
-                ct,
-                pt,
-                conn.pn_initial.max,
-            ) catch {
-                // AEAD auth failure counts toward integrity limit when we have a mapped connection
+            var pn_masked: [4]u8 = .{0} ** 4;
+            const avail = @min(@as(usize, 4), end_total - pn_start);
+            @memcpy(pn_masked[0..avail], bytes[pn_start .. pn_start + avail]);
+            // We'll try PN lengths 1..4 using auto-sample decrypt until one succeeds.
+            var success = false;
+            var chosen_pn_len: u3 = 0;
+            var pt_list = std.ArrayList(u8).init(self.allocator.*);
+            defer pt_list.deinit();
+            var pn_len_try: u3 = 1;
+            attempt: while (pn_len_try <= 4) : (pn_len_try += 1) {
+                if (pn_start + pn_len_try > end_total) break;
+                const ct = bytes[pn_start + pn_len_try .. end_total];
+                if (ct.len < 16) break;
+                var pn_try: [4]u8 = pn_masked; // copy masked bytes
+                var header_try = first;
+                pt_list.clearRetainingCapacity();
+                pt_list.ensureTotalCapacity(ct.len - 16) catch break;
+                pt_list.appendNTimesAssumeCapacity(0, ct.len - 16);
+                const pt_slice = pt_list.items;
+                const dec = crypto.unprotectInitialAutoSample(
+                    .aes_128_gcm,
+                    &keys.key,
+                    &keys.iv,
+                    &keys.hp,
+                    &header_try,
+                    pn_try[0..pn_len_try],
+                    header_prefix,
+                    ct,
+                    pt_slice,
+                    conn.pn_initial.max,
+                ) catch {
+                    continue;
+                };
+                _ = dec;
+                const indicated_pn_len: u3 = @intCast((header_try & 0x03) + 1);
+                if (indicated_pn_len != pn_len_try) {
+                    // Mismatch between header-indicated PN length and trial; reject.
+                    continue;
+                }
+                success = true;
+                chosen_pn_len = pn_len_try;
+                header_first = header_try;
+                @memcpy(pn_masked[0..pn_len_try], pn_try[0..pn_len_try]); // now holds unmasked bytes
+                break :attempt;
+            }
+            if (!success) {
                 std.debug.print("Failed to decrypt Initial packet\n", .{});
                 conn.onAeadAuthFailure();
-                // For fuzz/negative tests, immediately mark connection closed so pruning removes it.
                 conn.closed = true;
                 return;
-            };
-            _ = ok;
-            std.debug.print("Successfully decrypted Initial packet, plaintext len: {}\n", .{pt.len});
+            }
+            const pn_len = chosen_pn_len;
+            const pt = pt_list.items;
+            std.debug.print("Successfully decrypted Initial packet (trial pn_len={}) plaintext len: {}\n", .{ pn_len, pt.len });
             // Only now (after successful decryption) enqueue server connection for accept()
             if (conn.role == .Server and !conn.accepted_enqueued) {
                 conn.accepted_enqueued = true;
@@ -1387,7 +1404,7 @@ pub const Endpoint = struct {
             // Expand truncated PN against Initial space expectation and track
             var pn_val_be: u64 = 0;
             var kk: usize = 0;
-            while (kk < pn_len) : (kk += 1) pn_val_be = (pn_val_be << 8) | pn_buf[kk];
+            while (kk < pn_len) : (kk += 1) pn_val_be = (pn_val_be << 8) | pn_masked[kk];
             const pn_full: u64 = conn.expandPnInitial(pn_val_be, pn_len);
             std.debug.print("Expanded PN: {} from truncated: {}\n", .{ pn_full, pn_val_be });
             conn.trackRecvPnInitial(pn_full);
@@ -1888,8 +1905,18 @@ pub const Endpoint = struct {
                 if (dcid.len == 0) return;
                 // Derive server Initial TX keys from peer Initial DCID
                 const v2 = false; // TODO: map version
-                const initial = ks.deriveInitialSecret(v2, conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len]);
+                // Derive using DCID from packet (destination field) per RFC 9001.
+                const derive_dcid = dcid;
+                const initial = ks.deriveInitialSecret(v2, derive_dcid);
                 const pair = ks.deriveClientServerInitial(initial);
+                if (conn.peer_initial_dcid.len == 0) {
+                    // Record original DCID if not already captured.
+                    conn.peer_initial_dcid.len = @intCast(@min(derive_dcid.len, conn.peer_initial_dcid.bytes.len));
+                    if (conn.peer_initial_dcid.len > 0) @memcpy(conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len], derive_dcid[0..conn.peer_initial_dcid.len]);
+                }
+                std.debug.print("server: deriving Initial keys with dcid=", .{});
+                for (derive_dcid) |b| std.debug.print("{X:0>2}", .{b});
+                std.debug.print(" len={}\n", .{derive_dcid.len});
                 const tx_keys: packet.InitialKeys = if (v2) blk: {
                     const t = ks.deriveKeyIvHpV2(pair.server);
                     break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };

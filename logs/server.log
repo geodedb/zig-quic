@@ -1,0 +1,9 @@
+listening on 127.0.0.1:43217
+Processing Initial packet from peer
+AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
+Successfully decrypted Initial packet (trial pn_len=2) plaintext len: 1150
+Expanded PN: 1 from truncated: 1
+Server: Received CRYPTO frame with 39 bytes
+Server: Received ClientHello, queueing ServerHello
+Sending ServerHello in Initial packet: 39 bytes
+accepted connection

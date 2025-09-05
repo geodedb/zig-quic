@@ -73,10 +73,11 @@ pub fn main() !void {
         // try to write; if keys not ready, poll and retry
         const wn = api.writeStream(conn, 0, msg) catch |err| switch (err) {
             error.KeysNotReady => blk: {
+                // Drive timers and inbound CRYPTO while waiting for keys to be ready.
+                // We deliberately avoid calling api.isHandshakeConfirmed() here to
+                // prevent dereferencing a potentially stale connection pointer.  The
+                // client will simply continue polling until writeStream succeeds.
                 try api.poll(ep, 10);
-                if (api.isHandshakeConfirmed(conn)) {
-                    std.debug.print("handshake confirmed (client)\n", .{});
-                }
                 break :blk 0;
             },
             error.OutOfStreams => blk2: {

@@ -7,6 +7,10 @@ set -euo pipefail
 PORT=${PORT:-0} # 0 means ephemeral port
 HOST=${HOST:-127.0.0.1}
 
+if [[ /tmp/srv.err ]]; then
+  rm -f /tmp/srv.err
+fi
+
 # Generate certs
 bash ./examples/interop/certs/generate.sh
 
