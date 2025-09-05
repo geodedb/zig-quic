@@ -4,7 +4,8 @@ Date: 2025-09-04T00:00:00Z (updated)
 
 ## Summary delta since prior analysis
 
-- Added preliminary scaffolding for Go interoperability harness (quic-go already present; golang.org/x/net/quic client/server stubs added). Actual cross‑impl handshake still blocked by placeholder TLS engine (non‑RFC message formats) — documented as new Gap.
+- Added preliminary scaffolding for Go interoperability harness (quic-go already present; golang.org/x/net/quic client/server stubs added). Actual cross‑impl handshake still blocked by placeholder TLS engine (non‑RFC message formats) — documented as Gap.
+- Implemented Connection ID lifecycle enhancements: issuance up to negotiated limit, pending advertisement piggyback, retirement slot reuse, rotation with `retired_prior_to` advancement & advertisement, and related unit tests (limit, flush, reuse, rotation). Stateless reset token derivation remains placeholder (hash) pending HKDF integration (new Gap below).
 - No change yet to failing longitudinal Application ACK_ECN scenario; retained as Gap #1.
 
 ### Verification (this run)
@@ -56,11 +57,13 @@ Date: 2025-09-04T00:00:00Z (updated)
 2. Migration/path validation scenarios (§9; §19.17–§19.19) — broaden coverage and implementation.
 3. HP constant‑time audit (§9.5).
 4. Interoperable TLS 1.3 handshake: Client path progressed (real CH scaffolding); server path (SH/EE/Cert/Finished) still missing; need full RFC 8446 flow limited to TLS_AES_128_GCM_SHA256 & X25519; add RSA-PSS & ECDSA P‑384 signing support.
-5. Transport parameter application: negotiated values (ack_delay_exponent, max_ack_delay, max_udp_payload_size, flow control initial windows, active_connection_id_limit) not yet enforced in runtime.
-6. Preferred address: raw bytes captured but structure not parsed/applied (server advertisement & client migration logic incomplete).
-7. Integration harness completeness: `tools/interop_runner.zig` scenarios (zig↔quic-go / golang.org/x/net/quic) missing orchestration, timeouts, result reporting.
-8. Certificate handling & validation depth: need chain building (single self-signed now), hostname verification, KU/EKU enforcement on server certificate for interop (when not insecure mode).
-9. RSA-PSS & ECDSA P‑384 signing paths absent (verification exists); required for presenting diverse server certs during interop.
+5. Preferred address: raw bytes captured but structure not parsed/applied (server advertisement & client migration logic incomplete).
+6. Integration harness completeness: `tools/interop_runner.zig` scenarios (zig↔quic-go / golang.org/x/net/quic) missing orchestration, timeouts, result reporting.
+7. Certificate handling & validation depth: need chain building (single self-signed now), hostname verification, KU/EKU enforcement on server certificate for interop (when not insecure mode).
+8. RSA-PSS & ECDSA P‑384 signing paths absent (verification exists); required for presenting diverse server certs during interop.
+9. Stateless reset token derivation strength & rotation policy (currently simple hash; move to HKDF w/ secret salt; rotate on key updates or time-based trigger); plus rotation trigger heuristics (time / packets / path events) beyond manual invocation.
+
+Resolved / moved: Transport parameter application (was prior Gap item) now complete & validated; Connection ID lifecycle (issuance, rotation, retired_prior_to) implemented.
 
 ## Notes
 

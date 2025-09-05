@@ -49,6 +49,8 @@ pub fn defaultLoopBackend() LoopBackend {
 /// Initialize an endpoint bound to the provided address.
 pub fn endpointInit(alloc: *std.mem.Allocator, bind_addr: []const u8, cfgp: *const QuicConfig) !*QuicEndpoint {
     const ep = try alloc.create(QuicEndpoint);
+    // Ensure we destroy the allocated slot if initialization fails (e.g., bind AddressInUse)
+    errdefer alloc.destroy(ep);
     ep.* = try QuicEndpoint.init(alloc, bind_addr, cfgp);
     return ep;
 }

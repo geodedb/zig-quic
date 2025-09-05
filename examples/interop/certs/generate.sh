@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Generate a self-signed cert for test.local usable for TLS interop testing.
+# Generate a self-signed ECDSA P-256 cert for test.local (preferred for current TLS impl).
 # Requires: openssl
 
 DIR=$(cd "$(dirname "$0")" && pwd)
@@ -31,8 +31,9 @@ DNS.2 = localhost
 IP.1 = 127.0.0.1
 EOF
 
-openssl req -x509 -newkey rsa:2048 -sha256 -nodes \
-  -keyout key.pem -out cert.pem -days "$DAYS" -config openssl.cnf
+# Generate EC private key (prime256v1) and self-signed certificate
+openssl ecparam -name prime256v1 -genkey -noout -out key.pem
+openssl req -x509 -sha256 -key key.pem -nodes -days "$DAYS" -config openssl.cnf -out cert.pem
 
 rm -f openssl.cnf
 

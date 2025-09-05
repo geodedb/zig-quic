@@ -5,6 +5,32 @@ const core = std.crypto.core;
 const builtin = @import("builtin");
 const ks = @import("quic_tls");
 
+/// Expand a truncated packet number using the expected packet number.
+/// Based on RFC 9000 Appendix A.3
+fn expandPacketNumber(truncated: u64, pn_len: u3, expected: u64) u64 {
+    const pn_nbits: u6 = @as(u6, pn_len) * 8;
+    const pn_win: u64 = @as(u64, 1) << pn_nbits;
+    const pn_hwin: u64 = pn_win / 2;
+    const pn_mask: u64 = pn_win - 1;
+    
+    // For the first packet, if we have no expectation, just return the truncated value
+    // This handles the case where the client starts with a random packet number
+    if (expected == 0 and truncated < pn_win) {
+        return truncated;
+    }
+    
+    var candidate: u64 = (expected & ~pn_mask) | truncated;
+    
+    // Determine if we need to adjust the candidate
+    if (candidate <= expected -% pn_hwin and candidate < (1 << 62)) {
+        candidate += pn_win;
+    } else if (candidate > expected +% pn_hwin and candidate >= pn_win) {
+        candidate -= pn_win;
+    }
+    
+    return candidate;
+}
+
 /// Supported AEAD suites for QUIC-TLS binding.
 pub const AeadSuite = enum { aes_128_gcm, chacha20_poly1305 };
 
@@ -380,6 +406,7 @@ pub fn protectInitial(
 }
 
 /// Undo header protection and decrypt Initial-like packet payload.
+/// expected_pn is used to expand the truncated packet number.
 pub fn unprotectInitial(
     suite: AeadSuite,
     aead_key: []const u8,
@@ -391,10 +418,11 @@ pub fn unprotectInitial(
     hp_sample16: *const [16]u8,
     ciphertext_and_tag: []const u8,
     out_plaintext: []u8,
+    expected_pn: u64, // Expected packet number for expansion
 ) !usize {
     if (ciphertext_and_tag.len < 16) return error.AuthenticationFailed;
 
-    if (builtin.is_test) {
+    if (builtin.is_test or true) { // Always debug for now
         dumpBytes("DEC hp_sample", hp_sample16.*[0..]);
         dumpBytes("DEC hp_key", hp_key);
     }
@@ -411,12 +439,19 @@ pub fn unprotectInitial(
     @memcpy(aad_stack[1 + header_prefix.len .. aad_len], pn_bytes);
     const aad = aad_stack[0..aad_len];
 
-    // Derive packet_number from unmasked pn_bytes (big-endian truncated). For tests, this equals full PN.
-    var pn_val: u64 = 0;
+    // Derive packet_number from unmasked pn_bytes (big-endian truncated).
+    var pn_val_truncated: u64 = 0;
     var i: usize = 0;
-    while (i < pn_bytes.len) : (i += 1) pn_val = (pn_val << 8) | pn_bytes[i];
+    while (i < pn_bytes.len) : (i += 1) pn_val_truncated = (pn_val_truncated << 8) | pn_bytes[i];
+    
+    // Expand the truncated packet number using the expected value
+    const pn_val = expandPacketNumber(pn_val_truncated, @intCast(pn_bytes.len), expected_pn);
+    
+    if (expected_pn == 0) {
+        std.debug.print("First packet: truncated={x:0>4} ({}) -> expanded={}\n", .{ pn_val_truncated, pn_val_truncated, pn_val });
+    }
 
-    if (builtin.is_test) {
+    if (builtin.is_test or true) { // Always debug for now
         dumpBytes("DEC aead_key", aead_key);
         dumpBytes("DEC aead_iv", aead_iv);
         dumpBytes("DEC aad", aad);
@@ -426,7 +461,10 @@ pub fn unprotectInitial(
         dumpBytes("DEC pn_bytes", pn_bytes);
     }
 
-    return try aeadDecrypt(suite, aead_key, aead_iv, pn_val, aad, ciphertext_and_tag, out_plaintext);
+    return aeadDecrypt(suite, aead_key, aead_iv, pn_val, aad, ciphertext_and_tag, out_plaintext) catch |err| {
+        std.debug.print("AEAD decrypt failed: {} (pn={})\n", .{ err, pn_val });
+        return err;
+    };
 }
 
 /// Unmask long header first byte and up to 4 PN bytes using the given hp_key and sample.
@@ -527,7 +565,8 @@ fn poly1305TagRfc8439(aad: []const u8, ciphertext: []const u8, otk32: *const [32
 }
 
 fn dumpBytes(label: []const u8, bytes: []const u8) void {
-    if (!builtin.is_test) return;
+    // Temporarily always dump for debugging
+    // if (!builtin.is_test) return;
     var buf: [256]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buf);
     const a = fba.allocator();

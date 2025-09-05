@@ -11,7 +11,8 @@ const crypto = @import("quic_crypto");
 const varint = @import("quic_varint");
 const token_mod = @import("token.zig");
 const recovery = @import("quic_recovery");
-const tp = @import("transport_params.zig");
+// Import transport parameters via dedicated module to avoid duplicate root file compilation
+const tp = @import("quic_transport_params");
 
 const posix = std.posix;
 const builtin = @import("builtin");
@@ -835,20 +836,32 @@ pub const Endpoint = struct {
                 var saw_any: bool = false;
                 var saw_hs_done: bool = false;
                 var saw_close: ?frame.Frame = null;
+                var saw_ack_eliciting: bool = false;
+                const now_ns_ack: u64 = @intCast(std.time.nanoTimestamp());
                 while (off2 < dec_res.payload.len) {
                     const fr = frame.decodeOne(dec_res.payload[off2..]) catch break;
                     off2 += fr.n;
                     switch (fr.f) {
-                        .ping => saw_any = true,
+                        .ping => {
+                            saw_any = true;
+                            saw_ack_eliciting = true;
+                        },
                         .new_connection_id => |ncid| {
                             // Record stateless reset token for later detection
                             conn.onNewConnectionId(ncid.sequence, ncid.retire_prior_to, ncid.stateless_reset_token);
                             saw_any = true;
+                            saw_ack_eliciting = true;
+                        },
+                        .retire_connection_id => |rc| {
+                            conn.*.onRetireConnectionId(rc.sequence);
+                            saw_any = true;
+                            saw_ack_eliciting = true;
                         },
                         .stream => |s| {
                             const off: u64 = s.offset orelse 0;
                             conn.pushStreamFrame(s.stream_id, off, s.data, s.fin) catch {};
                             saw_any = true;
+                            saw_ack_eliciting = true;
                         },
                         .datagram => |d| {
                             conn.pushDatagram(d.data) catch {};
@@ -881,6 +894,7 @@ pub const Endpoint = struct {
                         },
                         .handshake_done => {
                             saw_hs_done = true;
+                            saw_ack_eliciting = true; // HANDSHAKE_DONE is ack-eliciting
                         },
                         .connection_close => {
                             saw_close = fr.f;
@@ -889,15 +903,19 @@ pub const Endpoint = struct {
                             if (m.stream_id == 0) {
                                 conn.peer_max_stream_data = m.max;
                             }
+                            saw_ack_eliciting = true;
                         },
                         .max_data => |md| {
                             conn.peer_max_data = md.max;
+                            saw_ack_eliciting = true;
                         },
                         .max_streams_bidi => |msb| {
                             conn.peer_max_streams_bidi = msb.max;
+                            saw_ack_eliciting = true;
                         },
                         .max_streams_uni => |msu| {
                             conn.peer_max_streams_uni = msu.max;
+                            saw_ack_eliciting = true;
                         },
                         .stream_data_blocked => |_| {},
                         .path_challenge => |pcv| {
@@ -930,6 +948,9 @@ pub const Endpoint = struct {
                 if (self.test_capture_enabled) {
                     std.debug.print("APP saw_any={s}\n", .{if (saw_any) "y" else "n"});
                 }
+                if (saw_ack_eliciting) {
+                    conn.recordAckElicitingRx(.Application, now_ns_ack);
+                }
                 if (saw_hs_done) {
                     // Client: drop Handshake keys after HANDSHAKE_DONE
                     conn.hs_rx_keys = null;
@@ -949,7 +970,8 @@ pub const Endpoint = struct {
                     if (self.test_capture_enabled and ack_ecn_now != null) {
                         std.debug.print("APP pending ACK_ECN flush ce={d} ect0={d} ect1={d}\n", .{ ack_ecn_now.?.ce, ack_ecn_now.?.ect0, ack_ecn_now.?.ect1 });
                     }
-                    const ackf = frame.Frame{ .ack = .{ .largest = ad.largest, .ack_delay = 0, .first_range = ad.first_range, .ranges = ad.ranges, .ecn = ack_ecn_now } };
+                    const ack_delay = conn.getAckDelayEncoded(.Application, now_ns_ack);
+                    const ackf = frame.Frame{ .ack = .{ .largest = ad.largest, .ack_delay = ack_delay, .first_range = ad.first_range, .ranges = ad.ranges, .ecn = ack_ecn_now } };
                     _ = ackf.write(w) catch 0;
                     const pkt = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..@min(conn.our_scid.len, 4)], @as(u32, @truncate(conn.pn_app_tx)), 2, ack_buf.items, conn.app_tx_keys.?, conn.tx_key_phase) catch null;
                     if (pkt) |bytes_out| {
@@ -1021,7 +1043,8 @@ pub const Endpoint = struct {
                                 if (self.test_capture_enabled) {
                                     std.debug.print("APP immediate ACK_ECN ce={d} ect0={d} ect1={d}\n", .{ ack_ecn_common.?.ce, ack_ecn_common.?.ect0, ack_ecn_common.?.ect1 });
                                 }
-                                const ackf = frame.Frame{ .ack = .{ .largest = ad.largest, .ack_delay = 0, .first_range = ad.first_range, .ranges = ad.ranges, .ecn = ack_ecn_common } };
+                                const ack_delay = conn.getAckDelayEncoded(.Application, now_ns_ack);
+                                const ackf = frame.Frame{ .ack = .{ .largest = ad.largest, .ack_delay = ack_delay, .first_range = ad.first_range, .ranges = ad.ranges, .ecn = ack_ecn_common } };
                                 _ = ackf.write(wa) catch 0;
                                 const po = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..@min(conn.our_scid.len, 4)], @as(u32, @truncate(conn.pn_app_tx)), 2, ack_only.items, tx_keys, conn.tx_key_phase) catch null;
                                 if (po) |bytes_out0| {
@@ -1041,7 +1064,8 @@ pub const Endpoint = struct {
                                 if (self.test_capture_enabled) {
                                     std.debug.print("APP ACK (no ECN) allow_send\n", .{});
                                 }
-                                const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = 0, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges, .ecn = null } };
+                                const ack_delay = conn.getAckDelayEncoded(.Application, now_ns_ack);
+                                const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = ack_delay, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges, .ecn = null } };
                                 _ = ack.write(w) catch 0;
                                 // Pace MAX_* emission: include only when values increased since last sent
                                 if (conn.local_max_stream_data > conn.last_sent_max_stream_data) {
@@ -1056,6 +1080,21 @@ pub const Endpoint = struct {
                                 if (conn.local_max_streams_bidi > conn.last_sent_max_streams_bidi) {
                                     _ = (frame.Frame{ .max_streams_bidi = .{ .max = conn.local_max_streams_bidi } }).write(w) catch {};
                                     conn.last_sent_max_streams_bidi = conn.local_max_streams_bidi;
+                                }
+                                // Append any pending NEW_CONNECTION_ID frames (bounded) to piggyback on ACK
+                                // Check pending_new_cid bitset for any set bits (std.bit_set has no isEmpty helper in this Zig version)
+                                var any_pending = false;
+                                {
+                                    var bi: usize = 0;
+                                    while (bi < conn.local_cids.len) : (bi += 1) {
+                                        if (conn.pending_new_cid.isSet(@intCast(bi))) {
+                                            any_pending = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (any_pending) {
+                                    _ = conn.writePendingNewConnectionIds(w, 2) catch 0; // piggyback up to 2
                                 }
                                 const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_app_tx)), 2, frames_buf.items, tx_keys, conn.tx_key_phase) catch null;
                                 if (out) |pkt_bytes| {
@@ -1080,7 +1119,8 @@ pub const Endpoint = struct {
                                     std.debug.print("APP ACK ack-only (no ECN)\n", .{});
                                 }
                             }
-                            const ack2 = frame.Frame{ .ack = .{ .largest = ack_desc2.largest, .ack_delay = 0, .first_range = ack_desc2.first_range, .ranges = ack_desc2.ranges, .ecn = ack_ecn_common } };
+                            const ack_delay2 = conn.getAckDelayEncoded(.Application, now_ns_ack);
+                            const ack2 = frame.Frame{ .ack = .{ .largest = ack_desc2.largest, .ack_delay = ack_delay2, .first_range = ack_desc2.first_range, .ranges = ack_desc2.ranges, .ecn = ack_ecn_common } };
                             _ = ack2.write(w2) catch 0;
                             const out2 = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_app_tx)), 2, ack_only.items, tx_keys, conn.tx_key_phase) catch null;
                             if (out2) |pkt_bytes2| {
@@ -1103,6 +1143,7 @@ pub const Endpoint = struct {
         const ty = (first >> 4) & 0x03;
         const version: u32 = (@as(u32, bytes[1]) << 24) | (@as(u32, bytes[2]) << 16) | (@as(u32, bytes[3]) << 8) | @as(u32, bytes[4]);
         if (ty == 0) {
+            std.debug.print("Processing Initial packet from peer\n", .{});
             // Initial
             var i: usize = 5;
             if (i >= bytes.len) return;
@@ -1197,7 +1238,7 @@ pub const Endpoint = struct {
             conn.addRxUnvalidated(bytes.len);
 
             // Derive Initial keys for server (we are receiving client's Initial)
-            const v2 = false; // TODO: parse version and map to v2 set
+            const v2 = (version == packet.QUIC_V2); // Check if it's QUIC v2
             const initial = ks.deriveInitialSecret(v2, dcid);
             const pair = ks.deriveClientServerInitial(initial);
             // RX path for server must use CLIENT initial keys (to decrypt client's Initial)
@@ -1295,55 +1336,46 @@ pub const Endpoint = struct {
                 &sample16,
                 ct,
                 pt,
+                conn.pn_initial.max, // Expected packet number for Initial space (0 for first packet)
             ) catch {
                 // AEAD auth failure counts toward integrity limit when we have a mapped connection
+                std.debug.print("Failed to decrypt Initial packet\n", .{});
                 conn.onAeadAuthFailure();
                 return;
             };
             _ = ok;
+            std.debug.print("Successfully decrypted Initial packet, plaintext len: {}\n", .{pt.len});
 
             // Expand truncated PN against Initial space expectation and track
             var pn_val_be: u64 = 0;
             var kk: usize = 0;
             while (kk < pn_len) : (kk += 1) pn_val_be = (pn_val_be << 8) | pn_buf[kk];
             const pn_full: u64 = conn.expandPnInitial(pn_val_be, pn_len);
+            std.debug.print("Expanded PN: {} from truncated: {}\n", .{ pn_full, pn_val_be });
             conn.trackRecvPnInitial(pn_full);
 
             // Walk frames and push CRYPTO to inbox
             var off: usize = 0;
             var saw_any: bool = false;
+            var saw_ack_eliciting_initial: bool = false;
+            const now_ns_initial: u64 = @intCast(std.time.nanoTimestamp());
             while (off < pt.len) {
                 const r = frame.decodeOne(pt[off..]) catch break;
                 off += r.n;
                 switch (r.f) {
                     .crypto => |cr| {
+                        std.debug.print("Server: Received CRYPTO frame with {} bytes\n", .{cr.data.len});
                         const was_server = (conn.role == .Server);
                         // Enforce contiguous CRYPTO offsets per space
                         const expect_off: u64 = 0;
                         _ = expect_off; // Initial space receive offset validation handled below
                         conn.pushCrypto(cr.data) catch {};
                         saw_any = true;
-                        // Server: after receiving CH, queue SH+EE with minimal TP/ALPN for emission in Handshake
-                        if (was_server and conn.tls.sh_seen) {
-                            const alpn_sel: []const u8 = if (conn.allowed_alpns.len > 0) conn.allowed_alpns[0] else "h3";
-                            var tps: tp.TransportParams = .{};
-                            tps.initial_max_data = conn.local_max_data;
-                            tps.initial_max_stream_data_bidi_local = conn.local_max_stream_data;
-                            tps.initial_max_stream_data_bidi_remote = conn.local_max_stream_data;
-                            tps.initial_max_streams_bidi = conn.local_max_streams_bidi;
-                            tps.initial_max_streams_uni = 0;
-                            const ee_bytes = tp.TransportParams.encode(&tps, self.allocator.*) catch &[_]u8{};
-                            defer {
-                                if (ee_bytes.len > 0) self.allocator.free(ee_bytes);
-                            }
-                            conn.tls.queueEncryptedExtensions(alpn_sel, if (ee_bytes.len > 0) ee_bytes else ee_bytes[0..0]) catch {};
-                            // If insecure mode, queue a dummy Certificate and immediately Finished.
-                            if (conn.tls.allow_insecure) {
-                                var dummy: [1]u8 = .{0};
-                                conn.tls.queueCertificate(dummy[0..0]) catch {};
-                                // Derive and send Finished using server handshake traffic secret
-                                if (conn.hs_server) |s_hs| conn.tls.queueFinished(s_hs) catch {};
-                            }
+                        saw_ack_eliciting_initial = true; // CRYPTO is ack-eliciting
+                        // Server: after receiving CH, only queue ServerHello for Initial emission
+                        if (was_server and !conn.tls.sh_seen) {
+                            // Queue ServerHello only - it will be sent in Initial packet
+                            // The rest of the handshake flight will be queued after SH is sent
                         }
                     },
                     .ack => |a| {
@@ -1364,38 +1396,119 @@ pub const Endpoint = struct {
             const allow_send = conn.canSendUnderAmplification();
 
             // If we received anything ack-eliciting, send ACK in Initial space when we still have Initial TX keys
+            if (saw_ack_eliciting_initial) {
+                conn.recordAckElicitingRx(.Initial, now_ns_initial);
+            }
             if (saw_any and !conn.initial_keys_dropped and allow_send) {
-                // Build ACK frame from Initial PN tracker
+                // Build frames for Initial packet response
                 var frames_buf = std.ArrayList(u8).init(self.allocator.*);
                 defer frames_buf.deinit();
                 const w = frames_buf.writer();
+                
+                // Add ACK frame
                 const ack_desc = conn.buildAckInitial();
                 const ack_ecn = conn.getAckEcn(.Initial);
-                const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = 0, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges, .ecn = ack_ecn } };
+                const ack_delay = conn.getAckDelayEncoded(.Initial, now_ns_initial);
+                const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = ack_delay, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges, .ecn = ack_ecn } };
                 _ = ack.write(w) catch 0;
-                if (conn.hs_tx_keys == null) {
-                    // Respond in Initial space using SERVER initial keys (TX direction)
-                    const tx_keys: packet.InitialKeys = if (v2) blk: {
-                        const t = ks.deriveKeyIvHpV2(pair.server);
-                        break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
-                    } else blk: {
-                        const t = ks.deriveKeyIvHp(pair.server);
-                        break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
-                    };
-                    const out = packet.encodeInitialProtected(self.allocator.*, version, scid, conn.our_scid.bytes[0..conn.our_scid.len], &[_]u8{}, @as(u32, @truncate(conn.pn_initial_tx)), 4, frames_buf.items, tx_keys) catch null;
-                    // cast packet numbers where needed
-
-                    if (out) |pkt_bytes| {
-                        defer self.allocator.free(pkt_bytes);
-                        _ = self.sendTo(peer, pkt_bytes) catch {};
-                        // ACK-only Initial is not ack-eliciting
-                        conn.onPacketSent(.Initial, conn.pn_initial_tx, pkt_bytes.len, false);
-                        conn.pn_initial_tx +%= 1;
+                
+                // Server: Include ServerHello in Initial packet if we have it queued and haven't sent it yet
+                var has_crypto = false;
+                if (conn.role == .Server and conn.tls.sh_seen and conn.crypto_tx_off_initial < 200) {
+                    // Pop any ServerHello bytes from TLS engine (should only be ServerHello at this point)
+                    var sh_buf: [512]u8 = undefined;
+                    const n_sh = conn.tls.popCrypto(sh_buf[0..]);
+                    if (n_sh > 0) {
+                        std.debug.print("Sending ServerHello in Initial packet: {} bytes\n", .{n_sh});
+                        // Add CRYPTO frame with ServerHello
+                        const crypto_frame = frame.Frame{ .crypto = .{ .offset = conn.crypto_tx_off_initial, .data = sh_buf[0..n_sh] } };
+                        _ = crypto_frame.write(w) catch 0;
+                        conn.crypto_tx_off_initial += n_sh;
+                        has_crypto = true;
+                        
+                        // Save for retransmission
+                        if (conn.crypto_retx_initial) |old| self.allocator.free(old);
+                        conn.crypto_retx_initial = self.allocator.alloc(u8, n_sh) catch null;
+                        if (conn.crypto_retx_initial) |retx| {
+                            @memcpy(retx, sh_buf[0..n_sh]);
+                        }
                     }
+                }
+                
+                // Always send Initial packet if we have frames to send
+                // Send in Initial space using SERVER initial keys (TX direction)
+                const tx_keys: packet.InitialKeys = if (v2) blk: {
+                    const t = ks.deriveKeyIvHpV2(pair.server);
+                    break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
+                } else blk: {
+                    const t = ks.deriveKeyIvHp(pair.server);
+                    break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
+                };
+                const out = packet.encodeInitialProtected(self.allocator.*, version, scid, conn.our_scid.bytes[0..conn.our_scid.len], &[_]u8{}, @as(u32, @truncate(conn.pn_initial_tx)), 4, frames_buf.items, tx_keys) catch null;
+                
+                if (out) |pkt_bytes| {
+                    defer self.allocator.free(pkt_bytes);
+                    _ = self.sendTo(peer, pkt_bytes) catch {};
+                    // Packet with CRYPTO is ack-eliciting
+                    conn.onPacketSent(.Initial, conn.pn_initial_tx, pkt_bytes.len, has_crypto);
+                    conn.pn_initial_tx +%= 1;
                 }
 
                 // Additionally, route received ACKs in Initial space through Recovery.
                 // Since this branch is taken when we saw any frames, send a synthetic ACK processing if needed is skipped.
+            }
+            // NEW: If we just derived Handshake keys and have outbound TLS handshake bytes queued, emit them now.
+            if (conn.hs_tx_keys) |hs_keys| {
+                // If we're a server and haven't queued the handshake flight yet, do it now
+                if (conn.role == .Server and conn.tls.sh_seen and !conn.server_hello_sent) {
+                    conn.server_hello_sent = true;
+                    std.debug.print("Queueing handshake flight (EE, Cert, Finished)\n", .{});
+                    
+                    // Queue EncryptedExtensions with ALPN and transport parameters
+                    const alpn_sel: []const u8 = if (conn.allowed_alpns.len > 0) conn.allowed_alpns[0] else "h3";
+                    var tps: tp.TransportParams = .{};
+                    tps.initial_max_data = conn.local_max_data;
+                    tps.initial_max_stream_data_bidi_local = conn.local_max_stream_data;
+                    tps.initial_max_stream_data_bidi_remote = conn.local_max_stream_data;
+                    tps.initial_max_streams_bidi = conn.local_max_streams_bidi;
+                    tps.initial_max_streams_uni = 0;
+                    const ee_bytes = tp.TransportParams.encode(&tps, self.allocator.*) catch &[_]u8{};
+                    defer {
+                        if (ee_bytes.len > 0) self.allocator.free(ee_bytes);
+                    }
+                    conn.tls.queueEncryptedExtensions(alpn_sel, if (ee_bytes.len > 0) ee_bytes else ee_bytes[0..0]) catch {};
+                    // Queue remaining handshake flight (Certificate*, Finished)
+                    conn.tls.queueServerHandshakeFlight();
+                }
+                
+                // Pull any pending TLS outbox (EncryptedExtensions, Certificate, CertificateVerify, Finished)
+                var tls_buf: [2048]u8 = undefined;
+                const n_tls = conn.tls.popCrypto(tls_buf[0..]);
+                if (n_tls > 0 and allow_send) {
+                    std.debug.print("Sending Handshake packet with {} bytes of CRYPTO\n", .{n_tls});
+                    var fb = std.ArrayList(u8).init(self.allocator.*);
+                    defer fb.deinit();
+                    const w_hs = fb.writer();
+                    const base_off_hs = conn.crypto_tx_off_handshake;
+                    _ = (frame.Frame{ .crypto = .{ .offset = base_off_hs, .data = tls_buf[0..n_tls] } }).write(w_hs) catch 0;
+                    // Save retransmit buffer for Handshake CRYPTO
+                    if (conn.crypto_retx_handshake) |b| self.allocator.free(b);
+                    var owned_hs = self.allocator.alloc(u8, n_tls) catch {
+                        conn.crypto_tx_off_handshake += n_tls; // advance offset even if we cannot retain
+                        return; // abort emission on OOM for retransmit copy
+                    };
+                    @memcpy(owned_hs[0..n_tls], tls_buf[0..n_tls]);
+                    conn.crypto_retx_handshake = owned_hs;
+                    conn.crypto_retx_handshake_off = base_off_hs;
+                    conn.crypto_tx_off_handshake += n_tls;
+                    const pkt_hs = packet.encodeHandshakeProtected(self.allocator.*, version, scid, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_handshake_tx)), 2, fb.items, hs_keys) catch null;
+                    if (pkt_hs) |bytes_out_hs| {
+                        defer self.allocator.free(bytes_out_hs);
+                        _ = self.sendTo(peer, bytes_out_hs) catch {};
+                        conn.onPacketSent(.Handshake, conn.pn_handshake_tx, bytes_out_hs.len, true);
+                        conn.pn_handshake_tx +%= 1;
+                    }
+                }
             }
             return;
         }
@@ -1505,6 +1618,7 @@ pub const Endpoint = struct {
                     &sample16,
                     ct,
                     pt,
+                    conn.pn_handshake.max, // Expected packet number for Handshake space
                 ) catch {
                     conn.onAeadAuthFailure();
                     return;
@@ -1520,6 +1634,8 @@ pub const Endpoint = struct {
                 // Feed CRYPTO frames and handle ACK frames for PTO reset
                 var off: usize = 0;
                 var saw_any: bool = false;
+                var saw_ack_eliciting_hs: bool = false;
+                const now_ns_hs: u64 = @intCast(std.time.nanoTimestamp());
                 while (off < pt.len) {
                     const r = frame.decodeOne(pt[off..]) catch break;
                     off += r.n;
@@ -1530,6 +1646,7 @@ pub const Endpoint = struct {
                                 conn.pushCrypto(cr.data) catch {};
                                 conn.crypto_rx_off_handshake += @intCast(cr.data.len);
                                 saw_any = true;
+                                saw_ack_eliciting_hs = true; // CRYPTO is ack-eliciting
                             } else {
                                 // Ignore out-of-order CRYPTO for Handshake
                             }
@@ -1577,6 +1694,9 @@ pub const Endpoint = struct {
                     }
                 }
                 // Send ACK in Handshake space if ack-eliciting seen and we have hs_tx_keys
+                if (saw_ack_eliciting_hs) {
+                    conn.recordAckElicitingRx(.Handshake, now_ns_hs);
+                }
                 if (saw_any) {
                     if (conn.hs_tx_keys) |tx_keys| {
                         var frames_buf = std.ArrayList(u8).init(self.allocator.*);
@@ -1584,7 +1704,8 @@ pub const Endpoint = struct {
                         const w = frames_buf.writer();
                         const ack_desc = conn.buildAckHandshake();
                         const ack_ecn = conn.getAckEcn(.Handshake);
-                        const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = 0, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges, .ecn = ack_ecn } };
+                        const ack_delay = conn.getAckDelayEncoded(.Handshake, now_ns_hs);
+                        const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = ack_delay, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges, .ecn = ack_ecn } };
                         _ = ack.write(w) catch 0;
                         // Also include any pending Initial CRYPTO from server side (unlikely) at correct offset
                         var outbox: [1024]u8 = undefined;

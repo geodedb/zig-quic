@@ -68,3 +68,44 @@ Initial slices build bottom-up: varint, frames, key schedule KATs, then handshak
   - ICMP-driven: Endpoint drains the Linux error queue for IPv4 Frag Needed / IPv6 Packet Too Big. Quoted packets are parsed and spoof-checked (short header DCID must match a known connection) before calling `Connection.onIcmpPacketTooBig(mtu)` to clamp path_mtu.
 - State machine: A basic DPLPMTUD state machine (ProbeStart/ProbeSearch) runs via endpoint timers (TimerKind.Pmtud). ACK progression hooks drive searches forward.
 - Safety: ICMP processing is optional and guarded; spoof checks prevent off-path PTB from affecting path_mtu. Minimum QUIC datagram size (1200 bytes) is enforced.
+
+## Connection ID Lifecycle & Rotation
+
+Goals: Support migration, stateless reset robustness, and linkability reduction while respecting the peer's `active_connection_id_limit`.
+
+Data structures:
+
+- `local_cids`: fixed-size array of CID slots `{ sequence, cid_bytes, stateless_reset_token, in_use }`.
+- `pending_new_cid`: bitset marking which slot indices must be (re)advertised as NEW_CONNECTION_ID.
+- Counters: `issued_cids` (number of currently active issued CIDs), `next_cid_sequence` (monotonic sequence allocator), and `retired_prior_to` (inclusive lower bound the peer may retire without further notification).
+
+Issuance:
+
+- `issueNewConnectionId()`: allocate a new slot if under limit; derive CID bytes (random) & stateless reset token (currently SHA-256(base||seq||cid) truncated 16B placeholder); mark pending.
+- `issueNewConnectionIdRotating()`: if at limit, select oldest non-zero sequence CID, retire it (mark not in_use, decrement `issued_cids`), advance `retired_prior_to` if all lower sequences retired, then issue a fresh CID as above.
+
+Advertisement:
+
+- `writePendingNewConnectionIds()`: iterates pending bitset, writing one NEW_CONNECTION_ID frame per set bit, each including current `retired_prior_to`.
+- Piggyback: ACK send path calls the writer before finalizing packet framing so NEW_CONNECTION_ID frames share packets with ACK / ACK_ECN.
+- `flushPendingNewConnectionIds()`: forces emission (e.g., for tests) even without other ack-eliciting frames.
+
+Retirement handling:
+
+- On RETIRE_CONNECTION_ID(frame.sequence), we mark the matching local CID retired, decrement `issued_cids` (except sequence 0 if policy differs), and recompute the minimal contiguous retired prefix to advance `retired_prior_to`.
+- Advancement only occurs when all sequences below the new threshold are fully retired to maintain RFC 9000 invariants.
+
+Security considerations:
+
+- Placeholder stateless reset token derivation will be replaced by HKDF using a per-endpoint secret + sequence + CID to avoid direct hash oracle concerns and enable secret rotation.
+- Rotation heuristics (time / traffic volume) are pluggable; current implementation performs explicit rotation when invoked by higher-level policy or tests.
+
+Testing:
+
+- Unit tests cover: limit enforcement, pending flush emission, retirement frees slot for reuse, rotation advancing `retired_prior_to` and advertising new CIDs.
+
+Future work:
+
+- Integrate with path migration triggers (issue new CID on validated new path, retire old after stable period).
+- HKDF-based token derivation & secret rotation on key update or timer.
+- Frame packing optimization (batch multiple NEW_CONNECTION_ID frames while respecting path MTU & congestion window).

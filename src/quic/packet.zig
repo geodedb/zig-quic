@@ -244,6 +244,7 @@ pub fn decodeShortProtected(
         &sample16,
         ct,
         payload,
+        0, // No expansion for test packets
     );
 
     // Compute PN value from the previously unmasked temporary PN bytes

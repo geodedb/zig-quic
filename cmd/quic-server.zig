@@ -61,6 +61,74 @@ pub fn main() !void {
         .token_expiry_ms = token_expiry_ms,
         .real_tls = real_tls,
     };
+    // If real TLS requested and file-based cert/key provided, load them and stash as inline for endpoint connections.
+    var loaded_cert: ?[]u8 = null;
+    var loaded_key: ?[]u8 = null;
+    defer {
+        if (loaded_cert) |cbytes| alloc.free(cbytes);
+        if (loaded_key) |kbytes| alloc.free(kbytes);
+    }
+    if (real_tls and cert_path != null and key_path != null) {
+        // Simple PEM -> DER loader (single object) for CERTIFICATE / (EC) PRIVATE KEY
+        const PemLoad = struct {
+            fn loadPem(allocator: std.mem.Allocator, path: []const u8, markers: []const []const u8) ![]u8 {
+                const data = try std.fs.cwd().readFileAlloc(allocator, path, 64 * 1024);
+                errdefer allocator.free(data);
+                var chosen_begin: ?[]const u8 = null;
+                var chosen_end: ?[]const u8 = null;
+                for (markers) |m| {
+                    var buf_begin: [64]u8 = undefined;
+                    var buf_end: [64]u8 = undefined;
+                    const begin_marker = try std.fmt.bufPrint(&buf_begin, "-----BEGIN {s}-----", .{m});
+                    const end_marker = try std.fmt.bufPrint(&buf_end, "-----END {s}-----", .{m});
+                    if (std.mem.indexOf(u8, data, begin_marker)) |_| {
+                        chosen_begin = try allocator.dupe(u8, begin_marker);
+                        chosen_end = try allocator.dupe(u8, end_marker);
+                        break;
+                    }
+                }
+                if (chosen_begin == null or chosen_end == null) return error.PemMarkerNotFound;
+                defer allocator.free(chosen_begin.?);
+                defer allocator.free(chosen_end.?);
+                const start = std.mem.indexOf(u8, data, chosen_begin.?) orelse return error.PemMarkerNotFound;
+                const rest = data[start + chosen_begin.?.len ..];
+                const end_rel = std.mem.indexOf(u8, rest, chosen_end.?) orelse return error.PemMarkerNotFound;
+                const b64_region = rest[0..end_rel];
+                // Collect base64 characters (skip newlines)
+                var tmp = try allocator.alloc(u8, b64_region.len);
+                defer allocator.free(tmp);
+                var n: usize = 0;
+                for (b64_region) |ch| {
+                    if (ch == '\n' or ch == '\r') continue;
+                    if (ch == ' ') continue;
+                    tmp[n] = ch;
+                    n += 1;
+                }
+                // Decode
+                const out_buf = try allocator.alloc(u8, (n * 3) / 4 + 8);
+                // Compute decoded length manually: every 4 chars -> 3 bytes, minus padding '='.
+                var pad: usize = 0;
+                if (n >= 2 and tmp[n - 1] == '=') pad += 1;
+                if (n >= 2 and tmp[n - 2] == '=') pad += 1;
+                const need: usize = (n / 4) * 3 - pad;
+                allocator.free(out_buf);
+                const exact = try allocator.alloc(u8, need);
+                // std.base64 Decoder.decode writes into exact; assume well-formed input.
+                std.base64.standard.Decoder.decode(exact, tmp[0..n]) catch |e| {
+                    allocator.free(exact);
+                    return e;
+                };
+                return exact;
+            }
+        };
+        loaded_cert = PemLoad.loadPem(alloc, cert_path.?, &[_][]const u8{"CERTIFICATE"}) catch null;
+        // Try PKCS#8 first (PRIVATE KEY) then EC PRIVATE KEY as fallback
+        loaded_key = PemLoad.loadPem(alloc, key_path.?, &[_][]const u8{ "PRIVATE KEY", "EC PRIVATE KEY" }) catch null;
+        if (loaded_cert != null and loaded_key != null) {
+            cfg.inline_server_cert_der = loaded_cert;
+            cfg.inline_server_priv_p256 = loaded_key;
+        }
+    }
     const ep = try api.endpointInit(&alloc, bind, &cfg);
     defer api.endpointDeinit(ep);
 

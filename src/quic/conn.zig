@@ -7,6 +7,8 @@ const packet = @import("quic_packet");
 const frame = @import("quic_frame");
 const recovery = @import("quic_recovery");
 const ks = @import("quic_tls");
+// Import transport parameters module (registered as quic_transport_params in build.zig)
+const tparams = @import("quic_transport_params");
 
 /// Role of this endpoint for a connection.
 pub const Role = enum { Client, Server };
@@ -17,6 +19,7 @@ pub const SockAddr = struct {
     len: u32 = 0,
 
     /// Initialize from a POSIX addrinfo entry.
+    /// Initialize a SockAddr from a POSIX addrinfo entry (copies raw bytes).
     pub fn setFrom(ai: *const posix.addrinfo) SockAddr {
         var s: SockAddr = .{};
         const src = ai.addr.?.*;
@@ -26,11 +29,13 @@ pub const SockAddr = struct {
     }
 
     /// Return address family (AF.INET/AF.INET6).
+    /// Return address family (AF.INET or AF.INET6).
     pub fn family(self: *const SockAddr) u16 {
         return self.storage.family;
     }
 
     /// Compare two socket addresses for byte-wise equality.
+    /// Compare two SockAddr values for byte-wise equality.
     pub fn eq(a: *const SockAddr, b: *const SockAddr) bool {
         if (a.len != b.len) return false;
         if (a.storage.family != b.storage.family) return false;
@@ -40,6 +45,7 @@ pub const SockAddr = struct {
     }
 
     /// Helper to build an IPv4 sockaddr for tests.
+    /// Build an IPv4 SockAddr from octets and host-order port (test helper).
     pub fn ipv4(a: u8, b: u8, c: u8, d: u8, port_host: u16) SockAddr {
         var s: SockAddr = .{};
         var sin: posix.sockaddr.in = .{
@@ -258,6 +264,7 @@ pub const Connection = struct {
     tx_sent_bytes_since_key: u64 = 0,
     // Lifecycle flags
     handshake_done_sent: bool = false,
+    server_hello_sent: bool = false,
     // Connection close state
     closed: bool = false,
 
@@ -383,52 +390,122 @@ pub const Connection = struct {
     aead_confidentiality_limit: u64 = (1 << 23), // AES-GCM default
     aead_integrity_limit: u64 = (1 << 52),
 
+    // --- Negotiated transport parameters (peer provided) ---
+    transport_params_applied: bool = false,
+    ack_delay_exponent: u8 = 3, // RFC 9000 default when absent
+    max_ack_delay_ms: u16 = 25, // RFC 9000 default (25 ms)
+    peer_max_udp_payload_size: u16 = 1200, // enforce <= path_mtu
+    active_connection_id_limit: u64 = 2, // minimum permitted (RFC 9000 §18.2)
+    // Count of locally issued connection IDs (includes initial our_scid as 1)
+    issued_cids: u64 = 1,
+    /// Active locally issued Connection IDs currently valid for use by peer (sequence space starts at 0).
+    /// Index 0 corresponds to the original Source Connection ID (our_scid) used in Initial.
+    local_cids: [8]LocalCid = [_]LocalCid{.{}} ** 8,
+    /// Number of entries in local_cids that are considered active (<= active_connection_id_limit, <= local_cids.len).
+    active_local_cids: u8 = 1,
+    /// Next sequence number to allocate when issuing a new CID (monotonic, may exceed local_cids.len — older entries retired first).
+    next_cid_sequence: u64 = 1,
+    /// Pending NEW_CONNECTION_ID indices (into local_cids) waiting to be sent to peer.
+    pending_new_cid: std.bit_set.IntegerBitSet(8) = std.bit_set.IntegerBitSet(8).initEmpty(),
+    /// Secret used to derive stateless reset tokens (HKDF extraction of initial secret, set during handshake). Placeholder until integrated.
+    stateless_reset_base: [32]u8 = [_]u8{0} ** 32,
+    /// Highest retire_prior_to value we have advertised (monotonic). Used when emitting NEW_CONNECTION_ID.
+    retired_prior_to: u64 = 0,
+
+    // --- ACK delay measurement (per space) ---
+    last_ack_eliciting_rx_initial_ns: u64 = 0,
+    last_ack_eliciting_rx_handshake_ns: u64 = 0,
+    last_ack_eliciting_rx_app_ns: u64 = 0,
+
+    /// Record time a new ack-eliciting packet was received in a PN space.
+    /// Record timestamp of most recent ack-eliciting packet arrival in the given PN space.
+    pub fn recordAckElicitingRx(self: *Connection, space: recovery.PacketNumberSpace, now_ns: u64) void {
+        switch (space) {
+            .Initial => self.last_ack_eliciting_rx_initial_ns = now_ns,
+            .Handshake => self.last_ack_eliciting_rx_handshake_ns = now_ns,
+            .Application => self.last_ack_eliciting_rx_app_ns = now_ns,
+        }
+    }
+
+    /// Compute encoded ACK delay value for the given PN space using ack_delay_exponent.
+    /// The encoded value is (delay_us >> ack_delay_exponent) per RFC 9000 §19.3.
+    /// Encode ACK delay per RFC 9000 §19.3 using negotiated ack_delay_exponent and max_ack_delay cap.
+    pub fn getAckDelayEncoded(self: *const Connection, space: recovery.PacketNumberSpace, now_ns: u64) u64 {
+        const origin_ns: u64 = switch (space) {
+            .Initial => self.last_ack_eliciting_rx_initial_ns,
+            .Handshake => self.last_ack_eliciting_rx_handshake_ns,
+            .Application => self.last_ack_eliciting_rx_app_ns,
+        };
+        if (origin_ns == 0 or now_ns <= origin_ns) return 0;
+        const delta_ns: u64 = now_ns - origin_ns;
+        var delay_us: u64 = delta_ns / 1000;
+        const max_us: u64 = @as(u64, self.max_ack_delay_ms) * 1000;
+        if (delay_us > max_us) delay_us = max_us;
+        const shift: u6 = @intCast(self.ack_delay_exponent);
+        return delay_us >> shift;
+    }
+
+    /// Return whether a new Connection ID can be issued without rotation. This checks
+    /// the current `issued_cids` count against the peer's negotiated
+    /// `active_connection_id_limit` (minimum 2 per RFC 9000 §18.2). Rotation helpers
+    /// may still retire an existing non-zero sequence CID to free a slot when this
+    /// returns false.
     /// Expand a truncated PN in Initial space using expected next PN.
+    /// Expand truncated Initial-space packet number using expected next PN (RFC 9000 §12.3).
     pub fn expandPnInitial(self: *const Connection, trunc_val: u64, pn_len: u3) u64 {
         const expected: u64 = if (self.pn_initial.have_any) self.pn_initial.max + 1 else 0;
         return expandTruncatedPn(trunc_val, pn_len, expected);
     }
     /// Expand a truncated PN in Handshake space using expected next PN.
+    /// Expand truncated Handshake-space packet number using expected next PN.
     pub fn expandPnHandshake(self: *const Connection, trunc_val: u64, pn_len: u3) u64 {
         const expected: u64 = if (self.pn_handshake.have_any) self.pn_handshake.max + 1 else 0;
         return expandTruncatedPn(trunc_val, pn_len, expected);
     }
     /// Expand a truncated PN in 1-RTT App space using expected next PN.
+    /// Expand truncated Application-space packet number using expected next PN.
     pub fn expandPnApp(self: *const Connection, trunc_val: u64, pn_len: u3) u64 {
         const expected: u64 = if (self.pn_app.have_any) self.pn_app.max + 1 else 0;
         return expandTruncatedPn(trunc_val, pn_len, expected);
     }
 
     /// Track a received PN in Initial space for ACK generation.
+    /// Track received Initial-space PN for ACK range construction.
     pub fn trackRecvPnInitial(self: *Connection, pn_full: u64) void {
         self.pn_initial.track(pn_full);
     }
     /// Track a received PN in Handshake space for ACK generation.
+    /// Track received Handshake-space PN for ACK range construction.
     pub fn trackRecvPnHandshake(self: *Connection, pn_full: u64) void {
         self.pn_handshake.track(pn_full);
     }
     /// Track a received PN in App space for ACK generation.
+    /// Track received Application-space PN for ACK range construction.
     pub fn trackRecvPnApp(self: *Connection, pn_full: u64) void {
         self.pn_app.track(pn_full);
     }
 
     /// Build ACK ranges for Initial/Handshake/App space using the sliding window.
+    /// Build ACK descriptor (largest + ranges) for Initial space using sliding window.
     pub fn buildAckInitial(self: *Connection) AckDesc {
         const d = self.pn_initial.buildAckRanges(self.ack_ranges_buf[0..]);
         return .{ .largest = self.pn_initial.max, .first_range = d.first_range, .ranges = self.ack_ranges_buf[0..d.ranges_len] };
     }
     /// Build ACK ranges for Handshake space.
+    /// Build ACK descriptor for Handshake space.
     pub fn buildAckHandshake(self: *Connection) AckDesc {
         const d = self.pn_handshake.buildAckRanges(self.ack_ranges_buf[0..]);
         return .{ .largest = self.pn_handshake.max, .first_range = d.first_range, .ranges = self.ack_ranges_buf[0..d.ranges_len] };
     }
     /// Build ACK ranges for Application space.
+    /// Build ACK descriptor for Application (1-RTT) space.
     pub fn buildAckApp(self: *Connection) AckDesc {
         const d = self.pn_app.buildAckRanges(self.ack_ranges_buf[0..]);
         return .{ .largest = self.pn_app.max, .first_range = d.first_range, .ranges = self.ack_ranges_buf[0..d.ranges_len] };
     }
 
     /// Initialize a Connection in the given role bound to a socket and peer address.
+    /// Initialize connection object with allocator, role, socket fd, and peer address; sets defaults.
     pub fn init(self: *Connection, alloc: *std.mem.Allocator, role: Role, sock_fd: posix.fd_t, peer: SockAddr) void {
         self.id = 0;
         self.role = role;
@@ -509,6 +586,7 @@ pub const Connection = struct {
     }
 
     /// Release resources held by this Connection (payloads, maps, TLS state).
+    /// Free dynamic resources (lists, maps, TLS engine) owned by the connection.
     pub fn deinit(self: *Connection) void {
         self.tls_inbox.deinit();
         self.tls.deinit();
@@ -534,11 +612,13 @@ pub const Connection = struct {
     }
 
     /// Update peer address (used for NAT rebinding / migration detection).
+    /// Update peer remote address (e.g., after observing NAT rebinding) without altering validation state.
     pub fn setPeer(self: *Connection, peer: SockAddr) void {
         self.peer = peer;
     }
 
     /// Update/reset stateless reset tokens based on NEW_CONNECTION_ID retire_prior_to.
+    /// Install/retire peer-advertised stateless reset tokens based on NEW_CONNECTION_ID frame sequencing.
     pub fn onNewConnectionId(self: *Connection, sequence: u64, retire_prior_to: u64, stateless_reset_token: [16]u8) void {
         // Retire tokens with index < retire_prior_to
         var i: usize = 0;
@@ -559,6 +639,7 @@ pub const Connection = struct {
     }
 
     /// Check if a trailing 16-byte token matches any known stateless reset token.
+    /// Heuristic detection of stateless reset (short header random body + 16-byte trailing token).
     pub fn looksLikeStatelessReset(self: *const Connection, pkt: []const u8) bool {
         if (pkt.len < 5 + 16) return false; // need at least short header + token
         // Per RFC 9000 §10.3, stateless reset is short header with random looking body and 16-byte token at end
@@ -572,6 +653,7 @@ pub const Connection = struct {
 
     /// Record an ECN mark observed on an incoming datagram for the given PN space.
     /// ecn_bits: least-significant two bits of the IP ECN field (00=Not-ECT, 10=ECT(0), 01=ECT(1), 11=CE).
+    /// Incorporate observed ECN bits for a received datagram into per-space counters for ACK_ECN emission.
     pub fn onEcnMark(self: *Connection, space: recovery.PacketNumberSpace, ecn_bits: u8) void {
         const b: u8 = ecn_bits & 0x03;
         var ctr: *EcnCounter = switch (space) {
@@ -593,6 +675,7 @@ pub const Connection = struct {
 
     /// Return ECN counts for ACK_ECN emission in the given PN space if any ECN
     /// marks were observed; otherwise return null to emit a plain ACK.
+    /// Retrieve ECN counters for given PN space or null if none observed (emit ACK vs ACK_ECN).
     pub fn getAckEcn(self: *const Connection, space: recovery.PacketNumberSpace) ?frame.EcnCounts {
         const ctr: *const EcnCounter = switch (space) {
             .Initial => &self.ecn_initial,
@@ -606,12 +689,14 @@ pub const Connection = struct {
     }
 
     /// Install a custom sender callback (typically provided by Endpoint) for paced sending.
+    /// Install sender callback (paced) used by endpoint for actual datagram emission.
     pub fn setSender(self: *Connection, ctx: *anyopaque, f: SendFn) void {
         self.sender_ctx = ctx;
         self.sender_fn = f;
     }
 
     /// Configure AEAD usage limits based on endpoint config (optional overrides).
+    /// Configure optional AEAD usage limits overriding cipher defaults (tests / policy tuning).
     pub fn setAeadUsageLimits(self: *Connection, conf_limit: ?u64, integ_limit: ?u64) void {
         if (conf_limit) |v| self.aead_confidentiality_limit = v;
         if (integ_limit) |v| self.aead_integrity_limit = v;
@@ -619,18 +704,21 @@ pub const Connection = struct {
 
     /// Return true if sending is allowed under the anti-amplification limit.
     /// Uses division (tx/3 <= rx) to avoid overflow for very large counters.
+    /// Return true if anti-amplification budget permits sending (server before validation). Uses division to avoid overflow.
     pub fn canSendUnderAmplification(self: *const Connection) bool {
         if (self.address_validated) return true;
         return (self.bytes_tx_unvalidated / 3) <= self.bytes_rx_unvalidated;
     }
 
     /// Return true if we are currently over the anti-amplification limit.
+    /// Return true if currently exceeding allowed 3x amplification limit.
     pub fn overAmplification(self: *const Connection) bool {
         if (self.address_validated) return false;
         return (self.bytes_tx_unvalidated / 3) > self.bytes_rx_unvalidated;
     }
 
     /// Saturating add to RX unvalidated counter to avoid wrap.
+    /// Saturating add to unvalidated RX byte counter (pre-validation address accounting).
     pub fn addRxUnvalidated(self: *Connection, n: usize) void {
         if (self.address_validated or n == 0) return;
         const max = std.math.maxInt(u64);
@@ -643,6 +731,7 @@ pub const Connection = struct {
     }
 
     /// Saturating add to TX unvalidated counter to avoid wrap.
+    /// Saturating add to unvalidated TX byte counter used for amplification gating.
     pub fn addTxUnvalidated(self: *Connection, n: usize) void {
         if (self.address_validated or n == 0) return;
         const max = std.math.maxInt(u64);
@@ -655,6 +744,7 @@ pub const Connection = struct {
     }
 
     /// Send bytes to peer using configured sender callback; if none, act as no-op that accounts amplification.
+    /// Send bytes via installed sender callback (accounting amplification); in tests with no sender, acts as no-op success.
     pub fn send(self: *Connection, data: []const u8) !usize {
         // Amplification guard: if address not validated and we already exceeded 3x budget, refuse to send
         if (self.overAmplification()) return error.WouldBlock;
@@ -670,16 +760,17 @@ pub const Connection = struct {
     }
 
     /// Feed received CRYPTO bytes to the TLS engine and enforce allowed ALPN list.
+    /// Feed CRYPTO stream bytes into TLS engine; derive secrets/keys and apply peer transport parameters when available.
     pub fn pushCrypto(self: *Connection, hs: []const u8) !void {
         self.tls.onCryptoRecv(hs);
-        // Server: upon receiving ClientHello, immediately queue a ServerHello
+        // Server: upon receiving first ClientHello bytes, queue a ServerHello if not already queued.
         if (self.role == .Server and !self.tls.sh_seen) {
-            // Attempt real ServerHello if engine in real_mode; fallback to minimal auto.
+            std.debug.print("Server: Received ClientHello, queueing ServerHello\n", .{});
             if (self.tls.real_mode) {
-                self.tls.queueMinimalServerHello() catch {
-                    _ = self.tls.queueMinimalServerHelloAuto() catch {};
-                };
+                // Real mode: build spec-like ServerHello
+                self.tls.queueRealServerHello() catch {};
             } else {
+                // Minimal placeholder auto ServerHello
                 _ = self.tls.queueMinimalServerHelloAuto() catch {};
             }
         }
@@ -699,6 +790,14 @@ pub const Connection = struct {
                 }
             }
         }
+        // Apply peer transport parameters (once) when they first become available.
+        if (!self.transport_params_applied) {
+            if (self.tls.getPeerTransportParameters()) |peer_tp_bytes| {
+                self.applyPeerTransportParameters(peer_tp_bytes) catch {
+                    // Ignore malformed transport parameters; retain defaults.
+                };
+            }
+        }
         // If an ALPN was negotiated, enforce it against the allowed list when provided.
         if (self.tls.alpn) |a| {
             if (self.allowed_alpns.len > 0) {
@@ -715,11 +814,13 @@ pub const Connection = struct {
     }
 
     /// Get negotiated ALPN if any.
+    /// Return negotiated ALPN slice (if any) after handshake progression.
     pub fn getNegotiatedAlpn(self: *Connection) ?[]const u8 {
         return self.tls.alpn;
     }
 
     /// Toggle congestion control (NewReno default, CUBIC optional).
+    /// Switch congestion control mode between NewReno (false) and CUBIC (true).
     pub fn setUseCubic(self: *Connection, use: bool) void {
         self.use_cubic = use;
         self.rec.setCcMode(use);
@@ -756,6 +857,7 @@ pub const Connection = struct {
     }
 
     /// Update peer Initial DCID/SCID (observed in Initial packet).
+    /// Record peer's Initial DCID/SCID values observed to support VN/Retry logic.
     pub fn setPeerInitialCids(self: *Connection, dcid: []const u8, scid: []const u8) void {
         self.peer_initial_dcid.len = @intCast(@min(dcid.len, self.peer_initial_dcid.bytes.len));
         if (self.peer_initial_dcid.len > 0) @memcpy(self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len], dcid[0..self.peer_initial_dcid.len]);
@@ -764,6 +866,7 @@ pub const Connection = struct {
     }
 
     /// Ingest a STREAM frame payload into the RX buffer for the stream with reassembly.
+    /// Ingest STREAM frame data (copy + reassembly); updates flow-control windows heuristically.
     pub fn pushStreamFrame(self: *Connection, stream_id: u64, offset: u64, data: []const u8, fin: bool) !void {
         if (self.stream_recv_aborted) return; // ignore further data after RESET_STREAM
         const s = self.ensureStreamRx(stream_id);
@@ -790,6 +893,7 @@ pub const Connection = struct {
     }
 
     /// Ingest a DATAGRAM frame payload (owned copy).
+    /// Append an incoming DATAGRAM frame payload (owned copy) to inbox.
     pub fn pushDatagram(self: *Connection, data: []const u8) !void {
         const owned = try self.allocator.alloc(u8, data.len);
         @memcpy(owned, data);
@@ -797,6 +901,7 @@ pub const Connection = struct {
     }
 
     /// Pop a DATAGRAM payload into buf; returns length copied or error if none.
+    /// Pop next DATAGRAM payload into provided buffer; returns bytes copied or WouldBlock if none.
     pub fn popDatagram(self: *Connection, buf: []u8) !usize {
         if (self.dgram_inbox.items.len == 0) return error.WouldBlock;
         const p = self.dgram_inbox.orderedRemove(0);
@@ -808,6 +913,7 @@ pub const Connection = struct {
 
     /// No-op compatibility shim so Connection can be passed where an Endpoint is expected.
     /// This satisfies ep.scheduleConnPto(self, kind, delay_ms) used in some helpers.
+    /// Compatibility shim for scheduling PTO timers when a Connection is used stand-alone in tests.
     pub fn scheduleConnPto(self: *Connection, _c: *Connection, kind: anytype, delay_ms: u32) !u64 {
         _ = self;
         _ = _c;
@@ -816,16 +922,19 @@ pub const Connection = struct {
         return 0;
     }
 
-    /// PTO expiry hook for Initial space: clears active flag, bumps backoff, and sends a PING probe.
+    /// PTO expiry hook for Initial space: clears active flag, increments per-space
+    /// and global recovery PTO backoff counters, and schedules a PING probe packet
+    /// (Initial keys) to elicit acknowledgment and re-establish RTT/loss timers.
     pub fn setPtoExpiredInitial(self: *Connection) void {
         if (!self.pto_initial_active) return;
         self.pto_initial_active = false;
         self.pto_initial_count +%= 1;
-        // Increase recovery PTO backoff as well
+        // Increase recovery PTO backoff counter (shared across spaces) per RFC 9002.
         self.rec.pto_count +%= 1;
         self.sendPtoProbeInitial();
     }
-    /// PTO expiry hook for Handshake space: clears active flag, bumps backoff, and sends a PING probe.
+    /// PTO expiry hook for Handshake space: clears active flag, increments counters
+    /// and sends a Handshake PING probe to drive handshake completion under loss.
     pub fn setPtoExpiredHandshake(self: *Connection) void {
         if (!self.pto_handshake_active) return;
         self.pto_handshake_active = false;
@@ -833,7 +942,9 @@ pub const Connection = struct {
         self.rec.pto_count +%= 1;
         self.sendPtoProbeHandshake();
     }
-    /// PTO expiry hook for Application space: clears active flag, bumps backoff, and sends a PING probe.
+    /// PTO expiry hook for Application space: clears active flag, increments per-space
+    /// and global recovery PTO counters, then sends a 1-RTT PING probe (with padding
+    /// if needed) to re-arm loss detection and capture fresh RTT samples.
     pub fn setPtoExpiredApp(self: *Connection) void {
         if (!self.pto_app_active) return;
         self.pto_app_active = false;
@@ -844,6 +955,7 @@ pub const Connection = struct {
     }
 
     /// Send a PATH_CHALLENGE on the 1-RTT path to validate current peer path.
+    /// Emit a PATH_CHALLENGE frame (1-RTT) and mark path validation pending.
     pub fn sendPathChallenge(self: *Connection) void {
         const tx = self.app_tx_keys orelse return;
         // Generate opaque 8-byte data and remember for validation
@@ -887,6 +999,7 @@ pub const Connection = struct {
         }
     }
 
+    /// Mark initial flow-control limits for transmission (sets flags so MAX_* frames are sent).
     pub fn advertiseInitialFlowControl(self: *Connection) void {
         if (self.app_tx_keys == null) return;
         if (!self.canSendUnderAmplification()) return;
@@ -913,6 +1026,7 @@ pub const Connection = struct {
     }
 
     /// Send a datagram to the connection's peer using 1-RTT short header.
+    /// Queue an application DATAGRAM for sending (subject to path MTU / congestion heuristics).
     pub fn sendDatagram(self: *Connection, data: []const u8) !void {
         const tx = self.app_tx_keys orelse return error.KeysNotReady;
         var frames = std.ArrayList(u8).init(self.allocator.*);
@@ -934,6 +1048,7 @@ pub const Connection = struct {
     }
 
     /// Open a bidi stream; only stream id 0 is supported in this minimal slice.
+    /// Open a new local stream (bidi or uni) returning stream id (flow-control permitting).
     pub fn openStream(self: *Connection, bidi: bool) !u64 {
         if (!bidi) return error.Unsupported;
         // Enforce peer MAX_STREAMS_BIDI
@@ -955,6 +1070,7 @@ pub const Connection = struct {
     }
 
     /// Write STREAM data enforcing flow-control; may emit *_BLOCKED frames.
+    /// Write data to a stream (simplified slice, no FIN flag in this helper slice yet).
     pub fn writeStream(self: *Connection, id: u64, data: []const u8) !usize {
         if (id != 0) return error.InvalidStream;
         if (self.stream_send_aborted) return error.StreamStopped;
@@ -1016,6 +1132,7 @@ pub const Connection = struct {
     }
 
     /// Read from STREAM into buf; returns number of bytes or WouldBlock.
+    /// Read reassembled bytes from a stream into buf; returns number copied or WouldBlock.
     pub fn readStream(self: *Connection, id: u64, buf: []u8) !usize {
         const s = self.streams_rx.getPtr(id) orelse return error.InvalidStream;
         if (s.inbox.items.len == 0) return 0;
@@ -1028,6 +1145,7 @@ pub const Connection = struct {
     }
 
     /// Close a STREAM with RESET_STREAM using the given application error code.
+    /// Initiate graceful close of a stream (sends RESET/FIN depending on state) with app error code.
     pub fn closeStream(self: *Connection, id: u64, app_error_code: u64) !void {
         _ = app_error_code; // not surfaced yet in transport close
         if (id != 0) return error.InvalidStream;
@@ -1052,6 +1170,7 @@ pub const Connection = struct {
     }
 
     /// Handle STOP_SENDING by responding with RESET_STREAM carrying our final size.
+    /// Process incoming STOP_SENDING frame; respond with RESET_STREAM if not already closed.
     pub fn handleStopSending(self: *Connection, stream_id: u64, app_error_code: u64) !void {
         const tx = self.app_tx_keys orelse return error.KeysNotReady;
         // Mark stream as aborted for sending further STREAM frames
@@ -1078,6 +1197,7 @@ pub const Connection = struct {
 
     /// Handle a received RESET_STREAM for RX-side teardown. Marks RX aborted, caps final size,
     /// discards any buffered segments beyond final_size, and treats the stream as finished.
+    /// Process incoming RESET_STREAM updating RX state and freeing buffers.
     pub fn handleResetStream(self: *Connection, stream_id: u64, app_error_code: u64, final_size: u64) void {
         _ = app_error_code; // surfaced to app layer out of scope here
         // Only stream 0 supported in this slice, but apply generically.
@@ -1115,6 +1235,7 @@ pub const Connection = struct {
 
     /// Explicitly tear down stream RX state and clear flags for the given stream.
     /// Safe to call multiple times; no-op if stream not present.
+    /// Tear down local bookkeeping for a stream (called after FIN/RESET & application consumption).
     pub fn teardownStream(self: *Connection, stream_id: u64) void {
         if (self.streams_rx.getPtr(stream_id)) |sr| {
             sr.deinit(self.allocator);
@@ -1130,12 +1251,15 @@ pub const Connection = struct {
     }
 
     /// When ACK arrives (any space), also allow finalizing TX key update on App ACKs
+    /// Legacy wrapper forwarding to space-aware ACK handler (kept for tests using old call).
     pub fn onAckReceived(self: *Connection, largest: u64, first_range: u64, ranges: []const frame.AckRange) void {
         // Back-compat: assume Application space
         self.onAckReceivedSpace(.Application, largest, first_range, ranges, null);
     }
 
     /// Generalized ACK handler that wires through Recovery for the given PN space.
+    /// Handle acknowledgment in a specific PN space including RTT update, loss detection,
+    /// ECN counters, key update finalization, and PMTUD probe validation.
     pub fn onAckReceivedSpace(self: *Connection, space: recovery.PacketNumberSpace, largest: u64, first_range: u64, ranges: []const frame.AckRange, ecn: ?frame.EcnCounts) void {
         // Build list of acked PNs from ACK ranges per RFC 9000 §13.2.3
         var buf: [256]u64 = undefined; // supports reasonably many acked packets per event
@@ -1207,20 +1331,24 @@ pub const Connection = struct {
     }
 
     /// Reset PTO backoff for Initial space.
+    /// Reset Initial-space PTO backoff counters after validation or handshake progress.
     pub fn resetPtoBackoffInitial(self: *Connection) void {
         self.pto_initial_count = 0;
     }
     /// Reset PTO backoff for Handshake space.
+    /// Reset Handshake-space PTO backoff counters.
     pub fn resetPtoBackoffHandshake(self: *Connection) void {
         self.pto_handshake_count = 0;
     }
     /// Reset PTO backoff for Application space (also clears recovery backoff).
+    /// Reset Application-space PTO backoff counters.
     pub fn resetPtoBackoffApp(self: *Connection) void {
         self.pto_app_count = 0;
         self.rec.pto_count = 0;
     }
 
     /// Cancel PTO timer for Initial space.
+    /// Cancel outstanding Initial PTO timer.
     pub fn cancelPtoInitial(self: *Connection, ep: anytype) void {
         if (self.pto_initial_active) {
             if (self.pto_initial_id != 0) _ = ep.cancelTimer(self.pto_initial_id);
@@ -1229,6 +1357,7 @@ pub const Connection = struct {
         self.resetPtoBackoffInitial();
     }
     /// Cancel PTO timer for Handshake space.
+    /// Cancel outstanding Handshake PTO timer.
     pub fn cancelPtoHandshake(self: *Connection, ep: anytype) void {
         if (self.pto_handshake_active) {
             if (self.pto_handshake_id != 0) _ = ep.cancelTimer(self.pto_handshake_id);
@@ -1237,6 +1366,7 @@ pub const Connection = struct {
         self.resetPtoBackoffHandshake();
     }
     /// Cancel PTO timer for Application space.
+    /// Cancel outstanding Application PTO timer.
     pub fn cancelPtoApp(self: *Connection, ep: anytype) void {
         if (self.pto_app_active) {
             if (self.pto_app_id != 0) _ = ep.cancelTimer(self.pto_app_id);
@@ -1246,6 +1376,7 @@ pub const Connection = struct {
     }
 
     /// Compute PTO for Application space and arm timer if not active.
+    /// Recompute earliest PTO across spaces and (re)arm timer if needed.
     pub fn computeAndMaybeArmPto(self: *Connection, ep: anytype) void {
         // Use Recovery to compute PTO deadline for Application space only
         const now_i = std.time.nanoTimestamp();
@@ -1267,6 +1398,7 @@ pub const Connection = struct {
     pub const PmtudState = enum { Disabled, ProbeStart, ProbeSearch };
 
     /// Begin DPLPMTUD probing from base (1200) upward. Requires app_tx_keys.
+    /// Begin DPLPMTUD search phase (send first probe) if enabled.
     pub fn pmtudStart(self: *Connection, ep: anytype) void {
         if (self.app_tx_keys == null) return;
         self.pmtud_state = .ProbeStart;
@@ -1283,6 +1415,7 @@ pub const Connection = struct {
     }
 
     /// Called by endpoint when PMTUD timer expires; sends next probe per state.
+    /// Timer handler for DPLPMTUD state machine (sends next probe / escalates size).
     pub fn pmtudOnTimer(self: *Connection, ep: anytype) void {
         self.pmtud_timer_active = false;
         if (self.app_tx_keys == null) return;
@@ -1310,6 +1443,7 @@ pub const Connection = struct {
     }
 
     /// Notify state machine when ACK progress happens in App space.
+    /// Advance DPLPMTUD on ACK progress (raise path_mtu when probe validated).
     pub fn pmtudOnAckProgress(self: *Connection, ep: anytype) void {
         // If a pending probe was ACKed, onAckReceivedSpace already raised path_mtu.
         // Here we can shorten the next timer to continue search more quickly in tests.
@@ -1319,6 +1453,7 @@ pub const Connection = struct {
     }
 
     /// Compute PTO for Initial space and arm timer if not active.
+    /// Recompute PTO for Initial space only and arm timer.
     pub fn computeAndMaybeArmPtoInitial(self: *Connection, ep: anytype) void {
         const now_i = std.time.nanoTimestamp();
         const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
@@ -1334,6 +1469,7 @@ pub const Connection = struct {
         }
     }
     /// Compute PTO for Handshake space and arm timer if not active.
+    /// Recompute PTO for Handshake space only and arm timer.
     pub fn computeAndMaybeArmPtoHandshake(self: *Connection, ep: anytype) void {
         const now_i = std.time.nanoTimestamp();
         const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
@@ -1350,6 +1486,7 @@ pub const Connection = struct {
     }
 
     /// Send a minimal PTO probe for the Initial space (PING frame).
+    /// Emit an Initial-space PTO probe (PING + optional padding) when timer fires.
     pub fn sendPtoProbeInitial(self: *Connection) void {
         if (self.initial_keys_dropped) return;
         // Derive server initial TX keys on demand
@@ -1387,6 +1524,7 @@ pub const Connection = struct {
         }
     }
     /// Send a minimal PTO probe for the Handshake space (PING frame).
+    /// Emit a Handshake-space PTO probe.
     pub fn sendPtoProbeHandshake(self: *Connection) void {
         const tx = self.hs_tx_keys orelse return;
         var frames = std.ArrayList(u8).init(self.allocator.*);
@@ -1412,6 +1550,7 @@ pub const Connection = struct {
         }
     }
     /// Send a minimal PTO probe for the Application space (PING frame).
+    /// Emit an Application-space PTO probe.
     pub fn sendPtoProbeApp(self: *Connection) void {
         const tx = self.app_tx_keys orelse return;
         var frames = std.ArrayList(u8).init(self.allocator.*);
@@ -1435,6 +1574,7 @@ pub const Connection = struct {
     }
 
     /// Close the connection with an application error code using a 1-RTT CONNECTION_CLOSE.
+    /// Build and send CONNECTION_CLOSE (application or transport) with reason string.
     pub fn sendConnectionClose(self: *Connection, app_error_code: u64, reason: []const u8) !void {
         const tx = self.app_tx_keys orelse return error.KeysNotReady;
         var frames = std.ArrayList(u8).init(self.allocator.*);
@@ -1561,6 +1701,7 @@ pub const Connection = struct {
     }
 
     /// Record a short-header 1-RTT packet as sent and maybe trigger key update.
+    /// Bookkeeping when a short-header packet (1-RTT) is sent: CC accounting & key update thresholds.
     pub fn onShortHeaderPacketSent(self: *Connection, bytes_sent: usize, ack_eliciting: bool) void {
         // Track recovery for Application space
         const now_i = std.time.nanoTimestamp();
@@ -1591,6 +1732,7 @@ pub const Connection = struct {
 
     /// Build and send a DPLPMTUD probe at the requested UDP payload size using
     /// an ack-eliciting PING followed by PADDING to reach target. Returns bytes sent.
+    /// Emit a sized PING+PADDING probe for DPLPMTUD (not congestion controlled beyond size bounds).
     pub fn sendPmtudProbe(self: *Connection, target_udp_payload: u16) !usize {
         const tx = self.app_tx_keys orelse return error.KeysNotReady;
         // Minimum QUIC/UDP payload size is 1200 (RFC 9000 §14.1)
@@ -1637,6 +1779,7 @@ pub const Connection = struct {
 
     /// Handle an ICMP/ICMPv6 Packet-Too-Big (PTB) signal by clamping path_mtu.
     /// Reported MTU is validated to never drop below 1200.
+    /// Handle validated ICMP PTB by clamping path_mtu (never below 1200) and canceling search.
     pub fn onIcmpPacketTooBig(self: *Connection, reported_mtu: u16) void {
         const clamp: u16 = if (reported_mtu < 1200) 1200 else reported_mtu;
         if (clamp < self.path_mtu) self.path_mtu = clamp;
@@ -1648,6 +1791,7 @@ pub const Connection = struct {
     }
 
     /// Called by endpoint when an incoming packet fails AEAD authentication; enforces integrity limit.
+    /// Increment integrity failure counter and close if AEAD integrity limit exceeded.
     pub fn onAeadAuthFailure(self: *Connection) void {
         self.aead_rx_invalid_count +%= 1;
         if (self.aead_rx_invalid_count >= self.aead_integrity_limit) {
@@ -1657,6 +1801,7 @@ pub const Connection = struct {
     }
 
     /// Record a packet as sent in the given PN space for Recovery bookkeeping.
+    /// Notify recovery of sent packet (per-space) for loss tracking & congestion control.
     pub fn onPacketSent(self: *Connection, space: recovery.PacketNumberSpace, pn: u64, bytes: usize, ack_eliciting: bool) void {
         // Record via Recovery (authoritative)
         const now_i = std.time.nanoTimestamp();
@@ -1678,4 +1823,247 @@ pub const Connection = struct {
         self.streams_rx.put(id, sr) catch {};
         return self.streams_rx.getPtr(id).?;
     }
+
+    /// Decode and apply peer-provided QUIC transport parameters (encoded TP extension payload).
+    /// Best-effort: on any error, defaults remain. Safe to call multiple times (idempotent after first success).
+    /// Decode and apply peer transport parameters (limits, ack_delay_exponent, max_ack_delay, active_connection_id_limit).
+    pub fn applyPeerTransportParameters(self: *Connection, encoded: []const u8) !void {
+        if (self.transport_params_applied) return; // already applied
+        var arena = std.heap.ArenaAllocator.init(self.allocator.*);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+        const tp_dec = tparams.TransportParams.decode(alloc, encoded) catch return error.MalformedTransportParams;
+        // Flow control: peer's advertised maxima govern what we may send.
+        if (tp_dec.initial_max_data) |v| self.peer_max_data = v;
+        // Choose a bidi stream data limit from whichever field is present (take the larger if both).
+        var bidi_limit: u64 = self.peer_max_stream_data;
+        if (tp_dec.initial_max_stream_data_bidi_local) |v| {
+            if (v > bidi_limit) bidi_limit = v;
+        }
+        if (tp_dec.initial_max_stream_data_bidi_remote) |v| {
+            if (v > bidi_limit) bidi_limit = v;
+        }
+        if (tp_dec.initial_max_stream_data_uni) |v| {
+            // For simplicity in this slice, treat uni limit similarly (even though stream id 0 is bidi).
+            if (v > bidi_limit) bidi_limit = v;
+        }
+        if (bidi_limit != self.peer_max_stream_data) self.peer_max_stream_data = bidi_limit;
+        if (tp_dec.initial_max_streams_bidi) |v| self.peer_max_streams_bidi = v;
+        if (tp_dec.initial_max_streams_uni) |v| self.peer_max_streams_uni = v;
+        if (tp_dec.ack_delay_exponent) |v| {
+            if (v <= 20) self.ack_delay_exponent = @intCast(v); // cap defensively
+        }
+        if (tp_dec.max_ack_delay) |v| {
+            // max_ack_delay is in milliseconds (RFC 9000); cap to 4000ms for safety.
+            const capped: u64 = if (v > 4000) 4000 else v;
+            self.max_ack_delay_ms = @intCast(capped);
+            // Feed into recovery RTT estimator (nanoseconds)
+            self.rec.rtt.max_ack_delay_ns = capped * std.time.ns_per_ms;
+        }
+        if (tp_dec.max_udp_payload_size) |v| {
+            // Enforce minimum 1200 and clamp path_mtu & cc.mds
+            if (v >= 1200 and v <= 65527) {
+                const lim: u16 = @intCast(v);
+                if (lim < self.path_mtu) self.path_mtu = lim;
+                if (lim < self.rec.cc.mds) self.rec.cc.mds = lim;
+                self.peer_max_udp_payload_size = lim;
+            }
+        }
+        if (tp_dec.active_connection_id_limit) |v| {
+            if (v >= 2) self.active_connection_id_limit = v;
+        }
+        // Mark applied (even if partial) to avoid reprocessing.
+        self.transport_params_applied = true;
+    }
+
+    /// Determine whether a NEW_CONNECTION_ID frame may be issued without exceeding peer limit.
+    /// Return true if a new CID can be issued without first retiring an existing one.
+    pub fn canIssueNewConnectionId(self: *const Connection) bool {
+        return self.issued_cids < self.active_connection_id_limit;
+    }
+
+    /// Register issuance of a new connection ID; returns error when limit reached.
+    /// Bookkeeping after issuing a new CID: increments issued counter and enforces limit.
+    pub fn onIssuedNewConnectionId(self: *Connection) !void {
+        if (!self.canIssueNewConnectionId()) return error.ActiveConnectionIdLimitReached;
+        self.issued_cids += 1;
+    }
+
+    /// Issue a new locally-generated Connection ID (placeholder implementation).
+    /// In a full implementation this would also schedule a NEW_CONNECTION_ID frame for transmission.
+    /// Returns the sequence number of the newly issued CID.
+    /// Issue new local CID (no rotation); marks pending for advertisement and returns sequence.
+    pub fn issueNewConnectionId(self: *Connection, rand: *std.rand.DefaultPrng) !u64 {
+        try self.onIssuedNewConnectionId();
+        // Allocate new CID slot and mark pending for advertisement.
+        const alloc = try self.acquireLocalCid(rand);
+        self.markPendingNewCid(alloc.idx);
+        return alloc.sequence;
+    }
+
+    /// Flush any pending NEW_CONNECTION_ID frames in a standalone short-header packet.
+    /// Returns number of frames flushed. No-op if no 1-RTT keys or amplification limit reached.
+    /// Force emission of all pending NEW_CONNECTION_ID frames immediately (test helper / control packet).
+    pub fn flushPendingNewConnectionIds(self: *Connection) !usize {
+        if (self.app_tx_keys == null) return 0;
+        if (!self.canSendUnderAmplification()) return 0;
+        if (self.pending_new_cid.isEmpty()) return 0;
+        var fb = std.ArrayList(u8).init(self.allocator.*);
+        defer fb.deinit();
+        const w = fb.writer();
+        const wrote = try self.writePendingNewConnectionIds(w, 4);
+        if (wrote == 0) return 0;
+        self.sendControlFrames(fb.items);
+        return wrote;
+    }
+
+    /// Mark a local CID slot as pending advertisement.
+    /// Mark a local CID slot index pending for NEW_CONNECTION_ID advertisement.
+    pub fn markPendingNewCid(self: *Connection, idx: u8) void {
+        if (idx < self.local_cids.len) self.pending_new_cid.set(idx);
+    }
+
+    /// Write pending NEW_CONNECTION_ID frames to writer (up to max_frames). Returns frames written.
+    /// Write up to max_frames NEW_CONNECTION_ID frames for currently pending local CIDs; returns frames written.
+    pub fn writePendingNewConnectionIds(self: *Connection, w: anytype, max_frames: usize) !usize {
+        if (max_frames == 0) return 0;
+        var written: usize = 0;
+        const retire_prior_to: u64 = self.retired_prior_to; // monotonic threshold updated by rotation logic
+        var i: usize = 0;
+        while (i < self.local_cids.len and written < max_frames) : (i += 1) {
+            if (!self.pending_new_cid.isSet(@intCast(i))) continue;
+            const lc = self.local_cids[i];
+            if (!lc.in_use or lc.sequence == 0) { // never advertise initial again
+                self.pending_new_cid.unset(@intCast(i));
+                continue;
+            }
+            const fr = frame.Frame{ .new_connection_id = .{
+                .sequence = lc.sequence,
+                .retire_prior_to = retire_prior_to,
+                .connection_id = lc.cid.bytes[0..lc.cid.len],
+                .stateless_reset_token = lc.reset_token,
+            } };
+            _ = try fr.write(w);
+            self.pending_new_cid.unset(@intCast(i));
+            written += 1;
+        }
+        return written;
+    }
+
+    /// Handle RETIRE_CONNECTION_ID received from peer; frees local CID with given sequence.
+    /// Handle RETIRE_CONNECTION_ID from peer; updates inventory and retired_prior_to if contiguous prefix retired.
+    pub fn onRetireConnectionId(self: *Connection, sequence: u64) void {
+        var i: usize = 0;
+        while (i < self.local_cids.len) : (i += 1) {
+            if (self.local_cids[i].in_use and self.local_cids[i].sequence == sequence) {
+                self.local_cids[i].in_use = false;
+                self.pending_new_cid.unset(@intCast(i));
+                // Decrement active issued count (sequence 0 initial SCID still counts until retired by policy).
+                if (self.issued_cids > 0 and sequence != 0) {
+                    self.issued_cids -= 1;
+                }
+                // Advance retired_prior_to if this retirement allows earlier sequences to be fully retired.
+                if (sequence + 1 > self.retired_prior_to) {
+                    // Ensure all sequences < (sequence + 1) (except 0) are not in use before advancing.
+                    var can_advance = true;
+                    var j: usize = 0;
+                    while (j < self.local_cids.len) : (j += 1) {
+                        const lcj = self.local_cids[j];
+                        if (lcj.in_use and lcj.sequence > 0 and lcj.sequence < sequence + 1) {
+                            can_advance = false;
+                            break;
+                        }
+                    }
+                    if (can_advance) self.retired_prior_to = sequence + 1;
+                }
+                break;
+            }
+        }
+    }
+
+    /// Acquire (or reuse) a local CID slot and populate with new random CID + derived stateless reset token.
+    /// Returns index into local_cids array and sequence number. Does NOT mark as pending for emission (caller does).
+    /// Acquire a free local CID slot, populate with random CID & derived token, return slot index and sequence.
+    pub fn acquireLocalCid(self: *Connection, rand: *std.rand.DefaultPrng) !struct { idx: u8, sequence: u64 } {
+        if (self.active_local_cids >= self.local_cids.len and !self.pending_new_cid.isEmpty()) {
+            return error.ConnectionIdInventoryFull;
+        }
+        var i: usize = 0;
+        while (i < self.local_cids.len) : (i += 1) {
+            if (!self.local_cids[i].in_use) break;
+        }
+        if (i == self.local_cids.len) return error.ConnectionIdInventoryFull;
+        const seq: u64 = self.next_cid_sequence;
+        self.next_cid_sequence += 1;
+        var cid_bytes: [8]u8 = undefined;
+        rand.random().bytes(&cid_bytes);
+        var lc = &self.local_cids[i];
+        lc.* = .{ .in_use = true, .sequence = seq, .cid = .{ .len = cid_bytes.len, .bytes = undefined }, .reset_token = undefined };
+        @memcpy(lc.cid.bytes[0..cid_bytes.len], &cid_bytes);
+        lc.reset_token = deriveStatelessResetToken(&self.stateless_reset_base, seq, cid_bytes[0..]);
+        if (i + 1 > self.active_local_cids) self.active_local_cids = @intCast(i + 1);
+        return .{ .idx = @intCast(i), .sequence = seq };
+    }
+
+    /// Issue a new CID with rotation: if active limit reached, retire the oldest non-zero sequence locally
+    /// and advance retired_prior_to so peer can drop it once the new CID frame is processed.
+    /// Issue new CID performing rotation if at active limit (retires oldest non-zero sequence first).
+    pub fn issueNewConnectionIdRotating(self: *Connection, rand: *std.rand.DefaultPrng) !u64 {
+        if (self.canIssueNewConnectionId()) {
+            return try self.issueNewConnectionId(rand);
+        }
+        // Find oldest (lowest sequence > 0) still in_use to retire locally.
+        var oldest_idx: ?usize = null;
+        var oldest_seq: u64 = std.math.maxInt(u64);
+        var k: usize = 0;
+        while (k < self.local_cids.len) : (k += 1) {
+            const lc = self.local_cids[k];
+            if (!lc.in_use or lc.sequence == 0) continue;
+            if (lc.sequence < oldest_seq) {
+                oldest_seq = lc.sequence;
+                oldest_idx = k;
+            }
+        }
+        if (oldest_idx) |oi| {
+            self.local_cids[oi].in_use = false;
+            self.pending_new_cid.unset(@intCast(oi));
+            if (oldest_seq + 1 > self.retired_prior_to) self.retired_prior_to = oldest_seq + 1;
+            // Adjust issued_cids count to reflect active set change (sequence 0 not decremented here)
+            if (self.issued_cids > 0) self.issued_cids -= 1;
+        } else {
+            return error.ActiveConnectionIdLimitReached;
+        }
+        // Now we can issue a fresh CID under limit again.
+        return try self.issueNewConnectionId(rand);
+    }
 };
+
+/// Local CID entry (minimal for now). Will be expanded with expiration/retire markers.
+const LocalCid = struct {
+    in_use: bool = false,
+    sequence: u64 = 0,
+    cid: Cid = .{},
+    reset_token: [16]u8 = [_]u8{0} ** 16,
+};
+
+/// Derive stateless reset token using a simple hash placeholder.
+/// Real implementation should follow guidance (e.g., use HMAC over (base || sequence || cid)).
+fn deriveStatelessResetToken(base: *const [32]u8, sequence: u64, cid_bytes: []const u8) [16]u8 {
+    var h = std.crypto.hash.sha2.Sha256.init(.{});
+    h.update(base.*);
+    var seq_be: [8]u8 = undefined;
+    std.mem.writeInt(u64, &seq_be, sequence, .big);
+    h.update(&seq_be);
+    h.update(cid_bytes);
+    var out_full: [32]u8 = undefined;
+    h.final(&out_full);
+    var tok: [16]u8 = undefined;
+    @memcpy(&tok, out_full[0..16]);
+    return tok;
+}
+
+/// Test helper exposing reset token derivation (used only by unit tests).
+/// Exposed for unit tests to validate stateless reset token derivation.
+pub fn testDeriveStatelessResetToken(base: *const [32]u8, sequence: u64, cid: []const u8) [16]u8 {
+    return deriveStatelessResetToken(base, sequence, cid);
+}

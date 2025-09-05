@@ -4,15 +4,37 @@ Date: 2025-09-04 (updated)
 
 ## Latest slice (status bump)
 
+### Connection ID Lifecycle & Rotation
+
+Implemented full local Connection ID inventory management:
+
+- Slot inventory (fixed small array) with issuance up to negotiated `active_connection_id_limit`.
+- Pending advertisement bitset enabling piggyback of multiple NEW_CONNECTION_ID frames.
+- Runtime enforcement of limit with tests for: initial issuance, pending flush, retirement frees slot, and rotation.
+- `retired_prior_to` tracking and advertisement: advancing threshold only when all CIDs below have been retired; included in all subsequent NEW_CONNECTION_ID frames.
+- Rotation helper `issueNewConnectionIdRotating()` that retires oldest non-zero sequence when at limit, advances `retired_prior_to`, issues fresh CID, and schedules advertisement.
+- Updated writer to include current `retired_prior_to` and piggyback logic in ACK send path.
+
+Security placeholder: stateless reset token derivation currently simple (SHA-256(base||seq||cid) truncated). Will be replaced with HKDF-based derivation keyed from per-endpoint secret (Gap – see Next Slices).
+
+Outstanding for CID lifecycle:
+
+- HKDF-based stateless reset token derivation + secret rotation.
+- Rotation policy triggers (time / packet count / path validation events) beyond explicit test-driven calls.
+- Preferred address + migration interplay (issuing fresh CIDs on path validation / probe success).
+- Frame packing heuristics (avoid exceeding MTU when batching multiple NEW_CONNECTION_ID frames with ACK).
+
 ### Transport Parameters Fidelity Expansion
 
 Added encode/decode coverage for additional RFC 9000 transport parameters: `stateless_reset_token`, `max_udp_payload_size`, `ack_delay_exponent`, `max_ack_delay`, `initial_source_connection_id`, `retry_source_connection_id`, and raw `preferred_address` capture (structure parse deferred). Round‑trip test now allocates and frees owned slices (fixing prior leak); all tests green.
 
+New: runtime application of peer transport parameters (flow control maxima, ack_delay_exponent, max_ack_delay (fed into recovery), max_udp_payload_size (clamps path_mtu & cc.mds), active_connection_id_limit). ACK delay measurement integrated: endpoint records time of last ack‑eliciting packet per PN space and encodes scaled `ack_delay` in all ACK/ACK_ECN frames (Initial/Handshake/Application) with cap at negotiated max_ack_delay.
+
 Outstanding in this area:
 
 - Parse and validate `preferred_address` structure (IPv4/IPv6, CID, SR token) and apply on server advertisement / client migration path.
-- Apply negotiated values into connection runtime (ACK delay exponent usage in ACK encode path; max_ack_delay timer; enforce max_udp_payload_size; initial flow control windows derivation).
-- Integrate active_connection_id_limit handling for CID retirement issuance cadence.
+- (DONE) Apply negotiated values into connection runtime: ack_delay_exponent usage in ACK encode path; max_ack_delay fed to recovery; enforce max_udp_payload_size (clamping path_mtu + cc.mds); initial flow control maxima adoption; active_connection_id_limit stored.
+- (DONE) Enforce active_connection_id_limit helpers + unit test; NEW_CONNECTION_ID emission path implemented (limit enforcement + rotation) — moved to separate CID lifecycle slice above.
 
 ### Partial Real TLS Bootstrapping (experimental flag `real_tls`)
 
@@ -54,7 +76,7 @@ Added:
 ## Next Slices (actionable, in order)
 
 - Real TLS server path (ServerHello + EncryptedExtensions + Certificate(+Verify) + Finished) + handshake secret install: parse SH (cipher suite, key share) → derive handshake secrets; emit EE (ALPN + full TP set); emit Certificate/CertificateVerify (add RSA-PSS & ECDSA P‑384 signing) + Finished; client verifies chain & Finished → install 1-RTT keys.
-- Apply negotiated transport parameters: wire ack_delay_exponent into ACK encode; store/enforce max_ack_delay; enforce max_udp_payload_size; initialize flow control windows from peer limits; enforce active_connection_id_limit.
+- Apply negotiated transport parameters: wire ack_delay_exponent into ACK encode; store/enforce max_ack_delay; enforce max_udp_payload_size (test added); initialize flow control windows from peer limits; enforce active_connection_id_limit (test added).
 - Preferred address parsing & utilization: parse blob, validate, server advertise path, client migration trigger logic.
 - Interop runner enhancements: add zig↔quic-go handshake scenarios, capture CH/SH/EE hex dumps.
 - Crash triage: retransmit buffer free path under `real_tls` fallback (add OOM injection test).

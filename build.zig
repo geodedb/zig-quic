@@ -149,6 +149,8 @@ pub fn build(b: *std.Build) void {
     quic_conn_mod.addImport("quic_recovery", quic_recovery_mod);
     const quic_transport_params_mod = mkModule(b, "src/quic/transport_params.zig");
     quic_transport_params_mod.addImport("quic_varint", quic_varint_mod);
+    // Make transport params available to connection and endpoint modules
+    quic_conn_mod.addImport("quic_transport_params", quic_transport_params_mod);
 
     // Endpoint module for socket/event-loop tests
     const loop_backend_mod = mkModule(b, "src/quic/loop_backend.zig");
@@ -164,6 +166,7 @@ pub fn build(b: *std.Build) void {
     quic_endpoint_mod.addImport("quic_recovery", quic_recovery_mod);
     quic_endpoint_mod.addImport("config.zig", quic_config_mod);
     quic_endpoint_mod.addImport("loop_backend.zig", loop_backend_mod);
+    quic_endpoint_mod.addImport("quic_transport_params", quic_transport_params_mod);
 
     // Public API module (reuse everywhere)
     const quic_api_mod = mkModule(b, "src/quic/api.zig");

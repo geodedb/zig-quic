@@ -714,6 +714,22 @@ pub const Engine = struct {
         return msg.len;
     }
 
+    /// Pop CRYPTO bytes up to a specified limit, preserving remaining bytes.
+    pub fn popCryptoPartial(self: *Engine, out: []u8, max_bytes: usize) usize {
+        const available = self.outbox.items.len;
+        const n = @min(@min(out.len, max_bytes), available);
+        if (n > 0) {
+            @memcpy(out[0..n], self.outbox.items[0..n]);
+            // Remove only the consumed bytes
+            _ = self.outbox.orderedRemove(0);
+            var i: usize = 1;
+            while (i < n) : (i += 1) {
+                _ = self.outbox.orderedRemove(0);
+            }
+        }
+        return n;
+    }
+
     /// Pop all queued CRYPTO bytes into caller-provided buffer, returning bytes copied.
     pub fn popCrypto(self: *Engine, out: []u8) usize {
         const n = @min(out.len, self.outbox.items.len);
@@ -721,6 +737,16 @@ pub const Engine = struct {
         // Clear the outbox after pop
         self.outbox.clearRetainingCapacity();
         return n;
+    }
+
+    /// Get the size of the next handshake message without consuming it.
+    pub fn peekNextMessageSize(self: *Engine) usize {
+        if (self.outbox.items.len < 4) return 0;
+        // TLS handshake message format: type(1) + length(3)
+        const len = (@as(usize, self.outbox.items[1]) << 16) |
+                    (@as(usize, self.outbox.items[2]) << 8) |
+                    self.outbox.items[3];
+        return 4 + len; // Include header
     }
 
     /// Build a minimally spec-compliant TLS 1.3 ServerHello (real mode)
@@ -825,6 +851,47 @@ pub const Engine = struct {
         self.server_cert_der = try self.outbox.allocator.dupe(u8, cert_der);
         self.server_priv_key = try self.outbox.allocator.dupe(u8, priv_key);
         self.server_sig_alg = alg;
+    }
+
+    /// Force queue of remaining server handshake flight (EncryptedExtensions already queued externally).
+    pub fn queueServerHandshakeFlight(self: *Engine) void {
+        if (!self.real_mode) return;
+        if (self.role != .Server) return;
+        if (self.finished_sent) return; // already done
+        // Require that handshake_server_secret be present (after SH) and EE queued.
+        if (self.handshake_server_secret == null) return;
+        // If we have a certificate configured, send Certificate + CertificateVerify.
+        if (self.server_cert_der != null and self.server_priv_key != null and !self.allow_insecure) {
+            self.queueCertificate(self.server_cert_der.?) catch {};
+            var snap = self.transcript;
+            const th = snap.finalize();
+            const alg = self.server_sig_alg orelse .ecdsa_secp256r1_sha256;
+            const sig_bytes = sig.signCertificateVerify(alg, self.server_priv_key.?, "TLS 1.3, server CertificateVerify", &th, self.outbox.allocator) catch null;
+            if (sig_bytes) |sb| {
+                var body = std.ArrayList(u8).init(self.outbox.allocator);
+                defer body.deinit();
+                const alg_id: u8 = switch (alg) {
+                    .ecdsa_secp256r1_sha256 => 0x40,
+                    .ecdsa_secp384r1_sha384 => 0x41,
+                    .rsa_pss_sha256 => 0x50,
+                };
+                body.append(alg_id) catch {};
+                body.appendSlice(sb) catch {};
+                const msg = encodeHandshake(self.outbox.allocator, .certificate_verify, body.items) catch null;
+                if (msg) |m| {
+                    self.queueCrypto(m) catch {};
+                    self.outbox.allocator.free(m);
+                }
+                self.outbox.allocator.free(sb);
+            }
+        } else if (self.allow_insecure and !self.finished_sent) {
+            // In insecure mode, no real certificate; queue an empty Certificate message
+            self.queueCertificate(&[_]u8{}) catch {};
+        }
+        // Always queue Finished last
+        if (!self.finished_sent and self.handshake_server_secret != null) {
+            self.queueFinished(self.handshake_server_secret.?) catch {};
+        }
     }
 };
 

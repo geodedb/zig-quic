@@ -1,6 +1,6 @@
 # NEXT — Near‑term Plan (rolling)
 
-Date: 2025‑09‑03
+Date: 2025‑09‑04
 
 ## 1) ECN longitudinal — FIX Application ACK_ECN (RFC 9000 §19.3.2)
 
@@ -34,3 +34,13 @@ Date: 2025‑09‑03
 
 - Keep `zig build tools && ./zig-out/bin/doccheck` green; ensure GAP.md/GAP_ANALYSIS.md updated in PRs with code changes.
 - Run `act -W .github/workflows/ci.yml` before push to keep main green.
+
+## 6) Connection ID hardening & rotation policy
+
+- Replace placeholder stateless reset token derivation with HKDF: `HKDF-Expand-Label(endpoint_secret, "stateless_reset", seq||cid, 16)`.
+- Introduce endpoint secret rotation (e.g., on Key Update or every N minutes) invalidating future token derivations without breaking existing tokens.
+- Add rotation triggers: (a) after M application packets, (b) after path validation success, (c) periodic timer.
+- Ensure NEW_CONNECTION_ID batching respects MTU (cap frames per packet, spill to follow-on packet if needed).
+- Add test capturing multiple NEW_CONNECTION_ID frames piggybacked with ACK ensuring no overflow and correct `retired_prior_to` propagation.
+
+Acceptance: HKDF derivation test vectors added; rotation policy unit tests; all existing CID lifecycle tests remain green.
