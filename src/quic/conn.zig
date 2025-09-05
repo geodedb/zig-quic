@@ -287,7 +287,7 @@ pub const Connection = struct {
     pn_handshake: PnWindow = .{},
     pn_app: PnWindow = .{},
     // Recovery integration: RFC 9002 RTT/loss/CC/PTO
-    rec: recovery.Recovery = recovery.Recovery.init(std.heap.page_allocator),
+    rec: recovery.Recovery = undefined,
     // Legacy send-time/size tracking (kept for backward-compat; no longer used for loss)
     sent_time: std.AutoHashMap(u64, i128) = undefined,
     sent_sizes: std.AutoHashMap(u64, u16) = undefined,
@@ -583,6 +583,81 @@ pub const Connection = struct {
         // Explicitly initialize crypto retransmit buffers (field defaults not applied on reuse)
         self.crypto_retx_initial = null;
         self.crypto_retx_handshake = null;
+        // Initialize ack_ranges_buf array
+        self.ack_ranges_buf = undefined;
+        // Initialize other fields that have defaults but might not be set
+        self.app_rx_secret = null;
+        self.app_tx_secret = null;
+        self.rx_key_phase = false;
+        self.tx_key_phase = false;
+        self.rx_prev_keys = null;
+        self.rx_prev_allow = 0;
+        self.tx_prev_keys = null;
+        self.tx_update_in_progress = false;
+        self.tx_update_start_pn = 0;
+        self.tx_sent_packets_since_key = 0;
+        self.last_stream_data_blocked_limit = 0;
+        self.last_data_blocked_limit = 0;
+        self.last_sent_max_stream_data = 0;
+        self.last_sent_max_data = 0;
+        self.last_sent_max_streams_bidi = 0;
+        self.tx_sent_bytes_since_key = 0;
+        self.handshake_done_sent = false;
+        self.server_hello_sent = false;
+        self.closed = false;
+        // Initialize connection ID management
+        self.local_cids = [_]LocalCid{.{}} ** 8;
+        self.active_local_cids = 1;
+        self.next_cid_sequence = 1;
+        self.pending_new_cid = std.bit_set.IntegerBitSet(8).initEmpty();
+        self.stateless_reset_base = [_]u8{0} ** 32;
+        self.retired_prior_to = 0;
+        self.issued_cids = 1;
+        // Initialize flow control defaults
+        self.local_max_stream_data = 64 * 1024;
+        self.peer_max_stream_data = 64 * 1024;
+        self.local_max_data = 256 * 1024;
+        self.peer_max_data = 256 * 1024;
+        self.peer_max_streams_bidi = 16;
+        self.peer_max_streams_uni = 16;
+        self.opened_bidi = 0;
+        self.local_max_streams_bidi = 16;
+        self.local_max_streams_uni = 0;
+        self.opened_uni = 0;
+        self.conn_send_off = 0;
+        self.conn_recv_total = 0;
+        self.address_validated = false;
+        self.bytes_rx_unvalidated = 0;
+        self.bytes_tx_unvalidated = 0;
+        // Initialize crypto offsets
+        self.crypto_tx_off_initial = 0;
+        self.crypto_tx_off_handshake = 0;
+        self.crypto_rx_off_initial = 0;
+        self.crypto_rx_off_handshake = 0;
+        self.crypto_retx_initial_off = 0;
+        self.crypto_retx_handshake_off = 0;
+        // Initialize PMTUD state
+        self.path_mtu = 1200;
+        self.probe_pending_pn = null;
+        self.probe_pending_size = 0;
+        self.pmtud_state = .Disabled;
+        self.pmtud_timer_active = false;
+        self.pmtud_timer_id = 0;
+        // Initialize AEAD limits
+        self.aead_tx_encrypted_count = 0;
+        self.aead_rx_invalid_count = 0;
+        self.aead_confidentiality_limit = (1 << 23);
+        self.aead_integrity_limit = (1 << 52);
+        // Initialize transport params
+        self.transport_params_applied = false;
+        self.ack_delay_exponent = 3;
+        self.max_ack_delay_ms = 25;
+        self.peer_max_udp_payload_size = 1200;
+        self.active_connection_id_limit = 2;
+        // Initialize ACK timing
+        self.last_ack_eliciting_rx_initial_ns = 0;
+        self.last_ack_eliciting_rx_handshake_ns = 0;
+        self.last_ack_eliciting_rx_app_ns = 0;
     }
 
     /// Release resources held by this Connection (payloads, maps, TLS state).

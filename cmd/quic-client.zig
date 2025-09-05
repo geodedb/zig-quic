@@ -2,7 +2,9 @@ const std = @import("std");
 const api = @import("quic_api");
 
 pub fn main() !void {
-    const alloc = std.heap.c_allocator;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    var alloc = gpa.allocator();
 
     var args = try std.process.argsWithAllocator(alloc);
     defer args.deinit();
@@ -43,7 +45,7 @@ pub fn main() !void {
         .compatible_vn = compat_vn,
         .real_tls = real_tls,
     };
-    const ep = try api.endpointInit(alloc, "0.0.0.0:0", &cfg);
+    const ep = try api.endpointInit(&alloc, "0.0.0.0:0", &cfg);
     defer api.endpointDeinit(ep);
 
     const conn = try api.connect(ep, connect, sni);

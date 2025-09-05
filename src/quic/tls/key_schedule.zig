@@ -73,17 +73,35 @@ fn hmac_sha256(key: []const u8, data: []const u8) [H.digest_length]u8 {
         ipad[i] = b ^ 0x36;
         opad[i] = b ^ 0x5c;
     }
-    var buf_inner = std.ArrayList(u8).init(std.heap.page_allocator);
-    defer buf_inner.deinit();
-    buf_inner.appendSlice(&ipad) catch unreachable;
-    buf_inner.appendSlice(data) catch unreachable;
-    const inner = sha256(buf_inner.items);
+    
+    // Use stack buffers instead of heap allocation
+    // Maximum size needed: block_len + max reasonable data size
+    // For QUIC/TLS usage, data is typically small (< 256 bytes)
+    var inner_buf: [block_len + 256]u8 = undefined;
+    const inner_len = block_len + data.len;
+    if (inner_len > inner_buf.len) {
+        // Fallback for unexpectedly large data
+        var large_buf = std.ArrayList(u8).init(std.heap.page_allocator);
+        defer large_buf.deinit();
+        large_buf.appendSlice(&ipad) catch unreachable;
+        large_buf.appendSlice(data) catch unreachable;
+        const inner = sha256(large_buf.items);
+        
+        var outer_buf = std.ArrayList(u8).init(std.heap.page_allocator);
+        defer outer_buf.deinit();
+        outer_buf.appendSlice(&opad) catch unreachable;
+        outer_buf.appendSlice(&inner) catch unreachable;
+        return sha256(outer_buf.items);
+    }
+    
+    @memcpy(inner_buf[0..block_len], &ipad);
+    @memcpy(inner_buf[block_len..inner_len], data);
+    const inner = sha256(inner_buf[0..inner_len]);
 
-    var buf_outer = std.ArrayList(u8).init(std.heap.page_allocator);
-    defer buf_outer.deinit();
-    buf_outer.appendSlice(&opad) catch unreachable;
-    buf_outer.appendSlice(&inner) catch unreachable;
-    return sha256(buf_outer.items);
+    var outer_buf: [block_len + H.digest_length]u8 = undefined;
+    @memcpy(outer_buf[0..block_len], &opad);
+    @memcpy(outer_buf[block_len..block_len + H.digest_length], &inner);
+    return sha256(outer_buf[0..block_len + H.digest_length]);
 }
 
 /// Public HMAC helper for TLS Finished and other KATs.
@@ -105,12 +123,37 @@ fn hkdfExpand(out: []u8, prk: [H.digest_length]u8, info: []const u8) void {
     var i: usize = 1;
     while (i <= n) : (i += 1) {
         // T(i) = HMAC(PRK, T(i-1) | info | i)
-        var input = std.ArrayList(u8).init(std.heap.page_allocator);
-        defer input.deinit();
-        if (i > 1) input.appendSlice(&t_prev) catch unreachable;
-        if (info.len != 0) input.appendSlice(info) catch unreachable;
-        input.append(@as(u8, @intCast(i))) catch unreachable;
-        const t = hmac_sha256(&prk, input.items);
+        // Use stack buffer for typical HKDF expand operations
+        // Max size: H.digest_length + info.len + 1
+        var input_buf: [H.digest_length + 256 + 1]u8 = undefined;
+        var input_len: usize = 0;
+        
+        if (i > 1) {
+            @memcpy(input_buf[input_len..input_len + hash_len], &t_prev);
+            input_len += hash_len;
+        }
+        if (info.len != 0) {
+            if (input_len + info.len > input_buf.len - 1) {
+                // Fallback for unexpectedly large info
+                var large_input = std.ArrayList(u8).init(std.heap.page_allocator);
+                defer large_input.deinit();
+                if (i > 1) large_input.appendSlice(&t_prev) catch unreachable;
+                if (info.len != 0) large_input.appendSlice(info) catch unreachable;
+                large_input.append(@as(u8, @intCast(i))) catch unreachable;
+                const t = hmac_sha256(&prk, large_input.items);
+                t_prev = t;
+                const to_copy = @min(hash_len, out.len - pos);
+                @memcpy(out[pos .. pos + to_copy], t_prev[0..to_copy]);
+                pos += to_copy;
+                continue;
+            }
+            @memcpy(input_buf[input_len..input_len + info.len], info);
+            input_len += info.len;
+        }
+        input_buf[input_len] = @as(u8, @intCast(i));
+        input_len += 1;
+        
+        const t = hmac_sha256(&prk, input_buf[0..input_len]);
         t_prev = t;
         const to_copy = @min(hash_len, out.len - pos);
         @memcpy(out[pos .. pos + to_copy], t_prev[0..to_copy]);
