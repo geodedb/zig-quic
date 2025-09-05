@@ -181,6 +181,32 @@ pub fn destroy(ep: *QuicEndpoint, conn: *QuicConnection) void {
     while (i < n) : (i += 1) {
         _ = ep.conns.remove(to_remove[i]);
     }
+    // Remove any timers referencing this connection (paced payloads freed if present)
+    var ti: usize = 0;
+    while (ti < ep.timers.items.len) {
+        const t = ep.timers.items[ti];
+        if (t.conn) |tc| {
+            if (tc == c) {
+                if (t.paced) {
+                    if (t.payload) |p| ep.allocator.free(p);
+                }
+                _ = ep.timers.orderedRemove(ti);
+                continue;
+            }
+        }
+        ti += 1;
+    }
+    // Mark closed and remove from retired list if present (to avoid double free in ep.deinit)
+    c.closed = true;
+    if (ep.retired.items.len > 0) {
+        var r: usize = 0;
+        while (r < ep.retired.items.len) : (r += 1) {
+            if (ep.retired.items[r] == c) {
+                _ = ep.retired.orderedRemove(r);
+                break;
+            }
+        }
+    }
     std.debug.print("destroy(): removed {d} map keys for connection\n", .{n});
     c.deinit();
     ep.allocator.destroy(c);

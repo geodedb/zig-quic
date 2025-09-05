@@ -71,6 +71,11 @@ pub const Endpoint = struct {
     captures: std.ArrayList(OutCaptured),
     // TEST-ONLY: runtime flag to enable outbound capture in tests
     test_capture_enabled: bool = false,
+    // Retired (closed) connections removed from maps & timers but not yet destroyed.
+    // They stay here until explicit api.destroy() or endpoint.deinit(), allowing external
+    // code (e.g., server CLI loop) holding an opaque pointer to observe closed state
+    // without risking use-after-free.
+    retired: std.ArrayList(*conn_mod.Connection),
 
     /// Initialize a UDP endpoint bound to bind_addr (e.g., "127.0.0.1:0").
     pub fn init(alloc: *std.mem.Allocator, bind_addr: []const u8, cfgp: *const cfg.QuicConfig) !Endpoint {
@@ -111,6 +116,7 @@ pub const Endpoint = struct {
             .accepted = std.ArrayList(*conn_mod.Connection).init(alloc.*),
             .captures = std.ArrayList(OutCaptured).init(alloc.*),
             .test_capture_enabled = false,
+            .retired = std.ArrayList(*conn_mod.Connection).init(alloc.*),
         };
     }
 
@@ -183,6 +189,16 @@ pub const Endpoint = struct {
                 self.allocator.destroy(c);
             }
         }
+        // Also destroy any retired (already removed from map) connections not yet destroyed.
+        var ri: usize = 0;
+        while (ri < self.retired.items.len) : (ri += 1) {
+            const c = self.retired.items[ri];
+            if (!seen.contains(c)) { // skip if already destroyed above
+                c.deinit();
+                self.allocator.destroy(c);
+            }
+        }
+        self.retired.deinit();
         self.conns.deinit();
         self.accepted.deinit();
         self.timers.deinit();
@@ -1944,12 +1960,21 @@ pub const Endpoint = struct {
             }
             ti += 1;
         }
-        // Finally deinit + destroy each unique closed connection.
+        // Move closed connections to retired list (avoid immediate destruction to
+        // prevent use-after-free in external code still holding an opaque pointer).
         var cit = closed_set.iterator();
         while (cit.next()) |ce| {
             const cptr = ce.key_ptr.*;
-            cptr.deinit();
-            self.allocator.destroy(cptr);
+            // Ensure not already retired (linear scan; small list expected).
+            var already: bool = false;
+            var rj: usize = 0;
+            while (rj < self.retired.items.len) : (rj += 1) {
+                if (self.retired.items[rj] == cptr) {
+                    already = true;
+                    break;
+                }
+            }
+            if (!already) _ = self.retired.append(cptr) catch {};
         }
     }
 };
