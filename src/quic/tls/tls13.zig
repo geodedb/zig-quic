@@ -265,7 +265,12 @@ pub const Engine = struct {
                 const sh = std.crypto.dh.X25519.scalarmult(priv, peer) catch return;
                 self.ecdhe_buf = sh;
                 self.ecdhe_secret = self.ecdhe_buf[0..];
+                std.debug.print("{s}: Computed ECDHE secret\n", .{if (self.role == .Server) "Server" else "Client"});
+            } else {
+                std.debug.print("{s}: No my_priv for ECDHE\n", .{if (self.role == .Server) "Server" else "Client"});
             }
+        } else {
+            std.debug.print("{s}: No peer_pub for ECDHE\n", .{if (self.role == .Server) "Server" else "Client"});
         }
     }
 
@@ -303,13 +308,18 @@ pub const Engine = struct {
                     }
                 }
                 if (extracted == null) {
-                    if (parseMinimalHelloPub(p.typ, p.body)) |pk_min| extracted = pk_min;
+                    if (parseMinimalHelloPub(p.typ, p.body)) |pk_min| {
+                        extracted = pk_min;
+                    } else {
+                        std.debug.print("{s}: Failed to parse minimal hello pub (typ={}, body_len={})\n", .{ if (self.role == .Server) "Server" else "Client", p.typ, p.body.len });
+                    }
                 }
                 if (extracted) |pk| {
                     self.peer_pub = pk;
+                    // Compute shared secret after receiving peer's public key
                     switch (p.typ) {
-                        .client_hello => if (self.role == .Server) self.tryComputeShared(),
                         .server_hello => if (self.role == .Client) self.tryComputeShared(),
+                        // For server, shared secret is computed after generating own keypair in queueMinimalServerHelloAuto
                         else => {},
                     }
                 }
@@ -693,6 +703,7 @@ pub const Engine = struct {
     /// Queue a minimalistic ClientHello with an auto-generated X25519 key share.
     pub fn queueMinimalClientHelloAuto(self: *Engine) !usize {
         self.ensureKeypair();
+        // For client, we'll compute shared secret when we receive ServerHello
         const pubkey = self.my_pub orelse return error.Internal;
         const msg = try encodeMinimalClientHello(self.outbox.allocator, pubkey);
         defer self.outbox.allocator.free(msg);
@@ -707,6 +718,8 @@ pub const Engine = struct {
             return 0;
         }
         self.ensureKeypair();
+        // Now that we have our keypair, try to compute shared secret if we have peer's public key
+        if (self.role == .Server) self.tryComputeShared();
         const pubkey = self.my_pub orelse return error.Internal;
         const msg = try encodeMinimalServerHello(self.outbox.allocator, pubkey);
         defer self.outbox.allocator.free(msg);

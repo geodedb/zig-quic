@@ -629,7 +629,7 @@ pub const Connection = struct {
         self.opened_uni = 0;
         self.conn_send_off = 0;
         self.conn_recv_total = 0;
-        self.address_validated = false;
+        self.address_validated = (role == .Client); // Clients don't need address validation
         self.bytes_rx_unvalidated = 0;
         self.bytes_tx_unvalidated = 0;
         // Initialize crypto offsets
@@ -857,9 +857,12 @@ pub const Connection = struct {
         // If we can compute handshake secrets now, install Handshake keys once
         if (self.hs_client == null or self.hs_server == null) {
             if (self.tls.computeHandshakeSecrets()) |hs_secrets| {
+                std.debug.print("{s}: Derived handshake secrets\n", .{if (self.role == .Server) "Server" else "Client"});
                 self.hs_client = hs_secrets.client;
                 self.hs_server = hs_secrets.server;
                 self.deriveHandshakeKeys(self.version_v2);
+            } else {
+                std.debug.print("{s}: Cannot derive handshake secrets yet (ch_sent={}, sh_seen={}, ecdhe={})\n", .{ if (self.role == .Server) "Server" else "Client", self.tls.ch_sent, self.tls.sh_seen, self.tls.ecdhe_secret != null });
             }
         }
         // If we can compute application secrets and Finished verified, install 1-RTT keys once

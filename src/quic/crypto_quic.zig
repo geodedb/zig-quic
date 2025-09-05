@@ -505,7 +505,17 @@ pub fn unprotectInitialAutoSample(
     }
 
     // Remove header protection in-place (mutates header_first & pn_bytes) using derived sample
+    if (builtin.is_test or true) {
+        std.debug.print("Before headerUnprotect: pn_bytes=", .{});
+        for (pn_bytes) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\n", .{});
+    }
     try headerUnprotect(suite, hp_key, &sample16, header_first, pn_bytes);
+    if (builtin.is_test or true) {
+        std.debug.print("After headerUnprotect: pn_bytes=", .{});
+        for (pn_bytes) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\n", .{});
+    }
 
     // Build AAD after unmasking: first byte + header_prefix + pn_bytes
     var aad_stack: [1024]u8 = undefined;
@@ -521,6 +531,10 @@ pub fn unprotectInitialAutoSample(
     var i: usize = 0;
     while (i < pn_len) : (i += 1) pn_trunc = (pn_trunc << 8) | pn_bytes[i];
     const full_pn = expandPacketNumber(pn_trunc, @intCast(pn_len), expected_pn);
+    
+    if (builtin.is_test or true) { // Always debug for now
+        std.debug.print("expandPacketNumber: truncated={} pn_len={} expected={} -> full={}\n", .{ pn_trunc, pn_len, expected_pn, full_pn });
+    }
 
     return aeadDecrypt(suite, aead_key, aead_iv, full_pn, aad, ciphertext_and_tag, out_plaintext) catch |err| {
         std.debug.print("AEAD decrypt failed (auto-sample): {} (pn={})\n", .{ err, full_pn });

@@ -1,9 +1,50 @@
-listening on 127.0.0.1:43217
+listening on 127.0.0.1:59229
 Processing Initial packet from peer
+Looking up connection with dcid=0C207179C4B09F1B (found=false)
+Server: Deriving Initial keys with dcid=0C207179C4B09F1B
+Server: Masked PN bytes: 23 AF 3D 63 
+Server: Trying to decrypt Initial with pn_initial.max=0
+Before headerUnprotect: pn_bytes=23 
+After headerUnprotect: pn_bytes=00 
+expandPacketNumber: truncated=0 pn_len=1 expected=0 -> full=0
 AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
+Before headerUnprotect: pn_bytes=23 AF 
+After headerUnprotect: pn_bytes=00 01 
+expandPacketNumber: truncated=1 pn_len=2 expected=0 -> full=1
+After unmasking with pn_len=2: 00 01 
 Successfully decrypted Initial packet (trial pn_len=2) plaintext len: 1150
 Expanded PN: 1 from truncated: 1
 Server: Received CRYPTO frame with 39 bytes
 Server: Received ClientHello, queueing ServerHello
+Server: Computed ECDHE secret
+Server: Derived handshake secrets
 Sending ServerHello in Initial packet: 39 bytes
+Server: Encoding Initial with pn=1 dcid_len=8 scid_len=8 pn_len=4
+Server: Sending Initial response with 93 bytes (has_crypto=true)
+Queueing handshake flight (EE, Cert, Finished)
+Sending Handshake packet with 37 bytes of CRYPTO
 accepted connection
+Processing Initial packet from peer
+Looking up connection with dcid=0C207179C4B09F1B (found=true)
+Found existing connection (role=conn.Role.Server)
+Server: Deriving Initial keys with dcid=0C207179C4B09F1B
+Server: Masked PN bytes: 4C 14 A5 4A 
+Server: Trying to decrypt Initial with pn_initial.max=1
+Before headerUnprotect: pn_bytes=4C 
+After headerUnprotect: pn_bytes=00 
+expandPacketNumber: truncated=0 pn_len=1 expected=1 -> full=256
+AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=256)
+Before headerUnprotect: pn_bytes=4C 14 
+After headerUnprotect: pn_bytes=00 00 
+expandPacketNumber: truncated=0 pn_len=2 expected=1 -> full=65536
+AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=65536)
+Before headerUnprotect: pn_bytes=4C 14 A5 
+After headerUnprotect: pn_bytes=00 00 00 
+expandPacketNumber: truncated=0 pn_len=3 expected=1 -> full=16777216
+AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=16777216)
+Before headerUnprotect: pn_bytes=4C 14 A5 4A 
+After headerUnprotect: pn_bytes=00 00 00 02 
+expandPacketNumber: truncated=2 pn_len=4 expected=1 -> full=4294967298
+AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=4294967298)
+Failed to decrypt Initial packet
+destroy(): removed 0 map keys for connection
