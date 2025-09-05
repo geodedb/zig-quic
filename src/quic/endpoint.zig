@@ -1236,8 +1236,7 @@ pub const Endpoint = struct {
                     // Also map our chosen SCID to this new server connection for Handshake DCID lookup.
                     const our_key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(c.our_scid.bytes[0..c.our_scid.len]) };
                     _ = self.conns.put(our_key, c) catch {};
-                    // Enqueue for accept()
-                    self.pushAccepted(c);
+                    // Defer enqueue until after successful Initial decrypt
                     break :blk c;
                 } else {
                     const c = self.allocator.create(conn_mod.Connection) catch return;
@@ -1266,8 +1265,7 @@ pub const Endpoint = struct {
                     // Also map our chosen SCID to this connection for Handshake DCID lookup.
                     const our_key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(c.our_scid.bytes[0..c.our_scid.len]) };
                     _ = self.conns.put(our_key, c) catch {};
-                    // Enqueue for accept()
-                    self.pushAccepted(c);
+                    // Defer enqueue until after successful Initial decrypt
                     break :blk c;
                 }
             };
@@ -1380,6 +1378,11 @@ pub const Endpoint = struct {
             };
             _ = ok;
             std.debug.print("Successfully decrypted Initial packet, plaintext len: {}\n", .{pt.len});
+            // Only now (after successful decryption) enqueue server connection for accept()
+            if (conn.role == .Server and !conn.accepted_enqueued) {
+                conn.accepted_enqueued = true;
+                self.pushAccepted(conn);
+            }
 
             // Expand truncated PN against Initial space expectation and track
             var pn_val_be: u64 = 0;

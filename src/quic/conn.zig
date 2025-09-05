@@ -267,6 +267,8 @@ pub const Connection = struct {
     server_hello_sent: bool = false,
     // Connection close state
     closed: bool = false,
+    // Server-side: whether this connection has been enqueued for accept()
+    accepted_enqueued: bool = false,
 
     // --- Missing transport/runtime state used by endpoint/tests ---
     // Packet number spaces: next PN to send in each space
@@ -605,6 +607,7 @@ pub const Connection = struct {
         self.handshake_done_sent = false;
         self.server_hello_sent = false;
         self.closed = false;
+        self.accepted_enqueued = false;
         // Initialize connection ID management
         self.local_cids = [_]LocalCid{.{}} ** 8;
         self.active_local_cids = 1;
