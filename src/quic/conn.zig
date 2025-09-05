@@ -594,6 +594,8 @@ pub const Connection = struct {
         self.sent_time.deinit();
         self.sent_sizes.deinit();
         // Free inbox payloads
+        if (self.crypto_retx_initial) |b| self.allocator.free(b);
+        if (self.crypto_retx_handshake) |b| self.allocator.free(b);
         while (self.dgram_inbox.items.len > 0) {
             const p = self.dgram_inbox.orderedRemove(0);
             self.allocator.free(p);
@@ -606,9 +608,9 @@ pub const Connection = struct {
             s.deinit(self.allocator);
         }
         self.streams_rx.deinit();
-        // Retry token buffer
-        self.initial_token.deinit();
-        self.reset_tokens.deinit();
+        // Free reset tokens / initial token buffers once (previous code double-deinited)
+        if (self.reset_tokens.capacity != 0) self.reset_tokens.deinit();
+        if (self.initial_token.capacity != 0) self.initial_token.deinit();
     }
 
     /// Update peer address (used for NAT rebinding / migration detection).
@@ -1594,6 +1596,15 @@ pub const Connection = struct {
         _ = try self.send(pkt);
         self.onShortHeaderPacketSent(pkt.len, true);
         self.closed = true;
+        // Drop any retransmit buffers no longer needed
+        if (self.crypto_retx_initial) |b| {
+            self.allocator.free(b);
+            self.crypto_retx_initial = null;
+        }
+        if (self.crypto_retx_handshake) |b| {
+            self.allocator.free(b);
+            self.crypto_retx_handshake = null;
+        }
     }
 
     /// Derive handshake keys for QUIC from current TLS secrets.

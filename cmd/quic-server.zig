@@ -138,12 +138,18 @@ pub fn main() !void {
         try api.poll(ep, 10);
         if (api.accept(ep) catch null) |conn| {
             std.debug.print("accepted connection\n", .{});
+            // Log handshake completion once keys become 1-RTT usable.
+            var handshake_logged = false;
             var stream_opened = false;
             var dgram_buf: [2048]u8 = undefined;
             var buf: [4096]u8 = undefined;
             var iter: usize = 0;
             while (iter < 10000) : (iter += 1) {
                 try api.poll(ep, 5);
+                if (!handshake_logged and api.isHandshakeConfirmed(conn)) {
+                    handshake_logged = true;
+                    std.debug.print("handshake confirmed\n", .{});
+                }
                 if (datagram) {
                     const dn = api.recvDatagram(conn, &dgram_buf) catch 0;
                     if (dn > 0) {
@@ -155,6 +161,7 @@ pub fn main() !void {
                     const n = api.readStream(conn, 0, buf[0..]) catch 0;
                     if (n > 0) {
                         stream_opened = true;
+                        std.debug.print("stream 0 opened (rx {d} bytes)\n", .{n});
                         _ = api.writeStream(conn, 0, buf[0..n]) catch 0;
                     }
                 } else {

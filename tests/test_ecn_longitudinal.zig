@@ -133,6 +133,7 @@ test "ECN longitudinal: multi-ACK across spaces with reordering and one loss" {
             &sample16_2,
             ct2,
             pt2,
+            0,
         ) catch continue;
         const prh = frame.decodeOne(pt2) catch continue;
         if (!std.mem.eql(u8, @tagName(prh.f), "ack")) continue;
@@ -151,12 +152,12 @@ test "ECN longitudinal: multi-ACK across spaces with reordering and one loss" {
     // Install 1-RTT keys on the client connection
     c.app_tx_keys = .{ .key = z16, .iv = z12, .hp = z16 };
     c.app_rx_keys = c.app_tx_keys;
-    
+
     // Simulate receiving packets with ECN marks by directly calling onEcnMark
     c.onEcnMark(.Application, 0x01); // ECT(1)
     c.onEcnMark(.Application, 0x03); // CE
     c.onEcnMark(.Application, 0x00); // Not-ECT (should be ignored)
-    
+
     // Check that ECN counts are correct
     const ecn_counts = c.getAckEcn(.Application);
     try std.testing.expect(ecn_counts != null);

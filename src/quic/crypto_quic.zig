@@ -12,22 +12,22 @@ fn expandPacketNumber(truncated: u64, pn_len: u3, expected: u64) u64 {
     const pn_win: u64 = @as(u64, 1) << pn_nbits;
     const pn_hwin: u64 = pn_win / 2;
     const pn_mask: u64 = pn_win - 1;
-    
+
     // For the first packet, if we have no expectation, just return the truncated value
     // This handles the case where the client starts with a random packet number
     if (expected == 0 and truncated < pn_win) {
         return truncated;
     }
-    
+
     var candidate: u64 = (expected & ~pn_mask) | truncated;
-    
+
     // Determine if we need to adjust the candidate
     if (candidate <= expected -% pn_hwin and candidate < (1 << 62)) {
         candidate += pn_win;
     } else if (candidate > expected +% pn_hwin and candidate >= pn_win) {
         candidate -= pn_win;
     }
-    
+
     return candidate;
 }
 
@@ -443,10 +443,10 @@ pub fn unprotectInitial(
     var pn_val_truncated: u64 = 0;
     var i: usize = 0;
     while (i < pn_bytes.len) : (i += 1) pn_val_truncated = (pn_val_truncated << 8) | pn_bytes[i];
-    
+
     // Expand the truncated packet number using the expected value
     const pn_val = expandPacketNumber(pn_val_truncated, @intCast(pn_bytes.len), expected_pn);
-    
+
     if (expected_pn == 0) {
         std.debug.print("First packet: truncated={x:0>4} ({}) -> expanded={}\n", .{ pn_val_truncated, pn_val_truncated, pn_val });
     }
@@ -463,6 +463,67 @@ pub fn unprotectInitial(
 
     return aeadDecrypt(suite, aead_key, aead_iv, pn_val, aad, ciphertext_and_tag, out_plaintext) catch |err| {
         std.debug.print("AEAD decrypt failed: {} (pn={})\n", .{ err, pn_val });
+        return err;
+    };
+}
+
+/// Variant of unprotectInitial that derives the HP sample internally from pn_bytes and ciphertext
+/// to avoid caller misuse (incorrect sample construction can lead to auth failure). For AES-128-GCM
+/// the sample is the 16 bytes starting (4 - pn_len) bytes into the ciphertext (which begins right
+/// after the truncated PN). For ChaCha20-Poly1305 the sample is PN bytes (1..4) followed by the first
+/// (16 - pn_len) bytes of ciphertext (RFC 9001 §5.4.4). The AAD construction and PN expansion logic
+/// mirror unprotectInitial.
+pub fn unprotectInitialAutoSample(
+    suite: AeadSuite,
+    aead_key: []const u8,
+    aead_iv: []const u8,
+    hp_key: []const u8,
+    header_first: *u8,
+    pn_bytes: []u8,
+    header_prefix: []const u8,
+    ciphertext_and_tag: []const u8,
+    out_plaintext: []u8,
+    expected_pn: u64,
+) !usize {
+    if (ciphertext_and_tag.len < 16) return error.AuthenticationFailed;
+    const pn_len = pn_bytes.len;
+    if (pn_len == 0 or pn_len > 4) return error.InvalidPacketNumberLength;
+
+    // Reconstruct HP sample per suite
+    var sample16: [16]u8 = undefined;
+    switch (suite) {
+        .aes_128_gcm => {
+            const offset = 4 - pn_len; // (4 - pn_len) into ciphertext
+            if (offset + 16 > ciphertext_and_tag.len) return error.AuthenticationFailed;
+            @memcpy(sample16[0..], ciphertext_and_tag[offset .. offset + 16]);
+        },
+        .chacha20_poly1305 => {
+            if ((16 - pn_len) > ciphertext_and_tag.len) return error.AuthenticationFailed;
+            @memcpy(sample16[0..pn_len], pn_bytes);
+            @memcpy(sample16[pn_len..], ciphertext_and_tag[0 .. 16 - pn_len]);
+        },
+    }
+
+    // Remove header protection in-place (mutates header_first & pn_bytes) using derived sample
+    try headerUnprotect(suite, hp_key, &sample16, header_first, pn_bytes);
+
+    // Build AAD after unmasking: first byte + header_prefix + pn_bytes
+    var aad_stack: [1024]u8 = undefined;
+    const aad_len = 1 + header_prefix.len + pn_len;
+    if (aad_len > aad_stack.len) return error.MessageTooLong;
+    aad_stack[0] = header_first.*;
+    @memcpy(aad_stack[1 .. 1 + header_prefix.len], header_prefix);
+    @memcpy(aad_stack[1 + header_prefix.len .. aad_len], pn_bytes);
+    const aad = aad_stack[0..aad_len];
+
+    // Expand truncated PN for nonce derivation
+    var pn_trunc: u64 = 0;
+    var i: usize = 0;
+    while (i < pn_len) : (i += 1) pn_trunc = (pn_trunc << 8) | pn_bytes[i];
+    const full_pn = expandPacketNumber(pn_trunc, @intCast(pn_len), expected_pn);
+
+    return aeadDecrypt(suite, aead_key, aead_iv, full_pn, aad, ciphertext_and_tag, out_plaintext) catch |err| {
+        std.debug.print("AEAD decrypt failed (auto-sample): {} (pn={})\n", .{ err, full_pn });
         return err;
     };
 }

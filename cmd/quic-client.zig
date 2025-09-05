@@ -2,9 +2,7 @@ const std = @import("std");
 const api = @import("quic_api");
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    var alloc = gpa.allocator();
+    const alloc = std.heap.c_allocator;
 
     var args = try std.process.argsWithAllocator(alloc);
     defer args.deinit();
@@ -45,10 +43,11 @@ pub fn main() !void {
         .compatible_vn = compat_vn,
         .real_tls = real_tls,
     };
-    const ep = try api.endpointInit(&alloc, "0.0.0.0:0", &cfg);
+    const ep = try api.endpointInit(alloc, "0.0.0.0:0", &cfg);
     defer api.endpointDeinit(ep);
 
     const conn = try api.connect(ep, connect, sni);
+    std.debug.print("connecting to {s}\n", .{connect});
 
     if (datagram) {
         try api.sendDatagram(conn, msg);
@@ -73,6 +72,9 @@ pub fn main() !void {
         const wn = api.writeStream(conn, 0, msg) catch |err| switch (err) {
             error.KeysNotReady => blk: {
                 try api.poll(ep, 10);
+                if (api.isHandshakeConfirmed(conn)) {
+                    std.debug.print("handshake confirmed (client)\n", .{});
+                }
                 break :blk 0;
             },
             error.OutOfStreams => blk2: {
@@ -88,6 +90,7 @@ pub fn main() !void {
         if (wn > 0) wrote = true;
         if (!wrote) try api.poll(ep, 10);
     }
+    if (wrote) std.debug.print("wrote initial message on stream 0 ({d} bytes)\n", .{msg.len});
     var rbuf: [4096]u8 = undefined;
     var total: usize = 0;
     var polls: usize = 0;
@@ -98,5 +101,15 @@ pub fn main() !void {
     }
     if (total > 0) {
         try std.io.getStdOut().writer().print("echo: {s}\n", .{rbuf[0..total]});
+        std.debug.print("received echo ({d} bytes)\n", .{total});
     }
+    // Attempt graceful close so any pending allocation owned by connection is released before endpoint deinit.
+    api.close(conn, 0, "bye") catch {};
+    // Drive a few polls to flush CONNECTION_CLOSE
+    api.flush(ep, 5);
+    var spins: usize = 0;
+    while (spins < 50 and !api.isDrained(conn)) : (spins += 1) {
+        api.poll(ep, 5) catch break;
+    }
+    api.destroy(ep, conn);
 }

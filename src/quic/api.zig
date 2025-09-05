@@ -6,6 +6,7 @@ const cfg = @import("config.zig");
 const lb = @import("loop_backend.zig");
 // Use named import to share the same module instance across build graph
 const conn_mod = @import("quic_conn");
+const endpoint_mod = @import("quic_endpoint");
 
 /// Supported QUIC wire versions exposed to users.
 pub const QuicVersion = enum { v1, v2 };
@@ -49,7 +50,6 @@ pub fn defaultLoopBackend() LoopBackend {
 /// Initialize an endpoint bound to the provided address.
 pub fn endpointInit(alloc: *std.mem.Allocator, bind_addr: []const u8, cfgp: *const QuicConfig) !*QuicEndpoint {
     const ep = try alloc.create(QuicEndpoint);
-    // Ensure we destroy the allocated slot if initialization fails (e.g., bind AddressInUse)
     errdefer alloc.destroy(ep);
     ep.* = try QuicEndpoint.init(alloc, bind_addr, cfgp);
     return ep;
@@ -151,4 +151,50 @@ pub fn scheduleTimer(ep: *QuicEndpoint, delay_ms: u32) !u64 {
 /// Cancel a previously scheduled endpoint timer.
 pub fn cancelTimer(ep: *QuicEndpoint, id: u64) bool {
     return ep.*.cancelTimer(id);
+}
+
+pub fn isHandshakeConfirmed(conn: *QuicConnection) bool {
+    const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
+    return c.app_tx_keys != null; // heuristic: 1-RTT keys ready
+}
+
+pub fn close(conn: *QuicConnection, app_error_code: u64, reason: []const u8) !void {
+    const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
+    return c.sendConnectionClose(app_error_code, reason);
+}
+
+/// Force immediate destruction (test/CLI) of a connection: removes from endpoint maps and frees.
+pub fn destroy(ep: *QuicEndpoint, conn: *QuicConnection) void {
+    const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
+    // Remove any map entries referencing this connection
+    const Key = endpoint_mod.Key;
+    var it = ep.conns.iterator();
+    var to_remove: [16]Key = undefined;
+    var n: usize = 0;
+    while (it.next()) |e| {
+        if (e.value_ptr.* == c and n < to_remove.len) {
+            to_remove[n] = e.key_ptr.*;
+            n += 1;
+        }
+    }
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        _ = ep.conns.remove(to_remove[i]);
+    }
+    std.debug.print("destroy(): removed {d} map keys for connection\n", .{n});
+    c.deinit();
+    ep.allocator.destroy(c);
+}
+
+pub fn isDrained(conn: *QuicConnection) bool {
+    const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
+    return c.closed; // simple signal for now
+}
+
+/// Best-effort flush: poll endpoint a few iterations with zero timeout to drive timers & RX.
+pub fn flush(ep: *QuicEndpoint, iterations: u32) void {
+    var i: u32 = 0;
+    while (i < iterations) : (i += 1) {
+        ep.poll(0) catch break;
+    }
 }

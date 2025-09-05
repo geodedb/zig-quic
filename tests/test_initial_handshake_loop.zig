@@ -156,6 +156,7 @@ test "initial->handshake pipeline in-process" {
         &sample16,
         ct,
         pt,
+        0,
     );
     // Expect a PING frame (type 0x01)
     try std.testing.expect(pt.len >= 1 and pt[0] == @intFromEnum(frame.FrameType.PING));

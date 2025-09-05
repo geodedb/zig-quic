@@ -49,7 +49,7 @@ test "initial_protect_roundtrip_aes" {
     var sample16: [16]u8 = undefined;
     // For AES and pn_len=2, offset = 4 - 2 = 2 into ciphertext
     @memcpy(sample16[0..], cipher[2..18]);
-    const pt_len = try crypto_quic.unprotectInitial(.aes_128_gcm, &keys.key, &keys.iv, &keys.hp, &header_first2, &pn2, header_prefix, &sample16, cipher[0..ct_len], &out_plain);
+    const pt_len = try crypto_quic.unprotectInitial(.aes_128_gcm, &keys.key, &keys.iv, &keys.hp, &header_first2, &pn2, header_prefix, &sample16, cipher[0..ct_len], &out_plain, 0);
     try std.testing.expectEqual(@as(usize, 4), pt_len);
     try std.testing.expectEqualSlices(u8, &plain, &out_plain);
 }
@@ -92,7 +92,7 @@ test "initial_protect_roundtrip_chacha" {
     var header_first_rx = header_first;
     var pn_rx = pn;
     var out_plain: [8]u8 = undefined;
-    const pt_len = try crypto_quic.unprotectInitial(.chacha20_poly1305, &aead_key, &aead_iv, &hp_key, &header_first_rx, &pn_rx, &header_prefix, &sample16, cipher[0..ct_len], &out_plain);
+    const pt_len = try crypto_quic.unprotectInitial(.chacha20_poly1305, &aead_key, &aead_iv, &hp_key, &header_first_rx, &pn_rx, &header_prefix, &sample16, cipher[0..ct_len], &out_plain, 0);
     try std.testing.expectEqual(@as(usize, plain.len), pt_len);
     try std.testing.expectEqualSlices(u8, &plain, &out_plain);
 }

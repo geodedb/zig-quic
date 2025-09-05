@@ -279,6 +279,17 @@ pub fn derive_initial_keys(version_v2: bool, dcid: []const u8) struct {
     return .{ .client = client_keys, .server = server_keys };
 }
 
+/// Convenience helper returning RX/TX Initial keys oriented by endpoint role.
+/// For a server, RX=client keys (decrypt Client Initial) and TX=server keys.
+/// For a client, RX=server keys (decrypt Server Initials) and TX=client keys.
+pub fn initialAeadKeys(version_v2: bool, is_server: bool, dcid: []const u8) struct { rx: InitialKeys, tx: InitialKeys } {
+    const both = derive_initial_keys(version_v2, dcid);
+    return if (is_server)
+        .{ .rx = both.client, .tx = both.server }
+    else
+        .{ .rx = both.server, .tx = both.client };
+}
+
 /// Initial/Handshake key material used by long header helpers.
 pub const InitialKeys = struct { key: [16]u8, iv: [12]u8, hp: [16]u8 };
 

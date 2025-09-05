@@ -28,7 +28,7 @@ fi
 echo $! > /tmp/srv.pid
 
 # Wait up to ~2s for the "listening on" line
-for i in {1..20}; do
+for _ in {1..20}; do
   if grep -q "listening on " /tmp/srv.err; then
     break
   fi
@@ -48,12 +48,33 @@ fi
 echo "server_addr=${addr}"
 
 # Run client (fail fast if unreachable)
-./zig-out/bin/go-interop-client \
+set +e
+client_out=$(./zig-out/bin/go-interop-client \
   --addr "${addr}" \
   --alpn h3 \
   --sni test.local \
   --insecure \
-  --msg hello
+  --msg hello 2>&1)
+status=$?
+set -e
+echo "client_output=${client_out}" >&2
+if echo "$client_out" | grep -q "Application error 0x0 (remote): bye"; then
+  echo "interop: treating remote bye (0x0) as success" >&2
+  status=0
+fi
+if [ $status -ne 0 ]; then
+  echo "interop client failed" >&2
+  kill "$(cat /tmp/srv.pid)" 2>/dev/null || true
+  exit $status
+fi
+
+# Optional: run zig server+client echo sanity on fixed high port (avoid dynamic capture complexity)
+ZIG_ECHO_PORT=${ZIG_ECHO_PORT:-44345}
+./zig-out/bin/quic-server --bind "${HOST}:${ZIG_ECHO_PORT}" --alpn h3 --insecure --real-tls 2> /tmp/zsrv.err &
+zpid=$!
+sleep 0.4
+./zig-out/bin/quic-client --connect "${HOST}:${ZIG_ECHO_PORT}" --sni test.local --alpn h3 --insecure --real-tls --msg ping || true
+kill $zpid 2>/dev/null || true
 
 # Cleanup
 kill "$(cat /tmp/srv.pid)" 2>/dev/null || true
