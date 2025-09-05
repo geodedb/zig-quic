@@ -1358,6 +1358,7 @@ pub const Endpoint = struct {
                 pt_list.ensureTotalCapacity(ct.len - 16) catch break;
                 pt_list.appendNTimesAssumeCapacity(0, ct.len - 16);
                 const pt_slice = pt_list.items;
+                const expected_pn = if (conn.pn_initial.have_any) conn.pn_initial.max + 1 else 0;
                 const dec = crypto.unprotectInitialAutoSample(
                     .aes_128_gcm,
                     &keys.key,
@@ -1368,7 +1369,7 @@ pub const Endpoint = struct {
                     header_prefix,
                     ct,
                     pt_slice,
-                    conn.pn_initial.max,
+                    expected_pn,
                 ) catch {
                     continue;
                 };
@@ -1570,6 +1571,14 @@ pub const Endpoint = struct {
                     }
                 }
             }
+            
+            // Check if there are more packets coalesced in this datagram
+            // The end_total from the Initial packet tells us where it ends
+            if (end_total < bytes.len) {
+                std.debug.print("Processing coalesced packet after Initial (remaining {} bytes)\n", .{bytes.len - end_total});
+                // Process the remaining bytes as a new packet
+                self.processIncomingDatagram(peer, bytes[end_total..], ecn_bits);
+            }
             return;
         }
         // Retry (client handling only). Parse fields, verify integrity using ODCID, then store token; resend Initial with token.
@@ -1619,6 +1628,7 @@ pub const Endpoint = struct {
             self.clientSendInitialProbe(c) catch {};
             return;
         } else if (ty == 2) {
+            std.debug.print("Processing Handshake packet from peer\n", .{});
             // Handshake RX path: attempt to unprotect and feed CRYPTO using hs_rx_keys
             var i: usize = 5;
             if (i >= bytes.len) return;
@@ -1633,62 +1643,96 @@ pub const Endpoint = struct {
             if (i + scid_len > bytes.len) return;
             const scid = bytes[i .. i + scid_len];
             i += scid_len;
+            
+            // Parse length varint to find packet boundary (needed for coalesced packets)
+            var j: usize = i;
+            const len_dec = varint.decode(bytes[j..]) catch return;
+            j += len_dec.n;
+            const end_total = j + @as(usize, len_dec.value);
+            if (end_total > bytes.len) return;
+            
             // Lookup connection keyed by peer + initial dcid hash (use stored mapping if any)
             const key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(dcid) };
             const c_ptr = self.conns.getPtr(key) orelse return;
             const conn = c_ptr.*;
             if (ecn_bits) |e| conn.onEcnMark(.Handshake, e);
             if (conn.hs_rx_keys) |rx_keys| {
-                // Parse length varint up to PN (Handshake has no token)
-                var j: usize = i;
-                const len_dec = varint.decode(bytes[j..]) catch return;
-                j += len_dec.n;
-                const end_total = j + @as(usize, len_dec.value);
-                if (end_total > bytes.len) return;
+                std.debug.print("Client has handshake RX keys, proceeding to decrypt\n", .{});
                 const header_prefix = bytes[1..j];
-                const pn_len_masked: u3 = @as(u3, @intCast(first & 0x03)) + 1;
-                if (j + pn_len_masked > bytes.len) return;
                 const pn_start = j;
-                // HP sample at PN+4
-                var sample16: [16]u8 = undefined;
-                if (pn_start + 4 + 16 > bytes.len) return;
-                @memcpy(sample16[0..], bytes[pn_start + 4 .. pn_start + 4 + 16]);
-
-                var header_first = first;
-                var pn_buf: [4]u8 = .{0} ** 4;
-                const copy_pn_len = @min(@as(usize, pn_len_masked), 4);
-                @memcpy(pn_buf[0..copy_pn_len], bytes[pn_start .. pn_start + copy_pn_len]);
-                const pn_len = crypto.unmaskLongHeaderAndPn(.aes_128_gcm, &rx_keys.hp, &sample16, &header_first, &pn_buf) catch return;
-                const pn_bytes = pn_buf[0..pn_len];
-                const ct = bytes[pn_start + pn_len .. end_total];
-                if (ct.len < 16) return;
-                var payload = std.ArrayList(u8).init(self.allocator.*);
-                defer payload.deinit();
-                payload.ensureTotalCapacity(ct.len - 16) catch return;
-                payload.appendNTimesAssumeCapacity(0, ct.len - 16);
-                const pt = payload.items;
-                const ok = crypto.unprotectInitialAutoSample(
-                    .aes_128_gcm,
-                    &rx_keys.key,
-                    &rx_keys.iv,
-                    &rx_keys.hp,
-                    &header_first,
-                    pn_bytes,
-                    header_prefix,
-                    ct,
-                    pt,
-                    conn.pn_handshake.max,
-                ) catch {
+                
+                // Capture up to 4 masked PN bytes
+                var pn_masked: [4]u8 = .{0} ** 4;
+                const avail = @min(@as(usize, 4), end_total - pn_start);
+                @memcpy(pn_masked[0..avail], bytes[pn_start .. pn_start + avail]);
+                
+                // Try different PN lengths until one succeeds
+                var success = false;
+                var chosen_pn_len: u3 = 0;
+                var pt_list = std.ArrayList(u8).init(self.allocator.*);
+                defer pt_list.deinit();
+                var pn_len_try: u3 = 1;
+                
+                attempt: while (pn_len_try <= 4) : (pn_len_try += 1) {
+                    if (pn_start + pn_len_try > end_total) break;
+                    const ct = bytes[pn_start + pn_len_try .. end_total];
+                    if (ct.len < 16) break;
+                    
+                    var pn_try: [4]u8 = pn_masked; // copy masked bytes
+                    var header_try = first;
+                    pt_list.clearRetainingCapacity();
+                    pt_list.ensureTotalCapacity(ct.len - 16) catch break;
+                    pt_list.appendNTimesAssumeCapacity(0, ct.len - 16);
+                    const pt_slice = pt_list.items;
+                    
+                    const expected_pn_hs = if (conn.pn_handshake.have_any) conn.pn_handshake.max + 1 else 0;
+                    const dec = crypto.unprotectInitialAutoSample(
+                        .aes_128_gcm,
+                        &rx_keys.key,
+                        &rx_keys.iv,
+                        &rx_keys.hp,
+                        &header_try,
+                        pn_try[0..pn_len_try],
+                        header_prefix,
+                        ct,
+                        pt_slice,
+                        expected_pn_hs,
+                    ) catch {
+                        continue;
+                    };
+                    _ = dec;
+                    
+                    std.debug.print("After unmasking with pn_len={}: ", .{pn_len_try});
+                    for (pn_try[0..pn_len_try]) |b| std.debug.print("{X:0>2} ", .{b});
+                    std.debug.print("\n", .{});
+                    
+                    const indicated_pn_len: u3 = @intCast((header_try & 0x03) + 1);
+                    if (indicated_pn_len != pn_len_try) {
+                        // Mismatch between header-indicated PN length and trial; reject.
+                        continue;
+                    }
+                    
+                    success = true;
+                    chosen_pn_len = pn_len_try;
+                    @memcpy(pn_masked[0..pn_len_try], pn_try[0..pn_len_try]); // now holds unmasked bytes
+                    break :attempt;
+                }
+                
+                if (!success) {
+                    std.debug.print("Failed to decrypt Handshake packet\n", .{});
                     conn.onAeadAuthFailure();
-                    // Mark closed on handshake decrypt failure for rapid pruning in tests.
                     conn.closed = true;
                     return;
-                };
-                _ = ok;
+                }
+                
+                const pn_len = chosen_pn_len;
+                const pt = pt_list.items;
+                std.debug.print("Successfully decrypted Handshake packet (trial pn_len={}) plaintext len: {}\n", .{ pn_len, pt.len });
+                
                 // Expand truncated PN and track in Handshake space
                 var pn_val_be: u64 = 0;
                 var kk: usize = 0;
-                while (kk < pn_len) : (kk += 1) pn_val_be = (pn_val_be << 8) | pn_buf[kk];
+                while (kk < pn_len) : (kk += 1) pn_val_be = (pn_val_be << 8) | pn_masked[kk];
                 const pn_full: u64 = conn.expandPnHandshake(pn_val_be, pn_len);
                 conn.trackRecvPnHandshake(pn_full);
 
@@ -1698,8 +1742,12 @@ pub const Endpoint = struct {
                 var saw_ack_eliciting_hs: bool = false;
                 const now_ns_hs: u64 = @intCast(std.time.nanoTimestamp());
                 while (off < pt.len) {
-                    const r = frame.decodeOne(pt[off..]) catch break;
+                    const r = frame.decodeOne(pt[off..]) catch |err| {
+                        std.debug.print("Failed to decode frame at offset {}: {}\n", .{off, err});
+                        break;
+                    };
                     off += r.n;
+                    std.debug.print("Handshake frame: {} at offset {}\n", .{r.f, off - r.n});
                     switch (r.f) {
                         .crypto => {
                             const cr = r.f.crypto;
@@ -1806,6 +1854,14 @@ pub const Endpoint = struct {
                         }
                     }
                 }
+            } else {
+                std.debug.print("Client does not have handshake RX keys yet\n", .{});
+            }
+            
+            // Check if there are more packets coalesced in this datagram (for Handshake packets)
+            if (end_total < bytes.len) {
+                // Process the remaining bytes as a new packet
+                self.processIncomingDatagram(peer, bytes[end_total..], ecn_bits);
             }
         } else {
             return; // ignore other long header types for now

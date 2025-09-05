@@ -22,9 +22,14 @@ fn expandPacketNumber(truncated: u64, pn_len: u3, expected: u64) u64 {
     var candidate: u64 = (expected & ~pn_mask) | truncated;
 
     // Determine if we need to adjust the candidate
-    if (candidate <= expected -% pn_hwin and candidate < (1 << 62)) {
-        candidate += pn_win;
-    } else if (candidate > expected +% pn_hwin and candidate >= pn_win) {
+    // Check if candidate is too far in the past
+    if (expected >= pn_hwin) {
+        if (candidate <= expected - pn_hwin and candidate < (1 << 62)) {
+            candidate += pn_win;
+        }
+    }
+    // Check if candidate is too far in the future
+    if (candidate > expected + pn_hwin and candidate >= pn_win) {
         candidate -= pn_win;
     }
 

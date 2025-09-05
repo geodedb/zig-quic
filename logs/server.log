@@ -1,50 +1,56 @@
-listening on 127.0.0.1:59229
+listening on 127.0.0.1:41531
 Processing Initial packet from peer
-Looking up connection with dcid=0C207179C4B09F1B (found=false)
-Server: Deriving Initial keys with dcid=0C207179C4B09F1B
-Server: Masked PN bytes: 23 AF 3D 63 
+Looking up connection with dcid=9EEB75878A6B45BA (found=false)
+Server: Deriving Initial keys with dcid=9EEB75878A6B45BA
+Server: Masked PN bytes: DE 5C B3 08 
 Server: Trying to decrypt Initial with pn_initial.max=0
-Before headerUnprotect: pn_bytes=23 
+Before headerUnprotect: pn_bytes=DE 
 After headerUnprotect: pn_bytes=00 
 expandPacketNumber: truncated=0 pn_len=1 expected=0 -> full=0
 AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
-Before headerUnprotect: pn_bytes=23 AF 
+Before headerUnprotect: pn_bytes=DE 5C 
 After headerUnprotect: pn_bytes=00 01 
 expandPacketNumber: truncated=1 pn_len=2 expected=0 -> full=1
 After unmasking with pn_len=2: 00 01 
 Successfully decrypted Initial packet (trial pn_len=2) plaintext len: 1150
 Expanded PN: 1 from truncated: 1
 Server: Received CRYPTO frame with 39 bytes
+TLS: Parsed handshake message type=tls13.HsType.client_hello len=35
+TLS: Added 39 bytes to transcript (recv): 01 00 00 23 43 48 31 93 ...
 Server: Received ClientHello, queueing ServerHello
 Server: Computed ECDHE secret
+TLS: Added 39 bytes to transcript (queue): 02 00 00 23 53 48 31 0A ...
 Server: Derived handshake secrets
 Sending ServerHello in Initial packet: 39 bytes
 Server: Encoding Initial with pn=1 dcid_len=8 scid_len=8 pn_len=4
 Server: Sending Initial response with 93 bytes (has_crypto=true)
 Queueing handshake flight (EE, Cert, Finished)
-Sending Handshake packet with 37 bytes of CRYPTO
+TLS: Added 37 bytes to transcript (queue): 08 00 00 21 41 4C 50 4E ...
+TLS: Queueing Finished with transcript hash: 27 F4 CD BF F1 35 A6 60 ...
+TLS: Added 36 bytes to transcript (queue): 14 00 00 20 11 3F 12 98 ...
+Sending Handshake packet with 73 bytes of CRYPTO
 accepted connection
 Processing Initial packet from peer
-Looking up connection with dcid=0C207179C4B09F1B (found=true)
+Looking up connection with dcid=9EEB75878A6B45BA (found=true)
 Found existing connection (role=conn.Role.Server)
-Server: Deriving Initial keys with dcid=0C207179C4B09F1B
-Server: Masked PN bytes: 4C 14 A5 4A 
+Server: Deriving Initial keys with dcid=9EEB75878A6B45BA
+Server: Masked PN bytes: 6A 38 F7 3C 
 Server: Trying to decrypt Initial with pn_initial.max=1
-Before headerUnprotect: pn_bytes=4C 
+Before headerUnprotect: pn_bytes=6A 
 After headerUnprotect: pn_bytes=00 
-expandPacketNumber: truncated=0 pn_len=1 expected=1 -> full=256
-AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=256)
-Before headerUnprotect: pn_bytes=4C 14 
+expandPacketNumber: truncated=0 pn_len=1 expected=2 -> full=0
+AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
+Before headerUnprotect: pn_bytes=6A 38 
 After headerUnprotect: pn_bytes=00 00 
-expandPacketNumber: truncated=0 pn_len=2 expected=1 -> full=65536
-AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=65536)
-Before headerUnprotect: pn_bytes=4C 14 A5 
+expandPacketNumber: truncated=0 pn_len=2 expected=2 -> full=0
+AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
+Before headerUnprotect: pn_bytes=6A 38 F7 
 After headerUnprotect: pn_bytes=00 00 00 
-expandPacketNumber: truncated=0 pn_len=3 expected=1 -> full=16777216
-AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=16777216)
-Before headerUnprotect: pn_bytes=4C 14 A5 4A 
+expandPacketNumber: truncated=0 pn_len=3 expected=2 -> full=0
+AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
+Before headerUnprotect: pn_bytes=6A 38 F7 3C 
 After headerUnprotect: pn_bytes=00 00 00 02 
-expandPacketNumber: truncated=2 pn_len=4 expected=1 -> full=4294967298
-AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=4294967298)
-Failed to decrypt Initial packet
-destroy(): removed 0 map keys for connection
+expandPacketNumber: truncated=2 pn_len=4 expected=2 -> full=2
+After unmasking with pn_len=4: 00 00 00 02 
+Successfully decrypted Initial packet (trial pn_len=4) plaintext len: 5
+Expanded PN: 2 from truncated: 2

@@ -281,10 +281,22 @@ pub const Engine = struct {
         while (true) {
             const parsed = parseHandshakeOne(data[off..]) catch null;
             if (parsed) |p| {
-                // Snapshot transcript up to the start of this message for Finished verification
+                std.debug.print("TLS: Parsed handshake message type={} len={}\n", .{p.typ, p.body.len});
+                
+                // For Finished verification, we need the transcript BEFORE the Finished message
+                // So take a snapshot of the current transcript state
                 var snap = self.transcript;
-                snap.update(data[0..off]);
                 const th_before = snap.finalize();
+                
+                // Update the transcript with this message UNLESS it's a Finished message
+                // Finished messages are added to the transcript AFTER verification
+                const msg_data = data[off .. off + p.n];
+                if (p.typ != .finished) {
+                    self.transcript.update(msg_data);
+                    std.debug.print("TLS: Added {} bytes to transcript (recv): ", .{msg_data.len});
+                    for (msg_data[0..@min(8, msg_data.len)]) |b| std.debug.print("{X:0>2} ", .{b});
+                    std.debug.print("...\n", .{});
+                }
 
                 off += p.n;
                 if (p.typ == .server_hello) self.sh_seen = true;
@@ -299,30 +311,35 @@ pub const Engine = struct {
                     self.handshake_client_secret = hs.client_hs;
                     self.handshake_server_secret = hs.server_hs;
                 }
-                var extracted: ?[32]u8 = null;
-                if (self.real_mode) {
-                    switch (p.typ) {
-                        .client_hello => extracted = parseRealClientHello(p.body),
-                        .server_hello => extracted = parseRealServerHello(p.body),
-                        else => {},
+                
+                // Only try to extract public keys from ClientHello and ServerHello
+                if (p.typ == .client_hello or p.typ == .server_hello) {
+                    var extracted: ?[32]u8 = null;
+                    if (self.real_mode) {
+                        switch (p.typ) {
+                            .client_hello => extracted = parseRealClientHello(p.body),
+                            .server_hello => extracted = parseRealServerHello(p.body),
+                            else => {},
+                        }
+                    }
+                    if (extracted == null) {
+                        if (parseMinimalHelloPub(p.typ, p.body)) |pk_min| {
+                            extracted = pk_min;
+                        } else {
+                            std.debug.print("{s}: Failed to parse hello pub (typ={}, body_len={})\n", .{ if (self.role == .Server) "Server" else "Client", p.typ, p.body.len });
+                        }
+                    }
+                    if (extracted) |pk| {
+                        self.peer_pub = pk;
+                        // Compute shared secret after receiving peer's public key
+                        switch (p.typ) {
+                            .server_hello => if (self.role == .Client) self.tryComputeShared(),
+                            // For server, shared secret is computed after generating own keypair in queueMinimalServerHelloAuto
+                            else => {},
+                        }
                     }
                 }
-                if (extracted == null) {
-                    if (parseMinimalHelloPub(p.typ, p.body)) |pk_min| {
-                        extracted = pk_min;
-                    } else {
-                        std.debug.print("{s}: Failed to parse minimal hello pub (typ={}, body_len={})\n", .{ if (self.role == .Server) "Server" else "Client", p.typ, p.body.len });
-                    }
-                }
-                if (extracted) |pk| {
-                    self.peer_pub = pk;
-                    // Compute shared secret after receiving peer's public key
-                    switch (p.typ) {
-                        .server_hello => if (self.role == .Client) self.tryComputeShared(),
-                        // For server, shared secret is computed after generating own keypair in queueMinimalServerHelloAuto
-                        else => {},
-                    }
-                }
+                
                 // Parse EncryptedExtensions (real or legacy placeholder)
                 if (p.typ == .encrypted_extensions) {
                     if (self.real_mode) {
@@ -436,14 +453,17 @@ pub const Engine = struct {
                 }
                 // Finished verification
                 if (p.typ == .finished and self.ecdhe_secret != null) {
+                    std.debug.print("TLS: Processing Finished message\n", .{});
                     var peer_secret_opt: ?[H.digest_length]u8 = null;
                     if (self.handshake_client_secret != null and self.handshake_server_secret != null) {
                         peer_secret_opt = switch (self.role) {
                             .Client => self.handshake_server_secret.?,
                             .Server => self.handshake_client_secret.?,
                         };
+                        std.debug.print("TLS: Using stored handshake secrets for verification\n", .{});
                     }
                     const ok = if (peer_secret_opt) |ps| self.verifyPeerFinished(ps, p.body) else blk: {
+                        std.debug.print("TLS: Using fallback for Finished verification\n", .{});
                         // Fallback (should not happen in real mode past this point)
                         const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th_before);
                         break :blk switch (self.role) {
@@ -451,11 +471,21 @@ pub const Engine = struct {
                             .Server => self.verifyPeerFinished(hs.client_hs, p.body),
                         };
                     };
+                    std.debug.print("TLS: Finished verification result: {}\n", .{ok});
                     self.finished_verified = ok;
+                    
+                    // Add the Finished message to the transcript AFTER verification
+                    if (ok) {
+                        const finished_msg = data[off - p.n .. off];
+                        self.transcript.update(finished_msg);
+                        std.debug.print("TLS: Added {} bytes to transcript (recv-finished): ", .{finished_msg.len});
+                        for (finished_msg[0..@min(8, finished_msg.len)]) |b| std.debug.print("{X:0>2} ", .{b});
+                        std.debug.print("...\n", .{});
+                    }
                 }
             } else break;
         }
-        self.transcript.update(data);
+        // Transcript is now updated message-by-message in the loop above
         self.maybeAutoProgress();
     }
 
@@ -468,6 +498,9 @@ pub const Engine = struct {
     pub fn queueCrypto(self: *Engine, data: []const u8) !void {
         try self.outbox.appendSlice(data);
         self.transcript.update(data);
+        std.debug.print("TLS: Added {} bytes to transcript (queue): ", .{data.len});
+        for (data[0..@min(8, data.len)]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("...\n", .{});
         // If this was a proper handshake record, flip flags
         if (data.len >= 1) {
             if (data[0] == @intFromEnum(HsType.client_hello)) {
@@ -608,6 +641,9 @@ pub const Engine = struct {
     pub fn queueFinished(self: *Engine, traffic_secret: [H.digest_length]u8) !void {
         var snap = self.transcript;
         const th = snap.finalize();
+        std.debug.print("TLS: Queueing Finished with transcript hash: ", .{});
+        for (th[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("...\n", .{});
         const verify = deriveFinishedVerifyData(traffic_secret, th);
         const msg = try encodeHandshake(self.outbox.allocator, .finished, verify[0..]);
         defer self.outbox.allocator.free(msg);
@@ -620,8 +656,18 @@ pub const Engine = struct {
         // finished_body is the verify_data sent by the peer
         var snap = self.transcript;
         const th = snap.finalize();
+        std.debug.print("TLS: Verifying Finished with transcript hash: ", .{});
+        for (th[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("...\n", .{});
         const expect = deriveFinishedVerifyData(peer_secret, th);
-        return finished_body.len == expect.len and std.mem.eql(u8, finished_body, &expect);
+        const match = finished_body.len == expect.len and std.mem.eql(u8, finished_body, &expect);
+        if (!match) {
+            std.debug.print("TLS: Finished verification failed. Expected len={}, got len={}\n", .{expect.len, finished_body.len});
+            if (finished_body.len == expect.len) {
+                std.debug.print("TLS: MAC mismatch\n", .{});
+            }
+        }
+        return match;
     }
 
     /// Build and queue EncryptedExtensions carrying ALPN and Transport Parameters.
@@ -688,6 +734,9 @@ pub const Engine = struct {
         if (!(self.ch_sent and self.sh_seen)) return null;
         const th = self.transcript.finalize();
         const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th);
+        // Store the secrets in the engine for later use
+        self.handshake_client_secret = hs.client_hs;
+        self.handshake_server_secret = hs.server_hs;
         return .{ .client = hs.client_hs, .server = hs.server_hs };
     }
 
@@ -803,11 +852,27 @@ pub const Engine = struct {
             self.handshake_server_secret = hs.server_hs;
         }
     }
-    /// Internal: auto-send Finished when conditions satisfied (real mode only)
+    /// Internal: auto-send Finished when conditions satisfied
     fn maybeAutoProgress(self: *Engine) void {
-        if (!self.real_mode) return;
         if (self.finished_sent) return;
         if (self.ecdhe_secret == null) return;
+        
+        // In minimal mode, handle Finished generation for both client and server
+        if (!self.real_mode) {
+            if (self.role == .Client) {
+                // Client: send Finished after verifying server's Finished
+                if (self.finished_verified and self.handshake_client_secret != null) {
+                    std.debug.print("Client: Queueing Finished message in minimal mode\n", .{});
+                    self.queueFinished(self.handshake_client_secret.?) catch {};
+                } else {
+                    std.debug.print("Client: Not ready to send Finished (verified={}, has_secret={})\n", .{self.finished_verified, self.handshake_client_secret != null});
+                }
+            }
+            // Server in minimal mode doesn't use this path
+            return;
+        }
+        
+        // Real mode handling
         if (self.role == .Server) {
             // Authenticated path: if a server certificate is configured and not yet sent, emit Certificate + CertificateVerify
             if (self.ee_sent and self.handshake_server_secret != null) {
@@ -868,9 +933,18 @@ pub const Engine = struct {
 
     /// Force queue of remaining server handshake flight (EncryptedExtensions already queued externally).
     pub fn queueServerHandshakeFlight(self: *Engine) void {
-        if (!self.real_mode) return;
         if (self.role != .Server) return;
         if (self.finished_sent) return; // already done
+        
+        // In minimal mode, just queue the Finished message
+        if (!self.real_mode) {
+            if (self.handshake_server_secret) |secret| {
+                self.queueFinished(secret) catch {};
+            }
+            return;
+        }
+        
+        // Real mode: full handshake flight
         // Require that handshake_server_secret be present (after SH) and EE queued.
         if (self.handshake_server_secret == null) return;
         // If we have a certificate configured, send Certificate + CertificateVerify.

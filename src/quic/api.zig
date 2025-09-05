@@ -228,20 +228,10 @@ pub fn destroy(ep: *QuicEndpoint, conn: *QuicConnection) void {
         }
     }
     std.debug.print("destroy(): removed {d} map keys for connection\n", .{n});
-    // Deinitialize the connection but deliberately leave the memory allocated.  In past
-    // interop testing we observed segmentation faults from use‑after‑free when other
-    // parts of the server continued to reference a connection after it had been
-    // destroyed.  By not returning the underlying allocation here, the opaque
-    // connection handle remains valid for the duration of the endpoint.  The
-    // connection's state machine is marked as closed (above) so subsequent API
-    // calls will see `c.closed` and behave appropriately, but the backing memory
-    // is not released until endpoint deinit.  This trades a small memory leak for
-    // crash safety during short‑lived integration tests.  Note that `c.deinit()`
-    // is still invoked to release any internal buffers or timers owned by the
-    // connection; only the outermost struct is kept alive.
+    // Deinitialize and free the connection immediately for CLI usage
+    // This is safe for the CLI use case where we control the lifecycle
     c.deinit();
-    // Do not free `c` here; memory is intentionally leaked to avoid dangling
-    // pointers.  Endpoint deinit will clean up any remaining allocations.
+    ep.allocator.destroy(c);
 }
 
 pub fn isDrained(conn: *QuicConnection) bool {
