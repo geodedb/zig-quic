@@ -62,14 +62,26 @@ fn ensureLogFile() void {
         _ = std.fs.cwd().makeDir("/logs") catch {};
     }
     log_file = std.fs.cwd().createFile("/logs/endpoint.log", .{ .truncate = false, .read = false }) catch null;
+    // Also attempt to mirror into /endpoint_logs if that path is mounted
+    if (std.fs.cwd().openDir("/endpoint_logs", .{})) |_| {
+        // best-effort copy open by creating file (not stored separately; just create symlink-style second file handle?)
+        // Simplicity: ignore; runner will bind mount /endpoint_logs/endpoint.log if created by other layer.
+        // We'll just create the file if absent.
+        _ = std.fs.cwd().createFile("/endpoint_logs/endpoint.log", .{ .truncate = false, .read = false }) catch {};
+    } else |_| {}
 }
 
 fn log(msg: []const u8) void {
     ensureLogFile();
     std.debug.print("[qns] {s}\n", .{msg});
+    // Attempt to fsync stdout best-effort (not critical if fails).
+    const stdout_file = std.io.getStdOut();
+    // Use posix fsync (not available under std.os in this Zig version)
+    std.posix.fsync(stdout_file.handle) catch {};
     if (log_file) |f| {
         // ignore errors
         _ = f.writer().print("[qns] {s}\n", .{msg}) catch {};
+        f.sync() catch {};
     }
 }
 
@@ -82,6 +94,7 @@ pub fn main() !void {
     defer env.deinit();
     const role = env.get("ROLE") orelse return error.MissingROLE;
     const testcase = env.get("TESTCASE") orelse "";
+    const verbose = env.get("ZIG_VERBOSE") != null;
     // Feature gating: exit 127 for still unsupported advanced cases so runner marks unsupported.
     // Now supporting: handshake, transfer, http3 (0.9 shim), retry, keyupdate (synthetic padding trigger).
     if (std.mem.eql(u8, testcase, "resumption") or
@@ -137,6 +150,7 @@ pub fn main() !void {
                 else => break,
             };
             log("server: accepted connection");
+            if (verbose) log("server: verbose logging enabled");
             if (cfg.enable_retry) {
                 log("server: retry enabled (may issue stateless Retry)");
             }
@@ -216,6 +230,7 @@ pub fn main() !void {
         defer api.endpointDeinit(ep);
         const conn = try api.connect(ep, "server4:443", "server4");
         log("client: connecting to server4:443");
+        if (verbose) log("client: verbose logging enabled");
         if (cfg.enable_retry) {
             log("client: retry enabled (will process Retry if received)");
         }

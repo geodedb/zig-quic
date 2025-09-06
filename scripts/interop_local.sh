@@ -60,7 +60,7 @@ RUN_LOG_DIR="logs"
 mkdir -p "$RUN_LOG_DIR"
 
 # Run interop tests; always continue to allow log summarization even on failure.
-python run.py -t $TESTS -c zig -s $IMPL -r zig=$IMAGE_TAG "${EXTRA_ENV[@]}" || true
+ZIG_VERBOSE=1 python run.py -t $TESTS -c zig -s $IMPL -r zig=$IMAGE_TAG --no-auto-unsupported zig,$IMPL "${EXTRA_ENV[@]}" || true
 
 # Restore original implementations.json if we modified it.
 if [[ -f implementations.json.bak ]]; then
