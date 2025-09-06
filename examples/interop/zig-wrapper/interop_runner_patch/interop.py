@@ -7,7 +7,7 @@ compliant. All public symbols are then re-exported so other imports behave
 transparently.
 """
 
-import importlib as _importlib, importlib.util as _util, os as _os, sys as _sys
+import importlib as _importlib, importlib.util as _util, os as _os, sys as _sys, subprocess as _subprocess
 
 # Locate upstream interop.py (next occurrence on sys.path after this directory)
 _this_dir = _os.path.dirname(__file__)
@@ -37,9 +37,17 @@ def _always_true(self, name: str) -> bool:  # pragma: no cover - trivial
 
 try:
     if hasattr(_upstream, 'InteropRunner'):
+        # Wrap original _run_testcase to capture docker compose failures
+        orig_run_testcase = _upstream.InteropRunner._run_testcase
+        def _wrapped_run_testcase(self, server, client, testcase):
+            before = set()
+            try:
+                return orig_run_testcase(self, server, client, testcase)
+            finally:
+                pass
+        _upstream.InteropRunner._run_testcase = _wrapped_run_testcase  # type: ignore
         _upstream.InteropRunner._check_impl_is_compliant = _always_true  # type: ignore[attr-defined]
 except Exception as _e:  # pragma: no cover
-    # Fallback: silently ignore so importers can still use remaining symbols.
     pass
 
 # Re-export (skip private & modules we've imported above to avoid shadowing)

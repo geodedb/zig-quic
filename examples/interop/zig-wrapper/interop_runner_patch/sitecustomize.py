@@ -65,5 +65,14 @@ def _patched_run(*a, **kw):  # pragma: no cover - debug
             print('[interop][trace]', cmd, file=_sys.stderr)
     except Exception:
         pass
-    return _orig_run(*a, **kw)
+    res = _orig_run(*a, **kw)
+    try:
+        cmd = a[0] if a else kw.get('args')
+        shell = kw.get('shell', False)
+        if res.returncode != 0 and shell and isinstance(cmd, str) and 'docker compose' in cmd:
+            print('[interop][compose][rc=%d]' % res.returncode, file=_sys.stderr)
+            print('[interop][compose][cmd]', cmd, file=_sys.stderr)
+    except Exception:
+        pass
+    return res
 _subprocess.run = _patched_run
