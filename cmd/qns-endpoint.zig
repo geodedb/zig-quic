@@ -74,10 +74,9 @@ fn ensureLogFile() void {
 fn log(msg: []const u8) void {
     ensureLogFile();
     std.debug.print("[qns] {s}\n", .{msg});
-    // Attempt to fsync stdout best-effort (not critical if fails).
-    const stdout_file = std.io.getStdOut();
-    // Use posix fsync (not available under std.os in this Zig version)
-    std.posix.fsync(stdout_file.handle) catch {};
+    // Write to stderr as well for Docker logs
+    const stderr = std.io.getStdErr().writer();
+    _ = stderr.print("[qns] {s}\n", .{msg}) catch {};
     if (log_file) |f| {
         // ignore errors
         _ = f.writer().print("[qns] {s}\n", .{msg}) catch {};

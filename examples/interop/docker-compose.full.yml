@@ -1,15 +1,13 @@
-version: "3.5"
-
 # Full QUIC interoperability test suite with all available implementations
 # This allows testing the Zig QUIC implementation against all other implementations
 #
 # Usage:
 #   docker compose -f examples/interop/docker-compose.full.yml build zig-qns
 #   docker compose -f examples/interop/docker-compose.full.yml pull
-#   
+#
 #   # Test zig as server with quic-go as client:
 #   SERVER=zig CLIENT=quic-go TESTCASE=handshake docker compose -f examples/interop/docker-compose.full.yml up
-#   
+#
 #   # Test zig as client with ngtcp2 as server:
 #   SERVER=ngtcp2 CLIENT=zig TESTCASE=transfer docker compose -f examples/interop/docker-compose.full.yml up
 #
@@ -34,7 +32,7 @@ services:
     cap_add:
       - NET_ADMIN
     expose:
-      - "57832"
+      - '57832'
     networks:
       leftnet:
         ipv4_address: 193.167.0.2
@@ -45,7 +43,7 @@ services:
 
   # Zig QUIC implementation (local build)
   zig-server:
-    build: 
+    build:
       context: ../../
       dockerfile: examples/interop/zig-qns/Dockerfile
     image: zig-qns:local
@@ -68,10 +66,10 @@ services:
         ipv4_address: 193.167.100.100
         ipv6_address: fd00:cafe:cafe:100::100
     extra_hosts:
-      - "client4:193.167.0.100"
-      - "client6:fd00:cafe:cafe:0::100"
-      - "client46:193.167.0.100"
-      - "client46:fd00:cafe:cafe:0::100"
+      - 'client4:193.167.0.100'
+      - 'client6:fd00:cafe:cafe:0::100'
+      - 'client46:193.167.0.100'
+      - 'client46:fd00:cafe:cafe:0::100'
     profiles:
       - zig
 
@@ -100,10 +98,10 @@ services:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
-      - "server4:193.167.100.100"
-      - "server6:fd00:cafe:cafe:100::100"
-      - "server46:193.167.100.100"
-      - "server46:fd00:cafe:cafe:100::100"
+      - 'server4:193.167.100.100'
+      - 'server6:fd00:cafe:cafe:100::100'
+      - 'server46:193.167.100.100'
+      - 'server46:fd00:cafe:cafe:100::100'
     profiles:
       - zig
 
@@ -129,10 +127,10 @@ services:
         ipv4_address: 193.167.100.100
         ipv6_address: fd00:cafe:cafe:100::100
     extra_hosts:
-      - "client4:193.167.0.100"
-      - "client6:fd00:cafe:cafe:0::100"
-      - "client46:193.167.0.100"
-      - "client46:fd00:cafe:cafe:0::100"
+      - 'client4:193.167.0.100'
+      - 'client6:fd00:cafe:cafe:0::100'
+      - 'client46:193.167.0.100'
+      - 'client46:fd00:cafe:cafe:0::100'
     profiles:
       - quic-go
 
@@ -158,10 +156,10 @@ services:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
-      - "server4:193.167.100.100"
-      - "server6:fd00:cafe:cafe:100::100"
-      - "server46:193.167.100.100"
-      - "server46:fd00:cafe:cafe:100::100"
+      - 'server4:193.167.100.100'
+      - 'server6:fd00:cafe:cafe:100::100'
+      - 'server46:193.167.100.100'
+      - 'server46:fd00:cafe:cafe:100::100'
     profiles:
       - quic-go
 
@@ -187,10 +185,10 @@ services:
         ipv4_address: 193.167.100.100
         ipv6_address: fd00:cafe:cafe:100::100
     extra_hosts:
-      - "client4:193.167.0.100"
-      - "client6:fd00:cafe:cafe:0::100"
-      - "client46:193.167.0.100"
-      - "client46:fd00:cafe:cafe:0::100"
+      - 'client4:193.167.0.100'
+      - 'client6:fd00:cafe:cafe:0::100'
+      - 'client46:193.167.0.100'
+      - 'client46:fd00:cafe:cafe:0::100'
     profiles:
       - ngtcp2
 
@@ -216,10 +214,10 @@ services:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
-      - "server4:193.167.100.100"
-      - "server6:fd00:cafe:cafe:100::100"
-      - "server46:193.167.100.100"
-      - "server46:fd00:cafe:cafe:100::100"
+      - 'server4:193.167.100.100'
+      - 'server6:fd00:cafe:cafe:100::100'
+      - 'server46:193.167.100.100'
+      - 'server46:fd00:cafe:cafe:100::100'
     profiles:
       - ngtcp2
 
@@ -245,10 +243,10 @@ services:
         ipv4_address: 193.167.100.100
         ipv6_address: fd00:cafe:cafe:100::100
     extra_hosts:
-      - "client4:193.167.0.100"
-      - "client6:fd00:cafe:cafe:0::100"
-      - "client46:193.167.0.100"
-      - "client46:fd00:cafe:cafe:0::100"
+      - 'client4:193.167.0.100'
+      - 'client6:fd00:cafe:cafe:0::100'
+      - 'client46:193.167.0.100'
+      - 'client46:fd00:cafe:cafe:0::100'
     profiles:
       - quiche
 
@@ -274,10 +272,10 @@ services:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
-      - "server4:193.167.100.100"
-      - "server6:fd00:cafe:cafe:100::100"
-      - "server46:193.167.100.100"
-      - "server46:fd00:cafe:cafe:100::100"
+      - 'server4:193.167.100.100'
+      - 'server6:fd00:cafe:cafe:100::100'
+      - 'server46:193.167.100.100'
+      - 'server46:fd00:cafe:cafe:100::100'
     profiles:
       - quiche
 
@@ -303,10 +301,10 @@ services:
         ipv4_address: 193.167.100.100
         ipv6_address: fd00:cafe:cafe:100::100
     extra_hosts:
-      - "client4:193.167.0.100"
-      - "client6:fd00:cafe:cafe:0::100"
-      - "client46:193.167.0.100"
-      - "client46:fd00:cafe:cafe:0::100"
+      - 'client4:193.167.0.100'
+      - 'client6:fd00:cafe:cafe:0::100'
+      - 'client46:193.167.0.100'
+      - 'client46:fd00:cafe:cafe:0::100'
     profiles:
       - picoquic
 
@@ -332,10 +330,10 @@ services:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
-      - "server4:193.167.100.100"
-      - "server6:fd00:cafe:cafe:100::100"
-      - "server46:193.167.100.100"
-      - "server46:fd00:cafe:cafe:100::100"
+      - 'server4:193.167.100.100'
+      - 'server6:fd00:cafe:cafe:100::100'
+      - 'server46:193.167.100.100'
+      - 'server46:fd00:cafe:cafe:100::100'
     profiles:
       - picoquic
 
@@ -361,10 +359,10 @@ services:
         ipv4_address: 193.167.100.100
         ipv6_address: fd00:cafe:cafe:100::100
     extra_hosts:
-      - "client4:193.167.0.100"
-      - "client6:fd00:cafe:cafe:0::100"
-      - "client46:193.167.0.100"
-      - "client46:fd00:cafe:cafe:0::100"
+      - 'client4:193.167.0.100'
+      - 'client6:fd00:cafe:cafe:0::100'
+      - 'client46:193.167.0.100'
+      - 'client46:fd00:cafe:cafe:0::100'
     profiles:
       - aioquic
 
@@ -390,10 +388,10 @@ services:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
-      - "server4:193.167.100.100"
-      - "server6:fd00:cafe:cafe:100::100"
-      - "server46:193.167.100.100"
-      - "server46:fd00:cafe:cafe:100::100"
+      - 'server4:193.167.100.100'
+      - 'server6:fd00:cafe:cafe:100::100'
+      - 'server46:193.167.100.100'
+      - 'server46:fd00:cafe:cafe:100::100'
     profiles:
       - aioquic
 
@@ -419,10 +417,10 @@ services:
         ipv4_address: 193.167.100.100
         ipv6_address: fd00:cafe:cafe:100::100
     extra_hosts:
-      - "client4:193.167.0.100"
-      - "client6:fd00:cafe:cafe:0::100"
-      - "client46:193.167.0.100"
-      - "client46:fd00:cafe:cafe:0::100"
+      - 'client4:193.167.0.100'
+      - 'client6:fd00:cafe:cafe:0::100'
+      - 'client46:193.167.0.100'
+      - 'client46:fd00:cafe:cafe:0::100'
     profiles:
       - msquic
 
@@ -448,10 +446,10 @@ services:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
-      - "server4:193.167.100.100"
-      - "server6:fd00:cafe:cafe:100::100"
-      - "server46:193.167.100.100"
-      - "server46:fd00:cafe:cafe:100::100"
+      - 'server4:193.167.100.100'
+      - 'server6:fd00:cafe:cafe:100::100'
+      - 'server46:193.167.100.100'
+      - 'server46:fd00:cafe:cafe:100::100'
     profiles:
       - msquic
 
@@ -477,10 +475,10 @@ services:
         ipv4_address: 193.167.100.100
         ipv6_address: fd00:cafe:cafe:100::100
     extra_hosts:
-      - "client4:193.167.0.100"
-      - "client6:fd00:cafe:cafe:0::100"
-      - "client46:193.167.0.100"
-      - "client46:fd00:cafe:cafe:0::100"
+      - 'client4:193.167.0.100'
+      - 'client6:fd00:cafe:cafe:0::100'
+      - 'client46:193.167.0.100'
+      - 'client46:fd00:cafe:cafe:0::100'
     profiles:
       - nginx
 
@@ -506,10 +504,10 @@ services:
         ipv4_address: 193.167.100.100
         ipv6_address: fd00:cafe:cafe:100::100
     extra_hosts:
-      - "client4:193.167.0.100"
-      - "client6:fd00:cafe:cafe:0::100"
-      - "client46:193.167.0.100"
-      - "client46:fd00:cafe:cafe:0::100"
+      - 'client4:193.167.0.100'
+      - 'client6:fd00:cafe:cafe:0::100'
+      - 'client46:193.167.0.100'
+      - 'client46:fd00:cafe:cafe:0::100'
     profiles:
       - generic
 
@@ -535,10 +533,10 @@ services:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
-      - "server4:193.167.100.100"
-      - "server6:fd00:cafe:cafe:100::100"
-      - "server46:193.167.100.100"
-      - "server46:fd00:cafe:cafe:100::100"
+      - 'server4:193.167.100.100'
+      - 'server6:fd00:cafe:cafe:100::100'
+      - 'server46:193.167.100.100'
+      - 'server46:fd00:cafe:cafe:100::100'
     profiles:
       - generic
 

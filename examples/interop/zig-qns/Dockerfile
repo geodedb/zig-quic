@@ -36,6 +36,10 @@ WORKDIR /quic
 COPY . .
 RUN zig version && zig build -Drelease-safe=true cli && zig build -Drelease-safe=true install && cp zig-out/bin/qns-endpoint /usr/local/bin/qns-endpoint
 
+# Copy our custom run_endpoint.sh
+COPY examples/interop/zig-qns/run_endpoint.sh /run_endpoint.sh
+RUN chmod +x /run_endpoint.sh
+
 
 
 ENTRYPOINT ["/run_endpoint.sh"]

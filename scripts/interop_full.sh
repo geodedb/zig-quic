@@ -4,7 +4,9 @@ set -euo pipefail
 # Full interoperability test runner for Zig QUIC implementation
 # Tests against all available QUIC implementations using docker-compose
 
-ROOT=$(dirname "$0")/../..
+SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Repository root is the parent directory of scripts/
+ROOT="${SCRIPT_DIR}/.."
 pushd "$ROOT" >/dev/null
 
 # Color output for better readability
@@ -15,22 +17,48 @@ NC='\033[0m' # No Color
 
 echo -e "${GREEN}=== QUIC Interoperability Test Suite ===${NC}"
 
-# Build the Zig implementation
-echo -e "${YELLOW}Building Zig QUIC implementation...${NC}"
-docker compose -f examples/interop/docker-compose.full.yml build zig-server zig-client
+# Build the Zig implementation (skip if already exists and SKIP_BUILD=1)
+if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+    echo -e "${YELLOW}Building Zig QUIC implementation...${NC}"
+    docker compose -f examples/interop/docker-compose.full.yml --profile zig build zig-server zig-client
+else
+    echo -e "${YELLOW}Skipping build (SKIP_BUILD=1)...${NC}"
+fi
 
 # Pull all other implementation images
 echo -e "${YELLOW}Pulling other QUIC implementation images...${NC}"
 docker compose -f examples/interop/docker-compose.full.yml pull
 
-# List of implementations to test against
-IMPLEMENTATIONS=("quic-go" "ngtcp2" "quiche" "picoquic" "aioquic" "msquic" "nginx")
+# Ensure no leftover networks from previous runs that might conflict with IP pools
+if docker network ls --format '{{.Name}}' | grep -q '^interop_rightnet$'; then
+    docker network rm interop_rightnet >/dev/null 2>&1 || true
+fi
+if docker network ls --format '{{.Name}}' | grep -q '^interop_leftnet$'; then
+    docker network rm interop_leftnet >/dev/null 2>&1 || true
+fi
+
+# Proactively prune any docker networks that already use the QNS subnets to avoid
+# 'Pool overlaps with other one on this address space' errors. Can be skipped
+# by setting SKIP_QNS_NET_PRUNE=1.
+if [[ "${SKIP_QNS_NET_PRUNE:-0}" != "1" ]]; then
+    echo -e "${YELLOW}Pruning pre-existing networks with QNS subnets (193.167.0.0/24, 193.167.100.0/24)...${NC}"
+    QNS_SUBNET_REGEX='193\.167\.0\.0/24|193\.167\.100\.0/24|fd00:cafe:cafe:0::/64|fd00:cafe:cafe:100::/64'
+    while read -r nid; do
+        [[ -z "$nid" ]] && continue
+        if docker network inspect "$nid" --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}' 2>/dev/null | grep -Eq "$QNS_SUBNET_REGEX"; then
+            nname=$(docker network inspect "$nid" --format '{{.Name}}')
+            echo -e " - Removing conflicting network: $nname"
+            docker network rm "$nid" >/dev/null 2>&1 || echo -e "${RED}   Failed to remove $nname (in use)${NC}"
+        fi
+    done < <(docker network ls -q)
+fi
+
 
 # Test cases to run
 TESTCASES=("handshake" "transfer" "retry" "http3" "keyupdate")
 
 # Results tracking
-DECLARE -A RESULTS
+declare -A RESULTS
 PASSED=0
 FAILED=0
 SKIPPED=0
@@ -89,8 +117,10 @@ run_test() {
         ((FAILED++))
     fi
     
-    # Clean up containers
-    docker compose -f examples/interop/docker-compose.full.yml --profile $profiles down -v >/dev/null 2>&1
+    # Clean up containers and networks
+    docker compose -f examples/interop/docker-compose.full.yml --profile $profiles down -v >/dev/null 2>&1 || true
+    # Also try to remove networks if they still exist
+    docker network rm interop_leftnet interop_rightnet >/dev/null 2>&1 || true
 }
 
 # Function to test using generic profile with image variables
@@ -163,8 +193,10 @@ run_generic_test() {
         ((FAILED++))
     fi
     
-    # Clean up containers
-    docker compose -f examples/interop/docker-compose.full.yml --profile generic down -v >/dev/null 2>&1
+    # Clean up containers and networks
+    docker compose -f examples/interop/docker-compose.full.yml --profile generic down -v >/dev/null 2>&1 || true
+    # Also try to remove networks if they still exist
+    docker network rm interop_leftnet interop_rightnet >/dev/null 2>&1 || true
 }
 
 # Main test execution
