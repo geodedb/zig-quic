@@ -1,6 +1,6 @@
 # QUIC
 
-Zig std-only QUIC workspace (target Zig 0.14.1/0.14.x). Includes:
+Zig std-only QUIC workspace (target Zig 0.15.1/0.14.x). Includes:
 
 - Varint/frames utilities and tests.
 - AES-128-GCM AEAD, AES/ChaCha header protection for QUIC Initial/Handshake/Short helpers.
@@ -115,7 +115,7 @@ pub fn main() !void {
 
 Notes:
 
-- Target Zig 0.14.1 for compatibility (ReleaseSafe recommended for production).
+- Target Zig 0.15.1 for compatibility (ReleaseSafe recommended for production).
 - The module name is `quic`; no additional deps are required.
 
 ## Process helpers
@@ -136,7 +136,7 @@ Notes:
 
 ## CI
 
-GitHub Actions matrix builds on ubuntu, windows, macOS. One job pins Zig 0.14.1 for compatibility; another runs on 0.14.1. Doccheck enforces public symbol docs and GAP.md must be bumped when code changes.
+GitHub Actions matrix builds on ubuntu, windows, macOS. One job pins Zig 0.15.1 for compatibility; another runs on 0.15.1. Doccheck enforces public symbol docs and GAP.md must be bumped when code changes.
 
 ## Next
 

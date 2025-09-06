@@ -839,6 +839,7 @@ pub const Endpoint = struct {
                 var dec_res = packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }) catch blk_dec: {
                     // If decryption fails outright, check for stateless reset token match to fail fast.
                     if (conn.looksLikeStatelessReset(bytes)) {
+                        std.debug.print("stateless-reset: closing connection\n", .{});
                         conn.closed = true;
                         return;
                     }

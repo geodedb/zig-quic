@@ -1,4 +1,4 @@
-//! Public QUIC API skeleton. Zig 0.14.1
+//! Public QUIC API skeleton. Zig 0.15.1
 //! MIT License
 const std = @import("std");
 const ks = @import("quic_tls");
@@ -123,6 +123,16 @@ pub fn recvDatagram(conn: *QuicConnection, buf: []u8) !usize {
 pub fn getNegotiatedAlpn(conn: *QuicConnection) ?[]const u8 {
     const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
     return c.getNegotiatedAlpn();
+}
+
+/// Return peer transport parameters raw encoded slice if available (may be empty before EE).
+pub fn getPeerTransportParams(conn: *QuicConnection) ?[]const u8 {
+    const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
+    if (c.tls.peer_tp) |p| {
+        return p;
+    } else {
+        return null;
+    }
 }
 
 /// Return true if handshake Finished messages exchanged.

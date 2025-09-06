@@ -19,7 +19,7 @@
 
 ## Non‑Functional
 
-- Zig 0.14.1, **std‑only** cryptography; zeroization of retired keys; deterministic tests. Align with repo process gates and doc updates (GAP, NEXT). :contentReference[oaicite:78]{index=78}
+- Zig 0.15.1, **std‑only** cryptography; zeroization of retired keys; deterministic tests. Align with repo process gates and doc updates (GAP, NEXT). :contentReference[oaicite:78]{index=78}
 
 ## CLI/Tools/CI (minimum)
 

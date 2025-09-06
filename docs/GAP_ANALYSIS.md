@@ -37,7 +37,7 @@ Date: 2025-09-04T00:00:00Z (updated)
 
 - Recovery & CC (RFC 9002): PTO/loss/PC implemented; NewReno default; CUBIC optional.
 
-- Non‑Functional: Zig 0.14.1; std‑only; zeroization; deterministic tests; CI matrices present.
+- Non‑Functional: Zig 0.15.1; std‑only; zeroization; deterministic tests; CI matrices present.
 
 ## Implemented (evidence)
 

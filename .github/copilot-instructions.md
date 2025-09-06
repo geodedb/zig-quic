@@ -1,4 +1,4 @@
-# QUIC — Copilot Instructions (Zig 0.14.1, std‑only)
+# QUIC — Copilot Instructions (Zig 0.15.1, std‑only)
 
 ## T — Task & Role
 

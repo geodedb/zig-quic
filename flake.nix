@@ -19,27 +19,12 @@
       flakeForSystem =
         nixpkgs: system:
         let
-          # Import nixpkgs with unfree enabled so the zcap package (unfree license) evaluates cleanly
           pkgs = import nixpkgs {
             inherit system;
             config = { allowUnfree = true; };
           };
-          # Package output for this system
-          zcap = pkgs.callPackage ./nix/zcap.nix {
-            zig = pkgs.zig_0_14;
-            pkg-config = pkgs.pkg-config;
-            git = pkgs.git;
-            revision = (self.rev or "dirty");
-            optimize = "ReleaseFast";
-            enableXdp = false;
-          };
         in
         {
-          packages = {
-            inherit zcap;
-            default = zcap;
-          };
-
           devShell = pkgs.mkShell {
             shellHook = '''';
             env = { };
@@ -51,6 +36,7 @@
               ])
               ++ (with pkgs; [
                 tcpdump
+                tshark
               ]);
           };
         };

@@ -12,7 +12,7 @@ jobs:
       - name: Set up Zig
         uses: goto-bus-stop/setup-zig@v2
         with:
-          version: 0.14.1
+          version: 0.15.1
       - name: Build project
         run: zig build -Drelease-safe
       - name: Update submodules

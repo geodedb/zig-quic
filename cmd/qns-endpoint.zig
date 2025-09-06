@@ -50,6 +50,29 @@ fn writeAllStream(ep: *api.QuicEndpoint, conn: *api.QuicConnection, data: []cons
     }
 }
 
+var log_file: ?std.fs.File = null;
+
+fn ensureLogFile() void {
+    if (log_file != null) return;
+    // Attempt to open /logs/endpoint.log (create dirs if needed)
+    if (std.fs.cwd().openDir("/logs", .{})) |_| {
+        // directory exists
+    } else |_| {
+        // try to create
+        _ = std.fs.cwd().makeDir("/logs") catch {};
+    }
+    log_file = std.fs.cwd().createFile("/logs/endpoint.log", .{ .truncate = false, .read = false }) catch null;
+}
+
+fn log(msg: []const u8) void {
+    ensureLogFile();
+    std.debug.print("[qns] {s}\n", .{msg});
+    if (log_file) |f| {
+        // ignore errors
+        _ = f.writer().print("[qns] {s}\n", .{msg}) catch {};
+    }
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -106,18 +129,47 @@ pub fn main() !void {
     if (std.mem.eql(u8, role, "server")) {
         const ep = try api.endpointInit(&alloc, "0.0.0.0:443", &cfg);
         defer api.endpointDeinit(ep);
+        log("server: started (listening 0.0.0.0:443)");
         // Single accept loop (serve sequentially) with coarse timeout budget.
         var served: usize = 0;
         while (served < 32) : (served += 1) {
             const conn = api.accept(ep) catch |e| switch (e) {
                 else => break,
             };
+            log("server: accepted connection");
+            if (cfg.enable_retry) {
+                log("server: retry enabled (may issue stateless Retry)");
+            }
             // Handle a single connection
             var buf: [4096]u8 = undefined;
             var total_wait: usize = 0;
             // Wait for handshake done before reading requests
             while (!api.handshakeDoneSeen(conn) and total_wait < 2000) : (total_wait += 1) {
                 api.poll(ep, 5) catch {};
+            }
+            if (api.handshakeDoneSeen(conn)) {
+                log("server: handshake complete");
+                if (api.getNegotiatedAlpn(conn)) |a| {
+                    var alpn_buf: [128]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&alpn_buf, "server: negotiated alpn={s}", .{a}) catch "server: negotiated alpn=?";
+                    log(msg);
+                }
+                if (api.getPeerTransportParams(conn)) |tp_raw| {
+                    var tp_buf: [256]u8 = undefined;
+                    const n = @min(tp_raw.len, tp_buf.len / 2);
+                    var j: usize = 0;
+                    var off: usize = 0;
+                    while (j < n and off + 2 <= tp_buf.len) : (j += 1) {
+                        _ = std.fmt.bufPrint(tp_buf[off..][0..2], "{X:0>2}", .{tp_raw[j]}) catch break;
+                        off += 2;
+                    }
+                    const slice = tp_buf[0..off];
+                    var tp_msg_buf: [300]u8 = undefined;
+                    const tp_msg = std.fmt.bufPrint(&tp_msg_buf, "server: peer transport params hex={s}", .{slice}) catch "server: peer transport params hex=?";
+                    log(tp_msg);
+                }
+            } else {
+                log("server: handshake timeout");
             }
             // Read simple lines until connection drained or timeout
             var iters: usize = 0;
@@ -129,6 +181,7 @@ pub fn main() !void {
                 const line = std.mem.trim(u8, buf[0..n], " \r\n");
                 if (std.mem.startsWith(u8, line, "GET ")) {
                     const path = line[4..];
+                    log("server: GET request received");
                     var full_path_buf: [512]u8 = undefined;
                     const full_path = try std.fmt.bufPrint(&full_path_buf, "/www{s}", .{path});
                     if (std.fs.cwd().openFile(full_path, .{})) |file| {
@@ -140,6 +193,7 @@ pub fn main() !void {
                                 const nread = file.readAll(b) catch 0;
                                 writeAllStream(ep, conn, b[0..nread]);
                                 alloc.free(b);
+                                log("server: response sent");
                             }
                         }
                     } else |_| {}
@@ -150,6 +204,7 @@ pub fn main() !void {
             var spins: usize = 0;
             while (spins < 50 and !api.isDrained(conn)) : (spins += 1) api.poll(ep, 1) catch break;
             api.destroy(ep, conn);
+            log("server: connection closed");
         }
         return;
     } else if (std.mem.eql(u8, role, "client")) {
@@ -160,10 +215,38 @@ pub fn main() !void {
         const ep = try api.endpointInit(&alloc, "0.0.0.0:0", &cfg);
         defer api.endpointDeinit(ep);
         const conn = try api.connect(ep, "server4:443", "server4");
+        log("client: connecting to server4:443");
+        if (cfg.enable_retry) {
+            log("client: retry enabled (will process Retry if received)");
+        }
         // Wait for handshake done
         var wait: usize = 0;
         while (!api.handshakeDoneSeen(conn) and wait < 2000) : (wait += 1) {
             api.poll(ep, 5) catch {};
+        }
+        if (api.handshakeDoneSeen(conn)) {
+            log("client: handshake complete");
+            if (api.getNegotiatedAlpn(conn)) |a| {
+                var alpn_buf: [128]u8 = undefined;
+                const msg = std.fmt.bufPrint(&alpn_buf, "client: negotiated alpn={s}", .{a}) catch "client: negotiated alpn=?";
+                log(msg);
+            }
+            if (api.getPeerTransportParams(conn)) |tp_raw| {
+                var tp_buf: [256]u8 = undefined;
+                const n = @min(tp_raw.len, tp_buf.len / 2);
+                var j: usize = 0;
+                var off: usize = 0;
+                while (j < n and off + 2 <= tp_buf.len) : (j += 1) {
+                    _ = std.fmt.bufPrint(tp_buf[off..][0..2], "{X:0>2}", .{tp_raw[j]}) catch break;
+                    off += 2;
+                }
+                const slice = tp_buf[0..off];
+                var tp_msg_buf: [300]u8 = undefined;
+                const tp_msg = std.fmt.bufPrint(&tp_msg_buf, "client: peer transport params hex={s}", .{slice}) catch "client: peer transport params hex=?";
+                log(tp_msg);
+            }
+        } else {
+            log("client: handshake timeout");
         }
         var success: bool = true;
         var request_i: usize = 0;
@@ -171,6 +254,7 @@ pub fn main() !void {
             const path = extractPath(urls[request_i]);
             var line_buf: [600]u8 = undefined;
             const line = try std.fmt.bufPrint(&line_buf, "GET {s}", .{path});
+            log("client: sending GET request");
             writeAllStream(ep, conn, line);
             // For keyupdate testcase, after first request send ~70KiB padding to force early key update.
             if (request_i == 0 and std.mem.eql(u8, testcase, "keyupdate")) {
@@ -185,6 +269,7 @@ pub fn main() !void {
                         sent_total += wn;
                     }
                 }
+                log("client: padding sent for keyupdate testcase");
             }
             // Read response until timeout or no progress; save to file
             var file_bytes = std.ArrayList(u8).init(alloc);
@@ -214,6 +299,9 @@ pub fn main() !void {
                 _ = outf.write(file_bytes.items) catch {};
             } else |_| {}
             if (file_bytes.items.len == 0) success = false;
+            var msg_buf: [96]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "client: response bytes={d}", .{file_bytes.items.len}) catch "client: response bytes=?";
+            log(msg);
         }
         api.close(conn, 0, "bye") catch {};
         api.flush(ep, 10);
