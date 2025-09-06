@@ -1,5 +1,7 @@
 # NEXT — Near‑term Plan (rolling)
 
+- Add client consumption of NewSessionTicket and derive resumption secret (RFC 8446 §4.6.1) for future 0-RTT.
+
 Date: 2025‑09‑04
 
 ## 1) ECN longitudinal — FIX Application ACK_ECN (RFC 9000 §19.3.2)

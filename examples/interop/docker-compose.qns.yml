@@ -1,0 +1,106 @@
+version: "3.5"
+
+# Convenience docker-compose to manually run the network simulator with the
+# local Zig QUIC implementation (zig-qns image) on both sides.
+# Example:
+#   (from repo root)
+#   docker compose -f examples/interop/docker-compose.qns.yml build
+#   SERVER=zig-qns CLIENT=zig-qns SCENARIO="simple-p2p --delay=10ms" docker compose -f examples/interop/docker-compose.qns.yml up
+
+services:
+  sim:
+    image: martenseemann/quic-network-simulator
+    container_name: sim
+    hostname: sim
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./quic-network-simulator/logs/sim:/logs
+    environment:
+      - SCENARIO=${SCENARIO}
+    cap_add:
+      - NET_ADMIN
+    expose:
+      - "57832"
+    networks:
+      leftnet:
+        ipv4_address: 193.167.0.2
+        ipv6_address: fd00:cafe:cafe:0::2
+      rightnet:
+        ipv4_address: 193.167.100.2
+        ipv6_address: fd00:cafe:cafe:100::2
+
+  server:
+    build: ./zig-qns
+    image: zig-qns:local
+    container_name: server
+    hostname: server
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./quic-network-simulator/logs/server:/logs
+      - ./quic-network-simulator/www:/www:ro
+    environment:
+      - ROLE=server
+      - TESTCASE=${TESTCASE}
+    depends_on:
+      - sim
+    cap_add:
+      - NET_ADMIN
+    networks:
+      rightnet:
+        ipv4_address: 193.167.100.100
+        ipv6_address: fd00:cafe:cafe:100::100
+    extra_hosts:
+      - "client4:193.167.0.100"
+      - "client6:fd00:cafe:cafe:0::100"
+      - "client46:193.167.0.100"
+      - "client46:fd00:cafe:cafe:0::100"
+
+  client:
+    build: ./zig-qns
+    image: zig-qns:local
+    container_name: client
+    hostname: client
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./quic-network-simulator/logs/client:/logs
+      - ./quic-network-simulator/downloads:/downloads
+    environment:
+      - ROLE=client
+      - REQUESTS=${REQUESTS}
+      - TESTCASE=${TESTCASE}
+    depends_on:
+      - sim
+    cap_add:
+      - NET_ADMIN
+    networks:
+      leftnet:
+        ipv4_address: 193.167.0.100
+        ipv6_address: fd00:cafe:cafe:0::100
+    extra_hosts:
+      - "server4:193.167.100.100"
+      - "server6:fd00:cafe:cafe:100::100"
+      - "server46:193.167.100.100"
+      - "server46:fd00:cafe:cafe:100::100"
+
+networks:
+  leftnet:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: 'false'
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: 193.167.0.0/24
+        - subnet: fd00:cafe:cafe:0::/64
+  rightnet:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: 'false'
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: 193.167.100.0/24
+        - subnet: fd00:cafe:cafe:100::/64

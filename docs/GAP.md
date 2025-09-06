@@ -1,8 +1,23 @@
 # GAP Analysis — RFCs 9000/9001/9002 (+ options)
 
-Date: 2025-09-04 (updated)
+_Recent additions:_ Session ticket storage (client) + minimal PSK ClientHello offer (binder placeholder, no resumption handshake yet).
+
+Date: 2025-09-06 (updated)
 
 ## Latest slice (status bump)
+
+### Multi-Stream Foundations & ALPN Adjustment
+
+Implemented initial multi-stream transmit bookkeeping (hash map of per-stream offsets/flags) and generalized `openStream`, `writeStream`, `closeStream` beyond stream 0. Existing tests still exercise stream 0 semantics; additional e2e multi-stream tests pending. Added `readAnyStream` helper for future HTTP/0.9 pipelining upgrades. Inserted key update debug logs (trigger/finalize) to aid interop traceability.
+
+Updated interop endpoint ALPN from placeholder `h3` to `hq-interop` to avoid misleading negotiation before real HTTP/3 stack lands. Endpoint still implements HTTP/0.9 style transfer.
+
+Outstanding for streams slice:
+
+- RX side multi-stream FIN/RESET/STOP_SENDING propagation tests.
+- Stream limit enforcement tests (MAX_STREAMS / STREAMS_BLOCKED for >0 ids).
+- Flow control tuning to scale window per active stream.
+- HTTP/0.9 multi-parallel GET support (client pipelining across multiple stream IDs).
 
 ### Connection ID Lifecycle & Rotation
 
@@ -88,7 +103,7 @@ Added:
 - HP timing side-channel audit scaffolding (measurement harness) (may defer behind above).
 - Streams & flow control refinements (FIN/RESET/STOP_SENDING) (deferred until after interop handshake success).
 
-Deferred (tracked): migration/token handling, extended logging/JSON lines, 0‑RTT enablement.
+Deferred (tracked): migration/token handling, extended logging/JSON lines, 0‑RTT enablement (design pending, early data + anti-replay scaffolding not started).
 
 ## Risks
 

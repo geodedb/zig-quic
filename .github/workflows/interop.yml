@@ -1,0 +1,38 @@
+name: Interop (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tests:
+        description: 'Comma separated testcases (e.g. handshake,transfer)'
+        required: false
+        default: 'handshake'
+      impl:
+        description: 'Peer implementation (e.g. quic-go, quiche)'
+        required: false
+        default: 'quic-go'
+
+jobs:
+  interop-local:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Zig 0.14.1
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.14.1
+      - name: Install Python deps
+        run: sudo apt-get update && sudo apt-get install -y python3-pip
+      - name: Run interop subset
+        env:
+          TESTS: ${{ github.event.inputs.tests }}
+          IMPL: ${{ github.event.inputs.impl }}
+        run: |
+          bash scripts/interop_local.sh || true
+      - name: Archive interop logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interop-logs
+          path: examples/interop/quic-interop-runner/logs

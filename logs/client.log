@@ -1,26 +1,26 @@
-client: deriving Initial keys with dcid=58B22F3E5FDED43C len=8
-TLS: Added 39 bytes to transcript (queue): 01 00 00 23 43 48 31 06 ...
-client: built Initial pn=1 dcid=58B22F3E5FDED43C scid=148F31D9C5C68FED payload_len=1150
-connecting to 127.0.0.1:48763
+client: deriving Initial keys with dcid=CF6964C6911974B3 len=8
+TLS: Added 39 bytes to transcript (queue): 01 00 00 23 43 48 31 DE ...
+client: built Initial pn=1 dcid=CF6964C6911974B3 scid=F7F04C083AC987F3 payload_len=1150
+connecting to 127.0.0.1:53093
 Processing Initial packet from peer
-Looking up connection with dcid=148F31D9C5C68FED (found=true)
+Looking up connection with dcid=F7F04C083AC987F3 (found=true)
 Reusing existing client connection for inbound Initial (dcid matched our_scid)
-Client: Deriving Initial keys with dcid=58B22F3E5FDED43C
-Client: Masked PN bytes: 9E B5 FA 70 
+Client: Deriving Initial keys with dcid=CF6964C6911974B3
+Client: Masked PN bytes: F9 42 C7 FF 
 Client: Trying to decrypt Initial with pn_initial.max=0
-Before headerUnprotect: pn_bytes=9E 
+Before headerUnprotect: pn_bytes=F9 
 After headerUnprotect: pn_bytes=00 
 expandPacketNumber: truncated=0 pn_len=1 expected=0 -> full=0
 AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
-Before headerUnprotect: pn_bytes=9E B5 
+Before headerUnprotect: pn_bytes=F9 42 
 After headerUnprotect: pn_bytes=00 00 
 expandPacketNumber: truncated=0 pn_len=2 expected=0 -> full=0
 AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
-Before headerUnprotect: pn_bytes=9E B5 FA 
+Before headerUnprotect: pn_bytes=F9 42 C7 
 After headerUnprotect: pn_bytes=00 00 00 
 expandPacketNumber: truncated=0 pn_len=3 expected=0 -> full=0
 AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
-Before headerUnprotect: pn_bytes=9E B5 FA 70 
+Before headerUnprotect: pn_bytes=F9 42 C7 FF 
 After headerUnprotect: pn_bytes=00 00 00 01 
 expandPacketNumber: truncated=1 pn_len=4 expected=0 -> full=1
 After unmasking with pn_len=4: 00 00 00 01 
@@ -28,7 +28,7 @@ Successfully decrypted Initial packet (trial pn_len=4) plaintext len: 47
 Expanded PN: 1 from truncated: 1
 Client: Received CRYPTO frame with 39 bytes
 TLS: Parsed handshake message type=tls13.HsType.server_hello len=35
-TLS: Added 39 bytes to transcript (recv): 02 00 00 23 53 48 31 C2 ...
+TLS: Added 39 bytes to transcript (recv): 02 00 00 23 53 48 31 A6 ...
 Client: Computed ECDHE secret
 Client: Not ready to send Finished (verified=false, has_secret=false)
 Client: Derived handshake secrets
@@ -36,62 +36,62 @@ Client: Encoding Initial with pn=2 dcid_len=8 scid_len=8 pn_len=4
 Client: Sending Initial response with 50 bytes (has_crypto=false)
 Processing Handshake packet from peer
 Client has handshake RX keys, proceeding to decrypt
-Before headerUnprotect: pn_bytes=88 
+Before headerUnprotect: pn_bytes=E7 
 After headerUnprotect: pn_bytes=00 
 expandPacketNumber: truncated=0 pn_len=1 expected=0 -> full=0
 AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
-Before headerUnprotect: pn_bytes=88 E1 
+Before headerUnprotect: pn_bytes=E7 03 
 After headerUnprotect: pn_bytes=00 01 
 expandPacketNumber: truncated=1 pn_len=2 expected=0 -> full=1
 After unmasking with pn_len=2: 00 01 
 Successfully decrypted Handshake packet (trial pn_len=2) plaintext len: 77
-Handshake frame: frame.Frame{ .crypto = frame.Frame__struct_25048{ .offset = 0, .data = { 8, 0, 0, 33, 65, 76, 80, 78, 2, 104, 51, 84, 80, 4, 4, 128, 4, 0, 0, 5, 4, 128, 1, 0, 0, 6, 4, 128, 1, 0, 0, 8, 1, 16, 9, 1, 0, 20, 0, 0, 32, 61, 44, 28, 123, 135, 168, 131, 103, 250, 4, 117, 237, 179, 165, 36, 151, 105, 135, 65, 43, 162, 119, 217, 243, 150, 96, 24, 130, 168, 193, 6, 208 } } } at offset 0
+Handshake frame: frame.Frame{ .crypto = frame.Frame__struct_25097{ .offset = 0, .data = { 8, 0, 0, 33, 65, 76, 80, 78, 2, 104, 51, 84, 80, 4, 4, 128, 4, 0, 0, 5, 4, 128, 1, 0, 0, 6, 4, 128, 1, 0, 0, 8, 1, 16, 9, 1, 0, 20, 0, 0, 32, 60, 131, 225, 241, 177, 64, 42, 46, 64, 142, 33, 251, 252, 70, 35, 248, 102, 164, 49, 10, 120, 69, 102, 59, 76, 21, 181, 38, 153, 21, 35, 251 } } } at offset 0
 TLS: Parsed handshake message type=tls13.HsType.encrypted_extensions len=33
 TLS: Added 37 bytes to transcript (recv): 08 00 00 21 41 4C 50 4E ...
 TLS: Parsed handshake message type=tls13.HsType.finished len=32
 TLS: Processing Finished message
 TLS: Using stored handshake secrets for verification
-TLS: Verifying Finished with transcript hash: F4 45 DD 24 FF 10 DD E5 ...
+TLS: Verifying Finished with transcript hash: 26 5F 35 EC D7 25 8E D8 ...
 TLS: Finished verification result: true
-TLS: Added 36 bytes to transcript (recv-finished): 14 00 00 20 3D 2C 1C 7B ...
+TLS: Added 36 bytes to transcript (recv-finished): 14 00 00 20 3C 83 E1 F1 ...
 Client: Queueing Finished message in minimal mode
-TLS: Queueing Finished with transcript hash: EA 90 C2 F2 06 E3 92 7E ...
-TLS: Added 36 bytes to transcript (queue): 14 00 00 20 CF 52 C3 77 ...
+TLS: Queueing Finished with transcript hash: D8 74 4B 8D DB 30 90 61 ...
+TLS: Added 36 bytes to transcript (queue): 14 00 00 20 5C F0 71 17 ...
 Client: Waiting to derive 1-RTT keys until Finished flushes (36 bytes pending)
 Client: Deriving application secrets after Finished flush
 Client: Sending control frames (13 bytes)
-DEC hp_sample: 1b b6 2e b5 28 4f fd 64 66 19 52 f2 f2 42 c9 45
-DEC hp_key: 26 eb 83 40 3f 32 b7 dc 2a 19 7c e3 7e 6f c4 f3
+DEC hp_sample: 08 a1 1b 5b 55 c9 97 72 78 b5 d3 ff 65 bf 74 45
+DEC hp_key: 4b 09 16 b9 15 4d 6d 96 38 29 9a a0 ec b5 06 60
 First packet: truncated=0001 (1) -> expanded=1
-DEC aead_key: 07 da 8b 22 6d 1c aa c3 d8 d6 f3 c5 70 f0 48 3d
-DEC aead_iv: ef 63 e5 42 7d 70 c4 b6 06 fd 1d 1d
-DEC aad: 41 14 8f 31 d9 c5 c6 8f ed 00 01
-DEC nonce: ef 63 e5 42 7d 70 c4 b6 06 fd 1d 1c
+DEC aead_key: 11 cb 94 a2 82 6d b4 20 b3 fa 18 72 63 e5 c1 d0
+DEC aead_iv: 5a c7 5f a0 5d 93 4a 7e 84 16 6a 1e
+DEC aad: 41 f7 f0 4c 08 3a c9 87 f3 00 01
+DEC nonce: 5a c7 5f a0 5d 93 4a 7e 84 16 6a 1f
 DEC pn_bytes: 00 01
-DEC hp_sample: f3 80 af 0e 92 71 22 88 fa 0d 2f 9a ce a8 37 7d
-DEC hp_key: 26 eb 83 40 3f 32 b7 dc 2a 19 7c e3 7e 6f c4 f3
+DEC hp_sample: 7d d6 3d 60 05 e0 8e e1 0b 84 e4 f5 6d 87 25 6f
+DEC hp_key: 4b 09 16 b9 15 4d 6d 96 38 29 9a a0 ec b5 06 60
 First packet: truncated=0002 (2) -> expanded=2
-DEC aead_key: 07 da 8b 22 6d 1c aa c3 d8 d6 f3 c5 70 f0 48 3d
-DEC aead_iv: ef 63 e5 42 7d 70 c4 b6 06 fd 1d 1d
-DEC aad: 41 14 8f 31 d9 c5 c6 8f ed 00 02
-DEC nonce: ef 63 e5 42 7d 70 c4 b6 06 fd 1d 1f
+DEC aead_key: 11 cb 94 a2 82 6d b4 20 b3 fa 18 72 63 e5 c1 d0
+DEC aead_iv: 5a c7 5f a0 5d 93 4a 7e 84 16 6a 1e
+DEC aad: 41 f7 f0 4c 08 3a c9 87 f3 00 02
+DEC nonce: 5a c7 5f a0 5d 93 4a 7e 84 16 6a 1c
 DEC pn_bytes: 00 02
 wrote initial message on stream 0 (5 bytes)
-DEC hp_sample: bd 35 8d 7a bb ca dc 45 c2 1c fb 67 04 9b cb d2
-DEC hp_key: 26 eb 83 40 3f 32 b7 dc 2a 19 7c e3 7e 6f c4 f3
+DEC hp_sample: e7 7f 91 f8 95 01 78 98 b5 62 3e 24 4e 0c 33 70
+DEC hp_key: 4b 09 16 b9 15 4d 6d 96 38 29 9a a0 ec b5 06 60
 First packet: truncated=0003 (3) -> expanded=3
-DEC aead_key: 07 da 8b 22 6d 1c aa c3 d8 d6 f3 c5 70 f0 48 3d
-DEC aead_iv: ef 63 e5 42 7d 70 c4 b6 06 fd 1d 1d
-DEC aad: 41 14 8f 31 d9 c5 c6 8f ed 00 03
-DEC nonce: ef 63 e5 42 7d 70 c4 b6 06 fd 1d 1e
+DEC aead_key: 11 cb 94 a2 82 6d b4 20 b3 fa 18 72 63 e5 c1 d0
+DEC aead_iv: 5a c7 5f a0 5d 93 4a 7e 84 16 6a 1e
+DEC aad: 41 f7 f0 4c 08 3a c9 87 f3 00 03
+DEC nonce: 5a c7 5f a0 5d 93 4a 7e 84 16 6a 1d
 DEC pn_bytes: 00 03
-DEC hp_sample: b0 51 92 e9 7b ae 38 ec 7f 3a 66 86 f1 2c d5 5a
-DEC hp_key: 26 eb 83 40 3f 32 b7 dc 2a 19 7c e3 7e 6f c4 f3
+DEC hp_sample: ab cc fc 15 ec e9 4d ae f6 b8 5f 1f 75 62 90 f0
+DEC hp_key: 4b 09 16 b9 15 4d 6d 96 38 29 9a a0 ec b5 06 60
 First packet: truncated=0004 (4) -> expanded=4
-DEC aead_key: 07 da 8b 22 6d 1c aa c3 d8 d6 f3 c5 70 f0 48 3d
-DEC aead_iv: ef 63 e5 42 7d 70 c4 b6 06 fd 1d 1d
-DEC aad: 41 14 8f 31 d9 c5 c6 8f ed 00 04
-DEC nonce: ef 63 e5 42 7d 70 c4 b6 06 fd 1d 19
+DEC aead_key: 11 cb 94 a2 82 6d b4 20 b3 fa 18 72 63 e5 c1 d0
+DEC aead_iv: 5a c7 5f a0 5d 93 4a 7e 84 16 6a 1e
+DEC aad: 41 f7 f0 4c 08 3a c9 87 f3 00 04
+DEC nonce: 5a c7 5f a0 5d 93 4a 7e 84 16 6a 1a
 DEC pn_bytes: 00 04
 echo: hello
 received echo (5 bytes)

@@ -8,6 +8,63 @@ const ks = @import("quic_tls");
 const x509 = @import("x509.zig");
 const sig = @import("sig.zig");
 
+// --- Session Ticket / PSK Cache Structures (minimal placeholder) ---
+pub const TicketEntry = struct {
+    identity: []u8, // ticket bytes (owned)
+    secret: [H.digest_length]u8, // resumption_secret derived from master_secret
+    lifetime: u32,
+};
+
+pub const TicketEntryView = struct {
+    identity: []const u8,
+    secret: [H.digest_length]u8,
+    lifetime: u32,
+};
+
+pub const TicketStore = struct {
+    const capacity = 4; // tiny FIFO
+    entries: [capacity]?TicketEntry = .{null} ** capacity,
+    count: usize = 0,
+
+    pub fn deinit(self: *TicketStore, alloc: std.mem.Allocator) void {
+        var i: usize = 0;
+        while (i < capacity) : (i += 1) {
+            if (self.entries[i]) |*e| {
+                alloc.free(e.identity);
+                self.entries[i] = null;
+            }
+        }
+        self.count = 0;
+    }
+
+    fn indexNewest(self: *TicketStore) ?usize {
+        if (self.count == 0) return null;
+        // Newest stored at (count-1) mod capacity as FIFO append order
+        return (self.count - 1) % capacity;
+    }
+
+    pub fn peek(self: *TicketStore) ?TicketEntryView {
+        const idx_opt = self.indexNewest();
+        if (idx_opt) |idx| {
+            if (self.entries[idx]) |e| {
+                return .{ .identity = e.identity, .secret = e.secret, .lifetime = e.lifetime };
+            }
+        }
+        return null;
+    }
+
+    pub fn add(self: *TicketStore, alloc: std.mem.Allocator, identity: []const u8, secret: [H.digest_length]u8, lifetime: u32) !void {
+        // If capacity full, evict oldest (which is at index (count % capacity) before increment)
+        const slot = self.count % capacity;
+        if (self.entries[slot]) |*old| {
+            alloc.free(old.identity);
+        }
+        const id_copy = try alloc.dupe(u8, identity);
+        self.entries[slot] = TicketEntry{ .identity = id_copy, .secret = secret, .lifetime = lifetime };
+        self.count += 1;
+    }
+};
+
 /// Hash used for TLS 1.3 in this implementation (SHA-256).
 pub const H = ks.H; // sha256
 
@@ -18,6 +75,7 @@ pub const Role = enum { Client, Server };
 pub const HsType = enum(u8) {
     client_hello = 1,
     server_hello = 2,
+    new_session_ticket = 4, // RFC 8446
     encrypted_extensions = 8,
     certificate = 11,
     certificate_verify = 15,
@@ -217,10 +275,14 @@ pub const Engine = struct {
     server_cert_der: ?[]u8 = null,
     server_priv_key: ?[]u8 = null,
     server_sig_alg: ?sig.SigAlg = null,
+    /// Cached master_secret (to derive resumption/PSK secrets). Filled when application secrets computed.
+    master_secret: ?[H.digest_length]u8 = null,
+    /// Stored resumption tickets (very small cache FIFO). Each entry keeps identity and resumption_secret.
+    tickets: TicketStore = .{},
 
     /// Initialize a TLS 1.3 Engine with allocator and role.
     pub fn init(alloc: std.mem.Allocator, role: Role) Engine {
-        return .{ .role = role, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .outbox = std.ArrayList(u8).init(alloc), .ch_sent = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .ee_sent = false, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .real_mode = false, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null };
+        return .{ .role = role, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .outbox = std.ArrayList(u8).init(alloc), .ch_sent = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .ee_sent = false, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .real_mode = false, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null, .master_secret = null, .tickets = .{} };
     }
     /// Release any owned resources and buffers.
     pub fn deinit(self: *Engine) void {
@@ -231,7 +293,42 @@ pub const Engine = struct {
         if (self.server_name) |s| self.outbox.allocator.free(s);
         if (self.server_cert_der) |c| self.outbox.allocator.free(c);
         if (self.server_priv_key) |k| self.outbox.allocator.free(k);
+        self.tickets.deinit(self.outbox.allocator);
         self.outbox.deinit();
+    }
+
+    /// Queue a minimal NewSessionTicket (placeholder). Not yet used for PSK resumption.
+    pub fn queueNewSessionTicket(self: *Engine, lifetime: u32, ticket: []const u8) !void {
+        var body = std.ArrayList(u8).init(self.outbox.allocator);
+        defer body.deinit();
+        // struct {
+        //   uint32 ticket_lifetime;
+        //   uint32 ticket_age_add;
+        //   opaque ticket_nonce<0..255>; (len=0)
+        //   opaque ticket<1..2^16-1>;
+        //   Extension extensions<0..2^16-2> (len=0)
+        // }
+        var be4: [4]u8 = undefined; // big-endian scratch
+        var be2: [2]u8 = undefined; // big-endian scratch
+        std.mem.writeInt(u32, &be4, lifetime, .big);
+        try body.appendSlice(&be4);
+        std.mem.writeInt(u32, &be4, 0, .big); // age_add placeholder
+        try body.appendSlice(&be4);
+        try body.append(0); // nonce length 0
+        std.mem.writeInt(u16, &be2, @intCast(ticket.len), .big);
+        try body.appendSlice(&be2);
+        try body.appendSlice(ticket);
+        std.mem.writeInt(u16, &be2, 0, .big); // extensions length 0
+        try body.appendSlice(&be2);
+        const msg = try encodeHandshake(self.outbox.allocator, .new_session_ticket, body.items);
+        defer self.outbox.allocator.free(msg);
+        self.transcript.update(msg);
+        try self.outbox.appendSlice(msg);
+    }
+
+    /// Access first cached ticket (if any) for simple resumption offering.
+    pub fn peekTicket(self: *Engine) ?TicketEntryView {
+        return self.tickets.peek();
     }
 
     /// Activate real handshake mode (experimental). Currently only affects ClientHello generation.
@@ -281,13 +378,13 @@ pub const Engine = struct {
         while (true) {
             const parsed = parseHandshakeOne(data[off..]) catch null;
             if (parsed) |p| {
-                std.debug.print("TLS: Parsed handshake message type={} len={}\n", .{p.typ, p.body.len});
-                
+                std.debug.print("TLS: Parsed handshake message type={} len={}\n", .{ p.typ, p.body.len });
+
                 // For Finished verification, we need the transcript BEFORE the Finished message
                 // So take a snapshot of the current transcript state
                 var snap = self.transcript;
                 const th_before = snap.finalize();
-                
+
                 // Update the transcript with this message UNLESS it's a Finished message
                 // Finished messages are added to the transcript AFTER verification
                 const msg_data = data[off .. off + p.n];
@@ -311,7 +408,7 @@ pub const Engine = struct {
                     self.handshake_client_secret = hs.client_hs;
                     self.handshake_server_secret = hs.server_hs;
                 }
-                
+
                 // Only try to extract public keys from ClientHello and ServerHello
                 if (p.typ == .client_hello or p.typ == .server_hello) {
                     var extracted: ?[32]u8 = null;
@@ -339,7 +436,7 @@ pub const Engine = struct {
                         }
                     }
                 }
-                
+
                 // Parse EncryptedExtensions (real or legacy placeholder)
                 if (p.typ == .encrypted_extensions) {
                     if (self.real_mode) {
@@ -473,7 +570,7 @@ pub const Engine = struct {
                     };
                     std.debug.print("TLS: Finished verification result: {}\n", .{ok});
                     self.finished_verified = ok;
-                    
+
                     // Add the Finished message to the transcript AFTER verification
                     if (ok) {
                         const finished_msg = data[off - p.n .. off];
@@ -481,6 +578,44 @@ pub const Engine = struct {
                         std.debug.print("TLS: Added {} bytes to transcript (recv-finished): ", .{finished_msg.len});
                         for (finished_msg[0..@min(8, finished_msg.len)]) |b| std.debug.print("{X:0>2} ", .{b});
                         std.debug.print("...\n", .{});
+                    }
+                }
+                // NewSessionTicket parsing (client side only for now)
+                if (p.typ == .new_session_ticket and self.role == .Client) {
+                    const b = p.body;
+                    var pos: usize = 0;
+                    if (b.len >= 4) {
+                        if (b.len < 4 + 4) continue; // need lifetime + age_add
+                        const lifetime: u32 = (@as(u32, b[0]) << 24) | (@as(u32, b[1]) << 16) | (@as(u32, b[2]) << 8) | @as(u32, b[3]);
+                        pos = 4 + 4; // skip age_add as well
+                        if (pos >= b.len) continue;
+                        if (pos >= b.len) continue;
+                        const nonce_len: usize = b[pos];
+                        pos += 1;
+                        if (pos + nonce_len > b.len) continue; // skip nonce
+                        pos += nonce_len;
+                        if (pos + 2 > b.len) continue;
+                        const ticket_len: usize = (@as(usize, b[pos]) << 8) | b[pos + 1];
+                        pos += 2;
+                        if (pos + ticket_len > b.len) continue;
+                        const ticket_bytes = b[pos .. pos + ticket_len];
+                        pos += ticket_len;
+                        if (pos + 2 > b.len) continue; // extensions length
+                        const ext_len: usize = (@as(usize, b[pos]) << 8) | b[pos + 1];
+                        pos += 2;
+                        if (pos + ext_len > b.len) continue;
+                        // Compute resumption_secret if we have master_secret stored
+                        if (self.master_secret) |ms| {
+                            var resumption_secret: [H.digest_length]u8 = undefined;
+                            // RFC 8446: resumption_master_secret = HKDF-Expand-Label(master_secret, "res master", Hash("") )
+                            var empty_hash: [H.digest_length]u8 = .{0} ** H.digest_length;
+                            // For now use zero hash as placeholder (transcript hash of empty string)
+                            ks.expandLabel(ms, "res master", &empty_hash, &resumption_secret) catch continue;
+                            self.tickets.add(self.outbox.allocator, ticket_bytes, resumption_secret, lifetime) catch {};
+                            std.debug.print("TLS: Stored session ticket (len={}, lifetime={})\n", .{ ticket_bytes.len, lifetime });
+                        } else {
+                            std.debug.print("TLS: Received ticket before master_secret ready; ignoring\n", .{});
+                        }
                     }
                 }
             } else break;
@@ -603,6 +738,35 @@ pub const Engine = struct {
             try ext_buf.appendSlice(&.{ 0x00, 0x39, @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
             try ext_buf.appendSlice(tp);
         }
+        // Pre-Shared Key (PSK) offer if we have cached tickets. Minimal implementation:
+        // - Offer single identity (first ticket). Binder is zero-filled placeholder (not validated yet).
+        if (self.peekTicket()) |tkt| {
+            // psk_key_exchange_modes (ext 0x002d) offering mode 0 (psk_ke) only
+            try ext_buf.appendSlice(&.{ 0x00, 0x2d, 0x00, 0x02, 0x01, 0x00 });
+            // pre_shared_key (0x0029)
+            const id_len: u16 = @intCast(tkt.identity.len);
+            // identities vector: length(2) + identity + obfuscated_ticket_age(4)
+            const one_identity_len: usize = 2 + id_len + 4;
+            const identities_vec_len: u16 = @intCast(one_identity_len);
+            const binders_len: u16 = @intCast(1 + H.digest_length); // vector length(1) + binder (digest length)
+            const total_psk_len: u16 = @intCast(2 + identities_vec_len + 2 + binders_len);
+            try ext_buf.appendSlice(&.{ 0x00, 0x29, @intCast(total_psk_len >> 8), @intCast(total_psk_len & 0xff) });
+            // identities vector length
+            try ext_buf.appendSlice(&.{ @intCast(identities_vec_len >> 8), @intCast(identities_vec_len & 0xff) });
+            // identity length
+            try ext_buf.appendSlice(&.{ @intCast(id_len >> 8), @intCast(id_len & 0xff) });
+            try ext_buf.appendSlice(tkt.identity);
+            // obfuscated_ticket_age (placeholder 0)
+            try ext_buf.appendSlice(&.{ 0, 0, 0, 0 });
+            // binders vector length
+            const binders_vec_len: u16 = @intCast(1 + H.digest_length);
+            try ext_buf.appendSlice(&.{ @intCast(binders_vec_len >> 8), @intCast(binders_vec_len & 0xff) });
+            // single binder length (H.digest_length)
+            try ext_buf.append(@as(u8, @intCast(H.digest_length)));
+            // zero-filled binder placeholder
+            var zeros: [H.digest_length]u8 = .{0} ** H.digest_length;
+            try ext_buf.appendSlice(&zeros);
+        }
         // Now write extensions length
         const exts = ext_buf.items;
         const exts_len: u16 = @intCast(exts.len);
@@ -662,7 +826,7 @@ pub const Engine = struct {
         const expect = deriveFinishedVerifyData(peer_secret, th);
         const match = finished_body.len == expect.len and std.mem.eql(u8, finished_body, &expect);
         if (!match) {
-            std.debug.print("TLS: Finished verification failed. Expected len={}, got len={}\n", .{expect.len, finished_body.len});
+            std.debug.print("TLS: Finished verification failed. Expected len={}, got len={}\n", .{ expect.len, finished_body.len });
             if (finished_body.len == expect.len) {
                 std.debug.print("TLS: MAC mismatch\n", .{});
             }
@@ -745,8 +909,20 @@ pub const Engine = struct {
         if (self.ecdhe_secret == null) return null;
         if (!(self.ch_sent and self.sh_seen)) return null;
         const th = self.transcript.finalize();
-        const app = deriveApplicationTrafficFromEcdhe(self.ecdhe_secret.?, th);
-        return .{ .client = app.client_app, .server = app.server_app };
+        // Recompute master_secret path locally to retain master
+        const early_secret = ks.extract(&[_]u8{}, &[_]u8{});
+        var derived: [H.digest_length]u8 = undefined;
+        ks.expandLabel(early_secret, "derived", &[_]u8{}, &derived) catch return null;
+        const handshake_secret = ks.extract(&derived, self.ecdhe_secret.?);
+        var derived2: [H.digest_length]u8 = undefined;
+        ks.expandLabel(handshake_secret, "derived", &[_]u8{}, &derived2) catch return null;
+        const master = ks.extract(&derived2, &[_]u8{});
+        self.master_secret = master; // cache for tickets
+        var c_app: [H.digest_length]u8 = undefined;
+        var s_app: [H.digest_length]u8 = undefined;
+        ks.expandLabel(master, "c ap traffic", &th, &c_app) catch return null;
+        ks.expandLabel(master, "s ap traffic", &th, &s_app) catch return null;
+        return .{ .client = c_app, .server = s_app };
     }
 
     /// Queue a minimalistic ClientHello with an auto-generated X25519 key share.
@@ -806,8 +982,8 @@ pub const Engine = struct {
         if (self.outbox.items.len < 4) return 0;
         // TLS handshake message format: type(1) + length(3)
         const len = (@as(usize, self.outbox.items[1]) << 16) |
-                    (@as(usize, self.outbox.items[2]) << 8) |
-                    self.outbox.items[3];
+            (@as(usize, self.outbox.items[2]) << 8) |
+            self.outbox.items[3];
         return 4 + len; // Include header
     }
 
@@ -856,7 +1032,7 @@ pub const Engine = struct {
     fn maybeAutoProgress(self: *Engine) void {
         if (self.finished_sent) return;
         if (self.ecdhe_secret == null) return;
-        
+
         // In minimal mode, handle Finished generation for both client and server
         if (!self.real_mode) {
             if (self.role == .Client) {
@@ -865,13 +1041,13 @@ pub const Engine = struct {
                     std.debug.print("Client: Queueing Finished message in minimal mode\n", .{});
                     self.queueFinished(self.handshake_client_secret.?) catch {};
                 } else {
-                    std.debug.print("Client: Not ready to send Finished (verified={}, has_secret={})\n", .{self.finished_verified, self.handshake_client_secret != null});
+                    std.debug.print("Client: Not ready to send Finished (verified={}, has_secret={})\n", .{ self.finished_verified, self.handshake_client_secret != null });
                 }
             }
             // Server in minimal mode doesn't use this path
             return;
         }
-        
+
         // Real mode handling
         if (self.role == .Server) {
             // Authenticated path: if a server certificate is configured and not yet sent, emit Certificate + CertificateVerify
@@ -935,7 +1111,7 @@ pub const Engine = struct {
     pub fn queueServerHandshakeFlight(self: *Engine) void {
         if (self.role != .Server) return;
         if (self.finished_sent) return; // already done
-        
+
         // In minimal mode, just queue the Finished message
         if (!self.real_mode) {
             if (self.handshake_server_secret) |secret| {
@@ -943,7 +1119,7 @@ pub const Engine = struct {
             }
             return;
         }
-        
+
         // Real mode: full handshake flight
         // Require that handshake_server_secret be present (after SH) and EE queued.
         if (self.handshake_server_secret == null) return;

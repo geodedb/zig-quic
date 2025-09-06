@@ -216,6 +216,13 @@ const EcnCounter = struct {
     seen_any: bool = false,
 };
 
+// Per-stream transmit bookkeeping (offset + flags) for multi-stream support.
+const StreamTx = struct {
+    off: u64 = 0,
+    fin_sent: bool = false,
+    aborted: bool = false,
+};
+
 /// Connection state and helpers for QUIC handshake, recovery, and 1-RTT.
 pub const Connection = struct {
     id: u64,
@@ -266,6 +273,7 @@ pub const Connection = struct {
     handshake_done_sent: bool = false,
     handshake_done_seen: bool = false,
     server_hello_sent: bool = false,
+    session_ticket_sent: bool = false,
     // Connection close state
     closed: bool = false,
     // Server-side: whether this connection has been enqueued for accept()
@@ -319,15 +327,18 @@ pub const Connection = struct {
     streams_rx: std.AutoHashMap(u64, StreamRx) = undefined,
     stream_opened: bool = false,
     stream_send_off: u64 = 0,
+    // Multi-stream TX state map (extended): track offset/flags per stream id
+    stream_txs: std.AutoHashMap(u64, StreamTx) = undefined,
     // Stream state flags (stream 0 in this slice)
     stream_send_aborted: bool = false,
     stream_recv_aborted: bool = false,
     stream_recv_fin: bool = false,
     // Flow-control windows (connection and per-stream)
-    local_max_stream_data: u64 = 64 * 1024,
-    peer_max_stream_data: u64 = 64 * 1024,
-    local_max_data: u64 = 256 * 1024,
-    peer_max_data: u64 = 256 * 1024,
+    // Start with conservative windows; grow adaptively.
+    local_max_stream_data: u64 = 16 * 1024,
+    peer_max_stream_data: u64 = 16 * 1024,
+    local_max_data: u64 = 64 * 1024,
+    peer_max_data: u64 = 64 * 1024,
     peer_max_streams_bidi: u64 = 16,
     peer_max_streams_uni: u64 = 16,
     opened_bidi: u64 = 0,
@@ -564,6 +575,7 @@ pub const Connection = struct {
         self.streams_rx = std.AutoHashMap(u64, StreamRx).init(alloc.*);
         self.stream_opened = false;
         self.stream_send_off = 0;
+        self.stream_txs = std.AutoHashMap(u64, StreamTx).init(alloc.*);
         self.stream_send_aborted = false;
         self.stream_recv_aborted = false;
         self.stream_recv_fin = false;
@@ -690,6 +702,7 @@ pub const Connection = struct {
             s.deinit(self.allocator);
         }
         self.streams_rx.deinit();
+        if (self.stream_txs.capacity() != 0) self.stream_txs.deinit();
         // Free reset tokens / initial token buffers once (previous code double-deinited)
         if (self.reset_tokens.capacity != 0) self.reset_tokens.deinit();
         if (self.initial_token.capacity != 0) self.initial_token.deinit();
@@ -1001,13 +1014,17 @@ pub const Connection = struct {
         // Update connection RX accounting
         self.conn_recv_total +%= data.len;
         // Flow-control: if we've consumed more than 50% of advertised windows, bump and let endpoint send MAX_* on next ACK
-        const half_stream = self.local_max_stream_data / 2;
-        if (s.recv_off >= half_stream) {
-            self.local_max_stream_data +%= half_stream;
+        // Adaptive growth: scale per active RX streams to avoid single-stream domination
+        const active_streams: u64 = @intCast(self.streams_rx.count());
+        const denom: u64 = if (active_streams == 0) 1 else active_streams;
+        const stream_threshold: u64 = (self.local_max_stream_data * 3) / 4; // 75%
+        if (s.recv_off >= stream_threshold) {
+            self.local_max_stream_data +%= (self.local_max_stream_data / 2);
         }
-        const half_conn = self.local_max_data / 2;
-        if (self.conn_recv_total >= half_conn) {
-            self.local_max_data +%= half_conn;
+        const conn_threshold: u64 = (self.local_max_data * 7) / 10; // 70%
+        if (self.conn_recv_total >= conn_threshold) {
+            const bump = @max(self.local_max_stream_data, self.local_max_data / (4 * denom));
+            self.local_max_data +%= bump;
         }
     }
 
@@ -1171,9 +1188,7 @@ pub const Connection = struct {
     /// Open a new local stream (bidi or uni) returning stream id (flow-control permitting).
     pub fn openStream(self: *Connection, bidi: bool) !u64 {
         if (!bidi) return error.Unsupported;
-        // Enforce peer MAX_STREAMS_BIDI
         if (self.opened_bidi >= self.peer_max_streams_bidi) {
-            // Attempt to signal STREAMS_BLOCKED_BIDI
             var fb = std.ArrayList(u8).init(self.allocator.*);
             defer fb.deinit();
             const w = fb.writer();
@@ -1181,23 +1196,47 @@ pub const Connection = struct {
             self.sendControlFrames(fb.items);
             return error.OutOfStreams;
         }
-        if (self.stream_opened) return error.OutOfStreams;
-        self.stream_opened = true;
+        const stream_num: u64 = self.opened_bidi; // 0-based sequence
+        const initiator_bit: u64 = if (self.role == .Server) 1 else 0; // QUIC stream id layout
+        const stream_id: u64 = (stream_num << 2) | (initiator_bit << 1) | 0; // bidi => type bit 0
         self.opened_bidi += 1;
-        // Ensure RX state for stream 0 exists
-        _ = self.ensureStreamRx(0);
-        return 0;
+        if (stream_id == 0) {
+            if (self.stream_opened) return error.OutOfStreams;
+            self.stream_opened = true;
+        }
+        _ = self.ensureStreamRx(stream_id);
+        if (self.stream_txs.getPtr(stream_id) == null) {
+            _ = self.stream_txs.put(stream_id, .{}) catch {};
+        }
+        return stream_id;
     }
 
     /// Write STREAM data enforcing flow-control; may emit *_BLOCKED frames.
     /// Write data to a stream (simplified slice, no FIN flag in this helper slice yet).
     pub fn writeStream(self: *Connection, id: u64, data: []const u8) !usize {
-        if (id != 0) return error.InvalidStream;
-        if (self.stream_send_aborted) return error.StreamStopped;
+        if (id == 0) {
+            // Lazy open of client-initiated stream 0: allow application to call writeStream
+            // without an explicit openStream( true ) first. This mirrors common QUIC API
+            // ergonomics where the first write on stream 0 implicitly opens it.
+            if (!self.stream_opened) {
+                _ = self.openStream(true) catch |e| switch (e) {
+                    // Propagate flow-control exhaustion semantics; other errors surface directly.
+                    error.OutOfStreams => return e,
+                    else => return e,
+                };
+            }
+            if (self.stream_send_aborted) return error.StreamStopped;
+        } else {
+            if (self.stream_txs.getPtr(id) == null) return error.InvalidStream;
+            // Safely inspect per-stream TX state (abort / FIN flags)
+            if (self.stream_txs.getPtr(id)) |st| {
+                if (st.aborted or st.fin_sent) return error.StreamStopped;
+            }
+        }
         const tx = self.app_tx_keys orelse return error.KeysNotReady;
         if (data.len == 0) return 0;
-        // Enforce stream-level window
-        if (self.stream_send_off >= self.peer_max_stream_data) {
+        const cur_off: u64 = if (id == 0) self.stream_send_off else self.stream_txs.getPtr(id).?.off;
+        if (cur_off >= self.peer_max_stream_data) {
             // Signal STREAM_DATA_BLOCKED (coalesced: only once per limit value)
             if (self.last_stream_data_blocked_limit != self.peer_max_stream_data) {
                 self.last_stream_data_blocked_limit = self.peer_max_stream_data;
@@ -1222,7 +1261,7 @@ pub const Connection = struct {
             }
             return error.FlowControlBlocked;
         }
-        const window_left_stream: u64 = self.peer_max_stream_data - self.stream_send_off;
+        const window_left_stream: u64 = self.peer_max_stream_data - cur_off;
         const window_left_conn: u64 = self.peer_max_data - self.conn_send_off;
         const window_left: u64 = if (window_left_stream < window_left_conn) window_left_stream else window_left_conn;
         const max_payload: usize = 1000; // keep within typical path-MTU
@@ -1232,7 +1271,7 @@ pub const Connection = struct {
         var frames = std.ArrayList(u8).init(self.allocator.*);
         defer frames.deinit();
         const w = frames.writer();
-        _ = (frame.Frame{ .stream = .{ .stream_id = id, .offset = self.stream_send_off, .fin = false, .data = data[0..to_send] } }).write(w) catch 0;
+        _ = (frame.Frame{ .stream = .{ .stream_id = id, .offset = cur_off, .fin = false, .data = data[0..to_send] } }).write(w) catch 0;
         const pkt = try packet.encodeShortProtected(
             self.allocator.*,
             self.shortHeaderDcid(),
@@ -1246,7 +1285,11 @@ pub const Connection = struct {
         _ = try self.send(pkt);
         self.onShortHeaderPacketSent(pkt.len, true);
         self.computeAndMaybeArmPto(self);
-        self.stream_send_off += to_send;
+        if (id == 0) {
+            self.stream_send_off += to_send;
+        } else if (self.stream_txs.getPtr(id)) |stx| {
+            stx.off += to_send;
+        }
         self.conn_send_off += to_send;
         return to_send;
     }
@@ -1267,14 +1310,18 @@ pub const Connection = struct {
     /// Close a STREAM with RESET_STREAM using the given application error code.
     /// Initiate graceful close of a stream (sends RESET/FIN depending on state) with app error code.
     pub fn closeStream(self: *Connection, id: u64, app_error_code: u64) !void {
-        _ = app_error_code; // not surfaced yet in transport close
-        if (id != 0) return error.InvalidStream;
-        if (self.stream_send_aborted) return error.StreamStopped;
+        _ = app_error_code;
+        if (id == 0) {
+            if (self.stream_send_aborted) return error.StreamStopped;
+        } else if (self.stream_txs.getPtr(id) == null) {
+            return error.InvalidStream;
+        }
         const tx = self.app_tx_keys orelse return error.KeysNotReady;
         var frames = std.ArrayList(u8).init(self.allocator.*);
         defer frames.deinit();
         const w = frames.writer();
-        _ = (frame.Frame{ .stream = .{ .stream_id = 0, .offset = self.stream_send_off, .fin = true, .data = &[_]u8{} } }).write(w) catch 0;
+        const final_off: u64 = if (id == 0) self.stream_send_off else self.stream_txs.getPtr(id).?.off;
+        _ = (frame.Frame{ .stream = .{ .stream_id = id, .offset = final_off, .fin = true, .data = &[_]u8{} } }).write(w) catch 0;
         const pkt = try packet.encodeShortProtected(
             self.allocator.*,
             self.shortHeaderDcid(),
@@ -1294,7 +1341,11 @@ pub const Connection = struct {
     pub fn handleStopSending(self: *Connection, stream_id: u64, app_error_code: u64) !void {
         const tx = self.app_tx_keys orelse return error.KeysNotReady;
         // Mark stream as aborted for sending further STREAM frames
-        self.stream_send_aborted = true;
+        if (stream_id == 0) {
+            self.stream_send_aborted = true;
+        } else if (self.stream_txs.getPtr(stream_id)) |st| {
+            st.aborted = true;
+        }
         var frames = std.ArrayList(u8).init(self.allocator.*);
         defer frames.deinit();
         const w = frames.writer();
@@ -1322,7 +1373,7 @@ pub const Connection = struct {
         _ = app_error_code; // surfaced to app layer out of scope here
         // Only stream 0 supported in this slice, but apply generically.
         var s = self.ensureStreamRx(stream_id);
-        self.stream_recv_aborted = true;
+        if (stream_id == 0) self.stream_recv_aborted = true;
         s.fin_off = final_size;
         // Drop any buffered segment that starts at or beyond final_size
         var i: usize = 0;
@@ -1367,6 +1418,9 @@ pub const Connection = struct {
             self.stream_recv_aborted = false;
             self.stream_recv_fin = false;
             self.stream_send_off = 0;
+        }
+        if (stream_id != 0) {
+            _ = self.stream_txs.remove(stream_id);
         }
     }
 
@@ -1780,6 +1834,13 @@ pub const Connection = struct {
             _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = self.local_max_stream_data } }).write(w) catch 0;
             _ = (frame.Frame{ .max_data = .{ .max = self.local_max_data } }).write(w) catch 0;
             _ = (frame.Frame{ .max_streams_bidi = .{ .max = self.local_max_streams_bidi } }).write(w) catch 0;
+            if (!self.session_ticket_sent) {
+                const ticket_bytes = "ticket-placeholder";
+                self.tls.queueNewSessionTicket(24 * 60 * 60, ticket_bytes) catch |e| {
+                    std.debug.print("session ticket queue error: {s}\n", .{@errorName(e)});
+                };
+                self.session_ticket_sent = true;
+            }
             self.sendControlFrames(frames.items);
             self.handshake_done_sent = true;
         }
@@ -1846,6 +1907,7 @@ pub const Connection = struct {
             // Reset counters for next epoch
             self.tx_sent_packets_since_key = 0;
             self.tx_sent_bytes_since_key = 0;
+            std.debug.print("keyupdate: triggered phase={d} start_pn={d}\n", .{ @intFromBool(self.tx_key_phase), self.tx_update_start_pn });
         }
     }
 
@@ -1858,7 +1920,25 @@ pub const Connection = struct {
             }
             self.tx_prev_keys = null;
             self.tx_update_in_progress = false;
+            std.debug.print("keyupdate: finalized ack_pn={d} phase={d}\n", .{ largest_acked, @intFromBool(self.tx_key_phase) });
         }
+    }
+
+    /// Read first available stream data (any stream). Returns error.WouldBlock if none.
+    pub fn readAnyStream(self: *Connection, buf: []u8) !struct { id: u64, n: usize } {
+        var it2 = self.streams_rx.iterator();
+        while (it2.next()) |e| {
+            const sid = e.key_ptr.*;
+            const sr = e.value_ptr.*;
+            if (sr.inbox.items.len == 0) continue;
+            const n = @min(buf.len, sr.inbox.items.len);
+            @memcpy(buf[0..n], sr.inbox.items[0..n]);
+            const rem = sr.inbox.items.len - n;
+            if (rem > 0) std.mem.copyForwards(u8, sr.inbox.items[0..rem], sr.inbox.items[n..]);
+            sr.inbox.shrinkRetainingCapacity(rem);
+            return .{ .id = sid, .n = n };
+        }
+        return error.WouldBlock;
     }
 
     /// Record a short-header 1-RTT packet as sent and maybe trigger key update.

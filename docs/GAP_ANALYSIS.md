@@ -1,5 +1,7 @@
 # GAP Analysis — QUIC v1
 
+- Session resumption (PSK, NewSessionTicket issuance, 0-RTT) – PARTIAL (ticket frame placeholder only; no cache / 0-RTT).
+
 Date: 2025-09-04T00:00:00Z (updated)
 
 ## Summary delta since prior analysis

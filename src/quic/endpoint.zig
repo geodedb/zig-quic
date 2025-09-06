@@ -1968,6 +1968,7 @@ pub const Endpoint = struct {
         _ = self.conns.put(new_key, c) catch {};
         // Trigger PATH_CHALLENGE if 1-RTT keys are available
         c.sendPathChallenge();
+        std.debug.print("path: change detected dcid_len={d} triggering validation (phase={d})\n", .{ dcid_len, @intFromBool(c.tx_key_phase) });
     }
 
     /// Mark path validated and clear unvalidated counters consistently.
@@ -1977,6 +1978,7 @@ pub const Endpoint = struct {
         c.address_validated = true;
         c.bytes_rx_unvalidated = 0;
         c.bytes_tx_unvalidated = 0;
+        std.debug.print("path: validated (peer={d} bytes_rx_unval reset)\n", .{c.peer.len});
     }
 
     fn nextTimeoutFromTimers(self: *Endpoint, now_ms: i64, requested_timeout_ms: i32) i32 {

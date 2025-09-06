@@ -1,0 +1,28 @@
+name: nightly-interop
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch: {}
+jobs:
+  interop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.14.1
+      - name: Build project
+        run: zig build -Drelease-safe
+      - name: Update submodules
+        run: git submodule update --init --recursive
+      - name: Run limited interop matrix
+        env:
+          RETRY_TOKEN_SECRET: ${{ secrets.RETRY_TOKEN_SECRET }}
+        run: ./scripts/interop_local.sh --peers quic-go,ngtcp2 --timeout 900 || true
+      - name: Archive logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: interop-logs
+          path: logs/*.log
