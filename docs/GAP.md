@@ -15,14 +15,18 @@ Implemented full local Connection ID inventory management:
 - Rotation helper `issueNewConnectionIdRotating()` that retires oldest non-zero sequence when at limit, advances `retired_prior_to`, issues fresh CID, and schedules advertisement.
 - Updated writer to include current `retired_prior_to` and piggyback logic in ACK send path.
 
-Security placeholder: stateless reset token derivation currently simple (SHA-256(base||seq||cid) truncated). Will be replaced with HKDF-based derivation keyed from per-endpoint secret (Gap – see Next Slices).
+Security: stateless reset token derivation now HKDF-based (Extract(salt=base_secret, ikm=seq||cid) then Expand-Label "reset token" -> 16B). Base secret derived from application traffic secret post-handshake or randomized early.
 
 Outstanding for CID lifecycle:
 
-- HKDF-based stateless reset token derivation + secret rotation.
+- (DONE) HKDF-based stateless reset token derivation; rotation policy still pending.
 - Rotation policy triggers (time / packet count / path validation events) beyond explicit test-driven calls.
 - Preferred address + migration interplay (issuing fresh CIDs on path validation / probe success).
 - Frame packing heuristics (avoid exceeding MTU when batching multiple NEW_CONNECTION_ID frames with ACK).
+
+### Initial ↔ Short Header DCID Transition (peer_initial_scid / original_dcid)
+
+Implemented capture of the peer's Initial Source Connection ID (client records server SCID on first valid server Initial) into `peer_initial_scid` and use of that value for all subsequent short‑header packet DCIDs. This fixes a routing bug where the client previously continued using its own SCID, preventing the server from correlating short packets (HANDSHAKE_DONE + STREAM echo) — interop echo now succeeds. Added regression test `test_client_peer_initial_scid.zig` with test‑only exported accessors (guarded by `builtin.is_test`) to assert that `peer_initial_scid` is populated and distinct from our SCID. Also solidified Retry handling by persisting `original_dcid` for Initial secret derivation after a Retry (RFC 9000 §5.2).
 
 ### Transport Parameters Fidelity Expansion
 

@@ -81,7 +81,7 @@ Data structures:
 
 Issuance:
 
-- `issueNewConnectionId()`: allocate a new slot if under limit; derive CID bytes (random) & stateless reset token (currently SHA-256(base||seq||cid) truncated 16B placeholder); mark pending.
+- `issueNewConnectionId()`: allocate a new slot if under limit; derive CID bytes (random) & stateless reset token via HKDF (Extract(salt=stateless_reset_base, ikm=seq||cid) then Expand-Label "reset token" 16B); mark pending.
 - `issueNewConnectionIdRotating()`: if at limit, select oldest non-zero sequence CID, retire it (mark not in_use, decrement `issued_cids`), advance `retired_prior_to` if all lower sequences retired, then issue a fresh CID as above.
 
 Advertisement:
@@ -97,8 +97,8 @@ Retirement handling:
 
 Security considerations:
 
-- Placeholder stateless reset token derivation will be replaced by HKDF using a per-endpoint secret + sequence + CID to avoid direct hash oracle concerns and enable secret rotation.
-- Rotation heuristics (time / traffic volume) are pluggable; current implementation performs explicit rotation when invoked by higher-level policy or tests.
+- Stateless reset token derivation uses HKDF with a per-connection base secret (seeded from application traffic secret or randomized). Future: rotate base secret on key updates / timer without invalidating already-issued tokens.
+- Rotation heuristics (time / traffic volume) pluggable (not yet implemented); current tests issue explicit rotations only.
 
 Testing:
 
@@ -109,3 +109,33 @@ Future work:
 - Integrate with path migration triggers (issue new CID on validated new path, retire old after stable period).
 - HKDF-based token derivation & secret rotation on key update or timer.
 - Frame packing optimization (batch multiple NEW_CONNECTION_ID frames while respecting path MTU & congestion window).
+
+## Initial vs Short-Header DCID Selection (peer_initial_scid & original_dcid)
+
+Goals: (1) ensure post‑handshake short‑header packets sent by the client use the server's chosen SCID (so the server's per‑connection demux map matches), and (2) retain the Original Destination Connection ID (ODCID) across Retry so Initial secrets are derived per RFC 9000 §5.2.
+
+Data fields (in `Connection`):
+
+- `original_dcid`: immutable copy of the very first DCID the client used (Initial Destination CID prior to any Retry). If a Retry occurs, subsequent Initial key derivations still use this value.
+- `peer_initial_dcid`: peer's first DCID observed (for server use / twin creation logic).
+- `peer_initial_scid`: peer's Initial SCID captured from the first validated Initial packet we receive from that peer (client captures server SCID; server may capture client SCID for symmetry / diagnostics).
+
+Transition rules:
+
+1. When the client receives the first server Initial it stores the packet's SCID into `peer_initial_scid` (once only).
+2. Short‑header DCID selection: if `peer_initial_scid.len > 0` use it, else fallback to our own SCID (`our_scid`). This guarantees that once known, the DCID on all 1‑RTT packets matches the server's expectation.
+3. Retry: if a server issues a Retry with a new SCID/DCID pair, the client still derives new Initial secrets using the unchanged `original_dcid` (ODCID) while updating its in‑flight DCID for routing, per §5.2. This prevents decryption failure observed when erroneously keying with the post‑Retry DCID.
+
+Testing:
+
+- `test_client_peer_initial_scid.zig` asserts `peer_initial_scid` is set and differs from `our_scid` for a basic handshake scenario. Test‑only C ABI accessors (`__test_export_peer_initial_scid`, `__test_export_our_scid`) are exported under `builtin.is_test` so production builds do not expose them.
+
+Security & Robustness:
+
+- The accessor exports are no‑ops in release builds; no additional attack surface introduced.
+- Persisting `original_dcid` aligns with Retry validation expectations and avoids key mismatch side effects.
+
+Future work:
+
+- Extend tests to confirm short‑header packet DCIDs on the wire match `peer_initial_scid` once set (requires capture hook or pcap harness).
+- Incorporate preferred address / migration path updates to reselect appropriate DCID when paths change (may imply new peer SCIDs).

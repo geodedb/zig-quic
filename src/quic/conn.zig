@@ -423,8 +423,7 @@ pub const Connection = struct {
     last_ack_eliciting_rx_handshake_ns: u64 = 0,
     last_ack_eliciting_rx_app_ns: u64 = 0,
 
-    /// Record time a new ack-eliciting packet was received in a PN space.
-    /// Record timestamp of most recent ack-eliciting packet arrival in the given PN space.
+    /// recordAckElicitingRx: Timestamp most recent ack-eliciting RX in the given PN space.
     pub fn recordAckElicitingRx(self: *Connection, space: recovery.PacketNumberSpace, now_ns: u64) void {
         switch (space) {
             .Initial => self.last_ack_eliciting_rx_initial_ns = now_ns,
@@ -433,9 +432,7 @@ pub const Connection = struct {
         }
     }
 
-    /// Compute encoded ACK delay value for the given PN space using ack_delay_exponent.
-    /// The encoded value is (delay_us >> ack_delay_exponent) per RFC 9000 §19.3.
-    /// Encode ACK delay per RFC 9000 §19.3 using negotiated ack_delay_exponent and max_ack_delay cap.
+    /// getAckDelayEncoded: Encode ACK delay per RFC 9000 §19.3 using ack_delay_exponent and max_ack_delay cap.
     pub fn getAckDelayEncoded(self: *const Connection, space: recovery.PacketNumberSpace, now_ns: u64) u64 {
         const origin_ns: u64 = switch (space) {
             .Initial => self.last_ack_eliciting_rx_initial_ns,
@@ -1453,25 +1450,27 @@ pub const Connection = struct {
         if (space == .Application and largest > self.largest_acked) self.largest_acked = largest;
     }
 
-    /// Reset PTO backoff for Initial space.
-    /// Reset Initial-space PTO backoff counters after validation or handshake progress.
+    /// PTO management helpers (see RFC 9002). Each function below resets or cancels
+    /// per-packet-number-space Probe Timeout state.
+    /// PTO helper functions (reset + cancel) manage per-PN-space exponential backoff counters
+    /// and timers (RFC 9002). Each reset clears the associated backoff count after progress; each
+    /// cancel stops the active timer and then resets backoff for that space.
+    /// resetPtoBackoffInitial: Clear Initial-space PTO exponential backoff after progress
+    /// so future PTO uses base duration (RFC 9002 §6.2 guidance).
     pub fn resetPtoBackoffInitial(self: *Connection) void {
         self.pto_initial_count = 0;
     }
-    /// Reset PTO backoff for Handshake space.
-    /// Reset Handshake-space PTO backoff counters.
+    /// resetPtoBackoffHandshake: Clear Handshake-space PTO backoff after keys/progress.
     pub fn resetPtoBackoffHandshake(self: *Connection) void {
         self.pto_handshake_count = 0;
     }
-    /// Reset PTO backoff for Application space (also clears recovery backoff).
-    /// Reset Application-space PTO backoff counters.
+    /// resetPtoBackoffApp: Clear Application-space PTO & recovery backoff counters.
     pub fn resetPtoBackoffApp(self: *Connection) void {
         self.pto_app_count = 0;
         self.rec.pto_count = 0;
     }
 
-    /// Cancel PTO timer for Initial space.
-    /// Cancel outstanding Initial PTO timer.
+    /// cancelPtoInitial: Stop active Initial PTO timer and reset its backoff.
     pub fn cancelPtoInitial(self: *Connection, ep: anytype) void {
         if (self.pto_initial_active) {
             if (self.pto_initial_id != 0) _ = ep.cancelTimer(self.pto_initial_id);
@@ -1479,8 +1478,7 @@ pub const Connection = struct {
         }
         self.resetPtoBackoffInitial();
     }
-    /// Cancel PTO timer for Handshake space.
-    /// Cancel outstanding Handshake PTO timer.
+    /// cancelPtoHandshake: Stop active Handshake PTO timer and reset its backoff.
     pub fn cancelPtoHandshake(self: *Connection, ep: anytype) void {
         if (self.pto_handshake_active) {
             if (self.pto_handshake_id != 0) _ = ep.cancelTimer(self.pto_handshake_id);
@@ -1488,8 +1486,7 @@ pub const Connection = struct {
         }
         self.resetPtoBackoffHandshake();
     }
-    /// Cancel PTO timer for Application space.
-    /// Cancel outstanding Application PTO timer.
+    /// cancelPtoApp: Stop active Application PTO timer and reset its backoff.
     pub fn cancelPtoApp(self: *Connection, ep: anytype) void {
         if (self.pto_app_active) {
             if (self.pto_app_id != 0) _ = ep.cancelTimer(self.pto_app_id);
@@ -1517,7 +1514,8 @@ pub const Connection = struct {
         }
     }
 
-    // --- DPLPMTUD state machine ---
+    /// DPLPMTUD path MTU discovery state machine (RFC 9000 §14). Tracks probing lifecycle
+    /// from Disabled -> ProbeStart (first upward probe) -> ProbeSearch (iterative increases).
     pub const PmtudState = enum { Disabled, ProbeStart, ProbeSearch };
 
     /// Begin DPLPMTUD probing from base (1200) upward. Requires app_tx_keys.
@@ -1793,6 +1791,23 @@ pub const Connection = struct {
     fn shortHeaderDcid(self: *Connection) []const u8 {
         if (self.peer_initial_scid.len > 0) return self.peer_initial_scid.bytes[0..self.peer_initial_scid.len];
         return self.our_scid.bytes[0..self.our_scid.len];
+    }
+
+    // Test-only C ABI exports to introspect connection IDs. Enabled when
+    // compiled with -Dtest or std.testing.is_test.
+    pub export fn __test_export_peer_initial_scid(ptr: *anyopaque, buf: [*]u8, max: usize) usize {
+        if (!@import("builtin").is_test) return 0;
+        const c: *Connection = @ptrCast(@alignCast(ptr));
+        const n = @min(c.peer_initial_scid.len, max);
+        if (n > 0) @memcpy(buf[0..n], c.peer_initial_scid.bytes[0..n]);
+        return n;
+    }
+    pub export fn __test_export_our_scid(ptr: *anyopaque, buf: [*]u8, max: usize) usize {
+        if (!@import("builtin").is_test) return 0;
+        const c: *Connection = @ptrCast(@alignCast(ptr));
+        const n = @min(c.our_scid.len, max);
+        if (n > 0) @memcpy(buf[0..n], c.our_scid.bytes[0..n]);
+        return n;
     }
 
     // --- Key Update helpers ---
@@ -2146,6 +2161,8 @@ pub const Connection = struct {
         var lc = &self.local_cids[i];
         lc.* = .{ .in_use = true, .sequence = seq, .cid = .{ .len = cid_bytes.len, .bytes = undefined }, .reset_token = undefined };
         @memcpy(lc.cid.bytes[0..cid_bytes.len], &cid_bytes);
+        // Seed stateless_reset_base lazily from first available app_tx_secret (post-handshake) if still zeroed.
+        self.ensureStatelessResetBase();
         lc.reset_token = deriveStatelessResetToken(&self.stateless_reset_base, seq, cid_bytes[0..]);
         if (i + 1 > self.active_local_cids) self.active_local_cids = @intCast(i + 1);
         return .{ .idx = @intCast(i), .sequence = seq };
@@ -2195,21 +2212,49 @@ const LocalCid = struct {
 /// Derive stateless reset token using a simple hash placeholder.
 /// Real implementation should follow guidance (e.g., use HMAC over (base || sequence || cid)).
 fn deriveStatelessResetToken(base: *const [32]u8, sequence: u64, cid_bytes: []const u8) [16]u8 {
-    var h = std.crypto.hash.sha2.Sha256.init(.{});
-    h.update(base.*);
+    // HKDF based derivation (implementation choice following RFC 9000 §10.3 guidance).
+    // prk = HKDF-Extract(salt = base, ikm = sequence||cid)
+    var ikm_buf: [8 + 20]u8 = undefined; // CID <= 20 bytes in this implementation
     var seq_be: [8]u8 = undefined;
     std.mem.writeInt(u64, &seq_be, sequence, .big);
-    h.update(&seq_be);
-    h.update(cid_bytes);
-    var out_full: [32]u8 = undefined;
-    h.final(&out_full);
-    var tok: [16]u8 = undefined;
-    @memcpy(&tok, out_full[0..16]);
-    return tok;
+    @memcpy(ikm_buf[0..8], &seq_be);
+    const cid_len = cid_bytes.len;
+    if (cid_len > 20) unreachable; // defensive (our Cid max 20)
+    @memcpy(ikm_buf[8 .. 8 + cid_len], cid_bytes);
+    const prk = ks.extract(base, ikm_buf[0 .. 8 + cid_len]);
+    var out: [16]u8 = undefined;
+    // token = HKDF-Expand-Label(prk, "reset token", "", 16)
+    ks.expandLabel(prk, "reset token", &[_]u8{}, out[0..]) catch unreachable;
+    return out;
 }
 
 /// Test helper exposing reset token derivation (used only by unit tests).
 /// Exposed for unit tests to validate stateless reset token derivation.
 pub fn testDeriveStatelessResetToken(base: *const [32]u8, sequence: u64, cid: []const u8) [16]u8 {
     return deriveStatelessResetToken(base, sequence, cid);
+}
+
+/// Ensure stateless_reset_base is populated. If still all-zero and we have an
+/// application traffic secret (post-handshake), derive a base using HKDF-Extract
+/// with salt = app_tx_secret and ikm = "stateless reset base". This ties tokens
+/// to the connection's cryptographic context without exposing traffic secrets.
+fn ensureStatelessResetBase(self: *Connection) void {
+    // Fast path: if already non-zero, return.
+    var any_non_zero = false;
+    for (self.stateless_reset_base) |b| {
+        if (b != 0) {
+            any_non_zero = true;
+            break;
+        }
+    }
+    if (any_non_zero) return;
+    if (self.app_tx_secret) |secret| {
+        const label = "stateless reset base";
+        const prk = ks.extract(&secret, label);
+        // Take first 32 bytes directly from prk (its size equals digest length 32).
+        @memcpy(self.stateless_reset_base[0..], prk[0..]);
+    } else {
+        // Fallback: randomize to avoid deterministic zero (should not happen before handshake in normal issuance).
+        std.crypto.random.bytes(&self.stateless_reset_base);
+    }
 }

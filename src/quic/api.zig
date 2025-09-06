@@ -19,10 +19,10 @@ pub const LoopBackend = lb.LoopBackend;
 /// Configuration for a QUIC endpoint and connections.
 pub const QuicConfig = cfg.QuicConfig;
 
-/// Concrete endpoint type.
-// Endpoint is provided by the endpoint module; expose alias via re-export helper
+/// Concrete endpoint type re-exported from the internal endpoint module.
+/// Endpoint is provided by the endpoint module; expose alias via re-export helper.
 pub const QuicEndpoint = @import("quic_endpoint").Endpoint;
-/// Public opaque connection handle
+/// Public opaque connection handle.
 pub const QuicConnection = opaque {};
 /// Stream identifier type.
 pub const QuicStreamId = u64;
@@ -139,16 +139,19 @@ pub fn closeConnection(conn: *QuicConnection, app_error_code: u64) !void {
 }
 
 /// Drives IO & timers; returns after timeout_ms or earlier when events handled.
+/// Drive endpoint I/O and internal timers for up to timeout_ms milliseconds.
 pub fn poll(ep: *QuicEndpoint, timeout_ms: u32) !void {
     return ep.*.poll(@as(i32, @intCast(timeout_ms)));
 }
 
 /// Schedule a one-shot timer on the endpoint; returns the timer id.
+/// Schedule a one-shot timer that fires after delay_ms milliseconds; returns timer id.
 pub fn scheduleTimer(ep: *QuicEndpoint, delay_ms: u32) !u64 {
     return ep.*.scheduleTimer(delay_ms);
 }
 
 /// Cancel a previously scheduled endpoint timer.
+/// Cancel an existing timer id; returns true if it was active.
 pub fn cancelTimer(ep: *QuicEndpoint, id: u64) bool {
     return ep.*.cancelTimer(id);
 }
@@ -178,12 +181,14 @@ pub fn isHandshakeConfirmed(conn: *QuicConnection) bool {
     return false;
 }
 
+/// Send CONNECTION_CLOSE with an application error and reason string.
 pub fn close(conn: *QuicConnection, app_error_code: u64, reason: []const u8) !void {
     const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
     return c.sendConnectionClose(app_error_code, reason);
 }
 
 /// Force immediate destruction (test/CLI) of a connection: removes from endpoint maps and frees.
+/// Forcefully destroy a connection (test / CLI only) bypassing normal retirement.
 pub fn destroy(ep: *QuicEndpoint, conn: *QuicConnection) void {
     const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
     // Remove any map entries referencing this connection
@@ -234,18 +239,19 @@ pub fn destroy(ep: *QuicEndpoint, conn: *QuicConnection) void {
     ep.allocator.destroy(c);
 }
 
-/// Return whether HANDSHAKE_DONE was observed for this connection.
+/// Return whether HANDSHAKE_DONE frame was processed for this connection.
 pub fn handshakeDoneSeen(conn: *QuicConnection) bool {
     const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
     return c.handshake_done_seen;
 }
 
+/// Report whether connection has entered drained/closed state.
 pub fn isDrained(conn: *QuicConnection) bool {
     const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
     return c.closed; // simple signal for now
 }
 
-/// Best-effort flush: poll endpoint a few iterations with zero timeout to drive timers & RX.
+/// Best-effort flush: drive endpoint event loop iterations with zero timeout (tests/CLI).
 pub fn flush(ep: *QuicEndpoint, iterations: u32) void {
     var i: u32 = 0;
     while (i < iterations) : (i += 1) {

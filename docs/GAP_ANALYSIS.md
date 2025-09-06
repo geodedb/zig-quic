@@ -5,8 +5,9 @@ Date: 2025-09-04T00:00:00Z (updated)
 ## Summary delta since prior analysis
 
 - Added preliminary scaffolding for Go interoperability harness (quic-go already present; golang.org/x/net/quic client/server stubs added). Actual cross‑impl handshake still blocked by placeholder TLS engine (non‑RFC message formats) — documented as Gap.
-- Implemented Connection ID lifecycle enhancements: issuance up to negotiated limit, pending advertisement piggyback, retirement slot reuse, rotation with `retired_prior_to` advancement & advertisement, and related unit tests (limit, flush, reuse, rotation). Stateless reset token derivation remains placeholder (hash) pending HKDF integration (new Gap below).
+- Implemented Connection ID lifecycle enhancements: issuance up to negotiated limit, pending advertisement piggyback, retirement slot reuse, rotation with `retired_prior_to` advancement & advertisement, and related unit tests (limit, flush, reuse, rotation). Stateless reset token derivation upgraded to HKDF (remaining gap: rotation policy only).
 - No change yet to failing longitudinal Application ACK_ECN scenario; retained as Gap #1.
+- Fixed client short‑header DCID selection by capturing server Initial SCID (`peer_initial_scid`) enabling correct HANDSHAKE_DONE + application data reception (interop echo now passes). Added regression test (`test_client_peer_initial_scid.zig`). Persisted `original_dcid` across Retry to derive correct Initial secrets post‑Retry (RFC 9000 §5.2) and resolved prior decryption failure.
 
 ### Verification (this run)
 

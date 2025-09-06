@@ -1,3 +1,9 @@
 [submodule "examples/quic-go"]
 	path = examples/quic-go
 	url = git@github.com:quic-go/quic-go.git
+[submodule "examples/interop/quic-network-simulator"]
+	path = examples/interop/quic-network-simulator
+	url = git@github.com:quic-interop/quic-network-simulator.git
+[submodule "examples/interop/quic-interop-runner"]
+	path = examples/interop/quic-interop-runner
+	url = git@github.com:quic-interop/quic-interop-runner.git

@@ -70,6 +70,7 @@ pub const RttState = struct {
 
 /// Classify whether a frame is ack-eliciting (RFC 9002 §2).
 /// ACK-only and PADDING are not ack-eliciting; most others are.
+/// Exposed for tests verifying ECN/loss logic classification.
 pub fn isAckElicitingFrame(fr: frame.Frame) bool {
     return switch (fr) {
         .ack => false,
@@ -79,7 +80,7 @@ pub fn isAckElicitingFrame(fr: frame.Frame) bool {
     };
 }
 
-/// NewReno congestion controller (bytes-based) with slow start and CA phases.
+/// NewReno congestion controller (bytes-based) implementing slow start and congestion avoidance per RFC 9002.
 pub const NewReno = struct {
     // Congestion control state (bytes)
     // Configurable max datagram size (RFC 9002 "max_datagram_size").
@@ -107,28 +108,30 @@ pub const NewReno = struct {
     }
 
     /// Halve cwnd on loss and set ssthresh accordingly.
-    pub fn onLoss(self: *NewReno, bytes_lost: usize) void {
+    fn onLoss(self: *NewReno, bytes_lost: usize) void {
         const min_wnd = 2 * self.mds;
         if (self.cwnd > min_wnd) self.cwnd = self.cwnd / 2 else self.cwnd = min_wnd;
         self.ssthresh = self.cwnd;
         if (self.bytes_in_flight >= bytes_lost) self.bytes_in_flight -= bytes_lost else self.bytes_in_flight = 0;
     }
 };
-
-/// CUBIC stub retained for compatibility
+/// CUBIC congestion controller placeholder wrapping NewReno behavior (future expansion).
 pub const Cubic = struct {
     inner: NewReno = .{},
+    /// Track bytes in flight for ack-eliciting packets under CUBIC wrapper.
     pub fn onPacketSent(self: *Cubic, bytes: usize, ack_eliciting: bool) void {
         self.inner.onPacketSent(bytes, ack_eliciting);
     }
+    /// Update congestion window on ACK (delegates to inner NewReno placeholder).
     pub fn onAck(self: *Cubic, bytes_acked: usize) void {
         self.inner.onAck(bytes_acked);
     }
-    pub fn onLoss(self: *Cubic, bytes_lost: usize) void {
+    fn onLoss(self: *Cubic, bytes_lost: usize) void {
         self.inner.onLoss(bytes_lost);
     }
 };
 
+/// Loss detection helper implementing packet/time threshold loss logic (RFC 9002 §6.1).
 pub const LossDetector = struct {
     /// Packet-threshold (default 3) and time-threshold (9/8 * max(smoothed_rtt, latest_rtt)).
     packet_threshold: u32 = 3,
@@ -147,6 +150,7 @@ pub const LossDetector = struct {
 
 /// Optional pacing hook: given cwnd and bytes_in_flight, return an inter-packet pacing delay in ns.
 /// This minimal implementation returns a coarse delay based on how full cwnd is.
+/// Used only in tests right now; production pacing TBD.
 pub fn computePacingDelayNs(cwnd: usize, bytes_in_flight: usize) u64 {
     // Very simple pacing heuristic:
     // - No delay if less than half of cwnd is in flight.
@@ -159,6 +163,7 @@ pub fn computePacingDelayNs(cwnd: usize, bytes_in_flight: usize) u64 {
 }
 
 /// Packet number spaces used by QUIC: Initial, Handshake, and Application (1-RTT).
+/// QUIC packet number spaces (RFC 9000): each maintains separate PN sequence and ACK logic.
 pub const PacketNumberSpace = enum { Initial, Handshake, Application };
 
 /// Sent packet metadata tracked for loss recovery and RTT measurement.

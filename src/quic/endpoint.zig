@@ -38,9 +38,10 @@ const Timer = struct {
     payload: ?[]u8 = null,
 };
 
-/// Endpoint timer kinds, including per-space PTO timers and DPLPMTUD.
+/// Endpoint timer kinds: generic app timers plus per-PN-space PTO and PMTUD timers.
 pub const TimerKind = enum { Generic, PtoInitial, PtoHandshake, PtoApp, Pmtud };
 
+/// Hash key combining peer address + destination CID for connection lookup.
 pub const Key = struct { peer_hash: u64, dcid_hash: u64 };
 
 fn hashBytes(b: []const u8) u64 {
@@ -54,7 +55,8 @@ fn hashSockaddr(sa: *const posix.sockaddr.storage, len: u32) u64 {
     return hashBytes(bytes);
 }
 
-/// UDP endpoint container with timer wheel and connection map; single-socket.
+/// UDP endpoint container with connection map, timer wheel, capture support, and
+/// single bound socket. Owns all live connections and drives send/recv plus PTO/PMTUD timers.
 pub const Endpoint = struct {
     sock_fd: posix.fd_t,
     loop_backend: lb.LoopBackend,
@@ -121,6 +123,7 @@ pub const Endpoint = struct {
     }
 
     /// Release resources: close socket, free timers, capture buffers, and destroy connections.
+    /// Deinitialize endpoint and free all associated connection state.
     pub fn deinit(self: *Endpoint) void {
         // Attempt to prune any closed (or newly closed due to earlier failures) connections
         // before emitting instrumentation so we only report genuinely still-open connections.
@@ -207,27 +210,32 @@ pub const Endpoint = struct {
     }
 
     /// Flush expired timers immediately based on current monotonic time (testing helper).
+    /// Expire due timers without blocking on I/O (test helper).
     pub fn flushTimers(self: *Endpoint) void {
         self.processExpiredTimers(nowMsMonotonic());
     }
 
     /// TEST-ONLY: clear capture ring and free owned buffers.
+    /// Clear all captured outbound packets (test helper).
     pub fn captureClear(self: *Endpoint) void {
         var i: usize = 0;
         while (i < self.captures.items.len) : (i += 1) self.allocator.free(self.captures.items[i].bytes);
         self.captures.clearRetainingCapacity();
     }
     /// TEST-ONLY: current number of captured datagrams.
+    /// Return number of captured outbound packets.
     pub fn captureLen(self: *Endpoint) usize {
         return self.captures.items.len;
     }
     /// TEST-ONLY: pop oldest capture entry, transferring ownership of bytes to caller.
+    /// Pop most recent captured outbound packet if present.
     pub fn capturePop(self: *Endpoint) ?OutCaptured {
         if (self.captures.items.len == 0) return null;
         return self.captures.orderedRemove(0);
     }
 
     /// Send a datagram to peer address.
+    /// Send UDP datagram to peer (capturing if enabled).
     pub fn sendTo(self: *Endpoint, peer: conn_mod.SockAddr, data: []const u8) !usize {
         if (self.test_capture_enabled) {
             // Capture: make an owned copy of data and enqueue
@@ -241,6 +249,7 @@ pub const Endpoint = struct {
     }
 
     /// Receive a datagram; returns size and source address.
+    /// Receive UDP datagram (non-blocking if platform supports MSG.DONTWAIT).
     pub fn recvFrom(self: *Endpoint, buf: []u8) !struct { n: usize, peer: conn_mod.SockAddr } {
         var peer = conn_mod.SockAddr{};
         peer.len = @intCast(@sizeOf(posix.sockaddr.storage));
@@ -249,6 +258,7 @@ pub const Endpoint = struct {
     }
 
     /// Create a Connection object for an incoming datagram's peer.
+    /// Accept a server connection from initial datagram's peer address.
     pub fn acceptFrom(self: *Endpoint, peer: conn_mod.SockAddr) conn_mod.Connection {
         return .{ .id = 0, .role = .Server, .sock_fd = self.sock_fd, .peer = peer, .tls_inbox = std.ArrayList(u8).init(self.allocator.*) };
     }
@@ -259,28 +269,33 @@ pub const Endpoint = struct {
     }
 
     /// Pop accepted connection pointer if present.
+    /// Pop next accepted server-side connection if available.
     pub fn popAccepted(self: *Endpoint) ?*conn_mod.Connection {
         if (self.accepted.items.len == 0) return null;
         return self.accepted.orderedRemove(0);
     }
 
     /// TEST-ONLY: inject a datagram directly into the endpoint RX path.
+    /// Inject inbound datagram into receive path (test helper, no ECN).
     pub fn testInject(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8) void {
         self.processIncomingDatagram(peer, bytes, null);
     }
 
     /// TEST-ONLY: inject a datagram with explicit ECN bits (low 2 bits of IP TOS)
+    /// Inject inbound datagram with explicit ECN bits (test helper).
     pub fn testInjectWithEcn(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8, ecn_bits: u8) void {
         self.processIncomingDatagram(peer, bytes, ecn_bits);
     }
 
     /// Resolve and create a Connection object for an explicit remote address.
+    /// Create server-side represented connection (used by client dialing logic).
     pub fn connectTo(self: *Endpoint, hostport: []const u8) !conn_mod.Connection {
         const peer = try resolveAny(hostport, .udp);
         return .{ .id = 0, .role = .Client, .sock_fd = self.sock_fd, .peer = peer, .tls_inbox = std.ArrayList(u8).init(self.allocator.*) };
     }
 
     /// Allocate and register a client connection for the given remote address.
+    /// Create client-side connection object referencing remote host:port.
     pub fn connectClient(self: *Endpoint, hostport: []const u8) !*conn_mod.Connection {
         const peer = try resolveAny(hostport, .udp);
         const c = try self.allocator.create(conn_mod.Connection);
@@ -321,6 +336,7 @@ pub const Endpoint = struct {
     }
 
     /// Send client Initial with CRYPTO(ClientHello) and padding to elicit ServerHello.
+    /// Transmit minimal Initial packet (PING) to elicit Version Negotiation or SH.
     pub fn clientSendInitialProbe(self: *Endpoint, c: *conn_mod.Connection) !void {
         const v2 = (c.version == packet.QUIC_V2);
         const initial = ks.deriveInitialSecret(v2, if (c.original_dcid.len > 0) c.original_dcid.bytes[0..c.original_dcid.len] else c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]);
@@ -402,6 +418,7 @@ pub const Endpoint = struct {
     }
 
     /// Schedule a one-shot timer to fire after delay_ms; returns timer id.
+    /// Schedule generic timer firing after delay_ms.
     pub fn scheduleTimer(self: *Endpoint, delay_ms: u32) !u64 {
         const id = self.next_timer_id;
         self.next_timer_id +%= 1;
@@ -412,6 +429,7 @@ pub const Endpoint = struct {
     }
 
     /// Schedule a PTO timer tied to a specific connection and space.
+    /// Schedule connection-owned PTO/PMTUD timer.
     pub fn scheduleConnPto(self: *Endpoint, c: *conn_mod.Connection, kind: TimerKind, delay_ms: u32) !u64 {
         const id = self.next_timer_id;
         self.next_timer_id +%= 1;
@@ -435,6 +453,7 @@ pub const Endpoint = struct {
     }
 
     /// Cancel a previously scheduled timer by id; returns true if removed.
+    /// Cancel a pending timer id.
     pub fn cancelTimer(self: *Endpoint, id: u64) bool {
         var i: usize = 0;
         while (i < self.timers.items.len) : (i += 1) {
@@ -447,6 +466,7 @@ pub const Endpoint = struct {
     }
 
     /// Drive IO using platform loop backend. timeout_ms < 0 means infinite.
+    /// Drive network I/O, timers, and paced send for up to timeout_ms milliseconds.
     pub fn poll(self: *Endpoint, timeout_ms: i32) !void {
         // First, process any timers that are already expired to avoid waiting unnecessarily.
         self.processExpiredTimers(nowMsMonotonic());
@@ -1230,18 +1250,26 @@ pub const Endpoint = struct {
             std.debug.print(" (found={})\n", .{self.conns.contains(key)});
             var conn: *conn_mod.Connection = blk: {
                 if (self.conns.getPtr(key)) |p| {
-                    // Found an existing mapping. If it's already a server connection we reuse it.
-                    // If it's a client connection (common in single-endpoint tests where a client
-                    // object was created only to craft an Initial), we intentionally create a
-                    // distinct server-side connection so that Initial decryption uses server
-                    // oriented traffic keys and a Retry can be generated. The original client
-                    // connection remains addressable via its SCID mapping.
+                    // Found an existing mapping. Reuse immediately if it's already a server.
                     if (p.*.role == .Server) {
                         std.debug.print("Found existing connection (role=Server)\n", .{});
                         break :blk p.*;
+                    }
+                    // Otherwise it's a client connection. Decide if we truly need a server twin.
+                    // We only synthesize a server twin in single-endpoint test scenarios where a
+                    // synthetic client object was installed solely to craft an Initial and now an
+                    // inbound client Initial (whose DCID equals that client's chosen initial DCID)
+                    // is being processed as a server. When a real client receives a server Initial
+                    // response, the DCID equals its own SCID, not its peer_initial_dcid.
+                    const dcid_is_client_initial = p.*.peer_initial_dcid.len > 0 and std.mem.eql(u8, dcid, p.*.peer_initial_dcid.bytes[0..p.*.peer_initial_dcid.len]);
+                    const dcid_is_our_scid = p.*.our_scid.len > 0 and std.mem.eql(u8, dcid, p.*.our_scid.bytes[0..p.*.our_scid.len]);
+                    if (dcid_is_client_initial and !dcid_is_our_scid) {
+                        std.debug.print("Found existing client connection for dcid (matches peer_initial_dcid); creating server twin for inbound client Initial\n", .{});
+                        // Fall through to allocate server twin
                     } else {
-                        std.debug.print("Found existing client connection for dcid; creating server twin for inbound Initial\n", .{});
-                        // Fall through to allocate a server connection (do not break here).
+                        // Reuse the client connection (this is the normal client receiving server Initial case)
+                        std.debug.print("Reusing existing client connection for inbound Initial (dcid matched our_scid)\n", .{});
+                        break :blk p.*;
                     }
                 }
                 // No suitable server connection exists: create one now.
@@ -1288,10 +1316,16 @@ pub const Endpoint = struct {
             if (ecn_bits) |e| conn.onEcnMark(.Initial, e);
             if (conn.initial_keys_dropped) return;
 
-            // For server role, set peer CIDs from packet
-            // For client role, these are already set and we're receiving server response
+            // For server role, set peer CIDs from packet (captures client's DCID/SCID and ODCID once).
+            // For client role, capture the server's SCID (peer_initial_scid) the first time we see it so
+            // that subsequent short-header 1-RTT packets use the correct DCID (the server's SCID). The
+            // client's peer_initial_dcid/original_dcid were recorded from its own first Initial and MUST
+            // NOT be overwritten here (RFC 9000 §5.2 Retry/ODCID rules).
             if (conn.role == .Server) {
                 conn.setPeerInitialCids(dcid, scid);
+            } else if (conn.role == .Client and conn.peer_initial_scid.len == 0) {
+                conn.peer_initial_scid.len = @intCast(@min(scid.len, conn.peer_initial_scid.bytes.len));
+                if (conn.peer_initial_scid.len > 0) @memcpy(conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len], scid[0..conn.peer_initial_scid.len]);
             }
 
             // Anti-amplification: before address validation, limit server to 3x bytes received
