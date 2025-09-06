@@ -1,14 +1,14 @@
-listening on 127.0.0.1:41531
+listening on 127.0.0.1:46781
 Processing Initial packet from peer
-Looking up connection with dcid=9EEB75878A6B45BA (found=false)
-Server: Deriving Initial keys with dcid=9EEB75878A6B45BA
-Server: Masked PN bytes: DE 5C B3 08 
+Looking up connection with dcid=B867FA298F61273A (found=false)
+Server: Deriving Initial keys with dcid=B867FA298F61273A
+Server: Masked PN bytes: 6B 64 0F 0D 
 Server: Trying to decrypt Initial with pn_initial.max=0
-Before headerUnprotect: pn_bytes=DE 
+Before headerUnprotect: pn_bytes=6B 
 After headerUnprotect: pn_bytes=00 
 expandPacketNumber: truncated=0 pn_len=1 expected=0 -> full=0
 AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
-Before headerUnprotect: pn_bytes=DE 5C 
+Before headerUnprotect: pn_bytes=6B 64 
 After headerUnprotect: pn_bytes=00 01 
 expandPacketNumber: truncated=1 pn_len=2 expected=0 -> full=1
 After unmasking with pn_len=2: 00 01 
@@ -16,41 +16,17 @@ Successfully decrypted Initial packet (trial pn_len=2) plaintext len: 1150
 Expanded PN: 1 from truncated: 1
 Server: Received CRYPTO frame with 39 bytes
 TLS: Parsed handshake message type=tls13.HsType.client_hello len=35
-TLS: Added 39 bytes to transcript (recv): 01 00 00 23 43 48 31 93 ...
+TLS: Added 39 bytes to transcript (recv): 01 00 00 23 43 48 31 38 ...
 Server: Received ClientHello, queueing ServerHello
 Server: Computed ECDHE secret
-TLS: Added 39 bytes to transcript (queue): 02 00 00 23 53 48 31 0A ...
+TLS: Added 39 bytes to transcript (queue): 02 00 00 23 53 48 31 C1 ...
 Server: Derived handshake secrets
 Sending ServerHello in Initial packet: 39 bytes
 Server: Encoding Initial with pn=1 dcid_len=8 scid_len=8 pn_len=4
 Server: Sending Initial response with 93 bytes (has_crypto=true)
 Queueing handshake flight (EE, Cert, Finished)
 TLS: Added 37 bytes to transcript (queue): 08 00 00 21 41 4C 50 4E ...
-TLS: Queueing Finished with transcript hash: 27 F4 CD BF F1 35 A6 60 ...
-TLS: Added 36 bytes to transcript (queue): 14 00 00 20 11 3F 12 98 ...
+TLS: Queueing Finished with transcript hash: B6 77 06 1D 20 BD F0 A9 ...
+TLS: Added 36 bytes to transcript (queue): 14 00 00 20 79 E3 7E 2A ...
 Sending Handshake packet with 73 bytes of CRYPTO
 accepted connection
-Processing Initial packet from peer
-Looking up connection with dcid=9EEB75878A6B45BA (found=true)
-Found existing connection (role=conn.Role.Server)
-Server: Deriving Initial keys with dcid=9EEB75878A6B45BA
-Server: Masked PN bytes: 6A 38 F7 3C 
-Server: Trying to decrypt Initial with pn_initial.max=1
-Before headerUnprotect: pn_bytes=6A 
-After headerUnprotect: pn_bytes=00 
-expandPacketNumber: truncated=0 pn_len=1 expected=2 -> full=0
-AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
-Before headerUnprotect: pn_bytes=6A 38 
-After headerUnprotect: pn_bytes=00 00 
-expandPacketNumber: truncated=0 pn_len=2 expected=2 -> full=0
-AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
-Before headerUnprotect: pn_bytes=6A 38 F7 
-After headerUnprotect: pn_bytes=00 00 00 
-expandPacketNumber: truncated=0 pn_len=3 expected=2 -> full=0
-AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
-Before headerUnprotect: pn_bytes=6A 38 F7 3C 
-After headerUnprotect: pn_bytes=00 00 00 02 
-expandPacketNumber: truncated=2 pn_len=4 expected=2 -> full=2
-After unmasking with pn_len=4: 00 00 00 02 
-Successfully decrypted Initial packet (trial pn_len=4) plaintext len: 5
-Expanded PN: 2 from truncated: 2

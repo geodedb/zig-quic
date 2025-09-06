@@ -234,6 +234,12 @@ pub fn destroy(ep: *QuicEndpoint, conn: *QuicConnection) void {
     ep.allocator.destroy(c);
 }
 
+/// Return whether HANDSHAKE_DONE was observed for this connection.
+pub fn handshakeDoneSeen(conn: *QuicConnection) bool {
+    const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
+    return c.handshake_done_seen;
+}
+
 pub fn isDrained(conn: *QuicConnection) bool {
     const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
     return c.closed; // simple signal for now

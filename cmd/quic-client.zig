@@ -69,7 +69,12 @@ pub fn main() !void {
     // stream echo on client-initiated stream 0: write then read
     var wrote: bool = false;
     var attempts: usize = 0;
-    while (!wrote and attempts < 1000) : (attempts += 1) {
+    while (!wrote and attempts < 5000) : (attempts += 1) {
+        // Require HANDSHAKE_DONE before sending application data to reduce early loss risk.
+        if (!api.handshakeDoneSeen(conn)) {
+            try api.poll(ep, 10);
+            continue;
+        }
         // try to write; if keys not ready, poll and retry
         const wn = api.writeStream(conn, 0, msg) catch |err| switch (err) {
             error.KeysNotReady => blk: {
@@ -97,7 +102,7 @@ pub fn main() !void {
     var rbuf: [4096]u8 = undefined;
     var total: usize = 0;
     var polls: usize = 0;
-    while (polls < 1000 and total == 0) : (polls += 1) {
+    while (polls < 5000 and total == 0) : (polls += 1) {
         try api.poll(ep, 10);
         const n = api.readStream(conn, 0, rbuf[0..]) catch 0;
         if (n > 0) total = n;

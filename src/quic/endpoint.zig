@@ -306,6 +306,9 @@ pub const Endpoint = struct {
         std.crypto.random.bytes(&dcid);
         c.peer_initial_dcid.len = @intCast(dcid.len);
         @memcpy(c.peer_initial_dcid.bytes[0..dcid.len], &dcid);
+        // Preserve original DCID separately for Initial secret derivation (never changes).
+        c.original_dcid.len = c.peer_initial_dcid.len;
+        if (c.original_dcid.len > 0) @memcpy(c.original_dcid.bytes[0..c.original_dcid.len], c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]);
         c.our_scid.len = 8;
         std.crypto.random.bytes(c.our_scid.bytes[0..c.our_scid.len]);
         // Map by both dcid and scid to find VN/HS
@@ -320,7 +323,7 @@ pub const Endpoint = struct {
     /// Send client Initial with CRYPTO(ClientHello) and padding to elicit ServerHello.
     pub fn clientSendInitialProbe(self: *Endpoint, c: *conn_mod.Connection) !void {
         const v2 = (c.version == packet.QUIC_V2);
-        const initial = ks.deriveInitialSecret(v2, c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]);
+        const initial = ks.deriveInitialSecret(v2, if (c.original_dcid.len > 0) c.original_dcid.bytes[0..c.original_dcid.len] else c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]);
         const pair = ks.deriveClientServerInitial(initial);
         std.debug.print("client: deriving Initial keys with dcid=", .{});
         for (c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]) |b| std.debug.print("{X:0>2}", .{b});
@@ -376,6 +379,7 @@ pub const Endpoint = struct {
             self.allocator.*,
             c.version,
             // Client Initial: DCID = our chosen dcid; SCID = our scid
+            // After a Retry, peer_initial_dcid is updated to the SCID from the Retry per RFC 9000 §17.2.5.
             c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len],
             c.our_scid.bytes[0..c.our_scid.len],
             token_slice,
@@ -928,7 +932,8 @@ pub const Endpoint = struct {
                                     defer fb.deinit();
                                     const w = fb.writer();
                                     _ = (frame.Frame{ .datagram = .{ .data = d.data } }).write(w) catch 0;
-                                    const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, txk, conn.tx_key_phase) catch null;
+                                    const dcid_sh = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else conn.our_scid.bytes[0..conn.our_scid.len];
+                                    const out = packet.encodeShortProtected(self.allocator.*, dcid_sh, @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, txk, conn.tx_key_phase) catch null;
                                     if (out) |pkt_bytes| {
                                         defer self.allocator.free(pkt_bytes);
                                         _ = self.sendTo(peer, pkt_bytes) catch {};
@@ -980,7 +985,8 @@ pub const Endpoint = struct {
                                 defer fb.deinit();
                                 const w = fb.writer();
                                 _ = (frame.Frame{ .path_response = pcv }).write(w) catch 0;
-                                const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, txk, conn.tx_key_phase) catch null;
+                                const dcid_sh2 = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else conn.our_scid.bytes[0..conn.our_scid.len];
+                                const out = packet.encodeShortProtected(self.allocator.*, dcid_sh2, @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, txk, conn.tx_key_phase) catch null;
                                 if (out) |pkt_bytes| {
                                     defer self.allocator.free(pkt_bytes);
                                     _ = self.sendTo(peer, pkt_bytes) catch {};
@@ -1008,6 +1014,7 @@ pub const Endpoint = struct {
                     conn.recordAckElicitingRx(.Application, now_ns_ack);
                 }
                 if (saw_hs_done) {
+                    conn.handshake_done_seen = true;
                     // Client: drop Handshake keys after HANDSHAKE_DONE
                     conn.hs_rx_keys = null;
                     conn.hs_tx_keys = null;
@@ -1029,7 +1036,8 @@ pub const Endpoint = struct {
                     const ack_delay = conn.getAckDelayEncoded(.Application, now_ns_ack);
                     const ackf = frame.Frame{ .ack = .{ .largest = ad.largest, .ack_delay = ack_delay, .first_range = ad.first_range, .ranges = ad.ranges, .ecn = ack_ecn_now } };
                     _ = ackf.write(w) catch 0;
-                    const pkt = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..@min(conn.our_scid.len, 4)], @as(u32, @truncate(conn.pn_app_tx)), 2, ack_buf.items, conn.app_tx_keys.?, conn.tx_key_phase) catch null;
+                    const dcid_ack = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..@min(conn.peer_initial_scid.len, 4)] else conn.our_scid.bytes[0..@min(conn.our_scid.len, 4)];
+                    const pkt = packet.encodeShortProtected(self.allocator.*, dcid_ack, @as(u32, @truncate(conn.pn_app_tx)), 2, ack_buf.items, conn.app_tx_keys.?, conn.tx_key_phase) catch null;
                     if (pkt) |bytes_out| {
                         defer self.allocator.free(bytes_out);
                         _ = self.sendTo(peer, bytes_out) catch {};
@@ -1050,7 +1058,8 @@ pub const Endpoint = struct {
                         // Amplification gating: only send if validated or within 3x limit
                         const allow_send = conn.canSendUnderAmplification();
                         if (allow_send) {
-                            const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, tx_keys, conn.tx_key_phase) catch null;
+                            const dcid_ack2 = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else conn.our_scid.bytes[0..conn.our_scid.len];
+                            const out = packet.encodeShortProtected(self.allocator.*, dcid_ack2, @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, tx_keys, conn.tx_key_phase) catch null;
                             if (out) |pkt_bytes| {
                                 defer self.allocator.free(pkt_bytes);
                                 _ = self.sendTo(peer, pkt_bytes) catch {};
@@ -1102,7 +1111,8 @@ pub const Endpoint = struct {
                                 const ack_delay = conn.getAckDelayEncoded(.Application, now_ns_ack);
                                 const ackf = frame.Frame{ .ack = .{ .largest = ad.largest, .ack_delay = ack_delay, .first_range = ad.first_range, .ranges = ad.ranges, .ecn = ack_ecn_common } };
                                 _ = ackf.write(wa) catch 0;
-                                const po = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..@min(conn.our_scid.len, 4)], @as(u32, @truncate(conn.pn_app_tx)), 2, ack_only.items, tx_keys, conn.tx_key_phase) catch null;
+                                const dcid_ack3 = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..@min(conn.peer_initial_scid.len, 4)] else conn.our_scid.bytes[0..@min(conn.our_scid.len, 4)];
+                                const po = packet.encodeShortProtected(self.allocator.*, dcid_ack3, @as(u32, @truncate(conn.pn_app_tx)), 2, ack_only.items, tx_keys, conn.tx_key_phase) catch null;
                                 if (po) |bytes_out0| {
                                     defer self.allocator.free(bytes_out0);
                                     _ = self.sendTo(peer, bytes_out0) catch {};
@@ -1152,7 +1162,8 @@ pub const Endpoint = struct {
                                 if (any_pending) {
                                     _ = conn.writePendingNewConnectionIds(w, 2) catch 0; // piggyback up to 2
                                 }
-                                const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_app_tx)), 2, frames_buf.items, tx_keys, conn.tx_key_phase) catch null;
+                                const dcid_ack4 = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else conn.our_scid.bytes[0..conn.our_scid.len];
+                                const out = packet.encodeShortProtected(self.allocator.*, dcid_ack4, @as(u32, @truncate(conn.pn_app_tx)), 2, frames_buf.items, tx_keys, conn.tx_key_phase) catch null;
                                 if (out) |pkt_bytes| {
                                     defer self.allocator.free(pkt_bytes);
                                     _ = self.sendTo(peer, pkt_bytes) catch {};
@@ -1178,7 +1189,8 @@ pub const Endpoint = struct {
                             const ack_delay2 = conn.getAckDelayEncoded(.Application, now_ns_ack);
                             const ack2 = frame.Frame{ .ack = .{ .largest = ack_desc2.largest, .ack_delay = ack_delay2, .first_range = ack_desc2.first_range, .ranges = ack_desc2.ranges, .ecn = ack_ecn_common } };
                             _ = ack2.write(w2) catch 0;
-                            const out2 = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_app_tx)), 2, ack_only.items, tx_keys, conn.tx_key_phase) catch null;
+                            const dcid_ack5 = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else conn.our_scid.bytes[0..conn.our_scid.len];
+                            const out2 = packet.encodeShortProtected(self.allocator.*, dcid_ack5, @as(u32, @truncate(conn.pn_app_tx)), 2, ack_only.items, tx_keys, conn.tx_key_phase) catch null;
                             if (out2) |pkt_bytes2| {
                                 defer self.allocator.free(pkt_bytes2);
                                 _ = self.sendTo(peer, pkt_bytes2) catch {};
@@ -1218,51 +1230,64 @@ pub const Endpoint = struct {
             std.debug.print(" (found={})\n", .{self.conns.contains(key)});
             var conn: *conn_mod.Connection = blk: {
                 if (self.conns.getPtr(key)) |p| {
-                    // If we find an existing connection, use it
-                    // For a client connection, this means we're receiving a server Initial response
-                    // For a server connection, this means we're receiving another client Initial
-                    std.debug.print("Found existing connection (role={})\n", .{p.*.role});
-                    break :blk p.*;
-                } else {
-                    // No existing connection - this must be a new client Initial to the server
-                    const c = self.allocator.create(conn_mod.Connection) catch return;
-
-                    c.init(self.allocator, .Server, self.sock_fd, peer);
-                    // Generate a random SCID for the server
-                    c.our_scid.len = 8;
-                    std.crypto.random.bytes(c.our_scid.bytes[0..c.our_scid.len]);
-                    c.setUseCubic(self.cfg.cc == .cubic);
-                    c.tls.allow_insecure = self.cfg.allow_insecure;
-                    if (self.cfg.real_tls) {
-                        c.tls.enableReal();
-                        if (self.cfg.inline_server_cert_der != null and self.cfg.inline_server_priv_p256 != null) {
-                            c.tls.setServerCertificate(self.cfg.inline_server_cert_der.?, self.cfg.inline_server_priv_p256.?, .ecdsa_secp256r1_sha256) catch {};
-                        }
+                    // Found an existing mapping. If it's already a server connection we reuse it.
+                    // If it's a client connection (common in single-endpoint tests where a client
+                    // object was created only to craft an Initial), we intentionally create a
+                    // distinct server-side connection so that Initial decryption uses server
+                    // oriented traffic keys and a Retry can be generated. The original client
+                    // connection remains addressable via its SCID mapping.
+                    if (p.*.role == .Server) {
+                        std.debug.print("Found existing connection (role=Server)\n", .{});
+                        break :blk p.*;
+                    } else {
+                        std.debug.print("Found existing client connection for dcid; creating server twin for inbound Initial\n", .{});
+                        // Fall through to allocate a server connection (do not break here).
                     }
-                    c.allowed_alpns = self.cfg.alpn;
-                    // Enable optional pacing and set CC max_datagram_size
-                    c.enable_pacing = self.cfg.enable_pacing;
-                    c.rec.cc.mds = @intCast(self.cfg.max_datagram_size);
-                    // Install paced sender callback
-                    c.setSender(@ptrCast(self), senderPaced);
-                    _ = self.conns.put(key, c) catch {
-                        c.deinit();
-                        self.allocator.destroy(c);
-                        return;
-                    };
-                    // Apply AEAD limits overrides for server-side
-                    c.setAeadUsageLimits(self.cfg.aead_confidentiality_limit_override, self.cfg.aead_integrity_limit_override);
-                    // Also map our chosen SCID to this connection for Handshake DCID lookup.
-                    const our_key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(c.our_scid.bytes[0..c.our_scid.len]) };
-                    _ = self.conns.put(our_key, c) catch {};
-                    // Defer enqueue until after successful Initial decrypt
-                    break :blk c;
                 }
+                // No suitable server connection exists: create one now.
+                const c_new = self.allocator.create(conn_mod.Connection) catch return;
+                c_new.init(self.allocator, .Server, self.sock_fd, peer);
+                // Generate a random SCID for the server
+                c_new.our_scid.len = 8;
+                std.crypto.random.bytes(c_new.our_scid.bytes[0..c_new.our_scid.len]);
+                // Pre-seed peer_initial_dcid/original_dcid with the client's DCID from this first Initial
+                // so that Initial key derivation (which happens before setPeerInitialCids for server twin)
+                // uses the correct ODCID and not an empty slice.
+                c_new.peer_initial_dcid.len = @intCast(@min(dcid.len, c_new.peer_initial_dcid.bytes.len));
+                if (c_new.peer_initial_dcid.len > 0) @memcpy(c_new.peer_initial_dcid.bytes[0..c_new.peer_initial_dcid.len], dcid[0..c_new.peer_initial_dcid.len]);
+                c_new.original_dcid.len = c_new.peer_initial_dcid.len;
+                if (c_new.original_dcid.len > 0) @memcpy(c_new.original_dcid.bytes[0..c_new.original_dcid.len], c_new.peer_initial_dcid.bytes[0..c_new.peer_initial_dcid.len]);
+                c_new.setUseCubic(self.cfg.cc == .cubic);
+                c_new.tls.allow_insecure = self.cfg.allow_insecure;
+                if (self.cfg.real_tls) {
+                    c_new.tls.enableReal();
+                    if (self.cfg.inline_server_cert_der != null and self.cfg.inline_server_priv_p256 != null) {
+                        c_new.tls.setServerCertificate(self.cfg.inline_server_cert_der.?, self.cfg.inline_server_priv_p256.?, .ecdsa_secp256r1_sha256) catch {};
+                    }
+                }
+                c_new.allowed_alpns = self.cfg.alpn;
+                // Enable optional pacing and set CC max_datagram_size
+                c_new.enable_pacing = self.cfg.enable_pacing;
+                c_new.rec.cc.mds = @intCast(self.cfg.max_datagram_size);
+                // Install paced sender callback
+                c_new.setSender(@ptrCast(self), senderPaced);
+                _ = self.conns.put(key, c_new) catch {
+                    c_new.deinit();
+                    self.allocator.destroy(c_new);
+                    return;
+                };
+                // Apply AEAD limits overrides for server-side
+                c_new.setAeadUsageLimits(self.cfg.aead_confidentiality_limit_override, self.cfg.aead_integrity_limit_override);
+                // Also map our chosen SCID to this connection for Handshake DCID lookup.
+                const our_key2 = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(c_new.our_scid.bytes[0..c_new.our_scid.len]) };
+                _ = self.conns.put(our_key2, c_new) catch {};
+                // Defer enqueue until after successful Initial decrypt
+                break :blk c_new;
             };
             conn.initial_version = version;
             if (ecn_bits) |e| conn.onEcnMark(.Initial, e);
             if (conn.initial_keys_dropped) return;
-            
+
             // For server role, set peer CIDs from packet
             // For client role, these are already set and we're receiving server response
             if (conn.role == .Server) {
@@ -1277,7 +1302,27 @@ pub const Endpoint = struct {
             // For server: rx = client keys (to decrypt client Initial)
             // For client: rx = server keys (to decrypt server Initial response)
             const v2 = (version == packet.QUIC_V2);
-            const derive_dcid = if (conn.role == .Client) conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len] else dcid;
+            // RFC 9000 §5.2: Initial secrets are derived from the Destination Connection ID in the
+            // first Initial packet sent by the client (ODCID). After a Retry, the client changes
+            // the DCID it uses on subsequent Initials to the SCID from the Retry, but keys MUST
+            // continue to be derived from the original DCID. We persist that value in
+            // conn.peer_initial_dcid. For a server, always prefer peer_initial_dcid when set.
+            const derive_dcid = blk: { // ODCID per RFC 9000 §5.2
+                if (conn.role == .Server) {
+                    // Defensive: clamp nonsense length that could arise if a reused connection
+                    // had an uninitialized original_dcid prior to the field being zeroed in init.
+                    if (conn.original_dcid.len > conn.original_dcid.bytes.len) conn.original_dcid.len = 0;
+                    if (conn.original_dcid.len > 0) break :blk conn.original_dcid.bytes[0..conn.original_dcid.len];
+                    // Fallback before setPeerInitialCids on very first packet (should not happen)
+                    if (conn.peer_initial_dcid.len > 0) break :blk conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len];
+                    break :blk dcid;
+                } else { // client
+                    if (conn.original_dcid.len > conn.original_dcid.bytes.len) conn.original_dcid.len = 0;
+                    if (conn.original_dcid.len > 0) break :blk conn.original_dcid.bytes[0..conn.original_dcid.len];
+                    if (conn.peer_initial_dcid.len > 0) break :blk conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len];
+                    break :blk dcid;
+                }
+            };
             std.debug.print("{s}: Deriving Initial keys with dcid=", .{if (conn.role == .Server) "Server" else "Client"});
             for (derive_dcid) |b| std.debug.print("{X:0>2}", .{b});
             std.debug.print("\n", .{});
@@ -1495,10 +1540,16 @@ pub const Endpoint = struct {
 
                 // Always send Initial packet if we have frames to send
                 // Use oriented Initial keys based on role
-                const derive_dcid_tx = if (conn.role == .Client) conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len] else dcid;
+                // Same ODCID rule applies for transmitting Initials: derive secrets using the
+                // client's original DCID (peer_initial_dcid) regardless of any Retry/DCID change.
+                const derive_dcid_tx = blk: { // Always ODCID
+                    if (conn.original_dcid.len > 0) break :blk conn.original_dcid.bytes[0..conn.original_dcid.len];
+                    if (conn.peer_initial_dcid.len > 0) break :blk conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len];
+                    break :blk dcid;
+                };
                 const oriented = packet.initialAeadKeys(v2, conn.role == .Server, derive_dcid_tx);
                 const tx_keys = oriented.tx;
-                
+
                 // For client: DCID = peer's initial DCID, SCID = our SCID
                 // For server: DCID = client's SCID (from packet), SCID = our SCID
                 const tx_dcid = if (conn.role == .Client) conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len] else scid;
@@ -1571,7 +1622,7 @@ pub const Endpoint = struct {
                     }
                 }
             }
-            
+
             // Check if there are more packets coalesced in this datagram
             // The end_total from the Initial packet tells us where it ends
             if (end_total < bytes.len) {
@@ -1643,14 +1694,14 @@ pub const Endpoint = struct {
             if (i + scid_len > bytes.len) return;
             const scid = bytes[i .. i + scid_len];
             i += scid_len;
-            
+
             // Parse length varint to find packet boundary (needed for coalesced packets)
             var j: usize = i;
             const len_dec = varint.decode(bytes[j..]) catch return;
             j += len_dec.n;
             const end_total = j + @as(usize, len_dec.value);
             if (end_total > bytes.len) return;
-            
+
             // Lookup connection keyed by peer + initial dcid hash (use stored mapping if any)
             const key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(dcid) };
             const c_ptr = self.conns.getPtr(key) orelse return;
@@ -1660,31 +1711,31 @@ pub const Endpoint = struct {
                 std.debug.print("Client has handshake RX keys, proceeding to decrypt\n", .{});
                 const header_prefix = bytes[1..j];
                 const pn_start = j;
-                
+
                 // Capture up to 4 masked PN bytes
                 var pn_masked: [4]u8 = .{0} ** 4;
                 const avail = @min(@as(usize, 4), end_total - pn_start);
                 @memcpy(pn_masked[0..avail], bytes[pn_start .. pn_start + avail]);
-                
+
                 // Try different PN lengths until one succeeds
                 var success = false;
                 var chosen_pn_len: u3 = 0;
                 var pt_list = std.ArrayList(u8).init(self.allocator.*);
                 defer pt_list.deinit();
                 var pn_len_try: u3 = 1;
-                
+
                 attempt: while (pn_len_try <= 4) : (pn_len_try += 1) {
                     if (pn_start + pn_len_try > end_total) break;
                     const ct = bytes[pn_start + pn_len_try .. end_total];
                     if (ct.len < 16) break;
-                    
+
                     var pn_try: [4]u8 = pn_masked; // copy masked bytes
                     var header_try = first;
                     pt_list.clearRetainingCapacity();
                     pt_list.ensureTotalCapacity(ct.len - 16) catch break;
                     pt_list.appendNTimesAssumeCapacity(0, ct.len - 16);
                     const pt_slice = pt_list.items;
-                    
+
                     const expected_pn_hs = if (conn.pn_handshake.have_any) conn.pn_handshake.max + 1 else 0;
                     const dec = crypto.unprotectInitialAutoSample(
                         .aes_128_gcm,
@@ -1701,34 +1752,34 @@ pub const Endpoint = struct {
                         continue;
                     };
                     _ = dec;
-                    
+
                     std.debug.print("After unmasking with pn_len={}: ", .{pn_len_try});
                     for (pn_try[0..pn_len_try]) |b| std.debug.print("{X:0>2} ", .{b});
                     std.debug.print("\n", .{});
-                    
+
                     const indicated_pn_len: u3 = @intCast((header_try & 0x03) + 1);
                     if (indicated_pn_len != pn_len_try) {
                         // Mismatch between header-indicated PN length and trial; reject.
                         continue;
                     }
-                    
+
                     success = true;
                     chosen_pn_len = pn_len_try;
                     @memcpy(pn_masked[0..pn_len_try], pn_try[0..pn_len_try]); // now holds unmasked bytes
                     break :attempt;
                 }
-                
+
                 if (!success) {
                     std.debug.print("Failed to decrypt Handshake packet\n", .{});
                     conn.onAeadAuthFailure();
                     conn.closed = true;
                     return;
                 }
-                
+
                 const pn_len = chosen_pn_len;
                 const pt = pt_list.items;
                 std.debug.print("Successfully decrypted Handshake packet (trial pn_len={}) plaintext len: {}\n", .{ pn_len, pt.len });
-                
+
                 // Expand truncated PN and track in Handshake space
                 var pn_val_be: u64 = 0;
                 var kk: usize = 0;
@@ -1743,11 +1794,11 @@ pub const Endpoint = struct {
                 const now_ns_hs: u64 = @intCast(std.time.nanoTimestamp());
                 while (off < pt.len) {
                     const r = frame.decodeOne(pt[off..]) catch |err| {
-                        std.debug.print("Failed to decode frame at offset {}: {}\n", .{off, err});
+                        std.debug.print("Failed to decode frame at offset {}: {}\n", .{ off, err });
                         break;
                     };
                     off += r.n;
-                    std.debug.print("Handshake frame: {} at offset {}\n", .{r.f, off - r.n});
+                    std.debug.print("Handshake frame: {} at offset {}\n", .{ r.f, off - r.n });
                     switch (r.f) {
                         .crypto => {
                             const cr = r.f.crypto;
@@ -1773,7 +1824,7 @@ pub const Endpoint = struct {
                         else => {},
                     }
                 }
-                // If we just derived Handshake keys and have outbound CRYPTO (ServerHello), send it
+                // Send any pending Handshake CRYPTO (e.g. client Finished) and then attempt post-flush 1-RTT key derivation.
                 if (conn.hs_tx_keys) |tx_hs| {
                     var outbox: [1024]u8 = undefined;
                     const n = conn.tls.popCrypto(outbox[0..]);
@@ -1783,7 +1834,7 @@ pub const Endpoint = struct {
                         const w = frames_buf.writer();
                         const base_off_hs = conn.crypto_tx_off_handshake;
                         _ = (frame.Frame{ .crypto = .{ .offset = base_off_hs, .data = outbox[0..n] } }).write(w) catch 0;
-                        // Save HS retransmit buffer
+                        // Save HS retransmit buffer for this slice
                         if (conn.crypto_retx_handshake) |b| self.allocator.free(b);
                         var owned_hs = self.allocator.alloc(u8, n) catch {
                             conn.crypto_tx_off_handshake += n;
@@ -1800,6 +1851,8 @@ pub const Endpoint = struct {
                             conn.onPacketSent(.Handshake, conn.pn_handshake_tx, bytes_out.len, true);
                             conn.pn_handshake_tx +%= 1;
                         }
+                        // With TLS outbox drained, attempt delayed 1-RTT key derivation.
+                        conn.maybeDeriveAppKeysAfterFlush();
                     }
                 }
                 // Send ACK in Handshake space if ack-eliciting seen and we have hs_tx_keys
@@ -1844,7 +1897,8 @@ pub const Endpoint = struct {
                         defer fb.deinit();
                         const w = fb.writer();
                         _ = (frame.Frame{ .new_token = .{ .token = tbytes } }).write(w) catch 0;
-                        const out = packet.encodeShortProtected(self.allocator.*, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, conn.app_tx_keys.?, conn.tx_key_phase) catch null;
+                        const dcid_nt = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else conn.our_scid.bytes[0..conn.our_scid.len];
+                        const out = packet.encodeShortProtected(self.allocator.*, dcid_nt, @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, conn.app_tx_keys.?, conn.tx_key_phase) catch null;
                         if (out) |pkt_bytes| {
                             defer self.allocator.free(pkt_bytes);
                             _ = self.sendTo(peer, pkt_bytes) catch {};
@@ -1857,7 +1911,7 @@ pub const Endpoint = struct {
             } else {
                 std.debug.print("Client does not have handshake RX keys yet\n", .{});
             }
-            
+
             // Check if there are more packets coalesced in this datagram (for Handshake packets)
             if (end_total < bytes.len) {
                 // Process the remaining bytes as a new packet

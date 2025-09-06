@@ -264,6 +264,7 @@ pub const Connection = struct {
     tx_sent_bytes_since_key: u64 = 0,
     // Lifecycle flags
     handshake_done_sent: bool = false,
+    handshake_done_seen: bool = false,
     server_hello_sent: bool = false,
     // Connection close state
     closed: bool = false,
@@ -282,6 +283,9 @@ pub const Connection = struct {
     initial_keys_dropped: bool = false,
     // Connection IDs used during Initial/transport
     peer_initial_dcid: Cid = .{},
+    // Original Destination Connection ID chosen by client (ODCID). Remains constant
+    // across Retry; used for Initial secret derivation per RFC 9000 §5.2.
+    original_dcid: Cid = .{},
     peer_initial_scid: Cid = .{},
     our_scid: Cid = .{},
     // Received PN tracking windows for ACK generation
@@ -531,6 +535,9 @@ pub const Connection = struct {
         self.pn_app_tx = 1;
         self.peer_initial_dcid = .{};
         self.peer_initial_scid = .{};
+        // Explicitly zero original_dcid (was left uninitialized when reusing a Connection object
+        // before this field was added, leading to bogus large lengths and panics when slicing).
+        self.original_dcid = .{};
         self.our_scid = .{};
         self.version = 0;
         self.version_v2 = false;
@@ -865,12 +872,26 @@ pub const Connection = struct {
                 std.debug.print("{s}: Cannot derive handshake secrets yet (ch_sent={}, sh_seen={}, ecdhe={})\n", .{ if (self.role == .Server) "Server" else "Client", self.tls.ch_sent, self.tls.sh_seen, self.tls.ecdhe_secret != null });
             }
         }
-        // If we can compute application secrets and Finished verified, install 1-RTT keys once
+        // Install 1-RTT keys only after BOTH sides' Finished messages are involved from our perspective:
+        // - finished_verified: we have validated the peer's Finished
+        // - finished_sent: we have queued our own Finished (prevents client from sending 1-RTT data before sending Finished)
+        // This fixes premature application key installation (client derived 1-RTT keys after verifying server Finished but before sending its own Finished),
+        // which caused interop failure: server never received client's Finished and thus couldn't decrypt 1-RTT stream data.
         if (self.app_tx_keys == null) {
-            if (self.tls.finished_verified) {
-                if (self.tls.computeApplicationSecrets()) |app_secrets| {
-                    self.deriveAppKeys(app_secrets.client, app_secrets.server, self.version_v2);
+            if (self.tls.finished_verified and self.tls.finished_sent) {
+                // Delay installation until the Finished has actually been flushed (outbox empty) so
+                // the client does not emit 1-RTT STREAM frames that the server cannot yet decrypt.
+                if (self.tls.outbox.items.len == 0) {
+                    if (self.tls.computeApplicationSecrets()) |app_secrets| {
+                        std.debug.print("{s}: Deriving application secrets (both Finished exchanged & flushed)\n", .{if (self.role == .Server) "Server" else "Client"});
+                        self.deriveAppKeys(app_secrets.client, app_secrets.server, self.version_v2);
+                    }
+                } else {
+                    std.debug.print("{s}: Waiting to derive 1-RTT keys until Finished flushes ({} bytes pending)\n", .{ if (self.role == .Server) "Server" else "Client", self.tls.outbox.items.len });
                 }
+            } else if (self.tls.finished_verified and !self.tls.finished_sent) {
+                // Debug aid: indicate deferral so logs show why 1-RTT keys not installed yet.
+                std.debug.print("{s}: Deferring 1-RTT key derivation until our Finished is sent (verified peer Finished)\n", .{if (self.role == .Server) "Server" else "Client"});
             }
         }
         // Apply peer transport parameters (once) when they first become available.
@@ -893,6 +914,19 @@ pub const Connection = struct {
                 }
                 if (!ok) self.tls.finished_verified = false;
             }
+        }
+    }
+
+    /// Attempt to derive 1-RTT keys after our Finished has been flushed from the TLS outbox.
+    /// This is needed because pushCrypto() may have deferred derivation until the outbox emptied,
+    /// but no further inbound CRYPTO might arrive to trigger another pushCrypto() call.
+    pub fn maybeDeriveAppKeysAfterFlush(self: *Connection) void {
+        if (self.app_tx_keys != null) return;
+        if (!(self.tls.finished_verified and self.tls.finished_sent)) return;
+        if (self.tls.outbox.items.len != 0) return; // still pending bytes
+        if (self.tls.computeApplicationSecrets()) |app_secrets| {
+            std.debug.print("{s}: Deriving application secrets after Finished flush\n", .{if (self.role == .Server) "Server" else "Client"});
+            self.deriveAppKeys(app_secrets.client, app_secrets.server, self.version_v2);
         }
     }
 
@@ -944,6 +978,11 @@ pub const Connection = struct {
     pub fn setPeerInitialCids(self: *Connection, dcid: []const u8, scid: []const u8) void {
         self.peer_initial_dcid.len = @intCast(@min(dcid.len, self.peer_initial_dcid.bytes.len));
         if (self.peer_initial_dcid.len > 0) @memcpy(self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len], dcid[0..self.peer_initial_dcid.len]);
+        // Capture original destination connection ID (ODCID) only once (first client Initial).
+        if (self.original_dcid.len == 0) {
+            self.original_dcid.len = self.peer_initial_dcid.len;
+            if (self.original_dcid.len > 0) @memcpy(self.original_dcid.bytes[0..self.original_dcid.len], self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len]);
+        }
         self.peer_initial_scid.len = @intCast(@min(scid.len, self.peer_initial_scid.bytes.len));
         if (self.peer_initial_scid.len > 0) @memcpy(self.peer_initial_scid.bytes[0..self.peer_initial_scid.len], scid[0..self.peer_initial_scid.len]);
     }
@@ -1050,7 +1089,7 @@ pub const Connection = struct {
         _ = (frame.Frame{ .path_challenge = self.path_challenge_data }).write(w) catch 0;
         const out = packet.encodeShortProtected(
             self.allocator.*,
-            self.our_scid.bytes[0..self.our_scid.len],
+            self.shortHeaderDcid(),
             @as(u32, @truncate(self.pn_app_tx)),
             2,
             frames.items,
@@ -1066,9 +1105,10 @@ pub const Connection = struct {
 
     fn sendControlFrames(self: *Connection, frames_bytes: []const u8) void {
         const tx = self.app_tx_keys orelse return;
+        std.debug.print("{s}: Sending control frames ({d} bytes)\n", .{ if (self.role == .Server) "Server" else "Client", frames_bytes.len });
         const pkt = packet.encodeShortProtected(
             self.allocator.*,
-            self.our_scid.bytes[0..self.our_scid.len],
+            self.shortHeaderDcid(),
             @as(u32, @truncate(self.pn_app_tx)),
             2,
             frames_bytes,
@@ -1118,7 +1158,7 @@ pub const Connection = struct {
         _ = (frame.Frame{ .datagram = .{ .data = data } }).write(w) catch 0;
         const pkt = try packet.encodeShortProtected(
             self.allocator.*,
-            self.our_scid.bytes[0..self.our_scid.len],
+            self.shortHeaderDcid(),
             @as(u32, @truncate(self.pn_app_tx)),
             2,
             frames.items,
@@ -1198,7 +1238,7 @@ pub const Connection = struct {
         _ = (frame.Frame{ .stream = .{ .stream_id = id, .offset = self.stream_send_off, .fin = false, .data = data[0..to_send] } }).write(w) catch 0;
         const pkt = try packet.encodeShortProtected(
             self.allocator.*,
-            self.our_scid.bytes[0..self.our_scid.len],
+            self.shortHeaderDcid(),
             @as(u32, @truncate(self.pn_app_tx)),
             2,
             frames.items,
@@ -1240,7 +1280,7 @@ pub const Connection = struct {
         _ = (frame.Frame{ .stream = .{ .stream_id = 0, .offset = self.stream_send_off, .fin = true, .data = &[_]u8{} } }).write(w) catch 0;
         const pkt = try packet.encodeShortProtected(
             self.allocator.*,
-            self.our_scid.bytes[0..self.our_scid.len],
+            self.shortHeaderDcid(),
             @as(u32, @truncate(self.pn_app_tx)),
             2,
             frames.items,
@@ -1666,7 +1706,7 @@ pub const Connection = struct {
         _ = (frame.Frame{ .connection_close = .{ .error_code = app_error_code, .frame_type = 0, .reason = reason } }).write(w) catch 0;
         const pkt = try packet.encodeShortProtected(
             self.allocator.*,
-            self.our_scid.bytes[0..self.our_scid.len],
+            self.shortHeaderDcid(),
             @as(u32, @truncate(self.pn_app_tx)),
             2,
             frames.items,
@@ -1723,10 +1763,16 @@ pub const Connection = struct {
         self.rx_prev_allow = 0;
         // After 1-RTT keys are ready, proactively advertise initial flow-control if allowed
         self.advertiseInitialFlowControl();
-        // Drop Initial and Handshake keys upon entering 1-RTT
+        // Drop Initial keys immediately; defer dropping Handshake keys until any pending Finished CRYPTO is sent.
         self.initial_keys_dropped = true;
-        self.hs_rx_keys = null;
-        self.hs_tx_keys = null;
+        // Only drop handshake keys if TLS outbox already flushed (no pending Finished or other handshake messages).
+        const pending_tls: bool = (self.tls.outbox.items.len > 0);
+        if (!pending_tls) {
+            self.hs_rx_keys = null;
+            self.hs_tx_keys = null;
+        } else {
+            std.debug.print("{s}: Deferring Handshake key drop until CRYPTO outbox flushed ({} bytes pending)\n", .{ if (self.role == .Server) "Server" else "Client", self.tls.outbox.items.len });
+        }
         // Server: send HANDSHAKE_DONE and reaffirm initial MAX_* once
         if (self.role == .Server and !self.handshake_done_sent) {
             var frames = std.ArrayList(u8).init(self.allocator.*);
@@ -1739,6 +1785,14 @@ pub const Connection = struct {
             self.sendControlFrames(frames.items);
             self.handshake_done_sent = true;
         }
+    }
+
+    /// Destination Connection ID for short-header packets is always the peer-chosen ID.
+    /// Use peer_initial_scid (the SCID the peer used in its Initial) when present; fallback
+    /// to our_scid only before we have observed the peer Initial (no 1-RTT should be sent then).
+    fn shortHeaderDcid(self: *Connection) []const u8 {
+        if (self.peer_initial_scid.len > 0) return self.peer_initial_scid.bytes[0..self.peer_initial_scid.len];
+        return self.our_scid.bytes[0..self.our_scid.len];
     }
 
     // --- Key Update helpers ---
