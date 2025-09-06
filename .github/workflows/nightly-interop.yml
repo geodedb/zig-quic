@@ -2,27 +2,109 @@ name: nightly-interop
 on:
   schedule:
     - cron: '0 3 * * *'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: 'Test mode (basic, quick, full)'
+        required: false
+        default: 'quick'
+        type: choice
+        options:
+          - basic
+          - quick
+          - full
+
 jobs:
-  interop:
+  interop-matrix:
+    name: Interop - ${{ matrix.implementation }}
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 60
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        implementation:
+          - quic-go
+          - ngtcp2
+          - quiche
+          - picoquic
+          - aioquic
+          - msquic
+    
     steps:
-      - uses: actions/checkout@v4
-      - name: Set up Zig
-        uses: goto-bus-stop/setup-zig@v2
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          version: 0.15.1
-      - name: Build project
-        run: zig build -Drelease-safe
-      - name: Update submodules
-        run: git submodule update --init --recursive
-      - name: Run limited interop matrix
+          submodules: recursive
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Build Zig implementation
+        run: |
+          docker compose -f examples/interop/docker-compose.full.yml build zig-server zig-client
+      
+      - name: Pull implementation image
+        run: |
+          case "${{ matrix.implementation }}" in
+            quic-go) docker pull martenseemann/quic-go-interop:latest ;;
+            ngtcp2) docker pull ghcr.io/ngtcp2/ngtcp2-interop:latest ;;
+            quiche) docker pull cloudflare/quiche-qns:latest ;;
+            picoquic) docker pull privateoctopus/picoquic:latest ;;
+            aioquic) docker pull aiortc/aioquic-qns:latest ;;
+            msquic) docker pull ghcr.io/microsoft/msquic/qns:main ;;
+          esac
+      
+      - name: Test core scenarios
         env:
           RETRY_TOKEN_SECRET: ${{ secrets.RETRY_TOKEN_SECRET }}
-        run: ./scripts/interop_local.sh --peers quic-go,ngtcp2 --timeout 900 || true
-      - name: Archive logs
+        run: |
+          # Map implementation to image
+          case "${{ matrix.implementation }}" in
+            quic-go) IMAGE="martenseemann/quic-go-interop:latest" ;;
+            ngtcp2) IMAGE="ghcr.io/ngtcp2/ngtcp2-interop:latest" ;;
+            quiche) IMAGE="cloudflare/quiche-qns:latest" ;;
+            picoquic) IMAGE="privateoctopus/picoquic:latest" ;;
+            aioquic) IMAGE="aiortc/aioquic-qns:latest" ;;
+            msquic) IMAGE="ghcr.io/microsoft/msquic/qns:main" ;;
+          esac
+          
+          # Test both directions for core test cases
+          TESTCASES=("handshake" "transfer" "retry" "http3")
+          
+          for testcase in "${TESTCASES[@]}"; do
+            echo "Testing: zig (server) <-> ${{ matrix.implementation }} (client) - $testcase"
+            SERVER_IMAGE="zig-qns:local" CLIENT_IMAGE="$IMAGE" TESTCASE="$testcase" \
+              timeout 60 docker compose -f examples/interop/docker-compose.full.yml --profile generic up --abort-on-container-exit || true
+            docker compose -f examples/interop/docker-compose.full.yml --profile generic down -v
+            
+            echo "Testing: ${{ matrix.implementation }} (server) <-> zig (client) - $testcase"
+            SERVER_IMAGE="$IMAGE" CLIENT_IMAGE="zig-qns:local" TESTCASE="$testcase" \
+              timeout 60 docker compose -f examples/interop/docker-compose.full.yml --profile generic up --abort-on-container-exit || true
+            docker compose -f examples/interop/docker-compose.full.yml --profile generic down -v
+          done
+      
+      - name: Upload logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: interop-logs
-          path: logs/*.log
+          name: interop-logs-${{ matrix.implementation }}
+          path: |
+            examples/interop/quic-network-simulator/logs/
+  
+  interop-summary:
+    name: Interop Summary
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [interop-matrix]
+    
+    steps:
+      - name: Check results
+        run: |
+          echo "Nightly interop test completed"
+          echo "Matrix results: ${{ needs.interop-matrix.result }}"
+          
+          if [[ "${{ needs.interop-matrix.result }}" == "failure" ]]; then
+            echo "Some interop tests failed - this is expected for nightly runs"
+            echo "Check individual job logs for details"
+          fi

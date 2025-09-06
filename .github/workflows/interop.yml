@@ -8,7 +8,7 @@ on:
         required: false
         default: 'handshake,transfer'
       impl:
-        description: 'Peer implementation (e.g. quic-go, quiche)'
+        description: 'Peer implementation (e.g. quic-go, quiche, all)'
         required: false
         default: 'quic-go'
   push:
@@ -17,35 +17,62 @@ on:
       - 'cmd/**'
       - 'src/**'
       - 'scripts/interop_local.sh'
+      - 'scripts/interop_full.sh'
       - 'examples/interop/zig-qns/Dockerfile'
+      - 'examples/interop/docker-compose.*.yml'
+      - '.github/workflows/interop.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'cmd/**'
+      - 'src/**'
+      - 'scripts/interop_*.sh'
+      - 'examples/interop/**'
       - '.github/workflows/interop.yml'
 
 jobs:
   smoke:
-    # Auto on push only when commit message contains [interop]; always on manual dispatch
-    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[interop]') }}
+    # Auto on push/PR when files change; always on manual dispatch
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || contains(github.event.head_commit.message, '[interop]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      
       - name: Setup Zig
         uses: mlugg/setup-zig@v1
         with:
           version: 0.14.1
+      
       - name: Build & Unit Tests
         run: zig build test --summary all
+      
       - name: Build interop image
-        run: docker build -t zig-qns:ci -f examples/interop/zig-qns/Dockerfile .
-      - name: Run interop subset
+        run: docker build -t zig-qns:local -f examples/interop/zig-qns/Dockerfile .
+      
+      - name: Run interop tests
         env:
           TESTS: ${{ github.event.inputs.tests || 'handshake,transfer' }}
           IMPL: ${{ github.event.inputs.impl || 'quic-go' }}
-        run: bash scripts/interop_local.sh || true
+          RETRY_TOKEN_SECRET: ${{ secrets.RETRY_TOKEN_SECRET }}
+        run: |
+          if [[ "$IMPL" == "all" ]]; then
+            # Run quick mode against major implementations
+            chmod +x scripts/interop_full.sh
+            scripts/interop_full.sh quick
+          else
+            # Run against specific implementation
+            bash scripts/interop_local.sh
+          fi
+      
       - name: Upload interop logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: interop-logs
-          path: examples/interop/quic-interop-runner/logs
+          path: |
+            examples/interop/quic-interop-runner/logs
+            examples/interop/quic-network-simulator/logs
+            /tmp/interop_*.log
