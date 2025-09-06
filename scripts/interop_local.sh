@@ -16,7 +16,8 @@ IMAGE_TAG=zig-qns:local
 echo "[interop] Building local zig-qns image (root context)..."
 docker build -t $IMAGE_TAG -f examples/interop/zig-qns/Dockerfile .
 
-pushd examples/interop/quic-interop-runner >/dev/null
+RUNNER_DIR=examples/interop/quic-interop-runner
+pushd "$RUNNER_DIR" >/dev/null
 # Create isolated virtualenv for runner deps to avoid system / read-only store issues.
 if [[ ! -d .venv ]]; then
 	echo "[interop] Creating local Python virtualenv" >&2
@@ -31,20 +32,24 @@ pip install -r requirements.txt >/dev/null 2>&1 || {
 }
 
 # Inject a temporary 'zig' implementation entry if missing (avoid committing changes to submodule).
-if ! grep -q '"zig"' implementations.json; then
-	echo "[interop] Injecting temporary zig implementation entry" >&2
-	cp implementations.json implementations.json.bak
-	python - <<'EOF'
-import json, pathlib
+python - <<'EOF'
+import json, pathlib, sys
 p=pathlib.Path('implementations.json')
 data=json.loads(p.read_text())
+changed=False
 if 'zig' not in data:
-		data['zig']={"image":"zig-qns:local","url":"https://github.com/spyder/zig-quic","role":"both"}
-		p.write_text(json.dumps(data, indent=2)+"\n")
+	data['zig']={"image":"zig-qns:local","url":"https://github.com/spyder/zig-quic","role":"both"}
+	changed=True
+else:
+	# update image tag each run so latest local build used
+	if data['zig'].get('image')!='zig-qns:local':
+		data['zig']['image']='zig-qns:local'; changed=True
+if changed:
+	p.write_text(json.dumps(data, indent=2)+"\n")
 EOF
-fi
 
 TESTS=${TESTS:-handshake,transfer}
+# If IMPL is 'all', exercise all other known implementations as server with zig client.
 IMPL=${IMPL:-quic-go}
 
 echo "[interop] Running tests $TESTS against $IMPL"
@@ -59,13 +64,34 @@ fi
 RUN_LOG_DIR="logs"
 mkdir -p "$RUN_LOG_DIR"
 
-# Run interop tests; always continue to allow log summarization even on failure.
-ZIG_VERBOSE=1 python run.py -t $TESTS -c zig -s $IMPL -r zig=$IMAGE_TAG --no-auto-unsupported zig,$IMPL "${EXTRA_ENV[@]}" || true
-
-# Restore original implementations.json if we modified it.
-if [[ -f implementations.json.bak ]]; then
-	mv implementations.json.bak implementations.json
+# Sanity cleanup and override setup
+rm -f __pycache__/interop*.pyc 2>/dev/null || true
+PYTHONPATH="$(pwd)/../zig-wrapper/interop_runner_patch:${PYTHONPATH:-}" export PYTHONPATH
+export PYTHON_INTEROP_OVERRIDE=1
+if ! grep -q 'class InteropRunner' interop.py; then
+	echo "[interop] ERROR: InteropRunner class missing in upstream module" >&2
+	exit 1
 fi
+
+# Run interop tests; always continue to allow log summarization even on failure.
+if [[ "$IMPL" == "all" ]]; then
+	# Build list of all implementations except zig (prefer jq, fallback to python)
+	if command -v jq >/dev/null 2>&1; then
+		ALL_SERVERS=$(jq -r 'keys | map(select(. != "zig")) | join(",")' implementations.json)
+	else
+		ALL_SERVERS=$(python - <<'EOF'
+import json, sys
+data=json.load(open('implementations.json'))
+print(','.join([k for k in data.keys() if k!='zig']))
+EOF
+)
+	fi
+	ZIG_VERBOSE=1 python run.py -t $TESTS -c zig -s "$ALL_SERVERS" -r zig=$IMAGE_TAG --no-auto-unsupported zig "${EXTRA_ENV[@]}" || true
+else
+	ZIG_VERBOSE=1 python run.py -t $TESTS -c zig -s $IMPL -r zig=$IMAGE_TAG --no-auto-unsupported zig,$IMPL "${EXTRA_ENV[@]}" || true
+fi
+
+# No restore needed; modification is idempotent and minimal.
 
 LOG_DIR="logs"
 echo "[interop] Parsing path validation events in $LOG_DIR (server/client/endpoint logs if present)"
