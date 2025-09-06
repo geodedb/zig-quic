@@ -274,6 +274,13 @@ pub const Connection = struct {
     handshake_done_seen: bool = false,
     server_hello_sent: bool = false,
     session_ticket_sent: bool = false,
+    // 0-RTT state
+    zero_rtt_keys: ?struct { key: [16]u8, iv: [12]u8, hp: [16]u8 } = null,
+    zero_rtt_enabled: bool = false,
+    zero_rtt_accepted: bool = false,
+    // Session resumption
+    session_ticket: ?[]const u8 = null,
+    resumption_secret: ?[32]u8 = null,
     // Connection close state
     closed: bool = false,
     // Server-side: whether this connection has been enqueued for accept()
@@ -1136,6 +1143,23 @@ pub const Connection = struct {
         }
     }
 
+    /// Enable 0-RTT for this connection (client-side)
+    pub fn enable0RTT(self: *Connection, ticket: []const u8, secret: [32]u8) void {
+        self.session_ticket = ticket;
+        self.resumption_secret = secret;
+        self.zero_rtt_enabled = true;
+        // Derive 0-RTT keys from resumption secret
+        // This is a simplified implementation - full implementation would need proper key derivation
+        const zero_rtt_secret = ks.deriveSecret(secret, "c e traffic", &[_]u8{});
+        const keys = if (self.version_v2) ks.deriveKeyIvHpV2(zero_rtt_secret) else ks.deriveKeyIvHp(zero_rtt_secret);
+        self.zero_rtt_keys = .{ .key = keys.key, .iv = keys.iv, .hp = keys.hp };
+    }
+    
+    /// Accept 0-RTT data (server-side)
+    pub fn accept0RTT(self: *Connection) void {
+        self.zero_rtt_accepted = true;
+    }
+    
     /// Mark initial flow-control limits for transmission (sets flags so MAX_* frames are sent).
     pub fn advertiseInitialFlowControl(self: *Connection) void {
         if (self.app_tx_keys == null) return;

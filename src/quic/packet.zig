@@ -702,6 +702,197 @@ pub const QUIC_V1: u32 = 0x00000001;
 /// QUIC v2 Version value per RFC 9369.
 pub const QUIC_V2: u32 = 0x709a50c4;
 
+/// Encode a 0-RTT packet (client -> server early data).
+/// Uses 0-RTT keys derived from resumption secret.
+pub fn encode0RTTProtected(
+    alloc: std.mem.Allocator,
+    version: u32,
+    dcid: []const u8,
+    scid: []const u8,
+    packet_number: u64,
+    pn_len: u8,
+    payload: []const u8,
+    keys: struct { key: [16]u8, iv: [12]u8, hp: [16]u8 },
+) ![]u8 {
+    // 0-RTT uses long header type 0x01
+    const ty: u2 = 0x01;
+    var buf = std.ArrayList(u8).init(alloc);
+    errdefer buf.deinit();
+    const w = buf.writer();
+    
+    // First byte: long header (0x80) | fixed bit (0x40) | type (0x01 << 4) | reserved | pn_len
+    const first: u8 = 0xc0 | (@as(u8, ty) << 4) | ((pn_len - 1) & 0x03);
+    try w.writeByte(first);
+    
+    // Version
+    var be: [4]u8 = .{ 
+        @as(u8, @intCast(version >> 24)), 
+        @as(u8, @intCast((version >> 16) & 0xff)), 
+        @as(u8, @intCast((version >> 8) & 0xff)), 
+        @as(u8, @intCast(version & 0xff)) 
+    };
+    try w.writeAll(&be);
+    
+    // DCID
+    try w.writeByte(@as(u8, @intCast(dcid.len)));
+    try w.writeAll(dcid);
+    
+    // SCID
+    try w.writeByte(@as(u8, @intCast(scid.len)));
+    try w.writeAll(scid);
+    
+    // Length field (varint)
+    var len_buf: [8]u8 = undefined;
+    const payload_with_tag_len = payload.len + 16; // AEAD tag
+    const total_len = pn_len + payload_with_tag_len;
+    const len_bytes = try varint.encode(total_len, &len_buf);
+    try w.writeAll(len_buf[0..len_bytes]);
+    
+    // Packet number (truncated)
+    const pn_offset = buf.items.len;
+    var pn_bytes: [4]u8 = undefined;
+    for (0..pn_len) |i| {
+        pn_bytes[i] = @as(u8, @intCast((packet_number >> @intCast(8 * (pn_len - 1 - i))) & 0xff));
+    }
+    try w.writeAll(pn_bytes[0..pn_len]);
+    
+    // Encrypt payload
+    const header_len = buf.items.len;
+    const aad = buf.items[0..header_len];
+    
+    // Build nonce
+    var nonce: [12]u8 = undefined;
+    @memcpy(&nonce, &keys.iv);
+    for (0..8) |i| {
+        if (i < 8 - pn_len) continue;
+        const pn_byte_idx = i - (8 - pn_len);
+        nonce[4 + i] ^= pn_bytes[pn_byte_idx];
+    }
+    
+    // Encrypt
+    const ct_start = buf.items.len;
+    try buf.ensureTotalCapacity(ct_start + payload.len + 16);
+    buf.items.len = ct_start + payload.len + 16;
+    
+    crypto.aeadEncrypt(
+        .aes_128_gcm,
+        buf.items[ct_start..],
+        payload,
+        &keys.key,
+        &nonce,
+        aad,
+    );
+    
+    // Apply header protection
+    const sample_offset = pn_offset + 4;
+    if (sample_offset + 16 <= buf.items.len) {
+        const sample = buf.items[sample_offset..][0..16];
+        const mask = crypto.headerProtectionMask(.aes_128_gcm, &keys.hp, sample.*);
+        
+        // Mask first byte
+        buf.items[0] ^= mask[0] & 0x0f;
+        
+        // Mask packet number
+        for (0..pn_len) |i| {
+            buf.items[pn_offset + i] ^= mask[1 + i];
+        }
+    }
+    
+    return buf.toOwnedSlice();
+}
+
+/// Decode and decrypt a 0-RTT packet.
+pub fn decode0RTTProtected(
+    alloc: std.mem.Allocator,
+    packet: []const u8,
+    keys: struct { key: [16]u8, iv: [12]u8, hp: [16]u8 },
+) !struct {
+    packet_number: u64,
+    payload: []u8,
+} {
+    if (packet.len < 20) return error.PacketTooShort;
+    
+    const first = packet[0];
+    if ((first & 0x80) == 0) return error.NotLongHeader;
+    if (((first >> 4) & 0x03) != 0x01) return error.Not0RTT;
+    
+    var i: usize = 5; // Skip first byte and version
+    
+    // Skip DCID
+    const dcid_len = packet[i];
+    i += 1 + dcid_len;
+    if (i >= packet.len) return error.PacketTooShort;
+    
+    // Skip SCID
+    const scid_len = packet[i];
+    i += 1 + scid_len;
+    if (i >= packet.len) return error.PacketTooShort;
+    
+    // Parse length
+    const len_result = varint.decode(packet[i..]) catch return error.InvalidLength;
+    i += len_result.n;
+    
+    // Find packet number offset
+    const pn_offset = i;
+    const pn_len = ((first & 0x03) + 1);
+    
+    // Remove header protection
+    var mutable = try alloc.alloc(u8, packet.len);
+    defer alloc.free(mutable);
+    @memcpy(mutable, packet);
+    
+    const sample_offset = pn_offset + 4;
+    if (sample_offset + 16 <= mutable.len) {
+        const sample = mutable[sample_offset..][0..16];
+        const mask = crypto.headerProtectionMask(.aes_128_gcm, &keys.hp, sample.*);
+        
+        // Unmask first byte
+        mutable[0] ^= mask[0] & 0x0f;
+        
+        // Unmask packet number
+        for (0..pn_len) |j| {
+            mutable[pn_offset + j] ^= mask[1 + j];
+        }
+    }
+    
+    // Extract packet number
+    var pn: u64 = 0;
+    for (0..pn_len) |j| {
+        pn = (pn << 8) | mutable[pn_offset + j];
+    }
+    
+    // Decrypt payload
+    const ct_offset = pn_offset + pn_len;
+    const ct = mutable[ct_offset..];
+    if (ct.len < 16) return error.CiphertextTooShort;
+    
+    const aad = mutable[0..ct_offset];
+    var nonce: [12]u8 = undefined;
+    @memcpy(&nonce, &keys.iv);
+    
+    // XOR packet number into nonce
+    for (0..pn_len) |j| {
+        nonce[12 - pn_len + j] ^= mutable[pn_offset + j];
+    }
+    
+    const plaintext = try alloc.alloc(u8, ct.len - 16);
+    errdefer alloc.free(plaintext);
+    
+    crypto.aeadDecrypt(
+        .aes_128_gcm,
+        plaintext,
+        ct,
+        &keys.key,
+        &nonce,
+        aad,
+    ) catch return error.DecryptionFailed;
+    
+    return .{
+        .packet_number = pn,
+        .payload = plaintext,
+    };
+}
+
 /// Encode a Retry packet with integrity tag per RFC 9001/9369.
 /// dcid = Destination Connection ID field in Retry (must equal client's Initial SCID)
 /// scid = Source Connection ID chosen by server

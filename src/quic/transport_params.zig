@@ -3,6 +3,89 @@
 const std = @import("std");
 const varint = @import("quic_varint");
 
+/// Preferred address structure per RFC 9000
+pub const PreferredAddress = struct {
+    ipv4_addr: ?struct {
+        ip: [4]u8,
+        port: u16,
+    } = null,
+    ipv6_addr: ?struct {
+        ip: [16]u8,
+        port: u16,
+    } = null,
+    connection_id: []const u8,
+    stateless_reset_token: [16]u8,
+};
+
+/// Parse preferred address from raw bytes
+pub fn parsePreferredAddress(data: []const u8) !PreferredAddress {
+    if (data.len < 41) return error.InvalidPreferredAddress;
+    
+    var result = PreferredAddress{
+        .connection_id = undefined,
+        .stateless_reset_token = undefined,
+    };
+    
+    var pos: usize = 0;
+    
+    // IPv4 address (4 bytes) + port (2 bytes)
+    const ipv4_bytes = data[pos..pos + 4];
+    pos += 4;
+    const ipv4_port = (@as(u16, data[pos]) << 8) | data[pos + 1];
+    pos += 2;
+    
+    // Check if IPv4 is present (not all zeros)
+    var has_ipv4 = false;
+    for (ipv4_bytes) |b| {
+        if (b != 0) {
+            has_ipv4 = true;
+            break;
+        }
+    }
+    
+    if (has_ipv4) {
+        result.ipv4_addr = .{
+            .ip = ipv4_bytes[0..4].*,
+            .port = ipv4_port,
+        };
+    }
+    
+    // IPv6 address (16 bytes) + port (2 bytes)
+    const ipv6_bytes = data[pos..pos + 16];
+    pos += 16;
+    const ipv6_port = (@as(u16, data[pos]) << 8) | data[pos + 1];
+    pos += 2;
+    
+    // Check if IPv6 is present
+    var has_ipv6 = false;
+    for (ipv6_bytes) |b| {
+        if (b != 0) {
+            has_ipv6 = true;
+            break;
+        }
+    }
+    
+    if (has_ipv6) {
+        result.ipv6_addr = .{
+            .ip = ipv6_bytes[0..16].*,
+            .port = ipv6_port,
+        };
+    }
+    
+    // Connection ID length and value
+    const cid_len = data[pos];
+    pos += 1;
+    if (pos + cid_len > data.len) return error.InvalidPreferredAddress;
+    result.connection_id = data[pos..pos + cid_len];
+    pos += cid_len;
+    
+    // Stateless reset token (16 bytes)
+    if (pos + 16 > data.len) return error.InvalidPreferredAddress;
+    @memcpy(&result.stateless_reset_token, data[pos..pos + 16]);
+    
+    return result;
+}
+
 /// Transport Parameter identifiers used in TLS QUIC handshake.
 pub const Id = enum(u64) {
     original_destination_connection_id = 0x00,

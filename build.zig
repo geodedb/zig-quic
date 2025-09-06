@@ -392,6 +392,36 @@ pub fn build(b: *std.Build) void {
         const run_test_tls_validity = b.addRunArtifact(test_tls_validity);
         test_step.dependOn(&run_test_tls_validity.step);
 
+        // 0-RTT tests
+        const test_0rtt = addTst(b, "tests/test_0rtt.zig", target, optimize);
+        test_0rtt.root_module.addImport("quic_packet", quic_packet_mod);
+        test_0rtt.root_module.addImport("quic_crypto", quic_crypto_mod);
+        test_0rtt.root_module.addImport("quic_tls", quic_tls_mod);
+        const run_test_0rtt = b.addRunArtifact(test_0rtt);
+        test_step.dependOn(&run_test_0rtt.step);
+        
+        // Session resumption tests
+        const test_resumption = addTst(b, "tests/test_resumption.zig", target, optimize);
+        test_resumption.root_module.addImport("quic_tls13", tls13_mod);
+        test_resumption.root_module.addImport("quic_tls", quic_tls_mod);
+        const run_test_resumption = b.addRunArtifact(test_resumption);
+        test_step.dependOn(&run_test_resumption.step);
+        
+        // Connection migration tests
+        const test_conn_migration = addTst(b, "tests/test_connection_migration.zig", target, optimize);
+        test_conn_migration.root_module.addImport("quic_conn", quic_conn_mod);
+        test_conn_migration.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        test_conn_migration.root_module.addImport("quic_frame", quic_frame_mod);
+        test_conn_migration.root_module.addImport("quic_packet", quic_packet_mod);
+        const run_test_conn_migration = b.addRunArtifact(test_conn_migration);
+        test_step.dependOn(&run_test_conn_migration.step);
+        
+        // Preferred address tests
+        const test_pref_addr = addTst(b, "tests/test_preferred_address.zig", target, optimize);
+        test_pref_addr.root_module.addImport("quic_transport_params", quic_transport_params_mod);
+        const run_test_pref_addr = b.addRunArtifact(test_pref_addr);
+        test_step.dependOn(&run_test_pref_addr.step);
+        
         // TLS KU/EKU and malformed DER tests
         const test_kus_ekus = addTst(b, "tests/test_tls_kus_ekus.zig", target, optimize);
         test_kus_ekus.root_module.addImport("quic_x509", x509_mod);
