@@ -84,30 +84,35 @@ test "server responds to client Initial" {
         }
     }
 
-    // Try to receive response from server
+    // Try to receive response from server with a few attempts to reduce flakiness
     var recv_buf: [2048]u8 = undefined;
     const recv_flags: u32 = if (@import("builtin").target.os.tag == .windows) 0 else std.posix.MSG.DONTWAIT;
-    const recv_result = std.posix.recv(sock, &recv_buf, recv_flags) catch |err| switch (err) {
-        error.WouldBlock => 0,
-        else => return err,
-    };
+    var got: usize = 0;
+    var tries: usize = 0;
+    while (tries < 20 and got == 0) : (tries += 1) {
+        const n = std.posix.recv(sock, &recv_buf, recv_flags) catch |err| switch (err) {
+            error.WouldBlock => 0,
+            else => return err,
+        };
+        if (n > 0) {
+            got = n;
+            break;
+        }
+        // Drive server once more and wait briefly
+        try api.poll(server_ep, 5);
+        std.Thread.sleep(1_000_000); // 1ms
+    }
 
-    // If we received a response, verify it's an Initial or Retry packet
-    if (recv_result > 0) {
-        const response = recv_buf[0..recv_result];
-        const first_byte = response[0];
-        const is_long = (first_byte & 0x80) != 0;
-        
-        try std.testing.expect(is_long); // Should be a long header
-        
-        const packet_type = (first_byte >> 4) & 0x03;
-        // 0 = Initial, 3 = Retry
-        try std.testing.expect(packet_type == 0 or packet_type == 3);
-        
-        std.debug.print("Server responded with packet type: {}\n", .{packet_type});
-    } else {
-        // No response received - this is the issue we're debugging
+    if (got == 0) {
         std.debug.print("No response received from server\n", .{});
         return error.NoServerResponse;
     }
+
+    const response = recv_buf[0..got];
+    const first_byte = response[0];
+    const is_long = (first_byte & 0x80) != 0;
+    try std.testing.expect(is_long);
+    const packet_type = (first_byte >> 4) & 0x03;
+    try std.testing.expect(packet_type == 0 or packet_type == 3);
+    std.debug.print("Server responded with packet type: {}\n", .{packet_type});
 }

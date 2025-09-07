@@ -23,8 +23,9 @@ pub fn main() !void {
     var out = std.ArrayList(u8){};
     defer out.deinit(alloc);
     var tmp: [4096]u8 = undefined;
+    const infd: std.posix.fd_t = std.posix.getStdIn();
     while (true) {
-        const n = std.posix.read(0, &tmp) catch break;
+        const n = std.posix.read(infd, &tmp) catch break;
         if (n == 0) break;
         _ = out.appendSlice(alloc, tmp[0..n]) catch break;
         if (out.items.len >= 4096) break;
