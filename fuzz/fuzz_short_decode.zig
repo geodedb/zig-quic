@@ -8,9 +8,9 @@ pub fn main() !void {
     var out = std.ArrayList(u8){};
     defer out.deinit(a);
     var tmp: [4096]u8 = undefined;
-    const infd: std.posix.fd_t = std.posix.getStdIn();
+    const infd: std.posix.fd_t = std.posix.STDIN_FILENO;
     while (true) {
-        const n = std.posix.read(infd, &tmp) catch break;
+        const n = std.posix.read(infd, tmp[0..]) catch break;
         if (n == 0) break;
         _ = out.appendSlice(a, tmp[0..n]) catch break;
         if (out.items.len >= 4096) break;
