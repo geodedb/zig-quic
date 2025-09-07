@@ -52,7 +52,7 @@ test "endpoint_pto_schedule_and_expire_flag" {
 
     // Build a minimal connection object and set a non-zero smoothed RTT so PTO computes
     var conn: @import("quic_conn").Connection = undefined;
-    conn.init(&gpa, .Server, ep.sock_fd, @import("quic_conn").SockAddr.ipv4(127, 0, 0, 1, 4433));
+    conn.init(&gpa, .Server, if (@import("builtin").target.os.tag == .windows) @as(isize, @intCast(@intFromPtr(ep.sock_fd))) else @as(isize, @intCast(ep.sock_fd)), @import("quic_conn").SockAddr.ipv4(127, 0, 0, 1, 4433));
     defer conn.deinit();
 
     // Seed RTT so PTO > 0
@@ -89,7 +89,7 @@ test "initial_space_pto_arm_and_probe_on_expire" {
 
     // Create a server-side Connection and seed Initial RTT so PTO can be armed
     var conn: @import("quic_conn").Connection = undefined;
-    conn.init(&gpa, .Server, ep.sock_fd, @import("quic_conn").SockAddr.ipv4(127, 0, 0, 1, 4433));
+    conn.init(&gpa, .Server, if (@import("builtin").target.os.tag == .windows) @as(isize, @intCast(@intFromPtr(ep.sock_fd))) else @as(isize, @intCast(ep.sock_fd)), @import("quic_conn").SockAddr.ipv4(127, 0, 0, 1, 4433));
     defer conn.deinit();
     conn.rtt_initial.have_sample = true;
     conn.rtt_initial.smoothed_rtt_ns = 30 * std.time.ns_per_ms;
@@ -131,7 +131,7 @@ test "handshake_space_pto_arm_cancel_on_ack_and_probe_on_expire" {
     defer api.endpointDeinit(ep);
 
     var conn: @import("quic_conn").Connection = undefined;
-    conn.init(&gpa, .Server, ep.sock_fd, @import("quic_conn").SockAddr.ipv4(127, 0, 0, 1, 4433));
+    conn.init(&gpa, .Server, if (@import("builtin").target.os.tag == .windows) @as(isize, @intCast(@intFromPtr(ep.sock_fd))) else @as(isize, @intCast(ep.sock_fd)), @import("quic_conn").SockAddr.ipv4(127, 0, 0, 1, 4433));
     defer conn.deinit();
 
     // Seed Handshake RTT

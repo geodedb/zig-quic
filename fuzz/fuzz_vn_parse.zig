@@ -5,7 +5,8 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
-    const buf = try std.io.getStdIn().readToEndAlloc(alloc, 4096);
+    var stdin = std.io.getStdIn();
+    const buf = try stdin.reader().readAllAlloc(alloc, 4096);
     defer alloc.free(buf);
     const r = pkt.decodeVersionNegotiation(alloc, buf);
     if (r) |vn| {
