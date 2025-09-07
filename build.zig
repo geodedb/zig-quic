@@ -17,12 +17,21 @@ fn mkModule(b: *std.Build, path: []const u8) *std.Build.Module {
 }
 
 fn addExe(b: *std.Build, name: []const u8, path: []const u8, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
-    // Newer Zig build wants root_module
-    return b.addExecutable(.{ .name = name, .root_module = b.createModule(.{ .root_source_file = rp(path), .target = target, .optimize = optimize }) });
+    var exe = b.addExecutable(.{ .name = name, .root_module = b.createModule(.{ .root_source_file = rp(path), .target = target, .optimize = optimize }) });
+    if (target.result.os.tag == .windows) {
+        exe.linkSystemLibrary("ws2_32");
+        exe.linkLibC();
+    }
+    return exe;
 }
 
 fn addTst(b: *std.Build, path: []const u8, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
-    return b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = rp(path), .target = target, .optimize = optimize }) });
+    var tst = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = rp(path), .target = target, .optimize = optimize }) });
+    if (target.result.os.tag == .windows) {
+        tst.linkSystemLibrary("ws2_32");
+        tst.linkLibC();
+    }
+    return tst;
 }
 
 pub fn build(b: *std.Build) void {
@@ -30,6 +39,7 @@ pub fn build(b: *std.Build) void {
     const optimize_base = b.standardOptimizeOption(.{});
     const release_safe = b.option(bool, "release-safe", "Build with ReleaseSafe optimization (convenience flag)") orelse false;
     const optimize: std.builtin.OptimizeMode = if (release_safe) .ReleaseSafe else optimize_base;
+    _ = b.option(bool, "xdp", "Enable XDP path (no-op placeholder)") orelse false;
 
     // Parse optional user args to support `zig build test --test-filter <substr>`.
     const raw_args = b.args orelse &[_][]const u8{};

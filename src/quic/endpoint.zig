@@ -1286,7 +1286,7 @@ pub const Endpoint = struct {
                 }
                 // No suitable server connection exists: create one now.
                 const c_new = self.allocator.create(conn_mod.Connection) catch return;
-                c_new.init(self.allocator, .Server, self.sock_fd, peer);
+                c_new.init(self.allocator, .Server, sockToIsize(self.sock_fd), peer);
                 // Generate a random SCID for the server
                 c_new.our_scid.len = 8;
                 std.crypto.random.bytes(c_new.our_scid.bytes[0..c_new.our_scid.len]);
