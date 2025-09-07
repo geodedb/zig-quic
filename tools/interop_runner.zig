@@ -45,9 +45,9 @@ const Runner = struct {
 
     fn goBuild(self: *Runner, pkg_dir: []const u8, out_path: []const u8) !void {
         if (self.pathExists(out_path)) return;
-        var args_buf = std.ArrayList([]const u8).init(self.alloc);
-        defer args_buf.deinit();
-        try args_buf.appendSlice(&.{ "go", "build", "-o", out_path, pkg_dir });
+        var args_buf = std.ArrayListUnmanaged([]const u8){};
+        defer args_buf.deinit(self.alloc);
+        try args_buf.appendSlice(self.alloc, &.{ "go", "build", "-o", out_path, pkg_dir });
         var child = std.process.Child.init(args_buf.items, self.alloc);
         child.stdin_behavior = .Ignore;
         child.stdout_behavior = .Pipe;
@@ -55,9 +55,31 @@ const Runner = struct {
         try child.spawn();
         const term = try child.wait();
         if (!(term == .Exited and term.Exited == 0)) {
-            const stdout_bytes = if (child.stdout) |s| (try s.reader().readAllAlloc(self.alloc, 64 * 1024)) else (try self.alloc.dupe(u8, ""));
+            var stdout_buf: [1024]u8 = undefined;
+            const stdout_bytes = if (child.stdout) |s| blk: {
+                var rdr = s.reader(stdout_buf[0..]);
+                var a = std.ArrayListUnmanaged(u8){};
+                defer a.deinit(self.alloc);
+                while (true) {
+                    const n = rdr.read(stdout_buf[0..]) catch 0;
+                    if (n == 0) break;
+                    _ = a.appendSlice(self.alloc, stdout_buf[0..n]) catch {};
+                }
+                break :blk a.toOwnedSlice(self.alloc) catch try self.alloc.dupe(u8, "");
+            } else (try self.alloc.dupe(u8, ""));
             defer self.alloc.free(stdout_bytes);
-            const stderr_bytes = if (child.stderr) |s| (try s.reader().readAllAlloc(self.alloc, 64 * 1024)) else (try self.alloc.dupe(u8, ""));
+            var stderr_buf: [1024]u8 = undefined;
+            const stderr_bytes = if (child.stderr) |s| blk: {
+                var rdr2 = s.reader(stderr_buf[0..]);
+                var a2 = std.ArrayListUnmanaged(u8){};
+                defer a2.deinit(self.alloc);
+                while (true) {
+                    const n2 = rdr2.read(stderr_buf[0..]) catch 0;
+                    if (n2 == 0) break;
+                    _ = a2.appendSlice(self.alloc, stderr_buf[0..n2]) catch {};
+                }
+                break :blk a2.toOwnedSlice(self.alloc) catch try self.alloc.dupe(u8, "");
+            } else (try self.alloc.dupe(u8, ""));
             defer self.alloc.free(stderr_bytes);
             std.debug.print("go build failed: {s} {s}\n", .{ stdout_bytes, stderr_bytes });
             return error.GoBuildFailed;
@@ -67,10 +89,10 @@ const Runner = struct {
     const SpawnInfo = struct { child: std.process.Child, addr_buf: [64]u8, addr_len: usize };
 
     fn spawnServer(self: *Runner, bin: []const u8, addr: []const u8, extra: []const []const u8) !SpawnInfo {
-        var args = std.ArrayList([]const u8).init(self.alloc);
-        defer args.deinit();
-        try args.appendSlice(&.{ bin, "--addr", addr, "--alpn", "h3", "--cert", "examples/interop/certs/cert.pem", "--key", "examples/interop/certs/key.pem" });
-        try args.appendSlice(extra);
+        var args = std.ArrayListUnmanaged([]const u8){};
+        defer args.deinit(self.alloc);
+        try args.appendSlice(self.alloc, &.{ bin, "--addr", addr, "--alpn", "h3", "--cert", "examples/interop/certs/cert.pem", "--key", "examples/interop/certs/key.pem" });
+        try args.appendSlice(self.alloc, extra);
         var child = std.process.Child.init(args.items, self.alloc);
         child.stdin_behavior = .Ignore;
         child.stdout_behavior = .Pipe;
@@ -79,16 +101,19 @@ const Runner = struct {
         var addr_buf: [64]u8 = undefined;
         var addr_len: usize = 0;
         if (child.stderr) |s| {
-            var r = s.reader();
-            var buf = std.ArrayList(u8).init(self.alloc);
-            defer buf.deinit();
+            var rb: [512]u8 = undefined;
+            var r = s.reader(rb[0..]);
+            var buf = std.ArrayListUnmanaged(u8){};
+            defer buf.deinit(self.alloc);
             // Read up to 4KB over ~800ms to catch the listening line
             var i: usize = 0;
             while (i < 4) : (i += 1) {
-                const chunk = r.readAllAlloc(self.alloc, 1024) catch null;
+                var tmp: [512]u8 = undefined;
+                const nread = r.read(tmp[0..]) catch 0;
+                const chunk = if (nread == 0) null else (try self.alloc.dupe(u8, tmp[0..nread]));
                 if (chunk) |bytes| {
                     defer self.alloc.free(bytes);
-                    _ = buf.appendSlice(bytes) catch {};
+                    _ = buf.appendSlice(self.alloc, bytes) catch {};
                     if (std.mem.indexOf(u8, buf.items, "listening on ")) |off| {
                         const rest = buf.items[off + ("listening on ").len ..];
                         const end = std.mem.indexOfScalar(u8, rest, '\n') orelse rest.len;
@@ -99,12 +124,12 @@ const Runner = struct {
                         break;
                     }
                 }
-                std.time.sleep(200 * std.time.ns_per_ms);
+                std.Thread.sleep(200 * std.time.ns_per_ms);
             }
         }
         if (addr_len == 0 and std.mem.indexOf(u8, addr, ":0") == null) {
             // Non-ephemeral addr requested: just wait a bit
-            std.time.sleep(800 * std.time.ns_per_ms);
+            std.Thread.sleep(800 * std.time.ns_per_ms);
         }
         return .{ .child = child, .addr_buf = addr_buf, .addr_len = addr_len };
     }
@@ -118,13 +143,35 @@ const Runner = struct {
         // Sleep up to timeout_ms; without tryWait in Zig 0.14, enforce timeout by kill+wait
         var elapsed: u64 = 0;
         while (elapsed < timeout_ms) : (elapsed += 20) {
-            std.time.sleep(20 * std.time.ns_per_ms);
+            std.Thread.sleep(20 * std.time.ns_per_ms);
             // We cannot non-blockingly detect termination here on 0.14; rely on timeout or short sleeps
         }
         _ = child.kill() catch {};
         _ = child.wait() catch {};
-        const out_bytes = if (child.stdout) |s| (try s.reader().readAllAlloc(self.alloc, 64 * 1024)) else (try self.alloc.dupe(u8, ""));
-        const err_bytes = if (child.stderr) |s| (try s.reader().readAllAlloc(self.alloc, 64 * 1024)) else (try self.alloc.dupe(u8, ""));
+        var outb: [1024]u8 = undefined;
+        const out_bytes = if (child.stdout) |s| blk: {
+            var rdr = s.reader(outb[0..]);
+            var arr = std.ArrayListUnmanaged(u8){};
+            defer arr.deinit(self.alloc);
+            while (true) {
+                const n = rdr.read(outb[0..]) catch 0;
+                if (n == 0) break;
+                _ = arr.appendSlice(self.alloc, outb[0..n]) catch {};
+            }
+            break :blk arr.toOwnedSlice(self.alloc) catch try self.alloc.dupe(u8, "");
+        } else (try self.alloc.dupe(u8, ""));
+        var errb: [1024]u8 = undefined;
+        const err_bytes = if (child.stderr) |s| blk2: {
+            var rdr2 = s.reader(errb[0..]);
+            var arr2 = std.ArrayListUnmanaged(u8){};
+            defer arr2.deinit(self.alloc);
+            while (true) {
+                const n2 = rdr2.read(errb[0..]) catch 0;
+                if (n2 == 0) break;
+                _ = arr2.appendSlice(self.alloc, errb[0..n2]) catch {};
+            }
+            break :blk2 arr2.toOwnedSlice(self.alloc) catch try self.alloc.dupe(u8, "");
+        } else (try self.alloc.dupe(u8, ""));
         return .{ .term_ok = false, .out = out_bytes, .err = err_bytes };
     }
 
@@ -143,9 +190,9 @@ const Runner = struct {
         if (srv.addr_len == 0) return error.ServerAddrParseFailed;
         const srv_addr = srv.addr_buf[0..srv.addr_len];
         std.debug.print("server_addr={s}\n", .{srv_addr});
-        var args = std.ArrayList([]const u8).init(self.alloc);
-        defer args.deinit();
-        try args.appendSlice(&.{ client_bin, "--addr", srv_addr, "--alpn", "h3", "--sni", "test.local", "--insecure", "--msg", "hello" });
+        var args = std.ArrayListUnmanaged([]const u8){};
+        defer args.deinit(self.alloc);
+        try args.appendSlice(self.alloc, &.{ client_bin, "--addr", srv_addr, "--alpn", "h3", "--sni", "test.local", "--insecure", "--msg", "hello" });
         const res = try self.runClientWithTimeout(args.items, 1500);
         defer self.alloc.free(res.out);
         defer self.alloc.free(res.err);
@@ -171,9 +218,9 @@ const Runner = struct {
         if (srv.addr_len == 0) return error.ServerAddrParseFailed;
         const srv_addr = srv.addr_buf[0..srv.addr_len];
         std.debug.print("server_addr={s}\n", .{srv_addr});
-        var args = std.ArrayList([]const u8).init(self.alloc);
-        defer args.deinit();
-        try args.appendSlice(&.{ client_bin, "--addr", srv_addr, "--alpn", "h3", "--sni", "test.local", "--insecure", "--datagram", "--dmsg", "ping" });
+        var args = std.ArrayListUnmanaged([]const u8){};
+        defer args.deinit(self.alloc);
+        try args.appendSlice(self.alloc, &.{ client_bin, "--addr", srv_addr, "--alpn", "h3", "--sni", "test.local", "--insecure", "--datagram", "--dmsg", "ping" });
         const res = try self.runClientWithTimeout(args.items, 1500);
         defer self.alloc.free(res.out);
         defer self.alloc.free(res.err);
@@ -199,9 +246,9 @@ const Runner = struct {
         if (srv.addr_len == 0) return error.ServerAddrParseFailed;
         const srv_addr = srv.addr_buf[0..srv.addr_len];
         std.debug.print("server_addr={s}\n", .{srv_addr});
-        var args = std.ArrayList([]const u8).init(self.alloc);
-        defer args.deinit();
-        try args.appendSlice(&.{ client_bin, "--addr", srv_addr, "--alpn", "h3", "--sni", "test.local", "--insecure", "--msg", "hello" });
+        var args = std.ArrayListUnmanaged([]const u8){};
+        defer args.deinit(self.alloc);
+        try args.appendSlice(self.alloc, &.{ client_bin, "--addr", srv_addr, "--alpn", "h3", "--sni", "test.local", "--insecure", "--msg", "hello" });
         const res = try self.runClientWithTimeout(args.items, 1500);
         defer self.alloc.free(res.out);
         defer self.alloc.free(res.err);
@@ -226,9 +273,9 @@ const Runner = struct {
         }
         if (srv.addr_len == 0) return error.ServerAddrParseFailed;
         const srv_addr = srv.addr_buf[0..srv.addr_len];
-        var args_cli = std.ArrayList([]const u8).init(self.alloc);
-        defer args_cli.deinit();
-        try args_cli.appendSlice(&.{ client_bin, "--addr", srv_addr, "--alpn", "hq-interop", "--sni", "test.local", "--insecure" });
+        var args_cli = std.ArrayListUnmanaged([]const u8){};
+        defer args_cli.deinit(self.alloc);
+        try args_cli.appendSlice(self.alloc, &.{ client_bin, "--addr", srv_addr, "--alpn", "hq-interop", "--sni", "test.local", "--insecure" });
         const res = try self.runClientWithTimeout(args_cli.items, 3000);
         defer self.alloc.free(res.out);
         defer self.alloc.free(res.err);
@@ -249,9 +296,9 @@ const Runner = struct {
         }
         if (srv.addr_len == 0) return error.ServerAddrParseFailed;
         const srv_addr = srv.addr_buf[0..srv.addr_len];
-        var args_cli = std.ArrayList([]const u8).init(self.alloc);
-        defer args_cli.deinit();
-        try args_cli.appendSlice(&.{ client_bin, "--addr", srv_addr, "--alpn", "h3", "--sni", "test.local", "--insecure", "--versions", "v2,v1", "--print-version" });
+        var args_cli = std.ArrayListUnmanaged([]const u8){};
+        defer args_cli.deinit(self.alloc);
+        try args_cli.appendSlice(self.alloc, &.{ client_bin, "--addr", srv_addr, "--alpn", "h3", "--sni", "test.local", "--insecure", "--versions", "v2,v1", "--print-version" });
         const res = try self.runClientWithTimeout(args_cli.items, 3000);
         defer self.alloc.free(res.out);
         defer self.alloc.free(res.err);
@@ -276,9 +323,9 @@ const Runner = struct {
         }
         if (srv.addr_len == 0) return error.ServerAddrParseFailed;
         const srv_addr = srv.addr_buf[0..srv.addr_len];
-        var args_cli = std.ArrayList([]const u8).init(self.alloc);
-        defer args_cli.deinit();
-        try args_cli.appendSlice(&.{ client_bin, "--addr", srv_addr, "--alpn", "h3", "--sni", "test.local", "--insecure", "--versions", "v2", "--print-version" });
+        var args_cli = std.ArrayListUnmanaged([]const u8){};
+        defer args_cli.deinit(self.alloc);
+        try args_cli.appendSlice(self.alloc, &.{ client_bin, "--addr", srv_addr, "--alpn", "h3", "--sni", "test.local", "--insecure", "--versions", "v2", "--print-version" });
         const res = try self.runClientWithTimeout(args_cli.items, 3000);
         defer self.alloc.free(res.out);
         defer self.alloc.free(res.err);
@@ -322,7 +369,7 @@ const Runner = struct {
             _ = srv.kill() catch {};
             _ = srv.wait() catch {};
         }
-        std.time.sleep(800 * std.time.ns_per_ms);
+        std.Thread.sleep(800 * std.time.ns_per_ms);
         // For simplicity, keep fixed port for Zig server until it prints bind addr; follow-up work can parse its stdout for the actual port
         const client_bin = "zig-out/bin/go-interop-client";
         try self.goBuild("./examples/interop/go-client", client_bin);
@@ -357,7 +404,7 @@ pub fn main() !void {
             "- go_net_echo_smoke (XFAIL until real TLS interop)\n" ++
             "- zig_client_vs_go_server (XFAIL until handshake/streams)\n" ++
             "- zig_server_vs_go_client (XFAIL until handshake/streams)\n";
-        try std.io.getStdOut().writer().print("{s}", .{out});
+        _ = std.posix.write(std.posix.STDOUT_FILENO, out) catch {};
         return;
     } else if (std.mem.eql(u8, cmd, "run")) {
         const scenario = args.next() orelse return error.MissingArgument;
@@ -393,9 +440,9 @@ fn runGoNetEchoSmoke(self: *Runner) !void {
     }
     if (srv.addr_len == 0) return error.ServerAddrParseFailed;
     const srv_addr = srv.addr_buf[0..srv.addr_len];
-    var args = std.ArrayList([]const u8).init(self.alloc);
-    defer args.deinit();
-    try args.appendSlice(&.{ client_bin, "--addr", srv_addr, "--alpn", "h3", "--sni", "test.local", "--insecure", "--msg", "hello" });
+    var args = std.ArrayListUnmanaged([]const u8){};
+    defer args.deinit(self.alloc);
+    try args.appendSlice(self.alloc, &.{ client_bin, "--addr", srv_addr, "--alpn", "h3", "--sni", "test.local", "--insecure", "--msg", "hello" });
     const res = try self.runClientWithTimeout(args.items, 1500);
     defer self.alloc.free(res.out);
     defer self.alloc.free(res.err);

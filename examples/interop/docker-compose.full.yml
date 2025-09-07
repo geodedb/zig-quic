@@ -21,7 +21,7 @@
 services:
   sim:
     image: martenseemann/quic-network-simulator
-    container_name: sim
+    container_name: ${COMPOSE_PROJECT_NAME}_sim
     hostname: sim
     stdin_open: true
     tty: true
@@ -47,12 +47,13 @@ services:
       context: ../../
       dockerfile: examples/interop/zig-qns/Dockerfile
     image: zig-qns:local
-    container_name: zig-server
+    container_name: ${COMPOSE_PROJECT_NAME}_zig_server
     hostname: server
     stdin_open: true
     tty: true
     volumes:
       - ./quic-network-simulator/logs/server:/logs
+      - ./quic-interop-runner/certs:/certs:ro
       - ./quic-network-simulator/www:/www:ro
     environment:
       - ROLE=server
@@ -78,12 +79,13 @@ services:
       context: ../../
       dockerfile: examples/interop/zig-qns/Dockerfile
     image: zig-qns:local
-    container_name: zig-client
+    container_name: ${COMPOSE_PROJECT_NAME}_zig_client
     hostname: client
     stdin_open: true
     tty: true
     volumes:
       - ./quic-network-simulator/logs/client:/logs
+      - ./quic-interop-runner/certs:/certs:ro
       - ./quic-network-simulator/downloads:/downloads
     environment:
       - ROLE=client
@@ -114,6 +116,7 @@ services:
     tty: true
     volumes:
       - ./quic-network-simulator/logs/server:/logs
+      - ./quic-interop-runner/certs:/certs:ro
       - ./quic-network-simulator/www:/www:ro
     environment:
       - ROLE=server
@@ -142,6 +145,7 @@ services:
     tty: true
     volumes:
       - ./quic-network-simulator/logs/client:/logs
+      - ./quic-interop-runner/certs:/certs:ro
       - ./quic-network-simulator/downloads:/downloads
     environment:
       - ROLE=client
@@ -172,6 +176,7 @@ services:
     tty: true
     volumes:
       - ./quic-network-simulator/logs/server:/logs
+      - ./quic-interop-runner/certs:/certs:ro
       - ./quic-network-simulator/www:/www:ro
     environment:
       - ROLE=server
@@ -200,6 +205,7 @@ services:
     tty: true
     volumes:
       - ./quic-network-simulator/logs/client:/logs
+      - ./quic-interop-runner/certs:/certs:ro
       - ./quic-network-simulator/downloads:/downloads
     environment:
       - ROLE=client
@@ -230,6 +236,7 @@ services:
     tty: true
     volumes:
       - ./quic-network-simulator/logs/server:/logs
+      - ./quic-interop-runner/certs:/certs:ro
       - ./quic-network-simulator/www:/www:ro
     environment:
       - ROLE=server
@@ -258,6 +265,7 @@ services:
     tty: true
     volumes:
       - ./quic-network-simulator/logs/client:/logs
+      - ./quic-interop-runner/certs:/certs:ro
       - ./quic-network-simulator/downloads:/downloads
     environment:
       - ROLE=client
@@ -288,6 +296,7 @@ services:
     tty: true
     volumes:
       - ./quic-network-simulator/logs/server:/logs
+      - ./quic-interop-runner/certs:/certs:ro
       - ./quic-network-simulator/www:/www:ro
     environment:
       - ROLE=server
@@ -316,6 +325,7 @@ services:
     tty: true
     volumes:
       - ./quic-network-simulator/logs/client:/logs
+      - ./quic-interop-runner/certs:/certs:ro
       - ./quic-network-simulator/downloads:/downloads
     environment:
       - ROLE=client
@@ -346,6 +356,7 @@ services:
     tty: true
     volumes:
       - ./quic-network-simulator/logs/server:/logs
+      - ./quic-interop-runner/certs:/certs:ro
       - ./quic-network-simulator/www:/www:ro
     environment:
       - ROLE=server
@@ -374,6 +385,7 @@ services:
     tty: true
     volumes:
       - ./quic-network-simulator/logs/client:/logs
+      - ./quic-interop-runner/certs:/certs:ro
       - ./quic-network-simulator/downloads:/downloads
     environment:
       - ROLE=client
@@ -404,6 +416,7 @@ services:
     tty: true
     volumes:
       - ./quic-network-simulator/logs/server:/logs
+      - ./quic-interop-runner/certs:/certs:ro
       - ./quic-network-simulator/www:/www:ro
     environment:
       - ROLE=server
@@ -432,6 +445,7 @@ services:
     tty: true
     volumes:
       - ./quic-network-simulator/logs/client:/logs
+      - ./quic-interop-runner/certs:/certs:ro
       - ./quic-network-simulator/downloads:/downloads
     environment:
       - ROLE=client
@@ -462,6 +476,7 @@ services:
     tty: true
     volumes:
       - ./quic-network-simulator/logs/server:/logs
+      - ./quic-interop-runner/certs:/certs:ro
       - ./quic-network-simulator/www:/www:ro
     environment:
       - ROLE=server
@@ -485,12 +500,13 @@ services:
   # Generic server/client services that use environment variables
   server:
     image: ${SERVER_IMAGE:-zig-qns:local}
-    container_name: server
+    container_name: ${COMPOSE_PROJECT_NAME}_server
     hostname: server
     stdin_open: true
     tty: true
     volumes:
       - ./quic-network-simulator/logs/server:/logs
+      - ./quic-interop-runner/certs:/certs:ro
       - ./quic-network-simulator/www:/www:ro
     environment:
       - ROLE=server
@@ -513,12 +529,13 @@ services:
 
   client:
     image: ${CLIENT_IMAGE:-zig-qns:local}
-    container_name: client
+    container_name: ${COMPOSE_PROJECT_NAME}_client
     hostname: client
     stdin_open: true
     tty: true
     volumes:
       - ./quic-network-simulator/logs/client:/logs
+      - ./quic-interop-runner/certs:/certs:ro
       - ./quic-network-simulator/downloads:/downloads
     environment:
       - ROLE=client

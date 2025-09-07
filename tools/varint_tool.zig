@@ -81,35 +81,43 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(alloc);
     defer std.process.argsFree(alloc, args);
     if (args.len < 3) {
-        try std.io.getStdErr().writer().writeAll("usage: quic-varint encode <u64> | decode <hex-bytes...>\n");
+        _ = std.posix.write(std.posix.STDERR_FILENO, "usage: quic-varint encode <u64> | decode <hex-bytes...>\n") catch {};
         std.process.exit(2);
     }
     const cmd = args[1];
     if (std.mem.eql(u8, cmd, "encode")) {
         const val = std.fmt.parseInt(u64, args[2], 10) catch {
-            try std.io.getStdErr().writer().writeAll("INVALID_ARG\n");
+            _ = std.posix.write(std.posix.STDERR_FILENO, "INVALID_ARG\n") catch {};
             std.process.exit(2);
         };
         var buf: [8]u8 = undefined;
         const n = varintEncode(val, &buf) catch |e| {
             if (e == QuicError.VARINT_OVERFLOW) {
-                try std.io.getStdErr().writer().writeAll("VARINT_OVERFLOW\n");
+                _ = std.posix.write(std.posix.STDERR_FILENO, "VARINT_OVERFLOW\n") catch {};
                 std.process.exit(2);
             }
             return e;
         };
         // print as hex bytes, space separated
-        var w = std.io.getStdOut().writer();
+        var out_buf: [32]u8 = undefined;
+        var k: usize = 0;
         var first = true;
         for (buf[0..n]) |b| {
-            if (!first) try w.writeByte(' ');
+            if (!first) {
+                out_buf[k] = ' ';
+                k += 1;
+            }
             first = false;
-            try w.print("{X:0>2}", .{b});
+            const s = std.fmt.bufPrint(out_buf[k..], "{X:0>2}", .{b}) catch out_buf[k..k];
+            k += s.len;
         }
-        try w.writeByte('\n');
+        out_buf[k] = '\n';
+        k += 1;
+        _ = std.posix.write(std.posix.STDOUT_FILENO, out_buf[0..k]) catch {};
+
     } else if (std.mem.eql(u8, cmd, "decode")) {
         if (args.len < 3) {
-            try std.io.getStdErr().writer().writeAll("VARINT_UNDERFLOW\n");
+            _ = std.posix.write(std.posix.STDERR_FILENO, "VARINT_UNDERFLOW\n") catch {};
             std.process.exit(2);
         }
         const count = args.len - 2;
@@ -118,22 +126,23 @@ pub fn main() !void {
         for (buf, 0..) |*b, i| {
             const s = args[2 + i];
             b.* = parseHexByte(std.mem.trim(u8, s, " ")) catch {
-                try std.io.getStdErr().writer().writeAll("INVALID_ARG\n");
+                _ = std.posix.write(std.posix.STDERR_FILENO, "INVALID_ARG\n") catch {};
                 std.process.exit(2);
                 unreachable;
             };
         }
         const res = varintDecode(buf) catch |e| {
             if (e == QuicError.VARINT_UNDERFLOW) {
-                try std.io.getStdErr().writer().writeAll("VARINT_UNDERFLOW\n");
+                _ = std.posix.write(std.posix.STDERR_FILENO, "VARINT_UNDERFLOW\n") catch {};
                 std.process.exit(2);
             }
             return e;
         };
-        var w = std.io.getStdOut().writer();
-        try w.print("{d}\n", .{res.value});
+        var numbuf: [32]u8 = undefined;
+        const s = std.fmt.bufPrint(&numbuf, "{d}\n", .{res.value}) catch return;
+        _ = std.posix.write(std.posix.STDOUT_FILENO, s) catch {};
     } else {
-        try std.io.getStdErr().writer().writeAll("INVALID_ARG\n");
+        _ = std.posix.write(std.posix.STDERR_FILENO, "INVALID_ARG\n") catch {};
         std.process.exit(2);
     }
 }

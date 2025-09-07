@@ -92,6 +92,11 @@ pub fn openStream(conn: *QuicConnection, bidi: bool) !QuicStreamId {
     const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
     return c.openStream(bidi);
 }
+/// Open a unidirectional stream.
+pub fn openUni(conn: *QuicConnection) !QuicStreamId {
+    const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
+    return c.openStream(false);
+}
 /// Write to a stream on a connection (not yet implemented).
 pub fn writeStream(conn: *QuicConnection, id: QuicStreamId, data: []const u8) !usize {
     const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
@@ -101,6 +106,11 @@ pub fn writeStream(conn: *QuicConnection, id: QuicStreamId, data: []const u8) !u
 pub fn readStream(conn: *QuicConnection, id: QuicStreamId, buf: []u8) !usize {
     const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
     return c.readStream(id, buf);
+}
+
+pub fn isStreamFinished(conn: *QuicConnection, id: QuicStreamId) bool {
+    const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
+    return c.isStreamFinished(id);
 }
 /// Close a stream with an application error (not yet implemented).
 pub fn closeStream(conn: *QuicConnection, id: QuicStreamId, app_error_code: u64) !void {

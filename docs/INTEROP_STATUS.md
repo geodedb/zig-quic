@@ -54,10 +54,10 @@
 - Completes handshakes with test clients
 
 ### Interop Test Suite
-⚠️ **PARTIAL**: Infrastructure issues prevent full interop testing:
-- Docker Compose has a network management bug causing "network not found" errors
-- Manual Docker testing confirms the implementation works
-- The issue is with Docker Compose, not the QUIC implementation
+⚠️ **PARTIAL**: Minimal HTTP/3 implemented; validating with runner:
+- Added HTTP/3 control stream + SETTINGS, minimal HEADERS(:status 200) + DATA for /www/index.html
+- ALPN negotiation for "h3" enabled in endpoint
+- Next: run quick matrix (zig↔quic-go, zig↔ngtcp2) and confirm handshake/transfer pass in both directions
 
 ## Fixed Issues
 

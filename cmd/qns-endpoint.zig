@@ -1,5 +1,6 @@
 const std = @import("std");
 const api = @import("quic_api");
+const h3_server = @import("h3_server");
 
 // Minimal endpoint used inside the quic-network-simulator / interop runner.
 // Implements a tiny HTTP/0.9 style GET over a single connection per request
@@ -116,8 +117,8 @@ pub fn main() !void {
     }
 
     var cfg = api.QuicConfig{
-        // Use a dedicated HTTP/0.9 interop ALPN token distinct from real h3
-        .alpn = &[_][]const u8{"hq-interop"},
+        // Advertise common interop ALPNs: RFC h3 and HQ variants used by older runners
+        .alpn = &[_][]const u8{ "h3", "hq-29", "hq-interop" },
         .allow_insecure = true, // runner provides cert; we skip validation for now
         .enable_datagram = false,
         .compatible_vn = false,
@@ -148,13 +149,17 @@ pub fn main() !void {
     // If server role and real TLS certs present, enable real TLS.
     const cert_ok = std.fs.cwd().openFile("certs/cert.pem", .{}) catch null;
     if (cert_ok) |f| f.close();
-    const key_ok = std.fs.cwd().openFile("certs/priv.key", .{}) catch null;
-    if (key_ok) |f| f.close();
-    if (cert_ok != null and key_ok != null) {
+    var key_path_sel: ?[]const u8 = null;
+    if (std.fs.cwd().openFile("certs/key.pem", .{})) |kf| { kf.close(); key_path_sel = "/certs/key.pem"; }
+    else |_| {
+        if (std.fs.cwd().openFile("certs/priv.key", .{})) |kf2| { kf2.close(); key_path_sel = "/certs/priv.key"; } else |_| {}
+    }
+    if (cert_ok != null and key_path_sel != null) {
         cfg.real_tls = true;
         cfg.cert_path = "/certs/cert.pem";
-        cfg.key_path = "/certs/priv.key";
+        cfg.key_path = key_path_sel;
         cfg.allow_insecure = true; // clients may skip verification for now
+        log("server: real TLS enabled with provided certificate");
     }
 
     if (std.mem.eql(u8, role, "server")) {
@@ -185,6 +190,11 @@ pub fn main() !void {
                     var alpn_buf: [128]u8 = undefined;
                     const msg = std.fmt.bufPrint(&alpn_buf, "server: negotiated alpn={s}", .{a}) catch "server: negotiated alpn=?";
                     log(msg);
+                    if (std.mem.eql(u8, a, "h3")) {
+                        const h3 = @import("h3_server");
+                        var shim = h3.H3Server.init(alloc);
+                        shim.serveConnection(ep, conn);
+                    }
                 }
                 if (api.getPeerTransportParams(conn)) |tp_raw| {
                     var tp_buf: [256]u8 = undefined;

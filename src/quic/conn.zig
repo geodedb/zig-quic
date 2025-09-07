@@ -1216,28 +1216,45 @@ pub const Connection = struct {
     /// Open a bidi stream; only stream id 0 is supported in this minimal slice.
     /// Open a new local stream (bidi or uni) returning stream id (flow-control permitting).
     pub fn openStream(self: *Connection, bidi: bool) !u64 {
-        if (!bidi) return error.Unsupported;
-        if (self.opened_bidi >= self.peer_max_streams_bidi) {
-            var fb = std.ArrayList(u8){};
-            defer fb.deinit(self.allocator.*);
-            const w = fb.writer(self.allocator.*);
-            _ = (frame.Frame{ .streams_blocked_bidi = .{ .max = self.peer_max_streams_bidi } }).write(w) catch 0;
-            self.sendControlFrames(fb.items);
-            return error.OutOfStreams;
+        if (bidi) {
+            if (self.opened_bidi >= self.peer_max_streams_bidi) {
+                var fb = std.ArrayList(u8){};
+                defer fb.deinit(self.allocator.*);
+                const w = fb.writer(self.allocator.*);
+                _ = (frame.Frame{ .streams_blocked_bidi = .{ .max = self.peer_max_streams_bidi } }).write(w) catch 0;
+                self.sendControlFrames(fb.items);
+                return error.OutOfStreams;
+            }
+            const stream_num: u64 = self.opened_bidi;
+            const initiator_bit: u64 = if (self.role == .Server) 1 else 0; // bit0
+            const dir_bit: u64 = 0; // bidi => bit1 = 0
+            const stream_id: u64 = (stream_num << 2) | initiator_bit | (dir_bit << 1);
+            self.opened_bidi += 1;
+            if (stream_id == 0) {
+                if (self.stream_opened) return error.OutOfStreams;
+                self.stream_opened = true;
+            }
+            _ = self.ensureStreamRx(stream_id);
+            if (self.stream_txs.getPtr(stream_id) == null) {
+                _ = self.stream_txs.put(stream_id, .{}) catch {};
+            }
+            return stream_id;
+        } else {
+            if (self.opened_uni >= self.peer_max_streams_uni) {
+                // No explicit *_BLOCKED frame for uni in this slice; return error
+                return error.OutOfStreams;
+            }
+            const stream_num: u64 = self.opened_uni;
+            const initiator_bit: u64 = if (self.role == .Server) 1 else 0; // bit0
+            const dir_bit: u64 = 1; // uni => bit1 = 1
+            const stream_id: u64 = (stream_num << 2) | initiator_bit | (dir_bit << 1);
+            self.opened_uni += 1;
+            // TX-only from our perspective, but install TX state for writeStream()
+            if (self.stream_txs.getPtr(stream_id) == null) {
+                _ = self.stream_txs.put(stream_id, .{}) catch {};
+            }
+            return stream_id;
         }
-        const stream_num: u64 = self.opened_bidi; // 0-based sequence
-        const initiator_bit: u64 = if (self.role == .Server) 1 else 0; // QUIC stream id layout
-        const stream_id: u64 = (stream_num << 2) | (initiator_bit << 1) | 0; // bidi => type bit 0
-        self.opened_bidi += 1;
-        if (stream_id == 0) {
-            if (self.stream_opened) return error.OutOfStreams;
-            self.stream_opened = true;
-        }
-        _ = self.ensureStreamRx(stream_id);
-        if (self.stream_txs.getPtr(stream_id) == null) {
-            _ = self.stream_txs.put(stream_id, .{}) catch {};
-        }
-        return stream_id;
     }
 
     /// Write STREAM data enforcing flow-control; may emit *_BLOCKED frames.
@@ -1326,7 +1343,7 @@ pub const Connection = struct {
     /// Read from STREAM into buf; returns number of bytes or WouldBlock.
     /// Read reassembled bytes from a stream into buf; returns number copied or WouldBlock.
     pub fn readStream(self: *Connection, id: u64, buf: []u8) !usize {
-        const s = self.streams_rx.getPtr(id) orelse return error.InvalidStream;
+        var s = self.streams_rx.getPtr(id) orelse return error.InvalidStream;
         if (s.inbox.items.len == 0) return 0;
         const n: usize = @min(buf.len, s.inbox.items.len);
         @memcpy(buf[0..n], s.inbox.items[0..n]);
@@ -1957,7 +1974,7 @@ pub const Connection = struct {
         var it2 = self.streams_rx.iterator();
         while (it2.next()) |e| {
             const sid = e.key_ptr.*;
-            const sr = e.value_ptr.*;
+            var sr = e.value_ptr; // pointer to StreamRx
             if (sr.inbox.items.len == 0) continue;
             const n = @min(buf.len, sr.inbox.items.len);
             @memcpy(buf[0..n], sr.inbox.items[0..n]);

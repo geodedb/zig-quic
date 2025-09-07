@@ -195,8 +195,18 @@ pub fn build(b: *std.Build) void {
     const install_quic_server = b.addInstallArtifact(quic_server, .{});
 
     // QNS endpoint binary for interop docker image
+    // Minimal HTTP/3 shim module (kept separate from QUIC core)
+    const h3_server_mod = mkModule(b, "src/h3/server.zig");
+    h3_server_mod.addImport("quic_api", quic_api_mod);
+    h3_server_mod.addImport("quic_conn", quic_conn_mod);
+    // Export for dependents as a named import
+    const h3_mod = b.addModule("h3_server", .{ .root_source_file = rp("src/h3/server.zig") });
+    h3_mod.addImport("quic_api", quic_api_mod);
+    h3_mod.addImport("quic_conn", quic_conn_mod);
+
     const qns_endpoint = addExe(b, "qns-endpoint", "cmd/qns-endpoint.zig", target, optimize);
     qns_endpoint.root_module.addImport("quic_api", quic_api_mod);
+    qns_endpoint.root_module.addImport("h3_server", h3_server_mod);
     const install_qns_endpoint = b.addInstallArtifact(qns_endpoint, .{});
 
     const cli_step = b.step("cli", "Build QUIC CLI client/server");
