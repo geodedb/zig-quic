@@ -8,7 +8,13 @@ pub fn main() !void {
     var out = std.ArrayList(u8){};
     defer out.deinit(a);
     var tmp: [4096]u8 = undefined;
-    const infd: std.posix.fd_t = std.posix.STDIN_FILENO;
+    var infd: std.posix.fd_t = undefined;
+    if (@import("builtin").target.os.tag == .windows) {
+        const w = std.os.windows;
+        infd = w.GetStdHandle(w.STD_INPUT_HANDLE) catch unreachable;
+    } else {
+        infd = std.posix.STDIN_FILENO;
+    }
     while (true) {
         const n = std.posix.read(infd, tmp[0..]) catch break;
         if (n == 0) break;
