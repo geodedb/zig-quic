@@ -701,7 +701,8 @@ pub const Endpoint = struct {
         try lp.add(0, true, false);
         var events: [8]io.Event = undefined;
         const n = try lp.wait(&events, timeout_ms);
-        if (n > 0) self.drainReadable();
+        _ = n;
+        self.drainReadable();
     }
 
     fn poll_kqueue_backend(self: *Endpoint, timeout_ms: i32) !void {
@@ -717,7 +718,8 @@ pub const Endpoint = struct {
         try lp.add(0, true, false);
         var events: [8]io.Event = undefined;
         const n = try lp.wait(&events, timeout_ms);
-        if (n > 0) self.drainReadable();
+        _ = n;
+        self.drainReadable();
     }
 
     fn poll_iocp_backend(self: *Endpoint, timeout_ms: i32) !void {
@@ -732,7 +734,8 @@ pub const Endpoint = struct {
         try lp.add(0, true, false);
         var events: [8]io.Event = undefined;
         const n = try lp.wait(&events, timeout_ms);
-        if (n > 0) self.drainReadable();
+        _ = n;
+        self.drainReadable();
     }
 
     fn processIncomingDatagram(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8, ecn_bits: ?u8) void {
