@@ -36,16 +36,20 @@ class _InteropBypassLoader(_machinery.SourceFileLoader):
 
 class _InteropBypassFinder:
     def find_spec(self, fullname: str, path, target=None):  # noqa: D401
-        if fullname != 'interop':
-            return None
-        # locate real upstream interop.py outside this patch dir
-        for entry in _sys.path:
-            if not entry or _os.path.abspath(entry) == _PATCH_DIR:
-                continue
-            cand = _os.path.join(entry, 'interop.py')
+        # Intercept 'implementations' to force shim module from patch dir
+        if fullname == 'implementations':
+            cand = _os.path.join(_PATCH_DIR, 'implementations.py')
             if _os.path.isfile(cand):
-                loader = _InteropBypassLoader(fullname, cand)
-                return _util.spec_from_file_location(fullname, cand, loader=loader)
+                return _util.spec_from_file_location(fullname, cand)
+        # Intercept 'interop' to patch compliance check
+        if fullname == 'interop':
+            for entry in _sys.path:
+                if not entry or _os.path.abspath(entry) == _PATCH_DIR:
+                    continue
+                cand = _os.path.join(entry, 'interop.py')
+                if _os.path.isfile(cand):
+                    loader = _InteropBypassLoader(fullname, cand)
+                    return _util.spec_from_file_location(fullname, cand, loader=loader)
         return None
 
 

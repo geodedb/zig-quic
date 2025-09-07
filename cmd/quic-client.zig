@@ -59,7 +59,7 @@ pub fn main() !void {
             try api.poll(ep, 10);
             const n = api.recvDatagram(conn, &buf) catch 0;
             if (n > 0) {
-                try std.io.getStdOut().writer().print("dgram: {s}\n", .{buf[0..n]});
+                std.debug.print("dgram: {s}\n", .{buf[0..n]});
                 return;
             }
         }
@@ -108,7 +108,7 @@ pub fn main() !void {
         if (n > 0) total = n;
     }
     if (total > 0) {
-        try std.io.getStdOut().writer().print("echo: {s}\n", .{rbuf[0..total]});
+        std.debug.print("echo: {s}\n", .{rbuf[0..total]});
         std.debug.print("received echo ({d} bytes)\n", .{total});
     }
     // Attempt graceful close so any pending allocation owned by connection is released before endpoint deinit.

@@ -18,14 +18,14 @@ fn getenv(alloc: std.mem.Allocator, key: []const u8) ?[]u8 {
 }
 
 fn parseUrls(alloc: std.mem.Allocator, requests_env: []const u8) ![][]const u8 {
-    var list = std.ArrayList([]const u8).init(alloc);
-    errdefer list.deinit();
+    var list = std.ArrayList([]const u8){};
+    errdefer list.deinit(alloc);
     var it = std.mem.tokenizeAny(u8, requests_env, " \n\r\t");
     while (it.next()) |tok| {
         if (tok.len == 0) continue;
-        try list.append(tok);
+        try list.append(alloc, tok);
     }
-    return list.toOwnedSlice();
+    return list.toOwnedSlice(alloc);
 }
 
 fn extractPath(url: []const u8) []const u8 {
@@ -79,7 +79,9 @@ fn log(msg: []const u8) void {
     // _ = stderr.print("[qns] {s}\n", .{msg}) catch {};
     if (log_file) |f| {
         // ignore errors
-        _ = f.writer().print("[qns] {s}\n", .{msg}) catch {};
+        var buf: [256]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "[qns] {s}\n", .{msg}) catch return;
+        _ = f.writeAll(line) catch {};
         f.sync() catch {};
     }
 }
@@ -279,8 +281,8 @@ pub fn main() !void {
                 writeAllStream(ep, conn, line);
                 
                 // Read response
-                var file_bytes = std.ArrayList(u8).init(alloc);
-                defer file_bytes.deinit();
+                var file_bytes = std.ArrayList(u8){};
+                defer file_bytes.deinit(alloc);
                 var idle: usize = 0;
                 var loops: usize = 0;
                 var tmp: [4096]u8 = undefined;
@@ -291,7 +293,7 @@ pub fn main() !void {
                         idle += 1;
                     } else {
                         idle = 0;
-                        try file_bytes.appendSlice(tmp[0..n]);
+                        try file_bytes.appendSlice(alloc, tmp[0..n]);
                         if (file_bytes.items.len > 4 * 1024 * 1024) break;
                     }
                 }
@@ -383,8 +385,8 @@ pub fn main() !void {
                 log("client: padding sent for keyupdate testcase");
             }
             // Read response until timeout or no progress; save to file
-            var file_bytes = std.ArrayList(u8).init(alloc);
-            defer file_bytes.deinit();
+            var file_bytes = std.ArrayList(u8){};
+            defer file_bytes.deinit(alloc);
             var idle: usize = 0;
             var loops: usize = 0;
             var tmp: [4096]u8 = undefined;
@@ -395,7 +397,7 @@ pub fn main() !void {
                     idle += 1;
                 } else {
                     idle = 0;
-                    try file_bytes.appendSlice(tmp[0..n]);
+                    try file_bytes.appendSlice(alloc, tmp[0..n]);
                     if (file_bytes.items.len > 4 * 1024 * 1024) break; // cap
                 }
             }

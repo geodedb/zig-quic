@@ -1,54 +1,54 @@
-listening on 127.0.0.1:53093
+listening on 127.0.0.1:39851
 Processing Initial packet from peer
-Looking up connection with dcid=CF6964C6911974B3 (found=false)
-Server: Deriving Initial keys with dcid=CF6964C6911974B3
-Server: Masked PN bytes: 49 68 25 D1 
+Looking up connection with dcid=148420EBE5FFCBEE (found=false)
+Server: Deriving Initial keys with dcid=148420EBE5FFCBEE
+Server: Masked PN bytes: 7B 78 78 C0 
 Server: Trying to decrypt Initial with pn_initial.max=0
-Before headerUnprotect: pn_bytes=49 
+Before headerUnprotect: pn_bytes=7B 
 After headerUnprotect: pn_bytes=00 
 expandPacketNumber: truncated=0 pn_len=1 expected=0 -> full=0
 AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
-Before headerUnprotect: pn_bytes=49 68 
+Before headerUnprotect: pn_bytes=7B 78 
 After headerUnprotect: pn_bytes=00 01 
 expandPacketNumber: truncated=1 pn_len=2 expected=0 -> full=1
 After unmasking with pn_len=2: 00 01 
 Successfully decrypted Initial packet (trial pn_len=2) plaintext len: 1150
 Expanded PN: 1 from truncated: 1
 Server: Received CRYPTO frame with 39 bytes
-TLS: Parsed handshake message type=tls13.HsType.client_hello len=35
-TLS: Added 39 bytes to transcript (recv): 01 00 00 23 43 48 31 DE ...
+TLS: Parsed handshake message type=.client_hello len=35
+TLS: Added 39 bytes to transcript (recv): 01 00 00 23 43 48 31 50 ...
 Server: Received ClientHello, queueing ServerHello
 Server: Computed ECDHE secret
-TLS: Added 39 bytes to transcript (queue): 02 00 00 23 53 48 31 A6 ...
+TLS: Added 39 bytes to transcript (queue): 02 00 00 23 53 48 31 31 ...
 Server: Derived handshake secrets
 Sending ServerHello in Initial packet: 39 bytes
 Server: Encoding Initial with pn=1 dcid_len=8 scid_len=8 pn_len=4
 Server: Sending Initial response with 93 bytes (has_crypto=true)
 Queueing handshake flight (EE, Cert, Finished)
 TLS: Added 37 bytes to transcript (queue): 08 00 00 21 41 4C 50 4E ...
-TLS: Queueing Finished with transcript hash: 26 5F 35 EC D7 25 8E D8 ...
-TLS: Added 36 bytes to transcript (queue): 14 00 00 20 3C 83 E1 F1 ...
+TLS: Queueing Finished with transcript hash: 8D 3E AF FA 41 0A EA 30 ...
+TLS: Added 36 bytes to transcript (queue): 14 00 00 20 FA 6F D1 E6 ...
 Sending Handshake packet with 73 bytes of CRYPTO
 accepted connection
 Processing Initial packet from peer
-Looking up connection with dcid=CF6964C6911974B3 (found=true)
+Looking up connection with dcid=148420EBE5FFCBEE (found=true)
 Found existing connection (role=Server)
-Server: Deriving Initial keys with dcid=CF6964C6911974B3
-Server: Masked PN bytes: 8A D3 1D DB 
+Server: Deriving Initial keys with dcid=148420EBE5FFCBEE
+Server: Masked PN bytes: 62 B2 9C 5A 
 Server: Trying to decrypt Initial with pn_initial.max=1
-Before headerUnprotect: pn_bytes=8A 
+Before headerUnprotect: pn_bytes=62 
 After headerUnprotect: pn_bytes=00 
 expandPacketNumber: truncated=0 pn_len=1 expected=2 -> full=0
 AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
-Before headerUnprotect: pn_bytes=8A D3 
+Before headerUnprotect: pn_bytes=62 B2 
 After headerUnprotect: pn_bytes=00 00 
 expandPacketNumber: truncated=0 pn_len=2 expected=2 -> full=0
 AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
-Before headerUnprotect: pn_bytes=8A D3 1D 
+Before headerUnprotect: pn_bytes=62 B2 9C 
 After headerUnprotect: pn_bytes=00 00 00 
 expandPacketNumber: truncated=0 pn_len=3 expected=2 -> full=0
 AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
-Before headerUnprotect: pn_bytes=8A D3 1D DB 
+Before headerUnprotect: pn_bytes=62 B2 9C 5A 
 After headerUnprotect: pn_bytes=00 00 00 02 
 expandPacketNumber: truncated=2 pn_len=4 expected=2 -> full=2
 After unmasking with pn_len=4: 00 00 00 02 
@@ -56,56 +56,56 @@ Successfully decrypted Initial packet (trial pn_len=4) plaintext len: 5
 Expanded PN: 2 from truncated: 2
 Processing Handshake packet from peer
 Client has handshake RX keys, proceeding to decrypt
-Before headerUnprotect: pn_bytes=2B 
+Before headerUnprotect: pn_bytes=35 
 After headerUnprotect: pn_bytes=00 
 expandPacketNumber: truncated=0 pn_len=1 expected=0 -> full=0
 AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
-Before headerUnprotect: pn_bytes=2B 7C 
+Before headerUnprotect: pn_bytes=35 DC 
 After headerUnprotect: pn_bytes=00 01 
 expandPacketNumber: truncated=1 pn_len=2 expected=0 -> full=1
 After unmasking with pn_len=2: 00 01 
 Successfully decrypted Handshake packet (trial pn_len=2) plaintext len: 39
-Handshake frame: frame.Frame{ .crypto = frame.Frame__struct_25833{ .offset = 0, .data = { 20, 0, 0, 32, 92, 240, 113, 23, 192, 133, 170, 37, 106, 47, 218, 224, 231, 211, 253, 201, 194, 45, 94, 179, 91, 29, 133, 61, 61, 178, 59, 214, 34, 218, 38, 81 } } } at offset 0
-TLS: Parsed handshake message type=tls13.HsType.finished len=32
+Handshake frame: .{ .crypto = .{ .offset = 0, .data = { 20, 0, 0, 32, 149, 184, 228, 170, 123, 150, 28, 146, 162, 140, 34, 85, 74, 183, 62, 187, 244, 171, 118, 151, 56, 71, 105, 99, 246, 179, 17, 129, 198, 230, 167, 7 } } } at offset 0
+TLS: Parsed handshake message type=.finished len=32
 TLS: Processing Finished message
 TLS: Using stored handshake secrets for verification
-TLS: Verifying Finished with transcript hash: D8 74 4B 8D DB 30 90 61 ...
+TLS: Verifying Finished with transcript hash: 60 DF DB 04 4D D0 1A 39 ...
 TLS: Finished verification result: true
-TLS: Added 36 bytes to transcript (recv-finished): 14 00 00 20 5C F0 71 17 ...
+TLS: Added 36 bytes to transcript (recv-finished): 14 00 00 20 95 B8 E4 AA ...
 Server: Deriving application secrets (both Finished exchanged & flushed)
 Server: Sending control frames (13 bytes)
 Server: Sending control frames (14 bytes)
-DEC hp_sample: 34 d6 70 43 1e eb c7 23 62 31 ec de 15 9a 2f f6
-DEC hp_key: ce f3 a7 e7 db 7d 67 99 30 e4 dc 57 ca fe 14 3d
+DEC hp_sample: 27 69 01 86 ed 7b 6c fa 94 71 34 6a 12 69 1c d2
+DEC hp_key: 86 df 0c 45 66 b0 35 c6 2e fe 8f dd 31 94 de f6
 First packet: truncated=0001 (1) -> expanded=1
-DEC aead_key: e9 d8 ef f8 d2 de 07 52 18 e3 8b 26 da 2e 3e 5b
-DEC aead_iv: d2 7b 73 6e f9 97 29 e5 9b 6c 33 5f
-DEC aad: 41 46 06 2a 1d 0a 50 59 ee 00 01
-DEC nonce: d2 7b 73 6e f9 97 29 e5 9b 6c 33 5e
+DEC aead_key: 4b 8b ea 7e 5e e5 37 d1 54 70 e6 1f 5a a2 50 46
+DEC aead_iv: ed 79 09 69 23 49 46 4d 7e 90 f0 ea
+DEC aad: 41 db a9 e4 26 d1 56 94 1c 00 01
+DEC nonce: ed 79 09 69 23 49 46 4d 7e 90 f0 eb
 DEC pn_bytes: 00 01
-DEC hp_sample: bf 9d 97 42 69 58 1e db d2 c9 f4 b7 07 cf 59 99
-DEC hp_key: ce f3 a7 e7 db 7d 67 99 30 e4 dc 57 ca fe 14 3d
+DEC hp_sample: 75 f6 57 cd dd 44 b4 81 a0 ec a2 72 8a ad ca 4c
+DEC hp_key: 86 df 0c 45 66 b0 35 c6 2e fe 8f dd 31 94 de f6
 First packet: truncated=0002 (2) -> expanded=2
-DEC aead_key: e9 d8 ef f8 d2 de 07 52 18 e3 8b 26 da 2e 3e 5b
-DEC aead_iv: d2 7b 73 6e f9 97 29 e5 9b 6c 33 5f
-DEC aad: 41 46 06 2a 1d 0a 50 59 ee 00 02
-DEC nonce: d2 7b 73 6e f9 97 29 e5 9b 6c 33 5d
+DEC aead_key: 4b 8b ea 7e 5e e5 37 d1 54 70 e6 1f 5a a2 50 46
+DEC aead_iv: ed 79 09 69 23 49 46 4d 7e 90 f0 ea
+DEC aad: 41 db a9 e4 26 d1 56 94 1c 00 02
+DEC nonce: ed 79 09 69 23 49 46 4d 7e 90 f0 e8
 DEC pn_bytes: 00 02
 stream 0 opened (rx 5 bytes)
-DEC hp_sample: 33 08 c6 ea 59 8b 1d 51 25 41 62 5b c7 03 70 5e
-DEC hp_key: ce f3 a7 e7 db 7d 67 99 30 e4 dc 57 ca fe 14 3d
+DEC hp_sample: 98 5a 59 4d cf 14 42 86 fe 20 7f ee 86 06 73 89
+DEC hp_key: 86 df 0c 45 66 b0 35 c6 2e fe 8f dd 31 94 de f6
 First packet: truncated=0003 (3) -> expanded=3
-DEC aead_key: e9 d8 ef f8 d2 de 07 52 18 e3 8b 26 da 2e 3e 5b
-DEC aead_iv: d2 7b 73 6e f9 97 29 e5 9b 6c 33 5f
-DEC aad: 41 46 06 2a 1d 0a 50 59 ee 00 03
-DEC nonce: d2 7b 73 6e f9 97 29 e5 9b 6c 33 5c
+DEC aead_key: 4b 8b ea 7e 5e e5 37 d1 54 70 e6 1f 5a a2 50 46
+DEC aead_iv: ed 79 09 69 23 49 46 4d 7e 90 f0 ea
+DEC aad: 41 db a9 e4 26 d1 56 94 1c 00 03
+DEC nonce: ed 79 09 69 23 49 46 4d 7e 90 f0 e9
 DEC pn_bytes: 00 03
-DEC hp_sample: 70 1f 4c 7a 17 14 bb b6 a4 18 4b b8 19 d1 9f e7
-DEC hp_key: ce f3 a7 e7 db 7d 67 99 30 e4 dc 57 ca fe 14 3d
+DEC hp_sample: 2a 2c e0 b7 ad 9e 85 76 bc 4f e4 25 1f b2 93 55
+DEC hp_key: 86 df 0c 45 66 b0 35 c6 2e fe 8f dd 31 94 de f6
 First packet: truncated=0004 (4) -> expanded=4
-DEC aead_key: e9 d8 ef f8 d2 de 07 52 18 e3 8b 26 da 2e 3e 5b
-DEC aead_iv: d2 7b 73 6e f9 97 29 e5 9b 6c 33 5f
-DEC aad: 41 46 06 2a 1d 0a 50 59 ee 00 04
-DEC nonce: d2 7b 73 6e f9 97 29 e5 9b 6c 33 5b
+DEC aead_key: 4b 8b ea 7e 5e e5 37 d1 54 70 e6 1f 5a a2 50 46
+DEC aead_iv: ed 79 09 69 23 49 46 4d 7e 90 f0 ea
+DEC aad: 41 db a9 e4 26 d1 56 94 1c 00 04
+DEC nonce: ed 79 09 69 23 49 46 4d 7e 90 f0 ee
 DEC pn_bytes: 00 04
 destroy(): removed 0 map keys for connection

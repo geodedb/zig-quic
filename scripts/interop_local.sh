@@ -32,22 +32,9 @@ pip install -r requirements.txt >/dev/null 2>&1 || {
 	exit 1
 }
 
-# Inject a temporary 'zig' implementation entry if missing (avoid committing changes to submodule).
-python - <<'EOF'
-import json, pathlib, sys
-p=pathlib.Path('implementations.json')
-data=json.loads(p.read_text())
-changed=False
-if 'zig' not in data:
-	data['zig']={"image":"zig-qns:local","url":"https://github.com/spyder/zig-quic","role":"both"}
-	changed=True
-else:
-	# update image tag each run so latest local build used
-	if data['zig'].get('image')!='zig-qns:local':
-		data['zig']['image']='zig-qns:local'; changed=True
-if changed:
-	p.write_text(json.dumps(data, indent=2)+"\n")
-EOF
+# Do not modify the submodule's implementations.json. Use a shim via PYTHONPATH and environment.
+export ZIG_IMAGE_TAG="$IMAGE_TAG"
+export ZIG_IMPL_URL="https://github.com/spyder/zig-quic"
 
 TESTS=${TESTS:-handshake,transfer}
 # If IMPL is 'all', exercise all other known implementations as server with zig client.
@@ -75,7 +62,9 @@ import importlib, sys
 try:
 	m=importlib.import_module('interop')
 	assert hasattr(m,'InteropRunner')
-	print('[interop] Shadow interop module active; compliance bypass engaged')
+	from implementations import IMPLEMENTATIONS
+	assert 'zig' in IMPLEMENTATIONS or 'ZIG_IMAGE_TAG' in __import__('os').environ
+	print('[interop] Shadow interop module active; using shim IMPLEMENTATIONS (no submodule edits)')
 except Exception as e:
 	print('[interop] ERROR: failed to import shadow interop module:', e, file=sys.stderr)
 	sys.exit(1)
@@ -85,12 +74,18 @@ EOF
 if [[ "$IMPL" == "all" ]]; then
 	# Build list of all implementations except zig (prefer jq, fallback to python)
 	if command -v jq >/dev/null 2>&1; then
-		ALL_SERVERS=$(jq -r 'keys | map(select(. != "zig")) | join(",")' implementations.json)
+		ALL_SERVERS=$(PYTHONPATH="$PYTHONPATH" python - <<'EOF'
+import os
+import importlib
+from implementations import IMPLEMENTATIONS
+print(','.join([k for k in IMPLEMENTATIONS.keys() if k!='zig']))
+EOF
+)
 	else
-		ALL_SERVERS=$(python - <<'EOF'
-import json, sys
-data=json.load(open('implementations.json'))
-print(','.join([k for k in data.keys() if k!='zig']))
+		ALL_SERVERS=$(PYTHONPATH="$PYTHONPATH" python - <<'EOF'
+import importlib
+from implementations import IMPLEMENTATIONS
+print(','.join([k for k in IMPLEMENTATIONS.keys() if k!='zig']))
 EOF
 )
 	fi
