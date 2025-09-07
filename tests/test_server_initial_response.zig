@@ -86,7 +86,8 @@ test "server responds to client Initial" {
 
     // Try to receive response from server
     var recv_buf: [2048]u8 = undefined;
-    const recv_result = std.posix.recv(sock, &recv_buf, std.posix.MSG.DONTWAIT) catch |err| switch (err) {
+    const recv_flags: u32 = if (@import("builtin").target.os.tag == .windows) 0 else std.posix.MSG.DONTWAIT;
+    const recv_result = std.posix.recv(sock, &recv_buf, recv_flags) catch |err| switch (err) {
         error.WouldBlock => 0,
         else => return err,
     };

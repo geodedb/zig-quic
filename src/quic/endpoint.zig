@@ -106,6 +106,11 @@ pub const Endpoint = struct {
         // Note: do not rely on O.NONBLOCK here; use MSG.DONTWAIT on Linux in recv loop for portability
         const sa_ptr: *const posix.sockaddr = @ptrCast(&ep_addr.storage);
         try posix.bind(fd, sa_ptr, ep_addr.len);
+        if (builtin.target.os.tag == .windows) {
+            const ws2 = std.os.windows.ws2_32;
+            var nonblock: u32 = 1;
+            _ = ws2.ioctlsocket(fd, ws2.FIONBIO, &nonblock) catch {};
+        }
 
         return Endpoint{
             .sock_fd = fd,
