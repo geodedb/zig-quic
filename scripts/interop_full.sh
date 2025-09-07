@@ -197,6 +197,9 @@ run_generic_test() {
     docker compose -f examples/interop/docker-compose.full.yml --profile generic down -v >/dev/null 2>&1 || true
     docker network rm interop_leftnet interop_rightnet >/dev/null 2>&1 || true
     sleep 1
+    # Bring up the simulator first, then client+server to avoid race on sim readiness
+    if ! COMPOSE_HTTP_TIMEOUT=120 timeout 120 docker compose -f examples/interop/docker-compose.full.yml --profile generic up -d sim; then echo -e "${RED}Failed to start sim${NC}"; fi
+    sleep 10
     # Run the test with timeout
     if COMPOSE_HTTP_TIMEOUT=120 timeout 240 docker compose -f examples/interop/docker-compose.full.yml --profile generic up --abort-on-container-exit --timeout 5 2>&1 | tee "/tmp/interop_${key}.log"; then
         echo -e "${GREEN}✓ PASSED${NC}"

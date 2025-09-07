@@ -334,6 +334,25 @@ pub fn build(b: *std.Build) void {
         const run_test_loop = b.addRunArtifact(test_loop);
         test_step.dependOn(&run_test_loop.step);
 
+        const test_server_initial = addTst(b, "tests/test_server_initial_response.zig", target, optimize);
+        test_server_initial.root_module.addImport("quic_api", quic_api_mod);
+        test_server_initial.root_module.addImport("quic_packet", quic_packet_mod);
+        test_server_initial.root_module.addImport("quic_frame", quic_frame_mod);
+        test_server_initial.root_module.addImport("quic_varint", quic_varint_mod);
+        test_server_initial.root_module.addImport("quic_tls", quic_tls_mod);
+        const run_test_server_initial = b.addRunArtifact(test_server_initial);
+        test_step.dependOn(&run_test_server_initial.step);
+
+        const test_server_processing = addTst(b, "tests/test_server_initial_processing.zig", target, optimize);
+        test_server_processing.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        test_server_processing.root_module.addImport("quic_conn", quic_conn_mod);
+        test_server_processing.root_module.addImport("quic_packet", quic_packet_mod);
+        test_server_processing.root_module.addImport("quic_frame", quic_frame_mod);
+        test_server_processing.root_module.addImport("quic_tls", quic_tls_mod);
+        test_server_processing.root_module.addImport("config.zig", quic_config_mod);
+        const run_test_server_processing = b.addRunArtifact(test_server_processing);
+        test_step.dependOn(&run_test_server_processing.step);
+
         const test_sh = addTst(b, "tests/test_shortrtt_roundtrip.zig", target, optimize);
         test_sh.root_module.addImport("quic_tls13", tls13_mod);
         test_sh.root_module.addImport("quic_packet", quic_packet_mod);

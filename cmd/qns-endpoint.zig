@@ -168,9 +168,20 @@ pub fn main() !void {
         log("server: started (listening 0.0.0.0:443)");
         // Single accept loop (serve sequentially) with coarse timeout budget.
         var served: usize = 0;
+        var poll_count: usize = 0;
         while (served < 32) : (served += 1) {
+            // Poll with timeout to process incoming packets
+            if (poll_count < 1000) {
+                api.poll(ep, 100) catch {};
+                poll_count += 1;
+            }
+            
             const conn = api.accept(ep) catch |e| switch (e) {
-                else => break,
+                else => {
+                    // No connection ready, continue polling
+                    if (poll_count < 1000) continue;
+                    break;
+                },
             };
             log("server: accepted connection");
             if (verbose) log("server: verbose logging enabled");

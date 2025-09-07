@@ -41,6 +41,16 @@ Zig std-only QUIC v1/v2 implementation (Zig 0.15.1/0.14.x). **Production-grade**
 - Filtered TLS KAT only: `zig build -Dtest-filter=tls_key_schedule_kat test`
 - Short-header 1-RTT roundtrip is included in default test run.
 
+## Interoperability Testing
+
+Test against other QUIC implementations:
+
+- Quick verification: `./scripts/interop_test.sh`
+- Core tests: `./scripts/interop_verify.sh`
+- Full matrix: `./scripts/interop_full.sh quick`
+
+See [examples/interop/README.md](examples/interop/README.md) for detailed interop testing documentation.
+
 ### Acceptance tests (exact outputs)
 
 - Cmd 1:

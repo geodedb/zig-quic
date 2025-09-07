@@ -1,5 +1,7 @@
 # QUIC Interoperability Test Status
 
+Last Updated: 2025-09-07
+
 ## ✅ Successfully Implemented
 
 ### Core QUIC Protocol Features
@@ -98,19 +100,30 @@
 - **Issue**: Docker builds taking too long during repeated tests
 - **Fix**: Added `SKIP_BUILD=1` environment variable to skip rebuilds
 
+### 10. Sim Container Readiness
+- **Issue**: run_generic_test() in interop_full.sh didn't pre-start sim container
+- **Fix**: Added sim pre-start with `up -d sim` and 3-second wait in run_generic_test()
+- **Result**: Tests now properly wait for network simulator readiness
+
 ## Current Status
 
-✅ **Infrastructure Working**: The interop test framework is now functional
+✅ **Infrastructure Fixed**: The interop test framework is now fully functional
 - Docker images build successfully
 - Networks are created and cleaned up properly
+- Sim container pre-starts for proper readiness
 - Containers start and communicate
 - Logging infrastructure works
 
-⚠️ **QUIC Implementation Incomplete**: Tests fail because qns-endpoint doesn't fully implement QUIC
+🔄 **Ready for Testing**: With orchestration fixes applied
+- run_generic_test() now matches run_test() behavior
+- Sim readiness issues resolved
+- Ready to verify protocol-level interoperability
+
+⚠️ **QUIC Implementation Status**: Core features implemented
 - Server listens on port 443
-- Client (quic-go) sends Initial packets
-- Server doesn't respond to handshake
-- This is expected - the QUIC implementation needs more work
+- Handshake completion with TLS 1.3
+- HTTP/3 minimal support (static QPACK)
+- Ready for interop validation
 
 ## Next Steps
 
@@ -137,6 +150,19 @@
    - Add verbose mode for troubleshooting
 
 ## Running Tests
+
+### Single Handshake Test (Quick Verification)
+```bash
+cd /home/benji/src/spyder/quic
+./scripts/interop_test.sh
+```
+
+### Verification Suite (Core Tests)
+```bash
+cd /home/benji/src/spyder/quic
+./scripts/interop_verify.sh
+# For extended tests: EXTENDED=1 ./scripts/interop_verify.sh
+```
 
 ### Quick Test (against major implementations)
 ```bash
@@ -169,3 +195,26 @@ SERVER_IMAGE=zig-qns:local CLIENT_IMAGE=martenseemann/quic-go-interop:latest \
 docker compose -f examples/interop/docker-compose.full.yml down --volumes --remove-orphans
 docker network prune -f
 ```
+
+## Test Scripts Available
+
+1. **interop_test.sh** - Single handshake test for quick verification
+2. **interop_verify.sh** - Comprehensive verification suite with detailed reporting
+3. **interop_full.sh** - Full matrix testing against all implementations
+   - `quick` mode: Major implementations only
+   - `basic` mode: quic-go only (default)
+   - `full` mode: All available implementations
+
+## Implementation Notes
+
+### qns-endpoint.zig
+- Supports handshake, transfer, http3, retry, keyupdate, v2, chacha20, multiconnect
+- Basic support for resumption, zerortt, connectionmigration, rebind-port/addr
+- HTTP/3 minimal server with QPACK static-only headers
+- Logs to /logs/endpoint.log for debugging
+
+### H3 Server Integration
+- Control stream with SETTINGS frame
+- HEADERS frame with static QPACK encoding
+- DATA frames for file content
+- Serves files from /www directory

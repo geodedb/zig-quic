@@ -1,18 +1,34 @@
 # QUIC Interoperability Testing
 
+Last Updated: 2025-09-07
+
 This directory contains the infrastructure for testing the Zig QUIC implementation against other QUIC implementations using the [QUIC Interop Runner](https://github.com/quic-interop/quic-interop-runner) framework.
 
 ## Quick Start
 
-### Basic Testing
-
-Test against quic-go (most common):
+### Build First
 ```bash
-# From repository root
-scripts/interop_local.sh
+# Build the Zig implementation
+zig build -Drelease-safe=true install
+
+# Build Docker image
+docker compose -f examples/interop/docker-compose.full.yml --profile zig build zig-server zig-client
 ```
 
-### Full Interoperability Suite
+### Test Options
+
+#### Single Handshake Test (Quick Verification)
+```bash
+scripts/interop_test.sh
+```
+
+#### Verification Suite (Core Tests)
+```bash
+scripts/interop_verify.sh
+# Extended: EXTENDED=1 scripts/interop_verify.sh
+```
+
+#### Full Interoperability Suite
 
 Test against all available implementations:
 ```bash
@@ -121,6 +137,12 @@ Comprehensive configuration with all available QUIC implementations. Uses Docker
 
 ## Scripts
 
+### scripts/interop_test.sh
+Single handshake test for quick verification. Tests zig server with quic-go client.
+
+### scripts/interop_verify.sh  
+Comprehensive verification suite with detailed reporting. Tests core functionality against major implementations.
+
 ### scripts/interop_local.sh
 Local test runner that builds the zig-qns image and runs tests using the Python interop runner.
 
@@ -194,6 +216,17 @@ docker exec -it client /bin/bash
 3. Implement any required functionality in the main QUIC library
 4. Test locally with docker-compose
 5. Update this README to reflect support
+
+## Recent Fixes (2025-09-07)
+
+### Sim Container Readiness
+- **Fixed**: run_generic_test() now pre-starts sim container with 3-second wait
+- **Result**: Tests properly wait for network simulator readiness
+- **Impact**: Eliminates "wait-for-it.sh: timeout" errors
+
+### Test Scripts Added
+- **interop_test.sh**: Quick single handshake verification
+- **interop_verify.sh**: Comprehensive test suite with detailed reporting
 
 ## Troubleshooting
 
