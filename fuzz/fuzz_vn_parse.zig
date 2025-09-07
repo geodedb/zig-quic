@@ -5,14 +5,19 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
-    var stdin = std.io.getStdIn();
-    const buf = try stdin.reader().readAllAlloc(alloc, 4096);
-    defer alloc.free(buf);
+    var out = std.ArrayList(u8){};
+    defer out.deinit(alloc);
+    var tmp: [4096]u8 = undefined;
+    while (true) {
+        const n = std.posix.read(0, &tmp) catch break;
+        if (n == 0) break;
+        _ = out.appendSlice(alloc, tmp[0..n]) catch break;
+        if (out.items.len >= 4096) break;
+    }
+    const buf = out.items;
     const r = pkt.decodeVersionNegotiation(alloc, buf);
     if (r) |vn| {
-        // basic sanity on versions list; free allocation
         defer alloc.free(vn.versions);
-        // ensure downgrade helper runs
         _ = pkt.shouldAcceptVersionNegotiation(pkt.QUIC_V1, vn.versions);
     } else |_| {}
 }
