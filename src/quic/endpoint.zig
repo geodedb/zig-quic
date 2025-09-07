@@ -1429,7 +1429,7 @@ pub const Endpoint = struct {
                 var pn_try: [4]u8 = pn_masked; // copy masked bytes
                 var header_try = first;
                 pt_list.clearRetainingCapacity();
-                pt_list.ensureTotalCapacity(ct.len - 16) catch break;
+                pt_list.ensureTotalCapacity(self.allocator.*, ct.len - 16) catch break;
                 pt_list.appendNTimesAssumeCapacity(0, ct.len - 16);
                 const pt_slice = pt_list.items;
                 const expected_pn = if (conn.pn_initial.have_any) conn.pn_initial.max + 1 else 0;
@@ -1761,7 +1761,7 @@ pub const Endpoint = struct {
                     var pn_try: [4]u8 = pn_masked; // copy masked bytes
                     var header_try = first;
                     pt_list.clearRetainingCapacity();
-                    pt_list.ensureTotalCapacity(ct.len - 16) catch break;
+                    pt_list.ensureTotalCapacity(self.allocator.*, ct.len - 16) catch break;
                     pt_list.appendNTimesAssumeCapacity(0, ct.len - 16);
                     const pt_slice = pt_list.items;
 
@@ -2224,7 +2224,7 @@ fn resolveAny(hostport: []const u8, proto: enum { udp }) !conn_mod.SockAddr {
     const host = parts.next() orelse return error.InvalidAddress;
     const port_s = parts.next() orelse return error.InvalidAddress;
     const port = std.fmt.parseInt(u16, port_s, 10) catch return error.InvalidAddress;
-    
+
     // Handle common hostnames used in tests
     if (std.mem.eql(u8, host, "localhost")) {
         return conn_mod.SockAddr.ipv4(127, 0, 0, 1, port);
@@ -2237,13 +2237,13 @@ fn resolveAny(hostport: []const u8, proto: enum { udp }) !conn_mod.SockAddr {
             return conn_mod.SockAddr.ipv4(193, 167, 100, 100, port);
         };
         defer hosts_file.close();
-        
+
         var buf: [4096]u8 = undefined;
         const bytes_read = hosts_file.readAll(&buf) catch {
             return conn_mod.SockAddr.ipv4(193, 167, 100, 100, port);
         };
         const content = buf[0..bytes_read];
-        
+
         // Parse /etc/hosts for server4
         var lines = std.mem.tokenizeScalar(u8, content, '\n');
         while (lines.next()) |line| {
@@ -2268,7 +2268,7 @@ fn resolveAny(hostport: []const u8, proto: enum { udp }) !conn_mod.SockAddr {
         // Default fallback
         return conn_mod.SockAddr.ipv4(193, 167, 100, 100, port);
     }
-    
+
     // Try dotted-quad IPv4 parse
     var it = std.mem.splitScalar(u8, host, '.');
     var oct: [4]u8 = .{0} ** 4;

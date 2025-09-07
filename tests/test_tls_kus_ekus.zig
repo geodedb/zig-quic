@@ -129,7 +129,7 @@ fn dummyCertWithKuEku(alloc: std.mem.Allocator, dns: []const u8, ku_bits: ?u16, 
 fn emitTLV(out: *std.ArrayList(u8), allocator: std.mem.Allocator, tag: u8, val: []const u8) void {
     out.append(allocator, tag) catch unreachable;
     putLen(out, allocator, val.len);
-    out.appendSlice(alloc, allocator, val) catch unreachable;
+    out.appendSlice(allocator, val) catch unreachable;
 }
 fn putLen(out: *std.ArrayList(u8), allocator: std.mem.Allocator, len: usize) void {
     if (len < 128) {
@@ -143,7 +143,7 @@ fn putLen(out: *std.ArrayList(u8), allocator: std.mem.Allocator, len: usize) voi
             n += 1;
         }
         out.append(allocator, 0x80 | @as(u8, @intCast(n))) catch unreachable;
-        out.appendSlice(alloc, allocator, tmp[tmp.len - n ..]) catch unreachable;
+        out.appendSlice(allocator, tmp[tmp.len - n ..]) catch unreachable;
     }
 }
 fn makeSeq(alloc: std.mem.Allocator, inner: []const u8) ![]u8 {

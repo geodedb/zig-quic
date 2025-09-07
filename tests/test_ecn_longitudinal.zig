@@ -69,8 +69,8 @@ test "ECN longitudinal: multi-ACK across spaces with reordering and one loss" {
     c.hs_rx_keys = .{ .key = z16, .iv = z12, .hp = z16 };
     c.hs_tx_keys = c.hs_rx_keys;
     var fb2 = std.ArrayList(u8){};
-    defer fb2.deinit(alloc);
-    _ = (frame.Frame{ .ping = {} }).write(fb2.writer(alloc)) catch {};
+    defer fb2.deinit(A);
+    _ = (frame.Frame{ .ping = {} }).write(fb2.writer(A)) catch {};
     const hs_pkt = try packet.encodeHandshakeProtected(
         A,
         packet.QUIC_V1,

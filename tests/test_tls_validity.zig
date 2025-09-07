@@ -27,37 +27,37 @@ fn emitTLV(buf: *std.ArrayList(u8), tag: u8, val: []const u8) void {
 fn makeSeq(alloc: std.mem.Allocator, inner: []const u8) ![]u8 {
     var out = std.ArrayList(u8){};
     try out.ensureTotalCapacity(alloc, inner.len + 4);
-    emitTLV(&out, alloc, 0x30, inner);
+    emitTLV(&out, 0x30, inner);
     return out.toOwnedSlice(alloc);
 }
 fn makeCtx(tagnum: u8, alloc: std.mem.Allocator, inner: []const u8) ![]u8 {
     var out = std.ArrayList(u8){};
     try out.ensureTotalCapacity(alloc, inner.len + 4);
-    emitTLV(&out, alloc, 0xA0 | (tagnum & 0x1f), inner);
+    emitTLV(&out, 0xA0 | (tagnum & 0x1f), inner);
     return out.toOwnedSlice(alloc);
 }
 fn makeOctet(alloc: std.mem.Allocator, inner: []const u8) ![]u8 {
     var out = std.ArrayList(u8){};
     try out.ensureTotalCapacity(alloc, inner.len + 4);
-    emitTLV(&out, alloc, 0x04, inner);
+    emitTLV(&out, 0x04, inner);
     return out.toOwnedSlice(alloc);
 }
 fn makeOID(alloc: std.mem.Allocator, oid_bytes: []const u8) ![]u8 {
     var out = std.ArrayList(u8){};
     try out.ensureTotalCapacity(alloc, oid_bytes.len + 4);
-    emitTLV(&out, alloc, 0x06, oid_bytes);
+    emitTLV(&out, 0x06, oid_bytes);
     return out.toOwnedSlice(alloc);
 }
 fn makeGeneralizedTime(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
     var out = std.ArrayList(u8){};
     try out.ensureTotalCapacity(alloc, s.len + 4);
-    emitTLV(&out, alloc, 0x18, s);
+    emitTLV(&out, 0x18, s);
     return out.toOwnedSlice(alloc);
 }
 fn makeInteger1(alloc: std.mem.Allocator, v: u8) ![]u8 {
     var out = std.ArrayList(u8){};
     try out.ensureTotalCapacity(alloc, 4);
-    emitTLV(&out, alloc, 0x02, &[_]u8{v});
+    emitTLV(&out, 0x02, &[_]u8{v});
     return out.toOwnedSlice(alloc);
 }
 
@@ -83,7 +83,7 @@ fn buildCertWithSanValidity(alloc: std.mem.Allocator, dns_name: []const u8, not_
     defer alloc.free(na);
     var validity_inner = std.ArrayList(u8){};
     defer validity_inner.deinit(alloc);
-    try validity_inner.ensureTotalCapacity(nb.len + na.len + 4);
+    try validity_inner.ensureTotalCapacity(alloc, nb.len + na.len + 4);
     validity_inner.appendSliceAssumeCapacity(nb);
     validity_inner.appendSliceAssumeCapacity(na);
     const validity = try makeSeq(alloc, validity_inner.items);
@@ -101,15 +101,15 @@ fn buildCertWithSanValidity(alloc: std.mem.Allocator, dns_name: []const u8, not_
     defer alloc.free(oid);
     var gn = std.ArrayList(u8){};
     defer gn.deinit(alloc);
-    try gn.ensureTotalCapacity(dns_name.len + 8);
-    emitTLV(&gn, alloc, 0x82, dns_name);
+    try gn.ensureTotalCapacity(alloc, dns_name.len + 8);
+    emitTLV(&gn, 0x82, dns_name);
     const gns = try makeSeq(alloc, gn.items);
     defer alloc.free(gns);
     const extn_val_octet = try makeOctet(alloc, gns);
     defer alloc.free(extn_val_octet);
     var ext_inner = std.ArrayList(u8){};
     defer ext_inner.deinit(alloc);
-    try ext_inner.ensureTotalCapacity(oid.len + extn_val_octet.len + 8);
+    try ext_inner.ensureTotalCapacity(alloc, oid.len + extn_val_octet.len + 8);
     ext_inner.appendSliceAssumeCapacity(oid);
     ext_inner.appendSliceAssumeCapacity(extn_val_octet);
     const one_ext = try makeSeq(alloc, ext_inner.items);
@@ -123,12 +123,12 @@ fn buildCertWithSanValidity(alloc: std.mem.Allocator, dns_name: []const u8, not_
     defer alloc.free(tbs_seq);
     var outer = std.ArrayList(u8){};
     defer outer.deinit(alloc);
-    try outer.ensureTotalCapacity(tbs_seq.len + 16);
+    try outer.ensureTotalCapacity(alloc, tbs_seq.len + 16);
     outer.appendSliceAssumeCapacity(tbs_seq);
     const sig_alg = try makeSeq(alloc, &[_]u8{});
     defer alloc.free(sig_alg);
     outer.appendSliceAssumeCapacity(sig_alg);
-    emitTLV(&outer, alloc, 0x03, &[_]u8{0x00});
+    emitTLV(&outer, 0x03, &[_]u8{0x00});
     const cert = try makeSeq(alloc, outer.items);
     return cert;
 }

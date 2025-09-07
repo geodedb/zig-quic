@@ -30,7 +30,7 @@ fn decodeHex(alloc: std.mem.Allocator, multi: []const []const u8) ![]u8 {
             if (chunk.len > 0) {
                 const b = try hexToBytes(alloc, chunk);
                 defer alloc.free(b);
-                try buf.appendSlice(alloc, alloc, b);
+                try buf.appendSlice(alloc, b);
             }
             j = k;
         }

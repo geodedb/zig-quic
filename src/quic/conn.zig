@@ -161,7 +161,7 @@ const StreamRx = struct {
     bufs: std.ArrayList(Segment),
     fin_off: ?u64 = null,
 
-    fn init(_alloc: *std.mem.Allocator) StreamRx {
+    fn init() StreamRx {
         return .{ .recv_off = 0, .inbox = std.ArrayList(u8){}, .bufs = std.ArrayList(Segment){}, .fin_off = null };
     }
     fn deinit(self: *StreamRx, alloc: *std.mem.Allocator) void {
@@ -1100,7 +1100,12 @@ pub const Connection = struct {
     /// Send a PATH_CHALLENGE on the 1-RTT path to validate current peer path.
     /// Emit a PATH_CHALLENGE frame (1-RTT) and mark path validation pending.
     pub fn sendPathChallenge(self: *Connection) void {
-        const tx = self.app_tx_keys orelse return;
+        const tx = self.app_tx_keys orelse {
+            // No 1-RTT keys yet (e.g. test setup); still mark validation pending and seed challenge data.
+            std.crypto.random.bytes(&self.path_challenge_data);
+            self.path_validation_pending = true;
+            return;
+        };
         // Generate opaque 8-byte data and remember for validation
         std.crypto.random.bytes(&self.path_challenge_data);
         self.path_validation_pending = true;
@@ -1154,12 +1159,12 @@ pub const Connection = struct {
         const keys = if (self.version_v2) ks.deriveKeyIvHpV2(zero_rtt_secret) else ks.deriveKeyIvHp(zero_rtt_secret);
         self.zero_rtt_keys = .{ .key = keys.key, .iv = keys.iv, .hp = keys.hp };
     }
-    
+
     /// Accept 0-RTT data (server-side)
     pub fn accept0RTT(self: *Connection) void {
         self.zero_rtt_accepted = true;
     }
-    
+
     /// Mark initial flow-control limits for transmission (sets flags so MAX_* frames are sent).
     pub fn advertiseInitialFlowControl(self: *Connection) void {
         if (self.app_tx_keys == null) return;
@@ -1859,8 +1864,7 @@ pub const Connection = struct {
             _ = (frame.Frame{ .max_data = .{ .max = self.local_max_data } }).write(w) catch 0;
             _ = (frame.Frame{ .max_streams_bidi = .{ .max = self.local_max_streams_bidi } }).write(w) catch 0;
             if (!self.session_ticket_sent) {
-                const ticket_bytes = "ticket-placeholder";
-                self.tls.queueNewSessionTicket(24 * 60 * 60, ticket_bytes) catch |e| {
+                self.tls.queueNewSessionTicket() catch |e| {
                     std.debug.print("session ticket queue error: {s}\n", .{@errorName(e)});
                 };
                 self.session_ticket_sent = true;
@@ -2084,7 +2088,7 @@ pub const Connection = struct {
         if (self.streams_rx.capacity() == 0) self.streams_rx = std.AutoHashMap(u64, StreamRx).init(self.allocator.*);
         if (self.dgram_inbox.capacity == 0) self.dgram_inbox = std.ArrayList([]u8){};
         if (self.streams_rx.getPtr(id)) |s| return s;
-        const sr = StreamRx.init(self.allocator);
+        const sr = StreamRx.init();
         self.streams_rx.put(id, sr) catch {};
         return self.streams_rx.getPtr(id).?;
     }

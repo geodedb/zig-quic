@@ -197,7 +197,7 @@ fn beSubInPlace(dst: *std.ArrayList(u8), b: []const u8) void {
     if (k > 0) {
         // shift left by k bytes
         std.mem.copyForwards(u8, dst.items[0 .. dst.items.len - k], dst.items[k..]);
-        _ = dst.resize(dst.items.len - k) catch {};
+        _ = dst.resize(std.heap.page_allocator, dst.items.len - k) catch {};
     }
 }
 
@@ -246,13 +246,13 @@ fn beMul(a: []const u8, b: []const u8, alloc: std.mem.Allocator) ![]u8 {
 }
 
 fn modFromBytes(n: []const u8, value: []const u8, alloc: std.mem.Allocator) ![]u8 {
-    var rem = std.ArrayList(u8).init(alloc);
-    defer rem.deinit();
+    var rem = std.ArrayList(u8){};
+    defer rem.deinit(alloc);
     // start with 0
-    try rem.append(0);
+    try rem.append(alloc, 0);
     for (value) |byte| {
         // rem = rem * 256 + byte
-        try rem.append(byte);
+        try rem.append(alloc, byte);
         // while rem >= n: rem -= n
         while (true) {
             const ord = beCmp(rem.items, n);
@@ -261,7 +261,7 @@ fn modFromBytes(n: []const u8, value: []const u8, alloc: std.mem.Allocator) ![]u
         }
     }
     // ensure canonical single zero if empty
-    if (rem.items.len == 0) try rem.append(0);
+    if (rem.items.len == 0) try rem.append(alloc, 0);
     return alloc.dupe(u8, rem.items);
 }
 

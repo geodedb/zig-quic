@@ -337,10 +337,10 @@ pub fn computeRetryIntegrityTag(version_v2: bool, odcid: []const u8, retry_witho
     const kiv = deriveRetryKeyIv(version_v2);
     // Build AAD = ODCID Len (1) || ODCID || retry_without_tag
     var buf = std.ArrayList(u8){};
-    defer buf.deinit();
-    buf.append(@as(u8, @intCast(odcid.len))) catch unreachable;
-    buf.appendSlice(odcid) catch unreachable;
-    buf.appendSlice(retry_without_tag) catch unreachable;
+    defer buf.deinit(std.heap.page_allocator);
+    buf.append(std.heap.page_allocator, @as(u8, @intCast(odcid.len))) catch unreachable;
+    buf.appendSlice(std.heap.page_allocator, odcid) catch unreachable;
+    buf.appendSlice(std.heap.page_allocator, retry_without_tag) catch unreachable;
     return aesGcmTagFixedNonce(kiv.key, kiv.iv, buf.items);
 }
 
@@ -536,7 +536,7 @@ pub fn unprotectInitialAutoSample(
     var i: usize = 0;
     while (i < pn_len) : (i += 1) pn_trunc = (pn_trunc << 8) | pn_bytes[i];
     const full_pn = expandPacketNumber(pn_trunc, @intCast(pn_len), expected_pn);
-    
+
     if (builtin.is_test or true) { // Always debug for now
         std.debug.print("expandPacketNumber: truncated={} pn_len={} expected={} -> full={}\n", .{ pn_trunc, pn_len, expected_pn, full_pn });
     }
@@ -648,7 +648,7 @@ fn dumpBytes(label: []const u8, bytes: []const u8) void {
     // Temporarily always dump for debugging
     // if (!builtin.is_test) return;
     var list = std.ArrayList(u8){};
-    defer list.deinit();
+    defer list.deinit(std.heap.page_allocator);
     var i: usize = 0;
     while (i < bytes.len) : (i += 1) {
         _ = list.writer(std.heap.page_allocator).print("{x:0>2}", .{bytes[i]}) catch break;

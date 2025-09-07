@@ -10,11 +10,11 @@ const builtin = @import("builtin");
 fn dumpBytes(label: []const u8, bytes: []const u8) void {
     if (!builtin.is_test) return;
     var list = std.ArrayList(u8){};
-    defer list.deinit();
+    defer list.deinit(std.heap.page_allocator);
     var i: usize = 0;
     while (i < bytes.len) : (i += 1) {
-        _ = list.writer().print("{x:0>2}", .{bytes[i]}) catch break;
-        if (i + 1 < bytes.len) _ = list.append(' ') catch break;
+        _ = list.writer(std.heap.page_allocator).print("{x:0>2}", .{bytes[i]}) catch break;
+        if (i + 1 < bytes.len) _ = list.append(std.heap.page_allocator, ' ') catch break;
     }
     std.debug.print("{s}: {s}\n", .{ label, list.items });
 }
@@ -155,7 +155,7 @@ pub fn encodeShortProtected(
     const ct_len = payload_plaintext.len + 16;
     const out_cipher_idx = buf.items.len;
     try buf.ensureTotalCapacity(alloc, out_cipher_idx + ct_len);
-    try buf.appendNTimes(0, ct_len);
+    try buf.appendNTimes(alloc, 0, ct_len);
     const out_cipher = buf.items[out_cipher_idx .. out_cipher_idx + ct_len];
 
     const suite = crypto.AeadSuite.aes_128_gcm;
@@ -481,10 +481,10 @@ pub fn decodeInitialProtected(
 
     // AAD = unmasked first byte || header_prefix || unmasked PN bytes
     var aad = std.ArrayList(u8){};
-    defer aad.deinit();
-    try aad.append(header_first);
-    try aad.appendSlice(header_prefix);
-    try aad.appendSlice(pn_masked4[0..pn_len_actual]);
+    defer aad.deinit(std.heap.page_allocator);
+    try aad.append(std.heap.page_allocator, header_first);
+    try aad.appendSlice(std.heap.page_allocator, header_prefix);
+    try aad.appendSlice(std.heap.page_allocator, pn_masked4[0..pn_len_actual]);
 
     // Compute PN value (big-endian truncated)
     var pn_val: u32 = 0;
@@ -580,7 +580,7 @@ pub fn encodeHandshakeProtected(
 
     const out_cipher_idx = buf.items.len;
     try buf.ensureTotalCapacity(alloc, out_cipher_idx + ct_len);
-    try buf.appendNTimes(0, ct_len);
+    try buf.appendNTimes(alloc, 0, ct_len);
 
     var header_first: u8 = first;
     var pn_mut: [4]u8 = .{0} ** 4;
@@ -716,35 +716,30 @@ pub fn encode0RTTProtected(
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(alloc);
     const w = buf.writer(alloc);
-    
+
     // First byte: long header (0x80) | fixed bit (0x40) | type (0x01 << 4) | reserved | pn_len
     const first: u8 = 0xc0 | (@as(u8, ty) << 4) | ((pn_len - 1) & 0x03);
     try w.writeByte(first);
-    
+
     // Version
-    var be: [4]u8 = .{ 
-        @as(u8, @intCast(version >> 24)), 
-        @as(u8, @intCast((version >> 16) & 0xff)), 
-        @as(u8, @intCast((version >> 8) & 0xff)), 
-        @as(u8, @intCast(version & 0xff)) 
-    };
+    var be: [4]u8 = .{ @as(u8, @intCast(version >> 24)), @as(u8, @intCast((version >> 16) & 0xff)), @as(u8, @intCast((version >> 8) & 0xff)), @as(u8, @intCast(version & 0xff)) };
     try w.writeAll(&be);
-    
+
     // DCID
     try w.writeByte(@as(u8, @intCast(dcid.len)));
     try w.writeAll(dcid);
-    
+
     // SCID
     try w.writeByte(@as(u8, @intCast(scid.len)));
     try w.writeAll(scid);
-    
+
     // Length field (varint)
     var len_buf: [8]u8 = undefined;
     const payload_with_tag_len = payload.len + 16; // AEAD tag
     const total_len = pn_len + payload_with_tag_len;
     const len_bytes = try varint.encode(total_len, &len_buf);
     try w.writeAll(len_buf[0..len_bytes]);
-    
+
     // Packet number (truncated)
     const pn_offset = buf.items.len;
     var pn_bytes: [4]u8 = undefined;
@@ -752,49 +747,42 @@ pub fn encode0RTTProtected(
         pn_bytes[i] = @as(u8, @intCast((packet_number >> @intCast(8 * (pn_len - 1 - i))) & 0xff));
     }
     try w.writeAll(pn_bytes[0..pn_len]);
-    
+
     // Encrypt payload
     const header_len = buf.items.len;
     const aad = buf.items[0..header_len];
-    
-    // Build nonce
-    var nonce: [12]u8 = undefined;
-    @memcpy(&nonce, &keys.iv);
-    for (0..8) |i| {
-        if (i < 8 - pn_len) continue;
-        const pn_byte_idx = i - (8 - pn_len);
-        nonce[4 + i] ^= pn_bytes[pn_byte_idx];
-    }
-    
+
+    // Nonce derived by AEAD helper from base IV and packet_number; pass base IV and pn separately.
+
     // Encrypt
     const ct_start = buf.items.len;
     try buf.ensureTotalCapacity(alloc, ct_start + payload.len + 16);
     buf.items.len = ct_start + payload.len + 16;
-    
-    crypto.aeadEncrypt(
+
+    // aeadEncrypt(suite, key, iv, packet_number, aad, plaintext, out)
+    _ = try crypto.aeadEncrypt(
         .aes_128_gcm,
-        buf.items[ct_start..],
-        payload,
         &keys.key,
-        &nonce,
+        &keys.iv,
+        packet_number,
         aad,
+        payload,
+        buf.items[ct_start..],
     );
-    
+
     // Apply header protection
+    // For long headers, use pn_offset + 4 as constant sample start (permits hp removal without knowing PN len yet)
     const sample_offset = pn_offset + 4;
     if (sample_offset + 16 <= buf.items.len) {
-        const sample = buf.items[sample_offset..][0..16];
-        const mask = crypto.headerProtectionMask(.aes_128_gcm, &keys.hp, sample.*);
-        
-        // Mask first byte
-        buf.items[0] ^= mask[0] & 0x0f;
-        
-        // Mask packet number
-        for (0..pn_len) |i| {
-            buf.items[pn_offset + i] ^= mask[1 + i];
-        }
+        // Build HP sample (16 bytes)
+        var sample16: [16]u8 = undefined;
+        @memcpy(&sample16, buf.items[sample_offset .. sample_offset + 16]);
+        // Apply header protection in place
+        const header_first_ptr = &buf.items[0];
+        const pn_slice = buf.items[pn_offset .. pn_offset + pn_len];
+        crypto.headerProtect(.aes_128_gcm, &keys.hp, &sample16, header_first_ptr, pn_slice) catch {};
     }
-    
+
     return buf.toOwnedSlice(alloc);
 }
 
@@ -808,82 +796,77 @@ pub fn decode0RTTProtected(
     payload: []u8,
 } {
     if (packet.len < 20) return error.PacketTooShort;
-    
-    const first = packet[0];
-    if ((first & 0x80) == 0) return error.NotLongHeader;
-    if (((first >> 4) & 0x03) != 0x01) return error.Not0RTT;
-    
+
+        const first_masked = packet[0];
+        if ((first_masked & 0x80) == 0) return error.NotLongHeader;
+        if (((first_masked >> 4) & 0x03) != 0x01) return error.Not0RTT;
+
     var i: usize = 5; // Skip first byte and version
-    
+
     // Skip DCID
     const dcid_len = packet[i];
     i += 1 + dcid_len;
     if (i >= packet.len) return error.PacketTooShort;
-    
+
     // Skip SCID
     const scid_len = packet[i];
     i += 1 + scid_len;
     if (i >= packet.len) return error.PacketTooShort;
-    
+
     // Parse length
     const len_result = varint.decode(packet[i..]) catch return error.InvalidLength;
     i += len_result.n;
-    
+
     // Find packet number offset
     const pn_offset = i;
-    const pn_len = ((first & 0x03) + 1);
-    
+        const pn_len = ((first_masked & 0x03) + 1);
+
     // Remove header protection
     var mutable = try alloc.alloc(u8, packet.len);
     defer alloc.free(mutable);
     @memcpy(mutable, packet);
-    
+
+    // For long headers we mirror encrypt path: sample offset uses pn_offset + 4 (max PN bytes) per simplified HP removal logic
     const sample_offset = pn_offset + 4;
     if (sample_offset + 16 <= mutable.len) {
-        const sample = mutable[sample_offset..][0..16];
-        const mask = crypto.headerProtectionMask(.aes_128_gcm, &keys.hp, sample.*);
-        
-        // Unmask first byte
-        mutable[0] ^= mask[0] & 0x0f;
-        
-        // Unmask packet number
-        for (0..pn_len) |j| {
-            mutable[pn_offset + j] ^= mask[1 + j];
-        }
+        var sample16: [16]u8 = undefined;
+        @memcpy(&sample16, mutable[sample_offset .. sample_offset + 16]);
+        const header_first_ptr = &mutable[0];
+        const pn_slice = mutable[pn_offset .. pn_offset + pn_len];
+        crypto.headerUnprotect(.aes_128_gcm, &keys.hp, &sample16, header_first_ptr, pn_slice) catch {};
     }
-    
+
     // Extract packet number
     var pn: u64 = 0;
-    for (0..pn_len) |j| {
-        pn = (pn << 8) | mutable[pn_offset + j];
-    }
-    
-    // Decrypt payload
+        const unmasked_first = mutable[0];
+        const pn_len_unmasked: usize = (unmasked_first & 0x03) + 1;
+        if (pn_offset + pn_len_unmasked > mutable.len) return error.PacketTooShort;
+
+        // Extract packet number using correct length
+        var idx_pn: usize = 0;
+        while (idx_pn < pn_len_unmasked) : (idx_pn += 1) {
+            pn = (pn << 8) | mutable[pn_offset + idx_pn];
+        }
+
+    // Decrypt payload using base IV and full packet number (nonce derived inside helper)
     const ct_offset = pn_offset + pn_len;
     const ct = mutable[ct_offset..];
     if (ct.len < 16) return error.CiphertextTooShort;
-    
+
     const aad = mutable[0..ct_offset];
-    var nonce: [12]u8 = undefined;
-    @memcpy(&nonce, &keys.iv);
-    
-    // XOR packet number into nonce
-    for (0..pn_len) |j| {
-        nonce[12 - pn_len + j] ^= mutable[pn_offset + j];
-    }
-    
     const plaintext = try alloc.alloc(u8, ct.len - 16);
     errdefer alloc.free(plaintext);
-    
-    crypto.aeadDecrypt(
+
+    _ = crypto.aeadDecrypt(
         .aes_128_gcm,
-        plaintext,
-        ct,
         &keys.key,
-        &nonce,
+        &keys.iv,
+            pn,
         aad,
+        ct,
+        plaintext,
     ) catch return error.DecryptionFailed;
-    
+
     return .{
         .packet_number = pn,
         .payload = plaintext,
