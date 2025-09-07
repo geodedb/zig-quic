@@ -227,7 +227,7 @@ const StreamTx = struct {
 pub const Connection = struct {
     id: u64,
     role: Role,
-    sock_fd: posix.fd_t,
+    sock_fd: isize,
     peer: SockAddr,
     tls_inbox: std.ArrayList(u8),
     tls: tls13.Engine,
@@ -534,7 +534,7 @@ pub const Connection = struct {
 
     /// Initialize a Connection in the given role bound to a socket and peer address.
     /// Initialize connection object with allocator, role, socket fd, and peer address; sets defaults.
-    pub fn init(self: *Connection, alloc: *std.mem.Allocator, role: Role, sock_fd: posix.fd_t, peer: SockAddr) void {
+    pub fn init(self: *Connection, alloc: *std.mem.Allocator, role: Role, sock_fd: isize, peer: SockAddr) void {
         self.id = 0;
         self.role = role;
         self.sock_fd = sock_fd;

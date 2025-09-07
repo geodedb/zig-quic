@@ -58,7 +58,7 @@ fn hashSockaddr(sa: *const posix.sockaddr.storage, len: u32) u64 {
 /// UDP endpoint container with connection map, timer wheel, capture support, and
 /// single bound socket. Owns all live connections and drives send/recv plus PTO/PMTUD timers.
 pub const Endpoint = struct {
-    sock_fd: posix.fd_t,
+    sock_fd: posix.socket_t,
     loop_backend: lb.LoopBackend,
     allocator: *std.mem.Allocator,
     timers: std.ArrayList(Timer),
@@ -206,7 +206,12 @@ pub const Endpoint = struct {
         self.accepted.deinit(self.allocator.*);
         self.timers.deinit(self.allocator.*);
         // Close socket
-        _ = posix.close(self.sock_fd);
+        if (builtin.target.os.tag == .windows) {
+            const ws2 = std.os.windows.ws2_32;
+            _ = ws2.closesocket(self.sock_fd);
+        } else {
+            _ = posix.close(self.sock_fd);
+        }
     }
 
     /// Flush expired timers immediately based on current monotonic time (testing helper).
@@ -232,6 +237,15 @@ pub const Endpoint = struct {
     pub fn capturePop(self: *Endpoint) ?OutCaptured {
         if (self.captures.items.len == 0) return null;
         return self.captures.orderedRemove(0);
+    }
+
+    /// Internal: convert socket_t to isize for Connection.sock_fd storage.
+    fn sockToIsize(fd: posix.socket_t) isize {
+        if (builtin.target.os.tag == .windows) {
+            return @as(isize, @intCast(@intFromPtr(fd)));
+        } else {
+            return @as(isize, @intCast(fd));
+        }
     }
 
     /// Send a datagram to peer address.
@@ -260,7 +274,7 @@ pub const Endpoint = struct {
     /// Create a Connection object for an incoming datagram's peer.
     /// Accept a server connection from initial datagram's peer address.
     pub fn acceptFrom(self: *Endpoint, peer: conn_mod.SockAddr) conn_mod.Connection {
-        return .{ .id = 0, .role = .Server, .sock_fd = self.sock_fd, .peer = peer, .tls_inbox = std.ArrayList(u8){} };
+        return .{ .id = 0, .role = .Server, .sock_fd = sockToIsize(self.sock_fd), .peer = peer, .tls_inbox = std.ArrayList(u8){} };
     }
 
     /// Enqueue accepted server connection for accept().
@@ -291,7 +305,7 @@ pub const Endpoint = struct {
     /// Create server-side represented connection (used by client dialing logic).
     pub fn connectTo(self: *Endpoint, hostport: []const u8) !conn_mod.Connection {
         const peer = try resolveAny(hostport, .udp);
-        return .{ .id = 0, .role = .Client, .sock_fd = self.sock_fd, .peer = peer, .tls_inbox = std.ArrayList(u8){} };
+        return .{ .id = 0, .role = .Client, .sock_fd = sockToIsize(self.sock_fd), .peer = peer, .tls_inbox = std.ArrayList(u8){} };
     }
 
     /// Allocate and register a client connection for the given remote address.
@@ -299,7 +313,7 @@ pub const Endpoint = struct {
     pub fn connectClient(self: *Endpoint, hostport: []const u8) !*conn_mod.Connection {
         const peer = try resolveAny(hostport, .udp);
         const c = try self.allocator.create(conn_mod.Connection);
-        c.init(self.allocator, .Client, self.sock_fd, peer);
+        c.init(self.allocator, .Client, sockToIsize(self.sock_fd), peer);
         // Apply config flags
         c.setUseCubic(self.cfg.cc == .cubic);
         c.tls.allow_insecure = self.cfg.allow_insecure;
@@ -684,7 +698,7 @@ pub const Endpoint = struct {
         const io = @import("io/loop_epoll.zig");
         var lp = try io.Loop.init();
         defer lp.deinit();
-        try lp.add(@as(i32, self.sock_fd), true, false);
+        try lp.add(0, true, false);
         var events: [8]io.Event = undefined;
         const n = try lp.wait(&events, timeout_ms);
         if (n > 0) self.drainReadable();
@@ -700,7 +714,7 @@ pub const Endpoint = struct {
         const io = @import("io/loop_kqueue.zig");
         var lp = try io.Loop.init();
         defer lp.deinit();
-        try lp.add(@as(i32, self.sock_fd), true, false);
+        try lp.add(0, true, false);
         var events: [8]io.Event = undefined;
         const n = try lp.wait(&events, timeout_ms);
         if (n > 0) self.drainReadable();
@@ -715,7 +729,7 @@ pub const Endpoint = struct {
         const io = @import("io/loop_iocp.zig");
         var lp = try io.Loop.init();
         defer lp.deinit();
-        try lp.add(@as(i32, self.sock_fd), true, false);
+        try lp.add(0, true, false);
         var events: [8]io.Event = undefined;
         const n = try lp.wait(&events, timeout_ms);
         if (n > 0) self.drainReadable();
@@ -2181,7 +2195,7 @@ fn poll_epoll(self: *Endpoint, timeout_ms: i32) !void {
     const io = @import("io/loop_epoll.zig");
     var lp = try io.Loop.init();
     defer lp.deinit();
-    try lp.add(@as(i32, self.sock_fd), true, false);
+    try lp.add(@as(i32, @intCast(self.sock_fd)), true, false);
     var events: [16]io.Event = undefined;
     _ = try lp.wait(&events, timeout_ms);
 }
@@ -2190,7 +2204,7 @@ fn poll_kqueue(self: *Endpoint, timeout_ms: i32) !void {
     const io = @import("io/loop_kqueue.zig");
     var lp = try io.Loop.init();
     defer lp.deinit();
-    try lp.add(@as(i32, self.sock_fd), true, false);
+    try lp.add(@as(i32, @intCast(self.sock_fd)), true, false);
     var events: [16]io.Event = undefined;
     _ = try lp.wait(&events, timeout_ms);
 }
@@ -2199,7 +2213,7 @@ fn poll_iocp(self: *Endpoint, timeout_ms: i32) !void {
     const io = @import("io/loop_iocp.zig");
     var lp = try io.Loop.init();
     defer lp.deinit();
-    try lp.add(@as(i32, self.sock_fd), true, false);
+    try lp.add(@as(i32, @intCast(self.sock_fd)), true, false);
     var events: [16]io.Event = undefined;
     _ = try lp.wait(&events, timeout_ms);
 }
