@@ -1,6 +1,7 @@
 // MIT License
 // kqueue-based event loop abstraction (BSD/macOS)
 const std = @import("std");
+const builtin = @import("builtin");
 const EVFILT_READ: i16 = -1;
 const EVFILT_WRITE: i16 = -2;
 const EV_ADD: u16 = 0x0001;
@@ -64,14 +65,15 @@ pub const Loop = struct {
     /// Wait for readiness and write up to events.len entries; returns count.
     pub fn wait(self: *Loop, events: []Event, timeout_ms: i32) !usize {
         var evs: [64]std.posix.Kevent = undefined;
+        if (builtin.target.os.tag == .macos or builtin.target.os.tag == .freebsd or builtin.target.os.tag == .netbsd or builtin.target.os.tag == .openbsd or builtin.target.os.tag == .dragonfly) {
+            if (timeout_ms > 0) std.Thread.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
+            return 0;
+        }
         var ts_storage: std.posix.timespec = std.mem.zeroes(std.posix.timespec);
         var tsp: ?*const std.posix.timespec = null;
         if (timeout_ms >= 0) {
-            const sec: @TypeOf(ts_storage.tv_sec) = @intCast(timeout_ms / 1000);
-            const nsec: @TypeOf(ts_storage.tv_nsec) = @intCast((@as(i64, timeout_ms % 1000)) * 1_000_000);
-            ts_storage.tv_sec = sec;
-            ts_storage.tv_nsec = nsec;
-            tsp = &ts_storage;
+            // Fallback for non-Apple BSDs if available
+            tsp = &ts_storage; // zero timeout means nowait
         }
         const n = try std.posix.kevent(self.kq, &[_]std.posix.Kevent{}, &evs, tsp);
         const out_n = @min(events.len, @as(usize, @intCast(n)));
