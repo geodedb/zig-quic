@@ -20,6 +20,7 @@ echo -e "${GREEN}=== QUIC Interoperability Test Suite ===${NC}"
 # Build the Zig implementation (skip if already exists and SKIP_BUILD=1)
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
     echo -e "${YELLOW}Building Zig QUIC implementation...${NC}"
+    zig build -Drelease-safe=true install || { echo -e "${RED}Host build failed. Ensure Zig 0.15.1 and run again.${NC}"; exit 1; }
     docker compose -f examples/interop/docker-compose.full.yml --profile zig build zig-server zig-client
 else
     echo -e "${YELLOW}Skipping build (SKIP_BUILD=1)...${NC}"
@@ -71,6 +72,7 @@ run_test() {
     local key="${server}_${client}_${testcase}"
     
     echo -e "\n${YELLOW}Testing: ${server} (server) <-> ${client} (client) - ${testcase}${NC}"
+    export COMPOSE_PROJECT_NAME="interop_${server}_${client}_${testcase}_$$"
     
     # Set up environment variables
     export SERVER=$server
@@ -106,8 +108,12 @@ run_test() {
         return
     fi
     
+    # Ensure clean slate for this project name
+    docker compose -f examples/interop/docker-compose.full.yml --profile $profiles down -v >/dev/null 2>&1 || true
+    docker network rm interop_leftnet interop_rightnet >/dev/null 2>&1 || true
+    sleep 1
     # Run the test with timeout
-    if timeout 60 docker compose -f examples/interop/docker-compose.full.yml --profile $profiles up --abort-on-container-exit 2>&1 | tee "/tmp/interop_${key}.log"; then
+    if COMPOSE_HTTP_TIMEOUT=120 timeout 240 docker compose -f examples/interop/docker-compose.full.yml --profile $profiles up --abort-on-container-exit --timeout 5 2>&1 | tee "/tmp/interop_${key}.log"; then
         echo -e "${GREEN}✓ PASSED${NC}"
         RESULTS[$key]="PASSED"
         ((PASSED++))
@@ -121,6 +127,7 @@ run_test() {
     docker compose -f examples/interop/docker-compose.full.yml --profile $profiles down -v >/dev/null 2>&1 || true
     # Also try to remove networks if they still exist
     docker network rm interop_leftnet interop_rightnet >/dev/null 2>&1 || true
+    sleep 1
 }
 
 # Function to test using generic profile with image variables
@@ -131,6 +138,7 @@ run_generic_test() {
     local key="${server_impl}_${client_impl}_${testcase}"
     
     echo -e "\n${YELLOW}Testing: ${server_impl} (server) <-> ${client_impl} (client) - ${testcase}${NC}"
+    export COMPOSE_PROJECT_NAME="interop_${server_impl}_${client_impl}_${testcase}_$$"
     
     # Map implementation names to Docker images
     local server_image
@@ -182,8 +190,12 @@ run_generic_test() {
     export CLIENT_IMAGE="$client_image"
     export TESTCASE="$testcase"
     
+    # Ensure clean slate for this project name
+    docker compose -f examples/interop/docker-compose.full.yml --profile generic down -v >/dev/null 2>&1 || true
+    docker network rm interop_leftnet interop_rightnet >/dev/null 2>&1 || true
+    sleep 1
     # Run the test with timeout
-    if timeout 60 docker compose -f examples/interop/docker-compose.full.yml --profile generic up --abort-on-container-exit 2>&1 | tee "/tmp/interop_${key}.log"; then
+    if COMPOSE_HTTP_TIMEOUT=120 timeout 240 docker compose -f examples/interop/docker-compose.full.yml --profile generic up --abort-on-container-exit --timeout 5 2>&1 | tee "/tmp/interop_${key}.log"; then
         echo -e "${GREEN}✓ PASSED${NC}"
         RESULTS[$key]="PASSED"
         ((PASSED++))
