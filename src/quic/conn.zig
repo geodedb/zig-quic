@@ -525,6 +525,7 @@ pub const Connection = struct {
         return .{ .largest = self.pn_app.max, .first_range = d.first_range, .ranges = self.ack_ranges_buf[0..d.ranges_len] };
     }
 
+    /// Return true when the receive side of the stream has reached FIN.
     pub fn isStreamFinished(self: *Connection, id: u64) bool {
         if (self.streams_rx.getPtr(id)) |rx| {
             return rx.isFinished();

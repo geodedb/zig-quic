@@ -1,6 +1,7 @@
 const std = @import("std");
 const api = @import("quic_api");
 
+/// Encode a QUIC varint into out, returning bytes written or 0 if out too small.
 pub fn encodeVarint(v: u64, out: []u8) usize {
     if (v < (1 << 6)) {
         if (out.len < 1) return 0;
@@ -93,6 +94,7 @@ fn encPref(val: u64, out: []u8, prefix_bits: u3) usize {
     return k;
 }
 
+/// Build a minimal QPACK header block for an HTTP/3 GET to host/path.
 pub fn buildSimpleGetHeaders(host: []const u8, path: []const u8, out: []u8) ?usize {
     var k: usize = 0;
     if (out.len < 2) return null;
@@ -141,6 +143,7 @@ pub fn buildSimpleGetHeaders(host: []const u8, path: []const u8, out: []u8) ?usi
     return k;
 }
 
+/// Build an HTTP/3 HEADERS frame carrying a simple GET header block.
 pub fn buildRequestFrame(host: []const u8, path: []const u8, out: []u8) ?usize {
     var hdrs: [512]u8 = undefined;
     const hb = buildSimpleGetHeaders(host, path, hdrs[0..]) orelse return null;
@@ -165,6 +168,7 @@ fn writeAll(ep: *api.QuicEndpoint, conn: *api.QuicConnection, sid: u64, data: []
     }
 }
 
+/// Perform a minimal HTTP/3 GET over an existing QUIC connection and copy response body into out.
 pub fn h3Get(ep: *api.QuicEndpoint, conn: *api.QuicConnection, host: []const u8, path: []const u8, out: []u8) !usize {
     var t: [1]u8 = .{0};
     var n: usize = 0;

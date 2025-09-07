@@ -1,9 +1,12 @@
 const std = @import("std");
 const api = @import("quic_api");
 
+/// Minimal HTTP/3 server helper for demo/tests (serves static files over QUIC).
 pub const H3Server = struct {
+    /// Allocator used for temporary buffers during request handling.
     allocator: std.mem.Allocator,
 
+    /// Per-request scratch buffers for parsing pseudo-headers.
     pub const ReqState = struct {
         method: []const u8 = &[_]u8{},
         authority: []const u8 = &[_]u8{},
@@ -11,10 +14,12 @@ pub const H3Server = struct {
         authority_buf: [128]u8 = undefined,
     };
 
+    /// Initialize an H3Server with the provided allocator.
     pub fn init(allocator: std.mem.Allocator) H3Server {
         return .{ .allocator = allocator };
     }
 
+    /// Serve a single QUIC connection: send control streams and respond once per bidi request.
     pub fn serveConnection(self: *H3Server, ep: *api.QuicEndpoint, conn: *api.QuicConnection) void {
         _ = self;
         // Control stream
@@ -175,6 +180,7 @@ pub const H3Server = struct {
         }
     }
 
+    /// Parse an HTTP/3 HEADERS frame payload (QPACK block) and extract :path.
     pub fn parseReqFromHeadersFrame(data: []const u8, out: []u8, rs: *ReqState) ?[]const u8 {
         var off: usize = 0;
         const t = decodeVarint(data, &off) orelse return null;
@@ -185,6 +191,7 @@ pub const H3Server = struct {
         return parseReqFromHeaders(data[off..end], out, rs);
     }
 
+    /// Variant that parses :path from a HEADERS frame without exposing ReqState.
     pub fn parsePathFromHeadersFrame(data: []const u8, out: []u8) ?[]const u8 {
         var off: usize = 0;
         const t = decodeVarint(data, &off) orelse return null;
@@ -196,6 +203,7 @@ pub const H3Server = struct {
         return parseReqFromHeaders(data[off..end], out, &dummy);
     }
 
+    /// Parse a QPACK header block for a request and extract :path into out.
     pub fn parseReqFromHeaders(h: []const u8, out: []u8, rs: *ReqState) ?[]const u8 {
         var off: usize = 0;
         _ = decodeVarint(h, &off) orelse return null;
@@ -624,6 +632,7 @@ pub const H3Server = struct {
         .{ .code = 0x3fffffff, .nbits = 30 },
     };
 
+    /// Decode an HPACK Huffman-encoded string into dst; returns bytes written or null on failure.
     pub fn hpackHuffmanDecode(src: []const u8, dst: []u8) ?usize {
         var acc: u64 = 0;
         var nbits: u8 = 0;
@@ -665,6 +674,7 @@ pub const H3Server = struct {
         return out_len;
     }
 
+    /// Encode a string using HPACK Huffman table, returning owned bytes.
     pub fn hpackHuffmanEncode(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
         var bit_acc: u128 = 0;
         var bit_len: u32 = 0;

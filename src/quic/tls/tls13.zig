@@ -8,24 +8,29 @@ const ks = @import("quic_tls");
 const x509 = @import("x509.zig");
 const sig = @import("sig.zig");
 
+/// Session ticket cache entry and store types used by the TLS 1.3 engine (minimal placeholder).
 // --- Session Ticket / PSK Cache Structures (minimal placeholder) ---
+/// One cached TLS 1.3 session ticket with identity, resumption secret, and lifetime.
 pub const TicketEntry = struct {
     identity: []u8, // ticket bytes (owned)
     secret: [H.digest_length]u8, // resumption_secret derived from master_secret
     lifetime: u32,
 };
 
+/// Borrowed view of a ticket entry used for read-only access without copying.
 pub const TicketEntryView = struct {
     identity: []const u8,
     secret: [H.digest_length]u8,
     lifetime: u32,
 };
 
+/// Fixed-size FIFO store for session tickets with helper methods to add/peek.
 pub const TicketStore = struct {
     const capacity = 4; // tiny FIFO
     entries: [capacity]?TicketEntry = .{null} ** capacity,
     count: usize = 0,
 
+    /// Free any owned ticket identities and reset the store to empty.
     pub fn deinit(self: *TicketStore, alloc: std.mem.Allocator) void {
         var i: usize = 0;
         while (i < capacity) : (i += 1) {
@@ -43,6 +48,7 @@ pub const TicketStore = struct {
         return (self.count - 1) % capacity;
     }
 
+    /// Return a borrowed view of the most recently added ticket if present.
     pub fn peek(self: *TicketStore) ?TicketEntryView {
         const idx_opt = self.indexNewest();
         if (idx_opt) |idx| {
@@ -53,6 +59,7 @@ pub const TicketStore = struct {
         return null;
     }
 
+    /// Insert a ticket, evicting the oldest when capacity is exceeded.
     pub fn add(self: *TicketStore, alloc: std.mem.Allocator, identity: []const u8, secret: [H.digest_length]u8, lifetime: u32) !void {
         // If capacity full, evict oldest (which is at index (count % capacity) before increment)
         const slot = self.count % capacity;

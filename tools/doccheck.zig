@@ -64,5 +64,6 @@ pub fn main() !void {
                 }
             }
         }
+        alloc.free(path);
     }
 }

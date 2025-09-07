@@ -42,10 +42,8 @@ pub const Loop = struct {
         var bytes: u32 = 0;
         var key: usize = 0;
         var overlapped: ?*std.os.windows.OVERLAPPED = null;
-        const res = std.os.windows.GetQueuedCompletionStatus(self.port, &bytes, &key, &overlapped, if (timeout_ms < 0) std.math.maxInt(u32) else @as(u32, @intCast(timeout_ms)));
-        switch (res) {
-            .timeout => return 0,
-            else => return if (overlapped != null) 1 else 0,
-        }
+        const _res = std.os.windows.GetQueuedCompletionStatus(self.port, &bytes, &key, &overlapped, if (timeout_ms < 0) std.math.maxInt(u32) else @as(u32, @intCast(timeout_ms)));
+        _ = _res;
+        return if (overlapped != null) 1 else 0;
     }
 };

@@ -108,6 +108,7 @@ pub fn readStream(conn: *QuicConnection, id: QuicStreamId, buf: []u8) !usize {
     return c.readStream(id, buf);
 }
 
+/// Return true if the stream identified by id has finished (FIN received and drained).
 pub fn isStreamFinished(conn: *QuicConnection, id: QuicStreamId) bool {
     const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
     return c.isStreamFinished(id);

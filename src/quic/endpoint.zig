@@ -510,7 +510,7 @@ pub const Endpoint = struct {
         while (true) {
             var peer = conn_mod.SockAddr{};
             peer.len = @intCast(@sizeOf(posix.sockaddr.storage));
-            const flags: u32 = if (builtin.target.os.tag == .linux) posix.MSG.DONTWAIT else 0;
+            const flags: u32 = if (builtin.target.os.tag == .windows) 0 else posix.MSG.DONTWAIT;
             // Linux: prefer recvmsg to extract ECN via ancillary when available; fallback elsewhere.
             if (builtin.target.os.tag == .linux and @hasDecl(std.posix, "recvmsg")) {
                 var iov = [1]posix.iovec{.{ .base = buf[0..].ptr, .len = buf.len }};
