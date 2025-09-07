@@ -443,7 +443,14 @@ pub fn main() !void {
             "- zig_client_vs_go_server (XFAIL until handshake/streams)\n" ++
             "- zig_server_vs_go_client (XFAIL until handshake/streams)\n" ++
             "- zig_h3_loopback (MUST PASS)\n";
-        _ = std.posix.write(std.posix.STDOUT_FILENO, out) catch {};
+        const bytes: []const u8 = out;
+        if (@import("builtin").target.os.tag == .windows) {
+            const w = std.os.windows;
+            const h = w.GetStdHandle(w.STD_OUTPUT_HANDLE) catch return;
+            _ = std.posix.write(h, bytes) catch {};
+        } else {
+            _ = std.posix.write(std.posix.STDOUT_FILENO, bytes) catch {};
+        }
         return;
     } else if (std.mem.eql(u8, cmd, "run")) {
         const scenario = args.next() orelse return error.MissingArgument;
