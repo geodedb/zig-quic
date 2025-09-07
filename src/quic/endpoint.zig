@@ -108,8 +108,8 @@ pub const Endpoint = struct {
         try posix.bind(fd, sa_ptr, ep_addr.len);
         if (builtin.target.os.tag == .windows) {
             const ws2 = std.os.windows.ws2_32;
-            var nonblock: u32 = 1;
-            _ = ws2.ioctlsocket(fd, ws2.FIONBIO, &nonblock) catch {};
+            var nonblock: std.os.windows.ULONG = 1;
+            _ = ws2.ioctlsocket(fd, ws2.FIONBIO, &nonblock);
         }
 
         return Endpoint{
