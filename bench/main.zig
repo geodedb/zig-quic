@@ -40,7 +40,7 @@ pub fn main() !void {
     }
     const dt1 = timer.read();
     const per1 = @as(f64, @floatFromInt(dt1)) / @as(f64, @floatFromInt(iters));
-    try std.io.getStdOut().writer().print("varint encode: {d} ns/op\n", .{per1});
+    std.debug.print("varint encode: {d} ns/op\n", .{per1});
 
     // Micro-bench 2: pacing delay computation with varying in-flight levels
     var nr = rec.NewReno{ .mds = 1200, .cwnd = 12000 };
@@ -58,7 +58,7 @@ pub fn main() !void {
     const per2 = @as(f64, @floatFromInt(dt2)) / @as(f64, @floatFromInt(iters2));
     // Avoid optimizing away
     std.mem.doNotOptimizeAway(sum_delay);
-    try std.io.getStdOut().writer().print("pacing delay compute: {d} ns/op (avg_delay={d} ns)\n", .{ per2, @as(u64, @intCast(sum_delay / iters2)) });
+    std.debug.print("pacing delay compute: {d} ns/op (avg_delay={d} ns)\n", .{ per2, @as(u64, @intCast(sum_delay / iters2)) });
 
     // Micro-bench 3: simulate send pacing on/off (busy-loop emulate sleep cost 0)
     const samples: usize = 200_000;
@@ -82,13 +82,13 @@ pub fn main() !void {
     }
     const on_ns = timer.read();
     std.mem.doNotOptimizeAway(sink);
-    try std.io.getStdOut().writer().print(
+    std.debug.print(
         "pacing on/off emulate: off={d} ns total, on={d} ns total, nonzero={d}\n",
         .{ off_ns, on_ns, cnt_nonzero },
     );
 
     // Bench 4: CUBIC vs NewReno cwnd growth under ACKs (single or grid)
-    const writer = std.io.getStdOut().writer();
+    const writer = std.debug;
 
     const ScenarioResult = struct {
         nr_cwnd: usize,
@@ -164,17 +164,17 @@ pub fn main() !void {
         const bdps = [_]u64{ 50, 200 };
         const losses = [_]u64{ 0, 50 }; // no loss, 1-in-50 loss
         if (csv) {
-            try writer.print("mode,rtt_ns,bdp_pkts,loss_every,cwnd,time_ns\n", .{});
+            writer.print("mode,rtt_ns,bdp_pkts,loss_every,cwnd,time_ns\n", .{});
         }
         for (rtts) |rtt_ns| {
             for (bdps) |bdp_pkts| {
                 for (losses) |loss_every| {
                     const res = try cc_scenario(alloc, rtt_ns, bdp_pkts, loss_every);
                     if (csv) {
-                        try writer.print("newreno,{d},{d},{d},{d},{d}\n", .{ rtt_ns, bdp_pkts, loss_every, res.nr_cwnd, res.nr_time_ns });
-                        try writer.print("cubic,{d},{d},{d},{d},{d}\n", .{ rtt_ns, bdp_pkts, loss_every, res.cubic_cwnd, res.cubic_time_ns });
+                        writer.print("newreno,{d},{d},{d},{d},{d}\n", .{ rtt_ns, bdp_pkts, loss_every, res.nr_cwnd, res.nr_time_ns });
+                        writer.print("cubic,{d},{d},{d},{d},{d}\n", .{ rtt_ns, bdp_pkts, loss_every, res.cubic_cwnd, res.cubic_time_ns });
                     } else {
-                        try writer.print(
+                        writer.print(
                             "cc bench: rtt_ns={d} bdp_pkts={d} loss_every={d} | newreno cwnd={d}, time={d} ns; cubic cwnd={d}, time={d} ns\n",
                             .{ rtt_ns, bdp_pkts, loss_every, res.nr_cwnd, res.nr_time_ns, res.cubic_cwnd, res.cubic_time_ns },
                         );
@@ -185,11 +185,11 @@ pub fn main() !void {
     } else {
         const res = try cc_scenario(alloc, rtt_ns_cfg, bdp_pkts_cfg, loss_every_cfg);
         if (csv) {
-            try writer.print("mode,rtt_ns,bdp_pkts,loss_every,cwnd,time_ns\n", .{});
-            try writer.print("newreno,{d},{d},{d},{d},{d}\n", .{ rtt_ns_cfg, bdp_pkts_cfg, loss_every_cfg, res.nr_cwnd, res.nr_time_ns });
-            try writer.print("cubic,{d},{d},{d},{d},{d}\n", .{ rtt_ns_cfg, bdp_pkts_cfg, loss_every_cfg, res.cubic_cwnd, res.cubic_time_ns });
+            writer.print("mode,rtt_ns,bdp_pkts,loss_every,cwnd,time_ns\n", .{});
+            writer.print("newreno,{d},{d},{d},{d},{d}\n", .{ rtt_ns_cfg, bdp_pkts_cfg, loss_every_cfg, res.nr_cwnd, res.nr_time_ns });
+            writer.print("cubic,{d},{d},{d},{d},{d}\n", .{ rtt_ns_cfg, bdp_pkts_cfg, loss_every_cfg, res.cubic_cwnd, res.cubic_time_ns });
         } else {
-            try writer.print(
+            writer.print(
                 "cc bench: rtt_ns={d} bdp_pkts={d} loss_every={d} | newreno cwnd={d}, time={d} ns; cubic cwnd={d}, time={d} ns\n",
                 .{ rtt_ns_cfg, bdp_pkts_cfg, loss_every_cfg, res.nr_cwnd, res.nr_time_ns, res.cubic_cwnd, res.cubic_time_ns },
             );
@@ -203,11 +203,11 @@ pub fn main() !void {
     const rng = prng.random();
     const dcid = "HPBM";
     const keys = pkt.AeadKeys{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
-    var frames = std.ArrayList(u8).init(alloc);
-    defer frames.deinit();
-    _ = (std.io.getStdOut().writer()).write("hp bench: generating...\n") catch {};
+    var frames = std.ArrayList(u8){};
+    defer frames.deinit(alloc);
+    std.debug.print("hp bench: generating...\n", .{});
     frames.clearRetainingCapacity();
-    _ = (pkt.ShortHeader{ .dcid = dcid, .packet_number = 1, .payload = &[_]u8{0x01} }).encode(frames.writer()) catch {};
+    _ = (pkt.ShortHeader{ .dcid = dcid, .packet_number = 1, .payload = &[_]u8{0x01} }).encode(frames.writer(alloc)) catch {};
     const payload = frames.items[frames.items.len - 1 ..];
     // Build two short protected packets for phase 0/1
     const sp0 = try pkt.encodeShortProtected(alloc, dcid, 1, 2, payload, keys, false);
@@ -216,9 +216,9 @@ pub fn main() !void {
     defer alloc.free(sp1);
     // Build an Initial packet too
     const ik = pkt.derive_initial_keys(false, dcid);
-    var fbi = std.ArrayList(u8).init(alloc);
-    defer fbi.deinit();
-    _ = fbi.writer().writeByte(0x01) catch {};
+    var fbi = std.ArrayList(u8){};
+    defer fbi.deinit(alloc);
+    _ = fbi.writer(alloc).writeByte(0x01) catch {};
     const ip = try pkt.encodeInitialProtected(alloc, pkt.QUIC_V1, dcid, "S", &[_]u8{}, 1, 2, fbi.items, .{ .key = ik.client.key, .iv = ik.client.iv, .hp = ik.client.hp });
     defer alloc.free(ip);
     // Time decode loops
@@ -238,5 +238,5 @@ pub fn main() !void {
         }
     }
     total_ns = timer.read();
-    try std.io.getStdOut().writer().print("hp decode timing: {d} ns total for {d} ops\n", .{ total_ns, loops });
+    std.debug.print("hp decode timing: {d} ns total for {d} ops\n", .{ total_ns, loops });
 }
