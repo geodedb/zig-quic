@@ -4,6 +4,13 @@ const api = @import("quic_api");
 pub const H3Server = struct {
     allocator: std.mem.Allocator,
 
+    pub const ReqState = struct {
+        method: []const u8 = &[_]u8{},
+        authority: []const u8 = &[_]u8{},
+        method_buf: [16]u8 = undefined,
+        authority_buf: [128]u8 = undefined,
+    };
+
     pub fn init(allocator: std.mem.Allocator) H3Server {
         return .{ .allocator = allocator };
     }
@@ -44,7 +51,9 @@ pub const H3Server = struct {
                 if (already) continue;
                 served[served_len] = pair.id;
                 served_len += 1;
-                const path = parsePathFromHeadersFrame(tmp[0..pair.n]) orelse "/index.html";
+                var path_buf: [256]u8 = undefined;
+                var rs: ReqState = .{};
+                const path = parseReqFromHeadersFrame(tmp[0..pair.n], path_buf[0..], &rs) orelse "/index.html";
                 respondFile(ep, conn, pair.id, path) catch {};
             }
         }
@@ -166,48 +175,146 @@ pub const H3Server = struct {
         }
     }
 
-    pub fn parsePathFromHeadersFrame(data: []const u8) ?[]const u8 {
+    pub fn parseReqFromHeadersFrame(data: []const u8, out: []u8, rs: *ReqState) ?[]const u8 {
         var off: usize = 0;
         const t = decodeVarint(data, &off) orelse return null;
-        if (t != 0x01) return null; // HEADERS
+        if (t != 0x01) return null;
         const l = decodeVarint(data, &off) orelse return null;
         const end = off + @as(usize, @intCast(l));
         if (end > data.len) return null;
-        return parsePathFromHeaders(data[off..end]);
+        return parseReqFromHeaders(data[off..end], out, rs);
     }
 
-    pub fn parsePathFromHeaders(h: []const u8) ?[]const u8 {
+    pub fn parsePathFromHeadersFrame(data: []const u8, out: []u8) ?[]const u8 {
         var off: usize = 0;
-        _ = decodeVarint(h, &off) orelse return null; // RIC
-        _ = decodeVarint(h, &off) orelse return null; // Base
+        const t = decodeVarint(data, &off) orelse return null;
+        if (t != 0x01) return null;
+        const l = decodeVarint(data, &off) orelse return null;
+        const end = off + @as(usize, @intCast(l));
+        if (end > data.len) return null;
+        var dummy: ReqState = .{};
+        return parseReqFromHeaders(data[off..end], out, &dummy);
+    }
+
+    pub fn parseReqFromHeaders(h: []const u8, out: []u8, rs: *ReqState) ?[]const u8 {
+        var off: usize = 0;
+        _ = decodeVarint(h, &off) orelse return null;
+        _ = decodeVarint(h, &off) orelse return null;
         while (off < h.len) {
             const b = h[off];
-            // Literal Field Line with Name Reference (01NT...)
             if ((b & 0b1100_0000) == 0b0100_0000) {
                 const t_bit = (b & 0b0001_0000) != 0;
                 off += 1;
                 const name_index = decodePrefixedInt(h, &off, 4) orelse return null;
+                if (!t_bit) {
+                    // Indexed Field Line (no value literal) — static or dynamic index
+                    // Handle a few static table entries we care about for request metadata.
+                    switch (name_index) {
+                        1 => { // :path "/"
+                            if (out.len >= 1) { out[0] = '/'; return out[0..1]; }
+                        },
+                        17 => { // :method GET
+                            rs.method = "GET";
+                        },
+                        22 => { // :method CONNECT
+                            rs.method = "CONNECT";
+                        },
+                        23 => { // :scheme https (ignore for ReqState)
+                        },
+                        else => {},
+                    }
+                    continue;
+                }
                 if (t_bit and name_index == 1) {
-                    // value string literal (8-bit prefix)
                     const hv = h[off];
                     const huff = (hv & 0x80) != 0;
                     var vlen_off = off;
                     const vlen = decodePrefixedInt(h, &vlen_off, 7) orelse return null;
                     off = vlen_off;
                     if (off + vlen > h.len) return null;
-                    if (huff) return null; // TODO: Huffman decode if necessary
-                    return h[off .. off + vlen];
+                    if (huff) {
+                        const n = hpackHuffmanDecode(h[off .. off + vlen], out) orelse return null;
+                        return out[0..n];
+                    } else {
+                        if (vlen > out.len) return null;
+                        @memcpy(out[0..@as(usize, @intCast(vlen))], h[off .. off + vlen]);
+                        return out[0..@as(usize, @intCast(vlen))];
+                    }
                 } else {
-                    // Skip value literal
                     var vlen_off2 = off;
                     const vlen2 = decodePrefixedInt(h, &vlen_off2, 7) orelse return null;
                     off = vlen_off2 + @as(usize, @intCast(vlen2));
                     continue;
                 }
-            } else if ((b & 0b1111_0000) == 0b0001_0000) {
-                // Indexed Field Line (T + index(6+)) — ignore
+            } else if ((b & 0b1110_0000) == 0b0010_0000) {
+                const n_bit = (b & 0b0001_0000) != 0;
+                _ = n_bit;
+                const h_bit = (b & 0b0000_1000) != 0;
                 off += 1;
-                _ = decodePrefixedInt(h, &off, 6) orelse return null;
+                var name_len_off = off - 1;
+                const name_len = decodePrefixedInt(h, &name_len_off, 3) orelse return null;
+                off = name_len_off;
+                if (off + name_len > h.len) return null;
+                var name_buf: [64]u8 = undefined;
+                const name_slice = if (h_bit) blk: {
+                    const nn = hpackHuffmanDecode(h[off .. off + name_len], name_buf[0..]) orelse return null;
+                    break :blk name_buf[0..nn];
+                } else h[off .. off + name_len];
+                off += name_len;
+                // Capture :method and :authority literal-name values for ReqState.
+                if (std.mem.eql(u8, name_slice, ":method")) {
+                    var vlen_off = off;
+                    const vlen = decodePrefixedInt(h, &vlen_off, 7) orelse return null;
+                    const start = vlen_off;
+                    off = vlen_off + @as(usize, @intCast(vlen));
+                    const copy_len = @min(rs.method_buf.len, @as(usize, @intCast(vlen)));
+                    @memcpy(rs.method_buf[0..copy_len], h[start .. start + copy_len]);
+                    rs.method = rs.method_buf[0..copy_len];
+                    continue;
+                } else if (std.mem.eql(u8, name_slice, ":authority")) {
+                    var vlen_off = off;
+                    const vlen = decodePrefixedInt(h, &vlen_off, 7) orelse return null;
+                    const start = vlen_off;
+                    off = vlen_off + @as(usize, @intCast(vlen));
+                    const copy_len = @min(rs.authority_buf.len, @as(usize, @intCast(vlen)));
+                    @memcpy(rs.authority_buf[0..copy_len], h[start .. start + copy_len]);
+                    rs.authority = rs.authority_buf[0..copy_len];
+                    continue;
+                }
+                if (!std.mem.eql(u8, name_slice, ":path")) {
+                    var vlen_off = off;
+                    const vlen = decodePrefixedInt(h, &vlen_off, 7) orelse return null;
+                    off = vlen_off + @as(usize, @intCast(vlen));
+                    continue;
+                }
+                const hv = h[off];
+                const huff = (hv & 0x80) != 0;
+                var vlen_off3 = off;
+                const vlen3 = decodePrefixedInt(h, &vlen_off3, 7) orelse return null;
+                off = vlen_off3;
+                if (off + vlen3 > h.len) return null;
+                if (huff) {
+                    const n = hpackHuffmanDecode(h[off .. off + vlen3], out) orelse return null;
+                    return out[0..n];
+                } else {
+                    if (vlen3 > out.len) return null;
+                    @memcpy(out[0..@as(usize, @intCast(vlen3))], h[off .. off + vlen3]);
+                    return out[0..@as(usize, @intCast(vlen3))];
+                }
+            } else if ((b & 0b1111_0000) == 0b0001_0000) {
+                // Indexed Field Line with Post-Base Index (0001 Index(4+)) — skip
+                off += 1;
+                _ = decodePrefixedInt(h, &off, 4) orelse return null;
+                continue;
+            } else if ((b & 0b1111_1000) == 0b0000_0000) {
+                // Literal Field Line with Post-Base Name Reference: 0000 N NameIdx(3+), then value literal (8-bit prefix)
+                off += 1;
+                var name_idx_off = off - 1;
+                _ = decodePrefixedInt(h, &name_idx_off, 3) orelse return null;
+                off = name_idx_off;
+                var vlen_off = off;
+                const vlen = decodePrefixedInt(h, &vlen_off, 7) orelse return null;
+                off = vlen_off + @as(usize, @intCast(vlen));
                 continue;
             } else {
                 break;
@@ -255,5 +362,339 @@ pub const H3Server = struct {
         }
         off.* += consumed;
         return val;
+    }
+
+    const Huff = struct { code: u32, nbits: u8 };
+    const huff_table = [_]Huff{
+        .{ .code = 0x1ff8, .nbits = 13 },
+        .{ .code = 0x7fffd8, .nbits = 23 },
+        .{ .code = 0xfffffe2, .nbits = 28 },
+        .{ .code = 0xfffffe3, .nbits = 28 },
+        .{ .code = 0xfffffe4, .nbits = 28 },
+        .{ .code = 0xfffffe5, .nbits = 28 },
+        .{ .code = 0xfffffe6, .nbits = 28 },
+        .{ .code = 0xfffffe7, .nbits = 28 },
+        .{ .code = 0xfffffe8, .nbits = 28 },
+        .{ .code = 0xfffefa, .nbits = 24 },
+        .{ .code = 0x3ffffffc, .nbits = 30 },
+        .{ .code = 0xfffffe9, .nbits = 28 },
+        .{ .code = 0xfffffea, .nbits = 28 },
+        .{ .code = 0x3ffffffd, .nbits = 30 },
+        .{ .code = 0xfffffeb, .nbits = 28 },
+        .{ .code = 0xfffffec, .nbits = 28 },
+        .{ .code = 0xfffffed, .nbits = 28 },
+        .{ .code = 0xfffffee, .nbits = 28 },
+        .{ .code = 0xffffff0, .nbits = 28 },
+        .{ .code = 0xffffff1, .nbits = 28 },
+        .{ .code = 0xffffff2, .nbits = 28 },
+        .{ .code = 0x3ffffffe, .nbits = 30 },
+        .{ .code = 0xffffff3, .nbits = 28 },
+        .{ .code = 0xffffff4, .nbits = 28 },
+        .{ .code = 0xffffff5, .nbits = 28 },
+        .{ .code = 0xffffff6, .nbits = 28 },
+        .{ .code = 0xffffff7, .nbits = 28 },
+        .{ .code = 0xffffff8, .nbits = 28 },
+        .{ .code = 0xffffff9, .nbits = 28 },
+        .{ .code = 0xffffffa, .nbits = 28 },
+        .{ .code = 0xffffffb, .nbits = 28 },
+        .{ .code = 0x14, .nbits = 6 },
+        .{ .code = 0x3f8, .nbits = 10 },
+        .{ .code = 0x3f9, .nbits = 10 },
+        .{ .code = 0xffa, .nbits = 12 },
+        .{ .code = 0x1ff9, .nbits = 13 },
+        .{ .code = 0x15, .nbits = 6 },
+        .{ .code = 0xf8, .nbits = 8 },
+        .{ .code = 0x7fa, .nbits = 11 },
+        .{ .code = 0x3fa, .nbits = 10 },
+        .{ .code = 0x3fb, .nbits = 10 },
+        .{ .code = 0xf9, .nbits = 8 },
+        .{ .code = 0x7fb, .nbits = 11 },
+        .{ .code = 0xfa, .nbits = 8 },
+        .{ .code = 0x16, .nbits = 6 },
+        .{ .code = 0x17, .nbits = 6 },
+        .{ .code = 0x18, .nbits = 6 },
+        .{ .code = 0x0, .nbits = 5 },
+        .{ .code = 0x1, .nbits = 5 },
+        .{ .code = 0x2, .nbits = 5 },
+        .{ .code = 0x19, .nbits = 6 },
+        .{ .code = 0x1a, .nbits = 6 },
+        .{ .code = 0x1b, .nbits = 6 },
+        .{ .code = 0x1c, .nbits = 6 },
+        .{ .code = 0x1d, .nbits = 6 },
+        .{ .code = 0x1e, .nbits = 6 },
+        .{ .code = 0x1f, .nbits = 6 },
+        .{ .code = 0x5c, .nbits = 7 },
+        .{ .code = 0xfb, .nbits = 8 },
+        .{ .code = 0x7ffc, .nbits = 15 },
+        .{ .code = 0x20, .nbits = 6 },
+        .{ .code = 0xffb, .nbits = 12 },
+        .{ .code = 0x3fc, .nbits = 10 },
+        .{ .code = 0x1ffa, .nbits = 13 },
+        .{ .code = 0x21, .nbits = 6 },
+        .{ .code = 0x5d, .nbits = 7 },
+        .{ .code = 0x5e, .nbits = 7 },
+        .{ .code = 0x5f, .nbits = 7 },
+        .{ .code = 0x60, .nbits = 7 },
+        .{ .code = 0x61, .nbits = 7 },
+        .{ .code = 0x62, .nbits = 7 },
+        .{ .code = 0x63, .nbits = 7 },
+        .{ .code = 0x64, .nbits = 7 },
+        .{ .code = 0x65, .nbits = 7 },
+        .{ .code = 0x66, .nbits = 7 },
+        .{ .code = 0x67, .nbits = 7 },
+        .{ .code = 0x68, .nbits = 7 },
+        .{ .code = 0x69, .nbits = 7 },
+        .{ .code = 0x6a, .nbits = 7 },
+        .{ .code = 0x6b, .nbits = 7 },
+        .{ .code = 0x6c, .nbits = 7 },
+        .{ .code = 0x6d, .nbits = 7 },
+        .{ .code = 0x6e, .nbits = 7 },
+        .{ .code = 0x6f, .nbits = 7 },
+        .{ .code = 0x70, .nbits = 7 },
+        .{ .code = 0x71, .nbits = 7 },
+        .{ .code = 0x72, .nbits = 7 },
+        .{ .code = 0xfc, .nbits = 8 },
+        .{ .code = 0x73, .nbits = 7 },
+        .{ .code = 0xfd, .nbits = 8 },
+        .{ .code = 0x1ffb, .nbits = 13 },
+        .{ .code = 0x7fff0, .nbits = 19 },
+        .{ .code = 0x1ffc, .nbits = 13 },
+        .{ .code = 0x3ffc, .nbits = 14 },
+        .{ .code = 0x22, .nbits = 6 },
+        .{ .code = 0x7ffd, .nbits = 15 },
+        .{ .code = 0x3, .nbits = 5 },
+        .{ .code = 0x23, .nbits = 6 },
+        .{ .code = 0x4, .nbits = 5 },
+        .{ .code = 0x24, .nbits = 6 },
+        .{ .code = 0x5, .nbits = 5 },
+        .{ .code = 0x25, .nbits = 6 },
+        .{ .code = 0x26, .nbits = 6 },
+        .{ .code = 0x27, .nbits = 6 },
+        .{ .code = 0x6, .nbits = 5 },
+        .{ .code = 0x74, .nbits = 7 },
+        .{ .code = 0x75, .nbits = 7 },
+        .{ .code = 0x28, .nbits = 6 },
+        .{ .code = 0x29, .nbits = 6 },
+        .{ .code = 0x2a, .nbits = 6 },
+        .{ .code = 0x7, .nbits = 5 },
+        .{ .code = 0x2b, .nbits = 6 },
+        .{ .code = 0x76, .nbits = 7 },
+        .{ .code = 0x2c, .nbits = 6 },
+        .{ .code = 0x8, .nbits = 5 },
+        .{ .code = 0x9, .nbits = 5 },
+        .{ .code = 0x2d, .nbits = 6 },
+        .{ .code = 0x77, .nbits = 7 },
+        .{ .code = 0x78, .nbits = 7 },
+        .{ .code = 0x79, .nbits = 7 },
+        .{ .code = 0x7a, .nbits = 7 },
+        .{ .code = 0x7b, .nbits = 7 },
+        .{ .code = 0x7ffe, .nbits = 15 },
+        .{ .code = 0x7fc, .nbits = 11 },
+        .{ .code = 0x3ffd, .nbits = 14 },
+        .{ .code = 0x1ffd, .nbits = 13 },
+        .{ .code = 0xffffffc, .nbits = 28 },
+        .{ .code = 0xfffe6, .nbits = 20 },
+        .{ .code = 0x3fffd2, .nbits = 22 },
+        .{ .code = 0xfffe7, .nbits = 20 },
+        .{ .code = 0xfffe8, .nbits = 20 },
+        .{ .code = 0x3fffd3, .nbits = 22 },
+        .{ .code = 0x3fffd4, .nbits = 22 },
+        .{ .code = 0x3fffd5, .nbits = 22 },
+        .{ .code = 0x7fffd9, .nbits = 23 },
+        .{ .code = 0x3fffd6, .nbits = 22 },
+        .{ .code = 0x7fffda, .nbits = 23 },
+        .{ .code = 0x7fffdb, .nbits = 23 },
+        .{ .code = 0x7fffdc, .nbits = 23 },
+        .{ .code = 0x7fffdd, .nbits = 23 },
+        .{ .code = 0x7fffde, .nbits = 23 },
+        .{ .code = 0xffffeb, .nbits = 24 },
+        .{ .code = 0x7fffdf, .nbits = 23 },
+        .{ .code = 0xffffec, .nbits = 24 },
+        .{ .code = 0xffffed, .nbits = 24 },
+        .{ .code = 0x3fffd7, .nbits = 22 },
+        .{ .code = 0x7fffe0, .nbits = 23 },
+        .{ .code = 0xffffee, .nbits = 24 },
+        .{ .code = 0x7fffe1, .nbits = 23 },
+        .{ .code = 0x7fffe2, .nbits = 23 },
+        .{ .code = 0x7fffe3, .nbits = 23 },
+        .{ .code = 0x7fffe4, .nbits = 23 },
+        .{ .code = 0x1fffdc, .nbits = 21 },
+        .{ .code = 0x3fffd8, .nbits = 22 },
+        .{ .code = 0x7fffe5, .nbits = 23 },
+        .{ .code = 0x3fffd9, .nbits = 22 },
+        .{ .code = 0x7fffe6, .nbits = 23 },
+        .{ .code = 0x7fffe7, .nbits = 23 },
+        .{ .code = 0xffffef, .nbits = 24 },
+        .{ .code = 0x3fffda, .nbits = 22 },
+        .{ .code = 0x1fffdd, .nbits = 21 },
+        .{ .code = 0xfffe9, .nbits = 20 },
+        .{ .code = 0x3fffdb, .nbits = 22 },
+        .{ .code = 0x3fffdc, .nbits = 22 },
+        .{ .code = 0x7fffe8, .nbits = 23 },
+        .{ .code = 0x7fffe9, .nbits = 23 },
+        .{ .code = 0x1fffde, .nbits = 21 },
+        .{ .code = 0x7fffea, .nbits = 23 },
+        .{ .code = 0x3fffdd, .nbits = 22 },
+        .{ .code = 0x3fffde, .nbits = 22 },
+        .{ .code = 0xfffff0, .nbits = 24 },
+        .{ .code = 0x1fffdf, .nbits = 21 },
+        .{ .code = 0x3fffdf, .nbits = 22 },
+        .{ .code = 0x7fffeb, .nbits = 23 },
+        .{ .code = 0x7fffec, .nbits = 23 },
+        .{ .code = 0x1fffe0, .nbits = 21 },
+        .{ .code = 0x1fffe1, .nbits = 21 },
+        .{ .code = 0x3fffe0, .nbits = 22 },
+        .{ .code = 0x1fffe2, .nbits = 21 },
+        .{ .code = 0x7fffed, .nbits = 23 },
+        .{ .code = 0x3fffe1, .nbits = 22 },
+        .{ .code = 0x7fffee, .nbits = 23 },
+        .{ .code = 0x7fffef, .nbits = 23 },
+        .{ .code = 0xfffea, .nbits = 20 },
+        .{ .code = 0x3fffe2, .nbits = 22 },
+        .{ .code = 0x3fffe3, .nbits = 22 },
+        .{ .code = 0x3fffe4, .nbits = 22 },
+        .{ .code = 0x7ffff0, .nbits = 23 },
+        .{ .code = 0x3fffe5, .nbits = 22 },
+        .{ .code = 0x3fffe6, .nbits = 22 },
+        .{ .code = 0x7ffff1, .nbits = 23 },
+        .{ .code = 0x3ffffe0, .nbits = 26 },
+        .{ .code = 0x3ffffe1, .nbits = 26 },
+        .{ .code = 0xfffeb, .nbits = 20 },
+        .{ .code = 0x7fff1, .nbits = 19 },
+        .{ .code = 0x3fffe7, .nbits = 22 },
+        .{ .code = 0x7ffff2, .nbits = 23 },
+        .{ .code = 0x3fffe8, .nbits = 22 },
+        .{ .code = 0x1ffffec, .nbits = 25 },
+        .{ .code = 0x3ffffe2, .nbits = 26 },
+        .{ .code = 0x3ffffe3, .nbits = 26 },
+        .{ .code = 0x3ffffe4, .nbits = 26 },
+        .{ .code = 0x7ffffde, .nbits = 27 },
+        .{ .code = 0x7ffffdf, .nbits = 27 },
+        .{ .code = 0x3ffffe5, .nbits = 26 },
+        .{ .code = 0xfffff1, .nbits = 24 },
+        .{ .code = 0x1ffffed, .nbits = 25 },
+        .{ .code = 0x7fff2, .nbits = 19 },
+        .{ .code = 0x1fffe3, .nbits = 21 },
+        .{ .code = 0x3ffffe6, .nbits = 26 },
+        .{ .code = 0x7ffffe0, .nbits = 27 },
+        .{ .code = 0x7ffffe1, .nbits = 27 },
+        .{ .code = 0x3ffffe7, .nbits = 26 },
+        .{ .code = 0x7ffffe2, .nbits = 27 },
+        .{ .code = 0xfffff2, .nbits = 24 },
+        .{ .code = 0x1fffe4, .nbits = 21 },
+        .{ .code = 0x1fffe5, .nbits = 21 },
+        .{ .code = 0x3ffffe8, .nbits = 26 },
+        .{ .code = 0x3ffffe9, .nbits = 26 },
+        .{ .code = 0xffffffd, .nbits = 28 },
+        .{ .code = 0x7ffffe3, .nbits = 27 },
+        .{ .code = 0x7ffffe4, .nbits = 27 },
+        .{ .code = 0x7ffffe5, .nbits = 27 },
+        .{ .code = 0xfffec, .nbits = 20 },
+        .{ .code = 0xfffff3, .nbits = 24 },
+        .{ .code = 0xfffed, .nbits = 20 },
+        .{ .code = 0x1fffe6, .nbits = 21 },
+        .{ .code = 0x3fffe9, .nbits = 22 },
+        .{ .code = 0x1fffe7, .nbits = 21 },
+        .{ .code = 0x1fffe8, .nbits = 21 },
+        .{ .code = 0x7ffff3, .nbits = 23 },
+        .{ .code = 0x3fffea, .nbits = 22 },
+        .{ .code = 0x3fffeb, .nbits = 22 },
+        .{ .code = 0x1ffffee, .nbits = 25 },
+        .{ .code = 0x1ffffef, .nbits = 25 },
+        .{ .code = 0xfffff4, .nbits = 24 },
+        .{ .code = 0xfffff5, .nbits = 24 },
+        .{ .code = 0x3ffffea, .nbits = 26 },
+        .{ .code = 0x7ffff4, .nbits = 23 },
+        .{ .code = 0x3ffffeb, .nbits = 26 },
+        .{ .code = 0x7ffffe6, .nbits = 27 },
+        .{ .code = 0x3ffffec, .nbits = 26 },
+        .{ .code = 0x3ffffed, .nbits = 26 },
+        .{ .code = 0x7ffffe7, .nbits = 27 },
+        .{ .code = 0x7ffffe8, .nbits = 27 },
+        .{ .code = 0x7ffffe9, .nbits = 27 },
+        .{ .code = 0x7ffffea, .nbits = 27 },
+        .{ .code = 0x7ffffeb, .nbits = 27 },
+        .{ .code = 0xffffffe, .nbits = 28 },
+        .{ .code = 0x7ffffec, .nbits = 27 },
+        .{ .code = 0x7ffffed, .nbits = 27 },
+        .{ .code = 0x7ffffee, .nbits = 27 },
+        .{ .code = 0x7ffffef, .nbits = 27 },
+        .{ .code = 0x7fffff0, .nbits = 27 },
+        .{ .code = 0x3ffffee, .nbits = 26 },
+        .{ .code = 0x3fffffff, .nbits = 30 },
+    };
+
+    pub fn hpackHuffmanDecode(src: []const u8, dst: []u8) ?usize {
+        var acc: u64 = 0;
+        var nbits: u8 = 0;
+        var out_len: usize = 0;
+        var i: usize = 0;
+        while (i < src.len) : (i += 1) {
+            acc = (acc << 8) | src[i];
+            nbits += 8;
+            while (nbits >= 5) {
+                var matched = false;
+                var s: usize = 0;
+                while (s < huff_table.len) : (s += 1) {
+                    const l = huff_table[s].nbits;
+                    if (l == 0 or l > nbits) continue;
+                    const l6: u6 = @intCast(l);
+                    const mask: u64 = (@as(u64, 1) << l6) - 1;
+                    const top = (acc >> (@as(u6, @intCast(nbits)) - l6)) & mask;
+                    if (top == huff_table[s].code) {
+                        if (s == 256) return null;
+                        if (out_len >= dst.len) return null;
+                        dst[out_len] = @intCast(s);
+                        out_len += 1;
+                        nbits -= l;
+                        const keep_mask: u64 = if (nbits == 0) 0 else ((@as(u64, 1) << @as(u6, @intCast(nbits))) - 1);
+                        acc &= keep_mask;
+                        matched = true;
+                        break;
+                    }
+                }
+                if (!matched) break;
+            }
+        }
+        if (nbits > 7) return null;
+        if (nbits > 0) {
+            const rem_mask: u64 = (@as(u64, 1) << @as(u6, @intCast(nbits))) - 1;
+            const rem = acc & rem_mask;
+            if (rem != rem_mask) return null;
+        }
+        return out_len;
+    }
+
+    pub fn hpackHuffmanEncode(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
+        var bit_acc: u128 = 0;
+        var bit_len: u32 = 0;
+        var buf = std.ArrayList(u8).init(alloc);
+        defer buf.deinit();
+        for (s) |ch| {
+            const code = huff_table[ch].code;
+            const n = huff_table[ch].nbits;
+            bit_acc = (bit_acc << n) | code;
+            bit_len += n;
+            while (bit_len >= 8) {
+                const shift: u32 = bit_len - 8;
+                const byte: u8 = @intCast((bit_acc >> shift) & 0xff);
+                try buf.append(byte);
+                bit_len -= 8;
+                bit_acc &= (@as(u128, 1) << shift) - 1;
+            }
+        }
+        if (bit_len != 0) {
+            const pad: u32 = 8 - (bit_len % 8);
+            bit_acc = (bit_acc << pad) | ((@as(u128, 1) << pad) - 1);
+            bit_len += pad;
+            while (bit_len >= 8) {
+                const shift2: u32 = bit_len - 8;
+                const byte2: u8 = @intCast((bit_acc >> shift2) & 0xff);
+                try buf.append(byte2);
+                bit_len -= 8;
+                bit_acc &= (@as(u128, 1) << shift2) - 1;
+            }
+        }
+        return try buf.toOwnedSlice();
     }
 };

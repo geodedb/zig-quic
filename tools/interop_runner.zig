@@ -381,6 +381,44 @@ const Runner = struct {
         if (term == .Exited and term.Exited == 0) return error.ExpectedFail;
         return error.ExpectedFail;
     }
+
+    fn runZigH3Loopback(self: *Runner) !void {
+        try self.ensureCerts();
+        const zig_server = "./zig-out/bin/quic-server";
+        const zig_client = "./zig-out/bin/quic-client";
+        if (!self.pathExists(zig_server) or !self.pathExists(zig_client)) return error.ZigBinariesMissing;
+        var srv = std.process.Child.init(&[_][]const u8{ zig_server, "--bind", "127.0.0.1:4433", "--alpn", "h3", "--cert", "examples/interop/certs/cert.pem", "--key", "examples/interop/certs/key.pem", "--insecure" }, self.alloc);
+        srv.stdin_behavior = .Ignore;
+        srv.stdout_behavior = .Pipe;
+        srv.stderr_behavior = .Pipe;
+        try srv.spawn();
+        defer {
+            _ = srv.kill() catch {};
+            _ = srv.wait() catch {};
+        }
+        std.Thread.sleep(400 * std.time.ns_per_ms);
+        var cli = std.process.Child.init(&[_][]const u8{ zig_client, "--connect", "127.0.0.1:4433", "--sni", "test.local", "--alpn", "h3", "--insecure" }, self.alloc);
+        cli.stdin_behavior = .Ignore;
+        cli.stdout_behavior = .Pipe;
+        cli.stderr_behavior = .Pipe;
+        const term = try cli.spawnAndWait();
+        var outb: [2048]u8 = undefined;
+        const out_bytes = if (cli.stdout) |s| blk: {
+            var rdr = s.reader(outb[0..]);
+            var arr = std.ArrayListUnmanaged(u8){};
+            defer arr.deinit(self.alloc);
+            while (true) {
+                const n = rdr.read(outb[0..]) catch 0;
+                if (n == 0) break;
+                _ = arr.appendSlice(self.alloc, outb[0..n]) catch {};
+            }
+            break :blk arr.toOwnedSlice(self.alloc) catch try self.alloc.dupe(u8, "");
+        } else (try self.alloc.dupe(u8, ""));
+        defer self.alloc.free(out_bytes);
+        const ok = (term == .Exited and term.Exited == 0);
+        if (!ok) return error.ClientFailed;
+        if (std.mem.indexOf(u8, out_bytes, "received echo") == null and std.mem.indexOf(u8, out_bytes, "echo:") == null) return error.NoSuccessMarker;
+    }
 };
 
 pub fn main() !void {
@@ -403,7 +441,8 @@ pub fn main() !void {
             "- go_vn_mismatch (MUST FAIL)\n" ++
             "- go_net_echo_smoke (XFAIL until real TLS interop)\n" ++
             "- zig_client_vs_go_server (XFAIL until handshake/streams)\n" ++
-            "- zig_server_vs_go_client (XFAIL until handshake/streams)\n";
+            "- zig_server_vs_go_client (XFAIL until handshake/streams)\n" ++
+            "- zig_h3_loopback (MUST PASS)\n";
         _ = std.posix.write(std.posix.STDOUT_FILENO, out) catch {};
         return;
     } else if (std.mem.eql(u8, cmd, "run")) {

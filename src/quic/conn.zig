@@ -525,6 +525,13 @@ pub const Connection = struct {
         return .{ .largest = self.pn_app.max, .first_range = d.first_range, .ranges = self.ack_ranges_buf[0..d.ranges_len] };
     }
 
+    pub fn isStreamFinished(self: *Connection, id: u64) bool {
+        if (self.streams_rx.getPtr(id)) |rx| {
+            return rx.isFinished();
+        }
+        return false;
+    }
+
     /// Initialize a Connection in the given role bound to a socket and peer address.
     /// Initialize connection object with allocator, role, socket fd, and peer address; sets defaults.
     pub fn init(self: *Connection, alloc: *std.mem.Allocator, role: Role, sock_fd: posix.fd_t, peer: SockAddr) void {

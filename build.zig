@@ -199,10 +199,13 @@ pub fn build(b: *std.Build) void {
     const h3_server_mod = mkModule(b, "src/h3/server.zig");
     h3_server_mod.addImport("quic_api", quic_api_mod);
     h3_server_mod.addImport("quic_conn", quic_conn_mod);
-    // Export for dependents as a named import
+    // Export for dependents as named imports
     const h3_mod = b.addModule("h3_server", .{ .root_source_file = rp("src/h3/server.zig") });
     h3_mod.addImport("quic_api", quic_api_mod);
     h3_mod.addImport("quic_conn", quic_conn_mod);
+    const h3_client_mod = b.addModule("h3_client", .{ .root_source_file = rp("src/h3/client.zig") });
+    h3_client_mod.addImport("quic_api", quic_api_mod);
+    h3_client_mod.addImport("quic_api", quic_api_mod);
 
     const qns_endpoint = addExe(b, "qns-endpoint", "cmd/qns-endpoint.zig", target, optimize);
     qns_endpoint.root_module.addImport("quic_api", quic_api_mod);
@@ -263,6 +266,14 @@ pub fn build(b: *std.Build) void {
             test_hp.root_module.addImport("quic_packet", quic_packet_mod);
             const run_test_hp = b.addRunArtifact(test_hp);
             test_step.dependOn(&run_test_hp.step);
+            return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "h3_loopback")) {
+            const test_h3_loop = addTst(b, "tests/test_h3_loopback.zig", target, optimize);
+            test_h3_loop.root_module.addImport("quic_api", quic_api_mod);
+            test_h3_loop.root_module.addImport("h3_server", h3_server_mod);
+            test_h3_loop.root_module.addImport("h3_client", h3_client_mod);
+            const run_test_h3_loop = b.addRunArtifact(test_h3_loop);
+            test_step.dependOn(&run_test_h3_loop.step);
             return;
         }
     }
@@ -352,6 +363,7 @@ pub fn build(b: *std.Build) void {
         test_vn.root_module.addImport("quic_packet", quic_packet_mod);
         const run_test_vn = b.addRunArtifact(test_vn);
         test_step.dependOn(&run_test_vn.step);
+
 
         // New: Retry issuance and amplification gating tests
         const test_retry = addTst(b, "tests/test_retry.zig", target, optimize);
