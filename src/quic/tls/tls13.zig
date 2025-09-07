@@ -345,10 +345,9 @@ pub const Engine = struct {
         return result;
     }
 
-    /// Ingest CRYPTO data from peer (placeholder for now).
+    /// Ingest CRYPTO data from peer and parse handshake messages.
     pub fn ingestCrypto(self: *Engine, data: []const u8) !void {
-        // For now, just update the transcript
-        self.transcript.update(data);
+        self.onCryptoRecv(data);
     }
 
     /// Activate real handshake mode (experimental). Currently only affects ClientHello generation.
@@ -420,13 +419,13 @@ pub const Engine = struct {
                 if (p.typ == .client_hello) self.ch_sent = true;
                 // If we just processed a real ServerHello, derive handshake secrets immediately (spec: hash includes CH+SH)
                 if (self.real_mode and p.typ == .server_hello and self.handshake_client_secret == null and self.ecdhe_secret != null) {
-                    // transcript hash for messages up to and including this server_hello is data[0..off]
                     var th_tr = Transcript.init();
                     th_tr.update(data[0..off]);
                     const th_hash = th_tr.finalize();
                     const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th_hash);
                     self.handshake_client_secret = hs.client_hs;
                     self.handshake_server_secret = hs.server_hs;
+                    _ = self.computeApplicationSecrets();
                 }
 
                 // Only try to extract public keys from ClientHello and ServerHello
@@ -647,6 +646,13 @@ pub const Engine = struct {
     /// Provide ECDHE shared secret directly (used in tests after X25519 exchange).
     pub fn setEcdhe(self: *Engine, shared: []const u8) void {
         self.ecdhe_secret = shared;
+        if (self.ch_sent and self.sh_seen) {
+            const th = self.transcript.finalize();
+            const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th);
+            self.handshake_client_secret = hs.client_hs;
+            self.handshake_server_secret = hs.server_hs;
+            _ = self.computeApplicationSecrets();
+        }
     }
 
     /// Queue outbound CRYPTO bytes (e.g., ClientHello)
@@ -1039,13 +1045,13 @@ pub const Engine = struct {
         defer self.allocator.free(msg);
         try self.queueCrypto(msg);
         self.tryComputeShared();
-        // Derive handshake traffic secrets immediately after SH (CH already in transcript)
         if (self.ecdhe_secret != null and self.handshake_client_secret == null) {
             var snap = self.transcript;
-            const th = snap.finalize(); // includes CH + SH only at this point
+            const th = snap.finalize();
             const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th);
             self.handshake_client_secret = hs.client_hs;
             self.handshake_server_secret = hs.server_hs;
+            _ = self.computeApplicationSecrets();
         }
     }
     /// Internal: auto-send Finished when conditions satisfied

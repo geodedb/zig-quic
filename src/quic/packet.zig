@@ -797,80 +797,74 @@ pub fn decode0RTTProtected(
 } {
     if (packet.len < 20) return error.PacketTooShort;
 
-        const first_masked = packet[0];
-        if ((first_masked & 0x80) == 0) return error.NotLongHeader;
-        if (((first_masked >> 4) & 0x03) != 0x01) return error.Not0RTT;
+    const first_masked = packet[0];
+    if ((first_masked & 0x80) == 0) return error.NotLongHeader;
+    if (((first_masked >> 4) & 0x03) != 0x01) return error.Not0RTT;
 
-    var i: usize = 5; // Skip first byte and version
+    var i: usize = 5;
 
-    // Skip DCID
     const dcid_len = packet[i];
     i += 1 + dcid_len;
     if (i >= packet.len) return error.PacketTooShort;
 
-    // Skip SCID
     const scid_len = packet[i];
     i += 1 + scid_len;
     if (i >= packet.len) return error.PacketTooShort;
 
-    // Parse length
     const len_result = varint.decode(packet[i..]) catch return error.InvalidLength;
     i += len_result.n;
 
-    // Find packet number offset
     const pn_offset = i;
-        const pn_len = ((first_masked & 0x03) + 1);
 
-    // Remove header protection
-    var mutable = try alloc.alloc(u8, packet.len);
-    defer alloc.free(mutable);
-    @memcpy(mutable, packet);
+    var pn_masked4: [4]u8 = .{0} ** 4;
+    const avail = @min(@as(usize, 4), packet.len - pn_offset);
+    if (avail == 0) return error.PacketTooShort;
+    @memcpy(pn_masked4[0..avail], packet[pn_offset .. pn_offset + avail]);
 
-    // For long headers we mirror encrypt path: sample offset uses pn_offset + 4 (max PN bytes) per simplified HP removal logic
-    const sample_offset = pn_offset + 4;
-    if (sample_offset + 16 <= mutable.len) {
-        var sample16: [16]u8 = undefined;
-        @memcpy(&sample16, mutable[sample_offset .. sample_offset + 16]);
-        const header_first_ptr = &mutable[0];
-        const pn_slice = mutable[pn_offset .. pn_offset + pn_len];
-        crypto.headerUnprotect(.aes_128_gcm, &keys.hp, &sample16, header_first_ptr, pn_slice) catch {};
-    }
+    const sample_start = pn_offset + 4;
+    const end_total = pn_offset + @as(usize, len_result.value);
+    if (sample_start + 16 > end_total or end_total > packet.len) return error.PacketTooShort;
+    var sample16: [16]u8 = undefined;
+    @memcpy(sample16[0..], packet[sample_start .. sample_start + 16]);
 
-    // Extract packet number
-    var pn: u64 = 0;
-        const unmasked_first = mutable[0];
-        const pn_len_unmasked: usize = (unmasked_first & 0x03) + 1;
-        if (pn_offset + pn_len_unmasked > mutable.len) return error.PacketTooShort;
+    var header_first = first_masked;
+    const pn_len_actual: u3 = try crypto.unmaskLongHeaderAndPn(
+        .aes_128_gcm,
+        &keys.hp,
+        &sample16,
+        &header_first,
+        &pn_masked4,
+    );
 
-        // Extract packet number using correct length
-        var idx_pn: usize = 0;
-        while (idx_pn < pn_len_unmasked) : (idx_pn += 1) {
-            pn = (pn << 8) | mutable[pn_offset + idx_pn];
-        }
+    const ct_begin = pn_offset + pn_len_actual;
+    const ct_end = end_total;
+    if (ct_end < ct_begin + 16) return error.CiphertextTooShort;
+    const ct_and_tag = packet[ct_begin..ct_end];
 
-    // Decrypt payload using base IV and full packet number (nonce derived inside helper)
-    const ct_offset = pn_offset + pn_len;
-    const ct = mutable[ct_offset..];
-    if (ct.len < 16) return error.CiphertextTooShort;
+    var aad = std.ArrayList(u8){};
+    defer aad.deinit(std.heap.page_allocator);
+    try aad.append(std.heap.page_allocator, header_first);
+    try aad.appendSlice(std.heap.page_allocator, packet[1..i]);
+    try aad.appendSlice(std.heap.page_allocator, pn_masked4[0..pn_len_actual]);
 
-    const aad = mutable[0..ct_offset];
-    const plaintext = try alloc.alloc(u8, ct.len - 16);
+    var pn_val: u64 = 0;
+    var j: usize = 0;
+    while (j < pn_len_actual) : (j += 1) pn_val = (pn_val << 8) | pn_masked4[j];
+
+    const plaintext = try alloc.alloc(u8, ct_and_tag.len - 16);
     errdefer alloc.free(plaintext);
 
     _ = crypto.aeadDecrypt(
         .aes_128_gcm,
         &keys.key,
         &keys.iv,
-            pn,
-        aad,
-        ct,
+        pn_val,
+        aad.items,
+        ct_and_tag,
         plaintext,
     ) catch return error.DecryptionFailed;
 
-    return .{
-        .packet_number = pn,
-        .payload = plaintext,
-    };
+    return .{ .packet_number = pn_val, .payload = plaintext };
 }
 
 /// Encode a Retry packet with integrity tag per RFC 9001/9369.
