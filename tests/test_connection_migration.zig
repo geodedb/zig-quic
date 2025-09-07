@@ -122,7 +122,7 @@ test "multiple path management" {
     defer paths.deinit(alloc);
     
     // Primary path
-    try paths.append(.{
+    try paths.append(alloc, .{
         .addr = conn_mod.SockAddr.ipv4(192, 168, 1, 1, 443),
         .validated = true,
         .rtt = 10_000, // 10ms
@@ -131,7 +131,7 @@ test "multiple path management" {
     });
     
     // Alternative path
-    try paths.append(.{
+    try paths.append(alloc, .{
         .addr = conn_mod.SockAddr.ipv4(10, 0, 0, 1, 443),
         .validated = false,
         .rtt = 50_000, // 50ms

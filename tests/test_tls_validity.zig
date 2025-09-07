@@ -26,45 +26,45 @@ fn emitTLV(buf: *std.ArrayList(u8), tag: u8, val: []const u8) void {
 }
 fn makeSeq(alloc: std.mem.Allocator, inner: []const u8) ![]u8 {
     var out = std.ArrayList(u8){};
-    try out.ensureTotalCapacity(inner.len + 4);
-    emitTLV(&out, 0x30, inner);
-    return out.toOwnedSlice();
+    try out.ensureTotalCapacity(alloc, inner.len + 4);
+    emitTLV(&out, alloc, 0x30, inner);
+    return out.toOwnedSlice(alloc);
 }
 fn makeCtx(tagnum: u8, alloc: std.mem.Allocator, inner: []const u8) ![]u8 {
     var out = std.ArrayList(u8){};
-    try out.ensureTotalCapacity(inner.len + 4);
-    emitTLV(&out, 0xA0 | (tagnum & 0x1f), inner);
-    return out.toOwnedSlice();
+    try out.ensureTotalCapacity(alloc, inner.len + 4);
+    emitTLV(&out, alloc, 0xA0 | (tagnum & 0x1f), inner);
+    return out.toOwnedSlice(alloc);
 }
 fn makeOctet(alloc: std.mem.Allocator, inner: []const u8) ![]u8 {
     var out = std.ArrayList(u8){};
-    try out.ensureTotalCapacity(inner.len + 4);
-    emitTLV(&out, 0x04, inner);
-    return out.toOwnedSlice();
+    try out.ensureTotalCapacity(alloc, inner.len + 4);
+    emitTLV(&out, alloc, 0x04, inner);
+    return out.toOwnedSlice(alloc);
 }
 fn makeOID(alloc: std.mem.Allocator, oid_bytes: []const u8) ![]u8 {
     var out = std.ArrayList(u8){};
-    try out.ensureTotalCapacity(oid_bytes.len + 4);
-    emitTLV(&out, 0x06, oid_bytes);
-    return out.toOwnedSlice();
+    try out.ensureTotalCapacity(alloc, oid_bytes.len + 4);
+    emitTLV(&out, alloc, 0x06, oid_bytes);
+    return out.toOwnedSlice(alloc);
 }
 fn makeGeneralizedTime(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
     var out = std.ArrayList(u8){};
-    try out.ensureTotalCapacity(s.len + 4);
-    emitTLV(&out, 0x18, s);
-    return out.toOwnedSlice();
+    try out.ensureTotalCapacity(alloc, s.len + 4);
+    emitTLV(&out, alloc, 0x18, s);
+    return out.toOwnedSlice(alloc);
 }
 fn makeInteger1(alloc: std.mem.Allocator, v: u8) ![]u8 {
     var out = std.ArrayList(u8){};
-    try out.ensureTotalCapacity(4);
-    emitTLV(&out, 0x02, &[_]u8{v});
-    return out.toOwnedSlice();
+    try out.ensureTotalCapacity(alloc, 4);
+    emitTLV(&out, alloc, 0x02, &[_]u8{v});
+    return out.toOwnedSlice(alloc);
 }
 
 fn buildCertWithSanValidity(alloc: std.mem.Allocator, dns_name: []const u8, not_before: []const u8, not_after: []const u8) ![]u8 {
     var tbs = std.ArrayList(u8){};
-    defer tbs.deinit(A);
-    try tbs.ensureTotalCapacity(512);
+    defer tbs.deinit(alloc);
+    try tbs.ensureTotalCapacity(alloc, 512);
     const int1 = try makeInteger1(alloc, 1);
     defer alloc.free(int1);
     const int2 = try makeInteger1(alloc, 2);
@@ -82,7 +82,7 @@ fn buildCertWithSanValidity(alloc: std.mem.Allocator, dns_name: []const u8, not_
     const na = try makeGeneralizedTime(alloc, not_after);
     defer alloc.free(na);
     var validity_inner = std.ArrayList(u8){};
-    defer validity_inner.deinit(A);
+    defer validity_inner.deinit(alloc);
     try validity_inner.ensureTotalCapacity(nb.len + na.len + 4);
     validity_inner.appendSliceAssumeCapacity(nb);
     validity_inner.appendSliceAssumeCapacity(na);
@@ -100,15 +100,15 @@ fn buildCertWithSanValidity(alloc: std.mem.Allocator, dns_name: []const u8, not_
     const oid = try makeOID(alloc, san_oid);
     defer alloc.free(oid);
     var gn = std.ArrayList(u8){};
-    defer gn.deinit(A);
+    defer gn.deinit(alloc);
     try gn.ensureTotalCapacity(dns_name.len + 8);
-    emitTLV(&gn, 0x82, dns_name);
+    emitTLV(&gn, alloc, 0x82, dns_name);
     const gns = try makeSeq(alloc, gn.items);
     defer alloc.free(gns);
     const extn_val_octet = try makeOctet(alloc, gns);
     defer alloc.free(extn_val_octet);
     var ext_inner = std.ArrayList(u8){};
-    defer ext_inner.deinit(A);
+    defer ext_inner.deinit(alloc);
     try ext_inner.ensureTotalCapacity(oid.len + extn_val_octet.len + 8);
     ext_inner.appendSliceAssumeCapacity(oid);
     ext_inner.appendSliceAssumeCapacity(extn_val_octet);
@@ -122,13 +122,13 @@ fn buildCertWithSanValidity(alloc: std.mem.Allocator, dns_name: []const u8, not_
     const tbs_seq = try makeSeq(alloc, tbs.items);
     defer alloc.free(tbs_seq);
     var outer = std.ArrayList(u8){};
-    defer outer.deinit(A);
+    defer outer.deinit(alloc);
     try outer.ensureTotalCapacity(tbs_seq.len + 16);
     outer.appendSliceAssumeCapacity(tbs_seq);
     const sig_alg = try makeSeq(alloc, &[_]u8{});
     defer alloc.free(sig_alg);
     outer.appendSliceAssumeCapacity(sig_alg);
-    emitTLV(&outer, 0x03, &[_]u8{0x00});
+    emitTLV(&outer, alloc, 0x03, &[_]u8{0x00});
     const cert = try makeSeq(alloc, outer.items);
     return cert;
 }

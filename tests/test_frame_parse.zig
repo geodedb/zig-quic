@@ -15,7 +15,7 @@ test "encode+parse stream with len and fin" {
     var fb: [16]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&fb);
     const f = frame.Frame{ .stream = .{ .stream_id = 4, .offset = null, .fin = true, .data = payload } };
-    const n = try f.write(fbs.writer());
+    const n = try f.write(fbs.writer(alloc));
     const pr = try frame.parse(fb[0..n]);
     try std.testing.expect(std.mem.eql(u8, @tagName(pr.frame), "stream"));
 }

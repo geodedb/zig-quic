@@ -73,10 +73,10 @@ fn roundtrip_short(suite: crypto.AeadSuite, dcid: []const u8, pn: u32, pn_len: u
 
     // Build a minimal short header buffer manually to feed protectInitial
     var buf = std.ArrayList(u8){};
-    defer buf.deinit(A);
+    defer buf.deinit(alloc);
     var header_first: u8 = 0x40 | @as(u8, pn_len - 1);
-    try buf.append(header_first);
-    try buf.appendSlice(dcid);
+    try buf.append(alloc, header_first);
+    try buf.appendSlice(alloc, dcid);
     const header_prefix = buf.items[1..];
 
     var pn_be_full: [4]u8 = .{
@@ -109,11 +109,11 @@ fn roundtrip_short(suite: crypto.AeadSuite, dcid: []const u8, pn: u32, pn_len: u
 
     // Build a complete packet: first | dcid | pn | ct
     var packet = std.ArrayList(u8){};
-    defer packet.deinit(A);
-    try packet.append(header_first);
-    try packet.appendSlice(dcid);
-    try packet.appendSlice(pn_mut[0..pn_len]);
-    try packet.appendSlice(ct[0..ct_len]);
+    defer packet.deinit(alloc);
+    try packet.append(alloc, header_first);
+    try packet.appendSlice(alloc, dcid);
+    try packet.appendSlice(alloc, pn_mut[0..pn_len]);
+    try packet.appendSlice(alloc, ct[0..ct_len]);
 
     // Recover hp sample depending on suite
     var sample16: [16]u8 = undefined;
@@ -136,10 +136,10 @@ fn roundtrip_short(suite: crypto.AeadSuite, dcid: []const u8, pn: u32, pn_len: u
 
     // AAD: unmasked first || dcid || unmasked pn
     var aad = std.ArrayList(u8){};
-    defer aad.deinit(A);
-    try aad.append(hdr_first_masked);
-    try aad.appendSlice(dcid);
-    try aad.appendSlice(pn_buf[0..pn_len]);
+    defer aad.deinit(alloc);
+    try aad.append(alloc, hdr_first_masked);
+    try aad.appendSlice(alloc, dcid);
+    try aad.appendSlice(alloc, pn_buf[0..pn_len]);
 
     // Decrypt
     const pt = try a.alloc(u8, payload.len);

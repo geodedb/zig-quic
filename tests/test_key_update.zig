@@ -49,9 +49,9 @@ test "key update: derive next secret and decrypt with toggled key phase" {
     const pn: u32 = 7;
 
     var header = std.ArrayList(u8){};
-    defer header.deinit(A);
-    try header.append(header_first);
-    try header.appendSlice(dcid);
+    defer header.deinit(alloc);
+    try header.append(alloc, header_first);
+    try header.appendSlice(alloc, dcid);
     const prefix = header.items[1..];
 
     var pn_bytes: [1]u8 = .{@as(u8, @intCast(pn))};
@@ -63,11 +63,11 @@ test "key update: derive next secret and decrypt with toggled key phase" {
 
     // Build packet bytes (short header): first | dcid | pn | ct
     var packet = std.ArrayList(u8){};
-    defer packet.deinit(A);
-    try packet.append(header_first);
-    try packet.appendSlice(dcid);
-    try packet.appendSlice(&pn_bytes);
-    try packet.appendSlice(ct);
+    defer packet.deinit(alloc);
+    try packet.append(alloc, header_first);
+    try packet.appendSlice(alloc, dcid);
+    try packet.appendSlice(alloc, &pn_bytes);
+    try packet.appendSlice(alloc, ct);
 
     // Build HP sample for AES (PN start + 4)
     var sample16: [16]u8 = undefined;
@@ -81,10 +81,10 @@ test "key update: derive next secret and decrypt with toggled key phase" {
 
     // AAD and decrypt with next keys
     var aad = std.ArrayList(u8){};
-    defer aad.deinit(A);
-    try aad.append(hdr_first_m);
-    try aad.appendSlice(dcid);
-    try aad.appendSlice(pn_buf[0..pn_len]);
+    defer aad.deinit(alloc);
+    try aad.append(alloc, hdr_first_m);
+    try aad.appendSlice(alloc, dcid);
+    try aad.appendSlice(alloc, pn_buf[0..pn_len]);
 
     const pt = try a.alloc(u8, payload.len);
     defer a.free(pt);

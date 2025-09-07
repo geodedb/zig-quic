@@ -33,12 +33,12 @@ fn decodeHex(alloc: std.mem.Allocator, multi: []const []const u8) ![]u8 {
             if (chunk.len > 0) {
                 const b = try hexToBytes(alloc, chunk);
                 defer alloc.free(b);
-                try buf.appendSlice(b);
+                try buf.appendSlice(alloc, b);
             }
             j = k;
         }
     }
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(alloc);
 }
 
 test "rfc9001_a1_client_initial_byte_exact" {

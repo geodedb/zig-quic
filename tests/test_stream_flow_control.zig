@@ -21,7 +21,7 @@ fn captureSender(ctx: *anyopaque, _: *conn_mod.Connection, data: []const u8) any
     var cap: *Capture = @ptrCast(@alignCast(ctx));
     const owned = try cap.alloc.alloc(u8, data.len);
     @memcpy(owned, data);
-    try cap.bufs.append(owned);
+    try cap.bufs.append(alloc, owned);
     return data.len;
 }
 
@@ -289,8 +289,8 @@ test "endpoint ACK includes updated MAX_* after threshold bumps" {
     defer A.free(payload1);
     @memset(payload1, 'A');
     var fb1 = std.ArrayList(u8){};
-    defer fb1.deinit(A);
-    _ = (fr.Frame{ .stream = .{ .stream_id = 0, .offset = 0, .fin = false, .data = payload1 } }).write(fb1.writer()) catch 0;
+    defer fb1.deinit(alloc);
+    _ = (fr.Frame{ .stream = .{ .stream_id = 0, .offset = 0, .fin = false, .data = payload1 } }).write(fb1.writer(alloc)) catch 0;
     try inject(A, &ep, &c, fb1.items);
 
     // Expect a captured ACK+MAX_*; decode and assert max_stream_data matches connection's bumped value.
@@ -329,8 +329,8 @@ test "endpoint ACK includes updated MAX_* after threshold bumps" {
     defer A.free(payload2);
     @memset(payload2, 'B');
     var fb2 = std.ArrayList(u8){};
-    defer fb2.deinit(A);
-    _ = (fr.Frame{ .stream = .{ .stream_id = 0, .offset = payload1.len, .fin = false, .data = payload2 } }).write(fb2.writer()) catch 0;
+    defer fb2.deinit(alloc);
+    _ = (fr.Frame{ .stream = .{ .stream_id = 0, .offset = payload1.len, .fin = false, .data = payload2 } }).write(fb2.writer(alloc)) catch 0;
     try inject(A, &ep, &c, fb2.items);
 
     // Inspect second captured packet
@@ -444,11 +444,11 @@ test "endpoint ACK does not include redundant MAX_* when values unchanged" {
     // Cross a threshold once to cause MAX emission
     const half_stream: usize = @intCast(c.local_max_stream_data / 2);
     var fb = std.ArrayList(u8){};
-    defer fb.deinit(A);
+    defer fb.deinit(alloc);
     const payload = try A.alloc(u8, half_stream + 16);
     defer A.free(payload);
     @memset(payload, 'Z');
-    _ = (fr.Frame{ .stream = .{ .stream_id = 0, .offset = 0, .fin = false, .data = payload } }).write(fb.writer()) catch 0;
+    _ = (fr.Frame{ .stream = .{ .stream_id = 0, .offset = 0, .fin = false, .data = payload } }).write(fb.writer(alloc)) catch 0;
     try inject(A, &ep, &c, fb.items);
     // Pop first captured ack (with MAX_*)
     const cap1 = ep.capturePop().?;
@@ -456,7 +456,7 @@ test "endpoint ACK does not include redundant MAX_* when values unchanged" {
 
     // Send another small packet that doesn't increase windows
     fb.clearRetainingCapacity();
-    _ = (fr.Frame{ .ping = {} }).write(fb.writer()) catch 0;
+    _ = (fr.Frame{ .ping = {} }).write(fb.writer(alloc)) catch 0;
     try inject(A, &ep, &c, fb.items);
     const cap2 = ep.capturePop().?;
     defer A.free(cap2.bytes);

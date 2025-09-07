@@ -16,8 +16,8 @@ fn build_client_initial(alloc: std.mem.Allocator, c: *conn_mod.Connection) ![]u8
         break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
     };
     var frames = std.ArrayList(u8){};
-    defer frames.deinit(A);
-    _ = (frame.Frame{ .ping = {} }).write(frames.writer()) catch {};
+    defer frames.deinit(alloc);
+    _ = (frame.Frame{ .ping = {} }).write(frames.writer(alloc)) catch {};
     return packet.encodeInitialProtected(
         alloc,
         packet.QUIC_V1,
@@ -100,8 +100,8 @@ test "nat rebinding enforces 3x before validation across repeated rebindings" {
         // Server will have generated srv.path_challenge_data; respond with PATH_RESPONSE now.
         {
             var fb = std.ArrayList(u8){};
-            defer fb.deinit(A);
-            const w = fb.writer();
+            defer fb.deinit(alloc);
+            const w = fb.writer(alloc);
             _ = (frame.Frame{ .path_response = srv.path_challenge_data }).write(w) catch {};
             const out = packet.encodeShortProtected(alloc, srv.our_scid.bytes[0..srv.our_scid.len], @as(u32, @truncate(srv.pn_app_tx)), 2, fb.items, .{ .key = srv.app_rx_keys.?.key, .iv = srv.app_rx_keys.?.iv, .hp = srv.app_rx_keys.?.hp }, srv.tx_key_phase) catch null;
             if (out) |bytes_out| {

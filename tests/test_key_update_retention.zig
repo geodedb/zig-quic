@@ -58,11 +58,11 @@ test "key update: rx promotes on next-phase, retains prev window; tx toggles and
     _ = try crypto.protectInitial(.aes_128_gcm, &cli_w1.key, &cli_w1.iv, &cli_w1.hp, pn_num1, &hdr_first1, pn1[0..], dcid, payload1, ct1);
 
     var pkt1 = std.ArrayList(u8){};
-    defer pkt1.deinit(A);
-    try pkt1.append(hdr_first1);
-    try pkt1.appendSlice(dcid);
-    try pkt1.appendSlice(&pn1);
-    try pkt1.appendSlice(ct1);
+    defer pkt1.deinit(alloc);
+    try pkt1.append(alloc, hdr_first1);
+    try pkt1.appendSlice(alloc, dcid);
+    try pkt1.appendSlice(alloc, &pn1);
+    try pkt1.appendSlice(alloc, ct1);
 
     // Decrypt with next read keys (simulate promotion acceptable)
     const dec1 = try pkt.decodeShortProtected(A, pkt1.items, dcid.len, srv_r1);
@@ -77,11 +77,11 @@ test "key update: rx promotes on next-phase, retains prev window; tx toggles and
     defer A.free(ct0);
     _ = try crypto.protectInitial(.aes_128_gcm, &cli_w0.key, &cli_w0.iv, &cli_w0.hp, pn_num0, &hdr_first0, pn0[0..], dcid, payload0, ct0);
     var pkt0 = std.ArrayList(u8){};
-    defer pkt0.deinit(A);
-    try pkt0.append(hdr_first0);
-    try pkt0.appendSlice(dcid);
-    try pkt0.appendSlice(&pn0);
-    try pkt0.appendSlice(ct0);
+    defer pkt0.deinit(alloc);
+    try pkt0.append(alloc, hdr_first0);
+    try pkt0.appendSlice(alloc, dcid);
+    try pkt0.appendSlice(alloc, &pn0);
+    try pkt0.appendSlice(alloc, ct0);
     // Attempt to decrypt with previous read keys
     const dec0 = try pkt.decodeShortProtected(A, pkt0.items, dcid.len, srv_r0);
     defer A.free(dec0.payload);

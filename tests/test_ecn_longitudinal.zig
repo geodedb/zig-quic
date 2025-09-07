@@ -29,8 +29,8 @@ test "ECN longitudinal: multi-ACK across spaces with reordering and one loss" {
     const send_initial = struct {
         fn f(alloc: std.mem.Allocator, ep_: *endpoint.Endpoint, peer: @TypeOf(c.peer), dcid: []const u8, scid: []const u8, pn: u32, ecn_bits: u8, k: packet.InitialKeys) !void {
             var fb = std.ArrayList(u8){};
-            defer fb.deinit(A);
-            _ = (frame.Frame{ .ping = {} }).write(fb.writer()) catch {};
+            defer fb.deinit(alloc);
+            _ = (frame.Frame{ .ping = {} }).write(fb.writer(alloc)) catch {};
             const pktb = try packet.encodeInitialProtected(alloc, packet.QUIC_V1, dcid, scid, &[_]u8{}, pn, 4, fb.items, k);
             defer alloc.free(pktb);
             ep_.testInjectWithEcn(peer, pktb, ecn_bits);
@@ -69,8 +69,8 @@ test "ECN longitudinal: multi-ACK across spaces with reordering and one loss" {
     c.hs_rx_keys = .{ .key = z16, .iv = z12, .hp = z16 };
     c.hs_tx_keys = c.hs_rx_keys;
     var fb2 = std.ArrayList(u8){};
-    defer fb2.deinit(A);
-    _ = (frame.Frame{ .ping = {} }).write(fb2.writer()) catch {};
+    defer fb2.deinit(alloc);
+    _ = (frame.Frame{ .ping = {} }).write(fb2.writer(alloc)) catch {};
     const hs_pkt = try packet.encodeHandshakeProtected(
         A,
         packet.QUIC_V1,

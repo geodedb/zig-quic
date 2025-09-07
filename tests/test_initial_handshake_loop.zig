@@ -87,7 +87,7 @@ test "initial->handshake pipeline in-process" {
     // Build a server Handshake packet carrying a CRYPTO PING payload
     var hs_frames = std.ArrayList(u8){};
     defer hs_frames.deinit(alloc);
-    const w2 = hs_frames.writer();
+    const w2 = hs_frames.writer(alloc);
     _ = try (frame.Frame{ .ping = {} }).write(w2);
 
     const hs_bytes = try pkt.encodeHandshakeProtected(

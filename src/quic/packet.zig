@@ -357,7 +357,7 @@ pub fn encodeInitialProtected(
 
     // Prepare ciphertext buffer
     const out_cipher_idx = buf.items.len;
-    try buf.ensureTotalCapacity(alloc, alloc, out_cipher_idx + ct_len);
+    try buf.ensureTotalCapacity(alloc, out_cipher_idx + ct_len);
     // Important: append zeros to reserve and then fill in place
     try buf.appendNTimes(alloc, 0, ct_len);
 

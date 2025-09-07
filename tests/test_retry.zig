@@ -35,7 +35,7 @@ test "server_issues_retry_and_client_retries" {
     };
     var frames = std.ArrayList(u8){};
     defer frames.deinit(alloc);
-    _ = (frame.Frame{ .ping = {} }).write(frames.writer()) catch {};
+    _ = (frame.Frame{ .ping = {} }).write(frames.writer(alloc)) catch {};
     const pkt = try packet.encodeInitialProtected(
         alloc,
         packet.QUIC_V1,

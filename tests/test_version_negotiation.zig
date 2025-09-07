@@ -30,8 +30,8 @@ test "vn_decode_and_downgrade_protection" {
 test "vn_malformed_versions_length" {
     // Build a bogus VN with versions length not multiple of 4
     var buf = std.ArrayList(u8){};
-    defer buf.deinit(A);
-    const w = buf.writer();
+    defer buf.deinit(std.testing.allocator);
+    const w = buf.writer(std.testing.allocator);
     try w.writeByte(0x80);
     try w.writeAll(&[_]u8{ 0, 0, 0, 0 });
     try w.writeByte(2); // dcid len

@@ -28,9 +28,9 @@ test "multi-stream RX: independent FIN completion" {
 
     // Simulate two inbound streams (0 and 4). Push partial data + FIN for stream 0 only.
     var fb = std.ArrayList(u8){};
-    defer fb.deinit(A);
-    _ = (fr.Frame{ .stream = .{ .stream_id = 0, .offset = 0, .fin = true, .data = "hello" } }).write(fb.writer()) catch 0;
-    _ = (fr.Frame{ .stream = .{ .stream_id = 4, .offset = 0, .fin = false, .data = "abc" } }).write(fb.writer()) catch 0;
+    defer fb.deinit(alloc);
+    _ = (fr.Frame{ .stream = .{ .stream_id = 0, .offset = 0, .fin = true, .data = "hello" } }).write(fb.writer(alloc)) catch 0;
+    _ = (fr.Frame{ .stream = .{ .stream_id = 4, .offset = 0, .fin = false, .data = "abc" } }).write(fb.writer(alloc)) catch 0;
     try injectShort(A, &ep, &c, fb.items);
     // Stream 0 should mark fin; stream 4 should not.
     const s0 = c.streams_rx.getPtr(0).?;

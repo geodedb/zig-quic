@@ -14,7 +14,7 @@ test "ack multi-range encode/decode with ECN counts" {
             .ecn = .{ .ect0 = 10, .ect1 = 5, .ce = 1 },
         },
     };
-    const n = try a.write(fbs.writer());
+    const n = try a.write(fbs.writer(alloc));
     // First byte should be ACK_ECN (0x03)
     try std.testing.expect(buf[0] == @intFromEnum(frame.FrameType.ACK_ECN));
     const pr = try frame.parse(buf[0..n]);

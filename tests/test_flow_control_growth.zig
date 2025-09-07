@@ -44,8 +44,8 @@ test "flow control adaptive growth thresholds" {
     defer A.free(payload1);
     @memset(payload1, 'A');
     var fb1 = std.ArrayList(u8){};
-    defer fb1.deinit(A);
-    _ = (fr.Frame{ .stream = .{ .stream_id = 0, .offset = 0, .fin = false, .data = payload1 } }).write(fb1.writer()) catch 0;
+    defer fb1.deinit(alloc);
+    _ = (fr.Frame{ .stream = .{ .stream_id = 0, .offset = 0, .fin = false, .data = payload1 } }).write(fb1.writer(alloc)) catch 0;
     try inject(A, &ep, &c, fb1.items);
 
     // Expect one captured ACK containing MAX_STREAM_DATA (initial advertisement) + updated after bump? We only bumped after push.
@@ -87,8 +87,8 @@ test "flow control adaptive growth thresholds" {
     defer A.free(payload2);
     @memset(payload2, 'B');
     var fb2 = std.ArrayList(u8){};
-    defer fb2.deinit(A);
-    _ = (fr.Frame{ .stream = .{ .stream_id = 0, .offset = payload1.len, .fin = false, .data = payload2 } }).write(fb2.writer()) catch 0;
+    defer fb2.deinit(alloc);
+    _ = (fr.Frame{ .stream = .{ .stream_id = 0, .offset = payload1.len, .fin = false, .data = payload2 } }).write(fb2.writer(alloc)) catch 0;
     try inject(A, &ep, &c, fb2.items);
     try std.testing.expect(ep.captureLen() > 0);
     const cap2 = ep.capturePop().?;
