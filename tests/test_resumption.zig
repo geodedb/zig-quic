@@ -26,7 +26,7 @@ test "session resumption with PSK" {
     try server.ingestCrypto(ch_bytes);
     
     // Server sends ServerHello
-    server.queueMinimalServerHello();
+    try server.queueMinimalServerHello();
     const sh_bytes = try server.flushCrypto(alloc);
     defer alloc.free(sh_bytes);
     try client.ingestCrypto(sh_bytes);

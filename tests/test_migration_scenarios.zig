@@ -14,8 +14,8 @@ fn fake_peer(ip_last_octet: u8, port: u16) conn_mod.SockAddr {
 // Helper: encode a PATH_RESPONSE echoing the server's challenge for short header
 fn encode_path_response(a: std.mem.Allocator, c: *conn_mod.Connection) !?[]u8 {
     if (c.app_rx_keys == null) return null;
-    var fb = std.ArrayList(u8).init(a);
-    defer fb.deinit();
+    var fb = std.ArrayList(u8){};
+    defer fb.deinit(A);
     const w = fb.writer();
     _ = (frame.Frame{ .path_response = c.path_challenge_data }).write(w) catch {};
     return packet.encodeShortProtected(a, c.our_scid.bytes[0..c.our_scid.len], @as(u32, @truncate(c.pn_app_tx)), 2, fb.items, .{ .key = c.app_rx_keys.?.key, .iv = c.app_rx_keys.?.iv, .hp = c.app_rx_keys.?.hp }, c.tx_key_phase) catch null;

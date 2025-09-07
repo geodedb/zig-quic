@@ -23,8 +23,8 @@ test "handshake space: ECN CE triggers ACK_ECN in server Handshake ACK" {
     c.hs_tx_keys = c.hs_rx_keys;
 
     // Build a minimal incoming Handshake packet (PING) addressed to this connection (DCID = our_scid).
-    var frames = std.ArrayList(u8).init(A);
-    defer frames.deinit();
+    var frames = std.ArrayList(u8){};
+    defer frames.deinit(A);
     _ = (frame.Frame{ .ping = {} }).write(frames.writer()) catch {};
     const in_pkt = try packet.encodeHandshakeProtected(
         A,

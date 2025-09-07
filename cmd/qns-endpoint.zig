@@ -74,9 +74,9 @@ fn ensureLogFile() void {
 fn log(msg: []const u8) void {
     ensureLogFile();
     std.debug.print("[qns] {s}\n", .{msg});
-    // Write to stderr as well for Docker logs
-    const stderr = std.io.getStdErr().writer();
-    _ = stderr.print("[qns] {s}\n", .{msg}) catch {};
+    // Write to stderr is already done by debug.print
+    // const stderr = std.io.getStdErr().writer();
+    // _ = stderr.print("[qns] {s}\n", .{msg}) catch {};
     if (log_file) |f| {
         // ignore errors
         _ = f.writer().print("[qns] {s}\n", .{msg}) catch {};

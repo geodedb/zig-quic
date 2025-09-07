@@ -235,6 +235,7 @@ pub fn deriveFinishedVerifyData(traffic_secret: [H.digest_length]u8, transcript_
 /// key schedule. Real message parsing/encoding will be added iteratively.
 pub const Engine = struct {
     role: Role,
+    allocator: std.mem.Allocator,
     transcript: Transcript = Transcript.init(),
     /// Deterministic ECDHE secret for tests or derived via X25519 in future slices.
     ecdhe_secret: ?[]const u8 = null,
@@ -282,25 +283,30 @@ pub const Engine = struct {
 
     /// Initialize a TLS 1.3 Engine with allocator and role.
     pub fn init(alloc: std.mem.Allocator, role: Role) Engine {
-        return .{ .role = role, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .outbox = std.ArrayList(u8).init(alloc), .ch_sent = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .ee_sent = false, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .real_mode = false, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null, .master_secret = null, .tickets = .{} };
+        return .{ .role = role, .allocator = alloc, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .outbox = std.ArrayList(u8){}, .ch_sent = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .ee_sent = false, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .real_mode = false, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null, .master_secret = null, .tickets = .{} };
     }
     /// Release any owned resources and buffers.
     pub fn deinit(self: *Engine) void {
-        if (self.leaf_spki) |spki| self.outbox.allocator.free(spki);
-        if (self.local_tp) |b| self.outbox.allocator.free(b);
-        if (self.peer_tp) |b| self.outbox.allocator.free(b);
-        if (self.alpn) |a| self.outbox.allocator.free(a);
-        if (self.server_name) |s| self.outbox.allocator.free(s);
-        if (self.server_cert_der) |c| self.outbox.allocator.free(c);
-        if (self.server_priv_key) |k| self.outbox.allocator.free(k);
-        self.tickets.deinit(self.outbox.allocator);
-        self.outbox.deinit();
+        if (self.leaf_spki) |spki| self.allocator.free(spki);
+        if (self.local_tp) |b| self.allocator.free(b);
+        if (self.peer_tp) |b| self.allocator.free(b);
+        if (self.alpn) |a| self.allocator.free(a);
+        if (self.server_name) |s| self.allocator.free(s);
+        if (self.server_cert_der) |c| self.allocator.free(c);
+        if (self.server_priv_key) |k| self.allocator.free(k);
+        self.tickets.deinit(self.allocator);
+        self.outbox.deinit(self.allocator);
     }
 
     /// Queue a minimal NewSessionTicket (placeholder). Not yet used for PSK resumption.
-    pub fn queueNewSessionTicket(self: *Engine, lifetime: u32, ticket: []const u8) !void {
-        var body = std.ArrayList(u8).init(self.outbox.allocator);
-        defer body.deinit();
+    pub fn queueNewSessionTicket(self: *Engine) !void {
+        try self.queueNewSessionTicketWithParams(3600, "test_ticket");
+    }
+    
+    /// Queue a NewSessionTicket with specific parameters.
+    pub fn queueNewSessionTicketWithParams(self: *Engine, lifetime: u32, ticket: []const u8) !void {
+        var body = std.ArrayList(u8){};
+        defer body.deinit(self.allocator);
         // struct {
         //   uint32 ticket_lifetime;
         //   uint32 ticket_age_add;
@@ -311,24 +317,38 @@ pub const Engine = struct {
         var be4: [4]u8 = undefined; // big-endian scratch
         var be2: [2]u8 = undefined; // big-endian scratch
         std.mem.writeInt(u32, &be4, lifetime, .big);
-        try body.appendSlice(&be4);
+        try body.appendSlice(self.allocator, &be4);
         std.mem.writeInt(u32, &be4, 0, .big); // age_add placeholder
-        try body.appendSlice(&be4);
-        try body.append(0); // nonce length 0
+        try body.appendSlice(self.allocator, &be4);
+        try body.append(self.allocator, 0); // nonce length 0
         std.mem.writeInt(u16, &be2, @intCast(ticket.len), .big);
-        try body.appendSlice(&be2);
-        try body.appendSlice(ticket);
+        try body.appendSlice(self.allocator, &be2);
+        try body.appendSlice(self.allocator, ticket);
         std.mem.writeInt(u16, &be2, 0, .big); // extensions length 0
-        try body.appendSlice(&be2);
-        const msg = try encodeHandshake(self.outbox.allocator, .new_session_ticket, body.items);
-        defer self.outbox.allocator.free(msg);
+        try body.appendSlice(self.allocator, &be2);
+        const msg = try encodeHandshake(self.allocator, .new_session_ticket, body.items);
+        defer self.allocator.free(msg);
         self.transcript.update(msg);
-        try self.outbox.appendSlice(msg);
+        try self.outbox.appendSlice(self.allocator, msg);
     }
 
     /// Access first cached ticket (if any) for simple resumption offering.
     pub fn peekTicket(self: *Engine) ?TicketEntryView {
         return self.tickets.peek();
+    }
+
+    /// Flush and return the outbox contents, transferring ownership to caller.
+    pub fn flushCrypto(self: *Engine, alloc: std.mem.Allocator) ![]u8 {
+        const result = try alloc.alloc(u8, self.outbox.items.len);
+        @memcpy(result, self.outbox.items);
+        self.outbox.clearRetainingCapacity();
+        return result;
+    }
+
+    /// Ingest CRYPTO data from peer (placeholder for now).
+    pub fn ingestCrypto(self: *Engine, data: []const u8) !void {
+        // For now, just update the transcript
+        self.transcript.update(data);
     }
 
     /// Activate real handshake mode (experimental). Currently only affects ClientHello generation.
@@ -458,16 +478,16 @@ pub const Engine = struct {
                                                     if (2 + list_len <= edata.len and list_len > 0) {
                                                         const name_len = edata[2];
                                                         if (3 + name_len <= edata.len and name_len > 0) {
-                                                            if (self.alpn) |old| self.outbox.allocator.free(old);
-                                                            self.alpn = self.outbox.allocator.dupe(u8, edata[3 .. 3 + name_len]) catch null;
+                                                            if (self.alpn) |old| self.allocator.free(old);
+                                                            self.alpn = self.allocator.dupe(u8, edata[3 .. 3 + name_len]) catch null;
                                                         }
                                                     }
                                                 }
                                             }
                                         },
                                         0x0039 => { // QUIC TP
-                                            if (self.peer_tp) |old| self.outbox.allocator.free(old);
-                                            self.peer_tp = self.outbox.allocator.dupe(u8, edata) catch null;
+                                            if (self.peer_tp) |old| self.allocator.free(old);
+                                            self.peer_tp = self.allocator.dupe(u8, edata) catch null;
                                         },
                                         else => {},
                                     }
@@ -481,15 +501,15 @@ pub const Engine = struct {
                             const n: usize = p.body[i];
                             i += 1;
                             if (i + n <= p.body.len) {
-                                if (self.alpn) |old| self.outbox.allocator.free(old);
-                                self.alpn = self.outbox.allocator.dupe(u8, p.body[i .. i + n]) catch null;
+                                if (self.alpn) |old| self.allocator.free(old);
+                                self.alpn = self.allocator.dupe(u8, p.body[i .. i + n]) catch null;
                                 i += n;
                             }
                         }
                         if (i + 2 <= p.body.len and p.body[i] == 'T' and p.body[i + 1] == 'P') {
                             const tp_bytes = p.body[i + 2 ..];
-                            if (self.peer_tp) |old| self.outbox.allocator.free(old);
-                            self.peer_tp = self.outbox.allocator.dupe(u8, tp_bytes) catch null;
+                            if (self.peer_tp) |old| self.allocator.free(old);
+                            self.peer_tp = self.allocator.dupe(u8, tp_bytes) catch null;
                         }
                     }
                 }
@@ -498,17 +518,17 @@ pub const Engine = struct {
                     if (self.allow_insecure) {
                         self.peer_cert_ok = true;
                     } else {
-                        const cert_val = x509.parseCert(self.outbox.allocator, p.body) catch null;
+                        const cert_val = x509.parseCert(self.allocator, p.body) catch null;
                         if (cert_val) |c| {
                             self.peer_cert_ok = true;
-                            if (self.leaf_spki) |old| self.outbox.allocator.free(old);
-                            self.leaf_spki = self.outbox.allocator.dupe(u8, c.spki) catch null;
+                            if (self.leaf_spki) |old| self.allocator.free(old);
+                            self.leaf_spki = self.allocator.dupe(u8, c.spki) catch null;
                             x509.checkValidity(std.time.timestamp(), &c) catch {
                                 self.peer_cert_ok = false;
                             };
                             if (self.peer_cert_ok) {
                                 if (self.server_name) |sni| {
-                                    x509.validateChain(self.outbox.allocator, &[_][]const u8{p.body}, std.time.timestamp(), sni, self.allow_insecure) catch {
+                                    x509.validateChain(self.allocator, &[_][]const u8{p.body}, std.time.timestamp(), sni, self.allow_insecure) catch {
                                         self.peer_cert_ok = false;
                                     };
                                 }
@@ -611,7 +631,7 @@ pub const Engine = struct {
                             var empty_hash: [H.digest_length]u8 = .{0} ** H.digest_length;
                             // For now use zero hash as placeholder (transcript hash of empty string)
                             ks.expandLabel(ms, "res master", &empty_hash, &resumption_secret) catch continue;
-                            self.tickets.add(self.outbox.allocator, ticket_bytes, resumption_secret, lifetime) catch {};
+                            self.tickets.add(self.allocator, ticket_bytes, resumption_secret, lifetime) catch {};
                             std.debug.print("TLS: Stored session ticket (len={}, lifetime={})\n", .{ ticket_bytes.len, lifetime });
                         } else {
                             std.debug.print("TLS: Received ticket before master_secret ready; ignoring\n", .{});
@@ -631,7 +651,7 @@ pub const Engine = struct {
 
     /// Queue outbound CRYPTO bytes (e.g., ClientHello)
     pub fn queueCrypto(self: *Engine, data: []const u8) !void {
-        try self.outbox.appendSlice(data);
+        try self.outbox.appendSlice(self.allocator, data);
         self.transcript.update(data);
         std.debug.print("TLS: Added {} bytes to transcript (queue): ", .{data.len});
         for (data[0..@min(8, data.len)]) |b| std.debug.print("{X:0>2} ", .{b});
@@ -649,30 +669,30 @@ pub const Engine = struct {
     /// Attach local Transport Parameters to be sent in next handshake message.
     /// The Engine will prefix with a simple marker "TP" and include bytes as-is.
     pub fn setLocalTransportParameters(self: *Engine, tp_encoded: []const u8) !void {
-        if (self.local_tp) |old| self.outbox.allocator.free(old);
-        self.local_tp = try self.outbox.allocator.dupe(u8, tp_encoded);
+        if (self.local_tp) |old| self.allocator.free(old);
+        self.local_tp = try self.allocator.dupe(u8, tp_encoded);
     }
 
     /// Set the expected server name (SNI) for certificate validation on client.
     pub fn setServerName(self: *Engine, name: []const u8) !void {
-        if (self.server_name) |old| self.outbox.allocator.free(old);
-        self.server_name = try self.outbox.allocator.dupe(u8, name);
+        if (self.server_name) |old| self.allocator.free(old);
+        self.server_name = try self.allocator.dupe(u8, name);
     }
 
     /// Build and queue a minimal ClientHello handshake envelope with optional TP.
     pub fn queueMinimalClientHello(self: *Engine) !void {
         if (self.real_mode) return self.queueRealClientHello();
-        var body = std.ArrayList(u8).init(self.outbox.allocator);
-        defer body.deinit();
+        var body = std.ArrayList(u8){};
+        defer body.deinit(self.allocator);
         // Base CH body
-        try body.appendSlice("CHLO");
+        try body.appendSlice(self.allocator, "CHLO");
         // Optionally append TP marker and bytes
         if (self.local_tp) |tp| {
-            try body.appendSlice("TP");
-            try body.appendSlice(tp);
+            try body.appendSlice(self.allocator, "TP");
+            try body.appendSlice(self.allocator, tp);
         }
-        const tmp = try encodeHandshake(self.outbox.allocator, .client_hello, body.items);
-        defer self.outbox.allocator.free(tmp);
+        const tmp = try encodeHandshake(self.allocator, .client_hello, body.items);
+        defer self.allocator.free(tmp);
         try self.queueCrypto(tmp);
     }
 
@@ -688,61 +708,61 @@ pub const Engine = struct {
         self.ensureKeypair();
         const pubkey = self.my_pub orelse return error.Internal;
         // Buffers
-        var body = std.ArrayList(u8).init(self.outbox.allocator);
-        defer body.deinit();
+        var body = std.ArrayList(u8){};
+        defer body.deinit(self.allocator);
         // legacy_version 0x0303
-        try body.appendSlice(&.{ 0x03, 0x03 });
+        try body.appendSlice(self.allocator, &.{ 0x03, 0x03 });
         // random 32 bytes
         var rnd: [32]u8 = undefined;
         std.crypto.random.bytes(&rnd);
-        try body.appendSlice(&rnd);
+        try body.appendSlice(self.allocator, &rnd);
         // session id (empty vector length 0)
-        try body.append(0); // length
+        try body.append(self.allocator, 0); // length
         // cipher_suites vector (length 2, then suite 0x1301)
-        try body.appendSlice(&.{ 0x00, 0x02, 0x13, 0x01 });
+        try body.appendSlice(self.allocator, &.{ 0x00, 0x02, 0x13, 0x01 });
         // legacy_compression_methods (length=1 then 0)
-        try body.appendSlice(&.{ 0x01, 0x00 });
+        try body.appendSlice(self.allocator, &.{ 0x01, 0x00 });
         // Build extensions into temp buffer
-        var ext_buf = std.ArrayList(u8).init(self.outbox.allocator);
-        defer ext_buf.deinit();
+        var ext_buf = std.ArrayList(u8){};
+        defer ext_buf.deinit(self.allocator);
         // supported_versions (43 / 0x002b)
-        try ext_buf.appendSlice(&.{ 0x00, 0x2b, 0x00, 0x03, 0x02, 0x03, 0x04 }); // len=3(0x0003), list length=2, version 0x0304
+        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x2b, 0x00, 0x03, 0x02, 0x03, 0x04 }); // len=3(0x0003), list length=2, version 0x0304
         // supported_groups (10 / 0x000a) -> length 2 list containing x25519 (0x001d)
-        try ext_buf.appendSlice(&.{ 0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x1d });
+        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x1d });
         // signature_algorithms (13 / 0x000d) list length 6 (3 algorithms)
-        try ext_buf.appendSlice(&.{ 0x00, 0x0d, 0x00, 0x08, 0x00, 0x06, 0x04, 0x03, 0x08, 0x04, 0x08, 0x07 });
+        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x0d, 0x00, 0x08, 0x00, 0x06, 0x04, 0x03, 0x08, 0x04, 0x08, 0x07 });
         // key_share (51 / 0x0033) group x25519(0x001d) key length 32
-        try ext_buf.appendSlice(&.{ 0x00, 0x33 });
+        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x33 });
         const key_share_len: u16 = 2 + 2 + 32; // group(2)+key_len(2)+key(32)
         const total_key_share_len: u16 = @intCast(key_share_len + 2); // plus vector length field (u16)
-        try ext_buf.appendSlice(&.{ @intCast(total_key_share_len >> 8), @intCast(total_key_share_len & 0xff) });
+        try ext_buf.appendSlice(self.allocator, &.{ @intCast(total_key_share_len >> 8), @intCast(total_key_share_len & 0xff) });
         // inner vector length
-        try ext_buf.appendSlice(&.{ @intCast(key_share_len >> 8), @intCast(key_share_len & 0xff) });
+        try ext_buf.appendSlice(self.allocator, &.{ @intCast(key_share_len >> 8), @intCast(key_share_len & 0xff) });
         // group
-        try ext_buf.appendSlice(&.{ 0x00, 0x1d });
+        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x1d });
         // key length (32)
-        try ext_buf.appendSlice(&.{ 0x00, 32 });
-        try ext_buf.appendSlice(pubkey[0..]);
+        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 32 });
+        try ext_buf.appendSlice(self.allocator, pubkey[0..]);
         // ALPN if configured (reuse self.alpn if already set via test harness) - ALPN ext type 16
         if (self.alpn) |alpn_vec| {
             // Extension type 0x0010
             // Format: type(2)|len(2)|list_len(2)|proto_len(1)|proto
             const list_len: usize = 1 + alpn_vec.len; // one entry
             const ext_len: usize = 2 + list_len; // list length field + list
-            try ext_buf.appendSlice(&.{ 0x00, 0x10, @intCast(ext_len >> 8), @intCast(ext_len & 0xff), @intCast(list_len >> 8), @intCast(list_len & 0xff), @intCast(alpn_vec.len) });
-            try ext_buf.appendSlice(alpn_vec);
+            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x10, @intCast(ext_len >> 8), @intCast(ext_len & 0xff), @intCast(list_len >> 8), @intCast(list_len & 0xff), @intCast(alpn_vec.len) });
+            try ext_buf.appendSlice(self.allocator, alpn_vec);
         }
         // QUIC Transport Parameters extension (0x0039) if local_tp present
         if (self.local_tp) |tp| {
             const tp_len: usize = tp.len;
-            try ext_buf.appendSlice(&.{ 0x00, 0x39, @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
-            try ext_buf.appendSlice(tp);
+            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x39, @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
+            try ext_buf.appendSlice(self.allocator, tp);
         }
         // Pre-Shared Key (PSK) offer if we have cached tickets. Minimal implementation:
         // - Offer single identity (first ticket). Binder is zero-filled placeholder (not validated yet).
         if (self.peekTicket()) |tkt| {
             // psk_key_exchange_modes (ext 0x002d) offering mode 0 (psk_ke) only
-            try ext_buf.appendSlice(&.{ 0x00, 0x2d, 0x00, 0x02, 0x01, 0x00 });
+            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x2d, 0x00, 0x02, 0x01, 0x00 });
             // pre_shared_key (0x0029)
             const id_len: u16 = @intCast(tkt.identity.len);
             // identities vector: length(2) + identity + obfuscated_ticket_age(4)
@@ -750,30 +770,30 @@ pub const Engine = struct {
             const identities_vec_len: u16 = @intCast(one_identity_len);
             const binders_len: u16 = @intCast(1 + H.digest_length); // vector length(1) + binder (digest length)
             const total_psk_len: u16 = @intCast(2 + identities_vec_len + 2 + binders_len);
-            try ext_buf.appendSlice(&.{ 0x00, 0x29, @intCast(total_psk_len >> 8), @intCast(total_psk_len & 0xff) });
+            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x29, @intCast(total_psk_len >> 8), @intCast(total_psk_len & 0xff) });
             // identities vector length
-            try ext_buf.appendSlice(&.{ @intCast(identities_vec_len >> 8), @intCast(identities_vec_len & 0xff) });
+            try ext_buf.appendSlice(self.allocator, &.{ @intCast(identities_vec_len >> 8), @intCast(identities_vec_len & 0xff) });
             // identity length
-            try ext_buf.appendSlice(&.{ @intCast(id_len >> 8), @intCast(id_len & 0xff) });
-            try ext_buf.appendSlice(tkt.identity);
+            try ext_buf.appendSlice(self.allocator, &.{ @intCast(id_len >> 8), @intCast(id_len & 0xff) });
+            try ext_buf.appendSlice(self.allocator, tkt.identity);
             // obfuscated_ticket_age (placeholder 0)
-            try ext_buf.appendSlice(&.{ 0, 0, 0, 0 });
+            try ext_buf.appendSlice(self.allocator, &.{ 0, 0, 0, 0 });
             // binders vector length
             const binders_vec_len: u16 = @intCast(1 + H.digest_length);
-            try ext_buf.appendSlice(&.{ @intCast(binders_vec_len >> 8), @intCast(binders_vec_len & 0xff) });
+            try ext_buf.appendSlice(self.allocator, &.{ @intCast(binders_vec_len >> 8), @intCast(binders_vec_len & 0xff) });
             // single binder length (H.digest_length)
-            try ext_buf.append(@as(u8, @intCast(H.digest_length)));
+            try ext_buf.append(self.allocator, @as(u8, @intCast(H.digest_length)));
             // zero-filled binder placeholder
             var zeros: [H.digest_length]u8 = .{0} ** H.digest_length;
-            try ext_buf.appendSlice(&zeros);
+            try ext_buf.appendSlice(self.allocator, &zeros);
         }
         // Now write extensions length
         const exts = ext_buf.items;
         const exts_len: u16 = @intCast(exts.len);
-        try body.appendSlice(&.{ @intCast(exts_len >> 8), @intCast(exts_len & 0xff) });
-        try body.appendSlice(exts);
-        const msg = try encodeHandshake(self.outbox.allocator, .client_hello, body.items);
-        defer self.outbox.allocator.free(msg);
+        try body.appendSlice(self.allocator, &.{ @intCast(exts_len >> 8), @intCast(exts_len & 0xff) });
+        try body.appendSlice(self.allocator, exts);
+        const msg = try encodeHandshake(self.allocator, .client_hello, body.items);
+        defer self.allocator.free(msg);
         try self.queueCrypto(msg);
     }
 
@@ -783,15 +803,15 @@ pub const Engine = struct {
             try self.queueRealServerHello();
             return;
         }
-        var body = std.ArrayList(u8).init(self.outbox.allocator);
-        defer body.deinit();
-        try body.appendSlice("SHLO");
+        var body = std.ArrayList(u8){};
+        defer body.deinit(self.allocator);
+        try body.appendSlice(self.allocator, "SHLO");
         if (self.local_tp) |tp| {
-            try body.appendSlice("TP");
-            try body.appendSlice(tp);
+            try body.appendSlice(self.allocator, "TP");
+            try body.appendSlice(self.allocator, tp);
         }
-        const msg = try encodeHandshake(self.outbox.allocator, .server_hello, body.items);
-        defer self.outbox.allocator.free(msg);
+        const msg = try encodeHandshake(self.allocator, .server_hello, body.items);
+        defer self.allocator.free(msg);
         try self.queueCrypto(msg);
     }
 
@@ -809,8 +829,8 @@ pub const Engine = struct {
         for (th[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
         std.debug.print("...\n", .{});
         const verify = deriveFinishedVerifyData(traffic_secret, th);
-        const msg = try encodeHandshake(self.outbox.allocator, .finished, verify[0..]);
-        defer self.outbox.allocator.free(msg);
+        const msg = try encodeHandshake(self.allocator, .finished, verify[0..]);
+        defer self.allocator.free(msg);
         try self.queueCrypto(msg);
         self.finished_sent = true;
     }
@@ -838,55 +858,55 @@ pub const Engine = struct {
     pub fn queueEncryptedExtensions(self: *Engine, alpn: []const u8, tp_bytes: []const u8) !void {
         if (self.real_mode) {
             // Encode standard TLS EncryptedExtensions extension vector
-            var ext_list = std.ArrayList(u8).init(self.outbox.allocator);
-            defer ext_list.deinit();
+            var ext_list = std.ArrayList(u8){};
+            defer ext_list.deinit(self.allocator);
             if (alpn.len > 0) {
                 // ALPN extension (0x0010)
                 const proto_list_len: u16 = @intCast(1 + alpn.len); // one entry
                 const ext_data_len: u16 = @intCast(2 + proto_list_len);
-                try ext_list.appendSlice(&.{ 0x00, 0x10, @intCast(ext_data_len >> 8), @intCast(ext_data_len & 0xff), @intCast(proto_list_len >> 8), @intCast(proto_list_len & 0xff), @intCast(alpn.len) });
-                try ext_list.appendSlice(alpn);
+                try ext_list.appendSlice(self.allocator, &.{ 0x00, 0x10, @intCast(ext_data_len >> 8), @intCast(ext_data_len & 0xff), @intCast(proto_list_len >> 8), @intCast(proto_list_len & 0xff), @intCast(alpn.len) });
+                try ext_list.appendSlice(self.allocator, alpn);
             }
             if (tp_bytes.len > 0) {
                 const tp_len: u16 = @intCast(tp_bytes.len);
-                try ext_list.appendSlice(&.{ 0x00, 0x39, @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
-                try ext_list.appendSlice(tp_bytes);
+                try ext_list.appendSlice(self.allocator, &.{ 0x00, 0x39, @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
+                try ext_list.appendSlice(self.allocator, tp_bytes);
             }
             const all_ext = ext_list.items;
             const total_len: u16 = @intCast(all_ext.len);
-            var body = std.ArrayList(u8).init(self.outbox.allocator);
-            defer body.deinit();
-            try body.appendSlice(&.{ @intCast(total_len >> 8), @intCast(total_len & 0xff) });
-            try body.appendSlice(all_ext);
-            const msg = try encodeHandshake(self.outbox.allocator, .encrypted_extensions, body.items);
-            defer self.outbox.allocator.free(msg);
+            var body = std.ArrayList(u8){};
+            defer body.deinit(self.allocator);
+            try body.appendSlice(self.allocator, &.{ @intCast(total_len >> 8), @intCast(total_len & 0xff) });
+            try body.appendSlice(self.allocator, all_ext);
+            const msg = try encodeHandshake(self.allocator, .encrypted_extensions, body.items);
+            defer self.allocator.free(msg);
             try self.queueCrypto(msg);
             self.ee_sent = true; // mark sent (server)
             self.maybeAutoProgress();
             return;
         }
         // Legacy minimal placeholder encoding
-        var body = std.ArrayList(u8).init(self.outbox.allocator);
-        defer body.deinit();
+        var body = std.ArrayList(u8){};
+        defer body.deinit(self.allocator);
         if (alpn.len > 0) {
-            try body.appendSlice("ALPN");
-            try body.append(@as(u8, @intCast(alpn.len)));
-            try body.appendSlice(alpn);
+            try body.appendSlice(self.allocator, "ALPN");
+            try body.append(self.allocator, @as(u8, @intCast(alpn.len)));
+            try body.appendSlice(self.allocator, alpn);
         }
         if (tp_bytes.len > 0) {
-            try body.appendSlice("TP");
-            try body.appendSlice(tp_bytes);
+            try body.appendSlice(self.allocator, "TP");
+            try body.appendSlice(self.allocator, tp_bytes);
         }
-        const msg = try encodeHandshake(self.outbox.allocator, .encrypted_extensions, body.items);
-        defer self.outbox.allocator.free(msg);
+        const msg = try encodeHandshake(self.allocator, .encrypted_extensions, body.items);
+        defer self.allocator.free(msg);
         try self.queueCrypto(msg);
     }
 
     /// Queue a raw Certificate handshake message body (DER) for interop; in secure mode,
     /// the peer will validate this using x509 helpers.
     pub fn queueCertificate(self: *Engine, cert_der: []const u8) !void {
-        const msg = try encodeHandshake(self.outbox.allocator, .certificate, cert_der);
-        defer self.outbox.allocator.free(msg);
+        const msg = try encodeHandshake(self.allocator, .certificate, cert_der);
+        defer self.allocator.free(msg);
         try self.queueCrypto(msg);
     }
 
@@ -930,8 +950,8 @@ pub const Engine = struct {
         self.ensureKeypair();
         // For client, we'll compute shared secret when we receive ServerHello
         const pubkey = self.my_pub orelse return error.Internal;
-        const msg = try encodeMinimalClientHello(self.outbox.allocator, pubkey);
-        defer self.outbox.allocator.free(msg);
+        const msg = try encodeMinimalClientHello(self.allocator, pubkey);
+        defer self.allocator.free(msg);
         try self.queueCrypto(msg);
         return msg.len;
     }
@@ -946,8 +966,8 @@ pub const Engine = struct {
         // Now that we have our keypair, try to compute shared secret if we have peer's public key
         if (self.role == .Server) self.tryComputeShared();
         const pubkey = self.my_pub orelse return error.Internal;
-        const msg = try encodeMinimalServerHello(self.outbox.allocator, pubkey);
-        defer self.outbox.allocator.free(msg);
+        const msg = try encodeMinimalServerHello(self.allocator, pubkey);
+        defer self.allocator.free(msg);
         try self.queueCrypto(msg);
         return msg.len;
     }
@@ -991,32 +1011,32 @@ pub const Engine = struct {
     pub fn queueRealServerHello(self: *Engine) !void {
         self.ensureKeypair();
         const pubkey = self.my_pub orelse return error.Internal;
-        var body = std.ArrayList(u8).init(self.outbox.allocator);
-        defer body.deinit();
-        try body.appendSlice(&.{ 0x03, 0x03 }); // legacy_version
+        var body = std.ArrayList(u8){};
+        defer body.deinit(self.allocator);
+        try body.appendSlice(self.allocator, &.{ 0x03, 0x03 }); // legacy_version
         var rnd: [32]u8 = undefined;
         std.crypto.random.bytes(&rnd);
-        try body.appendSlice(&rnd);
-        try body.append(0); // session id length
-        try body.appendSlice(&.{ 0x13, 0x01 }); // cipher suite
-        try body.append(0); // compression method
-        var ext = std.ArrayList(u8).init(self.outbox.allocator);
-        defer ext.deinit();
+        try body.appendSlice(self.allocator, &rnd);
+        try body.append(self.allocator, 0); // session id length
+        try body.appendSlice(self.allocator, &.{ 0x13, 0x01 }); // cipher suite
+        try body.append(self.allocator, 0); // compression method
+        var ext = std.ArrayList(u8){};
+        defer ext.deinit(self.allocator);
         // supported_versions
-        try ext.appendSlice(&.{ 0x00, 0x2b, 0x00, 0x02, 0x03, 0x04 });
+        try ext.appendSlice(self.allocator, &.{ 0x00, 0x2b, 0x00, 0x02, 0x03, 0x04 });
         // key_share
-        try ext.appendSlice(&.{ 0x00, 0x33 });
+        try ext.appendSlice(self.allocator, &.{ 0x00, 0x33 });
         const ks_len: u16 = 2 + 2 + 32; // group + key_len + key
-        try ext.appendSlice(&.{ @intCast(ks_len >> 8), @intCast(ks_len & 0xff) });
-        try ext.appendSlice(&.{ 0x00, 0x1d }); // group x25519
-        try ext.appendSlice(&.{ 0x00, 32 });
-        try ext.appendSlice(pubkey[0..]);
+        try ext.appendSlice(self.allocator, &.{ @intCast(ks_len >> 8), @intCast(ks_len & 0xff) });
+        try ext.appendSlice(self.allocator, &.{ 0x00, 0x1d }); // group x25519
+        try ext.appendSlice(self.allocator, &.{ 0x00, 32 });
+        try ext.appendSlice(self.allocator, pubkey[0..]);
         const exts_bytes = ext.items;
         const exts_len: u16 = @intCast(exts_bytes.len);
-        try body.appendSlice(&.{ @intCast(exts_len >> 8), @intCast(exts_len & 0xff) });
-        try body.appendSlice(exts_bytes);
-        const msg = try encodeHandshake(self.outbox.allocator, .server_hello, body.items);
-        defer self.outbox.allocator.free(msg);
+        try body.appendSlice(self.allocator, &.{ @intCast(exts_len >> 8), @intCast(exts_len & 0xff) });
+        try body.appendSlice(self.allocator, exts_bytes);
+        const msg = try encodeHandshake(self.allocator, .server_hello, body.items);
+        defer self.allocator.free(msg);
         try self.queueCrypto(msg);
         self.tryComputeShared();
         // Derive handshake traffic secrets immediately after SH (CH already in transcript)
@@ -1061,24 +1081,24 @@ pub const Engine = struct {
                     var snap = self.transcript; // includes cert now
                     const th = snap.finalize();
                     const alg = self.server_sig_alg orelse .ecdsa_secp256r1_sha256;
-                    const sig_bytes = sig.signCertificateVerify(alg, self.server_priv_key.?, "TLS 1.3, server CertificateVerify", &th, self.outbox.allocator) catch null;
+                    const sig_bytes = sig.signCertificateVerify(alg, self.server_priv_key.?, "TLS 1.3, server CertificateVerify", &th, self.allocator) catch null;
                     if (sig_bytes) |sb| {
                         // toy encoding: alg id byte + DER signature
-                        var body = std.ArrayList(u8).init(self.outbox.allocator);
-                        defer body.deinit();
+                        var body = std.ArrayList(u8){};
+                        defer body.deinit(self.allocator);
                         const alg_id: u8 = switch (alg) {
                             .ecdsa_secp256r1_sha256 => 0x40,
                             .ecdsa_secp384r1_sha384 => 0x41,
                             .rsa_pss_sha256 => 0x50,
                         };
-                        body.append(alg_id) catch {};
-                        body.appendSlice(sb) catch {};
-                        const msg = encodeHandshake(self.outbox.allocator, .certificate_verify, body.items) catch null;
+                        body.append(self.allocator, alg_id) catch {};
+                        body.appendSlice(self.allocator, sb) catch {};
+                        const msg = encodeHandshake(self.allocator, .certificate_verify, body.items) catch null;
                         if (msg) |m| {
                             self.queueCrypto(m) catch {};
-                            self.outbox.allocator.free(m);
+                            self.allocator.free(m);
                         }
-                        self.outbox.allocator.free(sb);
+                        self.allocator.free(sb);
                     }
                 }
                 // After (optionally) sending certificate flight, send Finished
@@ -1100,10 +1120,10 @@ pub const Engine = struct {
     /// Install server certificate and private key (ECDSA P-256 for now). Stored for future emission.
     pub fn setServerCertificate(self: *Engine, cert_der: []const u8, priv_key: []const u8, alg: sig.SigAlg) !void {
         if (self.role != .Server) return error.WrongRole;
-        if (self.server_cert_der) |c| self.outbox.allocator.free(c);
-        if (self.server_priv_key) |k| self.outbox.allocator.free(k);
-        self.server_cert_der = try self.outbox.allocator.dupe(u8, cert_der);
-        self.server_priv_key = try self.outbox.allocator.dupe(u8, priv_key);
+        if (self.server_cert_der) |c| self.allocator.free(c);
+        if (self.server_priv_key) |k| self.allocator.free(k);
+        self.server_cert_der = try self.allocator.dupe(u8, cert_der);
+        self.server_priv_key = try self.allocator.dupe(u8, priv_key);
         self.server_sig_alg = alg;
     }
 
@@ -1129,23 +1149,23 @@ pub const Engine = struct {
             var snap = self.transcript;
             const th = snap.finalize();
             const alg = self.server_sig_alg orelse .ecdsa_secp256r1_sha256;
-            const sig_bytes = sig.signCertificateVerify(alg, self.server_priv_key.?, "TLS 1.3, server CertificateVerify", &th, self.outbox.allocator) catch null;
+            const sig_bytes = sig.signCertificateVerify(alg, self.server_priv_key.?, "TLS 1.3, server CertificateVerify", &th, self.allocator) catch null;
             if (sig_bytes) |sb| {
-                var body = std.ArrayList(u8).init(self.outbox.allocator);
-                defer body.deinit();
+                var body = std.ArrayList(u8){};
+                defer body.deinit(self.allocator);
                 const alg_id: u8 = switch (alg) {
                     .ecdsa_secp256r1_sha256 => 0x40,
                     .ecdsa_secp384r1_sha384 => 0x41,
                     .rsa_pss_sha256 => 0x50,
                 };
-                body.append(alg_id) catch {};
-                body.appendSlice(sb) catch {};
-                const msg = encodeHandshake(self.outbox.allocator, .certificate_verify, body.items) catch null;
+                body.append(self.allocator, alg_id) catch {};
+                body.appendSlice(self.allocator, sb) catch {};
+                const msg = encodeHandshake(self.allocator, .certificate_verify, body.items) catch null;
                 if (msg) |m| {
                     self.queueCrypto(m) catch {};
-                    self.outbox.allocator.free(m);
+                    self.allocator.free(m);
                 }
-                self.outbox.allocator.free(sb);
+                self.allocator.free(sb);
             }
         } else if (self.allow_insecure and !self.finished_sent) {
             // In insecure mode, no real certificate; queue an empty Certificate message

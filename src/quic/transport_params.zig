@@ -139,9 +139,9 @@ pub const TransportParams = struct {
 
     /// Encode to the TLS transport parameters extension format.
     pub fn encode(self: *const TransportParams, alloc: std.mem.Allocator) ![]u8 {
-        var out = std.ArrayList(u8).init(alloc);
-        errdefer out.deinit();
-        const w = out.writer();
+        var out = std.ArrayList(u8){};
+        errdefer out.deinit(alloc);
+        const w = out.writer(alloc);
         var tmp: [16]u8 = undefined;
 
         // Helper to write a TLV with raw value bytes
@@ -221,7 +221,7 @@ pub const TransportParams = struct {
         }
         if (self.preferred_address_raw) |v| try writeTlv.raw(.preferred_address, v, w);
 
-        return out.toOwnedSlice();
+        return out.toOwnedSlice(alloc);
     }
 
     /// Decode from the TLS transport parameters extension format.

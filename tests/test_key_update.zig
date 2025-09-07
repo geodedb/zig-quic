@@ -48,8 +48,8 @@ test "key update: derive next secret and decrypt with toggled key phase" {
     const pn_len: u3 = 1;
     const pn: u32 = 7;
 
-    var header = std.ArrayList(u8).init(a);
-    defer header.deinit();
+    var header = std.ArrayList(u8){};
+    defer header.deinit(A);
     try header.append(header_first);
     try header.appendSlice(dcid);
     const prefix = header.items[1..];
@@ -62,8 +62,8 @@ test "key update: derive next secret and decrypt with toggled key phase" {
     _ = try crypto.protectInitial(.aes_128_gcm, &cli_w1.key, &cli_w1.iv, &cli_w1.hp, pn, &header_first, pn_bytes[0..], prefix, payload, ct);
 
     // Build packet bytes (short header): first | dcid | pn | ct
-    var packet = std.ArrayList(u8).init(a);
-    defer packet.deinit();
+    var packet = std.ArrayList(u8){};
+    defer packet.deinit(A);
     try packet.append(header_first);
     try packet.appendSlice(dcid);
     try packet.appendSlice(&pn_bytes);
@@ -80,8 +80,8 @@ test "key update: derive next secret and decrypt with toggled key phase" {
     try crypto.headerUnprotect(.aes_128_gcm, &srv_r1.hp, &sample16, &hdr_first_m, pn_buf[0..pn_len]);
 
     // AAD and decrypt with next keys
-    var aad = std.ArrayList(u8).init(a);
-    defer aad.deinit();
+    var aad = std.ArrayList(u8){};
+    defer aad.deinit(A);
     try aad.append(hdr_first_m);
     try aad.appendSlice(dcid);
     try aad.appendSlice(pn_buf[0..pn_len]);

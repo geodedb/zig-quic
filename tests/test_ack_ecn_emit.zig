@@ -24,8 +24,8 @@ test "endpoint emits ACK_ECN when ECN CE observed on incoming short packet" {
     c.app_tx_keys = .{ .key = key, .iv = iv, .hp = hp };
 
     // Build an incoming short header packet (PING) addressed to this connection (DCID = our_scid).
-    var frames = std.ArrayList(u8).init(alloc);
-    defer frames.deinit();
+    var frames = std.ArrayList(u8){};
+    defer frames.deinit(A);
     _ = (frame.Frame{ .ping = {} }).write(frames.writer()) catch {};
     const in_pkt = try packet.encodeShortProtected(
         alloc,

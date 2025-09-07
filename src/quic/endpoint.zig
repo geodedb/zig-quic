@@ -111,14 +111,14 @@ pub const Endpoint = struct {
             .sock_fd = fd,
             .loop_backend = lb.defaultLoopBackend(),
             .allocator = alloc,
-            .timers = std.ArrayList(Timer).init(alloc.*),
+            .timers = std.ArrayList(Timer){},
             .conns = std.AutoHashMap(Key, *conn_mod.Connection).init(alloc.*),
             .next_timer_id = 1,
             .cfg = cfgp.*,
-            .accepted = std.ArrayList(*conn_mod.Connection).init(alloc.*),
-            .captures = std.ArrayList(OutCaptured).init(alloc.*),
+            .accepted = std.ArrayList(*conn_mod.Connection){},
+            .captures = std.ArrayList(OutCaptured){},
             .test_capture_enabled = false,
-            .retired = std.ArrayList(*conn_mod.Connection).init(alloc.*),
+            .retired = std.ArrayList(*conn_mod.Connection){},
         };
     }
 
@@ -171,7 +171,7 @@ pub const Endpoint = struct {
             const cap = self.captures.items[i];
             self.allocator.free(cap.bytes);
         }
-        self.captures.deinit();
+        self.captures.deinit(self.allocator.*);
         // Free any pending paced payloads in timers
         var j: usize = 0;
         while (j < self.timers.items.len) : (j += 1) {
@@ -201,10 +201,10 @@ pub const Endpoint = struct {
                 self.allocator.destroy(c);
             }
         }
-        self.retired.deinit();
+        self.retired.deinit(self.allocator.*);
         self.conns.deinit();
-        self.accepted.deinit();
-        self.timers.deinit();
+        self.accepted.deinit(self.allocator.*);
+        self.timers.deinit(self.allocator.*);
         // Close socket
         _ = posix.close(self.sock_fd);
     }
@@ -241,7 +241,7 @@ pub const Endpoint = struct {
             // Capture: make an owned copy of data and enqueue
             const owned = try self.allocator.alloc(u8, data.len);
             @memcpy(owned, data);
-            _ = self.captures.append(.{ .peer = peer, .bytes = owned }) catch {};
+            _ = self.captures.append(self.allocator.*, .{ .peer = peer, .bytes = owned }) catch {};
             // Also send to socket for integration if desired
         }
         const sa_ptr: *const posix.sockaddr = @ptrCast(&peer.storage);
@@ -260,12 +260,12 @@ pub const Endpoint = struct {
     /// Create a Connection object for an incoming datagram's peer.
     /// Accept a server connection from initial datagram's peer address.
     pub fn acceptFrom(self: *Endpoint, peer: conn_mod.SockAddr) conn_mod.Connection {
-        return .{ .id = 0, .role = .Server, .sock_fd = self.sock_fd, .peer = peer, .tls_inbox = std.ArrayList(u8).init(self.allocator.*) };
+        return .{ .id = 0, .role = .Server, .sock_fd = self.sock_fd, .peer = peer, .tls_inbox = std.ArrayList(u8){} };
     }
 
     /// Enqueue accepted server connection for accept().
     fn pushAccepted(self: *Endpoint, c: *conn_mod.Connection) void {
-        self.accepted.append(c) catch {};
+        self.accepted.append(self.allocator.*, c) catch {};
     }
 
     /// Pop accepted connection pointer if present.
@@ -291,7 +291,7 @@ pub const Endpoint = struct {
     /// Create server-side represented connection (used by client dialing logic).
     pub fn connectTo(self: *Endpoint, hostport: []const u8) !conn_mod.Connection {
         const peer = try resolveAny(hostport, .udp);
-        return .{ .id = 0, .role = .Client, .sock_fd = self.sock_fd, .peer = peer, .tls_inbox = std.ArrayList(u8).init(self.allocator.*) };
+        return .{ .id = 0, .role = .Client, .sock_fd = self.sock_fd, .peer = peer, .tls_inbox = std.ArrayList(u8){} };
     }
 
     /// Allocate and register a client connection for the given remote address.
@@ -351,8 +351,8 @@ pub const Endpoint = struct {
             const t = ks.deriveKeyIvHp(pair.client);
             break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
         };
-        var frames = std.ArrayList(u8).init(self.allocator.*);
-        defer frames.deinit();
+        var frames = std.ArrayList(u8){};
+        defer frames.deinit(self.allocator.*);
         // Build CRYPTO frame carrying ClientHello
         // Attach local Transport Parameters (minimal) for interop scaffolding
         var tpp: tp.TransportParams = .{};
@@ -380,15 +380,15 @@ pub const Endpoint = struct {
         const crypto_len = c.tls.popCrypto(crypto_buf[0..]);
         if (crypto_len > 0) {
             const base_off = c.crypto_tx_off_initial;
-            _ = (frame.Frame{ .crypto = .{ .offset = base_off, .data = crypto_buf[0..crypto_len] } }).write(frames.writer()) catch 0;
+            _ = (frame.Frame{ .crypto = .{ .offset = base_off, .data = crypto_buf[0..crypto_len] } }).write(frames.writer(self.allocator.*)) catch 0;
             // (TEMP) Omit saving retransmit buffer to simplify leak debugging for interop slice.
             c.crypto_retx_initial_off = base_off;
             c.crypto_tx_off_initial += crypto_len;
         } else {
-            frames.append(@intFromEnum(frame.FrameType.PING)) catch {};
+            frames.append(self.allocator.*, @intFromEnum(frame.FrameType.PING)) catch {};
         }
         // Add padding to meet minimum Initial packet size of 1200 bytes
-        while (frames.items.len < 1150) frames.append(@intFromEnum(frame.FrameType.PADDING)) catch {};
+        while (frames.items.len < 1150) frames.append(self.allocator.*, @intFromEnum(frame.FrameType.PADDING)) catch {};
         // Use any stored Retry token if present
         const token_slice: []const u8 = c.initial_token.items;
         const pkt = try packet.encodeInitialProtected(
@@ -424,7 +424,7 @@ pub const Endpoint = struct {
         self.next_timer_id +%= 1;
         const now_ms: i64 = nowMsMonotonic();
         const deadline: i64 = now_ms + @as(i64, @intCast(delay_ms));
-        try self.timers.append(.{ .deadline_ms = deadline, .id = id, .kind = .Generic, .conn = null });
+        try self.timers.append(self.allocator.*, .{ .deadline_ms = deadline, .id = id, .kind = .Generic, .conn = null });
         return id;
     }
 
@@ -435,7 +435,7 @@ pub const Endpoint = struct {
         self.next_timer_id +%= 1;
         const now_ms: i64 = nowMsMonotonic();
         const deadline: i64 = now_ms + @as(i64, @intCast(delay_ms));
-        try self.timers.append(.{ .deadline_ms = deadline, .id = id, .kind = kind, .conn = c });
+        try self.timers.append(self.allocator.*, .{ .deadline_ms = deadline, .id = id, .kind = kind, .conn = c });
         return id;
     }
 
@@ -448,7 +448,7 @@ pub const Endpoint = struct {
         if (delay_ms_u64 == 0) delay_ms_u64 = 1; // minimum 1ms to avoid busy spinning
         if (delay_ms_u64 > 100) delay_ms_u64 = 100; // keep deterministic and fast in tests
         const deadline: i64 = now_ms + @as(i64, @intCast(@min(delay_ms_u64, @as(u64, std.math.maxInt(u32)))));
-        try self.timers.append(.{ .deadline_ms = deadline, .id = id, .kind = .Generic, .conn = c, .paced = true, .payload = owned_bytes });
+        try self.timers.append(self.allocator.*, .{ .deadline_ms = deadline, .id = id, .kind = .Generic, .conn = c, .paced = true, .payload = owned_bytes });
         return id;
     }
 
@@ -677,7 +677,7 @@ pub const Endpoint = struct {
     fn poll_epoll_backend(self: *Endpoint, timeout_ms: i32) !void {
         // On non-Linux platforms, fallback to a simple sleep + drain to avoid epoll dependency
         if (builtin.target.os.tag != .linux) {
-            if (timeout_ms > 0) std.time.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
+            if (timeout_ms > 0) std.Thread.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
             self.drainReadable();
             return;
         }
@@ -693,7 +693,7 @@ pub const Endpoint = struct {
     fn poll_kqueue_backend(self: *Endpoint, timeout_ms: i32) !void {
         // On non-kqueue platforms, just perform a sleep-based fallback
         if (builtin.target.os.tag != .macos and builtin.target.os.tag != .freebsd and builtin.target.os.tag != .netbsd and builtin.target.os.tag != .openbsd and builtin.target.os.tag != .dragonfly) {
-            if (timeout_ms > 0) std.time.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
+            if (timeout_ms > 0) std.Thread.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
             self.drainReadable();
             return;
         }
@@ -708,7 +708,7 @@ pub const Endpoint = struct {
 
     fn poll_iocp_backend(self: *Endpoint, timeout_ms: i32) !void {
         if (builtin.target.os.tag != .windows) {
-            if (timeout_ms > 0) std.time.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
+            if (timeout_ms > 0) std.Thread.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
             self.drainReadable();
             return;
         }
@@ -943,9 +943,9 @@ pub const Endpoint = struct {
                             saw_any = true;
                             if (self.cfg.enable_datagram) {
                                 if (conn.app_tx_keys) |txk| {
-                                    var fb = std.ArrayList(u8).init(self.allocator.*);
-                                    defer fb.deinit();
-                                    const w = fb.writer();
+                                    var fb = std.ArrayList(u8){};
+                                    defer fb.deinit(self.allocator.*);
+                                    const w = fb.writer(self.allocator.*);
                                     _ = (frame.Frame{ .datagram = .{ .data = d.data } }).write(w) catch 0;
                                     const dcid_sh = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else conn.our_scid.bytes[0..conn.our_scid.len];
                                     const out = packet.encodeShortProtected(self.allocator.*, dcid_sh, @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, txk, conn.tx_key_phase) catch null;
@@ -996,9 +996,9 @@ pub const Endpoint = struct {
                         .stream_data_blocked => |_| {},
                         .path_challenge => |pcv| {
                             if (conn.app_tx_keys) |txk| {
-                                var fb = std.ArrayList(u8).init(self.allocator.*);
-                                defer fb.deinit();
-                                const w = fb.writer();
+                                var fb = std.ArrayList(u8){};
+                                defer fb.deinit(self.allocator.*);
+                                const w = fb.writer(self.allocator.*);
                                 _ = (frame.Frame{ .path_response = pcv }).write(w) catch 0;
                                 const dcid_sh2 = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else conn.our_scid.bytes[0..conn.our_scid.len];
                                 const out = packet.encodeShortProtected(self.allocator.*, dcid_sh2, @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, txk, conn.tx_key_phase) catch null;
@@ -1016,7 +1016,7 @@ pub const Endpoint = struct {
                         },
                         .new_token => |nt| {
                             conn.initial_token.clearRetainingCapacity();
-                            _ = conn.initial_token.appendSlice(nt.token) catch {};
+                            _ = conn.initial_token.appendSlice(self.allocator.*, nt.token) catch {};
                         },
                         else => {},
                     }
@@ -1040,9 +1040,9 @@ pub const Endpoint = struct {
                 }
                 // If an ACK_ECN was deferred due to amplification, emit it now when allowed
                 if (conn.ecn_app_ack_pending and conn.app_tx_keys != null and conn.canSendUnderAmplification()) {
-                    var ack_buf = std.ArrayList(u8).init(self.allocator.*);
-                    defer ack_buf.deinit();
-                    const w = ack_buf.writer();
+                    var ack_buf = std.ArrayList(u8){};
+                    defer ack_buf.deinit(self.allocator.*);
+                    const w = ack_buf.writer(self.allocator.*);
                     const ad = conn.buildAckApp();
                     const ack_ecn_now = conn.getAckEcn(.Application);
                     if (self.test_capture_enabled and ack_ecn_now != null) {
@@ -1065,9 +1065,9 @@ pub const Endpoint = struct {
                 // Enforce AEAD integrity limit: if connection has been marked closed due to limit, send CONNECTION_CLOSE once.
                 if (conn.closed) {
                     if (conn.app_tx_keys) |tx_keys| {
-                        var fb = std.ArrayList(u8).init(self.allocator.*);
-                        defer fb.deinit();
-                        const w = fb.writer();
+                        var fb = std.ArrayList(u8){};
+                        defer fb.deinit(self.allocator.*);
+                        const w = fb.writer(self.allocator.*);
                         // AEAD_LIMIT_REACHED = 0x0f per RFC 9000 §20
                         _ = (frame.Frame{ .connection_close = .{ .error_code = 0x0f, .frame_type = 0, .reason = "AEAD integrity limit reached" } }).write(w) catch 0;
                         // Amplification gating: only send if validated or within 3x limit
@@ -1116,9 +1116,9 @@ pub const Endpoint = struct {
                         if (allow_send) {
                             // If we have ECN to report, emit an immediate ACK-only ACK_ECN to ensure the test observes it
                             if (ack_ecn_common != null) {
-                                var ack_only = std.ArrayList(u8).init(self.allocator.*);
-                                defer ack_only.deinit();
-                                const wa = ack_only.writer();
+                                var ack_only = std.ArrayList(u8){};
+                                defer ack_only.deinit(self.allocator.*);
+                                const wa = ack_only.writer(self.allocator.*);
                                 const ad = conn.buildAckApp();
                                 if (self.test_capture_enabled) {
                                     std.debug.print("APP immediate ACK_ECN ce={d} ect0={d} ect1={d}\n", .{ ack_ecn_common.?.ce, ack_ecn_common.?.ect0, ack_ecn_common.?.ect1 });
@@ -1137,9 +1137,9 @@ pub const Endpoint = struct {
                                 return;
                                 // Skip building a second ACK to avoid duplicates
                             } else {
-                                var frames_buf = std.ArrayList(u8).init(self.allocator.*);
-                                defer frames_buf.deinit();
-                                const w = frames_buf.writer();
+                                var frames_buf = std.ArrayList(u8){};
+                                defer frames_buf.deinit(self.allocator.*);
+                                const w = frames_buf.writer(self.allocator.*);
                                 const ack_desc = conn.buildAckApp();
                                 // Debug: log ACK_ECN decision for Application space in tests
                                 if (self.test_capture_enabled) {
@@ -1189,9 +1189,9 @@ pub const Endpoint = struct {
                             // RFC 9000 §8.1: a server MAY send a single packet containing only ACK
                             // in response to each received datagram when under amplification limit.
                             // Emit a pure ACK (no MAX_*) to report ECN counts promptly.
-                            var ack_only = std.ArrayList(u8).init(self.allocator.*);
-                            defer ack_only.deinit();
-                            const w2 = ack_only.writer();
+                            var ack_only = std.ArrayList(u8){};
+                            defer ack_only.deinit(self.allocator.*);
+                            const w2 = ack_only.writer(self.allocator.*);
                             const ack_desc2 = conn.buildAckApp();
                             if (self.test_capture_enabled) {
                                 std.debug.print("APP ack-only branch\n", .{});
@@ -1419,8 +1419,8 @@ pub const Endpoint = struct {
             std.debug.print("{s}: Trying to decrypt Initial with pn_initial.max={}\n", .{ if (conn.role == .Server) "Server" else "Client", conn.pn_initial.max });
             var success = false;
             var chosen_pn_len: u3 = 0;
-            var pt_list = std.ArrayList(u8).init(self.allocator.*);
-            defer pt_list.deinit();
+            var pt_list = std.ArrayList(u8){};
+            defer pt_list.deinit(self.allocator.*);
             var pn_len_try: u3 = 1;
             attempt: while (pn_len_try <= 4) : (pn_len_try += 1) {
                 if (pn_start + pn_len_try > end_total) break;
@@ -1532,9 +1532,9 @@ pub const Endpoint = struct {
             }
             if (saw_any and !conn.initial_keys_dropped and allow_send) {
                 // Build frames for Initial packet response
-                var frames_buf = std.ArrayList(u8).init(self.allocator.*);
-                defer frames_buf.deinit();
-                const w = frames_buf.writer();
+                var frames_buf = std.ArrayList(u8){};
+                defer frames_buf.deinit(self.allocator.*);
+                const w = frames_buf.writer(self.allocator.*);
 
                 // Add ACK frame
                 const ack_desc = conn.buildAckInitial();
@@ -1627,9 +1627,9 @@ pub const Endpoint = struct {
                 const n_tls = conn.tls.popCrypto(tls_buf[0..]);
                 if (n_tls > 0 and allow_send) {
                     std.debug.print("Sending Handshake packet with {} bytes of CRYPTO\n", .{n_tls});
-                    var fb = std.ArrayList(u8).init(self.allocator.*);
-                    defer fb.deinit();
-                    const w_hs = fb.writer();
+                    var fb = std.ArrayList(u8){};
+                    defer fb.deinit(self.allocator.*);
+                    const w_hs = fb.writer(self.allocator.*);
                     const base_off_hs = conn.crypto_tx_off_handshake;
                     _ = (frame.Frame{ .crypto = .{ .offset = base_off_hs, .data = tls_buf[0..n_tls] } }).write(w_hs) catch 0;
                     // Save retransmit buffer for Handshake CRYPTO
@@ -1697,7 +1697,7 @@ pub const Endpoint = struct {
             }
             // Store token for next Initial
             c.initial_token.clearRetainingCapacity();
-            _ = c.initial_token.appendSlice(token_bytes) catch {};
+            _ = c.initial_token.appendSlice(self.allocator.*, token_bytes) catch {};
             // Update version and DCID to use for next Initial (use Retry.SCID as new DCID per spec)
             c.version = version;
             c.version_v2 = (version == packet.QUIC_V2);
@@ -1749,8 +1749,8 @@ pub const Endpoint = struct {
                 // Try different PN lengths until one succeeds
                 var success = false;
                 var chosen_pn_len: u3 = 0;
-                var pt_list = std.ArrayList(u8).init(self.allocator.*);
-                defer pt_list.deinit();
+                var pt_list = std.ArrayList(u8){};
+                defer pt_list.deinit(self.allocator.*);
                 var pn_len_try: u3 = 1;
 
                 attempt: while (pn_len_try <= 4) : (pn_len_try += 1) {
@@ -1858,9 +1858,9 @@ pub const Endpoint = struct {
                     var outbox: [1024]u8 = undefined;
                     const n = conn.tls.popCrypto(outbox[0..]);
                     if (n > 0) {
-                        var frames_buf = std.ArrayList(u8).init(self.allocator.*);
-                        defer frames_buf.deinit();
-                        const w = frames_buf.writer();
+                        var frames_buf = std.ArrayList(u8){};
+                        defer frames_buf.deinit(self.allocator.*);
+                        const w = frames_buf.writer(self.allocator.*);
                         const base_off_hs = conn.crypto_tx_off_handshake;
                         _ = (frame.Frame{ .crypto = .{ .offset = base_off_hs, .data = outbox[0..n] } }).write(w) catch 0;
                         // Save HS retransmit buffer for this slice
@@ -1890,9 +1890,9 @@ pub const Endpoint = struct {
                 }
                 if (saw_any) {
                     if (conn.hs_tx_keys) |tx_keys| {
-                        var frames_buf = std.ArrayList(u8).init(self.allocator.*);
-                        defer frames_buf.deinit();
-                        const w = frames_buf.writer();
+                        var frames_buf = std.ArrayList(u8){};
+                        defer frames_buf.deinit(self.allocator.*);
+                        const w = frames_buf.writer(self.allocator.*);
                         const ack_desc = conn.buildAckHandshake();
                         const ack_ecn = conn.getAckEcn(.Handshake);
                         const ack_delay = conn.getAckDelayEncoded(.Handshake, now_ns_hs);
@@ -1922,9 +1922,9 @@ pub const Endpoint = struct {
                     const tok = token_mod.encode(self.allocator.*, client_ip_bytes, conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len], secret, self.cfg.token_expiry_ms) catch null;
                     if (tok) |tbytes| {
                         defer self.allocator.free(tbytes);
-                        var fb = std.ArrayList(u8).init(self.allocator.*);
-                        defer fb.deinit();
-                        const w = fb.writer();
+                        var fb = std.ArrayList(u8){};
+                        defer fb.deinit(self.allocator.*);
+                        const w = fb.writer(self.allocator.*);
                         _ = (frame.Frame{ .new_token = .{ .token = tbytes } }).write(w) catch 0;
                         const dcid_nt = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else conn.our_scid.bytes[0..conn.our_scid.len];
                         const out = packet.encodeShortProtected(self.allocator.*, dcid_nt, @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, conn.app_tx_keys.?, conn.tx_key_phase) catch null;
@@ -2074,9 +2074,9 @@ pub const Endpoint = struct {
                     break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
                 };
                 // Build a PING probe (ack-eliciting)
-                var frames = std.ArrayList(u8).init(self.allocator.*);
-                defer frames.deinit();
-                frames.append(@intFromEnum(frame.FrameType.PING)) catch {};
+                var frames = std.ArrayList(u8){};
+                defer frames.deinit(self.allocator.*);
+                frames.append(self.allocator.*, @intFromEnum(frame.FrameType.PING)) catch {};
                 const pkt = packet.encodeInitialProtected(self.allocator.*, if (conn.initial_version == 0) 0x00000001 else conn.initial_version, dcid, scid, &[_]u8{}, @as(u32, @truncate(conn.pn_initial_tx)), 4, frames.items, tx_keys) catch return;
                 defer self.allocator.free(pkt);
                 _ = self.sendTo(conn.peer, pkt) catch {};
@@ -2087,9 +2087,9 @@ pub const Endpoint = struct {
                 if (conn.hs_tx_keys) |tx_keys| {
                     const dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
                     const scid = conn.our_scid.bytes[0..conn.our_scid.len];
-                    var frames = std.ArrayList(u8).init(self.allocator.*);
-                    defer frames.deinit();
-                    frames.append(@intFromEnum(frame.FrameType.PING)) catch {};
+                    var frames = std.ArrayList(u8){};
+                    defer frames.deinit(self.allocator.*);
+                    frames.append(self.allocator.*, @intFromEnum(frame.FrameType.PING)) catch {};
                     const pkt = packet.encodeHandshakeProtected(self.allocator.*, if (conn.initial_version == 0) 0x00000001 else conn.initial_version, dcid, scid, @as(u32, @truncate(conn.pn_handshake_tx)), 4, frames.items, tx_keys) catch return;
                     defer self.allocator.free(pkt);
                     _ = self.sendTo(conn.peer, pkt) catch {};
@@ -2105,8 +2105,8 @@ pub const Endpoint = struct {
     /// Remove all map entries / timers referencing connections that have transitioned to closed state.
     fn pruneClosed(self: *Endpoint) void {
         // Collect keys referencing closed connections and build a unique set of those connections.
-        var keys = std.ArrayList(Key).init(self.allocator.*);
-        defer keys.deinit();
+        var keys = std.ArrayList(Key){};
+        defer keys.deinit(self.allocator.*);
         var closed_set = std.AutoHashMap(*conn_mod.Connection, void).init(self.allocator.*);
         defer closed_set.deinit();
         var it = self.conns.iterator();
@@ -2115,7 +2115,7 @@ pub const Endpoint = struct {
             if (c.closed) {
                 _ = closed_set.put(c, {}) catch continue;
                 // Record this key for removal
-                _ = keys.append(e.key_ptr.*) catch {};
+                _ = keys.append(self.allocator.*, e.key_ptr.*) catch {};
             }
         }
         if (closed_set.count() == 0) return; // nothing to prune
@@ -2153,7 +2153,7 @@ pub const Endpoint = struct {
                     break;
                 }
             }
-            if (!already) _ = self.retired.append(cptr) catch {};
+            if (!already) _ = self.retired.append(self.allocator.*, cptr) catch {};
         }
     }
 };

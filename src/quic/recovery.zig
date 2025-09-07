@@ -178,6 +178,7 @@ pub const SentPacket = struct {
 
 const SpaceState = struct {
     sent: std.ArrayList(SentPacket),
+    allocator: std.mem.Allocator,
     largest_acked: ?u64 = null,
     loss_time_ns: ?u64 = null,
     // Last observed ECN counters from peer's ACK_ECN for this space
@@ -185,10 +186,10 @@ const SpaceState = struct {
     ecn_seen_any: bool = false,
 
     fn init(alloc: std.mem.Allocator) SpaceState {
-        return .{ .sent = std.ArrayList(SentPacket).init(alloc) };
+        return .{ .sent = std.ArrayList(SentPacket){}, .allocator = alloc };
     }
     fn deinit(self: *SpaceState) void {
-        self.sent.deinit();
+        self.sent.deinit(self.allocator);
     }
 };
 
@@ -242,7 +243,7 @@ pub const Recovery = struct {
     /// Record a packet as sent in the given space.
     pub fn onPacketSent(self: *Recovery, space: PacketNumberSpace, pn: u64, bytes: usize, ack_eliciting: bool, now_ns: u64) !void {
         const idx = spaceIdx(space);
-        try self.spaces[idx].sent.append(.{ .pn = pn, .time_ns = now_ns, .size = bytes, .ack_eliciting = ack_eliciting });
+        try self.spaces[idx].sent.append(self.spaces[idx].allocator, .{ .pn = pn, .time_ns = now_ns, .size = bytes, .ack_eliciting = ack_eliciting });
         if (ack_eliciting) self.cc.bytes_in_flight += bytes;
         // Schedule time-threshold loss if we have an RTT sample; do not promote here.
         if (ack_eliciting and self.rtt.have_sample) {

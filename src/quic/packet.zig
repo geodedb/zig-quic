@@ -9,10 +9,7 @@ const builtin = @import("builtin");
 /// Debug helper: dump bytes when running inside tests.
 fn dumpBytes(label: []const u8, bytes: []const u8) void {
     if (!builtin.is_test) return;
-    var buf: [256]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buf);
-    const a = fba.allocator();
-    var list = std.ArrayList(u8).init(a);
+    var list = std.ArrayList(u8){};
     defer list.deinit();
     var i: usize = 0;
     while (i < bytes.len) : (i += 1) {
@@ -124,14 +121,14 @@ pub fn encodeShortProtected(
 ) ![]u8 {
     if (packet_number_len < 1 or packet_number_len > 4) return error.InvalidPacketNumberLength;
 
-    var buf = std.ArrayList(u8).init(alloc);
-    errdefer buf.deinit();
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(alloc);
 
     const pn_bits: u8 = @as(u8, packet_number_len - 1) & 0x03;
     var header_first: u8 = 0x40 | pn_bits; // short header with pn len bits
     if (key_phase) header_first |= 0x04; // key phase bit (bit 2)
 
-    const w = buf.writer();
+    const w = buf.writer(alloc);
     try w.writeByte(header_first);
     // header_prefix for short = DCID (QUIC short header carries DCID)
     try w.writeAll(dcid);
@@ -157,7 +154,7 @@ pub fn encodeShortProtected(
     // AEAD encrypt payload
     const ct_len = payload_plaintext.len + 16;
     const out_cipher_idx = buf.items.len;
-    try buf.ensureTotalCapacity(out_cipher_idx + ct_len);
+    try buf.ensureTotalCapacity(alloc, out_cipher_idx + ct_len);
     try buf.appendNTimes(0, ct_len);
     const out_cipher = buf.items[out_cipher_idx .. out_cipher_idx + ct_len];
 
@@ -181,7 +178,7 @@ pub fn encodeShortProtected(
     const pn_offset = 1 + header_prefix_len;
     @memcpy(buf.items[pn_offset .. pn_offset + packet_number_len], pn_mut[0..packet_number_len]);
 
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(alloc);
 }
 
 /// Result of decoding a protected short header packet.
@@ -308,8 +305,8 @@ pub fn encodeInitialProtected(
 ) ![]u8 {
     if (packet_number_len < 1 or packet_number_len > 4) return error.InvalidPacketNumberLength;
 
-    var buf = std.ArrayList(u8).init(alloc);
-    errdefer buf.deinit();
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(alloc);
 
     // Header first byte: Long header, Initial type, PN len bits
     const type_bits: u8 = 0x00; // Initial
@@ -317,7 +314,7 @@ pub fn encodeInitialProtected(
     const first: u8 = 0xc0 | type_bits | pn_bits;
 
     // We'll build header_prefix first to compute AAD
-    const w = buf.writer();
+    const w = buf.writer(alloc);
     try w.writeByte(first);
     var be_ver: [4]u8 = .{ @as(u8, @intCast(version >> 24)), @as(u8, @intCast((version >> 16) & 0xff)), @as(u8, @intCast((version >> 8) & 0xff)), @as(u8, @intCast(version & 0xff)) };
     try w.writeAll(&be_ver);
@@ -360,9 +357,9 @@ pub fn encodeInitialProtected(
 
     // Prepare ciphertext buffer
     const out_cipher_idx = buf.items.len;
-    try buf.ensureTotalCapacity(out_cipher_idx + ct_len);
+    try buf.ensureTotalCapacity(alloc, alloc, out_cipher_idx + ct_len);
     // Important: append zeros to reserve and then fill in place
-    try buf.appendNTimes(0, ct_len);
+    try buf.appendNTimes(alloc, 0, ct_len);
 
     // Protect payload and apply header protection (mutates first byte and PN in-place)
     var header_first: u8 = first;
@@ -390,7 +387,7 @@ pub fn encodeInitialProtected(
     const pn_offset = 1 + header_prefix_len; // after first + header_prefix
     @memcpy(buf.items[pn_offset .. pn_offset + packet_number_len], pn_mut[0..packet_number_len]);
 
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(alloc);
 }
 
 /// Result of decoding an Initial packet.
@@ -483,7 +480,7 @@ pub fn decodeInitialProtected(
     const ct_and_tag = packet_bytes[ct_begin..ct_end];
 
     // AAD = unmasked first byte || header_prefix || unmasked PN bytes
-    var aad = std.ArrayList(u8).init(alloc);
+    var aad = std.ArrayList(u8){};
     defer aad.deinit();
     try aad.append(header_first);
     try aad.appendSlice(header_prefix);
@@ -544,15 +541,15 @@ pub fn encodeHandshakeProtected(
 ) ![]u8 {
     if (packet_number_len < 1 or packet_number_len > 4) return error.InvalidPacketNumberLength;
 
-    var buf = std.ArrayList(u8).init(alloc);
-    errdefer buf.deinit();
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(alloc);
 
     // Header first byte: Long header, Handshake type (0x20), PN len bits
     const type_bits: u8 = 0x20; // Handshake
     const pn_bits: u8 = @as(u8, packet_number_len - 1) & 0x03;
     const first: u8 = 0xc0 | type_bits | pn_bits;
 
-    const w = buf.writer();
+    const w = buf.writer(alloc);
     try w.writeByte(first);
     var be_ver: [4]u8 = .{ @as(u8, @intCast(version >> 24)), @as(u8, @intCast((version >> 16) & 0xff)), @as(u8, @intCast((version >> 8) & 0xff)), @as(u8, @intCast(version & 0xff)) };
     try w.writeAll(&be_ver);
@@ -582,7 +579,7 @@ pub fn encodeHandshakeProtected(
     try w.writeAll(pn_slice);
 
     const out_cipher_idx = buf.items.len;
-    try buf.ensureTotalCapacity(out_cipher_idx + ct_len);
+    try buf.ensureTotalCapacity(alloc, out_cipher_idx + ct_len);
     try buf.appendNTimes(0, ct_len);
 
     var header_first: u8 = first;
@@ -609,7 +606,7 @@ pub fn encodeHandshakeProtected(
     const pn_offset = 1 + header_prefix_len;
     @memcpy(buf.items[pn_offset .. pn_offset + packet_number_len], pn_mut[0..packet_number_len]);
 
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(alloc);
 }
 
 /// Decoded representation of a Version Negotiation packet.
@@ -622,9 +619,9 @@ pub const DecodedVN = struct {
 /// Encode a Version Negotiation (VN) packet with Version=0 and provided version list.
 /// Returned slice is owned by alloc.
 pub fn encodeVersionNegotiation(alloc: std.mem.Allocator, dcid: []const u8, scid: []const u8, versions: []const u32) ![]u8 {
-    var buf = std.ArrayList(u8).init(alloc);
-    errdefer buf.deinit();
-    const w = buf.writer();
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(alloc);
+    const w = buf.writer(alloc);
     // Simplest VN first byte with Long Header bit set and fixed bit set (0x80)
     try w.writeByte(0x80);
     // Version = 0x00000000
@@ -647,7 +644,7 @@ pub fn encodeVersionNegotiation(alloc: std.mem.Allocator, dcid: []const u8, scid
         };
         try w.writeAll(&be);
     }
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(alloc);
 }
 
 /// Decode a Version Negotiation (VN) packet (Version=0x00000000).
@@ -716,9 +713,9 @@ pub fn encode0RTTProtected(
 ) ![]u8 {
     // 0-RTT uses long header type 0x01
     const ty: u2 = 0x01;
-    var buf = std.ArrayList(u8).init(alloc);
-    errdefer buf.deinit();
-    const w = buf.writer();
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(alloc);
+    const w = buf.writer(alloc);
     
     // First byte: long header (0x80) | fixed bit (0x40) | type (0x01 << 4) | reserved | pn_len
     const first: u8 = 0xc0 | (@as(u8, ty) << 4) | ((pn_len - 1) & 0x03);
@@ -771,7 +768,7 @@ pub fn encode0RTTProtected(
     
     // Encrypt
     const ct_start = buf.items.len;
-    try buf.ensureTotalCapacity(ct_start + payload.len + 16);
+    try buf.ensureTotalCapacity(alloc, ct_start + payload.len + 16);
     buf.items.len = ct_start + payload.len + 16;
     
     crypto.aeadEncrypt(
@@ -798,7 +795,7 @@ pub fn encode0RTTProtected(
         }
     }
     
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(alloc);
 }
 
 /// Decode and decrypt a 0-RTT packet.
@@ -898,9 +895,9 @@ pub fn decode0RTTProtected(
 /// scid = Source Connection ID chosen by server
 /// odcid = client's Original DCID (from the Initial that prompted this Retry)
 pub fn encodeRetry(alloc: std.mem.Allocator, version: u32, dcid: []const u8, scid: []const u8, odcid: []const u8, token: []const u8) ![]u8 {
-    var buf = std.ArrayList(u8).init(alloc);
-    errdefer buf.deinit();
-    const w = buf.writer();
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(alloc);
+    const w = buf.writer(alloc);
     // First byte: Long header, Retry type (0x30); PN length bits are 0 for Retry
     try w.writeByte(0xf0 | 0x30);
     // Version
@@ -923,7 +920,7 @@ pub fn encodeRetry(alloc: std.mem.Allocator, version: u32, dcid: []const u8, sci
     const tag = crypto.computeRetryIntegrityTag(version_v2, odcid, retry_without_tag);
 
     try w.writeAll(&tag);
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(alloc);
 }
 
 /// Verify a received Retry packet integrity tag given the client's Original DCID.

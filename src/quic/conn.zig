@@ -161,20 +161,20 @@ const StreamRx = struct {
     bufs: std.ArrayList(Segment),
     fin_off: ?u64 = null,
 
-    fn init(alloc: *std.mem.Allocator) StreamRx {
-        return .{ .recv_off = 0, .inbox = std.ArrayList(u8).init(alloc.*), .bufs = std.ArrayList(Segment).init(alloc.*), .fin_off = null };
+    fn init(_alloc: *std.mem.Allocator) StreamRx {
+        return .{ .recv_off = 0, .inbox = std.ArrayList(u8){}, .bufs = std.ArrayList(Segment){}, .fin_off = null };
     }
     fn deinit(self: *StreamRx, alloc: *std.mem.Allocator) void {
         for (self.bufs.items) |seg| alloc.free(seg.data);
-        self.bufs.deinit();
-        self.inbox.deinit();
+        self.bufs.deinit(alloc.*);
+        self.inbox.deinit(alloc.*);
     }
 
     fn insert(self: *StreamRx, alloc: *std.mem.Allocator, off: u64, data: []const u8) void {
         // store a copy of segment
         const owned = alloc.alloc(u8, data.len) catch return;
         @memcpy(owned, data);
-        self.bufs.append(.{ .off = off, .data = owned }) catch {
+        self.bufs.append(alloc.*, .{ .off = off, .data = owned }) catch {
             alloc.free(owned);
             return;
         };
@@ -189,7 +189,7 @@ const StreamRx = struct {
                 const seg = self.bufs.items[i];
                 if (seg.off == self.recv_off) {
                     // append to inbox and advance
-                    _ = self.inbox.appendSlice(seg.data) catch {};
+                    _ = self.inbox.appendSlice(alloc.*, seg.data) catch {};
                     self.recv_off +%= seg.data.len;
                     alloc.free(seg.data);
                     _ = self.bufs.orderedRemove(i);
@@ -532,7 +532,7 @@ pub const Connection = struct {
         self.role = role;
         self.sock_fd = sock_fd;
         self.peer = peer;
-        self.tls_inbox = std.ArrayList(u8).init(alloc.*);
+        self.tls_inbox = std.ArrayList(u8){};
         self.tls = tls13.Engine.init(alloc.*, if (role == .Client) .Client else .Server);
         self.allocator = alloc;
         self.allowed_alpns = &[_][]const u8{};
@@ -577,7 +577,7 @@ pub const Connection = struct {
         self.pto_app_count = 0;
         self.timer_granularity_ns = std.time.ns_per_ms;
         // Init DATAGRAM inbox
-        self.dgram_inbox = std.ArrayList([]u8).init(alloc.*);
+        self.dgram_inbox = std.ArrayList([]u8){};
         // Init streams map
         self.streams_rx = std.AutoHashMap(u64, StreamRx).init(alloc.*);
         self.stream_opened = false;
@@ -596,7 +596,7 @@ pub const Connection = struct {
         self.path_challenge_data = .{0} ** 8;
         self.new_token_pending = false;
         self.new_token_sent = false;
-        self.reset_tokens = std.ArrayList([16]u8).init(alloc.*);
+        self.reset_tokens = std.ArrayList([16]u8){};
         // CC default to NewReno; endpoint can flip use_cubic
         self.use_cubic = false;
         self.cc_nr = .{};
@@ -604,7 +604,7 @@ pub const Connection = struct {
         // ensure recovery knows CC mode
         self.rec.setCcMode(false);
         // Initialize retry token buffer to match deinit symmetry
-        self.initial_token = std.ArrayList(u8).init(alloc.*);
+        self.initial_token = std.ArrayList(u8){};
         // Explicitly initialize crypto retransmit buffers (field defaults not applied on reuse)
         self.crypto_retx_initial = null;
         self.crypto_retx_handshake = null;
@@ -689,7 +689,7 @@ pub const Connection = struct {
     /// Release resources held by this Connection (payloads, maps, TLS state).
     /// Free dynamic resources (lists, maps, TLS engine) owned by the connection.
     pub fn deinit(self: *Connection) void {
-        self.tls_inbox.deinit();
+        self.tls_inbox.deinit(self.allocator.*);
         self.tls.deinit();
         self.rec.deinit();
         self.sent_time.deinit();
@@ -701,7 +701,7 @@ pub const Connection = struct {
             const p = self.dgram_inbox.orderedRemove(0);
             self.allocator.free(p);
         }
-        self.dgram_inbox.deinit();
+        self.dgram_inbox.deinit(self.allocator.*);
         // Deinit all streams
         var it = self.streams_rx.iterator();
         while (it.next()) |e| {
@@ -711,8 +711,8 @@ pub const Connection = struct {
         self.streams_rx.deinit();
         if (self.stream_txs.capacity() != 0) self.stream_txs.deinit();
         // Free reset tokens / initial token buffers once (previous code double-deinited)
-        if (self.reset_tokens.capacity != 0) self.reset_tokens.deinit();
-        if (self.initial_token.capacity != 0) self.initial_token.deinit();
+        if (self.reset_tokens.capacity != 0) self.reset_tokens.deinit(self.allocator.*);
+        if (self.initial_token.capacity != 0) self.initial_token.deinit(self.allocator.*);
     }
 
     /// Update peer address (used for NAT rebinding / migration detection).
@@ -737,7 +737,7 @@ pub const Connection = struct {
         if (sequence >= self.reset_tokens.items.len) {
             const need = sequence + 1 - self.reset_tokens.items.len;
             var k: usize = 0;
-            while (k < need) : (k += 1) self.reset_tokens.append(.{0} ** 16) catch break;
+            while (k < need) : (k += 1) self.reset_tokens.append(self.allocator.*, .{0} ** 16) catch break;
         }
         if (sequence < self.reset_tokens.items.len) self.reset_tokens.items[@intCast(sequence)] = stateless_reset_token;
     }
@@ -1040,7 +1040,7 @@ pub const Connection = struct {
     pub fn pushDatagram(self: *Connection, data: []const u8) !void {
         const owned = try self.allocator.alloc(u8, data.len);
         @memcpy(owned, data);
-        try self.dgram_inbox.append(owned);
+        try self.dgram_inbox.append(self.allocator.*, owned);
     }
 
     /// Pop a DATAGRAM payload into buf; returns length copied or error if none.
@@ -1104,9 +1104,9 @@ pub const Connection = struct {
         // Generate opaque 8-byte data and remember for validation
         std.crypto.random.bytes(&self.path_challenge_data);
         self.path_validation_pending = true;
-        var frames = std.ArrayList(u8).init(self.allocator.*);
-        defer frames.deinit();
-        const w = frames.writer();
+        var frames = std.ArrayList(u8){};
+        defer frames.deinit(self.allocator.*);
+        const w = frames.writer(self.allocator.*);
         _ = (frame.Frame{ .path_challenge = self.path_challenge_data }).write(w) catch 0;
         const out = packet.encodeShortProtected(
             self.allocator.*,
@@ -1164,9 +1164,9 @@ pub const Connection = struct {
     pub fn advertiseInitialFlowControl(self: *Connection) void {
         if (self.app_tx_keys == null) return;
         if (!self.canSendUnderAmplification()) return;
-        var frames = std.ArrayList(u8).init(self.allocator.*);
-        defer frames.deinit();
-        const w = frames.writer();
+        var frames = std.ArrayList(u8){};
+        defer frames.deinit(self.allocator.*);
+        const w = frames.writer(self.allocator.*);
         var wrote: bool = false;
         if (self.local_max_stream_data > self.last_sent_max_stream_data) {
             _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = self.local_max_stream_data } }).write(w) catch 0;
@@ -1190,9 +1190,9 @@ pub const Connection = struct {
     /// Queue an application DATAGRAM for sending (subject to path MTU / congestion heuristics).
     pub fn sendDatagram(self: *Connection, data: []const u8) !void {
         const tx = self.app_tx_keys orelse return error.KeysNotReady;
-        var frames = std.ArrayList(u8).init(self.allocator.*);
-        defer frames.deinit();
-        const w = frames.writer();
+        var frames = std.ArrayList(u8){};
+        defer frames.deinit(self.allocator.*);
+        const w = frames.writer(self.allocator.*);
         _ = (frame.Frame{ .datagram = .{ .data = data } }).write(w) catch 0;
         const pkt = try packet.encodeShortProtected(
             self.allocator.*,
@@ -1213,9 +1213,9 @@ pub const Connection = struct {
     pub fn openStream(self: *Connection, bidi: bool) !u64 {
         if (!bidi) return error.Unsupported;
         if (self.opened_bidi >= self.peer_max_streams_bidi) {
-            var fb = std.ArrayList(u8).init(self.allocator.*);
-            defer fb.deinit();
-            const w = fb.writer();
+            var fb = std.ArrayList(u8){};
+            defer fb.deinit(self.allocator.*);
+            const w = fb.writer(self.allocator.*);
             _ = (frame.Frame{ .streams_blocked_bidi = .{ .max = self.peer_max_streams_bidi } }).write(w) catch 0;
             self.sendControlFrames(fb.items);
             return error.OutOfStreams;
@@ -1264,9 +1264,9 @@ pub const Connection = struct {
             // Signal STREAM_DATA_BLOCKED (coalesced: only once per limit value)
             if (self.last_stream_data_blocked_limit != self.peer_max_stream_data) {
                 self.last_stream_data_blocked_limit = self.peer_max_stream_data;
-                var fb1 = std.ArrayList(u8).init(self.allocator.*);
-                defer fb1.deinit();
-                const w1 = fb1.writer();
+                var fb1 = std.ArrayList(u8){};
+                defer fb1.deinit(self.allocator.*);
+                const w1 = fb1.writer(self.allocator.*);
                 _ = (frame.Frame{ .stream_data_blocked = .{ .stream_id = id, .limit = self.peer_max_stream_data } }).write(w1) catch 0;
                 self.sendControlFrames(fb1.items);
             }
@@ -1277,9 +1277,9 @@ pub const Connection = struct {
             // Signal DATA_BLOCKED (coalesced: only once per limit value)
             if (self.last_data_blocked_limit != self.peer_max_data) {
                 self.last_data_blocked_limit = self.peer_max_data;
-                var fb2 = std.ArrayList(u8).init(self.allocator.*);
-                defer fb2.deinit();
-                const w2 = fb2.writer();
+                var fb2 = std.ArrayList(u8){};
+                defer fb2.deinit(self.allocator.*);
+                const w2 = fb2.writer(self.allocator.*);
                 _ = (frame.Frame{ .data_blocked = .{ .limit = self.peer_max_data } }).write(w2) catch 0;
                 self.sendControlFrames(fb2.items);
             }
@@ -1292,9 +1292,9 @@ pub const Connection = struct {
         const to_send_u64: u64 = @min(window_left, @as(u64, data.len));
         const to_send: usize = @intCast(@min(to_send_u64, @as(u64, max_payload)));
         if (to_send == 0) return error.FlowControlBlocked;
-        var frames = std.ArrayList(u8).init(self.allocator.*);
-        defer frames.deinit();
-        const w = frames.writer();
+        var frames = std.ArrayList(u8){};
+        defer frames.deinit(self.allocator.*);
+        const w = frames.writer(self.allocator.*);
         _ = (frame.Frame{ .stream = .{ .stream_id = id, .offset = cur_off, .fin = false, .data = data[0..to_send] } }).write(w) catch 0;
         const pkt = try packet.encodeShortProtected(
             self.allocator.*,
@@ -1341,9 +1341,9 @@ pub const Connection = struct {
             return error.InvalidStream;
         }
         const tx = self.app_tx_keys orelse return error.KeysNotReady;
-        var frames = std.ArrayList(u8).init(self.allocator.*);
-        defer frames.deinit();
-        const w = frames.writer();
+        var frames = std.ArrayList(u8){};
+        defer frames.deinit(self.allocator.*);
+        const w = frames.writer(self.allocator.*);
         const final_off: u64 = if (id == 0) self.stream_send_off else self.stream_txs.getPtr(id).?.off;
         _ = (frame.Frame{ .stream = .{ .stream_id = id, .offset = final_off, .fin = true, .data = &[_]u8{} } }).write(w) catch 0;
         const pkt = try packet.encodeShortProtected(
@@ -1370,9 +1370,9 @@ pub const Connection = struct {
         } else if (self.stream_txs.getPtr(stream_id)) |st| {
             st.aborted = true;
         }
-        var frames = std.ArrayList(u8).init(self.allocator.*);
-        defer frames.deinit();
-        const w = frames.writer();
+        var frames = std.ArrayList(u8){};
+        defer frames.deinit(self.allocator.*);
+        const w = frames.writer(self.allocator.*);
         _ = (frame.Frame{ .reset_stream = .{ .stream_id = stream_id, .error_code = app_error_code, .final_size = self.stream_send_off } }).write(w) catch 0;
         const pkt = try packet.encodeShortProtected(
             self.allocator.*,
@@ -1698,9 +1698,9 @@ pub const Connection = struct {
             const t = ks.deriveKeyIvHp(pair.server);
             break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
         };
-        var frames = std.ArrayList(u8).init(self.allocator.*);
-        defer frames.deinit();
-        const w = frames.writer();
+        var frames = std.ArrayList(u8){};
+        defer frames.deinit(self.allocator.*);
+        const w = frames.writer(self.allocator.*);
         _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
         const out = packet.encodeInitialProtected(
             self.allocator.*,
@@ -1726,9 +1726,9 @@ pub const Connection = struct {
     /// Emit a Handshake-space PTO probe.
     pub fn sendPtoProbeHandshake(self: *Connection) void {
         const tx = self.hs_tx_keys orelse return;
-        var frames = std.ArrayList(u8).init(self.allocator.*);
-        defer frames.deinit();
-        const w = frames.writer();
+        var frames = std.ArrayList(u8){};
+        defer frames.deinit(self.allocator.*);
+        const w = frames.writer(self.allocator.*);
         _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
         const out = packet.encodeHandshakeProtected(
             self.allocator.*,
@@ -1752,9 +1752,9 @@ pub const Connection = struct {
     /// Emit an Application-space PTO probe.
     pub fn sendPtoProbeApp(self: *Connection) void {
         const tx = self.app_tx_keys orelse return;
-        var frames = std.ArrayList(u8).init(self.allocator.*);
-        defer frames.deinit();
-        const w = frames.writer();
+        var frames = std.ArrayList(u8){};
+        defer frames.deinit(self.allocator.*);
+        const w = frames.writer(self.allocator.*);
         _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
         const out = packet.encodeShortProtected(
             self.allocator.*,
@@ -1776,9 +1776,9 @@ pub const Connection = struct {
     /// Build and send CONNECTION_CLOSE (application or transport) with reason string.
     pub fn sendConnectionClose(self: *Connection, app_error_code: u64, reason: []const u8) !void {
         const tx = self.app_tx_keys orelse return error.KeysNotReady;
-        var frames = std.ArrayList(u8).init(self.allocator.*);
-        defer frames.deinit();
-        const w = frames.writer();
+        var frames = std.ArrayList(u8){};
+        defer frames.deinit(self.allocator.*);
+        const w = frames.writer(self.allocator.*);
         _ = (frame.Frame{ .connection_close = .{ .error_code = app_error_code, .frame_type = 0, .reason = reason } }).write(w) catch 0;
         const pkt = try packet.encodeShortProtected(
             self.allocator.*,
@@ -1851,9 +1851,9 @@ pub const Connection = struct {
         }
         // Server: send HANDSHAKE_DONE and reaffirm initial MAX_* once
         if (self.role == .Server and !self.handshake_done_sent) {
-            var frames = std.ArrayList(u8).init(self.allocator.*);
-            defer frames.deinit();
-            const w = frames.writer();
+            var frames = std.ArrayList(u8){};
+            defer frames.deinit(self.allocator.*);
+            const w = frames.writer(self.allocator.*);
             _ = (frame.Frame{ .handshake_done = {} }).write(w) catch 0;
             _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = self.local_max_stream_data } }).write(w) catch 0;
             _ = (frame.Frame{ .max_data = .{ .max = self.local_max_data } }).write(w) catch 0;
@@ -2016,9 +2016,9 @@ pub const Connection = struct {
         // Frames: 1 byte for PING + N bytes of PADDING
         if (target_udp_payload < header_overhead + aead_tag + 1) return error.InvalidProbeSize;
         const needed_padding: usize = target_udp_payload - header_overhead - aead_tag - 1;
-        var frames = std.ArrayList(u8).init(self.allocator.*);
-        defer frames.deinit();
-        const w = frames.writer();
+        var frames = std.ArrayList(u8){};
+        defer frames.deinit(self.allocator.*);
+        const w = frames.writer(self.allocator.*);
         _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
         if (needed_padding > 0) {
             // Frame.padding counts total padding bytes to emit (writes that many 0x00)
@@ -2082,7 +2082,7 @@ pub const Connection = struct {
 
     fn ensureStreamRx(self: *Connection, id: u64) *StreamRx {
         if (self.streams_rx.capacity() == 0) self.streams_rx = std.AutoHashMap(u64, StreamRx).init(self.allocator.*);
-        if (self.dgram_inbox.capacity == 0) self.dgram_inbox = std.ArrayList([]u8).init(self.allocator.*);
+        if (self.dgram_inbox.capacity == 0) self.dgram_inbox = std.ArrayList([]u8){};
         if (self.streams_rx.getPtr(id)) |s| return s;
         const sr = StreamRx.init(self.allocator);
         self.streams_rx.put(id, sr) catch {};
@@ -2173,9 +2173,9 @@ pub const Connection = struct {
         if (self.app_tx_keys == null) return 0;
         if (!self.canSendUnderAmplification()) return 0;
         if (self.pending_new_cid.isEmpty()) return 0;
-        var fb = std.ArrayList(u8).init(self.allocator.*);
-        defer fb.deinit();
-        const w = fb.writer();
+        var fb = std.ArrayList(u8){};
+        defer fb.deinit(self.allocator.*);
+        const w = fb.writer(self.allocator.*);
         const wrote = try self.writePendingNewConnectionIds(w, 4);
         if (wrote == 0) return 0;
         self.sendControlFrames(fb.items);

@@ -72,8 +72,8 @@ fn roundtrip_short(suite: crypto.AeadSuite, dcid: []const u8, pn: u32, pn_len: u
     // calling crypto.protectInitial/unprotectInitial with the right suite.
 
     // Build a minimal short header buffer manually to feed protectInitial
-    var buf = std.ArrayList(u8).init(a);
-    defer buf.deinit();
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(A);
     var header_first: u8 = 0x40 | @as(u8, pn_len - 1);
     try buf.append(header_first);
     try buf.appendSlice(dcid);
@@ -108,8 +108,8 @@ fn roundtrip_short(suite: crypto.AeadSuite, dcid: []const u8, pn: u32, pn_len: u
     );
 
     // Build a complete packet: first | dcid | pn | ct
-    var packet = std.ArrayList(u8).init(a);
-    defer packet.deinit();
+    var packet = std.ArrayList(u8){};
+    defer packet.deinit(A);
     try packet.append(header_first);
     try packet.appendSlice(dcid);
     try packet.appendSlice(pn_mut[0..pn_len]);
@@ -135,8 +135,8 @@ fn roundtrip_short(suite: crypto.AeadSuite, dcid: []const u8, pn: u32, pn_len: u
     try crypto.headerUnprotect(suite, &keys_read.hp, &sample16, &hdr_first_masked, pn_buf[0..pn_len]);
 
     // AAD: unmasked first || dcid || unmasked pn
-    var aad = std.ArrayList(u8).init(a);
-    defer aad.deinit();
+    var aad = std.ArrayList(u8){};
+    defer aad.deinit(A);
     try aad.append(hdr_first_masked);
     try aad.appendSlice(dcid);
     try aad.appendSlice(pn_buf[0..pn_len]);

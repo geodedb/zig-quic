@@ -118,8 +118,8 @@ test "multiple path management" {
         active: bool,
     };
     
-    var paths = std.ArrayList(Path).init(alloc);
-    defer paths.deinit();
+    var paths = std.ArrayList(Path){};
+    defer paths.deinit(alloc);
     
     // Primary path
     try paths.append(.{

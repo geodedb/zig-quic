@@ -17,8 +17,8 @@ test "key update harness basic" {
     c.app_tx_keys = .{ .key = key, .iv = iv, .hp = hp };
     c.app_tx_secret = [_]u8{0} ** 32;
     c.app_rx_secret = [_]u8{0} ** 32;
-    var frames = std.ArrayList(u8).init(A);
-    defer frames.deinit();
+    var frames = std.ArrayList(u8){};
+    defer frames.deinit(A);
     _ = (fr.Frame{ .ping = {} }).write(frames.writer()) catch 0;
     const start_phase = c.tx_key_phase;
     var i: usize = 0;

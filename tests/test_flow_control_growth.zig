@@ -43,8 +43,8 @@ test "flow control adaptive growth thresholds" {
     const payload1 = try A.alloc(u8, need1);
     defer A.free(payload1);
     @memset(payload1, 'A');
-    var fb1 = std.ArrayList(u8).init(A);
-    defer fb1.deinit();
+    var fb1 = std.ArrayList(u8){};
+    defer fb1.deinit(A);
     _ = (fr.Frame{ .stream = .{ .stream_id = 0, .offset = 0, .fin = false, .data = payload1 } }).write(fb1.writer()) catch 0;
     try inject(A, &ep, &c, fb1.items);
 
@@ -86,8 +86,8 @@ test "flow control adaptive growth thresholds" {
     const payload2 = try A.alloc(u8, need_more);
     defer A.free(payload2);
     @memset(payload2, 'B');
-    var fb2 = std.ArrayList(u8).init(A);
-    defer fb2.deinit();
+    var fb2 = std.ArrayList(u8){};
+    defer fb2.deinit(A);
     _ = (fr.Frame{ .stream = .{ .stream_id = 0, .offset = payload1.len, .fin = false, .data = payload2 } }).write(fb2.writer()) catch 0;
     try inject(A, &ep, &c, fb2.items);
     try std.testing.expect(ep.captureLen() > 0);

@@ -9,7 +9,7 @@ const Capture = struct {
     bufs: std.ArrayList([]u8),
 
     fn init(a: std.mem.Allocator) Capture {
-        return .{ .alloc = a, .bufs = std.ArrayList([]u8).init(a) };
+        return .{ .alloc = a, .bufs = std.ArrayList([]u8){} };
     }
     fn deinit(self: *Capture) void {
         for (self.bufs.items) |b| self.alloc.free(b);
@@ -288,8 +288,8 @@ test "endpoint ACK includes updated MAX_* after threshold bumps" {
     const payload1 = try A.alloc(u8, half_stream + 100);
     defer A.free(payload1);
     @memset(payload1, 'A');
-    var fb1 = std.ArrayList(u8).init(A);
-    defer fb1.deinit();
+    var fb1 = std.ArrayList(u8){};
+    defer fb1.deinit(A);
     _ = (fr.Frame{ .stream = .{ .stream_id = 0, .offset = 0, .fin = false, .data = payload1 } }).write(fb1.writer()) catch 0;
     try inject(A, &ep, &c, fb1.items);
 
@@ -328,8 +328,8 @@ test "endpoint ACK includes updated MAX_* after threshold bumps" {
     const payload2 = try A.alloc(u8, half_conn + 1024);
     defer A.free(payload2);
     @memset(payload2, 'B');
-    var fb2 = std.ArrayList(u8).init(A);
-    defer fb2.deinit();
+    var fb2 = std.ArrayList(u8){};
+    defer fb2.deinit(A);
     _ = (fr.Frame{ .stream = .{ .stream_id = 0, .offset = payload1.len, .fin = false, .data = payload2 } }).write(fb2.writer()) catch 0;
     try inject(A, &ep, &c, fb2.items);
 
@@ -443,8 +443,8 @@ test "endpoint ACK does not include redundant MAX_* when values unchanged" {
 
     // Cross a threshold once to cause MAX emission
     const half_stream: usize = @intCast(c.local_max_stream_data / 2);
-    var fb = std.ArrayList(u8).init(A);
-    defer fb.deinit();
+    var fb = std.ArrayList(u8){};
+    defer fb.deinit(A);
     const payload = try A.alloc(u8, half_stream + 16);
     defer A.free(payload);
     @memset(payload, 'Z');

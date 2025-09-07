@@ -33,8 +33,8 @@ test "server_issues_retry_and_client_retries" {
         const t = ks.deriveKeyIvHp(pair.client);
         break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
     };
-    var frames = std.ArrayList(u8).init(alloc);
-    defer frames.deinit();
+    var frames = std.ArrayList(u8){};
+    defer frames.deinit(alloc);
     _ = (frame.Frame{ .ping = {} }).write(frames.writer()) catch {};
     const pkt = try packet.encodeInitialProtected(
         alloc,

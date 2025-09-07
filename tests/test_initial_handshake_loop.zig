@@ -39,9 +39,9 @@ test "initial->handshake pipeline in-process" {
     const sh_msg = try tls13.encodeHandshake(alloc, .server_hello, sh_body);
     defer alloc.free(sh_msg);
 
-    var crypto_payload = std.ArrayList(u8).init(alloc);
-    defer crypto_payload.deinit();
-    const w = crypto_payload.writer();
+    var crypto_payload = std.ArrayList(u8){};
+    defer crypto_payload.deinit(alloc);
+    const w = crypto_payload.writer(alloc);
     _ = try (frame.Frame{ .crypto = .{ .offset = 0, .data = ch_msg } }).write(w);
     _ = try (frame.Frame{ .crypto = .{ .offset = ch_msg.len, .data = sh_msg } }).write(w);
 
@@ -85,8 +85,8 @@ test "initial->handshake pipeline in-process" {
     const srv_hs = tls13.deriveQuicHandshakeKeys(hs.server, false);
 
     // Build a server Handshake packet carrying a CRYPTO PING payload
-    var hs_frames = std.ArrayList(u8).init(alloc);
-    defer hs_frames.deinit();
+    var hs_frames = std.ArrayList(u8){};
+    defer hs_frames.deinit(alloc);
     const w2 = hs_frames.writer();
     _ = try (frame.Frame{ .ping = {} }).write(w2);
 

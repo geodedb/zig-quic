@@ -22,8 +22,8 @@ test "initial space: ECN CE triggers ACK_ECN in server Initial ACK" {
     const pair = ks.deriveClientServerInitial(initial);
     const cli = ks.deriveKeyIvHp(pair.client);
     const srv = ks.deriveKeyIvHp(pair.server);
-    var fb = std.ArrayList(u8).init(A);
-    defer fb.deinit();
+    var fb = std.ArrayList(u8){};
+    defer fb.deinit(A);
     _ = (frame.Frame{ .ping = {} }).write(fb.writer()) catch {};
     const init_pkt = try packet.encodeInitialProtected(
         A,

@@ -26,8 +26,8 @@ test "aead integrity limit triggers connection close" {
     c.app_tx_keys = .{ .key = key, .iv = iv, .hp = hp };
 
     // Build two bogus short packets that won't authenticate: mutate ciphertext bytes randomly.
-    var frames = std.ArrayList(u8).init(A);
-    defer frames.deinit();
+    var frames = std.ArrayList(u8){};
+    defer frames.deinit(A);
     _ = (fr.Frame{ .ping = {} }).write(frames.writer()) catch 0;
     const good = try pkt.encodeShortProtected(A, c.our_scid.bytes[0..c.our_scid.len], 1, 2, frames.items, .{ .key = key, .iv = iv, .hp = hp }, false);
     defer A.free(good);

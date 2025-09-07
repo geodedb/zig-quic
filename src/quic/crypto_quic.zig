@@ -336,7 +336,7 @@ var ct_empty: [1]u8 = .{0};
 pub fn computeRetryIntegrityTag(version_v2: bool, odcid: []const u8, retry_without_tag: []const u8) [16]u8 {
     const kiv = deriveRetryKeyIv(version_v2);
     // Build AAD = ODCID Len (1) || ODCID || retry_without_tag
-    var buf = std.ArrayList(u8).init(std.heap.page_allocator);
+    var buf = std.ArrayList(u8){};
     defer buf.deinit();
     buf.append(@as(u8, @intCast(odcid.len))) catch unreachable;
     buf.appendSlice(odcid) catch unreachable;
@@ -647,14 +647,11 @@ fn poly1305TagRfc8439(aad: []const u8, ciphertext: []const u8, otk32: *const [32
 fn dumpBytes(label: []const u8, bytes: []const u8) void {
     // Temporarily always dump for debugging
     // if (!builtin.is_test) return;
-    var buf: [256]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buf);
-    const a = fba.allocator();
-    var list = std.ArrayList(u8).init(a);
+    var list = std.ArrayList(u8){};
     defer list.deinit();
     var i: usize = 0;
     while (i < bytes.len) : (i += 1) {
-        _ = list.writer().print("{x:0>2}", .{bytes[i]}) catch break;
+        _ = list.writer(std.heap.page_allocator).print("{x:0>2}", .{bytes[i]}) catch break;
         if (i + 1 < bytes.len) _ = list.append(' ') catch break;
     }
     std.debug.print("{s}: {s}\n", .{ label, list.items });

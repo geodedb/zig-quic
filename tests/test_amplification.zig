@@ -27,8 +27,8 @@ test "anti_amplification_counters_update" {
         break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
     };
 
-    var frames = std.ArrayList(u8).init(alloc);
-    defer frames.deinit();
+    var frames = std.ArrayList(u8){};
+    defer frames.deinit(alloc);
     _ = (frame.Frame{ .ping = {} }).write(frames.writer()) catch {};
 
     const pkt = try packet.encodeInitialProtected(

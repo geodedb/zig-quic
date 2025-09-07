@@ -27,8 +27,8 @@ test "multi-stream RX: independent FIN completion" {
     c.app_tx_keys = .{ .key = key, .iv = iv, .hp = hp };
 
     // Simulate two inbound streams (0 and 4). Push partial data + FIN for stream 0 only.
-    var fb = std.ArrayList(u8).init(A);
-    defer fb.deinit();
+    var fb = std.ArrayList(u8){};
+    defer fb.deinit(A);
     _ = (fr.Frame{ .stream = .{ .stream_id = 0, .offset = 0, .fin = true, .data = "hello" } }).write(fb.writer()) catch 0;
     _ = (fr.Frame{ .stream = .{ .stream_id = 4, .offset = 0, .fin = false, .data = "abc" } }).write(fb.writer()) catch 0;
     try injectShort(A, &ep, &c, fb.items);

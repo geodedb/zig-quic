@@ -28,8 +28,8 @@ test "client_ignores_tampered_retry" {
     const txk = ks.deriveKeyIvHp(pair.client);
     const tx_keys: packet.InitialKeys = .{ .key = txk.key, .iv = txk.iv, .hp = txk.hp };
 
-    var frames_buf = std.ArrayList(u8).init(alloc);
-    defer frames_buf.deinit();
+    var frames_buf = std.ArrayList(u8){};
+    defer frames_buf.deinit(A);
     _ = (frame.Frame{ .ping = {} }).write(frames_buf.writer()) catch {};
 
     const initial_pkt = try packet.encodeInitialProtected(

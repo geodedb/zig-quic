@@ -124,7 +124,7 @@ test "pmtud probe builds PING+PADDING to exact UDP payload size" {
         .role = .Client,
         .sock_fd = 0,
         .peer = conn_mod.SockAddr.ipv4(127, 0, 0, 1, 5555),
-        .tls_inbox = std.ArrayList(u8).init(alloc),
+        .tls_inbox = std.ArrayList(u8){},
         .tls = @import("quic_tls13").Engine.init(alloc, .Client),
         .allocator = &alloc,
     };
@@ -150,7 +150,7 @@ test "pmtud validation raises path_mtu on ACK of probe PN" {
         .role = .Client,
         .sock_fd = 0,
         .peer = conn_mod.SockAddr.ipv4(127, 0, 0, 1, 5555),
-        .tls_inbox = std.ArrayList(u8).init(alloc),
+        .tls_inbox = std.ArrayList(u8){},
         .tls = @import("quic_tls13").Engine.init(alloc, .Client),
         .allocator = &alloc,
     };
@@ -181,7 +181,7 @@ test "icmp packet too big clamps path_mtu and clears oversize pending" {
         .role = .Client,
         .sock_fd = 0,
         .peer = conn_mod.SockAddr.ipv4(127, 0, 0, 1, 5555),
-        .tls_inbox = std.ArrayList(u8).init(alloc),
+        .tls_inbox = std.ArrayList(u8){},
         .tls = @import("quic_tls13").Engine.init(alloc, .Client),
         .allocator = &alloc,
     };
@@ -249,7 +249,7 @@ test "pmtud: send multiple probe sizes and accept only acked size" {
         .role = .Client,
         .sock_fd = 0,
         .peer = conn_mod.SockAddr.ipv4(127, 0, 0, 1, 5555),
-        .tls_inbox = std.ArrayList(u8).init(alloc),
+        .tls_inbox = std.ArrayList(u8){},
         .tls = @import("quic_tls13").Engine.init(alloc, .Client),
         .allocator = &alloc,
     };

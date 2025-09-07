@@ -81,16 +81,16 @@ fn hmac_sha256(key: []const u8, data: []const u8) [H.digest_length]u8 {
     const inner_len = block_len + data.len;
     if (inner_len > inner_buf.len) {
         // Fallback for unexpectedly large data
-        var large_buf = std.ArrayList(u8).init(std.heap.page_allocator);
-        defer large_buf.deinit();
-        large_buf.appendSlice(&ipad) catch unreachable;
-        large_buf.appendSlice(data) catch unreachable;
+        var large_buf = std.ArrayList(u8){};
+        defer large_buf.deinit(std.heap.page_allocator);
+        large_buf.appendSlice(std.heap.page_allocator, &ipad) catch unreachable;
+        large_buf.appendSlice(std.heap.page_allocator, data) catch unreachable;
         const inner = sha256(large_buf.items);
         
-        var outer_buf = std.ArrayList(u8).init(std.heap.page_allocator);
-        defer outer_buf.deinit();
-        outer_buf.appendSlice(&opad) catch unreachable;
-        outer_buf.appendSlice(&inner) catch unreachable;
+        var outer_buf = std.ArrayList(u8){};
+        defer outer_buf.deinit(std.heap.page_allocator);
+        outer_buf.appendSlice(std.heap.page_allocator, &opad) catch unreachable;
+        outer_buf.appendSlice(std.heap.page_allocator, &inner) catch unreachable;
         return sha256(outer_buf.items);
     }
     
@@ -135,11 +135,11 @@ fn hkdfExpand(out: []u8, prk: [H.digest_length]u8, info: []const u8) void {
         if (info.len != 0) {
             if (input_len + info.len > input_buf.len - 1) {
                 // Fallback for unexpectedly large info
-                var large_input = std.ArrayList(u8).init(std.heap.page_allocator);
-                defer large_input.deinit();
-                if (i > 1) large_input.appendSlice(&t_prev) catch unreachable;
-                if (info.len != 0) large_input.appendSlice(info) catch unreachable;
-                large_input.append(@as(u8, @intCast(i))) catch unreachable;
+                var large_input = std.ArrayList(u8){};
+                defer large_input.deinit(std.heap.page_allocator);
+                if (i > 1) large_input.appendSlice(std.heap.page_allocator, &t_prev) catch unreachable;
+                if (info.len != 0) large_input.appendSlice(std.heap.page_allocator, info) catch unreachable;
+                large_input.append(std.heap.page_allocator, @as(u8, @intCast(i))) catch unreachable;
                 const t = hmac_sha256(&prk, large_input.items);
                 t_prev = t;
                 const to_copy = @min(hash_len, out.len - pos);
@@ -228,4 +228,11 @@ pub fn updateTrafficSecret(current_secret: [H.digest_length]u8) [H.digest_length
     var next: [H.digest_length]u8 = undefined;
     expandLabel(current_secret, "traffic upd", &[_]u8{}, &next) catch unreachable;
     return next;
+}
+
+/// Derive a secret using HKDF-Expand-Label
+pub fn deriveSecret(secret: [H.digest_length]u8, label: []const u8, context: []const u8) [H.digest_length]u8 {
+    var derived: [H.digest_length]u8 = undefined;
+    expandLabel(secret, label, context, &derived) catch unreachable;
+    return derived;
 }

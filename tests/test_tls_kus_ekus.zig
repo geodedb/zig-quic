@@ -4,15 +4,15 @@ const x509 = @import("quic_x509");
 fn dummyCertWithKuEku(alloc: std.mem.Allocator, dns: []const u8, ku_bits: ?u16, eku_server_auth: bool) ![]u8 {
     // Minimal TBSCertificate with SAN and optional KU/EKU. Values are not signed; validateChain should fail
     // on KU/EKU before signature parsing when time and name match.
-    var tbs = std.ArrayList(u8).init(alloc);
-    defer tbs.deinit();
+    var tbs = std.ArrayList(u8){};
+    defer tbs.deinit(alloc);
     const nb = "20200101000000Z";
     const na = "20300101000000Z";
 
     // Sequence wrappers
     const empty_seq = blk: {
-        var a = std.ArrayList(u8).init(alloc);
-        defer a.deinit();
+        var a = std.ArrayList(u8){};
+        defer a.deinit(alloc);
         emitTLV(&a, 0x30, &[_]u8{});
         break :blk try a.toOwnedSlice();
     };
@@ -31,8 +31,8 @@ fn dummyCertWithKuEku(alloc: std.mem.Allocator, dns: []const u8, ku_bits: ?u16, 
     defer alloc.free(nb_t);
     const na_t = try makeGeneralizedTime(alloc, na);
     defer alloc.free(na_t);
-    var validity_inner = std.ArrayList(u8).init(alloc);
-    defer validity_inner.deinit();
+    var validity_inner = std.ArrayList(u8){};
+    defer validity_inner.deinit(alloc);
     validity_inner.appendSlice(nb_t) catch unreachable;
     validity_inner.appendSlice(na_t) catch unreachable;
     const validity = try makeSeq(alloc, validity_inner.items);
@@ -47,20 +47,20 @@ fn dummyCertWithKuEku(alloc: std.mem.Allocator, dns: []const u8, ku_bits: ?u16, 
     const san_oid = &[_]u8{ 0x55, 0x1D, 0x11 };
     const oid_san = try makeOID(alloc, san_oid);
     defer alloc.free(oid_san);
-    var gn = std.ArrayList(u8).init(alloc);
-    defer gn.deinit();
+    var gn = std.ArrayList(u8){};
+    defer gn.deinit(alloc);
     emitTLV(&gn, 0x82, dns);
     const gns = try makeSeq(alloc, gn.items);
     defer alloc.free(gns);
     const san_oct = try makeOctet(alloc, gns);
     defer alloc.free(san_oct);
 
-    var ext_list = std.ArrayList(u8).init(alloc);
-    defer ext_list.deinit();
+    var ext_list = std.ArrayList(u8){};
+    defer ext_list.deinit(alloc);
     // Append SAN extension
     {
-        var ext = std.ArrayList(u8).init(alloc);
-        defer ext.deinit();
+        var ext = std.ArrayList(u8){};
+        defer ext.deinit(alloc);
         ext.appendSlice(oid_san) catch unreachable;
         ext.appendSlice(san_oct) catch unreachable;
         const ext_seq = try makeSeq(alloc, ext.items);
@@ -73,16 +73,16 @@ fn dummyCertWithKuEku(alloc: std.mem.Allocator, dns: []const u8, ku_bits: ?u16, 
         defer alloc.free(oid_ku);
         // Encode 2-byte BIT STRING (unused bits = 0)
         var ku_val = [_]u8{ @intCast((bits >> 8) & 0xff), @intCast(bits & 0xff) };
-        var bs = std.ArrayList(u8).init(alloc);
-        defer bs.deinit();
+        var bs = std.ArrayList(u8){};
+        defer bs.deinit(alloc);
         bs.append(0) catch unreachable; // unused bits count
         bs.appendSlice(&ku_val) catch unreachable;
         const bs_tlv = try makeBitString(alloc, bs.items);
         defer alloc.free(bs_tlv);
         const ku_oct = try makeOctet(alloc, bs_tlv);
         defer alloc.free(ku_oct);
-        var ext = std.ArrayList(u8).init(alloc);
-        defer ext.deinit();
+        var ext = std.ArrayList(u8){};
+        defer ext.deinit(alloc);
         ext.appendSlice(oid_ku) catch unreachable;
         ext.appendSlice(ku_oct) catch unreachable;
         const ext_seq = try makeSeq(alloc, ext.items);
@@ -99,8 +99,8 @@ fn dummyCertWithKuEku(alloc: std.mem.Allocator, dns: []const u8, ku_bits: ?u16, 
         defer alloc.free(seq_sa);
         const eku_oct = try makeOctet(alloc, seq_sa);
         defer alloc.free(eku_oct);
-        var ext = std.ArrayList(u8).init(alloc);
-        defer ext.deinit();
+        var ext = std.ArrayList(u8){};
+        defer ext.deinit(alloc);
         ext.appendSlice(oid_eku) catch unreachable;
         ext.appendSlice(eku_oct) catch unreachable;
         const ext_seq = try makeSeq(alloc, ext.items);
@@ -117,8 +117,8 @@ fn dummyCertWithKuEku(alloc: std.mem.Allocator, dns: []const u8, ku_bits: ?u16, 
     defer alloc.free(tbs_seq);
 
     // Wrap into Certificate: Certificate ::= SEQUENCE { tbs, sigAlg, sigBits }
-    var outer = std.ArrayList(u8).init(alloc);
-    defer outer.deinit();
+    var outer = std.ArrayList(u8){};
+    defer outer.deinit(alloc);
     outer.appendSlice(tbs_seq) catch unreachable;
     emitTLV(&outer, 0x30, &[_]u8{}); // sigAlg
     emitTLV(&outer, 0x03, &[_]u8{0x00}); // sigBits
@@ -147,38 +147,38 @@ fn putLen(out: *std.ArrayList(u8), len: usize) void {
     }
 }
 fn makeSeq(alloc: std.mem.Allocator, inner: []const u8) ![]u8 {
-    var a = std.ArrayList(u8).init(alloc);
-    defer a.deinit();
+    var a = std.ArrayList(u8){};
+    defer a.deinit(alloc);
     emitTLV(&a, 0x30, inner);
     return try a.toOwnedSlice();
 }
 fn makeCtx(tagnum: u8, alloc: std.mem.Allocator, inner: []const u8) ![]u8 {
-    var a = std.ArrayList(u8).init(alloc);
-    defer a.deinit();
+    var a = std.ArrayList(u8){};
+    defer a.deinit(alloc);
     emitTLV(&a, 0xA0 | (tagnum & 0x1f), inner);
     return try a.toOwnedSlice();
 }
 fn makeOctet(alloc: std.mem.Allocator, inner: []const u8) ![]u8 {
-    var a = std.ArrayList(u8).init(alloc);
-    defer a.deinit();
+    var a = std.ArrayList(u8){};
+    defer a.deinit(alloc);
     emitTLV(&a, 0x04, inner);
     return try a.toOwnedSlice();
 }
 fn makeOID(alloc: std.mem.Allocator, bytes: []const u8) ![]u8 {
-    var a = std.ArrayList(u8).init(alloc);
-    defer a.deinit();
+    var a = std.ArrayList(u8){};
+    defer a.deinit(alloc);
     emitTLV(&a, 0x06, bytes);
     return try a.toOwnedSlice();
 }
 fn makeGeneralizedTime(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
-    var a = std.ArrayList(u8).init(alloc);
-    defer a.deinit();
+    var a = std.ArrayList(u8){};
+    defer a.deinit(alloc);
     emitTLV(&a, 0x18, s);
     return try a.toOwnedSlice();
 }
 fn makeBitString(alloc: std.mem.Allocator, v: []const u8) ![]u8 {
-    var a = std.ArrayList(u8).init(alloc);
-    defer a.deinit();
+    var a = std.ArrayList(u8){};
+    defer a.deinit(alloc);
     emitTLV(&a, 0x03, v);
     return try a.toOwnedSlice();
 }
