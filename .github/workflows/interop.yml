@@ -44,10 +44,13 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v1
         with:
-          version: 0.14.1
+          version: 0.15.1
       
       - name: Build & Unit Tests
         run: zig build test --summary all
+      
+      - name: Build Zig CLI (qns-endpoint)
+        run: zig build -Drelease-safe=true cli
       
       - name: Build interop image
         run: docker build -t zig-qns:local -f examples/interop/zig-qns/Dockerfile .

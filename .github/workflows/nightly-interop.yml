@@ -39,6 +39,14 @@ jobs:
       
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Set up Zig 0.15.1
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.15.1
+
+      - name: Build Zig CLI (qns-endpoint)
+        run: zig build -Drelease-safe=true cli
       
       - name: Build Zig implementation
         run: |
