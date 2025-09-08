@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-matrix:
+    name: Build/Test/Fuzz (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        zig: ['0.15.1']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: ${{ matrix.zig }}
+
+      - name: Install GNU Make (Windows)
+        if: runner.os == 'Windows'
+        run: choco install make -y
+
+      - name: Zig version
+        run: zig version
+
+      - name: Build
+        run: make build
+
+      - name: Test
+        run: make test
+
+      - name: Build fuzzers
+        run: make fuzz
+
+      - name: Bench (build only)
+        run: make bench
+
+      - name: Tools + Doccheck
+        run: make doccheck
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: quic-${{ runner.os }}-zig-${{ matrix.zig }}
+          path: |
+            zig-out/bin/**
+          retention-days: 7
+
+      - name: Release (attach OS artifacts)
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: |
+            zig-out/bin/**
+          prerelease: ${{ contains(github.ref_name, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
