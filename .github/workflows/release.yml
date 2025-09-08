@@ -9,6 +9,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  ZIG_VERSION: 0.15.1
+
 jobs:
   build-matrix:
     name: Build/Test/Fuzz (${{ matrix.os }}-${{ matrix.arch }})
@@ -60,7 +63,6 @@ jobs:
             runner: windows-latest
             target: aarch64-windows-msvc
             run_tests: false
-        zig: ['0.15.1']
 
     steps:
       - uses: actions/checkout@v4
@@ -68,7 +70,7 @@ jobs:
       - name: Setup Zig
         uses: goto-bus-stop/setup-zig@v2
         with:
-          version: ${{ matrix.zig }}
+          version: ${{ env.ZIG_VERSION }}
 
       - name: Install GNU Make (Windows)
         if: runner.os == 'Windows'
@@ -78,7 +80,7 @@ jobs:
         run: zig version
 
       - name: Build CLI (ReleaseSafe)
-        run: zig build -Dtarget='${{ matrix.target }}' -Drelease-safe=true cli
+        run: zig build -Dtarget='${{ matrix.target }}' -Doptimize=ReleaseSafe cli
 
       - name: Test
         if: matrix.run_tests
@@ -96,12 +98,11 @@ jobs:
         if: matrix.run_tests
         run: make doccheck
 
-      - name: Upload artifacts
+      - name: Upload raw build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: quic-${{ matrix.os }}-${{ matrix.arch }}-zig-${{ matrix.zig }}
-          path: |
-            zig-out/bin/**
+          name: quic-${{ matrix.os }}-${{ matrix.arch }}-zig-${{ env.ZIG_VERSION }}-raw
+          path: zig-out/bin/**
           retention-days: 7
 
       - name: Package binaries (OS-specific archive)
@@ -110,19 +111,19 @@ jobs:
           set -euo pipefail
           os='${{ matrix.os }}'
           arch='${{ matrix.arch }}'
-          zigv='${{ matrix.zig }}'
+          zigv='${{ env.ZIG_VERSION }}'
           name="quic-${os}-${arch}-zig-${zigv}"
           mkdir -p dist
           if [ "${os}" = "windows" ]; then
             if command -v powershell >/dev/null 2>&1; then
-              powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path 'dist' | Out-Null; if (-Not (Test-Path 'zig-out/bin')) { throw 'zig-out/bin missing' }; Compress-Archive -Path 'zig-out/bin/*' -DestinationPath 'dist/${name}.zip' -Force"
+              powershell -NoProfile -Command "if (-Not (Test-Path 'zig-out/bin')) { throw 'zig-out/bin missing' }; Compress-Archive -Path 'zig-out/bin/*' -DestinationPath 'dist/${name}.zip' -Force"
             else
               echo "powershell not available for zip compression" >&2; exit 1
             fi
             echo "ARCHIVE_PATH=dist/${name}.zip" >> "$GITHUB_ENV"
             echo "ARCHIVE_NAME=${name}.zip" >> "$GITHUB_ENV"
           else
-            if [ ! -d zig-out/bin ]; then echo 'zig-out/bin missing' >&2; exit 1; fi
+            [ -d zig-out/bin ] || { echo 'zig-out/bin missing' >&2; exit 1; }
             tar -czf "dist/${name}.tar.gz" -C zig-out/bin .
             echo "ARCHIVE_PATH=dist/${name}.tar.gz" >> "$GITHUB_ENV"
             echo "ARCHIVE_NAME=${name}.tar.gz" >> "$GITHUB_ENV"
@@ -147,13 +148,16 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Download packaged artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+
       - name: Create source tarball
         run: git archive --format=tar.gz -o dist/source-${{ github.ref_name }}.tar.gz --prefix=quic-${{ github.ref_name }}/ ${{ github.sha }}
+
       - name: Collect license and signatures
         shell: bash
         run: |
@@ -165,6 +169,7 @@ jobs:
               cp -v "$f" dist/
             done
           done
+
       - name: Create/Update Release and Upload Assets
         uses: softprops/action-gh-release@v2
         with:
@@ -179,3 +184,4 @@ jobs:
             dist/COPYING*
             dist/NOTICE*
           prerelease: ${{ contains(github.ref_name, '-') }}
+
