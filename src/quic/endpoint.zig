@@ -496,6 +496,18 @@ pub const Endpoint = struct {
         var eff_timeout = self.nextTimeoutFromTimers(now_ms, timeout_ms);
         if (eff_timeout < 0) eff_timeout = -1;
 
+        // Guard for coarse timer resolution on some platforms (e.g., Windows):
+        // if a timer is due "now" (eff_timeout == 0), sleep a minimal interval to
+        // ensure the next timestamp crosses the deadline, then flush again.
+        if (eff_timeout == 0 and self.timers.items.len > 0) {
+            std.Thread.sleep(@as(u64, 1) * std.time.ns_per_ms);
+            self.processExpiredTimers(nowMsMonotonic());
+            // Recompute effective timeout after the flush
+            const now_after = nowMsMonotonic();
+            eff_timeout = self.nextTimeoutFromTimers(now_after, timeout_ms);
+            if (eff_timeout < 0) eff_timeout = -1;
+        }
+
         // Always use the platform event loop to wait for readability
         // This ensures we actually wait for packets to arrive
         switch (lb.defaultLoopBackend()) {
@@ -504,9 +516,15 @@ pub const Endpoint = struct {
             .iocp => try self.poll_iocp_backend(eff_timeout),
         }
 
-        // After wait, process timers that have expired.
         self.processExpiredTimers(nowMsMonotonic());
-        // Prune any closed connections (after timers potentially changed state)
+        if (self.timers.items.len > 0 and timeout_ms != 0) {
+            const now2: i64 = nowMsMonotonic();
+            var again: i32 = self.nextTimeoutFromTimers(now2, 0);
+            if (again > 0 and again <= 5) {
+                std.Thread.sleep(@as(u64, @intCast(again)) * std.time.ns_per_ms);
+                self.processExpiredTimers(nowMsMonotonic());
+            }
+        }
         self.pruneClosed();
     }
 
