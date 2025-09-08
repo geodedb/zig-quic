@@ -11,12 +11,48 @@ concurrency:
 
 jobs:
   build-matrix:
-    name: Build/Test/Fuzz (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Build/Test/Fuzz (${{ matrix.archive_os }}-${{ matrix.archive_arch }})
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          # Linux x86_64 (native)
+          - runner: ubuntu-latest
+            target: x86_64-linux-gnu
+            archive_os: linux
+            archive_arch: x86_64
+            run_tests: true
+          # Linux arm
+          - runner: ubuntu-latest
+            target: arm-linux-gnueabihf
+            archive_os: linux
+            archive_arch: arm
+            run_tests: false
+          # Linux arm64
+          - runner: ubuntu-latest
+            target: aarch64-linux-gnu
+            archive_os: linux
+            archive_arch: arm64
+            run_tests: false
+          # Linux riscv64
+          - runner: ubuntu-latest
+            target: riscv64-linux-gnu
+            archive_os: linux
+            archive_arch: riscv64
+            run_tests: false
+          # macOS x86_64 (cross)
+          - runner: macos-latest
+            target: x86_64-macos
+            archive_os: macos
+            archive_arch: x86_64
+            run_tests: false
+          # Windows arm64 (cross)
+          - runner: windows-latest
+            target: aarch64-windows-msvc
+            archive_os: windows
+            archive_arch: arm64
+            run_tests: false
         zig: ['0.15.1']
 
     steps:
@@ -35,24 +71,28 @@ jobs:
         run: zig version
 
       - name: Build
-        run: make build
+        run: make build ZIG_FLAGS='-Dtarget=${{ matrix.target }}'
 
       - name: Test
+        if: matrix.run_tests
         run: make test
 
       - name: Build fuzzers
+        if: matrix.run_tests
         run: make fuzz
 
       - name: Bench (build only)
+        if: matrix.run_tests
         run: make bench
 
       - name: Tools + Doccheck
+        if: matrix.run_tests
         run: make doccheck
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: quic-${{ runner.os }}-zig-${{ matrix.zig }}
+          name: quic-${{ matrix.archive_os }}-${{ matrix.archive_arch }}-zig-${{ matrix.zig }}
           path: |
             zig-out/bin/**
           retention-days: 7
@@ -61,13 +101,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          os="$(echo "${RUNNER_OS}" | tr '[:upper:]' '[:lower:]')"
-          arch="$(echo "${RUNNER_ARCH}" | tr '[:upper:]' '[:lower:]')"
-          zigv="${{ matrix.zig }}"
+          os='${{ matrix.archive_os }}'
+          arch='${{ matrix.archive_arch }}'
+          zigv='${{ matrix.zig }}'
           name="quic-${os}-${arch}-zig-${zigv}"
           mkdir -p dist
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            powershell -NoProfile -Command "Compress-Archive -Path 'zig-out/bin/*' -DestinationPath 'dist/${name}.zip' -Force"
+          if [ "${os}" = "windows" ]; then
+            if command -v powershell >/dev/null 2>&1; then
+              powershell -NoProfile -Command "Compress-Archive -Path 'zig-out/bin/*' -DestinationPath 'dist/${name}.zip' -Force"
+            else
+              echo "powershell not available for zip compression" >&2; exit 1
+            fi
             echo "ARCHIVE_PATH=dist/${name}.zip" >> "$GITHUB_ENV"
             echo "ARCHIVE_NAME=${name}.zip" >> "$GITHUB_ENV"
           else

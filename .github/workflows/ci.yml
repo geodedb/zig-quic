@@ -112,6 +112,54 @@ jobs:
             ./zig-out/bin/update-gap --summary "CI: code changed in PR"
           fi
 
+  cross-builds:
+    name: Cross builds (${{ matrix.archive_os }}-${{ matrix.archive_arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: arm-linux-gnueabihf
+            archive_os: linux
+            archive_arch: arm
+          - runner: ubuntu-latest
+            target: aarch64-linux-gnu
+            archive_os: linux
+            archive_arch: arm64
+          - runner: ubuntu-latest
+            target: riscv64-linux-gnu
+            archive_os: linux
+            archive_arch: riscv64
+          - runner: macos-14
+            target: x86_64-macos
+            archive_os: macos
+            archive_arch: x86_64
+          - runner: windows-latest
+            target: aarch64-windows-msvc
+            archive_os: windows
+            archive_arch: arm64
+        zig: ['0.15.1']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Zig 0.15.1
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.15.1
+      - name: Zig version
+        run: zig version
+      - name: Build (cross)
+        run: make build ZIG_FLAGS='-Dtarget=${{ matrix.target }}'
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: zcap-${{ matrix.archive_os }}-${{ matrix.archive_arch }}-zig-${{ matrix.zig }}
+          path: |
+            zig-out/bin/
+            zig-out/lib/
+            include/
+          retention-days: 7
+
   build-test:
     strategy:
       fail-fast: false
