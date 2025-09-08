@@ -519,7 +519,7 @@ pub const Endpoint = struct {
         self.processExpiredTimers(nowMsMonotonic());
         if (self.timers.items.len > 0 and timeout_ms != 0) {
             const now2: i64 = nowMsMonotonic();
-            var again: i32 = self.nextTimeoutFromTimers(now2, 0);
+            const again: i32 = self.nextTimeoutFromTimers(now2, 0);
             if (again > 0 and again <= 5) {
                 std.Thread.sleep(@as(u64, @intCast(again)) * std.time.ns_per_ms);
                 self.processExpiredTimers(nowMsMonotonic());
