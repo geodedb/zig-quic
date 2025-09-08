@@ -163,13 +163,11 @@ jobs:
       - name: Create source tarball
         run: git archive --format=tar.gz -o quic-dev.tar.gz --prefix=quic-dev/ HEAD
       - name: Create/update dev release
-        uses: ncipollo/release-action@v1
+        uses: softprops/action-gh-release@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag: dev
+          tag_name: dev
           name: dev
           body: 'Automated dev release for ${{ github.sha }}'
           prerelease: true
-          allowUpdates: true
-          artifacts: quic-dev.tar.gz
-          artifactErrorsFailBuild: true
+          files: quic-dev.tar.gz
+          fail_on_unmatched_files: true
