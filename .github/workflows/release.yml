@@ -11,59 +11,56 @@ concurrency:
 
 jobs:
   build-matrix:
-    name: Build/Test/Fuzz (${{ matrix.archive_os }}-${{ matrix.archive_arch }})
+    name: Build/Test/Fuzz (${{ matrix.os }}-${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
+        os: [linux, macos, windows]
+        arch: [x86_64, arm, arm64, riscv64]
         include:
-          # Linux x86_64 (native)
-          - runner: ubuntu-latest
+          # Linux
+          - os: linux
+            arch: x86_64
+            runner: ubuntu-latest
             target: x86_64-linux-gnu
-            archive_os: linux
-            archive_arch: x86_64
             run_tests: true
-          # Linux arm
-          - runner: ubuntu-latest
+          - os: linux
+            arch: arm
+            runner: ubuntu-latest
             target: arm-linux-gnueabihf
-            archive_os: linux
-            archive_arch: arm
             run_tests: false
-          # Linux arm64
-          - runner: ubuntu-latest
+          - os: linux
+            arch: arm64
+            runner: ubuntu-latest
             target: aarch64-linux-gnu
-            archive_os: linux
-            archive_arch: arm64
             run_tests: false
-          # Linux riscv64
-          - runner: ubuntu-latest
+          - os: linux
+            arch: riscv64
+            runner: ubuntu-latest
             target: riscv64-linux-gnu
-            archive_os: linux
-            archive_arch: riscv64
             run_tests: false
-          # macOS x86_64 (cross)
-          - runner: macos-latest
+          # macOS
+          - os: macos
+            arch: x86_64
+            runner: macos-14
             target: x86_64-macos
-            archive_os: macos
-            archive_arch: x86_64
             run_tests: false
-          # macOS arm64 (native)
-          - runner: macos-14
+          - os: macos
+            arch: arm64
+            runner: macos-14
             target: aarch64-macos
-            archive_os: macos
-            archive_arch: arm64
             run_tests: false
-          # Windows x86_64 (native)
-          - runner: windows-latest
+          # Windows
+          - os: windows
+            arch: x86_64
+            runner: windows-latest
             target: x86_64-windows-msvc
-            archive_os: windows
-            archive_arch: x86_64
             run_tests: false
-          # Windows arm64 (cross)
-          - runner: windows-latest
+          - os: windows
+            arch: arm64
+            runner: windows-latest
             target: aarch64-windows-msvc
-            archive_os: windows
-            archive_arch: arm64
             run_tests: false
         zig: ['0.15.1']
 
@@ -104,7 +101,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: quic-${{ matrix.archive_os }}-${{ matrix.archive_arch }}-zig-${{ matrix.zig }}
+          name: quic-${{ matrix.os }}-${{ matrix.arch }}-zig-${{ matrix.zig }}
           path: |
             zig-out/bin/**
           retention-days: 7
@@ -113,8 +110,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          os='${{ matrix.archive_os }}'
-          arch='${{ matrix.archive_arch }}'
+          os='${{ matrix.os }}'
+          arch='${{ matrix.arch }}'
           zigv='${{ matrix.zig }}'
           name="quic-${os}-${arch}-zig-${zigv}"
           mkdir -p dist
