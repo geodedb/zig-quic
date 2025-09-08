@@ -108,7 +108,7 @@ jobs:
           mkdir -p dist
           if [ "${os}" = "windows" ]; then
             if command -v powershell >/dev/null 2>&1; then
-              powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path 'dist' > $null; if (-Not (Test-Path 'zig-out/bin')) { throw 'zig-out/bin missing' }; Compress-Archive -Path 'zig-out/bin/*' -DestinationPath 'dist/${name}.zip' -Force"
+              powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path 'dist' | Out-Null; if (-Not (Test-Path 'zig-out/bin')) { throw 'zig-out/bin missing' }; Compress-Archive -Path 'zig-out/bin/*' -DestinationPath 'dist/${name}.zip' -Force"
             else
               echo "powershell not available for zip compression" >&2; exit 1
             fi
