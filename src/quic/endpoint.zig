@@ -1403,9 +1403,10 @@ pub const Endpoint = struct {
             // token length varint and token bytes
             const tok = varint.decode(bytes[j..]) catch return;
             j += tok.n;
-            if (j + @as(usize, tok.value) > bytes.len) return;
-            const token_bytes = bytes[j .. j + @as(usize, tok.value)];
-            j += @as(usize, tok.value);
+            const tok_len_usize: usize = @as(usize, @intCast(tok.value));
+            if (j + tok_len_usize > bytes.len) return;
+            const token_bytes = bytes[j .. j + tok_len_usize];
+            j += tok_len_usize;
 
             // Address validation via token: verify token using HMAC over client IP and client's Initial DCID
             // Only applies to server role
@@ -1443,8 +1444,8 @@ pub const Endpoint = struct {
             // length varint (payload length includes pn+payload+tag)
             const len_dec = varint.decode(bytes[j..]) catch return;
             j += len_dec.n;
-            const end_total = j + @as(usize, len_dec.value);
-            if (end_total > bytes.len) return;
+            if (len_dec.value > @as(u64, bytes.len - j)) return;
+            const end_total = j + @as(usize, @intCast(len_dec.value));
             const header_prefix = bytes[1..j];
             const pn_start = j;
             // Capture up to 4 masked PN bytes (ciphertext begins immediately after PN).
@@ -1768,8 +1769,8 @@ pub const Endpoint = struct {
             var j: usize = i;
             const len_dec = varint.decode(bytes[j..]) catch return;
             j += len_dec.n;
-            const end_total = j + @as(usize, len_dec.value);
-            if (end_total > bytes.len) return;
+            if (len_dec.value > @as(u64, bytes.len - j)) return;
+            const end_total = j + @as(usize, @intCast(len_dec.value));
 
             // Lookup connection keyed by peer + initial dcid hash (use stored mapping if any)
             const key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(dcid) };

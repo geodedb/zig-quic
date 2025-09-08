@@ -241,11 +241,11 @@ pub const H3Server = struct {
                     off = vlen_off;
                     if (off + vlen > h.len) return null;
                     if (huff) {
-                        const n = hpackHuffmanDecode(h[off .. off + vlen], out) orelse return null;
+                        const n = hpackHuffmanDecode(h[off .. off + @as(usize, @intCast(vlen))], out) orelse return null;
                         return out[0..n];
                     } else {
                         if (vlen > out.len) return null;
-                        @memcpy(out[0..@as(usize, @intCast(vlen))], h[off .. off + vlen]);
+                        @memcpy(out[0..@as(usize, @intCast(vlen))], h[off .. off + @as(usize, @intCast(vlen))]);
                         return out[0..@as(usize, @intCast(vlen))];
                     }
                 } else {
@@ -262,13 +262,15 @@ pub const H3Server = struct {
                 var name_len_off = off - 1;
                 const name_len = decodePrefixedInt(h, &name_len_off, 3) orelse return null;
                 off = name_len_off;
-                if (off + name_len > h.len) return null;
+                const name_len_usize: usize = @as(usize, @intCast(name_len));
+                if (off + name_len_usize > h.len) return null;
                 var name_buf: [64]u8 = undefined;
                 const name_slice = if (h_bit) blk: {
-                    const nn = hpackHuffmanDecode(h[off .. off + name_len], name_buf[0..]) orelse return null;
+                    const name_end: usize = off + name_len_usize;
+                    const nn = hpackHuffmanDecode(h[off .. name_end], name_buf[0..]) orelse return null;
                     break :blk name_buf[0..nn];
-                } else h[off .. off + name_len];
-                off += name_len;
+                } else h[off .. off + name_len_usize];
+                off += name_len_usize;
                 // Capture :method and :authority literal-name values for ReqState.
                 if (std.mem.eql(u8, name_slice, ":method")) {
                     var vlen_off = off;
@@ -300,14 +302,15 @@ pub const H3Server = struct {
                 var vlen_off3 = off;
                 const vlen3 = decodePrefixedInt(h, &vlen_off3, 7) orelse return null;
                 off = vlen_off3;
-                if (off + vlen3 > h.len) return null;
+                const vlen3_usize: usize = @as(usize, @intCast(vlen3));
+                if (off + vlen3_usize > h.len) return null;
                 if (huff) {
-                    const n = hpackHuffmanDecode(h[off .. off + vlen3], out) orelse return null;
+                    const n = hpackHuffmanDecode(h[off .. off + vlen3_usize], out) orelse return null;
                     return out[0..n];
                 } else {
-                    if (vlen3 > out.len) return null;
-                    @memcpy(out[0..@as(usize, @intCast(vlen3))], h[off .. off + vlen3]);
-                    return out[0..@as(usize, @intCast(vlen3))];
+                    if (vlen3_usize > out.len) return null;
+                    @memcpy(out[0..vlen3_usize], h[off .. off + vlen3_usize]);
+                    return out[0..vlen3_usize];
                 }
             } else if ((b & 0b1111_0000) == 0b0001_0000) {
                 // Indexed Field Line with Post-Base Index (0001 Index(4+)) — skip

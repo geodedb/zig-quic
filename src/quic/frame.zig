@@ -381,8 +381,8 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
         i += off_dec.n;
         const len_dec = try varint.decode(buf[i..]);
         i += len_dec.n;
-        const need: usize = i + @as(usize, len_dec.value);
-        if (need > buf.len) return error.Truncated;
+        if (len_dec.value > @as(u64, buf.len - i)) return error.Truncated;
+        const need: usize = i + @as(usize, @intCast(len_dec.value));
         const data = buf[i..need];
         return .{ .f = Frame{ .crypto = .{ .offset = off_dec.value, .data = data } }, .n = need };
     }
@@ -460,8 +460,8 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
         if (has_len) {
             const dl = try varint.decode(buf[i..]);
             i += dl.n;
+            if (dl.value > @as(u64, buf.len - i)) return error.Truncated;
             data_len = @intCast(dl.value);
-            if (i + data_len > buf.len) return error.Truncated;
             const data = buf[i .. i + data_len];
             return .{ .f = Frame{ .stream = .{ .stream_id = id_dec.value, .offset = off_val, .fin = fin, .data = data } }, .n = i + data_len };
         } else {
@@ -475,8 +475,8 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
         var i: usize = 1;
         const dl = try varint.decode(buf[i..]);
         i += dl.n;
+        if (dl.value > @as(u64, buf.len - i)) return error.Truncated;
         const nbytes: usize = @intCast(dl.value);
-        if (i + nbytes > buf.len) return error.Truncated;
         const data = buf[i .. i + nbytes];
         return .{ .f = Frame{ .datagram = .{ .data = data } }, .n = i + nbytes };
     }
@@ -572,8 +572,8 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
         var i: usize = 1;
         const dl = try varint.decode(buf[i..]);
         i += dl.n;
+        if (dl.value > @as(u64, buf.len - i)) return error.Truncated;
         const nbytes: usize = @intCast(dl.value);
-        if (i + nbytes > buf.len) return error.Truncated;
         const tok = buf[i .. i + nbytes];
         return .{ .f = Frame{ .new_token = .{ .token = tok } }, .n = i + nbytes };
     }
@@ -588,9 +588,10 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
         i += ft.n;
         const rl = try varint.decode(buf[i..]);
         i += rl.n;
-        if (i + rl.value > buf.len) return error.Truncated;
-        const reason = buf[i .. i + @as(usize, rl.value)];
-        i += @as(usize, rl.value);
+        if (rl.value > @as(u64, buf.len - i)) return error.Truncated;
+        const rlen: usize = @intCast(rl.value);
+        const reason = buf[i .. i + rlen];
+        i += rlen;
         return .{ .f = Frame{ .connection_close = .{ .error_code = ec.value, .frame_type = ft.value, .reason = reason } }, .n = i };
     }
     if (t == @intFromEnum(FrameType.STOP_SENDING)) {
