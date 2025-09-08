@@ -13,8 +13,6 @@ jobs:
   build-matrix:
     name: Build/Test/Fuzz (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -59,12 +57,54 @@ jobs:
             zig-out/bin/**
           retention-days: 7
 
-      - name: Release (attach OS artifacts)
+      - name: Package binaries (OS-specific archive)
+        shell: bash
+        run: |
+          set -euo pipefail
+          os="$(echo "${RUNNER_OS}" | tr '[:upper:]' '[:lower:]')"
+          arch="$(echo "${RUNNER_ARCH}" | tr '[:upper:]' '[:lower:]')"
+          zigv="${{ matrix.zig }}"
+          name="quic-${os}-${arch}-zig-${zigv}"
+          mkdir -p dist
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            powershell -NoProfile -Command "Compress-Archive -Path 'zig-out/bin/*' -DestinationPath 'dist/${name}.zip' -Force"
+            echo "ARCHIVE_PATH=dist/${name}.zip" >> "$GITHUB_ENV"
+            echo "ARCHIVE_NAME=${name}.zip" >> "$GITHUB_ENV"
+          else
+            tar -czf "dist/${name}.tar.gz" -C zig-out/bin .
+            echo "ARCHIVE_PATH=dist/${name}.tar.gz" >> "$GITHUB_ENV"
+            echo "ARCHIVE_NAME=${name}.tar.gz" >> "$GITHUB_ENV"
+          fi
+
+      - name: Upload packaged artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE_NAME }}
+          path: ${{ env.ARCHIVE_PATH }}
+          retention-days: 7
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create source tarball
+        run: git archive --format=tar.gz -o dist/source-${{ github.ref_name }}.tar.gz --prefix=quic-${{ github.ref_name }}/ ${{ github.sha }}
+      - name: Create/Update Release and Upload Assets
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/v')
         with:
           files: |
-            zig-out/bin/**
+            dist/**/*
           prerelease: ${{ contains(github.ref_name, '-') }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
