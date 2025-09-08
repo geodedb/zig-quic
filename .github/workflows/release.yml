@@ -47,6 +47,18 @@ jobs:
             archive_os: macos
             archive_arch: x86_64
             run_tests: false
+          # macOS arm64 (native)
+          - runner: macos-14
+            target: aarch64-macos
+            archive_os: macos
+            archive_arch: arm64
+            run_tests: false
+          # Windows x86_64 (native)
+          - runner: windows-latest
+            target: x86_64-windows-msvc
+            archive_os: windows
+            archive_arch: x86_64
+            run_tests: false
           # Windows arm64 (cross)
           - runner: windows-latest
             target: aarch64-windows-msvc
