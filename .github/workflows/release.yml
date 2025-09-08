@@ -102,9 +102,28 @@ jobs:
           merge-multiple: true
       - name: Create source tarball
         run: git archive --format=tar.gz -o dist/source-${{ github.ref_name }}.tar.gz --prefix=quic-${{ github.ref_name }}/ ${{ github.sha }}
+      - name: Collect license and signatures
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          shopt -s nullglob
+          for pat in LICENSE* COPYING* NOTICE*; do
+            for f in $pat; do
+              cp -v "$f" dist/
+            done
+          done
       - name: Create/Update Release and Upload Assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/**/*
+            dist/**/*.zip
+            dist/**/*.tar.gz
+            dist/**/*.asc
+            dist/**/*.sig
+            dist/**/*.sha256
+            dist/**/*.sha512
+            dist/LICENSE*
+            dist/COPYING*
+            dist/NOTICE*
           prerelease: ${{ contains(github.ref_name, '-') }}
