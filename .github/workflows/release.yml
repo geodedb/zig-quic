@@ -70,8 +70,8 @@ jobs:
       - name: Zig version
         run: zig version
 
-      - name: Build
-        run: make build ZIG_FLAGS='-Dtarget=${{ matrix.target }}'
+      - name: Build CLI (ReleaseSafe)
+        run: zig build -Dtarget='${{ matrix.target }}' -Drelease-safe=true cli
 
       - name: Test
         if: matrix.run_tests
@@ -108,13 +108,14 @@ jobs:
           mkdir -p dist
           if [ "${os}" = "windows" ]; then
             if command -v powershell >/dev/null 2>&1; then
-              powershell -NoProfile -Command "Compress-Archive -Path 'zig-out/bin/*' -DestinationPath 'dist/${name}.zip' -Force"
+              powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path 'dist' > $null; if (-Not (Test-Path 'zig-out/bin')) { throw 'zig-out/bin missing' }; Compress-Archive -Path 'zig-out/bin/*' -DestinationPath 'dist/${name}.zip' -Force"
             else
               echo "powershell not available for zip compression" >&2; exit 1
             fi
             echo "ARCHIVE_PATH=dist/${name}.zip" >> "$GITHUB_ENV"
             echo "ARCHIVE_NAME=${name}.zip" >> "$GITHUB_ENV"
           else
+            if [ ! -d zig-out/bin ]; then echo 'zig-out/bin missing' >&2; exit 1; fi
             tar -czf "dist/${name}.tar.gz" -C zig-out/bin .
             echo "ARCHIVE_PATH=dist/${name}.tar.gz" >> "$GITHUB_ENV"
             echo "ARCHIVE_NAME=${name}.tar.gz" >> "$GITHUB_ENV"
