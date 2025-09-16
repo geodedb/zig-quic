@@ -1,19 +1,18 @@
 {
-  description = "dev";
+  description = "QUIC v1 transport implementation in Zig";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
     flake-utils.url = "github:numtide/flake-utils";
-    dev-env.url = "git+https://github.com/spyderorg/dev-env";
-    zigpkgs.url = "github:NixOS/nixpkgs/nixos-unstable"; # to source newer zig (0.15.x)
+    # We'll use unstable for newer zig version
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
   outputs =
     {
       self,
       nixpkgs,
-      zigpkgs,
-      dev-env,
+      nixpkgs-unstable,
       flake-utils,
       ...
     }:
@@ -21,29 +20,46 @@
       flakeForSystem =
         nixpkgs: system:
         let
-          # Import nixpkgs with unfree enabled so the forenix package (unfree license) evaluates cleanly
           pkgs = import nixpkgs {
             inherit system;
             config = { allowUnfree = true; };
           };
-          unstable = import zigpkgs {
+
+          pkgs-unstable = import nixpkgs-unstable {
             inherit system;
             config = { allowUnfree = true; };
           };
-          # Use zig 0.15.x from unstable (fallback to stable zig if attribute missing)
-          zigPkg = unstable.zig_0_15 or unstable.zig or pkgs.zig;
-          # Single source of truth for the development environment packages
-          devShellPackages = with pkgs; [
-            zigPkg
-            tcpdump
-            file
-          ];
+
+          # Use zig from unstable for newer version
+          zigPkg = pkgs-unstable.zig or pkgs.zig;
+
+          # Build quic packages
+          quicPkg = pkgs.callPackage ./nix/quic.nix {
+            zig = zigPkg;
+            optimize = "ReleaseSafe";
+          };
+          
+          quicDebugPkg = pkgs.callPackage ./nix/quic.nix {
+            zig = zigPkg;
+            optimize = "Debug";
+          };
         in
         {
+          packages = {
+            quic = quicPkg;
+            quic-debug = quicDebugPkg;
+            default = quicPkg;
+          };
           devShell = pkgs.mkShell {
             shellHook = '''';
             env = { };
-            packages = devShellPackages;
+            packages = with pkgs; [
+              zigPkg
+              go
+              tcpdump
+              tshark
+              file
+            ];
           };
         };
     in

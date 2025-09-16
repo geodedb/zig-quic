@@ -206,3 +206,38 @@ You are a senior **Zig 0.15.1** engineer and docs author. **Deliver**:
 ## Changelog
 
 - **Final:** Incorporated your confirmations; **removed license**; added Windows PowerShell shim; mandated **Canonical Test Filters** section; hardened acceptance scripts with explicit exit codes and messages; clarified newline/quoting expectations; added markdownlint (author‑side) note.
+
+
+---
+
+## Nix Flake Support
+
+The project includes a Nix flake configuration for reproducible builds and easy integration with other projects.
+
+### Building with Nix
+
+- **Build package:** `nix build .#quic` → Creates `result/` symlink with binaries in `result/bin/`
+- **Debug build:** `nix build .#quic-debug`
+- **Enter dev shell:** `nix develop` → Provides zig, go, and all tools in PATH
+
+### Using as a Dependency
+
+Add to your flake inputs:
+```nix
+quic.url = "github:spyderorg/quic";  # or "path:/path/to/quic" for local
+```
+
+### Available Packages
+
+- `quic` - ReleaseSafe build with all tools and libraries
+- `quic-debug` - Debug build for development  
+- `default` - Alias for `quic`
+
+### Exported Binaries
+
+- `quic-client`, `quic-server` - QUIC CLI tools
+- `quic-varint` - Variable-length integer encoder/decoder
+- `doccheck`, `update-gap` - Development tools
+- `interop-runner`, `qns-endpoint` - Testing tools
+
+See `docs/FLAKE_USAGE.md` for detailed integration examples.
