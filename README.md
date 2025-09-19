@@ -17,6 +17,7 @@ Zig std-only QUIC v1/v2 implementation (Zig 0.15.1/0.14.x). **Production-grade**
 - ✅ **Transport**: All frame types, connection ID management, path validation
 - ✅ **Crypto**: AES-128-GCM, ChaCha20-Poly1305, header protection
 - ✅ **TLS 1.3**: Full integration with key derivation, PSK, 0-RTT
+- ✅ **Signatures**: ECDSA (P-256/P-384), RSA-PSS, Ed25519 (vendored implementation)
 - ✅ **Recovery**: Loss detection, PTO, congestion control (NewReno/CUBIC)
 - ✅ **Flow Control**: Connection and stream-level with dynamic limits
 - ✅ **Migration**: NAT rebinding, path validation, preferred address

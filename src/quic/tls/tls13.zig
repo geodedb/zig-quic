@@ -5,8 +5,8 @@
 // handshake message encode/parse helpers for ClientHello/ServerHello envelopes.
 const std = @import("std");
 const ks = @import("quic_tls");
-const x509 = @import("x509.zig");
-const sig = @import("sig.zig");
+const x509 = @import("x509");
+const sig = @import("sig");
 
 /// Session ticket cache entry and store types used by the TLS 1.3 engine (minimal placeholder).
 // --- Session Ticket / PSK Cache Structures (minimal placeholder) ---
@@ -1103,6 +1103,7 @@ pub const Engine = struct {
                             .ecdsa_secp256r1_sha256 => 0x40,
                             .ecdsa_secp384r1_sha384 => 0x41,
                             .rsa_pss_sha256 => 0x50,
+                            .ed25519 => 0x87, // 0x0807 in TLS, single byte in CertificateVerify
                         };
                         body.append(self.allocator, alg_id) catch {};
                         body.appendSlice(self.allocator, sb) catch {};
@@ -1170,6 +1171,7 @@ pub const Engine = struct {
                     .ecdsa_secp256r1_sha256 => 0x40,
                     .ecdsa_secp384r1_sha384 => 0x41,
                     .rsa_pss_sha256 => 0x50,
+                    .ed25519 => 0x87, // 0x0807 in TLS, single byte in CertificateVerify
                 };
                 body.append(self.allocator, alg_id) catch {};
                 body.appendSlice(self.allocator, sb) catch {};

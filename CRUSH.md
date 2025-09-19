@@ -45,9 +45,13 @@ You are a senior **Zig 0.15.1** engineer and docs author. **Deliver**:
 
 ---
 
+### **Dependencies**
+
+- **Vendored Ed25519:** The project uses a vendored Ed25519 implementation from `vendor/ed25519/` instead of the standard library version. This provides a constant-time, production-grade Ed25519 implementation.
+
 ### **S — Standards & Constraints**
 
-- **Language/Version:** Zig **0.15.1** (std‑only).
+- **Language/Version:** Zig **0.15.1** (std‑only, with vendored Ed25519).
 - **Runtime/OS:** `ubuntu-24.04`, `macos-14`, `windows-2022`.
 - **Style/Lint:**
 

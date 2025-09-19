@@ -5,8 +5,9 @@
 // simple path validation using issuer SPKI and signature verification for
 // ECDSA (P-256/P-384) and RSA-PSS (SHA-256). Allow an insecure bypass.
 const std = @import("std");
-const asn1 = @import("asn1.zig");
-const sigmod = @import("sig.zig");
+const asn1 = @import("asn1");
+const sigmod = @import("sig");
+const ed25519 = @import("ed25519");
 
 /// Pluggable trust store hook. If set, root must be trusted via callback.
 pub const TrustStore = struct {
@@ -332,6 +333,10 @@ fn oidIsRsaPss(oid: []const u8) bool {
     // 1.2.840.113549.1.1.10 -> 2A 86 48 86 F7 0D 01 01 0A
     return oid.len >= 9 and std.mem.eql(u8, oid[oid.len - 9 ..], &[_]u8{ 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0A });
 }
+fn oidIsEd25519(oid: []const u8) bool {
+    // Ed25519 1.3.101.112 -> 2B 65 70
+    return oid.len >= 3 and std.mem.eql(u8, oid[oid.len - 3 ..], &[_]u8{ 0x2B, 0x65, 0x70 });
+}
 
 fn verifyCertSig(issuer_spki_der: []const u8, tbs: []const u8, algo_oid: []const u8, sig_der: []const u8) bool {
     if (oidIsEcdsaSha256(algo_oid)) {
@@ -356,6 +361,14 @@ fn verifyCertSig(issuer_spki_der: []const u8, tbs: []const u8, algo_oid: []const
         // Constrain to SHA-256 and saltLen=32. Verify TBSCertificate directly (no TLS context).
         // Note: We reuse the RSA-PSS verifier from sig.zig by providing the raw TBS as message.
         return sigmod.verifyCertificateVerify(.rsa_pss_sha256, issuer_spki_der, sig_der, "", tbs) catch false;
+    }
+    if (oidIsEd25519(algo_oid)) {
+        // Ed25519 signature verification
+        const pubkey = sigmod.parseEd25519Spki(issuer_spki_der) catch return false;
+        if (sig_der.len != 64) return false;
+        var sig: [64]u8 = undefined;
+        @memcpy(&sig, sig_der);
+        return ed25519.verify(&sig, tbs, &pubkey);
     }
     return false;
 }

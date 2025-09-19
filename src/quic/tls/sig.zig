@@ -1,8 +1,9 @@
 const std = @import("std");
-const asn1 = @import("asn1.zig");
+const asn1 = @import("asn1");
+const ed25519 = @import("ed25519");
 
 /// Supported TLS 1.3 signature algorithms used by this implementation.
-pub const SigAlg = enum { ecdsa_secp256r1_sha256, ecdsa_secp384r1_sha384, rsa_pss_sha256 };
+pub const SigAlg = enum { ecdsa_secp256r1_sha256, ecdsa_secp384r1_sha384, rsa_pss_sha256, ed25519 };
 
 /// Minimal ECDSA public key extracted from SubjectPublicKeyInfo
 pub const EcdsaSpki = struct {
@@ -377,6 +378,18 @@ fn rsa_pss_verify_sha256(pubkey_spki_der: []const u8, msg_signed_content: []cons
 /// the TLS context string, and transcript hash; returns true on success.
 pub fn verifyCertificateVerify(alg: SigAlg, pubkey_spki_der: []const u8, sig: []const u8, context: []const u8, transcript_hash: []const u8) !bool {
     switch (alg) {
+        .ed25519 => {
+            // Parse Ed25519 public key from SPKI
+            const pubkey = try parseEd25519Spki(pubkey_spki_der);
+            // Build TLS 1.3 signed content
+            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash);
+            defer std.heap.page_allocator.free(sc);
+            // Verify Ed25519 signature
+            if (sig.len != 64) return false;
+            var sig_array: [64]u8 = undefined;
+            @memcpy(&sig_array, sig);
+            return ed25519.verify(&sig_array, sc, &pubkey);
+        },
         .rsa_pss_sha256 => {
             // Build TLS 1.3 signed content: 64 spaces || context || 0x00 || transcript_hash
             const sc = try tls13_build_context_and_hash(alg, context, transcript_hash);
@@ -412,9 +425,28 @@ pub fn verifyCertificateVerify(alg: SigAlg, pubkey_spki_der: []const u8, sig: []
     }
 }
 
-/// Sign a TLS 1.3 CertificateVerify for given algorithm using a DER private key blob (currently supports raw PKCS#8 EC for P-256) and transcript hash.
+/// Sign a TLS 1.3 CertificateVerify for given algorithm using a DER private key blob (currently supports raw PKCS#8 EC for P-256 and Ed25519) and transcript hash.
 pub fn signCertificateVerify(alg: SigAlg, privkey_der: []const u8, context: []const u8, transcript_hash: []const u8, alloc: std.mem.Allocator) ![]u8 {
     switch (alg) {
+        .ed25519 => {
+            // Parse Ed25519 private key from PKCS#8
+            const seed = try parsePkcs8Ed25519PrivateKey(privkey_der);
+            // Derive keypair from seed
+            const kp = ed25519.deriveKeyPair(&seed);
+            // Build TLS 1.3 signed content
+            const to_sign = try tls13_build_context_and_hash(alg, context, transcript_hash);
+            defer alloc.free(to_sign);
+            // Sign the message
+            var sig: [64]u8 = undefined;
+            var full_sk: [64]u8 = undefined;
+            @memcpy(full_sk[0..32], &seed);
+            @memcpy(full_sk[32..64], &kp.pk);
+            ed25519.sign(&sig, to_sign, &full_sk);
+            // Return signature (Ed25519 signatures are always 64 bytes, no DER encoding)
+            const result = try alloc.alloc(u8, 64);
+            @memcpy(result, &sig);
+            return result;
+        },
         .ecdsa_secp256r1_sha256 => {
             // Preferred: parse PKCS#8 -> ECPrivateKey -> scalar. Fallback to legacy pattern scan.
             var sk: [32]u8 = undefined;
@@ -502,6 +534,55 @@ fn trimLeading(x: []const u8) []const u8 {
 // ---- Minimal PKCS#8 / ECPrivateKey parsing (P-256 only) ----
 // Returns error.BadKey on generic structural or OID mismatch, error.Parse on malformed DER.
 // Writes 32-byte scalar into out and returns void on success.
+/// Parse Ed25519 public key from SubjectPublicKeyInfo (returns 32-byte public key)
+pub fn parseEd25519Spki(spki_der: []const u8) ![32]u8 {
+    var d = asn1.Decoder.init(spki_der);
+    const seq = try d.readSequence();
+    var s1 = asn1.Decoder.init(seq);
+    const algo_seq = try s1.readSequence();
+    var a1 = asn1.Decoder.init(algo_seq);
+    const algo_oid = try a1.readOID();
+    // id-Ed25519: 1.3.101.112 -> DER: 06 03 2B 65 70
+    const ed25519_oid = [_]u8{ 0x2B, 0x65, 0x70 };
+    if (!std.mem.eql(u8, algo_oid, &ed25519_oid)) return error.UnexpectedAlgorithm;
+    // No parameters for Ed25519
+    // subjectPublicKey BIT STRING
+    const bitstr = try s1.readBitString();
+    if (bitstr.len != 32) return error.InvalidPublicKey;
+    var result: [32]u8 = undefined;
+    @memcpy(&result, bitstr);
+    return result;
+}
+
+/// Parse Ed25519 private key (seed) from PKCS#8 (returns 32-byte seed)
+fn parsePkcs8Ed25519PrivateKey(der: []const u8) ![32]u8 {
+    var d = asn1.Decoder.init(der);
+    const seq = try d.readSequence();
+    var s1 = asn1.Decoder.init(seq);
+    // version INTEGER (expect 0)
+    const ver_tlv = try s1.readTLV();
+    if (asn1.tagClass(ver_tlv.tag) != .universal or asn1.tagNumber(ver_tlv.tag) != 2) return error.UnexpectedTag;
+    if (ver_tlv.val.len != 1 or ver_tlv.val[0] != 0x00) return error.BadKey;
+    // algorithm AlgorithmIdentifier = SEQUENCE
+    const algo_seq = try s1.readSequence();
+    var a1 = asn1.Decoder.init(algo_seq);
+    const algo_oid = try a1.readOID();
+    // id-Ed25519: 1.3.101.112 -> DER: 06 03 2B 65 70
+    const ed25519_oid = [_]u8{ 0x2B, 0x65, 0x70 };
+    if (!std.mem.eql(u8, algo_oid, &ed25519_oid)) return error.UnexpectedAlgorithm;
+    // privateKey OCTET STRING containing the 32-byte seed wrapped in OCTET STRING
+    const pk_oct = try s1.readOctetString();
+    // Ed25519 private key is wrapped as OCTET STRING containing the 32-byte seed
+    if (pk_oct.len < 34) return error.BadKey;
+    // Parse inner OCTET STRING
+    var d2 = asn1.Decoder.init(pk_oct);
+    const seed_oct = try d2.readOctetString();
+    if (seed_oct.len != 32) return error.BadKey;
+    var result: [32]u8 = undefined;
+    @memcpy(&result, seed_oct);
+    return result;
+}
+
 fn parsePkcs8EcdsaP256PrivateKey(der: []const u8, out: *[32]u8) !void {
     if (der.len < 16) return error.Parse;
     var i: usize = 0;
