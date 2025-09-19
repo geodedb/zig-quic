@@ -104,16 +104,8 @@ jobs:
         uses: goto-bus-stop/setup-zig@v2
         with:
           version: 0.15.1
-      - name: Build
-        run: zig build
-      - name: Unit tests
-        run: make test
-      - name: Build fuzzers
-        run: make fuzz
-      - name: Build bench
-        run: make bench
-      - name: Doccheck
-        run: make doccheck
+      - name: Full CI build and test
+        run: make ci-github
       - name: Ensure GAP updated when code changes
         if: github.event_name == 'pull_request'
         run: |
@@ -198,18 +190,10 @@ jobs:
         uses: goto-bus-stop/setup-zig@v2
         with:
           version: ${{ matrix.zig }}
-      - name: Build
-        run: make build ZIG_FLAGS='-Drelease-safe=false'
-      - name: Run tests
-        run: zig build test
-      - name: Build fuzzers
-        run: make fuzz
-      - name: Build bench
-        run: make bench
-      - name: Build tools
-        run: zig build tools
-      - name: Doccheck
-        run: ./zig-out/bin/doccheck
+      - name: Build and test
+        run: make ci
+      - name: Cross-compilation check (primary targets)
+        run: make cross-compile-quick
       - name: Ensure GAP updated on code changes
         if: ${{ github.event_name == 'pull_request' }}
         shell: bash
