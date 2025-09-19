@@ -37,9 +37,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: spyderorg/workflows/.github/actions/nix-setup@main
         with:
-          submodules: recursive
+          git-credentials: ${{ secrets.GIT_CREDENTIALS }}
+          gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
       
       - name: Setup Zig
         uses: goto-bus-stop/setup-zig@v2

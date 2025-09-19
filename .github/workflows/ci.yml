@@ -21,7 +21,12 @@ jobs:
         zig: ['0.15.1']
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: spyderorg/workflows/.github/actions/nix-setup@main
+        with:
+          git-credentials: ${{ secrets.GIT_CREDENTIALS }}
+          gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
       - name: Setup Zig 0.15.1
         uses: goto-bus-stop/setup-zig@v2
         with:
@@ -54,7 +59,12 @@ jobs:
       matrix:
         zig: ['0.15.1']
     steps:
-      - uses: actions/checkout@v4
+      - uses: spyderorg/workflows/.github/actions/nix-setup@main
+        with:
+          git-credentials: ${{ secrets.GIT_CREDENTIALS }}
+          gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
       - name: Setup Zig 0.15.1
         uses: goto-bus-stop/setup-zig@v2
         with:
@@ -84,7 +94,12 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-14]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: spyderorg/workflows/.github/actions/nix-setup@main
+        with:
+          git-credentials: ${{ secrets.GIT_CREDENTIALS }}
+          gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
       - name: Setup Zig 0.15.1
         uses: goto-bus-stop/setup-zig@v2
         with:
@@ -141,7 +156,12 @@ jobs:
             archive_arch: arm64
         zig: ['0.15.1']
     steps:
-      - uses: actions/checkout@v4
+      - uses: spyderorg/workflows/.github/actions/nix-setup@main
+        with:
+          git-credentials: ${{ secrets.GIT_CREDENTIALS }}
+          gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
       - name: Setup Zig 0.15.1
         uses: goto-bus-stop/setup-zig@v2
         with:
@@ -168,7 +188,12 @@ jobs:
         zig: [0.15.1]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: spyderorg/workflows/.github/actions/nix-setup@main
+        with:
+          git-credentials: ${{ secrets.GIT_CREDENTIALS }}
+          gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
       - name: Install Zig
         uses: goto-bus-stop/setup-zig@v2
         with:
@@ -204,10 +229,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: spyderorg/workflows/.github/actions/nix-setup@main
         with:
-          fetch-depth: 0
+          git-credentials: ${{ secrets.GIT_CREDENTIALS }}
+          gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
       - name: Create source tarball
         run: git archive --format=tar.gz -o quic-dev.tar.gz --prefix=quic-dev/ HEAD
       - name: Create/update dev release

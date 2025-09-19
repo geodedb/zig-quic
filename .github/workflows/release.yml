@@ -65,7 +65,12 @@ jobs:
             run_tests: false
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: spyderorg/workflows/.github/actions/nix-setup@main
+        with:
+          git-credentials: ${{ secrets.GIT_CREDENTIALS }}
+          gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
 
       - name: Setup Zig
         uses: goto-bus-stop/setup-zig@v2
@@ -144,10 +149,12 @@ jobs:
       contents: write
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: spyderorg/workflows/.github/actions/nix-setup@main
         with:
-          fetch-depth: 0
+          git-credentials: ${{ secrets.GIT_CREDENTIALS }}
+          gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
 
       - name: Download packaged artifacts
         uses: actions/download-artifact@v4

@@ -4,15 +4,14 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
     flake-utils.url = "github:numtide/flake-utils";
-    # We'll use unstable for newer zig version
-    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
+    dev-env.url = "github:spyderorg/dev-env";
   };
 
   outputs =
     {
       self,
       nixpkgs,
-      nixpkgs-unstable,
+      dev-env,
       flake-utils,
       ...
     }:
@@ -24,14 +23,7 @@
             inherit system;
             config = { allowUnfree = true; };
           };
-
-          pkgs-unstable = import nixpkgs-unstable {
-            inherit system;
-            config = { allowUnfree = true; };
-          };
-
-          # Use zig from unstable for newer version
-          zigPkg = pkgs-unstable.zig or pkgs.zig;
+          zigPkg = dev-env.packages.${system}.zigPackages;
 
           # Build quic packages
           quicPkg = pkgs.callPackage ./nix/quic.nix {
@@ -43,6 +35,11 @@
             zig = zigPkg;
             optimize = "Debug";
           };
+          
+          # Single source of truth for the development environment packages
+          devShellPackages = with pkgs; [
+            zigPkg
+          ];
         in
         {
           packages = {
@@ -53,13 +50,18 @@
           devShell = pkgs.mkShell {
             shellHook = '''';
             env = { };
-            packages = with pkgs; [
-              zigPkg
-              go
-              tcpdump
-              tshark
-              file
-            ];
+            packages =
+              (with dev-env.packages.${system}; [
+                zigPackages
+                commonPackages
+              ])
+              ++ ([
+                quicPkg
+                quicDebugPkg
+                pkgs.tcpdump
+                pkgs.tshark
+                pkgs.file
+              ]);
           };
         };
     in
