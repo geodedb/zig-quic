@@ -56,10 +56,6 @@
                 commonPackages
               ])
               ++ ([
-                quicPkg
-                quicDebugPkg
-                pkgs.tcpdump
-                pkgs.tshark
                 pkgs.file
               ]);
           };
