@@ -1,8 +1,8 @@
 # CHANGELOG
 
-## [Unreleased] - 2025-12-19
+## [Current] - 2025-09-20
 
-### Added 🎆
+### Current Implementation Status 🎆
 
 #### 0-RTT Implementation
 - Complete 0-RTT data transmission and reception
@@ -58,7 +58,7 @@
 - ECN counter tracking
 - Path validation timing
 
-## [Previous] - 2025-12-18
+## Implementation Milestones
 
 ### Added
 - Interoperability test infrastructure
@@ -73,7 +73,7 @@
 - Improved connection ID rotation
 - Updated ALPN handling
 
-## [Initial] - 2025-09-06
+## Architecture Highlights
 
 ### Added
 - Core QUIC v1 implementation

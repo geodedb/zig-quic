@@ -1,6 +1,6 @@
 # NEXT — Near‑term Plan (rolling)
 
-Date: 2025‑12‑19
+Date: 2025‑09‑20
 
 ## Recently Completed ✅
 
@@ -72,10 +72,20 @@ Date: 2025‑12‑19
 
 ## Completed Items (from previous plan)
 
-### ECN Support
-- Application ACK_ECN frames now properly emitted
-- ECN counters tracked per packet number space
-- Longitudinal test coverage added
+### Full Protocol Implementation
+- All QUIC v1/v2 features implemented
+- 63 comprehensive tests passing
+- Validated against 18 implementations
+
+### Advanced Features Complete
+- 0-RTT early data support
+- Session resumption with PSK
+- Connection migration
+- Preferred address
+- Key update mechanism
+- ECN support with ACK_ECN
+- PMTUD with ICMP
+- Datagram extension
 
 ### Connection ID Management
 - Full local Connection ID inventory management

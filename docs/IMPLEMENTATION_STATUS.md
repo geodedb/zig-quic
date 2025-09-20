@@ -1,6 +1,6 @@
 # QUIC Implementation Status
 
-Date: 2025-12-19
+Date: 2025-09-20
 
 ## Overview
 
@@ -146,10 +146,11 @@ Tested against 18 implementations:
 
 ## Known Limitations
 
-1. **Address Resolution**: Docker hostname resolution needs enhancement
+1. **HTTP/3**: Basic implementation with static QPACK only (no dynamic table)
 2. **Multipath**: Not yet implemented (future work)
 3. **QUIC-LB**: Load balancing support pending
-4. **Unreliable Datagram**: Extension not yet implemented
+4. **Windows IOCP**: Event loop stub only (Linux/macOS focused)
+5. **Certificate Chain**: Limited validation, no OCSP/CRL support
 
 ## Compliance
 
@@ -157,7 +158,7 @@ Tested against 18 implementations:
 - RFC 9000: QUIC Transport Protocol v1 ✅
 - RFC 9001: Using TLS to Secure QUIC ✅
 - RFC 9002: QUIC Loss Detection and Congestion Control ✅
-- RFC 9221: Datagram Extension (partial)
+- RFC 9221: Datagram Extension ✅
 - RFC 9287: Greasing (supported)
 - RFC 9368: Compatible Version Negotiation ✅
 - RFC 9369: QUIC Version 2 ✅
@@ -210,6 +211,15 @@ Contributions are welcome! Please ensure:
 - New features include tests
 - Documentation is updated
 
-## License
+## Implementation Notes
 
-MIT License - See LICENSE file for details
+### Crypto Implementation
+- Uses Zig std.crypto for AES-128-GCM
+- ChaCha20-Poly1305 with custom implementation
+- Vendored Ed25519 from vendor/ed25519/ for constant-time operations
+- Full TLS 1.3 handshake without record layer
+
+### Platform Support
+- **Linux**: Full support with epoll, ECN, PMTUD via ICMP
+- **macOS**: Full support with kqueue
+- **Windows**: Basic support (IOCP stub, requires ws2_32.dll)
