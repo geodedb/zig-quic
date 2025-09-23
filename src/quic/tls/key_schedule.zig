@@ -5,6 +5,12 @@ const std = @import("std");
 /// Hash used for TLS_AES_128_GCM_SHA256 and CHACHA20_POLY1305_SHA256
 pub const H = std.crypto.hash.sha2.Sha256; // 32-byte digest
 
+/// Use standard library HMAC and HKDF
+const Hmac = std.crypto.auth.hmac.Hmac;
+const Hkdf = std.crypto.kdf.hkdf.Hkdf;
+const HmacSha256 = Hmac(H);
+const HkdfSha256 = Hkdf(HmacSha256);
+
 /// QUIC v1 Initial Salt (RFC 9001 §5.2, Appendix A.1 vectors use this)
 /// 38762cf7f55934b34d179ae6a4c80cadccbb7f0a
 pub const initial_salt_v1: [20]u8 = .{
@@ -49,116 +55,19 @@ fn hkdfLabel(alloc: std.mem.Allocator, label: []const u8, context: []const u8, o
     return out;
 }
 
-// --- Minimal HMAC(SHA-256) + HKDF (RFC 5869) ---
-fn sha256(data: []const u8) [H.digest_length]u8 {
-    var hasher = H.init(.{});
-    hasher.update(data);
-    var out: [H.digest_length]u8 = undefined;
-    hasher.final(&out);
+/// Public HMAC helper for TLS Finished and other KATs.
+pub fn hmacSha256(key: []const u8, data: []const u8) [H.digest_length]u8 {
+    var out: [HmacSha256.mac_length]u8 = undefined;
+    HmacSha256.create(&out, data, key);
     return out;
 }
 
-fn hmac_sha256(key: []const u8, data: []const u8) [H.digest_length]u8 {
-    const block_len: usize = 64; // SHA-256 block size
-    var k0: [block_len]u8 = .{0} ** block_len;
-    if (key.len > block_len) {
-        const d = sha256(key);
-        @memcpy(k0[0..d.len], d[0..]);
-    } else {
-        @memcpy(k0[0..key.len], key);
-    }
-    var ipad: [block_len]u8 = undefined;
-    var opad: [block_len]u8 = undefined;
-    for (k0, 0..) |b, i| {
-        ipad[i] = b ^ 0x36;
-        opad[i] = b ^ 0x5c;
-    }
-    
-    // Use stack buffers instead of heap allocation
-    // Maximum size needed: block_len + max reasonable data size
-    // For QUIC/TLS usage, data is typically small (< 256 bytes)
-    var inner_buf: [block_len + 256]u8 = undefined;
-    const inner_len = block_len + data.len;
-    if (inner_len > inner_buf.len) {
-        // Fallback for unexpectedly large data
-        var large_buf = std.ArrayList(u8){};
-        defer large_buf.deinit(std.heap.page_allocator);
-        large_buf.appendSlice(std.heap.page_allocator, &ipad) catch unreachable;
-        large_buf.appendSlice(std.heap.page_allocator, data) catch unreachable;
-        const inner = sha256(large_buf.items);
-        
-        var outer_buf = std.ArrayList(u8){};
-        defer outer_buf.deinit(std.heap.page_allocator);
-        outer_buf.appendSlice(std.heap.page_allocator, &opad) catch unreachable;
-        outer_buf.appendSlice(std.heap.page_allocator, &inner) catch unreachable;
-        return sha256(outer_buf.items);
-    }
-    
-    @memcpy(inner_buf[0..block_len], &ipad);
-    @memcpy(inner_buf[block_len..inner_len], data);
-    const inner = sha256(inner_buf[0..inner_len]);
-
-    var outer_buf: [block_len + H.digest_length]u8 = undefined;
-    @memcpy(outer_buf[0..block_len], &opad);
-    @memcpy(outer_buf[block_len..block_len + H.digest_length], &inner);
-    return sha256(outer_buf[0..block_len + H.digest_length]);
-}
-
-/// Public HMAC helper for TLS Finished and other KATs.
-pub fn hmacSha256(key: []const u8, data: []const u8) [H.digest_length]u8 {
-    return hmac_sha256(key, data);
-}
-
 fn hkdfExtractRaw(salt: ?[]const u8, ikm: []const u8) [H.digest_length]u8 {
-    var zeros: [H.digest_length]u8 = .{0} ** H.digest_length;
-    const s = salt orelse zeros[0..];
-    return hmac_sha256(s, ikm);
+    return HkdfSha256.extract(salt orelse &[_]u8{}, ikm);
 }
 
 fn hkdfExpand(out: []u8, prk: [H.digest_length]u8, info: []const u8) void {
-    const hash_len: usize = H.digest_length;
-    const n: usize = (out.len + hash_len - 1) / hash_len;
-    var t_prev: [H.digest_length]u8 = undefined;
-    var pos: usize = 0;
-    var i: usize = 1;
-    while (i <= n) : (i += 1) {
-        // T(i) = HMAC(PRK, T(i-1) | info | i)
-        // Use stack buffer for typical HKDF expand operations
-        // Max size: H.digest_length + info.len + 1
-        var input_buf: [H.digest_length + 256 + 1]u8 = undefined;
-        var input_len: usize = 0;
-        
-        if (i > 1) {
-            @memcpy(input_buf[input_len..input_len + hash_len], &t_prev);
-            input_len += hash_len;
-        }
-        if (info.len != 0) {
-            if (input_len + info.len > input_buf.len - 1) {
-                // Fallback for unexpectedly large info
-                var large_input = std.ArrayList(u8){};
-                defer large_input.deinit(std.heap.page_allocator);
-                if (i > 1) large_input.appendSlice(std.heap.page_allocator, &t_prev) catch unreachable;
-                if (info.len != 0) large_input.appendSlice(std.heap.page_allocator, info) catch unreachable;
-                large_input.append(std.heap.page_allocator, @as(u8, @intCast(i))) catch unreachable;
-                const t = hmac_sha256(&prk, large_input.items);
-                t_prev = t;
-                const to_copy = @min(hash_len, out.len - pos);
-                @memcpy(out[pos .. pos + to_copy], t_prev[0..to_copy]);
-                pos += to_copy;
-                continue;
-            }
-            @memcpy(input_buf[input_len..input_len + info.len], info);
-            input_len += info.len;
-        }
-        input_buf[input_len] = @as(u8, @intCast(i));
-        input_len += 1;
-        
-        const t = hmac_sha256(&prk, input_buf[0..input_len]);
-        t_prev = t;
-        const to_copy = @min(hash_len, out.len - pos);
-        @memcpy(out[pos .. pos + to_copy], t_prev[0..to_copy]);
-        pos += to_copy;
-    }
+    HkdfSha256.expand(out, info, prk);
 }
 
 /// HKDF-Expand-Label as per TLS 1.3 using H.

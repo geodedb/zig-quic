@@ -1,6 +1,8 @@
 const std = @import("std");
 const asn1 = @import("asn1");
-const ed25519 = @import("ed25519");
+
+// Use standard library crypto
+const Ed25519 = std.crypto.sign.Ed25519;
 
 /// Supported TLS 1.3 signature algorithms used by this implementation.
 pub const SigAlg = enum { ecdsa_secp256r1_sha256, ecdsa_secp384r1_sha384, rsa_pss_sha256, ed25519 };
@@ -380,15 +382,16 @@ pub fn verifyCertificateVerify(alg: SigAlg, pubkey_spki_der: []const u8, sig: []
     switch (alg) {
         .ed25519 => {
             // Parse Ed25519 public key from SPKI
-            const pubkey = try parseEd25519Spki(pubkey_spki_der);
+            const pubkey_bytes = try parseEd25519Spki(pubkey_spki_der);
+            const pubkey = try Ed25519.PublicKey.fromBytes(pubkey_bytes);
             // Build TLS 1.3 signed content
             const sc = try tls13_build_context_and_hash(alg, context, transcript_hash);
             defer std.heap.page_allocator.free(sc);
             // Verify Ed25519 signature
             if (sig.len != 64) return false;
-            var sig_array: [64]u8 = undefined;
-            @memcpy(&sig_array, sig);
-            return ed25519.verify(&sig_array, sc, &pubkey);
+            const signature = Ed25519.Signature.fromBytes(sig[0..64].*);
+            signature.verify(sc, pubkey) catch return false;
+            return true;
         },
         .rsa_pss_sha256 => {
             // Build TLS 1.3 signed content: 64 spaces || context || 0x00 || transcript_hash
@@ -431,20 +434,16 @@ pub fn signCertificateVerify(alg: SigAlg, privkey_der: []const u8, context: []co
         .ed25519 => {
             // Parse Ed25519 private key from PKCS#8
             const seed = try parsePkcs8Ed25519PrivateKey(privkey_der);
-            // Derive keypair from seed
-            const kp = ed25519.deriveKeyPair(&seed);
+            // Use standard library Ed25519 - generate keypair from seed
+            const kp = try Ed25519.KeyPair.generateDeterministic(seed);
             // Build TLS 1.3 signed content
             const to_sign = try tls13_build_context_and_hash(alg, context, transcript_hash);
             defer alloc.free(to_sign);
             // Sign the message
-            var sig: [64]u8 = undefined;
-            var full_sk: [64]u8 = undefined;
-            @memcpy(full_sk[0..32], &seed);
-            @memcpy(full_sk[32..64], &kp.pk);
-            ed25519.sign(&sig, to_sign, &full_sk);
+            const sig = try kp.sign(to_sign, null);
             // Return signature (Ed25519 signatures are always 64 bytes, no DER encoding)
             const result = try alloc.alloc(u8, 64);
-            @memcpy(result, &sig);
+            @memcpy(result, &sig.toBytes());
             return result;
         },
         .ecdsa_secp256r1_sha256 => {

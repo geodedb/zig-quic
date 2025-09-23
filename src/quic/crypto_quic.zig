@@ -1,9 +1,14 @@
 // MIT License
 // QUIC Initial packet AEAD and Header Protection helpers (RFC 9001/9369)
 const std = @import("std");
-const core = std.crypto.core;
 const builtin = @import("builtin");
 const ks = @import("quic_tls");
+
+// Use standard library crypto
+const ChaCha20Poly1305 = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
+const Aes128Gcm = std.crypto.aead.aes_gcm.Aes128Gcm;
+const Poly1305 = std.crypto.onetimeauth.Poly1305;
+const ChaCha20IETF = std.crypto.stream.chacha.ChaCha20IETF;
 
 /// Expand a truncated packet number using the expected packet number.
 /// Based on RFC 9000 Appendix A.3
@@ -54,37 +59,15 @@ pub fn aeadEncrypt(
     switch (suite) {
         .chacha20_poly1305 => {
             if (key.len != 32 or iv.len != 12) return error.InvalidKeyIv;
-            const has_chacha = @hasDecl(std.crypto.aead, "chacha20poly1305");
-            if (has_chacha) {
-                const ChaCha = std.crypto.aead.chacha20poly1305.ChaCha20Poly1305;
-                var nonce: [12]u8 = undefined;
-                xorNonce(&nonce, iv, packet_number);
-                var tag: [ChaCha.tag_length]u8 = undefined;
-                ChaCha.encrypt(out[0..plaintext.len], &tag, plaintext, aad, nonce, key[0..32].*);
-                @memcpy(out[plaintext.len .. plaintext.len + tag.len], tag[0..]);
-                return plaintext.len + tag.len;
-            } else {
-                // Fallback: RFC 8439 AEAD_CHACHA20_POLY1305 (IETF 96-bit nonce)
-                var nonce: [12]u8 = undefined;
-                xorNonce(&nonce, iv, packet_number);
-                // Derive one-time Poly1305 key: chacha20 block with counter=0
-                var otk_block: [64]u8 = undefined;
-                chacha20Block(&otk_block, key[0..32].*, nonce, 0);
-                var otk: [32]u8 = undefined;
-                @memcpy(otk[0..], otk_block[0..32]);
-                // Encrypt plaintext with counter=1
-                chacha20Xor(out[0..plaintext.len], plaintext, key[0..32].*, nonce, 1);
-                // Compute Poly1305 tag over AAD || pad16 || CT || pad16 || len(aad) || len(ct)
-                const tag = try poly1305TagRfc8439(aad, out[0..plaintext.len], &otk);
-                @memcpy(out[plaintext.len .. plaintext.len + 16], tag[0..]);
-                return plaintext.len + 16;
-            }
+            var nonce: [12]u8 = undefined;
+            xorNonce(&nonce, iv, packet_number);
+            var tag: [ChaCha20Poly1305.tag_length]u8 = undefined;
+            ChaCha20Poly1305.encrypt(out[0..plaintext.len], &tag, plaintext, aad, nonce, key[0..32].*);
+            @memcpy(out[plaintext.len .. plaintext.len + tag.len], tag[0..]);
+            return plaintext.len + tag.len;
         },
         .aes_128_gcm => {
             if (key.len != 16 or iv.len != 12) return error.InvalidKeyIv;
-            const has_aes_gcm = @hasDecl(std.crypto.aead, "aes_gcm");
-            if (!has_aes_gcm) return error.NotImplemented;
-            const Aes128Gcm = std.crypto.aead.aes_gcm.Aes128Gcm;
             var nonce: [12]u8 = undefined;
             xorNonce(&nonce, iv, packet_number);
             var tag: [Aes128Gcm.tag_length]u8 = undefined;
@@ -113,34 +96,16 @@ pub fn aeadDecrypt(
     switch (suite) {
         .chacha20_poly1305 => {
             if (key.len != 32 or iv.len != 12) return error.InvalidKeyIv;
-            const has_chacha = @hasDecl(std.crypto.aead, "chacha20poly1305");
             var nonce: [12]u8 = undefined;
             xorNonce(&nonce, iv, packet_number);
-            if (has_chacha) {
-                const ChaCha = std.crypto.aead.chacha20poly1305.ChaCha20Poly1305;
-                if (!ChaCha.decrypt(out_plaintext[0..ct.len], ct, tag_arr, aad, nonce, key[0..32].*))
-                    return error.AuthenticationFailed;
-                return ct.len;
-            } else {
-                // Fallback: verify tag then decrypt with counter=1
-                var otk_block: [64]u8 = undefined;
-                chacha20Block(&otk_block, key[0..32].*, nonce, 0);
-                var otk: [32]u8 = undefined;
-                @memcpy(otk[0..], otk_block[0..32]);
-                const tag = try poly1305TagRfc8439(aad, ct, &otk);
-                if (!std.mem.eql(u8, &tag_arr, &tag)) return error.AuthenticationFailed;
-                chacha20Xor(out_plaintext[0..ct.len], ct, key[0..32].*, nonce, 1);
-                return ct.len;
-            }
+            ChaCha20Poly1305.decrypt(out_plaintext[0..ct.len], ct, tag_arr, aad, nonce, key[0..32].*) catch return error.AuthenticationFailed;
+            return ct.len;
         },
         .aes_128_gcm => {
             if (key.len != 16 or iv.len != 12) return error.InvalidKeyIv;
-            const has_aes_gcm = @hasDecl(std.crypto.aead, "aes_gcm");
-            if (!has_aes_gcm) return error.NotImplemented;
-            const Aes128Gcm = std.crypto.aead.aes_gcm.Aes128Gcm;
             var nonce: [12]u8 = undefined;
             xorNonce(&nonce, iv, packet_number);
-            try Aes128Gcm.decrypt(out_plaintext[0..ct.len], ct, tag_arr, aad, nonce, key[0..16].*);
+            Aes128Gcm.decrypt(out_plaintext[0..ct.len], ct, tag_arr, aad, nonce, key[0..16].*) catch return error.AuthenticationFailed;
             return ct.len;
         },
     }
@@ -161,8 +126,10 @@ pub fn headerProtect(
         .aes_128_gcm => {
             // AES-based header protection per RFC 9001 §5.4.3
             if (hp_key.len != 16) return error.InvalidKey;
+            const Aes128 = std.crypto.core.aes.Aes128;
+            var ctx = Aes128.initEnc(hp_key[0..16].*);
             var out_block: [16]u8 = undefined;
-            try aesEcbEncrypt128(&out_block, hp_key[0..16].*, sample16.*);
+            ctx.encrypt(&out_block, sample16);
             const mask0 = out_block[0];
             const is_long = (header_first.* & 0x80) != 0;
             const hdr_mask: u8 = if (is_long) 0x0f else 0x1f;
@@ -173,11 +140,12 @@ pub fn headerProtect(
         },
         .chacha20_poly1305 => {
             if (hp_key.len != 32) return error.InvalidKey;
-            var nonce: [12]u8 = undefined;
             // Per RFC 9001 §5.4.4 use bytes 4..15 of sample as 96-bit nonce
+            var nonce: [12]u8 = undefined;
             @memcpy(nonce[0..], sample16.*[4..16]);
+            // Generate mask using ChaCha20 with counter=0
             var block: [64]u8 = undefined;
-            chacha20Block(&block, hp_key[0..32].*, nonce, 0);
+            ChaCha20IETF.xor(&block, &([_]u8{0} ** 64), 0, hp_key[0..32].*, nonce);
             const mask0 = block[0];
             const is_long = (header_first.* & 0x80) != 0;
             const hdr_mask: u8 = if (is_long) 0x0f else 0x1f;
@@ -217,81 +185,7 @@ fn xorNonce(out: *[12]u8, iv: []const u8, pn: u64) void {
     while (i < 12) : (i += 1) out[i] ^= pn_be[i];
 }
 
-// --- ChaCha20 block (minimal) for header protection ---
-inline fn rotl32(x: u32, n: u5) u32 {
-    return std.math.rotl(u32, x, n);
-}
 
-inline fn qr(a: *u32, b: *u32, c: *u32, d: *u32) void {
-    a.* +%= b.*;
-    d.* ^= a.*;
-    d.* = rotl32(d.*, 16);
-    c.* +%= d.*;
-    b.* ^= c.*;
-    b.* = rotl32(b.*, 12);
-    a.* +%= b.*;
-    d.* ^= a.*;
-    d.* = rotl32(d.*, 8);
-    c.* +%= d.*;
-    b.* ^= c.*;
-    b.* = rotl32(b.*, 7);
-}
-
-fn chacha20Block(out: *[64]u8, key32: [32]u8, nonce12: [12]u8, counter: u32) void {
-    var state: [16]u32 = .{
-        0x61707865, 0x3320646e, 0x79622d32, 0x6b206574, // constants
-        // key (little-endian)
-        0,          0,          0,          0,
-        0,          0,          0,          0,
-        counter, // counter
-        0, 0, 0, // nonce
-    };
-    comptime var i_key: usize = 0;
-    inline while (i_key < 8) : (i_key += 1) {
-        const j = i_key * 4;
-        state[4 + i_key] = @as(u32, key32[j]) | (@as(u32, key32[j + 1]) << 8) | (@as(u32, key32[j + 2]) << 16) | (@as(u32, key32[j + 3]) << 24);
-    }
-    // load nonce little-endian
-    state[13] = @as(u32, nonce12[0]) | (@as(u32, nonce12[1]) << 8) | (@as(u32, nonce12[2]) << 16) | (@as(u32, nonce12[3]) << 24);
-    state[14] = @as(u32, nonce12[4]) | (@as(u32, nonce12[5]) << 8) | (@as(u32, nonce12[6]) << 16) | (@as(u32, nonce12[7]) << 24);
-    state[15] = @as(u32, nonce12[8]) | (@as(u32, nonce12[9]) << 8) | (@as(u32, nonce12[10]) << 16) | (@as(u32, nonce12[11]) << 24);
-
-    var x = state; // working state
-    var r: usize = 0;
-    while (r < 10) : (r += 1) {
-        // column rounds
-        qr(&x[0], &x[4], &x[8], &x[12]);
-        qr(&x[1], &x[5], &x[9], &x[13]);
-        qr(&x[2], &x[6], &x[10], &x[14]);
-        qr(&x[3], &x[7], &x[11], &x[15]);
-        // diagonal rounds
-        qr(&x[0], &x[5], &x[10], &x[15]);
-        qr(&x[1], &x[6], &x[11], &x[12]);
-        qr(&x[2], &x[7], &x[8], &x[13]);
-        qr(&x[3], &x[4], &x[9], &x[14]);
-    }
-    var sum_iter: usize = 0;
-    while (sum_iter < 16) : (sum_iter += 1) x[sum_iter] +%= state[sum_iter];
-
-    // serialize little-endian
-    var o: usize = 0;
-    var k: usize = 0;
-    while (k < 16) : (k += 1) {
-        const v = x[k];
-        out.*[o + 0] = @as(u8, @truncate(v));
-        out.*[o + 1] = @as(u8, @truncate(v >> 8));
-        out.*[o + 2] = @as(u8, @truncate(v >> 16));
-        out.*[o + 3] = @as(u8, @truncate(v >> 24));
-        o += 4;
-    }
-}
-
-fn aesEcbEncrypt128(out: *[16]u8, key16: [16]u8, block16: [16]u8) !void {
-    if (!@hasDecl(core, "aes")) return error.NotImplemented;
-    const Aes128 = core.aes.Aes128;
-    var ctx = Aes128.initEnc(key16);
-    ctx.encrypt(out, &block16);
-}
 
 // --- Retry Integrity Tag helpers (RFC 9001 §5.8, RFC 9369 §3.3.3) ---
 const retry_secret_v1: [32]u8 = .{
@@ -322,7 +216,6 @@ fn deriveRetryKeyIv(version_v2: bool) struct { key: [16]u8, iv: [12]u8 } {
 
 /// Compute the Retry Integrity Tag over the provided pseudo-packet AAD using AES-128-GCM with fixed key/nonce.
 fn aesGcmTagFixedNonce(key16: [16]u8, nonce12: [12]u8, aad: []const u8) [16]u8 {
-    const Aes128Gcm = std.crypto.aead.aes_gcm.Aes128Gcm;
     var tag: [Aes128Gcm.tag_length]u8 = undefined;
     // Empty plaintext; ciphertext buffer can be zero-length
     const ct: []u8 = ct_empty[0..0];
@@ -427,7 +320,7 @@ pub fn unprotectInitial(
 ) !usize {
     if (ciphertext_and_tag.len < 16) return error.AuthenticationFailed;
 
-    if (builtin.is_test or true) { // Always debug for now
+    if (builtin.is_test) {
         dumpBytes("DEC hp_sample", hp_sample16.*[0..]);
         dumpBytes("DEC hp_key", hp_key);
     }
@@ -456,7 +349,7 @@ pub fn unprotectInitial(
         std.debug.print("First packet: truncated={x:0>4} ({}) -> expanded={}\n", .{ pn_val_truncated, pn_val_truncated, pn_val });
     }
 
-    if (builtin.is_test or true) { // Always debug for now
+    if (builtin.is_test) {
         dumpBytes("DEC aead_key", aead_key);
         dumpBytes("DEC aead_iv", aead_iv);
         dumpBytes("DEC aad", aad);
@@ -503,6 +396,7 @@ pub fn unprotectInitialAutoSample(
             @memcpy(sample16[0..], ciphertext_and_tag[offset .. offset + 16]);
         },
         .chacha20_poly1305 => {
+            // For ChaCha20, sample is PN bytes (masked) followed by first (16 - pn_len) bytes of ciphertext
             if ((16 - pn_len) > ciphertext_and_tag.len) return error.AuthenticationFailed;
             @memcpy(sample16[0..pn_len], pn_bytes);
             @memcpy(sample16[pn_len..], ciphertext_and_tag[0 .. 16 - pn_len]);
@@ -510,13 +404,13 @@ pub fn unprotectInitialAutoSample(
     }
 
     // Remove header protection in-place (mutates header_first & pn_bytes) using derived sample
-    if (builtin.is_test or true) {
+    if (builtin.is_test) {
         std.debug.print("Before headerUnprotect: pn_bytes=", .{});
         for (pn_bytes) |b| std.debug.print("{X:0>2} ", .{b});
         std.debug.print("\n", .{});
     }
     try headerUnprotect(suite, hp_key, &sample16, header_first, pn_bytes);
-    if (builtin.is_test or true) {
+    if (builtin.is_test) {
         std.debug.print("After headerUnprotect: pn_bytes=", .{});
         for (pn_bytes) |b| std.debug.print("{X:0>2} ", .{b});
         std.debug.print("\n", .{});
@@ -537,7 +431,7 @@ pub fn unprotectInitialAutoSample(
     while (i < pn_len) : (i += 1) pn_trunc = (pn_trunc << 8) | pn_bytes[i];
     const full_pn = expandPacketNumber(pn_trunc, @intCast(pn_len), expected_pn);
 
-    if (builtin.is_test or true) { // Always debug for now
+    if (builtin.is_test) {
         std.debug.print("expandPacketNumber: truncated={} pn_len={} expected={} -> full={}\n", .{ pn_trunc, pn_len, expected_pn, full_pn });
     }
 
@@ -560,14 +454,17 @@ pub fn unmaskLongHeaderAndPn(
     switch (suite) {
         .aes_128_gcm => {
             if (hp_key.len != 16) return error.InvalidKey;
-            try aesEcbEncrypt128(&out_block, hp_key[0..16].*, sample16.*);
+            const Aes128 = std.crypto.core.aes.Aes128;
+            var ctx = Aes128.initEnc(hp_key[0..16].*);
+            ctx.encrypt(&out_block, sample16);
         },
         .chacha20_poly1305 => {
             if (hp_key.len != 32) return error.InvalidKey;
             var nonce: [12]u8 = undefined;
             @memcpy(nonce[0..], sample16.*[4..16]);
+            // Generate mask using ChaCha20 with counter=0
             var block: [64]u8 = undefined;
-            chacha20Block(&block, hp_key[0..32].*, nonce, 0);
+            ChaCha20IETF.xor(&block, &([_]u8{0} ** 64), 0, hp_key[0..32].*, nonce);
             @memcpy(out_block[0..16], block[0..16]);
         },
     }
@@ -581,68 +478,7 @@ pub fn unmaskLongHeaderAndPn(
     return pn_len;
 }
 
-// XOR ChaCha20 keystream (starting from given counter) with input into out
-fn chacha20Xor(out: []u8, input: []const u8, key32: [32]u8, nonce12: [12]u8, counter: u32) void {
-    var ctr = counter;
-    var off: usize = 0;
-    var block: [64]u8 = undefined;
-    while (off < input.len) {
-        chacha20Block(&block, key32, nonce12, ctr);
-        ctr +%= 1;
-        const n = @min(input.len - off, block.len);
-        var i: usize = 0;
-        while (i < n) : (i += 1) {
-            out[off + i] = input[off + i] ^ block[i];
-        }
-        off += n;
-    }
-}
 
-inline fn pad16Len(len: usize) usize {
-    return (16 - (len % 16)) % 16;
-}
-
-fn le64(x: u64) [8]u8 {
-    return .{
-        @as(u8, @truncate(x)),
-        @as(u8, @truncate(x >> 8)),
-        @as(u8, @truncate(x >> 16)),
-        @as(u8, @truncate(x >> 24)),
-        @as(u8, @truncate(x >> 32)),
-        @as(u8, @truncate(x >> 40)),
-        @as(u8, @truncate(x >> 48)),
-        @as(u8, @truncate(x >> 56)),
-    };
-}
-
-fn poly1305TagRfc8439(aad: []const u8, ciphertext: []const u8, otk32: *const [32]u8) ![16]u8 {
-    // Prefer std Poly1305 if available
-    const have_poly = @hasDecl(std.crypto.onetimeauth, "Poly1305");
-    if (have_poly) {
-        const Poly1305 = std.crypto.onetimeauth.Poly1305;
-        var mac = Poly1305.init(otk32);
-        // AAD
-        mac.update(aad);
-        var zeros16: [16]u8 = .{0} ** 16;
-        var pad_len = pad16Len(aad.len);
-        if (pad_len != 0) mac.update(zeros16[0..pad_len]);
-        // Ciphertext
-        mac.update(ciphertext);
-        pad_len = pad16Len(ciphertext.len);
-        if (pad_len != 0) mac.update(zeros16[0..pad_len]);
-        // Lengths (64-bit little endian each)
-        const a_len_le = le64(@intCast(aad.len));
-        const c_len_le = le64(@intCast(ciphertext.len));
-        mac.update(&a_len_le);
-        mac.update(&c_len_le);
-        var tag: [16]u8 = undefined;
-        mac.final(&tag);
-        return tag;
-    } else {
-        // Minimal in-repo Poly1305 (slow fallback) — not implemented yet.
-        return error.NotImplemented;
-    }
-}
 
 fn dumpBytes(label: []const u8, bytes: []const u8) void {
     // Temporarily always dump for debugging
