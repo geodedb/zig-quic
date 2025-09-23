@@ -110,8 +110,6 @@ pub fn build(b: *std.Build) void {
     const legacy_tests = b.option(bool, "legacy-tests", "Run legacy tests in quic.zig") orelse false;
     const cc_opt = b.option([]const u8, "cc", "Congestion control: newreno (default) or cubic");
 
-    // Expose vendored ed25519 module
-    const ed25519_mod = mkModule(b, "vendor/ed25519/src/ed25519.zig");
 
     // Expose TLS/crypto/packet modules
     const quic_tls_mod = mkModule(b, "src/quic/tls/key_schedule.zig");
@@ -125,13 +123,10 @@ pub fn build(b: *std.Build) void {
     // TLS/X.509 modules
     const tls13_mod = mkModule(b, "src/quic/tls/tls13.zig");
     tls13_mod.addImport("quic_tls", quic_tls_mod);
-    tls13_mod.addImport("ed25519", ed25519_mod);
     const asn1_mod = mkModule(b, "src/quic/tls/asn1.zig");
     const sig_mod = mkModule(b, "src/quic/tls/sig.zig");
-    sig_mod.addImport("ed25519", ed25519_mod);
     sig_mod.addImport("asn1", asn1_mod);
     const x509_mod = mkModule(b, "src/quic/tls/x509.zig");
-    x509_mod.addImport("ed25519", ed25519_mod);
     x509_mod.addImport("asn1", asn1_mod);
     x509_mod.addImport("sig", sig_mod);
     // Make sig and x509 available to tls13

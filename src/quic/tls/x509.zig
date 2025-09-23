@@ -7,7 +7,7 @@
 const std = @import("std");
 const asn1 = @import("asn1");
 const sigmod = @import("sig");
-const ed25519 = @import("ed25519");
+const Ed25519 = std.crypto.sign.Ed25519;
 
 /// Pluggable trust store hook. If set, root must be trusted via callback.
 pub const TrustStore = struct {
@@ -363,12 +363,15 @@ fn verifyCertSig(issuer_spki_der: []const u8, tbs: []const u8, algo_oid: []const
         return sigmod.verifyCertificateVerify(.rsa_pss_sha256, issuer_spki_der, sig_der, "", tbs) catch false;
     }
     if (oidIsEd25519(algo_oid)) {
-        // Ed25519 signature verification
-        const pubkey = sigmod.parseEd25519Spki(issuer_spki_der) catch return false;
+        // Ed25519 signature verification using std.crypto
+        const pubkey_bytes = sigmod.parseEd25519Spki(issuer_spki_der) catch return false;
+        const pubkey = Ed25519.PublicKey.fromBytes(pubkey_bytes) catch return false;
         if (sig_der.len != 64) return false;
-        var sig: [64]u8 = undefined;
-        @memcpy(&sig, sig_der);
-        return ed25519.verify(&sig, tbs, &pubkey);
+        var sig_arr: [64]u8 = undefined;
+        @memcpy(&sig_arr, sig_der[0..64]);
+        const signature = Ed25519.Signature.fromBytes(sig_arr);
+        signature.verify(tbs, pubkey) catch return false;
+        return true;
     }
     return false;
 }
