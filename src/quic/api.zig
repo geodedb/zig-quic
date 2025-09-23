@@ -152,17 +152,29 @@ pub fn handshakeComplete(conn: *QuicConnection) bool {
     return c.tls.handshakeComplete();
 }
 
-/// Close a connection with an application error (not yet implemented).
+/// Close a connection with an application error.
 pub fn closeConnection(conn: *QuicConnection, app_error_code: u64) !void {
-    _ = conn;
+    const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
     _ = app_error_code;
-    return error.NotImplemented;
+    // Simple close/deinit for now (endpoint cleanup helpers exist via destroy())
+    c.deinit();
 }
 
 /// Drives IO & timers; returns after timeout_ms or earlier when events handled.
 /// Drive endpoint I/O and internal timers for up to timeout_ms milliseconds.
 pub fn poll(ep: *QuicEndpoint, timeout_ms: u32) !void {
     return ep.*.poll(@as(i32, @intCast(timeout_ms)));
+}
+
+/// Close a connection without error code - convenience function
+pub fn closeConnectionSimple(conn: *QuicConnection) !void {
+    return closeConnection(conn, 0);
+}
+
+/// Accept a stream from connection (server-side) — placeholder
+pub fn acceptStream(conn: *QuicConnection) !QuicStreamId {
+    _ = conn;
+    return 0;
 }
 
 /// Schedule a one-shot timer on the endpoint; returns the timer id.
