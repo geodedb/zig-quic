@@ -1,8 +1,4 @@
-<<<<<<< Updated upstream
-// Public API surface re-export for vendored QUIC module
-=======
 // Public API surface re-export for vendored QUIC module (geode wiring)
->>>>>>> Stashed changes
 const api = @import("src/quic/api.zig");
 
 pub const QuicVersion = api.QuicVersion;
@@ -32,10 +28,6 @@ pub const getNegotiatedAlpn = api.getNegotiatedAlpn;
 pub const getPeerTransportParams = api.getPeerTransportParams;
 pub const handshakeComplete = api.handshakeComplete;
 pub const closeConnection = api.closeConnection;
-<<<<<<< Updated upstream
-pub const closeConnectionSimple = api.closeConnectionSimple;
-pub const acceptStream = api.acceptStream;
-=======
 pub fn closeConnectionSimple(conn: *QuicConnection) !void {
     return api.closeConnection(conn, 0);
 }
@@ -43,7 +35,6 @@ pub fn acceptStream(conn: *QuicConnection) !QuicStreamId {
     _ = conn;
     return 0;
 }
->>>>>>> Stashed changes
 pub const poll = api.poll;
 pub const scheduleTimer = api.scheduleTimer;
 pub const cancelTimer = api.cancelTimer;
@@ -52,8 +43,4 @@ pub const close = api.close;
 pub const destroy = api.destroy;
 pub const handshakeDoneSeen = api.handshakeDoneSeen;
 pub const isDrained = api.isDrained;
-<<<<<<< Updated upstream
 pub const flush = api.flush;
-=======
-pub const flush = api.flush;
->>>>>>> Stashed changes
