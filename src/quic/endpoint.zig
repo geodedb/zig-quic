@@ -754,7 +754,7 @@ pub const Endpoint = struct {
         const io = @import("io/loop_iocp.zig");
         var lp = try io.Loop.init();
         defer lp.deinit();
-        try lp.add(@as(i32, @intCast(self.sock_fd)), true, false);
+        try lp.add(self.sock_fd, true, false);
         var events: [8]io.Event = undefined;
         const n = try lp.wait(&events, timeout_ms);
         _ = n;

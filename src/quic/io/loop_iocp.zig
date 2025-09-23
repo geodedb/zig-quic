@@ -23,16 +23,16 @@ pub const Loop = struct {
         _ = std.os.windows.CloseHandle(self.port);
     }
 
-    /// Register an fd/handle (no-op in this stub).
-    pub fn add(self: *Loop, _: i32, _: bool, _: bool) !void {
+    /// Register a socket handle (no-op in this stub).
+    pub fn add(self: *Loop, _: std.os.windows.ws2_32.SOCKET, _: bool, _: bool) !void {
         _ = self;
     }
     /// Modify interest (no-op in this stub).
-    pub fn mod(self: *Loop, _: i32, _: bool, _: bool) !void {
+    pub fn mod(self: *Loop, _: std.os.windows.ws2_32.SOCKET, _: bool, _: bool) !void {
         _ = self;
     }
     /// Remove interest (no-op in this stub).
-    pub fn del(self: *Loop, _: i32) !void {
+    pub fn del(self: *Loop, _: std.os.windows.ws2_32.SOCKET) !void {
         _ = self;
     }
 
