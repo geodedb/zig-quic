@@ -185,8 +185,6 @@ fn xorNonce(out: *[12]u8, iv: []const u8, pn: u64) void {
     while (i < 12) : (i += 1) out[i] ^= pn_be[i];
 }
 
-
-
 // --- Retry Integrity Tag helpers (RFC 9001 §5.8, RFC 9369 §3.3.3) ---
 const retry_secret_v1: [32]u8 = .{
     0xd9, 0xc9, 0x94, 0x3e, 0x61, 0x01, 0xfd, 0x20,
@@ -477,8 +475,6 @@ pub fn unmaskLongHeaderAndPn(
     while (i < 4) : (i += 1) pn_buf.*[i] ^= out_block[i + 1];
     return pn_len;
 }
-
-
 
 fn dumpBytes(label: []const u8, bytes: []const u8) void {
     // Temporarily always dump for debugging

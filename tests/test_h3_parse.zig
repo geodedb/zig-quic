@@ -2,15 +2,31 @@ const std = @import("std");
 const h3 = @import("h3_server");
 
 fn encVar(v: u64, out: []u8) usize {
-    if (v < (1 << 6)) { out[0] = @as(u8, @intCast(v)); return 1; }
-    if (v < (1 << 14)) { out[0] = @as(u8, @intCast(v >> 8)) | 0b01 << 6; out[1] = @as(u8, @intCast(v & 0xff)); return 2; }
-    if (v < (1 << 30)) { out[0] = @as(u8, @intCast(v >> 24)) | 0b10 << 6; out[1] = @as(u8, @intCast((v >> 16) & 0xff)); out[2] = @as(u8, @intCast((v >> 8) & 0xff)); out[3] = @as(u8, @intCast(v & 0xff)); return 4; }
+    if (v < (1 << 6)) {
+        out[0] = @as(u8, @intCast(v));
+        return 1;
+    }
+    if (v < (1 << 14)) {
+        out[0] = @as(u8, @intCast(v >> 8)) | 0b01 << 6;
+        out[1] = @as(u8, @intCast(v & 0xff));
+        return 2;
+    }
+    if (v < (1 << 30)) {
+        out[0] = @as(u8, @intCast(v >> 24)) | 0b10 << 6;
+        out[1] = @as(u8, @intCast((v >> 16) & 0xff));
+        out[2] = @as(u8, @intCast((v >> 8) & 0xff));
+        out[3] = @as(u8, @intCast(v & 0xff));
+        return 4;
+    }
     return 0;
 }
 
 fn encPref(val: u64, out: []u8, prefix_bits: u3) usize {
     const max = (@as(u8, 1) << (8 - prefix_bits)) - 1;
-    if (val < max) { out[0] |= @as(u8, @intCast(val)); return 1; }
+    if (val < max) {
+        out[0] |= @as(u8, @intCast(val));
+        return 1;
+    }
     out[0] |= max;
     var k: usize = 1;
     var rem = val - max;

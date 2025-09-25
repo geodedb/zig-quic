@@ -134,7 +134,6 @@ pub fn main() !void {
         out_buf[k] = '\n';
         k += 1;
         writeStdout(out_buf[0..k]);
-
     } else if (std.mem.eql(u8, cmd, "decode")) {
         if (args.len < 3) {
             writeStderr("VARINT_UNDERFLOW\n");

@@ -28,7 +28,7 @@ pub const H3Server = struct {
         var i: usize = 0;
         i += encodeVarint(0x00, ctrl_buf[i..]); // uni stream type: control
         i += encodeVarint(0x04, ctrl_buf[i..]); // SETTINGS
-        i += encodeVarint(0, ctrl_buf[i..]);    // len=0
+        i += encodeVarint(0, ctrl_buf[i..]); // len=0
         _ = api.writeStream(conn, ctrl, ctrl_buf[0..i]) catch {};
         // QPACK encoder/decoder streams
         if (api.openUni(conn)) |sid| {
@@ -51,7 +51,10 @@ pub const H3Server = struct {
                 var already: bool = false;
                 var j: usize = 0;
                 while (j < served_len) : (j += 1) {
-                    if (served[j] == pair.id) { already = true; break; }
+                    if (served[j] == pair.id) {
+                        already = true;
+                        break;
+                    }
                 }
                 if (already) continue;
                 served[served_len] = pair.id;
@@ -101,8 +104,10 @@ pub const H3Server = struct {
     fn encodeQpackStatus200WithContentType(out: []u8) usize {
         var k: usize = 0;
         if (out.len < 2) return 0;
-        out[k] = 0; k += 1; // RIC
-        out[k] = 0; k += 1; // Base
+        out[k] = 0;
+        k += 1; // RIC
+        out[k] = 0;
+        k += 1; // Base
         // :status 200 (static idx 25)
         k += encodeIndexedStatic(25, out[k..]);
         // content-type: text/html; charset=utf-8 (static idx 52)
@@ -219,7 +224,10 @@ pub const H3Server = struct {
                     // Handle a few static table entries we care about for request metadata.
                     switch (name_index) {
                         1 => { // :path "/"
-                            if (out.len >= 1) { out[0] = '/'; return out[0..1]; }
+                            if (out.len >= 1) {
+                                out[0] = '/';
+                                return out[0..1];
+                            }
                         },
                         17 => { // :method GET
                             rs.method = "GET";
@@ -267,7 +275,7 @@ pub const H3Server = struct {
                 var name_buf: [64]u8 = undefined;
                 const name_slice = if (h_bit) blk: {
                     const name_end: usize = off + name_len_usize;
-                    const nn = hpackHuffmanDecode(h[off .. name_end], name_buf[0..]) orelse return null;
+                    const nn = hpackHuffmanDecode(h[off..name_end], name_buf[0..]) orelse return null;
                     break :blk name_buf[0..nn];
                 } else h[off .. off + name_len_usize];
                 off += name_len_usize;
@@ -338,7 +346,12 @@ pub const H3Server = struct {
         if (off.* >= h.len) return null;
         const first = h[off.*];
         const prefix = first >> 6;
-        const len: usize = switch (prefix) { 0 => 1, 1 => 2, 2 => 4, else => 8 };
+        const len: usize = switch (prefix) {
+            0 => 1,
+            1 => 2,
+            2 => 4,
+            else => 8,
+        };
         if (off.* + len > h.len) return null;
         var v: u64 = 0;
         switch (len) {

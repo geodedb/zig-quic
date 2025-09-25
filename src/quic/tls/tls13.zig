@@ -309,7 +309,7 @@ pub const Engine = struct {
     pub fn queueNewSessionTicket(self: *Engine) !void {
         try self.queueNewSessionTicketWithParams(3600, "test_ticket");
     }
-    
+
     /// Queue a NewSessionTicket with specific parameters.
     pub fn queueNewSessionTicketWithParams(self: *Engine, lifetime: u32, ticket: []const u8) !void {
         var body = std.ArrayList(u8){};

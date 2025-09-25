@@ -101,7 +101,7 @@ pub fn main() !void {
     // Now supporting: handshake, transfer, http3 (0.9 shim), retry, keyupdate, v2, chacha20, multiconnect
     // Partially supporting: resumption, zerortt, connectionmigration, rebind-port, rebind-addr (basic structure)
     // These features have basic implementation but may not pass all interop tests
-    
+
     // Log support for partially implemented features
     if (std.mem.eql(u8, testcase, "resumption")) {
         log("endpoint: session resumption enabled (basic support)");
@@ -125,13 +125,13 @@ pub fn main() !void {
         .enable_retry = false,
         .version = .v1, // Default to v1
     };
-    
+
     // Enable v2 when requested
     if (std.mem.eql(u8, testcase, "v2")) {
         cfg.version = .v2;
         log("endpoint: QUIC v2 enabled");
     }
-    
+
     // Enable ChaCha20 when requested (already supported in crypto layer)
     if (std.mem.eql(u8, testcase, "chacha20")) {
         // ChaCha20-Poly1305 is already supported, just log it
@@ -150,9 +150,14 @@ pub fn main() !void {
     const cert_ok = std.fs.cwd().openFile("certs/cert.pem", .{}) catch null;
     if (cert_ok) |f| f.close();
     var key_path_sel: ?[]const u8 = null;
-    if (std.fs.cwd().openFile("certs/key.pem", .{})) |kf| { kf.close(); key_path_sel = "/certs/key.pem"; }
-    else |_| {
-        if (std.fs.cwd().openFile("certs/priv.key", .{})) |kf2| { kf2.close(); key_path_sel = "/certs/priv.key"; } else |_| {}
+    if (std.fs.cwd().openFile("certs/key.pem", .{})) |kf| {
+        kf.close();
+        key_path_sel = "/certs/key.pem";
+    } else |_| {
+        if (std.fs.cwd().openFile("certs/priv.key", .{})) |kf2| {
+            kf2.close();
+            key_path_sel = "/certs/priv.key";
+        } else |_| {}
     }
     if (cert_ok != null and key_path_sel != null) {
         cfg.real_tls = true;
@@ -175,7 +180,7 @@ pub fn main() !void {
                 api.poll(ep, 100) catch {};
                 poll_count += 1;
             }
-            
+
             const conn = api.accept(ep) catch |e| switch (e) {
                 else => {
                     // No connection ready, continue polling
@@ -265,42 +270,42 @@ pub fn main() !void {
         const req_env = env.get("REQUESTS") orelse return error.MissingREQUESTS;
         const urls = try parseUrls(alloc, req_env);
         defer alloc.free(urls);
-        
+
         // For multiconnect test, establish a new connection for each request
         if (std.mem.eql(u8, testcase, "multiconnect")) {
             log("client: multiconnect mode - establishing separate connection per request");
             const ep = try api.endpointInit(&alloc, "0.0.0.0:0", &cfg);
             defer api.endpointDeinit(ep);
-            
+
             var success: bool = true;
             for (urls, 0..) |url, idx| {
                 const path = extractPath(url);
-                
+
                 // Create new connection for each request
                 const conn = try api.connect(ep, "server4:443", "server4");
                 var conn_msg_buf: [128]u8 = undefined;
                 const conn_msg = std.fmt.bufPrint(&conn_msg_buf, "client: connection {d} connecting to server4:443", .{idx + 1}) catch "client: connecting";
                 log(conn_msg);
-                
+
                 // Wait for handshake
                 var wait: usize = 0;
                 while (!api.handshakeDoneSeen(conn) and wait < 2000) : (wait += 1) {
                     api.poll(ep, 5) catch {};
                 }
-                
+
                 if (!api.handshakeDoneSeen(conn)) {
                     log("client: handshake timeout");
                     api.destroy(ep, conn);
                     success = false;
                     continue;
                 }
-                
+
                 // Send request
                 var line_buf: [600]u8 = undefined;
                 const line = try std.fmt.bufPrint(&line_buf, "GET {s}", .{path});
                 log("client: sending GET request");
                 writeAllStream(ep, conn, line);
-                
+
                 // Read response
                 var file_bytes = std.ArrayList(u8){};
                 defer file_bytes.deinit(alloc);
@@ -318,7 +323,7 @@ pub fn main() !void {
                         if (file_bytes.items.len > 4 * 1024 * 1024) break;
                     }
                 }
-                
+
                 // Save file
                 var sanitized = path;
                 if (sanitized.len > 0 and sanitized[0] == '/') sanitized = sanitized[1..];
@@ -328,22 +333,22 @@ pub fn main() !void {
                     defer outf.close();
                     _ = outf.write(file_bytes.items) catch {};
                 } else |_| {}
-                
+
                 if (file_bytes.items.len == 0) success = false;
                 var msg_buf: [96]u8 = undefined;
                 const msg = std.fmt.bufPrint(&msg_buf, "client: connection {d} response bytes={d}", .{ idx + 1, file_bytes.items.len }) catch "client: response received";
                 log(msg);
-                
+
                 // Close connection
                 api.close(conn, 0, "bye") catch {};
                 api.flush(ep, 10);
                 api.destroy(ep, conn);
             }
-            
+
             if (!success) std.process.exit(1);
             return;
         }
-        
+
         // Normal mode: single connection for all requests
         const ep = try api.endpointInit(&alloc, "0.0.0.0:0", &cfg);
         defer api.endpointDeinit(ep);

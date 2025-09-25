@@ -37,7 +37,12 @@ fn decodeVarint(h: []const u8, off: *usize) ?u64 {
     if (off.* >= h.len) return null;
     const first = h[off.*];
     const prefix = first >> 6;
-    const len: usize = switch (prefix) { 0 => 1, 1 => 2, 2 => 4, else => 8 };
+    const len: usize = switch (prefix) {
+        0 => 1,
+        1 => 2,
+        2 => 4,
+        else => 8,
+    };
     if (off.* + len > h.len) return null;
     var v: u64 = 0;
     switch (len) {
@@ -98,15 +103,18 @@ fn encPref(val: u64, out: []u8, prefix_bits: u3) usize {
 pub fn buildSimpleGetHeaders(host: []const u8, path: []const u8, out: []u8) ?usize {
     var k: usize = 0;
     if (out.len < 2) return null;
-    out[k] = 0; k += 1; // RIC=0
-    out[k] = 0; k += 1; // Base=0
+    out[k] = 0;
+    k += 1; // RIC=0
+    out[k] = 0;
+    k += 1; // Base=0
     // :method GET (static idx 17)
     k += encodeIndexedStatic(17, out[k..]);
     // :scheme https (static idx 23)
     k += encodeIndexedStatic(23, out[k..]);
     // :authority host (literal with name reference to static idx 0)
     if (out.len < k + 1) return null;
-    out[k] = 0b0101_0000; k += 1; // 01 N T; N=0, T=1 (name reference), prefix=4
+    out[k] = 0b0101_0000;
+    k += 1; // 01 N T; N=0, T=1 (name reference), prefix=4
     var nb: [8]u8 = .{0} ** 8;
     nb[0] = 0;
     const nk = encPref(0, nb[0..], 4); // static index 0 = :authority
@@ -125,7 +133,8 @@ pub fn buildSimpleGetHeaders(host: []const u8, path: []const u8, out: []u8) ?usi
         k += encodeIndexedStatic(1, out[k..]);
     } else {
         if (out.len < k + 1) return null;
-        out[k] = 0b0101_0000; k += 1; // name reference
+        out[k] = 0b0101_0000;
+        k += 1; // name reference
         var nb2: [8]u8 = .{0} ** 8;
         nb2[0] = 0;
         const nk2 = encPref(1, nb2[0..], 4);
