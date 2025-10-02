@@ -1287,7 +1287,12 @@ pub const Connection = struct {
                 if (st.aborted or st.fin_sent) return error.StreamStopped;
             }
         }
-        const tx = self.app_tx_keys orelse return error.KeysNotReady;
+        // Check if handshake is complete and app keys are ready
+        const tx = self.app_tx_keys orelse {
+            // If handshake is not complete, return 0 to indicate no data sent
+            // The caller can retry later when the connection is ready
+            return 0;
+        };
         if (data.len == 0) return 0;
         const cur_off: u64 = if (id == 0) self.stream_send_off else self.stream_txs.getPtr(id).?.off;
         if (cur_off >= self.peer_max_stream_data) {
