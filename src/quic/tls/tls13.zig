@@ -521,15 +521,20 @@ pub const Engine = struct {
                 }
                 // Minimal X.509 certificate body handling (single DER cert)
                 if (p.typ == .certificate) {
+                    std.debug.print("{s}: Processing Certificate message (len={})\n", .{ if (self.role == .Server) "Server" else "Client", p.body.len });
                     if (self.allow_insecure) {
+                        std.debug.print("{s}: Certificate validation skipped (insecure mode)\n", .{if (self.role == .Server) "Server" else "Client"});
                         self.peer_cert_ok = true;
                     } else {
+                        std.debug.print("{s}: Attempting certificate validation\n", .{if (self.role == .Server) "Server" else "Client"});
                         const cert_val = x509.parseCert(self.allocator, p.body) catch null;
                         if (cert_val) |c| {
+                            std.debug.print("{s}: Certificate parsed successfully\n", .{if (self.role == .Server) "Server" else "Client"});
                             self.peer_cert_ok = true;
                             if (self.leaf_spki) |old| self.allocator.free(old);
                             self.leaf_spki = self.allocator.dupe(u8, c.spki) catch null;
                             x509.checkValidity(std.time.timestamp(), &c) catch {
+                                std.debug.print("{s}: Certificate validity check failed\n", .{if (self.role == .Server) "Server" else "Client"});
                                 self.peer_cert_ok = false;
                             };
                             if (self.peer_cert_ok) {
@@ -1121,8 +1126,13 @@ pub const Engine = struct {
             return;
         } else { // Client
             // Client waits for Finished verification; in authenticated mode also ensures peer_cert_ok
+            std.debug.print("Client: maybeAutoProgress - finished_verified={}, has_secret={}, allow_insecure={}, peer_cert_ok={}\n", .{ self.finished_verified, self.handshake_client_secret != null, self.allow_insecure, self.peer_cert_ok });
             if (self.finished_verified and self.handshake_client_secret != null) {
-                if (!self.allow_insecure and !self.peer_cert_ok) return; // wait for cert validation
+                if (!self.allow_insecure and !self.peer_cert_ok) {
+                    std.debug.print("Client: Waiting for certificate validation to complete\n", .{});
+                    return; // wait for cert validation
+                }
+                std.debug.print("Client: Queueing Finished message in real mode\n", .{});
                 self.queueFinished(self.handshake_client_secret.?) catch {};
             }
         }
@@ -1256,53 +1266,109 @@ fn readU16(be: []const u8) u16 {
 /// Attempt to parse a real (spec-like) TLS 1.3 ClientHello and extract the first X25519 key share.
 /// Returns pubkey if successful; otherwise null. Does not perform deep validation beyond bounds.
 fn parseRealClientHello(body: []const u8) ?[32]u8 {
-    if (body.len < 2 + 32 + 1) return null; // version + random + session id len
+    std.debug.print("parseRealClientHello: body_len={}\n", .{body.len});
+    if (body.len < 2 + 32 + 1) {
+        std.debug.print("parseRealClientHello: body too short (min 35 bytes)\n", .{});
+        return null; // version + random + session id len
+    }
     var pos: usize = 0;
     // legacy_version
     pos += 2;
     // random
     pos += 32;
-    if (pos >= body.len) return null;
+    if (pos >= body.len) {
+        std.debug.print("parseRealClientHello: pos >= body.len after random\n", .{});
+        return null;
+    }
     // session id
     const sid_len: usize = body[pos];
+    std.debug.print("parseRealClientHello: sid_len={}\n", .{sid_len});
     pos += 1;
-    if (pos + sid_len > body.len) return null;
+    if (pos + sid_len > body.len) {
+        std.debug.print("parseRealClientHello: session id overflow\n", .{});
+        return null;
+    }
     pos += sid_len;
-    if (pos + 2 > body.len) return null;
+    if (pos + 2 > body.len) {
+        std.debug.print("parseRealClientHello: no space for cipher suite length\n", .{});
+        return null;
+    }
     const cs_len = readU16(body[pos .. pos + 2]);
+    std.debug.print("parseRealClientHello: cs_len={}\n", .{cs_len});
     pos += 2;
-    if (pos + cs_len > body.len) return null;
+    if (pos + cs_len > body.len) {
+        std.debug.print("parseRealClientHello: cipher suites overflow\n", .{});
+        return null;
+    }
     pos += cs_len; // skip cipher_suites
-    if (pos >= body.len) return null;
+    if (pos >= body.len) {
+        std.debug.print("parseRealClientHello: no space for compression length\n", .{});
+        return null;
+    }
     const comp_len: usize = body[pos];
+    std.debug.print("parseRealClientHello: comp_len={}\n", .{comp_len});
     pos += 1;
-    if (pos + comp_len > body.len) return null;
+    if (pos + comp_len > body.len) {
+        std.debug.print("parseRealClientHello: compression overflow\n", .{});
+        return null;
+    }
     pos += comp_len;
-    if (pos + 2 > body.len) return null;
+    if (pos + 2 > body.len) {
+        std.debug.print("parseRealClientHello: no space for extensions length\n", .{});
+        return null;
+    }
     const exts_len = readU16(body[pos .. pos + 2]);
+    std.debug.print("parseRealClientHello: exts_len={}, pos={}\n", .{ exts_len, pos });
     pos += 2;
-    if (pos + exts_len > body.len) return null;
+    if (pos + exts_len > body.len) {
+        std.debug.print("parseRealClientHello: extensions overflow\n", .{});
+        return null;
+    }
     const exts_end = pos + exts_len;
     var pk: ?[32]u8 = null;
+    var ext_count: u32 = 0;
     while (pos + 4 <= exts_end) {
         const etype = readU16(body[pos .. pos + 2]);
         const elen = readU16(body[pos + 2 .. pos + 4]);
+        std.debug.print("parseRealClientHello: ext #{} type=0x{X:0>4} len={}\n", .{ ext_count, etype, elen });
+        ext_count += 1;
         pos += 4;
-        if (pos + elen > exts_end) return null;
+        if (pos + elen > exts_end) {
+            std.debug.print("parseRealClientHello: extension {} overflow\n", .{ext_count - 1});
+            return null;
+        }
         if (etype == 0x0033) { // key_share
-            if (elen < 2) return null;
-            if (pos + 2 > exts_end) return null;
+            std.debug.print("parseRealClientHello: found key_share extension\n", .{});
+            if (elen < 2) {
+                std.debug.print("parseRealClientHello: key_share too short\n", .{});
+                return null;
+            }
+            if (pos + 2 > exts_end) {
+                std.debug.print("parseRealClientHello: no space for key_share list length\n", .{});
+                return null;
+            }
             const list_len = readU16(body[pos .. pos + 2]);
+            std.debug.print("parseRealClientHello: key_share list_len={}\n", .{list_len});
             pos += 2;
-            if (pos + list_len > exts_end) return null;
+            if (pos + list_len > exts_end) {
+                std.debug.print("parseRealClientHello: key_share list overflow\n", .{});
+                return null;
+            }
             var lp: usize = pos;
             const list_end = pos + list_len;
+            var key_count: u32 = 0;
             while (lp + 4 <= list_end) {
                 const group = readU16(body[lp .. lp + 2]);
                 const klen = readU16(body[lp + 2 .. lp + 4]);
+                std.debug.print("parseRealClientHello: key #{} group=0x{X:0>4} klen={}\n", .{ key_count, group, klen });
+                key_count += 1;
                 lp += 4;
-                if (lp + klen > list_end) return null;
+                if (lp + klen > list_end) {
+                    std.debug.print("parseRealClientHello: key {} overflow\n", .{key_count - 1});
+                    return null;
+                }
                 if (group == 0x001d and klen == 32) {
+                    std.debug.print("parseRealClientHello: found X25519 key!\n", .{});
                     var out: [32]u8 = undefined;
                     @memcpy(&out, body[lp .. lp + 32]);
                     pk = out;
@@ -1311,8 +1377,14 @@ fn parseRealClientHello(body: []const u8) ?[32]u8 {
                 lp += klen;
             }
             // We don't parse further extensions once key_share found.
+            break;
         }
         pos += elen; // advance to next extension
+    }
+    if (pk != null) {
+        std.debug.print("parseRealClientHello: successfully extracted public key\n", .{});
+    } else {
+        std.debug.print("parseRealClientHello: no X25519 key found\n", .{});
     }
     return pk;
 }
