@@ -31,10 +31,7 @@ pub const closeConnection = api.closeConnection;
 pub fn closeConnectionSimple(conn: *QuicConnection) !void {
     return api.closeConnection(conn, 0);
 }
-pub fn acceptStream(conn: *QuicConnection) !QuicStreamId {
-    _ = conn;
-    return 0;
-}
+pub const acceptStream = api.acceptStream;
 pub const poll = api.poll;
 pub const scheduleTimer = api.scheduleTimer;
 pub const cancelTimer = api.cancelTimer;

@@ -336,6 +336,11 @@ pub const Connection = struct {
     stream_send_off: u64 = 0,
     // Multi-stream TX state map (extended): track offset/flags per stream id
     stream_txs: std.AutoHashMap(u64, StreamTx) = undefined,
+    // Queue of incoming peer-initiated streams waiting to be accepted
+    incoming_stream_queue: std.ArrayList(u64) = undefined,
+    // Track highest peer-initiated stream ID seen (for each type)
+    highest_peer_bidi_stream: ?u64 = null,
+    highest_peer_uni_stream: ?u64 = null,
     // Stream state flags (stream 0 in this slice)
     stream_send_aborted: bool = false,
     stream_recv_aborted: bool = false,
@@ -593,6 +598,10 @@ pub const Connection = struct {
         self.stream_txs = std.AutoHashMap(u64, StreamTx).init(alloc.*);
         self.stream_send_aborted = false;
         self.stream_recv_aborted = false;
+        // Init incoming stream queue
+        self.incoming_stream_queue = std.ArrayList(u64){};
+        self.highest_peer_bidi_stream = null;
+        self.highest_peer_uni_stream = null;
         self.stream_recv_fin = false;
         // Initialize ECN counters
         self.ecn_initial = .{};
@@ -718,6 +727,8 @@ pub const Connection = struct {
         }
         self.streams_rx.deinit();
         if (self.stream_txs.capacity() != 0) self.stream_txs.deinit();
+        // Free incoming stream queue
+        if (self.incoming_stream_queue.capacity != 0) self.incoming_stream_queue.deinit(self.allocator.*);
         // Free reset tokens / initial token buffers once (previous code double-deinited)
         if (self.reset_tokens.capacity != 0) self.reset_tokens.deinit(self.allocator.*);
         if (self.initial_token.capacity != 0) self.initial_token.deinit(self.allocator.*);
@@ -1016,6 +1027,14 @@ pub const Connection = struct {
     /// Ingest STREAM frame data (copy + reassembly); updates flow-control windows heuristically.
     pub fn pushStreamFrame(self: *Connection, stream_id: u64, offset: u64, data: []const u8, fin: bool) !void {
         if (self.stream_recv_aborted) return; // ignore further data after RESET_STREAM
+        
+        // Check if this is a new peer-initiated stream
+        const is_peer_initiated = self.isPeerInitiatedStream(stream_id);
+        if (is_peer_initiated and !self.isStreamKnown(stream_id)) {
+            // Add to incoming queue if not already there
+            try self.queueIncomingStream(stream_id);
+        }
+        
         const s = self.ensureStreamRx(stream_id);
         if (fin) {
             const end_off: u64 = offset + @as(u64, data.len);
@@ -2117,10 +2136,116 @@ pub const Connection = struct {
     fn ensureStreamRx(self: *Connection, id: u64) *StreamRx {
         if (self.streams_rx.capacity() == 0) self.streams_rx = std.AutoHashMap(u64, StreamRx).init(self.allocator.*);
         if (self.dgram_inbox.capacity == 0) self.dgram_inbox = std.ArrayList([]u8){};
+        if (self.incoming_stream_queue.capacity == 0) self.incoming_stream_queue = std.ArrayList(u64){};
         if (self.streams_rx.getPtr(id)) |s| return s;
         const sr = StreamRx.init();
         self.streams_rx.put(id, sr) catch {};
         return self.streams_rx.getPtr(id).?;
+    }
+    
+    /// Check if a stream ID was initiated by the peer
+    fn isPeerInitiatedStream(self: *const Connection, stream_id: u64) bool {
+        // Stream ID format: [stream_num:62][dir:1][initiator:1]
+        // Bit 0: 0=client-initiated, 1=server-initiated
+        const initiator_bit = stream_id & 0x1;
+        const is_client_initiated = (initiator_bit == 0);
+        const is_server_initiated = (initiator_bit == 1);
+        
+        if (self.role == .Client) {
+            // If we're the client, peer-initiated means server-initiated
+            return is_server_initiated;
+        } else {
+            // If we're the server, peer-initiated means client-initiated
+            return is_client_initiated;
+        }
+    }
+    
+    /// Check if we already know about this stream
+    fn isStreamKnown(self: *const Connection, stream_id: u64) bool {
+        // Check if it's in our RX map
+        if (self.streams_rx.get(stream_id) != null) return true;
+        
+        // Check if it's already in the incoming queue
+        for (self.incoming_stream_queue.items) |id| {
+            if (id == stream_id) return true;
+        }
+        
+        return false;
+    }
+    
+    /// Queue a new incoming stream for acceptance
+    fn queueIncomingStream(self: *Connection, stream_id: u64) !void {
+        // Check if already in queue
+        for (self.incoming_stream_queue.items) |id| {
+            if (id == stream_id) return;
+        }
+        
+        // Add to queue
+        try self.incoming_stream_queue.append(self.allocator.*, stream_id);
+        
+        // Update highest seen stream ID
+        const dir_bit = (stream_id >> 1) & 0x1;
+        const is_bidi = (dir_bit == 0);
+        
+        if (is_bidi) {
+            if (self.highest_peer_bidi_stream == null or stream_id > self.highest_peer_bidi_stream.?) {
+                self.highest_peer_bidi_stream = stream_id;
+            }
+        } else {
+            if (self.highest_peer_uni_stream == null or stream_id > self.highest_peer_uni_stream.?) {
+                self.highest_peer_uni_stream = stream_id;
+            }
+        }
+    }
+    
+    /// Accept an incoming peer-initiated stream (non-blocking)
+    pub fn acceptStream(self: *Connection) !u64 {
+        if (self.incoming_stream_queue.items.len == 0) {
+            return error.WouldBlock;
+        }
+        
+        // Remove and return the first stream in the queue
+        const stream_id = self.incoming_stream_queue.orderedRemove(0);
+        
+        // Ensure we have RX state for it
+        _ = self.ensureStreamRx(stream_id);
+        
+        // Also ensure TX state for bidirectional streams
+        const dir_bit = (stream_id >> 1) & 0x1;
+        const is_bidi = (dir_bit == 0);
+        if (is_bidi) {
+            if (self.stream_txs.getPtr(stream_id) == null) {
+                _ = self.stream_txs.put(stream_id, .{}) catch {};
+            }
+        }
+        
+        return stream_id;
+    }
+    
+    /// Check if any incoming streams are available
+    pub fn hasIncomingStreams(self: *const Connection) bool {
+        return self.incoming_stream_queue.items.len > 0;
+    }
+    
+    /// Get the first available stream from received data (for compatibility)
+    pub fn getFirstStream(self: *Connection) ?u64 {
+        // Check if we have any streams in RX map that are peer-initiated
+        var it = self.streams_rx.iterator();
+        while (it.next()) |entry| {
+            const stream_id = entry.key_ptr.*;
+            if (self.isPeerInitiatedStream(stream_id)) {
+                // Ensure TX state for bidirectional streams
+                const dir_bit = (stream_id >> 1) & 0x1;
+                const is_bidi = (dir_bit == 0);
+                if (is_bidi) {
+                    if (self.stream_txs.getPtr(stream_id) == null) {
+                        _ = self.stream_txs.put(stream_id, .{}) catch {};
+                    }
+                }
+                return stream_id;
+            }
+        }
+        return null;
     }
 
     /// Decode and apply peer-provided QUIC transport parameters (encoded TP extension payload).

@@ -171,10 +171,17 @@ pub fn closeConnectionSimple(conn: *QuicConnection) !void {
     return closeConnection(conn, 0);
 }
 
-/// Accept a stream from connection (server-side) — placeholder
+/// Accept an incoming peer-initiated stream from the connection
 pub fn acceptStream(conn: *QuicConnection) !QuicStreamId {
-    _ = conn;
-    return 0;
+    const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
+    
+    // For backward compatibility with the server, check if stream 0 exists
+    // This is a workaround since the client always opens stream 0
+    if (c.getFirstStream()) |stream_id| {
+        return stream_id;
+    }
+    
+    return c.acceptStream();
 }
 
 /// Schedule a one-shot timer on the endpoint; returns the timer id.
