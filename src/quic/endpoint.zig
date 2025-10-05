@@ -263,8 +263,33 @@ pub const Endpoint = struct {
             _ = self.captures.append(self.allocator.*, .{ .peer = peer, .bytes = owned }) catch {};
             // Also send to socket for integration if desired
         }
+        if (data.len == 141) {
+            // Extract peer address for debugging
+            const sa: *const posix.sockaddr = @ptrCast(&peer.storage);
+            if (sa.family == posix.AF.INET) {
+                const sin: *const posix.sockaddr.in = @ptrCast(&peer.storage);
+                const addr_bytes = @as([4]u8, @bitCast(sin.addr));
+                std.debug.print("DEBUG: sendTo 141 bytes to IPv4: {}.{}.{}.{}:{}\n", .{
+                    addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3],
+                    std.mem.bigToNative(u16, sin.port)
+                });
+            } else if (sa.family == posix.AF.INET6) {
+                const sin6: *const posix.sockaddr.in6 = @ptrCast(&peer.storage);
+                std.debug.print("DEBUG: sendTo 141 bytes to IPv6 port {}\n", .{
+                    std.mem.bigToNative(u16, sin6.port)
+                });
+            }
+        }
         const sa_ptr: *const posix.sockaddr = @ptrCast(&peer.storage);
-        return posix.sendto(self.sock_fd, data, 0, sa_ptr, peer.len);
+        const result = posix.sendto(self.sock_fd, data, 0, sa_ptr, peer.len);
+        if (data.len == 141) {
+            if (result) |n| {
+                std.debug.print("DEBUG: sendTo successful for 141 bytes: sent {} bytes\n", .{n});
+            } else |err| {
+                std.debug.print("DEBUG: sendTo failed for 141 bytes: {}\n", .{err});
+            }
+        }
+        return result;
     }
 
     /// Receive a datagram; returns size and source address.
@@ -487,6 +512,7 @@ pub const Endpoint = struct {
     /// Drive IO using platform loop backend. timeout_ms < 0 means infinite.
     /// Drive network I/O, timers, and paced send for up to timeout_ms milliseconds.
     pub fn poll(self: *Endpoint, timeout_ms: i32) !void {
+        std.debug.print("DEBUG: poll called, timeout_ms={}\n", .{timeout_ms});
         // First, process any timers that are already expired to avoid waiting unnecessarily.
         self.processExpiredTimers(nowMsMonotonic());
         // Drain any pending error queue notifications (ICMP PTB, etc.) before waiting.
@@ -586,6 +612,8 @@ pub const Endpoint = struct {
             } else {
                 const n_or_err = posix.recvfrom(self.sock_fd, buf[0..], flags, @ptrCast(&peer.storage), &peer.len);
                 if (n_or_err) |n| {
+                    // Debug: Log all received packets
+                    std.debug.print("DEBUG: recvfrom got {} bytes\n", .{n});
                     self.processIncomingDatagram(peer, buf[0..n], null);
                 } else |err| {
                     switch (err) {
@@ -763,6 +791,9 @@ pub const Endpoint = struct {
 
     fn processIncomingDatagram(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8, ecn_bits: ?u8) void {
         if (bytes.len < 1) return;
+        if (bytes.len == 141) {
+            std.debug.print("DEBUG: Client processIncomingDatagram - received 141-byte packet!\n", .{});
+        }
         const first = bytes[0];
         const is_long = (first & 0x80) != 0;
         if (is_long) {
@@ -801,6 +832,7 @@ pub const Endpoint = struct {
         }
         if (!is_long) {
             // Short header 1-RTT path
+            std.debug.print("DEBUG: Processing short header packet - len={}, first_byte={x}\n", .{bytes.len, bytes[0]});
             if (bytes.len < 1) return;
             const peer_h = hashSockaddr(&peer.storage, peer.len);
             var found: ?*conn_mod.Connection = null;
@@ -840,22 +872,50 @@ pub const Endpoint = struct {
             }
             // NAT rebinding / migration fallback: try match by DCID across all entries
             if (found == null) {
+                std.debug.print("DEBUG: No match with peer_hash, trying all connections\n", .{});
                 var it2 = self.conns.iterator();
                 while (it2.next()) |entry| {
                     const c = entry.value_ptr.*;
                     const l: usize = c.our_scid.len;
                     if (1 + l > bytes.len) continue;
                     if (l == 0) continue;
+                    
+                    // Debug: show what we're comparing
+                    if (c.role == .Client) {
+                        std.debug.print("DEBUG: Client conn - our_scid={x} (len={}), packet has DCID starting at byte 1\n", .{
+                            if (l > 0) c.our_scid.bytes[0] else 0,
+                            l,
+                        });
+                        if (bytes.len > 9) {
+                            std.debug.print("DEBUG: Packet bytes[1..9]: {x} {x} {x} {x} {x} {x} {x} {x}\n", .{
+                                bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8]
+                            });
+                        }
+                    }
+                    
                     if (std.mem.eql(u8, c.our_scid.bytes[0..l], bytes[1 .. 1 + l])) {
+                        std.debug.print("DEBUG: Found match - our_scid len={}, first_byte={x}, packet_dcid_first={x}\n", .{l, if (l > 0) c.our_scid.bytes[0] else 0, if (1 + l <= bytes.len) bytes[1] else 0});
                         found = c;
                         dcid_len = l;
                         // Centralized handling for path change and validation
                         self.onPathAddressChanged(c, peer, peer_h, l);
                         break;
+                    } else {
+                        if (bytes.len >= 1 + l and c.role == .Client) {
+                            std.debug.print("DEBUG: No match - our_scid[0..8]={x} {x} {x} {x} {x} {x} {x} {x} vs packet[1..9]={x} {x} {x} {x} {x} {x} {x} {x}\n", .{
+                                c.our_scid.bytes[0], c.our_scid.bytes[1], c.our_scid.bytes[2], c.our_scid.bytes[3],
+                                c.our_scid.bytes[4], c.our_scid.bytes[5], c.our_scid.bytes[6], c.our_scid.bytes[7],
+                                bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8]
+                            });
+                        }
                     }
                 }
             }
-            const conn = found orelse return;
+            const conn = found orelse {
+                std.debug.print("DEBUG: No connection found for short header packet from peer\n", .{});
+                return;
+            };
+            std.debug.print("DEBUG: Found connection for short header packet - has_app_rx={}, has_app_tx={}\n", .{conn.app_rx_keys != null, conn.app_tx_keys != null});
             // Test-only debug: log short-header match and ECN bits/keys state
             if (self.test_capture_enabled) {
                 const has_rx = (conn.app_rx_keys != null);
@@ -922,6 +982,7 @@ pub const Endpoint = struct {
                     return;
                 };
                 defer self.allocator.free(dec_res.payload);
+                std.debug.print("DEBUG: Client decoded 1-RTT packet - payload_len={}, pn={}\n", .{dec_res.payload.len, dec_res.packet_number});
                 const pn_full: u64 = conn.expandPnApp(@intCast(dec_res.packet_number), dec_res.packet_number_len);
                 conn.trackRecvPnApp(pn_full);
                 // If we decoded with previous keys, decrement allowance and drop them when exhausted
@@ -953,8 +1014,12 @@ pub const Endpoint = struct {
                 var saw_close: ?frame.Frame = null;
                 var saw_ack_eliciting: bool = false;
                 const now_ns_ack: u64 = @intCast(std.time.nanoTimestamp());
+                std.debug.print("DEBUG: Parsing frames from payload, total_len={}\n", .{dec_res.payload.len});
                 while (off2 < dec_res.payload.len) {
-                    const fr = frame.decodeOne(dec_res.payload[off2..]) catch break;
+                    const fr = frame.decodeOne(dec_res.payload[off2..]) catch |err| {
+                        std.debug.print("DEBUG: Frame decode error at offset {}: {}\n", .{off2, err});
+                        break;
+                    };
                     off2 += fr.n;
                     switch (fr.f) {
                         .ping => {
@@ -974,7 +1039,14 @@ pub const Endpoint = struct {
                         },
                         .stream => |s| {
                             const off: u64 = s.offset orelse 0;
-                            conn.pushStreamFrame(s.stream_id, off, s.data, s.fin) catch {};
+                            if (conn.role == .Server) {
+                                std.debug.print("DEBUG: Server received STREAM frame - id={}, off={}, len={}, fin={}\n", .{s.stream_id, off, s.data.len, s.fin});
+                            } else {
+                                std.debug.print("DEBUG: CLIENT received STREAM frame - id={}, off={}, len={}, fin={}\n", .{s.stream_id, off, s.data.len, s.fin});
+                            }
+                            conn.pushStreamFrame(s.stream_id, off, s.data, s.fin) catch |err| {
+                                std.debug.print("DEBUG: pushStreamFrame failed: {}\n", .{err});
+                            };
                             saw_any = true;
                             saw_ack_eliciting = true;
                         },
@@ -2204,6 +2276,17 @@ fn senderPaced(ctx: *anyopaque, c: *conn_mod.Connection, data: []const u8) !usiz
     const self: *Endpoint = @ptrCast(@alignCast(ctx));
     // If pacing disabled, send directly
     if (!c.enable_pacing) {
+        if (data.len == 141) {
+            const sa: *const posix.sockaddr = @ptrCast(&c.peer.storage);
+            if (sa.family == posix.AF.INET) {
+                const sin: *const posix.sockaddr.in = @ptrCast(&c.peer.storage);
+                const addr_bytes = @as([4]u8, @bitCast(sin.addr));
+                std.debug.print("DEBUG: senderPaced using peer addr {}.{}.{}.{}:{}\n", .{
+                    addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3],
+                    std.mem.bigToNative(u16, sin.port)
+                });
+            }
+        }
         return self.sendTo(c.peer, data);
     }
     const delay_ns = recovery.computePacingDelayNs(c.rec.cc.cwnd, c.rec.cc.bytes_in_flight);

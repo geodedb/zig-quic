@@ -871,13 +871,22 @@ pub const Connection = struct {
     pub fn send(self: *Connection, data: []const u8) !usize {
         // Amplification guard: if address not validated and we already exceeded 3x budget, refuse to send
         if (self.overAmplification()) return error.WouldBlock;
+        if (data.len == 141) {
+            std.debug.print("DEBUG: send() called with 141 bytes, sender_fn={}\n", .{self.sender_fn != null});
+        }
         if (self.sender_fn) |f| {
             const ctx = self.sender_ctx orelse return data.len;
             const n = try f(ctx, self, data);
+            if (data.len == 141) {
+                std.debug.print("DEBUG: sender_fn returned {} bytes for 141-byte packet\n", .{n});
+            }
             self.addTxUnvalidated(n);
             return n;
         }
         // Test mode: no endpoint sender installed; pretend all bytes were sent.
+        if (data.len == 141) {
+            std.debug.print("DEBUG: No sender_fn, test mode - pretending 141 bytes sent\n", .{});
+        }
         self.addTxUnvalidated(data.len);
         return data.len;
     }
@@ -1350,9 +1359,11 @@ pub const Connection = struct {
         defer frames.deinit(self.allocator.*);
         const w = frames.writer(self.allocator.*);
         _ = (frame.Frame{ .stream = .{ .stream_id = id, .offset = cur_off, .fin = false, .data = data[0..to_send] } }).write(w) catch 0;
+        const dcid = self.shortHeaderDcid();
+        std.debug.print("DEBUG: Server sending STREAM with DCID len={}, first_byte={x}\n", .{dcid.len, if (dcid.len > 0) dcid[0] else 0});
         const pkt = try packet.encodeShortProtected(
             self.allocator.*,
-            self.shortHeaderDcid(),
+            dcid,
             @as(u32, @truncate(self.pn_app_tx)),
             2,
             frames.items,
@@ -1360,7 +1371,10 @@ pub const Connection = struct {
             self.tx_key_phase,
         );
         defer self.allocator.free(pkt);
-        _ = try self.send(pkt);
+        std.debug.print("DEBUG: About to call send() with {} bytes\n", .{pkt.len});
+        const bytes_sent = try self.send(pkt);
+        std.debug.print("DEBUG: send() returned {} bytes\n", .{bytes_sent});
+        std.debug.print("DEBUG: STREAM frame packet sent - {} bytes (pkt.len={})\n", .{bytes_sent, pkt.len});
         self.onShortHeaderPacketSent(pkt.len, true);
         self.computeAndMaybeArmPto(self);
         if (id == 0) {
@@ -1375,13 +1389,19 @@ pub const Connection = struct {
     /// Read from STREAM into buf; returns number of bytes or WouldBlock.
     /// Read reassembled bytes from a stream into buf; returns number copied or WouldBlock.
     pub fn readStream(self: *Connection, id: u64, buf: []u8) !usize {
-        var s = self.streams_rx.getPtr(id) orelse return error.InvalidStream;
-        if (s.inbox.items.len == 0) return 0;
+        std.debug.print("DEBUG: readStream called - id={}, buf_len={}\n", .{id, buf.len});
+        var s = self.streams_rx.getPtr(id) orelse {
+            std.debug.print("DEBUG: readStream - stream {} not found in RX map\n", .{id});
+            return error.InvalidStream;
+        };
+        std.debug.print("DEBUG: readStream - inbox has {} bytes\n", .{s.inbox.items.len});
+        if (s.inbox.items.len == 0) return error.WouldBlock;
         const n: usize = @min(buf.len, s.inbox.items.len);
         @memcpy(buf[0..n], s.inbox.items[0..n]);
         const rem = s.inbox.items.len - n;
         if (rem > 0) std.mem.copyForwards(u8, s.inbox.items[0..rem], s.inbox.items[n..]);
         s.inbox.shrinkRetainingCapacity(rem);
+        std.debug.print("DEBUG: readStream - returning {} bytes\n", .{n});
         return n;
     }
 
