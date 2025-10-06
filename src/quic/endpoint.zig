@@ -512,7 +512,8 @@ pub const Endpoint = struct {
     /// Drive IO using platform loop backend. timeout_ms < 0 means infinite.
     /// Drive network I/O, timers, and paced send for up to timeout_ms milliseconds.
     pub fn poll(self: *Endpoint, timeout_ms: i32) !void {
-        std.debug.print("DEBUG: poll called, timeout_ms={}\n", .{timeout_ms});
+        // TRACE: poll called
+        // std.debug.print("DEBUG: poll called, timeout_ms={}\n", .{timeout_ms});
         // First, process any timers that are already expired to avoid waiting unnecessarily.
         self.processExpiredTimers(nowMsMonotonic());
         // Drain any pending error queue notifications (ICMP PTB, etc.) before waiting.

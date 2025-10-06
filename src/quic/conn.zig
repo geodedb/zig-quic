@@ -1389,19 +1389,22 @@ pub const Connection = struct {
     /// Read from STREAM into buf; returns number of bytes or WouldBlock.
     /// Read reassembled bytes from a stream into buf; returns number copied or WouldBlock.
     pub fn readStream(self: *Connection, id: u64, buf: []u8) !usize {
-        std.debug.print("DEBUG: readStream called - id={}, buf_len={}\n", .{id, buf.len});
+        // TRACE: readStream called
+        // std.debug.print("DEBUG: readStream called - id={}, buf_len={}\n", .{id, buf.len});
         var s = self.streams_rx.getPtr(id) orelse {
             std.debug.print("DEBUG: readStream - stream {} not found in RX map\n", .{id});
             return error.InvalidStream;
         };
-        std.debug.print("DEBUG: readStream - inbox has {} bytes\n", .{s.inbox.items.len});
+        // TRACE: readStream inbox status
+        // std.debug.print("DEBUG: readStream - inbox has {} bytes\n", .{s.inbox.items.len});
         if (s.inbox.items.len == 0) return error.WouldBlock;
         const n: usize = @min(buf.len, s.inbox.items.len);
         @memcpy(buf[0..n], s.inbox.items[0..n]);
         const rem = s.inbox.items.len - n;
         if (rem > 0) std.mem.copyForwards(u8, s.inbox.items[0..rem], s.inbox.items[n..]);
         s.inbox.shrinkRetainingCapacity(rem);
-        std.debug.print("DEBUG: readStream - returning {} bytes\n", .{n});
+        // TRACE: readStream returning data
+        // std.debug.print("DEBUG: readStream - returning {} bytes\n", .{n});
         return n;
     }
 
