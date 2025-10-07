@@ -10,6 +10,126 @@ const ks = @import("quic_tls");
 // Import transport parameters module (registered as quic_transport_params in build.zig)
 const tparams = @import("quic_transport_params");
 
+/// Buffer for reassembling out-of-order CRYPTO frames
+const CryptoBuffer = struct {
+    const Fragment = struct {
+        offset: u64,
+        data: []u8,
+    };
+
+    // Static array to avoid allocations - max 8 out-of-order fragments
+    fragments: [8]?Fragment = [_]?Fragment{null} ** 8,
+    count: usize = 0,
+    // Result buffer to avoid returning stack-allocated memory
+    result_buffer: [8]Fragment = undefined,
+
+    /// Add a fragment to the buffer
+    pub fn add(self: *CryptoBuffer, offset: u64, data: []const u8, allocator: std.mem.Allocator) !void {
+        if (self.count >= self.fragments.len) {
+            // Buffer full, drop oldest fragment
+            if (self.fragments[0]) |frag| {
+                allocator.free(frag.data);
+            }
+            // Shift fragments left
+            var i: usize = 0;
+            while (i < self.fragments.len - 1) : (i += 1) {
+                self.fragments[i] = self.fragments[i + 1];
+            }
+            self.fragments[self.fragments.len - 1] = null;
+            self.count -= 1;
+        }
+
+        // Copy data
+        const data_copy = try allocator.alloc(u8, data.len);
+        @memcpy(data_copy, data);
+
+        // Insert in sorted order by offset
+        var insert_pos: usize = self.count;
+        var i: usize = 0;
+        while (i < self.count) : (i += 1) {
+            if (self.fragments[i]) |frag| {
+                if (frag.offset > offset) {
+                    insert_pos = i;
+                    break;
+                }
+            }
+        }
+
+        // Shift right to make room
+        if (insert_pos < self.count) {
+            i = self.count;
+            while (i > insert_pos) : (i -= 1) {
+                self.fragments[i] = self.fragments[i - 1];
+            }
+        }
+
+        self.fragments[insert_pos] = Fragment{ .offset = offset, .data = data_copy };
+        self.count += 1;
+    }
+
+    /// Check if we have contiguous data starting from the given offset
+    /// Returns the fragments that can be processed
+    pub fn getContiguous(self: *CryptoBuffer, start_offset: u64) ?[]const Fragment {
+        var result_count: usize = 0;
+        var expected_offset = start_offset;
+
+        var i: usize = 0;
+        while (i < self.count) : (i += 1) {
+            if (self.fragments[i]) |frag| {
+                if (frag.offset == expected_offset) {
+                    self.result_buffer[result_count] = frag;
+                    expected_offset += frag.data.len;
+                    result_count += 1;
+                } else if (frag.offset < expected_offset) {
+                    // Overlapping or duplicate fragment - skip
+                    continue;
+                } else {
+                    // Gap found
+                    break;
+                }
+            }
+        }
+
+        if (result_count == 0) return null;
+
+        // Return slice of contiguous fragments
+        return self.result_buffer[0..result_count];
+    }
+
+    /// Remove processed fragments
+    pub fn removeProcessed(self: *CryptoBuffer, count: usize, allocator: std.mem.Allocator) void {
+        // Free memory for processed fragments
+        var i: usize = 0;
+        while (i < count) : (i += 1) {
+            if (self.fragments[i]) |frag| {
+                allocator.free(frag.data);
+                self.fragments[i] = null;
+            }
+        }
+
+        // Shift remaining fragments left
+        i = 0;
+        while (i < self.count - count) : (i += 1) {
+            self.fragments[i] = self.fragments[i + count];
+            self.fragments[i + count] = null;
+        }
+
+        self.count -= count;
+    }
+
+    /// Clear all buffered fragments
+    pub fn clear(self: *CryptoBuffer, allocator: std.mem.Allocator) void {
+        var i: usize = 0;
+        while (i < self.fragments.len) : (i += 1) {
+            if (self.fragments[i]) |frag| {
+                allocator.free(frag.data);
+                self.fragments[i] = null;
+            }
+        }
+        self.count = 0;
+    }
+};
+
 /// Role of this endpoint for a connection.
 pub const Role = enum { Client, Server };
 
@@ -398,6 +518,10 @@ pub const Connection = struct {
     crypto_retx_handshake: ?[]u8 = null,
     crypto_retx_handshake_off: u64 = 0,
 
+    // CRYPTO frame reassembly buffers for out-of-order frames
+    crypto_buffer_initial: CryptoBuffer = .{},
+    crypto_buffer_handshake: CryptoBuffer = .{},
+
     // --- DPLPMTUD (RFC 9000 §14.2–§14.4) minimal state ---
     /// Current believed path MTU (UDP payload size), never below 1200.
     path_mtu: u16 = 1200,
@@ -732,6 +856,9 @@ pub const Connection = struct {
         // Free reset tokens / initial token buffers once (previous code double-deinited)
         if (self.reset_tokens.capacity != 0) self.reset_tokens.deinit(self.allocator.*);
         if (self.initial_token.capacity != 0) self.initial_token.deinit(self.allocator.*);
+        // Clear CRYPTO reassembly buffers
+        self.crypto_buffer_initial.clear(self.allocator.*);
+        self.crypto_buffer_handshake.clear(self.allocator.*);
     }
 
     /// Update peer address (used for NAT rebinding / migration detection).

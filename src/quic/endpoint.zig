@@ -1762,18 +1762,43 @@ pub const Endpoint = struct {
                 off += r.n;
                 switch (r.f) {
                     .crypto => |cr| {
-                        std.debug.print("{s}: Received CRYPTO frame with {} bytes\n", .{ if (conn.role == .Server) "Server" else "Client", cr.data.len });
+                        std.debug.print("{s}: Received CRYPTO frame with {} bytes at offset {}\n", .{ if (conn.role == .Server) "Server" else "Client", cr.data.len, cr.offset });
                         const was_server = (conn.role == .Server);
-                        // Enforce contiguous CRYPTO offsets per space
-                        const expect_off: u64 = 0;
-                        _ = expect_off; // Initial space receive offset validation handled below
-                        conn.pushCrypto(cr.data) catch {};
-                        saw_any = true;
-                        saw_ack_eliciting_initial = true; // CRYPTO is ack-eliciting
-                        // Server: after receiving CH, only queue ServerHello for Initial emission
-                        if (was_server and !conn.tls.sh_seen) {
-                            // Queue ServerHello only - it will be sent in Initial packet
-                            // The rest of the handshake flight will be queued after SH is sent
+
+                        // Check if this CRYPTO frame is at the expected offset
+                        if (cr.offset == conn.crypto_rx_off_initial) {
+                            // In-order frame, process immediately
+                            conn.pushCrypto(cr.data) catch {};
+                            conn.crypto_rx_off_initial += @intCast(cr.data.len);
+                            saw_any = true;
+                            saw_ack_eliciting_initial = true; // CRYPTO is ack-eliciting
+
+                            // Check if we can now process buffered frames
+                            if (conn.crypto_buffer_initial.getContiguous(conn.crypto_rx_off_initial)) |fragments| {
+                                for (fragments) |frag| {
+                                    conn.pushCrypto(frag.data) catch {};
+                                    conn.crypto_rx_off_initial += @intCast(frag.data.len);
+                                }
+                                // Remove processed fragments from buffer
+                                conn.crypto_buffer_initial.removeProcessed(fragments.len, self.allocator.*);
+                            }
+
+                            // Server: after receiving CH, only queue ServerHello for Initial emission
+                            if (was_server and !conn.tls.sh_seen) {
+                                // Queue ServerHello only - it will be sent in Initial packet
+                                // The rest of the handshake flight will be queued after SH is sent
+                            }
+                        } else if (cr.offset > conn.crypto_rx_off_initial) {
+                            // Out-of-order frame - buffer it
+                            std.debug.print("Buffering out-of-order CRYPTO frame: offset {} expected {}\n", .{ cr.offset, conn.crypto_rx_off_initial });
+                            conn.crypto_buffer_initial.add(cr.offset, cr.data, self.allocator.*) catch |err| {
+                                std.debug.print("Failed to buffer CRYPTO frame: {}\n", .{err});
+                            };
+                            saw_any = true;
+                            saw_ack_eliciting_initial = true;
+                        } else {
+                            // Duplicate or overlapping frame - ignore
+                            std.debug.print("Ignoring duplicate/overlapping CRYPTO frame: offset {} expected {}\n", .{ cr.offset, conn.crypto_rx_off_initial });
                         }
                     },
                     .ack => |a| {
@@ -2158,12 +2183,32 @@ pub const Endpoint = struct {
                         .crypto => {
                             const cr = r.f.crypto;
                             if (cr.offset == conn.crypto_rx_off_handshake) {
+                                // In-order frame, process immediately
                                 conn.pushCrypto(cr.data) catch {};
                                 conn.crypto_rx_off_handshake += @intCast(cr.data.len);
                                 saw_any = true;
                                 saw_ack_eliciting_hs = true; // CRYPTO is ack-eliciting
+
+                                // Check if we can now process buffered frames
+                                if (conn.crypto_buffer_handshake.getContiguous(conn.crypto_rx_off_handshake)) |fragments| {
+                                    for (fragments) |frag| {
+                                        conn.pushCrypto(frag.data) catch {};
+                                        conn.crypto_rx_off_handshake += @intCast(frag.data.len);
+                                    }
+                                    // Remove processed fragments from buffer
+                                    conn.crypto_buffer_handshake.removeProcessed(fragments.len, self.allocator.*);
+                                }
+                            } else if (cr.offset > conn.crypto_rx_off_handshake) {
+                                // Out-of-order frame - buffer it
+                                std.debug.print("Buffering out-of-order Handshake CRYPTO frame: offset {} expected {}\n", .{ cr.offset, conn.crypto_rx_off_handshake });
+                                conn.crypto_buffer_handshake.add(cr.offset, cr.data, self.allocator.*) catch |err| {
+                                    std.debug.print("Failed to buffer Handshake CRYPTO frame: {}\n", .{err});
+                                };
+                                saw_any = true;
+                                saw_ack_eliciting_hs = true;
                             } else {
-                                // Ignore out-of-order CRYPTO for Handshake
+                                // Duplicate or overlapping frame - ignore
+                                std.debug.print("Ignoring duplicate/overlapping Handshake CRYPTO frame: offset {} expected {}\n", .{ cr.offset, conn.crypto_rx_off_handshake });
                             }
                         },
                         .ack => |a| {
