@@ -255,6 +255,8 @@ pub const Engine = struct {
     peer_pub: ?[32]u8 = null,
     /// Buffer for producing outbound CRYPTO data (e.g., ClientHello).
     outbox: std.ArrayList(u8),
+    /// Buffer for accumulating inbound CRYPTO data (for fragmented handshake messages).
+    inbox: std.ArrayList(u8),
     /// Tracking flags for minimal handshake state.
     ch_sent: bool = false,
     sh_seen: bool = false,
@@ -290,7 +292,7 @@ pub const Engine = struct {
 
     /// Initialize a TLS 1.3 Engine with allocator and role.
     pub fn init(alloc: std.mem.Allocator, role: Role) Engine {
-        return .{ .role = role, .allocator = alloc, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .outbox = std.ArrayList(u8){}, .ch_sent = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .ee_sent = false, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .real_mode = false, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null, .master_secret = null, .tickets = .{} };
+        return .{ .role = role, .allocator = alloc, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .outbox = std.ArrayList(u8){}, .inbox = std.ArrayList(u8){}, .ch_sent = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .ee_sent = false, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .real_mode = false, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null, .master_secret = null, .tickets = .{} };
     }
     /// Release any owned resources and buffers.
     pub fn deinit(self: *Engine) void {
@@ -303,6 +305,7 @@ pub const Engine = struct {
         if (self.server_priv_key) |k| self.allocator.free(k);
         self.tickets.deinit(self.allocator);
         self.outbox.deinit(self.allocator);
+        self.inbox.deinit(self.allocator);
     }
 
     /// Queue a minimal NewSessionTicket (placeholder). Not yet used for PSK resumption.
@@ -400,9 +403,16 @@ pub const Engine = struct {
     /// Append received CRYPTO bytes into transcript. Attempts to parse handshake messages
     /// to update simple state, but always feeds the transcript with raw bytes.
     pub fn onCryptoRecv(self: *Engine, data: []const u8) void {
+        // Append new data to inbox buffer
+        self.inbox.appendSlice(self.allocator, data) catch {
+            std.debug.print("TLS: Failed to buffer CRYPTO data\n", .{});
+            return;
+        };
+        
+        // Process complete messages from the buffered data
         var off: usize = 0;
         while (true) {
-            const parsed = parseHandshakeOne(data[off..]) catch null;
+            const parsed = parseHandshakeOne(self.inbox.items[off..]) catch null;
             if (parsed) |p| {
                 std.debug.print("TLS: Parsed handshake message type={} len={}\n", .{ p.typ, p.body.len });
 
@@ -413,7 +423,7 @@ pub const Engine = struct {
 
                 // Update the transcript with this message UNLESS it's a Finished message
                 // Finished messages are added to the transcript AFTER verification
-                const msg_data = data[off .. off + p.n];
+                const msg_data = self.inbox.items[off .. off + p.n];
                 if (p.typ != .finished) {
                     self.transcript.update(msg_data);
                     std.debug.print("TLS: Added {} bytes to transcript (recv): ", .{msg_data.len});
@@ -427,7 +437,7 @@ pub const Engine = struct {
                 // If we just processed a real ServerHello, derive handshake secrets immediately (spec: hash includes CH+SH)
                 if (self.real_mode and p.typ == .server_hello and self.handshake_client_secret == null and self.ecdhe_secret != null) {
                     var th_tr = Transcript.init();
-                    th_tr.update(data[0..off]);
+                    th_tr.update(self.inbox.items[0..off]);
                     const th_hash = th_tr.finalize();
                     const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th_hash);
                     self.handshake_client_secret = hs.client_hs;
@@ -457,13 +467,17 @@ pub const Engine = struct {
                         }
                     }
                     if (extracted) |pk| {
+                        std.debug.print("TLS: Setting peer_pub for {} (was null={})\n", .{p.typ, self.peer_pub == null});
                         self.peer_pub = pk;
+                        std.debug.print("TLS: peer_pub is now set (null={})\n", .{self.peer_pub == null});
                         // Compute shared secret after receiving peer's public key
                         switch (p.typ) {
                             .server_hello => if (self.role == .Client) self.tryComputeShared(),
-                            // For server, shared secret is computed after generating own keypair in queueMinimalServerHelloAuto
+                            .client_hello => if (self.role == .Server) std.debug.print("Server: Will compute ECDHE when generating ServerHello\n", .{}),
                             else => {},
                         }
+                    } else {
+                        std.debug.print("TLS: No key extracted from hello message\n", .{});
                     }
                 }
 
@@ -655,6 +669,18 @@ pub const Engine = struct {
                 }
             } else break;
         }
+        
+        // Remove processed messages from the inbox
+        if (off > 0) {
+            // Keep any unprocessed data by moving it to the beginning
+            const remaining = self.inbox.items.len - off;
+            if (remaining > 0) {
+                std.mem.copyForwards(u8, self.inbox.items[0..remaining], self.inbox.items[off..]);
+            }
+            self.inbox.shrinkRetainingCapacity(remaining);
+            std.debug.print("TLS: Processed {} bytes, {} bytes remaining in buffer\n", .{off, remaining});
+        }
+        
         // Transcript is now updated message-by-message in the loop above
         self.maybeAutoProgress();
     }

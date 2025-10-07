@@ -609,7 +609,8 @@ pub const Endpoint = struct {
 
     fn drainReadable(self: *Endpoint) void {
         std.debug.print("DEBUG: drainReadable called on fd={}\n", .{self.sock_fd});
-        var buf: [2048]u8 = undefined;
+        // Increase buffer size to handle larger Handshake packets (can be up to ~3000 bytes with certificates)
+        var buf: [4096]u8 = undefined;
         var read_count: usize = 0;
         while (true) {
             var peer = conn_mod.SockAddr{};
@@ -617,7 +618,9 @@ pub const Endpoint = struct {
             // Socket is already non-blocking, no need for MSG_DONTWAIT
             const flags: u32 = 0;
             // Linux: prefer recvmsg to extract ECN via ancillary when available; fallback elsewhere.
-            if (builtin.target.os.tag == .linux and @hasDecl(std.posix, "recvmsg")) {
+            // NOTE: Disabled recvmsg for now due to missing types in std.posix
+            if (false and builtin.target.os.tag == .linux) {
+                std.debug.print("DEBUG: Calling recvmsg on socket fd={}\n", .{self.sock_fd});
                 var iov = [1]posix.iovec{.{ .base = buf[0..].ptr, .len = buf.len }};
                 var ctrl: [64]u8 = undefined;
                 var msg: posix.msghdr = .{
@@ -629,8 +632,20 @@ pub const Endpoint = struct {
                     .controllen = ctrl.len,
                     .flags = 0,
                 };
-                const n_or_err = posix.recvmsg(self.sock_fd, &msg, flags);
-                if (n_or_err) |n| {
+                const linux = std.os.linux;
+                const n_raw = linux.recvmsg(@intCast(self.sock_fd), &msg, flags);
+                
+                // Check if error occurred (-1 is returned on error)
+                if (n_raw == @as(usize, @bitCast(@as(isize, -1)))) {
+                    // recvmsg returns -1 on error, errno is set
+                    // For non-blocking sockets, EAGAIN/EWOULDBLOCK is expected
+                    // Just return to try again later
+                    return;
+                }
+                
+                const n = n_raw;
+                if (n > 0) {
+                    std.debug.print("DEBUG: recvmsg got {} bytes!\n", .{n});
                     // Extract ECN from ancillary: IP_TOS (level IPPROTO_IP, type IP_TOS)
                     var ecn_bits: ?u8 = null;
                     var off: usize = 0;
@@ -658,16 +673,12 @@ pub const Endpoint = struct {
                         off += adv;
                     }
                     self.processIncomingDatagram(peer, buf[0..@intCast(n)], ecn_bits);
-                } else |err| {
-                    switch (err) {
-                        error.WouldBlock => return,
-                        error.ConnectionResetByPeer => return,
-                        else => return,
-                    }
                 }
             } else {
+                std.debug.print("DEBUG: Calling recvfrom on socket fd={}, flags={}\n", .{self.sock_fd, flags});
                 const n_or_err = posix.recvfrom(self.sock_fd, buf[0..], flags, @ptrCast(&peer.storage), &peer.len);
                 if (n_or_err) |n| {
+                    std.debug.print("DEBUG: recvfrom got {} bytes!\n", .{n});
                     // Debug: Log all received packets with source address
                     if (peer.storage.family == posix.AF.INET) {
                         const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&peer.storage));
@@ -685,9 +696,8 @@ pub const Endpoint = struct {
                 } else |err| {
                     switch (err) {
                         error.WouldBlock => {
-                            if (read_count > 0) {
-                                std.debug.print("DEBUG: drainReadable finished, read {} packets\n", .{read_count});
-                            }
+                            // This is normal for non-blocking sockets
+                            std.debug.print("DEBUG: recvfrom returned WouldBlock\n", .{});
                             return;
                         },
                         error.ConnectionResetByPeer => {
@@ -839,16 +849,21 @@ pub const Endpoint = struct {
                 const ev = events[i];
                 std.debug.print("DEBUG: Event {}: fd={}, events=0x{x}\n", .{i, ev.data.fd, ev.events});
                 
-                // Check if our socket is readable
+                // Check if our socket is readable or has errors
                 const expected_fd = @as(i32, @intCast(self.sock_fd));
                 std.debug.print("DEBUG: Checking ev.data.fd={} vs expected_fd={}\n", .{ev.data.fd, expected_fd});
-                if (ev.data.fd == expected_fd and (ev.events & linux.EPOLL.IN) != 0) {
-                    std.debug.print("DEBUG: Socket {} is readable - calling drainReadable\n", .{self.sock_fd});
+                // Handle both EPOLLIN (data ready) and EPOLLERR (error condition)
+                // EPOLLERR can occur with ICMP errors on UDP sockets and we need to read to clear them
+                if (ev.data.fd == expected_fd and ((ev.events & linux.EPOLL.IN) != 0 or (ev.events & linux.EPOLL.ERR) != 0)) {
+                    std.debug.print("DEBUG: Socket {} is readable or has error (events=0x{x}) - calling drainReadable\n", .{self.sock_fd, ev.events});
                     self.drainReadable();
                 } else {
-                    std.debug.print("DEBUG: Not our socket or not readable\n", .{});
+                    std.debug.print("DEBUG: Not our socket or not readable/error\n", .{});
                 }
             }
+        } else if (n == 0) {
+            // epoll_wait timed out - no events, don't call drainReadable
+            // std.debug.print("DEBUG: epoll_wait timed out\n", .{});
         }
     }
 
@@ -1463,6 +1478,13 @@ pub const Endpoint = struct {
             if (i + scid_len > bytes.len) return;
             const scid = bytes[i .. i + scid_len];
             i += scid_len;
+            
+            std.debug.print("Initial packet: dcid_len={}, scid_len={}\n", .{dcid_len, scid_len});
+            if (scid_len > 0) {
+                std.debug.print("  Client SCID: ", .{});
+                for (scid) |b| std.debug.print("{X:0>2}", .{b});
+                std.debug.print("\n", .{});
+            }
 
             // Key connection by peer and dcid
             const key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(dcid) };
@@ -1543,7 +1565,11 @@ pub const Endpoint = struct {
             // client's peer_initial_dcid/original_dcid were recorded from its own first Initial and MUST
             // NOT be overwritten here (RFC 9000 §5.2 Retry/ODCID rules).
             if (conn.role == .Server) {
+                std.debug.print("Server: Setting peer CIDs - peer sent DCID_len={} SCID_len={}\n", .{dcid.len, scid.len});
                 conn.setPeerInitialCids(dcid, scid);
+                std.debug.print("Server: After setPeerInitialCids - peer_initial_dcid.len={}, peer_initial_scid.len={}\n", .{
+                    conn.peer_initial_dcid.len, conn.peer_initial_scid.len
+                });
             } else if (conn.role == .Client and conn.peer_initial_scid.len == 0) {
                 std.debug.print("Client: Capturing server SCID from Initial packet: ", .{});
                 for (scid) |b| std.debug.print("{x:0>2}", .{b});
@@ -1820,11 +1846,36 @@ pub const Endpoint = struct {
                 const tx_dcid = if (conn.role == .Client) conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len] else scid;
                 const tx_scid = conn.our_scid.bytes[0..conn.our_scid.len];
                 std.debug.print("{s}: Encoding Initial with pn={} dcid_len={} scid_len={} pn_len={}\n", .{ if (conn.role == .Server) "Server" else "Client", conn.pn_initial_tx, tx_dcid.len, tx_scid.len, 4 });
+                std.debug.print("  Server will use SCID: ", .{});
+                for (tx_scid) |b| std.debug.print("{X:0>2}", .{b});
+                std.debug.print("\n", .{});
+                
+                // Calculate approximate header size to ensure total packet is at least 1200 bytes
+                // Header: ~30 bytes (varies with CID lengths) + auth tag: 16 bytes
+                const estimated_header_size = 30 + tx_dcid.len + tx_scid.len + 16;
+                const min_payload_size = 1200 - estimated_header_size;
+                
+                // Add PADDING frames if needed to meet minimum Initial packet size
+                if (frames_buf.items.len < min_payload_size) {
+                    const padding_needed = min_payload_size - frames_buf.items.len;
+                    // PADDING frames are just 0x00 bytes
+                    frames_buf.appendNTimes(self.allocator.*, 0x00, padding_needed) catch {
+                        std.debug.print("Failed to add padding to Initial packet\n", .{});
+                        return;
+                    };
+                    std.debug.print("Added {} bytes of padding to Initial frames\n", .{padding_needed});
+                }
+                
                 const out = packet.encodeInitialProtected(self.allocator.*, version, tx_dcid, tx_scid, &[_]u8{}, @as(u32, @truncate(conn.pn_initial_tx)), 4, frames_buf.items, tx_keys) catch null;
 
                 if (out) |pkt_bytes| {
                     defer self.allocator.free(pkt_bytes);
                     std.debug.print("{s}: Sending Initial response with {} bytes (has_crypto={})\n", .{ if (conn.role == .Server) "Server" else "Client", pkt_bytes.len, has_crypto });
+                    if (pkt_bytes.len == 137) {
+                        std.debug.print("Initial packet header (first 30 bytes): ", .{});
+                        for (pkt_bytes[0..@min(30, pkt_bytes.len)]) |b| std.debug.print("{X:0>2} ", .{b});
+                        std.debug.print("\n", .{});
+                    }
                     const send_result = self.sendTo(peer, pkt_bytes) catch |err| blk: {
                         std.debug.print("ERROR: sendTo failed: {}\n", .{err});
                         break :blk 0;
@@ -1884,10 +1935,24 @@ pub const Endpoint = struct {
                     conn.crypto_retx_handshake = owned_hs;
                     conn.crypto_retx_handshake_off = base_off_hs;
                     conn.crypto_tx_off_handshake += n_tls;
-                    const pkt_hs = packet.encodeHandshakeProtected(self.allocator.*, version, scid, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_handshake_tx)), 2, fb.items, hs_keys) catch null;
+                    std.debug.print("Encoding Handshake packet: dcid_len={}, scid_len={}\n", .{scid.len, conn.our_scid.len});
+                    const pkt_hs = packet.encodeHandshakeProtected(self.allocator.*, version, scid, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_handshake_tx)), 2, fb.items, hs_keys) catch |err| blk: {
+                        std.debug.print("ERROR: Failed to encode Handshake packet: {}\n", .{err});
+                        break :blk null;
+                    };
                     if (pkt_hs) |bytes_out_hs| {
+                        std.debug.print("Handshake packet encoded successfully: {} bytes\n", .{bytes_out_hs.len});
                         defer self.allocator.free(bytes_out_hs);
-                        _ = self.sendTo(peer, bytes_out_hs) catch {};
+                        std.debug.print("Handshake packet header (first 30 bytes): ", .{});
+                        for (bytes_out_hs[0..@min(30, bytes_out_hs.len)]) |b| std.debug.print("{X:0>2} ", .{b});
+                        std.debug.print("\n", .{});
+                        const send_result = self.sendTo(peer, bytes_out_hs) catch |err| blk: {
+                            std.debug.print("ERROR: Failed to send Handshake packet: {}\n", .{err});
+                            break :blk 0;
+                        };
+                        if (send_result > 0) {
+                            std.debug.print("Successfully sent Handshake packet: {} bytes\n", .{send_result});
+                        }
                         conn.onPacketSent(.Handshake, conn.pn_handshake_tx, bytes_out_hs.len, true);
                         conn.pn_handshake_tx +%= 1;
                     }
@@ -1975,8 +2040,21 @@ pub const Endpoint = struct {
 
             // Lookup connection keyed by peer + initial dcid hash (use stored mapping if any)
             const key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(dcid) };
-            const c_ptr = self.conns.getPtr(key) orelse return;
+            std.debug.print("Looking up Handshake connection with dcid=", .{});
+            for (dcid) |b| std.debug.print("{x:0>2}", .{b});
+            std.debug.print(" (hash={x})\n", .{key.dcid_hash});
+
+            const c_ptr = self.conns.getPtr(key) orelse {
+                std.debug.print("ERROR: Connection not found for Handshake packet\n", .{});
+                std.debug.print("  Available connections:\n", .{});
+                var iter = self.conns.iterator();
+                while (iter.next()) |entry| {
+                    std.debug.print("    key: peer_hash={x}, dcid_hash={x}\n", .{entry.key_ptr.peer_hash, entry.key_ptr.dcid_hash});
+                }
+                return;
+            };
             const conn = c_ptr.*;
+            std.debug.print("Found connection for Handshake packet (role={})\n", .{conn.role});
             if (ecn_bits) |e| conn.onEcnMark(.Handshake, e);
             if (conn.hs_rx_keys) |rx_keys| {
                 std.debug.print("Client has handshake RX keys, proceeding to decrypt\n", .{});

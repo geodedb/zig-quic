@@ -894,10 +894,11 @@ pub const Connection = struct {
     /// Feed received CRYPTO bytes to the TLS engine and enforce allowed ALPN list.
     /// Feed CRYPTO stream bytes into TLS engine; derive secrets/keys and apply peer transport parameters when available.
     pub fn pushCrypto(self: *Connection, hs: []const u8) !void {
+        const had_peer_pub = self.tls.peer_pub != null;
         self.tls.onCryptoRecv(hs);
-        // Server: upon receiving first ClientHello bytes, queue a ServerHello if not already queued.
-        if (self.role == .Server and !self.tls.sh_seen) {
-            std.debug.print("Server: Received ClientHello, queueing ServerHello\n", .{});
+        // Server: upon receiving first ClientHello AND extracting peer's public key, queue a ServerHello
+        if (self.role == .Server and !self.tls.sh_seen and !had_peer_pub and self.tls.peer_pub != null) {
+            std.debug.print("Server: ClientHello parsed with public key, queueing ServerHello\n", .{});
             if (self.tls.real_mode) {
                 // Real mode: build spec-like ServerHello
                 self.tls.queueRealServerHello() catch {};
