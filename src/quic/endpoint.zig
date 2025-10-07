@@ -862,8 +862,9 @@ pub const Endpoint = struct {
                 }
             }
         } else if (n == 0) {
-            // epoll_wait timed out - no events, don't call drainReadable
-            // std.debug.print("DEBUG: epoll_wait timed out\n", .{});
+            // epoll_wait timed out - still call drainReadable as packets might be waiting
+            // This matches the behavior of kqueue and IOCP backends
+            self.drainReadable();
         }
     }
 
