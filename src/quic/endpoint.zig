@@ -1519,6 +1519,17 @@ pub const Endpoint = struct {
                 }
                 // No suitable server connection exists: create one now.
                 const c_new = self.allocator.create(conn_mod.Connection) catch return;
+
+                // Debug: Log the peer address being stored
+                if (peer.storage.family == posix.AF.INET) {
+                    const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&peer.storage));
+                    const addr_bytes = @as([4]u8, @bitCast(sin.addr));
+                    std.debug.print("DEBUG: Creating server connection with peer address {}.{}.{}.{}:{}\n", .{
+                        addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3],
+                        std.mem.bigToNative(u16, sin.port)
+                    });
+                }
+
                 c_new.init(self.allocator, .Server, sockToIsize(self.sock_fd), peer);
                 // Set version from packet
                 c_new.version = version;
@@ -1911,7 +1922,27 @@ pub const Endpoint = struct {
                         for (pkt_bytes[0..@min(30, pkt_bytes.len)]) |b| std.debug.print("{X:0>2} ", .{b});
                         std.debug.print("\n", .{});
                     }
-                    const send_result = self.sendTo(peer, pkt_bytes) catch |err| blk: {
+
+                    // Debug: Log both peer addresses to see if they differ
+                    if (peer.storage.family == posix.AF.INET) {
+                        const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&peer.storage));
+                        const addr_bytes = @as([4]u8, @bitCast(sin.addr));
+                        std.debug.print("DEBUG: Initial response - using 'peer' param: {}.{}.{}.{}:{}\n", .{
+                            addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3],
+                            std.mem.bigToNative(u16, sin.port)
+                        });
+                    }
+                    if (conn.peer.storage.family == posix.AF.INET) {
+                        const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&conn.peer.storage));
+                        const addr_bytes = @as([4]u8, @bitCast(sin.addr));
+                        std.debug.print("DEBUG: Initial response - conn.peer: {}.{}.{}.{}:{}\n", .{
+                            addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3],
+                            std.mem.bigToNative(u16, sin.port)
+                        });
+                    }
+
+                    // Should we use conn.peer instead of peer?
+                    const send_result = self.sendTo(conn.peer, pkt_bytes) catch |err| blk: {
                         std.debug.print("ERROR: sendTo failed: {}\n", .{err});
                         break :blk 0;
                     };
@@ -1987,7 +2018,8 @@ pub const Endpoint = struct {
                         std.debug.print("Handshake packet header (first 30 bytes): ", .{});
                         for (bytes_out_hs[0..@min(30, bytes_out_hs.len)]) |b| std.debug.print("{X:0>2} ", .{b});
                         std.debug.print("\n", .{});
-                        const send_result = self.sendTo(peer, bytes_out_hs) catch |err| blk: {
+                        // Use conn.peer for consistent addressing
+                        const send_result = self.sendTo(conn.peer, bytes_out_hs) catch |err| blk: {
                             std.debug.print("ERROR: Failed to send Handshake packet: {}\n", .{err});
                             break :blk 0;
                         };
