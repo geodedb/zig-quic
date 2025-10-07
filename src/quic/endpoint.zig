@@ -78,13 +78,25 @@ pub const Endpoint = struct {
     // code (e.g., server CLI loop) holding an opaque pointer to observe closed state
     // without risking use-after-free.
     retired: std.ArrayList(*conn_mod.Connection),
+    // Epoll file descriptor for Linux
+    epoll_fd: ?posix.fd_t = null,
 
     /// Initialize a UDP endpoint bound to bind_addr (e.g., "127.0.0.1:0").
     pub fn init(alloc: *std.mem.Allocator, bind_addr: []const u8, cfgp: *const cfg.QuicConfig) !Endpoint {
         // Resolve and bind IPv4 socket for tests; port 0 lets OS choose a free port.
         var ep_addr = try resolveAny(bind_addr, .udp);
-        const fd = try posix.socket(posix.AF.INET, posix.SOCK.DGRAM, posix.IPPROTO.UDP);
+        
+        // Determine address family from resolved address
+        const sa: *const posix.sockaddr = @ptrCast(&ep_addr.storage);
+        const family = sa.family;
+        
+        std.debug.print("DEBUG: Endpoint init - binding to address family={}\n", .{family});
+        
+        const fd = try posix.socket(family, posix.SOCK.DGRAM, posix.IPPROTO.UDP);
         errdefer posix.close(fd);
+        
+        std.debug.print("DEBUG: Created socket fd={}\n", .{fd});
+        
         // Allow fast rebinding in tests
         var one: i32 = 1;
         _ = posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, std.mem.asBytes(&one)) catch {};
@@ -105,11 +117,34 @@ pub const Endpoint = struct {
         }
         // Note: do not rely on O.NONBLOCK here; use MSG.DONTWAIT on Linux in recv loop for portability
         const sa_ptr: *const posix.sockaddr = @ptrCast(&ep_addr.storage);
+        std.debug.print("DEBUG: Binding socket to address...\n", .{});
         try posix.bind(fd, sa_ptr, ep_addr.len);
+        std.debug.print("DEBUG: Socket bound successfully\n", .{});
+        
+        // Set socket to non-blocking mode
         if (builtin.target.os.tag == .windows) {
             const ws2 = std.os.windows.ws2_32;
             var nonblock: std.os.windows.ULONG = 1;
             _ = ws2.ioctlsocket(fd, ws2.FIONBIO, &nonblock);
+        } else {
+            // Set non-blocking mode on Unix
+            const flags = try posix.fcntl(fd, posix.F.GETFL, 0);
+            const O_NONBLOCK: i32 = 0x800; // O_NONBLOCK value on Linux
+            _ = try posix.fcntl(fd, posix.F.SETFL, flags | O_NONBLOCK);
+        }
+        
+        // Create epoll instance on Linux
+        var epoll_fd_opt: ?posix.fd_t = null;
+        if (builtin.target.os.tag == .linux) {
+            const linux = std.os.linux;
+            const epfd = try posix.epoll_create1(linux.EPOLL.CLOEXEC);
+            
+            // Add the socket to epoll for read events
+            var ev: linux.epoll_event = .{ .events = linux.EPOLL.IN, .data = .{ .fd = @as(i32, @intCast(fd)) } };
+            try posix.epoll_ctl(epfd, linux.EPOLL.CTL_ADD, fd, @ptrCast(&ev));
+            
+            epoll_fd_opt = epfd;
+            std.debug.print("DEBUG: Created epoll fd={} and added socket fd={}\n", .{epfd, fd});
         }
 
         return Endpoint{
@@ -124,6 +159,7 @@ pub const Endpoint = struct {
             .captures = std.ArrayList(OutCaptured){},
             .test_capture_enabled = false,
             .retired = std.ArrayList(*conn_mod.Connection){},
+            .epoll_fd = epoll_fd_opt,
         };
     }
 
@@ -210,6 +246,12 @@ pub const Endpoint = struct {
         self.conns.deinit();
         self.accepted.deinit(self.allocator.*);
         self.timers.deinit(self.allocator.*);
+        
+        // Close epoll fd if we have one
+        if (self.epoll_fd) |epfd| {
+            _ = posix.close(epfd);
+        }
+        
         // Close socket
         if (builtin.target.os.tag == .windows) {
             const ws2 = std.os.windows.ws2_32;
@@ -281,13 +323,21 @@ pub const Endpoint = struct {
             }
         }
         const sa_ptr: *const posix.sockaddr = @ptrCast(&peer.storage);
+        // Debug the actual address we're sending to
+        if (peer.storage.family == posix.AF.INET) {
+            const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&peer.storage));
+            const addr_bytes = @as([4]u8, @bitCast(sin.addr));
+            std.debug.print("DEBUG: sendto IPv4 {}.{}.{}.{}:{}, fd={}, data.len={}\n", .{
+                addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3],
+                std.mem.bigToNative(u16, sin.port),
+                self.sock_fd, data.len
+            });
+        }
         const result = posix.sendto(self.sock_fd, data, 0, sa_ptr, peer.len);
-        if (data.len == 141) {
-            if (result) |n| {
-                std.debug.print("DEBUG: sendTo successful for 141 bytes: sent {} bytes\n", .{n});
-            } else |err| {
-                std.debug.print("DEBUG: sendTo failed for 141 bytes: {}\n", .{err});
-            }
+        if (result) |n| {
+            std.debug.print("DEBUG: sendto successful: sent {} bytes (of {})\n", .{ n, data.len });
+        } else |err| {
+            std.debug.print("DEBUG: sendto failed: {}\n", .{err});
         }
         return result;
     }
@@ -513,7 +563,7 @@ pub const Endpoint = struct {
     /// Drive network I/O, timers, and paced send for up to timeout_ms milliseconds.
     pub fn poll(self: *Endpoint, timeout_ms: i32) !void {
         // TRACE: poll called
-        // std.debug.print("DEBUG: poll called, timeout_ms={}\n", .{timeout_ms});
+        std.debug.print("DEBUG: poll called, timeout_ms={}\n", .{timeout_ms});
         // First, process any timers that are already expired to avoid waiting unnecessarily.
         self.processExpiredTimers(nowMsMonotonic());
         // Drain any pending error queue notifications (ICMP PTB, etc.) before waiting.
@@ -537,7 +587,9 @@ pub const Endpoint = struct {
 
         // Always use the platform event loop to wait for readability
         // This ensures we actually wait for packets to arrive
-        switch (lb.defaultLoopBackend()) {
+        const backend = lb.defaultLoopBackend();
+        std.debug.print("DEBUG: Using backend: {}\n", .{backend});
+        switch (backend) {
             .epoll => try self.poll_epoll_backend(eff_timeout),
             .kqueue => try self.poll_kqueue_backend(eff_timeout),
             .iocp => try self.poll_iocp_backend(eff_timeout),
@@ -556,11 +608,14 @@ pub const Endpoint = struct {
     }
 
     fn drainReadable(self: *Endpoint) void {
+        std.debug.print("DEBUG: drainReadable called on fd={}\n", .{self.sock_fd});
         var buf: [2048]u8 = undefined;
+        var read_count: usize = 0;
         while (true) {
             var peer = conn_mod.SockAddr{};
             peer.len = @intCast(@sizeOf(posix.sockaddr.storage));
-            const flags: u32 = if (builtin.target.os.tag == .windows) 0 else posix.MSG.DONTWAIT;
+            // Socket is already non-blocking, no need for MSG_DONTWAIT
+            const flags: u32 = 0;
             // Linux: prefer recvmsg to extract ECN via ancillary when available; fallback elsewhere.
             if (builtin.target.os.tag == .linux and @hasDecl(std.posix, "recvmsg")) {
                 var iov = [1]posix.iovec{.{ .base = buf[0..].ptr, .len = buf.len }};
@@ -613,14 +668,36 @@ pub const Endpoint = struct {
             } else {
                 const n_or_err = posix.recvfrom(self.sock_fd, buf[0..], flags, @ptrCast(&peer.storage), &peer.len);
                 if (n_or_err) |n| {
-                    // Debug: Log all received packets
-                    std.debug.print("DEBUG: recvfrom got {} bytes\n", .{n});
+                    // Debug: Log all received packets with source address
+                    if (peer.storage.family == posix.AF.INET) {
+                        const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&peer.storage));
+                        const addr_bytes = @as([4]u8, @bitCast(sin.addr));
+                        std.debug.print("DEBUG: recvfrom {} bytes from {}.{}.{}.{}:{}\n", .{
+                            n,
+                            addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3],
+                            std.mem.bigToNative(u16, sin.port)
+                        });
+                    } else {
+                        std.debug.print("DEBUG: recvfrom got {} bytes from socket {}\n", .{ n, self.sock_fd });
+                    }
+                    read_count += 1;
                     self.processIncomingDatagram(peer, buf[0..n], null);
                 } else |err| {
                     switch (err) {
-                        error.WouldBlock => return,
-                        error.ConnectionResetByPeer => return,
-                        else => return,
+                        error.WouldBlock => {
+                            if (read_count > 0) {
+                                std.debug.print("DEBUG: drainReadable finished, read {} packets\n", .{read_count});
+                            }
+                            return;
+                        },
+                        error.ConnectionResetByPeer => {
+                            std.debug.print("DEBUG: connection reset by peer\n", .{});
+                            return;
+                        },
+                        else => {
+                            std.debug.print("DEBUG: recvfrom error: {}\n", .{err});
+                            return;
+                        },
                     }
                 }
             }
@@ -741,20 +818,38 @@ pub const Endpoint = struct {
     }
 
     fn poll_epoll_backend(self: *Endpoint, timeout_ms: i32) !void {
+        std.debug.print("DEBUG: poll_epoll_backend called, timeout={}, epoll_fd={?}\n", .{timeout_ms, self.epoll_fd});
+        
         // On non-Linux platforms, fallback to a simple sleep + drain to avoid epoll dependency
-        if (builtin.target.os.tag != .linux) {
+        if (builtin.target.os.tag != .linux or self.epoll_fd == null) {
+            std.debug.print("DEBUG: Falling back to sleep+drain\n", .{});
             if (timeout_ms > 0) std.Thread.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
             self.drainReadable();
             return;
         }
-        const io = @import("io/loop_epoll.zig");
-        var lp = try io.Loop.init();
-        defer lp.deinit();
-        try lp.add(@as(i32, @intCast(self.sock_fd)), true, false);
-        var events: [8]io.Event = undefined;
-        const n = try lp.wait(&events, timeout_ms);
-        _ = n;
-        self.drainReadable();
+        
+        const linux = std.os.linux;
+        var events: [16]linux.epoll_event = undefined;
+        std.debug.print("DEBUG: Calling epoll_wait on fd={} with timeout={}\n", .{self.epoll_fd.?, timeout_ms});
+        const n = posix.epoll_wait(self.epoll_fd.?, &events, timeout_ms);
+        
+        if (n > 0) {
+            std.debug.print("DEBUG: epoll_wait returned {} events\n", .{n});
+            for (0..n) |i| {
+                const ev = events[i];
+                std.debug.print("DEBUG: Event {}: fd={}, events=0x{x}\n", .{i, ev.data.fd, ev.events});
+                
+                // Check if our socket is readable
+                const expected_fd = @as(i32, @intCast(self.sock_fd));
+                std.debug.print("DEBUG: Checking ev.data.fd={} vs expected_fd={}\n", .{ev.data.fd, expected_fd});
+                if (ev.data.fd == expected_fd and (ev.events & linux.EPOLL.IN) != 0) {
+                    std.debug.print("DEBUG: Socket {} is readable - calling drainReadable\n", .{self.sock_fd});
+                    self.drainReadable();
+                } else {
+                    std.debug.print("DEBUG: Not our socket or not readable\n", .{});
+                }
+            }
+        }
     }
 
     fn poll_kqueue_backend(self: *Endpoint, timeout_ms: i32) !void {
@@ -835,6 +930,14 @@ pub const Endpoint = struct {
             // Short header 1-RTT path
             std.debug.print("DEBUG: Processing short header packet - len={}, first_byte={x}\n", .{bytes.len, bytes[0]});
             if (bytes.len < 1) return;
+            
+            // Extract the DCID from the short header packet
+            // First byte is header, then DCID (we need to try different lengths)
+            std.debug.print("DEBUG: Short header DCID bytes (after header): ", .{});
+            const show_len = @min(20, bytes.len - 1);
+            for (bytes[1..1+show_len]) |b| std.debug.print("{x:0>2} ", .{b});
+            std.debug.print("\n", .{});
+            
             const peer_h = hashSockaddr(&peer.storage, peer.len);
             var found: ?*conn_mod.Connection = null;
             var dcid_len: usize = 0;
@@ -843,13 +946,23 @@ pub const Endpoint = struct {
             var best: ?*conn_mod.Connection = null;
             var best_len: usize = 0;
             var it = self.conns.iterator();
+            std.debug.print("DEBUG: Looking for connection with peer_hash={x}\n", .{peer_h});
             while (it.next()) |entry| {
                 if (entry.key_ptr.*.peer_hash != peer_h) continue;
                 const c = entry.value_ptr.*;
                 const l: usize = c.our_scid.len;
+                
+                std.debug.print("DEBUG: Checking conn with our_scid=", .{});
+                for (c.our_scid.bytes[0..l]) |b| std.debug.print("{x:0>2}", .{b});
+                std.debug.print(" (len={}), role={}\n", .{l, c.role});
+                
                 if (l == 0) continue; // do not match ambiguous zero-length DCID
                 if (1 + l > bytes.len) continue;
-                if (!std.mem.eql(u8, c.our_scid.bytes[0..l], bytes[1 .. 1 + l])) continue;
+                if (!std.mem.eql(u8, c.our_scid.bytes[0..l], bytes[1 .. 1 + l])) {
+                    std.debug.print("DEBUG: DCID mismatch\n", .{});
+                    continue;
+                }
+                std.debug.print("DEBUG: Found matching connection!\n", .{});
                 // Record first match as fallback
                 if (found == null) {
                     found = c;
@@ -1432,8 +1545,17 @@ pub const Endpoint = struct {
             if (conn.role == .Server) {
                 conn.setPeerInitialCids(dcid, scid);
             } else if (conn.role == .Client and conn.peer_initial_scid.len == 0) {
+                std.debug.print("Client: Capturing server SCID from Initial packet: ", .{});
+                for (scid) |b| std.debug.print("{x:0>2}", .{b});
+                std.debug.print(" (len={})\n", .{scid.len});
+                
                 conn.peer_initial_scid.len = @intCast(@min(scid.len, conn.peer_initial_scid.bytes.len));
                 if (conn.peer_initial_scid.len > 0) @memcpy(conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len], scid[0..conn.peer_initial_scid.len]);
+                
+                std.debug.print("Client: Will use DCID={x} (len={}) for 1-RTT packets\n", .{
+                    if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0] else 0,
+                    conn.peer_initial_scid.len,
+                });
             }
 
             // Anti-amplification: before address validation, limit server to 3x bytes received
@@ -1703,7 +1825,13 @@ pub const Endpoint = struct {
                 if (out) |pkt_bytes| {
                     defer self.allocator.free(pkt_bytes);
                     std.debug.print("{s}: Sending Initial response with {} bytes (has_crypto={})\n", .{ if (conn.role == .Server) "Server" else "Client", pkt_bytes.len, has_crypto });
-                    _ = self.sendTo(peer, pkt_bytes) catch {};
+                    const send_result = self.sendTo(peer, pkt_bytes) catch |err| blk: {
+                        std.debug.print("ERROR: sendTo failed: {}\n", .{err});
+                        break :blk 0;
+                    };
+                    if (send_result > 0) {
+                        std.debug.print("Successfully sent {} bytes\n", .{send_result});
+                    }
                     // Packet with CRYPTO is ack-eliciting
                     conn.onPacketSent(.Initial, conn.pn_initial_tx, pkt_bytes.len, has_crypto);
                     conn.pn_initial_tx +%= 1;

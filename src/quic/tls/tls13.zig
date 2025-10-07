@@ -437,13 +437,17 @@ pub const Engine = struct {
 
                 // Only try to extract public keys from ClientHello and ServerHello
                 if (p.typ == .client_hello or p.typ == .server_hello) {
+                    std.debug.print("TLS: Processing hello message, typ={}, real_mode={}\n", .{p.typ, self.real_mode});
                     var extracted: ?[32]u8 = null;
                     if (self.real_mode) {
+                        std.debug.print("TLS: Real mode - parsing real hello\n", .{});
                         switch (p.typ) {
                             .client_hello => extracted = parseRealClientHello(p.body),
                             .server_hello => extracted = parseRealServerHello(p.body),
                             else => {},
                         }
+                    } else {
+                        std.debug.print("TLS: Not in real mode - trying minimal parse\n", .{});
                     }
                     if (extracted == null) {
                         if (parseMinimalHelloPub(p.typ, p.body)) |pk_min| {
