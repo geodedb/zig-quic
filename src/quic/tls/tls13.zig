@@ -667,9 +667,26 @@ pub const Engine = struct {
                         }
                     }
                 }
-            } else break;
+            } else {
+                // parseHandshakeOne returned null - not enough data
+                if (off < self.inbox.items.len) {
+                    const remaining_data = self.inbox.items[off..];
+                    std.debug.print("TLS: parseHandshakeOne failed with {} bytes available. First bytes: ", .{remaining_data.len});
+                    for (remaining_data[0..@min(16, remaining_data.len)]) |b| std.debug.print("{X:0>2} ", .{b});
+                    std.debug.print("\n", .{});
+
+                    // Check if it's a partial message that needs more data
+                    if (remaining_data.len >= 4) {
+                        const msg_type = remaining_data[0];
+                        const msg_len = (@as(usize, remaining_data[1]) << 16) | (@as(usize, remaining_data[2]) << 8) | @as(usize, remaining_data[3]);
+                        const need_total = 4 + msg_len;
+                        std.debug.print("TLS: Partial message type=0x{X:0>2} needs {} bytes total, have {} bytes\n", .{msg_type, need_total, remaining_data.len});
+                    }
+                }
+                break;
+            }
         }
-        
+
         // Remove processed messages from the inbox
         if (off > 0) {
             // Keep any unprocessed data by moving it to the beginning

@@ -1916,7 +1916,8 @@ pub const Endpoint = struct {
                 }
 
                 // Pull any pending TLS outbox (EncryptedExtensions, Certificate, CertificateVerify, Finished)
-                var tls_buf: [2048]u8 = undefined;
+                // Increase buffer size to handle full handshake flight (can be 2300+ bytes with certificates)
+                var tls_buf: [4096]u8 = undefined;
                 const n_tls = conn.tls.popCrypto(tls_buf[0..]);
                 if (n_tls > 0 and allow_send) {
                     std.debug.print("Sending Handshake packet with {} bytes of CRYPTO\n", .{n_tls});
