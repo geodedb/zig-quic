@@ -298,6 +298,7 @@ pub const Endpoint = struct {
     /// Send a datagram to peer address.
     /// Send UDP datagram to peer (capturing if enabled).
     pub fn sendTo(self: *Endpoint, peer: conn_mod.SockAddr, data: []const u8) !usize {
+        std.debug.print("DEBUG: sendTo called with data.len={}\n", .{data.len});
         if (self.test_capture_enabled) {
             // Capture: make an owned copy of data and enqueue
             const owned = try self.allocator.alloc(u8, data.len);
@@ -1767,21 +1768,25 @@ pub const Endpoint = struct {
 
                         // Check if this CRYPTO frame is at the expected offset
                         if (cr.offset == conn.crypto_rx_off_initial) {
-                            // In-order frame, process immediately
+                            // In-order frame - process immediately
+                            std.debug.print("Processing in-order CRYPTO frame at offset {}\n", .{cr.offset});
                             conn.pushCrypto(cr.data) catch {};
                             conn.crypto_rx_off_initial += @intCast(cr.data.len);
-                            saw_any = true;
-                            saw_ack_eliciting_initial = true; // CRYPTO is ack-eliciting
 
-                            // Check if we can now process buffered frames
-                            if (conn.crypto_buffer_initial.getContiguous(conn.crypto_rx_off_initial)) |fragments| {
+                            // Check if we can now process any buffered out-of-order frames
+                            while (conn.crypto_buffer_initial.getContiguous(conn.crypto_rx_off_initial)) |fragments| {
+                                // Process all contiguous fragments
                                 for (fragments) |frag| {
+                                    std.debug.print("Processing buffered CRYPTO frame at offset {}\n", .{frag.offset});
                                     conn.pushCrypto(frag.data) catch {};
                                     conn.crypto_rx_off_initial += @intCast(frag.data.len);
                                 }
+
                                 // Remove processed fragments from buffer
                                 conn.crypto_buffer_initial.removeProcessed(fragments.len, self.allocator.*);
                             }
+                            saw_any = true;
+                            saw_ack_eliciting_initial = true; // CRYPTO is ack-eliciting
 
                             // Server: after receiving CH, only queue ServerHello for Initial emission
                             if (was_server and !conn.tls.sh_seen) {
@@ -1967,6 +1972,10 @@ pub const Endpoint = struct {
                     conn.crypto_retx_handshake_off = base_off_hs;
                     conn.crypto_tx_off_handshake += n_tls;
                     std.debug.print("Encoding Handshake packet: dcid_len={}, scid_len={}\n", .{scid.len, conn.our_scid.len});
+                    std.debug.print("  Using Handshake keys - key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+                        hs_keys.key[0], hs_keys.key[1], hs_keys.key[2], hs_keys.key[3],
+                        hs_keys.iv[0], hs_keys.iv[1], hs_keys.iv[2], hs_keys.iv[3],
+                    });
                     const pkt_hs = packet.encodeHandshakeProtected(self.allocator.*, version, scid, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_handshake_tx)), 2, fb.items, hs_keys) catch |err| blk: {
                         std.debug.print("ERROR: Failed to encode Handshake packet: {}\n", .{err});
                         break :blk null;

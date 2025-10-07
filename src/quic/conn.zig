@@ -26,40 +26,94 @@ const CryptoBuffer = struct {
     /// Add a fragment to the buffer
     pub fn add(self: *CryptoBuffer, offset: u64, data: []const u8, allocator: std.mem.Allocator) !void {
         if (self.count >= self.fragments.len) {
-            // Buffer full, drop oldest fragment
-            if (self.fragments[0]) |frag| {
-                allocator.free(frag.data);
-            }
-            // Shift fragments left
+            // Buffer full, drop the fragment with smallest offset
+            var min_offset: u64 = std.math.maxInt(u64);
+            var min_idx: usize = 0;
+            var found = false;
+
+            // Find the fragment with the smallest offset
             var i: usize = 0;
-            while (i < self.fragments.len - 1) : (i += 1) {
-                self.fragments[i] = self.fragments[i + 1];
+            while (i < self.fragments.len) : (i += 1) {
+                if (self.fragments[i]) |frag| {
+                    if (frag.offset < min_offset) {
+                        min_offset = frag.offset;
+                        min_idx = i;
+                        found = true;
+                    }
+                }
             }
-            self.fragments[self.fragments.len - 1] = null;
-            self.count -= 1;
+
+            // Free the oldest fragment if found
+            if (found) {
+                if (self.fragments[min_idx]) |frag| {
+                    allocator.free(frag.data);
+                }
+
+                // Compact array by shifting left from the removed position
+                i = min_idx;
+                while (i < self.fragments.len - 1) : (i += 1) {
+                    self.fragments[i] = self.fragments[i + 1];
+                }
+                self.fragments[self.fragments.len - 1] = null;
+                self.count -= 1;
+            }
         }
 
         // Copy data
         const data_copy = try allocator.alloc(u8, data.len);
         @memcpy(data_copy, data);
 
-        // Insert in sorted order by offset
-        var insert_pos: usize = self.count;
+        // Find the correct position to insert (sorted by offset)
+        var insert_pos: usize = 0;
+        var found_pos = false;
+
+        // Find first null slot or position where offset should be inserted
         var i: usize = 0;
-        while (i < self.count) : (i += 1) {
+        while (i < self.fragments.len) : (i += 1) {
             if (self.fragments[i]) |frag| {
                 if (frag.offset > offset) {
+                    insert_pos = i;
+                    found_pos = true;
+                    break;
+                }
+            } else {
+                // Found a null slot, we can use this
+                if (!found_pos) {
+                    insert_pos = i;
+                    found_pos = true;
+                }
+            }
+        }
+
+        // If no position found, use the first available null slot
+        if (!found_pos) {
+            i = 0;
+            while (i < self.fragments.len) : (i += 1) {
+                if (self.fragments[i] == null) {
                     insert_pos = i;
                     break;
                 }
             }
         }
 
-        // Shift right to make room
-        if (insert_pos < self.count) {
-            i = self.count;
-            while (i > insert_pos) : (i -= 1) {
-                self.fragments[i] = self.fragments[i - 1];
+        // If we need to shift elements right, do so
+        if (self.fragments[insert_pos] != null) {
+            // Find first null slot after insert_pos
+            var null_pos: ?usize = null;
+            i = insert_pos;
+            while (i < self.fragments.len) : (i += 1) {
+                if (self.fragments[i] == null) {
+                    null_pos = i;
+                    break;
+                }
+            }
+
+            // Shift elements right to make room
+            if (null_pos) |np| {
+                i = np;
+                while (i > insert_pos) : (i -= 1) {
+                    self.fragments[i] = self.fragments[i - 1];
+                }
             }
         }
 
