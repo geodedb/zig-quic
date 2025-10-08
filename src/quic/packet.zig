@@ -547,13 +547,12 @@ pub fn encodeHandshakeProtected(
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(alloc);
 
-    // Header first byte: Long header with fixed bit, Handshake type (0x20), PN len bits
-    // Per RFC 9000: Fixed bit (5) must be 1, Handshake packet type = 10 in bits 5-4
-    // quic-go uses packetType = 0b10, shifted left by 4 = 0x20
-    const type_bits: u8 = 0x20; // Handshake type bits in position 5-4
+    // Header first byte: Long header with fixed bit, Handshake type, PN len bits
+    // Per RFC 9000: Fixed bit (6) must be 1, Handshake packet type = 10 in bits 5-4
+    // 0xe0 = 11100000 (Long header + fixed bit + Handshake type 10)
+    // We don't need to OR type_bits because 0xe0 already includes Handshake type
     const pn_bits: u8 = @as(u8, packet_number_len - 1) & 0x03;
-    // 0xe0 = 11100000 (Long header + fixed bit=1), not 0xc0!
-    const first: u8 = 0xe0 | type_bits | pn_bits;
+    const first: u8 = 0xe0 | pn_bits;
     std.debug.print("DEBUG encodeHandshakeProtected: packet_number_len={}, pn_bits={}, first=0x{X:0>2}\n", .{ packet_number_len, pn_bits, first });
 
     const w = buf.writer(alloc);
