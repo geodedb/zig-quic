@@ -309,11 +309,12 @@ pub fn encodeInitialProtected(
     errdefer buf.deinit(alloc);
 
     // Header first byte: Long header with fixed bit, Initial type, PN len bits
-    // Per RFC 9000: Fixed bit (5) must be 1
+    // Per RFC 9000: Fixed bit (6) must be 1
+    // Initial packet type = 00 in bits 5-4
+    // 0xc0 = 11000000 (Long header + fixed bit + Initial type 00)
     const type_bits: u8 = 0x00; // Initial
     const pn_bits: u8 = @as(u8, packet_number_len - 1) & 0x03;
-    // 0xe0 = 11100000 (Long header + fixed bit=1), not 0xc0!
-    const first: u8 = 0xe0 | type_bits | pn_bits;
+    const first: u8 = 0xc0 | type_bits | pn_bits;
 
     // We'll build header_prefix first to compute AAD
     const w = buf.writer(alloc);

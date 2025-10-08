@@ -129,8 +129,14 @@ pub const Endpoint = struct {
         } else {
             // Set non-blocking mode on Unix
             const flags = try posix.fcntl(fd, posix.F.GETFL, 0);
+            std.debug.print("DEBUG: Current socket flags: 0x{x}\n", .{flags});
             const O_NONBLOCK: i32 = 0x800; // O_NONBLOCK value on Linux
-            _ = try posix.fcntl(fd, posix.F.SETFL, flags | O_NONBLOCK);
+            const new_flags = flags | O_NONBLOCK;
+            std.debug.print("DEBUG: Setting socket flags to: 0x{x}\n", .{new_flags});
+            _ = try posix.fcntl(fd, posix.F.SETFL, new_flags);
+            const verify_flags = try posix.fcntl(fd, posix.F.GETFL, 0);
+            std.debug.print("DEBUG: Socket flags after setting: 0x{x}\n", .{verify_flags});
+            std.debug.print("DEBUG: Has O_NONBLOCK: {}\n", .{(verify_flags & O_NONBLOCK) != 0});
         }
         
         // Create epoll instance on Linux
@@ -1911,9 +1917,10 @@ pub const Endpoint = struct {
                 const oriented = packet.initialAeadKeys(v2, conn.role == .Server, derive_dcid_tx);
                 const tx_keys = oriented.tx;
 
-                // For client: DCID = peer's initial DCID, SCID = our SCID
-                // For server: DCID = client's initial DCID (what the client used as DCID), SCID = our SCID
-                const tx_dcid = conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len];
+                // For client: DCID = peer's initial DCID (from server's SCID in response), SCID = our SCID
+                // For server: DCID = client's SCID from Initial (peer_initial_scid), SCID = our SCID
+                // RFC 9000: Server's Initial response uses DCID = client's SCID, SCID = new server CID
+                const tx_dcid = if (conn.role == .Server) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len];
                 const tx_scid = conn.our_scid.bytes[0..conn.our_scid.len];
                 std.debug.print("{s}: Encoding Initial with pn={} dcid_len={} scid_len={} pn_len={}\n", .{ if (conn.role == .Server) "Server" else "Client", conn.pn_initial_tx, tx_dcid.len, tx_scid.len, 4 });
                 std.debug.print("  Server will use SCID: ", .{});
@@ -1955,7 +1962,28 @@ pub const Endpoint = struct {
                 // Additionally, route received ACKs in Initial space through Recovery.
                 // Since this branch is taken when we saw any frames, send a synthetic ACK processing if needed is skipped.
             }
-            // NEW: If we just derived Handshake keys and have outbound TLS handshake bytes queued, emit them now.
+            // Check if we can send Handshake packet (requires Handshake keys)
+            std.debug.print("Checking for Handshake keys: hs_tx_keys is {s}\n", .{if (conn.hs_tx_keys != null) "SET" else "NULL"});
+
+            // If we have an Initial packet but no Handshake keys yet, send the Initial packet immediately
+            // The client needs the ServerHello to proceed with the handshake
+            if (initial_pkt) |initial| {
+                if (conn.hs_tx_keys == null) {
+                    std.debug.print("Sending Initial packet without coalescence (Handshake keys not ready yet)\n", .{});
+                    const send_result = self.sendTo(conn.peer, initial) catch |err| blk: {
+                        std.debug.print("ERROR: Failed to send Initial packet: {}\n", .{err});
+                        break :blk 0;
+                    };
+                    if (send_result > 0) {
+                        std.debug.print("Successfully sent Initial packet: {} bytes\n", .{send_result});
+                    }
+                    // Clear initial_pkt so we don't try to send it again below
+                    self.allocator.free(initial);
+                    initial_pkt = null;
+                }
+            }
+
+            // If we have Handshake keys and have outbound TLS handshake bytes queued, emit them now.
             if (conn.hs_tx_keys) |hs_keys| {
                 // If we're a server and haven't queued the handshake flight yet, do it now
                 if (conn.role == .Server and conn.tls.sh_seen and !conn.server_hello_sent) {
@@ -2025,13 +2053,21 @@ pub const Endpoint = struct {
                             if (coalesced_len > MAX_DATAGRAM_SIZE) {
                                 std.debug.print("Coalesced size {} exceeds MTU {}, sending packets separately\n", .{coalesced_len, MAX_DATAGRAM_SIZE});
                                 // Send Initial packet first
-                                _ = self.sendTo(conn.peer, initial) catch |err| {
+                                const initial_result = self.sendTo(conn.peer, initial) catch |err| blk: {
                                     std.debug.print("ERROR: Failed to send Initial packet: {}\n", .{err});
+                                    break :blk 0;
                                 };
+                                if (initial_result > 0) {
+                                    std.debug.print("Successfully sent separate Initial packet: {} bytes\n", .{initial_result});
+                                }
                                 // Then send Handshake packet
-                                _ = self.sendTo(conn.peer, bytes_out_hs) catch |err| {
+                                const hs_result = self.sendTo(conn.peer, bytes_out_hs) catch |err| blk: {
                                     std.debug.print("ERROR: Failed to send Handshake packet: {}\n", .{err});
+                                    break :blk 0;
                                 };
+                                if (hs_result > 0) {
+                                    std.debug.print("Successfully sent separate Handshake packet: {} bytes\n", .{hs_result});
+                                }
                             } else {
                                 std.debug.print("Coalescing Initial ({} bytes) and Handshake ({} bytes) packets\n", .{initial.len, bytes_out_hs.len});
 
