@@ -547,9 +547,10 @@ pub fn encodeHandshakeProtected(
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(alloc);
 
-    // Header first byte: Long header with fixed bit, Handshake type (0x10), PN len bits
-    // Per RFC 9000: Fixed bit (5) must be 1, Handshake packet type = 10 in bits 4-3
-    const type_bits: u8 = 0x10; // Handshake (not 0x20!)
+    // Header first byte: Long header with fixed bit, Handshake type (0x20), PN len bits
+    // Per RFC 9000: Fixed bit (5) must be 1, Handshake packet type = 10 in bits 5-4
+    // quic-go uses packetType = 0b10, shifted left by 4 = 0x20
+    const type_bits: u8 = 0x20; // Handshake type bits in position 5-4
     const pn_bits: u8 = @as(u8, packet_number_len - 1) & 0x03;
     // 0xe0 = 11100000 (Long header + fixed bit=1), not 0xc0!
     const first: u8 = 0xe0 | type_bits | pn_bits;
@@ -614,6 +615,9 @@ pub fn encodeHandshakeProtected(
     buf.items[0] = header_first;
     const pn_offset = 1 + header_prefix_len;
     @memcpy(buf.items[pn_offset .. pn_offset + packet_number_len], pn_mut[0..packet_number_len]);
+
+    std.debug.print("DEBUG encodeHandshakeProtected: AFTER header protection - first byte changed from 0x{X:0>2} to 0x{X:0>2}\n", .{ first, header_first });
+    std.debug.print("DEBUG encodeHandshakeProtected: Final packet first 5 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ buf.items[0], buf.items[1], buf.items[2], buf.items[3], buf.items[4] });
 
     return buf.toOwnedSlice(alloc);
 }

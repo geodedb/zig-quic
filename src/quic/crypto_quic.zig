@@ -133,7 +133,9 @@ pub fn headerProtect(
             const mask0 = out_block[0];
             const is_long = (header_first.* & 0x80) != 0;
             const hdr_mask: u8 = if (is_long) 0x0f else 0x1f;
+            const old_first = header_first.*;
             header_first.* ^= (mask0 & hdr_mask);
+            std.debug.print("DEBUG headerProtect: first byte 0x{X:0>2} ^ (mask0 0x{X:0>2} & hdr_mask 0x{X:0>2}) = 0x{X:0>2}\n", .{ old_first, mask0, hdr_mask, header_first.* });
             var i: usize = 0;
             while (i < pn_bytes.len) : (i += 1) pn_bytes[i] ^= out_block[i + 1];
             return;
