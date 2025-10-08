@@ -2010,10 +2010,24 @@ pub const Endpoint = struct {
 
                         // Coalesce Initial and Handshake packets into single datagram
                         if (initial_pkt) |initial| {
-                            std.debug.print("Coalescing Initial ({} bytes) and Handshake ({} bytes) packets\n", .{initial.len, bytes_out_hs.len});
-
-                            // Create coalesced buffer
+                            const MAX_DATAGRAM_SIZE = 1400; // Conservative MTU limit for real networks
                             const coalesced_len = initial.len + bytes_out_hs.len;
+
+                            // Check if coalescence would exceed typical MTU
+                            if (coalesced_len > MAX_DATAGRAM_SIZE) {
+                                std.debug.print("Coalesced size {} exceeds MTU {}, sending packets separately\n", .{coalesced_len, MAX_DATAGRAM_SIZE});
+                                // Send Initial packet first
+                                _ = self.sendTo(conn.peer, initial) catch |err| {
+                                    std.debug.print("ERROR: Failed to send Initial packet: {}\n", .{err});
+                                };
+                                // Then send Handshake packet
+                                _ = self.sendTo(conn.peer, bytes_out_hs) catch |err| {
+                                    std.debug.print("ERROR: Failed to send Handshake packet: {}\n", .{err});
+                                };
+                            } else {
+                                std.debug.print("Coalescing Initial ({} bytes) and Handshake ({} bytes) packets\n", .{initial.len, bytes_out_hs.len});
+
+                                // Create coalesced buffer - within MTU limits
                             const coalesced = self.allocator.alloc(u8, coalesced_len) catch {
                                 std.debug.print("ERROR: Failed to allocate coalesced buffer, sending Handshake only\n", .{});
                                 // Fall back to sending just the Handshake packet
@@ -2040,6 +2054,7 @@ pub const Endpoint = struct {
                             };
                             if (send_result > 0) {
                                 std.debug.print("Successfully sent coalesced datagram: {} bytes\n", .{send_result});
+                            }
                             }
                         } else {
                             // No Initial packet to coalesce, send Handshake alone
