@@ -403,11 +403,15 @@ pub const Engine = struct {
     /// Append received CRYPTO bytes into transcript. Attempts to parse handshake messages
     /// to update simple state, but always feeds the transcript with raw bytes.
     pub fn onCryptoRecv(self: *Engine, data: []const u8) void {
+        std.debug.print("TLS: onCryptoRecv called with {} bytes, inbox already has {} bytes\n", .{data.len, self.inbox.items.len});
+
         // Append new data to inbox buffer
         self.inbox.appendSlice(self.allocator, data) catch {
             std.debug.print("TLS: Failed to buffer CRYPTO data\n", .{});
             return;
         };
+
+        std.debug.print("TLS: Inbox now has {} bytes total\n", .{self.inbox.items.len});
         
         // Process complete messages from the buffered data
         var off: usize = 0;

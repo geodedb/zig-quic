@@ -235,13 +235,13 @@ pub fn computeRetryIntegrityTag(version_v2: bool, odcid: []const u8, retry_witho
     return aesGcmTagFixedNonce(kiv.key, kiv.iv, buf.items);
 }
 
-/// Protect an Initial-like packet payload and apply header protection using the provided keys.
+/// Generic protection function for Initial and Handshake packets.
 /// - header_first: pointer to first header byte (mutated by HP)
 /// - pn_bytes: packet number bytes (1..4), mutated by HP
 /// - header_prefix: bytes before PN (e.g., long header fields up to Length varint end)
 /// - plaintext -> ciphertext+tag written to out_cipher (len = plaintext.len+16)
 /// AAD = header_first || header_prefix || pn_bytes (pre-HP). HP sample is 16 bytes starting 4 bytes after PN, i.e., out_cipher[4..20].
-pub fn protectInitial(
+pub fn protectPacket(
     suite: AeadSuite,
     aead_key: []const u8,
     aead_iv: []const u8,
@@ -299,6 +299,22 @@ pub fn protectInitial(
     try headerProtect(suite, hp_key, &sample16, header_first, pn_bytes);
 
     return ct_len;
+}
+
+/// Backward compatibility wrapper for protectInitial
+pub fn protectInitial(
+    suite: AeadSuite,
+    aead_key: []const u8,
+    aead_iv: []const u8,
+    hp_key: []const u8,
+    packet_number: u64,
+    header_first: *u8,
+    pn_bytes: []u8,
+    header_prefix: []const u8,
+    plaintext: []const u8,
+    out_cipher: []u8,
+) !usize {
+    return protectPacket(suite, aead_key, aead_iv, hp_key, packet_number, header_first, pn_bytes, header_prefix, plaintext, out_cipher);
 }
 
 /// Undo header protection and decrypt Initial-like packet payload.

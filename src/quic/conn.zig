@@ -2086,6 +2086,11 @@ pub const Connection = struct {
         const tx = tls13.deriveQuicHandshakeKeys(tx_secret, version_v2);
         self.hs_rx_keys = .{ .key = rx.key, .iv = rx.iv, .hp = rx.hp };
         self.hs_tx_keys = .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp };
+        std.debug.print("DEBUG: Handshake keys derived for {s} - tx_key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}, rx_key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+            if (self.role == .Server) "Server" else "Client",
+            tx.key[0], tx.key[1], tx.key[2], tx.key[3],
+            rx.key[0], rx.key[1], rx.key[2], rx.key[3],
+        });
     }
 
     /// Derive application keys and traffic secrets for QUIC from current TLS secrets.

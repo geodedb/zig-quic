@@ -529,6 +529,7 @@ pub fn decodeInitialProtected(
 }
 
 /// Build a fully protected Handshake packet using AES-128-GCM.
+/// Note: Uses InitialKeys struct (same as AeadKeys structure) for Handshake protection
 pub fn encodeHandshakeProtected(
     alloc: std.mem.Allocator,
     version: u32,
@@ -544,10 +545,12 @@ pub fn encodeHandshakeProtected(
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(alloc);
 
-    // Header first byte: Long header, Handshake type (0x20), PN len bits
-    const type_bits: u8 = 0x20; // Handshake
+    // Header first byte: Long header, Handshake type (0x10), PN len bits
+    // Per RFC 9000: Handshake packet type = 10 in bits 4-3
+    const type_bits: u8 = 0x10; // Handshake (not 0x20!)
     const pn_bits: u8 = @as(u8, packet_number_len - 1) & 0x03;
     const first: u8 = 0xc0 | type_bits | pn_bits;
+    std.debug.print("DEBUG encodeHandshakeProtected: packet_number_len={}, pn_bits={}, first=0x{X:0>2}\n", .{ packet_number_len, pn_bits, first });
 
     const w = buf.writer(alloc);
     try w.writeByte(first);
@@ -568,6 +571,7 @@ pub fn encodeHandshakeProtected(
     try w.writeAll(lbuf[0..ll]);
 
     const header_prefix_len = buf.items.len - 1;
+    std.debug.print("DEBUG encodeHandshakeProtected: payload_len={}, ct_len={}, pn_len={}, length_value={}\n", .{ payload_plaintext.len, ct_len, packet_number_len, length_value });
 
     var pn_be_full: [4]u8 = .{
         @as(u8, @intCast((packet_number >> 24) & 0xff)),
@@ -588,7 +592,9 @@ pub fn encodeHandshakeProtected(
 
     const out_cipher = buf.items[out_cipher_idx .. out_cipher_idx + ct_len];
     const suite = crypto.AeadSuite.aes_128_gcm;
-    const written = try crypto.protectInitial(
+    std.debug.print("DEBUG encodeHandshakeProtected: Using keys - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ keys.key[0], keys.key[1], keys.key[2], keys.key[3], keys.iv[0], keys.iv[1], keys.iv[2], keys.iv[3] });
+    // Use protectPacket for Handshake packets, not protectInitial
+    const written = try crypto.protectPacket(
         suite,
         &keys.key,
         &keys.iv,

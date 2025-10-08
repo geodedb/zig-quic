@@ -863,9 +863,9 @@ pub const Endpoint = struct {
                 }
             }
         } else if (n == 0) {
-            // epoll_wait timed out - still call drainReadable as packets might be waiting
-            // This matches the behavior of kqueue and IOCP backends
-            self.drainReadable();
+            // epoll_wait timed out - no events, don't call drainReadable
+            // Only call drainReadable when there are actual events
+            std.debug.print("DEBUG: epoll_wait timed out, no events\n", .{});
         }
     }
 
@@ -1774,22 +1774,33 @@ pub const Endpoint = struct {
                 off += r.n;
                 switch (r.f) {
                     .crypto => |cr| {
-                        std.debug.print("{s}: Received CRYPTO frame with {} bytes at offset {}\n", .{ if (conn.role == .Server) "Server" else "Client", cr.data.len, cr.offset });
+                        std.debug.print("{s}: Received Initial CRYPTO frame with {} bytes at offset {} (expected {})\n", .{
+                            if (conn.role == .Server) "Server" else "Client",
+                            cr.data.len,
+                            cr.offset,
+                            conn.crypto_rx_off_initial
+                        });
                         const was_server = (conn.role == .Server);
 
                         // Check if this CRYPTO frame is at the expected offset
                         if (cr.offset == conn.crypto_rx_off_initial) {
                             // In-order frame - process immediately
-                            std.debug.print("Processing in-order CRYPTO frame at offset {}\n", .{cr.offset});
-                            conn.pushCrypto(cr.data) catch {};
+                            std.debug.print("Processing in-order Initial CRYPTO frame at offset {} with {} bytes\n", .{cr.offset, cr.data.len});
+                            std.debug.print("Pushing {} bytes to TLS engine (Initial)\n", .{cr.data.len});
+                            conn.pushCrypto(cr.data) catch |err| {
+                                std.debug.print("ERROR: Failed to push CRYPTO data to TLS: {}\n", .{err});
+                            };
                             conn.crypto_rx_off_initial += @intCast(cr.data.len);
+                            std.debug.print("Updated crypto_rx_off_initial to {}\n", .{conn.crypto_rx_off_initial});
 
                             // Check if we can now process any buffered out-of-order frames
                             while (conn.crypto_buffer_initial.getContiguous(conn.crypto_rx_off_initial)) |fragments| {
                                 // Process all contiguous fragments
                                 for (fragments) |frag| {
-                                    std.debug.print("Processing buffered CRYPTO frame at offset {}\n", .{frag.offset});
-                                    conn.pushCrypto(frag.data) catch {};
+                                    std.debug.print("Processing buffered Initial CRYPTO frame at offset {} with {} bytes\n", .{frag.offset, frag.data.len});
+                                    conn.pushCrypto(frag.data) catch |err| {
+                                        std.debug.print("ERROR: Failed to push buffered CRYPTO data: {}\n", .{err});
+                                    };
                                     conn.crypto_rx_off_initial += @intCast(frag.data.len);
                                 }
 
@@ -2002,7 +2013,9 @@ pub const Endpoint = struct {
                     conn.crypto_retx_handshake = owned_hs;
                     conn.crypto_retx_handshake_off = base_off_hs;
                     conn.crypto_tx_off_handshake += n_tls;
-                    const hs_dcid = conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len];
+                    // For Handshake packets, use the client's source connection ID (peer_initial_scid)
+                    // If client sent scid_len=0, we send Handshake with dcid_len=0
+                    const hs_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
                     std.debug.print("Encoding Handshake packet: dcid_len={}, scid_len={}\n", .{hs_dcid.len, conn.our_scid.len});
                     std.debug.print("  Using Handshake keys - key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
                         hs_keys.key[0], hs_keys.key[1], hs_keys.key[2], hs_keys.key[3],
@@ -2101,7 +2114,8 @@ pub const Endpoint = struct {
             const scid_len = bytes[i];
             i += 1;
             if (i + scid_len > bytes.len) return;
-            const scid = bytes[i .. i + scid_len];
+            // scid is not used here, we use conn.peer_initial_scid for Handshake packets
+            _ = bytes[i .. i + scid_len];
             i += scid_len;
 
             // Parse length varint to find packet boundary (needed for coalesced packets)
@@ -2274,6 +2288,22 @@ pub const Endpoint = struct {
                         var frames_buf = std.ArrayList(u8){};
                         defer frames_buf.deinit(self.allocator.*);
                         const w = frames_buf.writer(self.allocator.*);
+
+                        // Include ACK for Initial packets in our first Handshake packet
+                        // This is required by RFC 9000 - the server must ACK Initial packets
+                        const now_ns_ack_initial: u64 = @intCast(std.time.nanoTimestamp());
+                        const ack_desc_initial = conn.buildAckInitial();
+                        const ack_ecn_initial = conn.getAckEcn(.Initial);
+                        const ack_delay_initial = conn.getAckDelayEncoded(.Initial, now_ns_ack_initial);
+                        const ack_initial = frame.Frame{ .ack = .{
+                            .largest = ack_desc_initial.largest,
+                            .ack_delay = ack_delay_initial,
+                            .first_range = ack_desc_initial.first_range,
+                            .ranges = ack_desc_initial.ranges,
+                            .ecn = ack_ecn_initial,
+                        } };
+                        _ = ack_initial.write(w) catch 0;
+
                         const base_off_hs = conn.crypto_tx_off_handshake;
                         _ = (frame.Frame{ .crypto = .{ .offset = base_off_hs, .data = outbox[0..n] } }).write(w) catch 0;
                         // Save HS retransmit buffer for this slice
@@ -2286,7 +2316,10 @@ pub const Endpoint = struct {
                         conn.crypto_retx_handshake = owned_hs;
                         conn.crypto_retx_handshake_off = base_off_hs;
                         conn.crypto_tx_off_handshake += n;
-                        const pkt = packet.encodeHandshakeProtected(self.allocator.*, version, scid, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_handshake_tx)), 2, frames_buf.items, tx_hs) catch null;
+                        // Use the client's source connection ID (peer_initial_scid)
+                        // If client sent scid_len=0, we send Handshake with dcid_len=0
+                        const hs_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
+                        const pkt = packet.encodeHandshakeProtected(self.allocator.*, version, hs_dcid, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_handshake_tx)), 2, frames_buf.items, tx_hs) catch null;
                         if (pkt) |bytes_out| {
                             defer self.allocator.free(bytes_out);
                             _ = self.sendTo(peer, bytes_out) catch {};
@@ -2302,7 +2335,7 @@ pub const Endpoint = struct {
                     conn.recordAckElicitingRx(.Handshake, now_ns_hs);
                 }
                 if (saw_any) {
-                    if (conn.hs_tx_keys) |tx_keys| {
+                    if (conn.hs_tx_keys) |hs_keys| {
                         var frames_buf = std.ArrayList(u8){};
                         defer frames_buf.deinit(self.allocator.*);
                         const w = frames_buf.writer(self.allocator.*);
@@ -2311,14 +2344,11 @@ pub const Endpoint = struct {
                         const ack_delay = conn.getAckDelayEncoded(.Handshake, now_ns_hs);
                         const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = ack_delay, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges, .ecn = ack_ecn } };
                         _ = ack.write(w) catch 0;
-                        // Also include any pending Initial CRYPTO from server side (unlikely) at correct offset
-                        var outbox: [1024]u8 = undefined;
-                        const n = conn.tls.popCrypto(outbox[0..]);
-                        if (n > 0) {
-                            _ = (frame.Frame{ .crypto = .{ .offset = conn.crypto_tx_off_initial, .data = outbox[0..n] } }).write(w) catch 0;
-                            conn.crypto_tx_off_initial += n;
-                        }
-                        const pkt = packet.encodeHandshakeProtected(self.allocator.*, version, scid, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_handshake_tx)), 2, frames_buf.items, tx_keys) catch null;
+                        // Handshake packets can only contain Handshake-level frames, not Initial CRYPTO
+                        // Use the client's source connection ID (peer_initial_scid)
+                        // If client sent scid_len=0, we send Handshake with dcid_len=0
+                        const hs_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
+                        const pkt = packet.encodeHandshakeProtected(self.allocator.*, version, hs_dcid, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_handshake_tx)), 2, frames_buf.items, hs_keys) catch null;
                         if (pkt) |bytes_out| {
                             defer self.allocator.free(bytes_out);
                             _ = self.sendTo(peer, bytes_out) catch {};
