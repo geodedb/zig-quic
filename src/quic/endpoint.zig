@@ -869,9 +869,9 @@ pub const Endpoint = struct {
                 }
             }
         } else if (n == 0) {
-            // epoll_wait timed out - no events, don't call drainReadable
-            // Only call drainReadable when there are actual events
-            std.debug.print("DEBUG: epoll_wait timed out, no events\n", .{});
+            // epoll_wait timed out - but try drainReadable anyway to diagnose if packets are arriving
+            std.debug.print("DEBUG: epoll_wait timed out, but trying drainReadable anyway to check for packets\n", .{});
+            self.drainReadable();
         }
     }
 
@@ -1551,6 +1551,9 @@ pub const Endpoint = struct {
                 if (c_new.peer_initial_dcid.len > 0) @memcpy(c_new.peer_initial_dcid.bytes[0..c_new.peer_initial_dcid.len], dcid[0..c_new.peer_initial_dcid.len]);
                 c_new.original_dcid.len = c_new.peer_initial_dcid.len;
                 if (c_new.original_dcid.len > 0) @memcpy(c_new.original_dcid.bytes[0..c_new.original_dcid.len], c_new.peer_initial_dcid.bytes[0..c_new.peer_initial_dcid.len]);
+                // CRITICAL FIX: Also set peer_initial_scid from client's SCID so Handshake packets use correct DCID
+                c_new.peer_initial_scid.len = @intCast(@min(scid.len, c_new.peer_initial_scid.bytes.len));
+                if (c_new.peer_initial_scid.len > 0) @memcpy(c_new.peer_initial_scid.bytes[0..c_new.peer_initial_scid.len], scid[0..c_new.peer_initial_scid.len]);
                 c_new.setUseCubic(self.cfg.cc == .cubic);
                 c_new.tls.allow_insecure = self.cfg.allow_insecure;
                 if (self.cfg.real_tls) {

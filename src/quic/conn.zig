@@ -25,38 +25,11 @@ const CryptoBuffer = struct {
 
     /// Add a fragment to the buffer
     pub fn add(self: *CryptoBuffer, offset: u64, data: []const u8, allocator: std.mem.Allocator) !void {
+        // If buffer is full, skip adding this fragment to prevent memory corruption
+        // In normal operation with in-order CRYPTO frames, this should never happen
         if (self.count >= self.fragments.len) {
-            // Buffer full, drop the fragment with smallest offset
-            var min_offset: u64 = std.math.maxInt(u64);
-            var min_idx: usize = 0;
-            var found = false;
-
-            // Find the fragment with the smallest offset
-            var i: usize = 0;
-            while (i < self.fragments.len) : (i += 1) {
-                if (self.fragments[i]) |frag| {
-                    if (frag.offset < min_offset) {
-                        min_offset = frag.offset;
-                        min_idx = i;
-                        found = true;
-                    }
-                }
-            }
-
-            // Free the oldest fragment if found
-            if (found) {
-                if (self.fragments[min_idx]) |frag| {
-                    allocator.free(frag.data);
-                }
-
-                // Compact array by shifting left from the removed position
-                i = min_idx;
-                while (i < self.fragments.len - 1) : (i += 1) {
-                    self.fragments[i] = self.fragments[i + 1];
-                }
-                self.fragments[self.fragments.len - 1] = null;
-                self.count -= 1;
-            }
+            std.debug.print("WARNING: CryptoBuffer full (count={}, max={}), skipping fragment at offset {}\n", .{ self.count, self.fragments.len, offset });
+            return error.BufferFull;
         }
 
         // Copy data
