@@ -1867,26 +1867,44 @@ pub const Endpoint = struct {
                 const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = ack_delay, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges, .ecn = ack_ecn } };
                 _ = ack.write(w) catch 0;
 
-                // Server: Include ServerHello in Initial packet if we have it queued and haven't sent it yet
+                // Server: Add ACK frame for received Initial packets
                 var has_crypto = false;
-                if (conn.role == .Server and conn.tls.sh_seen and conn.crypto_tx_off_initial < 200) {
-                    // Pop any ServerHello bytes from TLS engine (should only be ServerHello at this point)
-                    var sh_buf: [512]u8 = undefined;
-                    const n_sh = conn.tls.popCrypto(sh_buf[0..]);
-                    if (n_sh > 0) {
-                        std.debug.print("Sending ServerHello in Initial packet: {} bytes\n", .{n_sh});
-                        // Add CRYPTO frame with ServerHello
-                        const crypto_frame = frame.Frame{ .crypto = .{ .offset = conn.crypto_tx_off_initial, .data = sh_buf[0..n_sh] } };
-                        _ = crypto_frame.write(w) catch 0;
-                        conn.crypto_tx_off_initial += n_sh;
-                        has_crypto = true;
+                if (conn.role == .Server) {
+                    // Add ACK frame if we have received Initial packets
+                    const ad = conn.ack_ranges_initial.generateAckData(now_ns_initial);
+                    if (ad.largest != 0xFFFFFFFFFFFFFFFF) {
+                        std.debug.print("Server: Adding ACK frame to Initial packet - largest={}\n", .{ad.largest});
+                        const ack_delay = conn.getAckDelayEncoded(.Initial, now_ns_initial);
+                        const ackf = frame.Frame{ .ack = .{
+                            .largest = ad.largest,
+                            .ack_delay = ack_delay,
+                            .first_range = ad.first_range,
+                            .ranges = ad.ranges,
+                            .ecn = null
+                        } };
+                        _ = ackf.write(w) catch 0;
+                    }
 
-                        // Save for retransmission
-                        if (conn.crypto_retx_initial) |b| self.allocator.free(b);
-                        const owned = self.allocator.alloc(u8, n_sh) catch null;
-                        if (owned) |retx| {
-                            @memcpy(retx, sh_buf[0..n_sh]);
-                            conn.crypto_retx_initial = owned;
+                    // Include ServerHello in Initial packet if we have it queued and haven't sent it yet
+                    if (conn.tls.sh_seen and conn.crypto_tx_off_initial < 200) {
+                        // Pop any ServerHello bytes from TLS engine (should only be ServerHello at this point)
+                        var sh_buf: [512]u8 = undefined;
+                        const n_sh = conn.tls.popCrypto(sh_buf[0..]);
+                        if (n_sh > 0) {
+                            std.debug.print("Sending ServerHello in Initial packet: {} bytes\n", .{n_sh});
+                            // Add CRYPTO frame with ServerHello
+                            const crypto_frame = frame.Frame{ .crypto = .{ .offset = conn.crypto_tx_off_initial, .data = sh_buf[0..n_sh] } };
+                            _ = crypto_frame.write(w) catch 0;
+                            conn.crypto_tx_off_initial += n_sh;
+                            has_crypto = true;
+
+                            // Save for retransmission
+                            if (conn.crypto_retx_initial) |b| self.allocator.free(b);
+                            const owned = self.allocator.alloc(u8, n_sh) catch null;
+                            if (owned) |retx| {
+                                @memcpy(retx, sh_buf[0..n_sh]);
+                                conn.crypto_retx_initial = owned;
+                            }
                         }
                     }
                 }
