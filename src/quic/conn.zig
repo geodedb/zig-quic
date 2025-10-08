@@ -146,10 +146,15 @@ const CryptoBuffer = struct {
 
     /// Clear all buffered fragments
     pub fn clear(self: *CryptoBuffer, allocator: std.mem.Allocator) void {
+        // Only iterate up to count, not the full array length
+        // This avoids attempting to free already-freed fragments
         var i: usize = 0;
-        while (i < self.fragments.len) : (i += 1) {
+        while (i < self.count) : (i += 1) {
             if (self.fragments[i]) |frag| {
-                allocator.free(frag.data);
+                // Only free non-empty allocations
+                if (frag.data.len > 0) {
+                    allocator.free(frag.data);
+                }
                 self.fragments[i] = null;
             }
         }
@@ -830,6 +835,9 @@ pub const Connection = struct {
         self.crypto_rx_off_handshake = 0;
         self.crypto_retx_initial_off = 0;
         self.crypto_retx_handshake_off = 0;
+        // Initialize crypto reassembly buffers
+        self.crypto_buffer_initial = .{};
+        self.crypto_buffer_handshake = .{};
         // Initialize PMTUD state
         self.path_mtu = 1200;
         self.probe_pending_pn = null;
