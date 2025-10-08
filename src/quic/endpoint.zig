@@ -1849,6 +1849,11 @@ pub const Endpoint = struct {
             if (saw_ack_eliciting_initial) {
                 conn.recordAckElicitingRx(.Initial, now_ns_initial);
             }
+
+            // Store Initial packet for coalescence with Handshake
+            var initial_pkt: ?[]u8 = null;
+            defer if (initial_pkt) |p| self.allocator.free(p);
+
             if (saw_any and !conn.initial_keys_dropped and allow_send) {
                 // Build frames for Initial packet response
                 var frames_buf = std.ArrayList(u8){};
@@ -1922,47 +1927,21 @@ pub const Endpoint = struct {
                     };
                     std.debug.print("Added {} bytes of padding to Initial frames\n", .{padding_needed});
                 }
-                
+
                 const out = packet.encodeInitialProtected(self.allocator.*, version, tx_dcid, tx_scid, &[_]u8{}, @as(u32, @truncate(conn.pn_initial_tx)), 4, frames_buf.items, tx_keys) catch null;
 
                 if (out) |pkt_bytes| {
-                    defer self.allocator.free(pkt_bytes);
-                    std.debug.print("{s}: Sending Initial response with {} bytes (has_crypto={})\n", .{ if (conn.role == .Server) "Server" else "Client", pkt_bytes.len, has_crypto });
-                    if (pkt_bytes.len == 137) {
-                        std.debug.print("Initial packet header (first 30 bytes): ", .{});
-                        for (pkt_bytes[0..@min(30, pkt_bytes.len)]) |b| std.debug.print("{X:0>2} ", .{b});
-                        std.debug.print("\n", .{});
-                    }
+                    std.debug.print("{s}: Prepared Initial response with {} bytes (has_crypto={})\n", .{ if (conn.role == .Server) "Server" else "Client", pkt_bytes.len, has_crypto });
 
-                    // Debug: Log both peer addresses to see if they differ
-                    if (peer.storage.family == posix.AF.INET) {
-                        const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&peer.storage));
-                        const addr_bytes = @as([4]u8, @bitCast(sin.addr));
-                        std.debug.print("DEBUG: Initial response - using 'peer' param: {}.{}.{}.{}:{}\n", .{
-                            addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3],
-                            std.mem.bigToNative(u16, sin.port)
-                        });
+                    // Store the Initial packet for coalescence instead of sending immediately
+                    initial_pkt = self.allocator.alloc(u8, pkt_bytes.len) catch null;
+                    if (initial_pkt) |p| {
+                        @memcpy(p, pkt_bytes);
+                        // Packet with CRYPTO is ack-eliciting
+                        conn.onPacketSent(.Initial, conn.pn_initial_tx, pkt_bytes.len, has_crypto);
+                        conn.pn_initial_tx +%= 1;
                     }
-                    if (conn.peer.storage.family == posix.AF.INET) {
-                        const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&conn.peer.storage));
-                        const addr_bytes = @as([4]u8, @bitCast(sin.addr));
-                        std.debug.print("DEBUG: Initial response - conn.peer: {}.{}.{}.{}:{}\n", .{
-                            addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3],
-                            std.mem.bigToNative(u16, sin.port)
-                        });
-                    }
-
-                    // Should we use conn.peer instead of peer?
-                    const send_result = self.sendTo(conn.peer, pkt_bytes) catch |err| blk: {
-                        std.debug.print("ERROR: sendTo failed: {}\n", .{err});
-                        break :blk 0;
-                    };
-                    if (send_result > 0) {
-                        std.debug.print("Successfully sent {} bytes\n", .{send_result});
-                    }
-                    // Packet with CRYPTO is ack-eliciting
-                    conn.onPacketSent(.Initial, conn.pn_initial_tx, pkt_bytes.len, has_crypto);
-                    conn.pn_initial_tx +%= 1;
+                    self.allocator.free(pkt_bytes);
                 }
 
                 // Additionally, route received ACKs in Initial space through Recovery.
@@ -2028,17 +2007,52 @@ pub const Endpoint = struct {
                     if (pkt_hs) |bytes_out_hs| {
                         std.debug.print("Handshake packet encoded successfully: {} bytes\n", .{bytes_out_hs.len});
                         defer self.allocator.free(bytes_out_hs);
-                        std.debug.print("Handshake packet header (first 30 bytes): ", .{});
-                        for (bytes_out_hs[0..@min(30, bytes_out_hs.len)]) |b| std.debug.print("{X:0>2} ", .{b});
-                        std.debug.print("\n", .{});
-                        // Use conn.peer for consistent addressing
-                        const send_result = self.sendTo(conn.peer, bytes_out_hs) catch |err| blk: {
-                            std.debug.print("ERROR: Failed to send Handshake packet: {}\n", .{err});
-                            break :blk 0;
-                        };
-                        if (send_result > 0) {
-                            std.debug.print("Successfully sent Handshake packet: {} bytes\n", .{send_result});
+
+                        // Coalesce Initial and Handshake packets into single datagram
+                        if (initial_pkt) |initial| {
+                            std.debug.print("Coalescing Initial ({} bytes) and Handshake ({} bytes) packets\n", .{initial.len, bytes_out_hs.len});
+
+                            // Create coalesced buffer
+                            const coalesced_len = initial.len + bytes_out_hs.len;
+                            const coalesced = self.allocator.alloc(u8, coalesced_len) catch {
+                                std.debug.print("ERROR: Failed to allocate coalesced buffer, sending Handshake only\n", .{});
+                                // Fall back to sending just the Handshake packet
+                                _ = self.sendTo(conn.peer, bytes_out_hs) catch 0;
+                                conn.onPacketSent(.Handshake, conn.pn_handshake_tx, bytes_out_hs.len, true);
+                                conn.pn_handshake_tx +%= 1;
+                                return;
+                            };
+                            defer self.allocator.free(coalesced);
+
+                            // Copy Initial and Handshake packets
+                            @memcpy(coalesced[0..initial.len], initial);
+                            @memcpy(coalesced[initial.len..], bytes_out_hs);
+
+                            std.debug.print("Sending coalesced datagram: {} bytes total\n", .{coalesced_len});
+                            std.debug.print("Coalesced packet first 50 bytes: ", .{});
+                            for (coalesced[0..@min(50, coalesced_len)]) |b| std.debug.print("{X:0>2} ", .{b});
+                            std.debug.print("\n", .{});
+
+                            // Send coalesced datagram
+                            const send_result = self.sendTo(conn.peer, coalesced) catch |err| blk: {
+                                std.debug.print("ERROR: Failed to send coalesced packets: {}\n", .{err});
+                                break :blk 0;
+                            };
+                            if (send_result > 0) {
+                                std.debug.print("Successfully sent coalesced datagram: {} bytes\n", .{send_result});
+                            }
+                        } else {
+                            // No Initial packet to coalesce, send Handshake alone
+                            std.debug.print("Sending Handshake packet alone (no Initial to coalesce)\n", .{});
+                            const send_result = self.sendTo(conn.peer, bytes_out_hs) catch |err| blk: {
+                                std.debug.print("ERROR: Failed to send Handshake packet: {}\n", .{err});
+                                break :blk 0;
+                            };
+                            if (send_result > 0) {
+                                std.debug.print("Successfully sent Handshake packet: {} bytes\n", .{send_result});
+                            }
                         }
+
                         conn.onPacketSent(.Handshake, conn.pn_handshake_tx, bytes_out_hs.len, true);
                         conn.pn_handshake_tx +%= 1;
                     }
@@ -2322,6 +2336,11 @@ pub const Endpoint = struct {
                         const pkt = packet.encodeHandshakeProtected(self.allocator.*, version, hs_dcid, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_handshake_tx)), 2, frames_buf.items, tx_hs) catch null;
                         if (pkt) |bytes_out| {
                             defer self.allocator.free(bytes_out);
+                            std.debug.print("DEBUG endpoint: Sending Handshake packet, first 10 bytes: ", .{});
+                            for (bytes_out[0..@min(10, bytes_out.len)]) |b| {
+                                std.debug.print("{X:0>2} ", .{b});
+                            }
+                            std.debug.print("\n", .{});
                             _ = self.sendTo(peer, bytes_out) catch {};
                             conn.onPacketSent(.Handshake, conn.pn_handshake_tx, bytes_out.len, true);
                             conn.pn_handshake_tx +%= 1;
