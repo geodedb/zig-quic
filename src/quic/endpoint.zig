@@ -144,11 +144,13 @@ pub const Endpoint = struct {
         if (builtin.target.os.tag == .linux) {
             const linux = std.os.linux;
             const epfd = try posix.epoll_create1(linux.EPOLL.CLOEXEC);
-            
+
             // Add the socket to epoll for read events
-            var ev: linux.epoll_event = .{ .events = linux.EPOLL.IN, .data = .{ .fd = @as(i32, @intCast(fd)) } };
-            try posix.epoll_ctl(epfd, linux.EPOLL.CTL_ADD, fd, @ptrCast(&ev));
-            
+            var ev = std.mem.zeroes(linux.epoll_event);
+            ev.events = linux.EPOLL.IN;
+            ev.data.fd = @as(i32, @intCast(fd));
+            try posix.epoll_ctl(epfd, linux.EPOLL.CTL_ADD, fd, &ev);
+
             epoll_fd_opt = epfd;
             std.debug.print("DEBUG: Created epoll fd={} and added socket fd={}\n", .{epfd, fd});
         }
