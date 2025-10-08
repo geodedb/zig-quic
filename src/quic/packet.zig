@@ -308,10 +308,12 @@ pub fn encodeInitialProtected(
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(alloc);
 
-    // Header first byte: Long header, Initial type, PN len bits
+    // Header first byte: Long header with fixed bit, Initial type, PN len bits
+    // Per RFC 9000: Fixed bit (5) must be 1
     const type_bits: u8 = 0x00; // Initial
     const pn_bits: u8 = @as(u8, packet_number_len - 1) & 0x03;
-    const first: u8 = 0xc0 | type_bits | pn_bits;
+    // 0xe0 = 11100000 (Long header + fixed bit=1), not 0xc0!
+    const first: u8 = 0xe0 | type_bits | pn_bits;
 
     // We'll build header_prefix first to compute AAD
     const w = buf.writer(alloc);
@@ -545,11 +547,12 @@ pub fn encodeHandshakeProtected(
     var buf = std.ArrayList(u8){};
     errdefer buf.deinit(alloc);
 
-    // Header first byte: Long header, Handshake type (0x10), PN len bits
-    // Per RFC 9000: Handshake packet type = 10 in bits 4-3
+    // Header first byte: Long header with fixed bit, Handshake type (0x10), PN len bits
+    // Per RFC 9000: Fixed bit (5) must be 1, Handshake packet type = 10 in bits 4-3
     const type_bits: u8 = 0x10; // Handshake (not 0x20!)
     const pn_bits: u8 = @as(u8, packet_number_len - 1) & 0x03;
-    const first: u8 = 0xc0 | type_bits | pn_bits;
+    // 0xe0 = 11100000 (Long header + fixed bit=1), not 0xc0!
+    const first: u8 = 0xe0 | type_bits | pn_bits;
     std.debug.print("DEBUG encodeHandshakeProtected: packet_number_len={}, pn_bits={}, first=0x{X:0>2}\n", .{ packet_number_len, pn_bits, first });
 
     const w = buf.writer(alloc);
