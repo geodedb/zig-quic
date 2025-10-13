@@ -40,6 +40,7 @@ export COMPOSE_PROJECT_NAME="interop_test_$$"
 export SERVER_IMAGE="zig-qns:local"
 export CLIENT_IMAGE="martenseemann/quic-go-interop:latest"
 export TESTCASE="handshake"
+export SCENARIO="simple-p2p --delay=10ms --bandwidth=10Mbps --queue=25"
 
 # Start sim first
 echo -e "${YELLOW}Starting network simulator...${NC}"
