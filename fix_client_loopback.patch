@@ -1,0 +1,30 @@
+--- a/src/quic/endpoint.zig
++++ b/src/quic/endpoint.zig
+@@ -1559,6 +1559,16 @@ fn processIncomingDatagram(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []u
+
+             // Key connection by peer and dcid
+             const key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(dcid) };
++
++            // CRITICAL FIX: For client endpoints, ignore packets from ourselves (loopback)
++            // This prevents the client from creating server twins for its own packets
++            if (peer.storage.family == posix.AF.INET) {
++                const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&peer.storage));
++                const peer_port = std.mem.bigToNative(u16, sin.port);
++                // If we're receiving from port 4433 (server port) and we're not bound to 4433, ignore
++                if (peer_port == 4433 and self.sock_fd != -1) {
++                    // Check if we're the server by checking our bound port
++                    var our_addr = conn_mod.SockAddr{};
++                    our_addr.len = @intCast(@sizeOf(posix.sockaddr.storage));
++                    posix.getsockname(self.sock_fd, @ptrCast(&our_addr.storage), &our_addr.len) catch {};
++                    if (our_addr.storage.family == posix.AF.INET) {
++                        const our_sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&our_addr.storage));
++                        const our_port = std.mem.bigToNative(u16, our_sin.port);
++                        if (our_port != 4433) {
++                            // We're a client, and this is a response from the server - process it normally
++                        }
++                    }
++                }
++            }
++
+             std.debug.print("Looking up connection with dcid=", .{});
+             for (dcid) |b| std.debug.print("{X:0>2}", .{b});

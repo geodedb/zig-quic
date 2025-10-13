@@ -55,6 +55,12 @@ fn hashSockaddr(sa: *const posix.sockaddr.storage, len: u32) u64 {
     return hashBytes(bytes);
 }
 
+/// Endpoint role enum
+pub const EndpointRole = enum {
+    Client,
+    Server,
+};
+
 /// UDP endpoint container with connection map, timer wheel, capture support, and
 /// single bound socket. Owns all live connections and drives send/recv plus PTO/PMTUD timers.
 pub const Endpoint = struct {
@@ -80,6 +86,8 @@ pub const Endpoint = struct {
     retired: std.ArrayList(*conn_mod.Connection),
     // Epoll file descriptor for Linux
     epoll_fd: ?posix.fd_t = null,
+    // Endpoint role (Client or Server)
+    role: EndpointRole,
 
     /// Initialize a UDP endpoint bound to bind_addr (e.g., "127.0.0.1:0").
     pub fn init(alloc: *std.mem.Allocator, bind_addr: []const u8, cfgp: *const cfg.QuicConfig) !Endpoint {
@@ -180,6 +188,21 @@ pub const Endpoint = struct {
             std.debug.print("DEBUG: Created epoll fd={} and added socket fd={}\n", .{epfd, fd});
         }
 
+        // Determine endpoint role based on the bound port
+        // Server typically binds to a specific port (like 4433), client binds to port 0 (random)
+        const endpoint_role = if (actual_addr.storage.family == posix.AF.INET) blk: {
+            const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&actual_addr.storage));
+            const bound_port = std.mem.bigToNative(u16, sin.port);
+            // If we're binding to port 4433 or any specific port in the bind_addr, we're a server
+            // If we're binding to port 0 or got a random port, we're a client
+            const is_server = std.mem.indexOf(u8, bind_addr, ":4433") != null or
+                             std.mem.indexOf(u8, bind_addr, ":443") != null or
+                             (std.mem.indexOf(u8, bind_addr, ":0") == null and bound_port != 0);
+            break :blk if (is_server) EndpointRole.Server else EndpointRole.Client;
+        } else EndpointRole.Client;
+
+        std.debug.print("DEBUG: Endpoint role determined as: {}\n", .{endpoint_role});
+
         return Endpoint{
             .sock_fd = fd,
             .loop_backend = lb.defaultLoopBackend(),
@@ -193,6 +216,7 @@ pub const Endpoint = struct {
             .test_capture_enabled = false,
             .retired = std.ArrayList(*conn_mod.Connection){},
             .epoll_fd = epoll_fd_opt,
+            .role = endpoint_role,
         };
     }
 
@@ -1587,6 +1611,12 @@ pub const Endpoint = struct {
                     }
                 }
                 // No suitable server connection exists: create one now.
+                // CRITICAL FIX: Only server endpoints should create server connections
+                if (self.role == EndpointRole.Client) {
+                    std.debug.print("Client endpoint refusing to create server connection for Initial packet\n", .{});
+                    return; // Client endpoints should never create server connections
+                }
+
                 const c_new = self.allocator.create(conn_mod.Connection) catch return;
 
                 // Debug: Log the peer address being stored

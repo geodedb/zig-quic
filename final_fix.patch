@@ -1,0 +1,22 @@
+--- a/src/quic/endpoint.zig
++++ b/src/quic/endpoint.zig
+@@ -1587,8 +1587,18 @@ fn processIncomingDatagram(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []u
+                     }
+                 }
+                 // No suitable server connection exists: create one now.
++                // CRITICAL FIX: Only create server connections if we're actually a server
++                // Check if we're bound to the server port (4433)
++                var our_addr = conn_mod.SockAddr{};
++                our_addr.len = @intCast(@sizeOf(posix.sockaddr.storage));
++                posix.getsockname(self.sock_fd, @ptrCast(&our_addr.storage), &our_addr.len) catch {};
++                const our_port = if (our_addr.storage.family == posix.AF.INET) blk: {
++                    const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&our_addr.storage));
++                    break :blk std.mem.bigToNative(u16, sin.port);
++                } else 0;
++
++                // Only servers (bound to port 4433) should create new server connections
++                if (our_port != 4433) return; // Client should not create server connections
++
+                 const c_new = self.allocator.create(conn_mod.Connection) catch return;
+
+                 // Debug: Log the peer address being stored
