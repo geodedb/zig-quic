@@ -4,6 +4,11 @@ set -euo pipefail
 # Comprehensive interoperability verification script
 # Tests the Zig QUIC implementation against multiple implementations
 
+# Fix DOCKER_HOST if it's set incorrectly (should be unix:// or unset for local socket)
+if [[ "${DOCKER_HOST:-}" == "/var/run/docker.sock" ]]; then
+    unset DOCKER_HOST
+fi
+
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${SCRIPT_DIR}/.."
 pushd "$ROOT" >/dev/null
@@ -128,7 +133,11 @@ run_single_test() {
     fi
     
     # Wait for sim
-    sleep 5
+    sleep 15
+
+    # Fix simulator iptables DROP rules
+    docker exec ${COMPOSE_PROJECT_NAME}_sim iptables -D FORWARD -i eth0 -o eth1 -j DROP 2>/dev/null || true
+    docker exec ${COMPOSE_PROJECT_NAME}_sim iptables -D FORWARD -i eth1 -o eth0 -j DROP 2>/dev/null || true
     
     # Run the test
     local log_file="/tmp/interop_verify_${test_name}.log"

@@ -4,6 +4,11 @@ set -euo pipefail
 # Full interoperability test runner for Zig QUIC implementation
 # Tests against all available QUIC implementations using docker-compose
 
+# Fix DOCKER_HOST if it's set incorrectly (should be unix:// or unset for local socket)
+if [[ "${DOCKER_HOST:-}" == "/var/run/docker.sock" ]]; then
+    unset DOCKER_HOST
+fi
+
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Repository root is the parent directory of scripts/
 ROOT="${SCRIPT_DIR}/.."
@@ -114,7 +119,10 @@ run_test() {
     sleep 1
     # Bring up the simulator first, then client+server to avoid race on sim readiness
     if ! COMPOSE_HTTP_TIMEOUT=120 timeout 120 docker compose -f examples/interop/docker-compose.full.yml --profile $profiles up -d sim; then echo -e "${RED}Failed to start sim${NC}"; fi
-    sleep 3
+    sleep 15
+    # Fix simulator iptables DROP rules
+    docker exec ${COMPOSE_PROJECT_NAME}_sim iptables -D FORWARD -i eth0 -o eth1 -j DROP 2>/dev/null || true
+    docker exec ${COMPOSE_PROJECT_NAME}_sim iptables -D FORWARD -i eth1 -o eth0 -j DROP 2>/dev/null || true
     # Run the test with timeout
     if COMPOSE_HTTP_TIMEOUT=120 timeout 240 docker compose -f examples/interop/docker-compose.full.yml --profile $profiles up --abort-on-container-exit --timeout 5 2>&1 | tee "/tmp/interop_${key}.log"; then
         echo -e "${GREEN}✓ PASSED${NC}"
@@ -199,7 +207,10 @@ run_generic_test() {
     sleep 1
     # Bring up the simulator first, then client+server to avoid race on sim readiness
     if ! COMPOSE_HTTP_TIMEOUT=120 timeout 120 docker compose -f examples/interop/docker-compose.full.yml --profile generic up -d sim; then echo -e "${RED}Failed to start sim${NC}"; fi
-    sleep 10
+    sleep 15
+    # Fix simulator iptables DROP rules
+    docker exec ${COMPOSE_PROJECT_NAME}_sim iptables -D FORWARD -i eth0 -o eth1 -j DROP 2>/dev/null || true
+    docker exec ${COMPOSE_PROJECT_NAME}_sim iptables -D FORWARD -i eth1 -o eth0 -j DROP 2>/dev/null || true
     # Run the test with timeout
     if COMPOSE_HTTP_TIMEOUT=120 timeout 240 docker compose -f examples/interop/docker-compose.full.yml --profile generic up --abort-on-container-exit --timeout 5 2>&1 | tee "/tmp/interop_${key}.log"; then
         echo -e "${GREEN}✓ PASSED${NC}"

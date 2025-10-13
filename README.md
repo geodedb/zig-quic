@@ -142,6 +142,76 @@ Notes:
 - Target Zig 0.15.1 for compatibility (ReleaseSafe recommended for production).
 - The module name is `quic`; no additional deps are required.
 
+## High-Level Transport API
+
+For ease of use, this library includes a high-level transport layer that provides a simple, ergonomic API for building QUIC applications without dealing with low-level packet handling.
+
+### Features
+
+- **Automatic TLS Management**: Auto-generates self-signed certificates when not provided
+- **Connection Pooling**: Manages multiple connections efficiently
+- **Stream Management**: Easy-to-use stream API with read/write helpers
+- **Client & Server**: Full support for both client and server sides
+
+### Quick Example
+
+Using the transport module from a Zig project:
+
+```zig
+// Add to build.zig.zon dependencies
+.quic = .{
+    .url = "https://github.com/spyderorg/quic/archive/<commit>.tar.gz",
+    .hash = "<sha256>",
+},
+
+// Wire the transport module in build.zig
+const quic_dep = b.dependency("quic", .{ .target = target, .optimize = optimize });
+exe.root_module.addImport("quic", quic_dep.module("transport"));
+
+// Use in code
+const transport = @import("quic");
+
+// Server example
+var quic_transport = try transport.QuicTransport.init(allocator, .{
+    .port = 4433,
+});
+defer quic_transport.deinit();
+
+try quic_transport.listen();
+while (true) {
+    try quic_transport.poll(10);
+    const conn = quic_transport.accept() catch continue;
+    // Handle connection...
+}
+
+// Client example
+var client = transport.QuicClient.init(allocator);
+defer client.deinit();
+
+try client.connect("127.0.0.1", 4433);
+const stream = try client.openStream(true);
+defer stream.close();
+
+try stream.writeAll("Hello, QUIC!");
+```
+
+### Building Examples
+
+Build and run the transport layer examples:
+
+```bash
+# Build examples
+zig build examples
+
+# Run server
+./zig-out/bin/server-transport
+
+# Run client (in another terminal)
+./zig-out/bin/client-transport
+```
+
+See [docs/TRANSPORT_LAYER.md](docs/TRANSPORT_LAYER.md) for complete API documentation.
+
 ## Process helpers
 
 - Update GAP after a slice: `zig build tools && ./zig-out/bin/update-gap --summary "Finished <slice>"`

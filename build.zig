@@ -224,6 +224,30 @@ pub fn build(b: *std.Build) void {
     h3_client_mod.addImport("quic_api", quic_api_mod);
     h3_client_mod.addImport("quic_api", quic_api_mod);
 
+    // High-level transport API module
+    const transport_mod = mkModule(b, "src/quic/transport.zig");
+    transport_mod.addImport("api", quic_api_mod);
+    transport_mod.addImport("quic_endpoint", quic_endpoint_mod);
+    transport_mod.addImport("quic_conn", quic_conn_mod);
+    transport_mod.addImport("quic_crypto", quic_crypto_mod);
+    transport_mod.addImport("quic_frame", quic_frame_mod);
+    transport_mod.addImport("quic_varint", quic_varint_mod);
+    transport_mod.addImport("quic_tls", quic_tls_mod);
+    transport_mod.addImport("quic_packet", quic_packet_mod);
+    transport_mod.addImport("config.zig", quic_config_mod);
+    transport_mod.addImport("loop_backend.zig", loop_backend_mod);
+    const transport_public = b.addModule("transport", .{ .root_source_file = rp("src/quic/transport.zig") });
+    transport_public.addImport("api", quic_api_mod);
+    transport_public.addImport("quic_endpoint", quic_endpoint_mod);
+    transport_public.addImport("quic_conn", quic_conn_mod);
+    transport_public.addImport("quic_crypto", quic_crypto_mod);
+    transport_public.addImport("quic_frame", quic_frame_mod);
+    transport_public.addImport("quic_varint", quic_varint_mod);
+    transport_public.addImport("quic_tls", quic_tls_mod);
+    transport_public.addImport("quic_packet", quic_packet_mod);
+    transport_public.addImport("config.zig", quic_config_mod);
+    transport_public.addImport("loop_backend.zig", loop_backend_mod);
+
     const qns_endpoint = addExe(b, "qns-endpoint", "cmd/qns-endpoint.zig", target, optimize);
     qns_endpoint.root_module.addImport("quic_api", quic_api_mod);
     qns_endpoint.root_module.addImport("h3_server", h3_server_mod);
@@ -233,6 +257,19 @@ pub fn build(b: *std.Build) void {
     cli_step.dependOn(&install_quic_client.step);
     cli_step.dependOn(&install_quic_server.step);
     cli_step.dependOn(&install_qns_endpoint.step);
+
+    // Transport layer examples
+    const client_transport = addExe(b, "client-transport", "examples/client_transport.zig", target, optimize);
+    client_transport.root_module.addImport("quic", transport_public);
+    const install_client_transport = b.addInstallArtifact(client_transport, .{});
+
+    const server_transport = addExe(b, "server-transport", "examples/server_transport.zig", target, optimize);
+    server_transport.root_module.addImport("quic", transport_public);
+    const install_server_transport = b.addInstallArtifact(server_transport, .{});
+
+    const examples_step = b.step("examples", "Build transport layer examples");
+    examples_step.dependOn(&install_client_transport.step);
+    examples_step.dependOn(&install_server_transport.step);
 
     // Filtering
     if (filter) |f| {

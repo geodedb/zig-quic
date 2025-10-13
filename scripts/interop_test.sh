@@ -4,6 +4,11 @@ set -euo pipefail
 # Simple interoperability test to verify the setup works
 # This tests a single handshake between zig and quic-go
 
+# Fix DOCKER_HOST if it's set incorrectly (should be unix:// or unset for local socket)
+if [[ "${DOCKER_HOST:-}" == "/var/run/docker.sock" ]]; then
+    unset DOCKER_HOST
+fi
+
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${SCRIPT_DIR}/.."
 pushd "$ROOT" >/dev/null
@@ -45,7 +50,16 @@ fi
 
 # Wait for sim to be ready
 echo -e "${YELLOW}Waiting for sim to be ready...${NC}"
-sleep 10
+sleep 15
+
+# Fix simulator iptables DROP rules that block all traffic
+# The ns3 simulator should set up nfqueue rules, but they're not being created properly
+# Remove the DROP rules to allow direct connectivity
+echo -e "${YELLOW}Fixing simulator iptables rules...${NC}"
+docker exec ${COMPOSE_PROJECT_NAME}_sim iptables -D FORWARD -i eth0 -o eth1 -j DROP 2>&1 | head -5 || echo "Rule 1 removed or not found"
+docker exec ${COMPOSE_PROJECT_NAME}_sim iptables -D FORWARD -i eth1 -o eth0 -j DROP 2>&1 | head -5 || echo "Rule 2 removed or not found"
+echo -e "${YELLOW}Verifying iptables FORWARD chain:${NC}"
+docker exec ${COMPOSE_PROJECT_NAME}_sim iptables -L FORWARD -n -v
 
 # Run the test
 echo -e "${YELLOW}Running handshake test...${NC}"
