@@ -57,6 +57,8 @@
               ])
               ++ ([
                 pkgs.file
+                pkgs.tcpdump
+                pkgs.tshark
               ]);
           };
         };

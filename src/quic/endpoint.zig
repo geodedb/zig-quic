@@ -96,7 +96,17 @@ pub const Endpoint = struct {
         errdefer posix.close(fd);
         
         std.debug.print("DEBUG: Created socket fd={}\n", .{fd});
-        
+
+        // Print actual socket address being used
+        if (family == posix.AF.INET) {
+            const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&ep_addr.storage));
+            const addr_bytes = @as([4]u8, @bitCast(sin.addr));
+            std.debug.print("DEBUG: Binding to IPv4 address {}.{}.{}.{}:{}\n", .{
+                addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3],
+                std.mem.bigToNative(u16, sin.port)
+            });
+        }
+
         // Allow fast rebinding in tests
         var one: i32 = 1;
         _ = posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, std.mem.asBytes(&one)) catch {};
@@ -120,7 +130,22 @@ pub const Endpoint = struct {
         std.debug.print("DEBUG: Binding socket to address...\n", .{});
         try posix.bind(fd, sa_ptr, ep_addr.len);
         std.debug.print("DEBUG: Socket bound successfully\n", .{});
-        
+
+        // Verify the actual bound address (in case port was 0)
+        var actual_addr = conn_mod.SockAddr{};
+        actual_addr.len = @intCast(@sizeOf(posix.sockaddr.storage));
+        try posix.getsockname(fd, @ptrCast(&actual_addr.storage), &actual_addr.len);
+
+        if (actual_addr.storage.family == posix.AF.INET) {
+            const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&actual_addr.storage));
+            const addr_bytes = @as([4]u8, @bitCast(sin.addr));
+            const port = std.mem.bigToNative(u16, sin.port);
+            std.debug.print("DEBUG: Actually bound to {}.{}.{}.{}:{}\n", .{
+                addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3],
+                port
+            });
+        }
+
         // Set socket to non-blocking mode
         if (builtin.target.os.tag == .windows) {
             const ws2 = std.os.windows.ws2_32;
@@ -618,6 +643,26 @@ pub const Endpoint = struct {
 
     fn drainReadable(self: *Endpoint) void {
         std.debug.print("DEBUG: drainReadable called on fd={}\n", .{self.sock_fd});
+
+        // First, let's verify the socket is still valid and bound
+        var check_addr = conn_mod.SockAddr{};
+        check_addr.len = @intCast(@sizeOf(posix.sockaddr.storage));
+        const sockname_result = posix.getsockname(self.sock_fd, @ptrCast(&check_addr.storage), &check_addr.len);
+
+        if (sockname_result) |_| {
+            if (check_addr.storage.family == posix.AF.INET) {
+                const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&check_addr.storage));
+                const addr_bytes = @as([4]u8, @bitCast(sin.addr));
+                const port = std.mem.bigToNative(u16, sin.port);
+                std.debug.print("DEBUG: Socket is bound to {}.{}.{}.{}:{}\n", .{
+                    addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3],
+                    port
+                });
+            }
+        } else |err| {
+            std.debug.print("DEBUG: getsockname failed: {}\n", .{err});
+        }
+
         // Increase buffer size to handle larger Handshake packets (can be up to ~3000 bytes with certificates)
         var buf: [4096]u8 = undefined;
         var read_count: usize = 0;
@@ -874,6 +919,22 @@ pub const Endpoint = struct {
             // epoll_wait timed out - but try drainReadable anyway to diagnose if packets are arriving
             std.debug.print("DEBUG: epoll_wait timed out, but trying drainReadable anyway to check for packets\n", .{});
             self.drainReadable();
+        }
+
+        // Additional check: Try a non-blocking recv to see if data is available
+        // This helps diagnose if epoll is not working correctly
+        var test_buf: [1]u8 = undefined;
+        var test_addr: posix.sockaddr.storage = undefined;
+        var test_len: posix.socklen_t = @sizeOf(@TypeOf(test_addr));
+        const peek_result = posix.recvfrom(self.sock_fd, &test_buf, posix.MSG.DONTWAIT | posix.MSG.PEEK, @ptrCast(&test_addr), &test_len);
+
+        if (peek_result) |nbytes| {
+            std.debug.print("DEBUG: PEEK found {} bytes waiting on socket! Calling drainReadable\n", .{nbytes});
+            self.drainReadable();
+        } else |err| {
+            if (err != error.WouldBlock) {
+                std.debug.print("DEBUG: PEEK error: {}\n", .{err});
+            }
         }
     }
 
