@@ -906,8 +906,8 @@ pub const Endpoint = struct {
     }
 
     fn poll_epoll_backend(self: *Endpoint, timeout_ms: i32) !void {
-        std.debug.print("DEBUG: poll_epoll_backend called, timeout={}, epoll_fd={?}\n", .{timeout_ms, self.epoll_fd});
-        
+        std.debug.print("DEBUG: poll_epoll_backend - self=0x{x}, sock_fd={}, epoll_fd={?}, timeout={}\n", .{@intFromPtr(self), self.sock_fd, self.epoll_fd, timeout_ms});
+
         // On non-Linux platforms, fallback to a simple sleep + drain to avoid epoll dependency
         if (builtin.target.os.tag != .linux or self.epoll_fd == null) {
             std.debug.print("DEBUG: Falling back to sleep+drain\n", .{});
@@ -915,51 +915,49 @@ pub const Endpoint = struct {
             self.drainReadable();
             return;
         }
-        
+
+        // Verify FDs are still valid
+        var check_addr = conn_mod.SockAddr{};
+        check_addr.len = @intCast(@sizeOf(posix.sockaddr.storage));
+        if (posix.getsockname(self.sock_fd, @ptrCast(&check_addr.storage), &check_addr.len)) |_| {
+            std.debug.print("DEBUG: Socket fd={} is still valid\n", .{self.sock_fd});
+        } else |err| {
+            std.debug.print("DEBUG: Socket fd={} is INVALID: {}\n", .{self.sock_fd, err});
+            return;
+        }
+
         const linux = std.os.linux;
+
+        // CRITICAL DEBUG: Try manually checking if data is available with MSG_PEEK
+        var peek_buf: [1]u8 = undefined;
+        var peek_addr: posix.sockaddr.storage = undefined;
+        var peek_len: posix.socklen_t = @sizeOf(@TypeOf(peek_addr));
+        const peek_flags = posix.MSG.DONTWAIT | posix.MSG.PEEK;
+        if (posix.recvfrom(self.sock_fd, &peek_buf, @intCast(peek_flags), @ptrCast(&peek_addr), &peek_len)) |peek_n| {
+            std.debug.print("DEBUG: !!!! CRITICAL: recvfrom PEEK shows {} bytes waiting, but epoll didn't trigger!\n", .{peek_n});
+        } else |peek_err| {
+            if (peek_err != error.WouldBlock) {
+                std.debug.print("DEBUG: recvfrom PEEK error: {}\n", .{peek_err});
+            }
+        }
+
         var events: [16]linux.epoll_event = undefined;
-        std.debug.print("DEBUG: Calling epoll_wait on fd={} with timeout={}\n", .{self.epoll_fd.?, timeout_ms});
+        std.debug.print("DEBUG: About to call epoll_wait(epfd={}, events_ptr=0x{x}, maxevents={}, timeout={})\n", .{self.epoll_fd.?, @intFromPtr(&events), events.len, timeout_ms});
         const n = posix.epoll_wait(self.epoll_fd.?, &events, timeout_ms);
-        
+
         if (n > 0) {
             std.debug.print("DEBUG: epoll_wait returned {} events\n", .{n});
             for (0..n) |i| {
                 const ev = events[i];
                 std.debug.print("DEBUG: Event {}: fd={}, events=0x{x}\n", .{i, ev.data.fd, ev.events});
-                
-                // Check if our socket is readable or has errors
-                const expected_fd = @as(i32, @intCast(self.sock_fd));
-                std.debug.print("DEBUG: Checking ev.data.fd={} vs expected_fd={}\n", .{ev.data.fd, expected_fd});
-                // Handle both EPOLLIN (data ready) and EPOLLERR (error condition)
-                // EPOLLERR can occur with ICMP errors on UDP sockets and we need to read to clear them
-                if (ev.data.fd == expected_fd and ((ev.events & linux.EPOLL.IN) != 0 or (ev.events & linux.EPOLL.ERR) != 0)) {
-                    std.debug.print("DEBUG: Socket {} is readable or has error (events=0x{x}) - calling drainReadable\n", .{self.sock_fd, ev.events});
-                    self.drainReadable();
-                } else {
-                    std.debug.print("DEBUG: Not our socket or not readable/error\n", .{});
-                }
             }
         } else if (n == 0) {
-            // epoll_wait timed out - but try drainReadable anyway to diagnose if packets are arriving
-            std.debug.print("DEBUG: epoll_wait timed out, but trying drainReadable anyway to check for packets\n", .{});
-            self.drainReadable();
+            std.debug.print("DEBUG: epoll_wait timed out\n", .{});
         }
 
-        // Additional check: Try a non-blocking recv to see if data is available
-        // This helps diagnose if epoll is not working correctly
-        var test_buf: [1]u8 = undefined;
-        var test_addr: posix.sockaddr.storage = undefined;
-        var test_len: posix.socklen_t = @sizeOf(@TypeOf(test_addr));
-        const peek_result = posix.recvfrom(self.sock_fd, &test_buf, posix.MSG.DONTWAIT | posix.MSG.PEEK, @ptrCast(&test_addr), &test_len);
-
-        if (peek_result) |nbytes| {
-            std.debug.print("DEBUG: PEEK found {} bytes waiting on socket! Calling drainReadable\n", .{nbytes});
-            self.drainReadable();
-        } else |err| {
-            if (err != error.WouldBlock) {
-                std.debug.print("DEBUG: PEEK error: {}\n", .{err});
-            }
-        }
+        // Always call drainReadable after polling, matching kqueue backend and old geode implementation
+        // This ensures we process any pending data even if epoll didn't trigger
+        self.drainReadable();
     }
 
     fn poll_kqueue_backend(self: *Endpoint, timeout_ms: i32) !void {
@@ -996,7 +994,11 @@ pub const Endpoint = struct {
     }
 
     fn processIncomingDatagram(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8, ecn_bits: ?u8) void {
-        if (bytes.len < 1) return;
+        std.debug.print("DEBUG: processIncomingDatagram called with {} bytes\n", .{bytes.len});
+        if (bytes.len < 1) {
+            std.debug.print("DEBUG: Packet too short, returning\n", .{});
+            return;
+        }
         if (bytes.len == 141) {
             std.debug.print("DEBUG: Client processIncomingDatagram - received 141-byte packet!\n", .{});
         }

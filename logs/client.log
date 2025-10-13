@@ -1,58 +1,74 @@
 DEBUG: Endpoint init - binding to address family=2
 DEBUG: Created socket fd=3
+DEBUG: Binding to IPv4 address 0.0.0.0:0
 DEBUG: Binding socket to address...
 DEBUG: Socket bound successfully
+DEBUG: Actually bound to 0.0.0.0:51543
 DEBUG: Current socket flags: 0x2
 DEBUG: Setting socket flags to: 0x802
 DEBUG: Socket flags after setting: 0x802
 DEBUG: Has O_NONBLOCK: true
 DEBUG: Created epoll fd=4 and added socket fd=3
-client: deriving Initial keys with dcid=4A587B8F8E1569D0 len=8
-TLS: Added 39 bytes to transcript (queue): 01 00 00 23 43 48 31 49 ...
-DEBUG headerProtect: first byte 0xC1 ^ (mask0 0x98 & hdr_mask 0x0F) = 0xC9
-client: built Initial pn=1 dcid=4A587B8F8E1569D0 scid=4CF979FE0EFD842D payload_len=1150
+DEBUG: Endpoint role determined as: .Client
+client: deriving Initial keys with dcid=74D391A39EC2C90D len=8
+TLS: Added 39 bytes to transcript (queue): 01 00 00 23 43 48 31 DE ...
+DEBUG headerProtect: first byte 0xC1 ^ (mask0 0x64 & hdr_mask 0x0F) = 0xC5
+client: built Initial pn=1 dcid=74D391A39EC2C90D scid=14FAE6F1EECE5937 payload_len=1150
 DEBUG: sendTo called with data.len=1194
-DEBUG: sendto IPv4 127.0.0.1:37959, fd=3, data.len=1194
+DEBUG: sendto IPv4 127.0.0.1:52491, fd=3, data.len=1194
 DEBUG: sendto successful: sent 1194 bytes (of 1194)
-connecting to 127.0.0.1:37959
+connecting to 127.0.0.1:52491
 DEBUG: poll called, timeout_ms=10
-Server: Sending Initial response with SCID=4cf979fe0efd842d (len=8) to client DCID= (len=0)
 DEBUG: Using backend: .epoll
-DEBUG: poll_epoll_backend called, timeout=10, epoll_fd=4
-DEBUG: Calling epoll_wait on fd=4 with timeout=10
-DEBUG: epoll_wait timed out, but trying drainReadable anyway to check for packets
+DEBUG: poll_epoll_backend - self=0x7f005ffe0000, sock_fd=3, epoll_fd=4, timeout=1
+DEBUG: Socket fd=3 is still valid
+DEBUG: About to call epoll_wait(epfd=4, events_ptr=0x7fffe5ec1630, maxevents=16, timeout=1)
+DEBUG: epoll_wait timed out
 DEBUG: drainReadable called on fd=3
+DEBUG: Socket is bound to 0.0.0.0:51543
+DEBUG: Calling recvfrom on socket fd=3, flags=0
+DEBUG: recvfrom returned WouldBlock
+Server: Sending Initial response with SCID=14fae6f1eece5937 (len=8) to client DCID= (len=0)
+DEBUG: poll called, timeout_ms=10
+DEBUG: Using backend: .epoll
+DEBUG: poll_epoll_backend - self=0x7f005ffe0000, sock_fd=3, epoll_fd=4, timeout=10
+DEBUG: Socket fd=3 is still valid
+DEBUG: About to call epoll_wait(epfd=4, events_ptr=0x7fffe5ec1630, maxevents=16, timeout=10)
+DEBUG: epoll_wait timed out
+DEBUG: drainReadable called on fd=3
+DEBUG: Socket is bound to 0.0.0.0:51543
 DEBUG: Calling recvfrom on socket fd=3, flags=0
 DEBUG: recvfrom returned WouldBlock
 DEBUG: poll called, timeout_ms=10
 DEBUG: Using backend: .epoll
-DEBUG: poll_epoll_backend called, timeout=10, epoll_fd=4
-DEBUG: Calling epoll_wait on fd=4 with timeout=10
+DEBUG: poll_epoll_backend - self=0x7f005ffe0000, sock_fd=3, epoll_fd=4, timeout=10
+DEBUG: Socket fd=3 is still valid
+DEBUG: About to call epoll_wait(epfd=4, events_ptr=0x7fffe5ec1630, maxevents=16, timeout=10)
 DEBUG: epoll_wait returned 1 events
 DEBUG: Event 0: fd=3, events=0x1
-DEBUG: Checking ev.data.fd=3 vs expected_fd=3
-DEBUG: Socket 3 is readable or has error (events=0x1) - calling drainReadable
 DEBUG: drainReadable called on fd=3
+DEBUG: Socket is bound to 0.0.0.0:51543
 DEBUG: Calling recvfrom on socket fd=3, flags=0
 DEBUG: recvfrom got 1304 bytes!
-DEBUG: recvfrom 1304 bytes from 127.0.0.1:37959
+DEBUG: recvfrom 1304 bytes from 127.0.0.1:52491
+DEBUG: processIncomingDatagram called with 1304 bytes
 Processing Initial packet from peer
 Initial packet: dcid_len=8, scid_len=8
-  Client SCID: 3360B37527076316
-Looking up connection with dcid=4CF979FE0EFD842D (found=true)
+  Client SCID: C819AE7C28E6ABFC
+Looking up connection with dcid=14FAE6F1EECE5937 (found=true)
 Reusing existing client connection for inbound Initial (dcid matched our_scid)
-Client: Capturing server SCID from Initial packet: 3360b37527076316 (len=8)
-Client: Will use DCID=33 (len=8) for 1-RTT packets
-Client: Deriving Initial keys with dcid=4A587B8F8E1569D0
-Client: Masked PN bytes: CC CD 57 C9 
+Client: Capturing server SCID from Initial packet: c819ae7c28e6abfc (len=8)
+Client: Will use DCID=c8 (len=8) for 1-RTT packets
+Client: Deriving Initial keys with dcid=74D391A39EC2C90D
+Client: Masked PN bytes: 24 E3 C3 92 
 Client: Trying to decrypt Initial with pn_initial.max=0
-DEBUG headerProtect: first byte 0xCA ^ (mask0 0x79 & hdr_mask 0x0F) = 0xC3
+DEBUG headerProtect: first byte 0xC8 ^ (mask0 0x2B & hdr_mask 0x0F) = 0xC3
 AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
-DEBUG headerProtect: first byte 0xCA ^ (mask0 0x79 & hdr_mask 0x0F) = 0xC3
+DEBUG headerProtect: first byte 0xC8 ^ (mask0 0x2B & hdr_mask 0x0F) = 0xC3
 AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
-DEBUG headerProtect: first byte 0xCA ^ (mask0 0x79 & hdr_mask 0x0F) = 0xC3
+DEBUG headerProtect: first byte 0xC8 ^ (mask0 0x2B & hdr_mask 0x0F) = 0xC3
 AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
-DEBUG headerProtect: first byte 0xCA ^ (mask0 0x79 & hdr_mask 0x0F) = 0xC3
+DEBUG headerProtect: first byte 0xC8 ^ (mask0 0x2B & hdr_mask 0x0F) = 0xC3
 After unmasking with pn_len=4: 00 00 00 01 
 Successfully decrypted Initial packet (trial pn_len=4) plaintext len: 1138
 Expanded PN: 1 from truncated: 1
@@ -62,7 +78,7 @@ Pushing 39 bytes to TLS engine (Initial)
 TLS: onCryptoRecv called with 39 bytes, inbox already has 0 bytes
 TLS: Inbox now has 39 bytes total
 TLS: Parsed handshake message type=.server_hello len=35
-TLS: Added 39 bytes to transcript (recv): 02 00 00 23 53 48 31 BE ...
+TLS: Added 39 bytes to transcript (recv): 02 00 00 23 53 48 31 F1 ...
 TLS: Processing hello message, typ=.server_hello, real_mode=false
 TLS: Not in real mode - trying minimal parse
 TLS: Setting peer_pub for .server_hello (was null=true)
@@ -71,26 +87,27 @@ Client: Computed ECDHE secret
 TLS: Processed 39 bytes, 0 bytes remaining in buffer
 Client: Not ready to send Finished (verified=false, has_secret=false)
 Client: Derived handshake secrets
-DEBUG: Handshake keys derived for Client - tx_key[0..4]: 8F1EAB80, rx_key[0..4]: ADBFC490
+DEBUG: Handshake keys derived for Client - tx_key[0..4]: 34C82BD1, rx_key[0..4]: 198C7CD3
 Updated crypto_rx_off_initial to 39
 Server: Adding ACK frame to Initial packet - largest=1, first_range=0
 Client: Encoding Initial with pn=2 dcid_len=8 scid_len=8 pn_len=4
-  Server will use SCID: 4CF979FE0EFD842D
+  Server will use SCID: 14FAE6F1EECE5937
 Added 1133 bytes of padding to Initial frames
-DEBUG headerProtect: first byte 0xC3 ^ (mask0 0xE0 & hdr_mask 0x0F) = 0xC3
+DEBUG headerProtect: first byte 0xC3 ^ (mask0 0xCC & hdr_mask 0x0F) = 0xCF
 Client: Prepared Initial response with 1184 bytes (has_crypto=false)
 Checking for Handshake keys: hs_tx_keys is SET
 Processing coalesced packet after Initial (remaining 120 bytes)
+DEBUG: processIncomingDatagram called with 120 bytes
 Processing Handshake packet from peer
-Looking up Handshake connection with dcid=4cf979fe0efd842d (hash=21afec084ee50669)
+Looking up Handshake connection with dcid=14fae6f1eece5937 (hash=ec6ab1c066e0493)
 Found connection for Handshake packet (role=.Client)
 Client has handshake RX keys, proceeding to decrypt
-DEBUG headerProtect: first byte 0xE6 ^ (mask0 0xB7 & hdr_mask 0x0F) = 0xE1
+DEBUG headerProtect: first byte 0xEE ^ (mask0 0xFF & hdr_mask 0x0F) = 0xE1
 AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0)
-DEBUG headerProtect: first byte 0xE6 ^ (mask0 0xB7 & hdr_mask 0x0F) = 0xE1
+DEBUG headerProtect: first byte 0xEE ^ (mask0 0xFF & hdr_mask 0x0F) = 0xE1
 After unmasking with pn_len=2: 00 01 
 Successfully decrypted Handshake packet (trial pn_len=2) plaintext len: 77
-Handshake frame: .{ .crypto = .{ .offset = 0, .data = { 8, 0, 0, 33, 65, 76, 80, 78, 2, 104, 51, 84, 80, 4, 4, 128, 4, 0, 0, 5, 4, 128, 1, 0, 0, 6, 4, 128, 1, 0, 0, 8, 1, 16, 9, 1, 0, 20, 0, 0, 32, 141, 35, 149, 124, 211, 128, 11, 84, 232, 124, 2, 57, 185, 52, 83, 99, 68, 92, 252, 116, 55, 136, 100, 52, 96, 185, 157, 147, 16, 233, 164, 64 } } } at offset 0
+Handshake frame: .{ .crypto = .{ .offset = 0, .data = { 8, 0, 0, 33, 65, 76, 80, 78, 2, 104, 51, 84, 80, 4, 4, 128, 4, 0, 0, 5, 4, 128, 1, 0, 0, 6, 4, 128, 1, 0, 0, 8, 1, 16, 9, 1, 0, 20, 0, 0, 32, 235, 27, 122, 217, 244, 183, 212, 65, 137, 59, 183, 105, 219, 67, 245, 143, 7, 213, 143, 48, 176, 69, 248, 182, 149, 104, 55, 224, 33, 101, 159, 44 } } } at offset 0
 TLS: onCryptoRecv called with 73 bytes, inbox already has 0 bytes
 TLS: Inbox now has 73 bytes total
 TLS: Parsed handshake message type=.encrypted_extensions len=33
@@ -98,56 +115,57 @@ TLS: Added 37 bytes to transcript (recv): 08 00 00 21 41 4C 50 4E ...
 TLS: Parsed handshake message type=.finished len=32
 TLS: Processing Finished message
 TLS: Using stored handshake secrets for verification
-TLS: Verifying Finished with transcript hash: 5F C3 D6 AE 48 8A B6 A6 ...
+TLS: Verifying Finished with transcript hash: C9 56 66 9C CD 33 14 6C ...
 TLS: Finished verification result: true
-TLS: Added 36 bytes to transcript (recv-finished): 14 00 00 20 8D 23 95 7C ...
+TLS: Added 36 bytes to transcript (recv-finished): 14 00 00 20 EB 1B 7A D9 ...
 TLS: Processed 73 bytes, 0 bytes remaining in buffer
 Client: Queueing Finished message in minimal mode
-TLS: Queueing Finished with transcript hash: 7C EC 2C FF 97 42 C7 27 ...
-TLS: Added 36 bytes to transcript (queue): 14 00 00 20 16 D1 CF 7D ...
+TLS: Queueing Finished with transcript hash: 56 3A 4C 2C DE 2F AD FB ...
+TLS: Added 36 bytes to transcript (queue): 14 00 00 20 5B A8 95 4D ...
 Client: Waiting to derive 1-RTT keys until Finished flushes (36 bytes pending)
 DEBUG encodeHandshakeProtected: packet_number_len=2, pn_bits=1, first=0xE1
 DEBUG encodeHandshakeProtected: payload_len=45, ct_len=61, pn_len=2, length_value=63
-DEBUG encodeHandshakeProtected: Using keys - key[0..4]=8F1EAB80, iv[0..4]=882F258E
-DEBUG headerProtect: first byte 0xE1 ^ (mask0 0x41 & hdr_mask 0x0F) = 0xE0
-DEBUG encodeHandshakeProtected: AFTER header protection - first byte changed from 0xE1 to 0xE0
-DEBUG encodeHandshakeProtected: Final packet first 5 bytes: E0 00 00 00 01
-DEBUG endpoint: Sending Handshake packet, first 10 bytes: E0 00 00 00 01 08 33 60 B3 75 
+DEBUG encodeHandshakeProtected: Using keys - key[0..4]=34C82BD1, iv[0..4]=C97DAC33
+DEBUG headerProtect: first byte 0xE1 ^ (mask0 0xB8 & hdr_mask 0x0F) = 0xE9
+DEBUG encodeHandshakeProtected: AFTER header protection - first byte changed from 0xE1 to 0xE9
+DEBUG encodeHandshakeProtected: Final packet first 5 bytes: E9 00 00 00 01
+DEBUG endpoint: Sending Handshake packet, first 10 bytes: E9 00 00 00 01 08 C8 19 AE 7C 
 DEBUG: sendTo called with data.len=87
-DEBUG: sendto IPv4 127.0.0.1:37959, fd=3, data.len=87
+DEBUG: sendto IPv4 127.0.0.1:52491, fd=3, data.len=87
 DEBUG: sendto successful: sent 87 bytes (of 87)
 Client: Deriving application secrets after Finished flush
-Client: 1-RTT keys ready, will send to DCID=Client: Using DCID for 1-RTT packet: 3360b37527076316 (len=8)
-3360b37527076316 (len=8)
+Client: 1-RTT keys ready, will send to DCID=Client: Using DCID for 1-RTT packet: c819ae7c28e6abfc (len=8)
+c819ae7c28e6abfc (len=8)
 Client: Sending control frames (13 bytes)
-Client: Using DCID for 1-RTT packet: 3360b37527076316 (len=8)
-DEBUG headerProtect: first byte 0x41 ^ (mask0 0x0C & hdr_mask 0x1F) = 0x4D
+Client: Using DCID for 1-RTT packet: c819ae7c28e6abfc (len=8)
+DEBUG headerProtect: first byte 0x41 ^ (mask0 0xA8 & hdr_mask 0x1F) = 0x49
 DEBUG: sendTo called with data.len=40
-DEBUG: sendto IPv4 127.0.0.1:37959, fd=3, data.len=40
+DEBUG: sendto IPv4 127.0.0.1:52491, fd=3, data.len=40
 DEBUG: sendto successful: sent 40 bytes (of 40)
 DEBUG: Calling recvfrom on socket fd=3, flags=0
 DEBUG: recvfrom returned WouldBlock
 DEBUG: poll called, timeout_ms=10
 DEBUG: Using backend: .epoll
-DEBUG: poll_epoll_backend called, timeout=10, epoll_fd=4
-DEBUG: Calling epoll_wait on fd=4 with timeout=10
+DEBUG: poll_epoll_backend - self=0x7f005ffe0000, sock_fd=3, epoll_fd=4, timeout=10
+DEBUG: Socket fd=3 is still valid
+DEBUG: About to call epoll_wait(epfd=4, events_ptr=0x7fffe5ec1630, maxevents=16, timeout=10)
 DEBUG: epoll_wait returned 1 events
 DEBUG: Event 0: fd=3, events=0x1
-DEBUG: Checking ev.data.fd=3 vs expected_fd=3
-DEBUG: Socket 3 is readable or has error (events=0x1) - calling drainReadable
 DEBUG: drainReadable called on fd=3
+DEBUG: Socket is bound to 0.0.0.0:51543
 DEBUG: Calling recvfrom on socket fd=3, flags=0
 DEBUG: recvfrom got 40 bytes!
-DEBUG: recvfrom 40 bytes from 127.0.0.1:37959
-DEBUG: Processing short header packet - len=40, first_byte=47
-DEBUG: Short header DCID bytes (after header): 4c f9 79 fe 0e fd 84 2d f5 14 34 08 52 25 a2 d3 6d 71 f0 33 
-DEBUG: Looking for connection with peer_hash=ed62da25a8b8f2
-DEBUG: Checking conn with our_scid=4cf979fe0efd842d (len=8), role=.Client
+DEBUG: recvfrom 40 bytes from 127.0.0.1:52491
+DEBUG: processIncomingDatagram called with 40 bytes
+DEBUG: Processing short header packet - len=40, first_byte=44
+DEBUG: Short header DCID bytes (after header): 14 fa e6 f1 ee ce 59 37 0c 7a 62 43 dd 2b 4b 09 6c ab 9f 55 
+DEBUG: Looking for connection with peer_hash=f445a11ecfa810b8
+DEBUG: Checking conn with our_scid=14fae6f1eece5937 (len=8), role=.Client
 DEBUG: Found matching connection!
-DEBUG: Checking conn with our_scid=4cf979fe0efd842d (len=8), role=.Client
+DEBUG: Checking conn with our_scid=14fae6f1eece5937 (len=8), role=.Client
 DEBUG: Found matching connection!
 DEBUG: Found connection for short header packet - has_app_rx=true, has_app_tx=true
-DEBUG headerProtect: first byte 0x47 ^ (mask0 0x46 & hdr_mask 0x1F) = 0x41
+DEBUG headerProtect: first byte 0x44 ^ (mask0 0x05 & hdr_mask 0x1F) = 0x41
 First packet: truncated=0001 (1) -> expanded=1
 DEBUG: Client decoded 1-RTT packet - payload_len=13, pn=1
 DEBUG: Parsing frames from payload, total_len=13
@@ -155,61 +173,63 @@ DEBUG: Calling recvfrom on socket fd=3, flags=0
 DEBUG: recvfrom returned WouldBlock
 DEBUG: poll called, timeout_ms=10
 DEBUG: Using backend: .epoll
-DEBUG: poll_epoll_backend called, timeout=10, epoll_fd=4
-DEBUG: Calling epoll_wait on fd=4 with timeout=10
+DEBUG: poll_epoll_backend - self=0x7f005ffe0000, sock_fd=3, epoll_fd=4, timeout=10
+DEBUG: Socket fd=3 is still valid
+DEBUG: About to call epoll_wait(epfd=4, events_ptr=0x7fffe5ec1630, maxevents=16, timeout=10)
 DEBUG: epoll_wait returned 1 events
 DEBUG: Event 0: fd=3, events=0x1
-DEBUG: Checking ev.data.fd=3 vs expected_fd=3
-DEBUG: Socket 3 is readable or has error (events=0x1) - calling drainReadable
 DEBUG: drainReadable called on fd=3
+DEBUG: Socket is bound to 0.0.0.0:51543
 DEBUG: Calling recvfrom on socket fd=3, flags=0
 DEBUG: recvfrom got 41 bytes!
-DEBUG: recvfrom 41 bytes from 127.0.0.1:37959
-DEBUG: Processing short header packet - len=41, first_byte=5c
-DEBUG: Short header DCID bytes (after header): 4c f9 79 fe 0e fd 84 2d 56 88 19 a2 d7 e9 1b b2 5d 4f bb 51 
-DEBUG: Looking for connection with peer_hash=ed62da25a8b8f2
-DEBUG: Checking conn with our_scid=4cf979fe0efd842d (len=8), role=.Client
+DEBUG: recvfrom 41 bytes from 127.0.0.1:52491
+DEBUG: processIncomingDatagram called with 41 bytes
+DEBUG: Processing short header packet - len=41, first_byte=5d
+DEBUG: Short header DCID bytes (after header): 14 fa e6 f1 ee ce 59 37 f9 03 d9 56 1c e9 29 f0 c3 41 06 08 
+DEBUG: Looking for connection with peer_hash=f445a11ecfa810b8
+DEBUG: Checking conn with our_scid=14fae6f1eece5937 (len=8), role=.Client
 DEBUG: Found matching connection!
-DEBUG: Checking conn with our_scid=4cf979fe0efd842d (len=8), role=.Client
+DEBUG: Checking conn with our_scid=14fae6f1eece5937 (len=8), role=.Client
 DEBUG: Found matching connection!
 DEBUG: Found connection for short header packet - has_app_rx=true, has_app_tx=true
-DEBUG headerProtect: first byte 0x5C ^ (mask0 0x9D & hdr_mask 0x1F) = 0x41
+DEBUG headerProtect: first byte 0x5D ^ (mask0 0xFC & hdr_mask 0x1F) = 0x41
 First packet: truncated=0002 (2) -> expanded=2
 DEBUG: Client decoded 1-RTT packet - payload_len=14, pn=2
 DEBUG: Parsing frames from payload, total_len=14
 DEBUG: Calling recvfrom on socket fd=3, flags=0
 DEBUG: recvfrom returned WouldBlock
-Client: Using DCID for 1-RTT packet: 3360b37527076316 (len=8)
-DEBUG: Server sending STREAM with DCID len=8, first_byte=33
-DEBUG headerProtect: first byte 0x41 ^ (mask0 0xC0 & hdr_mask 0x1F) = 0x41
+Client: Using DCID for 1-RTT packet: c819ae7c28e6abfc (len=8)
+DEBUG: Server sending STREAM with DCID len=8, first_byte=c8
+DEBUG headerProtect: first byte 0x41 ^ (mask0 0x18 & hdr_mask 0x1F) = 0x59
 DEBUG: About to call send() with 36 bytes
 DEBUG: sendTo called with data.len=36
-DEBUG: sendto IPv4 127.0.0.1:37959, fd=3, data.len=36
+DEBUG: sendto IPv4 127.0.0.1:52491, fd=3, data.len=36
 DEBUG: sendto successful: sent 36 bytes (of 36)
 DEBUG: send() returned 36 bytes
 DEBUG: STREAM frame packet sent - 36 bytes (pkt.len=36)
 wrote initial message on stream 0 (5 bytes)
 DEBUG: poll called, timeout_ms=10
 DEBUG: Using backend: .epoll
-DEBUG: poll_epoll_backend called, timeout=10, epoll_fd=4
-DEBUG: Calling epoll_wait on fd=4 with timeout=10
+DEBUG: poll_epoll_backend - self=0x7f005ffe0000, sock_fd=3, epoll_fd=4, timeout=10
+DEBUG: Socket fd=3 is still valid
+DEBUG: About to call epoll_wait(epfd=4, events_ptr=0x7fffe5ec1630, maxevents=16, timeout=10)
 DEBUG: epoll_wait returned 1 events
 DEBUG: Event 0: fd=3, events=0x1
-DEBUG: Checking ev.data.fd=3 vs expected_fd=3
-DEBUG: Socket 3 is readable or has error (events=0x1) - calling drainReadable
 DEBUG: drainReadable called on fd=3
+DEBUG: Socket is bound to 0.0.0.0:51543
 DEBUG: Calling recvfrom on socket fd=3, flags=0
 DEBUG: recvfrom got 32 bytes!
-DEBUG: recvfrom 32 bytes from 127.0.0.1:37959
-DEBUG: Processing short header packet - len=32, first_byte=4d
-DEBUG: Short header DCID bytes (after header): 4c f9 79 fe 0e fd 84 2d 10 1f e1 33 4c f4 5c 7f 8e e0 4e 3c 
-DEBUG: Looking for connection with peer_hash=ed62da25a8b8f2
-DEBUG: Checking conn with our_scid=4cf979fe0efd842d (len=8), role=.Client
+DEBUG: recvfrom 32 bytes from 127.0.0.1:52491
+DEBUG: processIncomingDatagram called with 32 bytes
+DEBUG: Processing short header packet - len=32, first_byte=5d
+DEBUG: Short header DCID bytes (after header): 14 fa e6 f1 ee ce 59 37 05 26 99 ef f2 19 30 c9 17 0c 82 91 
+DEBUG: Looking for connection with peer_hash=f445a11ecfa810b8
+DEBUG: Checking conn with our_scid=14fae6f1eece5937 (len=8), role=.Client
 DEBUG: Found matching connection!
-DEBUG: Checking conn with our_scid=4cf979fe0efd842d (len=8), role=.Client
+DEBUG: Checking conn with our_scid=14fae6f1eece5937 (len=8), role=.Client
 DEBUG: Found matching connection!
 DEBUG: Found connection for short header packet - has_app_rx=true, has_app_tx=true
-DEBUG headerProtect: first byte 0x4D ^ (mask0 0xAC & hdr_mask 0x1F) = 0x41
+DEBUG headerProtect: first byte 0x5D ^ (mask0 0x1C & hdr_mask 0x1F) = 0x41
 First packet: truncated=0003 (3) -> expanded=3
 DEBUG: Client decoded 1-RTT packet - payload_len=5, pn=3
 DEBUG: Parsing frames from payload, total_len=5
@@ -217,82 +237,93 @@ DEBUG: Calling recvfrom on socket fd=3, flags=0
 DEBUG: recvfrom returned WouldBlock
 DEBUG: poll called, timeout_ms=10
 DEBUG: Using backend: .epoll
-DEBUG: poll_epoll_backend called, timeout=10, epoll_fd=4
-DEBUG: Calling epoll_wait on fd=4 with timeout=10
+DEBUG: poll_epoll_backend - self=0x7f005ffe0000, sock_fd=3, epoll_fd=4, timeout=10
+DEBUG: Socket fd=3 is still valid
+DEBUG: About to call epoll_wait(epfd=4, events_ptr=0x7fffe5ec1630, maxevents=16, timeout=10)
 DEBUG: epoll_wait returned 1 events
 DEBUG: Event 0: fd=3, events=0x1
-DEBUG: Checking ev.data.fd=3 vs expected_fd=3
-DEBUG: Socket 3 is readable or has error (events=0x1) - calling drainReadable
 DEBUG: drainReadable called on fd=3
+DEBUG: Socket is bound to 0.0.0.0:51543
 DEBUG: Calling recvfrom on socket fd=3, flags=0
 DEBUG: recvfrom got 36 bytes!
-DEBUG: recvfrom 36 bytes from 127.0.0.1:37959
-DEBUG: Processing short header packet - len=36, first_byte=42
-DEBUG: Short header DCID bytes (after header): 4c f9 79 fe 0e fd 84 2d af 23 05 73 a5 53 6d 78 96 4a 5d cc 
-DEBUG: Looking for connection with peer_hash=ed62da25a8b8f2
-DEBUG: Checking conn with our_scid=4cf979fe0efd842d (len=8), role=.Client
+DEBUG: recvfrom 36 bytes from 127.0.0.1:52491
+DEBUG: processIncomingDatagram called with 36 bytes
+DEBUG: Processing short header packet - len=36, first_byte=4f
+DEBUG: Short header DCID bytes (after header): 14 fa e6 f1 ee ce 59 37 94 c1 bf e6 02 42 22 9e b6 2c 02 38 
+DEBUG: Looking for connection with peer_hash=f445a11ecfa810b8
+DEBUG: Checking conn with our_scid=14fae6f1eece5937 (len=8), role=.Client
 DEBUG: Found matching connection!
-DEBUG: Checking conn with our_scid=4cf979fe0efd842d (len=8), role=.Client
+DEBUG: Checking conn with our_scid=14fae6f1eece5937 (len=8), role=.Client
 DEBUG: Found matching connection!
 DEBUG: Found connection for short header packet - has_app_rx=true, has_app_tx=true
-DEBUG headerProtect: first byte 0x42 ^ (mask0 0x03 & hdr_mask 0x1F) = 0x41
+DEBUG headerProtect: first byte 0x4F ^ (mask0 0xEE & hdr_mask 0x1F) = 0x41
 First packet: truncated=0004 (4) -> expanded=4
 DEBUG: Client decoded 1-RTT packet - payload_len=9, pn=4
 DEBUG: Parsing frames from payload, total_len=9
 DEBUG: CLIENT received STREAM frame - id=0, off=0, len=5, fin=false
 DEBUG pushStreamFrame: stream_id=0, offset=0, len=5, fin=false, role=.Client
 DEBUG: is_peer_initiated=false, stream_known=true
-DEBUG headerProtect: first byte 0x41 ^ (mask0 0x19 & hdr_mask 0x1F) = 0x58
+DEBUG headerProtect: first byte 0x41 ^ (mask0 0xFD & hdr_mask 0x1F) = 0x5C
 DEBUG: sendTo called with data.len=32
-DEBUG: sendto IPv4 127.0.0.1:37959, fd=3, data.len=32
+DEBUG: sendto IPv4 127.0.0.1:52491, fd=3, data.len=32
 DEBUG: sendto successful: sent 32 bytes (of 32)
 DEBUG: Calling recvfrom on socket fd=3, flags=0
 DEBUG: recvfrom returned WouldBlock
 echo: hello
 received echo (5 bytes)
-Client: Using DCID for 1-RTT packet: 3360b37527076316 (len=8)
-DEBUG headerProtect: first byte 0x41 ^ (mask0 0x0E & hdr_mask 0x1F) = 0x4F
+Client: Using DCID for 1-RTT packet: c819ae7c28e6abfc (len=8)
+DEBUG headerProtect: first byte 0x41 ^ (mask0 0xE4 & hdr_mask 0x1F) = 0x45
 DEBUG: sendTo called with data.len=34
-DEBUG: sendto IPv4 127.0.0.1:37959, fd=3, data.len=34
+DEBUG: sendto IPv4 127.0.0.1:52491, fd=3, data.len=34
 DEBUG: sendto successful: sent 34 bytes (of 34)
 DEBUG: poll called, timeout_ms=0
 DEBUG: Using backend: .epoll
-DEBUG: poll_epoll_backend called, timeout=0, epoll_fd=4
-DEBUG: Calling epoll_wait on fd=4 with timeout=0
-DEBUG: epoll_wait timed out, but trying drainReadable anyway to check for packets
+DEBUG: poll_epoll_backend - self=0x7f005ffe0000, sock_fd=3, epoll_fd=4, timeout=0
+DEBUG: Socket fd=3 is still valid
+DEBUG: About to call epoll_wait(epfd=4, events_ptr=0x7fffe5ec1610, maxevents=16, timeout=0)
+DEBUG: epoll_wait timed out
 DEBUG: drainReadable called on fd=3
+DEBUG: Socket is bound to 0.0.0.0:51543
 DEBUG: Calling recvfrom on socket fd=3, flags=0
 DEBUG: recvfrom returned WouldBlock
 DEBUG: poll called, timeout_ms=0
 DEBUG: Using backend: .epoll
-DEBUG: poll_epoll_backend called, timeout=0, epoll_fd=4
-DEBUG: Calling epoll_wait on fd=4 with timeout=0
-DEBUG: epoll_wait timed out, but trying drainReadable anyway to check for packets
+DEBUG: poll_epoll_backend - self=0x7f005ffe0000, sock_fd=3, epoll_fd=4, timeout=0
+DEBUG: Socket fd=3 is still valid
+DEBUG: About to call epoll_wait(epfd=4, events_ptr=0x7fffe5ec1610, maxevents=16, timeout=0)
+DEBUG: epoll_wait timed out
 DEBUG: drainReadable called on fd=3
+DEBUG: Socket is bound to 0.0.0.0:51543
 DEBUG: Calling recvfrom on socket fd=3, flags=0
 DEBUG: recvfrom returned WouldBlock
 DEBUG: poll called, timeout_ms=0
 DEBUG: Using backend: .epoll
-DEBUG: poll_epoll_backend called, timeout=0, epoll_fd=4
-DEBUG: Calling epoll_wait on fd=4 with timeout=0
-DEBUG: epoll_wait timed out, but trying drainReadable anyway to check for packets
+DEBUG: poll_epoll_backend - self=0x7f005ffe0000, sock_fd=3, epoll_fd=4, timeout=0
+DEBUG: Socket fd=3 is still valid
+DEBUG: About to call epoll_wait(epfd=4, events_ptr=0x7fffe5ec1610, maxevents=16, timeout=0)
+DEBUG: epoll_wait timed out
 DEBUG: drainReadable called on fd=3
+DEBUG: Socket is bound to 0.0.0.0:51543
 DEBUG: Calling recvfrom on socket fd=3, flags=0
 DEBUG: recvfrom returned WouldBlock
 DEBUG: poll called, timeout_ms=0
 DEBUG: Using backend: .epoll
-DEBUG: poll_epoll_backend called, timeout=0, epoll_fd=4
-DEBUG: Calling epoll_wait on fd=4 with timeout=0
-DEBUG: epoll_wait timed out, but trying drainReadable anyway to check for packets
+DEBUG: poll_epoll_backend - self=0x7f005ffe0000, sock_fd=3, epoll_fd=4, timeout=0
+DEBUG: Socket fd=3 is still valid
+DEBUG: About to call epoll_wait(epfd=4, events_ptr=0x7fffe5ec1610, maxevents=16, timeout=0)
+DEBUG: epoll_wait timed out
 DEBUG: drainReadable called on fd=3
+DEBUG: Socket is bound to 0.0.0.0:51543
 DEBUG: Calling recvfrom on socket fd=3, flags=0
 DEBUG: recvfrom returned WouldBlock
 DEBUG: poll called, timeout_ms=0
 DEBUG: Using backend: .epoll
-DEBUG: poll_epoll_backend called, timeout=0, epoll_fd=4
-DEBUG: Calling epoll_wait on fd=4 with timeout=0
-DEBUG: epoll_wait timed out, but trying drainReadable anyway to check for packets
+DEBUG: poll_epoll_backend - self=0x7f005ffe0000, sock_fd=3, epoll_fd=4, timeout=0
+DEBUG: Socket fd=3 is still valid
+DEBUG: About to call epoll_wait(epfd=4, events_ptr=0x7fffe5ec1610, maxevents=16, timeout=0)
+DEBUG: epoll_wait timed out
 DEBUG: drainReadable called on fd=3
+DEBUG: Socket is bound to 0.0.0.0:51543
 DEBUG: Calling recvfrom on socket fd=3, flags=0
 DEBUG: recvfrom returned WouldBlock
 destroy(): removed 0 map keys for connection
