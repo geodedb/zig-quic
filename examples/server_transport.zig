@@ -7,10 +7,32 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Parse command-line arguments
+    var args = std.process.args();
+    _ = args.skip(); // Skip program name
+
+    var addr: []const u8 = "0.0.0.0";
+    var port: u16 = 4433;
+
+    if (args.next()) |bind_arg| {
+        // Parse address in format "ip:port"
+        if (std.mem.indexOf(u8, bind_arg, ":")) |colon_pos| {
+            addr = bind_arg[0..colon_pos];
+            const port_str = bind_arg[colon_pos + 1 ..];
+            port = std.fmt.parseInt(u16, port_str, 10) catch {
+                std.debug.print("Invalid port: {s}\n", .{port_str});
+                return error.InvalidPort;
+            };
+        } else {
+            std.debug.print("Invalid address format. Expected ip:port\n", .{});
+            return error.InvalidAddress;
+        }
+    }
+
     // Configure the QUIC transport
     const config = transport.QuicTransport.Config{
-        .address = "0.0.0.0",
-        .port = 4433,
+        .address = addr,
+        .port = port,
         .max_connections = 100,
         .idle_timeout_ms = 30000,
         .cert_path = "certs/server.crt",
@@ -23,7 +45,7 @@ pub fn main() !void {
 
     // Start listening for connections
     try quic_transport.listen();
-    std.debug.print("QUIC server listening on port {d}\n", .{config.port});
+    std.debug.print("QUIC server listening on {s}:{d}\n", .{ config.address, config.port });
 
     // Accept and handle connections
     while (true) {

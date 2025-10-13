@@ -1,20 +1,37 @@
 #!/bin/bash
-set -euo pipefail
+set -e
 
+# Set up the routing needed for the simulation.
 /setup.sh
+
+# Print version info if available
+if [ -f /quic/version.txt ]; then
+    echo "Using version:" $(cat /quic/version.txt)
+fi
 
 ROLE=${ROLE:-server}
 TESTCASE=${TESTCASE:-}
 
-LOGDIR=/logs
-mkdir -p "$LOGDIR"
+# Create log directory
+mkdir -p /logs
 
-if [ "$ROLE" = "client" ]; then
-  # Wait for simulator ready
-  /wait-for-it.sh sim:57832 -s -t 150 || echo "sim wait timeout"
-  echo "Starting qns client for testcase=$TESTCASE" | tee -a $LOGDIR/qns.log
-  exec qns-endpoint 2>&1 | tee -a $LOGDIR/client.log
+if [ "$ROLE" == "client" ]; then
+    # Wait for the simulator to start up.
+    # Retry multiple times as the simulator may take a while to be ready
+    for i in {1..5}; do
+        if /wait-for-it.sh sim:57832 -s -t 10; then
+            break
+        fi
+        echo "Retry $i: Simulator not ready, waiting 5 seconds..."
+        sleep 5
+    done
+    echo "Starting QUIC client..."
+    echo "Client params: $CLIENT_PARAMS"
+    echo "Test case: $TESTCASE"
+    echo "Requests: $REQUESTS"
+    exec qns-endpoint 2>&1 | tee /logs/client.log
 else
-  echo "Starting qns server for testcase=$TESTCASE" | tee -a $LOGDIR/qns.log
-  exec qns-endpoint 2>&1 | tee -a $LOGDIR/server.log
+    echo "Running QUIC server."
+    echo "Test case: $TESTCASE"
+    exec qns-endpoint 2>&1 | tee /logs/server.log
 fi
