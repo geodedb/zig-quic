@@ -12,7 +12,8 @@ test "server_issues_retry_and_client_retries" {
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 
-    var ep = try endpoint.Endpoint.init(&alloc, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
+    // Create server endpoint - use port 4433 to ensure it's recognized as a server
+    var ep = try endpoint.Endpoint.init(&alloc, "127.0.0.1:4433", &.{ .alpn = &[_][]const u8{} });
     defer ep.deinit();
     ep.cfg.enable_retry = true;
     ep.cfg.token_secret = "test-secret";

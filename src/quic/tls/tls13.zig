@@ -7,6 +7,7 @@ const std = @import("std");
 const ks = @import("quic_tls");
 const x509 = @import("x509");
 const sig = @import("sig");
+const tls13_full = @import("tls13_full.zig");
 
 /// Session ticket cache entry and store types used by the TLS 1.3 engine (minimal placeholder).
 // --- Session Ticket / PSK Cache Structures (minimal placeholder) ---
@@ -1120,34 +1121,26 @@ pub const Engine = struct {
             std.debug.print("DEBUG queueRealServerHello: EARLY EXIT - my_pub is NULL\n", .{});
             return error.Internal;
         };
-        var body = std.ArrayList(u8){};
-        defer body.deinit(self.allocator);
-        try body.appendSlice(self.allocator, &.{ 0x03, 0x03 }); // legacy_version
-        var rnd: [32]u8 = undefined;
-        std.crypto.random.bytes(&rnd);
-        try body.appendSlice(self.allocator, &rnd);
-        try body.append(self.allocator, 0); // session id length
-        try body.appendSlice(self.allocator, &.{ 0x13, 0x01 }); // cipher suite
-        try body.append(self.allocator, 0); // compression method
-        var ext = std.ArrayList(u8){};
-        defer ext.deinit(self.allocator);
-        // supported_versions
-        try ext.appendSlice(self.allocator, &.{ 0x00, 0x2b, 0x00, 0x02, 0x03, 0x04 });
-        // key_share
-        try ext.appendSlice(self.allocator, &.{ 0x00, 0x33 });
-        const ks_len: u16 = 2 + 2 + 32; // group + key_len + key
-        try ext.appendSlice(self.allocator, &.{ @intCast(ks_len >> 8), @intCast(ks_len & 0xff) });
-        try ext.appendSlice(self.allocator, &.{ 0x00, 0x1d }); // group x25519
-        try ext.appendSlice(self.allocator, &.{ 0x00, 32 });
-        try ext.appendSlice(self.allocator, pubkey[0..]);
-        // NOTE: For TLS 1.3, ALPN and Transport Parameters go in EncryptedExtensions, NOT ServerHello (RFC 8446, RFC 9001)
-        const exts_bytes = ext.items;
-        const exts_len: u16 = @intCast(exts_bytes.len);
-        try body.appendSlice(self.allocator, &.{ @intCast(exts_len >> 8), @intCast(exts_len & 0xff) });
-        try body.appendSlice(self.allocator, exts_bytes);
-        const msg = try encodeHandshake(self.allocator, .server_hello, body.items);
+
+        // Generate server random
+        var server_random: [32]u8 = undefined;
+        std.crypto.random.bytes(&server_random);
+
+        // Use the comprehensive ServerHello builder
+        const sh_body = try tls13_full.buildServerHello(
+            self.allocator,
+            server_random,
+            .TLS_AES_128_GCM_SHA256,  // Use AES-128-GCM for compatibility
+            .x25519,
+            pubkey[0..]
+        );
+        defer self.allocator.free(sh_body);
+
+        // Encode as handshake message
+        const msg = try encodeHandshake(self.allocator, .server_hello, sh_body);
         defer self.allocator.free(msg);
         try self.queueCrypto(msg);
+
         self.tryComputeShared();
         if (self.ecdhe_secret != null and self.handshake_client_secret == null) {
             var snap = self.transcript;
@@ -1157,6 +1150,7 @@ pub const Engine = struct {
             self.handshake_server_secret = hs.server_hs;
             _ = self.computeApplicationSecrets();
         }
+
         // Queue EncryptedExtensions (which will trigger Certificate + CertificateVerify + Finished via maybeAutoProgress)
         const alpn_for_ee = self.alpn orelse &[_]u8{};
         const tp_for_ee = self.local_tp orelse &[_]u8{};
@@ -1446,126 +1440,31 @@ fn readU16(be: []const u8) u16 {
 /// Returns pubkey if successful; otherwise null. Does not perform deep validation beyond bounds.
 fn parseRealClientHello(body: []const u8) ?[32]u8 {
     std.debug.print("parseRealClientHello: body_len={}\n", .{body.len});
-    if (body.len < 2 + 32 + 1) {
-        std.debug.print("parseRealClientHello: body too short (min 35 bytes)\n", .{});
-        return null; // version + random + session id len
-    }
-    var pos: usize = 0;
-    // legacy_version
-    pos += 2;
-    // random
-    pos += 32;
-    if (pos >= body.len) {
-        std.debug.print("parseRealClientHello: pos >= body.len after random\n", .{});
+
+    // Use a stack allocator for the parsing
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // Parse the ClientHello using the comprehensive parser
+    const ch = tls13_full.parseClientHello(allocator, body) catch {
+        std.debug.print("parseRealClientHello: failed to parse ClientHello\n", .{});
         return null;
-    }
-    // session id
-    const sid_len: usize = body[pos];
-    std.debug.print("parseRealClientHello: sid_len={}\n", .{sid_len});
-    pos += 1;
-    if (pos + sid_len > body.len) {
-        std.debug.print("parseRealClientHello: session id overflow\n", .{});
-        return null;
-    }
-    pos += sid_len;
-    if (pos + 2 > body.len) {
-        std.debug.print("parseRealClientHello: no space for cipher suite length\n", .{});
-        return null;
-    }
-    const cs_len = readU16(body[pos .. pos + 2]);
-    std.debug.print("parseRealClientHello: cs_len={}\n", .{cs_len});
-    pos += 2;
-    if (pos + cs_len > body.len) {
-        std.debug.print("parseRealClientHello: cipher suites overflow\n", .{});
-        return null;
-    }
-    pos += cs_len; // skip cipher_suites
-    if (pos >= body.len) {
-        std.debug.print("parseRealClientHello: no space for compression length\n", .{});
-        return null;
-    }
-    const comp_len: usize = body[pos];
-    std.debug.print("parseRealClientHello: comp_len={}\n", .{comp_len});
-    pos += 1;
-    if (pos + comp_len > body.len) {
-        std.debug.print("parseRealClientHello: compression overflow\n", .{});
-        return null;
-    }
-    pos += comp_len;
-    if (pos + 2 > body.len) {
-        std.debug.print("parseRealClientHello: no space for extensions length\n", .{});
-        return null;
-    }
-    const exts_len = readU16(body[pos .. pos + 2]);
-    std.debug.print("parseRealClientHello: exts_len={}, pos={}\n", .{ exts_len, pos });
-    pos += 2;
-    if (pos + exts_len > body.len) {
-        std.debug.print("parseRealClientHello: extensions overflow\n", .{});
-        return null;
-    }
-    const exts_end = pos + exts_len;
-    var pk: ?[32]u8 = null;
-    var ext_count: u32 = 0;
-    while (pos + 4 <= exts_end) {
-        const etype = readU16(body[pos .. pos + 2]);
-        const elen = readU16(body[pos + 2 .. pos + 4]);
-        std.debug.print("parseRealClientHello: ext #{} type=0x{X:0>4} len={}\n", .{ ext_count, etype, elen });
-        ext_count += 1;
-        pos += 4;
-        if (pos + elen > exts_end) {
-            std.debug.print("parseRealClientHello: extension {} overflow\n", .{ext_count - 1});
-            return null;
+    };
+
+    // Extract the X25519 key share if present
+    if (ch.key_share) |key_share| {
+        if (key_share.group == .x25519 and key_share.key_exchange.len == 32) {
+            std.debug.print("parseRealClientHello: found X25519 key!\n", .{});
+            var out: [32]u8 = undefined;
+            @memcpy(&out, key_share.key_exchange[0..32]);
+            std.debug.print("parseRealClientHello: successfully extracted public key\n", .{});
+            return out;
         }
-        if (etype == 0x0033) { // key_share
-            std.debug.print("parseRealClientHello: found key_share extension\n", .{});
-            if (elen < 2) {
-                std.debug.print("parseRealClientHello: key_share too short\n", .{});
-                return null;
-            }
-            if (pos + 2 > exts_end) {
-                std.debug.print("parseRealClientHello: no space for key_share list length\n", .{});
-                return null;
-            }
-            const list_len = readU16(body[pos .. pos + 2]);
-            std.debug.print("parseRealClientHello: key_share list_len={}\n", .{list_len});
-            pos += 2;
-            if (pos + list_len > exts_end) {
-                std.debug.print("parseRealClientHello: key_share list overflow\n", .{});
-                return null;
-            }
-            var lp: usize = pos;
-            const list_end = pos + list_len;
-            var key_count: u32 = 0;
-            while (lp + 4 <= list_end) {
-                const group = readU16(body[lp .. lp + 2]);
-                const klen = readU16(body[lp + 2 .. lp + 4]);
-                std.debug.print("parseRealClientHello: key #{} group=0x{X:0>4} klen={}\n", .{ key_count, group, klen });
-                key_count += 1;
-                lp += 4;
-                if (lp + klen > list_end) {
-                    std.debug.print("parseRealClientHello: key {} overflow\n", .{key_count - 1});
-                    return null;
-                }
-                if (group == 0x001d and klen == 32) {
-                    std.debug.print("parseRealClientHello: found X25519 key!\n", .{});
-                    var out: [32]u8 = undefined;
-                    @memcpy(&out, body[lp .. lp + 32]);
-                    pk = out;
-                    break;
-                }
-                lp += klen;
-            }
-            // We don't parse further extensions once key_share found.
-            break;
-        }
-        pos += elen; // advance to next extension
     }
-    if (pk != null) {
-        std.debug.print("parseRealClientHello: successfully extracted public key\n", .{});
-    } else {
-        std.debug.print("parseRealClientHello: no X25519 key found\n", .{});
-    }
-    return pk;
+
+    std.debug.print("parseRealClientHello: no X25519 key found\n", .{});
+    return null;
 }
 
 /// Attempt to parse a real (spec-like) TLS 1.3 ServerHello and extract the X25519 key share.
