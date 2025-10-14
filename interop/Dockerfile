@@ -1,29 +1,25 @@
-FROM martenseemann/quic-network-simulator-endpoint:latest
+# Expect a prebuilt qns-endpoint copied from host to make builds deterministic and offline-friendly.
+# Build locally before invoking docker:
+#   zig build -Doptimize=ReleaseSafe cli
 
-# Install Zig compiler
-RUN apt-get update && apt-get install -y wget xz-utils && \
-    wget -q https://ziglang.org/download/0.15.1/zig-linux-x86_64-0.15.1.tar.xz && \
-    tar -xf zig-linux-x86_64-0.15.1.tar.xz && \
-    mv zig-linux-x86_64-0.15.1 /opt/zig && \
-    rm zig-linux-x86_64-0.15.1.tar.xz && \
-    ln -s /opt/zig/zig /usr/local/bin/zig && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+ARG QNS_IMAGE=martenseemann/quic-network-simulator-endpoint
+ARG QNS_TAG=latest
+
+FROM ${QNS_IMAGE}:${QNS_TAG}
 
 WORKDIR /quic
 
-# Copy source code
-COPY . /quic/
-
-# Build the QNS endpoint binary
-RUN zig build -Drelease-safe=true qns-endpoint && \
-    cp zig-out/bin/qns-endpoint /usr/local/bin/qns-endpoint && \
-    chmod +x /usr/local/bin/qns-endpoint
-
-# Create version file
-RUN echo "zig-quic-$(date +%Y%m%d)-$(git rev-parse --short HEAD 2>/dev/null || echo dev)" > /quic/version.txt
+# Copy prebuilt binary from host
+COPY zig-out/bin/qns-endpoint /usr/local/bin/qns-endpoint
 
 # Copy run script
 COPY interop/run_endpoint.sh /run_endpoint.sh
-RUN chmod +x /run_endpoint.sh
+RUN chmod +x /run_endpoint.sh /usr/local/bin/qns-endpoint
+
+# Version metadata
+ARG VCS_REF="dev"
+ARG BUILD_DATE
+RUN printf "zig-quic-%s-%s\n" "${BUILD_DATE:-$(date -u +%Y%m%d)}" "${VCS_REF}" > /quic/version.txt
 
 ENTRYPOINT ["/run_endpoint.sh"]
+

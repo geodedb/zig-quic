@@ -16,7 +16,6 @@ pub fn main() !void {
     var datagram = false;
     var compat_vn = false;
     var msg: []const u8 = "hello";
-    var real_tls = false;
     while (args.next()) |a| {
         if (std.mem.eql(u8, a, "--connect")) {
             connect = args.next().?;
@@ -33,8 +32,6 @@ pub fn main() !void {
             compat_vn = true;
         } else if (std.mem.eql(u8, a, "--msg")) {
             msg = args.next().?;
-        } else if (std.mem.eql(u8, a, "--real-tls")) {
-            real_tls = true;
         }
     }
 
@@ -43,7 +40,6 @@ pub fn main() !void {
         .allow_insecure = insecure,
         .enable_datagram = datagram,
         .compatible_vn = compat_vn,
-        .real_tls = real_tls,
     };
     const ep = try api.endpointInit(&alloc, "0.0.0.0:0", &cfg);
     defer api.endpointDeinit(ep);

@@ -73,7 +73,17 @@ Uses the official quic-interop-runner from the IETF QUIC working group
 
 ### Manual Docker Build
 ```bash
-docker build -f interop/Dockerfile -t zig-quic:interop .
+docker build -f interop/Dockerfile \
+  --build-arg QNS_TAG=latest \
+  --build-arg ZIG_VERSION=0.15.1 \
+  --build-arg VCS_REF="$(git rev-parse --short HEAD || echo dev)" \
+  --build-arg BUILD_DATE="$(date -u +%Y%m%d)" \
+  -t zig-quic:interop .
+```
+
+Or use the Makefile:
+```bash
+make interop-build
 ```
 
 ## Integration with Official QUIC Interop Runner

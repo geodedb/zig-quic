@@ -257,7 +257,12 @@ run_official_interop() {
 
     # Build Docker image
     echo -e "${YELLOW}Building Zig QUIC Docker image for interop...${NC}"
-    docker build -f interop/Dockerfile -t zig-quic:interop .
+    docker build -f interop/Dockerfile \
+        --build-arg QNS_TAG=latest \
+        --build-arg ZIG_VERSION=0.15.1 \
+        --build-arg VCS_REF="$(git rev-parse --short HEAD 2>/dev/null || echo dev)" \
+        --build-arg BUILD_DATE="$(date -u +%Y%m%d)" \
+        -t zig-quic:interop .
 
     # Copy our implementations.json to the runner
     cp interop/implementations.json interop/quic-interop-runner/implementations.local.json

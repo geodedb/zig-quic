@@ -519,15 +519,10 @@ pub const Endpoint = struct {
             if (tp_bytes.len > 0) self.allocator.free(tp_bytes);
         }
         c.tls.setLocalTransportParameters(if (tp_bytes.len > 0) tp_bytes else tp_bytes[0..0]) catch {};
-        if (self.cfg.real_tls) {
-            c.tls.enableReal();
-            // Use queueMinimalClientHello (will dispatch to real builder when real_mode true)
-            c.tls.queueMinimalClientHello() catch {
-                _ = c.tls.queueMinimalClientHelloAuto() catch 0;
-            };
-        } else {
+        // Queue ClientHello using full TLS 1.3
+        c.tls.queueMinimalClientHello() catch {
             _ = c.tls.queueMinimalClientHelloAuto() catch 0;
-        }
+        };
         var crypto_buf: [2048]u8 = undefined;
         const crypto_len = c.tls.popCrypto(crypto_buf[0..]);
         if (crypto_len > 0) {
@@ -1659,12 +1654,11 @@ pub const Endpoint = struct {
                 if (c_new.peer_initial_scid.len > 0) @memcpy(c_new.peer_initial_scid.bytes[0..c_new.peer_initial_scid.len], scid[0..c_new.peer_initial_scid.len]);
                 c_new.setUseCubic(self.cfg.cc == .cubic);
                 c_new.tls.allow_insecure = self.cfg.allow_insecure;
-                if (self.cfg.real_tls) {
-                    c_new.tls.enableReal();
-                    if (self.cfg.inline_server_cert_der != null and self.cfg.inline_server_priv_p256 != null) {
-                        c_new.tls.setServerCertificate(self.cfg.inline_server_cert_der.?, self.cfg.inline_server_priv_p256.?, .ecdsa_secp256r1_sha256) catch {};
-                    }
-                    // Set local transport parameters for server (required for QUIC TLS extension)
+                // Configure server certificate for TLS 1.3
+                if (self.cfg.inline_server_cert_der != null and self.cfg.inline_server_priv_p256 != null) {
+                    c_new.tls.setServerCertificate(self.cfg.inline_server_cert_der.?, self.cfg.inline_server_priv_p256.?, .ecdsa_secp256r1_sha256) catch {};
+                }
+                // Set local transport parameters for server (required for QUIC TLS extension)
                     var tpp: tp.TransportParams = .{};
                     tpp.original_destination_connection_id = c_new.peer_initial_dcid.bytes[0..c_new.peer_initial_dcid.len];
                     tpp.initial_source_connection_id = c_new.our_scid.bytes[0..c_new.our_scid.len];

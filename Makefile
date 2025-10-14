@@ -22,6 +22,7 @@ TARGETS = \
 .PHONY: cross-compile cross-compile-all cross-compile-release
 .PHONY: $(TARGETS) $(addsuffix -release,$(TARGETS))
 .PHONY: interop interop-quic-go interop-zig test-interop-all
+.PHONY: interop-build interop-basic interop-quick interop-full interop-runner interop-clean
 
 # Default target runs full CI including cross-compilation
 all: ci cross-compile-quick interop
@@ -246,6 +247,54 @@ test-interop-all: test interop
 	@echo "================================================"
 	@echo "✓ All comprehensive tests completed"
 
+# ==================== FULL INTEROP RUNNER ====================
+
+# Build Docker image for QUIC interop testing
+interop-build: build
+	@echo "========== Building QUIC Interop Docker Image =========="
+	@echo "Building qns-endpoint binary..."
+	@$(ZIG) build $(RELEASE_FLAGS) cli || { echo "CLI build failed"; exit 1; }
+	@echo "Building Docker image..."
+	@docker build -f interop/Dockerfile \
+		--build-arg QNS_TAG=latest \
+		--build-arg VCS_REF="$$(git rev-parse --short HEAD 2>/dev/null || echo dev)" \
+		--build-arg BUILD_DATE="$$(date -u +%Y%m%d)" \
+		-t zig-quic:interop . || { echo "Docker build failed"; exit 1; }
+	@echo "✓ Interop Docker image built successfully"
+
+# Run basic interop tests (quic-go only)
+interop-basic: interop-build
+	@echo "========== Running Basic Interop Tests =========="
+	@bash scripts/interop_full.sh basic
+
+# Run quick interop tests (quic-go, ngtcp2, quiche)
+interop-quick: interop-build
+	@echo "========== Running Quick Interop Tests =========="
+	@bash scripts/interop_full.sh quick
+
+# Run full interop test matrix (all implementations)
+interop-full: interop-build
+	@echo "========== Running Full Interop Test Matrix =========="
+	@echo "This will test against all 17 QUIC implementations"
+	@echo "Expected duration: 30-60 minutes"
+	@bash scripts/interop_full.sh full
+
+# Run with official QUIC interop runner
+interop-runner: interop-build
+	@echo "========== Running Official QUIC Interop Runner =========="
+	@bash scripts/interop_full.sh runner
+
+# Clean up interop artifacts
+interop-clean:
+	@echo "Cleaning up interop artifacts..."
+	@docker rmi zig-quic:interop 2>/dev/null || true
+	@docker network prune -f
+	@rm -rf interop/quic-interop-runner
+	@rm -rf interop/logs interop/logs_*
+	@rm -f /tmp/interop_*.log
+	@killall -9 quic-server quic-client 2>/dev/null || true
+	@echo "✓ Interop artifacts cleaned"
+
 # Help target
 help:
 	@echo "QUIC Library Makefile"
@@ -259,11 +308,19 @@ help:
 	@echo "  make test                 - Run tests"
 	@echo "  make tools                - Build CLI tools"
 	@echo ""
-	@echo "Interop testing:"
-	@echo "  make interop              - Run all interop tests"
+	@echo "Interop testing (basic):"
+	@echo "  make interop              - Run all basic interop tests"
 	@echo "  make interop-quic-go      - Test with quic-go implementation"
 	@echo "  make interop-zig          - Test Zig-to-Zig communication"
 	@echo "  make test-interop-all     - Run all tests including interop"
+	@echo ""
+	@echo "Full interop testing (Docker-based):"
+	@echo "  make interop-build        - Build Docker image for interop testing"
+	@echo "  make interop-basic        - Test against quic-go only (~5 min)"
+	@echo "  make interop-quick        - Test against 3 implementations (~15 min)"
+	@echo "  make interop-full         - Test against all 17 implementations (~60 min)"
+	@echo "  make interop-runner       - Use official QUIC interop runner"
+	@echo "  make interop-clean        - Clean up interop artifacts"
 	@echo ""
 	@echo "Cross-compilation:"
 	@echo "  make cross-compile        - Build for all targets in parallel (debug)"

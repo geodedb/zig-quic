@@ -26,7 +26,12 @@ func main() {
 		NextProtos:         []string{"hq-interop"},
 	}
 
-	conn, err := quic.DialAddr(context.Background(), addr, tlsConf, nil)
+	quicConf := &quic.Config{
+		EnableDatagrams: false,
+	}
+
+	log.Printf("Connecting to %s", addr)
+	conn, err := quic.DialAddr(context.Background(), addr, tlsConf, quicConf)
 	if err != nil {
 		log.Fatal(err)
 	}

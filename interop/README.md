@@ -89,10 +89,26 @@ According to `implementations.json`, the Zig QUIC implementation currently suppo
 
 ## Building the Docker Image
 
-Build the Zig QUIC Docker image for interop testing:
+Build the qns-endpoint binary locally first:
 
 ```bash
-docker build -f interop/Dockerfile -t zig-quic:interop .
+zig build -Doptimize=ReleaseSafe cli
+```
+
+Then build the Docker image:
+
+```bash
+docker build -f interop/Dockerfile \
+  --build-arg QNS_TAG=latest \
+  --build-arg VCS_REF="$(git rev-parse --short HEAD || echo dev)" \
+  --build-arg BUILD_DATE="$(date -u +%Y%m%d)" \
+  -t zig-quic:interop .
+```
+
+Or simply use the Makefile target (builds binary and image):
+
+```bash
+make interop-build
 ```
 
 ## Manual Testing with Official Runner
@@ -216,6 +232,52 @@ The interop tests can be integrated into CI/CD:
 ```
 
 ## Troubleshooting
+
+### Docker Network/DNS Issues
+
+If Docker builds fail with errors like "Could not connect to archive.ubuntu.com" or "Unable to fetch some archives":
+
+**Quick Diagnosis:**
+```bash
+# Run the diagnostic script
+./interop/fix-docker-network.sh
+```
+
+This script checks:
+- Docker daemon status
+- DNS resolution inside containers
+- Ubuntu repository access
+- Zig download site connectivity
+
+**Solutions:**
+
+1. **Already Applied in Dockerfile**: The Dockerfile includes:
+   - Retry logic (3 attempts) for transient network failures
+   - `--fix-missing` flag for apt-get
+
+2. **Configure Docker Daemon DNS** (Recommended): Edit `/etc/docker/daemon.json`:
+   ```json
+   {
+     "dns": ["8.8.8.8", "1.1.1.1"]
+   }
+   ```
+   Then restart: `sudo systemctl restart docker`
+
+3. **Use Host Network**: For builds (not recommended for tests):
+   ```bash
+   docker build --network=host -f interop/Dockerfile -t zig-quic:interop .
+   ```
+
+4. **Corporate Proxy**: If behind a proxy, add to `/etc/docker/daemon.json`:
+   ```json
+   {
+     "dns": ["8.8.8.8", "1.1.1.1"],
+     "proxies": {
+       "http-proxy": "http://proxy.example.com:80",
+       "https-proxy": "http://proxy.example.com:80"
+     }
+   }
+   ```
 
 ### Docker Network Conflicts
 
