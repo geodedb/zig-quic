@@ -32,22 +32,24 @@ test "server responds to client Initial" {
     const pair = ks.deriveClientServerInitial(initial);
     const client_keys = ks.deriveKeyIvHp(pair.client);
 
-    // Create minimal ClientHello CRYPTO frame
+    // Create minimal ClientHello CRYPTO frame using the "CH1" format
     var crypto_payload = std.ArrayList(u8){};
     defer crypto_payload.deinit(alloc);
     const w = crypto_payload.writer(alloc);
 
-    // Minimal TLS ClientHello (just enough to trigger response)
+    // Generate a client X25519 public key for the test
+    var client_priv: [32]u8 = undefined;
+    std.crypto.random.bytes(&client_priv);
+    const client_pub = try std.crypto.dh.X25519.recoverPublicKey(client_priv);
+
+    // Minimal handshake format: "CH1" + 32-byte public key
+    const ch_body = [_]u8{'C', 'H', '1'} ++ client_pub;
+
+    // Wrap in handshake record: type (1 byte) + length (3 bytes) + body
     const ch_bytes = [_]u8{
-        0x01, 0x00, 0x00, 0x20, // Handshake header: ClientHello, length 32
-        0x03, 0x03, // TLS 1.2 (for compatibility)
-    } ++ ([_]u8{0x00} ** 32) ++ // Random
-        [_]u8{
-            0x00, // Session ID length
-            0x00, 0x02, 0x13, 0x01, // Cipher suites: TLS_AES_128_GCM_SHA256
-            0x01, 0x00, // Compression methods
-            0x00, 0x00, // Extensions length (none for now)
-        };
+        0x01, // Handshake type: ClientHello
+        0x00, 0x00, @as(u8, ch_body.len), // Length: 35 bytes
+    } ++ ch_body;
 
     _ = try (frame.Frame{ .crypto = .{ .offset = 0, .data = &ch_bytes } }).write(w);
 

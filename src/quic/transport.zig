@@ -3,10 +3,10 @@ const builtin = @import("builtin");
 const api = @import("api.zig");
 const tls = std.crypto.tls;
 
-// High-level QUIC transport layer providing connection and stream management.
-// This layer provides a convenient interface for building QUIC applications,
-// This layer provides a convenient interface for building QUIC applications,
+//! High-level QUIC transport layer providing connection and stream management.
+//! This layer provides a convenient interface for building QUIC applications.
 
+/// Errors that can occur during QUIC operations.
 pub const QuicError = error{
     ConnectionFailed,
     StreamFailed,
@@ -22,15 +22,20 @@ pub const QuicError = error{
     ConnectionClosed,
 };
 
+/// High-level QUIC transport for managing endpoints and connections.
 pub const QuicTransport = struct {
     allocator: std.mem.Allocator,
     config: Config,
     endpoint: ?*api.QuicEndpoint = null,
     connections: std.ArrayList(*QuicConnection),
+    /// Path to the TLS certificate file.
     cert_path: []const u8,
+    /// Path to the TLS private key file.
     key_path: []const u8,
+    /// Internal QUIC configuration object.
     quic_config: ?*api.QuicConfig = null,
 
+    /// Configuration options for the QUIC transport.
     pub const Config = struct {
         address: []const u8 = "0.0.0.0",
         port: u16 = 7567,
@@ -38,11 +43,15 @@ pub const QuicTransport = struct {
         idle_timeout_ms: u64 = 30000,
         max_stream_data: u64 = 10 * 1024 * 1024, // 10MB per stream
         max_data: u64 = 100 * 1024 * 1024, // 100MB per connection
+        /// Path to the TLS certificate file.
         cert_path: []const u8 = "certs/server.crt",
+        /// Path to the TLS private key file.
         key_path: []const u8 = "certs/server.key",
+        /// Optional path to CA certificate for client authentication.
         ca_path: ?[]const u8 = null,
     };
 
+    /// Initializes a new QUIC transport with the given configuration.
     pub fn init(allocator: std.mem.Allocator, config: Config) !QuicTransport {
         return QuicTransport{
             .allocator = allocator,
@@ -53,6 +62,7 @@ pub const QuicTransport = struct {
         };
     }
 
+    /// Deinitializes the transport, closing all connections and releasing resources.
     pub fn deinit(self: *QuicTransport) void {
         // Close all active connections first to avoid using a torn-down endpoint
         for (self.connections.items) |conn| {
@@ -78,6 +88,7 @@ pub const QuicTransport = struct {
         }
     }
 
+    /// Starts listening for incoming QUIC connections on the configured address and port.
     pub fn listen(self: *QuicTransport) !void {
         // CANARY: REQ=REQ-GQL-074; FEATURE="Network Transport"; ASPECT=QUICListener; STATUS=TESTED; TEST=e2e_quic_startup; OWNER=wire; UPDATED=2025-09-25
 
@@ -223,6 +234,7 @@ pub const QuicTransport = struct {
         }
     }
 
+    /// Accepts an incoming QUIC connection from a client.
     pub fn accept(self: *QuicTransport) !*QuicConnection {
         // CANARY: REQ=REQ-GQL-074; FEATURE="Network Transport"; ASPECT=QUICAccept; STATUS=TESTED; TEST=TestCANARY_REQ_GQL_074_QUICAccept; OWNER=wire; UPDATED=2025-09-22
 
@@ -249,6 +261,7 @@ pub const QuicTransport = struct {
         return QuicError.ConnectionFailed;
     }
 
+    /// Polls the endpoint for network events with the specified timeout in milliseconds.
     pub fn poll(self: *QuicTransport, timeout_ms: u32) !void {
         if (self.endpoint) |ep| {
             try api.poll(ep, timeout_ms);
@@ -256,6 +269,7 @@ pub const QuicTransport = struct {
     }
 };
 
+/// Represents an active QUIC connection that can manage multiple streams.
 pub const QuicConnection = struct {
     allocator: std.mem.Allocator,
     quic_connection: ?*api.QuicConnection,
@@ -263,6 +277,7 @@ pub const QuicConnection = struct {
     streams_init: bool = false,
     next_stream_id: usize = 0,
 
+    /// Closes the connection and all associated streams.
     pub fn close(self: *QuicConnection) void {
         // Close all streams (idempotent) if initialized
         if (self.streams_init) {
@@ -280,6 +295,7 @@ pub const QuicConnection = struct {
         }
     }
 
+    /// Accepts an incoming bidirectional stream on this connection.
     pub fn acceptStream(self: *QuicConnection) !*QuicStream {
         // CANARY: REQ=REQ-GQL-074; FEATURE="Network Transport"; ASPECT=QUICStream; STATUS=TESTED; TEST=TestCANARY_REQ_GQL_074_QUICStream; OWNER=wire; UPDATED=2025-09-22
 
@@ -307,6 +323,7 @@ pub const QuicConnection = struct {
         return stream;
     }
 
+    /// Opens a new stream on this connection, either bidirectional or unidirectional.
     pub fn openStream(self: *QuicConnection, bidirectional: bool) !*QuicStream {
         // CANARY: REQ=REQ-GQL-074; FEATURE="Network Transport"; ASPECT=QUICStreamOpen; STATUS=TESTED; TEST=TestCANARY_REQ_GQL_074_QUICStreamOpen; OWNER=wire; UPDATED=2025-09-22
 
@@ -331,6 +348,7 @@ pub const QuicConnection = struct {
     }
 };
 
+/// Represents a QUIC stream for reading and writing data.
 pub const QuicStream = struct {
     allocator: std.mem.Allocator,
     quic_stream_id: ?api.QuicStreamId,
@@ -338,6 +356,7 @@ pub const QuicStream = struct {
     stream_id: usize = 0,
     read_buffer: []u8 = &[_]u8{},
 
+    /// Closes the stream, releasing any associated resources.
     pub fn close(self: *QuicStream) void {
         // Best-effort, idempotent: avoid vendor close by default to reduce teardown races.
         // Enable explicit stream close only when GEODE_QUIC_FORCE_STREAM_CLOSE=1.
@@ -355,6 +374,7 @@ pub const QuicStream = struct {
         }
     }
 
+    /// Writes data to the stream.
     pub fn write(self: *QuicStream, data: []const u8) !void {
         if (self.quic_stream_id) |sid| {
             _ = try api.writeStream(self.parent_connection.quic_connection.?, sid, data);
@@ -363,6 +383,7 @@ pub const QuicStream = struct {
         }
     }
 
+    /// Writes all data to the stream, handling fragmentation internally.
     pub fn writeAll(self: *QuicStream, data: []const u8) !void {
         if (self.quic_stream_id) |sid| {
             // QUIC handles fragmentation internally
@@ -372,6 +393,7 @@ pub const QuicStream = struct {
         }
     }
 
+    /// Reads data from the stream into the provided buffer, returning the number of bytes read.
     pub fn read(self: *QuicStream, buf: []u8) !usize {
         if (self.quic_stream_id) |sid| {
             return api.readStream(self.parent_connection.quic_connection.?, sid, buf) catch {
@@ -382,6 +404,7 @@ pub const QuicStream = struct {
         }
     }
 
+    /// Reads data until the buffer is full or the stream ends, returning total bytes read.
     pub fn readAll(self: *QuicStream, buf: []u8) !usize {
         var total_read: usize = 0;
         while (total_read < buf.len) {
@@ -392,6 +415,7 @@ pub const QuicStream = struct {
         return total_read;
     }
 
+    /// Reads a line of text from the stream, up to max_size bytes, returning an allocated buffer.
     pub fn readLine(self: *QuicStream, max_size: usize) ![]u8 {
         var buf = try self.allocator.alloc(u8, max_size);
         var pos: usize = 0;
@@ -411,7 +435,7 @@ pub const QuicStream = struct {
     }
 };
 
-// Client-side QUIC support
+/// Client-side QUIC support for connecting to QUIC servers.
 pub const QuicClient = struct {
     allocator: std.mem.Allocator,
     endpoint: ?*api.QuicEndpoint = null,
@@ -421,12 +445,14 @@ pub const QuicClient = struct {
     is_quic: bool = false,
     quic_config: ?*api.QuicConfig = null,
 
+    /// Initializes a new QUIC client.
     pub fn init(allocator: std.mem.Allocator) QuicClient {
         return QuicClient{
             .allocator = allocator,
         };
     }
 
+    /// Deinitializes the client, closing connections and releasing resources.
     pub fn deinit(self: *QuicClient) void {
         // Close connection first, then endpoint. The vendored QUIC may crash if closed during handshake;
         // skip active close by default and rely on endpoint teardown/OS to reclaim unless forced via env.
@@ -450,6 +476,7 @@ pub const QuicClient = struct {
         }
     }
 
+    /// Connects to a QUIC server at the specified address and port.
     pub fn connect(self: *QuicClient, address: []const u8, port: u16) !void {
         // CANARY: REQ=REQ-GQL-074; FEATURE="Network Transport"; ASPECT=QUICClientConnect; STATUS=TESTED; TEST=TestCANARY_REQ_GQL_074_QUICClientConnect; OWNER=wire; UPDATED=2025-09-22
 
@@ -515,6 +542,7 @@ pub const QuicClient = struct {
         std.debug.print("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"connection initiated successfully\"}}\n", .{});
     }
 
+    /// Connects to a QUIC server with optional insecure mode (allows self-signed certificates).
     pub fn connectInsecure(self: *QuicClient, address: []const u8, port: u16, allow_insecure: bool) !void {
         const server_addr_str = try std.fmt.allocPrint(self.allocator, "{s}:{d}", .{ address, port });
         defer self.allocator.free(server_addr_str);
@@ -567,6 +595,7 @@ pub const QuicClient = struct {
         std.debug.print("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"connection initiated successfully\"}}\n", .{});
     }
 
+    /// Extended connection with custom CA, certificate, and key paths for mutual TLS authentication.
     pub fn connectEx(self: *QuicClient, address: []const u8, port: u16, ca: ?[]const u8, cert: ?[]const u8, key: ?[]const u8) !void {
         const server_addr_str = try std.fmt.allocPrint(self.allocator, "{s}:{d}", .{ address, port });
         defer self.allocator.free(server_addr_str);
@@ -614,6 +643,7 @@ pub const QuicClient = struct {
         self.server_port = port;
     }
 
+    /// Waits for the TLS handshake to complete with a timeout.
     pub fn waitForHandshake(self: *QuicClient) !void {
         if (!self.is_quic or self.quic_connection == null) {
             std.debug.print("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"waitForHandshake: no QUIC connection\"}}\n", .{});
@@ -668,6 +698,7 @@ pub const QuicClient = struct {
         return QuicError.HandshakeFailed;
     }
 
+    /// Opens a new bidirectional stream on the connection.
     pub fn getStream(self: *QuicClient) !*QuicClientStream {
         std.debug.print("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"getStream: starting\"}}\n", .{});
 
@@ -696,12 +727,14 @@ pub const QuicClient = struct {
     }
 };
 
+/// Represents a client-side QUIC stream for reading and writing data.
 pub const QuicClientStream = struct {
     allocator: std.mem.Allocator,
     quic_stream_id: ?api.QuicStreamId,
     quic_connection: ?*api.QuicConnection,
     client: ?*QuicClient,
 
+    /// Writes all data to the stream, polling to ensure delivery.
     pub fn writeAll(self: *QuicClientStream, data: []const u8) !void {
         if (self.quic_stream_id) |sid| {
             std.debug.print("DEBUG: QuicClientStream.writeAll called with {} bytes on stream {}\n", .{ data.len, sid });
@@ -724,6 +757,7 @@ pub const QuicClientStream = struct {
         }
     }
 
+    /// Reads data from the stream into the buffer with automatic retries and polling.
     pub fn read(self: *QuicClientStream, buf: []u8) !usize {
         if (self.quic_stream_id) |sid| {
             // Try reading with retries and polling
@@ -762,6 +796,7 @@ pub const QuicClientStream = struct {
         }
     }
 
+    /// Reads a line of text from the stream, up to max_size bytes, returning an allocated buffer.
     pub fn readLine(self: *QuicClientStream, max_size: usize) ![]u8 {
         var buf = try self.allocator.alloc(u8, max_size);
         errdefer self.allocator.free(buf);
@@ -796,6 +831,7 @@ pub const QuicClientStream = struct {
         }
     }
 
+    /// Deinitializes the stream and frees its resources.
     pub fn deinit(self: *QuicClientStream) void {
         // Avoid vendor close by default; env-gated for explicit shutdown.
         if (self.quic_stream_id) |sid| {
