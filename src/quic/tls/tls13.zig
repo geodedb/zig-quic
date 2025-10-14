@@ -369,10 +369,9 @@ pub const Engine = struct {
     fn ensureKeypair(self: *Engine) void {
         if (self.my_priv == null or self.my_pub == null) {
             var sk: [32]u8 = undefined;
-            var pk: [32]u8 = undefined;
             std.crypto.random.bytes(&sk);
-            // Derive public key from private key using the correct std.crypto API
-            std.crypto.dh.X25519.scalarmultBase(&pk, sk);
+            // Derive public key from private key using Zig 0.15.1 X25519 API
+            const pk = std.crypto.dh.X25519.recoverPublicKey(sk) catch unreachable;
             self.my_priv = sk;
             self.my_pub = pk;
             std.debug.print("{s}: Generated X25519 keypair\n", .{if (self.role == .Server) "Server" else "Client"});
@@ -382,9 +381,8 @@ pub const Engine = struct {
     fn tryComputeShared(self: *Engine) void {
         if (self.peer_pub) |peer| {
             if (self.my_priv) |priv| {
-                // Use the correct std.crypto API with output parameter
-                var sh: [32]u8 = undefined;
-                std.crypto.dh.X25519.scalarmult(&sh, priv, peer) catch {
+                // Use Zig 0.15.1 X25519 API - scalarmult returns the value
+                const sh = std.crypto.dh.X25519.scalarmult(priv, peer) catch {
                     std.debug.print("{s}: X25519 scalarmult failed\n", .{if (self.role == .Server) "Server" else "Client"});
                     return;
                 };
