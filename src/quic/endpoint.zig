@@ -1980,7 +1980,11 @@ pub const Endpoint = struct {
             const should_send_initial = blk: {
                 if (conn.role == .Server) {
                     // Server: only send Initial when ServerHello is ready
-                    break :blk conn.tls.sh_seen and conn.crypto_tx_off_initial < 200;
+                    const result = conn.tls.sh_seen and conn.crypto_tx_off_initial < 200;
+                    std.debug.print("Server should_send_initial: sh_seen={}, crypto_tx_off_initial={}, result={}\n", .{
+                        conn.tls.sh_seen, conn.crypto_tx_off_initial, result
+                    });
+                    break :blk result;
                 } else {
                     // Client: send if we saw any ack-eliciting frame
                     break :blk saw_any;
@@ -2041,6 +2045,9 @@ pub const Endpoint = struct {
                     if (conn.peer_initial_dcid.len > 0) break :blk conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len];
                     break :blk dcid;
                 };
+                std.debug.print("Server TX: Deriving Initial keys with dcid=", .{});
+                for (derive_dcid_tx) |b| std.debug.print("{X:0>2}", .{b});
+                std.debug.print(" (len={})\n", .{derive_dcid_tx.len});
                 const oriented = packet.initialAeadKeys(v2, conn.role == .Server, derive_dcid_tx);
                 const tx_keys = oriented.tx;
 
@@ -2054,11 +2061,21 @@ pub const Endpoint = struct {
                 for (tx_scid) |b| std.debug.print("{X:0>2}", .{b});
                 std.debug.print("\n", .{});
                 
+                // Check if we'll have a Handshake packet to send for coalescence
+                const will_send_handshake = conn.hs_tx_keys != null and
+                    ((conn.role == .Server and conn.tls.sh_seen and !conn.server_hello_sent) or
+                     (conn.role == .Client and conn.crypto_tx_off_handshake > 0));
+
                 // Calculate approximate header size to ensure total packet is at least 1200 bytes
                 // Header: ~30 bytes (varies with CID lengths) + auth tag: 16 bytes
                 const estimated_header_size = 30 + tx_dcid.len + tx_scid.len + 16;
-                const min_payload_size = 1200 - estimated_header_size;
-                
+
+                // If we'll send a Handshake packet, limit Initial padding to leave room for coalescence
+                // Assume Handshake packet will be ~600 bytes, so limit Initial to ~800 bytes to fit in 1400 MTU
+                const target_initial_size: usize = if (will_send_handshake) @as(usize, 800) else @as(usize, 1200);
+                const min_payload_size = if (target_initial_size > estimated_header_size)
+                    target_initial_size - estimated_header_size else 0;
+
                 // Add PADDING frames if needed to meet minimum Initial packet size
                 if (frames_buf.items.len < min_payload_size) {
                     const padding_needed = min_payload_size - frames_buf.items.len;
@@ -2067,7 +2084,7 @@ pub const Endpoint = struct {
                         std.debug.print("Failed to add padding to Initial packet\n", .{});
                         return;
                     };
-                    std.debug.print("Added {} bytes of padding to Initial frames\n", .{padding_needed});
+                    std.debug.print("Added {} bytes of padding to Initial frames (target_size={})\n", .{padding_needed, target_initial_size});
                 }
 
                 const out = packet.encodeInitialProtected(self.allocator.*, version, tx_dcid, tx_scid, &[_]u8{}, @as(u32, @truncate(conn.pn_initial_tx)), 4, frames_buf.items, tx_keys) catch null;
