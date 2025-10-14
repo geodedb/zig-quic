@@ -2105,20 +2105,8 @@ pub const Endpoint = struct {
                     conn.server_hello_sent = true;
                     std.debug.print("Queueing handshake flight (EE, Cert, Finished)\n", .{});
 
-                    // Queue EncryptedExtensions with ALPN and transport parameters
-                    const alpn_sel: []const u8 = if (conn.allowed_alpns.len > 0) conn.allowed_alpns[0] else "h3";
-                    var tps: tp.TransportParams = .{};
-                    tps.initial_max_data = conn.local_max_data;
-                    tps.initial_max_stream_data_bidi_local = conn.local_max_stream_data;
-                    tps.initial_max_stream_data_bidi_remote = conn.local_max_stream_data;
-                    tps.initial_max_streams_bidi = conn.local_max_streams_bidi;
-                    tps.initial_max_streams_uni = 0;
-                    const ee_bytes = tp.TransportParams.encode(&tps, self.allocator.*) catch &[_]u8{};
-                    defer {
-                        if (ee_bytes.len > 0) self.allocator.free(ee_bytes);
-                    }
-                    conn.tls.queueEncryptedExtensions(alpn_sel, if (ee_bytes.len > 0) ee_bytes else ee_bytes[0..0]) catch {};
-                    // Queue remaining handshake flight (Certificate*, Finished)
+                    // queueServerHandshakeFlight will send EncryptedExtensions + Certificate + CertificateVerify + Finished
+                    // using the ALPN and TP already set in conn.tls via setLocalTransportParams
                     conn.tls.queueServerHandshakeFlight();
                 }
 
@@ -2434,7 +2422,7 @@ pub const Endpoint = struct {
                                 saw_ack_eliciting_hs = true; // CRYPTO is ack-eliciting
 
                                 // Check if we can now process buffered frames
-                                if (conn.crypto_buffer_handshake.getContiguous(conn.crypto_rx_off_handshake)) |fragments| {
+                                while (conn.crypto_buffer_handshake.getContiguous(conn.crypto_rx_off_handshake)) |fragments| {
                                     for (fragments) |frag| {
                                         conn.pushCrypto(frag.data) catch {};
                                         conn.crypto_rx_off_handshake += @intCast(frag.data.len);

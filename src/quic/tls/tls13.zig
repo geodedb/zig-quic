@@ -1140,25 +1140,7 @@ pub const Engine = struct {
         try ext.appendSlice(self.allocator, &.{ 0x00, 0x1d }); // group x25519
         try ext.appendSlice(self.allocator, &.{ 0x00, 32 });
         try ext.appendSlice(self.allocator, pubkey[0..]);
-        // ALPN extension (0x0010) - REQUIRED for QUIC
-        if (self.alpn) |alpn_proto| {
-            std.debug.print("DEBUG queueRealServerHello: Adding ALPN extension, proto={s}, len={}\n", .{ alpn_proto, alpn_proto.len });
-            const alpn_len: u16 = @intCast(1 + alpn_proto.len); // length byte + protocol
-            try ext.appendSlice(self.allocator, &.{ 0x00, 0x10, @intCast(alpn_len >> 8), @intCast(alpn_len & 0xff) });
-            try ext.append(self.allocator, @intCast(alpn_proto.len));
-            try ext.appendSlice(self.allocator, alpn_proto);
-        } else {
-            std.debug.print("DEBUG queueRealServerHello: ALPN is NULL - NOT adding ALPN extension!\n", .{});
-        }
-        // QUIC Transport Parameters extension (0x0039) - REQUIRED for QUIC
-        if (self.local_tp) |tp| {
-            std.debug.print("DEBUG queueRealServerHello: Adding Transport Parameters extension, len={}\n", .{tp.len});
-            const tp_len: u16 = @intCast(tp.len);
-            try ext.appendSlice(self.allocator, &.{ 0x00, 0x39, @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
-            try ext.appendSlice(self.allocator, tp);
-        } else {
-            std.debug.print("DEBUG queueRealServerHello: local_tp is NULL - NOT adding Transport Parameters extension!\n", .{});
-        }
+        // NOTE: For TLS 1.3, ALPN and Transport Parameters go in EncryptedExtensions, NOT ServerHello (RFC 8446, RFC 9001)
         const exts_bytes = ext.items;
         const exts_len: u16 = @intCast(exts_bytes.len);
         try body.appendSlice(self.allocator, &.{ @intCast(exts_len >> 8), @intCast(exts_len & 0xff) });
