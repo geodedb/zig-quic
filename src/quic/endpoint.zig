@@ -2054,7 +2054,11 @@ pub const Endpoint = struct {
                 // For client: DCID = peer's initial DCID (from server's SCID in response), SCID = our SCID
                 // For server: DCID = client's SCID from Initial (peer_initial_scid), SCID = our SCID
                 // RFC 9000: Server's Initial response uses DCID = client's SCID, SCID = new server CID
-                const tx_dcid = if (conn.role == .Server) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len];
+                // If client sent zero-length SCID, use empty DCID (proper quic-go compatibility)
+                const tx_dcid = if (conn.role == .Server)
+                    conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len]
+                else
+                    conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len];
                 const tx_scid = conn.our_scid.bytes[0..conn.our_scid.len];
                 std.debug.print("{s}: Encoding Initial with pn={} dcid_len={} scid_len={} pn_len={}\n", .{ if (conn.role == .Server) "Server" else "Client", conn.pn_initial_tx, tx_dcid.len, tx_scid.len, 4 });
                 std.debug.print("  Server will use SCID: ", .{});
@@ -2161,7 +2165,7 @@ pub const Endpoint = struct {
                     conn.crypto_retx_handshake_off = base_off_hs;
                     conn.crypto_tx_off_handshake += n_tls;
                     // For Handshake packets, use the client's source connection ID (peer_initial_scid)
-                    // If client sent scid_len=0, we send Handshake with dcid_len=0
+                    // If client sent zero-length SCID, use empty DCID (proper quic-go compatibility)
                     const hs_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
                     std.debug.print("Encoding Handshake packet: dcid_len={}, scid_len={}\n", .{hs_dcid.len, conn.our_scid.len});
                     std.debug.print("  Using Handshake keys - key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
@@ -2522,7 +2526,7 @@ pub const Endpoint = struct {
                         conn.crypto_retx_handshake_off = base_off_hs;
                         conn.crypto_tx_off_handshake += n;
                         // Use the client's source connection ID (peer_initial_scid)
-                        // If client sent scid_len=0, we send Handshake with dcid_len=0
+                        // If client sent zero-length SCID, use empty DCID (proper quic-go compatibility)
                         const hs_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
                         const pkt = packet.encodeHandshakeProtected(self.allocator.*, version, hs_dcid, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_handshake_tx)), 2, frames_buf.items, tx_hs) catch null;
                         if (pkt) |bytes_out| {

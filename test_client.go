@@ -19,8 +19,8 @@ func main() {
 	flag.Parse()
 
 	tlsConf := &tls.Config{
-		InsecureSkipVerify: insecure,
-		NextProtos:         []string{"h3"},
+		InsecureSkipVerify: true,  // Always use insecure for testing
+		NextProtos:         []string{"hq-interop"},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
