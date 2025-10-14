@@ -1,0 +1,33 @@
+# QUIC Interop Runner artifacts
+quic-interop-runner/
+*.log
+logs/
+logs_*/
+
+# Build artifacts
+*.o
+*.so
+*.dylib
+
+# Test results
+results/
+*.pcap
+*.pcapng
+
+# SSL keys
+*.key
+!certs/*.key
+keys.log
+
+# QLOG files
+qlog/
+*.qlog
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Docker
+.docker/

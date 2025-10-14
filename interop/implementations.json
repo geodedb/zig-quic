@@ -1,0 +1,28 @@
+{
+  "zig": {
+    "image": "zig-quic:interop",
+    "url": "https://github.com/beejjorgensen/zig-quic",
+    "role": "both",
+    "tests": {
+      "handshake": true,
+      "transfer": true,
+      "retry": true,
+      "resumption": false,
+      "zerortt": false,
+      "http3": true,
+      "multiconnect": true,
+      "keyupdate": true,
+      "ecn": false,
+      "amplificationlimit": false,
+      "handshakeloss": false,
+      "transferloss": false,
+      "handshakecorruption": false,
+      "transfercorruption": false,
+      "ipv6": true,
+      "v2": false,
+      "blackhole": false,
+      "chacha20": false
+    },
+    "note": "Zig-based QUIC implementation with TLS 1.3 support"
+  }
+}

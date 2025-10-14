@@ -3,6 +3,22 @@ set -euo pipefail
 
 # Full interoperability test runner for Zig QUIC implementation
 # Tests against all available QUIC implementations using docker-compose
+#
+# Usage:
+#   ./scripts/interop_full.sh [mode] [--official]
+#
+# Modes:
+#   basic  - Test against quic-go only (default)
+#   quick  - Test against quic-go, ngtcp2, quiche
+#   full   - Test against all implementations
+#   runner - Use official quic-interop-runner
+#
+# Options:
+#   --official - Clone and use the official quic-interop-runner
+#
+# Environment variables:
+#   SKIP_BUILD=1         - Skip building the Zig implementation
+#   SKIP_QNS_NET_PRUNE=1 - Skip pruning conflicting Docker networks
 
 # Fix DOCKER_HOST if it's set incorrectly (should be unix:// or unset for local socket)
 if [[ "${DOCKER_HOST:-}" == "/var/run/docker.sock" ]]; then
@@ -228,11 +244,87 @@ run_generic_test() {
     docker network rm interop_leftnet interop_rightnet >/dev/null 2>&1 || true
 }
 
+# Function to run with official quic-interop-runner
+run_official_interop() {
+    echo -e "${GREEN}=== Setting up official quic-interop-runner ===${NC}"
+
+    # Clone official runner if not exists
+    if [ ! -d "interop/quic-interop-runner" ]; then
+        echo "Cloning quic-interop-runner..."
+        mkdir -p interop
+        git clone https://github.com/quic-interop/quic-interop-runner.git interop/quic-interop-runner
+    fi
+
+    # Build Docker image
+    echo -e "${YELLOW}Building Zig QUIC Docker image for interop...${NC}"
+    docker build -f interop/Dockerfile -t zig-quic:interop .
+
+    # Copy our implementations.json to the runner
+    cp interop/implementations.json interop/quic-interop-runner/implementations.local.json
+
+    # Run the official runner
+    cd interop/quic-interop-runner
+
+    # Setup Python venv if needed
+    if [ ! -d ".venv" ]; then
+        python3 -m venv .venv
+        .venv/bin/pip install -r requirements.txt
+    fi
+
+    # Run interop tests
+    echo -e "${GREEN}Running official interop tests...${NC}"
+    .venv/bin/python interop.py \
+        --client zig \
+        --server zig \
+        --log-dir logs \
+        --implementations implementations.local.json \
+        --tests handshake,transfer,retry,http3 || true
+
+    # Also test against other implementations
+    echo -e "${GREEN}Testing Zig against quic-go...${NC}"
+    .venv/bin/python interop.py \
+        --client zig \
+        --server quic-go \
+        --log-dir logs \
+        --tests handshake,transfer || true
+
+    .venv/bin/python interop.py \
+        --client quic-go \
+        --server zig \
+        --log-dir logs \
+        --tests handshake,transfer || true
+
+    cd "$ROOT"
+}
+
 # Main test execution
 echo -e "\n${GREEN}=== Running Interoperability Tests ===${NC}"
 
+# Check for --official flag
+USE_OFFICIAL=false
+for arg in "$@"; do
+    if [[ "$arg" == "--official" ]]; then
+        USE_OFFICIAL=true
+    fi
+done
+
 # Test mode selection
 MODE=${1:-basic}
+
+# Remove --official from args for mode detection
+MODE=${MODE//--official/}
+MODE=${MODE// /}
+MODE=${MODE:-basic}
+
+if [[ "$USE_OFFICIAL" == "true" ]]; then
+    run_official_interop
+    exit 0
+fi
+
+if [[ "$MODE" == "runner" ]]; then
+    run_official_interop
+    exit 0
+fi
 
 if [[ "$MODE" == "full" ]]; then
     # Full matrix: test zig against all implementations in both directions
