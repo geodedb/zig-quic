@@ -456,7 +456,13 @@ pub const Engine = struct {
                     if (self.real_mode) {
                         std.debug.print("TLS: Real mode - parsing real hello\n", .{});
                         switch (p.typ) {
-                            .client_hello => extracted = parseRealClientHello(p.body),
+                            .client_hello => {
+                                extracted = parseRealClientHello(p.body);
+                                // Extract ALPN from ClientHello for server
+                                if (self.role == .Server) {
+                                    self.extractAlpnFromClientHello(p.body);
+                                }
+                            },
                             .server_hello => extracted = parseRealServerHello(p.body),
                             else => {},
                         }
@@ -1078,8 +1084,12 @@ pub const Engine = struct {
 
     /// Build a minimally spec-compliant TLS 1.3 ServerHello (real mode)
     pub fn queueRealServerHello(self: *Engine) !void {
+        std.debug.print("DEBUG queueRealServerHello: ENTER - alpn={}, local_tp={}\n", .{ self.alpn != null, self.local_tp != null });
         self.ensureKeypair();
-        const pubkey = self.my_pub orelse return error.Internal;
+        const pubkey = self.my_pub orelse {
+            std.debug.print("DEBUG queueRealServerHello: EARLY EXIT - my_pub is NULL\n", .{});
+            return error.Internal;
+        };
         var body = std.ArrayList(u8){};
         defer body.deinit(self.allocator);
         try body.appendSlice(self.allocator, &.{ 0x03, 0x03 }); // legacy_version
@@ -1100,6 +1110,25 @@ pub const Engine = struct {
         try ext.appendSlice(self.allocator, &.{ 0x00, 0x1d }); // group x25519
         try ext.appendSlice(self.allocator, &.{ 0x00, 32 });
         try ext.appendSlice(self.allocator, pubkey[0..]);
+        // ALPN extension (0x0010) - REQUIRED for QUIC
+        if (self.alpn) |alpn_proto| {
+            std.debug.print("DEBUG queueRealServerHello: Adding ALPN extension, proto={s}, len={}\n", .{ alpn_proto, alpn_proto.len });
+            const alpn_len: u16 = @intCast(1 + alpn_proto.len); // length byte + protocol
+            try ext.appendSlice(self.allocator, &.{ 0x00, 0x10, @intCast(alpn_len >> 8), @intCast(alpn_len & 0xff) });
+            try ext.append(self.allocator, @intCast(alpn_proto.len));
+            try ext.appendSlice(self.allocator, alpn_proto);
+        } else {
+            std.debug.print("DEBUG queueRealServerHello: ALPN is NULL - NOT adding ALPN extension!\n", .{});
+        }
+        // QUIC Transport Parameters extension (0x0039) - REQUIRED for QUIC
+        if (self.local_tp) |tp| {
+            std.debug.print("DEBUG queueRealServerHello: Adding Transport Parameters extension, len={}\n", .{tp.len});
+            const tp_len: u16 = @intCast(tp.len);
+            try ext.appendSlice(self.allocator, &.{ 0x00, 0x39, @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
+            try ext.appendSlice(self.allocator, tp);
+        } else {
+            std.debug.print("DEBUG queueRealServerHello: local_tp is NULL - NOT adding Transport Parameters extension!\n", .{});
+        }
         const exts_bytes = ext.items;
         const exts_len: u16 = @intCast(exts_bytes.len);
         try body.appendSlice(self.allocator, &.{ @intCast(exts_len >> 8), @intCast(exts_len & 0xff) });
@@ -1117,6 +1146,53 @@ pub const Engine = struct {
             _ = self.computeApplicationSecrets();
         }
     }
+
+    /// Extract ALPN from ClientHello for server
+    fn extractAlpnFromClientHello(self: *Engine, body: []const u8) void {
+        std.debug.print("extractAlpnFromClientHello: body_len={}\n", .{body.len});
+        if (body.len < 35) return; // Minimum ClientHello size
+        var pos: usize = 2 + 32; // Skip version + random
+        if (pos >= body.len) return;
+        // Session ID
+        const sid_len: usize = body[pos];
+        pos += 1 + sid_len;
+        if (pos + 2 > body.len) return;
+        // Cipher suites
+        const cs_len = readU16(body[pos..pos+2]);
+        pos += 2 + cs_len;
+        if (pos >= body.len) return;
+        // Compression
+        const comp_len: usize = body[pos];
+        pos += 1 + comp_len;
+        if (pos + 2 > body.len) return;
+        // Extensions
+        const exts_len = readU16(body[pos..pos+2]);
+        pos += 2;
+        if (pos + exts_len > body.len) return;
+        const exts_end = pos + exts_len;
+        // Parse extensions looking for ALPN (0x0010)
+        while (pos + 4 <= exts_end) {
+            const etype = readU16(body[pos..pos+2]);
+            const elen = readU16(body[pos+2..pos+4]);
+            pos += 4;
+            if (pos + elen > exts_end) break;
+            if (etype == 0x0010 and elen >= 3) { // ALPN extension
+                const list_len = readU16(body[pos..pos+2]);
+                if (2 + list_len <= elen and list_len > 0) {
+                    const name_len = body[pos + 2];
+                    if (3 + name_len <= elen and name_len > 0) {
+                        if (self.alpn) |old| self.allocator.free(old);
+                        self.alpn = self.allocator.dupe(u8, body[pos+3..pos+3+name_len]) catch null;
+                        std.debug.print("extractAlpnFromClientHello: Extracted ALPN: {s}\n", .{self.alpn.?});
+                        return;
+                    }
+                }
+            }
+            pos += elen;
+        }
+        std.debug.print("extractAlpnFromClientHello: No ALPN found\n", .{});
+    }
+
     /// Internal: auto-send Finished when conditions satisfied
     fn maybeAutoProgress(self: *Engine) void {
         if (self.finished_sent) return;
