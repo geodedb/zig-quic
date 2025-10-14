@@ -1975,7 +1975,19 @@ pub const Endpoint = struct {
             var initial_pkt: ?[]u8 = null;
             defer if (initial_pkt) |p| self.allocator.free(p);
 
-            if (saw_any and !conn.initial_keys_dropped and allow_send) {
+            // Only send Initial response when we have ServerHello ready (for server role)
+            // or when we have something meaningful to send (for client role)
+            const should_send_initial = blk: {
+                if (conn.role == .Server) {
+                    // Server: only send Initial when ServerHello is ready
+                    break :blk conn.tls.sh_seen and conn.crypto_tx_off_initial < 200;
+                } else {
+                    // Client: send if we saw any ack-eliciting frame
+                    break :blk saw_any;
+                }
+            };
+
+            if (should_send_initial and !conn.initial_keys_dropped and allow_send) {
                 // Build frames for Initial packet response
                 var frames_buf = std.ArrayList(u8){};
                 defer frames_buf.deinit(self.allocator.*);
