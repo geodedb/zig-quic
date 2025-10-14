@@ -947,17 +947,24 @@ pub const Endpoint = struct {
 
         if (n > 0) {
             std.debug.print("DEBUG: epoll_wait returned {} events\n", .{n});
+            var has_read_event = false;
             for (0..n) |i| {
                 const ev = events[i];
                 std.debug.print("DEBUG: Event {}: fd={}, events=0x{x}\n", .{i, ev.data.fd, ev.events});
+                // Check if this event is for our socket and has EPOLLIN (readable)
+                // Cast sock_fd to i32 for comparison with epoll event data
+                if (ev.data.fd == @as(i32, @intCast(self.sock_fd)) and (ev.events & linux.EPOLL.IN) != 0) {
+                    has_read_event = true;
+                }
+            }
+            // Only drain readable if we actually have a read event
+            if (has_read_event) {
+                self.drainReadable();
             }
         } else if (n == 0) {
             std.debug.print("DEBUG: epoll_wait timed out\n", .{});
+            // Don't call drainReadable on timeout - there's no data available
         }
-
-        // Always call drainReadable after polling, matching kqueue backend and old geode implementation
-        // This ensures we process any pending data even if epoll didn't trigger
-        self.drainReadable();
     }
 
     fn poll_kqueue_backend(self: *Endpoint, timeout_ms: i32) !void {

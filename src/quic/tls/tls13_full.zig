@@ -133,8 +133,8 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
     pos += 2;
     if (pos + cs_len > data.len) return error.TooShort;
 
-    var cipher_suites = std.ArrayList(CipherSuite){};
-    defer cipher_suites.deinit();
+    var cipher_suites = try std.ArrayList(CipherSuite).initCapacity(allocator, 0);
+    defer cipher_suites.deinit(allocator);
 
     var cs_pos: usize = 0;
     while (cs_pos < cs_len) : (cs_pos += 2) {
@@ -144,7 +144,7 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
             try cipher_suites.append(allocator, @enumFromInt(cs_value));
         }
     }
-    ch.cipher_suites = try cipher_suites.toOwnedSlice();
+    ch.cipher_suites = try cipher_suites.toOwnedSlice(allocator);
     pos += cs_len;
 
     // Compression methods
@@ -191,8 +191,8 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
                 if (ext_data.len >= 2) {
                     const groups_len = readU16(ext_data[0..2]);
                     if (2 + groups_len <= ext_data.len) {
-                        var groups = std.ArrayList(NamedGroup){};
-                        defer groups.deinit();
+                        var groups = try std.ArrayList(NamedGroup).initCapacity(allocator, 0);
+                        defer groups.deinit(allocator);
 
                         var g_pos: usize = 2;
                         while (g_pos + 2 <= 2 + groups_len) : (g_pos += 2) {
@@ -203,7 +203,7 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
                         }
 
                         if (groups.items.len > 0) {
-                            ch.supported_groups = try groups.toOwnedSlice();
+                            ch.supported_groups = try groups.toOwnedSlice(allocator);
                         }
                     }
                 }
@@ -213,8 +213,8 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
                 if (ext_data.len >= 2) {
                     const algs_len = readU16(ext_data[0..2]);
                     if (2 + algs_len <= ext_data.len) {
-                        var algs = std.ArrayList(SignatureScheme){};
-                        defer algs.deinit();
+                        var algs = try std.ArrayList(SignatureScheme).initCapacity(allocator, 0);
+                        defer algs.deinit(allocator);
 
                         var a_pos: usize = 2;
                         while (a_pos + 2 <= 2 + algs_len) : (a_pos += 2) {
@@ -226,7 +226,7 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
                         }
 
                         if (algs.items.len > 0) {
-                            ch.signature_algorithms = try algs.toOwnedSlice();
+                            ch.signature_algorithms = try algs.toOwnedSlice(allocator);
                         }
                     }
                 }
@@ -268,8 +268,8 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
                 if (ext_data.len >= 2) {
                     const list_len = readU16(ext_data[0..2]);
                     if (2 + list_len <= ext_data.len) {
-                        var alpn_list = std.ArrayList([]const u8){};
-                        defer alpn_list.deinit();
+                        var alpn_list = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+                        defer alpn_list.deinit(allocator);
 
                         var a_pos: usize = 2;
                         while (a_pos < 2 + list_len) {
@@ -285,7 +285,7 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
                         }
 
                         if (alpn_list.items.len > 0) {
-                            ch.alpn_list = try alpn_list.toOwnedSlice();
+                            ch.alpn_list = try alpn_list.toOwnedSlice(allocator);
                         }
                     }
                 }
@@ -318,21 +318,21 @@ pub fn buildServerHello(
     key_share_group: NamedGroup,
     key_share_data: []const u8,
 ) ![]u8 {
-    var msg = std.ArrayList(u8){};
-    defer msg.deinit();
+    var msg = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer msg.deinit(allocator);
 
     // Legacy version (TLS 1.2 for compatibility)
-    try msg.appendSlice(allocator,&[_]u8{ 0x03, 0x03 });
+    try msg.appendSlice(allocator, &[_]u8{ 0x03, 0x03 });
 
     // Random
-    try msg.appendSlice(allocator,&server_random);
+    try msg.appendSlice(allocator, &server_random);
 
     // Legacy session ID (echo from client or empty)
     try msg.append(allocator, 0);
 
     // Cipher suite
     const cs_value = @intFromEnum(cipher_suite);
-    try msg.appendSlice(allocator,&[_]u8{
+    try msg.appendSlice(allocator, &[_]u8{
         @intCast(cs_value >> 8),
         @intCast(cs_value & 0xff),
     });
@@ -341,35 +341,35 @@ pub fn buildServerHello(
     try msg.append(allocator, 0);
 
     // Extensions
-    var exts = std.ArrayList(u8){};
-    defer exts.deinit();
+    var exts = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer exts.deinit(allocator);
 
     // supported_versions (mandatory for TLS 1.3)
-    try writeExtension(&exts, .supported_versions, &[_]u8{ 0x03, 0x04 }); // TLS 1.3
+    try writeExtension(allocator, &exts, .supported_versions, &[_]u8{ 0x03, 0x04 }); // TLS 1.3
 
     // key_share (mandatory for ECDHE)
-    var ks_data = std.ArrayList(u8){};
-    defer ks_data.deinit();
+    var ks_data = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer ks_data.deinit(allocator);
     const group_value = @intFromEnum(key_share_group);
-    try ks_data.appendSlice(allocator,&[_]u8{
+    try ks_data.appendSlice(allocator, &[_]u8{
         @intCast(group_value >> 8),
         @intCast(group_value & 0xff),
     });
-    try ks_data.appendSlice(allocator,&[_]u8{
+    try ks_data.appendSlice(allocator, &[_]u8{
         @intCast(key_share_data.len >> 8),
         @intCast(key_share_data.len & 0xff),
     });
-    try ks_data.appendSlice(allocator,key_share_data);
-    try writeExtension(&exts, .key_share, ks_data.items);
+    try ks_data.appendSlice(allocator, key_share_data);
+    try writeExtension(allocator, &exts, .key_share, ks_data.items);
 
     // Write extensions length
-    try msg.appendSlice(allocator,&[_]u8{
+    try msg.appendSlice(allocator, &[_]u8{
         @intCast(exts.items.len >> 8),
         @intCast(exts.items.len & 0xff),
     });
-    try msg.appendSlice(allocator,exts.items);
+    try msg.appendSlice(allocator, exts.items);
 
-    return msg.toOwnedSlice();
+    return msg.toOwnedSlice(allocator);
 }
 
 /// Build EncryptedExtensions message
@@ -378,42 +378,42 @@ pub fn buildEncryptedExtensions(
     alpn: ?[]const u8,
     quic_params: ?[]const u8,
 ) ![]u8 {
-    var exts = std.ArrayList(u8){};
-    defer exts.deinit();
+    var exts = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer exts.deinit(allocator);
 
     // ALPN
     if (alpn) |proto| {
-        var alpn_data = std.ArrayList(u8){};
+        var alpn_data = try std.ArrayList(u8).initCapacity(allocator, 0);
         defer alpn_data.deinit();
 
         const alpn_list_len = 1 + proto.len;
-        try alpn_data.appendSlice(allocator,&[_]u8{
+        try alpn_data.appendSlice(&[_]u8{
             @intCast(alpn_list_len >> 8),
             @intCast(alpn_list_len & 0xff),
         });
         try alpn_data.append(allocator, @intCast(proto.len));
-        try alpn_data.appendSlice(allocator,proto);
+        try alpn_data.appendSlice(proto);
 
-        try writeExtension(&exts, .alpn, alpn_data.items);
+        try writeExtension(allocator, &exts, .alpn, alpn_data.items);
     }
 
     // QUIC transport parameters
     if (quic_params) |params| {
-        try writeExtension(&exts, .quic_transport_parameters, params);
+        try writeExtension(allocator, &exts, .quic_transport_parameters, params);
     }
 
     // Build the message
-    var msg = std.ArrayList(u8){};
-    defer msg.deinit();
+    var msg = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer msg.deinit(allocator);
 
     // Extensions length
-    try msg.appendSlice(allocator,&[_]u8{
+    try msg.appendSlice(allocator, &[_]u8{
         @intCast(exts.items.len >> 8),
         @intCast(exts.items.len & 0xff),
     });
-    try msg.appendSlice(allocator,exts.items);
+    try msg.appendSlice(allocator, exts.items);
 
-    return msg.toOwnedSlice();
+    return msg.toOwnedSlice(allocator);
 }
 
 /// Build Certificate message
@@ -421,8 +421,8 @@ pub fn buildCertificate(
     allocator: std.mem.Allocator,
     cert_chain: []const []const u8,
 ) ![]u8 {
-    var msg = std.ArrayList(u8){};
-    defer msg.deinit();
+    var msg = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer msg.deinit(allocator);
 
     // Certificate request context (empty for server)
     try msg.append(allocator, 0);
@@ -434,7 +434,7 @@ pub fn buildCertificate(
     }
 
     // Certificate list length (3 bytes)
-    try msg.appendSlice(allocator,&[_]u8{
+    try msg.appendSlice(allocator, &[_]u8{
         @intCast(total_len >> 16),
         @intCast((total_len >> 8) & 0xff),
         @intCast(total_len & 0xff),
@@ -444,20 +444,20 @@ pub fn buildCertificate(
     for (cert_chain) |cert| {
         // Certificate data length (3 bytes)
         const cert_len: u24 = @intCast(cert.len);
-        try msg.appendSlice(allocator,&[_]u8{
+        try msg.appendSlice(allocator, &[_]u8{
             @intCast(cert_len >> 16),
             @intCast((cert_len >> 8) & 0xff),
             @intCast(cert_len & 0xff),
         });
 
         // Certificate data
-        try msg.appendSlice(allocator,cert);
+        try msg.appendSlice(allocator, cert);
 
         // Certificate extensions (empty)
-        try msg.appendSlice(allocator,&[_]u8{ 0x00, 0x00 });
+        try msg.appendSlice(allocator, &[_]u8{ 0x00, 0x00 });
     }
 
-    return msg.toOwnedSlice();
+    return msg.toOwnedSlice(allocator);
 }
 
 /// Build CertificateVerify message
@@ -466,26 +466,26 @@ pub fn buildCertificateVerify(
     signature_scheme: SignatureScheme,
     signature: []const u8,
 ) ![]u8 {
-    var msg = std.ArrayList(u8){};
-    defer msg.deinit();
+    var msg = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer msg.deinit(allocator);
 
     // Signature algorithm
     const scheme_value = @intFromEnum(signature_scheme);
-    try msg.appendSlice(allocator,&[_]u8{
+    try msg.appendSlice(allocator, &[_]u8{
         @intCast(scheme_value >> 8),
         @intCast(scheme_value & 0xff),
     });
 
     // Signature length
-    try msg.appendSlice(allocator,&[_]u8{
+    try msg.appendSlice(allocator, &[_]u8{
         @intCast(signature.len >> 8),
         @intCast(signature.len & 0xff),
     });
 
     // Signature
-    try msg.appendSlice(allocator,signature);
+    try msg.appendSlice(allocator, signature);
 
-    return msg.toOwnedSlice();
+    return msg.toOwnedSlice(allocator);
 }
 
 /// Build Finished message
@@ -493,10 +493,10 @@ pub fn buildFinished(
     allocator: std.mem.Allocator,
     verify_data: []const u8,
 ) ![]u8 {
-    var msg = std.ArrayList(u8){};
-    defer msg.deinit();
-    try msg.appendSlice(allocator,verify_data);
-    return msg.toOwnedSlice();
+    var msg = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer msg.deinit(allocator);
+    try msg.appendSlice(allocator, verify_data);
+    return msg.toOwnedSlice(allocator);
 }
 
 // Helper functions
@@ -510,18 +510,19 @@ fn readU24(data: []const u8) u24 {
 }
 
 fn writeExtension(
+    allocator: std.mem.Allocator,
     list: *std.ArrayList(u8),
     ext_type: ExtensionType,
     data: []const u8,
 ) !void {
     const type_value = @intFromEnum(ext_type);
-    try list.appendSlice(allocator,&[_]u8{
+    try list.appendSlice(allocator, &[_]u8{
         @intCast(type_value >> 8),
         @intCast(type_value & 0xff),
         @intCast(data.len >> 8),
         @intCast(data.len & 0xff),
     });
-    try list.appendSlice(allocator,data);
+    try list.appendSlice(allocator, data);
 }
 
 /// Compute the signature for CertificateVerify
