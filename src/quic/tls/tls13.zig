@@ -452,23 +452,31 @@ pub const Engine = struct {
                 if (p.typ == .client_hello or p.typ == .server_hello) {
                     std.debug.print("TLS: Processing hello message, typ={}, real_mode={}\n", .{p.typ, self.real_mode});
                     var extracted: ?[32]u8 = null;
-                    if (self.real_mode) {
-                        std.debug.print("TLS: Real mode - parsing real hello\n", .{});
-                        switch (p.typ) {
-                            .client_hello => {
-                                extracted = parseRealClientHello(p.body);
+
+                    // Always try real TLS parsing first (for interop with standard clients)
+                    std.debug.print("TLS: Attempting real TLS hello parsing\n", .{});
+                    switch (p.typ) {
+                        .client_hello => {
+                            extracted = parseRealClientHello(p.body);
+                            if (extracted != null) {
+                                // Successfully parsed real ClientHello - enable real mode for response
+                                if (!self.real_mode) {
+                                    std.debug.print("TLS: Detected real ClientHello, enabling real_mode\n", .{});
+                                    self.real_mode = true;
+                                }
                                 // Extract ALPN from ClientHello for server
                                 if (self.role == .Server) {
                                     self.extractAlpnFromClientHello(p.body);
                                 }
-                            },
-                            .server_hello => extracted = parseRealServerHello(p.body),
-                            else => {},
-                        }
-                    } else {
-                        std.debug.print("TLS: Not in real mode - trying minimal parse\n", .{});
+                            }
+                        },
+                        .server_hello => extracted = parseRealServerHello(p.body),
+                        else => {},
                     }
+
+                    // If real parsing failed, try minimal "CH1"/"SH1" format as fallback
                     if (extracted == null) {
+                        std.debug.print("TLS: Real TLS parsing failed, trying minimal parse\n", .{});
                         if (parseMinimalHelloPub(p.typ, p.body)) |pk_min| {
                             extracted = pk_min;
                         } else {

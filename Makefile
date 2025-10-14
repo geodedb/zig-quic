@@ -28,6 +28,7 @@ all: ci cross-compile-quick
 
 build:
 	$(ZIG) build $(ZIG_FLAGS)
+	$(ZIG) build cli $(ZIG_FLAGS)
 
 build-release:
 	$(ZIG) build $(RELEASE_FLAGS) $(ZIG_FLAGS)
