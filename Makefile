@@ -24,7 +24,7 @@ TARGETS = \
 .PHONY: interop interop-quic-go interop-zig test-interop-all
 
 # Default target runs full CI including cross-compilation
-all: ci cross-compile-quick
+all: ci cross-compile-quick interop
 
 build:
 	$(ZIG) build $(ZIG_FLAGS)

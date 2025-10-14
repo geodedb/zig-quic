@@ -3,6 +3,25 @@
 // Scope: transcript hash, Derive-Secret helpers, handshake traffic secrets,
 // a tiny state container to consume/produce CRYPTO bytes, and minimal
 // handshake message encode/parse helpers for ClientHello/ServerHello envelopes.
+//
+// DESIGN PRINCIPLE: INTEROP FIRST
+// ================================
+// The TLS engine MUST attempt to parse standard TLS 1.3 formats BEFORE falling
+// back to minimal/test formats. This ensures compatibility with real-world QUIC
+// implementations (quic-go, quinn, msquic, etc.) without requiring explicit
+// configuration.
+//
+// Auto-detection is preferred over mode flags to avoid configuration errors:
+// - When receiving a ClientHello, always try real TLS 1.3 parsing first
+// - If successful, automatically enable real_mode for response generation
+// - Only fall back to minimal "CH1" format if real parsing fails
+//
+// This pattern ensures that:
+// 1. Standard QUIC clients work out-of-the-box
+// 2. Test/minimal formats still work for backward compatibility
+// 3. No manual configuration required for interoperability
+//
+// See tests/test_standard_tls_clienthello.zig for verification of this behavior.
 const std = @import("std");
 const ks = @import("quic_tls");
 const x509 = @import("x509");
