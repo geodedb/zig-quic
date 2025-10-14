@@ -1145,6 +1145,13 @@ pub const Engine = struct {
             self.handshake_server_secret = hs.server_hs;
             _ = self.computeApplicationSecrets();
         }
+        // Queue EncryptedExtensions (which will trigger Certificate + CertificateVerify + Finished via maybeAutoProgress)
+        const alpn_for_ee = self.alpn orelse &[_]u8{};
+        const tp_for_ee = self.local_tp orelse &[_]u8{};
+        std.debug.print("Server: Queueing EncryptedExtensions with ALPN={s} TP_len={}\n", .{ alpn_for_ee, tp_for_ee.len });
+        self.queueEncryptedExtensions(alpn_for_ee, tp_for_ee) catch |e| {
+            std.debug.print("Server: Failed to queue EncryptedExtensions: {}\n", .{e});
+        };
     }
 
     /// Extract ALPN from ClientHello for server
@@ -1217,7 +1224,7 @@ pub const Engine = struct {
         if (self.role == .Server) {
             // Authenticated path: if a server certificate is configured and not yet sent, emit Certificate + CertificateVerify
             if (self.ee_sent and self.handshake_server_secret != null) {
-                if (self.server_cert_der != null and self.server_priv_key != null and !self.allow_insecure) {
+                if (self.server_cert_der != null and self.server_priv_key != null) {
                     // Check if Certificate already in transcript by scanning for finished_sent flag only; use finished_sent as barrier.
                     // If Finished not yet sent, we can still add cert flight.
                     // Queue Certificate
