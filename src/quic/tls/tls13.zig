@@ -369,30 +369,30 @@ pub const Engine = struct {
     fn ensureKeypair(self: *Engine) void {
         if (self.my_priv == null or self.my_pub == null) {
             var sk: [32]u8 = undefined;
+            var pk: [32]u8 = undefined;
             std.crypto.random.bytes(&sk);
-            // Derive public as sk * basepoint (0x09 || 31*0x00)
-            var base: [32]u8 = .{0} ** 32;
-            base[0] = 9;
-            const pk = std.crypto.dh.X25519.scalarmult(sk, base) catch {
-                // Fallback to deterministic non-zero pub to avoid panics in tests
-                var tmp: [32]u8 = .{0} ** 32;
-                tmp[0] = 1;
-                self.my_priv = sk;
-                self.my_pub = tmp;
-                return;
-            };
+            // Derive public key from private key using the correct std.crypto API
+            std.crypto.dh.X25519.scalarmultBase(&pk, sk);
             self.my_priv = sk;
             self.my_pub = pk;
+            std.debug.print("{s}: Generated X25519 keypair\n", .{if (self.role == .Server) "Server" else "Client"});
         }
     }
 
     fn tryComputeShared(self: *Engine) void {
         if (self.peer_pub) |peer| {
             if (self.my_priv) |priv| {
-                const sh = std.crypto.dh.X25519.scalarmult(priv, peer) catch return;
+                // Use the correct std.crypto API with output parameter
+                var sh: [32]u8 = undefined;
+                std.crypto.dh.X25519.scalarmult(&sh, priv, peer) catch {
+                    std.debug.print("{s}: X25519 scalarmult failed\n", .{if (self.role == .Server) "Server" else "Client"});
+                    return;
+                };
                 self.ecdhe_buf = sh;
                 self.ecdhe_secret = self.ecdhe_buf[0..];
-                std.debug.print("{s}: Computed ECDHE secret\n", .{if (self.role == .Server) "Server" else "Client"});
+                std.debug.print("{s}: Computed ECDHE shared secret (", .{if (self.role == .Server) "Server" else "Client"});
+                for (sh[0..8]) |b| std.debug.print("{X:0>2}", .{b});
+                std.debug.print("...)\n", .{});
             } else {
                 std.debug.print("{s}: No my_priv for ECDHE\n", .{if (self.role == .Server) "Server" else "Client"});
             }
