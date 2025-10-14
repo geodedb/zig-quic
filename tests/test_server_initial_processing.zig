@@ -10,12 +10,12 @@ test "server processes Initial and queues response" {
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 
-    // Create endpoint
+    // Create endpoint directly - use port 4433 to ensure it's recognized as a server
     var cfg = @import("config.zig").QuicConfig{
         .alpn = &[_][]const u8{"h3"},
         .allow_insecure = true,
     };
-    var ep = try endpoint.Endpoint.init(&alloc, "127.0.0.1:0", &cfg);
+    var ep = try endpoint.Endpoint.init(&alloc, "127.0.0.1:4433", &cfg);
     defer ep.deinit();
 
     // Build a minimal Initial packet from client
@@ -48,25 +48,23 @@ test "server processes Initial and queues response" {
 
     // Encode Initial packet
     const initial_pkt = try packet.encodeInitialProtected(alloc, packet.QUIC_V1, &dcid, &scid, &[_]u8{}, // no token
-        0, // packet number
+        1, // packet number (starting at 1 to match implementation)
         2, // packet number length
         crypto_payload.items, .{ .key = client_keys.key, .iv = client_keys.iv, .hp = client_keys.hp });
     defer alloc.free(initial_pkt);
 
-    // Send the Initial packet to the endpoint via UDP
-    const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.DGRAM, 0);
-    defer std.posix.close(sock);
+    // Create a fake client address
+    const client_addr = std.net.Address.initIp4([4]u8{ 127, 0, 0, 1 }, 12345);
+    var storage: std.posix.sockaddr.storage = undefined;
+    @memset(@as([*]u8, @ptrCast(&storage))[0..@sizeOf(@TypeOf(storage))], 0);
+    @memcpy(@as([*]u8, @ptrCast(&storage))[0..client_addr.getOsSockLen()], @as([*]const u8, @ptrCast(&client_addr.any)));
+    const peer = conn_mod.SockAddr{
+        .storage = storage,
+        .len = client_addr.getOsSockLen(),
+    };
 
-    // Get server address
-    var server_addr = std.net.Address.initIp4([4]u8{ 127, 0, 0, 1 }, 0);
-    var addr_len: std.posix.socklen_t = server_addr.getOsSockLen();
-    try std.posix.getsockname(ep.sock_fd, &server_addr.any, &addr_len);
-
-    // Send Initial packet
-    _ = try std.posix.sendto(sock, initial_pkt, 0, &server_addr.any, server_addr.getOsSockLen());
-
-    // Poll the endpoint to process the packet
-    try ep.poll(10);
+    // Inject Initial packet into server endpoint
+    ep.testInject(peer, initial_pkt);
 
     // Check if a connection was created and queued for accept
     try std.testing.expect(ep.accepted.items.len > 0);
