@@ -86,12 +86,12 @@ pub fn parseRsaSpki(spki_der: []const u8, alloc: std.mem.Allocator) !RsaSpki {
     return .{ .modulus = modulus, .exponent = e_val, .allocator = alloc };
 }
 
-fn tls13_build_context_and_hash(alg: SigAlg, context: []const u8, th: []const u8) ![]u8 {
+fn tls13_build_context_and_hash(alg: SigAlg, context: []const u8, th: []const u8, allocator: std.mem.Allocator) ![]u8 {
     _ = alg; // context depends only on TLS; alg included for future use
     // Per RFC8446 4.4.3: signed_content = 0x20 * 64 || context || 0x00 || transcript_hash
     const hash_len: usize = th.len; // sha256 or sha384 length
     const ctx_len: usize = context.len;
-    var out = try std.heap.page_allocator.alloc(u8, 64 + ctx_len + 1 + hash_len);
+    var out = try allocator.alloc(u8, 64 + ctx_len + 1 + hash_len);
     @memset(out[0..64], 0x20);
     @memcpy(out[64 .. 64 + ctx_len], context);
     out[64 + ctx_len] = 0x00;
@@ -385,7 +385,7 @@ pub fn verifyCertificateVerify(alg: SigAlg, pubkey_spki_der: []const u8, sig: []
             const pubkey_bytes = try parseEd25519Spki(pubkey_spki_der);
             const pubkey = try Ed25519.PublicKey.fromBytes(pubkey_bytes);
             // Build TLS 1.3 signed content
-            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash);
+            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash, std.heap.page_allocator);
             defer std.heap.page_allocator.free(sc);
             // Verify Ed25519 signature
             if (sig.len != 64) return false;
@@ -395,7 +395,7 @@ pub fn verifyCertificateVerify(alg: SigAlg, pubkey_spki_der: []const u8, sig: []
         },
         .rsa_pss_sha256 => {
             // Build TLS 1.3 signed content: 64 spaces || context || 0x00 || transcript_hash
-            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash);
+            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash, std.heap.page_allocator);
             defer std.heap.page_allocator.free(sc);
             return rsa_pss_verify_sha256(pubkey_spki_der, sc, sig, 32);
         },
@@ -407,7 +407,7 @@ pub fn verifyCertificateVerify(alg: SigAlg, pubkey_spki_der: []const u8, sig: []
             const Ecdsa = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, Sha256);
             const signature = Ecdsa.Signature.fromDer(sig) catch return false;
             const pubkey = Ecdsa.PublicKey.fromSec1(spki.sec1_uncompressed) catch return false;
-            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash);
+            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash, std.heap.page_allocator);
             defer std.heap.page_allocator.free(sc);
             signature.verify(sc, pubkey) catch return false;
             return true;
@@ -420,7 +420,7 @@ pub fn verifyCertificateVerify(alg: SigAlg, pubkey_spki_der: []const u8, sig: []
             const Ecdsa384 = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P384, Sha384);
             const signature = Ecdsa384.Signature.fromDer(sig) catch return false;
             const pubkey = Ecdsa384.PublicKey.fromSec1(spki.sec1_uncompressed) catch return false;
-            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash);
+            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash, std.heap.page_allocator);
             defer std.heap.page_allocator.free(sc);
             signature.verify(sc, pubkey) catch return false;
             return true;
@@ -437,7 +437,7 @@ pub fn signCertificateVerify(alg: SigAlg, privkey_der: []const u8, context: []co
             // Use standard library Ed25519 - generate keypair from seed
             const kp = try Ed25519.KeyPair.generateDeterministic(seed);
             // Build TLS 1.3 signed content
-            const to_sign = try tls13_build_context_and_hash(alg, context, transcript_hash);
+            const to_sign = try tls13_build_context_and_hash(alg, context, transcript_hash, alloc);
             defer alloc.free(to_sign);
             // Sign the message
             const sig = try kp.sign(to_sign, null);
@@ -470,7 +470,7 @@ pub fn signCertificateVerify(alg: SigAlg, privkey_der: []const u8, context: []co
             }
             const Ecdsa = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, Sha256);
             // Build signing context content
-            const to_sign = try tls13_build_context_and_hash(alg, context, transcript_hash);
+            const to_sign = try tls13_build_context_and_hash(alg, context, transcript_hash, alloc);
             defer alloc.free(to_sign);
             const secret = try Ecdsa.SecretKey.fromBytes(sk);
             const key_pair = try Ecdsa.KeyPair.fromSecretKey(secret);

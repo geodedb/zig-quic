@@ -6,7 +6,7 @@ SERVER_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("", 0)); pri
 echo "=== Test: Zig Server with quic-go Client ==="
 echo "Starting Zig server on 127.0.0.1:$SERVER_PORT"
 
-timeout 15 ./zig-out/bin/quic-server --bind 127.0.0.1:$SERVER_PORT --alpn hq-interop --insecure --real-tls > /tmp/zig_server_interop2.log 2>&1 &
+timeout 15 ./zig-out/bin/quic-server --bind 127.0.0.1:$SERVER_PORT --alpn hq-interop --insecure --real-tls --cert examples/interop/certs/cert.pem --key examples/interop/certs/key.pem > /tmp/zig_server_interop2.log 2>&1 &
 SERVER_PID=$!
 
 sleep 2

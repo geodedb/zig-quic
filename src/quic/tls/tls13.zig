@@ -957,7 +957,8 @@ pub const Engine = struct {
             defer self.allocator.free(msg);
             try self.queueCrypto(msg);
             self.ee_sent = true; // mark sent (server)
-            self.maybeAutoProgress();
+            // Don't call maybeAutoProgress here - endpoint.zig will explicitly call queueServerHandshakeFlight
+            // self.maybeAutoProgress();
             return;
         }
         // Legacy minimal placeholder encoding
@@ -977,12 +978,41 @@ pub const Engine = struct {
         try self.queueCrypto(msg);
     }
 
-    /// Queue a raw Certificate handshake message body (DER) for interop; in secure mode,
-    /// the peer will validate this using x509 helpers.
+    /// Queue a Certificate handshake message with proper RFC 8446 TLS 1.3 format.
+    /// Format: certificate_request_context (1 byte len + data) + certificate_list (3 bytes len + entries)
+    /// Each entry: cert_data (3 bytes len + DER) + extensions (2 bytes len + data)
     pub fn queueCertificate(self: *Engine, cert_der: []const u8) !void {
-        const msg = try encodeHandshake(self.allocator, .certificate, cert_der);
+        var body = std.ArrayList(u8){};
+        defer body.deinit(self.allocator);
+
+        // certificate_request_context (empty for server certificates)
+        try body.append(self.allocator, 0x00);
+
+        // certificate_list length (3 bytes): cert_data_len(3) + cert_der.len + extensions_len(2)
+        const entry_len = 3 + cert_der.len + 2;
+        const list_len = entry_len;
+        try body.append(self.allocator, @intCast((list_len >> 16) & 0xff));
+        try body.append(self.allocator, @intCast((list_len >> 8) & 0xff));
+        try body.append(self.allocator, @intCast(list_len & 0xff));
+
+        // CertificateEntry: cert_data length (3 bytes)
+        const cert_len = cert_der.len;
+        try body.append(self.allocator, @intCast((cert_len >> 16) & 0xff));
+        try body.append(self.allocator, @intCast((cert_len >> 8) & 0xff));
+        try body.append(self.allocator, @intCast(cert_len & 0xff));
+
+        // cert_data (DER certificate)
+        try body.appendSlice(self.allocator, cert_der);
+
+        // extensions (empty, 2 bytes length = 0)
+        try body.append(self.allocator, 0x00);
+        try body.append(self.allocator, 0x00);
+
+        const msg = try encodeHandshake(self.allocator, .certificate, body.items);
         defer self.allocator.free(msg);
         try self.queueCrypto(msg);
+
+        std.debug.print("TLS: Queued Certificate message (cert_len={}, total_body_len={})\n", .{cert_der.len, body.items.len});
     }
 
     // --- New helper methods used by tests ---
@@ -1235,21 +1265,33 @@ pub const Engine = struct {
                     const alg = self.server_sig_alg orelse .ecdsa_secp256r1_sha256;
                     const sig_bytes = sig.signCertificateVerify(alg, self.server_priv_key.?, "TLS 1.3, server CertificateVerify", &th, self.allocator) catch null;
                     if (sig_bytes) |sb| {
-                        // toy encoding: alg id byte + DER signature
+                        // RFC 8446 format: SignatureScheme (2 bytes) + signature length (2 bytes) + signature data
                         var body = std.ArrayList(u8){};
                         defer body.deinit(self.allocator);
-                        const alg_id: u8 = switch (alg) {
-                            .ecdsa_secp256r1_sha256 => 0x40,
-                            .ecdsa_secp384r1_sha384 => 0x41,
-                            .rsa_pss_sha256 => 0x50,
-                            .ed25519 => 0x87, // 0x0807 in TLS, single byte in CertificateVerify
+
+                        // SignatureScheme (2 bytes, big-endian)
+                        const scheme: u16 = switch (alg) {
+                            .ecdsa_secp256r1_sha256 => 0x0403,
+                            .ecdsa_secp384r1_sha384 => 0x0503,
+                            .rsa_pss_sha256 => 0x0804,
+                            .ed25519 => 0x0807,
                         };
-                        body.append(self.allocator, alg_id) catch {};
+                        body.append(self.allocator, @intCast((scheme >> 8) & 0xff)) catch {};
+                        body.append(self.allocator, @intCast(scheme & 0xff)) catch {};
+
+                        // Signature length (2 bytes, big-endian)
+                        const sig_len: u16 = @intCast(sb.len);
+                        body.append(self.allocator, @intCast((sig_len >> 8) & 0xff)) catch {};
+                        body.append(self.allocator, @intCast(sig_len & 0xff)) catch {};
+
+                        // Signature data
                         body.appendSlice(self.allocator, sb) catch {};
+
                         const msg = encodeHandshake(self.allocator, .certificate_verify, body.items) catch null;
                         if (msg) |m| {
                             self.queueCrypto(m) catch {};
                             self.allocator.free(m);
+                            std.debug.print("TLS: Queued CertificateVerify (scheme=0x{x:0>4}, sig_len={})\n", .{scheme, sb.len});
                         }
                         self.allocator.free(sb);
                     }
@@ -1287,6 +1329,15 @@ pub const Engine = struct {
 
     /// Force queue of remaining server handshake flight (EncryptedExtensions already queued externally).
     pub fn queueServerHandshakeFlight(self: *Engine) void {
+        std.debug.print("DEBUG queueServerHandshakeFlight: role={s}, finished_sent={}, real_mode={}, has_secret={}, has_cert={}, has_key={}\n", .{
+            if (self.role == .Server) "Server" else "Client",
+            self.finished_sent,
+            self.real_mode,
+            self.handshake_server_secret != null,
+            self.server_cert_der != null,
+            self.server_priv_key != null,
+        });
+
         if (self.role != .Server) return;
         if (self.finished_sent) return; // already done
 
@@ -1302,33 +1353,45 @@ pub const Engine = struct {
         // Require that handshake_server_secret be present (after SH) and EE queued.
         if (self.handshake_server_secret == null) return;
         // If we have a certificate configured, send Certificate + CertificateVerify.
-        if (self.server_cert_der != null and self.server_priv_key != null and !self.allow_insecure) {
+        // Note: allow_insecure only affects peer certificate validation, not whether we send ours
+        if (self.server_cert_der != null and self.server_priv_key != null) {
+            std.debug.print("DEBUG: Calling queueCertificate...\n", .{});
             self.queueCertificate(self.server_cert_der.?) catch {};
             var snap = self.transcript;
             const th = snap.finalize();
             const alg = self.server_sig_alg orelse .ecdsa_secp256r1_sha256;
             const sig_bytes = sig.signCertificateVerify(alg, self.server_priv_key.?, "TLS 1.3, server CertificateVerify", &th, self.allocator) catch null;
             if (sig_bytes) |sb| {
+                // RFC 8446 format: SignatureScheme (2 bytes) + signature length (2 bytes) + signature data
                 var body = std.ArrayList(u8){};
                 defer body.deinit(self.allocator);
-                const alg_id: u8 = switch (alg) {
-                    .ecdsa_secp256r1_sha256 => 0x40,
-                    .ecdsa_secp384r1_sha384 => 0x41,
-                    .rsa_pss_sha256 => 0x50,
-                    .ed25519 => 0x87, // 0x0807 in TLS, single byte in CertificateVerify
+
+                // SignatureScheme (2 bytes, big-endian)
+                const scheme: u16 = switch (alg) {
+                    .ecdsa_secp256r1_sha256 => 0x0403,
+                    .ecdsa_secp384r1_sha384 => 0x0503,
+                    .rsa_pss_sha256 => 0x0804,
+                    .ed25519 => 0x0807,
                 };
-                body.append(self.allocator, alg_id) catch {};
+                body.append(self.allocator, @intCast((scheme >> 8) & 0xff)) catch {};
+                body.append(self.allocator, @intCast(scheme & 0xff)) catch {};
+
+                // Signature length (2 bytes, big-endian)
+                const sig_len: u16 = @intCast(sb.len);
+                body.append(self.allocator, @intCast((sig_len >> 8) & 0xff)) catch {};
+                body.append(self.allocator, @intCast(sig_len & 0xff)) catch {};
+
+                // Signature data
                 body.appendSlice(self.allocator, sb) catch {};
+
                 const msg = encodeHandshake(self.allocator, .certificate_verify, body.items) catch null;
                 if (msg) |m| {
                     self.queueCrypto(m) catch {};
                     self.allocator.free(m);
+                    std.debug.print("TLS: Queued CertificateVerify (scheme=0x{x:0>4}, sig_len={})\n", .{scheme, sb.len});
                 }
                 self.allocator.free(sb);
             }
-        } else if (self.allow_insecure and !self.finished_sent) {
-            // In insecure mode, no real certificate; queue an empty Certificate message
-            self.queueCertificate(&[_]u8{}) catch {};
         }
         // Always queue Finished last
         if (!self.finished_sent and self.handshake_server_secret != null) {
