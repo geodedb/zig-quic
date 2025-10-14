@@ -179,10 +179,20 @@ pub const Endpoint = struct {
             const epfd = try posix.epoll_create1(linux.EPOLL.CLOEXEC);
 
             // Add the socket to epoll for read events
-            var ev = std.mem.zeroes(linux.epoll_event);
-            ev.events = linux.EPOLL.IN;
-            ev.data.fd = @as(i32, @intCast(fd));
-            try posix.epoll_ctl(epfd, linux.EPOLL.CTL_ADD, fd, &ev);
+            // Use linux.epoll_event and call epoll_ctl syscall directly
+            var ev = linux.epoll_event{
+                .events = linux.EPOLL.IN,
+                .data = .{ .fd = @as(i32, @intCast(fd)) },
+            };
+            // Call Linux syscall directly to ensure proper registration
+            const rc = linux.epoll_ctl(@intCast(epfd), linux.EPOLL.CTL_ADD, @intCast(fd), &ev);
+            // epoll_ctl returns 0 on success, negative errno on failure
+            if (rc != 0) {
+                const err = linux.E.init(@as(usize, @intCast(-rc)));
+                std.debug.print("ERROR: epoll_ctl failed with errno: {} ({})\n", .{-rc, err});
+                return error.EpollCtlFailed;
+            }
+            std.debug.print("DEBUG: epoll_ctl succeeded, registered fd={} with epoll fd={}\n", .{fd, epfd});
 
             epoll_fd_opt = epfd;
             std.debug.print("DEBUG: Created epoll fd={} and added socket fd={}\n", .{epfd, fd});
