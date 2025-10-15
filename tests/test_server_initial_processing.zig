@@ -27,26 +27,15 @@ test "server processes Initial and queues response" {
     const pair = ks.deriveClientServerInitial(initial);
     const client_keys = ks.deriveKeyIvHp(pair.client);
 
-    // Create minimal ClientHello CRYPTO frame using the "CH1" format
+    // Build standard TLS 1.3 ClientHello
+    const ch_bytes = try buildStandardClientHello(alloc);
+    defer alloc.free(ch_bytes);
+
+    // Create CRYPTO frame
     var crypto_payload = std.ArrayList(u8){};
     defer crypto_payload.deinit(alloc);
     const w = crypto_payload.writer(alloc);
-
-    // Generate a client X25519 public key for the test
-    var client_priv: [32]u8 = undefined;
-    std.crypto.random.bytes(&client_priv);
-    const client_pub = try std.crypto.dh.X25519.recoverPublicKey(client_priv);
-
-    // Minimal handshake format: "CH1" + 32-byte public key
-    const ch_body = [_]u8{'C', 'H', '1'} ++ client_pub;
-
-    // Wrap in handshake record: type (1 byte) + length (3 bytes) + body
-    const ch_bytes = [_]u8{
-        0x01, // Handshake type: ClientHello
-        0x00, 0x00, @as(u8, ch_body.len), // Length: 35 bytes
-    } ++ ch_body;
-
-    _ = try (frame.Frame{ .crypto = .{ .offset = 0, .data = &ch_bytes } }).write(w);
+    _ = try (frame.Frame{ .crypto = .{ .offset = 0, .data = ch_bytes } }).write(w);
 
     // Encode Initial packet
     const initial_pkt = try packet.encodeInitialProtected(alloc, packet.QUIC_V1, &dcid, &scid, &[_]u8{}, // no token
@@ -81,4 +70,72 @@ test "server processes Initial and queues response" {
     try std.testing.expect(conn.tls.sh_seen);
 
     std.debug.print("Test passed: Server processed Initial and queued ServerHello\n", .{});
+}
+
+/// Build a standard TLS 1.3 ClientHello
+fn buildStandardClientHello(alloc: std.mem.Allocator) ![]u8 {
+    // Generate X25519 keypair
+    var sk: [32]u8 = undefined;
+    std.crypto.random.bytes(&sk);
+    const pk = try std.crypto.dh.X25519.recoverPublicKey(sk);
+
+    var body = try std.ArrayList(u8).initCapacity(alloc, 0);
+    defer body.deinit(alloc);
+
+    // ClientHello structure (RFC 8446):
+    // - legacy_version (2 bytes): 0x0303
+    try body.appendSlice(alloc, &.{ 0x03, 0x03 });
+
+    // - random (32 bytes)
+    var rnd: [32]u8 = undefined;
+    std.crypto.random.bytes(&rnd);
+    try body.appendSlice(alloc, &rnd);
+
+    // - session_id (1 byte length + data): empty
+    try body.append(alloc, 0);
+
+    // - cipher_suites (2 bytes length + data): TLS_AES_128_GCM_SHA256 (0x1301)
+    try body.appendSlice(alloc, &.{ 0x00, 0x02, 0x13, 0x01 });
+
+    // - legacy_compression_methods (1 byte length + data): none
+    try body.appendSlice(alloc, &.{ 0x01, 0x00 });
+
+    // Build extensions
+    var ext_buf = try std.ArrayList(u8).initCapacity(alloc, 0);
+    defer ext_buf.deinit(alloc);
+
+    // supported_versions extension (43): TLS 1.3 (0x0304)
+    try ext_buf.appendSlice(alloc, &.{ 0x00, 0x2b, 0x00, 0x03, 0x02, 0x03, 0x04 });
+
+    // supported_groups extension (10): x25519 (0x001d)
+    try ext_buf.appendSlice(alloc, &.{ 0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x1d });
+
+    // signature_algorithms extension (13): ecdsa_secp256r1_sha256 (0x0403)
+    try ext_buf.appendSlice(alloc, &.{ 0x00, 0x0d, 0x00, 0x04, 0x00, 0x02, 0x04, 0x03 });
+
+    // key_share extension (51): x25519 with generated public key
+    try ext_buf.appendSlice(alloc, &.{ 0x00, 0x33 }); // extension type
+    const key_share_len: u16 = 2 + 2 + 32; // group(2) + key_len(2) + key(32)
+    const total_len: u16 = key_share_len + 2; // + vector length field
+    try ext_buf.appendSlice(alloc, &.{ @intCast(total_len >> 8), @intCast(total_len & 0xff) });
+    try ext_buf.appendSlice(alloc, &.{ @intCast(key_share_len >> 8), @intCast(key_share_len & 0xff) });
+    try ext_buf.appendSlice(alloc, &.{ 0x00, 0x1d }); // group x25519
+    try ext_buf.appendSlice(alloc, &.{ 0x00, 32 }); // key length
+    try ext_buf.appendSlice(alloc, &pk);
+
+    // Write extensions length and data
+    const exts_len: u16 = @intCast(ext_buf.items.len);
+    try body.appendSlice(alloc, &.{ @intCast(exts_len >> 8), @intCast(exts_len & 0xff) });
+    try body.appendSlice(alloc, ext_buf.items);
+
+    // Wrap in handshake message
+    const body_len: u32 = @intCast(body.items.len);
+    const result = try alloc.alloc(u8, 4 + body.items.len);
+    result[0] = 0x01; // ClientHello type
+    result[1] = @intCast((body_len >> 16) & 0xff);
+    result[2] = @intCast((body_len >> 8) & 0xff);
+    result[3] = @intCast(body_len & 0xff);
+    @memcpy(result[4..], body.items);
+
+    return result;
 }

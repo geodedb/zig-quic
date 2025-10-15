@@ -1659,23 +1659,22 @@ pub const Endpoint = struct {
                     c_new.tls.setServerCertificate(self.cfg.inline_server_cert_der.?, self.cfg.inline_server_priv_p256.?, .ecdsa_secp256r1_sha256) catch {};
                 }
                 // Set local transport parameters for server (required for QUIC TLS extension)
-                    var tpp: tp.TransportParams = .{};
-                    tpp.original_destination_connection_id = c_new.peer_initial_dcid.bytes[0..c_new.peer_initial_dcid.len];
-                    tpp.initial_source_connection_id = c_new.our_scid.bytes[0..c_new.our_scid.len];
-                    tpp.max_idle_timeout = self.cfg.max_idle_timeout_ms;
-                    tpp.max_udp_payload_size = self.cfg.max_udp_payload;
-                    tpp.initial_max_data = c_new.local_max_data;
-                    tpp.initial_max_stream_data_bidi_local = c_new.local_max_stream_data;
-                    tpp.initial_max_stream_data_bidi_remote = c_new.local_max_stream_data;
-                    tpp.initial_max_stream_data_uni = c_new.local_max_stream_data;
-                    tpp.initial_max_streams_bidi = c_new.local_max_streams_bidi;
-                    tpp.initial_max_streams_uni = c_new.local_max_streams_uni;
-                    const tp_bytes = tp.TransportParams.encode(&tpp, self.allocator.*) catch &[_]u8{};
-                    defer {
-                        if (tp_bytes.len > 0) self.allocator.free(tp_bytes);
-                    }
-                    c_new.tls.setLocalTransportParameters(if (tp_bytes.len > 0) tp_bytes else tp_bytes[0..0]) catch {};
+                var tpp: tp.TransportParams = .{};
+                tpp.original_destination_connection_id = c_new.peer_initial_dcid.bytes[0..c_new.peer_initial_dcid.len];
+                tpp.initial_source_connection_id = c_new.our_scid.bytes[0..c_new.our_scid.len];
+                tpp.max_idle_timeout = self.cfg.max_idle_timeout_ms;
+                tpp.max_udp_payload_size = self.cfg.max_udp_payload;
+                tpp.initial_max_data = c_new.local_max_data;
+                tpp.initial_max_stream_data_bidi_local = c_new.local_max_stream_data;
+                tpp.initial_max_stream_data_bidi_remote = c_new.local_max_stream_data;
+                tpp.initial_max_stream_data_uni = c_new.local_max_stream_data;
+                tpp.initial_max_streams_bidi = c_new.local_max_streams_bidi;
+                tpp.initial_max_streams_uni = c_new.local_max_streams_uni;
+                const tp_bytes = tp.TransportParams.encode(&tpp, self.allocator.*) catch &[_]u8{};
+                defer {
+                    if (tp_bytes.len > 0) self.allocator.free(tp_bytes);
                 }
+                c_new.tls.setLocalTransportParameters(if (tp_bytes.len > 0) tp_bytes else tp_bytes[0..0]) catch {};
                 c_new.allowed_alpns = self.cfg.alpn;
                 // Enable optional pacing and set CC max_datagram_size
                 c_new.enable_pacing = self.cfg.enable_pacing;

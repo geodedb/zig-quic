@@ -12,7 +12,6 @@ fn spawnServer(alloc: *std.mem.Allocator, bind: []const u8) !struct { ep: *api.Q
         .enable_retry = false,
         .token_secret = null,
         .token_expiry_ms = 60000,
-        .real_tls = false,
     };
     const ep = try api.endpointInit(alloc, bind, &cfg);
     const th = try std.Thread.spawn(.{}, struct {
@@ -50,7 +49,6 @@ test "h3 loopback GET /index.html" {
         .allow_insecure = true,
         .enable_datagram = false,
         .compatible_vn = true,
-        .real_tls = false,
     };
     const cli_ep = try api.endpointInit(&alloc, "0.0.0.0:0", &cfg);
     defer api.endpointDeinit(cli_ep);

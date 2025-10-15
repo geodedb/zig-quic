@@ -7,12 +7,9 @@ test "TLS engine auto-detects and parses standard ClientHello" {
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
-    // Create server engine in default mode (not real_mode)
+    // Create server engine
     var engine = tls13.Engine.init(alloc, .Server);
     defer engine.deinit();
-
-    // Verify we start in minimal mode
-    try std.testing.expect(!engine.real_mode);
 
     // Build a standard TLS 1.3 ClientHello with X25519 key share
     const client_hello = try buildStandardClientHello(alloc);
@@ -21,11 +18,7 @@ test "TLS engine auto-detects and parses standard ClientHello" {
     // Ingest the ClientHello
     try engine.ingestCrypto(client_hello);
 
-    // Verify that:
-    // 1. The engine auto-detected real TLS format
-    try std.testing.expect(engine.real_mode);
-
-    // 2. Public key was extracted
+    // Verify that public key was extracted
     try std.testing.expect(engine.peer_pub != null);
 
     // 3. ClientHello was marked as seen
@@ -57,8 +50,6 @@ test "TLS engine still accepts minimal CH1 format" {
     // Verify it was accepted
     try std.testing.expect(engine.peer_pub != null);
     try std.testing.expect(engine.ch_sent);
-    // Should not have switched to real_mode
-    try std.testing.expect(!engine.real_mode);
 }
 
 /// Build a minimal but valid standard TLS 1.3 ClientHello

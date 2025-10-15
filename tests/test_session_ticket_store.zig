@@ -9,8 +9,6 @@ test "session_ticket_store" {
     defer server.deinit();
     var client = tls.Engine.init(alloc, .Client);
     defer client.deinit();
-    server.enableReal();
-    client.enableReal();
     // Minimal key shares
     try client.queueMinimalClientHello();
     var buf: [4096]u8 = undefined;

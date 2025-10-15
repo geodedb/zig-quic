@@ -13,10 +13,6 @@ test "session resumption with PSK" {
     var server = tls13.Engine.init(alloc, .Server);
     defer server.deinit();
 
-    // Enable real mode for proper handshake
-    client.enableReal();
-    server.enableReal();
-
     // First handshake to establish session
     try client.queueMinimalClientHello();
 
@@ -48,7 +44,6 @@ test "session resumption with PSK" {
     // Second connection with resumption
     var client2 = tls13.Engine.init(alloc, .Client);
     defer client2.deinit();
-    client2.enableReal();
 
     // Copy ticket from first client
     if (ticket) |t| {

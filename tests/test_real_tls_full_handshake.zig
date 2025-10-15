@@ -11,12 +11,10 @@ test "real_tls_full_handshake_finished_flags" {
     var srv_cfg = api.QuicConfig{
         .alpn = &[_][]const u8{"h3"},
         .allow_insecure = true, // allow skipping cert path for now
-        .real_tls = true,
     };
     var cli_cfg = api.QuicConfig{
         .alpn = &[_][]const u8{"h3"},
         .allow_insecure = true,
-        .real_tls = true,
     };
     const ep_server = try api.endpointInit(&alloc, "127.0.0.1:0", &srv_cfg);
     defer api.endpointDeinit(ep_server);

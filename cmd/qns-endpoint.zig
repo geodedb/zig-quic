@@ -160,11 +160,10 @@ pub fn main() !void {
         } else |_| {}
     }
     if (cert_ok != null and key_path_sel != null) {
-        cfg.real_tls = true;
         cfg.cert_path = "/certs/cert.pem";
         cfg.key_path = key_path_sel;
         cfg.allow_insecure = true; // clients may skip verification for now
-        log("server: real TLS enabled with provided certificate");
+        log("server: TLS enabled with provided certificate");
     }
 
     if (std.mem.eql(u8, role, "server")) {

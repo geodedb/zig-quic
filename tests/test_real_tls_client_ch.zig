@@ -12,7 +12,6 @@ test "real_tls_client_initial_probe_smoke" {
     var cfg = api.QuicConfig{
         .alpn = &[_][]const u8{"h3"},
         .allow_insecure = true,
-        .real_tls = true,
     };
     const ep = try api.endpointInit(&alloc, "0.0.0.0:0", &cfg);
     defer api.endpointDeinit(ep);

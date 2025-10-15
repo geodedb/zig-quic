@@ -27,14 +27,12 @@ test "real_tls_full_handshake_auth_gating" {
     // Server engine
     var server = tls13.Engine.init(gpa, .Server);
     defer server.deinit();
-    server.enableReal();
     server.allow_insecure = false;
     server.setServerCertificate(dummy_cert, dummy_key, .ecdsa_secp256r1_sha256) catch {};
 
     // Client engine
     var client = tls13.Engine.init(gpa, .Client);
     defer client.deinit();
-    client.enableReal();
     client.allow_insecure = false;
 
     // Client sends CH

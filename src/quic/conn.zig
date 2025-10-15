@@ -1062,25 +1062,20 @@ pub const Connection = struct {
         if (self.role == .Server and !self.tls.sh_seen and !had_peer_pub and self.tls.peer_pub != null) {
             std.debug.print("Server: ClientHello parsed with public key, queueing ServerHello\n", .{});
             // Verify ALPN and Transport Parameters are set before generating ServerHello
-            if (self.tls.real_mode) {
-                // ALPN should be extracted from ClientHello by this point
-                if (self.tls.alpn) |client_alpn| {
-                    std.debug.print("Server: Using ALPN from ClientHello: {s}\n", .{client_alpn});
-                } else {
-                    std.debug.print("Server: WARNING - No ALPN from ClientHello!\n", .{});
-                }
-                // Transport Parameters should be set by endpoint during connection initialization
-                if (self.tls.local_tp) |ltp| {
-                    std.debug.print("Server: local_tp set in TLS engine, len={}\n", .{ltp.len});
-                } else {
-                    std.debug.print("Server: WARNING - No local transport parameters in TLS engine!\n", .{});
-                }
-                // Real mode: build spec-like ServerHello
-                self.tls.queueRealServerHello() catch {};
+            // ALPN should be extracted from ClientHello by this point
+            if (self.tls.alpn) |client_alpn| {
+                std.debug.print("Server: Using ALPN from ClientHello: {s}\n", .{client_alpn});
             } else {
-                // Minimal placeholder auto ServerHello
-                _ = self.tls.queueMinimalServerHelloAuto() catch {};
+                std.debug.print("Server: WARNING - No ALPN from ClientHello!\n", .{});
             }
+            // Transport Parameters should be set by endpoint during connection initialization
+            if (self.tls.local_tp) |ltp| {
+                std.debug.print("Server: local_tp set in TLS engine, len={}\n", .{ltp.len});
+            } else {
+                std.debug.print("Server: WARNING - No local transport parameters in TLS engine!\n", .{});
+            }
+            // Build spec-compliant ServerHello
+            self.tls.queueRealServerHello() catch {};
         }
         // If we can compute handshake secrets now, install Handshake keys once
         if (self.hs_client == null or self.hs_server == null) {

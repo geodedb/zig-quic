@@ -9,8 +9,6 @@ test "psk_client_hello_offer" {
     defer client.deinit();
     var server = tls.Engine.init(alloc, .Server);
     defer server.deinit();
-    client.enableReal();
-    server.enableReal();
     // Perform one handshake to get ticket
     try client.queueMinimalClientHello();
     var buf: [4096]u8 = undefined;
