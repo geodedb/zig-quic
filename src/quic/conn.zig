@@ -995,10 +995,48 @@ pub const Connection = struct {
         return (self.bytes_tx_unvalidated / 3) <= self.bytes_rx_unvalidated;
     }
 
+    /// Check if the peer address is localhost (127.0.0.1 or ::1)
+    fn isLocalhost(self: *const Connection) bool {
+        // Check IPv4 localhost (127.0.0.1)
+        if (self.peer.storage.family == posix.AF.INET) {
+            const addr_bytes = @as([*]const u8, @ptrCast(&self.peer.storage));
+            // IPv4 sockaddr_in structure: family(2) + port(2) + addr(4)
+            // Check if address bytes are 127.0.0.1
+            if (self.peer.len >= 8) {
+                return addr_bytes[4] == 127 and addr_bytes[5] == 0 and
+                       addr_bytes[6] == 0 and addr_bytes[7] == 1;
+            }
+        }
+
+        // Check IPv6 localhost (::1)
+        if (self.peer.storage.family == posix.AF.INET6) {
+            const addr_bytes = @as([*]const u8, @ptrCast(&self.peer.storage));
+            // IPv6 sockaddr_in6 structure: family(2) + port(2) + flowinfo(4) + addr(16) + scope_id(4)
+            // Check if address is ::1 (all zeros except last byte = 1)
+            if (self.peer.len >= 24) {
+                // Address starts at offset 8
+                var i: usize = 8;
+                while (i < 23) : (i += 1) {
+                    if (addr_bytes[i] != 0) return false;
+                }
+                return addr_bytes[23] == 1;
+            }
+        }
+
+        return false;
+    }
+
     /// Return true if we are currently over the anti-amplification limit.
     /// Return true if currently exceeding allowed 3x amplification limit.
     pub fn overAmplification(self: *const Connection) bool {
         if (self.address_validated) return false;
+
+        // CANARY: REQ=REQ-TRANSPORT-001; FEATURE="AmplificationProtection"; ASPECT=LocalhostExemption; STATUS=IMPLEMENTED; OWNER=transport; UPDATED=2025-10-15
+        // Exempt localhost connections from amplification protection
+        // This is safe because localhost connections have no amplification risk
+        if (self.isLocalhost()) return false;
+
+        // Apply standard amplification protection for non-localhost connections
         return (self.bytes_tx_unvalidated / 3) > self.bytes_rx_unvalidated;
     }
 
