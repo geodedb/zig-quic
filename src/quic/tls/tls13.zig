@@ -27,6 +27,7 @@ const ks = @import("quic_tls");
 const x509 = @import("x509");
 const sig = @import("sig");
 const tls13_full = @import("tls13_full.zig");
+const logger = @import("quic_logger");
 
 /// Session ticket cache entry and store types used by the TLS 1.3 engine (minimal placeholder).
 // --- Session Ticket / PSK Cache Structures (minimal placeholder) ---
@@ -386,7 +387,7 @@ pub const Engine = struct {
             const pk = std.crypto.dh.X25519.recoverPublicKey(sk) catch unreachable;
             self.my_priv = sk;
             self.my_pub = pk;
-            std.debug.print("{s}: Generated X25519 keypair\n", .{if (self.role == .Server) "Server" else "Client"});
+            logger.debug("{s}: Generated X25519 keypair", .{if (self.role == .Server) "Server" else "Client"});
         }
     }
 
@@ -395,41 +396,39 @@ pub const Engine = struct {
             if (self.my_priv) |priv| {
                 // Use Zig 0.15.1 X25519 API - scalarmult returns the value
                 const sh = std.crypto.dh.X25519.scalarmult(priv, peer) catch {
-                    std.debug.print("{s}: X25519 scalarmult failed\n", .{if (self.role == .Server) "Server" else "Client"});
+                    logger.err("{s}: X25519 scalarmult failed", .{if (self.role == .Server) "Server" else "Client"});
                     return;
                 };
                 self.ecdhe_buf = sh;
                 self.ecdhe_secret = self.ecdhe_buf[0..];
-                std.debug.print("{s}: Computed ECDHE shared secret (", .{if (self.role == .Server) "Server" else "Client"});
-                for (sh[0..8]) |b| std.debug.print("{X:0>2}", .{b});
-                std.debug.print("...)\n", .{});
+                logger.debug("{s}: Computed ECDHE shared secret ({X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}...)", .{if (self.role == .Server) "Server" else "Client", sh[0], sh[1], sh[2], sh[3], sh[4], sh[5], sh[6], sh[7]});
             } else {
-                std.debug.print("{s}: No my_priv for ECDHE\n", .{if (self.role == .Server) "Server" else "Client"});
+                logger.debug("{s}: No my_priv for ECDHE", .{if (self.role == .Server) "Server" else "Client"});
             }
         } else {
-            std.debug.print("{s}: No peer_pub for ECDHE\n", .{if (self.role == .Server) "Server" else "Client"});
+            logger.debug("{s}: No peer_pub for ECDHE", .{if (self.role == .Server) "Server" else "Client"});
         }
     }
 
     /// Append received CRYPTO bytes into transcript. Attempts to parse handshake messages
     /// to update simple state, but always feeds the transcript with raw bytes.
     pub fn onCryptoRecv(self: *Engine, data: []const u8) void {
-        std.debug.print("TLS: onCryptoRecv called with {} bytes, inbox already has {} bytes\n", .{data.len, self.inbox.items.len});
+        logger.debug("TLS: onCryptoRecv called with {} bytes, inbox already has {} bytes", .{data.len, self.inbox.items.len});
 
         // Append new data to inbox buffer
         self.inbox.appendSlice(self.allocator, data) catch {
-            std.debug.print("TLS: Failed to buffer CRYPTO data\n", .{});
+            logger.err("TLS: Failed to buffer CRYPTO data", .{});
             return;
         };
 
-        std.debug.print("TLS: Inbox now has {} bytes total\n", .{self.inbox.items.len});
+        logger.debug("TLS: Inbox now has {} bytes total", .{self.inbox.items.len});
         
         // Process complete messages from the buffered data
         var off: usize = 0;
         while (true) {
             const parsed = parseHandshakeOne(self.inbox.items[off..]) catch null;
             if (parsed) |p| {
-                std.debug.print("TLS: Parsed handshake message type={} len={}\n", .{ p.typ, p.body.len });
+                logger.debug("TLS: Parsed handshake message type={} len={}", .{ p.typ, p.body.len });
 
                 // For Finished verification, we need the transcript BEFORE the Finished message
                 // So take a snapshot of the current transcript state
@@ -441,9 +440,12 @@ pub const Engine = struct {
                 const msg_data = self.inbox.items[off .. off + p.n];
                 if (p.typ != .finished) {
                     self.transcript.update(msg_data);
-                    std.debug.print("TLS: Added {} bytes to transcript (recv): ", .{msg_data.len});
-                    for (msg_data[0..@min(8, msg_data.len)]) |b| std.debug.print("{X:0>2} ", .{b});
-                    std.debug.print("...\n", .{});
+                    const show_len = @min(8, msg_data.len);
+                    if (show_len >= 8) {
+                        logger.debug("TLS: Added {} bytes to transcript (recv): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...", .{msg_data.len, msg_data[0], msg_data[1], msg_data[2], msg_data[3], msg_data[4], msg_data[5], msg_data[6], msg_data[7]});
+                    } else {
+                        logger.debug("TLS: Added {} bytes to transcript (recv)", .{msg_data.len});
+                    }
                 }
 
                 off += p.n;
@@ -462,10 +464,10 @@ pub const Engine = struct {
 
                 // Only try to extract public keys from ClientHello and ServerHello
                 if (p.typ == .client_hello or p.typ == .server_hello) {
-                    std.debug.print("TLS: Processing hello message, typ={}\n", .{p.typ});
+                    logger.debug("TLS: Processing hello message, typ={}", .{p.typ});
                     var extracted: ?[32]u8 = null;
                     // Try real TLS 1.3 parsing first
-                    std.debug.print("TLS: Trying real TLS 1.3 hello parsing\n", .{});
+                    logger.debug("TLS: Trying real TLS 1.3 hello parsing", .{});
                     switch (p.typ) {
                         .client_hello => extracted = parseRealClientHello(p.body),
                         .server_hello => extracted = parseRealServerHello(p.body),
@@ -473,24 +475,24 @@ pub const Engine = struct {
                     }
                     // If real parsing failed, try minimal format as fallback
                     if (extracted == null) {
-                        std.debug.print("TLS: Real parse failed, trying minimal parse as fallback\n", .{});
+                        logger.debug("TLS: Real parse failed, trying minimal parse as fallback", .{});
                         extracted = parseMinimalHelloPub(p.typ, p.body);
                         if (extracted == null) {
-                            std.debug.print("{s}: Failed to parse hello pub (typ={}, body_len={})\n", .{ if (self.role == .Server) "Server" else "Client", p.typ, p.body.len });
+                            logger.warn("{s}: Failed to parse hello pub (typ={}, body_len={})", .{ if (self.role == .Server) "Server" else "Client", p.typ, p.body.len });
                         }
                     }
                     if (extracted) |pk| {
-                        std.debug.print("TLS: Setting peer_pub for {} (was null={})\n", .{p.typ, self.peer_pub == null});
+                        logger.debug("TLS: Setting peer_pub for {} (was null={})", .{p.typ, self.peer_pub == null});
                         self.peer_pub = pk;
-                        std.debug.print("TLS: peer_pub is now set (null={})\n", .{self.peer_pub == null});
+                        logger.debug("TLS: peer_pub is now set (null={})", .{self.peer_pub == null});
                         // Compute shared secret after receiving peer's public key
                         switch (p.typ) {
                             .server_hello => if (self.role == .Client) self.tryComputeShared(),
-                            .client_hello => if (self.role == .Server) std.debug.print("Server: Will compute ECDHE when generating ServerHello\n", .{}),
+                            .client_hello => if (self.role == .Server) logger.debug("Server: Will compute ECDHE when generating ServerHello", .{}),
                             else => {},
                         }
                     } else {
-                        std.debug.print("TLS: No key extracted from hello message\n", .{});
+                        logger.debug("TLS: No key extracted from hello message", .{});
                     }
                 }
 
@@ -533,20 +535,20 @@ pub const Engine = struct {
                 }
                 // Minimal X.509 certificate body handling (single DER cert)
                 if (p.typ == .certificate) {
-                    std.debug.print("{s}: Processing Certificate message (len={})\n", .{ if (self.role == .Server) "Server" else "Client", p.body.len });
+                    logger.debug("{s}: Processing Certificate message (len={})", .{ if (self.role == .Server) "Server" else "Client", p.body.len });
                     if (self.allow_insecure) {
-                        std.debug.print("{s}: Certificate validation skipped (insecure mode)\n", .{if (self.role == .Server) "Server" else "Client"});
+                        logger.debug("{s}: Certificate validation skipped (insecure mode)", .{if (self.role == .Server) "Server" else "Client"});
                         self.peer_cert_ok = true;
                     } else {
-                        std.debug.print("{s}: Attempting certificate validation\n", .{if (self.role == .Server) "Server" else "Client"});
+                        logger.debug("{s}: Attempting certificate validation", .{if (self.role == .Server) "Server" else "Client"});
                         const cert_val = x509.parseCert(self.allocator, p.body) catch null;
                         if (cert_val) |c| {
-                            std.debug.print("{s}: Certificate parsed successfully\n", .{if (self.role == .Server) "Server" else "Client"});
+                            logger.debug("{s}: Certificate parsed successfully", .{if (self.role == .Server) "Server" else "Client"});
                             self.peer_cert_ok = true;
                             if (self.leaf_spki) |old| self.allocator.free(old);
                             self.leaf_spki = self.allocator.dupe(u8, c.spki) catch null;
                             x509.checkValidity(std.time.timestamp(), &c) catch {
-                                std.debug.print("{s}: Certificate validity check failed\n", .{if (self.role == .Server) "Server" else "Client"});
+                                logger.warn("{s}: Certificate validity check failed", .{if (self.role == .Server) "Server" else "Client"});
                                 self.peer_cert_ok = false;
                             };
                             if (self.peer_cert_ok) {
@@ -593,17 +595,17 @@ pub const Engine = struct {
                 }
                 // Finished verification
                 if (p.typ == .finished and self.ecdhe_secret != null) {
-                    std.debug.print("TLS: Processing Finished message\n", .{});
+                    logger.debug("TLS: Processing Finished message", .{});
                     var peer_secret_opt: ?[H.digest_length]u8 = null;
                     if (self.handshake_client_secret != null and self.handshake_server_secret != null) {
                         peer_secret_opt = switch (self.role) {
                             .Client => self.handshake_server_secret.?,
                             .Server => self.handshake_client_secret.?,
                         };
-                        std.debug.print("TLS: Using stored handshake secrets for verification\n", .{});
+                        logger.debug("TLS: Using stored handshake secrets for verification", .{});
                     }
                     const ok = if (peer_secret_opt) |ps| self.verifyPeerFinished(ps, p.body) else blk: {
-                        std.debug.print("TLS: Using fallback for Finished verification\n", .{});
+                        logger.debug("TLS: Using fallback for Finished verification", .{});
                         // Fallback (should not happen in real mode past this point)
                         const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th_before);
                         break :blk switch (self.role) {
@@ -611,16 +613,19 @@ pub const Engine = struct {
                             .Server => self.verifyPeerFinished(hs.client_hs, p.body),
                         };
                     };
-                    std.debug.print("TLS: Finished verification result: {}\n", .{ok});
+                    logger.debug("TLS: Finished verification result: {}", .{ok});
                     self.finished_verified = ok;
 
                     // Add the Finished message to the transcript AFTER verification
                     if (ok) {
                         const finished_msg = data[off - p.n .. off];
                         self.transcript.update(finished_msg);
-                        std.debug.print("TLS: Added {} bytes to transcript (recv-finished): ", .{finished_msg.len});
-                        for (finished_msg[0..@min(8, finished_msg.len)]) |b| std.debug.print("{X:0>2} ", .{b});
-                        std.debug.print("...\n", .{});
+                        const show_len = @min(8, finished_msg.len);
+                        if (show_len >= 8) {
+                            logger.debug("TLS: Added {} bytes to transcript (recv-finished): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...", .{finished_msg.len, finished_msg[0], finished_msg[1], finished_msg[2], finished_msg[3], finished_msg[4], finished_msg[5], finished_msg[6], finished_msg[7]});
+                        } else {
+                            logger.debug("TLS: Added {} bytes to transcript (recv-finished)", .{finished_msg.len});
+                        }
                     }
                 }
                 // NewSessionTicket parsing (client side only for now)
@@ -655,9 +660,9 @@ pub const Engine = struct {
                             // For now use zero hash as placeholder (transcript hash of empty string)
                             ks.expandLabel(ms, "res master", &empty_hash, &resumption_secret) catch continue;
                             self.tickets.add(self.allocator, ticket_bytes, resumption_secret, lifetime) catch {};
-                            std.debug.print("TLS: Stored session ticket (len={}, lifetime={})\n", .{ ticket_bytes.len, lifetime });
+                            logger.debug("TLS: Stored session ticket (len={}, lifetime={})", .{ ticket_bytes.len, lifetime });
                         } else {
-                            std.debug.print("TLS: Received ticket before master_secret ready; ignoring\n", .{});
+                            logger.debug("TLS: Received ticket before master_secret ready; ignoring", .{});
                         }
                     }
                 }
@@ -665,16 +670,14 @@ pub const Engine = struct {
                 // parseHandshakeOne returned null - not enough data
                 if (off < self.inbox.items.len) {
                     const remaining_data = self.inbox.items[off..];
-                    std.debug.print("TLS: parseHandshakeOne failed with {} bytes available. First bytes: ", .{remaining_data.len});
-                    for (remaining_data[0..@min(16, remaining_data.len)]) |b| std.debug.print("{X:0>2} ", .{b});
-                    std.debug.print("\n", .{});
+                    logger.debug("TLS: parseHandshakeOne failed with {} bytes available", .{remaining_data.len});
 
                     // Check if it's a partial message that needs more data
                     if (remaining_data.len >= 4) {
                         const msg_type = remaining_data[0];
                         const msg_len = (@as(usize, remaining_data[1]) << 16) | (@as(usize, remaining_data[2]) << 8) | @as(usize, remaining_data[3]);
                         const need_total = 4 + msg_len;
-                        std.debug.print("TLS: Partial message type=0x{X:0>2} needs {} bytes total, have {} bytes\n", .{msg_type, need_total, remaining_data.len});
+                        logger.debug("TLS: Partial message type=0x{X:0>2} needs {} bytes total, have {} bytes", .{msg_type, need_total, remaining_data.len});
                     }
                 }
                 break;
@@ -689,7 +692,7 @@ pub const Engine = struct {
                 std.mem.copyForwards(u8, self.inbox.items[0..remaining], self.inbox.items[off..]);
             }
             self.inbox.shrinkRetainingCapacity(remaining);
-            std.debug.print("TLS: Processed {} bytes, {} bytes remaining in buffer\n", .{off, remaining});
+            logger.debug("TLS: Processed {} bytes, {} bytes remaining in buffer", .{off, remaining});
         }
         
         // Transcript is now updated message-by-message in the loop above
@@ -712,9 +715,12 @@ pub const Engine = struct {
     pub fn queueCrypto(self: *Engine, data: []const u8) !void {
         try self.outbox.appendSlice(self.allocator, data);
         self.transcript.update(data);
-        std.debug.print("TLS: Added {} bytes to transcript (queue): ", .{data.len});
-        for (data[0..@min(8, data.len)]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("...\n", .{});
+        const show_len = @min(8, data.len);
+        if (show_len >= 8) {
+            logger.debug("TLS: Added {} bytes to transcript (queue): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...", .{data.len, data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]});
+        } else {
+            logger.debug("TLS: Added {} bytes to transcript (queue)", .{data.len});
+        }
         // If this was a proper handshake record, flip flags
         if (data.len >= 1) {
             if (data[0] == @intFromEnum(HsType.client_hello)) {
@@ -860,9 +866,7 @@ pub const Engine = struct {
     pub fn queueFinished(self: *Engine, traffic_secret: [H.digest_length]u8) !void {
         var snap = self.transcript;
         const th = snap.finalize();
-        std.debug.print("TLS: Queueing Finished with transcript hash: ", .{});
-        for (th[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("...\n", .{});
+        logger.debug("TLS: Queueing Finished with transcript hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...", .{th[0], th[1], th[2], th[3], th[4], th[5], th[6], th[7]});
         const verify = deriveFinishedVerifyData(traffic_secret, th);
         const msg = try encodeHandshake(self.allocator, .finished, verify[0..]);
         defer self.allocator.free(msg);
@@ -875,15 +879,13 @@ pub const Engine = struct {
         // finished_body is the verify_data sent by the peer
         var snap = self.transcript;
         const th = snap.finalize();
-        std.debug.print("TLS: Verifying Finished with transcript hash: ", .{});
-        for (th[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("...\n", .{});
+        logger.debug("TLS: Verifying Finished with transcript hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...", .{th[0], th[1], th[2], th[3], th[4], th[5], th[6], th[7]});
         const expect = deriveFinishedVerifyData(peer_secret, th);
         const match = finished_body.len == expect.len and std.mem.eql(u8, finished_body, &expect);
         if (!match) {
-            std.debug.print("TLS: Finished verification failed. Expected len={}, got len={}\n", .{ expect.len, finished_body.len });
+            logger.warn("TLS: Finished verification failed. Expected len={}, got len={}", .{ expect.len, finished_body.len });
             if (finished_body.len == expect.len) {
-                std.debug.print("TLS: MAC mismatch\n", .{});
+                logger.warn("TLS: MAC mismatch", .{});
             }
         }
         return match;
@@ -955,7 +957,7 @@ pub const Engine = struct {
         defer self.allocator.free(msg);
         try self.queueCrypto(msg);
 
-        std.debug.print("TLS: Queued Certificate message (cert_len={}, total_body_len={})\n", .{cert_der.len, body.items.len});
+        logger.debug("TLS: Queued Certificate message (cert_len={}, total_body_len={})", .{cert_der.len, body.items.len});
     }
 
     // --- New helper methods used by tests ---
@@ -1047,10 +1049,10 @@ pub const Engine = struct {
 
     /// Build a minimally spec-compliant TLS 1.3 ServerHello (real mode)
     pub fn queueRealServerHello(self: *Engine) !void {
-        std.debug.print("DEBUG queueRealServerHello: ENTER - alpn={}, local_tp={}\n", .{ self.alpn != null, self.local_tp != null });
+        logger.debug("queueRealServerHello: ENTER - alpn={}, local_tp={}", .{ self.alpn != null, self.local_tp != null });
         self.ensureKeypair();
         const pubkey = self.my_pub orelse {
-            std.debug.print("DEBUG queueRealServerHello: EARLY EXIT - my_pub is NULL\n", .{});
+            logger.debug("queueRealServerHello: EARLY EXIT - my_pub is NULL", .{});
             return error.Internal;
         };
 
@@ -1086,15 +1088,15 @@ pub const Engine = struct {
         // Queue EncryptedExtensions (which will trigger Certificate + CertificateVerify + Finished via maybeAutoProgress)
         const alpn_for_ee = self.alpn orelse &[_]u8{};
         const tp_for_ee = self.local_tp orelse &[_]u8{};
-        std.debug.print("Server: Queueing EncryptedExtensions with ALPN={s} TP_len={}\n", .{ alpn_for_ee, tp_for_ee.len });
+        logger.debug("Server: Queueing EncryptedExtensions with ALPN={s} TP_len={}", .{ alpn_for_ee, tp_for_ee.len });
         self.queueEncryptedExtensions(alpn_for_ee, tp_for_ee) catch |e| {
-            std.debug.print("Server: Failed to queue EncryptedExtensions: {}\n", .{e});
+            logger.err("Server: Failed to queue EncryptedExtensions: {}", .{e});
         };
     }
 
     /// Extract ALPN from ClientHello for server
     fn extractAlpnFromClientHello(self: *Engine, body: []const u8) void {
-        std.debug.print("extractAlpnFromClientHello: body_len={}\n", .{body.len});
+        logger.debug("extractAlpnFromClientHello: body_len={}", .{body.len});
         if (body.len < 35) return; // Minimum ClientHello size
         var pos: usize = 2 + 32; // Skip version + random
         if (pos >= body.len) return;
@@ -1128,14 +1130,14 @@ pub const Engine = struct {
                     if (3 + name_len <= elen and name_len > 0) {
                         if (self.alpn) |old| self.allocator.free(old);
                         self.alpn = self.allocator.dupe(u8, body[pos+3..pos+3+name_len]) catch null;
-                        std.debug.print("extractAlpnFromClientHello: Extracted ALPN: {s}\n", .{self.alpn.?});
+                        logger.debug("extractAlpnFromClientHello: Extracted ALPN: {s}", .{self.alpn.?});
                         return;
                     }
                 }
             }
             pos += elen;
         }
-        std.debug.print("extractAlpnFromClientHello: No ALPN found\n", .{});
+        logger.debug("extractAlpnFromClientHello: No ALPN found", .{});
     }
 
     /// Internal: auto-send Finished when conditions satisfied
@@ -1184,7 +1186,7 @@ pub const Engine = struct {
                         if (msg) |m| {
                             self.queueCrypto(m) catch {};
                             self.allocator.free(m);
-                            std.debug.print("TLS: Queued CertificateVerify (scheme=0x{x:0>4}, sig_len={})\n", .{scheme, sb.len});
+                            logger.debug("TLS: Queued CertificateVerify (scheme=0x{x:0>4}, sig_len={})", .{scheme, sb.len});
                         }
                         self.allocator.free(sb);
                     }
@@ -1195,13 +1197,13 @@ pub const Engine = struct {
             return;
         } else { // Client
             // Client waits for Finished verification; in authenticated mode also ensures peer_cert_ok
-            std.debug.print("Client: maybeAutoProgress - finished_verified={}, has_secret={}, allow_insecure={}, peer_cert_ok={}\n", .{ self.finished_verified, self.handshake_client_secret != null, self.allow_insecure, self.peer_cert_ok });
+            logger.debug("Client: maybeAutoProgress - finished_verified={}, has_secret={}, allow_insecure={}, peer_cert_ok={}", .{ self.finished_verified, self.handshake_client_secret != null, self.allow_insecure, self.peer_cert_ok });
             if (self.finished_verified and self.handshake_client_secret != null) {
                 if (!self.allow_insecure and !self.peer_cert_ok) {
-                    std.debug.print("Client: Waiting for certificate validation to complete\n", .{});
+                    logger.debug("Client: Waiting for certificate validation to complete", .{});
                     return; // wait for cert validation
                 }
-                std.debug.print("Client: Queueing Finished message in real mode\n", .{});
+                logger.debug("Client: Queueing Finished message in real mode", .{});
                 self.queueFinished(self.handshake_client_secret.?) catch {};
             }
         }
@@ -1222,7 +1224,7 @@ pub const Engine = struct {
 
     /// Force queue of remaining server handshake flight (EncryptedExtensions already queued externally).
     pub fn queueServerHandshakeFlight(self: *Engine) void {
-        std.debug.print("DEBUG queueServerHandshakeFlight: role={s}, finished_sent={}, has_secret={}, has_cert={}, has_key={}\n", .{
+        logger.debug("queueServerHandshakeFlight: role={s}, finished_sent={}, has_secret={}, has_cert={}, has_key={}", .{
             if (self.role == .Server) "Server" else "Client",
             self.finished_sent,
             self.handshake_server_secret != null,
@@ -1239,7 +1241,7 @@ pub const Engine = struct {
         // If we have a certificate configured, send Certificate + CertificateVerify.
         // Note: allow_insecure only affects peer certificate validation, not whether we send ours
         if (self.server_cert_der != null and self.server_priv_key != null) {
-            std.debug.print("DEBUG: Calling queueCertificate...\n", .{});
+            logger.debug("Calling queueCertificate...", .{});
             self.queueCertificate(self.server_cert_der.?) catch {};
             var snap = self.transcript;
             const th = snap.finalize();
@@ -1272,7 +1274,7 @@ pub const Engine = struct {
                 if (msg) |m| {
                     self.queueCrypto(m) catch {};
                     self.allocator.free(m);
-                    std.debug.print("TLS: Queued CertificateVerify (scheme=0x{x:0>4}, sig_len={})\n", .{scheme, sb.len});
+                    logger.debug("TLS: Queued CertificateVerify (scheme=0x{x:0>4}, sig_len={})", .{scheme, sb.len});
                 }
                 self.allocator.free(sb);
             }
@@ -1347,7 +1349,7 @@ fn readU16(be: []const u8) u16 {
 /// Attempt to parse a real (spec-like) TLS 1.3 ClientHello and extract the first X25519 key share.
 /// Returns pubkey if successful; otherwise null. Does not perform deep validation beyond bounds.
 fn parseRealClientHello(body: []const u8) ?[32]u8 {
-    std.debug.print("parseRealClientHello: body_len={}\n", .{body.len});
+    logger.debug("parseRealClientHello: body_len={}", .{body.len});
 
     // Use a stack allocator for the parsing
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -1356,22 +1358,22 @@ fn parseRealClientHello(body: []const u8) ?[32]u8 {
 
     // Parse the ClientHello using the comprehensive parser
     const ch = tls13_full.parseClientHello(allocator, body) catch {
-        std.debug.print("parseRealClientHello: failed to parse ClientHello\n", .{});
+        logger.debug("parseRealClientHello: failed to parse ClientHello", .{});
         return null;
     };
 
     // Extract the X25519 key share if present
     if (ch.key_share) |key_share| {
         if (key_share.group == .x25519 and key_share.key_exchange.len == 32) {
-            std.debug.print("parseRealClientHello: found X25519 key!\n", .{});
+            logger.debug("parseRealClientHello: found X25519 key!", .{});
             var out: [32]u8 = undefined;
             @memcpy(&out, key_share.key_exchange[0..32]);
-            std.debug.print("parseRealClientHello: successfully extracted public key\n", .{});
+            logger.debug("parseRealClientHello: successfully extracted public key", .{});
             return out;
         }
     }
 
-    std.debug.print("parseRealClientHello: no X25519 key found\n", .{});
+    logger.debug("parseRealClientHello: no X25519 key found", .{});
     return null;
 }
 

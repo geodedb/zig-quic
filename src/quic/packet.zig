@@ -5,6 +5,7 @@ const varint = @import("quic_varint");
 const ks = @import("quic_tls");
 const crypto = @import("quic_crypto");
 const builtin = @import("builtin");
+const logger = @import("quic_logger");
 
 /// Debug helper: dump bytes when running inside tests.
 fn dumpBytes(label: []const u8, bytes: []const u8) void {
@@ -16,7 +17,7 @@ fn dumpBytes(label: []const u8, bytes: []const u8) void {
         _ = list.writer(std.heap.page_allocator).print("{x:0>2}", .{bytes[i]}) catch break;
         if (i + 1 < bytes.len) _ = list.append(std.heap.page_allocator, ' ') catch break;
     }
-    std.debug.print("{s}: {s}\n", .{ label, list.items });
+    logger.debug("{s}: {s}", .{ label, list.items });
 }
 
 /// Packet number type alias.
@@ -554,7 +555,7 @@ pub fn encodeHandshakeProtected(
     // We don't need to OR type_bits because 0xe0 already includes Handshake type
     const pn_bits: u8 = @as(u8, packet_number_len - 1) & 0x03;
     const first: u8 = 0xe0 | pn_bits;
-    std.debug.print("DEBUG encodeHandshakeProtected: packet_number_len={}, pn_bits={}, first=0x{X:0>2}\n", .{ packet_number_len, pn_bits, first });
+    logger.debug("encodeHandshakeProtected: packet_number_len={}, pn_bits={}, first=0x{X:0>2}", .{ packet_number_len, pn_bits, first });
 
     const w = buf.writer(alloc);
     try w.writeByte(first);
@@ -575,7 +576,7 @@ pub fn encodeHandshakeProtected(
     try w.writeAll(lbuf[0..ll]);
 
     const header_prefix_len = buf.items.len - 1;
-    std.debug.print("DEBUG encodeHandshakeProtected: payload_len={}, ct_len={}, pn_len={}, length_value={}\n", .{ payload_plaintext.len, ct_len, packet_number_len, length_value });
+    logger.debug("encodeHandshakeProtected: payload_len={}, ct_len={}, pn_len={}, length_value={}", .{ payload_plaintext.len, ct_len, packet_number_len, length_value });
 
     var pn_be_full: [4]u8 = .{
         @as(u8, @intCast((packet_number >> 24) & 0xff)),
@@ -596,7 +597,7 @@ pub fn encodeHandshakeProtected(
 
     const out_cipher = buf.items[out_cipher_idx .. out_cipher_idx + ct_len];
     const suite = crypto.AeadSuite.aes_128_gcm;
-    std.debug.print("DEBUG encodeHandshakeProtected: Using keys - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ keys.key[0], keys.key[1], keys.key[2], keys.key[3], keys.iv[0], keys.iv[1], keys.iv[2], keys.iv[3] });
+    logger.debug("encodeHandshakeProtected: Using keys - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{ keys.key[0], keys.key[1], keys.key[2], keys.key[3], keys.iv[0], keys.iv[1], keys.iv[2], keys.iv[3] });
     // Use protectPacket for Handshake packets, not protectInitial
     const written = try crypto.protectPacket(
         suite,
@@ -616,8 +617,8 @@ pub fn encodeHandshakeProtected(
     const pn_offset = 1 + header_prefix_len;
     @memcpy(buf.items[pn_offset .. pn_offset + packet_number_len], pn_mut[0..packet_number_len]);
 
-    std.debug.print("DEBUG encodeHandshakeProtected: AFTER header protection - first byte changed from 0x{X:0>2} to 0x{X:0>2}\n", .{ first, header_first });
-    std.debug.print("DEBUG encodeHandshakeProtected: Final packet first 5 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ buf.items[0], buf.items[1], buf.items[2], buf.items[3], buf.items[4] });
+    logger.debug("encodeHandshakeProtected: AFTER header protection - first byte changed from 0x{X:0>2} to 0x{X:0>2}", .{ first, header_first });
+    logger.debug("encodeHandshakeProtected: Final packet first 5 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{ buf.items[0], buf.items[1], buf.items[2], buf.items[3], buf.items[4] });
 
     return buf.toOwnedSlice(alloc);
 }

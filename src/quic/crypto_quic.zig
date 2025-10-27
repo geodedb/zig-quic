@@ -3,6 +3,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const ks = @import("quic_tls");
+const logger = @import("quic_logger");
 
 // Use standard library crypto
 const ChaCha20Poly1305 = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
@@ -135,7 +136,7 @@ pub fn headerProtect(
             const hdr_mask: u8 = if (is_long) 0x0f else 0x1f;
             const old_first = header_first.*;
             header_first.* ^= (mask0 & hdr_mask);
-            std.debug.print("DEBUG headerProtect: first byte 0x{X:0>2} ^ (mask0 0x{X:0>2} & hdr_mask 0x{X:0>2}) = 0x{X:0>2}\n", .{ old_first, mask0, hdr_mask, header_first.* });
+            logger.debug("headerProtect: first byte 0x{X:0>2} ^ (mask0 0x{X:0>2} & hdr_mask 0x{X:0>2}) = 0x{X:0>2}", .{ old_first, mask0, hdr_mask, header_first.* });
             var i: usize = 0;
             while (i < pn_bytes.len) : (i += 1) pn_bytes[i] ^= out_block[i + 1];
             return;
@@ -362,7 +363,7 @@ pub fn unprotectInitial(
     const pn_val = expandPacketNumber(pn_val_truncated, @intCast(pn_bytes.len), expected_pn);
 
     if (expected_pn == 0) {
-        std.debug.print("First packet: truncated={x:0>4} ({}) -> expanded={}\n", .{ pn_val_truncated, pn_val_truncated, pn_val });
+        logger.debug("First packet: truncated={x:0>4} ({}) -> expanded={}", .{ pn_val_truncated, pn_val_truncated, pn_val });
     }
 
     if (builtin.is_test) {
@@ -376,7 +377,7 @@ pub fn unprotectInitial(
     }
 
     return aeadDecrypt(suite, aead_key, aead_iv, pn_val, aad, ciphertext_and_tag, out_plaintext) catch |err| {
-        std.debug.print("AEAD decrypt failed: {} (pn={})\n", .{ err, pn_val });
+        logger.debug("AEAD decrypt failed: {} (pn={})", .{ err, pn_val });
         return err;
     };
 }
@@ -421,15 +422,11 @@ pub fn unprotectInitialAutoSample(
 
     // Remove header protection in-place (mutates header_first & pn_bytes) using derived sample
     if (builtin.is_test) {
-        std.debug.print("Before headerUnprotect: pn_bytes=", .{});
-        for (pn_bytes) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("\n", .{});
+        logger.debug("Before headerUnprotect: pn_bytes set", .{});
     }
     try headerUnprotect(suite, hp_key, &sample16, header_first, pn_bytes);
     if (builtin.is_test) {
-        std.debug.print("After headerUnprotect: pn_bytes=", .{});
-        for (pn_bytes) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("\n", .{});
+        logger.debug("After headerUnprotect: pn_bytes set", .{});
     }
 
     // Build AAD after unmasking: first byte + header_prefix + pn_bytes
@@ -448,11 +445,11 @@ pub fn unprotectInitialAutoSample(
     const full_pn = expandPacketNumber(pn_trunc, @intCast(pn_len), expected_pn);
 
     if (builtin.is_test) {
-        std.debug.print("expandPacketNumber: truncated={} pn_len={} expected={} -> full={}\n", .{ pn_trunc, pn_len, expected_pn, full_pn });
+        logger.debug("expandPacketNumber: truncated={} pn_len={} expected={} -> full={}", .{ pn_trunc, pn_len, expected_pn, full_pn });
     }
 
     return aeadDecrypt(suite, aead_key, aead_iv, full_pn, aad, ciphertext_and_tag, out_plaintext) catch |err| {
-        std.debug.print("AEAD decrypt failed (auto-sample): {} (pn={})\n", .{ err, full_pn });
+        logger.debug("AEAD decrypt failed (auto-sample): {} (pn={})", .{ err, full_pn });
         return err;
     };
 }
@@ -504,7 +501,7 @@ fn dumpBytes(label: []const u8, bytes: []const u8) void {
         _ = list.writer(std.heap.page_allocator).print("{x:0>2}", .{bytes[i]}) catch break;
         if (i + 1 < bytes.len) _ = list.append(std.heap.page_allocator, ' ') catch break;
     }
-    std.debug.print("{s}: {s}\n", .{ label, list.items });
+    logger.debug("{s}: {s}", .{ label, list.items });
 }
 
 /// Decode QUIC short header key phase bit and pn length from first byte.
