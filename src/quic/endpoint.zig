@@ -182,7 +182,7 @@ pub const Endpoint = struct {
             break :blk if (is_server) EndpointRole.Server else EndpointRole.Client;
         } else EndpointRole.Client;
 
-        std.debug.print("DEBUG: Endpoint role determined as: {}\n", .{endpoint_role});
+        logger.debug("Endpoint role determined as: {}", .{endpoint_role});
 
         return Endpoint{
             .sock_fd = fd,
@@ -875,9 +875,9 @@ pub const Endpoint = struct {
         var check_addr = conn_mod.SockAddr{};
         check_addr.len = @intCast(@sizeOf(posix.sockaddr.storage));
         if (posix.getsockname(self.sock_fd, @ptrCast(&check_addr.storage), &check_addr.len)) |_| {
-            std.debug.print("DEBUG: Socket fd={} is still valid\n", .{self.sock_fd});
+            logger.debug("Socket fd={} is still valid", .{self.sock_fd});
         } else |err| {
-            std.debug.print("DEBUG: Socket fd={} is INVALID: {}\n", .{self.sock_fd, err});
+            logger.debug("Socket fd={} is INVALID: {}", .{self.sock_fd, err});
             return;
         }
 
@@ -889,10 +889,10 @@ pub const Endpoint = struct {
         var peek_len: posix.socklen_t = @sizeOf(@TypeOf(peek_addr));
         const peek_flags = posix.MSG.DONTWAIT | posix.MSG.PEEK;
         if (posix.recvfrom(self.sock_fd, &peek_buf, @intCast(peek_flags), @ptrCast(&peek_addr), &peek_len)) |peek_n| {
-            std.debug.print("DEBUG: !!!! CRITICAL: recvfrom PEEK shows {} bytes waiting, but epoll didn't trigger!\n", .{peek_n});
+            logger.debug("!!!! CRITICAL: recvfrom PEEK shows {} bytes waiting, but epoll didn't trigger!", .{peek_n});
         } else |peek_err| {
             if (peek_err != error.WouldBlock) {
-                std.debug.print("DEBUG: recvfrom PEEK error: {}\n", .{peek_err});
+                logger.debug("recvfrom PEEK error: {}", .{peek_err});
             }
         }
 
@@ -959,9 +959,9 @@ pub const Endpoint = struct {
     }
 
     fn processIncomingDatagram(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8, ecn_bits: ?u8) void {
-        std.debug.print("DEBUG: processIncomingDatagram called with {} bytes\n", .{bytes.len});
+        logger.debug("processIncomingDatagram called with {} bytes", .{bytes.len});
         if (bytes.len < 1) {
-            std.debug.print("DEBUG: Packet too short, returning\n", .{});
+            logger.debug("Packet too short, returning", .{});
             return;
         }
         if (bytes.len == 141) {
@@ -1580,7 +1580,7 @@ pub const Endpoint = struct {
                 // No suitable server connection exists: create one now.
                 // CRITICAL FIX: Only server endpoints should create server connections
                 if (self.role == EndpointRole.Client) {
-                    std.debug.print("Client endpoint refusing to create server connection for Initial packet\n", .{});
+                    logger.debug("Client endpoint refusing to create server connection for Initial packet", .{});
                     return; // Client endpoints should never create server connections
                 }
 
@@ -1944,7 +1944,7 @@ pub const Endpoint = struct {
                 if (conn.role == .Server) {
                     // Server: only send Initial when ServerHello is ready
                     const result = conn.tls.sh_seen and conn.crypto_tx_off_initial < 200;
-                    std.debug.print("Server should_send_initial: sh_seen={}, crypto_tx_off_initial={}, result={}\n", .{
+                    logger.debug("Server should_send_initial: sh_seen={}, crypto_tx_off_initial={}, result={}", .{
                         conn.tls.sh_seen, conn.crypto_tx_off_initial, result
                     });
                     break :blk result;
@@ -2008,9 +2008,13 @@ pub const Endpoint = struct {
                     if (conn.peer_initial_dcid.len > 0) break :blk conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len];
                     break :blk dcid;
                 };
-                std.debug.print("Server TX: Deriving Initial keys with dcid=", .{});
-                for (derive_dcid_tx) |b| std.debug.print("{X:0>2}", .{b});
-                std.debug.print(" (len={})\n", .{derive_dcid_tx.len});
+                {
+                    var hex_buf: [256]u8 = undefined;
+                    var fbs = std.io.fixedBufferStream(&hex_buf);
+                    const hex_w = fbs.writer();
+                    for (derive_dcid_tx) |b| hex_w.print("{X:0>2}", .{b}) catch break;
+                    logger.debug("Server TX: Deriving Initial keys with dcid={s} (len={})", .{hex_buf[0..fbs.pos], derive_dcid_tx.len});
+                }
                 const oriented = packet.initialAeadKeys(v2, conn.role == .Server, derive_dcid_tx);
                 const tx_keys = oriented.tx;
 
