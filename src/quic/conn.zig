@@ -9,6 +9,7 @@ const recovery = @import("quic_recovery");
 const ks = @import("quic_tls");
 // Import transport parameters module (registered as quic_transport_params in build.zig)
 const tparams = @import("quic_transport_params");
+const logger = @import("quic_logger");
 
 /// Buffer for reassembling out-of-order CRYPTO frames
 const CryptoBuffer = struct {
@@ -28,7 +29,7 @@ const CryptoBuffer = struct {
         // If buffer is full, skip adding this fragment to prevent memory corruption
         // In normal operation with in-order CRYPTO frames, this should never happen
         if (self.count >= self.fragments.len) {
-            std.debug.print("WARNING: CryptoBuffer full (count={}, max={}), skipping fragment at offset {}\n", .{ self.count, self.fragments.len, offset });
+            logger.debug("WARNING: CryptoBuffer full (count={}, max={}), skipping fragment at offset {}", .{ self.count, self.fragments.len, offset });
             return error.BufferFull;
         }
 
@@ -1072,20 +1073,20 @@ pub const Connection = struct {
         // Amplification guard: if address not validated and we already exceeded 3x budget, refuse to send
         if (self.overAmplification()) return error.WouldBlock;
         if (data.len == 141) {
-            std.debug.print("DEBUG: send() called with 141 bytes, sender_fn={}\n", .{self.sender_fn != null});
+            logger.debug("send() called with 141 bytes, sender_fn={}", .{self.sender_fn != null});
         }
         if (self.sender_fn) |f| {
             const ctx = self.sender_ctx orelse return data.len;
             const n = try f(ctx, self, data);
             if (data.len == 141) {
-                std.debug.print("DEBUG: sender_fn returned {} bytes for 141-byte packet\n", .{n});
+                logger.debug("sender_fn returned {} bytes for 141-byte packet", .{n});
             }
             self.addTxUnvalidated(n);
             return n;
         }
         // Test mode: no endpoint sender installed; pretend all bytes were sent.
         if (data.len == 141) {
-            std.debug.print("DEBUG: No sender_fn, test mode - pretending 141 bytes sent\n", .{});
+            logger.debug("No sender_fn, test mode - pretending 141 bytes sent", .{});
         }
         self.addTxUnvalidated(data.len);
         return data.len;
@@ -1098,32 +1099,19 @@ pub const Connection = struct {
         self.tls.onCryptoRecv(hs);
         // Server: upon receiving first ClientHello AND extracting peer's public key, queue a ServerHello
         if (self.role == .Server and !self.tls.sh_seen and !had_peer_pub and self.tls.peer_pub != null) {
-            std.debug.print("Server: ClientHello parsed with public key, queueing ServerHello\n", .{});
-            // Verify ALPN and Transport Parameters are set before generating ServerHello
-            // ALPN should be extracted from ClientHello by this point
-            if (self.tls.alpn) |client_alpn| {
-                std.debug.print("Server: Using ALPN from ClientHello: {s}\n", .{client_alpn});
-            } else {
-                std.debug.print("Server: WARNING - No ALPN from ClientHello!\n", .{});
-            }
-            // Transport Parameters should be set by endpoint during connection initialization
-            if (self.tls.local_tp) |ltp| {
-                std.debug.print("Server: local_tp set in TLS engine, len={}\n", .{ltp.len});
-            } else {
-                std.debug.print("Server: WARNING - No local transport parameters in TLS engine!\n", .{});
-            }
-            // Build spec-compliant ServerHello
+            logger.debug("Server: ClientHello parsed with public key, queueing ServerHello", .{});
+            // Always use real TLS 1.3 ServerHello
             self.tls.queueRealServerHello() catch {};
         }
         // If we can compute handshake secrets now, install Handshake keys once
         if (self.hs_client == null or self.hs_server == null) {
             if (self.tls.computeHandshakeSecrets()) |hs_secrets| {
-                std.debug.print("{s}: Derived handshake secrets\n", .{if (self.role == .Server) "Server" else "Client"});
+                logger.debug("{s}: Derived handshake secrets", .{if (self.role == .Server) "Server" else "Client"});
                 self.hs_client = hs_secrets.client;
                 self.hs_server = hs_secrets.server;
                 self.deriveHandshakeKeys(self.version_v2);
             } else {
-                std.debug.print("{s}: Cannot derive handshake secrets yet (ch_sent={}, sh_seen={}, ecdhe={})\n", .{ if (self.role == .Server) "Server" else "Client", self.tls.ch_sent, self.tls.sh_seen, self.tls.ecdhe_secret != null });
+                logger.debug("{s}: Cannot derive handshake secrets yet (ch_sent={}, sh_seen={}, ecdhe={})", .{ if (self.role == .Server) "Server" else "Client", self.tls.ch_sent, self.tls.sh_seen, self.tls.ecdhe_secret != null });
             }
         }
         // Install 1-RTT keys only after BOTH sides' Finished messages are involved from our perspective:
@@ -1137,15 +1125,15 @@ pub const Connection = struct {
                 // the client does not emit 1-RTT STREAM frames that the server cannot yet decrypt.
                 if (self.tls.outbox.items.len == 0) {
                     if (self.tls.computeApplicationSecrets()) |app_secrets| {
-                        std.debug.print("{s}: Deriving application secrets (both Finished exchanged & flushed)\n", .{if (self.role == .Server) "Server" else "Client"});
+                        logger.debug("{s}: Deriving application secrets (both Finished exchanged & flushed)", .{if (self.role == .Server) "Server" else "Client"});
                         self.deriveAppKeys(app_secrets.client, app_secrets.server, self.version_v2);
                     }
                 } else {
-                    std.debug.print("{s}: Waiting to derive 1-RTT keys until Finished flushes ({} bytes pending)\n", .{ if (self.role == .Server) "Server" else "Client", self.tls.outbox.items.len });
+                    logger.debug("{s}: Waiting to derive 1-RTT keys until Finished flushes ({} bytes pending)", .{ if (self.role == .Server) "Server" else "Client", self.tls.outbox.items.len });
                 }
             } else if (self.tls.finished_verified and !self.tls.finished_sent) {
                 // Debug aid: indicate deferral so logs show why 1-RTT keys not installed yet.
-                std.debug.print("{s}: Deferring 1-RTT key derivation until our Finished is sent (verified peer Finished)\n", .{if (self.role == .Server) "Server" else "Client"});
+                logger.debug("{s}: Deferring 1-RTT key derivation until our Finished is sent (verified peer Finished)", .{if (self.role == .Server) "Server" else "Client"});
             }
         }
         // Apply peer transport parameters (once) when they first become available.
@@ -1179,7 +1167,7 @@ pub const Connection = struct {
         if (!(self.tls.finished_verified and self.tls.finished_sent)) return;
         if (self.tls.outbox.items.len != 0) return; // still pending bytes
         if (self.tls.computeApplicationSecrets()) |app_secrets| {
-            std.debug.print("{s}: Deriving application secrets after Finished flush\n", .{if (self.role == .Server) "Server" else "Client"});
+            logger.debug("{s}: Deriving application secrets after Finished flush", .{if (self.role == .Server) "Server" else "Client"});
             self.deriveAppKeys(app_secrets.client, app_secrets.server, self.version_v2);
         }
     }
@@ -1246,17 +1234,17 @@ pub const Connection = struct {
     pub fn pushStreamFrame(self: *Connection, stream_id: u64, offset: u64, data: []const u8, fin: bool) !void {
         if (self.stream_recv_aborted) return; // ignore further data after RESET_STREAM
         
-        std.debug.print("DEBUG pushStreamFrame: stream_id={}, offset={}, len={}, fin={}, role={}\n", .{stream_id, offset, data.len, fin, self.role});
+        logger.debug("DEBUG pushStreamFrame: stream_id={}, offset={}, len={}, fin={}, role={}", .{stream_id, offset, data.len, fin, self.role});
         
         // Check if this is a new peer-initiated stream
         const is_peer_initiated = self.isPeerInitiatedStream(stream_id);
-        std.debug.print("DEBUG: is_peer_initiated={}, stream_known={}\n", .{is_peer_initiated, self.isStreamKnown(stream_id)});
+        logger.debug("is_peer_initiated={}, stream_known={}", .{is_peer_initiated, self.isStreamKnown(stream_id)});
         
         if (is_peer_initiated and !self.isStreamKnown(stream_id)) {
             // Add to incoming queue if not already there
-            std.debug.print("DEBUG: Queueing new incoming stream {}\n", .{stream_id});
+            logger.debug("Queueing new incoming stream {}", .{stream_id});
             try self.queueIncomingStream(stream_id);
-            std.debug.print("DEBUG: Queue now has {} streams\n", .{self.incoming_stream_queue.items.len});
+            logger.debug("Queue now has {} streams", .{self.incoming_stream_queue.items.len});
         }
         
         const s = self.ensureStreamRx(stream_id);
@@ -1382,7 +1370,7 @@ pub const Connection = struct {
 
     fn sendControlFrames(self: *Connection, frames_bytes: []const u8) void {
         const tx = self.app_tx_keys orelse return;
-        std.debug.print("{s}: Sending control frames ({d} bytes)\n", .{ if (self.role == .Server) "Server" else "Client", frames_bytes.len });
+        logger.debug("{s}: Sending control frames ({d} bytes)", .{ if (self.role == .Server) "Server" else "Client", frames_bytes.len });
         const pkt = packet.encodeShortProtected(
             self.allocator.*,
             self.shortHeaderDcid(),
@@ -1575,7 +1563,7 @@ pub const Connection = struct {
         const w = frames.writer(self.allocator.*);
         _ = (frame.Frame{ .stream = .{ .stream_id = id, .offset = cur_off, .fin = false, .data = data[0..to_send] } }).write(w) catch 0;
         const dcid = self.shortHeaderDcid();
-        std.debug.print("DEBUG: Server sending STREAM with DCID len={}, first_byte={x}\n", .{dcid.len, if (dcid.len > 0) dcid[0] else 0});
+        logger.debug("Server sending STREAM with DCID len={}, first_byte={x}", .{dcid.len, if (dcid.len > 0) dcid[0] else 0});
         const pkt = try packet.encodeShortProtected(
             self.allocator.*,
             dcid,
@@ -1586,10 +1574,10 @@ pub const Connection = struct {
             self.tx_key_phase,
         );
         defer self.allocator.free(pkt);
-        std.debug.print("DEBUG: About to call send() with {} bytes\n", .{pkt.len});
+        logger.debug("About to call send() with {} bytes", .{pkt.len});
         const bytes_sent = try self.send(pkt);
-        std.debug.print("DEBUG: send() returned {} bytes\n", .{bytes_sent});
-        std.debug.print("DEBUG: STREAM frame packet sent - {} bytes (pkt.len={})\n", .{bytes_sent, pkt.len});
+        logger.debug("send() returned {} bytes", .{bytes_sent});
+        logger.debug("STREAM frame packet sent - {} bytes (pkt.len={})", .{bytes_sent, pkt.len});
         self.onShortHeaderPacketSent(pkt.len, true);
         self.computeAndMaybeArmPto(self);
         if (id == 0) {
@@ -1605,13 +1593,13 @@ pub const Connection = struct {
     /// Read reassembled bytes from a stream into buf; returns number copied or WouldBlock.
     pub fn readStream(self: *Connection, id: u64, buf: []u8) !usize {
         // TRACE: readStream called
-        // std.debug.print("DEBUG: readStream called - id={}, buf_len={}\n", .{id, buf.len});
+        // logger.debug("readStream called - id={}, buf_len={}", .{id, buf.len});
         var s = self.streams_rx.getPtr(id) orelse {
-            std.debug.print("DEBUG: readStream - stream {} not found in RX map\n", .{id});
+            logger.debug("readStream - stream {} not found in RX map", .{id});
             return error.InvalidStream;
         };
         // TRACE: readStream inbox status
-        // std.debug.print("DEBUG: readStream - inbox has {} bytes\n", .{s.inbox.items.len});
+        // logger.debug("readStream - inbox has {} bytes", .{s.inbox.items.len});
         if (s.inbox.items.len == 0) return error.WouldBlock;
         const n: usize = @min(buf.len, s.inbox.items.len);
         @memcpy(buf[0..n], s.inbox.items[0..n]);
@@ -1619,7 +1607,7 @@ pub const Connection = struct {
         if (rem > 0) std.mem.copyForwards(u8, s.inbox.items[0..rem], s.inbox.items[n..]);
         s.inbox.shrinkRetainingCapacity(rem);
         // TRACE: readStream returning data
-        // std.debug.print("DEBUG: readStream - returning {} bytes\n", .{n});
+        // logger.debug("readStream - returning {} bytes", .{n});
         return n;
     }
 
@@ -1995,11 +1983,11 @@ pub const Connection = struct {
         const w = frames.writer(self.allocator.*);
         _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
         
-        std.debug.print("Server: Sending Initial response with SCID=", .{});
-        for (self.our_scid.bytes[0..self.our_scid.len]) |b| std.debug.print("{x:0>2}", .{b});
-        std.debug.print(" (len={}) to client DCID=", .{self.our_scid.len});
-        for (self.peer_initial_scid.bytes[0..self.peer_initial_scid.len]) |b| std.debug.print("{x:0>2}", .{b});
-        std.debug.print(" (len={})\n", .{self.peer_initial_scid.len});
+        logger.debug("Server: Sending Initial response with SCID=", .{});
+        for (self.our_scid.bytes[0..self.our_scid.len]) |b| logger.debug("{x:0>2}", .{b});
+        logger.debug(" (len={}) to client DCID=", .{self.our_scid.len});
+        for (self.peer_initial_scid.bytes[0..self.peer_initial_scid.len]) |b| logger.debug("{x:0>2}", .{b});
+        logger.debug(" (len={})", .{self.peer_initial_scid.len});
         
         const out = packet.encodeInitialProtected(
             self.allocator.*,
@@ -2113,7 +2101,7 @@ pub const Connection = struct {
         const tx = tls13.deriveQuicHandshakeKeys(tx_secret, version_v2);
         self.hs_rx_keys = .{ .key = rx.key, .iv = rx.iv, .hp = rx.hp };
         self.hs_tx_keys = .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp };
-        std.debug.print("DEBUG: Handshake keys derived for {s} - tx_key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}, rx_key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+        logger.debug("Handshake keys derived for {s} - tx_key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}, rx_key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{
             if (self.role == .Server) "Server" else "Client",
             tx.key[0], tx.key[1], tx.key[2], tx.key[3],
             rx.key[0], rx.key[1], rx.key[2], rx.key[3],
@@ -2135,16 +2123,16 @@ pub const Connection = struct {
         
         // Debug: log what connection IDs will be used
         if (self.role == .Server) {
-            std.debug.print("Server: 1-RTT keys ready, our_scid=", .{});
-            for (self.our_scid.bytes[0..self.our_scid.len]) |b| std.debug.print("{x:0>2}", .{b});
-            std.debug.print(" (len={}), peer_initial_scid=", .{self.our_scid.len});
-            for (self.peer_initial_scid.bytes[0..self.peer_initial_scid.len]) |b| std.debug.print("{x:0>2}", .{b});
-            std.debug.print(" (len={})\n", .{self.peer_initial_scid.len});
+            logger.debug("Server: 1-RTT keys ready, our_scid=", .{});
+            for (self.our_scid.bytes[0..self.our_scid.len]) |b| logger.debug("{x:0>2}", .{b});
+            logger.debug(" (len={}), peer_initial_scid=", .{self.our_scid.len});
+            for (self.peer_initial_scid.bytes[0..self.peer_initial_scid.len]) |b| logger.debug("{x:0>2}", .{b});
+            logger.debug(" (len={})", .{self.peer_initial_scid.len});
         } else {
-            std.debug.print("Client: 1-RTT keys ready, will send to DCID=", .{});
+            logger.debug("Client: 1-RTT keys ready, will send to DCID=", .{});
             const dcid = self.shortHeaderDcid();
-            for (dcid) |b| std.debug.print("{x:0>2}", .{b});
-            std.debug.print(" (len={})\n", .{dcid.len});
+            for (dcid) |b| logger.debug("{x:0>2}", .{b});
+            logger.debug(" (len={})", .{dcid.len});
         }
         // Reset per-direction phases to initial 0
         self.rx_key_phase = false;
@@ -2165,7 +2153,7 @@ pub const Connection = struct {
             self.hs_rx_keys = null;
             self.hs_tx_keys = null;
         } else {
-            std.debug.print("{s}: Deferring Handshake key drop until CRYPTO outbox flushed ({} bytes pending)\n", .{ if (self.role == .Server) "Server" else "Client", self.tls.outbox.items.len });
+            logger.debug("{s}: Deferring Handshake key drop until CRYPTO outbox flushed ({} bytes pending)", .{ if (self.role == .Server) "Server" else "Client", self.tls.outbox.items.len });
         }
         // Server: send HANDSHAKE_DONE and reaffirm initial MAX_* once
         if (self.role == .Server and !self.handshake_done_sent) {
@@ -2178,7 +2166,7 @@ pub const Connection = struct {
             _ = (frame.Frame{ .max_streams_bidi = .{ .max = self.local_max_streams_bidi } }).write(w) catch 0;
             if (!self.session_ticket_sent) {
                 self.tls.queueNewSessionTicket() catch |e| {
-                    std.debug.print("session ticket queue error: {s}\n", .{@errorName(e)});
+                    logger.debug("session ticket queue error: {s}", .{@errorName(e)});
                 };
                 self.session_ticket_sent = true;
             }
@@ -2194,9 +2182,9 @@ pub const Connection = struct {
         const result = if (self.peer_initial_scid.len > 0) self.peer_initial_scid.bytes[0..self.peer_initial_scid.len] else self.our_scid.bytes[0..self.our_scid.len];
         
         if (self.role == .Client) {
-            std.debug.print("Client: Using DCID for 1-RTT packet: ", .{});
-            for (result) |b| std.debug.print("{x:0>2}", .{b});
-            std.debug.print(" (len={})\n", .{result.len});
+            logger.debug("Client: Using DCID for 1-RTT packet: ", .{});
+            for (result) |b| logger.debug("{x:0>2}", .{b});
+            logger.debug(" (len={})", .{result.len});
         }
         
         return result;
@@ -2255,7 +2243,7 @@ pub const Connection = struct {
             // Reset counters for next epoch
             self.tx_sent_packets_since_key = 0;
             self.tx_sent_bytes_since_key = 0;
-            std.debug.print("keyupdate: triggered phase={d} start_pn={d}\n", .{ @intFromBool(self.tx_key_phase), self.tx_update_start_pn });
+            logger.debug("keyupdate: triggered phase={d} start_pn={d}", .{ @intFromBool(self.tx_key_phase), self.tx_update_start_pn });
         }
     }
 
@@ -2268,7 +2256,7 @@ pub const Connection = struct {
             }
             self.tx_prev_keys = null;
             self.tx_update_in_progress = false;
-            std.debug.print("keyupdate: finalized ack_pn={d} phase={d}\n", .{ largest_acked, @intFromBool(self.tx_key_phase) });
+            logger.debug("keyupdate: finalized ack_pn={d} phase={d}", .{ largest_acked, @intFromBool(self.tx_key_phase) });
         }
     }
 
@@ -2471,7 +2459,7 @@ pub const Connection = struct {
     
     /// Accept an incoming peer-initiated stream (non-blocking)
     pub fn acceptStream(self: *Connection) !u64 {
-        std.debug.print("DEBUG acceptStream: queue has {} streams\n", .{self.incoming_stream_queue.items.len});
+        logger.debug("DEBUG acceptStream: queue has {} streams", .{self.incoming_stream_queue.items.len});
         
         if (self.incoming_stream_queue.items.len == 0) {
             // Also check if we have any streams in RX that are peer-initiated
@@ -2480,16 +2468,16 @@ pub const Connection = struct {
             while (it.next()) |entry| {
                 if (self.isPeerInitiatedStream(entry.key_ptr.*)) {
                     found_count += 1;
-                    std.debug.print("DEBUG: Found peer-initiated stream {} in RX but not in queue\n", .{entry.key_ptr.*});
+                    logger.debug("Found peer-initiated stream {} in RX but not in queue", .{entry.key_ptr.*});
                 }
             }
-            std.debug.print("DEBUG: Total peer-initiated streams in RX: {}\n", .{found_count});
+            logger.debug("Total peer-initiated streams in RX: {}", .{found_count});
             return error.WouldBlock;
         }
         
         // Remove and return the first stream in the queue
         const stream_id = self.incoming_stream_queue.orderedRemove(0);
-        std.debug.print("DEBUG acceptStream: returning stream_id={}\n", .{stream_id});
+        logger.debug("DEBUG acceptStream: returning stream_id={}", .{stream_id});
         
         // Ensure we have RX state for it
         _ = self.ensureStreamRx(stream_id);

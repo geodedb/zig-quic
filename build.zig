@@ -146,6 +146,9 @@ pub fn build(b: *std.Build) void {
         // Placeholder: runtime selection occurs via config; both controllers are in same module
     }
 
+    // Logger module for QUIC library
+    const quic_logger_mod = mkModule(b, "src/quic/logger.zig");
+
     // Connection/TP
     const quic_conn_mod = mkModule(b, "src/quic/conn.zig");
     quic_conn_mod.addImport("quic_packet", quic_packet_mod);
@@ -154,6 +157,7 @@ pub fn build(b: *std.Build) void {
     quic_conn_mod.addImport("quic_varint", quic_varint_mod);
     quic_conn_mod.addImport("quic_tls", quic_tls_mod);
     quic_conn_mod.addImport("quic_recovery", quic_recovery_mod);
+    quic_conn_mod.addImport("quic_logger", quic_logger_mod);
     const quic_transport_params_mod = mkModule(b, "src/quic/transport_params.zig");
     quic_transport_params_mod.addImport("quic_varint", quic_varint_mod);
     // Make transport params available to connection and endpoint modules
@@ -174,6 +178,7 @@ pub fn build(b: *std.Build) void {
     quic_endpoint_mod.addImport("config.zig", quic_config_mod);
     quic_endpoint_mod.addImport("loop_backend.zig", loop_backend_mod);
     quic_endpoint_mod.addImport("quic_transport_params", quic_transport_params_mod);
+    quic_endpoint_mod.addImport("quic_logger", quic_logger_mod);
 
     // Public API module (reuse everywhere)
     const quic_api_mod = mkModule(b, "src/quic/api.zig");

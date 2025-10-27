@@ -464,25 +464,20 @@ pub const Engine = struct {
                 if (p.typ == .client_hello or p.typ == .server_hello) {
                     std.debug.print("TLS: Processing hello message, typ={}\n", .{p.typ});
                     var extracted: ?[32]u8 = null;
-
-                    // Parse TLS 1.3 hello messages
-                    std.debug.print("TLS: Attempting TLS 1.3 hello parsing\n", .{});
+                    // Try real TLS 1.3 parsing first
+                    std.debug.print("TLS: Trying real TLS 1.3 hello parsing\n", .{});
                     switch (p.typ) {
-                        .client_hello => {
-                            extracted = parseRealClientHello(p.body);
-                            if (extracted != null) {
-                                // Extract ALPN from ClientHello for server
-                                if (self.role == .Server) {
-                                    self.extractAlpnFromClientHello(p.body);
-                                }
-                            }
-                        },
+                        .client_hello => extracted = parseRealClientHello(p.body),
                         .server_hello => extracted = parseRealServerHello(p.body),
                         else => {},
                     }
-
+                    // If real parsing failed, try minimal format as fallback
                     if (extracted == null) {
-                        std.debug.print("{s}: Failed to parse hello pub (typ={}, body_len={})\n", .{ if (self.role == .Server) "Server" else "Client", p.typ, p.body.len });
+                        std.debug.print("TLS: Real parse failed, trying minimal parse as fallback\n", .{});
+                        extracted = parseMinimalHelloPub(p.typ, p.body);
+                        if (extracted == null) {
+                            std.debug.print("{s}: Failed to parse hello pub (typ={}, body_len={})\n", .{ if (self.role == .Server) "Server" else "Client", p.typ, p.body.len });
+                        }
                     }
                     if (extracted) |pk| {
                         std.debug.print("TLS: Setting peer_pub for {} (was null={})\n", .{p.typ, self.peer_pub == null});
