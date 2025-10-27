@@ -32,19 +32,38 @@ test "server processes Initial and queues response" {
     defer crypto_payload.deinit(alloc);
     const w = crypto_payload.writer(alloc);
 
-    // Minimal TLS ClientHello
-    const ch_bytes = [_]u8{
-        0x01, 0x00, 0x00, 0x20, // Handshake header: ClientHello, length 32
-        0x03, 0x03, // TLS 1.2 (for compatibility)
-    } ++ ([_]u8{0x00} ** 32) ++ // Random
-        [_]u8{
-            0x00, // Session ID length
-            0x00, 0x02, 0x13, 0x01, // Cipher suites: TLS_AES_128_GCM_SHA256
-            0x01, 0x00, // Compression methods
-            0x00, 0x00, // Extensions length (none for now)
+    // Generate a keypair for the client
+    var client_priv: [32]u8 = undefined;
+    std.crypto.random.bytes(&client_priv);
+    // Derive public key as priv * basepoint (0x09 || 31*0x00)
+    var base: [32]u8 = .{0} ** 32;
+    base[0] = 9;
+    const client_pub = blk: {
+        break :blk std.crypto.dh.X25519.scalarmult(client_priv, base) catch {
+            // If scalarmult fails, use a dummy pubkey for testing
+            var tmp: [32]u8 = .{0} ** 32;
+            tmp[0] = 1;
+            break :blk tmp;
         };
+    };
 
-    _ = try (frame.Frame{ .crypto = .{ .offset = 0, .data = &ch_bytes } }).write(w);
+    // Minimal TLS ClientHello in simple format: "CH1" + 32-byte public key
+    var ch_body = std.ArrayList(u8){};
+    defer ch_body.deinit(alloc);
+    try ch_body.appendSlice(alloc, "CH1");
+    try ch_body.appendSlice(alloc, &client_pub);
+
+    // Wrap in handshake message format: type (1 byte) + length (3 bytes) + body
+    var ch_bytes = std.ArrayList(u8){};
+    defer ch_bytes.deinit(alloc);
+    try ch_bytes.append(alloc, 0x01); // ClientHello type
+    const body_len = ch_body.items.len;
+    try ch_bytes.append(alloc, @intCast((body_len >> 16) & 0xFF));
+    try ch_bytes.append(alloc, @intCast((body_len >> 8) & 0xFF));
+    try ch_bytes.append(alloc, @intCast(body_len & 0xFF));
+    try ch_bytes.appendSlice(alloc, ch_body.items);
+
+    _ = try (frame.Frame{ .crypto = .{ .offset = 0, .data = ch_bytes.items } }).write(w);
 
     // Encode Initial packet
     const initial_pkt = try packet.encodeInitialProtected(alloc, packet.QUIC_V1, &dcid, &scid, &[_]u8{}, // no token

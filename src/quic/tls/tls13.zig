@@ -461,12 +461,26 @@ pub const Engine = struct {
                             else => {},
                         }
                     } else {
-                        std.debug.print("TLS: Not in real mode - trying minimal parse\n", .{});
+                        std.debug.print("TLS: Not in real mode - trying minimal parse first\n", .{});
+                        // Try minimal format first
+                        extracted = parseMinimalHelloPub(p.typ, p.body);
                     }
+                    // If extraction failed, try the other format as fallback
                     if (extracted == null) {
-                        if (parseMinimalHelloPub(p.typ, p.body)) |pk_min| {
-                            extracted = pk_min;
+                        if (self.real_mode) {
+                            // Was in real mode, try minimal as fallback
+                            std.debug.print("TLS: Real parse failed, trying minimal parse as fallback\n", .{});
+                            extracted = parseMinimalHelloPub(p.typ, p.body);
                         } else {
+                            // Was in minimal mode, try real as fallback
+                            std.debug.print("TLS: Minimal parse failed, trying real parse as fallback\n", .{});
+                            switch (p.typ) {
+                                .client_hello => extracted = parseRealClientHello(p.body),
+                                .server_hello => extracted = parseRealServerHello(p.body),
+                                else => {},
+                            }
+                        }
+                        if (extracted == null) {
                             std.debug.print("{s}: Failed to parse hello pub (typ={}, body_len={})\n", .{ if (self.role == .Server) "Server" else "Client", p.typ, p.body.len });
                         }
                     }
