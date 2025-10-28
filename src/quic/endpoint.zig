@@ -1618,7 +1618,10 @@ pub const Endpoint = struct {
                 c_new.tls.allow_insecure = self.cfg.allow_insecure;
                 // Configure server certificate for TLS 1.3
                 if (self.cfg.inline_server_cert_der != null and self.cfg.inline_server_priv_p256 != null) {
-                    c_new.tls.setServerCertificate(self.cfg.inline_server_cert_der.?, self.cfg.inline_server_priv_p256.?, .ecdsa_secp256r1_sha256) catch {};
+                    // TEMPORARY: Just pass the PEM data directly to test if PEM decoder was the issue
+                    c_new.tls.setServerCertificate(self.cfg.inline_server_cert_der.?, self.cfg.inline_server_priv_p256.?, .ecdsa_secp256r1_sha256) catch |e| {
+                        logger.err("setServerCertificate FAILED: {}", .{e});
+                    };
                 }
                 // Set local transport parameters for server (required for QUIC TLS extension)
                 var tpp: tp.TransportParams = .{};

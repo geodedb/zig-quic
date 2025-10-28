@@ -1223,7 +1223,19 @@ pub const Engine = struct {
     }
     /// Public: handshake complete when both sides' Finished exchanged.
     pub fn handshakeComplete(self: *Engine) bool {
-        return self.finished_sent and self.finished_verified;
+        const result = self.finished_sent and self.finished_verified;
+        if (!result) {
+            logger.debug("[TLS HANDSHAKE] NOT COMPLETE - role={s}, finished_sent={}, finished_verified={}, ecdhe_secret={}, handshake_client_secret={}, handshake_server_secret={}, peer_cert_ok={}", .{
+                if (self.role == .Server) "Server" else "Client",
+                self.finished_sent,
+                self.finished_verified,
+                self.ecdhe_secret != null,
+                self.handshake_client_secret != null,
+                self.handshake_server_secret != null,
+                self.peer_cert_ok,
+            });
+        }
+        return result;
     }
     /// Install server certificate and private key (ECDSA P-256 for now). Stored for future emission.
     pub fn setServerCertificate(self: *Engine, cert_der: []const u8, priv_key: []const u8, alg: sig.SigAlg) !void {
@@ -1238,20 +1250,33 @@ pub const Engine = struct {
     /// Queue server handshake flight: EncryptedExtensions, Certificate, CertificateVerify, Finished
     /// RFC 9001: These go to Handshake CRYPTO space (ServerHello goes to Initial)
     pub fn queueServerHandshakeFlight(self: *Engine) void {
-        logger.debug("queueServerHandshakeFlight: role={s}, finished_sent={}, has_secret={}, has_cert={}, has_key={}", .{
+        logger.debug("[FLIGHT] queueServerHandshakeFlight CALLED: role={s}, finished_sent={}, ee_sent={}, has_server_secret={}, has_client_secret={}, has_cert={}, has_key={}", .{
             if (self.role == .Server) "Server" else "Client",
             self.finished_sent,
+            self.ee_sent,
             self.handshake_server_secret != null,
+            self.handshake_client_secret != null,
             self.server_cert_der != null,
             self.server_priv_key != null,
         });
 
-        if (self.role != .Server) return;
-        if (self.finished_sent) return; // already done
+        if (self.role != .Server) {
+            logger.debug("[FLIGHT] Early return: not server", .{});
+            return;
+        }
+        if (self.finished_sent) {
+            logger.debug("[FLIGHT] Early return: already sent finished", .{});
+            return; // already done
+        }
 
         // Full handshake flight
         // Require that handshake_server_secret be present (after SH)
-        if (self.handshake_server_secret == null) return;
+        if (self.handshake_server_secret == null) {
+            logger.debug("[FLIGHT] Early return: no handshake_server_secret", .{});
+            return;
+        }
+
+        logger.debug("[FLIGHT] Proceeding with handshake flight", .{});
 
         // RFC 9001: Queue EncryptedExtensions first for Handshake CRYPTO space
         if (!self.ee_sent) {
@@ -1268,10 +1293,16 @@ pub const Engine = struct {
         if (self.server_cert_der != null and self.server_priv_key != null) {
             logger.debug("Calling queueCertificate...", .{});
             self.queueCertificate(self.server_cert_der.?) catch {};
+            logger.debug("[CERTVERIFY] After queueCertificate, transcript exists={}", .{true});
             var snap = self.transcript;
             const th = snap.finalize();
             const alg = self.server_sig_alg orelse .ecdsa_secp256r1_sha256;
-            const sig_bytes = sig.signCertificateVerify(alg, self.server_priv_key.?, "TLS 1.3, server CertificateVerify", &th, self.allocator) catch null;
+            logger.debug("[CERTVERIFY] About to sign with alg={}, priv_key_len={}", .{alg, self.server_priv_key.?.len});
+            const sig_bytes = sig.signCertificateVerify(alg, self.server_priv_key.?, "TLS 1.3, server CertificateVerify", &th, self.allocator) catch |e| blk: {
+                logger.err("[CERTVERIFY] signCertificateVerify FAILED: {}", .{e});
+                break :blk null;
+            };
+            logger.debug("[CERTVERIFY] Signature generation result: sig_bytes={}", .{sig_bytes != null});
             if (sig_bytes) |sb| {
                 // RFC 8446 format: SignatureScheme (2 bytes) + signature length (2 bytes) + signature data
                 var body = std.ArrayList(u8){};
@@ -1305,8 +1336,18 @@ pub const Engine = struct {
             }
         }
         // Always queue Finished last
+        logger.debug("[FLIGHT] About to queue Finished: finished_sent={}, has_secret={}", .{
+            self.finished_sent,
+            self.handshake_server_secret != null,
+        });
         if (!self.finished_sent and self.handshake_server_secret != null) {
-            self.queueFinished(self.handshake_server_secret.?) catch {};
+            logger.debug("[FLIGHT] Calling queueFinished with server secret...", .{});
+            self.queueFinished(self.handshake_server_secret.?) catch |e| {
+                logger.err("[FLIGHT] queueFinished FAILED: {}", .{e});
+            };
+            logger.debug("[FLIGHT] After queueFinished: finished_sent={}", .{self.finished_sent});
+        } else {
+            logger.debug("[FLIGHT] NOT queueing Finished (already sent or no secret)", .{});
         }
     }
 };
