@@ -488,11 +488,20 @@ pub const Engine = struct {
                         // Compute shared secret after receiving peer's public key
                         switch (p.typ) {
                             .server_hello => if (self.role == .Client) self.tryComputeShared(),
-                            .client_hello => if (self.role == .Server) logger.debug("Server: Will compute ECDHE when generating ServerHello", .{}),
+                            .client_hello => if (self.role == .Server) {
+                                logger.debug("Server: Will compute ECDHE when generating ServerHello", .{});
+                                // Extract ALPN from ClientHello
+                                self.extractAlpnFromClientHello(p.body);
+                            },
                             else => {},
                         }
                     } else {
                         logger.debug("TLS: No key extracted from hello message", .{});
+                    }
+
+                    // Also extract ALPN even if key extraction failed (ALPN is independent of key)
+                    if (p.typ == .client_hello and self.role == .Server) {
+                        self.extractAlpnFromClientHello(p.body);
                     }
                 }
 

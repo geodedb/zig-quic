@@ -298,3 +298,15 @@ pub fn flush(ep: *QuicEndpoint, iterations: u32) void {
         ep.poll(0) catch break;
     }
 }
+
+/// Check if connection has incoming streams in the queue.
+pub fn hasIncomingStreams(conn: *QuicConnection) bool {
+    const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
+    return c.hasIncomingStreams();
+}
+
+/// Get the first stream ID if available.
+pub fn getFirstStream(conn: *QuicConnection) ?QuicStreamId {
+    const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
+    return c.getFirstStream();
+}

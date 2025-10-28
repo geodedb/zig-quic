@@ -41,3 +41,6 @@ pub const destroy = api.destroy;
 pub const handshakeDoneSeen = api.handshakeDoneSeen;
 pub const isDrained = api.isDrained;
 pub const flush = api.flush;
+
+pub const hasIncomingStreams = api.hasIncomingStreams;
+pub const getFirstStream = api.getFirstStream;

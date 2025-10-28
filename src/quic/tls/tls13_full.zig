@@ -170,8 +170,15 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
         if (pos + ext_data_len > ext_end) return error.TooShort;
         const ext_data = data[pos..pos + ext_data_len];
 
-        switch (@as(ExtensionType, @enumFromInt(ext_type))) {
-            .server_name => {
+        // Use intToEnum to safely handle unknown extension types without panicking
+        const ext = std.meta.intToEnum(ExtensionType, ext_type) catch {
+            // Unknown extension type - ignore per TLS 1.3 spec
+            pos += ext_data_len;
+            continue;
+        };
+
+        switch (ext) {
+                .server_name => {
                 // Parse SNI
                 if (ext_data.len >= 5) {
                     const list_len = readU16(ext_data[0..2]);
@@ -300,7 +307,7 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
                 ch.early_data = true;
             },
             else => {
-                // Ignore unknown extensions
+                // Known extension but not handled
             },
         }
 
