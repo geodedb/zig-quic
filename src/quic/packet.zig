@@ -586,6 +586,7 @@ pub fn encodeHandshakeProtected(
         @as(u8, @intCast(packet_number & 0xff)),
     };
     const pn_slice = pn_be_full[4 - packet_number_len .. 4];
+    logger.debug("encodeHandshakeProtected: PN {} encoded as bytes [{X:0>2} {X:0>2}]", .{packet_number, pn_slice[0], if(pn_slice.len > 1) pn_slice[1] else 0});
     try w.writeAll(pn_slice);
 
     const out_cipher_idx = buf.items.len;
