@@ -149,6 +149,11 @@ pub fn build(b: *std.Build) void {
     // Logger module for QUIC library
     const quic_logger_mod = mkModule(b, "src/quic/logger.zig");
 
+    // Add logger to modules that need it
+    quic_crypto_mod.addImport("quic_logger", quic_logger_mod);
+    tls13_mod.addImport("quic_logger", quic_logger_mod);
+    quic_packet_mod.addImport("quic_logger", quic_logger_mod);
+
     // Connection/TP
     const quic_conn_mod = mkModule(b, "src/quic/conn.zig");
     quic_conn_mod.addImport("quic_packet", quic_packet_mod);
