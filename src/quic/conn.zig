@@ -440,10 +440,10 @@ pub const Connection = struct {
     accepted_enqueued: bool = false,
 
     // --- Missing transport/runtime state used by endpoint/tests ---
-    // Packet number spaces: next PN to send in each space
-    pn_initial_tx: u64 = 1,
-    pn_handshake_tx: u64 = 1,
-    pn_app_tx: u64 = 1,
+    // Packet number spaces: next PN to send in each space (RFC 9000 §12.3: MUST start at 0)
+    pn_initial_tx: u64 = 0,
+    pn_handshake_tx: u64 = 0,
+    pn_app_tx: u64 = 0,
     // Version negotiation/bookkeeping
     version: u32 = 0,
     version_v2: bool = false,
@@ -715,9 +715,9 @@ pub const Connection = struct {
         self.hs_tx_keys = null;
         self.app_rx_keys = null;
         self.app_tx_keys = null;
-        self.pn_initial_tx = 1;
-        self.pn_handshake_tx = 1;
-        self.pn_app_tx = 1;
+        self.pn_initial_tx = 0;
+        self.pn_handshake_tx = 0;
+        self.pn_app_tx = 0;
         self.peer_initial_dcid = .{};
         self.peer_initial_scid = .{};
         // Explicitly zero original_dcid (was left uninitialized when reusing a Connection object

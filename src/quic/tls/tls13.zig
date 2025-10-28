@@ -1094,13 +1094,9 @@ pub const Engine = struct {
             _ = self.computeApplicationSecrets();
         }
 
-        // Queue EncryptedExtensions (which will trigger Certificate + CertificateVerify + Finished via maybeAutoProgress)
-        const alpn_for_ee = self.alpn orelse &[_]u8{};
-        const tp_for_ee = self.local_tp orelse &[_]u8{};
-        logger.debug("Server: Queueing EncryptedExtensions with ALPN={s} TP_len={}", .{ alpn_for_ee, tp_for_ee.len });
-        self.queueEncryptedExtensions(alpn_for_ee, tp_for_ee) catch |e| {
-            logger.err("Server: Failed to queue EncryptedExtensions: {}", .{e});
-        };
+        // RFC 9001: ServerHello goes to Initial CRYPTO space
+        // EncryptedExtensions will be queued later by queueServerHandshakeFlight() for Handshake CRYPTO space
+        logger.debug("Server: ServerHello queued to Initial CRYPTO (EncryptedExtensions will go to Handshake)", .{});
     }
 
     /// Extract ALPN from ClientHello for server
@@ -1231,7 +1227,8 @@ pub const Engine = struct {
         self.server_sig_alg = alg;
     }
 
-    /// Force queue of remaining server handshake flight (EncryptedExtensions already queued externally).
+    /// Queue server handshake flight: EncryptedExtensions, Certificate, CertificateVerify, Finished
+    /// RFC 9001: These go to Handshake CRYPTO space (ServerHello goes to Initial)
     pub fn queueServerHandshakeFlight(self: *Engine) void {
         logger.debug("queueServerHandshakeFlight: role={s}, finished_sent={}, has_secret={}, has_cert={}, has_key={}", .{
             if (self.role == .Server) "Server" else "Client",
@@ -1245,8 +1242,19 @@ pub const Engine = struct {
         if (self.finished_sent) return; // already done
 
         // Full handshake flight
-        // Require that handshake_server_secret be present (after SH) and EE queued.
+        // Require that handshake_server_secret be present (after SH)
         if (self.handshake_server_secret == null) return;
+
+        // RFC 9001: Queue EncryptedExtensions first for Handshake CRYPTO space
+        if (!self.ee_sent) {
+            const alpn_for_ee = self.alpn orelse &[_]u8{};
+            const tp_for_ee = self.local_tp orelse &[_]u8{};
+            logger.debug("Server: Queueing EncryptedExtensions to Handshake CRYPTO with ALPN={s} TP_len={}", .{ alpn_for_ee, tp_for_ee.len });
+            self.queueEncryptedExtensions(alpn_for_ee, tp_for_ee) catch |e| {
+                logger.err("Server: Failed to queue EncryptedExtensions: {}", .{e});
+                return;
+            };
+        }
         // If we have a certificate configured, send Certificate + CertificateVerify.
         // Note: allow_insecure only affects peer certificate validation, not whether we send ours
         if (self.server_cert_der != null and self.server_priv_key != null) {
