@@ -544,6 +544,7 @@ pub fn encodeHandshakeProtected(
     payload_plaintext: []const u8,
     keys: InitialKeys,
 ) ![]u8 {
+    logger.debug("encodeHandshakeProtected: CALLED with packet_number={}", .{packet_number});
     if (packet_number_len < 1 or packet_number_len > 4) return error.InvalidPacketNumberLength;
 
     var buf = std.ArrayList(u8){};

@@ -2115,13 +2115,15 @@ pub const Endpoint = struct {
                 var tls_buf: [4096]u8 = undefined;
                 const n_tls = conn.tls.popCrypto(tls_buf[0..]);
                 if (n_tls > 0 and allow_send) {
-                    logger.debug("Sending Handshake packet with {} bytes of CRYPTO", .{n_tls});
-                    var fb = std.ArrayList(u8){};
-                    defer fb.deinit(self.allocator.*);
-                    const w_hs = fb.writer(self.allocator.*);
-                    const base_off_hs = conn.crypto_tx_off_handshake;
-                    _ = (frame.Frame{ .crypto = .{ .offset = base_off_hs, .data = tls_buf[0..n_tls] } }).write(w_hs) catch 0;
-                    // Save retransmit buffer for Handshake CRYPTO
+                    logger.debug("Sending Handshake CRYPTO with {} bytes total", .{n_tls});
+
+                    // RFC 9000 §14.1: Fragment large CRYPTO frames to fit within MTU
+                    // Maximum safe CRYPTO payload per packet:
+                    // MTU (1200) - IP header (~40) - UDP header (8) - QUIC header (~30) - CRYPTO frame header (~10) - AEAD tag (16) = ~1096 bytes
+                    // Use 1100 bytes to minimize number of fragments while staying within MTU
+                    const MAX_CRYPTO_PER_PACKET: usize = 1100;
+
+                    // Save retransmit buffer for Handshake CRYPTO (store complete data)
                     if (conn.crypto_retx_handshake) |b| self.allocator.free(b);
                     var owned_hs = self.allocator.alloc(u8, n_tls) catch {
                         conn.crypto_tx_off_handshake += n_tls; // advance offset even if we cannot retain
@@ -2129,95 +2131,126 @@ pub const Endpoint = struct {
                     };
                     @memcpy(owned_hs[0..n_tls], tls_buf[0..n_tls]);
                     conn.crypto_retx_handshake = owned_hs;
-                    conn.crypto_retx_handshake_off = base_off_hs;
-                    conn.crypto_tx_off_handshake += n_tls;
+                    conn.crypto_retx_handshake_off = conn.crypto_tx_off_handshake;
+
                     // For Handshake packets, use the client's source connection ID (peer_initial_scid)
-                    // If client sent zero-length SCID, use empty DCID (proper quic-go compatibility)
                     const hs_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
-                    logger.debug("Encoding Handshake packet: dcid_len={}, scid_len={}", .{hs_dcid.len, conn.our_scid.len});
-                    logger.debug("  Using Handshake keys - key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{
-                        hs_keys.key[0], hs_keys.key[1], hs_keys.key[2], hs_keys.key[3],
-                        hs_keys.iv[0], hs_keys.iv[1], hs_keys.iv[2], hs_keys.iv[3],
-                    });
-                    const pkt_hs = packet.encodeHandshakeProtected(self.allocator.*, version, hs_dcid, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_handshake_tx)), 2, fb.items, hs_keys) catch |err| blk: {
-                        logger.debug("ERROR: Failed to encode Handshake packet: {}", .{err});
-                        break :blk null;
-                    };
-                    if (pkt_hs) |bytes_out_hs| {
-                        logger.debug("Handshake packet encoded successfully: {} bytes", .{bytes_out_hs.len});
-                        defer self.allocator.free(bytes_out_hs);
 
-                        // Coalesce Initial and Handshake packets into single datagram
-                        if (initial_pkt) |initial| {
-                            const MAX_DATAGRAM_SIZE = 1400; // Conservative MTU limit for real networks
-                            const coalesced_len = initial.len + bytes_out_hs.len;
+                    // Fragment the CRYPTO data across multiple packets if needed
+                    var offset: usize = 0;
+                    var fragment_num: usize = 0;
+                    const num_fragments = (n_tls + MAX_CRYPTO_PER_PACKET - 1) / MAX_CRYPTO_PER_PACKET;
 
-                            // Check if coalescence would exceed typical MTU
-                            if (coalesced_len > MAX_DATAGRAM_SIZE) {
-                                logger.debug("Coalesced size {} exceeds MTU {}, sending packets separately", .{coalesced_len, MAX_DATAGRAM_SIZE});
-                                // Send Initial packet first
-                                const initial_result = self.sendTo(conn.peer, initial) catch |err| blk: {
-                                    logger.debug("ERROR: Failed to send Initial packet: {}", .{err});
-                                    break :blk 0;
-                                };
-                                if (initial_result > 0) {
-                                    logger.debug("Successfully sent separate Initial packet: {} bytes", .{initial_result});
-                                }
-                                // Then send Handshake packet
-                                const hs_result = self.sendTo(conn.peer, bytes_out_hs) catch |err| blk: {
-                                    logger.debug("ERROR: Failed to send Handshake packet: {}", .{err});
-                                    break :blk 0;
-                                };
-                                if (hs_result > 0) {
-                                    logger.debug("Successfully sent separate Handshake packet: {} bytes", .{hs_result});
+                    if (num_fragments > 1) {
+                        logger.debug("Fragmenting {} bytes of CRYPTO across {} Handshake packets", .{n_tls, num_fragments});
+                    }
+
+                    while (offset < n_tls) {
+                        const remaining = n_tls - offset;
+                        const chunk_size = @min(remaining, MAX_CRYPTO_PER_PACKET);
+                        const chunk_data = tls_buf[offset..offset + chunk_size];
+                        const crypto_offset = conn.crypto_tx_off_handshake + offset;
+
+                        // Capture the packet number for this fragment and increment for next
+                        const this_pn = conn.pn_handshake_tx;
+                        conn.pn_handshake_tx +%= 1;
+
+                        logger.debug("Sending Handshake fragment {}/{}: {} bytes at offset {}, packet number {}", .{fragment_num + 1, num_fragments, chunk_size, crypto_offset, this_pn});
+
+                        // Create CRYPTO frame for this fragment
+                        var fb = std.ArrayList(u8){};
+                        defer fb.deinit(self.allocator.*);
+                        const w_hs = fb.writer(self.allocator.*);
+                        _ = (frame.Frame{ .crypto = .{ .offset = crypto_offset, .data = chunk_data } }).write(w_hs) catch 0;
+
+                        logger.debug("Encoding Handshake packet {}/{} with PN {}: dcid_len={}, scid_len={}", .{fragment_num + 1, num_fragments, this_pn, hs_dcid.len, conn.our_scid.len});
+                        logger.debug("  Using Handshake keys - key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{
+                            hs_keys.key[0], hs_keys.key[1], hs_keys.key[2], hs_keys.key[3],
+                            hs_keys.iv[0], hs_keys.iv[1], hs_keys.iv[2], hs_keys.iv[3],
+                        });
+
+                        // Encode this fragment as a Handshake packet
+                        const pkt_hs = packet.encodeHandshakeProtected(
+                            self.allocator.*,
+                            version,
+                            hs_dcid,
+                            conn.our_scid.bytes[0..conn.our_scid.len],
+                            @as(u32, @truncate(this_pn)),
+                            2,
+                            fb.items,
+                            hs_keys
+                        ) catch |err| blk: {
+                            logger.debug("ERROR: Failed to encode Handshake fragment: {}", .{err});
+                            break :blk null;
+                        };
+
+                        if (pkt_hs) |bytes_out_hs| {
+                            defer self.allocator.free(bytes_out_hs);
+                            logger.debug("Handshake fragment {}/{} encoded: {} bytes (payload {} bytes)", .{fragment_num + 1, num_fragments, bytes_out_hs.len, chunk_size});
+
+                            // For first fragment, try coalescing with Initial packet
+                            if (fragment_num == 0 and initial_pkt != null) {
+                                const initial = initial_pkt.?;
+                                const MAX_DATAGRAM_SIZE = 1400;
+                                const coalesced_len = initial.len + bytes_out_hs.len;
+
+                                if (coalesced_len <= MAX_DATAGRAM_SIZE) {
+                                    logger.debug("Coalescing Initial ({} bytes) and first Handshake fragment ({} bytes)", .{initial.len, bytes_out_hs.len});
+
+                                    const coalesced = self.allocator.alloc(u8, coalesced_len) catch {
+                                        logger.debug("ERROR: Failed to allocate coalesced buffer", .{});
+                                        // Fall back to sending separately
+                                        _ = self.sendTo(conn.peer, initial) catch 0;
+                                        _ = self.sendTo(conn.peer, bytes_out_hs) catch 0;
+                                        conn.onPacketSent(.Handshake, this_pn, bytes_out_hs.len, true);
+                                        self.allocator.free(initial);
+                                        initial_pkt = null;
+                                        offset += chunk_size;
+                                        fragment_num += 1;
+                                        continue;
+                                    };
+                                    defer self.allocator.free(coalesced);
+
+                                    @memcpy(coalesced[0..initial.len], initial);
+                                    @memcpy(coalesced[initial.len..], bytes_out_hs);
+
+                                    const send_result = self.sendTo(conn.peer, coalesced) catch 0;
+                                    if (send_result > 0) {
+                                        logger.debug("Successfully sent coalesced datagram: {} bytes", .{send_result});
+                                    }
+
+                                    // Clear initial_pkt so we don't send it again
+                                    self.allocator.free(initial);
+                                    initial_pkt = null;
+                                } else {
+                                    logger.debug("Coalesced size {} exceeds MTU, sending separately", .{coalesced_len});
+                                    _ = self.sendTo(conn.peer, initial) catch 0;
+                                    _ = self.sendTo(conn.peer, bytes_out_hs) catch 0;
+                                    self.allocator.free(initial);
+                                    initial_pkt = null;
                                 }
                             } else {
-                                logger.debug("Coalescing Initial ({} bytes) and Handshake ({} bytes) packets", .{initial.len, bytes_out_hs.len});
-
-                                // Create coalesced buffer - within MTU limits
-                            const coalesced = self.allocator.alloc(u8, coalesced_len) catch {
-                                logger.debug("ERROR: Failed to allocate coalesced buffer, sending Handshake only", .{});
-                                // Fall back to sending just the Handshake packet
-                                _ = self.sendTo(conn.peer, bytes_out_hs) catch 0;
-                                conn.onPacketSent(.Handshake, conn.pn_handshake_tx, bytes_out_hs.len, true);
-                                conn.pn_handshake_tx +%= 1;
-                                return;
-                            };
-                            defer self.allocator.free(coalesced);
-
-                            // Copy Initial and Handshake packets
-                            @memcpy(coalesced[0..initial.len], initial);
-                            @memcpy(coalesced[initial.len..], bytes_out_hs);
-
-                            logger.debug("Sending coalesced datagram: {} bytes total", .{coalesced_len});
-                            logger.debug("Coalesced packet first 50 bytes: ", .{});
-                            for (coalesced[0..@min(50, coalesced_len)]) |b| logger.debug("{X:0>2} ", .{b});
-                            logger.debug("", .{});
-
-                            // Send coalesced datagram
-                            const send_result = self.sendTo(conn.peer, coalesced) catch |err| blk: {
-                                logger.debug("ERROR: Failed to send coalesced packets: {}", .{err});
-                                break :blk 0;
-                            };
-                            if (send_result > 0) {
-                                logger.debug("Successfully sent coalesced datagram: {} bytes", .{send_result});
+                                // Send fragment alone
+                                const send_result = self.sendTo(conn.peer, bytes_out_hs) catch |err| blk: {
+                                    logger.debug("ERROR: Failed to send Handshake fragment: {}", .{err});
+                                    break :blk 0;
+                                };
+                                if (send_result > 0) {
+                                    logger.debug("Successfully sent Handshake fragment {}/{}: {} bytes", .{fragment_num + 1, num_fragments, send_result});
+                                }
                             }
-                            }
-                        } else {
-                            // No Initial packet to coalesce, send Handshake alone
-                            logger.debug("Sending Handshake packet alone (no Initial to coalesce)", .{});
-                            const send_result = self.sendTo(conn.peer, bytes_out_hs) catch |err| blk: {
-                                logger.debug("ERROR: Failed to send Handshake packet: {}", .{err});
-                                break :blk 0;
-                            };
-                            if (send_result > 0) {
-                                logger.debug("Successfully sent Handshake packet: {} bytes", .{send_result});
-                            }
+
+                            // Record packet sent (packet number was already incremented above)
+                            conn.onPacketSent(.Handshake, this_pn, bytes_out_hs.len, true);
                         }
 
-                        conn.onPacketSent(.Handshake, conn.pn_handshake_tx, bytes_out_hs.len, true);
-                        conn.pn_handshake_tx +%= 1;
+                        offset += chunk_size;
+                        fragment_num += 1;
                     }
+
+                    // Update crypto offset for all fragments
+                    conn.crypto_tx_off_handshake += n_tls;
+                    logger.debug("Sent {} Handshake fragments, total {} bytes", .{fragment_num, n_tls});
                 }
             }
 
