@@ -635,6 +635,11 @@ pub const Engine = struct {
                         } else {
                             logger.debug("TLS: Added {} bytes to transcript (recv-finished)", .{finished_msg.len});
                         }
+
+                        // RFC 8446 §7.1: Derive application traffic secrets AFTER verifying peer Finished
+                        // The transcript now includes: ClientHello...ServerHello...server Finished...client Finished
+                        logger.debug("TLS: Deriving application traffic secrets after peer Finished verified", .{});
+                        _ = self.computeApplicationSecrets();
                     }
                 }
                 // NewSessionTicket parsing (client side only for now)
@@ -881,6 +886,8 @@ pub const Engine = struct {
         defer self.allocator.free(msg);
         try self.queueCrypto(msg);
         self.finished_sent = true;
+        // NOTE: Application secrets are NOT derived here
+        // They must be derived AFTER receiving and verifying the peer's Finished message
     }
 
     /// Verify peer Finished given peer traffic secret.
@@ -1091,7 +1098,8 @@ pub const Engine = struct {
             const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th);
             self.handshake_client_secret = hs.client_hs;
             self.handshake_server_secret = hs.server_hs;
-            _ = self.computeApplicationSecrets();
+            // NOTE: Do NOT derive Application secrets here! They must be derived after Finished is added to transcript
+            // Application secrets will be derived in queueFinished() after server Finished is added
         }
 
         // RFC 9001: ServerHello goes to Initial CRYPTO space
