@@ -324,6 +324,7 @@ pub fn buildServerHello(
     cipher_suite: CipherSuite,
     key_share_group: NamedGroup,
     key_share_data: []const u8,
+    client_session_id: ?[]const u8,
 ) ![]u8 {
     var msg = try std.ArrayList(u8).initCapacity(allocator, 0);
     defer msg.deinit(allocator);
@@ -334,8 +335,15 @@ pub fn buildServerHello(
     // Random
     try msg.appendSlice(allocator, &server_random);
 
-    // Legacy session ID (echo from client or empty)
-    try msg.append(allocator, 0);
+    // Legacy session ID (echo from client per RFC 8446 Section 4.1.3)
+    if (client_session_id) |session_id| {
+        // Echo the client's session ID
+        try msg.append(allocator, @intCast(session_id.len));
+        try msg.appendSlice(allocator, session_id);
+    } else {
+        // No session ID from client
+        try msg.append(allocator, 0);
+    }
 
     // Cipher suite
     const cs_value = @intFromEnum(cipher_suite);

@@ -144,12 +144,40 @@ pub const Transcript = struct {
     /// Update transcript with raw bytes (handshake messages).
     pub fn update(self: *Transcript, msg: []const u8) void {
         self.hasher.update(msg);
+        // Debug: log what's being added to transcript
+        if (msg.len >= 4) {
+            const msg_type = msg[0];
+            const msg_len = (@as(usize, msg[1]) << 16) | (@as(usize, msg[2]) << 8) | msg[3];
+            const type_name = switch (msg_type) {
+                0x01 => "ClientHello",
+                0x02 => "ServerHello",
+                0x08 => "EncryptedExtensions",
+                0x0B => "Certificate",
+                0x0F => "CertificateVerify",
+                0x14 => "Finished",
+                else => "Unknown",
+            };
+            logger.debug("[TRANSCRIPT] Adding {s} (0x{X:0>2}) len={} bytes, first 8: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{
+                type_name, msg_type, msg_len,
+                if (msg.len > 0) msg[0] else 0,
+                if (msg.len > 1) msg[1] else 0,
+                if (msg.len > 2) msg[2] else 0,
+                if (msg.len > 3) msg[3] else 0,
+                if (msg.len > 4) msg[4] else 0,
+                if (msg.len > 5) msg[5] else 0,
+                if (msg.len > 6) msg[6] else 0,
+                if (msg.len > 7) msg[7] else 0,
+            });
+        }
     }
     /// Finalize and return current transcript hash without consuming internal state.
     pub fn finalize(self: *Transcript) [H.digest_length]u8 {
         var out: [H.digest_length]u8 = undefined;
         var tmp = self.hasher; // copy
         tmp.final(&out);
+        logger.debug("[TRANSCRIPT] Finalized hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}... (32 bytes)", .{
+            out[0], out[1], out[2], out[3], out[4], out[5], out[6], out[7]
+        });
         return out;
     }
 };
@@ -274,13 +302,16 @@ pub const Engine = struct {
     my_pub: ?[32]u8 = null,
     /// Last seen peer pubkey (from CH/SH minimal envelopes).
     peer_pub: ?[32]u8 = null,
+    /// Client's legacy session ID (must be echoed in ServerHello)
+    client_session_id: ?[]u8 = null,
     /// Buffer for producing outbound CRYPTO data (e.g., ClientHello).
     outbox: std.ArrayList(u8),
     /// Buffer for accumulating inbound CRYPTO data (for fragmented handshake messages).
     inbox: std.ArrayList(u8),
     /// Tracking flags for minimal handshake state.
-    ch_sent: bool = false,
-    sh_seen: bool = false,
+    ch_sent: bool = false,  // Client: sent ClientHello
+    ch_recv: bool = false,  // Server: received ClientHello
+    sh_seen: bool = false,  // Client: seen ServerHello; Server: sent ServerHello
     /// Security / verification state (minimal)
     allow_insecure: bool = true,
     peer_cert_ok: bool = false,
@@ -311,11 +342,12 @@ pub const Engine = struct {
 
     /// Initialize a TLS 1.3 Engine with allocator and role.
     pub fn init(alloc: std.mem.Allocator, role: Role) Engine {
-        return .{ .role = role, .allocator = alloc, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .outbox = std.ArrayList(u8){}, .inbox = std.ArrayList(u8){}, .ch_sent = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .ee_sent = false, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null, .master_secret = null, .tickets = .{} };
+        return .{ .role = role, .allocator = alloc, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .client_session_id = null, .outbox = std.ArrayList(u8){}, .inbox = std.ArrayList(u8){}, .ch_sent = false, .ch_recv = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .ee_sent = false, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null, .master_secret = null, .tickets = .{} };
     }
     /// Release any owned resources and buffers.
     pub fn deinit(self: *Engine) void {
         if (self.leaf_spki) |spki| self.allocator.free(spki);
+        if (self.client_session_id) |sid| self.allocator.free(sid);
         if (self.local_tp) |b| self.allocator.free(b);
         if (self.peer_tp) |b| self.allocator.free(b);
         if (self.alpn) |a| self.allocator.free(a);
@@ -450,13 +482,24 @@ pub const Engine = struct {
 
                 off += p.n;
                 if (p.typ == .server_hello) self.sh_seen = true;
-                if (p.typ == .client_hello) self.ch_sent = true;
+                if (p.typ == .client_hello) {
+                    if (self.role == .Client) {
+                        self.ch_sent = true;
+                    } else {
+                        self.ch_recv = true;
+                    }
+                }
                 // If we just processed a ServerHello, derive handshake secrets immediately (spec: hash includes CH+SH)
                 if (p.typ == .server_hello and self.handshake_client_secret == null and self.ecdhe_secret != null) {
-                    var th_tr = Transcript.init();
-                    th_tr.update(self.inbox.items[0..off]);
-                    const th_hash = th_tr.finalize();
+                    // Use the actual transcript that already contains ClientHello + ServerHello
+                    var snapshot = self.transcript;
+                    const th_hash = snapshot.finalize();
+                    logger.debug("onCryptoRecv: Deriving handshake secrets after ServerHello", .{});
+                    logger.debug("onCryptoRecv: Transcript hash for handshake: {X:0>2} {X:0>2} {X:0>2} {X:0>2} ... (first 4 of {})", .{th_hash[0], th_hash[1], th_hash[2], th_hash[3], th_hash.len});
+                    logger.debug("onCryptoRecv: ECDHE secret first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{self.ecdhe_secret.?[0], self.ecdhe_secret.?[1], self.ecdhe_secret.?[2], self.ecdhe_secret.?[3]});
                     const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th_hash);
+                    logger.debug("onCryptoRecv: Derived client_hs first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{hs.client_hs[0], hs.client_hs[1], hs.client_hs[2], hs.client_hs[3]});
+                    logger.debug("onCryptoRecv: Derived server_hs first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{hs.server_hs[0], hs.server_hs[1], hs.server_hs[2], hs.server_hs[3]});
                     self.handshake_client_secret = hs.client_hs;
                     self.handshake_server_secret = hs.server_hs;
                     _ = self.computeApplicationSecrets();
@@ -469,7 +512,9 @@ pub const Engine = struct {
                     // Try real TLS 1.3 parsing first
                     logger.debug("TLS: Trying real TLS 1.3 hello parsing", .{});
                     switch (p.typ) {
-                        .client_hello => extracted = parseRealClientHello(p.body),
+                        .client_hello => {
+                            extracted = parseRealClientHello(p.body, self);
+                        },
                         .server_hello => extracted = parseRealServerHello(p.body),
                         else => {},
                     }
@@ -716,7 +761,13 @@ pub const Engine = struct {
     /// Provide ECDHE shared secret directly (used in tests after X25519 exchange).
     pub fn setEcdhe(self: *Engine, shared: []const u8) void {
         self.ecdhe_secret = shared;
-        if (self.ch_sent and self.sh_seen) {
+        // For client: must have sent CH and seen SH
+        // For server: must have received CH and sent SH
+        const ch_sh_ready = if (self.role == .Client)
+            (self.ch_sent and self.sh_seen)
+        else
+            (self.ch_recv and self.sh_seen);
+        if (ch_sh_ready) {
             const th = self.transcript.finalize();
             const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th);
             self.handshake_client_secret = hs.client_hs;
@@ -981,9 +1032,19 @@ pub const Engine = struct {
     /// Compute handshake traffic secrets if ECDHE and both CH/SH are present.
     pub fn computeHandshakeSecrets(self: *Engine) ?struct { client: [H.digest_length]u8, server: [H.digest_length]u8 } {
         if (self.ecdhe_secret == null) return null;
-        if (!(self.ch_sent and self.sh_seen)) return null;
+        // For client: must have sent CH and seen SH
+        // For server: must have received CH and sent SH
+        const ch_sh_ready = if (self.role == .Client)
+            (self.ch_sent and self.sh_seen)
+        else
+            (self.ch_recv and self.sh_seen);
+        if (!ch_sh_ready) return null;
         const th = self.transcript.finalize();
+        logger.debug("computeHandshakeSecrets: Computing with transcript hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} ... (first 4 bytes of {})", .{th[0], th[1], th[2], th[3], th.len});
+        logger.debug("computeHandshakeSecrets: ecdhe_secret first 4 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{self.ecdhe_secret.?[0], self.ecdhe_secret.?[1], self.ecdhe_secret.?[2], self.ecdhe_secret.?[3]});
         const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th);
+        logger.debug("computeHandshakeSecrets: client_hs first 4 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{hs.client_hs[0], hs.client_hs[1], hs.client_hs[2], hs.client_hs[3]});
+        logger.debug("computeHandshakeSecrets: server_hs first 4 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{hs.server_hs[0], hs.server_hs[1], hs.server_hs[2], hs.server_hs[3]});
         // Store the secrets in the engine for later use
         self.handshake_client_secret = hs.client_hs;
         self.handshake_server_secret = hs.server_hs;
@@ -993,7 +1054,13 @@ pub const Engine = struct {
     /// Compute application traffic secrets from current transcript and ECDHE.
     pub fn computeApplicationSecrets(self: *Engine) ?struct { client: [H.digest_length]u8, server: [H.digest_length]u8 } {
         if (self.ecdhe_secret == null) return null;
-        if (!(self.ch_sent and self.sh_seen)) return null;
+        // For client: must have sent CH and seen SH
+        // For server: must have received CH and sent SH
+        const ch_sh_ready = if (self.role == .Client)
+            (self.ch_sent and self.sh_seen)
+        else
+            (self.ch_recv and self.sh_seen);
+        if (!ch_sh_ready) return null;
         const th = self.transcript.finalize();
         // Recompute master_secret path locally to retain master
         const early_secret = ks.extract(&[_]u8{}, &[_]u8{});
@@ -1082,7 +1149,8 @@ pub const Engine = struct {
             server_random,
             .TLS_AES_128_GCM_SHA256,  // Use AES-128-GCM for compatibility
             .x25519,
-            pubkey[0..]
+            pubkey[0..],
+            self.client_session_id
         );
         defer self.allocator.free(sh_body);
 
@@ -1413,8 +1481,9 @@ fn readU16(be: []const u8) u16 {
 }
 
 /// Attempt to parse a real (spec-like) TLS 1.3 ClientHello and extract the first X25519 key share.
+/// Also stores the client's session ID for ServerHello echo (RFC 8446 requirement).
 /// Returns pubkey if successful; otherwise null. Does not perform deep validation beyond bounds.
-fn parseRealClientHello(body: []const u8) ?[32]u8 {
+fn parseRealClientHello(body: []const u8, engine: *Engine) ?[32]u8 {
     logger.debug("parseRealClientHello: body_len={}", .{body.len});
 
     // Use a stack allocator for the parsing
@@ -1427,6 +1496,24 @@ fn parseRealClientHello(body: []const u8) ?[32]u8 {
         logger.debug("parseRealClientHello: failed to parse ClientHello", .{});
         return null;
     };
+
+    // Store the client's session ID for ServerHello echo (RFC 8446 Section 4.1.3)
+    if (ch.session_id.len > 0) {
+        // Free any existing session ID
+        if (engine.client_session_id) |old_id| {
+            engine.allocator.free(old_id);
+        }
+
+        // Store a copy of the client's session ID
+        engine.client_session_id = engine.allocator.alloc(u8, ch.session_id.len) catch null;
+        if (engine.client_session_id) |new_id| {
+            @memcpy(new_id, ch.session_id);
+            logger.debug("parseRealClientHello: stored client session_id len={}", .{ch.session_id.len});
+        }
+    } else {
+        logger.debug("parseRealClientHello: client sent empty session_id", .{});
+        engine.client_session_id = null;
+    }
 
     // Extract the X25519 key share if present
     if (ch.key_share) |key_share| {

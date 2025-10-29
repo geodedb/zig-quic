@@ -83,7 +83,7 @@ pub fn accept(ep: *QuicEndpoint) !*QuicConnection {
             const anyp: *anyopaque = @ptrCast(pc);
             return @ptrCast(anyp);
         }
-        try ep.poll(10);
+        try ep.poll(1000);  // Use 1 second timeout for better network responsiveness
     }
 }
 

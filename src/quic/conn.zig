@@ -1111,7 +1111,8 @@ pub const Connection = struct {
                 self.hs_server = hs_secrets.server;
                 self.deriveHandshakeKeys(self.version_v2);
             } else {
-                logger.debug("{s}: Cannot derive handshake secrets yet (ch_sent={}, sh_seen={}, ecdhe={})", .{ if (self.role == .Server) "Server" else "Client", self.tls.ch_sent, self.tls.sh_seen, self.tls.ecdhe_secret != null });
+                const ch_status = if (self.role == .Server) self.tls.ch_recv else self.tls.ch_sent;
+                logger.debug("{s}: Cannot derive handshake secrets yet (ch_{s}={}, sh_seen={}, ecdhe={})", .{ if (self.role == .Server) "Server" else "Client", if (self.role == .Server) "recv" else "sent", ch_status, self.tls.sh_seen, self.tls.ecdhe_secret != null });
             }
         }
         // Install 1-RTT keys only after BOTH sides' Finished messages are involved from our perspective:
