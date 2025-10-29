@@ -14,7 +14,7 @@ import (
 func main() {
 	var connect string
 	var insecure bool
-	flag.StringVar(&connect, "connect", "127.0.0.1:4433", "server address")
+	flag.StringVar(&connect, "connect", "127.0.0.1:7567", "server address")
 	flag.BoolVar(&insecure, "insecure", false, "skip certificate verification")
 	flag.Parse()
 

@@ -2128,22 +2128,22 @@ pub const Endpoint = struct {
             // Check if we can send Handshake packet (requires Handshake keys)
             logger.debug("Checking for Handshake keys: hs_tx_keys is {s}", .{if (conn.hs_tx_keys != null) "SET" else "NULL"});
 
-            // If we have an Initial packet but no Handshake keys yet, send the Initial packet immediately
-            // The client needs the ServerHello to proceed with the handshake
+            // RFC 9000 Section 12.2: Initial and Handshake packets MUST be coalesced
+            // Use a fixed buffer for coalescing packets
+            var coalesced_buffer: [4096]u8 = undefined;
+            var coalesced_len: usize = 0;
+
+            // Add Initial packet to coalesced buffer if we have one
             if (initial_pkt) |initial| {
-                if (conn.hs_tx_keys == null) {
-                    logger.debug("Sending Initial packet without coalescence (Handshake keys not ready yet)", .{});
-                    const send_result = self.sendTo(conn.peer, initial) catch |err| blk: {
-                        logger.debug("ERROR: Failed to send Initial packet: {}", .{err});
-                        break :blk 0;
-                    };
-                    if (send_result > 0) {
-                        logger.debug("Successfully sent Initial packet: {} bytes", .{send_result});
-                    }
-                    // Clear initial_pkt so we don't try to send it again below
-                    self.allocator.free(initial);
-                    initial_pkt = null;
+                if (initial.len <= coalesced_buffer.len) {
+                    @memcpy(coalesced_buffer[0..initial.len], initial);
+                    coalesced_len = initial.len;
+                    logger.debug("Added Initial packet to coalesced buffer: {} bytes", .{initial.len});
+                } else {
+                    logger.debug("Initial packet too large for coalesced buffer", .{});
                 }
+                // Free the initial packet since we've copied it
+                self.allocator.free(initial);
             }
 
             // If we have Handshake keys and have outbound TLS handshake bytes queued, emit them now.
@@ -2191,12 +2191,14 @@ pub const Endpoint = struct {
                     var pkt_count: usize = 0;
 
                     // Parse TLS messages to find safe fragment points
-                    var tls_msg_boundaries = std.ArrayList(usize){};
-                    defer tls_msg_boundaries.deinit(self.allocator.*);
-                    _ = tls_msg_boundaries.append(self.allocator.*, 0) catch {};
+                    // Use a fixed array for boundaries (max 32 TLS messages should be plenty)
+                    var tls_msg_boundaries: [32]usize = undefined;
+                    var boundary_count: usize = 0;
+                    tls_msg_boundaries[0] = 0;
+                    boundary_count = 1;
 
                     var parse_offset: usize = 0;
-                    while (parse_offset + 4 <= n_tls) {
+                    while (parse_offset + 4 <= n_tls and boundary_count < 32) {
                         // TLS handshake message: type(1) + length(3) + body(length)
                         const msg_len: u32 = (@as(u32, tls_buf[parse_offset + 1]) << 16) |
                                             (@as(u32, tls_buf[parse_offset + 2]) << 8) |
@@ -2204,18 +2206,12 @@ pub const Endpoint = struct {
                         const total_msg_len = 4 + msg_len; // header + body
                         parse_offset += total_msg_len;
                         if (parse_offset <= n_tls) {
-                            _ = tls_msg_boundaries.append(self.allocator.*, parse_offset) catch {};
+                            tls_msg_boundaries[boundary_count] = parse_offset;
+                            boundary_count += 1;
                         }
                     }
 
-                    logger.debug("Found {} TLS message boundaries in {} bytes", .{tls_msg_boundaries.items.len, n_tls});
-
-                    // Send Initial packet first if we have one
-                    if (initial_pkt) |initial| {
-                        _ = self.sendTo(conn.peer, initial) catch 0;
-                        self.allocator.free(initial);
-                        initial_pkt = null;
-                    }
+                    logger.debug("Found {} TLS message boundaries in {} bytes", .{boundary_count, n_tls});
 
                     while (offset < n_tls) {
                         // Find next TLS message boundary that would keep chunk under MAX_CRYPTO_CHUNK
@@ -2225,7 +2221,9 @@ pub const Endpoint = struct {
                         } else {
                             // Find the largest TLS message boundary <= chunk_end
                             var best_boundary = chunk_end;
-                            for (tls_msg_boundaries.items) |boundary| {
+                            var bi: usize = 0;
+                            while (bi < boundary_count) : (bi += 1) {
+                                const boundary = tls_msg_boundaries[bi];
                                 if (boundary > offset and boundary <= chunk_end) {
                                     best_boundary = boundary;
                                 }
@@ -2259,17 +2257,22 @@ pub const Endpoint = struct {
                         };
 
                         if (pkt_hs) |bytes_out_hs| {
-                            defer self.allocator.free(bytes_out_hs);
                             logger.debug("Handshake packet {} encoded: {} bytes (CRYPTO {} bytes at offset {})", .{pkt_count, bytes_out_hs.len, chunk_len, crypto_stream_offset});
 
-                            const send_result = self.sendTo(conn.peer, bytes_out_hs) catch |err| blk: {
-                                logger.debug("ERROR: Failed to send Handshake packet: {}", .{err});
-                                break :blk 0;
-                            };
-                            if (send_result > 0) {
-                                logger.debug("Successfully sent Handshake packet {}: {} bytes", .{pkt_count, send_result});
+                            // Only append first handshake packet to coalesced buffer (RFC 9000 §12.2)
+                            // Additional handshake packets can be sent separately
+                            if (pkt_count == 0 and coalesced_len > 0) {
+                                if (coalesced_len + bytes_out_hs.len <= coalesced_buffer.len) {
+                                    @memcpy(coalesced_buffer[coalesced_len..coalesced_len + bytes_out_hs.len], bytes_out_hs);
+                                    coalesced_len += bytes_out_hs.len;
+                                    logger.debug("Added first Handshake packet to coalesced buffer: {} bytes", .{bytes_out_hs.len});
+                                } else {
+                                    logger.debug("Failed to append Handshake packet to coalesced buffer - would exceed buffer", .{});
+                                }
                             }
 
+                            // Always free the allocated packet buffer since we've copied it
+                            self.allocator.free(bytes_out_hs);
                             conn.onPacketSent(.Handshake, conn.pn_handshake_tx, bytes_out_hs.len, true);
                             conn.pn_handshake_tx +%= 1;
                         }
@@ -2279,9 +2282,28 @@ pub const Endpoint = struct {
                     }
 
                     conn.crypto_tx_off_handshake += n_tls;
-                    logger.debug("Sent {} Handshake packets with {} bytes total CRYPTO", .{pkt_count, n_tls});
+                    logger.debug("Prepared {} Handshake packets with {} bytes total CRYPTO", .{pkt_count, n_tls});
+
+                    // Send coalesced packets (Initial + first Handshake)
+                    if (coalesced_len > 0) {
+                        logger.debug("Sending coalesced packet: {} bytes (Initial + Handshake)", .{coalesced_len});
+                        const send_result = self.sendTo(conn.peer, coalesced_buffer[0..coalesced_len]) catch |err| blk: {
+                            logger.debug("ERROR: Failed to send coalesced packet: {}", .{err});
+                            break :blk 0;
+                        };
+                        if (send_result > 0) {
+                            logger.debug("Successfully sent coalesced packet: {} bytes", .{send_result});
+                        }
+                    }
+
+                    // Additional handshake packets beyond the first one are sent separately
+                    // Per RFC 9000 §12.2, only the first handshake packet needs to be coalesced
+                    // with the Initial packet
                 }
             }
+
+            // Note: initial_pkt is already freed after being copied to coalesced_packets
+            // The coalesced packet(s) are sent above
 
             // Check if there are more packets coalesced in this datagram
             // The end_total from the Initial packet tells us where it ends
