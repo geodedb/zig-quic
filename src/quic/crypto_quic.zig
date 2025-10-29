@@ -94,19 +94,41 @@ pub fn aeadDecrypt(
     const ct = ciphertext_and_tag[0 .. ciphertext_and_tag.len - 16];
     var tag_arr: [16]u8 = undefined;
     @memcpy(tag_arr[0..], ciphertext_and_tag[ciphertext_and_tag.len - 16 ..]);
+
+    // Debug logging for AEAD decryption
+    logger.debug("aeadDecrypt: suite={}, pn={}, ct_len={}, tag_len=16", .{ suite, packet_number, ct.len });
+    dumpBytes("AEAD decrypt key", key);
+    dumpBytes("AEAD decrypt iv", iv);
+    var nonce_debug: [12]u8 = undefined;
+    xorNonce(&nonce_debug, iv, packet_number);
+    dumpBytes("AEAD decrypt nonce", &nonce_debug);
+    dumpBytes("AEAD decrypt aad", aad);
+    if (ct.len <= 32) {
+        dumpBytes("AEAD decrypt ciphertext", ct);
+    } else {
+        dumpBytes("AEAD decrypt ciphertext (first 32)", ct[0..32]);
+    }
+    dumpBytes("AEAD decrypt tag", &tag_arr);
+
     switch (suite) {
         .chacha20_poly1305 => {
             if (key.len != 32 or iv.len != 12) return error.InvalidKeyIv;
             var nonce: [12]u8 = undefined;
             xorNonce(&nonce, iv, packet_number);
-            ChaCha20Poly1305.decrypt(out_plaintext[0..ct.len], ct, tag_arr, aad, nonce, key[0..32].*) catch return error.AuthenticationFailed;
+            ChaCha20Poly1305.decrypt(out_plaintext[0..ct.len], ct, tag_arr, aad, nonce, key[0..32].*) catch {
+                logger.debug("ChaCha20Poly1305.decrypt failed for pn={}", .{packet_number});
+                return error.AuthenticationFailed;
+            };
             return ct.len;
         },
         .aes_128_gcm => {
             if (key.len != 16 or iv.len != 12) return error.InvalidKeyIv;
             var nonce: [12]u8 = undefined;
             xorNonce(&nonce, iv, packet_number);
-            Aes128Gcm.decrypt(out_plaintext[0..ct.len], ct, tag_arr, aad, nonce, key[0..16].*) catch return error.AuthenticationFailed;
+            Aes128Gcm.decrypt(out_plaintext[0..ct.len], ct, tag_arr, aad, nonce, key[0..16].*) catch {
+                logger.debug("Aes128Gcm.decrypt failed for pn={}", .{packet_number});
+                return error.AuthenticationFailed;
+            };
             return ct.len;
         },
     }
@@ -174,18 +196,24 @@ pub fn headerUnprotect(
 
 fn xorNonce(out: *[12]u8, iv: []const u8, pn: u64) void {
     @memcpy(out[0..], iv);
-    var pn_be: [12]u8 = .{0} ** 12;
-    // encode pn as big-endian 64-bit at the end of 12-byte array
-    pn_be[4] = @as(u8, @truncate(pn >> 56));
-    pn_be[5] = @as(u8, @truncate(pn >> 48));
-    pn_be[6] = @as(u8, @truncate(pn >> 40));
-    pn_be[7] = @as(u8, @truncate(pn >> 32));
-    pn_be[8] = @as(u8, @truncate(pn >> 24));
-    pn_be[9] = @as(u8, @truncate(pn >> 16));
-    pn_be[10] = @as(u8, @truncate(pn >> 8));
-    pn_be[11] = @as(u8, @truncate(pn));
+    // Per RFC 9001: The 62-bit packet number is padded with zeros on the left
+    // and XORed with the IV to produce the nonce. Since we use 64-bit pn,
+    // we just XOR it at the end of the 12-byte nonce (last 8 bytes).
+    // The packet number is encoded in network byte order (big-endian).
+    var pn_bytes: [8]u8 = undefined;
+    pn_bytes[0] = @as(u8, @truncate(pn >> 56));
+    pn_bytes[1] = @as(u8, @truncate(pn >> 48));
+    pn_bytes[2] = @as(u8, @truncate(pn >> 40));
+    pn_bytes[3] = @as(u8, @truncate(pn >> 32));
+    pn_bytes[4] = @as(u8, @truncate(pn >> 24));
+    pn_bytes[5] = @as(u8, @truncate(pn >> 16));
+    pn_bytes[6] = @as(u8, @truncate(pn >> 8));
+    pn_bytes[7] = @as(u8, @truncate(pn));
+    // XOR the packet number bytes with the last 8 bytes of the IV
     var i: usize = 0;
-    while (i < 12) : (i += 1) out[i] ^= pn_be[i];
+    while (i < 8) : (i += 1) {
+        out[4 + i] ^= pn_bytes[i];
+    }
 }
 
 // --- Retry Integrity Tag helpers (RFC 9001 §5.8, RFC 9369 §3.3.3) ---

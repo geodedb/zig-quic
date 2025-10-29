@@ -1717,11 +1717,22 @@ pub const Endpoint = struct {
                     break :blk dcid;
                 }
             };
-            logger.debug("{s}: Deriving Initial keys with dcid=", .{if (conn.role == .Server) "Server" else "Client"});
+            logger.debug("{s}: Deriving Initial keys with dcid (len={})=", .{if (conn.role == .Server) "Server" else "Client", derive_dcid.len});
             for (derive_dcid) |b| logger.debug("{X:0>2}", .{b});
+            logger.debug("", .{});
+
+            // Log the DCID we're actually using from the packet
+            logger.debug("DCID from packet (len={})=", .{dcid.len});
+            for (dcid) |b| logger.debug("{X:0>2}", .{b});
             logger.debug("", .{});
             const ik = packet.initialAeadKeys(v2, conn.role == .Server, derive_dcid);
             const keys = ik.rx;
+
+            // Log the keys we derived
+            logger.debug("Derived RX keys - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{
+                keys.key[0], keys.key[1], keys.key[2], keys.key[3],
+                keys.iv[0], keys.iv[1], keys.iv[2], keys.iv[3],
+            });
 
             // Parse long header variable fields up to PN start
             var j: usize = i; // after SCID value
@@ -1829,8 +1840,42 @@ pub const Endpoint = struct {
                 break :attempt;
             }
             if (!success) {
-                logger.debug("Failed to decrypt Initial packet", .{});
+                logger.debug("Failed to decrypt Initial packet, sending RETRY", .{});
                 conn.onAeadAuthFailure();
+
+                // Send RETRY packet with token per RFC 9000
+                // The server should send a RETRY packet when it cannot decrypt the Initial packet
+                if (conn.role == .Server) {
+                    // Generate a simple retry token (in production this should be cryptographically secure)
+                    var token: [16]u8 = undefined;
+                    var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
+                    prng.random().bytes(&token);
+
+                    // Build RETRY packet: dcid=client's scid, scid=new server cid, odcid=client's dcid
+                    const retry_dcid = scid; // Use client's SCID as DCID in RETRY
+                    const retry_scid = conn.our_scid.bytes[0..conn.our_scid.len]; // Server's CID
+                    const odcid = dcid; // Original DCID from client
+
+                    const retry_pkt = packet.encodeRetry(
+                        self.allocator.*,
+                        version,
+                        retry_dcid,
+                        retry_scid,
+                        odcid,
+                        &token
+                    ) catch {
+                        logger.debug("Failed to encode RETRY packet", .{});
+                        conn.closed = true;
+                        return;
+                    };
+                    defer self.allocator.free(retry_pkt);
+
+                    logger.debug("Sending RETRY packet ({} bytes) with token", .{retry_pkt.len});
+                    _ = self.sendTo(peer, retry_pkt) catch {
+                        logger.debug("Failed to send RETRY packet", .{});
+                    };
+                }
+
                 conn.closed = true;
                 return;
             }

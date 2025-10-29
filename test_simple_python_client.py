@@ -18,14 +18,19 @@ def build_quic_initial_packet():
     # Version (QUIC v1 = 0x00000001)
     header.extend(struct.pack('>I', 0x00000001))
 
-    # Destination Connection ID Length (0 for initial)
-    header.append(0x00)
+    # Destination Connection ID Length (8 bytes - required for Initial)
+    header.append(0x08)
+
+    # Destination Connection ID (8 bytes - FIXED for testing)
+    # Using the same DCID as in test_quic_initial.py for consistency
+    dcid = bytes([0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08])
+    header.extend(dcid)
 
     # Source Connection ID Length (8 bytes)
     header.append(0x08)
 
-    # Source Connection ID (random)
-    scid = bytes([random.randint(0, 255) for _ in range(8)])
+    # Source Connection ID (FIXED for testing)
+    scid = bytes([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08])
     header.extend(scid)
 
     # Token length (0 for initial client packet)
