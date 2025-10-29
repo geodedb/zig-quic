@@ -7,3 +7,21 @@
 [submodule "examples/interop/quic-interop-runner"]
 	path = examples/interop/quic-interop-runner
 	url = git@github.com:quic-interop/quic-interop-runner.git
+[submodule "forks/quiche"]
+	path = forks/quiche
+	url = git@github.com:cloudflare/quiche.git
+[submodule "forks/quinn"]
+	path = forks/quinn
+	url = git@github.com:quinn-rs/quinn.git
+[submodule "forks/quic-go"]
+	path = forks/quic-go
+	url = git@github.com:quic-go/quic-go.git
+[submodule "forks/aioquic"]
+	path = forks/aioquic
+	url = https://github.com/aiortc/aioquic
+[submodule "forks/picotls"]
+	path = forks/picotls
+	url = git@github.com:h2o/picotls.git
+[submodule "forks/boringssl"]
+	path = forks/boringssl
+	url = git@github.com:google/boringssl.git

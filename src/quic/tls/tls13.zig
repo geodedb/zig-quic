@@ -1291,16 +1291,21 @@ pub const Engine = struct {
     }
     /// Public: handshake complete when both sides' Finished exchanged.
     pub fn handshakeComplete(self: *Engine) bool {
+        // In insecure mode on server side, we don't require client certificates
+        // The handshake is complete once Finished messages are exchanged
+        const cert_ok = if (self.role == .Server and self.allow_insecure) true else self.peer_cert_ok;
+
         const result = self.finished_sent and self.finished_verified;
         if (!result) {
-            logger.debug("[TLS HANDSHAKE] NOT COMPLETE - role={s}, finished_sent={}, finished_verified={}, ecdhe_secret={}, handshake_client_secret={}, handshake_server_secret={}, peer_cert_ok={}", .{
+            logger.debug("[TLS HANDSHAKE] NOT COMPLETE - role={s}, finished_sent={}, finished_verified={}, ecdhe_secret={}, handshake_client_secret={}, handshake_server_secret={}, peer_cert_ok={}, allow_insecure={}", .{
                 if (self.role == .Server) "Server" else "Client",
                 self.finished_sent,
                 self.finished_verified,
                 self.ecdhe_secret != null,
                 self.handshake_client_secret != null,
                 self.handshake_server_secret != null,
-                self.peer_cert_ok,
+                cert_ok,
+                self.allow_insecure,
             });
         }
         return result;
