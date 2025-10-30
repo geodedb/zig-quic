@@ -81,6 +81,7 @@
                 commonPackages
               ])
               ++ (with pkgs; [
+                toybox
                 file
                 tcpdump
                 tshark

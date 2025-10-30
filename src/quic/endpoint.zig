@@ -1546,6 +1546,8 @@ pub const Endpoint = struct {
                 logger.debug("  Client SCID: ", .{});
                 for (scid) |b| logger.debug("{X:0>2}", .{b});
                 logger.debug("", .{});
+            } else {
+                logger.debug("  Client sent zero-length SCID", .{});
             }
 
             // Key connection by peer and dcid
@@ -1612,8 +1614,10 @@ pub const Endpoint = struct {
                 c_new.original_dcid.len = c_new.peer_initial_dcid.len;
                 if (c_new.original_dcid.len > 0) @memcpy(c_new.original_dcid.bytes[0..c_new.original_dcid.len], c_new.peer_initial_dcid.bytes[0..c_new.peer_initial_dcid.len]);
                 // CRITICAL FIX: Also set peer_initial_scid from client's SCID so Handshake packets use correct DCID
+                logger.debug("Server: Setting peer_initial_scid from client SCID, scid.len={}", .{scid.len});
                 c_new.peer_initial_scid.len = @intCast(@min(scid.len, c_new.peer_initial_scid.bytes.len));
                 if (c_new.peer_initial_scid.len > 0) @memcpy(c_new.peer_initial_scid.bytes[0..c_new.peer_initial_scid.len], scid[0..c_new.peer_initial_scid.len]);
+                logger.debug("Server: After setting peer_initial_scid, peer_initial_scid.len={}", .{c_new.peer_initial_scid.len});
                 c_new.setUseCubic(self.cfg.cc == .cubic);
                 c_new.tls.allow_insecure = self.cfg.allow_insecure;
                 // Configure server certificate for TLS 1.3
@@ -2227,6 +2231,7 @@ pub const Endpoint = struct {
                     conn.crypto_retx_handshake_off = conn.crypto_tx_off_handshake;
 
                     // For Handshake packets, use the client's source connection ID
+                    logger.debug("Server: Using peer_initial_scid for Handshake DCID, len={}", .{conn.peer_initial_scid.len});
                     const hs_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
 
                     // Fragment CRYPTO data into chunks that fit within MTU
@@ -2334,6 +2339,25 @@ pub const Endpoint = struct {
                     // Send coalesced packets (Initial + first Handshake)
                     if (coalesced_len > 0) {
                         logger.debug("Sending coalesced packet: {} bytes (Initial + Handshake)", .{coalesced_len});
+
+                        // DIAGNOSTIC: Hexdump the coalesced packet to understand structure
+                        logger.debug("=== COALESCED PACKET HEXDUMP ===", .{});
+                        var dump_idx: usize = 0;
+                        const max_dump = @min(256, coalesced_len);
+                        while (dump_idx < max_dump) : (dump_idx += 16) {
+                            const line_end = @min(dump_idx + 16, max_dump);
+                            logger.debug("{X:0>4}: ", .{dump_idx});
+                            var line_idx = dump_idx;
+                            while (line_idx < line_end) : (line_idx += 1) {
+                                logger.debug("{X:0>2} ", .{coalesced_buffer[line_idx]});
+                            }
+                            logger.debug("", .{});
+                        }
+                        if (coalesced_len > max_dump) {
+                            logger.debug("... ({} more bytes)", .{coalesced_len - max_dump});
+                        }
+                        logger.debug("=== END HEXDUMP ===", .{});
+
                         const send_result = self.sendTo(conn.peer, coalesced_buffer[0..coalesced_len]) catch |err| blk: {
                             logger.debug("ERROR: Failed to send coalesced packet: {}", .{err});
                             break :blk 0;
@@ -2647,6 +2671,8 @@ pub const Endpoint = struct {
                         // Use the client's source connection ID (peer_initial_scid)
                         // If client sent zero-length SCID, use empty DCID (proper quic-go compatibility)
                         const hs_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
+                        // DIAGNOSTIC: Log the version being used for Handshake packet
+                        logger.debug("DEBUG: Encoding Handshake packet with version=0x{X:0>8} (decimal: {})", .{version, version});
                         const pkt = packet.encodeHandshakeProtected(self.allocator.*, version, hs_dcid, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_handshake_tx)), 2, frames_buf.items, tx_hs) catch null;
                         if (pkt) |bytes_out| {
                             defer self.allocator.free(bytes_out);

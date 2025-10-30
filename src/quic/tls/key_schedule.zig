@@ -117,6 +117,21 @@ pub fn deriveKeyIvHp(secret: [H.digest_length]u8) struct { key: [16]u8, iv: [12]
     expandLabel(secret, "quic key", &[_]u8{}, &key) catch unreachable;
     expandLabel(secret, "quic iv", &[_]u8{}, &iv) catch unreachable;
     expandLabel(secret, "quic hp", &[_]u8{}, &hp) catch unreachable;
+
+    // DIAGNOSTIC: Log the exact keys being derived
+    std.log.debug("deriveKeyIvHp: secret[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{
+        secret[0], secret[1], secret[2], secret[3]
+    });
+    std.log.debug("  -> key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{
+        key[0], key[1], key[2], key[3]
+    });
+    std.log.debug("  -> iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{
+        iv[0], iv[1], iv[2], iv[3]
+    });
+    std.log.debug("  -> hp[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{
+        hp[0], hp[1], hp[2], hp[3]
+    });
+
     return .{ .key = key, .iv = iv, .hp = hp };
 }
 

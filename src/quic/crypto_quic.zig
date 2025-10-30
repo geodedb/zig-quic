@@ -293,6 +293,25 @@ pub fn protectPacket(
     @memcpy(aad_stack[1 + header_prefix.len .. aad_len], pn_bytes);
     const aad = aad_stack[0..aad_len];
 
+    // Debug logging for encryption
+    logger.debug("protectPacket: pn={} pn_len={} header_prefix_len={} aad_len={}", .{packet_number, pn_bytes.len, header_prefix.len, aad_len});
+    logger.debug("protectPacket: header_first=0x{X:0>2}", .{header_first.*});
+    logger.debug("protectPacket: AAD (first 20 bytes): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{
+        aad[0], if(aad_len>1) aad[1] else 0, if(aad_len>2) aad[2] else 0, if(aad_len>3) aad[3] else 0,
+        if(aad_len>4) aad[4] else 0, if(aad_len>5) aad[5] else 0, if(aad_len>6) aad[6] else 0, if(aad_len>7) aad[7] else 0,
+        if(aad_len>8) aad[8] else 0, if(aad_len>9) aad[9] else 0, if(aad_len>10) aad[10] else 0, if(aad_len>11) aad[11] else 0,
+        if(aad_len>12) aad[12] else 0, if(aad_len>13) aad[13] else 0, if(aad_len>14) aad[14] else 0, if(aad_len>15) aad[15] else 0,
+        if(aad_len>16) aad[16] else 0, if(aad_len>17) aad[17] else 0, if(aad_len>18) aad[18] else 0, if(aad_len>19) aad[19] else 0,
+    });
+
+    // Compute and log nonce
+    var nonce_dbg: [12]u8 = undefined;
+    xorNonce(&nonce_dbg, aead_iv, packet_number);
+    logger.debug("protectPacket: Nonce: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{
+        nonce_dbg[0], nonce_dbg[1], nonce_dbg[2], nonce_dbg[3], nonce_dbg[4], nonce_dbg[5],
+        nonce_dbg[6], nonce_dbg[7], nonce_dbg[8], nonce_dbg[9], nonce_dbg[10], nonce_dbg[11],
+    });
+
     // Debug dumps
     if (builtin.is_test) {
         dumpBytes("ENC aead_key", aead_key);
@@ -319,6 +338,24 @@ pub fn protectPacket(
             const sample_offset: usize = if (pn_len >= 4) 0 else (4 - pn_len);
             if (sample_offset + 16 > out_cipher.len) return error.AuthenticationFailed;
             @memcpy(sample16[0..], out_cipher[sample_offset .. sample_offset + 16]);
+
+            // DIAGNOSTIC: Log ciphertext and sample extraction
+            logger.debug("protectPacket: ct_len={}, sample_offset={} (pn_len={}, formula: 4-pn_len={})", .{out_cipher.len, sample_offset, pn_len, 4 - pn_len});
+            const ct_dump = @min(32, out_cipher.len);
+            logger.debug("protectPacket: ciphertext[0..{}]:", .{ct_dump});
+            for (out_cipher[0..ct_dump], 0..) |b, i| {
+                if (i > 0 and i % 16 == 0) logger.debug("", .{});
+                if (i % 16 == 0) logger.debug("  ", .{});
+                logger.debug("{X:0>2} ", .{b});
+            }
+            logger.debug("", .{});
+            logger.debug("protectPacket: HP sample from offset {}:", .{sample_offset});
+            logger.debug("  ", .{});
+            for (sample16, 0..) |b, i| {
+                logger.debug("{X:0>2} ", .{b});
+                if (i == 7) logger.debug(" ", .{});
+            }
+            logger.debug("", .{});
         },
         .chacha20_poly1305 => {
             if (pn_len > 4) return error.InvalidPacketNumberLength;

@@ -1157,12 +1157,27 @@ pub const Engine = struct {
         // Encode as handshake message
         const msg = try encodeHandshake(self.allocator, .server_hello, sh_body);
         defer self.allocator.free(msg);
+
+        // Enhanced ServerHello logging
+        logger.debug("ServerHello total length: {} bytes", .{msg.len});
+        if (msg.len >= 16) {
+            logger.debug("ServerHello header: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{msg[0], msg[1], msg[2], msg[3]});
+            logger.debug("ServerHello body start: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{msg[4], msg[5], msg[6], msg[7], msg[8], msg[9], msg[10], msg[11]});
+            logger.debug("ServerHello body[12..20]: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{msg[12], msg[13], msg[14], msg[15], msg[16], msg[17], msg[18], msg[19]});
+        }
+
+        // Show transcript state before adding ServerHello
+        var pre_snap = self.transcript;
+        const pre_th = pre_snap.finalize();
+        logger.debug("Transcript hash BEFORE ServerHello: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{pre_th[0], pre_th[1], pre_th[2], pre_th[3], pre_th[4], pre_th[5], pre_th[6], pre_th[7]});
+
         try self.queueCrypto(msg);
 
         self.tryComputeShared();
         if (self.ecdhe_secret != null and self.handshake_client_secret == null) {
             var snap = self.transcript;
             const th = snap.finalize();
+            logger.debug("Transcript hash AFTER ServerHello: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{th[0], th[1], th[2], th[3], th[4], th[5], th[6], th[7]});
             const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th);
             self.handshake_client_secret = hs.client_hs;
             self.handshake_server_secret = hs.server_hs;

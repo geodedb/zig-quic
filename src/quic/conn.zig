@@ -1220,6 +1220,7 @@ pub const Connection = struct {
     /// Update peer Initial DCID/SCID (observed in Initial packet).
     /// Record peer's Initial DCID/SCID values observed to support VN/Retry logic.
     pub fn setPeerInitialCids(self: *Connection, dcid: []const u8, scid: []const u8) void {
+        logger.debug("setPeerInitialCids: ENTER - dcid.len={}, scid.len={}", .{dcid.len, scid.len});
         self.peer_initial_dcid.len = @intCast(@min(dcid.len, self.peer_initial_dcid.bytes.len));
         if (self.peer_initial_dcid.len > 0) @memcpy(self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len], dcid[0..self.peer_initial_dcid.len]);
         // Capture original destination connection ID (ODCID) only once (first client Initial).
@@ -1227,8 +1228,10 @@ pub const Connection = struct {
             self.original_dcid.len = self.peer_initial_dcid.len;
             if (self.original_dcid.len > 0) @memcpy(self.original_dcid.bytes[0..self.original_dcid.len], self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len]);
         }
+        logger.debug("setPeerInitialCids: Before setting peer_initial_scid, current len={}", .{self.peer_initial_scid.len});
         self.peer_initial_scid.len = @intCast(@min(scid.len, self.peer_initial_scid.bytes.len));
         if (self.peer_initial_scid.len > 0) @memcpy(self.peer_initial_scid.bytes[0..self.peer_initial_scid.len], scid[0..self.peer_initial_scid.len]);
+        logger.debug("setPeerInitialCids: EXIT - peer_initial_dcid.len={}, peer_initial_scid.len={}", .{self.peer_initial_dcid.len, self.peer_initial_scid.len});
     }
 
     /// Ingest a STREAM frame payload into the RX buffer for the stream with reassembly.
@@ -2096,9 +2099,33 @@ pub const Connection = struct {
     /// Derive handshake keys for QUIC from current TLS secrets.
     pub fn deriveHandshakeKeys(self: *Connection, version_v2: bool) void {
         if (self.hs_client == null or self.hs_server == null) return;
+
+        // Log the raw secrets first
+        logger.debug("deriveHandshakeKeys: role={s}, version_v2={}", .{
+            if (self.role == .Server) "Server" else "Client",
+            version_v2,
+        });
+        logger.debug("  hs_client secret[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{
+            self.hs_client.?[0], self.hs_client.?[1], self.hs_client.?[2], self.hs_client.?[3],
+        });
+        logger.debug("  hs_server secret[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{
+            self.hs_server.?[0], self.hs_server.?[1], self.hs_server.?[2], self.hs_server.?[3],
+        });
+
         // Assign rx/tx according to role
         const rx_secret = if (self.role == .Server) self.hs_client.? else self.hs_server.?;
         const tx_secret = if (self.role == .Server) self.hs_server.? else self.hs_client.?;
+
+        logger.debug("  For {s}:", .{if (self.role == .Server) "Server" else "Client"});
+        logger.debug("    rx_secret (for reading) = {s} secret[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{
+            if (self.role == .Server) "client" else "server",
+            rx_secret[0], rx_secret[1], rx_secret[2], rx_secret[3],
+        });
+        logger.debug("    tx_secret (for writing) = {s} secret[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{
+            if (self.role == .Server) "server" else "client",
+            tx_secret[0], tx_secret[1], tx_secret[2], tx_secret[3],
+        });
+
         const rx = tls13.deriveQuicHandshakeKeys(rx_secret, version_v2);
         const tx = tls13.deriveQuicHandshakeKeys(tx_secret, version_v2);
         self.hs_rx_keys = .{ .key = rx.key, .iv = rx.iv, .hp = rx.hp };

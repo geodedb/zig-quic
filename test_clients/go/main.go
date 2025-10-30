@@ -85,8 +85,8 @@ func main() {
                 ReceivedRetry: func(hdr *logging.Header) {
                     log.Printf("Received retry packet\n")
                 },
-                ReceivedVersionNegotiationPacket: func(dest, src logging.ArbitraryLenConnectionID, versions []uint32) {
-                    log.Printf("Received version negotiation: dest=%x, src=%x, versions=%v\n", dest, src, versions)
+                ReceivedVersionNegotiationPacket: func(dest, src logging.ArbitraryLenConnectionID, _ []logging.VersionNumber) {
+                    log.Printf("Received version negotiation: dest=%x, src=%x\n", dest, src)
                 },
                 BufferedPacket: func(pt logging.PacketType, size logging.ByteCount) {
                     log.Printf("Buffered packet: type=%v, size=%d\n", pt, size)

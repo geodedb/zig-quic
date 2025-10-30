@@ -544,7 +544,18 @@ pub fn encodeHandshakeProtected(
     payload_plaintext: []const u8,
     keys: InitialKeys,
 ) ![]u8 {
-    logger.debug("encodeHandshakeProtected: CALLED with packet_number={}", .{packet_number});
+    logger.debug("encodeHandshakeProtected: CALLED with packet_number={} version=0x{X:0>8}", .{packet_number, version});
+    logger.debug("encodeHandshakeProtected: dcid.len={}, scid.len={}", .{dcid.len, scid.len});
+    if (dcid.len > 0) {
+        logger.debug("encodeHandshakeProtected: dcid bytes: ", .{});
+        for (dcid) |b| logger.debug("{X:0>2}", .{b});
+        logger.debug("", .{});
+    }
+    if (scid.len > 0) {
+        logger.debug("encodeHandshakeProtected: scid bytes: ", .{});
+        for (scid) |b| logger.debug("{X:0>2}", .{b});
+        logger.debug("", .{});
+    }
     if (packet_number_len < 1 or packet_number_len > 4) return error.InvalidPacketNumberLength;
 
     var buf = std.ArrayList(u8){};
@@ -561,6 +572,7 @@ pub fn encodeHandshakeProtected(
     const w = buf.writer(alloc);
     try w.writeByte(first);
     var be_ver: [4]u8 = .{ @as(u8, @intCast(version >> 24)), @as(u8, @intCast((version >> 16) & 0xff)), @as(u8, @intCast((version >> 8) & 0xff)), @as(u8, @intCast(version & 0xff)) };
+    logger.debug("DEBUG: Writing Handshake version bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} (version=0x{X:0>8})", .{be_ver[0], be_ver[1], be_ver[2], be_ver[3], version});
     try w.writeAll(&be_ver);
     try w.writeByte(@as(u8, @intCast(dcid.len)));
     try w.writeAll(dcid);
@@ -621,6 +633,21 @@ pub fn encodeHandshakeProtected(
 
     logger.debug("encodeHandshakeProtected: AFTER header protection - first byte changed from 0x{X:0>2} to 0x{X:0>2}", .{ first, header_first });
     logger.debug("encodeHandshakeProtected: Final packet first 5 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{ buf.items[0], buf.items[1], buf.items[2], buf.items[3], buf.items[4] });
+
+    // DIAGNOSTIC: Hexdump first 64 bytes of Handshake packet for analysis
+    logger.debug("=== HANDSHAKE PACKET HEXDUMP (first 64 bytes) ===", .{});
+    const dump_len = @min(64, buf.items.len);
+    var dump_idx: usize = 0;
+    while (dump_idx < dump_len) : (dump_idx += 16) {
+        const line_end = @min(dump_idx + 16, dump_len);
+        logger.debug("{X:0>4}: ", .{dump_idx});
+        var line_idx = dump_idx;
+        while (line_idx < line_end) : (line_idx += 1) {
+            logger.debug("{X:0>2} ", .{buf.items[line_idx]});
+        }
+        logger.debug("", .{});
+    }
+    logger.debug("=== END HEXDUMP (total packet size: {} bytes) ===", .{buf.items.len});
 
     return buf.toOwnedSlice(alloc);
 }

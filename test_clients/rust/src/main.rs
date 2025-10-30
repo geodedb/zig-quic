@@ -93,7 +93,7 @@ fn configure_client() -> ClientConfig {
     // Create a client config that skips certificate verification
     let crypto = rustls::ClientConfig::builder()
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(SkipServerVerification::new()))
+        .with_custom_certificate_verifier(SkipServerVerification::new())
         .with_no_client_auth();
 
     let mut config = ClientConfig::new(Arc::new(
