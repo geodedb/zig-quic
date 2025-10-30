@@ -75,16 +75,24 @@ pub fn connect(ep: *QuicEndpoint, server_addr: []const u8, sni: []const u8) !*Qu
     const anyp: *anyopaque = @ptrCast(c);
     return @ptrCast(anyp);
 }
-/// Accept a server-side connection from the endpoint accept queue.
+/// Accept a server-side connection from the endpoint accept queue (blocking).
 pub fn accept(ep: *QuicEndpoint) !*QuicConnection {
-    // Blockingly poll until a server-side Connection is accepted.
     while (true) {
         if (ep.popAccepted()) |pc| {
             const anyp: *anyopaque = @ptrCast(pc);
             return @ptrCast(anyp);
         }
-        try ep.poll(1000);  // Use 1 second timeout for better network responsiveness
+        try ep.poll(50); // drive IO until accept queue populated
     }
+}
+
+/// Non-blocking accept; returns null if no queued connection.
+pub fn tryAccept(ep: *QuicEndpoint) ?*QuicConnection {
+    if (ep.popAccepted()) |pc| {
+        const anyp: *anyopaque = @ptrCast(pc);
+        return @ptrCast(anyp);
+    }
+    return null;
 }
 
 /// Open a stream on a connection (not yet implemented).
