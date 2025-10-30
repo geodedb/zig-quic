@@ -339,10 +339,13 @@ pub fn encodeInitialProtected(
     }
 
     // Length varint: pn_len + ciphertext_len
+    // CRITICAL: Use 2-byte encoding for Length field to ensure consistent parsing
+    // of coalesced packets. Variable-length encoding causes clients to misparse
+    // packet boundaries when Initial+Handshake packets are coalesced.
     const ct_len = payload_plaintext.len + 16;
     const length_value: usize = @as(usize, packet_number_len) + ct_len;
     var lbuf: [8]u8 = undefined;
-    const ll = try varint.encode(length_value, &lbuf);
+    const ll = try varint.encodeWithLen(length_value, &lbuf, 2);
     try w.writeAll(lbuf[0..ll]);
 
     // Remember header_prefix length (after first header byte) to end of length varint
@@ -582,10 +585,13 @@ pub fn encodeHandshakeProtected(
     // Handshake packets do not carry a token
 
     // Length varint: pn_len + ciphertext_len
+    // CRITICAL: Use 2-byte encoding for Length field to ensure consistent parsing
+    // of coalesced packets. Variable-length encoding causes clients to misparse
+    // packet boundaries when Initial+Handshake packets are coalesced.
     const ct_len = payload_plaintext.len + 16;
     const length_value: usize = @as(usize, packet_number_len) + ct_len;
     var lbuf: [8]u8 = undefined;
-    const ll = try varint.encode(length_value, &lbuf);
+    const ll = try varint.encodeWithLen(length_value, &lbuf, 2);
     try w.writeAll(lbuf[0..ll]);
 
     const header_prefix_len = buf.items.len - 1;
@@ -777,10 +783,13 @@ pub fn encode0RTTProtected(
     try w.writeAll(scid);
 
     // Length field (varint)
+    // CRITICAL: Use 2-byte encoding for Length field to ensure consistent parsing
+    // of coalesced packets. Variable-length encoding causes clients to misparse
+    // packet boundaries when 0-RTT packets are coalesced with other packets.
     var len_buf: [8]u8 = undefined;
     const payload_with_tag_len = payload.len + 16; // AEAD tag
     const total_len = pn_len + payload_with_tag_len;
-    const len_bytes = try varint.encode(total_len, &len_buf);
+    const len_bytes = try varint.encodeWithLen(total_len, &len_buf, 2);
     try w.writeAll(len_buf[0..len_bytes]);
 
     // Packet number (truncated)

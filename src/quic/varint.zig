@@ -66,3 +66,55 @@ pub fn encode(value: u64, out: []u8) Error!usize {
     }
     return len;
 }
+
+/// Encode value using QUIC varint with forced byte length (1, 2, 4, or 8).
+/// This is needed for fields like Length in long headers that must use
+/// consistent encoding for proper parsing of coalesced packets.
+/// Per de facto standard established by major implementations (quic-go, aioquic),
+/// all Length fields in long header packets should use 2-byte encoding.
+pub fn encodeWithLen(value: u64, out: []u8, byte_len: usize) Error!usize {
+    if (value > ((1 << 62) - 1)) return Error.Overflow;
+    if (out.len < byte_len) return Error.Truncated;
+
+    // Validate byte_len and value fit
+    const max_for_len: u64 = switch (byte_len) {
+        1 => (1 << 6) - 1,
+        2 => (1 << 14) - 1,
+        4 => (1 << 30) - 1,
+        8 => (1 << 62) - 1,
+        else => return Error.Overflow,
+    };
+    if (value > max_for_len) return Error.Overflow;
+
+    const toU8 = struct {
+        fn f(v: u64) u8 {
+            return @as(u8, @intCast(v));
+        }
+    }.f;
+
+    switch (byte_len) {
+        1 => out[0] = toU8(value) | @as(u8, 0b00 << 6),
+        2 => {
+            out[0] = toU8((value >> 8) & 0x3f) | @as(u8, 0b01 << 6);
+            out[1] = toU8(value & 0xff);
+        },
+        4 => {
+            out[0] = toU8((value >> 24) & 0x3f) | @as(u8, 0b10 << 6);
+            out[1] = toU8((value >> 16) & 0xff);
+            out[2] = toU8((value >> 8) & 0xff);
+            out[3] = toU8(value & 0xff);
+        },
+        8 => {
+            out[0] = toU8((value >> 56) & 0x3f) | @as(u8, 0b11 << 6);
+            out[1] = toU8((value >> 48) & 0xff);
+            out[2] = toU8((value >> 40) & 0xff);
+            out[3] = toU8((value >> 32) & 0xff);
+            out[4] = toU8((value >> 24) & 0xff);
+            out[5] = toU8((value >> 16) & 0xff);
+            out[6] = toU8((value >> 8) & 0xff);
+            out[7] = toU8(value & 0xff);
+        },
+        else => return Error.Overflow,
+    }
+    return byte_len;
+}
