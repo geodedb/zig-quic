@@ -2148,9 +2148,10 @@ pub const Endpoint = struct {
                 } else {
                     logger.debug("Initial packet too large for coalesced buffer", .{});
                 }
-                // Free Initial after copying; ownership transferred
+                // Free Initial after copying / or failed coalesce; clear debug tracker
                 self.allocator.free(initial);
                 initial_pkt = null;
+                conn.initial_debug_alloc = null;
             }
 
             // If we have Handshake keys and have outbound TLS handshake bytes queued, emit them now.
