@@ -1106,10 +1106,29 @@ pub const Connection = struct {
         const had_peer_pub = self.tls.peer_pub != null;
         self.tls.onCryptoRecv(hs);
         // Server: upon receiving first ClientHello AND extracting peer's public key, queue a ServerHello
-        if (self.role == .Server and !self.tls.sh_seen and !had_peer_pub and self.tls.peer_pub != null) {
-            logger.debug("Server: ClientHello parsed with public key, queueing ServerHello", .{});
-            // Always use real TLS 1.3 ServerHello
+        // Server: upon receiving first ClientHello AND extracting peer's public key,
+        // derive ECDHE shared secret and Handshake keys immediately.
+        // The ServerHello + handshake flight will be queued and sent later in endpoint.zig
+        // when we're ready to transmit Handshake packets.
+        if (self.role == .Server and self.hs_client == null and !had_peer_pub and self.tls.peer_pub != null) {
+            logger.debug("Server: ClientHello parsed with peer public key, deriving Handshake keys", .{});
+
+            // Queue ServerHello to update transcript, compute ECDHE, and derive secrets
+            // (tryComputeShared is called internally by queueRealServerHello)
             self.tls.queueRealServerHello() catch {};
+
+            // Copy handshake secrets from TLS engine to Connection
+            if (self.tls.handshake_client_secret) |client_secret| {
+                if (self.tls.handshake_server_secret) |server_secret| {
+                    logger.debug("Server: Derived handshake secrets, installing Handshake keys", .{});
+                    self.hs_client = client_secret;
+                    self.hs_server = server_secret;
+                    self.deriveHandshakeKeys(self.version_v2);
+
+                    // Clear the outbox since ServerHello will be sent later in Handshake packet
+                    self.tls.outbox.clearRetainingCapacity();
+                }
+            }
         }
         // If we can compute handshake secrets now, install Handshake keys once
         if (self.hs_client == null or self.hs_server == null) {

@@ -2037,35 +2037,12 @@ pub const Endpoint = struct {
                     _ = ack.write(w) catch 0;
                 }
 
-                // Server: Include ServerHello in Initial packet if we have it queued and haven't sent it yet
-                var has_crypto = false;
-                if (conn.role == .Server) {
-                    // Include ServerHello in Initial packet if we have pending TLS data and haven't sent it yet
-                    // Check for pending data in the TLS outbox instead of sh_seen flag
-                    if (conn.tls.outbox.items.len > 0 and conn.crypto_tx_off_initial < 200) {
-                        logger.debug("Server: Attempting to pop ServerHello - outbox.len={} crypto_tx_off_initial={}", .{conn.tls.outbox.items.len, conn.crypto_tx_off_initial});
-                        // Pop any ServerHello bytes from TLS engine (should only be ServerHello at this point)
-                        var sh_buf: [512]u8 = undefined;
-                        const n_sh = conn.tls.popCrypto(sh_buf[0..]);
-                        logger.debug("Server: popCrypto returned {} bytes", .{n_sh});
-                        if (n_sh > 0) {
-                            logger.debug("Sending ServerHello in Initial packet: {} bytes", .{n_sh});
-                            // Add CRYPTO frame with ServerHello
-                            const crypto_frame = frame.Frame{ .crypto = .{ .offset = conn.crypto_tx_off_initial, .data = sh_buf[0..n_sh] } };
-                            _ = crypto_frame.write(w) catch 0;
-                            conn.crypto_tx_off_initial += n_sh;
-                            has_crypto = true;
-
-                            // Save for retransmission
-                            if (conn.crypto_retx_initial) |b| self.allocator.free(b);
-                            const owned = self.allocator.alloc(u8, n_sh) catch null;
-                            if (owned) |retx| {
-                                @memcpy(retx, sh_buf[0..n_sh]);
-                                conn.crypto_retx_initial = owned;
-                            }
-                        }
-                    }
-                }
+                // QUIC RFC 9001: ServerHello MUST be sent in Handshake packet (with Handshake keys),
+                // NOT in Initial packet. Initial packets only contain ACK frames from server.
+                // The full handshake flight (ServerHello + EE + Cert + Finished) is sent later
+                // in Handshake packet(s) after deriving Handshake keys.
+                // No CRYPTO frames in server's Initial packet - only ACK
+                const has_crypto = false;
 
                 // Always send Initial packet if we have frames to send
                 // Use oriented Initial keys based on role
@@ -2180,9 +2157,13 @@ pub const Endpoint = struct {
                 // If we're a server and haven't queued the handshake flight yet, do it now
                 if (conn.role == .Server and conn.tls.sh_seen and !conn.server_hello_sent) {
                     conn.server_hello_sent = true;
-                    logger.debug("Queueing handshake flight (EE, Cert, Finished)", .{});
+                    logger.debug("Queueing handshake flight (ServerHello + EE + Cert + Finished)", .{});
 
-                    // queueServerHandshakeFlight will send EncryptedExtensions + Certificate + CertificateVerify + Finished
+                    // Queue ServerHello first (this was already prepared and cleared from outbox earlier)
+                    // We need to queue it again since it should be sent in Handshake packet
+                    conn.tls.queueRealServerHello() catch {};
+
+                    // Queue the rest of the handshake flight (EncryptedExtensions + Certificate + CertificateVerify + Finished)
                     // using the ALPN and TP already set in conn.tls via setLocalTransportParams
                     conn.tls.queueServerHandshakeFlight();
                 }

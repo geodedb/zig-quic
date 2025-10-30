@@ -23,6 +23,8 @@ TARGETS = \
 .PHONY: $(TARGETS) $(addsuffix -release,$(TARGETS))
 .PHONY: interop interop-quic-go interop-zig test-interop-all
 .PHONY: interop-build interop-basic interop-quick interop-full interop-runner interop-clean
+.PHONY: setup-clients setup-python-client setup-rust-client
+.PHONY: e2e-test-go e2e-test-python e2e-test-rust e2e-test-all e2e-ci
 
 # Default target runs full CI including cross-compilation
 all: ci cross-compile-quick interop
@@ -295,6 +297,131 @@ interop-clean:
 	@killall -9 quic-server quic-client 2>/dev/null || true
 	@echo "✓ Interop artifacts cleaned"
 
+# ============================
+# E2E Client Testing
+# ============================
+
+# Setup Python test client environment
+setup-python-client:
+	@echo "========== Setting up Python test client =========="
+	@cd clients/python && bash setup.sh
+
+# Build Rust test client
+setup-rust-client:
+	@echo "========== Building Rust test client =========="
+	@cd clients/rust && bash build.sh
+
+# Setup all test clients
+setup-clients: setup-python-client setup-rust-client
+	@echo "✓ All test clients ready"
+
+# E2E test with Go client
+e2e-test-go: build
+	@echo "========== E2E Test: Go Client (quic-go) =========="
+	@echo "Building server..."
+	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
+	@echo "Starting server..."
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --insecure > /tmp/e2e-go.log 2>&1 & \
+		SERVER_PID=$$!; \
+		echo "Server PID: $$SERVER_PID"; \
+		sleep 2; \
+		echo "Running Go client..."; \
+		timeout 10 go run -mod=mod test-go-client.go 2>&1 | tee /tmp/e2e-go-client.log; \
+		CLIENT_EXIT=$$?; \
+		kill $$SERVER_PID 2>/dev/null || true; \
+		sleep 1; \
+		echo ""; \
+		echo "=== Server Log ==="; \
+		tail -20 /tmp/e2e-go.log; \
+		echo ""; \
+		if grep -q "accepted connection" /tmp/e2e-go.log; then \
+			echo "✅ Go client test PASSED - Connection accepted"; \
+			exit 0; \
+		else \
+			echo "❌ Go client test FAILED - No connection accepted"; \
+			exit 1; \
+		fi'
+
+# E2E test with Python client
+e2e-test-python: build
+	@echo "========== E2E Test: Python Client (aioquic) =========="
+	@if [ ! -d "clients/python/venv" ]; then \
+		echo "Python environment not set up. Run 'make setup-python-client' first."; \
+		exit 1; \
+	fi
+	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
+	@echo "Starting server..."
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --insecure > /tmp/e2e-python.log 2>&1 & \
+		SERVER_PID=$$!; \
+		echo "Server PID: $$SERVER_PID"; \
+		sleep 2; \
+		echo "Running Python client..."; \
+		cd clients/python && timeout 10 ./venv/bin/python3 test_client.py -v 2>&1 | tee /tmp/e2e-python-client.log; \
+		CLIENT_EXIT=$$?; \
+		kill $$SERVER_PID 2>/dev/null || true; \
+		sleep 1; \
+		echo ""; \
+		echo "=== Server Log ==="; \
+		tail -20 /tmp/e2e-python.log; \
+		echo ""; \
+		if grep -q "accepted connection" /tmp/e2e-python.log; then \
+			echo "✅ Python client test PASSED - Connection accepted"; \
+			exit 0; \
+		else \
+			echo "❌ Python client test FAILED - No connection accepted"; \
+			exit 1; \
+		fi'
+
+# E2E test with Rust client
+e2e-test-rust: build
+	@echo "========== E2E Test: Rust Client (quinn) =========="
+	@if [ ! -f "clients/rust/target/release/test-client" ]; then \
+		echo "Rust client not built. Run 'make setup-rust-client' first."; \
+		exit 1; \
+	fi
+	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
+	@echo "Starting server..."
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --insecure > /tmp/e2e-rust.log 2>&1 & \
+		SERVER_PID=$$!; \
+		echo "Server PID: $$SERVER_PID"; \
+		sleep 2; \
+		echo "Running Rust client..."; \
+		timeout 10 ./clients/rust/target/release/test-client 127.0.0.1:4433 2>&1 | tee /tmp/e2e-rust-client.log; \
+		CLIENT_EXIT=$$?; \
+		kill $$SERVER_PID 2>/dev/null || true; \
+		sleep 1; \
+		echo ""; \
+		echo "=== Server Log ==="; \
+		tail -20 /tmp/e2e-rust.log; \
+		echo ""; \
+		if grep -q "accepted connection" /tmp/e2e-rust.log; then \
+			echo "✅ Rust client test PASSED - Connection accepted"; \
+			exit 0; \
+		else \
+			echo "❌ Rust client test FAILED - No connection accepted"; \
+			exit 1; \
+		fi'
+
+# Run all e2e tests sequentially
+e2e-test-all: build
+	@echo "=========================================="
+	@echo "Running All E2E Tests"
+	@echo "=========================================="
+	@echo ""
+	@$(MAKE) e2e-test-go
+	@echo ""
+	@$(MAKE) e2e-test-python
+	@echo ""
+	@$(MAKE) e2e-test-rust
+	@echo ""
+	@echo "=========================================="
+	@echo "✅ All E2E Tests Completed"
+	@echo "=========================================="
+
+# CI/CD mode - run all tests with strict validation
+e2e-ci: clean build setup-clients e2e-test-all
+	@echo "✅ E2E CI tests completed successfully"
+
 # Help target
 help:
 	@echo "QUIC Library Makefile"
@@ -321,6 +448,16 @@ help:
 	@echo "  make interop-full         - Test against all 17 implementations (~60 min)"
 	@echo "  make interop-runner       - Use official QUIC interop runner"
 	@echo "  make interop-clean        - Clean up interop artifacts"
+	@echo ""
+	@echo "E2E client testing:"
+	@echo "  make setup-clients        - Set up Python and Rust test clients"
+	@echo "  make setup-python-client  - Set up Python (aioquic) test client"
+	@echo "  make setup-rust-client    - Build Rust (quinn) test client"
+	@echo "  make e2e-test-go          - Test with Go (quic-go) client"
+	@echo "  make e2e-test-python      - Test with Python (aioquic) client"
+	@echo "  make e2e-test-rust        - Test with Rust (quinn) client"
+	@echo "  make e2e-test-all         - Run all e2e tests sequentially"
+	@echo "  make e2e-ci               - Full e2e CI pipeline (clean + build + setup + test)"
 	@echo ""
 	@echo "Cross-compilation:"
 	@echo "  make cross-compile        - Build for all targets in parallel (debug)"

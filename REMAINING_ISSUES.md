@@ -1,7 +1,7 @@
-# QUIC/TLS Issues - RESOLVED ✅
+# QUIC/TLS Issues - STATUS UPDATE
 
-**Date**: October 30, 2025 (Updated 16:27)
-**Status**: **CRITICAL CRYPTOGRAPHIC ISSUES FIXED** - Initial packet decryption working, connections accepted!
+**Date**: October 30, 2025 (Updated 17:20)
+**Status**: **Initial Crypto WORKING ✅ | Handshake Crypto IMPLEMENTED BUT BUGGY ⚠️**
 
 ---
 
@@ -142,5 +142,76 @@ accepted connection ✅
 
 ---
 
-**Last Updated**: October 30, 2025 16:42
-**Status**: ✅ **CRITICAL CRYPTOGRAPHIC BUGS FIXED - INITIAL HANDSHAKE WORKING WITH MULTIPLE CLIENTS**
+**Last Updated**: October 30, 2025 17:20
+**Status**: ✅ **INITIAL HANDSHAKE WORKING** | ⚠️ **HANDSHAKE PACKET DECRYPTION FAILING**
+
+---
+
+## 🎯 E2E Test Infrastructure Created
+
+### Makefile Targets (lines 300-460)
+Comprehensive e2e testing infrastructure for CI/CD:
+
+```bash
+make setup-clients         # Set up Python and Rust test environments
+make e2e-test-go          # Test with Go (quic-go) client
+make e2e-test-python      # Test with Python (aioquic) client
+make e2e-test-rust        # Test with Rust (quinn) client
+make e2e-test-all         # Run all e2e tests sequentially
+make e2e-ci               # Full CI/CD pipeline
+```
+
+### Test Environments
+- **Python (aioquic)**: `clients/python/` - Virtual env with aioquic installed
+- **Rust (quinn)**: `clients/rust/` - Cargo project ready (requires cargo to build)
+- **Go (quic-go)**: `test-go-client.go` - Already present and working
+
+---
+
+## 🔍 Handshake-Level Crypto Status
+
+### Implementation Complete ✅
+All Handshake-level cryptography has been fully implemented:
+
+1. **Key Derivation** (src/quic/tls/tls13.zig):
+   - `deriveHandshakeTraffic()` - Lines 186-210
+   - `deriveQuicHandshakeKeys()` - Lines 212-228
+   - Uses correct TLS 1.3 labels: "c hs traffic", "s hs traffic"
+
+2. **Connection State** (src/quic/conn.zig):
+   - `hs_client`, `hs_server` - Handshake traffic secrets (lines 396-397)
+   - `hs_rx_keys`, `hs_tx_keys` - Handshake QUIC keys (lines 399-400)
+
+3. **Key Installation** (src/quic/conn.zig):
+   - `deriveHandshakeKeys()` - Lines 2107-2145
+   - Called when ECDHE + CH/SH complete (line 1120)
+
+4. **Packet Processing** (src/quic/endpoint.zig):
+   - Encryption: Lines 2179-2330 using `packet.encodeHandshakeProtected()`
+   - Decryption: Lines 2437-2750 with proper key selection
+
+### Current Issue ⚠️
+Despite full implementation, Handshake packets fail authentication at clients:
+- **Python (aioquic)**: "Payload decryption failed" (repeatedly)
+- **Go (quic-go)**: "Dropped packet: pn=-1, reason=3" (header protection removal fails)
+- **Rust (quinn)**: "failed to authenticate packet"
+
+### Investigation Findings (HANDSHAKE_DECRYPTION_INVESTIGATION.md)
+✅ **Verified as Correct**:
+- Key assignment (tx/rx roles)
+- TLS 1.3 labels
+- Header protection (matches quic-go exactly)
+- AAD construction (matches RFC 9001)
+- Packet coalescence (RFC 9000 §12.2 compliant)
+- Sample offset calculation (RFC 9001 §5.4.2 compliant)
+
+🔍 **Remaining Possibilities**:
+1. Nonce computation - XOR with packet number
+2. Key derivation timing - Keys may not install at the right moment
+3. Packet structure - Subtle header formatting issue
+4. AEAD encryption details
+5. Edge cases in packet number encoding
+
+---
+
+**Last Updated**: October 30, 2025 17:20
