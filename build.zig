@@ -221,11 +221,11 @@ pub fn build(b: *std.Build) void {
     quic_server.root_module.addImport("quic_api", quic_api_mod);
     const install_quic_server = b.addInstallArtifact(quic_server, .{});
 
-    const quic_debug_client = addExe(b, "quic-debug-client", "cmd/quic-debug-client.zig", target, optimize);
+    const quic_debug_client = addExe(b, "quic_debug_client", "cmd/quic-debug-client.zig", target, optimize);
     quic_debug_client.root_module.addImport("quic_api", quic_api_mod);
     const install_quic_debug_client = b.addInstallArtifact(quic_debug_client, .{});
 
-    const quic_debug_dgram_client = addExe(b, "quic-debug-dgram-client", "cmd/quic-debug-dgram-client.zig", target, optimize);
+    const quic_debug_dgram_client = addExe(b, "quic_debug_dgram_client", "cmd/quic-debug-dgram-client.zig", target, optimize);
     quic_debug_dgram_client.root_module.addImport("quic_api", quic_api_mod);
     const install_quic_debug_dgram_client = b.addInstallArtifact(quic_debug_dgram_client, .{});
 
