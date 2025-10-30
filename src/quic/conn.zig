@@ -442,6 +442,7 @@ pub const Connection = struct {
     // --- Missing transport/runtime state used by endpoint/tests ---
     // Packet number spaces: next PN to send in each space (RFC 9000 §12.3: MUST start at 0)
     pn_initial_tx: u64 = 0,
+    initial_debug_alloc: ?[]u8 = null,
     pn_handshake_tx: u64 = 0,
     pn_app_tx: u64 = 0,
     // Version negotiation/bookkeeping
