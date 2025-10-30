@@ -216,7 +216,7 @@ pub const SockAddr = struct {
 /// Fixed-size Connection ID used in tests/internals.
 pub const Cid = struct {
     len: u8 = 0,
-    bytes: [20]u8 = undefined,
+    bytes: [20]u8 = [_]u8{0} ** 20,  // Initialize to zeros to avoid undefined behavior
 };
 
 /// Sender callback used by Endpoint to provide paced sending.

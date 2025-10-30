@@ -1743,14 +1743,14 @@ pub const Endpoint = struct {
                 conn.initial_rx_keys = ik.rx;
                 conn.initial_tx_keys = ik.tx;
                 logger.debug("Derived and cached Initial keys for role={s}", .{if (conn.role == .Server) "Server" else "Client"});
+
+                // Log freshly derived keys immediately
+                logger.debug("Derived RX keys - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{
+                    ik.rx.key[0], ik.rx.key[1], ik.rx.key[2], ik.rx.key[3],
+                    ik.rx.iv[0], ik.rx.iv[1], ik.rx.iv[2], ik.rx.iv[3],
+                });
             }
             const keys = conn.initial_rx_keys.?;
-
-            // Log the keys we derived
-            logger.debug("Derived RX keys - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{
-                keys.key[0], keys.key[1], keys.key[2], keys.key[3],
-                keys.iv[0], keys.iv[1], keys.iv[2], keys.iv[3],
-            });
 
             // Parse long header variable fields up to PN start
             var j: usize = i; // after SCID value
