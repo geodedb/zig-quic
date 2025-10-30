@@ -2117,6 +2117,8 @@ pub const Endpoint = struct {
                     logger.debug("{s}: Prepared Initial response with {} bytes (has_crypto={})", .{ if (conn.role == .Server) "Server" else "Client", pkt_bytes.len, has_crypto });
 
                     // Store the Initial packet for coalescence instead of sending immediately
+                    // Allocate storage for coalescence; free any existing stale buffer first
+                    if (initial_pkt) |prev| self.allocator.free(prev);
                     initial_pkt = self.allocator.alloc(u8, pkt_bytes.len) catch null;
                     if (initial_pkt) |p| {
                         @memcpy(p, pkt_bytes);
@@ -2124,6 +2126,7 @@ pub const Endpoint = struct {
                         conn.onPacketSent(.Initial, conn.pn_initial_tx, pkt_bytes.len, has_crypto);
                         conn.pn_initial_tx +%= 1;
                     }
+                    // pkt_bytes was duped; free source slice (already owned)
                     self.allocator.free(pkt_bytes);
                 }
 
