@@ -21,7 +21,7 @@ pub fn main() !void {
     while (loops < 5000) : (loops += 1) {
         api.poll(ep, 10) catch {};
         if (sent < 5) {
-            const payload = "dg" ++ [_]u8{ @intCast(u8, sent) };
+            var payload: [3]u8 = .{'d','g',@intCast(u8, sent)};
             _ = api.sendDatagram(conn, &payload) catch 0;
             sent += 1;
         }

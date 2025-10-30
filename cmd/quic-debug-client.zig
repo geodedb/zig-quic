@@ -25,12 +25,11 @@ pub fn main() !void {
             _ = api.writeStream(conn, 0, msg) catch 0;
             sent_init = true;
         }
-        const n = api.readStream(conn, 0, buf[0..]);
-        if (n) |rn| if (rn > 0) {
-            std.debug.print("received {d} bytes: ", .{rn});
-            std.debug.print("{s}\n", .{buf[0..rn]});
+        const rn = api.readStream(conn, 0, buf[0..]) catch 0;
+        if (rn > 0) {
+            std.debug.print("received {d} bytes: {s}\n", .{rn, buf[0..rn]});
             break;
-        } else |_| {}
+        }
     }
     std.debug.print("debug-client: done\n", .{});
 }
