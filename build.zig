@@ -278,6 +278,11 @@ pub fn build(b: *std.Build) void {
     cli_step.dependOn(&install_quic_debug_dgram_client.step);
     cli_step.dependOn(&install_qns_endpoint.step);
 
+    // Explicit debug clients build step
+    const debug_clients = b.step("debug-clients", "Build debug stream/datagram clients");
+    debug_clients.dependOn(&install_quic_debug_client.step);
+    debug_clients.dependOn(&install_quic_debug_dgram_client.step);
+
     // Transport layer examples
     const client_transport = addExe(b, "client-transport", "examples/client_transport.zig", target, optimize);
     client_transport.root_module.addImport("quic", transport_public);
