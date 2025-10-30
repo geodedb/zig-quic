@@ -472,28 +472,47 @@ pub fn unprotectInitialAutoSample(
     if (pn_len == 0 or pn_len > 4) return error.InvalidPacketNumberLength;
 
     // Reconstruct HP sample per suite
+    // ciphertext_and_tag parameter starts at PN field beginning (includes PN bytes + encrypted payload + tag)
     var sample16: [16]u8 = undefined;
     switch (suite) {
         .aes_128_gcm => {
-            // RFC 9001: sample starts 4 bytes after the start of packet number field
-            // If PN is N bytes, sample starts at (4-N) bytes into ciphertext
-            const sample_offset = if (pn_len >= 4) 0 else (4 - pn_len);
-            if (sample_offset + 16 > ciphertext_and_tag.len) return error.AuthenticationFailed;
-            @memcpy(sample16[0..], ciphertext_and_tag[sample_offset .. sample_offset + 16]);
+            // RFC 9001 §5.4.2: Sample starts 4 bytes after PN field start, always 16 bytes.
+            // Buffer layout: [PN bytes (pn_len)] [encrypted payload...] [16-byte tag]
+            // Sample position: bytes 4..20 from buffer start
+            if (4 + 16 > ciphertext_and_tag.len) return error.AuthenticationFailed;
+            @memcpy(sample16[0..], ciphertext_and_tag[4 .. 4 + 16]);
+
+            logger.debug("HP Sample extraction: pn_len={}, ct_len={}", .{pn_len, ciphertext_and_tag.len});
+            logger.debug("Sample bytes: ", .{});
+            for (sample16) |b| logger.debug("{X:0>2}", .{b});
+            logger.debug("", .{});
         },
         .chacha20_poly1305 => {
             // For ChaCha20, sample is PN bytes (masked) followed by first (16 - pn_len) bytes of ciphertext
-            if ((16 - pn_len) > ciphertext_and_tag.len) return error.AuthenticationFailed;
+            // Buffer layout: [PN bytes (pn_len)] [encrypted payload...] [16-byte tag]
+            if (pn_len + (16 - pn_len) > ciphertext_and_tag.len) return error.AuthenticationFailed;
             @memcpy(sample16[0..pn_len], pn_bytes);
-            @memcpy(sample16[pn_len..], ciphertext_and_tag[0 .. 16 - pn_len]);
+            @memcpy(sample16[pn_len..], ciphertext_and_tag[pn_len .. pn_len + (16 - pn_len)]);
         },
     }
+
+    // Log masked PN bytes before unprotection
+    logger.debug("Masked PN bytes (len={}): ", .{pn_len});
+    for (pn_bytes) |b| logger.debug("{X:0>2}", .{b});
+    logger.debug("", .{});
+    logger.debug("Masked header_first: {X:0>2}", .{header_first.*});
 
     // Remove header protection in-place (mutates header_first & pn_bytes) using derived sample
     if (builtin.is_test) {
         logger.debug("Before headerUnprotect: pn_bytes set", .{});
     }
     try headerUnprotect(suite, hp_key, &sample16, header_first, pn_bytes);
+
+    // Log unmasked PN bytes after unprotection
+    logger.debug("Unmasked PN bytes (len={}): ", .{pn_len});
+    for (pn_bytes) |b| logger.debug("{X:0>2}", .{b});
+    logger.debug("", .{});
+    logger.debug("Unmasked header_first: {X:0>2}", .{header_first.*});
     if (builtin.is_test) {
         logger.debug("After headerUnprotect: pn_bytes set", .{});
     }
@@ -517,7 +536,10 @@ pub fn unprotectInitialAutoSample(
         logger.debug("expandPacketNumber: truncated={} pn_len={} expected={} -> full={}", .{ pn_trunc, pn_len, expected_pn, full_pn });
     }
 
-    return aeadDecrypt(suite, aead_key, aead_iv, full_pn, aad, ciphertext_and_tag, out_plaintext) catch |err| {
+    // ciphertext_and_tag buffer layout: [PN bytes (pn_len)] [encrypted payload + tag]
+    // Pass only the encrypted payload + tag portion to AEAD decrypt
+    const actual_ciphertext = ciphertext_and_tag[pn_len..];
+    return aeadDecrypt(suite, aead_key, aead_iv, full_pn, aad, actual_ciphertext, out_plaintext) catch |err| {
         logger.debug("AEAD decrypt failed (auto-sample): {} (pn={})", .{ err, full_pn });
         return err;
     };
@@ -532,6 +554,10 @@ pub fn unmaskLongHeaderAndPn(
     header_first: *u8,
     pn_buf: *[4]u8, // contains 4 masked bytes from packet at PN start
 ) !u3 {
+    logger.debug("HP key: ", .{});
+    for (hp_key) |b| logger.debug("{X:0>2}", .{b});
+    logger.debug("", .{});
+
     var out_block: [16]u8 = undefined;
     switch (suite) {
         .aes_128_gcm => {
@@ -550,10 +576,21 @@ pub fn unmaskLongHeaderAndPn(
             @memcpy(out_block[0..16], block[0..16]);
         },
     }
+
+    logger.debug("HP mask (first 5 bytes): ", .{});
+    for (out_block[0..5]) |b| logger.debug("{X:0>2}", .{b});
+    logger.debug("", .{});
+
     const is_long = (header_first.* & 0x80) != 0;
     const hdr_mask: u8 = if (is_long) 0x0f else 0x1f;
+    logger.debug("is_long={}, hdr_mask={X:0>2}, header_first_before={X:0>2}", .{is_long, hdr_mask, header_first.*});
+
     header_first.* ^= (out_block[0] & hdr_mask);
+    logger.debug("header_first_after={X:0>2}", .{header_first.*});
+
     const pn_len: u3 = @as(u3, @intCast((header_first.* & 0x03))) + 1;
+    logger.debug("Decoded pn_len from header: {}", .{pn_len});
+
     // Constant-time-ish: always xor 4 bytes to avoid data-dependent timing; callers will slice by pn_len.
     var i: usize = 0;
     while (i < 4) : (i += 1) pn_buf.*[i] ^= out_block[i + 1];

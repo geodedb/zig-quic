@@ -220,6 +220,7 @@ pub fn build(b: *std.Build) void {
     const quic_server = addExe(b, "quic-server", "cmd/quic-server.zig", target, optimize);
     quic_server.root_module.addImport("quic_api", quic_api_mod);
     const install_quic_server = b.addInstallArtifact(quic_server, .{});
+    b.getInstallStep().dependOn(&install_quic_server.step); // Add to default install
 
     const quic_debug_client = addExe(b, "quic-debug-client", "cmd/quic-debug-client.zig", target, optimize);
     quic_debug_client.root_module.addImport("quic_api", quic_api_mod);

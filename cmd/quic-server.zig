@@ -146,7 +146,7 @@ pub fn main() !void {
 
     // Track active connections to avoid storing them in a separate data structure
     // The connections are managed internally by the endpoint
-    var active_conns = std.ArrayList(*anyopaque).init(alloc);
+    var active_conns = std.ArrayList(*api.QuicConnection).initCapacity(alloc, 0) catch unreachable;
     defer {
         for (active_conns.items) |conn| {
             api.destroy(ep, conn);
@@ -162,7 +162,7 @@ pub fn main() !void {
         // Accept all newly-ready connections
         while (api.tryAccept(ep)) |conn| {
             std.debug.print("accepted connection\n", .{});
-            active_conns.append(conn) catch {};
+            active_conns.append(alloc, conn) catch {};
         }
 
         // Process all active connections

@@ -1819,7 +1819,8 @@ pub const Endpoint = struct {
             var pn_len_try: u3 = 1;
             attempt: while (pn_len_try <= 4) : (pn_len_try += 1) {
                 if (pn_start + pn_len_try > end_total) break;
-                const ct = bytes[pn_start + pn_len_try .. end_total];
+                // Pass full buffer from PN start; crypto function extracts sample from offset 4
+                const ct = bytes[pn_start .. end_total];
                 if (ct.len < 16) break;
                 var pn_try: [4]u8 = pn_masked; // copy masked bytes
                 var header_try = first;
@@ -1858,43 +1859,15 @@ pub const Endpoint = struct {
                 break :attempt;
             }
             if (!success) {
-                logger.debug("Failed to decrypt Initial packet, sending RETRY", .{});
-                conn.onAeadAuthFailure();
-
-                // Send RETRY packet with token per RFC 9000
-                // The server should send a RETRY packet when it cannot decrypt the Initial packet
-                if (conn.role == .Server) {
-                    // Generate a simple retry token (in production this should be cryptographically secure)
-                    var token: [16]u8 = undefined;
-                    var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
-                    prng.random().bytes(&token);
-
-                    // Build RETRY packet: dcid=client's scid, scid=new server cid, odcid=client's dcid
-                    const retry_dcid = scid; // Use client's SCID as DCID in RETRY
-                    const retry_scid = conn.our_scid.bytes[0..conn.our_scid.len]; // Server's CID
-                    const odcid = dcid; // Original DCID from client
-
-                    const retry_pkt = packet.encodeRetry(
-                        self.allocator.*,
-                        version,
-                        retry_dcid,
-                        retry_scid,
-                        odcid,
-                        &token
-                    ) catch {
-                        logger.debug("Failed to encode RETRY packet", .{});
-                        conn.closed = true;
-                        return;
-                    };
-                    defer self.allocator.free(retry_pkt);
-
-                    logger.debug("Sending RETRY packet ({} bytes) with token", .{retry_pkt.len});
-                    _ = self.sendTo(peer, retry_pkt) catch {
-                        logger.debug("Failed to send RETRY packet", .{});
-                    };
-                }
-
-                conn.closed = true;
+                logger.debug("Failed to decrypt Initial packet - dropping silently", .{});
+                // NOTE: RETRY is an optional DoS protection mechanism, not a requirement.
+                // Sending RETRY on every decryption failure creates issues because:
+                // 1. It closes the connection, losing the original_dcid state
+                // 2. The client retries with a new DCID (server's SCID from RETRY)
+                // 3. A new connection is created without the original_dcid
+                // 4. Key derivation uses the wrong DCID
+                // Instead, just drop invalid packets and let the client retry naturally.
+                // The TLS 1.3 handshake provides authentication.
                 return;
             }
             const pn_len = chosen_pn_len;
@@ -2523,7 +2496,8 @@ pub const Endpoint = struct {
 
                 attempt: while (pn_len_try <= 4) : (pn_len_try += 1) {
                     if (pn_start + pn_len_try > end_total) break;
-                    const ct = bytes[pn_start + pn_len_try .. end_total];
+                    // Pass full buffer from PN start; crypto function extracts sample from offset 4
+                    const ct = bytes[pn_start .. end_total];
                     if (ct.len < 16) break;
 
                     var pn_try: [4]u8 = pn_masked; // copy masked bytes
