@@ -2118,12 +2118,9 @@ pub const Endpoint = struct {
 
                     // Store Initial for later coalescence; take ownership
                     // Assign only if not already present; avoid double free pattern
-                    if (initial_pkt == null) {
-                        initial_pkt = pkt_bytes; // ownership until coalesced
-                    } else {
-                        // Already have one; free new and keep existing
-                        self.allocator.free(pkt_bytes);
-                    }
+                    // Always free previous (if any) then take ownership of new bytes
+                    if (initial_pkt) |prev| self.allocator.free(prev);
+                    initial_pkt = pkt_bytes;
                     conn.onPacketSent(.Initial, conn.pn_initial_tx, initial_pkt.?.len, has_crypto);
                     conn.pn_initial_tx +%= 1;
                     // Do NOT free pkt_bytes here; defer will free if never coalesced
