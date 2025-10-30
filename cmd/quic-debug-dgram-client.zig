@@ -11,7 +11,7 @@ pub fn main() !void {
     if (args.next()) |a| server = a;
 
     var cfg = api.QuicConfig{ .alpn = &[_][]const u8{"h3"}, .allow_insecure = true, .enable_datagram = true };
-    var ep = try api.endpointInit(@ptrCast(&alloc), "0.0.0.0:0", &cfg); defer api.endpointDeinit(ep);
+    const ep = try api.endpointInit(@constCast(&alloc), "0.0.0.0:0", &cfg); defer api.endpointDeinit(ep);
     const conn = try api.connect(ep, server, "localhost");
     std.debug.print("debug-dgram-client: connecting to {s}\n", .{server});
 
@@ -21,7 +21,7 @@ pub fn main() !void {
     while (loops < 5000) : (loops += 1) {
         api.poll(ep, 10) catch {};
         if (sent < 5) {
-            var payload: [3]u8 = .{'d','g',@intCast(u8, sent)};
+            var payload: [3]u8 = .{'d','g',@as(u8, @intCast(sent))};
             _ = api.sendDatagram(conn, &payload) catch 0;
             sent += 1;
         }
