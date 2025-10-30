@@ -314,7 +314,9 @@ pub fn protectPacket(
     const pn_len: usize = pn_bytes.len;
     switch (suite) {
         .aes_128_gcm => {
-            const offset: usize = (4 - pn_len);
+            // RFC 9001: sample starts 4 bytes after the start of packet number field
+            // Since out_cipher starts after PN, offset is always 4
+            const offset: usize = 4;
             if (offset + 16 > out_cipher.len) return error.AuthenticationFailed;
             @memcpy(sample16[0..], out_cipher[offset .. offset + 16]);
         },
@@ -436,7 +438,9 @@ pub fn unprotectInitialAutoSample(
     var sample16: [16]u8 = undefined;
     switch (suite) {
         .aes_128_gcm => {
-            const offset = 4 - pn_len; // (4 - pn_len) into ciphertext
+            // RFC 9001: sample starts 4 bytes after the start of packet number field
+            // Since ciphertext_and_tag starts after PN, offset is always 4
+            const offset = 4;
             if (offset + 16 > ciphertext_and_tag.len) return error.AuthenticationFailed;
             @memcpy(sample16[0..], ciphertext_and_tag[offset .. offset + 16]);
         },

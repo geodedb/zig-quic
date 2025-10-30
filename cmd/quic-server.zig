@@ -12,6 +12,8 @@ pub fn main() !void {
     defer args.deinit();
 
     var bind: []const u8 = "127.0.0.1:4433";
+    var host: ?[]const u8 = null;
+    var port: ?[]const u8 = null;
     var alpn: []const u8 = "h3";
     var insecure = false;
     var cert_path: ?[]const u8 = null;
@@ -24,6 +26,10 @@ pub fn main() !void {
     while (args.next()) |a| {
         if (std.mem.eql(u8, a, "--bind")) {
             bind = args.next().?;
+        } else if (std.mem.eql(u8, a, "--host")) {
+            host = args.next().?;
+        } else if (std.mem.eql(u8, a, "--port")) {
+            port = args.next().?;
         } else if (std.mem.eql(u8, a, "--alpn")) {
             alpn = args.next().?;
         } else if (std.mem.eql(u8, a, "--insecure")) {
@@ -46,6 +52,12 @@ pub fn main() !void {
             const v = args.next().?;
             token_expiry_ms = std.fmt.parseInt(u32, v, 10) catch token_expiry_ms;
         }
+    }
+
+    // If --host and --port are provided, construct bind address
+    var bind_buf: [256]u8 = undefined;
+    if (host != null and port != null) {
+        bind = try std.fmt.bufPrint(&bind_buf, "{s}:{s}", .{ host.?, port.? });
     }
 
     var cfg = api.QuicConfig{

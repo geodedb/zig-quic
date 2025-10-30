@@ -1984,16 +1984,20 @@ pub const Endpoint = struct {
 
             // Store Initial packet for coalescence with Handshake
             var initial_pkt: ?[]u8 = null;
-            defer if (initial_pkt) |p| self.allocator.free(p);
+            // NOTE: We must free initial_pkt ONLY if it's not used in coalescence
+
+            // After processing ClientHello, check if TLS has pending handshake data
+            // This is critical for the server to send ServerHello immediately
+            const has_pending_tls = conn.tls.outbox.items.len > 0;
 
             // Only send Initial response when we have ServerHello ready (for server role)
             // or when we have something meaningful to send (for client role)
             const should_send_initial = blk: {
                 if (conn.role == .Server) {
-                    // Server: only send Initial when ServerHello is ready
-                    const result = conn.tls.sh_seen and conn.crypto_tx_off_initial < 200;
-                    logger.debug("Server should_send_initial: sh_seen={}, crypto_tx_off_initial={}, result={}", .{
-                        conn.tls.sh_seen, conn.crypto_tx_off_initial, result
+                    // Server: send Initial if we have pending TLS data (ServerHello) OR if sh_seen is set
+                    const result = (has_pending_tls or conn.tls.sh_seen) and conn.crypto_tx_off_initial < 200;
+                    logger.debug("Server should_send_initial: has_pending_tls={}, sh_seen={}, crypto_tx_off_initial={}, result={}", .{
+                        has_pending_tls, conn.tls.sh_seen, conn.crypto_tx_off_initial, result
                     });
                     break :blk result;
                 } else {
@@ -2023,8 +2027,9 @@ pub const Endpoint = struct {
                 // Server: Include ServerHello in Initial packet if we have it queued and haven't sent it yet
                 var has_crypto = false;
                 if (conn.role == .Server) {
-                    // Include ServerHello in Initial packet if we have it queued and haven't sent it yet
-                    if (conn.tls.sh_seen and conn.crypto_tx_off_initial < 200) {
+                    // Include ServerHello in Initial packet if we have pending TLS data and haven't sent it yet
+                    // Check for pending data in the TLS outbox instead of sh_seen flag
+                    if (conn.tls.outbox.items.len > 0 and conn.crypto_tx_off_initial < 200) {
                         // Pop any ServerHello bytes from TLS engine (should only be ServerHello at this point)
                         var sh_buf: [512]u8 = undefined;
                         const n_sh = conn.tls.popCrypto(sh_buf[0..]);
@@ -2142,8 +2147,7 @@ pub const Endpoint = struct {
                 } else {
                     logger.debug("Initial packet too large for coalesced buffer", .{});
                 }
-                // Free the initial packet since we've copied it
-                self.allocator.free(initial);
+                // Don't free here - the defer statement at line 1987 will handle it
             }
 
             // If we have Handshake keys and have outbound TLS handshake bytes queued, emit them now.
@@ -2161,7 +2165,22 @@ pub const Endpoint = struct {
                 // Pull any pending TLS outbox (EncryptedExtensions, Certificate, CertificateVerify, Finished)
                 // Increase buffer size to handle full handshake flight (can be 2300+ bytes with certificates)
                 var tls_buf: [4096]u8 = undefined;
-                const n_tls = conn.tls.popCrypto(tls_buf[0..]);
+                var n_tls = conn.tls.popCrypto(tls_buf[0..]);
+
+                // If no new TLS data but we have retransmit data and haven't received client's Finished,
+                // resend the saved Handshake CRYPTO data
+                if (n_tls == 0 and conn.crypto_retx_handshake != null and !conn.tls.finished_verified and conn.role == .Server) {
+                    // Client is still sending Initial packets, likely hasn't received our Handshake
+                    // Resend the saved Handshake CRYPTO data
+                    if (conn.crypto_retx_handshake) |retx_data| {
+                        if (retx_data.len <= tls_buf.len) {
+                            @memcpy(tls_buf[0..retx_data.len], retx_data);
+                            n_tls = retx_data.len;
+                            logger.debug("Resending saved Handshake CRYPTO data: {} bytes", .{n_tls});
+                        }
+                    }
+                }
+
                 if (n_tls > 0 and allow_send) {
                     logger.debug("Sending Handshake CRYPTO with {} bytes total", .{n_tls});
 
@@ -2294,6 +2313,11 @@ pub const Endpoint = struct {
                         if (send_result > 0) {
                             logger.debug("Successfully sent coalesced packet: {} bytes", .{send_result});
                         }
+                        // Free initial_pkt now that it's been sent in the coalesced buffer
+                        if (initial_pkt) |p| {
+                            self.allocator.free(p);
+                            initial_pkt = null;
+                        }
                     }
 
                     // Additional handshake packets beyond the first one are sent separately
@@ -2312,6 +2336,8 @@ pub const Endpoint = struct {
                 // Process the remaining bytes as a new packet
                 self.processIncomingDatagram(peer, bytes[end_total..], ecn_bits);
             }
+
+            // initial_pkt is already freed after sending (line 2298) or not allocated
             return;
         }
         // Retry (client handling only). Parse fields, verify integrity using ODCID, then store token; resend Initial with token.
@@ -2404,7 +2430,8 @@ pub const Endpoint = struct {
             logger.debug("Found connection for Handshake packet (role={})", .{conn.role});
             if (ecn_bits) |e| conn.onEcnMark(.Handshake, e);
             if (conn.hs_rx_keys) |rx_keys| {
-                logger.debug("Client has handshake RX keys, proceeding to decrypt", .{});
+                logger.debug("Server has handshake RX keys, proceeding to decrypt", .{});
+                logger.debug("Handshake RX keys: key={any}, iv={any}, hp={any}", .{ rx_keys.key, rx_keys.iv, rx_keys.hp });
                 const header_prefix = bytes[1..j];
                 const pn_start = j;
 
@@ -2433,6 +2460,8 @@ pub const Endpoint = struct {
                     const pt_slice = pt_list.items;
 
                     const expected_pn_hs = if (conn.pn_handshake.have_any) conn.pn_handshake.max + 1 else 0;
+                    // Use unprotectInitialAutoSample for handshake packets with handshake keys
+                    // Note: The function name is misleading - it works for any QUIC packet type
                     const dec = crypto.unprotectInitialAutoSample(
                         .aes_128_gcm,
                         &rx_keys.key,
@@ -2444,7 +2473,8 @@ pub const Endpoint = struct {
                         ct,
                         pt_slice,
                         expected_pn_hs,
-                    ) catch {
+                    ) catch |err| {
+                        logger.debug("Handshake packet decrypt failed: {} (pn_len={})", .{ err, pn_len_try });
                         continue;
                     };
                     _ = dec;
@@ -2482,6 +2512,16 @@ pub const Endpoint = struct {
                 while (kk < pn_len) : (kk += 1) pn_val_be = (pn_val_be << 8) | pn_masked[kk];
                 const pn_full: u64 = conn.expandPnHandshake(pn_val_be, pn_len);
                 conn.trackRecvPnHandshake(pn_full);
+
+                // RFC 9000 §8.1: Successfully authenticating a packet at the Handshake level
+                // proves the client received the server's Initial (which provided handshake keys).
+                // This validates the client's address for anti-amplification purposes.
+                if (conn.role == .Server and !conn.address_validated) {
+                    logger.debug("Server: Validating client address after receiving Handshake packet", .{});
+                    conn.address_validated = true;
+                    conn.bytes_rx_unvalidated = 0;
+                    conn.bytes_tx_unvalidated = 0;
+                }
 
                 // Feed CRYPTO frames and handle ACK frames for PTO reset
                 var off: usize = 0;
@@ -2757,21 +2797,22 @@ pub const Endpoint = struct {
         switch (kind) {
             .PtoInitial => {
                 if (conn.initial_keys_dropped) return; // no more Initial
+                // For sending, use peer's SCID as DCID (what they expect)
                 const dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
                 const scid = conn.our_scid.bytes[0..conn.our_scid.len];
                 if (dcid.len == 0) return;
-                // Derive server Initial TX keys from peer Initial DCID
+                // Derive server Initial TX keys from the original DCID (ODCID)
                 const v2 = conn.version_v2;
-                // Derive using DCID from packet (destination field) per RFC 9001.
-                const derive_dcid = dcid;
+                // Use ODCID for key derivation per RFC 9001 §5.2
+                const derive_dcid = if (conn.original_dcid.len > 0)
+                    conn.original_dcid.bytes[0..conn.original_dcid.len]
+                else if (conn.peer_initial_dcid.len > 0)
+                    conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len]
+                else
+                    dcid; // fallback, should not happen
                 const initial = ks.deriveInitialSecret(v2, derive_dcid);
                 const pair = ks.deriveClientServerInitial(initial);
-                if (conn.peer_initial_dcid.len == 0) {
-                    // Record original DCID if not already captured.
-                    conn.peer_initial_dcid.len = @intCast(@min(derive_dcid.len, conn.peer_initial_dcid.bytes.len));
-                    if (conn.peer_initial_dcid.len > 0) @memcpy(conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len], derive_dcid[0..conn.peer_initial_dcid.len]);
-                }
-                logger.debug("server: deriving Initial keys with dcid=", .{});
+                logger.debug("server PTO: deriving Initial keys with odcid=", .{});
                 for (derive_dcid) |b| logger.debug("{X:0>2}", .{b});
                 logger.debug(" len={}", .{derive_dcid.len});
                 const tx_keys: packet.InitialKeys = if (v2) blk: {
