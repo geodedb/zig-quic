@@ -79,25 +79,25 @@ pub fn main() !void {
     std.debug.print("QUIC server listening on {s}\n", .{bind_addr});
     std.debug.print("Entering poll loop...\n", .{});
 
-    // Main server loop
+    // Main server loop (non-blocking accept + echo)
     while (true) {
-        // Poll for incoming packets with 100ms timeout
-        try endpoint.poll(100);
-
-        // Process any timer events
-        endpoint.processTimers() catch |err| {
-            std.debug.print("Timer processing error: {}\n", .{err});
-        };
-
-        // Accept new connections
-        while (endpoint.accept()) |conn| {
+        endpoint.poll(20) catch {};
+        endpoint.processTimers() catch |err| std.debug.print("Timer processing error: {}\n", .{err});
+        while (endpoint.tryAccept()) |conn| {
             std.debug.print("Accepted new QUIC connection!\n", .{});
-            // Connection will be handled by the endpoint
-        } else |_| {
-            // No more connections to accept
+            var buf: [1024]u8 = undefined;
+            var opened = false;
+            var loops: usize = 0;
+            while (loops < 2000) : (loops += 1) {
+                endpoint.poll(0) catch {};
+                const n = conn.readStream(0, buf[0..]) catch 0;
+                if (n > 0) {
+                    if (!opened) { opened = true; std.debug.print("stream0 opened rx {d}\n", .{n}); }
+                    _ = conn.writeStream(0, buf[0..n]) catch 0;
+                }
+                if (conn.closed) break;
+            }
         }
-
-        // Give some CPU time to other processes
-        std.time.sleep(1_000_000); // 1ms
+        std.time.sleep(500_000); // 0.5ms throttle
     }
 }
