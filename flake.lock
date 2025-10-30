@@ -8,11 +8,11 @@
         "unstable": "unstable"
       },
       "locked": {
-        "lastModified": 1758156050,
-        "narHash": "sha256-9UPqh4vzZZJP48cD4Tt2jvHffH6SLY84ooTR/HrtCLc=",
+        "lastModified": 1759612154,
+        "narHash": "sha256-Vo5PkPyiLEmFZ8EjEeGcBdZrhBVkoUM2bZfJviYoWwM=",
         "owner": "spyderorg",
         "repo": "dev-env",
-        "rev": "b6eed0752c910e9e9a897fe7db694947a6ddd6fa",
+        "rev": "96b6489f554c31899d13345fbc2a63bd39f7909b",
         "type": "github"
       },
       "original": {
@@ -115,11 +115,11 @@
     },
     "nixpkgs_2": {
       "locked": {
-        "lastModified": 1758216857,
-        "narHash": "sha256-h1BW2y7CY4LI9w61R02wPaOYfmYo82FyRqHIwukQ6SY=",
+        "lastModified": 1761597516,
+        "narHash": "sha256-wxX7u6D2rpkJLWkZ2E932SIvDJW8+ON/0Yy8+a5vsDU=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "d2ed99647a4b195f0bcc440f76edfa10aeb3b743",
+        "rev": "daf6dc47aa4b44791372d6139ab7b25269184d55",
         "type": "github"
       },
       "original": {

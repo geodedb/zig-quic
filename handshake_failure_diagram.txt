@@ -1,0 +1,129 @@
+QUIC Handshake Failure - Packet Flow Diagram
+==============================================
+
+Time: 19:32:13.000
+Client                                                      Server
+  |                                                            |
+  |  Initial[0]: DCID=ed85...6ca6, SCID=(empty)              |
+  |  Frame: CRYPTO[0..1232] (ClientHello part 1)             |
+  |------------------------------------------------------------>|
+  |                                                            |
+  |  Initial[1]: DCID=ed85...6ca6, SCID=(empty)              |
+  |  Frame: CRYPTO[1232..1490] (ClientHello part 2)          |
+  |------------------------------------------------------------>|
+  |                                                            |
+  |                                     [Process ClientHello] |
+  |                                     [Derive HS keys]      |
+  |                                     [Queue ServerHello]   |
+  |                                                            |
+Time: 19:32:13.024 (RTT ~24ms)
+  |                                                            |
+  |         Coalesced Datagram (1142 bytes)                   |
+  |  +------------------------------------------------------+  |
+  |  | Packet 1: Initial[1] (784 bytes)                   |  |
+  |  |   DCID=(empty), SCID=8bd1...540c                   |  |
+  |  |   Frame: ACK[0-1]                                  |  |
+  |  |   Status: ACCEPTED by client                       |  |
+  |<-+------------------------------------------------------+--|
+  |  |                                                     |  |
+  |  | Packet 2: Handshake[?] (358 bytes)                 |  |
+  |  |   DCID=8bd1...540c  <- WRONG! Should be (empty)    |  |
+  |  |   SCID=8bd1...540c                                 |  |
+  |  |   Frame: CRYPTO[0..?] (ServerHello + more)         |  |
+  |  |   Status: REJECTED - DCID mismatch                 |  |
+  |<-+------------------------------------------------------+--|
+  |  +------------------------------------------------------+  |
+  |                                                            |
+  |  [ERROR: coalesced packet has different DCID]            |
+  |  [Expected: (empty), Got: 8bd1...540c]                   |
+  |                                                            |
+Time: 19:32:14.000
+  |                                                            |
+  |  Initial[2]: DCID=8bd1...540c, SCID=(empty)              |
+  |  Frame: PING (keepalive - hoping for retransmit)         |
+  |------------------------------------------------------------>|
+  |                                                            |
+  |         Coalesced Datagram (1452 bytes)                   |
+  |  [Same issue: Handshake DCID still wrong]                |
+  |<------------------------------------------------------------|
+  |  [ERROR: coalesced packet has different DCID]            |
+  |                                                            |
+  ... [Pattern repeats 6 more times] ...
+  |                                                            |
+Time: 19:32:18.000
+  |                                                            |
+  |  [TIMEOUT: context deadline exceeded]                    |
+  |  [Connection closed]                                      |
+  X                                                            |
+
+
+Connection ID Analysis
+======================
+
+Client's View:
+--------------
+Initial Packet:
+  My DCID: ed85df6cdef9d482c56b9e7f2ac16ca6 (16 bytes)
+  My SCID: (empty) (0 bytes)
+
+After receiving server's Initial:
+  Switch DCID to: 8bd1f6093ae7540c (8 bytes)  <- Server's SCID
+
+Expectation for coalesced packets:
+  All packets in same datagram must have SAME DCID
+  Initial packet has DCID=(empty), so Handshake must also have DCID=(empty)
+
+Server's View:
+--------------
+Responding to client:
+  My SCID: 8bd1f6093ae7540c (8 bytes)
+  My DCID for Initial: (empty) (0 bytes) - CORRECT
+
+  My DCID for Handshake: 8bd1f6093ae7540c (8 bytes) - WRONG!
+    Should be: (empty) (0 bytes)
+
+
+RFC 9000 Violation
+==================
+
+Section 12.2 - Coalescing Packets:
+"Senders MUST NOT coalesce QUIC packets with different connection IDs
+ into a single UDP datagram."
+
+Server's coalesced datagram contains:
+  1. Initial packet:    DCID=(empty)
+  2. Handshake packet:  DCID=8bd1f6093ae7540c
+
+These are DIFFERENT! Violation of RFC 9000.
+
+
+Fix Location
+============
+
+File: /home/benji/src/spyder/quic/src/quic/endpoint.zig
+Line: 2218
+
+Current:
+    const hs_dcid = if (conn.peer_initial_scid.len > 0)
+        conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len]
+    else
+        conn.our_scid.bytes[0..conn.our_scid.len];  // <- BUG
+
+Fixed:
+    const hs_dcid = if (conn.peer_initial_scid.len > 0)
+        conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len]
+    else
+        &[_]u8{};  // <- CORRECT: empty slice
+
+
+Impact
+======
+
+Breaks interoperability with:
+  - quic-go (Golang) - CONFIRMED BROKEN
+  - quinn (Rust) - Likely broken
+  - quiche (Rust) - Likely broken
+  - Any strict RFC 9000 implementation
+
+Severity: CRITICAL
+Priority: HIGH

@@ -44,6 +44,7 @@
             flake8
             aioquic
             cryptography
+            python-lsp-server
           ]);
 
           zigPkg = dev-env.packages.${system}.zigPackages;
@@ -72,7 +73,59 @@
           };
           devShell = pkgs.mkShell {
             shellHook = ''
-              export PYTHONPATH="${pythonWithPackages}/lib/python3.12/site-packages:$PYTHONPATH"
+              # --- Python path --------------------------------------------------------------
+              # Reset PYTHONPATH safely, then prepend the env's site-packages if it exists.
+              export PYTHONPATH=''${PYTHONPATH:-""}
+              if [ -d "${pythonWithPackages}/lib/python3.12/site-packages" ]; then
+                export PYTHONPATH="${pythonWithPackages}/lib/python3.12/site-packages:$PYTHONPATH"
+              fi
+              
+              # --- GitHub CLI auth ----------------------------------------------------------
+              # If not authenticated, try token-based login from ~/.github_token
+              ${pkgs.gh}/bin/gh auth status >/dev/null 2>&1 || \
+                ${pkgs.gh}/bin/gh auth login --with-token < "$HOME/.github_token" 2>/dev/null || \
+                warn "GitHub CLI not authenticated, some features may not work"
+              
+              # Export a real token value (command substitution was missing before)
+              export GITHUB_TOKEN="$(${pkgs.gh}/bin/gh auth token 2>/dev/null || true)"
+              
+              # --- Vault login & secret retrieval ------------------------------------------
+              export VAULT_ADDR="https://pki.devnw.com"
+              
+              # Use the pinned vault binary consistently
+              if ! ${pkgs.vault}/bin/vault token lookup -no-print >/dev/null 2>&1; then
+                # Use the GH token we just exported
+                ${pkgs.vault}/bin/vault login -no-print -method=github token="''${GITHUB_TOKEN}" \
+                  >/dev/null 2>&1 || warn "Vault login failed"
+              fi
+              
+              # Pull secrets (command substitutions were previously double-$-escaped)
+              OPENAI_API_KEY="$(${pkgs.vault}/bin/vault kv get -mount=secret -field=token /dev/openai/actions-primary 2>/dev/null || echo "")"
+              export OPENAI_API_KEY
+              
+              CACHIX_AUTH_TOKEN="$(${pkgs.vault}/bin/vault kv get -mount=secret -field=token /cicd/gh/cachix 2>/dev/null || echo "")"
+              export CACHIX_AUTH_TOKEN
+              
+              # --- Nix configuration & Cachix ----------------------------------------------
+              # Use ''${VAR} to avoid Nix interpolation while still expanding in bash.
+              NIX_CONFIG="experimental-features = nix-command flakes
+              access-tokens = github.com=''${GITHUB_TOKEN}
+              trusted-users = root $(whoami)"
+              export NIX_CONFIG
+              
+              # Best-effort: add current user as trusted in /etc/nix/nix.conf (may require sudo)
+              if ! grep -q "trusted-users.*$(whoami)" /etc/nix/nix.conf 2>/dev/null; then
+                warn "Adding $(whoami) as trusted user for Nix..."
+                echo "trusted-users = root $(whoami)" | sudo tee -a /etc/nix/nix.conf >/dev/null || true
+                sudo pkill nix-daemon 2>/dev/null || true
+                sleep 2
+              fi
+              
+              # Cachix auth & binary cache (use pinned cachix)
+              if [ -n "''${CACHIX_AUTH_TOKEN-}" ]; then
+                ${pkgs.cachix}/bin/cachix authtoken "''${CACHIX_AUTH_TOKEN}" >/dev/null 2>&1 || true
+                ${pkgs.cachix}/bin/cachix use spyder >/dev/null 2>&1 || warn "Could not configure Cachix binary cache"
+              fi
             '';
             env = { };
             packages =
@@ -91,6 +144,7 @@
                   rustc
                   cargo
                   rustfmt
+                  rust-analyzer
                   clippy
                   boringssl
 

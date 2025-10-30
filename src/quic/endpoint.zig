@@ -2037,12 +2037,32 @@ pub const Endpoint = struct {
                     _ = ack.write(w) catch 0;
                 }
 
-                // QUIC RFC 9001: ServerHello MUST be sent in Handshake packet (with Handshake keys),
-                // NOT in Initial packet. Initial packets only contain ACK frames from server.
-                // The full handshake flight (ServerHello + EE + Cert + Finished) is sent later
-                // in Handshake packet(s) after deriving Handshake keys.
-                // No CRYPTO frames in server's Initial packet - only ACK
-                const has_crypto = false;
+                // RFC 9001 + TLS 1.3: ServerHello MUST be sent in Initial packet (with Initial keys)
+                // Then EncryptedExtensions + Certificate + CertificateVerify + Finished are sent
+                // in Handshake packets (with Handshake keys derived AFTER client processes ServerHello)
+                //
+                // Add CRYPTO frame with ServerHello if we have pending TLS data
+                // IMPORTANT: Only send Initial CRYPTO if Handshake keys are NOT yet available
+                // Once Handshake keys exist, all remaining TLS data goes to Handshake packets
+                var has_crypto = false;
+                var crypto_bytes_sent: usize = 0;
+                if (has_pending_tls and conn.role == .Server and conn.crypto_tx_off_initial < conn.tls.outbox.items.len and conn.hs_tx_keys == null) {
+                    // Get unsent Initial CRYPTO data from TLS outbox
+                    // Only send data that was queued BEFORE Handshake keys were derived
+                    const unsent_start = conn.crypto_tx_off_initial;
+                    const unsent_end = conn.tls.outbox.items.len;
+                    const unsent_data = conn.tls.outbox.items[unsent_start..unsent_end];
+
+                    if (unsent_data.len > 0) {
+                        logger.debug("Server: Adding Initial CRYPTO frame with {} bytes at offset {} (Handshake keys not yet available)", .{unsent_data.len, conn.crypto_tx_off_initial});
+                        const crypto_frame = frame.Frame{ .crypto = .{ .offset = conn.crypto_tx_off_initial, .data = unsent_data } };
+                        _ = crypto_frame.write(w) catch 0;
+                        has_crypto = true;
+                        crypto_bytes_sent = unsent_data.len;
+                    }
+                } else if (conn.hs_tx_keys != null and has_pending_tls) {
+                    logger.debug("Server: Skipping Initial CRYPTO - Handshake keys available, will send in Handshake packet", .{});
+                }
 
                 // Always send Initial packet if we have frames to send
                 // Use oriented Initial keys based on role
@@ -2122,6 +2142,11 @@ pub const Endpoint = struct {
                     conn.initial_debug_alloc = initial_pkt;
                     conn.onPacketSent(.Initial, conn.pn_initial_tx, initial_pkt.?.len, has_crypto);
                     conn.pn_initial_tx +%= 1;
+                    // Update CRYPTO offset after successful packet creation
+                    if (crypto_bytes_sent > 0) {
+                        conn.crypto_tx_off_initial += crypto_bytes_sent;
+                        logger.debug("Server: Updated Initial CRYPTO offset to {}", .{conn.crypto_tx_off_initial});
+                    }
                     // Do NOT free pkt_bytes here; defer will free if never coalesced
 
                 }
@@ -2130,26 +2155,27 @@ pub const Endpoint = struct {
                 // Since this branch is taken when we saw any frames, send a synthetic ACK processing if needed is skipped.
             }
             // Check if we can send Handshake packet (requires Handshake keys)
-            logger.debug("Checking for Handshake keys: hs_tx_keys is {s}", .{if (conn.hs_tx_keys != null) "SET" else "NULL"});
+            logger.debug("CHECKPOINT: Reached coalesc logic, initial_pkt is {s}, hs_tx_keys is {s}", .{
+                if (initial_pkt != null) "SET" else "NULL",
+                if (conn.hs_tx_keys != null) "SET" else "NULL"
+            });
 
             // RFC 9000 Section 12.2: Initial and Handshake packets MUST be coalesced
             // Use a fixed buffer for coalescing packets
             var coalesced_buffer: [4096]u8 = undefined;
             var coalesced_len: usize = 0;
 
-            // Add Initial packet to coalesced buffer if we have one
+            // TEMPORARY FIX: Send Initial packet separately instead of coalescing
+            // This avoids Length field mismatch issues when Handshake packet is too large
             if (initial_pkt) |initial| {
-                if (initial.len <= coalesced_buffer.len) {
-                    @memcpy(coalesced_buffer[0..initial.len], initial);
-                    coalesced_len = initial.len;
-                    logger.debug("Added Initial packet to coalesced buffer: {} bytes", .{initial.len});
-                } else {
-                    logger.debug("Initial packet too large for coalesced buffer", .{});
-                }
-                // Free Initial after copying / or failed coalesce; clear debug tracker
+                _ = self.sendTo(peer, initial) catch {};
+                logger.debug("TEMP FIX: Sent Initial packet separately ({} bytes) - not coalescing", .{initial.len});
+                // Free Initial after sending; clear debug tracker
                 self.allocator.free(initial);
                 initial_pkt = null;
                 conn.initial_debug_alloc = null;
+                // DON'T add to coalesced buffer - send separately
+                coalesced_len = 0;
             }
 
             // If we have Handshake keys and have outbound TLS handshake bytes queued, emit them now.
@@ -2212,16 +2238,17 @@ pub const Endpoint = struct {
 
                     // For Handshake packets, determine correct DCID:
                     // - If client sent non-zero SCID: use peer_initial_scid (RFC 9000 §7.2)
-                    // - If client sent zero-length SCID: use our own SCID (what client used as DCID)
+                    // - If client sent zero-length SCID: MUST use empty DCID to avoid RFC 9000 §12.2 violation
+                    //   (coalesced packets MUST have same DCID, so if Initial had empty DCID, Handshake must too)
                     const hs_dcid = if (conn.peer_initial_scid.len > 0)
                         conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len]
                     else
-                        conn.our_scid.bytes[0..conn.our_scid.len];
+                        &[_]u8{}; // Empty slice - RFC 9000 §12.2: coalesced packets must have same DCID
 
                     logger.debug("Server: Handshake DCID len={} (peer_scid_len={}, using {s})", .{
                         hs_dcid.len,
                         conn.peer_initial_scid.len,
-                        if (conn.peer_initial_scid.len > 0) "peer_initial_scid" else "our_scid"
+                        if (conn.peer_initial_scid.len > 0) "peer_initial_scid" else "empty_dcid"
                     });
 
                     // Fragment CRYPTO data into chunks that fit within MTU
@@ -2259,6 +2286,18 @@ pub const Endpoint = struct {
                     }
 
                     logger.debug("Found {} TLS message boundaries in {} bytes", .{boundary_count, n_tls});
+
+                    // Store additional Handshake packets to send separately
+                    var additional_hs_packets = std.ArrayList([]u8).initCapacity(self.allocator.*, 0) catch {
+                        logger.debug("Failed to allocate ArrayList for additional Handshake packets", .{});
+                        return;
+                    };
+                    defer {
+                        for (additional_hs_packets.items) |pkt| {
+                            self.allocator.free(pkt);
+                        }
+                        additional_hs_packets.deinit(self.allocator.*);
+                    }
 
                     while (offset < n_tls) {
                         // Find next TLS message boundary that would keep chunk under MAX_CRYPTO_CHUNK
@@ -2304,23 +2343,43 @@ pub const Endpoint = struct {
                         };
 
                         if (pkt_hs) |bytes_out_hs| {
-                            logger.debug("Handshake packet {} encoded: {} bytes (CRYPTO {} bytes at offset {})", .{pkt_count, bytes_out_hs.len, chunk_len, crypto_stream_offset});
+                            const pkt_len = bytes_out_hs.len;  // Save length before potentially freeing
+                            logger.debug("Handshake packet {} encoded: {} bytes (CRYPTO {} bytes at offset {})", .{pkt_count, pkt_len, chunk_len, crypto_stream_offset});
 
                             // Only append first handshake packet to coalesced buffer (RFC 9000 §12.2)
-                            // Additional handshake packets can be sent separately
+                            // Store additional handshake packets to send separately after coalescing
                             if (pkt_count == 0 and coalesced_len > 0) {
-                                if (coalesced_len + bytes_out_hs.len <= coalesced_buffer.len) {
-                                    @memcpy(coalesced_buffer[coalesced_len..coalesced_len + bytes_out_hs.len], bytes_out_hs);
-                                    coalesced_len += bytes_out_hs.len;
-                                    logger.debug("Added first Handshake packet to coalesced buffer: {} bytes", .{bytes_out_hs.len});
+                                if (coalesced_len + pkt_len <= coalesced_buffer.len) {
+                                    @memcpy(coalesced_buffer[coalesced_len..coalesced_len + pkt_len], bytes_out_hs);
+                                    coalesced_len += pkt_len;
+                                    logger.debug("Added first Handshake packet to coalesced buffer: {} bytes", .{pkt_len});
+                                    // Free immediately since we copied it
+                                    self.allocator.free(bytes_out_hs);
                                 } else {
                                     logger.debug("Failed to append Handshake packet to coalesced buffer - would exceed buffer", .{});
+                                    // Store for separate sending
+                                    additional_hs_packets.append(self.allocator.*, bytes_out_hs) catch {
+                                        self.allocator.free(bytes_out_hs);
+                                    };
                                 }
+                            } else if (pkt_count > 0) {
+                                // Store subsequent packets for separate sending
+                                additional_hs_packets.append(self.allocator.*, bytes_out_hs) catch {
+                                    self.allocator.free(bytes_out_hs);
+                                };
+                            } else {
+                                // Not coalescing, send immediately
+                                const send_result = self.sendTo(conn.peer, bytes_out_hs) catch |err| blk: {
+                                    logger.debug("ERROR: Failed to send Handshake packet: {}", .{err});
+                                    break :blk 0;
+                                };
+                                if (send_result > 0) {
+                                    logger.debug("Sent Handshake packet {}: {} bytes", .{pkt_count, send_result});
+                                }
+                                self.allocator.free(bytes_out_hs);
                             }
 
-                            // Always free the allocated packet buffer since we've copied it
-                            self.allocator.free(bytes_out_hs);
-                            conn.onPacketSent(.Handshake, conn.pn_handshake_tx, bytes_out_hs.len, true);
+                            conn.onPacketSent(.Handshake, conn.pn_handshake_tx, pkt_len, true);
                             conn.pn_handshake_tx +%= 1;
                         }
 
@@ -2372,7 +2431,19 @@ pub const Endpoint = struct {
                         }
                     }
 
-                    // Additional handshake packets beyond the first one are sent separately
+                    // Send additional Handshake packets separately
+                    if (additional_hs_packets.items.len > 0) {
+                        logger.debug("Sending {} additional Handshake packets separately", .{additional_hs_packets.items.len});
+                        for (additional_hs_packets.items, 0..) |pkt, idx| {
+                            const send_result = self.sendTo(conn.peer, pkt) catch |err| blk: {
+                                logger.debug("ERROR: Failed to send additional Handshake packet {}: {}", .{idx, err});
+                                break :blk 0;
+                            };
+                            if (send_result > 0) {
+                                logger.debug("Sent additional Handshake packet {}: {} bytes", .{idx, send_result});
+                            }
+                        }
+                    }
                     // Per RFC 9000 §12.2, only the first handshake packet needs to be coalesced
                     // with the Initial packet
                 }
@@ -2637,57 +2708,129 @@ pub const Endpoint = struct {
                 }
                 // Send any pending Handshake CRYPTO (e.g. client Finished) and then attempt post-flush 1-RTT key derivation.
                 if (conn.hs_tx_keys) |tx_hs| {
-                    var outbox: [1024]u8 = undefined;
+                    // Increase buffer to 4096 to support larger TLS messages
+                    var outbox: [4096]u8 = undefined;
                     const n = conn.tls.popCrypto(outbox[0..]);
                     if (n > 0) {
-                        var frames_buf = std.ArrayList(u8){};
-                        defer frames_buf.deinit(self.allocator.*);
-                        const w = frames_buf.writer(self.allocator.*);
+                        logger.debug("OLD CODE PATH: Preparing to send {} bytes of Handshake CRYPTO data", .{n});
 
-                        // Include ACK for Initial packets in our first Handshake packet
-                        // This is required by RFC 9000 - the server must ACK Initial packets
-                        const now_ns_ack_initial: u64 = @intCast(std.time.nanoTimestamp());
-                        const ack_desc_initial = conn.buildAckInitial();
-                        const ack_ecn_initial = conn.getAckEcn(.Initial);
-                        const ack_delay_initial = conn.getAckDelayEncoded(.Initial, now_ns_ack_initial);
-                        const ack_initial = frame.Frame{ .ack = .{
-                            .largest = ack_desc_initial.largest,
-                            .ack_delay = ack_delay_initial,
-                            .first_range = ack_desc_initial.first_range,
-                            .ranges = ack_desc_initial.ranges,
-                            .ecn = ack_ecn_initial,
-                        } };
-                        _ = ack_initial.write(w) catch 0;
+                        // ArrayList to store additional Handshake packets that don't fit in coalesced datagram
+                        var additional_hs_packets = std.ArrayList([]u8).initCapacity(self.allocator.*, 0) catch {
+                            logger.debug("Failed to allocate ArrayList for additional Handshake packets", .{});
+                            return;
+                        };
+                        defer {
+                            for (additional_hs_packets.items) |pkt| {
+                                self.allocator.free(pkt);
+                            }
+                            additional_hs_packets.deinit(self.allocator.*);
+                        }
 
+                        // Use the client's source connection ID (peer_initial_scid)
+                        // If client sent zero-length SCID, use empty DCID (proper quic-go compatibility)
+                        const hs_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
+
+                        // Fragment the CRYPTO data across multiple packets if needed
+                        // Max CRYPTO frame size per packet: ~1100 bytes (1200 MTU - headers - overhead)
+                        const max_crypto_per_packet: usize = 1100;
+                        var offset: usize = 0;
+                        var pkt_count: usize = 0;
                         const base_off_hs = conn.crypto_tx_off_handshake;
-                        _ = (frame.Frame{ .crypto = .{ .offset = base_off_hs, .data = outbox[0..n] } }).write(w) catch 0;
-                        // Save HS retransmit buffer for this slice
+
+                        while (offset < n) {
+                            const chunk_size = @min(max_crypto_per_packet, n - offset);
+                            const chunk = outbox[offset..offset + chunk_size];
+
+                            var frames_buf = std.ArrayList(u8){};
+                            defer frames_buf.deinit(self.allocator.*);
+                            const w = frames_buf.writer(self.allocator.*);
+
+                            // Include ACK for Initial packets in our first Handshake packet only
+                            if (pkt_count == 0) {
+                                const now_ns_ack_initial: u64 = @intCast(std.time.nanoTimestamp());
+                                const ack_desc_initial = conn.buildAckInitial();
+                                const ack_ecn_initial = conn.getAckEcn(.Initial);
+                                const ack_delay_initial = conn.getAckDelayEncoded(.Initial, now_ns_ack_initial);
+                                const ack_initial = frame.Frame{ .ack = .{
+                                    .largest = ack_desc_initial.largest,
+                                    .ack_delay = ack_delay_initial,
+                                    .first_range = ack_desc_initial.first_range,
+                                    .ranges = ack_desc_initial.ranges,
+                                    .ecn = ack_ecn_initial,
+                                } };
+                                _ = ack_initial.write(w) catch 0;
+                            }
+
+                            // Add CRYPTO frame with current chunk
+                            const crypto_offset = base_off_hs + offset;
+                            _ = (frame.Frame{ .crypto = .{ .offset = crypto_offset, .data = chunk } }).write(w) catch 0;
+
+                            logger.debug("OLD CODE PATH: Creating Handshake packet {} with CRYPTO offset={} len={}", .{pkt_count, crypto_offset, chunk_size});
+
+                            const pkt = packet.encodeHandshakeProtected(
+                                self.allocator.*,
+                                version,
+                                hs_dcid,
+                                conn.our_scid.bytes[0..conn.our_scid.len],
+                                @as(u32, @truncate(conn.pn_handshake_tx)),
+                                2,
+                                frames_buf.items,
+                                tx_hs
+                            ) catch null;
+
+                            if (pkt) |bytes_out_hs| {
+                                const pkt_len = bytes_out_hs.len;
+                                logger.debug("OLD CODE PATH: Handshake packet {} encoded, size={} bytes", .{pkt_count, pkt_len});
+
+                                // Store all packets to send after the loop
+                                // First packet sent directly, additional packets stored
+                                if (pkt_count == 0) {
+                                    // Send first packet immediately
+                                    _ = self.sendTo(peer, bytes_out_hs) catch {};
+                                    logger.debug("OLD CODE PATH: Sent first Handshake packet {} directly", .{pkt_count});
+                                    self.allocator.free(bytes_out_hs);
+                                } else {
+                                    // Store additional packets for later sending
+                                    additional_hs_packets.append(self.allocator.*, bytes_out_hs) catch {
+                                        logger.debug("OLD CODE PATH: Failed to store Handshake packet {}, freeing", .{pkt_count});
+                                        self.allocator.free(bytes_out_hs);
+                                    };
+                                }
+
+                                conn.onPacketSent(.Handshake, conn.pn_handshake_tx, pkt_len, true);
+                                conn.pn_handshake_tx +%= 1;
+                            }
+
+                            offset += chunk_size;
+                            pkt_count += 1;
+                        }
+
+                        // Save HS retransmit buffer for the entire CRYPTO data
                         if (conn.crypto_retx_handshake) |b| self.allocator.free(b);
                         var owned_hs = self.allocator.alloc(u8, n) catch {
                             conn.crypto_tx_off_handshake += n;
-                            return; // abort sending HS CRYPTO chunk if we cannot save retransmit buffer
+                            logger.debug("OLD CODE PATH: Failed to allocate retransmit buffer", .{});
+                            return;
                         };
                         @memcpy(owned_hs[0..n], outbox[0..n]);
                         conn.crypto_retx_handshake = owned_hs;
                         conn.crypto_retx_handshake_off = base_off_hs;
                         conn.crypto_tx_off_handshake += n;
-                        // Use the client's source connection ID (peer_initial_scid)
-                        // If client sent zero-length SCID, use empty DCID (proper quic-go compatibility)
-                        const hs_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
-                        // DIAGNOSTIC: Log the version being used for Handshake packet
-                        logger.debug("DEBUG: Encoding Handshake packet with version=0x{X:0>8} (decimal: {})", .{version, version});
-                        const pkt = packet.encodeHandshakeProtected(self.allocator.*, version, hs_dcid, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_handshake_tx)), 2, frames_buf.items, tx_hs) catch null;
-                        if (pkt) |bytes_out| {
-                            defer self.allocator.free(bytes_out);
-                            logger.debug("DEBUG endpoint: Sending Handshake packet, first 10 bytes: ", .{});
-                            for (bytes_out[0..@min(10, bytes_out.len)]) |b| {
-                                logger.debug("{X:0>2} ", .{b});
+
+                        // Send additional Handshake packets that didn't fit in coalesced datagram
+                        if (additional_hs_packets.items.len > 0) {
+                            logger.debug("OLD CODE PATH: Sending {} additional Handshake packets separately", .{additional_hs_packets.items.len});
+                            for (additional_hs_packets.items, 0..) |pkt, idx| {
+                                const send_result = self.sendTo(conn.peer, pkt) catch |err| blk: {
+                                    logger.debug("OLD CODE PATH: ERROR: Failed to send additional Handshake packet {}: {}", .{idx, err});
+                                    break :blk 0;
+                                };
+                                if (send_result > 0) {
+                                    logger.debug("OLD CODE PATH: Sent additional Handshake packet {} ({} bytes)", .{idx, send_result});
+                                }
                             }
-                            logger.debug("", .{});
-                            _ = self.sendTo(peer, bytes_out) catch {};
-                            conn.onPacketSent(.Handshake, conn.pn_handshake_tx, bytes_out.len, true);
-                            conn.pn_handshake_tx +%= 1;
                         }
+
                         // With TLS outbox drained, attempt delayed 1-RTT key derivation.
                         conn.maybeDeriveAppKeysAfterFlush();
                     }

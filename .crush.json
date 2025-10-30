@@ -4,11 +4,55 @@
     "go": {
       "command": "gopls",
       "env": {
-        "GOTOOLCHAIN": "go1.24.5"
+        "GOTOOLCHAIN": "go1.25.0"
       }
     },
-		"zig": {
-			"command": "zls"
-		}
+    "zig": {
+      "command": "zls"
+    },
+    "python": {
+      "command": "python-lsp-server",
+    },
+    "rust": {
+      "command": "rust-analyzer"
+    }
+  },
+  "providers": {
+    "ollama": {
+      "name": "Ollama",
+      "type": "openai",
+      "base_url": "http://192.168.0.178:11434/v1",
+      "headers": {
+        "Authorization": "Bearer ollama"
+      },
+      "models": [
+        {
+          "name": "GPT-OSS 120B",
+          "id": "gpt-oss:120b",
+          "context_window": 128000,
+          "default_max_tokens": 2000
+        }
+      ]
+    },
+    "github-mcp": {
+      "name": "GitHub MCP Server",
+      "type": "mcp",
+      "base_url": "https://api.github.com",
+      "models": [
+        {
+          "name": "GitHub-MCP",
+          "id": "github:mcp",
+          "capabilities": [
+            "issues",
+            "pulls",
+            "commits",
+            "repos"
+          ]
+        }
+      ],
+      "env": {
+        "GITHUB_TOKEN": "{{env.GITHUB_TOKEN}}"
+      }
+    }
   }
 }
