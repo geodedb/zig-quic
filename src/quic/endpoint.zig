@@ -2155,16 +2155,13 @@ pub const Endpoint = struct {
             // If we have Handshake keys and have outbound TLS handshake bytes queued, emit them now.
             if (conn.hs_tx_keys) |hs_keys| {
                 // If we're a server and haven't queued the handshake flight yet, do it now
+                // ServerHello is already in the TLS outbox from conn.zig, so we only need to queue the rest
                 if (conn.role == .Server and conn.tls.sh_seen and !conn.server_hello_sent) {
                     conn.server_hello_sent = true;
-                    logger.debug("Queueing handshake flight (ServerHello + EE + Cert + Finished)", .{});
-
-                    // Queue ServerHello first (this was already prepared and cleared from outbox earlier)
-                    // We need to queue it again since it should be sent in Handshake packet
-                    conn.tls.queueRealServerHello() catch {};
+                    logger.debug("Queueing handshake flight (EE + Cert + Finished), ServerHello already queued", .{});
 
                     // Queue the rest of the handshake flight (EncryptedExtensions + Certificate + CertificateVerify + Finished)
-                    // using the ALPN and TP already set in conn.tls via setLocalTransportParams
+                    // ServerHello is already in outbox from when keys were derived in conn.zig
                     conn.tls.queueServerHandshakeFlight();
                 }
 
@@ -2172,6 +2169,9 @@ pub const Endpoint = struct {
                 // Increase buffer size to handle full handshake flight (can be 2300+ bytes with certificates)
                 var tls_buf: [4096]u8 = undefined;
                 var n_tls = conn.tls.popCrypto(tls_buf[0..]);
+
+                // Track whether this is new data (true) or retransmission (false)
+                var is_new_data = (n_tls > 0);
 
                 // If no new TLS data but we have retransmit data and haven't received client's Finished,
                 // resend the saved Handshake CRYPTO data
@@ -2182,6 +2182,7 @@ pub const Endpoint = struct {
                         if (retx_data.len <= tls_buf.len) {
                             @memcpy(tls_buf[0..retx_data.len], retx_data);
                             n_tls = retx_data.len;
+                            is_new_data = false;  // This is a retransmission, not new data
                             logger.debug("Resending saved Handshake CRYPTO data: {} bytes", .{n_tls});
                         }
                     }
@@ -2194,19 +2195,34 @@ pub const Endpoint = struct {
                     // RFC 9001 §4.9: Split large CRYPTO data across multiple QUIC packets
                     // Each Handshake packet should fit within ~1200 bytes to avoid IP fragmentation
 
-                    // Save retransmit buffer for Handshake CRYPTO
-                    if (conn.crypto_retx_handshake) |b| self.allocator.free(b);
-                    var owned_hs = self.allocator.alloc(u8, n_tls) catch {
-                        conn.crypto_tx_off_handshake += n_tls;
-                        return;
-                    };
-                    @memcpy(owned_hs[0..n_tls], tls_buf[0..n_tls]);
-                    conn.crypto_retx_handshake = owned_hs;
-                    conn.crypto_retx_handshake_off = conn.crypto_tx_off_handshake;
+                    // Save retransmit buffer for Handshake CRYPTO (only for new data, not retransmissions)
+                    if (is_new_data) {
+                        if (conn.crypto_retx_handshake) |b| self.allocator.free(b);
+                        var owned_hs = self.allocator.alloc(u8, n_tls) catch {
+                            conn.crypto_tx_off_handshake += n_tls;
+                            return;
+                        };
+                        @memcpy(owned_hs[0..n_tls], tls_buf[0..n_tls]);
+                        conn.crypto_retx_handshake = owned_hs;
+                        conn.crypto_retx_handshake_off = conn.crypto_tx_off_handshake;
+                        logger.debug("Saved new Handshake CRYPTO for retransmission: {} bytes at offset {}", .{n_tls, conn.crypto_tx_off_handshake});
+                    } else {
+                        logger.debug("Using saved retransmission data at offset {}", .{conn.crypto_retx_handshake_off});
+                    }
 
-                    // For Handshake packets, use the client's source connection ID
-                    logger.debug("Server: Using peer_initial_scid for Handshake DCID, len={}", .{conn.peer_initial_scid.len});
-                    const hs_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
+                    // For Handshake packets, determine correct DCID:
+                    // - If client sent non-zero SCID: use peer_initial_scid (RFC 9000 §7.2)
+                    // - If client sent zero-length SCID: use our own SCID (what client used as DCID)
+                    const hs_dcid = if (conn.peer_initial_scid.len > 0)
+                        conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len]
+                    else
+                        conn.our_scid.bytes[0..conn.our_scid.len];
+
+                    logger.debug("Server: Handshake DCID len={} (peer_scid_len={}, using {s})", .{
+                        hs_dcid.len,
+                        conn.peer_initial_scid.len,
+                        if (conn.peer_initial_scid.len > 0) "peer_initial_scid" else "our_scid"
+                    });
 
                     // Fragment CRYPTO data into chunks that fit within MTU
                     // CRITICAL: Must fragment at TLS message boundaries to avoid KeyEpochWithPendingFragment
@@ -2215,6 +2231,11 @@ pub const Endpoint = struct {
                     const MAX_CRYPTO_CHUNK = 2000;
                     var offset: usize = 0;
                     var pkt_count: usize = 0;
+
+                    // Determine base offset for CRYPTO stream
+                    // For new data: use current tx offset
+                    // For retransmissions: use saved retx offset
+                    const base_crypto_offset = if (is_new_data) conn.crypto_tx_off_handshake else conn.crypto_retx_handshake_off;
 
                     // Parse TLS messages to find safe fragment points
                     // Use a fixed array for boundaries (max 32 TLS messages should be plenty)
@@ -2258,13 +2279,13 @@ pub const Endpoint = struct {
                         }
 
                         const chunk_len = chunk_end - offset;
-                        logger.debug("Handshake CRYPTO fragment {}: offset={}, length={} (PN {}) [TLS-aligned]", .{pkt_count, conn.crypto_tx_off_handshake + offset, chunk_len, conn.pn_handshake_tx});
+                        logger.debug("Handshake CRYPTO fragment {}: offset={}, length={} (PN {}) [TLS-aligned]", .{pkt_count, base_crypto_offset + offset, chunk_len, conn.pn_handshake_tx});
 
                         // Create CRYPTO frame for this chunk
                         var fb = std.ArrayList(u8){};
                         defer fb.deinit(self.allocator.*);
                         const w_hs = fb.writer(self.allocator.*);
-                        const crypto_stream_offset = conn.crypto_tx_off_handshake + offset;
+                        const crypto_stream_offset = base_crypto_offset + offset;
                         _ = (frame.Frame{ .crypto = .{ .offset = crypto_stream_offset, .data = tls_buf[offset..offset+chunk_len] } }).write(w_hs) catch 0;
 
                         // Encode Handshake packet with this CRYPTO fragment
@@ -2307,8 +2328,13 @@ pub const Endpoint = struct {
                         pkt_count += 1;
                     }
 
-                    conn.crypto_tx_off_handshake += n_tls;
-                    logger.debug("Prepared {} Handshake packets with {} bytes total CRYPTO", .{pkt_count, n_tls});
+                    // Only increment the CRYPTO offset for new data, NOT for retransmissions
+                    if (is_new_data) {
+                        conn.crypto_tx_off_handshake += n_tls;
+                        logger.debug("Prepared {} Handshake packets with {} bytes NEW CRYPTO data (offset now {})", .{pkt_count, n_tls, conn.crypto_tx_off_handshake});
+                    } else {
+                        logger.debug("Prepared {} Handshake packets with {} bytes RETRANSMITTED CRYPTO data (offset unchanged at {})", .{pkt_count, n_tls, conn.crypto_tx_off_handshake});
+                    }
 
                     // Send coalesced packets (Initial + first Handshake)
                     if (coalesced_len > 0) {

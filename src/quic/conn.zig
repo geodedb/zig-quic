@@ -1125,8 +1125,7 @@ pub const Connection = struct {
                     self.hs_server = server_secret;
                     self.deriveHandshakeKeys(self.version_v2);
 
-                    // Clear the outbox since ServerHello will be sent later in Handshake packet
-                    self.tls.outbox.clearRetainingCapacity();
+                    // ServerHello is now in outbox and will be sent in Handshake packet
                 }
             }
         }
