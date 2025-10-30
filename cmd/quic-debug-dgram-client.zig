@@ -11,7 +11,7 @@ pub fn main() !void {
     if (args.next()) |a| server = a;
 
     var cfg = api.QuicConfig{ .alpn = &[_][]const u8{"h3"}, .allow_insecure = true, .enable_datagram = true };
-    const ep = try api.endpointInit(&alloc, "0.0.0.0:0", &cfg); defer api.endpointDeinit(ep);
+    var ep = try api.endpointInit(@ptrCast(&alloc), "0.0.0.0:0", &cfg); defer api.endpointDeinit(ep);
     const conn = try api.connect(ep, server, "localhost");
     std.debug.print("debug-dgram-client: connecting to {s}\n", .{server});
 
