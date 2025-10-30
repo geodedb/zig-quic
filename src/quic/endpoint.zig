@@ -2119,15 +2119,11 @@ pub const Endpoint = struct {
                     // Store the Initial packet for coalescence instead of sending immediately
                     // Allocate storage for coalescence; free any existing stale buffer first
                     if (initial_pkt) |prev| self.allocator.free(prev);
-                    initial_pkt = self.allocator.alloc(u8, pkt_bytes.len) catch null;
-                    if (initial_pkt) |p| {
-                        @memcpy(p, pkt_bytes);
-                        // Packet with CRYPTO is ack-eliciting
-                        conn.onPacketSent(.Initial, conn.pn_initial_tx, pkt_bytes.len, has_crypto);
-                        conn.pn_initial_tx +%= 1;
-                    }
-                    // pkt_bytes was duped; free source slice (already owned)
-                    self.allocator.free(pkt_bytes);
+                    // Take ownership directly; avoid second alloc to prevent leak
+                    initial_pkt = pkt_bytes;
+                    // Packet with CRYPTO is ack-eliciting
+                    conn.onPacketSent(.Initial, conn.pn_initial_tx, initial_pkt.?.len, has_crypto);
+                    conn.pn_initial_tx +%= 1;
                 }
 
                 // Additionally, route received ACKs in Initial space through Recovery.
