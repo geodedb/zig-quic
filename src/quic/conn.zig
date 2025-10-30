@@ -450,6 +450,9 @@ pub const Connection = struct {
     version_v2: bool = false,
     initial_version: u32 = 0,
     initial_keys_dropped: bool = false,
+    // Cached Initial AEAD keys (derived once, reused for all Initial packets)
+    initial_rx_keys: ?packet.InitialKeys = null,
+    initial_tx_keys: ?packet.InitialKeys = null,
     // Connection IDs used during Initial/transport
     peer_initial_dcid: Cid = .{},
     // Original Destination Connection ID chosen by client (ODCID). Remains constant
@@ -2176,6 +2179,9 @@ pub const Connection = struct {
         self.advertiseInitialFlowControl();
         // Drop Initial keys immediately; defer dropping Handshake keys until any pending Finished CRYPTO is sent.
         self.initial_keys_dropped = true;
+        // Clear cached Initial keys when they're dropped
+        self.initial_rx_keys = null;
+        self.initial_tx_keys = null;
         // Only drop handshake keys if TLS outbox already flushed (no pending Finished or other handshake messages).
         const pending_tls: bool = (self.tls.outbox.items.len > 0);
         if (!pending_tls) {

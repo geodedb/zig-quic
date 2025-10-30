@@ -144,34 +144,58 @@ pub fn main() !void {
 
     std.debug.print("listening on {s}\n", .{bind});
 
+    // Track active connections to avoid storing them in a separate data structure
+    // The connections are managed internally by the endpoint
+    var active_conns = std.ArrayList(*anyopaque).init(alloc);
+    defer {
+        for (active_conns.items) |conn| {
+            api.destroy(ep, conn);
+        }
+        active_conns.deinit();
+    }
+
     while (true) {
-        // Drive I/O continuously so that handshakes progress
+        // Drive I/O with a reasonable timeout to allow proper event-driven I/O
+        // This replaces the busy-wait pattern with proper blocking I/O
         api.poll(ep, 20) catch {};
 
-        // Drain all newly accepted connections without blocking
+        // Accept all newly-ready connections
         while (api.tryAccept(ep)) |conn| {
             std.debug.print("accepted connection\n", .{});
-            var stream_opened = false;
-            var dgram_buf: [2048]u8 = undefined;
-            var buf: [4096]u8 = undefined;
-            var iter: usize = 0;
-            while (iter < 10000) : (iter += 1) {
-                api.poll(ep, 0) catch {};
-                if (api.isDrained(conn)) { api.destroy(ep, conn); break; }
-                if (datagram) {
-                    const dn = api.recvDatagram(conn, &dgram_buf) catch 0;
-                    if (dn > 0) { _ = api.sendDatagram(conn, dgram_buf[0..dn]) catch 0; }
-                }
-                const n = api.readStream(conn, 0, buf[0..]) catch 0;
-                if (n > 0) {
-                    if (!stream_opened) {
-                        stream_opened = true;
-                        std.debug.print("stream 0 opened (rx {d} bytes)\n", .{n});
-                    }
-                    _ = api.writeStream(conn, 0, buf[0..n]) catch 0;
-                }
-                if (api.isDrained(conn)) { api.destroy(ep, conn); break; }
+            active_conns.append(conn) catch {};
+        }
+
+        // Process all active connections
+        var i: usize = 0;
+        while (i < active_conns.items.len) {
+            const conn = active_conns.items[i];
+
+            // Check if connection is drained (closed)
+            if (api.isDrained(conn)) {
+                std.debug.print("connection closed\n", .{});
+                api.destroy(ep, conn);
+                _ = active_conns.swapRemove(i);
+                continue; // Don't increment i, check the swapped element
             }
+
+            // Handle datagrams if enabled
+            if (datagram) {
+                var dgram_buf: [2048]u8 = undefined;
+                const dn = api.recvDatagram(conn, &dgram_buf) catch 0;
+                if (dn > 0) {
+                    _ = api.sendDatagram(conn, dgram_buf[0..dn]) catch 0;
+                }
+            }
+
+            // Handle stream data (echo server)
+            var buf: [4096]u8 = undefined;
+            const n = api.readStream(conn, 0, buf[0..]) catch 0;
+            if (n > 0) {
+                std.debug.print("stream 0 received {d} bytes\n", .{n});
+                _ = api.writeStream(conn, 0, buf[0..n]) catch 0;
+            }
+
+            i += 1;
         }
     } // main event loop
 

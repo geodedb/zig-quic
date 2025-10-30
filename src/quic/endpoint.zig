@@ -595,9 +595,11 @@ pub const Endpoint = struct {
 
     /// Drive IO using platform loop backend. timeout_ms < 0 means infinite.
     /// Drive network I/O, timers, and paced send for up to timeout_ms milliseconds.
+    var poll_call_count: u64 = 0;
     pub fn poll(self: *Endpoint, timeout_ms: i32) !void {
+        poll_call_count += 1;
         // TRACE: poll called
-        logger.debug("poll called, timeout_ms={}", .{timeout_ms});
+        logger.debug(">>> POLL #{} called, timeout_ms={}", .{poll_call_count, timeout_ms});
         // First, process any timers that are already expired to avoid waiting unnecessarily.
         self.processExpiredTimers(nowMsMonotonic());
         // Drain any pending error queue notifications (ICMP PTB, etc.) before waiting.
@@ -641,8 +643,10 @@ pub const Endpoint = struct {
         self.pruneClosed();
     }
 
+    var drain_call_count: u64 = 0;
     fn drainReadable(self: *Endpoint) void {
-        logger.debug("drainReadable called on fd={}", .{self.sock_fd});
+        drain_call_count += 1;
+        logger.debug(">>> drainReadable #{} called on fd={}", .{drain_call_count, self.sock_fd});
         // Increase buffer size to handle larger Handshake packets (can be up to ~3000 bytes with certificates)
         var buf: [4096]u8 = undefined;
         var read_count: usize = 0;
@@ -712,7 +716,7 @@ pub const Endpoint = struct {
                 logger.debug("Calling recvfrom on socket fd={}, flags={}", .{self.sock_fd, flags});
                 const n_or_err = posix.recvfrom(self.sock_fd, buf[0..], flags, @ptrCast(&peer.storage), &peer.len);
                 if (n_or_err) |n| {
-                    logger.debug("recvfrom got {} bytes!", .{n});
+                    logger.debug(">>> recvfrom got {} bytes (read #{} in this drain)!", .{n, read_count + 1});
                     // Debug: Log all received packets with source address
                     if (peer.storage.family == posix.AF.INET) {
                         const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&peer.storage));
@@ -726,7 +730,9 @@ pub const Endpoint = struct {
                         logger.debug("recvfrom got {} bytes from socket {}", .{ n, self.sock_fd });
                     }
                     read_count += 1;
+                    logger.debug(">>> About to call processIncomingDatagram with {} bytes", .{n});
                     self.processIncomingDatagram(peer, buf[0..n], null);
+                    logger.debug(">>> Returned from processIncomingDatagram", .{});
                 } else |err| {
                     switch (err) {
                         error.WouldBlock => {
@@ -919,9 +925,8 @@ pub const Endpoint = struct {
                 }
             }
         } else if (n == 0) {
-            // epoll_wait timed out - but try drainReadable anyway to diagnose if packets are arriving
-            logger.debug("epoll_wait timed out, but trying drainReadable anyway to check for packets", .{});
-            self.drainReadable();
+            // epoll_wait timed out - no data available, do not drain
+            logger.debug("epoll_wait timed out (no events)", .{});
         }
     }
 
@@ -958,8 +963,10 @@ pub const Endpoint = struct {
         self.drainReadable();
     }
 
+    var process_count: u64 = 0; // Global counter to track how many times processIncomingDatagram is called
     fn processIncomingDatagram(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8, ecn_bits: ?u8) void {
-        logger.debug("processIncomingDatagram called with {} bytes", .{bytes.len});
+        process_count += 1;
+        logger.debug("=== processIncomingDatagram #{} called with {} bytes ===", .{process_count, bytes.len});
         if (bytes.len < 1) {
             logger.debug("Packet too short, returning", .{});
             return;
@@ -1729,8 +1736,15 @@ pub const Endpoint = struct {
             logger.debug("DCID from packet (len={})=", .{dcid.len});
             for (dcid) |b| logger.debug("{X:0>2}", .{b});
             logger.debug("", .{});
-            const ik = packet.initialAeadKeys(v2, conn.role == .Server, derive_dcid);
-            const keys = ik.rx;
+
+            // Derive and cache Initial keys on first use to avoid redundant crypto operations
+            if (conn.initial_rx_keys == null) {
+                const ik = packet.initialAeadKeys(v2, conn.role == .Server, derive_dcid);
+                conn.initial_rx_keys = ik.rx;
+                conn.initial_tx_keys = ik.tx;
+                logger.debug("Derived and cached Initial keys for role={s}", .{if (conn.role == .Server) "Server" else "Client"});
+            }
+            const keys = conn.initial_rx_keys.?;
 
             // Log the keys we derived
             logger.debug("Derived RX keys - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{
@@ -2094,10 +2108,16 @@ pub const Endpoint = struct {
                     var fbs = std.io.fixedBufferStream(&hex_buf);
                     const hex_w = fbs.writer();
                     for (derive_dcid_tx) |b| hex_w.print("{X:0>2}", .{b}) catch break;
-                    logger.debug("Server TX: Deriving Initial keys with dcid={s} (len={})", .{hex_buf[0..fbs.pos], derive_dcid_tx.len});
+                    logger.debug("Server TX: Using Initial keys with dcid={s} (len={})", .{hex_buf[0..fbs.pos], derive_dcid_tx.len});
                 }
-                const oriented = packet.initialAeadKeys(v2, conn.role == .Server, derive_dcid_tx);
-                const tx_keys = oriented.tx;
+                // Reuse cached Initial TX keys (should always be available after RX path caching)
+                const tx_keys = conn.initial_tx_keys orelse blk: {
+                    // Fallback if not cached (shouldn't happen after RX path caching)
+                    logger.debug("Warning: Initial TX keys not cached, deriving now", .{});
+                    const oriented = packet.initialAeadKeys(v2, conn.role == .Server, derive_dcid_tx);
+                    conn.initial_tx_keys = oriented.tx;
+                    break :blk oriented.tx;
+                };
 
                 // For client: DCID = peer's initial DCID (from server's SCID in response), SCID = our SCID
                 // For server: DCID = client's SCID from Initial (peer_initial_scid), SCID = our SCID
@@ -2384,9 +2404,11 @@ pub const Endpoint = struct {
             // Check if there are more packets coalesced in this datagram
             // The end_total from the Initial packet tells us where it ends
             if (end_total < bytes.len) {
-                logger.debug("Processing coalesced packet after Initial (remaining {} bytes)", .{bytes.len - end_total});
+                logger.debug("=== COALESCED PACKET DETECTED: end_total={}, bytes.len={}, remaining={} bytes ===", .{end_total, bytes.len, bytes.len - end_total});
                 // Process the remaining bytes as a new packet
                 self.processIncomingDatagram(peer, bytes[end_total..], ecn_bits);
+            } else {
+                logger.debug("=== No coalesced packets, end_total={}, bytes.len={} ===", .{end_total, bytes.len});
             }
 
             // initial_pkt is already freed after sending (line 2298) or not allocated
