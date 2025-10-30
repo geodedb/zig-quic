@@ -2116,14 +2116,13 @@ pub const Endpoint = struct {
                 if (out) |pkt_bytes| {
                     logger.debug("{s}: Prepared Initial response with {} bytes (has_crypto={})", .{ if (conn.role == .Server) "Server" else "Client", pkt_bytes.len, has_crypto });
 
-                    // Store the Initial packet for coalescence instead of sending immediately
-                    // Allocate storage for coalescence; free any existing stale buffer first
+                    // Store Initial for later coalescence; take ownership
                     if (initial_pkt) |prev| self.allocator.free(prev);
-                    // Take ownership directly; avoid second alloc to prevent leak
-                    initial_pkt = pkt_bytes;
-                    // Packet with CRYPTO is ack-eliciting
+                    initial_pkt = pkt_bytes; // owned until coalesced/send
                     conn.onPacketSent(.Initial, conn.pn_initial_tx, initial_pkt.?.len, has_crypto);
                     conn.pn_initial_tx +%= 1;
+                    // Do NOT free pkt_bytes here; defer will free if never coalesced
+
                 }
 
                 // Additionally, route received ACKs in Initial space through Recovery.
