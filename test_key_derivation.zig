@@ -1,42 +1,43 @@
 const std = @import("std");
-const tls13 = @import("src/quic/tls/tls13.zig");
 const ks = @import("src/quic/tls/key_schedule.zig");
 
 pub fn main() !void {
-    // Test vector from RFC 8448 or similar
-    // Using a known handshake secret to derive QUIC keys
+    // QUIC v2 DCID from the logs: D9 66 EF 01 E0 5A 92 B7 36 B6 8E 73 46 19
+    const dcid = [_]u8{ 0xD9, 0x66, 0xEF, 0x01, 0xE0, 0x5A, 0x92, 0xB7, 0x36, 0xB6, 0x8E, 0x73, 0x46, 0x19 };
 
-    // Example handshake secret (32 bytes)
-    const test_secret = [_]u8{
-        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-        0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
-        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-        0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
-    };
+    std.debug.print("Testing key derivation with DCID:\n", .{});
+    for (dcid) |b| std.debug.print("{X:0>2} ", .{b});
+    std.debug.print("\n\n", .{});
 
-    std.log.info("Testing QUIC key derivation from handshake secret", .{});
-    std.log.info("Input secret: {x}", .{std.fmt.fmtSliceHexLower(&test_secret)});
+    // Step 1: Derive initial secret
+    const initial_secret = ks.deriveInitialSecretV2(&dcid);
+    std.debug.print("Initial secret: ", .{});
+    for (initial_secret) |b| std.debug.print("{X:0>2} ", .{b});
+    std.debug.print("\n\n", .{});
 
-    // Derive QUIC v1 keys
-    const keys = ks.deriveKeyIvHp(test_secret);
+    // Step 2: Derive client/server initial secrets
+    const pair = ks.deriveClientServerInitial(initial_secret);
+    std.debug.print("Client secret: ", .{});
+    for (pair.client) |b| std.debug.print("{X:0>2} ", .{b});
+    std.debug.print("\n\n", .{});
 
-    std.log.info("Derived key: {x}", .{std.fmt.fmtSliceHexLower(&keys.key)});
-    std.log.info("Derived IV:  {x}", .{std.fmt.fmtSliceHexLower(&keys.iv)});
-    std.log.info("Derived HP:  {x}", .{std.fmt.fmtSliceHexLower(&keys.hp)});
+    std.debug.print("Server secret: ", .{});
+    for (pair.server) |b| std.debug.print("{X:0>2} ", .{b});
+    std.debug.print("\n\n", .{});
 
-    // Now test with actual handshake secret from logs
-    const actual_secret = [_]u8{
-        0xbc, 0xd9, 0x0c, 0x21, // First 4 bytes from log
-        // Fill in rest with zeros for now
-        0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0,
-    };
+    // Step 3: Derive keys from server secret (since we're the server receiving client Initial)
+    std.debug.print("Calling deriveKeyIvHpV2 for client (RX) keys...\n", .{});
+    const client_keys = ks.deriveKeyIvHpV2(pair.client);
 
-    std.log.info("\nTesting with actual secret from logs:", .{});
-    const actual_keys = ks.deriveKeyIvHp(actual_secret);
-    std.log.info("Key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{
-        actual_keys.key[0], actual_keys.key[1], actual_keys.key[2], actual_keys.key[3]
-    });
+    std.debug.print("\nClient (RX) Key: ", .{});
+    for (client_keys.key) |b| std.debug.print("{X:0>2} ", .{b});
+    std.debug.print("\n", .{});
+
+    std.debug.print("Client (RX) IV: ", .{});
+    for (client_keys.iv) |b| std.debug.print("{X:0>2} ", .{b});
+    std.debug.print("\n", .{});
+
+    std.debug.print("Client (RX) HP: ", .{});
+    for (client_keys.hp) |b| std.debug.print("{X:0>2} ", .{b});
+    std.debug.print("\n", .{});
 }

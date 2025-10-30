@@ -67,7 +67,13 @@ fn hkdfExtractRaw(salt: ?[]const u8, ikm: []const u8) [H.digest_length]u8 {
 }
 
 fn hkdfExpand(out: []u8, prk: [H.digest_length]u8, info: []const u8) void {
+    std.log.debug("hkdfExpand: out.len={}, prk[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, info.len={}", .{
+        out.len, prk[0], prk[1], prk[2], prk[3], info.len
+    });
     HkdfSha256.expand(out, info, prk);
+    std.log.debug("hkdfExpand: AFTER expand, out[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{
+        out[0], out[1], out[2], out[3]
+    });
 }
 
 /// HKDF-Expand-Label as per TLS 1.3 using H.
@@ -140,9 +146,21 @@ pub fn deriveKeyIvHpV2(secret: [H.digest_length]u8) struct { key: [16]u8, iv: [1
     var key: [16]u8 = undefined;
     var iv: [12]u8 = undefined;
     var hp: [16]u8 = undefined;
+    std.log.debug("deriveKeyIvHpV2: secret[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{
+        secret[0], secret[1], secret[2], secret[3]
+    });
     expandLabel(secret, "quicv2 key", &[_]u8{}, &key) catch unreachable;
     expandLabel(secret, "quicv2 iv", &[_]u8{}, &iv) catch unreachable;
     expandLabel(secret, "quicv2 hp", &[_]u8{}, &hp) catch unreachable;
+    std.log.debug("deriveKeyIvHpV2: -> key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{
+        key[0], key[1], key[2], key[3]
+    });
+    std.log.debug("deriveKeyIvHpV2: -> iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{
+        iv[0], iv[1], iv[2], iv[3]
+    });
+    std.log.debug("deriveKeyIvHpV2: -> hp[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{
+        hp[0], hp[1], hp[2], hp[3]
+    });
     return .{ .key = key, .iv = iv, .hp = hp };
 }
 

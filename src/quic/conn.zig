@@ -732,6 +732,10 @@ pub const Connection = struct {
         self.version_v2 = false;
         self.initial_version = 0;
         self.initial_keys_dropped = false;
+        // CRITICAL: Initialize cached Initial key fields to null
+        // Without this, allocator.create() leaves them as undefined memory (0xAA pattern)
+        self.initial_rx_keys = null;
+        self.initial_tx_keys = null;
         self.pn_initial = .{};
         self.pn_handshake = .{};
         self.pn_app = .{};
