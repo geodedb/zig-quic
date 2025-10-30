@@ -212,7 +212,7 @@ pub fn build(b: *std.Build) void {
     quic_mod.addImport("quic_conn", quic_conn_mod);
     quic_mod.addImport("quic_packet", quic_packet_mod);
 
-    // CLI binaries (scaffold): quic-client, quic-server
+    // CLI binaries (scaffold): quic-client, quic-server + debug clients
     const quic_client = addExe(b, "quic-client", "cmd/quic-client.zig", target, optimize);
     quic_client.root_module.addImport("quic_api", quic_api_mod);
     const install_quic_client = b.addInstallArtifact(quic_client, .{});
@@ -220,6 +220,14 @@ pub fn build(b: *std.Build) void {
     const quic_server = addExe(b, "quic-server", "cmd/quic-server.zig", target, optimize);
     quic_server.root_module.addImport("quic_api", quic_api_mod);
     const install_quic_server = b.addInstallArtifact(quic_server, .{});
+
+    const quic_debug_client = addExe(b, "quic-debug-client", "cmd/quic-debug-client.zig", target, optimize);
+    quic_debug_client.root_module.addImport("quic_api", quic_api_mod);
+    const install_quic_debug_client = b.addInstallArtifact(quic_debug_client, .{});
+
+    const quic_debug_dgram_client = addExe(b, "quic-debug-dgram-client", "cmd/quic-debug-dgram-client.zig", target, optimize);
+    quic_debug_dgram_client.root_module.addImport("quic_api", quic_api_mod);
+    const install_quic_debug_dgram_client = b.addInstallArtifact(quic_debug_dgram_client, .{});
 
     // QNS endpoint binary for interop docker image
     // Minimal HTTP/3 shim module (kept separate from QUIC core)
@@ -266,6 +274,8 @@ pub fn build(b: *std.Build) void {
     const cli_step = b.step("cli", "Build QUIC CLI client/server");
     cli_step.dependOn(&install_quic_client.step);
     cli_step.dependOn(&install_quic_server.step);
+    cli_step.dependOn(&install_quic_debug_client.step);
+    cli_step.dependOn(&install_quic_debug_dgram_client.step);
     cli_step.dependOn(&install_qns_endpoint.step);
 
     // Transport layer examples
