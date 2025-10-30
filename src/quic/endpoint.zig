@@ -2145,7 +2145,9 @@ pub const Endpoint = struct {
                 } else {
                     logger.debug("Initial packet too large for coalesced buffer", .{});
                 }
-                // Don't free here - the defer statement at line 1987 will handle it
+                // Free after copying into coalesced buffer to avoid leak
+                self.allocator.free(initial);
+                initial_pkt = null;
             }
 
             // If we have Handshake keys and have outbound TLS handshake bytes queued, emit them now.
