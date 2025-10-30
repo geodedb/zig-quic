@@ -1,0 +1,28 @@
+[package]
+name = "quic-test-client"
+version = "0.1.0"
+edition = "2021"
+authors = ["QUIC Contributors"]
+description = "Rust QUIC test client using quinn for interoperability testing"
+
+[[bin]]
+name = "test-client"
+path = "src/main.rs"
+
+[dependencies]
+# Quinn QUIC implementation
+quinn = "0.11"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# TLS support
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rustls-pemfile = "2.0"
+
+# Error handling
+anyhow = "1.0"
+
+# Utilities
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
