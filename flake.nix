@@ -16,6 +16,7 @@
       ...
     }:
     let
+
       flakeForSystem =
         nixpkgs: system:
         let
@@ -23,6 +24,28 @@
             inherit system;
             config = { allowUnfree = true; };
           };
+
+          # Python environment for geodetestlab and client test harness
+          pythonWithPackages = pkgs.python3.withPackages (ps: with ps; [
+            pip
+            setuptools
+            wheel
+            typer
+            pydantic
+            rich
+            jmespath
+            psutil
+            keyring
+            pyyaml
+            pytest
+            mypy
+            black
+            isort
+            flake8
+            aioquic
+            cryptography
+          ]);
+
           zigPkg = dev-env.packages.${system}.zigPackages;
 
           # Build quic packages
@@ -48,17 +71,37 @@
             default = quicPkg;
           };
           devShell = pkgs.mkShell {
-            shellHook = '''';
+            shellHook = ''
+              export PYTHONPATH="${pythonWithPackages}/lib/python3.12/site-packages:$PYTHONPATH"
+            '';
             env = { };
             packages =
               (with dev-env.packages.${system}; [
                 zigPackages
                 commonPackages
               ])
-              ++ ([
-                pkgs.file
-                pkgs.tcpdump
-                pkgs.tshark
+              ++ (with pkgs; [
+                file
+                tcpdump
+                tshark
+                pythonWithPackages
+
+                  # Rust toolchain for client tests
+                  rustc
+                  cargo
+                  rustfmt
+                  clippy
+                  boringssl
+
+                  # Debugging and analysis
+                  gdb
+                  valgrind
+                  strace
+
+                  # Network tools
+                  tcpdump
+                  wireshark-cli
+                  netcat-gnu
               ]);
           };
         };
