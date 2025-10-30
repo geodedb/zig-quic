@@ -1984,7 +1984,7 @@ pub const Endpoint = struct {
 
             // Store Initial packet for coalescence with Handshake
             var initial_pkt: ?[]u8 = null;
-            // NOTE: We must free initial_pkt ONLY if it's not used in coalescence
+            defer if (initial_pkt) |p| self.allocator.free(p); // ensure no leak if not coalesced
 
             // After processing ClientHello, check if TLS has pending handshake data
             // This is critical for the server to send ServerHello immediately
