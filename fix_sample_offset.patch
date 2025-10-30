@@ -1,0 +1,37 @@
+--- Issue Found in Initial Packet Decryption ---
+
+The bug is in src/quic/crypto_quic.zig line 440-445:
+
+CURRENT CODE (WRONG):
+```zig
+// RFC 9001: sample starts 4 bytes after the start of packet number field
+// Since ciphertext_and_tag starts after PN, offset is always 4
+const offset = 4;
+if (offset + 16 > ciphertext_and_tag.len) return error.AuthenticationFailed;
+@memcpy(sample16[0..], ciphertext_and_tag[offset .. offset + 16]);
+```
+
+THE PROBLEM:
+The comment says "sample starts 4 bytes after the start of packet number field"
+but the code is taking the sample from offset 4 in the ciphertext, which starts AFTER the PN field.
+
+According to RFC 9001 Section 5.4.2:
+"The sample of ciphertext is taken starting from an offset of 4 bytes after the start
+of the Packet Number field."
+
+So if the PN field is N bytes long, the sample should start at:
+- Masked PN bytes: [0..N)
+- Ciphertext starts at position N
+- Sample starts at position 4 (which is 4-N bytes into the ciphertext if N < 4)
+
+CORRECT CODE:
+```zig
+// RFC 9001: sample starts 4 bytes after the start of packet number field
+// If PN is N bytes, sample starts at (4-N) bytes into ciphertext
+const sample_offset = if (pn_len >= 4) 0 else (4 - pn_len);
+if (sample_offset + 16 > ciphertext_and_tag.len) return error.AuthenticationFailed;
+@memcpy(sample16[0..], ciphertext_and_tag[sample_offset .. sample_offset + 16]);
+```
+
+This explains why the Zig-to-Zig communication works (they both have the same bug)
+but external clients fail (they follow the RFC correctly).

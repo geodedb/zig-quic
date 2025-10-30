@@ -2094,7 +2094,7 @@ pub const Connection = struct {
     }
 
     /// Derive handshake keys for QUIC from current TLS secrets.
-    fn deriveHandshakeKeys(self: *Connection, version_v2: bool) void {
+    pub fn deriveHandshakeKeys(self: *Connection, version_v2: bool) void {
         if (self.hs_client == null or self.hs_server == null) return;
         // Assign rx/tx according to role
         const rx_secret = if (self.role == .Server) self.hs_client.? else self.hs_server.?;

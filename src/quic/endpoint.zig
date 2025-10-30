@@ -1946,6 +1946,26 @@ pub const Endpoint = struct {
                             if (was_server and !conn.tls.sh_seen) {
                                 // Queue ServerHello only - it will be sent in Initial packet
                                 // The rest of the handshake flight will be queued after SH is sent
+                                logger.debug("Server: About to queue ServerHello - outbox.len={}", .{conn.tls.outbox.items.len});
+                                conn.tls.queueRealServerHello() catch |err| {
+                                    logger.debug("Failed to queue ServerHello: {}", .{err});
+                                    return;
+                                };
+                                logger.debug("Server: After queueRealServerHello - outbox.len={} sh_seen={}", .{conn.tls.outbox.items.len, conn.tls.sh_seen});
+
+                                // CRITICAL: Derive Handshake keys after queuing ServerHello
+                                // If we can compute handshake secrets now, install Handshake keys
+                                if (conn.hs_client == null or conn.hs_server == null) {
+                                    if (conn.tls.computeHandshakeSecrets()) |hs_secrets| {
+                                        logger.debug("Server: Derived handshake secrets after queuing ServerHello", .{});
+                                        conn.hs_client = hs_secrets.client;
+                                        conn.hs_server = hs_secrets.server;
+                                        conn.deriveHandshakeKeys(conn.version_v2);
+                                        logger.debug("Server: After deriving Handshake keys - hs_tx_keys is {s}", .{if (conn.hs_tx_keys != null) "SET" else "NULL"});
+                                    } else {
+                                        logger.debug("Server: Cannot derive handshake secrets yet (sh_seen={}, ecdhe={})", .{conn.tls.sh_seen, conn.tls.ecdhe_secret != null});
+                                    }
+                                }
                             }
                         } else if (cr.offset > conn.crypto_rx_off_initial) {
                             // Out-of-order frame - buffer it
@@ -1985,11 +2005,12 @@ pub const Endpoint = struct {
             // Store Initial packet for coalescence with Handshake
             // Coalesced Initial storage (single allocation). Ensure freed on function exit if not coalesced.
             var initial_pkt: ?[]u8 = null;
-            defer if (initial_pkt) |p| { self.allocator.free(p); conn.initial_debug_alloc = null; }
+            defer if (initial_pkt) |p| { self.allocator.free(p); conn.initial_debug_alloc = null; };
 
             // After processing ClientHello, check if TLS has pending handshake data
             // This is critical for the server to send ServerHello immediately
             const has_pending_tls = conn.tls.outbox.items.len > 0;
+            logger.debug("Checked TLS outbox: has_pending_tls={} outbox.len={}", .{has_pending_tls, conn.tls.outbox.items.len});
 
             // Only send Initial response when we have ServerHello ready (for server role)
             // or when we have something meaningful to send (for client role)
@@ -2031,9 +2052,11 @@ pub const Endpoint = struct {
                     // Include ServerHello in Initial packet if we have pending TLS data and haven't sent it yet
                     // Check for pending data in the TLS outbox instead of sh_seen flag
                     if (conn.tls.outbox.items.len > 0 and conn.crypto_tx_off_initial < 200) {
+                        logger.debug("Server: Attempting to pop ServerHello - outbox.len={} crypto_tx_off_initial={}", .{conn.tls.outbox.items.len, conn.crypto_tx_off_initial});
                         // Pop any ServerHello bytes from TLS engine (should only be ServerHello at this point)
                         var sh_buf: [512]u8 = undefined;
                         const n_sh = conn.tls.popCrypto(sh_buf[0..]);
+                        logger.debug("Server: popCrypto returned {} bytes", .{n_sh});
                         if (n_sh > 0) {
                             logger.debug("Sending ServerHello in Initial packet: {} bytes", .{n_sh});
                             // Add CRYPTO frame with ServerHello
