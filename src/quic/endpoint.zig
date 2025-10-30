@@ -1983,8 +1983,8 @@ pub const Endpoint = struct {
             }
 
             // Store Initial packet for coalescence with Handshake
+            // Coalesced Initial storage (single allocation, freed after copy into coalesced buffer)
             var initial_pkt: ?[]u8 = null;
-            defer if (initial_pkt) |p| self.allocator.free(p); // ensure no leak if not coalesced
 
             // After processing ClientHello, check if TLS has pending handshake data
             // This is critical for the server to send ServerHello immediately
@@ -2117,8 +2117,13 @@ pub const Endpoint = struct {
                     logger.debug("{s}: Prepared Initial response with {} bytes (has_crypto={})", .{ if (conn.role == .Server) "Server" else "Client", pkt_bytes.len, has_crypto });
 
                     // Store Initial for later coalescence; take ownership
-                    if (initial_pkt) |prev| self.allocator.free(prev);
-                    initial_pkt = pkt_bytes; // owned until coalesced/send
+                    // Assign only if not already present; avoid double free pattern
+                    if (initial_pkt == null) {
+                        initial_pkt = pkt_bytes; // ownership until coalesced
+                    } else {
+                        // Already have one; free new and keep existing
+                        self.allocator.free(pkt_bytes);
+                    }
                     conn.onPacketSent(.Initial, conn.pn_initial_tx, initial_pkt.?.len, has_crypto);
                     conn.pn_initial_tx +%= 1;
                     // Do NOT free pkt_bytes here; defer will free if never coalesced
@@ -2145,7 +2150,7 @@ pub const Endpoint = struct {
                 } else {
                     logger.debug("Initial packet too large for coalesced buffer", .{});
                 }
-                // Free after copying into coalesced buffer to avoid leak
+                // Free Initial after copying; ownership transferred
                 self.allocator.free(initial);
                 initial_pkt = null;
             }
