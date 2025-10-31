@@ -45,6 +45,8 @@
             flake8
             aioquic
             cryptography
+            pyopenssl
+            service-identity
             python-lsp-server
           ]);
 
@@ -75,6 +77,10 @@
           devShell = pkgs.mkShell {
             shellHook = ''
               # --- Python path --------------------------------------------------------------
+              # Use the Python 3 environment with all required packages (cffi, aioquic, etc)
+              # This ensures we use Python 3.12 with cffi instead of the system Python 3.13
+              export PATH="${pythonWithPackages}/bin:$PATH"
+
               # Reset PYTHONPATH safely, then prepend the env's site-packages if it exists.
               export PYTHONPATH=''${PYTHONPATH:-""}
               if [ -d "${pythonWithPackages}/${pythonWithPackages.sitePackages}" ]; then
@@ -86,13 +92,16 @@
               # Use -idirafter to append glibc includes after C++ stdlib, avoiding #include_next issues
               export NIX_CFLAGS_COMPILE="''${NIX_CFLAGS_COMPILE:-""}"
               export NIX_CXXFLAGS_COMPILE="''${NIX_CXXFLAGS_COMPILE:-""}"
-              export NIX_LDFLAGS="''${NIX_LDFLAGS:-""} -L${pkgs.glibc}/lib -L${pkgs.gcc.cc.lib}/lib"
+              export NIX_LDFLAGS="''${NIX_LDFLAGS:-""} -L${pkgs.glibc}/lib -L${pkgs.gcc.cc.lib}/lib -L${pkgs.libffi}/lib"
 
               # Set CFLAGS/CXXFLAGS for CMake-based builds (e.g., BoringSSL in quiche)
               # CMake doesn't inherit Nix's wrapper flags, so we need to set them explicitly
               export CFLAGS="''${CFLAGS:-""}"
               export CXXFLAGS="''${CXXFLAGS:-""}"
-              export LDFLAGS="''${LDFLAGS:-""} -L${pkgs.glibc}/lib -L${pkgs.gcc.cc.lib}/lib"
+              export LDFLAGS="''${LDFLAGS:-""} -L${pkgs.glibc}/lib -L${pkgs.gcc.cc.lib}/lib -L${pkgs.libffi}/lib"
+
+              # Ensure libffi is in the library path for cffi
+              export LD_LIBRARY_PATH="${pkgs.libffi}/lib:''${LD_LIBRARY_PATH:-""}"
 
               # --- GitHub CLI auth ----------------------------------------------------------
               # If not authenticated, try token-based login from ~/.github_token
@@ -166,6 +175,7 @@
                   glibc.dev
                   gcc.cc.lib
                   libev
+                  libffi
 
                   # Debugging and analysis
                   gdb
