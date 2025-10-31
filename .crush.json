@@ -5,22 +5,41 @@
       "command": "gopls",
       "env": {
         "GOTOOLCHAIN": "go1.25.0"
-      }
+      },
+      "filetypes": ["go", "mod"],
+      "root_markers": ["go.mod", "go.work"]
     },
     "zig": {
-      "command": "zls"
+      "command": "zls",
+      "filetypes": ["zig", "zon"],
+      "root_markers": ["build.zig", "build.zig.zon"]
     },
     "python": {
-      "command": "python-lsp-server"
+      "command": "python-lsp-server",
+      "filetypes": ["py"],
+      "root_markers": ["setup.py", "pyproject.toml", "requirements.txt"]
     },
     "rust": {
-      "command": "rust-analyzer"
+      "command": "rust-analyzer",
+      "filetypes": ["rs"],
+      "root_markers": ["Cargo.toml"]
+    }
+  },
+  "mcp": {
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "timeout": 120,
+      "disabled": false,
+      "headers": {
+        "Authorization": "$(echo Bearer $GITHUB_TOKEN)"
+      }
     }
   },
   "providers": {
     "ollama": {
       "name": "Ollama",
-      "type": "openai",
+      "type": "openai-compat",
       "base_url": "http://192.168.0.178:11434/v1",
       "headers": {
         "Authorization": "Bearer ollama"
@@ -30,29 +49,51 @@
           "name": "GPT-OSS 120B",
           "id": "gpt-oss:120b",
           "context_window": 128000,
-          "default_max_tokens": 2000
+          "default_max_tokens": 8192,
+          "cost_per_1m_in": 1.25,
+          "cost_per_1m_out": 10,
+          "cost_per_1m_in_cached": 0.25,
+          "cost_per_1m_out_cached": 0.25,
+          "can_reason": true,
+          "reasoning_levels": [
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ],
+          "default_reasoning_effort": "medium",
+          "supports_attachments": true,
+          "options": {}
+        },
+        {
+          "name": "Qwen Coder",
+          "id": "qwen3-coder:30b-a3b-fp16",
+          "context_window": 25600,
+          "default_max_tokens": 16384,
+          "cost_per_1m_in": 1.25,
+          "cost_per_1m_out": 10,
+          "cost_per_1m_in_cached": 0.25,
+          "cost_per_1m_out_cached": 0.25,
+          "can_reason": false,
+          "supports_attachments": false,
+          "options": {}
         }
       ]
-    },
-    "github-mcp": {
-      "name": "GitHub MCP Server",
-      "type": "mcp",
-      "base_url": "https://api.github.com",
-      "models": [
-        {
-          "name": "GitHub-MCP",
-          "id": "github:mcp",
-          "capabilities": [
-            "issues",
-            "pulls",
-            "commits",
-            "repos"
-          ]
-        }
-      ],
-      "env": {
-        "GITHUB_TOKEN": "{{env.GITHUB_TOKEN}}"
-      }
     }
+  },
+  "tools": {
+    "ls": {
+      "max_depth": 5,
+      "max_items": 2000
+    }
+  },
+  "options": {
+    "context_paths": [
+      "CRUSH.md",
+      "README.md",
+      "docs/DESIGN.md",
+      "docs/GAP.md"
+    ],
+    "disabled_tools": []
   }
 }
