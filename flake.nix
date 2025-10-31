@@ -28,6 +28,7 @@
           # Python environment for geodetestlab and client test harness
           pythonWithPackages = pkgs.python3.withPackages (ps: with ps; [
             pip
+            cffi
             setuptools
             wheel
             typer
