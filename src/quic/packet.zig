@@ -631,6 +631,16 @@ pub fn encodeHandshakeProtected(
         payload_plaintext,
         out_cipher,
     );
+
+    // CRITICAL: Verify that the actual encrypted length matches our precalculated length
+    if (written != ct_len) {
+        logger.err("LENGTH MISMATCH BUG DETECTED: protectPacket wrote {} bytes, but we calculated ct_len={}", .{written, ct_len});
+        logger.err("  payload_plaintext.len={}, packet_number_len={}, expected_tag_len=16", .{payload_plaintext.len, packet_number_len});
+        logger.err("  Declared length_value in header={} (pn_len + ct_len)", .{length_value});
+        logger.err("  Actual packet will have length={} (pn_len + written)", .{@as(usize, packet_number_len) + written});
+        logger.err("  This will cause a {} byte discrepancy!", .{@as(i64, @intCast(ct_len)) - @as(i64, @intCast(written))});
+        return error.LengthMismatch;
+    }
     std.debug.assert(written == ct_len);
 
     buf.items[0] = header_first;
@@ -654,6 +664,18 @@ pub fn encodeHandshakeProtected(
         logger.debug("", .{});
     }
     logger.debug("=== END HEXDUMP (total packet size: {} bytes) ===", .{buf.items.len});
+
+    // FINAL VERIFICATION: Ensure packet length matches what we declared in the header
+    const expected_total_len = (1 + header_prefix_len) + packet_number_len + written;
+    if (buf.items.len != expected_total_len) {
+        logger.err("FINAL PACKET LENGTH MISMATCH: buf.len={}, expected={} (header={}, pn={}, payload={})", .{
+            buf.items.len, expected_total_len, 1 + header_prefix_len, packet_number_len, written
+        });
+        return error.PacketLengthMismatch;
+    }
+
+    // Log successful packet construction with length verification
+    logger.debug("encodeHandshakeProtected: SUCCESS - packet length verified: declared_in_header={}, actual_packet_len={}", .{length_value, buf.items.len - (1 + header_prefix_len)});
 
     return buf.toOwnedSlice(alloc);
 }
