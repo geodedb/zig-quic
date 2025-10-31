@@ -10,7 +10,7 @@ use tracing::info;
 #[clap(name = "quinn-test-client")]
 struct Opt {
     /// Server address
-    #[clap(long, default_value = "127.0.0.1:4433")]
+    #[clap(long, default_value = "127.0.0.1:3141")]
     addr: SocketAddr,
 
     /// Server name for TLS verification
@@ -50,7 +50,7 @@ async fn run_test(opt: Opt) -> Result<()> {
         .with_no_client_auth();
 
     // Set ALPN protocol
-    crypto.alpn_protocols = vec![b"hq-interop".to_vec()];
+    crypto.alpn_protocols = vec![b"quic-zig/1".to_vec()];
 
     // Create quinn client config
     let client_config = ClientConfig::new(Arc::new(

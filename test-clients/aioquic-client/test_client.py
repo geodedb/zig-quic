@@ -58,7 +58,7 @@ async def run_client(host: str, port: int, verbose: bool = False):
 
     # Configure QUIC
     configuration = QuicConfiguration(
-        alpn_protocols=["hq-interop"],
+        alpn_protocols=["quic-zig/1"],
         is_client=True,
         verify_mode=0,  # Don't verify certificates for testing
     )
@@ -117,8 +117,8 @@ def main():
     parser.add_argument(
         "--port",
         type=int,
-        default=4433,
-        help="Server port (default: 4433)"
+        default=3141,
+        help="Server port (default: 3141)"
     )
     parser.add_argument(
         "-v", "--verbose",

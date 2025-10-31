@@ -91,7 +91,7 @@ pub fn main() !void {
     }
 }
 
-fn handleConnection(conn: *api.QuicConnection, alloc: *std.mem.Allocator) !void {
+fn handleConnection(conn: *api.QuicConnection, _: *std.mem.Allocator) !void {
     defer api.closeConnectionSimple(conn) catch {};
 
     std.debug.print("Handling connection...\n", .{});
@@ -101,12 +101,24 @@ fn handleConnection(conn: *api.QuicConnection, alloc: *std.mem.Allocator) !void 
         std.debug.print("Negotiated ALPN: {s}\n", .{alpn});
     }
 
-    // Simple echo server - accept stream and echo back
+    // Simple echo server - accept incoming streams and echo back
     var attempts: usize = 0;
     while (attempts < 100) : (attempts += 1) {
-        // Try to read from stream 0 (client-initiated)
+        // Try to accept an incoming stream
+        const stream_id = api.acceptStream(conn) catch |err| switch (err) {
+            error.WouldBlock => {
+                // No stream available yet, wait and try again
+                std.time.sleep(10 * std.time.ns_per_ms);
+                continue;
+            },
+            else => return err,
+        };
+
+        std.debug.print("Accepted stream {d}\n", .{stream_id});
+
+        // Read from the accepted stream
         var buf: [4096]u8 = undefined;
-        const n = api.readStream(conn, 0, &buf) catch |err| switch (err) {
+        const n = api.readStream(conn, stream_id, &buf) catch |err| switch (err) {
             error.KeysNotReady => 0,
             error.StreamNotFound => 0,
             error.NoDataAvailable => 0,
@@ -117,7 +129,7 @@ fn handleConnection(conn: *api.QuicConnection, alloc: *std.mem.Allocator) !void 
             std.debug.print("Received {d} bytes: {s}\n", .{n, buf[0..n]});
 
             // Echo back
-            const written = api.writeStream(conn, 0, buf[0..n]) catch |err| {
+            const written = api.writeStream(conn, stream_id, buf[0..n]) catch |err| {
                 std.debug.print("Write error: {}\n", .{err});
                 return;
             };
@@ -142,7 +154,7 @@ fn generateSelfSignedCert(cert_path: []const u8, key_path: []const u8) !void {
 
     // Generate using openssl (simplified for testing)
     var cmd = std.ArrayList(u8).init(std.heap.page_allocator);
-    defer cmd.deinit();
+    defer cmd.deinit(std.heap.page_allocator);
 
     try cmd.writer().print(
         "openssl req -x509 -newkey rsa:2048 -keyout {s} -out {s} -days 365 -nodes -subj '/CN=localhost'",

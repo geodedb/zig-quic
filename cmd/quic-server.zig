@@ -188,11 +188,19 @@ pub fn main() !void {
             }
 
             // Handle stream data (echo server)
+            // Try to accept an incoming stream
+            const stream_id = api.acceptStream(conn) catch {
+                // No stream available yet, continue to next connection
+                i += 1;
+                continue;
+            };
+
+            // Read from the accepted stream
             var buf: [4096]u8 = undefined;
-            const n = api.readStream(conn, 0, buf[0..]) catch 0;
+            const n = api.readStream(conn, stream_id, buf[0..]) catch 0;
             if (n > 0) {
-                std.debug.print("stream 0 received {d} bytes\n", .{n});
-                _ = api.writeStream(conn, 0, buf[0..n]) catch 0;
+                std.debug.print("stream {d} received {d} bytes\n", .{stream_id, n});
+                _ = api.writeStream(conn, stream_id, buf[0..n]) catch 0;
             }
 
             i += 1;
