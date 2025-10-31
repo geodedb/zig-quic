@@ -112,6 +112,7 @@ async fn run_test(server_addr: SocketAddr) -> Result<()> {
 }
 
 // Skip server certificate verification (for testing only - DO NOT USE IN PRODUCTION)
+#[derive(Debug)]
 struct SkipServerVerification;
 
 impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
