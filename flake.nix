@@ -77,8 +77,8 @@
               # --- Python path --------------------------------------------------------------
               # Reset PYTHONPATH safely, then prepend the env's site-packages if it exists.
               export PYTHONPATH=''${PYTHONPATH:-""}
-              if [ -d "${pythonWithPackages}/lib/python3.12/site-packages" ]; then
-                export PYTHONPATH="${pythonWithPackages}/lib/python3.12/site-packages:$PYTHONPATH"
+              if [ -d "${pythonWithPackages}/${pythonWithPackages.sitePackages}" ]; then
+                export PYTHONPATH="${pythonWithPackages}/${pythonWithPackages.sitePackages}:$PYTHONPATH"
               fi
 
               # --- C/C++ compiler flags for glibc -------------------------------------------
