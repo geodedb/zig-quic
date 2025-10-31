@@ -130,6 +130,7 @@
             env = { };
             packages =
               (with dev-env.packages.${system}; [
+                goPackages
                 zigPackages
                 commonPackages
               ])
