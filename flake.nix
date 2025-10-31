@@ -79,7 +79,20 @@
               if [ -d "${pythonWithPackages}/lib/python3.12/site-packages" ]; then
                 export PYTHONPATH="${pythonWithPackages}/lib/python3.12/site-packages:$PYTHONPATH"
               fi
-              
+
+              # --- C/C++ compiler flags for glibc -------------------------------------------
+              # Required for building C/C++ projects (like quiche's BoringSSL) with proper glibc headers
+              # Use -idirafter to append glibc includes after C++ stdlib, avoiding #include_next issues
+              export NIX_CFLAGS_COMPILE="''${NIX_CFLAGS_COMPILE:-""}"
+              export NIX_CXXFLAGS_COMPILE="''${NIX_CXXFLAGS_COMPILE:-""}"
+              export NIX_LDFLAGS="''${NIX_LDFLAGS:-""} -L${pkgs.glibc}/lib -L${pkgs.gcc.cc.lib}/lib"
+
+              # Set CFLAGS/CXXFLAGS for CMake-based builds (e.g., BoringSSL in quiche)
+              # CMake doesn't inherit Nix's wrapper flags, so we need to set them explicitly
+              export CFLAGS="''${CFLAGS:-""}"
+              export CXXFLAGS="''${CXXFLAGS:-""}"
+              export LDFLAGS="''${LDFLAGS:-""} -L${pkgs.glibc}/lib -L${pkgs.gcc.cc.lib}/lib"
+
               # --- GitHub CLI auth ----------------------------------------------------------
               # If not authenticated, try token-based login from ~/.github_token
               ${pkgs.gh}/bin/gh auth status >/dev/null 2>&1 || \
@@ -148,6 +161,10 @@
                   rust-analyzer
                   clippy
                   boringssl
+                  glibc
+                  glibc.dev
+                  gcc.cc.lib
+                  libev
 
                   # Debugging and analysis
                   gdb
