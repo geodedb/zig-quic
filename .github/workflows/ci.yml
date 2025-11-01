@@ -12,18 +12,21 @@ concurrency:
 
 jobs:
   build-and-test:
-    name: Build and test (${{ matrix.os }}-${{ matrix.arch || 'x64' }}, zig ${{ matrix.zig }})
-    runs-on: runs-on=${{ github.run_id }}/runner=${{ matrix.os }}-${{ matrix.arch || 'x64' }}
+    name: Build and test (${{ matrix.os }}-${{ matrix.arch }}, zig ${{ matrix.zig }})
+    runs-on: runs-on=${{ github.run_id }}/${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu24-full
             arch: x64
+            runner: runner=2cpu-linux-x64
           - os: ubuntu24-full
             arch: arm64
+            runner: runner=2cpu-linux-arm64
           - os: windows22-full
             arch: x64
+            runner: image=windows22-full-x64/family=m7i
         zig: ['0.15.1']
 
     steps:
@@ -58,12 +61,16 @@ jobs:
           retention-days: 7
 
   build-linux-xdp:
-    name: Build (${{ matrix.runner }}, zig ${{ matrix.zig }}, -Dxdp=true)
+    name: Build (${{ matrix.arch }}, zig ${{ matrix.zig }}, -Dxdp=true)
     runs-on: runs-on=${{ github.run_id }}/runner=${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu24-full-x64, ubuntu24-full-arm64]
+        include:
+          - arch: x64
+            runner: 2cpu-linux-x64
+          - arch: arm64
+            runner: 2cpu-linux-arm64
         zig: ['0.15.1']
     steps:
       - uses: spyderorg/workflows/.github/actions/nix-setup@main
@@ -101,11 +108,14 @@ jobs:
         include:
           - os: ubuntu24-full
             arch: x64
+            runner: runner=2cpu-linux-x64
           - os: ubuntu24-full
             arch: arm64
+            runner: runner=2cpu-linux-arm64
           - os: windows22-full
             arch: x64
-    runs-on: runs-on=${{ github.run_id }}/runner=${{ matrix.os }}-${{ matrix.arch }}
+            runner: image=windows22-full-x64/family=m7i
+    runs-on: runs-on=${{ github.run_id }}/${{ matrix.runner }}
     steps:
       - uses: spyderorg/workflows/.github/actions/nix-setup@main
         with:
@@ -166,24 +176,24 @@ jobs:
 
   cross-builds:
     name: Cross builds (${{ matrix.archive_os }}-${{ matrix.archive_arch }})
-    runs-on: runs-on=${{ github.run_id }}/runner=${{ matrix.runner }}
+    runs-on: runs-on=${{ github.run_id }}/${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu24-full-x64
+          - runner: runner=2cpu-linux-x64
             target: arm-linux-gnueabihf
             archive_os: linux
             archive_arch: arm
-          - runner: ubuntu24-full-x64
+          - runner: runner=2cpu-linux-x64
             target: aarch64-linux-gnu
             archive_os: linux
             archive_arch: arm64
-          - runner: ubuntu24-full-x64
+          - runner: runner=2cpu-linux-x64
             target: riscv64-linux-gnu
             archive_os: linux
             archive_arch: riscv64
-          - runner: windows22-full-x64
+          - runner: image=windows22-full-x64/family=m7i
             target: aarch64-windows-msvc
             archive_os: windows
             archive_arch: arm64
@@ -252,12 +262,15 @@ jobs:
         include:
           - os: ubuntu24-full
             arch: x64
+            runner: runner=2cpu-linux-x64
           - os: ubuntu24-full
             arch: arm64
+            runner: runner=2cpu-linux-arm64
           - os: windows22-full
             arch: x64
+            runner: image=windows22-full-x64/family=m7i
         zig: [0.15.1]
-    runs-on: runs-on=${{ github.run_id }}/runner=${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: runs-on=${{ github.run_id }}/${{ matrix.runner }}
     steps:
       - uses: spyderorg/workflows/.github/actions/nix-setup@main
         with:
@@ -321,7 +334,7 @@ jobs:
     name: Create or update dev release with tarball
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [build-test, build-test-macos]
-    runs-on: runs-on=${{ github.run_id }}/runner=ubuntu24-full-x64
+    runs-on: runs-on=${{ github.run_id }}/runner=2cpu-linux-x64
     permissions:
       contents: write
     steps:

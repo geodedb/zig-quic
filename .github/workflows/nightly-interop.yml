@@ -17,7 +17,7 @@ on:
 jobs:
   interop-matrix:
     name: Interop - ${{ matrix.implementation }} (${{ matrix.arch }})
-    runs-on: runs-on=${{ github.run_id }}/runner=ubuntu24-full-${{ matrix.arch }}
+    runs-on: runs-on=${{ github.run_id }}/runner=2cpu-linux-${{ matrix.arch }}
     timeout-minutes: 60
 
     strategy:
@@ -105,7 +105,7 @@ jobs:
   
   interop-summary:
     name: Interop Summary
-    runs-on: runs-on=${{ github.run_id }}/runner=ubuntu24-full-x64
+    runs-on: runs-on=${{ github.run_id }}/runner=2cpu-linux-x64
     if: always()
     needs: [interop-matrix]
     
