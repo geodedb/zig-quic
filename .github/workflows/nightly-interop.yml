@@ -16,13 +16,14 @@ on:
 
 jobs:
   interop-matrix:
-    name: Interop - ${{ matrix.implementation }}
-    runs-on: runs-on=${{ github.run_id }}/runner=ubuntu24-full-x64
+    name: Interop - ${{ matrix.implementation }} (${{ matrix.arch }})
+    runs-on: runs-on=${{ github.run_id }}/runner=ubuntu24-full-${{ matrix.arch }}
     timeout-minutes: 60
-    
+
     strategy:
       fail-fast: false
       matrix:
+        arch: [x64, arm64]
         implementation:
           - quic-go
           - ngtcp2

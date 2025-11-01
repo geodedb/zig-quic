@@ -12,12 +12,18 @@ concurrency:
 
 jobs:
   build-and-test:
-    name: Build and test (${{ matrix.os }}, zig ${{ matrix.zig }})
-    runs-on: runs-on=${{ github.run_id }}/runner=${{ matrix.os }}
+    name: Build and test (${{ matrix.os }}-${{ matrix.arch || 'x64' }}, zig ${{ matrix.zig }})
+    runs-on: runs-on=${{ github.run_id }}/runner=${{ matrix.os }}-${{ matrix.arch || 'x64' }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu24-full-arm64, windows22-full-x64]
+        include:
+          - os: ubuntu24-full
+            arch: x64
+          - os: ubuntu24-full
+            arch: arm64
+          - os: windows22-full
+            arch: x64
         zig: ['0.15.1']
 
     steps:
@@ -52,11 +58,12 @@ jobs:
           retention-days: 7
 
   build-linux-xdp:
-    name: Build (ubuntu-latest, zig ${{ matrix.zig }}, -Dxdp=true)
-    runs-on: runs-on=${{ github.run_id }}/runner=ubuntu24-full-arm64
+    name: Build (${{ matrix.runner }}, zig ${{ matrix.zig }}, -Dxdp=true)
+    runs-on: runs-on=${{ github.run_id }}/runner=${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
+        runner: [ubuntu24-full-x64, ubuntu24-full-arm64]
         zig: ['0.15.1']
     steps:
       - uses: spyderorg/workflows/.github/actions/nix-setup@main
@@ -91,8 +98,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu24-full-x64, windows22-full-x64]
-    runs-on: runs-on=${{ github.run_id }}/runner=${{ matrix.os }}
+        include:
+          - os: ubuntu24-full
+            arch: x64
+          - os: ubuntu24-full
+            arch: arm64
+          - os: windows22-full
+            arch: x64
+    runs-on: runs-on=${{ github.run_id }}/runner=${{ matrix.os }}-${{ matrix.arch }}
     steps:
       - uses: spyderorg/workflows/.github/actions/nix-setup@main
         with:
@@ -236,9 +249,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu24-full-x64, windows22-full-x64]
+        include:
+          - os: ubuntu24-full
+            arch: x64
+          - os: ubuntu24-full
+            arch: arm64
+          - os: windows22-full
+            arch: x64
         zig: [0.15.1]
-    runs-on: runs-on=${{ github.run_id }}/runner=${{ matrix.os }}
+    runs-on: runs-on=${{ github.run_id }}/runner=${{ matrix.os }}-${{ matrix.arch }}
     steps:
       - uses: spyderorg/workflows/.github/actions/nix-setup@main
         with:

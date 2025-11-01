@@ -33,9 +33,9 @@ jobs:
             run_tests: false
           - os: linux
             arch: arm64
-            runner: ubuntu24-full-x64
+            runner: ubuntu24-full-arm64
             target: aarch64-linux-gnu
-            run_tests: false
+            run_tests: true
           - os: linux
             arch: riscv64
             runner: ubuntu24-full-x64
