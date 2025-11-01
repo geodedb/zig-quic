@@ -925,8 +925,11 @@ pub const Endpoint = struct {
                 }
             }
         } else if (n == 0) {
-            // epoll_wait timed out - no data available, do not drain
+            // epoll_wait timed out - no data available
             logger.debug("epoll_wait timed out (no events)", .{});
+            // TEMPORARY DEBUG: Try draining anyway to see if data is buffered
+            logger.debug("TEMP FIX: Attempting to drain despite timeout", .{});
+            self.drainReadable();
         }
     }
 
@@ -1532,7 +1535,8 @@ pub const Endpoint = struct {
         const ty = (first >> 4) & 0x03;
         const version: u32 = (@as(u32, bytes[1]) << 24) | (@as(u32, bytes[2]) << 16) | (@as(u32, bytes[3]) << 8) | @as(u32, bytes[4]);
         if (ty == 0) {
-            logger.debug("Processing Initial packet from peer", .{});
+            logger.debug("=== PROCESSING INITIAL PACKET FROM PEER ===", .{});
+            logger.debug("Packet total length: {} bytes", .{bytes.len});
             // Initial
             var i: usize = 5;
             if (i >= bytes.len) return;
@@ -1547,8 +1551,8 @@ pub const Endpoint = struct {
             if (i + scid_len > bytes.len) return;
             const scid = bytes[i .. i + scid_len];
             i += scid_len;
-            
-            logger.debug("Initial packet: dcid_len={}, scid_len={}", .{dcid_len, scid_len});
+
+            logger.debug("Initial packet: dcid_len={}, scid_len={}, version=0x{X:0>8}", .{dcid_len, scid_len, version});
             if (scid_len > 0) {
                 logger.debug("  Client SCID: ", .{});
                 for (scid) |b| logger.debug("{X:0>2}", .{b});
@@ -1892,8 +1896,20 @@ pub const Endpoint = struct {
             var saw_any: bool = false;
             var saw_ack_eliciting_initial: bool = false;
             const now_ns_initial: u64 = @intCast(std.time.nanoTimestamp());
+            logger.debug("=== DECODING FRAMES FROM INITIAL PACKET ===", .{});
+            logger.debug("Plaintext length: {} bytes", .{pt.len});
+            if (pt.len > 0) {
+                logger.debug("First 16 bytes of plaintext: ", .{});
+                for (pt[0..@min(16, pt.len)]) |b| logger.debug("{X:0>2} ", .{b});
+                logger.debug("", .{});
+            }
             while (off < pt.len) {
-                const r = frame.decodeOne(pt[off..]) catch break;
+                logger.debug("Attempting to decode frame at offset {} (remaining: {} bytes)", .{off, pt.len - off});
+                const r = frame.decodeOne(pt[off..]) catch |err| {
+                    logger.debug("ERROR: Frame decode failed at offset {}: {}", .{off, err});
+                    break;
+                };
+                logger.debug("Successfully decoded frame type: {s}, consumed {} bytes", .{@tagName(r.f), r.n});
                 off += r.n;
                 switch (r.f) {
                     .crypto => |cr| {

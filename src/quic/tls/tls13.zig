@@ -1192,6 +1192,57 @@ pub const Engine = struct {
         logger.debug("TLS: Queued Certificate message (cert_len={}, total_body_len={})", .{cert_der.len, body.items.len});
     }
 
+    /// Queue CertificateVerify message (RFC 8446 Section 4.4.3)
+    /// Signs the transcript hash with the server's private key
+    pub fn queueCertificateVerify(self: *Engine) !void {
+        const privkey = self.server_priv_key orelse return error.NoPrivateKey;
+        const alg = self.server_sig_alg orelse return error.NoSignatureAlgorithm;
+
+        // Get transcript hash up to this point (before CertificateVerify)
+        var transcript_snapshot = self.transcript;
+        const transcript_hash = transcript_snapshot.finalize();
+
+        // Context for server CertificateVerify
+        const context = "TLS 1.3, server CertificateVerify";
+
+        // Sign the transcript
+        const signature = try sig.signCertificateVerify(alg, privkey, context, &transcript_hash, self.allocator);
+        defer self.allocator.free(signature);
+
+        // Build CertificateVerify message body per RFC 8446 Section 4.4.3:
+        // struct {
+        //     SignatureScheme algorithm;  // 2 bytes
+        //     opaque signature<0..2^16-1>; // 2-byte length + signature
+        // } CertificateVerify;
+
+        var body = std.ArrayList(u8){};
+        defer body.deinit(self.allocator);
+
+        // SignatureScheme (2 bytes)
+        const scheme_value: u16 = switch (alg) {
+            .ecdsa_secp256r1_sha256 => 0x0403,
+            .ecdsa_secp384r1_sha384 => 0x0503,
+            .rsa_pss_sha256 => 0x0804,
+            .ed25519 => 0x0807,
+        };
+        try body.append(self.allocator, @intCast((scheme_value >> 8) & 0xff));
+        try body.append(self.allocator, @intCast(scheme_value & 0xff));
+
+        // Signature length (2 bytes)
+        const sig_len: u16 = @intCast(signature.len);
+        try body.append(self.allocator, @intCast((sig_len >> 8) & 0xff));
+        try body.append(self.allocator, @intCast(sig_len & 0xff));
+
+        // Signature bytes
+        try body.appendSlice(self.allocator, signature);
+
+        const msg = try encodeHandshake(self.allocator, .certificate_verify, body.items);
+        defer self.allocator.free(msg);
+        try self.queueCrypto(msg);
+
+        logger.debug("TLS: Queued CertificateVerify message (alg={s}, sig_len={})", .{@tagName(alg), signature.len});
+    }
+
     // --- New helper methods used by tests ---
 
     /// Compute handshake traffic secrets if ECDHE and both CH/SH are present.

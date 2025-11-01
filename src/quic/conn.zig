@@ -1125,7 +1125,39 @@ pub const Connection = struct {
                     self.hs_server = server_secret;
                     self.deriveHandshakeKeys(self.version_v2);
 
-                    // ServerHello is now in outbox and will be sent in Handshake packet
+                    // Queue the rest of the TLS handshake flight
+                    // FIX: Server must send complete handshake flight after ServerHello
+                    // This was missing, causing clients to timeout waiting for EncryptedExtensions
+
+                    // 1. EncryptedExtensions (with ALPN and transport parameters)
+                    const alpn = if (self.tls.alpn) |a| a else "hq-interop";
+                    const local_tp = self.tls.local_tp orelse &[_]u8{};
+                    self.tls.queueEncryptedExtensions(alpn, local_tp) catch {
+                        logger.err("Server: Failed to queue EncryptedExtensions", .{});
+                    };
+
+                    // 2. Certificate (if we have one)
+                    if (self.tls.server_cert_der) |cert| {
+                        self.tls.queueCertificate(cert) catch {
+                            logger.err("Server: Failed to queue Certificate", .{});
+                        };
+
+                        // 3. CertificateVerify (signature over transcript)
+                        if (self.tls.server_priv_key) |_| {
+                            if (self.tls.server_sig_alg) |_| {
+                                self.tls.queueCertificateVerify() catch {
+                                    logger.err("Server: Failed to queue CertificateVerify", .{});
+                                };
+                            }
+                        }
+                    }
+
+                    // 4. Finished (MAC over transcript using handshake traffic secret)
+                    self.tls.queueFinished(server_secret) catch {
+                        logger.err("Server: Failed to queue Finished", .{});
+                    };
+
+                    logger.debug("Server: Queued complete handshake flight (SH + EE + Cert + CV + Finished)", .{});
                 }
             }
         }

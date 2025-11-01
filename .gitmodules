@@ -22,3 +22,33 @@
 [submodule "forks/boringssl"]
 	path = forks/boringssl
 	url = git@github.com:google/boringssl.git
+[submodule "forks/neqo"]
+	path = forks/neqo
+	url = git@github.com:mozilla/neqo.git
+[submodule "forks/mvfst"]
+	path = forks/mvfst
+	url = git@github.com:facebook/mvfst.git
+[submodule "forks/picoquic"]
+	path = forks/picoquic
+	url = git@github.com:private-octopus/picoquic.git
+[submodule "forks/lsquic"]
+	path = forks/lsquic
+	url = git@github.com:litespeedtech/lsquic.git
+[submodule "forks/go-x-net"]
+	path = forks/go-x-net
+	url = https://go.googlesource.com/net
+[submodule "forks/s2n-quic"]
+	path = forks/s2n-quic
+	url = git@github.com:aws/s2n-quic.git
+[submodule "forks/xquic"]
+	path = forks/xquic
+	url = git@github.com:alibaba/xquic.git
+[submodule "forks/kwik"]
+	path = forks/kwik
+	url = git@github.com:ptrd/kwik.git
+[submodule "forks/ngtcp2"]
+	path = forks/ngtcp2
+	url = git@github.com:ngtcp2/ngtcp2.git
+[submodule "forks/openssl"]
+	path = forks/openssl
+	url = git@github.com:openssl/openssl.git
