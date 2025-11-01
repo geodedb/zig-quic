@@ -1,0 +1,1 @@
+- remember to check @forks/quiche/quiche as this is built by cloudflare and likely an authoritative implementation of quic, and use @forks/boringssl for tls 1.3 as that is an authoritative implementation of tls 1.3. When referencing forks those should be your first inspection points.

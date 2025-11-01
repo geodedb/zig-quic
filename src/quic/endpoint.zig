@@ -2635,13 +2635,28 @@ pub const Endpoint = struct {
                     return;
                 }
 
-                // Now unmask the packet number bytes with the correct length
+                // FIXED: Now re-extract the HP sample from the correct offset
+                // Per RFC 9001 5.4.2: Sample ALWAYS starts at offset 4 from PN field start
+                const sample_offset: usize = 4;  // ALWAYS 4, not actual_pn_len!
+                if (full_pn_and_payload.len < sample_offset + 16) {
+                    logger.debug("Handshake packet too short for HP sample: {} bytes, need {}", .{full_pn_and_payload.len, sample_offset + 16});
+                    conn.onAeadAuthFailure();
+                    return;
+                }
+                @memcpy(sample16[0..], full_pn_and_payload[sample_offset .. sample_offset + 16]);
+                logger.debug("Re-extracted HP sample from offset {} (always 4) for PN length {}", .{sample_offset, actual_pn_len});
+
+                // Now unmask the packet number bytes with the correct length and correct sample
                 var pn_bytes_buf: [4]u8 = undefined;
                 const pn_bytes = pn_bytes_buf[0..actual_pn_len];
                 @memcpy(pn_bytes, bytes[pn_start .. pn_start + actual_pn_len]);
+
+                // Debug: Log masked PN bytes
+                logger.debug("Masked PN bytes (len={}): {any}", .{actual_pn_len, pn_bytes});
+
                 var header_try = first;
 
-                // Unmask both header and PN bytes
+                // Unmask both header and PN bytes with the correctly positioned sample
                 crypto.headerProtect(
                     .aes_128_gcm,
                     &rx_keys.hp,
@@ -2653,6 +2668,9 @@ pub const Endpoint = struct {
                     conn.onAeadAuthFailure();
                     return;
                 };
+
+                // Debug: Log unmasked PN bytes
+                logger.debug("Unmasked PN bytes (len={}): {any}", .{actual_pn_len, pn_bytes});
 
                 // Now decrypt with the correct PN length
                 var pt_list = std.ArrayList(u8){};
@@ -2689,13 +2707,17 @@ pub const Endpoint = struct {
 
                 // Use unprotectInitialAutoSample for handshake packets with handshake keys
                 // Note: The function name is misleading - it works for any QUIC packet type
+                // IMPORTANT: Pass MASKED bytes since the function will unmask them internally
+                var masked_header = first; // Use the original masked header byte
+                var masked_pn_bytes: [4]u8 = undefined;
+                @memcpy(masked_pn_bytes[0..actual_pn_len], bytes[pn_start .. pn_start + actual_pn_len]);
                 const dec = crypto.unprotectInitialAutoSample(
                     .aes_128_gcm,
                     &rx_keys.key,
                     &rx_keys.iv,
                     &rx_keys.hp,
-                    &header_try,
-                    pn_bytes,
+                    &masked_header,
+                    masked_pn_bytes[0..actual_pn_len],
                     header_prefix,
                     full_pn_and_payload,  // Correctly positioned buffer for sample extraction
                     pt_slice,
