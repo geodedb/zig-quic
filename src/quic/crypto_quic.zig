@@ -477,12 +477,20 @@ pub fn unprotectInitialAutoSample(
 
     // IMPORTANT: The ciphertext_and_tag buffer starts at the packet number field.
     // The first pn_len bytes are the masked packet number bytes.
-    // We need to copy them to pn_bytes for unmasking.
-    @memcpy(pn_bytes, ciphertext_and_tag[0..pn_len]);
+    // pn_bytes is already initialized by the caller with the masked PN bytes.
+    // DO NOT overwrite pn_bytes here - it's already set correctly by the caller.
 
     // Reconstruct HP sample per suite
     // ciphertext_and_tag parameter starts at PN field beginning (includes PN bytes + encrypted payload + tag)
     var sample16: [16]u8 = undefined;
+
+    // Debug: Log the first few bytes of ciphertext_and_tag to see what we're working with
+    logger.debug("Header protection removal - first 32 bytes of ciphertext_and_tag:", .{});
+    const debug_len = @min(32, ciphertext_and_tag.len);
+    for (ciphertext_and_tag[0..debug_len]) |b| logger.debug("{X:0>2} ", .{b});
+    logger.debug("", .{});
+    logger.debug("  pn_len={}, ciphertext_and_tag.len={}", .{ pn_len, ciphertext_and_tag.len });
+
     switch (suite) {
         .aes_128_gcm => {
             // RFC 9001 §5.4.2: Sample starts 4 bytes after PN field start, always 16 bytes.
@@ -549,9 +557,15 @@ pub fn unprotectInitialAutoSample(
     while (i < pn_len) : (i += 1) pn_trunc = (pn_trunc << 8) | pn_bytes[i];
     const full_pn = expandPacketNumber(pn_trunc, @intCast(pn_len), expected_pn);
 
-    if (builtin.is_test) {
-        logger.debug("expandPacketNumber: truncated={} pn_len={} expected={} -> full={}", .{ pn_trunc, pn_len, expected_pn, full_pn });
-    }
+    logger.debug("expandPacketNumber: truncated={} pn_len={} expected={} -> full={}", .{ pn_trunc, pn_len, expected_pn, full_pn });
+    logger.debug("  Nonce IV: ", .{});
+    for (aead_iv) |b| logger.debug("{X:0>2}", .{b});
+    logger.debug("", .{});
+    logger.debug("  Nonce after XOR with PN {}: ", .{full_pn});
+    var nonce_debug: [12]u8 = undefined;
+    xorNonce(&nonce_debug, aead_iv, full_pn);
+    for (nonce_debug) |b| logger.debug("{X:0>2}", .{b});
+    logger.debug("", .{});
 
     // ciphertext_and_tag buffer layout: [PN bytes (pn_len)] [encrypted payload + tag]
     // Pass only the encrypted payload + tag portion to AEAD decrypt
