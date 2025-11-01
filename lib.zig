@@ -1,5 +1,6 @@
 // Public API surface re-export for vendored QUIC module (geode wiring)
 const api = @import("src/quic/api.zig");
+pub const pem = @import("src/quic/pem.zig");
 
 pub const QuicVersion = api.QuicVersion;
 pub const Role = api.Role;

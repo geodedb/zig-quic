@@ -1,5 +1,6 @@
 const std = @import("std");
 const api = @import("quic_api");
+const pem = @import("quic_api").pem;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -40,23 +41,45 @@ pub fn main() !void {
     var key_p256: ?[]const u8 = null;
 
     if (cert_path) |cp| {
-        const cert_file = try std.fs.cwd().openFile(cp, .{});
-        defer cert_file.close();
-        const cert_data = try cert_file.readToEndAlloc(alloc, 1024 * 1024);
-        defer alloc.free(cert_data);
+        if (std.fs.cwd().openFile(cp, .{})) |cert_file| {
+            defer cert_file.close();
+            const cert_pem_data = try cert_file.readToEndAlloc(alloc, 1024 * 1024);
+            defer alloc.free(cert_pem_data);
 
-        // For now, just pass the PEM data directly
-        cert_der = try alloc.dupe(u8, cert_data);
+            // Parse PEM to DER
+            cert_der = pem.parseCertificate(alloc, cert_pem_data) catch |err| blk: {
+                std.debug.print("Warning: Failed to parse certificate '{s}': {}\n", .{cp, err});
+                std.debug.print("Continuing without certificate (insecure mode)\n", .{});
+                break :blk null;
+            };
+            if (cert_der) |cd| {
+                std.debug.print("Loaded and parsed certificate from '{s}' (DER: {} bytes)\n", .{cp, cd.len});
+            }
+        } else |err| {
+            std.debug.print("Warning: Could not open certificate file '{s}': {}\n", .{cp, err});
+            std.debug.print("Continuing without certificate (insecure mode)\n", .{});
+        }
     }
 
     if (key_path) |kp| {
-        const key_file = try std.fs.cwd().openFile(kp, .{});
-        defer key_file.close();
-        const key_data = try key_file.readToEndAlloc(alloc, 1024 * 1024);
-        defer alloc.free(key_data);
+        if (std.fs.cwd().openFile(kp, .{})) |key_file| {
+            defer key_file.close();
+            const key_pem_data = try key_file.readToEndAlloc(alloc, 1024 * 1024);
+            defer alloc.free(key_pem_data);
 
-        // For now, just pass the PEM data directly
-        key_p256 = try alloc.dupe(u8, key_data);
+            // Parse PEM private key (EC or RSA)
+            key_p256 = pem.parsePrivateKey(alloc, key_pem_data) catch |err| blk: {
+                std.debug.print("Warning: Failed to parse private key '{s}': {}\n", .{kp, err});
+                std.debug.print("Continuing without private key (insecure mode)\n", .{});
+                break :blk null;
+            };
+            if (key_p256) |kd| {
+                std.debug.print("Loaded and parsed private key from '{s}' ({} bytes)\n", .{kp, kd.len});
+            }
+        } else |err| {
+            std.debug.print("Warning: Could not open key file '{s}': {}\n", .{kp, err});
+            std.debug.print("Continuing without private key (insecure mode)\n", .{});
+        }
     }
 
     // Create ALPN slice

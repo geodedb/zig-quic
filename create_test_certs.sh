@@ -1,0 +1,72 @@
+#!/bin/bash
+
+# Create test certificate directories
+mkdir -p tests/certs/valid
+mkdir -p tests/certs/self-signed
+
+# Function to generate ECDSA P-256 certificate
+generate_ecdsa_cert() {
+    local dir=$1
+    local subject=$2
+
+    # Generate ECDSA private key (P-256)
+    openssl ecparam -genkey -name prime256v1 -out "$dir/key.pem"
+
+    # Generate certificate request
+    openssl req -new -key "$dir/key.pem" -out "$dir/cert.csr" -subj "$subject"
+
+    # Generate certificate
+    openssl x509 -req -in "$dir/cert.csr" -signkey "$dir/key.pem" -out "$dir/cert.pem" -days 365 \
+        -extfile <(printf "subjectAltName=DNS:localhost,DNS:127.0.0.1,IP:127.0.0.1\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth,clientAuth")
+
+    # Convert to DER format (binary)
+    openssl x509 -in "$dir/cert.pem" -outform DER -out "$dir/cert.der"
+
+    # Clean up CSR
+    rm "$dir/cert.csr"
+
+    # Display certificate info
+    echo "Certificate created in $dir:"
+    openssl x509 -in "$dir/cert.pem" -noout -text | head -20
+}
+
+# Function to generate RSA certificate
+generate_rsa_cert() {
+    local dir=$1
+    local subject=$2
+
+    # Generate RSA private key
+    openssl genrsa -out "$dir/key_rsa.pem" 2048
+
+    # Generate certificate
+    openssl req -new -x509 -key "$dir/key_rsa.pem" -out "$dir/cert_rsa.pem" -days 365 -subj "$subject" \
+        -addext "subjectAltName=DNS:localhost,DNS:127.0.0.1,IP:127.0.0.1" \
+        -addext "keyUsage=digitalSignature,keyEncipherment" \
+        -addext "extendedKeyUsage=serverAuth,clientAuth"
+
+    # Convert to DER format
+    openssl x509 -in "$dir/cert_rsa.pem" -outform DER -out "$dir/cert_rsa.der"
+}
+
+echo "Creating valid test certificates..."
+generate_ecdsa_cert "tests/certs/valid" "/CN=quic-test-server/O=QUIC Test/C=US"
+generate_rsa_cert "tests/certs/valid" "/CN=quic-test-server-rsa/O=QUIC Test/C=US"
+
+echo "Creating self-signed test certificates..."
+generate_ecdsa_cert "tests/certs/self-signed" "/CN=localhost/O=Self-Signed/C=US"
+generate_rsa_cert "tests/certs/self-signed" "/CN=localhost-rsa/O=Self-Signed/C=US"
+
+echo "Certificate generation complete!"
+echo ""
+echo "Files created:"
+echo "  Valid certificates:"
+echo "    - tests/certs/valid/cert.pem (ECDSA)"
+echo "    - tests/certs/valid/key.pem (ECDSA)"
+echo "    - tests/certs/valid/cert_rsa.pem (RSA)"
+echo "    - tests/certs/valid/key_rsa.pem (RSA)"
+echo ""
+echo "  Self-signed certificates:"
+echo "    - tests/certs/self-signed/cert.pem (ECDSA)"
+echo "    - tests/certs/self-signed/key.pem (ECDSA)"
+echo "    - tests/certs/self-signed/cert_rsa.pem (RSA)"
+echo "    - tests/certs/self-signed/key_rsa.pem (RSA)"
