@@ -1920,8 +1920,7 @@ pub const Endpoint = struct {
                     continue;
                 };
                 std.debug.print("DEBUG: Decryption SUCCESS!\n", .{});
-                std.debug.print("DEBUG: dec value = {}\n", .{dec});
-                _ = dec;
+                std.debug.print("DEBUG: dec value = {any}\n", .{dec});
                 std.debug.print("DEBUG: After unmasking with pn_len={}: ", .{pn_len_try});
                 for (pn_try[0..pn_len_try]) |b| std.debug.print("{X:0>2} ", .{b});
                 std.debug.print("\n", .{});
@@ -1964,35 +1963,39 @@ pub const Endpoint = struct {
             std.debug.print("DEBUG: After accept enqueue check\n", .{});
 
             // Expand truncated PN against Initial space expectation and track
+            std.debug.print("DEBUG: About to expand packet number\n", .{});
             var pn_val_be: u64 = 0;
             var kk: usize = 0;
             while (kk < pn_len) : (kk += 1) pn_val_be = (pn_val_be << 8) | pn_masked[kk];
             const pn_full: u64 = conn.expandPnInitial(pn_val_be, pn_len);
-            logger.debug("Expanded PN: {} from truncated: {}", .{ pn_full, pn_val_be });
+            std.debug.print("DEBUG: Expanded PN: {} from truncated: {}\n", .{ pn_full, pn_val_be });
             conn.trackRecvPnInitial(pn_full);
+            std.debug.print("DEBUG: Tracked packet number, now processing frames\n", .{});
 
             // Walk frames and push CRYPTO to inbox
             var off: usize = 0;
             var saw_any: bool = false;
             var saw_ack_eliciting_initial: bool = false;
             const now_ns_initial: u64 = @intCast(std.time.nanoTimestamp());
-            logger.debug("=== DECODING FRAMES FROM INITIAL PACKET ===", .{});
-            logger.debug("Plaintext length: {} bytes", .{pt.len});
+            std.debug.print("DEBUG: === DECODING FRAMES FROM INITIAL PACKET ===\n", .{});
+            std.debug.print("DEBUG: Plaintext length: {} bytes\n", .{pt.len});
             if (pt.len > 0) {
-                logger.debug("First 16 bytes of plaintext: ", .{});
-                for (pt[0..@min(16, pt.len)]) |b| logger.debug("{X:0>2} ", .{b});
-                logger.debug("", .{});
+                std.debug.print("DEBUG: First 16 bytes of plaintext: ", .{});
+                for (pt[0..@min(16, pt.len)]) |b| std.debug.print("{X:0>2} ", .{b});
+                std.debug.print("\n", .{});
             }
             while (off < pt.len) {
-                logger.debug("Attempting to decode frame at offset {} (remaining: {} bytes)", .{off, pt.len - off});
+                std.debug.print("DEBUG: Attempting to decode frame at offset {} (remaining: {} bytes)\n", .{off, pt.len - off});
                 const r = frame.decodeOne(pt[off..]) catch |err| {
-                    logger.debug("ERROR: Frame decode failed at offset {}: {}", .{off, err});
+                    std.debug.print("DEBUG: ERROR: Frame decode failed at offset {}: {}\n", .{off, err});
                     break;
                 };
-                logger.debug("Successfully decoded frame type: {s}, consumed {} bytes", .{@tagName(r.f), r.n});
+                std.debug.print("DEBUG: Successfully decoded frame type: {s}, consumed {} bytes\n", .{@tagName(r.f), r.n});
                 off += r.n;
+                std.debug.print("DEBUG: About to switch on frame type: {s}\n", .{@tagName(r.f)});
                 switch (r.f) {
                     .crypto => |cr| {
+                        std.debug.print("DEBUG: Processing CRYPTO frame with {} bytes at offset {}\n", .{cr.data.len, cr.offset});
                         logger.debug("{s}: Received Initial CRYPTO frame with {} bytes at offset {} (expected {})", .{
                             if (conn.role == .Server) "Server" else "Client",
                             cr.data.len,
@@ -2004,20 +2007,20 @@ pub const Endpoint = struct {
                         // Check if this CRYPTO frame is at the expected offset
                         if (cr.offset == conn.crypto_rx_off_initial) {
                             // In-order frame - process immediately
-                            logger.debug("Processing in-order Initial CRYPTO frame at offset {} with {} bytes", .{cr.offset, cr.data.len});
-                            logger.debug("Pushing {} bytes to TLS engine (Initial)", .{cr.data.len});
+                            std.debug.print("DEBUG: Processing in-order Initial CRYPTO frame at offset {} with {} bytes\n", .{cr.offset, cr.data.len});
+                            std.debug.print("DEBUG: Pushing {} bytes to TLS engine (Initial)\n", .{cr.data.len});
                             // Log first few bytes of CRYPTO data for debugging
                             if (cr.data.len >= 8) {
-                                logger.debug("CRYPTO data first 8 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{
+                                std.debug.print("DEBUG: CRYPTO data first 8 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{
                                     cr.data[0], cr.data[1], cr.data[2], cr.data[3],
                                     cr.data[4], cr.data[5], cr.data[6], cr.data[7]
                                 });
                             }
                             conn.pushCrypto(cr.data) catch |err| {
-                                logger.debug("ERROR: Failed to push CRYPTO data to TLS: {}", .{err});
+                                std.debug.print("DEBUG: ERROR: Failed to push CRYPTO data to TLS: {}\n", .{err});
                             };
                             conn.crypto_rx_off_initial += @intCast(cr.data.len);
-                            logger.debug("Updated crypto_rx_off_initial to {}", .{conn.crypto_rx_off_initial});
+                            std.debug.print("DEBUG: Updated crypto_rx_off_initial to {}\n", .{conn.crypto_rx_off_initial});
 
                             // Check if we can now process any buffered out-of-order frames
                             while (conn.crypto_buffer_initial.getContiguous(conn.crypto_rx_off_initial)) |fragments| {
