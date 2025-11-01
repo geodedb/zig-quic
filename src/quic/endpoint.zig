@@ -2597,83 +2597,124 @@ pub const Endpoint = struct {
                 const avail = @min(@as(usize, 4), end_total - pn_start);
                 @memcpy(pn_masked[0..avail], bytes[pn_start .. pn_start + avail]);
 
-                // Try different PN lengths until one succeeds
-                var success = false;
-                var chosen_pn_len: u3 = 0;
+                // FIXED: Extract HP sample first, then determine actual PN length from header
+                const full_pn_and_payload = bytes[pn_start..end_total];
+                if (full_pn_and_payload.len < 20) {
+                    logger.debug("Handshake packet too short for HP sample: {} bytes", .{full_pn_and_payload.len});
+                    conn.onAeadAuthFailure();
+                    return;
+                }
+
+                // Extract HP sample (always at offset 4 from PN start for AES-128-GCM)
+                var sample16: [16]u8 = undefined;
+                @memcpy(sample16[0..], full_pn_and_payload[4 .. 4 + 16]);
+
+                // First, unmask just the header byte to get the actual PN length
+                var header_first_copy = first;
+                var dummy_pn = [_]u8{0}; // Mutable dummy PN byte
+                crypto.headerProtect(
+                    .aes_128_gcm,
+                    &rx_keys.hp,
+                    &sample16,
+                    &header_first_copy,
+                    &dummy_pn,
+                ) catch {
+                    logger.debug("Failed to unmask header byte for handshake packet", .{});
+                    conn.onAeadAuthFailure();
+                    return;
+                };
+
+                // Extract the actual packet number length from the unmasked header
+                const actual_pn_len: u3 = @intCast((header_first_copy & 0x03) + 1);
+
+                logger.debug("Handshake packet: unmasked header=0x{X:0>2}, actual_pn_len={}", .{header_first_copy, actual_pn_len});
+
+                if (pn_start + actual_pn_len > end_total) {
+                    logger.debug("Invalid PN length {} extends past packet end", .{actual_pn_len});
+                    conn.onAeadAuthFailure();
+                    return;
+                }
+
+                // Now unmask the packet number bytes with the correct length
+                var pn_bytes_buf: [4]u8 = undefined;
+                const pn_bytes = pn_bytes_buf[0..actual_pn_len];
+                @memcpy(pn_bytes, bytes[pn_start .. pn_start + actual_pn_len]);
+                var header_try = first;
+
+                // Unmask both header and PN bytes
+                crypto.headerProtect(
+                    .aes_128_gcm,
+                    &rx_keys.hp,
+                    &sample16,
+                    &header_try,
+                    pn_bytes,
+                ) catch {
+                    logger.debug("Failed to unmask header and PN bytes for handshake packet", .{});
+                    conn.onAeadAuthFailure();
+                    return;
+                };
+
+                // Now decrypt with the correct PN length
                 var pt_list = std.ArrayList(u8){};
                 defer pt_list.deinit(self.allocator.*);
-                var pn_len_try: u3 = 1;
 
-                // Debug the raw packet bytes
-                const debug_len = @min(32, end_total - pn_start);
-                logger.debug("Handshake packet raw bytes from pn_start={} to end_total={}, showing first {} bytes:", .{pn_start, end_total, debug_len});
-                for (bytes[pn_start .. pn_start + debug_len]) |b| {
-                    logger.debug("{X:0>2} ", .{b});
+                // Decrypt expects plaintext buffer size = total - tag - PN bytes
+                const expected_pt_len = full_pn_and_payload.len - 16 - actual_pn_len;
+                if (expected_pt_len == 0) {
+                    // This can happen for ACK-only packets
+                    logger.debug("Handshake packet appears to be ACK-only (no payload after auth tag)", .{});
                 }
+                pt_list.ensureTotalCapacity(self.allocator.*, if (expected_pt_len > 0) expected_pt_len else 1) catch {
+                    logger.debug("Failed to allocate plaintext buffer", .{});
+                    conn.onAeadAuthFailure();
+                    return;
+                };
+                if (expected_pt_len > 0) {
+                    pt_list.appendNTimesAssumeCapacity(0, expected_pt_len);
+                } else {
+                    // For zero-length payloads, we still need a valid slice
+                    pt_list.appendAssumeCapacity(0);
+                }
+                const pt_slice = pt_list.items[0..expected_pt_len];
+
+                const expected_pn_hs = if (conn.pn_handshake.have_any) conn.pn_handshake.max + 1 else 0;
+                logger.debug("=== HANDSHAKE PACKET DECRYPTION ===", .{});
+                logger.debug("pn_start={}, end_total={}, actual_pn_len={}", .{pn_start, end_total, actual_pn_len});
+                logger.debug("full_pn_and_payload.len={}, expected_pt_len={}", .{full_pn_and_payload.len, expected_pt_len});
+                logger.debug("Attempting Handshake decrypt: actual_pn_len={}, expected_pn={}, have_any={}", .{
+                    actual_pn_len,
+                    expected_pn_hs,
+                    conn.pn_handshake.have_any,
+                });
+
+                // Use unprotectInitialAutoSample for handshake packets with handshake keys
+                // Note: The function name is misleading - it works for any QUIC packet type
+                const dec = crypto.unprotectInitialAutoSample(
+                    .aes_128_gcm,
+                    &rx_keys.key,
+                    &rx_keys.iv,
+                    &rx_keys.hp,
+                    &header_try,
+                    pn_bytes,
+                    header_prefix,
+                    full_pn_and_payload,  // Correctly positioned buffer for sample extraction
+                    pt_slice,
+                    expected_pn_hs,
+                ) catch |err| {
+                    logger.debug("Handshake packet decrypt failed: {} (actual_pn_len={}, expected_pn={})", .{ err, actual_pn_len, expected_pn_hs });
+                    conn.onAeadAuthFailure();
+                    return;
+                };
+                _ = dec;
+
+                logger.debug("After unmasking with actual_pn_len={}: ", .{actual_pn_len});
+                for (pn_bytes) |b| logger.debug("{X:0>2} ", .{b});
                 logger.debug("", .{});
 
-                attempt: while (pn_len_try <= 4) : (pn_len_try += 1) {
-                    if (pn_start + pn_len_try > end_total) break;
-                    // Pass full buffer from PN start; crypto function extracts sample from offset 4
-                    const ct = bytes[pn_start .. end_total];
-                    if (ct.len < 16) break;
-
-                    // Create mutable buffer for packet number bytes that will be unmasked
-                    var pn_bytes_buf: [4]u8 = undefined;
-                    const pn_bytes = pn_bytes_buf[0..pn_len_try];
-                    @memcpy(pn_bytes, bytes[pn_start .. pn_start + pn_len_try]);
-                    var header_try = first;
-                    pt_list.clearRetainingCapacity();
-                    pt_list.ensureTotalCapacity(self.allocator.*, ct.len - 16) catch break;
-                    pt_list.appendNTimesAssumeCapacity(0, ct.len - 16);
-                    const pt_slice = pt_list.items;
-
-                    const expected_pn_hs = if (conn.pn_handshake.have_any) conn.pn_handshake.max + 1 else 0;
-                    logger.debug("Attempting Handshake decrypt: pn_len_try={}, expected_pn={}, have_any={}", .{
-                        pn_len_try,
-                        expected_pn_hs,
-                        conn.pn_handshake.have_any,
-                    });
-                    logger.debug("Handshake RX keys: key=", .{});
-                    for (rx_keys.key) |b| logger.debug("{X:0>2}", .{b});
-                    logger.debug("", .{});
-                    logger.debug("Handshake RX keys: iv=", .{});
-                    for (rx_keys.iv) |b| logger.debug("{X:0>2}", .{b});
-                    logger.debug("", .{});
-                    // Use unprotectInitialAutoSample for handshake packets with handshake keys
-                    // Note: The function name is misleading - it works for any QUIC packet type
-                    const dec = crypto.unprotectInitialAutoSample(
-                        .aes_128_gcm,
-                        &rx_keys.key,
-                        &rx_keys.iv,
-                        &rx_keys.hp,
-                        &header_try,
-                        pn_bytes,
-                        header_prefix,
-                        ct,
-                        pt_slice,
-                        expected_pn_hs,
-                    ) catch |err| {
-                        logger.debug("Handshake packet decrypt failed: {} (pn_len={}, expected_pn={})", .{ err, pn_len_try, expected_pn_hs });
-                        continue;
-                    };
-                    _ = dec;
-
-                    logger.debug("After unmasking with pn_len={}: ", .{pn_len_try});
-                    for (pn_bytes) |b| logger.debug("{X:0>2} ", .{b});
-                    logger.debug("", .{});
-
-                    const indicated_pn_len: u3 = @intCast((header_try & 0x03) + 1);
-                    if (indicated_pn_len != pn_len_try) {
-                        // Mismatch between header-indicated PN length and trial; reject.
-                        continue;
-                    }
-
-                    success = true;
-                    chosen_pn_len = pn_len_try;
-                    @memcpy(pn_masked[0..pn_len_try], pn_bytes); // now holds unmasked bytes
-                    break :attempt;
-                }
+                // Update pn_masked with the unmasked bytes
+                @memcpy(pn_masked[0..actual_pn_len], pn_bytes);
+                const success = true;
+                const chosen_pn_len = actual_pn_len;
 
                 if (!success) {
                     logger.debug("Failed to decrypt Handshake packet", .{});
