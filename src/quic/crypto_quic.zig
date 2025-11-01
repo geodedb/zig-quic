@@ -475,6 +475,11 @@ pub fn unprotectInitialAutoSample(
     const pn_len = pn_bytes.len;
     if (pn_len == 0 or pn_len > 4) return error.InvalidPacketNumberLength;
 
+    // IMPORTANT: The ciphertext_and_tag buffer starts at the packet number field.
+    // The first pn_len bytes are the masked packet number bytes.
+    // We need to copy them to pn_bytes for unmasking.
+    @memcpy(pn_bytes, ciphertext_and_tag[0..pn_len]);
+
     // Reconstruct HP sample per suite
     // ciphertext_and_tag parameter starts at PN field beginning (includes PN bytes + encrypted payload + tag)
     var sample16: [16]u8 = undefined;
