@@ -449,8 +449,12 @@ pub fn signCertificateVerify(alg: SigAlg, privkey_der: []const u8, context: []co
         .ecdsa_secp256r1_sha256 => {
             // Preferred: parse PKCS#8 -> ECPrivateKey -> scalar. Fallback to legacy pattern scan.
             var sk: [32]u8 = undefined;
+            std.debug.print("[SIG] Starting ECDSA P-256 signature, privkey_der len={d}\n", .{privkey_der.len});
             if (parsePkcs8EcdsaP256PrivateKey(privkey_der, &sk)) |ok| {
                 _ = ok; // already written into sk
+                std.debug.print("[SIG] Successfully parsed PKCS#8, scalar: ", .{});
+                for (sk) |b| std.debug.print("{x:0>2} ", .{b});
+                std.debug.print("\n", .{});
             } else |err| switch (err) {
                 error.BadKey, error.Unsupported, error.Parse => {
                     // Legacy heuristic fallback (scan for 0x04 0x20 <32-bytes>) used by early tests.
@@ -472,10 +476,16 @@ pub fn signCertificateVerify(alg: SigAlg, privkey_der: []const u8, context: []co
             // Build signing context content
             const to_sign = try tls13_build_context_and_hash(alg, context, transcript_hash, alloc);
             defer alloc.free(to_sign);
+            std.debug.print("[SIG] Message to sign len={d}\n", .{to_sign.len});
             const secret = try Ecdsa.SecretKey.fromBytes(sk);
             const key_pair = try Ecdsa.KeyPair.fromSecretKey(secret);
             // Pass message then optional random noise (null => deterministic per RFC6979)
             const signature = try key_pair.sign(to_sign, null);
+            std.debug.print("[SIG] Generated signature r=", .{});
+            for (signature.r[0..8]) |b| std.debug.print("{x:0>2}", .{b});
+            std.debug.print("..., s=", .{});
+            for (signature.s[0..8]) |b| std.debug.print("{x:0>2}", .{b});
+            std.debug.print("...\n", .{});
 
             // Manually DER-encode (SEQUENCE { r INTEGER, s INTEGER }) per RFC 3279/5480
             const r_full = signature.r; // [32]u8

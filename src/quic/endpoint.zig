@@ -877,6 +877,10 @@ pub const Endpoint = struct {
             return;
         }
 
+        // Always try to drain first - UDP packets might be buffered
+        // This ensures we process any pending packets before waiting
+        self.drainReadable();
+
         // Verify FDs are still valid
         var check_addr = conn_mod.SockAddr{};
         check_addr.len = @intCast(@sizeOf(posix.sockaddr.storage));
@@ -927,10 +931,11 @@ pub const Endpoint = struct {
         } else if (n == 0) {
             // epoll_wait timed out - no data available
             logger.debug("epoll_wait timed out (no events)", .{});
-            // TEMPORARY DEBUG: Try draining anyway to see if data is buffered
-            logger.debug("TEMP FIX: Attempting to drain despite timeout", .{});
-            self.drainReadable();
         }
+
+        // Always try to drain after epoll_wait regardless of result
+        // UDP packets might arrive between epoll registration and wait
+        self.drainReadable();
     }
 
     fn poll_kqueue_backend(self: *Endpoint, timeout_ms: i32) !void {
