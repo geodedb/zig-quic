@@ -2058,26 +2058,34 @@ pub const Endpoint = struct {
                 // in Handshake packets (with Handshake keys derived AFTER client processes ServerHello)
                 //
                 // Add CRYPTO frame with ServerHello if we have pending TLS data
-                // IMPORTANT: Only send Initial CRYPTO if Handshake keys are NOT yet available
-                // Once Handshake keys exist, all remaining TLS data goes to Handshake packets
+                // IMPORTANT: ServerHello MUST be sent in Initial packets (RFC 9001)
+                // Only send Initial CRYPTO if we haven't already sent it (check crypto_tx_off_initial)
                 var has_crypto = false;
                 var crypto_bytes_sent: usize = 0;
-                if (has_pending_tls and conn.role == .Server and conn.crypto_tx_off_initial < conn.tls.outbox.items.len and conn.hs_tx_keys == null) {
-                    // Get unsent Initial CRYPTO data from TLS outbox
-                    // Only send data that was queued BEFORE Handshake keys were derived
-                    const unsent_start = conn.crypto_tx_off_initial;
-                    const unsent_end = conn.tls.outbox.items.len;
-                    const unsent_data = conn.tls.outbox.items[unsent_start..unsent_end];
+                if (has_pending_tls and conn.role == .Server and conn.crypto_tx_off_initial == 0) {
+                    // ServerHello MUST go in Initial packet (RFC 9001)
+                    // Send only the ServerHello portion (typically first ~120 bytes of outbox)
+                    // The rest (EncryptedExtensions, Certificate, etc) go in Handshake packets
 
-                    if (unsent_data.len > 0) {
-                        logger.debug("Server: Adding Initial CRYPTO frame with {} bytes at offset {} (Handshake keys not yet available)", .{unsent_data.len, conn.crypto_tx_off_initial});
+                    // Find how much data is ServerHello (should be queued first in outbox)
+                    // ServerHello is typically 120-150 bytes depending on extensions
+                    // We'll send up to 200 bytes in Initial to ensure complete ServerHello
+                    const max_initial_crypto: usize = 200;
+                    const unsent_start = conn.crypto_tx_off_initial;
+                    const available_data = if (conn.tls.outbox.items.len > unsent_start)
+                        conn.tls.outbox.items.len - unsent_start else 0;
+                    const bytes_to_send = @min(available_data, max_initial_crypto);
+
+                    if (bytes_to_send > 0) {
+                        const unsent_data = conn.tls.outbox.items[unsent_start..unsent_start + bytes_to_send];
+                        logger.debug("Server: Adding Initial CRYPTO frame with {} bytes at offset {} (ServerHello for Initial packet)", .{unsent_data.len, conn.crypto_tx_off_initial});
                         const crypto_frame = frame.Frame{ .crypto = .{ .offset = conn.crypto_tx_off_initial, .data = unsent_data } };
                         _ = crypto_frame.write(w) catch 0;
                         has_crypto = true;
                         crypto_bytes_sent = unsent_data.len;
                     }
-                } else if (conn.hs_tx_keys != null and has_pending_tls) {
-                    logger.debug("Server: Skipping Initial CRYPTO - Handshake keys available, will send in Handshake packet", .{});
+                } else if (has_pending_tls and conn.crypto_tx_off_initial > 0) {
+                    logger.debug("Server: ServerHello already sent in Initial (offset={}), remaining TLS data will go to Handshake", .{conn.crypto_tx_off_initial});
                 }
 
                 // Always send Initial packet if we have frames to send

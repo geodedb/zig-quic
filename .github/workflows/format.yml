@@ -6,7 +6,7 @@ on:
 
 jobs:
   fmt:
-    runs-on: ubuntu-latest
+    runs-on: runs-on=${{ github.run_id }}/runner=ubuntu24-full-x64
     steps:
       - uses: spyderorg/workflows/.github/actions/nix-setup@main
         with:

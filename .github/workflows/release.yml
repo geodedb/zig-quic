@@ -15,7 +15,7 @@ env:
 jobs:
   build-matrix:
     name: Build/Test/Fuzz (${{ matrix.os }}-${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
+    runs-on: runs-on=${{ github.run_id }}/runner=${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
@@ -23,44 +23,33 @@ jobs:
           # Linux
           - os: linux
             arch: x86_64
-            runner: ubuntu-latest
+            runner: ubuntu24-full-x64
             target: x86_64-linux-gnu
             run_tests: true
           - os: linux
             arch: arm
-            runner: ubuntu-latest
+            runner: ubuntu24-full-x64
             target: arm-linux-gnueabihf
             run_tests: false
           - os: linux
             arch: arm64
-            runner: ubuntu-latest
+            runner: ubuntu24-full-x64
             target: aarch64-linux-gnu
             run_tests: false
           - os: linux
             arch: riscv64
-            runner: ubuntu-latest
+            runner: ubuntu24-full-x64
             target: riscv64-linux-gnu
-            run_tests: false
-          # macOS
-          - os: macos
-            arch: x86_64
-            runner: macos-14
-            target: x86_64-macos
-            run_tests: false
-          - os: macos
-            arch: arm64
-            runner: macos-14
-            target: aarch64-macos
             run_tests: false
           # Windows
           - os: windows
             arch: x86_64
-            runner: windows-latest
+            runner: windows22-full-x64
             target: x86_64-windows-msvc
             run_tests: false
           - os: windows
             arch: arm64
-            runner: windows-latest
+            runner: windows22-full-x64
             target: aarch64-windows-msvc
             run_tests: false
 
@@ -141,10 +130,105 @@ jobs:
           path: ${{ env.ARCHIVE_PATH }}
           retention-days: 7
 
+  build-matrix-macos:
+    name: Build/Test/Fuzz (${{ matrix.os }}-${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS
+          - os: macos
+            arch: x86_64
+            runner: macos-14
+            target: x86_64-macos
+            run_tests: false
+          - os: macos
+            arch: arm64
+            runner: macos-14
+            target: aarch64-macos
+            run_tests: false
+
+    steps:
+      - uses: spyderorg/workflows/.github/actions/nix-setup@main
+        with:
+          git-credentials: ${{ secrets.GIT_CREDENTIALS }}
+          gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Install GNU Make (Windows)
+        if: runner.os == 'Windows'
+        run: choco install make -y
+
+      - name: Zig version
+        run: zig version
+
+      - name: Build CLI (ReleaseSafe)
+        run: zig build -Dtarget='${{ matrix.target }}' -Doptimize=ReleaseSafe cli
+
+      - name: Test
+        if: matrix.run_tests
+        run: make test
+
+      - name: Build fuzzers
+        if: matrix.run_tests
+        run: make fuzz
+
+      - name: Bench (build only)
+        if: matrix.run_tests
+        run: make bench
+
+      - name: Tools + Doccheck
+        if: matrix.run_tests
+        run: make doccheck
+
+      - name: Upload raw build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: quic-${{ matrix.os }}-${{ matrix.arch }}-zig-${{ env.ZIG_VERSION }}-raw
+          path: zig-out/bin/**
+          retention-days: 7
+
+      - name: Package binaries (OS-specific archive)
+        shell: bash
+        run: |
+          set -euo pipefail
+          os='${{ matrix.os }}'
+          arch='${{ matrix.arch }}'
+          zigv='${{ env.ZIG_VERSION }}'
+          name="quic-${os}-${arch}-zig-${zigv}"
+          mkdir -p dist
+          if [ "${os}" = "windows" ]; then
+            if command -v powershell >/dev/null 2>&1; then
+              powershell -NoProfile -Command "if (-Not (Test-Path 'zig-out/bin')) { throw 'zig-out/bin missing' }; Compress-Archive -Path 'zig-out/bin/*' -DestinationPath 'dist/${name}.zip' -Force"
+            else
+              echo "powershell not available for zip compression" >&2; exit 1
+            fi
+            echo "ARCHIVE_PATH=dist/${name}.zip" >> "$GITHUB_ENV"
+            echo "ARCHIVE_NAME=${name}.zip" >> "$GITHUB_ENV"
+          else
+            [ -d zig-out/bin ] || { echo 'zig-out/bin missing' >&2; exit 1; }
+            tar -czf "dist/${name}.tar.gz" -C zig-out/bin .
+            echo "ARCHIVE_PATH=dist/${name}.tar.gz" >> "$GITHUB_ENV"
+            echo "ARCHIVE_NAME=${name}.tar.gz" >> "$GITHUB_ENV"
+          fi
+
+      - name: Upload packaged artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE_NAME }}
+          path: ${{ env.ARCHIVE_PATH }}
+          retention-days: 7
+
   publish-release:
     name: Publish GitHub Release
-    needs: build-matrix
-    runs-on: ubuntu-latest
+    needs: [build-matrix, build-matrix-macos]
+    runs-on: runs-on=${{ github.run_id }}/runner=ubuntu24-full-x64
     permissions:
       contents: write
     if: startsWith(github.ref, 'refs/tags/v')

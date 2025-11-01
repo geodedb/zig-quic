@@ -1,152 +1,85 @@
 const std = @import("std");
 const api = @import("quic_api");
-// Import connection module for alignment checking of opaque pointers
-const quic_conn = @import("quic_conn");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 
-    var args = try std.process.argsWithAllocator(alloc);
-    defer args.deinit();
+    var args_it = try std.process.ArgIterator.initWithAllocator(alloc);
+    defer args_it.deinit();
 
-    var bind: []const u8 = "127.0.0.1:4433";
-    var host: ?[]const u8 = null;
-    var port: ?[]const u8 = null;
-    var alpn: []const u8 = "h3";
-    var insecure = false;
+    // Skip program name
+    _ = args_it.next();
+
+    var bind_addr: []const u8 = "127.0.0.1:4433";
     var cert_path: ?[]const u8 = null;
     var key_path: ?[]const u8 = null;
+    var alpn_str: []const u8 = "hq-interop";
+    var insecure = false;
     var datagram = false;
-    var compat_vn = false;
-    var enable_retry = false;
-    var token_secret: ?[]const u8 = null;
-    var token_expiry_ms: u32 = 60000;
-    while (args.next()) |a| {
-        if (std.mem.eql(u8, a, "--bind")) {
-            bind = args.next().?;
-        } else if (std.mem.eql(u8, a, "--host")) {
-            host = args.next().?;
-        } else if (std.mem.eql(u8, a, "--port")) {
-            port = args.next().?;
-        } else if (std.mem.eql(u8, a, "--alpn")) {
-            alpn = args.next().?;
-        } else if (std.mem.eql(u8, a, "--insecure")) {
+
+    while (args_it.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--bind")) {
+            bind_addr = args_it.next() orelse "127.0.0.1:4433";
+        } else if (std.mem.eql(u8, arg, "--cert")) {
+            cert_path = args_it.next();
+        } else if (std.mem.eql(u8, arg, "--key")) {
+            key_path = args_it.next();
+        } else if (std.mem.eql(u8, arg, "--alpn")) {
+            alpn_str = args_it.next() orelse "hq-interop";
+        } else if (std.mem.eql(u8, arg, "--insecure")) {
             insecure = true;
-        } else if (std.mem.eql(u8, a, "--cert")) {
-            cert_path = args.next().?;
-        } else if (std.mem.eql(u8, a, "--key")) {
-            key_path = args.next().?;
-        } else if (std.mem.eql(u8, a, "--datagram")) {
-            const v = args.next().?;
-            datagram = std.mem.eql(u8, v, "true");
-        } else if (std.mem.eql(u8, a, "--compatible-vn")) {
-            compat_vn = true;
-        } else if (std.mem.eql(u8, a, "--retry")) {
-            const v = args.next().?;
-            enable_retry = std.mem.eql(u8, v, "true");
-        } else if (std.mem.eql(u8, a, "--token-secret")) {
-            token_secret = args.next().?;
-        } else if (std.mem.eql(u8, a, "--token-expiry-ms")) {
-            const v = args.next().?;
-            token_expiry_ms = std.fmt.parseInt(u32, v, 10) catch token_expiry_ms;
+        } else if (std.mem.eql(u8, arg, "--datagram")) {
+            datagram = true;
         }
     }
 
-    // If --host and --port are provided, construct bind address
-    var bind_buf: [256]u8 = undefined;
-    if (host != null and port != null) {
-        bind = try std.fmt.bufPrint(&bind_buf, "{s}:{s}", .{ host.?, port.? });
+    // Load certificate and key if provided
+    var cert_der: ?[]const u8 = null;
+    var key_p256: ?[]const u8 = null;
+
+    if (cert_path) |cp| {
+        const cert_file = try std.fs.cwd().openFile(cp, .{});
+        defer cert_file.close();
+        const cert_data = try cert_file.readToEndAlloc(alloc, 1024 * 1024);
+        defer alloc.free(cert_data);
+
+        // For now, just pass the PEM data directly
+        cert_der = try alloc.dupe(u8, cert_data);
     }
 
-    var cfg = api.QuicConfig{
-        .alpn = &[_][]const u8{alpn},
+    if (key_path) |kp| {
+        const key_file = try std.fs.cwd().openFile(kp, .{});
+        defer key_file.close();
+        const key_data = try key_file.readToEndAlloc(alloc, 1024 * 1024);
+        defer alloc.free(key_data);
+
+        // For now, just pass the PEM data directly
+        key_p256 = try alloc.dupe(u8, key_data);
+    }
+
+    // Create ALPN slice
+    var alpn_list = [_][]const u8{alpn_str};
+
+    var config = api.QuicConfig{
+        .inline_server_cert_der = cert_der,
+        .inline_server_priv_p256 = key_p256,
+        .alpn = &alpn_list,
         .allow_insecure = insecure,
-        .cert_path = cert_path,
-        .key_path = key_path,
+        .max_idle_timeout_ms = 30000,
+        .max_udp_payload = 1350,
         .enable_datagram = datagram,
-        .compatible_vn = compat_vn,
-        .enable_retry = enable_retry,
-        .token_secret = token_secret,
-        .token_expiry_ms = token_expiry_ms,
     };
-    // If file-based cert/key provided, load them and stash as inline for endpoint connections.
-    var loaded_cert: ?[]u8 = null;
-    var loaded_key: ?[]u8 = null;
-    defer {
-        if (loaded_cert) |cbytes| alloc.free(cbytes);
-        if (loaded_key) |kbytes| alloc.free(kbytes);
-    }
-    if (cert_path != null and key_path != null) {
-        // Simple PEM -> DER loader (single object) for CERTIFICATE / (EC) PRIVATE KEY
-        const PemLoad = struct {
-            fn loadPem(allocator: std.mem.Allocator, path: []const u8, markers: []const []const u8) ![]u8 {
-                const data = try std.fs.cwd().readFileAlloc(allocator, path, 64 * 1024);
-                errdefer allocator.free(data);
-                var chosen_begin: ?[]const u8 = null;
-                var chosen_end: ?[]const u8 = null;
-                for (markers) |m| {
-                    var buf_begin: [64]u8 = undefined;
-                    var buf_end: [64]u8 = undefined;
-                    const begin_marker = try std.fmt.bufPrint(&buf_begin, "-----BEGIN {s}-----", .{m});
-                    const end_marker = try std.fmt.bufPrint(&buf_end, "-----END {s}-----", .{m});
-                    if (std.mem.indexOf(u8, data, begin_marker)) |_| {
-                        chosen_begin = try allocator.dupe(u8, begin_marker);
-                        chosen_end = try allocator.dupe(u8, end_marker);
-                        break;
-                    }
-                }
-                if (chosen_begin == null or chosen_end == null) return error.PemMarkerNotFound;
-                defer allocator.free(chosen_begin.?);
-                defer allocator.free(chosen_end.?);
-                const start = std.mem.indexOf(u8, data, chosen_begin.?) orelse return error.PemMarkerNotFound;
-                const rest = data[start + chosen_begin.?.len ..];
-                const end_rel = std.mem.indexOf(u8, rest, chosen_end.?) orelse return error.PemMarkerNotFound;
-                const b64_region = rest[0..end_rel];
-                // Collect base64 characters (skip newlines)
-                var tmp = try allocator.alloc(u8, b64_region.len);
-                defer allocator.free(tmp);
-                var n: usize = 0;
-                for (b64_region) |ch| {
-                    if (ch == '\n' or ch == '\r') continue;
-                    if (ch == ' ') continue;
-                    tmp[n] = ch;
-                    n += 1;
-                }
-                // Decode
-                const out_buf = try allocator.alloc(u8, (n * 3) / 4 + 8);
-                // Compute decoded length manually: every 4 chars -> 3 bytes, minus padding '='.
-                var pad: usize = 0;
-                if (n >= 2 and tmp[n - 1] == '=') pad += 1;
-                if (n >= 2 and tmp[n - 2] == '=') pad += 1;
-                const need: usize = (n / 4) * 3 - pad;
-                allocator.free(out_buf);
-                const exact = try allocator.alloc(u8, need);
-                // std.base64 Decoder.decode writes into exact; assume well-formed input.
-                std.base64.standard.Decoder.decode(exact, tmp[0..n]) catch |e| {
-                    allocator.free(exact);
-                    return e;
-                };
-                return exact;
-            }
-        };
-        loaded_cert = PemLoad.loadPem(alloc, cert_path.?, &[_][]const u8{"CERTIFICATE"}) catch null;
-        // Try PKCS#8 first (PRIVATE KEY) then EC PRIVATE KEY as fallback
-        loaded_key = PemLoad.loadPem(alloc, key_path.?, &[_][]const u8{ "PRIVATE KEY", "EC PRIVATE KEY" }) catch null;
-        if (loaded_cert != null and loaded_key != null) {
-            cfg.inline_server_cert_der = loaded_cert;
-            cfg.inline_server_priv_p256 = loaded_key;
-        }
-    }
-    const ep = try api.endpointInit(&alloc, bind, &cfg);
+
+    const ep = try api.endpointInit(&alloc, bind_addr, &config);
     defer api.endpointDeinit(ep);
 
-    std.debug.print("listening on {s}\n", .{bind});
+    std.debug.print("listening on {s}\n", .{bind_addr});
 
-    // Track active connections to avoid storing them in a separate data structure
-    // The connections are managed internally by the endpoint
-    var active_conns = std.ArrayList(*api.QuicConnection).initCapacity(alloc, 0) catch unreachable;
+    // Keep track of active connections
+    var active_conns = std.ArrayListUnmanaged(*api.QuicConnection){};
+    defer active_conns.deinit(alloc);
     defer {
         for (active_conns.items) |conn| {
             api.destroy(ep, conn);

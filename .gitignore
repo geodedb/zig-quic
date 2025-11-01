@@ -10,6 +10,9 @@ out/
 *.log
 test-logs/
 
+# But preserve important cmd files
+!cmd/
+
 .direnv/
 .zig-cache/
 

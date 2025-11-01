@@ -34,7 +34,7 @@ jobs:
   smoke:
     # Auto on push/PR when files change; always on manual dispatch
     if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || contains(github.event.head_commit.message, '[interop]') }}
-    runs-on: ubuntu-latest
+    runs-on: runs-on=${{ github.run_id }}/runner=ubuntu24-full-x64
     timeout-minutes: 45
     steps:
       - uses: spyderorg/workflows/.github/actions/nix-setup@main
