@@ -2,7 +2,7 @@ module quic-go-test-client
 
 go 1.24
 
-replace github.com/quic-go/quic-go => ../../forks/quic-go
+replace github.com/quic-go/quic-go => ./vendor/quic-go
 
 require github.com/quic-go/quic-go v0.50.0
 

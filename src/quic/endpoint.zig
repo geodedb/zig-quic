@@ -974,6 +974,7 @@ pub const Endpoint = struct {
     var process_count: u64 = 0; // Global counter to track how many times processIncomingDatagram is called
     fn processIncomingDatagram(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8, ecn_bits: ?u8) void {
         process_count += 1;
+        std.debug.print("PACKET #{}: {} bytes, first=0x{X:0>2}\n", .{process_count, bytes.len, if (bytes.len > 0) bytes[0] else 0});
         logger.debug("=== processIncomingDatagram #{} called with {} bytes ===", .{process_count, bytes.len});
         if (bytes.len < 1) {
             logger.debug("Packet too short, returning", .{});
@@ -983,6 +984,7 @@ pub const Endpoint = struct {
             logger.debug("Client processIncomingDatagram - received 141-byte packet!", .{});
         }
         const first = bytes[0];
+        logger.debug("First byte: 0x{X:0>2}, is_long: {}", .{first, (first & 0x80) != 0});
         const is_long = (first & 0x80) != 0;
         if (is_long) {
             // Long header: check Version for VN/Initial/Handshake
@@ -1539,6 +1541,8 @@ pub const Endpoint = struct {
         // Detect NAT rebinding or migration: if we have a known connection for dcid but peer address changed, update and trigger validation
         const ty = (first >> 4) & 0x03;
         const version: u32 = (@as(u32, bytes[1]) << 24) | (@as(u32, bytes[2]) << 16) | (@as(u32, bytes[3]) << 8) | @as(u32, bytes[4]);
+        logger.debug("Long header packet received: first=0x{X:0>2}, ty={} (0=Initial, 1=0-RTT, 2=Handshake, 3=Retry), version=0x{X:0>8}", .{first, ty, version});
+        std.debug.print("LONG HEADER: ty={} (0=Initial, 2=Handshake), version=0x{X:0>8}\n", .{ty, version});
         if (ty == 0) {
             logger.debug("=== PROCESSING INITIAL PACKET FROM PEER ===", .{});
             logger.debug("Packet total length: {} bytes", .{bytes.len});
@@ -1958,6 +1962,7 @@ pub const Endpoint = struct {
                             if (was_server and !conn.tls.sh_seen) {
                                 // Queue ServerHello only - it will be sent in Initial packet
                                 // The rest of the handshake flight will be queued after SH is sent
+                                std.debug.print("SERVER: Reached ServerHello queueing code path! sh_seen={}\n", .{conn.tls.sh_seen});
                                 logger.debug("Server: About to queue ServerHello - outbox.len={}", .{conn.tls.outbox.items.len});
                                 conn.tls.queueRealServerHello() catch |err| {
                                     logger.debug("Failed to queue ServerHello: {}", .{err});
@@ -2084,6 +2089,16 @@ pub const Endpoint = struct {
                     if (bytes_to_send > 0) {
                         const unsent_data = conn.tls.outbox.items[unsent_start..unsent_start + bytes_to_send];
                         logger.debug("Server: Adding Initial CRYPTO frame with {} bytes at offset {} (ServerHello for Initial packet)", .{unsent_data.len, conn.crypto_tx_off_initial});
+
+                        // Debug: Show first 20 bytes of CRYPTO data being sent
+                        std.debug.print("INITIAL CRYPTO: Sending {} bytes at offset {}\n", .{unsent_data.len, conn.crypto_tx_off_initial});
+                        std.debug.print("  First 20 bytes: ", .{});
+                        const debug_len = @min(20, unsent_data.len);
+                        for (unsent_data[0..debug_len]) |b| {
+                            std.debug.print("{x:0>2} ", .{b});
+                        }
+                        std.debug.print("\n", .{});
+
                         const crypto_frame = frame.Frame{ .crypto = .{ .offset = conn.crypto_tx_off_initial, .data = unsent_data } };
                         _ = crypto_frame.write(w) catch 0;
                         has_crypto = true;
@@ -2542,18 +2557,33 @@ pub const Endpoint = struct {
             return;
         } else if (ty == 2) {
             logger.debug("Processing Handshake packet from peer", .{});
+            std.debug.print("HANDSHAKE PACKET: {} bytes total\n", .{bytes.len});
             // Handshake RX path: attempt to unprotect and feed CRYPTO using hs_rx_keys
             var i: usize = 5;
-            if (i >= bytes.len) return;
+            if (i >= bytes.len) {
+                std.debug.print("HANDSHAKE PACKET TOO SHORT: at byte {}, len={}\n", .{i, bytes.len});
+                return;
+            }
             const dcid_len = bytes[i];
+            std.debug.print("HANDSHAKE: dcid_len={}\n", .{dcid_len});
             i += 1;
-            if (i + dcid_len > bytes.len) return;
+            if (i + dcid_len > bytes.len) {
+                std.debug.print("HANDSHAKE: dcid extends past packet end\n", .{});
+                return;
+            }
             const dcid = bytes[i .. i + dcid_len];
             i += dcid_len;
-            if (i >= bytes.len) return;
+            if (i >= bytes.len) {
+                std.debug.print("HANDSHAKE: no room for scid_len\n", .{});
+                return;
+            }
             const scid_len = bytes[i];
+            std.debug.print("HANDSHAKE: scid_len={}\n", .{scid_len});
             i += 1;
-            if (i + scid_len > bytes.len) return;
+            if (i + scid_len > bytes.len) {
+                std.debug.print("HANDSHAKE: scid extends past packet end\n", .{});
+                return;
+            }
             // scid is not used here, we use conn.peer_initial_scid for Handshake packets
             _ = bytes[i .. i + scid_len];
             i += scid_len;
@@ -2574,21 +2604,44 @@ pub const Endpoint = struct {
             for (dcid) |b| logger.debug("{x:0>2}", .{b});
             logger.debug(" (hash={x})", .{key.dcid_hash});
 
+            std.debug.print("HANDSHAKE: Looking up connection with dcid=", .{});
+            for (dcid) |b| std.debug.print("{x:0>2}", .{b});
+            std.debug.print(" (hash={x})\n", .{key.dcid_hash});
+
             const c_ptr = self.conns.getPtr(key) orelse {
                 logger.debug("ERROR: Connection not found for Handshake packet", .{});
                 logger.debug("  Available connections:", .{});
+                std.debug.print("ERROR: Connection not found for Handshake packet!\n", .{});
+                std.debug.print("  Available connections:\n", .{});
                 var iter = self.conns.iterator();
                 while (iter.next()) |entry| {
                     logger.debug("    key: peer_hash={x}, dcid_hash={x}", .{entry.key_ptr.peer_hash, entry.key_ptr.dcid_hash});
+                    std.debug.print("    key: peer_hash={x}, dcid_hash={x}\n", .{entry.key_ptr.peer_hash, entry.key_ptr.dcid_hash});
                 }
                 return;
             };
             const conn = c_ptr.*;
+            std.debug.print("HANDSHAKE: Found connection, role={}\n", .{conn.role});
             logger.debug("Found connection for Handshake packet (role={})", .{conn.role});
             if (ecn_bits) |e| conn.onEcnMark(.Handshake, e);
             if (conn.hs_rx_keys) |rx_keys| {
                 logger.debug("Server has handshake RX keys, proceeding to decrypt", .{});
                 logger.debug("Handshake RX keys: key={any}, iv={any}, hp={any}", .{ rx_keys.key, rx_keys.iv, rx_keys.hp });
+                std.debug.print("HANDSHAKE: Has RX keys! Proceeding to decrypt...\n", .{});
+                std.debug.print("HANDSHAKE PACKET STRUCTURE:\n", .{});
+                std.debug.print("  Total packet: {} bytes\n", .{bytes.len});
+                std.debug.print("  Header end (j): {}\n", .{j});
+                std.debug.print("  Packet end: {}\n", .{end_total});
+                std.debug.print("  Payload + PN + tag: {} bytes\n", .{end_total - j});
+
+                // Print first 20 bytes of the handshake packet for debugging
+                std.debug.print("  First 20 bytes: ", .{});
+                const debug_len = @min(20, bytes.len);
+                for (bytes[0..debug_len]) |b| {
+                    std.debug.print("{x:0>2} ", .{b});
+                }
+                std.debug.print("\n", .{});
+
                 const header_prefix = bytes[1..j];
                 const pn_start = j;
 
@@ -2711,6 +2764,13 @@ pub const Endpoint = struct {
                 var masked_header = first; // Use the original masked header byte
                 var masked_pn_bytes: [4]u8 = undefined;
                 @memcpy(masked_pn_bytes[0..actual_pn_len], bytes[pn_start .. pn_start + actual_pn_len]);
+                logger.debug("Calling unprotectInitialAutoSample with:", .{});
+                logger.debug("  masked_header=0x{X:0>2}", .{masked_header});
+                logger.debug("  masked_pn_bytes[0..{}]={any}", .{actual_pn_len, masked_pn_bytes[0..actual_pn_len]});
+                logger.debug("  header_prefix.len={}", .{header_prefix.len});
+                logger.debug("  full_pn_and_payload.len={}", .{full_pn_and_payload.len});
+                logger.debug("  expected_pn_hs={}", .{expected_pn_hs});
+
                 const dec = crypto.unprotectInitialAutoSample(
                     .aes_128_gcm,
                     &rx_keys.key,
@@ -2724,10 +2784,13 @@ pub const Endpoint = struct {
                     expected_pn_hs,
                 ) catch |err| {
                     logger.debug("Handshake packet decrypt failed: {} (actual_pn_len={}, expected_pn={})", .{ err, actual_pn_len, expected_pn_hs });
+                    logger.debug("  RX keys: key[0..4]={any}, iv[0..4]={any}, hp[0..4]={any}", .{
+                        rx_keys.key[0..4], rx_keys.iv[0..4], rx_keys.hp[0..4]
+                    });
                     conn.onAeadAuthFailure();
                     return;
                 };
-                _ = dec;
+                logger.debug("unprotectInitialAutoSample returned: {} bytes decrypted", .{dec});
 
                 logger.debug("After unmasking with actual_pn_len={}: ", .{actual_pn_len});
                 for (pn_bytes) |b| logger.debug("{X:0>2} ", .{b});
@@ -2981,31 +3044,33 @@ pub const Endpoint = struct {
                         }
                     }
                 }
-                // If peer has validated address (CH contained token) and we are server, consider sending NEW_TOKEN on 1-RTT after HS done
-                if (conn.address_validated and conn.app_tx_keys != null and conn.new_token_pending and !conn.new_token_sent) {
-                    // Issue a fresh token bound to current peer IP and ODCID (peer_initial_dcid)
-                    const client_ip_bytes = @as([*]const u8, @ptrCast(&peer.storage))[0..peer.len];
-                    const secret = self.cfg.token_secret orelse "default-retry-secret-16";
-                    const tok = token_mod.encode(self.allocator.*, client_ip_bytes, conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len], secret, self.cfg.token_expiry_ms) catch null;
-                    if (tok) |tbytes| {
-                        defer self.allocator.free(tbytes);
-                        var fb = std.ArrayList(u8){};
-                        defer fb.deinit(self.allocator.*);
-                        const w = fb.writer(self.allocator.*);
-                        _ = (frame.Frame{ .new_token = .{ .token = tbytes } }).write(w) catch 0;
-                        const dcid_nt = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else conn.our_scid.bytes[0..conn.our_scid.len];
-                        const out = packet.encodeShortProtected(self.allocator.*, dcid_nt, @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, conn.app_tx_keys.?, conn.tx_key_phase) catch null;
-                        if (out) |pkt_bytes| {
-                            defer self.allocator.free(pkt_bytes);
-                            _ = self.sendTo(peer, pkt_bytes) catch {};
-                            conn.onPacketSent(.Application, conn.pn_app_tx, pkt_bytes.len, true);
-                            conn.pn_app_tx +%= 1;
-                            conn.new_token_sent = true;
-                        }
+            } else {
+                std.debug.print("WARNING: No handshake RX keys available for handshake packet!\n", .{});
+            }
+            // If peer has validated address (CH contained token) and we are server, consider sending NEW_TOKEN on 1-RTT after HS done
+            if (conn.address_validated and conn.app_tx_keys != null and conn.new_token_pending and !conn.new_token_sent) {
+                // Issue a fresh token bound to current peer IP and ODCID (peer_initial_dcid)
+                const client_ip_bytes = @as([*]const u8, @ptrCast(&peer.storage))[0..peer.len];
+                const secret = self.cfg.token_secret orelse "default-retry-secret-16";
+                const tok = token_mod.encode(self.allocator.*, client_ip_bytes, conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len], secret, self.cfg.token_expiry_ms) catch null;
+                if (tok) |tbytes| {
+                    defer self.allocator.free(tbytes);
+                    var fb = std.ArrayList(u8){};
+                    defer fb.deinit(self.allocator.*);
+                    const w = fb.writer(self.allocator.*);
+                    _ = (frame.Frame{ .new_token = .{ .token = tbytes } }).write(w) catch 0;
+                    const dcid_nt = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else conn.our_scid.bytes[0..conn.our_scid.len];
+                    const out = packet.encodeShortProtected(self.allocator.*, dcid_nt, @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, conn.app_tx_keys.?, conn.tx_key_phase) catch null;
+                    if (out) |pkt_bytes| {
+                        defer self.allocator.free(pkt_bytes);
+                        _ = self.sendTo(peer, pkt_bytes) catch {};
+                        conn.onPacketSent(.Application, conn.pn_app_tx, pkt_bytes.len, true);
+                        conn.pn_app_tx +%= 1;
+                        conn.new_token_sent = true;
                     }
                 }
             } else {
-                logger.debug("Client does not have handshake RX keys yet", .{});
+                std.debug.print("WARNING: No handshake RX keys available for handshake packet!\n", .{});
             }
 
             // Check if there are more packets coalesced in this datagram (for Handshake packets)

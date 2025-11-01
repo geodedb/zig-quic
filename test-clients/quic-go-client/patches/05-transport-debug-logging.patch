@@ -1,0 +1,10 @@
+--- /home/benji/src/spyder/quic/forks/quic-go/transport.go	2025-10-30 12:19:35.518890006 -0400
++++ /home/benji/src/spyder/quic/test-clients/quic-go-client/vendor/quic-go/transport.go	2025-11-01 15:52:43.009460019 -0400
+@@ -567,6 +567,7 @@
+ }
+ 
+ func (t *Transport) handlePacket(p receivedPacket) {
++	fmt.Printf("[TRANSPORT] Handling packet: size=%d, from=%s\n", len(p.data), p.remoteAddr)
+ 	if len(p.data) == 0 {
+ 		return
+ 	}

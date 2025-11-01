@@ -1,0 +1,33 @@
+--- /home/benji/src/spyder/quic/forks/quic-go/packet_unpacker.go	2025-10-30 12:19:35.513656995 -0400
++++ /home/benji/src/spyder/quic/test-clients/quic-go-client/vendor/quic-go/packet_unpacker.go	2025-11-01 15:52:42.994459769 -0400
+@@ -54,12 +54,14 @@
+ // If decrypting the payload fails for any reason, the error is the error returned by the AEAD.
+ func (u *packetUnpacker) UnpackLongHeader(hdr *wire.Header, data []byte) (*unpackedPacket, error) {
+ 	var encLevel protocol.EncryptionLevel
++	fmt.Printf("[UNPACKER] Unpacking long header packet: type=%s, version=%s, dest_conn_id=%s, src_conn_id=%s, data_len=%d\n", hdr.Type, hdr.Version, hdr.DestConnectionID, hdr.SrcConnectionID, len(data))
+ 	var extHdr *wire.ExtendedHeader
+ 	var decrypted []byte
+ 	//nolint:exhaustive // Retry packets can't be unpacked.
+ 	switch hdr.Type {
+ 	case protocol.PacketTypeInitial:
+ 		encLevel = protocol.EncryptionInitial
++		fmt.Printf("[UNPACKER] Processing Initial packet\n")
+ 		opener, err := u.cs.GetInitialOpener()
+ 		if err != nil {
+ 			return nil, err
+@@ -70,6 +72,7 @@
+ 		}
+ 	case protocol.PacketTypeHandshake:
+ 		encLevel = protocol.EncryptionHandshake
++		fmt.Printf("[UNPACKER] Processing Handshake packet\n")
+ 		opener, err := u.cs.GetHandshakeOpener()
+ 		if err != nil {
+ 			return nil, err
+@@ -107,6 +110,7 @@
+ }
+ 
+ func (u *packetUnpacker) UnpackShortHeader(rcvTime monotime.Time, data []byte) (protocol.PacketNumber, protocol.PacketNumberLen, protocol.KeyPhaseBit, []byte, error) {
++	fmt.Printf("[UNPACKER] Unpacking short header packet: data_len=%d\n", len(data))
+ 	opener, err := u.cs.Get1RTTOpener()
+ 	if err != nil {
+ 		return 0, 0, 0, nil, err

@@ -1,0 +1,27 @@
+diff --git a/connection.go b/connection.go
+index 1111111..2222222 100644
+--- a/connection.go
++++ b/connection.go
+@@ -1614,6 +1614,10 @@ func (c *connection) handleUnpackedPacket(
+ 	packetSize protocol.ByteCount, // only for logging
+ ) error {
+ 	if !c.receivedFirstPacket {
++		if packet != nil && packet.hdr != nil {
++			fmt.Printf("[QUIC-GO DEBUG] First packet received: type=%d, pn=%d, dcid=%x, scid=%x\n",
++				packet.hdr.Type, packet.hdr.PacketNumber, packet.hdr.DestConnectionID, packet.hdr.SrcConnectionID)
++		}
+ 		c.receivedFirstPacket = true
+ 		if !c.versionNegotiated && c.qlogger != nil {
+ 			var clientVersions, serverVersions []Version
+@@ -1690,6 +1694,11 @@ func (c *connection) handleRetryPacket(remoteAddr net.Addr, hdr *wire.Header) e
+ }
+
+ func (c *connection) handleVersionNegotiationPacket(p packetHandler) {
++	if c.perspective == protocol.PerspectiveClient {
++		fmt.Printf("[QUIC-GO DEBUG] Received Version Negotiation packet\n")
++		fmt.Printf("  Current version: %x\n", c.version)
++		fmt.Printf("  Config versions: %v\n", c.config.Versions)
++	}
+ 	if c.perspective == protocol.PerspectiveServer || // servers never receive version negotiation packets
+ 		c.receivedFirstPacket ||
+ 		c.versionNegotiated { // ignore delayed / duplicated version negotiation packets
