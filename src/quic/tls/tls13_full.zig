@@ -5,6 +5,7 @@ const std = @import("std");
 const ks = @import("quic_tls");
 const x509 = @import("x509");
 const sig = @import("sig");
+const logger = @import("quic_logger");
 const H = ks.H; // SHA-256
 
 /// TLS 1.3 Extension types
@@ -325,6 +326,7 @@ pub fn buildServerHello(
     key_share_group: NamedGroup,
     key_share_data: []const u8,
     client_session_id: ?[]const u8,
+    quic_params: ?[]const u8,
 ) ![]u8 {
     var msg = try std.ArrayList(u8).initCapacity(allocator, 0);
     defer msg.deinit(allocator);
@@ -376,6 +378,14 @@ pub fn buildServerHello(
     });
     try ks_data.appendSlice(allocator, key_share_data);
     try writeExtension(allocator, &exts, .key_share, ks_data.items);
+
+    // QUIC transport parameters (mandatory for QUIC connections per RFC 9001)
+    if (quic_params) |params| {
+        logger.debug("buildServerHello: Adding QUIC transport parameters extension, {} bytes", .{params.len});
+        try writeExtension(allocator, &exts, .quic_transport_parameters, params);
+    } else {
+        logger.debug("buildServerHello: WARNING - No QUIC transport parameters provided", .{});
+    }
 
     // Write extensions length
     try msg.appendSlice(allocator, &[_]u8{

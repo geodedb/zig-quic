@@ -2190,6 +2190,20 @@ pub const Endpoint = struct {
                     if (crypto_bytes_sent > 0) {
                         conn.crypto_tx_off_initial += crypto_bytes_sent;
                         logger.debug("Server: Updated Initial CRYPTO offset to {}", .{conn.crypto_tx_off_initial});
+
+                        // CRITICAL FIX: Remove sent ServerHello from outbox before queueing handshake flight
+                        // The Initial packet code accessed outbox.items directly but didn't remove the sent data
+                        // We need to remove it now so queueServerHandshakeFlight can append cleanly
+                        if (crypto_bytes_sent <= conn.tls.outbox.items.len) {
+                            // Remove the sent bytes from the beginning of the outbox
+                            const remaining = conn.tls.outbox.items.len - crypto_bytes_sent;
+                            if (remaining > 0) {
+                                // Shift remaining data to the beginning
+                                std.mem.copyForwards(u8, conn.tls.outbox.items[0..remaining], conn.tls.outbox.items[crypto_bytes_sent..]);
+                            }
+                            conn.tls.outbox.shrinkRetainingCapacity(remaining);
+                            logger.debug("Server: Removed {} sent bytes from TLS outbox, {} bytes remaining", .{crypto_bytes_sent, remaining});
+                        }
                     }
                     // Do NOT free pkt_bytes here; defer will free if never coalesced
 
@@ -2229,10 +2243,12 @@ pub const Endpoint = struct {
                 if (conn.role == .Server and conn.tls.sh_seen and !conn.server_hello_sent) {
                     conn.server_hello_sent = true;
                     logger.debug("Queueing handshake flight (EE + Cert + Finished), ServerHello already queued", .{});
+                    logger.debug("BEFORE queueServerHandshakeFlight: outbox.len={}", .{conn.tls.outbox.items.len});
 
                     // Queue the rest of the handshake flight (EncryptedExtensions + Certificate + CertificateVerify + Finished)
                     // ServerHello is already in outbox from when keys were derived in conn.zig
                     conn.tls.queueServerHandshakeFlight();
+                    logger.debug("AFTER queueServerHandshakeFlight: outbox.len={}", .{conn.tls.outbox.items.len});
                 }
 
                 // Pull any pending TLS outbox (EncryptedExtensions, Certificate, CertificateVerify, Finished)

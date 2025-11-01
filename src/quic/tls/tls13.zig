@@ -1349,6 +1349,13 @@ pub const Engine = struct {
     /// Build a minimally spec-compliant TLS 1.3 ServerHello (real mode)
     pub fn queueRealServerHello(self: *Engine) !void {
         logger.debug("queueRealServerHello: ENTER - alpn={}, local_tp={}", .{ self.alpn != null, self.local_tp != null });
+
+        // Log transport parameters if available
+        if (self.local_tp) |tp| {
+            logger.debug("queueRealServerHello: Transport parameters available, {} bytes", .{tp.len});
+        } else {
+            logger.debug("WARNING: queueRealServerHello called without transport parameters - ServerHello will be non-compliant with RFC 9001", .{});
+        }
         self.ensureKeypair();
         const pubkey = self.my_pub orelse {
             logger.debug("queueRealServerHello: EARLY EXIT - my_pub is NULL", .{});
@@ -1366,7 +1373,8 @@ pub const Engine = struct {
             .TLS_AES_128_GCM_SHA256,  // Use AES-128-GCM for compatibility
             .x25519,
             pubkey[0..],
-            self.client_session_id
+            self.client_session_id,
+            null  // RFC 9001: Transport params go in EncryptedExtensions, NOT ServerHello!
         );
         defer self.allocator.free(sh_body);
 
