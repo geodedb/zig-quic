@@ -1115,7 +1115,11 @@ pub const Connection = struct {
 
             // Queue ServerHello to update transcript, compute ECDHE, and derive secrets
             // (tryComputeShared is called internally by queueRealServerHello)
-            self.tls.queueRealServerHello() catch {};
+            self.tls.queueRealServerHello() catch |err| {
+                logger.debug("Server: Failed to queue ServerHello in pushCrypto: {}", .{err});
+                // Don't proceed if ServerHello generation failed
+                return;
+            };
 
             // Copy handshake secrets from TLS engine to Connection
             if (self.tls.handshake_client_secret) |client_secret| {

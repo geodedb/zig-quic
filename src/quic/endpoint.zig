@@ -1544,8 +1544,8 @@ pub const Endpoint = struct {
         logger.debug("Long header packet received: first=0x{X:0>2}, ty={} (0=Initial, 1=0-RTT, 2=Handshake, 3=Retry), version=0x{X:0>8}", .{first, ty, version});
         std.debug.print("LONG HEADER: ty={} (0=Initial, 2=Handshake), version=0x{X:0>8}\n", .{ty, version});
         if (ty == 0) {
-            logger.debug("=== PROCESSING INITIAL PACKET FROM PEER ===", .{});
-            logger.debug("Packet total length: {} bytes", .{bytes.len});
+            std.debug.print("=== PROCESSING INITIAL PACKET FROM PEER ===\n", .{});
+            std.debug.print("Packet total length: {} bytes\n", .{bytes.len});
             // Initial
             var i: usize = 5;
             if (i >= bytes.len) return;
@@ -1685,7 +1685,11 @@ pub const Endpoint = struct {
             };
             conn.initial_version = version;
             if (ecn_bits) |e| conn.onEcnMark(.Initial, e);
-            if (conn.initial_keys_dropped) return;
+            std.debug.print("DEBUG: Checking initial_keys_dropped = {}\n", .{conn.initial_keys_dropped});
+            if (conn.initial_keys_dropped) {
+                std.debug.print("DEBUG: Early return due to initial_keys_dropped=true\n", .{});
+                return;
+            }
 
             // For server role, set peer CIDs from packet (captures client's DCID/SCID and ODCID once).
             // For client role, capture the server's SCID (peer_initial_scid) the first time we see it so
@@ -1773,7 +1777,11 @@ pub const Endpoint = struct {
             // Parse long header variable fields up to PN start
             var j: usize = i; // after SCID value
             // token length varint and token bytes
-            const tok = varint.decode(bytes[j..]) catch return;
+            std.debug.print("DEBUG: About to decode token varint at offset {}\n", .{j});
+            const tok = varint.decode(bytes[j..]) catch {
+                std.debug.print("DEBUG: Failed to decode token varint - returning\n", .{});
+                return;
+            };
             j += tok.n;
             const tok_len_usize: usize = @as(usize, @intCast(tok.value));
             if (j + tok_len_usize > bytes.len) return;
@@ -1796,6 +1804,11 @@ pub const Endpoint = struct {
 
             // If address still not validated after parsing, consider issuing Retry per config
             // Only applies to server role
+            std.debug.print("DEBUG: Retry check - role={s}, address_validated={}, enable_retry={}\n", .{
+                if (conn.role == .Server) "Server" else "Client",
+                conn.address_validated,
+                self.cfg.enable_retry,
+            });
             if (conn.role == .Server and !conn.address_validated and self.cfg.enable_retry) {
                 // Build Retry: version as received; DCID = client's SCID; SCID = server-chosen; token bound to client ip+odcid
                 const client_ip_bytes = @as([*]const u8, @ptrCast(&peer.storage))[0..peer.len];
@@ -1830,23 +1843,67 @@ pub const Endpoint = struct {
             logger.debug("", .{});
             // We'll try PN lengths 1..4 using auto-sample decrypt until one succeeds.
             logger.debug("{s}: Trying to decrypt Initial with pn_initial.max={}", .{ if (conn.role == .Server) "Server" else "Client", conn.pn_initial.max });
+
+            // Debug log packet structure
+            logger.debug("Initial packet structure:", .{});
+            logger.debug("  - Total packet len: {}", .{bytes.len});
+            logger.debug("  - Header prefix len: {}", .{header_prefix.len});
+            logger.debug("  - pn_start: {}, end_total: {}", .{pn_start, end_total});
+            logger.debug("  - Ciphertext len (including PN): {}", .{end_total - pn_start});
+            if (header_prefix.len > 0 and bytes.len > 0) {
+                logger.debug("  - First byte: {X:0>2} (long_header={}, type={})", .{
+                    bytes[0],
+                    (bytes[0] & 0x80) != 0,
+                    (bytes[0] >> 4) & 0x03,
+                });
+            }
+
+            std.debug.print("DEBUG: Reached Initial packet decryption section\n", .{});
+            std.debug.print("DEBUG: pn_start={}, end_total={}, bytes.len={}\n", .{pn_start, end_total, bytes.len});
             var success = false;
             var chosen_pn_len: u3 = 0;
             var pt_list = std.ArrayList(u8){};
             defer pt_list.deinit(self.allocator.*);
             var pn_len_try: u3 = 1;
             attempt: while (pn_len_try <= 4) : (pn_len_try += 1) {
-                if (pn_start + pn_len_try > end_total) break;
+                std.debug.print("DEBUG: Loop iteration pn_len_try={}, checking if {} + {} > {}\n", .{pn_len_try, pn_start, pn_len_try, end_total});
+                if (pn_start + pn_len_try > end_total) {
+                    std.debug.print("DEBUG: Breaking loop because pn_start + pn_len_try > end_total\n", .{});
+                    break;
+                }
                 // Pass full buffer from PN start; crypto function extracts sample from offset 4
                 const ct = bytes[pn_start .. end_total];
-                if (ct.len < 16) break;
+                std.debug.print("DEBUG: ct.len={}, checking if < 16\n", .{ct.len});
+                if (ct.len < 16) {
+                    std.debug.print("DEBUG: ct.len={} < 16, breaking loop at pn_len_try={}\n", .{ct.len, pn_len_try});
+                    break;
+                }
                 var pn_try: [4]u8 = pn_masked; // copy masked bytes
                 var header_try = first;
                 pt_list.clearRetainingCapacity();
-                pt_list.ensureTotalCapacity(self.allocator.*, ct.len - 16) catch break;
+                std.debug.print("DEBUG: About to allocate {} bytes for pt_list\n", .{ct.len - 16});
+                pt_list.ensureTotalCapacity(self.allocator.*, ct.len - 16) catch |err| {
+                    std.debug.print("DEBUG: Failed to allocate pt_list: {}\n", .{err});
+                    break;
+                };
+                std.debug.print("DEBUG: After allocation, pt_list.capacity={}\n", .{pt_list.capacity});
                 pt_list.appendNTimesAssumeCapacity(0, ct.len - 16);
+                std.debug.print("DEBUG: After appendNTimes, pt_list.items.len={}\n", .{pt_list.items.len});
                 const pt_slice = pt_list.items;
+                std.debug.print("DEBUG: pt_slice.len={}\n", .{pt_slice.len});
                 const expected_pn = if (conn.pn_initial.have_any) conn.pn_initial.max + 1 else 0;
+                std.debug.print("DEBUG: expected_pn={}\n", .{expected_pn});
+
+                // Debug logging for decryption attempt
+                std.debug.print("DEBUG: About to attempt Initial packet decryption (pn_len_try={})\n", .{pn_len_try});
+                std.debug.print("DEBUG:   - header_try: {X:0>2}\n", .{header_try});
+                std.debug.print("DEBUG:   - header_prefix.len={}\n", .{header_prefix.len});
+                std.debug.print("DEBUG:   - ct.len={}\n", .{ct.len});
+                std.debug.print("DEBUG:   - keys.key[0..4]: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{
+                    keys.key[0], keys.key[1], keys.key[2], keys.key[3],
+                });
+
+                std.debug.print("DEBUG: About to call crypto.unprotectInitialAutoSample\n", .{});
                 const dec = crypto.unprotectInitialAutoSample(
                     .aes_128_gcm,
                     &keys.key,
@@ -1858,26 +1915,33 @@ pub const Endpoint = struct {
                     ct,
                     pt_slice,
                     expected_pn,
-                ) catch {
+                ) catch |err| {
+                    std.debug.print("DEBUG: Decryption failed with error: {}\n", .{err});
                     continue;
                 };
+                std.debug.print("DEBUG: Decryption SUCCESS!\n", .{});
+                std.debug.print("DEBUG: dec value = {}\n", .{dec});
                 _ = dec;
-                logger.debug("After unmasking with pn_len={}: ", .{pn_len_try});
-                for (pn_try[0..pn_len_try]) |b| logger.debug("{X:0>2} ", .{b});
-                logger.debug("", .{});
+                std.debug.print("DEBUG: After unmasking with pn_len={}: ", .{pn_len_try});
+                for (pn_try[0..pn_len_try]) |b| std.debug.print("{X:0>2} ", .{b});
+                std.debug.print("\n", .{});
                 const indicated_pn_len: u3 = @intCast((header_try & 0x03) + 1);
+                std.debug.print("DEBUG: indicated_pn_len={}, pn_len_try={}\n", .{indicated_pn_len, pn_len_try});
                 if (indicated_pn_len != pn_len_try) {
                     // Mismatch between header-indicated PN length and trial; reject.
+                    std.debug.print("DEBUG: PN length mismatch, continuing to next attempt\n", .{});
                     continue;
                 }
+                std.debug.print("DEBUG: PN length match! Setting success=true\n", .{});
                 success = true;
                 chosen_pn_len = pn_len_try;
                 header_first = header_try;
                 @memcpy(pn_masked[0..pn_len_try], pn_try[0..pn_len_try]); // now holds unmasked bytes
                 break :attempt;
             }
+            std.debug.print("DEBUG: After decryption loop, success={}\n", .{success});
             if (!success) {
-                logger.debug("Failed to decrypt Initial packet - dropping silently", .{});
+                std.debug.print("DEBUG: Failed to decrypt Initial packet - dropping silently\n", .{});
                 // NOTE: RETRY is an optional DoS protection mechanism, not a requirement.
                 // Sending RETRY on every decryption failure creates issues because:
                 // 1. It closes the connection, losing the original_dcid state
@@ -1890,12 +1954,14 @@ pub const Endpoint = struct {
             }
             const pn_len = chosen_pn_len;
             const pt = pt_list.items;
-            logger.debug("Successfully decrypted Initial packet (trial pn_len={}) plaintext len: {}", .{ pn_len, pt.len });
+            std.debug.print("DEBUG: Successfully decrypted Initial packet (trial pn_len={}) plaintext len: {}\n", .{ pn_len, pt.len });
             // Only now (after successful decryption) enqueue server connection for accept()
             if (conn.role == .Server and !conn.accepted_enqueued) {
+                std.debug.print("DEBUG: Enqueuing server connection for accept()\n", .{});
                 conn.accepted_enqueued = true;
                 self.pushAccepted(conn);
             }
+            std.debug.print("DEBUG: After accept enqueue check\n", .{});
 
             // Expand truncated PN against Initial space expectation and track
             var pn_val_be: u64 = 0;
@@ -1933,7 +1999,7 @@ pub const Endpoint = struct {
                             cr.offset,
                             conn.crypto_rx_off_initial
                         });
-                        const was_server = (conn.role == .Server);
+                        // const was_server = (conn.role == .Server); // Commented out - no longer used
 
                         // Check if this CRYPTO frame is at the expected offset
                         if (cr.offset == conn.crypto_rx_off_initial) {
@@ -1971,16 +2037,18 @@ pub const Endpoint = struct {
                             saw_ack_eliciting_initial = true; // CRYPTO is ack-eliciting
 
                             // Server: after receiving CH, only queue ServerHello for Initial emission
-                            if (was_server and !conn.tls.sh_seen) {
-                                // Queue ServerHello only - it will be sent in Initial packet
-                                // The rest of the handshake flight will be queued after SH is sent
-                                std.debug.print("SERVER: Reached ServerHello queueing code path! sh_seen={}\n", .{conn.tls.sh_seen});
-                                logger.debug("Server: About to queue ServerHello - outbox.len={}", .{conn.tls.outbox.items.len});
-                                conn.tls.queueRealServerHello() catch |err| {
-                                    logger.debug("Failed to queue ServerHello: {}", .{err});
-                                    return;
-                                };
-                                logger.debug("Server: After queueRealServerHello - outbox.len={} sh_seen={}", .{conn.tls.outbox.items.len, conn.tls.sh_seen});
+                            // COMMENTED OUT: This is duplicate - ServerHello queueing is already handled in conn.pushCrypto()
+                            // if (was_server and !conn.tls.sh_seen) {
+                            //     // Queue ServerHello only - it will be sent in Initial packet
+                            //     // The rest of the handshake flight will be queued after SH is sent
+                            //     std.debug.print("SERVER: Reached ServerHello queueing code path! sh_seen={}\n", .{conn.tls.sh_seen});
+                            //     logger.debug("Server: About to queue ServerHello - outbox.len={}", .{conn.tls.outbox.items.len});
+                            //     conn.tls.queueRealServerHello() catch |err| {
+                            //         logger.debug("Failed to queue ServerHello: {}", .{err});
+                            //         return;
+                            //     };
+                            //     logger.debug("Server: After queueRealServerHello - outbox.len={} sh_seen={}", .{conn.tls.outbox.items.len, conn.tls.sh_seen});
+                            // }
 
                                 // CRITICAL: Derive Handshake keys after queuing ServerHello
                                 // If we can compute handshake secrets now, install Handshake keys
@@ -1995,7 +2063,7 @@ pub const Endpoint = struct {
                                         logger.debug("Server: Cannot derive handshake secrets yet (sh_seen={}, ecdhe={})", .{conn.tls.sh_seen, conn.tls.ecdhe_secret != null});
                                     }
                                 }
-                            }
+                            // } // This was the closing brace for the commented-out if statement
                         } else if (cr.offset > conn.crypto_rx_off_initial) {
                             // Out-of-order frame - buffer it
                             logger.debug("Buffering out-of-order CRYPTO frame: offset {} expected {}", .{ cr.offset, conn.crypto_rx_off_initial });
