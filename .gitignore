@@ -2,29 +2,22 @@
 *.tmp
 core
 
-external/
 dist/
 result
-out/
-
-*.log
-test-logs/
 
 # But preserve important cmd files
 !cmd/
 
+clients/rust/target/
+test-clients/quinn-client/target/
+test-clients/quinn-client/target/
+test_clients/rust/target/release/
+test_clients/rust/target/release/
+
+
 .direnv/
 .zig-cache/
-
-# build folders
-bin/
-ui/public/
-ui/build/
-ui/node_modules/
-**/node_modules/
-
-# Removing Vendor
-vendor/
+zig-out/
 
 .vscode/
 .rightnow/
@@ -41,10 +34,6 @@ vendor/
 
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
-
-*.crt
-*.key
-*.pem
 
 # ignore mac files
 .DS_Store

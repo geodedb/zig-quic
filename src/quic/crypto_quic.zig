@@ -426,8 +426,12 @@ pub fn unprotectInitial(
     var i: usize = 0;
     while (i < pn_bytes.len) : (i += 1) pn_val_truncated = (pn_val_truncated << 8) | pn_bytes[i];
 
+    logger.debug("Packet number extraction: pn_bytes={any}, pn_val_truncated={}, expected_pn={}", .{ pn_bytes, pn_val_truncated, expected_pn });
+
     // Expand the truncated packet number using the expected value
     const pn_val = expandPacketNumber(pn_val_truncated, @intCast(pn_bytes.len), expected_pn);
+
+    logger.debug("Expanded packet number: {} (from truncated {} with expected {})", .{ pn_val, pn_val_truncated, expected_pn });
 
     if (expected_pn == 0) {
         logger.debug("First packet: truncated={x:0>4} ({}) -> expanded={}", .{ pn_val_truncated, pn_val_truncated, pn_val });
@@ -607,9 +611,11 @@ pub fn unmaskLongHeaderAndPn(
     const pn_len: u3 = @as(u3, @intCast((header_first.* & 0x03))) + 1;
     logger.debug("Decoded pn_len from header: {}", .{pn_len});
 
+    logger.debug("pn_buf before unmasking: {any}", .{pn_buf.*});
     // Constant-time-ish: always xor 4 bytes to avoid data-dependent timing; callers will slice by pn_len.
     var i: usize = 0;
     while (i < 4) : (i += 1) pn_buf.*[i] ^= out_block[i + 1];
+    logger.debug("pn_buf after unmasking: {any}, using pn_len={}", .{ pn_buf.*, pn_len });
     return pn_len;
 }
 
