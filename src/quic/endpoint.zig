@@ -2606,14 +2606,11 @@ pub const Endpoint = struct {
 
                 // Debug the raw packet bytes
                 const debug_len = @min(32, end_total - pn_start);
-                logger.debug("Handshake packet raw bytes from pn_start={} to end_total={}, showing first {} bytes", .{pn_start, end_total, debug_len});
-                var hex_buf: [100]u8 = undefined;
-                var hex_idx: usize = 0;
+                logger.debug("Handshake packet raw bytes from pn_start={} to end_total={}, showing first {} bytes:", .{pn_start, end_total, debug_len});
                 for (bytes[pn_start .. pn_start + debug_len]) |b| {
-                    _ = std.fmt.bufPrint(hex_buf[hex_idx..], "{X:0>2} ", .{b}) catch break;
-                    hex_idx += 3;
+                    logger.debug("{X:0>2} ", .{b});
                 }
-                logger.debug("Packet bytes: {s}", .{hex_buf[0..hex_idx]});
+                logger.debug("", .{});
 
                 attempt: while (pn_len_try <= 4) : (pn_len_try += 1) {
                     if (pn_start + pn_len_try > end_total) break;

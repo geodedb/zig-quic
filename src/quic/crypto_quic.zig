@@ -484,12 +484,27 @@ pub fn unprotectInitialAutoSample(
     // ciphertext_and_tag parameter starts at PN field beginning (includes PN bytes + encrypted payload + tag)
     var sample16: [16]u8 = undefined;
 
-    // Debug: Log the first few bytes of ciphertext_and_tag to see what we're working with
-    logger.debug("Header protection removal - first 32 bytes of ciphertext_and_tag:", .{});
+    // Debug: Log the first few bytes of ciphertext_and_tag
     const debug_len = @min(32, ciphertext_and_tag.len);
-    for (ciphertext_and_tag[0..debug_len]) |b| logger.debug("{X:0>2} ", .{b});
-    logger.debug("", .{});
-    logger.debug("  pn_len={}, ciphertext_and_tag.len={}", .{ pn_len, ciphertext_and_tag.len });
+    var hex_buf: [96]u8 = undefined; // 32 bytes * 3 chars per byte (2 hex + 1 space)
+    var hex_stream = std.io.fixedBufferStream(&hex_buf);
+    const hex_writer = hex_stream.writer();
+    for (ciphertext_and_tag[0..debug_len]) |b| {
+        _ = hex_writer.print("{X:0>2} ", .{b}) catch break;
+    }
+    const hex_str = hex_stream.getWritten();
+    logger.debug("Header protection removal - first {} bytes of ciphertext_and_tag: {s}", .{ debug_len, hex_str });
+    logger.debug("  pn_len={}, ciphertext_and_tag.len={}, expected_pn={}", .{ pn_len, ciphertext_and_tag.len, expected_pn });
+
+    // Debug: Show the masked packet number bytes
+    var pn_hex_buf: [12]u8 = undefined; // 4 bytes max * 3 chars
+    var pn_hex_stream = std.io.fixedBufferStream(&pn_hex_buf);
+    const pn_hex_writer = pn_hex_stream.writer();
+    for (pn_bytes[0..pn_len]) |b| {
+        _ = pn_hex_writer.print("{X:0>2} ", .{b}) catch break;
+    }
+    const pn_hex_str = pn_hex_stream.getWritten();
+    logger.debug("  Masked PN bytes before unmasking: {s}", .{pn_hex_str});
 
     switch (suite) {
         .aes_128_gcm => {
@@ -502,13 +517,17 @@ pub fn unprotectInitialAutoSample(
 
             logger.debug("HP Sample extraction: pn_len={}, ct_len={}, sample_offset={}", .{pn_len, ciphertext_and_tag.len, sample_offset});
             logger.debug("Sample bytes: ", .{});
-            for (sample16) |b| logger.debug("{X:0>2} ", .{b});
+            for (sample16) |b| {
+                logger.debug("{X:0>2} ", .{b});
+            }
             logger.debug("", .{});
 
             // Debug: show what we're extracting the sample from
             if (ciphertext_and_tag.len <= 32) {
                 logger.debug("Full ciphertext for sample: ", .{});
-                for (ciphertext_and_tag) |b| logger.debug("{X:0>2} ", .{b});
+                for (ciphertext_and_tag) |b| {
+                    logger.debug("{X:0>2} ", .{b});
+                }
                 logger.debug("", .{});
             }
         },
@@ -523,7 +542,9 @@ pub fn unprotectInitialAutoSample(
 
     // Log masked PN bytes before unprotection
     logger.debug("Masked PN bytes (len={}): ", .{pn_len});
-    for (pn_bytes) |b| logger.debug("{X:0>2}", .{b});
+    for (pn_bytes[0..pn_len]) |b| {
+        logger.debug("{X:0>2} ", .{b});
+    }
     logger.debug("", .{});
     logger.debug("Masked header_first: {X:0>2}", .{header_first.*});
 
