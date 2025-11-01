@@ -2618,7 +2618,10 @@ pub const Endpoint = struct {
                     const ct = bytes[pn_start .. end_total];
                     if (ct.len < 16) break;
 
-                    var pn_try: [4]u8 = pn_masked; // copy masked bytes
+                    // Create mutable buffer for packet number bytes that will be unmasked
+                    var pn_bytes_buf: [4]u8 = undefined;
+                    const pn_bytes = pn_bytes_buf[0..pn_len_try];
+                    @memcpy(pn_bytes, bytes[pn_start .. pn_start + pn_len_try]);
                     var header_try = first;
                     pt_list.clearRetainingCapacity();
                     pt_list.ensureTotalCapacity(self.allocator.*, ct.len - 16) catch break;
@@ -2645,7 +2648,7 @@ pub const Endpoint = struct {
                         &rx_keys.iv,
                         &rx_keys.hp,
                         &header_try,
-                        pn_try[0..pn_len_try],
+                        pn_bytes,
                         header_prefix,
                         ct,
                         pt_slice,
@@ -2657,7 +2660,7 @@ pub const Endpoint = struct {
                     _ = dec;
 
                     logger.debug("After unmasking with pn_len={}: ", .{pn_len_try});
-                    for (pn_try[0..pn_len_try]) |b| logger.debug("{X:0>2} ", .{b});
+                    for (pn_bytes) |b| logger.debug("{X:0>2} ", .{b});
                     logger.debug("", .{});
 
                     const indicated_pn_len: u3 = @intCast((header_try & 0x03) + 1);
@@ -2668,7 +2671,7 @@ pub const Endpoint = struct {
 
                     success = true;
                     chosen_pn_len = pn_len_try;
-                    @memcpy(pn_masked[0..pn_len_try], pn_try[0..pn_len_try]); // now holds unmasked bytes
+                    @memcpy(pn_masked[0..pn_len_try], pn_bytes); // now holds unmasked bytes
                     break :attempt;
                 }
 
