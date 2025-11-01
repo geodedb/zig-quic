@@ -222,11 +222,11 @@ pub fn cancelTimer(ep: *QuicEndpoint, id: u64) bool {
 /// rely on successful read/write operations or stream openings to infer
 /// handshake progress rather than calling this function.
 pub fn isHandshakeConfirmed(conn: *QuicConnection) bool {
-    // Suppress unused parameter warning.
-    _ = conn;
-    // Without dereferencing the pointer we cannot determine handshake status.
-    // Always report not confirmed to avoid dereferencing stale pointers.
-    return false;
+    // FIX: This function was always returning false, preventing handshake confirmation
+    // from ever being reported. Now it correctly delegates to the TLS engine's
+    // handshakeComplete() method, consistent with the handshakeComplete() API function.
+    const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
+    return c.tls.handshakeComplete();
 }
 
 /// Send CONNECTION_CLOSE with an application error and reason string.

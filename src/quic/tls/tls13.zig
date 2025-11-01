@@ -502,7 +502,10 @@ pub const Engine = struct {
                     logger.debug("onCryptoRecv: Derived server_hs first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{hs.server_hs[0], hs.server_hs[1], hs.server_hs[2], hs.server_hs[3]});
                     self.handshake_client_secret = hs.client_hs;
                     self.handshake_server_secret = hs.server_hs;
-                    _ = self.computeApplicationSecrets();
+                    // FIX: Removed premature computeApplicationSecrets() call
+                    // Per RFC 8446 Section 7.1 and RFC 9001, application secrets must be derived
+                    // AFTER both Finished messages are sent and verified, not after ServerHello.
+                    // Application secrets are now correctly derived at line ~753 after Finished verification.
                 }
 
                 // Only try to extract public keys from ClientHello and ServerHello
@@ -587,7 +590,8 @@ pub const Engine = struct {
                         }
                     }
                 }
-                // Minimal X.509 certificate body handling (single DER cert)
+                // Certificate message parsing: RFC 8446 Section 4.4.2
+                // FIX: Parse TLS Certificate message format before extracting DER certificate
                 if (p.typ == .certificate) {
                     logger.debug("{s}: Processing Certificate message (len={})", .{ if (self.role == .Server) "Server" else "Client", p.body.len });
                     if (self.allow_insecure) {
@@ -595,56 +599,140 @@ pub const Engine = struct {
                         self.peer_cert_ok = true;
                     } else {
                         logger.debug("{s}: Attempting certificate validation", .{if (self.role == .Server) "Server" else "Client"});
-                        const cert_val = x509.parseCert(self.allocator, p.body) catch null;
-                        if (cert_val) |c| {
-                            logger.debug("{s}: Certificate parsed successfully", .{if (self.role == .Server) "Server" else "Client"});
-                            self.peer_cert_ok = true;
-                            if (self.leaf_spki) |old| self.allocator.free(old);
-                            self.leaf_spki = self.allocator.dupe(u8, c.spki) catch null;
-                            x509.checkValidity(std.time.timestamp(), &c) catch {
-                                logger.warn("{s}: Certificate validity check failed", .{if (self.role == .Server) "Server" else "Client"});
-                                self.peer_cert_ok = false;
-                            };
-                            if (self.peer_cert_ok) {
-                                if (self.server_name) |sni| {
-                                    x509.validateChain(self.allocator, &[_][]const u8{p.body}, std.time.timestamp(), sni, self.allow_insecure) catch {
-                                        self.peer_cert_ok = false;
-                                    };
-                                }
+
+                        // Parse TLS Certificate message format per RFC 8446 Section 4.4.2:
+                        // struct {
+                        //     opaque certificate_request_context<0..2^8-1>;
+                        //     CertificateEntry certificate_list<0..2^24-1>;
+                        // } Certificate;
+                        // struct {
+                        //     opaque cert_data<1..2^24-1>;
+                        //     Extension extensions<0..2^16-1>;
+                        // } CertificateEntry;
+
+                        var pos: usize = 0;
+                        var cert_der: ?[]const u8 = null;
+
+                        parse_cert: {
+                            if (p.body.len < 1) {
+                                logger.err("TLS: Certificate message too short for request context", .{});
+                                break :parse_cert;
                             }
-                            if (self.peer_cert_ok) {
-                                if (c.eku) |eku| {
-                                    if (!eku.server_auth) {
-                                        self.peer_cert_ok = false;
+
+                            // certificate_request_context length (1 byte)
+                            const ctx_len: usize = p.body[pos];
+                            pos += 1;
+                            if (pos + ctx_len > p.body.len) {
+                                logger.err("TLS: Certificate message truncated at request context", .{});
+                                break :parse_cert;
+                            }
+                            // Skip context bytes
+                            pos += ctx_len;
+
+                            // certificate_list length (3 bytes)
+                            if (pos + 3 > p.body.len) {
+                                logger.err("TLS: Certificate message too short for certificate list length", .{});
+                                break :parse_cert;
+                            }
+                            const list_len: usize = (@as(usize, p.body[pos]) << 16) | (@as(usize, p.body[pos+1]) << 8) | p.body[pos+2];
+                            pos += 3;
+                            if (pos + list_len > p.body.len) {
+                                logger.err("TLS: Certificate message truncated at certificate list", .{});
+                                break :parse_cert;
+                            }
+
+                            const list_end = pos + list_len;
+
+                            // Parse first CertificateEntry (leaf certificate)
+                            if (pos + 3 <= list_end) {
+                                const cert_data_len: usize = (@as(usize, p.body[pos]) << 16) | (@as(usize, p.body[pos+1]) << 8) | p.body[pos+2];
+                                pos += 3;
+                                if (pos + cert_data_len <= list_end) {
+                                    cert_der = p.body[pos..pos+cert_data_len];
+                                    logger.debug("TLS: Extracted DER certificate (len={})", .{cert_data_len});
+                                } else {
+                                    logger.err("TLS: Certificate entry truncated", .{});
+                                }
+                            } else {
+                                logger.err("TLS: Certificate list empty or malformed", .{});
+                            }
+                        }
+
+                        // Now parse the extracted DER certificate
+                        if (cert_der) |der| {
+                            const cert_val = x509.parseCert(self.allocator, der) catch null;
+                            if (cert_val) |c| {
+                                logger.debug("{s}: Certificate parsed successfully", .{if (self.role == .Server) "Server" else "Client"});
+                                self.peer_cert_ok = true;
+                                if (self.leaf_spki) |old| self.allocator.free(old);
+                                self.leaf_spki = self.allocator.dupe(u8, c.spki) catch null;
+                                x509.checkValidity(std.time.timestamp(), &c) catch {
+                                    logger.warn("{s}: Certificate validity check failed", .{if (self.role == .Server) "Server" else "Client"});
+                                    self.peer_cert_ok = false;
+                                };
+                                if (self.peer_cert_ok) {
+                                    if (self.server_name) |sni| {
+                                        x509.validateChain(self.allocator, &[_][]const u8{der}, std.time.timestamp(), sni, self.allow_insecure) catch {
+                                            self.peer_cert_ok = false;
+                                        };
                                     }
                                 }
+                                if (self.peer_cert_ok) {
+                                    if (c.eku) |eku| {
+                                        if (!eku.server_auth) {
+                                            self.peer_cert_ok = false;
+                                        }
+                                    }
+                                }
+                            } else {
+                                logger.err("TLS: x509.parseCert failed", .{});
+                                self.peer_cert_ok = false;
                             }
                         } else {
+                            logger.err("TLS: Failed to extract DER certificate from Certificate message", .{});
                             self.peer_cert_ok = false;
                         }
                     }
                 }
-                // CertificateVerify: toy format for now -> first byte = alg id, rest = signature
+                // CertificateVerify: RFC 8446 format - SignatureScheme (2 bytes) + signature (2-byte length-prefixed)
+                // FIX: Changed from 1-byte "toy" format to RFC 8446 standard format for aioquic/quic-go compatibility
                 if (p.typ == .certificate_verify and !self.allow_insecure) {
                     if (!self.peer_cert_ok or self.leaf_spki == null) {
                         self.peer_cert_ok = false;
                     } else {
-                        if (p.body.len > 1) {
-                            const alg_id: u8 = p.body[0];
-                            const signature = p.body[1..];
-                            const th = th_before; // transcript up to CertificateVerify
-                            const alg: sig.SigAlg = switch (alg_id) {
-                                0x40 => .ecdsa_secp256r1_sha256,
-                                0x41 => .ecdsa_secp384r1_sha384,
-                                0x50 => .rsa_pss_sha256,
-                                else => blk: {
-                                    self.peer_cert_ok = false;
-                                    break :blk .rsa_pss_sha256;
-                                },
-                            };
-                            const ok = sig.verifyCertificateVerify(alg, self.leaf_spki.?, signature, "TLS 1.3, server CertificateVerify", &th) catch false;
-                            self.peer_cert_ok = ok;
-                        } else self.peer_cert_ok = false;
+                        // RFC 8446 Section 4.4.3: struct { SignatureScheme algorithm; opaque signature<0..2^16-1>; }
+                        if (p.body.len >= 4) { // Minimum: 2 (SignatureScheme) + 2 (signature length) + 0 (signature data)
+                            const scheme_value: u16 = readU16(p.body[0..2]);
+                            const sig_len: usize = readU16(p.body[2..4]);
+                            if (4 + sig_len <= p.body.len) {
+                                const signature = p.body[4..4+sig_len];
+                                const th = th_before; // transcript up to CertificateVerify
+                                const alg: sig.SigAlg = switch (scheme_value) {
+                                    0x0403 => .ecdsa_secp256r1_sha256,  // RFC 8446 SignatureScheme values
+                                    0x0503 => .ecdsa_secp384r1_sha384,
+                                    0x0804 => .rsa_pss_sha256,
+                                    0x0807 => .ed25519,
+                                    else => blk: {
+                                        logger.warn("TLS: Unknown SignatureScheme: 0x{X:0>4}", .{scheme_value});
+                                        self.peer_cert_ok = false;
+                                        break :blk .rsa_pss_sha256;
+                                    },
+                                };
+                                if (self.peer_cert_ok) { // Only verify if not already failed
+                                    const ok = sig.verifyCertificateVerify(alg, self.leaf_spki.?, signature, "TLS 1.3, server CertificateVerify", &th) catch false;
+                                    self.peer_cert_ok = ok;
+                                    if (!ok) {
+                                        logger.err("TLS: CertificateVerify signature verification FAILED", .{});
+                                    }
+                                }
+                            } else {
+                                logger.err("TLS: CertificateVerify message too short for declared signature length", .{});
+                                self.peer_cert_ok = false;
+                            }
+                        } else {
+                            logger.err("TLS: CertificateVerify message too short (len={})", .{p.body.len});
+                            self.peer_cert_ok = false;
+                        }
                     }
                 }
                 // Finished verification
