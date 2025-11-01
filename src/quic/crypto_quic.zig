@@ -478,14 +478,22 @@ pub fn unprotectInitialAutoSample(
         .aes_128_gcm => {
             // RFC 9001 §5.4.2: Sample starts 4 bytes after PN field start, always 16 bytes.
             // Buffer layout: [PN bytes (pn_len)] [encrypted payload...] [16-byte tag]
-            // Sample position: bytes 4..20 from buffer start
-            if (4 + 16 > ciphertext_and_tag.len) return error.AuthenticationFailed;
-            @memcpy(sample16[0..], ciphertext_and_tag[4 .. 4 + 16]);
+            // Sample position: Always at offset 4 from the start of the Packet Number field
+            const sample_offset: usize = 4;
+            if (sample_offset + 16 > ciphertext_and_tag.len) return error.AuthenticationFailed;
+            @memcpy(sample16[0..], ciphertext_and_tag[sample_offset .. sample_offset + 16]);
 
-            logger.debug("HP Sample extraction: pn_len={}, ct_len={}", .{pn_len, ciphertext_and_tag.len});
+            logger.debug("HP Sample extraction: pn_len={}, ct_len={}, sample_offset={}", .{pn_len, ciphertext_and_tag.len, sample_offset});
             logger.debug("Sample bytes: ", .{});
-            for (sample16) |b| logger.debug("{X:0>2}", .{b});
+            for (sample16) |b| logger.debug("{X:0>2} ", .{b});
             logger.debug("", .{});
+
+            // Debug: show what we're extracting the sample from
+            if (ciphertext_and_tag.len <= 32) {
+                logger.debug("Full ciphertext for sample: ", .{});
+                for (ciphertext_and_tag) |b| logger.debug("{X:0>2} ", .{b});
+                logger.debug("", .{});
+            }
         },
         .chacha20_poly1305 => {
             // For ChaCha20, sample is PN bytes (masked) followed by first (16 - pn_len) bytes of ciphertext
@@ -539,8 +547,16 @@ pub fn unprotectInitialAutoSample(
     // ciphertext_and_tag buffer layout: [PN bytes (pn_len)] [encrypted payload + tag]
     // Pass only the encrypted payload + tag portion to AEAD decrypt
     const actual_ciphertext = ciphertext_and_tag[pn_len..];
+
+    logger.debug("AEAD decrypt parameters:", .{});
+    logger.debug("  full_pn={}, truncated_pn={}, pn_len={}", .{full_pn, pn_trunc, pn_len});
+    logger.debug("  AAD len={}, ciphertext len={}", .{aad.len, actual_ciphertext.len});
+    logger.debug("  AAD bytes: ", .{});
+    for (aad) |b| logger.debug("{X:0>2}", .{b});
+    logger.debug("", .{});
+
     return aeadDecrypt(suite, aead_key, aead_iv, full_pn, aad, actual_ciphertext, out_plaintext) catch |err| {
-        logger.debug("AEAD decrypt failed (auto-sample): {} (pn={})", .{ err, full_pn });
+        logger.debug("AEAD decrypt failed (auto-sample): {} (pn={}, trunc={}, pn_len={})", .{ err, full_pn, pn_trunc, pn_len });
         return err;
     };
 }

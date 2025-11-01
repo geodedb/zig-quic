@@ -2564,6 +2564,9 @@ pub const Endpoint = struct {
             j += len_dec.n;
             if (len_dec.value > @as(u64, bytes.len - j)) return;
             const end_total = j + @as(usize, @intCast(len_dec.value));
+            logger.debug("Handshake packet: j={}, len_dec.value={}, end_total={}, bytes.len={}", .{
+                j, len_dec.value, end_total, bytes.len
+            });
 
             // Lookup connection keyed by peer + initial dcid hash (use stored mapping if any)
             const key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(dcid) };
@@ -2615,6 +2618,17 @@ pub const Endpoint = struct {
                     const pt_slice = pt_list.items;
 
                     const expected_pn_hs = if (conn.pn_handshake.have_any) conn.pn_handshake.max + 1 else 0;
+                    logger.debug("Attempting Handshake decrypt: pn_len_try={}, expected_pn={}, have_any={}", .{
+                        pn_len_try,
+                        expected_pn_hs,
+                        conn.pn_handshake.have_any,
+                    });
+                    logger.debug("Handshake RX keys: key=", .{});
+                    for (rx_keys.key) |b| logger.debug("{X:0>2}", .{b});
+                    logger.debug("", .{});
+                    logger.debug("Handshake RX keys: iv=", .{});
+                    for (rx_keys.iv) |b| logger.debug("{X:0>2}", .{b});
+                    logger.debug("", .{});
                     // Use unprotectInitialAutoSample for handshake packets with handshake keys
                     // Note: The function name is misleading - it works for any QUIC packet type
                     const dec = crypto.unprotectInitialAutoSample(
@@ -2629,7 +2643,7 @@ pub const Endpoint = struct {
                         pt_slice,
                         expected_pn_hs,
                     ) catch |err| {
-                        logger.debug("Handshake packet decrypt failed: {} (pn_len={})", .{ err, pn_len_try });
+                        logger.debug("Handshake packet decrypt failed: {} (pn_len={}, expected_pn={})", .{ err, pn_len_try, expected_pn_hs });
                         continue;
                     };
                     _ = dec;
@@ -2653,7 +2667,9 @@ pub const Endpoint = struct {
                 if (!success) {
                     logger.debug("Failed to decrypt Handshake packet", .{});
                     conn.onAeadAuthFailure();
-                    conn.closed = true;
+                    // Don't close connection on single decrypt failure
+                    // The connection should persist for retries
+                    // conn.closed = true;
                     return;
                 }
 
