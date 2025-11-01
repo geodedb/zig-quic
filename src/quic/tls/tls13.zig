@@ -99,6 +99,13 @@ pub const H = ks.H; // sha256
 /// TLS handshake role.
 pub const Role = enum { Client, Server };
 
+/// QUIC encryption levels per RFC 9001 Section 4.1.4
+pub const EncryptionLevel = enum {
+    Initial,      // ClientHello, ServerHello
+    Handshake,    // EncryptedExtensions, Certificate, CertificateVerify, Finished
+    Application,  // NewSessionTicket, post-handshake messages
+};
+
 /// TLS Handshake message types used by helpers.
 pub const HsType = enum(u8) {
     client_hello = 1,
@@ -126,6 +133,11 @@ pub fn encodeHandshake(alloc: std.mem.Allocator, typ: HsType, body: []const u8) 
 pub fn parseHandshakeOne(data: []const u8) !?struct { typ: HsType, body: []const u8, n: usize } {
     if (data.len < 4) return null;
     const t_byte = data[0];
+    // RFC 9001 Section 8.3: EndOfEarlyData (type 5) MUST NOT be sent over QUIC
+    if (t_byte == 5) {
+        logger.err("TLS: Received EndOfEarlyData message (RFC 9001 violation - type 5 prohibited)", .{});
+        return error.ProtocolViolation;
+    }
     const typ: HsType = std.meta.intToEnum(HsType, t_byte) catch return error.UnknownHandshakeType;
     const L: usize = (@as(usize, data[1]) << 16) | (@as(usize, data[2]) << 8) | @as(usize, data[3]);
     const need = 4 + L;
@@ -304,10 +316,12 @@ pub const Engine = struct {
     peer_pub: ?[32]u8 = null,
     /// Client's legacy session ID (must be echoed in ServerHello)
     client_session_id: ?[]u8 = null,
-    /// Buffer for producing outbound CRYPTO data (e.g., ClientHello).
+    /// Buffer for producing outbound CRYPTO data (owned by Engine; callers copy via flushCrypto).
     outbox: std.ArrayList(u8),
     /// Buffer for accumulating inbound CRYPTO data (for fragmented handshake messages).
     inbox: std.ArrayList(u8),
+    /// Flag to indicate handshake failure (e.g., missing transport parameters)
+    handshake_failed: bool = false,
     /// Tracking flags for minimal handshake state.
     ch_sent: bool = false,  // Client: sent ClientHello
     ch_recv: bool = false,  // Server: received ClientHello
@@ -342,7 +356,40 @@ pub const Engine = struct {
 
     /// Initialize a TLS 1.3 Engine with allocator and role.
     pub fn init(alloc: std.mem.Allocator, role: Role) Engine {
-        return .{ .role = role, .allocator = alloc, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .client_session_id = null, .outbox = std.ArrayList(u8){}, .inbox = std.ArrayList(u8){}, .ch_sent = false, .ch_recv = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .ee_sent = false, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null, .master_secret = null, .tickets = .{} };
+        return .{
+            .role = role,
+            .allocator = alloc,
+            .transcript = Transcript.init(),
+            .ecdhe_secret = null,
+            .ecdhe_buf = undefined,
+            .my_priv = null,
+            .my_pub = null,
+            .peer_pub = null,
+            .client_session_id = null,
+            .outbox = std.ArrayList(u8){},
+            .inbox = std.ArrayList(u8){},
+            .handshake_failed = false,
+            .ch_sent = false,
+            .ch_recv = false,
+            .sh_seen = false,
+            .allow_insecure = true,
+            .peer_cert_ok = false,
+            .finished_sent = false,
+            .finished_verified = false,
+            .ee_sent = false,
+            .handshake_client_secret = null,
+            .handshake_server_secret = null,
+            .leaf_spki = null,
+            .local_tp = null,
+            .peer_tp = null,
+            .alpn = null,
+            .server_name = null,
+            .server_cert_der = null,
+            .server_priv_key = null,
+            .server_sig_alg = null,
+            .master_secret = null,
+            .tickets = .{}
+        };
     }
     /// Release any owned resources and buffers.
     pub fn deinit(self: *Engine) void {
@@ -551,6 +598,19 @@ pub const Engine = struct {
                     if (p.typ == .client_hello and self.role == .Server) {
                         self.extractAlpnFromClientHello(p.body);
                     }
+
+                    // RFC 9001 Section 8.2: Validate that transport parameters extension is present
+                    // "Endpoints MUST send the quic_transport_parameters extension"
+                    // Skip validation in insecure/test mode to allow minimal test messages
+                    if (p.typ == .client_hello and self.role == .Server and !self.allow_insecure) {
+                        // Server receiving ClientHello from client - TP MUST be present
+                        if (self.peer_tp == null) {
+                            logger.err("TLS: Missing transport parameters in ClientHello (RFC 9001 violation)", .{});
+                            // Mark connection as failed - upper layer should close connection
+                            self.handshake_failed = true;
+                            return;
+                        }
+                    }
                 }
 
                 // Parse EncryptedExtensions
@@ -587,6 +647,19 @@ pub const Engine = struct {
                                     else => {},
                                 }
                             }
+                        }
+                    }
+
+                    // RFC 9001 Section 8.2: Validate that transport parameters extension is present
+                    // "Endpoints MUST send the quic_transport_parameters extension"
+                    // Skip validation in insecure/test mode to allow minimal test messages
+                    if (self.role == .Client and !self.allow_insecure) {
+                        // Client receiving EncryptedExtensions from server - TP MUST be present
+                        if (self.peer_tp == null) {
+                            logger.err("TLS: Missing transport parameters in EncryptedExtensions (RFC 9001 violation)", .{});
+                            // Mark connection as failed - upper layer should close connection
+                            self.handshake_failed = true;
+                            return;
                         }
                     }
                 }
@@ -802,10 +875,12 @@ pub const Engine = struct {
                         // Compute resumption_secret if we have master_secret stored
                         if (self.master_secret) |ms| {
                             var resumption_secret: [H.digest_length]u8 = undefined;
-                            // RFC 8446: resumption_master_secret = HKDF-Expand-Label(master_secret, "res master", Hash("") )
-                            var empty_hash: [H.digest_length]u8 = .{0} ** H.digest_length;
-                            // For now use zero hash as placeholder (transcript hash of empty string)
-                            ks.expandLabel(ms, "res master", &empty_hash, &resumption_secret) catch continue;
+                            // RFC 8446 Section 4.6.1: resumption_master_secret = HKDF-Expand-Label(
+                            //     master_secret, "res master", transcript_hash)
+                            // FIX: Use actual transcript hash instead of zeros for PSK security
+                            var transcript_snapshot = self.transcript;
+                            const transcript_hash = transcript_snapshot.finalize();
+                            ks.expandLabel(ms, "res master", &transcript_hash, &resumption_secret) catch continue;
                             self.tickets.add(self.allocator, ticket_bytes, resumption_secret, lifetime) catch {};
                             logger.debug("TLS: Stored session ticket (len={}, lifetime={})", .{ ticket_bytes.len, lifetime });
                         } else {
@@ -865,6 +940,8 @@ pub const Engine = struct {
     }
 
     /// Queue outbound CRYPTO bytes (e.g., ClientHello)
+    /// Queue CRYPTO data to the appropriate encryption level outbox (RFC 9001 Section 4.1.4)
+    /// Queue CRYPTO data (handshake message bytes) to be sent to the peer.
     pub fn queueCrypto(self: *Engine, data: []const u8) !void {
         try self.outbox.appendSlice(self.allocator, data);
         self.transcript.update(data);
@@ -1621,6 +1698,22 @@ fn parseRealClientHello(body: []const u8, engine: *Engine) ?[32]u8 {
     } else {
         logger.debug("parseRealClientHello: client sent empty session_id", .{});
         engine.client_session_id = null;
+    }
+
+    // Extract QUIC transport parameters if present (RFC 9001 Section 8.2)
+    if (ch.quic_transport_parameters) |tp| {
+        logger.debug("parseRealClientHello: found transport parameters (len={})", .{tp.len});
+        // Free any existing peer transport parameters
+        if (engine.peer_tp) |old| {
+            engine.allocator.free(old);
+        }
+        // Store a copy of the client's transport parameters
+        engine.peer_tp = engine.allocator.dupe(u8, tp) catch null;
+        if (engine.peer_tp != null) {
+            logger.debug("parseRealClientHello: stored transport parameters", .{});
+        }
+    } else {
+        logger.debug("parseRealClientHello: no transport parameters found in ClientHello", .{});
     }
 
     // Extract the X25519 key share if present
