@@ -1727,18 +1727,23 @@ pub const Endpoint = struct {
             // conn.peer_initial_dcid. For a server, always prefer peer_initial_dcid when set.
             const derive_dcid = blk: { // ODCID per RFC 9000 §5.2
                 if (conn.role == .Server) {
-                    // Defensive: clamp nonsense length that could arise if a reused connection
-                    // had an uninitialized original_dcid prior to the field being zeroed in init.
+                    // RFC 9000 §5.2: Server must derive Initial keys from the DCID in the client's Initial packet
+                    // For the first packet, we won't have original_dcid set yet, so use the packet's DCID
                     if (conn.original_dcid.len > conn.original_dcid.bytes.len) conn.original_dcid.len = 0;
-                    if (conn.original_dcid.len > 0) break :blk conn.original_dcid.bytes[0..conn.original_dcid.len];
-                    // Fallback before setPeerInitialCids on very first packet (should not happen)
-                    if (conn.peer_initial_dcid.len > 0) break :blk conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len];
+                    if (conn.original_dcid.len > 0) {
+                        // Use stored original_dcid if we have it
+                        break :blk conn.original_dcid.bytes[0..conn.original_dcid.len];
+                    }
+                    // For the first Initial packet from client, use the packet's DCID
+                    logger.debug("Server: Using packet DCID for Initial key derivation (first packet)", .{});
                     break :blk dcid;
                 } else { // client
                     if (conn.original_dcid.len > conn.original_dcid.bytes.len) conn.original_dcid.len = 0;
                     if (conn.original_dcid.len > 0) break :blk conn.original_dcid.bytes[0..conn.original_dcid.len];
-                    if (conn.peer_initial_dcid.len > 0) break :blk conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len];
-                    break :blk dcid;
+                    // RFC 9000 §5.2: Client must use its original DCID for Initial keys, never the server's
+                    // If we don't have original_dcid set, this connection is not properly initialized
+                    logger.err("Client: No original_dcid set for Initial key derivation - dropping packet", .{});
+                    return;
                 }
             };
             logger.debug("{s}: Deriving Initial keys with dcid (len={})=", .{if (conn.role == .Server) "Server" else "Client", derive_dcid.len});
@@ -1935,6 +1940,13 @@ pub const Endpoint = struct {
                             // In-order frame - process immediately
                             logger.debug("Processing in-order Initial CRYPTO frame at offset {} with {} bytes", .{cr.offset, cr.data.len});
                             logger.debug("Pushing {} bytes to TLS engine (Initial)", .{cr.data.len});
+                            // Log first few bytes of CRYPTO data for debugging
+                            if (cr.data.len >= 8) {
+                                logger.debug("CRYPTO data first 8 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{
+                                    cr.data[0], cr.data[1], cr.data[2], cr.data[3],
+                                    cr.data[4], cr.data[5], cr.data[6], cr.data[7]
+                                });
+                            }
                             conn.pushCrypto(cr.data) catch |err| {
                                 logger.debug("ERROR: Failed to push CRYPTO data to TLS: {}", .{err});
                             };

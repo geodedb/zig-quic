@@ -563,7 +563,13 @@ pub const Engine = struct {
                     logger.debug("TLS: Trying real TLS 1.3 hello parsing", .{});
                     switch (p.typ) {
                         .client_hello => {
+                            logger.debug("TLS: Calling parseRealClientHello with {} bytes", .{p.body.len});
                             extracted = parseRealClientHello(p.body, self);
+                            if (extracted != null) {
+                                logger.debug("TLS: parseRealClientHello SUCCESS - extracted key", .{});
+                            } else {
+                                logger.debug("TLS: parseRealClientHello FAILED - returned null", .{});
+                            }
                         },
                         .server_hello => extracted = parseRealServerHello(p.body),
                         else => {},
@@ -1736,8 +1742,12 @@ fn parseRealClientHello(body: []const u8, engine: *Engine) ?[32]u8 {
     const allocator = arena.allocator();
 
     // Parse the ClientHello using the comprehensive parser
-    const ch = tls13_full.parseClientHello(allocator, body) catch {
-        logger.debug("parseRealClientHello: failed to parse ClientHello", .{});
+    const ch = tls13_full.parseClientHello(allocator, body) catch |err| {
+        logger.debug("parseRealClientHello: failed to parse ClientHello with error: {}", .{err});
+        // Log first few bytes of body for debugging
+        if (body.len >= 8) {
+            logger.debug("parseRealClientHello: First 8 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{body[0], body[1], body[2], body[3], body[4], body[5], body[6], body[7]});
+        }
         return null;
     };
 
