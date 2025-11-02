@@ -55,6 +55,12 @@ Date: 2025-09-20 (Current Status)
 - Introduced `on_handshake_metadata` and `on_peer_finished` callbacks so the QUIC layer can observe when EncryptedExtensions is committed and when peer Finished verification succeeds; both callbacks are guarded to fire exactly once per handshake.
 - Extended `tests/test_tls_handshake_context.zig` to register these callbacks, assert metadata presence, and ensure the notifications fire alongside the existing `on_handshake_complete` hook.
 
+### TLS 1.3 Metadata Propagation into QUIC Connection ✅
+
+- `src/quic/conn.zig` now duplicates negotiated ALPN plus local/peer QUIC transport parameter payloads and exposes them through `getNegotiatedAlpn`, `getLocalTransportParams`, and `getPeerTransportParams`, removing ad-hoc reaches into the TLS engine from API/endpoint layers.
+- Endpoint wiring now calls `Connection.setLocalTransportParameters`, keeping TLS and connection caches in sync for EncryptedExtensions emission and later QUIC tooling.
+- New regression file `tests/test_conn_metadata.zig` asserts cached slices remain stable even when the original buffers are mutated, covering ALPN and transport parameter caching.
+
 ### Session Resumption with PSK (In Progress)
 
 - ClientHello PSK offers are now parsed and exposed, providing the groundwork for resumption/0-RTT enablement.

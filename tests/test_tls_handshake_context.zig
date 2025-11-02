@@ -399,6 +399,53 @@ test "server verifies client Finished and derives application secrets" {
     try std.testing.expect(meta.local_transport_parameters != null);
 }
 
+test "server rejects tampered client Finished" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const alloc = gpa.allocator();
+
+    const server_tp = try buildServerTransportParams(alloc);
+    defer alloc.free(server_tp);
+
+    const server_alpn = [_][]const u8{"hq-interop"};
+    const config = tls13.Config{
+        .allocator = alloc,
+        .role = .Server,
+        .quic_transport_parameters = server_tp,
+        .alpn_protocols = server_alpn[0..],
+    };
+    var ctx = tls13.Context.init(config, .{});
+    defer ctx.deinit();
+
+    const ch = try buildStandardClientHello(alloc, server_alpn[0..], default_signature_schemes[0..], null);
+    defer alloc.free(ch);
+
+    try ctx.processCrypto(.Initial, ch);
+
+    const initial_bytes = try ctx.pollCrypto(alloc, .Initial);
+    defer alloc.free(initial_bytes);
+
+    const handshake_bytes = try ctx.pollCrypto(alloc, .Handshake);
+    defer alloc.free(handshake_bytes);
+
+    const recv_slot = ctx.secrets.slot(.Handshake, .recv);
+    try std.testing.expect(recv_slot.valid);
+
+    var transcript_snapshot = ctx.transcripts.handshake;
+    const transcript_hash = transcript_snapshot.finalize();
+    var verify_data = tls13.deriveFinishedVerifyData(recv_slot.value, transcript_hash);
+    verify_data[0] ^= 0x01;
+
+    const client_finished = try tls13.encodeHandshake(alloc, .finished, verify_data[0..]);
+    defer alloc.free(client_finished);
+
+    try std.testing.expectError(tls13.HandshakeError.FinishedVerifyFailed, ctx.processCrypto(.Handshake, client_finished));
+    try std.testing.expect(!ctx.handshakeComplete());
+    try std.testing.expectEqual(tls13.HandshakePhase.keys_installed, ctx.phase);
+    try std.testing.expect(!ctx.secrets.slot(.Application, .send).valid);
+    try std.testing.expect(!ctx.secrets.slot(.Application, .recv).valid);
+}
+
 test "server records negotiated signature algorithm" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();

@@ -389,6 +389,12 @@ pub const Connection = struct {
     allocator: *std.mem.Allocator,
     // Allowed ALPNs configured on endpoint
     allowed_alpns: []const []const u8 = &[_][]const u8{},
+    /// Negotiated ALPN cached for outer layers (owned slice, may be null prior to EncryptedExtensions)
+    negotiated_alpn: ?[]u8 = null,
+    /// Locally advertised QUIC transport parameters (encoded) cached for reuse.
+    local_transport_params_raw: ?[]u8 = null,
+    /// Peer-provided QUIC transport parameters (encoded) cached after validation.
+    peer_transport_params_raw: ?[]u8 = null,
     // Optional pacing flag (from endpoint cfg)
     enable_pacing: bool = false,
     // Optional sender callback (set by Endpoint) for paced sending
@@ -712,6 +718,9 @@ pub const Connection = struct {
         self.tls = tls13.Engine.init(alloc.*, if (role == .Client) .Client else .Server);
         self.allocator = alloc;
         self.allowed_alpns = &[_][]const u8{};
+        self.negotiated_alpn = null;
+        self.local_transport_params_raw = null;
+        self.peer_transport_params_raw = null;
         self.enable_pacing = false;
         self.sender_ctx = null;
         self.sender_fn = null;
@@ -876,6 +885,12 @@ pub const Connection = struct {
     /// Release resources held by this Connection (payloads, maps, TLS state).
     /// Free dynamic resources (lists, maps, TLS engine) owned by the connection.
     pub fn deinit(self: *Connection) void {
+        if (self.negotiated_alpn) |alpn| self.allocator.free(alpn);
+        if (self.local_transport_params_raw) |tp| self.allocator.free(tp);
+        if (self.peer_transport_params_raw) |tp| self.allocator.free(tp);
+        self.negotiated_alpn = null;
+        self.local_transport_params_raw = null;
+        self.peer_transport_params_raw = null;
         self.tls_inbox.deinit(self.allocator.*);
         self.tls.deinit();
         self.rec.deinit();
@@ -1075,6 +1090,49 @@ pub const Connection = struct {
         } else {
             self.bytes_tx_unvalidated += add;
         }
+    }
+
+    fn storeNegotiatedAlpn(self: *Connection, alpn: []const u8) !void {
+        if (self.negotiated_alpn) |existing| {
+            if (std.mem.eql(u8, existing, alpn)) return;
+            self.allocator.free(existing);
+        }
+        const copy = try self.allocator.dupe(u8, alpn);
+        self.negotiated_alpn = copy;
+    }
+
+    fn storePeerTransportParams(self: *Connection, encoded: []const u8) !void {
+        if (self.peer_transport_params_raw) |existing| {
+            if (std.mem.eql(u8, existing, encoded)) return;
+            self.allocator.free(existing);
+        }
+        const copy = try self.allocator.dupe(u8, encoded);
+        self.peer_transport_params_raw = copy;
+    }
+
+    fn storeLocalTransportParams(self: *Connection, encoded: []const u8) !void {
+        if (self.local_transport_params_raw) |existing| {
+            if (std.mem.eql(u8, existing, encoded)) return;
+            self.allocator.free(existing);
+        }
+        const copy = try self.allocator.dupe(u8, encoded);
+        self.local_transport_params_raw = copy;
+    }
+
+    /// Cache negotiated ALPN for outer layers (tests/interop helpers may call directly).
+    pub fn cacheNegotiatedAlpn(self: *Connection, alpn: []const u8) !void {
+        try self.storeNegotiatedAlpn(alpn);
+    }
+
+    /// Cache peer transport parameters (encoded form) for reuse outside TLS.
+    pub fn cachePeerTransportParams(self: *Connection, encoded: []const u8) !void {
+        try self.storePeerTransportParams(encoded);
+    }
+
+    /// Set locally advertised transport parameters on TLS and cache them for QUIC wiring.
+    pub fn setLocalTransportParameters(self: *Connection, encoded: []const u8) !void {
+        try self.tls.setLocalTransportParameters(encoded);
+        self.storeLocalTransportParams(encoded) catch {};
     }
 
     /// Send bytes to peer using configured sender callback; if none, act as no-op that accounts amplification.
@@ -1279,10 +1337,12 @@ pub const Connection = struct {
                 self.applyPeerTransportParameters(peer_tp_bytes) catch {
                     // Ignore malformed transport parameters; retain defaults.
                 };
+                self.storePeerTransportParams(peer_tp_bytes) catch {};
             }
         }
         // If an ALPN was negotiated, enforce it against the allowed list when provided.
         if (self.tls.alpn) |a| {
+            self.storeNegotiatedAlpn(a) catch {};
             if (self.allowed_alpns.len > 0) {
                 var ok = false;
                 for (self.allowed_alpns) |p| {
@@ -1312,7 +1372,23 @@ pub const Connection = struct {
     /// Get negotiated ALPN if any.
     /// Return negotiated ALPN slice (if any) after handshake progression.
     pub fn getNegotiatedAlpn(self: *Connection) ?[]const u8 {
-        return self.tls.alpn;
+        if (self.negotiated_alpn) |alpn| return alpn;
+        if (self.tls.alpn) |alpn_view| return alpn_view;
+        return null;
+    }
+
+    /// Return cached peer transport parameters (encoded) if available.
+    pub fn getPeerTransportParams(self: *Connection) ?[]const u8 {
+        if (self.peer_transport_params_raw) |tp| return tp;
+        if (self.tls.peer_tp) |tp_view| return tp_view;
+        return null;
+    }
+
+    /// Return locally advertised transport parameters (encoded) if cached.
+    pub fn getLocalTransportParams(self: *Connection) ?[]const u8 {
+        if (self.local_transport_params_raw) |tp| return tp;
+        if (self.tls.local_tp) |tp_view| return tp_view;
+        return null;
     }
 
     /// Toggle congestion control (NewReno default, CUBIC optional).

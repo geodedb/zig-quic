@@ -24,7 +24,7 @@ Date: 2025-09-20 (Current Implementation Status)
 - **HTTP/3**: Minimal HTTP/0.9 compatibility remains; full H3/QPACK integration deferred.
 - **Certificate Handling**: X.509 parsing and validation planned; current TLS handshake stops before Certificate/CertificateVerify.
 - **TLS 1.3 Record Layer**: Plaintext/inner-plaintext framing with AEAD suites and usage-limit enforcement implemented; dedicated fuzz harness pending.
-- **TLS 1.3 Handshake Integration**: Server-side flights, handshake secret installation, metadata exposure (`HandshakeMetadata`, `on_handshake_metadata`, `on_peer_finished`), ClientHello PSK offer capture, and application secret derivation complete. Outstanding: wiring metadata callbacks into the outer QUIC connection, client-role Finished handling, certificate authentication, alert mapping, and the remaining session resumption/0-RTT work (ticket issuance, binder validation, resumption secrets).
+- **TLS 1.3 Handshake Integration**: Server-side flights, handshake secret installation, metadata exposure (`HandshakeMetadata`, `on_handshake_metadata`, `on_peer_finished`), ClientHello PSK offer capture, application secret derivation, and QUIC connection wiring for negotiated ALPN/transport parameters are complete. Outstanding: client-role Finished handling, certificate authentication, alert mapping, and the remaining session resumption/0-RTT work (ticket issuance, binder validation, resumption secrets).
 - **Platform Backends**: kqueue/IOCP backends need parity testing and tuning once TLS work settles.
 
 ### Platform Specific

@@ -55,12 +55,14 @@
   - `Context.notifyMetadata()` fires a single `on_handshake_metadata` callback carrying the negotiated ALPN and encoded local QUIC transport parameters, while `metadataView()` and `localTransportParameters()` expose the cached slices for later inspection.
   - `confirmPeerFinished()` now triggers the optional `on_peer_finished` callback before promoting to `application_ready`, and `bumpPhaseAfterFinished()` retains the existing `on_handshake_complete` notification once both Finished messages are confirmed.
 - [x] Parse and cache `pre_shared_key` identities and binders so PSK-capable clients can be negotiated once resumption support lands while continuing the full handshake flow by default.
-- [ ] Surface negotiated transport parameters/ALPN into the outer QUIC connection wiring.
+- [x] Surface negotiated transport parameters/ALPN into the outer QUIC connection wiring.
+  - `conn.zig` now duplicates negotiated ALPN and both local/peer QUIC transport parameter payloads, exposing them through getters so endpoint/api layers no longer reach into the TLS engine directly. New `tests/test_conn_metadata.zig` asserts the cached slices outlive the original buffers.
 - [x] Manage transcript hash checkpoints (§4.4.1) and drive key schedule transitions (§7.1) across handshake flights, including Finished verification helpers.
   - Stored the handshake secret returned by `deriveHandshakeTraffic`, validated peer Finished messages against a transcript snapshot before mutating the running hash, and derived application send/receive secrets exactly once per endpoint role.
   - Added `tests/test_tls_handshake_context.zig` coverage that synthesizes a peer Finished and asserts the context promotes to `application_ready` with both application slots populated.
-- [ ] Plumb verified Finished state into QUIC outer components (e.g., enabling short-header transmission gates) and surface negotiated transport parameters/ALPN to the connection layer.
-- [ ] Extend Finished handlers to cover client role, including transcript management when acting as initiator, and add negative tests for tampered verify_data.
+- [ ] Plumb verified Finished state into QUIC outer components (e.g., enabling short-header transmission gates).
+- [ ] Extend Finished handlers to cover client role, including transcript management when acting as initiator.
+- [x] Added regression ensuring tampered peer Finished triggers `HandshakeError.FinishedVerifyFailed`, keeping application secrets unset until verification succeeds.
 - [ ] Tests: end-to-end handshake happy path, downgrade attempt detection, malformed message rejection, and fuzz on ClientHello parsers/extension decoding.
 
 ### Phase 4 – Authentication & Certificates (RFC 8446 §4.4)

@@ -501,7 +501,7 @@ pub const Endpoint = struct {
         defer {
             if (tp_bytes.len > 0) self.allocator.free(tp_bytes);
         }
-        c.tls.setLocalTransportParameters(if (tp_bytes.len > 0) tp_bytes else tp_bytes[0..0]) catch {};
+        c.setLocalTransportParameters(if (tp_bytes.len > 0) tp_bytes else tp_bytes[0..0]) catch {};
         // Queue ClientHello using full TLS 1.3
         c.tls.queueMinimalClientHello() catch {
             _ = c.tls.queueMinimalClientHelloAuto() catch 0;
@@ -1656,7 +1656,7 @@ pub const Endpoint = struct {
                 defer {
                     if (tp_bytes.len > 0) self.allocator.free(tp_bytes);
                 }
-                c_new.tls.setLocalTransportParameters(if (tp_bytes.len > 0) tp_bytes else tp_bytes[0..0]) catch {};
+                c_new.setLocalTransportParameters(if (tp_bytes.len > 0) tp_bytes else tp_bytes[0..0]) catch {};
                 c_new.allowed_alpns = self.cfg.alpn;
                 // Enable optional pacing and set CC max_datagram_size
                 c_new.enable_pacing = self.cfg.enable_pacing;

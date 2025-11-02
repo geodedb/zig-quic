@@ -527,6 +527,12 @@ pub fn build(b: *std.Build) void {
         const run_test_alpn = b.addRunArtifact(test_alpn);
         test_step.dependOn(&run_test_alpn.step);
 
+        const test_conn_metadata = addTst(b, "tests/test_conn_metadata.zig", target, optimize);
+        test_conn_metadata.root_module.addImport("quic_conn", quic_conn_mod);
+        test_conn_metadata.root_module.addImport("quic_tls13", tls13_mod);
+        const run_test_conn_metadata = b.addRunArtifact(test_conn_metadata);
+        test_step.dependOn(&run_test_conn_metadata.step);
+
         // TLS SNI negative/allow_insecure tests
         const test_tls_sni = addTst(b, "tests/test_tls_sni.zig", target, optimize);
         test_tls_sni.root_module.addImport("quic_x509", x509_mod);

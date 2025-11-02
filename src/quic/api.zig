@@ -150,11 +150,7 @@ pub fn getNegotiatedAlpn(conn: *QuicConnection) ?[]const u8 {
 /// Return peer transport parameters raw encoded slice if available (may be empty before EE).
 pub fn getPeerTransportParams(conn: *QuicConnection) ?[]const u8 {
     const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
-    if (c.tls.peer_tp) |p| {
-        return p;
-    } else {
-        return null;
-    }
+    return c.getPeerTransportParams();
 }
 
 /// Return true if handshake Finished messages exchanged.
