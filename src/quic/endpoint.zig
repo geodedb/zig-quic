@@ -109,7 +109,8 @@ pub const Endpoint = struct {
         var one: i32 = 1;
         _ = posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, std.mem.asBytes(&one)) catch {};
         // Linux: enable reception of TOS/TCLASS via ancillary data to read ECN bits per datagram
-        if (builtin.target.os.tag == .linux) {
+        // TEMPORARILY DISABLED: These socket options may interfere with basic UDP reception
+        if (false and builtin.target.os.tag == .linux) {
             var enable: i32 = 1;
             // Zig std may not expose IP.RECVTOS; use the Linux value (IP_RECVTOS = 13)
             const IP_RECVTOS: i32 = 13;
