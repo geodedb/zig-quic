@@ -60,8 +60,10 @@
 - [x] Manage transcript hash checkpoints (§4.4.1) and drive key schedule transitions (§7.1) across handshake flights, including Finished verification helpers.
   - Stored the handshake secret returned by `deriveHandshakeTraffic`, validated peer Finished messages against a transcript snapshot before mutating the running hash, and derived application send/receive secrets exactly once per endpoint role.
   - Added `tests/test_tls_handshake_context.zig` coverage that synthesizes a peer Finished and asserts the context promotes to `application_ready` with both application slots populated.
-- [ ] Plumb verified Finished state into QUIC outer components (e.g., enabling short-header transmission gates).
-- [ ] Extend Finished handlers to cover client role, including transcript management when acting as initiator.
+- [x] Plumb verified Finished state into QUIC outer components (e.g., enabling short-header transmission gates).
+  - Registered a peer Finished callback in the TLS engine and wired `Connection.updatePeerFinishedStatus` so QUIC now reacts immediately to verification changes without polling.
+- [x] Extend Finished handlers to cover client role, including transcript management when acting as initiator.
+  - Verified the TLS peer-finished callback wiring drives both client and server connections by adding `tests/test_conn_peer_finished.zig`, ensuring short-header gating reacts immediately for initiators too.
 - [x] Added regression ensuring tampered peer Finished triggers `HandshakeError.FinishedVerifyFailed`, keeping application secrets unset until verification succeeds.
 - [ ] Tests: end-to-end handshake happy path, downgrade attempt detection, malformed message rejection, and fuzz on ClientHello parsers/extension decoding.
 
