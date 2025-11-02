@@ -31,6 +31,12 @@ Date: 2025-09-20 (Current Status)
 - `Context.ensureLocalTransportParameters()` caches the configured server QUIC transport parameters and `driveServerHandshakeFlight()` now injects the extension 0x0039 blob into EncryptedExtensions per RFC 9001 §8.2.
 - `tests/test_tls_handshake_context.zig` encodes canonical transport parameters via `transport_params.TransportParams` and asserts that the emitted EncryptedExtensions payload matches the advertised parameters.
 
+### TLS 1.3 ClientHello ALPN Capture & Negotiation ✅
+
+- `Context.clientHello()` now exposes an owned ALPN protocol list so server policy can inspect the client's offer without aliasing transient buffers.
+- `driveServerHandshakeFlight()` intersects the configured ALPN preferences with the ClientHello offer, emits the ALPN (0x0010) extension in EncryptedExtensions, and caches the negotiated protocol via `Context.negotiatedAlpn()`. Absent overlap, the handshake fails with `HandshakeError.AlpnNegotiationFailed` and no ALPN extension is sent.
+- Regression tests in `tests/test_tls_handshake_context.zig` cover ClientHello ALPN capture, successful negotiation, and the mandatory error path when the client omits ALPN while the server requires it.
+
 ### Session Resumption with PSK ✅
 
 - Enhanced TLS 1.3 engine with full PSK support
@@ -39,6 +45,10 @@ Date: 2025-09-20 (Current Status)
 - PSK binder computation for ClientHello
 - Ticket age obfuscation support
 - Tests in `test_resumption.zig` covering resumption flow
+
+#### TLS Integration (RFC 9001) Snapshot
+
+- ⚠️ Handshake state machine: Initial ClientHello intake and transcript checkpoints land; server now emits ServerHello/EncryptedExtensions/Finished with handshake key installation, configurable QUIC transport parameters, and ALPN negotiation. Mandatory extension negotiation for `signature_algorithms`/`pre_shared_key`, certificate authentication, and alert mapping remain outstanding.
 
 ### Connection Migration State Machine ✅
 
@@ -97,7 +107,7 @@ Date: 2025-09-20 (Current Status)
 
 #### TLS Integration (RFC 9001)
 
-- ⚠️ Handshake state machine: Initial ClientHello intake and transcript checkpoints land; server now emits ServerHello/EncryptedExtensions/Finished with handshake key installation and configurable QUIC transport parameters, while broader extension negotiation (signature_algorithms/ALPN propagation), certificate authentication, and alert mapping remain.
+- ⚠️ Handshake state machine: Initial ClientHello intake and transcript checkpoints land; server now emits ServerHello/EncryptedExtensions/Finished with handshake key installation, configurable QUIC transport parameters, and ALPN negotiation. Mandatory extension negotiation for `signature_algorithms`/`pre_shared_key`, certificate authentication, and alert mapping remain outstanding.
 - ✅ Key derivation (Initial, Handshake, 1-RTT)
 - ✅ Header protection and removal
 - ✅ AEAD encryption/decryption
@@ -202,7 +212,7 @@ Added:
 - ECN longitudinal (Application): ensure ACK_ECN emission under reordering/loss; audit anti‑amplification interaction and connection demux tie‑break.
 - Migration/security: NEW_TOKEN persistence/use; path migration and NAT rebinding; amplification backoff coverage.
 - TLS 1.3: optional 0-RTT; trust store provider; HP timing audit (§9.5); migrate custom ASN.1/X.509/ClientHello parsing in `src/quic/tls/{asn1,sig,x509,tls13_full}.zig` to `std.crypto.asn1` / `std.crypto.x509` / `std.crypto.tls` primitives; extend new `Context` handshake engine beyond Initial space.
-- TLS 1.3 (handshake follow-up): negotiate mandatory extensions (signature_algorithms, pre_shared_key), surface QUIC transport parameters/ALPN to connection layer, verify Finished, and map TLS alerts to QUIC CONNECTION_CLOSE semantics.
+- TLS 1.3 (handshake follow-up): negotiate mandatory extensions (signature_algorithms, pre_shared_key), plumb negotiated transport parameters/ALPN into the outer QUIC connection, verify Finished, and map TLS alerts to QUIC CONNECTION_CLOSE semantics.
 - TLS 1.3 (record layer follow-up): hook `record.zig` into AEAD cipher selection, derive nonces per RFC 8446 §5.3, and cap usage per §5.5.
 - Event loop/UDP: epoll/kqueue/IOCP parity; pacing timers on Windows/macOS; non‑blocking UDP path perf; pacing policy tuning.
 - Logging/observability: JSON Lines logs (INFO/ERROR), counters, structured trace points.

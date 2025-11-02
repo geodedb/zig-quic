@@ -143,6 +143,9 @@ pub fn build(b: *std.Build) void {
     const quic_frame_mod = mkModule(b, "src/quic/frame.zig");
     quic_frame_mod.addImport("quic_varint", quic_varint_mod);
     quic_packet_mod.addImport("quic_varint", quic_varint_mod);
+    const quic_transport_params_mod = mkModule(b, "src/quic/transport_params.zig");
+    quic_transport_params_mod.addImport("quic_varint", quic_varint_mod);
+    tls13_mod.addImport("quic_transport_params", quic_transport_params_mod);
 
     // Recovery
     const quic_recovery_mod = mkModule(b, "src/quic/recovery.zig");
@@ -169,8 +172,6 @@ pub fn build(b: *std.Build) void {
     quic_conn_mod.addImport("quic_recovery", quic_recovery_mod);
     quic_conn_mod.addImport("quic_logger", quic_logger_mod);
     quic_conn_mod.addImport("byteorder", byteorder_mod);
-    const quic_transport_params_mod = mkModule(b, "src/quic/transport_params.zig");
-    quic_transport_params_mod.addImport("quic_varint", quic_varint_mod);
     // Make transport params available to connection and endpoint modules
     quic_conn_mod.addImport("quic_transport_params", quic_transport_params_mod);
 

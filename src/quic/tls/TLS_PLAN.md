@@ -50,7 +50,8 @@
 - [x] Implement server-side ServerHello → EncryptedExtensions → Finished flight production with transcript checkpoints and handshake secret installation.
   - `Context.processCrypto` now records the ClientHello transcript hash checkpoint and invokes `driveServerHandshakeFlight()` once, producing a ServerHello (TLS_AES_128_GCM_SHA256, x25519) on Initial CRYPTO, installing Handshake traffic secrets via `installTrafficSecret`, emitting EncryptedExtensions + Finished on Handshake CRYPTO, and caching the Finished pre-hash for later verification.
 - [x] Emit QUIC transport parameters (extension 0x0039) in EncryptedExtensions using configurable payload; regression covered in `tests/test_tls_handshake_context.zig`.
-- [ ] Support mandatory extension negotiation beyond ClientHello parsing (signature_algorithms, pre_shared_key) and surface negotiated ALPN/transport parameters to the connection layer.
+- [x] Capture ClientHello ALPN offers, negotiate the server-preferred protocol, expose it via `Context.negotiatedAlpn()`, and fail the handshake with `HandshakeError.AlpnNegotiationFailed` when no overlap exists.
+- [ ] Support mandatory extension negotiation beyond ClientHello parsing (`signature_algorithms`, `pre_shared_key`) and surface negotiated transport parameters/ALPN into the outer QUIC connection wiring.
 - [ ] Manage transcript hash checkpoints (§4.4.1) and drive key schedule transitions (§7.1) across handshake flights, including Finished verification helpers.
 - [ ] Tests: end-to-end handshake happy path, downgrade attempt detection, malformed message rejection, and fuzz on ClientHello parsers/extension decoding.
 

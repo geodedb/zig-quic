@@ -20,6 +20,8 @@ The implementation is complete with 63 passing tests covering all major features
 
 ## TLS Handshake Context
 
+- `Context.processCrypto` parses ClientHello into an owned `HandshakeState` record covering session_id, cipher suites, supported versions, X25519 key share, QUIC transport parameters, and the ALPN protocol list so downstream logic can inspect offers without aliasing packet buffers. `Context.clientHello()` exposes an immutable view for policy decisions.
+- `driveServerHandshakeFlight()` intersects the configured ALPN preferences with the cached ClientHello list, emits the ALPN (0x0010) extension when a match exists, and stores the negotiated protocol via `Context.negotiatedAlpn()`. Absent overlap, the server aborts with `HandshakeError.AlpnNegotiationFailed`, enforcing RFC 7301 requirements. Regression coverage in `tests/test_tls_handshake_context.zig` exercises capture, success, and failure cases.
 - `ensureLocalTransportParameters()` duplicates the configured QUIC transport-parameter blob so EncryptedExtensions always carries extension 0x0039 per RFC 9001 §8.2, and `tests/test_tls_handshake_context.zig` covers the emitted payload end-to-end.
 
 ## ACK handling and ECN propagation

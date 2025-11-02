@@ -29,6 +29,7 @@ const x509 = @import("x509");
 const sig = @import("sig");
 const tls13_full = @import("tls13_full.zig");
 const logger = @import("quic_logger");
+const transport_params = @import("quic_transport_params");
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 
 /// RFC 8446 §4 and §7 describe the handshake protocol and key schedule. `Config` captures
@@ -67,6 +68,7 @@ pub const HandshakeError = error{
     UnsupportedKeyShareGroup,
     NoCipherSuite,
     MissingTransportParameters,
+    AlpnNegotiationFailed,
 };
 
 /// Traffic direction relative to the current endpoint when installing secrets (RFC 8446 §7.1).
@@ -225,6 +227,7 @@ pub const ClientHelloView = struct {
     supported_versions: []const u8,
     key_share: ClientHelloKeyShareView,
     quic_transport_parameters: ?[]const u8,
+    alpn_list: ?[]const []const u8,
     early_data: bool,
     raw: []const u8,
 };
@@ -239,6 +242,7 @@ const ClientHelloInfo = struct {
         key: []u8,
     },
     quic_transport_parameters: ?[]u8,
+    alpn_list: ?[]const []const u8,
     early_data: bool,
     raw: []u8,
 
@@ -274,6 +278,36 @@ const ClientHelloInfo = struct {
         }
         errdefer if (tp_copy) |buf| if (buf.len != 0) allocator.free(buf);
 
+        var alpn_copy: ?[]const []const u8 = null;
+        if (parsed.alpn_list) |list| {
+            const dest = try allocator.alloc([]const u8, list.len);
+            errdefer allocator.free(dest);
+
+            var copied_count: usize = 0;
+            errdefer {
+                while (copied_count != 0) {
+                    copied_count -= 1;
+                    const proto = dest[copied_count];
+                    if (proto.len != 0) allocator.free(@constCast(proto));
+                }
+            }
+
+            while (copied_count < list.len) : (copied_count += 1) {
+                const proto_copy = try allocator.dupe(u8, list[copied_count]);
+                dest[copied_count] = proto_copy;
+            }
+
+            alpn_copy = dest;
+        }
+        errdefer if (alpn_copy) |list| {
+            if (list.len != 0) {
+                for (list) |proto| {
+                    if (proto.len != 0) allocator.free(@constCast(proto));
+                }
+                allocator.free(@constCast(list));
+            }
+        };
+
         const info = ClientHelloInfo{
             .random = parsed.random,
             .session_id = session_id_copy,
@@ -281,6 +315,7 @@ const ClientHelloInfo = struct {
             .supported_versions = versions_copy,
             .key_share = .{ .group = key_share.group, .key = key_bytes },
             .quic_transport_parameters = tp_copy,
+            .alpn_list = alpn_copy,
             .early_data = parsed.early_data,
             .raw = raw_copy,
         };
@@ -295,6 +330,12 @@ const ClientHelloInfo = struct {
         if (self.supported_versions.len != 0) allocator.free(self.supported_versions);
         if (self.key_share.key.len != 0) allocator.free(self.key_share.key);
         if (self.quic_transport_parameters) |buf| if (buf.len != 0) allocator.free(buf);
+        if (self.alpn_list) |list| {
+            for (list) |proto| {
+                if (proto.len != 0) allocator.free(@constCast(proto));
+            }
+            if (list.len != 0) allocator.free(@constCast(list));
+        }
         if (self.raw.len != 0) allocator.free(self.raw);
     }
 };
@@ -328,6 +369,7 @@ const HandshakeState = struct {
                 .supported_versions = info.supported_versions,
                 .key_share = .{ .group = info.key_share.group, .key = info.key_share.key },
                 .quic_transport_parameters = info.quic_transport_parameters,
+                .alpn_list = info.alpn_list,
                 .early_data = info.early_data,
                 .raw = info.raw,
             };
@@ -414,6 +456,7 @@ pub const Context = struct {
     state: HandshakeState = HandshakeState.init(),
     flags: HandshakeFlags = .{},
     local_transport_parameters: ?[]u8 = null,
+    negotiated_alpn: ?[]u8 = null,
 
     /// Initializes a new TLS 1.3 context with the specified configuration and callbacks.
     pub fn init(config: Config, callbacks: Callbacks) Context {
@@ -428,6 +471,7 @@ pub const Context = struct {
             .state = HandshakeState.init(),
             .flags = .{},
             .local_transport_parameters = null,
+            .negotiated_alpn = null,
         };
     }
 
@@ -441,6 +485,10 @@ pub const Context = struct {
         if (self.local_transport_parameters) |buf| {
             self.allocator.free(buf);
             self.local_transport_parameters = null;
+        }
+        if (self.negotiated_alpn) |proto| {
+            self.allocator.free(proto);
+            self.negotiated_alpn = null;
         }
         self.phase = .initial;
     }
@@ -516,6 +564,14 @@ pub const Context = struct {
         return self.state.clientHello();
     }
 
+    /// Returns the negotiated ALPN protocol after EncryptedExtensions is generated (server role).
+    pub fn negotiatedAlpn(self: *const Context) ?[]const u8 {
+        if (self.negotiated_alpn) |proto| {
+            return proto;
+        }
+        return null;
+    }
+
     fn handleHandshakeMessage(self: *Context, level: EncryptionLevel, parsed: HandshakeMessage) !void {
         _ = level;
         switch (parsed.typ) {
@@ -559,11 +615,27 @@ pub const Context = struct {
         return null;
     }
 
-    fn selectServerAlpn(self: *const Context) ?[]const u8 {
-        if (self.config.alpn_protocols) |list| {
-            if (list.len != 0) return list[0];
+    fn selectServerAlpn(self: *Context, client: ClientHelloView) !?[]const u8 {
+        if (self.negotiated_alpn) |prev| {
+            if (prev.len != 0) self.allocator.free(prev);
+            self.negotiated_alpn = null;
         }
-        return null;
+        const server_list = self.config.alpn_protocols orelse return null;
+        if (server_list.len == 0) return null;
+
+        const client_list = client.alpn_list orelse return HandshakeError.AlpnNegotiationFailed;
+        if (client_list.len == 0) return HandshakeError.AlpnNegotiationFailed;
+
+        for (server_list) |candidate| {
+            for (client_list) |offered| {
+                if (std.mem.eql(u8, candidate, offered)) {
+                    const copy = try self.allocator.dupe(u8, candidate);
+                    self.negotiated_alpn = copy;
+                    return copy;
+                }
+            }
+        }
+        return HandshakeError.AlpnNegotiationFailed;
     }
 
     fn ensureLocalTransportParameters(self: *Context) ![]const u8 {
@@ -628,9 +700,10 @@ pub const Context = struct {
         }
 
         const server_tp = try self.ensureLocalTransportParameters();
+        const selected_alpn = try self.selectServerAlpn(ch_view);
         const ee_body = try tls13_full.buildEncryptedExtensions(
             self.allocator,
-            self.selectServerAlpn(),
+            selected_alpn,
             server_tp,
         );
         defer self.allocator.free(ee_body);
