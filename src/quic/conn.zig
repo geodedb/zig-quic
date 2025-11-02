@@ -718,6 +718,7 @@ pub const Connection = struct {
         self.peer = peer;
         self.tls_inbox = std.ArrayList(u8){};
         self.tls = tls13.Engine.init(alloc.*, if (role == .Client) .Client else .Server);
+        self.tls.setPeerFinishedCallback(Connection.handleTlsPeerFinished, self);
         self.allocator = alloc;
         self.allowed_alpns = &[_][]const u8{};
         self.negotiated_alpn = null;
@@ -895,6 +896,7 @@ pub const Connection = struct {
         self.local_transport_params_raw = null;
         self.peer_transport_params_raw = null;
         self.tls_inbox.deinit(self.allocator.*);
+        self.tls.setPeerFinishedCallback(null, null);
         self.tls.deinit();
         self.rec.deinit();
         self.sent_time.deinit();
@@ -1143,9 +1145,17 @@ pub const Connection = struct {
         return self.peer_finished_verified and self.app_tx_keys != null;
     }
 
-    fn updatePeerFinishedStatus(self: *Connection) void {
-        if (self.peer_finished_verified == self.tls.finished_verified) return;
-        self.peer_finished_verified = self.tls.finished_verified;
+    fn handleTlsPeerFinished(ctx: ?*anyopaque, engine: *tls13.Engine, verified: bool) anyerror!void {
+        _ = engine;
+        if (ctx) |raw| {
+            const conn_ptr: *Connection = @ptrCast(@alignCast(raw));
+            conn_ptr.updatePeerFinishedStatus(verified);
+        }
+    }
+
+    fn updatePeerFinishedStatus(self: *Connection, verified: bool) void {
+        if (self.peer_finished_verified == verified) return;
+        self.peer_finished_verified = verified;
         if (self.peer_finished_verified) {
             std.debug.print("{s}: Peer Finished verified; short-header transmission unlocked\n", .{if (self.role == .Server) "Server" else "Client"});
         } else {
@@ -1183,7 +1193,6 @@ pub const Connection = struct {
     pub fn pushCrypto(self: *Connection, hs: []const u8) !void {
         const had_peer_pub = self.tls.peer_pub != null;
         self.tls.onCryptoRecv(hs);
-        self.updatePeerFinishedStatus();
         // Server: upon receiving first ClientHello AND extracting peer's public key, queue a ServerHello
         // Server: upon receiving first ClientHello AND extracting peer's public key,
         // derive ECDHE shared secret and Handshake keys immediately.
@@ -1372,7 +1381,7 @@ pub const Connection = struct {
                 }
                 if (!ok) {
                     self.tls.finished_verified = false;
-                    self.updatePeerFinishedStatus();
+                    self.updatePeerFinishedStatus(false);
                 }
             }
         }

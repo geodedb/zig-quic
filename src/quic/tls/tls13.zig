@@ -1266,10 +1266,15 @@ pub const Engine = struct {
     master_secret: ?[H.digest_length]u8 = null,
     /// Stored resumption tickets (very small cache FIFO). Each entry keeps identity and resumption_secret.
     tickets: TicketStore = .{},
+    /// Optional callback invoked whenever the peer Finished verification state changes.
+    peer_finished_cb: ?PeerFinishedCallback = null,
+    peer_finished_ctx: ?*anyopaque = null,
+
+    const PeerFinishedCallback = *const fn (ctx: ?*anyopaque, engine: *Engine, verified: bool) anyerror!void;
 
     /// Initialize a TLS 1.3 Engine with allocator and role.
     pub fn init(alloc: std.mem.Allocator, role: Role) Engine {
-        return .{ .role = role, .allocator = alloc, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .client_session_id = null, .outbox = std.ArrayList(u8){}, .inbox = std.ArrayList(u8){}, .handshake_failed = false, .ch_sent = false, .ch_recv = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .ee_sent = false, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null, .master_secret = null, .tickets = .{} };
+        return .{ .role = role, .allocator = alloc, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .client_session_id = null, .outbox = std.ArrayList(u8){}, .inbox = std.ArrayList(u8){}, .handshake_failed = false, .ch_sent = false, .ch_recv = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .ee_sent = false, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null, .master_secret = null, .tickets = .{}, .peer_finished_cb = null, .peer_finished_ctx = null };
     }
     /// Release any owned resources and buffers.
     pub fn deinit(self: *Engine) void {
@@ -1284,6 +1289,20 @@ pub const Engine = struct {
         self.tickets.deinit(self.allocator);
         self.outbox.deinit(self.allocator);
         self.inbox.deinit(self.allocator);
+    }
+
+    /// Register a callback that fires whenever peer Finished verification toggles.
+    pub fn setPeerFinishedCallback(self: *Engine, cb: ?PeerFinishedCallback, ctx: ?*anyopaque) void {
+        self.peer_finished_cb = cb;
+        self.peer_finished_ctx = ctx;
+    }
+
+    fn updateFinishedVerified(self: *Engine, value: bool) void {
+        if (self.finished_verified == value) return;
+        self.finished_verified = value;
+        if (self.peer_finished_cb) |cb| {
+            cb(self.peer_finished_ctx, self, value) catch {};
+        }
     }
 
     /// Queue a minimal NewSessionTicket (placeholder). Not yet used for PSK resumption.
@@ -1715,7 +1734,7 @@ pub const Engine = struct {
                         };
                     };
                     std.debug.print("TLS: Finished verification result: {}\n", .{ok});
-                    self.finished_verified = ok;
+                    self.updateFinishedVerified(ok);
 
                     // Add the Finished message to the transcript AFTER verification
                     if (ok) {
