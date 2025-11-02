@@ -38,6 +38,7 @@ pub const HandshakeMetadata = struct {
     local_transport_parameters: ?[]const u8 = null,
 };
 
+/// Mirror of the TLS 1.3 signature scheme enumeration (RFC 8446 §4.2.3).
 pub const SignatureScheme = tls13_full.SignatureScheme;
 
 /// RFC 8446 §4 and §7 describe the handshake protocol and key schedule. `Config` captures

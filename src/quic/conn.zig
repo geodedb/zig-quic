@@ -433,6 +433,8 @@ pub const Connection = struct {
     // Lifecycle flags
     handshake_done_sent: bool = false,
     handshake_done_seen: bool = false,
+    /// Tracks when the TLS engine has verified the peer's Finished, enabling short-header traffic.
+    peer_finished_verified: bool = false,
     server_hello_sent: bool = false,
     session_ticket_sent: bool = false,
     // 0-RTT state
@@ -821,6 +823,7 @@ pub const Connection = struct {
         self.last_sent_max_streams_bidi = 0;
         self.tx_sent_bytes_since_key = 0;
         self.handshake_done_sent = false;
+        self.peer_finished_verified = false;
         self.server_hello_sent = false;
         self.closed = false;
         self.accepted_enqueued = false;
@@ -1135,6 +1138,21 @@ pub const Connection = struct {
         self.storeLocalTransportParams(encoded) catch {};
     }
 
+    /// Returns true once the TLS stack has verified the peer's Finished and 1-RTT TX keys are ready.
+    pub fn hasConfirmedAppTxKeys(self: *const Connection) bool {
+        return self.peer_finished_verified and self.app_tx_keys != null;
+    }
+
+    fn updatePeerFinishedStatus(self: *Connection) void {
+        if (self.peer_finished_verified == self.tls.finished_verified) return;
+        self.peer_finished_verified = self.tls.finished_verified;
+        if (self.peer_finished_verified) {
+            std.debug.print("{s}: Peer Finished verified; short-header transmission unlocked\n", .{if (self.role == .Server) "Server" else "Client"});
+        } else {
+            std.debug.print("{s}: Peer Finished verification revoked\n", .{if (self.role == .Server) "Server" else "Client"});
+        }
+    }
+
     /// Send bytes to peer using configured sender callback; if none, act as no-op that accounts amplification.
     /// Send bytes via installed sender callback (accounting amplification); in tests with no sender, acts as no-op success.
     pub fn send(self: *Connection, data: []const u8) !usize {
@@ -1165,6 +1183,7 @@ pub const Connection = struct {
     pub fn pushCrypto(self: *Connection, hs: []const u8) !void {
         const had_peer_pub = self.tls.peer_pub != null;
         self.tls.onCryptoRecv(hs);
+        self.updatePeerFinishedStatus();
         // Server: upon receiving first ClientHello AND extracting peer's public key, queue a ServerHello
         // Server: upon receiving first ClientHello AND extracting peer's public key,
         // derive ECDHE shared secret and Handshake keys immediately.
@@ -1351,7 +1370,10 @@ pub const Connection = struct {
                         break;
                     }
                 }
-                if (!ok) self.tls.finished_verified = false;
+                if (!ok) {
+                    self.tls.finished_verified = false;
+                    self.updatePeerFinishedStatus();
+                }
             }
         }
     }
@@ -1555,12 +1577,13 @@ pub const Connection = struct {
     /// Send a PATH_CHALLENGE on the 1-RTT path to validate current peer path.
     /// Emit a PATH_CHALLENGE frame (1-RTT) and mark path validation pending.
     pub fn sendPathChallenge(self: *Connection) void {
-        const tx = self.app_tx_keys orelse {
-            // No 1-RTT keys yet (e.g. test setup); still mark validation pending and seed challenge data.
+        if (!self.hasConfirmedAppTxKeys()) {
+            // No confirmed 1-RTT keys yet (e.g. test setup); still mark validation pending and seed challenge data.
             std.crypto.random.bytes(&self.path_challenge_data);
             self.path_validation_pending = true;
             return;
-        };
+        }
+        const tx = self.app_tx_keys.?;
         // Generate opaque 8-byte data and remember for validation
         std.crypto.random.bytes(&self.path_challenge_data);
         self.path_validation_pending = true;
@@ -1585,7 +1608,8 @@ pub const Connection = struct {
     }
 
     fn sendControlFrames(self: *Connection, frames_bytes: []const u8) void {
-        const tx = self.app_tx_keys orelse return;
+        if (!self.hasConfirmedAppTxKeys()) return;
+        const tx = self.app_tx_keys.?;
         std.debug.print("{s}: Sending control frames ({d} bytes)\n", .{ if (self.role == .Server) "Server" else "Client", frames_bytes.len });
         const pkt = packet.encodeShortProtected(
             self.allocator.*,
@@ -1622,7 +1646,7 @@ pub const Connection = struct {
 
     /// Mark initial flow-control limits for transmission (sets flags so MAX_* frames are sent).
     pub fn advertiseInitialFlowControl(self: *Connection) void {
-        if (self.app_tx_keys == null) return;
+        if (!self.hasConfirmedAppTxKeys()) return;
         if (!self.canSendUnderAmplification()) return;
         var frames = std.ArrayList(u8){};
         defer frames.deinit(self.allocator.*);
@@ -1649,7 +1673,8 @@ pub const Connection = struct {
     /// Send a datagram to the connection's peer using 1-RTT short header.
     /// Queue an application DATAGRAM for sending (subject to path MTU / congestion heuristics).
     pub fn sendDatagram(self: *Connection, data: []const u8) !void {
-        const tx = self.app_tx_keys orelse return error.KeysNotReady;
+        if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
+        const tx = self.app_tx_keys.?;
         var frames = std.ArrayList(u8){};
         defer frames.deinit(self.allocator.*);
         const w = frames.writer(self.allocator.*);
@@ -1735,11 +1760,12 @@ pub const Connection = struct {
             }
         }
         // Check if handshake is complete and app keys are ready
-        const tx = self.app_tx_keys orelse {
+        if (!self.hasConfirmedAppTxKeys()) {
             // If handshake is not complete, return 0 to indicate no data sent
             // The caller can retry later when the connection is ready
             return 0;
-        };
+        }
+        const tx = self.app_tx_keys.?;
         if (data.len == 0) return 0;
         const cur_off: u64 = if (id == 0) self.stream_send_off else self.stream_txs.getPtr(id).?.off;
         if (cur_off >= self.peer_max_stream_data) {
@@ -1836,7 +1862,8 @@ pub const Connection = struct {
         } else if (self.stream_txs.getPtr(id) == null) {
             return error.InvalidStream;
         }
-        const tx = self.app_tx_keys orelse return error.KeysNotReady;
+        if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
+        const tx = self.app_tx_keys.?;
         var frames = std.ArrayList(u8){};
         defer frames.deinit(self.allocator.*);
         const w = frames.writer(self.allocator.*);
@@ -1859,7 +1886,8 @@ pub const Connection = struct {
     /// Handle STOP_SENDING by responding with RESET_STREAM carrying our final size.
     /// Process incoming STOP_SENDING frame; respond with RESET_STREAM if not already closed.
     pub fn handleStopSending(self: *Connection, stream_id: u64, app_error_code: u64) !void {
-        const tx = self.app_tx_keys orelse return error.KeysNotReady;
+        if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
+        const tx = self.app_tx_keys.?;
         // Mark stream as aborted for sending further STREAM frames
         if (stream_id == 0) {
             self.stream_send_aborted = true;
@@ -2095,7 +2123,7 @@ pub const Connection = struct {
     /// Begin DPLPMTUD probing from base (1200) upward. Requires app_tx_keys.
     /// Begin DPLPMTUD search phase (send first probe) if enabled.
     pub fn pmtudStart(self: *Connection, ep: anytype) void {
-        if (self.app_tx_keys == null) return;
+        if (!self.hasConfirmedAppTxKeys()) return;
         self.pmtud_state = .ProbeStart;
         self.pmtudArm(ep, 15); // 15 ms short delay in tests
     }
@@ -2113,7 +2141,7 @@ pub const Connection = struct {
     /// Timer handler for DPLPMTUD state machine (sends next probe / escalates size).
     pub fn pmtudOnTimer(self: *Connection, ep: anytype) void {
         self.pmtud_timer_active = false;
-        if (self.app_tx_keys == null) return;
+        if (!self.hasConfirmedAppTxKeys()) return;
         switch (self.pmtud_state) {
             .Disabled => return,
             .ProbeStart => {
@@ -2254,7 +2282,8 @@ pub const Connection = struct {
     /// Send a minimal PTO probe for the Application space (PING frame).
     /// Emit an Application-space PTO probe.
     pub fn sendPtoProbeApp(self: *Connection) void {
-        const tx = self.app_tx_keys orelse return;
+        if (!self.hasConfirmedAppTxKeys()) return;
+        const tx = self.app_tx_keys.?;
         var frames = std.ArrayList(u8){};
         defer frames.deinit(self.allocator.*);
         const w = frames.writer(self.allocator.*);
@@ -2278,7 +2307,8 @@ pub const Connection = struct {
     /// Close the connection with an application error code using a 1-RTT CONNECTION_CLOSE.
     /// Build and send CONNECTION_CLOSE (application or transport) with reason string.
     pub fn sendConnectionClose(self: *Connection, app_error_code: u64, reason: []const u8) !void {
-        const tx = self.app_tx_keys orelse return error.KeysNotReady;
+        if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
+        const tx = self.app_tx_keys.?;
         var frames = std.ArrayList(u8){};
         defer frames.deinit(self.allocator.*);
         const w = frames.writer(self.allocator.*);
@@ -2566,7 +2596,8 @@ pub const Connection = struct {
     /// an ack-eliciting PING followed by PADDING to reach target. Returns bytes sent.
     /// Emit a sized PING+PADDING probe for DPLPMTUD (not congestion controlled beyond size bounds).
     pub fn sendPmtudProbe(self: *Connection, target_udp_payload: u16) !usize {
-        const tx = self.app_tx_keys orelse return error.KeysNotReady;
+        if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
+        const tx = self.app_tx_keys.?;
         // Minimum QUIC/UDP payload size is 1200 (RFC 9000 §14.1)
         if (target_udp_payload < 1200) return error.InvalidProbeSize;
         // CC-aware pacing guard: do not send a probe if it would exceed cwnd.

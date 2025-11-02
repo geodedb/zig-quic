@@ -24,6 +24,7 @@ test "pmtud pacing: paced send occurs under NewReno and CUBIC when cwnd is parti
             var c = try ep.connectClient("127.0.0.1:9");
             // Seed minimal 1-RTT TX keys and DCID for short header encode
             c.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
+            c.peer_finished_verified = true;
             c.our_scid.len = 4;
             std.mem.copyForwards(u8, c.our_scid.bytes[0..4], if (use_cubic) "CUBC" else "NREN");
 
@@ -62,6 +63,7 @@ test "pmtud with cubic: single outstanding probe with backoff (blackhole)" {
     defer ep.deinit();
     var c = try ep.connectClient("127.0.0.1:10");
     c.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
+    c.peer_finished_verified = true;
     c.our_scid.len = 4;
     std.mem.copyForwards(u8, c.our_scid.bytes[0..4], "CBKH");
     // Start PMTUD but never ACK probes; ensure only one pending at a time and PN advances/updates
@@ -91,6 +93,7 @@ test "pmtud with cubic: cwnd insufficient blocks probe and PTO backoff increases
     defer ep.deinit();
     var c = try ep.connectClient("127.0.0.1:12");
     c.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
+    c.peer_finished_verified = true;
     c.our_scid.len = 4;
     std.mem.copyForwards(u8, c.our_scid.bytes[0..4], "CBWD");
     // Block probe due to cwnd
@@ -131,6 +134,7 @@ test "pmtud probe builds PING+PADDING to exact UDP payload size" {
     c.init(&alloc, .Client, 0, c.peer);
     // Seed minimal 1-RTT TX keys (zeros suffice for encode in tests)
     c.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
+    c.peer_finished_verified = true;
     // Set a DCID for short header
     c.our_scid.len = 8;
     std.mem.copyForwards(u8, c.our_scid.bytes[0..8], "ABCDEFGH");
@@ -157,6 +161,7 @@ test "pmtud validation raises path_mtu on ACK of probe PN" {
     c.init(&alloc, .Client, 0, c.peer);
     // Seed minimal 1-RTT TX keys
     c.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
+    c.peer_finished_verified = true;
     c.our_scid.len = 4;
     std.mem.copyForwards(u8, c.our_scid.bytes[0..4], "ABCD");
 
@@ -205,6 +210,7 @@ test "icmp ptb spoof-check: only applies when DCID matches known connection" {
     var c = try ep.connectClient("127.0.0.1:9");
     // Seed minimal 1-RTT TX keys and DCID for short header
     c.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
+    c.peer_finished_verified = true;
     c.our_scid.len = 4;
     std.mem.copyForwards(u8, c.our_scid.bytes[0..4], "DCID");
     c.path_mtu = 1400;
@@ -257,6 +263,7 @@ test "pmtud: send multiple probe sizes and accept only acked size" {
     // For direct sends in this unit test, bypass anti-amplification gating
     c.address_validated = true;
     c.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
+    c.peer_finished_verified = true;
     c.our_scid.len = 4;
     std.mem.copyForwards(u8, c.our_scid.bytes[0..4], "PROB");
 
@@ -285,6 +292,7 @@ test "pmtud state machine sends probes and raises mtu upon ack progression" {
     defer ep.deinit();
     var c = try ep.connectClient("127.0.0.1:9");
     c.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
+    c.peer_finished_verified = true;
     c.our_scid.len = 4;
     std.mem.copyForwards(u8, c.our_scid.bytes[0..4], "ABCD");
     // Start PMTUD and force timers to fire
@@ -348,6 +356,7 @@ test "pmtud pacing: single outstanding probe with backoff on blackhole" {
     defer ep.deinit();
     var c = try ep.connectClient("127.0.0.1:10");
     c.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
+    c.peer_finished_verified = true;
     c.our_scid.len = 4;
     std.mem.copyForwards(u8, c.our_scid.bytes[0..4], "PACE");
     // Start PMTUD but never ACK probes; ensure only one pending at a time and PN advances
@@ -377,6 +386,7 @@ test "pmtud pacing: do not send probe when cwnd insufficient; respects PTO backo
     defer ep.deinit();
     var c = try ep.connectClient("127.0.0.1:12");
     c.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
+    c.peer_finished_verified = true;
     c.our_scid.len = 4;
     std.mem.copyForwards(u8, c.our_scid.bytes[0..4], "CWND");
     // Set a very small cwnd and high bytes_in_flight to block probe
