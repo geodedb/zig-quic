@@ -32,6 +32,8 @@ const logger = @import("quic_logger");
 const transport_params = @import("quic_transport_params");
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 
+pub const SignatureScheme = tls13_full.SignatureScheme;
+
 /// RFC 8446 §4 and §7 describe the handshake protocol and key schedule. `Config` captures
 /// the negotiable parameters required to drive a compliant TLS 1.3 exchange in the QUIC context.
 pub const Config = struct {
@@ -69,6 +71,7 @@ pub const HandshakeError = error{
     NoCipherSuite,
     MissingTransportParameters,
     AlpnNegotiationFailed,
+    NoSignatureScheme,
 };
 
 /// Traffic direction relative to the current endpoint when installing secrets (RFC 8446 §7.1).
@@ -224,6 +227,7 @@ pub const ClientHelloView = struct {
     random: [32]u8,
     session_id: []const u8,
     cipher_suites: []const tls13_full.CipherSuite,
+    signature_algorithms: ?[]const tls13_full.SignatureScheme,
     supported_versions: []const u8,
     key_share: ClientHelloKeyShareView,
     quic_transport_parameters: ?[]const u8,
@@ -236,6 +240,7 @@ const ClientHelloInfo = struct {
     random: [32]u8,
     session_id: []u8,
     cipher_suites: []tls13_full.CipherSuite,
+    signature_algorithms: ?[]const tls13_full.SignatureScheme,
     supported_versions: []u8,
     key_share: struct {
         group: tls13_full.NamedGroup,
@@ -262,6 +267,12 @@ const ClientHelloInfo = struct {
 
         const cipher_suites_copy = try allocator.dupe(tls13_full.CipherSuite, parsed.cipher_suites);
         errdefer if (cipher_suites_copy.len != 0) allocator.free(cipher_suites_copy);
+
+        var sigalgs_copy: ?[]const tls13_full.SignatureScheme = null;
+        if (parsed.signature_algorithms) |algs| {
+            sigalgs_copy = try allocator.dupe(tls13_full.SignatureScheme, algs);
+        }
+        errdefer if (sigalgs_copy) |buf| if (buf.len != 0) allocator.free(@constCast(buf));
 
         const versions_copy = try allocator.dupe(u8, versions);
         errdefer if (versions_copy.len != 0) allocator.free(versions_copy);
@@ -312,6 +323,7 @@ const ClientHelloInfo = struct {
             .random = parsed.random,
             .session_id = session_id_copy,
             .cipher_suites = cipher_suites_copy,
+            .signature_algorithms = sigalgs_copy,
             .supported_versions = versions_copy,
             .key_share = .{ .group = key_share.group, .key = key_bytes },
             .quic_transport_parameters = tp_copy,
@@ -327,6 +339,7 @@ const ClientHelloInfo = struct {
     fn deinit(self: *ClientHelloInfo, allocator: std.mem.Allocator) void {
         if (self.session_id.len != 0) allocator.free(self.session_id);
         if (self.cipher_suites.len != 0) allocator.free(self.cipher_suites);
+        if (self.signature_algorithms) |list| if (list.len != 0) allocator.free(@constCast(list));
         if (self.supported_versions.len != 0) allocator.free(self.supported_versions);
         if (self.key_share.key.len != 0) allocator.free(self.key_share.key);
         if (self.quic_transport_parameters) |buf| if (buf.len != 0) allocator.free(buf);
@@ -366,6 +379,7 @@ const HandshakeState = struct {
                 .random = info.random,
                 .session_id = info.session_id,
                 .cipher_suites = info.cipher_suites,
+                .signature_algorithms = info.signature_algorithms,
                 .supported_versions = info.supported_versions,
                 .key_share = .{ .group = info.key_share.group, .key = info.key_share.key },
                 .quic_transport_parameters = info.quic_transport_parameters,
@@ -457,6 +471,7 @@ pub const Context = struct {
     flags: HandshakeFlags = .{},
     local_transport_parameters: ?[]u8 = null,
     negotiated_alpn: ?[]u8 = null,
+    negotiated_signature: ?tls13_full.SignatureScheme = null,
 
     /// Initializes a new TLS 1.3 context with the specified configuration and callbacks.
     pub fn init(config: Config, callbacks: Callbacks) Context {
@@ -472,6 +487,7 @@ pub const Context = struct {
             .flags = .{},
             .local_transport_parameters = null,
             .negotiated_alpn = null,
+            .negotiated_signature = null,
         };
     }
 
@@ -490,6 +506,7 @@ pub const Context = struct {
             self.allocator.free(proto);
             self.negotiated_alpn = null;
         }
+        self.negotiated_signature = null;
         self.phase = .initial;
     }
 
@@ -572,6 +589,11 @@ pub const Context = struct {
         return null;
     }
 
+    /// Returns the negotiated SignatureScheme once selected during the server flight.
+    pub fn negotiatedSignatureScheme(self: *const Context) ?tls13_full.SignatureScheme {
+        return self.negotiated_signature;
+    }
+
     fn handleHandshakeMessage(self: *Context, level: EncryptionLevel, parsed: HandshakeMessage) !void {
         _ = level;
         switch (parsed.typ) {
@@ -638,6 +660,24 @@ pub const Context = struct {
         return HandshakeError.AlpnNegotiationFailed;
     }
 
+    fn selectServerSignatureScheme(self: *Context, client: ClientHelloView) !tls13_full.SignatureScheme {
+        const server_list = self.config.supported_signature_schemes;
+        if (server_list.len == 0) return HandshakeError.NoSignatureScheme;
+
+        const client_list = client.signature_algorithms orelse return HandshakeError.NoSignatureScheme;
+        self.negotiated_signature = null;
+
+        for (server_list) |candidate| {
+            for (client_list) |offered| {
+                if (candidate == offered) {
+                    self.negotiated_signature = candidate;
+                    return candidate;
+                }
+            }
+        }
+        return HandshakeError.NoSignatureScheme;
+    }
+
     fn ensureLocalTransportParameters(self: *Context) ![]const u8 {
         if (self.local_transport_parameters) |buf| {
             return buf;
@@ -655,6 +695,7 @@ pub const Context = struct {
 
         const ch_view = self.state.clientHello() orelse return HandshakeError.UnexpectedMessage;
         const cipher_suite = self.chooseCipherSuite(ch_view.cipher_suites) orelse return HandshakeError.NoCipherSuite;
+        _ = try self.selectServerSignatureScheme(ch_view);
         if (ch_view.key_share.key.len != 32) return HandshakeError.UnsupportedKeyShareGroup;
 
         var server_random: [32]u8 = undefined;

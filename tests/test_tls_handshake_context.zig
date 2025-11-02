@@ -2,6 +2,8 @@ const std = @import("std");
 const tls13 = @import("quic_tls13");
 const transport_params = @import("quic_transport_params");
 
+const default_signature_schemes = [_]u16{ 0x0807, 0x0403 };
+
 fn buildServerTransportParams(alloc: std.mem.Allocator) ![]u8 {
     var params = transport_params.TransportParams{
         .max_idle_timeout = 30,
@@ -18,7 +20,7 @@ fn buildServerTransportParams(alloc: std.mem.Allocator) ![]u8 {
     return try params.encode(alloc);
 }
 
-fn buildStandardClientHello(alloc: std.mem.Allocator, alpn: ?[]const []const u8) ![]u8 {
+fn buildStandardClientHello(alloc: std.mem.Allocator, alpn: ?[]const []const u8, signature_schemes: []const u16) ![]u8 {
     var sk: [32]u8 = undefined;
     std.crypto.random.bytes(&sk);
     const pk = try std.crypto.dh.X25519.recoverPublicKey(sk);
@@ -45,7 +47,27 @@ fn buildStandardClientHello(alloc: std.mem.Allocator, alpn: ?[]const []const u8)
 
     try ext_buf.appendSlice(alloc, &.{ 0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x1d });
 
-    try ext_buf.appendSlice(alloc, &.{ 0x00, 0x0d, 0x00, 0x04, 0x00, 0x02, 0x04, 0x03 });
+    if (signature_schemes.len != 0) {
+        const count_bytes = signature_schemes.len * 2;
+        const list_len = std.math.cast(u16, count_bytes) orelse return error.SignatureListTooLong;
+        const ext_len = std.math.cast(u16, @as(usize, list_len) + 2) orelse return error.SignatureListTooLong;
+
+        var header: [6]u8 = undefined;
+        header[0] = 0x00;
+        header[1] = 0x0d;
+        header[2] = @as(u8, @intCast(ext_len >> 8));
+        header[3] = @as(u8, @intCast(ext_len & 0xff));
+        header[4] = @as(u8, @intCast(list_len >> 8));
+        header[5] = @as(u8, @intCast(list_len & 0xff));
+        try ext_buf.appendSlice(alloc, header[0..]);
+
+        for (signature_schemes) |scheme| {
+            try ext_buf.appendSlice(alloc, &.{
+                @as(u8, @intCast((scheme >> 8) & 0xff)),
+                @as(u8, @intCast(scheme & 0xff)),
+            });
+        }
+    }
 
     try ext_buf.appendSlice(alloc, &.{ 0x00, 0x33 });
     const key_share_len: u16 = 2 + 2 + 32;
@@ -115,7 +137,7 @@ test "context parses ClientHello and stores handshake view" {
     var ctx = tls13.Context.init(config, .{});
     defer ctx.deinit();
 
-    const ch = try buildStandardClientHello(alloc, null);
+    const ch = try buildStandardClientHello(alloc, null, default_signature_schemes[0..]);
     defer alloc.free(ch);
 
     try ctx.processCrypto(.Initial, ch);
@@ -154,7 +176,7 @@ test "context captures ClientHello ALPN list" {
     defer ctx.deinit();
 
     const client_alpn = [_][]const u8{ "h3", "hq-interop" };
-    const ch = try buildStandardClientHello(alloc, client_alpn[0..]);
+    const ch = try buildStandardClientHello(alloc, client_alpn[0..], default_signature_schemes[0..]);
     defer alloc.free(ch);
 
     try ctx.processCrypto(.Initial, ch);
@@ -182,7 +204,7 @@ test "server emits ServerHello flight with Finished" {
     var ctx = tls13.Context.init(config, .{});
     defer ctx.deinit();
 
-    const ch = try buildStandardClientHello(alloc, null);
+    const ch = try buildStandardClientHello(alloc, null, default_signature_schemes[0..]);
     defer alloc.free(ch);
 
     try ctx.processCrypto(.Initial, ch);
@@ -230,6 +252,47 @@ test "server emits ServerHello flight with Finished" {
     try std.testing.expect(ctx.transcripts.finished_hash != null);
 }
 
+test "server records negotiated signature algorithm" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const alloc = gpa.allocator();
+
+    const server_tp = try buildServerTransportParams(alloc);
+    defer alloc.free(server_tp);
+
+    const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp };
+    var ctx = tls13.Context.init(config, .{});
+    defer ctx.deinit();
+
+    const ch = try buildStandardClientHello(alloc, null, default_signature_schemes[0..]);
+    defer alloc.free(ch);
+
+    try ctx.processCrypto(.Initial, ch);
+    const scheme_opt = ctx.negotiatedSignatureScheme();
+    try std.testing.expect(scheme_opt != null);
+    try std.testing.expectEqual(tls13.SignatureScheme.ed25519, scheme_opt.?);
+}
+
+test "server rejects client without compatible signature algorithm" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const alloc = gpa.allocator();
+
+    const server_tp = try buildServerTransportParams(alloc);
+    defer alloc.free(server_tp);
+
+    const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp };
+    var ctx = tls13.Context.init(config, .{});
+    defer ctx.deinit();
+
+    const incompatible_schemes = [_]u16{0x0403};
+    const ch = try buildStandardClientHello(alloc, null, incompatible_schemes[0..]);
+    defer alloc.free(ch);
+
+    try std.testing.expectError(tls13.HandshakeError.NoSignatureScheme, ctx.processCrypto(.Initial, ch));
+    try std.testing.expect(ctx.negotiatedSignatureScheme() == null);
+}
+
 test "server negotiates ALPN when offered" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -249,7 +312,7 @@ test "server negotiates ALPN when offered" {
     defer ctx.deinit();
 
     const client_alpn = [_][]const u8{ "h3", "hq-interop" };
-    const ch = try buildStandardClientHello(alloc, client_alpn[0..]);
+    const ch = try buildStandardClientHello(alloc, client_alpn[0..], default_signature_schemes[0..]);
     defer alloc.free(ch);
 
     try ctx.processCrypto(.Initial, ch);
@@ -335,7 +398,7 @@ test "server errors when ALPN required but absent" {
     var ctx = tls13.Context.init(config, .{});
     defer ctx.deinit();
 
-    const ch = try buildStandardClientHello(alloc, null);
+    const ch = try buildStandardClientHello(alloc, null, default_signature_schemes[0..]);
     defer alloc.free(ch);
 
     try std.testing.expectError(tls13.HandshakeError.AlpnNegotiationFailed, ctx.processCrypto(.Initial, ch));
