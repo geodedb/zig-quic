@@ -26,6 +26,11 @@ Date: 2025-09-20 (Current Status)
 - Introduced `HandshakeState` with owned ClientHello copies (session_id, cipher suites, supported_versions vector, x25519 key share, QUIC TP blob) enabling later handshake flights to operate without referencing transient buffers.
 - Added `tests/test_tls_handshake_context.zig` covering ClientHello ingestion, transcript hash verification, and duplicate message rejection.
 
+### TLS 1.3 Server Flight Transport Parameters ✅
+
+- `Context.ensureLocalTransportParameters()` caches the configured server QUIC transport parameters and `driveServerHandshakeFlight()` now injects the extension 0x0039 blob into EncryptedExtensions per RFC 9001 §8.2.
+- `tests/test_tls_handshake_context.zig` encodes canonical transport parameters via `transport_params.TransportParams` and asserts that the emitted EncryptedExtensions payload matches the advertised parameters.
+
 ### Session Resumption with PSK ✅
 
 - Enhanced TLS 1.3 engine with full PSK support
@@ -92,7 +97,7 @@ Date: 2025-09-20 (Current Status)
 
 #### TLS Integration (RFC 9001)
 
-- ⚠️ Handshake state machine: Initial ClientHello intake and transcript checkpoints land; server now emits ServerHello/EncryptedExtensions/Finished with handshake key installation, while extension negotiation, certificate authentication, and alert mapping remain.
+- ⚠️ Handshake state machine: Initial ClientHello intake and transcript checkpoints land; server now emits ServerHello/EncryptedExtensions/Finished with handshake key installation and configurable QUIC transport parameters, while broader extension negotiation (signature_algorithms/ALPN propagation), certificate authentication, and alert mapping remain.
 - ✅ Key derivation (Initial, Handshake, 1-RTT)
 - ✅ Header protection and removal
 - ✅ AEAD encryption/decryption

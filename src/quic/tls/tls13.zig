@@ -40,6 +40,8 @@ pub const Config = struct {
     supported_groups: []const tls13_full.NamedGroup = &.{tls13_full.NamedGroup.x25519},
     supported_signature_schemes: []const tls13_full.SignatureScheme = &.{tls13_full.SignatureScheme.ed25519},
     alpn_protocols: ?[]const []const u8 = null,
+    /// Raw QUIC transport parameters to advertise in EncryptedExtensions (RFC 9001 §8.2).
+    quic_transport_parameters: ?[]const u8 = null,
     enable_early_data: bool = false,
 };
 
@@ -64,6 +66,7 @@ pub const HandshakeError = error{
     MissingKeyShare,
     UnsupportedKeyShareGroup,
     NoCipherSuite,
+    MissingTransportParameters,
 };
 
 /// Traffic direction relative to the current endpoint when installing secrets (RFC 8446 §7.1).
@@ -410,6 +413,7 @@ pub const Context = struct {
     streams: CryptoStreams = .{},
     state: HandshakeState = HandshakeState.init(),
     flags: HandshakeFlags = .{},
+    local_transport_parameters: ?[]u8 = null,
 
     /// Initializes a new TLS 1.3 context with the specified configuration and callbacks.
     pub fn init(config: Config, callbacks: Callbacks) Context {
@@ -423,6 +427,7 @@ pub const Context = struct {
             .streams = .{},
             .state = HandshakeState.init(),
             .flags = .{},
+            .local_transport_parameters = null,
         };
     }
 
@@ -433,6 +438,10 @@ pub const Context = struct {
         self.transcripts.reset();
         self.flags.reset();
         self.state.reset(self.allocator);
+        if (self.local_transport_parameters) |buf| {
+            self.allocator.free(buf);
+            self.local_transport_parameters = null;
+        }
         self.phase = .initial;
     }
 
@@ -557,6 +566,16 @@ pub const Context = struct {
         return null;
     }
 
+    fn ensureLocalTransportParameters(self: *Context) ![]const u8 {
+        if (self.local_transport_parameters) |buf| {
+            return buf;
+        }
+        const configured = self.config.quic_transport_parameters orelse return HandshakeError.MissingTransportParameters;
+        const copy = try self.allocator.dupe(u8, configured);
+        self.local_transport_parameters = copy;
+        return copy;
+    }
+
     fn driveServerHandshakeFlight(self: *Context) !void {
         if (self.config.role != .Server) return;
         if (self.flags.local_finished_sent) return;
@@ -608,10 +627,11 @@ pub const Context = struct {
             self.phase = .keys_installed;
         }
 
+        const server_tp = try self.ensureLocalTransportParameters();
         const ee_body = try tls13_full.buildEncryptedExtensions(
             self.allocator,
             self.selectServerAlpn(),
-            null,
+            server_tp,
         );
         defer self.allocator.free(ee_body);
 

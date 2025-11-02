@@ -20,12 +20,7 @@ The implementation is complete with 63 passing tests covering all major features
 
 ## TLS Handshake Context
 
-- `src/quic/tls/tls13.zig::Context` now buffers inbound CRYPTO streams per encryption level, parses Initial-space ClientHello messages with the full `tls13_full` parser, and records transcript hashes once parsing succeeds (RFC 8446 §4.4.1).
-- `HandshakeState` owns canonical ClientHello artifacts (random, session_id copy, filtered cipher_suites, supported_versions raw vector, and x25519 key share) so downstream handshake flights can consume normalized data without holding on to transient buffers.
-- Duplicate ClientHello deliveries are rejected with `HandshakeError.DuplicateClientHello`, preserving transcript state and preventing replay of handshake metadata.
-- Unit test `tests/test_tls_handshake_context.zig` exercises ClientHello ingestion, transcript hashing against the standalone SHA-256 KAT, and duplicate-detection coverage.
-- `driveServerHandshakeFlight()` generates the server-side flight immediately after a validated ClientHello: a spec-compliant ServerHello (TLS_AES_128_GCM_SHA256, x25519) is queued on Initial CRYPTO, handshake traffic secrets are derived and installed via `installTrafficSecret`, EncryptedExtensions and Finished are emitted on Handshake CRYPTO, and transcript checkpoints (ClientHello hash, pre-Finished hash) are cached for Finished validation.
-- Additional test coverage in `tests/test_tls_handshake_context.zig` verifies the emitted ServerHello/EncryptedExtensions/Finished sequence, Finished MAC sizing, and that handshake send secrets and transcript checkpoints are populated.
+- `ensureLocalTransportParameters()` duplicates the configured QUIC transport-parameter blob so EncryptedExtensions always carries extension 0x0039 per RFC 9001 §8.2, and `tests/test_tls_handshake_context.zig` covers the emitted payload end-to-end.
 
 ## ACK handling and ECN propagation
 

@@ -378,6 +378,7 @@ pub fn build(b: *std.Build) void {
 
         const test_tls_context = addTst(b, "tests/test_tls_handshake_context.zig", target, optimize);
         test_tls_context.root_module.addImport("quic_tls13", tls13_mod);
+        test_tls_context.root_module.addImport("quic_transport_params", quic_transport_params_mod);
         const run_test_tls_context = b.addRunArtifact(test_tls_context);
         test_step.dependOn(&run_test_tls_context.step);
 

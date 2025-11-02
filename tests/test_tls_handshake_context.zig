@@ -1,5 +1,22 @@
 const std = @import("std");
 const tls13 = @import("quic_tls13");
+const transport_params = @import("quic_transport_params");
+
+fn buildServerTransportParams(alloc: std.mem.Allocator) ![]u8 {
+    var params = transport_params.TransportParams{
+        .max_idle_timeout = 30,
+        .max_udp_payload_size = 1350,
+        .initial_max_data = 65536,
+        .initial_max_stream_data_bidi_local = 32768,
+        .initial_max_stream_data_bidi_remote = 32768,
+        .initial_max_stream_data_uni = 32768,
+        .initial_max_streams_bidi = 4,
+        .initial_max_streams_uni = 4,
+        .active_connection_id_limit = 4,
+        .disable_active_migration = true,
+    };
+    return try params.encode(alloc);
+}
 
 fn buildStandardClientHello(alloc: std.mem.Allocator) ![]u8 {
     var sk: [32]u8 = undefined;
@@ -67,7 +84,10 @@ test "context parses ClientHello and stores handshake view" {
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
-    const config = tls13.Config{ .allocator = alloc, .role = .Server };
+    const server_tp = try buildServerTransportParams(alloc);
+    defer alloc.free(server_tp);
+
+    const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp };
     var ctx = tls13.Context.init(config, .{});
     defer ctx.deinit();
 
@@ -102,7 +122,10 @@ test "server emits ServerHello flight with Finished" {
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
-    const config = tls13.Config{ .allocator = alloc, .role = .Server };
+    const server_tp = try buildServerTransportParams(alloc);
+    defer alloc.free(server_tp);
+
+    const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp };
     var ctx = tls13.Context.init(config, .{});
     defer ctx.deinit();
 
@@ -123,6 +146,26 @@ test "server emits ServerHello flight with Finished" {
     const ee_msg = (try tls13.parseHandshakeOne(remaining)).?;
     try std.testing.expectEqual(tls13.HsType.encrypted_extensions, ee_msg.typ);
     remaining = remaining[ee_msg.n..];
+
+    try std.testing.expect(ee_msg.body.len >= 2);
+    const ext_total_len = (@as(u16, ee_msg.body[0]) << 8) | @as(u16, ee_msg.body[1]);
+    try std.testing.expectEqual(@as(usize, ext_total_len), ee_msg.body.len - 2);
+    const exts = ee_msg.body[2 .. 2 + ext_total_len];
+    var cursor: usize = 0;
+    var found_tp = false;
+    while (cursor + 4 <= exts.len) {
+        const etype = (@as(u16, exts[cursor]) << 8) | @as(u16, exts[cursor + 1]);
+        const elen = (@as(u16, exts[cursor + 2]) << 8) | @as(u16, exts[cursor + 3]);
+        cursor += 4;
+        try std.testing.expect(cursor + elen <= exts.len);
+        if (etype == 0x0039) {
+            found_tp = true;
+            try std.testing.expectEqualSlices(u8, server_tp, exts[cursor .. cursor + elen]);
+        }
+        cursor += elen;
+    }
+    try std.testing.expectEqual(cursor, exts.len);
+    try std.testing.expect(found_tp);
 
     const fin_msg = (try tls13.parseHandshakeOne(remaining)).?;
     try std.testing.expectEqual(tls13.HsType.finished, fin_msg.typ);
