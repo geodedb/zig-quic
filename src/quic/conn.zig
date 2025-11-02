@@ -168,7 +168,7 @@ pub const Role = enum { Client, Server };
 
 /// Portable socket address wrapper used by endpoint/connection.
 pub const SockAddr = struct {
-    storage: posix.sockaddr.storage = undefined,
+    storage: posix.sockaddr.storage = std.mem.zeroes(posix.sockaddr.storage),  // CRITICAL FIX: Zero-initialize to avoid undefined behavior
     len: u32 = 0,
 
     /// Initialize from a POSIX addrinfo entry.
@@ -201,6 +201,8 @@ pub const SockAddr = struct {
     /// Build an IPv4 SockAddr from octets and host-order port (test helper).
     pub fn ipv4(a: u8, b: u8, c: u8, d: u8, port_host: u16) SockAddr {
         var s: SockAddr = .{};
+        // CRITICAL FIX: Zero-initialize the entire storage first to avoid garbage data
+        s.storage = std.mem.zeroes(posix.sockaddr.storage);
         var sin: posix.sockaddr.in = .{
             .family = posix.AF.INET,
             .port = std.mem.nativeToBig(u16, port_host),
