@@ -8,20 +8,20 @@ pub fn main() !void {
 
     std.debug.print("Testing Initial Secret Derivation\n", .{});
     std.debug.print("DCID: ", .{});
-    for (dcid) |b| std.debug.print("{X:0>2}", .{b});
+    for (dcid) |b| std.debug.print("{X:0>2}\n", .{b});
     std.debug.print("\n\n", .{});
 
     // Derive initial secret
     const initial_secret = ks.deriveInitialSecretV1(&dcid);
     std.debug.print("Initial Secret: ", .{});
-    for (initial_secret) |b| std.debug.print("{X:0>2}", .{b});
+    for (initial_secret) |b| std.debug.print("{X:0>2}\n", .{b});
     std.debug.print("\n\n", .{});
 
     // Derive client and server secrets
     const pair = ks.deriveClientServerInitial(initial_secret);
 
     std.debug.print("Client Secret: ", .{});
-    for (pair.client) |b| std.debug.print("{X:0>2}", .{b});
+    for (pair.client) |b| std.debug.print("{X:0>2}\n", .{b});
     std.debug.print("\n", .{});
 
     // Expected from quic-go test:
@@ -38,12 +38,12 @@ pub fn main() !void {
     } else {
         std.debug.print("✗ Client secret MISMATCH\n", .{});
         std.debug.print("Expected: ", .{});
-        for (expected_client) |b| std.debug.print("{X:0>2}", .{b});
+        for (expected_client) |b| std.debug.print("{X:0>2}\n", .{b});
         std.debug.print("\n\n", .{});
     }
 
     std.debug.print("Server Secret: ", .{});
-    for (pair.server) |b| std.debug.print("{X:0>2}", .{b});
+    for (pair.server) |b| std.debug.print("{X:0>2}\n", .{b});
     std.debug.print("\n", .{});
 
     // Expected from quic-go test:
@@ -60,14 +60,14 @@ pub fn main() !void {
     } else {
         std.debug.print("✗ Server secret MISMATCH\n", .{});
         std.debug.print("Expected: ", .{});
-        for (expected_server) |b| std.debug.print("{X:0>2}", .{b});
+        for (expected_server) |b| std.debug.print("{X:0>2}\n", .{b});
         std.debug.print("\n\n", .{});
     }
 
     // Derive client key and IV
     const client_mat = ks.deriveKeyIvHp(pair.client);
     std.debug.print("Client Key: ", .{});
-    for (client_mat.key) |b| std.debug.print("{X:0>2}", .{b});
+    for (client_mat.key) |b| std.debug.print("{X:0>2}\n", .{b});
     std.debug.print("\n", .{});
 
     // Expected: 1f369613dd76d5467730efcbe3b1a22d
@@ -81,12 +81,12 @@ pub fn main() !void {
     } else {
         std.debug.print("✗ Client key MISMATCH\n", .{});
         std.debug.print("Expected: ", .{});
-        for (expected_client_key) |b| std.debug.print("{X:0>2}", .{b});
+        for (expected_client_key) |b| std.debug.print("{X:0>2}\n", .{b});
         std.debug.print("\n\n", .{});
     }
 
     std.debug.print("Client IV: ", .{});
-    for (client_mat.iv) |b| std.debug.print("{X:0>2}", .{b});
+    for (client_mat.iv) |b| std.debug.print("{X:0>2}\n", .{b});
     std.debug.print("\n", .{});
 
     // Expected: fa044b2f42a3fd3b46fb255c
@@ -100,14 +100,14 @@ pub fn main() !void {
     } else {
         std.debug.print("✗ Client IV MISMATCH\n", .{});
         std.debug.print("Expected: ", .{});
-        for (expected_client_iv) |b| std.debug.print("{X:0>2}", .{b});
+        for (expected_client_iv) |b| std.debug.print("{X:0>2}\n", .{b});
         std.debug.print("\n\n", .{});
     }
 
     // Derive server key and IV
     const server_mat = ks.deriveKeyIvHp(pair.server);
     std.debug.print("Server Key: ", .{});
-    for (server_mat.key) |b| std.debug.print("{X:0>2}", .{b});
+    for (server_mat.key) |b| std.debug.print("{X:0>2}\n", .{b});
     std.debug.print("\n", .{});
 
     // Expected: cf3a5331653c364c88f0f379b6067e37
@@ -121,12 +121,12 @@ pub fn main() !void {
     } else {
         std.debug.print("✗ Server key MISMATCH\n", .{});
         std.debug.print("Expected: ", .{});
-        for (expected_server_key) |b| std.debug.print("{X:0>2}", .{b});
+        for (expected_server_key) |b| std.debug.print("{X:0>2}\n", .{b});
         std.debug.print("\n\n", .{});
     }
 
     std.debug.print("Server IV: ", .{});
-    for (server_mat.iv) |b| std.debug.print("{X:0>2}", .{b});
+    for (server_mat.iv) |b| std.debug.print("{X:0>2}\n", .{b});
     std.debug.print("\n", .{});
 
     // Expected: 0ac1493ca1905853b0bba03e
@@ -140,7 +140,7 @@ pub fn main() !void {
     } else {
         std.debug.print("✗ Server IV MISMATCH\n", .{});
         std.debug.print("Expected: ", .{});
-        for (expected_server_iv) |b| std.debug.print("{X:0>2}", .{b});
+        for (expected_server_iv) |b| std.debug.print("{X:0>2}\n", .{b});
         std.debug.print("\n\n", .{});
     }
 }

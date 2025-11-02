@@ -222,7 +222,7 @@ pub fn main() !void {
 
 fn printHex(data: []const u8) void {
     for (data) |byte| {
-        std.debug.print("{x:0>2}", .{byte});
+        std.debug.print("{x:0>2}\n", .{byte});
     }
     std.debug.print("\n", .{});
 }

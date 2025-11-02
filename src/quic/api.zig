@@ -8,7 +8,7 @@ const lb = @import("loop_backend.zig");
 const conn_mod = @import("quic_conn");
 const endpoint_mod = @import("quic_endpoint");
 
-// Export PEM parsing utilities
+/// Export PEM parsing utilities
 pub const pem = @import("pem.zig");
 
 /// Supported QUIC wire versions exposed to users.

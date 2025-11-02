@@ -481,10 +481,10 @@ pub fn signCertificateVerify(alg: SigAlg, privkey_der: []const u8, context: []co
             const key_pair = try Ecdsa.KeyPair.fromSecretKey(secret);
             // Pass message then optional random noise (null => deterministic per RFC6979)
             const signature = try key_pair.sign(to_sign, null);
-            std.debug.print("[SIG] Generated signature r=", .{});
-            for (signature.r[0..8]) |b| std.debug.print("{x:0>2}", .{b});
-            std.debug.print("..., s=", .{});
-            for (signature.s[0..8]) |b| std.debug.print("{x:0>2}", .{b});
+            std.debug.print("[SIG] Generated signature r=\n", .{});
+            for (signature.r[0..8]) |b| std.debug.print("{x:0>2}\n", .{b});
+            std.debug.print("..., s=\n", .{});
+            for (signature.s[0..8]) |b| std.debug.print("{x:0>2}\n", .{b});
             std.debug.print("...\n", .{});
 
             // Manually DER-encode (SEQUENCE { r INTEGER, s INTEGER }) per RFC 3279/5480

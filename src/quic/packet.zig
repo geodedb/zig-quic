@@ -17,7 +17,7 @@ fn dumpBytes(label: []const u8, bytes: []const u8) void {
         _ = list.writer(std.heap.page_allocator).print("{x:0>2}", .{bytes[i]}) catch break;
         if (i + 1 < bytes.len) _ = list.append(std.heap.page_allocator, ' ') catch break;
     }
-    std.debug.print("{s}: {s}", .{ label, list.items });
+    std.debug.print("{s}: {s}\n", .{ label, list.items });
 }
 
 /// Packet number type alias.
@@ -547,16 +547,16 @@ pub fn encodeHandshakeProtected(
     payload_plaintext: []const u8,
     keys: InitialKeys,
 ) ![]u8 {
-    std.debug.print("encodeHandshakeProtected: CALLED with packet_number={} version=0x{X:0>8}", .{packet_number, version});
-    std.debug.print("encodeHandshakeProtected: dcid.len={}, scid.len={}", .{dcid.len, scid.len});
+    std.debug.print("encodeHandshakeProtected: CALLED with packet_number={} version=0x{X:0>8}\n", .{packet_number, version});
+    std.debug.print("encodeHandshakeProtected: dcid.len={}, scid.len={}\n", .{dcid.len, scid.len});
     if (dcid.len > 0) {
         std.debug.print("encodeHandshakeProtected: dcid bytes: ", .{});
-        for (dcid) |b| std.debug.print("{X:0>2}", .{b});
+        for (dcid) |b| std.debug.print("{X:0>2}\n", .{b});
         std.debug.print("", .{});
     }
     if (scid.len > 0) {
         std.debug.print("encodeHandshakeProtected: scid bytes: ", .{});
-        for (scid) |b| std.debug.print("{X:0>2}", .{b});
+        for (scid) |b| std.debug.print("{X:0>2}\n", .{b});
         std.debug.print("", .{});
     }
     if (packet_number_len < 1 or packet_number_len > 4) return error.InvalidPacketNumberLength;
@@ -570,12 +570,12 @@ pub fn encodeHandshakeProtected(
     // We don't need to OR type_bits because 0xe0 already includes Handshake type
     const pn_bits: u8 = @as(u8, packet_number_len - 1) & 0x03;
     const first: u8 = 0xe0 | pn_bits;
-    std.debug.print("encodeHandshakeProtected: packet_number_len={}, pn_bits={}, first=0x{X:0>2}", .{ packet_number_len, pn_bits, first });
+    std.debug.print("encodeHandshakeProtected: packet_number_len={}, pn_bits={}, first=0x{X:0>2}\n", .{ packet_number_len, pn_bits, first });
 
     const w = buf.writer(alloc);
     try w.writeByte(first);
     var be_ver: [4]u8 = .{ @as(u8, @intCast(version >> 24)), @as(u8, @intCast((version >> 16) & 0xff)), @as(u8, @intCast((version >> 8) & 0xff)), @as(u8, @intCast(version & 0xff)) };
-    std.debug.print("DEBUG: Writing Handshake version bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} (version=0x{X:0>8})", .{be_ver[0], be_ver[1], be_ver[2], be_ver[3], version});
+    std.debug.print("DEBUG: Writing Handshake version bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} (version=0x{X:0>8})\n", .{be_ver[0], be_ver[1], be_ver[2], be_ver[3], version});
     try w.writeAll(&be_ver);
     try w.writeByte(@as(u8, @intCast(dcid.len)));
     try w.writeAll(dcid);
@@ -595,7 +595,7 @@ pub fn encodeHandshakeProtected(
     try w.writeAll(lbuf[0..ll]);
 
     const header_prefix_len = buf.items.len - 1;
-    std.debug.print("encodeHandshakeProtected: payload_len={}, ct_len={}, pn_len={}, length_value={}", .{ payload_plaintext.len, ct_len, packet_number_len, length_value });
+    std.debug.print("encodeHandshakeProtected: payload_len={}, ct_len={}, pn_len={}, length_value={}\n", .{ payload_plaintext.len, ct_len, packet_number_len, length_value });
 
     var pn_be_full: [4]u8 = .{
         @as(u8, @intCast((packet_number >> 24) & 0xff)),
@@ -604,7 +604,7 @@ pub fn encodeHandshakeProtected(
         @as(u8, @intCast(packet_number & 0xff)),
     };
     const pn_slice = pn_be_full[4 - packet_number_len .. 4];
-    std.debug.print("encodeHandshakeProtected: PN {} encoded as bytes [{X:0>2} {X:0>2}]", .{packet_number, pn_slice[0], if(pn_slice.len > 1) pn_slice[1] else 0});
+    std.debug.print("encodeHandshakeProtected: PN {} encoded as bytes [{X:0>2} {X:0>2}]\n", .{packet_number, pn_slice[0], if(pn_slice.len > 1) pn_slice[1] else 0});
     try w.writeAll(pn_slice);
 
     const out_cipher_idx = buf.items.len;
@@ -617,7 +617,7 @@ pub fn encodeHandshakeProtected(
 
     const out_cipher = buf.items[out_cipher_idx .. out_cipher_idx + ct_len];
     const suite = crypto.AeadSuite.aes_128_gcm;
-    std.debug.print("encodeHandshakeProtected: Using keys - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{ keys.key[0], keys.key[1], keys.key[2], keys.key[3], keys.iv[0], keys.iv[1], keys.iv[2], keys.iv[3] });
+    std.debug.print("encodeHandshakeProtected: Using keys - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ keys.key[0], keys.key[1], keys.key[2], keys.key[3], keys.iv[0], keys.iv[1], keys.iv[2], keys.iv[3] });
     // Use protectPacket for Handshake packets, not protectInitial
     const written = try crypto.protectPacket(
         suite,
@@ -634,11 +634,11 @@ pub fn encodeHandshakeProtected(
 
     // CRITICAL: Verify that the actual encrypted length matches our precalculated length
     if (written != ct_len) {
-        std.debug.print("LENGTH MISMATCH BUG DETECTED: protectPacket wrote {} bytes, but we calculated ct_len={}", .{written, ct_len});
-        std.debug.print("  payload_plaintext.len={}, packet_number_len={}, expected_tag_len=16", .{payload_plaintext.len, packet_number_len});
-        std.debug.print("  Declared length_value in header={} (pn_len + ct_len)", .{length_value});
-        std.debug.print("  Actual packet will have length={} (pn_len + written)", .{@as(usize, packet_number_len) + written});
-        std.debug.print("  This will cause a {} byte discrepancy!", .{@as(i64, @intCast(ct_len)) - @as(i64, @intCast(written))});
+        std.debug.print("LENGTH MISMATCH BUG DETECTED: protectPacket wrote {} bytes, but we calculated ct_len={}\n", .{written, ct_len});
+        std.debug.print("  payload_plaintext.len={}, packet_number_len={}, expected_tag_len=16\n", .{payload_plaintext.len, packet_number_len});
+        std.debug.print("  Declared length_value in header={} (pn_len + ct_len)\n", .{length_value});
+        std.debug.print("  Actual packet will have length={} (pn_len + written)\n", .{@as(usize, packet_number_len) + written});
+        std.debug.print("  This will cause a {} byte discrepancy!\n", .{@as(i64, @intCast(ct_len)) - @as(i64, @intCast(written))});
         // Strict length verification enabled
         return error.LengthMismatch;
     }
@@ -648,11 +648,11 @@ pub fn encodeHandshakeProtected(
     const pn_offset = 1 + header_prefix_len;
     @memcpy(buf.items[pn_offset .. pn_offset + packet_number_len], pn_mut[0..packet_number_len]);
 
-    std.debug.print("encodeHandshakeProtected: AFTER header protection - first byte changed from 0x{X:0>2} to 0x{X:0>2}", .{ first, header_first });
-    std.debug.print("encodeHandshakeProtected: Final packet first 5 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{ buf.items[0], buf.items[1], buf.items[2], buf.items[3], buf.items[4] });
+    std.debug.print("encodeHandshakeProtected: AFTER header protection - first byte changed from 0x{X:0>2} to 0x{X:0>2}\n", .{ first, header_first });
+    std.debug.print("encodeHandshakeProtected: Final packet first 5 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ buf.items[0], buf.items[1], buf.items[2], buf.items[3], buf.items[4] });
 
     // DIAGNOSTIC: Hexdump first 64 bytes of Handshake packet for analysis
-    std.debug.print("=== HANDSHAKE PACKET HEXDUMP (first 64 bytes) ===", .{});
+    std.debug.print("=== HANDSHAKE PACKET HEXDUMP (first 64 bytes) ===\n", .{});
     const dump_len = @min(64, buf.items.len);
     var dump_idx: usize = 0;
     while (dump_idx < dump_len) : (dump_idx += 16) {
@@ -664,12 +664,12 @@ pub fn encodeHandshakeProtected(
         }
         std.debug.print("", .{});
     }
-    std.debug.print("=== END HEXDUMP (total packet size: {} bytes) ===", .{buf.items.len});
+    std.debug.print("=== END HEXDUMP (total packet size: {} bytes) ===\n", .{buf.items.len});
 
     // FINAL VERIFICATION: Ensure packet length matches what we declared in the header
     const expected_total_len = (1 + header_prefix_len) + packet_number_len + written;
     if (buf.items.len != expected_total_len) {
-        std.debug.print("FINAL PACKET LENGTH MISMATCH: buf.len={}, expected={} (header={}, pn={}, payload={})", .{
+        std.debug.print("FINAL PACKET LENGTH MISMATCH: buf.len={}, expected={} (header={}, pn={}, payload={})\n", .{
             buf.items.len, expected_total_len, 1 + header_prefix_len, packet_number_len, written
         });
         // Strict length verification enabled
@@ -677,7 +677,7 @@ pub fn encodeHandshakeProtected(
     }
 
     // Log successful packet construction with length verification
-    std.debug.print("encodeHandshakeProtected: SUCCESS - packet length verified: declared_in_header={}, actual_packet_len={}", .{length_value, buf.items.len - (1 + header_prefix_len)});
+    std.debug.print("encodeHandshakeProtected: SUCCESS - packet length verified: declared_in_header={}, actual_packet_len={}\n", .{length_value, buf.items.len - (1 + header_prefix_len)});
 
     return buf.toOwnedSlice(alloc);
 }

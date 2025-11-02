@@ -62,7 +62,6 @@ pub const EndpointRole = enum {
     Server,
 };
 
-/// UDP endpoint container with connection map, timer wheel, capture support, and
 /// single bound socket. Owns all live connections and drives send/recv plus PTO/PMTUD timers.
 pub const Endpoint = struct {
     sock_fd: posix.socket_t,
@@ -99,12 +98,12 @@ pub const Endpoint = struct {
         const sa: *const posix.sockaddr = @ptrCast(&ep_addr.storage);
         const family = sa.family;
         
-        std.debug.print("Endpoint init - binding to address family={any}", .{family});
+        std.debug.print("Endpoint init - binding to address family={any}\n", .{family});
         
         const fd = try posix.socket(family, posix.SOCK.DGRAM, posix.IPPROTO.UDP);
         errdefer posix.close(fd);
 
-        std.debug.print("Created socket fd={}", .{fd});
+        std.debug.print("Created socket fd={}\n", .{fd});
 
         // Allow fast rebinding in tests
         var one: i32 = 1;
@@ -126,9 +125,9 @@ pub const Endpoint = struct {
         }
         // Note: do not rely on O.NONBLOCK here; use MSG.DONTWAIT on Linux in recv loop for portability
         const sa_ptr: *const posix.sockaddr = @ptrCast(&ep_addr.storage);
-        std.debug.print("Binding socket to address...", .{});
+        std.debug.print("Binding socket to address...\n", .{});
         try posix.bind(fd, sa_ptr, ep_addr.len);
-        std.debug.print("Socket bound successfully", .{});
+        std.debug.print("Socket bound successfully\n", .{});
 
         // Verify the actual bound address (in case port was 0)
         var actual_addr = conn_mod.SockAddr{};
@@ -143,14 +142,14 @@ pub const Endpoint = struct {
         } else {
             // Set non-blocking mode on Unix
             const flags = try posix.fcntl(fd, posix.F.GETFL, 0);
-            std.debug.print("Current socket flags: 0x{x}", .{flags});
+            std.debug.print("Current socket flags: 0x{x}\n", .{flags});
             const O_NONBLOCK: i32 = 0x800; // O_NONBLOCK value on Linux
             const new_flags = flags | O_NONBLOCK;
-            std.debug.print("Setting socket flags to: 0x{x}", .{new_flags});
+            std.debug.print("Setting socket flags to: 0x{x}\n", .{new_flags});
             _ = try posix.fcntl(fd, posix.F.SETFL, new_flags);
             const verify_flags = try posix.fcntl(fd, posix.F.GETFL, 0);
-            std.debug.print("Socket flags after setting: 0x{x}", .{verify_flags});
-            std.debug.print("Has O_NONBLOCK: {}", .{(verify_flags & O_NONBLOCK) != 0});
+            std.debug.print("Socket flags after setting: 0x{x}\n", .{verify_flags});
+            std.debug.print("Has O_NONBLOCK: {}\n", .{(verify_flags & O_NONBLOCK) != 0});
         }
         
         // Create epoll instance on Linux
@@ -166,7 +165,7 @@ pub const Endpoint = struct {
             try posix.epoll_ctl(epfd, linux.EPOLL.CTL_ADD, fd, &ev);
 
             epoll_fd_opt = epfd;
-            std.debug.print("Created epoll fd={} and added socket fd={}", .{epfd, fd});
+            std.debug.print("Created epoll fd={} and added socket fd={}\n", .{epfd, fd});
         }
 
         // Determine endpoint role based on the bound port
@@ -182,7 +181,7 @@ pub const Endpoint = struct {
             break :blk if (is_server) EndpointRole.Server else EndpointRole.Client;
         } else EndpointRole.Client;
 
-        std.debug.print("Endpoint role determined as: {any}", .{endpoint_role});
+        std.debug.print("Endpoint role determined as: {any}\n", .{endpoint_role});
 
         return Endpoint{
             .sock_fd = fd,
@@ -201,7 +200,6 @@ pub const Endpoint = struct {
         };
     }
 
-    /// Release resources: close socket, free timers, capture buffers, and destroy connections.
     /// Deinitialize endpoint and free all associated connection state.
     pub fn deinit(self: *Endpoint) void {
         // Attempt to prune any closed (or newly closed due to earlier failures) connections
@@ -226,10 +224,10 @@ pub const Endpoint = struct {
                 _ = unique.put(c, idx + 1) catch {};
             }
             if (unique.count() > 0) {
-                std.debug.print("endpoint.deinit: {d} unique conn(s) still referenced by map; dumping counts", .{unique.count()});
+                std.debug.print("endpoint.deinit: {d} unique conn(s) still referenced by map; dumping counts\n", .{unique.count()});
                 var uit = unique.iterator();
                 while (uit.next()) |ve| {
-                    std.debug.print("  conn ptr={*} ref_count={d}", .{ ve.key_ptr.*, ve.value_ptr.* });
+                    std.debug.print("  conn ptr={*} ref_count={d}\n", .{ ve.key_ptr.*, ve.value_ptr.* });
                 }
                 // Also dump timers referencing a connection
                 var ti: usize = 0;
@@ -238,10 +236,10 @@ pub const Endpoint = struct {
                     const t = self.timers.items[ti];
                     if (t.conn) |tc| {
                         timer_conn_refs += 1;
-                        std.debug.print("  timer id={d} kind={any} conn={*}", .{ t.id, t.kind, tc });
+                        std.debug.print("  timer id={d} kind={any} conn={*}\n", .{ t.id, t.kind, tc });
                     }
                 }
-                if (timer_conn_refs > 0) std.debug.print("  timers referencing connections: {d}", .{timer_conn_refs});
+                if (timer_conn_refs > 0) std.debug.print("  timers referencing connections: {d}\n", .{timer_conn_refs});
             }
         }
         // Free captured payloads
@@ -299,25 +297,21 @@ pub const Endpoint = struct {
         }
     }
 
-    /// Flush expired timers immediately based on current monotonic time (testing helper).
     /// Expire due timers without blocking on I/O (test helper).
     pub fn flushTimers(self: *Endpoint) void {
         self.processExpiredTimers(nowMsMonotonic());
     }
 
-    /// TEST-ONLY: clear capture ring and free owned buffers.
     /// Clear all captured outbound packets (test helper).
     pub fn captureClear(self: *Endpoint) void {
         var i: usize = 0;
         while (i < self.captures.items.len) : (i += 1) self.allocator.free(self.captures.items[i].bytes);
         self.captures.clearRetainingCapacity();
     }
-    /// TEST-ONLY: current number of captured datagrams.
     /// Return number of captured outbound packets.
     pub fn captureLen(self: *Endpoint) usize {
         return self.captures.items.len;
     }
-    /// TEST-ONLY: pop oldest capture entry, transferring ownership of bytes to caller.
     /// Pop most recent captured outbound packet if present.
     pub fn capturePop(self: *Endpoint) ?OutCaptured {
         if (self.captures.items.len == 0) return null;
@@ -333,10 +327,9 @@ pub const Endpoint = struct {
         }
     }
 
-    /// Send a datagram to peer address.
     /// Send UDP datagram to peer (capturing if enabled).
     pub fn sendTo(self: *Endpoint, peer: conn_mod.SockAddr, data: []const u8) !usize {
-        std.debug.print("sendTo called with data.len={}", .{data.len});
+        std.debug.print("sendTo called with data.len={}\n", .{data.len});
         if (self.test_capture_enabled) {
             // Capture: make an owned copy of data and enqueue
             const owned = try self.allocator.alloc(u8, data.len);
@@ -350,13 +343,13 @@ pub const Endpoint = struct {
             if (sa.family == posix.AF.INET) {
                 const sin: *const posix.sockaddr.in = @ptrCast(&peer.storage);
                 const addr_bytes = @as([4]u8, @bitCast(sin.addr));
-                std.debug.print("sendTo 141 bytes to IPv4: {}.{}.{}.{}:{}", .{
+                std.debug.print("sendTo 141 bytes to IPv4: {}.{}.{}.{}:{}\n", .{
                     addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3],
                     std.mem.bigToNative(u16, sin.port)
                 });
             } else if (sa.family == posix.AF.INET6) {
                 const sin6: *const posix.sockaddr.in6 = @ptrCast(&peer.storage);
-                std.debug.print("sendTo 141 bytes to IPv6 port {}", .{
+                std.debug.print("sendTo 141 bytes to IPv6 port {}\n", .{
                     std.mem.bigToNative(u16, sin6.port)
                 });
             }
@@ -366,7 +359,7 @@ pub const Endpoint = struct {
         if (peer.storage.family == posix.AF.INET) {
             const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&peer.storage));
             const addr_bytes = @as([4]u8, @bitCast(sin.addr));
-            std.debug.print("sendto IPv4 {}.{}.{}.{}:{}, fd={}, data.len={}", .{
+            std.debug.print("sendto IPv4 {}.{}.{}.{}:{}, fd={}, data.len={}\n", .{
                 addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3],
                 std.mem.bigToNative(u16, sin.port),
                 self.sock_fd, data.len
@@ -374,14 +367,13 @@ pub const Endpoint = struct {
         }
         const result = posix.sendto(self.sock_fd, data, 0, sa_ptr, peer.len);
         if (result) |n| {
-            std.debug.print("sendto successful: sent {} bytes (of {})", .{ n, data.len });
+            std.debug.print("sendto successful: sent {} bytes (of {})\n", .{ n, data.len });
         } else |err| {
-            std.debug.print("sendto failed: {}", .{err});
+            std.debug.print("sendto failed: {}\n", .{err});
         }
         return result;
     }
 
-    /// Receive a datagram; returns size and source address.
     /// Receive UDP datagram (non-blocking if platform supports MSG.DONTWAIT).
     pub fn recvFrom(self: *Endpoint, buf: []u8) !struct { n: usize, peer: conn_mod.SockAddr } {
         var peer = conn_mod.SockAddr{};
@@ -390,7 +382,6 @@ pub const Endpoint = struct {
         return .{ .n = n, .peer = peer };
     }
 
-    /// Create a Connection object for an incoming datagram's peer.
     /// Accept a server connection from initial datagram's peer address.
     pub fn acceptFrom(self: *Endpoint, peer: conn_mod.SockAddr) conn_mod.Connection {
         return .{ .id = 0, .role = .Server, .sock_fd = sockToIsize(self.sock_fd), .peer = peer, .tls_inbox = std.ArrayList(u8){} };
@@ -401,33 +392,28 @@ pub const Endpoint = struct {
         self.accepted.append(self.allocator.*, c) catch {};
     }
 
-    /// Pop accepted connection pointer if present.
     /// Pop next accepted server-side connection if available.
     pub fn popAccepted(self: *Endpoint) ?*conn_mod.Connection {
         if (self.accepted.items.len == 0) return null;
         return self.accepted.orderedRemove(0);
     }
 
-    /// TEST-ONLY: inject a datagram directly into the endpoint RX path.
     /// Inject inbound datagram into receive path (test helper, no ECN).
     pub fn testInject(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8) void {
         self.processIncomingDatagram(peer, bytes, null);
     }
 
-    /// TEST-ONLY: inject a datagram with explicit ECN bits (low 2 bits of IP TOS)
     /// Inject inbound datagram with explicit ECN bits (test helper).
     pub fn testInjectWithEcn(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8, ecn_bits: u8) void {
         self.processIncomingDatagram(peer, bytes, ecn_bits);
     }
 
-    /// Resolve and create a Connection object for an explicit remote address.
     /// Create server-side represented connection (used by client dialing logic).
     pub fn connectTo(self: *Endpoint, hostport: []const u8) !conn_mod.Connection {
         const peer = try resolveAny(hostport, .udp);
         return .{ .id = 0, .role = .Client, .sock_fd = sockToIsize(self.sock_fd), .peer = peer, .tls_inbox = std.ArrayList(u8){} };
     }
 
-    /// Allocate and register a client connection for the given remote address.
     /// Create client-side connection object referencing remote host:port.
     pub fn connectClient(self: *Endpoint, hostport: []const u8) !*conn_mod.Connection {
         const peer = try resolveAny(hostport, .udp);
@@ -468,15 +454,14 @@ pub const Endpoint = struct {
         return c;
     }
 
-    /// Send client Initial with CRYPTO(ClientHello) and padding to elicit ServerHello.
     /// Transmit minimal Initial packet (PING) to elicit Version Negotiation or SH.
     pub fn clientSendInitialProbe(self: *Endpoint, c: *conn_mod.Connection) !void {
         const v2 = (c.version == packet.QUIC_V2);
         const initial = ks.deriveInitialSecret(v2, if (c.original_dcid.len > 0) c.original_dcid.bytes[0..c.original_dcid.len] else c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]);
         const pair = ks.deriveClientServerInitial(initial);
-        std.debug.print("client: deriving Initial keys with dcid=", .{});
-        for (c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]) |b| std.debug.print("{X:0>2}", .{b});
-        std.debug.print(" len={}", .{c.peer_initial_dcid.len});
+        std.debug.print("client: deriving Initial keys with dcid=\n", .{});
+        for (c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]) |b| std.debug.print("{X:0>2}\n", .{b});
+        std.debug.print(" len={}\n", .{c.peer_initial_dcid.len});
         const tx_keys: packet.InitialKeys = if (v2) blk: {
             const t = ks.deriveKeyIvHpV2(pair.client);
             break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
@@ -532,11 +517,11 @@ pub const Endpoint = struct {
             frames.items,
             tx_keys,
         );
-        std.debug.print("client: built Initial pn={} dcid=", .{c.pn_initial_tx});
-        for (c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]) |b| std.debug.print("{X:0>2}", .{b});
-        std.debug.print(" scid=", .{});
-        for (c.our_scid.bytes[0..c.our_scid.len]) |b| std.debug.print("{X:0>2}", .{b});
-        std.debug.print(" payload_len={}", .{frames.items.len});
+        std.debug.print("client: built Initial pn={} dcid=\n", .{c.pn_initial_tx});
+        for (c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]) |b| std.debug.print("{X:0>2}\n", .{b});
+        std.debug.print(" scid=\n", .{});
+        for (c.our_scid.bytes[0..c.our_scid.len]) |b| std.debug.print("{X:0>2}\n", .{b});
+        std.debug.print(" payload_len={}\n", .{frames.items.len});
         defer self.allocator.free(pkt);
         const sent = try self.sendTo(c.peer, pkt);
         c.onPacketSent(.Initial, c.pn_initial_tx, sent, true);
@@ -545,7 +530,6 @@ pub const Endpoint = struct {
         c.computeAndMaybeArmPtoInitial(self);
     }
 
-    /// Schedule a one-shot timer to fire after delay_ms; returns timer id.
     /// Schedule generic timer firing after delay_ms.
     pub fn scheduleTimer(self: *Endpoint, delay_ms: u32) !u64 {
         const id = self.next_timer_id;
@@ -556,8 +540,7 @@ pub const Endpoint = struct {
         return id;
     }
 
-    /// Schedule a PTO timer tied to a specific connection and space.
-    /// Schedule connection-owned PTO/PMTUD timer.
+    /// Schedule connection-owned PTO/PMTUD timer tied to a specific connection and space.
     pub fn scheduleConnPto(self: *Endpoint, c: *conn_mod.Connection, kind: TimerKind, delay_ms: u32) !u64 {
         const id = self.next_timer_id;
         self.next_timer_id +%= 1;
@@ -580,7 +563,6 @@ pub const Endpoint = struct {
         return id;
     }
 
-    /// Cancel a previously scheduled timer by id; returns true if removed.
     /// Cancel a pending timer id.
     pub fn cancelTimer(self: *Endpoint, id: u64) bool {
         var i: usize = 0;
@@ -593,13 +575,12 @@ pub const Endpoint = struct {
         return false;
     }
 
-    /// Drive IO using platform loop backend. timeout_ms < 0 means infinite.
-    /// Drive network I/O, timers, and paced send for up to timeout_ms milliseconds.
     var poll_call_count: u64 = 0;
+    /// Drive network I/O, timers, and paced send for up to timeout_ms milliseconds.
     pub fn poll(self: *Endpoint, timeout_ms: i32) !void {
         poll_call_count += 1;
         // TRACE: poll called
-        std.debug.print(">>> POLL #{} called, timeout_ms={}", .{poll_call_count, timeout_ms});
+        std.debug.print(">>> POLL #{} called, timeout_ms={}\n", .{poll_call_count, timeout_ms});
         // First, process any timers that are already expired to avoid waiting unnecessarily.
         self.processExpiredTimers(nowMsMonotonic());
         // Drain any pending error queue notifications (ICMP PTB, etc.) before waiting.
@@ -624,7 +605,7 @@ pub const Endpoint = struct {
         // Always use the platform event loop to wait for readability
         // This ensures we actually wait for packets to arrive
         const backend = lb.defaultLoopBackend();
-        std.debug.print("Using backend: {}", .{backend});
+        std.debug.print("Using backend: {}\n", .{backend});
         switch (backend) {
             .epoll => try self.poll_epoll_backend(eff_timeout),
             .kqueue => try self.poll_kqueue_backend(eff_timeout),
@@ -646,7 +627,7 @@ pub const Endpoint = struct {
     var drain_call_count: u64 = 0;
     fn drainReadable(self: *Endpoint) void {
         drain_call_count += 1;
-        std.debug.print(">>> drainReadable #{} called on fd={}", .{drain_call_count, self.sock_fd});
+        std.debug.print(">>> drainReadable #{} called on fd={}\n", .{drain_call_count, self.sock_fd});
         // Increase buffer size to handle larger Handshake packets (can be up to ~3000 bytes with certificates)
         var buf: [4096]u8 = undefined;
         var read_count: usize = 0;
@@ -658,7 +639,7 @@ pub const Endpoint = struct {
             // Linux: prefer recvmsg to extract ECN via ancillary when available; fallback elsewhere.
             // NOTE: Disabled recvmsg for now due to missing types in std.posix
             if (false and builtin.target.os.tag == .linux) {
-                std.debug.print("Calling recvmsg on socket fd={}", .{self.sock_fd});
+                std.debug.print("Calling recvmsg on socket fd={}\n", .{self.sock_fd});
                 var iov = [1]posix.iovec{.{ .base = buf[0..].ptr, .len = buf.len }};
                 var ctrl: [64]u8 = undefined;
                 var msg: posix.msghdr = .{
@@ -683,7 +664,7 @@ pub const Endpoint = struct {
                 
                 const n = n_raw;
                 if (n > 0) {
-                    std.debug.print("recvmsg got {} bytes!", .{n});
+                    std.debug.print("recvmsg got {} bytes!\n", .{n});
                     // Extract ECN from ancillary: IP_TOS (level IPPROTO_IP, type IP_TOS)
                     var ecn_bits: ?u8 = null;
                     var off: usize = 0;
@@ -713,39 +694,39 @@ pub const Endpoint = struct {
                     self.processIncomingDatagram(peer, buf[0..@intCast(n)], ecn_bits);
                 }
             } else {
-                std.debug.print("Calling recvfrom on socket fd={}, flags={}", .{self.sock_fd, flags});
+                std.debug.print("Calling recvfrom on socket fd={}, flags={}\n", .{self.sock_fd, flags});
                 const n_or_err = posix.recvfrom(self.sock_fd, buf[0..], flags, @ptrCast(&peer.storage), &peer.len);
                 if (n_or_err) |n| {
-                    std.debug.print(">>> recvfrom got {} bytes (read #{} in this drain)!", .{n, read_count + 1});
+                    std.debug.print(">>> recvfrom got {} bytes (read #{} in this drain)!\n", .{n, read_count + 1});
                     // Debug: Log all received packets with source address
                     if (peer.storage.family == posix.AF.INET) {
                         const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&peer.storage));
                         const addr_bytes = @as([4]u8, @bitCast(sin.addr));
-                        std.debug.print("recvfrom {} bytes from {}.{}.{}.{}:{}", .{
+                        std.debug.print("recvfrom {} bytes from {}.{}.{}.{}:{}\n", .{
                             n,
                             addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3],
                             std.mem.bigToNative(u16, sin.port)
                         });
                     } else {
-                        std.debug.print("recvfrom got {} bytes from socket {}", .{ n, self.sock_fd });
+                        std.debug.print("recvfrom got {} bytes from socket {}\n", .{ n, self.sock_fd });
                     }
                     read_count += 1;
-                    std.debug.print(">>> About to call processIncomingDatagram with {} bytes", .{n});
+                    std.debug.print(">>> About to call processIncomingDatagram with {} bytes\n", .{n});
                     self.processIncomingDatagram(peer, buf[0..n], null);
-                    std.debug.print(">>> Returned from processIncomingDatagram", .{});
+                    std.debug.print(">>> Returned from processIncomingDatagram\n", .{});
                 } else |err| {
                     switch (err) {
                         error.WouldBlock => {
                             // This is normal for non-blocking sockets
-                            std.debug.print("recvfrom returned WouldBlock", .{});
+                            std.debug.print("recvfrom returned WouldBlock\n", .{});
                             return;
                         },
                         error.ConnectionResetByPeer => {
-                            std.debug.print("connection reset by peer", .{});
+                            std.debug.print("connection reset by peer\n", .{});
                             return;
                         },
                         else => {
-                            std.debug.print("recvfrom error: {}", .{err});
+                            std.debug.print("recvfrom error: {}\n", .{err});
                             return;
                         },
                     }
@@ -838,7 +819,6 @@ pub const Endpoint = struct {
         }
     }
 
-    /// Apply ICMP PTB with spoofing checks: accept only if a known connection's DCID
     /// appears in a plausible short-header QUIC at some reasonable offset.
     fn handleIcmpPtb(self: *Endpoint, peer: conn_mod.SockAddr, quoted_udp_payload: []const u8, reported_mtu: u16) void {
         const ph = hashSockaddr(&peer.storage, peer.len);
@@ -868,10 +848,10 @@ pub const Endpoint = struct {
     }
 
     fn poll_epoll_backend(self: *Endpoint, timeout_ms: i32) !void {
-        std.debug.print("poll_epoll_backend called, timeout={}, epoll_fd={?}", .{timeout_ms, self.epoll_fd});
+        std.debug.print("poll_epoll_backend called, timeout={}, epoll_fd={?}\n", .{timeout_ms, self.epoll_fd});
         // On non-Linux platforms, fallback to a simple sleep + drain to avoid epoll dependency
         if (builtin.target.os.tag != .linux or self.epoll_fd == null) {
-            std.debug.print("Falling back to sleep+drain", .{});
+            std.debug.print("Falling back to sleep+drain\n", .{});
             if (timeout_ms > 0) std.Thread.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
             self.drainReadable();
             return;
@@ -885,9 +865,9 @@ pub const Endpoint = struct {
         var check_addr = conn_mod.SockAddr{};
         check_addr.len = @intCast(@sizeOf(posix.sockaddr.storage));
         if (posix.getsockname(self.sock_fd, @ptrCast(&check_addr.storage), &check_addr.len)) |_| {
-            std.debug.print("Socket fd={} is still valid", .{self.sock_fd});
+            std.debug.print("Socket fd={} is still valid\n", .{self.sock_fd});
         } else |err| {
-            std.debug.print("Socket fd={} is INVALID: {}", .{self.sock_fd, err});
+            std.debug.print("Socket fd={} is INVALID: {}\n", .{self.sock_fd, err});
             return;
         }
 
@@ -899,38 +879,38 @@ pub const Endpoint = struct {
         var peek_len: posix.socklen_t = @sizeOf(@TypeOf(peek_addr));
         const peek_flags = posix.MSG.DONTWAIT | posix.MSG.PEEK;
         if (posix.recvfrom(self.sock_fd, &peek_buf, @intCast(peek_flags), @ptrCast(&peek_addr), &peek_len)) |peek_n| {
-            std.debug.print("!!!! CRITICAL: recvfrom PEEK shows {} bytes waiting, but epoll didn't trigger!", .{peek_n});
+            std.debug.print("!!!! CRITICAL: recvfrom PEEK shows {} bytes waiting, but epoll didn't trigger!\n", .{peek_n});
         } else |peek_err| {
             if (peek_err != error.WouldBlock) {
-                std.debug.print("recvfrom PEEK error: {}", .{peek_err});
+                std.debug.print("recvfrom PEEK error: {}\n", .{peek_err});
             }
         }
 
         var events: [16]linux.epoll_event = undefined;
-        std.debug.print("Calling epoll_wait on fd={} with timeout={}", .{self.epoll_fd.?, timeout_ms});
+        std.debug.print("Calling epoll_wait on fd={} with timeout={}\n", .{self.epoll_fd.?, timeout_ms});
         const n = posix.epoll_wait(self.epoll_fd.?, &events, timeout_ms);
 
         if (n > 0) {
-            std.debug.print("epoll_wait returned {} events", .{n});
+            std.debug.print("epoll_wait returned {} events\n", .{n});
             for (0..n) |i| {
                 const ev = events[i];
-                std.debug.print("Event {}: fd={}, events=0x{x}", .{i, ev.data.fd, ev.events});
+                std.debug.print("Event {}: fd={}, events=0x{x}\n", .{i, ev.data.fd, ev.events});
 
                 // Check if our socket is readable or has errors
                 const expected_fd = @as(i32, @intCast(self.sock_fd));
-                std.debug.print("Checking ev.data.fd={} vs expected_fd={}", .{ev.data.fd, expected_fd});
+                std.debug.print("Checking ev.data.fd={} vs expected_fd={}\n", .{ev.data.fd, expected_fd});
                 // Handle both EPOLLIN (data ready) and EPOLLERR (error condition)
                 // EPOLLERR can occur with ICMP errors on UDP sockets and we need to read to clear them
                 if (ev.data.fd == expected_fd and ((ev.events & linux.EPOLL.IN) != 0 or (ev.events & linux.EPOLL.ERR) != 0)) {
-                    std.debug.print("Socket {} is readable or has error (events=0x{x}) - calling drainReadable", .{self.sock_fd, ev.events});
+                    std.debug.print("Socket {} is readable or has error (events=0x{x}) - calling drainReadable\n", .{self.sock_fd, ev.events});
                     self.drainReadable();
                 } else {
-                    std.debug.print("Not our socket or not readable/error", .{});
+                    std.debug.print("Not our socket or not readable/error\n", .{});
                 }
             }
         } else if (n == 0) {
             // epoll_wait timed out - no data available
-            std.debug.print("epoll_wait timed out (no events)", .{});
+            std.debug.print("epoll_wait timed out (no events)\n", .{});
         }
 
         // Always try to drain after epoll_wait regardless of result
@@ -975,16 +955,16 @@ pub const Endpoint = struct {
     fn processIncomingDatagram(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8, ecn_bits: ?u8) void {
         process_count += 1;
         std.debug.print("PACKET #{}: {} bytes, first=0x{X:0>2}\n", .{process_count, bytes.len, if (bytes.len > 0) bytes[0] else 0});
-        std.debug.print("=== processIncomingDatagram #{} called with {} bytes ===", .{process_count, bytes.len});
+        std.debug.print("=== processIncomingDatagram #{} called with {} bytes ===\n", .{process_count, bytes.len});
         if (bytes.len < 1) {
-            std.debug.print("Packet too short, returning", .{});
+            std.debug.print("Packet too short, returning\n", .{});
             return;
         }
         if (bytes.len == 141) {
-            std.debug.print("Client processIncomingDatagram - received 141-byte packet!", .{});
+            std.debug.print("Client processIncomingDatagram - received 141-byte packet!\n", .{});
         }
         const first = bytes[0];
-        std.debug.print("First byte: 0x{X:0>2}, is_long: {}", .{first, (first & 0x80) != 0});
+        std.debug.print("First byte: 0x{X:0>2}, is_long: {}\n", .{first, (first & 0x80) != 0});
         const is_long = (first & 0x80) != 0;
         if (is_long) {
             // Long header: check Version for VN/Initial/Handshake
@@ -1022,7 +1002,7 @@ pub const Endpoint = struct {
         }
         if (!is_long) {
             // Short header 1-RTT path
-            std.debug.print("Processing short header packet - len={}, first_byte={x}", .{bytes.len, bytes[0]});
+            std.debug.print("Processing short header packet - len={}, first_byte={x}\n", .{bytes.len, bytes[0]});
             if (bytes.len < 1) return;
             
             // Extract the DCID from the short header packet
@@ -1040,23 +1020,23 @@ pub const Endpoint = struct {
             var best: ?*conn_mod.Connection = null;
             var best_len: usize = 0;
             var it = self.conns.iterator();
-            std.debug.print("Looking for connection with peer_hash={x}", .{peer_h});
+            std.debug.print("Looking for connection with peer_hash={x}\n", .{peer_h});
             while (it.next()) |entry| {
                 if (entry.key_ptr.*.peer_hash != peer_h) continue;
                 const c = entry.value_ptr.*;
                 const l: usize = c.our_scid.len;
                 
-                std.debug.print("Checking conn with our_scid=", .{});
-                for (c.our_scid.bytes[0..l]) |b| std.debug.print("{x:0>2}", .{b});
-                std.debug.print(" (len={}), role={}", .{l, c.role});
+                std.debug.print("Checking conn with our_scid=\n", .{});
+                for (c.our_scid.bytes[0..l]) |b| std.debug.print("{x:0>2}\n", .{b});
+                std.debug.print(" (len={}), role={}\n", .{l, c.role});
                 
                 if (l == 0) continue; // do not match ambiguous zero-length DCID
                 if (1 + l > bytes.len) continue;
                 if (!std.mem.eql(u8, c.our_scid.bytes[0..l], bytes[1 .. 1 + l])) {
-                    std.debug.print("DCID mismatch", .{});
+                    std.debug.print("DCID mismatch\n", .{});
                     continue;
                 }
-                std.debug.print("Found matching connection!", .{});
+                std.debug.print("Found matching connection!\n", .{});
                 // Record first match as fallback
                 if (found == null) {
                     found = c;
@@ -1080,7 +1060,7 @@ pub const Endpoint = struct {
             }
             // NAT rebinding / migration fallback: try match by DCID across all entries
             if (found == null) {
-                std.debug.print("No match with peer_hash, trying all connections", .{});
+                std.debug.print("No match with peer_hash, trying all connections\n", .{});
                 var it2 = self.conns.iterator();
                 while (it2.next()) |entry| {
                     const c = entry.value_ptr.*;
@@ -1090,19 +1070,19 @@ pub const Endpoint = struct {
                     
                     // Debug: show what we're comparing
                     if (c.role == .Client) {
-                        std.debug.print("Client conn - our_scid={x} (len={}), packet has DCID starting at byte 1", .{
+                        std.debug.print("Client conn - our_scid={x} (len={}), packet has DCID starting at byte 1\n", .{
                             if (l > 0) c.our_scid.bytes[0] else 0,
                             l,
                         });
                         if (bytes.len > 9) {
-                            std.debug.print("Packet bytes[1..9]: {x} {x} {x} {x} {x} {x} {x} {x}", .{
+                            std.debug.print("Packet bytes[1..9]: {x} {x} {x} {x} {x} {x} {x} {x}\n", .{
                                 bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8]
                             });
                         }
                     }
                     
                     if (std.mem.eql(u8, c.our_scid.bytes[0..l], bytes[1 .. 1 + l])) {
-                        std.debug.print("Found match - our_scid len={}, first_byte={x}, packet_dcid_first={x}", .{l, if (l > 0) c.our_scid.bytes[0] else 0, if (1 + l <= bytes.len) bytes[1] else 0});
+                        std.debug.print("Found match - our_scid len={}, first_byte={x}, packet_dcid_first={x}\n", .{l, if (l > 0) c.our_scid.bytes[0] else 0, if (1 + l <= bytes.len) bytes[1] else 0});
                         found = c;
                         dcid_len = l;
                         // Centralized handling for path change and validation
@@ -1110,7 +1090,7 @@ pub const Endpoint = struct {
                         break;
                     } else {
                         if (bytes.len >= 1 + l and c.role == .Client) {
-                            std.debug.print("No match - our_scid[0..8]={x} {x} {x} {x} {x} {x} {x} {x} vs packet[1..9]={x} {x} {x} {x} {x} {x} {x} {x}", .{
+                            std.debug.print("No match - our_scid[0..8]={x} {x} {x} {x} {x} {x} {x} {x} vs packet[1..9]={x} {x} {x} {x} {x} {x} {x} {x}\n", .{
                                 c.our_scid.bytes[0], c.our_scid.bytes[1], c.our_scid.bytes[2], c.our_scid.bytes[3],
                                 c.our_scid.bytes[4], c.our_scid.bytes[5], c.our_scid.bytes[6], c.our_scid.bytes[7],
                                 bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8]
@@ -1120,16 +1100,16 @@ pub const Endpoint = struct {
                 }
             }
             const conn = found orelse {
-                std.debug.print("No connection found for short header packet from peer", .{});
+                std.debug.print("No connection found for short header packet from peer\n", .{});
                 return;
             };
-            std.debug.print("Found connection for short header packet - has_app_rx={}, has_app_tx={}", .{conn.app_rx_keys != null, conn.app_tx_keys != null});
+            std.debug.print("Found connection for short header packet - has_app_rx={}, has_app_tx={}\n", .{conn.app_rx_keys != null, conn.app_tx_keys != null});
             // Test-only debug: log short-header match and ECN bits/keys state
             if (self.test_capture_enabled) {
                 const has_rx = (conn.app_rx_keys != null);
                 const has_tx = (conn.app_tx_keys != null);
                 const eb: u8 = if (ecn_bits) |e| (e & 0x03) else 0xff;
-                std.debug.print("APP short: match dcid_len={d} rx_keys={s} tx_keys={s} ecn_bits=0x{x}", .{ dcid_len, if (has_rx) "y" else "n", if (has_tx) "y" else "n", eb });
+                std.debug.print("APP short: match dcid_len={d} rx_keys={s} tx_keys={s} ecn_bits=0x{x}\n", .{ dcid_len, if (has_rx) "y" else "n", if (has_tx) "y" else "n", eb });
             }
             if (ecn_bits) |e| conn.onEcnMark(.Application, e);
             // Track bytes received from unvalidated address for amplification gating
@@ -1141,7 +1121,7 @@ pub const Endpoint = struct {
                 var dec_res = packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }) catch blk_dec: {
                     // If decryption fails outright, check for stateless reset token match to fail fast.
                     if (conn.looksLikeStatelessReset(bytes)) {
-                        std.debug.print("stateless-reset: closing connection", .{});
+                        std.debug.print("stateless-reset: closing connection\n", .{});
                         conn.closed = true;
                         return;
                     }
@@ -1190,7 +1170,7 @@ pub const Endpoint = struct {
                     return;
                 };
                 defer self.allocator.free(dec_res.payload);
-                std.debug.print("Client decoded 1-RTT packet - payload_len={}, pn={}", .{dec_res.payload.len, dec_res.packet_number});
+                std.debug.print("Client decoded 1-RTT packet - payload_len={}, pn={}\n", .{dec_res.payload.len, dec_res.packet_number});
                 const pn_full: u64 = conn.expandPnApp(@intCast(dec_res.packet_number), dec_res.packet_number_len);
                 conn.trackRecvPnApp(pn_full);
                 // If we decoded with previous keys, decrement allowance and drop them when exhausted
@@ -1222,10 +1202,10 @@ pub const Endpoint = struct {
                 var saw_close: ?frame.Frame = null;
                 var saw_ack_eliciting: bool = false;
                 const now_ns_ack: u64 = @intCast(std.time.nanoTimestamp());
-                std.debug.print("Parsing frames from payload, total_len={}", .{dec_res.payload.len});
+                std.debug.print("Parsing frames from payload, total_len={}\n", .{dec_res.payload.len});
                 while (off2 < dec_res.payload.len) {
                     const fr = frame.decodeOne(dec_res.payload[off2..]) catch |err| {
-                        std.debug.print("Frame decode error at offset {}: {}", .{off2, err});
+                        std.debug.print("Frame decode error at offset {}: {}\n", .{off2, err});
                         break;
                     };
                     off2 += fr.n;
@@ -1248,12 +1228,12 @@ pub const Endpoint = struct {
                         .stream => |s| {
                             const off: u64 = s.offset orelse 0;
                             if (conn.role == .Server) {
-                                std.debug.print("Server received STREAM frame - id={}, off={}, len={}, fin={}", .{s.stream_id, off, s.data.len, s.fin});
+                                std.debug.print("Server received STREAM frame - id={}, off={}, len={}, fin={}\n", .{s.stream_id, off, s.data.len, s.fin});
                             } else {
-                                std.debug.print("CLIENT received STREAM frame - id={}, off={}, len={}, fin={}", .{s.stream_id, off, s.data.len, s.fin});
+                                std.debug.print("CLIENT received STREAM frame - id={}, off={}, len={}, fin={}\n", .{s.stream_id, off, s.data.len, s.fin});
                             }
                             conn.pushStreamFrame(s.stream_id, off, s.data, s.fin) catch |err| {
-                                std.debug.print("pushStreamFrame failed: {}", .{err});
+                                std.debug.print("pushStreamFrame failed: {}\n", .{err});
                             };
                             saw_any = true;
                             saw_ack_eliciting = true;
@@ -1343,7 +1323,7 @@ pub const Endpoint = struct {
                 }
                 // Test-only debug: record whether we saw any ack-eliciting frames
                 if (self.test_capture_enabled) {
-                    std.debug.print("APP saw_any={s}", .{if (saw_any) "y" else "n"});
+                    std.debug.print("APP saw_any={s}\n", .{if (saw_any) "y" else "n"});
                 }
                 if (saw_ack_eliciting) {
                     conn.recordAckElicitingRx(.Application, now_ns_ack);
@@ -1366,7 +1346,7 @@ pub const Endpoint = struct {
                     const ad = conn.buildAckApp();
                     const ack_ecn_now = conn.getAckEcn(.Application);
                     if (self.test_capture_enabled and ack_ecn_now != null) {
-                        std.debug.print("APP pending ACK_ECN flush ce={d} ect0={d} ect1={d}", .{ ack_ecn_now.?.ce, ack_ecn_now.?.ect0, ack_ecn_now.?.ect1 });
+                        std.debug.print("APP pending ACK_ECN flush ce={d} ect0={d} ect1={d}\n", .{ ack_ecn_now.?.ce, ack_ecn_now.?.ect0, ack_ecn_now.?.ect1 });
                     }
                     const ack_delay = conn.getAckDelayEncoded(.Application, now_ns_ack);
                     const ackf = frame.Frame{ .ack = .{ .largest = ad.largest, .ack_delay = ack_delay, .first_range = ad.first_range, .ranges = ad.ranges, .ecn = ack_ecn_now } };
@@ -1406,12 +1386,12 @@ pub const Endpoint = struct {
                 }
                 if (saw_any or (ecn_bits != null)) {
                     if (self.test_capture_enabled) {
-                        std.debug.print("APP have_tx_keys={s}", .{if (conn.app_tx_keys != null) "y" else "n"});
+                        std.debug.print("APP have_tx_keys={s}\n", .{if (conn.app_tx_keys != null) "y" else "n"});
                     }
                     if (conn.app_tx_keys) |tx_keys| {
                         const allow_send = conn.canSendUnderAmplification();
                         if (self.test_capture_enabled) {
-                            std.debug.print("APP allow_send={s} rx_unval={d} tx_unval={d} validated={s}", .{ if (allow_send) "y" else "n", conn.bytes_rx_unvalidated, conn.bytes_tx_unvalidated, if (conn.address_validated) "y" else "n" });
+                            std.debug.print("APP allow_send={s} rx_unval={d} tx_unval={d} validated={s}\n", .{ if (allow_send) "y" else "n", conn.bytes_rx_unvalidated, conn.bytes_tx_unvalidated, if (conn.address_validated) "y" else "n" });
                         }
                         // Precompute ACK_ECN selection once to keep consistent across branches
                         var ack_ecn_common = conn.getAckEcn(.Application);
@@ -1441,7 +1421,7 @@ pub const Endpoint = struct {
                                 const wa = ack_only.writer(self.allocator.*);
                                 const ad = conn.buildAckApp();
                                 if (self.test_capture_enabled) {
-                                    std.debug.print("APP immediate ACK_ECN ce={d} ect0={d} ect1={d}", .{ ack_ecn_common.?.ce, ack_ecn_common.?.ect0, ack_ecn_common.?.ect1 });
+                                    std.debug.print("APP immediate ACK_ECN ce={d} ect0={d} ect1={d}\n", .{ ack_ecn_common.?.ce, ack_ecn_common.?.ect0, ack_ecn_common.?.ect1 });
                                 }
                                 const ack_delay = conn.getAckDelayEncoded(.Application, now_ns_ack);
                                 const ackf = frame.Frame{ .ack = .{ .largest = ad.largest, .ack_delay = ack_delay, .first_range = ad.first_range, .ranges = ad.ranges, .ecn = ack_ecn_common } };
@@ -1463,7 +1443,7 @@ pub const Endpoint = struct {
                                 const ack_desc = conn.buildAckApp();
                                 // Debug: log ACK_ECN decision for Application space in tests
                                 if (self.test_capture_enabled) {
-                                    std.debug.print("APP ACK (no ECN) allow_send", .{});
+                                    std.debug.print("APP ACK (no ECN) allow_send\n", .{});
                                 }
                                 const ack_delay = conn.getAckDelayEncoded(.Application, now_ns_ack);
                                 const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = ack_delay, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges, .ecn = null } };
@@ -1514,11 +1494,11 @@ pub const Endpoint = struct {
                             const w2 = ack_only.writer(self.allocator.*);
                             const ack_desc2 = conn.buildAckApp();
                             if (self.test_capture_enabled) {
-                                std.debug.print("APP ack-only branch", .{});
+                                std.debug.print("APP ack-only branch\n", .{});
                                 if (ack_ecn_common) |e2| {
-                                    std.debug.print("APP ACK_ECN ack-only ce={d} ect0={d} ect1={d}", .{ e2.ce, e2.ect0, e2.ect1 });
+                                    std.debug.print("APP ACK_ECN ack-only ce={d} ect0={d} ect1={d}\n", .{ e2.ce, e2.ect0, e2.ect1 });
                                 } else {
-                                    std.debug.print("APP ACK ack-only (no ECN)", .{});
+                                    std.debug.print("APP ACK ack-only (no ECN)\n", .{});
                                 }
                             }
                             const ack_delay2 = conn.getAckDelayEncoded(.Application, now_ns_ack);
@@ -1541,7 +1521,7 @@ pub const Endpoint = struct {
         // Detect NAT rebinding or migration: if we have a known connection for dcid but peer address changed, update and trigger validation
         const ty = (first >> 4) & 0x03;
         const version: u32 = (@as(u32, bytes[1]) << 24) | (@as(u32, bytes[2]) << 16) | (@as(u32, bytes[3]) << 8) | @as(u32, bytes[4]);
-        std.debug.print("Long header packet received: first=0x{X:0>2}, ty={} (0=Initial, 1=0-RTT, 2=Handshake, 3=Retry), version=0x{X:0>8}", .{first, ty, version});
+        std.debug.print("Long header packet received: first=0x{X:0>2}, ty={} (0=Initial, 1=0-RTT, 2=Handshake, 3=Retry), version=0x{X:0>8}\n", .{first, ty, version});
         std.debug.print("LONG HEADER: ty={} (0=Initial, 2=Handshake), version=0x{X:0>8}\n", .{ty, version});
         if (ty == 0) {
             std.debug.print("=== PROCESSING INITIAL PACKET FROM PEER ===\n", .{});
@@ -1561,25 +1541,25 @@ pub const Endpoint = struct {
             const scid = bytes[i .. i + scid_len];
             i += scid_len;
 
-            std.debug.print("Initial packet: dcid_len={}, scid_len={}, version=0x{X:0>8}", .{dcid_len, scid_len, version});
+            std.debug.print("Initial packet: dcid_len={}, scid_len={}, version=0x{X:0>8}\n", .{dcid_len, scid_len, version});
             if (scid_len > 0) {
                 std.debug.print("  Client SCID: ", .{});
-                for (scid) |b| std.debug.print("{X:0>2}", .{b});
+                for (scid) |b| std.debug.print("{X:0>2}\n", .{b});
                 std.debug.print("", .{});
             } else {
-                std.debug.print("  Client sent zero-length SCID", .{});
+                std.debug.print("  Client sent zero-length SCID\n", .{});
             }
 
             // Key connection by peer and dcid
             const key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(dcid) };
-            std.debug.print("Looking up connection with dcid=", .{});
-            for (dcid) |b| std.debug.print("{X:0>2}", .{b});
-            std.debug.print(" (found={})", .{self.conns.contains(key)});
+            std.debug.print("Looking up connection with dcid=\n", .{});
+            for (dcid) |b| std.debug.print("{X:0>2}\n", .{b});
+            std.debug.print(" (found={})\n", .{self.conns.contains(key)});
             var conn: *conn_mod.Connection = blk: {
                 if (self.conns.getPtr(key)) |p| {
                     // Found an existing mapping. Reuse immediately if it's already a server.
                     if (p.*.role == .Server) {
-                        std.debug.print("Found existing connection (role=Server)", .{});
+                        std.debug.print("Found existing connection (role=Server)\n", .{});
                         break :blk p.*;
                     }
                     // Otherwise it's a client connection. Decide if we truly need a server twin.
@@ -1591,18 +1571,18 @@ pub const Endpoint = struct {
                     const dcid_is_client_initial = p.*.peer_initial_dcid.len > 0 and std.mem.eql(u8, dcid, p.*.peer_initial_dcid.bytes[0..p.*.peer_initial_dcid.len]);
                     const dcid_is_our_scid = p.*.our_scid.len > 0 and std.mem.eql(u8, dcid, p.*.our_scid.bytes[0..p.*.our_scid.len]);
                     if (dcid_is_client_initial and !dcid_is_our_scid) {
-                        std.debug.print("Found existing client connection for dcid (matches peer_initial_dcid); creating server twin for inbound client Initial", .{});
+                        std.debug.print("Found existing client connection for dcid (matches peer_initial_dcid); creating server twin for inbound client Initial\n", .{});
                         // Fall through to allocate server twin
                     } else {
                         // Reuse the client connection (this is the normal client receiving server Initial case)
-                        std.debug.print("Reusing existing client connection for inbound Initial (dcid matched our_scid)", .{});
+                        std.debug.print("Reusing existing client connection for inbound Initial (dcid matched our_scid)\n", .{});
                         break :blk p.*;
                     }
                 }
                 // No suitable server connection exists: create one now.
                 // CRITICAL FIX: Only server endpoints should create server connections
                 if (self.role == EndpointRole.Client) {
-                    std.debug.print("Client endpoint refusing to create server connection for Initial packet", .{});
+                    std.debug.print("Client endpoint refusing to create server connection for Initial packet\n", .{});
                     return; // Client endpoints should never create server connections
                 }
 
@@ -1612,7 +1592,7 @@ pub const Endpoint = struct {
                 if (peer.storage.family == posix.AF.INET) {
                     const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&peer.storage));
                     const addr_bytes = @as([4]u8, @bitCast(sin.addr));
-                    std.debug.print("Creating server connection with peer address {}.{}.{}.{}:{}", .{
+                    std.debug.print("Creating server connection with peer address {}.{}.{}.{}:{}\n", .{
                         addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3],
                         std.mem.bigToNative(u16, sin.port)
                     });
@@ -1634,10 +1614,10 @@ pub const Endpoint = struct {
                 c_new.original_dcid.len = c_new.peer_initial_dcid.len;
                 if (c_new.original_dcid.len > 0) @memcpy(c_new.original_dcid.bytes[0..c_new.original_dcid.len], c_new.peer_initial_dcid.bytes[0..c_new.peer_initial_dcid.len]);
                 // CRITICAL FIX: Also set peer_initial_scid from client's SCID so Handshake packets use correct DCID
-                std.debug.print("Server: Setting peer_initial_scid from client SCID, scid.len={}", .{scid.len});
+                std.debug.print("Server: Setting peer_initial_scid from client SCID, scid.len={}\n", .{scid.len});
                 c_new.peer_initial_scid.len = @intCast(@min(scid.len, c_new.peer_initial_scid.bytes.len));
                 if (c_new.peer_initial_scid.len > 0) @memcpy(c_new.peer_initial_scid.bytes[0..c_new.peer_initial_scid.len], scid[0..c_new.peer_initial_scid.len]);
-                std.debug.print("Server: After setting peer_initial_scid, peer_initial_scid.len={}", .{c_new.peer_initial_scid.len});
+                std.debug.print("Server: After setting peer_initial_scid, peer_initial_scid.len={}\n", .{c_new.peer_initial_scid.len});
                 c_new.setUseCubic(self.cfg.cc == .cubic);
                 c_new.tls.allow_insecure = self.cfg.allow_insecure;
                 // Configure server certificate for TLS 1.3
@@ -1704,20 +1684,20 @@ pub const Endpoint = struct {
             // client's peer_initial_dcid/original_dcid were recorded from its own first Initial and MUST
             // NOT be overwritten here (RFC 9000 §5.2 Retry/ODCID rules).
             if (conn.role == .Server) {
-                std.debug.print("Server: Setting peer CIDs - peer sent DCID_len={} SCID_len={}", .{dcid.len, scid.len});
+                std.debug.print("Server: Setting peer CIDs - peer sent DCID_len={} SCID_len={}\n", .{dcid.len, scid.len});
                 conn.setPeerInitialCids(dcid, scid);
-                std.debug.print("Server: After setPeerInitialCids - peer_initial_dcid.len={}, peer_initial_scid.len={}", .{
+                std.debug.print("Server: After setPeerInitialCids - peer_initial_dcid.len={}, peer_initial_scid.len={}\n", .{
                     conn.peer_initial_dcid.len, conn.peer_initial_scid.len
                 });
             } else if (conn.role == .Client and conn.peer_initial_scid.len == 0) {
                 std.debug.print("Client: Capturing server SCID from Initial packet: ", .{});
-                for (scid) |b| std.debug.print("{x:0>2}", .{b});
-                std.debug.print(" (len={})", .{scid.len});
+                for (scid) |b| std.debug.print("{x:0>2}\n", .{b});
+                std.debug.print(" (len={})\n", .{scid.len});
                 
                 conn.peer_initial_scid.len = @intCast(@min(scid.len, conn.peer_initial_scid.bytes.len));
                 if (conn.peer_initial_scid.len > 0) @memcpy(conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len], scid[0..conn.peer_initial_scid.len]);
                 
-                std.debug.print("Client: Will use DCID={x} (len={}) for 1-RTT packets", .{
+                std.debug.print("Client: Will use DCID={x} (len={}) for 1-RTT packets\n", .{
                     if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0] else 0,
                     conn.peer_initial_scid.len,
                 });
@@ -1746,24 +1726,24 @@ pub const Endpoint = struct {
                         break :blk conn.original_dcid.bytes[0..conn.original_dcid.len];
                     }
                     // For the first Initial packet from client, use the packet's DCID
-                    std.debug.print("Server: Using packet DCID for Initial key derivation (first packet)", .{});
+                    std.debug.print("Server: Using packet DCID for Initial key derivation (first packet)\n", .{});
                     break :blk dcid;
                 } else { // client
                     if (conn.original_dcid.len > conn.original_dcid.bytes.len) conn.original_dcid.len = 0;
                     if (conn.original_dcid.len > 0) break :blk conn.original_dcid.bytes[0..conn.original_dcid.len];
                     // RFC 9000 §5.2: Client must use its original DCID for Initial keys, never the server's
                     // If we don't have original_dcid set, this connection is not properly initialized
-                    std.debug.print("Client: No original_dcid set for Initial key derivation - dropping packet", .{});
+                    std.debug.print("Client: No original_dcid set for Initial key derivation - dropping packet\n", .{});
                     return;
                 }
             };
-            std.debug.print("{s}: Deriving Initial keys with dcid (len={})=", .{if (conn.role == .Server) "Server" else "Client", derive_dcid.len});
-            for (derive_dcid) |b| std.debug.print("{X:0>2}", .{b});
+            std.debug.print("{s}: Deriving Initial keys with dcid (len={})=\n", .{if (conn.role == .Server) "Server" else "Client", derive_dcid.len});
+            for (derive_dcid) |b| std.debug.print("{X:0>2}\n", .{b});
             std.debug.print("", .{});
 
             // Log the DCID we're actually using from the packet
-            std.debug.print("DCID from packet (len={})=", .{dcid.len});
-            for (dcid) |b| std.debug.print("{X:0>2}", .{b});
+            std.debug.print("DCID from packet (len={})=\n", .{dcid.len});
+            for (dcid) |b| std.debug.print("{X:0>2}\n", .{b});
             std.debug.print("", .{});
 
             // Derive and cache Initial keys on first use to avoid redundant crypto operations
@@ -1771,10 +1751,10 @@ pub const Endpoint = struct {
                 const ik = packet.initialAeadKeys(v2, conn.role == .Server, derive_dcid);
                 conn.initial_rx_keys = ik.rx;
                 conn.initial_tx_keys = ik.tx;
-                std.debug.print("Derived and cached Initial keys for role={s}", .{if (conn.role == .Server) "Server" else "Client"});
+                std.debug.print("Derived and cached Initial keys for role={s}\n", .{if (conn.role == .Server) "Server" else "Client"});
 
                 // Log freshly derived keys immediately
-                std.debug.print("Derived RX keys - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{
+                std.debug.print("Derived RX keys - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
                     ik.rx.key[0], ik.rx.key[1], ik.rx.key[2], ik.rx.key[3],
                     ik.rx.iv[0], ik.rx.iv[1], ik.rx.iv[2], ik.rx.iv[3],
                 });
@@ -1849,16 +1829,16 @@ pub const Endpoint = struct {
             for (pn_masked[0..avail]) |b| std.debug.print("{X:0>2} ", .{b});
             std.debug.print("", .{});
             // We'll try PN lengths 1..4 using auto-sample decrypt until one succeeds.
-            std.debug.print("{s}: Trying to decrypt Initial with pn_initial.max={}", .{ if (conn.role == .Server) "Server" else "Client", conn.pn_initial.max });
+            std.debug.print("{s}: Trying to decrypt Initial with pn_initial.max={}\n", .{ if (conn.role == .Server) "Server" else "Client", conn.pn_initial.max });
 
             // Debug log packet structure
             std.debug.print("Initial packet structure:", .{});
-            std.debug.print("  - Total packet len: {}", .{bytes.len});
-            std.debug.print("  - Header prefix len: {}", .{header_prefix.len});
-            std.debug.print("  - pn_start: {}, end_total: {}", .{pn_start, end_total});
-            std.debug.print("  - Ciphertext len (including PN): {}", .{end_total - pn_start});
+            std.debug.print("  - Total packet len: {}\n", .{bytes.len});
+            std.debug.print("  - Header prefix len: {}\n", .{header_prefix.len});
+            std.debug.print("  - pn_start: {}, end_total: {}\n", .{pn_start, end_total});
+            std.debug.print("  - Ciphertext len (including PN): {}\n", .{end_total - pn_start});
             if (header_prefix.len > 0 and bytes.len > 0) {
-                std.debug.print("  - First byte: {X:0>2} (long_header={}, type={})", .{
+                std.debug.print("  - First byte: {X:0>2} (long_header={}, type={})\n", .{
                     bytes[0],
                     (bytes[0] & 0x80) != 0,
                     (bytes[0] >> 4) & 0x03,
@@ -2003,7 +1983,7 @@ pub const Endpoint = struct {
                 switch (r.f) {
                     .crypto => |cr| {
                         std.debug.print("DEBUG: Processing CRYPTO frame with {} bytes at offset {}\n", .{cr.data.len, cr.offset});
-                        std.debug.print("{s}: Received Initial CRYPTO frame with {} bytes at offset {} (expected {})", .{
+                        std.debug.print("{s}: Received Initial CRYPTO frame with {} bytes at offset {} (expected {})\n", .{
                             if (conn.role == .Server) "Server" else "Client",
                             cr.data.len,
                             cr.offset,
@@ -2033,9 +2013,9 @@ pub const Endpoint = struct {
                             while (conn.crypto_buffer_initial.getContiguous(conn.crypto_rx_off_initial)) |fragments| {
                                 // Process all contiguous fragments
                                 for (fragments) |frag| {
-                                    std.debug.print("Processing buffered Initial CRYPTO frame at offset {} with {} bytes", .{frag.offset, frag.data.len});
+                                    std.debug.print("Processing buffered Initial CRYPTO frame at offset {} with {} bytes\n", .{frag.offset, frag.data.len});
                                     conn.pushCrypto(frag.data) catch |err| {
-                                        std.debug.print("ERROR: Failed to push buffered CRYPTO data: {}", .{err});
+                                        std.debug.print("ERROR: Failed to push buffered CRYPTO data: {}\n", .{err});
                                     };
                                     conn.crypto_rx_off_initial += @intCast(frag.data.len);
                                 }
@@ -2052,39 +2032,39 @@ pub const Endpoint = struct {
                             //     // Queue ServerHello only - it will be sent in Initial packet
                             //     // The rest of the handshake flight will be queued after SH is sent
                             //     std.debug.print("SERVER: Reached ServerHello queueing code path! sh_seen={}\n", .{conn.tls.sh_seen});
-                            //     std.debug.print("Server: About to queue ServerHello - outbox.len={}", .{conn.tls.outbox.items.len});
+                            //     std.debug.print("Server: About to queue ServerHello - outbox.len={}\n", .{conn.tls.outbox.items.len});
                             //     conn.tls.queueRealServerHello() catch |err| {
-                            //         std.debug.print("Failed to queue ServerHello: {}", .{err});
+                            //         std.debug.print("Failed to queue ServerHello: {}\n", .{err});
                             //         return;
                             //     };
-                            //     std.debug.print("Server: After queueRealServerHello - outbox.len={} sh_seen={}", .{conn.tls.outbox.items.len, conn.tls.sh_seen});
+                            //     std.debug.print("Server: After queueRealServerHello - outbox.len={} sh_seen={}\n", .{conn.tls.outbox.items.len, conn.tls.sh_seen});
                             // }
 
                                 // CRITICAL: Derive Handshake keys after queuing ServerHello
                                 // If we can compute handshake secrets now, install Handshake keys
                                 if (conn.hs_client == null or conn.hs_server == null) {
                                     if (conn.tls.computeHandshakeSecrets()) |hs_secrets| {
-                                        std.debug.print("Server: Derived handshake secrets after queuing ServerHello", .{});
+                                        std.debug.print("Server: Derived handshake secrets after queuing ServerHello\n", .{});
                                         conn.hs_client = hs_secrets.client;
                                         conn.hs_server = hs_secrets.server;
                                         conn.deriveHandshakeKeys(conn.version_v2);
-                                        std.debug.print("Server: After deriving Handshake keys - hs_tx_keys is {s}", .{if (conn.hs_tx_keys != null) "SET" else "NULL"});
+                                        std.debug.print("Server: After deriving Handshake keys - hs_tx_keys is {s}\n", .{if (conn.hs_tx_keys != null) "SET" else "NULL"});
                                     } else {
-                                        std.debug.print("Server: Cannot derive handshake secrets yet (sh_seen={}, ecdhe={})", .{conn.tls.sh_seen, conn.tls.ecdhe_secret != null});
+                                        std.debug.print("Server: Cannot derive handshake secrets yet (sh_seen={}, ecdhe={})\n", .{conn.tls.sh_seen, conn.tls.ecdhe_secret != null});
                                     }
                                 }
                             // } // This was the closing brace for the commented-out if statement
                         } else if (cr.offset > conn.crypto_rx_off_initial) {
                             // Out-of-order frame - buffer it
-                            std.debug.print("Buffering out-of-order CRYPTO frame: offset {} expected {}", .{ cr.offset, conn.crypto_rx_off_initial });
+                            std.debug.print("Buffering out-of-order CRYPTO frame: offset {} expected {}\n", .{ cr.offset, conn.crypto_rx_off_initial });
                             conn.crypto_buffer_initial.add(cr.offset, cr.data, self.allocator.*) catch |err| {
-                                std.debug.print("Failed to buffer CRYPTO frame: {}", .{err});
+                                std.debug.print("Failed to buffer CRYPTO frame: {}\n", .{err});
                             };
                             saw_any = true;
                             saw_ack_eliciting_initial = true;
                         } else {
                             // Duplicate or overlapping frame - ignore
-                            std.debug.print("Ignoring duplicate/overlapping CRYPTO frame: offset {} expected {}", .{ cr.offset, conn.crypto_rx_off_initial });
+                            std.debug.print("Ignoring duplicate/overlapping CRYPTO frame: offset {} expected {}\n", .{ cr.offset, conn.crypto_rx_off_initial });
                         }
                     },
                     .ack => |a| {
@@ -2117,7 +2097,7 @@ pub const Endpoint = struct {
             // After processing ClientHello, check if TLS has pending handshake data
             // This is critical for the server to send ServerHello immediately
             const has_pending_tls = conn.tls.outbox.items.len > 0;
-            std.debug.print("Checked TLS outbox: has_pending_tls={} outbox.len={}", .{has_pending_tls, conn.tls.outbox.items.len});
+            std.debug.print("Checked TLS outbox: has_pending_tls={} outbox.len={}\n", .{has_pending_tls, conn.tls.outbox.items.len});
 
             // Only send Initial response when we have ServerHello ready (for server role)
             // or when we have something meaningful to send (for client role)
@@ -2125,7 +2105,7 @@ pub const Endpoint = struct {
                 if (conn.role == .Server) {
                     // Server: send Initial if we have pending TLS data (ServerHello) OR if sh_seen is set
                     const result = (has_pending_tls or conn.tls.sh_seen) and conn.crypto_tx_off_initial < 200;
-                    std.debug.print("Server should_send_initial: has_pending_tls={}, sh_seen={}, crypto_tx_off_initial={}, result={}", .{
+                    std.debug.print("Server should_send_initial: has_pending_tls={}, sh_seen={}, crypto_tx_off_initial={}, result={}\n", .{
                         has_pending_tls, conn.tls.sh_seen, conn.crypto_tx_off_initial, result
                     });
                     break :blk result;
@@ -2149,7 +2129,7 @@ pub const Endpoint = struct {
 
                 // Only write ACK if we have received packets to acknowledge
                 if (ack_desc.largest != 0xFFFFFFFFFFFFFFFF) {
-                    std.debug.print("Server: Adding ACK frame to Initial packet - largest={}, first_range={}", .{ack_desc.largest, ack_desc.first_range});
+                    std.debug.print("Server: Adding ACK frame to Initial packet - largest={}, first_range={}\n", .{ack_desc.largest, ack_desc.first_range});
                     _ = ack.write(w) catch 0;
                 }
 
@@ -2178,7 +2158,7 @@ pub const Endpoint = struct {
 
                     if (bytes_to_send > 0) {
                         const unsent_data = conn.tls.outbox.items[unsent_start..unsent_start + bytes_to_send];
-                        std.debug.print("Server: Adding Initial CRYPTO frame with {} bytes at offset {} (ServerHello for Initial packet)", .{unsent_data.len, conn.crypto_tx_off_initial});
+                        std.debug.print("Server: Adding Initial CRYPTO frame with {} bytes at offset {} (ServerHello for Initial packet)\n", .{unsent_data.len, conn.crypto_tx_off_initial});
 
                         // Debug: Show first 20 bytes of CRYPTO data being sent
                         std.debug.print("INITIAL CRYPTO: Sending {} bytes at offset {}\n", .{unsent_data.len, conn.crypto_tx_off_initial});
@@ -2195,7 +2175,7 @@ pub const Endpoint = struct {
                         crypto_bytes_sent = unsent_data.len;
                     }
                 } else if (has_pending_tls and conn.crypto_tx_off_initial > 0) {
-                    std.debug.print("Server: ServerHello already sent in Initial (offset={}), remaining TLS data will go to Handshake", .{conn.crypto_tx_off_initial});
+                    std.debug.print("Server: ServerHello already sent in Initial (offset={}), remaining TLS data will go to Handshake\n", .{conn.crypto_tx_off_initial});
                 }
 
                 // Always send Initial packet if we have frames to send
@@ -2212,12 +2192,12 @@ pub const Endpoint = struct {
                     var fbs = std.io.fixedBufferStream(&hex_buf);
                     const hex_w = fbs.writer();
                     for (derive_dcid_tx) |b| hex_w.print("{X:0>2}", .{b}) catch break;
-                    std.debug.print("Server TX: Using Initial keys with dcid={s} (len={})", .{hex_buf[0..fbs.pos], derive_dcid_tx.len});
+                    std.debug.print("Server TX: Using Initial keys with dcid={s} (len={})\n", .{hex_buf[0..fbs.pos], derive_dcid_tx.len});
                 }
                 // Reuse cached Initial TX keys (should always be available after RX path caching)
                 const tx_keys = conn.initial_tx_keys orelse blk: {
                     // Fallback if not cached (shouldn't happen after RX path caching)
-                    std.debug.print("Warning: Initial TX keys not cached, deriving now", .{});
+                    std.debug.print("Warning: Initial TX keys not cached, deriving now\n", .{});
                     const oriented = packet.initialAeadKeys(v2, conn.role == .Server, derive_dcid_tx);
                     conn.initial_tx_keys = oriented.tx;
                     break :blk oriented.tx;
@@ -2232,9 +2212,9 @@ pub const Endpoint = struct {
                 else
                     conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len];
                 const tx_scid = conn.our_scid.bytes[0..conn.our_scid.len];
-                std.debug.print("{s}: Encoding Initial with pn={} dcid_len={} scid_len={} pn_len={}", .{ if (conn.role == .Server) "Server" else "Client", conn.pn_initial_tx, tx_dcid.len, tx_scid.len, 4 });
+                std.debug.print("{s}: Encoding Initial with pn={} dcid_len={} scid_len={} pn_len={}\n", .{ if (conn.role == .Server) "Server" else "Client", conn.pn_initial_tx, tx_dcid.len, tx_scid.len, 4 });
                 std.debug.print("  Server will use SCID: ", .{});
-                for (tx_scid) |b| std.debug.print("{X:0>2}", .{b});
+                for (tx_scid) |b| std.debug.print("{X:0>2}\n", .{b});
                 std.debug.print("", .{});
                 
                 // Check if we'll have a Handshake packet to send for coalescence
@@ -2257,16 +2237,16 @@ pub const Endpoint = struct {
                     const padding_needed = min_payload_size - frames_buf.items.len;
                     // PADDING frames are just 0x00 bytes
                     frames_buf.appendNTimes(self.allocator.*, 0x00, padding_needed) catch {
-                        std.debug.print("Failed to add padding to Initial packet", .{});
+                        std.debug.print("Failed to add padding to Initial packet\n", .{});
                         return;
                     };
-                    std.debug.print("Added {} bytes of padding to Initial frames", .{padding_needed});
+                    std.debug.print("Added {} bytes of padding to Initial frames\n", .{padding_needed});
                 }
 
                 const out = packet.encodeInitialProtected(self.allocator.*, version, tx_dcid, tx_scid, &[_]u8{}, @as(u32, @truncate(conn.pn_initial_tx)), 4, frames_buf.items, tx_keys) catch null;
 
                 if (out) |pkt_bytes| {
-                    std.debug.print("{s}: Prepared Initial response with {} bytes (has_crypto={})", .{ if (conn.role == .Server) "Server" else "Client", pkt_bytes.len, has_crypto });
+                    std.debug.print("{s}: Prepared Initial response with {} bytes (has_crypto={})\n", .{ if (conn.role == .Server) "Server" else "Client", pkt_bytes.len, has_crypto });
 
                     // Store Initial for later coalescence; take ownership
                     // Assign only if not already present; avoid double free pattern
@@ -2279,7 +2259,7 @@ pub const Endpoint = struct {
                     // Update CRYPTO offset after successful packet creation
                     if (crypto_bytes_sent > 0) {
                         conn.crypto_tx_off_initial += crypto_bytes_sent;
-                        std.debug.print("Server: Updated Initial CRYPTO offset to {}", .{conn.crypto_tx_off_initial});
+                        std.debug.print("Server: Updated Initial CRYPTO offset to {}\n", .{conn.crypto_tx_off_initial});
 
                         // CRITICAL FIX: Remove sent ServerHello from outbox before queueing handshake flight
                         // The Initial packet code accessed outbox.items directly but didn't remove the sent data
@@ -2292,7 +2272,7 @@ pub const Endpoint = struct {
                                 std.mem.copyForwards(u8, conn.tls.outbox.items[0..remaining], conn.tls.outbox.items[crypto_bytes_sent..]);
                             }
                             conn.tls.outbox.shrinkRetainingCapacity(remaining);
-                            std.debug.print("Server: Removed {} sent bytes from TLS outbox, {} bytes remaining", .{crypto_bytes_sent, remaining});
+                            std.debug.print("Server: Removed {} sent bytes from TLS outbox, {} bytes remaining\n", .{crypto_bytes_sent, remaining});
                         }
                     }
                     // Do NOT free pkt_bytes here; defer will free if never coalesced
@@ -2303,7 +2283,7 @@ pub const Endpoint = struct {
                 // Since this branch is taken when we saw any frames, send a synthetic ACK processing if needed is skipped.
             }
             // Check if we can send Handshake packet (requires Handshake keys)
-            std.debug.print("CHECKPOINT: Reached coalesc logic, initial_pkt is {s}, hs_tx_keys is {s}", .{
+            std.debug.print("CHECKPOINT: Reached coalesc logic, initial_pkt is {s}, hs_tx_keys is {s}\n", .{
                 if (initial_pkt != null) "SET" else "NULL",
                 if (conn.hs_tx_keys != null) "SET" else "NULL"
             });
@@ -2317,7 +2297,7 @@ pub const Endpoint = struct {
             // This avoids Length field mismatch issues when Handshake packet is too large
             if (initial_pkt) |initial| {
                 _ = self.sendTo(peer, initial) catch {};
-                std.debug.print("TEMP FIX: Sent Initial packet separately ({} bytes) - not coalescing", .{initial.len});
+                std.debug.print("TEMP FIX: Sent Initial packet separately ({} bytes) - not coalescing\n", .{initial.len});
                 // Free Initial after sending; clear debug tracker
                 self.allocator.free(initial);
                 initial_pkt = null;
@@ -2332,13 +2312,13 @@ pub const Endpoint = struct {
                 // ServerHello is already in the TLS outbox from conn.zig, so we only need to queue the rest
                 if (conn.role == .Server and conn.tls.sh_seen and !conn.server_hello_sent) {
                     conn.server_hello_sent = true;
-                    std.debug.print("Queueing handshake flight (EE + Cert + Finished), ServerHello already queued", .{});
-                    std.debug.print("BEFORE queueServerHandshakeFlight: outbox.len={}", .{conn.tls.outbox.items.len});
+                    std.debug.print("Queueing handshake flight (EE + Cert + Finished), ServerHello already queued\n", .{});
+                    std.debug.print("BEFORE queueServerHandshakeFlight: outbox.len={}\n", .{conn.tls.outbox.items.len});
 
                     // Queue the rest of the handshake flight (EncryptedExtensions + Certificate + CertificateVerify + Finished)
                     // ServerHello is already in outbox from when keys were derived in conn.zig
                     conn.tls.queueServerHandshakeFlight();
-                    std.debug.print("AFTER queueServerHandshakeFlight: outbox.len={}", .{conn.tls.outbox.items.len});
+                    std.debug.print("AFTER queueServerHandshakeFlight: outbox.len={}\n", .{conn.tls.outbox.items.len});
                 }
 
                 // Pull any pending TLS outbox (EncryptedExtensions, Certificate, CertificateVerify, Finished)
@@ -2359,13 +2339,13 @@ pub const Endpoint = struct {
                             @memcpy(tls_buf[0..retx_data.len], retx_data);
                             n_tls = retx_data.len;
                             is_new_data = false;  // This is a retransmission, not new data
-                            std.debug.print("Resending saved Handshake CRYPTO data: {} bytes", .{n_tls});
+                            std.debug.print("Resending saved Handshake CRYPTO data: {} bytes\n", .{n_tls});
                         }
                     }
                 }
 
                 if (n_tls > 0 and allow_send) {
-                    std.debug.print("Sending Handshake CRYPTO with {} bytes total", .{n_tls});
+                    std.debug.print("Sending Handshake CRYPTO with {} bytes total\n", .{n_tls});
 
                     // RFC 9000 §14: Avoid IP fragmentation by keeping packets under MTU
                     // RFC 9001 §4.9: Split large CRYPTO data across multiple QUIC packets
@@ -2381,9 +2361,9 @@ pub const Endpoint = struct {
                         @memcpy(owned_hs[0..n_tls], tls_buf[0..n_tls]);
                         conn.crypto_retx_handshake = owned_hs;
                         conn.crypto_retx_handshake_off = conn.crypto_tx_off_handshake;
-                        std.debug.print("Saved new Handshake CRYPTO for retransmission: {} bytes at offset {}", .{n_tls, conn.crypto_tx_off_handshake});
+                        std.debug.print("Saved new Handshake CRYPTO for retransmission: {} bytes at offset {}\n", .{n_tls, conn.crypto_tx_off_handshake});
                     } else {
-                        std.debug.print("Using saved retransmission data at offset {}", .{conn.crypto_retx_handshake_off});
+                        std.debug.print("Using saved retransmission data at offset {}\n", .{conn.crypto_retx_handshake_off});
                     }
 
                     // For Handshake packets, determine correct DCID:
@@ -2395,7 +2375,7 @@ pub const Endpoint = struct {
                     else
                         &[_]u8{}; // Empty slice - RFC 9000 §12.2: coalesced packets must have same DCID
 
-                    std.debug.print("Server: Handshake DCID len={} (peer_scid_len={}, using {s})", .{
+                    std.debug.print("Server: Handshake DCID len={} (peer_scid_len={}, using {s})\n", .{
                         hs_dcid.len,
                         conn.peer_initial_scid.len,
                         if (conn.peer_initial_scid.len > 0) "peer_initial_scid" else "empty_dcid"
@@ -2435,11 +2415,11 @@ pub const Endpoint = struct {
                         }
                     }
 
-                    std.debug.print("Found {} TLS message boundaries in {} bytes", .{boundary_count, n_tls});
+                    std.debug.print("Found {} TLS message boundaries in {} bytes\n", .{boundary_count, n_tls});
 
                     // Store additional Handshake packets to send separately
                     var additional_hs_packets = std.ArrayList([]u8).initCapacity(self.allocator.*, 0) catch {
-                        std.debug.print("Failed to allocate ArrayList for additional Handshake packets", .{});
+                        std.debug.print("Failed to allocate ArrayList for additional Handshake packets\n", .{});
                         return;
                     };
                     defer {
@@ -2468,7 +2448,7 @@ pub const Endpoint = struct {
                         }
 
                         const chunk_len = chunk_end - offset;
-                        std.debug.print("Handshake CRYPTO fragment {}: offset={}, length={} (PN {}) [TLS-aligned]", .{pkt_count, base_crypto_offset + offset, chunk_len, conn.pn_handshake_tx});
+                        std.debug.print("Handshake CRYPTO fragment {}: offset={}, length={} (PN {}) [TLS-aligned]\n", .{pkt_count, base_crypto_offset + offset, chunk_len, conn.pn_handshake_tx});
 
                         // Create CRYPTO frame for this chunk
                         var fb = std.ArrayList(u8){};
@@ -2488,13 +2468,13 @@ pub const Endpoint = struct {
                             fb.items,
                             hs_keys
                         ) catch |err| blk: {
-                            std.debug.print("ERROR: Failed to encode Handshake packet: {}", .{err});
+                            std.debug.print("ERROR: Failed to encode Handshake packet: {}\n", .{err});
                             break :blk null;
                         };
 
                         if (pkt_hs) |bytes_out_hs| {
                             const pkt_len = bytes_out_hs.len;  // Save length before potentially freeing
-                            std.debug.print("Handshake packet {} encoded: {} bytes (CRYPTO {} bytes at offset {})", .{pkt_count, pkt_len, chunk_len, crypto_stream_offset});
+                            std.debug.print("Handshake packet {} encoded: {} bytes (CRYPTO {} bytes at offset {})\n", .{pkt_count, pkt_len, chunk_len, crypto_stream_offset});
 
                             // Only append first handshake packet to coalesced buffer (RFC 9000 §12.2)
                             // Store additional handshake packets to send separately after coalescing
@@ -2502,11 +2482,11 @@ pub const Endpoint = struct {
                                 if (coalesced_len + pkt_len <= coalesced_buffer.len) {
                                     @memcpy(coalesced_buffer[coalesced_len..coalesced_len + pkt_len], bytes_out_hs);
                                     coalesced_len += pkt_len;
-                                    std.debug.print("Added first Handshake packet to coalesced buffer: {} bytes", .{pkt_len});
+                                    std.debug.print("Added first Handshake packet to coalesced buffer: {} bytes\n", .{pkt_len});
                                     // Free immediately since we copied it
                                     self.allocator.free(bytes_out_hs);
                                 } else {
-                                    std.debug.print("Failed to append Handshake packet to coalesced buffer - would exceed buffer", .{});
+                                    std.debug.print("Failed to append Handshake packet to coalesced buffer - would exceed buffer\n", .{});
                                     // Store for separate sending
                                     additional_hs_packets.append(self.allocator.*, bytes_out_hs) catch {
                                         self.allocator.free(bytes_out_hs);
@@ -2520,11 +2500,11 @@ pub const Endpoint = struct {
                             } else {
                                 // Not coalescing, send immediately
                                 const send_result = self.sendTo(conn.peer, bytes_out_hs) catch |err| blk: {
-                                    std.debug.print("ERROR: Failed to send Handshake packet: {}", .{err});
+                                    std.debug.print("ERROR: Failed to send Handshake packet: {}\n", .{err});
                                     break :blk 0;
                                 };
                                 if (send_result > 0) {
-                                    std.debug.print("Sent Handshake packet {}: {} bytes", .{pkt_count, send_result});
+                                    std.debug.print("Sent Handshake packet {}: {} bytes\n", .{pkt_count, send_result});
                                 }
                                 self.allocator.free(bytes_out_hs);
                             }
@@ -2540,17 +2520,17 @@ pub const Endpoint = struct {
                     // Only increment the CRYPTO offset for new data, NOT for retransmissions
                     if (is_new_data) {
                         conn.crypto_tx_off_handshake += n_tls;
-                        std.debug.print("Prepared {} Handshake packets with {} bytes NEW CRYPTO data (offset now {})", .{pkt_count, n_tls, conn.crypto_tx_off_handshake});
+                        std.debug.print("Prepared {} Handshake packets with {} bytes NEW CRYPTO data (offset now {})\n", .{pkt_count, n_tls, conn.crypto_tx_off_handshake});
                     } else {
-                        std.debug.print("Prepared {} Handshake packets with {} bytes RETRANSMITTED CRYPTO data (offset unchanged at {})", .{pkt_count, n_tls, conn.crypto_tx_off_handshake});
+                        std.debug.print("Prepared {} Handshake packets with {} bytes RETRANSMITTED CRYPTO data (offset unchanged at {})\n", .{pkt_count, n_tls, conn.crypto_tx_off_handshake});
                     }
 
                     // Send coalesced packets (Initial + first Handshake)
                     if (coalesced_len > 0) {
-                        std.debug.print("Sending coalesced packet: {} bytes (Initial + Handshake)", .{coalesced_len});
+                        std.debug.print("Sending coalesced packet: {} bytes (Initial + Handshake)\n", .{coalesced_len});
 
                         // DIAGNOSTIC: Hexdump the coalesced packet to understand structure
-                        std.debug.print("=== COALESCED PACKET HEXDUMP ===", .{});
+                        std.debug.print("=== COALESCED PACKET HEXDUMP ===\n", .{});
                         var dump_idx: usize = 0;
                         const max_dump = @min(256, coalesced_len);
                         while (dump_idx < max_dump) : (dump_idx += 16) {
@@ -2563,16 +2543,16 @@ pub const Endpoint = struct {
                             std.debug.print("", .{});
                         }
                         if (coalesced_len > max_dump) {
-                            std.debug.print("... ({} more bytes)", .{coalesced_len - max_dump});
+                            std.debug.print("... ({} more bytes)\n", .{coalesced_len - max_dump});
                         }
-                        std.debug.print("=== END HEXDUMP ===", .{});
+                        std.debug.print("=== END HEXDUMP ===\n", .{});
 
                         const send_result = self.sendTo(conn.peer, coalesced_buffer[0..coalesced_len]) catch |err| blk: {
-                            std.debug.print("ERROR: Failed to send coalesced packet: {}", .{err});
+                            std.debug.print("ERROR: Failed to send coalesced packet: {}\n", .{err});
                             break :blk 0;
                         };
                         if (send_result > 0) {
-                            std.debug.print("Successfully sent coalesced packet: {} bytes", .{send_result});
+                            std.debug.print("Successfully sent coalesced packet: {} bytes\n", .{send_result});
                         }
                         // Free initial_pkt now that it's been sent in the coalesced buffer
                         if (initial_pkt) |p| {
@@ -2583,14 +2563,14 @@ pub const Endpoint = struct {
 
                     // Send additional Handshake packets separately
                     if (additional_hs_packets.items.len > 0) {
-                        std.debug.print("Sending {} additional Handshake packets separately", .{additional_hs_packets.items.len});
+                        std.debug.print("Sending {} additional Handshake packets separately\n", .{additional_hs_packets.items.len});
                         for (additional_hs_packets.items, 0..) |pkt, idx| {
                             const send_result = self.sendTo(conn.peer, pkt) catch |err| blk: {
-                                std.debug.print("ERROR: Failed to send additional Handshake packet {}: {}", .{idx, err});
+                                std.debug.print("ERROR: Failed to send additional Handshake packet {}: {}\n", .{idx, err});
                                 break :blk 0;
                             };
                             if (send_result > 0) {
-                                std.debug.print("Sent additional Handshake packet {}: {} bytes", .{idx, send_result});
+                                std.debug.print("Sent additional Handshake packet {}: {} bytes\n", .{idx, send_result});
                             }
                         }
                     }
@@ -2605,11 +2585,11 @@ pub const Endpoint = struct {
             // Check if there are more packets coalesced in this datagram
             // The end_total from the Initial packet tells us where it ends
             if (end_total < bytes.len) {
-                std.debug.print("=== COALESCED PACKET DETECTED: end_total={}, bytes.len={}, remaining={} bytes ===", .{end_total, bytes.len, bytes.len - end_total});
+                std.debug.print("=== COALESCED PACKET DETECTED: end_total={}, bytes.len={}, remaining={} bytes ===\n", .{end_total, bytes.len, bytes.len - end_total});
                 // Process the remaining bytes as a new packet
                 self.processIncomingDatagram(peer, bytes[end_total..], ecn_bits);
             } else {
-                std.debug.print("=== No coalesced packets, end_total={}, bytes.len={} ===", .{end_total, bytes.len});
+                std.debug.print("=== No coalesced packets, end_total={}, bytes.len={} ===\n", .{end_total, bytes.len});
             }
 
             // initial_pkt is already freed after sending (line 2298) or not allocated
@@ -2662,7 +2642,7 @@ pub const Endpoint = struct {
             self.clientSendInitialProbe(c) catch {};
             return;
         } else if (ty == 2) {
-            std.debug.print("Processing Handshake packet from peer", .{});
+            std.debug.print("Processing Handshake packet from peer\n", .{});
             std.debug.print("HANDSHAKE PACKET: {} bytes total\n", .{bytes.len});
             // Handshake RX path: attempt to unprotect and feed CRYPTO using hs_rx_keys
             var i: usize = 5;
@@ -2700,39 +2680,39 @@ pub const Endpoint = struct {
             j += len_dec.n;
             if (len_dec.value > @as(u64, bytes.len - j)) return;
             const end_total = j + @as(usize, @intCast(len_dec.value));
-            std.debug.print("Handshake packet: j={}, len_dec.value={}, end_total={}, bytes.len={}", .{
+            std.debug.print("Handshake packet: j={}, len_dec.value={}, end_total={}, bytes.len={}\n", .{
                 j, len_dec.value, end_total, bytes.len
             });
 
             // Lookup connection keyed by peer + initial dcid hash (use stored mapping if any)
             const key = Key{ .peer_hash = hashSockaddr(&peer.storage, peer.len), .dcid_hash = hashBytes(dcid) };
-            std.debug.print("Looking up Handshake connection with dcid=", .{});
-            for (dcid) |b| std.debug.print("{x:0>2}", .{b});
-            std.debug.print(" (hash={x})", .{key.dcid_hash});
+            std.debug.print("Looking up Handshake connection with dcid=\n", .{});
+            for (dcid) |b| std.debug.print("{x:0>2}\n", .{b});
+            std.debug.print(" (hash={x})\n", .{key.dcid_hash});
 
-            std.debug.print("HANDSHAKE: Looking up connection with dcid=", .{});
-            for (dcid) |b| std.debug.print("{x:0>2}", .{b});
+            std.debug.print("HANDSHAKE: Looking up connection with dcid=\n", .{});
+            for (dcid) |b| std.debug.print("{x:0>2}\n", .{b});
             std.debug.print(" (hash={x})\n", .{key.dcid_hash});
 
             const c_ptr = self.conns.getPtr(key) orelse {
-                std.debug.print("ERROR: Connection not found for Handshake packet", .{});
+                std.debug.print("ERROR: Connection not found for Handshake packet\n", .{});
                 std.debug.print("  Available connections:", .{});
                 std.debug.print("ERROR: Connection not found for Handshake packet!\n", .{});
                 std.debug.print("  Available connections:\n", .{});
                 var iter = self.conns.iterator();
                 while (iter.next()) |entry| {
-                    std.debug.print("    key: peer_hash={x}, dcid_hash={x}", .{entry.key_ptr.peer_hash, entry.key_ptr.dcid_hash});
+                    std.debug.print("    key: peer_hash={x}, dcid_hash={x}\n", .{entry.key_ptr.peer_hash, entry.key_ptr.dcid_hash});
                     std.debug.print("    key: peer_hash={x}, dcid_hash={x}\n", .{entry.key_ptr.peer_hash, entry.key_ptr.dcid_hash});
                 }
                 return;
             };
             const conn = c_ptr.*;
             std.debug.print("HANDSHAKE: Found connection, role={}\n", .{conn.role});
-            std.debug.print("Found connection for Handshake packet (role={})", .{conn.role});
+            std.debug.print("Found connection for Handshake packet (role={})\n", .{conn.role});
             if (ecn_bits) |e| conn.onEcnMark(.Handshake, e);
             if (conn.hs_rx_keys) |rx_keys| {
-                std.debug.print("Server has handshake RX keys, proceeding to decrypt", .{});
-                std.debug.print("Handshake RX keys: key={any}, iv={any}, hp={any}", .{ rx_keys.key, rx_keys.iv, rx_keys.hp });
+                std.debug.print("Server has handshake RX keys, proceeding to decrypt\n", .{});
+                std.debug.print("Handshake RX keys: key={any}, iv={any}, hp={any}\n", .{ rx_keys.key, rx_keys.iv, rx_keys.hp });
                 std.debug.print("HANDSHAKE: Has RX keys! Proceeding to decrypt...\n", .{});
                 std.debug.print("HANDSHAKE PACKET STRUCTURE:\n", .{});
                 std.debug.print("  Total packet: {} bytes\n", .{bytes.len});
@@ -2759,7 +2739,7 @@ pub const Endpoint = struct {
                 // FIXED: Extract HP sample first, then determine actual PN length from header
                 const full_pn_and_payload = bytes[pn_start..end_total];
                 if (full_pn_and_payload.len < 20) {
-                    std.debug.print("Handshake packet too short for HP sample: {} bytes", .{full_pn_and_payload.len});
+                    std.debug.print("Handshake packet too short for HP sample: {} bytes\n", .{full_pn_and_payload.len});
                     conn.onAeadAuthFailure();
                     return;
                 }
@@ -2778,7 +2758,7 @@ pub const Endpoint = struct {
                     &header_first_copy,
                     &dummy_pn,
                 ) catch {
-                    std.debug.print("Failed to unmask header byte for handshake packet", .{});
+                    std.debug.print("Failed to unmask header byte for handshake packet\n", .{});
                     conn.onAeadAuthFailure();
                     return;
                 };
@@ -2786,10 +2766,10 @@ pub const Endpoint = struct {
                 // Extract the actual packet number length from the unmasked header
                 const actual_pn_len: u3 = @intCast((header_first_copy & 0x03) + 1);
 
-                std.debug.print("Handshake packet: unmasked header=0x{X:0>2}, actual_pn_len={}", .{header_first_copy, actual_pn_len});
+                std.debug.print("Handshake packet: unmasked header=0x{X:0>2}, actual_pn_len={}\n", .{header_first_copy, actual_pn_len});
 
                 if (pn_start + actual_pn_len > end_total) {
-                    std.debug.print("Invalid PN length {} extends past packet end", .{actual_pn_len});
+                    std.debug.print("Invalid PN length {} extends past packet end\n", .{actual_pn_len});
                     conn.onAeadAuthFailure();
                     return;
                 }
@@ -2798,12 +2778,12 @@ pub const Endpoint = struct {
                 // Per RFC 9001 5.4.2: Sample ALWAYS starts at offset 4 from PN field start
                 const sample_offset: usize = 4;  // ALWAYS 4, not actual_pn_len!
                 if (full_pn_and_payload.len < sample_offset + 16) {
-                    std.debug.print("Handshake packet too short for HP sample: {} bytes, need {}", .{full_pn_and_payload.len, sample_offset + 16});
+                    std.debug.print("Handshake packet too short for HP sample: {} bytes, need {}\n", .{full_pn_and_payload.len, sample_offset + 16});
                     conn.onAeadAuthFailure();
                     return;
                 }
                 @memcpy(sample16[0..], full_pn_and_payload[sample_offset .. sample_offset + 16]);
-                std.debug.print("Re-extracted HP sample from offset {} (always 4) for PN length {}", .{sample_offset, actual_pn_len});
+                std.debug.print("Re-extracted HP sample from offset {} (always 4) for PN length {}\n", .{sample_offset, actual_pn_len});
 
                 // Now unmask the packet number bytes with the correct length and correct sample
                 var pn_bytes_buf: [4]u8 = undefined;
@@ -2811,7 +2791,7 @@ pub const Endpoint = struct {
                 @memcpy(pn_bytes, bytes[pn_start .. pn_start + actual_pn_len]);
 
                 // Debug: Log masked PN bytes
-                std.debug.print("Masked PN bytes (len={}): {any}", .{actual_pn_len, pn_bytes});
+                std.debug.print("Masked PN bytes (len={}): {any}\n", .{actual_pn_len, pn_bytes});
 
                 var header_try = first;
 
@@ -2823,13 +2803,13 @@ pub const Endpoint = struct {
                     &header_try,
                     pn_bytes,
                 ) catch {
-                    std.debug.print("Failed to unmask header and PN bytes for handshake packet", .{});
+                    std.debug.print("Failed to unmask header and PN bytes for handshake packet\n", .{});
                     conn.onAeadAuthFailure();
                     return;
                 };
 
                 // Debug: Log unmasked PN bytes
-                std.debug.print("Unmasked PN bytes (len={}): {any}", .{actual_pn_len, pn_bytes});
+                std.debug.print("Unmasked PN bytes (len={}): {any}\n", .{actual_pn_len, pn_bytes});
 
                 // Now decrypt with the correct PN length
                 var pt_list = std.ArrayList(u8){};
@@ -2839,10 +2819,10 @@ pub const Endpoint = struct {
                 const expected_pt_len = full_pn_and_payload.len - 16 - actual_pn_len;
                 if (expected_pt_len == 0) {
                     // This can happen for ACK-only packets
-                    std.debug.print("Handshake packet appears to be ACK-only (no payload after auth tag)", .{});
+                    std.debug.print("Handshake packet appears to be ACK-only (no payload after auth tag)\n", .{});
                 }
                 pt_list.ensureTotalCapacity(self.allocator.*, if (expected_pt_len > 0) expected_pt_len else 1) catch {
-                    std.debug.print("Failed to allocate plaintext buffer", .{});
+                    std.debug.print("Failed to allocate plaintext buffer\n", .{});
                     conn.onAeadAuthFailure();
                     return;
                 };
@@ -2855,10 +2835,10 @@ pub const Endpoint = struct {
                 const pt_slice = pt_list.items[0..expected_pt_len];
 
                 const expected_pn_hs = if (conn.pn_handshake.have_any) conn.pn_handshake.max + 1 else 0;
-                std.debug.print("=== HANDSHAKE PACKET DECRYPTION ===", .{});
-                std.debug.print("pn_start={}, end_total={}, actual_pn_len={}", .{pn_start, end_total, actual_pn_len});
-                std.debug.print("full_pn_and_payload.len={}, expected_pt_len={}", .{full_pn_and_payload.len, expected_pt_len});
-                std.debug.print("Attempting Handshake decrypt: actual_pn_len={}, expected_pn={}, have_any={}", .{
+                std.debug.print("=== HANDSHAKE PACKET DECRYPTION ===\n", .{});
+                std.debug.print("pn_start={}, end_total={}, actual_pn_len={}\n", .{pn_start, end_total, actual_pn_len});
+                std.debug.print("full_pn_and_payload.len={}, expected_pt_len={}\n", .{full_pn_and_payload.len, expected_pt_len});
+                std.debug.print("Attempting Handshake decrypt: actual_pn_len={}, expected_pn={}, have_any={}\n", .{
                     actual_pn_len,
                     expected_pn_hs,
                     conn.pn_handshake.have_any,
@@ -2871,11 +2851,11 @@ pub const Endpoint = struct {
                 var masked_pn_bytes: [4]u8 = undefined;
                 @memcpy(masked_pn_bytes[0..actual_pn_len], bytes[pn_start .. pn_start + actual_pn_len]);
                 std.debug.print("Calling unprotectInitialAutoSample with:", .{});
-                std.debug.print("  masked_header=0x{X:0>2}", .{masked_header});
-                std.debug.print("  masked_pn_bytes[0..{}]={any}", .{actual_pn_len, masked_pn_bytes[0..actual_pn_len]});
-                std.debug.print("  header_prefix.len={}", .{header_prefix.len});
-                std.debug.print("  full_pn_and_payload.len={}", .{full_pn_and_payload.len});
-                std.debug.print("  expected_pn_hs={}", .{expected_pn_hs});
+                std.debug.print("  masked_header=0x{X:0>2}\n", .{masked_header});
+                std.debug.print("  masked_pn_bytes[0..{}]={any}\n", .{actual_pn_len, masked_pn_bytes[0..actual_pn_len]});
+                std.debug.print("  header_prefix.len={}\n", .{header_prefix.len});
+                std.debug.print("  full_pn_and_payload.len={}\n", .{full_pn_and_payload.len});
+                std.debug.print("  expected_pn_hs={}\n", .{expected_pn_hs});
 
                 const dec = crypto.unprotectInitialAutoSample(
                     .aes_128_gcm,
@@ -2889,14 +2869,14 @@ pub const Endpoint = struct {
                     pt_slice,
                     expected_pn_hs,
                 ) catch |err| {
-                    std.debug.print("Handshake packet decrypt failed: {} (actual_pn_len={}, expected_pn={})", .{ err, actual_pn_len, expected_pn_hs });
-                    std.debug.print("  RX keys: key[0..4]={any}, iv[0..4]={any}, hp[0..4]={any}", .{
+                    std.debug.print("Handshake packet decrypt failed: {} (actual_pn_len={}, expected_pn={})\n", .{ err, actual_pn_len, expected_pn_hs });
+                    std.debug.print("  RX keys: key[0..4]={any}, iv[0..4]={any}, hp[0..4]={any}\n", .{
                         rx_keys.key[0..4], rx_keys.iv[0..4], rx_keys.hp[0..4]
                     });
                     conn.onAeadAuthFailure();
                     return;
                 };
-                std.debug.print("unprotectInitialAutoSample returned: {} bytes decrypted", .{dec});
+                std.debug.print("unprotectInitialAutoSample returned: {} bytes decrypted\n", .{dec});
 
                 std.debug.print("After unmasking with actual_pn_len={}: ", .{actual_pn_len});
                 for (pn_bytes) |b| std.debug.print("{X:0>2} ", .{b});
@@ -2908,7 +2888,7 @@ pub const Endpoint = struct {
                 const chosen_pn_len = actual_pn_len;
 
                 if (!success) {
-                    std.debug.print("Failed to decrypt Handshake packet", .{});
+                    std.debug.print("Failed to decrypt Handshake packet\n", .{});
                     conn.onAeadAuthFailure();
                     // Don't close connection on single decrypt failure
                     // The connection should persist for retries
@@ -2918,7 +2898,7 @@ pub const Endpoint = struct {
 
                 const pn_len = chosen_pn_len;
                 const pt = pt_list.items;
-                std.debug.print("Successfully decrypted Handshake packet (trial pn_len={}) plaintext len: {}", .{ pn_len, pt.len });
+                std.debug.print("Successfully decrypted Handshake packet (trial pn_len={}) plaintext len: {}\n", .{ pn_len, pt.len });
 
                 // Expand truncated PN and track in Handshake space
                 var pn_val_be: u64 = 0;
@@ -2931,7 +2911,7 @@ pub const Endpoint = struct {
                 // proves the client received the server's Initial (which provided handshake keys).
                 // This validates the client's address for anti-amplification purposes.
                 if (conn.role == .Server and !conn.address_validated) {
-                    std.debug.print("Server: Validating client address after receiving Handshake packet", .{});
+                    std.debug.print("Server: Validating client address after receiving Handshake packet\n", .{});
                     conn.address_validated = true;
                     conn.bytes_rx_unvalidated = 0;
                     conn.bytes_tx_unvalidated = 0;
@@ -2944,11 +2924,11 @@ pub const Endpoint = struct {
                 const now_ns_hs: u64 = @intCast(std.time.nanoTimestamp());
                 while (off < pt.len) {
                     const r = frame.decodeOne(pt[off..]) catch |err| {
-                        std.debug.print("Failed to decode frame at offset {}: {}", .{ off, err });
+                        std.debug.print("Failed to decode frame at offset {}: {}\n", .{ off, err });
                         break;
                     };
                     off += r.n;
-                    std.debug.print("Handshake frame: {} at offset {}", .{ r.f, off - r.n });
+                    std.debug.print("Handshake frame: {} at offset {}\n", .{ r.f, off - r.n });
                     switch (r.f) {
                         .crypto => {
                             const cr = r.f.crypto;
@@ -2970,15 +2950,15 @@ pub const Endpoint = struct {
                                 }
                             } else if (cr.offset > conn.crypto_rx_off_handshake) {
                                 // Out-of-order frame - buffer it
-                                std.debug.print("Buffering out-of-order Handshake CRYPTO frame: offset {} expected {}", .{ cr.offset, conn.crypto_rx_off_handshake });
+                                std.debug.print("Buffering out-of-order Handshake CRYPTO frame: offset {} expected {}\n", .{ cr.offset, conn.crypto_rx_off_handshake });
                                 conn.crypto_buffer_handshake.add(cr.offset, cr.data, self.allocator.*) catch |err| {
-                                    std.debug.print("Failed to buffer Handshake CRYPTO frame: {}", .{err});
+                                    std.debug.print("Failed to buffer Handshake CRYPTO frame: {}\n", .{err});
                                 };
                                 saw_any = true;
                                 saw_ack_eliciting_hs = true;
                             } else {
                                 // Duplicate or overlapping frame - ignore
-                                std.debug.print("Ignoring duplicate/overlapping Handshake CRYPTO frame: offset {} expected {}", .{ cr.offset, conn.crypto_rx_off_handshake });
+                                std.debug.print("Ignoring duplicate/overlapping Handshake CRYPTO frame: offset {} expected {}\n", .{ cr.offset, conn.crypto_rx_off_handshake });
                             }
                         },
                         .ack => |a| {
@@ -3000,11 +2980,11 @@ pub const Endpoint = struct {
                     var outbox: [4096]u8 = undefined;
                     const n = conn.tls.popCrypto(outbox[0..]);
                     if (n > 0) {
-                        std.debug.print("OLD CODE PATH: Preparing to send {} bytes of Handshake CRYPTO data", .{n});
+                        std.debug.print("OLD CODE PATH: Preparing to send {} bytes of Handshake CRYPTO data\n", .{n});
 
                         // ArrayList to store additional Handshake packets that don't fit in coalesced datagram
                         var additional_hs_packets = std.ArrayList([]u8).initCapacity(self.allocator.*, 0) catch {
-                            std.debug.print("Failed to allocate ArrayList for additional Handshake packets", .{});
+                            std.debug.print("Failed to allocate ArrayList for additional Handshake packets\n", .{});
                             return;
                         };
                         defer {
@@ -3053,7 +3033,7 @@ pub const Endpoint = struct {
                             const crypto_offset = base_off_hs + offset;
                             _ = (frame.Frame{ .crypto = .{ .offset = crypto_offset, .data = chunk } }).write(w) catch 0;
 
-                            std.debug.print("OLD CODE PATH: Creating Handshake packet {} with CRYPTO offset={} len={}", .{pkt_count, crypto_offset, chunk_size});
+                            std.debug.print("OLD CODE PATH: Creating Handshake packet {} with CRYPTO offset={} len={}\n", .{pkt_count, crypto_offset, chunk_size});
 
                             const pkt = packet.encodeHandshakeProtected(
                                 self.allocator.*,
@@ -3068,19 +3048,19 @@ pub const Endpoint = struct {
 
                             if (pkt) |bytes_out_hs| {
                                 const pkt_len = bytes_out_hs.len;
-                                std.debug.print("OLD CODE PATH: Handshake packet {} encoded, size={} bytes", .{pkt_count, pkt_len});
+                                std.debug.print("OLD CODE PATH: Handshake packet {} encoded, size={} bytes\n", .{pkt_count, pkt_len});
 
                                 // Store all packets to send after the loop
                                 // First packet sent directly, additional packets stored
                                 if (pkt_count == 0) {
                                     // Send first packet immediately
                                     _ = self.sendTo(peer, bytes_out_hs) catch {};
-                                    std.debug.print("OLD CODE PATH: Sent first Handshake packet {} directly", .{pkt_count});
+                                    std.debug.print("OLD CODE PATH: Sent first Handshake packet {} directly\n", .{pkt_count});
                                     self.allocator.free(bytes_out_hs);
                                 } else {
                                     // Store additional packets for later sending
                                     additional_hs_packets.append(self.allocator.*, bytes_out_hs) catch {
-                                        std.debug.print("OLD CODE PATH: Failed to store Handshake packet {}, freeing", .{pkt_count});
+                                        std.debug.print("OLD CODE PATH: Failed to store Handshake packet {}, freeing\n", .{pkt_count});
                                         self.allocator.free(bytes_out_hs);
                                     };
                                 }
@@ -3097,7 +3077,7 @@ pub const Endpoint = struct {
                         if (conn.crypto_retx_handshake) |b| self.allocator.free(b);
                         var owned_hs = self.allocator.alloc(u8, n) catch {
                             conn.crypto_tx_off_handshake += n;
-                            std.debug.print("OLD CODE PATH: Failed to allocate retransmit buffer", .{});
+                            std.debug.print("OLD CODE PATH: Failed to allocate retransmit buffer\n", .{});
                             return;
                         };
                         @memcpy(owned_hs[0..n], outbox[0..n]);
@@ -3107,14 +3087,14 @@ pub const Endpoint = struct {
 
                         // Send additional Handshake packets that didn't fit in coalesced datagram
                         if (additional_hs_packets.items.len > 0) {
-                            std.debug.print("OLD CODE PATH: Sending {} additional Handshake packets separately", .{additional_hs_packets.items.len});
+                            std.debug.print("OLD CODE PATH: Sending {} additional Handshake packets separately\n", .{additional_hs_packets.items.len});
                             for (additional_hs_packets.items, 0..) |pkt, idx| {
                                 const send_result = self.sendTo(conn.peer, pkt) catch |err| blk: {
-                                    std.debug.print("OLD CODE PATH: ERROR: Failed to send additional Handshake packet {}: {}", .{idx, err});
+                                    std.debug.print("OLD CODE PATH: ERROR: Failed to send additional Handshake packet {}: {}\n", .{idx, err});
                                     break :blk 0;
                                 };
                                 if (send_result > 0) {
-                                    std.debug.print("OLD CODE PATH: Sent additional Handshake packet {} ({} bytes)", .{idx, send_result});
+                                    std.debug.print("OLD CODE PATH: Sent additional Handshake packet {} ({} bytes)\n", .{idx, send_result});
                                 }
                             }
                         }
@@ -3189,7 +3169,6 @@ pub const Endpoint = struct {
         }
     }
 
-    /// Single source-of-truth for path change handling: updates peer address,
     /// resets validation state and counters, installs new map key, and triggers validation.
     fn onPathAddressChanged(self: *Endpoint, c: *conn_mod.Connection, new_peer: conn_mod.SockAddr, new_peer_hash: u64, dcid_len: usize) void {
         c.setPeer(new_peer);
@@ -3201,7 +3180,7 @@ pub const Endpoint = struct {
         _ = self.conns.put(new_key, c) catch {};
         // Trigger PATH_CHALLENGE if 1-RTT keys are available
         c.sendPathChallenge();
-        std.debug.print("path: change detected dcid_len={d} triggering validation (phase={d})", .{ dcid_len, @intFromBool(c.tx_key_phase) });
+        std.debug.print("path: change detected dcid_len={d} triggering validation (phase={d})\n", .{ dcid_len, @intFromBool(c.tx_key_phase) });
     }
 
     /// Mark path validated and clear unvalidated counters consistently.
@@ -3211,7 +3190,7 @@ pub const Endpoint = struct {
         c.address_validated = true;
         c.bytes_rx_unvalidated = 0;
         c.bytes_tx_unvalidated = 0;
-        std.debug.print("path: validated (peer={d} bytes_rx_unval reset)", .{c.peer.len});
+        std.debug.print("path: validated (peer={d} bytes_rx_unval reset)\n", .{c.peer.len});
     }
 
     fn nextTimeoutFromTimers(self: *Endpoint, now_ms: i64, requested_timeout_ms: i32) i32 {
@@ -3302,9 +3281,9 @@ pub const Endpoint = struct {
                     dcid; // fallback, should not happen
                 const initial = ks.deriveInitialSecret(v2, derive_dcid);
                 const pair = ks.deriveClientServerInitial(initial);
-                std.debug.print("server PTO: deriving Initial keys with odcid=", .{});
-                for (derive_dcid) |b| std.debug.print("{X:0>2}", .{b});
-                std.debug.print(" len={}", .{derive_dcid.len});
+                std.debug.print("server PTO: deriving Initial keys with odcid=\n", .{});
+                for (derive_dcid) |b| std.debug.print("{X:0>2}\n", .{b});
+                std.debug.print(" len={}\n", .{derive_dcid.len});
                 const tx_keys: packet.InitialKeys = if (v2) blk: {
                     const t = ks.deriveKeyIvHpV2(pair.server);
                     break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
@@ -3407,7 +3386,7 @@ fn senderPaced(ctx: *anyopaque, c: *conn_mod.Connection, data: []const u8) !usiz
             if (sa.family == posix.AF.INET) {
                 const sin: *const posix.sockaddr.in = @ptrCast(&c.peer.storage);
                 const addr_bytes = @as([4]u8, @bitCast(sin.addr));
-                std.debug.print("senderPaced using peer addr {}.{}.{}.{}:{}", .{
+                std.debug.print("senderPaced using peer addr {}.{}.{}.{}:{}\n", .{
                     addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3],
                     std.mem.bigToNative(u16, sin.port)
                 });

@@ -381,10 +381,10 @@ pub fn buildServerHello(
 
     // QUIC transport parameters (mandatory for QUIC connections per RFC 9001)
     if (quic_params) |params| {
-        std.debug.print("buildServerHello: Adding QUIC transport parameters extension, {} bytes", .{params.len});
+        std.debug.print("buildServerHello: Adding QUIC transport parameters extension, {} bytes\n", .{params.len});
         try writeExtension(allocator, &exts, .quic_transport_parameters, params);
     } else {
-        std.debug.print("buildServerHello: WARNING - No QUIC transport parameters provided", .{});
+        std.debug.print("buildServerHello: WARNING - No QUIC transport parameters provided\n", .{});
     }
 
     // Write extensions length
