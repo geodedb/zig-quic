@@ -1110,6 +1110,17 @@ pub const Connection = struct {
         // derive ECDHE shared secret and Handshake keys immediately.
         // The ServerHello + handshake flight will be queued and sent later in endpoint.zig
         // when we're ready to transmit Handshake packets.
+
+        // DEBUG: Check Path 1 condition
+        if (self.role == .Server) {
+            std.debug.print("DEBUG pushCrypto: role={s}, hs_client={}, had_peer_pub={}, peer_pub_now={}\n", .{
+                if (self.role == .Server) "Server" else "Client",
+                self.hs_client != null,
+                had_peer_pub,
+                self.tls.peer_pub != null,
+            });
+        }
+
         if (self.role == .Server and self.hs_client == null and !had_peer_pub and self.tls.peer_pub != null) {
             std.debug.print("Server: ClientHello parsed with peer public key, deriving Handshake keys\n", .{});
 
@@ -1189,6 +1200,50 @@ pub const Connection = struct {
                 self.hs_client = hs_secrets.client;
                 self.hs_server = hs_secrets.server;
                 self.deriveHandshakeKeys(self.version_v2);
+
+                // FIX: Path 2 must also queue handshake flight for servers
+                // This handles the case where ClientHello was fragmented across multiple CRYPTO frames,
+                // causing Path 1's condition (!had_peer_pub) to fail on subsequent frames.
+                if (self.role == .Server) {
+                    // Queue ServerHello if not already queued
+                    if (!self.tls.sh_seen) {
+                        self.tls.queueRealServerHello() catch |err| {
+                            std.debug.print("Server: Failed to queue ServerHello in Path 2: {}\n", .{err});
+                            return;
+                        };
+                    }
+
+                    // Queue the complete handshake flight (EncryptedExtensions + Certificate + CertificateVerify + Finished)
+                    std.debug.print("Server: Path 2 - queueing complete handshake flight\n", .{});
+
+                    // 1. EncryptedExtensions (with ALPN and transport parameters)
+                    const alpn = if (self.tls.alpn) |a| a else "hq-interop";
+                    const local_tp = self.tls.local_tp orelse &[_]u8{};
+                    self.tls.queueEncryptedExtensions(alpn, local_tp) catch |err| {
+                        std.debug.print("Server: Failed to queue EncryptedExtensions in Path 2: {}\n", .{err});
+                    };
+
+                    // 2. Certificate (if we have one)
+                    if (self.tls.server_cert_der) |cert| {
+                        self.tls.queueCertificate(cert) catch {
+                            std.debug.print("Server: Failed to queue Certificate in Path 2\n", .{});
+                        };
+
+                        // 3. CertificateVerify (signature over transcript)
+                        if (self.tls.server_priv_key != null and self.tls.server_sig_alg != null) {
+                            self.tls.queueCertificateVerify() catch {
+                                std.debug.print("Server: Failed to queue CertificateVerify in Path 2\n", .{});
+                            };
+                        }
+                    }
+
+                    // 4. Finished (MAC over transcript using handshake traffic secret)
+                    self.tls.queueFinished(hs_secrets.server) catch |err| {
+                        std.debug.print("Server: Failed to queue Finished in Path 2: {}\n", .{err});
+                    };
+
+                    std.debug.print("Server: Path 2 - Complete handshake flight queued, outbox len={}\n", .{self.tls.outbox.items.len});
+                }
             } else {
                 const ch_status = if (self.role == .Server) self.tls.ch_recv else self.tls.ch_sent;
                 std.debug.print("{s}: Cannot derive handshake secrets yet (ch_{s}={}, sh_seen={}, ecdhe={})\n", .{ if (self.role == .Server) "Server" else "Client", if (self.role == .Server) "recv" else "sent", ch_status, self.tls.sh_seen, self.tls.ecdhe_secret != null });
