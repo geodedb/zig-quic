@@ -32,6 +32,12 @@ const logger = @import("quic_logger");
 const transport_params = @import("quic_transport_params");
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 
+/// View of negotiated handshake metadata surfaced to the QUIC connection layer.
+pub const HandshakeMetadata = struct {
+    alpn: ?[]const u8 = null,
+    local_transport_parameters: ?[]const u8 = null,
+};
+
 pub const SignatureScheme = tls13_full.SignatureScheme;
 
 /// RFC 8446 §4 and §7 describe the handshake protocol and key schedule. `Config` captures
@@ -52,6 +58,10 @@ pub const Config = struct {
 pub const Callbacks = struct {
     /// Called when a new encryption secret becomes available during the handshake.
     on_secret_available: ?*const fn (ctx: *Context, level: EncryptionLevel, secret: [H.digest_length]u8) anyerror!void = null,
+    /// Called once the context has selected ALPN and transport parameters for the connection.
+    on_handshake_metadata: ?*const fn (ctx: *Context, meta: HandshakeMetadata) anyerror!void = null,
+    /// Called when the peer's Finished message has been verified.
+    on_peer_finished: ?*const fn (ctx: *Context) anyerror!void = null,
     /// Called when the TLS handshake completes successfully.
     on_handshake_complete: ?*const fn (ctx: *Context) anyerror!void = null,
     /// Called to fetch the certificate chain for local authentication.
@@ -72,6 +82,7 @@ pub const HandshakeError = error{
     MissingTransportParameters,
     AlpnNegotiationFailed,
     NoSignatureScheme,
+    FinishedVerifyFailed,
 };
 
 /// Traffic direction relative to the current endpoint when installing secrets (RFC 8446 §7.1).
@@ -127,6 +138,10 @@ fn freeParsedClientHello(allocator: std.mem.Allocator, parsed: *tls13_full.Clien
     }
     if (parsed.signature_algorithms) |algs| {
         if (algs.len != 0) allocator.free(@constCast(algs));
+    }
+    if (parsed.pre_shared_key) |psk| {
+        if (psk.identities.len != 0) allocator.free(psk.identities);
+        if (psk.binders.len != 0) allocator.free(@constCast(psk.binders));
     }
     if (parsed.alpn_list) |list| {
         if (list.len != 0) allocator.free(@constCast(list));
@@ -222,6 +237,18 @@ pub const ClientHelloKeyShareView = struct {
     key: []const u8,
 };
 
+/// View of a pre-shared key identity advertised by the client.
+pub const ClientHelloPskIdentityView = struct {
+    identity: []const u8,
+    obfuscated_ticket_age: u32,
+};
+
+/// View of the pre_shared_key extension contents.
+pub const ClientHelloPreSharedKeyView = struct {
+    identities: []const ClientHelloPskIdentityView,
+    binders: []const []const u8,
+};
+
 /// Immutable view returned by `Context.clientHello()` describing the parsed ClientHello.
 pub const ClientHelloView = struct {
     random: [32]u8,
@@ -233,7 +260,18 @@ pub const ClientHelloView = struct {
     quic_transport_parameters: ?[]const u8,
     alpn_list: ?[]const []const u8,
     early_data: bool,
+    pre_shared_key: ?ClientHelloPreSharedKeyView,
     raw: []const u8,
+};
+
+const PskIdentityOwned = struct {
+    identity: []const u8,
+    obfuscated_ticket_age: u32,
+};
+
+const PreSharedKeyInfo = struct {
+    identities: []PskIdentityOwned,
+    binders: []const []const u8,
 };
 
 const ClientHelloInfo = struct {
@@ -249,6 +287,7 @@ const ClientHelloInfo = struct {
     quic_transport_parameters: ?[]u8,
     alpn_list: ?[]const []const u8,
     early_data: bool,
+    pre_shared_key: ?PreSharedKeyInfo,
     raw: []u8,
 
     fn parse(allocator: std.mem.Allocator, body: []const u8) !ClientHelloInfo {
@@ -319,6 +358,48 @@ const ClientHelloInfo = struct {
             }
         };
 
+        var psk_copy: ?PreSharedKeyInfo = null;
+        if (parsed.pre_shared_key) |psk_ext| {
+            const ids = try allocator.alloc(PskIdentityOwned, psk_ext.identities.len);
+            var ids_filled: usize = 0;
+            errdefer {
+                while (ids_filled != 0) {
+                    ids_filled -= 1;
+                    const ident = ids[ids_filled];
+                    if (ident.identity.len != 0) allocator.free(@constCast(ident.identity));
+                }
+                allocator.free(ids);
+            }
+
+            while (ids_filled < psk_ext.identities.len) : (ids_filled += 1) {
+                const src = psk_ext.identities[ids_filled];
+                const dup = try allocator.dupe(u8, src.identity);
+                ids[ids_filled] = .{
+                    .identity = dup,
+                    .obfuscated_ticket_age = src.obfuscated_ticket_age,
+                };
+            }
+
+            const binders = try allocator.alloc([]const u8, psk_ext.binders.len);
+            var binders_filled: usize = 0;
+            errdefer {
+                while (binders_filled != 0) {
+                    binders_filled -= 1;
+                    const binder = binders[binders_filled];
+                    if (binder.len != 0) allocator.free(@constCast(binder));
+                }
+                allocator.free(binders);
+            }
+
+            while (binders_filled < psk_ext.binders.len) : (binders_filled += 1) {
+                const src = psk_ext.binders[binders_filled];
+                const dup = try allocator.dupe(u8, src);
+                binders[binders_filled] = dup;
+            }
+
+            psk_copy = .{ .identities = ids, .binders = binders };
+        }
+
         const info = ClientHelloInfo{
             .random = parsed.random,
             .session_id = session_id_copy,
@@ -329,6 +410,7 @@ const ClientHelloInfo = struct {
             .quic_transport_parameters = tp_copy,
             .alpn_list = alpn_copy,
             .early_data = parsed.early_data,
+            .pre_shared_key = psk_copy,
             .raw = raw_copy,
         };
 
@@ -348,6 +430,16 @@ const ClientHelloInfo = struct {
                 if (proto.len != 0) allocator.free(@constCast(proto));
             }
             if (list.len != 0) allocator.free(@constCast(list));
+        }
+        if (self.pre_shared_key) |psk| {
+            for (psk.identities) |ident| {
+                if (ident.identity.len != 0) allocator.free(@constCast(ident.identity));
+            }
+            if (psk.identities.len != 0) allocator.free(psk.identities);
+            for (psk.binders) |binder| {
+                if (binder.len != 0) allocator.free(@constCast(binder));
+            }
+            if (psk.binders.len != 0) allocator.free(@constCast(psk.binders));
         }
         if (self.raw.len != 0) allocator.free(self.raw);
     }
@@ -385,6 +477,14 @@ const HandshakeState = struct {
                 .quic_transport_parameters = info.quic_transport_parameters,
                 .alpn_list = info.alpn_list,
                 .early_data = info.early_data,
+                .pre_shared_key = if (info.pre_shared_key) |psk| blk: {
+                    const base_ptr = @as([*]const ClientHelloPskIdentityView, @ptrCast(psk.identities.ptr));
+                    const identities_view = base_ptr[0..psk.identities.len];
+                    break :blk ClientHelloPreSharedKeyView{
+                        .identities = identities_view,
+                        .binders = psk.binders,
+                    };
+                } else null,
                 .raw = info.raw,
             };
         }
@@ -396,6 +496,7 @@ const HandshakeFlags = struct {
     peer_finished_verified: bool = false,
     local_finished_sent: bool = false,
     alert: ?u8 = null,
+    metadata_notified: bool = false,
 
     fn reset(self: *HandshakeFlags) void {
         self.* = HandshakeFlags{};
@@ -472,6 +573,7 @@ pub const Context = struct {
     local_transport_parameters: ?[]u8 = null,
     negotiated_alpn: ?[]u8 = null,
     negotiated_signature: ?tls13_full.SignatureScheme = null,
+    handshake_secret: ?[H.digest_length]u8 = null,
 
     /// Initializes a new TLS 1.3 context with the specified configuration and callbacks.
     pub fn init(config: Config, callbacks: Callbacks) Context {
@@ -488,6 +590,7 @@ pub const Context = struct {
             .local_transport_parameters = null,
             .negotiated_alpn = null,
             .negotiated_signature = null,
+            .handshake_secret = null,
         };
     }
 
@@ -507,6 +610,7 @@ pub const Context = struct {
             self.negotiated_alpn = null;
         }
         self.negotiated_signature = null;
+        self.handshake_secret = null;
         self.phase = .initial;
     }
 
@@ -522,9 +626,11 @@ pub const Context = struct {
             const parsed = parsed_opt.?;
             const message_bytes = buffer[0..parsed.n];
 
-            try self.handleHandshakeMessage(level, parsed);
+            try self.handleHandshakeMessage(level, parsed, message_bytes);
             if (parsed.typ != .finished) {
                 self.transcripts.handshake.update(message_bytes);
+                try self.afterHandshakeMessage(level, parsed);
+            } else {
                 try self.afterHandshakeMessage(level, parsed);
             }
             stream.consume(parsed.n);
@@ -546,6 +652,19 @@ pub const Context = struct {
         return self.flags.peer_finished_verified and self.flags.local_finished_sent;
     }
 
+    /// Returns a view of ALPN/transport parameters selected so far.
+    pub fn metadataView(self: *const Context) HandshakeMetadata {
+        return .{
+            .alpn = self.negotiated_alpn,
+            .local_transport_parameters = self.local_transport_parameters,
+        };
+    }
+
+    /// Returns the encoded local transport parameters if configured.
+    pub fn localTransportParameters(self: *const Context) ?[]const u8 {
+        return self.local_transport_parameters;
+    }
+
     /// Cache a freshly derived traffic secret and notify the embedder (RFC 8446 §7.1).
     pub fn installTrafficSecret(self: *Context, level: EncryptionLevel, dir: TrafficDirection, secret: [H.digest_length]u8) !void {
         var slot = self.secrets.slot(level, dir);
@@ -564,6 +683,9 @@ pub const Context = struct {
     /// Mark that the peer Finished verified successfully (§4.4.4) and update phase state.
     pub fn confirmPeerFinished(self: *Context) void {
         self.flags.peer_finished_verified = true;
+        if (self.callbacks.on_peer_finished) |cb| {
+            cb(self) catch {};
+        }
         self.bumpPhaseAfterFinished();
     }
 
@@ -594,8 +716,7 @@ pub const Context = struct {
         return self.negotiated_signature;
     }
 
-    fn handleHandshakeMessage(self: *Context, level: EncryptionLevel, parsed: HandshakeMessage) !void {
-        _ = level;
+    fn handleHandshakeMessage(self: *Context, level: EncryptionLevel, parsed: HandshakeMessage, raw: []const u8) !void {
         switch (parsed.typ) {
             .client_hello => {
                 if (self.config.role != .Server) return HandshakeError.UnexpectedMessage;
@@ -604,19 +725,64 @@ pub const Context = struct {
                     self.phase = .negotiating;
                 }
             },
+            .finished => try self.handlePeerFinished(level, parsed.body, raw),
             else => {},
         }
     }
 
     fn afterHandshakeMessage(self: *Context, level: EncryptionLevel, parsed: HandshakeMessage) !void {
-        _ = level;
         switch (parsed.typ) {
             .client_hello => {
                 if (self.config.role != .Server) return;
                 self.transcripts.client_hello_hash = self.transcripts.handshake.finalize();
                 try self.driveServerHandshakeFlight();
             },
+            .finished => try self.handleFinishedPostActions(level),
             else => {},
+        }
+    }
+
+    fn handlePeerFinished(self: *Context, level: EncryptionLevel, verify_data: []const u8, raw: []const u8) !void {
+        if (level != .Handshake) return HandshakeError.UnexpectedMessage;
+        if (verify_data.len != H.digest_length) return HandshakeError.FinishedVerifyFailed;
+
+        const slot = self.secrets.slot(.Handshake, .recv);
+        if (!slot.valid) return HandshakeError.UnexpectedMessage;
+
+        var transcript_snapshot = self.transcripts.handshake;
+        const transcript_hash = transcript_snapshot.finalize();
+        const expected = deriveFinishedVerifyData(slot.value, transcript_hash);
+        if (!std.mem.eql(u8, expected[0..], verify_data)) return HandshakeError.FinishedVerifyFailed;
+
+        self.transcripts.finished_hash = transcript_hash;
+        self.transcripts.handshake.update(raw);
+    }
+
+    fn handleFinishedPostActions(self: *Context, level: EncryptionLevel) !void {
+        if (level != .Handshake) return;
+        try self.ensureApplicationSecrets();
+        self.confirmPeerFinished();
+    }
+
+    fn ensureApplicationSecrets(self: *Context) !void {
+        const send_slot = self.secrets.slot(.Application, .send);
+        const recv_slot = self.secrets.slot(.Application, .recv);
+        if (send_slot.valid and recv_slot.valid) return;
+
+        const hs_secret = self.handshake_secret orelse return HandshakeError.UnexpectedMessage;
+        var transcript_snapshot = self.transcripts.handshake;
+        const transcript_hash = transcript_snapshot.finalize();
+        const apps = deriveApplicationTraffic(hs_secret, transcript_hash);
+
+        switch (self.config.role) {
+            .Server => {
+                if (!send_slot.valid) try self.installTrafficSecret(.Application, .send, apps.server_app);
+                if (!recv_slot.valid) try self.installTrafficSecret(.Application, .recv, apps.client_app);
+            },
+            .Client => {
+                if (!send_slot.valid) try self.installTrafficSecret(.Application, .send, apps.client_app);
+                if (!recv_slot.valid) try self.installTrafficSecret(.Application, .recv, apps.server_app);
+            },
         }
     }
 
@@ -734,6 +900,7 @@ pub const Context = struct {
 
         const transcript_after_sh = self.transcripts.handshake.finalize();
         const hs = deriveHandshakeTraffic(shared[0..], transcript_after_sh);
+        self.handshake_secret = hs.handshake;
         try self.installTrafficSecret(.Handshake, .send, hs.server_hs);
         try self.installTrafficSecret(.Handshake, .recv, hs.client_hs);
         if (self.phase == .negotiating) {
@@ -742,6 +909,7 @@ pub const Context = struct {
 
         const server_tp = try self.ensureLocalTransportParameters();
         const selected_alpn = try self.selectServerAlpn(ch_view);
+        self.notifyMetadata();
         const ee_body = try tls13_full.buildEncryptedExtensions(
             self.allocator,
             selected_alpn,
@@ -762,6 +930,14 @@ pub const Context = struct {
         try self.appendOutbound(.Handshake, fin_msg, true);
 
         self.markLocalFinished();
+    }
+
+    fn notifyMetadata(self: *Context) void {
+        if (self.flags.metadata_notified) return;
+        if (self.callbacks.on_handshake_metadata) |cb| {
+            cb(self, self.metadataView()) catch {};
+        }
+        self.flags.metadata_notified = true;
     }
 };
 
@@ -934,6 +1110,7 @@ pub const Transcript = struct {
 /// - transcript_hash: Hash(ClientHello ... ServerHello)
 /// Assumes no PSK (early_secret is HKDF-Extract(0, 0)).
 pub fn deriveHandshakeTraffic(ecdhe_secret: []const u8, transcript_hash: [H.digest_length]u8) struct {
+    handshake: [H.digest_length]u8,
     client_hs: [H.digest_length]u8,
     server_hs: [H.digest_length]u8,
 } {
@@ -949,7 +1126,7 @@ pub fn deriveHandshakeTraffic(ecdhe_secret: []const u8, transcript_hash: [H.dige
     var s_hs: [H.digest_length]u8 = undefined;
     ks.expandLabel(handshake_secret, "c hs traffic", &transcript_hash, &c_hs) catch unreachable;
     ks.expandLabel(handshake_secret, "s hs traffic", &transcript_hash, &s_hs) catch unreachable;
-    return .{ .client_hs = c_hs, .server_hs = s_hs };
+    return .{ .handshake = handshake_secret, .client_hs = c_hs, .server_hs = s_hs };
 }
 
 /// QUIC key material derived from a TLS traffic secret.

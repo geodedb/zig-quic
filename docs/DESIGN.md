@@ -4,13 +4,13 @@ This project provides a production-grade QUIC v1/v2 (RFC 9000/9001/9002) library
 
 Key principles:
 
-- std.crypto for AES-128-GCM and ChaCha20-Poly1305; vendored Ed25519 from vendor/ed25519/; complete TLS 1.3 implementation in-repo.
+- std.crypto for AES-128-GCM and ChaCha20-Poly1305; vendored Ed25519 from vendor/ed25519/; TLS 1.3 handshake engine implemented in-repo.
 - Strict parsing, constant-time crypto, zeroization of secrets.
 - Event loop abstraction over epoll/kqueue/IOCP using std.os.
 - Separation of transport, crypto, recovery, and congestion control.
 - Deterministic tests/fuzz seeds for reproducibility.
 
-The implementation is complete with 63 passing tests covering all major features including 0-RTT, resumption, migration, and key updates.
+Implementation status: the stack is under active development. Core QUIC transport, recovery, and an expanding TLS 1.3 handshake engine are in place, with authentication, resumption, and additional key-update workflows tracked in `docs/GAP.md` and `docs/NEXT.md`.
 
 ## TLS 1.3 Record Layer
 
@@ -21,8 +21,11 @@ The implementation is complete with 63 passing tests covering all major features
 ## TLS Handshake Context
 
 - `Context.processCrypto` parses ClientHello into an owned `HandshakeState` record covering session_id, cipher suites, supported versions, X25519 key share, QUIC transport parameters, and the ALPN protocol list so downstream logic can inspect offers without aliasing packet buffers. `Context.clientHello()` exposes an immutable view for policy decisions.
+- ClientHello PSK offers (identities + binders) are duplicated into owned storage so `ClientHelloView.pre_shared_key` can surface them for future resumption/0-RTT logic while the current implementation continues with the full handshake path.
 - `driveServerHandshakeFlight()` intersects the configured ALPN preferences with the cached ClientHello list, emits the ALPN (0x0010) extension when a match exists, and stores the negotiated protocol via `Context.negotiatedAlpn()`. Absent overlap, the server aborts with `HandshakeError.AlpnNegotiationFailed`, enforcing RFC 7301 requirements. Regression coverage in `tests/test_tls_handshake_context.zig` exercises capture, success, and failure cases.
 - `ensureLocalTransportParameters()` duplicates the configured QUIC transport-parameter blob so EncryptedExtensions always carries extension 0x0039 per RFC 9001 §8.2, and `tests/test_tls_handshake_context.zig` covers the emitted payload end-to-end.
+- Peer Finished handling snapshots the handshake transcript, validates `verify_data` using the installed handshake receive secret, and only then mutates the running transcript hash. Once verification succeeds the context derives application traffic secrets exactly once per role and promotes the handshake to `application_ready`, matching RFC 8446 §4.4.4/§7.1 sequencing. The new regression test builds a synthetic client Finished to validate this transition.
+- `Context.metadataView()` and the `on_handshake_metadata` callback surface the negotiated ALPN and encoded local transport parameters immediately after EncryptedExtensions emission, giving the QUIC layer enough information to program short-header state. When the peer Finished verifies, `confirmPeerFinished()` invokes the optional `on_peer_finished` callback before the existing `on_handshake_complete` notification so embedders can gate application data release.
 
 ## ACK handling and ECN propagation
 

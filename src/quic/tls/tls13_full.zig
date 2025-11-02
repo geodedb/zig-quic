@@ -93,6 +93,7 @@ pub const ClientHello = struct {
     alpn_list: ?[]const []const u8 = null,
     quic_transport_parameters: ?[]const u8 = null,
     psk_key_exchange_modes: ?[]const u8 = null,
+    pre_shared_key: ?PreSharedKey = null,
     early_data: bool = false,
 };
 
@@ -100,6 +101,18 @@ pub const ClientHello = struct {
 pub const KeyShareEntry = struct {
     group: NamedGroup,
     key_exchange: []const u8,
+};
+
+/// TLS 1.3 Pre-Shared Key identity entry (RFC 8446 §4.2.11).
+pub const PskIdentity = struct {
+    identity: []const u8,
+    obfuscated_ticket_age: u32,
+};
+
+/// TLS 1.3 pre_shared_key extension payload contents.
+pub const PreSharedKey = struct {
+    identities: []PskIdentity,
+    binders: []const []const u8,
 };
 
 /// Parse a full TLS 1.3 ClientHello
@@ -305,6 +318,58 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
             },
             .psk_key_exchange_modes => {
                 ch.psk_key_exchange_modes = ext_data;
+            },
+            .pre_shared_key => {
+                if (ext_data.len < 2) return error.TooShort;
+                const identities_len = readU16(ext_data[0..2]);
+                if (identities_len + 2 > ext_data.len) return error.TooShort;
+
+                var identities = try std.ArrayList(PskIdentity).initCapacity(allocator, 0);
+                defer identities.deinit(allocator);
+
+                var id_pos: usize = 2;
+                const identities_end = 2 + identities_len;
+                while (id_pos < identities_end) {
+                    if (id_pos + 2 > identities_end) return error.TooShort;
+                    const identity_len = readU16(ext_data[id_pos .. id_pos + 2]);
+                    id_pos += 2;
+                    if (id_pos + identity_len > identities_end) return error.TooShort;
+                    const identity_bytes = ext_data[id_pos .. id_pos + identity_len];
+                    id_pos += identity_len;
+                    if (id_pos + 4 > identities_end) return error.TooShort;
+                    const ticket_age = readU32(ext_data[id_pos .. id_pos + 4]);
+                    id_pos += 4;
+                    try identities.append(allocator, .{
+                        .identity = identity_bytes,
+                        .obfuscated_ticket_age = ticket_age,
+                    });
+                }
+                if (id_pos != identities_end) return error.TooShort;
+
+                if (id_pos + 2 > ext_data.len) return error.TooShort;
+                const binders_len = readU16(ext_data[id_pos .. id_pos + 2]);
+                id_pos += 2;
+                if (id_pos + binders_len > ext_data.len) return error.TooShort;
+
+                var binders = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+                defer binders.deinit(allocator);
+
+                var binder_pos: usize = 0;
+                while (binder_pos < binders_len) {
+                    if (binder_pos >= binders_len) return error.TooShort;
+                    const binder_len = ext_data[id_pos + binder_pos];
+                    binder_pos += 1;
+                    if (binder_pos + binder_len > binders_len) return error.TooShort;
+                    const binder_slice = ext_data[id_pos + binder_pos .. id_pos + binder_pos + binder_len];
+                    binder_pos += binder_len;
+                    try binders.append(allocator, binder_slice);
+                }
+                if (binder_pos != binders_len) return error.TooShort;
+
+                ch.pre_shared_key = PreSharedKey{
+                    .identities = try identities.toOwnedSlice(allocator),
+                    .binders = try binders.toOwnedSlice(allocator),
+                };
             },
             .early_data => {
                 ch.early_data = true;
@@ -534,6 +599,10 @@ fn readU16(data: []const u8) u16 {
 
 fn readU24(data: []const u8) u24 {
     return (@as(u24, data[0]) << 16) | (@as(u24, data[1]) << 8) | data[2];
+}
+
+fn readU32(data: []const u8) u32 {
+    return (@as(u32, data[0]) << 24) | (@as(u32, data[1]) << 16) | (@as(u32, data[2]) << 8) | data[3];
 }
 
 fn writeExtension(

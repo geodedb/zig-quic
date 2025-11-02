@@ -4,6 +4,29 @@ const transport_params = @import("quic_transport_params");
 
 const default_signature_schemes = [_]u16{ 0x0807, 0x0403 };
 
+var metadata_callback_count: usize = 0;
+var metadata_alpn_seen: bool = false;
+var metadata_tp_seen: bool = false;
+var peer_finished_callback_count: usize = 0;
+var handshake_complete_callback_count: usize = 0;
+
+fn testOnMetadata(ctx: *tls13.Context, meta: tls13.HandshakeMetadata) anyerror!void {
+    _ = ctx;
+    metadata_callback_count += 1;
+    metadata_alpn_seen = meta.alpn != null;
+    metadata_tp_seen = meta.local_transport_parameters != null;
+}
+
+fn testOnPeerFinished(ctx: *tls13.Context) anyerror!void {
+    _ = ctx;
+    peer_finished_callback_count += 1;
+}
+
+fn testOnHandshakeComplete(ctx: *tls13.Context) anyerror!void {
+    _ = ctx;
+    handshake_complete_callback_count += 1;
+}
+
 fn buildServerTransportParams(alloc: std.mem.Allocator) ![]u8 {
     var params = transport_params.TransportParams{
         .max_idle_timeout = 30,
@@ -20,7 +43,12 @@ fn buildServerTransportParams(alloc: std.mem.Allocator) ![]u8 {
     return try params.encode(alloc);
 }
 
-fn buildStandardClientHello(alloc: std.mem.Allocator, alpn: ?[]const []const u8, signature_schemes: []const u16) ![]u8 {
+fn buildStandardClientHello(
+    alloc: std.mem.Allocator,
+    alpn: ?[]const []const u8,
+    signature_schemes: []const u16,
+    psk_identity: ?[]const u8,
+) ![]u8 {
     var sk: [32]u8 = undefined;
     std.crypto.random.bytes(&sk);
     const pk = try std.crypto.dh.X25519.recoverPublicKey(sk);
@@ -102,6 +130,26 @@ fn buildStandardClientHello(alloc: std.mem.Allocator, alpn: ?[]const []const u8,
         }
     }
 
+    if (psk_identity) |identity| {
+        // psk_key_exchange_modes (0x002d) offering psk_dhe_ke (0x01)
+        try ext_buf.appendSlice(alloc, &.{ 0x00, 0x2d, 0x00, 0x02, 0x01, 0x01 });
+
+        const identity_len: u16 = @intCast(identity.len);
+        const identities_vec_len: u16 = @intCast(2 + identity_len + 4);
+        const binders_vec_len: u16 = @intCast(1 + tls13.H.digest_length);
+        const total_psk_len: u16 = @intCast(2 + identities_vec_len + 2 + binders_vec_len);
+
+        try ext_buf.appendSlice(alloc, &.{ 0x00, 0x29, @intCast(total_psk_len >> 8), @intCast(total_psk_len & 0xff) });
+        try ext_buf.appendSlice(alloc, &.{ @intCast(identities_vec_len >> 8), @intCast(identities_vec_len & 0xff) });
+        try ext_buf.appendSlice(alloc, &.{ @intCast(identity_len >> 8), @intCast(identity_len & 0xff) });
+        try ext_buf.appendSlice(alloc, identity);
+        try ext_buf.appendSlice(alloc, &.{ 0, 0, 0, 0 });
+        try ext_buf.appendSlice(alloc, &.{ @intCast(binders_vec_len >> 8), @intCast(binders_vec_len & 0xff) });
+        try ext_buf.append(alloc, @as(u8, @intCast(tls13.H.digest_length)));
+        var binder: [tls13.H.digest_length]u8 = .{0} ** tls13.H.digest_length;
+        try ext_buf.appendSlice(alloc, &binder);
+    }
+
     const exts_len: u16 = @intCast(ext_buf.items.len);
     try body.appendSlice(alloc, &.{ @intCast(exts_len >> 8), @intCast(exts_len & 0xff) });
     try body.appendSlice(alloc, ext_buf.items);
@@ -137,7 +185,7 @@ test "context parses ClientHello and stores handshake view" {
     var ctx = tls13.Context.init(config, .{});
     defer ctx.deinit();
 
-    const ch = try buildStandardClientHello(alloc, null, default_signature_schemes[0..]);
+    const ch = try buildStandardClientHello(alloc, null, default_signature_schemes[0..], null);
     defer alloc.free(ch);
 
     try ctx.processCrypto(.Initial, ch);
@@ -176,7 +224,7 @@ test "context captures ClientHello ALPN list" {
     defer ctx.deinit();
 
     const client_alpn = [_][]const u8{ "h3", "hq-interop" };
-    const ch = try buildStandardClientHello(alloc, client_alpn[0..], default_signature_schemes[0..]);
+    const ch = try buildStandardClientHello(alloc, client_alpn[0..], default_signature_schemes[0..], null);
     defer alloc.free(ch);
 
     try ctx.processCrypto(.Initial, ch);
@@ -192,6 +240,38 @@ test "context captures ClientHello ALPN list" {
     }
 }
 
+test "context captures pre_shared_key offer" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const alloc = gpa.allocator();
+
+    const server_tp = try buildServerTransportParams(alloc);
+    defer alloc.free(server_tp);
+
+    const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp };
+    var ctx = tls13.Context.init(config, .{});
+    defer ctx.deinit();
+
+    const psk_identity = "ticket-123";
+    const ch = try buildStandardClientHello(alloc, null, default_signature_schemes[0..], psk_identity);
+    defer alloc.free(ch);
+
+    try ctx.processCrypto(.Initial, ch);
+
+    const view_opt = ctx.clientHello();
+    try std.testing.expect(view_opt != null);
+    const view = view_opt.?;
+
+    try std.testing.expect(view.pre_shared_key != null);
+    const psk = view.pre_shared_key.?;
+    try std.testing.expectEqual(@as(usize, 1), psk.identities.len);
+    try std.testing.expectEqualSlices(u8, psk_identity, psk.identities[0].identity);
+    try std.testing.expectEqual(@as(u32, 0), psk.identities[0].obfuscated_ticket_age);
+    try std.testing.expectEqual(@as(usize, 1), psk.binders.len);
+    try std.testing.expectEqual(@as(usize, tls13.H.digest_length), psk.binders[0].len);
+    try std.testing.expect(std.mem.allEqual(u8, psk.binders[0], 0));
+}
+
 test "server emits ServerHello flight with Finished" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -204,7 +284,7 @@ test "server emits ServerHello flight with Finished" {
     var ctx = tls13.Context.init(config, .{});
     defer ctx.deinit();
 
-    const ch = try buildStandardClientHello(alloc, null, default_signature_schemes[0..]);
+    const ch = try buildStandardClientHello(alloc, null, default_signature_schemes[0..], null);
     defer alloc.free(ch);
 
     try ctx.processCrypto(.Initial, ch);
@@ -252,6 +332,73 @@ test "server emits ServerHello flight with Finished" {
     try std.testing.expect(ctx.transcripts.finished_hash != null);
 }
 
+test "server verifies client Finished and derives application secrets" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const alloc = gpa.allocator();
+
+    metadata_callback_count = 0;
+    metadata_alpn_seen = false;
+    metadata_tp_seen = false;
+    peer_finished_callback_count = 0;
+    handshake_complete_callback_count = 0;
+
+    const callbacks = tls13.Callbacks{
+        .on_handshake_metadata = testOnMetadata,
+        .on_peer_finished = testOnPeerFinished,
+        .on_handshake_complete = testOnHandshakeComplete,
+    };
+    const server_tp = try buildServerTransportParams(alloc);
+    defer alloc.free(server_tp);
+
+    const server_alpn = [_][]const u8{"hq-interop"};
+    const config = tls13.Config{
+        .allocator = alloc,
+        .role = .Server,
+        .quic_transport_parameters = server_tp,
+        .alpn_protocols = server_alpn[0..],
+    };
+    var ctx = tls13.Context.init(config, callbacks);
+    defer ctx.deinit();
+
+    const ch = try buildStandardClientHello(alloc, server_alpn[0..], default_signature_schemes[0..], null);
+    defer alloc.free(ch);
+
+    try ctx.processCrypto(.Initial, ch);
+
+    const initial_bytes = try ctx.pollCrypto(alloc, .Initial);
+    defer alloc.free(initial_bytes);
+
+    const handshake_bytes = try ctx.pollCrypto(alloc, .Handshake);
+    defer alloc.free(handshake_bytes);
+
+    const recv_slot = ctx.secrets.slot(.Handshake, .recv);
+    try std.testing.expect(recv_slot.valid);
+
+    var transcript_snapshot = ctx.transcripts.handshake;
+    const transcript_hash = transcript_snapshot.finalize();
+    const verify_data = tls13.deriveFinishedVerifyData(recv_slot.value, transcript_hash);
+
+    const client_finished = try tls13.encodeHandshake(alloc, .finished, verify_data[0..]);
+    defer alloc.free(client_finished);
+
+    try ctx.processCrypto(.Handshake, client_finished);
+
+    try std.testing.expect(ctx.handshakeComplete());
+    try std.testing.expectEqual(tls13.HandshakePhase.application_ready, ctx.phase);
+    try std.testing.expect(ctx.secrets.slot(.Application, .send).valid);
+    try std.testing.expect(ctx.secrets.slot(.Application, .recv).valid);
+    try std.testing.expectEqual(@as(usize, 1), metadata_callback_count);
+    try std.testing.expect(metadata_alpn_seen);
+    try std.testing.expect(metadata_tp_seen);
+    try std.testing.expectEqual(@as(usize, 1), peer_finished_callback_count);
+    try std.testing.expectEqual(@as(usize, 1), handshake_complete_callback_count);
+
+    const meta = ctx.metadataView();
+    try std.testing.expect(meta.alpn != null);
+    try std.testing.expect(meta.local_transport_parameters != null);
+}
+
 test "server records negotiated signature algorithm" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -264,7 +411,7 @@ test "server records negotiated signature algorithm" {
     var ctx = tls13.Context.init(config, .{});
     defer ctx.deinit();
 
-    const ch = try buildStandardClientHello(alloc, null, default_signature_schemes[0..]);
+    const ch = try buildStandardClientHello(alloc, null, default_signature_schemes[0..], null);
     defer alloc.free(ch);
 
     try ctx.processCrypto(.Initial, ch);
@@ -286,7 +433,7 @@ test "server rejects client without compatible signature algorithm" {
     defer ctx.deinit();
 
     const incompatible_schemes = [_]u16{0x0403};
-    const ch = try buildStandardClientHello(alloc, null, incompatible_schemes[0..]);
+    const ch = try buildStandardClientHello(alloc, null, incompatible_schemes[0..], null);
     defer alloc.free(ch);
 
     try std.testing.expectError(tls13.HandshakeError.NoSignatureScheme, ctx.processCrypto(.Initial, ch));
@@ -312,7 +459,7 @@ test "server negotiates ALPN when offered" {
     defer ctx.deinit();
 
     const client_alpn = [_][]const u8{ "h3", "hq-interop" };
-    const ch = try buildStandardClientHello(alloc, client_alpn[0..], default_signature_schemes[0..]);
+    const ch = try buildStandardClientHello(alloc, client_alpn[0..], default_signature_schemes[0..], null);
     defer alloc.free(ch);
 
     try ctx.processCrypto(.Initial, ch);
@@ -398,7 +545,7 @@ test "server errors when ALPN required but absent" {
     var ctx = tls13.Context.init(config, .{});
     defer ctx.deinit();
 
-    const ch = try buildStandardClientHello(alloc, null, default_signature_schemes[0..]);
+    const ch = try buildStandardClientHello(alloc, null, default_signature_schemes[0..], null);
     defer alloc.free(ch);
 
     try std.testing.expectError(tls13.HandshakeError.AlpnNegotiationFailed, ctx.processCrypto(.Initial, ch));

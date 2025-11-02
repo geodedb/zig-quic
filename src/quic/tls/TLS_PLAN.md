@@ -51,8 +51,16 @@
   - `Context.processCrypto` now records the ClientHello transcript hash checkpoint and invokes `driveServerHandshakeFlight()` once, producing a ServerHello (TLS_AES_128_GCM_SHA256, x25519) on Initial CRYPTO, installing Handshake traffic secrets via `installTrafficSecret`, emitting EncryptedExtensions + Finished on Handshake CRYPTO, and caching the Finished pre-hash for later verification.
 - [x] Emit QUIC transport parameters (extension 0x0039) in EncryptedExtensions using configurable payload; regression covered in `tests/test_tls_handshake_context.zig`.
 - [x] Capture ClientHello ALPN offers, negotiate the server-preferred protocol, expose it via `Context.negotiatedAlpn()`, and fail the handshake with `HandshakeError.AlpnNegotiationFailed` when no overlap exists.
-- [ ] Support mandatory extension negotiation beyond ClientHello parsing (`signature_algorithms`, `pre_shared_key`) and surface negotiated transport parameters/ALPN into the outer QUIC connection wiring.
-- [ ] Manage transcript hash checkpoints (§4.4.1) and drive key schedule transitions (§7.1) across handshake flights, including Finished verification helpers.
+- [x] Surface negotiated handshake metadata and Finished verification state to the QUIC layer.
+  - `Context.notifyMetadata()` fires a single `on_handshake_metadata` callback carrying the negotiated ALPN and encoded local QUIC transport parameters, while `metadataView()` and `localTransportParameters()` expose the cached slices for later inspection.
+  - `confirmPeerFinished()` now triggers the optional `on_peer_finished` callback before promoting to `application_ready`, and `bumpPhaseAfterFinished()` retains the existing `on_handshake_complete` notification once both Finished messages are confirmed.
+- [x] Parse and cache `pre_shared_key` identities and binders so PSK-capable clients can be negotiated once resumption support lands while continuing the full handshake flow by default.
+- [ ] Surface negotiated transport parameters/ALPN into the outer QUIC connection wiring.
+- [x] Manage transcript hash checkpoints (§4.4.1) and drive key schedule transitions (§7.1) across handshake flights, including Finished verification helpers.
+  - Stored the handshake secret returned by `deriveHandshakeTraffic`, validated peer Finished messages against a transcript snapshot before mutating the running hash, and derived application send/receive secrets exactly once per endpoint role.
+  - Added `tests/test_tls_handshake_context.zig` coverage that synthesizes a peer Finished and asserts the context promotes to `application_ready` with both application slots populated.
+- [ ] Plumb verified Finished state into QUIC outer components (e.g., enabling short-header transmission gates) and surface negotiated transport parameters/ALPN to the connection layer.
+- [ ] Extend Finished handlers to cover client role, including transcript management when acting as initiator, and add negative tests for tampered verify_data.
 - [ ] Tests: end-to-end handshake happy path, downgrade attempt detection, malformed message rejection, and fuzz on ClientHello parsers/extension decoding.
 
 ### Phase 4 – Authentication & Certificates (RFC 8446 §4.4)
