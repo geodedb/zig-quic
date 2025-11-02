@@ -15,7 +15,6 @@ Date: 2025-09-20 (Current Implementation Status)
 ### Fully Implemented ✅
 
 - **QUIC v1 Transport** (RFC 9000): All packet types, frames, connection management
-- **TLS 1.3 Integration** (RFC 9001): Full handshake, key derivation, header protection
 - **Loss Recovery** (RFC 9002): PTO, RTT estimation, NewReno/CUBIC congestion control
 - **Advanced Features**: 0-RTT, resumption, migration, preferred address, ECN
 - **Connection ID Management**: Rotation, retirement, stateless reset tokens
@@ -28,6 +27,7 @@ Date: 2025-09-20 (Current Implementation Status)
 - **Certificate Handling**: Basic X.509, limited chain validation
 - **CUBIC**: Uses NewReno internally (functional but not full CUBIC)
 - **TLS 1.3 Record Layer**: Plaintext/inner-plaintext framing plus full AEAD wiring (AES-GCM, ChaCha20-Poly1305), nonce derivation, and usage-limit enforcement completed; fuzz harness still outstanding.
+- **TLS 1.3 Handshake Integration**: Context-based ClientHello ingestion, transcript updates, and metadata storage completed; ServerHello → Finished flight generation, secret installation, and alert mapping pending.
 
 ### Platform Specific
 

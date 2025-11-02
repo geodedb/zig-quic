@@ -45,11 +45,12 @@
 
 ### Phase 3 – Handshake Core (RFC 8446 §4)
 
-- Implement client/server state machines covering ClientHello through Finished (§4.1–§4.6).
-- Support mandatory extensions: supported_versions (§4.2.1), signature_algorithms (§4.2.3), key_share (§4.2.8), pre_shared_key (§4.2.11).
-- Manage transcript hash (§4.4.1) using `std.crypto.hash.sha2`.
-- Integrate key schedule transitions (§7.1) at each handshake flight.
-- Tests: handshake happy path, downgrade attempt detection, malformed message rejection, fuzz on ClientHello parsing.
+- [x] Wire `Context.processCrypto` to buffer Initial CRYPTO data, parse a spec-compliant ClientHello (supported_versions + x25519 key_share), persist transcript updates, and expose normalized handshake metadata for the QUIC server role.
+  - Added `HandshakeState` with owned ClientHello storage, view accessors, and `tests/test_tls_handshake_context.zig` covering parsing, transcript hashing, and duplicate-message rejection.
+- [ ] Implement server-side ServerHello → EncryptedExtensions → Finished flight production with transcript checkpoints and handshake secret installation.
+- [ ] Support mandatory extension negotiation beyond ClientHello parsing (signature_algorithms, pre_shared_key) and surface QUIC transport parameters/ALPN to the connection layer.
+- [ ] Manage transcript hash checkpoints (§4.4.1) and drive key schedule transitions (§7.1) across handshake flights, including Finished verification helpers.
+- [ ] Tests: end-to-end handshake happy path, downgrade attempt detection, malformed message rejection, and fuzz on ClientHello parsers/extension decoding.
 
 ### Phase 4 – Authentication & Certificates (RFC 8446 §4.4)
 

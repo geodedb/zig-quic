@@ -376,6 +376,11 @@ pub fn build(b: *std.Build) void {
         const run_test_tls_record = b.addRunArtifact(test_tls_record);
         test_step.dependOn(&run_test_tls_record.step);
 
+        const test_tls_context = addTst(b, "tests/test_tls_handshake_context.zig", target, optimize);
+        test_tls_context.root_module.addImport("quic_tls13", tls13_mod);
+        const run_test_tls_context = b.addRunArtifact(test_tls_context);
+        test_step.dependOn(&run_test_tls_context.step);
+
         const test_tls = addTst(b, "tests/test_tls_key_schedule.zig", target, optimize);
         test_tls.root_module.addImport("quic_tls", quic_tls_mod);
         const run_test_tls = b.addRunArtifact(test_tls);

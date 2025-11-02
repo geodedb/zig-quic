@@ -46,15 +46,25 @@ pub const Config = struct {
 /// Callback hooks notified during the handshake lifecycle (§4.1–§4.6) and post-handshake updates (§4.6).
 pub const Callbacks = struct {
     /// Called when a new encryption secret becomes available during the handshake.
-    on_secret_available: ?fn (ctx: *Context, level: EncryptionLevel, secret: [H.digest_length]u8) anyerror!void = null,
+    on_secret_available: ?*const fn (ctx: *Context, level: EncryptionLevel, secret: [H.digest_length]u8) anyerror!void = null,
     /// Called when the TLS handshake completes successfully.
-    on_handshake_complete: ?fn (ctx: *Context) anyerror!void = null,
+    on_handshake_complete: ?*const fn (ctx: *Context) anyerror!void = null,
     /// Called to fetch the certificate chain for local authentication.
-    fetch_certificate_chain: ?fn (ctx: *Context) anyerror![]const u8 = null,
+    fetch_certificate_chain: ?*const fn (ctx: *Context) anyerror![]const u8 = null,
 };
 
 /// Error type for TLS API operations.
 pub const ApiError = error{Unimplemented};
+
+/// Errors surfaced while parsing or sequencing TLS 1.3 handshake messages.
+pub const HandshakeError = error{
+    UnexpectedMessage,
+    DuplicateClientHello,
+    UnsupportedVersion,
+    MissingKeyShare,
+    UnsupportedKeyShareGroup,
+    NoCipherSuite,
+};
 
 /// Traffic direction relative to the current endpoint when installing secrets (RFC 8446 §7.1).
 pub const TrafficDirection = enum { send, recv };
@@ -87,6 +97,33 @@ pub const SecretSlot = struct {
         return self.value[0..];
     }
 };
+
+fn supportsTls13Version(encoded: []const u8) bool {
+    if (encoded.len < 1) return false;
+    const list_len = encoded[0];
+    const byte_count: usize = list_len;
+    if (encoded.len < 1 + byte_count) return false;
+    if ((byte_count & 1) != 0) return false;
+    var offset: usize = 1;
+    while (offset + 1 < 1 + byte_count) : (offset += 2) {
+        const version = (@as(u16, encoded[offset]) << 8) | @as(u16, encoded[offset + 1]);
+        if (version == 0x0304) return true;
+    }
+    return false;
+}
+
+fn freeParsedClientHello(allocator: std.mem.Allocator, parsed: *tls13_full.ClientHello) void {
+    if (parsed.cipher_suites.len != 0) allocator.free(parsed.cipher_suites);
+    if (parsed.supported_groups) |groups| {
+        if (groups.len != 0) allocator.free(@constCast(groups));
+    }
+    if (parsed.signature_algorithms) |algs| {
+        if (algs.len != 0) allocator.free(@constCast(algs));
+    }
+    if (parsed.alpn_list) |list| {
+        if (list.len != 0) allocator.free(@constCast(list));
+    }
+}
 
 /// Bidirectional secret pair (send/recv) for a single packet number space (RFC 9001 §4.1.4).
 pub const BidirSecrets = struct {
@@ -171,6 +208,131 @@ pub const HandshakePhase = enum {
     post_handshake,
 };
 
+/// View into the stored ClientHello key share for downstream consumers.
+pub const ClientHelloKeyShareView = struct {
+    group: tls13_full.NamedGroup,
+    key: []const u8,
+};
+
+/// Immutable view returned by `Context.clientHello()` describing the parsed ClientHello.
+pub const ClientHelloView = struct {
+    random: [32]u8,
+    session_id: []const u8,
+    cipher_suites: []const tls13_full.CipherSuite,
+    supported_versions: []const u8,
+    key_share: ClientHelloKeyShareView,
+    quic_transport_parameters: ?[]const u8,
+    early_data: bool,
+    raw: []const u8,
+};
+
+const ClientHelloInfo = struct {
+    random: [32]u8,
+    session_id: []u8,
+    cipher_suites: []tls13_full.CipherSuite,
+    supported_versions: []u8,
+    key_share: struct {
+        group: tls13_full.NamedGroup,
+        key: []u8,
+    },
+    quic_transport_parameters: ?[]u8,
+    early_data: bool,
+    raw: []u8,
+
+    fn parse(allocator: std.mem.Allocator, body: []const u8) !ClientHelloInfo {
+        var parsed = try tls13_full.parseClientHello(allocator, body);
+        errdefer freeParsedClientHello(allocator, &parsed);
+
+        if (parsed.cipher_suites.len == 0) return HandshakeError.NoCipherSuite;
+        const versions = parsed.supported_versions orelse return HandshakeError.UnsupportedVersion;
+        if (!supportsTls13Version(versions)) return HandshakeError.UnsupportedVersion;
+
+        const key_share = parsed.key_share orelse return HandshakeError.MissingKeyShare;
+        if (key_share.group != .x25519) return HandshakeError.UnsupportedKeyShareGroup;
+
+        const session_id_copy = try allocator.dupe(u8, parsed.session_id);
+        errdefer if (session_id_copy.len != 0) allocator.free(session_id_copy);
+
+        const cipher_suites_copy = try allocator.dupe(tls13_full.CipherSuite, parsed.cipher_suites);
+        errdefer if (cipher_suites_copy.len != 0) allocator.free(cipher_suites_copy);
+
+        const versions_copy = try allocator.dupe(u8, versions);
+        errdefer if (versions_copy.len != 0) allocator.free(versions_copy);
+
+        const key_bytes = try allocator.dupe(u8, key_share.key_exchange);
+        errdefer if (key_bytes.len != 0) allocator.free(key_bytes);
+
+        const raw_copy = try allocator.dupe(u8, body);
+        errdefer if (raw_copy.len != 0) allocator.free(raw_copy);
+
+        var tp_copy: ?[]u8 = null;
+        if (parsed.quic_transport_parameters) |tp| {
+            tp_copy = try allocator.dupe(u8, tp);
+        }
+        errdefer if (tp_copy) |buf| if (buf.len != 0) allocator.free(buf);
+
+        const info = ClientHelloInfo{
+            .random = parsed.random,
+            .session_id = session_id_copy,
+            .cipher_suites = cipher_suites_copy,
+            .supported_versions = versions_copy,
+            .key_share = .{ .group = key_share.group, .key = key_bytes },
+            .quic_transport_parameters = tp_copy,
+            .early_data = parsed.early_data,
+            .raw = raw_copy,
+        };
+
+        freeParsedClientHello(allocator, &parsed);
+        return info;
+    }
+
+    fn deinit(self: *ClientHelloInfo, allocator: std.mem.Allocator) void {
+        if (self.session_id.len != 0) allocator.free(self.session_id);
+        if (self.cipher_suites.len != 0) allocator.free(self.cipher_suites);
+        if (self.supported_versions.len != 0) allocator.free(self.supported_versions);
+        if (self.key_share.key.len != 0) allocator.free(self.key_share.key);
+        if (self.quic_transport_parameters) |buf| if (buf.len != 0) allocator.free(buf);
+        if (self.raw.len != 0) allocator.free(self.raw);
+    }
+};
+
+const HandshakeState = struct {
+    client_hello: ?ClientHelloInfo = null,
+
+    fn init() HandshakeState {
+        return .{};
+    }
+
+    fn reset(self: *HandshakeState, allocator: std.mem.Allocator) void {
+        if (self.client_hello) |*info| {
+            info.deinit(allocator);
+            self.client_hello = null;
+        }
+    }
+
+    fn setClientHello(self: *HandshakeState, allocator: std.mem.Allocator, body: []const u8) !void {
+        if (self.client_hello != null) return HandshakeError.DuplicateClientHello;
+        const info = try ClientHelloInfo.parse(allocator, body);
+        self.client_hello = info;
+    }
+
+    fn clientHello(self: *const HandshakeState) ?ClientHelloView {
+        if (self.client_hello) |*info| {
+            return ClientHelloView{
+                .random = info.random,
+                .session_id = info.session_id,
+                .cipher_suites = info.cipher_suites,
+                .supported_versions = info.supported_versions,
+                .key_share = .{ .group = info.key_share.group, .key = info.key_share.key },
+                .quic_transport_parameters = info.quic_transport_parameters,
+                .early_data = info.early_data,
+                .raw = info.raw,
+            };
+        }
+        return null;
+    }
+};
+
 const HandshakeFlags = struct {
     peer_finished_verified: bool = false,
     local_finished_sent: bool = false,
@@ -181,7 +343,7 @@ const HandshakeFlags = struct {
     }
 };
 
-const encryption_level_count = @typeInfo(EncryptionLevel).Enum.fields.len;
+const encryption_level_count = std.meta.fields(EncryptionLevel).len;
 
 /// RFC 9001 §4.1.4: per-encryption-level CRYPTO queues keeping inbound/outbound bytes.
 const CryptoBuffer = struct {
@@ -202,6 +364,15 @@ const CryptoBuffer = struct {
         self.inbound.deinit(alloc);
         self.outbound.deinit(alloc);
     }
+
+    fn consume(self: *CryptoBuffer, count: usize) void {
+        std.debug.assert(count <= self.inbound.items.len);
+        const remaining = self.inbound.items.len - count;
+        if (remaining > 0) {
+            std.mem.copyBackwards(u8, self.inbound.items[0..remaining], self.inbound.items[count .. count + remaining]);
+        }
+        self.inbound.items = self.inbound.items[0..remaining];
+    }
 };
 
 const CryptoStreams = struct {
@@ -216,11 +387,11 @@ const CryptoStreams = struct {
     }
 
     fn reset(self: *CryptoStreams) void {
-        for (self.buffers) |*buf| buf.clear();
+        for (&self.buffers) |*buf| buf.clear();
     }
 
     fn deinit(self: *CryptoStreams, alloc: std.mem.Allocator) void {
-        for (self.buffers) |*buf| buf.deinit(alloc);
+        for (&self.buffers) |*buf| buf.deinit(alloc);
     }
 
     fn buffer(self: *CryptoStreams, level: EncryptionLevel) *CryptoBuffer {
@@ -237,6 +408,7 @@ pub const Context = struct {
     transcripts: TranscriptSet = TranscriptSet.init(),
     secrets: SecretSchedule = SecretSchedule.init(),
     streams: CryptoStreams = .{},
+    state: HandshakeState = HandshakeState.init(),
     flags: HandshakeFlags = .{},
 
     /// Initializes a new TLS 1.3 context with the specified configuration and callbacks.
@@ -249,6 +421,7 @@ pub const Context = struct {
             .transcripts = TranscriptSet.init(),
             .secrets = SecretSchedule.init(),
             .streams = .{},
+            .state = HandshakeState.init(),
             .flags = .{},
         };
     }
@@ -259,21 +432,35 @@ pub const Context = struct {
         self.secrets.reset();
         self.transcripts.reset();
         self.flags.reset();
+        self.state.reset(self.allocator);
         self.phase = .initial;
     }
 
-    /// Consume inbound CRYPTO data at the specified encryption level. Placeholder until full handshake wiring lands.
+    /// Consume inbound CRYPTO data at the specified encryption level.
     pub fn processCrypto(self: *Context, level: EncryptionLevel, data: []const u8) !void {
         var stream = self.streams.buffer(level);
         try stream.inbound.appendSlice(self.allocator, data);
-        return ApiError.Unimplemented;
+
+        while (true) {
+            const buffer = stream.inbound.items;
+            const parsed_opt = try parseHandshakeOne(buffer);
+            if (parsed_opt == null) break;
+            const parsed = parsed_opt.?;
+            const message_bytes = buffer[0..parsed.n];
+
+            try self.handleHandshakeMessage(level, parsed);
+            if (parsed.typ != .finished) {
+                self.transcripts.handshake.update(message_bytes);
+            }
+            stream.consume(parsed.n);
+        }
     }
 
     /// Produce outbound CRYPTO payload for the given encryption level when available.
     pub fn pollCrypto(self: *Context, allocator: std.mem.Allocator, level: EncryptionLevel) ![]u8 {
         var stream = self.streams.buffer(level);
-        if (stream.outbound.len == 0) return ApiError.Unimplemented;
-        const view = stream.outbound.items[0..stream.outbound.len];
+        if (stream.outbound.items.len == 0) return ApiError.Unimplemented;
+        const view = stream.outbound.items;
         const out = try allocator.dupe(u8, view);
         stream.outbound.clearRetainingCapacity();
         return out;
@@ -311,6 +498,25 @@ pub const Context = struct {
             if (self.callbacks.on_handshake_complete) |cb| {
                 cb(self) catch {};
             }
+        }
+    }
+
+    /// Returns the stored ClientHello view if one has been processed (server role).
+    pub fn clientHello(self: *const Context) ?ClientHelloView {
+        return self.state.clientHello();
+    }
+
+    fn handleHandshakeMessage(self: *Context, level: EncryptionLevel, parsed: HandshakeMessage) !void {
+        _ = level;
+        switch (parsed.typ) {
+            .client_hello => {
+                if (self.config.role != .Server) return HandshakeError.UnexpectedMessage;
+                try self.state.setClientHello(self.allocator, parsed.body);
+                if (self.phase == .initial) {
+                    self.phase = .negotiating;
+                }
+            },
+            else => {},
         }
     }
 };
@@ -403,6 +609,12 @@ pub const HsType = enum(u8) {
     finished = 20,
 };
 
+const HandshakeMessage = struct {
+    typ: HsType,
+    body: []const u8,
+    n: usize,
+};
+
 /// Encode a single TLS Handshake message (type + 3-byte length + body).
 pub fn encodeHandshake(alloc: std.mem.Allocator, typ: HsType, body: []const u8) ![]u8 {
     var out = try alloc.alloc(u8, 4 + body.len);
@@ -416,7 +628,7 @@ pub fn encodeHandshake(alloc: std.mem.Allocator, typ: HsType, body: []const u8) 
 }
 
 /// Attempt to parse a Handshake message from data. Returns null if not enough bytes.
-pub fn parseHandshakeOne(data: []const u8) !?struct { typ: HsType, body: []const u8, n: usize } {
+pub fn parseHandshakeOne(data: []const u8) !?HandshakeMessage {
     if (data.len < 4) return null;
     const t_byte = data[0];
     // RFC 9001 Section 8.3: EndOfEarlyData (type 5) MUST NOT be sent over QUIC
@@ -428,7 +640,7 @@ pub fn parseHandshakeOne(data: []const u8) !?struct { typ: HsType, body: []const
     const L: usize = (@as(usize, data[1]) << 16) | (@as(usize, data[2]) << 8) | @as(usize, data[3]);
     const need = 4 + L;
     if (data.len < need) return null;
-    return .{ .typ = typ, .body = data[4 .. 4 + L], .n = need };
+    return HandshakeMessage{ .typ = typ, .body = data[4 .. 4 + L], .n = need };
 }
 
 /// Small transcript helper; accumulates handshake messages as-is.

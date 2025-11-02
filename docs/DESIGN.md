@@ -18,6 +18,13 @@ The implementation is complete with 63 passing tests covering all major features
 - `AeadCipher` wraps std.crypto AES-GCM (128/256) and ChaCha20-Poly1305 with suite metadata, nonce derivation (`xorNonce`), and confidentiality/integrity usage counters enforcing RFC 8446 §5.2–§5.5 limits. All keying material and derived nonces are zeroized after use.
 - Unit tests in `tests/test_tls_record_layer.zig` cover plaintext framing, AEAD round-trips, tamper-induced authentication failures, limit enforcement, and nonce validation; fuzz harness will follow once handshake CRYPTO buffering is wired up.
 
+## TLS Handshake Context
+
+- `src/quic/tls/tls13.zig::Context` now buffers inbound CRYPTO streams per encryption level, parses Initial-space ClientHello messages with the full `tls13_full` parser, and records transcript hashes once parsing succeeds (RFC 8446 §4.4.1).
+- `HandshakeState` owns canonical ClientHello artifacts (random, session_id copy, filtered cipher_suites, supported_versions raw vector, and x25519 key share) so downstream handshake flights can consume normalized data without holding on to transient buffers.
+- Duplicate ClientHello deliveries are rejected with `HandshakeError.DuplicateClientHello`, preserving transcript state and preventing replay of handshake metadata.
+- Unit test `tests/test_tls_handshake_context.zig` exercises ClientHello ingestion, transcript hashing against the standalone SHA-256 KAT, and duplicate-detection coverage.
+
 ## ACK handling and ECN propagation
 
 - Frames:

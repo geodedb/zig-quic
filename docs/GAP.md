@@ -20,6 +20,12 @@ Date: 2025-09-20 (Current Status)
 - Unit tests in `tests/test_tls_record_layer.zig` now cover AEAD round-trips, confidentiality/integrity limit enforcement, nonce derivation error paths, and the existing framing validations.
 - Next: add dedicated fuzz harness once handshake CRYPTO buffering lands to exercise ciphertext parsing under mutation.
 
+### TLS 1.3 Handshake Context Intake ✅
+
+- `src/quic/tls/tls13.zig::Context.processCrypto` now buffers Initial-space CRYPTO data, parses ClientHello with the full TLS 1.3 parser, and records transcript updates only after successful validation (RFC 8446 §4.4.1).
+- Introduced `HandshakeState` with owned ClientHello copies (session_id, cipher suites, supported_versions vector, x25519 key share, QUIC TP blob) enabling later handshake flights to operate without referencing transient buffers.
+- Added `tests/test_tls_handshake_context.zig` covering ClientHello ingestion, transcript hash verification, and duplicate message rejection.
+
 ### Session Resumption with PSK ✅
 
 - Enhanced TLS 1.3 engine with full PSK support
@@ -86,7 +92,7 @@ Date: 2025-09-20 (Current Status)
 
 #### TLS Integration (RFC 9001)
 
-- ✅ TLS 1.3 handshake messages
+- ⚠️ Handshake state machine rework in progress: Initial ClientHello ingestion and transcript management complete; ServerHello → Finished flight generation, key installation, and alert mapping pending.
 - ✅ Key derivation (Initial, Handshake, 1-RTT)
 - ✅ Header protection and removal
 - ✅ AEAD encryption/decryption
@@ -190,9 +196,9 @@ Added:
 
 - ECN longitudinal (Application): ensure ACK_ECN emission under reordering/loss; audit anti‑amplification interaction and connection demux tie‑break.
 - Migration/security: NEW_TOKEN persistence/use; path migration and NAT rebinding; amplification backoff coverage.
-- TLS 1.3: optional 0-RTT; trust store provider; HP timing audit (§9.5); migrate custom ASN.1/X.509/ClientHello parsing in `src/quic/tls/{asn1,sig,x509,tls13_full}.zig` to `std.crypto.asn1` / `std.crypto.x509` / `std.crypto.tls` primitives; wire new `Config`/`Context` API scaffold into QUIC handshake.
+- TLS 1.3: optional 0-RTT; trust store provider; HP timing audit (§9.5); migrate custom ASN.1/X.509/ClientHello parsing in `src/quic/tls/{asn1,sig,x509,tls13_full}.zig` to `std.crypto.asn1` / `std.crypto.x509` / `std.crypto.tls` primitives; extend new `Context` handshake engine beyond Initial space.
+- TLS 1.3 (handshake follow-up): generate ServerHello → EncryptedExtensions → Finished flights with transcript checkpoints, install handshake/application secrets, and map TLS alerts to QUIC CONNECTION_CLOSE semantics.
 - TLS 1.3 (record layer follow-up): hook `record.zig` into AEAD cipher selection, derive nonces per RFC 8446 §5.3, and cap usage per §5.5.
-- TLS 1.3 (interop specific): real ServerHello parse; EE (ALPN+TP) emit/parse; Certificate & CV & Finished; key schedule integration replacing placeholder; error mapping & alerts -> QUIC CONNECTION_CLOSE; crash fix on empty network; X25519 retry edge cases.
 - Event loop/UDP: epoll/kqueue/IOCP parity; pacing timers on Windows/macOS; non‑blocking UDP path perf; pacing policy tuning.
 - Logging/observability: JSON Lines logs (INFO/ERROR), counters, structured trace points.
 
