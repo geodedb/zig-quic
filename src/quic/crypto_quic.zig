@@ -96,7 +96,7 @@ pub fn aeadDecrypt(
     @memcpy(tag_arr[0..], ciphertext_and_tag[ciphertext_and_tag.len - 16 ..]);
 
     // Debug logging for AEAD decryption
-    logger.debug("aeadDecrypt: suite={}, pn={}, ct_len={}, tag_len=16", .{ suite, packet_number, ct.len });
+    std.debug.print("aeadDecrypt: suite={}, pn={}, ct_len={}, tag_len=16", .{ suite, packet_number, ct.len });
     dumpBytes("AEAD decrypt key", key);
     dumpBytes("AEAD decrypt iv", iv);
     var nonce_debug: [12]u8 = undefined;
@@ -116,7 +116,7 @@ pub fn aeadDecrypt(
             var nonce: [12]u8 = undefined;
             xorNonce(&nonce, iv, packet_number);
             ChaCha20Poly1305.decrypt(out_plaintext[0..ct.len], ct, tag_arr, aad, nonce, key[0..32].*) catch {
-                logger.debug("ChaCha20Poly1305.decrypt failed for pn={}", .{packet_number});
+                std.debug.print("ChaCha20Poly1305.decrypt failed for pn={}", .{packet_number});
                 return error.AuthenticationFailed;
             };
             return ct.len;
@@ -126,7 +126,7 @@ pub fn aeadDecrypt(
             var nonce: [12]u8 = undefined;
             xorNonce(&nonce, iv, packet_number);
             Aes128Gcm.decrypt(out_plaintext[0..ct.len], ct, tag_arr, aad, nonce, key[0..16].*) catch {
-                logger.debug("Aes128Gcm.decrypt failed for pn={}", .{packet_number});
+                std.debug.print("Aes128Gcm.decrypt failed for pn={}", .{packet_number});
                 return error.AuthenticationFailed;
             };
             return ct.len;
@@ -158,7 +158,7 @@ pub fn headerProtect(
             const hdr_mask: u8 = if (is_long) 0x0f else 0x1f;
             const old_first = header_first.*;
             header_first.* ^= (mask0 & hdr_mask);
-            logger.debug("headerProtect: first byte 0x{X:0>2} ^ (mask0 0x{X:0>2} & hdr_mask 0x{X:0>2}) = 0x{X:0>2}", .{ old_first, mask0, hdr_mask, header_first.* });
+            std.debug.print("headerProtect: first byte 0x{X:0>2} ^ (mask0 0x{X:0>2} & hdr_mask 0x{X:0>2}) = 0x{X:0>2}", .{ old_first, mask0, hdr_mask, header_first.* });
             var i: usize = 0;
             while (i < pn_bytes.len) : (i += 1) pn_bytes[i] ^= out_block[i + 1];
             return;
@@ -294,9 +294,9 @@ pub fn protectPacket(
     const aad = aad_stack[0..aad_len];
 
     // Debug logging for encryption
-    logger.debug("protectPacket: pn={} pn_len={} header_prefix_len={} aad_len={}", .{packet_number, pn_bytes.len, header_prefix.len, aad_len});
-    logger.debug("protectPacket: header_first=0x{X:0>2}", .{header_first.*});
-    logger.debug("protectPacket: AAD (first 20 bytes): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{
+    std.debug.print("protectPacket: pn={} pn_len={} header_prefix_len={} aad_len={}", .{packet_number, pn_bytes.len, header_prefix.len, aad_len});
+    std.debug.print("protectPacket: header_first=0x{X:0>2}", .{header_first.*});
+    std.debug.print("protectPacket: AAD (first 20 bytes): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{
         aad[0], if(aad_len>1) aad[1] else 0, if(aad_len>2) aad[2] else 0, if(aad_len>3) aad[3] else 0,
         if(aad_len>4) aad[4] else 0, if(aad_len>5) aad[5] else 0, if(aad_len>6) aad[6] else 0, if(aad_len>7) aad[7] else 0,
         if(aad_len>8) aad[8] else 0, if(aad_len>9) aad[9] else 0, if(aad_len>10) aad[10] else 0, if(aad_len>11) aad[11] else 0,
@@ -307,7 +307,7 @@ pub fn protectPacket(
     // Compute and log nonce
     var nonce_dbg: [12]u8 = undefined;
     xorNonce(&nonce_dbg, aead_iv, packet_number);
-    logger.debug("protectPacket: Nonce: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{
+    std.debug.print("protectPacket: Nonce: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{
         nonce_dbg[0], nonce_dbg[1], nonce_dbg[2], nonce_dbg[3], nonce_dbg[4], nonce_dbg[5],
         nonce_dbg[6], nonce_dbg[7], nonce_dbg[8], nonce_dbg[9], nonce_dbg[10], nonce_dbg[11],
     });
@@ -340,22 +340,22 @@ pub fn protectPacket(
             @memcpy(sample16[0..], out_cipher[sample_offset .. sample_offset + 16]);
 
             // DIAGNOSTIC: Log ciphertext and sample extraction
-            logger.debug("protectPacket: ct_len={}, sample_offset={} (pn_len={}, formula: 4-pn_len={})", .{out_cipher.len, sample_offset, pn_len, 4 - pn_len});
+            std.debug.print("protectPacket: ct_len={}, sample_offset={} (pn_len={}, formula: 4-pn_len={})", .{out_cipher.len, sample_offset, pn_len, 4 - pn_len});
             const ct_dump = @min(32, out_cipher.len);
-            logger.debug("protectPacket: ciphertext[0..{}]:", .{ct_dump});
+            std.debug.print("protectPacket: ciphertext[0..{}]:", .{ct_dump});
             for (out_cipher[0..ct_dump], 0..) |b, i| {
-                if (i > 0 and i % 16 == 0) logger.debug("", .{});
-                if (i % 16 == 0) logger.debug("  ", .{});
-                logger.debug("{X:0>2} ", .{b});
+                if (i > 0 and i % 16 == 0) std.debug.print("", .{});
+                if (i % 16 == 0) std.debug.print("  ", .{});
+                std.debug.print("{X:0>2} ", .{b});
             }
-            logger.debug("", .{});
-            logger.debug("protectPacket: HP sample from offset {}:", .{sample_offset});
-            logger.debug("  ", .{});
+            std.debug.print("", .{});
+            std.debug.print("protectPacket: HP sample from offset {}:", .{sample_offset});
+            std.debug.print("  ", .{});
             for (sample16, 0..) |b, i| {
-                logger.debug("{X:0>2} ", .{b});
-                if (i == 7) logger.debug(" ", .{});
+                std.debug.print("{X:0>2} ", .{b});
+                if (i == 7) std.debug.print(" ", .{});
             }
-            logger.debug("", .{});
+            std.debug.print("", .{});
         },
         .chacha20_poly1305 => {
             if (pn_len > 4) return error.InvalidPacketNumberLength;
@@ -426,15 +426,15 @@ pub fn unprotectInitial(
     var i: usize = 0;
     while (i < pn_bytes.len) : (i += 1) pn_val_truncated = (pn_val_truncated << 8) | pn_bytes[i];
 
-    logger.debug("Packet number extraction: pn_bytes={any}, pn_val_truncated={}, expected_pn={}", .{ pn_bytes, pn_val_truncated, expected_pn });
+    std.debug.print("Packet number extraction: pn_bytes={any}, pn_val_truncated={}, expected_pn={}", .{ pn_bytes, pn_val_truncated, expected_pn });
 
     // Expand the truncated packet number using the expected value
     const pn_val = expandPacketNumber(pn_val_truncated, @intCast(pn_bytes.len), expected_pn);
 
-    logger.debug("Expanded packet number: {} (from truncated {} with expected {})", .{ pn_val, pn_val_truncated, expected_pn });
+    std.debug.print("Expanded packet number: {} (from truncated {} with expected {})", .{ pn_val, pn_val_truncated, expected_pn });
 
     if (expected_pn == 0) {
-        logger.debug("First packet: truncated={x:0>4} ({}) -> expanded={}", .{ pn_val_truncated, pn_val_truncated, pn_val });
+        std.debug.print("First packet: truncated={x:0>4} ({}) -> expanded={}", .{ pn_val_truncated, pn_val_truncated, pn_val });
     }
 
     if (builtin.is_test) {
@@ -448,7 +448,7 @@ pub fn unprotectInitial(
     }
 
     return aeadDecrypt(suite, aead_key, aead_iv, pn_val, aad, ciphertext_and_tag, out_plaintext) catch |err| {
-        logger.debug("AEAD decrypt failed: {} (pn={})", .{ err, pn_val });
+        std.debug.print("AEAD decrypt failed: {} (pn={})", .{ err, pn_val });
         return err;
     };
 }
@@ -493,8 +493,8 @@ pub fn unprotectInitialAutoSample(
         _ = hex_writer.print("{X:0>2} ", .{b}) catch break;
     }
     const hex_str = hex_stream.getWritten();
-    logger.debug("Header protection removal - first {} bytes of ciphertext_and_tag: {s}", .{ debug_len, hex_str });
-    logger.debug("  pn_len={}, ciphertext_and_tag.len={}, expected_pn={}", .{ pn_len, ciphertext_and_tag.len, expected_pn });
+    std.debug.print("Header protection removal - first {} bytes of ciphertext_and_tag: {s}", .{ debug_len, hex_str });
+    std.debug.print("  pn_len={}, ciphertext_and_tag.len={}, expected_pn={}", .{ pn_len, ciphertext_and_tag.len, expected_pn });
 
     // Debug: Show the masked packet number bytes
     var pn_hex_buf: [12]u8 = undefined; // 4 bytes max * 3 chars
@@ -504,7 +504,7 @@ pub fn unprotectInitialAutoSample(
         _ = pn_hex_writer.print("{X:0>2} ", .{b}) catch break;
     }
     const pn_hex_str = pn_hex_stream.getWritten();
-    logger.debug("  Masked PN bytes before unmasking: {s}", .{pn_hex_str});
+    std.debug.print("  Masked PN bytes before unmasking: {s}", .{pn_hex_str});
 
     switch (suite) {
         .aes_128_gcm => {
@@ -515,20 +515,20 @@ pub fn unprotectInitialAutoSample(
             if (sample_offset + 16 > ciphertext_and_tag.len) return error.AuthenticationFailed;
             @memcpy(sample16[0..], ciphertext_and_tag[sample_offset .. sample_offset + 16]);
 
-            logger.debug("HP Sample extraction: pn_len={}, ct_len={}, sample_offset={}", .{pn_len, ciphertext_and_tag.len, sample_offset});
-            logger.debug("Sample bytes: ", .{});
+            std.debug.print("HP Sample extraction: pn_len={}, ct_len={}, sample_offset={}", .{pn_len, ciphertext_and_tag.len, sample_offset});
+            std.debug.print("Sample bytes: ", .{});
             for (sample16) |b| {
-                logger.debug("{X:0>2} ", .{b});
+                std.debug.print("{X:0>2} ", .{b});
             }
-            logger.debug("", .{});
+            std.debug.print("", .{});
 
             // Debug: show what we're extracting the sample from
             if (ciphertext_and_tag.len <= 32) {
-                logger.debug("Full ciphertext for sample: ", .{});
+                std.debug.print("Full ciphertext for sample: ", .{});
                 for (ciphertext_and_tag) |b| {
-                    logger.debug("{X:0>2} ", .{b});
+                    std.debug.print("{X:0>2} ", .{b});
                 }
-                logger.debug("", .{});
+                std.debug.print("", .{});
             }
         },
         .chacha20_poly1305 => {
@@ -541,26 +541,26 @@ pub fn unprotectInitialAutoSample(
     }
 
     // Log masked PN bytes before unprotection
-    logger.debug("Masked PN bytes (len={}): ", .{pn_len});
+    std.debug.print("Masked PN bytes (len={}): ", .{pn_len});
     for (pn_bytes[0..pn_len]) |b| {
-        logger.debug("{X:0>2} ", .{b});
+        std.debug.print("{X:0>2} ", .{b});
     }
-    logger.debug("", .{});
-    logger.debug("Masked header_first: {X:0>2}", .{header_first.*});
+    std.debug.print("", .{});
+    std.debug.print("Masked header_first: {X:0>2}", .{header_first.*});
 
     // Remove header protection in-place (mutates header_first & pn_bytes) using derived sample
     if (builtin.is_test) {
-        logger.debug("Before headerUnprotect: pn_bytes set", .{});
+        std.debug.print("Before headerUnprotect: pn_bytes set", .{});
     }
     try headerUnprotect(suite, hp_key, &sample16, header_first, pn_bytes);
 
     // Log unmasked PN bytes after unprotection
-    logger.debug("Unmasked PN bytes (len={}): ", .{pn_len});
-    for (pn_bytes) |b| logger.debug("{X:0>2}", .{b});
-    logger.debug("", .{});
-    logger.debug("Unmasked header_first: {X:0>2}", .{header_first.*});
+    std.debug.print("Unmasked PN bytes (len={}): ", .{pn_len});
+    for (pn_bytes) |b| std.debug.print("{X:0>2}", .{b});
+    std.debug.print("", .{});
+    std.debug.print("Unmasked header_first: {X:0>2}", .{header_first.*});
     if (builtin.is_test) {
-        logger.debug("After headerUnprotect: pn_bytes set", .{});
+        std.debug.print("After headerUnprotect: pn_bytes set", .{});
     }
 
     // Build AAD after unmasking: first byte + header_prefix + pn_bytes
@@ -578,29 +578,29 @@ pub fn unprotectInitialAutoSample(
     while (i < pn_len) : (i += 1) pn_trunc = (pn_trunc << 8) | pn_bytes[i];
     const full_pn = expandPacketNumber(pn_trunc, @intCast(pn_len), expected_pn);
 
-    logger.debug("expandPacketNumber: truncated={} pn_len={} expected={} -> full={}", .{ pn_trunc, pn_len, expected_pn, full_pn });
-    logger.debug("  Nonce IV: ", .{});
-    for (aead_iv) |b| logger.debug("{X:0>2}", .{b});
-    logger.debug("", .{});
-    logger.debug("  Nonce after XOR with PN {}: ", .{full_pn});
+    std.debug.print("expandPacketNumber: truncated={} pn_len={} expected={} -> full={}", .{ pn_trunc, pn_len, expected_pn, full_pn });
+    std.debug.print("  Nonce IV: ", .{});
+    for (aead_iv) |b| std.debug.print("{X:0>2}", .{b});
+    std.debug.print("", .{});
+    std.debug.print("  Nonce after XOR with PN {}: ", .{full_pn});
     var nonce_debug: [12]u8 = undefined;
     xorNonce(&nonce_debug, aead_iv, full_pn);
-    for (nonce_debug) |b| logger.debug("{X:0>2}", .{b});
-    logger.debug("", .{});
+    for (nonce_debug) |b| std.debug.print("{X:0>2}", .{b});
+    std.debug.print("", .{});
 
     // ciphertext_and_tag buffer layout: [PN bytes (pn_len)] [encrypted payload + tag]
     // Pass only the encrypted payload + tag portion to AEAD decrypt
     const actual_ciphertext = ciphertext_and_tag[pn_len..];
 
-    logger.debug("AEAD decrypt parameters:", .{});
-    logger.debug("  full_pn={}, truncated_pn={}, pn_len={}", .{full_pn, pn_trunc, pn_len});
-    logger.debug("  AAD len={}, ciphertext len={}", .{aad.len, actual_ciphertext.len});
-    logger.debug("  AAD bytes: ", .{});
-    for (aad) |b| logger.debug("{X:0>2}", .{b});
-    logger.debug("", .{});
+    std.debug.print("AEAD decrypt parameters:", .{});
+    std.debug.print("  full_pn={}, truncated_pn={}, pn_len={}", .{full_pn, pn_trunc, pn_len});
+    std.debug.print("  AAD len={}, ciphertext len={}", .{aad.len, actual_ciphertext.len});
+    std.debug.print("  AAD bytes: ", .{});
+    for (aad) |b| std.debug.print("{X:0>2}", .{b});
+    std.debug.print("", .{});
 
     return aeadDecrypt(suite, aead_key, aead_iv, full_pn, aad, actual_ciphertext, out_plaintext) catch |err| {
-        logger.debug("AEAD decrypt failed (auto-sample): {} (pn={}, trunc={}, pn_len={})", .{ err, full_pn, pn_trunc, pn_len });
+        std.debug.print("AEAD decrypt failed (auto-sample): {} (pn={}, trunc={}, pn_len={})", .{ err, full_pn, pn_trunc, pn_len });
         return err;
     };
 }
@@ -614,9 +614,9 @@ pub fn unmaskLongHeaderAndPn(
     header_first: *u8,
     pn_buf: *[4]u8, // contains 4 masked bytes from packet at PN start
 ) !u3 {
-    logger.debug("HP key: ", .{});
-    for (hp_key) |b| logger.debug("{X:0>2}", .{b});
-    logger.debug("", .{});
+    std.debug.print("HP key: ", .{});
+    for (hp_key) |b| std.debug.print("{X:0>2}", .{b});
+    std.debug.print("", .{});
 
     var out_block: [16]u8 = undefined;
     switch (suite) {
@@ -637,25 +637,25 @@ pub fn unmaskLongHeaderAndPn(
         },
     }
 
-    logger.debug("HP mask (first 5 bytes): ", .{});
-    for (out_block[0..5]) |b| logger.debug("{X:0>2}", .{b});
-    logger.debug("", .{});
+    std.debug.print("HP mask (first 5 bytes): ", .{});
+    for (out_block[0..5]) |b| std.debug.print("{X:0>2}", .{b});
+    std.debug.print("", .{});
 
     const is_long = (header_first.* & 0x80) != 0;
     const hdr_mask: u8 = if (is_long) 0x0f else 0x1f;
-    logger.debug("is_long={}, hdr_mask={X:0>2}, header_first_before={X:0>2}", .{is_long, hdr_mask, header_first.*});
+    std.debug.print("is_long={}, hdr_mask={X:0>2}, header_first_before={X:0>2}", .{is_long, hdr_mask, header_first.*});
 
     header_first.* ^= (out_block[0] & hdr_mask);
-    logger.debug("header_first_after={X:0>2}", .{header_first.*});
+    std.debug.print("header_first_after={X:0>2}", .{header_first.*});
 
     const pn_len: u3 = @as(u3, @intCast((header_first.* & 0x03))) + 1;
-    logger.debug("Decoded pn_len from header: {}", .{pn_len});
+    std.debug.print("Decoded pn_len from header: {}", .{pn_len});
 
-    logger.debug("pn_buf before unmasking: {any}", .{pn_buf.*});
+    std.debug.print("pn_buf before unmasking: {any}", .{pn_buf.*});
     // Constant-time-ish: always xor 4 bytes to avoid data-dependent timing; callers will slice by pn_len.
     var i: usize = 0;
     while (i < 4) : (i += 1) pn_buf.*[i] ^= out_block[i + 1];
-    logger.debug("pn_buf after unmasking: {any}, using pn_len={}", .{ pn_buf.*, pn_len });
+    std.debug.print("pn_buf after unmasking: {any}, using pn_len={}", .{ pn_buf.*, pn_len });
     return pn_len;
 }
 
@@ -669,7 +669,7 @@ fn dumpBytes(label: []const u8, bytes: []const u8) void {
         _ = list.writer(std.heap.page_allocator).print("{x:0>2}", .{bytes[i]}) catch break;
         if (i + 1 < bytes.len) _ = list.append(std.heap.page_allocator, ' ') catch break;
     }
-    logger.debug("{s}: {s}", .{ label, list.items });
+    std.debug.print("{s}: {s}", .{ label, list.items });
 }
 
 /// Decode QUIC short header key phase bit and pn length from first byte.

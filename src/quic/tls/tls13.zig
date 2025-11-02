@@ -135,7 +135,7 @@ pub fn parseHandshakeOne(data: []const u8) !?struct { typ: HsType, body: []const
     const t_byte = data[0];
     // RFC 9001 Section 8.3: EndOfEarlyData (type 5) MUST NOT be sent over QUIC
     if (t_byte == 5) {
-        logger.err("TLS: Received EndOfEarlyData message (RFC 9001 violation - type 5 prohibited)", .{});
+        std.debug.print("TLS: Received EndOfEarlyData message (RFC 9001 violation - type 5 prohibited)", .{});
         return error.ProtocolViolation;
     }
     const typ: HsType = std.meta.intToEnum(HsType, t_byte) catch return error.UnknownHandshakeType;
@@ -169,7 +169,7 @@ pub const Transcript = struct {
                 0x14 => "Finished",
                 else => "Unknown",
             };
-            logger.debug("[TRANSCRIPT] Adding {s} (0x{X:0>2}) len={} bytes, first 8: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{
+            std.debug.print("[TRANSCRIPT] Adding {s} (0x{X:0>2}) len={} bytes, first 8: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{
                 type_name, msg_type, msg_len,
                 if (msg.len > 0) msg[0] else 0,
                 if (msg.len > 1) msg[1] else 0,
@@ -187,7 +187,7 @@ pub const Transcript = struct {
         var out: [H.digest_length]u8 = undefined;
         var tmp = self.hasher; // copy
         tmp.final(&out);
-        logger.debug("[TRANSCRIPT] Finalized hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}... (32 bytes)", .{
+        std.debug.print("[TRANSCRIPT] Finalized hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}... (32 bytes)", .{
             out[0], out[1], out[2], out[3], out[4], out[5], out[6], out[7]
         });
         return out;
@@ -466,7 +466,7 @@ pub const Engine = struct {
             const pk = std.crypto.dh.X25519.recoverPublicKey(sk) catch unreachable;
             self.my_priv = sk;
             self.my_pub = pk;
-            logger.debug("{s}: Generated X25519 keypair", .{if (self.role == .Server) "Server" else "Client"});
+            std.debug.print("{s}: Generated X25519 keypair", .{if (self.role == .Server) "Server" else "Client"});
         }
     }
 
@@ -475,39 +475,39 @@ pub const Engine = struct {
             if (self.my_priv) |priv| {
                 // Use Zig 0.15.1 X25519 API - scalarmult returns the value
                 const sh = std.crypto.dh.X25519.scalarmult(priv, peer) catch {
-                    logger.err("{s}: X25519 scalarmult failed", .{if (self.role == .Server) "Server" else "Client"});
+                    std.debug.print("{s}: X25519 scalarmult failed", .{if (self.role == .Server) "Server" else "Client"});
                     return;
                 };
                 self.ecdhe_buf = sh;
                 self.ecdhe_secret = self.ecdhe_buf[0..];
-                logger.debug("{s}: Computed ECDHE shared secret ({X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}...)", .{if (self.role == .Server) "Server" else "Client", sh[0], sh[1], sh[2], sh[3], sh[4], sh[5], sh[6], sh[7]});
+                std.debug.print("{s}: Computed ECDHE shared secret ({X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}...)", .{if (self.role == .Server) "Server" else "Client", sh[0], sh[1], sh[2], sh[3], sh[4], sh[5], sh[6], sh[7]});
             } else {
-                logger.debug("{s}: No my_priv for ECDHE", .{if (self.role == .Server) "Server" else "Client"});
+                std.debug.print("{s}: No my_priv for ECDHE", .{if (self.role == .Server) "Server" else "Client"});
             }
         } else {
-            logger.debug("{s}: No peer_pub for ECDHE", .{if (self.role == .Server) "Server" else "Client"});
+            std.debug.print("{s}: No peer_pub for ECDHE", .{if (self.role == .Server) "Server" else "Client"});
         }
     }
 
     /// Append received CRYPTO bytes into transcript. Attempts to parse handshake messages
     /// to update simple state, but always feeds the transcript with raw bytes.
     pub fn onCryptoRecv(self: *Engine, data: []const u8) void {
-        logger.debug("TLS: onCryptoRecv called with {} bytes, inbox already has {} bytes", .{data.len, self.inbox.items.len});
+        std.debug.print("TLS: onCryptoRecv called with {} bytes, inbox already has {} bytes", .{data.len, self.inbox.items.len});
 
         // Append new data to inbox buffer
         self.inbox.appendSlice(self.allocator, data) catch {
-            logger.err("TLS: Failed to buffer CRYPTO data", .{});
+            std.debug.print("TLS: Failed to buffer CRYPTO data", .{});
             return;
         };
 
-        logger.debug("TLS: Inbox now has {} bytes total", .{self.inbox.items.len});
+        std.debug.print("TLS: Inbox now has {} bytes total", .{self.inbox.items.len});
         
         // Process complete messages from the buffered data
         var off: usize = 0;
         while (true) {
             const parsed = parseHandshakeOne(self.inbox.items[off..]) catch null;
             if (parsed) |p| {
-                logger.debug("TLS: Parsed handshake message type={} len={}", .{ p.typ, p.body.len });
+                std.debug.print("TLS: Parsed handshake message type={} len={}", .{ p.typ, p.body.len });
 
                 // For Finished verification, we need the transcript BEFORE the Finished message
                 // So take a snapshot of the current transcript state
@@ -521,9 +521,9 @@ pub const Engine = struct {
                     self.transcript.update(msg_data);
                     const show_len = @min(8, msg_data.len);
                     if (show_len >= 8) {
-                        logger.debug("TLS: Added {} bytes to transcript (recv): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...", .{msg_data.len, msg_data[0], msg_data[1], msg_data[2], msg_data[3], msg_data[4], msg_data[5], msg_data[6], msg_data[7]});
+                        std.debug.print("TLS: Added {} bytes to transcript (recv): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...", .{msg_data.len, msg_data[0], msg_data[1], msg_data[2], msg_data[3], msg_data[4], msg_data[5], msg_data[6], msg_data[7]});
                     } else {
-                        logger.debug("TLS: Added {} bytes to transcript (recv)", .{msg_data.len});
+                        std.debug.print("TLS: Added {} bytes to transcript (recv)", .{msg_data.len});
                     }
                 }
 
@@ -541,12 +541,12 @@ pub const Engine = struct {
                     // Use the actual transcript that already contains ClientHello + ServerHello
                     var snapshot = self.transcript;
                     const th_hash = snapshot.finalize();
-                    logger.debug("onCryptoRecv: Deriving handshake secrets after ServerHello", .{});
-                    logger.debug("onCryptoRecv: Transcript hash for handshake: {X:0>2} {X:0>2} {X:0>2} {X:0>2} ... (first 4 of {})", .{th_hash[0], th_hash[1], th_hash[2], th_hash[3], th_hash.len});
-                    logger.debug("onCryptoRecv: ECDHE secret first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{self.ecdhe_secret.?[0], self.ecdhe_secret.?[1], self.ecdhe_secret.?[2], self.ecdhe_secret.?[3]});
+                    std.debug.print("onCryptoRecv: Deriving handshake secrets after ServerHello", .{});
+                    std.debug.print("onCryptoRecv: Transcript hash for handshake: {X:0>2} {X:0>2} {X:0>2} {X:0>2} ... (first 4 of {})", .{th_hash[0], th_hash[1], th_hash[2], th_hash[3], th_hash.len});
+                    std.debug.print("onCryptoRecv: ECDHE secret first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{self.ecdhe_secret.?[0], self.ecdhe_secret.?[1], self.ecdhe_secret.?[2], self.ecdhe_secret.?[3]});
                     const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th_hash);
-                    logger.debug("onCryptoRecv: Derived client_hs first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{hs.client_hs[0], hs.client_hs[1], hs.client_hs[2], hs.client_hs[3]});
-                    logger.debug("onCryptoRecv: Derived server_hs first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{hs.server_hs[0], hs.server_hs[1], hs.server_hs[2], hs.server_hs[3]});
+                    std.debug.print("onCryptoRecv: Derived client_hs first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{hs.client_hs[0], hs.client_hs[1], hs.client_hs[2], hs.client_hs[3]});
+                    std.debug.print("onCryptoRecv: Derived server_hs first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{hs.server_hs[0], hs.server_hs[1], hs.server_hs[2], hs.server_hs[3]});
                     self.handshake_client_secret = hs.client_hs;
                     self.handshake_server_secret = hs.server_hs;
                     // FIX: Removed premature computeApplicationSecrets() call
@@ -557,18 +557,18 @@ pub const Engine = struct {
 
                 // Only try to extract public keys from ClientHello and ServerHello
                 if (p.typ == .client_hello or p.typ == .server_hello) {
-                    logger.debug("TLS: Processing hello message, typ={}", .{p.typ});
+                    std.debug.print("TLS: Processing hello message, typ={}", .{p.typ});
                     var extracted: ?[32]u8 = null;
                     // Try real TLS 1.3 parsing first
-                    logger.debug("TLS: Trying real TLS 1.3 hello parsing", .{});
+                    std.debug.print("TLS: Trying real TLS 1.3 hello parsing", .{});
                     switch (p.typ) {
                         .client_hello => {
-                            logger.debug("TLS: Calling parseRealClientHello with {} bytes", .{p.body.len});
+                            std.debug.print("TLS: Calling parseRealClientHello with {} bytes", .{p.body.len});
                             extracted = parseRealClientHello(p.body, self);
                             if (extracted != null) {
-                                logger.debug("TLS: parseRealClientHello SUCCESS - extracted key", .{});
+                                std.debug.print("TLS: parseRealClientHello SUCCESS - extracted key", .{});
                             } else {
-                                logger.debug("TLS: parseRealClientHello FAILED - returned null", .{});
+                                std.debug.print("TLS: parseRealClientHello FAILED - returned null", .{});
                             }
                         },
                         .server_hello => extracted = parseRealServerHello(p.body),
@@ -576,28 +576,28 @@ pub const Engine = struct {
                     }
                     // If real parsing failed, try minimal format as fallback
                     if (extracted == null) {
-                        logger.debug("TLS: Real parse failed, trying minimal parse as fallback", .{});
+                        std.debug.print("TLS: Real parse failed, trying minimal parse as fallback", .{});
                         extracted = parseMinimalHelloPub(p.typ, p.body);
                         if (extracted == null) {
-                            logger.warn("{s}: Failed to parse hello pub (typ={}, body_len={})", .{ if (self.role == .Server) "Server" else "Client", p.typ, p.body.len });
+                            std.debug.print("{s}: Failed to parse hello pub (typ={}, body_len={})", .{ if (self.role == .Server) "Server" else "Client", p.typ, p.body.len });
                         }
                     }
                     if (extracted) |pk| {
-                        logger.debug("TLS: Setting peer_pub for {} (was null={})", .{p.typ, self.peer_pub == null});
+                        std.debug.print("TLS: Setting peer_pub for {} (was null={})", .{p.typ, self.peer_pub == null});
                         self.peer_pub = pk;
-                        logger.debug("TLS: peer_pub is now set (null={})", .{self.peer_pub == null});
+                        std.debug.print("TLS: peer_pub is now set (null={})", .{self.peer_pub == null});
                         // Compute shared secret after receiving peer's public key
                         switch (p.typ) {
                             .server_hello => if (self.role == .Client) self.tryComputeShared(),
                             .client_hello => if (self.role == .Server) {
-                                logger.debug("Server: Will compute ECDHE when generating ServerHello", .{});
+                                std.debug.print("Server: Will compute ECDHE when generating ServerHello", .{});
                                 // Extract ALPN from ClientHello
                                 self.extractAlpnFromClientHello(p.body);
                             },
                             else => {},
                         }
                     } else {
-                        logger.debug("TLS: No key extracted from hello message", .{});
+                        std.debug.print("TLS: No key extracted from hello message", .{});
                     }
 
                     // Also extract ALPN even if key extraction failed (ALPN is independent of key)
@@ -611,7 +611,7 @@ pub const Engine = struct {
                     if (p.typ == .client_hello and self.role == .Server and !self.allow_insecure) {
                         // Server receiving ClientHello from client - TP MUST be present
                         if (self.peer_tp == null) {
-                            logger.err("TLS: Missing transport parameters in ClientHello (RFC 9001 violation)", .{});
+                            std.debug.print("TLS: Missing transport parameters in ClientHello (RFC 9001 violation)", .{});
                             // Mark connection as failed - upper layer should close connection
                             self.handshake_failed = true;
                             return;
@@ -662,7 +662,7 @@ pub const Engine = struct {
                     if (self.role == .Client and !self.allow_insecure) {
                         // Client receiving EncryptedExtensions from server - TP MUST be present
                         if (self.peer_tp == null) {
-                            logger.err("TLS: Missing transport parameters in EncryptedExtensions (RFC 9001 violation)", .{});
+                            std.debug.print("TLS: Missing transport parameters in EncryptedExtensions (RFC 9001 violation)", .{});
                             // Mark connection as failed - upper layer should close connection
                             self.handshake_failed = true;
                             return;
@@ -672,12 +672,12 @@ pub const Engine = struct {
                 // Certificate message parsing: RFC 8446 Section 4.4.2
                 // FIX: Parse TLS Certificate message format before extracting DER certificate
                 if (p.typ == .certificate) {
-                    logger.debug("{s}: Processing Certificate message (len={})", .{ if (self.role == .Server) "Server" else "Client", p.body.len });
+                    std.debug.print("{s}: Processing Certificate message (len={})", .{ if (self.role == .Server) "Server" else "Client", p.body.len });
                     if (self.allow_insecure) {
-                        logger.debug("{s}: Certificate validation skipped (insecure mode)", .{if (self.role == .Server) "Server" else "Client"});
+                        std.debug.print("{s}: Certificate validation skipped (insecure mode)", .{if (self.role == .Server) "Server" else "Client"});
                         self.peer_cert_ok = true;
                     } else {
-                        logger.debug("{s}: Attempting certificate validation", .{if (self.role == .Server) "Server" else "Client"});
+                        std.debug.print("{s}: Attempting certificate validation", .{if (self.role == .Server) "Server" else "Client"});
 
                         // Parse TLS Certificate message format per RFC 8446 Section 4.4.2:
                         // struct {
@@ -694,7 +694,7 @@ pub const Engine = struct {
 
                         parse_cert: {
                             if (p.body.len < 1) {
-                                logger.err("TLS: Certificate message too short for request context", .{});
+                                std.debug.print("TLS: Certificate message too short for request context", .{});
                                 break :parse_cert;
                             }
 
@@ -702,7 +702,7 @@ pub const Engine = struct {
                             const ctx_len: usize = p.body[pos];
                             pos += 1;
                             if (pos + ctx_len > p.body.len) {
-                                logger.err("TLS: Certificate message truncated at request context", .{});
+                                std.debug.print("TLS: Certificate message truncated at request context", .{});
                                 break :parse_cert;
                             }
                             // Skip context bytes
@@ -710,13 +710,13 @@ pub const Engine = struct {
 
                             // certificate_list length (3 bytes)
                             if (pos + 3 > p.body.len) {
-                                logger.err("TLS: Certificate message too short for certificate list length", .{});
+                                std.debug.print("TLS: Certificate message too short for certificate list length", .{});
                                 break :parse_cert;
                             }
                             const list_len: usize = (@as(usize, p.body[pos]) << 16) | (@as(usize, p.body[pos+1]) << 8) | p.body[pos+2];
                             pos += 3;
                             if (pos + list_len > p.body.len) {
-                                logger.err("TLS: Certificate message truncated at certificate list", .{});
+                                std.debug.print("TLS: Certificate message truncated at certificate list", .{});
                                 break :parse_cert;
                             }
 
@@ -728,12 +728,12 @@ pub const Engine = struct {
                                 pos += 3;
                                 if (pos + cert_data_len <= list_end) {
                                     cert_der = p.body[pos..pos+cert_data_len];
-                                    logger.debug("TLS: Extracted DER certificate (len={})", .{cert_data_len});
+                                    std.debug.print("TLS: Extracted DER certificate (len={})", .{cert_data_len});
                                 } else {
-                                    logger.err("TLS: Certificate entry truncated", .{});
+                                    std.debug.print("TLS: Certificate entry truncated", .{});
                                 }
                             } else {
-                                logger.err("TLS: Certificate list empty or malformed", .{});
+                                std.debug.print("TLS: Certificate list empty or malformed", .{});
                             }
                         }
 
@@ -741,12 +741,12 @@ pub const Engine = struct {
                         if (cert_der) |der| {
                             const cert_val = x509.parseCert(self.allocator, der) catch null;
                             if (cert_val) |c| {
-                                logger.debug("{s}: Certificate parsed successfully", .{if (self.role == .Server) "Server" else "Client"});
+                                std.debug.print("{s}: Certificate parsed successfully", .{if (self.role == .Server) "Server" else "Client"});
                                 self.peer_cert_ok = true;
                                 if (self.leaf_spki) |old| self.allocator.free(old);
                                 self.leaf_spki = self.allocator.dupe(u8, c.spki) catch null;
                                 x509.checkValidity(std.time.timestamp(), &c) catch {
-                                    logger.warn("{s}: Certificate validity check failed", .{if (self.role == .Server) "Server" else "Client"});
+                                    std.debug.print("{s}: Certificate validity check failed", .{if (self.role == .Server) "Server" else "Client"});
                                     self.peer_cert_ok = false;
                                 };
                                 if (self.peer_cert_ok) {
@@ -764,11 +764,11 @@ pub const Engine = struct {
                                     }
                                 }
                             } else {
-                                logger.err("TLS: x509.parseCert failed", .{});
+                                std.debug.print("TLS: x509.parseCert failed", .{});
                                 self.peer_cert_ok = false;
                             }
                         } else {
-                            logger.err("TLS: Failed to extract DER certificate from Certificate message", .{});
+                            std.debug.print("TLS: Failed to extract DER certificate from Certificate message", .{});
                             self.peer_cert_ok = false;
                         }
                     }
@@ -792,7 +792,7 @@ pub const Engine = struct {
                                     0x0804 => .rsa_pss_sha256,
                                     0x0807 => .ed25519,
                                     else => blk: {
-                                        logger.warn("TLS: Unknown SignatureScheme: 0x{X:0>4}", .{scheme_value});
+                                        std.debug.print("TLS: Unknown SignatureScheme: 0x{X:0>4}", .{scheme_value});
                                         self.peer_cert_ok = false;
                                         break :blk .rsa_pss_sha256;
                                     },
@@ -801,32 +801,32 @@ pub const Engine = struct {
                                     const ok = sig.verifyCertificateVerify(alg, self.leaf_spki.?, signature, "TLS 1.3, server CertificateVerify", &th) catch false;
                                     self.peer_cert_ok = ok;
                                     if (!ok) {
-                                        logger.err("TLS: CertificateVerify signature verification FAILED", .{});
+                                        std.debug.print("TLS: CertificateVerify signature verification FAILED", .{});
                                     }
                                 }
                             } else {
-                                logger.err("TLS: CertificateVerify message too short for declared signature length", .{});
+                                std.debug.print("TLS: CertificateVerify message too short for declared signature length", .{});
                                 self.peer_cert_ok = false;
                             }
                         } else {
-                            logger.err("TLS: CertificateVerify message too short (len={})", .{p.body.len});
+                            std.debug.print("TLS: CertificateVerify message too short (len={})", .{p.body.len});
                             self.peer_cert_ok = false;
                         }
                     }
                 }
                 // Finished verification
                 if (p.typ == .finished and self.ecdhe_secret != null) {
-                    logger.debug("TLS: Processing Finished message", .{});
+                    std.debug.print("TLS: Processing Finished message", .{});
                     var peer_secret_opt: ?[H.digest_length]u8 = null;
                     if (self.handshake_client_secret != null and self.handshake_server_secret != null) {
                         peer_secret_opt = switch (self.role) {
                             .Client => self.handshake_server_secret.?,
                             .Server => self.handshake_client_secret.?,
                         };
-                        logger.debug("TLS: Using stored handshake secrets for verification", .{});
+                        std.debug.print("TLS: Using stored handshake secrets for verification", .{});
                     }
                     const ok = if (peer_secret_opt) |ps| self.verifyPeerFinished(ps, p.body) else blk: {
-                        logger.debug("TLS: Using fallback for Finished verification", .{});
+                        std.debug.print("TLS: Using fallback for Finished verification", .{});
                         // Fallback (should not happen in real mode past this point)
                         const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th_before);
                         break :blk switch (self.role) {
@@ -834,7 +834,7 @@ pub const Engine = struct {
                             .Server => self.verifyPeerFinished(hs.client_hs, p.body),
                         };
                     };
-                    logger.debug("TLS: Finished verification result: {}", .{ok});
+                    std.debug.print("TLS: Finished verification result: {}", .{ok});
                     self.finished_verified = ok;
 
                     // Add the Finished message to the transcript AFTER verification
@@ -843,14 +843,14 @@ pub const Engine = struct {
                         self.transcript.update(finished_msg);
                         const show_len = @min(8, finished_msg.len);
                         if (show_len >= 8) {
-                            logger.debug("TLS: Added {} bytes to transcript (recv-finished): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...", .{finished_msg.len, finished_msg[0], finished_msg[1], finished_msg[2], finished_msg[3], finished_msg[4], finished_msg[5], finished_msg[6], finished_msg[7]});
+                            std.debug.print("TLS: Added {} bytes to transcript (recv-finished): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...", .{finished_msg.len, finished_msg[0], finished_msg[1], finished_msg[2], finished_msg[3], finished_msg[4], finished_msg[5], finished_msg[6], finished_msg[7]});
                         } else {
-                            logger.debug("TLS: Added {} bytes to transcript (recv-finished)", .{finished_msg.len});
+                            std.debug.print("TLS: Added {} bytes to transcript (recv-finished)", .{finished_msg.len});
                         }
 
                         // RFC 8446 §7.1: Derive application traffic secrets AFTER verifying peer Finished
                         // The transcript now includes: ClientHello...ServerHello...server Finished...client Finished
-                        logger.debug("TLS: Deriving application traffic secrets after peer Finished verified", .{});
+                        std.debug.print("TLS: Deriving application traffic secrets after peer Finished verified", .{});
                         _ = self.computeApplicationSecrets();
                     }
                 }
@@ -888,9 +888,9 @@ pub const Engine = struct {
                             const transcript_hash = transcript_snapshot.finalize();
                             ks.expandLabel(ms, "res master", &transcript_hash, &resumption_secret) catch continue;
                             self.tickets.add(self.allocator, ticket_bytes, resumption_secret, lifetime) catch {};
-                            logger.debug("TLS: Stored session ticket (len={}, lifetime={})", .{ ticket_bytes.len, lifetime });
+                            std.debug.print("TLS: Stored session ticket (len={}, lifetime={})", .{ ticket_bytes.len, lifetime });
                         } else {
-                            logger.debug("TLS: Received ticket before master_secret ready; ignoring", .{});
+                            std.debug.print("TLS: Received ticket before master_secret ready; ignoring", .{});
                         }
                     }
                 }
@@ -898,14 +898,14 @@ pub const Engine = struct {
                 // parseHandshakeOne returned null - not enough data
                 if (off < self.inbox.items.len) {
                     const remaining_data = self.inbox.items[off..];
-                    logger.debug("TLS: parseHandshakeOne failed with {} bytes available", .{remaining_data.len});
+                    std.debug.print("TLS: parseHandshakeOne failed with {} bytes available", .{remaining_data.len});
 
                     // Check if it's a partial message that needs more data
                     if (remaining_data.len >= 4) {
                         const msg_type = remaining_data[0];
                         const msg_len = (@as(usize, remaining_data[1]) << 16) | (@as(usize, remaining_data[2]) << 8) | @as(usize, remaining_data[3]);
                         const need_total = 4 + msg_len;
-                        logger.debug("TLS: Partial message type=0x{X:0>2} needs {} bytes total, have {} bytes", .{msg_type, need_total, remaining_data.len});
+                        std.debug.print("TLS: Partial message type=0x{X:0>2} needs {} bytes total, have {} bytes", .{msg_type, need_total, remaining_data.len});
                     }
                 }
                 break;
@@ -920,7 +920,7 @@ pub const Engine = struct {
                 std.mem.copyForwards(u8, self.inbox.items[0..remaining], self.inbox.items[off..]);
             }
             self.inbox.shrinkRetainingCapacity(remaining);
-            logger.debug("TLS: Processed {} bytes, {} bytes remaining in buffer", .{off, remaining});
+            std.debug.print("TLS: Processed {} bytes, {} bytes remaining in buffer", .{off, remaining});
         }
         
         // Transcript is now updated message-by-message in the loop above
@@ -953,9 +953,9 @@ pub const Engine = struct {
         self.transcript.update(data);
         const show_len = @min(8, data.len);
         if (show_len >= 8) {
-            logger.debug("TLS: Added {} bytes to transcript (queue): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...", .{data.len, data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]});
+            std.debug.print("TLS: Added {} bytes to transcript (queue): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...", .{data.len, data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]});
         } else {
-            logger.debug("TLS: Added {} bytes to transcript (queue)", .{data.len});
+            std.debug.print("TLS: Added {} bytes to transcript (queue)", .{data.len});
         }
         // If this was a proper handshake record, flip flags
         if (data.len >= 1) {
@@ -1102,7 +1102,7 @@ pub const Engine = struct {
     pub fn queueFinished(self: *Engine, traffic_secret: [H.digest_length]u8) !void {
         var snap = self.transcript;
         const th = snap.finalize();
-        logger.debug("TLS: Queueing Finished with transcript hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...", .{th[0], th[1], th[2], th[3], th[4], th[5], th[6], th[7]});
+        std.debug.print("TLS: Queueing Finished with transcript hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...", .{th[0], th[1], th[2], th[3], th[4], th[5], th[6], th[7]});
         const verify = deriveFinishedVerifyData(traffic_secret, th);
         const msg = try encodeHandshake(self.allocator, .finished, verify[0..]);
         defer self.allocator.free(msg);
@@ -1117,13 +1117,13 @@ pub const Engine = struct {
         // finished_body is the verify_data sent by the peer
         var snap = self.transcript;
         const th = snap.finalize();
-        logger.debug("TLS: Verifying Finished with transcript hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...", .{th[0], th[1], th[2], th[3], th[4], th[5], th[6], th[7]});
+        std.debug.print("TLS: Verifying Finished with transcript hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...", .{th[0], th[1], th[2], th[3], th[4], th[5], th[6], th[7]});
         const expect = deriveFinishedVerifyData(peer_secret, th);
         const match = finished_body.len == expect.len and std.mem.eql(u8, finished_body, &expect);
         if (!match) {
-            logger.warn("TLS: Finished verification failed. Expected len={}, got len={}", .{ expect.len, finished_body.len });
+            std.debug.print("TLS: Finished verification failed. Expected len={}, got len={}", .{ expect.len, finished_body.len });
             if (finished_body.len == expect.len) {
-                logger.warn("TLS: MAC mismatch", .{});
+                std.debug.print("TLS: MAC mismatch", .{});
             }
         }
         return match;
@@ -1195,7 +1195,7 @@ pub const Engine = struct {
         defer self.allocator.free(msg);
         try self.queueCrypto(msg);
 
-        logger.debug("TLS: Queued Certificate message (cert_len={}, total_body_len={})", .{cert_der.len, body.items.len});
+        std.debug.print("TLS: Queued Certificate message (cert_len={}, total_body_len={})", .{cert_der.len, body.items.len});
     }
 
     /// Queue CertificateVerify message (RFC 8446 Section 4.4.3)
@@ -1246,7 +1246,7 @@ pub const Engine = struct {
         defer self.allocator.free(msg);
         try self.queueCrypto(msg);
 
-        logger.debug("TLS: Queued CertificateVerify message (alg={s}, sig_len={})", .{@tagName(alg), signature.len});
+        std.debug.print("TLS: Queued CertificateVerify message (alg={s}, sig_len={})", .{@tagName(alg), signature.len});
     }
 
     // --- New helper methods used by tests ---
@@ -1262,11 +1262,11 @@ pub const Engine = struct {
             (self.ch_recv and self.sh_seen);
         if (!ch_sh_ready) return null;
         const th = self.transcript.finalize();
-        logger.debug("computeHandshakeSecrets: Computing with transcript hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} ... (first 4 bytes of {})", .{th[0], th[1], th[2], th[3], th.len});
-        logger.debug("computeHandshakeSecrets: ecdhe_secret first 4 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{self.ecdhe_secret.?[0], self.ecdhe_secret.?[1], self.ecdhe_secret.?[2], self.ecdhe_secret.?[3]});
+        std.debug.print("computeHandshakeSecrets: Computing with transcript hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} ... (first 4 bytes of {})", .{th[0], th[1], th[2], th[3], th.len});
+        std.debug.print("computeHandshakeSecrets: ecdhe_secret first 4 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{self.ecdhe_secret.?[0], self.ecdhe_secret.?[1], self.ecdhe_secret.?[2], self.ecdhe_secret.?[3]});
         const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th);
-        logger.debug("computeHandshakeSecrets: client_hs first 4 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{hs.client_hs[0], hs.client_hs[1], hs.client_hs[2], hs.client_hs[3]});
-        logger.debug("computeHandshakeSecrets: server_hs first 4 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{hs.server_hs[0], hs.server_hs[1], hs.server_hs[2], hs.server_hs[3]});
+        std.debug.print("computeHandshakeSecrets: client_hs first 4 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{hs.client_hs[0], hs.client_hs[1], hs.client_hs[2], hs.client_hs[3]});
+        std.debug.print("computeHandshakeSecrets: server_hs first 4 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{hs.server_hs[0], hs.server_hs[1], hs.server_hs[2], hs.server_hs[3]});
         // Store the secrets in the engine for later use
         self.handshake_client_secret = hs.client_hs;
         self.handshake_server_secret = hs.server_hs;
@@ -1354,17 +1354,17 @@ pub const Engine = struct {
 
     /// Build a minimally spec-compliant TLS 1.3 ServerHello (real mode)
     pub fn queueRealServerHello(self: *Engine) !void {
-        logger.debug("queueRealServerHello: ENTER - alpn={}, local_tp={}", .{ self.alpn != null, self.local_tp != null });
+        std.debug.print("queueRealServerHello: ENTER - alpn={}, local_tp={}", .{ self.alpn != null, self.local_tp != null });
 
         // Log transport parameters if available
         if (self.local_tp) |tp| {
-            logger.debug("queueRealServerHello: Transport parameters available, {} bytes", .{tp.len});
+            std.debug.print("queueRealServerHello: Transport parameters available, {} bytes", .{tp.len});
         } else {
-            logger.debug("WARNING: queueRealServerHello called without transport parameters - ServerHello will be non-compliant with RFC 9001", .{});
+            std.debug.print("WARNING: queueRealServerHello called without transport parameters - ServerHello will be non-compliant with RFC 9001", .{});
         }
         self.ensureKeypair();
         const pubkey = self.my_pub orelse {
-            logger.debug("queueRealServerHello: EARLY EXIT - my_pub is NULL", .{});
+            std.debug.print("queueRealServerHello: EARLY EXIT - my_pub is NULL", .{});
             return error.Internal;
         };
 
@@ -1389,17 +1389,17 @@ pub const Engine = struct {
         defer self.allocator.free(msg);
 
         // Enhanced ServerHello logging
-        logger.debug("ServerHello total length: {} bytes", .{msg.len});
+        std.debug.print("ServerHello total length: {} bytes", .{msg.len});
         if (msg.len >= 16) {
-            logger.debug("ServerHello header: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{msg[0], msg[1], msg[2], msg[3]});
-            logger.debug("ServerHello body start: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{msg[4], msg[5], msg[6], msg[7], msg[8], msg[9], msg[10], msg[11]});
-            logger.debug("ServerHello body[12..20]: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{msg[12], msg[13], msg[14], msg[15], msg[16], msg[17], msg[18], msg[19]});
+            std.debug.print("ServerHello header: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{msg[0], msg[1], msg[2], msg[3]});
+            std.debug.print("ServerHello body start: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{msg[4], msg[5], msg[6], msg[7], msg[8], msg[9], msg[10], msg[11]});
+            std.debug.print("ServerHello body[12..20]: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{msg[12], msg[13], msg[14], msg[15], msg[16], msg[17], msg[18], msg[19]});
         }
 
         // Show transcript state before adding ServerHello
         var pre_snap = self.transcript;
         const pre_th = pre_snap.finalize();
-        logger.debug("Transcript hash BEFORE ServerHello: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{pre_th[0], pre_th[1], pre_th[2], pre_th[3], pre_th[4], pre_th[5], pre_th[6], pre_th[7]});
+        std.debug.print("Transcript hash BEFORE ServerHello: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{pre_th[0], pre_th[1], pre_th[2], pre_th[3], pre_th[4], pre_th[5], pre_th[6], pre_th[7]});
 
         try self.queueCrypto(msg);
 
@@ -1407,7 +1407,7 @@ pub const Engine = struct {
         if (self.ecdhe_secret != null and self.handshake_client_secret == null) {
             var snap = self.transcript;
             const th = snap.finalize();
-            logger.debug("Transcript hash AFTER ServerHello: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{th[0], th[1], th[2], th[3], th[4], th[5], th[6], th[7]});
+            std.debug.print("Transcript hash AFTER ServerHello: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{th[0], th[1], th[2], th[3], th[4], th[5], th[6], th[7]});
             const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th);
             self.handshake_client_secret = hs.client_hs;
             self.handshake_server_secret = hs.server_hs;
@@ -1417,12 +1417,12 @@ pub const Engine = struct {
 
         // RFC 9001: ServerHello goes to Initial CRYPTO space
         // EncryptedExtensions will be queued later by queueServerHandshakeFlight() for Handshake CRYPTO space
-        logger.debug("Server: ServerHello queued to Initial CRYPTO (EncryptedExtensions will go to Handshake)", .{});
+        std.debug.print("Server: ServerHello queued to Initial CRYPTO (EncryptedExtensions will go to Handshake)", .{});
     }
 
     /// Extract ALPN from ClientHello for server
     fn extractAlpnFromClientHello(self: *Engine, body: []const u8) void {
-        logger.debug("extractAlpnFromClientHello: body_len={}", .{body.len});
+        std.debug.print("extractAlpnFromClientHello: body_len={}", .{body.len});
         if (body.len < 35) return; // Minimum ClientHello size
         var pos: usize = 2 + 32; // Skip version + random
         if (pos >= body.len) return;
@@ -1456,14 +1456,14 @@ pub const Engine = struct {
                     if (3 + name_len <= elen and name_len > 0) {
                         if (self.alpn) |old| self.allocator.free(old);
                         self.alpn = self.allocator.dupe(u8, body[pos+3..pos+3+name_len]) catch null;
-                        logger.debug("extractAlpnFromClientHello: Extracted ALPN: {s}", .{self.alpn.?});
+                        std.debug.print("extractAlpnFromClientHello: Extracted ALPN: {s}", .{self.alpn.?});
                         return;
                     }
                 }
             }
             pos += elen;
         }
-        logger.debug("extractAlpnFromClientHello: No ALPN found", .{});
+        std.debug.print("extractAlpnFromClientHello: No ALPN found", .{});
     }
 
     /// Internal: auto-send Finished when conditions satisfied
@@ -1512,7 +1512,7 @@ pub const Engine = struct {
                         if (msg) |m| {
                             self.queueCrypto(m) catch {};
                             self.allocator.free(m);
-                            logger.debug("TLS: Queued CertificateVerify (scheme=0x{x:0>4}, sig_len={})", .{scheme, sb.len});
+                            std.debug.print("TLS: Queued CertificateVerify (scheme=0x{x:0>4}, sig_len={})", .{scheme, sb.len});
                         }
                         self.allocator.free(sb);
                     }
@@ -1523,13 +1523,13 @@ pub const Engine = struct {
             return;
         } else { // Client
             // Client waits for Finished verification; in authenticated mode also ensures peer_cert_ok
-            logger.debug("Client: maybeAutoProgress - finished_verified={}, has_secret={}, allow_insecure={}, peer_cert_ok={}", .{ self.finished_verified, self.handshake_client_secret != null, self.allow_insecure, self.peer_cert_ok });
+            std.debug.print("Client: maybeAutoProgress - finished_verified={}, has_secret={}, allow_insecure={}, peer_cert_ok={}", .{ self.finished_verified, self.handshake_client_secret != null, self.allow_insecure, self.peer_cert_ok });
             if (self.finished_verified and self.handshake_client_secret != null) {
                 if (!self.allow_insecure and !self.peer_cert_ok) {
-                    logger.debug("Client: Waiting for certificate validation to complete", .{});
+                    std.debug.print("Client: Waiting for certificate validation to complete", .{});
                     return; // wait for cert validation
                 }
-                logger.debug("Client: Queueing Finished message in real mode", .{});
+                std.debug.print("Client: Queueing Finished message in real mode", .{});
                 self.queueFinished(self.handshake_client_secret.?) catch {};
             }
         }
@@ -1542,7 +1542,7 @@ pub const Engine = struct {
 
         const result = self.finished_sent and self.finished_verified;
         if (!result) {
-            logger.debug("[TLS HANDSHAKE] NOT COMPLETE - role={s}, finished_sent={}, finished_verified={}, ecdhe_secret={}, handshake_client_secret={}, handshake_server_secret={}, peer_cert_ok={}, allow_insecure={}", .{
+            std.debug.print("[TLS HANDSHAKE] NOT COMPLETE - role={s}, finished_sent={}, finished_verified={}, ecdhe_secret={}, handshake_client_secret={}, handshake_server_secret={}, peer_cert_ok={}, allow_insecure={}", .{
                 if (self.role == .Server) "Server" else "Client",
                 self.finished_sent,
                 self.finished_verified,
@@ -1568,7 +1568,7 @@ pub const Engine = struct {
     /// Queue server handshake flight: EncryptedExtensions, Certificate, CertificateVerify, Finished
     /// RFC 9001: These go to Handshake CRYPTO space (ServerHello goes to Initial)
     pub fn queueServerHandshakeFlight(self: *Engine) void {
-        logger.debug("[FLIGHT] queueServerHandshakeFlight CALLED: role={s}, finished_sent={}, ee_sent={}, has_server_secret={}, has_client_secret={}, has_cert={}, has_key={}", .{
+        std.debug.print("[FLIGHT] queueServerHandshakeFlight CALLED: role={s}, finished_sent={}, ee_sent={}, has_server_secret={}, has_client_secret={}, has_cert={}, has_key={}\n", .{
             if (self.role == .Server) "Server" else "Client",
             self.finished_sent,
             self.ee_sent,
@@ -1579,48 +1579,48 @@ pub const Engine = struct {
         });
 
         if (self.role != .Server) {
-            logger.debug("[FLIGHT] Early return: not server", .{});
+            std.debug.print("[FLIGHT] Early return: not server\n", .{});
             return;
         }
         if (self.finished_sent) {
-            logger.debug("[FLIGHT] Early return: already sent finished", .{});
+            std.debug.print("[FLIGHT] Early return: already sent finished\n", .{});
             return; // already done
         }
 
         // Full handshake flight
         // Require that handshake_server_secret be present (after SH)
         if (self.handshake_server_secret == null) {
-            logger.debug("[FLIGHT] Early return: no handshake_server_secret", .{});
+            std.debug.print("[FLIGHT] Early return: no handshake_server_secret\n", .{});
             return;
         }
 
-        logger.debug("[FLIGHT] Proceeding with handshake flight", .{});
+        std.debug.print("[FLIGHT] Proceeding with handshake flight\n", .{});
 
         // RFC 9001: Queue EncryptedExtensions first for Handshake CRYPTO space
         if (!self.ee_sent) {
             const alpn_for_ee = self.alpn orelse &[_]u8{};
             const tp_for_ee = self.local_tp orelse &[_]u8{};
-            logger.debug("Server: Queueing EncryptedExtensions to Handshake CRYPTO with ALPN={s} TP_len={}", .{ alpn_for_ee, tp_for_ee.len });
+            std.debug.print("Server: Queueing EncryptedExtensions to Handshake CRYPTO with ALPN={s} TP_len={}", .{ alpn_for_ee, tp_for_ee.len });
             self.queueEncryptedExtensions(alpn_for_ee, tp_for_ee) catch |e| {
-                logger.err("Server: Failed to queue EncryptedExtensions: {}", .{e});
+                std.debug.print("Server: Failed to queue EncryptedExtensions: {}", .{e});
                 return;
             };
         }
         // If we have a certificate configured, send Certificate + CertificateVerify.
         // Note: allow_insecure only affects peer certificate validation, not whether we send ours
         if (self.server_cert_der != null and self.server_priv_key != null) {
-            logger.debug("Calling queueCertificate...", .{});
+            std.debug.print("Calling queueCertificate...", .{});
             self.queueCertificate(self.server_cert_der.?) catch {};
-            logger.debug("[CERTVERIFY] After queueCertificate, transcript exists={}", .{true});
+            std.debug.print("[CERTVERIFY] After queueCertificate, transcript exists={}", .{true});
             var snap = self.transcript;
             const th = snap.finalize();
             const alg = self.server_sig_alg orelse .ecdsa_secp256r1_sha256;
-            logger.debug("[CERTVERIFY] About to sign with alg={}, priv_key_len={}", .{alg, self.server_priv_key.?.len});
+            std.debug.print("[CERTVERIFY] About to sign with alg={}, priv_key_len={}", .{alg, self.server_priv_key.?.len});
             const sig_bytes = sig.signCertificateVerify(alg, self.server_priv_key.?, "TLS 1.3, server CertificateVerify", &th, self.allocator) catch |e| blk: {
-                logger.err("[CERTVERIFY] signCertificateVerify FAILED: {}", .{e});
+                std.debug.print("[CERTVERIFY] signCertificateVerify FAILED: {}", .{e});
                 break :blk null;
             };
-            logger.debug("[CERTVERIFY] Signature generation result: sig_bytes={}", .{sig_bytes != null});
+            std.debug.print("[CERTVERIFY] Signature generation result: sig_bytes={}", .{sig_bytes != null});
             if (sig_bytes) |sb| {
                 // RFC 8446 format: SignatureScheme (2 bytes) + signature length (2 bytes) + signature data
                 var body = std.ArrayList(u8){};
@@ -1648,24 +1648,24 @@ pub const Engine = struct {
                 if (msg) |m| {
                     self.queueCrypto(m) catch {};
                     self.allocator.free(m);
-                    logger.debug("TLS: Queued CertificateVerify (scheme=0x{x:0>4}, sig_len={})", .{scheme, sb.len});
+                    std.debug.print("TLS: Queued CertificateVerify (scheme=0x{x:0>4}, sig_len={})", .{scheme, sb.len});
                 }
                 self.allocator.free(sb);
             }
         }
         // Always queue Finished last
-        logger.debug("[FLIGHT] About to queue Finished: finished_sent={}, has_secret={}", .{
+        std.debug.print("[FLIGHT] About to queue Finished: finished_sent={}, has_secret={}", .{
             self.finished_sent,
             self.handshake_server_secret != null,
         });
         if (!self.finished_sent and self.handshake_server_secret != null) {
-            logger.debug("[FLIGHT] Calling queueFinished with server secret...", .{});
+            std.debug.print("[FLIGHT] Calling queueFinished with server secret...", .{});
             self.queueFinished(self.handshake_server_secret.?) catch |e| {
-                logger.err("[FLIGHT] queueFinished FAILED: {}", .{e});
+                std.debug.print("[FLIGHT] queueFinished FAILED: {}", .{e});
             };
-            logger.debug("[FLIGHT] After queueFinished: finished_sent={}", .{self.finished_sent});
+            std.debug.print("[FLIGHT] After queueFinished: finished_sent={}", .{self.finished_sent});
         } else {
-            logger.debug("[FLIGHT] NOT queueing Finished (already sent or no secret)", .{});
+            std.debug.print("[FLIGHT] NOT queueing Finished (already sent or no secret)", .{});
         }
     }
 };
@@ -1734,7 +1734,7 @@ fn readU16(be: []const u8) u16 {
 /// Also stores the client's session ID for ServerHello echo (RFC 8446 requirement).
 /// Returns pubkey if successful; otherwise null. Does not perform deep validation beyond bounds.
 fn parseRealClientHello(body: []const u8, engine: *Engine) ?[32]u8 {
-    logger.debug("parseRealClientHello: body_len={}", .{body.len});
+    std.debug.print("parseRealClientHello: body_len={}", .{body.len});
 
     // Use a stack allocator for the parsing
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -1743,10 +1743,10 @@ fn parseRealClientHello(body: []const u8, engine: *Engine) ?[32]u8 {
 
     // Parse the ClientHello using the comprehensive parser
     const ch = tls13_full.parseClientHello(allocator, body) catch |err| {
-        logger.debug("parseRealClientHello: failed to parse ClientHello with error: {}", .{err});
+        std.debug.print("parseRealClientHello: failed to parse ClientHello with error: {}", .{err});
         // Log first few bytes of body for debugging
         if (body.len >= 8) {
-            logger.debug("parseRealClientHello: First 8 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{body[0], body[1], body[2], body[3], body[4], body[5], body[6], body[7]});
+            std.debug.print("parseRealClientHello: First 8 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{body[0], body[1], body[2], body[3], body[4], body[5], body[6], body[7]});
         }
         return null;
     };
@@ -1762,16 +1762,16 @@ fn parseRealClientHello(body: []const u8, engine: *Engine) ?[32]u8 {
         engine.client_session_id = engine.allocator.alloc(u8, ch.session_id.len) catch null;
         if (engine.client_session_id) |new_id| {
             @memcpy(new_id, ch.session_id);
-            logger.debug("parseRealClientHello: stored client session_id len={}", .{ch.session_id.len});
+            std.debug.print("parseRealClientHello: stored client session_id len={}", .{ch.session_id.len});
         }
     } else {
-        logger.debug("parseRealClientHello: client sent empty session_id", .{});
+        std.debug.print("parseRealClientHello: client sent empty session_id", .{});
         engine.client_session_id = null;
     }
 
     // Extract QUIC transport parameters if present (RFC 9001 Section 8.2)
     if (ch.quic_transport_parameters) |tp| {
-        logger.debug("parseRealClientHello: found transport parameters (len={})", .{tp.len});
+        std.debug.print("parseRealClientHello: found transport parameters (len={})", .{tp.len});
         // Free any existing peer transport parameters
         if (engine.peer_tp) |old| {
             engine.allocator.free(old);
@@ -1779,24 +1779,24 @@ fn parseRealClientHello(body: []const u8, engine: *Engine) ?[32]u8 {
         // Store a copy of the client's transport parameters
         engine.peer_tp = engine.allocator.dupe(u8, tp) catch null;
         if (engine.peer_tp != null) {
-            logger.debug("parseRealClientHello: stored transport parameters", .{});
+            std.debug.print("parseRealClientHello: stored transport parameters", .{});
         }
     } else {
-        logger.debug("parseRealClientHello: no transport parameters found in ClientHello", .{});
+        std.debug.print("parseRealClientHello: no transport parameters found in ClientHello", .{});
     }
 
     // Extract the X25519 key share if present
     if (ch.key_share) |key_share| {
         if (key_share.group == .x25519 and key_share.key_exchange.len == 32) {
-            logger.debug("parseRealClientHello: found X25519 key!", .{});
+            std.debug.print("parseRealClientHello: found X25519 key!", .{});
             var out: [32]u8 = undefined;
             @memcpy(&out, key_share.key_exchange[0..32]);
-            logger.debug("parseRealClientHello: successfully extracted public key", .{});
+            std.debug.print("parseRealClientHello: successfully extracted public key", .{});
             return out;
         }
     }
 
-    logger.debug("parseRealClientHello: no X25519 key found", .{});
+    std.debug.print("parseRealClientHello: no X25519 key found", .{});
     return null;
 }
 
