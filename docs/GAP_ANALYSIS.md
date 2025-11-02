@@ -27,7 +27,7 @@ Date: 2025-09-20 (Current Implementation Status)
 - **Certificate Handling**: Basic X.509, limited chain validation
 - **CUBIC**: Uses NewReno internally (functional but not full CUBIC)
 - **TLS 1.3 Record Layer**: Plaintext/inner-plaintext framing plus full AEAD wiring (AES-GCM, ChaCha20-Poly1305), nonce derivation, and usage-limit enforcement completed; fuzz harness still outstanding.
-- **TLS 1.3 Handshake Integration**: Context-based ClientHello ingestion, transcript updates, and metadata storage completed; ServerHello → Finished flight generation, secret installation, and alert mapping pending.
+- **TLS 1.3 Handshake Integration**: Context-based ClientHello ingestion plus server-side ServerHello/EncryptedExtensions/Finished flight generation with handshake key installation complete; extension negotiation, certificate authentication, and alert mapping still pending.
 
 ### Platform Specific
 

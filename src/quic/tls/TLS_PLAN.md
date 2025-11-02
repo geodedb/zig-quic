@@ -47,7 +47,8 @@
 
 - [x] Wire `Context.processCrypto` to buffer Initial CRYPTO data, parse a spec-compliant ClientHello (supported_versions + x25519 key_share), persist transcript updates, and expose normalized handshake metadata for the QUIC server role.
   - Added `HandshakeState` with owned ClientHello storage, view accessors, and `tests/test_tls_handshake_context.zig` covering parsing, transcript hashing, and duplicate-message rejection.
-- [ ] Implement server-side ServerHello → EncryptedExtensions → Finished flight production with transcript checkpoints and handshake secret installation.
+- [x] Implement server-side ServerHello → EncryptedExtensions → Finished flight production with transcript checkpoints and handshake secret installation.
+  - `Context.processCrypto` now records the ClientHello transcript hash checkpoint and invokes `driveServerHandshakeFlight()` once, producing a ServerHello (TLS_AES_128_GCM_SHA256, x25519) on Initial CRYPTO, installing Handshake traffic secrets via `installTrafficSecret`, emitting EncryptedExtensions + Finished on Handshake CRYPTO, and caching the Finished pre-hash for later verification.
 - [ ] Support mandatory extension negotiation beyond ClientHello parsing (signature_algorithms, pre_shared_key) and surface QUIC transport parameters/ALPN to the connection layer.
 - [ ] Manage transcript hash checkpoints (§4.4.1) and drive key schedule transitions (§7.1) across handshake flights, including Finished verification helpers.
 - [ ] Tests: end-to-end handshake happy path, downgrade attempt detection, malformed message rejection, and fuzz on ClientHello parsers/extension decoding.

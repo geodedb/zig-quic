@@ -76,7 +76,7 @@ test "context parses ClientHello and stores handshake view" {
 
     try ctx.processCrypto(.Initial, ch);
 
-    try std.testing.expectEqual(tls13.HandshakePhase.negotiating, ctx.phase);
+    try std.testing.expectEqual(tls13.HandshakePhase.keys_installed, ctx.phase);
 
     const view_opt = ctx.clientHello();
     try std.testing.expect(view_opt != null);
@@ -90,8 +90,46 @@ test "context parses ClientHello and stores handshake view" {
     try std.testing.expectEqual(@as(usize, ch.len - 4), view.raw.len);
 
     const expected_hash = computeTranscriptHash(ch);
-    const actual_hash = ctx.transcripts.handshake.finalize();
-    try std.testing.expectEqualSlices(u8, expected_hash[0..], actual_hash[0..]);
+    const stored_ch_hash = ctx.transcripts.client_hello_hash orelse unreachable;
+    try std.testing.expectEqualSlices(u8, expected_hash[0..], stored_ch_hash[0..]);
+    try std.testing.expect(ctx.secrets.handshake.send.valid);
 
     try std.testing.expectError(tls13.HandshakeError.DuplicateClientHello, ctx.processCrypto(.Initial, ch));
+}
+
+test "server emits ServerHello flight with Finished" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const alloc = gpa.allocator();
+
+    const config = tls13.Config{ .allocator = alloc, .role = .Server };
+    var ctx = tls13.Context.init(config, .{});
+    defer ctx.deinit();
+
+    const ch = try buildStandardClientHello(alloc);
+    defer alloc.free(ch);
+
+    try ctx.processCrypto(.Initial, ch);
+
+    const initial_bytes = try ctx.pollCrypto(alloc, .Initial);
+    defer alloc.free(initial_bytes);
+    const sh_msg = (try tls13.parseHandshakeOne(initial_bytes)).?;
+    try std.testing.expectEqual(tls13.HsType.server_hello, sh_msg.typ);
+
+    const handshake_bytes = try ctx.pollCrypto(alloc, .Handshake);
+    defer alloc.free(handshake_bytes);
+    var remaining = handshake_bytes;
+
+    const ee_msg = (try tls13.parseHandshakeOne(remaining)).?;
+    try std.testing.expectEqual(tls13.HsType.encrypted_extensions, ee_msg.typ);
+    remaining = remaining[ee_msg.n..];
+
+    const fin_msg = (try tls13.parseHandshakeOne(remaining)).?;
+    try std.testing.expectEqual(tls13.HsType.finished, fin_msg.typ);
+    try std.testing.expectEqual(@as(usize, tls13.H.digest_length), fin_msg.body.len);
+    remaining = remaining[fin_msg.n..];
+    try std.testing.expectEqual(@as(usize, 0), remaining.len);
+
+    try std.testing.expect(ctx.flags.local_finished_sent);
+    try std.testing.expect(ctx.transcripts.finished_hash != null);
 }

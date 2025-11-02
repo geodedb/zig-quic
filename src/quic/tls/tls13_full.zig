@@ -411,15 +411,15 @@ pub fn buildEncryptedExtensions(
     // ALPN
     if (alpn) |proto| {
         var alpn_data = try std.ArrayList(u8).initCapacity(allocator, 0);
-        defer alpn_data.deinit();
+        defer alpn_data.deinit(allocator);
 
         const alpn_list_len = 1 + proto.len;
-        try alpn_data.appendSlice(&[_]u8{
+        try alpn_data.appendSlice(allocator, &[_]u8{
             @intCast(alpn_list_len >> 8),
             @intCast(alpn_list_len & 0xff),
         });
         try alpn_data.append(allocator, @intCast(proto.len));
-        try alpn_data.appendSlice(proto);
+        try alpn_data.appendSlice(allocator, proto);
 
         try writeExtension(allocator, &exts, .alpn, alpn_data.items);
     }

@@ -92,7 +92,7 @@ Date: 2025-09-20 (Current Status)
 
 #### TLS Integration (RFC 9001)
 
-- ⚠️ Handshake state machine rework in progress: Initial ClientHello ingestion and transcript management complete; ServerHello → Finished flight generation, key installation, and alert mapping pending.
+- ⚠️ Handshake state machine: Initial ClientHello intake and transcript checkpoints land; server now emits ServerHello/EncryptedExtensions/Finished with handshake key installation, while extension negotiation, certificate authentication, and alert mapping remain.
 - ✅ Key derivation (Initial, Handshake, 1-RTT)
 - ✅ Header protection and removal
 - ✅ AEAD encryption/decryption
@@ -197,7 +197,7 @@ Added:
 - ECN longitudinal (Application): ensure ACK_ECN emission under reordering/loss; audit anti‑amplification interaction and connection demux tie‑break.
 - Migration/security: NEW_TOKEN persistence/use; path migration and NAT rebinding; amplification backoff coverage.
 - TLS 1.3: optional 0-RTT; trust store provider; HP timing audit (§9.5); migrate custom ASN.1/X.509/ClientHello parsing in `src/quic/tls/{asn1,sig,x509,tls13_full}.zig` to `std.crypto.asn1` / `std.crypto.x509` / `std.crypto.tls` primitives; extend new `Context` handshake engine beyond Initial space.
-- TLS 1.3 (handshake follow-up): generate ServerHello → EncryptedExtensions → Finished flights with transcript checkpoints, install handshake/application secrets, and map TLS alerts to QUIC CONNECTION_CLOSE semantics.
+- TLS 1.3 (handshake follow-up): negotiate mandatory extensions (signature_algorithms, pre_shared_key), surface QUIC transport parameters/ALPN to connection layer, verify Finished, and map TLS alerts to QUIC CONNECTION_CLOSE semantics.
 - TLS 1.3 (record layer follow-up): hook `record.zig` into AEAD cipher selection, derive nonces per RFC 8446 §5.3, and cap usage per §5.5.
 - Event loop/UDP: epoll/kqueue/IOCP parity; pacing timers on Windows/macOS; non‑blocking UDP path perf; pacing policy tuning.
 - Logging/observability: JSON Lines logs (INFO/ERROR), counters, structured trace points.

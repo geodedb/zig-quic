@@ -451,6 +451,7 @@ pub const Context = struct {
             try self.handleHandshakeMessage(level, parsed);
             if (parsed.typ != .finished) {
                 self.transcripts.handshake.update(message_bytes);
+                try self.afterHandshakeMessage(level, parsed);
             }
             stream.consume(parsed.n);
         }
@@ -518,6 +519,115 @@ pub const Context = struct {
             },
             else => {},
         }
+    }
+
+    fn afterHandshakeMessage(self: *Context, level: EncryptionLevel, parsed: HandshakeMessage) !void {
+        _ = level;
+        switch (parsed.typ) {
+            .client_hello => {
+                if (self.config.role != .Server) return;
+                self.transcripts.client_hello_hash = self.transcripts.handshake.finalize();
+                try self.driveServerHandshakeFlight();
+            },
+            else => {},
+        }
+    }
+
+    fn appendOutbound(self: *Context, level: EncryptionLevel, msg: []const u8, update_transcript: bool) !void {
+        var stream = self.streams.buffer(level);
+        try stream.outbound.appendSlice(self.allocator, msg);
+        if (update_transcript) {
+            self.transcripts.handshake.update(msg);
+        }
+    }
+
+    fn chooseCipherSuite(self: *const Context, offered: []const tls13_full.CipherSuite) ?tls13_full.CipherSuite {
+        for (self.config.supported_cipher_suites) |supported| {
+            for (offered) |candidate| {
+                if (supported == candidate) return supported;
+            }
+        }
+        return null;
+    }
+
+    fn selectServerAlpn(self: *const Context) ?[]const u8 {
+        if (self.config.alpn_protocols) |list| {
+            if (list.len != 0) return list[0];
+        }
+        return null;
+    }
+
+    fn driveServerHandshakeFlight(self: *Context) !void {
+        if (self.config.role != .Server) return;
+        if (self.flags.local_finished_sent) return;
+        if (self.secrets.handshake.send.valid) return; // secrets already installed
+
+        const ch_view = self.state.clientHello() orelse return HandshakeError.UnexpectedMessage;
+        const cipher_suite = self.chooseCipherSuite(ch_view.cipher_suites) orelse return HandshakeError.NoCipherSuite;
+        if (ch_view.key_share.key.len != 32) return HandshakeError.UnsupportedKeyShareGroup;
+
+        var server_random: [32]u8 = undefined;
+        std.crypto.random.bytes(&server_random);
+
+        var server_priv: [32]u8 = undefined;
+        std.crypto.random.bytes(&server_priv);
+
+        const server_pub = std.crypto.dh.X25519.recoverPublicKey(server_priv) catch {
+            return HandshakeError.UnsupportedKeyShareGroup;
+        };
+
+        var client_pub: [32]u8 = undefined;
+        @memcpy(&client_pub, ch_view.key_share.key[0..32]);
+
+        const shared = std.crypto.dh.X25519.scalarmult(server_priv, client_pub) catch {
+            return HandshakeError.UnsupportedKeyShareGroup;
+        };
+
+        const session_id_opt: ?[]const u8 = if (ch_view.session_id.len != 0) ch_view.session_id else null;
+
+        const sh_body = try tls13_full.buildServerHello(
+            self.allocator,
+            server_random,
+            cipher_suite,
+            ch_view.key_share.group,
+            server_pub[0..],
+            session_id_opt,
+            null,
+        );
+        defer self.allocator.free(sh_body);
+
+        const sh_msg = try encodeHandshake(self.allocator, .server_hello, sh_body);
+        defer self.allocator.free(sh_msg);
+        try self.appendOutbound(.Initial, sh_msg, true);
+
+        const transcript_after_sh = self.transcripts.handshake.finalize();
+        const hs = deriveHandshakeTraffic(shared[0..], transcript_after_sh);
+        try self.installTrafficSecret(.Handshake, .send, hs.server_hs);
+        try self.installTrafficSecret(.Handshake, .recv, hs.client_hs);
+        if (self.phase == .negotiating) {
+            self.phase = .keys_installed;
+        }
+
+        const ee_body = try tls13_full.buildEncryptedExtensions(
+            self.allocator,
+            self.selectServerAlpn(),
+            null,
+        );
+        defer self.allocator.free(ee_body);
+
+        const ee_msg = try encodeHandshake(self.allocator, .encrypted_extensions, ee_body);
+        defer self.allocator.free(ee_msg);
+        try self.appendOutbound(.Handshake, ee_msg, true);
+
+        const hash_before_finished = self.transcripts.handshake.finalize();
+        self.transcripts.finished_hash = hash_before_finished;
+        const verify_data = deriveFinishedVerifyData(hs.server_hs, hash_before_finished);
+
+        const fin_msg = try encodeHandshake(self.allocator, .finished, verify_data[0..]);
+        defer self.allocator.free(fin_msg);
+        try self.appendOutbound(.Handshake, fin_msg, true);
+
+        self.markLocalFinished();
     }
 };
 
