@@ -4,13 +4,19 @@ This project provides a production-grade QUIC v1/v2 (RFC 9000/9001/9002) library
 
 Key principles:
 
-- std.crypto for AES-128-GCM; custom ChaCha20-Poly1305; vendored Ed25519 from vendor/ed25519/; complete TLS 1.3 implementation in-repo.
+- std.crypto for AES-128-GCM and ChaCha20-Poly1305; vendored Ed25519 from vendor/ed25519/; complete TLS 1.3 implementation in-repo.
 - Strict parsing, constant-time crypto, zeroization of secrets.
 - Event loop abstraction over epoll/kqueue/IOCP using std.os.
 - Separation of transport, crypto, recovery, and congestion control.
 - Deterministic tests/fuzz seeds for reproducibility.
 
 The implementation is complete with 63 passing tests covering all major features including 0-RTT, resumption, migration, and key updates.
+
+## TLS 1.3 Record Layer
+
+- `src/quic/tls/record.zig` encapsulates TLSPlaintext framing (RFC 8446 §5.1), TLSInnerPlaintext packing/unpacking (RFC 8446 §5.4), and AEAD protection helpers for QUIC’s TLS binding.
+- `AeadCipher` wraps std.crypto AES-GCM (128/256) and ChaCha20-Poly1305 with suite metadata, nonce derivation (`xorNonce`), and confidentiality/integrity usage counters enforcing RFC 8446 §5.2–§5.5 limits. All keying material and derived nonces are zeroized after use.
+- Unit tests in `tests/test_tls_record_layer.zig` cover plaintext framing, AEAD round-trips, tamper-induced authentication failures, limit enforcement, and nonce validation; fuzz harness will follow once handshake CRYPTO buffering is wired up.
 
 ## ACK handling and ECN propagation
 

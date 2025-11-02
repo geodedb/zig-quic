@@ -7,13 +7,21 @@ Date: 2025-09-20 (Current Status)
 ## Latest Implementation Achievements
 
 ### 0-RTT Data Transmission/Reception ✅
+
 - Implemented `encode0RTTProtected` and `decode0RTTProtected` functions in `packet.zig`
 - Proper 0-RTT packet structure with AEAD encryption/decryption
 - Support for variable packet number lengths (1-4 bytes)
 - Comprehensive test coverage in `test_0rtt.zig`
 - Keys derivation from resumption secret
 
+### TLS 1.3 Record Layer AEAD Integration ✅
+
+- Extended `src/quic/tls/record.zig` with `AeadCipher`, suite metadata, nonce XOR helper, and usage-limit enforcement per RFC 8446 §5.2–§5.5, wiring std.crypto AES-GCM and ChaCha20-Poly1305.
+- Unit tests in `tests/test_tls_record_layer.zig` now cover AEAD round-trips, confidentiality/integrity limit enforcement, nonce derivation error paths, and the existing framing validations.
+- Next: add dedicated fuzz harness once handshake CRYPTO buffering lands to exercise ciphertext parsing under mutation.
+
 ### Session Resumption with PSK ✅
+
 - Enhanced TLS 1.3 engine with full PSK support
 - Session ticket storage and retrieval mechanism
 - Resumption secret derivation from master secret
@@ -22,6 +30,7 @@ Date: 2025-09-20 (Current Status)
 - Tests in `test_resumption.zig` covering resumption flow
 
 ### Connection Migration State Machine ✅
+
 - PATH_CHALLENGE/RESPONSE frame handling implemented
 - NAT rebinding detection and handling
 - Path validation state transitions
@@ -30,6 +39,7 @@ Date: 2025-09-20 (Current Status)
 - Comprehensive tests in `test_connection_migration.zig`
 
 ### Preferred Address Handling ✅
+
 - `PreferredAddress` structure per RFC 9000
 - `parsePreferredAddress` function for transport parameter parsing
 - Support for both IPv4 and IPv6 addresses
@@ -38,6 +48,7 @@ Date: 2025-09-20 (Current Status)
 - Tests in `test_preferred_address.zig`
 
 ### Test Coverage Milestone ✅
+
 - **63 tests passing** across the entire codebase
 - 4 new comprehensive test files added
 - All tests integrated into build system
@@ -46,6 +57,7 @@ Date: 2025-09-20 (Current Status)
 ## Current Feature Support Matrix
 
 ### Fully Implemented ✅
+
 - **Core Protocol**: handshake, transfer, http3 (HTTP/0.9 shim)
 - **Retry**: Stateless retry with token validation
 - **Key Update**: Key phase toggling with proper retention
@@ -60,6 +72,7 @@ Date: 2025-09-20 (Current Status)
 ### Implementation Status by Component
 
 #### Transport (RFC 9000)
+
 - ✅ Long and short header formats
 - ✅ All frame types (STREAM, ACK, CRYPTO, etc.)
 - ✅ Connection ID management and rotation
@@ -72,6 +85,7 @@ Date: 2025-09-20 (Current Status)
 - ✅ Version negotiation (v1 and v2)
 
 #### TLS Integration (RFC 9001)
+
 - ✅ TLS 1.3 handshake messages
 - ✅ Key derivation (Initial, Handshake, 1-RTT)
 - ✅ Header protection and removal
@@ -83,6 +97,7 @@ Date: 2025-09-20 (Current Status)
 - ✅ Transport parameters extension
 
 #### Loss Recovery (RFC 9002)
+
 - ✅ Packet number spaces
 - ✅ RTT estimation
 - ✅ Loss detection by threshold and time
@@ -175,7 +190,8 @@ Added:
 
 - ECN longitudinal (Application): ensure ACK_ECN emission under reordering/loss; audit anti‑amplification interaction and connection demux tie‑break.
 - Migration/security: NEW_TOKEN persistence/use; path migration and NAT rebinding; amplification backoff coverage.
-- TLS 1.3: optional 0‑RTT; trust store provider; HP timing audit (§9.5).
+- TLS 1.3: optional 0-RTT; trust store provider; HP timing audit (§9.5); migrate custom ASN.1/X.509/ClientHello parsing in `src/quic/tls/{asn1,sig,x509,tls13_full}.zig` to `std.crypto.asn1` / `std.crypto.x509` / `std.crypto.tls` primitives; wire new `Config`/`Context` API scaffold into QUIC handshake.
+- TLS 1.3 (record layer follow-up): hook `record.zig` into AEAD cipher selection, derive nonces per RFC 8446 §5.3, and cap usage per §5.5.
 - TLS 1.3 (interop specific): real ServerHello parse; EE (ALPN+TP) emit/parse; Certificate & CV & Finished; key schedule integration replacing placeholder; error mapping & alerts -> QUIC CONNECTION_CLOSE; crash fix on empty network; X25519 retry edge cases.
 - Event loop/UDP: epoll/kqueue/IOCP parity; pacing timers on Windows/macOS; non‑blocking UDP path perf; pacing policy tuning.
 - Logging/observability: JSON Lines logs (INFO/ERROR), counters, structured trace points.

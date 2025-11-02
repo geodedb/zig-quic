@@ -122,8 +122,10 @@ pub fn build(b: *std.Build) void {
     quic_crypto_mod.addImport("quic_tls", quic_tls_mod);
 
     // TLS/X.509 modules
+    const tls_record_mod = mkModule(b, "src/quic/tls/record.zig");
     const tls13_mod = mkModule(b, "src/quic/tls/tls13.zig");
     tls13_mod.addImport("quic_tls", quic_tls_mod);
+    tls13_mod.addImport("tls_record", tls_record_mod);
     const asn1_mod = mkModule(b, "src/quic/tls/asn1.zig");
     const sig_mod = mkModule(b, "src/quic/tls/sig.zig");
     sig_mod.addImport("asn1", asn1_mod);
@@ -368,6 +370,11 @@ pub fn build(b: *std.Build) void {
         test_byteorder.root_module.addImport("byteorder", byteorder_mod);
         const run_test_byteorder = b.addRunArtifact(test_byteorder);
         test_step.dependOn(&run_test_byteorder.step);
+
+        const test_tls_record = addTst(b, "tests/test_tls_record_layer.zig", target, optimize);
+        test_tls_record.root_module.addImport("tls_record", tls_record_mod);
+        const run_test_tls_record = b.addRunArtifact(test_tls_record);
+        test_step.dependOn(&run_test_tls_record.step);
 
         const test_tls = addTst(b, "tests/test_tls_key_schedule.zig", target, optimize);
         test_tls.root_module.addImport("quic_tls", quic_tls_mod);

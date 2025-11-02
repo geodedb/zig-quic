@@ -1,0 +1,3749 @@
+test
++- run test stderr
+aeadDecrypt: suite=.chacha20_poly1305, pn=4660, ct_len=9, tag_len=16
+AEAD decrypt key: 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f
+AEAD decrypt iv: a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 aa ab
+AEAD decrypt nonce: a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 b8 9f
+AEAD decrypt aad: c3 00 00 00 01 aa bb cc dd 12 34
+AEAD decrypt ciphertext: f9 e4 f9 c5 3d 6c bd 56 3f
+AEAD decrypt tag: b3 25 d7 e3 24 97 9e af dc 80 2a ca a6 c6 ae ca
+aeadDecrypt: suite=.aes_128_gcm, pn=4660, ct_len=9, tag_len=16
+AEAD decrypt key: 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f
+AEAD decrypt iv: a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 aa ab
+AEAD decrypt nonce: a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 b8 9f
+AEAD decrypt aad: c3 00 00 00 01 aa bb cc dd 12 34
+AEAD decrypt ciphertext: 5a e7 f4 66 a3 cc 00 cf 2f
+AEAD decrypt tag: 40 18 f7 3e 46 46 9e d8 f3 c0 ab 86 77 55 70 58
+headerProtect: first byte 0xC3 ^ (mask0 0x68 & hdr_mask 0x0F) = 0xCB
+headerProtect: first byte 0xCB ^ (mask0 0x68 & hdr_mask 0x0F) = 0xC3
+test
++- run test stderr
+PASSED tls_key_schedule_kat
+test
++- run test stderr
+protectPacket: pn=1 pn_len=2 header_prefix_len=17 aad_len=20
+protectPacket: header_first=0xC1
+protectPacket: AAD (first 20 bytes): C1 00 00 00 01 00 08 F0 67 A5 50 2A 42 62 B5 00 40 75 00 01
+protectPacket: Nonce: 0A C1 49 3C A1 90 58 53 B0 BB A0 3F
+ENC aead_key: cf 3a 53 31 65 3c 36 4c 88 f0 f3 79 b6 06 7e 37
+ENC aead_iv: 0a c1 49 3c a1 90 58 53 b0 bb a0 3e
+ENC aad: c1 00 00 00 01 00 08 f0 67 a5 50 2a 42 62 b5 00 40 75 00 01
+ENC nonce: 0a c1 49 3c a1 90 58 53 b0 bb a0 3f
+ENC pn_bytes: 00 01
+protectPacket: ct_len=115, sample_offset=2 (pn_len=2, formula: 4-pn_len=2)
+protectPacket: ciphertext[0..32]:  5A 48 2C D0 99 1C D2 5B 0A AC 40 6A 58 16 B6 39   41 00 F3 7A 1C 69 79 75 54 78 0B B3 8C C5 A9 9F protectPacket: HP sample from offset 2:  2C D0 99 1C D2 5B 0A AC  40 6A 58 16 B6 39 41 00 ENC hp_sample: 2c d0 99 1c d2 5b 0a ac 40 6a 58 16 b6 39 41 00
+headerProtect: first byte 0xC1 ^ (mask0 0x2E & hdr_mask 0x0F) = 0xCF
+test
++- run test stderr
+protectPacket: pn=2 pn_len=4 header_prefix_len=17 aad_len=22
+protectPacket: header_first=0xC3
+protectPacket: AAD (first 20 bytes): C3 00 00 00 01 08 83 94 C8 F0 3E 51 57 08 00 00 44 9E 00 00
+protectPacket: Nonce: FA 04 4B 2F 42 A3 FD 3B 46 FB 25 5E
+ENC aead_key: 1f 36 96 13 dd 76 d5 46 77 30 ef cb e3 b1 a2 2d
+ENC aead_iv: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5c
+ENC aad: c3 00 00 00 01 08 83 94 c8 f0 3e 51 57 08 00 00 44 9e 00 00 00 02
+ENC nonce: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5e
+ENC pn_bytes: 00 00 00 02
+protectPacket: ct_len=1178, sample_offset=0 (pn_len=4, formula: 4-pn_len=0)
+protectPacket: ciphertext[0..32]:  D1 B1 C9 8D D7 68 9F B8 EC 11 D2 42 B1 23 DC 9B   D8 BA B9 36 B4 7D 92 EC 35 6C 0B AB 7D F5 97 6D protectPacket: HP sample from offset 0:  D1 B1 C9 8D D7 68 9F B8  EC 11 D2 42 B1 23 DC 9B ENC hp_sample: d1 b1 c9 8d d7 68 9f b8 ec 11 d2 42 b1 23 dc 9b
+headerProtect: first byte 0xC3 ^ (mask0 0x43 & hdr_mask 0x0F) = 0xC0
+protectPacket: pn=1 pn_len=2 header_prefix_len=17 aad_len=20
+protectPacket: header_first=0xC1
+protectPacket: AAD (first 20 bytes): C1 00 00 00 01 00 08 F0 67 A5 50 2A 42 62 B5 00 40 75 00 01
+protectPacket: Nonce: 0A C1 49 3C A1 90 58 53 B0 BB A0 3F
+ENC aead_key: cf 3a 53 31 65 3c 36 4c 88 f0 f3 79 b6 06 7e 37
+ENC aead_iv: 0a c1 49 3c a1 90 58 53 b0 bb a0 3e
+ENC aad: c1 00 00 00 01 00 08 f0 67 a5 50 2a 42 62 b5 00 40 75 00 01
+ENC nonce: 0a c1 49 3c a1 90 58 53 b0 bb a0 3f
+ENC pn_bytes: 00 01
+protectPacket: ct_len=115, sample_offset=2 (pn_len=2, formula: 4-pn_len=2)
+protectPacket: ciphertext[0..32]:  5A 48 2C D0 99 1C D2 5B 0A AC 40 6A 58 16 B6 39   41 00 F3 7A 1C 69 79 75 54 78 0B B3 8C C5 A9 9F protectPacket: HP sample from offset 2:  2C D0 99 1C D2 5B 0A AC  40 6A 58 16 B6 39 41 00 ENC hp_sample: 2c d0 99 1c d2 5b 0a ac 40 6a 58 16 b6 39 41 00
+headerProtect: first byte 0xC1 ^ (mask0 0x2E & hdr_mask 0x0F) = 0xCF
+test
++- run test stderr
+protectPacket: pn=1 pn_len=2 header_prefix_len=23 aad_len=26
+protectPacket: header_first=0xC3
+protectPacket: AAD (first 20 bytes): C3 00 00 00 01 08 83 94 C8 F0 3E 51 57 08 08 01 02 03 04 05
+protectPacket: Nonce: FA 04 4B 2F 42 A3 FD 3B 46 FB 25 5D
+ENC aead_key: 1f 36 96 13 dd 76 d5 46 77 30 ef cb e3 b1 a2 2d
+ENC aead_iv: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5c
+ENC aad: c3 00 00 00 01 08 83 94 c8 f0 3e 51 57 08 08 01 02 03 04 05 06 07 00 02 00 01
+ENC nonce: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5d
+ENC pn_bytes: 00 01
+protectPacket: ct_len=20, sample_offset=2 (pn_len=2, formula: 4-pn_len=2)
+protectPacket: ciphertext[0..20]:  6B 38 A8 B8 13 87 6E F3 73 0F EC 13 5B D9 AA BB   A2 27 91 D3 protectPacket: HP sample from offset 2:  A8 B8 13 87 6E F3 73 0F  EC 13 5B D9 AA BB A2 27 ENC hp_sample: a8 b8 13 87 6e f3 73 0f ec 13 5b d9 aa bb a2 27
+headerProtect: first byte 0xC3 ^ (mask0 0xC0 & hdr_mask 0x0F) = 0xC3
+DEC hp_sample: a8 b8 13 87 6e f3 73 0f ec 13 5b d9 aa bb a2 27
+DEC hp_key: 9f 50 44 9e 04 a0 e8 10 28 3a 1e 99 33 ad ed d2
+headerProtect: first byte 0xC3 ^ (mask0 0xC0 & hdr_mask 0x0F) = 0xC3
+Packet number extraction: pn_bytes={ 0, 1 }, pn_val_truncated=1, expected_pn=0
+Expanded packet number: 1 (from truncated 1 with expected 0)
+First packet: truncated=0001 (1) -> expanded=1
+DEC aead_key: 1f 36 96 13 dd 76 d5 46 77 30 ef cb e3 b1 a2 2d
+DEC aead_iv: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5c
+DEC aad: c3 00 00 00 01 08 83 94 c8 f0 3e 51 57 08 08 01 02 03 04 05 06 07 00 02 00 01
+DEC nonce: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5d
+DEC pn_bytes: 00 01
+aeadDecrypt: suite=.aes_128_gcm, pn=1, ct_len=4, tag_len=16
+AEAD decrypt key: 1f 36 96 13 dd 76 d5 46 77 30 ef cb e3 b1 a2 2d
+AEAD decrypt iv: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5c
+AEAD decrypt nonce: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5d
+AEAD decrypt aad: c3 00 00 00 01 08 83 94 c8 f0 3e 51 57 08 08 01 02 03 04 05 06 07 00 02 00 01
+AEAD decrypt ciphertext: 6b 38 a8 b8
+AEAD decrypt tag: 13 87 6e f3 73 0f ec 13 5b d9 aa bb a2 27 91 d3
+protectPacket: pn=4660 pn_len=2 header_prefix_len=8 aad_len=11
+protectPacket: header_first=0xC3
+protectPacket: AAD (first 20 bytes): C3 00 00 00 01 AA BB CC DD 12 34 00 00 00 00 00 00 00 00 00
+protectPacket: Nonce: A0 A1 A2 A3 A4 A5 A6 A7 A8 A9 B8 9F
+ENC aead_key: 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f
+ENC aead_iv: a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 aa ab
+ENC aad: c3 00 00 00 01 aa bb cc dd 12 34
+ENC nonce: a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 b8 9f
+ENC pn_bytes: 12 34
+ENC hp_sample: 12 34 84 89 8d b7 18 0c df 20 8f c9 cc b1 bb 57
+DEC hp_sample: 30 78 84 89 8d b7 18 0c df 20 8f c9 cc b1 bb 57
+DEC hp_key: 55 54 57 56 51 50 53 52 5d 5c 5f 5e 59 58 5b 5a 45 44 47 46 41 40 43 42 4d 4c 4f 4e 49 48 4b 4a
+Packet number extraction: pn_bytes={ 18, 52 }, pn_val_truncated=4660, expected_pn=0
+Expanded packet number: 4660 (from truncated 4660 with expected 0)
+First packet: truncated=1234 (4660) -> expanded=4660
+DEC aead_key: 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f
+DEC aead_iv: a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 aa ab
+DEC aad: c3 00 00 00 01 aa bb cc dd 12 34
+DEC nonce: a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 b8 9f
+DEC pn_bytes: 12 34
+aeadDecrypt: suite=.chacha20_poly1305, pn=4660, ct_len=8, tag_len=16
+AEAD decrypt key: 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f
+AEAD decrypt iv: a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 aa ab
+AEAD decrypt nonce: a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 b8 9f
+AEAD decrypt aad: c3 00 00 00 01 aa bb cc dd 12 34
+AEAD decrypt ciphertext: 84 89 8d b7 18 0c df 20
+AEAD decrypt tag: 8f c9 cc b1 bb 57 ff 65 3b 6b ec db 58 75 98 21
+test
++- run test stderr
+[TRANSCRIPT] Adding ClientHello (0x01) len=4 bytes, first 8: 01 00 00 04 43 48 4C 4F
+TLS: Added 8 bytes to transcript (queue): 01 00 00 04 43 48 4C 4F ...
+TLS: onCryptoRecv called with 8 bytes, inbox already has 0 bytes
+TLS: Inbox now has 8 bytes total
+TLS: Parsed handshake message type=.server_hello len=4
+[TRANSCRIPT] Finalized hash: 36 D3 57 7A 3F 7A 94 13... (32 bytes)
+[TRANSCRIPT] Adding ServerHello (0x02) len=4 bytes, first 8: 02 00 00 04 53 48 4C 4F
+TLS: Added 8 bytes to transcript (recv): 02 00 00 04 53 48 4C 4F ...
+[TRANSCRIPT] Finalized hash: 2D BB A5 8B B8 2F 45 98... (32 bytes)
+onCryptoRecv: Deriving handshake secrets after ServerHello
+onCryptoRecv: Transcript hash for handshake: 2D BB A5 8B ... (first 4 of 32)
+onCryptoRecv: ECDHE secret first 4: 01 02 03 04
+onCryptoRecv: Derived client_hs first 4: 87 56 03 16
+onCryptoRecv: Derived server_hs first 4: 0B F3 E6 AF
+TLS: Processing hello message, typ=.server_hello
+TLS: Trying real TLS 1.3 hello parsing
+TLS: Real parse failed, trying minimal parse as fallback
+Client: Failed to parse hello pub (typ=.server_hello, body_len=4)
+TLS: No key extracted from hello message
+TLS: Processed 8 bytes, 0 bytes remaining in buffer
+Client: maybeAutoProgress - finished_verified=false, has_secret=true, allow_insecure=true, peer_cert_ok=false
+[TRANSCRIPT] Finalized hash: 2D BB A5 8B B8 2F 45 98... (32 bytes)
+computeHandshakeSecrets: Computing with transcript hash: 2D BB A5 8B ... (first 4 bytes of 32)
+computeHandshakeSecrets: ecdhe_secret first 4 bytes: 01 02 03 04
+computeHandshakeSecrets: client_hs first 4 bytes: 87 56 03 16
+computeHandshakeSecrets: server_hs first 4 bytes: 0B F3 E6 AF
+[TRANSCRIPT] Adding ClientHello (0x01) len=4 bytes, first 8: 01 00 00 04 43 48 4C 4F
+[TRANSCRIPT] Adding ServerHello (0x02) len=4 bytes, first 8: 02 00 00 04 53 48 4C 4F
+[TRANSCRIPT] Finalized hash: 2D BB A5 8B B8 2F 45 98... (32 bytes)
+test
++- run test stderr
+protectPacket: pn=2 pn_len=4 header_prefix_len=17 aad_len=22
+protectPacket: header_first=0xC3
+protectPacket: AAD (first 20 bytes): C3 00 00 00 01 08 83 94 C8 F0 3E 51 57 08 00 00 41 09 00 00
+protectPacket: Nonce: FA 04 4B 2F 42 A3 FD 3B 46 FB 25 5E
+ENC aead_key: 1f 36 96 13 dd 76 d5 46 77 30 ef cb e3 b1 a2 2d
+ENC aead_iv: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5c
+ENC aad: c3 00 00 00 01 08 83 94 c8 f0 3e 51 57 08 00 00 41 09 00 00 00 02
+ENC nonce: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5e
+ENC pn_bytes: 00 00 00 02
+protectPacket: ct_len=261, sample_offset=0 (pn_len=4, formula: 4-pn_len=0)
+protectPacket: ciphertext[0..32]:  D1 B1 C9 8D D7 68 9F B8 EC 11 D2 42 B1 23 DC 9B   D8 BA B9 36 B4 7D 92 EC 35 6C 0B AB 7D F5 97 6D protectPacket: HP sample from offset 0:  D1 B1 C9 8D D7 68 9F B8  EC 11 D2 42 B1 23 DC 9B ENC hp_sample: d1 b1 c9 8d d7 68 9f b8 ec 11 d2 42 b1 23 dc 9b
+headerProtect: first byte 0xC3 ^ (mask0 0x43 & hdr_mask 0x0F) = 0xC0
+HP key: 9F
+50
+44
+9E
+04
+A0
+E8
+10
+28
+3A
+1E
+99
+33
+AD
+ED
+D2
+HP mask (first 5 bytes): 43
+7B
+9A
+EC
+36
+is_long=true, hdr_mask=0F, header_first_before=C0
+header_first_after=C3
+Decoded pn_len from header: 4
+pn_buf before unmasking: { 123, 154, 236, 52 }
+pn_buf after unmasking: { 0, 0, 0, 2 }, using pn_len=4
+DEC aad: c3 00 00 00 01 08 83 94 c8 f0 3e 51 57 08 00 00 41 09 00 00 00 02
+DEC nonce: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5e
+DEC pn_bytes: 00 00 00 02
+aeadDecrypt: suite=.aes_128_gcm, pn=2, ct_len=245, tag_len=16
+AEAD decrypt key: 1f 36 96 13 dd 76 d5 46 77 30 ef cb e3 b1 a2 2d
+AEAD decrypt iv: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5c
+AEAD decrypt nonce: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5e
+AEAD decrypt aad: c3 00 00 00 01 08 83 94 c8 f0 3e 51 57 08 00 00 41 09 00 00 00 02
+AEAD decrypt ciphertext (first 32): d1 b1 c9 8d d7 68 9f b8 ec 11 d2 42 b1 23 dc 9b d8 ba b9 36 b4 7d 92 ec 35 6c 0b ab 7d f5 97 6d
+AEAD decrypt tag: bc 3c 6c f1 28 bb d7 f8 61 15 61 cd fa 09 e7 de
+test
++- run test stderr
+headerProtect: first byte 0xD1 ^ (mask0 0x0A & hdr_mask 0x0F) = 0xDB
+HP key: 03
+03
+03
+03
+03
+03
+03
+03
+03
+03
+03
+03
+03
+03
+03
+03
+HP mask (first 5 bytes): 0A
+F7
+81
+C3
+45
+is_long=true, hdr_mask=0F, header_first_before=DB
+header_first_after=D1
+Decoded pn_len from header: 2
+pn_buf before unmasking: { 247, 171, 240, 195 }
+pn_buf after unmasking: { 0, 42, 51, 134 }, using pn_len=2
+aeadDecrypt: suite=.aes_128_gcm, pn=42, ct_len=21, tag_len=16
+AEAD decrypt key: 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+AEAD decrypt iv: 02 02 02 02 02 02 02 02 02 02 02 02
+AEAD decrypt nonce: 02 02 02 02 02 02 02 02 02 02 02 28
+AEAD decrypt aad: d1 00 00 00 01 04 11 22 33 44 04 55 66 77 88 40 27 00 2a
+AEAD decrypt ciphertext: f0 c3 80 95 65 1f 68 11 34 0a e0 79 6b ff 3a 92 54 44 a7 0f 3c
+AEAD decrypt tag: 7d d2 64 98 f0 ad 40 e4 7d 19 35 0a 20 99 08 79
+headerProtect: first byte 0xD0 ^ (mask0 0xDF & hdr_mask 0x0F) = 0xDF
+HP key: CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+HP mask (first 5 bytes): DF
+EA
+40
+95
+16
+is_long=true, hdr_mask=0F, header_first_before=DF
+header_first_after=D0
+Decoded pn_len from header: 1
+pn_buf before unmasking: { 21, 210, 219, 69 }
+pn_buf after unmasking: { 255, 146, 78, 83 }, using pn_len=1
+aeadDecrypt: suite=.aes_128_gcm, pn=255, ct_len=12, tag_len=16
+AEAD decrypt key: aa aa aa aa aa aa aa aa aa aa aa aa aa aa aa aa
+AEAD decrypt iv: bb bb bb bb bb bb bb bb bb bb bb bb
+AEAD decrypt nonce: bb bb bb bb bb bb bb bb bb bb bb 44
+AEAD decrypt aad: d0 00 00 00 01 08 01 02 03 04 05 06 07 08 04 09 0a 0b 0c 40 1d ff
+AEAD decrypt ciphertext: d2 db 45 68 d3 e1 7d 2b 56 de c1 cb
+AEAD decrypt tag: 8d 40 20 a3 c6 30 2e e6 83 15 82 cd 77 d7 48 7f
+headerProtect: first byte 0xD1 ^ (mask0 0x54 & hdr_mask 0x0F) = 0xD5
+HP key: CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+HP mask (first 5 bytes): 54
+73
+89
+8C
+2F
+is_long=true, hdr_mask=0F, header_first_before=D5
+header_first_after=D1
+Decoded pn_len from header: 2
+pn_buf before unmasking: { 140, 118, 242, 121 }
+pn_buf after unmasking: { 255, 255, 126, 86 }, using pn_len=2
+aeadDecrypt: suite=.aes_128_gcm, pn=65535, ct_len=12, tag_len=16
+AEAD decrypt key: aa aa aa aa aa aa aa aa aa aa aa aa aa aa aa aa
+AEAD decrypt iv: bb bb bb bb bb bb bb bb bb bb bb bb
+AEAD decrypt nonce: bb bb bb bb bb bb bb bb bb bb 44 44
+AEAD decrypt aad: d1 00 00 00 01 08 01 02 03 04 05 06 07 08 04 09 0a 0b 0c 40 1e ff ff
+AEAD decrypt ciphertext: f2 79 c6 67 67 2a 19 8a e3 a1 5a 21
+AEAD decrypt tag: 95 fb fb 18 a8 3d 07 fc f6 1a 06 9a 1c 70 0b f0
+headerProtect: first byte 0xD2 ^ (mask0 0x16 & hdr_mask 0x0F) = 0xD4
+HP key: CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+HP mask (first 5 bytes): 16
+01
+15
+BE
+9E
+is_long=true, hdr_mask=0F, header_first_before=D4
+header_first_after=D2
+Decoded pn_len from header: 3
+pn_buf before unmasking: { 254, 234, 65, 179 }
+pn_buf after unmasking: { 255, 255, 255, 45 }, using pn_len=3
+aeadDecrypt: suite=.aes_128_gcm, pn=16777215, ct_len=12, tag_len=16
+AEAD decrypt key: aa aa aa aa aa aa aa aa aa aa aa aa aa aa aa aa
+AEAD decrypt iv: bb bb bb bb bb bb bb bb bb bb bb bb
+AEAD decrypt nonce: bb bb bb bb bb bb bb bb bb 44 44 44
+AEAD decrypt aad: d2 00 00 00 01 08 01 02 03 04 05 06 07 08 04 09 0a 0b 0c 40 1f ff ff ff
+AEAD decrypt ciphertext: b3 36 11 45 c6 53 95 50 e9 45 79 1a
+AEAD decrypt tag: 35 1a ca e0 02 e7 e6 79 44 1b c4 3b c0 2c 52 0f
+headerProtect: first byte 0xD3 ^ (mask0 0x75 & hdr_mask 0x0F) = 0xD6
+HP key: CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+CC
+HP mask (first 5 bytes): 75
+44
+09
+5D
+84
+is_long=true, hdr_mask=0F, header_first_before=D6
+header_first_after=D3
+Decoded pn_len from header: 4
+pn_buf before unmasking: { 187, 246, 162, 123 }
+pn_buf after unmasking: { 255, 255, 255, 255 }, using pn_len=4
+aeadDecrypt: suite=.aes_128_gcm, pn=4294967295, ct_len=12, tag_len=16
+AEAD decrypt key: aa aa aa aa aa aa aa aa aa aa aa aa aa aa aa aa
+AEAD decrypt iv: bb bb bb bb bb bb bb bb bb bb bb bb
+AEAD decrypt nonce: bb bb bb bb bb bb bb bb 44 44 44 44
+AEAD decrypt aad: d3 00 00 00 01 08 01 02 03 04 05 06 07 08 04 09 0a 0b 0c 40 20 ff ff ff ff
+AEAD decrypt ciphertext: 20 78 69 9b d9 3c 17 64 79 74 55 80
+AEAD decrypt tag: e0 29 fb 53 73 12 ea e0 8e 05 6c 09 f5 ef 4a d4
+headerProtect: first byte 0xD1 ^ (mask0 0x0E & hdr_mask 0x0F) = 0xDF
+HP key: 66
+66
+66
+66
+66
+66
+66
+66
+66
+66
+66
+66
+66
+66
+66
+66
+HP mask (first 5 bytes): 38
+63
+B2
+A0
+4E
+is_long=true, hdr_mask=0F, header_first_before=DF
+header_first_after=D7
+Decoded pn_len from header: 4
+pn_buf before unmasking: { 6, 26, 97, 77 }
+pn_buf after unmasking: { 101, 168, 193, 3 }, using pn_len=4
+aeadDecrypt: suite=.aes_128_gcm, pn=1705558275, ct_len=9, tag_len=16
+AEAD decrypt key: 44 44 44 44 44 44 44 44 44 44 44 44 44 44 44 44
+AEAD decrypt iv: 55 55 55 55 55 55 55 55 55 55 55 55
+AEAD decrypt nonce: 55 55 55 55 55 55 55 55 30 fd 94 56
+AEAD decrypt aad: d7 00 00 00 01 04 de ad be ef 04 ca fe ba be 40 1d 65 a8 c1 03
+AEAD decrypt ciphertext: 3a 37 71 46 9b a2 7e a6 44
+AEAD decrypt tag: fc c4 26 86 13 2f c9 84 7d ac fc 51 30 a0 41 75
+Aes128Gcm.decrypt failed for pn=1705558275
+test
++- run test stderr
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:44137
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Client
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:55092
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Client
+test
++- run test stderr
+Client: Generated X25519 keypair
+[TRANSCRIPT] Adding ClientHello (0x01) len=112 bytes, first 8: 01 00 00 70 03 03 D3 D2
+TLS: Added 116 bytes to transcript (queue): 01 00 00 70 03 03 D3 D2 ...
+TLS: onCryptoRecv called with 116 bytes, inbox already has 0 bytes
+TLS: Inbox now has 116 bytes total
+TLS: Parsed handshake message type=.client_hello len=112
+[TRANSCRIPT] Finalized hash: E3 B0 C4 42 98 FC 1C 14... (32 bytes)
+[TRANSCRIPT] Adding ClientHello (0x01) len=112 bytes, first 8: 01 00 00 70 03 03 D3 D2
+TLS: Added 116 bytes to transcript (recv): 01 00 00 70 03 03 D3 D2 ...
+TLS: Processing hello message, typ=.client_hello
+TLS: Trying real TLS 1.3 hello parsing
+TLS: Calling parseRealClientHello with 112 bytes
+parseRealClientHello: body_len=112
+parseRealClientHello: client sent empty session_id
+parseRealClientHello: no transport parameters found in ClientHello
+parseRealClientHello: found X25519 key!
+parseRealClientHello: successfully extracted public key
+TLS: parseRealClientHello SUCCESS - extracted key
+TLS: Setting peer_pub for .client_hello (was null=true)
+TLS: peer_pub is now set (null=false)
+Server: Will compute ECDHE when generating ServerHello
+extractAlpnFromClientHello: body_len=112
+extractAlpnFromClientHello: No ALPN found
+extractAlpnFromClientHello: body_len=112
+extractAlpnFromClientHello: No ALPN found
+TLS: Processed 116 bytes, 0 bytes remaining in buffer
+queueRealServerHello: ENTER - alpn=false, local_tp=false
+WARNING: queueRealServerHello called without transport parameters - ServerHello will be non-compliant with RFC 9001
+Server: Generated X25519 keypair
+buildServerHello: WARNING - No QUIC transport parameters provided
+ServerHello total length: 90 bytes
+ServerHello header: 02 00 00 56
+ServerHello body start: 03 03 1A F0 1D 9D 7E 12
+ServerHello body[12..20]: 4D 00 57 07 B6 2C EA 1B
+[TRANSCRIPT] Finalized hash: 44 33 A6 2D 4A B8 E0 86... (32 bytes)
+Transcript hash BEFORE ServerHello: 44 33 A6 2D 4A B8 E0 86
+[TRANSCRIPT] Adding ServerHello (0x02) len=86 bytes, first 8: 02 00 00 56 03 03 1A F0
+TLS: Added 90 bytes to transcript (queue): 02 00 00 56 03 03 1A F0 ...
+Server: Computed ECDHE shared secret (70789E5C3957C742...)
+[TRANSCRIPT] Finalized hash: 4B 8F DE 31 AF B5 79 59... (32 bytes)
+Transcript hash AFTER ServerHello: 4B 8F DE 31 AF B5 79 59
+Server: ServerHello queued to Initial CRYPTO (EncryptedExtensions will go to Handshake)
+TLS: onCryptoRecv called with 90 bytes, inbox already has 0 bytes
+TLS: Inbox now has 90 bytes total
+TLS: Parsed handshake message type=.server_hello len=86
+[TRANSCRIPT] Finalized hash: 44 33 A6 2D 4A B8 E0 86... (32 bytes)
+[TRANSCRIPT] Adding ServerHello (0x02) len=86 bytes, first 8: 02 00 00 56 03 03 1A F0
+TLS: Added 90 bytes to transcript (recv): 02 00 00 56 03 03 1A F0 ...
+TLS: Processing hello message, typ=.server_hello
+TLS: Trying real TLS 1.3 hello parsing
+TLS: Setting peer_pub for .server_hello (was null=true)
+TLS: peer_pub is now set (null=false)
+Client: Computed ECDHE shared secret (70789E5C3957C742...)
+TLS: Processed 90 bytes, 0 bytes remaining in buffer
+Client: maybeAutoProgress - finished_verified=false, has_secret=false, allow_insecure=true, peer_cert_ok=false
+[TRANSCRIPT] Finalized hash: 4B 8F DE 31 AF B5 79 59... (32 bytes)
+[TRANSCRIPT] Finalized hash: 4B 8F DE 31 AF B5 79 59... (32 bytes)
+[TRANSCRIPT] Finalized hash: 4B 8F DE 31 AF B5 79 59... (32 bytes)
+[TRANSCRIPT] Finalized hash: 4B 8F DE 31 AF B5 79 59... (32 bytes)
+[TRANSCRIPT] Adding Unknown (0x04) len=24 bytes, first 8: 04 00 00 18 00 00 0E 10
+TLS: onCryptoRecv called with 28 bytes, inbox already has 0 bytes
+TLS: Inbox now has 28 bytes total
+TLS: Parsed handshake message type=.new_session_ticket len=24
+[TRANSCRIPT] Finalized hash: 4B 8F DE 31 AF B5 79 59... (32 bytes)
+[TRANSCRIPT] Adding Unknown (0x04) len=24 bytes, first 8: 04 00 00 18 00 00 0E 10
+TLS: Added 28 bytes to transcript (recv): 04 00 00 18 00 00 0E 10 ...
+[TRANSCRIPT] Finalized hash: B1 C1 B1 6E A1 BB A4 54... (32 bytes)
+TLS: Stored session ticket (len=11, lifetime=3600)
+TLS: Processed 28 bytes, 0 bytes remaining in buffer
+Client: maybeAutoProgress - finished_verified=false, has_secret=true, allow_insecure=true, peer_cert_ok=false
+Client: Generated X25519 keypair
+[TRANSCRIPT] Adding ClientHello (0x01) len=176 bytes, first 8: 01 00 00 B0 03 03 62 9C
+TLS: Added 180 bytes to transcript (queue): 01 00 00 B0 03 03 62 9C ...
+test
++- run test stderr
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:39008
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Client
+protectPacket: pn=0 pn_len=2 header_prefix_len=4 aad_len=7
+protectPacket: header_first=0x41
+protectPacket: AAD (first 20 bytes): 41 4E 52 45 4E 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+protectPacket: Nonce: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_key: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_iv: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aad: 41 4e 52 45 4e 00 00
+ENC nonce: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC pn_bytes: 00 00
+protectPacket: ct_len=1393, sample_offset=2 (pn_len=2, formula: 4-pn_len=2)
+protectPacket: ciphertext[0..32]:  02 88 DA CE 60 B6 A3 92 F3 28 C2 B9 71 B2 FE 78   F7 95 AA AB 49 4B 59 23 F7 FD 89 FF 94 8B C1 E0 protectPacket: HP sample from offset 2:  DA CE 60 B6 A3 92 F3 28  C2 B9 71 B2 FE 78 F7 95 ENC hp_sample: da ce 60 b6 a3 92 f3 28 c2 b9 71 b2 fe 78 f7 95
+headerProtect: first byte 0x41 ^ (mask0 0x5D & hdr_mask 0x1F) = 0x5C
+sendTo called with data.len=1400
+sendto IPv4 127.0.0.1:9, fd=3, data.len=1400
+sendto successful: sent 1400 bytes (of 1400)
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:47944
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Client
+protectPacket: pn=0 pn_len=2 header_prefix_len=4 aad_len=7
+protectPacket: header_first=0x41
+protectPacket: AAD (first 20 bytes): 41 43 55 42 43 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+protectPacket: Nonce: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_key: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_iv: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aad: 41 43 55 42 43 00 00
+ENC nonce: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC pn_bytes: 00 00
+protectPacket: ct_len=1393, sample_offset=2 (pn_len=2, formula: 4-pn_len=2)
+protectPacket: ciphertext[0..32]:  02 88 DA CE 60 B6 A3 92 F3 28 C2 B9 71 B2 FE 78   F7 95 AA AB 49 4B 59 23 F7 FD 89 FF 94 8B C1 E0 protectPacket: HP sample from offset 2:  DA CE 60 B6 A3 92 F3 28  C2 B9 71 B2 FE 78 F7 95 ENC hp_sample: da ce 60 b6 a3 92 f3 28 c2 b9 71 b2 fe 78 f7 95
+headerProtect: first byte 0x41 ^ (mask0 0x5D & hdr_mask 0x1F) = 0x5C
+sendTo called with data.len=1400
+sendto IPv4 127.0.0.1:9, fd=3, data.len=1400
+sendto successful: sent 1400 bytes (of 1400)
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:34851
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Client
+protectPacket: pn=0 pn_len=2 header_prefix_len=4 aad_len=7
+protectPacket: header_first=0x41
+protectPacket: AAD (first 20 bytes): 41 43 42 4B 48 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+protectPacket: Nonce: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_key: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_iv: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aad: 41 43 42 4b 48 00 00
+ENC nonce: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC pn_bytes: 00 00
+protectPacket: ct_len=1273, sample_offset=2 (pn_len=2, formula: 4-pn_len=2)
+protectPacket: ciphertext[0..32]:  02 88 DA CE 60 B6 A3 92 F3 28 C2 B9 71 B2 FE 78   F7 95 AA AB 49 4B 59 23 F7 FD 89 FF 94 8B C1 E0 protectPacket: HP sample from offset 2:  DA CE 60 B6 A3 92 F3 28  C2 B9 71 B2 FE 78 F7 95 ENC hp_sample: da ce 60 b6 a3 92 f3 28 c2 b9 71 b2 fe 78 f7 95
+headerProtect: first byte 0x41 ^ (mask0 0x5D & hdr_mask 0x1F) = 0x5C
+sendTo called with data.len=1280
+sendto IPv4 127.0.0.1:10, fd=3, data.len=1280
+sendto successful: sent 1280 bytes (of 1280)
+protectPacket: pn=1 pn_len=2 header_prefix_len=4 aad_len=7
+protectPacket: header_first=0x41
+protectPacket: AAD (first 20 bytes): 41 43 42 4B 48 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00
+protectPacket: Nonce: 00 00 00 00 00 00 00 00 00 00 00 01
+ENC aead_key: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_iv: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aad: 41 43 42 4b 48 00 01
+ENC nonce: 00 00 00 00 00 00 00 00 00 00 00 01
+ENC pn_bytes: 00 01
+protectPacket: ct_len=1393, sample_offset=2 (pn_len=2, formula: 4-pn_len=2)
+protectPacket: ciphertext[0..32]:  6F 01 D9 30 07 88 72 BD 5B 32 EC 94 65 FD 47 98   C5 A8 01 34 59 F6 B7 7B 83 CD F5 C5 C5 FF 5F C5 protectPacket: HP sample from offset 2:  D9 30 07 88 72 BD 5B 32  EC 94 65 FD 47 98 C5 A8 ENC hp_sample: d9 30 07 88 72 bd 5b 32 ec 94 65 fd 47 98 c5 a8
+headerProtect: first byte 0x41 ^ (mask0 0xCC & hdr_mask 0x1F) = 0x4D
+sendTo called with data.len=1400
+sendto IPv4 127.0.0.1:10, fd=3, data.len=1400
+sendto successful: sent 1400 bytes (of 1400)
+protectPacket: pn=2 pn_len=2 header_prefix_len=4 aad_len=7
+protectPacket: header_first=0x41
+protectPacket: AAD (first 20 bytes): 41 43 42 4B 48 00 02 00 00 00 00 00 00 00 00 00 00 00 00 00
+protectPacket: Nonce: 00 00 00 00 00 00 00 00 00 00 00 02
+ENC aead_key: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_iv: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aad: 41 43 42 4b 48 00 02
+ENC nonce: 00 00 00 00 00 00 00 00 00 00 00 02
+ENC pn_bytes: 00 02
+protectPacket: ct_len=1393, sample_offset=2 (pn_len=2, formula: 4-pn_len=2)
+protectPacket: ciphertext[0..32]:  D0 17 20 9B 73 5D F6 AC 68 3C EC CB 97 03 11 F9   71 9D 7C 73 47 72 2E ED 75 50 EF 69 3C B9 BC 2E protectPacket: HP sample from offset 2:  20 9B 73 5D F6 AC 68 3C  EC CB 97 03 11 F9 71 9D ENC hp_sample: 20 9b 73 5d f6 ac 68 3c ec cb 97 03 11 f9 71 9d
+headerProtect: first byte 0x41 ^ (mask0 0xA3 & hdr_mask 0x1F) = 0x42
+sendTo called with data.len=1400
+sendto IPv4 127.0.0.1:10, fd=3, data.len=1400
+sendto successful: sent 1400 bytes (of 1400)
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:55576
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Client
+protectPacket: pn=0 pn_len=2 header_prefix_len=4 aad_len=7
+protectPacket: header_first=0x41
+protectPacket: AAD (first 20 bytes): 41 43 42 57 44 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+protectPacket: Nonce: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_key: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_iv: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aad: 41 43 42 57 44 00 00
+ENC nonce: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC pn_bytes: 00 00
+protectPacket: ct_len=1273, sample_offset=2 (pn_len=2, formula: 4-pn_len=2)
+protectPacket: ciphertext[0..32]:  02 88 DA CE 60 B6 A3 92 F3 28 C2 B9 71 B2 FE 78   F7 95 AA AB 49 4B 59 23 F7 FD 89 FF 94 8B C1 E0 protectPacket: HP sample from offset 2:  DA CE 60 B6 A3 92 F3 28  C2 B9 71 B2 FE 78 F7 95 ENC hp_sample: da ce 60 b6 a3 92 f3 28 c2 b9 71 b2 fe 78 f7 95
+headerProtect: first byte 0x41 ^ (mask0 0x5D & hdr_mask 0x1F) = 0x5C
+sendTo called with data.len=1280
+sendto IPv4 127.0.0.1:12, fd=3, data.len=1280
+sendto successful: sent 1280 bytes (of 1280)
+protectPacket: pn=1 pn_len=2 header_prefix_len=4 aad_len=7
+protectPacket: header_first=0x41
+protectPacket: AAD (first 20 bytes): 41 43 42 57 44 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00
+protectPacket: Nonce: 00 00 00 00 00 00 00 00 00 00 00 01
+ENC aead_key: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_iv: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aad: 41 43 42 57 44 00 01
+ENC nonce: 00 00 00 00 00 00 00 00 00 00 00 01
+ENC pn_bytes: 00 01
+protectPacket: pn=0 pn_len=2 header_prefix_len=8 aad_len=11
+protectPacket: header_first=0x41
+protectPacket: AAD (first 20 bytes): 41 41 42 43 44 45 46 47 48 00 00 00 00 00 00 00 00 00 00 00
+protectPacket: Nonce: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_key: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_iv: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aad: 41 41 42 43 44 45 46 47 48 00 00
+ENC nonce: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC pn_bytes: 00 00
+protectPacket: ct_len=1239, sample_offset=2 (pn_len=2, formula: 4-pn_len=2)
+protectPacket: ciphertext[0..32]:  02 88 DA CE 60 B6 A3 92 F3 28 C2 B9 71 B2 FE 78   F7 95 AA AB 49 4B 59 23 F7 FD 89 FF 94 8B C1 E0 protectPacket: HP sample from offset 2:  DA CE 60 B6 A3 92 F3 28  C2 B9 71 B2 FE 78 F7 95 ENC hp_sample: da ce 60 b6 a3 92 f3 28 c2 b9 71 b2 fe 78 f7 95
+headerProtect: first byte 0x41 ^ (mask0 0x5D & hdr_mask 0x1F) = 0x5C
+protectPacket: pn=0 pn_len=2 header_prefix_len=4 aad_len=7
+protectPacket: header_first=0x41
+protectPacket: AAD (first 20 bytes): 41 41 42 43 44 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+protectPacket: Nonce: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_key: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_iv: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aad: 41 41 42 43 44 00 00
+ENC nonce: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC pn_bytes: 00 00
+protectPacket: ct_len=1293, sample_offset=2 (pn_len=2, formula: 4-pn_len=2)
+protectPacket: ciphertext[0..32]:  02 88 DA CE 60 B6 A3 92 F3 28 C2 B9 71 B2 FE 78   F7 95 AA AB 49 4B 59 23 F7 FD 89 FF 94 8B C1 E0 protectPacket: HP sample from offset 2:  DA CE 60 B6 A3 92 F3 28  C2 B9 71 B2 FE 78 F7 95 ENC hp_sample: da ce 60 b6 a3 92 f3 28 c2 b9 71 b2 fe 78 f7 95
+headerProtect: first byte 0x41 ^ (mask0 0x5D & hdr_mask 0x1F) = 0x5C
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:37409
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Client
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:35770
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Client
+protectPacket: pn=0 pn_len=2 header_prefix_len=4 aad_len=7
+protectPacket: header_first=0x41
+protectPacket: AAD (first 20 bytes): 41 50 52 4F 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+protectPacket: Nonce: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_key: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_iv: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aad: 41 50 52 4f 42 00 00
+ENC nonce: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC pn_bytes: 00 00
+protectPacket: ct_len=1273, sample_offset=2 (pn_len=2, formula: 4-pn_len=2)
+protectPacket: ciphertext[0..32]:  02 88 DA CE 60 B6 A3 92 F3 28 C2 B9 71 B2 FE 78   F7 95 AA AB 49 4B 59 23 F7 FD 89 FF 94 8B C1 E0 protectPacket: HP sample from offset 2:  DA CE 60 B6 A3 92 F3 28  C2 B9 71 B2 FE 78 F7 95 ENC hp_sample: da ce 60 b6 a3 92 f3 28 c2 b9 71 b2 fe 78 f7 95
+headerProtect: first byte 0x41 ^ (mask0 0x5D & hdr_mask 0x1F) = 0x5C
+protectPacket: pn=1 pn_len=2 header_prefix_len=4 aad_len=7
+protectPacket: header_first=0x41
+protectPacket: AAD (first 20 bytes): 41 50 52 4F 42 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00
+protectPacket: Nonce: 00 00 00 00 00 00 00 00 00 00 00 01
+ENC aead_key: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_iv: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aad: 41 50 52 4f 42 00 01
+ENC nonce: 00 00 00 00 00 00 00 00 00 00 00 01
+ENC pn_bytes: 00 01
+protectPacket: ct_len=1393, sample_offset=2 (pn_len=2, formula: 4-pn_len=2)
+protectPacket: ciphertext[0..32]:  6F 01 D9 30 07 88 72 BD 5B 32 EC 94 65 FD 47 98   C5 A8 01 34 59 F6 B7 7B 83 CD F5 C5 C5 FF 5F C5 protectPacket: HP sample from offset 2:  D9 30 07 88 72 BD 5B 32  EC 94 65 FD 47 98 C5 A8 ENC hp_sample: d9 30 07 88 72 bd 5b 32 ec 94 65 fd 47 98 c5 a8
+headerProtect: first byte 0x41 ^ (mask0 0xCC & hdr_mask 0x1F) = 0x4D
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:34169
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Client
+protectPacket: pn=0 pn_len=2 header_prefix_len=4 aad_len=7
+protectPacket: header_first=0x41
+protectPacket: AAD (first 20 bytes): 41 41 42 43 44 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+protectPacket: Nonce: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_key: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_iv: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aad: 41 41 42 43 44 00 00
+ENC nonce: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC pn_bytes: 00 00
+protectPacket: ct_len=1273, sample_offset=2 (pn_len=2, formula: 4-pn_len=2)
+protectPacket: ciphertext[0..32]:  02 88 DA CE 60 B6 A3 92 F3 28 C2 B9 71 B2 FE 78   F7 95 AA AB 49 4B 59 23 F7 FD 89 FF 94 8B C1 E0 protectPacket: HP sample from offset 2:  DA CE 60 B6 A3 92 F3 28  C2 B9 71 B2 FE 78 F7 95 ENC hp_sample: da ce 60 b6 a3 92 f3 28 c2 b9 71 b2 fe 78 f7 95
+headerProtect: first byte 0x41 ^ (mask0 0x5D & hdr_mask 0x1F) = 0x5C
+sendTo called with data.len=1280
+sendto IPv4 127.0.0.1:9, fd=3, data.len=1280
+sendto successful: sent 1280 bytes (of 1280)
+protectPacket: pn=1 pn_len=2 header_prefix_len=4 aad_len=7
+protectPacket: header_first=0x41
+protectPacket: AAD (first 20 bytes): 41 41 42 43 44 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00
+protectPacket: Nonce: 00 00 00 00 00 00 00 00 00 00 00 01
+ENC aead_key: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_iv: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aad: 41 41 42 43 44 00 01
+ENC nonce: 00 00 00 00 00 00 00 00 00 00 00 01
+ENC pn_bytes: 00 01
+protectPacket: ct_len=1393, sample_offset=2 (pn_len=2, formula: 4-pn_len=2)
+protectPacket: ciphertext[0..32]:  6F 01 D9 30 07 88 72 BD 5B 32 EC 94 65 FD 47 98   C5 A8 01 34 59 F6 B7 7B 83 CD F5 C5 C5 FF 5F C5 protectPacket: HP sample from offset 2:  D9 30 07 88 72 BD 5B 32  EC 94 65 FD 47 98 C5 A8 ENC hp_sample: d9 30 07 88 72 bd 5b 32 ec 94 65 fd 47 98 c5 a8
+headerProtect: first byte 0x41 ^ (mask0 0xCC & hdr_mask 0x1F) = 0x4D
+sendTo called with data.len=1400
+sendto IPv4 127.0.0.1:9, fd=3, data.len=1400
+sendto successful: sent 1400 bytes (of 1400)
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:51301
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Client
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:54065
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Client
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:38682
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Client
+protectPacket: pn=0 pn_len=2 header_prefix_len=4 aad_len=7
+protectPacket: header_first=0x41
+protectPacket: AAD (first 20 bytes): 41 50 41 43 45 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+protectPacket: Nonce: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_key: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_iv: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aad: 41 50 41 43 45 00 00
+ENC nonce: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC pn_bytes: 00 00
+protectPacket: ct_len=1273, sample_offset=2 (pn_len=2, formula: 4-pn_len=2)
+protectPacket: ciphertext[0..32]:  02 88 DA CE 60 B6 A3 92 F3 28 C2 B9 71 B2 FE 78   F7 95 AA AB 49 4B 59 23 F7 FD 89 FF 94 8B C1 E0 protectPacket: HP sample from offset 2:  DA CE 60 B6 A3 92 F3 28  C2 B9 71 B2 FE 78 F7 95 ENC hp_sample: da ce 60 b6 a3 92 f3 28 c2 b9 71 b2 fe 78 f7 95
+headerProtect: first byte 0x41 ^ (mask0 0x5D & hdr_mask 0x1F) = 0x5C
+sendTo called with data.len=1280
+sendto IPv4 127.0.0.1:10, fd=3, data.len=1280
+sendto successful: sent 1280 bytes (of 1280)
+protectPacket: pn=1 pn_len=2 header_prefix_len=4 aad_len=7
+protectPacket: header_first=0x41
+protectPacket: AAD (first 20 bytes): 41 50 41 43 45 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00
+protectPacket: Nonce: 00 00 00 00 00 00 00 00 00 00 00 01
+ENC aead_key: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_iv: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aad: 41 50 41 43 45 00 01
+ENC nonce: 00 00 00 00 00 00 00 00 00 00 00 01
+ENC pn_bytes: 00 01
+protectPacket: ct_len=1393, sample_offset=2 (pn_len=2, formula: 4-pn_len=2)
+protectPacket: ciphertext[0..32]:  6F 01 D9 30 07 88 72 BD 5B 32 EC 94 65 FD 47 98   C5 A8 01 34 59 F6 B7 7B 83 CD F5 C5 C5 FF 5F C5 protectPacket: HP sample from offset 2:  D9 30 07 88 72 BD 5B 32  EC 94 65 FD 47 98 C5 A8 ENC hp_sample: d9 30 07 88 72 bd 5b 32 ec 94 65 fd 47 98 c5 a8
+headerProtect: first byte 0x41 ^ (mask0 0xCC & hdr_mask 0x1F) = 0x4D
+sendTo called with data.len=1400
+sendto IPv4 127.0.0.1:10, fd=3, data.len=1400
+sendto successful: sent 1400 bytes (of 1400)
+protectPacket: pn=2 pn_len=2 header_prefix_len=4 aad_len=7
+protectPacket: header_first=0x41
+protectPacket: AAD (first 20 bytes): 41 50 41 43 45 00 02 00 00 00 00 00 00 00 00 00 00 00 00 00
+protectPacket: Nonce: 00 00 00 00 00 00 00 00 00 00 00 02
+ENC aead_key: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_iv: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aad: 41 50 41 43 45 00 02
+ENC nonce: 00 00 00 00 00 00 00 00 00 00 00 02
+ENC pn_bytes: 00 02
+protectPacket: ct_len=1393, sample_offset=2 (pn_len=2, formula: 4-pn_len=2)
+protectPacket: ciphertext[0..32]:  D0 17 20 9B 73 5D F6 AC 68 3C EC CB 97 03 11 F9   71 9D 7C 73 47 72 2E ED 75 50 EF 69 3C B9 BC 2E protectPacket: HP sample from offset 2:  20 9B 73 5D F6 AC 68 3C  EC CB 97 03 11 F9 71 9D ENC hp_sample: 20 9b 73 5d f6 ac 68 3c ec cb 97 03 11 f9 71 9d
+headerProtect: first byte 0x41 ^ (mask0 0xA3 & hdr_mask 0x1F) = 0x42
+sendTo called with data.len=1400
+sendto IPv4 127.0.0.1:10, fd=3, data.len=1400
+sendto successful: sent 1400 bytes (of 1400)
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:39446
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Client
+protectPacket: pn=0 pn_len=2 header_prefix_len=4 aad_len=7
+protectPacket: header_first=0x41
+protectPacket: AAD (first 20 bytes): 41 43 57 4E 44 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+protectPacket: Nonce: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_key: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_iv: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aad: 41 43 57 4e 44 00 00
+ENC nonce: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC pn_bytes: 00 00
+protectPacket: ct_len=1273, sample_offset=2 (pn_len=2, formula: 4-pn_len=2)
+protectPacket: ciphertext[0..32]:  02 88 DA CE 60 B6 A3 92 F3 28 C2 B9 71 B2 FE 78   F7 95 AA AB 49 4B 59 23 F7 FD 89 FF 94 8B C1 E0 protectPacket: HP sample from offset 2:  DA CE 60 B6 A3 92 F3 28  C2 B9 71 B2 FE 78 F7 95 ENC hp_sample: da ce 60 b6 a3 92 f3 28 c2 b9 71 b2 fe 78 f7 95
+headerProtect: first byte 0x41 ^ (mask0 0x5D & hdr_mask 0x1F) = 0x5C
+sendTo called with data.len=1280
+sendto IPv4 127.0.0.1:12, fd=3, data.len=1280
+sendto successful: sent 1280 bytes (of 1280)
+protectPacket: pn=1 pn_len=2 header_prefix_len=4 aad_len=7
+protectPacket: header_first=0x41
+protectPacket: AAD (first 20 bytes): 41 43 57 4E 44 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00
+protectPacket: Nonce: 00 00 00 00 00 00 00 00 00 00 00 01
+ENC aead_key: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_iv: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aad: 41 43 57 4e 44 00 01
+ENC nonce: 00 00 00 00 00 00 00 00 00 00 00 01
+ENC pn_bytes: 00 01
+test
++- run test stderr
+protectPacket: pn=2 pn_len=2 header_prefix_len=26 aad_len=29
+protectPacket: header_first=0xC1
+protectPacket: AAD (first 20 bytes): C1 00 00 00 01 08 83 94 C8 F0 3E 51 57 08 09 73 65 72 76 65
+protectPacket: Nonce: FA 04 4B 2F 42 A3 FD 3B 46 FB 25 5E
+ENC aead_key: 1f 36 96 13 dd 76 d5 46 77 30 ef cb e3 b1 a2 2d
+ENC aead_iv: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5c
+ENC aad: c1 00 00 00 01 08 83 94 c8 f0 3e 51 57 08 09 73 65 72 76 65 72 63 69 64 00 40 28 00 02
+ENC nonce: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5e
+ENC pn_bytes: 00 02
+protectPacket: ct_len=38, sample_offset=2 (pn_len=2, formula: 4-pn_len=2)
+protectPacket: ciphertext[0..32]:  D1 B1 81 7D D6 68 9B 16 A7 5E 76 BC 43 7D 2F B2   E1 07 B2 34 C0 A4 76 0D 1C B7 4B 4B 0E D2 A3 6D protectPacket: HP sample from offset 2:  81 7D D6 68 9B 16 A7 5E  76 BC 43 7D 2F B2 E1 07 ENC hp_sample: 81 7d d6 68 9b 16 a7 5e 76 bc 43 7d 2f b2 e1 07
+headerProtect: first byte 0xC1 ^ (mask0 0x82 & hdr_mask 0x0F) = 0xC3
+HP key: 9F
+50
+44
+9E
+04
+A0
+E8
+10
+28
+3A
+1E
+99
+33
+AD
+ED
+D2
+HP mask (first 5 bytes): 82
+1D
+97
+6C
+22
+is_long=true, hdr_mask=0F, header_first_before=C3
+header_first_after=C1
+Decoded pn_len from header: 2
+pn_buf before unmasking: { 29, 149, 209, 177 }
+pn_buf after unmasking: { 0, 2, 189, 147 }, using pn_len=2
+DEC aad: c1 00 00 00 01 08 83 94 c8 f0 3e 51 57 08 09 73 65 72 76 65 72 63 69 64 00 40 28 00 02
+DEC nonce: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5e
+DEC pn_bytes: 00 02
+aeadDecrypt: suite=.aes_128_gcm, pn=2, ct_len=22, tag_len=16
+AEAD decrypt key: 1f 36 96 13 dd 76 d5 46 77 30 ef cb e3 b1 a2 2d
+AEAD decrypt iv: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5c
+AEAD decrypt nonce: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5e
+AEAD decrypt aad: c1 00 00 00 01 08 83 94 c8 f0 3e 51 57 08 09 73 65 72 76 65 72 63 69 64 00 40 28 00 02
+AEAD decrypt ciphertext: d1 b1 81 7d d6 68 9b 16 a7 5e 76 bc 43 7d 2f b2 e1 07 b2 34 c0 a4
+AEAD decrypt tag: 76 0d 1c b7 4b 4b 0e d2 a3 6d a7 ea b6 85 7f 4a
+TLS: onCryptoRecv called with 8 bytes, inbox already has 0 bytes
+TLS: Inbox now has 8 bytes total
+TLS: Parsed handshake message type=.client_hello len=4
+[TRANSCRIPT] Finalized hash: E3 B0 C4 42 98 FC 1C 14... (32 bytes)
+[TRANSCRIPT] Adding ClientHello (0x01) len=4 bytes, first 8: 01 00 00 04 43 48 4C 4F
+TLS: Added 8 bytes to transcript (recv): 01 00 00 04 43 48 4C 4F ...
+TLS: Processing hello message, typ=.client_hello
+TLS: Trying real TLS 1.3 hello parsing
+TLS: Calling parseRealClientHello with 4 bytes
+parseRealClientHello: body_len=4
+parseRealClientHello: failed to parse ClientHello with error: error.TooShort
+TLS: parseRealClientHello FAILED - returned null
+TLS: Real parse failed, trying minimal parse as fallback
+Server: Failed to parse hello pub (typ=.client_hello, body_len=4)
+TLS: No key extracted from hello message
+extractAlpnFromClientHello: body_len=4
+TLS: Processed 8 bytes, 0 bytes remaining in buffer
+TLS: onCryptoRecv called with 8 bytes, inbox already has 0 bytes
+TLS: Inbox now has 8 bytes total
+TLS: Parsed handshake message type=.server_hello len=4
+[TRANSCRIPT] Finalized hash: 36 D3 57 7A 3F 7A 94 13... (32 bytes)
+[TRANSCRIPT] Adding ServerHello (0x02) len=4 bytes, first 8: 02 00 00 04 53 48 4C 4F
+TLS: Added 8 bytes to transcript (recv): 02 00 00 04 53 48 4C 4F ...
+[TRANSCRIPT] Finalized hash: 2D BB A5 8B B8 2F 45 98... (32 bytes)
+onCryptoRecv: Deriving handshake secrets after ServerHello
+onCryptoRecv: Transcript hash for handshake: 2D BB A5 8B ... (first 4 of 32)
+onCryptoRecv: ECDHE secret first 4: 01 02 03 04
+onCryptoRecv: Derived client_hs first 4: 87 56 03 16
+onCryptoRecv: Derived server_hs first 4: 0B F3 E6 AF
+TLS: Processing hello message, typ=.server_hello
+TLS: Trying real TLS 1.3 hello parsing
+TLS: Real parse failed, trying minimal parse as fallback
+Server: Failed to parse hello pub (typ=.server_hello, body_len=4)
+TLS: No key extracted from hello message
+TLS: Processed 8 bytes, 0 bytes remaining in buffer
+[TRANSCRIPT] Finalized hash: 2D BB A5 8B B8 2F 45 98... (32 bytes)
+computeHandshakeSecrets: Computing with transcript hash: 2D BB A5 8B ... (first 4 bytes of 32)
+computeHandshakeSecrets: ecdhe_secret first 4 bytes: 01 02 03 04
+computeHandshakeSecrets: client_hs first 4 bytes: 87 56 03 16
+computeHandshakeSecrets: server_hs first 4 bytes: 0B F3 E6 AF
+encodeHandshakeProtected: CALLED with packet_number=1 version=0x00000001
+encodeHandshakeProtected: dcid.len=9, scid.len=6
+encodeHandshakeProtected: dcid bytes: 73
+65
+72
+76
+65
+72
+63
+69
+64
+encodeHandshakeProtected: scid bytes: 73
+72
+76
+63
+69
+64
+encodeHandshakeProtected: packet_number_len=4, pn_bits=3, first=0xE3
+DEBUG: Writing Handshake version bytes: 00 00 00 01 (version=0x00000001)
+encodeHandshakeProtected: payload_len=1, ct_len=17, pn_len=4, length_value=21
+encodeHandshakeProtected: PN 1 encoded as bytes [00 00]
+encodeHandshakeProtected: Using keys - key[0..4]=7B86F273, iv[0..4]=01C0B38D
+protectPacket: pn=1 pn_len=4 header_prefix_len=23 aad_len=28
+protectPacket: header_first=0xE3
+protectPacket: AAD (first 20 bytes): E3 00 00 00 01 09 73 65 72 76 65 72 63 69 64 06 73 72 76 63
+protectPacket: Nonce: 01 C0 B3 8D B2 CA 24 0C 0E 9C 48 EE
+ENC aead_key: 7b 86 f2 73 4d 1e cb 4f 1d 9e 59 7f 49 8d 5f 39
+ENC aead_iv: 01 c0 b3 8d b2 ca 24 0c 0e 9c 48 ef
+ENC aad: e3 00 00 00 01 09 73 65 72 76 65 72 63 69 64 06 73 72 76 63 69 64 40 15 00 00 00 01
+ENC nonce: 01 c0 b3 8d b2 ca 24 0c 0e 9c 48 ee
+ENC pn_bytes: 00 00 00 01
+protectPacket: ct_len=17, sample_offset=0 (pn_len=4, formula: 4-pn_len=0)
+protectPacket: ciphertext[0..17]:  9D 8F 80 91 F6 53 B0 E4 54 B6 FD A2 D6 F9 0E 00   8D protectPacket: HP sample from offset 0:  9D 8F 80 91 F6 53 B0 E4  54 B6 FD A2 D6 F9 0E 00 ENC hp_sample: 9d 8f 80 91 f6 53 b0 e4 54 b6 fd a2 d6 f9 0e 00
+headerProtect: first byte 0xE3 ^ (mask0 0xA6 & hdr_mask 0x0F) = 0xE5
+encodeHandshakeProtected: AFTER header protection - first byte changed from 0xE3 to 0xE5
+encodeHandshakeProtected: Final packet first 5 bytes: E5 00 00 00 01
+=== HANDSHAKE PACKET HEXDUMP (first 64 bytes) ===
+0000: E5 00 00 00 01 09 73 65 72 76 65 72 63 69 64 06 0010: 73 72 76 63 69 64 40 15 06 6D D7 0A 9D 8F 80 91 0020: F6 53 B0 E4 54 B6 FD A2 D6 F9 0E 00 8D === END HEXDUMP (total packet size: 45 bytes) ===
+encodeHandshakeProtected: SUCCESS - packet length verified: declared_in_header=21, actual_packet_len=21
+HP key: 10
+B5
+5C
+96
+4E
+FA
+2A
+22
+29
+82
+DF
+25
+36
+A6
+C1
+2C
+HP mask (first 5 bytes): A6
+06
+6D
+D7
+0B
+is_long=true, hdr_mask=0F, header_first_before=E5
+header_first_after=E3
+Decoded pn_len from header: 4
+pn_buf before unmasking: { 6, 109, 215, 10 }
+pn_buf after unmasking: { 0, 0, 0, 1 }, using pn_len=4
+DEC hp_sample: 9d 8f 80 91 f6 53 b0 e4 54 b6 fd a2 d6 f9 0e 00
+DEC hp_key: 10 b5 5c 96 4e fa 2a 22 29 82 df 25 36 a6 c1 2c
+headerProtect: first byte 0xE5 ^ (mask0 0xA6 & hdr_mask 0x0F) = 0xE3
+Packet number extraction: pn_bytes={ 0, 0, 0, 1 }, pn_val_truncated=1, expected_pn=0
+Expanded packet number: 1 (from truncated 1 with expected 0)
+First packet: truncated=0001 (1) -> expanded=1
+DEC aead_key: 7b 86 f2 73 4d 1e cb 4f 1d 9e 59 7f 49 8d 5f 39
+DEC aead_iv: 01 c0 b3 8d b2 ca 24 0c 0e 9c 48 ef
+DEC aad: e3 00 00 00 01 09 73 65 72 76 65 72 63 69 64 06 73 72 76 63 69 64 40 15 00 00 00 01
+DEC nonce: 01 c0 b3 8d b2 ca 24 0c 0e 9c 48 ee
+DEC pn_bytes: 00 00 00 01
+aeadDecrypt: suite=.aes_128_gcm, pn=1, ct_len=1, tag_len=16
+AEAD decrypt key: 7b 86 f2 73 4d 1e cb 4f 1d 9e 59 7f 49 8d 5f 39
+AEAD decrypt iv: 01 c0 b3 8d b2 ca 24 0c 0e 9c 48 ef
+AEAD decrypt nonce: 01 c0 b3 8d b2 ca 24 0c 0e 9c 48 ee
+AEAD decrypt aad: e3 00 00 00 01 09 73 65 72 76 65 72 63 69 64 06 73 72 76 63 69 64 40 15 00 00 00 01
+AEAD decrypt ciphertext: 9d
+AEAD decrypt tag: 8f 80 91 f6 53 b0 e4 54 b6 fd a2 d6 f9 0e 00 8d
+test
++- run test stderr
+Client: Generated X25519 keypair
+[TRANSCRIPT] Adding ClientHello (0x01) len=35 bytes, first 8: 01 00 00 23 43 48 31 89
+TLS: Added 39 bytes to transcript (queue): 01 00 00 23 43 48 31 89 ...
+TLS: onCryptoRecv called with 39 bytes, inbox already has 0 bytes
+TLS: Inbox now has 39 bytes total
+TLS: Parsed handshake message type=.client_hello len=35
+[TRANSCRIPT] Finalized hash: E3 B0 C4 42 98 FC 1C 14... (32 bytes)
+[TRANSCRIPT] Adding ClientHello (0x01) len=35 bytes, first 8: 01 00 00 23 43 48 31 89
+TLS: Added 39 bytes to transcript (recv): 01 00 00 23 43 48 31 89 ...
+TLS: Processing hello message, typ=.client_hello
+TLS: Trying real TLS 1.3 hello parsing
+TLS: Calling parseRealClientHello with 35 bytes
+parseRealClientHello: body_len=35
+parseRealClientHello: failed to parse ClientHello with error: error.TooShort
+parseRealClientHello: First 8 bytes: 43 48 31 89 0D 18 32 FA
+TLS: parseRealClientHello FAILED - returned null
+TLS: Real parse failed, trying minimal parse as fallback
+TLS: Setting peer_pub for .client_hello (was null=true)
+TLS: peer_pub is now set (null=false)
+Server: Will compute ECDHE when generating ServerHello
+extractAlpnFromClientHello: body_len=35
+extractAlpnFromClientHello: body_len=35
+TLS: Processed 39 bytes, 0 bytes remaining in buffer
+queueRealServerHello: ENTER - alpn=false, local_tp=false
+WARNING: queueRealServerHello called without transport parameters - ServerHello will be non-compliant with RFC 9001
+Server: Generated X25519 keypair
+buildServerHello: WARNING - No QUIC transport parameters provided
+ServerHello total length: 90 bytes
+ServerHello header: 02 00 00 56
+ServerHello body start: 03 03 2F E9 AE D8 81 B6
+ServerHello body[12..20]: 37 FE 5C F3 09 E1 52 D9
+[TRANSCRIPT] Finalized hash: E0 16 BA 00 F8 41 BE 22... (32 bytes)
+Transcript hash BEFORE ServerHello: E0 16 BA 00 F8 41 BE 22
+[TRANSCRIPT] Adding ServerHello (0x02) len=86 bytes, first 8: 02 00 00 56 03 03 2F E9
+TLS: Added 90 bytes to transcript (queue): 02 00 00 56 03 03 2F E9 ...
+Server: Computed ECDHE shared secret (599BA9E88BD298D7...)
+[TRANSCRIPT] Finalized hash: CF 6F A4 F3 40 23 15 70... (32 bytes)
+Transcript hash AFTER ServerHello: CF 6F A4 F3 40 23 15 70
+Server: ServerHello queued to Initial CRYPTO (EncryptedExtensions will go to Handshake)
+TLS: onCryptoRecv called with 90 bytes, inbox already has 0 bytes
+TLS: Inbox now has 90 bytes total
+TLS: Parsed handshake message type=.server_hello len=86
+[TRANSCRIPT] Finalized hash: E0 16 BA 00 F8 41 BE 22... (32 bytes)
+[TRANSCRIPT] Adding ServerHello (0x02) len=86 bytes, first 8: 02 00 00 56 03 03 2F E9
+TLS: Added 90 bytes to transcript (recv): 02 00 00 56 03 03 2F E9 ...
+TLS: Processing hello message, typ=.server_hello
+TLS: Trying real TLS 1.3 hello parsing
+TLS: Setting peer_pub for .server_hello (was null=true)
+TLS: peer_pub is now set (null=false)
+Client: Computed ECDHE shared secret (599BA9E88BD298D7...)
+TLS: Processed 90 bytes, 0 bytes remaining in buffer
+Client: maybeAutoProgress - finished_verified=false, has_secret=false, allow_insecure=true, peer_cert_ok=false
+[TRANSCRIPT] Finalized hash: CF 6F A4 F3 40 23 15 70... (32 bytes)
+protectPacket: pn=2241348 pn_len=3 header_prefix_len=9 aad_len=13
+protectPacket: header_first=0x42
+protectPacket: AAD (first 20 bytes): 42 73 65 72 76 65 72 63 69 64 22 33 44 00 00 00 00 00 00 00
+protectPacket: Nonce: 04 21 AF 77 89 E7 A9 23 C2 D3 90 85
+ENC aead_key: f5 7a 91 ff fe ab 24 b5 96 e6 ab 97 c7 8e e0 48
+ENC aead_iv: 04 21 af 77 89 e7 a9 23 c2 f1 a3 c1
+ENC aad: 42 73 65 72 76 65 72 63 69 64 22 33 44
+ENC nonce: 04 21 af 77 89 e7 a9 23 c2 d3 90 85
+ENC pn_bytes: 22 33 44
+protectPacket: ct_len=21, sample_offset=1 (pn_len=3, formula: 4-pn_len=1)
+protectPacket: ciphertext[0..21]:  75 CC 18 F6 48 0E 1D 62 BA 58 ED FC CD 60 A0 1F   2C 93 C7 93 4E protectPacket: HP sample from offset 1:  CC 18 F6 48 0E 1D 62 BA  58 ED FC CD 60 A0 1F 2C ENC hp_sample: cc 18 f6 48 0e 1d 62 ba 58 ed fc cd 60 a0 1f 2c
+headerProtect: first byte 0x42 ^ (mask0 0x3F & hdr_mask 0x1F) = 0x5D
+HP key: 27
+9D
+90
+65
+E6
+4F
+B1
+3D
+88
+BE
+60
+6D
+3D
+BF
+A1
+B6
+HP mask (first 5 bytes): 3F
+A5
+A9
+2D
+45
+is_long=false, hdr_mask=1F, header_first_before=5D
+header_first_after=42
+Decoded pn_len from header: 3
+pn_buf before unmasking: { 135, 154, 105, 117 }
+pn_buf after unmasking: { 34, 51, 68, 48 }, using pn_len=3
+DEC hp_sample: cc 18 f6 48 0e 1d 62 ba 58 ed fc cd 60 a0 1f 2c
+DEC hp_key: 27 9d 90 65 e6 4f b1 3d 88 be 60 6d 3d bf a1 b6
+headerProtect: first byte 0x5D ^ (mask0 0x3F & hdr_mask 0x1F) = 0x42
+Packet number extraction: pn_bytes={ 34, 51, 68 }, pn_val_truncated=2241348, expected_pn=0
+Expanded packet number: 2241348 (from truncated 2241348 with expected 0)
+First packet: truncated=223344 (2241348) -> expanded=2241348
+DEC aead_key: f5 7a 91 ff fe ab 24 b5 96 e6 ab 97 c7 8e e0 48
+DEC aead_iv: 04 21 af 77 89 e7 a9 23 c2 f1 a3 c1
+DEC aad: 42 73 65 72 76 65 72 63 69 64 22 33 44
+DEC nonce: 04 21 af 77 89 e7 a9 23 c2 d3 90 85
+DEC pn_bytes: 22 33 44
+aeadDecrypt: suite=.aes_128_gcm, pn=2241348, ct_len=5, tag_len=16
+AEAD decrypt key: f5 7a 91 ff fe ab 24 b5 96 e6 ab 97 c7 8e e0 48
+AEAD decrypt iv: 04 21 af 77 89 e7 a9 23 c2 f1 a3 c1
+AEAD decrypt nonce: 04 21 af 77 89 e7 a9 23 c2 d3 90 85
+AEAD decrypt aad: 42 73 65 72 76 65 72 63 69 64 22 33 44
+AEAD decrypt ciphertext: 75 cc 18 f6 48
+AEAD decrypt tag: 0e 1d 62 ba 58 ed fc cd 60 a0 1f 2c 93 c7 93 4e
+test
++- run test stderr
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:38528
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Client
+protectPacket: pn=2 pn_len=4 header_prefix_len=25 aad_len=30
+protectPacket: header_first=0xC3
+protectPacket: AAD (first 20 bytes): C3 00 00 00 01 08 E5 2E C5 26 42 E8 C8 19 08 EF BA B7 95 C7
+protectPacket: Nonce: 44 90 2E 1B 57 7B 43 6C EE 19 70 B2
+ENC aead_key: 7e bd ff e8 f8 06 0b a7 c3 08 59 fa 87 8d 06 55
+ENC aead_iv: 44 90 2e 1b 57 7b 43 6c ee 19 70 b0
+ENC aad: c3 00 00 00 01 08 e5 2e c5 26 42 e8 c8 19 08 ef ba b7 95 c7 39 34 40 00 40 15 00 00 00 02
+ENC nonce: 44 90 2e 1b 57 7b 43 6c ee 19 70 b2
+ENC pn_bytes: 00 00 00 02
+protectPacket: ct_len=17, sample_offset=0 (pn_len=4, formula: 4-pn_len=0)
+protectPacket: ciphertext[0..17]:  A2 72 CB 1B 92 F8 2D 54 6B E5 AA A5 0C 9D 98 67   64 protectPacket: HP sample from offset 0:  A2 72 CB 1B 92 F8 2D 54  6B E5 AA A5 0C 9D 98 67 ENC hp_sample: a2 72 cb 1b 92 f8 2d 54 6b e5 aa a5 0c 9d 98 67
+headerProtect: first byte 0xC3 ^ (mask0 0xE7 & hdr_mask 0x0F) = 0xC4
+PACKET #1: 47 bytes, first=0xC4
+=== processIncomingDatagram #1 called with 47 bytes ===
+First byte: 0xC4, is_long: true
+Long header packet received: first=0xC4, ty=0 (0=Initial, 1=0-RTT, 2=Handshake, 3=Retry), version=0x00000001
+LONG HEADER: ty=0 (0=Initial, 2=Handshake), version=0x00000001
+=== PROCESSING INITIAL PACKET FROM PEER ===
+Packet total length: 47 bytes
+Initial packet: dcid_len=8, scid_len=8, version=0x00000001
+  Client SCID: EF
+BA
+B7
+95
+C7
+39
+34
+40
+Looking up connection with dcid=
+E5
+2E
+C5
+26
+42
+E8
+C8
+19
+ (found=true)
+Found existing client connection for dcid (matches peer_initial_dcid); creating server twin for inbound client Initial
+Client endpoint refusing to create server connection for Initial packet
+protectPacket: pn=1 pn_len=4 header_prefix_len=25 aad_len=30
+protectPacket: header_first=0xC3
+protectPacket: AAD (first 20 bytes): C3 00 00 00 01 08 E5 2E C5 26 42 E8 C8 19 08 EF BA B7 95 C7
+protectPacket: Nonce: 44 90 2E 1B 57 7B 43 6C EE 19 70 B1
+ENC aead_key: 7e bd ff e8 f8 06 0b a7 c3 08 59 fa 87 8d 06 55
+ENC aead_iv: 44 90 2e 1b 57 7b 43 6c ee 19 70 b0
+ENC aad: c3 00 00 00 01 08 e5 2e c5 26 42 e8 c8 19 08 ef ba b7 95 c7 39 34 40 00 40 15 00 00 00 01
+ENC nonce: 44 90 2e 1b 57 7b 43 6c ee 19 70 b1
+ENC pn_bytes: 00 00 00 01
+protectPacket: ct_len=17, sample_offset=0 (pn_len=4, formula: 4-pn_len=0)
+protectPacket: ciphertext[0..17]:  5E 87 74 AE 3E 60 75 D4 E7 00 10 5B 0E E0 11 89   67 protectPacket: HP sample from offset 0:  5E 87 74 AE 3E 60 75 D4  E7 00 10 5B 0E E0 11 89 ENC hp_sample: 5e 87 74 ae 3e 60 75 d4 e7 00 10 5b 0e e0 11 89
+headerProtect: first byte 0xC3 ^ (mask0 0x8F & hdr_mask 0x0F) = 0xCC
+PACKET #2: 47 bytes, first=0xCC
+=== processIncomingDatagram #2 called with 47 bytes ===
+First byte: 0xCC, is_long: true
+Long header packet received: first=0xCC, ty=0 (0=Initial, 1=0-RTT, 2=Handshake, 3=Retry), version=0x00000001
+LONG HEADER: ty=0 (0=Initial, 2=Handshake), version=0x00000001
+=== PROCESSING INITIAL PACKET FROM PEER ===
+Packet total length: 47 bytes
+Initial packet: dcid_len=8, scid_len=8, version=0x00000001
+  Client SCID: EF
+BA
+B7
+95
+C7
+39
+34
+40
+Looking up connection with dcid=
+E5
+2E
+C5
+26
+42
+E8
+C8
+19
+ (found=true)
+Found existing client connection for dcid (matches peer_initial_dcid); creating server twin for inbound client Initial
+Client endpoint refusing to create server connection for Initial packet
+encodeHandshakeProtected: CALLED with packet_number=1 version=0x00000001
+encodeHandshakeProtected: dcid.len=8, scid.len=0
+encodeHandshakeProtected: dcid bytes: EF
+BA
+B7
+95
+C7
+39
+34
+40
+encodeHandshakeProtected: packet_number_len=4, pn_bits=3, first=0xE3
+DEBUG: Writing Handshake version bytes: 00 00 00 01 (version=0x00000001)
+encodeHandshakeProtected: payload_len=1, ct_len=17, pn_len=4, length_value=21
+encodeHandshakeProtected: PN 1 encoded as bytes [00 00]
+encodeHandshakeProtected: Using keys - key[0..4]=00000000, iv[0..4]=00000000
+protectPacket: pn=1 pn_len=4 header_prefix_len=16 aad_len=21
+protectPacket: header_first=0xE3
+protectPacket: AAD (first 20 bytes): E3 00 00 00 01 08 EF BA B7 95 C7 39 34 40 00 40 15 00 00 00
+protectPacket: Nonce: 00 00 00 00 00 00 00 00 00 00 00 01
+ENC aead_key: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_iv: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aad: e3 00 00 00 01 08 ef ba b7 95 c7 39 34 40 00 40 15 00 00 00 01
+ENC nonce: 00 00 00 00 00 00 00 00 00 00 00 01
+ENC pn_bytes: 00 00 00 01
+protectPacket: ct_len=17, sample_offset=0 (pn_len=4, formula: 4-pn_len=0)
+protectPacket: ciphertext[0..17]:  6F 0E 73 AA FC 8D F6 38 9A 33 4D 56 0F 40 FC F1   34 protectPacket: HP sample from offset 0:  6F 0E 73 AA FC 8D F6 38  9A 33 4D 56 0F 40 FC F1 ENC hp_sample: 6f 0e 73 aa fc 8d f6 38 9a 33 4d 56 0f 40 fc f1
+headerProtect: first byte 0xE3 ^ (mask0 0x87 & hdr_mask 0x0F) = 0xE4
+encodeHandshakeProtected: AFTER header protection - first byte changed from 0xE3 to 0xE4
+encodeHandshakeProtected: Final packet first 5 bytes: E4 00 00 00 01
+=== HANDSHAKE PACKET HEXDUMP (first 64 bytes) ===
+0000: E4 00 00 00 01 08 EF BA B7 95 C7 39 34 40 00 40 0010: 15 C7 4C CE 33 6F 0E 73 AA FC 8D F6 38 9A 33 4D 0020: 56 0F 40 FC F1 34 === END HEXDUMP (total packet size: 38 bytes) ===
+encodeHandshakeProtected: SUCCESS - packet length verified: declared_in_header=21, actual_packet_len=21
+PACKET #3: 38 bytes, first=0xE4
+=== processIncomingDatagram #3 called with 38 bytes ===
+First byte: 0xE4, is_long: true
+Long header packet received: first=0xE4, ty=2 (0=Initial, 1=0-RTT, 2=Handshake, 3=Retry), version=0x00000001
+LONG HEADER: ty=2 (0=Initial, 2=Handshake), version=0x00000001
+Processing Handshake packet from peer
+HANDSHAKE PACKET: 38 bytes total
+HANDSHAKE: dcid_len=8
+HANDSHAKE: scid_len=0
+Handshake packet: j=17, len_dec.value=21, end_total=38, bytes.len=38
+Looking up Handshake connection with dcid=
+ef
+ba
+b7
+95
+c7
+39
+34
+40
+ (hash=2701ed531f6f872)
+HANDSHAKE: Looking up connection with dcid=
+ef
+ba
+b7
+95
+c7
+39
+34
+40
+ (hash=2701ed531f6f872)
+HANDSHAKE: Found connection, role=.Client
+Found connection for Handshake packet (role=.Client)
+Server has handshake RX keys, proceeding to decrypt
+Handshake RX keys: key={ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, iv={ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, hp={ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+HANDSHAKE: Has RX keys! Proceeding to decrypt...
+HANDSHAKE PACKET STRUCTURE:
+  Total packet: 38 bytes
+  Header end (j): 17
+  Packet end: 38
+  Payload + PN + tag: 21 bytes
+  First 20 bytes: e4 00 00 00 01 08 ef ba b7 95 c7 39 34 40 00 40 15 c7 4c ce 
+headerProtect: first byte 0xE4 ^ (mask0 0x87 & hdr_mask 0x0F) = 0xE3
+Handshake packet: unmasked header=0xE3, actual_pn_len=4
+Re-extracted HP sample from offset 4 (always 4) for PN length 4
+Masked PN bytes (len=4): { 199, 76, 206, 51 }
+headerProtect: first byte 0xE4 ^ (mask0 0x87 & hdr_mask 0x0F) = 0xE3
+Unmasked PN bytes (len=4): { 0, 0, 0, 1 }
+=== HANDSHAKE PACKET DECRYPTION ===
+pn_start=17, end_total=38, actual_pn_len=4
+full_pn_and_payload.len=21, expected_pt_len=1
+Attempting Handshake decrypt: actual_pn_len=4, expected_pn=0, have_any=false
+Calling unprotectInitialAutoSample with:  masked_header=0xE4
+  masked_pn_bytes[0..4]={ 199, 76, 206, 51 }
+  header_prefix.len=16
+  full_pn_and_payload.len=21
+  expected_pn_hs=0
+Header protection removal - first 21 bytes of ciphertext_and_tag: C7 4C CE 33 6F 0E 73 AA FC 8D F6 38 9A 33 4D 56 0F 40 FC F1 34 
+  pn_len=4, ciphertext_and_tag.len=21, expected_pn=0
+  Masked PN bytes before unmasking: C7 4C CE 33 
+HP Sample extraction: pn_len=4, ct_len=21, sample_offset=4
+Sample bytes: 6F 0E 73 AA FC 8D F6 38 9A 33 4D 56 0F 40 FC F1 Full ciphertext for sample: C7 4C CE 33 6F 0E 73 AA FC 8D F6 38 9A 33 4D 56 0F 40 FC F1 34 Masked PN bytes (len=4): C7 4C CE 33 Masked header_first: E4
+Before headerUnprotect: pn_bytes set
+headerProtect: first byte 0xE4 ^ (mask0 0x87 & hdr_mask 0x0F) = 0xE3
+Unmasked PN bytes (len=4): 00
+00
+00
+01
+Unmasked header_first: E3
+After headerUnprotect: pn_bytes set
+expandPacketNumber: truncated=1 pn_len=4 expected=0 -> full=1
+  Nonce IV: 00
+00
+00
+00
+00
+00
+00
+00
+00
+00
+00
+00
+  Nonce after XOR with PN 1: 00
+00
+00
+00
+00
+00
+00
+00
+00
+00
+00
+01
+AEAD decrypt parameters:  full_pn=1, truncated_pn=1, pn_len=4
+  AAD len=21, ciphertext len=17
+  AAD bytes: E3
+00
+00
+00
+01
+08
+EF
+BA
+B7
+95
+C7
+39
+34
+40
+00
+40
+15
+00
+00
+00
+01
+aeadDecrypt: suite=.aes_128_gcm, pn=1, ct_len=1, tag_len=16
+AEAD decrypt key: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+AEAD decrypt iv: 00 00 00 00 00 00 00 00 00 00 00 00
+AEAD decrypt nonce: 00 00 00 00 00 00 00 00 00 00 00 01
+AEAD decrypt aad: e3 00 00 00 01 08 ef ba b7 95 c7 39 34 40 00 40 15 00 00 00 01
+AEAD decrypt ciphertext: 6f
+AEAD decrypt tag: 0e 73 aa fc 8d f6 38 9a 33 4d 56 0f 40 fc f1 34
+unprotectInitialAutoSample returned: 1 bytes decrypted
+After unmasking with actual_pn_len=4: 00 00 00 01 Successfully decrypted Handshake packet (trial pn_len=4) plaintext len: 1
+Handshake frame: .{ .ping = void } at offset 0
+WARNING: No handshake RX keys available for handshake packet!
+test
++- run test stderr
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:4433
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Server
+protectPacket: pn=1 pn_len=4 header_prefix_len=25 aad_len=30
+protectPacket: header_first=0xC3
+protectPacket: AAD (first 20 bytes): C3 00 00 00 01 08 46 BD F1 69 4B 2A 7D AB 08 B9 6E 9A D8 AC
+protectPacket: Nonce: A6 11 DE 83 2F 20 C7 C3 48 DE B8 C6
+ENC aead_key: f5 e8 e5 f5 7b 84 3f fc 3b a3 5a ac 0f 88 f7 be
+ENC aead_iv: a6 11 de 83 2f 20 c7 c3 48 de b8 c7
+ENC aad: c3 00 00 00 01 08 46 bd f1 69 4b 2a 7d ab 08 b9 6e 9a d8 ac ff 05 a6 00 40 15 00 00 00 01
+ENC nonce: a6 11 de 83 2f 20 c7 c3 48 de b8 c6
+ENC pn_bytes: 00 00 00 01
+protectPacket: ct_len=17, sample_offset=0 (pn_len=4, formula: 4-pn_len=0)
+protectPacket: ciphertext[0..17]:  03 81 B3 D4 86 A5 39 CD D5 73 E8 07 20 75 3C 63   E2 protectPacket: HP sample from offset 0:  03 81 B3 D4 86 A5 39 CD  D5 73 E8 07 20 75 3C 63 ENC hp_sample: 03 81 b3 d4 86 a5 39 cd d5 73 e8 07 20 75 3c 63
+headerProtect: first byte 0xC3 ^ (mask0 0x3D & hdr_mask 0x0F) = 0xCE
+PACKET #1: 47 bytes, first=0xCE
+=== processIncomingDatagram #1 called with 47 bytes ===
+First byte: 0xCE, is_long: true
+Long header packet received: first=0xCE, ty=0 (0=Initial, 1=0-RTT, 2=Handshake, 3=Retry), version=0x00000001
+LONG HEADER: ty=0 (0=Initial, 2=Handshake), version=0x00000001
+=== PROCESSING INITIAL PACKET FROM PEER ===
+Packet total length: 47 bytes
+Initial packet: dcid_len=8, scid_len=8, version=0x00000001
+  Client SCID: B9
+6E
+9A
+D8
+AC
+FF
+05
+A6
+Looking up connection with dcid=
+46
+BD
+F1
+69
+4B
+2A
+7D
+AB
+ (found=true)
+Found existing client connection for dcid (matches peer_initial_dcid); creating server twin for inbound client Initial
+Creating server connection with peer address 127.0.0.1:1
+Server: Setting peer_initial_scid from client SCID, scid.len=8
+Server: After setting peer_initial_scid, peer_initial_scid.len=8
+WARNING: No server certificate configured! cert=false, key=false
+DEBUG: Checking initial_keys_dropped = false
+Server: Setting peer CIDs - peer sent DCID_len=8 SCID_len=8
+setPeerInitialCids: ENTER - dcid.len=8, scid.len=8
+setPeerInitialCids: Before setting peer_initial_scid, current len=8
+setPeerInitialCids: EXIT - peer_initial_dcid.len=8, peer_initial_scid.len=8
+Server: After setPeerInitialCids - peer_initial_dcid.len=8, peer_initial_scid.len=8
+Server: Deriving Initial keys with dcid (len=8)=
+46
+BD
+F1
+69
+4B
+2A
+7D
+AB
+DCID from packet (len=8)=
+46
+BD
+F1
+69
+4B
+2A
+7D
+AB
+Derived and cached Initial keys for role=Server
+Derived RX keys - key[0..4]=F5E8E5F5, iv[0..4]=A611DE83
+DEBUG: About to decode token varint at offset 23
+DEBUG: Retry check - role=Server, address_validated=false, enable_retry=true
+sendTo called with data.len=71
+sendto IPv4 127.0.0.1:1, fd=3, data.len=71
+sendto successful: sent 71 bytes (of 71)
+PACKET #2: 71 bytes, first=0xF0
+=== processIncomingDatagram #2 called with 71 bytes ===
+First byte: 0xF0, is_long: true
+Long header packet received: first=0xF0, ty=3 (0=Initial, 1=0-RTT, 2=Handshake, 3=Retry), version=0x00000001
+LONG HEADER: ty=3 (0=Initial, 2=Handshake), version=0x00000001
+test
++- run test stderr
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:4433
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Server
+protectPacket: pn=1 pn_len=4 header_prefix_len=25 aad_len=30
+protectPacket: header_first=0xC3
+protectPacket: AAD (first 20 bytes): C3 00 00 00 01 08 3B 3A BB E1 9B FB B8 51 08 41 B9 02 ED 14
+protectPacket: Nonce: F1 1F 61 1F 16 78 DB D4 F6 5A D9 CA
+ENC aead_key: f1 5a 89 f8 d4 c8 9f 85 35 ec 06 27 7c e4 ce e3
+ENC aead_iv: f1 1f 61 1f 16 78 db d4 f6 5a d9 cb
+ENC aad: c3 00 00 00 01 08 3b 3a bb e1 9b fb b8 51 08 41 b9 02 ed 14 c8 ae f1 00 40 15 00 00 00 01
+ENC nonce: f1 1f 61 1f 16 78 db d4 f6 5a d9 ca
+ENC pn_bytes: 00 00 00 01
+protectPacket: ct_len=17, sample_offset=0 (pn_len=4, formula: 4-pn_len=0)
+protectPacket: ciphertext[0..17]:  B4 4E C5 E7 B4 18 FF DC 15 7F A5 0D 02 31 72 7E   98 protectPacket: HP sample from offset 0:  B4 4E C5 E7 B4 18 FF DC  15 7F A5 0D 02 31 72 7E ENC hp_sample: b4 4e c5 e7 b4 18 ff dc 15 7f a5 0d 02 31 72 7e
+headerProtect: first byte 0xC3 ^ (mask0 0xE0 & hdr_mask 0x0F) = 0xC3
+PACKET #1: 47 bytes, first=0xC3
+=== processIncomingDatagram #1 called with 47 bytes ===
+First byte: 0xC3, is_long: true
+Long header packet received: first=0xC3, ty=0 (0=Initial, 1=0-RTT, 2=Handshake, 3=Retry), version=0x00000001
+LONG HEADER: ty=0 (0=Initial, 2=Handshake), version=0x00000001
+=== PROCESSING INITIAL PACKET FROM PEER ===
+Packet total length: 47 bytes
+Initial packet: dcid_len=8, scid_len=8, version=0x00000001
+  Client SCID: 41
+B9
+02
+ED
+14
+C8
+AE
+F1
+Looking up connection with dcid=
+3B
+3A
+BB
+E1
+9B
+FB
+B8
+51
+ (found=true)
+Found existing client connection for dcid (matches peer_initial_dcid); creating server twin for inbound client Initial
+Creating server connection with peer address 127.0.0.1:1
+Server: Setting peer_initial_scid from client SCID, scid.len=8
+Server: After setting peer_initial_scid, peer_initial_scid.len=8
+WARNING: No server certificate configured! cert=false, key=false
+DEBUG: Checking initial_keys_dropped = false
+Server: Setting peer CIDs - peer sent DCID_len=8 SCID_len=8
+setPeerInitialCids: ENTER - dcid.len=8, scid.len=8
+setPeerInitialCids: Before setting peer_initial_scid, current len=8
+setPeerInitialCids: EXIT - peer_initial_dcid.len=8, peer_initial_scid.len=8
+Server: After setPeerInitialCids - peer_initial_dcid.len=8, peer_initial_scid.len=8
+Server: Deriving Initial keys with dcid (len=8)=
+3B
+3A
+BB
+E1
+9B
+FB
+B8
+51
+DCID from packet (len=8)=
+3B
+3A
+BB
+E1
+9B
+FB
+B8
+51
+Derived and cached Initial keys for role=Server
+Derived RX keys - key[0..4]=F15A89F8, iv[0..4]=F11F611F
+DEBUG: About to decode token varint at offset 23
+DEBUG: Retry check - role=Server, address_validated=false, enable_retry=true
+sendTo called with data.len=71
+sendto IPv4 127.0.0.1:1, fd=3, data.len=71
+sendto successful: sent 71 bytes (of 71)
+test
++- run test stderr
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:55223
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Client
+protectPacket: pn=1 pn_len=4 header_prefix_len=25 aad_len=30
+protectPacket: header_first=0xC3
+protectPacket: AAD (first 20 bytes): C3 00 00 00 01 08 62 10 74 BC 05 EB 89 10 08 1B 46 AB 58 88
+protectPacket: Nonce: 79 2F C4 C6 80 30 60 BA BB B9 2E 4C
+ENC aead_key: 6e 5d c8 ae 42 7a 36 ee 58 47 2e 30 04 af 1f 20
+ENC aead_iv: 79 2f c4 c6 80 30 60 ba bb b9 2e 4d
+ENC aad: c3 00 00 00 01 08 62 10 74 bc 05 eb 89 10 08 1b 46 ab 58 88 76 ba 09 00 40 15 00 00 00 01
+ENC nonce: 79 2f c4 c6 80 30 60 ba bb b9 2e 4c
+ENC pn_bytes: 00 00 00 01
+protectPacket: ct_len=17, sample_offset=0 (pn_len=4, formula: 4-pn_len=0)
+protectPacket: ciphertext[0..17]:  FA 86 7A 1D 30 C9 45 79 6B 8B 52 A0 CC 3D 4A F2   9E protectPacket: HP sample from offset 0:  FA 86 7A 1D 30 C9 45 79  6B 8B 52 A0 CC 3D 4A F2 ENC hp_sample: fa 86 7a 1d 30 c9 45 79 6b 8b 52 a0 cc 3d 4a f2
+headerProtect: first byte 0xC3 ^ (mask0 0x48 & hdr_mask 0x0F) = 0xCB
+PACKET #1: 47 bytes, first=0xCB
+=== processIncomingDatagram #1 called with 47 bytes ===
+First byte: 0xCB, is_long: true
+Long header packet received: first=0xCB, ty=0 (0=Initial, 1=0-RTT, 2=Handshake, 3=Retry), version=0x00000001
+LONG HEADER: ty=0 (0=Initial, 2=Handshake), version=0x00000001
+=== PROCESSING INITIAL PACKET FROM PEER ===
+Packet total length: 47 bytes
+Initial packet: dcid_len=8, scid_len=8, version=0x00000001
+  Client SCID: 1B
+46
+AB
+58
+88
+76
+BA
+09
+Looking up connection with dcid=
+62
+10
+74
+BC
+05
+EB
+89
+10
+ (found=true)
+Found existing client connection for dcid (matches peer_initial_dcid); creating server twin for inbound client Initial
+Client endpoint refusing to create server connection for Initial packet
+test
++- run test stderr
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:4433
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Server
+protectPacket: pn=1 pn_len=2 header_prefix_len=21 aad_len=24
+protectPacket: header_first=0xC1
+protectPacket: AAD (first 20 bytes): C1 00 00 00 01 08 83 94 C8 F0 3E 51 57 08 04 01 02 03 04 00
+protectPacket: Nonce: FA 04 4B 2F 42 A3 FD 3B 46 FB 25 5D
+ENC aead_key: 1f 36 96 13 dd 76 d5 46 77 30 ef cb e3 b1 a2 2d
+ENC aead_iv: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5c
+ENC aad: c1 00 00 00 01 08 83 94 c8 f0 3e 51 57 08 04 01 02 03 04 00 40 86 00 01
+ENC nonce: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5d
+ENC pn_bytes: 00 01
+protectPacket: ct_len=132, sample_offset=2 (pn_len=2, formula: 4-pn_len=2)
+protectPacket: ciphertext[0..32]:  6C 3A EB CC 06 87 C2 A2 E2 DE 67 D3 9B BA 85 48   38 84 B2 73 7E D1 B4 A6 EE 45 77 1C 12 F4 93 7C protectPacket: HP sample from offset 2:  EB CC 06 87 C2 A2 E2 DE  67 D3 9B BA 85 48 38 84 ENC hp_sample: eb cc 06 87 c2 a2 e2 de 67 d3 9b ba 85 48 38 84
+headerProtect: first byte 0xC1 ^ (mask0 0x33 & hdr_mask 0x0F) = 0xC2
+PACKET #1: 156 bytes, first=0xC2
+=== processIncomingDatagram #1 called with 156 bytes ===
+First byte: 0xC2, is_long: true
+Long header packet received: first=0xC2, ty=0 (0=Initial, 1=0-RTT, 2=Handshake, 3=Retry), version=0x00000001
+LONG HEADER: ty=0 (0=Initial, 2=Handshake), version=0x00000001
+=== PROCESSING INITIAL PACKET FROM PEER ===
+Packet total length: 156 bytes
+Initial packet: dcid_len=8, scid_len=4, version=0x00000001
+  Client SCID: 01
+02
+03
+04
+Looking up connection with dcid=
+83
+94
+C8
+F0
+3E
+51
+57
+08
+ (found=false)
+Creating server connection with peer address 127.0.0.1:12345
+Server: Setting peer_initial_scid from client SCID, scid.len=4
+Server: After setting peer_initial_scid, peer_initial_scid.len=4
+WARNING: No server certificate configured! cert=false, key=false
+DEBUG: Checking initial_keys_dropped = false
+Server: Setting peer CIDs - peer sent DCID_len=8 SCID_len=4
+setPeerInitialCids: ENTER - dcid.len=8, scid.len=4
+setPeerInitialCids: Before setting peer_initial_scid, current len=4
+setPeerInitialCids: EXIT - peer_initial_dcid.len=8, peer_initial_scid.len=4
+Server: After setPeerInitialCids - peer_initial_dcid.len=8, peer_initial_scid.len=4
+Server: Deriving Initial keys with dcid (len=8)=
+83
+94
+C8
+F0
+3E
+51
+57
+08
+DCID from packet (len=8)=
+83
+94
+C8
+F0
+3E
+51
+57
+08
+Derived and cached Initial keys for role=Server
+Derived RX keys - key[0..4]=1F369613, iv[0..4]=FA044B2F
+DEBUG: About to decode token varint at offset 19
+DEBUG: Retry check - role=Server, address_validated=false, enable_retry=false
+Server: Masked PN bytes: CC 28 6C 3A Server: Trying to decrypt Initial with pn_initial.max=0
+Initial packet structure:  - Total packet len: 156
+  - Header prefix len: 21
+  - pn_start: 22, end_total: 156
+  - Ciphertext len (including PN): 134
+  - First byte: C2 (long_header=true, type=0)
+DEBUG: Reached Initial packet decryption section
+DEBUG: pn_start=22, end_total=156, bytes.len=156
+DEBUG: Loop iteration pn_len_try=1, checking if 22 + 1 > 156
+DEBUG: ct.len=134, checking if < 16
+DEBUG: About to allocate 118 bytes for pt_list
+DEBUG: After allocation, pt_list.capacity=128
+DEBUG: After appendNTimes, pt_list.items.len=118
+DEBUG: pt_slice.len=118
+DEBUG: expected_pn=0
+DEBUG: About to attempt Initial packet decryption (pn_len_try=1)
+DEBUG:   - header_try: C2
+DEBUG:   - header_prefix.len=21
+DEBUG:   - ct.len=134
+DEBUG:   - keys.key[0..4]: 1F 36 96 13
+DEBUG: About to call crypto.unprotectInitialAutoSample
+Header protection removal - first 32 bytes of ciphertext_and_tag: CC 28 6C 3A EB CC 06 87 C2 A2 E2 DE 67 D3 9B BA 85 48 38 84 B2 73 7E D1 B4 A6 EE 45 77 1C 12 F4 
+  pn_len=1, ciphertext_and_tag.len=134, expected_pn=0
+  Masked PN bytes before unmasking: CC 
+HP Sample extraction: pn_len=1, ct_len=134, sample_offset=4
+Sample bytes: EB CC 06 87 C2 A2 E2 DE 67 D3 9B BA 85 48 38 84 Masked PN bytes (len=1): CC Masked header_first: C2
+Before headerUnprotect: pn_bytes set
+headerProtect: first byte 0xC2 ^ (mask0 0x33 & hdr_mask 0x0F) = 0xC1
+Unmasked PN bytes (len=1): 00
+Unmasked header_first: C1
+After headerUnprotect: pn_bytes set
+expandPacketNumber: truncated=0 pn_len=1 expected=0 -> full=0
+  Nonce IV: FA
+04
+4B
+2F
+42
+A3
+FD
+3B
+46
+FB
+25
+5C
+  Nonce after XOR with PN 0: FA
+04
+4B
+2F
+42
+A3
+FD
+3B
+46
+FB
+25
+5C
+AEAD decrypt parameters:  full_pn=0, truncated_pn=0, pn_len=1
+  AAD len=23, ciphertext len=133
+  AAD bytes: C1
+00
+00
+00
+01
+08
+83
+94
+C8
+F0
+3E
+51
+57
+08
+04
+01
+02
+03
+04
+00
+40
+86
+00
+aeadDecrypt: suite=.aes_128_gcm, pn=0, ct_len=117, tag_len=16
+AEAD decrypt key: 1f 36 96 13 dd 76 d5 46 77 30 ef cb e3 b1 a2 2d
+AEAD decrypt iv: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5c
+AEAD decrypt nonce: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5c
+AEAD decrypt aad: c1 00 00 00 01 08 83 94 c8 f0 3e 51 57 08 04 01 02 03 04 00 40 86 00
+AEAD decrypt ciphertext (first 32): 28 6c 3a eb cc 06 87 c2 a2 e2 de 67 d3 9b ba 85 48 38 84 b2 73 7e d1 b4 a6 ee 45 77 1c 12 f4 93
+AEAD decrypt tag: 07 6f c8 3a 48 52 87 f9 cf 4c a7 0e 2b 07 ff 47
+Aes128Gcm.decrypt failed for pn=0
+AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0, trunc=0, pn_len=1)
+DEBUG: Decryption failed with error: error.AuthenticationFailed
+DEBUG: Loop iteration pn_len_try=2, checking if 22 + 2 > 156
+DEBUG: ct.len=134, checking if < 16
+DEBUG: About to allocate 118 bytes for pt_list
+DEBUG: After allocation, pt_list.capacity=128
+DEBUG: After appendNTimes, pt_list.items.len=118
+DEBUG: pt_slice.len=118
+DEBUG: expected_pn=0
+DEBUG: About to attempt Initial packet decryption (pn_len_try=2)
+DEBUG:   - header_try: C2
+DEBUG:   - header_prefix.len=21
+DEBUG:   - ct.len=134
+DEBUG:   - keys.key[0..4]: 1F 36 96 13
+DEBUG: About to call crypto.unprotectInitialAutoSample
+Header protection removal - first 32 bytes of ciphertext_and_tag: CC 28 6C 3A EB CC 06 87 C2 A2 E2 DE 67 D3 9B BA 85 48 38 84 B2 73 7E D1 B4 A6 EE 45 77 1C 12 F4 
+  pn_len=2, ciphertext_and_tag.len=134, expected_pn=0
+  Masked PN bytes before unmasking: CC 28 
+HP Sample extraction: pn_len=2, ct_len=134, sample_offset=4
+Sample bytes: EB CC 06 87 C2 A2 E2 DE 67 D3 9B BA 85 48 38 84 Masked PN bytes (len=2): CC 28 Masked header_first: C2
+Before headerUnprotect: pn_bytes set
+headerProtect: first byte 0xC2 ^ (mask0 0x33 & hdr_mask 0x0F) = 0xC1
+Unmasked PN bytes (len=2): 00
+01
+Unmasked header_first: C1
+After headerUnprotect: pn_bytes set
+expandPacketNumber: truncated=1 pn_len=2 expected=0 -> full=1
+  Nonce IV: FA
+04
+4B
+2F
+42
+A3
+FD
+3B
+46
+FB
+25
+5C
+  Nonce after XOR with PN 1: FA
+04
+4B
+2F
+42
+A3
+FD
+3B
+46
+FB
+25
+5D
+AEAD decrypt parameters:  full_pn=1, truncated_pn=1, pn_len=2
+  AAD len=24, ciphertext len=132
+  AAD bytes: C1
+00
+00
+00
+01
+08
+83
+94
+C8
+F0
+3E
+51
+57
+08
+04
+01
+02
+03
+04
+00
+40
+86
+00
+01
+aeadDecrypt: suite=.aes_128_gcm, pn=1, ct_len=116, tag_len=16
+AEAD decrypt key: 1f 36 96 13 dd 76 d5 46 77 30 ef cb e3 b1 a2 2d
+AEAD decrypt iv: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5c
+AEAD decrypt nonce: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5d
+AEAD decrypt aad: c1 00 00 00 01 08 83 94 c8 f0 3e 51 57 08 04 01 02 03 04 00 40 86 00 01
+AEAD decrypt ciphertext (first 32): 6c 3a eb cc 06 87 c2 a2 e2 de 67 d3 9b ba 85 48 38 84 b2 73 7e d1 b4 a6 ee 45 77 1c 12 f4 93 7c
+AEAD decrypt tag: 07 6f c8 3a 48 52 87 f9 cf 4c a7 0e 2b 07 ff 47
+DEBUG: Decryption SUCCESS!
+DEBUG: dec value = 116
+DEBUG: After unmasking with pn_len=2: 00 01 
+DEBUG: indicated_pn_len=2, pn_len_try=2
+DEBUG: PN length match! Setting success=true
+DEBUG: After decryption loop, success=true
+DEBUG: Successfully decrypted Initial packet (trial pn_len=2) plaintext len: 118
+DEBUG: Enqueuing server connection for accept()
+DEBUG: After accept enqueue check
+DEBUG: About to expand packet number
+DEBUG: Expanded PN: 1 from truncated: 1
+DEBUG: Tracked packet number, now processing frames
+DEBUG: === DECODING FRAMES FROM INITIAL PACKET ===
+DEBUG: Plaintext length: 118 bytes
+DEBUG: First 16 bytes of plaintext: 06 00 40 70 01 00 00 6C 03 03 FB 77 A9 C6 63 6D 
+DEBUG: Attempting to decode frame at offset 0 (remaining: 118 bytes)
+DEBUG: Successfully decoded frame type: crypto, consumed 116 bytes
+DEBUG: About to switch on frame type: crypto
+DEBUG: Processing CRYPTO frame with 112 bytes at offset 0
+Server: Received Initial CRYPTO frame with 112 bytes at offset 0 (expected 0)
+DEBUG: Processing in-order Initial CRYPTO frame at offset 0 with 112 bytes
+DEBUG: Pushing 112 bytes to TLS engine (Initial)
+DEBUG: CRYPTO data first 8 bytes: 01 00 00 6C 03 03 FB 77
+TLS: onCryptoRecv called with 112 bytes, inbox already has 0 bytes
+TLS: Inbox now has 112 bytes total
+TLS: Parsed handshake message type=.client_hello len=108
+[TRANSCRIPT] Finalized hash: E3 B0 C4 42 98 FC 1C 14... (32 bytes)
+[TRANSCRIPT] Adding ClientHello (0x01) len=108 bytes, first 8: 01 00 00 6C 03 03 FB 77
+TLS: Added 112 bytes to transcript (recv): 01 00 00 6C 03 03 FB 77 ...
+TLS: Processing hello message, typ=.client_hello
+TLS: Trying real TLS 1.3 hello parsing
+TLS: Calling parseRealClientHello with 108 bytes
+parseRealClientHello: body_len=108
+parseRealClientHello: client sent empty session_id
+parseRealClientHello: no transport parameters found in ClientHello
+parseRealClientHello: found X25519 key!
+parseRealClientHello: successfully extracted public key
+TLS: parseRealClientHello SUCCESS - extracted key
+TLS: Setting peer_pub for .client_hello (was null=true)
+TLS: peer_pub is now set (null=false)
+Server: Will compute ECDHE when generating ServerHello
+extractAlpnFromClientHello: body_len=108
+extractAlpnFromClientHello: No ALPN found
+extractAlpnFromClientHello: body_len=108
+extractAlpnFromClientHello: No ALPN found
+TLS: Processed 112 bytes, 0 bytes remaining in buffer
+DEBUG pushCrypto: role=Server, hs_client=false, had_peer_pub=false, peer_pub_now=true
+Server: ClientHello parsed with peer public key, deriving Handshake keys
+queueRealServerHello: ENTER - alpn=false, local_tp=true
+queueRealServerHello: Transport parameters available, 60 bytes
+Server: Generated X25519 keypair
+buildServerHello: WARNING - No QUIC transport parameters provided
+ServerHello total length: 90 bytes
+ServerHello header: 02 00 00 56
+ServerHello body start: 03 03 87 25 BA 8B 7D D0
+ServerHello body[12..20]: D5 6C 97 40 D2 82 D5 33
+[TRANSCRIPT] Finalized hash: 65 F9 04 72 90 4B A7 BD... (32 bytes)
+Transcript hash BEFORE ServerHello: 65 F9 04 72 90 4B A7 BD
+[TRANSCRIPT] Adding ServerHello (0x02) len=86 bytes, first 8: 02 00 00 56 03 03 87 25
+TLS: Added 90 bytes to transcript (queue): 02 00 00 56 03 03 87 25 ...
+Server: Computed ECDHE shared secret (C2C9026323D68024...)
+[TRANSCRIPT] Finalized hash: 46 DA 38 5D 82 6D AE 76... (32 bytes)
+Transcript hash AFTER ServerHello: 46 DA 38 5D 82 6D AE 76
+Server: ServerHello queued to Initial CRYPTO (EncryptedExtensions will go to Handshake)
+Server: Checking handshake secrets - client: true, server: true
+Server: Derived handshake secrets, installing Handshake keys
+deriveHandshakeKeys: role=Server, version_v2=false
+  hs_client secret[0..4]: DA6BD8B9
+  hs_server secret[0..4]: 2D0CB954
+  For Server:    rx_secret (for reading) = client secret[0..4]: DA6BD8B9
+    tx_secret (for writing) = server secret[0..4]: 2D0CB954
+Handshake keys derived for Server - tx_key[0..4]: AD395767, rx_key[0..4]: 8A8277FF
+Server: About to queue EncryptedExtensions
+Server: Using ALPN 'hq-interop' and transport params len=60
+[TRANSCRIPT] Adding EncryptedExtensions (0x08) len=83 bytes, first 8: 08 00 00 53 00 51 00 10
+TLS: Added 87 bytes to transcript (queue): 08 00 00 53 00 51 00 10 ...
+Server: No certificate configured
+Server: Queueing Finished message
+[TRANSCRIPT] Finalized hash: 39 EC 3D 21 A2 7A 3F 72... (32 bytes)
+TLS: Queueing Finished with transcript hash: 39 EC 3D 21 A2 7A 3F 72 ...
+[TRANSCRIPT] Adding Finished (0x14) len=32 bytes, first 8: 14 00 00 20 86 8A 2D EC
+TLS: Added 36 bytes to transcript (queue): 14 00 00 20 86 8A 2D EC ...
+Server: Complete handshake flight queued, outbox len=213
+Server: Queued complete handshake flight (SH + EE + Cert + CV + Finished)
+DEBUG: Updated crypto_rx_off_initial to 112
+DEBUG: Attempting to decode frame at offset 116 (remaining: 2 bytes)
+DEBUG: Successfully decoded frame type: padding, consumed 2 bytes
+DEBUG: About to switch on frame type: padding
+Checked TLS outbox: has_pending_tls=true outbox.len=213
+Server should_send_initial: has_pending_tls=true, sh_seen=true, crypto_tx_off_initial=0, result=true
+Server: Adding ACK frame to Initial packet - largest=1, first_range=0
+Server: Adding Initial CRYPTO frame with 200 bytes at offset 0 (ServerHello for Initial packet)
+INITIAL CRYPTO: Sending 200 bytes at offset 0
+  First 20 bytes: 02 00 00 56 03 03 87 25 ba 8b 7d d0 d5 6c 97 40 d2 82 d5 33 
+Server TX: Using Initial keys with dcid=8394C8F03E515708 (len=8)
+Server: Encoding Initial with pn=0 dcid_len=4 scid_len=8 pn_len=4
+  Server will use SCID: 4C
+29
+47
+30
+61
+79
+1D
+DE
+Added 533 bytes of padding to Initial frames
+protectPacket: pn=0 pn_len=4 header_prefix_len=21 aad_len=26
+protectPacket: header_first=0xC3
+protectPacket: AAD (first 20 bytes): C3 00 00 00 01 04 01 02 03 04 08 4C 29 47 30 61 79 1D DE 00
+protectPacket: Nonce: 0A C1 49 3C A1 90 58 53 B0 BB A0 3E
+ENC aead_key: cf 3a 53 31 65 3c 36 4c 88 f0 f3 79 b6 06 7e 37
+ENC aead_iv: 0a c1 49 3c a1 90 58 53 b0 bb a0 3e
+ENC aad: c3 00 00 00 01 04 01 02 03 04 08 4c 29 47 30 61 79 1d de 00 42 fa 00 00 00 00
+ENC nonce: 0a c1 49 3c a1 90 58 53 b0 bb a0 3e
+ENC pn_bytes: 00 00 00 00
+protectPacket: ct_len=758, sample_offset=0 (pn_len=4, formula: 4-pn_len=0)
+protectPacket: ciphertext[0..32]:  AA 31 39 B1 1B 5A A9 D3 3A 09 5F DC EC 34 38 3F   0D 51 5F 34 F4 BD 56 0D 64 FF B8 52 C4 68 94 3C protectPacket: HP sample from offset 0:  AA 31 39 B1 1B 5A A9 D3  3A 09 5F DC EC 34 38 3F ENC hp_sample: aa 31 39 b1 1b 5a a9 d3 3a 09 5f dc ec 34 38 3f
+headerProtect: first byte 0xC3 ^ (mask0 0x5C & hdr_mask 0x0F) = 0xCF
+Server: Prepared Initial response with 784 bytes (has_crypto=true)
+Server: Updated Initial CRYPTO offset to 200
+Server: Removed 200 sent bytes from TLS outbox, 13 bytes remaining
+CHECKPOINT: Reached coalesc logic, initial_pkt is SET, hs_tx_keys is SET
+sendTo called with data.len=784
+sendto IPv4 127.0.0.1:12345, fd=3, data.len=784
+sendto successful: sent 784 bytes (of 784)
+TEMP FIX: Sent Initial packet separately (784 bytes) - not coalescing
+DEBUG: Checking Handshake keys - hs_tx_keys=true, outbox.len=13
+DEBUG: Inside hs_tx_keys block - role=Server, sh_seen=true, server_hello_sent=false
+Queueing handshake flight (EE + Cert + Finished), ServerHello already queued
+BEFORE queueServerHandshakeFlight: outbox.len=13
+[FLIGHT] queueServerHandshakeFlight CALLED: role=Server, finished_sent=true, ee_sent=true, has_server_secret=true, has_client_secret=true, has_cert=false, has_key=false
+[FLIGHT] Early return: already sent finished
+AFTER queueServerHandshakeFlight: outbox.len=13
+DEBUG: About to extract TLS messages from outbox, outbox.len=13
+DEBUG: First 4 bytes of outbox: ed 30 95 70
+DEBUG: First peekNextMessageSize() returned 3183988
+Warning: Expected 3183988 bytes but got 13 bytes
+TLS: Extracted 0 separate TLS messages
+=== No coalesced packets, end_total=156, bytes.len=156 ===
+Server responded with packet type: 0
+test
++- run test stderr
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:4433
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Server
+protectPacket: pn=1 pn_len=2 header_prefix_len=21 aad_len=24
+protectPacket: header_first=0xC1
+protectPacket: AAD (first 20 bytes): C1 00 00 00 01 08 83 94 C8 F0 3E 51 57 08 04 01 02 03 04 00
+protectPacket: Nonce: FA 04 4B 2F 42 A3 FD 3B 46 FB 25 5D
+ENC aead_key: 1f 36 96 13 dd 76 d5 46 77 30 ef cb e3 b1 a2 2d
+ENC aead_iv: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5c
+ENC aad: c1 00 00 00 01 08 83 94 c8 f0 3e 51 57 08 04 01 02 03 04 00 40 86 00 01
+ENC nonce: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5d
+ENC pn_bytes: 00 01
+protectPacket: ct_len=132, sample_offset=2 (pn_len=2, formula: 4-pn_len=2)
+protectPacket: ciphertext[0..32]:  6C 3A EB CC 06 87 C2 A2 E2 DE 9A 4F E5 42 3B B7   03 07 3A 68 08 BF B8 67 E7 13 DE 62 27 58 E1 5B protectPacket: HP sample from offset 2:  EB CC 06 87 C2 A2 E2 DE  9A 4F E5 42 3B B7 03 07 ENC hp_sample: eb cc 06 87 c2 a2 e2 de 9a 4f e5 42 3b b7 03 07
+headerProtect: first byte 0xC1 ^ (mask0 0x26 & hdr_mask 0x0F) = 0xC7
+PACKET #1: 156 bytes, first=0xC7
+=== processIncomingDatagram #1 called with 156 bytes ===
+First byte: 0xC7, is_long: true
+Long header packet received: first=0xC7, ty=0 (0=Initial, 1=0-RTT, 2=Handshake, 3=Retry), version=0x00000001
+LONG HEADER: ty=0 (0=Initial, 2=Handshake), version=0x00000001
+=== PROCESSING INITIAL PACKET FROM PEER ===
+Packet total length: 156 bytes
+Initial packet: dcid_len=8, scid_len=4, version=0x00000001
+  Client SCID: 01
+02
+03
+04
+Looking up connection with dcid=
+83
+94
+C8
+F0
+3E
+51
+57
+08
+ (found=false)
+Creating server connection with peer address 127.0.0.1:12345
+Server: Setting peer_initial_scid from client SCID, scid.len=4
+Server: After setting peer_initial_scid, peer_initial_scid.len=4
+WARNING: No server certificate configured! cert=false, key=false
+DEBUG: Checking initial_keys_dropped = false
+Server: Setting peer CIDs - peer sent DCID_len=8 SCID_len=4
+setPeerInitialCids: ENTER - dcid.len=8, scid.len=4
+setPeerInitialCids: Before setting peer_initial_scid, current len=4
+setPeerInitialCids: EXIT - peer_initial_dcid.len=8, peer_initial_scid.len=4
+Server: After setPeerInitialCids - peer_initial_dcid.len=8, peer_initial_scid.len=4
+Server: Deriving Initial keys with dcid (len=8)=
+83
+94
+C8
+F0
+3E
+51
+57
+08
+DCID from packet (len=8)=
+83
+94
+C8
+F0
+3E
+51
+57
+08
+Derived and cached Initial keys for role=Server
+Derived RX keys - key[0..4]=1F369613, iv[0..4]=FA044B2F
+DEBUG: About to decode token varint at offset 19
+DEBUG: Retry check - role=Server, address_validated=false, enable_retry=false
+Server: Masked PN bytes: 5F CC 6C 3A Server: Trying to decrypt Initial with pn_initial.max=0
+Initial packet structure:  - Total packet len: 156
+  - Header prefix len: 21
+  - pn_start: 22, end_total: 156
+  - Ciphertext len (including PN): 134
+  - First byte: C7 (long_header=true, type=0)
+DEBUG: Reached Initial packet decryption section
+DEBUG: pn_start=22, end_total=156, bytes.len=156
+DEBUG: Loop iteration pn_len_try=1, checking if 22 + 1 > 156
+DEBUG: ct.len=134, checking if < 16
+DEBUG: About to allocate 118 bytes for pt_list
+DEBUG: After allocation, pt_list.capacity=128
+DEBUG: After appendNTimes, pt_list.items.len=118
+DEBUG: pt_slice.len=118
+DEBUG: expected_pn=0
+DEBUG: About to attempt Initial packet decryption (pn_len_try=1)
+DEBUG:   - header_try: C7
+DEBUG:   - header_prefix.len=21
+DEBUG:   - ct.len=134
+DEBUG:   - keys.key[0..4]: 1F 36 96 13
+DEBUG: About to call crypto.unprotectInitialAutoSample
+Header protection removal - first 32 bytes of ciphertext_and_tag: 5F CC 6C 3A EB CC 06 87 C2 A2 E2 DE 9A 4F E5 42 3B B7 03 07 3A 68 08 BF B8 67 E7 13 DE 62 27 58 
+  pn_len=1, ciphertext_and_tag.len=134, expected_pn=0
+  Masked PN bytes before unmasking: 5F 
+HP Sample extraction: pn_len=1, ct_len=134, sample_offset=4
+Sample bytes: EB CC 06 87 C2 A2 E2 DE 9A 4F E5 42 3B B7 03 07 Masked PN bytes (len=1): 5F Masked header_first: C7
+Before headerUnprotect: pn_bytes set
+headerProtect: first byte 0xC7 ^ (mask0 0x26 & hdr_mask 0x0F) = 0xC1
+Unmasked PN bytes (len=1): 00
+Unmasked header_first: C1
+After headerUnprotect: pn_bytes set
+expandPacketNumber: truncated=0 pn_len=1 expected=0 -> full=0
+  Nonce IV: FA
+04
+4B
+2F
+42
+A3
+FD
+3B
+46
+FB
+25
+5C
+  Nonce after XOR with PN 0: FA
+04
+4B
+2F
+42
+A3
+FD
+3B
+46
+FB
+25
+5C
+AEAD decrypt parameters:  full_pn=0, truncated_pn=0, pn_len=1
+  AAD len=23, ciphertext len=133
+  AAD bytes: C1
+00
+00
+00
+01
+08
+83
+94
+C8
+F0
+3E
+51
+57
+08
+04
+01
+02
+03
+04
+00
+40
+86
+00
+aeadDecrypt: suite=.aes_128_gcm, pn=0, ct_len=117, tag_len=16
+AEAD decrypt key: 1f 36 96 13 dd 76 d5 46 77 30 ef cb e3 b1 a2 2d
+AEAD decrypt iv: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5c
+AEAD decrypt nonce: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5c
+AEAD decrypt aad: c1 00 00 00 01 08 83 94 c8 f0 3e 51 57 08 04 01 02 03 04 00 40 86 00
+AEAD decrypt ciphertext (first 32): cc 6c 3a eb cc 06 87 c2 a2 e2 de 9a 4f e5 42 3b b7 03 07 3a 68 08 bf b8 67 e7 13 de 62 27 58 e1
+AEAD decrypt tag: bc b1 ef 36 8c b7 d3 b5 f7 bb d5 a7 14 29 d6 f6
+Aes128Gcm.decrypt failed for pn=0
+AEAD decrypt failed (auto-sample): error.AuthenticationFailed (pn=0, trunc=0, pn_len=1)
+DEBUG: Decryption failed with error: error.AuthenticationFailed
+DEBUG: Loop iteration pn_len_try=2, checking if 22 + 2 > 156
+DEBUG: ct.len=134, checking if < 16
+DEBUG: About to allocate 118 bytes for pt_list
+DEBUG: After allocation, pt_list.capacity=128
+DEBUG: After appendNTimes, pt_list.items.len=118
+DEBUG: pt_slice.len=118
+DEBUG: expected_pn=0
+DEBUG: About to attempt Initial packet decryption (pn_len_try=2)
+DEBUG:   - header_try: C7
+DEBUG:   - header_prefix.len=21
+DEBUG:   - ct.len=134
+DEBUG:   - keys.key[0..4]: 1F 36 96 13
+DEBUG: About to call crypto.unprotectInitialAutoSample
+Header protection removal - first 32 bytes of ciphertext_and_tag: 5F CC 6C 3A EB CC 06 87 C2 A2 E2 DE 9A 4F E5 42 3B B7 03 07 3A 68 08 BF B8 67 E7 13 DE 62 27 58 
+  pn_len=2, ciphertext_and_tag.len=134, expected_pn=0
+  Masked PN bytes before unmasking: 5F CC 
+HP Sample extraction: pn_len=2, ct_len=134, sample_offset=4
+Sample bytes: EB CC 06 87 C2 A2 E2 DE 9A 4F E5 42 3B B7 03 07 Masked PN bytes (len=2): 5F CC Masked header_first: C7
+Before headerUnprotect: pn_bytes set
+headerProtect: first byte 0xC7 ^ (mask0 0x26 & hdr_mask 0x0F) = 0xC1
+Unmasked PN bytes (len=2): 00
+01
+Unmasked header_first: C1
+After headerUnprotect: pn_bytes set
+expandPacketNumber: truncated=1 pn_len=2 expected=0 -> full=1
+  Nonce IV: FA
+04
+4B
+2F
+42
+A3
+FD
+3B
+46
+FB
+25
+5C
+  Nonce after XOR with PN 1: FA
+04
+4B
+2F
+42
+A3
+FD
+3B
+46
+FB
+25
+5D
+AEAD decrypt parameters:  full_pn=1, truncated_pn=1, pn_len=2
+  AAD len=24, ciphertext len=132
+  AAD bytes: C1
+00
+00
+00
+01
+08
+83
+94
+C8
+F0
+3E
+51
+57
+08
+04
+01
+02
+03
+04
+00
+40
+86
+00
+01
+aeadDecrypt: suite=.aes_128_gcm, pn=1, ct_len=116, tag_len=16
+AEAD decrypt key: 1f 36 96 13 dd 76 d5 46 77 30 ef cb e3 b1 a2 2d
+AEAD decrypt iv: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5c
+AEAD decrypt nonce: fa 04 4b 2f 42 a3 fd 3b 46 fb 25 5d
+AEAD decrypt aad: c1 00 00 00 01 08 83 94 c8 f0 3e 51 57 08 04 01 02 03 04 00 40 86 00 01
+AEAD decrypt ciphertext (first 32): 6c 3a eb cc 06 87 c2 a2 e2 de 9a 4f e5 42 3b b7 03 07 3a 68 08 bf b8 67 e7 13 de 62 27 58 e1 5b
+AEAD decrypt tag: bc b1 ef 36 8c b7 d3 b5 f7 bb d5 a7 14 29 d6 f6
+DEBUG: Decryption SUCCESS!
+DEBUG: dec value = 116
+DEBUG: After unmasking with pn_len=2: 00 01 
+DEBUG: indicated_pn_len=2, pn_len_try=2
+DEBUG: PN length match! Setting success=true
+DEBUG: After decryption loop, success=true
+DEBUG: Successfully decrypted Initial packet (trial pn_len=2) plaintext len: 118
+DEBUG: Enqueuing server connection for accept()
+DEBUG: After accept enqueue check
+DEBUG: About to expand packet number
+DEBUG: Expanded PN: 1 from truncated: 1
+DEBUG: Tracked packet number, now processing frames
+DEBUG: === DECODING FRAMES FROM INITIAL PACKET ===
+DEBUG: Plaintext length: 118 bytes
+DEBUG: First 16 bytes of plaintext: 06 00 40 70 01 00 00 6C 03 03 06 EB D7 3E DD 92 
+DEBUG: Attempting to decode frame at offset 0 (remaining: 118 bytes)
+DEBUG: Successfully decoded frame type: crypto, consumed 116 bytes
+DEBUG: About to switch on frame type: crypto
+DEBUG: Processing CRYPTO frame with 112 bytes at offset 0
+Server: Received Initial CRYPTO frame with 112 bytes at offset 0 (expected 0)
+DEBUG: Processing in-order Initial CRYPTO frame at offset 0 with 112 bytes
+DEBUG: Pushing 112 bytes to TLS engine (Initial)
+DEBUG: CRYPTO data first 8 bytes: 01 00 00 6C 03 03 06 EB
+TLS: onCryptoRecv called with 112 bytes, inbox already has 0 bytes
+TLS: Inbox now has 112 bytes total
+TLS: Parsed handshake message type=.client_hello len=108
+[TRANSCRIPT] Finalized hash: E3 B0 C4 42 98 FC 1C 14... (32 bytes)
+[TRANSCRIPT] Adding ClientHello (0x01) len=108 bytes, first 8: 01 00 00 6C 03 03 06 EB
+TLS: Added 112 bytes to transcript (recv): 01 00 00 6C 03 03 06 EB ...
+TLS: Processing hello message, typ=.client_hello
+TLS: Trying real TLS 1.3 hello parsing
+TLS: Calling parseRealClientHello with 108 bytes
+parseRealClientHello: body_len=108
+parseRealClientHello: client sent empty session_id
+parseRealClientHello: no transport parameters found in ClientHello
+parseRealClientHello: found X25519 key!
+parseRealClientHello: successfully extracted public key
+TLS: parseRealClientHello SUCCESS - extracted key
+TLS: Setting peer_pub for .client_hello (was null=true)
+TLS: peer_pub is now set (null=false)
+Server: Will compute ECDHE when generating ServerHello
+extractAlpnFromClientHello: body_len=108
+extractAlpnFromClientHello: No ALPN found
+extractAlpnFromClientHello: body_len=108
+extractAlpnFromClientHello: No ALPN found
+TLS: Processed 112 bytes, 0 bytes remaining in buffer
+DEBUG pushCrypto: role=Server, hs_client=false, had_peer_pub=false, peer_pub_now=true
+Server: ClientHello parsed with peer public key, deriving Handshake keys
+queueRealServerHello: ENTER - alpn=false, local_tp=true
+queueRealServerHello: Transport parameters available, 60 bytes
+Server: Generated X25519 keypair
+buildServerHello: WARNING - No QUIC transport parameters provided
+ServerHello total length: 90 bytes
+ServerHello header: 02 00 00 56
+ServerHello body start: 03 03 B5 AD A2 46 10 A9
+ServerHello body[12..20]: 8B 76 75 DA 0F D7 52 C1
+[TRANSCRIPT] Finalized hash: F7 61 3A F5 02 9E E8 27... (32 bytes)
+Transcript hash BEFORE ServerHello: F7 61 3A F5 02 9E E8 27
+[TRANSCRIPT] Adding ServerHello (0x02) len=86 bytes, first 8: 02 00 00 56 03 03 B5 AD
+TLS: Added 90 bytes to transcript (queue): 02 00 00 56 03 03 B5 AD ...
+Server: Computed ECDHE shared secret (F0675964C28344DA...)
+[TRANSCRIPT] Finalized hash: 3D 81 0A 00 79 7D 6A 29... (32 bytes)
+Transcript hash AFTER ServerHello: 3D 81 0A 00 79 7D 6A 29
+Server: ServerHello queued to Initial CRYPTO (EncryptedExtensions will go to Handshake)
+Server: Checking handshake secrets - client: true, server: true
+Server: Derived handshake secrets, installing Handshake keys
+deriveHandshakeKeys: role=Server, version_v2=false
+  hs_client secret[0..4]: E60786F0
+  hs_server secret[0..4]: DD026536
+  For Server:    rx_secret (for reading) = client secret[0..4]: E60786F0
+    tx_secret (for writing) = server secret[0..4]: DD026536
+Handshake keys derived for Server - tx_key[0..4]: D7086808, rx_key[0..4]: 21EE923C
+Server: About to queue EncryptedExtensions
+Server: Using ALPN 'hq-interop' and transport params len=60
+[TRANSCRIPT] Adding EncryptedExtensions (0x08) len=83 bytes, first 8: 08 00 00 53 00 51 00 10
+TLS: Added 87 bytes to transcript (queue): 08 00 00 53 00 51 00 10 ...
+Server: No certificate configured
+Server: Queueing Finished message
+[TRANSCRIPT] Finalized hash: BC 7E 6C 31 21 A5 10 B1... (32 bytes)
+TLS: Queueing Finished with transcript hash: BC 7E 6C 31 21 A5 10 B1 ...
+[TRANSCRIPT] Adding Finished (0x14) len=32 bytes, first 8: 14 00 00 20 42 7F 97 C2
+TLS: Added 36 bytes to transcript (queue): 14 00 00 20 42 7F 97 C2 ...
+Server: Complete handshake flight queued, outbox len=213
+Server: Queued complete handshake flight (SH + EE + Cert + CV + Finished)
+DEBUG: Updated crypto_rx_off_initial to 112
+DEBUG: Attempting to decode frame at offset 116 (remaining: 2 bytes)
+DEBUG: Successfully decoded frame type: padding, consumed 2 bytes
+DEBUG: About to switch on frame type: padding
+Checked TLS outbox: has_pending_tls=true outbox.len=213
+Server should_send_initial: has_pending_tls=true, sh_seen=true, crypto_tx_off_initial=0, result=true
+Server: Adding ACK frame to Initial packet - largest=1, first_range=0
+Server: Adding Initial CRYPTO frame with 200 bytes at offset 0 (ServerHello for Initial packet)
+INITIAL CRYPTO: Sending 200 bytes at offset 0
+  First 20 bytes: 02 00 00 56 03 03 b5 ad a2 46 10 a9 8b 76 75 da 0f d7 52 c1 
+Server TX: Using Initial keys with dcid=8394C8F03E515708 (len=8)
+Server: Encoding Initial with pn=0 dcid_len=4 scid_len=8 pn_len=4
+  Server will use SCID: 50
+0D
+5C
+D8
+7B
+F4
+51
+90
+Added 533 bytes of padding to Initial frames
+protectPacket: pn=0 pn_len=4 header_prefix_len=21 aad_len=26
+protectPacket: header_first=0xC3
+protectPacket: AAD (first 20 bytes): C3 00 00 00 01 04 01 02 03 04 08 50 0D 5C D8 7B F4 51 90 00
+protectPacket: Nonce: 0A C1 49 3C A1 90 58 53 B0 BB A0 3E
+ENC aead_key: cf 3a 53 31 65 3c 36 4c 88 f0 f3 79 b6 06 7e 37
+ENC aead_iv: 0a c1 49 3c a1 90 58 53 b0 bb a0 3e
+ENC aad: c3 00 00 00 01 04 01 02 03 04 08 50 0d 5c d8 7b f4 51 90 00 42 fa 00 00 00 00
+ENC nonce: 0a c1 49 3c a1 90 58 53 b0 bb a0 3e
+ENC pn_bytes: 00 00 00 00
+protectPacket: ct_len=758, sample_offset=0 (pn_len=4, formula: 4-pn_len=0)
+protectPacket: ciphertext[0..32]:  AA 31 39 B1 1B 5A A9 D3 3A 09 5F DC EC 34 38 0D   85 49 92 59 8D E3 4C EF FE 22 ED D5 36 D9 B2 A0 protectPacket: HP sample from offset 0:  AA 31 39 B1 1B 5A A9 D3  3A 09 5F DC EC 34 38 0D ENC hp_sample: aa 31 39 b1 1b 5a a9 d3 3a 09 5f dc ec 34 38 0d
+headerProtect: first byte 0xC3 ^ (mask0 0x09 & hdr_mask 0x0F) = 0xCA
+Server: Prepared Initial response with 784 bytes (has_crypto=true)
+Server: Updated Initial CRYPTO offset to 200
+Server: Removed 200 sent bytes from TLS outbox, 13 bytes remaining
+CHECKPOINT: Reached coalesc logic, initial_pkt is SET, hs_tx_keys is SET
+sendTo called with data.len=784
+sendto IPv4 127.0.0.1:12345, fd=3, data.len=784
+sendto successful: sent 784 bytes (of 784)
+TEMP FIX: Sent Initial packet separately (784 bytes) - not coalescing
+DEBUG: Checking Handshake keys - hs_tx_keys=true, outbox.len=13
+DEBUG: Inside hs_tx_keys block - role=Server, sh_seen=true, server_hello_sent=false
+Queueing handshake flight (EE + Cert + Finished), ServerHello already queued
+BEFORE queueServerHandshakeFlight: outbox.len=13
+[FLIGHT] queueServerHandshakeFlight CALLED: role=Server, finished_sent=true, ee_sent=true, has_server_secret=true, has_client_secret=true, has_cert=false, has_key=false
+[FLIGHT] Early return: already sent finished
+AFTER queueServerHandshakeFlight: outbox.len=13
+DEBUG: About to extract TLS messages from outbox, outbox.len=13
+DEBUG: First 4 bytes of outbox: a8 6d 1f 15
+DEBUG: First peekNextMessageSize() returned 7151385
+Warning: Expected 7151385 bytes but got 13 bytes
+TLS: Extracted 0 separate TLS messages
+=== No coalesced packets, end_total=156, bytes.len=156 ===
+Test passed: Server processed Initial and queued ServerHello
+test
++- run test stderr
+Client: Generated X25519 keypair
+[TRANSCRIPT] Adding ClientHello (0x01) len=35 bytes, first 8: 01 00 00 23 43 48 31 D6
+TLS: Added 39 bytes to transcript (queue): 01 00 00 23 43 48 31 D6 ...
+TLS: onCryptoRecv called with 39 bytes, inbox already has 0 bytes
+TLS: Inbox now has 39 bytes total
+TLS: Parsed handshake message type=.client_hello len=35
+[TRANSCRIPT] Finalized hash: E3 B0 C4 42 98 FC 1C 14... (32 bytes)
+[TRANSCRIPT] Adding ClientHello (0x01) len=35 bytes, first 8: 01 00 00 23 43 48 31 D6
+TLS: Added 39 bytes to transcript (recv): 01 00 00 23 43 48 31 D6 ...
+TLS: Processing hello message, typ=.client_hello
+TLS: Trying real TLS 1.3 hello parsing
+TLS: Calling parseRealClientHello with 35 bytes
+parseRealClientHello: body_len=35
+parseRealClientHello: failed to parse ClientHello with error: error.TooShort
+parseRealClientHello: First 8 bytes: 43 48 31 D6 01 F2 12 84
+TLS: parseRealClientHello FAILED - returned null
+TLS: Real parse failed, trying minimal parse as fallback
+TLS: Setting peer_pub for .client_hello (was null=true)
+TLS: peer_pub is now set (null=false)
+Server: Will compute ECDHE when generating ServerHello
+extractAlpnFromClientHello: body_len=35
+extractAlpnFromClientHello: body_len=35
+TLS: Processed 39 bytes, 0 bytes remaining in buffer
+queueRealServerHello: ENTER - alpn=false, local_tp=false
+WARNING: queueRealServerHello called without transport parameters - ServerHello will be non-compliant with RFC 9001
+Server: Generated X25519 keypair
+buildServerHello: WARNING - No QUIC transport parameters provided
+ServerHello total length: 90 bytes
+ServerHello header: 02 00 00 56
+ServerHello body start: 03 03 8A E3 46 D3 74 FB
+ServerHello body[12..20]: 61 C3 8A 56 1B E0 45 3D
+[TRANSCRIPT] Finalized hash: AB 26 9E 40 7A E9 C0 A7... (32 bytes)
+Transcript hash BEFORE ServerHello: AB 26 9E 40 7A E9 C0 A7
+[TRANSCRIPT] Adding ServerHello (0x02) len=86 bytes, first 8: 02 00 00 56 03 03 8A E3
+TLS: Added 90 bytes to transcript (queue): 02 00 00 56 03 03 8A E3 ...
+Server: Computed ECDHE shared secret (6CD96ED6BD3E9819...)
+[TRANSCRIPT] Finalized hash: 58 11 2F 5B F5 C8 FF 90... (32 bytes)
+Transcript hash AFTER ServerHello: 58 11 2F 5B F5 C8 FF 90
+Server: ServerHello queued to Initial CRYPTO (EncryptedExtensions will go to Handshake)
+TLS: onCryptoRecv called with 90 bytes, inbox already has 0 bytes
+TLS: Inbox now has 90 bytes total
+TLS: Parsed handshake message type=.server_hello len=86
+[TRANSCRIPT] Finalized hash: AB 26 9E 40 7A E9 C0 A7... (32 bytes)
+[TRANSCRIPT] Adding ServerHello (0x02) len=86 bytes, first 8: 02 00 00 56 03 03 8A E3
+TLS: Added 90 bytes to transcript (recv): 02 00 00 56 03 03 8A E3 ...
+TLS: Processing hello message, typ=.server_hello
+TLS: Trying real TLS 1.3 hello parsing
+TLS: Setting peer_pub for .server_hello (was null=true)
+TLS: peer_pub is now set (null=false)
+Client: Computed ECDHE shared secret (6CD96ED6BD3E9819...)
+TLS: Processed 90 bytes, 0 bytes remaining in buffer
+Client: maybeAutoProgress - finished_verified=false, has_secret=false, allow_insecure=true, peer_cert_ok=false
+[TRANSCRIPT] Finalized hash: 58 11 2F 5B F5 C8 FF 90... (32 bytes)
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:59822
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Client
+protectPacket: pn=1 pn_len=4 header_prefix_len=8 aad_len=13
+protectPacket: header_first=0x47
+protectPacket: AAD (first 20 bytes): 47 CF 41 4D 7B 5A CC 41 46 00 00 00 01 00 00 00 00 00 00 00
+protectPacket: Nonce: 77 D2 0F 36 86 A2 A3 30 E3 BF 7D AF
+ENC aead_key: 0c f2 8d 27 a6 34 d1 e3 1b c9 61 9d 82 90 ed 6c
+ENC aead_iv: 77 d2 0f 36 86 a2 a3 30 e3 bf 7d ae
+ENC aad: 47 cf 41 4d 7b 5a cc 41 46 00 00 00 01
+ENC nonce: 77 d2 0f 36 86 a2 a3 30 e3 bf 7d af
+ENC pn_bytes: 00 00 00 01
+protectPacket: ct_len=36, sample_offset=0 (pn_len=4, formula: 4-pn_len=0)
+protectPacket: ciphertext[0..32]:  65 B2 67 F9 06 7C DF 85 DB E6 19 E5 BA 53 66 52   93 59 AB 4A F9 86 02 34 07 26 26 A0 21 92 3F BB protectPacket: HP sample from offset 0:  65 B2 67 F9 06 7C DF 85  DB E6 19 E5 BA 53 66 52 ENC hp_sample: 65 b2 67 f9 06 7c df 85 db e6 19 e5 ba 53 66 52
+headerProtect: first byte 0x47 ^ (mask0 0x3D & hdr_mask 0x1F) = 0x5A
+PACKET #1: 49 bytes, first=0x5A
+=== processIncomingDatagram #1 called with 49 bytes ===
+First byte: 0x5A, is_long: false
+Processing short header packet - len=49, first_byte=5a
+Short header DCID bytes (after header): cf 41 4d 7b 5a cc 41 46 d4 f4 bf 6f 65 b2 67 f9 06 7c df 85 Looking for connection with peer_hash=3bfb4e8a87555d4e
+Checking conn with our_scid=
+cf
+41
+4d
+7b
+5a
+cc
+41
+46
+ (len=8), role=.Client
+Found matching connection!
+Checking conn with our_scid=
+cf
+41
+4d
+7b
+5a
+cc
+41
+46
+ (len=8), role=.Client
+Found matching connection!
+Found connection for short header packet - has_app_rx=true, has_app_tx=true
+HP key: 5C
+C4
+35
+B2
+EB
+28
+3D
+A4
+47
+52
+D9
+F4
+29
+C4
+13
+5A
+HP mask (first 5 bytes): 0D
+D3
+0E
+01
+04
+is_long=false, hdr_mask=1F, header_first_before=5A
+header_first_after=57
+Decoded pn_len from header: 4
+pn_buf before unmasking: { 212, 244, 191, 111 }
+pn_buf after unmasking: { 7, 250, 190, 107 }, using pn_len=4
+DEC hp_sample: 65 b2 67 f9 06 7c df 85 db e6 19 e5 ba 53 66 52
+DEC hp_key: 5c c4 35 b2 eb 28 3d a4 47 52 d9 f4 29 c4 13 5a
+headerProtect: first byte 0x5A ^ (mask0 0x0D & hdr_mask 0x1F) = 0x57
+Packet number extraction: pn_bytes={ 7, 250, 190, 107 }, pn_val_truncated=133873259, expected_pn=0
+Expanded packet number: 133873259 (from truncated 133873259 with expected 0)
+First packet: truncated=7fabe6b (133873259) -> expanded=133873259
+DEC aead_key: 53 f3 6f 7b da 93 d1 52 46 87 3c d1 2a e4 1a e6
+DEC aead_iv: e3 16 22 46 6d d3 d7 13 a4 bf 8b 09
+DEC aad: 57 cf 41 4d 7b 5a cc 41 46 07 fa be 6b
+DEC nonce: e3 16 22 46 6d d3 d7 13 a3 45 35 62
+DEC pn_bytes: 07 fa be 6b
+aeadDecrypt: suite=.aes_128_gcm, pn=133873259, ct_len=20, tag_len=16
+AEAD decrypt key: 53 f3 6f 7b da 93 d1 52 46 87 3c d1 2a e4 1a e6
+AEAD decrypt iv: e3 16 22 46 6d d3 d7 13 a4 bf 8b 09
+AEAD decrypt nonce: e3 16 22 46 6d d3 d7 13 a3 45 35 62
+AEAD decrypt aad: 57 cf 41 4d 7b 5a cc 41 46 07 fa be 6b
+AEAD decrypt ciphertext: 65 b2 67 f9 06 7c df 85 db e6 19 e5 ba 53 66 52 93 59 ab 4a
+AEAD decrypt tag: f9 86 02 34 07 26 26 a0 21 92 3f bb 02 cf a8 af
+Aes128Gcm.decrypt failed for pn=133873259
+AEAD decrypt failed: error.AuthenticationFailed (pn=133873259)
+HP key: 30
+68
+70
+59
+2E
+8F
+47
+8F
+1D
+A0
+7B
+1F
+F0
+9A
+72
+0A
+HP mask (first 5 bytes): 3D
+D4
+F4
+BF
+6E
+is_long=false, hdr_mask=1F, header_first_before=5A
+header_first_after=47
+Decoded pn_len from header: 4
+pn_buf before unmasking: { 212, 244, 191, 111 }
+pn_buf after unmasking: { 0, 0, 0, 1 }, using pn_len=4
+DEC hp_sample: 65 b2 67 f9 06 7c df 85 db e6 19 e5 ba 53 66 52
+DEC hp_key: 30 68 70 59 2e 8f 47 8f 1d a0 7b 1f f0 9a 72 0a
+headerProtect: first byte 0x5A ^ (mask0 0x3D & hdr_mask 0x1F) = 0x47
+Packet number extraction: pn_bytes={ 0, 0, 0, 1 }, pn_val_truncated=1, expected_pn=0
+Expanded packet number: 1 (from truncated 1 with expected 0)
+First packet: truncated=0001 (1) -> expanded=1
+DEC aead_key: 0c f2 8d 27 a6 34 d1 e3 1b c9 61 9d 82 90 ed 6c
+DEC aead_iv: 77 d2 0f 36 86 a2 a3 30 e3 bf 7d ae
+DEC aad: 47 cf 41 4d 7b 5a cc 41 46 00 00 00 01
+DEC nonce: 77 d2 0f 36 86 a2 a3 30 e3 bf 7d af
+DEC pn_bytes: 00 00 00 01
+aeadDecrypt: suite=.aes_128_gcm, pn=1, ct_len=20, tag_len=16
+AEAD decrypt key: 0c f2 8d 27 a6 34 d1 e3 1b c9 61 9d 82 90 ed 6c
+AEAD decrypt iv: 77 d2 0f 36 86 a2 a3 30 e3 bf 7d ae
+AEAD decrypt nonce: 77 d2 0f 36 86 a2 a3 30 e3 bf 7d af
+AEAD decrypt aad: 47 cf 41 4d 7b 5a cc 41 46 00 00 00 01
+AEAD decrypt ciphertext: 65 b2 67 f9 06 7c df 85 db e6 19 e5 ba 53 66 52 93 59 ab 4a
+AEAD decrypt tag: f9 86 02 34 07 26 26 a0 21 92 3f bb 02 cf a8 af
+Client decoded 1-RTT packet - payload_len=20, pn=1
+Parsing frames from payload, total_len=20
+Frame decode error at offset 0: error.Unsupported
+protectPacket: pn=2 pn_len=4 header_prefix_len=8 aad_len=13
+protectPacket: header_first=0x43
+protectPacket: AAD (first 20 bytes): 43 CF 41 4D 7B 5A CC 41 46 00 00 00 02 00 00 00 00 00 00 00
+protectPacket: Nonce: E3 16 22 46 6D D3 D7 13 A4 BF 8B 0B
+ENC aead_key: 53 f3 6f 7b da 93 d1 52 46 87 3c d1 2a e4 1a e6
+ENC aead_iv: e3 16 22 46 6d d3 d7 13 a4 bf 8b 09
+ENC aad: 43 cf 41 4d 7b 5a cc 41 46 00 00 00 02
+ENC nonce: e3 16 22 46 6d d3 d7 13 a4 bf 8b 0b
+ENC pn_bytes: 00 00 00 02
+protectPacket: ct_len=36, sample_offset=0 (pn_len=4, formula: 4-pn_len=0)
+protectPacket: ciphertext[0..32]:  C1 EE 9D 1F 9D 90 75 72 1A 6A 78 0B 05 3C F4 0E   02 B5 C9 73 20 DE D2 6B 64 40 99 BD 6A 2F 40 25 protectPacket: HP sample from offset 0:  C1 EE 9D 1F 9D 90 75 72  1A 6A 78 0B 05 3C F4 0E ENC hp_sample: c1 ee 9d 1f 9d 90 75 72 1a 6a 78 0b 05 3c f4 0e
+headerProtect: first byte 0x43 ^ (mask0 0x97 & hdr_mask 0x1F) = 0x54
+PACKET #2: 49 bytes, first=0x54
+=== processIncomingDatagram #2 called with 49 bytes ===
+First byte: 0x54, is_long: false
+Processing short header packet - len=49, first_byte=54
+Short header DCID bytes (after header): cf 41 4d 7b 5a cc 41 46 f6 4e ef 5c c1 ee 9d 1f 9d 90 75 72 Looking for connection with peer_hash=3bfb4e8a87555d4e
+Checking conn with our_scid=
+cf
+41
+4d
+7b
+5a
+cc
+41
+46
+ (len=8), role=.Client
+Found matching connection!
+Checking conn with our_scid=
+cf
+41
+4d
+7b
+5a
+cc
+41
+46
+ (len=8), role=.Client
+Found matching connection!
+Found connection for short header packet - has_app_rx=true, has_app_tx=true
+HP key: 30
+68
+70
+59
+2E
+8F
+47
+8F
+1D
+A0
+7B
+1F
+F0
+9A
+72
+0A
+HP mask (first 5 bytes): BA
+05
+9B
+DA
+CF
+is_long=false, hdr_mask=1F, header_first_before=54
+header_first_after=4E
+Decoded pn_len from header: 3
+pn_buf before unmasking: { 246, 78, 239, 92 }
+pn_buf after unmasking: { 243, 213, 53, 147 }, using pn_len=3
+DEC hp_sample: c1 ee 9d 1f 9d 90 75 72 1a 6a 78 0b 05 3c f4 0e
+DEC hp_key: 30 68 70 59 2e 8f 47 8f 1d a0 7b 1f f0 9a 72 0a
+headerProtect: first byte 0x54 ^ (mask0 0xBA & hdr_mask 0x1F) = 0x4E
+Packet number extraction: pn_bytes={ 243, 213, 53 }, pn_val_truncated=15979829, expected_pn=0
+Expanded packet number: 15979829 (from truncated 15979829 with expected 0)
+First packet: truncated=f3d535 (15979829) -> expanded=15979829
+DEC aead_key: 0c f2 8d 27 a6 34 d1 e3 1b c9 61 9d 82 90 ed 6c
+DEC aead_iv: 77 d2 0f 36 86 a2 a3 30 e3 bf 7d ae
+DEC aad: 4e cf 41 4d 7b 5a cc 41 46 f3 d5 35
+DEC nonce: 77 d2 0f 36 86 a2 a3 30 e3 4c a8 9b
+DEC pn_bytes: f3 d5 35
+aeadDecrypt: suite=.aes_128_gcm, pn=15979829, ct_len=21, tag_len=16
+AEAD decrypt key: 0c f2 8d 27 a6 34 d1 e3 1b c9 61 9d 82 90 ed 6c
+AEAD decrypt iv: 77 d2 0f 36 86 a2 a3 30 e3 bf 7d ae
+AEAD decrypt nonce: 77 d2 0f 36 86 a2 a3 30 e3 4c a8 9b
+AEAD decrypt aad: 4e cf 41 4d 7b 5a cc 41 46 f3 d5 35
+AEAD decrypt ciphertext: 5c c1 ee 9d 1f 9d 90 75 72 1a 6a 78 0b 05 3c f4 0e 02 b5 c9 73
+AEAD decrypt tag: 20 de d2 6b 64 40 99 bd 6a 2f 40 25 8c 74 03 09
+Aes128Gcm.decrypt failed for pn=15979829
+AEAD decrypt failed: error.AuthenticationFailed (pn=15979829)
+HP key: 93
+33
+DF
+A8
+76
+19
+AE
+00
+01
+F1
+06
+40
+CA
+C1
+CD
+BB
+HP mask (first 5 bytes): E7
+BB
+06
+D5
+20
+is_long=false, hdr_mask=1F, header_first_before=54
+header_first_after=53
+Decoded pn_len from header: 4
+pn_buf before unmasking: { 246, 78, 239, 92 }
+pn_buf after unmasking: { 77, 72, 58, 124 }, using pn_len=4
+DEC hp_sample: c1 ee 9d 1f 9d 90 75 72 1a 6a 78 0b 05 3c f4 0e
+DEC hp_key: 93 33 df a8 76 19 ae 00 01 f1 06 40 ca c1 cd bb
+headerProtect: first byte 0x54 ^ (mask0 0xE7 & hdr_mask 0x1F) = 0x53
+Packet number extraction: pn_bytes={ 77, 72, 58, 124 }, pn_val_truncated=1296579196, expected_pn=0
+Expanded packet number: 1296579196 (from truncated 1296579196 with expected 0)
+First packet: truncated=4d483a7c (1296579196) -> expanded=1296579196
+DEC aead_key: ef dc fc 61 c0 64 e9 ba 05 25 5a c6 3f 02 49 50
+DEC aead_iv: 12 4d d1 89 ab e5 c8 3a 4b 50 44 10
+DEC aad: 53 cf 41 4d 7b 5a cc 41 46 4d 48 3a 7c
+DEC nonce: 12 4d d1 89 ab e5 c8 3a 06 18 7e 6c
+DEC pn_bytes: 4d 48 3a 7c
+aeadDecrypt: suite=.aes_128_gcm, pn=1296579196, ct_len=20, tag_len=16
+AEAD decrypt key: ef dc fc 61 c0 64 e9 ba 05 25 5a c6 3f 02 49 50
+AEAD decrypt iv: 12 4d d1 89 ab e5 c8 3a 4b 50 44 10
+AEAD decrypt nonce: 12 4d d1 89 ab e5 c8 3a 06 18 7e 6c
+AEAD decrypt aad: 53 cf 41 4d 7b 5a cc 41 46 4d 48 3a 7c
+AEAD decrypt ciphertext: c1 ee 9d 1f 9d 90 75 72 1a 6a 78 0b 05 3c f4 0e 02 b5 c9 73
+AEAD decrypt tag: 20 de d2 6b 64 40 99 bd 6a 2f 40 25 8c 74 03 09
+Aes128Gcm.decrypt failed for pn=1296579196
+AEAD decrypt failed: error.AuthenticationFailed (pn=1296579196)
+HP key: 5C
+C4
+35
+B2
+EB
+28
+3D
+A4
+47
+52
+D9
+F4
+29
+C4
+13
+5A
+HP mask (first 5 bytes): 97
+F6
+4E
+EF
+5E
+is_long=false, hdr_mask=1F, header_first_before=54
+header_first_after=43
+Decoded pn_len from header: 4
+pn_buf before unmasking: { 246, 78, 239, 92 }
+pn_buf after unmasking: { 0, 0, 0, 2 }, using pn_len=4
+DEC hp_sample: c1 ee 9d 1f 9d 90 75 72 1a 6a 78 0b 05 3c f4 0e
+DEC hp_key: 5c c4 35 b2 eb 28 3d a4 47 52 d9 f4 29 c4 13 5a
+headerProtect: first byte 0x54 ^ (mask0 0x97 & hdr_mask 0x1F) = 0x43
+Packet number extraction: pn_bytes={ 0, 0, 0, 2 }, pn_val_truncated=2, expected_pn=0
+Expanded packet number: 2 (from truncated 2 with expected 0)
+First packet: truncated=0002 (2) -> expanded=2
+DEC aead_key: 53 f3 6f 7b da 93 d1 52 46 87 3c d1 2a e4 1a e6
+DEC aead_iv: e3 16 22 46 6d d3 d7 13 a4 bf 8b 09
+DEC aad: 43 cf 41 4d 7b 5a cc 41 46 00 00 00 02
+DEC nonce: e3 16 22 46 6d d3 d7 13 a4 bf 8b 0b
+DEC pn_bytes: 00 00 00 02
+aeadDecrypt: suite=.aes_128_gcm, pn=2, ct_len=20, tag_len=16
+AEAD decrypt key: 53 f3 6f 7b da 93 d1 52 46 87 3c d1 2a e4 1a e6
+AEAD decrypt iv: e3 16 22 46 6d d3 d7 13 a4 bf 8b 09
+AEAD decrypt nonce: e3 16 22 46 6d d3 d7 13 a4 bf 8b 0b
+AEAD decrypt aad: 43 cf 41 4d 7b 5a cc 41 46 00 00 00 02
+AEAD decrypt ciphertext: c1 ee 9d 1f 9d 90 75 72 1a 6a 78 0b 05 3c f4 0e 02 b5 c9 73
+AEAD decrypt tag: 20 de d2 6b 64 40 99 bd 6a 2f 40 25 8c 74 03 09
+Client decoded 1-RTT packet - payload_len=20, pn=2
+Parsing frames from payload, total_len=20
+Frame decode error at offset 0: error.Unsupported
+protectPacket: pn=3 pn_len=4 header_prefix_len=8 aad_len=13
+protectPacket: header_first=0x43
+protectPacket: AAD (first 20 bytes): 43 CF 41 4D 7B 5A CC 41 46 00 00 00 03 00 00 00 00 00 00 00
+protectPacket: Nonce: E3 16 22 46 6D D3 D7 13 A4 BF 8B 0A
+ENC aead_key: 53 f3 6f 7b da 93 d1 52 46 87 3c d1 2a e4 1a e6
+ENC aead_iv: e3 16 22 46 6d d3 d7 13 a4 bf 8b 09
+ENC aad: 43 cf 41 4d 7b 5a cc 41 46 00 00 00 03
+ENC nonce: e3 16 22 46 6d d3 d7 13 a4 bf 8b 0a
+ENC pn_bytes: 00 00 00 03
+protectPacket: ct_len=36, sample_offset=0 (pn_len=4, formula: 4-pn_len=0)
+protectPacket: ciphertext[0..32]:  16 A0 76 29 CC 7B 6D 4E 7C 6A 94 B5 4F C0 01 EB   EA 8F C9 AF C9 05 85 10 DF 5B D0 01 3F F4 12 ED protectPacket: HP sample from offset 0:  16 A0 76 29 CC 7B 6D 4E  7C 6A 94 B5 4F C0 01 EB ENC hp_sample: 16 a0 76 29 cc 7b 6d 4e 7c 6a 94 b5 4f c0 01 eb
+headerProtect: first byte 0x43 ^ (mask0 0xAC & hdr_mask 0x1F) = 0x4F
+PACKET #3: 49 bytes, first=0x4F
+=== processIncomingDatagram #3 called with 49 bytes ===
+First byte: 0x4F, is_long: false
+Processing short header packet - len=49, first_byte=4f
+Short header DCID bytes (after header): cf 41 4d 7b 5a cc 41 46 16 f7 67 78 16 a0 76 29 cc 7b 6d 4e Looking for connection with peer_hash=3bfb4e8a87555d4e
+Checking conn with our_scid=
+cf
+41
+4d
+7b
+5a
+cc
+41
+46
+ (len=8), role=.Client
+Found matching connection!
+Checking conn with our_scid=
+cf
+41
+4d
+7b
+5a
+cc
+41
+46
+ (len=8), role=.Client
+Found matching connection!
+Found connection for short header packet - has_app_rx=true, has_app_tx=true
+HP key: 93
+33
+DF
+A8
+76
+19
+AE
+00
+01
+F1
+06
+40
+CA
+C1
+CD
+BB
+HP mask (first 5 bytes): 27
+33
+05
+BD
+52
+is_long=false, hdr_mask=1F, header_first_before=4F
+header_first_after=48
+Decoded pn_len from header: 1
+pn_buf before unmasking: { 22, 247, 103, 120 }
+pn_buf after unmasking: { 37, 242, 218, 42 }, using pn_len=1
+DEC hp_sample: 16 a0 76 29 cc 7b 6d 4e 7c 6a 94 b5 4f c0 01 eb
+DEC hp_key: 93 33 df a8 76 19 ae 00 01 f1 06 40 ca c1 cd bb
+headerProtect: first byte 0x4F ^ (mask0 0x27 & hdr_mask 0x1F) = 0x48
+Packet number extraction: pn_bytes={ 37 }, pn_val_truncated=37, expected_pn=0
+Expanded packet number: 37 (from truncated 37 with expected 0)
+First packet: truncated=0025 (37) -> expanded=37
+DEC aead_key: ef dc fc 61 c0 64 e9 ba 05 25 5a c6 3f 02 49 50
+DEC aead_iv: 12 4d d1 89 ab e5 c8 3a 4b 50 44 10
+DEC aad: 48 cf 41 4d 7b 5a cc 41 46 25
+DEC nonce: 12 4d d1 89 ab e5 c8 3a 4b 50 44 35
+DEC pn_bytes: 25
+aeadDecrypt: suite=.aes_128_gcm, pn=37, ct_len=23, tag_len=16
+AEAD decrypt key: ef dc fc 61 c0 64 e9 ba 05 25 5a c6 3f 02 49 50
+AEAD decrypt iv: 12 4d d1 89 ab e5 c8 3a 4b 50 44 10
+AEAD decrypt nonce: 12 4d d1 89 ab e5 c8 3a 4b 50 44 35
+AEAD decrypt aad: 48 cf 41 4d 7b 5a cc 41 46 25
+AEAD decrypt ciphertext: f7 67 78 16 a0 76 29 cc 7b 6d 4e 7c 6a 94 b5 4f c0 01 eb ea 8f c9 af
+AEAD decrypt tag: c9 05 85 10 df 5b d0 01 3f f4 12 ed 0b 4c b0 9a
+Aes128Gcm.decrypt failed for pn=37
+AEAD decrypt failed: error.AuthenticationFailed (pn=37)
+HP key: 0B
+6A
+56
+93
+2A
+8A
+3C
+1C
+CC
+05
+71
+17
+E4
+12
+2D
+9D
+HP mask (first 5 bytes): AD
+AD
+56
+DF
+31
+is_long=false, hdr_mask=1F, header_first_before=4F
+header_first_after=42
+Decoded pn_len from header: 3
+pn_buf before unmasking: { 22, 247, 103, 120 }
+pn_buf after unmasking: { 187, 161, 184, 73 }, using pn_len=3
+DEC hp_sample: 16 a0 76 29 cc 7b 6d 4e 7c 6a 94 b5 4f c0 01 eb
+DEC hp_key: 0b 6a 56 93 2a 8a 3c 1c cc 05 71 17 e4 12 2d 9d
+headerProtect: first byte 0x4F ^ (mask0 0xAD & hdr_mask 0x1F) = 0x42
+Packet number extraction: pn_bytes={ 187, 161, 184 }, pn_val_truncated=12296632, expected_pn=0
+Expanded packet number: 12296632 (from truncated 12296632 with expected 0)
+First packet: truncated=bba1b8 (12296632) -> expanded=12296632
+DEC aead_key: 7f ff e9 c6 88 b4 6f d9 2e d2 76 58 62 10 3d a9
+DEC aead_iv: 8d 76 07 d5 cf a2 d3 01 27 8d ce 40
+DEC aad: 42 cf 41 4d 7b 5a cc 41 46 bb a1 b8
+DEC nonce: 8d 76 07 d5 cf a2 d3 01 27 36 6f f8
+DEC pn_bytes: bb a1 b8
+aeadDecrypt: suite=.aes_128_gcm, pn=12296632, ct_len=21, tag_len=16
+AEAD decrypt key: 7f ff e9 c6 88 b4 6f d9 2e d2 76 58 62 10 3d a9
+AEAD decrypt iv: 8d 76 07 d5 cf a2 d3 01 27 8d ce 40
+AEAD decrypt nonce: 8d 76 07 d5 cf a2 d3 01 27 36 6f f8
+AEAD decrypt aad: 42 cf 41 4d 7b 5a cc 41 46 bb a1 b8
+AEAD decrypt ciphertext: 78 16 a0 76 29 cc 7b 6d 4e 7c 6a 94 b5 4f c0 01 eb ea 8f c9 af
+AEAD decrypt tag: c9 05 85 10 df 5b d0 01 3f f4 12 ed 0b 4c b0 9a
+Aes128Gcm.decrypt failed for pn=12296632
+AEAD decrypt failed: error.AuthenticationFailed (pn=12296632)
+HP key: 30
+68
+70
+59
+2E
+8F
+47
+8F
+1D
+A0
+7B
+1F
+F0
+9A
+72
+0A
+HP mask (first 5 bytes): 05
+B6
+49
+28
+22
+is_long=false, hdr_mask=1F, header_first_before=4F
+header_first_after=4A
+Decoded pn_len from header: 3
+pn_buf before unmasking: { 22, 247, 103, 120 }
+pn_buf after unmasking: { 160, 190, 79, 90 }, using pn_len=3
+DEC hp_sample: 16 a0 76 29 cc 7b 6d 4e 7c 6a 94 b5 4f c0 01 eb
+DEC hp_key: 30 68 70 59 2e 8f 47 8f 1d a0 7b 1f f0 9a 72 0a
+headerProtect: first byte 0x4F ^ (mask0 0x05 & hdr_mask 0x1F) = 0x4A
+Packet number extraction: pn_bytes={ 160, 190, 79 }, pn_val_truncated=10534479, expected_pn=0
+Expanded packet number: 10534479 (from truncated 10534479 with expected 0)
+First packet: truncated=a0be4f (10534479) -> expanded=10534479
+DEC aead_key: 0c f2 8d 27 a6 34 d1 e3 1b c9 61 9d 82 90 ed 6c
+DEC aead_iv: 77 d2 0f 36 86 a2 a3 30 e3 bf 7d ae
+DEC aad: 4a cf 41 4d 7b 5a cc 41 46 a0 be 4f
+DEC nonce: 77 d2 0f 36 86 a2 a3 30 e3 1f c3 e1
+DEC pn_bytes: a0 be 4f
+aeadDecrypt: suite=.aes_128_gcm, pn=10534479, ct_len=21, tag_len=16
+AEAD decrypt key: 0c f2 8d 27 a6 34 d1 e3 1b c9 61 9d 82 90 ed 6c
+AEAD decrypt iv: 77 d2 0f 36 86 a2 a3 30 e3 bf 7d ae
+AEAD decrypt nonce: 77 d2 0f 36 86 a2 a3 30 e3 1f c3 e1
+AEAD decrypt aad: 4a cf 41 4d 7b 5a cc 41 46 a0 be 4f
+AEAD decrypt ciphertext: 78 16 a0 76 29 cc 7b 6d 4e 7c 6a 94 b5 4f c0 01 eb ea 8f c9 af
+AEAD decrypt tag: c9 05 85 10 df 5b d0 01 3f f4 12 ed 0b 4c b0 9a
+Aes128Gcm.decrypt failed for pn=10534479
+AEAD decrypt failed: error.AuthenticationFailed (pn=10534479)
+protectPacket: pn=4 pn_len=4 header_prefix_len=8 aad_len=13
+protectPacket: header_first=0x43
+protectPacket: AAD (first 20 bytes): 43 CF 41 4D 7B 5A CC 41 46 00 00 00 04 00 00 00 00 00 00 00
+protectPacket: Nonce: E3 16 22 46 6D D3 D7 13 A4 BF 8B 0D
+ENC aead_key: 53 f3 6f 7b da 93 d1 52 46 87 3c d1 2a e4 1a e6
+ENC aead_iv: e3 16 22 46 6d d3 d7 13 a4 bf 8b 09
+ENC aad: 43 cf 41 4d 7b 5a cc 41 46 00 00 00 04
+ENC nonce: e3 16 22 46 6d d3 d7 13 a4 bf 8b 0d
+ENC pn_bytes: 00 00 00 04
+protectPacket: ct_len=36, sample_offset=0 (pn_len=4, formula: 4-pn_len=0)
+protectPacket: ciphertext[0..32]:  F3 BE A2 5C 2C 92 79 9C 69 FD 82 14 4F 63 32 0A   8D 12 67 A6 E8 4A 2B 29 F4 7E D2 95 76 A6 67 AE protectPacket: HP sample from offset 0:  F3 BE A2 5C 2C 92 79 9C  69 FD 82 14 4F 63 32 0A ENC hp_sample: f3 be a2 5c 2c 92 79 9c 69 fd 82 14 4f 63 32 0a
+headerProtect: first byte 0x43 ^ (mask0 0x79 & hdr_mask 0x1F) = 0x5A
+PACKET #4: 49 bytes, first=0x5A
+=== processIncomingDatagram #4 called with 49 bytes ===
+First byte: 0x5A, is_long: false
+Processing short header packet - len=49, first_byte=5a
+Short header DCID bytes (after header): cf 41 4d 7b 5a cc 41 46 b8 f3 7f b5 f3 be a2 5c 2c 92 79 9c Looking for connection with peer_hash=3bfb4e8a87555d4e
+Checking conn with our_scid=
+cf
+41
+4d
+7b
+5a
+cc
+41
+46
+ (len=8), role=.Client
+Found matching connection!
+Checking conn with our_scid=
+cf
+41
+4d
+7b
+5a
+cc
+41
+46
+ (len=8), role=.Client
+Found matching connection!
+Found connection for short header packet - has_app_rx=true, has_app_tx=true
+HP key: 93
+33
+DF
+A8
+76
+19
+AE
+00
+01
+F1
+06
+40
+CA
+C1
+CD
+BB
+HP mask (first 5 bytes): ED
+B8
+C7
+04
+D2
+is_long=false, hdr_mask=1F, header_first_before=5A
+header_first_after=57
+Decoded pn_len from header: 4
+pn_buf before unmasking: { 184, 243, 127, 181 }
+pn_buf after unmasking: { 0, 52, 123, 103 }, using pn_len=4
+DEC hp_sample: f3 be a2 5c 2c 92 79 9c 69 fd 82 14 4f 63 32 0a
+DEC hp_key: 93 33 df a8 76 19 ae 00 01 f1 06 40 ca c1 cd bb
+headerProtect: first byte 0x5A ^ (mask0 0xED & hdr_mask 0x1F) = 0x57
+Packet number extraction: pn_bytes={ 0, 52, 123, 103 }, pn_val_truncated=3439463, expected_pn=0
+Expanded packet number: 3439463 (from truncated 3439463 with expected 0)
+First packet: truncated=347b67 (3439463) -> expanded=3439463
+DEC aead_key: ef dc fc 61 c0 64 e9 ba 05 25 5a c6 3f 02 49 50
+DEC aead_iv: 12 4d d1 89 ab e5 c8 3a 4b 50 44 10
+DEC aad: 57 cf 41 4d 7b 5a cc 41 46 00 34 7b 67
+DEC nonce: 12 4d d1 89 ab e5 c8 3a 4b 64 3f 77
+DEC pn_bytes: 00 34 7b 67
+aeadDecrypt: suite=.aes_128_gcm, pn=3439463, ct_len=20, tag_len=16
+AEAD decrypt key: ef dc fc 61 c0 64 e9 ba 05 25 5a c6 3f 02 49 50
+AEAD decrypt iv: 12 4d d1 89 ab e5 c8 3a 4b 50 44 10
+AEAD decrypt nonce: 12 4d d1 89 ab e5 c8 3a 4b 64 3f 77
+AEAD decrypt aad: 57 cf 41 4d 7b 5a cc 41 46 00 34 7b 67
+AEAD decrypt ciphertext: f3 be a2 5c 2c 92 79 9c 69 fd 82 14 4f 63 32 0a 8d 12 67 a6
+AEAD decrypt tag: e8 4a 2b 29 f4 7e d2 95 76 a6 67 ae ec e7 55 e0
+Aes128Gcm.decrypt failed for pn=3439463
+AEAD decrypt failed: error.AuthenticationFailed (pn=3439463)
+HP key: 0B
+6A
+56
+93
+2A
+8A
+3C
+1C
+CC
+05
+71
+17
+E4
+12
+2D
+9D
+HP mask (first 5 bytes): 5B
+93
+6F
+76
+00
+is_long=false, hdr_mask=1F, header_first_before=5A
+header_first_after=41
+Decoded pn_len from header: 2
+pn_buf before unmasking: { 184, 243, 127, 181 }
+pn_buf after unmasking: { 43, 156, 9, 181 }, using pn_len=2
+DEC hp_sample: f3 be a2 5c 2c 92 79 9c 69 fd 82 14 4f 63 32 0a
+DEC hp_key: 0b 6a 56 93 2a 8a 3c 1c cc 05 71 17 e4 12 2d 9d
+headerProtect: first byte 0x5A ^ (mask0 0x5B & hdr_mask 0x1F) = 0x41
+Packet number extraction: pn_bytes={ 43, 156 }, pn_val_truncated=11164, expected_pn=0
+Expanded packet number: 11164 (from truncated 11164 with expected 0)
+First packet: truncated=2b9c (11164) -> expanded=11164
+DEC aead_key: 7f ff e9 c6 88 b4 6f d9 2e d2 76 58 62 10 3d a9
+DEC aead_iv: 8d 76 07 d5 cf a2 d3 01 27 8d ce 40
+DEC aad: 41 cf 41 4d 7b 5a cc 41 46 2b 9c
+DEC nonce: 8d 76 07 d5 cf a2 d3 01 27 8d e5 dc
+DEC pn_bytes: 2b 9c
+aeadDecrypt: suite=.aes_128_gcm, pn=11164, ct_len=22, tag_len=16
+AEAD decrypt key: 7f ff e9 c6 88 b4 6f d9 2e d2 76 58 62 10 3d a9
+AEAD decrypt iv: 8d 76 07 d5 cf a2 d3 01 27 8d ce 40
+AEAD decrypt nonce: 8d 76 07 d5 cf a2 d3 01 27 8d e5 dc
+AEAD decrypt aad: 41 cf 41 4d 7b 5a cc 41 46 2b 9c
+AEAD decrypt ciphertext: 7f b5 f3 be a2 5c 2c 92 79 9c 69 fd 82 14 4f 63 32 0a 8d 12 67 a6
+AEAD decrypt tag: e8 4a 2b 29 f4 7e d2 95 76 a6 67 ae ec e7 55 e0
+Aes128Gcm.decrypt failed for pn=11164
+AEAD decrypt failed: error.AuthenticationFailed (pn=11164)
+HP key: 30
+68
+70
+59
+2E
+8F
+47
+8F
+1D
+A0
+7B
+1F
+F0
+9A
+72
+0A
+HP mask (first 5 bytes): 32
+1F
+A4
+8F
+D2
+is_long=false, hdr_mask=1F, header_first_before=5A
+header_first_after=48
+Decoded pn_len from header: 1
+pn_buf before unmasking: { 184, 243, 127, 181 }
+pn_buf after unmasking: { 167, 87, 240, 103 }, using pn_len=1
+DEC hp_sample: f3 be a2 5c 2c 92 79 9c 69 fd 82 14 4f 63 32 0a
+DEC hp_key: 30 68 70 59 2e 8f 47 8f 1d a0 7b 1f f0 9a 72 0a
+headerProtect: first byte 0x5A ^ (mask0 0x32 & hdr_mask 0x1F) = 0x48
+Packet number extraction: pn_bytes={ 167 }, pn_val_truncated=167, expected_pn=0
+Expanded packet number: 167 (from truncated 167 with expected 0)
+First packet: truncated=00a7 (167) -> expanded=167
+DEC aead_key: 0c f2 8d 27 a6 34 d1 e3 1b c9 61 9d 82 90 ed 6c
+DEC aead_iv: 77 d2 0f 36 86 a2 a3 30 e3 bf 7d ae
+DEC aad: 48 cf 41 4d 7b 5a cc 41 46 a7
+DEC nonce: 77 d2 0f 36 86 a2 a3 30 e3 bf 7d 09
+DEC pn_bytes: a7
+aeadDecrypt: suite=.aes_128_gcm, pn=167, ct_len=23, tag_len=16
+AEAD decrypt key: 0c f2 8d 27 a6 34 d1 e3 1b c9 61 9d 82 90 ed 6c
+AEAD decrypt iv: 77 d2 0f 36 86 a2 a3 30 e3 bf 7d ae
+AEAD decrypt nonce: 77 d2 0f 36 86 a2 a3 30 e3 bf 7d 09
+AEAD decrypt aad: 48 cf 41 4d 7b 5a cc 41 46 a7
+AEAD decrypt ciphertext: f3 7f b5 f3 be a2 5c 2c 92 79 9c 69 fd 82 14 4f 63 32 0a 8d 12 67 a6
+AEAD decrypt tag: e8 4a 2b 29 f4 7e d2 95 76 a6 67 ae ec e7 55 e0
+Aes128Gcm.decrypt failed for pn=167
+AEAD decrypt failed: error.AuthenticationFailed (pn=167)
+protectPacket: pn=5 pn_len=4 header_prefix_len=8 aad_len=13
+protectPacket: header_first=0x43
+protectPacket: AAD (first 20 bytes): 43 CF 41 4D 7B 5A CC 41 46 00 00 00 05 00 00 00 00 00 00 00
+protectPacket: Nonce: E3 16 22 46 6D D3 D7 13 A4 BF 8B 0C
+ENC aead_key: 53 f3 6f 7b da 93 d1 52 46 87 3c d1 2a e4 1a e6
+ENC aead_iv: e3 16 22 46 6d d3 d7 13 a4 bf 8b 09
+ENC aad: 43 cf 41 4d 7b 5a cc 41 46 00 00 00 05
+ENC nonce: e3 16 22 46 6d d3 d7 13 a4 bf 8b 0c
+ENC pn_bytes: 00 00 00 05
+protectPacket: ct_len=36, sample_offset=0 (pn_len=4, formula: 4-pn_len=0)
+protectPacket: ciphertext[0..32]:  17 D0 D3 E9 0C 64 61 70 3B 2C FB AF 0B 67 49 59   AC B7 48 92 E1 D3 DC 0F 41 81 D9 3C C4 6E DC 6A protectPacket: HP sample from offset 0:  17 D0 D3 E9 0C 64 61 70  3B 2C FB AF 0B 67 49 59 ENC hp_sample: 17 d0 d3 e9 0c 64 61 70 3b 2c fb af 0b 67 49 59
+headerProtect: first byte 0x43 ^ (mask0 0xB4 & hdr_mask 0x1F) = 0x57
+PACKET #5: 49 bytes, first=0x57
+=== processIncomingDatagram #5 called with 49 bytes ===
+First byte: 0x57, is_long: false
+Processing short header packet - len=49, first_byte=57
+Short header DCID bytes (after header): cf 41 4d 7b 5a cc 41 46 cd 73 79 81 17 d0 d3 e9 0c 64 61 70 Looking for connection with peer_hash=3bfb4e8a87555d4e
+Checking conn with our_scid=
+cf
+41
+4d
+7b
+5a
+cc
+41
+46
+ (len=8), role=.Client
+Found matching connection!
+Checking conn with our_scid=
+cf
+41
+4d
+7b
+5a
+cc
+41
+46
+ (len=8), role=.Client
+Found matching connection!
+Found connection for short header packet - has_app_rx=true, has_app_tx=true
+HP key: 93
+33
+DF
+A8
+76
+19
+AE
+00
+01
+F1
+06
+40
+CA
+C1
+CD
+BB
+HP mask (first 5 bytes): BA
+57
+48
+CA
+51
+is_long=false, hdr_mask=1F, header_first_before=57
+header_first_after=4D
+Decoded pn_len from header: 2
+pn_buf before unmasking: { 205, 115, 121, 129 }
+pn_buf after unmasking: { 154, 59, 179, 208 }, using pn_len=2
+DEC hp_sample: 17 d0 d3 e9 0c 64 61 70 3b 2c fb af 0b 67 49 59
+DEC hp_key: 93 33 df a8 76 19 ae 00 01 f1 06 40 ca c1 cd bb
+headerProtect: first byte 0x57 ^ (mask0 0xBA & hdr_mask 0x1F) = 0x4D
+Packet number extraction: pn_bytes={ 154, 59 }, pn_val_truncated=39483, expected_pn=0
+Expanded packet number: 39483 (from truncated 39483 with expected 0)
+First packet: truncated=9a3b (39483) -> expanded=39483
+DEC aead_key: ef dc fc 61 c0 64 e9 ba 05 25 5a c6 3f 02 49 50
+DEC aead_iv: 12 4d d1 89 ab e5 c8 3a 4b 50 44 10
+DEC aad: 4d cf 41 4d 7b 5a cc 41 46 9a 3b
+DEC nonce: 12 4d d1 89 ab e5 c8 3a 4b 50 de 2b
+DEC pn_bytes: 9a 3b
+aeadDecrypt: suite=.aes_128_gcm, pn=39483, ct_len=22, tag_len=16
+AEAD decrypt key: ef dc fc 61 c0 64 e9 ba 05 25 5a c6 3f 02 49 50
+AEAD decrypt iv: 12 4d d1 89 ab e5 c8 3a 4b 50 44 10
+AEAD decrypt nonce: 12 4d d1 89 ab e5 c8 3a 4b 50 de 2b
+AEAD decrypt aad: 4d cf 41 4d 7b 5a cc 41 46 9a 3b
+AEAD decrypt ciphertext: 79 81 17 d0 d3 e9 0c 64 61 70 3b 2c fb af 0b 67 49 59 ac b7 48 92
+AEAD decrypt tag: e1 d3 dc 0f 41 81 d9 3c c4 6e dc 6a 1c 45 39 ab
+Aes128Gcm.decrypt failed for pn=39483
+AEAD decrypt failed: error.AuthenticationFailed (pn=39483)
+HP key: 0B
+6A
+56
+93
+2A
+8A
+3C
+1C
+CC
+05
+71
+17
+E4
+12
+2D
+9D
+HP mask (first 5 bytes): 20
+FA
+4D
+84
+B3
+is_long=false, hdr_mask=1F, header_first_before=57
+header_first_after=57
+Decoded pn_len from header: 4
+pn_buf before unmasking: { 205, 115, 121, 129 }
+pn_buf after unmasking: { 55, 62, 253, 50 }, using pn_len=4
+DEC hp_sample: 17 d0 d3 e9 0c 64 61 70 3b 2c fb af 0b 67 49 59
+DEC hp_key: 0b 6a 56 93 2a 8a 3c 1c cc 05 71 17 e4 12 2d 9d
+headerProtect: first byte 0x57 ^ (mask0 0x20 & hdr_mask 0x1F) = 0x57
+Packet number extraction: pn_bytes={ 55, 62, 253, 50 }, pn_val_truncated=926874930, expected_pn=0
+Expanded packet number: 926874930 (from truncated 926874930 with expected 0)
+First packet: truncated=373efd32 (926874930) -> expanded=926874930
+DEC aead_key: 7f ff e9 c6 88 b4 6f d9 2e d2 76 58 62 10 3d a9
+DEC aead_iv: 8d 76 07 d5 cf a2 d3 01 27 8d ce 40
+DEC aad: 57 cf 41 4d 7b 5a cc 41 46 37 3e fd 32
+DEC nonce: 8d 76 07 d5 cf a2 d3 01 10 b3 33 72
+DEC pn_bytes: 37 3e fd 32
+aeadDecrypt: suite=.aes_128_gcm, pn=926874930, ct_len=20, tag_len=16
+AEAD decrypt key: 7f ff e9 c6 88 b4 6f d9 2e d2 76 58 62 10 3d a9
+AEAD decrypt iv: 8d 76 07 d5 cf a2 d3 01 27 8d ce 40
+AEAD decrypt nonce: 8d 76 07 d5 cf a2 d3 01 10 b3 33 72
+AEAD decrypt aad: 57 cf 41 4d 7b 5a cc 41 46 37 3e fd 32
+AEAD decrypt ciphertext: 17 d0 d3 e9 0c 64 61 70 3b 2c fb af 0b 67 49 59 ac b7 48 92
+AEAD decrypt tag: e1 d3 dc 0f 41 81 d9 3c c4 6e dc 6a 1c 45 39 ab
+Aes128Gcm.decrypt failed for pn=926874930
+AEAD decrypt failed: error.AuthenticationFailed (pn=926874930)
+HP key: 30
+68
+70
+59
+2E
+8F
+47
+8F
+1D
+A0
+7B
+1F
+F0
+9A
+72
+0A
+HP mask (first 5 bytes): 68
+E2
+4B
+C3
+3A
+is_long=false, hdr_mask=1F, header_first_before=57
+header_first_after=5F
+Decoded pn_len from header: 4
+pn_buf before unmasking: { 205, 115, 121, 129 }
+pn_buf after unmasking: { 47, 56, 186, 187 }, using pn_len=4
+DEC hp_sample: 17 d0 d3 e9 0c 64 61 70 3b 2c fb af 0b 67 49 59
+DEC hp_key: 30 68 70 59 2e 8f 47 8f 1d a0 7b 1f f0 9a 72 0a
+headerProtect: first byte 0x57 ^ (mask0 0x68 & hdr_mask 0x1F) = 0x5F
+Packet number extraction: pn_bytes={ 47, 56, 186, 187 }, pn_val_truncated=792246971, expected_pn=0
+Expanded packet number: 792246971 (from truncated 792246971 with expected 0)
+First packet: truncated=2f38babb (792246971) -> expanded=792246971
+DEC aead_key: 0c f2 8d 27 a6 34 d1 e3 1b c9 61 9d 82 90 ed 6c
+DEC aead_iv: 77 d2 0f 36 86 a2 a3 30 e3 bf 7d ae
+DEC aad: 5f cf 41 4d 7b 5a cc 41 46 2f 38 ba bb
+DEC nonce: 77 d2 0f 36 86 a2 a3 30 cc 87 c7 15
+DEC pn_bytes: 2f 38 ba bb
+aeadDecrypt: suite=.aes_128_gcm, pn=792246971, ct_len=20, tag_len=16
+AEAD decrypt key: 0c f2 8d 27 a6 34 d1 e3 1b c9 61 9d 82 90 ed 6c
+AEAD decrypt iv: 77 d2 0f 36 86 a2 a3 30 e3 bf 7d ae
+AEAD decrypt nonce: 77 d2 0f 36 86 a2 a3 30 cc 87 c7 15
+AEAD decrypt aad: 5f cf 41 4d 7b 5a cc 41 46 2f 38 ba bb
+AEAD decrypt ciphertext: 17 d0 d3 e9 0c 64 61 70 3b 2c fb af 0b 67 49 59 ac b7 48 92
+AEAD decrypt tag: e1 d3 dc 0f 41 81 d9 3c c4 6e dc 6a 1c 45 39 ab
+Aes128Gcm.decrypt failed for pn=792246971
+AEAD decrypt failed: error.AuthenticationFailed (pn=792246971)
+protectPacket: pn=6 pn_len=4 header_prefix_len=8 aad_len=13
+protectPacket: header_first=0x43
+protectPacket: AAD (first 20 bytes): 43 CF 41 4D 7B 5A CC 41 46 00 00 00 06 00 00 00 00 00 00 00
+protectPacket: Nonce: E3 16 22 46 6D D3 D7 13 A4 BF 8B 0F
+ENC aead_key: 53 f3 6f 7b da 93 d1 52 46 87 3c d1 2a e4 1a e6
+ENC aead_iv: e3 16 22 46 6d d3 d7 13 a4 bf 8b 09
+ENC aad: 43 cf 41 4d 7b 5a cc 41 46 00 00 00 06
+ENC nonce: e3 16 22 46 6d d3 d7 13 a4 bf 8b 0f
+ENC pn_bytes: 00 00 00 06
+protectPacket: ct_len=36, sample_offset=0 (pn_len=4, formula: 4-pn_len=0)
+protectPacket: ciphertext[0..32]:  1D 5A BA A9 F8 9E 8E 89 56 C3 6B AB 20 7D 27 B7   6E 5C 6E B9 5B 0D 5A 84 9F 06 66 19 8A 3A FD 3A protectPacket: HP sample from offset 0:  1D 5A BA A9 F8 9E 8E 89  56 C3 6B AB 20 7D 27 B7 ENC hp_sample: 1d 5a ba a9 f8 9e 8e 89 56 c3 6b ab 20 7d 27 b7
+headerProtect: first byte 0x43 ^ (mask0 0x5F & hdr_mask 0x1F) = 0x5C
+PACKET #6: 49 bytes, first=0x5C
+=== processIncomingDatagram #6 called with 49 bytes ===
+First byte: 0x5C, is_long: false
+Processing short header packet - len=49, first_byte=5c
+Short header DCID bytes (after header): cf 41 4d 7b 5a cc 41 46 ed f2 df 14 1d 5a ba a9 f8 9e 8e 89 Looking for connection with peer_hash=3bfb4e8a87555d4e
+Checking conn with our_scid=
+cf
+41
+4d
+7b
+5a
+cc
+41
+46
+ (len=8), role=.Client
+Found matching connection!
+Checking conn with our_scid=
+cf
+41
+4d
+7b
+5a
+cc
+41
+46
+ (len=8), role=.Client
+Found matching connection!
+Found connection for short header packet - has_app_rx=true, has_app_tx=true
+HP key: 93
+33
+DF
+A8
+76
+19
+AE
+00
+01
+F1
+06
+40
+CA
+C1
+CD
+BB
+HP mask (first 5 bytes): 77
+91
+DB
+DF
+F9
+is_long=false, hdr_mask=1F, header_first_before=5C
+header_first_after=4B
+Decoded pn_len from header: 4
+pn_buf before unmasking: { 237, 242, 223, 20 }
+pn_buf after unmasking: { 124, 41, 0, 237 }, using pn_len=4
+DEC hp_sample: 1d 5a ba a9 f8 9e 8e 89 56 c3 6b ab 20 7d 27 b7
+DEC hp_key: 93 33 df a8 76 19 ae 00 01 f1 06 40 ca c1 cd bb
+headerProtect: first byte 0x5C ^ (mask0 0x77 & hdr_mask 0x1F) = 0x4B
+Packet number extraction: pn_bytes={ 124, 41, 0, 237 }, pn_val_truncated=2083061997, expected_pn=0
+Expanded packet number: 2083061997 (from truncated 2083061997 with expected 0)
+First packet: truncated=7c2900ed (2083061997) -> expanded=2083061997
+DEC aead_key: ef dc fc 61 c0 64 e9 ba 05 25 5a c6 3f 02 49 50
+DEC aead_iv: 12 4d d1 89 ab e5 c8 3a 4b 50 44 10
+DEC aad: 4b cf 41 4d 7b 5a cc 41 46 7c 29 00 ed
+DEC nonce: 12 4d d1 89 ab e5 c8 3a 37 79 44 fd
+DEC pn_bytes: 7c 29 00 ed
+aeadDecrypt: suite=.aes_128_gcm, pn=2083061997, ct_len=20, tag_len=16
+AEAD decrypt key: ef dc fc 61 c0 64 e9 ba 05 25 5a c6 3f 02 49 50
+AEAD decrypt iv: 12 4d d1 89 ab e5 c8 3a 4b 50 44 10
+AEAD decrypt nonce: 12 4d d1 89 ab e5 c8 3a 37 79 44 fd
+AEAD decrypt aad: 4b cf 41 4d 7b 5a cc 41 46 7c 29 00 ed
+AEAD decrypt ciphertext: 1d 5a ba a9 f8 9e 8e 89 56 c3 6b ab 20 7d 27 b7 6e 5c 6e b9
+AEAD decrypt tag: 5b 0d 5a 84 9f 06 66 19 8a 3a fd 3a ee 0a f4 2a
+Aes128Gcm.decrypt failed for pn=2083061997
+AEAD decrypt failed: error.AuthenticationFailed (pn=2083061997)
+HP key: 0B
+6A
+56
+93
+2A
+8A
+3C
+1C
+CC
+05
+71
+17
+E4
+12
+2D
+9D
+HP mask (first 5 bytes): 63
+DC
+DD
+18
+FD
+is_long=false, hdr_mask=1F, header_first_before=5C
+header_first_after=5F
+Decoded pn_len from header: 4
+pn_buf before unmasking: { 237, 242, 223, 20 }
+pn_buf after unmasking: { 49, 47, 199, 233 }, using pn_len=4
+DEC hp_sample: 1d 5a ba a9 f8 9e 8e 89 56 c3 6b ab 20 7d 27 b7
+DEC hp_key: 0b 6a 56 93 2a 8a 3c 1c cc 05 71 17 e4 12 2d 9d
+headerProtect: first byte 0x5C ^ (mask0 0x63 & hdr_mask 0x1F) = 0x5F
+Packet number extraction: pn_bytes={ 49, 47, 199, 233 }, pn_val_truncated=825214953, expected_pn=0
+Expanded packet number: 825214953 (from truncated 825214953 with expected 0)
+First packet: truncated=312fc7e9 (825214953) -> expanded=825214953
+DEC aead_key: 7f ff e9 c6 88 b4 6f d9 2e d2 76 58 62 10 3d a9
+DEC aead_iv: 8d 76 07 d5 cf a2 d3 01 27 8d ce 40
+DEC aad: 5f cf 41 4d 7b 5a cc 41 46 31 2f c7 e9
+DEC nonce: 8d 76 07 d5 cf a2 d3 01 16 a2 09 a9
+DEC pn_bytes: 31 2f c7 e9
+aeadDecrypt: suite=.aes_128_gcm, pn=825214953, ct_len=20, tag_len=16
+AEAD decrypt key: 7f ff e9 c6 88 b4 6f d9 2e d2 76 58 62 10 3d a9
+AEAD decrypt iv: 8d 76 07 d5 cf a2 d3 01 27 8d ce 40
+AEAD decrypt nonce: 8d 76 07 d5 cf a2 d3 01 16 a2 09 a9
+AEAD decrypt aad: 5f cf 41 4d 7b 5a cc 41 46 31 2f c7 e9
+AEAD decrypt ciphertext: 1d 5a ba a9 f8 9e 8e 89 56 c3 6b ab 20 7d 27 b7 6e 5c 6e b9
+AEAD decrypt tag: 5b 0d 5a 84 9f 06 66 19 8a 3a fd 3a ee 0a f4 2a
+Aes128Gcm.decrypt failed for pn=825214953
+AEAD decrypt failed: error.AuthenticationFailed (pn=825214953)
+HP key: 30
+68
+70
+59
+2E
+8F
+47
+8F
+1D
+A0
+7B
+1F
+F0
+9A
+72
+0A
+HP mask (first 5 bytes): 9D
+33
+05
+93
+6B
+is_long=false, hdr_mask=1F, header_first_before=5C
+header_first_after=41
+Decoded pn_len from header: 2
+pn_buf before unmasking: { 237, 242, 223, 20 }
+pn_buf after unmasking: { 222, 247, 76, 127 }, using pn_len=2
+DEC hp_sample: 1d 5a ba a9 f8 9e 8e 89 56 c3 6b ab 20 7d 27 b7
+DEC hp_key: 30 68 70 59 2e 8f 47 8f 1d a0 7b 1f f0 9a 72 0a
+headerProtect: first byte 0x5C ^ (mask0 0x9D & hdr_mask 0x1F) = 0x41
+Packet number extraction: pn_bytes={ 222, 247 }, pn_val_truncated=57079, expected_pn=0
+Expanded packet number: 57079 (from truncated 57079 with expected 0)
+First packet: truncated=def7 (57079) -> expanded=57079
+DEC aead_key: 0c f2 8d 27 a6 34 d1 e3 1b c9 61 9d 82 90 ed 6c
+DEC aead_iv: 77 d2 0f 36 86 a2 a3 30 e3 bf 7d ae
+DEC aad: 41 cf 41 4d 7b 5a cc 41 46 de f7
+DEC nonce: 77 d2 0f 36 86 a2 a3 30 e3 bf a3 59
+DEC pn_bytes: de f7
+aeadDecrypt: suite=.aes_128_gcm, pn=57079, ct_len=22, tag_len=16
+AEAD decrypt key: 0c f2 8d 27 a6 34 d1 e3 1b c9 61 9d 82 90 ed 6c
+AEAD decrypt iv: 77 d2 0f 36 86 a2 a3 30 e3 bf 7d ae
+AEAD decrypt nonce: 77 d2 0f 36 86 a2 a3 30 e3 bf a3 59
+AEAD decrypt aad: 41 cf 41 4d 7b 5a cc 41 46 de f7
+AEAD decrypt ciphertext: df 14 1d 5a ba a9 f8 9e 8e 89 56 c3 6b ab 20 7d 27 b7 6e 5c 6e b9
+AEAD decrypt tag: 5b 0d 5a 84 9f 06 66 19 8a 3a fd 3a ee 0a f4 2a
+Aes128Gcm.decrypt failed for pn=57079
+AEAD decrypt failed: error.AuthenticationFailed (pn=57079)
+test
++- run test
+   +- compile test Debug native 2 errors
+src/quic/tls/record.zig:6:25: error: root source file struct 'crypto' has no member named 'aes_gcm'
+const Aes128Gcm = crypto.aes_gcm.Aes128Gcm;
+                  ~~~~~~^~~~~~~~
+/nix/store/0lhqddd2i6dybgidm29i9zc4simd1rm3-zig-0.15.1/lib/zig/std/crypto.zig:1:1: note: struct declared here
+//! Cryptography.
+^~~~~~~~~~~~~~~~~
+referenced by:
+    record.AeadCipher.KeyMaterial: src/quic/tls/record.zig:201:18
+    KeyMaterial: src/quic/tls/record.zig:200:25
+    3 reference(s) hidden; use '-freference-trace=5' to see all references
+src/quic/tls/record.zig:440:12: error: root source file struct 'mem' has no member named 'copy'
+    std.mem.copy(u8, out, base_iv);
+    ~~~~~~~^~~~~
+/nix/store/0lhqddd2i6dybgidm29i9zc4simd1rm3-zig-0.15.1/lib/zig/std/mem.zig:1:1: note: struct declared here
+const std = @import("std.zig");
+^~~~~
+error: the following command failed with 2 compilation errors:
+/nix/store/0lhqddd2i6dybgidm29i9zc4simd1rm3-zig-0.15.1/bin/zig test -ODebug --dep tls_record -Mroot=tests/test_tls_record_layer.zig -Mtls_record=src/quic/tls/record.zig --cache-dir .zig-cache --global-cache-dir /home/benji/.cache/zig --name test --zig-lib-dir /nix/store/0lhqddd2i6dybgidm29i9zc4simd1rm3-zig-0.15.1/lib/zig/ --listen=-
+test
++- run test stderr
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:57167
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Client
+>>> POLL #1 called, timeout_ms=200
+Using backend: .epoll
+poll_epoll_backend called, timeout=20, epoll_fd=4
+>>> drainReadable #1 called on fd=3
+Calling recvfrom on socket fd=3, flags=0
+recvfrom returned WouldBlock
+Socket fd=3 is still valid
+Calling epoll_wait on fd=4 with timeout=20
+epoll_wait timed out (no events)
+>>> drainReadable #2 called on fd=3
+Calling recvfrom on socket fd=3, flags=0
+recvfrom returned WouldBlock
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:56121
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Client
+>>> POLL #2 called, timeout_ms=10
+Using backend: .epoll
+poll_epoll_backend called, timeout=10, epoll_fd=4
+>>> drainReadable #3 called on fd=3
+Calling recvfrom on socket fd=3, flags=0
+recvfrom returned WouldBlock
+Socket fd=3 is still valid
+Calling epoll_wait on fd=4 with timeout=10
+epoll_wait timed out (no events)
+>>> drainReadable #4 called on fd=3
+Calling recvfrom on socket fd=3, flags=0
+recvfrom returned WouldBlock
+>>> POLL #3 called, timeout_ms=300
+Using backend: .epoll
+poll_epoll_backend called, timeout=189, epoll_fd=4
+>>> drainReadable #5 called on fd=3
+Calling recvfrom on socket fd=3, flags=0
+recvfrom returned WouldBlock
+Socket fd=3 is still valid
+Calling epoll_wait on fd=4 with timeout=189
+epoll_wait timed out (no events)
+>>> drainReadable #6 called on fd=3
+Calling recvfrom on socket fd=3, flags=0
+recvfrom returned WouldBlock
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:47218
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Client
+DEBUG app: active=true timers=1 pto_count=0
+DEBUG app after expire: active=false timers=0 pto_count=1
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:53075
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Client
+DEBUG init: active=true timers=1 pn_tx=1 count=0
+Server: Sending Initial response with SCID=
+57
+58
+59
+5a
+ (len=4) to client DCID=
+41
+42
+43
+44
+ (len=4)
+protectPacket: pn=1 pn_len=2 header_prefix_len=17 aad_len=20
+protectPacket: header_first=0xC1
+protectPacket: AAD (first 20 bytes): C1 00 00 00 00 04 41 42 43 44 04 57 58 59 5A 00 40 13 00 01
+protectPacket: Nonce: C8 7E DF E1 86 79 E2 6C E3 97 39 DC
+ENC aead_key: ad da d5 c2 c2 3c ae d5 28 58 68 3d 55 7b 01 dc
+ENC aead_iv: c8 7e df e1 86 79 e2 6c e3 97 39 dd
+ENC aad: c1 00 00 00 00 04 41 42 43 44 04 57 58 59 5a 00 40 13 00 01
+ENC nonce: c8 7e df e1 86 79 e2 6c e3 97 39 dc
+ENC pn_bytes: 00 01
+server PTO: deriving Initial keys with odcid=
+31
+32
+33
+34
+35
+36
+37
+38
+ len=8
+protectPacket: pn=1 pn_len=4 header_prefix_len=17 aad_len=22
+protectPacket: header_first=0xC3
+protectPacket: AAD (first 20 bytes): C3 00 00 00 01 04 41 42 43 44 04 57 58 59 5A 00 40 15 00 00
+protectPacket: Nonce: C8 7E DF E1 86 79 E2 6C E3 97 39 DC
+ENC aead_key: ad da d5 c2 c2 3c ae d5 28 58 68 3d 55 7b 01 dc
+ENC aead_iv: c8 7e df e1 86 79 e2 6c e3 97 39 dd
+ENC aad: c3 00 00 00 01 04 41 42 43 44 04 57 58 59 5a 00 40 15 00 00 00 01
+ENC nonce: c8 7e df e1 86 79 e2 6c e3 97 39 dc
+ENC pn_bytes: 00 00 00 01
+protectPacket: ct_len=17, sample_offset=0 (pn_len=4, formula: 4-pn_len=0)
+protectPacket: ciphertext[0..17]:  FD 9B 67 BA D8 AE 52 10 EC 06 0A 99 59 48 BD 5E   8F protectPacket: HP sample from offset 0:  FD 9B 67 BA D8 AE 52 10  EC 06 0A 99 59 48 BD 5E ENC hp_sample: fd 9b 67 ba d8 ae 52 10 ec 06 0a 99 59 48 bd 5e
+headerProtect: first byte 0xC3 ^ (mask0 0xE6 & hdr_mask 0x0F) = 0xC5
+sendTo called with data.len=39
+sendto IPv4 127.0.0.1:4433, fd=3, data.len=39
+sendto successful: sent 39 bytes (of 39)
+DEBUG init after expire: active=false timers=0 pn_tx=1->2 count=0->1
+Endpoint init - binding to address family=2
+Created socket fd=3
+Binding socket to address...
+Socket bound successfully
+Socket bound to 127.0.0.1:41764
+Current socket flags: 0x2
+Setting socket flags to: 0x802
+Socket flags after setting: 0x802
+Has O_NONBLOCK: true
+Created epoll fd=4 and added socket fd=3
+Endpoint role determined as: .Client
+DEBUG hs: active=true timers=1 pn_tx=1 count=0
+encodeHandshakeProtected: CALLED with packet_number=1 version=0x00000000
+encodeHandshakeProtected: dcid.len=4, scid.len=4
+encodeHandshakeProtected: dcid bytes: 41
+42
+43
+44
+encodeHandshakeProtected: scid bytes: 57
+58
+59
+5A
+encodeHandshakeProtected: packet_number_len=2, pn_bits=1, first=0xE1
+DEBUG: Writing Handshake version bytes: 00 00 00 00 (version=0x00000000)
+encodeHandshakeProtected: payload_len=1, ct_len=17, pn_len=2, length_value=19
+encodeHandshakeProtected: PN 1 encoded as bytes [00 01]
+encodeHandshakeProtected: Using keys - key[0..4]=00000000, iv[0..4]=00000000
+protectPacket: pn=1 pn_len=2 header_prefix_len=16 aad_len=19
+protectPacket: header_first=0xE1
+protectPacket: AAD (first 20 bytes): E1 00 00 00 00 04 41 42 43 44 04 57 58 59 5A 40 13 00 01 00
+protectPacket: Nonce: 00 00 00 00 00 00 00 00 00 00 00 01
+ENC aead_key: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_iv: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aad: e1 00 00 00 00 04 41 42 43 44 04 57 58 59 5a 40 13 00 01
+ENC nonce: 00 00 00 00 00 00 00 00 00 00 00 01
+ENC pn_bytes: 00 01
+encodeHandshakeProtected: CALLED with packet_number=1 version=0x00000001
+encodeHandshakeProtected: dcid.len=4, scid.len=4
+encodeHandshakeProtected: dcid bytes: 41
+42
+43
+44
+encodeHandshakeProtected: scid bytes: 57
+58
+59
+5A
+encodeHandshakeProtected: packet_number_len=4, pn_bits=3, first=0xE3
+DEBUG: Writing Handshake version bytes: 00 00 00 01 (version=0x00000001)
+encodeHandshakeProtected: payload_len=1, ct_len=17, pn_len=4, length_value=21
+encodeHandshakeProtected: PN 1 encoded as bytes [00 00]
+encodeHandshakeProtected: Using keys - key[0..4]=00000000, iv[0..4]=00000000
+protectPacket: pn=1 pn_len=4 header_prefix_len=16 aad_len=21
+protectPacket: header_first=0xE3
+protectPacket: AAD (first 20 bytes): E3 00 00 00 01 04 41 42 43 44 04 57 58 59 5A 40 15 00 00 00
+protectPacket: Nonce: 00 00 00 00 00 00 00 00 00 00 00 01
+ENC aead_key: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aead_iv: 00 00 00 00 00 00 00 00 00 00 00 00
+ENC aad: e3 00 00 00 01 04 41 42 43 44 04 57 58 59 5a 40 15 00 00 00 01
+ENC nonce: 00 00 00 00 00 00 00 00 00 00 00 01
+ENC pn_bytes: 00 00 00 01
+protectPacket: ct_len=17, sample_offset=0 (pn_len=4, formula: 4-pn_len=0)
+protectPacket: ciphertext[0..17]:  6F EC D0 CD 1F 4B 5C 76 A2 6B 6F 74 3F 9B 81 14   F5 protectPacket: HP sample from offset 0:  6F EC D0 CD 1F 4B 5C 76  A2 6B 6F 74 3F 9B 81 14 ENC hp_sample: 6f ec d0 cd 1f 4b 5c 76 a2 6b 6f 74 3f 9b 81 14
+headerProtect: first byte 0xE3 ^ (mask0 0xAC & hdr_mask 0x0F) = 0xEF
+encodeHandshakeProtected: AFTER header protection - first byte changed from 0xE3 to 0xEF
+encodeHandshakeProtected: Final packet first 5 bytes: EF 00 00 00 01
+=== HANDSHAKE PACKET HEXDUMP (first 64 bytes) ===
+0000: EF 00 00 00 01 04 41 42 43 44 04 57 58 59 5A 40 0010: 15 77 A8 28 79 6F EC D0 CD 1F 4B 5C 76 A2 6B 6F 0020: 74 3F 9B 81 14 F5 === END HEXDUMP (total packet size: 38 bytes) ===
+encodeHandshakeProtected: SUCCESS - packet length verified: declared_in_header=21, actual_packet_len=21
+sendTo called with data.len=38
+sendto IPv4 127.0.0.1:4433, fd=3, data.len=38
+sendto successful: sent 38 bytes (of 38)
+DEBUG hs after expire: active=false timers=0 pn_tx=1->2 count=0->1
+
+Build Summary: 62/65 steps succeeded; 1 failed; 83/83 tests passed
+test transitive failure
++- run test transitive failure
+   +- compile test Debug native 2 errors
+
+error: the following build command failed with exit code 1:
+.zig-cache/o/1b5000cd6f26c18bd481ddd350637ad7/build /nix/store/0lhqddd2i6dybgidm29i9zc4simd1rm3-zig-0.15.1/bin/zig /nix/store/0lhqddd2i6dybgidm29i9zc4simd1rm3-zig-0.15.1/lib/zig /home/benji/src/spyder/quic .zig-cache /home/benji/.cache/zig --seed 0x9c0c2f9 -Z16c7d0501de4c76f test

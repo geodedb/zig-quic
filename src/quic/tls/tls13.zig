@@ -29,6 +29,291 @@ const x509 = @import("x509");
 const sig = @import("sig");
 const tls13_full = @import("tls13_full.zig");
 const logger = @import("quic_logger");
+const ArrayListUnmanaged = std.ArrayListUnmanaged;
+
+/// RFC 8446 §4 and §7 describe the handshake protocol and key schedule. `Config` captures
+/// the negotiable parameters required to drive a compliant TLS 1.3 exchange in the QUIC context.
+pub const Config = struct {
+    allocator: std.mem.Allocator,
+    role: Role,
+    supported_cipher_suites: []const tls13_full.CipherSuite = &.{tls13_full.CipherSuite.TLS_AES_128_GCM_SHA256},
+    supported_groups: []const tls13_full.NamedGroup = &.{tls13_full.NamedGroup.x25519},
+    supported_signature_schemes: []const tls13_full.SignatureScheme = &.{tls13_full.SignatureScheme.ed25519},
+    alpn_protocols: ?[]const []const u8 = null,
+    enable_early_data: bool = false,
+};
+
+/// Callback hooks notified during the handshake lifecycle (§4.1–§4.6) and post-handshake updates (§4.6).
+pub const Callbacks = struct {
+    /// Called when a new encryption secret becomes available during the handshake.
+    on_secret_available: ?fn (ctx: *Context, level: EncryptionLevel, secret: [H.digest_length]u8) anyerror!void = null,
+    /// Called when the TLS handshake completes successfully.
+    on_handshake_complete: ?fn (ctx: *Context) anyerror!void = null,
+    /// Called to fetch the certificate chain for local authentication.
+    fetch_certificate_chain: ?fn (ctx: *Context) anyerror![]const u8 = null,
+};
+
+/// Error type for TLS API operations.
+pub const ApiError = error{Unimplemented};
+
+/// Traffic direction relative to the current endpoint when installing secrets (RFC 8446 §7.1).
+pub const TrafficDirection = enum { send, recv };
+
+/// RFC 8446 §7.1–§7.5: individual traffic secret slot with epoch tracking for key updates.
+pub const SecretSlot = struct {
+    value: [H.digest_length]u8 = undefined,
+    valid: bool = false,
+    epoch: EncryptionLevel = .Initial,
+    generation: u32 = 0,
+
+    /// Clears the secret slot, resetting it to its initial state.
+    pub fn clear(self: *SecretSlot) void {
+        self.valid = false;
+        self.epoch = .Initial;
+        self.generation = 0;
+    }
+
+    /// Stores a new secret in the slot with the specified encryption level.
+    pub fn store(self: *SecretSlot, level: EncryptionLevel, secret: [H.digest_length]u8) void {
+        self.value = secret;
+        self.valid = true;
+        self.epoch = level;
+        self.generation += 1;
+    }
+
+    /// Returns a slice to the secret value if valid, otherwise null.
+    pub fn slice(self: *const SecretSlot) ?[]const u8 {
+        if (!self.valid) return null;
+        return self.value[0..];
+    }
+};
+
+/// Bidirectional secret pair (send/recv) for a single packet number space (RFC 9001 §4.1.4).
+pub const BidirSecrets = struct {
+    send: SecretSlot = .{},
+    recv: SecretSlot = .{},
+
+    /// Resets both send and receive secret slots to their initial state.
+    pub fn reset(self: *BidirSecrets) void {
+        self.send.clear();
+        self.recv.clear();
+    }
+
+    /// Returns the secret slot for the specified traffic direction.
+    pub fn slot(self: *BidirSecrets, dir: TrafficDirection) *SecretSlot {
+        return switch (dir) {
+            .send => &self.send,
+            .recv => &self.recv,
+        };
+    }
+};
+
+/// Unified traffic secret store for Initial/Handshake/Application keys (RFC 8446 §7.1, RFC 9001 §5).
+pub const SecretSchedule = struct {
+    initial: BidirSecrets = .{},
+    handshake: BidirSecrets = .{},
+    application: BidirSecrets = .{},
+    exporter_master: SecretSlot = .{},
+    resumption_master: SecretSlot = .{},
+
+    /// Creates a new secret schedule with all secrets in initial state.
+    pub fn init() SecretSchedule {
+        return .{};
+    }
+
+    /// Resets all encryption level secrets to their initial state.
+    pub fn reset(self: *SecretSchedule) void {
+        self.initial.reset();
+        self.handshake.reset();
+        self.application.reset();
+        self.exporter_master.clear();
+        self.resumption_master.clear();
+    }
+
+    /// Returns the bidirectional secrets for the specified encryption level.
+    pub fn pairForLevel(self: *SecretSchedule, level: EncryptionLevel) *BidirSecrets {
+        return switch (level) {
+            .Initial => &self.initial,
+            .Handshake => &self.handshake,
+            .Application => &self.application,
+        };
+    }
+
+    /// Returns the secret slot for the specified encryption level and traffic direction.
+    pub fn slot(self: *SecretSchedule, level: EncryptionLevel, dir: TrafficDirection) *SecretSlot {
+        return self.pairForLevel(level).slot(dir);
+    }
+};
+
+/// RFC 8446 §4.4.1: transcripts and cached hashes used across handshake flights.
+pub const TranscriptSet = struct {
+    handshake: Transcript,
+    client_hello_hash: ?[H.digest_length]u8 = null,
+    finished_hash: ?[H.digest_length]u8 = null,
+
+    /// Creates a new transcript set with empty transcripts.
+    pub fn init() TranscriptSet {
+        return .{ .handshake = Transcript.init(), .client_hello_hash = null, .finished_hash = null };
+    }
+
+    /// Resets all transcripts to their initial empty state.
+    pub fn reset(self: *TranscriptSet) void {
+        self.* = TranscriptSet.init();
+    }
+};
+
+/// High-level handshake lifecycle position for progress tracking (RFC 8446 §4).
+pub const HandshakePhase = enum {
+    initial,
+    negotiating,
+    keys_installed,
+    application_ready,
+    post_handshake,
+};
+
+const HandshakeFlags = struct {
+    peer_finished_verified: bool = false,
+    local_finished_sent: bool = false,
+    alert: ?u8 = null,
+
+    fn reset(self: *HandshakeFlags) void {
+        self.* = HandshakeFlags{};
+    }
+};
+
+const encryption_level_count = @typeInfo(EncryptionLevel).Enum.fields.len;
+
+/// RFC 9001 §4.1.4: per-encryption-level CRYPTO queues keeping inbound/outbound bytes.
+const CryptoBuffer = struct {
+    level: EncryptionLevel,
+    inbound: ArrayListUnmanaged(u8) = .{},
+    outbound: ArrayListUnmanaged(u8) = .{},
+
+    fn init(level: EncryptionLevel) CryptoBuffer {
+        return .{ .level = level };
+    }
+
+    fn clear(self: *CryptoBuffer) void {
+        self.inbound.clearRetainingCapacity();
+        self.outbound.clearRetainingCapacity();
+    }
+
+    fn deinit(self: *CryptoBuffer, alloc: std.mem.Allocator) void {
+        self.inbound.deinit(alloc);
+        self.outbound.deinit(alloc);
+    }
+};
+
+const CryptoStreams = struct {
+    buffers: [encryption_level_count]CryptoBuffer = initBuffers(),
+
+    fn initBuffers() [encryption_level_count]CryptoBuffer {
+        return .{
+            CryptoBuffer.init(.Initial),
+            CryptoBuffer.init(.Handshake),
+            CryptoBuffer.init(.Application),
+        };
+    }
+
+    fn reset(self: *CryptoStreams) void {
+        for (self.buffers) |*buf| buf.clear();
+    }
+
+    fn deinit(self: *CryptoStreams, alloc: std.mem.Allocator) void {
+        for (self.buffers) |*buf| buf.deinit(alloc);
+    }
+
+    fn buffer(self: *CryptoStreams, level: EncryptionLevel) *CryptoBuffer {
+        return &self.buffers[@intFromEnum(level)];
+    }
+};
+
+/// TLS 1.3 driver that will orchestrate QUIC CRYPTO data flow (RFC 8446 §4, RFC 9001 §4.1.4).
+pub const Context = struct {
+    config: Config,
+    callbacks: Callbacks,
+    allocator: std.mem.Allocator,
+    phase: HandshakePhase = .initial,
+    transcripts: TranscriptSet = TranscriptSet.init(),
+    secrets: SecretSchedule = SecretSchedule.init(),
+    streams: CryptoStreams = .{},
+    flags: HandshakeFlags = .{},
+
+    /// Initializes a new TLS 1.3 context with the specified configuration and callbacks.
+    pub fn init(config: Config, callbacks: Callbacks) Context {
+        return .{
+            .config = config,
+            .callbacks = callbacks,
+            .allocator = config.allocator,
+            .phase = .initial,
+            .transcripts = TranscriptSet.init(),
+            .secrets = SecretSchedule.init(),
+            .streams = .{},
+            .flags = .{},
+        };
+    }
+
+    /// Cleans up the context, freeing resources and resetting state.
+    pub fn deinit(self: *Context) void {
+        self.streams.deinit(self.allocator);
+        self.secrets.reset();
+        self.transcripts.reset();
+        self.flags.reset();
+        self.phase = .initial;
+    }
+
+    /// Consume inbound CRYPTO data at the specified encryption level. Placeholder until full handshake wiring lands.
+    pub fn processCrypto(self: *Context, level: EncryptionLevel, data: []const u8) !void {
+        var stream = self.streams.buffer(level);
+        try stream.inbound.appendSlice(self.allocator, data);
+        return ApiError.Unimplemented;
+    }
+
+    /// Produce outbound CRYPTO payload for the given encryption level when available.
+    pub fn pollCrypto(self: *Context, allocator: std.mem.Allocator, level: EncryptionLevel) ![]u8 {
+        var stream = self.streams.buffer(level);
+        if (stream.outbound.len == 0) return ApiError.Unimplemented;
+        const view = stream.outbound.items[0..stream.outbound.len];
+        const out = try allocator.dupe(u8, view);
+        stream.outbound.clearRetainingCapacity();
+        return out;
+    }
+
+    /// Whether Finished has been processed and application traffic keys are ready (§4.4.4, §7.1).
+    pub fn handshakeComplete(self: *Context) bool {
+        return self.flags.peer_finished_verified and self.flags.local_finished_sent;
+    }
+
+    /// Cache a freshly derived traffic secret and notify the embedder (RFC 8446 §7.1).
+    pub fn installTrafficSecret(self: *Context, level: EncryptionLevel, dir: TrafficDirection, secret: [H.digest_length]u8) !void {
+        var slot = self.secrets.slot(level, dir);
+        slot.store(level, secret);
+        if (self.callbacks.on_secret_available) |cb| {
+            try cb(self, level, secret);
+        }
+    }
+
+    /// Mark that our Finished flight has been transmitted (§4.4.4) and update phase state.
+    pub fn markLocalFinished(self: *Context) void {
+        self.flags.local_finished_sent = true;
+        self.bumpPhaseAfterFinished();
+    }
+
+    /// Mark that the peer Finished verified successfully (§4.4.4) and update phase state.
+    pub fn confirmPeerFinished(self: *Context) void {
+        self.flags.peer_finished_verified = true;
+        self.bumpPhaseAfterFinished();
+    }
+
+    fn bumpPhaseAfterFinished(self: *Context) void {
+        if (self.flags.peer_finished_verified and self.flags.local_finished_sent) {
+            self.phase = .application_ready;
+            if (self.callbacks.on_handshake_complete) |cb| {
+                cb(self) catch {};
+            }
+        }
+    }
+};
 
 /// Session ticket cache entry and store types used by the TLS 1.3 engine (minimal placeholder).
 // --- Session Ticket / PSK Cache Structures (minimal placeholder) ---
@@ -52,7 +337,7 @@ pub const TicketStore = struct {
     entries: [capacity]?TicketEntry = .{null} ** capacity,
     count: usize = 0,
 
-    /// Free any owned ticket identities and reset the store to empty.
+    /// Frees all stored ticket identities and clears the store.
     pub fn deinit(self: *TicketStore, alloc: std.mem.Allocator) void {
         var i: usize = 0;
         while (i < capacity) : (i += 1) {
@@ -70,7 +355,7 @@ pub const TicketStore = struct {
         return (self.count - 1) % capacity;
     }
 
-    /// Return a borrowed view of the most recently added ticket if present.
+    /// Returns the most recently added ticket entry, if any.
     pub fn peek(self: *TicketStore) ?TicketEntryView {
         const idx_opt = self.indexNewest();
         if (idx_opt) |idx| {
@@ -81,7 +366,7 @@ pub const TicketStore = struct {
         return null;
     }
 
-    /// Insert a ticket, evicting the oldest when capacity is exceeded.
+    /// Adds a new ticket to the store, evicting the oldest if at capacity.
     pub fn add(self: *TicketStore, alloc: std.mem.Allocator, identity: []const u8, secret: [H.digest_length]u8, lifetime: u32) !void {
         // If capacity full, evict oldest (which is at index (count % capacity) before increment)
         const slot = self.count % capacity;
