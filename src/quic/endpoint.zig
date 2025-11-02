@@ -732,7 +732,9 @@ pub const Endpoint = struct {
                         error.WouldBlock => {
                             // This is normal for non-blocking sockets
                             std.debug.print("recvfrom returned WouldBlock\n", .{});
-                            return;
+                            // Don't return immediately - this allows us to keep trying
+                            // after epoll_wait indicates data is available
+                            break; // Exit the while loop but don't return from function
                         },
                         error.ConnectionResetByPeer => {
                             std.debug.print("connection reset by peer\n", .{});
