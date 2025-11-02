@@ -1,4 +1,3 @@
-// MIT License
 // QUIC Initial packet AEAD and Header Protection helpers (RFC 9001/9369)
 const std = @import("std");
 const builtin = @import("builtin");
@@ -294,21 +293,21 @@ pub fn protectPacket(
     const aad = aad_stack[0..aad_len];
 
     // Debug logging for encryption
-    std.debug.print("protectPacket: pn={} pn_len={} header_prefix_len={} aad_len={}\n", .{packet_number, pn_bytes.len, header_prefix.len, aad_len});
+    std.debug.print("protectPacket: pn={} pn_len={} header_prefix_len={} aad_len={}\n", .{ packet_number, pn_bytes.len, header_prefix.len, aad_len });
     std.debug.print("protectPacket: header_first=0x{X:0>2}\n", .{header_first.*});
     std.debug.print("protectPacket: AAD (first 20 bytes): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{
-        aad[0], if(aad_len>1) aad[1] else 0, if(aad_len>2) aad[2] else 0, if(aad_len>3) aad[3] else 0,
-        if(aad_len>4) aad[4] else 0, if(aad_len>5) aad[5] else 0, if(aad_len>6) aad[6] else 0, if(aad_len>7) aad[7] else 0,
-        if(aad_len>8) aad[8] else 0, if(aad_len>9) aad[9] else 0, if(aad_len>10) aad[10] else 0, if(aad_len>11) aad[11] else 0,
-        if(aad_len>12) aad[12] else 0, if(aad_len>13) aad[13] else 0, if(aad_len>14) aad[14] else 0, if(aad_len>15) aad[15] else 0,
-        if(aad_len>16) aad[16] else 0, if(aad_len>17) aad[17] else 0, if(aad_len>18) aad[18] else 0, if(aad_len>19) aad[19] else 0,
+        aad[0],                           if (aad_len > 1) aad[1] else 0,   if (aad_len > 2) aad[2] else 0,   if (aad_len > 3) aad[3] else 0,
+        if (aad_len > 4) aad[4] else 0,   if (aad_len > 5) aad[5] else 0,   if (aad_len > 6) aad[6] else 0,   if (aad_len > 7) aad[7] else 0,
+        if (aad_len > 8) aad[8] else 0,   if (aad_len > 9) aad[9] else 0,   if (aad_len > 10) aad[10] else 0, if (aad_len > 11) aad[11] else 0,
+        if (aad_len > 12) aad[12] else 0, if (aad_len > 13) aad[13] else 0, if (aad_len > 14) aad[14] else 0, if (aad_len > 15) aad[15] else 0,
+        if (aad_len > 16) aad[16] else 0, if (aad_len > 17) aad[17] else 0, if (aad_len > 18) aad[18] else 0, if (aad_len > 19) aad[19] else 0,
     });
 
     // Compute and log nonce
     var nonce_dbg: [12]u8 = undefined;
     xorNonce(&nonce_dbg, aead_iv, packet_number);
     std.debug.print("protectPacket: Nonce: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{
-        nonce_dbg[0], nonce_dbg[1], nonce_dbg[2], nonce_dbg[3], nonce_dbg[4], nonce_dbg[5],
+        nonce_dbg[0], nonce_dbg[1], nonce_dbg[2], nonce_dbg[3], nonce_dbg[4],  nonce_dbg[5],
         nonce_dbg[6], nonce_dbg[7], nonce_dbg[8], nonce_dbg[9], nonce_dbg[10], nonce_dbg[11],
     });
 
@@ -340,7 +339,7 @@ pub fn protectPacket(
             @memcpy(sample16[0..], out_cipher[sample_offset .. sample_offset + 16]);
 
             // DIAGNOSTIC: Log ciphertext and sample extraction
-            std.debug.print("protectPacket: ct_len={}, sample_offset={} (pn_len={}, formula: 4-pn_len={})\n", .{out_cipher.len, sample_offset, pn_len, 4 - pn_len});
+            std.debug.print("protectPacket: ct_len={}, sample_offset={} (pn_len={}, formula: 4-pn_len={})\n", .{ out_cipher.len, sample_offset, pn_len, 4 - pn_len });
             const ct_dump = @min(32, out_cipher.len);
             std.debug.print("protectPacket: ciphertext[0..{}]:", .{ct_dump});
             for (out_cipher[0..ct_dump], 0..) |b, i| {
@@ -515,7 +514,7 @@ pub fn unprotectInitialAutoSample(
             if (sample_offset + 16 > ciphertext_and_tag.len) return error.AuthenticationFailed;
             @memcpy(sample16[0..], ciphertext_and_tag[sample_offset .. sample_offset + 16]);
 
-            std.debug.print("HP Sample extraction: pn_len={}, ct_len={}, sample_offset={}\n", .{pn_len, ciphertext_and_tag.len, sample_offset});
+            std.debug.print("HP Sample extraction: pn_len={}, ct_len={}, sample_offset={}\n", .{ pn_len, ciphertext_and_tag.len, sample_offset });
             std.debug.print("Sample bytes: ", .{});
             for (sample16) |b| {
                 std.debug.print("{X:0>2} ", .{b});
@@ -593,8 +592,8 @@ pub fn unprotectInitialAutoSample(
     const actual_ciphertext = ciphertext_and_tag[pn_len..];
 
     std.debug.print("AEAD decrypt parameters:", .{});
-    std.debug.print("  full_pn={}, truncated_pn={}, pn_len={}\n", .{full_pn, pn_trunc, pn_len});
-    std.debug.print("  AAD len={}, ciphertext len={}\n", .{aad.len, actual_ciphertext.len});
+    std.debug.print("  full_pn={}, truncated_pn={}, pn_len={}\n", .{ full_pn, pn_trunc, pn_len });
+    std.debug.print("  AAD len={}, ciphertext len={}\n", .{ aad.len, actual_ciphertext.len });
     std.debug.print("  AAD bytes: ", .{});
     for (aad) |b| std.debug.print("{X:0>2}\n", .{b});
     std.debug.print("", .{});
@@ -643,7 +642,7 @@ pub fn unmaskLongHeaderAndPn(
 
     const is_long = (header_first.* & 0x80) != 0;
     const hdr_mask: u8 = if (is_long) 0x0f else 0x1f;
-    std.debug.print("is_long={}, hdr_mask={X:0>2}, header_first_before={X:0>2}\n", .{is_long, hdr_mask, header_first.*});
+    std.debug.print("is_long={}, hdr_mask={X:0>2}, header_first_before={X:0>2}\n", .{ is_long, hdr_mask, header_first.* });
 
     header_first.* ^= (out_block[0] & hdr_mask);
     std.debug.print("header_first_after={X:0>2}\n", .{header_first.*});

@@ -407,7 +407,7 @@ Provide README with install/run/test commands (Linux/macOS and Windows) and a **
 ## Context Package (compact)
 
 **ASSUMPTIONS (final)**:
-A1) Python 3.11; A2) Linux/macOS/**Windows**; A3) Zig **0.15.x**; A4) Specs are plaintext `rfc<number>.txt` with `§` or `Section` anchors; A5) MIT license; A6) Max RSS 512 MiB; A7) Logs = JSON Lines; A8) No badges; A9) Use `git` if present; do not commit.
+A1) Python 3.11; A2) Linux/macOS/**Windows**; A3) Zig **0.15.x**; A4) Specs are plaintext `rfc<number>.txt` with `§` or `Section` anchors; A5) Commercial license; A6) Max RSS 512 MiB; A7) Logs = JSON Lines; A8) No badges; A9) Use `git` if present; do not commit.
 
 **Acceptance Tests**
 

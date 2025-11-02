@@ -1,4 +1,3 @@
-// MIT License
 // QUIC Recovery skeleton: RTT estimator, PTO computation, and helpers
 const std = @import("std");
 const frame = @import("quic_frame");

@@ -1,4 +1,3 @@
-// MIT License
 // tools/update_gap.zig — append summary to docs/GAP.md with timestamp
 const std = @import("std");
 

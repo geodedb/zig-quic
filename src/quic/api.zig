@@ -1,5 +1,5 @@
 //! Public QUIC API skeleton. Zig 0.15.1
-//! MIT License
+
 const std = @import("std");
 const ks = @import("quic_tls");
 const cfg = @import("config.zig");
@@ -185,13 +185,13 @@ pub fn closeConnectionSimple(conn: *QuicConnection) !void {
 /// Accept an incoming peer-initiated stream from the connection
 pub fn acceptStream(conn: *QuicConnection) !QuicStreamId {
     const c: *conn_mod.Connection = @ptrCast(@alignCast(conn));
-    
+
     // For backward compatibility with the server, check if stream 0 exists
     // This is a workaround since the client always opens stream 0
     if (c.getFirstStream()) |stream_id| {
         return stream_id;
     }
-    
+
     return c.acceptStream();
 }
 

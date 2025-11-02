@@ -1,4 +1,3 @@
-// MIT License
 // epoll-based event loop abstraction (Linux)
 const std = @import("std");
 const posix = std.posix;

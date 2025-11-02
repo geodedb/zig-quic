@@ -1,4 +1,3 @@
-// MIT License
 // Tests for minimal DPLPMTUD probe building and validation
 const std = @import("std");
 const api = @import("quic_api");

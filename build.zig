@@ -111,6 +111,8 @@ pub fn build(b: *std.Build) void {
     const cc_opt = b.option([]const u8, "cc", "Congestion control: newreno (default) or cubic");
 
     // Expose TLS/crypto/packet modules
+    const byteorder_mod = mkModule(b, "src/byteorder/byteorder.zig");
+
     const quic_tls_mod = mkModule(b, "src/quic/tls/key_schedule.zig");
     const quic_crypto_mod = mkModule(b, "src/quic/crypto_quic.zig");
     const quic_packet_mod = mkModule(b, "src/quic/packet.zig");
@@ -135,6 +137,7 @@ pub fn build(b: *std.Build) void {
 
     // Varint/frame
     const quic_varint_mod = mkModule(b, "src/quic/varint.zig");
+    quic_varint_mod.addImport("byteorder", byteorder_mod);
     const quic_frame_mod = mkModule(b, "src/quic/frame.zig");
     quic_frame_mod.addImport("quic_varint", quic_varint_mod);
     quic_packet_mod.addImport("quic_varint", quic_varint_mod);
@@ -163,6 +166,7 @@ pub fn build(b: *std.Build) void {
     quic_conn_mod.addImport("quic_tls", quic_tls_mod);
     quic_conn_mod.addImport("quic_recovery", quic_recovery_mod);
     quic_conn_mod.addImport("quic_logger", quic_logger_mod);
+    quic_conn_mod.addImport("byteorder", byteorder_mod);
     const quic_transport_params_mod = mkModule(b, "src/quic/transport_params.zig");
     quic_transport_params_mod.addImport("quic_varint", quic_varint_mod);
     // Make transport params available to connection and endpoint modules
@@ -184,6 +188,7 @@ pub fn build(b: *std.Build) void {
     quic_endpoint_mod.addImport("loop_backend.zig", loop_backend_mod);
     quic_endpoint_mod.addImport("quic_transport_params", quic_transport_params_mod);
     quic_endpoint_mod.addImport("quic_logger", quic_logger_mod);
+    quic_endpoint_mod.addImport("byteorder", byteorder_mod);
 
     // Public API module (reuse everywhere)
     const quic_api_mod = mkModule(b, "src/quic/api.zig");
@@ -359,6 +364,11 @@ pub fn build(b: *std.Build) void {
     }
 
     if (!legacy_tests) {
+        const test_byteorder = addTst(b, "tests/test_byteorder.zig", target, optimize);
+        test_byteorder.root_module.addImport("byteorder", byteorder_mod);
+        const run_test_byteorder = b.addRunArtifact(test_byteorder);
+        test_step.dependOn(&run_test_byteorder.step);
+
         const test_tls = addTst(b, "tests/test_tls_key_schedule.zig", target, optimize);
         test_tls.root_module.addImport("quic_tls", quic_tls_mod);
         const run_test_tls = b.addRunArtifact(test_tls);

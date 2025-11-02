@@ -1,4 +1,3 @@
-// MIT License
 // Expanded migration tests: varied rebind patterns, concurrent paths, and timeout/failure.
 const std = @import("std");
 const api = @import("quic_api");

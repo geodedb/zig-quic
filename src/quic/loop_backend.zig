@@ -1,4 +1,3 @@
-// MIT License
 // loop_backend.zig — platform loop selection utilities shared by api and endpoint
 const std = @import("std");
 const builtin = @import("builtin");

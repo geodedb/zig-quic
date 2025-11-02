@@ -1,4 +1,3 @@
-// MIT License
 // Tests NAT rebinding path-validation gating across repeated rebindings.
 const std = @import("std");
 const api = @import("quic_api");

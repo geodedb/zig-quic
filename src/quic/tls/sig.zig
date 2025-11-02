@@ -2,6 +2,7 @@ const std = @import("std");
 const asn1 = @import("asn1");
 
 // Use standard library crypto
+// https://ziglang.org/documentation/master/std/#std.crypto.sign.Ed25519
 const Ed25519 = std.crypto.sign.Ed25519;
 
 /// Supported TLS 1.3 signature algorithms used by this implementation.

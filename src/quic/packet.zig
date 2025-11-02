@@ -1,5 +1,5 @@
 //! QUIC packet encoding helpers (simplified). RFC 9000 long/short headers.
-//! MIT License
+
 const std = @import("std");
 const varint = @import("quic_varint");
 const ks = @import("quic_tls");
@@ -547,8 +547,8 @@ pub fn encodeHandshakeProtected(
     payload_plaintext: []const u8,
     keys: InitialKeys,
 ) ![]u8 {
-    std.debug.print("encodeHandshakeProtected: CALLED with packet_number={} version=0x{X:0>8}\n", .{packet_number, version});
-    std.debug.print("encodeHandshakeProtected: dcid.len={}, scid.len={}\n", .{dcid.len, scid.len});
+    std.debug.print("encodeHandshakeProtected: CALLED with packet_number={} version=0x{X:0>8}\n", .{ packet_number, version });
+    std.debug.print("encodeHandshakeProtected: dcid.len={}, scid.len={}\n", .{ dcid.len, scid.len });
     if (dcid.len > 0) {
         std.debug.print("encodeHandshakeProtected: dcid bytes: ", .{});
         for (dcid) |b| std.debug.print("{X:0>2}\n", .{b});
@@ -575,7 +575,7 @@ pub fn encodeHandshakeProtected(
     const w = buf.writer(alloc);
     try w.writeByte(first);
     var be_ver: [4]u8 = .{ @as(u8, @intCast(version >> 24)), @as(u8, @intCast((version >> 16) & 0xff)), @as(u8, @intCast((version >> 8) & 0xff)), @as(u8, @intCast(version & 0xff)) };
-    std.debug.print("DEBUG: Writing Handshake version bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} (version=0x{X:0>8})\n", .{be_ver[0], be_ver[1], be_ver[2], be_ver[3], version});
+    std.debug.print("DEBUG: Writing Handshake version bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} (version=0x{X:0>8})\n", .{ be_ver[0], be_ver[1], be_ver[2], be_ver[3], version });
     try w.writeAll(&be_ver);
     try w.writeByte(@as(u8, @intCast(dcid.len)));
     try w.writeAll(dcid);
@@ -604,7 +604,7 @@ pub fn encodeHandshakeProtected(
         @as(u8, @intCast(packet_number & 0xff)),
     };
     const pn_slice = pn_be_full[4 - packet_number_len .. 4];
-    std.debug.print("encodeHandshakeProtected: PN {} encoded as bytes [{X:0>2} {X:0>2}]\n", .{packet_number, pn_slice[0], if(pn_slice.len > 1) pn_slice[1] else 0});
+    std.debug.print("encodeHandshakeProtected: PN {} encoded as bytes [{X:0>2} {X:0>2}]\n", .{ packet_number, pn_slice[0], if (pn_slice.len > 1) pn_slice[1] else 0 });
     try w.writeAll(pn_slice);
 
     const out_cipher_idx = buf.items.len;
@@ -634,8 +634,8 @@ pub fn encodeHandshakeProtected(
 
     // CRITICAL: Verify that the actual encrypted length matches our precalculated length
     if (written != ct_len) {
-        std.debug.print("LENGTH MISMATCH BUG DETECTED: protectPacket wrote {} bytes, but we calculated ct_len={}\n", .{written, ct_len});
-        std.debug.print("  payload_plaintext.len={}, packet_number_len={}, expected_tag_len=16\n", .{payload_plaintext.len, packet_number_len});
+        std.debug.print("LENGTH MISMATCH BUG DETECTED: protectPacket wrote {} bytes, but we calculated ct_len={}\n", .{ written, ct_len });
+        std.debug.print("  payload_plaintext.len={}, packet_number_len={}, expected_tag_len=16\n", .{ payload_plaintext.len, packet_number_len });
         std.debug.print("  Declared length_value in header={} (pn_len + ct_len)\n", .{length_value});
         std.debug.print("  Actual packet will have length={} (pn_len + written)\n", .{@as(usize, packet_number_len) + written});
         std.debug.print("  This will cause a {} byte discrepancy!\n", .{@as(i64, @intCast(ct_len)) - @as(i64, @intCast(written))});
@@ -669,15 +669,13 @@ pub fn encodeHandshakeProtected(
     // FINAL VERIFICATION: Ensure packet length matches what we declared in the header
     const expected_total_len = (1 + header_prefix_len) + packet_number_len + written;
     if (buf.items.len != expected_total_len) {
-        std.debug.print("FINAL PACKET LENGTH MISMATCH: buf.len={}, expected={} (header={}, pn={}, payload={})\n", .{
-            buf.items.len, expected_total_len, 1 + header_prefix_len, packet_number_len, written
-        });
+        std.debug.print("FINAL PACKET LENGTH MISMATCH: buf.len={}, expected={} (header={}, pn={}, payload={})\n", .{ buf.items.len, expected_total_len, 1 + header_prefix_len, packet_number_len, written });
         // Strict length verification enabled
         return error.PacketLengthMismatch;
     }
 
     // Log successful packet construction with length verification
-    std.debug.print("encodeHandshakeProtected: SUCCESS - packet length verified: declared_in_header={}, actual_packet_len={}\n", .{length_value, buf.items.len - (1 + header_prefix_len)});
+    std.debug.print("encodeHandshakeProtected: SUCCESS - packet length verified: declared_in_header={}, actual_packet_len={}\n", .{ length_value, buf.items.len - (1 + header_prefix_len) });
 
     return buf.toOwnedSlice(alloc);
 }

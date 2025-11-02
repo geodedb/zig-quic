@@ -1,5 +1,5 @@
 //! Simple logging module for QUIC library with environment variable control
-//! MIT License
+
 const std = @import("std");
 const builtin = @import("builtin");
 

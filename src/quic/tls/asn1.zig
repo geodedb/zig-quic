@@ -1,6 +1,7 @@
-// MIT License
 // Minimal ASN.1 DER decoder utilities used by X.509 parsing.
 const std = @import("std");
+
+// TODO: This should be using https://ziglang.org/documentation/master/std/#std.crypto.codecs.asn1
 
 /// ASN.1 tag class categories for DER TLV headers.
 pub const TagClass = enum { universal, application, context, private };

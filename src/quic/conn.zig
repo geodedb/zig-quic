@@ -1,4 +1,3 @@
-// MIT License
 // Minimal QUIC connection handle and socket address utils
 const std = @import("std");
 const posix = std.posix;
@@ -10,6 +9,7 @@ const ks = @import("quic_tls");
 // Import transport parameters module (registered as quic_transport_params in build.zig)
 const tparams = @import("quic_transport_params");
 const logger = @import("quic_logger");
+const byteorder = @import("byteorder");
 
 /// Buffer for reassembling out-of-order CRYPTO frames
 const CryptoBuffer = struct {
@@ -168,7 +168,7 @@ pub const Role = enum { Client, Server };
 
 /// Portable socket address wrapper used by endpoint/connection.
 pub const SockAddr = struct {
-    storage: posix.sockaddr.storage = std.mem.zeroes(posix.sockaddr.storage),  // CRITICAL FIX: Zero-initialize to avoid undefined behavior
+    storage: posix.sockaddr.storage = std.mem.zeroes(posix.sockaddr.storage), // CRITICAL FIX: Zero-initialize to avoid undefined behavior
     len: u32 = 0,
 
     /// Initialize from a POSIX addrinfo entry.
@@ -205,8 +205,8 @@ pub const SockAddr = struct {
         s.storage = std.mem.zeroes(posix.sockaddr.storage);
         var sin: posix.sockaddr.in = .{
             .family = posix.AF.INET,
-            .port = std.mem.nativeToBig(u16, port_host),
-            .addr = std.mem.nativeToBig(u32, (@as(u32, a) << 24) | (@as(u32, b) << 16) | (@as(u32, c) << 8) | @as(u32, d)),
+            .port = byteorder.toEndian(u16, .big, port_host),
+            .addr = byteorder.toEndian(u32, .big, (@as(u32, a) << 24) | (@as(u32, b) << 16) | (@as(u32, c) << 8) | @as(u32, d)),
             .zero = .{0} ** 8,
         };
         s.len = @intCast(@sizeOf(posix.sockaddr.in));
@@ -218,7 +218,7 @@ pub const SockAddr = struct {
 /// Fixed-size Connection ID used in tests/internals.
 pub const Cid = struct {
     len: u8 = 0,
-    bytes: [20]u8 = [_]u8{0} ** 20,  // Initialize to zeros to avoid undefined behavior
+    bytes: [20]u8 = [_]u8{0} ** 20, // Initialize to zeros to avoid undefined behavior
 };
 
 /// Sender callback used by Endpoint to provide paced sending.
@@ -1015,7 +1015,7 @@ pub const Connection = struct {
             // Check if address bytes are 127.0.0.1
             if (self.peer.len >= 8) {
                 return addr_bytes[4] == 127 and addr_bytes[5] == 0 and
-                       addr_bytes[6] == 0 and addr_bytes[7] == 1;
+                    addr_bytes[6] == 0 and addr_bytes[7] == 1;
             }
         }
 
@@ -1154,7 +1154,7 @@ pub const Connection = struct {
                     std.debug.print("Server: About to queue EncryptedExtensions\n", .{});
                     const alpn = if (self.tls.alpn) |a| a else "hq-interop";
                     const local_tp = self.tls.local_tp orelse &[_]u8{};
-                    std.debug.print("Server: Using ALPN '{s}' and transport params len={}\n", .{alpn, local_tp.len});
+                    std.debug.print("Server: Using ALPN '{s}' and transport params len={}\n", .{ alpn, local_tp.len });
                     self.tls.queueEncryptedExtensions(alpn, local_tp) catch |err| {
                         std.debug.print("Server: Failed to queue EncryptedExtensions: {}\n", .{err});
                     };
@@ -1355,7 +1355,7 @@ pub const Connection = struct {
     /// Update peer Initial DCID/SCID (observed in Initial packet).
     /// Record peer's Initial DCID/SCID values observed to support VN/Retry logic.
     pub fn setPeerInitialCids(self: *Connection, dcid: []const u8, scid: []const u8) void {
-        std.debug.print("setPeerInitialCids: ENTER - dcid.len={}, scid.len={}\n", .{dcid.len, scid.len});
+        std.debug.print("setPeerInitialCids: ENTER - dcid.len={}, scid.len={}\n", .{ dcid.len, scid.len });
         self.peer_initial_dcid.len = @intCast(@min(dcid.len, self.peer_initial_dcid.bytes.len));
         if (self.peer_initial_dcid.len > 0) @memcpy(self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len], dcid[0..self.peer_initial_dcid.len]);
         // Capture original destination connection ID (ODCID) only once (first client Initial).
@@ -1366,27 +1366,27 @@ pub const Connection = struct {
         std.debug.print("setPeerInitialCids: Before setting peer_initial_scid, current len={}\n", .{self.peer_initial_scid.len});
         self.peer_initial_scid.len = @intCast(@min(scid.len, self.peer_initial_scid.bytes.len));
         if (self.peer_initial_scid.len > 0) @memcpy(self.peer_initial_scid.bytes[0..self.peer_initial_scid.len], scid[0..self.peer_initial_scid.len]);
-        std.debug.print("setPeerInitialCids: EXIT - peer_initial_dcid.len={}, peer_initial_scid.len={}\n", .{self.peer_initial_dcid.len, self.peer_initial_scid.len});
+        std.debug.print("setPeerInitialCids: EXIT - peer_initial_dcid.len={}, peer_initial_scid.len={}\n", .{ self.peer_initial_dcid.len, self.peer_initial_scid.len });
     }
 
     /// Ingest a STREAM frame payload into the RX buffer for the stream with reassembly.
     /// Ingest STREAM frame data (copy + reassembly); updates flow-control windows heuristically.
     pub fn pushStreamFrame(self: *Connection, stream_id: u64, offset: u64, data: []const u8, fin: bool) !void {
         if (self.stream_recv_aborted) return; // ignore further data after RESET_STREAM
-        
-        std.debug.print("DEBUG pushStreamFrame: stream_id={}, offset={}, len={}, fin={}, role={}\n", .{stream_id, offset, data.len, fin, self.role});
-        
+
+        std.debug.print("DEBUG pushStreamFrame: stream_id={}, offset={}, len={}, fin={}, role={}\n", .{ stream_id, offset, data.len, fin, self.role });
+
         // Check if this is a new peer-initiated stream
         const is_peer_initiated = self.isPeerInitiatedStream(stream_id);
-        std.debug.print("is_peer_initiated={}, stream_known={}\n", .{is_peer_initiated, self.isStreamKnown(stream_id)});
-        
+        std.debug.print("is_peer_initiated={}, stream_known={}\n", .{ is_peer_initiated, self.isStreamKnown(stream_id) });
+
         if (is_peer_initiated and !self.isStreamKnown(stream_id)) {
             // Add to incoming queue if not already there
             std.debug.print("Queueing new incoming stream {}\n", .{stream_id});
             try self.queueIncomingStream(stream_id);
             std.debug.print("Queue now has {} streams\n", .{self.incoming_stream_queue.items.len});
         }
-        
+
         const s = self.ensureStreamRx(stream_id);
         if (fin) {
             const end_off: u64 = offset + @as(u64, data.len);
@@ -1703,7 +1703,7 @@ pub const Connection = struct {
         const w = frames.writer(self.allocator.*);
         _ = (frame.Frame{ .stream = .{ .stream_id = id, .offset = cur_off, .fin = false, .data = data[0..to_send] } }).write(w) catch 0;
         const dcid = self.shortHeaderDcid();
-        std.debug.print("Server sending STREAM with DCID len={}, first_byte={x}\n", .{dcid.len, if (dcid.len > 0) dcid[0] else 0});
+        std.debug.print("Server sending STREAM with DCID len={}, first_byte={x}\n", .{ dcid.len, if (dcid.len > 0) dcid[0] else 0 });
         const pkt = try packet.encodeShortProtected(
             self.allocator.*,
             dcid,
@@ -1717,7 +1717,7 @@ pub const Connection = struct {
         std.debug.print("About to call send() with {} bytes\n", .{pkt.len});
         const bytes_sent = try self.send(pkt);
         std.debug.print("send() returned {} bytes\n", .{bytes_sent});
-        std.debug.print("STREAM frame packet sent - {} bytes (pkt.len={})\n", .{bytes_sent, pkt.len});
+        std.debug.print("STREAM frame packet sent - {} bytes (pkt.len={})\n", .{ bytes_sent, pkt.len });
         self.onShortHeaderPacketSent(pkt.len, true);
         self.computeAndMaybeArmPto(self);
         if (id == 0) {
@@ -2122,13 +2122,13 @@ pub const Connection = struct {
         defer frames.deinit(self.allocator.*);
         const w = frames.writer(self.allocator.*);
         _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
-        
+
         std.debug.print("Server: Sending Initial response with SCID=\n", .{});
         for (self.our_scid.bytes[0..self.our_scid.len]) |b| std.debug.print("{x:0>2}\n", .{b});
         std.debug.print(" (len={}) to client DCID=\n", .{self.our_scid.len});
         for (self.peer_initial_scid.bytes[0..self.peer_initial_scid.len]) |b| std.debug.print("{x:0>2}\n", .{b});
         std.debug.print(" (len={})\n", .{self.peer_initial_scid.len});
-        
+
         const out = packet.encodeInitialProtected(
             self.allocator.*,
             self.version,
@@ -2254,11 +2254,17 @@ pub const Connection = struct {
         std.debug.print("  For {s}:", .{if (self.role == .Server) "Server" else "Client"});
         std.debug.print("    rx_secret (for reading) = {s} secret[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
             if (self.role == .Server) "client" else "server",
-            rx_secret[0], rx_secret[1], rx_secret[2], rx_secret[3],
+            rx_secret[0],
+            rx_secret[1],
+            rx_secret[2],
+            rx_secret[3],
         });
         std.debug.print("    tx_secret (for writing) = {s} secret[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
             if (self.role == .Server) "server" else "client",
-            tx_secret[0], tx_secret[1], tx_secret[2], tx_secret[3],
+            tx_secret[0],
+            tx_secret[1],
+            tx_secret[2],
+            tx_secret[3],
         });
 
         const rx = tls13.deriveQuicHandshakeKeys(rx_secret, version_v2);
@@ -2267,8 +2273,14 @@ pub const Connection = struct {
         self.hs_tx_keys = .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp };
         std.debug.print("Handshake keys derived for {s} - tx_key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}, rx_key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
             if (self.role == .Server) "Server" else "Client",
-            tx.key[0], tx.key[1], tx.key[2], tx.key[3],
-            rx.key[0], rx.key[1], rx.key[2], rx.key[3],
+            tx.key[0],
+            tx.key[1],
+            tx.key[2],
+            tx.key[3],
+            rx.key[0],
+            rx.key[1],
+            rx.key[2],
+            rx.key[3],
         });
     }
 
@@ -2284,7 +2296,7 @@ pub const Connection = struct {
         // Seed traffic secrets for future updates
         self.app_rx_secret = rx_secret;
         self.app_tx_secret = tx_secret;
-        
+
         // Debug: log what connection IDs will be used
         if (self.role == .Server) {
             std.debug.print("Server: 1-RTT keys ready, our_scid=\n", .{});
@@ -2347,13 +2359,13 @@ pub const Connection = struct {
     /// to our_scid only before we have observed the peer Initial (no 1-RTT should be sent then).
     fn shortHeaderDcid(self: *Connection) []const u8 {
         const result = if (self.peer_initial_scid.len > 0) self.peer_initial_scid.bytes[0..self.peer_initial_scid.len] else self.our_scid.bytes[0..self.our_scid.len];
-        
+
         if (self.role == .Client) {
             std.debug.print("Client: Using DCID for 1-RTT packet: ", .{});
             for (result) |b| std.debug.print("{x:0>2}\n", .{b});
             std.debug.print(" (len={})\n", .{result.len});
         }
-        
+
         return result;
     }
 
@@ -2568,7 +2580,7 @@ pub const Connection = struct {
         self.streams_rx.put(id, sr) catch {};
         return self.streams_rx.getPtr(id).?;
     }
-    
+
     /// Check if a stream ID was initiated by the peer
     fn isPeerInitiatedStream(self: *const Connection, stream_id: u64) bool {
         // Stream ID format: [stream_num:62][dir:1][initiator:1]
@@ -2576,7 +2588,7 @@ pub const Connection = struct {
         const initiator_bit = stream_id & 0x1;
         const is_client_initiated = (initiator_bit == 0);
         const is_server_initiated = (initiator_bit == 1);
-        
+
         if (self.role == .Client) {
             // If we're the client, peer-initiated means server-initiated
             return is_server_initiated;
@@ -2585,34 +2597,34 @@ pub const Connection = struct {
             return is_client_initiated;
         }
     }
-    
+
     /// Check if we already know about this stream
     fn isStreamKnown(self: *const Connection, stream_id: u64) bool {
         // Check if it's in our RX map
         if (self.streams_rx.get(stream_id) != null) return true;
-        
+
         // Check if it's already in the incoming queue
         for (self.incoming_stream_queue.items) |id| {
             if (id == stream_id) return true;
         }
-        
+
         return false;
     }
-    
+
     /// Queue a new incoming stream for acceptance
     fn queueIncomingStream(self: *Connection, stream_id: u64) !void {
         // Check if already in queue
         for (self.incoming_stream_queue.items) |id| {
             if (id == stream_id) return;
         }
-        
+
         // Add to queue
         try self.incoming_stream_queue.append(self.allocator.*, stream_id);
-        
+
         // Update highest seen stream ID
         const dir_bit = (stream_id >> 1) & 0x1;
         const is_bidi = (dir_bit == 0);
-        
+
         if (is_bidi) {
             if (self.highest_peer_bidi_stream == null or stream_id > self.highest_peer_bidi_stream.?) {
                 self.highest_peer_bidi_stream = stream_id;
@@ -2623,11 +2635,11 @@ pub const Connection = struct {
             }
         }
     }
-    
+
     /// Accept an incoming peer-initiated stream (non-blocking)
     pub fn acceptStream(self: *Connection) !u64 {
         std.debug.print("DEBUG acceptStream: queue has {} streams\n", .{self.incoming_stream_queue.items.len});
-        
+
         if (self.incoming_stream_queue.items.len == 0) {
             // Also check if we have any streams in RX that are peer-initiated
             var it = self.streams_rx.iterator();
@@ -2641,14 +2653,14 @@ pub const Connection = struct {
             std.debug.print("Total peer-initiated streams in RX: {}\n", .{found_count});
             return error.WouldBlock;
         }
-        
+
         // Remove and return the first stream in the queue
         const stream_id = self.incoming_stream_queue.orderedRemove(0);
         std.debug.print("DEBUG acceptStream: returning stream_id={}\n", .{stream_id});
-        
+
         // Ensure we have RX state for it
         _ = self.ensureStreamRx(stream_id);
-        
+
         // Also ensure TX state for bidirectional streams
         const dir_bit = (stream_id >> 1) & 0x1;
         const is_bidi = (dir_bit == 0);
@@ -2657,15 +2669,15 @@ pub const Connection = struct {
                 _ = self.stream_txs.put(stream_id, .{}) catch {};
             }
         }
-        
+
         return stream_id;
     }
-    
+
     /// Check if any incoming streams are available
     pub fn hasIncomingStreams(self: *const Connection) bool {
         return self.incoming_stream_queue.items.len > 0;
     }
-    
+
     /// Get the first available stream from received data (for compatibility)
     pub fn getFirstStream(self: *Connection) ?u64 {
         // Check if we have any streams in RX map that are peer-initiated

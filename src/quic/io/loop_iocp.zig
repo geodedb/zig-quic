@@ -1,4 +1,3 @@
-// MIT License
 // IOCP-based event loop abstraction (Windows) — minimal stub for build
 const std = @import("std");
 

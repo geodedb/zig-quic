@@ -1,4 +1,3 @@
-// MIT License
 // QUIC frame codec (subset) used by tests and initial handshake
 const std = @import("std");
 const varint = @import("quic_varint");

@@ -1,4 +1,3 @@
-// MIT License
 // kqueue-based event loop abstraction (BSD/macOS)
 const std = @import("std");
 const builtin = @import("builtin");

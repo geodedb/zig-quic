@@ -1,4 +1,3 @@
-// MIT License
 // QUIC Transport Parameters encode/decode (subset) RFC 9000 §7.4
 const std = @import("std");
 const varint = @import("quic_varint");

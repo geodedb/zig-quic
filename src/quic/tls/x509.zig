@@ -1,4 +1,3 @@
-// MIT License
 // Minimal X.509 (DER) parser/validator for TLS 1.3 in this project.
 // Scope: parse TBSCertificate, read subject alt names, basic constraints,
 // key usage, extended key usage (serverAuth), and validity. Provide

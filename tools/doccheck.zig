@@ -1,4 +1,3 @@
-// MIT License
 // tools/doccheck.zig — ensure pub symbols in src/quic/* have doc comments.
 const std = @import("std");
 

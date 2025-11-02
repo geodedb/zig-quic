@@ -1,6 +1,6 @@
-// MIT License
 // Stateless Retry token encode/verify (minimal HMAC-based implementation)
 const std = @import("std");
+const byteorder = @import("byteorder");
 
 const H = std.crypto.hash.sha2.Sha256;
 
@@ -16,14 +16,11 @@ fn hash64(input: []const u8) u64 {
 }
 
 inline fn writeLe64(out: *[8]u8, v: u64) void {
-    const le = std.mem.nativeToLittle(u64, v);
-    @memcpy(out, std.mem.asBytes(&le));
+    out.* = std.mem.toBytes(byteorder.toEndian(u64, .little, v));
 }
 
 inline fn readLe64(in: *const [8]u8) u64 {
-    var tmp: u64 = undefined;
-    @memcpy(std.mem.asBytes(&tmp), in);
-    return std.mem.littleToNative(u64, tmp);
+    return byteorder.fromEndian(u64, .little, @as(u64, @bitCast(in.*)));
 }
 
 /// Layout: [8 bytes expiry_ms_le] || [8 bytes odcid_hash_le] || [16 bytes tag]

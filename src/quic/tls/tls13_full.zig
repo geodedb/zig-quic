@@ -1,3 +1,5 @@
+// https://ziglang.org/documentation/master/std/#std.crypto.tls
+
 // Full TLS 1.3 implementation for QUIC
 // This provides complete TLS 1.3 handshake support for interoperability with other implementations
 
@@ -117,7 +119,7 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
     pos += 2;
 
     // Random (32 bytes)
-    @memcpy(&ch.random, data[pos..pos + 32]);
+    @memcpy(&ch.random, data[pos .. pos + 32]);
     pos += 32;
 
     // Session ID
@@ -125,12 +127,12 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
     const sid_len = data[pos];
     pos += 1;
     if (pos + sid_len > data.len) return error.TooShort;
-    ch.session_id = data[pos..pos + sid_len];
+    ch.session_id = data[pos .. pos + sid_len];
     pos += sid_len;
 
     // Cipher suites
     if (pos + 2 > data.len) return error.TooShort;
-    const cs_len = readU16(data[pos..pos + 2]);
+    const cs_len = readU16(data[pos .. pos + 2]);
     pos += 2;
     if (pos + cs_len > data.len) return error.TooShort;
 
@@ -153,23 +155,23 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
     const comp_len = data[pos];
     pos += 1;
     if (pos + comp_len > data.len) return error.TooShort;
-    ch.compression_methods = data[pos..pos + comp_len];
+    ch.compression_methods = data[pos .. pos + comp_len];
     pos += comp_len;
 
     // Extensions
     if (pos + 2 > data.len) return error.TooShort;
-    const ext_len = readU16(data[pos..pos + 2]);
+    const ext_len = readU16(data[pos .. pos + 2]);
     pos += 2;
     if (pos + ext_len > data.len) return error.TooShort;
 
     const ext_end = pos + ext_len;
     while (pos + 4 <= ext_end) {
-        const ext_type = readU16(data[pos..pos + 2]);
-        const ext_data_len = readU16(data[pos + 2..pos + 4]);
+        const ext_type = readU16(data[pos .. pos + 2]);
+        const ext_data_len = readU16(data[pos + 2 .. pos + 4]);
         pos += 4;
 
         if (pos + ext_data_len > ext_end) return error.TooShort;
-        const ext_data = data[pos..pos + ext_data_len];
+        const ext_data = data[pos .. pos + ext_data_len];
 
         // Use intToEnum to safely handle unknown extension types without panicking
         const ext = std.meta.intToEnum(ExtensionType, ext_type) catch {
@@ -179,7 +181,7 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
         };
 
         switch (ext) {
-                .server_name => {
+            .server_name => {
                 // Parse SNI
                 if (ext_data.len >= 5) {
                     const list_len = readU16(ext_data[0..2]);
@@ -188,7 +190,7 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
                         if (name_type == 0) { // host_name
                             const name_len = readU16(ext_data[3..5]);
                             if (5 + name_len <= ext_data.len) {
-                                ch.server_name = ext_data[5..5 + name_len];
+                                ch.server_name = ext_data[5 .. 5 + name_len];
                             }
                         }
                     }
@@ -204,7 +206,7 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
 
                         var g_pos: usize = 2;
                         while (g_pos + 2 <= 2 + groups_len) : (g_pos += 2) {
-                            const group = readU16(ext_data[g_pos..g_pos + 2]);
+                            const group = readU16(ext_data[g_pos .. g_pos + 2]);
                             if (group == 0x001d) { // x25519
                                 try groups.append(allocator, .x25519);
                             }
@@ -226,7 +228,7 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
 
                         var a_pos: usize = 2;
                         while (a_pos + 2 <= 2 + algs_len) : (a_pos += 2) {
-                            const alg = readU16(ext_data[a_pos..a_pos + 2]);
+                            const alg = readU16(ext_data[a_pos .. a_pos + 2]);
                             // Add supported algorithms
                             if (alg >= 0x0401 and alg <= 0x080b) {
                                 try algs.append(allocator, @enumFromInt(alg));
@@ -250,8 +252,8 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
                     if (2 + shares_len <= ext_data.len) {
                         var ks_pos: usize = 2;
                         while (ks_pos + 4 <= 2 + shares_len) {
-                            const group = readU16(ext_data[ks_pos..ks_pos + 2]);
-                            const key_len = readU16(ext_data[ks_pos + 2..ks_pos + 4]);
+                            const group = readU16(ext_data[ks_pos .. ks_pos + 2]);
+                            const key_len = readU16(ext_data[ks_pos + 2 .. ks_pos + 4]);
                             ks_pos += 4;
 
                             if (ks_pos + key_len <= 2 + shares_len) {
@@ -259,7 +261,7 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
                                 if (group == 0x001d and key_len == 32) {
                                     ch.key_share = KeyShareEntry{
                                         .group = .x25519,
-                                        .key_exchange = ext_data[ks_pos..ks_pos + key_len],
+                                        .key_exchange = ext_data[ks_pos .. ks_pos + key_len],
                                     };
                                     break;
                                 }
@@ -285,7 +287,7 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
                             const proto_len = ext_data[a_pos];
                             a_pos += 1;
                             if (a_pos + proto_len <= ext_data.len) {
-                                try alpn_list.append(allocator, ext_data[a_pos..a_pos + proto_len]);
+                                try alpn_list.append(allocator, ext_data[a_pos .. a_pos + proto_len]);
                                 a_pos += proto_len;
                             } else {
                                 break;
@@ -566,9 +568,9 @@ pub fn computeCertificateVerifySignature(
     // Build the message to sign
     var msg: [64 + context_string.len + 1 + H.digest_length]u8 = undefined;
     @memset(msg[0..64], 0x20); // 64 spaces
-    @memcpy(msg[64..64 + context_string.len], context_string);
+    @memcpy(msg[64 .. 64 + context_string.len], context_string);
     msg[64 + context_string.len] = 0; // separator
-    @memcpy(msg[65 + context_string.len..], &transcript_hash);
+    @memcpy(msg[65 + context_string.len ..], &transcript_hash);
 
     // For now, we only support Ed25519
     if (signature_scheme != .ed25519) {

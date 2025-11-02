@@ -1,4 +1,3 @@
-// MIT License
 // quic-varint: encode/decode QUIC varints from CLI
 // Usage:
 //   quic-varint encode <u64>

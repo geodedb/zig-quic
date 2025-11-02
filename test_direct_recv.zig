@@ -1,5 +1,6 @@
 const std = @import("std");
 const posix = std.posix;
+const byteorder = @import("byteorder");
 
 pub fn main() !void {
     // Create UDP socket
@@ -28,9 +29,6 @@ pub fn main() !void {
     if (peer_storage.family == posix.AF.INET) {
         const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&peer_storage));
         const addr_bytes = @as([4]u8, @bitCast(sin.addr));
-        std.debug.print("From {}.{}.{}.{}:{}\n", .{
-            addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3],
-            std.mem.bigToNative(u16, sin.port)
-        });
+        std.debug.print("From {}.{}.{}.{}:{}\n", .{ addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3], byteorder.fromEndian(u16, .big, sin.port) });
     }
 }
