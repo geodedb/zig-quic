@@ -95,7 +95,7 @@ pub const Endpoint = struct {
         var ep_addr = try resolveAny(bind_addr, .udp);
         
         // Determine address family from resolved address
-        const sa: *const posix.sockaddr = @ptrCast(&ep_addr.storage);
+        const sa: *const posix.sockaddr = @ptrCast(@alignCast(&ep_addr.storage));
         const family = sa.family;
         
         std.debug.print("Endpoint init - binding to address family={any}\n", .{family});
@@ -124,15 +124,27 @@ pub const Endpoint = struct {
             _ = posix.setsockopt(fd, posix.IPPROTO.IPV6, IPV6_RECVERR, std.mem.asBytes(&enable)) catch {};
         }
         // Note: do not rely on O.NONBLOCK here; use MSG.DONTWAIT on Linux in recv loop for portability
-        const sa_ptr: *const posix.sockaddr = @ptrCast(&ep_addr.storage);
+        const sa_ptr: *const posix.sockaddr = @ptrCast(@alignCast(&ep_addr.storage));
         std.debug.print("Binding socket to address...\n", .{});
-        try posix.bind(fd, sa_ptr, ep_addr.len);
+        const bind_len: posix.socklen_t = switch (family) {
+            posix.AF.INET => @intCast(@sizeOf(posix.sockaddr.in)),
+            posix.AF.INET6 => @intCast(@sizeOf(posix.sockaddr.in6)),
+            else => return error.AddressFamilyNotSupported,
+        };
+        try posix.bind(fd, sa_ptr, bind_len);
         std.debug.print("Socket bound successfully\n", .{});
 
         // Verify the actual bound address (in case port was 0)
         var actual_addr = conn_mod.SockAddr{};
         actual_addr.len = @intCast(@sizeOf(posix.sockaddr.storage));
         try posix.getsockname(fd, @ptrCast(&actual_addr.storage), &actual_addr.len);
+        // Debug: print actual bound IPv4 address and port
+        if (actual_addr.storage.family == posix.AF.INET) {
+            const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&actual_addr.storage));
+            const addr_bytes = @as([4]u8, @bitCast(sin.addr));
+            const port = std.mem.bigToNative(u16, sin.port);
+            std.debug.print("Socket bound to {}.{}.{}.{}:{}\n", .{addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3], port});
+        }
 
         // Set socket to non-blocking mode
         if (builtin.target.os.tag == .windows) {
@@ -695,7 +707,7 @@ pub const Endpoint = struct {
                 }
             } else {
                 std.debug.print("Calling recvfrom on socket fd={}, flags={}\n", .{self.sock_fd, flags});
-                const n_or_err = posix.recvfrom(self.sock_fd, buf[0..], flags, @ptrCast(&peer.storage), &peer.len);
+                const n_or_err = posix.recvfrom(self.sock_fd, buf[0..], flags, @ptrCast(@alignCast(&peer.storage)), &peer.len);
                 if (n_or_err) |n| {
                     std.debug.print(">>> recvfrom got {} bytes (read #{} in this drain)!\n", .{n, read_count + 1});
                     // Debug: Log all received packets with source address
