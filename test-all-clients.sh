@@ -41,7 +41,7 @@ run_test() {
 
     # Start server
     echo "Starting server..."
-    $SERVER_BIN --bind 127.0.0.1:4433 --insecure > "$log_file" 2>&1 &
+    $SERVER_BIN --bind 127.0.0.1:4433 --cert certs/cert.pem --key certs/key.pem --insecure > "$log_file" 2>&1 &
     SERVER_PID=$!
     echo "Server PID: $SERVER_PID"
     sleep 2

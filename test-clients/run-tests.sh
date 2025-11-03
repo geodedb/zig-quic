@@ -16,8 +16,8 @@ NC='\033[0m' # No Color
 SERVER_HOST="127.0.0.1"
 SERVER_PORT="4433"
 SERVER_BINARY="/home/benji/src/spyder/quic/zig-out/bin/quic-server"
-CERT_PATH="/home/benji/src/spyder/quic/examples/interop/certs/cert.pem"
-KEY_PATH="/home/benji/src/spyder/quic/examples/interop/certs/key.pem"
+CERT_PATH="/home/benji/src/spyder/quic/certs/cert.pem"
+KEY_PATH="/home/benji/src/spyder/quic/certs/key.pem"
 
 # Test result tracking
 TESTS_RUN=0

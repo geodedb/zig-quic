@@ -22,7 +22,7 @@ sleep 1
 
 # Start server in background with debug output
 echo "[1/4] Starting Zig QUIC server on port $PORT..."
-"$SERVER_BIN" 2>&1 | tee "$SERVER_LOG" &
+"$SERVER_BIN" --cert certs/cert.pem --key certs/key.pem 2>&1 | tee "$SERVER_LOG" &
 SERVER_PID=$!
 echo "       Server PID: $SERVER_PID"
 sleep 2
