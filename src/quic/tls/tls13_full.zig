@@ -428,10 +428,19 @@ pub fn buildServerHello(
     var exts = try std.ArrayList(u8).initCapacity(allocator, 0);
     defer exts.deinit(allocator);
 
-    // supported_versions (mandatory for TLS 1.3)
-    try writeExtension(allocator, &exts, .supported_versions, &[_]u8{ 0x03, 0x04 }); // TLS 1.3
+    // CRITICAL: Extension order must match BoringSSL/Quiche for interoperability.
+    // BoringSSL order (ssl/tls13_server.cc:938-941):
+    //   1. pre_shared_key (if resuming)
+    //   2. pake (if using PAKE)
+    //   3. key_share
+    //   4. supported_versions
+    // We only support key_share and supported_versions, so our order is:
+    //   1. key_share
+    //   2. supported_versions
+    // This is CRITICAL because transcript hash = SHA256(ClientHello || ServerHello)
+    // and extension order affects the byte representation.
 
-    // key_share (mandatory for ECDHE)
+    // key_share (mandatory for ECDHE) - MUST BE FIRST (after PSK/PAKE if present)
     var ks_data = try std.ArrayList(u8).initCapacity(allocator, 0);
     defer ks_data.deinit(allocator);
     const group_value = @intFromEnum(key_share_group);
@@ -446,13 +455,14 @@ pub fn buildServerHello(
     try ks_data.appendSlice(allocator, key_share_data);
     try writeExtension(allocator, &exts, .key_share, ks_data.items);
 
-    // QUIC transport parameters (mandatory for QUIC connections per RFC 9001)
-    if (quic_params) |params| {
-        std.debug.print("buildServerHello: Adding QUIC transport parameters extension, {} bytes\n", .{params.len});
-        try writeExtension(allocator, &exts, .quic_transport_parameters, params);
-    } else {
-        std.debug.print("buildServerHello: WARNING - No QUIC transport parameters provided\n", .{});
-    }
+    // supported_versions (mandatory for TLS 1.3) - MUST BE AFTER key_share
+    try writeExtension(allocator, &exts, .supported_versions, &[_]u8{ 0x03, 0x04 }); // TLS 1.3
+
+    // NOTE: RFC 9001 §8.2 mandates that quic_transport_parameters goes in
+    // EncryptedExtensions, NOT ServerHello. The quic_params parameter is
+    // ignored here (and should always be null). Transport parameters are
+    // added in buildEncryptedExtensions() instead.
+    _ = quic_params; // Explicitly ignore to make it clear this is intentional
 
     // Write extensions length
     try msg.appendSlice(allocator, &[_]u8{

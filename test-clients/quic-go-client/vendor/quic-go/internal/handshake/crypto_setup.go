@@ -458,6 +458,7 @@ func (h *cryptoSetup) setReadKey(el tls.QUICEncryptionLevel, suiteID uint16, tra
 			h.logger.Debugf("Installed 0-RTT Read keys (using %s)", tls.CipherSuiteName(suite.ID))
 		}
 	case tls.QUICEncryptionLevelHandshake:
+		fmt.Printf("[TLS_DEBUG] setReadKey(Handshake): trafficSecret=%x\n", trafficSecret)
 		h.handshakeOpener = newLongHeaderOpener(
 			createAEAD(suite, trafficSecret, h.version),
 			newHeaderProtector(suite, trafficSecret, true, h.version),
@@ -507,6 +508,7 @@ func (h *cryptoSetup) setWriteKey(el tls.QUICEncryptionLevel, suiteID uint16, tr
 		// don't set used0RTT here. 0-RTT might still get rejected.
 		return
 	case tls.QUICEncryptionLevelHandshake:
+		fmt.Printf("[TLS_DEBUG] setWriteKey(Handshake): trafficSecret=%x\n", trafficSecret)
 		h.handshakeSealer = newLongHeaderSealer(
 			createAEAD(suite, trafficSecret, h.version),
 			newHeaderProtector(suite, trafficSecret, true, h.version),

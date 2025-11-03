@@ -1,6 +1,7 @@
 package handshake
 
 import (
+	"fmt"
 	"encoding/binary"
 
 	"github.com/quic-go/quic-go/internal/protocol"
@@ -15,6 +16,7 @@ func createAEAD(suite *cipherSuite, trafficSecret []byte, v protocol.Version) *x
 	}
 	key := hkdfExpandLabel(suite.Hash, trafficSecret, []byte{}, keyLabel, suite.KeyLen)
 	iv := hkdfExpandLabel(suite.Hash, trafficSecret, []byte{}, ivLabel, suite.IVLen())
+	fmt.Printf("[TLS_DEBUG] createAEAD: suite=%x, key=%x, iv=%x\n", suite.ID, key, iv)
 	return suite.AEAD(key, iv)
 }
 

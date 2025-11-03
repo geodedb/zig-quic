@@ -753,7 +753,14 @@ pub const Context = struct {
         switch (parsed.typ) {
             .client_hello => {
                 if (self.config.role != .Server) return;
-                self.transcripts.client_hello_hash = self.transcripts.handshake.finalize();
+
+                // Debug: Print ClientHello transcript hash
+                const ch_hash = self.transcripts.handshake.finalize();
+                std.debug.print("[TRANSCRIPT_DEBUG] ClientHello hash: ", .{});
+                for (ch_hash) |b| std.debug.print("{X:0>2}", .{b});
+                std.debug.print("\n", .{});
+
+                self.transcripts.client_hello_hash = ch_hash;
                 try self.driveServerHandshakeFlight();
             },
             .server_hello => {
@@ -926,6 +933,12 @@ pub const Context = struct {
 
         const sh_msg = try encodeHandshake(self.allocator, .server_hello, sh_body);
         defer self.allocator.free(sh_msg);
+
+        // Debug: Print ServerHello message hex dump
+        std.debug.print("[TRANSCRIPT_DEBUG] ServerHello message ({} bytes): ", .{sh_msg.len});
+        for (sh_msg) |b| std.debug.print("{X:0>2}", .{b});
+        std.debug.print("\n", .{});
+
         try self.appendOutbound(.Initial, sh_msg, true);
 
         const transcript_after_sh = self.transcripts.handshake.finalize();
@@ -1305,6 +1318,20 @@ pub const Transcript = struct {
                 if (msg.len > 3) msg[3] else 0, if (msg.len > 4) msg[4] else 0, if (msg.len > 5) msg[5] else 0,
                 if (msg.len > 6) msg[6] else 0, if (msg.len > 7) msg[7] else 0,
             });
+
+            // Print full message bytes for ClientHello and ServerHello
+            if (msg_type == 0x01 or msg_type == 0x02) {
+                std.debug.print("[TRANSCRIPT] Full {s} message ({} bytes):\n", .{type_name, msg.len});
+                var i: usize = 0;
+                while (i < msg.len) : (i += 32) {
+                    std.debug.print("  ", .{});
+                    var j: usize = i;
+                    while (j < @min(i + 32, msg.len)) : (j += 1) {
+                        std.debug.print("{X:0>2}", .{msg[j]});
+                    }
+                    std.debug.print("\n", .{});
+                }
+            }
         }
     }
     /// Finalize and return current transcript hash without consuming internal state.
