@@ -2292,17 +2292,20 @@ pub const Endpoint = struct {
             var coalesced_buffer: [4096]u8 = undefined;
             var coalesced_len: usize = 0;
 
-            // TEMPORARY FIX: Send Initial packet separately instead of coalescing
-            // This avoids Length field mismatch issues when Handshake packet is too large
+            // RFC 9001: Initial and Handshake packets MUST be coalesced
+            // Add Initial packet to coalesced buffer
             if (initial_pkt) |initial| {
-                _ = self.sendTo(peer, initial) catch {};
-                std.debug.print("TEMP FIX: Sent Initial packet separately ({} bytes) - not coalescing\n", .{initial.len});
-                // Free Initial after sending; clear debug tracker
-                self.allocator.free(initial);
-                initial_pkt = null;
-                conn.initial_debug_alloc = null;
-                // DON'T add to coalesced buffer - send separately
-                coalesced_len = 0;
+                if (initial.len <= coalesced_buffer.len) {
+                    @memcpy(coalesced_buffer[0..initial.len], initial);
+                    coalesced_len = initial.len;
+                    std.debug.print("Added Initial packet to coalesced buffer: {} bytes\n", .{initial.len});
+                    // Free Initial after copying
+                    self.allocator.free(initial);
+                    initial_pkt = null;
+                    conn.initial_debug_alloc = null;
+                } else {
+                    std.debug.print("ERROR: Initial packet too large for coalescing buffer ({} > {})\n", .{initial.len, coalesced_buffer.len});
+                }
             }
 
             // If we have Handshake keys and have outbound TLS handshake bytes queued, emit them now.
@@ -2755,7 +2758,7 @@ pub const Endpoint = struct {
                 const avail = @min(@as(usize, 4), end_total - pn_start);
                 @memcpy(pn_masked[0..avail], bytes[pn_start .. pn_start + avail]);
 
-                // FIXED: Extract HP sample first, then determine actual PN length from header
+                // RFC 9001: Determine PN length, then decrypt with integrated function
                 const full_pn_and_payload = bytes[pn_start..end_total];
                 if (full_pn_and_payload.len < 20) {
                     std.debug.print("Handshake packet too short for HP sample: {} bytes\n", .{full_pn_and_payload.len});
@@ -2763,83 +2766,28 @@ pub const Endpoint = struct {
                     return;
                 }
 
-                // Extract HP sample (always at offset 4 from PN start for AES-128-GCM)
+                // Step 1: Extract HP sample and unmask ONLY the header byte to get PN length
                 var sample16: [16]u8 = undefined;
-                @memcpy(sample16[0..], full_pn_and_payload[4 .. 4 + 16]);
+                @memcpy(&sample16, full_pn_and_payload[4..20]); // Sample always at offset 4
 
-                // First, unmask just the header byte to get the actual PN length
-                var header_first_copy = first;
-                var dummy_pn = [_]u8{0}; // Mutable dummy PN byte
-                crypto.headerProtect(
-                    .aes_128_gcm,
-                    &rx_keys.hp,
-                    &sample16,
-                    &header_first_copy,
-                    &dummy_pn,
-                ) catch {
-                    std.debug.print("Failed to unmask header byte for handshake packet\n", .{});
+                var header_peek = first;
+                var dummy_pn = [_]u8{0};
+                crypto.headerProtect(.aes_128_gcm, &rx_keys.hp, &sample16, &header_peek, &dummy_pn) catch {
+                    std.debug.print("Failed to peek header for PN length\n", .{});
                     conn.onAeadAuthFailure();
                     return;
                 };
+                const actual_pn_len: u3 = @intCast((header_peek & 0x03) + 1);
+                std.debug.print("Determined actual_pn_len={} from header peek\n", .{actual_pn_len});
 
-                // Extract the actual packet number length from the unmasked header
-                const actual_pn_len: u3 = @intCast((header_first_copy & 0x03) + 1);
-
-                std.debug.print("Handshake packet: unmasked header=0x{X:0>2}, actual_pn_len={}\n", .{ header_first_copy, actual_pn_len });
-
-                if (pn_start + actual_pn_len > end_total) {
-                    std.debug.print("Invalid PN length {} extends past packet end\n", .{actual_pn_len});
-                    conn.onAeadAuthFailure();
-                    return;
-                }
-
-                // FIXED: Now re-extract the HP sample from the correct offset
-                // Per RFC 9001 5.4.2: Sample ALWAYS starts at offset 4 from PN field start
-                const sample_offset: usize = 4; // ALWAYS 4, not actual_pn_len!
-                if (full_pn_and_payload.len < sample_offset + 16) {
-                    std.debug.print("Handshake packet too short for HP sample: {} bytes, need {}\n", .{ full_pn_and_payload.len, sample_offset + 16 });
-                    conn.onAeadAuthFailure();
-                    return;
-                }
-                @memcpy(sample16[0..], full_pn_and_payload[sample_offset .. sample_offset + 16]);
-                std.debug.print("Re-extracted HP sample from offset {} (always 4) for PN length {}\n", .{ sample_offset, actual_pn_len });
-
-                // Now unmask the packet number bytes with the correct length and correct sample
-                var pn_bytes_buf: [4]u8 = undefined;
-                const pn_bytes = pn_bytes_buf[0..actual_pn_len];
-                @memcpy(pn_bytes, bytes[pn_start .. pn_start + actual_pn_len]);
-
-                // Debug: Log masked PN bytes
-                std.debug.print("Masked PN bytes (len={}): {any}\n", .{ actual_pn_len, pn_bytes });
-
-                var header_try = first;
-
-                // Unmask both header and PN bytes with the correctly positioned sample
-                crypto.headerProtect(
-                    .aes_128_gcm,
-                    &rx_keys.hp,
-                    &sample16,
-                    &header_try,
-                    pn_bytes,
-                ) catch {
-                    std.debug.print("Failed to unmask header and PN bytes for handshake packet\n", .{});
-                    conn.onAeadAuthFailure();
-                    return;
-                };
-
-                // Debug: Log unmasked PN bytes
-                std.debug.print("Unmasked PN bytes (len={}): {any}\n", .{ actual_pn_len, pn_bytes });
-
-                // Now decrypt with the correct PN length
+                // Step 2: Allocate plaintext buffer based on actual PN length
                 var pt_list = std.ArrayList(u8){};
                 defer pt_list.deinit(self.allocator.*);
 
-                // Decrypt expects plaintext buffer size = total - tag - PN bytes
-                const expected_pt_len = full_pn_and_payload.len - 16 - actual_pn_len;
-                if (expected_pt_len == 0) {
-                    // This can happen for ACK-only packets
-                    std.debug.print("Handshake packet appears to be ACK-only (no payload after auth tag)\n", .{});
-                }
+                const expected_pt_len = if (full_pn_and_payload.len > 16 + @as(usize, actual_pn_len))
+                    full_pn_and_payload.len - 16 - @as(usize, actual_pn_len)
+                else
+                    0;
                 pt_list.ensureTotalCapacity(self.allocator.*, if (expected_pt_len > 0) expected_pt_len else 1) catch {
                     std.debug.print("Failed to allocate plaintext buffer\n", .{});
                     conn.onAeadAuthFailure();
@@ -2848,33 +2796,19 @@ pub const Endpoint = struct {
                 if (expected_pt_len > 0) {
                     pt_list.appendNTimesAssumeCapacity(0, expected_pt_len);
                 } else {
-                    // For zero-length payloads, we still need a valid slice
                     pt_list.appendAssumeCapacity(0);
                 }
-                const pt_slice = pt_list.items[0..expected_pt_len];
+                const pt_slice = pt_list.items;
 
                 const expected_pn_hs = if (conn.pn_handshake.have_any) conn.pn_handshake.max + 1 else 0;
                 std.debug.print("=== HANDSHAKE PACKET DECRYPTION ===\n", .{});
                 std.debug.print("pn_start={}, end_total={}, actual_pn_len={}\n", .{ pn_start, end_total, actual_pn_len });
-                std.debug.print("full_pn_and_payload.len={}, expected_pt_len={}\n", .{ full_pn_and_payload.len, expected_pt_len });
-                std.debug.print("Attempting Handshake decrypt: actual_pn_len={}, expected_pn={}, have_any={}\n", .{
-                    actual_pn_len,
-                    expected_pn_hs,
-                    conn.pn_handshake.have_any,
-                });
+                std.debug.print("Attempting Handshake decrypt: expected_pn={}\n", .{expected_pn_hs});
 
-                // Use unprotectInitialAutoSample for handshake packets with handshake keys
-                // Note: The function name is misleading - it works for any QUIC packet type
-                // IMPORTANT: Pass MASKED bytes since the function will unmask them internally
-                var masked_header = first; // Use the original masked header byte
+                // Step 3: Call integrated decrypt function with correct PN length slice
+                var masked_header = first;
                 var masked_pn_bytes: [4]u8 = undefined;
                 @memcpy(masked_pn_bytes[0..actual_pn_len], bytes[pn_start .. pn_start + actual_pn_len]);
-                std.debug.print("Calling unprotectInitialAutoSample with:", .{});
-                std.debug.print("  masked_header=0x{X:0>2}\n", .{masked_header});
-                std.debug.print("  masked_pn_bytes[0..{}]={any}\n", .{ actual_pn_len, masked_pn_bytes[0..actual_pn_len] });
-                std.debug.print("  header_prefix.len={}\n", .{header_prefix.len});
-                std.debug.print("  full_pn_and_payload.len={}\n", .{full_pn_and_payload.len});
-                std.debug.print("  expected_pn_hs={}\n", .{expected_pn_hs});
 
                 const dec = crypto.unprotectInitialAutoSample(
                     .aes_128_gcm,
@@ -2882,7 +2816,7 @@ pub const Endpoint = struct {
                     &rx_keys.iv,
                     &rx_keys.hp,
                     &masked_header,
-                    masked_pn_bytes[0..actual_pn_len],
+                    masked_pn_bytes[0..actual_pn_len],  // Pass slice with correct length
                     header_prefix,
                     full_pn_and_payload, // Correctly positioned buffer for sample extraction
                     pt_slice,
@@ -2895,27 +2829,17 @@ pub const Endpoint = struct {
                 };
                 std.debug.print("unprotectInitialAutoSample returned: {} bytes decrypted\n", .{dec});
 
-                std.debug.print("After unmasking with actual_pn_len={}: ", .{actual_pn_len});
-                for (pn_bytes) |b| std.debug.print("{X:0>2} ", .{b});
+                // After decryption, masked_pn_bytes now contains the UNMASKED PN bytes
+                std.debug.print("Unmasked PN bytes: ", .{});
+                for (masked_pn_bytes[0..actual_pn_len]) |b| std.debug.print("{X:0>2} ", .{b});
                 std.debug.print("", .{});
 
-                // Update pn_masked with the unmasked bytes
-                @memcpy(pn_masked[0..actual_pn_len], pn_bytes);
-                const success = true;
-                const chosen_pn_len = actual_pn_len;
+                // Update pn_masked with the unmasked bytes from the function
+                @memcpy(pn_masked[0..actual_pn_len], masked_pn_bytes[0..actual_pn_len]);
 
-                if (!success) {
-                    std.debug.print("Failed to decrypt Handshake packet\n", .{});
-                    conn.onAeadAuthFailure();
-                    // Don't close connection on single decrypt failure
-                    // The connection should persist for retries
-                    // conn.closed = true;
-                    return;
-                }
-
-                const pn_len = chosen_pn_len;
-                const pt = pt_list.items;
-                std.debug.print("Successfully decrypted Handshake packet (trial pn_len={}) plaintext len: {}\n", .{ pn_len, pt.len });
+                const pn_len = actual_pn_len;
+                const pt = pt_slice[0..dec];  // Use actual decrypted length
+                std.debug.print("Successfully decrypted Handshake packet (pn_len={}) plaintext len: {}\n", .{ pn_len, pt.len });
 
                 // Expand truncated PN and track in Handshake space
                 var pn_val_be: u64 = 0;

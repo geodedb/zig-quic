@@ -332,8 +332,10 @@ pub fn protectPacket(
     const pn_len: usize = pn_bytes.len;
     switch (suite) {
         .aes_128_gcm => {
-            // RFC 9001: sample starts 4 bytes after the start of packet number field
-            // If PN is N bytes, sample starts at (4-N) bytes into ciphertext
+            // RFC 9001 §5.4.3: Sample starts 4 bytes after the start of packet number field
+            // The out_cipher buffer contains only encrypted payload (no PN bytes)
+            // For 2-byte PN: sample at packet bytes 4-19 = ciphertext bytes 2-17 = offset (4-2)
+            // General formula: offset into ciphertext = 4 - pn_len
             const sample_offset: usize = if (pn_len >= 4) 0 else (4 - pn_len);
             if (sample_offset + 16 > out_cipher.len) return error.AuthenticationFailed;
             @memcpy(sample16[0..], out_cipher[sample_offset .. sample_offset + 16]);

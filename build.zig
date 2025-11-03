@@ -214,6 +214,12 @@ pub fn build(b: *std.Build) void {
     quic_api_mod.addImport("quic_packet", quic_packet_mod);
     // Ensure submodule endpoint.zig (imported relatively by api.zig) can import recovery
     quic_api_mod.addImport("quic_recovery", quic_recovery_mod);
+    // Add byteorder for endpoint.zig
+    quic_api_mod.addImport("byteorder", byteorder_mod);
+    // Add transport params for endpoint.zig
+    quic_api_mod.addImport("quic_transport_params", quic_transport_params_mod);
+    // Add logger for endpoint.zig
+    quic_api_mod.addImport("quic_logger", quic_logger_mod);
 
     // Export named module for dependents: @import("quic")
     const quic_mod = b.addModule("quic", .{ .root_source_file = rp("src/quic/api.zig") }); // module API still supports root_source_file

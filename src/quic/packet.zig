@@ -574,9 +574,10 @@ pub fn encodeHandshakeProtected(
 
     const w = buf.writer(alloc);
     try w.writeByte(first);
-    var be_ver: [4]u8 = .{ @as(u8, @intCast(version >> 24)), @as(u8, @intCast((version >> 16) & 0xff)), @as(u8, @intCast((version >> 8) & 0xff)), @as(u8, @intCast(version & 0xff)) };
-    std.debug.print("DEBUG: Writing Handshake version bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} (version=0x{X:0>8})\n", .{ be_ver[0], be_ver[1], be_ver[2], be_ver[3], version });
-    try w.writeAll(&be_ver);
+    // RFC 9000: Handshake packets do NOT have a version field (only Initial packets do)
+    // var be_ver: [4]u8 = .{ @as(u8, @intCast(version >> 24)), @as(u8, @intCast((version >> 16) & 0xff)), @as(u8, @intCast((version >> 8) & 0xff)), @as(u8, @intCast(version & 0xff)) };
+    // std.debug.print("DEBUG: Writing Handshake version bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} (version=0x{X:0>8})\n", .{ be_ver[0], be_ver[1], be_ver[2], be_ver[3], version });
+    // try w.writeAll(&be_ver);
     try w.writeByte(@as(u8, @intCast(dcid.len)));
     try w.writeAll(dcid);
     try w.writeByte(@as(u8, @intCast(scid.len)));
