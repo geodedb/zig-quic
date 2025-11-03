@@ -1570,10 +1570,18 @@ pub const Engine = struct {
     }
 
     fn updateFinishedVerified(self: *Engine, value: bool) void {
-        if (self.finished_verified == value) return;
+        std.debug.print("TLS: updateFinishedVerified called: value={}, role={s}, current={}\n", .{ value, if (self.role == .Server) "Server" else "Client", self.finished_verified });
+        if (self.finished_verified == value) {
+            std.debug.print("TLS: finished_verified already set to {}, skipping\n", .{value});
+            return;
+        }
         self.finished_verified = value;
+        std.debug.print("TLS: Set finished_verified={}\n", .{value});
         if (self.peer_finished_cb) |cb| {
+            std.debug.print("TLS: Calling peer_finished_cb callback\n", .{});
             cb(self.peer_finished_ctx, self, value) catch {};
+        } else {
+            std.debug.print("TLS: No peer_finished_cb registered\n", .{});
         }
     }
 

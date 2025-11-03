@@ -2762,8 +2762,8 @@ pub const Endpoint = struct {
             std.debug.print("Processing Handshake packet from peer\n", .{});
             std.debug.print("HANDSHAKE PACKET: {} bytes total\n", .{bytes.len});
             // Handshake RX path: attempt to unprotect and feed CRYPTO using hs_rx_keys
-            // RFC 9000: Handshake packets don't have a version field, start at byte 1
-            var i: usize = 1;
+            // RFC 9000 §17.2: Handshake packets DO have a version field (bytes 1-4)
+            var i: usize = 5; // Skip first byte (0) + version field (1-4)
             if (i >= bytes.len) {
                 std.debug.print("HANDSHAKE PACKET TOO SHORT: at byte {}, len={}\n", .{ i, bytes.len });
                 return;
@@ -2810,7 +2810,23 @@ pub const Endpoint = struct {
             for (dcid) |b| std.debug.print("{x:0>2}\n", .{b});
             std.debug.print(" (hash={x})\n", .{key.dcid_hash});
 
-            const c_ptr = self.conns.getPtr(key) orelse {
+            var c_ptr = self.conns.getPtr(key);
+
+            // Fallback: If lookup failed and DCID is empty, find connection by peer address alone
+            if (c_ptr == null and dcid.len == 0) {
+                std.debug.print("Handshake packet has empty DCID, falling back to peer address lookup\n", .{});
+                const peer_hash = hashSockaddr(&peer.storage, peer.len);
+                var iter = self.conns.iterator();
+                while (iter.next()) |entry| {
+                    if (entry.key_ptr.peer_hash == peer_hash) {
+                        std.debug.print("Found connection by peer address: peer_hash={x}, dcid_hash={x}\n", .{ entry.key_ptr.peer_hash, entry.key_ptr.dcid_hash });
+                        c_ptr = entry.value_ptr;
+                        break;
+                    }
+                }
+            }
+
+            const c_ptr_final = c_ptr orelse {
                 std.debug.print("ERROR: Connection not found for Handshake packet\n", .{});
                 std.debug.print("  Available connections:", .{});
                 std.debug.print("ERROR: Connection not found for Handshake packet!\n", .{});
@@ -2822,7 +2838,7 @@ pub const Endpoint = struct {
                 }
                 return;
             };
-            const conn = c_ptr.*;
+            const conn = c_ptr_final.*;
             std.debug.print("HANDSHAKE: Found connection, role={}\n", .{conn.role});
             std.debug.print("Found connection for Handshake packet (role={})\n", .{conn.role});
             if (ecn_bits) |e| conn.onEcnMark(.Handshake, e);
