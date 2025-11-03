@@ -1326,6 +1326,14 @@ pub fn deriveHandshakeTraffic(ecdhe_secret: []const u8, transcript_hash: [H.dige
     client_hs: [H.digest_length]u8,
     server_hs: [H.digest_length]u8,
 } {
+    // Debug: Print transcript hash (all bytes)
+    std.debug.print("[TLS_KEY_SCHEDULE] Transcript hash (CH+SH): ", .{});
+    for (transcript_hash) |b| std.debug.print("{X:0>2}", .{b});
+    std.debug.print("\n", .{});
+    std.debug.print("[TLS_KEY_SCHEDULE] ECDHE shared secret: ", .{});
+    for (ecdhe_secret) |b| std.debug.print("{X:0>2}", .{b});
+    std.debug.print("\n", .{});
+
     // early_secret = HKDF-Extract(0, 0)
     const early_secret = ks.extract(&[_]u8{}, &[_]u8{});
     // derived = Derive-Secret(early_secret, "derived", "")
@@ -1338,6 +1346,15 @@ pub fn deriveHandshakeTraffic(ecdhe_secret: []const u8, transcript_hash: [H.dige
     var s_hs: [H.digest_length]u8 = undefined;
     ks.expandLabel(handshake_secret, "c hs traffic", &transcript_hash, &c_hs) catch unreachable;
     ks.expandLabel(handshake_secret, "s hs traffic", &transcript_hash, &s_hs) catch unreachable;
+
+    // Debug: Print derived traffic secrets (all bytes)
+    std.debug.print("[TLS_KEY_SCHEDULE] Client HS traffic secret: ", .{});
+    for (c_hs) |b| std.debug.print("{X:0>2}", .{b});
+    std.debug.print("\n", .{});
+    std.debug.print("[TLS_KEY_SCHEDULE] Server HS traffic secret: ", .{});
+    for (s_hs) |b| std.debug.print("{X:0>2}", .{b});
+    std.debug.print("\n", .{});
+
     return .{ .handshake = handshake_secret, .client_hs = c_hs, .server_hs = s_hs };
 }
 

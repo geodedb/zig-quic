@@ -79,11 +79,22 @@ pub const EndpointRole = enum {
 
 /// single bound socket. Owns all live connections and drives send/recv plus PTO/PMTUD timers.
 pub const Endpoint = struct {
+
+    // Socket file descriptor
     sock_fd: posix.socket_t,
+
+    // Event loop backend (os specific)
     loop_backend: lb.LoopBackend,
+
+    // Memory allocator for endpoint resources
     allocator: *std.mem.Allocator,
+
+    // Timer management for the endpoint
     timers: std.ArrayList(Timer),
+
+    // Connection Management Map
     conns: std.AutoHashMap(Key, *conn_mod.Connection),
+
     // Next timer identifier for scheduleTimer
     next_timer_id: u64 = 1,
     // Config copy
@@ -2357,6 +2368,38 @@ pub const Endpoint = struct {
                     std.debug.print("AFTER queueServerHandshakeFlight: outbox.len={}\n", .{conn.tls.outbox.items.len});
                 }
 
+                // CRITICAL FIX: If outbox is empty but we have crypto_retx_handshake, the client likely
+                // didn't receive our Handshake packets. Retransmit them.
+                // This happens when client keeps retransmitting Initial packets.
+                if (conn.tls.outbox.items.len == 0 and conn.crypto_retx_handshake != null and saw_ack_eliciting_initial and allow_send) {
+                    std.debug.print("Client retransmitting Initial - retransmitting Handshake flight\n", .{});
+
+                    const retx_data = conn.crypto_retx_handshake.?;
+                    const retx_offset = conn.crypto_retx_handshake_off;
+
+                    // For Handshake packets, use peer_initial_scid as DCID per RFC 9000 §7.2
+                    const hs_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
+
+                    // Retransmit as a single Handshake packet
+                    var buf: [4096]u8 = undefined;
+                    var w = std.io.fixedBufferStream(&buf);
+                    const cfw = frame.Frame{ .crypto = .{ .offset = retx_offset, .data = retx_data } };
+                    _ = cfw.write(&w.writer()) catch 0;
+
+                    const hs_pkt = packet.encodeHandshakeProtected(self.allocator.*, conn.version, hs_dcid, conn.our_scid.bytes[0..conn.our_scid.len], @as(u32, @truncate(conn.pn_handshake_tx)), 2, // packet number length
+                        buf[0..w.pos], hs_keys) catch null;
+
+                    if (hs_pkt) |pkt| {
+                        defer self.allocator.free(pkt);
+                        _ = self.sendTo(peer, pkt) catch {};
+                        std.debug.print("Retransmitted Handshake packet: {} bytes (CRYPTO offset={} len={})\n", .{ pkt.len, retx_offset, retx_data.len });
+                        conn.onPacketSent(.Handshake, conn.pn_handshake_tx, pkt.len, true);
+                        conn.pn_handshake_tx += 1;
+                    }
+
+                    return; // Done retransmitting
+                }
+
                 // Pull TLS messages one at a time to send each in its own CRYPTO frame
                 // This is critical for rustls compatibility which expects separate messages
                 std.debug.print("DEBUG: About to extract TLS messages from outbox, outbox.len={}\n", .{conn.tls.outbox.items.len});
@@ -3005,22 +3048,6 @@ pub const Endpoint = struct {
                             defer frames_buf.deinit(self.allocator.*);
                             const w = frames_buf.writer(self.allocator.*);
 
-                            // Include ACK for Initial packets in our first Handshake packet only
-                            if (pkt_count == 0) {
-                                const now_ns_ack_initial: u64 = @intCast(std.time.nanoTimestamp());
-                                const ack_desc_initial = conn.buildAckInitial();
-                                const ack_ecn_initial = conn.getAckEcn(.Initial);
-                                const ack_delay_initial = conn.getAckDelayEncoded(.Initial, now_ns_ack_initial);
-                                const ack_initial = frame.Frame{ .ack = .{
-                                    .largest = ack_desc_initial.largest,
-                                    .ack_delay = ack_delay_initial,
-                                    .first_range = ack_desc_initial.first_range,
-                                    .ranges = ack_desc_initial.ranges,
-                                    .ecn = ack_ecn_initial,
-                                } };
-                                _ = ack_initial.write(w) catch 0;
-                            }
-
                             // Add CRYPTO frame with current chunk
                             const crypto_offset = base_off_hs + offset;
                             _ = (frame.Frame{ .crypto = .{ .offset = crypto_offset, .data = chunk } }).write(w) catch 0;
@@ -3098,8 +3125,10 @@ pub const Endpoint = struct {
                         const ack_desc = conn.buildAckHandshake();
                         const ack_ecn = conn.getAckEcn(.Handshake);
                         const ack_delay = conn.getAckDelayEncoded(.Handshake, now_ns_hs);
-                        const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = ack_delay, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges, .ecn = ack_ecn } };
-                        _ = ack.write(w) catch 0;
+                        if (ack_desc.largest != 0xFFFFFFFFFFFFFFFF) {
+                            const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = ack_delay, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges, .ecn = ack_ecn } };
+                            _ = ack.write(w) catch 0;
+                        }
                         // Handshake packets can only contain Handshake-level frames, not Initial CRYPTO
                         // Use the client's source connection ID (peer_initial_scid)
                         // If client sent scid_len=0, we send Handshake with dcid_len=0
