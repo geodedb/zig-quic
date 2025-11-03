@@ -2461,14 +2461,16 @@ pub const Endpoint = struct {
 
                     // For Handshake packets, determine correct DCID:
                     // - If client sent non-zero SCID: use peer_initial_scid (RFC 9000 §7.2)
-                    // - If client sent zero-length SCID: MUST use empty DCID to avoid RFC 9000 §12.2 violation
-                    //   (coalesced packets MUST have same DCID, so if Initial had empty DCID, Handshake must too)
+                    // - If client sent zero-length SCID: workaround for quic-go bug - use our_scid
+                    //   (quic-go doesn't handle empty DCIDs properly in Handshake packets)
+                    // NOTE: This violates RFC 9000 §12.2 (coalesced packets should have same DCID)
+                    //       but is necessary for quic-go compatibility
                     const hs_dcid = if (conn.peer_initial_scid.len > 0)
                         conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len]
                     else
-                        &[_]u8{}; // Empty slice - RFC 9000 §12.2: coalesced packets must have same DCID
+                        conn.our_scid.bytes[0..conn.our_scid.len]; // Workaround: use our SCID for quic-go compatibility
 
-                    std.debug.print("Server: Handshake DCID len={} (peer_scid_len={}, using {s})\n", .{ hs_dcid.len, conn.peer_initial_scid.len, if (conn.peer_initial_scid.len > 0) "peer_initial_scid" else "empty_dcid" });
+                    std.debug.print("Server: Handshake DCID len={} (peer_scid_len={}, using {s})\n", .{ hs_dcid.len, conn.peer_initial_scid.len, if (conn.peer_initial_scid.len > 0) "peer_initial_scid" else "our_scid (quic-go workaround)" });
 
                     // Send each TLS message in a separate CRYPTO frame/packet for rustls compatibility
                     // Store additional Handshake packets to send separately
@@ -2506,13 +2508,24 @@ pub const Endpoint = struct {
 
                             // Only append first handshake packet to coalesced buffer (RFC 9000 §12.2)
                             // Store additional handshake packets to send separately after coalescing
-                            if (msg_idx == 0 and coalesced_len > 0) {
+                            // CRITICAL: Don't coalesce if DCIDs differ (violates RFC 9000 §12.2)
+                            // Check if Initial DCID matches Handshake DCID
+                            const initial_dcid_len = if (conn.role == .Server) conn.peer_initial_scid.len else conn.peer_initial_dcid.len;
+                            const can_coalesce = (initial_dcid_len == hs_dcid.len);
+
+                            if (msg_idx == 0 and coalesced_len > 0 and can_coalesce) {
                                 if (coalesced_len + pkt_len <= coalesced_buffer.len) {
                                     @memcpy(coalesced_buffer[coalesced_len .. coalesced_len + pkt_len], bytes_out_hs);
                                     coalesced_len += pkt_len;
                                     std.debug.print("Added first Handshake packet to coalesced buffer: {} bytes\n", .{pkt_len});
                                     // Free immediately since we copied it
                                     self.allocator.free(bytes_out_hs);
+                                } else if (!can_coalesce) {
+                                    std.debug.print("Skipping coalescing: Initial DCID len {} != Handshake DCID len {} (RFC 9000 §12.2)\n", .{ initial_dcid_len, hs_dcid.len });
+                                    // Store for separate sending
+                                    additional_hs_packets.append(self.allocator.*, bytes_out_hs) catch {
+                                        self.allocator.free(bytes_out_hs);
+                                    };
                                 } else {
                                     std.debug.print("Failed to append Handshake packet to coalesced buffer - would exceed buffer\n", .{});
                                     // Store for separate sending
@@ -2549,8 +2562,10 @@ pub const Endpoint = struct {
                     conn.crypto_tx_off_handshake += total_size;
                     std.debug.print("Prepared {} Handshake packets with {} bytes total CRYPTO data (offset now {})\n", .{ tls_messages.items.len, total_size, conn.crypto_tx_off_handshake });
 
-                    // Send coalesced packets (Initial + first Handshake)
-                    if (coalesced_len > 0) {
+                    // Send packets - either coalesced or separately
+                    // If coalescing was skipped due to DCID mismatch, send Initial separately first
+                    if (coalesced_len > 0 and initial_pkt == null) {
+                        // Initial was added to coalesced buffer, send the coalesced packet
                         std.debug.print("Sending coalesced packet: {} bytes (Initial + Handshake)\n", .{coalesced_len});
 
                         // DIAGNOSTIC: Hexdump the coalesced packet to understand structure
@@ -2583,6 +2598,18 @@ pub const Endpoint = struct {
                             self.allocator.free(p);
                             initial_pkt = null;
                         }
+                    } else if (initial_pkt) |init_pkt| {
+                        // Send Initial packet separately (coalescing was skipped due to DCID mismatch)
+                        std.debug.print("Sending Initial packet separately: {} bytes (no coalescing due to DCID mismatch)\n", .{init_pkt.len});
+                        const send_result = self.sendTo(conn.peer, init_pkt) catch |err| blk: {
+                            std.debug.print("ERROR: Failed to send Initial packet: {}\n", .{err});
+                            break :blk 0;
+                        };
+                        if (send_result > 0) {
+                            std.debug.print("Successfully sent Initial packet: {} bytes\n", .{send_result});
+                        }
+                        self.allocator.free(init_pkt);
+                        initial_pkt = null;
                     }
 
                     // Send additional Handshake packets separately
@@ -2669,7 +2696,8 @@ pub const Endpoint = struct {
             std.debug.print("Processing Handshake packet from peer\n", .{});
             std.debug.print("HANDSHAKE PACKET: {} bytes total\n", .{bytes.len});
             // Handshake RX path: attempt to unprotect and feed CRYPTO using hs_rx_keys
-            var i: usize = 5;
+            // RFC 9000: Handshake packets don't have a version field, start at byte 1
+            var i: usize = 1;
             if (i >= bytes.len) {
                 std.debug.print("HANDSHAKE PACKET TOO SHORT: at byte {}, len={}\n", .{ i, bytes.len });
                 return;
