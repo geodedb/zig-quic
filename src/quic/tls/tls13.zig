@@ -2196,7 +2196,8 @@ pub const Engine = struct {
         const msg = try encodeHandshake(self.allocator, .finished, verify[0..]);
         defer self.allocator.free(msg);
         try self.queueCrypto(msg);
-        self.finished_sent = true;
+        // FIXED: Don't set finished_sent here - let endpoint.zig set it after actual transmission
+        // self.finished_sent = true;
         // NOTE: Application secrets are NOT derived here
         // They must be derived AFTER receiving and verifying the peer's Finished message
     }
@@ -2244,7 +2245,8 @@ pub const Engine = struct {
         const msg = try encodeHandshake(self.allocator, .encrypted_extensions, body.items);
         defer self.allocator.free(msg);
         try self.queueCrypto(msg);
-        self.ee_sent = true; // mark sent (server)
+        // FIXED: Don't set ee_sent here - let endpoint.zig set it after actual transmission
+        // self.ee_sent = true; // mark sent (server)
         // Don't call maybeAutoProgress here - endpoint.zig will explicitly call queueServerHandshakeFlight
         // self.maybeAutoProgress();
         return;
@@ -2412,12 +2414,14 @@ pub const Engine = struct {
         const n = @min(@min(out.len, max_bytes), available);
         if (n > 0) {
             @memcpy(out[0..n], self.outbox.items[0..n]);
-            // Remove only the consumed bytes
-            _ = self.outbox.orderedRemove(0);
-            var i: usize = 1;
-            while (i < n) : (i += 1) {
-                _ = self.outbox.orderedRemove(0);
+            // FIXED: Remove all consumed bytes at once by shifting the remaining data
+            const remaining = self.outbox.items[n..];
+            const remaining_len = remaining.len;
+            if (remaining_len > 0) {
+                // Shift remaining bytes to the front
+                std.mem.copyForwards(u8, self.outbox.items[0..remaining_len], remaining);
             }
+            self.outbox.items.len = remaining_len;
         }
         return n;
     }
@@ -2629,10 +2633,12 @@ pub const Engine = struct {
             std.debug.print("[FLIGHT] Early return: not server\n", .{});
             return;
         }
-        if (self.finished_sent) {
-            std.debug.print("[FLIGHT] Early return: already sent finished\n", .{});
-            return; // already done
-        }
+        // FIXED: Don't check finished_sent here - let endpoint.zig control when to queue messages
+        // The flags should only be set after actual transmission, not after queuing
+        // if (self.finished_sent) {
+        //     std.debug.print("[FLIGHT] Early return: already sent finished\n", .{});
+        //     return; // already done
+        // }
 
         // Full handshake flight
         // Require that handshake_server_secret be present (after SH)
@@ -2644,6 +2650,13 @@ pub const Engine = struct {
         std.debug.print("[FLIGHT] Proceeding with handshake flight\n", .{});
 
         // RFC 9001: Queue EncryptedExtensions first for Handshake CRYPTO space
+        // FIXED: Check if we've already queued the handshake flight
+        // If outbox already has substantial data (>400 bytes), the flight is already queued
+        if (self.outbox.items.len > 400) {
+            std.debug.print("[FLIGHT] Handshake flight already queued (outbox.len={}), skipping\n", .{self.outbox.items.len});
+            return;
+        }
+
         if (!self.ee_sent) {
             const alpn_for_ee = self.alpn orelse &[_]u8{};
             const tp_for_ee = self.local_tp orelse &[_]u8{};
@@ -2706,7 +2719,8 @@ pub const Engine = struct {
             self.finished_sent,
             self.handshake_server_secret != null,
         });
-        if (!self.finished_sent and self.handshake_server_secret != null) {
+        // FIXED: Always queue Finished if we have the secret and outbox contains our handshake messages
+        if (self.handshake_server_secret != null) {
             std.debug.print("[FLIGHT] Calling queueFinished with server secret...\n", .{});
             self.queueFinished(self.handshake_server_secret.?) catch |e| {
                 std.debug.print("[FLIGHT] queueFinished FAILED: {}\n", .{e});

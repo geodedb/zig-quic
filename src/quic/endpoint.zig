@@ -2145,9 +2145,10 @@ pub const Endpoint = struct {
                     // The rest (EncryptedExtensions, Certificate, etc) go in Handshake packets
 
                     // Find how much data is ServerHello (should be queued first in outbox)
-                    // ServerHello is typically 120-150 bytes depending on extensions
-                    // We'll send up to 200 bytes in Initial to ensure complete ServerHello
-                    const max_initial_crypto: usize = 200;
+                    // ServerHello is typically 90-120 bytes depending on extensions
+                    // FIXED: Use peekNextMessageSize to get exact ServerHello size
+                    const sh_size = conn.tls.peekNextMessageSize();
+                    const max_initial_crypto: usize = if (sh_size > 0 and sh_size < 200) sh_size else 90;
                     const unsent_start = conn.crypto_tx_off_initial;
                     const available_data = if (conn.tls.outbox.items.len > unsent_start)
                         conn.tls.outbox.items.len - unsent_start
