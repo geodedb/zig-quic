@@ -1362,10 +1362,16 @@ pub fn deriveHandshakeTraffic(ecdhe_secret: []const u8, transcript_hash: [H.dige
     std.debug.print("\n", .{});
 
     // early_secret = HKDF-Extract(0, 0)
-    const early_secret = ks.extract(&[_]u8{}, &[_]u8{});
+    // RFC 8446 §7.1: If a given secret is not available, then the 0-value
+    // consisting of a string of Hash.length bytes set to zeros is used.
+    const zero_value = [_]u8{0} ** H.digest_length; // 32 zero bytes for SHA-256
+    const early_secret = ks.extract(&zero_value, &zero_value);
     // derived = Derive-Secret(early_secret, "derived", "")
+    // RFC 8446 §7.1: The context for "derived" is Hash("")
+    var empty_hash: [H.digest_length]u8 = undefined;
+    H.hash(&[_]u8{}, &empty_hash, .{});
     var derived: [H.digest_length]u8 = undefined;
-    ks.expandLabel(early_secret, "derived", &[_]u8{}, &derived) catch unreachable;
+    ks.expandLabel(early_secret, "derived", &empty_hash, &derived) catch unreachable;
     // handshake_secret = HKDF-Extract(derived, ecdhe_secret)
     const handshake_secret = ks.extract(&derived, ecdhe_secret);
     // traffic secrets
@@ -1444,10 +1450,16 @@ pub fn deriveApplicationTrafficFromEcdhe(ecdhe_secret: []const u8, transcript_ha
     server_app: [H.digest_length]u8,
 } {
     // early_secret = HKDF-Extract(0, 0)
-    const early_secret = ks.extract(&[_]u8{}, &[_]u8{});
+    // RFC 8446 §7.1: If a given secret is not available, then the 0-value
+    // consisting of a string of Hash.length bytes set to zeros is used.
+    const zero_value = [_]u8{0} ** H.digest_length; // 32 zero bytes for SHA-256
+    const early_secret = ks.extract(&zero_value, &zero_value);
     // derived = Derive-Secret(early_secret, "derived", "")
+    // RFC 8446 §7.1: The context for "derived" is Hash("")
+    var empty_hash: [H.digest_length]u8 = undefined;
+    H.hash(&[_]u8{}, &empty_hash, .{});
     var derived: [H.digest_length]u8 = undefined;
-    ks.expandLabel(early_secret, "derived", &[_]u8{}, &derived) catch unreachable;
+    ks.expandLabel(early_secret, "derived", &empty_hash, &derived) catch unreachable;
     // handshake_secret = HKDF-Extract(derived, ecdhe_secret)
     const handshake_secret = ks.extract(&derived, ecdhe_secret);
     // master_secret = HKDF-Extract(Derive-Secret(handshake_secret, "derived", ""), 0)
