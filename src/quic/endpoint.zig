@@ -7,6 +7,8 @@ const conn_mod = @import("quic_conn");
 const packet = @import("quic_packet");
 const frame = @import("quic_frame");
 const ks = @import("quic_tls");
+const sig = @import("sig");
+const x509 = @import("x509");
 const crypto = @import("quic_crypto");
 const varint = @import("quic_varint");
 const token_mod = @import("token.zig");
@@ -1628,9 +1630,23 @@ pub const Endpoint = struct {
                 c_new.tls.allow_insecure = self.cfg.allow_insecure;
                 // Configure server certificate for TLS 1.3
                 if (self.cfg.inline_server_cert_der != null and self.cfg.inline_server_priv_p256 != null) {
-                    std.debug.print("Setting server certificate: cert_len={}, key_len={}\n", .{ self.cfg.inline_server_cert_der.?.len, self.cfg.inline_server_priv_p256.?.len });
-                    // TEMPORARY: Just pass the PEM data directly to test if PEM decoder was the issue
-                    c_new.tls.setServerCertificate(self.cfg.inline_server_cert_der.?, self.cfg.inline_server_priv_p256.?, .ecdsa_secp256r1_sha256) catch |e| {
+                    const cert_der = self.cfg.inline_server_cert_der.?;
+                    const key_der = self.cfg.inline_server_priv_p256.?;
+                    std.debug.print("Setting server certificate: cert_len={}, key_len={}\n", .{ cert_der.len, key_der.len });
+
+                    const detected_alg = x509.inferSignatureAlgorithm(cert_der) catch |err| fallback: {
+                        std.debug.print("Failed to infer signature algorithm from inline cert: {} (defaulting to ECDSA P-256)\n", .{err});
+                        break :fallback sig.SigAlg.ecdsa_secp256r1_sha256;
+                    };
+                    const alg_name = switch (detected_alg) {
+                        .ecdsa_secp256r1_sha256 => "ecdsa_secp256r1_sha256",
+                        .ecdsa_secp384r1_sha384 => "ecdsa_secp384r1_sha384",
+                        .rsa_pss_sha256 => "rsa_pss_sha256",
+                        .ed25519 => "ed25519",
+                    };
+                    std.debug.print("Detected inline certificate signature algorithm: {s}\n", .{alg_name});
+
+                    c_new.tls.setServerCertificate(cert_der, key_der, detected_alg) catch |e| {
                         std.debug.print("setServerCertificate FAILED: {}\n", .{e});
                     };
                     std.debug.print("Server certificate set successfully\n", .{});
@@ -2145,16 +2161,28 @@ pub const Endpoint = struct {
                     // The rest (EncryptedExtensions, Certificate, etc) go in Handshake packets
 
                     // Find how much data is ServerHello (should be queued first in outbox)
-                    // ServerHello is typically 90-120 bytes depending on extensions
-                    // FIXED: Use peekNextMessageSize to get exact ServerHello size
+                    // ServerHello is typically ~200 bytes for full TLS 1.3 with extensions
+                    // RFC 9001 §4.1.1: it MUST be sent completely in Initial packets.
                     const sh_size = conn.tls.peekNextMessageSize();
-                    const max_initial_crypto: usize = if (sh_size > 0 and sh_size < 200) sh_size else 90;
                     const unsent_start = conn.crypto_tx_off_initial;
                     const available_data = if (conn.tls.outbox.items.len > unsent_start)
                         conn.tls.outbox.items.len - unsent_start
                     else
                         0;
-                    const bytes_to_send = @min(available_data, max_initial_crypto);
+
+                    var bytes_to_send = available_data;
+                    if (sh_size > 0) {
+                        if (available_data >= sh_size) {
+                            bytes_to_send = sh_size;
+                        } else {
+                            // Defensive: transcript corruption would break the handshake, so surface it.
+                            std.debug.print("WARNING: ServerHello truncated in outbox (available={}, sh_size={})\n", .{ available_data, sh_size });
+                        }
+                    } else if (available_data > 0) {
+                        // Fallback: cap to a conservative upper bound to keep packets under MTU.
+                        const max_initial_crypto: usize = 1200;
+                        bytes_to_send = @min(available_data, max_initial_crypto);
+                    }
 
                     if (bytes_to_send > 0) {
                         const unsent_data = conn.tls.outbox.items[unsent_start .. unsent_start + bytes_to_send];
@@ -2304,7 +2332,7 @@ pub const Endpoint = struct {
                     initial_pkt = null;
                     conn.initial_debug_alloc = null;
                 } else {
-                    std.debug.print("ERROR: Initial packet too large for coalescing buffer ({} > {})\n", .{initial.len, coalesced_buffer.len});
+                    std.debug.print("ERROR: Initial packet too large for coalescing buffer ({} > {})\n", .{ initial.len, coalesced_buffer.len });
                 }
             }
 
@@ -2459,18 +2487,13 @@ pub const Endpoint = struct {
                     conn.crypto_retx_handshake_off = conn.crypto_tx_off_handshake;
                     std.debug.print("Saved new Handshake CRYPTO for retransmission: {} bytes at offset {}\n", .{ total_size, conn.crypto_tx_off_handshake });
 
-                    // For Handshake packets, determine correct DCID:
-                    // - If client sent non-zero SCID: use peer_initial_scid (RFC 9000 §7.2)
-                    // - If client sent zero-length SCID: workaround for quic-go bug - use our_scid
-                    //   (quic-go doesn't handle empty DCIDs properly in Handshake packets)
-                    // NOTE: This violates RFC 9000 §12.2 (coalesced packets should have same DCID)
-                    //       but is necessary for quic-go compatibility
-                    const hs_dcid = if (conn.peer_initial_scid.len > 0)
-                        conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len]
-                    else
-                        conn.our_scid.bytes[0..conn.our_scid.len]; // Workaround: use our SCID for quic-go compatibility
+                    // For Handshake packets, use peer_initial_scid as DCID
+                    // RFC 9000 §7.2: "An endpoint that receives a packet with a zero-length
+                    // Source Connection ID field MUST use a zero-length Destination Connection ID
+                    // field for all packets in the connection."
+                    const hs_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
 
-                    std.debug.print("Server: Handshake DCID len={} (peer_scid_len={}, using {s})\n", .{ hs_dcid.len, conn.peer_initial_scid.len, if (conn.peer_initial_scid.len > 0) "peer_initial_scid" else "our_scid (quic-go workaround)" });
+                    std.debug.print("Server: Handshake DCID len={} (using peer_initial_scid)\n", .{hs_dcid.len});
 
                     // Send each TLS message in a separate CRYPTO frame/packet for rustls compatibility
                     // Store additional Handshake packets to send separately
@@ -2844,7 +2867,7 @@ pub const Endpoint = struct {
                     &rx_keys.iv,
                     &rx_keys.hp,
                     &masked_header,
-                    masked_pn_bytes[0..actual_pn_len],  // Pass slice with correct length
+                    masked_pn_bytes[0..actual_pn_len], // Pass slice with correct length
                     header_prefix,
                     full_pn_and_payload, // Correctly positioned buffer for sample extraction
                     pt_slice,
@@ -2866,7 +2889,7 @@ pub const Endpoint = struct {
                 @memcpy(pn_masked[0..actual_pn_len], masked_pn_bytes[0..actual_pn_len]);
 
                 const pn_len = actual_pn_len;
-                const pt = pt_slice[0..dec];  // Use actual decrypted length
+                const pt = pt_slice[0..dec]; // Use actual decrypted length
                 std.debug.print("Successfully decrypted Handshake packet (pn_len={}) plaintext len: {}\n", .{ pn_len, pt.len });
 
                 // Expand truncated PN and track in Handshake space

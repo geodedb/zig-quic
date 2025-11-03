@@ -181,11 +181,11 @@ pub fn encode(value: u64, out: []u8) Error!usize {
     return len;
 }
 
-/// Encode value using QUIC varint with forced byte length (1, 2, 4, or 8).
-/// This is needed for fields like Length in long headers that must use
-/// consistent encoding for proper parsing of coalesced packets.
-/// Per de facto standard established by major implementations (quic-go, aioquic),
-/// all Length fields in long header packets should use 2-byte encoding.
+/// Encode value using QUIC varint with a forced byte length (1, 2, 4, or 8).
+/// This helper is retained for interoperability tests that need to exercise
+/// non-minimal encodings, but production code should prefer `encode` to comply
+/// with RFC 9000's minimum-length requirement for integer fields such as the
+/// long-header Length.
 pub fn encodeWithLen(value: u64, out: []u8, byte_len: usize) Error!usize {
     if (value > ((1 << 62) - 1)) return Error.Overflow;
     if (out.len < byte_len) return Error.Truncated;

@@ -141,25 +141,58 @@ pub const QuicTransport = struct {
             defer cert_file.close();
 
             const cert_size = try cert_file.getEndPos();
-            inline_cert_der = try self.allocator.alloc(u8, cert_size);
-            _ = try cert_file.readAll(inline_cert_der.?);
+            const cert_pem = try self.allocator.alloc(u8, cert_size);
+            defer self.allocator.free(cert_pem);
+            _ = try cert_file.readAll(cert_pem);
             std.debug.print("{{\"level\":\"DEBUG\",\"component\":\"quic_server\",\"msg\":\"loaded certificate\",\"size\":{}}}\n", .{cert_size});
 
-            // Load private key file
-            const key_file = std.fs.cwd().openFile(self.key_path, .{}) catch |err| {
-                std.debug.print("{{\"level\":\"ERROR\",\"component\":\"quic_server\",\"msg\":\"failed to open private key file\",\"path\":\"{s}\",\"error\":\"{}\"}}\n", .{ self.key_path, err });
-                if (inline_cert_der) |cert| self.allocator.free(cert);
-                return err;
+            const parsed_cert = api.pem.parseCertificate(self.allocator, cert_pem) catch |err| {
+                std.debug.print("{{\"level\":\"ERROR\",\"component\":\"quic_server\",\"msg\":\"failed to parse certificate\",\"path\":\"{s}\",\"error\":\"{}\"}}\n", .{ self.cert_path, err });
+                use_tls = false;
+                null
             };
-            defer key_file.close();
+            if (parsed_cert) |der| {
+                inline_cert_der = der;
+            } else {
+                std.debug.print("{{\"level\":\"WARN\",\"component\":\"quic_server\",\"msg\":\"disabling TLS due to certificate parse failure\"}}\n", .{});
+            }
 
-            const key_size = try key_file.getEndPos();
-            inline_priv_key = try self.allocator.alloc(u8, key_size);
-            _ = try key_file.readAll(inline_priv_key.?);
-            std.debug.print("{{\"level\":\"DEBUG\",\"component\":\"quic_server\",\"msg\":\"loaded private key\",\"size\":{}}}\n", .{key_size});
+            if (use_tls) {
+                // Load private key file only when certificate parsing succeeded
+                const key_file = std.fs.cwd().openFile(self.key_path, .{}) catch |err| {
+                    std.debug.print("{{\"level\":\"ERROR\",\"component\":\"quic_server\",\"msg\":\"failed to open private key file\",\"path\":\"{s}\",\"error\":\"{}\"}}\n", .{ self.key_path, err });
+                    if (inline_cert_der) |cert| self.allocator.free(cert);
+                    return err;
+                };
+                defer key_file.close();
+
+                const key_size = try key_file.getEndPos();
+                const key_pem = try self.allocator.alloc(u8, key_size);
+                defer self.allocator.free(key_pem);
+                _ = try key_file.readAll(key_pem);
+                std.debug.print("{{\"level\":\"DEBUG\",\"component\":\"quic_server\",\"msg\":\"loaded private key\",\"size\":{}}}\n", .{key_size});
+
+                const parsed_key = api.pem.parsePrivateKey(self.allocator, key_pem) catch |err| {
+                    std.debug.print("{{\"level\":\"ERROR\",\"component\":\"quic_server\",\"msg\":\"failed to parse private key\",\"path\":\"{s}\",\"error\":\"{}\"}}\n", .{ self.key_path, err });
+                    use_tls = false;
+                    null
+                };
+                if (parsed_key) |der_key| {
+                    inline_priv_key = der_key;
+                } else {
+                    std.debug.print("{{\"level\":\"WARN\",\"component\":\"quic_server\",\"msg\":\"disabling TLS due to private key parse failure\"}}\n", .{});
+                }
+            }
         }
 
-        // Initialize QUIC with TLS mandatory (no TCP fallback)
+        if (!use_tls) {
+            if (inline_cert_der) |cert| self.allocator.free(cert);
+            inline_cert_der = null;
+            if (inline_priv_key) |key| self.allocator.free(key);
+            inline_priv_key = null;
+        }
+
+        // Initialize QUIC with TLS
         const cfg = try self.allocator.create(api.QuicConfig);
         cfg.* = .{
             .version = .v1,
@@ -194,7 +227,7 @@ pub const QuicTransport = struct {
         if (self.config.ca_path != null) {
             std.debug.print("{{\"level\":\"INFO\",\"msg\":\"mTLS: client certs required\"}}\n", .{});
         }
-        std.debug.print("{{\"component\":\"transport\",\"transport\":\"quic\",\"tls\":\"true\",\"port\":{d}}}\n", .{self.config.port});
+    std.debug.print("{{\"component\":\"transport\",\"transport\":\"quic\",\"tls\":\"{s}\",\"port\":{d}}}\n", .{ if (use_tls) "true" else "false", self.config.port });
     }
 
     fn generateSelfSignedCert(self: *QuicTransport) !void {

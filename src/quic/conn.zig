@@ -448,6 +448,8 @@ pub const Connection = struct {
     closed: bool = false,
     // Server-side: whether this connection has been enqueued for accept()
     accepted_enqueued: bool = false,
+    // Guard flag to keep deinit idempotent across layered cleanup paths.
+    deinit_called: bool = false,
 
     // --- Missing transport/runtime state used by endpoint/tests ---
     // Packet number spaces: next PN to send in each space (RFC 9000 §12.3: MUST start at 0)
@@ -828,6 +830,7 @@ pub const Connection = struct {
         self.server_hello_sent = false;
         self.closed = false;
         self.accepted_enqueued = false;
+        self.deinit_called = false;
         // Initialize connection ID management
         self.local_cids = [_]LocalCid{.{}} ** 8;
         self.active_local_cids = 1;
@@ -889,6 +892,8 @@ pub const Connection = struct {
     /// Release resources held by this Connection (payloads, maps, TLS state).
     /// Free dynamic resources (lists, maps, TLS engine) owned by the connection.
     pub fn deinit(self: *Connection) void {
+        if (self.deinit_called) return;
+        self.deinit_called = true;
         if (self.negotiated_alpn) |alpn| self.allocator.free(alpn);
         if (self.local_transport_params_raw) |tp| self.allocator.free(tp);
         if (self.peer_transport_params_raw) |tp| self.allocator.free(tp);
@@ -1231,53 +1236,7 @@ pub const Connection = struct {
                     self.hs_client = client_secret;
                     self.hs_server = server_secret;
                     self.deriveHandshakeKeys(self.version_v2);
-
-                    // Queue the rest of the TLS handshake flight
-                    // FIX: Server must send complete handshake flight after ServerHello
-                    // This was missing, causing clients to timeout waiting for EncryptedExtensions
-
-                    // 1. EncryptedExtensions (with ALPN and transport parameters)
-                    std.debug.print("Server: About to queue EncryptedExtensions\n", .{});
-                    const alpn = if (self.tls.alpn) |a| a else "hq-interop";
-                    const local_tp = self.tls.local_tp orelse &[_]u8{};
-                    std.debug.print("Server: Using ALPN '{s}' and transport params len={}\n", .{ alpn, local_tp.len });
-                    self.tls.queueEncryptedExtensions(alpn, local_tp) catch |err| {
-                        std.debug.print("Server: Failed to queue EncryptedExtensions: {}\n", .{err});
-                    };
-
-                    // 2. Certificate (if we have one)
-                    if (self.tls.server_cert_der) |cert| {
-                        std.debug.print("Server: Queueing Certificate (cert len={})\n", .{cert.len});
-                        self.tls.queueCertificate(cert) catch {
-                            std.debug.print("Server: Failed to queue Certificate\n", .{});
-                        };
-
-                        // 3. CertificateVerify (signature over transcript)
-                        if (self.tls.server_priv_key) |_| {
-                            if (self.tls.server_sig_alg) |_| {
-                                std.debug.print("Server: Queueing CertificateVerify\n", .{});
-                                self.tls.queueCertificateVerify() catch {
-                                    std.debug.print("Server: Failed to queue CertificateVerify\n", .{});
-                                };
-                            } else {
-                                std.debug.print("Server: No signature algorithm configured\n", .{});
-                            }
-                        } else {
-                            std.debug.print("Server: No private key configured\n", .{});
-                        }
-                    } else {
-                        std.debug.print("Server: No certificate configured\n", .{});
-                    }
-
-                    // 4. Finished (MAC over transcript using handshake traffic secret)
-                    std.debug.print("Server: Queueing Finished message\n", .{});
-                    self.tls.queueFinished(server_secret) catch |err| {
-                        std.debug.print("Server: Failed to queue Finished: {}\n", .{err});
-                    };
-
-                    std.debug.print("Server: Complete handshake flight queued, outbox len={}\n", .{self.tls.outbox.items.len});
-
-                    std.debug.print("Server: Queued complete handshake flight (SH + EE + Cert + CV + Finished)\n", .{});
+                    std.debug.print("Server: Handshake secrets installed (flight pending emission by endpoint)\n", .{});
                 }
             }
         }
@@ -1302,35 +1261,7 @@ pub const Connection = struct {
                     }
 
                     // Queue the complete handshake flight (EncryptedExtensions + Certificate + CertificateVerify + Finished)
-                    std.debug.print("Server: Path 2 - queueing complete handshake flight\n", .{});
-
-                    // 1. EncryptedExtensions (with ALPN and transport parameters)
-                    const alpn = if (self.tls.alpn) |a| a else "hq-interop";
-                    const local_tp = self.tls.local_tp orelse &[_]u8{};
-                    self.tls.queueEncryptedExtensions(alpn, local_tp) catch |err| {
-                        std.debug.print("Server: Failed to queue EncryptedExtensions in Path 2: {}\n", .{err});
-                    };
-
-                    // 2. Certificate (if we have one)
-                    if (self.tls.server_cert_der) |cert| {
-                        self.tls.queueCertificate(cert) catch {
-                            std.debug.print("Server: Failed to queue Certificate in Path 2\n", .{});
-                        };
-
-                        // 3. CertificateVerify (signature over transcript)
-                        if (self.tls.server_priv_key != null and self.tls.server_sig_alg != null) {
-                            self.tls.queueCertificateVerify() catch {
-                                std.debug.print("Server: Failed to queue CertificateVerify in Path 2\n", .{});
-                            };
-                        }
-                    }
-
-                    // 4. Finished (MAC over transcript using handshake traffic secret)
-                    self.tls.queueFinished(hs_secrets.server) catch |err| {
-                        std.debug.print("Server: Failed to queue Finished in Path 2: {}\n", .{err});
-                    };
-
-                    std.debug.print("Server: Path 2 - Complete handshake flight queued, outbox len={}\n", .{self.tls.outbox.items.len});
+                    std.debug.print("Server: Path 2 - handshake secrets installed (flight pending emission by endpoint)\n", .{});
                 }
             } else {
                 const ch_status = if (self.role == .Server) self.tls.ch_recv else self.tls.ch_sent;

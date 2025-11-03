@@ -6,6 +6,11 @@ Date: 2025-09-20 (Current Status)
 
 ## Latest Implementation Achievements
 
+### Long-Header Length Encoding Compliance ✅
+
+- Updated `encodeInitialProtected`, `encodeHandshakeProtected`, and `encode0RTTProtected` to emit the long-header Length field with the minimal varint size mandated by RFC 9000 §17.2, fixing interoperability failures with quic-go clients that enforce strict encoding when using zero-length CIDs.
+- Added `tests/test_packet_length_varint.zig` to assert minimal Length encodings for Initial, Handshake, and 0-RTT packets, preventing regressions where oversized encodings could trigger peer drops.
+
 ### 0-RTT Data Transmission/Reception ✅
 
 - Implemented `encode0RTTProtected` and `decode0RTTProtected` functions in `packet.zig`

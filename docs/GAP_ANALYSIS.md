@@ -14,7 +14,7 @@ Date: 2025-09-20 (Current Implementation Status)
 
 ### Implemented
 
-- **QUIC v1 Transport** (RFC 9000): Initial/Handshake/Short header processing, frame encode/decode, connection ID lifecycle, amplification guard, path validation, preferred address scaffolding.
+- **QUIC v1 Transport** (RFC 9000): Initial/Handshake/Short header processing, frame encode/decode, connection ID lifecycle, amplification guard, path validation, preferred address scaffolding, and minimal varint Length encoding on all long-header packets.
 - **Loss Recovery** (RFC 9002): Separate packet number spaces, RTT estimation, loss detection, PTO, persistent congestion, NewReno and optional CUBIC.
 - **Connection ID Management**: Rotation, retirement, stateless reset tokens with HKDF derivation.
 - **Path Sizing**: PMTUD/DPLPMTUD with ICMP validation hooks.

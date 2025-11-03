@@ -32,8 +32,11 @@ test "real_tls_server_hello_smoke" {
         _ = api.poll(ep_server, 5) catch {};
     }
     // Accept connection on server side (should exist)
-    const accepted = api.accept(ep_server);
-    std.testing.expect(accepted != null) catch |e| return e;
+    const accepted = api.accept(ep_server) catch |err| switch (err) {
+        error.WouldBlock => return error.TestExpectedAccept,
+        else => return err,
+    };
+    _ = accepted;
     // Poll out any handshake CRYPTO emission
     var j: usize = 0;
     while (j < 10) : (j += 1) {

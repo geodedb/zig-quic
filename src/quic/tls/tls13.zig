@@ -46,14 +46,21 @@ pub const SignatureScheme = tls13_full.SignatureScheme;
 /// RFC 8446 §4 and §7 describe the handshake protocol and key schedule. `Config` captures
 /// the negotiable parameters required to drive a compliant TLS 1.3 exchange in the QUIC context.
 pub const Config = struct {
+    /// Allocator used for handshake buffers and transcript storage.
     allocator: std.mem.Allocator,
+    /// Role of the local endpoint, driving client vs. server handshake flows.
     role: Role,
+    /// Cipher suites offered in ClientHello / accepted in ServerHello ordering.
     supported_cipher_suites: []const tls13_full.CipherSuite = &.{tls13_full.CipherSuite.TLS_AES_128_GCM_SHA256},
+    /// Named groups advertised for key agreement (RFC 8446 §4.2.7).
     supported_groups: []const tls13_full.NamedGroup = &.{tls13_full.NamedGroup.x25519},
+    /// Signature algorithms allowed for certificate authentication (RFC 8446 §4.2.3).
     supported_signature_schemes: []const tls13_full.SignatureScheme = &.{tls13_full.SignatureScheme.ed25519},
+    /// Ordered ALPN protocols to negotiate with the peer (RFC 7301).
     alpn_protocols: ?[]const []const u8 = null,
     /// Raw QUIC transport parameters to advertise in EncryptedExtensions (RFC 9001 §8.2).
     quic_transport_parameters: ?[]const u8 = null,
+    /// Enable receipt and processing of 0-RTT early data when available.
     enable_early_data: bool = false,
 };
 
@@ -955,6 +962,7 @@ pub const Context = struct {
         self.markLocalFinished();
     }
 
+    /// Construct and queue a ClientHello with QUIC extensions when acting as the client.
     fn startClientHandshake(self: *Context) !void {
         if (self.config.role != .Client) return;
         if (self.client_priv != null) return; // already started
@@ -968,13 +976,16 @@ pub const Context = struct {
         var body = std.ArrayList(u8){};
         defer body.deinit(self.allocator);
         try body.appendSlice(self.allocator, &.{ 0x03, 0x03 }); // legacy_version
-        var rnd: [32]u8 = undefined; std.crypto.random.bytes(&rnd); try body.appendSlice(self.allocator, &rnd);
+        var rnd: [32]u8 = undefined;
+        std.crypto.random.bytes(&rnd);
+        try body.appendSlice(self.allocator, &rnd);
         try body.append(self.allocator, 0); // empty session id
         // cipher suites (vector len=2 -> one suite)
         try body.appendSlice(self.allocator, &.{ 0x00, 0x02, 0x13, 0x01 });
         // compression methods
         try body.appendSlice(self.allocator, &.{ 0x01, 0x00 });
-        var ext_buf = std.ArrayList(u8){}; defer ext_buf.deinit(self.allocator);
+        var ext_buf = std.ArrayList(u8){};
+        defer ext_buf.deinit(self.allocator);
         // supported_versions
         try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x2b, 0x00, 0x03, 0x02, 0x03, 0x04 });
         // supported_groups (x25519)
@@ -986,7 +997,12 @@ pub const Context = struct {
             const ext_len: u16 = list_len + 2;
             try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x0d, @intCast(ext_len >> 8), @intCast(ext_len & 0xff), @intCast(list_len >> 8), @intCast(list_len & 0xff) });
             for (sigs) |scheme| {
-                const val: u16 = switch (scheme) { .ed25519 => 0x0807, .ecdsa_secp256r1_sha256 => 0x0403, .ecdsa_secp384r1_sha384 => 0x0503, .rsa_pss_sha256 => 0x0804 };
+                const val: u16 = switch (scheme) {
+                    .ed25519 => 0x0807,
+                    .ecdsa_secp256r1_sha256 => 0x0403,
+                    .ecdsa_secp384r1_sha384 => 0x0503,
+                    .rsa_pss_sha256 => 0x0804,
+                };
                 try ext_buf.appendSlice(self.allocator, &.{ @intCast(val >> 8), @intCast(val & 0xff) });
             }
         }
@@ -1001,11 +1017,15 @@ pub const Context = struct {
         try ext_buf.appendSlice(self.allocator, self.client_pub.?[0..]);
         // ALPN
         if (self.config.alpn_protocols) |alpn_list| if (alpn_list.len != 0) {
-            var names_len: usize = 0; for (alpn_list) |p| names_len += 1 + p.len;
+            var names_len: usize = 0;
+            for (alpn_list) |p| names_len += 1 + p.len;
             const list_len: u16 = @intCast(names_len);
             const ext_len: u16 = list_len + 2;
             try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x10, @intCast(ext_len >> 8), @intCast(ext_len & 0xff), @intCast(list_len >> 8), @intCast(list_len & 0xff) });
-            for (alpn_list) |p| { try ext_buf.append(self.allocator, @intCast(p.len)); try ext_buf.appendSlice(self.allocator, p); }
+            for (alpn_list) |p| {
+                try ext_buf.append(self.allocator, @intCast(p.len));
+                try ext_buf.appendSlice(self.allocator, p);
+            }
         };
         // QUIC transport parameters (client sends its TP in CH)
         if (self.config.quic_transport_parameters) |tp| {
@@ -1043,11 +1063,14 @@ pub const Context = struct {
         }
         var pos: usize = 2 + 32; // after legacy_version+random
         if (pos >= body.len) return HandshakeError.UnexpectedMessage;
-        const sid_len: usize = body[pos]; pos += 1 + sid_len; if (pos + 2 + 1 > body.len) return HandshakeError.UnexpectedMessage;
+        const sid_len: usize = body[pos];
+        pos += 1 + sid_len;
+        if (pos + 2 + 1 > body.len) return HandshakeError.UnexpectedMessage;
         pos += 2; // cipher_suite
         pos += 1; // compression
         if (pos + 2 > body.len) return HandshakeError.UnexpectedMessage;
-        const exts_len: usize = (@as(usize, body[pos]) << 8) | @as(usize, body[pos + 1]); pos += 2;
+        const exts_len: usize = (@as(usize, body[pos]) << 8) | @as(usize, body[pos + 1]);
+        pos += 2;
         if (pos + exts_len > body.len) return HandshakeError.UnexpectedMessage;
         const exts_end = pos + exts_len;
         var server_pub: ?[32]u8 = null;
@@ -1098,12 +1121,13 @@ pub const Context = struct {
         self.flags.metadata_notified = true;
     }
 
-    // RFC 8446 §7.5 Exporter interface
+    /// Derive exporter secret material per RFC 8446 §7.5 using the finished transcript hash.
     pub fn exportSecret(self: *Context, label: []const u8, out: []u8) !void {
         const exp_slot = &self.secrets.exporter_master;
         if (!exp_slot.valid) return HandshakeError.UnexpectedMessage;
         const th = self.transcripts.finished_hash orelse blk: {
-            var snap = self.transcripts.handshake; break :blk snap.finalize();
+            var snap = self.transcripts.handshake;
+            break :blk snap.finalize();
         };
         var derived: [H.digest_length]u8 = undefined;
         ks.expandLabel(exp_slot.value, label, &th, &derived) catch return HandshakeError.UnexpectedMessage;
@@ -1112,7 +1136,7 @@ pub const Context = struct {
         if (n < out.len) @memset(out[n..], 0);
     }
 
-    // Perform a sender key update for application traffic (RFC 8446 §7.2)
+    /// Rotate the local application traffic secret and install fresh send keys (RFC 8446 §7.2).
     pub fn performKeyUpdateSend(self: *Context) !void {
         const send_slot = self.secrets.slot(.Application, .send);
         if (!send_slot.valid) return HandshakeError.UnexpectedMessage;
@@ -1120,7 +1144,7 @@ pub const Context = struct {
         send_slot.store(.Application, next);
     }
 
-    // Accept a peer key update by rotating receive secret
+    /// Accept a peer initiated key update by rotating the receive traffic secret.
     pub fn performKeyUpdateRecv(self: *Context) !void {
         const recv_slot = self.secrets.slot(.Application, .recv);
         if (!recv_slot.valid) return HandshakeError.UnexpectedMessage;
@@ -1436,6 +1460,8 @@ pub const Engine = struct {
     finished_verified: bool = false,
     /// Whether EncryptedExtensions has been sent (server) or received (client) in real mode
     ee_sent: bool = false,
+    /// Whether the server has already staged its complete handshake flight in the outbox
+    server_handshake_flight_enqueued: bool = false,
     /// Stored handshake traffic secrets (derived immediately after SH) for correct Finished verification
     handshake_client_secret: ?[H.digest_length]u8 = null,
     handshake_server_secret: ?[H.digest_length]u8 = null,
@@ -1464,7 +1490,7 @@ pub const Engine = struct {
 
     /// Initialize a TLS 1.3 Engine with allocator and role.
     pub fn init(alloc: std.mem.Allocator, role: Role) Engine {
-        return .{ .role = role, .allocator = alloc, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .client_session_id = null, .outbox = std.ArrayList(u8){}, .inbox = std.ArrayList(u8){}, .handshake_failed = false, .ch_sent = false, .ch_recv = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .ee_sent = false, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null, .master_secret = null, .tickets = .{}, .peer_finished_cb = null, .peer_finished_ctx = null };
+        return .{ .role = role, .allocator = alloc, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .client_session_id = null, .outbox = std.ArrayList(u8){}, .inbox = std.ArrayList(u8){}, .handshake_failed = false, .ch_sent = false, .ch_recv = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .ee_sent = false, .server_handshake_flight_enqueued = false, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null, .master_secret = null, .tickets = .{}, .peer_finished_cb = null, .peer_finished_ctx = null };
     }
     /// Release any owned resources and buffers.
     pub fn deinit(self: *Engine) void {
@@ -2196,8 +2222,7 @@ pub const Engine = struct {
         const msg = try encodeHandshake(self.allocator, .finished, verify[0..]);
         defer self.allocator.free(msg);
         try self.queueCrypto(msg);
-        // FIXED: Don't set finished_sent here - let endpoint.zig set it after actual transmission
-        // self.finished_sent = true;
+        self.finished_sent = true;
         // NOTE: Application secrets are NOT derived here
         // They must be derived AFTER receiving and verifying the peer's Finished message
     }
@@ -2245,6 +2270,9 @@ pub const Engine = struct {
         const msg = try encodeHandshake(self.allocator, .encrypted_extensions, body.items);
         defer self.allocator.free(msg);
         try self.queueCrypto(msg);
+        if (self.role == .Server) {
+            self.ee_sent = true;
+        }
         // FIXED: Don't set ee_sent here - let endpoint.zig set it after actual transmission
         // self.ee_sent = true; // mark sent (server)
         // Don't call maybeAutoProgress here - endpoint.zig will explicitly call queueServerHandshakeFlight
@@ -2619,7 +2647,7 @@ pub const Engine = struct {
     /// CRITICAL FIX: Insert a message boundary marker (0xFF) between each TLS message
     /// This allows the connection layer to send each message in a separate CRYPTO frame/packet
     pub fn queueServerHandshakeFlight(self: *Engine) void {
-        std.debug.print("[FLIGHT] queueServerHandshakeFlight CALLED: role={s}, finished_sent={}, ee_sent={}, has_server_secret={}, has_client_secret={}, has_cert={}, has_key={}\n", .{
+        std.debug.print("[FLIGHT] queueServerHandshakeFlight CALLED: role={s}, finished_sent={}, ee_sent={}, has_server_secret={}, has_client_secret={}, has_cert={}, has_key={}, enqueued={}\n", .{
             if (self.role == .Server) "Server" else "Client",
             self.finished_sent,
             self.ee_sent,
@@ -2627,10 +2655,15 @@ pub const Engine = struct {
             self.handshake_client_secret != null,
             self.server_cert_der != null,
             self.server_priv_key != null,
+            self.server_handshake_flight_enqueued,
         });
 
         if (self.role != .Server) {
             std.debug.print("[FLIGHT] Early return: not server\n", .{});
+            return;
+        }
+        if (self.server_handshake_flight_enqueued) {
+            std.debug.print("[FLIGHT] Early return: handshake flight already enqueued\n", .{});
             return;
         }
         // FIXED: Don't check finished_sent here - let endpoint.zig control when to queue messages
@@ -2650,13 +2683,7 @@ pub const Engine = struct {
         std.debug.print("[FLIGHT] Proceeding with handshake flight\n", .{});
 
         // RFC 9001: Queue EncryptedExtensions first for Handshake CRYPTO space
-        // FIXED: Check if we've already queued the handshake flight
-        // If outbox already has substantial data (>400 bytes), the flight is already queued
-        if (self.outbox.items.len > 400) {
-            std.debug.print("[FLIGHT] Handshake flight already queued (outbox.len={}), skipping\n", .{self.outbox.items.len});
-            return;
-        }
-
+        var appended_any = false;
         if (!self.ee_sent) {
             const alpn_for_ee = self.alpn orelse &[_]u8{};
             const tp_for_ee = self.local_tp orelse &[_]u8{};
@@ -2665,6 +2692,7 @@ pub const Engine = struct {
                 std.debug.print("Server: Failed to queue EncryptedExtensions: {}\n", .{e});
                 return;
             };
+            appended_any = true;
         }
         // If we have a certificate configured, send Certificate + CertificateVerify.
         // Note: allow_insecure only affects peer certificate validation, not whether we send ours
@@ -2675,7 +2703,14 @@ pub const Engine = struct {
             std.debug.print("[CERTVERIFY] After queueCertificate, transcript exists={}\n", .{true});
             var snap = self.transcript;
             const th = snap.finalize();
-            const alg = self.server_sig_alg orelse .ecdsa_secp256r1_sha256;
+            const alg = self.server_sig_alg orelse infer_alg: {
+                const cert_der = self.server_cert_der.?;
+                const detected = x509.inferSignatureAlgorithm(cert_der) catch |err| {
+                    std.debug.print("[CERTVERIFY] Failed to infer signature algorithm from server cert: {} (defaulting to ECDSA P-256)\n", .{err});
+                    break :infer_alg .ecdsa_secp256r1_sha256;
+                };
+                break :infer_alg detected;
+            };
             std.debug.print("[CERTVERIFY] About to sign with alg={}, priv_key_len={}\n", .{ alg, self.server_priv_key.?.len });
             const sig_bytes = sig.signCertificateVerify(alg, self.server_priv_key.?, "TLS 1.3, server CertificateVerify", &th, self.allocator) catch |e| blk: {
                 std.debug.print("[CERTVERIFY] signCertificateVerify FAILED: {}\n", .{e});
@@ -2713,6 +2748,7 @@ pub const Engine = struct {
                 }
                 self.allocator.free(sb);
             }
+            appended_any = true;
         }
         // Always queue Finished last
         std.debug.print("[FLIGHT] About to queue Finished: finished_sent={}, has_secret={}\n", .{
@@ -2726,9 +2762,14 @@ pub const Engine = struct {
                 std.debug.print("[FLIGHT] queueFinished FAILED: {}\n", .{e});
             };
             std.debug.print("[FLIGHT] After queueFinished: finished_sent={}\n", .{self.finished_sent});
+            appended_any = true;
             // Note: No boundary marker after Finished as it's the last message
         } else {
             std.debug.print("[FLIGHT] NOT queueing Finished (already sent or no secret)\n", .{});
+        }
+
+        if (appended_any) {
+            self.server_handshake_flight_enqueued = true;
         }
     }
 

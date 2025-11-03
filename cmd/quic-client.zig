@@ -48,7 +48,7 @@ pub fn main() !void {
     std.debug.print("connecting to {s}\n", .{connect});
 
     if (datagram) {
-        try api.sendDatagram(conn, msg);
+        _ = try api.sendDatagram(conn, msg);
         var buf: [1024]u8 = undefined;
         var attempts: usize = 0;
         while (attempts < 500) : (attempts += 1) {

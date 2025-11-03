@@ -160,10 +160,10 @@ pub fn build(b: *std.Build) void {
     // Add logger to modules that need it
     quic_crypto_mod.addImport("quic_logger", quic_logger_mod);
     tls13_mod.addImport("quic_logger", quic_logger_mod);
-    
+
     const alert_mod = mkModule(b, "src/quic/tls/alert.zig");
     tls13_mod.addImport("alert", alert_mod);
-    
+
     const zero_rtt_mod = mkModule(b, "src/quic/tls/zero_rtt.zig");
     tls13_mod.addImport("zero_rtt", zero_rtt_mod);
     quic_packet_mod.addImport("quic_logger", quic_logger_mod);
@@ -192,6 +192,8 @@ pub fn build(b: *std.Build) void {
     quic_endpoint_mod.addImport("quic_crypto", quic_crypto_mod);
     quic_endpoint_mod.addImport("quic_varint", quic_varint_mod);
     quic_endpoint_mod.addImport("quic_tls", quic_tls_mod);
+    quic_endpoint_mod.addImport("sig", sig_mod);
+    quic_endpoint_mod.addImport("x509", x509_mod);
     quic_endpoint_mod.addImport("quic_recovery", quic_recovery_mod);
     quic_endpoint_mod.addImport("config.zig", quic_config_mod);
     quic_endpoint_mod.addImport("loop_backend.zig", loop_backend_mod);
@@ -395,6 +397,11 @@ pub fn build(b: *std.Build) void {
         const run_test_tls_context = b.addRunArtifact(test_tls_context);
         test_step.dependOn(&run_test_tls_context.step);
 
+        const test_tls_server_flight = addTst(b, "tests/test_tls_server_handshake_flight.zig", target, optimize);
+        test_tls_server_flight.root_module.addImport("quic_tls13", tls13_mod);
+        const run_test_tls_server_flight = b.addRunArtifact(test_tls_server_flight);
+        test_step.dependOn(&run_test_tls_server_flight.step);
+
         const test_tls = addTst(b, "tests/test_tls_key_schedule.zig", target, optimize);
         test_tls.root_module.addImport("quic_tls", quic_tls_mod);
         const run_test_tls = b.addRunArtifact(test_tls);
@@ -410,7 +417,7 @@ pub fn build(b: *std.Build) void {
         test_tls_hs.root_module.addImport("quic_tls", quic_tls_mod);
         const run_test_tls_hs = b.addRunArtifact(test_tls_hs);
         test_step.dependOn(&run_test_tls_hs.step);
-        
+
         const test_tls_integration = addTst(b, "tests/test_tls_integration.zig", target, optimize);
         test_tls_integration.root_module.addImport("quic_tls13", tls13_mod);
         test_tls_integration.root_module.addImport("alert", alert_mod);
@@ -685,14 +692,14 @@ pub fn build(b: *std.Build) void {
     const install_bench = b.addInstallArtifact(bench, .{});
     const bench_step = b.step("bench", "Build benchmarks");
     bench_step.dependOn(&install_bench.step);
-    
+
     // TLS benchmarks
     const bench_tls_hs = addExe(b, "bench_tls_handshake", "bench/bench_tls_handshake.zig", target, .ReleaseFast);
     bench_tls_hs.root_module.addImport("quic_tls13", tls13_mod);
     bench_tls_hs.root_module.addImport("quic_tls", quic_tls_mod);
     const install_bench_tls_hs = b.addInstallArtifact(bench_tls_hs, .{});
     bench_step.dependOn(&install_bench_tls_hs.step);
-    
+
     const bench_tls_aead = addExe(b, "bench_tls_aead", "bench/bench_tls_aead.zig", target, .ReleaseFast);
     const install_bench_tls_aead = b.addInstallArtifact(bench_tls_aead, .{});
     bench_step.dependOn(&install_bench_tls_aead.step);

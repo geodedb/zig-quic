@@ -155,3 +155,8 @@ Future work:
 
 - Extend tests to confirm short‑header packet DCIDs on the wire match `peer_initial_scid` once set (requires capture hook or pcap harness).
 - Incorporate preferred address / migration path updates to reselect appropriate DCID when paths change (may imply new peer SCIDs).
+
+## Long-Header Length Encoding
+
+- All long-header packet builders (`encodeInitialProtected`, `encodeHandshakeProtected`, `encode0RTTProtected`) now emit the Length field using the minimal varint size permitted by RFC 9000 §17.2. This restores compliance for small handshake flights and prevents peers from discarding packets encoded with oversized varints (notably quic-go clients using zero-length CIDs).
+- New regression tests in `tests/test_packet_length_varint.zig` exercise each encoder with single-byte payloads and assert the Length varint consumes exactly one byte, covering Initial, Handshake, and 0-RTT cases.

@@ -35,7 +35,10 @@ test "real_tls_full_handshake_finished_flags" {
         if (api.getNegotiatedAlpn(conn_client) != null) break;
     }
 
-    const accepted = api.accept(ep_server) orelse return error.TestExpectedAccept;
+    const accepted = api.accept(ep_server) catch |err| switch (err) {
+        error.WouldBlock => return error.TestExpectedAccept,
+        else => return err,
+    };
     // After further polling, Finished messages should have been exchanged.
     var post_ticks: usize = 0;
     while (post_ticks < 100) : (post_ticks += 1) {

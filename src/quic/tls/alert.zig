@@ -32,7 +32,7 @@ pub const AlertDescription = enum(u8) {
     certificate_required = 116,
     no_application_protocol = 120,
     _,
-
+    /// Human-readable formatting for diagnostics and logging.
     pub fn format(self: AlertDescription, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
         const name = switch (self) {
             .close_notify => "close_notify",
@@ -80,10 +80,12 @@ pub const Alert = packed struct {
     level: AlertLevel,
     description: AlertDescription,
 
+    /// Encode the alert as the on-the-wire two byte TLS alert payload.
     pub fn encode(self: Alert) [2]u8 {
         return .{ @intFromEnum(self.level), @intFromEnum(self.description) };
     }
 
+    /// Decode a TLS alert payload into strongly typed fields.
     pub fn decode(bytes: [2]u8) Alert {
         return .{
             .level = @enumFromInt(bytes[0]),

@@ -248,6 +248,42 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
     };
 }
 
+/// Infer the TLS signature algorithm from a DER-encoded certificate's SubjectPublicKeyInfo.
+/// Detects Ed25519, ECDSA P-256, and RSA-PSS (SHA-256). Returns error.UnsupportedKeyAlgorithm
+/// for unsupported or unknown key types.
+pub fn inferSignatureAlgorithm(cert_der: []const u8) !sigmod.SigAlg {
+    const cert = try parseCert(std.heap.page_allocator, cert_der);
+
+    if (sigmod.parseEd25519Spki(cert.spki)) |_| {
+        return .ed25519;
+    } else |err| switch (err) {
+        error.UnexpectedAlgorithm => {},
+        else => return err,
+    }
+
+    if (sigmod.parseEcdsaSpki(cert.spki, std.heap.page_allocator)) |spki_val| {
+        var spki = spki_val;
+        defer spki.deinit();
+        if (!spki.curve_p256) return error.UnsupportedKeyAlgorithm;
+        return .ecdsa_secp256r1_sha256;
+    } else |err| switch (err) {
+        error.UnexpectedAlgorithm => {},
+        error.UnsupportedCurve, error.InvalidEcPoint => return error.UnsupportedKeyAlgorithm,
+        else => return err,
+    }
+
+    if (sigmod.parseRsaSpki(cert.spki, std.heap.page_allocator)) |spki_val| {
+        var spki = spki_val;
+        defer spki.deinit();
+        return .rsa_pss_sha256;
+    } else |err| switch (err) {
+        error.UnexpectedAlgorithm => {},
+        else => return err,
+    }
+
+    return error.UnsupportedKeyAlgorithm;
+}
+
 /// Check if 'now' is within the certificate validity window.
 pub fn checkValidity(now_unix: i64, cert: *const Certificate) !void {
     if (now_unix < cert.not_before_unix) return error.NotYetValid;

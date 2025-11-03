@@ -338,14 +338,12 @@ pub fn encodeInitialProtected(
         try w.writeAll(&tbuf);
     }
 
-    // Length varint: pn_len + ciphertext_len
-    // CRITICAL: Use 2-byte encoding for Length field to ensure consistent parsing
-    // of coalesced packets. Variable-length encoding causes clients to misparse
-    // packet boundaries when Initial+Handshake packets are coalesced.
+    // Length varint: pn_len + ciphertext_len. RFC 9000 §17.2 requires the
+    // sender to use the minimum-length varint encoding for this field.
     const ct_len = payload_plaintext.len + 16;
     const length_value: usize = @as(usize, packet_number_len) + ct_len;
     var lbuf: [8]u8 = undefined;
-    const ll = try varint.encodeWithLen(length_value, &lbuf, 2);
+    const ll = try varint.encode(length_value, &lbuf);
     try w.writeAll(lbuf[0..ll]);
 
     // Remember header_prefix length (after first header byte) to end of length varint
@@ -574,10 +572,14 @@ pub fn encodeHandshakeProtected(
 
     const w = buf.writer(alloc);
     try w.writeByte(first);
-    // RFC 9000: Handshake packets do NOT have a version field (only Initial packets do)
-    // var be_ver: [4]u8 = .{ @as(u8, @intCast(version >> 24)), @as(u8, @intCast((version >> 16) & 0xff)), @as(u8, @intCast((version >> 8) & 0xff)), @as(u8, @intCast(version & 0xff)) };
-    // std.debug.print("DEBUG: Writing Handshake version bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} (version=0x{X:0>8})\n", .{ be_ver[0], be_ver[1], be_ver[2], be_ver[3], version });
-    // try w.writeAll(&be_ver);
+    var be_ver: [4]u8 = .{
+        @as(u8, @intCast((version >> 24) & 0xff)),
+        @as(u8, @intCast((version >> 16) & 0xff)),
+        @as(u8, @intCast((version >> 8) & 0xff)),
+        @as(u8, @intCast(version & 0xff)),
+    };
+    std.debug.print("encodeHandshakeProtected: writing version bytes {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ be_ver[0], be_ver[1], be_ver[2], be_ver[3] });
+    try w.writeAll(&be_ver);
     try w.writeByte(@as(u8, @intCast(dcid.len)));
     try w.writeAll(dcid);
     try w.writeByte(@as(u8, @intCast(scid.len)));
@@ -585,14 +587,12 @@ pub fn encodeHandshakeProtected(
 
     // Handshake packets do not carry a token
 
-    // Length varint: pn_len + ciphertext_len
-    // CRITICAL: Use 2-byte encoding for Length field to ensure consistent parsing
-    // of coalesced packets. Variable-length encoding causes clients to misparse
-    // packet boundaries when Initial+Handshake packets are coalesced.
+    // Length varint: pn_len + ciphertext_len, encoded with the minimal length
+    // permitted by RFC 9000 §17.2.
     const ct_len = payload_plaintext.len + 16;
     const length_value: usize = @as(usize, packet_number_len) + ct_len;
     var lbuf: [8]u8 = undefined;
-    const ll = try varint.encodeWithLen(length_value, &lbuf, 2);
+    const ll = try varint.encode(length_value, &lbuf);
     try w.writeAll(lbuf[0..ll]);
 
     const header_prefix_len = buf.items.len - 1;
@@ -805,14 +805,12 @@ pub fn encode0RTTProtected(
     try w.writeByte(@as(u8, @intCast(scid.len)));
     try w.writeAll(scid);
 
-    // Length field (varint)
-    // CRITICAL: Use 2-byte encoding for Length field to ensure consistent parsing
-    // of coalesced packets. Variable-length encoding causes clients to misparse
-    // packet boundaries when 0-RTT packets are coalesced with other packets.
+    // Length field (varint). Encode using the minimal length permitted by
+    // RFC 9000 §17.2.
     var len_buf: [8]u8 = undefined;
     const payload_with_tag_len = payload.len + 16; // AEAD tag
     const total_len = pn_len + payload_with_tag_len;
-    const len_bytes = try varint.encodeWithLen(total_len, &len_buf, 2);
+    const len_bytes = try varint.encode(total_len, &len_buf);
     try w.writeAll(len_buf[0..len_bytes]);
 
     // Packet number (truncated)

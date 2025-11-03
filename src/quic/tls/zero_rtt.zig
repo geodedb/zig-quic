@@ -14,11 +14,12 @@ pub const TicketState = enum {
 pub const AntiReplayWindow = struct {
     const Self = @This();
     const window_size = 64; // Track last 64 randoms
-    
+
     randoms: [window_size][32]u8 = undefined,
     count: usize = 0,
     allocator: std.mem.Allocator,
 
+    /// Construct an empty anti-replay window backed by the provided allocator.
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .randoms = undefined,
@@ -27,6 +28,7 @@ pub const AntiReplayWindow = struct {
         };
     }
 
+    /// Release any allocator-backed state held by the window (no-op today).
     pub fn deinit(_: *Self) void {
         // No heap allocations in this simple implementation
     }
