@@ -195,6 +195,7 @@ pub fn decodeShortProtected(
     packet_bytes: []const u8,
     dcid_len: usize,
     keys: AeadKeys,
+    expected_pn: u64,
 ) !DecodedShort {
     if (packet_bytes.len < 1 + dcid_len + 1) return error.Truncated;
     var i: usize = 0;
@@ -229,9 +230,8 @@ pub fn decodeShortProtected(
 
     // Decrypt while letting unprotectInitial perform the unmasking using masked header/pn
     const payload = try alloc.alloc(u8, ct.len - 16);
-    errdefer alloc.free(payload);
 
-    _ = try crypto.unprotectInitial(
+    const decrypt_result = crypto.unprotectInitial(
         .aes_128_gcm,
         &keys.key,
         &keys.iv,
@@ -242,8 +242,22 @@ pub fn decodeShortProtected(
         &sample16,
         ct,
         payload,
-        0, // No expansion for test packets
+        expected_pn, // Use connection's largest_received + 1 for correct PN expansion
     );
+
+    if (decrypt_result) |_| {
+        // Success - continue
+    } else |err| {
+        // Decryption failed - free payload and handle error
+        alloc.free(payload);
+        // If dcid_len was non-zero, try again with zero-length DCID
+        // Some QUIC implementations use zero-length DCIDs for 1-RTT packets
+        if (dcid_len > 0) {
+            std.debug.print("1-RTT decryption failed with dcid_len={}, retrying with dcid_len=0\n", .{dcid_len});
+            return decodeShortProtected(alloc, packet_bytes, 0, keys, expected_pn);
+        }
+        return err;
+    }
 
     // Compute PN value from the previously unmasked temporary PN bytes
     var pn_val: u32 = 0;

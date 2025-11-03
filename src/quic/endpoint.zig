@@ -1049,14 +1049,20 @@ pub const Endpoint = struct {
             var best_len: usize = 0;
             var it = self.conns.iterator();
             std.debug.print("Looking for connection with peer_hash={x}\n", .{peer_h});
+            var checked_count: usize = 0;
             while (it.next()) |entry| {
-                if (entry.key_ptr.*.peer_hash != peer_h) continue;
+                std.debug.print("  Checking entry: peer_hash={x}, dcid_hash={x}\n", .{ entry.key_ptr.*.peer_hash, entry.key_ptr.*.dcid_hash });
+                if (entry.key_ptr.*.peer_hash != peer_h) {
+                    std.debug.print("    -> peer_hash mismatch, skipping\n", .{});
+                    continue;
+                }
+                checked_count += 1;
                 const c = entry.value_ptr.*;
                 const l: usize = c.our_scid.len;
 
-                std.debug.print("Checking conn with our_scid=\n", .{});
-                for (c.our_scid.bytes[0..l]) |b| std.debug.print("{x:0>2}\n", .{b});
-                std.debug.print(" (len={}), role={}\n", .{ l, c.role });
+                std.debug.print("  -> MATCHED peer_hash! Checking conn with our_scid=", .{});
+                for (c.our_scid.bytes[0..l]) |b| std.debug.print("{x:0>2} ", .{b});
+                std.debug.print("(len={}), role={}\n", .{ l, c.role });
 
                 if (l == 0) continue; // do not match ambiguous zero-length DCID
                 if (1 + l > bytes.len) continue;
@@ -1082,6 +1088,7 @@ pub const Endpoint = struct {
                     }
                 }
             }
+            std.debug.print("Checked {} connections with matching peer_hash. found={}, best={}\n", .{ checked_count, found != null, best != null });
             if (best) |b| {
                 found = b;
                 dcid_len = best_len;
@@ -1140,7 +1147,10 @@ pub const Endpoint = struct {
                 // Attempt decode using current RX keys first. On failure, try derived NEXT keys, then previous keys.
                 var used_next: bool = false;
                 var used_prev: bool = false;
-                var dec_res = packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }) catch blk_dec: {
+                // RFC 9000 Appendix A.3: Use largest received PN + 1 as expected value for expansion
+                const expected_pn: u64 = if (conn.pn_app.have_any) conn.pn_app.max + 1 else 0;
+                std.debug.print("DEBUG: Decoding 1-RTT packet, have_any={}, pn_app.max={}, expected_pn={}\n", .{ conn.pn_app.have_any, conn.pn_app.max, expected_pn });
+                var dec_res = packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }, expected_pn) catch blk_dec: {
                     // If decryption fails outright, check for stateless reset token match to fail fast.
                     if (conn.looksLikeStatelessReset(bytes)) {
                         std.debug.print("stateless-reset: closing connection\n", .{});
@@ -1158,11 +1168,11 @@ pub const Endpoint = struct {
                             const t2 = ks.deriveKeyIvHp(next_secret);
                             mat = .{ .key = t2.key, .iv = t2.iv, .hp = t2.hp };
                         }
-                        const try_next = packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = mat.key, .iv = mat.iv, .hp = mat.hp }) catch blk_prev: {
+                        const try_next = packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = mat.key, .iv = mat.iv, .hp = mat.hp }, expected_pn) catch blk_prev: {
                             // Finally, if we have previous RX keys during transition, try them
                             if (conn.rx_prev_keys) |kp| {
                                 used_prev = true;
-                                break :blk_prev packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = kp.key, .iv = kp.iv, .hp = kp.hp }) catch return;
+                                break :blk_prev packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = kp.key, .iv = kp.iv, .hp = kp.hp }, expected_pn) catch return;
                             }
                             // Authentication failed across current/next/prev keys
                             conn.onAeadAuthFailure();
@@ -1186,7 +1196,7 @@ pub const Endpoint = struct {
                     // No secret available for deriving NEXT; try previous only
                     if (conn.rx_prev_keys) |kp2| {
                         used_prev = true;
-                        break :blk_dec packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = kp2.key, .iv = kp2.iv, .hp = kp2.hp }) catch return;
+                        break :blk_dec packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = kp2.key, .iv = kp2.iv, .hp = kp2.hp }, expected_pn) catch return;
                     }
                     conn.onAeadAuthFailure();
                     return;
