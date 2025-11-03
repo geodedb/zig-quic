@@ -160,6 +160,12 @@ pub fn build(b: *std.Build) void {
     // Add logger to modules that need it
     quic_crypto_mod.addImport("quic_logger", quic_logger_mod);
     tls13_mod.addImport("quic_logger", quic_logger_mod);
+    
+    const alert_mod = mkModule(b, "src/quic/tls/alert.zig");
+    tls13_mod.addImport("alert", alert_mod);
+    
+    const zero_rtt_mod = mkModule(b, "src/quic/tls/zero_rtt.zig");
+    tls13_mod.addImport("zero_rtt", zero_rtt_mod);
     quic_packet_mod.addImport("quic_logger", quic_logger_mod);
 
     // Connection/TP
@@ -389,10 +395,22 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_test_tls.step);
 
         const test_tls_hs = addTst(b, "tests/test_tls_handshake_secrets.zig", target, optimize);
+        const test_tls_keyupdate = addTst(b, "tests/test_tls_key_update_exporter.zig", target, optimize);
+        test_tls_keyupdate.root_module.addImport("quic_tls13", tls13_mod);
+        test_tls_keyupdate.root_module.addImport("quic_tls", quic_tls_mod);
+        const run_test_tls_keyupdate = b.addRunArtifact(test_tls_keyupdate);
+        test_step.dependOn(&run_test_tls_keyupdate.step);
         test_tls_hs.root_module.addImport("quic_tls13", tls13_mod);
         test_tls_hs.root_module.addImport("quic_tls", quic_tls_mod);
         const run_test_tls_hs = b.addRunArtifact(test_tls_hs);
         test_step.dependOn(&run_test_tls_hs.step);
+        
+        const test_tls_integration = addTst(b, "tests/test_tls_integration.zig", target, optimize);
+        test_tls_integration.root_module.addImport("quic_tls13", tls13_mod);
+        test_tls_integration.root_module.addImport("alert", alert_mod);
+        test_tls_integration.root_module.addImport("zero_rtt", zero_rtt_mod);
+        const run_test_tls_integration = b.addRunArtifact(test_tls_integration);
+        test_step.dependOn(&run_test_tls_integration.step);
 
         const test_initial = addTst(b, "tests/test_initial_protect.zig", target, optimize);
         test_initial.root_module.addImport("quic_tls", quic_tls_mod);
@@ -630,6 +648,8 @@ pub fn build(b: *std.Build) void {
     const fuzz_frame = addExe(b, "fuzz_frame_parse", "fuzz/fuzz_frame_parse.zig", target, optimize);
     const fuzz_vn = addExe(b, "fuzz_vn_parse", "fuzz/fuzz_vn_parse.zig", target, optimize);
     const fuzz_short = addExe(b, "fuzz_short_decode", "fuzz/fuzz_short_decode.zig", target, optimize);
+    const fuzz_tls_hello = addExe(b, "fuzz_tls_hello", "fuzz/fuzz_tls_hello.zig", target, optimize);
+    const fuzz_tls_cert = addExe(b, "fuzz_tls_cert", "fuzz/fuzz_tls_cert.zig", target, optimize);
     fuzz_varint.root_module.addImport("quic_varint", quic_varint_mod);
     fuzz_frame.root_module.addImport("quic_frame", quic_frame_mod);
     fuzz_frame.root_module.addImport("quic_varint", quic_varint_mod);
@@ -639,11 +659,15 @@ pub fn build(b: *std.Build) void {
     const install_fuzz_frame = b.addInstallArtifact(fuzz_frame, .{});
     const install_fuzz_vn = b.addInstallArtifact(fuzz_vn, .{});
     const install_fuzz_short = b.addInstallArtifact(fuzz_short, .{});
+    const install_fuzz_tls_hello = b.addInstallArtifact(fuzz_tls_hello, .{});
+    const install_fuzz_tls_cert = b.addInstallArtifact(fuzz_tls_cert, .{});
     const fuzz_step = b.step("fuzz", "Build fuzzers");
     fuzz_step.dependOn(&install_fuzz_varint.step);
     fuzz_step.dependOn(&install_fuzz_frame.step);
     fuzz_step.dependOn(&install_fuzz_vn.step);
     fuzz_step.dependOn(&install_fuzz_short.step);
+    fuzz_step.dependOn(&install_fuzz_tls_hello.step);
+    fuzz_step.dependOn(&install_fuzz_tls_cert.step);
 
     // Benchmarks
     const bench = addExe(b, "quic-bench", "bench/main.zig", target, optimize);
@@ -655,4 +679,15 @@ pub fn build(b: *std.Build) void {
     const install_bench = b.addInstallArtifact(bench, .{});
     const bench_step = b.step("bench", "Build benchmarks");
     bench_step.dependOn(&install_bench.step);
+    
+    // TLS benchmarks
+    const bench_tls_hs = addExe(b, "bench_tls_handshake", "bench/bench_tls_handshake.zig", target, .ReleaseFast);
+    bench_tls_hs.root_module.addImport("quic_tls13", tls13_mod);
+    bench_tls_hs.root_module.addImport("quic_tls", quic_tls_mod);
+    const install_bench_tls_hs = b.addInstallArtifact(bench_tls_hs, .{});
+    bench_step.dependOn(&install_bench_tls_hs.step);
+    
+    const bench_tls_aead = addExe(b, "bench_tls_aead", "bench/bench_tls_aead.zig", target, .ReleaseFast);
+    const install_bench_tls_aead = b.addInstallArtifact(bench_tls_aead, .{});
+    bench_step.dependOn(&install_bench_tls_aead.step);
 }

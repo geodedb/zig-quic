@@ -28,6 +28,8 @@ const ks = @import("quic_tls");
 const x509 = @import("x509");
 const sig = @import("sig");
 const tls13_full = @import("tls13_full.zig");
+const alert_mod = @import("alert");
+const zero_rtt_mod = @import("zero_rtt");
 const logger = @import("quic_logger");
 const transport_params = @import("quic_transport_params");
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
@@ -84,6 +86,7 @@ pub const HandshakeError = error{
     AlpnNegotiationFailed,
     NoSignatureScheme,
     FinishedVerifyFailed,
+    DowngradeAttempt,
 };
 
 /// Traffic direction relative to the current endpoint when installing secrets (RFC 8446 §7.1).
@@ -575,6 +578,8 @@ pub const Context = struct {
     negotiated_alpn: ?[]u8 = null,
     negotiated_signature: ?tls13_full.SignatureScheme = null,
     handshake_secret: ?[H.digest_length]u8 = null,
+    client_priv: ?[32]u8 = null,
+    client_pub: ?[32]u8 = null,
 
     /// Initializes a new TLS 1.3 context with the specified configuration and callbacks.
     pub fn init(config: Config, callbacks: Callbacks) Context {
@@ -592,6 +597,8 @@ pub const Context = struct {
             .negotiated_alpn = null,
             .negotiated_signature = null,
             .handshake_secret = null,
+            .client_priv = null,
+            .client_pub = null,
         };
     }
 
@@ -726,6 +733,10 @@ pub const Context = struct {
                     self.phase = .negotiating;
                 }
             },
+            .server_hello => {
+                if (self.config.role != .Client) return HandshakeError.UnexpectedMessage;
+                try self.handleServerHello(parsed.body);
+            },
             .finished => try self.handlePeerFinished(level, parsed.body, raw),
             else => {},
         }
@@ -737,6 +748,11 @@ pub const Context = struct {
                 if (self.config.role != .Server) return;
                 self.transcripts.client_hello_hash = self.transcripts.handshake.finalize();
                 try self.driveServerHandshakeFlight();
+            },
+            .server_hello => {
+                if (self.config.role != .Client) return;
+                // After processing ServerHello, transcript already updated; checkpoint ClientHello+ServerHello hash
+                self.transcripts.client_hello_hash = self.transcripts.client_hello_hash orelse undefined; // keep existing
             },
             .finished => try self.handleFinishedPostActions(level),
             else => {},
@@ -763,6 +779,10 @@ pub const Context = struct {
         if (level != .Handshake) return;
         try self.ensureApplicationSecrets();
         self.confirmPeerFinished();
+        // Client must send its Finished after verifying server Finished
+        if (self.config.role == .Client and !self.flags.local_finished_sent) {
+            try self.sendClientFinished();
+        }
     }
 
     fn ensureApplicationSecrets(self: *Context) !void {
@@ -785,6 +805,8 @@ pub const Context = struct {
                 if (!recv_slot.valid) try self.installTrafficSecret(.Application, .recv, apps.server_app);
             },
         }
+        // Cache exporter master when first deriving application secrets
+        if (!self.secrets.exporter_master.valid) self.secrets.exporter_master.store(.Application, apps.exporter_master);
     }
 
     fn appendOutbound(self: *Context, level: EncryptionLevel, msg: []const u8, update_transcript: bool) !void {
@@ -933,12 +955,177 @@ pub const Context = struct {
         self.markLocalFinished();
     }
 
+    fn startClientHandshake(self: *Context) !void {
+        if (self.config.role != .Client) return;
+        if (self.client_priv != null) return; // already started
+        // Generate X25519 key pair
+        var priv: [32]u8 = undefined;
+        std.crypto.random.bytes(&priv);
+        const server_pubkey = std.crypto.dh.X25519.recoverPublicKey(priv) catch return HandshakeError.UnsupportedKeyShareGroup;
+        self.client_priv = priv;
+        self.client_pub = server_pubkey;
+        // Build ClientHello using offered params
+        var body = std.ArrayList(u8){};
+        defer body.deinit(self.allocator);
+        try body.appendSlice(self.allocator, &.{ 0x03, 0x03 }); // legacy_version
+        var rnd: [32]u8 = undefined; std.crypto.random.bytes(&rnd); try body.appendSlice(self.allocator, &rnd);
+        try body.append(self.allocator, 0); // empty session id
+        // cipher suites (vector len=2 -> one suite)
+        try body.appendSlice(self.allocator, &.{ 0x00, 0x02, 0x13, 0x01 });
+        // compression methods
+        try body.appendSlice(self.allocator, &.{ 0x01, 0x00 });
+        var ext_buf = std.ArrayList(u8){}; defer ext_buf.deinit(self.allocator);
+        // supported_versions
+        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x2b, 0x00, 0x03, 0x02, 0x03, 0x04 });
+        // supported_groups (x25519)
+        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x1d });
+        // signature_algorithms
+        const sigs = self.config.supported_signature_schemes;
+        if (sigs.len != 0) {
+            const list_len: u16 = @intCast(sigs.len * 2);
+            const ext_len: u16 = list_len + 2;
+            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x0d, @intCast(ext_len >> 8), @intCast(ext_len & 0xff), @intCast(list_len >> 8), @intCast(list_len & 0xff) });
+            for (sigs) |scheme| {
+                const val: u16 = switch (scheme) { .ed25519 => 0x0807, .ecdsa_secp256r1_sha256 => 0x0403, .ecdsa_secp384r1_sha384 => 0x0503, .rsa_pss_sha256 => 0x0804 };
+                try ext_buf.appendSlice(self.allocator, &.{ @intCast(val >> 8), @intCast(val & 0xff) });
+            }
+        }
+        // key_share
+        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x33 });
+        const key_share_len: u16 = 2 + 2 + 32;
+        const total_len: u16 = key_share_len + 2;
+        try ext_buf.appendSlice(self.allocator, &.{ @intCast(total_len >> 8), @intCast(total_len & 0xff) });
+        try ext_buf.appendSlice(self.allocator, &.{ @intCast(key_share_len >> 8), @intCast(key_share_len & 0xff) });
+        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x1d });
+        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 32 });
+        try ext_buf.appendSlice(self.allocator, self.client_pub.?[0..]);
+        // ALPN
+        if (self.config.alpn_protocols) |alpn_list| if (alpn_list.len != 0) {
+            var names_len: usize = 0; for (alpn_list) |p| names_len += 1 + p.len;
+            const list_len: u16 = @intCast(names_len);
+            const ext_len: u16 = list_len + 2;
+            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x10, @intCast(ext_len >> 8), @intCast(ext_len & 0xff), @intCast(list_len >> 8), @intCast(list_len & 0xff) });
+            for (alpn_list) |p| { try ext_buf.append(self.allocator, @intCast(p.len)); try ext_buf.appendSlice(self.allocator, p); }
+        };
+        // QUIC transport parameters (client sends its TP in CH)
+        if (self.config.quic_transport_parameters) |tp| {
+            const tp_len: u16 = @intCast(tp.len);
+            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x39, @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
+            try ext_buf.appendSlice(self.allocator, tp);
+        }
+        // finalize extensions
+        const exts_len: u16 = @intCast(ext_buf.items.len);
+        try body.appendSlice(self.allocator, &.{ @intCast(exts_len >> 8), @intCast(exts_len & 0xff) });
+        try body.appendSlice(self.allocator, ext_buf.items);
+        const body_len: u32 = @intCast(body.items.len);
+        const msg = try self.allocator.alloc(u8, 4 + body.items.len);
+        msg[0] = @intFromEnum(HsType.client_hello);
+        msg[1] = @intCast((body_len >> 16) & 0xff);
+        msg[2] = @intCast((body_len >> 8) & 0xff);
+        msg[3] = @intCast(body_len & 0xff);
+        @memcpy(msg[4..], body.items);
+        defer self.allocator.free(msg);
+        try self.appendOutbound(.Initial, msg, true);
+        self.transcripts.client_hello_hash = self.transcripts.handshake.finalize();
+        if (self.phase == .initial) self.phase = .negotiating;
+    }
+
+    fn handleServerHello(self: *Context, body: []const u8) !void {
+        // Minimal parse: skip legacy_version(2) + random(32) + session_id
+        if (body.len < 2 + 32 + 1) return HandshakeError.UnexpectedMessage;
+        const random = body[2..34];
+        // Downgrade sentinel check (RFC 8446 4.1.3)
+        if (random.len >= 32) {
+            const last8 = random[24..32];
+            if (std.mem.eql(u8, last8, "DOWNGRD\x00") or std.mem.eql(u8, last8, "DOWNGRD\x01")) {
+                return HandshakeError.DowngradeAttempt;
+            }
+        }
+        var pos: usize = 2 + 32; // after legacy_version+random
+        if (pos >= body.len) return HandshakeError.UnexpectedMessage;
+        const sid_len: usize = body[pos]; pos += 1 + sid_len; if (pos + 2 + 1 > body.len) return HandshakeError.UnexpectedMessage;
+        pos += 2; // cipher_suite
+        pos += 1; // compression
+        if (pos + 2 > body.len) return HandshakeError.UnexpectedMessage;
+        const exts_len: usize = (@as(usize, body[pos]) << 8) | @as(usize, body[pos + 1]); pos += 2;
+        if (pos + exts_len > body.len) return HandshakeError.UnexpectedMessage;
+        const exts_end = pos + exts_len;
+        var server_pub: ?[32]u8 = null;
+        while (pos + 4 <= exts_end) {
+            const etype = (@as(u16, body[pos]) << 8) | body[pos + 1];
+            const elen = (@as(usize, body[pos + 2]) << 8) | body[pos + 3];
+            pos += 4;
+            if (pos + elen > exts_end) return HandshakeError.UnexpectedMessage;
+            if (etype == 0x0033) { // key_share
+                if (elen < 4 + 32) return HandshakeError.MissingKeyShare;
+                const group = (@as(u16, body[pos]) << 8) | body[pos + 1];
+                const klen = (@as(u16, body[pos + 2]) << 8) | body[pos + 3];
+                if (group != 0x001d or klen != 32 or pos + 4 + 32 > pos + elen) return HandshakeError.UnsupportedKeyShareGroup;
+                var kp: [32]u8 = undefined;
+                @memcpy(&kp, body[pos + 4 .. pos + 4 + 32]);
+                server_pub = kp;
+            }
+            pos += elen;
+        }
+        if (server_pub == null) return HandshakeError.MissingKeyShare;
+        const priv = self.client_priv orelse return HandshakeError.UnexpectedMessage;
+        const shared = std.crypto.dh.X25519.scalarmult(priv, server_pub.?) catch return HandshakeError.UnsupportedKeyShareGroup;
+        const sh_snapshot = self.transcripts.handshake.finalize();
+        const hs = deriveHandshakeTraffic(shared[0..], sh_snapshot);
+        self.handshake_secret = hs.handshake;
+        try self.installTrafficSecret(.Handshake, .send, hs.client_hs);
+        try self.installTrafficSecret(.Handshake, .recv, hs.server_hs);
+        self.phase = .keys_installed;
+    }
+
+    fn sendClientFinished(self: *Context) !void {
+        const slot = self.secrets.slot(.Handshake, .send);
+        if (!slot.valid) return HandshakeError.UnexpectedMessage;
+        var transcript_snapshot = self.transcripts.handshake;
+        const hash_before = transcript_snapshot.finalize();
+        const verify_data = deriveFinishedVerifyData(slot.value, hash_before);
+        const fin_msg = try encodeHandshake(self.allocator, .finished, verify_data[0..]);
+        defer self.allocator.free(fin_msg);
+        try self.appendOutbound(.Handshake, fin_msg, true);
+        self.markLocalFinished();
+    }
+
     fn notifyMetadata(self: *Context) void {
         if (self.flags.metadata_notified) return;
         if (self.callbacks.on_handshake_metadata) |cb| {
             cb(self, self.metadataView()) catch {};
         }
         self.flags.metadata_notified = true;
+    }
+
+    // RFC 8446 §7.5 Exporter interface
+    pub fn exportSecret(self: *Context, label: []const u8, out: []u8) !void {
+        const exp_slot = &self.secrets.exporter_master;
+        if (!exp_slot.valid) return HandshakeError.UnexpectedMessage;
+        const th = self.transcripts.finished_hash orelse blk: {
+            var snap = self.transcripts.handshake; break :blk snap.finalize();
+        };
+        var derived: [H.digest_length]u8 = undefined;
+        ks.expandLabel(exp_slot.value, label, &th, &derived) catch return HandshakeError.UnexpectedMessage;
+        const n = @min(out.len, derived.len);
+        @memcpy(out[0..n], derived[0..n]);
+        if (n < out.len) @memset(out[n..], 0);
+    }
+
+    // Perform a sender key update for application traffic (RFC 8446 §7.2)
+    pub fn performKeyUpdateSend(self: *Context) !void {
+        const send_slot = self.secrets.slot(.Application, .send);
+        if (!send_slot.valid) return HandshakeError.UnexpectedMessage;
+        const next = ks.updateTrafficSecret(send_slot.value);
+        send_slot.store(.Application, next);
+    }
+
+    // Accept a peer key update by rotating receive secret
+    pub fn performKeyUpdateRecv(self: *Context) !void {
+        const recv_slot = self.secrets.slot(.Application, .recv);
+        if (!recv_slot.valid) return HandshakeError.UnexpectedMessage;
+        const next = ks.updateTrafficSecret(recv_slot.value);
+        recv_slot.store(.Application, next);
     }
 };
 
@@ -1156,6 +1343,7 @@ pub fn deriveQuicHandshakeKeys(client_or_server_hs_secret: [H.digest_length]u8, 
 pub fn deriveApplicationTraffic(handshake_secret: [H.digest_length]u8, transcript_hash: [H.digest_length]u8) struct {
     client_app: [H.digest_length]u8,
     server_app: [H.digest_length]u8,
+    exporter_master: [H.digest_length]u8,
 } {
     // master_secret = HKDF-Extract(Derive-Secret(handshake_secret, "derived", ""), 0)
     var derived2: [H.digest_length]u8 = undefined;
@@ -1165,7 +1353,9 @@ pub fn deriveApplicationTraffic(handshake_secret: [H.digest_length]u8, transcrip
     var s_app: [H.digest_length]u8 = undefined;
     ks.expandLabel(master, "c ap traffic", &transcript_hash, &c_app) catch unreachable;
     ks.expandLabel(master, "s ap traffic", &transcript_hash, &s_app) catch unreachable;
-    return .{ .client_app = c_app, .server_app = s_app };
+    var exp_master: [H.digest_length]u8 = undefined;
+    ks.expandLabel(master, "exp master", &transcript_hash, &exp_master) catch unreachable;
+    return .{ .client_app = c_app, .server_app = s_app, .exporter_master = exp_master };
 }
 
 /// Derive QUIC 1-RTT keys from an application traffic secret.
