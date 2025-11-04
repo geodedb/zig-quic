@@ -1680,6 +1680,7 @@ pub const Connection = struct {
     /// Write STREAM data enforcing flow-control; may emit *_BLOCKED frames.
     /// Write data to a stream (simplified slice, no FIN flag in this helper slice yet).
     pub fn writeStream(self: *Connection, id: u64, data: []const u8) !usize {
+        std.debug.print("DEBUG writeStream: stream_id={}, data_len={}\n", .{id, data.len});
         if (id == 0) {
             // Lazy open of client-initiated stream 0: allow application to call writeStream
             // without an explicit openStream( true ) first. This mirrors common QUIC API
@@ -1693,16 +1694,23 @@ pub const Connection = struct {
             }
             if (self.stream_send_aborted) return error.StreamStopped;
         } else {
-            if (self.stream_txs.getPtr(id) == null) return error.InvalidStream;
+            if (self.stream_txs.getPtr(id) == null) {
+                std.debug.print("DEBUG writeStream: InvalidStream - no TX state for stream {}\n", .{id});
+                return error.InvalidStream;
+            }
             // Safely inspect per-stream TX state (abort / FIN flags)
             if (self.stream_txs.getPtr(id)) |st| {
-                if (st.aborted or st.fin_sent) return error.StreamStopped;
+                if (st.aborted or st.fin_sent) {
+                    std.debug.print("DEBUG writeStream: StreamStopped - aborted={} fin_sent={}\n", .{st.aborted, st.fin_sent});
+                    return error.StreamStopped;
+                }
             }
         }
         // Check if handshake is complete and app keys are ready
         if (!self.hasConfirmedAppTxKeys()) {
             // If handshake is not complete, return 0 to indicate no data sent
             // The caller can retry later when the connection is ready
+            std.debug.print("DEBUG writeStream: No confirmed app TX keys yet\n", .{});
             return 0;
         }
         const tx = self.app_tx_keys.?;

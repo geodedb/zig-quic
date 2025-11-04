@@ -150,13 +150,27 @@ pub fn main() !void {
                 i += 1;
                 continue;
             };
+            std.debug.print("DEBUG: Accepted stream {d}\n", .{stream_id});
 
             // Read from the accepted stream
             var buf: [4096]u8 = undefined;
-            const n = api.readStream(conn, stream_id, buf[0..]) catch 0;
+            const n = api.readStream(conn, stream_id, buf[0..]) catch |err| blk: {
+                std.debug.print("DEBUG: readStream error: {}\n", .{err});
+                break :blk 0;
+            };
             if (n > 0) {
-                std.debug.print("stream {d} received {d} bytes\n", .{stream_id, n});
-                _ = api.writeStream(conn, stream_id, buf[0..n]) catch 0;
+                std.debug.print("stream {d} received {d} bytes: ", .{stream_id, n});
+                for (buf[0..@min(n, 32)]) |b| std.debug.print("{x:0>2} ", .{b});
+                if (n > 32) std.debug.print("...", .{});
+                std.debug.print("\n", .{});
+
+                const written = api.writeStream(conn, stream_id, buf[0..n]) catch |err| blk: {
+                    std.debug.print("DEBUG: writeStream error: {}\n", .{err});
+                    break :blk 0;
+                };
+                std.debug.print("DEBUG: Wrote {d} bytes to stream {d}\n", .{written, stream_id});
+            } else {
+                std.debug.print("DEBUG: No data read from stream {d}\n", .{stream_id});
             }
 
             i += 1;
