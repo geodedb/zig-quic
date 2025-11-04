@@ -49,8 +49,38 @@
 // can negotiate a timeout period, errors can cause immediate connection
 // teardown, and a stateless mechanism provides for termination of
 // connections after one endpoint has lost state.
+// Core modules
 const api = @import("src/quic/api.zig");
+const tls13 = @import("src/quic/tls/tls13.zig");
+const frame_mod = @import("src/quic/frame.zig");
+const packet_mod = @import("src/quic/packet.zig");
+const varint_mod = @import("src/quic/varint.zig");
+const transport_params = @import("src/quic/transport_params.zig");
+const crypto_mod = @import("src/quic/crypto_quic.zig");
+const config_mod = @import("src/quic/config.zig");
+const logger_mod = @import("src/quic/logger.zig");
+
+// ============================================================================
+// Utility Modules
+// ============================================================================
+
+/// PEM certificate/key parsing utilities
 pub const pem = @import("src/quic/pem.zig");
+
+/// Byteorder utilities (used internally by conn, endpoint, varint, and token modules)
+/// Note: When using this library as a vendor dependency, you may need to configure
+/// the byteorder module in your build.zig. See VENDOR_USAGE.md for details.
+pub const byteorder = @import("src/byteorder/byteorder.zig");
+
+/// Variable-length integer encoding/decoding (RFC 9000 §16)
+pub const varint = varint_mod;
+
+/// Logger interface for QUIC events and debugging
+pub const logger = logger_mod;
+
+// ============================================================================
+// QUIC Core Types (from api.zig)
+// ============================================================================
 
 pub const QuicVersion = api.QuicVersion;
 pub const Role = api.Role;
@@ -96,3 +126,108 @@ pub const flush = api.flush;
 
 pub const hasIncomingStreams = api.hasIncomingStreams;
 pub const getFirstStream = api.getFirstStream;
+
+// ============================================================================
+// TLS 1.3 Types and Functions
+// ============================================================================
+
+/// TLS 1.3 configuration for QUIC connections
+pub const TlsConfig = tls13.Config;
+
+/// TLS 1.3 context for managing handshake state
+pub const TlsContext = tls13.Context;
+
+/// TLS 1.3 callbacks for handling handshake events
+pub const TlsCallbacks = tls13.Callbacks;
+
+/// TLS handshake metadata
+pub const HandshakeMetadata = tls13.HandshakeMetadata;
+
+/// TLS handshake errors
+pub const HandshakeError = tls13.HandshakeError;
+
+/// TLS signature schemes (RFC 8446)
+pub const SignatureScheme = tls13.SignatureScheme;
+
+/// TLS encryption levels
+pub const EncryptionLevel = tls13.EncryptionLevel;
+
+/// TLS handshake phase
+pub const HandshakePhase = tls13.HandshakePhase;
+
+/// Traffic direction (send/receive)
+pub const TrafficDirection = tls13.TrafficDirection;
+
+/// Session ticket storage
+pub const TicketStore = tls13.TicketStore;
+
+/// Session ticket entry
+pub const TicketEntry = tls13.TicketEntry;
+
+/// View of a session ticket
+pub const TicketEntryView = tls13.TicketEntryView;
+
+/// ClientHello view for parsing
+pub const ClientHelloView = tls13.ClientHelloView;
+
+// ============================================================================
+// QUIC Frame Types (RFC 9000 §19)
+// ============================================================================
+
+/// QUIC frame type enumeration
+pub const FrameType = frame_mod.FrameType;
+
+/// QUIC frame union type
+pub const Frame = frame_mod.Frame;
+
+/// ACK frame range
+pub const AckRange = frame_mod.AckRange;
+
+/// ECN counts for ACK frames
+pub const EcnCounts = frame_mod.EcnCounts;
+
+// ============================================================================
+// QUIC Transport Parameters (RFC 9000 §18)
+// ============================================================================
+
+/// Transport parameter IDs
+pub const TransportParamId = transport_params.Id;
+
+/// Transport parameters structure
+pub const TransportParams = transport_params.TransportParams;
+
+/// Preferred address for connection migration
+pub const PreferredAddress = transport_params.PreferredAddress;
+
+// ============================================================================
+// QUIC Packet Types and Functions
+// ============================================================================
+
+/// Packet module for packet encoding/decoding
+pub const packet = packet_mod;
+
+// ============================================================================
+// Cryptographic Functions
+// ============================================================================
+
+/// AEAD suite enumeration (AES-128-GCM, ChaCha20-Poly1305)
+pub const AeadSuite = crypto_mod.AeadSuite;
+
+/// QUIC cryptographic keys (key, IV, header protection)
+pub const QuicKeys = crypto_mod.QuicKeys;
+
+/// Derive QUIC initial secrets from connection ID
+pub const deriveInitialSecrets = crypto_mod.deriveInitialSecrets;
+
+/// Protect a QUIC packet with AEAD encryption
+pub const protectPacket = crypto_mod.protectPacket;
+
+/// Unprotect a QUIC packet with AEAD decryption
+pub const unprotectPacket = crypto_mod.unprotectPacket;
+
+// ============================================================================
+// Configuration Types
+// ============================================================================
+
+/// Detailed QUIC configuration (from config.zig)
+pub const DetailedQuicConfig = config_mod.QuicConfig;
