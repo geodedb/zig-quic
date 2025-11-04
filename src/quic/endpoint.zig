@@ -1203,7 +1203,8 @@ pub const Endpoint = struct {
                 };
                 defer self.allocator.free(dec_res.payload);
                 std.debug.print("Client decoded 1-RTT packet - payload_len={}, pn={}\n", .{ dec_res.payload.len, dec_res.packet_number });
-                const pn_full: u64 = conn.expandPnApp(@intCast(dec_res.packet_number), dec_res.packet_number_len);
+                // dec_res.packet_number is already expanded by unprotectInitial - don't expand again!
+                const pn_full: u64 = dec_res.packet_number;
                 conn.trackRecvPnApp(pn_full);
                 // If we decoded with previous keys, decrement allowance and drop them when exhausted
                 if (used_prev) {
