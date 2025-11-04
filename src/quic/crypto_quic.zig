@@ -10,31 +10,33 @@ const Aes128Gcm = std.crypto.aead.aes_gcm.Aes128Gcm;
 const Poly1305 = std.crypto.onetimeauth.Poly1305;
 const ChaCha20IETF = std.crypto.stream.chacha.ChaCha20IETF;
 
-/// Expand a truncated packet number using the expected packet number.
+/// Expand a truncated packet number using the largest received packet number.
 /// Based on RFC 9000 Appendix A.3
-fn expandPacketNumber(truncated: u64, pn_len: u3, expected: u64) u64 {
+/// @param truncated: The truncated packet number from the packet header
+/// @param pn_len: Length of the truncated packet number in bytes (1-4)
+/// @param largest_pn: The largest packet number successfully received and processed (0 if none)
+fn expandPacketNumber(truncated: u64, pn_len: u3, largest_pn: u64) u64 {
     const pn_nbits: u6 = @as(u6, pn_len) * 8;
     const pn_win: u64 = @as(u64, 1) << pn_nbits;
     const pn_hwin: u64 = pn_win / 2;
     const pn_mask: u64 = pn_win - 1;
 
-    // For the first packet, if we have no expectation, just return the truncated value
-    // This handles the case where the client starts with a random packet number
-    if (expected == 0 and truncated < pn_win) {
-        return truncated;
-    }
+    // Compute expected_pn as per RFC 9000 Appendix A.3
+    // This is the next packet number we expect to receive
+    const expected_pn: u64 = largest_pn +% 1;
 
-    var candidate: u64 = (expected & ~pn_mask) | truncated;
+    // Standard RFC 9000 A.3 algorithm - no special cases
+    var candidate: u64 = (expected_pn & ~pn_mask) | truncated;
 
     // Determine if we need to adjust the candidate
     // Check if candidate is too far in the past
-    if (expected >= pn_hwin) {
-        if (candidate <= expected - pn_hwin and candidate < (1 << 62)) {
+    if (expected_pn >= pn_hwin) {
+        if (candidate <= expected_pn - pn_hwin and candidate < (1 << 62)) {
             candidate += pn_win;
         }
     }
     // Check if candidate is too far in the future
-    if (candidate > expected + pn_hwin and candidate >= pn_win) {
+    if (candidate > expected_pn + pn_hwin and candidate >= pn_win) {
         candidate -= pn_win;
     }
 
@@ -94,20 +96,26 @@ pub fn aeadDecrypt(
     var tag_arr: [16]u8 = undefined;
     @memcpy(tag_arr[0..], ciphertext_and_tag[ciphertext_and_tag.len - 16 ..]);
 
-    // Debug logging for AEAD decryption
-    std.debug.print("aeadDecrypt: suite={}, pn={}, ct_len={}, tag_len=16\n", .{ suite, packet_number, ct.len });
-    dumpBytes("AEAD decrypt key", key);
-    dumpBytes("AEAD decrypt iv", iv);
+    // CRITICAL DEBUG: Full AEAD decrypt parameters
+    std.debug.print("\n=== AEAD DECRYPT DEBUG ===\n", .{});
+    std.debug.print("Suite: {}, PN: {}, CT_len: {}, AAD_len: {}\n", .{ suite, packet_number, ct.len, aad.len });
+    std.debug.print("Key (16B): ", .{});
+    for (key) |b| std.debug.print("{x:0>2}", .{b});
+    std.debug.print("\nIV (12B):  ", .{});
+    for (iv) |b| std.debug.print("{x:0>2}", .{b});
     var nonce_debug: [12]u8 = undefined;
     xorNonce(&nonce_debug, iv, packet_number);
-    dumpBytes("AEAD decrypt nonce", &nonce_debug);
-    dumpBytes("AEAD decrypt aad", aad);
-    if (ct.len <= 32) {
-        dumpBytes("AEAD decrypt ciphertext", ct);
-    } else {
-        dumpBytes("AEAD decrypt ciphertext (first 32)", ct[0..32]);
-    }
-    dumpBytes("AEAD decrypt tag", &tag_arr);
+    std.debug.print("\nNonce:     ", .{});
+    for (nonce_debug) |b| std.debug.print("{x:0>2}", .{b});
+    std.debug.print("\nAAD ({} B): ", .{aad.len});
+    for (aad) |b| std.debug.print("{x:0>2}", .{b});
+    std.debug.print("\nCT:        ", .{});
+    const ct_show = @min(32, ct.len);
+    for (ct[0..ct_show]) |b| std.debug.print("{x:0>2}", .{b});
+    if (ct.len > 32) std.debug.print("... ({} more)", .{ct.len - 32});
+    std.debug.print("\nTag:       ", .{});
+    for (tag_arr) |b| std.debug.print("{x:0>2}", .{b});
+    std.debug.print("\n=========================\n", .{});
 
     switch (suite) {
         .chacha20_poly1305 => {
@@ -389,7 +397,7 @@ pub fn protectInitial(
 }
 
 /// Undo header protection and decrypt Initial-like packet payload.
-/// expected_pn is used to expand the truncated packet number.
+/// largest_pn is the largest packet number successfully received (0 if none).
 pub fn unprotectInitial(
     suite: AeadSuite,
     aead_key: []const u8,
@@ -401,7 +409,7 @@ pub fn unprotectInitial(
     hp_sample16: *const [16]u8,
     ciphertext_and_tag: []const u8,
     out_plaintext: []u8,
-    expected_pn: u64, // Expected packet number for expansion
+    largest_pn: u64, // Largest packet number successfully received (0 if none)
 ) !usize {
     if (ciphertext_and_tag.len < 16) return error.AuthenticationFailed;
 
@@ -427,14 +435,14 @@ pub fn unprotectInitial(
     var i: usize = 0;
     while (i < pn_bytes.len) : (i += 1) pn_val_truncated = (pn_val_truncated << 8) | pn_bytes[i];
 
-    std.debug.print("Packet number extraction: pn_bytes={any}, pn_val_truncated={}, expected_pn={}\n", .{ pn_bytes, pn_val_truncated, expected_pn });
+    std.debug.print("Packet number extraction: pn_bytes={any}, pn_val_truncated={}, largest_pn={}\n", .{ pn_bytes, pn_val_truncated, largest_pn });
 
-    // Expand the truncated packet number using the expected value
-    const pn_val = expandPacketNumber(pn_val_truncated, @intCast(pn_bytes.len), expected_pn);
+    // Expand the truncated packet number per RFC 9000 Appendix A.3
+    const pn_val = expandPacketNumber(pn_val_truncated, @intCast(pn_bytes.len), largest_pn);
 
-    std.debug.print("Expanded packet number: {} (from truncated {} with expected {})\n", .{ pn_val, pn_val_truncated, expected_pn });
+    std.debug.print("Expanded packet number: {} (from truncated {} with largest_pn {})\n", .{ pn_val, pn_val_truncated, largest_pn });
 
-    if (expected_pn == 0) {
+    if (largest_pn == 0) {
         std.debug.print("First packet: truncated={x:0>4} ({}) -> expanded={}\n", .{ pn_val_truncated, pn_val_truncated, pn_val });
     }
 
@@ -470,7 +478,7 @@ pub fn unprotectInitialAutoSample(
     header_prefix: []const u8,
     ciphertext_and_tag: []const u8,
     out_plaintext: []u8,
-    expected_pn: u64,
+    largest_pn: u64,
 ) !usize {
     if (ciphertext_and_tag.len < 16) return error.AuthenticationFailed;
     const pn_len = pn_bytes.len;
@@ -495,7 +503,7 @@ pub fn unprotectInitialAutoSample(
     }
     const hex_str = hex_stream.getWritten();
     std.debug.print("Header protection removal - first {} bytes of ciphertext_and_tag: {s}\n", .{ debug_len, hex_str });
-    std.debug.print("  pn_len={}, ciphertext_and_tag.len={}, expected_pn={}\n", .{ pn_len, ciphertext_and_tag.len, expected_pn });
+    std.debug.print("  pn_len={}, ciphertext_and_tag.len={}, largest_pn={}\n", .{ pn_len, ciphertext_and_tag.len, largest_pn });
 
     // Debug: Show the masked packet number bytes
     var pn_hex_buf: [12]u8 = undefined; // 4 bytes max * 3 chars
@@ -577,9 +585,9 @@ pub fn unprotectInitialAutoSample(
     var pn_trunc: u64 = 0;
     var i: usize = 0;
     while (i < pn_len) : (i += 1) pn_trunc = (pn_trunc << 8) | pn_bytes[i];
-    const full_pn = expandPacketNumber(pn_trunc, @intCast(pn_len), expected_pn);
+    const full_pn = expandPacketNumber(pn_trunc, @intCast(pn_len), largest_pn);
 
-    std.debug.print("expandPacketNumber: truncated={} pn_len={} expected={} -> full={}\n", .{ pn_trunc, pn_len, expected_pn, full_pn });
+    std.debug.print("expandPacketNumber: truncated={} pn_len={} largest_pn={} -> full={}\n", .{ pn_trunc, pn_len, largest_pn, full_pn });
     std.debug.print("  Nonce IV: ", .{});
     for (aead_iv) |b| std.debug.print("{X:0>2}\n", .{b});
     std.debug.print("", .{});

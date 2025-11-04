@@ -195,7 +195,7 @@ pub fn decodeShortProtected(
     packet_bytes: []const u8,
     dcid_len: usize,
     keys: AeadKeys,
-    expected_pn: u64,
+    largest_pn: u64,
 ) !DecodedShort {
     if (packet_bytes.len < 1 + dcid_len + 1) return error.Truncated;
     var i: usize = 0;
@@ -242,7 +242,7 @@ pub fn decodeShortProtected(
         &sample16,
         ct,
         payload,
-        expected_pn, // Use connection's largest_received + 1 for correct PN expansion
+        largest_pn, // Largest packet number successfully received (0 if none)
     );
 
     if (decrypt_result) |_| {
@@ -254,7 +254,7 @@ pub fn decodeShortProtected(
         // Some QUIC implementations use zero-length DCIDs for 1-RTT packets
         if (dcid_len > 0) {
             std.debug.print("1-RTT decryption failed with dcid_len={}, retrying with dcid_len=0\n", .{dcid_len});
-            return decodeShortProtected(alloc, packet_bytes, 0, keys, expected_pn);
+            return decodeShortProtected(alloc, packet_bytes, 0, keys, largest_pn);
         }
         return err;
     }

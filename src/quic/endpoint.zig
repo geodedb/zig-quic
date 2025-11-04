@@ -1147,10 +1147,10 @@ pub const Endpoint = struct {
                 // Attempt decode using current RX keys first. On failure, try derived NEXT keys, then previous keys.
                 var used_next: bool = false;
                 var used_prev: bool = false;
-                // RFC 9000 Appendix A.3: Use largest received PN + 1 as expected value for expansion
-                const expected_pn: u64 = if (conn.pn_app.have_any) conn.pn_app.max + 1 else 0;
-                std.debug.print("DEBUG: Decoding 1-RTT packet, have_any={}, pn_app.max={}, expected_pn={}\n", .{ conn.pn_app.have_any, conn.pn_app.max, expected_pn });
-                var dec_res = packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }, expected_pn) catch blk_dec: {
+                // RFC 9000 Appendix A.3: Pass largest received PN for expansion
+                const largest_pn: u64 = if (conn.pn_app.have_any) conn.pn_app.max else 0;
+                std.debug.print("DEBUG: Decoding 1-RTT packet, have_any={}, pn_app.max={}, largest_pn={}\n", .{ conn.pn_app.have_any, conn.pn_app.max, largest_pn });
+                var dec_res = packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }, largest_pn) catch blk_dec: {
                     // If decryption fails outright, check for stateless reset token match to fail fast.
                     if (conn.looksLikeStatelessReset(bytes)) {
                         std.debug.print("stateless-reset: closing connection\n", .{});
@@ -1168,11 +1168,11 @@ pub const Endpoint = struct {
                             const t2 = ks.deriveKeyIvHp(next_secret);
                             mat = .{ .key = t2.key, .iv = t2.iv, .hp = t2.hp };
                         }
-                        const try_next = packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = mat.key, .iv = mat.iv, .hp = mat.hp }, expected_pn) catch blk_prev: {
+                        const try_next = packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = mat.key, .iv = mat.iv, .hp = mat.hp }, largest_pn) catch blk_prev: {
                             // Finally, if we have previous RX keys during transition, try them
                             if (conn.rx_prev_keys) |kp| {
                                 used_prev = true;
-                                break :blk_prev packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = kp.key, .iv = kp.iv, .hp = kp.hp }, expected_pn) catch return;
+                                break :blk_prev packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = kp.key, .iv = kp.iv, .hp = kp.hp }, largest_pn) catch return;
                             }
                             // Authentication failed across current/next/prev keys
                             conn.onAeadAuthFailure();
@@ -1196,7 +1196,7 @@ pub const Endpoint = struct {
                     // No secret available for deriving NEXT; try previous only
                     if (conn.rx_prev_keys) |kp2| {
                         used_prev = true;
-                        break :blk_dec packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = kp2.key, .iv = kp2.iv, .hp = kp2.hp }, expected_pn) catch return;
+                        break :blk_dec packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = kp2.key, .iv = kp2.iv, .hp = kp2.hp }, largest_pn) catch return;
                     }
                     conn.onAeadAuthFailure();
                     return;
@@ -1920,8 +1920,8 @@ pub const Endpoint = struct {
                 std.debug.print("DEBUG: After appendNTimes, pt_list.items.len={}\n", .{pt_list.items.len});
                 const pt_slice = pt_list.items;
                 std.debug.print("DEBUG: pt_slice.len={}\n", .{pt_slice.len});
-                const expected_pn = if (conn.pn_initial.have_any) conn.pn_initial.max + 1 else 0;
-                std.debug.print("DEBUG: expected_pn={}\n", .{expected_pn});
+                const largest_pn = if (conn.pn_initial.have_any) conn.pn_initial.max else 0;
+                std.debug.print("DEBUG: largest_pn={}\n", .{largest_pn});
 
                 // Debug logging for decryption attempt
                 std.debug.print("DEBUG: About to attempt Initial packet decryption (pn_len_try={})\n", .{pn_len_try});
@@ -1943,7 +1943,7 @@ pub const Endpoint = struct {
                     header_prefix,
                     ct,
                     pt_slice,
-                    expected_pn,
+                    largest_pn,
                 ) catch |err| {
                     std.debug.print("DEBUG: Decryption failed with error: {}\n", .{err});
                     continue;
@@ -2921,10 +2921,10 @@ pub const Endpoint = struct {
                 }
                 const pt_slice = pt_list.items;
 
-                const expected_pn_hs = if (conn.pn_handshake.have_any) conn.pn_handshake.max + 1 else 0;
+                const largest_pn_hs = if (conn.pn_handshake.have_any) conn.pn_handshake.max else 0;
                 std.debug.print("=== HANDSHAKE PACKET DECRYPTION ===\n", .{});
                 std.debug.print("pn_start={}, end_total={}, actual_pn_len={}\n", .{ pn_start, end_total, actual_pn_len });
-                std.debug.print("Attempting Handshake decrypt: expected_pn={}\n", .{expected_pn_hs});
+                std.debug.print("Attempting Handshake decrypt: largest_pn={}\n", .{largest_pn_hs});
 
                 // Step 3: Call integrated decrypt function with correct PN length slice
                 var masked_header = first;
@@ -2941,9 +2941,9 @@ pub const Endpoint = struct {
                     header_prefix,
                     full_pn_and_payload, // Correctly positioned buffer for sample extraction
                     pt_slice,
-                    expected_pn_hs,
+                    largest_pn_hs,
                 ) catch |err| {
-                    std.debug.print("Handshake packet decrypt failed: {} (actual_pn_len={}, expected_pn={})\n", .{ err, actual_pn_len, expected_pn_hs });
+                    std.debug.print("Handshake packet decrypt failed: {} (actual_pn_len={}, largest_pn={})\n", .{ err, actual_pn_len, largest_pn_hs });
                     std.debug.print("  RX keys: key[0..4]={any}, iv[0..4]={any}, hp[0..4]={any}\n", .{ rx_keys.key[0..4], rx_keys.iv[0..4], rx_keys.hp[0..4] });
                     conn.onAeadAuthFailure();
                     return;
