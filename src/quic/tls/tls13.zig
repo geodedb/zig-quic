@@ -1761,9 +1761,9 @@ pub const Engine = struct {
                     self.transcript.update(msg_data);
                     const show_len = @min(8, msg_data.len);
                     if (show_len >= 8) {
-                        std.debug.print("TLS: Added {} bytes to transcript (recv): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...\n", .{ msg_data.len, msg_data[0], msg_data[1], msg_data[2], msg_data[3], msg_data[4], msg_data[5], msg_data[6], msg_data[7] });
+                        std.debug.print("[TRANSCRIPT-RECV] Added {} bytes to transcript (recv): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...\n", .{ msg_data.len, msg_data[0], msg_data[1], msg_data[2], msg_data[3], msg_data[4], msg_data[5], msg_data[6], msg_data[7] });
                     } else {
-                        std.debug.print("TLS: Added {} bytes to transcript (recv)\n", .{msg_data.len});
+                        std.debug.print("[TRANSCRIPT-RECV] Added {} bytes to transcript (recv)\n", .{msg_data.len});
                     }
                 }
 
@@ -2213,7 +2213,7 @@ pub const Engine = struct {
                 0x14 => "Finished",
                 else => "Unknown",
             };
-            std.debug.print("[TRANSCRIPT] Adding {s} (0x{X:0>2}) len={} bytes, first 8: ", .{ type_name, msg_type, data.len - 4 });
+            std.debug.print("[TRANSCRIPT-QUEUE] Adding {s} (0x{X:0>2}) len={} bytes, first 8: ", .{ type_name, msg_type, data.len - 4 });
             const show_len = @min(8, data.len);
             var i: usize = 0;
             while (i < show_len) : (i += 1) {
@@ -2223,7 +2223,7 @@ pub const Engine = struct {
 
             // Show first 32 bytes for debugging
             if (data.len > 8) {
-                std.debug.print("[TRANSCRIPT] Full {s} message ({} bytes):\n", .{ type_name, data.len });
+                std.debug.print("[TRANSCRIPT-QUEUE] Full {s} message ({} bytes):\n", .{ type_name, data.len });
                 i = 0;
                 while (i < @min(64, data.len)) : (i += 1) {
                     std.debug.print("{X:0>2} ", .{data[i]});

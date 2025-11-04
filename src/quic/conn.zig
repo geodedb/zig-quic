@@ -1239,11 +1239,19 @@ pub const Connection = struct {
 
             // Queue ServerHello to update transcript, compute ECDHE, and derive secrets
             // (tryComputeShared is called internally by queueRealServerHello)
-            self.tls.queueRealServerHello() catch |err| {
-                std.debug.print("Server: Failed to queue ServerHello in pushCrypto: {}\n", .{err});
-                // Don't proceed if ServerHello generation failed
-                return;
-            };
+            // CRITICAL: Only queue if not already queued (prevents duplicate transcript addition)
+            std.debug.print("DEBUG PATH1: sh_seen={}, about to check...\n", .{self.tls.sh_seen});
+            if (!self.tls.sh_seen) {
+                std.debug.print("DEBUG PATH1: Calling queueRealServerHello...\n", .{});
+                self.tls.queueRealServerHello() catch |err| {
+                    std.debug.print("Server: Failed to queue ServerHello in pushCrypto: {}\n", .{err});
+                    // Don't proceed if ServerHello generation failed
+                    return;
+                };
+                std.debug.print("DEBUG PATH1: After queueRealServerHello, sh_seen={}\n", .{self.tls.sh_seen});
+            } else {
+                std.debug.print("DEBUG PATH1: SKIPPED queueRealServerHello because sh_seen=true\n", .{});
+            }
 
             // Copy handshake secrets from TLS engine to Connection
             std.debug.print("Server: Checking handshake secrets - client: {}, server: {}\n", .{
@@ -1273,11 +1281,16 @@ pub const Connection = struct {
                 // causing Path 1's condition (!had_peer_pub) to fail on subsequent frames.
                 if (self.role == .Server) {
                     // Queue ServerHello if not already queued
+                    std.debug.print("DEBUG PATH2: sh_seen={}, about to check...\n", .{self.tls.sh_seen});
                     if (!self.tls.sh_seen) {
+                        std.debug.print("DEBUG PATH2: Calling queueRealServerHello...\n", .{});
                         self.tls.queueRealServerHello() catch |err| {
                             std.debug.print("Server: Failed to queue ServerHello in Path 2: {}\n", .{err});
                             return;
                         };
+                        std.debug.print("DEBUG PATH2: After queueRealServerHello, sh_seen={}\n", .{self.tls.sh_seen});
+                    } else {
+                        std.debug.print("DEBUG PATH2: SKIPPED queueRealServerHello because sh_seen=true\n", .{});
                     }
 
                     // Queue the complete handshake flight (EncryptedExtensions + Certificate + CertificateVerify + Finished)
