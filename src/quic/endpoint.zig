@@ -3199,6 +3199,11 @@ pub const Endpoint = struct {
 
                         // With TLS outbox drained, attempt delayed 1-RTT key derivation.
                         conn.maybeDeriveAppKeysAfterFlush();
+
+                        // If handshake just completed (app keys now exist), close any stale connections from same peer
+                        if (conn.app_rx_keys != null) {
+                            self.closeStaleConnectionsForPeer(conn);
+                        }
                     }
                 }
                 // Send ACK in Handshake space if ack-eliciting seen and we have hs_tx_keys
@@ -3418,6 +3423,45 @@ pub const Endpoint = struct {
             },
             else => return,
         }
+    }
+
+    /// Close old connections from the same peer when a new connection completes its handshake.
+    /// This prevents routing packets to stale connections with mismatched keys.
+    pub fn closeStaleConnectionsForPeer(self: *Endpoint, new_conn: *conn_mod.Connection) void {
+        if (new_conn.app_rx_keys == null) return; // Only run after handshake complete (app keys derived)
+
+        const peer_hash = hashSockaddr(&new_conn.peer.storage, new_conn.peer.len);
+        var to_close = std.ArrayList(*conn_mod.Connection){};
+        defer to_close.deinit(self.allocator.*);
+
+        var it = self.conns.iterator();
+        while (it.next()) |e| {
+            const c = e.value_ptr.*;
+            // Skip if same connection object
+            if (c == new_conn) continue;
+
+            // Check if this connection is from the same peer
+            const c_peer_hash = hashSockaddr(&c.peer.storage, c.peer.len);
+            if (c_peer_hash != peer_hash) continue;
+
+            // This is an old connection from the same peer - mark for closure
+            std.debug.print("Closing stale connection with our_scid=", .{});
+            for (c.our_scid.bytes[0..c.our_scid.len]) |b| std.debug.print("{x:0>2} ", .{b});
+            std.debug.print("(peer has new handshake with our_scid=", .{});
+            for (new_conn.our_scid.bytes[0..new_conn.our_scid.len]) |b| std.debug.print("{x:0>2} ", .{b});
+            std.debug.print(")\n", .{});
+
+            _ = to_close.append(self.allocator.*, c) catch continue;
+        }
+
+        // Close all stale connections
+        for (to_close.items) |c| {
+            // Send CONNECTION_CLOSE and mark as closed
+            c.sendConnectionClose(0x00, "Replaced by new connection from same peer") catch {};
+            c.closed = true;
+        }
+
+        std.debug.print("Closed {} stale connection(s) for peer, keeping new connection\n", .{to_close.items.len});
     }
 
     /// Remove all map entries / timers referencing connections that have transitioned to closed state.
