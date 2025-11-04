@@ -2347,6 +2347,22 @@ pub const Connection = struct {
         const tx = tls13.deriveQuicAppKeys(tx_secret, version_v2);
         self.app_rx_keys = .{ .key = rx.key, .iv = rx.iv, .hp = rx.hp };
         self.app_tx_keys = .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp };
+
+        // Debug: Log derived key material
+        std.debug.print("\n=== 1-RTT KEYS DERIVED ({s}) ===\n", .{if (self.role == .Server) "Server" else "Client"});
+        std.debug.print("RX (decrypt) secret[0..8]: ", .{});
+        for (rx_secret[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\nRX key[0..8]: ", .{});
+        for (rx.key[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\nRX iv[0..8]: ", .{});
+        for (rx.iv[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\nRX hp[0..8]: ", .{});
+        for (rx.hp[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\nTX (encrypt) secret[0..8]: ", .{});
+        for (tx_secret[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\nTX key[0..8]: ", .{});
+        for (tx.key[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\n", .{});
         // Seed traffic secrets for future updates
         self.app_rx_secret = rx_secret;
         self.app_tx_secret = tx_secret;

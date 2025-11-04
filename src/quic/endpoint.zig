@@ -1132,7 +1132,7 @@ pub const Endpoint = struct {
                 std.debug.print("No connection found for short header packet from peer\n", .{});
                 return;
             };
-            std.debug.print("Found connection for short header packet - has_app_rx={}, has_app_tx={}\n", .{ conn.app_rx_keys != null, conn.app_tx_keys != null });
+            std.debug.print("=== RECEIVED 1-RTT PACKET === size={}, dcid_len={}, has_app_rx={}, has_app_tx={}\n", .{ bytes.len, dcid_len, conn.app_rx_keys != null, conn.app_tx_keys != null });
             // Test-only debug: log short-header match and ECN bits/keys state
             if (self.test_capture_enabled) {
                 const has_rx = (conn.app_rx_keys != null);
@@ -1144,12 +1144,22 @@ pub const Endpoint = struct {
             // Track bytes received from unvalidated address for amplification gating
             conn.addRxUnvalidated(bytes.len);
             if (conn.app_rx_keys) |rx_keys| {
+                std.debug.print("\n=== 1-RTT DECRYPT ATTEMPT ===\n", .{});
+                std.debug.print("Packet first 32 bytes: ", .{});
+                for (bytes[0..@min(32, bytes.len)]) |b| std.debug.print("{X:0>2} ", .{b});
+                std.debug.print("\nUsing RX keys: key[0..8]=", .{});
+                for (rx_keys.key[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+                std.debug.print(", iv[0..8]=", .{});
+                for (rx_keys.iv[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+                std.debug.print(", hp[0..8]=", .{});
+                for (rx_keys.hp[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+                std.debug.print("\n", .{});
                 // Attempt decode using current RX keys first. On failure, try derived NEXT keys, then previous keys.
                 var used_next: bool = false;
                 var used_prev: bool = false;
                 // RFC 9000 Appendix A.3: Pass largest received PN for expansion
                 const largest_pn: u64 = if (conn.pn_app.have_any) conn.pn_app.max else 0;
-                std.debug.print("DEBUG: Decoding 1-RTT packet, have_any={}, pn_app.max={}, largest_pn={}\n", .{ conn.pn_app.have_any, conn.pn_app.max, largest_pn });
+                std.debug.print("dcid_len={}, largest_pn={}\n", .{ dcid_len, largest_pn });
                 var dec_res = packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }, largest_pn) catch blk_dec: {
                     // If decryption fails outright, check for stateless reset token match to fail fast.
                     if (conn.looksLikeStatelessReset(bytes)) {
@@ -1202,7 +1212,7 @@ pub const Endpoint = struct {
                     return;
                 };
                 defer self.allocator.free(dec_res.payload);
-                std.debug.print("Client decoded 1-RTT packet - payload_len={}, pn={}\n", .{ dec_res.payload.len, dec_res.packet_number });
+                std.debug.print("✅ 1-RTT AEAD SUCCESS - payload_len={}, pn={}\n", .{ dec_res.payload.len, dec_res.packet_number });
                 // dec_res.packet_number is already expanded by unprotectInitial - don't expand again!
                 const pn_full: u64 = dec_res.packet_number;
                 conn.trackRecvPnApp(pn_full);
