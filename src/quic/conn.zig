@@ -1840,7 +1840,7 @@ pub const Connection = struct {
         _ = (frame.Frame{ .reset_stream = .{ .stream_id = stream_id, .error_code = app_error_code, .final_size = self.stream_send_off } }).write(w) catch 0;
         const pkt = try packet.encodeShortProtected(
             self.allocator.*,
-            self.our_scid.bytes[0..self.our_scid.len],
+            self.shortHeaderDcid(),
             @as(u32, @truncate(self.pn_app_tx)),
             2,
             frames.items,
@@ -2230,7 +2230,7 @@ pub const Connection = struct {
         _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
         const out = packet.encodeShortProtected(
             self.allocator.*,
-            self.our_scid.bytes[0..self.our_scid.len],
+            self.shortHeaderDcid(),
             @as(u32, @truncate(self.pn_app_tx)),
             2,
             frames.items,
@@ -2567,7 +2567,7 @@ pub const Connection = struct {
         self.probe_pending_size = target_udp_payload;
         const pkt = try packet.encodeShortProtected(
             self.allocator.*,
-            self.our_scid.bytes[0..dcid_len],
+            self.shortHeaderDcid(),
             @as(u32, @truncate(self.pn_app_tx)),
             2,
             frames.items,

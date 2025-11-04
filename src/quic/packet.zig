@@ -184,7 +184,7 @@ pub fn encodeShortProtected(
 
 /// Result of decoding a protected short header packet.
 pub const DecodedShort = struct {
-    packet_number: u32,
+    packet_number: u64,  // Changed from u32 to support full QUIC packet number range
     packet_number_len: u3,
     payload: []u8,
 };
@@ -260,11 +260,18 @@ pub fn decodeShortProtected(
     }
 
     // Compute PN value from the previously unmasked temporary PN bytes
-    var pn_val: u32 = 0;
+    var pn_val_truncated: u32 = 0;
     var j: usize = 0;
-    while (j < pn_len) : (j += 1) pn_val = (pn_val << 8) | tmp_pn[j];
+    while (j < pn_len) : (j += 1) pn_val_truncated = (pn_val_truncated << 8) | tmp_pn[j];
 
-    return .{ .packet_number = pn_val, .packet_number_len = pn_len, .payload = payload };
+    // CRITICAL FIX: Expand the packet number per RFC 9000 Appendix A.3
+    // unprotectInitial() already expanded it internally for decryption,
+    // but we need to return the expanded value to endpoint.zig
+    const pn_val_expanded = crypto.expandPacketNumber(pn_val_truncated, @intCast(pn_len), largest_pn);
+
+    std.debug.print("decodeShortProtected: truncated PN={} -> expanded PN={} (largest_pn={})\n", .{ pn_val_truncated, pn_val_expanded, largest_pn });
+
+    return .{ .packet_number = pn_val_expanded, .packet_number_len = pn_len, .payload = payload };
 }
 
 /// Compute initial client/server traffic keys for QUIC v1/v2 given DCID bytes.

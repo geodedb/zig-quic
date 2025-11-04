@@ -15,7 +15,7 @@ const ChaCha20IETF = std.crypto.stream.chacha.ChaCha20IETF;
 /// @param truncated: The truncated packet number from the packet header
 /// @param pn_len: Length of the truncated packet number in bytes (1-4)
 /// @param largest_pn: The largest packet number successfully received and processed (0 if none)
-fn expandPacketNumber(truncated: u64, pn_len: u3, largest_pn: u64) u64 {
+pub fn expandPacketNumber(truncated: u64, pn_len: u3, largest_pn: u64) u64 {
     const pn_nbits: u6 = @as(u6, pn_len) * 8;
     const pn_win: u64 = @as(u64, 1) << pn_nbits;
     const pn_hwin: u64 = pn_win / 2;
