@@ -1321,7 +1321,7 @@ pub const Transcript = struct {
 
             // Print full message bytes for ClientHello and ServerHello
             if (msg_type == 0x01 or msg_type == 0x02) {
-                std.debug.print("[TRANSCRIPT] Full {s} message ({} bytes):\n", .{type_name, msg.len});
+                std.debug.print("[TRANSCRIPT] Full {s} message ({} bytes):\n", .{ type_name, msg.len });
                 var i: usize = 0;
                 while (i < msg.len) : (i += 32) {
                     std.debug.print("  ", .{});
@@ -2016,8 +2016,21 @@ pub const Engine = struct {
                     std.debug.print("TLS: Finished verification result: {}\n", .{ok});
                     self.updateFinishedVerified(ok);
 
-                    // Add the Finished message to the transcript AFTER verification
+                    // RFC 8446 §7.1: Application traffic secrets must be derived from transcript
+                    // hash "ClientHello...server Finished" (NOT including client Finished).
+                    // CRITICAL FIX: Capture transcript hash BEFORE adding peer Finished to it.
                     if (ok) {
+                        // For SERVER: at this point transcript = CH...SH...EE...Cert...CV...server Finished
+                        //             and we're processing client Finished - DO NOT include it in app secrets
+                        // For CLIENT: at this point transcript = CH...SH...EE...Cert...CV...server Finished
+                        //             and we're processing server Finished - we need this transcript for app secrets
+
+                        // Derive application secrets BEFORE adding peer Finished
+                        // This ensures we use CH...server Finished for both sides
+                        std.debug.print("TLS: Deriving application traffic secrets (before adding peer Finished to transcript)\n", .{});
+                        _ = self.computeApplicationSecrets();
+
+                        // NOW add the peer Finished to transcript for resumption master secret derivation
                         const finished_msg = data[off - p.n .. off];
                         self.transcript.update(finished_msg);
                         const show_len = @min(8, finished_msg.len);
@@ -2026,11 +2039,6 @@ pub const Engine = struct {
                         } else {
                             std.debug.print("TLS: Added {} bytes to transcript (recv-finished)\n", .{finished_msg.len});
                         }
-
-                        // RFC 8446 §7.1: Derive application traffic secrets AFTER verifying peer Finished
-                        // The transcript now includes: ClientHello...ServerHello...server Finished...client Finished
-                        std.debug.print("TLS: Deriving application traffic secrets after peer Finished verified\n", .{});
-                        _ = self.computeApplicationSecrets();
                     }
                 }
                 // NewSessionTicket parsing (client side only for now)
@@ -2120,7 +2128,8 @@ pub const Engine = struct {
             const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th);
             self.handshake_client_secret = hs.client_hs;
             self.handshake_server_secret = hs.server_hs;
-            _ = self.computeApplicationSecrets();
+            // REMOVED: Do NOT compute application secrets here - we only have CH+SH,
+            // missing EE+Cert+CV+Finished. App secrets computed after receiving peer Finished.
         }
     }
 
@@ -2467,6 +2476,14 @@ pub const Engine = struct {
             (self.ch_recv and self.sh_seen);
         if (!ch_sh_ready) return null;
         const th = self.transcript.finalize();
+
+        // DEBUG: Show transcript hash being used for application secret derivation
+        std.debug.print("=== computeApplicationSecrets ({s}) ===\n", .{if (self.role == .Server) "Server" else "Client"});
+        std.debug.print("Transcript hash for app secrets (first 16 bytes): ", .{});
+        for (th[0..@min(16, th.len)]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\n", .{});
+        std.debug.print("Transcript hash length: {} bytes\n", .{th.len});
+
         // Recompute master_secret path locally to retain master
         const early_secret = ks.extract(&[_]u8{}, &[_]u8{});
         var derived: [H.digest_length]u8 = undefined;
@@ -2480,6 +2497,15 @@ pub const Engine = struct {
         var s_app: [H.digest_length]u8 = undefined;
         ks.expandLabel(master, "c ap traffic", &th, &c_app) catch return null;
         ks.expandLabel(master, "s ap traffic", &th, &s_app) catch return null;
+
+        // DEBUG: Show derived application secrets
+        std.debug.print("Client app secret (first 16 bytes): ", .{});
+        for (c_app[0..@min(16, c_app.len)]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\n", .{});
+        std.debug.print("Server app secret (first 16 bytes): ", .{});
+        for (s_app[0..@min(16, s_app.len)]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\n=========================================\n", .{});
+
         return .{ .client = c_app, .server = s_app };
     }
 

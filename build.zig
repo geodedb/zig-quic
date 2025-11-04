@@ -498,6 +498,13 @@ pub fn build(b: *std.Build) void {
         const run_test_sh = b.addRunArtifact(test_sh);
         test_step.dependOn(&run_test_sh.step);
 
+        // Regression test for RFC 8446 transcript hash handling in 1-RTT key derivation
+        const test_transcript = addTst(b, "tests/test_transcript_hash.zig", target, optimize);
+        test_transcript.root_module.addImport("quic_tls13", tls13_mod);
+        test_transcript.root_module.addImport("quic_tls", quic_tls_mod);
+        const run_test_transcript = b.addRunArtifact(test_transcript);
+        test_step.dependOn(&run_test_transcript.step);
+
         const test_pn = addTst(b, "tests/test_pn_expansion.zig", target, optimize);
         test_pn.root_module.addImport("quic_tls13", tls13_mod);
         test_pn.root_module.addImport("quic_conn", quic_conn_mod);

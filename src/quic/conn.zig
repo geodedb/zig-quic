@@ -1163,6 +1163,8 @@ pub const Connection = struct {
         self.peer_finished_verified = verified;
         if (self.peer_finished_verified) {
             std.debug.print("{s}: Peer Finished verified; short-header transmission unlocked\n", .{if (self.role == .Server) "Server" else "Client"});
+            // NOTE: Do NOT drop Handshake keys here! maybeDropHandshakeKeys() will handle it safely
+            // after we finish processing the current packet.
         } else {
             std.debug.print("{s}: Peer Finished verification revoked\n", .{if (self.role == .Server) "Server" else "Client"});
         }
@@ -1680,7 +1682,7 @@ pub const Connection = struct {
     /// Write STREAM data enforcing flow-control; may emit *_BLOCKED frames.
     /// Write data to a stream (simplified slice, no FIN flag in this helper slice yet).
     pub fn writeStream(self: *Connection, id: u64, data: []const u8) !usize {
-        std.debug.print("DEBUG writeStream: stream_id={}, data_len={}\n", .{id, data.len});
+        std.debug.print("DEBUG writeStream: stream_id={}, data_len={}\n", .{ id, data.len });
         if (id == 0) {
             // Lazy open of client-initiated stream 0: allow application to call writeStream
             // without an explicit openStream( true ) first. This mirrors common QUIC API
@@ -1701,7 +1703,7 @@ pub const Connection = struct {
             // Safely inspect per-stream TX state (abort / FIN flags)
             if (self.stream_txs.getPtr(id)) |st| {
                 if (st.aborted or st.fin_sent) {
-                    std.debug.print("DEBUG writeStream: StreamStopped - aborted={} fin_sent={}\n", .{st.aborted, st.fin_sent});
+                    std.debug.print("DEBUG writeStream: StreamStopped - aborted={} fin_sent={}\n", .{ st.aborted, st.fin_sent });
                     return error.StreamStopped;
                 }
             }
@@ -2396,13 +2398,23 @@ pub const Connection = struct {
         // Clear cached Initial keys when they're dropped
         self.initial_rx_keys = null;
         self.initial_tx_keys = null;
-        // Only drop handshake keys if TLS outbox already flushed (no pending Finished or other handshake messages).
+
+        // RFC 9001 §4.1.2: Server MUST wait until peer Finished is received before dropping handshake keys.
+        // Client can drop immediately after sending its Finished (once TLS outbox flushed).
         const pending_tls: bool = (self.tls.outbox.items.len > 0);
-        if (!pending_tls) {
+        const can_drop_hs_keys = if (self.role == .Server)
+            // Server: wait for peer_finished_verified (client Finished received)
+            (self.peer_finished_verified and !pending_tls)
+        else
+            // Client: drop after sending Finished (once outbox flushed)
+            !pending_tls;
+
+        if (can_drop_hs_keys) {
+            std.debug.print("{s}: Dropping Handshake keys (peer_finished_verified={}, pending_tls={})\n", .{ if (self.role == .Server) "Server" else "Client", self.peer_finished_verified, pending_tls });
             self.hs_rx_keys = null;
             self.hs_tx_keys = null;
         } else {
-            std.debug.print("{s}: Deferring Handshake key drop until CRYPTO outbox flushed ({} bytes pending)\n", .{ if (self.role == .Server) "Server" else "Client", self.tls.outbox.items.len });
+            std.debug.print("{s}: Deferring Handshake key drop (peer_finished_verified={}, pending_tls={}, {} bytes pending)\n", .{ if (self.role == .Server) "Server" else "Client", self.peer_finished_verified, pending_tls, self.tls.outbox.items.len });
         }
         // Server: send HANDSHAKE_DONE and reaffirm initial MAX_* once
         if (self.role == .Server and !self.handshake_done_sent) {
