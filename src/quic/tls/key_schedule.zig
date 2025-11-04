@@ -82,6 +82,7 @@ pub fn expandLabel(prk: [H.digest_length]u8, label: []const u8, context: []const
     const alloc = fba.allocator();
     const info = try hkdfLabel(alloc, label, context, @as(u16, @intCast(out.len)));
     defer alloc.free(info);
+    std.log.debug("expandLabel: label='{s}', context.len={}, out.len={}, info[0..8]={X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{ label, context.len, out.len, info[0], info[1], info[2], info[3], info[4], info[5], info[6], info[7] });
     hkdfExpand(out, prk, info);
 }
 

@@ -2537,12 +2537,36 @@ pub const Engine = struct {
 
         // Recompute master_secret path locally to retain master
         const early_secret = ks.extract(&[_]u8{}, &[_]u8{});
+        std.debug.print("DERIVATION: early_secret (first 16): ", .{});
+        for (early_secret[0..16]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\n", .{});
+        
         var derived: [H.digest_length]u8 = undefined;
         ks.expandLabel(early_secret, "derived", &[_]u8{}, &derived) catch return null;
+        std.debug.print("DERIVATION: derived1 (first 16): ", .{});
+        for (derived[0..16]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\n", .{});
+        
+        std.debug.print("DERIVATION: ECDHE secret (first 16): ", .{});
+        for (self.ecdhe_secret.?[0..16]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\n", .{});
+        
         const handshake_secret = ks.extract(&derived, self.ecdhe_secret.?);
+        std.debug.print("DERIVATION: handshake_secret (first 16): ", .{});
+        for (handshake_secret[0..16]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\n", .{});
+        
         var derived2: [H.digest_length]u8 = undefined;
         ks.expandLabel(handshake_secret, "derived", &[_]u8{}, &derived2) catch return null;
+        std.debug.print("DERIVATION: derived2 (first 16): ", .{});
+        for (derived2[0..16]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\n", .{});
+        
         const master = ks.extract(&derived2, &[_]u8{});
+        std.debug.print("DERIVATION: master_secret (FULL 32 bytes): ", .{});
+        for (master) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\n", .{});
+        
         self.master_secret = master; // cache for tickets
         var c_app: [H.digest_length]u8 = undefined;
         var s_app: [H.digest_length]u8 = undefined;
