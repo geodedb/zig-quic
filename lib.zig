@@ -49,16 +49,16 @@
 // can negotiate a timeout period, errors can cause immediate connection
 // teardown, and a stateless mechanism provides for termination of
 // connections after one endpoint has lost state.
-// Core modules
+// Core modules - using named imports configured in build.zig
 const api = @import("src/quic/api.zig");
-const tls13 = @import("src/quic/tls/tls13.zig");
-const frame_mod = @import("src/quic/frame.zig");
-const packet_mod = @import("src/quic/packet.zig");
-const varint_mod = @import("src/quic/varint.zig");
-const transport_params = @import("src/quic/transport_params.zig");
-const crypto_mod = @import("src/quic/crypto_quic.zig");
-const config_mod = @import("src/quic/config.zig");
-const logger_mod = @import("src/quic/logger.zig");
+const tls13 = @import("quic_tls13");
+const frame_mod = @import("quic_frame");
+const packet_mod = @import("quic_packet");
+const varint_mod = @import("quic_varint");
+const transport_params = @import("quic_transport_params");
+const crypto_mod = @import("quic_crypto");
+const config_mod = @import("config.zig");
+const logger_mod = @import("quic_logger");
 
 // ============================================================================
 // Utility Modules
@@ -70,7 +70,7 @@ pub const pem = @import("src/quic/pem.zig");
 /// Byteorder utilities (used internally by conn, endpoint, varint, and token modules)
 /// Note: When using this library as a vendor dependency, you may need to configure
 /// the byteorder module in your build.zig. See VENDOR_USAGE.md for details.
-pub const byteorder = @import("src/byteorder/byteorder.zig");
+pub const byteorder = @import("byteorder");
 
 /// Variable-length integer encoding/decoding (RFC 9000 §16)
 pub const varint = varint_mod;
