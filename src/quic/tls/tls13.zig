@@ -964,6 +964,63 @@ pub const Context = struct {
         defer self.allocator.free(ee_msg);
         try self.appendOutbound(.Handshake, ee_msg, true);
 
+        // CRITICAL: Send Certificate and CertificateVerify before Finished (RFC 8446 §4.4.1)
+        // Server must prove possession of private key corresponding to certificate
+        if (self.config.server_cert_der) |cert_der| {
+            std.debug.print("Server: Sending Certificate message ({} bytes DER)\n", .{cert_der.len});
+
+            // Build Certificate message using tls13_full helper
+            const cert_body = try tls13_full.buildCertificate(self.allocator, cert_der);
+            defer self.allocator.free(cert_body);
+
+            const cert_msg = try encodeHandshake(self.allocator, .certificate, cert_body);
+            defer self.allocator.free(cert_msg);
+            try self.appendOutbound(.Handshake, cert_msg, true);
+
+            // Build CertificateVerify message
+            // Signature is over transcript hash including Certificate message we just added
+            const hash_for_sig = self.transcripts.handshake.finalize();
+
+            // Infer signature algorithm from certificate if not explicitly configured
+            const sig_alg = self.config.server_sig_alg orelse blk: {
+                const detected = x509.inferSignatureAlgorithm(cert_der) catch {
+                    std.debug.print("Server: Failed to infer sig alg, defaulting to ECDSA P-256\n", .{});
+                    break :blk .ecdsa_secp256r1_sha256;
+                };
+                break :blk detected;
+            };
+
+            std.debug.print("Server: Signing CertificateVerify with algorithm: {s}\n", .{@tagName(sig_alg)});
+
+            // Get private key from config
+            const priv_key = self.config.server_priv_key orelse {
+                std.debug.print("Server: ERROR - No private key configured!\n", .{});
+                return HandshakeError.ConfigError;
+            };
+
+            // Sign the transcript hash with proper TLS 1.3 context string
+            const signature = try sig.signCertificateVerify(
+                sig_alg,
+                priv_key,
+                "TLS 1.3, server CertificateVerify",
+                &hash_for_sig,
+                self.allocator,
+            );
+            defer self.allocator.free(signature);
+
+            // Build CertificateVerify message body (RFC 8446 §4.4.3)
+            const cv_body = try tls13_full.buildCertificateVerify(self.allocator, sig_alg, signature);
+            defer self.allocator.free(cv_body);
+
+            const cv_msg = try encodeHandshake(self.allocator, .certificate_verify, cv_body);
+            defer self.allocator.free(cv_msg);
+            try self.appendOutbound(.Handshake, cv_msg, true);
+
+            std.debug.print("Server: Certificate and CertificateVerify sent successfully\n", .{});
+        } else {
+            std.debug.print("Server: WARNING - No certificate configured, proceeding without Certificate/CertificateVerify\n", .{});
+        }
+
         const hash_before_finished = self.transcripts.handshake.finalize();
         self.transcripts.finished_hash = hash_before_finished;
         const verify_data = deriveFinishedVerifyData(hs.server_hs, hash_before_finished);
