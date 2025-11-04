@@ -339,7 +339,7 @@ e2e-test-go: build
 	@echo "========== E2E Test: Go Client (quic-go) =========="
 	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
 	@echo "Starting Zig server..."
-	@bash -c './zig-out/bin/quic-server 127.0.0.1:4433 > /tmp/e2e-go.log 2>&1 & \
+	@bash -c './zig-out/bin/quic-server 127.0.0.1:4433 --cert server.crt --key server.key > /tmp/e2e-go.log 2>&1 & \
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \
@@ -366,7 +366,7 @@ e2e-test-python: build
 	@echo "========== E2E Test: Python Client (aioquic) =========="
 	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
 	@echo "Starting Zig server..."
-	@bash -c './zig-out/bin/quic-server 127.0.0.1:4433 > /tmp/e2e-python.log 2>&1 & \
+	@bash -c './zig-out/bin/quic-server 127.0.0.1:4433  --cert server.crt --key server.key > /tmp/e2e-python.log 2>&1 & \
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \
@@ -394,7 +394,7 @@ e2e-test-rust: build
 	@echo "========== E2E Test: Rust Client (quinn) =========="
 	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
 	@echo "Starting Zig server..."
-	@bash -c './zig-out/bin/quic-server 127.0.0.1:4433 > /tmp/e2e-rust.log 2>&1 & \
+	@bash -c './zig-out/bin/quic-server 127.0.0.1:4433  --cert server.crt --key server.key > /tmp/e2e-rust.log 2>&1 & \
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \
@@ -429,7 +429,7 @@ e2e-test-zig: build
 	@echo "========== E2E Test: Zig Client =========="
 	@bash -c 'killall quic-server quic-client 2>/dev/null || true; sleep 1'
 	@echo "Starting Zig server..."
-	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --insecure > /tmp/e2e-zig.log 2>&1 & \
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433  --cert server.crt --key server.key > /tmp/e2e-zig.log 2>&1 & \
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \

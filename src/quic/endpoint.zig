@@ -2101,6 +2101,13 @@ pub const Endpoint = struct {
                             conn.pushCrypto(cr.data) catch |err| {
                                 std.debug.print("DEBUG: ERROR: Failed to push CRYPTO data to TLS: {}\n", .{err});
                             };
+
+                            // CRITICAL: After pushCrypto, check if app keys were just derived and close stale connections
+                            if (conn.app_rx_keys != null and conn.app_tx_keys != null) {
+                                std.debug.print("INITIAL CRYPTO: App keys NOW READY - calling closeStaleConnectionsForPeer\n", .{});
+                                self.closeStaleConnectionsForPeer(conn);
+                            }
+
                             conn.crypto_rx_off_initial += @intCast(cr.data.len);
                             std.debug.print("DEBUG: Updated crypto_rx_off_initial to {}\n", .{conn.crypto_rx_off_initial});
 
@@ -2174,6 +2181,20 @@ pub const Endpoint = struct {
                     .padding => {},
                     else => {},
                 }
+            }
+
+            // CRITICAL: After processing Initial CRYPTO and potentially deriving app keys,
+            // close any stale connections from the same peer to prevent key mismatch
+            // This fixes the client-side duplicate connection bug
+            std.debug.print("DEBUG CLEANUP CHECK: app_rx_keys={s}, app_tx_keys={s}\n", .{
+                if (conn.app_rx_keys != null) "SET" else "NULL",
+                if (conn.app_tx_keys != null) "SET" else "NULL",
+            });
+            if (conn.app_rx_keys != null and conn.app_tx_keys != null) {
+                std.debug.print("CALLING closeStaleConnectionsForPeer!\n", .{});
+                self.closeStaleConnectionsForPeer(conn);
+            } else {
+                std.debug.print("SKIPPING closeStaleConnectionsForPeer (keys not ready)\n", .{});
             }
 
             // If address still not validated, enforce 3x amplification limit for any server send
@@ -3058,6 +3079,13 @@ pub const Endpoint = struct {
                             if (cr.offset == conn.crypto_rx_off_handshake) {
                                 // In-order frame, process immediately
                                 conn.pushCrypto(cr.data) catch {};
+
+                                // CRITICAL: After pushCrypto, check if app keys were just derived and close stale connections
+                                if (conn.app_rx_keys != null and conn.app_tx_keys != null) {
+                                    std.debug.print("HANDSHAKE CRYPTO: App keys NOW READY - calling closeStaleConnectionsForPeer\n", .{});
+                                    self.closeStaleConnectionsForPeer(conn);
+                                }
+
                                 conn.crypto_rx_off_handshake += @intCast(cr.data.len);
                                 saw_any = true;
                                 saw_ack_eliciting_hs = true; // CRYPTO is ack-eliciting
@@ -3201,8 +3229,15 @@ pub const Endpoint = struct {
                         conn.maybeDeriveAppKeysAfterFlush();
 
                         // If handshake just completed (app keys now exist), close any stale connections from same peer
+                        std.debug.print("HANDSHAKE CLEANUP CHECK: app_rx_keys={s}, app_tx_keys={s}\n", .{
+                            if (conn.app_rx_keys != null) "SET" else "NULL",
+                            if (conn.app_tx_keys != null) "SET" else "NULL",
+                        });
                         if (conn.app_rx_keys != null) {
+                            std.debug.print("HANDSHAKE: CALLING closeStaleConnectionsForPeer!\n", .{});
                             self.closeStaleConnectionsForPeer(conn);
+                        } else {
+                            std.debug.print("HANDSHAKE: SKIPPING closeStaleConnectionsForPeer (keys not ready)\n", .{});
                         }
                     }
                 }
@@ -3434,14 +3469,39 @@ pub const Endpoint = struct {
         var to_close = std.ArrayList(*conn_mod.Connection){};
         defer to_close.deinit(self.allocator.*);
 
+        std.debug.print("closeStaleConnectionsForPeer: new_conn={*}, peer_hash={x:0>16}, checking {} total connections\n", .{ new_conn, peer_hash, self.conns.count() });
         var it = self.conns.iterator();
+        var checked: usize = 0;
+        var seen = std.ArrayList(*conn_mod.Connection){};
+        defer seen.deinit(self.allocator.*);
+
         while (it.next()) |e| {
             const c = e.value_ptr.*;
+            checked += 1;
+
             // Skip if same connection object
-            if (c == new_conn) continue;
+            if (c == new_conn) {
+                std.debug.print("  [{}] conn={*} - SAME as new_conn (skipping)\n", .{ checked, c });
+                continue;
+            }
+
+            // Skip if we've already processed this connection object
+            var already_seen = false;
+            for (seen.items) |s| {
+                if (s == c) {
+                    already_seen = true;
+                    break;
+                }
+            }
+            if (already_seen) {
+                std.debug.print("  [{}] conn={*} - Already processed (skipping)\n", .{ checked, c });
+                continue;
+            }
+            _ = seen.append(self.allocator.*, c) catch {};
 
             // Check if this connection is from the same peer
             const c_peer_hash = hashSockaddr(&c.peer.storage, c.peer.len);
+            std.debug.print("  [{}] conn={*} - peer_hash={x:0>16}, match={}\n", .{ checked, c, c_peer_hash, c_peer_hash == peer_hash });
             if (c_peer_hash != peer_hash) continue;
 
             // This is an old connection from the same peer - mark for closure
