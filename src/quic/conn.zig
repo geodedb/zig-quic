@@ -1654,23 +1654,23 @@ pub const Connection = struct {
     }
 
     // RFC-9000 2.  Streams
-
+    //
     // Streams in QUIC provide a lightweight, ordered byte-stream
     // abstraction to an application.  Streams can be unidirectional or
     // bidirectional.
-
+    //
     // Streams can be created by sending data.  Other processes associated
     // with stream management -- ending, canceling, and managing flow
     // control -- are all designed to impose minimal overheads.  For
     // instance, a single STREAM frame (Section 19.8) can open, carry data
     // for, and close a stream.  Streams can also be long-lived and can last
     // the entire duration of a connection.
-
+    //
     // Streams can be created by either endpoint, can concurrently send data
     // interleaved with other streams, and can be canceled.  QUIC does not
     // provide any means of ensuring ordering between bytes on different
     // streams.
-
+    //
     // QUIC allows for an arbitrary number of streams to operate
     // concurrently and for an arbitrary amount of data to be sent on any
     // stream, subject to flow control constraints and stream limits; see
@@ -1719,6 +1719,37 @@ pub const Connection = struct {
             return stream_id;
         }
     }
+
+    // RFC-9000 2.2.  Sending and Receiving Data
+    //
+    // STREAM frames (Section 19.8) encapsulate data sent by an application.
+    // An endpoint uses the Stream ID and Offset fields in STREAM frames to
+    // place data in order.
+    //
+    // Endpoints MUST be able to deliver stream data to an application as an
+    // ordered byte stream.  Delivering an ordered byte stream requires that
+    // an endpoint buffer any data that is received out of order, up to the
+    // advertised flow control limit.
+    //
+    // QUIC makes no specific allowances for delivery of stream data out of
+    // order.  However, implementations MAY choose to offer the ability to
+    // deliver data out of order to a receiving application.
+    //
+    // An endpoint could receive data for a stream at the same stream offset
+    // multiple times.  Data that has already been received can be
+    // discarded.  The data at a given offset MUST NOT change if it is sent
+    // multiple times; an endpoint MAY treat receipt of different data at
+    // the same offset within a stream as a connection error of type
+    // PROTOCOL_VIOLATION.
+    //
+    // Streams are an ordered byte-stream abstraction with no other
+    // structure visible to QUIC.  STREAM frame boundaries are not expected
+    // to be preserved when data is transmitted, retransmitted after packet
+    // loss, or delivered to the application at a receiver.
+    //
+    // An endpoint MUST NOT send data on any stream without ensuring that it
+    // is within the flow control limits set by its peer.  Flow control is
+    // described in detail in Section 4.
 
     /// Write STREAM data enforcing flow-control; may emit *_BLOCKED frames.
     /// Write data to a stream (simplified slice, no FIN flag in this helper slice yet).
@@ -2760,7 +2791,7 @@ pub const Connection = struct {
         }
     }
 
-    // 2.1.  Stream Types and Identifiers
+    // RFC-9000 2.1.  Stream Types and Identifiers
     //
     // Streams can be unidirectional or bidirectional.  Unidirectional
     // streams carry data in one direction: from the initiator of the stream

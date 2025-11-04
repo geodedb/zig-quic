@@ -2143,11 +2143,38 @@ pub const Engine = struct {
     pub fn queueCrypto(self: *Engine, data: []const u8) !void {
         try self.outbox.appendSlice(self.allocator, data);
         self.transcript.update(data);
-        const show_len = @min(8, data.len);
-        if (show_len >= 8) {
-            std.debug.print("TLS: Added {} bytes to transcript (queue): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...\n", .{ data.len, data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7] });
-        } else {
-            std.debug.print("TLS: Added {} bytes to transcript (queue)\n", .{data.len});
+
+        // Enhanced logging: show message type and first 32 bytes
+        if (data.len >= 1) {
+            const msg_type = data[0];
+            const type_name = switch (msg_type) {
+                0x01 => "ClientHello",
+                0x02 => "ServerHello",
+                0x08 => "EncryptedExtensions",
+                0x0B => "Certificate",
+                0x0F => "CertificateVerify",
+                0x14 => "Finished",
+                else => "Unknown",
+            };
+            std.debug.print("[TRANSCRIPT] Adding {s} (0x{X:0>2}) len={} bytes, first 8: ", .{ type_name, msg_type, data.len - 4 });
+            const show_len = @min(8, data.len);
+            var i: usize = 0;
+            while (i < show_len) : (i += 1) {
+                std.debug.print("{X:0>2} ", .{data[i]});
+            }
+            std.debug.print("\n", .{});
+
+            // Show first 32 bytes for debugging
+            if (data.len > 8) {
+                std.debug.print("[TRANSCRIPT] Full {s} message ({} bytes):\n", .{ type_name, data.len });
+                i = 0;
+                while (i < @min(64, data.len)) : (i += 1) {
+                    std.debug.print("{X:0>2} ", .{data[i]});
+                    if ((i + 1) % 16 == 0) std.debug.print("\n", .{});
+                }
+                if (data.len > 64) std.debug.print("... ({} more bytes)\n", .{data.len - 64});
+                std.debug.print("\n", .{});
+            }
         }
         // If this was a proper handshake record, flip flags
         if (data.len >= 1) {
@@ -2502,6 +2529,9 @@ pub const Engine = struct {
         std.debug.print("=== computeApplicationSecrets ({s}) - COMPUTING NEW ===\n", .{if (self.role == .Server) "Server" else "Client"});
         std.debug.print("Transcript hash for app secrets (first 16 bytes): ", .{});
         for (th[0..@min(16, th.len)]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\n", .{});
+        std.debug.print("Transcript hash FULL (32 bytes): ", .{});
+        for (th) |b| std.debug.print("{X:0>2} ", .{b});
         std.debug.print("\n", .{});
         std.debug.print("Transcript hash length: {} bytes\n", .{th.len});
 
