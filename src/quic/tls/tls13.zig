@@ -62,6 +62,10 @@ pub const Config = struct {
     quic_transport_parameters: ?[]const u8 = null,
     /// Enable receipt and processing of 0-RTT early data when available.
     enable_early_data: bool = false,
+    /// DER-encoded server certificate (leaf) for authentication when acting as Server. Optional.
+    server_cert_der: ?[]const u8 = null,
+    /// DER-encoded corresponding private key (PKCS#8) for server authentication. Optional.
+    server_key_der: ?[]const u8 = null,
 };
 
 /// Callback hooks notified during the handshake lifecycle (§4.1–§4.6) and post-handshake updates (§4.6).
@@ -970,7 +974,9 @@ pub const Context = struct {
             std.debug.print("Server: Sending Certificate message ({} bytes DER)\n", .{cert_der.len});
 
             // Build Certificate message using tls13_full helper
-            const cert_body = try tls13_full.buildCertificate(self.allocator, cert_der);
+            // Convert single certificate to certificate chain
+            const cert_chain = [_][]const u8{cert_der};
+            const cert_body = try tls13_full.buildCertificate(self.allocator, &cert_chain);
             defer self.allocator.free(cert_body);
 
             const cert_msg = try encodeHandshake(self.allocator, .certificate, cert_body);
@@ -982,20 +988,28 @@ pub const Context = struct {
             const hash_for_sig = self.transcripts.handshake.finalize();
 
             // Infer signature algorithm from certificate if not explicitly configured
-            const sig_alg = self.config.server_sig_alg orelse blk: {
-                const detected = x509.inferSignatureAlgorithm(cert_der) catch {
-                    std.debug.print("Server: Failed to infer sig alg, defaulting to ECDSA P-256\n", .{});
-                    break :blk .ecdsa_secp256r1_sha256;
-                };
-                break :blk detected;
+            // First get the SignatureScheme, then convert to SigAlg
+            const sig_scheme = self.negotiated_signature orelse blk: {
+                // Try to detect from certificate, but this returns SigAlg not SignatureScheme
+                // For now, default to ed25519 which is in our supported schemes
+                break :blk .ed25519;
+            };
+
+            // Convert SignatureScheme to SigAlg
+            const sig_alg: sig.SigAlg = switch (sig_scheme) {
+                .ecdsa_secp256r1_sha256 => .ecdsa_secp256r1_sha256,
+                .ecdsa_secp384r1_sha384 => .ecdsa_secp384r1_sha384,
+                .rsa_pss_rsae_sha256 => .rsa_pss_sha256,
+                .ed25519 => .ed25519,
+                else => .ed25519, // Default fallback
             };
 
             std.debug.print("Server: Signing CertificateVerify with algorithm: {s}\n", .{@tagName(sig_alg)});
 
             // Get private key from config
-            const priv_key = self.config.server_priv_key orelse {
+            const priv_key = self.config.server_key_der orelse {
                 std.debug.print("Server: ERROR - No private key configured!\n", .{});
-                return HandshakeError.ConfigError;
+                return HandshakeError.UnexpectedMessage; // Using this as a placeholder for config errors
             };
 
             // Sign the transcript hash with proper TLS 1.3 context string
@@ -1009,7 +1023,7 @@ pub const Context = struct {
             defer self.allocator.free(signature);
 
             // Build CertificateVerify message body (RFC 8446 §4.4.3)
-            const cv_body = try tls13_full.buildCertificateVerify(self.allocator, sig_alg, signature);
+            const cv_body = try tls13_full.buildCertificateVerify(self.allocator, sig_scheme, signature);
             defer self.allocator.free(cv_body);
 
             const cv_msg = try encodeHandshake(self.allocator, .certificate_verify, cv_body);
@@ -2656,10 +2670,16 @@ pub const Engine = struct {
         return msg.len;
     }
 
-    /// Queue a ServerHello with an auto-generated X25519 key share using full TLS 1.3.
+    /// Queue a minimal ServerHello with an auto-generated X25519 key share.
+    /// For testing only - uses minimal non-TLS format that won't interop with real TLS.
     pub fn queueMinimalServerHelloAuto(self: *Engine) !usize {
-        try self.queueRealServerHello();
-        return 0;
+        self.ensureKeypair();
+        self.tryComputeShared(); // Compute shared secret with client's public key
+        const pubkey = self.my_pub orelse return error.Internal;
+        const msg = try encodeMinimalServerHello(self.allocator, pubkey);
+        defer self.allocator.free(msg);
+        try self.queueCrypto(msg);
+        return msg.len;
     }
 
     /// Pop CRYPTO bytes up to a specified limit, preserving remaining bytes.

@@ -164,12 +164,17 @@ pub fn encodeShortProtected(
     const out_cipher = buf.items[out_cipher_idx .. out_cipher_idx + ct_len];
 
     const suite = crypto.AeadSuite.aes_128_gcm;
+    // IMPORTANT (RFC 9001 §5.3): The AEAD nonce uses the FULL packet number, not the truncated value.
+    // Previously we passed pn_trunc_val here, causing decrypt side (which expands PN) to derive a different
+    // nonce -> authentication failures for 1-RTT short header packets once packet numbers exceeded the
+    // truncated range. Fix: pass the original full packet_number to protectInitial/protectPacket.
+    std.debug.print("encodeShortProtected: pn={} (0x{x}) pn_len={} dcid={s}\n", .{ packet_number, packet_number, packet_number_len, dcid });
     const written = try crypto.protectInitial(
         suite,
         &keys.key,
         &keys.iv,
         &keys.hp,
-        @as(u64, pn_trunc_val),
+        @as(u64, packet_number), // use full packet number for nonce derivation
         &header_first,
         pn_mut[0..packet_number_len],
         buf.items[1 .. 1 + header_prefix_len],
@@ -277,6 +282,19 @@ pub fn decodeShortProtected(
     std.debug.print("decodeShortProtected: truncated PN={} -> expanded PN={} (largest_pn={})\n", .{ pn_val_truncated, pn_val_expanded, largest_pn });
 
     return .{ .packet_number = pn_val_expanded, .packet_number_len = pn_len, .payload = payload };
+}
+
+/// Temporary legacy shim for older tests that haven't been updated to pass `largest_pn`.
+/// Uses `largest_pn=0` (no previously received packets) which is correct for isolated
+/// unit test scenarios that only construct a single encrypted short header packet.
+/// NOTE: New tests should call `decodeShortProtected` directly.
+pub fn decodeShortProtectedLegacy(
+    alloc: std.mem.Allocator,
+    packet_bytes: []const u8,
+    dcid_len: usize,
+    keys: AeadKeys,
+) !DecodedShort {
+    return decodeShortProtected(alloc, packet_bytes, dcid_len, keys, 0);
 }
 
 /// Compute initial client/server traffic keys for QUIC v1/v2 given DCID bytes.

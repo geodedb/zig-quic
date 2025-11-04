@@ -31,7 +31,12 @@ test "session resumption with PSK" {
     client.setEcdhe(&([_]u8{0x42} ** 32));
     server.setEcdhe(&([_]u8{0x42} ** 32));
 
-    // Server sends NewSessionTicket
+    // Compute application secrets to set master_secret
+    // This simulates handshake completion
+    _ = client.computeApplicationSecrets();
+    _ = server.computeApplicationSecrets();
+
+    // Server sends NewSessionTicket (now master_secret is set)
     try server.queueNewSessionTicket();
     const nst_bytes = try server.flushCrypto(alloc);
     defer alloc.free(nst_bytes);

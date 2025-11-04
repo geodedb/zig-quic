@@ -52,7 +52,7 @@ test "flow control adaptive growth thresholds" {
     try std.testing.expect(ep.captureLen() > 0);
     const cap1 = ep.capturePop().?;
     defer A.free(cap1.bytes);
-    const dec1 = try pkt.decodeShortProtected(A, cap1.bytes, c.our_scid.len, .{ .key = key, .iv = iv, .hp = hp });
+    const dec1 = try pkt.decodeShortProtected(A, cap1.bytes, c.our_scid.len, .{ .key = key, .iv = iv, .hp = hp }, 0);
     defer A.free(dec1.payload);
     // After reading data, window should have increased by 50%.
     const expected_stream_after = init_stream_max + init_stream_max / 2; // +50%
@@ -93,7 +93,7 @@ test "flow control adaptive growth thresholds" {
     try std.testing.expect(ep.captureLen() > 0);
     const cap2 = ep.capturePop().?;
     defer A.free(cap2.bytes);
-    const dec2 = try pkt.decodeShortProtected(A, cap2.bytes, c.our_scid.len, .{ .key = key, .iv = iv, .hp = hp });
+    const dec2 = try pkt.decodeShortProtected(A, cap2.bytes, c.our_scid.len, .{ .key = key, .iv = iv, .hp = hp }, 0);
     defer A.free(dec2.payload);
     const expected_conn_after = init_conn_max + (expected_stream_after); // bump chosen = max(stream_max_after, init_conn_max/4)
     try std.testing.expectEqual(expected_conn_after, c.local_max_data);
