@@ -7,6 +7,10 @@ const crypto = @import("quic_crypto");
 const builtin = @import("builtin");
 const logger = @import("quic_logger");
 
+// QUIC packet (RFC-9000):  A complete processable unit of QUIC that can be
+//       encapsulated in a UDP datagram.  One or more QUIC packets can be
+//       encapsulated in a single UDP datagram.
+
 /// Debug helper: dump bytes when running inside tests.
 fn dumpBytes(label: []const u8, bytes: []const u8) void {
     if (!builtin.is_test) return;
@@ -184,7 +188,7 @@ pub fn encodeShortProtected(
 
 /// Result of decoding a protected short header packet.
 pub const DecodedShort = struct {
-    packet_number: u64,  // Changed from u32 to support full QUIC packet number range
+    packet_number: u64, // Changed from u32 to support full QUIC packet number range
     packet_number_len: u3,
     payload: []u8,
 };
@@ -199,7 +203,7 @@ pub fn decodeShortProtected(
 ) !DecodedShort {
     if (packet_bytes.len < 1 + dcid_len + 1) return error.Truncated;
     var i: usize = 0;
-    var header_first_masked: u8 = packet_bytes[0];
+    const header_first_masked: u8 = packet_bytes[0];
     if ((header_first_masked & 0x80) != 0) return error.InvalidHeader; // not short
     i += 1;
     const header_prefix = packet_bytes[i .. i + dcid_len];
@@ -219,6 +223,11 @@ pub fn decodeShortProtected(
     var sample16: [16]u8 = undefined;
     @memcpy(sample16[0..], packet_bytes[pn_start + 4 .. pn_start + 4 + 16]);
 
+    std.debug.print("SHORT HEADER HP: pn_start={}, sample_offset={}, packet_len={}\n", .{ pn_start, pn_start + 4, packet_bytes.len });
+    std.debug.print("SHORT HEADER HP: sample16 = ", .{});
+    for (sample16) |b| std.debug.print("{X:0>2} ", .{b});
+    std.debug.print("\n", .{});
+
     // Determine actual PN length by unmasking header+PN on a temporary copy
     var tmp_first = header_first_masked;
     var tmp_pn: [4]u8 = pn_masked4;
@@ -228,34 +237,30 @@ pub fn decodeShortProtected(
     const ct = packet_bytes[pn_start + pn_len ..];
     if (ct.len < 16) return error.Truncated;
 
-    // Decrypt while letting unprotectInitial perform the unmasking using masked header/pn
+    // Decrypt using already-unmasked header and PN
+    // CRITICAL: unprotectInitial expects unmasked values, not masked ones
+    // We already unmasked into tmp_first and tmp_pn above, so use those
     const payload = try alloc.alloc(u8, ct.len - 16);
 
-    const decrypt_result = crypto.unprotectInitial(
+    const decrypt_result = crypto.unprotectInitialNoUnmask(
         .aes_128_gcm,
         &keys.key,
         &keys.iv,
-        &keys.hp,
-        &header_first_masked,
-        pn_masked4[0..pn_len],
+        &tmp_first,
+        tmp_pn[0..pn_len],
         header_prefix,
-        &sample16,
         ct,
         payload,
         largest_pn, // Largest packet number successfully received (0 if none)
     );
 
+    // Check decryption result
     if (decrypt_result) |_| {
-        // Success - continue
+        // Success - continue to compute PN
     } else |err| {
-        // Decryption failed - free payload and handle error
+        // Decryption failed - free payload and return error
+        // The caller (endpoint.zig) will handle DCID length enumeration
         alloc.free(payload);
-        // If dcid_len was non-zero, try again with zero-length DCID
-        // Some QUIC implementations use zero-length DCIDs for 1-RTT packets
-        if (dcid_len > 0) {
-            std.debug.print("1-RTT decryption failed with dcid_len={}, retrying with dcid_len=0\n", .{dcid_len});
-            return decodeShortProtected(alloc, packet_bytes, 0, keys, largest_pn);
-        }
         return err;
     }
 

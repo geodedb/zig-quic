@@ -1,4 +1,4 @@
-// Minimal QUIC connection handle and socket address utils
+// QUIC connection handle and socket address utils
 const std = @import("std");
 const posix = std.posix;
 const tls13 = @import("quic_tls13");
@@ -10,6 +10,20 @@ const ks = @import("quic_tls");
 const tparams = @import("quic_transport_params");
 const logger = @import("quic_logger");
 const byteorder = @import("byteorder");
+
+// Connection ID (RFC-9000):  An identifier that is used to identify a QUIC
+//     connection at an endpoint.  Each endpoint selects one or more
+//     connection IDs for its peer to include in packets sent towards the
+//     endpoint.  This value is opaque to the peer.
+//
+// This is tracked in the code as a `cid` `dcid` and `scid`
+// cid = Connection ID
+// dcid = Destination Connection ID
+// scid = Source Connection ID
+//
+// Stream (RFC-9000):  A unidirectional or bidirectional channel of ordered bytes
+//     within a QUIC connection.  A QUIC connection can carry multiple
+//     simultaneous streams.
 
 /// Buffer for reassembling out-of-order CRYPTO frames
 const CryptoBuffer = struct {
@@ -472,6 +486,9 @@ pub const Connection = struct {
     original_dcid: Cid = .{},
     peer_initial_scid: Cid = .{},
     our_scid: Cid = .{},
+    // Expected DCID length in incoming 1-RTT packets (learned from negotiation)
+    // Initially matches our_scid.len, but may be updated based on successful decryption
+    expected_rx_dcid_len: ?u8 = null,
     // Received PN tracking windows for ACK generation
     pn_initial: PnWindow = .{},
     pn_handshake: PnWindow = .{},
@@ -744,6 +761,7 @@ pub const Connection = struct {
         // before this field was added, leading to bogus large lengths and panics when slicing).
         self.original_dcid = .{};
         self.our_scid = .{};
+        self.expected_rx_dcid_len = null;
         self.version = 0;
         self.version_v2 = false;
         self.initial_version = 0;
@@ -1634,6 +1652,29 @@ pub const Connection = struct {
         _ = try self.send(pkt);
         self.onShortHeaderPacketSent(pkt.len, true);
     }
+
+    // RFC-9000 2.  Streams
+
+    // Streams in QUIC provide a lightweight, ordered byte-stream
+    // abstraction to an application.  Streams can be unidirectional or
+    // bidirectional.
+
+    // Streams can be created by sending data.  Other processes associated
+    // with stream management -- ending, canceling, and managing flow
+    // control -- are all designed to impose minimal overheads.  For
+    // instance, a single STREAM frame (Section 19.8) can open, carry data
+    // for, and close a stream.  Streams can also be long-lived and can last
+    // the entire duration of a connection.
+
+    // Streams can be created by either endpoint, can concurrently send data
+    // interleaved with other streams, and can be canceled.  QUIC does not
+    // provide any means of ensuring ordering between bytes on different
+    // streams.
+
+    // QUIC allows for an arbitrary number of streams to operate
+    // concurrently and for an arbitrary amount of data to be sent on any
+    // stream, subject to flow control constraints and stream limits; see
+    // Section 4.
 
     /// Open a bidi stream; only stream id 0 is supported in this minimal slice.
     /// Open a new local stream (bidi or uni) returning stream id (flow-control permitting).
@@ -2718,6 +2759,51 @@ pub const Connection = struct {
             }
         }
     }
+
+    // 2.1.  Stream Types and Identifiers
+    //
+    // Streams can be unidirectional or bidirectional.  Unidirectional
+    // streams carry data in one direction: from the initiator of the stream
+    // to its peer.  Bidirectional streams allow for data to be sent in both
+    // directions.
+    //
+    // Streams are identified within a connection by a numeric value,
+    // referred to as the stream ID.  A stream ID is a 62-bit integer (0 to
+    // 2^62-1) that is unique for all streams on a connection.  Stream IDs
+    // are encoded as variable-length integers; see Section 16.  A QUIC
+    // endpoint MUST NOT reuse a stream ID within a connection.
+    //
+    // The least significant bit (0x01) of the stream ID identifies the
+    // initiator of the stream.  Client-initiated streams have even-numbered
+    // stream IDs (with the bit set to 0), and server-initiated streams have
+    // odd-numbered stream IDs (with the bit set to 1).
+    //
+    // The second least significant bit (0x02) of the stream ID
+    // distinguishes between bidirectional streams (with the bit set to 0)
+    // and unidirectional streams (with the bit set to 1).
+    //
+    // The two least significant bits from a stream ID therefore identify a
+    // stream as one of four types, as summarized in Table 1.
+    //
+    //             +======+==================================+
+    //             | Bits | Stream Type                      |
+    //             +======+==================================+
+    //             | 0x00 | Client-Initiated, Bidirectional  |
+    //             +------+----------------------------------+
+    //             | 0x01 | Server-Initiated, Bidirectional  |
+    //             +------+----------------------------------+
+    //             | 0x02 | Client-Initiated, Unidirectional |
+    //             +------+----------------------------------+
+    //             | 0x03 | Server-Initiated, Unidirectional |
+    //             +------+----------------------------------+
+    //
+    //                         Table 1: Stream ID Types
+    //
+    // The stream space for each type begins at the minimum value (0x00
+    // through 0x03, respectively); successive streams of each type are
+    // created with numerically increasing stream IDs.  A stream ID that is
+    // used out of order results in all streams of that type with lower-
+    // numbered stream IDs also being opened.
 
     /// Accept an incoming peer-initiated stream (non-blocking)
     pub fn acceptStream(self: *Connection) !u64 {

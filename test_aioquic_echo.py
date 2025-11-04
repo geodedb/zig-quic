@@ -39,6 +39,7 @@ async def test_quic_echo(host: str, port: int):
         is_client=True,
         verify_mode=0,  # Disable certificate verification
         alpn_protocols=["hq-interop"],  # Match server's default ALPN
+        secrets_log_file=open("/tmp/aioquic_keys.log", "a"),
     )
     
     logger.info(f"Connecting to {host}:{port}...")

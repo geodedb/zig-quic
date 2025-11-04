@@ -1536,6 +1536,10 @@ pub const Engine = struct {
     server_sig_alg: ?sig.SigAlg = null,
     /// Cached master_secret (to derive resumption/PSK secrets). Filled when application secrets computed.
     master_secret: ?[H.digest_length]u8 = null,
+    /// Cached application traffic secrets (computed once with correct transcript, before adding peer Finished).
+    /// This prevents recomputation with wrong transcript after both Finisheds are added.
+    cached_app_client: ?[H.digest_length]u8 = null,
+    cached_app_server: ?[H.digest_length]u8 = null,
     /// Stored resumption tickets (very small cache FIFO). Each entry keeps identity and resumption_secret.
     tickets: TicketStore = .{},
     /// Optional callback invoked whenever the peer Finished verification state changes.
@@ -1546,7 +1550,7 @@ pub const Engine = struct {
 
     /// Initialize a TLS 1.3 Engine with allocator and role.
     pub fn init(alloc: std.mem.Allocator, role: Role) Engine {
-        return .{ .role = role, .allocator = alloc, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .client_session_id = null, .outbox = std.ArrayList(u8){}, .inbox = std.ArrayList(u8){}, .handshake_failed = false, .ch_sent = false, .ch_recv = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .ee_sent = false, .server_handshake_flight_enqueued = false, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null, .master_secret = null, .tickets = .{}, .peer_finished_cb = null, .peer_finished_ctx = null };
+        return .{ .role = role, .allocator = alloc, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .client_session_id = null, .outbox = std.ArrayList(u8){}, .inbox = std.ArrayList(u8){}, .handshake_failed = false, .ch_sent = false, .ch_recv = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .ee_sent = false, .server_handshake_flight_enqueued = false, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null, .master_secret = null, .cached_app_client = null, .cached_app_server = null, .tickets = .{}, .peer_finished_cb = null, .peer_finished_ctx = null };
     }
     /// Release any owned resources and buffers.
     pub fn deinit(self: *Engine) void {
@@ -2466,7 +2470,24 @@ pub const Engine = struct {
     }
 
     /// Compute application traffic secrets from current transcript and ECDHE.
+    /// CRITICAL: Caches the result on first call to prevent recomputation with wrong transcript.
+    /// The first call happens when processing peer Finished (BEFORE adding it to transcript).
+    /// Subsequent calls return the cached value, ensuring both calls use the same (correct) transcript.
     pub fn computeApplicationSecrets(self: *Engine) ?struct { client: [H.digest_length]u8, server: [H.digest_length]u8 } {
+        // Return cached secrets if already computed
+        if (self.cached_app_client) |c| {
+            if (self.cached_app_server) |s| {
+                std.debug.print("=== computeApplicationSecrets ({s}) - RETURNING CACHED ===\n", .{if (self.role == .Server) "Server" else "Client"});
+                std.debug.print("Cached client app secret (first 16 bytes): ", .{});
+                for (c[0..@min(16, c.len)]) |b| std.debug.print("{X:0>2} ", .{b});
+                std.debug.print("\n", .{});
+                std.debug.print("Cached server app secret (first 16 bytes): ", .{});
+                for (s[0..@min(16, s.len)]) |b| std.debug.print("{X:0>2} ", .{b});
+                std.debug.print("\n=========================================\n", .{});
+                return .{ .client = c, .server = s };
+            }
+        }
+
         if (self.ecdhe_secret == null) return null;
         // For client: must have sent CH and seen SH
         // For server: must have received CH and sent SH
@@ -2478,7 +2499,7 @@ pub const Engine = struct {
         const th = self.transcript.finalize();
 
         // DEBUG: Show transcript hash being used for application secret derivation
-        std.debug.print("=== computeApplicationSecrets ({s}) ===\n", .{if (self.role == .Server) "Server" else "Client"});
+        std.debug.print("=== computeApplicationSecrets ({s}) - COMPUTING NEW ===\n", .{if (self.role == .Server) "Server" else "Client"});
         std.debug.print("Transcript hash for app secrets (first 16 bytes): ", .{});
         for (th[0..@min(16, th.len)]) |b| std.debug.print("{X:0>2} ", .{b});
         std.debug.print("\n", .{});
@@ -2497,6 +2518,10 @@ pub const Engine = struct {
         var s_app: [H.digest_length]u8 = undefined;
         ks.expandLabel(master, "c ap traffic", &th, &c_app) catch return null;
         ks.expandLabel(master, "s ap traffic", &th, &s_app) catch return null;
+
+        // CACHE the computed secrets to prevent recomputation with wrong transcript
+        self.cached_app_client = c_app;
+        self.cached_app_server = s_app;
 
         // DEBUG: Show derived application secrets
         std.debug.print("Client app secret (first 16 bytes): ", .{});

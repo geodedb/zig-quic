@@ -2,6 +2,10 @@
 const std = @import("std");
 const varint = @import("quic_varint");
 
+// Frame (RFC-9000):  A unit of structured protocol information.  There are
+//       multiple frame types, each of which carries different information.
+//       Frames are contained in QUIC packets.
+
 /// Known QUIC frame type bytes (subset).
 pub const FrameType = enum(u8) {
     PADDING = 0x00,

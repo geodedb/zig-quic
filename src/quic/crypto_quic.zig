@@ -462,6 +462,53 @@ pub fn unprotectInitial(
     };
 }
 
+/// Decrypt a QUIC packet when header protection has ALREADY been removed.
+/// Used by short header decryption path which unmasks header+PN before calling this.
+/// Skips the headerUnprotect step that unprotectInitial performs.
+pub fn unprotectInitialNoUnmask(
+    suite: AeadSuite,
+    aead_key: []const u8,
+    aead_iv: []const u8,
+    header_first: *const u8, // Already unmasked
+    pn_bytes: []const u8, // Already unmasked
+    header_prefix: []const u8,
+    ciphertext_and_tag: []const u8,
+    out_plaintext: []u8,
+    largest_pn: u64,
+) !usize {
+    if (ciphertext_and_tag.len < 16) return error.AuthenticationFailed;
+
+    // AAD constructed with already-unprotected header_first and pn_bytes
+    var aad_stack: [1024]u8 = undefined;
+    const aad_len = 1 + header_prefix.len + pn_bytes.len;
+    if (aad_len > aad_stack.len) return error.MessageTooLong;
+    aad_stack[0] = header_first.*;
+    @memcpy(aad_stack[1 .. 1 + header_prefix.len], header_prefix);
+    @memcpy(aad_stack[1 + header_prefix.len .. aad_len], pn_bytes);
+    const aad = aad_stack[0..aad_len];
+
+    // Derive packet_number from unmasked pn_bytes (big-endian truncated)
+    var pn_val_truncated: u64 = 0;
+    var i: usize = 0;
+    while (i < pn_bytes.len) : (i += 1) pn_val_truncated = (pn_val_truncated << 8) | pn_bytes[i];
+
+    std.debug.print("Packet number extraction (no-unmask): pn_bytes={any}, pn_val_truncated={}, largest_pn={}\n", .{ pn_bytes, pn_val_truncated, largest_pn });
+
+    // Expand the truncated packet number per RFC 9000 Appendix A.3
+    const pn_val = expandPacketNumber(pn_val_truncated, @intCast(pn_bytes.len), largest_pn);
+
+    std.debug.print("Expanded packet number (no-unmask): {} (from truncated {} with largest_pn {})\n", .{ pn_val, pn_val_truncated, largest_pn });
+
+    if (largest_pn == 0) {
+        std.debug.print("First 1-RTT packet: truncated={x:0>4} ({}) -> expanded={}\n", .{ pn_val_truncated, pn_val_truncated, pn_val });
+    }
+
+    return aeadDecrypt(suite, aead_key, aead_iv, pn_val, aad, ciphertext_and_tag, out_plaintext) catch |err| {
+        std.debug.print("AEAD decrypt failed (no-unmask): {} (pn={})\n", .{ err, pn_val });
+        return err;
+    };
+}
+
 /// Variant of unprotectInitial that derives the HP sample internally from pn_bytes and ciphertext
 /// to avoid caller misuse (incorrect sample construction can lead to auth failure). For AES-128-GCM
 /// the sample is the 16 bytes starting (4 - pn_len) bytes into the ciphertext (which begins right

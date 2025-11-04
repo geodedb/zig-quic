@@ -21,6 +21,10 @@ const byteorder = @import("byteorder");
 const posix = std.posix;
 const builtin = @import("builtin");
 
+// Endpoint (RFC-9000):  An entity that can participate in a QUIC connection by
+//       generating, receiving, and processing QUIC packets.  There are
+//       only two types of endpoints in QUIC: client and server.
+
 // TEST-ONLY: outbound capture entry (peer + owned bytes)
 const OutCaptured = struct { peer: conn_mod.SockAddr, bytes: []u8 };
 
@@ -1133,6 +1137,16 @@ pub const Endpoint = struct {
                 return;
             };
             std.debug.print("=== RECEIVED 1-RTT PACKET === size={}, dcid_len={}, has_app_rx={}, has_app_tx={}\n", .{ bytes.len, dcid_len, conn.app_rx_keys != null, conn.app_tx_keys != null });
+
+            // CRITICAL FIX for Bug #6: Use cached expected_rx_dcid_len if available
+            // Otherwise try systematic enumeration to discover the actual DCID length
+            const try_dcid_len = if (conn.expected_rx_dcid_len) |cached_len|
+                cached_len
+            else
+                dcid_len; // Start with connection-matched length
+
+            std.debug.print("Will try decryption with dcid_len={} (cached={})\n", .{ try_dcid_len, conn.expected_rx_dcid_len != null });
+
             // Test-only debug: log short-header match and ECN bits/keys state
             if (self.test_capture_enabled) {
                 const has_rx = (conn.app_rx_keys != null);
@@ -1159,14 +1173,41 @@ pub const Endpoint = struct {
                 var used_prev: bool = false;
                 // RFC 9000 Appendix A.3: Pass largest received PN for expansion
                 const largest_pn: u64 = if (conn.pn_app.have_any) conn.pn_app.max else 0;
-                std.debug.print("dcid_len={}, largest_pn={}\n", .{ dcid_len, largest_pn });
-                var dec_res = packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }, largest_pn) catch blk_dec: {
+                std.debug.print("trying dcid_len={}, largest_pn={}\n", .{ try_dcid_len, largest_pn });
+
+                // CRITICAL BUG #6 FIX: Try systematic DCID length enumeration
+                // RFC 9000 §17.2: Short headers don't encode DCID length - we must discover it
+                // Try the cached/matched length first, then enumerate all possibilities 0-20
+                var dec_res = packet.decodeShortProtected(self.allocator.*, bytes, try_dcid_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }, largest_pn) catch blk_dec: {
                     // If decryption fails outright, check for stateless reset token match to fail fast.
                     if (conn.looksLikeStatelessReset(bytes)) {
                         std.debug.print("stateless-reset: closing connection\n", .{});
                         conn.closed = true;
                         return;
                     }
+
+                    // BUG #6 FIX: If no cached length, try all DCID lengths 0-20 systematically
+                    if (conn.expected_rx_dcid_len == null) {
+                        std.debug.print("DCID length enumeration: trying all lengths 0-20...\n", .{});
+                        var test_len: u8 = 0;
+                        while (test_len <= 20) : (test_len += 1) {
+                            if (test_len == try_dcid_len) {
+                                // Already tried this length above
+                                continue;
+                            }
+                            std.debug.print("  Trying dcid_len={}...\n", .{test_len});
+                            if (packet.decodeShortProtected(self.allocator.*, bytes, test_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }, largest_pn)) |result| {
+                                // SUCCESS! Cache this length for future packets
+                                std.debug.print("✅ 1-RTT decryption SUCCEEDED with dcid_len={} (was trying {})\n", .{ test_len, try_dcid_len });
+                                conn.expected_rx_dcid_len = test_len;
+                                break :blk_dec result;
+                            } else |_| {
+                                // This length didn't work, continue trying
+                            }
+                        }
+                        std.debug.print("DCID length enumeration: all lengths 0-20 failed\n", .{});
+                    }
+
                     // Try derived NEXT keys if we have a RX traffic secret
                     if (conn.app_rx_secret) |cur_rx_secret| {
                         const next_secret = ks.updateTrafficSecret(cur_rx_secret);
@@ -1178,11 +1219,13 @@ pub const Endpoint = struct {
                             const t2 = ks.deriveKeyIvHp(next_secret);
                             mat = .{ .key = t2.key, .iv = t2.iv, .hp = t2.hp };
                         }
-                        const try_next = packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = mat.key, .iv = mat.iv, .hp = mat.hp }, largest_pn) catch blk_prev: {
+                        // Use discovered/cached dcid_len if available
+                        const final_dcid_len = if (conn.expected_rx_dcid_len) |cached| cached else try_dcid_len;
+                        const try_next = packet.decodeShortProtected(self.allocator.*, bytes, final_dcid_len, .{ .key = mat.key, .iv = mat.iv, .hp = mat.hp }, largest_pn) catch blk_prev: {
                             // Finally, if we have previous RX keys during transition, try them
                             if (conn.rx_prev_keys) |kp| {
                                 used_prev = true;
-                                break :blk_prev packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = kp.key, .iv = kp.iv, .hp = kp.hp }, largest_pn) catch return;
+                                break :blk_prev packet.decodeShortProtected(self.allocator.*, bytes, final_dcid_len, .{ .key = kp.key, .iv = kp.iv, .hp = kp.hp }, largest_pn) catch return;
                             }
                             // Authentication failed across current/next/prev keys
                             conn.onAeadAuthFailure();
@@ -1206,12 +1249,20 @@ pub const Endpoint = struct {
                     // No secret available for deriving NEXT; try previous only
                     if (conn.rx_prev_keys) |kp2| {
                         used_prev = true;
-                        break :blk_dec packet.decodeShortProtected(self.allocator.*, bytes, dcid_len, .{ .key = kp2.key, .iv = kp2.iv, .hp = kp2.hp }, largest_pn) catch return;
+                        const final_dcid_len = if (conn.expected_rx_dcid_len) |cached| cached else try_dcid_len;
+                        break :blk_dec packet.decodeShortProtected(self.allocator.*, bytes, final_dcid_len, .{ .key = kp2.key, .iv = kp2.iv, .hp = kp2.hp }, largest_pn) catch return;
                     }
                     conn.onAeadAuthFailure();
                     return;
                 };
                 defer self.allocator.free(dec_res.payload);
+
+                // Cache the successful DCID length if not already cached
+                if (conn.expected_rx_dcid_len == null) {
+                    conn.expected_rx_dcid_len = @intCast(try_dcid_len);
+                    std.debug.print("✅ Cached successful dcid_len={} for future packets\n", .{try_dcid_len});
+                }
+
                 std.debug.print("✅ 1-RTT AEAD SUCCESS - payload_len={}, pn={}\n", .{ dec_res.payload.len, dec_res.packet_number });
                 // dec_res.packet_number is already expanded by unprotectInitial - don't expand again!
                 const pn_full: u64 = dec_res.packet_number;
