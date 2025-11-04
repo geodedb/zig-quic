@@ -1441,11 +1441,10 @@ pub const Connection = struct {
         self.peer_initial_scid.len = @intCast(@min(scid.len, self.peer_initial_scid.bytes.len));
         if (self.peer_initial_scid.len > 0) @memcpy(self.peer_initial_scid.bytes[0..self.peer_initial_scid.len], scid[0..self.peer_initial_scid.len]);
 
-        // CRITICAL FIX: Set expected RX DCID length for Short header packets
-        // When peer sends 1-RTT packets to us, they use OUR SCID as their DCID
-        // So expected_rx_dcid_len should be OUR SCID length, not theirs!
-        self.expected_rx_dcid_len = @intCast(self.our_scid.len);
-        std.debug.print("setPeerInitialCids: Set expected_rx_dcid_len={} from OUR SCID (not peer's)\n", .{self.our_scid.len});
+        // Reset any cached DCID length hint. The peer may shorten the DCID once
+        // the handshake completes, so defer caching until we successfully
+        // authenticate a 1-RTT packet and observe the actual length in use.
+        self.expected_rx_dcid_len = null;
 
         std.debug.print("setPeerInitialCids: EXIT - peer_initial_dcid.len={}, peer_initial_scid.len={}\n", .{ self.peer_initial_dcid.len, self.peer_initial_scid.len });
     }
