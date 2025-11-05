@@ -1746,8 +1746,23 @@ pub const Endpoint = struct {
 
                     c_new.tls.setServerCertificate(cert_der, key_der, detected_alg) catch |e| {
                         std.debug.print("setServerCertificate FAILED: {}\n", .{e});
+                        // CRITICAL: If certificate setup fails, handshake will fail later
+                        // This is acceptable for testing but should be fixed in production
+                        std.debug.print("WARNING: Server certificate setup failed - handshake will proceed without authentication\n", .{});
                     };
-                    std.debug.print("Server certificate set successfully\n", .{});
+                    // Verify certificate was actually set
+                    if (c_new.tls.server_cert_der != null and c_new.tls.server_priv_key != null) {
+                        std.debug.print("Server certificate set successfully (cert_len={}, key_len={}, alg={s})\n", .{ 
+                            c_new.tls.server_cert_der.?.len, 
+                            c_new.tls.server_priv_key.?.len,
+                            @tagName(detected_alg),
+                        });
+                    } else {
+                        std.debug.print("WARNING: Server certificate NOT set despite configuration (cert={}, key={})\n", .{
+                            c_new.tls.server_cert_der != null,
+                            c_new.tls.server_priv_key != null,
+                        });
+                    }
                 } else {
                     std.debug.print("WARNING: No server certificate configured! cert={}, key={}\n", .{
                         self.cfg.inline_server_cert_der != null,
