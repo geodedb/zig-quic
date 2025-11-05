@@ -123,7 +123,47 @@ pub fn build(b: *std.Build) void {
     // Expose TLS/crypto/packet modules
     const byteorder_mod = mkModule(b, "src/byteorder/byteorder.zig");
 
-    const quic_tls_mod = mkModule(b, "src/quic/tls/key_schedule.zig");
+    // ========================================================================
+    // Vendored TLS Library (vendor/ztls)
+    // ========================================================================
+    // Import TLS modules from the vendored ztls library instead of local implementation
+    const ztls_byteorder_mod = mkModule(b, "vendor/ztls/src/byteorder.zig");
+    const ztls_varint_mod = mkModule(b, "vendor/ztls/src/varint.zig");
+    ztls_varint_mod.addImport("byteorder", ztls_byteorder_mod);
+
+    const ztls_transport_params_mod = mkModule(b, "vendor/ztls/src/quic_transport_params.zig");
+    ztls_transport_params_mod.addImport("varint", ztls_varint_mod);
+
+    const quic_tls_mod = mkModule(b, "vendor/ztls/src/key_schedule.zig");
+    const tls_record_mod = mkModule(b, "vendor/ztls/src/record.zig");
+    tls_record_mod.addImport("quic_tls", quic_tls_mod);
+
+    const alert_mod = mkModule(b, "vendor/ztls/src/alert.zig");
+    const asn1_mod = mkModule(b, "vendor/ztls/src/asn1.zig");
+    const sig_mod = mkModule(b, "vendor/ztls/src/sig.zig");
+    sig_mod.addImport("asn1", asn1_mod);
+
+    const x509_mod = mkModule(b, "vendor/ztls/src/x509.zig");
+    x509_mod.addImport("asn1", asn1_mod);
+    x509_mod.addImport("sig", sig_mod);
+
+    const zero_rtt_mod = mkModule(b, "vendor/ztls/src/zero_rtt.zig");
+    zero_rtt_mod.addImport("quic_tls", quic_tls_mod);
+
+    const ztls_logger_mod = mkModule(b, "vendor/ztls/src/quic_logger.zig");
+    const tls13_full_mod = mkModule(b, "vendor/ztls/src/tls13_full.zig");
+
+    const tls13_mod = mkModule(b, "vendor/ztls/src/tls13.zig");
+    tls13_mod.addImport("quic_tls", quic_tls_mod);
+    tls13_mod.addImport("x509", x509_mod);
+    tls13_mod.addImport("sig", sig_mod);
+    tls13_mod.addImport("alert", alert_mod);
+    tls13_mod.addImport("zero_rtt", zero_rtt_mod);
+    tls13_mod.addImport("tls13_full", tls13_full_mod);
+    tls13_mod.addImport("quic_logger", ztls_logger_mod);
+    tls13_mod.addImport("quic_transport_params", ztls_transport_params_mod);
+
+    // QUIC crypto and packet modules
     const quic_crypto_mod = mkModule(b, "src/quic/crypto_quic.zig");
     const quic_packet_mod = mkModule(b, "src/quic/packet.zig");
     quic_packet_mod.addImport("quic_tls", quic_tls_mod);
@@ -131,31 +171,18 @@ pub fn build(b: *std.Build) void {
     // Ensure crypto module can import the key schedule
     quic_crypto_mod.addImport("quic_tls", quic_tls_mod);
 
-    // TLS/X.509 modules
-    const tls_record_mod = mkModule(b, "src/quic/tls/record.zig");
-    const tls13_mod = mkModule(b, "src/quic/tls/tls13.zig");
-    tls13_mod.addImport("quic_tls", quic_tls_mod);
-    tls13_mod.addImport("tls_record", tls_record_mod);
-    const asn1_mod = mkModule(b, "src/quic/tls/asn1.zig");
-    const sig_mod = mkModule(b, "src/quic/tls/sig.zig");
-    sig_mod.addImport("asn1", asn1_mod);
-    const x509_mod = mkModule(b, "src/quic/tls/x509.zig");
-    x509_mod.addImport("asn1", asn1_mod);
-    x509_mod.addImport("sig", sig_mod);
-    // Make sig and x509 available to tls13
-    tls13_mod.addImport("sig", sig_mod);
-    tls13_mod.addImport("x509", x509_mod);
-    tls13_mod.addImport("asn1", asn1_mod);
-
     // Varint/frame
     const quic_varint_mod = mkModule(b, "src/quic/varint.zig");
     quic_varint_mod.addImport("byteorder", byteorder_mod);
     const quic_frame_mod = mkModule(b, "src/quic/frame.zig");
     quic_frame_mod.addImport("quic_varint", quic_varint_mod);
     quic_packet_mod.addImport("quic_varint", quic_varint_mod);
+
+    // Local QUIC transport params (separate from vendored TLS transport params)
     const quic_transport_params_mod = mkModule(b, "src/quic/transport_params.zig");
     quic_transport_params_mod.addImport("quic_varint", quic_varint_mod);
-    tls13_mod.addImport("quic_transport_params", quic_transport_params_mod);
+
+    // Note: tls13_mod uses ztls_transport_params_mod from vendor/ztls (defined above)
 
     // Recovery
     const quic_recovery_mod = mkModule(b, "src/quic/recovery.zig");
@@ -164,19 +191,14 @@ pub fn build(b: *std.Build) void {
         // Placeholder: runtime selection occurs via config; both controllers are in same module
     }
 
-    // Logger module for QUIC library
+    // Logger module for QUIC library (local QUIC logger, not vendored TLS logger)
     const quic_logger_mod = mkModule(b, "src/quic/logger.zig");
 
     // Add logger to modules that need it
     quic_crypto_mod.addImport("quic_logger", quic_logger_mod);
-    tls13_mod.addImport("quic_logger", quic_logger_mod);
-
-    const alert_mod = mkModule(b, "src/quic/tls/alert.zig");
-    tls13_mod.addImport("alert", alert_mod);
-
-    const zero_rtt_mod = mkModule(b, "src/quic/tls/zero_rtt.zig");
-    tls13_mod.addImport("zero_rtt", zero_rtt_mod);
     quic_packet_mod.addImport("quic_logger", quic_logger_mod);
+
+    // Note: alert_mod, zero_rtt_mod, and tls logger are now imported from vendor/ztls above
 
     // Connection/TP
     const quic_conn_mod = mkModule(b, "src/quic/conn.zig");

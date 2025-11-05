@@ -52,3 +52,6 @@
 [submodule "forks/openssl"]
 	path = forks/openssl
 	url = git@github.com:openssl/openssl.git
+[submodule "vendor/ztls"]
+	path = vendor/ztls
+	url = org-155590327@github.com:spyderorg/ztls.git
