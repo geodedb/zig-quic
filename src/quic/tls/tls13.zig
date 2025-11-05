@@ -2097,26 +2097,43 @@ pub const Engine = struct {
 
                     // RFC 8446 §7.1: Application traffic secrets must be derived from transcript
                     // hash "ClientHello...server Finished" (NOT including client Finished).
-                    // CRITICAL FIX: Capture transcript hash BEFORE adding peer Finished to it.
                     if (ok) {
-                        // For SERVER: at this point transcript = CH...SH...EE...Cert...CV...server Finished
-                        //             and we're processing client Finished - DO NOT include it in app secrets
-                        // For CLIENT: at this point transcript = CH...SH...EE...Cert...CV...server Finished
-                        //             and we're processing server Finished - we need this transcript for app secrets
-
-                        // Derive application secrets BEFORE adding peer Finished
-                        // This ensures we use CH...server Finished for both sides
-                        std.debug.print("TLS: Deriving application traffic secrets (before adding peer Finished to transcript)\n", .{});
-                        _ = self.computeApplicationSecrets();
-
-                        // NOW add the peer Finished to transcript for resumption master secret derivation
+                        // Get the Finished message bytes
                         const finished_msg = data[off - p.n .. off];
-                        self.transcript.update(finished_msg);
-                        const show_len = @min(8, finished_msg.len);
-                        if (show_len >= 8) {
-                            std.debug.print("TLS: Added {} bytes to transcript (recv-finished): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...\n", .{ finished_msg.len, finished_msg[0], finished_msg[1], finished_msg[2], finished_msg[3], finished_msg[4], finished_msg[5], finished_msg[6], finished_msg[7] });
+                        
+                        // CRITICAL FIX: Handle transcript differently based on role
+                        // For CLIENT: Must add server's Finished BEFORE deriving app secrets
+                        //             because app secrets use CH...SH...EE...Cert...CV...server Finished
+                        // For SERVER: Must NOT add client's Finished before deriving app secrets
+                        //             because server already queued its own Finished
+                        
+                        if (self.role == .Client) {
+                            // Client: Add server's Finished to transcript FIRST
+                            self.transcript.update(finished_msg);
+                            const show_len = @min(8, finished_msg.len);
+                            if (show_len >= 8) {
+                                std.debug.print("TLS: Added server Finished to transcript ({} bytes): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...\n", .{ finished_msg.len, finished_msg[0], finished_msg[1], finished_msg[2], finished_msg[3], finished_msg[4], finished_msg[5], finished_msg[6], finished_msg[7] });
+                            } else {
+                                std.debug.print("TLS: Added server Finished to transcript ({} bytes)\n", .{finished_msg.len});
+                            }
+                            
+                            // Now derive application secrets with server Finished included
+                            std.debug.print("TLS: Deriving application traffic secrets (after adding server Finished to transcript)\n", .{});
+                            _ = self.computeApplicationSecrets();
                         } else {
-                            std.debug.print("TLS: Added {} bytes to transcript (recv-finished)\n", .{finished_msg.len});
+                            // Server: Derive app secrets BEFORE adding client's Finished
+                            // Server's own Finished is already in transcript from queueFinished()
+                            std.debug.print("TLS: Deriving application traffic secrets (before adding client Finished to transcript)\n", .{});
+                            _ = self.computeApplicationSecrets();
+                            
+                            // NOW add the client Finished to transcript for resumption master secret derivation
+                            self.transcript.update(finished_msg);
+                            const show_len = @min(8, finished_msg.len);
+                            if (show_len >= 8) {
+                                std.debug.print("TLS: Added client Finished to transcript ({} bytes): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...\n", .{ finished_msg.len, finished_msg[0], finished_msg[1], finished_msg[2], finished_msg[3], finished_msg[4], finished_msg[5], finished_msg[6], finished_msg[7] });
+                            } else {
+                                std.debug.print("TLS: Added client Finished to transcript ({} bytes)\n", .{finished_msg.len});
+                            }
                         }
                     }
                 }
