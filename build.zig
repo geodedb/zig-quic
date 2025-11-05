@@ -571,6 +571,16 @@ pub fn build(b: *std.Build) void {
         const run_test_conn_metadata = b.addRunArtifact(test_conn_metadata);
         test_step.dependOn(&run_test_conn_metadata.step);
 
+        // Regression test for TLS Error 266 (zero-length SCID in 1-RTT packets)
+        const test_zero_scid_1rtt = addTst(b, "tests/test_zero_length_scid_1rtt.zig", target, optimize);
+        test_zero_scid_1rtt.root_module.addImport("quic_api", quic_api_mod);
+        test_zero_scid_1rtt.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        test_zero_scid_1rtt.root_module.addImport("quic_conn", quic_conn_mod);
+        test_zero_scid_1rtt.root_module.addImport("quic_packet", quic_packet_mod);
+        test_zero_scid_1rtt.root_module.addImport("quic_frame", quic_frame_mod);
+        const run_test_zero_scid_1rtt = b.addRunArtifact(test_zero_scid_1rtt);
+        test_step.dependOn(&run_test_zero_scid_1rtt.step);
+
         // TLS SNI negative/allow_insecure tests
         const test_tls_sni = addTst(b, "tests/test_tls_sni.zig", target, optimize);
         test_tls_sni.root_module.addImport("quic_x509", x509_mod);
