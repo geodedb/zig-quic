@@ -28,5 +28,5 @@ pub fn main() !void {
     if (1 + dcid_len + 1 >= buf.len) return;
     const dcid = buf[1 .. 1 + dcid_len];
     const keys = pkt.AeadKeys{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
-    _ = pkt.decodeShortProtected(a, buf, dcid.len, keys) catch {};
+    _ = pkt.decodeShortProtected(a, buf, dcid.len, keys, 0) catch {};
 }

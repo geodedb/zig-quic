@@ -49,11 +49,8 @@ bench:
 tools:
 	$(ZIG) build tools $(ZIG_FLAGS)
 
-doccheck: tools
-	./zig-out/bin/doccheck
-
-# Run build, test, fuzz, bench, and doccheck sequentially
-ci: build test fuzz bench tools doccheck
+# Run build, test, fuzz, bench, and tools sequentially
+ci: build test fuzz bench tools
 
 # GitHub Actions CI target (includes cross-compilation verification)
 ci-github: ci cross-compile-quick

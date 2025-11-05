@@ -27,6 +27,9 @@ test "pmtud pacing: paced send occurs under NewReno and CUBIC when cwnd is parti
             c.peer_finished_verified = true;
             c.our_scid.len = 4;
             std.mem.copyForwards(u8, c.our_scid.bytes[0..4], if (use_cubic) "CUBC" else "NREN");
+            // Set peer_initial_scid so DCID is included in short header packets
+            c.peer_initial_scid.len = 4;
+            std.mem.copyForwards(u8, c.peer_initial_scid.bytes[0..4], "PEER");
 
             // Arrange cwnd/bytes_in_flight to trigger pacing but not block on cwnd
             c.rec.cc.cwnd = 5000;
@@ -66,6 +69,9 @@ test "pmtud with cubic: single outstanding probe with backoff (blackhole)" {
     c.peer_finished_verified = true;
     c.our_scid.len = 4;
     std.mem.copyForwards(u8, c.our_scid.bytes[0..4], "CBKH");
+    // Set peer_initial_scid so DCID is included in short header packets
+    c.peer_initial_scid.len = 4;
+    std.mem.copyForwards(u8, c.peer_initial_scid.bytes[0..4], "PEER");
     // Start PMTUD but never ACK probes; ensure only one pending at a time and PN advances/updates
     c.pmtudStart(&ep);
     var prev_pn: ?u64 = null;
@@ -96,6 +102,9 @@ test "pmtud with cubic: cwnd insufficient blocks probe and PTO backoff increases
     c.peer_finished_verified = true;
     c.our_scid.len = 4;
     std.mem.copyForwards(u8, c.our_scid.bytes[0..4], "CBWD");
+    // Set peer_initial_scid so DCID is included in short header packets
+    c.peer_initial_scid.len = 4;
+    std.mem.copyForwards(u8, c.peer_initial_scid.bytes[0..4], "PEER");
     // Block probe due to cwnd
     c.rec.cc.cwnd = 1200;
     c.rec.cc.bytes_in_flight = 1200;
@@ -138,6 +147,9 @@ test "pmtud probe builds PING+PADDING to exact UDP payload size" {
     // Set a DCID for short header
     c.our_scid.len = 8;
     std.mem.copyForwards(u8, c.our_scid.bytes[0..8], "ABCDEFGH");
+    // Set peer_initial_scid so DCID is included in short header packets
+    c.peer_initial_scid.len = 8;
+    std.mem.copyForwards(u8, c.peer_initial_scid.bytes[0..8], "PEERABCD");
 
     const target: u16 = 1250;
     const sent_bytes = try c.sendPmtudProbe(target);
@@ -164,6 +176,9 @@ test "pmtud validation raises path_mtu on ACK of probe PN" {
     c.peer_finished_verified = true;
     c.our_scid.len = 4;
     std.mem.copyForwards(u8, c.our_scid.bytes[0..4], "ABCD");
+    // Set peer_initial_scid so DCID is included in short header packets
+    c.peer_initial_scid.len = 4;
+    std.mem.copyForwards(u8, c.peer_initial_scid.bytes[0..4], "PEER");
 
     const target: u16 = 1300;
     const old_mtu = c.path_mtu;
@@ -213,6 +228,9 @@ test "icmp ptb spoof-check: only applies when DCID matches known connection" {
     c.peer_finished_verified = true;
     c.our_scid.len = 4;
     std.mem.copyForwards(u8, c.our_scid.bytes[0..4], "DCID");
+    // Set peer_initial_scid so DCID is included in short header packets
+    c.peer_initial_scid.len = 4;
+    std.mem.copyForwards(u8, c.peer_initial_scid.bytes[0..4], "PEER");
     c.path_mtu = 1400;
     // Craft a quoted UDP payload resembling a short-header QUIC with our DCID at offset 0
     var quote_ok: [16]u8 = .{0} ** 16;
@@ -239,6 +257,9 @@ test "icmp ptb spoof corner: quoted header too short is ignored" {
     var c = try ep.connectClient("127.0.0.1:9");
     c.our_scid.len = 4;
     std.mem.copyForwards(u8, c.our_scid.bytes[0..4], "DCID");
+    // Set peer_initial_scid so DCID is included in short header packets
+    c.peer_initial_scid.len = 4;
+    std.mem.copyForwards(u8, c.peer_initial_scid.bytes[0..4], "PEER");
     c.path_mtu = 1400;
     var quote_short: [2]u8 = .{ 0x40, 0x00 };
     ep.testInjectIcmpPtb(c.peer, &quote_short, 1200);
@@ -266,6 +287,9 @@ test "pmtud: send multiple probe sizes and accept only acked size" {
     c.peer_finished_verified = true;
     c.our_scid.len = 4;
     std.mem.copyForwards(u8, c.our_scid.bytes[0..4], "PROB");
+    // Set peer_initial_scid so DCID is included in short header packets
+    c.peer_initial_scid.len = 4;
+    std.mem.copyForwards(u8, c.peer_initial_scid.bytes[0..4], "PEER");
 
     const s1: u16 = 1280;
     const s2: u16 = 1400;
@@ -295,6 +319,9 @@ test "pmtud state machine sends probes and raises mtu upon ack progression" {
     c.peer_finished_verified = true;
     c.our_scid.len = 4;
     std.mem.copyForwards(u8, c.our_scid.bytes[0..4], "ABCD");
+    // Set peer_initial_scid so DCID is included in short header packets
+    c.peer_initial_scid.len = 4;
+    std.mem.copyForwards(u8, c.peer_initial_scid.bytes[0..4], "PEER");
     // Start PMTUD and force timers to fire
     c.pmtudStart(&ep);
     ep.forceExpireAllTimers(); // should send 1280 probe and arm next
@@ -319,6 +346,9 @@ test "icmp ptb ipv6 minimal quote length required" {
     var c = try ep.connectClient("127.0.0.1:9");
     c.our_scid.len = 4;
     std.mem.copyForwards(u8, c.our_scid.bytes[0..4], "V6ID");
+    // Set peer_initial_scid so DCID is included in short header packets
+    c.peer_initial_scid.len = 4;
+    std.mem.copyForwards(u8, c.peer_initial_scid.bytes[0..4], "PEER");
     c.path_mtu = 1400;
     // Too-short IPv6 quote should be ignored
     var quote_tiny: [4]u8 = .{ 0x40, 'V', '6', 'X' };
@@ -336,6 +366,9 @@ test "icmp ptb ipv6 EH offset scan: accept DCID match beyond base header" {
     var c = try ep.connectClient("127.0.0.1:9");
     c.our_scid.len = 4;
     std.mem.copyForwards(u8, c.our_scid.bytes[0..4], "V6EH");
+    // Set peer_initial_scid so DCID is included in short header packets
+    c.peer_initial_scid.len = 4;
+    std.mem.copyForwards(u8, c.peer_initial_scid.bytes[0..4], "PEER");
     c.path_mtu = 1400;
     // Build a quote with 40 bytes of IPv6 header + 8 bytes extension, then short header + DCID
     var quote: [64]u8 = .{0} ** 64;
@@ -359,6 +392,9 @@ test "pmtud pacing: single outstanding probe with backoff on blackhole" {
     c.peer_finished_verified = true;
     c.our_scid.len = 4;
     std.mem.copyForwards(u8, c.our_scid.bytes[0..4], "PACE");
+    // Set peer_initial_scid so DCID is included in short header packets
+    c.peer_initial_scid.len = 4;
+    std.mem.copyForwards(u8, c.peer_initial_scid.bytes[0..4], "PEER");
     // Start PMTUD but never ACK probes; ensure only one pending at a time and PN advances
     c.pmtudStart(&ep);
     var prev_pn: ?u64 = null;
@@ -389,6 +425,9 @@ test "pmtud pacing: do not send probe when cwnd insufficient; respects PTO backo
     c.peer_finished_verified = true;
     c.our_scid.len = 4;
     std.mem.copyForwards(u8, c.our_scid.bytes[0..4], "CWND");
+    // Set peer_initial_scid so DCID is included in short header packets
+    c.peer_initial_scid.len = 4;
+    std.mem.copyForwards(u8, c.peer_initial_scid.bytes[0..4], "PEER");
     // Set a very small cwnd and high bytes_in_flight to block probe
     c.rec.cc.cwnd = 1200;
     c.rec.cc.bytes_in_flight = 1200;

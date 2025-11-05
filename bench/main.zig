@@ -230,7 +230,7 @@ pub fn main() !void {
         if (which == 0) {
             const phase = (i & 1) == 0;
             const pkt_bytes = if (phase) sp1 else sp0;
-            const d = pkt.decodeShortProtected(alloc, pkt_bytes, dcid.len, keys) catch continue;
+            const d = pkt.decodeShortProtected(alloc, pkt_bytes, dcid.len, keys, 0) catch continue;
             alloc.free(d.payload);
         } else {
             const d2 = pkt.decodeInitialProtected(alloc, ip, .{ .key = ik.server.key, .iv = ik.server.iv, .hp = ik.server.hp }) catch continue;
