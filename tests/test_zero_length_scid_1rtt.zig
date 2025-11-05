@@ -21,7 +21,7 @@ const frame = @import("quic_frame");
 test "server uses zero-length DCID in 1-RTT packets when client sends zero-length SCID" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+    var alloc = gpa.allocator();
 
     // Start a server endpoint
     var cfg = api.QuicConfig{
@@ -32,23 +32,24 @@ test "server uses zero-length DCID in 1-RTT packets when client sends zero-lengt
     defer api.endpointDeinit(ep);
 
     // Get the server's listening address
-    const ep_typed = @as(*endpoint.Endpoint, @ptrCast(@alignCast(ep)));
-    const server_addr = try ep_typed.getLocalAddress();
+    _ = @as(*endpoint.Endpoint, @ptrCast(@alignCast(ep)));
 
     // Create a client endpoint
     const client_ep = try api.endpointInit(&alloc, "127.0.0.1:0", &cfg);
     defer api.endpointDeinit(client_ep);
 
     // Manually create a connection with zero-length SCID
-    const client_ep_typed = @as(*endpoint.Endpoint, @ptrCast(@alignCast(client_ep)));
+    _ = @as(*endpoint.Endpoint, @ptrCast(@alignCast(client_ep)));
 
     // Create client connection with zero-length our_scid
-    var client_conn = try conn_mod.Connection.init(
-        alloc,
+    var client_conn: conn_mod.Connection = undefined;
+    const storage: std.posix.sockaddr.storage = undefined;
+    const sock_addr = conn_mod.SockAddr{ .storage = storage, .len = @sizeOf(@TypeOf(storage)) };
+    client_conn.init(
+        &alloc,
         .Client,
-        &[_]u8{}, // zero-length SCID!
-        &[_]u8{ 0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08 }, // server DCID
-        server_addr,
+        -1, // dummy socket fd
+        sock_addr,
     );
     defer client_conn.deinit();
 
@@ -95,17 +96,17 @@ test "server uses zero-length DCID in 1-RTT packets when client sends zero-lengt
 test "shortHeaderDcid returns empty slice for zero-length peer SCID" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
-
-    const server_addr = std.net.Address.initIp4([4]u8{ 127, 0, 0, 1 }, 4433);
+    var alloc = gpa.allocator();
 
     // Create a connection with zero-length peer_initial_scid
-    var conn = try conn_mod.Connection.init(
-        alloc,
+    var conn: conn_mod.Connection = undefined;
+    const storage: std.posix.sockaddr.storage = undefined;
+    const sock_addr = conn_mod.SockAddr{ .storage = storage, .len = @sizeOf(@TypeOf(storage)) };
+    conn.init(
+        &alloc,
         .Client,
-        &[_]u8{ 0x01, 0x02, 0x03, 0x04 }, // our SCID (non-zero)
-        &[_]u8{ 0x05, 0x06, 0x07, 0x08 }, // peer DCID (doesn't matter for this test)
-        server_addr,
+        -1, // dummy socket fd
+        sock_addr,
     );
     defer conn.deinit();
 
@@ -123,17 +124,17 @@ test "shortHeaderDcid returns empty slice for zero-length peer SCID" {
 test "shortHeaderDcid returns peer SCID when non-zero" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
-
-    const server_addr = std.net.Address.initIp4([4]u8{ 127, 0, 0, 1 }, 4433);
+    var alloc = gpa.allocator();
 
     // Create a connection
-    var conn = try conn_mod.Connection.init(
-        alloc,
+    var conn: conn_mod.Connection = undefined;
+    const storage: std.posix.sockaddr.storage = undefined;
+    const sock_addr = conn_mod.SockAddr{ .storage = storage, .len = @sizeOf(@TypeOf(storage)) };
+    conn.init(
+        &alloc,
         .Client,
-        &[_]u8{ 0x01, 0x02, 0x03, 0x04 }, // our SCID
-        &[_]u8{ 0x05, 0x06, 0x07, 0x08 }, // peer DCID
-        server_addr,
+        -1, // dummy socket fd
+        sock_addr,
     );
     defer conn.deinit();
 

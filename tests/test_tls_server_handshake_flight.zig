@@ -103,8 +103,8 @@ test "tls_handshake_message_ordering_with_certificate_regression_266" {
     // Parse handshake messages from outbox to verify ordering
     // Skip ServerHello (Initial space), then check Handshake messages
     var offset: usize = sh_len; // Start after ServerHello
-    var message_types = std.ArrayList(u8).init(alloc);
-    defer message_types.deinit();
+    var message_types = std.ArrayList(u8){};
+    defer message_types.deinit(alloc);
 
     // Parse TLS handshake messages from outbox
     // Each message has: type (1 byte) + length (3 bytes) + body
@@ -128,7 +128,7 @@ test "tls_handshake_message_ordering_with_certificate_regression_266" {
         
         // Only track handshake flight messages (skip ServerHello which is in Initial space)
         if (msg_type == 0x08 or msg_type == 0x0B or msg_type == 0x0F or msg_type == 0x14) {
-            try message_types.append(msg_type);
+            try message_types.append(alloc, msg_type);
             std.debug.print("Found handshake message: {s} (0x{X:0>2})\n", .{ type_name, msg_type });
         }
         

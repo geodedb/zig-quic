@@ -79,7 +79,7 @@ fn hashBytes(b: []const u8) u64 {
     return h.final();
 }
 
-fn hashSockaddr(sa: *const posix.sockaddr.storage, len: u32) u64 {
+pub fn hashSockaddr(sa: *const posix.sockaddr.storage, len: u32) u64 {
     const bytes = @as([*]const u8, @ptrCast(sa))[0..len];
     return hashBytes(bytes);
 }
@@ -3344,7 +3344,7 @@ pub const Endpoint = struct {
         self.processExpiredTimers(now_ms);
     }
 
-    fn sendPtoProbe(self: *Endpoint, conn: *conn_mod.Connection, kind: TimerKind) !void {
+    pub fn sendPtoProbe(self: *Endpoint, conn: *conn_mod.Connection, kind: TimerKind) !void {
         switch (kind) {
             .PtoInitial => {
                 if (conn.initial_keys_dropped) return; // no more Initial

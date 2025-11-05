@@ -78,7 +78,7 @@ test "server sends PTO probe with zero-length DCID" {
 
     // Find the connection that was just created
     var conn: ?*conn_mod.Connection = null;
-    var it = ep.connections.iterator();
+    var it = ep.conns.iterator();
     while (it.next()) |entry| {
         const c = entry.value_ptr.*;
         const peer_hash = endpoint.hashSockaddr(&peer.storage, peer.len);
@@ -174,7 +174,7 @@ test "server sends Handshake PTO probe with zero-length DCID" {
 
     // Find connection
     var conn: ?*conn_mod.Connection = null;
-    var it = ep.connections.iterator();
+    var it = ep.conns.iterator();
     while (it.next()) |entry| {
         const c = entry.value_ptr.*;
         const peer_hash = endpoint.hashSockaddr(&peer.storage, peer.len);
