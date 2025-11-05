@@ -58,7 +58,7 @@ async def run_client(host: str, port: int, verbose: bool = False):
 
     # Configure QUIC
     configuration = QuicConfiguration(
-        alpn_protocols=["quic-zig/1"],
+        alpn_protocols=["hq-interop"],
         is_client=True,
         verify_mode=0,  # Don't verify certificates for testing
     )
