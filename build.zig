@@ -528,6 +528,28 @@ pub fn build(b: *std.Build) void {
         const run_test_vn = b.addRunArtifact(test_vn);
         test_step.dependOn(&run_test_vn.step);
 
+        // Zero-length connection ID tests (RFC 9000 §12.2 / TLS Error 266 regression)
+        const test_zero_scid = addTst(b, "tests/test_zero_length_scid_coalescing.zig", target, optimize);
+        test_zero_scid.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        test_zero_scid.root_module.addImport("quic_conn", quic_conn_mod);
+        test_zero_scid.root_module.addImport("quic_packet", quic_packet_mod);
+        test_zero_scid.root_module.addImport("quic_frame", quic_frame_mod);
+        test_zero_scid.root_module.addImport("quic_varint", quic_varint_mod);
+        test_zero_scid.root_module.addImport("quic_tls", quic_tls_mod);
+        test_zero_scid.root_module.addImport("config.zig", quic_config_mod);
+        const run_test_zero_scid = b.addRunArtifact(test_zero_scid);
+        test_step.dependOn(&run_test_zero_scid.step);
+
+        const test_pto_zero_dcid = addTst(b, "tests/test_pto_probe_zero_length_dcid.zig", target, optimize);
+        test_pto_zero_dcid.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        test_pto_zero_dcid.root_module.addImport("quic_conn", quic_conn_mod);
+        test_pto_zero_dcid.root_module.addImport("quic_packet", quic_packet_mod);
+        test_pto_zero_dcid.root_module.addImport("quic_frame", quic_frame_mod);
+        test_pto_zero_dcid.root_module.addImport("quic_tls", quic_tls_mod);
+        test_pto_zero_dcid.root_module.addImport("config.zig", quic_config_mod);
+        const run_test_pto_zero_dcid = b.addRunArtifact(test_pto_zero_dcid);
+        test_step.dependOn(&run_test_pto_zero_dcid.step);
+
         // New: Retry issuance and amplification gating tests
         const test_retry = addTst(b, "tests/test_retry.zig", target, optimize);
         test_retry.root_module.addImport("quic_endpoint", quic_endpoint_mod);
