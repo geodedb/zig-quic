@@ -445,6 +445,10 @@ pub fn buildServerHello(
     var ks_data = try std.ArrayList(u8).initCapacity(allocator, 0);
     defer ks_data.deinit(allocator);
     const group_value = @intFromEnum(key_share_group);
+    std.debug.print("[buildServerHello] key_share_group={}, group_value=0x{X:0>4}, key_share_data.len={}\n", .{ key_share_group, group_value, key_share_data.len });
+    if (key_share_data.len > 0) {
+        std.debug.print("[buildServerHello] key_share_data first 4 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ key_share_data[0], key_share_data[1], key_share_data[2], key_share_data[3] });
+    }
     try ks_data.appendSlice(allocator, &[_]u8{
         @intCast(group_value >> 8),
         @intCast(group_value & 0xff),
@@ -454,6 +458,11 @@ pub fn buildServerHello(
         @intCast(key_share_data.len & 0xff),
     });
     try ks_data.appendSlice(allocator, key_share_data);
+    std.debug.print("[buildServerHello] ks_data.items.len={}, first 8 bytes: ", .{ks_data.items.len});
+    for (ks_data.items[0..@min(8, ks_data.items.len)]) |b| {
+        std.debug.print("{X:0>2} ", .{b});
+    }
+    std.debug.print("\n", .{});
     try writeExtension(allocator, &exts, .key_share, ks_data.items);
 
     // supported_versions (mandatory for TLS 1.3) - MUST BE AFTER key_share
