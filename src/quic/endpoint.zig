@@ -3351,7 +3351,7 @@ pub const Endpoint = struct {
                 // For sending, use peer's SCID as DCID (what they expect)
                 const dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
                 const scid = conn.our_scid.bytes[0..conn.our_scid.len];
-                if (dcid.len == 0) return;
+                // RFC 9000 §12.2: Zero-length DCIDs are valid and must be supported
                 // Derive server Initial TX keys from the original DCID (ODCID)
                 const v2 = conn.version_v2;
                 // Use ODCID for key derivation per RFC 9001 §5.2
