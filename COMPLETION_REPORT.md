@@ -38,12 +38,12 @@ Server now waits for `peer_finished_verified` flag before dropping keys.
 
 ### 3. ✅ DCID Length Tracking Bug
 
-**Problem:** `expected_rx_dcid_len` was set to peer's SCID length (often 0), but should be set to OUR SCID length (8) because peer uses OUR SCID as their DCID in packets they send to us.
+**Problem:** `expected_rx_dcid_len` was eagerly initialised, preventing fallback enumeration when peers shortened the DCID after handshake completion.
 
-**Fix:** `src/quic/conn.zig` line ~1428  
-Changed to: `self.expected_rx_dcid_len = @intCast(self.our_scid.len);`
+**Fix:** `src/quic/conn.zig` line ~1428
+Reset cached hint to `null` so the short-header parser can discover and cache the peer's actual DCID length on first successful 1-RTT packet.
 
-**Impact:** Short header (1-RTT) packets now parse with correct 8-byte DCID.
+**Impact:** Short header (1-RTT) packets remain decryptable even when peers change DCID length.
 
 ---
 

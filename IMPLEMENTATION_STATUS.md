@@ -71,8 +71,8 @@ The QUIC v1 implementation is **FEATURE COMPLETE** according to RFC 9000/9001/90
 
 1. **DCID Length Tracking**
 
-   - Fixed `expected_rx_dcid_len` to use OUR SCID length (8 bytes)
-   - Peer uses our SCID as their DCID in packets to us
+   - Reset `expected_rx_dcid_len` to `null` until the peer's 1-RTT packets reveal the actual length in use
+   - Ensures length enumeration runs when peers shorten their DCID
    - File: `src/quic/conn.zig` line ~1428
 
 2. **Header Protection Sample Offset**

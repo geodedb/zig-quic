@@ -1201,27 +1201,25 @@ pub const Endpoint = struct {
                         return;
                     }
 
-                    // BUG #6 FIX: If no cached length, try all DCID lengths 0-20 systematically
-                    if (conn.expected_rx_dcid_len == null) {
-                        std.debug.print("DCID length enumeration: trying all lengths 0-20...\n", .{});
-                        var test_len: u8 = 0;
-                        while (test_len <= 20) : (test_len += 1) {
-                            if (test_len == try_dcid_len) {
-                                // Already tried this length above
-                                continue;
-                            }
-                            std.debug.print("  Trying dcid_len={}...\n", .{test_len});
-                            if (packet.decodeShortProtected(self.allocator.*, bytes, test_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }, largest_pn)) |result| {
-                                // SUCCESS! Cache this length for future packets
-                                std.debug.print("✅ 1-RTT decryption SUCCEEDED with dcid_len={} (was trying {})\n", .{ test_len, try_dcid_len });
-                                conn.expected_rx_dcid_len = test_len;
-                                break :blk_dec result;
-                            } else |_| {
-                                // This length didn't work, continue trying
-                            }
+                    // BUG #6 FIX: If initial attempt failed, try all DCID lengths 0-20 systematically
+                    std.debug.print("DCID length enumeration: trying all lengths 0-20...\n", .{});
+                    var test_len: u8 = 0;
+                    while (test_len <= 20) : (test_len += 1) {
+                        if (test_len == try_dcid_len) {
+                            // Already tried this length above
+                            continue;
                         }
-                        std.debug.print("DCID length enumeration: all lengths 0-20 failed\n", .{});
+                        std.debug.print("  Trying dcid_len={}...\n", .{test_len});
+                        if (packet.decodeShortProtected(self.allocator.*, bytes, test_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }, largest_pn)) |result| {
+                            // SUCCESS! Cache this length for future packets
+                            std.debug.print("✅ 1-RTT decryption SUCCEEDED with dcid_len={} (was trying {})\n", .{ test_len, try_dcid_len });
+                            conn.expected_rx_dcid_len = test_len;
+                            break :blk_dec result;
+                        } else |_| {
+                            // This length didn't work, continue trying
+                        }
                     }
+                    std.debug.print("DCID length enumeration: all lengths 0-20 failed\n", .{});
 
                     // Try derived NEXT keys if we have a RX traffic secret
                     if (conn.app_rx_secret) |cur_rx_secret| {
