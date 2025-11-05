@@ -363,8 +363,8 @@ e2e-test-go: build
 e2e-test-go-comprehensive: build
 	@echo "========== E2E Comprehensive Test: Go Client (quic-go) =========="
 	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
-	@echo "Starting Zig server..."
-	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --insecure > /tmp/e2e-go-comprehensive.log 2>&1 & \
+	@echo "Starting Zig server with TLS..."
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key > /tmp/e2e-go-comprehensive.log 2>&1 & \
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \
@@ -473,8 +473,8 @@ e2e-test-zig: build
 e2e-test-zig-comprehensive: build
 	@echo "========== E2E Comprehensive Test: Zig Client =========="
 	@bash -c 'killall quic-server quic-client quic-client-comprehensive 2>/dev/null || true; sleep 1'
-	@echo "Starting Zig server..."
-	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --insecure > /tmp/e2e-zig-comprehensive.log 2>&1 & \
+	@echo "Starting Zig server with TLS..."
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key > /tmp/e2e-zig-comprehensive.log 2>&1 & \
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \

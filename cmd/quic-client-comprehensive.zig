@@ -108,7 +108,7 @@ fn testSingleStreamEcho(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Con
     var attempts: usize = 0;
     while (!wrote and attempts < 1000) : (attempts += 1) {
         const wn = api.writeStream(conn, stream_id, msg) catch |err| switch (err) {
-            error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked => blk: {
+            error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked, error.InvalidStream => blk: {
                 try api.poll(ep, 10);
                 break :blk 0;
             },
@@ -156,7 +156,7 @@ fn testMultipleStreams(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Conn
         var attempts: usize = 0;
         while (!wrote and attempts < 500) : (attempts += 1) {
             const wn = api.writeStream(conn, stream_id, msg) catch |err| switch (err) {
-                error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked => blk: {
+                error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked, error.InvalidStream => blk: {
                     try api.poll(ep, 5);
                     break :blk 0;
                 },
@@ -203,7 +203,7 @@ fn testLargeDataTransfer(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Co
     std.debug.print("📝 Test: Large data transfer ({s})\n", .{size_name});
     const start = std.time.milliTimestamp();
 
-    const stream_id: u64 = 100; // Use higher stream ID to avoid conflicts
+    const stream_id: u64 = 16; // Use sequential stream ID (after 0, 4, 8, 12 from previous test)
 
     // Generate random data
     const data = try alloc.alloc(u8, size);
@@ -222,7 +222,7 @@ fn testLargeDataTransfer(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Co
         var attempts: usize = 0;
         while (!chunk_written and attempts < 500) : (attempts += 1) {
             const wn = api.writeStream(conn, stream_id, chunk) catch |err| switch (err) {
-                error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked => blk: {
+                error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked, error.InvalidStream => blk: {
                     try api.poll(ep, 10);
                     break :blk 0;
                 },
@@ -267,7 +267,7 @@ fn testMultipleRoundTrips(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *C
     std.debug.print("📝 Test: Multiple round-trips ({d} cycles)\n", .{num_rounds});
     const start = std.time.milliTimestamp();
 
-    const stream_id: u64 = 200;
+    const stream_id: u64 = 20; // Sequential after large transfer test
     var round: usize = 0;
 
     while (round < num_rounds) : (round += 1) {
@@ -279,7 +279,7 @@ fn testMultipleRoundTrips(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *C
         var attempts: usize = 0;
         while (!wrote and attempts < 500) : (attempts += 1) {
             const wn = api.writeStream(conn, stream_id, msg) catch |err| switch (err) {
-                error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked => blk: {
+                error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked, error.InvalidStream => blk: {
                     try api.poll(ep, 5);
                     break :blk 0;
                 },
@@ -321,7 +321,7 @@ fn testStreamInterleaving(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *C
     while (round < 5) : (round += 1) {
         var stream_idx: usize = 0;
         while (stream_idx < num_streams) : (stream_idx += 1) {
-            const stream_id = stream_idx * 4 + 300; // Start from stream 300
+            const stream_id = stream_idx * 4 + 24; // Sequential after round-trips (24, 28, 32, 36, 40)
 
             var msg_buf: [100]u8 = undefined;
             const msg = try std.fmt.bufPrint(&msg_buf, "Stream {d}, Round {d}", .{ stream_id, round });
@@ -330,7 +330,7 @@ fn testStreamInterleaving(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *C
             var attempts: usize = 0;
             while (!wrote and attempts < 300) : (attempts += 1) {
                 const wn = api.writeStream(conn, stream_id, msg) catch |err| switch (err) {
-                    error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked => blk: {
+                    error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked, error.InvalidStream => blk: {
                         try api.poll(ep, 5);
                         break :blk 0;
                     },
@@ -345,7 +345,7 @@ fn testStreamInterleaving(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *C
     // Read responses from all streams
     var stream_idx: usize = 0;
     while (stream_idx < num_streams) : (stream_idx += 1) {
-        const stream_id = stream_idx * 4 + 300;
+        const stream_id = stream_idx * 4 + 24;
         var rbuf: [1024]u8 = undefined;
         var polls: usize = 0;
         while (polls < 200) : (polls += 1) {
