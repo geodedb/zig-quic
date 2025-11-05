@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -18,13 +19,26 @@ func main() {
 	flag.BoolVar(&insecure, "insecure", false, "skip certificate verification")
 	flag.Parse()
 
+	// Create TLS key log file for debugging
+	keyLogFile, err := os.Create("/tmp/tls_keys.log")
+	if err != nil {
+		log.Printf("Warning: Could not create key log file: %v", err)
+	} else {
+		log.Printf("TLS keys will be logged to /tmp/tls_keys.log")
+	}
+
 	tlsConf := &tls.Config{
 		InsecureSkipVerify: true,  // Always use insecure for testing
 		NextProtos:         []string{"hq-interop"},
+		KeyLogWriter:       keyLogFile,  // Export TLS secrets for debugging
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	if keyLogFile != nil {
+		defer keyLogFile.Close()
+	}
 
 	log.Printf("Connecting to %s", connect)
 	conn, err := quic.DialAddr(ctx, connect, tlsConf, &quic.Config{
@@ -44,8 +58,8 @@ func main() {
 	}
 	defer stream.Close()
 
-	// Send some data
-	msg := []byte("Hello from Go client!")
+	// Send some data (matching what we're debugging)
+	msg := []byte("GET /\r\n")
 	_, err = stream.Write(msg)
 	if err != nil {
 		log.Fatalf("Failed to write: %v", err)

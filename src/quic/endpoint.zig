@@ -1334,14 +1334,17 @@ pub const Endpoint = struct {
                         },
                         .stream => |s| {
                             const off: u64 = s.offset orelse 0;
+                            std.debug.print("\n>>> ENDPOINT RECEIVED STREAM FRAME <<<\n", .{});
                             if (conn.role == .Server) {
                                 std.debug.print("Server received STREAM frame - id={}, off={}, len={}, fin={}\n", .{ s.stream_id, off, s.data.len, s.fin });
                             } else {
                                 std.debug.print("CLIENT received STREAM frame - id={}, off={}, len={}, fin={}\n", .{ s.stream_id, off, s.data.len, s.fin });
                             }
+                            std.debug.print("Calling conn.pushStreamFrame()...\n", .{});
                             conn.pushStreamFrame(s.stream_id, off, s.data, s.fin) catch |err| {
-                                std.debug.print("pushStreamFrame failed: {}\n", .{err});
+                                std.debug.print("ERROR: pushStreamFrame failed: {}\n", .{err});
                             };
+                            std.debug.print("pushStreamFrame returned successfully\n", .{});
                             saw_any = true;
                             saw_ack_eliciting = true;
                         },

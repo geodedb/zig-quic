@@ -8,8 +8,10 @@ const builtin = @import("builtin");
 const ks = @import("quic_tls");
 const logger = @import("quic_logger");
 
-// Use standard library crypto
-const ChaCha20Poly1305 = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
+// Use OpenSSL for AEAD operations (compatibility with other QUIC implementations)
+const openssl = @import("crypto_openssl.zig");
+
+// Keep Zig std.crypto for non-AEAD operations and Retry Integrity Tag
 const Aes128Gcm = std.crypto.aead.aes_gcm.Aes128Gcm;
 const Poly1305 = std.crypto.onetimeauth.Poly1305;
 const ChaCha20IETF = std.crypto.stream.chacha.ChaCha20IETF;
@@ -47,8 +49,8 @@ pub fn expandPacketNumber(truncated: u64, pn_len: u3, largest_pn: u64) u64 {
     return candidate;
 }
 
-/// Supported AEAD suites for QUIC-TLS binding.
-pub const AeadSuite = enum { aes_128_gcm, chacha20_poly1305 };
+/// Supported AEAD suites for QUIC-TLS binding (re-exported from OpenSSL module).
+pub const AeadSuite = openssl.AeadSuite;
 
 /// Encrypt plaintext with associated data using the given suite.
 /// The nonce is constructed as iv XOR packet_number (left-padded to iv length) per RFC 9001.
@@ -62,26 +64,8 @@ pub fn aeadEncrypt(
     plaintext: []const u8,
     out: []u8,
 ) !usize {
-    switch (suite) {
-        .chacha20_poly1305 => {
-            if (key.len != 32 or iv.len != 12) return error.InvalidKeyIv;
-            var nonce: [12]u8 = undefined;
-            xorNonce(&nonce, iv, packet_number);
-            var tag: [ChaCha20Poly1305.tag_length]u8 = undefined;
-            ChaCha20Poly1305.encrypt(out[0..plaintext.len], &tag, plaintext, aad, nonce, key[0..32].*);
-            @memcpy(out[plaintext.len .. plaintext.len + tag.len], tag[0..]);
-            return plaintext.len + tag.len;
-        },
-        .aes_128_gcm => {
-            if (key.len != 16 or iv.len != 12) return error.InvalidKeyIv;
-            var nonce: [12]u8 = undefined;
-            xorNonce(&nonce, iv, packet_number);
-            var tag: [Aes128Gcm.tag_length]u8 = undefined;
-            Aes128Gcm.encrypt(out[0..plaintext.len], &tag, plaintext, aad, nonce, key[0..16].*);
-            @memcpy(out[plaintext.len .. plaintext.len + tag.len], tag[0..]);
-            return plaintext.len + tag.len;
-        },
-    }
+    // Delegate to OpenSSL for AEAD operations (compatibility with quic-go/quiche)
+    return openssl.aeadEncrypt(suite, key, iv, packet_number, aad, plaintext, out);
 }
 
 /// Decrypt ciphertext+tag with associated data using the given suite.
@@ -95,54 +79,8 @@ pub fn aeadDecrypt(
     ciphertext_and_tag: []const u8,
     out_plaintext: []u8,
 ) !usize {
-    if (ciphertext_and_tag.len < 16) return error.AuthenticationFailed;
-    const ct = ciphertext_and_tag[0 .. ciphertext_and_tag.len - 16];
-    var tag_arr: [16]u8 = undefined;
-    @memcpy(tag_arr[0..], ciphertext_and_tag[ciphertext_and_tag.len - 16 ..]);
-
-    // CRITICAL DEBUG: Full AEAD decrypt parameters
-    std.debug.print("\n=== AEAD DECRYPT DEBUG ===\n", .{});
-    std.debug.print("Suite: {}, PN: {}, CT_len: {}, AAD_len: {}\n", .{ suite, packet_number, ct.len, aad.len });
-    std.debug.print("Key (16B): ", .{});
-    for (key) |b| std.debug.print("{x:0>2}", .{b});
-    std.debug.print("\nIV (12B):  ", .{});
-    for (iv) |b| std.debug.print("{x:0>2}", .{b});
-    var nonce_debug: [12]u8 = undefined;
-    xorNonce(&nonce_debug, iv, packet_number);
-    std.debug.print("\nNonce:     ", .{});
-    for (nonce_debug) |b| std.debug.print("{x:0>2}", .{b});
-    std.debug.print("\nAAD ({} B): ", .{aad.len});
-    for (aad) |b| std.debug.print("{x:0>2}", .{b});
-    std.debug.print("\nCT:        ", .{});
-    const ct_show = @min(32, ct.len);
-    for (ct[0..ct_show]) |b| std.debug.print("{x:0>2}", .{b});
-    if (ct.len > 32) std.debug.print("... ({} more)", .{ct.len - 32});
-    std.debug.print("\nTag:       ", .{});
-    for (tag_arr) |b| std.debug.print("{x:0>2}", .{b});
-    std.debug.print("\n=========================\n", .{});
-
-    switch (suite) {
-        .chacha20_poly1305 => {
-            if (key.len != 32 or iv.len != 12) return error.InvalidKeyIv;
-            var nonce: [12]u8 = undefined;
-            xorNonce(&nonce, iv, packet_number);
-            ChaCha20Poly1305.decrypt(out_plaintext[0..ct.len], ct, tag_arr, aad, nonce, key[0..32].*) catch {
-                std.debug.print("ChaCha20Poly1305.decrypt failed for pn={}\n", .{packet_number});
-                return error.AuthenticationFailed;
-            };
-            return ct.len;
-        },
-        .aes_128_gcm => {
-            if (key.len != 16 or iv.len != 12) return error.InvalidKeyIv;
-            var nonce: [12]u8 = undefined;
-            xorNonce(&nonce, iv, packet_number);
-            Aes128Gcm.decrypt(out_plaintext[0..ct.len], ct, tag_arr, aad, nonce, key[0..16].*) catch {
-                std.debug.print("Aes128Gcm.decrypt failed for pn={}\n", .{packet_number});
-                return error.AuthenticationFailed;
-            };
-            return ct.len;
-        },
-    }
+    // Delegate to OpenSSL for AEAD operations (compatibility with quic-go/quiche)
+    return openssl.aeadDecrypt(suite, key, iv, packet_number, aad, ciphertext_and_tag, out_plaintext);
 }
 
 /// Apply header protection to the first byte and packet number bytes.
@@ -157,22 +95,21 @@ pub fn headerProtect(
     if (pn_bytes.len == 0 or pn_bytes.len > 4) return error.InvalidPacketNumberLength;
 
     switch (suite) {
-        .aes_128_gcm => {
-            // AES-based header protection per RFC 9001 §5.4.3
-            if (hp_key.len != 16) return error.InvalidKey;
-            const Aes128 = std.crypto.core.aes.Aes128;
-            var ctx = Aes128.initEnc(hp_key[0..16].*);
-            var out_block: [16]u8 = undefined;
-            ctx.encrypt(&out_block, sample16);
-            const mask0 = out_block[0];
+        .aes_128_gcm, .aes_256_gcm => {
+            // Delegate to OpenSSL for header protection (RFC 9001 §5.4.3)
+            var mask: [5]u8 = undefined;
+            try openssl.headerProtect(hp_key, sample16, &mask);
+
+            // Apply mask to header first byte and packet number bytes
             const is_long = (header_first.* & 0x80) != 0;
             const hdr_mask: u8 = if (is_long) 0x0f else 0x1f;
             const old_first = header_first.*;
-            header_first.* ^= (mask0 & hdr_mask);
-            std.debug.print("headerProtect: first byte 0x{X:0>2} ^ (mask0 0x{X:0>2} & hdr_mask 0x{X:0>2}) = 0x{X:0>2}\n", .{ old_first, mask0, hdr_mask, header_first.* });
-            var i: usize = 0;
-            while (i < pn_bytes.len) : (i += 1) pn_bytes[i] ^= out_block[i + 1];
-            return;
+            header_first.* ^= (mask[0] & hdr_mask);
+            std.debug.print("headerProtect: first byte 0x{X:0>2} ^ (mask0 0x{X:0>2} & hdr_mask 0x{X:0>2}) = 0x{X:0>2}\n", .{ old_first, mask[0], hdr_mask, header_first.* });
+
+            for (pn_bytes, 0..) |*b, i| {
+                b.* ^= mask[1 + i];
+            }
         },
         .chacha20_poly1305 => {
             if (hp_key.len != 32) return error.InvalidKey;
@@ -343,7 +280,7 @@ pub fn protectPacket(
     var sample16: [16]u8 = undefined;
     const pn_len: usize = pn_bytes.len;
     switch (suite) {
-        .aes_128_gcm => {
+        .aes_128_gcm, .aes_256_gcm => {
             // RFC 9001 §5.4.3: Sample starts 4 bytes after the start of packet number field
             // The out_cipher buffer contains only encrypted payload (no PN bytes)
             // For 2-byte PN: sample at packet bytes 4-19 = ciphertext bytes 2-17 = offset (4-2)
@@ -567,7 +504,7 @@ pub fn unprotectInitialAutoSample(
     std.debug.print("  Masked PN bytes before unmasking: {s}\n", .{pn_hex_str});
 
     switch (suite) {
-        .aes_128_gcm => {
+        .aes_128_gcm, .aes_256_gcm => {
             // RFC 9001 §5.4.2: Sample starts 4 bytes after PN field start, always 16 bytes.
             // Buffer layout: [PN bytes (pn_len)] [encrypted payload...] [16-byte tag]
             // Sample position: Always at offset 4 from the start of the Packet Number field
@@ -680,7 +617,8 @@ pub fn unmaskLongHeaderAndPn(
 
     var out_block: [16]u8 = undefined;
     switch (suite) {
-        .aes_128_gcm => {
+        .aes_128_gcm, .aes_256_gcm => {
+            // Both AES-128-GCM and AES-256-GCM use AES-128-ECB for header protection (RFC 9001 §5.4.3)
             if (hp_key.len != 16) return error.InvalidKey;
             const Aes128 = std.crypto.core.aes.Aes128;
             var ctx = Aes128.initEnc(hp_key[0..16].*);

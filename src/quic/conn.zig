@@ -1655,20 +1655,36 @@ pub const Connection = struct {
     pub fn pushStreamFrame(self: *Connection, stream_id: u64, offset: u64, data: []const u8, fin: bool) !void {
         if (self.stream_recv_aborted) return; // ignore further data after RESET_STREAM
 
-        std.debug.print("DEBUG pushStreamFrame: stream_id={}, offset={}, len={}, fin={}, role={}\n", .{ stream_id, offset, data.len, fin, self.role });
+        std.debug.print("\n=== PUSH_STREAM_FRAME ENTRY ===\n", .{});
+        std.debug.print("stream_id={}, offset={}, len={}, fin={}, role={}\n", .{ stream_id, offset, data.len, fin, self.role });
 
         // Check if this is a new peer-initiated stream
         const is_peer_initiated = self.isPeerInitiatedStream(stream_id);
-        std.debug.print("is_peer_initiated={}, stream_known={}\n", .{ is_peer_initiated, self.isStreamKnown(stream_id) });
+        const stream_known = self.isStreamKnown(stream_id);
 
-        if (is_peer_initiated and !self.isStreamKnown(stream_id)) {
+        std.debug.print("CHECKS: is_peer_initiated={}, stream_known={}\n", .{ is_peer_initiated, stream_known });
+        std.debug.print("  - initiator_bit (stream_id & 0x1) = {}\n", .{stream_id & 0x1});
+        std.debug.print("  - streams_rx has stream? {}\n", .{self.streams_rx.get(stream_id) != null});
+        std.debug.print("  - queue size before = {}\n", .{self.incoming_stream_queue.items.len});
+
+        if (is_peer_initiated and !stream_known) {
             // Add to incoming queue if not already there
-            std.debug.print("Queueing new incoming stream {}\n", .{stream_id});
+            std.debug.print("✓ CONDITION MET: Queueing new incoming stream {}\n", .{stream_id});
             try self.queueIncomingStream(stream_id);
-            std.debug.print("Queue now has {} streams\n", .{self.incoming_stream_queue.items.len});
+            std.debug.print("✓ QUEUED: Queue now has {} streams\n", .{self.incoming_stream_queue.items.len});
+        } else {
+            std.debug.print("✗ CONDITION NOT MET: NOT queueing stream {}\n", .{stream_id});
+            if (!is_peer_initiated) {
+                std.debug.print("  Reason: NOT peer-initiated\n", .{});
+            }
+            if (stream_known) {
+                std.debug.print("  Reason: stream already KNOWN\n", .{});
+            }
         }
 
+        std.debug.print("Calling ensureStreamRx({})...\n", .{stream_id});
         const s = self.ensureStreamRx(stream_id);
+        std.debug.print("After ensureStreamRx: streams_rx now has {} entries\n", .{self.streams_rx.count()});
         if (fin) {
             const end_off: u64 = offset + @as(u64, data.len);
             s.fin_off = end_off;

@@ -18,18 +18,28 @@ fn mkModule(b: *std.Build, path: []const u8) *std.Build.Module {
 
 fn addExe(b: *std.Build, name: []const u8, path: []const u8, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
     var exe = b.addExecutable(.{ .name = name, .root_module = b.createModule(.{ .root_source_file = rp(path), .target = target, .optimize = optimize }) });
+
+    // Link OpenSSL for crypto operations (required for QUIC AEAD compatibility)
+    exe.linkSystemLibrary("ssl");
+    exe.linkSystemLibrary("crypto");
+    exe.linkLibC();
+
     if (target.result.os.tag == .windows) {
         exe.linkSystemLibrary("ws2_32");
-        exe.linkLibC();
     }
     return exe;
 }
 
 fn addTst(b: *std.Build, path: []const u8, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
     var tst = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = rp(path), .target = target, .optimize = optimize }) });
+
+    // Link OpenSSL for crypto operations (required for QUIC AEAD compatibility)
+    tst.linkSystemLibrary("ssl");
+    tst.linkSystemLibrary("crypto");
+    tst.linkLibC();
+
     if (target.result.os.tag == .windows) {
         tst.linkSystemLibrary("ws2_32");
-        tst.linkLibC();
     }
     return tst;
 }

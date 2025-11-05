@@ -1,0 +1,67 @@
+zig build 
+zig build cli 
+========== E2E Test: Go Client (quic-go) ==========
+Starting Zig server...
+Server PID: 2897555
+Running Go client...
+2025/11/05 11:18:45 Connecting to 127.0.0.1:4433 with ALPN: hq-interop
+[TRANSPORT] Handling packet: size=911, from=127.0.0.1:4433
+[TRANSPORT] Handling packet: size=438, from=127.0.0.1:4433
+[TRANSPORT] Handling packet: size=118, from=127.0.0.1:4433
+[TRANSPORT] Handling packet: size=74, from=127.0.0.1:4433
+[UNPACKER] Unpacking long header packet: type=Initial, version=v1, dest_conn_id=(empty), src_conn_id=98d7428902d4e254, data_len=784
+[UNPACKER] Processing Initial packet
+[CONN] First packet received from server, switching to new conn ID: 98d7428902d4e254
+[CRYPTO_MGR] Handling CRYPTO frame: enc_level=Initial, offset=0, length=90
+[CRYPTO_MGR] Processing Initial CRYPTO frame
+[CRYPTO_MGR] Processing Initial CRYPTO frame
+[TLS_DEBUG] setWriteKey(Handshake): trafficSecret=31163fc763908b5e2e4c58c9fa190c50b10ff5470aaa1e65b27dcc939bac2e95
+[TLS_DEBUG] createAEAD: suite=1301, key=76f9e926915db0ab05782b1dea9c2fe5, iv=d4095e6b653677f02eb2b296
+[TLS_DEBUG] setReadKey(Handshake): trafficSecret=43d02ed9c6219e16b964aef485a50427ccd966b3d54dd07e58e9cb11ca4a8f21
+[TLS_DEBUG] createAEAD: suite=1301, key=c8f0adaa78d39f7a64315a3452a56d2b, iv=5c798d8cba63bf3a26f00229
+[CRYPTO_MGR] Processing Initial CRYPTO frame
+[UNPACKER] Unpacking long header packet: type=Handshake, version=v1, dest_conn_id=(empty), src_conn_id=98d7428902d4e254, data_len=127
+[UNPACKER] Processing Handshake packet
+[CRYPTO_MGR] Handling CRYPTO frame: enc_level=Handshake, offset=0, length=88
+[CRYPTO_MGR] Processing Handshake CRYPTO frame
+[CRYPTO_MGR] Processing Handshake CRYPTO frame
+[CRYPTO_MGR] Processing Handshake CRYPTO frame
+[UNPACKER] Unpacking long header packet: type=Handshake, version=v1, dest_conn_id=(empty), src_conn_id=98d7428902d4e254, data_len=438
+[UNPACKER] Processing Handshake packet
+[CRYPTO_MGR] Handling CRYPTO frame: enc_level=Handshake, offset=88, length=398
+[CRYPTO_MGR] Processing Handshake CRYPTO frame
+[CRYPTO_MGR] Processing Handshake CRYPTO frame
+[CRYPTO_MGR] Processing Handshake CRYPTO frame
+[CRYPTO_MGR] Processing Initial CRYPTO frame
+[UNPACKER] Unpacking long header packet: type=Handshake, version=v1, dest_conn_id=(empty), src_conn_id=98d7428902d4e254, data_len=118
+[UNPACKER] Processing Handshake packet
+[CRYPTO_MGR] Handling CRYPTO frame: enc_level=Handshake, offset=486, length=78
+[CRYPTO_MGR] Processing Handshake CRYPTO frame
+[CRYPTO_MGR] Processing Handshake CRYPTO frame
+[CRYPTO_MGR] Processing Handshake CRYPTO frame
+[UNPACKER] Unpacking long header packet: type=Handshake, version=v1, dest_conn_id=(empty), src_conn_id=98d7428902d4e254, data_len=74
+[UNPACKER] Processing Handshake packet
+[CRYPTO_MGR] Handling CRYPTO frame: enc_level=Handshake, offset=564, length=36
+[CRYPTO_MGR] Processing Handshake CRYPTO frame
+[CRYPTO_MGR] Processing Handshake CRYPTO frame
+[TLS_DEBUG] createAEAD: suite=1301, key=da2a35bd73c2b87c51c7845bbe5e8e5b, iv=774b11733e3055be3c494613
+[TLS_DEBUG] createAEAD: suite=1301, key=cb4c41be1915632ccbcde54bdbcd8e8c, iv=de94f272b915831a7c43b10a
+[TLS_DEBUG] createAEAD: suite=1301, key=79408c22ab5b2b4ddceb24bdd80358d6, iv=db6532abcb5e2f61dd2879c2
+[TLS_DEBUG] createAEAD: suite=1301, key=3746d264b77c936875539ea5058f83d7, iv=1f229a53da3a8a81fa683694
+[CRYPTO_MGR] Processing Handshake CRYPTO frame
+2025/11/05 11:18:45 ✓ Connection established
+2025/11/05 11:18:45 ✓ TLS handshake complete
+2025/11/05 11:18:45 ✓ Stream opened (ID: 0)
+2025/11/05 11:18:45 ✓ Sent request: "GET /\r\n"
+[TRANSPORT] Handling packet: size=32, from=127.0.0.1:4433
+[UNPACKER] Unpacking short header packet: data_len=32
+[TRANSPORT] Handling packet: size=33, from=127.0.0.1:4433
+[UNPACKER] Unpacking short header packet: data_len=33
+
+=== Server Log Analysis ===
+✅ Server received 17 packets from Go client
+>>> About to call processIncomingDatagram with 1280 bytes
+=== processIncomingDatagram #1 called with 1280 bytes ===
+>>> Returned from processIncomingDatagram
+>>> About to call processIncomingDatagram with 1280 bytes
+=== processIncomingDatagram #2 called with 1280 bytes ===

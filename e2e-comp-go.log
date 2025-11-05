@@ -1,0 +1,75 @@
+zig build 
+zig build cli 
+========== E2E Comprehensive Test: Go Client (quic-go) ==========
+Starting Zig server with TLS...
+Server PID: 3038245
+Running comprehensive Go test suite...
+2025/11/05 12:36:22 🚀 Starting comprehensive QUIC test suite
+2025/11/05 12:36:22 📡 Connecting to 127.0.0.1:4433
+2025/11/05 12:36:22 ✅ Connection established
+2025/11/05 12:36:22 ✅ TLS handshake complete
+2025/11/05 12:36:22 
+📝 Test 1: Single stream echo
+2025/11/05 12:36:22 ✓ Stream opened (ID: 0)
+2025/11/05 12:36:52 
+📝 Test 2: Multiple concurrent streams
+2025/11/05 12:36:52 
+📝 Test: Large data transfer (10240 bytes)
+2025/11/05 12:36:52 
+📝 Test: Large data transfer (102400 bytes)
+2025/11/05 12:36:52 
+📝 Test: Large data transfer (1048576 bytes)
+2025/11/05 12:36:52 
+📝 Test: Multiple round-trips (10 cycles)
+2025/11/05 12:36:52 
+📝 Test: Bidirectional simultaneous send/receive
+2025/11/05 12:36:52 
+📝 Test: Stream interleaving (5 streams)
+2025/11/05 12:36:52 
+============================================================
+2025/11/05 12:36:52 📊 TEST SUMMARY
+2025/11/05 12:36:52 ============================================================
+2025/11/05 12:36:52 ❌ Single Stream Echo
+2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
+2025/11/05 12:36:52 ❌ Multiple Concurrent Streams
+2025/11/05 12:36:52    └─ Error: stream 3: timeout: no recent network activity
+2025/11/05 12:36:52 ❌ Large Transfer (10240)
+2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
+2025/11/05 12:36:52 ❌ Large Transfer (102400)
+2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
+2025/11/05 12:36:52 ❌ Large Transfer (1048576)
+2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
+2025/11/05 12:36:52 ❌ Multiple Round-trips
+2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
+2025/11/05 12:36:52 ❌ Bidirectional Simultaneous
+2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
+2025/11/05 12:36:52 ❌ Stream Interleaving
+2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
+2025/11/05 12:36:52 
+============================================================
+2025/11/05 12:36:52 RESULTS: 0 passed, 8 failed, 8 total
+2025/11/05 12:36:52 ============================================================
+2025/11/05 12:36:52 
+❌ Some tests failed
+
+⚠️  Go comprehensive test suite completed with warnings/failures
+2025/11/05 12:36:52 ❌ Multiple Concurrent Streams
+2025/11/05 12:36:52    └─ Error: stream 3: timeout: no recent network activity
+2025/11/05 12:36:52 ❌ Large Transfer (10240)
+2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
+2025/11/05 12:36:52 ❌ Large Transfer (102400)
+2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
+2025/11/05 12:36:52 ❌ Large Transfer (1048576)
+2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
+2025/11/05 12:36:52 ❌ Multiple Round-trips
+2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
+2025/11/05 12:36:52 ❌ Bidirectional Simultaneous
+2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
+2025/11/05 12:36:52 ❌ Stream Interleaving
+2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
+2025/11/05 12:36:52 
+============================================================
+2025/11/05 12:36:52 RESULTS: 0 passed, 8 failed, 8 total
+2025/11/05 12:36:52 ============================================================
+2025/11/05 12:36:52 
+❌ Some tests failed

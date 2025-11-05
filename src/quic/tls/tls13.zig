@@ -2411,14 +2411,25 @@ pub const Engine = struct {
     /// Build and queue a Finished message for this endpoint using provided traffic secret.
     /// This computes verify_data = HMAC(FinishedKey(secret), Transcript-Hash(before-Finished)).
     pub fn queueFinished(self: *Engine, traffic_secret: [H.digest_length]u8) !void {
+        // 1. Take snapshot BEFORE adding our Finished (for computing verify_data)
         var snap = self.transcript;
         const th = snap.finalize();
         std.debug.print("TLS: Queueing Finished with transcript hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...\n", .{ th[0], th[1], th[2], th[3], th[4], th[5], th[6], th[7] });
+
+        // 2. Compute verify_data using transcript WITHOUT our Finished
         const verify = deriveFinishedVerifyData(traffic_secret, th);
         const msg = try encodeHandshake(self.allocator, .finished, verify[0..]);
         defer self.allocator.free(msg);
+
+        // 3. CRITICAL: Add our Finished to the transcript BEFORE queueing
+        //    This ensures application secrets can be derived with correct transcript
+        self.transcript.update(msg);
+        std.debug.print("TLS: Added our Finished to transcript ({} bytes) before queueing\n", .{msg.len});
+
+        // 4. Queue the message to crypto stream
         try self.queueCrypto(msg);
         self.finished_sent = true;
+
         // NOTE: Application secrets are NOT derived here
         // They must be derived AFTER receiving and verifying the peer's Finished message
     }
