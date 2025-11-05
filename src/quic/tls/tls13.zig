@@ -2421,12 +2421,9 @@ pub const Engine = struct {
         const msg = try encodeHandshake(self.allocator, .finished, verify[0..]);
         defer self.allocator.free(msg);
 
-        // 3. CRITICAL: Add our Finished to the transcript BEFORE queueing
-        //    This ensures application secrets can be derived with correct transcript
-        self.transcript.update(msg);
-        std.debug.print("TLS: Added our Finished to transcript ({} bytes) before queueing\n", .{msg.len});
-
-        // 4. Queue the message to crypto stream
+        // 3. Queue the message - queueCrypto will add it to transcript automatically
+        //    NOTE: queueCrypto() updates transcript (line 2237), so we don't add it here
+        //    Adding it twice would corrupt the transcript hash!
         try self.queueCrypto(msg);
         self.finished_sent = true;
 

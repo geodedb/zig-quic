@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -29,9 +30,19 @@ func main() {
 	flag.BoolVar(&insecure, "insecure", false, "skip certificate verification")
 	flag.Parse()
 
+	// Create TLS key log file for debugging
+	keyLogFile, err := os.Create("/tmp/tls_keys_comprehensive.log")
+	if err != nil {
+		log.Printf("Warning: Could not create key log file: %v", err)
+	} else {
+		defer keyLogFile.Close()
+		log.Printf("📝 TLS keys will be logged to /tmp/tls_keys_comprehensive.log")
+	}
+
 	tlsConf := &tls.Config{
 		InsecureSkipVerify: true,
 		NextProtos:         []string{"hq-interop"},
+		KeyLogWriter:       keyLogFile,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
