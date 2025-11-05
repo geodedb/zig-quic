@@ -1,4 +1,8 @@
-// Minimal X.509 (DER) parser/validator for TLS 1.3 in this project.
+//! Minimal X.509 (DER) parser/validator for TLS 1.3 in this project.
+//!
+//! Implements the certificate processing subset demanded by RFC 5280 (subject
+//! alt names, key usage, validity) so QUIC's TLS layer can validate peers.
+//! Signature verification hooks align with RFC 8446 §4.4.4 expectations.
 // Scope: parse TBSCertificate, read subject alt names, basic constraints,
 // key usage, extended key usage (serverAuth), and validity. Provide
 // simple path validation using issuer SPKI and signature verification for

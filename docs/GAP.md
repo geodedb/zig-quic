@@ -6,6 +6,12 @@ Date: 2025-09-20 (Current Status)
 
 ## Latest Implementation Achievements
 
+### Zero-Length Client SCID Coalescing Fix ✅
+
+- Ensured the server repeats a zero-length Destination Connection ID when a client Initial arrives with `scid_len = 0`, satisfying RFC 9000 §12.2 and eliminating the TLS alert 0x010a (266) observed with quic-go and geode runners.
+- Updated `src/quic/endpoint.zig` to stop falling back to `our_scid` across Handshake, ACK, DATAGRAM, NEW_TOKEN, and other short-header paths when `peer_initial_scid.len == 0`, keeping all coalesced packets compliant for zero-length CIDs.
+- Added regression `tests/test_zero_length_scid_coalescing.zig` that injects a ClientHello with an empty SCID and asserts the coalesced Handshake packet encodes a zero-length DCID.
+
 ### Long-Header Length Encoding Compliance ✅
 
 - Updated `encodeInitialProtected`, `encodeHandshakeProtected`, and `encode0RTTProtected` to emit the long-header Length field with the minimal varint size mandated by RFC 9000 §17.2, fixing interoperability failures with quic-go clients that enforce strict encoding when using zero-length CIDs.

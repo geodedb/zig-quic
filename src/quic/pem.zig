@@ -1,3 +1,7 @@
+//! PEM parsing helpers for certificates and private keys.
+//!
+//! Provides the PEM-to-DER conversions required by TLS certificate loading in
+//! accordance with RFC 7468 so QUIC endpoints can ingest external material.
 const std = @import("std");
 const base64 = std.base64.standard;
 

@@ -1,4 +1,8 @@
-// Stateless Retry token encode/verify (minimal HMAC-based implementation)
+//! Stateless Retry token encode/verify (minimal HMAC-based implementation).
+//!
+//! RFC 9000 §8.1.4 describes Retry tokens as opaque values the server can use
+//! to validate a client's address on a subsequent Initial. This module binds
+//! tokens to the client IP and Original DCID using an HMAC-based construction.
 const std = @import("std");
 const byteorder = @import("byteorder");
 
@@ -25,6 +29,9 @@ inline fn readLe64(in: *const [8]u8) u64 {
 
 /// Layout: [8 bytes expiry_ms_le] || [8 bytes odcid_hash_le] || [16 bytes tag]
 /// tag = HMAC-SHA256(secret, client_ip || odcid_hash_le || expiry_ms_le)[0..16]
+/// RFC 9000 §8.1.4 recommends binding tokens to the client address and the
+/// Original Destination Connection ID so they cannot be replayed by another
+/// client.
 fn makeTag(secret: []const u8, client_ip: []const u8, odcid_hash_le: *const [8]u8, expiry_le: *const [8]u8, out: *[16]u8) void {
     var mac = std.crypto.auth.hmac.Hmac(H).init(secret);
     mac.update(client_ip);
@@ -36,6 +43,8 @@ fn makeTag(secret: []const u8, client_ip: []const u8, odcid_hash_le: *const [8]u
 }
 
 /// Encode a token bound to the client's IP and the client's Original DCID.
+/// Servers SHOULD enforce a bounded lifetime for tokens (§8.1.4); the caller
+/// supplies the expiration interval in milliseconds.
 pub fn encode(alloc: std.mem.Allocator, client_ip: []const u8, odcid: []const u8, secret: []const u8, expiry_ms_from_now: u64) ![]u8 {
     // Compute absolute expiry in ms using monotonic now as base.
     const now_ns: i128 = std.time.nanoTimestamp();
@@ -55,8 +64,9 @@ pub fn encode(alloc: std.mem.Allocator, client_ip: []const u8, odcid: []const u8
     return out;
 }
 
-/// Verify a token under secret and client address at current time.
-/// Returns true when the tag matches and token has not expired.
+/// Verify a token under secret and client address at current time. RFC 9000
+/// §8.1.4 requires rejecting tokens whose integrity cannot be verified or whose
+/// expiry has elapsed.
 pub fn verify(token: []const u8, client_ip: []const u8, secret: []const u8, now_ms: u64) bool {
     if (token.len != 32) return false;
     var expiry_le: [8]u8 = undefined;

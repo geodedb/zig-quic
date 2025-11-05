@@ -1,4 +1,8 @@
 //! Endpoint skeleton with UDP send/recv (single socket, single-thread).
+//!
+//! Implements the endpoint responsibilities from RFC 9000 (§§5–9, §14) including
+//! packet processing, path validation, and PMTUD timers, plus recovery plumbing
+//! from RFC 9002 (§6). TLS credential loading follows RFC 9001 §4 requirements.
 
 const std = @import("std");
 const cfg = @import("config.zig");
@@ -59,9 +63,14 @@ const Timer = struct {
 };
 
 /// Endpoint timer kinds: generic app timers plus per-PN-space PTO and PMTUD timers.
+///
+/// PTO timers correspond to RFC 9002 §6.2, while PMTUD follows RFC 9000 §14.2.
 pub const TimerKind = enum { Generic, PtoInitial, PtoHandshake, PtoApp, Pmtud };
 
 /// Hash key combining peer address + destination CID for connection lookup.
+///
+/// RFC 9000 §5.1 mandates that servers route packets using tuple + DCID. We use
+/// this composite hash so multipath/path validation still find the right entry.
 pub const Key = struct { peer_hash: u64, dcid_hash: u64 };
 
 fn hashBytes(b: []const u8) u64 {
@@ -82,6 +91,10 @@ pub const EndpointRole = enum {
 };
 
 /// single bound socket. Owns all live connections and drives send/recv plus PTO/PMTUD timers.
+///
+/// Covers the UDP abstraction and anti-amplification logic described in RFC 9000
+/// §8, manages Retry/NEW_TOKEN (via config) per §8.1, and orchestrates timers for
+/// loss recovery as recommended by RFC 9002 §6.
 pub const Endpoint = struct {
 
     // Socket file descriptor
@@ -469,7 +482,7 @@ pub const Endpoint = struct {
         c.version = if (self.cfg.version == .v2) packet.QUIC_V2 else packet.QUIC_V1;
         c.version_v2 = (c.version == packet.QUIC_V2);
         c.initial_version = c.version;
-        // Client chooses DCID and SCID
+        // Client chooses DCID and SCID (RFC 9000 §5.1.1) prior to deriving Initial secrets.
         var dcid: [8]u8 = undefined;
         std.crypto.random.bytes(&dcid);
         c.peer_initial_dcid.len = @intCast(dcid.len);
@@ -491,6 +504,7 @@ pub const Endpoint = struct {
     /// Transmit minimal Initial packet (PING) to elicit Version Negotiation or SH.
     pub fn clientSendInitialProbe(self: *Endpoint, c: *conn_mod.Connection) !void {
         const v2 = (c.version == packet.QUIC_V2);
+        // Initial secret derives from the immutable DCID per RFC 9001 §5.1/§5.2.
         const initial = ks.deriveInitialSecret(v2, if (c.original_dcid.len > 0) c.original_dcid.bytes[0..c.original_dcid.len] else c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]);
         const pair = ks.deriveClientServerInitial(initial);
         std.debug.print("client: deriving Initial keys with dcid=\n", .{});
@@ -534,7 +548,7 @@ pub const Endpoint = struct {
         } else {
             frames.append(self.allocator.*, @intFromEnum(frame.FrameType.PING)) catch {};
         }
-        // Add padding to meet minimum Initial packet size of 1200 bytes
+        // Add padding to meet minimum Initial datagram size of 1200 bytes (RFC 9000 §14.1).
         while (frames.items.len < 1150) frames.append(self.allocator.*, @intFromEnum(frame.FrameType.PADDING)) catch {};
         // Use any stored Retry token if present
         const token_slice: []const u8 = c.initial_token.items;
@@ -580,6 +594,7 @@ pub const Endpoint = struct {
         self.next_timer_id +%= 1;
         const now_ms: i64 = nowMsMonotonic();
         const deadline: i64 = now_ms + @as(i64, @intCast(delay_ms));
+        // PTO and probe timers follow RFC 9002 §6 (loss detection) and §7 (PMTUD pacing).
         try self.timers.append(self.allocator.*, .{ .deadline_ms = deadline, .id = id, .kind = kind, .conn = c });
         return id;
     }
@@ -999,11 +1014,11 @@ pub const Endpoint = struct {
         std.debug.print("First byte: 0x{X:0>2}, is_long: {}\n", .{ first, (first & 0x80) != 0 });
         const is_long = (first & 0x80) != 0;
         if (is_long) {
-            // Long header: check Version for VN/Initial/Handshake
+            // Long header: check Version for VN/Initial/Handshake per RFC 9000 §17.2.
             if (bytes.len < 5) return;
             const version: u32 = (@as(u32, bytes[1]) << 24) | (@as(u32, bytes[2]) << 16) | (@as(u32, bytes[3]) << 8) | @as(u32, bytes[4]);
             if (version == 0) {
-                // Version Negotiation handling (client side)
+                // Version Negotiation handling (client side, RFC 9000 §7).
                 var arena = std.heap.ArenaAllocator.init(self.allocator.*);
                 defer arena.deinit();
                 const aa = arena.allocator();
@@ -1033,7 +1048,7 @@ pub const Endpoint = struct {
             }
         }
         if (!is_long) {
-            // Short header 1-RTT path
+            // Short header 1-RTT processing (RFC 9000 §17.3) matching existing path tuple + DCID.
             std.debug.print("Processing short header packet - len={}, first_byte={x}\n", .{ bytes.len, bytes[0] });
             if (bytes.len < 1) return;
 
@@ -1097,7 +1112,7 @@ pub const Endpoint = struct {
                 found = b;
                 dcid_len = best_len;
             }
-            // NAT rebinding / migration fallback: try match by DCID across all entries
+            // NAT rebinding / active migration fallback (RFC 9000 §9.3): try match by DCID across all entries.
             if (found == null) {
                 std.debug.print("No match with peer_hash, trying all connections\n", .{});
                 var it2 = self.conns.iterator();
@@ -1122,7 +1137,7 @@ pub const Endpoint = struct {
                         std.debug.print("Found match - our_scid len={}, first_byte={x}, packet_dcid_first={x}\n", .{ l, if (l > 0) c.our_scid.bytes[0] else 0, if (1 + l <= bytes.len) bytes[1] else 0 });
                         found = c;
                         dcid_len = l;
-                        // Centralized handling for path change and validation
+                        // Centralized handling for path change and validation (RFC 9000 §9.4/§9.6).
                         self.onPathAddressChanged(c, peer, peer_h, l);
                         break;
                     } else {
@@ -1155,7 +1170,7 @@ pub const Endpoint = struct {
                 std.debug.print("APP short: match dcid_len={d} rx_keys={s} tx_keys={s} ecn_bits=0x{x}\n", .{ dcid_len, if (has_rx) "y" else "n", if (has_tx) "y" else "n", eb });
             }
             if (ecn_bits) |e| conn.onEcnMark(.Application, e);
-            // Track bytes received from unvalidated address for amplification gating
+            // Track bytes received from unvalidated address for anti-amplification (RFC 9000 §8.1).
             conn.addRxUnvalidated(bytes.len);
             if (conn.app_rx_keys) |rx_keys| {
                 std.debug.print("\n=== 1-RTT DECRYPT ATTEMPT ===\n", .{});
@@ -1176,7 +1191,7 @@ pub const Endpoint = struct {
                 std.debug.print("trying dcid_len={}, largest_pn={}\n", .{ try_dcid_len, largest_pn });
 
                 // CRITICAL BUG #6 FIX: Try systematic DCID length enumeration
-                // RFC 9000 §17.2: Short headers don't encode DCID length - we must discover it
+                // RFC 9000 §17.2 / §17.3: Short headers omit DCID length; discoverable via matching heuristics.
                 // Try the cached/matched length first, then enumerate all possibilities 0-20
                 var dec_res = packet.decodeShortProtected(self.allocator.*, bytes, try_dcid_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }, largest_pn) catch blk_dec: {
                     // If decryption fails outright, check for stateless reset token match to fail fast.
@@ -1341,7 +1356,7 @@ pub const Endpoint = struct {
                                     defer fb.deinit(self.allocator.*);
                                     const w = fb.writer(self.allocator.*);
                                     _ = (frame.Frame{ .datagram = .{ .data = d.data } }).write(w) catch 0;
-                                    const dcid_sh = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else conn.our_scid.bytes[0..conn.our_scid.len];
+                                    const dcid_sh = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else &[_]u8{};
                                     const out = packet.encodeShortProtected(self.allocator.*, dcid_sh, @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, txk, conn.tx_key_phase) catch null;
                                     if (out) |pkt_bytes| {
                                         defer self.allocator.free(pkt_bytes);
@@ -1394,7 +1409,7 @@ pub const Endpoint = struct {
                                 defer fb.deinit(self.allocator.*);
                                 const w = fb.writer(self.allocator.*);
                                 _ = (frame.Frame{ .path_response = pcv }).write(w) catch 0;
-                                const dcid_sh2 = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else conn.our_scid.bytes[0..conn.our_scid.len];
+                                const dcid_sh2 = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else &[_]u8{};
                                 const out = packet.encodeShortProtected(self.allocator.*, dcid_sh2, @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, txk, conn.tx_key_phase) catch null;
                                 if (out) |pkt_bytes| {
                                     defer self.allocator.free(pkt_bytes);
@@ -1445,7 +1460,7 @@ pub const Endpoint = struct {
                     const ack_delay = conn.getAckDelayEncoded(.Application, now_ns_ack);
                     const ackf = frame.Frame{ .ack = .{ .largest = ad.largest, .ack_delay = ack_delay, .first_range = ad.first_range, .ranges = ad.ranges, .ecn = ack_ecn_now } };
                     _ = ackf.write(w) catch 0;
-                    const dcid_ack = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..@min(conn.peer_initial_scid.len, 4)] else conn.our_scid.bytes[0..@min(conn.our_scid.len, 4)];
+                    const dcid_ack = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..@min(conn.peer_initial_scid.len, 4)] else &[_]u8{};
                     const pkt = packet.encodeShortProtected(self.allocator.*, dcid_ack, @as(u32, @truncate(conn.pn_app_tx)), 2, ack_buf.items, conn.app_tx_keys.?, conn.tx_key_phase) catch null;
                     if (pkt) |bytes_out| {
                         defer self.allocator.free(bytes_out);
@@ -1467,7 +1482,7 @@ pub const Endpoint = struct {
                         // Amplification gating: only send if validated or within 3x limit
                         const allow_send = conn.canSendUnderAmplification();
                         if (allow_send) {
-                            const dcid_ack2 = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else conn.our_scid.bytes[0..conn.our_scid.len];
+                            const dcid_ack2 = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else &[_]u8{};
                             const out = packet.encodeShortProtected(self.allocator.*, dcid_ack2, @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, tx_keys, conn.tx_key_phase) catch null;
                             if (out) |pkt_bytes| {
                                 defer self.allocator.free(pkt_bytes);
@@ -1520,7 +1535,7 @@ pub const Endpoint = struct {
                                 const ack_delay = conn.getAckDelayEncoded(.Application, now_ns_ack);
                                 const ackf = frame.Frame{ .ack = .{ .largest = ad.largest, .ack_delay = ack_delay, .first_range = ad.first_range, .ranges = ad.ranges, .ecn = ack_ecn_common } };
                                 _ = ackf.write(wa) catch 0;
-                                const dcid_ack3 = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..@min(conn.peer_initial_scid.len, 4)] else conn.our_scid.bytes[0..@min(conn.our_scid.len, 4)];
+                                const dcid_ack3 = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..@min(conn.peer_initial_scid.len, 4)] else &[_]u8{};
                                 const po = packet.encodeShortProtected(self.allocator.*, dcid_ack3, @as(u32, @truncate(conn.pn_app_tx)), 2, ack_only.items, tx_keys, conn.tx_key_phase) catch null;
                                 if (po) |bytes_out0| {
                                     defer self.allocator.free(bytes_out0);
@@ -1571,7 +1586,7 @@ pub const Endpoint = struct {
                                 if (any_pending) {
                                     _ = conn.writePendingNewConnectionIds(w, 2) catch 0; // piggyback up to 2
                                 }
-                                const dcid_ack4 = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else conn.our_scid.bytes[0..conn.our_scid.len];
+                                const dcid_ack4 = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else &[_]u8{};
                                 const out = packet.encodeShortProtected(self.allocator.*, dcid_ack4, @as(u32, @truncate(conn.pn_app_tx)), 2, frames_buf.items, tx_keys, conn.tx_key_phase) catch null;
                                 if (out) |pkt_bytes| {
                                     defer self.allocator.free(pkt_bytes);
@@ -1598,7 +1613,7 @@ pub const Endpoint = struct {
                             const ack_delay2 = conn.getAckDelayEncoded(.Application, now_ns_ack);
                             const ack2 = frame.Frame{ .ack = .{ .largest = ack_desc2.largest, .ack_delay = ack_delay2, .first_range = ack_desc2.first_range, .ranges = ack_desc2.ranges, .ecn = ack_ecn_common } };
                             _ = ack2.write(w2) catch 0;
-                            const dcid_ack5 = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else conn.our_scid.bytes[0..conn.our_scid.len];
+                            const dcid_ack5 = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else &[_]u8{};
                             const out2 = packet.encodeShortProtected(self.allocator.*, dcid_ack5, @as(u32, @truncate(conn.pn_app_tx)), 2, ack_only.items, tx_keys, conn.tx_key_phase) catch null;
                             if (out2) |pkt_bytes2| {
                                 defer self.allocator.free(pkt_bytes2);
@@ -3285,7 +3300,7 @@ pub const Endpoint = struct {
                     defer fb.deinit(self.allocator.*);
                     const w = fb.writer(self.allocator.*);
                     _ = (frame.Frame{ .new_token = .{ .token = tbytes } }).write(w) catch 0;
-                    const dcid_nt = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else conn.our_scid.bytes[0..conn.our_scid.len];
+                    const dcid_nt = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else &[_]u8{};
                     const out = packet.encodeShortProtected(self.allocator.*, dcid_nt, @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, conn.app_tx_keys.?, conn.tx_key_phase) catch null;
                     if (out) |pkt_bytes| {
                         defer self.allocator.free(pkt_bytes);
@@ -3309,7 +3324,8 @@ pub const Endpoint = struct {
         }
     }
 
-    /// resets validation state and counters, installs new map key, and triggers validation.
+    /// resets validation state and counters, installs new map key, and triggers validation
+    /// as described in RFC 9000 §9.4/§9.5 for path migration.
     fn onPathAddressChanged(self: *Endpoint, c: *conn_mod.Connection, new_peer: conn_mod.SockAddr, new_peer_hash: u64, dcid_len: usize) void {
         c.setPeer(new_peer);
         c.address_validated = false;
@@ -3318,7 +3334,7 @@ pub const Endpoint = struct {
         // Insert/refresh mapping keyed by new peer and our DCID
         const new_key = Key{ .peer_hash = new_peer_hash, .dcid_hash = hashBytes(c.our_scid.bytes[0..dcid_len]) };
         _ = self.conns.put(new_key, c) catch {};
-        // Trigger PATH_CHALLENGE if 1-RTT keys are available
+        // Trigger PATH_CHALLENGE if 1-RTT keys are available (§9.3):
         c.sendPathChallenge();
         std.debug.print("path: change detected dcid_len={d} triggering validation (phase={d})\n", .{ dcid_len, @intFromBool(c.tx_key_phase) });
     }

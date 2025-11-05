@@ -139,12 +139,13 @@ Data fields (in `Connection`):
 Transition rules:
 
 1. When the client receives the first server Initial it stores the packet's SCID into `peer_initial_scid` (once only).
-2. Short‑header DCID selection: if `peer_initial_scid.len > 0` use it, else fallback to our own SCID (`our_scid`). This guarantees that once known, the DCID on all 1‑RTT packets matches the server's expectation.
+2. Short‑header DCID selection: if `peer_initial_scid.len > 0` use it, else emit a zero-length DCID slice so every Initial, Handshake, and short-header packet mirrors the client's zero-length SCID choice. This keeps coalesced datagrams RFC 9000 §12.2 compliant and avoids the TLS alert 0x010a (266) observed by strict peers.
 3. Retry: if a server issues a Retry with a new SCID/DCID pair, the client still derives new Initial secrets using the unchanged `original_dcid` (ODCID) while updating its in‑flight DCID for routing, per §5.2. This prevents decryption failure observed when erroneously keying with the post‑Retry DCID.
 
 Testing:
 
 - `test_client_peer_initial_scid.zig` asserts `peer_initial_scid` is set and differs from `our_scid` for a basic handshake scenario. Test‑only C ABI accessors (`__test_export_peer_initial_scid`, `__test_export_our_scid`) are exported under `builtin.is_test` so production builds do not expose them.
+- `test_zero_length_scid_coalescing.zig` injects a ClientHello with `scid_len = 0` and verifies the coalesced Handshake response also carries a zero-length DCID.
 
 Security & Robustness:
 

@@ -1,3 +1,8 @@
+//! TLS 1.3 record layer primitives for QUIC handshake support.
+//!
+//! Implements framing and AEAD encapsulation per RFC 8446 §5 so the QUIC
+//! handshake code can serialise TLSPlaintext/TLSInnerPlaintext without relying
+//! on the standard library record stack.
 const std = @import("std");
 const crypto = std.crypto;
 const math = std.math;

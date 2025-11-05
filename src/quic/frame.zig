@@ -1,4 +1,7 @@
-// QUIC frame codec (subset) used by tests and initial handshake
+//! QUIC frame codec (subset) used by tests and initial handshake.
+//!
+//! Implements encoders/decoders for the frame families described in RFC 9000
+//! §19 plus the DATAGRAM extension from RFC 9221.
 const std = @import("std");
 const varint = @import("quic_varint");
 
@@ -40,10 +43,13 @@ pub const AckRange = struct { gap: u64, len: u64 };
 pub const EcnCounts = struct { ect0: u64, ect1: u64, ce: u64 };
 
 /// Frame union with encode helper for a subset used in tests/tools.
+/// Each case references the governing section in RFC 9000 unless noted.
 pub const Frame = union(enum) {
     padding: usize,
     ping: void,
+    // CRYPTO frame per RFC 9000 §19.6 carries handshake bytes on the crypto streams.
     crypto: struct { offset: u64, data: []const u8 },
+    // STREAM frame per RFC 9000 §19.8 conveys stream data with optional offset/FIN.
     stream: struct { stream_id: u64, offset: ?u64, fin: bool, data: []const u8 },
     // NEW_CONNECTION_ID per RFC 9000 §19.15
     new_connection_id: struct {
@@ -54,6 +60,7 @@ pub const Frame = union(enum) {
     },
     // RETIRE_CONNECTION_ID per RFC 9000 §19.16
     retire_connection_id: struct { sequence: u64 },
+    // ACK/ACK_ECN per RFC 9000 §19.3 and §19.3.2 track ranges and optional ECN counts.
     ack: struct {
         largest: u64,
         ack_delay: u64,
@@ -65,7 +72,9 @@ pub const Frame = union(enum) {
         ranges_buf: [16]AckRange = undefined,
         ranges_len: usize = 0,
     },
+    // DATAGRAM frame from RFC 9221 (transport extension for unreliable datagrams).
     datagram: struct { data: []const u8 },
+    // Flow-control frames (§19.10–§19.14)
     max_data: struct { max: u64 },
     max_stream_data: struct { stream_id: u64, max: u64 },
     max_streams_bidi: struct { max: u64 },
@@ -74,15 +83,16 @@ pub const Frame = union(enum) {
     stream_data_blocked: struct { stream_id: u64, limit: u64 },
     streams_blocked_bidi: struct { max: u64 },
     streams_blocked_uni: struct { max: u64 },
+    // Path validation (§19.17, §19.18)
     path_challenge: [8]u8,
     path_response: [8]u8,
     // NEW: server-issued token for future connections (1-RTT only)
     new_token: struct { token: []const u8 },
     // NEW: handshake done signal (server -> client, 1-RTT only)
     handshake_done: void,
-    // NEW: transport CONNECTION_CLOSE (subset: transport close only, no application close here)
+    // NEW: transport CONNECTION_CLOSE per RFC 9000 §19.19 (transport close only, no application close here)
     connection_close: struct { error_code: u64, frame_type: u64 = 0, reason: []const u8 = &[_]u8{} },
-    // NEW: stop sending (peer requests sender to stop), and reset stream (sender aborts stream)
+    // NEW: STOP_SENDING (§19.5) and RESET_STREAM (§19.4) helpers
     stop_sending: struct { stream_id: u64, error_code: u64 },
     reset_stream: struct { stream_id: u64, error_code: u64, final_size: u64 },
     // ... more frames as needed ...

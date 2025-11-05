@@ -1,8 +1,8 @@
-// QUIC Transport Parameters encode/decode (subset) RFC 9000 §7.4
+//! QUIC Transport Parameters encode/decode (subset) RFC 9000 §7.4/§18.1.
 const std = @import("std");
 const varint = @import("quic_varint");
 
-/// Preferred address structure per RFC 9000
+/// Preferred address structure per RFC 9000 §9.6 and §18.2.
 pub const PreferredAddress = struct {
     ipv4_addr: ?struct {
         ip: [4]u8,
@@ -16,7 +16,7 @@ pub const PreferredAddress = struct {
     stateless_reset_token: [16]u8,
 };
 
-/// Parse preferred address from raw bytes
+/// Parse preferred address from raw bytes per RFC 9000 §9.6.
 pub fn parsePreferredAddress(data: []const u8) !PreferredAddress {
     if (data.len < 41) return error.InvalidPreferredAddress;
 
@@ -107,6 +107,8 @@ pub const Id = enum(u64) {
 };
 
 /// Parsed QUIC Transport Parameters (subset) with encode/decode helpers.
+/// Encoding follows the TLS `quic_transport_parameters` extension defined in
+/// RFC 9001 §8 and the transport parameter registry in RFC 9000 §18.2.
 pub const TransportParams = struct {
     // Greasing and other fields omitted for now.
     original_destination_connection_id: ?[]u8 = null, // owned
@@ -136,7 +138,9 @@ pub const TransportParams = struct {
         self.* = undefined;
     }
 
-    /// Encode to the TLS transport parameters extension format.
+    /// Encode to the TLS transport parameters extension format. Each parameter
+    /// is emitted using QUIC varints for the identifier and value length as
+    /// mandated by RFC 9000 §18.1.
     pub fn encode(self: *const TransportParams, alloc: std.mem.Allocator) ![]u8 {
         var out = std.ArrayList(u8){};
         errdefer out.deinit(alloc);

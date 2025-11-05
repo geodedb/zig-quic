@@ -1,4 +1,8 @@
-// Minimal ASN.1 DER decoder utilities used by X.509 parsing.
+//! Minimal ASN.1 DER decoder utilities used by X.509 parsing.
+//!
+//! Covers the subset of DER rules required for X.509 certificate handling in
+//! accordance with RFC 5280. TLS integration code relies on these helpers when
+//! processing certificate chains during the QUIC handshake.
 const std = @import("std");
 
 // TODO: This should be using https://ziglang.org/documentation/master/std/#std.crypto.codecs.asn1

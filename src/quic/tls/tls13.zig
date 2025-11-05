@@ -1,6 +1,10 @@
-// https://ziglang.org/documentation/master/std/#std.crypto.tls
+//! Minimal TLS 1.3 handshake helpers for QUIC (no record layer).
+//!
+//! Implements the QUIC-TLS handshake glue required by RFC 9001 §4 on top of the
+//! TLS 1.3 protocol defined in RFC 8446. This layer focuses on transcript
+//! management, secret callbacks, and transport parameter exchange without the
+//! full record layer.
 
-// Minimal TLS 1.3 handshake helpers for QUIC (no record layer)
 // Scope: transcript hash, Derive-Secret helpers, handshake traffic secrets,
 // a tiny state container to consume/produce CRYPTO bytes, and minimal
 // handshake message encode/parse helpers for ClientHello/ServerHello envelopes.

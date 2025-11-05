@@ -1,7 +1,8 @@
-// https://ziglang.org/documentation/master/std/#std.crypto.tls
-
-// Full TLS 1.3 implementation for QUIC
-// This provides complete TLS 1.3 handshake support for interoperability with other implementations
+//! Full TLS 1.3 implementation for QUIC.
+//!
+//! Provides the full handshake machinery from RFC 8446 (§3–§4) needed when QUIC
+//! peers negotiate standard TLS messages. Transport parameter handling aligns
+//! with RFC 9001 §8.2 to keep the QUIC handshake interoperable with other stacks.
 
 const std = @import("std");
 const ks = @import("quic_tls");

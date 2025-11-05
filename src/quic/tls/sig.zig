@@ -1,3 +1,7 @@
+//! Signature parsing and verification helpers for TLS 1.3.
+//!
+//! Implements the signature validation rules from RFC 8446 §4.2.3/§4.4.3 used
+//! during QUIC handshakes, covering ECDSA, RSA-PSS, and Ed25519 variants.
 const std = @import("std");
 const asn1 = @import("asn1");
 

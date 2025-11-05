@@ -1,4 +1,8 @@
-// QUIC Initial packet AEAD and Header Protection helpers (RFC 9001/9369)
+//! QUIC Initial packet AEAD and Header Protection helpers (RFC 9001/9369).
+//!
+//! Covers key derivation and masking rules from RFC 9001 §§5.3–5.4 and Retry
+//! integrity handling from RFC 9001 §5.8 / RFC 9369 §3.3.3. Debug statements are
+//! retained to validate nonce construction when tracing interop failures.
 const std = @import("std");
 const builtin = @import("builtin");
 const ks = @import("quic_tls");

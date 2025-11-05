@@ -1,5 +1,7 @@
-// RFC 8446 §6 Alert Protocol
-// Maps TLS 1.3 alert codes to QUIC error codes per RFC 9001 §4.8
+//! Alert protocol helpers for TLS 1.3 and QUIC.
+//!
+//! Implements RFC 8446 §6 alert descriptions/levels and the QUIC mapping from
+//! RFC 9001 §4.8 so transport code can surface TLS failures as CRYPTO_ERRORs.
 const std = @import("std");
 
 /// RFC 8446 §6.2 Alert descriptions

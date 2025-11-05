@@ -1,3 +1,9 @@
+//! QUIC connection orchestration and socket helpers.
+//!
+//! This module owns the end-to-end connection state machine defined by RFC 9000
+//! (§§2–7), integrates TLS 1.3 per RFC 9001 §4, and drives loss detection per
+//! RFC 9002 §5. Inline comments call out the specific sections where behaviour
+//! matches normative spec requirements (e.g., packet number handling, ACK logic).
 // QUIC connection handle and socket address utils
 const std = @import("std");
 const posix = std.posix;
@@ -25,7 +31,11 @@ const byteorder = @import("byteorder");
 //     within a QUIC connection.  A QUIC connection can carry multiple
 //     simultaneous streams.
 
-/// Buffer for reassembling out-of-order CRYPTO frames
+/// Buffer for reassembling out-of-order CRYPTO frames.
+///
+/// RFC 9000 §4.9.2 requires endpoints to handle out-of-order CRYPTO data until
+/// it becomes contiguous. This helper keeps fragments sorted so handshake
+/// processing can consume them in order without reallocation churn.
 const CryptoBuffer = struct {
     const Fragment = struct {
         offset: u64,
@@ -238,25 +248,60 @@ pub const Cid = struct {
 /// Sender callback used by Endpoint to provide paced sending.
 pub const SendFn = *const fn (ctx: *anyopaque, c: *Connection, data: []const u8) anyerror!usize;
 
+/// Sliding ACK tracking window constrained to the most recent 256 packet
+/// numbers. RFC 9000 §13.2 recommends maintaining acknowledgement state per
+/// packet number space, while §19.3 defines how ACK ranges are encoded. This
+/// helper maps received packet numbers into the limited ACK range encoding
+/// window used by the connection object.
 const PnWindow = struct {
     max: u64 = 0,
     have_any: bool = false,
     win: std.bit_set.IntegerBitSet(256) = std.bit_set.IntegerBitSet(256).initEmpty(),
 
     fn track(this: *PnWindow, pn: u64) void {
-        if (!this.have_any or pn > this.max) {
+        const span: u64 = 256;
+        const had_any = this.have_any;
+        const prev_max = this.max;
+        const prev_base: u64 = if (had_any and prev_max + 1 >= span) prev_max + 1 - span else 0;
+
+        if (!had_any or pn > this.max) {
             this.max = pn;
             this.have_any = true;
         }
-        const span: u64 = 256;
-        if (pn + 1 >= span) {
-            const base: u64 = pn + 1 - span;
-            const idx: u8 = @intCast(pn - base);
-            this.win.set(idx);
-        } else {
-            const idx: u8 = @intCast(pn);
-            this.win.set(idx);
+
+        const new_max = this.max;
+        const new_base: u64 = if (this.have_any and new_max + 1 >= span) new_max + 1 - span else 0;
+
+        if (!had_any) {
+            this.win = std.bit_set.IntegerBitSet(256).initEmpty();
+        } else if (new_base != prev_base) {
+            var new_win = std.bit_set.IntegerBitSet(256).initEmpty();
+            var idx: usize = 0;
+            while (idx < span) : (idx += 1) {
+                if (this.win.isSet(@intCast(idx))) {
+                    const pn_val: u64 = prev_base + idx;
+                    if (pn_val >= new_base) {
+                        const shifted: u64 = pn_val - new_base;
+                        if (shifted < span) {
+                            new_win.set(@intCast(shifted));
+                        }
+                    }
+                }
+            }
+            this.win = new_win;
         }
+
+        if (pn < new_base) {
+            // RFC 9000 §13.2 allows omitting acknowledgements that fall outside
+            // the tracked ranges; we simply drop packet numbers that are older
+            // than the sliding window permits.
+            return;
+        }
+
+        const offset: u64 = pn - new_base;
+        if (offset >= span) return;
+        const idx: u8 = @intCast(offset);
+        this.win.set(idx);
     }
 
     fn buildAckRanges(this: *const PnWindow, out_buf: []frame.AckRange) struct { first_range: u64, ranges_len: usize } {
@@ -265,6 +310,8 @@ const PnWindow = struct {
         const span: u64 = 256;
         const base: u64 = if (largest + 1 >= span) largest + 1 - span else 0;
         const largest_idx: usize = @intCast(largest - base);
+        // RFC 9000 §19.3: first_range encodes the number of contiguous packet
+        // numbers (minus one) acknowledged up to Largest Acknowledged.
         var first_len: u64 = 0;
         var i_desc: i64 = @intCast(largest_idx);
         while (i_desc >= 0) : (i_desc -= 1) {
@@ -279,6 +326,9 @@ const PnWindow = struct {
             if (pos < 0) break;
             var ones: u64 = 0;
             while (pos >= 0 and this.win.isSet(@intCast(pos))) : (pos -= 1) ones += 1;
+            // RFC 9000 §19.3: gap encodes the number of missing packet numbers
+            // between ACK ranges minus one, and len encodes the size of the
+            // following contiguous ACK range minus one.
             const gap_val: u64 = if (zeros == 0) 0 else (zeros - 1);
             const len_val: u64 = if (ones == 0) 0 else (ones - 1);
             out_buf[out_len] = .{ .gap = gap_val, .len = len_val };
@@ -555,11 +605,16 @@ pub const Connection = struct {
     // Retry token buffer
     initial_token: std.ArrayList(u8) = undefined,
     // Simple path validation & tokens
+    /// PATH_CHALLENGE validation state per RFC 9000 §9; true until a matching
+    /// PATH_RESPONSE arrives for the outstanding challenge data.
     path_validation_pending: bool = false,
+    /// Last PATH_CHALLENGE payload issued (8 bytes, §19.17).
     path_challenge_data: [8]u8 = .{0} ** 8,
+    /// Track NEW_TOKEN issuance per RFC 9000 §19.7 (servers advertise address validation tokens).
     new_token_pending: bool = false,
     new_token_sent: bool = false,
     // Stateless reset tokens advertised by peer via NEW_CONNECTION_ID
+    /// Peer-advertised stateless reset tokens (RFC 9000 §10.3, §19.15).
     reset_tokens: std.ArrayList([16]u8) = undefined,
     // Congestion controllers and selection flag (legacy; Recovery.cc is authoritative)
     use_cubic: bool = false,
@@ -591,21 +646,24 @@ pub const Connection = struct {
     crypto_buffer_handshake: CryptoBuffer = .{},
 
     // --- DPLPMTUD (RFC 9000 §14.2–§14.4) minimal state ---
-    /// Current believed path MTU (UDP payload size), never below 1200.
+    /// Current believed path MTU (UDP payload size), never below 1200. RFC 9000
+    /// §14.1 mandates a minimum of 1200 bytes for Initials and recommends
+    /// probing larger sizes via DPLPMTUD.
     path_mtu: u16 = 1200,
-    /// Pending probe PN (Application space) awaiting ACK to validate path MTU.
+    /// Pending probe PN (Application space) awaiting ACK to validate path MTU
+    /// per RFC 9000 §14.3.
     probe_pending_pn: ?u64 = null,
     /// Target size of the pending probe (UDP payload size).
     probe_pending_size: u16 = 0,
-    /// DPLPMTUD phase and timer
+    /// DPLPMTUD phase and timer (RFC 9000 §14.4, RFC 8899).
     pmtud_state: PmtudState = .Disabled,
     pmtud_timer_active: bool = false,
     pmtud_timer_id: u64 = 0,
 
     // --- AEAD usage limits (RFC 9001 §6.6) ---
-    /// Total number of 1-RTT packets encrypted with current TX keys (confidentiality limit counter).
+    /// Total number of 1-RTT packets encrypted with current TX keys (RFC 9001 §6.6 confidentiality limit).
     aead_tx_encrypted_count: u64 = 0,
-    /// Total number of packets that failed authentication on RX (integrity limit counter).
+    /// Total number of packets that failed authentication on RX (integrity limit counter per §6.6).
     aead_rx_invalid_count: u64 = 0,
     /// Applied limits (derived from cipher suite and optionally overridden by config).
     aead_confidentiality_limit: u64 = (1 << 23), // AES-GCM default
@@ -639,6 +697,8 @@ pub const Connection = struct {
     last_ack_eliciting_rx_app_ns: u64 = 0,
 
     /// recordAckElicitingRx: Timestamp most recent ack-eliciting RX in the given PN space.
+    /// RFC 9000 §13.2.1 defines ack-eliciting packets and requires endpoints to
+    /// track time since such packets to schedule ACKs and encode ACK Delay.
     pub fn recordAckElicitingRx(self: *Connection, space: recovery.PacketNumberSpace, now_ns: u64) void {
         switch (space) {
             .Initial => self.last_ack_eliciting_rx_initial_ns = now_ns,
@@ -648,6 +708,9 @@ pub const Connection = struct {
     }
 
     /// getAckDelayEncoded: Encode ACK delay per RFC 9000 §19.3 using ack_delay_exponent and max_ack_delay cap.
+    /// The ACK Delay field stores the delay in microseconds divided by
+    /// 2^ack_delay_exponent (§18.2) and clamped to peer-advertised
+    /// max_ack_delay.
     pub fn getAckDelayEncoded(self: *const Connection, space: recovery.PacketNumberSpace, now_ns: u64) u64 {
         const origin_ns: u64 = switch (space) {
             .Initial => self.last_ack_eliciting_rx_initial_ns,
@@ -688,35 +751,37 @@ pub const Connection = struct {
     }
 
     /// Track a received PN in Initial space for ACK generation.
-    /// Track received Initial-space PN for ACK range construction.
+    /// RFC 9000 §13.2 requires endpoints to maintain separate ACK tracking for
+    /// each packet number space; this feeds the Initial-space ACK encoder.
     pub fn trackRecvPnInitial(self: *Connection, pn_full: u64) void {
         self.pn_initial.track(pn_full);
     }
-    /// Track a received PN in Handshake space for ACK generation.
-    /// Track received Handshake-space PN for ACK range construction.
+    /// Track a received PN in Handshake space for ACK generation. See RFC 9000
+    /// §13.2 for per-space ACK maintenance rules.
     pub fn trackRecvPnHandshake(self: *Connection, pn_full: u64) void {
         self.pn_handshake.track(pn_full);
     }
-    /// Track a received PN in App space for ACK generation.
-    /// Track received Application-space PN for ACK range construction.
+    /// Track a received PN in App space for ACK generation. RFC 9000 §13.2
+    /// requires independent ACK state for the Application packet number space.
     pub fn trackRecvPnApp(self: *Connection, pn_full: u64) void {
         self.pn_app.track(pn_full);
     }
 
     /// Build ACK ranges for Initial/Handshake/App space using the sliding window.
+    /// Emits ACK metadata following RFC 9000 §19.3 semantics.
     /// Build ACK descriptor (largest + ranges) for Initial space using sliding window.
     pub fn buildAckInitial(self: *Connection) AckDesc {
         const d = self.pn_initial.buildAckRanges(self.ack_ranges_buf[0..]);
         return .{ .largest = self.pn_initial.max, .first_range = d.first_range, .ranges = self.ack_ranges_buf[0..d.ranges_len] };
     }
     /// Build ACK ranges for Handshake space.
-    /// Build ACK descriptor for Handshake space.
+    /// Build ACK descriptor for Handshake space per RFC 9000 §19.3.
     pub fn buildAckHandshake(self: *Connection) AckDesc {
         const d = self.pn_handshake.buildAckRanges(self.ack_ranges_buf[0..]);
         return .{ .largest = self.pn_handshake.max, .first_range = d.first_range, .ranges = self.ack_ranges_buf[0..d.ranges_len] };
     }
     /// Build ACK ranges for Application space.
-    /// Build ACK descriptor for Application (1-RTT) space.
+    /// Build ACK descriptor for Application (1-RTT) space per RFC 9000 §19.3.
     pub fn buildAckApp(self: *Connection) AckDesc {
         const d = self.pn_app.buildAckRanges(self.ack_ranges_buf[0..]);
         return .{ .largest = self.pn_app.max, .first_range = d.first_range, .ranges = self.ack_ranges_buf[0..d.ranges_len] };
@@ -1045,7 +1110,9 @@ pub const Connection = struct {
     }
 
     /// Return true if sending is allowed under the anti-amplification limit.
-    /// Uses division (tx/3 <= rx) to avoid overflow for very large counters.
+    /// RFC 9000 §8.1 caps a server's response to three times the amount of data
+    /// received before the client address is validated. Uses division (tx/3 <=
+    /// rx) to avoid overflow for very large counters.
     /// Return true if anti-amplification budget permits sending (server before validation). Uses division to avoid overflow.
     pub fn canSendUnderAmplification(self: *const Connection) bool {
         if (self.address_validated) return true;
@@ -1084,6 +1151,9 @@ pub const Connection = struct {
     }
 
     /// Return true if we are currently over the anti-amplification limit.
+    /// RFC 9000 §8.1 states that an endpoint must limit the data it sends to
+    /// thrice the amount received until validation, unless exempt (e.g.,
+    /// localhost in our implementation-specific carve-out).
     /// Return true if currently exceeding allowed 3x amplification limit.
     pub fn overAmplification(self: *const Connection) bool {
         if (self.address_validated) return false;
@@ -1098,6 +1168,8 @@ pub const Connection = struct {
     }
 
     /// Saturating add to RX unvalidated counter to avoid wrap.
+    /// RFC 9000 §8.1 requires accurate accounting of unvalidated bytes; we
+    /// saturate to stay within u64 bounds.
     /// Saturating add to unvalidated RX byte counter (pre-validation address accounting).
     pub fn addRxUnvalidated(self: *Connection, n: usize) void {
         if (self.address_validated or n == 0) return;
@@ -1111,6 +1183,8 @@ pub const Connection = struct {
     }
 
     /// Saturating add to TX unvalidated counter to avoid wrap.
+    /// RFC 9000 §8.1 likewise constrains transmission prior to validation, so
+    /// we track unvalidated TX with saturation.
     /// Saturating add to unvalidated TX byte counter used for amplification gating.
     pub fn addTxUnvalidated(self: *Connection, n: usize) void {
         if (self.address_validated or n == 0) return;
@@ -1573,7 +1647,9 @@ pub const Connection = struct {
     }
 
     /// Send a PATH_CHALLENGE on the 1-RTT path to validate current peer path.
-    /// Emit a PATH_CHALLENGE frame (1-RTT) and mark path validation pending.
+    /// RFC 9000 §9.1/§9.3 require endpoints to probe a new path using
+    /// PATH_CHALLENGE/RESPONSE pairs before migrating traffic; we mark
+    /// validation pending until a matching PATH_RESPONSE arrives.
     pub fn sendPathChallenge(self: *Connection) void {
         if (!self.hasConfirmedAppTxKeys()) {
             // No confirmed 1-RTT keys yet (e.g. test setup); still mark validation pending and seed challenge data.

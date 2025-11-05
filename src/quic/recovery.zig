@@ -1,4 +1,6 @@
-// QUIC Recovery skeleton: RTT estimator, PTO computation, and helpers
+//! QUIC recovery primitives: RTT estimator, PTO computation, and helpers.
+//!
+//! Implements the congestion control and loss detection pieces of RFC 9002.
 const std = @import("std");
 const frame = @import("quic_frame");
 

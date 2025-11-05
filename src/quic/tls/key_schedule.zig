@@ -1,4 +1,8 @@
-// QUIC-TLS Key Schedule (RFC 9001/9369) — HKDF labels and exporter
+//! QUIC-TLS Key Schedule (RFC 9001/9369) — HKDF labels and exporter.
+//!
+//! Implements the HKDF extract/expand sequence from RFC 9001 §5.1 plus QUIC v2
+//! label updates from RFC 9369 §3. These helpers are shared by the handshake
+//! stack and the standalone key schedule tests.
 const std = @import("std");
 
 // TODO: this should be using

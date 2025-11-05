@@ -1,5 +1,7 @@
-// RFC 8446 §8 0-RTT and Anti-Replay
-// Implements anti-replay protection for 0-RTT data per RFC 8446 §8.1-§8.3
+//! 0-RTT ticket tracking and anti-replay per RFC 8446 §8.
+//!
+//! Provides the limited replay window and ticket state helpers referenced by
+//! the QUIC handshake when enabling early data (RFC 9001 §4.6).
 const std = @import("std");
 
 /// RFC 8446 §8.2: Single-use tickets prevent replay across connections

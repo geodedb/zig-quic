@@ -5,6 +5,10 @@ const tls = std.crypto.tls;
 
 //! High-level QUIC transport layer providing connection and stream management.
 //! This layer provides a convenient interface for building QUIC applications.
+//!
+//! RFC 9000 §7 and §10 outline endpoint responsibilities (handshake, timeout,
+//! connection lifecycle) that this abstraction orchestrates. Stream helpers map
+//! directly to §§2–4, while TLS handling aligns with RFC 9001 §4.
 
 /// Errors that can occur during QUIC operations.
 pub const QuicError = error{
@@ -39,15 +43,19 @@ pub const QuicTransport = struct {
     pub const Config = struct {
         address: []const u8 = "0.0.0.0",
         port: u16 = 7567,
+        // Implementation guard to cap concurrent connections; not normative.
         max_connections: usize = 1000,
+        // RFC 9000 §10.1 idle timeout (converted to transport config later)
         idle_timeout_ms: u64 = 30000,
+        // RFC 9000 §4.1 STREAM flow control credit (per-stream offset limit)
         max_stream_data: u64 = 10 * 1024 * 1024, // 10MB per stream
+        // RFC 9000 §4.2 connection-level flow control (MAX_DATA)
         max_data: u64 = 100 * 1024 * 1024, // 100MB per connection
         /// Path to the TLS certificate file.
         cert_path: []const u8 = "certs/server.crt",
         /// Path to the TLS private key file.
         key_path: []const u8 = "certs/server.key",
-        /// Optional path to CA certificate for client authentication.
+        /// Optional path to CA certificate for client authentication (RFC 9001 §4.4.2).
         ca_path: ?[]const u8 = null,
     };
 
@@ -89,6 +97,11 @@ pub const QuicTransport = struct {
     }
 
     /// Starts listening for incoming QUIC connections on the configured address and port.
+    ///
+    /// RFC 9000 §7.1 requires servers to validate client addresses before
+    /// completing the handshake; this listener ensures Initial padding and
+    /// optional Retry support via the shared `QuicConfig` knobs. Certificate
+    /// loading adheres to RFC 9001 §4.4 expectations for TLS server endpoints.
     pub fn listen(self: *QuicTransport) !void {
         // CANARY: REQ=REQ-GQL-074; FEATURE="Network Transport"; ASPECT=QUICListener; STATUS=TESTED; TEST=e2e_quic_startup; OWNER=wire; UPDATED=2025-09-25
 
@@ -267,6 +280,10 @@ pub const QuicTransport = struct {
     }
 
     /// Accepts an incoming QUIC connection from a client.
+    ///
+    /// Returns only after the API reports a completed handshake flight per
+    /// RFC 9000 §7.2, ensuring applications see connections that survived anti-
+    /// amplification and Retry handling.
     pub fn accept(self: *QuicTransport) !*QuicConnection {
         // CANARY: REQ=REQ-GQL-074; FEATURE="Network Transport"; ASPECT=QUICAccept; STATUS=TESTED; TEST=TestCANARY_REQ_GQL_074_QUICAccept; OWNER=wire; UPDATED=2025-09-22
 
@@ -294,6 +311,9 @@ pub const QuicTransport = struct {
     }
 
     /// Polls the endpoint for network events with the specified timeout in milliseconds.
+    ///
+    /// RFC 9000 §6 mandates timers for loss detection and idle timeout. We feed
+    /// the endpoint so that PTO/idle timers managed by recovery (RFC 9002) fire.
     pub fn poll(self: *QuicTransport, timeout_ms: u32) !void {
         if (self.endpoint) |ep| {
             try api.poll(ep, timeout_ms);
@@ -328,6 +348,10 @@ pub const QuicConnection = struct {
     }
 
     /// Accepts an incoming bidirectional stream on this connection.
+    ///
+    /// RFC 9000 §2.1 permits peers to open bidirectional streams subject to
+    /// MAX_STREAMS credit. The underlying API enforces those limits before this
+    /// helper returns a live `QuicStream`.
     pub fn acceptStream(self: *QuicConnection) !*QuicStream {
         // CANARY: REQ=REQ-GQL-074; FEATURE="Network Transport"; ASPECT=QUICStream; STATUS=TESTED; TEST=TestCANARY_REQ_GQL_074_QUICStream; OWNER=wire; UPDATED=2025-09-22
 
@@ -356,6 +380,9 @@ pub const QuicConnection = struct {
     }
 
     /// Opens a new stream on this connection, either bidirectional or unidirectional.
+    ///
+    /// RFC 9000 §3.1 describes stream state machines. We return a handle that
+    /// keeps the stream ID for later RESET/FIN signalling.
     pub fn openStream(self: *QuicConnection, bidirectional: bool) !*QuicStream {
         // CANARY: REQ=REQ-GQL-074; FEATURE="Network Transport"; ASPECT=QUICStreamOpen; STATUS=TESTED; TEST=TestCANARY_REQ_GQL_074_QUICStreamOpen; OWNER=wire; UPDATED=2025-09-22
 
@@ -389,6 +416,10 @@ pub const QuicStream = struct {
     read_buffer: []u8 = &[_]u8{},
 
     /// Closes the stream, releasing any associated resources.
+    ///
+    /// RFC 9000 §3.1 allows either side to abruptly terminate via RESET_STREAM
+    /// (or FIN). This helper optionally forces RESET when an environment flag is
+    /// set, enabling tests that exercise §19.4 error propagation.
     pub fn close(self: *QuicStream) void {
         // Best-effort, idempotent: avoid vendor close by default to reduce teardown races.
         // Enable explicit stream close only when GEODE_QUIC_FORCE_STREAM_CLOSE=1.

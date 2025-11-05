@@ -30,7 +30,9 @@ pub const PacketNumber = u64;
 /// Long header type discriminator used when encoding/decoding.
 pub const LongHeaderType = enum { Initial, Handshake };
 
-/// Serializable Long Header structure used by helpers for tests/tools.
+/// Serializable Long Header structure used by helpers for tests/tools. Layout
+/// matches RFC 9000 §17.2 including token length, Length varint, and packet
+/// number truncation bits in the first byte.
 pub const LongHeader = struct {
     ty: LongHeaderType,
     version: u32,
@@ -69,7 +71,7 @@ pub const LongHeader = struct {
             try w.writeAll(self.token);
             total += tl + self.token.len;
         }
-        // Length: pn_len + payload length (ignore tag)
+        // Length: pn_len + payload length (ignore tag) per RFC 9000 §17.2.4.
         var buf2: [8]u8 = undefined;
         const pn_len: usize = 2; // as chosen above
         const length = pn_len + self.payload.len;
@@ -89,6 +91,9 @@ pub const LongHeader = struct {
 };
 
 /// Serializable Short Header structure used by helpers for tests/tools.
+/// NOTE: this helper is intentionally simplified for diagnostics—RFC 9000 §17.3
+/// requires truncated packet numbers (1–4 bytes) following the destination CID,
+/// whereas this helper writes a full QUIC varint for ease of use in tests.
 pub const ShortHeader = struct {
     dcid: []const u8 = &[_]u8{},
     packet_number: PacketNumber = 1,
@@ -96,7 +101,7 @@ pub const ShortHeader = struct {
 
     /// Serialize this short header into the provided writer; returns bytes written.
     pub fn encode(self: ShortHeader, w: anytype) !usize {
-        // First byte short header: 0b0100_0000 (fixed bit set)
+        // First byte short header: 0b0100_0000 (fixed bit set) per RFC 9000 §17.3.
         const first: u8 = 0x40;
         try w.writeByte(first);
         var total: usize = 1;
@@ -115,6 +120,8 @@ pub const ShortHeader = struct {
 pub const AeadKeys = struct { key: [16]u8, iv: [12]u8, hp: [16]u8 };
 
 /// Encode a protected short-header packet carrying payload with given PN length (1..4).
+/// Implements the authenticated encryption and header protection steps from
+/// RFC 9001 §5.4.1/§5.4.3 for 1-RTT packets.
 pub fn encodeShortProtected(
     alloc: std.mem.Allocator,
     dcid: []const u8,
@@ -199,6 +206,8 @@ pub const DecodedShort = struct {
 };
 
 /// Decode and unprotect a short-header packet given dcid_len for header parsing.
+/// Mirrors RFC 9001 §5.4.1/§5.4.3 using the provided largest packet number to
+/// expand truncated packet numbers (Appendix A.3).
 pub fn decodeShortProtected(
     alloc: std.mem.Allocator,
     packet_bytes: []const u8,
@@ -223,7 +232,7 @@ pub fn decodeShortProtected(
     if (avail == 0) return error.Truncated;
     @memcpy(pn_masked4[0..avail], packet_bytes[pn_start .. pn_start + avail]);
 
-    // Sample at PN+4 (RFC 9001 §5.4.3)
+    // Sample at PN+4 (RFC 9001 §5.4.3) before removing header protection.
     if (pn_start + 4 + 16 > packet_bytes.len) return error.Truncated;
     var sample16: [16]u8 = undefined;
     @memcpy(sample16[0..], packet_bytes[pn_start + 4 .. pn_start + 4 + 16]);
@@ -297,7 +306,8 @@ pub fn decodeShortProtectedLegacy(
     return decodeShortProtected(alloc, packet_bytes, dcid_len, keys, 0);
 }
 
-/// Compute initial client/server traffic keys for QUIC v1/v2 given DCID bytes.
+/// Compute initial client/server traffic keys for QUIC v1/v2 given DCID bytes
+/// per the HKDF derivations in RFC 9001 §5.1.
 pub fn derive_initial_keys(version_v2: bool, dcid: []const u8) struct {
     client: InitialKeys,
     server: InitialKeys,
@@ -321,7 +331,8 @@ pub fn derive_initial_keys(version_v2: bool, dcid: []const u8) struct {
     return .{ .client = client_keys, .server = server_keys };
 }
 
-/// Convenience helper returning RX/TX Initial keys oriented by endpoint role.
+/// Convenience helper returning RX/TX Initial keys oriented by endpoint role
+/// (RFC 9001 §5.1.2).
 /// For a server, RX=client keys (decrypt Client Initial) and TX=server keys.
 /// For a client, RX=server keys (decrypt Server Initials) and TX=client keys.
 pub fn initialAeadKeys(version_v2: bool, is_server: bool, dcid: []const u8) struct { rx: InitialKeys, tx: InitialKeys } {

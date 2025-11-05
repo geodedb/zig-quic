@@ -1,4 +1,4 @@
-// QUIC varint utilities (RFC 9000 §16)
+//! QUIC varint utilities (RFC 9000 §16).
 //
 // 16.  Variable-Length Integer Encoding
 
@@ -117,6 +117,9 @@ pub fn decode(data: []const u8) Error!struct { n: usize, value: u64 } {
 }
 
 /// Encode value using QUIC varint into out. Returns bytes written.
+/// RFC 9000 §16 defines the encoding sizes, while §12.4 mandates using the
+/// minimum-length encoding for integer fields unless otherwise specified (for
+/// example, the Length field in long headers).
 pub fn encode(value: u64, out: []u8) Error!usize {
     if (value > ((1 << 62) - 1)) return Error.Overflow;
 
@@ -183,9 +186,8 @@ pub fn encode(value: u64, out: []u8) Error!usize {
 
 /// Encode value using QUIC varint with a forced byte length (1, 2, 4, or 8).
 /// This helper is retained for interoperability tests that need to exercise
-/// non-minimal encodings, but production code should prefer `encode` to comply
-/// with RFC 9000's minimum-length requirement for integer fields such as the
-/// long-header Length.
+/// non-minimal encodings; RFC 9000 §12.4 otherwise requires emitters to choose
+/// the shortest encoding.
 pub fn encodeWithLen(value: u64, out: []u8, byte_len: usize) Error!usize {
     if (value > ((1 << 62) - 1)) return Error.Overflow;
     if (out.len < byte_len) return Error.Truncated;
