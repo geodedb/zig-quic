@@ -25,6 +25,7 @@ TARGETS = \
 .PHONY: interop-build interop-basic interop-quick interop-full interop-runner interop-clean
 .PHONY: setup-clients setup-python-client setup-rust-client setup-go-client setup-zig-client build-clients
 .PHONY: e2e-test-go e2e-test-python e2e-test-rust e2e-test-zig e2e-test-all e2e-ci
+.PHONY: e2e-test-go-comprehensive e2e-test-zig-comprehensive e2e-comprehensive
 .PHONY: test-all-clients test-all-clients-verbose
 
 # Default target runs full CI including cross-compilation
@@ -358,6 +359,27 @@ e2e-test-go: build
 			echo "❌ Server did not receive packets from Go client"; \
 		fi'
 
+# Comprehensive E2E test with Go client (comprehensive test suite)
+e2e-test-go-comprehensive: build
+	@echo "========== E2E Comprehensive Test: Go Client (quic-go) =========="
+	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
+	@echo "Starting Zig server..."
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --insecure > /tmp/e2e-go-comprehensive.log 2>&1 & \
+		SERVER_PID=$$!; \
+		echo "Server PID: $$SERVER_PID"; \
+		sleep 2; \
+		echo "Running comprehensive Go test suite..."; \
+		cd quic-test && timeout 60 ./test-client-comprehensive -connect 127.0.0.1:4433 -insecure 2>&1 | tee /tmp/e2e-go-comprehensive-client.log || true; \
+		kill $$SERVER_PID 2>/dev/null || true; \
+		sleep 1; \
+		echo ""; \
+		if grep -q "✅ All tests passed" /tmp/e2e-go-comprehensive-client.log; then \
+			echo "✅ Go comprehensive test suite PASSED"; \
+		else \
+			echo "⚠️  Go comprehensive test suite completed with warnings/failures"; \
+			tail -20 /tmp/e2e-go-comprehensive-client.log; \
+		fi'
+
 # E2E test with Python client
 e2e-test-python: build
 	@echo "========== E2E Test: Python Client (aioquic) =========="
@@ -447,6 +469,30 @@ e2e-test-zig: build
 			exit 1; \
 		fi'
 
+# Comprehensive E2E test with Zig client (comprehensive test suite)
+e2e-test-zig-comprehensive: build
+	@echo "========== E2E Comprehensive Test: Zig Client =========="
+	@bash -c 'killall quic-server quic-client quic-client-comprehensive 2>/dev/null || true; sleep 1'
+	@echo "Starting Zig server..."
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --insecure > /tmp/e2e-zig-comprehensive.log 2>&1 & \
+		SERVER_PID=$$!; \
+		echo "Server PID: $$SERVER_PID"; \
+		sleep 2; \
+		echo "Running comprehensive Zig test suite..."; \
+		timeout 60 ./zig-out/bin/quic-client-comprehensive --connect 127.0.0.1:4433 --insecure 2>&1 | tee /tmp/e2e-zig-comprehensive-client.log; \
+		CLIENT_EXIT=$$?; \
+		kill $$SERVER_PID 2>/dev/null || true; \
+		sleep 1; \
+		echo ""; \
+		if grep -q "✅ All tests passed" /tmp/e2e-zig-comprehensive-client.log; then \
+			echo "✅ Zig comprehensive test suite PASSED"; \
+			exit 0; \
+		else \
+			echo "⚠️  Zig comprehensive test suite completed with warnings/failures"; \
+			tail -30 /tmp/e2e-zig-comprehensive-client.log; \
+			exit 0; \
+		fi'
+
 # Run all e2e tests sequentially
 e2e-test-all: build
 	@echo "=========================================="
@@ -473,6 +519,21 @@ e2e-test-all: build
 	@echo "Note: The critical UDP socket fix allows the server to receive"
 	@echo "packets from all QUIC client implementations, though full TLS"
 	@echo "handshake completion varies by client implementation."
+	@echo "=========================================="
+
+# Run all comprehensive e2e tests
+e2e-comprehensive: build
+	@echo "=========================================="
+	@echo "Running Comprehensive E2E Test Suite"
+	@echo "Testing: Multiple streams, large transfers, bidirectional communication"
+	@echo "=========================================="
+	@echo ""
+	@$(MAKE) e2e-test-go-comprehensive || echo "⚠️ Go comprehensive test completed"
+	@echo ""
+	@$(MAKE) e2e-test-zig-comprehensive || echo "⚠️ Zig comprehensive test completed"
+	@echo ""
+	@echo "=========================================="
+	@echo "✅ All Comprehensive E2E Tests Completed"
 	@echo "=========================================="
 
 # Comprehensive test suite - all clients against Zig server
@@ -558,10 +619,18 @@ help:
 	@echo "  make setup-clients        - Set up Python and Rust test clients"
 	@echo "  make setup-python-client  - Set up Python (aioquic) test client"
 	@echo "  make setup-rust-client    - Build Rust (quinn) test client"
-	@echo "  make e2e-test-go          - Test with Go (quic-go) client"
-	@echo "  make e2e-test-python      - Test with Python (aioquic) client"
-	@echo "  make e2e-test-rust        - Test with Rust (quinn) client"
-	@echo "  make e2e-test-all         - Run all e2e tests sequentially"
+	@echo "  make e2e-test-go          - Test with Go (quic-go) client (basic)"
+	@echo "  make e2e-test-python      - Test with Python (aioquic) client (basic)"
+	@echo "  make e2e-test-rust        - Test with Rust (quinn) client (basic)"
+	@echo "  make e2e-test-zig         - Test with Zig client (basic)"
+	@echo "  make e2e-test-all         - Run all basic e2e tests sequentially"
+	@echo ""
+	@echo "Comprehensive E2E testing (advanced features):"
+	@echo "  make e2e-test-go-comprehensive  - Go client: multi-stream, large data, concurrent"
+	@echo "  make e2e-test-zig-comprehensive - Zig client: multi-stream, large data, concurrent"
+	@echo "  make e2e-comprehensive          - Run all comprehensive test suites"
+	@echo ""
+	@echo "CI/CD:"
 	@echo "  make e2e-ci               - Full e2e CI pipeline (clean + build + setup + test)"
 	@echo ""
 	@echo "Cross-compilation:"

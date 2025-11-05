@@ -239,6 +239,10 @@ pub fn build(b: *std.Build) void {
     quic_client.root_module.addImport("quic_api", quic_api_mod);
     const install_quic_client = b.addInstallArtifact(quic_client, .{});
 
+    const quic_client_comprehensive = addExe(b, "quic-client-comprehensive", "cmd/quic-client-comprehensive.zig", target, optimize);
+    quic_client_comprehensive.root_module.addImport("quic_api", quic_api_mod);
+    const install_quic_client_comprehensive = b.addInstallArtifact(quic_client_comprehensive, .{});
+
     const quic_server = addExe(b, "quic-server", "cmd/quic-server.zig", target, optimize);
     quic_server.root_module.addImport("quic_api", quic_api_mod);
     const install_quic_server = b.addInstallArtifact(quic_server, .{});
@@ -296,6 +300,7 @@ pub fn build(b: *std.Build) void {
 
     const cli_step = b.step("cli", "Build QUIC CLI client/server");
     cli_step.dependOn(&install_quic_client.step);
+    cli_step.dependOn(&install_quic_client_comprehensive.step);
     cli_step.dependOn(&install_quic_server.step);
     cli_step.dependOn(&install_quic_debug_client.step);
     cli_step.dependOn(&install_quic_debug_dgram_client.step);
