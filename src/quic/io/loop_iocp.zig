@@ -1,4 +1,7 @@
-// IOCP-based event loop abstraction (Windows) — minimal stub for build
+//! Windows IOCP stub ensuring QUIC timers keep running on that platform.
+//!
+//! The minimal wrapper still satisfies RFC 9000 §6 obligations by letting the
+//! endpoint pump timers even when IOCP integration is a no-op today.
 const std = @import("std");
 
 /// One IOCP completion event entry.

@@ -1,4 +1,8 @@
-// epoll-based event loop abstraction (Linux)
+//! Linux epoll backend feeding QUIC timers and IO.
+//!
+//! RFC 9000 §6 highlights the need to promptly service network events and
+//! PTO timers; this wrapper exposes the minimal operations the endpoint needs
+//! when running on Linux.
 const std = @import("std");
 const posix = std.posix;
 const linux = std.os.linux;

@@ -1,4 +1,7 @@
-// kqueue-based event loop abstraction (BSD/macOS)
+//! BSD/macOS kqueue backend for QUIC IO and timers.
+//!
+//! Ensures readiness notifications drive PTO and idle timers as required by
+//! RFC 9000 §6 when running on Darwin/FreeBSD family systems.
 const std = @import("std");
 const builtin = @import("builtin");
 const EVFILT_READ: i16 = -1;

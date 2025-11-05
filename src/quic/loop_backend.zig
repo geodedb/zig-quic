@@ -1,4 +1,7 @@
-// loop_backend.zig — platform loop selection utilities shared by api and endpoint
+//! Platform event loop selection used by the QUIC endpoint.
+//!
+//! RFC 9000 §6 requires endpoints to service timers promptly; this helper picks
+//! an appropriate OS backend so the transport can honour PTO/idle timeouts.
 const std = @import("std");
 const builtin = @import("builtin");
 

@@ -1,3 +1,7 @@
+//! Endian helpers used to satisfy QUIC wire encodings.
+//!
+//! RFC 9000 §17 encodes multi-byte integers in network byte order; these
+//! wrappers centralise the conversions so packet and frame modules stay tidy.
 const std = @import("std");
 
 /// Errors returned by byteorder encode/decode helpers.

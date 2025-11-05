@@ -1,4 +1,7 @@
-//! Simple logging module for QUIC library with environment variable control
+//! Simple logging module for QUIC library with environment variable control.
+//!
+//! While not a full qlog implementation, the hooks support diagnostics similar
+//! to those described in RFC 9308 when integrating with external tooling.
 
 const std = @import("std");
 const builtin = @import("builtin");
