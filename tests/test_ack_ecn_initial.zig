@@ -4,6 +4,9 @@ const packet = @import("quic_packet");
 const frame = @import("quic_frame");
 const ks = @import("quic_tls");
 
+// RFC 9000 §13.4.2 mandates sending ACK_ECN for ECN-marked packets in each
+// packet number space. Verify Initial-space CE markings cause the server to
+// emit ACK_ECN.
 // End-to-end: when ECN CE is observed on an Initial, server emits ACK_ECN in Initial space.
 test "initial space: ECN CE triggers ACK_ECN in server Initial ACK" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -23,8 +26,8 @@ test "initial space: ECN CE triggers ACK_ECN in server Initial ACK" {
     const cli = ks.deriveKeyIvHp(pair.client);
     const srv = ks.deriveKeyIvHp(pair.server);
     var fb = std.ArrayList(u8){};
-    defer fb.deinit(alloc);
-    _ = (frame.Frame{ .ping = {} }).write(fb.writer(alloc)) catch {};
+    defer fb.deinit(A);
+    _ = (frame.Frame{ .ping = {} }).write(fb.writer(A)) catch {};
     const init_pkt = try packet.encodeInitialProtected(
         A,
         packet.QUIC_V1,

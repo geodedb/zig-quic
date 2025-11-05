@@ -3,8 +3,10 @@ const tls13 = @import("quic_tls13");
 const crypto = @import("quic_crypto");
 const pkt = @import("quic_packet");
 
-// Validate RX/TX phase toggling and a small retention window allowing previous keys
-// to accept a few packets after update (per §6.4 Concept; exact policy is implementation defined).
+// RFC 9001 §6.4 states an endpoint MUST be able to process packets protected with the
+// new keys immediately after sending a Key Update, while §6.5 allows a retention window
+// for the previous keys to accept in-flight packets. Validate RX/TX phase toggling and
+// that a small retention window continues to decrypt packets from the prior phase.
 test "key update: rx promotes on next-phase, retains prev window; tx toggles and encrypts with new keys" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -58,11 +60,11 @@ test "key update: rx promotes on next-phase, retains prev window; tx toggles and
     _ = try crypto.protectInitial(.aes_128_gcm, &cli_w1.key, &cli_w1.iv, &cli_w1.hp, pn_num1, &hdr_first1, pn1[0..], dcid, payload1, ct1);
 
     var pkt1 = std.ArrayList(u8){};
-    defer pkt1.deinit(alloc);
-    try pkt1.append(alloc, hdr_first1);
-    try pkt1.appendSlice(alloc, dcid);
-    try pkt1.appendSlice(alloc, &pn1);
-    try pkt1.appendSlice(alloc, ct1);
+    defer pkt1.deinit(A);
+    try pkt1.append(A, hdr_first1);
+    try pkt1.appendSlice(A, dcid);
+    try pkt1.appendSlice(A, &pn1);
+    try pkt1.appendSlice(A, ct1);
 
     // Decrypt with next read keys (simulate promotion acceptable)
     const dec1 = try pkt.decodeShortProtected(A, pkt1.items, dcid.len, srv_r1);
@@ -77,11 +79,11 @@ test "key update: rx promotes on next-phase, retains prev window; tx toggles and
     defer A.free(ct0);
     _ = try crypto.protectInitial(.aes_128_gcm, &cli_w0.key, &cli_w0.iv, &cli_w0.hp, pn_num0, &hdr_first0, pn0[0..], dcid, payload0, ct0);
     var pkt0 = std.ArrayList(u8){};
-    defer pkt0.deinit(alloc);
-    try pkt0.append(alloc, hdr_first0);
-    try pkt0.appendSlice(alloc, dcid);
-    try pkt0.appendSlice(alloc, &pn0);
-    try pkt0.appendSlice(alloc, ct0);
+    defer pkt0.deinit(A);
+    try pkt0.append(A, hdr_first0);
+    try pkt0.appendSlice(A, dcid);
+    try pkt0.appendSlice(A, &pn0);
+    try pkt0.appendSlice(A, ct0);
     // Attempt to decrypt with previous read keys
     const dec0 = try pkt.decodeShortProtected(A, pkt0.items, dcid.len, srv_r0);
     defer A.free(dec0.payload);

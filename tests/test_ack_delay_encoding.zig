@@ -1,6 +1,8 @@
 const std = @import("std");
 const quic = @import("../quic.zig");
 
+// RFC 9000 §13.2 defines ACK delay encoding using ack_delay_exponent with a cap
+// at max_ack_delay. Exercise the helper that computes the encoded value.
 // Test that ack_delay is encoded using ack_delay_exponent and capped by max_ack_delay.
 // Strategy: create a connection, manually set last_ack_eliciting_rx_* timestamps in past, call getAckDelayEncoded.
 // We bypass full endpoint by instantiating Connection directly.

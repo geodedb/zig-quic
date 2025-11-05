@@ -1,6 +1,9 @@
 const std = @import("std");
 const quic = @import("../quic.zig");
 
+// RFC 9000 §5.1.2 caps the number of active connection IDs an endpoint may
+// issue before receiving RETIRE_CONNECTION_ID frames from the peer. Ensure the
+// helper enforces the advertised limit.
 test "issue_new_connection_id_respects_limit" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();

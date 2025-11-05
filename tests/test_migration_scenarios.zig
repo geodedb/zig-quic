@@ -6,6 +6,9 @@ const conn_mod = @import("quic_conn");
 const packet = @import("quic_packet");
 const frame = @import("quic_frame");
 
+// RFC 9000 §9.3–§9.6 cover path validation, preferred address migration, and
+// the anti-amplification rule (§8.1). The following scenarios exercise those
+// requirements across rebinding, timeouts, preferred addresses, and PTO loops.
 fn fake_peer(ip_last_octet: u8, port: u16) conn_mod.SockAddr {
     return conn_mod.SockAddr.ipv4(127, 0, 0, ip_last_octet, port);
 }
@@ -14,8 +17,8 @@ fn fake_peer(ip_last_octet: u8, port: u16) conn_mod.SockAddr {
 fn encode_path_response(a: std.mem.Allocator, c: *conn_mod.Connection) !?[]u8 {
     if (c.app_rx_keys == null) return null;
     var fb = std.ArrayList(u8){};
-    defer fb.deinit(alloc);
-    const w = fb.writer(alloc);
+    defer fb.deinit(a);
+    const w = fb.writer(a);
     _ = (frame.Frame{ .path_response = c.path_challenge_data }).write(w) catch {};
     return packet.encodeShortProtected(a, c.our_scid.bytes[0..c.our_scid.len], @as(u32, @truncate(c.pn_app_tx)), 2, fb.items, .{ .key = c.app_rx_keys.?.key, .iv = c.app_rx_keys.?.iv, .hp = c.app_rx_keys.?.hp }, c.tx_key_phase) catch null;
 }

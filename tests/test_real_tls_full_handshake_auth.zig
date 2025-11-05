@@ -21,9 +21,13 @@ const dummy_key: []const u8 = &[_]u8{
 // Given current minimal x509 parser, the dummy cert may fail validation; we assert that
 // Finished is not sent on client if peer_cert_ok is false.
 // Once a real self-signed cert fixture is added, expectations should change to require success.
+// RFC 8446 §4.4 requires endpoints to abort the handshake when certificate
+// verification fails. Ensure the implementation with QUIC binding (RFC 9001 §4)
+// refuses to transmit Finished until peer certificate validation succeeds or
+// the connection explicitly allows insecure mode.
 
 test "real_tls_full_handshake_auth_gating" {
-    var gpa = std.heap.page_allocator;
+    const gpa = std.heap.page_allocator;
     // Server engine
     var server = tls13.Engine.init(gpa, .Server);
     defer server.deinit();

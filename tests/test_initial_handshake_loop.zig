@@ -4,6 +4,10 @@ const frame = @import("quic_frame");
 const ks = @import("quic_tls");
 const tls13 = @import("quic_tls13");
 
+// RFC 9001 §4–§5 bridge QUIC packet protection with TLS 1.3 key schedule
+// defined in RFC 8446 §7. This exercises Initial packet protection through
+// derivation of Handshake keys and ensures the decrypted payload aligns with
+// the expected CRYPTO frames.
 fn hex(comptime N: usize, s: []const u8) [N]u8 {
     var out: [N]u8 = undefined;
     var i: usize = 0;

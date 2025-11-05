@@ -2,6 +2,9 @@ const std = @import("std");
 const tls13 = @import("quic_tls13");
 const ks = @import("quic_tls");
 
+// RFC 8446 §7.5 defines the TLS exporter interface, while §7.2 describes Key
+// Update. Confirm exporter stability once application secrets are installed and
+// that performKeyUpdate rotates send/receive traffic secrets as mandated.
 test "exporter produces stable prefix after application secrets" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){}; defer _ = gpa.deinit();
     const alloc = gpa.allocator();

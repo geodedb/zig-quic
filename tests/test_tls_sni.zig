@@ -1,6 +1,11 @@
 const std = @import("std");
 const x509 = @import("quic_x509");
 
+// RFC 8446 §4.2.6 requires clients to validate the "server_name" extension
+// against the certificate Subject Alternative Name per RFC 5280 §4.2.1.6.
+// These tests ensure SAN mismatches fail validation unless insecure mode is
+// explicitly enabled.
+
 fn putByte(buf: *std.ArrayList(u8), b: u8) void {
     buf.appendAssumeCapacity(b);
 }

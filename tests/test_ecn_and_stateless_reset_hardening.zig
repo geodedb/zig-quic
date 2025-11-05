@@ -1,6 +1,9 @@
 const std = @import("std");
 const conn_mod = @import("quic_conn");
 
+// RFC 9000 §13.4.2 requires ACK_ECN to carry ECN counts per packet number
+// space, while §10.3 defines stateless reset token handling and spoof
+// resistance. Cover both behaviours here.
 test "ecn counters per space accumulate and ACK_ECN selection gating" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
