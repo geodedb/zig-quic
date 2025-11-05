@@ -8,10 +8,10 @@ const builtin = @import("builtin");
 const ks = @import("quic_tls");
 const logger = @import("quic_logger");
 
-// Use OpenSSL for AEAD operations (compatibility with other QUIC implementations)
-const openssl = @import("crypto_openssl.zig");
+// Use Zig std.crypto for AEAD operations (matching vendored ztls approach)
+const crypto_impl = @import("crypto_zig.zig");
 
-// Keep Zig std.crypto for non-AEAD operations and Retry Integrity Tag
+// Keep Zig std.crypto for Retry Integrity Tag
 const Aes128Gcm = std.crypto.aead.aes_gcm.Aes128Gcm;
 const Poly1305 = std.crypto.onetimeauth.Poly1305;
 const ChaCha20IETF = std.crypto.stream.chacha.ChaCha20IETF;
@@ -49,8 +49,8 @@ pub fn expandPacketNumber(truncated: u64, pn_len: u3, largest_pn: u64) u64 {
     return candidate;
 }
 
-/// Supported AEAD suites for QUIC-TLS binding (re-exported from OpenSSL module).
-pub const AeadSuite = openssl.AeadSuite;
+/// Supported AEAD suites for QUIC-TLS binding (re-exported from Zig crypto module).
+pub const AeadSuite = crypto_impl.AeadSuite;
 
 /// Encrypt plaintext with associated data using the given suite.
 /// The nonce is constructed as iv XOR packet_number (left-padded to iv length) per RFC 9001.
@@ -64,8 +64,8 @@ pub fn aeadEncrypt(
     plaintext: []const u8,
     out: []u8,
 ) !usize {
-    // Delegate to OpenSSL for AEAD operations (compatibility with quic-go/quiche)
-    return openssl.aeadEncrypt(suite, key, iv, packet_number, aad, plaintext, out);
+    // Use Zig std.crypto for AEAD operations (matching vendored ztls)
+    return crypto_impl.aeadEncrypt(suite, key, iv, packet_number, aad, plaintext, out);
 }
 
 /// Decrypt ciphertext+tag with associated data using the given suite.
@@ -79,8 +79,8 @@ pub fn aeadDecrypt(
     ciphertext_and_tag: []const u8,
     out_plaintext: []u8,
 ) !usize {
-    // Delegate to OpenSSL for AEAD operations (compatibility with quic-go/quiche)
-    return openssl.aeadDecrypt(suite, key, iv, packet_number, aad, ciphertext_and_tag, out_plaintext);
+    // Use Zig std.crypto for AEAD operations (matching vendored ztls)
+    return crypto_impl.aeadDecrypt(suite, key, iv, packet_number, aad, ciphertext_and_tag, out_plaintext);
 }
 
 /// Apply header protection to the first byte and packet number bytes.
@@ -93,41 +93,8 @@ pub fn headerProtect(
     pn_bytes: []u8,
 ) !void {
     if (pn_bytes.len == 0 or pn_bytes.len > 4) return error.InvalidPacketNumberLength;
-
-    switch (suite) {
-        .aes_128_gcm, .aes_256_gcm => {
-            // Delegate to OpenSSL for header protection (RFC 9001 §5.4.3)
-            var mask: [5]u8 = undefined;
-            try openssl.headerProtect(hp_key, sample16, &mask);
-
-            // Apply mask to header first byte and packet number bytes
-            const is_long = (header_first.* & 0x80) != 0;
-            const hdr_mask: u8 = if (is_long) 0x0f else 0x1f;
-            const old_first = header_first.*;
-            header_first.* ^= (mask[0] & hdr_mask);
-            std.debug.print("headerProtect: first byte 0x{X:0>2} ^ (mask0 0x{X:0>2} & hdr_mask 0x{X:0>2}) = 0x{X:0>2}\n", .{ old_first, mask[0], hdr_mask, header_first.* });
-
-            for (pn_bytes, 0..) |*b, i| {
-                b.* ^= mask[1 + i];
-            }
-        },
-        .chacha20_poly1305 => {
-            if (hp_key.len != 32) return error.InvalidKey;
-            // Per RFC 9001 §5.4.4 use bytes 4..15 of sample as 96-bit nonce
-            var nonce: [12]u8 = undefined;
-            @memcpy(nonce[0..], sample16.*[4..16]);
-            // Generate mask using ChaCha20 with counter=0
-            var block: [64]u8 = undefined;
-            ChaCha20IETF.xor(&block, &([_]u8{0} ** 64), 0, hp_key[0..32].*, nonce);
-            const mask0 = block[0];
-            const is_long = (header_first.* & 0x80) != 0;
-            const hdr_mask: u8 = if (is_long) 0x0f else 0x1f;
-            header_first.* ^= (mask0 & hdr_mask);
-            var i: usize = 0;
-            while (i < pn_bytes.len) : (i += 1) pn_bytes[i] ^= block[i + 1];
-            return;
-        },
-    }
+    // Delegate to Zig crypto implementation (matching vendored ztls)
+    return crypto_impl.headerProtect(suite, hp_key, sample16, header_first, pn_bytes);
 }
 
 /// Remove header protection (inverse of headerProtect).

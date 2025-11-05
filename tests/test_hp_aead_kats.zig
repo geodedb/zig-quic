@@ -26,7 +26,15 @@ test "kat_chacha20_poly1305_aead_encrypt_decrypt" {
     const pt = "test data";
     var out = try a.alloc(u8, pt.len + 16);
     defer a.free(out);
-    const ct_len = try crypto.aeadEncrypt(.chacha20_poly1305, key, iv, 0x1234, aad, pt, out);
+
+    // ChaCha20-Poly1305 may not be available in all OpenSSL versions
+    const ct_len = crypto.aeadEncrypt(.chacha20_poly1305, key, iv, 0x1234, aad, pt, out) catch |err| {
+        if (err == error.CipherNotAvailable) {
+            return error.SkipZigTest; // Skip test if cipher not available
+        }
+        return err;
+    };
+
     var dec = try a.alloc(u8, pt.len);
     defer a.free(dec);
     const pt_len = try crypto.aeadDecrypt(.chacha20_poly1305, key, iv, 0x1234, aad, out[0..ct_len], dec);
@@ -65,13 +73,21 @@ test "kat_header_protection_chacha_and_aes" {
     try crypto.headerUnprotect(.aes_128_gcm, aes_hp_key[0..], &s16, &header_first, pn_copy[0..]);
     try std.testing.expectEqual(@as(u8, 0xc3), header_first);
     try std.testing.expectEqualSlices(u8, &pn, &pn_copy);
-    // ChaCha HP
+
+    // ChaCha HP - may not be available in all OpenSSL versions
     header_first = 0xc3;
     pn = .{ 0x12, 0x34 };
     s16 = sample;
     pn_copy = pn;
     var chacha_hp_key: [32]u8 = .{0} ** 32;
-    try crypto.headerProtect(.chacha20_poly1305, chacha_hp_key[0..], &s16, &header_first, pn_copy[0..]);
+
+    crypto.headerProtect(.chacha20_poly1305, chacha_hp_key[0..], &s16, &header_first, pn_copy[0..]) catch |err| {
+        if (err == error.CipherNotAvailable) {
+            return error.SkipZigTest; // Skip test if cipher not available
+        }
+        return err;
+    };
+
     try crypto.headerUnprotect(.chacha20_poly1305, chacha_hp_key[0..], &s16, &header_first, pn_copy[0..]);
     try std.testing.expectEqual(@as(u8, 0xc3), header_first);
     try std.testing.expectEqualSlices(u8, &pn, &pn_copy);

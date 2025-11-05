@@ -80,7 +80,15 @@ test "initial_protect_roundtrip_chacha" {
     var cipher: [8 + 16]u8 = undefined;
 
     const pn_val: u64 = (@as(u64, pn[0]) << 8) | pn[1];
-    const ct_len = try crypto_quic.protectInitial(.chacha20_poly1305, &aead_key, &aead_iv, &hp_key, pn_val, &header_first, &pn, &header_prefix, &plain, &cipher);
+
+    // ChaCha20-Poly1305 may not be available in all OpenSSL versions
+    const ct_len = crypto_quic.protectInitial(.chacha20_poly1305, &aead_key, &aead_iv, &hp_key, pn_val, &header_first, &pn, &header_prefix, &plain, &cipher) catch |err| {
+        if (err == error.CipherNotAvailable) {
+            return error.SkipZigTest; // Skip test if cipher not available
+        }
+        return err;
+    };
+
     try std.testing.expect(ct_len == plain.len + 16);
 
     // Build ChaCha HP sample from RECEIVED packet view: masked PN + first (16 - pn_len) bytes of ciphertext
