@@ -2963,59 +2963,51 @@ pub const Engine = struct {
         }
         // If we have a certificate configured, send Certificate + CertificateVerify.
         // Note: allow_insecure only affects peer certificate validation, not whether we send ours
+        // RFC 8446 §4.4.1: Server must send Certificate and CertificateVerify before Finished
+        // CRITICAL FIX: Proper error handling - if Certificate/CertificateVerify fail, handshake fails
         if (self.server_cert_der != null and self.server_priv_key != null) {
             std.debug.print("Calling queueCertificate...\n", .{});
-            self.queueCertificate(self.server_cert_der.?) catch {};
+            // FIXED: Properly handle errors instead of silently catching them
+            // If Certificate fails to queue, the handshake cannot proceed
+            self.queueCertificate(self.server_cert_der.?) catch |e| {
+                std.debug.print("[FLIGHT] queueCertificate FAILED: {}\n", .{e});
+                // Mark handshake as failed - endpoint will handle connection termination
+                self.handshake_failed = true;
+                return;
+            };
 
-            std.debug.print("[CERTVERIFY] After queueCertificate, transcript exists={}\n", .{true});
-            var snap = self.transcript;
-            const th = snap.finalize();
-            const alg = self.server_sig_alg orelse infer_alg: {
+            // Ensure signature algorithm is set
+            if (self.server_sig_alg == null) {
                 const cert_der = self.server_cert_der.?;
                 const detected = x509.inferSignatureAlgorithm(cert_der) catch |err| {
                     std.debug.print("[CERTVERIFY] Failed to infer signature algorithm from server cert: {} (defaulting to ECDSA P-256)\n", .{err});
-                    break :infer_alg .ecdsa_secp256r1_sha256;
-                };
-                break :infer_alg detected;
-            };
-            std.debug.print("[CERTVERIFY] About to sign with alg={}, priv_key_len={}\n", .{ alg, self.server_priv_key.?.len });
-            const sig_bytes = sig.signCertificateVerify(alg, self.server_priv_key.?, "TLS 1.3, server CertificateVerify", &th, self.allocator) catch |e| blk: {
-                std.debug.print("[CERTVERIFY] signCertificateVerify FAILED: {}\n", .{e});
-                break :blk null;
-            };
-            std.debug.print("[CERTVERIFY] Signature generation result: sig_bytes={}\n", .{sig_bytes != null});
-            if (sig_bytes) |sb| {
-                // RFC 8446 format: SignatureScheme (2 bytes) + signature length (2 bytes) + signature data
-                var body = std.ArrayList(u8){};
-                defer body.deinit(self.allocator);
-
-                // SignatureScheme (2 bytes, big-endian)
-                const scheme: u16 = switch (alg) {
-                    .ecdsa_secp256r1_sha256 => 0x0403,
-                    .ecdsa_secp384r1_sha384 => 0x0503,
-                    .rsa_pss_sha256 => 0x0804,
-                    .ed25519 => 0x0807,
-                };
-                body.append(self.allocator, @intCast((scheme >> 8) & 0xff)) catch {};
-                body.append(self.allocator, @intCast(scheme & 0xff)) catch {};
-
-                // Signature length (2 bytes, big-endian)
-                const sig_len: u16 = @intCast(sb.len);
-                body.append(self.allocator, @intCast((sig_len >> 8) & 0xff)) catch {};
-                body.append(self.allocator, @intCast(sig_len & 0xff)) catch {};
-
-                // Signature data
-                body.appendSlice(self.allocator, sb) catch {};
-
-                const msg = encodeHandshake(self.allocator, .certificate_verify, body.items) catch null;
-                if (msg) |m| {
-                    self.queueCrypto(m) catch {};
-                    self.allocator.free(m);
-                    std.debug.print("TLS: Queued CertificateVerify (scheme=0x{x:0>4}, sig_len={})\n", .{ scheme, sb.len });
+                    self.server_sig_alg = .ecdsa_secp256r1_sha256;
+                } else {
+                    self.server_sig_alg = detected;
                 }
-                self.allocator.free(sb);
             }
+
+            std.debug.print("[CERTVERIFY] About to queue CertificateVerify with alg={}, priv_key_len={}\n", .{ 
+                self.server_sig_alg.?, self.server_priv_key.?.len 
+            });
+            
+            // FIXED: Use the existing queueCertificateVerify() helper which properly handles transcript timing
+            // This ensures CertificateVerify signature is computed over transcript that includes Certificate
+            self.queueCertificateVerify() catch |e| {
+                std.debug.print("[FLIGHT] queueCertificateVerify FAILED: {}\n", .{e});
+                // Mark handshake as failed - endpoint will handle connection termination
+                self.handshake_failed = true;
+                return;
+            };
+            
             appended_any = true;
+        } else {
+            std.debug.print("[FLIGHT] WARNING: No server certificate configured (cert={}, key={}). Skipping Certificate/CertificateVerify.\n", .{
+                self.server_cert_der != null,
+                self.server_priv_key != null,
+            });
+            // RFC 8446 allows servers to skip Certificate/CertificateVerify if not authenticating
+            // This is acceptable for development/testing, but production should always have certificates
         }
         // Always queue Finished last
         std.debug.print("[FLIGHT] About to queue Finished: finished_sent={}, has_secret={}\n", .{
