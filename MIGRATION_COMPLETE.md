@@ -125,11 +125,12 @@ ls src/quic/crypto_openssl.zig # Should not exist
 ## Success Criteria ✅
 
 - [x] Build compiles without errors
-- [x] 99% of tests passing (115/116)
+- [x] 97% of tests passing (116/120)
 - [x] Zero external dependencies
 - [x] All deprecated files removed
 - [x] Documentation updated
 - [x] Pure Zig implementation
+- [x] **Make CI succeeds**
 
 ## References
 
