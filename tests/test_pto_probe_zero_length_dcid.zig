@@ -113,7 +113,7 @@ test "server sends PTO probe with zero-length DCID" {
     try std.testing.expectEqual(@as(u8, 0), packet_type); // Initial packet (type 0)
 
     // Parse to verify DCID length is 0
-    var offset: usize = 5; // Skip first byte + version (4 bytes)
+    const offset: usize = 5; // Skip first byte + version (4 bytes)
     const dcid_len = pto_pkt.bytes[offset];
     try std.testing.expectEqual(@as(u8, 0), dcid_len); // DCID must be zero-length
 }
@@ -207,7 +207,7 @@ test "server sends Handshake PTO probe with zero-length DCID" {
             const packet_type = (first >> 4) & 0x03;
             try std.testing.expectEqual(@as(u8, 2), packet_type); // Handshake packet (type 2)
 
-            var offset: usize = 5; // Skip first byte + version
+            const offset: usize = 5; // Skip first byte + version
             const dcid_len = pto_pkt.bytes[offset];
             try std.testing.expectEqual(@as(u8, 0), dcid_len); // DCID must be zero-length
         }

@@ -2116,9 +2116,9 @@ pub const Endpoint = struct {
                         std.debug.print("DEBUG: Processing CRYPTO frame with {} bytes at offset {}\n", .{ cr.data.len, cr.offset });
                         std.debug.print("{s}: Received Initial CRYPTO frame with {} bytes at offset {} (expected {})\n", .{ if (conn.role == .Server) "Server" else "Client", cr.data.len, cr.offset, conn.crypto_rx_off_initial });
 
-                        const ack_initial = conn.handleInitialCrypto(self.allocator, cr.offset, cr.data) catch |err| {
+                        const ack_initial = conn.handleInitialCrypto(self.allocator, cr.offset, cr.data) catch |err| blk: {
                             std.debug.print("DEBUG: ERROR: Failed to process Initial CRYPTO data: {}\n", .{err});
-                            false
+                            break :blk false;
                         };
 
                         if (ack_initial) {
@@ -3038,9 +3038,9 @@ pub const Endpoint = struct {
                     switch (r.f) {
                         .crypto => {
                             const cr = r.f.crypto;
-                            const ack_handshake = conn.handleHandshakeCrypto(self.allocator, cr.offset, cr.data) catch |err| {
+                            const ack_handshake = conn.handleHandshakeCrypto(self.allocator, cr.offset, cr.data) catch |err| blk: {
                                 std.debug.print("ERROR: Failed to process Handshake CRYPTO data: {}\n", .{err});
-                                false
+                                break :blk false;
                             };
 
                             if (ack_handshake) {

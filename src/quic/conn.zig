@@ -1509,6 +1509,7 @@ pub const Connection = struct {
     }
 
     fn afterHandshakeWrapper(self: *Connection) !void {
+        _ = self;
         // no-op for handshake space
     }
 

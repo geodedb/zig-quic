@@ -5,19 +5,19 @@ const conn_mod = @import("quic_conn");
 const packet = @import("quic_packet");
 const frame = @import("quic_frame");
 
-/// Regression test for TLS Error 266 (0x010a)
-///
-/// This test verifies that when a client uses a zero-length SCID, the server
-/// properly uses a zero-length DCID in ALL packets including 1-RTT (short-header)
-/// packets, per RFC 9000 §7.2:
-///
-/// "An endpoint that receives a packet with a zero-length Source Connection ID
-/// field MUST use a zero-length Destination Connection ID field for all packets
-/// in the connection."
-///
-/// The bug fixed here was in Connection.shortHeaderDcid() which incorrectly
-/// fell back to our_scid when peer_initial_scid.len == 0, causing TLS alert
-/// 0x010a (266) from strict QUIC implementations like quic-go.
+// Regression test for TLS Error 266 (0x010a)
+//
+// This test verifies that when a client uses a zero-length SCID, the server
+// properly uses a zero-length DCID in ALL packets including 1-RTT (short-header)
+// packets, per RFC 9000 §7.2:
+//
+// "An endpoint that receives a packet with a zero-length Source Connection ID
+// field MUST use a zero-length Destination Connection ID field for all packets
+// in the connection."
+//
+// The bug fixed here was in Connection.shortHeaderDcid() which incorrectly
+// fell back to our_scid when peer_initial_scid.len == 0, causing TLS alert
+// 0x010a (266) from strict QUIC implementations like quic-go.
 test "server uses zero-length DCID in 1-RTT packets when client sends zero-length SCID" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -91,7 +91,7 @@ test "server uses zero-length DCID in 1-RTT packets when client sends zero-lengt
     std.debug.print("✓ Test passed: server correctly uses zero-length DCID in 1-RTT packets\n", .{});
 }
 
-/// Unit test for Connection.shortHeaderDcid() function
+// Unit test for Connection.shortHeaderDcid() function
 test "shortHeaderDcid returns empty slice for zero-length peer SCID" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -119,7 +119,7 @@ test "shortHeaderDcid returns empty slice for zero-length peer SCID" {
     std.debug.print("✓ Unit test passed: shortHeaderDcid() returns empty slice for zero-length peer SCID\n", .{});
 }
 
-/// Unit test for Connection.shortHeaderDcid() with non-zero peer SCID
+// Unit test for Connection.shortHeaderDcid() with non-zero peer SCID
 test "shortHeaderDcid returns peer SCID when non-zero" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();

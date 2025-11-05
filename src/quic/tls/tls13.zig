@@ -2982,9 +2982,9 @@ pub const Engine = struct {
                 const detected = x509.inferSignatureAlgorithm(cert_der) catch |err| {
                     std.debug.print("[CERTVERIFY] Failed to infer signature algorithm from server cert: {} (defaulting to ECDSA P-256)\n", .{err});
                     self.server_sig_alg = .ecdsa_secp256r1_sha256;
-                } else {
-                    self.server_sig_alg = detected;
-                }
+                    return; // Exit early if inference fails
+                };
+                self.server_sig_alg = detected;
             }
 
             std.debug.print("[CERTVERIFY] About to queue CertificateVerify with alg={}, priv_key_len={}\n", .{ 
