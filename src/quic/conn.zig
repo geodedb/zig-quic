@@ -1428,6 +1428,132 @@ pub const Connection = struct {
         }
     }
 
+    fn afterInitialCryptoChunk(self: *Connection) void {
+        _ = self;
+    }
+
+    fn processBufferedInitial(
+        self: *Connection,
+        allocator: *std.mem.Allocator,
+    ) !void {
+        while (self.crypto_buffer_initial.getContiguous(self.crypto_rx_off_initial)) |fragments| {
+            for (fragments) |frag| {
+                if (frag.data.len == 0) continue;
+                try self.pushCrypto(frag.data);
+                self.crypto_rx_off_initial += @intCast(frag.data.len);
+                self.afterInitialCryptoChunk();
+            }
+
+            self.crypto_buffer_initial.removeProcessed(fragments.len, allocator.*);
+        }
+    }
+
+    fn processBufferedHandshake(
+        self: *Connection,
+        allocator: *std.mem.Allocator,
+    ) !void {
+        while (self.crypto_buffer_handshake.getContiguous(self.crypto_rx_off_handshake)) |fragments| {
+            for (fragments) |frag| {
+                if (frag.data.len == 0) continue;
+                try self.pushCrypto(frag.data);
+                self.crypto_rx_off_handshake += @intCast(frag.data.len);
+            }
+
+            self.crypto_buffer_handshake.removeProcessed(fragments.len, allocator.*);
+        }
+    }
+
+    fn handleCryptoFrameGeneric(
+        self: *Connection,
+        allocator: *std.mem.Allocator,
+        offset: u64,
+        data: []const u8,
+        expected_offset: *u64,
+        buffer: *CryptoBuffer,
+        after: anytype,
+        continuation: anytype,
+    ) !bool {
+        var ack_eliciting = false;
+        const expected = expected_offset.*;
+
+        if (offset == expected) {
+            if (data.len > 0) {
+                try self.pushCrypto(data);
+                expected_offset.* += @intCast(data.len);
+                ack_eliciting = true;
+                try after(self);
+            }
+            try continuation(self, allocator);
+        } else if (offset > expected) {
+            try buffer.add(offset, data, allocator.*);
+            if (data.len > 0) ack_eliciting = true;
+        } else {
+            const overlap = expected - offset;
+            if (overlap < data.len) {
+                const new_data = data[@intCast(overlap)..];
+                if (new_data.len > 0) {
+                    try self.pushCrypto(new_data);
+                    expected_offset.* += @intCast(new_data.len);
+                    ack_eliciting = true;
+                    try after(self);
+                    try continuation(self, allocator);
+                }
+            }
+        }
+
+        return ack_eliciting;
+    }
+
+    fn afterInitialWrapper(self: *Connection) !void {
+        self.afterInitialCryptoChunk();
+    }
+
+    fn afterHandshakeWrapper(self: *Connection) !void {
+        // no-op for handshake space
+    }
+
+    fn continueInitial(self: *Connection, allocator: *std.mem.Allocator) !void {
+        try self.processBufferedInitial(allocator);
+    }
+
+    fn continueHandshake(self: *Connection, allocator: *std.mem.Allocator) !void {
+        try self.processBufferedHandshake(allocator);
+    }
+
+    pub fn handleInitialCrypto(
+        self: *Connection,
+        allocator: *std.mem.Allocator,
+        offset: u64,
+        data: []const u8,
+    ) !bool {
+        return self.handleCryptoFrameGeneric(
+            allocator,
+            offset,
+            data,
+            &self.crypto_rx_off_initial,
+            &self.crypto_buffer_initial,
+            afterInitialWrapper,
+            continueInitial,
+        );
+    }
+
+    pub fn handleHandshakeCrypto(
+        self: *Connection,
+        allocator: *std.mem.Allocator,
+        offset: u64,
+        data: []const u8,
+    ) !bool {
+        return self.handleCryptoFrameGeneric(
+            allocator,
+            offset,
+            data,
+            &self.crypto_rx_off_handshake,
+            &self.crypto_buffer_handshake,
+            afterHandshakeWrapper,
+            continueHandshake,
+        );
+    }
+
     /// Attempt to derive 1-RTT keys after our Finished has been flushed from the TLS outbox.
     /// This is needed because pushCrypto() may have deferred derivation until the outbox emptied,
     /// but no further inbound CRYPTO might arrive to trigger another pushCrypto() call.

@@ -2102,86 +2102,20 @@ pub const Endpoint = struct {
                     .crypto => |cr| {
                         std.debug.print("DEBUG: Processing CRYPTO frame with {} bytes at offset {}\n", .{ cr.data.len, cr.offset });
                         std.debug.print("{s}: Received Initial CRYPTO frame with {} bytes at offset {} (expected {})\n", .{ if (conn.role == .Server) "Server" else "Client", cr.data.len, cr.offset, conn.crypto_rx_off_initial });
-                        // const was_server = (conn.role == .Server); // Commented out - no longer used
 
-                        // Check if this CRYPTO frame is at the expected offset
-                        if (cr.offset == conn.crypto_rx_off_initial) {
-                            // In-order frame - process immediately
-                            std.debug.print("DEBUG: Processing in-order Initial CRYPTO frame at offset {} with {} bytes\n", .{ cr.offset, cr.data.len });
-                            std.debug.print("DEBUG: Pushing {} bytes to TLS engine (Initial)\n", .{cr.data.len});
-                            // Log first few bytes of CRYPTO data for debugging
-                            if (cr.data.len >= 8) {
-                                std.debug.print("DEBUG: CRYPTO data first 8 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ cr.data[0], cr.data[1], cr.data[2], cr.data[3], cr.data[4], cr.data[5], cr.data[6], cr.data[7] });
-                            }
-                            conn.pushCrypto(cr.data) catch |err| {
-                                std.debug.print("DEBUG: ERROR: Failed to push CRYPTO data to TLS: {}\n", .{err});
-                            };
+                        const ack_initial = conn.handleInitialCrypto(self.allocator, cr.offset, cr.data) catch |err| {
+                            std.debug.print("DEBUG: ERROR: Failed to process Initial CRYPTO data: {}\n", .{err});
+                            false
+                        };
 
-                            // CRITICAL: After pushCrypto, check if app keys were just derived and close stale connections
+                        if (ack_initial) {
+                            saw_any = true;
+                            saw_ack_eliciting_initial = true;
+
                             if (conn.app_rx_keys != null and conn.app_tx_keys != null) {
                                 std.debug.print("INITIAL CRYPTO: App keys NOW READY - calling closeStaleConnectionsForPeer\n", .{});
                                 self.closeStaleConnectionsForPeer(conn);
                             }
-
-                            conn.crypto_rx_off_initial += @intCast(cr.data.len);
-                            std.debug.print("DEBUG: Updated crypto_rx_off_initial to {}\n", .{conn.crypto_rx_off_initial});
-
-                            // Check if we can now process any buffered out-of-order frames
-                            while (conn.crypto_buffer_initial.getContiguous(conn.crypto_rx_off_initial)) |fragments| {
-                                // Process all contiguous fragments
-                                for (fragments) |frag| {
-                                    std.debug.print("Processing buffered Initial CRYPTO frame at offset {} with {} bytes\n", .{ frag.offset, frag.data.len });
-                                    conn.pushCrypto(frag.data) catch |err| {
-                                        std.debug.print("ERROR: Failed to push buffered CRYPTO data: {}\n", .{err});
-                                    };
-                                    conn.crypto_rx_off_initial += @intCast(frag.data.len);
-                                }
-
-                                // Remove processed fragments from buffer
-                                conn.crypto_buffer_initial.removeProcessed(fragments.len, self.allocator.*);
-                            }
-                            saw_any = true;
-                            saw_ack_eliciting_initial = true; // CRYPTO is ack-eliciting
-
-                            // Server: after receiving CH, only queue ServerHello for Initial emission
-                            // COMMENTED OUT: This is duplicate - ServerHello queueing is already handled in conn.pushCrypto()
-                            // if (was_server and !conn.tls.sh_seen) {
-                            //     // Queue ServerHello only - it will be sent in Initial packet
-                            //     // The rest of the handshake flight will be queued after SH is sent
-                            //     std.debug.print("SERVER: Reached ServerHello queueing code path! sh_seen={}\n", .{conn.tls.sh_seen});
-                            //     std.debug.print("Server: About to queue ServerHello - outbox.len={}\n", .{conn.tls.outbox.items.len});
-                            //     conn.tls.queueRealServerHello() catch |err| {
-                            //         std.debug.print("Failed to queue ServerHello: {}\n", .{err});
-                            //         return;
-                            //     };
-                            //     std.debug.print("Server: After queueRealServerHello - outbox.len={} sh_seen={}\n", .{conn.tls.outbox.items.len, conn.tls.sh_seen});
-                            // }
-
-                            // CRITICAL: Derive Handshake keys after queuing ServerHello
-                            // If we can compute handshake secrets now, install Handshake keys
-                            if (conn.hs_client == null or conn.hs_server == null) {
-                                if (conn.tls.computeHandshakeSecrets()) |hs_secrets| {
-                                    std.debug.print("Server: Derived handshake secrets after queuing ServerHello\n", .{});
-                                    conn.hs_client = hs_secrets.client;
-                                    conn.hs_server = hs_secrets.server;
-                                    conn.deriveHandshakeKeys(conn.version_v2);
-                                    std.debug.print("Server: After deriving Handshake keys - hs_tx_keys is {s}\n", .{if (conn.hs_tx_keys != null) "SET" else "NULL"});
-                                } else {
-                                    std.debug.print("Server: Cannot derive handshake secrets yet (sh_seen={}, ecdhe={})\n", .{ conn.tls.sh_seen, conn.tls.ecdhe_secret != null });
-                                }
-                            }
-                            // } // This was the closing brace for the commented-out if statement
-                        } else if (cr.offset > conn.crypto_rx_off_initial) {
-                            // Out-of-order frame - buffer it
-                            std.debug.print("Buffering out-of-order CRYPTO frame: offset {} expected {}\n", .{ cr.offset, conn.crypto_rx_off_initial });
-                            conn.crypto_buffer_initial.add(cr.offset, cr.data, self.allocator.*) catch |err| {
-                                std.debug.print("Failed to buffer CRYPTO frame: {}\n", .{err});
-                            };
-                            saw_any = true;
-                            saw_ack_eliciting_initial = true;
-                        } else {
-                            // Duplicate or overlapping frame - ignore
-                            std.debug.print("Ignoring duplicate/overlapping CRYPTO frame: offset {} expected {}\n", .{ cr.offset, conn.crypto_rx_off_initial });
                         }
                     },
                     .ack => |a| {
@@ -3091,40 +3025,19 @@ pub const Endpoint = struct {
                     switch (r.f) {
                         .crypto => {
                             const cr = r.f.crypto;
-                            if (cr.offset == conn.crypto_rx_off_handshake) {
-                                // In-order frame, process immediately
-                                conn.pushCrypto(cr.data) catch {};
+                            const ack_handshake = conn.handleHandshakeCrypto(self.allocator, cr.offset, cr.data) catch |err| {
+                                std.debug.print("ERROR: Failed to process Handshake CRYPTO data: {}\n", .{err});
+                                false
+                            };
 
-                                // CRITICAL: After pushCrypto, check if app keys were just derived and close stale connections
+                            if (ack_handshake) {
+                                saw_any = true;
+                                saw_ack_eliciting_hs = true;
+
                                 if (conn.app_rx_keys != null and conn.app_tx_keys != null) {
                                     std.debug.print("HANDSHAKE CRYPTO: App keys NOW READY - calling closeStaleConnectionsForPeer\n", .{});
                                     self.closeStaleConnectionsForPeer(conn);
                                 }
-
-                                conn.crypto_rx_off_handshake += @intCast(cr.data.len);
-                                saw_any = true;
-                                saw_ack_eliciting_hs = true; // CRYPTO is ack-eliciting
-
-                                // Check if we can now process buffered frames
-                                while (conn.crypto_buffer_handshake.getContiguous(conn.crypto_rx_off_handshake)) |fragments| {
-                                    for (fragments) |frag| {
-                                        conn.pushCrypto(frag.data) catch {};
-                                        conn.crypto_rx_off_handshake += @intCast(frag.data.len);
-                                    }
-                                    // Remove processed fragments from buffer
-                                    conn.crypto_buffer_handshake.removeProcessed(fragments.len, self.allocator.*);
-                                }
-                            } else if (cr.offset > conn.crypto_rx_off_handshake) {
-                                // Out-of-order frame - buffer it
-                                std.debug.print("Buffering out-of-order Handshake CRYPTO frame: offset {} expected {}\n", .{ cr.offset, conn.crypto_rx_off_handshake });
-                                conn.crypto_buffer_handshake.add(cr.offset, cr.data, self.allocator.*) catch |err| {
-                                    std.debug.print("Failed to buffer Handshake CRYPTO frame: {}\n", .{err});
-                                };
-                                saw_any = true;
-                                saw_ack_eliciting_hs = true;
-                            } else {
-                                // Duplicate or overlapping frame - ignore
-                                std.debug.print("Ignoring duplicate/overlapping Handshake CRYPTO frame: offset {} expected {}\n", .{ cr.offset, conn.crypto_rx_off_handshake });
                             }
                         },
                         .ack => |a| {
