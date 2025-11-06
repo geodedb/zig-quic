@@ -26,12 +26,12 @@ TARGETS = \
 .PHONY: setup-clients setup-python-client setup-rust-client setup-go-client setup-zig-client build-clients
 .PHONY: e2e-test-go e2e-test-python e2e-test-rust e2e-test-zig e2e-test-all e2e-ci
 .PHONY: e2e-test-go-comprehensive e2e-test-zig-comprehensive e2e-test-xnet-quic e2e-comprehensive
-.PHONY: test-all-clients test-all-clients-verbose
+.PHONY: test-all-clients test-all-clients-verbose kill
 
 # Default target runs full CI including cross-compilation
 all: ci cross-compile-quick interop
 
-build:
+build: kill
 	$(ZIG) build $(ZIG_FLAGS)
 	$(ZIG) build cli $(ZIG_FLAGS)
 
@@ -49,6 +49,15 @@ bench:
 
 tools:
 	$(ZIG) build tools $(ZIG_FLAGS)
+
+kill:
+	@killall -9 quic-server quic-client 2>/dev/null || true
+	@echo "✓ All running quic-server and quic-client processes killed"
+	@killall -9 quicgo-client 2>/dev/null || true
+	@echo "✓ All running quicgo-client processes killed"
+	@killall -9 quic-* 2>/dev/null || true
+	@pgrep quic- | xargs -r kill -9 2>/dev/null || true
+	@echo "✓ All running quic-* processes killed"
 
 # Run build, test, fuzz, bench, and tools sequentially
 ci: build test fuzz bench tools
@@ -524,6 +533,50 @@ e2e-test-zig-comprehensive: build
 			exit 0; \
 		fi'
 
+# Comprehensive E2E test with Python client (aioquic)
+e2e-test-python-comprehensive: build
+	@echo "========== E2E Comprehensive Test: Python Client (aioquic) =========="
+	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
+	@echo "Starting Zig server with TLS..."
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key > /tmp/e2e-python-comprehensive.log 2>&1 & \
+		SERVER_PID=$$!; \
+		echo "Server PID: $$SERVER_PID"; \
+		sleep 2; \
+		echo "Running comprehensive Python test suite..."; \
+		cd test-clients/aioquic-client && timeout 60 python3 test_client_comprehensive.py --host 127.0.0.1 --port 4433 2>&1 | tee /tmp/e2e-python-comprehensive-client.log || true; \
+		kill $$SERVER_PID 2>/dev/null || true; \
+		sleep 1; \
+		echo ""; \
+		if grep -q "✅ All tests passed" /tmp/e2e-python-comprehensive-client.log; then \
+			echo "✅ Python comprehensive test suite PASSED"; \
+		else \
+			echo "⚠️  Python comprehensive test suite completed with warnings/failures"; \
+			tail -20 /tmp/e2e-python-comprehensive-client.log; \
+		fi'
+
+# Comprehensive E2E test with Rust client (quinn)
+e2e-test-rust-comprehensive: build
+	@echo "========== E2E Comprehensive Test: Rust Client (Quinn) =========="
+	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
+	@echo "Starting Zig server with TLS..."
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key > /tmp/e2e-rust-comprehensive.log 2>&1 & \
+		SERVER_PID=$$!; \
+		echo "Server PID: $$SERVER_PID"; \
+		sleep 2; \
+		echo "Building quinn comprehensive test client..."; \
+		cd test-clients/quinn-client && cargo build --release --bin quinn-test-client-comprehensive 2>&1 | grep -E "Compiling|Finished" || true; \
+		echo "Running comprehensive Rust test suite..."; \
+		cd test-clients/quinn-client && timeout 60 ./target/release/quinn-test-client-comprehensive --addr 127.0.0.1:4433 --server-name test.local 2>&1 | tee /tmp/e2e-rust-comprehensive-client.log || true; \
+		kill $$SERVER_PID 2>/dev/null || true; \
+		sleep 1; \
+		echo ""; \
+		if grep -q "✅ All tests passed" /tmp/e2e-rust-comprehensive-client.log; then \
+			echo "✅ Rust comprehensive test suite PASSED"; \
+		else \
+			echo "⚠️  Rust comprehensive test suite completed with warnings/failures"; \
+			tail -20 /tmp/e2e-rust-comprehensive-client.log; \
+		fi'
+
 # Run all e2e tests sequentially
 e2e-test-all: build
 	@echo "=========================================="
@@ -562,6 +615,10 @@ e2e-comprehensive: build
 	@$(MAKE) e2e-test-go-comprehensive || echo "⚠️ Go (quic-go) comprehensive test completed"
 	@echo ""
 	@$(MAKE) e2e-test-xnet-quic || echo "⚠️ x/net/quic test completed"
+	@echo ""
+	@$(MAKE) e2e-test-python-comprehensive || echo "⚠️ Python (aioquic) comprehensive test completed"
+	@echo ""
+	@$(MAKE) e2e-test-rust-comprehensive || echo "⚠️ Rust (quinn) comprehensive test completed"
 	@echo ""
 	@$(MAKE) e2e-test-zig-comprehensive || echo "⚠️ Zig comprehensive test completed"
 	@echo ""

@@ -3,6 +3,14 @@ name = "quinn-test-client"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "quinn-test-client"
+path = "src/main.rs"
+
+[[bin]]
+name = "quinn-test-client-comprehensive"
+path = "src/comprehensive.rs"
+
 [dependencies]
 quinn = { path = "../../forks/quinn/quinn" }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
@@ -11,3 +19,4 @@ anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rand = "0.8"
