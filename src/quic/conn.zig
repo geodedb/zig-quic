@@ -465,8 +465,8 @@ pub const Connection = struct {
     sender_ctx: ?*anyopaque = null,
     sender_fn: ?SendFn = null,
     // Derived handshake traffic secrets (once both hellos present)
-    hs_client: ?[tls13.H.digest_length]u8 = null,
-    hs_server: ?[tls13.H.digest_length]u8 = null,
+    hs_client: ?[ks.H.digest_length]u8 = null,
+    hs_server: ?[ks.H.digest_length]u8 = null,
     // Cached QUIC Handshake keys for RX/TX once derived
     hs_rx_keys: ?packet.InitialKeys = null,
     hs_tx_keys: ?packet.InitialKeys = null,
@@ -1338,8 +1338,12 @@ pub const Connection = struct {
             if (self.tls.handshake_client_secret) |client_secret| {
                 if (self.tls.handshake_server_secret) |server_secret| {
                     std.debug.print("Server: Derived handshake secrets, installing Handshake keys\n", .{});
-                    self.hs_client = client_secret;
-                    self.hs_server = server_secret;
+                    var hs_c: [ks.H.digest_length]u8 = undefined;
+                    var hs_s: [ks.H.digest_length]u8 = undefined;
+                    @memcpy(&hs_c, client_secret.slice());
+                    @memcpy(&hs_s, server_secret.slice());
+                    self.hs_client = hs_c;
+                    self.hs_server = hs_s;
                     self.deriveHandshakeKeys(self.version_v2);
                     std.debug.print("Server: Handshake secrets installed (flight pending emission by endpoint)\n", .{});
                 }
@@ -1349,8 +1353,12 @@ pub const Connection = struct {
         if (self.hs_client == null or self.hs_server == null) {
             if (self.tls.computeHandshakeSecrets()) |hs_secrets| {
                 std.debug.print("{s}: Derived handshake secrets\n", .{if (self.role == .Server) "Server" else "Client"});
-                self.hs_client = hs_secrets.client;
-                self.hs_server = hs_secrets.server;
+                var hs_c: [ks.H.digest_length]u8 = undefined;
+                var hs_s: [ks.H.digest_length]u8 = undefined;
+                @memcpy(&hs_c, hs_secrets.client.slice());
+                @memcpy(&hs_s, hs_secrets.server.slice());
+                self.hs_client = hs_c;
+                self.hs_server = hs_s;
                 self.deriveHandshakeKeys(self.version_v2);
 
                 // FIX: Path 2 must also queue handshake flight for servers
@@ -2632,27 +2640,30 @@ pub const Connection = struct {
         });
 
         // Assign rx/tx according to role
-        const rx_secret = if (self.role == .Server) self.hs_client.? else self.hs_server.?;
-        const tx_secret = if (self.role == .Server) self.hs_server.? else self.hs_client.?;
+        const rx_secret_bytes = if (self.role == .Server) self.hs_client.? else self.hs_server.?;
+        const tx_secret_bytes = if (self.role == .Server) self.hs_server.? else self.hs_client.?;
+
+        const rx_secret = ks.Secret.fromSlice(.sha256, &rx_secret_bytes);
+        const tx_secret = ks.Secret.fromSlice(.sha256, &tx_secret_bytes);
 
         std.debug.print("  For {s}:", .{if (self.role == .Server) "Server" else "Client"});
         std.debug.print("    rx_secret (for reading) = {s} secret[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
             if (self.role == .Server) "client" else "server",
-            rx_secret[0],
-            rx_secret[1],
-            rx_secret[2],
-            rx_secret[3],
+            rx_secret_bytes[0],
+            rx_secret_bytes[1],
+            rx_secret_bytes[2],
+            rx_secret_bytes[3],
         });
         std.debug.print("    tx_secret (for writing) = {s} secret[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
             if (self.role == .Server) "server" else "client",
-            tx_secret[0],
-            tx_secret[1],
-            tx_secret[2],
-            tx_secret[3],
+            tx_secret_bytes[0],
+            tx_secret_bytes[1],
+            tx_secret_bytes[2],
+            tx_secret_bytes[3],
         });
 
-        const rx = tls13.deriveQuicHandshakeKeys(rx_secret, version_v2);
-        const tx = tls13.deriveQuicHandshakeKeys(tx_secret, version_v2);
+        const rx = tls13.deriveQuicHandshakeKeys(.sha256, &rx_secret, version_v2);
+        const tx = tls13.deriveQuicHandshakeKeys(.sha256, &tx_secret, version_v2);
         self.hs_rx_keys = .{ .key = rx.key, .iv = rx.iv, .hp = rx.hp };
         self.hs_tx_keys = .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp };
         std.debug.print("Handshake keys derived for {s} - tx_key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}, rx_key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
@@ -2669,19 +2680,20 @@ pub const Connection = struct {
     }
 
     /// Derive application keys and traffic secrets for QUIC from current TLS secrets.
-    fn deriveAppKeys(self: *Connection, client_app: [tls13.H.digest_length]u8, server_app: [tls13.H.digest_length]u8, version_v2: bool) void {
+    fn deriveAppKeys(self: *Connection, client_app: ks.Secret, server_app: ks.Secret, version_v2: bool) void {
         // Assign rx/tx according to role
         const rx_secret = if (self.role == .Server) client_app else server_app;
         const tx_secret = if (self.role == .Server) server_app else client_app;
-        const rx = tls13.deriveQuicAppKeys(rx_secret, version_v2);
-        const tx = tls13.deriveQuicAppKeys(tx_secret, version_v2);
+        const rx = tls13.deriveQuicAppKeys(.sha256, &rx_secret, version_v2);
+        const tx = tls13.deriveQuicAppKeys(.sha256, &tx_secret, version_v2);
         self.app_rx_keys = .{ .key = rx.key, .iv = rx.iv, .hp = rx.hp };
         self.app_tx_keys = .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp };
 
         // Debug: Log derived key material
         std.debug.print("\n=== 1-RTT KEYS DERIVED ({s}) ===\n", .{if (self.role == .Server) "Server" else "Client"});
         std.debug.print("RX (decrypt) secret[0..8]: ", .{});
-        for (rx_secret[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+        const rx_slice = rx_secret.slice();
+        for (rx_slice[0..@min(8, rx_slice.len)]) |b| std.debug.print("{X:0>2} ", .{b});
         std.debug.print("\nRX key[0..8]: ", .{});
         for (rx.key[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
         std.debug.print("\nRX iv[0..8]: ", .{});
@@ -2689,13 +2701,18 @@ pub const Connection = struct {
         std.debug.print("\nRX hp[0..8]: ", .{});
         for (rx.hp[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
         std.debug.print("\nTX (encrypt) secret[0..8]: ", .{});
-        for (tx_secret[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+        const tx_slice = tx_secret.slice();
+        for (tx_slice[0..@min(8, tx_slice.len)]) |b| std.debug.print("{X:0>2} ", .{b});
         std.debug.print("\nTX key[0..8]: ", .{});
         for (tx.key[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
         std.debug.print("\n", .{});
         // Seed traffic secrets for future updates
-        self.app_rx_secret = rx_secret;
-        self.app_tx_secret = tx_secret;
+        var app_rx: [ks.H.digest_length]u8 = undefined;
+        var app_tx: [ks.H.digest_length]u8 = undefined;
+        @memcpy(&app_rx, rx_secret.slice());
+        @memcpy(&app_tx, tx_secret.slice());
+        self.app_rx_secret = app_rx;
+        self.app_tx_secret = app_tx;
 
         // Debug: log what connection IDs will be used
         if (self.role == .Server) {

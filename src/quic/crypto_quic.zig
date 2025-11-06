@@ -149,11 +149,11 @@ fn deriveRetryKeyIv(version_v2: bool) struct { key: [16]u8, iv: [12]u8 } {
     var key: [16]u8 = undefined;
     var iv: [12]u8 = undefined;
     if (version_v2) {
-        ks.expandLabel(retry_secret_v2, "quicv2 key", &[_]u8{}, &key) catch unreachable;
-        ks.expandLabel(retry_secret_v2, "quicv2 iv", &[_]u8{}, &iv) catch unreachable;
+        ks.expandLabel(&retry_secret_v2, "quicv2 key", &[_]u8{}, &key) catch unreachable;
+        ks.expandLabel(&retry_secret_v2, "quicv2 iv", &[_]u8{}, &iv) catch unreachable;
     } else {
-        ks.expandLabel(retry_secret_v1, "quic key", &[_]u8{}, &key) catch unreachable;
-        ks.expandLabel(retry_secret_v1, "quic iv", &[_]u8{}, &iv) catch unreachable;
+        ks.expandLabel(&retry_secret_v1, "quic key", &[_]u8{}, &key) catch unreachable;
+        ks.expandLabel(&retry_secret_v1, "quic iv", &[_]u8{}, &iv) catch unreachable;
     }
     return .{ .key = key, .iv = iv };
 }

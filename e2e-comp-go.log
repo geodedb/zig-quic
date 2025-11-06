@@ -1,75 +1,25 @@
 zig build 
-zig build cli 
-========== E2E Comprehensive Test: Go Client (quic-go) ==========
-Starting Zig server with TLS...
-Server PID: 3038245
-Running comprehensive Go test suite...
-2025/11/05 12:36:22 🚀 Starting comprehensive QUIC test suite
-2025/11/05 12:36:22 📡 Connecting to 127.0.0.1:4433
-2025/11/05 12:36:22 ✅ Connection established
-2025/11/05 12:36:22 ✅ TLS handshake complete
-2025/11/05 12:36:22 
-📝 Test 1: Single stream echo
-2025/11/05 12:36:22 ✓ Stream opened (ID: 0)
-2025/11/05 12:36:52 
-📝 Test 2: Multiple concurrent streams
-2025/11/05 12:36:52 
-📝 Test: Large data transfer (10240 bytes)
-2025/11/05 12:36:52 
-📝 Test: Large data transfer (102400 bytes)
-2025/11/05 12:36:52 
-📝 Test: Large data transfer (1048576 bytes)
-2025/11/05 12:36:52 
-📝 Test: Multiple round-trips (10 cycles)
-2025/11/05 12:36:52 
-📝 Test: Bidirectional simultaneous send/receive
-2025/11/05 12:36:52 
-📝 Test: Stream interleaving (5 streams)
-2025/11/05 12:36:52 
-============================================================
-2025/11/05 12:36:52 📊 TEST SUMMARY
-2025/11/05 12:36:52 ============================================================
-2025/11/05 12:36:52 ❌ Single Stream Echo
-2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
-2025/11/05 12:36:52 ❌ Multiple Concurrent Streams
-2025/11/05 12:36:52    └─ Error: stream 3: timeout: no recent network activity
-2025/11/05 12:36:52 ❌ Large Transfer (10240)
-2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
-2025/11/05 12:36:52 ❌ Large Transfer (102400)
-2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
-2025/11/05 12:36:52 ❌ Large Transfer (1048576)
-2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
-2025/11/05 12:36:52 ❌ Multiple Round-trips
-2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
-2025/11/05 12:36:52 ❌ Bidirectional Simultaneous
-2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
-2025/11/05 12:36:52 ❌ Stream Interleaving
-2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
-2025/11/05 12:36:52 
-============================================================
-2025/11/05 12:36:52 RESULTS: 0 passed, 8 failed, 8 total
-2025/11/05 12:36:52 ============================================================
-2025/11/05 12:36:52 
-❌ Some tests failed
+install
++- install quic-server
+   +- compile exe quic-server Debug native 1 errors
+src/quic/conn.zig:468:23: error: root source file struct 'tls13' has no member named 'H'
+    hs_client: ?[tls13.H.digest_length]u8 = null,
+                 ~~~~~^~
+vendor/ztls/src/tls13.zig:1:1: note: struct declared here
+//! TLS 1.3 Handshake State Machine for QUIC
+^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+referenced by:
+    Connection: src/quic/conn.zig:446:24
+    endpoint.Timer: src/quic/endpoint.zig:59:21
+    10 reference(s) hidden; use '-freference-trace=12' to see all references
+error: the following command failed with 1 compilation errors:
+/nix/store/0lhqddd2i6dybgidm29i9zc4simd1rm3-zig-0.15.1/bin/zig build-exe -lssl -lcrypto -ODebug --dep quic_api -Mroot=cmd/quic-server.zig --dep config.zig --dep loop_backend.zig --dep quic_endpoint --dep quic_crypto --dep quic_frame --dep quic_varint --dep tls/key_schedule.zig=quic_tls --dep quic_tls --dep quic_tls13 --dep quic_conn --dep quic_packet --dep quic_recovery --dep byteorder --dep quic_transport_params --dep quic_logger -Mquic_api=src/quic/api.zig -Mconfig.zig=src/quic/config.zig -Mloop_backend.zig=src/quic/loop_backend.zig --dep quic_conn --dep quic_packet --dep quic_frame --dep quic_tls13 --dep quic_crypto --dep quic_varint --dep quic_tls --dep sig --dep x509 --dep quic_recovery --dep config.zig --dep loop_backend.zig --dep quic_transport_params --dep quic_logger --dep byteorder -Mquic_endpoint=src/quic/endpoint.zig --dep quic_tls --dep quic_logger -Mquic_crypto=src/quic/crypto_quic.zig --dep quic_varint -Mquic_frame=src/quic/frame.zig --dep byteorder -Mquic_varint=src/quic/varint.zig -Mquic_tls=vendor/ztls/src/key_schedule.zig --dep quic_tls --dep x509 --dep sig --dep alert --dep zero_rtt --dep tls13_full --dep quic_logger=quic_logger0 --dep quic_transport_params=quic_transport_params0 -Mquic_tls13=vendor/ztls/src/tls13.zig --dep quic_packet --dep quic_frame --dep quic_tls13 --dep quic_varint --dep quic_tls --dep quic_recovery --dep quic_logger --dep byteorder --dep quic_transport_params -Mquic_conn=src/quic/conn.zig --dep quic_tls --dep quic_crypto --dep quic_varint --dep quic_logger -Mquic_packet=src/quic/packet.zig --dep quic_frame -Mquic_recovery=src/quic/recovery.zig -Mbyteorder=src/byteorder/byteorder.zig --dep quic_varint -Mquic_transport_params=src/quic/transport_params.zig -Mquic_logger=src/quic/logger.zig --dep asn1 -Msig=vendor/ztls/src/sig.zig --dep asn1 --dep sig -Mx509=vendor/ztls/src/x509.zig -Malert=vendor/ztls/src/alert.zig --dep quic_tls -Mzero_rtt=vendor/ztls/src/zero_rtt.zig -Mtls13_full=vendor/ztls/src/tls13_full.zig -Mquic_logger0=vendor/ztls/src/quic_logger.zig --dep varint -Mquic_transport_params0=vendor/ztls/src/quic_transport_params.zig -Masn1=vendor/ztls/src/asn1.zig --dep byteorder=byteorder0 -Mvarint=vendor/ztls/src/varint.zig -Mbyteorder0=vendor/ztls/src/byteorder.zig -lc --cache-dir .zig-cache --global-cache-dir /home/benji/.cache/zig --name quic-server --zig-lib-dir /nix/store/0lhqddd2i6dybgidm29i9zc4simd1rm3-zig-0.15.1/lib/zig/ --listen=-
 
-⚠️  Go comprehensive test suite completed with warnings/failures
-2025/11/05 12:36:52 ❌ Multiple Concurrent Streams
-2025/11/05 12:36:52    └─ Error: stream 3: timeout: no recent network activity
-2025/11/05 12:36:52 ❌ Large Transfer (10240)
-2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
-2025/11/05 12:36:52 ❌ Large Transfer (102400)
-2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
-2025/11/05 12:36:52 ❌ Large Transfer (1048576)
-2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
-2025/11/05 12:36:52 ❌ Multiple Round-trips
-2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
-2025/11/05 12:36:52 ❌ Bidirectional Simultaneous
-2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
-2025/11/05 12:36:52 ❌ Stream Interleaving
-2025/11/05 12:36:52    └─ Error: timeout: no recent network activity
-2025/11/05 12:36:52 
-============================================================
-2025/11/05 12:36:52 RESULTS: 0 passed, 8 failed, 8 total
-2025/11/05 12:36:52 ============================================================
-2025/11/05 12:36:52 
-❌ Some tests failed
+Build Summary: 0/3 steps succeeded; 1 failed
+install transitive failure
++- install quic-server transitive failure
+   +- compile exe quic-server Debug native 1 errors
+
+error: the following build command failed with exit code 1:
+.zig-cache/o/f873872ee03a1eda1cbd6164ebb94bb4/build /nix/store/0lhqddd2i6dybgidm29i9zc4simd1rm3-zig-0.15.1/bin/zig /nix/store/0lhqddd2i6dybgidm29i9zc4simd1rm3-zig-0.15.1/lib/zig /home/benji/src/spyder/quic .zig-cache /home/benji/.cache/zig --seed 0xd78c48ac -Z84d8b6d59f0bc7f2
+make: *** [Makefile:35: build] Error 1

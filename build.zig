@@ -152,6 +152,10 @@ pub fn build(b: *std.Build) void {
 
     const ztls_logger_mod = mkModule(b, "vendor/ztls/src/quic_logger.zig");
     const tls13_full_mod = mkModule(b, "vendor/ztls/src/tls13_full.zig");
+    const ocsp_mod = mkModule(b, "vendor/ztls/src/ocsp.zig");
+    ocsp_mod.addImport("asn1", asn1_mod);
+    ocsp_mod.addImport("x509", x509_mod);
+    const sct_mod = mkModule(b, "vendor/ztls/src/sct.zig");
 
     const tls13_mod = mkModule(b, "vendor/ztls/src/tls13.zig");
     tls13_mod.addImport("quic_tls", quic_tls_mod);
@@ -162,6 +166,8 @@ pub fn build(b: *std.Build) void {
     tls13_mod.addImport("tls13_full", tls13_full_mod);
     tls13_mod.addImport("quic_logger", ztls_logger_mod);
     tls13_mod.addImport("quic_transport_params", ztls_transport_params_mod);
+    tls13_mod.addImport("ocsp", ocsp_mod);
+    tls13_mod.addImport("sct", sct_mod);
 
     // QUIC crypto and packet modules
     const quic_crypto_mod = mkModule(b, "src/quic/crypto_quic.zig");
