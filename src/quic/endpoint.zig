@@ -177,36 +177,7 @@ pub const Endpoint = struct {
 
         // Determine address family from resolved address
         const sa: *const posix.sockaddr = @ptrCast(@alignCast(&ep_addr.storage));
-        var family = sa.family;
-
-        // Convert IPv4 addresses to IPv4-mapped IPv6 for dual-stack support
-        // This allows the server to accept connections from both IPv4 and IPv6 clients
-        if (family == posix.AF.INET) {
-            const sin4: *const posix.sockaddr.in = @ptrCast(@alignCast(&ep_addr.storage));
-            const ipv4_addr = sin4.addr;
-            const port = sin4.port;
-
-            // Convert to IPv4-mapped IPv6 address (::ffff:a.b.c.d)
-            var sin6 = std.mem.zeroes(posix.sockaddr.in6);
-            sin6.family = posix.AF.INET6;
-            sin6.port = port;
-            // IPv4-mapped IPv6 prefix: first 10 bytes are 0, next 2 bytes are 0xff
-            sin6.addr[10] = 0xff;
-            sin6.addr[11] = 0xff;
-            // Copy IPv4 address bytes to last 4 bytes
-            const ipv4_bytes = std.mem.asBytes(&ipv4_addr);
-            sin6.addr[12] = ipv4_bytes[0];
-            sin6.addr[13] = ipv4_bytes[1];
-            sin6.addr[14] = ipv4_bytes[2];
-            sin6.addr[15] = ipv4_bytes[3];
-
-            // Update ep_addr to use the IPv6 address
-            @memcpy(std.mem.asBytes(&ep_addr.storage)[0..@sizeOf(posix.sockaddr.in6)], std.mem.asBytes(&sin6));
-            family = posix.AF.INET6;
-            ep_addr.len = @sizeOf(posix.sockaddr.in6);
-
-            std.debug.print("Converted IPv4 to IPv4-mapped IPv6 for dual-stack support\n", .{});
-        }
+        const family = sa.family;
 
         std.debug.print("Endpoint init - binding to address family={any}\n", .{family});
 
@@ -503,43 +474,17 @@ pub const Endpoint = struct {
             }
         }
 
-        // If socket is IPv6 but peer address is IPv4, convert to IPv4-mapped IPv6
-        var actual_peer = peer;
-        if (self.sock_family == posix.AF.INET6 and peer.storage.family == posix.AF.INET) {
-            const sin4: *const posix.sockaddr.in = @ptrCast(@alignCast(&peer.storage));
-            const ipv4_addr = sin4.addr;
-            const port = sin4.port;
-
-            std.debug.print("Converting IPv4 peer to IPv4-mapped IPv6 for sendto\n", .{});
-
-            // Create IPv4-mapped IPv6 address
-            var sin6 = std.mem.zeroes(posix.sockaddr.in6);
-            sin6.family = posix.AF.INET6;
-            sin6.port = port;
-            sin6.addr[10] = 0xff;
-            sin6.addr[11] = 0xff;
-            const ipv4_bytes = std.mem.asBytes(&ipv4_addr);
-            sin6.addr[12] = ipv4_bytes[0];
-            sin6.addr[13] = ipv4_bytes[1];
-            sin6.addr[14] = ipv4_bytes[2];
-            sin6.addr[15] = ipv4_bytes[3];
-
-            actual_peer.storage = std.mem.zeroes(posix.sockaddr.storage);
-            @memcpy(std.mem.asBytes(&actual_peer.storage)[0..@sizeOf(posix.sockaddr.in6)], std.mem.asBytes(&sin6));
-            actual_peer.len = @sizeOf(posix.sockaddr.in6);
-        }
-
-        const sa_ptr: *const posix.sockaddr = @ptrCast(&actual_peer.storage);
+        const sa_ptr: *const posix.sockaddr = @ptrCast(&peer.storage);
         // Debug the actual address we're sending to
-        if (actual_peer.storage.family == posix.AF.INET) {
-            const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&actual_peer.storage));
+        if (peer.storage.family == posix.AF.INET) {
+            const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&peer.storage));
             const addr_bytes = @as([4]u8, @bitCast(sin.addr));
             std.debug.print("sendto IPv4 {}.{}.{}.{}:{}, fd={}, data.len={}\n", .{ addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3], portFromNetwork(sin.port), self.sock_fd, data.len });
-        } else if (actual_peer.storage.family == posix.AF.INET6) {
-            const sin6: *const posix.sockaddr.in6 = @ptrCast(@alignCast(&actual_peer.storage));
+        } else if (peer.storage.family == posix.AF.INET6) {
+            const sin6: *const posix.sockaddr.in6 = @ptrCast(@alignCast(&peer.storage));
             std.debug.print("sendto IPv6 port {}, fd={}, data.len={}\n", .{ portFromNetwork(sin6.port), self.sock_fd, data.len });
         }
-        const result = posix.sendto(self.sock_fd, data, 0, sa_ptr, actual_peer.len);
+        const result = posix.sendto(self.sock_fd, data, 0, sa_ptr, peer.len);
         if (result) |n| {
             std.debug.print("sendto successful: sent {} bytes (of {})\n", .{ n, data.len });
         } else |err| {
