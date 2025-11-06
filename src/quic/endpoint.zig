@@ -79,8 +79,43 @@ fn hashBytes(b: []const u8) u64 {
     return h.final();
 }
 
+/// Normalize IPv4-mapped IPv6 address to IPv4 for consistent hashing.
+/// This ensures that ::ffff:127.0.0.1 and 127.0.0.1 hash to the same value.
+fn normalizeAddr(sa: *const posix.sockaddr.storage, len: u32) conn_mod.SockAddr {
+    if (sa.family == posix.AF.INET6) {
+        const sin6: *const posix.sockaddr.in6 = @ptrCast(@alignCast(sa));
+        // Check if this is an IPv4-mapped IPv6 address (::ffff:a.b.c.d)
+        // The first 10 bytes must be zero, bytes 10-11 must be 0xFF
+        const addr_bytes = @as(*const [16]u8, @ptrCast(&sin6.addr)).*;
+        const is_v4_mapped =
+            addr_bytes[0] == 0 and addr_bytes[1] == 0 and
+            addr_bytes[2] == 0 and addr_bytes[3] == 0 and
+            addr_bytes[4] == 0 and addr_bytes[5] == 0 and
+            addr_bytes[6] == 0 and addr_bytes[7] == 0 and
+            addr_bytes[8] == 0 and addr_bytes[9] == 0 and
+            addr_bytes[10] == 0xFF and addr_bytes[11] == 0xFF;
+
+        if (is_v4_mapped) {
+            // Extract the IPv4 address from bytes 12-15 and convert to IPv4 sockaddr
+            const a = addr_bytes[12];
+            const b = addr_bytes[13];
+            const c = addr_bytes[14];
+            const d = addr_bytes[15];
+            const port = portFromNetwork(sin6.port);
+            return conn_mod.SockAddr.ipv4(a, b, c, d, port);
+        }
+    }
+
+    // Not IPv4-mapped, return as-is
+    var result: conn_mod.SockAddr = .{};
+    result.storage = sa.*;
+    result.len = len;
+    return result;
+}
+
 pub fn hashSockaddr(sa: *const posix.sockaddr.storage, len: u32) u64 {
-    const bytes = @as([*]const u8, @ptrCast(sa))[0..len];
+    const normalized = normalizeAddr(sa, len);
+    const bytes = @as([*]const u8, @ptrCast(&normalized.storage))[0..normalized.len];
     return hashBytes(bytes);
 }
 
@@ -99,6 +134,9 @@ pub const Endpoint = struct {
 
     // Socket file descriptor
     sock_fd: posix.socket_t,
+
+    // Socket address family (AF_INET or AF_INET6)
+    sock_family: u16,
 
     // Event loop backend (os specific)
     loop_backend: lb.LoopBackend,
@@ -299,6 +337,7 @@ pub const Endpoint = struct {
 
         return Endpoint{
             .sock_fd = fd,
+            .sock_family = family,
             .loop_backend = lb.defaultLoopBackend(),
             .allocator = alloc,
             .timers = std.ArrayList(Timer){},
@@ -463,14 +502,44 @@ pub const Endpoint = struct {
                 std.debug.print("sendTo 141 bytes to IPv6 port {}\n", .{portFromNetwork(sin6.port)});
             }
         }
-        const sa_ptr: *const posix.sockaddr = @ptrCast(&peer.storage);
+
+        // If socket is IPv6 but peer address is IPv4, convert to IPv4-mapped IPv6
+        var actual_peer = peer;
+        if (self.sock_family == posix.AF.INET6 and peer.storage.family == posix.AF.INET) {
+            const sin4: *const posix.sockaddr.in = @ptrCast(@alignCast(&peer.storage));
+            const ipv4_addr = sin4.addr;
+            const port = sin4.port;
+
+            std.debug.print("Converting IPv4 peer to IPv4-mapped IPv6 for sendto\n", .{});
+
+            // Create IPv4-mapped IPv6 address
+            var sin6 = std.mem.zeroes(posix.sockaddr.in6);
+            sin6.family = posix.AF.INET6;
+            sin6.port = port;
+            sin6.addr[10] = 0xff;
+            sin6.addr[11] = 0xff;
+            const ipv4_bytes = std.mem.asBytes(&ipv4_addr);
+            sin6.addr[12] = ipv4_bytes[0];
+            sin6.addr[13] = ipv4_bytes[1];
+            sin6.addr[14] = ipv4_bytes[2];
+            sin6.addr[15] = ipv4_bytes[3];
+
+            actual_peer.storage = std.mem.zeroes(posix.sockaddr.storage);
+            @memcpy(std.mem.asBytes(&actual_peer.storage)[0..@sizeOf(posix.sockaddr.in6)], std.mem.asBytes(&sin6));
+            actual_peer.len = @sizeOf(posix.sockaddr.in6);
+        }
+
+        const sa_ptr: *const posix.sockaddr = @ptrCast(&actual_peer.storage);
         // Debug the actual address we're sending to
-        if (peer.storage.family == posix.AF.INET) {
-            const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&peer.storage));
+        if (actual_peer.storage.family == posix.AF.INET) {
+            const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&actual_peer.storage));
             const addr_bytes = @as([4]u8, @bitCast(sin.addr));
             std.debug.print("sendto IPv4 {}.{}.{}.{}:{}, fd={}, data.len={}\n", .{ addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3], portFromNetwork(sin.port), self.sock_fd, data.len });
+        } else if (actual_peer.storage.family == posix.AF.INET6) {
+            const sin6: *const posix.sockaddr.in6 = @ptrCast(@alignCast(&actual_peer.storage));
+            std.debug.print("sendto IPv6 port {}, fd={}, data.len={}\n", .{ portFromNetwork(sin6.port), self.sock_fd, data.len });
         }
-        const result = posix.sendto(self.sock_fd, data, 0, sa_ptr, peer.len);
+        const result = posix.sendto(self.sock_fd, data, 0, sa_ptr, actual_peer.len);
         if (result) |n| {
             std.debug.print("sendto successful: sent {} bytes (of {})\n", .{ n, data.len });
         } else |err| {
