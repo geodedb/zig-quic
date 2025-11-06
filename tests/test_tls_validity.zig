@@ -61,20 +61,33 @@ fn makeInteger1(alloc: std.mem.Allocator, v: u8) ![]u8 {
     return out.toOwnedSlice(alloc);
 }
 
+// Create AlgorithmIdentifier SEQUENCE with SHA256-RSA OID
+fn makeAlgorithmIdentifier(alloc: std.mem.Allocator) ![]u8 {
+    // sha256WithRSAEncryption OID: 1.2.840.113549.1.1.11
+    const oid_bytes = &[_]u8{ 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b };
+    const oid = try makeOID(alloc, oid_bytes);
+    defer alloc.free(oid);
+    // NULL parameters
+    const null_tlv = &[_]u8{ 0x05, 0x00 };
+    var inner = std.ArrayList(u8){};
+    defer inner.deinit(alloc);
+    try inner.ensureTotalCapacity(alloc, oid.len + null_tlv.len);
+    inner.appendSliceAssumeCapacity(oid);
+    inner.appendSliceAssumeCapacity(null_tlv);
+    return makeSeq(alloc, inner.items);
+}
+
 fn buildCertWithSanValidity(alloc: std.mem.Allocator, dns_name: []const u8, not_before: []const u8, not_after: []const u8) ![]u8 {
     var tbs = std.ArrayList(u8){};
     defer tbs.deinit(alloc);
     try tbs.ensureTotalCapacity(alloc, 512);
-    const int1 = try makeInteger1(alloc, 1);
-    defer alloc.free(int1);
-    const int2 = try makeInteger1(alloc, 2);
-    defer alloc.free(int2);
-    const int3 = try makeInteger1(alloc, 3);
-    defer alloc.free(int3);
-    tbs.appendSliceAssumeCapacity(int1);
-    tbs.appendSliceAssumeCapacity(int2);
-    tbs.appendSliceAssumeCapacity(int3);
-    const issuer = try makeSeq(alloc, &[_]u8{});
+    const serial = try makeInteger1(alloc, 1);
+    defer alloc.free(serial);
+    const sig_alg = try makeAlgorithmIdentifier(alloc);
+    defer alloc.free(sig_alg);
+    tbs.appendSliceAssumeCapacity(serial);
+    tbs.appendSliceAssumeCapacity(sig_alg);
+    const issuer = try makeSeq(alloc, &[_]u8{0x00});
     defer alloc.free(issuer);
     tbs.appendSliceAssumeCapacity(issuer);
     const nb = try makeGeneralizedTime(alloc, not_before);
@@ -125,9 +138,9 @@ fn buildCertWithSanValidity(alloc: std.mem.Allocator, dns_name: []const u8, not_
     defer outer.deinit(alloc);
     try outer.ensureTotalCapacity(alloc, tbs_seq.len + 16);
     outer.appendSliceAssumeCapacity(tbs_seq);
-    const sig_alg = try makeSeq(alloc, &[_]u8{});
-    defer alloc.free(sig_alg);
-    outer.appendSliceAssumeCapacity(sig_alg);
+    const outer_sig_alg = try makeAlgorithmIdentifier(alloc);
+    defer alloc.free(outer_sig_alg);
+    outer.appendSliceAssumeCapacity(outer_sig_alg);
     emitTLV(&outer, 0x03, &[_]u8{0x00});
     const cert = try makeSeq(alloc, outer.items);
     return cert;

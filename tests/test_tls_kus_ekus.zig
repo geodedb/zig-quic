@@ -18,13 +18,14 @@ fn dummyCertWithKuEku(alloc: std.mem.Allocator, dns: []const u8, ku_bits: ?u16, 
     };
     defer alloc.free(empty_seq);
 
-    // Prepend three TLVs to satisfy parseCert's initial reads (version/serial/signature placeholder)
+    // Prepend three TLVs to satisfy parseCert's initial reads (version/serial/signature)
     emitTLV(&tbs, alloc, 0x02, &[_]u8{1}); // serial
-    emitTLV(&tbs, alloc, 0x30, &[_]u8{}); // signature algorithm (placeholder)
-    emitTLV(&tbs, alloc, 0x02, &[_]u8{2}); // extra placeholder so issuer is 4th TLV
+    const sig_alg = try makeAlgorithmIdentifier(alloc);
+    defer alloc.free(sig_alg);
+    tbs.appendSlice(alloc, sig_alg) catch unreachable;
 
-    // Issuer
-    emitTLV(&tbs, alloc, 0x30, &[_]u8{});
+    // Issuer (with one byte to differentiate from subject)
+    emitTLV(&tbs, alloc, 0x30, &[_]u8{0x00});
 
     // Validity
     const nb_t = try makeGeneralizedTime(alloc, nb);
@@ -120,7 +121,9 @@ fn dummyCertWithKuEku(alloc: std.mem.Allocator, dns: []const u8, ku_bits: ?u16, 
     var outer = std.ArrayList(u8){};
     defer outer.deinit(alloc);
     outer.appendSlice(alloc, tbs_seq) catch unreachable;
-    emitTLV(&outer, alloc, 0x30, &[_]u8{}); // sigAlg
+    const outer_sig_alg = try makeAlgorithmIdentifier(alloc);
+    defer alloc.free(outer_sig_alg);
+    outer.appendSlice(alloc, outer_sig_alg) catch unreachable;
     emitTLV(&outer, alloc, 0x03, &[_]u8{0x00}); // sigBits
     return try makeSeq(alloc, outer.items);
 }
@@ -181,6 +184,21 @@ fn makeBitString(alloc: std.mem.Allocator, v: []const u8) ![]u8 {
     defer a.deinit(alloc);
     emitTLV(&a, alloc, 0x03, v);
     return try a.toOwnedSlice(alloc);
+}
+
+// Create AlgorithmIdentifier SEQUENCE with SHA256-RSA OID
+fn makeAlgorithmIdentifier(alloc: std.mem.Allocator) ![]u8 {
+    // sha256WithRSAEncryption OID: 1.2.840.113549.1.1.11
+    const oid_bytes = &[_]u8{ 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b };
+    const oid = try makeOID(alloc, oid_bytes);
+    defer alloc.free(oid);
+    // NULL parameters
+    const null_tlv = &[_]u8{ 0x05, 0x00 };
+    var inner = std.ArrayList(u8){};
+    defer inner.deinit(alloc);
+    inner.appendSlice(alloc, oid) catch unreachable;
+    inner.appendSlice(alloc, null_tlv) catch unreachable;
+    return makeSeq(alloc, inner.items);
 }
 
 // Tests

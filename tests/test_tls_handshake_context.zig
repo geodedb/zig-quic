@@ -203,8 +203,8 @@ test "context parses ClientHello and stores handshake view" {
     try std.testing.expectEqual(@as(usize, ch.len - 4), view.raw.len);
 
     const expected_hash = computeTranscriptHash(ch);
-    const stored_ch_hash = ctx.transcripts.client_hello_hash orelse unreachable;
-    try std.testing.expectEqualSlices(u8, expected_hash[0..], stored_ch_hash[0..]);
+    const stored_ch_hash = ctx.transcripts.client_hello_hash.get(.sha256) orelse unreachable;
+    try std.testing.expectEqualSlices(u8, expected_hash[0..], stored_ch_hash.slice());
     try std.testing.expect(ctx.secrets.handshake.send.valid);
 
     try std.testing.expectError(tls13.HandshakeError.DuplicateClientHello, ctx.processCrypto(.Initial, ch));
@@ -328,7 +328,7 @@ test "server emits ServerHello flight with Finished" {
     try std.testing.expectEqual(@as(usize, 0), remaining.len);
 
     try std.testing.expect(ctx.flags.local_finished_sent);
-    try std.testing.expect(ctx.transcripts.finished_hash.valid);
+    try std.testing.expect(ctx.transcripts.finished_hash.get(.sha256) != null);
 }
 
 test "server verifies client Finished and derives application secrets" {
@@ -434,7 +434,7 @@ test "server rejects tampered client Finished" {
     const transcript_hash = transcript_snapshot.finalize(.sha256);
     var verify_data = tls13.deriveFinishedVerifyData(.sha256, &recv_slot.value, transcript_hash);
     // Corrupt the verify data by flipping a bit (verify_data is Secret, need to get mutable slice)
-    var verify_data_bytes = verify_data.slice();
+    var verify_data_bytes = verify_data.sliceMut();
     verify_data_bytes[0] ^= 0x01;
 
     const client_finished = try tls13.encodeHandshake(alloc, .finished, verify_data.slice());
