@@ -25,7 +25,7 @@ TARGETS = \
 .PHONY: interop-build interop-basic interop-quick interop-full interop-runner interop-clean
 .PHONY: setup-clients setup-python-client setup-rust-client setup-go-client setup-zig-client build-clients
 .PHONY: e2e-test-go e2e-test-python e2e-test-rust e2e-test-zig e2e-test-all e2e-ci
-.PHONY: e2e-test-go-comprehensive e2e-test-zig-comprehensive e2e-comprehensive
+.PHONY: e2e-test-go-comprehensive e2e-test-zig-comprehensive e2e-test-xnet-quic e2e-comprehensive
 .PHONY: test-all-clients test-all-clients-verbose
 
 # Default target runs full CI including cross-compilation
@@ -359,7 +359,7 @@ e2e-test-go: build
 			echo "❌ Server did not receive packets from Go client"; \
 		fi'
 
-# Comprehensive E2E test with Go client (comprehensive test suite)
+# Comprehensive E2E test with Go client (quic-go)
 e2e-test-go-comprehensive: build
 	@echo "========== E2E Comprehensive Test: Go Client (quic-go) =========="
 	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
@@ -378,6 +378,37 @@ e2e-test-go-comprehensive: build
 		else \
 			echo "⚠️  Go comprehensive test suite completed with warnings/failures"; \
 			tail -20 /tmp/e2e-go-comprehensive-client.log; \
+		fi'
+
+# E2E test with x/net/quic client
+e2e-test-xnet-quic: build
+	@echo "========== E2E Test: x/net/quic Client =========="
+	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
+	@echo "Starting Zig server with TLS..."
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key > /tmp/e2e-xnet-quic.log 2>&1 & \
+		SERVER_PID=$$!; \
+		echo "Server PID: $$SERVER_PID"; \
+		sleep 2; \
+		echo "Running x/net/quic client..."; \
+		timeout 10 ./quic-test/test-client-xnet -connect 127.0.0.1:4433 -insecure 2>&1 | tee /tmp/e2e-xnet-quic-client.log || true; \
+		kill $$SERVER_PID 2>/dev/null || true; \
+		sleep 1; \
+		echo ""; \
+		echo "=== Client Output Analysis ==="; \
+		if grep -q "✅ Test completed successfully" /tmp/e2e-xnet-quic-client.log; then \
+			echo "✅ x/net/quic client test PASSED"; \
+		else \
+			echo "⚠️  x/net/quic client test completed with warnings/failures"; \
+			tail -10 /tmp/e2e-xnet-quic-client.log; \
+		fi; \
+		echo ""; \
+		echo "=== Server Log Analysis ==="; \
+		if grep -q "recvfrom got" /tmp/e2e-xnet-quic.log; then \
+			PACKET_COUNT=$$(grep -c "recvfrom got" /tmp/e2e-xnet-quic.log); \
+			echo "✅ Server received $$PACKET_COUNT packets from x/net/quic client"; \
+			grep -E "Initial|Handshake|processIncoming" /tmp/e2e-xnet-quic.log | head -5 || true; \
+		else \
+			echo "❌ Server did not receive packets from x/net/quic client"; \
 		fi'
 
 # E2E test with Python client
@@ -528,7 +559,9 @@ e2e-comprehensive: build
 	@echo "Testing: Multiple streams, large transfers, bidirectional communication"
 	@echo "=========================================="
 	@echo ""
-	@$(MAKE) e2e-test-go-comprehensive || echo "⚠️ Go comprehensive test completed"
+	@$(MAKE) e2e-test-go-comprehensive || echo "⚠️ Go (quic-go) comprehensive test completed"
+	@echo ""
+	@$(MAKE) e2e-test-xnet-quic || echo "⚠️ x/net/quic test completed"
 	@echo ""
 	@$(MAKE) e2e-test-zig-comprehensive || echo "⚠️ Zig comprehensive test completed"
 	@echo ""

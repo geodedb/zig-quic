@@ -139,7 +139,36 @@ pub const Endpoint = struct {
 
         // Determine address family from resolved address
         const sa: *const posix.sockaddr = @ptrCast(@alignCast(&ep_addr.storage));
-        const family = sa.family;
+        var family = sa.family;
+
+        // Convert IPv4 addresses to IPv4-mapped IPv6 for dual-stack support
+        // This allows the server to accept connections from both IPv4 and IPv6 clients
+        if (family == posix.AF.INET) {
+            const sin4: *const posix.sockaddr.in = @ptrCast(@alignCast(&ep_addr.storage));
+            const ipv4_addr = sin4.addr;
+            const port = sin4.port;
+
+            // Convert to IPv4-mapped IPv6 address (::ffff:a.b.c.d)
+            var sin6 = std.mem.zeroes(posix.sockaddr.in6);
+            sin6.family = posix.AF.INET6;
+            sin6.port = port;
+            // IPv4-mapped IPv6 prefix: first 10 bytes are 0, next 2 bytes are 0xff
+            sin6.addr[10] = 0xff;
+            sin6.addr[11] = 0xff;
+            // Copy IPv4 address bytes to last 4 bytes
+            const ipv4_bytes = std.mem.asBytes(&ipv4_addr);
+            sin6.addr[12] = ipv4_bytes[0];
+            sin6.addr[13] = ipv4_bytes[1];
+            sin6.addr[14] = ipv4_bytes[2];
+            sin6.addr[15] = ipv4_bytes[3];
+
+            // Update ep_addr to use the IPv6 address
+            @memcpy(std.mem.asBytes(&ep_addr.storage)[0..@sizeOf(posix.sockaddr.in6)], std.mem.asBytes(&sin6));
+            family = posix.AF.INET6;
+            ep_addr.len = @sizeOf(posix.sockaddr.in6);
+
+            std.debug.print("Converted IPv4 to IPv4-mapped IPv6 for dual-stack support\n", .{});
+        }
 
         std.debug.print("Endpoint init - binding to address family={any}\n", .{family});
 
@@ -147,6 +176,14 @@ pub const Endpoint = struct {
         errdefer posix.close(fd);
 
         std.debug.print("Created socket fd={}\n", .{fd});
+
+        // For IPv6 sockets, disable IPV6_V6ONLY to allow dual-stack (IPv4-mapped + IPv6)
+        if (family == posix.AF.INET6) {
+            var v6only: i32 = 0; // 0 = allow both IPv4-mapped and IPv6
+            const IPV6_V6ONLY: i32 = 26; // Standard value for IPV6_V6ONLY
+            _ = posix.setsockopt(fd, posix.IPPROTO.IPV6, IPV6_V6ONLY, std.mem.asBytes(&v6only)) catch {};
+            std.debug.print("Set IPV6_V6ONLY=0 for dual-stack support\n", .{});
+        }
 
         // Allow fast rebinding in tests
         var one: i32 = 1;
@@ -182,12 +219,27 @@ pub const Endpoint = struct {
         var actual_addr = conn_mod.SockAddr{};
         actual_addr.len = @intCast(@sizeOf(posix.sockaddr.storage));
         try posix.getsockname(fd, @ptrCast(&actual_addr.storage), &actual_addr.len);
-        // Debug: print actual bound IPv4 address and port
+        // Debug: print actual bound address and port
         if (actual_addr.storage.family == posix.AF.INET) {
             const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&actual_addr.storage));
             const addr_bytes = @as([4]u8, @bitCast(sin.addr));
             const port = portFromNetwork(sin.port);
             std.debug.print("Socket bound to {}.{}.{}.{}:{}\n", .{ addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3], port });
+        } else if (actual_addr.storage.family == posix.AF.INET6) {
+            const sin6: *const posix.sockaddr.in6 = @ptrCast(@alignCast(&actual_addr.storage));
+            const port = portFromNetwork(sin6.port);
+            // Check if it's an IPv4-mapped IPv6 address (::ffff:a.b.c.d)
+            const is_ipv4_mapped = sin6.addr[0] == 0 and sin6.addr[1] == 0 and
+                sin6.addr[2] == 0 and sin6.addr[3] == 0 and
+                sin6.addr[4] == 0 and sin6.addr[5] == 0 and
+                sin6.addr[6] == 0 and sin6.addr[7] == 0 and
+                sin6.addr[8] == 0 and sin6.addr[9] == 0 and
+                sin6.addr[10] == 0xff and sin6.addr[11] == 0xff;
+            if (is_ipv4_mapped) {
+                std.debug.print("Socket bound to ::ffff:{}.{}.{}.{}:{} (dual-stack)\n", .{ sin6.addr[12], sin6.addr[13], sin6.addr[14], sin6.addr[15], port });
+            } else {
+                std.debug.print("Socket bound to IPv6 port {}\n", .{port});
+            }
         }
 
         // Set socket to non-blocking mode
@@ -226,16 +278,22 @@ pub const Endpoint = struct {
 
         // Determine endpoint role based on the bound port
         // Server typically binds to a specific port (like 4433), client binds to port 0 (random)
-        const endpoint_role = if (actual_addr.storage.family == posix.AF.INET) blk: {
+        const bound_port = if (actual_addr.storage.family == posix.AF.INET) blk: {
             const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&actual_addr.storage));
-            const bound_port = portFromNetwork(sin.port);
-            // If we're binding to port 4433 or any specific port in the bind_addr, we're a server
-            // If we're binding to port 0 or got a random port, we're a client
-            const is_server = std.mem.indexOf(u8, bind_addr, ":4433") != null or
-                std.mem.indexOf(u8, bind_addr, ":443") != null or
-                (std.mem.indexOf(u8, bind_addr, ":0") == null and bound_port != 0);
-            break :blk if (is_server) EndpointRole.Server else EndpointRole.Client;
-        } else EndpointRole.Client;
+            break :blk portFromNetwork(sin.port);
+        } else if (actual_addr.storage.family == posix.AF.INET6) blk: {
+            const sin6: *const posix.sockaddr.in6 = @ptrCast(@alignCast(&actual_addr.storage));
+            break :blk portFromNetwork(sin6.port);
+        } else blk: {
+            break :blk @as(u16, 0);
+        };
+
+        // If we're binding to port 4433 or any specific port in the bind_addr, we're a server
+        // If we're binding to port 0 or got a random port, we're a client
+        const is_server = std.mem.indexOf(u8, bind_addr, ":4433") != null or
+            std.mem.indexOf(u8, bind_addr, ":443") != null or
+            (std.mem.indexOf(u8, bind_addr, ":0") == null and bound_port != 0);
+        const endpoint_role = if (is_server) EndpointRole.Server else EndpointRole.Client;
 
         std.debug.print("Endpoint role determined as: {any}\n", .{endpoint_role});
 

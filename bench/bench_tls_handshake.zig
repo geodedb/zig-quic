@@ -78,24 +78,26 @@ fn benchmarkTranscriptHash(config: BenchConfig) !void {
 }
 
 fn benchmarkHandshakeSecrets(config: BenchConfig) !void {
+    const hash = ks.Hash.sha256; // Use SHA-256 for the benchmark
     const ecdhe_secret = [_]u8{0x11} ** 32;
-    const transcript_hash = [_]u8{0x22} ** 32;
-    
+    const transcript_hash_data = [_]u8{0x22} ** 32;
+    const transcript_hash = ks.Secret.fromSlice(hash, &transcript_hash_data);
+
     var i: usize = 0;
     while (i < config.warmup) : (i += 1) {
-        _ = tls13.deriveHandshakeTraffic(&ecdhe_secret, transcript_hash);
+        _ = tls13.deriveHandshakeTraffic(hash, &ecdhe_secret, transcript_hash);
     }
-    
+
     const start = std.time.nanoTimestamp();
     i = 0;
     while (i < config.iterations) : (i += 1) {
-        _ = tls13.deriveHandshakeTraffic(&ecdhe_secret, transcript_hash);
+        _ = tls13.deriveHandshakeTraffic(hash, &ecdhe_secret, transcript_hash);
     }
     const end = std.time.nanoTimestamp();
-    
+
     const total_ns = @as(u64, @intCast(end - start));
     const per_op_ns = total_ns / config.iterations;
-    
+
     std.debug.print("Handshake Secrets:   {} ns/op ({d:.2} µs)\n", .{
         per_op_ns,
         @as(f64, @floatFromInt(per_op_ns)) / 1000.0,
