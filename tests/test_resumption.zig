@@ -79,13 +79,14 @@ test "0-RTT data with resumption" {
 
     // Simulate having a ticket with resumption secret
     const resumption_secret = [_]u8{0x55} ** 32;
+    const resumption_secret_wrap = ks.Secret.fromSlice(.sha256, &resumption_secret);
     const ticket_identity = "test_ticket_123";
 
     var client = tls13.Engine.init(alloc, .Client);
     defer client.deinit();
 
     // Add ticket
-    try client.tickets.add(alloc, ticket_identity, resumption_secret, 3600);
+    try client.tickets.add(alloc, ticket_identity, resumption_secret_wrap, 3600);
 
     // Verify we can derive 0-RTT keys from resumption secret
     const zero_rtt_secret = ks.deriveSecret(resumption_secret, "c e traffic", &[_]u8{});
@@ -109,7 +110,7 @@ test "PSK binder computation" {
     // Compute binder key using extract function
     const early_secret = ks.extract(null, &psk);
     var binder_key: [32]u8 = undefined;
-    ks.expandLabel(early_secret, "res binder", &[_]u8{}, &binder_key) catch unreachable;
+    ks.expandLabel(&early_secret, "res binder", &[_]u8{}, &binder_key) catch unreachable;
 
     // Compute binder
     const binder = ks.hmacSha256(&binder_key, &transcript_hash);

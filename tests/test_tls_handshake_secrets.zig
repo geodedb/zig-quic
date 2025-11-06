@@ -46,15 +46,17 @@ test "tls13 handshake traffic secrets transition (deterministic input)" {
     var t = tls13.Transcript.init();
     t.update(ch_msg);
     t.update(sh_msg);
-    const th = t.finalize();
-    const hs2 = tls13.deriveHandshakeTraffic(&ecdhe, th);
+    const th = t.finalize(.sha256);
+    const hs2 = tls13.deriveHandshakeTraffic(.sha256, &ecdhe, th);
 
-    try std.testing.expectEqualSlices(u8, &hs2.client_hs, &hs.client);
-    try std.testing.expectEqualSlices(u8, &hs2.server_hs, &hs.server);
+    try std.testing.expectEqualSlices(u8, hs2.client_hs.slice(), hs.client.slice());
+    try std.testing.expectEqualSlices(u8, hs2.server_hs.slice(), hs.server.slice());
 
     // Derive QUIC handshake keys and compare to direct key schedule
-    const exp_client = ks.deriveKeyIvHp(hs2.client_hs);
-    const k_client = tls13.deriveQuicHandshakeKeys(hs.client, false);
+    var client_hs_array: [32]u8 = undefined;
+    @memcpy(&client_hs_array, hs2.client_hs.slice());
+    const exp_client = ks.deriveKeyIvHp(client_hs_array);
+    const k_client = tls13.deriveQuicHandshakeKeys(.sha256, &hs.client, false);
     try std.testing.expectEqualSlices(u8, &exp_client.key, &k_client.key);
     try std.testing.expectEqualSlices(u8, &exp_client.iv, &k_client.iv);
     try std.testing.expectEqualSlices(u8, &exp_client.hp, &k_client.hp);

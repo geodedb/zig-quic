@@ -2,6 +2,7 @@ const std = @import("std");
 const endpoint = @import("quic_endpoint");
 const packet = @import("quic_packet");
 const tls13 = @import("quic_tls13");
+const ks = @import("quic_tls");
 
 // Exercise endpoint short-header RX Key Update acceptance logic:
 // 1) Peer sends with next-phase keys (kp=1) -> endpoint promotes to NEXT, toggles rx_key_phase, preserves prev keys with allowance.
@@ -33,9 +34,9 @@ test "rx key update: promote on next-phase and consume prev window" {
         eng_srv.setEcdhe(&shared);
     }
 
-    const th = eng_cli.transcript.finalize();
-    const app_cli = tls13.deriveApplicationTrafficFromEcdhe(eng_cli.ecdhe_secret.?, th);
-    const app_srv = tls13.deriveApplicationTrafficFromEcdhe(eng_srv.ecdhe_secret.?, th);
+    const th = eng_cli.transcript.finalize(.sha256);
+    const app_cli = tls13.deriveApplicationTrafficFromEcdhe(.sha256, eng_cli.ecdhe_secret.?, th);
+    const app_srv = tls13.deriveApplicationTrafficFromEcdhe(.sha256, eng_srv.ecdhe_secret.?, th);
 
     // Endpoint and a client-side connection (role doesn't matter for RX test, we program keys directly).
     var ep = try endpoint.Endpoint.init(&alloc, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
@@ -45,10 +46,14 @@ test "rx key update: promote on next-phase and consume prev window" {
 
     // Program application RX/TX keys and secrets as if handshake completed (QUIC v1).
     // Client reads from server_app; writes with client_app.
-    const rx0 = tls13.deriveQuicAppKeys(app_srv.client_app, false);
-    const tx0 = tls13.deriveQuicAppKeys(app_cli.client_app, false);
-    c.app_rx_secret = app_srv.client_app;
-    c.app_tx_secret = app_cli.client_app;
+    const rx0 = tls13.deriveQuicAppKeys(.sha256, &app_srv.client_app, false);
+    const tx0 = tls13.deriveQuicAppKeys(.sha256, &app_cli.client_app, false);
+    var app_rx_array: [ks.H.digest_length]u8 = undefined;
+    var app_tx_array: [ks.H.digest_length]u8 = undefined;
+    @memcpy(&app_rx_array, app_srv.client_app.slice());
+    @memcpy(&app_tx_array, app_cli.client_app.slice());
+    c.app_rx_secret = app_rx_array;
+    c.app_tx_secret = app_tx_array;
     c.app_rx_keys = .{ .key = rx0.key, .iv = rx0.iv, .hp = rx0.hp };
     c.app_tx_keys = .{ .key = tx0.key, .iv = tx0.iv, .hp = tx0.hp };
     c.rx_key_phase = false;
@@ -56,7 +61,8 @@ test "rx key update: promote on next-phase and consume prev window" {
 
     // Craft a short packet from peer using NEXT-phase keys (kp=1) to trigger promotion.
     const next_rx_secret = @import("quic_tls").updateTrafficSecret(c.app_rx_secret.?);
-    const next_rx = tls13.deriveQuicAppKeys(next_rx_secret, false);
+    const next_rx_secret_wrap = ks.Secret.fromSlice(.sha256, &next_rx_secret);
+    const next_rx = tls13.deriveQuicAppKeys(.sha256, &next_rx_secret_wrap, false);
 
     const dcid = c.our_scid.bytes[0..c.our_scid.len];
     const payload = "abcdefghijklmnopqrst"; // ensure enough bytes for HP sample

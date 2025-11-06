@@ -86,7 +86,7 @@ test "initial->handshake pipeline in-process" {
     const hs = eng.computeHandshakeSecrets() orelse return error.TestExpectedSecrets;
 
     // Derive server/client handshake QUIC keys
-    const srv_hs = tls13.deriveQuicHandshakeKeys(hs.server, false);
+    const srv_hs = tls13.deriveQuicHandshakeKeys(.sha256, &hs.server, false);
 
     // Build a server Handshake packet carrying a CRYPTO PING payload
     var hs_frames = std.ArrayList(u8){};

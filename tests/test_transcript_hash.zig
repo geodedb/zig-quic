@@ -39,18 +39,17 @@ test "transcript hash idempotent finalization" {
     engine.transcript.update(&data);
 
     // Finalize twice and verify same hash
-    const hash1 = engine.transcript.finalize();
-    const hash1_again = engine.transcript.finalize();
+    const hash1 = engine.transcript.finalize(.sha256);
+    const hash1_again = engine.transcript.finalize(.sha256);
 
-    try testing.expectEqualSlices(u8, &hash1, &hash1_again);
+    try testing.expectEqualSlices(u8, hash1.slice(), hash1_again.slice());
 
     // Add more data and verify hash changes
     const data2 = [_]u8{ 0x02, 0x00, 0x00, 0x04 } ++ [_]u8{0xbb} ** 4;
     engine.transcript.update(&data2);
-    const hash2 = engine.transcript.finalize();
+    const hash2 = engine.transcript.finalize(.sha256);
 
-    try testing.expectEqualSlices(u8, &hash1, &hash1_again);
-    try testing.expect(!std.mem.eql(u8, &hash1, &hash2));
+    try testing.expect(!std.mem.eql(u8, hash1.slice(), hash2.slice()));
 }
 
 // Test RFC 8446 key schedule: app secrets use CH...server Finished

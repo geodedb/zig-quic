@@ -45,7 +45,7 @@ test "short-header 1-RTT STREAM+PING roundtrip" {
     // Both sides have transcript; for minimal hellos, use the same transcript
     // Since we're using minimal non-TLS hellos, the transcript handling is simplified
     // Both engines should see the same messages, so we'll use client's transcript for both
-    const th = eng_cli.transcript.finalize();
+    const th = eng_cli.transcript.finalize(.sha256);
 
     // Debug: Check if ECDHE secrets match
     if (eng_cli.ecdhe_secret) |cli_sec| {
@@ -58,12 +58,12 @@ test "short-header 1-RTT STREAM+PING roundtrip" {
 
     // Derive application traffic directly from ECDHE + transcript
     // Since both have the same ECDHE secret and we use the same transcript, keys should match
-    const app_cli = tls13.deriveApplicationTrafficFromEcdhe(eng_cli.ecdhe_secret.?, th);
-    const app_srv = tls13.deriveApplicationTrafficFromEcdhe(eng_srv.ecdhe_secret.?, th);
+    const app_cli = tls13.deriveApplicationTrafficFromEcdhe(.sha256, eng_cli.ecdhe_secret.?, th);
+    const app_srv = tls13.deriveApplicationTrafficFromEcdhe(.sha256, eng_srv.ecdhe_secret.?, th);
 
     // Map to QUIC 1-RTT write/read keys
-    const cli_tx = tls13.deriveQuicAppKeys(app_cli.client_app, false); // client write
-    const srv_rx = tls13.deriveQuicAppKeys(app_srv.client_app, false); // server read
+    const cli_tx = tls13.deriveQuicAppKeys(.sha256, &app_cli.client_app, false); // client write
+    const srv_rx = tls13.deriveQuicAppKeys(.sha256, &app_srv.client_app, false); // server read
 
     // Debug: Print the keys
     std.debug.print("cli_tx.key: ", .{});

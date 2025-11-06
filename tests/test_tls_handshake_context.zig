@@ -1,5 +1,6 @@
 const std = @import("std");
 const tls13 = @import("quic_tls13");
+const ks = @import("quic_tls");
 const transport_params = @import("quic_transport_params");
 
 const default_signature_schemes = [_]u16{ 0x0807, 0x0403 };
@@ -136,7 +137,7 @@ fn buildStandardClientHello(
 
         const identity_len: u16 = @intCast(identity.len);
         const identities_vec_len: u16 = @intCast(2 + identity_len + 4);
-        const binders_vec_len: u16 = @intCast(1 + tls13.H.digest_length);
+        const binders_vec_len: u16 = @intCast(1 + ks.H.digest_length);
         const total_psk_len: u16 = @intCast(2 + identities_vec_len + 2 + binders_vec_len);
 
         try ext_buf.appendSlice(alloc, &.{ 0x00, 0x29, @intCast(total_psk_len >> 8), @intCast(total_psk_len & 0xff) });
@@ -145,8 +146,8 @@ fn buildStandardClientHello(
         try ext_buf.appendSlice(alloc, identity);
         try ext_buf.appendSlice(alloc, &.{ 0, 0, 0, 0 });
         try ext_buf.appendSlice(alloc, &.{ @intCast(binders_vec_len >> 8), @intCast(binders_vec_len & 0xff) });
-        try ext_buf.append(alloc, @as(u8, @intCast(tls13.H.digest_length)));
-        var binder: [tls13.H.digest_length]u8 = .{0} ** tls13.H.digest_length;
+        try ext_buf.append(alloc, @as(u8, @intCast(ks.H.digest_length)));
+        var binder: [ks.H.digest_length]u8 = .{0} ** ks.H.digest_length;
         try ext_buf.appendSlice(alloc, &binder);
     }
 
@@ -165,11 +166,9 @@ fn buildStandardClientHello(
     return result;
 }
 
-fn computeTranscriptHash(data: []const u8) [tls13.H.digest_length]u8 {
-    var hasher = tls13.H.init(.{});
-    hasher.update(data);
-    var out: [tls13.H.digest_length]u8 = undefined;
-    hasher.final(&out);
+fn computeTranscriptHash(data: []const u8) [ks.H.digest_length]u8 {
+    var out: [ks.H.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(data, &out, .{});
     return out;
 }
 
@@ -268,7 +267,7 @@ test "context captures pre_shared_key offer" {
     try std.testing.expectEqualSlices(u8, psk_identity, psk.identities[0].identity);
     try std.testing.expectEqual(@as(u32, 0), psk.identities[0].obfuscated_ticket_age);
     try std.testing.expectEqual(@as(usize, 1), psk.binders.len);
-    try std.testing.expectEqual(@as(usize, tls13.H.digest_length), psk.binders[0].len);
+    try std.testing.expectEqual(@as(usize, ks.H.digest_length), psk.binders[0].len);
     try std.testing.expect(std.mem.allEqual(u8, psk.binders[0], 0));
 }
 
@@ -324,12 +323,12 @@ test "server emits ServerHello flight with Finished" {
 
     const fin_msg = (try tls13.parseHandshakeOne(remaining)).?;
     try std.testing.expectEqual(tls13.HsType.finished, fin_msg.typ);
-    try std.testing.expectEqual(@as(usize, tls13.H.digest_length), fin_msg.body.len);
+    try std.testing.expectEqual(@as(usize, ks.H.digest_length), fin_msg.body.len);
     remaining = remaining[fin_msg.n..];
     try std.testing.expectEqual(@as(usize, 0), remaining.len);
 
     try std.testing.expect(ctx.flags.local_finished_sent);
-    try std.testing.expect(ctx.transcripts.finished_hash != null);
+    try std.testing.expect(ctx.transcripts.finished_hash.valid);
 }
 
 test "server verifies client Finished and derives application secrets" {
@@ -376,10 +375,10 @@ test "server verifies client Finished and derives application secrets" {
     try std.testing.expect(recv_slot.valid);
 
     var transcript_snapshot = ctx.transcripts.handshake;
-    const transcript_hash = transcript_snapshot.finalize();
-    const verify_data = tls13.deriveFinishedVerifyData(recv_slot.value, transcript_hash);
+    const transcript_hash = transcript_snapshot.finalize(.sha256);
+    const verify_data = tls13.deriveFinishedVerifyData(.sha256, &recv_slot.value, transcript_hash);
 
-    const client_finished = try tls13.encodeHandshake(alloc, .finished, verify_data[0..]);
+    const client_finished = try tls13.encodeHandshake(alloc, .finished, verify_data.slice());
     defer alloc.free(client_finished);
 
     try ctx.processCrypto(.Handshake, client_finished);
@@ -432,11 +431,13 @@ test "server rejects tampered client Finished" {
     try std.testing.expect(recv_slot.valid);
 
     var transcript_snapshot = ctx.transcripts.handshake;
-    const transcript_hash = transcript_snapshot.finalize();
-    var verify_data = tls13.deriveFinishedVerifyData(recv_slot.value, transcript_hash);
-    verify_data[0] ^= 0x01;
+    const transcript_hash = transcript_snapshot.finalize(.sha256);
+    var verify_data = tls13.deriveFinishedVerifyData(.sha256, &recv_slot.value, transcript_hash);
+    // Corrupt the verify data by flipping a bit (verify_data is Secret, need to get mutable slice)
+    var verify_data_bytes = verify_data.slice();
+    verify_data_bytes[0] ^= 0x01;
 
-    const client_finished = try tls13.encodeHandshake(alloc, .finished, verify_data[0..]);
+    const client_finished = try tls13.encodeHandshake(alloc, .finished, verify_data.slice());
     defer alloc.free(client_finished);
 
     try std.testing.expectError(tls13.HandshakeError.FinishedVerifyFailed, ctx.processCrypto(.Handshake, client_finished));
@@ -569,7 +570,7 @@ test "server negotiates ALPN when offered" {
 
     const fin_msg = (try tls13.parseHandshakeOne(remaining)).?;
     try std.testing.expectEqual(tls13.HsType.finished, fin_msg.typ);
-    try std.testing.expectEqual(@as(usize, tls13.H.digest_length), fin_msg.body.len);
+    try std.testing.expectEqual(@as(usize, ks.H.digest_length), fin_msg.body.len);
     remaining = remaining[fin_msg.n..];
     try std.testing.expectEqual(@as(usize, 0), remaining.len);
 }
