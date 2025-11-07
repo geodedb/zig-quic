@@ -205,7 +205,7 @@ test "boundary: HandshakeState large ALPN string" {
     defer state.deinit(&test_allocator);
 
     // Create a large ALPN (255 bytes is typical max for TLS)
-    var large_alpn = try test_allocator.alloc(u8, 255);
+    const large_alpn = try test_allocator.alloc(u8, 255);
     @memset(large_alpn, 'a');
 
     state.negotiated_alpn = large_alpn;

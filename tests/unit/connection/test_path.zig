@@ -28,7 +28,7 @@ test "RFC 9000 §9 - PathValidation initial state" {
 }
 
 test "RFC 9000 §9 - PathValidation starts unvalidated" {
-    var validation: path.PathValidation = .{};
+    const validation: path.PathValidation = .{};
 
     // New paths start unvalidated
     try testing.expectEqual(false, validation.validated);
@@ -101,8 +101,8 @@ test "RFC 9000 §9 - PathValidation multiple paths independently" {
 }
 
 test "RFC 9000 §9 - PathValidation per-path state" {
-    var primary_path: path.PathValidation = .{ .validated = true };
-    var probe_path: path.PathValidation = .{ .validated = false };
+    const primary_path: path.PathValidation = .{ .validated = true };
+    const probe_path: path.PathValidation = .{ .validated = false };
 
     // Primary path is validated
     try testing.expect(primary_path.validated);
@@ -129,7 +129,7 @@ test "RFC 9000 §8.2 - PathValidation transition from unvalidated to validated" 
 }
 
 test "RFC 9000 §9 - PathValidation cannot transition back to unvalidated" {
-    var validation: path.PathValidation = .{ .validated = true };
+    const validation: path.PathValidation = .{ .validated = true };
 
     // Once validated, path remains validated
     try testing.expect(validation.validated);
@@ -195,7 +195,7 @@ test "negative: PathValidation unvalidated path cannot send full packets" {
 // =============================================================================
 
 test "RFC 9000 §9 - Path validation required for connection migration" {
-    var old_path: path.PathValidation = .{ .validated = true };
+    const old_path: path.PathValidation = .{ .validated = true };
     var new_path: path.PathValidation = .{};
 
     // Old path is validated
@@ -227,7 +227,7 @@ test "RFC 9000 §8.2 - Path validation uses PATH_CHALLENGE/PATH_RESPONSE" {
 }
 
 test "RFC 9000 §9.4 - Probing new paths before migration" {
-    var current_path: path.PathValidation = .{ .validated = true };
+    const current_path: path.PathValidation = .{ .validated = true };
     var probe_path: path.PathValidation = .{};
 
     // Current path is in use
@@ -271,7 +271,7 @@ test "RFC 9000 §8.2 - Address validation prevents amplification" {
 
 test "RFC 9000 §9 - Multi-path probing for connection migration" {
     // Simulate multi-path probing scenario
-    var ipv4_path: path.PathValidation = .{ .validated = true };
+    const ipv4_path: path.PathValidation = .{ .validated = true };
     var ipv6_path: path.PathValidation = .{};
 
     // Currently using IPv4
