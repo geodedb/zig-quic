@@ -6,7 +6,7 @@
 
 const std = @import("std");
 const posix = std.posix;
-const conn_mod = @import("../conn.zig");
+const conn_mod = @import("quic_conn");
 
 /// Timer structure for endpoint scheduling.
 pub const Timer = struct {

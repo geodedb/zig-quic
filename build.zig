@@ -516,6 +516,27 @@ pub fn build(b: *std.Build) void {
         const run_test_byteorder = b.addRunArtifact(test_byteorder);
         test_step.dependOn(&run_test_byteorder.step);
 
+        // ========================================================================
+        // Phase 1 Unit Tests: Foundation Modules (RFC-based)
+        // ========================================================================
+        const test_conn_types = addTst(b, "tests/unit/connection/test_types.zig", target, optimize);
+        test_conn_types.root_module.addImport("quic_connection_types", conn_types_mod);
+        const run_test_conn_types = b.addRunArtifact(test_conn_types);
+        test_step.dependOn(&run_test_conn_types.step);
+
+        const test_endpoint_types = addTst(b, "tests/unit/endpoint/test_types.zig", target, optimize);
+        test_endpoint_types.root_module.addImport("quic_endpoint_types", endpoint_types_mod);
+        test_endpoint_types.root_module.addImport("quic_connection_types", conn_types_mod);
+        test_endpoint_types.root_module.addImport("quic_conn", quic_conn_mod);
+        const run_test_endpoint_types = b.addRunArtifact(test_endpoint_types);
+        test_step.dependOn(&run_test_endpoint_types.step);
+
+        const test_packet_number = addTst(b, "tests/unit/connection/test_packet_number.zig", target, optimize);
+        test_packet_number.root_module.addImport("quic_connection_packet_number", conn_packet_number_mod);
+        test_packet_number.root_module.addImport("quic_frame", quic_frame_mod);
+        const run_test_packet_number = b.addRunArtifact(test_packet_number);
+        test_step.dependOn(&run_test_packet_number.step);
+
         const test_tls_record = addTst(b, "tests/test_tls_record_layer.zig", target, optimize);
         test_tls_record.root_module.addImport("tls_record", tls_record_mod);
         const run_test_tls_record = b.addRunArtifact(test_tls_record);
