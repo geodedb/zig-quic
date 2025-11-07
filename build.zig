@@ -707,6 +707,54 @@ pub fn build(b: *std.Build) void {
         const run_test_frame_types = b.addRunArtifact(test_frame_types);
         test_step.dependOn(&run_test_frame_types.step);
 
+        const test_frame_misc = addTst(b, "tests/unit/frame/test_misc.zig", target, optimize);
+        test_frame_misc.root_module.addImport("misc", frame_misc_mod);
+        test_frame_misc.root_module.addImport("types", frame_types_mod);
+        const run_test_frame_misc = b.addRunArtifact(test_frame_misc);
+        test_step.dependOn(&run_test_frame_misc.step);
+
+        const test_frame_crypto = addTst(b, "tests/unit/frame/test_crypto.zig", target, optimize);
+        test_frame_crypto.root_module.addImport("crypto", frame_crypto_mod);
+        test_frame_crypto.root_module.addImport("types", frame_types_mod);
+        const run_test_frame_crypto = b.addRunArtifact(test_frame_crypto);
+        test_step.dependOn(&run_test_frame_crypto.step);
+
+        const test_frame_stream = addTst(b, "tests/unit/frame/test_stream.zig", target, optimize);
+        test_frame_stream.root_module.addImport("stream", frame_stream_mod);
+        test_frame_stream.root_module.addImport("types", frame_types_mod);
+        const run_test_frame_stream = b.addRunArtifact(test_frame_stream);
+        test_step.dependOn(&run_test_frame_stream.step);
+
+        const test_frame_ack = addTst(b, "tests/unit/frame/test_ack.zig", target, optimize);
+        test_frame_ack.root_module.addImport("ack", frame_ack_mod);
+        test_frame_ack.root_module.addImport("types", frame_types_mod);
+        const run_test_frame_ack = b.addRunArtifact(test_frame_ack);
+        test_step.dependOn(&run_test_frame_ack.step);
+
+        const test_frame_path = addTst(b, "tests/unit/frame/test_path.zig", target, optimize);
+        test_frame_path.root_module.addImport("path", frame_path_mod);
+        test_frame_path.root_module.addImport("types", frame_types_mod);
+        const run_test_frame_path = b.addRunArtifact(test_frame_path);
+        test_step.dependOn(&run_test_frame_path.step);
+
+        const test_frame_connection_mgmt = addTst(b, "tests/unit/frame/test_connection_mgmt.zig", target, optimize);
+        test_frame_connection_mgmt.root_module.addImport("connection_mgmt", frame_connection_mgmt_mod);
+        test_frame_connection_mgmt.root_module.addImport("types", frame_types_mod);
+        const run_test_frame_connection_mgmt = b.addRunArtifact(test_frame_connection_mgmt);
+        test_step.dependOn(&run_test_frame_connection_mgmt.step);
+
+        const test_frame_flow_control = addTst(b, "tests/unit/frame/test_flow_control.zig", target, optimize);
+        test_frame_flow_control.root_module.addImport("flow_control", frame_flow_control_mod);
+        test_frame_flow_control.root_module.addImport("types", frame_types_mod);
+        const run_test_frame_flow_control = b.addRunArtifact(test_frame_flow_control);
+        test_step.dependOn(&run_test_frame_flow_control.step);
+
+        const test_frame_datagram = addTst(b, "tests/unit/frame/test_datagram.zig", target, optimize);
+        test_frame_datagram.root_module.addImport("datagram", frame_datagram_mod);
+        test_frame_datagram.root_module.addImport("types", frame_types_mod);
+        const run_test_frame_datagram = b.addRunArtifact(test_frame_datagram);
+        test_step.dependOn(&run_test_frame_datagram.step);
+
         const test_tls_record = addTst(b, "tests/test_tls_record_layer.zig", target, optimize);
         test_tls_record.root_module.addImport("tls_record", tls_record_mod);
         const run_test_tls_record = b.addRunArtifact(test_tls_record);
