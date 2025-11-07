@@ -635,6 +635,33 @@ pub fn build(b: *std.Build) void {
         const run_test_packet_number = b.addRunArtifact(test_packet_number);
         test_step.dependOn(&run_test_packet_number.step);
 
+        // ========================================================================
+        // New RFC Compliance Unit Tests
+        // ========================================================================
+
+        // Connection module tests
+        const test_crypto_buffer = addTst(b, "tests/unit/connection/test_crypto_buffer.zig", target, optimize);
+        const run_test_crypto_buffer = b.addRunArtifact(test_crypto_buffer);
+        test_step.dependOn(&run_test_crypto_buffer.step);
+
+        const test_conn_ack = addTst(b, "tests/unit/connection/test_ack.zig", target, optimize);
+        test_conn_ack.root_module.addImport("quic_frame", quic_frame_mod);
+        const run_test_conn_ack = b.addRunArtifact(test_conn_ack);
+        test_step.dependOn(&run_test_conn_ack.step);
+
+        const test_conn_stream = addTst(b, "tests/unit/connection/test_stream.zig", target, optimize);
+        const run_test_conn_stream = b.addRunArtifact(test_conn_stream);
+        test_step.dependOn(&run_test_conn_stream.step);
+
+        const test_connection_id_module = addTst(b, "tests/unit/connection/test_connection_id.zig", target, optimize);
+        const run_test_connection_id_module = b.addRunArtifact(test_connection_id_module);
+        test_step.dependOn(&run_test_connection_id_module.step);
+
+        // Frame module tests
+        const test_frame_types = addTst(b, "tests/unit/frame/test_types.zig", target, optimize);
+        const run_test_frame_types = b.addRunArtifact(test_frame_types);
+        test_step.dependOn(&run_test_frame_types.step);
+
         const test_tls_record = addTst(b, "tests/test_tls_record_layer.zig", target, optimize);
         test_tls_record.root_module.addImport("tls_record", tls_record_mod);
         const run_test_tls_record = b.addRunArtifact(test_tls_record);
