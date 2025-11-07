@@ -325,6 +325,8 @@ pub fn build(b: *std.Build) void {
 
     const conn_error_mod = mkModule(b, "src/quic/connection/error.zig");
 
+    const conn_idle_mod = mkModule(b, "src/quic/connection/idle.zig");
+
     const conn_connection_mod = mkModule(b, "src/quic/connection/connection.zig");
     // Connection coordinator imports all sub-modules
     conn_connection_mod.addImport("types", conn_types_mod);
@@ -340,6 +342,7 @@ pub fn build(b: *std.Build) void {
     conn_connection_mod.addImport("limits", conn_limits_mod);
     conn_connection_mod.addImport("flow_control", conn_flow_control_mod);
     conn_connection_mod.addImport("error", conn_error_mod);
+    conn_connection_mod.addImport("idle", conn_idle_mod);
 
     // ========================================================================
     // Endpoint Sub-Modules (Phase 2 Refactoring)

@@ -27,6 +27,7 @@ The QUIC implementation uses a **modular, RFC-aligned architecture** in `src/qui
 | `connection/limits.zig` | RFC 9001 §6.6 | AEAD usage limits, key update triggers |
 | `connection/flow_control.zig` | RFC 9000 §4 | Flow control helpers: window checks, limit expansion, frame generation |
 | `connection/error.zig` | RFC 9000 §10, §20 | Error codes, connection closure, draining state management |
+| `connection/idle.zig` | RFC 9000 §10.1 | Idle timeout negotiation, timer management, expiry checks |
 
 ### Frame Modules (RFC 9000 Transport, RFC 9221 DATAGRAM)
 
@@ -93,6 +94,17 @@ The QUIC implementation uses a **modular, RFC-aligned architecture** in `src/qui
   - `tls13.zig` - Handshake state machine (RFC 8446, RFC 9001)
   - `key_schedule.zig` - HKDF key derivation (RFC 9001 §5)
   - `record.zig` - AEAD encryption, header protection (RFC 9001 §5.3-5.4)
+
+### Crypto Architecture (RFC 9001)
+
+- **`src/quic/crypto_quic.zig`** (654 lines) - QUIC packet protection coordination layer
+  - **AEAD Operations** - `aeadEncrypt`, `aeadDecrypt` (thin wrappers to `crypto_zig.zig`)
+  - **Header Protection** - `headerProtect`, `headerUnprotect` (RFC 9001 §5.4)
+  - **Packet Protection** - `protectPacket`, `unprotectInitial*` (high-level coordination)
+  - **Key Derivation** - `deriveNextAppKeys` (wrapper to `vendor/ztls/key_schedule.zig`)
+  - **Retry Integrity** - `computeRetryIntegrityTag` (RFC 9001 §5.8)
+- **`src/quic/crypto_zig.zig`** - AEAD and header protection implementations using Zig std.crypto
+- **Assessment**: At 654 lines, `crypto_quic.zig` is well-organized and does not require further splitting
 
 ## Finding Code by RFC Section
 
