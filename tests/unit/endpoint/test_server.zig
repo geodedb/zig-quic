@@ -24,6 +24,8 @@ const std = @import("std");
 const testing = std.testing;
 const server = @import("server");
 const quic_conn = @import("quic_conn");
+const packet = @import("quic_packet");
+const token_mod = @import("quic_token");
 
 // Import Connection type for tests
 const Connection = quic_conn.Connection;
@@ -442,46 +444,94 @@ test "RFC 9000 §8.1 - anti-amplification limit removed after validation" {
     try testing.expectEqual(true, conn.address_validated);
 }
 
-test "RFC 9000 §8.1.1 - Retry packet generation requires endpoint logic" {
-    // NOTE: Retry packet generation is complex endpoint logic not yet extracted
-    // Retry packet structure per RFC 9000 §17.2.5:
-    // - Long header with type = Retry (3)
-    // - DCID = client's SCID from Initial
-    // - SCID = newly generated random server CID
-    // - Retry Token (opaque to client)
-    // - Retry Integrity Tag (RFC 9001 §5.8)
+test "RFC 9000 §8.1.1 - Retry token generation binds client address" {
+    // RFC 9000 §8.1.4: "Servers SHOULD ensure that tokens sent in NEW_TOKEN
+    // frames and Retry packets are authenticated using a secret key"
     //
-    // This requires:
-    // - Token generation: HMAC(client_addr + odcid, secret)
-    // - Retry integrity tag computation
-    // - Packet encoding with proper header format
-    // - All currently in endpoint.zig
-    //
-    // PLACEHOLDER: Will be converted when Retry logic is extracted
+    // Token generation using HMAC binds:
+    // - Client IP address (prevents token reuse from different address)
+    // - Original Destination Connection ID (binds to connection)
+    // - Expiration time (prevents replay attacks)
 
-    try testing.expect(true);
+    const client_ip = [_]u8{ 192, 168, 1, 100 }; // Client address bytes
+    const odcid = [_]u8{ 0x01, 0x02, 0x03, 0x04 }; // Original DCID from client's Initial
+    const secret = "test-secret-key-16bytes"; // Server's secret key
+    const expiry_ms: u64 = 60000; // Token valid for 60 seconds
+
+    // Generate Retry token
+    const token = try token_mod.encode(
+        test_allocator,
+        &client_ip,
+        &odcid,
+        secret,
+        expiry_ms,
+    );
+    defer test_allocator.free(token);
+
+    // Token should be exactly 32 bytes (8 expiry + 8 hash + 16 HMAC tag)
+    try testing.expectEqual(@as(usize, 32), token.len);
+
+    // Token should be different for different client IPs
+    const different_ip = [_]u8{ 10, 0, 0, 1 };
+    const token2 = try token_mod.encode(
+        test_allocator,
+        &different_ip,
+        &odcid,
+        secret,
+        expiry_ms,
+    );
+    defer test_allocator.free(token2);
+
+    // Tokens should not be equal (different client address)
+    try testing.expect(!std.mem.eql(u8, token, token2));
 }
 
-test "RFC 9000 §8.1.2 - token validation requires endpoint logic" {
-    // NOTE: Token validation is complex endpoint logic not yet extracted
-    // Token validation per RFC 9000 §8.1.2:
-    // - Extract token from Initial packet header
-    // - Verify HMAC(client_addr + odcid, secret) == token
-    // - If valid: set conn.address_validated = true
-    // - If invalid: may send Retry or close connection
+test "RFC 9000 §8.1.2 - token validation verifies HMAC" {
+    // RFC 9000 §8.1.2: "An endpoint MUST discard a token that does not pass
+    // validation without generating a connection error"
     //
-    // This requires:
-    // - Token parsing from packet header
-    // - HMAC verification with server secret
-    // - Currently in endpoint.zig
-    //
-    // PLACEHOLDER: Will be converted when token validation logic is extracted
+    // Token validation checks:
+    // - HMAC integrity (using server secret)
+    // - Client address matches
+    // - Token has not expired
 
-    try testing.expect(true);
+    const client_ip = [_]u8{ 192, 168, 1, 100 };
+    const odcid = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
+    const secret = "test-secret-key-16bytes";
+    const expiry_ms: u64 = 60000;
+
+    // Generate a valid token
+    const token = try token_mod.encode(
+        test_allocator,
+        &client_ip,
+        &odcid,
+        secret,
+        expiry_ms,
+    );
+    defer test_allocator.free(token);
+
+    // Verify token with correct parameters
+    const now_ms: u64 = @intCast(@divFloor(std.time.milliTimestamp(), 1));
+    const valid = token_mod.verify(token, &client_ip, secret, now_ms);
+    try testing.expect(valid);
+
+    // Token fails validation with different client IP
+    const wrong_ip = [_]u8{ 10, 0, 0, 1 };
+    const invalid_ip = token_mod.verify(token, &wrong_ip, secret, now_ms);
+    try testing.expect(!invalid_ip);
+
+    // Token fails validation with different secret
+    const wrong_secret = "wrong-secret-key-16";
+    const invalid_secret = token_mod.verify(token, &client_ip, wrong_secret, now_ms);
+    try testing.expect(!invalid_secret);
+
+    // Token fails validation if expired (simulate far future timestamp)
+    const far_future: u64 = now_ms + 120000; // 2 minutes in the future
+    const expired = token_mod.verify(token, &client_ip, secret, far_future);
+    try testing.expect(!expired);
 }
 
-test "RFC 9000 §17.2.5 - Retry packet format verification pending extraction" {
-    // NOTE: Retry packet format testing requires endpoint packet encoding
+test "RFC 9000 §17.2.5 - Retry packet format verification" {
     // Retry packet format per RFC 9000 §17.2.5:
     // - Header Form (1) = 1 (long header)
     // - Fixed Bit (1) = 1
@@ -494,10 +544,56 @@ test "RFC 9000 §17.2.5 - Retry packet format verification pending extraction" {
     // - Source Connection ID (0..160)
     // - Retry Token (..)
     // - Retry Integrity Tag (128)
-    //
-    // PLACEHOLDER: Will be converted when Retry encoding is extracted
 
-    try testing.expect(true);
+    const version: u32 = 0x00000001; // QUIC v1
+    const dcid = [_]u8{ 0x01, 0x02, 0x03, 0x04 }; // Client's SCID
+    const scid = [_]u8{ 0x05, 0x06, 0x07, 0x08 }; // Server's chosen CID
+    const odcid = [_]u8{ 0x09, 0x0a, 0x0b, 0x0c }; // Original DCID
+    const token = [_]u8{ 0x10, 0x20, 0x30, 0x40 }; // Retry token
+
+    // Encode Retry packet
+    const retry_bytes = try packet.encodeRetry(
+        test_allocator,
+        version,
+        &dcid,
+        &scid,
+        &odcid,
+        &token,
+    );
+    defer test_allocator.free(retry_bytes);
+
+    // Verify packet format
+    try testing.expect(retry_bytes.len > 0);
+
+    // First byte: Long header (0x80) | Retry type (0x30)
+    const first_byte = retry_bytes[0];
+    try testing.expectEqual(@as(u8, 0x80), first_byte & 0x80); // Long header bit
+    try testing.expectEqual(@as(u8, 0x30), first_byte & 0x30); // Retry type (bits 4-5 = 11)
+
+    // Version field (bytes 1-4)
+    const ver = (@as(u32, retry_bytes[1]) << 24) | (@as(u32, retry_bytes[2]) << 16) |
+        (@as(u32, retry_bytes[3]) << 8) | @as(u32, retry_bytes[4]);
+    try testing.expectEqual(version, ver);
+
+    // DCID length and DCID
+    try testing.expectEqual(@as(u8, dcid.len), retry_bytes[5]);
+    try testing.expectEqualSlices(u8, &dcid, retry_bytes[6 .. 6 + dcid.len]);
+
+    // SCID length and SCID
+    const scid_idx = 6 + dcid.len;
+    try testing.expectEqual(@as(u8, scid.len), retry_bytes[scid_idx]);
+    try testing.expectEqualSlices(u8, &scid, retry_bytes[scid_idx + 1 .. scid_idx + 1 + scid.len]);
+
+    // Token is present
+    const token_idx = scid_idx + 1 + scid.len;
+    try testing.expectEqualSlices(u8, &token, retry_bytes[token_idx .. token_idx + token.len]);
+
+    // Integrity tag is last 16 bytes
+    const tag_idx = retry_bytes.len - 16;
+    try testing.expectEqual(@as(usize, 16), retry_bytes.len - tag_idx);
+
+    // Verify integrity tag using verifyRetry
+    try testing.expect(packet.verifyRetry(&odcid, retry_bytes));
 }
 
 // =============================================================================

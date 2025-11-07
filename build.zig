@@ -181,6 +181,10 @@ pub fn build(b: *std.Build) void {
     // Version negotiation module (needed by packet and connection modules)
     const quic_version_mod = mkModule(b, "src/quic/version.zig");
 
+    // Token module (Retry token encode/verify)
+    const quic_token_mod = mkModule(b, "src/quic/token.zig");
+    quic_token_mod.addImport("byteorder", byteorder_mod);
+
     // ========================================================================
     // Packet Sub-Modules (Phase 7 Refactoring)
     // ========================================================================
@@ -658,6 +662,8 @@ pub fn build(b: *std.Build) void {
         const test_endpoint_server = addTst(b, "tests/unit/endpoint/test_server.zig", target, optimize);
         test_endpoint_server.root_module.addImport("server", endpoint_server_mod);
         test_endpoint_server.root_module.addImport("quic_conn", quic_conn_mod);
+        test_endpoint_server.root_module.addImport("quic_packet", quic_packet_mod);
+        test_endpoint_server.root_module.addImport("quic_token", quic_token_mod);
         const run_test_endpoint_server = b.addRunArtifact(test_endpoint_server);
         test_step.dependOn(&run_test_endpoint_server.step);
 

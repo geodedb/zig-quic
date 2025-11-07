@@ -1,8 +1,9 @@
 # Phase 4 Status: Modular Endpoint Architecture
 
 **Date**: November 7, 2025
-**Status**: Phase 4b Incremental Progress ✅
-**Progress**: 56 real implementation tests, 32.9% server test conversion (maximum achievable with current extractions)
+**Status**: Phase 4b.2 In Progress ⏳
+**Progress**: 59 real implementation tests, 37.1% server test conversion
+**Session 7**: Converted 3 Retry packet tests using already-extracted packet encoding primitives
 
 ---
 
@@ -889,7 +890,126 @@ To convert the remaining 47 placeholder tests to real implementations, the follo
 
 ---
 
-**Updated Status**: Phase 4b Incremental Progress ✅
-**Current Achievement**: 32.9% server test conversion (maximum without further extraction)
-**Path to 100%**: Requires Phase 4b.2-4b.5 (extracting endpoint.zig functionality)
+**Updated Status**: Phase 4b.2 In Progress ⏳
+**Current Achievement**: 37.1% server test conversion (26/70 tests)
+**Recent Progress**: Converted 3 Retry packet tests using already-extracted primitives
+**Build Status**: ✅ 881/888 tests passing
+
+---
+
+### ⏳ Session 7: Phase 4b.2 - Packet Encoding Tests (Initial Progress)
+
+#### 12. Discovery: Packet Encoding Primitives Already Extracted
+
+**Key Finding**: Phase 4b.2 goal ("Extract packet encoding primitives") was already completed in earlier development!
+
+**Already-Extracted Primitives**:
+- ✅ `packet.encodeRetry()` and `packet.verifyRetry()` - Retry packet encoding/verification (packet.zig lines 1002-1060)
+- ✅ `token.encode()` and `token.verify()` - HMAC-based Retry token generation/verification (token.zig, 84 lines)
+- ✅ `packet.encodeVersionNegotiation()` - VN packet encoding (packet.zig line 748)
+- ✅ `packet.decodeVersionNegotiation()` - VN packet decoding (packet.zig line 779)
+- ✅ `packet.shouldAcceptVersionNegotiation()` - VN validation logic (packet.zig line 819)
+
+**What Was Missing**: Tests that USE these primitives! The placeholder tests were documented as waiting for extraction, but the extraction was already done.
+
+#### 13. Retry Packet Tests Converted (3 tests)
+
+**Test File**: `tests/unit/endpoint/test_server.zig`
+
+**Converted Tests**:
+1. ✅ "RFC 9000 §8.1.1 - Retry token generation binds client address"
+   - Tests `token.encode()` with client IP, ODCID, secret, expiry
+   - Verifies token is exactly 32 bytes (8 expiry + 8 hash + 16 HMAC tag)
+   - Tests that tokens differ for different client addresses
+   - Validates RFC 9000 §8.1.4 requirement: tokens authenticated with secret key
+
+2. ✅ "RFC 9000 §8.1.2 - token validation verifies HMAC"
+   - Tests `token.verify()` with correct and incorrect parameters
+   - Validates HMAC integrity checking
+   - Tests rejection of tokens with wrong client IP
+   - Tests rejection of tokens with wrong secret
+   - Tests expiry validation (future timestamp fails)
+
+3. ✅ "RFC 9000 §17.2.5 - Retry packet format verification"
+   - Tests `packet.encodeRetry()` with test CIDs and token
+   - Verifies complete Retry packet format:
+     - Long header bit (0x80) and Retry type (0x30)
+     - Version field (32 bits)
+     - DCID length + DCID bytes
+     - SCID length + SCID bytes
+     - Retry token payload
+     - 16-byte Retry integrity tag
+   - Uses `packet.verifyRetry()` to validate integrity tag
+
+**Test Characteristics**:
+- Tests the actual packet encoding primitives directly (no endpoint logic needed)
+- Comprehensive format validation with field-by-field checks
+- Tests both encoding and verification/decoding functions
+- Includes negative tests (wrong IP, wrong secret, expired tokens)
+
+#### 14. Build System Updates
+
+**Changes to build.zig**:
+1. ✅ Added `quic_token_mod` module definition (line 184-186)
+   - `mkModule(b, "src/quic/token.zig")`
+   - Added `byteorder` import dependency
+2. ✅ Added imports to `test_endpoint_server` (lines 665-666)
+   - `quic_packet` import for Retry/VN packet functions
+   - `quic_token` import for token encode/verify functions
+
+**Verification**:
+- ✅ Build status: 881/888 tests passing (unchanged - no regressions)
+- ✅ Token module properly integrated
+- ✅ Test imports configured correctly
+
+---
+
+## 📊 Updated Phase 4b Metrics (Session 7 - Phase 4b.2 Initial)
+
+**Test Status**:
+- Server module: 26/70 tests converted (37.1%) ⏳
+  - Basic functionality: 8 tests ✅
+  - Boundary/edge cases: 9 tests ✅
+  - Connection enqueuing: 2 tests ✅
+  - Address validation: 4 tests ✅
+  - **Retry packet primitives: 3 tests ✅ (NEW)**
+- Documented placeholders: 44/70 tests (62.9%) 📋
+  - Reduced from 47 (converted 3 Retry tests)
+- Utils module: 14/14 tests completed (100%) ✅
+- Client module helpers: 4/4 tests completed (100%) ✅
+- PTO module helpers: 7/7 tests completed (100%) ✅
+- Incoming module helpers: 8/8 tests completed (100%) ✅
+- **Total real implementation tests**: 59 tests (+3 from Session 6)
+  - 26 server (8 basic + 9 boundary + 2 enqueuing + 4 address validation + 3 Retry)
+  - 14 utils
+  - 4 client helpers
+  - 7 pto helpers
+  - 8 incoming helpers
+- Build: ✅ 881/888 tests passing
+- Remaining: 44 server tests, 68 client tests, 54 pto tests, 74 incoming tests
+
+**Test Conversion Rate**:
+- Server tests: 37.1% (26/70) ✅ +4.2% from Session 6
+- Helper tests: 100% (33/33) - All extracted helpers fully tested
+- Overall progress: 59 real tests vs 0 at Phase 4b start (+3 this session)
+
+**Phase 4b.2 Status**:
+- ✅ Discovered packet encoding primitives already extracted
+- ✅ Converted 3 Retry packet tests (token generation, validation, format)
+- ⏳ Remaining: VN packet tests, stateless reset tests
+- 📋 Many placeholder tests require high-level endpoint logic (not packet primitives)
+
+**Code Quality**:
+- ✅ Tests use real packet/token module functions
+- ✅ Comprehensive format validation (field-by-field)
+- ✅ Both positive and negative test cases
+- ✅ RFC citations maintained throughout
+- ✅ Zero breaking changes
+
+---
+
+**Updated Status**: Phase 4b.2 Initial Progress ⏳
+**Current Achievement**: 37.1% server test conversion (26/70 tests, +3 Retry tests)
+**Discovery**: Packet encoding primitives already extracted - converted tests to use them
+**Next Steps**: Continue converting VN and stateless reset tests using extracted primitives
 **Build Status**: ✅ 881/888 tests passing
