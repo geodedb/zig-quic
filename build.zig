@@ -206,6 +206,55 @@ pub fn build(b: *std.Build) void {
 
     // Note: alert_mod, zero_rtt_mod, and tls logger are now imported from vendor/ztls above
 
+    // ========================================================================
+    // Connection Sub-Modules (Phase 1 Refactoring)
+    // ========================================================================
+    const conn_types_mod = mkModule(b, "src/quic/connection/types.zig");
+    conn_types_mod.addImport("byteorder", byteorder_mod);
+
+    const conn_crypto_buffer_mod = mkModule(b, "src/quic/connection/crypto_buffer.zig");
+
+    const conn_packet_number_mod = mkModule(b, "src/quic/connection/packet_number.zig");
+    conn_packet_number_mod.addImport("quic_frame", quic_frame_mod);
+
+    const conn_ack_mod = mkModule(b, "src/quic/connection/ack.zig");
+    conn_ack_mod.addImport("quic_frame", quic_frame_mod);
+
+    const conn_stream_mod = mkModule(b, "src/quic/connection/stream.zig");
+
+    const conn_connection_id_mod = mkModule(b, "src/quic/connection/connection_id.zig");
+    conn_connection_id_mod.addImport("types", conn_types_mod);
+    conn_connection_id_mod.addImport("quic_tls", quic_tls_mod);
+
+    const conn_handshake_mod = mkModule(b, "src/quic/connection/handshake.zig");
+
+    const conn_path_mod = mkModule(b, "src/quic/connection/path.zig");
+
+    const conn_amplification_mod = mkModule(b, "src/quic/connection/amplification.zig");
+
+    const conn_pmtud_mod = mkModule(b, "src/quic/connection/pmtud.zig");
+
+    const conn_limits_mod = mkModule(b, "src/quic/connection/limits.zig");
+
+    const conn_connection_mod = mkModule(b, "src/quic/connection/connection.zig");
+    // Connection coordinator imports all sub-modules
+    conn_connection_mod.addImport("types", conn_types_mod);
+    conn_connection_mod.addImport("crypto_buffer", conn_crypto_buffer_mod);
+    conn_connection_mod.addImport("packet_number", conn_packet_number_mod);
+    conn_connection_mod.addImport("ack", conn_ack_mod);
+    conn_connection_mod.addImport("stream", conn_stream_mod);
+    conn_connection_mod.addImport("connection_id", conn_connection_id_mod);
+    conn_connection_mod.addImport("handshake", conn_handshake_mod);
+    conn_connection_mod.addImport("path", conn_path_mod);
+    conn_connection_mod.addImport("amplification", conn_amplification_mod);
+    conn_connection_mod.addImport("pmtud", conn_pmtud_mod);
+    conn_connection_mod.addImport("limits", conn_limits_mod);
+
+    // ========================================================================
+    // Endpoint Sub-Modules (Phase 2 Refactoring)
+    // ========================================================================
+    // Note: endpoint modules defined after quic_conn_mod is created below
+
     // Connection/TP
     const quic_conn_mod = mkModule(b, "src/quic/conn.zig");
     quic_conn_mod.addImport("quic_packet", quic_packet_mod);
@@ -218,6 +267,44 @@ pub fn build(b: *std.Build) void {
     quic_conn_mod.addImport("byteorder", byteorder_mod);
     // Make transport params available to connection and endpoint modules
     quic_conn_mod.addImport("quic_transport_params", quic_transport_params_mod);
+    // Phase 5: conn.zig now imports connection/* modules directly via file paths to avoid diamond dependencies
+
+    // Now define endpoint modules (they need quic_conn_mod)
+    const endpoint_types_mod = mkModule(b, "src/quic/endpoint/types.zig");
+    endpoint_types_mod.addImport("quic_conn", quic_conn_mod);
+
+    const endpoint_timer_mod = mkModule(b, "src/quic/endpoint/timer.zig");
+    endpoint_timer_mod.addImport("types", endpoint_types_mod);
+
+    const endpoint_lookup_mod = mkModule(b, "src/quic/endpoint/lookup.zig");
+    endpoint_lookup_mod.addImport("types", endpoint_types_mod);
+    endpoint_lookup_mod.addImport("quic_conn", quic_conn_mod);
+
+    const endpoint_io_mod = mkModule(b, "src/quic/endpoint/io.zig");
+    endpoint_io_mod.addImport("quic_conn", quic_conn_mod);
+
+    const endpoint_client_mod = mkModule(b, "src/quic/endpoint/client.zig");
+    endpoint_client_mod.addImport("quic_conn", quic_conn_mod);
+
+    const endpoint_server_mod = mkModule(b, "src/quic/endpoint/server.zig");
+    endpoint_server_mod.addImport("quic_conn", quic_conn_mod);
+
+    const endpoint_incoming_mod = mkModule(b, "src/quic/endpoint/incoming.zig");
+
+    const endpoint_pto_mod = mkModule(b, "src/quic/endpoint/pto.zig");
+    endpoint_pto_mod.addImport("types", endpoint_types_mod);
+    endpoint_pto_mod.addImport("quic_conn", quic_conn_mod);
+
+    const endpoint_endpoint_mod = mkModule(b, "src/quic/endpoint/endpoint.zig");
+    // Endpoint coordinator imports all sub-modules
+    endpoint_endpoint_mod.addImport("types", endpoint_types_mod);
+    endpoint_endpoint_mod.addImport("timer", endpoint_timer_mod);
+    endpoint_endpoint_mod.addImport("lookup", endpoint_lookup_mod);
+    endpoint_endpoint_mod.addImport("io", endpoint_io_mod);
+    endpoint_endpoint_mod.addImport("client", endpoint_client_mod);
+    endpoint_endpoint_mod.addImport("server", endpoint_server_mod);
+    endpoint_endpoint_mod.addImport("incoming", endpoint_incoming_mod);
+    endpoint_endpoint_mod.addImport("pto", endpoint_pto_mod);
 
     // Endpoint module for socket/event-loop tests
     const loop_backend_mod = mkModule(b, "src/quic/loop_backend.zig");
