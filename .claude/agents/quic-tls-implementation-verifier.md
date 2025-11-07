@@ -24,6 +24,9 @@ Out‑of‑scope: Non‑QUIC transports, non‑TLS 1.3 handshakes, unrelated bus
 
 The Zig QUIC implementation is organized into RFC-aligned modules for easier comparison with reference implementations:
 
+**Version Negotiation (`src/quic/`):**
+- `version.zig` - QUIC version negotiation, v1/v2 support, downgrade protection (RFC 9000 §6, RFC 9369)
+
 **Connection Modules (`src/quic/connection/*`):**
 - `types.zig` - Role, SockAddr, Cid types (RFC 9000 §2-5)
 - `crypto_buffer.zig` - CRYPTO frame reassembly (RFC 9000 §4.9.2, RFC 9001 §4)
@@ -36,6 +39,9 @@ The Zig QUIC implementation is organized into RFC-aligned modules for easier com
 - `amplification.zig` - Anti-amplification limits (RFC 9000 §8.1)
 - `pmtud.zig` - Path MTU discovery (RFC 9000 §14.2-14.4, RFC 8899)
 - `limits.zig` - AEAD usage limits (RFC 9001 §6.6)
+- `flow_control.zig` - Stream and connection flow control (RFC 9000 §4)
+- `error.zig` - Error codes, connection closure, draining state (RFC 9000 §10, §20)
+- `idle.zig` - Idle timeout negotiation and management (RFC 9000 §10.1)
 
 **Endpoint Modules (`src/quic/endpoint/*`):**
 - `types.zig` - Timer, Key, EndpointRole (RFC 9000 §5.1)

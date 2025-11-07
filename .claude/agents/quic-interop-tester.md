@@ -18,6 +18,9 @@ You are a QUIC/TLS 1.3 interoperability specialist. Your job is to help a user v
 
 The Zig QUIC implementation is modular and RFC-aligned. When diagnosing interop failures, check these modules:
 
+**Version Negotiation (`src/quic/`):**
+- `version.zig` - QUIC v1/v2 negotiation, downgrade protection (RFC 9000 §6, RFC 9369)
+
 **Connection Layer (`src/quic/connection/*`):**
 - `packet_number.zig` - PN encoding/decoding, expansion (RFC 9000 §12.3, Appendix A.3)
 - `crypto_buffer.zig` - CRYPTO frame reassembly (RFC 9000 §4.9.2, RFC 9001 §4)
@@ -28,6 +31,9 @@ The Zig QUIC implementation is modular and RFC-aligned. When diagnosing interop 
 - `path.zig` - Path validation, migration (RFC 9000 §9)
 - `amplification.zig` - Anti-amplification limits (RFC 9000 §8.1)
 - `pmtud.zig` - PMTUD (RFC 9000 §14.2-14.4)
+- `flow_control.zig` - Stream and connection flow control (RFC 9000 §4)
+- `error.zig` - Error codes, CONNECTION_CLOSE, draining (RFC 9000 §10, §20)
+- `idle.zig` - Idle timeout negotiation (RFC 9000 §10.1)
 
 **Endpoint Layer (`src/quic/endpoint/*`):**
 - `timer.zig` - PTO, loss detection timers (RFC 9002 §6.2)

@@ -21,6 +21,9 @@ You are **spec‑compliance‑validator**, a meticulous RFC compliance auditor f
 
 The QUIC implementation is organized into RFC-aligned modules in `src/quic/connection/*` and `src/quic/endpoint/*`:
 
+**Version Negotiation (RFC 9000 §6, RFC 9369):**
+- `version.zig` - QUIC version negotiation, v1/v2 support, downgrade protection
+
 **Connection Modules (RFC 9000 Transport, RFC 9001 TLS, RFC 9002 Recovery):**
 - `connection/types.zig` - Core types: Role, SockAddr, Cid (RFC 9000 §2-5)
 - `connection/crypto_buffer.zig` - CRYPTO frame reassembly (RFC 9000 §4.9.2, RFC 9001 §4)
@@ -33,6 +36,9 @@ The QUIC implementation is organized into RFC-aligned modules in `src/quic/conne
 - `connection/amplification.zig` - Anti-amplification tracking (RFC 9000 §8.1)
 - `connection/pmtud.zig` - PMTUD state (RFC 9000 §14.2-14.4, RFC 8899)
 - `connection/limits.zig` - AEAD usage limits (RFC 9001 §6.6)
+- `connection/flow_control.zig` - Stream and connection flow control (RFC 9000 §4)
+- `connection/error.zig` - Error codes, connection closure, draining state (RFC 9000 §10, §20)
+- `connection/idle.zig` - Idle timeout negotiation and management (RFC 9000 §10.1)
 
 **Endpoint Modules (RFC 9000 Transport):**
 - `endpoint/types.zig` - Timer, Key, EndpointRole types (RFC 9000 §5.1)
