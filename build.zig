@@ -384,6 +384,9 @@ pub fn build(b: *std.Build) void {
     const endpoint_server_mod = mkModule(b, "src/quic/endpoint/server.zig");
     endpoint_server_mod.addImport("quic_conn", quic_conn_mod);
 
+    const endpoint_utils_mod = mkModule(b, "src/quic/endpoint/utils.zig");
+    endpoint_utils_mod.addImport("quic_conn", quic_conn_mod);
+
     const endpoint_incoming_mod = mkModule(b, "src/quic/endpoint/incoming.zig");
 
     const endpoint_pto_mod = mkModule(b, "src/quic/endpoint/pto.zig");
@@ -653,8 +656,15 @@ pub fn build(b: *std.Build) void {
 
         const test_endpoint_server = addTst(b, "tests/unit/endpoint/test_server.zig", target, optimize);
         test_endpoint_server.root_module.addImport("server", endpoint_server_mod);
+        test_endpoint_server.root_module.addImport("quic_conn", quic_conn_mod);
         const run_test_endpoint_server = b.addRunArtifact(test_endpoint_server);
         test_step.dependOn(&run_test_endpoint_server.step);
+
+        const test_endpoint_utils = addTst(b, "tests/unit/endpoint/test_utils.zig", target, optimize);
+        test_endpoint_utils.root_module.addImport("utils", endpoint_utils_mod);
+        test_endpoint_utils.root_module.addImport("quic_conn", quic_conn_mod);
+        const run_test_endpoint_utils = b.addRunArtifact(test_endpoint_utils);
+        test_step.dependOn(&run_test_endpoint_utils.step);
 
         const test_endpoint_incoming = addTst(b, "tests/unit/endpoint/test_incoming.zig", target, optimize);
         test_endpoint_incoming.root_module.addImport("incoming", endpoint_incoming_mod);

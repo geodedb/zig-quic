@@ -310,3 +310,127 @@ All Phase 4a changes maintain RFC compliance:
 **Ready for**: Phase 4b incremental implementation extraction
 **Recommended Next Step**: Extract utility functions to break dependencies, then proceed function-by-function
 
+---
+
+## Phase 4b Progress (November 7, 2025)
+
+### ✅ Completed Work
+
+#### 1. utils.zig Module Created (90 lines)
+
+**Purpose**: Shared utility functions extracted to break dependencies between endpoint modules.
+
+**Extracted Functions**:
+```zig
+pub fn hashBytes(b: []const u8) u64
+pub fn hashSockaddr(sa: *const posix.sockaddr.storage, len: u32) u64
+pub fn normalizeAddr(sa: *const posix.sockaddr.storage, len: u32) SockAddr
+pub fn portToNetwork(value: u16) u16
+pub fn addrToNetwork(value: u32) u32
+pub fn sockToIsize(sock: posix.socket_t) isize
+```
+
+**RFC Compliance**:
+- RFC 9000 §5.1: Connection ID routing (hashBytes for DCID hashing)
+- RFC 9000 §5.2: Matching Packets to Connections (hashSockaddr for peer routing)
+- IPv4-mapped IPv6 normalization for consistent hashing
+
+**Benefits**:
+- Enables consistent connection routing
+- Provides shared primitives for other endpoint modules
+- Properly handles IPv4-mapped IPv6 addresses (::ffff:127.0.0.1 → 127.0.0.1)
+- Zero dependencies on Endpoint struct
+
+#### 2. Server Tests Converted (7 tests)
+
+**Test File**: `tests/unit/endpoint/test_server.zig`
+
+**Converted Tests**:
+1. ✅ "RFC 9000 §7 - acceptFrom creates server connection structure"
+2. ✅ "RFC 9000 §7 - acceptFrom sets role to Server"
+3. ✅ "RFC 9000 §7 - acceptFrom associates connection with peer address"
+4. ✅ "RFC 9000 §7 - acceptFrom initializes with endpoint socket"
+5. ✅ "RFC 9000 §7 - pushAccepted adds connection to accept queue"
+6. ✅ "RFC 9000 §7 - popAccepted returns oldest accepted connection"
+7. ✅ "RFC 9000 §7 - popAccepted returns null when queue empty"
+
+**Status**: All 7 tests now use real implementations from server.zig with actual assertions
+
+**Changes Made**:
+- Imported Connection and SockAddr types via quic_conn module
+- Added allocator parameter to acceptFrom calls
+- Fixed ArrayList initialization syntax for Zig 0.15 (`std.ArrayList(T){}`)
+- Removed placeholder ServerHandshake test (not yet extracted)
+
+#### 3. Utils Tests Added (14 tests)
+
+**Test File**: `tests/unit/endpoint/test_utils.zig` (172 lines)
+
+**Test Categories**:
+- **Byte Hashing** (3 tests): Consistency, differentiation, empty data
+- **Socket Address Hashing** (4 tests): IPv4 consistency, address/port differentiation
+- **IPv4-Mapped IPv6 Normalization** (4 tests): IPv4 passthrough, mapped conversion, regular IPv6
+- **Byte Order Conversions** (3 tests): Port/address network byte order, socket descriptor conversion
+
+**Coverage**: All utils.zig functions have corresponding tests
+
+#### 4. Build System Updates
+
+**Changes to build.zig**:
+1. Added `endpoint_utils_mod` module definition with quic_conn dependency
+2. Added `quic_conn` import to `test_endpoint_server`
+3. Added `test_endpoint_utils` test configuration
+
+**Status**: ✅ All tests compile and pass
+
+#### 5. Module Import Fixes
+
+**Fixed Import Issues**:
+- server.zig: Changed `@import("../conn.zig")` → `@import("quic_conn")`
+- utils.zig: Changed `@import("../conn.zig")` → `@import("quic_conn")`
+- test_server.zig: Changed relative imports to module imports
+
+**Result**: All endpoint modules now use proper module system instead of relative paths
+
+### 📊 Phase 4b Metrics
+
+**Lines of Code**:
+- utils.zig: 90 lines (new module)
+- test_utils.zig: 172 lines (new tests)
+- test_server.zig: 7 placeholder tests → 7 real tests (converted)
+
+**Total New/Modified Code**: ~262 lines
+
+**Test Status**:
+- Server module: 7/70 tests converted (10%)
+- Utils module: 14/14 tests completed (100%)
+- Build: ✅ All tests compile
+- Remaining: 63 server tests, 68 client tests, 54 pto tests, 74 incoming tests
+
+### 🎯 Next Steps
+
+**Immediate (Phase 4b continuation)**:
+1. Add helper tests for client.zig extracted functions (generateRandomCid)
+2. Add helper tests for pto.zig extracted functions (isPtoTimer, ptoTimerSpace)
+3. Add helper tests for incoming.zig extracted functions (isLongHeader, extractEcnBits)
+4. Continue converting remaining server placeholder tests
+
+**Near-term (Phase 4b)**:
+1. Extract more client functions from endpoint.zig
+2. Extract more PTO functions
+3. Extract incoming packet classification logic
+4. Update endpoint.zig to use extracted functions
+
+**Benefits Achieved So Far**:
+- ✅ Zero breaking changes to existing code
+- ✅ Modular utility functions with full test coverage
+- ✅ Proper module system usage (no relative imports)
+- ✅ RFC-compliant implementations with citations
+- ✅ Foundation for incremental extraction of remaining functions
+
+---
+
+**Updated Status**: Phase 4b In Progress 🔄
+**Progress**: 7 server tests converted, utils module complete with 14 tests
+**Next Milestone**: Complete helper tests for all endpoint modules, continue server test conversion
+

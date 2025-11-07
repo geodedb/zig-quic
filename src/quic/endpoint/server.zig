@@ -12,7 +12,7 @@
 //! - RFC 9000 §10.3: Stateless Reset
 
 const std = @import("std");
-const conn_mod = @import("../conn.zig");
+const conn_mod = @import("quic_conn");
 
 /// Accept a server connection from initial datagram's peer address.
 ///
@@ -22,19 +22,16 @@ const conn_mod = @import("../conn.zig");
 /// RFC 9000 §7: "A server that receives an Initial packet creates a new connection state."
 ///
 /// Parameters:
+///   - allocator: Memory allocator for the connection
 ///   - sock_fd: Socket file descriptor for sending/receiving
 ///   - peer: Socket address of the client that sent the Initial packet
 ///
 /// Returns:
 ///   A new Connection object configured for server role
-pub fn acceptFrom(sock_fd: std.posix.socket_t, peer: conn_mod.SockAddr) conn_mod.Connection {
-    return .{
-        .id = 0,
-        .role = .Server,
-        .sock_fd = @as(isize, @intCast(sock_fd)),
-        .peer = peer,
-        .tls_inbox = std.ArrayList(u8){},
-    };
+pub fn acceptFrom(allocator: *std.mem.Allocator, sock_fd: std.posix.socket_t, peer: conn_mod.SockAddr) conn_mod.Connection {
+    var conn: conn_mod.Connection = undefined;
+    conn.init(allocator, .Server, @as(isize, @intCast(sock_fd)), peer);
+    return conn;
 }
 
 /// Enqueue accepted server connection to the accepted queue.

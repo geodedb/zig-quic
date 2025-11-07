@@ -26,7 +26,7 @@ jobs:
             runner: runner=2cpu-linux-arm64
           - os: windows22-full
             arch: x64
-            runner: image=windows22-full-x64/family=m7i
+            runner: image=windows22-full-x64
         zig: ['0.15.1']
 
     steps:
@@ -114,7 +114,7 @@ jobs:
             runner: runner=2cpu-linux-arm64
           - os: windows22-full
             arch: x64
-            runner: image=windows22-full-x64/family=m7i
+            runner: image=windows22-full-x64
     runs-on: runs-on=${{ github.run_id }}/${{ matrix.runner }}
     steps:
       - uses: spyderorg/workflows/.github/actions/nix-setup@main
@@ -193,7 +193,7 @@ jobs:
             target: riscv64-linux-gnu
             archive_os: linux
             archive_arch: riscv64
-          - runner: image=windows22-full-x64/family=m7i
+          - runner: image=windows22-full-x64
             target: aarch64-windows-msvc
             archive_os: windows
             archive_arch: arm64
@@ -268,7 +268,7 @@ jobs:
             runner: runner=2cpu-linux-arm64
           - os: windows22-full
             arch: x64
-            runner: image=windows22-full-x64/family=m7i
+            runner: image=windows22-full-x64
         zig: [0.15.1]
     runs-on: runs-on=${{ github.run_id }}/${{ matrix.runner }}
     steps:

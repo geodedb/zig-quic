@@ -17,14 +17,17 @@
 //! - Server Initial packet processing
 //! - Connection ID issuance
 //!
-//! Note: These tests document expected behavior for the server module.
-//! Currently endpoint.zig contains the implementation. Tests designed for
-//! future extraction to server.zig.
+//! Note: Phase 4b - Tests converted to real implementations.
+//! Server functions extracted to server.zig.
 
 const std = @import("std");
 const testing = std.testing;
-
 const server = @import("server");
+const quic_conn = @import("quic_conn");
+
+// Import Connection type for tests
+const Connection = quic_conn.Connection;
+const SockAddr = quic_conn.SockAddr;
 
 var test_allocator = std.testing.allocator;
 
@@ -32,98 +35,120 @@ var test_allocator = std.testing.allocator;
 // ServerHandshake Initialization Tests
 // =============================================================================
 
-test "RFC 9000 §7 - ServerHandshake placeholder initialization" {
-    const handshake = server.ServerHandshake.init();
-    _ = handshake;
-
-    // Placeholder struct initializes without error
-    // Will be replaced with full implementation
-}
+// NOTE: ServerHandshake not yet extracted to server.zig - remains in endpoint.zig
+// This test will be enabled once ServerHandshake is extracted in future Phase 4b work
 
 // =============================================================================
 // Phase 3: Connection Acceptance Tests
 // =============================================================================
 
-test "Phase 3 - acceptFrom creates server connection structure" {
+test "RFC 9000 §7 - acceptFrom creates server connection structure" {
     // RFC 9000 §7: Server accepts incoming connection
-    //
-    // Expected behavior after extraction:
-    // const peer = SockAddr{...};
-    // const conn = endpoint.acceptFrom(peer);
-    // try testing.expectEqual(.Server, conn.role);
-    // try testing.expectEqual(peer, conn.peer);
+    const peer = SockAddr.ipv4(127, 0, 0, 1, 4433);
+    var alloc = test_allocator;
+    const conn = server.acceptFrom(&alloc, 1, peer);
 
-    try testing.expect(true);
+    try testing.expectEqual(.Server, conn.role);
+    try testing.expectEqual(@as(isize, 1), conn.sock_fd);
+    try testing.expectEqual(peer.storage.family, conn.peer.storage.family);
 }
 
-test "Phase 3 - acceptFrom sets role to Server" {
+test "RFC 9000 §7 - acceptFrom sets role to Server" {
     // Connection role identifies server vs client behavior
-    //
-    // Expected:
-    // - conn.role = .Server
-    // - Determines key derivation (server vs client keys)
-    // - Affects packet processing logic
+    const peer = SockAddr.ipv4(192, 168, 1, 100, 5000);
+    var alloc = test_allocator;
+    const conn = server.acceptFrom(&alloc, 3, peer);
 
-    try testing.expect(true);
+    // Verify server role is set
+    try testing.expectEqual(.Server, conn.role);
+    // Server role determines:
+    // - Key derivation (server Initial keys vs client)
+    // - Packet processing logic (accepts Initial with token)
 }
 
-test "Phase 3 - acceptFrom associates connection with peer address" {
+test "RFC 9000 §7 - acceptFrom associates connection with peer address" {
     // Server tracks which peer this connection serves
-    //
-    // Expected:
-    // - conn.peer = peer parameter
-    // - Used for routing responses
-    // - Part of connection routing key
+    const peer = SockAddr.ipv4(10, 0, 0, 50, 12345);
+    var alloc = test_allocator;
+    const conn = server.acceptFrom(&alloc, 5, peer);
 
-    try testing.expect(true);
+    // Verify peer address is stored
+    try testing.expectEqual(peer.storage.family, conn.peer.storage.family);
+    // Peer address is used for:
+    // - Routing responses back to client
+    // - Part of connection routing key (peer_hash + dcid_hash)
+    // - Address validation checks
 }
 
-test "Phase 3 - acceptFrom initializes with endpoint socket" {
+test "RFC 9000 §7 - acceptFrom initializes with endpoint socket" {
     // Connection shares endpoint's UDP socket
-    //
-    // Expected:
-    // - conn.sock_fd = endpoint.sock_fd
-    // - All connections use same socket
-    // - Multiplexed by CID
+    const sock_fd: std.posix.socket_t = 42;
+    const peer = SockAddr.ipv4(172, 16, 0, 1, 8080);
+    var alloc = test_allocator;
+    const conn = server.acceptFrom(&alloc, sock_fd, peer);
 
-    try testing.expect(true);
+    // Verify socket FD is stored
+    try testing.expectEqual(@as(isize, 42), conn.sock_fd);
+    // All connections use same socket:
+    // - Multiplexed by Connection ID (DCID)
+    // - Endpoint manages single UDP socket
+    // - RFC 9000 §5.2: "Servers route packets to connections using the DCID"
 }
 
 // =============================================================================
 // Phase 3: Accept Queue Management Tests
 // =============================================================================
 
-test "Phase 3 - pushAccepted adds connection to accept queue" {
+test "RFC 9000 §7 - pushAccepted adds connection to accept queue" {
     // Internal queue for accepted connections
-    //
-    // Expected:
-    // - self.accepted.append(connection)
-    // - FIFO queue
-    // - Application calls popAccepted to retrieve
+    var accepted = std.ArrayList(*Connection){};
+    defer accepted.deinit(test_allocator);
 
-    try testing.expect(true);
+    // Create a test connection
+    var alloc = test_allocator;
+    var conn = server.acceptFrom(&alloc, 1, SockAddr.ipv4(127, 0, 0, 1, 4433));
+
+    // Push to accepted queue
+    server.pushAccepted(test_allocator, &accepted, &conn);
+
+    // Verify it was added
+    try testing.expectEqual(@as(usize, 1), accepted.items.len);
+    try testing.expectEqual(&conn, accepted.items[0]);
+    // FIFO queue - application calls popAccepted to retrieve
 }
 
-test "Phase 3 - popAccepted returns oldest accepted connection" {
+test "RFC 9000 §7 - popAccepted returns oldest accepted connection" {
     // FIFO retrieval from accept queue
-    //
-    // Expected:
-    // - if queue empty: return null
-    // - else: return self.accepted.orderedRemove(0)
-    // - First in, first out
+    var accepted = std.ArrayList(*Connection){};
+    defer accepted.deinit(test_allocator);
 
-    try testing.expect(true);
+    var alloc = test_allocator;
+    var conn1 = server.acceptFrom(&alloc, 1, SockAddr.ipv4(192, 168, 1, 10, 5001));
+    var conn2 = server.acceptFrom(&alloc, 1, SockAddr.ipv4(192, 168, 1, 20, 5002));
+
+    server.pushAccepted(test_allocator, &accepted, &conn1);
+    server.pushAccepted(test_allocator, &accepted, &conn2);
+
+    // Pop returns first connection (FIFO)
+    const first = server.popAccepted(&accepted);
+    try testing.expect(first != null);
+    try testing.expectEqual(&conn1, first.?);
+
+    // Second pop returns second connection
+    const second = server.popAccepted(&accepted);
+    try testing.expect(second != null);
+    try testing.expectEqual(&conn2, second.?);
 }
 
-test "Phase 3 - popAccepted returns null when queue empty" {
+test "RFC 9000 §7 - popAccepted returns null when queue empty" {
     // No connections ready to accept
-    //
-    // Expected:
-    // - Check self.accepted.items.len == 0
-    // - Return null to indicate no connections
-    // - Application can poll again later
+    var accepted = std.ArrayList(*Connection){};
+    defer accepted.deinit(test_allocator);
 
-    try testing.expect(true);
+    // Empty queue returns null
+    const result = server.popAccepted(&accepted);
+    try testing.expect(result == null);
+    // Application can poll again later
 }
 
 test "Phase 3 - multiple connections queued in order" {
