@@ -151,15 +151,169 @@ test "RFC 9000 §7 - popAccepted returns null when queue empty" {
     // Application can poll again later
 }
 
-test "Phase 3 - multiple connections queued in order" {
-    // Multiple clients connecting simultaneously
-    //
-    // Expected:
-    // - pushAccepted(conn1), pushAccepted(conn2), pushAccepted(conn3)
-    // - popAccepted returns conn1, then conn2, then conn3
-    // - FIFO order maintained
+test "RFC 9000 §7 - multiple connections queued in FIFO order" {
+    // Multiple clients connecting simultaneously should maintain FIFO order
+    var accepted = std.ArrayList(*Connection){};
+    defer accepted.deinit(test_allocator);
 
-    try testing.expect(true);
+    var alloc = test_allocator;
+    var conn1 = server.acceptFrom(&alloc, 1, SockAddr.ipv4(192, 168, 1, 10, 5001));
+    var conn2 = server.acceptFrom(&alloc, 1, SockAddr.ipv4(192, 168, 1, 20, 5002));
+    var conn3 = server.acceptFrom(&alloc, 1, SockAddr.ipv4(192, 168, 1, 30, 5003));
+
+    // Queue all three connections
+    server.pushAccepted(test_allocator, &accepted, &conn1);
+    server.pushAccepted(test_allocator, &accepted, &conn2);
+    server.pushAccepted(test_allocator, &accepted, &conn3);
+
+    // Verify FIFO order
+    try testing.expectEqual(@as(usize, 3), accepted.items.len);
+    try testing.expectEqual(&conn1, accepted.items[0]);
+    try testing.expectEqual(&conn2, accepted.items[1]);
+    try testing.expectEqual(&conn3, accepted.items[2]);
+
+    // Pop in order
+    try testing.expectEqual(&conn1, server.popAccepted(&accepted).?);
+    try testing.expectEqual(&conn2, server.popAccepted(&accepted).?);
+    try testing.expectEqual(&conn3, server.popAccepted(&accepted).?);
+    try testing.expect(server.popAccepted(&accepted) == null);
+}
+
+// =============================================================================
+// Boundary and Edge Case Tests (Phase 4b)
+// =============================================================================
+
+test "RFC 9000 §7 - acceptFrom with different socket descriptors" {
+    // Verify socket descriptor is properly stored
+    var alloc = test_allocator;
+    const peer = SockAddr.ipv4(127, 0, 0, 1, 4433);
+
+    const conn1 = server.acceptFrom(&alloc, 3, peer);
+    const conn2 = server.acceptFrom(&alloc, 100, peer);
+    const conn3 = server.acceptFrom(&alloc, 65535, peer);
+
+    try testing.expectEqual(@as(isize, 3), conn1.sock_fd);
+    try testing.expectEqual(@as(isize, 100), conn2.sock_fd);
+    try testing.expectEqual(@as(isize, 65535), conn3.sock_fd);
+}
+
+test "RFC 9000 §7 - acceptFrom with IPv6 addresses" {
+    // Server should handle IPv6 peers
+    var alloc = test_allocator;
+    var peer: SockAddr = undefined;
+    peer.storage.family = std.posix.AF.INET6;
+    peer.len = @sizeOf(std.posix.sockaddr.in6);
+
+    const conn = server.acceptFrom(&alloc, 1, peer);
+
+    try testing.expectEqual(.Server, conn.role);
+    try testing.expectEqual(std.posix.AF.INET6, conn.peer.storage.family);
+}
+
+test "RFC 9000 §7 - acceptFrom with high port numbers" {
+    // Test with maximum valid port number
+    var alloc = test_allocator;
+    const peer = SockAddr.ipv4(192, 168, 1, 1, 65535);
+
+    const conn = server.acceptFrom(&alloc, 1, peer);
+
+    try testing.expectEqual(.Server, conn.role);
+    try testing.expectEqual(peer.storage.family, conn.peer.storage.family);
+}
+
+test "RFC 9000 §7 - pushAccepted maintains insertion order under load" {
+    // Stress test: many connections queued
+    var accepted = std.ArrayList(*Connection){};
+    defer accepted.deinit(test_allocator);
+
+    var alloc = test_allocator;
+    const count = 20;
+    var connections: [count]Connection = undefined;
+
+    // Create and queue many connections
+    for (0..count) |i| {
+        const port: u16 = @intCast(5000 + i);
+        connections[i] = server.acceptFrom(&alloc, 1, SockAddr.ipv4(192, 168, 1, 10, port));
+        server.pushAccepted(test_allocator, &accepted, &connections[i]);
+    }
+
+    // Verify all queued in order
+    try testing.expectEqual(@as(usize, count), accepted.items.len);
+    for (0..count) |i| {
+        try testing.expectEqual(&connections[i], accepted.items[i]);
+    }
+}
+
+test "RFC 9000 §7 - popAccepted handles rapid push/pop cycles" {
+    // Interleaved push/pop operations
+    var accepted = std.ArrayList(*Connection){};
+    defer accepted.deinit(test_allocator);
+
+    var alloc = test_allocator;
+    var conn1 = server.acceptFrom(&alloc, 1, SockAddr.ipv4(10, 0, 0, 1, 5001));
+    var conn2 = server.acceptFrom(&alloc, 1, SockAddr.ipv4(10, 0, 0, 2, 5002));
+    var conn3 = server.acceptFrom(&alloc, 1, SockAddr.ipv4(10, 0, 0, 3, 5003));
+
+    // Push, pop, push, pop pattern
+    server.pushAccepted(test_allocator, &accepted, &conn1);
+    try testing.expectEqual(&conn1, server.popAccepted(&accepted).?);
+    try testing.expect(server.popAccepted(&accepted) == null);
+
+    server.pushAccepted(test_allocator, &accepted, &conn2);
+    server.pushAccepted(test_allocator, &accepted, &conn3);
+    try testing.expectEqual(&conn2, server.popAccepted(&accepted).?);
+    try testing.expectEqual(&conn3, server.popAccepted(&accepted).?);
+    try testing.expect(server.popAccepted(&accepted) == null);
+}
+
+test "RFC 9000 §7 - popAccepted on empty queue is safe" {
+    // Multiple pops on empty queue should all return null
+    var accepted = std.ArrayList(*Connection){};
+    defer accepted.deinit(test_allocator);
+
+    // Pop many times on empty queue
+    for (0..10) |_| {
+        try testing.expect(server.popAccepted(&accepted) == null);
+    }
+}
+
+test "RFC 9000 §7 - acceptFrom creates independent connections" {
+    // Multiple connections from same peer should be independent
+    var alloc = test_allocator;
+    const peer = SockAddr.ipv4(192, 168, 1, 100, 4433);
+
+    var conn1 = server.acceptFrom(&alloc, 1, peer);
+    var conn2 = server.acceptFrom(&alloc, 1, peer);
+
+    // Connections should be distinct objects
+    try testing.expect(&conn1 != &conn2);
+
+    // Both should have correct properties
+    try testing.expectEqual(.Server, conn1.role);
+    try testing.expectEqual(.Server, conn2.role);
+    try testing.expectEqual(@as(isize, 1), conn1.sock_fd);
+    try testing.expectEqual(@as(isize, 1), conn2.sock_fd);
+}
+
+test "RFC 9000 §7 - queue operations preserve connection identity" {
+    // Verify pointers remain valid through queue operations
+    var accepted = std.ArrayList(*Connection){};
+    defer accepted.deinit(test_allocator);
+
+    var alloc = test_allocator;
+    var conn = server.acceptFrom(&alloc, 1, SockAddr.ipv4(127, 0, 0, 1, 8080));
+
+    // Get original address
+    const original_ptr = &conn;
+
+    server.pushAccepted(test_allocator, &accepted, &conn);
+
+    // Verify same pointer is in queue
+    try testing.expectEqual(original_ptr, accepted.items[0]);
+
+    // Verify same pointer comes back
+    const popped = server.popAccepted(&accepted);
+    try testing.expectEqual(original_ptr, popped.?);
 }
 
 test "Phase 3 - connection enqueued after handshake progression" {
