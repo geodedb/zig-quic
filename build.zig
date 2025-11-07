@@ -755,6 +755,23 @@ pub fn build(b: *std.Build) void {
         const run_test_frame_datagram = b.addRunArtifact(test_frame_datagram);
         test_step.dependOn(&run_test_frame_datagram.step);
 
+        // Packet module tests
+        const test_packet_types = addTst(b, "tests/unit/packet/test_types.zig", target, optimize);
+        test_packet_types.root_module.addImport("types", packet_types_mod);
+        const run_test_packet_types = b.addRunArtifact(test_packet_types);
+        test_step.dependOn(&run_test_packet_types.step);
+
+        const test_packet_header = addTst(b, "tests/unit/packet/test_header.zig", target, optimize);
+        test_packet_header.root_module.addImport("header", packet_header_mod);
+        test_packet_header.root_module.addImport("types", packet_types_mod);
+        const run_test_packet_header = b.addRunArtifact(test_packet_header);
+        test_step.dependOn(&run_test_packet_header.step);
+
+        const test_packet_packet = addTst(b, "tests/unit/packet/test_packet.zig", target, optimize);
+        test_packet_packet.root_module.addImport("packet", quic_packet_mod);
+        const run_test_packet_packet = b.addRunArtifact(test_packet_packet);
+        test_step.dependOn(&run_test_packet_packet.step);
+
         const test_tls_record = addTst(b, "tests/test_tls_record_layer.zig", target, optimize);
         test_tls_record.root_module.addImport("tls_record", tls_record_mod);
         const run_test_tls_record = b.addRunArtifact(test_tls_record);
