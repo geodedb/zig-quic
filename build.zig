@@ -178,6 +178,9 @@ pub fn build(b: *std.Build) void {
     const quic_varint_mod = mkModule(b, "src/quic/varint.zig");
     quic_varint_mod.addImport("byteorder", byteorder_mod);
 
+    // Version negotiation module (needed by packet and connection modules)
+    const quic_version_mod = mkModule(b, "src/quic/version.zig");
+
     // ========================================================================
     // Packet Sub-Modules (Phase 7 Refactoring)
     // ========================================================================
@@ -196,6 +199,7 @@ pub fn build(b: *std.Build) void {
     quic_packet_legacy_mod.addImport("quic_tls", quic_tls_mod);
     quic_packet_legacy_mod.addImport("quic_crypto", quic_crypto_mod);
     quic_packet_legacy_mod.addImport("quic_varint", quic_varint_mod);
+    quic_packet_legacy_mod.addImport("quic_version", quic_version_mod);
     quic_packet_mod.addImport("../packet.zig", quic_packet_legacy_mod);
 
     // ========================================================================
@@ -317,6 +321,10 @@ pub fn build(b: *std.Build) void {
 
     const conn_limits_mod = mkModule(b, "src/quic/connection/limits.zig");
 
+    const conn_flow_control_mod = mkModule(b, "src/quic/connection/flow_control.zig");
+
+    const conn_error_mod = mkModule(b, "src/quic/connection/error.zig");
+
     const conn_connection_mod = mkModule(b, "src/quic/connection/connection.zig");
     // Connection coordinator imports all sub-modules
     conn_connection_mod.addImport("types", conn_types_mod);
@@ -330,6 +338,8 @@ pub fn build(b: *std.Build) void {
     conn_connection_mod.addImport("amplification", conn_amplification_mod);
     conn_connection_mod.addImport("pmtud", conn_pmtud_mod);
     conn_connection_mod.addImport("limits", conn_limits_mod);
+    conn_connection_mod.addImport("flow_control", conn_flow_control_mod);
+    conn_connection_mod.addImport("error", conn_error_mod);
 
     // ========================================================================
     // Endpoint Sub-Modules (Phase 2 Refactoring)
@@ -346,6 +356,7 @@ pub fn build(b: *std.Build) void {
     quic_conn_mod.addImport("quic_recovery", quic_recovery_mod);
     quic_conn_mod.addImport("quic_logger", quic_logger_mod);
     quic_conn_mod.addImport("byteorder", byteorder_mod);
+    quic_conn_mod.addImport("quic_version", quic_version_mod);
     // Make transport params available to connection and endpoint modules
     quic_conn_mod.addImport("quic_transport_params", quic_transport_params_mod);
     // Phase 5: conn.zig now imports connection/* modules directly via file paths to avoid diamond dependencies
@@ -406,6 +417,7 @@ pub fn build(b: *std.Build) void {
     quic_endpoint_mod.addImport("quic_transport_params", quic_transport_params_mod);
     quic_endpoint_mod.addImport("quic_logger", quic_logger_mod);
     quic_endpoint_mod.addImport("byteorder", byteorder_mod);
+    quic_endpoint_mod.addImport("quic_version", quic_version_mod);
 
     // Public API module (reuse everywhere)
     const quic_api_mod = mkModule(b, "src/quic/api.zig");
@@ -428,6 +440,8 @@ pub fn build(b: *std.Build) void {
     quic_api_mod.addImport("quic_transport_params", quic_transport_params_mod);
     // Add logger for endpoint.zig
     quic_api_mod.addImport("quic_logger", quic_logger_mod);
+    // Add version negotiation for endpoint.zig
+    quic_api_mod.addImport("quic_version", quic_version_mod);
 
     // Export named module for dependents: @import("quic")
     const quic_mod = b.addModule("quic", .{ .root_source_file = rp("src/quic/api.zig") }); // module API still supports root_source_file

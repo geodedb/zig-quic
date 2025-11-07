@@ -6,9 +6,9 @@ This document identifies additional areas of the QUIC library that can be modula
 
 ## Current Status
 
-### ✅ Already Modularized (Phase 1-5)
+### ✅ Already Modularized (Phase 1-11)
 
-**Connection Modules (12 files, 747 lines):**
+**Connection Modules (14 files, 1,076 lines):**
 - `connection/types.zig` (70 lines) - RFC 9000 §2-5
 - `connection/crypto_buffer.zig` (165 lines) - RFC 9000 §4.9.2, RFC 9001 §4
 - `connection/packet_number.zig` (137 lines) - RFC 9000 §12.3, §13.2, Appendix A.3
@@ -20,6 +20,8 @@ This document identifies additional areas of the QUIC library that can be modula
 - `connection/amplification.zig` (46 lines) - RFC 9000 §8.1
 - `connection/pmtud.zig` (29 lines) - RFC 9000 §14.2-14.4, RFC 8899
 - `connection/limits.zig` (26 lines) - RFC 9001 §6.6
+- `connection/flow_control.zig` (93 lines) - RFC 9000 §4 (Phase 9)
+- `connection/error.zig` (236 lines) - RFC 9000 §10, §20 (Phase 11)
 - `connection/connection.zig` (73 lines) - Module coordinator
 
 **Endpoint Modules (9 files, 497 lines):**
@@ -32,6 +34,20 @@ This document identifies additional areas of the QUIC library that can be modula
 - `endpoint/incoming.zig` (28 lines) - RFC 9000 §12-17
 - `endpoint/pto.zig` (34 lines) - RFC 9002 §6.2
 - `endpoint/endpoint.zig` (69 lines) - Module coordinator
+
+**Frame Modules (10 files, ~760 lines) - Phase 6:**
+- See Phase 6 section below for details
+
+**Packet Modules (3 files, 266 lines) - Phase 7:**
+- See Phase 7 section below for details
+
+**Recovery Modules (5 files, 528 lines) - Phase 8:**
+- See Phase 8 section below for details
+
+**Version Module (1 file, 201 lines) - Phase 10:**
+- `version.zig` (201 lines) - RFC 9000 §6, RFC 9369
+
+**Total Modularized: 42 modules, ~3,328 lines**
 
 ### 📦 Existing Modules (Not Yet Modularized)
 
@@ -137,73 +153,100 @@ Direct mapping to RFC 9002 sections (RTT §5, Loss Detection §6, Congestion Con
 
 ---
 
-## Phase 9: Connection Flow Control Extraction
+## Phase 9: Connection Flow Control Extraction ✅ COMPLETED
 
-**Target:** Extract flow control logic from `conn.zig` (currently embedded in 3449-line file)
+**Target:** Extract flow control logic from `conn.zig` → helper functions module
 
-### Proposed Structure: `src/quic/connection/flow_control.zig`
+### Completed Structure: `src/quic/connection/flow_control.zig`
+
+**Module:** 93 lines of flow control helper functions
 
 | Function | RFC Sections | Purpose |
 |----------|--------------|---------|
-| `checkConnectionFlowControl()` | RFC 9000 §4.1 | Connection-level flow control limits |
-| `checkStreamFlowControl()` | RFC 9000 §4.2 | Stream-level flow control limits |
-| `updateMaxData()` | RFC 9000 §4.1, §19.10 | Update connection-level receive window |
-| `updateMaxStreamData()` | RFC 9000 §4.2, §19.11 | Update stream-level receive window |
-| `checkStreamLimits()` | RFC 9000 §4.6 | Check MAX_STREAMS limits |
-| `generateFlowControlFrames()` | RFC 9000 §19.10-19.14 | Generate MAX_* frames when needed |
+| `canSendConnectionData()` | RFC 9000 §4.1 | Check if connection-level flow control allows sending |
+| `canSendStreamData()` | RFC 9000 §4.2 | Check if stream-level flow control allows sending |
+| `connectionFlowWindow()` | RFC 9000 §4.1 | Compute available connection-level window |
+| `streamFlowWindow()` | RFC 9000 §4.2 | Compute available stream-level window |
+| `canOpenStream()` | RFC 9000 §4.6 | Check if stream count is within MAX_STREAMS limit |
+| `shouldExpandConnectionWindow()` | RFC 9000 §4.1 | Check if connection receive window should expand |
+| `shouldExpandStreamWindow()` | RFC 9000 §4.2 | Check if stream receive window should expand |
+| `expandConnectionWindow()` | RFC 9000 §4.1 | Compute new connection limit with adaptive growth |
+| `expandStreamWindow()` | RFC 9000 §4.2 | Compute new stream limit with adaptive growth |
+| `shouldSendMaxData()` | RFC 9000 §19.10 | Check if MAX_DATA frame should be sent |
+| `shouldSendMaxStreamData()` | RFC 9000 §19.11 | Check if MAX_STREAM_DATA frame should be sent |
+| `shouldSendMaxStreamsBidi()` | RFC 9000 §19.12 | Check if MAX_STREAMS_BIDI frame should be sent |
+| `clampToFlowControl()` | RFC 9000 §4 | Clamp send amount to available windows |
+
+**Implementation Approach:**
+- **Helper Functions**: Pure functions that operate on flow control state
+- **Connection Integration**: Connection struct retains flow control state fields
+- **Clean Separation**: Flow control logic isolated for testing and clarity
 
 **Benefits:**
-- Test flow control independently
+- Flow control logic testable independently
 - Clearer RFC 9000 §4 compliance
 - Easier to debug flow control issues
+- Reusable helper functions
 
-**Estimated Size:** ~200 lines
+**RFC Alignment:**
+Direct mapping to RFC 9000 §4 (Flow Control) and §19.10-19.14 (Flow Control Frames).
 
 ---
 
-## Phase 10: Version Negotiation Module
+## Phase 10: Version Negotiation Module ✅ COMPLETED
 
 **Target:** Extract version negotiation from `conn.zig` and `packet.zig`
 
-### Proposed Structure: `src/quic/version.zig`
+### Completed Structure: `src/quic/version.zig`
 
 | Function | RFC Sections | Purpose |
 |----------|--------------|---------|
-| `parseVersion()` | RFC 9000 §6 | Parse version from packet |
-| `isSupported()` | RFC 9000 §6.1 | Check if version is supported |
-| `generateVersionNegotiation()` | RFC 9000 §6.2, §17.2.1 | Generate Version Negotiation packet |
-| `validateVersionNegotiation()` | RFC 9000 §6.2 | Validate received VN packet |
-| `getVersionSalt()` | RFC 9001 §5.2 | Get Initial salt for version |
+| `QUIC_V1`, `QUIC_V2`, `SUPPORTED_VERSIONS` | RFC 9000 §15, RFC 9369 | Version constants |
+| `isSupported()`, `isV1()`, `isV2()` | RFC 9000 §6.1 | Version checking |
+| `parseVersion()`, `encodeVersion()` | RFC 9000 §6, §17.2 | Version parsing/encoding |
+| `encodeVersionNegotiation()` | RFC 9000 §6.2, §17.2.1 | Generate Version Negotiation packet |
+| `decodeVersionNegotiation()` | RFC 9000 §17.2.1 | Parse Version Negotiation packet |
+| `shouldAcceptVersionNegotiation()` | RFC 9000 §6.2 | Downgrade protection check |
+| `validateVersionNegotiation()` | RFC 9000 §6.2 | Full VN packet validation with CID checks |
+| `selectVersion()` | RFC 9000 §6.2 | Select best version from offered list |
 
 **Benefits:**
-- Test version negotiation independently
-- Support QUIC v2 (RFC 9369) easily
+- Version negotiation independently testable
+- QUIC v2 (RFC 9369) support included
+- Downgrade protection implemented
 - Clear version compatibility matrix
 
-**Estimated Size:** ~150 lines
+**Actual Size:** 201 lines
 
 ---
 
-## Phase 11: Error Handling Module
+## Phase 11: Error Handling Module ✅ COMPLETED
 
 **Target:** Extract error handling from `conn.zig`
 
-### Proposed Structure: `src/quic/connection/error.zig`
+### Completed Structure: `src/quic/connection/error.zig`
 
-| Function | RFC Sections | Purpose |
-|----------|--------------|---------|
-| `ErrorCode` enum | RFC 9000 §20 | All QUIC error codes |
-| `generateConnectionClose()` | RFC 9000 §10.2, §19.19 | Generate CONNECTION_CLOSE frame |
-| `handleConnectionClose()` | RFC 9000 §10.2 | Process CONNECTION_CLOSE |
-| `enterDraining()` | RFC 9000 §10.2.1 | Enter draining state |
-| `immediateClose()` | RFC 9000 §10.2.3 | Immediate close without draining |
+| Type/Function | RFC Sections | Purpose |
+|---------------|--------------|---------|
+| `ErrorCode` enum | RFC 9000 §20 | All QUIC transport error codes (NO_ERROR through NO_VIABLE_PATH) |
+| `cryptoError()`, `isCryptoError()`, `tlsAlert()` | RFC 9000 §20, RFC 9001 §4.8 | CRYPTO_ERROR helpers (0x0100-0x01FF) |
+| `CloseState` enum | RFC 9000 §10.2 | Connection termination states (active, closing, draining, closed) |
+| `ErrorContext` struct | RFC 9000 §10 | Error state tracking with code, reason, and timestamp |
+| `enterClosing()` | RFC 9000 §10.2.1 | Transition to closing state after sending CONNECTION_CLOSE |
+| `enterDraining()` | RFC 9000 §10.2.2 | Transition to draining state after receiving CONNECTION_CLOSE |
+| `enterClosed()`, `immediateClose()` | RFC 9000 §10.2.3 | Final closure transitions |
+| `isTerminating()`, `isClosed()`, `canSend()` | RFC 9000 §10.2 | State query functions |
+| `drainingTimeoutNs()`, `isDrainingExpired()` | RFC 9000 §10.2 | Draining timeout calculation (3x PTO) |
+| `isValidErrorCode()`, `errorCodeString()` | RFC 9000 §20 | Error code validation and display |
 
 **Benefits:**
-- Test error handling independently
-- Clear error code definitions (RFC 9000 §20)
-- Easier to audit connection closure logic
+- Complete RFC 9000 §20 error code enumeration
+- Clear connection closure state machine
+- Draining timeout management (3x PTO)
+- Independent testing of error handling
+- CRYPTO_ERROR range support (TLS alerts)
 
-**Estimated Size:** ~180 lines
+**Actual Size:** 236 lines
 
 ---
 
@@ -346,9 +389,10 @@ For each new module:
 - **Phase 6**: ✅ 10 frame modules created (types, misc, crypto, stream, ack, path, connection_mgmt, flow_control, datagram, frame coordinator)
 - **Phase 7**: ✅ 3 packet modules created (types, header, packet coordinator with hybrid approach)
 - **Phase 8**: ✅ 5 recovery modules created (types, rtt, loss_detection, congestion, recovery coordinator)
-- **Phase 9-14**: 📋 Additional focused modules
+- **Phase 9**: ✅ 1 flow control module created (connection/flow_control.zig with helper functions)
+- **Phase 10-14**: 📋 Additional focused modules
 
-**Total Completed**: 39 modules (~3,403 lines modularized, avg 87 lines per module)
+**Total Completed**: 40 modules (~3,496 lines modularized, avg 87 lines per module)
 
 ---
 

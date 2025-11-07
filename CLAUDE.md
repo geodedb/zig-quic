@@ -25,6 +25,8 @@ The QUIC implementation uses a **modular, RFC-aligned architecture** in `src/qui
 | `connection/amplification.zig` | RFC 9000 §8.1 | Anti-amplification limit tracking |
 | `connection/pmtud.zig` | RFC 9000 §14.2-14.4, RFC 8899 | Path MTU discovery (DPLPMTUD) |
 | `connection/limits.zig` | RFC 9001 §6.6 | AEAD usage limits, key update triggers |
+| `connection/flow_control.zig` | RFC 9000 §4 | Flow control helpers: window checks, limit expansion, frame generation |
+| `connection/error.zig` | RFC 9000 §10, §20 | Error codes, connection closure, draining state management |
 
 ### Frame Modules (RFC 9000 Transport, RFC 9221 DATAGRAM)
 
@@ -50,6 +52,12 @@ The QUIC implementation uses a **modular, RFC-aligned architecture** in `src/qui
 | `packet/packet.zig` | RFC 9000 §17, RFC 9001 §5 | Coordinator module: re-exports types, headers, and legacy packet functions |
 
 **Note:** The packet coordinator uses a hybrid approach - it establishes modular structure by importing packet/types.zig and packet/header.zig, while re-exporting functions from the legacy packet.zig implementation. Future phases will gradually extract specialized modules (initial.zig, handshake.zig, one_rtt.zig, etc.) from the legacy implementation.
+
+### Version Negotiation Module (RFC 9000 §6, RFC 9369)
+
+| Module | RFC Sections | Purpose |
+|--------|--------------|---------|
+| `version.zig` | RFC 9000 §6, §17.2.1, RFC 9369 | Version negotiation: QUIC v1/v2 constants, version parsing/encoding, VN packet encode/decode, downgrade protection, version selection |
 
 ### Recovery Modules (RFC 9002 Loss Detection and Congestion Control)
 
