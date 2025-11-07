@@ -772,6 +772,12 @@ pub fn build(b: *std.Build) void {
         const run_test_packet_packet = b.addRunArtifact(test_packet_packet);
         test_step.dependOn(&run_test_packet_packet.step);
 
+        // Version module tests
+        const test_version = addTst(b, "tests/unit/version/test_version.zig", target, optimize);
+        test_version.root_module.addImport("version", quic_version_mod);
+        const run_test_version = b.addRunArtifact(test_version);
+        test_step.dependOn(&run_test_version.step);
+
         const test_tls_record = addTst(b, "tests/test_tls_record_layer.zig", target, optimize);
         test_tls_record.root_module.addImport("tls_record", tls_record_mod);
         const run_test_tls_record = b.addRunArtifact(test_tls_record);
