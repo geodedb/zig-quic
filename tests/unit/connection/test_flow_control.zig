@@ -15,7 +15,7 @@
 const std = @import("std");
 const testing = std.testing;
 
-const fc = @import("flow_control.zig");
+const fc = @import("flow_control");
 
 // =============================================================================
 // Connection Flow Control Tests
@@ -277,14 +277,15 @@ test "boundary: Flow control with max u64" {
 }
 
 test "boundary: Window expansion with overflow protection" {
-    const current_max: u64 = std.math.maxInt(u64) - 100;
+    const current_max: u64 = std.math.maxInt(u64) / 2 + 1000;
     const growth_factor_num: u64 = 2;
     const growth_factor_denom: u64 = 1;
 
     // Uses saturating arithmetic (+%)
-    _ = fc.expandConnectionWindow(current_max, growth_factor_num, growth_factor_denom);
+    const result = fc.expandConnectionWindow(current_max, growth_factor_num, growth_factor_denom);
 
-    try testing.expect(true); // Should not panic
+    // Result should wrap around due to +%
+    try testing.expect(result < current_max); // Wrapped around
 }
 
 test "boundary: clampToFlowControl with zero windows" {

@@ -15,7 +15,7 @@
 const std = @import("std");
 const testing = std.testing;
 
-const error_mod = @import("error.zig");
+const error_mod = @import("error");
 
 // =============================================================================
 // ErrorCode Enum Tests
@@ -148,7 +148,7 @@ test "RFC 9001 §4.8 - cryptoError creates CRYPTO_ERROR from TLS alert" {
     const alert: u8 = 40; // handshake_failure
     const code = error_mod.ErrorCode.cryptoError(alert);
 
-    try testing.expectEqual(@as(u64, 0x0140), @intFromEnum(code));
+    try testing.expectEqual(@as(u64, 0x0100 + 40), @intFromEnum(code));
 }
 
 test "RFC 9001 §4.8 - cryptoError alert 0 maps to 0x0100" {
@@ -332,8 +332,8 @@ test "RFC 9000 §10.2.2 - enterDraining preserves close_time from closing" {
 
 test "RFC 9000 §10.2.2 - enterDraining sets close_time if null" {
     var ctx = error_mod.init();
-    // Manually set to draining without close_time
-    ctx.state = .draining;
+    // Start from closing state without close_time
+    ctx.state = .closing;
     ctx.close_time_ns = null;
 
     const now: u64 = 2000000;

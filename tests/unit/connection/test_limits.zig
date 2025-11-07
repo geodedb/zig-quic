@@ -15,7 +15,7 @@
 const std = @import("std");
 const testing = std.testing;
 
-const limits = @import("limits.zig");
+const limits = @import("limits");
 
 // =============================================================================
 // AeadLimits Initialization Tests
