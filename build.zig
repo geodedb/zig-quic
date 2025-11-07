@@ -171,17 +171,82 @@ pub fn build(b: *std.Build) void {
 
     // QUIC crypto and packet modules
     const quic_crypto_mod = mkModule(b, "src/quic/crypto_quic.zig");
-    const quic_packet_mod = mkModule(b, "src/quic/packet.zig");
-    quic_packet_mod.addImport("quic_tls", quic_tls_mod);
-    quic_packet_mod.addImport("quic_crypto", quic_crypto_mod);
     // Ensure crypto module can import the key schedule
     quic_crypto_mod.addImport("quic_tls", quic_tls_mod);
 
-    // Varint/frame
+    // Varint module (needed by packet and frame modules)
     const quic_varint_mod = mkModule(b, "src/quic/varint.zig");
     quic_varint_mod.addImport("byteorder", byteorder_mod);
-    const quic_frame_mod = mkModule(b, "src/quic/frame.zig");
+
+    // ========================================================================
+    // Packet Sub-Modules (Phase 7 Refactoring)
+    // ========================================================================
+    const packet_types_mod = mkModule(b, "src/quic/packet/types.zig");
+
+    const packet_header_mod = mkModule(b, "src/quic/packet/header.zig");
+    packet_header_mod.addImport("types", packet_types_mod);
+    packet_header_mod.addImport("quic_varint", quic_varint_mod);
+
+    // Packet coordinator module (imports legacy packet.zig and new submodules)
+    const quic_packet_mod = mkModule(b, "src/quic/packet/packet.zig");
+    quic_packet_mod.addImport("types", packet_types_mod);
+    quic_packet_mod.addImport("header", packet_header_mod);
+    // Import legacy packet.zig for current implementations
+    const quic_packet_legacy_mod = mkModule(b, "src/quic/packet.zig");
+    quic_packet_legacy_mod.addImport("quic_tls", quic_tls_mod);
+    quic_packet_legacy_mod.addImport("quic_crypto", quic_crypto_mod);
+    quic_packet_legacy_mod.addImport("quic_varint", quic_varint_mod);
+    quic_packet_mod.addImport("../packet.zig", quic_packet_legacy_mod);
+
+    // ========================================================================
+    // Frame Sub-Modules (Phase 6 Refactoring)
+    // ========================================================================
+    const frame_types_mod = mkModule(b, "src/quic/frame/types.zig");
+
+    const frame_misc_mod = mkModule(b, "src/quic/frame/misc.zig");
+    frame_misc_mod.addImport("types", frame_types_mod);
+    frame_misc_mod.addImport("quic_varint", quic_varint_mod);
+
+    const frame_crypto_mod = mkModule(b, "src/quic/frame/crypto.zig");
+    frame_crypto_mod.addImport("types", frame_types_mod);
+    frame_crypto_mod.addImport("quic_varint", quic_varint_mod);
+
+    const frame_stream_mod = mkModule(b, "src/quic/frame/stream.zig");
+    frame_stream_mod.addImport("types", frame_types_mod);
+    frame_stream_mod.addImport("quic_varint", quic_varint_mod);
+
+    const frame_ack_mod = mkModule(b, "src/quic/frame/ack.zig");
+    frame_ack_mod.addImport("types", frame_types_mod);
+    frame_ack_mod.addImport("quic_varint", quic_varint_mod);
+
+    const frame_path_mod = mkModule(b, "src/quic/frame/path.zig");
+    frame_path_mod.addImport("types", frame_types_mod);
+
+    const frame_connection_mgmt_mod = mkModule(b, "src/quic/frame/connection_mgmt.zig");
+    frame_connection_mgmt_mod.addImport("types", frame_types_mod);
+    frame_connection_mgmt_mod.addImport("quic_varint", quic_varint_mod);
+
+    const frame_flow_control_mod = mkModule(b, "src/quic/frame/flow_control.zig");
+    frame_flow_control_mod.addImport("types", frame_types_mod);
+    frame_flow_control_mod.addImport("quic_varint", quic_varint_mod);
+
+    const frame_datagram_mod = mkModule(b, "src/quic/frame/datagram.zig");
+    frame_datagram_mod.addImport("types", frame_types_mod);
+    frame_datagram_mod.addImport("quic_varint", quic_varint_mod);
+
+    // Frame coordinator module
+    const quic_frame_mod = mkModule(b, "src/quic/frame/frame.zig");
+    quic_frame_mod.addImport("types", frame_types_mod);
+    quic_frame_mod.addImport("misc", frame_misc_mod);
+    quic_frame_mod.addImport("crypto", frame_crypto_mod);
+    quic_frame_mod.addImport("stream", frame_stream_mod);
+    quic_frame_mod.addImport("ack", frame_ack_mod);
+    quic_frame_mod.addImport("path", frame_path_mod);
+    quic_frame_mod.addImport("connection_mgmt", frame_connection_mgmt_mod);
+    quic_frame_mod.addImport("flow_control", frame_flow_control_mod);
+    quic_frame_mod.addImport("datagram", frame_datagram_mod);
     quic_frame_mod.addImport("quic_varint", quic_varint_mod);
+
     quic_packet_mod.addImport("quic_varint", quic_varint_mod);
 
     // Local QUIC transport params (separate from vendored TLS transport params)

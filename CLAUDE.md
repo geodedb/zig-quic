@@ -26,6 +26,31 @@ The QUIC implementation uses a **modular, RFC-aligned architecture** in `src/qui
 | `connection/pmtud.zig` | RFC 9000 §14.2-14.4, RFC 8899 | Path MTU discovery (DPLPMTUD) |
 | `connection/limits.zig` | RFC 9001 §6.6 | AEAD usage limits, key update triggers |
 
+### Frame Modules (RFC 9000 Transport, RFC 9221 DATAGRAM)
+
+| Module | RFC Sections | Purpose |
+|--------|--------------|---------|
+| `frame/types.zig` | RFC 9000 §19 | FrameType enum, AckRange, EcnCounts types |
+| `frame/misc.zig` | RFC 9000 §19.1-19.2, §19.7, §19.20 | PADDING, PING, NEW_TOKEN, HANDSHAKE_DONE |
+| `frame/crypto.zig` | RFC 9000 §19.6 | CRYPTO frame for TLS handshake data |
+| `frame/stream.zig` | RFC 9000 §19.8 | STREAM frame encoding/decoding with offset/FIN |
+| `frame/ack.zig` | RFC 9000 §19.3, RFC 3168 | ACK, ACK_ECN frames with range encoding |
+| `frame/path.zig` | RFC 9000 §19.17-19.18, §9 | PATH_CHALLENGE, PATH_RESPONSE for validation |
+| `frame/connection_mgmt.zig` | RFC 9000 §19.4-19.5, §19.15-19.16, §19.19 | Connection/stream lifecycle management |
+| `frame/flow_control.zig` | RFC 9000 §19.10-19.14, §4 | MAX_DATA, MAX_STREAM_DATA, *_BLOCKED frames |
+| `frame/datagram.zig` | RFC 9221 | DATAGRAM frame (unreliable extension) |
+| `frame/frame.zig` | RFC 9000 §19 | Coordinator module with Frame union |
+
+### Packet Modules (RFC 9000 Packet Formats, RFC 9001 Packet Protection)
+
+| Module | RFC Sections | Purpose |
+|--------|--------------|---------|
+| `packet/types.zig` | RFC 9000 §17 | PacketNumber, LongHeaderType, Decoded* result types, QUIC version constants |
+| `packet/header.zig` | RFC 9000 §17.2-17.3 | LongHeader and ShortHeader structures for test/diagnostic use |
+| `packet/packet.zig` | RFC 9000 §17, RFC 9001 §5 | Coordinator module: re-exports types, headers, and legacy packet functions |
+
+**Note:** The packet coordinator uses a hybrid approach - it establishes modular structure by importing packet/types.zig and packet/header.zig, while re-exporting functions from the legacy packet.zig implementation. Future phases will gradually extract specialized modules (initial.zig, handshake.zig, one_rtt.zig, etc.) from the legacy implementation.
+
 ### Endpoint Modules (RFC 9000 Transport, RFC 9002 Recovery)
 
 | Module | RFC Sections | Purpose |
