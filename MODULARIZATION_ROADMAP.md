@@ -106,29 +106,34 @@ Maps to RFC 9000 §17 (Packet Formats) and RFC 9001 §5.4 (Header Protection).
 
 ---
 
-## Phase 8: Recovery Module Refactoring
+## Phase 8: Recovery Module Refactoring ✅ COMPLETED
 
-**Target:** `recovery.zig` (463 lines) → 4-5 focused modules (~90-120 lines each)
+**Target:** `recovery.zig` (464 lines) → 5 focused modules
 
-### Proposed Structure: `src/quic/recovery/*`
+### Completed Structure: `src/quic/recovery/*`
 
-| Module | RFC Sections | Lines Est. | Purpose |
-|--------|--------------|------------|---------|
-| `recovery/types.zig` | RFC 9002 §2 | 60 | Common types (CcState, SentPacket, AckFrame) |
-| `recovery/rtt.zig` | RFC 9002 §5 | 120 | RTT estimation (RttState, onAck, computePto) |
-| `recovery/loss_detection.zig` | RFC 9002 §6 | 150 | Loss detection algorithm, PTO computation |
-| `recovery/congestion.zig` | RFC 9002 §7 | 100 | Common congestion control interface |
-| `recovery/newreno.zig` | RFC 9002 §7.3, Appendix B.1 | 100 | NewReno congestion controller |
-| `recovery/cubic.zig` | RFC 9002 Appendix B.2 | 120 | CUBIC congestion controller |
+| Module | RFC Sections | Lines | Purpose |
+|--------|--------------|-------|---------|
+| `recovery/types.zig` | RFC 9002 §2 | 38 | Common types (CcState, SentPacket, PacketNumberSpace, CUBIC constants) |
+| `recovery/rtt.zig` | RFC 9002 §5, §6.2 | 64 | RTT estimation (RttState, onAck, computePto with backoff) |
+| `recovery/loss_detection.zig` | RFC 9002 §6.1 | 38 | Loss detection (LossDetector, packet/time thresholds, isAckElicitingFrame) |
+| `recovery/congestion.zig` | RFC 9002 §7, Appendix B | 79 | NewReno, CUBIC congestion controllers, pacing delay computation |
+| `recovery/recovery.zig` | RFC 9002 | 309 | Coordinator module with Recovery struct: RTT, loss detection, CC, per-space state |
+
+**Implementation Approach:**
+- **Full Extraction**: Unlike Phase 7's hybrid approach, Phase 8 fully extracts all recovery logic into focused modules
+- **Clean Separation**: Types, RTT, loss detection, and congestion control are completely independent
+- **Coordinator Pattern**: recovery.zig combines all submodules and implements the main Recovery struct
 
 **Benefits:**
-- Test RTT estimation independently
-- Test congestion controllers in isolation
-- Easy to add new congestion control algorithms
+- RTT estimation testable independently
+- Loss detection algorithm isolated and verifiable
+- Congestion controllers (NewReno/CUBIC) separately testable
 - Clear RFC 9002 section alignment
+- Easy to add new congestion control algorithms
 
 **RFC Alignment:**
-Direct mapping to RFC 9002 sections (RTT, Loss Detection, Congestion Control).
+Direct mapping to RFC 9002 sections (RTT §5, Loss Detection §6, Congestion Control §7).
 
 ---
 
@@ -340,10 +345,10 @@ For each new module:
 - **Phase 1-5**: ✅ 21 modules created (connection/*, endpoint/*)
 - **Phase 6**: ✅ 10 frame modules created (types, misc, crypto, stream, ack, path, connection_mgmt, flow_control, datagram, frame coordinator)
 - **Phase 7**: ✅ 3 packet modules created (types, header, packet coordinator with hybrid approach)
-- **Phase 8**: 📋 6 recovery modules planned
+- **Phase 8**: ✅ 5 recovery modules created (types, rtt, loss_detection, congestion, recovery coordinator)
 - **Phase 9-14**: 📋 Additional focused modules
 
-**Total Completed**: 34 modules (~2,875 lines modularized, avg 85 lines per module)
+**Total Completed**: 39 modules (~3,403 lines modularized, avg 87 lines per module)
 
 ---
 

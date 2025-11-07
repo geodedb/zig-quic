@@ -51,6 +51,16 @@ The QUIC implementation uses a **modular, RFC-aligned architecture** in `src/qui
 
 **Note:** The packet coordinator uses a hybrid approach - it establishes modular structure by importing packet/types.zig and packet/header.zig, while re-exporting functions from the legacy packet.zig implementation. Future phases will gradually extract specialized modules (initial.zig, handshake.zig, one_rtt.zig, etc.) from the legacy implementation.
 
+### Recovery Modules (RFC 9002 Loss Detection and Congestion Control)
+
+| Module | RFC Sections | Purpose |
+|--------|--------------|---------|
+| `recovery/types.zig` | RFC 9002 §2 | CcState, SentPacket, PacketNumberSpace, CUBIC constants |
+| `recovery/rtt.zig` | RFC 9002 §5, §6.2 | RTT estimation (RttState, onAck, computePto) |
+| `recovery/loss_detection.zig` | RFC 9002 §6.1 | Loss detection (LossDetector, packet/time thresholds, isAckElicitingFrame) |
+| `recovery/congestion.zig` | RFC 9002 §7, Appendix B | NewReno, CUBIC congestion controllers, pacing delay computation |
+| `recovery/recovery.zig` | RFC 9002 | Coordinator module with Recovery struct: RTT, loss detection, congestion control |
+
 ### Endpoint Modules (RFC 9000 Transport, RFC 9002 Recovery)
 
 | Module | RFC Sections | Purpose |

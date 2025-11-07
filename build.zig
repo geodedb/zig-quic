@@ -255,8 +255,24 @@ pub fn build(b: *std.Build) void {
 
     // Note: tls13_mod uses ztls_transport_params_mod from vendor/ztls (defined above)
 
-    // Recovery
-    const quic_recovery_mod = mkModule(b, "src/quic/recovery.zig");
+    // ========================================================================
+    // Recovery Sub-Modules (Phase 8 Refactoring)
+    // ========================================================================
+    const recovery_types_mod = mkModule(b, "src/quic/recovery/types.zig");
+
+    const recovery_rtt_mod = mkModule(b, "src/quic/recovery/rtt.zig");
+
+    const recovery_loss_detection_mod = mkModule(b, "src/quic/recovery/loss_detection.zig");
+    recovery_loss_detection_mod.addImport("quic_frame", quic_frame_mod);
+
+    const recovery_congestion_mod = mkModule(b, "src/quic/recovery/congestion.zig");
+
+    // Recovery coordinator module
+    const quic_recovery_mod = mkModule(b, "src/quic/recovery/recovery.zig");
+    quic_recovery_mod.addImport("types", recovery_types_mod);
+    quic_recovery_mod.addImport("rtt.zig", recovery_rtt_mod);
+    quic_recovery_mod.addImport("loss_detection.zig", recovery_loss_detection_mod);
+    quic_recovery_mod.addImport("congestion.zig", recovery_congestion_mod);
     quic_recovery_mod.addImport("quic_frame", quic_frame_mod);
     if (cc_opt) |_| {
         // Placeholder: runtime selection occurs via config; both controllers are in same module
