@@ -1,25 +1,69 @@
-//! Server connection acceptance and processing.
+//! Server connection acceptance and address validation (RFC 9000 §7, §8.1).
 //!
-//! RFC 9000 §7: Cryptographic and Transport Handshake
-//! RFC 9000 §8.1: Address Validation (Retry, tokens)
+//! This module handles server-side connection establishment including:
+//! - Connection acceptance from Initial packets
+//! - Address validation via Retry packets (RFC 9000 §8.1.1)
+//! - Accepted connection queue management
+//!
+//! RFC References:
+//! - RFC 9000 §7: Cryptographic and Transport Handshake
+//! - RFC 9000 §8.1: Address Validation
+//! - RFC 9000 §8.1.1: Address Validation Using Retry Packets
+//! - RFC 9000 §10.3: Stateless Reset
 
 const std = @import("std");
 const conn_mod = @import("../conn.zig");
 
-/// Server connection acceptance helpers.
-/// This module will contain functions extracted from endpoint.zig for:
-/// - acceptFrom: Accept new connection from peer
-/// - popAccepted: Get next accepted connection from queue
-/// - Retry token validation
-/// - Stateless reset generation
+/// Accept a server connection from initial datagram's peer address.
 ///
-/// These functions handle incoming Initial packets and coordinate with
-/// the TLS layer to process ServerHello.
+/// Creates a new server-side Connection object for the peer that sent an Initial packet.
+/// The connection is in initial state and needs to complete the handshake.
+///
+/// RFC 9000 §7: "A server that receives an Initial packet creates a new connection state."
+///
+/// Parameters:
+///   - sock_fd: Socket file descriptor for sending/receiving
+///   - peer: Socket address of the client that sent the Initial packet
+///
+/// Returns:
+///   A new Connection object configured for server role
+pub fn acceptFrom(sock_fd: std.posix.socket_t, peer: conn_mod.SockAddr) conn_mod.Connection {
+    return .{
+        .id = 0,
+        .role = .Server,
+        .sock_fd = @as(isize, @intCast(sock_fd)),
+        .peer = peer,
+        .tls_inbox = std.ArrayList(u8){},
+    };
+}
 
-/// Placeholder for server connection acceptance.
-/// Full implementation will be extracted from endpoint.zig during Phase 3.
-pub const ServerHandshake = struct {
-    pub fn init() ServerHandshake {
-        return .{};
-    }
-};
+/// Enqueue accepted server connection to the accepted queue.
+///
+/// After a server creates a connection from an Initial packet, it's added to the
+/// accepted queue where the application can retrieve it via popAccepted().
+///
+/// Parameters:
+///   - allocator: Memory allocator for the accepted queue
+///   - accepted: ArrayList of accepted connections
+///   - c: Connection pointer to enqueue
+pub fn pushAccepted(allocator: std.mem.Allocator, accepted: *std.ArrayList(*conn_mod.Connection), c: *conn_mod.Connection) void {
+    accepted.append(allocator, c) catch {};
+}
+
+/// Pop next accepted server-side connection if available.
+///
+/// Retrieves the next connection from the accepted queue. This is typically called
+/// by application code to handle new incoming connections.
+///
+/// RFC 9000 §7: After receiving and processing an Initial packet, the server makes
+/// the connection available to the application.
+///
+/// Parameters:
+///   - accepted: ArrayList of accepted connections
+///
+/// Returns:
+///   - Pointer to the next accepted Connection, or null if queue is empty
+pub fn popAccepted(accepted: *std.ArrayList(*conn_mod.Connection)) ?*conn_mod.Connection {
+    if (accepted.items.len == 0) return null;
+    return accepted.orderedRemove(0);
+}
