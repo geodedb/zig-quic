@@ -778,6 +778,33 @@ pub fn build(b: *std.Build) void {
         const run_test_version = b.addRunArtifact(test_version);
         test_step.dependOn(&run_test_version.step);
 
+        // Recovery module tests
+        const test_recovery_types = addTst(b, "tests/unit/recovery/test_types.zig", target, optimize);
+        test_recovery_types.root_module.addImport("types", recovery_types_mod);
+        const run_test_recovery_types = b.addRunArtifact(test_recovery_types);
+        test_step.dependOn(&run_test_recovery_types.step);
+
+        const test_recovery_rtt = addTst(b, "tests/unit/recovery/test_rtt.zig", target, optimize);
+        test_recovery_rtt.root_module.addImport("rtt", recovery_rtt_mod);
+        const run_test_recovery_rtt = b.addRunArtifact(test_recovery_rtt);
+        test_step.dependOn(&run_test_recovery_rtt.step);
+
+        const test_recovery_loss_detection = addTst(b, "tests/unit/recovery/test_loss_detection.zig", target, optimize);
+        test_recovery_loss_detection.root_module.addImport("loss_detection", recovery_loss_detection_mod);
+        test_recovery_loss_detection.root_module.addImport("quic_frame", quic_frame_mod);
+        const run_test_recovery_loss_detection = b.addRunArtifact(test_recovery_loss_detection);
+        test_step.dependOn(&run_test_recovery_loss_detection.step);
+
+        const test_recovery_congestion = addTst(b, "tests/unit/recovery/test_congestion.zig", target, optimize);
+        test_recovery_congestion.root_module.addImport("congestion", recovery_congestion_mod);
+        const run_test_recovery_congestion = b.addRunArtifact(test_recovery_congestion);
+        test_step.dependOn(&run_test_recovery_congestion.step);
+
+        const test_recovery_recovery = addTst(b, "tests/unit/recovery/test_recovery.zig", target, optimize);
+        test_recovery_recovery.root_module.addImport("recovery", quic_recovery_mod);
+        const run_test_recovery_recovery = b.addRunArtifact(test_recovery_recovery);
+        test_step.dependOn(&run_test_recovery_recovery.step);
+
         const test_tls_record = addTst(b, "tests/test_tls_record_layer.zig", target, optimize);
         test_tls_record.root_module.addImport("tls_record", tls_record_mod);
         const run_test_tls_record = b.addRunArtifact(test_tls_record);
