@@ -393,6 +393,15 @@ pub fn build(b: *std.Build) void {
 
     const endpoint_incoming_mod = mkModule(b, "src/quic/endpoint/incoming.zig");
 
+    const endpoint_handshake_integration_mod = mkModule(b, "src/quic/endpoint/handshake_integration.zig");
+    endpoint_handshake_integration_mod.addImport("quic_conn", quic_conn_mod);
+    endpoint_handshake_integration_mod.addImport("packet", quic_packet_legacy_mod);
+    endpoint_handshake_integration_mod.addImport("frame", quic_frame_mod);
+    endpoint_handshake_integration_mod.addImport("crypto_quic", quic_crypto_mod);
+    endpoint_handshake_integration_mod.addImport("transport_params", quic_transport_params_mod);
+    endpoint_handshake_integration_mod.addImport("vendor_ztls_tls13", tls13_mod);
+    endpoint_handshake_integration_mod.addImport("vendor_ztls_key_schedule", quic_tls_mod);
+
     const endpoint_pto_mod = mkModule(b, "src/quic/endpoint/pto.zig");
     endpoint_pto_mod.addImport("types", endpoint_types_mod);
     endpoint_pto_mod.addImport("quic_conn", quic_conn_mod);
@@ -411,6 +420,10 @@ pub fn build(b: *std.Build) void {
     // Endpoint module for socket/event-loop tests
     const loop_backend_mod = mkModule(b, "src/quic/loop_backend.zig");
     const quic_config_mod = mkModule(b, "src/quic/config.zig");
+
+    // Add config import to handshake_integration_mod now that quic_config_mod is defined
+    endpoint_handshake_integration_mod.addImport("config", quic_config_mod);
+
     const quic_endpoint_mod = mkModule(b, "src/quic/endpoint.zig");
     quic_endpoint_mod.addImport("quic_conn", quic_conn_mod);
     quic_endpoint_mod.addImport("quic_packet", quic_packet_mod);
@@ -646,6 +659,8 @@ pub fn build(b: *std.Build) void {
         const test_endpoint_lookup = addTst(b, "tests/unit/endpoint/test_lookup.zig", target, optimize);
         test_endpoint_lookup.root_module.addImport("lookup", endpoint_lookup_mod);
         test_endpoint_lookup.root_module.addImport("types", endpoint_types_mod);
+        test_endpoint_lookup.root_module.addImport("quic_conn", quic_conn_mod);
+        test_endpoint_lookup.root_module.addImport("endpoint/types", endpoint_types_mod);
         const run_test_endpoint_lookup = b.addRunArtifact(test_endpoint_lookup);
         test_step.dependOn(&run_test_endpoint_lookup.step);
 
@@ -665,6 +680,8 @@ pub fn build(b: *std.Build) void {
         test_endpoint_server.root_module.addImport("quic_packet", quic_packet_mod);
         test_endpoint_server.root_module.addImport("quic_token", quic_token_mod);
         test_endpoint_server.root_module.addImport("quic_connection_id", conn_connection_id_mod);
+        test_endpoint_server.root_module.addImport("quic_config", quic_config_mod);
+        test_endpoint_server.root_module.addImport("endpoint/types", endpoint_types_mod);
         const run_test_endpoint_server = b.addRunArtifact(test_endpoint_server);
         test_step.dependOn(&run_test_endpoint_server.step);
 
@@ -676,8 +693,19 @@ pub fn build(b: *std.Build) void {
 
         const test_endpoint_incoming = addTst(b, "tests/unit/endpoint/test_incoming.zig", target, optimize);
         test_endpoint_incoming.root_module.addImport("incoming", endpoint_incoming_mod);
+        test_endpoint_incoming.root_module.addImport("endpoint/types", endpoint_types_mod);
+        test_endpoint_incoming.root_module.addImport("endpoint/utils", endpoint_utils_mod);
+        test_endpoint_incoming.root_module.addImport("quic_conn", quic_conn_mod);
+        test_endpoint_incoming.root_module.addImport("config", quic_config_mod);
+        test_endpoint_incoming.root_module.addImport("packet", quic_packet_legacy_mod);
         const run_test_endpoint_incoming = b.addRunArtifact(test_endpoint_incoming);
         test_step.dependOn(&run_test_endpoint_incoming.step);
+
+        const test_endpoint_handshake_integration = addTst(b, "tests/unit/endpoint/test_handshake_integration.zig", target, optimize);
+        test_endpoint_handshake_integration.root_module.addImport("quic_endpoint_handshake_integration", endpoint_handshake_integration_mod);
+        test_endpoint_handshake_integration.root_module.addImport("quic_conn", quic_conn_mod);
+        const run_test_endpoint_handshake_integration = b.addRunArtifact(test_endpoint_handshake_integration);
+        test_step.dependOn(&run_test_endpoint_handshake_integration.step);
 
         const test_endpoint_pto = addTst(b, "tests/unit/endpoint/test_pto.zig", target, optimize);
         test_endpoint_pto.root_module.addImport("pto", endpoint_pto_mod);
