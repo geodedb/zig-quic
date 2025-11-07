@@ -629,6 +629,44 @@ pub fn build(b: *std.Build) void {
         const run_test_endpoint_types = b.addRunArtifact(test_endpoint_types);
         test_step.dependOn(&run_test_endpoint_types.step);
 
+        const test_endpoint_timer = addTst(b, "tests/unit/endpoint/test_timer.zig", target, optimize);
+        test_endpoint_timer.root_module.addImport("timer", endpoint_timer_mod);
+        test_endpoint_timer.root_module.addImport("types", endpoint_types_mod);
+        const run_test_endpoint_timer = b.addRunArtifact(test_endpoint_timer);
+        test_step.dependOn(&run_test_endpoint_timer.step);
+
+        const test_endpoint_lookup = addTst(b, "tests/unit/endpoint/test_lookup.zig", target, optimize);
+        test_endpoint_lookup.root_module.addImport("lookup", endpoint_lookup_mod);
+        test_endpoint_lookup.root_module.addImport("types", endpoint_types_mod);
+        const run_test_endpoint_lookup = b.addRunArtifact(test_endpoint_lookup);
+        test_step.dependOn(&run_test_endpoint_lookup.step);
+
+        const test_endpoint_io = addTst(b, "tests/unit/endpoint/test_io.zig", target, optimize);
+        test_endpoint_io.root_module.addImport("io", endpoint_io_mod);
+        const run_test_endpoint_io = b.addRunArtifact(test_endpoint_io);
+        test_step.dependOn(&run_test_endpoint_io.step);
+
+        const test_endpoint_client = addTst(b, "tests/unit/endpoint/test_client.zig", target, optimize);
+        test_endpoint_client.root_module.addImport("client", endpoint_client_mod);
+        const run_test_endpoint_client = b.addRunArtifact(test_endpoint_client);
+        test_step.dependOn(&run_test_endpoint_client.step);
+
+        const test_endpoint_server = addTst(b, "tests/unit/endpoint/test_server.zig", target, optimize);
+        test_endpoint_server.root_module.addImport("server", endpoint_server_mod);
+        const run_test_endpoint_server = b.addRunArtifact(test_endpoint_server);
+        test_step.dependOn(&run_test_endpoint_server.step);
+
+        const test_endpoint_incoming = addTst(b, "tests/unit/endpoint/test_incoming.zig", target, optimize);
+        test_endpoint_incoming.root_module.addImport("incoming", endpoint_incoming_mod);
+        const run_test_endpoint_incoming = b.addRunArtifact(test_endpoint_incoming);
+        test_step.dependOn(&run_test_endpoint_incoming.step);
+
+        const test_endpoint_pto = addTst(b, "tests/unit/endpoint/test_pto.zig", target, optimize);
+        test_endpoint_pto.root_module.addImport("pto", endpoint_pto_mod);
+        test_endpoint_pto.root_module.addImport("types", endpoint_types_mod);
+        const run_test_endpoint_pto = b.addRunArtifact(test_endpoint_pto);
+        test_step.dependOn(&run_test_endpoint_pto.step);
+
         const test_packet_number = addTst(b, "tests/unit/connection/test_packet_number.zig", target, optimize);
         test_packet_number.root_module.addImport("quic_connection_packet_number", conn_packet_number_mod);
         test_packet_number.root_module.addImport("quic_frame", quic_frame_mod);
