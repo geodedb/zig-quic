@@ -20,6 +20,42 @@ Out‑of‑scope: Non‑QUIC transports, non‑TLS 1.3 handshakes, unrelated bus
 - Project code: Zig repository supplied by the user.
 - Reference implementations under @forks (git submodules).
 
+## ZIG CODEBASE STRUCTURE (Modular QUIC Implementation)
+
+The Zig QUIC implementation is organized into RFC-aligned modules for easier comparison with reference implementations:
+
+**Connection Modules (`src/quic/connection/*`):**
+- `types.zig` - Role, SockAddr, Cid types (RFC 9000 §2-5)
+- `crypto_buffer.zig` - CRYPTO frame reassembly (RFC 9000 §4.9.2, RFC 9001 §4)
+- `packet_number.zig` - PN expansion, truncation, ACK tracking (RFC 9000 §12.3, §13.2, Appendix A.3)
+- `ack.zig` - ACK generation, ECN counters (RFC 9000 §13.2, §19.3, RFC 3168)
+- `stream.zig` - Stream state machine (RFC 9000 §2-4, §19.8)
+- `connection_id.zig` - CID management, stateless reset tokens (RFC 9000 §5.1-5.3, §10.3)
+- `handshake.zig` - TLS handshake state, ALPN, transport parameters (RFC 9001 §4, §8.2)
+- `path.zig` - Path validation (RFC 9000 §9, §19.17-19.18)
+- `amplification.zig` - Anti-amplification limits (RFC 9000 §8.1)
+- `pmtud.zig` - Path MTU discovery (RFC 9000 §14.2-14.4, RFC 8899)
+- `limits.zig` - AEAD usage limits (RFC 9001 §6.6)
+
+**Endpoint Modules (`src/quic/endpoint/*`):**
+- `types.zig` - Timer, Key, EndpointRole (RFC 9000 §5.1)
+- `timer.zig` - Timer heap for PTO/loss detection (RFC 9002 §6.2)
+- `lookup.zig` - Connection ID routing table (RFC 9000 §5.1-5.2)
+- `io.zig` - UDP I/O, ECN marking (RFC 9000 §13.3, RFC 3168)
+- `client.zig`, `server.zig` - Connection establishment (RFC 9000 §7)
+- `incoming.zig` - Packet processing (RFC 9000 §12-17)
+- `pto.zig` - PTO probe generation (RFC 9002 §6.2)
+
+**TLS Integration (`vendor/ztls/src/*`):**
+- See `vendor/ztls/CLAUDE.md` for TLS 1.3 module structure
+- Key schedule, record layer, handshake, signatures, X.509
+
+**Monolithic Files (legacy, still functional):**
+- `src/quic/conn.zig` - Main Connection implementation (re-exports modular types)
+- `src/quic/endpoint.zig` - Main Endpoint implementation
+
+When comparing implementations, **check the relevant module first** (e.g., `connection/packet_number.zig` for PN encoding issues) as it contains the focused implementation. The monolithic files may contain the Connection/Endpoint struct usage.
+
 # INPUT CONTRACT (provide what you can; proceed with partial data)
 
 Required (at least one of):

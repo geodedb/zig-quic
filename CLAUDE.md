@@ -1,1 +1,77 @@
-- remember to check @forks/quiche/quiche as this is built by cloudflare and likely an authoritative implementation of quic, and use @forks/boringssl for tls 1.3 as that is an authoritative implementation of tls 1.3. When referencing forks those should be your first inspection points.
+# QUIC Implementation Guide for Claude
+
+## Reference Implementations
+
+- **@forks/quiche/quiche** - Cloudflare's authoritative QUIC implementation (C/Rust)
+- **@forks/boringssl** - Google's authoritative TLS 1.3 implementation (C)
+- When comparing implementations or debugging protocol issues, check these forks first
+
+## Modular Codebase Structure
+
+The QUIC implementation uses a **modular, RFC-aligned architecture** in `src/quic/connection/*` and `src/quic/endpoint/*`:
+
+### Connection Modules (RFC 9000 Transport, RFC 9001 TLS, RFC 9002 Recovery)
+
+| Module | RFC Sections | Purpose |
+|--------|--------------|---------|
+| `connection/types.zig` | RFC 9000 §2-5 | Core types: Role, SockAddr, Cid, SendFn |
+| `connection/crypto_buffer.zig` | RFC 9000 §4.9.2, RFC 9001 §4 | CRYPTO frame out-of-order reassembly |
+| `connection/packet_number.zig` | RFC 9000 §12.3, §13.2, Appendix A.3 | PN expansion, truncation, ACK windows |
+| `connection/ack.zig` | RFC 9000 §13.2, §19.3, RFC 3168 | ACK generation, ECN counters |
+| `connection/stream.zig` | RFC 9000 §2-4, §19.8 | Stream RX/TX state machine |
+| `connection/connection_id.zig` | RFC 9000 §5.1-5.3, §10.3, §19.15 | CID management, stateless reset tokens |
+| `connection/handshake.zig` | RFC 9001 §4, §8.2 | TLS handshake state, ALPN, transport params |
+| `connection/path.zig` | RFC 9000 §9, §19.17-19.18 | Path validation, migration |
+| `connection/amplification.zig` | RFC 9000 §8.1 | Anti-amplification limit tracking |
+| `connection/pmtud.zig` | RFC 9000 §14.2-14.4, RFC 8899 | Path MTU discovery (DPLPMTUD) |
+| `connection/limits.zig` | RFC 9001 §6.6 | AEAD usage limits, key update triggers |
+
+### Endpoint Modules (RFC 9000 Transport, RFC 9002 Recovery)
+
+| Module | RFC Sections | Purpose |
+|--------|--------------|---------|
+| `endpoint/types.zig` | RFC 9000 §5.1 | Timer, Key, EndpointRole types |
+| `endpoint/timer.zig` | RFC 9002 §6.2 | Min-heap timer management (PTO, loss detection) |
+| `endpoint/lookup.zig` | RFC 9000 §5.1-5.2 | Connection routing by CID hash |
+| `endpoint/io.zig` | RFC 9000 §13.3, RFC 3168 | UDP I/O operations, ECN marking |
+| `endpoint/client.zig` | RFC 9000 §7 | Client connection establishment |
+| `endpoint/server.zig` | RFC 9000 §7, §8.1 | Server acceptance, address validation |
+| `endpoint/incoming.zig` | RFC 9000 §12-17 | Incoming packet processing |
+| `endpoint/pto.zig` | RFC 9002 §6.2 | PTO probe packet generation |
+
+### Legacy Monolithic Files (Still Functional)
+
+- **`src/quic/conn.zig`** (3,449 lines) - Main Connection struct implementation, re-exports modular types
+- **`src/quic/endpoint.zig`** (3,728 lines) - Main Endpoint struct implementation
+
+### TLS Integration
+
+- **`vendor/ztls/src/*`** - TLS 1.3 implementation (see `vendor/ztls/CLAUDE.md` for details)
+  - `tls13.zig` - Handshake state machine (RFC 8446, RFC 9001)
+  - `key_schedule.zig` - HKDF key derivation (RFC 9001 §5)
+  - `record.zig` - AEAD encryption, header protection (RFC 9001 §5.3-5.4)
+
+## Finding Code by RFC Section
+
+When implementing or debugging a specific RFC requirement:
+
+1. **Identify the RFC section** (e.g., "RFC 9000 §13.2 ACK generation")
+2. **Check the table above** to find the corresponding module
+3. **Open the module file** - it contains focused implementation with RFC citations
+4. **Check the monolithic file** if the Connection/Endpoint struct uses those types
+
+Example: For PN encoding issues (RFC 9000 §12.3) → Check `connection/packet_number.zig` first
+
+## Benefits of Modular Structure
+
+- **98.4% smaller** modules (avg 59 lines vs 3,588 lines)
+- **RFC-aligned** - Easy to verify spec compliance
+- **Testable** - Can unit test modules in isolation
+- **Navigable** - Find features by name instead of searching
+- **Maintainable** - Changes localized to relevant modules
+
+## Documentation
+
+- `MIGRATION_TO_MODULAR_API.md` - Complete usage guide
+- `REFACTORING_STATUS.md` - Implementation status and metrics
+- Module headers contain RFC section references

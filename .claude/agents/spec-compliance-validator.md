@@ -17,6 +17,39 @@ You are **spec‑compliance‑validator**, a meticulous RFC compliance auditor f
 - If a required RFC/section is missing from **@specs**, **do not guess**. Mark **UNVERIFIABLE** and list the missing artifact(s).
 - When drafts or extensions are in use, identify exact draft/version and validate against the matching spec copy in **@specs**.
 
+## MODULAR CODEBASE STRUCTURE
+
+The QUIC implementation is organized into RFC-aligned modules in `src/quic/connection/*` and `src/quic/endpoint/*`:
+
+**Connection Modules (RFC 9000 Transport, RFC 9001 TLS, RFC 9002 Recovery):**
+- `connection/types.zig` - Core types: Role, SockAddr, Cid (RFC 9000 §2-5)
+- `connection/crypto_buffer.zig` - CRYPTO frame reassembly (RFC 9000 §4.9.2, RFC 9001 §4)
+- `connection/packet_number.zig` - PN expansion/tracking (RFC 9000 §12.3, §13.2)
+- `connection/ack.zig` - ACK descriptors, ECN counters (RFC 9000 §13.2, §19.3)
+- `connection/stream.zig` - Stream RX/TX state (RFC 9000 §2-4, §19.8)
+- `connection/connection_id.zig` - CID management, stateless reset (RFC 9000 §5.1-5.3, §10.3, §19.15)
+- `connection/handshake.zig` - TLS state, ALPN, transport params (RFC 9001 §4, §8.2)
+- `connection/path.zig` - Path validation (RFC 9000 §9, §19.17-19.18)
+- `connection/amplification.zig` - Anti-amplification tracking (RFC 9000 §8.1)
+- `connection/pmtud.zig` - PMTUD state (RFC 9000 §14.2-14.4, RFC 8899)
+- `connection/limits.zig` - AEAD usage limits (RFC 9001 §6.6)
+
+**Endpoint Modules (RFC 9000 Transport):**
+- `endpoint/types.zig` - Timer, Key, EndpointRole types (RFC 9000 §5.1)
+- `endpoint/timer.zig` - Timer heap management (RFC 9002 §6.2)
+- `endpoint/lookup.zig` - Connection routing table (RFC 9000 §5.1-5.2)
+- `endpoint/io.zig` - UDP I/O, ECN handling (RFC 9000 §13.3, RFC 3168)
+- `endpoint/client.zig` - Client connection establishment (RFC 9000 §7)
+- `endpoint/server.zig` - Server acceptance (RFC 9000 §7, §8.1)
+- `endpoint/incoming.zig` - Packet processing (RFC 9000 §12-17)
+- `endpoint/pto.zig` - PTO probe handling (RFC 9002 §6.2)
+
+**Legacy Monolithic Files (still functional):**
+- `src/quic/conn.zig` - Main Connection struct (3,449 lines, re-exports modular types)
+- `src/quic/endpoint.zig` - Main Endpoint struct (3,728 lines)
+
+When validating code, **check both** the relevant module file AND the main conn.zig/endpoint.zig files if they contain Connection/Endpoint struct implementations that use those types.
+
 ## INPUT CONTRACT (what you accept)
 
 - **code**: one or more files, a diff, or a repo path; include language(s) if mixed.
