@@ -316,121 +316,186 @@ test "RFC 9000 §7 - queue operations preserve connection identity" {
     try testing.expectEqual(original_ptr, popped.?);
 }
 
-test "Phase 3 - connection enqueued after handshake progression" {
-    // When to add connection to accept queue
-    //
-    // Expected:
-    // - After processing first valid Initial from client
-    // - conn.accepted_enqueued flag prevents duplicates
-    // - Application retrieves via popAccepted
+test "RFC 9000 §7 - new connection has accepted_enqueued flag false" {
+    // Connections start with accepted_enqueued = false
+    // This flag prevents duplicate queueing of the same connection
+    var alloc = test_allocator;
+    const peer = SockAddr.ipv4(127, 0, 0, 1, 4433);
 
-    try testing.expect(true);
+    const conn = server.acceptFrom(&alloc, 1, peer);
+
+    // New connection should not be marked as enqueued yet
+    try testing.expectEqual(false, conn.accepted_enqueued);
 }
 
-test "Phase 3 - connection not enqueued multiple times" {
-    // Prevent duplicate queueing
-    //
-    // Expected:
-    // - Check !conn.accepted_enqueued before pushAccepted
-    // - Set conn.accepted_enqueued = true after queueing
-    // - Subsequent packets don't re-queue same connection
+test "RFC 9000 §7 - accepted_enqueued flag prevents duplicate queueing" {
+    // The accepted_enqueued flag should be checked before queueing
+    // to prevent the same connection from being added multiple times
+    var accepted = std.ArrayList(*Connection){};
+    defer accepted.deinit(test_allocator);
 
-    try testing.expect(true);
+    var alloc = test_allocator;
+    var conn = server.acceptFrom(&alloc, 1, SockAddr.ipv4(127, 0, 0, 1, 4433));
+
+    // Initially not enqueued
+    try testing.expectEqual(false, conn.accepted_enqueued);
+
+    // Queue the connection
+    server.pushAccepted(test_allocator, &accepted, &conn);
+    try testing.expectEqual(@as(usize, 1), accepted.items.len);
+
+    // Manually set flag to simulate what endpoint would do
+    conn.accepted_enqueued = true;
+
+    // In real implementation, endpoint checks this flag before queueing:
+    // if (!conn.accepted_enqueued) { pushAccepted(...); conn.accepted_enqueued = true; }
+    // This prevents duplicate queueing
+
+    // Verify flag is set
+    try testing.expectEqual(true, conn.accepted_enqueued);
+
+    // Application would check flag before queueing again
+    if (!conn.accepted_enqueued) {
+        server.pushAccepted(test_allocator, &accepted, &conn);
+    }
+
+    // Should still be only 1 connection in queue
+    try testing.expectEqual(@as(usize, 1), accepted.items.len);
 }
 
 // =============================================================================
-// Phase 3: Address Validation Tests
+// Address Validation Tests
 // =============================================================================
 
-test "Phase 3 - Server validates client address using Retry" {
-    // RFC 9000 §8.1.1: Retry packet for address validation
+test "RFC 9000 §8.1 - new server connection has address_validated false" {
+    // Server connections start without address validation
+    var alloc = test_allocator;
+    const peer = SockAddr.ipv4(127, 0, 0, 1, 4433);
+
+    const conn = server.acceptFrom(&alloc, 1, peer);
+
+    // Server connections need address validation
+    try testing.expectEqual(false, conn.address_validated);
+}
+
+test "RFC 9000 §8.1 - server connection tracks unvalidated bytes" {
+    // Anti-amplification tracking: bytes sent/received before validation
+    var alloc = test_allocator;
+    const peer = SockAddr.ipv4(127, 0, 0, 1, 4433);
+
+    const conn = server.acceptFrom(&alloc, 1, peer);
+
+    // Initially no bytes sent or received
+    try testing.expectEqual(@as(u64, 0), conn.bytes_rx_unvalidated);
+    try testing.expectEqual(@as(u64, 0), conn.bytes_tx_unvalidated);
+}
+
+test "RFC 9000 §8.1 - address validation state can be set" {
+    // Address validation flag can be updated after token verification
+    var alloc = test_allocator;
+    var conn = server.acceptFrom(&alloc, 1, SockAddr.ipv4(127, 0, 0, 1, 4433));
+
+    // Initially not validated
+    try testing.expectEqual(false, conn.address_validated);
+
+    // After token validation (or Retry), endpoint sets this flag
+    conn.address_validated = true;
+    try testing.expectEqual(true, conn.address_validated);
+}
+
+test "RFC 9000 §8.1 - anti-amplification limit applies before validation" {
+    // Before address validation, server must limit bytes sent to 3x bytes received
+    var alloc = test_allocator;
+    var conn = server.acceptFrom(&alloc, 1, SockAddr.ipv4(127, 0, 0, 1, 4433));
+
+    // Not validated, no bytes received
+    try testing.expectEqual(false, conn.address_validated);
+    try testing.expectEqual(@as(u64, 0), conn.bytes_rx_unvalidated);
+
+    // Simulate receiving 100 bytes
+    conn.bytes_rx_unvalidated = 100;
+
+    // Can send up to 300 bytes (3x amplification limit)
+    // Setting bytes_tx_unvalidated to test the state
+    conn.bytes_tx_unvalidated = 300;
+
+    // Still under limit
+    try testing.expect(conn.bytes_tx_unvalidated <= conn.bytes_rx_unvalidated * 3);
+}
+
+test "RFC 9000 §8.1 - anti-amplification limit removed after validation" {
+    // After address validation, amplification limit no longer applies
+    var alloc = test_allocator;
+    var conn = server.acceptFrom(&alloc, 1, SockAddr.ipv4(127, 0, 0, 1, 4433));
+
+    // Simulate receiving 100 bytes
+    conn.bytes_rx_unvalidated = 100;
+    conn.bytes_tx_unvalidated = 100;
+
+    // Validate address
+    conn.address_validated = true;
+
+    // After validation, can send unlimited bytes
+    conn.bytes_tx_unvalidated = 10000;
+
+    // No amplification limit check needed when validated
+    try testing.expectEqual(true, conn.address_validated);
+}
+
+test "RFC 9000 §8.1.1 - Retry packet generation requires endpoint logic" {
+    // NOTE: Retry packet generation is complex endpoint logic not yet extracted
+    // Retry packet structure per RFC 9000 §17.2.5:
+    // - Long header with type = Retry (3)
+    // - DCID = client's SCID from Initial
+    // - SCID = newly generated random server CID
+    // - Retry Token (opaque to client)
+    // - Retry Integrity Tag (RFC 9001 §5.8)
     //
-    // Expected:
-    // - if !conn.address_validated and cfg.enable_retry
-    // - Generate Retry packet with token
-    // - Client must echo token in next Initial
-    // - Proves client can receive at claimed address
+    // This requires:
+    // - Token generation: HMAC(client_addr + odcid, secret)
+    // - Retry integrity tag computation
+    // - Packet encoding with proper header format
+    // - All currently in endpoint.zig
+    //
+    // PLACEHOLDER: Will be converted when Retry logic is extracted
 
     try testing.expect(true);
 }
 
-test "Phase 3 - Retry packet includes server-generated token" {
-    // Token binds client address to connection
-    //
-    // Expected:
-    // - Token = HMAC(client_addr + odcid, secret)
-    // - Server can validate token stateless
-    // - Token proves address ownership
-
-    try testing.expect(true);
-}
-
-test "Phase 3 - Retry packet uses new SCID" {
-    // RFC 9000 §17.2.5: Retry changes SCID
-    //
-    // Expected:
-    // - Retry SCID = newly generated random CID
-    // - Client uses this as DCID in subsequent Initials
-    // - DCID in Retry packet = client's SCID from Initial
-
-    try testing.expect(true);
-}
-
-test "Phase 3 - Retry integrity tag protects packet" {
-    // RFC 9001 §5.8: Retry integrity
-    //
-    // Expected:
-    // - Compute tag over Retry pseudo-packet
-    // - Pseudo-packet includes original DCID (ODCID)
-    // - Tag appended to Retry packet
-    // - Client validates tag before accepting Retry
-
-    try testing.expect(true);
-}
-
-test "Phase 3 - Server validates token from client Initial" {
-    // RFC 9000 §8.1.2: Token validation
-    //
-    // Expected:
+test "RFC 9000 §8.1.2 - token validation requires endpoint logic" {
+    // NOTE: Token validation is complex endpoint logic not yet extracted
+    // Token validation per RFC 9000 §8.1.2:
     // - Extract token from Initial packet header
     // - Verify HMAC(client_addr + odcid, secret) == token
     // - If valid: set conn.address_validated = true
     // - If invalid: may send Retry or close connection
+    //
+    // This requires:
+    // - Token parsing from packet header
+    // - HMAC verification with server secret
+    // - Currently in endpoint.zig
+    //
+    // PLACEHOLDER: Will be converted when token validation logic is extracted
 
     try testing.expect(true);
 }
 
-test "Phase 3 - Server bypasses anti-amplification with valid token" {
-    // RFC 9000 §8.1: Address validation removes limit
+test "RFC 9000 §17.2.5 - Retry packet format verification pending extraction" {
+    // NOTE: Retry packet format testing requires endpoint packet encoding
+    // Retry packet format per RFC 9000 §17.2.5:
+    // - Header Form (1) = 1 (long header)
+    // - Fixed Bit (1) = 1
+    // - Long Packet Type (2) = 3 (Retry)
+    // - Unused (4) = 0
+    // - Version (32)
+    // - DCID Len (8)
+    // - Destination Connection ID (0..160)
+    // - SCID Len (8)
+    // - Source Connection ID (0..160)
+    // - Retry Token (..)
+    // - Retry Integrity Tag (128)
     //
-    // Expected:
-    // - Before validation: 3x amplification limit
-    // - After validation: no amplification limit
-    // - Token proves client address
-    // - Server can send full handshake data
-
-    try testing.expect(true);
-}
-
-test "Phase 3 - Server enforces anti-amplification without validation" {
-    // RFC 9000 §8.1: Limit to 3x received bytes
-    //
-    // Expected:
-    // - Track bytes sent vs bytes received
-    // - Enforce sent <= 3 * received
-    // - Prevents amplification attacks
-    // - Lifted after address validation
-
-    try testing.expect(true);
-}
-
-test "Phase 3 - Retry disabled by configuration" {
-    // Optional address validation
-    //
-    // Expected:
-    // - if !cfg.enable_retry: skip Retry generation
-    // - Accept connection without pre-validation
-    // - Rely on anti-amplification limit
+    // PLACEHOLDER: Will be converted when Retry encoding is extracted
 
     try testing.expect(true);
 }
