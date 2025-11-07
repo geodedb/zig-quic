@@ -664,6 +664,7 @@ pub fn build(b: *std.Build) void {
         test_endpoint_server.root_module.addImport("quic_conn", quic_conn_mod);
         test_endpoint_server.root_module.addImport("quic_packet", quic_packet_mod);
         test_endpoint_server.root_module.addImport("quic_token", quic_token_mod);
+        test_endpoint_server.root_module.addImport("quic_connection_id", conn_connection_id_mod);
         const run_test_endpoint_server = b.addRunArtifact(test_endpoint_server);
         test_step.dependOn(&run_test_endpoint_server.step);
 
