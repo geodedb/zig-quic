@@ -64,7 +64,7 @@ pub fn normalizeAddr(sa: *const posix.sockaddr.storage, len: u32) conn_mod.SockA
 }
 
 /// Convert network byte order u16 to host byte order.
-inline fn portFromNetwork(value: u16) u16 {
+pub fn portFromNetwork(value: u16) u16 {
     return std.mem.bigToNative(u16, value);
 }
 

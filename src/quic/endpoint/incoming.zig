@@ -158,7 +158,7 @@ pub const Interface = struct {
     pub const PollSignature = fn (timeout_ms: i32) anyerror!void;
 
     /// Process single incoming datagram
-    pub const ProcessIncomingDatagramSignature = fn (peer: @import("../conn.zig").SockAddr, bytes: []const u8, ecn_bits: ?u8) void;
+    pub const ProcessIncomingDatagramSignature = fn (peer: @import("quic_conn").SockAddr, bytes: []const u8, ecn_bits: ?u8) void;
 
     /// Drain all readable packets from socket
     pub const DrainReadableSignature = fn () void;

@@ -71,13 +71,13 @@ pub const extracted = false; // Set to true when implementations are fully extra
 /// the interface that will eventually be extracted. Currently implemented in endpoint.zig.
 pub const Interface = struct {
     /// Create basic connection struct (not fully initialized)
-    pub const ConnectToSignature = fn (hostport: []const u8) anyerror!@import("../conn.zig").Connection;
+    pub const ConnectToSignature = fn (hostport: []const u8) anyerror!@import("quic_conn").Connection;
 
     /// Create and fully initialize client connection
-    pub const ConnectClientSignature = fn (hostport: []const u8) anyerror!*@import("../conn.zig").Connection;
+    pub const ConnectClientSignature = fn (hostport: []const u8) anyerror!*@import("quic_conn").Connection;
 
     /// Send Initial packet with ClientHello
-    pub const ClientSendInitialProbeSignature = fn (conn: *@import("../conn.zig").Connection) anyerror!void;
+    pub const ClientSendInitialProbeSignature = fn (conn: *@import("quic_conn").Connection) anyerror!void;
 };
 
 /// Helper: Generate random 8-byte Connection ID.

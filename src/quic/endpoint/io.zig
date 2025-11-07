@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const posix = std.posix;
-const conn_mod = @import("../conn.zig");
+const conn_mod = @import("quic_conn");
 
 /// Result of a recvFrom operation.
 pub const RecvResult = struct {
