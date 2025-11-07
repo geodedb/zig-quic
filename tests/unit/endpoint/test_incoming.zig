@@ -32,6 +32,107 @@ const incoming = @import("incoming");
 var test_allocator = std.testing.allocator;
 
 // =============================================================================
+// Helper Function Tests (Phase 4b)
+// =============================================================================
+
+test "RFC 9000 §17 - isLongHeader identifies long header packets" {
+    // Long header has bit 0x80 set (Header Form bit)
+    // RFC 9000 §17: "The Header Form bit (0x80) is set to 1 for long headers."
+
+    // Initial packet: type 00, long header (0b11)
+    try testing.expect(incoming.isLongHeader(0b11000000));
+
+    // 0-RTT packet: type 01, long header (0b11)
+    try testing.expect(incoming.isLongHeader(0b11010000));
+
+    // Handshake packet: type 10, long header (0b11)
+    try testing.expect(incoming.isLongHeader(0b11100000));
+
+    // Retry packet: type 11, long header (0b11)
+    try testing.expect(incoming.isLongHeader(0b11110000));
+
+    // Any byte with high bit set
+    try testing.expect(incoming.isLongHeader(0xFF));
+    try testing.expect(incoming.isLongHeader(0x80));
+}
+
+test "RFC 9000 §17 - isLongHeader rejects short header packets" {
+    // Short header has bit 0x80 clear (Header Form bit = 0)
+    // RFC 9000 §17.3: "The Header Form bit (0x80) is set to 0 for short headers."
+
+    // Short header packet
+    try testing.expect(!incoming.isLongHeader(0b01000000));
+
+    // Any byte with high bit clear
+    try testing.expect(!incoming.isLongHeader(0x00));
+    try testing.expect(!incoming.isLongHeader(0x7F));
+    try testing.expect(!incoming.isLongHeader(0x40));
+}
+
+test "RFC 3168 - extractEcnBits extracts low 2 bits" {
+    // ECN bits are the low 2 bits of TOS/Traffic Class byte
+    // RFC 3168: ECN uses bits 6-7 of the IPv4 TOS field (bits 0-1 in our byte order)
+
+    // Not-ECT (00)
+    try testing.expectEqual(@as(u8, 0b00), incoming.extractEcnBits(0b00000000));
+
+    // ECT(1) (01)
+    try testing.expectEqual(@as(u8, 0b01), incoming.extractEcnBits(0b00000001));
+
+    // ECT(0) (10)
+    try testing.expectEqual(@as(u8, 0b10), incoming.extractEcnBits(0b00000010));
+
+    // CE (11)
+    try testing.expectEqual(@as(u8, 0b11), incoming.extractEcnBits(0b00000011));
+}
+
+test "RFC 3168 - extractEcnBits ignores high bits" {
+    // Only low 2 bits should be extracted, high bits ignored
+
+    // Various high bits with ECT(0) in low bits
+    try testing.expectEqual(@as(u8, 0b10), incoming.extractEcnBits(0b11111110));
+    try testing.expectEqual(@as(u8, 0b10), incoming.extractEcnBits(0b10101010));
+    try testing.expectEqual(@as(u8, 0b10), incoming.extractEcnBits(0b01010110));
+
+    // Various high bits with CE in low bits
+    try testing.expectEqual(@as(u8, 0b11), incoming.extractEcnBits(0b11111111));
+    try testing.expectEqual(@as(u8, 0b11), incoming.extractEcnBits(0b10101011));
+}
+
+test "RFC 3168 - EcnCodepoint enum values match bit patterns" {
+    // Verify enum values match RFC 3168 ECN codepoints
+    try testing.expectEqual(@as(u8, 0b00), @intFromEnum(incoming.EcnCodepoint.NotEct));
+    try testing.expectEqual(@as(u8, 0b01), @intFromEnum(incoming.EcnCodepoint.Ect1));
+    try testing.expectEqual(@as(u8, 0b10), @intFromEnum(incoming.EcnCodepoint.Ect0));
+    try testing.expectEqual(@as(u8, 0b11), @intFromEnum(incoming.EcnCodepoint.Ce));
+}
+
+test "RFC 3168 - EcnCodepoint can be created from extracted bits" {
+    // Extract ECN bits and convert to enum
+    const tos_byte: u8 = 0b11111011; // CE with various high bits
+    const ecn_bits = incoming.extractEcnBits(tos_byte);
+
+    const codepoint: incoming.EcnCodepoint = @enumFromInt(ecn_bits);
+    try testing.expectEqual(incoming.EcnCodepoint.Ce, codepoint);
+}
+
+test "RFC 3168 - all ECN codepoints can be extracted" {
+    // Test all four ECN codepoints
+    const test_cases = [_]struct { tos: u8, expected: incoming.EcnCodepoint }{
+        .{ .tos = 0b00000000, .expected = .NotEct },
+        .{ .tos = 0b00000001, .expected = .Ect1 },
+        .{ .tos = 0b00000010, .expected = .Ect0 },
+        .{ .tos = 0b00000011, .expected = .Ce },
+    };
+
+    for (test_cases) |case| {
+        const bits = incoming.extractEcnBits(case.tos);
+        const codepoint: incoming.EcnCodepoint = @enumFromInt(bits);
+        try testing.expectEqual(case.expected, codepoint);
+    }
+}
+
+// =============================================================================
 // IncomingProcessor Initialization Tests
 // =============================================================================
 

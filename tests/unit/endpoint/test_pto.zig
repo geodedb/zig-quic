@@ -24,8 +24,68 @@ const std = @import("std");
 const testing = std.testing;
 
 const pto = @import("pto");
+const types = @import("types");
 
 var test_allocator = std.testing.allocator;
+
+// =============================================================================
+// Helper Function Tests (Phase 4b)
+// =============================================================================
+
+test "RFC 9002 §6.2 - isPtoTimer identifies PTO timers" {
+    // PTO timers should be identified correctly
+    try testing.expect(pto.isPtoTimer(.PtoInitial));
+    try testing.expect(pto.isPtoTimer(.PtoHandshake));
+    try testing.expect(pto.isPtoTimer(.PtoApp));
+}
+
+test "RFC 9002 §6.2 - isPtoTimer rejects non-PTO timers" {
+    // Generic and PMTUD timers are not PTO timers
+    try testing.expect(!pto.isPtoTimer(.Generic));
+    try testing.expect(!pto.isPtoTimer(.Pmtud));
+}
+
+test "RFC 9002 §6.2 - ptoTimerSpace maps Initial timer" {
+    // PtoInitial should map to Initial packet number space
+    const space = pto.ptoTimerSpace(.PtoInitial);
+    try testing.expect(space != null);
+    try testing.expectEqual(.Initial, space.?);
+}
+
+test "RFC 9002 §6.2 - ptoTimerSpace maps Handshake timer" {
+    // PtoHandshake should map to Handshake packet number space
+    const space = pto.ptoTimerSpace(.PtoHandshake);
+    try testing.expect(space != null);
+    try testing.expectEqual(.Handshake, space.?);
+}
+
+test "RFC 9002 §6.2 - ptoTimerSpace maps Application timer" {
+    // PtoApp should map to Application packet number space
+    const space = pto.ptoTimerSpace(.PtoApp);
+    try testing.expect(space != null);
+    try testing.expectEqual(.Application, space.?);
+}
+
+test "RFC 9002 §6.2 - ptoTimerSpace returns null for non-PTO timers" {
+    // Generic and PMTUD timers don't map to packet number spaces
+    try testing.expect(pto.ptoTimerSpace(.Generic) == null);
+    try testing.expect(pto.ptoTimerSpace(.Pmtud) == null);
+}
+
+test "RFC 9002 §6.2 - all PTO timers have corresponding spaces" {
+    // Every PTO timer should map to a packet number space
+    const pto_timers = [_]types.TimerKind{
+        .PtoInitial,
+        .PtoHandshake,
+        .PtoApp,
+    };
+
+    for (pto_timers) |timer_kind| {
+        try testing.expect(pto.isPtoTimer(timer_kind));
+        const space = pto.ptoTimerSpace(timer_kind);
+        try testing.expect(space != null);
+    }
+}
 
 // =============================================================================
 // PtoHandler Initialization Tests
