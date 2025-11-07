@@ -15,7 +15,7 @@
 const std = @import("std");
 const testing = std.testing;
 
-const stream = @import("src/quic/connection/stream.zig");
+const stream = @import("stream");
 
 var test_allocator = std.testing.allocator;
 

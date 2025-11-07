@@ -16,8 +16,8 @@
 const std = @import("std");
 const testing = std.testing;
 
-const cid = @import("src/quic/connection/connection_id.zig");
-const types = @import("src/quic/connection/types.zig");
+const cid = @import("connection_id");
+const types = @import("types");
 
 // =============================================================================
 // LocalCid Tests

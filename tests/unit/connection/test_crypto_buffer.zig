@@ -15,7 +15,7 @@ const std = @import("std");
 const testing = std.testing;
 
 // Direct imports - module paths configured in build.zig
-const crypto_buffer = @import("src/quic/connection/crypto_buffer.zig");
+const crypto_buffer = @import("crypto_buffer");
 const CryptoBuffer = crypto_buffer.CryptoBuffer;
 const Fragment = crypto_buffer.Fragment;
 

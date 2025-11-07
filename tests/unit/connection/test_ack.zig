@@ -14,7 +14,7 @@
 const std = @import("std");
 const testing = std.testing;
 
-const ack = @import("src/quic/connection/ack.zig");
+const ack = @import("ack");
 const frame = @import("quic_frame");
 
 // =============================================================================

@@ -641,21 +641,66 @@ pub fn build(b: *std.Build) void {
 
         // Connection module tests
         const test_crypto_buffer = addTst(b, "tests/unit/connection/test_crypto_buffer.zig", target, optimize);
+        test_crypto_buffer.root_module.addImport("crypto_buffer", conn_crypto_buffer_mod);
         const run_test_crypto_buffer = b.addRunArtifact(test_crypto_buffer);
         test_step.dependOn(&run_test_crypto_buffer.step);
 
         const test_conn_ack = addTst(b, "tests/unit/connection/test_ack.zig", target, optimize);
+        test_conn_ack.root_module.addImport("ack", conn_ack_mod);
         test_conn_ack.root_module.addImport("quic_frame", quic_frame_mod);
         const run_test_conn_ack = b.addRunArtifact(test_conn_ack);
         test_step.dependOn(&run_test_conn_ack.step);
 
         const test_conn_stream = addTst(b, "tests/unit/connection/test_stream.zig", target, optimize);
+        test_conn_stream.root_module.addImport("stream", conn_stream_mod);
         const run_test_conn_stream = b.addRunArtifact(test_conn_stream);
         test_step.dependOn(&run_test_conn_stream.step);
 
         const test_connection_id_module = addTst(b, "tests/unit/connection/test_connection_id.zig", target, optimize);
+        test_connection_id_module.root_module.addImport("connection_id", conn_connection_id_mod);
+        test_connection_id_module.root_module.addImport("types", conn_types_mod);
         const run_test_connection_id_module = b.addRunArtifact(test_connection_id_module);
         test_step.dependOn(&run_test_connection_id_module.step);
+
+        const test_conn_handshake = addTst(b, "tests/unit/connection/test_handshake.zig", target, optimize);
+        test_conn_handshake.root_module.addImport("handshake", conn_handshake_mod);
+        const run_test_conn_handshake = b.addRunArtifact(test_conn_handshake);
+        test_step.dependOn(&run_test_conn_handshake.step);
+
+        const test_conn_path = addTst(b, "tests/unit/connection/test_path.zig", target, optimize);
+        test_conn_path.root_module.addImport("path", conn_path_mod);
+        const run_test_conn_path = b.addRunArtifact(test_conn_path);
+        test_step.dependOn(&run_test_conn_path.step);
+
+        const test_conn_amplification = addTst(b, "tests/unit/connection/test_amplification.zig", target, optimize);
+        test_conn_amplification.root_module.addImport("amplification", conn_amplification_mod);
+        const run_test_conn_amplification = b.addRunArtifact(test_conn_amplification);
+        test_step.dependOn(&run_test_conn_amplification.step);
+
+        const test_conn_pmtud = addTst(b, "tests/unit/connection/test_pmtud.zig", target, optimize);
+        test_conn_pmtud.root_module.addImport("pmtud", conn_pmtud_mod);
+        const run_test_conn_pmtud = b.addRunArtifact(test_conn_pmtud);
+        test_step.dependOn(&run_test_conn_pmtud.step);
+
+        const test_conn_limits = addTst(b, "tests/unit/connection/test_limits.zig", target, optimize);
+        test_conn_limits.root_module.addImport("limits", conn_limits_mod);
+        const run_test_conn_limits = b.addRunArtifact(test_conn_limits);
+        test_step.dependOn(&run_test_conn_limits.step);
+
+        const test_conn_flow_control = addTst(b, "tests/unit/connection/test_flow_control.zig", target, optimize);
+        test_conn_flow_control.root_module.addImport("flow_control", conn_flow_control_mod);
+        const run_test_conn_flow_control = b.addRunArtifact(test_conn_flow_control);
+        test_step.dependOn(&run_test_conn_flow_control.step);
+
+        const test_conn_error = addTst(b, "tests/unit/connection/test_error.zig", target, optimize);
+        test_conn_error.root_module.addImport("error", conn_error_mod);
+        const run_test_conn_error = b.addRunArtifact(test_conn_error);
+        test_step.dependOn(&run_test_conn_error.step);
+
+        const test_conn_idle = addTst(b, "tests/unit/connection/test_idle.zig", target, optimize);
+        test_conn_idle.root_module.addImport("idle", conn_idle_mod);
+        const run_test_conn_idle = b.addRunArtifact(test_conn_idle);
+        test_step.dependOn(&run_test_conn_idle.step);
 
         // Frame module tests
         const test_frame_types = addTst(b, "tests/unit/frame/test_types.zig", target, optimize);
