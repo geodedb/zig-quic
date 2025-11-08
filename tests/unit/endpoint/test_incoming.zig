@@ -176,8 +176,8 @@ test "Phase 4b.5 - processVersionNegotiation selects QUIC v2 when offered" {
 
     // Build Version Negotiation packet
     // Format: version(0) | dcid_len | dcid | scid_len | scid | supported_versions[]
-    var vn_packet = std.ArrayList(u8).init(test_allocator);
-    defer vn_packet.deinit();
+    var vn_packet = std.ArrayList(u8).init();
+    defer vn_packet.deinit(test_allocator);
 
     // Version (0x00000000 indicates VN packet)
     try vn_packet.appendSlice(&[_]u8{ 0x00, 0x00, 0x00, 0x00 });
@@ -243,8 +243,8 @@ test "Phase 4b.5 - processVersionNegotiation ignores when compatible_vn disabled
     var rx_ctx = createTestRxContext(test_allocator, &conns, &accepted, &test_cfg);
 
     // Build minimal VN packet
-    var vn_packet = std.ArrayList(u8).init(test_allocator);
-    defer vn_packet.deinit();
+    var vn_packet = std.ArrayList(u8).init();
+    defer vn_packet.deinit(test_allocator);
     try vn_packet.appendSlice(&[_]u8{ 0x00, 0x00, 0x00, 0x00 }); // version=0
     try vn_packet.append(8);
     try vn_packet.appendSlice(&dcid_bytes);
@@ -283,8 +283,8 @@ test "Phase 4b.5 - processVersionNegotiation handles unknown connection graceful
     const test_peer = conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433);
 
     // Build VN packet with unknown CID
-    var vn_packet = std.ArrayList(u8).init(test_allocator);
-    defer vn_packet.deinit();
+    var vn_packet = std.ArrayList(u8).init();
+    defer vn_packet.deinit(test_allocator);
     try vn_packet.appendSlice(&[_]u8{ 0x00, 0x00, 0x00, 0x00 });
     try vn_packet.append(8);
     try vn_packet.appendSlice(&[_]u8{ 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF }); // Unknown CID
@@ -576,8 +576,8 @@ test "Phase 4b.5 Session 3 - enumerateDcidLength detects stateless reset" {
     @memcpy(&test_conn.peer_stateless_reset_token, &reset_token);
 
     // Create packet that looks like stateless reset (contains token)
-    var fake_packet = std.ArrayList(u8).init(test_allocator);
-    defer fake_packet.deinit();
+    var fake_packet = std.ArrayList(u8).init();
+    defer fake_packet.deinit(test_allocator);
 
     // Short header bit + random bytes
     try fake_packet.append(0x40); // Short header

@@ -361,14 +361,14 @@ fn makeTestAddr(port: u16) conn_mod.SockAddr {
 
 /// Create short header packet with given DCID
 fn makeShortHeaderPacket(allocator: std.mem.Allocator, dcid: []const u8) ![]u8 {
-    const packet = try allocator.alloc(u8, 1 + dcid.len + 20);
-    packet[0] = 0x40; // Short header, fixed bit set
-    @memcpy(packet[1 .. 1 + dcid.len], dcid);
+    const pkt_buf = try allocator.alloc(u8, 1 + dcid.len + 20);
+    pkt_buf[0] = 0x40; // Short header, fixed bit set
+    @memcpy(pkt_buf[1 .. 1 + dcid.len], dcid);
     // Fill rest with dummy data
-    for (packet[1 + dcid.len ..]) |*b| {
+    for (pkt_buf[1 + dcid.len ..]) |*b| {
         b.* = 0;
     }
-    return packet;
+    return pkt_buf;
 }
 
 // Mock callback state
@@ -382,14 +382,14 @@ const PathChangeState = struct {
 threadlocal var path_change_state: PathChangeState = .{};
 
 fn mockPathChangedFn(
-    conn: *conn_mod.Connection,
+    connection: *conn_mod.Connection,
     new_peer: conn_mod.SockAddr,
     new_peer_hash: u64,
     dcid_len: usize,
 ) !void {
     _ = new_peer;
     path_change_state.called = true;
-    path_change_state.conn = conn;
+    path_change_state.conn = connection;
     path_change_state.peer_hash = new_peer_hash;
     path_change_state.dcid_len = dcid_len;
 }
@@ -399,8 +399,8 @@ test "Phase 4b.5 Session 3 - findConnectionByDcid: Phase 1 match with peer_hash 
 
     // Create connection with 8-byte DCID
     const dcid = [_]u8{ 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88 };
-    const conn = try createMockConnection(allocator, &dcid, false, false);
-    defer allocator.destroy(conn);
+    const connection = try createMockConnection(allocator, &dcid, false, false);
+    defer allocator.destroy(connection);
 
     // Create connection table
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(allocator);
@@ -413,20 +413,20 @@ test "Phase 4b.5 Session 3 - findConnectionByDcid: Phase 1 match with peer_hash 
         .peer_hash = peer_h,
         .dcid_hash = hashBytes(&dcid),
     };
-    try conns.put(key, conn);
+    try conns.put(key, connection);
 
     // Create packet with matching DCID
-    const packet = try makeShortHeaderPacket(allocator, &dcid);
-    defer allocator.free(packet);
+    const pkt_buf = try makeShortHeaderPacket(allocator, &dcid);
+    defer allocator.free(pkt_buf);
 
     // Reset mock state
     path_change_state = .{};
 
     // Lookup should find connection via Phase 1
-    const result = lookup.findConnectionByDcid(&conns, peer, packet, mockPathChangedFn);
+    const result = lookup.findConnectionByDcid(&conns, peer, pkt_buf, mockPathChangedFn);
 
     try testing.expect(result.conn != null);
-    try testing.expectEqual(conn, result.conn.?);
+    try testing.expectEqual(connection, result.conn.?);
     try testing.expectEqual(@as(usize, 8), result.dcid_len);
     try testing.expectEqual(false, result.nat_rebinding);
     try testing.expectEqual(false, path_change_state.called); // No NAT rebinding
@@ -459,12 +459,12 @@ test "Phase 4b.5 Session 3 - findConnectionByDcid: Server prioritization (both k
     try conns.put(key2, conn2);
 
     // Create packet that matches dcid2 (conn2 with both keys)
-    const packet = try makeShortHeaderPacket(allocator, &dcid2);
-    defer allocator.free(packet);
+    const pkt_buf = try makeShortHeaderPacket(allocator, &dcid2);
+    defer allocator.free(pkt_buf);
 
     path_change_state = .{};
 
-    const result = lookup.findConnectionByDcid(&conns, peer, packet, mockPathChangedFn);
+    const result = lookup.findConnectionByDcid(&conns, peer, pkt_buf, mockPathChangedFn);
 
     try testing.expect(result.conn != null);
     try testing.expectEqual(conn2, result.conn.?); // Should select conn2 (has both keys)
@@ -476,8 +476,8 @@ test "Phase 4b.5 Session 3 - findConnectionByDcid: Phase 2 NAT rebinding fallbac
     const allocator = testing.allocator;
 
     const dcid = [_]u8{ 0x12, 0x34, 0x56, 0x78 };
-    const conn = try createMockConnection(allocator, &dcid, false, false);
-    defer allocator.destroy(conn);
+    const connection = try createMockConnection(allocator, &dcid, false, false);
+    defer allocator.destroy(connection);
 
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(allocator);
     defer conns.deinit();
@@ -489,24 +489,24 @@ test "Phase 4b.5 Session 3 - findConnectionByDcid: Phase 2 NAT rebinding fallbac
         .peer_hash = original_peer_h,
         .dcid_hash = hashBytes(&dcid),
     };
-    try conns.put(key, conn);
+    try conns.put(key, connection);
 
     // Query with DIFFERENT peer address (simulates NAT rebinding)
     const new_peer = makeTestAddr(9999);
-    const packet = try makeShortHeaderPacket(allocator, &dcid);
-    defer allocator.free(packet);
+    const pkt_buf = try makeShortHeaderPacket(allocator, &dcid);
+    defer allocator.free(pkt_buf);
 
     path_change_state = .{};
 
     // Lookup should trigger Phase 2 NAT rebinding fallback
-    const result = lookup.findConnectionByDcid(&conns, new_peer, packet, mockPathChangedFn);
+    const result = lookup.findConnectionByDcid(&conns, new_peer, pkt_buf, mockPathChangedFn);
 
     try testing.expect(result.conn != null);
-    try testing.expectEqual(conn, result.conn.?);
+    try testing.expectEqual(connection, result.conn.?);
     try testing.expectEqual(@as(usize, 4), result.dcid_len);
     try testing.expectEqual(true, result.nat_rebinding); // NAT rebinding detected!
     try testing.expectEqual(true, path_change_state.called); // Callback invoked
-    try testing.expectEqual(conn, path_change_state.conn);
+    try testing.expectEqual(connection, path_change_state.conn);
     try testing.expectEqual(@as(usize, 4), path_change_state.dcid_len);
 }
 
@@ -519,12 +519,12 @@ test "Phase 4b.5 Session 3 - findConnectionByDcid: No match returns null" {
     // Empty connection table
     const peer = makeTestAddr(1234);
     const dcid = [_]u8{ 0xff, 0xee, 0xdd, 0xcc };
-    const packet = try makeShortHeaderPacket(allocator, &dcid);
-    defer allocator.free(packet);
+    const pkt_buf = try makeShortHeaderPacket(allocator, &dcid);
+    defer allocator.free(pkt_buf);
 
     path_change_state = .{};
 
-    const result = lookup.findConnectionByDcid(&conns, peer, packet, mockPathChangedFn);
+    const result = lookup.findConnectionByDcid(&conns, peer, pkt_buf, mockPathChangedFn);
 
     try testing.expect(result.conn == null);
     try testing.expectEqual(@as(usize, 0), result.dcid_len);
@@ -536,8 +536,8 @@ test "Phase 4b.5 Session 3 - findConnectionByDcid: Zero-length DCID skipped" {
     const allocator = testing.allocator;
 
     // Create connection with zero-length DCID (ambiguous, should be skipped)
-    const conn = try createMockConnection(allocator, &[_]u8{}, false, false);
-    defer allocator.destroy(conn);
+    const connection = try createMockConnection(allocator, &[_]u8{}, false, false);
+    defer allocator.destroy(connection);
 
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(allocator);
     defer conns.deinit();
@@ -548,15 +548,15 @@ test "Phase 4b.5 Session 3 - findConnectionByDcid: Zero-length DCID skipped" {
         .peer_hash = peer_h,
         .dcid_hash = hashBytes(&[_]u8{}),
     };
-    try conns.put(key, conn);
+    try conns.put(key, connection);
 
-    const packet = try makeShortHeaderPacket(allocator, &[_]u8{});
-    defer allocator.free(packet);
+    const pkt_buf = try makeShortHeaderPacket(allocator, &[_]u8{});
+    defer allocator.free(pkt_buf);
 
     path_change_state = .{};
 
     // Should not match zero-length DCID
-    const result = lookup.findConnectionByDcid(&conns, peer, packet, mockPathChangedFn);
+    const result = lookup.findConnectionByDcid(&conns, peer, pkt_buf, mockPathChangedFn);
 
     try testing.expect(result.conn == null);
     try testing.expectEqual(@as(usize, 0), result.dcid_len);
@@ -594,12 +594,12 @@ test "Phase 4b.5 Session 3 - findConnectionByDcid: Longer DCID wins tie-break" {
     try conns.put(key_long, conn_long);
 
     // Create packet with long DCID prefix (matches both, but long should win)
-    const packet = try makeShortHeaderPacket(allocator, &dcid_long);
-    defer allocator.free(packet);
+    const pkt_buf = try makeShortHeaderPacket(allocator, &dcid_long);
+    defer allocator.free(pkt_buf);
 
     path_change_state = .{};
 
-    const result = lookup.findConnectionByDcid(&conns, peer, packet, mockPathChangedFn);
+    const result = lookup.findConnectionByDcid(&conns, peer, pkt_buf, mockPathChangedFn);
 
     try testing.expect(result.conn != null);
     try testing.expectEqual(conn_long, result.conn.?); // Longer DCID wins
