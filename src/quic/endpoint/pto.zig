@@ -16,7 +16,7 @@
 //! Phase 4b.5 Session 9: Extract PTO probe generation from endpoint.zig:3392-3448
 
 const std = @import("std");
-pub const types = @import("types.zig");
+pub const types = @import("types");
 const conn_mod = @import("quic_conn");
 const packet = @import("quic_packet");
 const frame = @import("quic_frame");

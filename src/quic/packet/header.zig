@@ -4,7 +4,7 @@
 //! RFC 9000 §17.3: Short Header
 
 const std = @import("std");
-const types = @import("types.zig");
+const types = @import("types");
 const varint = @import("quic_varint");
 
 /// Serializable Long Header structure used by helpers for tests/tools. Layout

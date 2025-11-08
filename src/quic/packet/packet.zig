@@ -9,7 +9,7 @@
 const std = @import("std");
 
 // Import packet submodules
-pub const types = @import("types.zig");
+pub const types = @import("types");
 pub const header = @import("header.zig");
 
 // Import legacy packet.zig for current implementations

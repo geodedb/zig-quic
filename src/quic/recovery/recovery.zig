@@ -9,7 +9,7 @@ const std = @import("std");
 const frame = @import("quic_frame");
 
 // Import recovery submodules
-pub const types = @import("types.zig");
+pub const types = @import("types");
 pub const rtt_mod = @import("rtt.zig");
 pub const loss_detection = @import("loss_detection.zig");
 pub const congestion = @import("congestion.zig");
