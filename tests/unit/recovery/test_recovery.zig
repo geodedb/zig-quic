@@ -18,6 +18,7 @@ const std = @import("std");
 const testing = std.testing;
 
 const recovery = @import("recovery");
+const frame = @import("frame");
 
 // =============================================================================
 // Module Re-export Tests
@@ -347,7 +348,7 @@ test "RFC 3168 - onAckReceivedWithEcn tracks ECN counters" {
     try rec.onPacketSent(.Initial, 1, 1200, true, 1000);
 
     const acked = [_]u64{1};
-    const ecn = recovery.types.frame.EcnCounts{
+    const ecn = frame.EcnCounts{
         .ect0 = 1,
         .ect1 = 0,
         .ce = 0,
@@ -368,14 +369,14 @@ test "RFC 3168 - onAckReceivedWithEcn reduces cwnd on CE increase" {
 
     // First ACK with no CE
     const acked1 = [_]u64{1};
-    const ecn1 = recovery.types.frame.EcnCounts{ .ect0 = 1, .ect1 = 0, .ce = 0 };
+    const ecn1 = frame.EcnCounts{ .ect0 = 1, .ect1 = 0, .ce = 0 };
     _ = rec.onAckReceivedWithEcn(.Initial, &acked1, 0, 3000, ecn1);
 
     const cwnd_before = rec.cc.cwnd;
 
     // Second ACK with CE increased
     const acked2 = [_]u64{2};
-    const ecn2 = recovery.types.frame.EcnCounts{ .ect0 = 2, .ect1 = 0, .ce = 1 };
+    const ecn2 = frame.EcnCounts{ .ect0 = 2, .ect1 = 0, .ce = 1 };
     _ = rec.onAckReceivedWithEcn(.Initial, &acked2, 0, 4000, ecn2);
 
     // cwnd should be reduced
@@ -390,7 +391,7 @@ test "onAckReceivedWithEcn ignores decreasing ECN counters" {
 
     // Set initial ECN state
     const acked1 = [_]u64{1};
-    const ecn1 = recovery.types.frame.EcnCounts{ .ect0 = 5, .ect1 = 0, .ce = 0 };
+    const ecn1 = frame.EcnCounts{ .ect0 = 5, .ect1 = 0, .ce = 0 };
     _ = rec.onAckReceivedWithEcn(.Initial, &acked1, 0, 2000, ecn1);
 
     const cwnd_before = rec.cc.cwnd;
@@ -399,7 +400,7 @@ test "onAckReceivedWithEcn ignores decreasing ECN counters" {
 
     // Receive ECN with decreased counters (ignore this)
     const acked2 = [_]u64{2};
-    const ecn2 = recovery.types.frame.EcnCounts{ .ect0 = 3, .ect1 = 0, .ce = 0 };
+    const ecn2 = frame.EcnCounts{ .ect0 = 3, .ect1 = 0, .ce = 0 };
     _ = rec.onAckReceivedWithEcn(.Initial, &acked2, 0, 4000, ecn2);
 
     // cwnd should not be affected
