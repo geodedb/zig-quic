@@ -34,6 +34,7 @@ const crypto = @import("crypto_quic");
 // Import frame processing modules
 const frame = @import("frame");
 const frame_handler = @import("frame_handler");
+const handshake_integration = @import("handshake_integration");
 
 // Phase 4b.5: Modular extraction using focused context structs.
 // Functions below use RxContext instead of full Endpoint pointer.
@@ -796,7 +797,7 @@ pub fn processInitial(
 
     // Address validation via token (RFC 9000 §8.1.4)
     if (conn.role == .Server and !conn.address_validated and token_bytes.len > 0) {
-        const token_mod = @import("token.zig");
+        const token_mod = @import("token");
         const client_ip_bytes = @as([*]const u8, @ptrCast(&peer.storage))[0..peer.len];
         const secret = ctx.cfg.token_secret orelse "default-retry-secret-16";
         const now_ns: i128 = std.time.nanoTimestamp();
@@ -810,7 +811,7 @@ pub fn processInitial(
 
     // If address still not validated, consider issuing Retry (RFC 9000 §8.1.1)
     if (conn.role == .Server and !conn.address_validated and ctx.cfg.enable_retry) {
-        const token_mod = @import("token.zig");
+        const token_mod = @import("token");
         const client_ip_bytes = @as([*]const u8, @ptrCast(&peer.storage))[0..peer.len];
         const secret = ctx.cfg.token_secret orelse "default-retry-secret-16";
 
@@ -1372,7 +1373,7 @@ fn decryptHandshakePacket(
     }
 
     // Expand truncated PN
-    const pn_full = expandPacketNumber(pn_val_be, actual_pn_len, largest_pn);
+    const pn_full = crypto.expandPacketNumber(pn_val_be, actual_pn_len, largest_pn);
 
     return .{
         .payload = pt_slice[0..dec],

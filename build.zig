@@ -399,6 +399,7 @@ pub fn build(b: *std.Build) void {
     endpoint_incoming_mod.addImport("crypto_quic", quic_crypto_mod);
     endpoint_incoming_mod.addImport("frame", quic_frame_mod);
     endpoint_incoming_mod.addImport("varint", quic_varint_mod);
+    endpoint_incoming_mod.addImport("token", quic_token_mod);
 
     const endpoint_handshake_integration_mod = mkModule(b, "src/quic/endpoint/handshake_integration.zig");
     endpoint_handshake_integration_mod.addImport("quic_conn", quic_conn_mod);
@@ -438,6 +439,7 @@ pub fn build(b: *std.Build) void {
     endpoint_frame_handler_mod.addImport("config", quic_config_mod);
     endpoint_incoming_mod.addImport("config", quic_config_mod);
     endpoint_incoming_mod.addImport("frame_handler", endpoint_frame_handler_mod);
+    endpoint_incoming_mod.addImport("handshake_integration", endpoint_handshake_integration_mod);
 
     const quic_endpoint_mod = mkModule(b, "src/quic/endpoint.zig");
     quic_endpoint_mod.addImport("quic_conn", quic_conn_mod);
