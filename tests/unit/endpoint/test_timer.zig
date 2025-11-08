@@ -155,7 +155,7 @@ test "RFC 9002 §6.2 - cancel twice returns false second time" {
 // =============================================================================
 
 test "RFC 9002 §6.2 - nextDeadline returns null for empty queue" {
-    const tm = timer.TimerManager.init(test_allocator);
+    var tm = timer.TimerManager.init(test_allocator);
     defer tm.deinit();
 
     try testing.expectEqual(@as(?i64, null), tm.nextDeadline());
@@ -220,7 +220,7 @@ test "RFC 9002 §6.2 - flush removes expired timers" {
     _ = try tm.schedule(0, .PtoInitial, null);
 
     // Give it a moment to ensure expiry
-    std.time.sleep(1 * std.time.ns_per_ms);
+    std.Thread.sleep(1 * std.time.ns_per_ms);
 
     var expired = try tm.flush(test_allocator);
     defer expired.deinit();
@@ -402,7 +402,7 @@ test "RFC 9002 §6.2.1 - Timer scheduling uses monotonic time" {
     const id1 = try tm.schedule(100, .PtoInitial, null);
 
     // Small delay
-    std.time.sleep(2 * std.time.ns_per_ms);
+    std.Thread.sleep(2 * std.time.ns_per_ms);
 
     const id2 = try tm.schedule(100, .PtoHandshake, null);
 

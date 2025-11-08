@@ -664,9 +664,9 @@ test "RFC 9000 §3 - Stream offset enables reliable ordered delivery" {
     // Decode all frames
     var frames: [3]struct { offset: ?u64, data: []const u8 } = undefined;
     var pos: usize = 0;
-    for (&frames) |*frame| {
+    for (&frames) |*f| {
         const result = try stream.decodeStream(written[pos..]);
-        types.* = .{ .offset = result.offset, .data = result.data };
+        f.* = .{ .offset = result.offset, .data = result.data };
         pos += result.n;
     }
 
