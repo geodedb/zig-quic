@@ -53,7 +53,7 @@ fn createTestConnection() !*conn_mod.Connection {
 
 // Test helper: Cleanup test connection
 fn destroyTestConnection(conn: *conn_mod.Connection) void {
-    conn.initial_token.deinit();
+    conn.initial_token.deinit(test_allocator);
     test_allocator.destroy(conn);
 }
 
@@ -66,15 +66,16 @@ fn mockSendFn(peer: conn_mod.SockAddr, data: []const u8) !usize {
 // Test helper: Create test FrameContext
 fn createTestContext(conn: *conn_mod.Connection) frame_handler.FrameContext {
     const test_cfg = cfg.QuicConfig{
+        .alpn = &[_][]const u8{},
         .enable_datagram = false,
         .max_idle_timeout_ms = 30000,
-        .max_udp_payload_size = 1200,
+        .max_udp_payload = 1200,
     };
     return .{
         .conn = conn,
         .allocator = &test_allocator,
         .send_fn = &mockSendFn,
-        .peer = .{ .v4 = .{ .addr = [_]u8{ 127, 0, 0, 1 }, .port = 8080 } },
+        .peer = .{},
         .space = .Application,
         .cfg = &test_cfg,
     };
@@ -105,11 +106,11 @@ test "RFC 9000 §19.15 - NEW_CONNECTION_ID records stateless reset token" {
     defer destroyTestConnection(conn);
     var ctx = createTestContext(conn);
 
+    const cid = [_]u8{0x01} ** 8;
     const ncid = frame.NewConnectionId{
         .sequence = 1,
         .retire_prior_to = 0,
-        .connection_id = [_]u8{0x01} ** 8,
-        .connection_id_len = 8,
+        .connection_id = &cid,
         .stateless_reset_token = [_]u8{0xAA} ** 16,
     };
 
@@ -355,7 +356,7 @@ test "RFC 9000 §19.13 - STREAM_DATA_BLOCKED is no-op" {
 
     const sdb = frame.StreamDataBlocked{
         .stream_id = 0,
-        .max = 1000,
+        .limit = 1000,
     };
 
     const result = frame_handler.handleStreamDataBlocked(&ctx, sdb);
@@ -488,7 +489,6 @@ test "processFrame dispatches CONNECTION_CLOSE correctly" {
     const fr = frame.Frame{
         .connection_close = .{
             .error_code = 0,
-            .frame_type = null,
             .reason = "",
         },
     };
@@ -514,11 +514,11 @@ test "RFC 9000 §13.2.1 - Ack-eliciting frames are correctly identified" {
     const hs_done_result = frame_handler.handleHandshakeDone(&ctx);
     try testing.expect(hs_done_result.saw_ack_eliciting);
 
+    const cid2 = [_]u8{0} ** 8;
     const ncid_result = frame_handler.handleNewConnectionId(&ctx, .{
         .sequence = 0,
         .retire_prior_to = 0,
-        .connection_id = [_]u8{0} ** 8,
-        .connection_id_len = 8,
+        .connection_id = &cid2,
         .stateless_reset_token = [_]u8{0} ** 16,
     });
     try testing.expect(ncid_result.saw_ack_eliciting);

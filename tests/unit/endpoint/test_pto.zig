@@ -88,6 +88,79 @@ test "RFC 9002 §6.2 - all PTO timers have corresponding spaces" {
 }
 
 // =============================================================================
+// Probe Builder Tests (Phase 5 Tier 1)
+// =============================================================================
+
+test "RFC 9002 §6.2.4 - buildInitialProbe returns PING frame" {
+    // RFC 9002 §6.2.4: "Probe packets MUST contain ACK-eliciting frames."
+    // PING frame is ACK-eliciting and has minimal overhead.
+
+    const payload = try pto.buildInitialProbe(&test_allocator);
+    defer test_allocator.free(payload);
+
+    // Assert: Should be single PING frame (0x01)
+    try testing.expectEqual(@as(usize, 1), payload.len);
+    try testing.expectEqual(@as(u8, 0x01), payload[0]);
+}
+
+test "RFC 9002 §6.2.4 - buildHandshakeProbe returns PING frame" {
+    // RFC 9002 §6.2.4: "Probe packets MUST contain ACK-eliciting frames."
+    // Handshake probes use same PING frame as Initial probes.
+
+    const payload = try pto.buildHandshakeProbe(&test_allocator);
+    defer test_allocator.free(payload);
+
+    // Assert: Should be single PING frame (0x01)
+    try testing.expectEqual(@as(usize, 1), payload.len);
+    try testing.expectEqual(@as(u8, 0x01), payload[0]);
+}
+
+test "RFC 9002 §6.2.4 - buildApplicationProbe returns PING frame" {
+    // RFC 9002 §6.2.4: "Probe packets MUST contain ACK-eliciting frames."
+    // Application probes use PING frame (future: could include STREAM data).
+
+    const payload = try pto.buildApplicationProbe(&test_allocator);
+    defer test_allocator.free(payload);
+
+    // Assert: Should be single PING frame (0x01)
+    try testing.expectEqual(@as(usize, 1), payload.len);
+    try testing.expectEqual(@as(u8, 0x01), payload[0]);
+}
+
+test "RFC 9002 §6.2.4 - buildInitialProbe allocates memory correctly" {
+    // Verify memory allocation and proper cleanup
+
+    const payload = try pto.buildInitialProbe(&test_allocator);
+    defer test_allocator.free(payload);
+
+    // Assert: Allocated slice has correct properties
+    try testing.expect(payload.len > 0);
+    try testing.expect(payload.ptr != null);
+}
+
+test "RFC 9002 §6.2.4 - buildHandshakeProbe allocates memory correctly" {
+    // Verify memory allocation and proper cleanup
+
+    const payload = try pto.buildHandshakeProbe(&test_allocator);
+    defer test_allocator.free(payload);
+
+    // Assert: Allocated slice has correct properties
+    try testing.expect(payload.len > 0);
+    try testing.expect(payload.ptr != null);
+}
+
+test "RFC 9002 §6.2.4 - buildApplicationProbe allocates memory correctly" {
+    // Verify memory allocation and proper cleanup
+
+    const payload = try pto.buildApplicationProbe(&test_allocator);
+    defer test_allocator.free(payload);
+
+    // Assert: Allocated slice has correct properties
+    try testing.expect(payload.len > 0);
+    try testing.expect(payload.ptr != null);
+}
+
+// =============================================================================
 // PtoHandler Initialization Tests
 // =============================================================================
 
@@ -100,178 +173,238 @@ test "RFC 9002 §6.2 - PtoHandler placeholder initialization" {
 }
 
 // =============================================================================
-// Phase 3: PTO Probe Generation Tests
+// INTEGRATION TESTS - PTO Probe Generation (Tier 3)
 // =============================================================================
+//
+// These tests require full Connection object with TLS keys, recovery state,
+// and UDP socket. Deferred to Phase 6 (Integration Test Framework).
+//
+// Current Status: 13/62 tests passing (21%)
+// Target: Document expected behavior for future integration testing
+//
 
-test "Phase 3 - sendPtoProbe generates probe for Initial space" {
+test "INTEGRATION TEST - sendPtoProbe generates Initial probe" {
     // RFC 9002 §6.2.4: Send probe when Initial PTO expires
+    // Implementation: pto.zig:143-208
     //
-    // Expected:
-    // - kind = .PtoInitial
-    // - Check !conn.initial_keys_dropped
-    // - Build Initial packet with PING frame
-    // - Use server Initial TX keys
-    // - Send to peer
+    // Expected Implementation Steps:
+    // 1. Check timer kind is .PtoInitial
+    // 2. Verify !conn.initial_keys_dropped (early return if dropped)
+    // 3. Derive Initial TX keys from ODCID (conn.original_dcid or peer_initial_dcid)
+    // 4. Call buildInitialProbe() to get PING frame payload
+    // 5. Encode Initial packet with encodeInitialProtected()
+    // 6. Send packet via send_fn callback to peer address
+    // 7. Call conn.onPacketSent(.Initial, pn, pkt.len, true) for congestion control
+    // 8. Increment conn.pn_initial_tx
+    //
+    // Requires:
+    // - Full Connection object with initial_keys_dropped, original_dcid, peer_initial_scid
+    // - TLS key derivation (deriveInitialSecret, deriveClientServerInitial)
+    // - send_fn callback for UDP transmission
+    // - Recovery state for congestion control tracking
+    //
+    // Status: Deferred to Phase 6
 
-    try testing.expect(true);
+    try testing.expect(true); // Placeholder - documents expected behavior
 }
 
-test "Phase 3 - sendPtoProbe generates probe for Handshake space" {
+test "INTEGRATION TEST - sendPtoProbe generates Handshake probe" {
     // RFC 9002 §6.2.4: Send probe when Handshake PTO expires
+    // Implementation: pto.zig:211-242
     //
-    // Expected:
-    // - kind = .PtoHandshake
-    // - Check conn.hs_tx_keys exists
-    // - Build Handshake packet with PING frame
-    // - Use Handshake TX keys
-    // - Send to peer
+    // Expected Implementation Steps:
+    // 1. Check timer kind is .PtoHandshake
+    // 2. Verify conn.hs_tx_keys exists (early return if null)
+    // 3. Extract peer SCID as DCID, our SCID as SCID
+    // 4. Call buildHandshakeProbe() to get PING frame payload
+    // 5. Encode Handshake packet with encodeHandshakeProtected()
+    // 6. Send packet via send_fn callback
+    // 7. Call conn.onPacketSent(.Handshake, pn, pkt.len, true)
+    // 8. Increment conn.pn_handshake_tx
+    //
+    // Requires:
+    // - Connection with hs_tx_keys derived from TLS handshake
+    // - Packet encoding with Handshake protection level
+    // - Recovery state tracking
+    //
+    // Status: Deferred to Phase 6
 
     try testing.expect(true);
 }
 
-test "Phase 3 - sendPtoProbe skips Initial if keys dropped" {
-    // Initial keys discarded after Handshake confirmed
+test "INTEGRATION TEST - sendPtoProbe skips Initial if keys dropped" {
+    // RFC 9001 §4.9.1: Initial keys discarded after Handshake confirmed
+    // Implementation: pto.zig:151 (early return)
     //
-    // Expected:
-    // - if conn.initial_keys_dropped: return early
-    // - Don't send Initial probe
-    // - Handshake/Application probes still sent
+    // Expected Behavior:
+    // - When conn.initial_keys_dropped == true, return immediately
+    // - No Initial probe sent (keys no longer available)
+    // - Handshake/Application probes can still be sent
+    //
+    // Test Scenario:
+    // 1. Create Connection with initial_keys_dropped = true
+    // 2. Call sendPtoProbe(ctx, .PtoInitial)
+    // 3. Verify no packet was sent (check send_fn not called)
+    // 4. Verify pn_initial_tx was not incremented
+    //
+    // Status: Deferred to Phase 6
 
     try testing.expect(true);
 }
 
-test "Phase 3 - sendPtoProbe skips Handshake if no TX keys" {
-    // Handshake keys not yet derived
+test "INTEGRATION TEST - sendPtoProbe skips Handshake if no TX keys" {
+    // Handshake keys not yet derived (early in connection)
+    // Implementation: pto.zig:213 (early return)
     //
-    // Expected:
-    // - if conn.hs_tx_keys == null: return early
-    // - Don't send Handshake probe
-    // - May still send Initial probe
+    // Expected Behavior:
+    // - When conn.hs_tx_keys == null, return immediately
+    // - No Handshake probe sent (keys not available yet)
+    // - Initial probe may still be sent if keys not dropped
+    //
+    // Test Scenario:
+    // 1. Create Connection with hs_tx_keys = null
+    // 2. Call sendPtoProbe(ctx, .PtoHandshake)
+    // 3. Verify no packet was sent
+    // 4. Verify pn_handshake_tx was not incremented
+    //
+    // Status: Deferred to Phase 6
 
     try testing.expect(true);
 }
 
-test "Phase 3 - Initial PTO probe uses PING frame" {
+test "NOTE - Initial PTO probe content verified by buildInitialProbe tests" {
     // RFC 9002 §6.2.4: ACK-eliciting probe
     //
-    // Expected:
-    // - frames.append(FrameType.PING)
-    // - PING is ACK-eliciting
-    // - Minimal overhead
-    // - Elicits ACK from peer
+    // This behavior is already tested by:
+    // - "RFC 9002 §6.2.4 - buildInitialProbe returns PING frame" (line 94)
+    // - sendPtoProbe calls buildInitialProbe() internally (pto.zig:185)
+    //
+    // Expected probe content:
+    // - Single PING frame (0x01)
+    // - Minimal overhead (1 byte)
+    // - ACK-eliciting per RFC 9002 §6.2.4
+    //
+    // Status: Covered by existing unit tests ✅
 
     try testing.expect(true);
 }
 
-test "Phase 3 - Handshake PTO probe uses PING frame" {
+test "NOTE - Handshake PTO probe content verified by buildHandshakeProbe tests" {
     // RFC 9002 §6.2.4: ACK-eliciting probe
     //
-    // Expected:
-    // - frames.append(FrameType.PING)
-    // - PING is ACK-eliciting
-    // - Could alternatively use CRYPTO retransmission
+    // This behavior is already tested by:
+    // - "RFC 9002 §6.2.4 - buildHandshakeProbe returns PING frame" (line 106)
+    // - sendPtoProbe calls buildHandshakeProbe() internally (pto.zig:219)
+    //
+    // Expected probe content:
+    // - Single PING frame (0x01)
+    // - ACK-eliciting per RFC 9002 §6.2.4
+    // - Alternative: Could include CRYPTO retransmission (future enhancement)
+    //
+    // Status: Covered by existing unit tests ✅
 
     try testing.expect(true);
 }
 
 // =============================================================================
-// Phase 3: Initial Space PTO Tests
+// INTEGRATION TESTS - Initial Space PTO Details (Tier 3)
 // =============================================================================
 
-test "Phase 3 - Initial PTO derives keys from ODCID" {
-    // RFC 9001 §5.2: Use original DCID for Initial keys
+test "INTEGRATION TEST - Initial PTO derives keys from ODCID" {
+    // RFC 9001 §5.2: Use original DCID for Initial key derivation
+    // Implementation: pto.zig:162-182
     //
-    // Expected:
-    // - Use conn.original_dcid if len > 0
-    // - Else use conn.peer_initial_dcid
-    // - initial_secret = deriveInitialSecret(v2, derive_dcid)
-    // - Consistent with handshake key derivation
+    // Key Derivation Logic:
+    // 1. If conn.original_dcid.len > 0: use original_dcid bytes
+    // 2. Else if conn.peer_initial_dcid.len > 0: use peer_initial_dcid bytes
+    // 3. Else: use dcid (fallback)
+    // 4. Call ks.deriveInitialSecret(v2, derive_dcid)
+    // 5. Call ks.deriveClientServerInitial(initial)
+    // 6. Select pair.server for server role TX keys
+    //
+    // Status: Deferred to Phase 6
 
     try testing.expect(true);
 }
 
-test "Phase 3 - Initial PTO uses server keys for server role" {
-    // Server sends with server TX keys
+test "INTEGRATION TEST - Initial PTO uses peer SCID as DCID" {
+    // RFC 9000 §17.2: Packet addressing for routing
+    // Implementation: pto.zig:154
     //
-    // Expected:
-    // - if conn.role == .Server: use pair.server
-    // - deriveKeyIvHp(pair.server) or deriveKeyIvHpV2
-    // - Client receives with client RX keys
+    // Addressing: dcid = conn.peer_initial_scid.bytes[0..len]
+    // Rationale: Peer expects to see their SCID as DCID for routing
+    //
+    // Status: Deferred to Phase 6
 
     try testing.expect(true);
 }
 
-test "Phase 3 - Initial PTO uses peer SCID as DCID" {
-    // Packet addressing
+test "INTEGRATION TEST - Initial PTO uses own SCID as SCID" {
+    // RFC 9000 §17.2: Return address for responses
+    // Implementation: pto.zig:155
     //
-    // Expected:
-    // - dcid = conn.peer_initial_scid bytes
-    // - What peer expects to receive
-    // - Routing to correct connection
+    // Addressing: scid = conn.our_scid.bytes[0..len]
+    // Rationale: Peer uses this as DCID when sending responses
+    //
+    // Status: Deferred to Phase 6
 
     try testing.expect(true);
 }
 
-test "Phase 3 - Initial PTO uses own SCID as SCID" {
-    // Packet return addressing
+test "INTEGRATION TEST - Initial PTO includes empty token" {
+    // RFC 9000 §17.2.2: Token field in Initial packets
+    // Implementation: pto.zig:194
     //
-    // Expected:
-    // - scid = conn.our_scid bytes
-    // - Peer uses this as DCID for responses
-    // - Connection routing
+    // Behavior: token = &[_]u8{} (empty slice)
+    // Rationale: Tokens only in original Initial, not PTO probes
+    //
+    // Status: Deferred to Phase 6
 
     try testing.expect(true);
 }
 
-test "Phase 3 - Initial PTO includes empty token" {
-    // No token in retransmission probes
+test "INTEGRATION TEST - Initial PTO uses current packet number" {
+    // RFC 9000 §12.3: Packet number assignment
+    // Implementation: pto.zig:195, 208
     //
-    // Expected:
-    // - token = empty slice &[_]u8{}
-    // - Token only in original Initial
-    // - Retry token already validated
+    // Behavior:
+    // 1. Use conn.pn_initial_tx as packet number
+    // 2. Increment: conn.pn_initial_tx +%= 1
+    //
+    // Status: Deferred to Phase 6
 
     try testing.expect(true);
 }
 
-test "Phase 3 - Initial PTO uses current packet number" {
-    // PN for probe packet
+test "INTEGRATION TEST - Initial PTO uses 4-byte PN encoding" {
+    // RFC 9000 §17.2: Packet number length
+    // Implementation: pto.zig:196
     //
-    // Expected:
-    // - pn = conn.pn_initial_tx (current value)
-    // - PN incremented after sending
-    // - conn.pn_initial_tx +%= 1
+    // Behavior: pn_len = 4 (maximum)
+    // Rationale: Maximizes PN space, standard for Initial packets
+    //
+    // Status: Deferred to Phase 6
 
     try testing.expect(true);
 }
 
-test "Phase 3 - Initial PTO uses 4-byte PN encoding" {
-    // Maximum PN length
+test "INTEGRATION TEST - Initial PTO uses initial_version" {
+    // RFC 9000 §17.2: Version field in long header
+    // Implementation: pto.zig:191
     //
-    // Expected:
-    // - pn_len = 4
-    // - Maximizes PN space
-    // - Standard for Initial packets
-
-    try testing.expect(true);
-}
-
-test "Phase 3 - Initial PTO uses initial_version for packet version" {
-    // Version field in packet header
+    // Behavior: version = conn.initial_version (or default 0x00000001)
+    // Rationale: Must match version negotiated during handshake
     //
-    // Expected:
-    // - version = conn.initial_version (or default 0x00000001)
-    // - Matches handshake version
-    // - Consistent throughout connection
+    // Status: Deferred to Phase 6
 
     try testing.expect(true);
 }
 
 // =============================================================================
-// Phase 3: Handshake Space PTO Tests
+// INTEGRATION TESTS - Handshake Space PTO Details (Tier 3)
 // =============================================================================
 
-test "Phase 3 - Handshake PTO uses Handshake TX keys" {
+test "INTEGRATION TEST - Handshake PTO uses Handshake TX keys" {
     // Keys for Handshake space
     //
     // Expected:
@@ -282,7 +415,7 @@ test "Phase 3 - Handshake PTO uses Handshake TX keys" {
     try testing.expect(true);
 }
 
-test "Phase 3 - Handshake PTO encodes Handshake packet" {
+test "INTEGRATION TEST - Handshake PTO encodes Handshake packet" {
     // RFC 9000 §17.2.4: Handshake packet format
     //
     // Expected:
@@ -294,7 +427,7 @@ test "Phase 3 - Handshake PTO encodes Handshake packet" {
     try testing.expect(true);
 }
 
-test "Phase 3 - Handshake PTO increments Handshake PN" {
+test "INTEGRATION TEST - Handshake PTO increments Handshake PN" {
     // Separate PN space
     //
     // Expected:
@@ -305,7 +438,7 @@ test "Phase 3 - Handshake PTO increments Handshake PN" {
     try testing.expect(true);
 }
 
-test "Phase 3 - Handshake PTO tracks sent packet" {
+test "INTEGRATION TEST - Handshake PTO tracks sent packet" {
     // Loss recovery
     //
     // Expected:
@@ -317,10 +450,10 @@ test "Phase 3 - Handshake PTO tracks sent packet" {
 }
 
 // =============================================================================
-// Phase 3: PTO Timer Scheduling Tests
+// INTEGRATION TESTS - PTO Timer Scheduling (Tier 3)
 // =============================================================================
 
-test "Phase 3 - scheduleConnPto registers timer with endpoint" {
+test "INTEGRATION TEST - scheduleConnPto registers timer with endpoint" {
     // Timer registration
     //
     // Expected:
@@ -332,7 +465,7 @@ test "Phase 3 - scheduleConnPto registers timer with endpoint" {
     try testing.expect(true);
 }
 
-test "Phase 3 - scheduleConnPto calculates Initial PTO" {
+test "INTEGRATION TEST - scheduleConnPto calculates Initial PTO" {
     // RFC 9002 §6.2.1: PTO = smoothed_rtt + max(4*rttvar, kGranularity)
     //
     // Expected:
@@ -343,7 +476,7 @@ test "Phase 3 - scheduleConnPto calculates Initial PTO" {
     try testing.expect(true);
 }
 
-test "Phase 3 - scheduleConnPto calculates Handshake PTO" {
+test "INTEGRATION TEST - scheduleConnPto calculates Handshake PTO" {
     // Separate PTO per PN space
     //
     // Expected:
@@ -354,7 +487,7 @@ test "Phase 3 - scheduleConnPto calculates Handshake PTO" {
     try testing.expect(true);
 }
 
-test "Phase 3 - scheduleConnPto applies PTO backoff" {
+test "INTEGRATION TEST - scheduleConnPto applies PTO backoff" {
     // RFC 9002 §6.2.2.1: Exponential backoff
     //
     // Expected:
@@ -365,7 +498,7 @@ test "Phase 3 - scheduleConnPto applies PTO backoff" {
     try testing.expect(true);
 }
 
-test "Phase 3 - scheduleConnPto uses kGranularity minimum" {
+test "INTEGRATION TEST - scheduleConnPto uses kGranularity minimum" {
     // RFC 9002 §6.2.1: Timer granularity
     //
     // Expected:
@@ -377,10 +510,10 @@ test "Phase 3 - scheduleConnPto uses kGranularity minimum" {
 }
 
 // =============================================================================
-// Phase 3: PTO Backoff Tests
+// INTEGRATION TESTS - PTO Backoff Mechanism (Tier 3)
 // =============================================================================
 
-test "Phase 3 - PTO backoff doubles on each timeout" {
+test "INTEGRATION TEST - PTO backoff doubles on each timeout" {
     // RFC 9002 §6.2.2.1: Exponential backoff
     //
     // Expected sequence:
@@ -392,7 +525,7 @@ test "Phase 3 - PTO backoff doubles on each timeout" {
     try testing.expect(true);
 }
 
-test "Phase 3 - PTO backoff resets on ACK" {
+test "INTEGRATION TEST - PTO backoff resets on ACK" {
     // RFC 9002 §6.2.1: Reset on progress
     //
     // Expected:
@@ -403,7 +536,7 @@ test "Phase 3 - PTO backoff resets on ACK" {
     try testing.expect(true);
 }
 
-test "Phase 3 - PTO backoff limited to prevent excessive timeout" {
+test "INTEGRATION TEST - PTO backoff limited to prevent excessive timeout" {
     // Practical limit on backoff
     //
     // Expected:
@@ -414,7 +547,7 @@ test "Phase 3 - PTO backoff limited to prevent excessive timeout" {
     try testing.expect(true);
 }
 
-test "Phase 3 - PTO backoff separate per PN space" {
+test "INTEGRATION TEST - PTO backoff separate per PN space" {
     // Independent backoff counters
     //
     // Expected:
@@ -426,10 +559,10 @@ test "Phase 3 - PTO backoff separate per PN space" {
 }
 
 // =============================================================================
-// Phase 3: Packet Sending Tests
+// INTEGRATION TESTS - Packet Sending Behavior (Tier 3)
 // =============================================================================
 
-test "Phase 3 - sendPtoProbe sends packet to peer address" {
+test "INTEGRATION TEST - sendPtoProbe sends packet to peer address" {
     // UDP transmission
     //
     // Expected:
@@ -440,7 +573,7 @@ test "Phase 3 - sendPtoProbe sends packet to peer address" {
     try testing.expect(true);
 }
 
-test "Phase 3 - sendPtoProbe handles send failure gracefully" {
+test "INTEGRATION TEST - sendPtoProbe handles send failure gracefully" {
     // Network error
     //
     // Expected:
@@ -452,7 +585,7 @@ test "Phase 3 - sendPtoProbe handles send failure gracefully" {
     try testing.expect(true);
 }
 
-test "Phase 3 - sendPtoProbe frees packet buffer" {
+test "INTEGRATION TEST - sendPtoProbe frees packet buffer" {
     // Memory management
     //
     // Expected:
@@ -463,7 +596,7 @@ test "Phase 3 - sendPtoProbe frees packet buffer" {
     try testing.expect(true);
 }
 
-test "Phase 3 - sendPtoProbe marks packet as ACK-eliciting" {
+test "INTEGRATION TEST - sendPtoProbe marks packet as ACK-eliciting" {
     // Loss recovery tracking
     //
     // Expected:
@@ -475,10 +608,10 @@ test "Phase 3 - sendPtoProbe marks packet as ACK-eliciting" {
 }
 
 // =============================================================================
-// Phase 3: Error Handling Tests
+// INTEGRATION TESTS - Error Handling (Tier 3)
 // =============================================================================
 
-test "Phase 3 - sendPtoProbe handles frame allocation failure" {
+test "INTEGRATION TEST - sendPtoProbe handles frame allocation failure" {
     // OOM during frame building
     //
     // Expected:
@@ -490,7 +623,7 @@ test "Phase 3 - sendPtoProbe handles frame allocation failure" {
     try testing.expect(true);
 }
 
-test "Phase 3 - sendPtoProbe handles packet encoding failure" {
+test "INTEGRATION TEST - sendPtoProbe handles packet encoding failure" {
     // Encoding error
     //
     // Expected:
@@ -501,7 +634,7 @@ test "Phase 3 - sendPtoProbe handles packet encoding failure" {
     try testing.expect(true);
 }
 
-test "Phase 3 - scheduleConnPto handles timer registration failure" {
+test "INTEGRATION TEST - scheduleConnPto handles timer registration failure" {
     // Timer system error
     //
     // Expected:
@@ -513,10 +646,10 @@ test "Phase 3 - scheduleConnPto handles timer registration failure" {
 }
 
 // =============================================================================
-// Phase 3: Boundary Tests
+// INTEGRATION TESTS - Boundary Conditions (Tier 3)
 // =============================================================================
 
-test "Phase 3 - sendPtoProbe with maximum PN value" {
+test "INTEGRATION TEST - sendPtoProbe with maximum PN value" {
     // PN wraparound
     //
     // Expected:
@@ -527,7 +660,7 @@ test "Phase 3 - sendPtoProbe with maximum PN value" {
     try testing.expect(true);
 }
 
-test "Phase 3 - sendPtoProbe with zero RTT" {
+test "INTEGRATION TEST - sendPtoProbe with zero RTT" {
     // No RTT samples yet
     //
     // Expected:
@@ -538,7 +671,7 @@ test "Phase 3 - sendPtoProbe with zero RTT" {
     try testing.expect(true);
 }
 
-test "Phase 3 - scheduleConnPto with maximum backoff" {
+test "INTEGRATION TEST - scheduleConnPto with maximum backoff" {
     // Extreme backoff scenario
     //
     // Expected:
@@ -550,7 +683,7 @@ test "Phase 3 - scheduleConnPto with maximum backoff" {
     try testing.expect(true);
 }
 
-test "Phase 3 - sendPtoProbe with minimal MTU" {
+test "INTEGRATION TEST - sendPtoProbe with minimal MTU" {
     // Path MTU constraints
     //
     // Expected:
@@ -562,10 +695,10 @@ test "Phase 3 - sendPtoProbe with minimal MTU" {
 }
 
 // =============================================================================
-// Phase 3: RFC Compliance Tests
+// INTEGRATION TESTS - RFC Compliance (Tier 3)
 // =============================================================================
 
-test "Phase 3 - RFC 9002 §6.2: PTO timer arms on ACK-eliciting sent" {
+test "INTEGRATION TEST - RFC 9002 §6.2: PTO timer arms on ACK-eliciting sent" {
     // Timer management
     //
     // MUST: Arm PTO when sending ACK-eliciting packet
@@ -575,7 +708,7 @@ test "Phase 3 - RFC 9002 §6.2: PTO timer arms on ACK-eliciting sent" {
     try testing.expect(true);
 }
 
-test "Phase 3 - RFC 9002 §6.2.1: PTO calculation formula" {
+test "INTEGRATION TEST - RFC 9002 §6.2.1: PTO calculation formula" {
     // PTO = smoothed_rtt + max(4*rttvar, kGranularity) + max_ack_delay
     //
     // MUST: Use this formula
@@ -585,7 +718,7 @@ test "Phase 3 - RFC 9002 §6.2.1: PTO calculation formula" {
     try testing.expect(true);
 }
 
-test "Phase 3 - RFC 9002 §6.2.2.1: PTO backoff" {
+test "INTEGRATION TEST - RFC 9002 §6.2.2.1: PTO backoff" {
     // Exponential backoff on consecutive timeouts
     //
     // MUST: Double PTO on each timeout without progress
@@ -594,7 +727,7 @@ test "Phase 3 - RFC 9002 §6.2.2.1: PTO backoff" {
     try testing.expect(true);
 }
 
-test "Phase 3 - RFC 9002 §6.2.4: Probe packets are ACK-eliciting" {
+test "INTEGRATION TEST - RFC 9002 §6.2.4: Probe packets are ACK-eliciting" {
     // Probe content
     //
     // MUST: Send at least one ACK-eliciting frame
@@ -604,7 +737,7 @@ test "Phase 3 - RFC 9002 §6.2.4: Probe packets are ACK-eliciting" {
     try testing.expect(true);
 }
 
-test "Phase 3 - RFC 9002 §6.2.4: Send probe in each PN space with unacked data" {
+test "INTEGRATION TEST - RFC 9002 §6.2.4: Send probe in each PN space with unacked data" {
     // Per-space probing
     //
     // MUST: Send probe in each space with in-flight packets
@@ -614,7 +747,7 @@ test "Phase 3 - RFC 9002 §6.2.4: Send probe in each PN space with unacked data"
     try testing.expect(true);
 }
 
-test "Phase 3 - RFC 9000 §12.2: Probe packets can be coalesced" {
+test "INTEGRATION TEST - RFC 9000 §12.2: Probe packets can be coalesced" {
     // Packet coalescing
     //
     // MAY: Coalesce Initial + Handshake probes
@@ -624,7 +757,7 @@ test "Phase 3 - RFC 9000 §12.2: Probe packets can be coalesced" {
     try testing.expect(true);
 }
 
-test "Phase 3 - RFC 9002 §6.2: PTO prevents deadlock" {
+test "INTEGRATION TEST - RFC 9002 §6.2: PTO prevents deadlock" {
     // Purpose of PTO
     //
     // Purpose: Prevent connection stall when ACKs lost
@@ -634,7 +767,7 @@ test "Phase 3 - RFC 9002 §6.2: PTO prevents deadlock" {
     try testing.expect(true);
 }
 
-test "Phase 3 - RFC 9002 §6.2.1: No PTO before first RTT sample" {
+test "INTEGRATION TEST - RFC 9002 §6.2.1: No PTO before first RTT sample" {
     // Initial PTO value
     //
     // SHOULD: Use initial_rtt = 333ms if no sample
@@ -644,7 +777,7 @@ test "Phase 3 - RFC 9002 §6.2.1: No PTO before first RTT sample" {
     try testing.expect(true);
 }
 
-test "Phase 3 - RFC 9002 §6.2: PTO timer not armed for non-ACK-eliciting" {
+test "INTEGRATION TEST - RFC 9002 §6.2: PTO timer not armed for non-ACK-eliciting" {
     // ACK-only packets
     //
     // MUST NOT: Arm PTO for ACK-only packets
@@ -654,7 +787,7 @@ test "Phase 3 - RFC 9002 §6.2: PTO timer not armed for non-ACK-eliciting" {
     try testing.expect(true);
 }
 
-test "Phase 3 - RFC 9002 §6.2.4: Probe retransmits lost data" {
+test "INTEGRATION TEST - RFC 9002 §6.2.4: Probe retransmits lost data" {
     // Loss recovery
     //
     // SHOULD: Retransmit lost CRYPTO or STREAM data

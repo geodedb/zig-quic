@@ -101,7 +101,7 @@ pub fn ptoTimerSpace(kind: types.TimerKind) ?enum { Initial, Handshake, Applicat
 
 /// Build Initial probe payload (PING frame).
 /// RFC 9002 §6.2.4: "Probe packets MUST contain ACK-eliciting frames."
-fn buildInitialProbe(allocator: *std.mem.Allocator) ![]u8 {
+pub fn buildInitialProbe(allocator: *std.mem.Allocator) ![]u8 {
     // Create PING frame payload
     const result = try allocator.alloc(u8, 1);
     result[0] = @intFromEnum(frame.FrameType.PING);
@@ -110,7 +110,7 @@ fn buildInitialProbe(allocator: *std.mem.Allocator) ![]u8 {
 
 /// Build Handshake probe payload (PING frame).
 /// RFC 9002 §6.2.4: "Probe packets MUST contain ACK-eliciting frames."
-fn buildHandshakeProbe(allocator: *std.mem.Allocator) ![]u8 {
+pub fn buildHandshakeProbe(allocator: *std.mem.Allocator) ![]u8 {
     // Create PING frame payload
     const result = try allocator.alloc(u8, 1);
     result[0] = @intFromEnum(frame.FrameType.PING);
@@ -120,7 +120,7 @@ fn buildHandshakeProbe(allocator: *std.mem.Allocator) ![]u8 {
 /// Build Application probe payload (PING frame).
 /// Future enhancement: Could also include STREAM frames with application data.
 /// RFC 9002 §6.2.4: "Probe packets MUST contain ACK-eliciting frames."
-fn buildApplicationProbe(allocator: *std.mem.Allocator) ![]u8 {
+pub fn buildApplicationProbe(allocator: *std.mem.Allocator) ![]u8 {
     // Create PING frame payload
     const result = try allocator.alloc(u8, 1);
     result[0] = @intFromEnum(frame.FrameType.PING);

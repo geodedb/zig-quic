@@ -24,45 +24,67 @@ pub const FrameType = types.FrameType;
 pub const AckRange = types.AckRange;
 pub const EcnCounts = types.EcnCounts;
 
+// Type aliases for frame data structures (used by frame_handler.zig)
+pub const Crypto = struct { offset: u64, data: []const u8 };
+pub const Stream = struct { stream_id: u64, offset: ?u64, fin: bool, data: []const u8 };
+pub const NewConnectionId = struct {
+    sequence: u64,
+    retire_prior_to: u64,
+    connection_id: []const u8,
+    stateless_reset_token: [16]u8,
+};
+pub const RetireConnectionId = struct { sequence: u64 };
+pub const Ack = struct {
+    largest: u64,
+    ack_delay: u64,
+    first_range: u64 = 0,
+    ranges: []const AckRange = &[_]AckRange{},
+    ecn: ?EcnCounts = null,
+    ranges_buf: [16]AckRange = undefined,
+    ranges_len: usize = 0,
+};
+pub const Datagram = struct { data: []const u8 };
+pub const MaxData = struct { max: u64 };
+pub const MaxStreamData = struct { stream_id: u64, max: u64 };
+pub const MaxStreamsBidi = struct { max: u64 };
+pub const MaxStreamsUni = struct { max: u64 };
+pub const DataBlocked = struct { limit: u64 };
+pub const StreamDataBlocked = struct { stream_id: u64, limit: u64 };
+pub const StreamsBlockedBidi = struct { max: u64 };
+pub const StreamsBlockedUni = struct { max: u64 };
+pub const PathChallenge = [8]u8;
+pub const PathResponse = [8]u8;
+pub const NewToken = struct { token: []const u8 };
+pub const ConnectionClose = struct { error_code: u64, frame_type: u64 = 0, reason: []const u8 = &[_]u8{} };
+pub const StopSending = struct { stream_id: u64, error_code: u64 };
+pub const ResetStream = struct { stream_id: u64, error_code: u64, final_size: u64 };
+
 /// Frame union with encode helper for all supported QUIC frames.
 /// Each case references the governing section in RFC 9000 unless noted.
 pub const Frame = union(enum) {
     padding: usize,
     ping: void,
-    crypto: struct { offset: u64, data: []const u8 },
-    stream: struct { stream_id: u64, offset: ?u64, fin: bool, data: []const u8 },
-    new_connection_id: struct {
-        sequence: u64,
-        retire_prior_to: u64,
-        connection_id: []const u8,
-        stateless_reset_token: [16]u8,
-    },
-    retire_connection_id: struct { sequence: u64 },
-    ack: struct {
-        largest: u64,
-        ack_delay: u64,
-        first_range: u64 = 0,
-        ranges: []const AckRange = &[_]AckRange{},
-        ecn: ?EcnCounts = null,
-        ranges_buf: [16]AckRange = undefined,
-        ranges_len: usize = 0,
-    },
-    datagram: struct { data: []const u8 },
-    max_data: struct { max: u64 },
-    max_stream_data: struct { stream_id: u64, max: u64 },
-    max_streams_bidi: struct { max: u64 },
-    max_streams_uni: struct { max: u64 },
-    data_blocked: struct { limit: u64 },
-    stream_data_blocked: struct { stream_id: u64, limit: u64 },
-    streams_blocked_bidi: struct { max: u64 },
-    streams_blocked_uni: struct { max: u64 },
-    path_challenge: [8]u8,
-    path_response: [8]u8,
-    new_token: struct { token: []const u8 },
+    crypto: Crypto,
+    stream: Stream,
+    new_connection_id: NewConnectionId,
+    retire_connection_id: RetireConnectionId,
+    ack: Ack,
+    datagram: Datagram,
+    max_data: MaxData,
+    max_stream_data: MaxStreamData,
+    max_streams_bidi: MaxStreamsBidi,
+    max_streams_uni: MaxStreamsUni,
+    data_blocked: DataBlocked,
+    stream_data_blocked: StreamDataBlocked,
+    streams_blocked_bidi: StreamsBlockedBidi,
+    streams_blocked_uni: StreamsBlockedUni,
+    path_challenge: PathChallenge,
+    path_response: PathResponse,
+    new_token: NewToken,
     handshake_done: void,
-    connection_close: struct { error_code: u64, frame_type: u64 = 0, reason: []const u8 = &[_]u8{} },
-    stop_sending: struct { stream_id: u64, error_code: u64 },
-    reset_stream: struct { stream_id: u64, error_code: u64, final_size: u64 },
+    connection_close: ConnectionClose,
+    stop_sending: StopSending,
+    reset_stream: ResetStream,
 
     /// Encode this frame to the writer. Returns bytes written.
     pub fn write(self: Frame, w: anytype) !usize {

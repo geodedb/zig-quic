@@ -133,9 +133,9 @@ pub fn handleDatagram(
     // Optional DATAGRAM echo response (test/debugging feature)
     if (ctx.cfg.enable_datagram) {
         if (ctx.conn.app_tx_keys) |txk| {
-            var fb = std.ArrayList(u8).init(ctx.allocator.*);
-            defer fb.deinit();
-            const w = fb.writer();
+            var fb = std.ArrayList(u8){};
+            defer fb.deinit(ctx.allocator.*);
+            const w = fb.writer(ctx.allocator.*);
             _ = (frame.Frame{ .datagram = .{ .data = d.data } }).write(w) catch 0;
 
             const dcid_sh = if (ctx.conn.peer_initial_scid.len > 0)
@@ -288,11 +288,11 @@ pub fn handleStreamDataBlocked(ctx: *FrameContext, sdb: frame.StreamDataBlocked)
 pub fn handlePathChallenge(
     ctx: *FrameContext,
     pcv: frame.PathChallenge,
-) !FrameResult {
+)! FrameResult {
     if (ctx.conn.app_tx_keys) |txk| {
-        var fb = std.ArrayList(u8).init(ctx.allocator.*);
-        defer fb.deinit();
-        const w = fb.writer();
+        var fb = std.ArrayList(u8){};
+        defer fb.deinit(ctx.allocator.*);
+        const w = fb.writer(ctx.allocator.*);
         _ = (frame.Frame{ .path_response = pcv }).write(w) catch 0;
 
         const dcid_sh2 = if (ctx.conn.peer_initial_scid.len > 0)
