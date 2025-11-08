@@ -191,14 +191,14 @@ test "RFC 9002 §6.1.2 - timeThresholdNs is always > base RTT" {
 // =============================================================================
 
 test "RFC 9002 §2 - PADDING is not ACK-eliciting" {
-    const fr = frame.Frame{ .padding = .{} };
+    const fr = frame.Frame{ .padding = 0 };
     try testing.expect(!isAckElicitingFrame(fr));
 }
 
 test "RFC 9002 §2 - ACK is not ACK-eliciting" {
     const fr = frame.Frame{
         .ack = .{
-            .largest_acknowledged = 10,
+            .largest = 10,
             .ack_delay = 0,
             .ranges = &[_]frame.AckRange{.{ .gap = 0, .len = 0 }},
         },
@@ -207,7 +207,7 @@ test "RFC 9002 §2 - ACK is not ACK-eliciting" {
 }
 
 test "RFC 9002 §2 - PING is ACK-eliciting" {
-    const fr = frame.Frame{ .ping = .{} };
+    const fr = frame.Frame{ .ping = {} };
     try testing.expect(isAckElicitingFrame(fr));
 }
 
@@ -225,7 +225,7 @@ test "RFC 9002 §2 - STREAM is ACK-eliciting" {
     const fr = frame.Frame{
         .stream = .{
             .stream_id = 0,
-            .offset = 0,
+            .offset = null,
             .data = &[_]u8{},
             .fin = false,
         },
@@ -237,7 +237,7 @@ test "RFC 9002 §2 - RESET_STREAM is ACK-eliciting" {
     const fr = frame.Frame{
         .reset_stream = .{
             .stream_id = 0,
-            .application_error_code = 0,
+            .error_code = 0,
             .final_size = 0,
         },
     };
@@ -248,7 +248,7 @@ test "RFC 9002 §2 - STOP_SENDING is ACK-eliciting" {
     const fr = frame.Frame{
         .stop_sending = .{
             .stream_id = 0,
-            .application_error_code = 0,
+            .error_code = 0,
         },
     };
     try testing.expect(isAckElicitingFrame(fr));
@@ -266,7 +266,7 @@ test "RFC 9002 §2 - NEW_TOKEN is ACK-eliciting" {
 test "RFC 9002 §2 - MAX_DATA is ACK-eliciting" {
     const fr = frame.Frame{
         .max_data = .{
-            .maximum_data = 1000,
+            .max = 1000,
         },
     };
     try testing.expect(isAckElicitingFrame(fr));
@@ -276,7 +276,7 @@ test "RFC 9002 §2 - MAX_STREAM_DATA is ACK-eliciting" {
     const fr = frame.Frame{
         .max_stream_data = .{
             .stream_id = 0,
-            .maximum_stream_data = 1000,
+            .max = 1000,
         },
     };
     try testing.expect(isAckElicitingFrame(fr));
@@ -284,18 +284,14 @@ test "RFC 9002 §2 - MAX_STREAM_DATA is ACK-eliciting" {
 
 test "RFC 9002 §2 - PATH_CHALLENGE is ACK-eliciting" {
     const fr = frame.Frame{
-        .path_challenge = .{
-            .data = [_]u8{0} ** 8,
-        },
+        .path_challenge = [_]u8{0} ** 8,
     };
     try testing.expect(isAckElicitingFrame(fr));
 }
 
 test "RFC 9002 §2 - PATH_RESPONSE is ACK-eliciting" {
     const fr = frame.Frame{
-        .path_response = .{
-            .data = [_]u8{0} ** 8,
-        },
+        .path_response = [_]u8{0} ** 8,
     };
     try testing.expect(isAckElicitingFrame(fr));
 }
@@ -304,7 +300,6 @@ test "RFC 9002 §2 - CONNECTION_CLOSE is ACK-eliciting" {
     const fr = frame.Frame{
         .connection_close = .{
             .error_code = 0,
-            .frame_type = null,
             .reason = &[_]u8{},
         },
     };
@@ -312,7 +307,7 @@ test "RFC 9002 §2 - CONNECTION_CLOSE is ACK-eliciting" {
 }
 
 test "RFC 9002 §2 - HANDSHAKE_DONE is ACK-eliciting" {
-    const fr = frame.Frame{ .handshake_done = .{} };
+    const fr = frame.Frame{ .handshake_done = {} };
     try testing.expect(isAckElicitingFrame(fr));
 }
 
@@ -403,12 +398,12 @@ test "RFC 9002 §2 - only ACK and PADDING are not ACK-eliciting" {
     // All other frame types should be ACK-eliciting
     const ack_frame = frame.Frame{
         .ack = .{
-            .largest_acknowledged = 0,
+            .largest = 0,
             .ack_delay = 0,
             .ranges = &[_]frame.AckRange{.{ .gap = 0, .len = 0 }},
         },
     };
-    const padding_frame = frame.Frame{ .padding = .{} };
+    const padding_frame = frame.Frame{ .padding = 0 };
 
     try testing.expect(!isAckElicitingFrame(ack_frame));
     try testing.expect(!isAckElicitingFrame(padding_frame));
@@ -473,11 +468,11 @@ test "timeThresholdNs consistently larger than base RTT" {
 test "ACK-eliciting classification covers all frame types" {
     // Create one of each frame type and verify classification
     const frames = [_]frame.Frame{
-        frame.Frame{ .padding = .{} }, // Not ACK-eliciting
-        frame.Frame{ .ping = .{} }, // ACK-eliciting
+        frame.Frame{ .padding = 0 }, // Not ACK-eliciting
+        frame.Frame{ .ping = {} }, // ACK-eliciting
         frame.Frame{
             .ack = .{
-                .largest_acknowledged = 0,
+                .largest = 0,
                 .ack_delay = 0,
                 .ranges = &[_]frame.AckRange{.{ .gap = 0, .len = 0 }},
             },

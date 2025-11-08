@@ -37,7 +37,8 @@ pub fn deriveStatelessResetToken(base: *const [32]u8, sequence: u64, cid_bytes: 
     const prk = ks.extract(base, ikm_buf[0 .. 8 + cid_len]);
     var out: [16]u8 = undefined;
     // token = HKDF-Expand-Label(prk, "reset token", "", 16)
-    ks.expandLabel(prk, "reset token", &[_]u8{}, out[0..]) catch unreachable;
+    const empty: []const u8 = &.{};
+    ks.expandLabel(&prk, "reset token", empty, out[0..]) catch unreachable;
     return out;
 }
 

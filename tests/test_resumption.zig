@@ -23,8 +23,9 @@ test "0-RTT data with resumption" {
     var client = tls13.Engine.init(alloc, .Client);
     defer client.deinit();
 
-    // Add ticket
-    try client.tickets.add(alloc, ticket_identity, resumption_secret_wrap, 3600);
+    // Add ticket - need to set allocator first
+    client.tickets.allocator = alloc;
+    try client.tickets.store(ticket_identity, resumption_secret_wrap, 3600);
 
     // Verify we can derive 0-RTT keys from resumption secret
     const zero_rtt_secret = ks.deriveSecret(resumption_secret, "c e traffic", &[_]u8{});

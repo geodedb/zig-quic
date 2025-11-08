@@ -472,8 +472,11 @@ test "RFC 9002 §7.3.2 - congestion avoidance increases cwnd by mds per RTT" {
 
     // After one RTT worth of ACKs, cwnd should increase by ~mds
     const increase = nr.cwnd - initial;
-    try testing.expect(increase >= nr.mds * 0.9); // Allow some rounding
-    try testing.expect(increase <= nr.mds * 1.1);
+    const mds_f = @as(f64, @floatFromInt(nr.mds));
+    const lower_bound = @as(usize, @intFromFloat(mds_f * 0.9));
+    const upper_bound = @as(usize, @intFromFloat(mds_f * 1.1));
+    try testing.expect(increase >= lower_bound); // Allow some rounding
+    try testing.expect(increase <= upper_bound);
 }
 
 test "RFC 9002 §7.3.3 - loss reduces cwnd by multiplicative decrease" {
