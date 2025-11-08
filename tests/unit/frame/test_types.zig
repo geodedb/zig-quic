@@ -136,7 +136,7 @@ test "RFC 9000 §19.3 - AckRange encodes packet number gaps" {
 // =============================================================================
 
 test "RFC 3168 - EcnCounts initial state" {
-    const ecn: types.EcnCounts = .{};
+    const ecn: types.EcnCounts = .{ .ect0 = 0, .ect1 = 0, .ce = 0 };
 
     try testing.expectEqual(@as(u64, 0), ecn.ect0);
     try testing.expectEqual(@as(u64, 0), ecn.ect1);
@@ -227,7 +227,7 @@ test "RFC 9000 §19.3 - ACK frame range encoding" {
 test "RFC 3168 - ECN codepoints mapping" {
     // ECT(0) = 10 (binary), ECT(1) = 01 (binary), CE = 11 (binary)
     // EcnCounts tracks how many packets were received with each marking
-    var ecn: types.EcnCounts = .{};
+    var ecn: types.EcnCounts = .{ .ect0 = 0, .ect1 = 0, .ce = 0 };
 
     // Simulate receiving packets with different ECN markings
     ecn.ect0 += 1; // Received packet with ECT(0)
