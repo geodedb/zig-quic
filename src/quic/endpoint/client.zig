@@ -85,3 +85,11 @@ pub const Interface = struct {
 pub fn generateRandomCid(bytes: []u8) void {
     std.crypto.random.bytes(bytes);
 }
+
+/// Placeholder ClientHandshake struct for test compatibility.
+/// Full implementation will be extracted in Phase 4b.
+pub const ClientHandshake = struct {
+    pub fn init() ClientHandshake {
+        return .{};
+    }
+};

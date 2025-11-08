@@ -16,8 +16,17 @@ const testing = std.testing;
 
 const lookup = @import("lookup");
 const types = @import("types");
+const conn = @import("quic_conn");
+const packet = @import("quic_packet");
 
 var test_allocator = std.testing.allocator;
+
+// Dummy keys for mock connections
+const dummy_keys = packet.AeadKeys{
+    .key = [_]u8{0} ** 16,
+    .iv = [_]u8{0} ** 12,
+    .hp = [_]u8{0} ** 16,
+};
 
 // =============================================================================
 // ConnectionTable Initialization Tests
@@ -321,8 +330,8 @@ fn createMockConnection(
     c.* = undefined; // Initialize to undefined first
     c.our_scid.len = @intCast(our_scid.len);
     @memcpy(c.our_scid.bytes[0..our_scid.len], our_scid);
-    c.app_rx_keys = if (has_app_rx) @as(?*anyopaque, @ptrFromInt(0x1)) else null;
-    c.app_tx_keys = if (has_app_tx) @as(?*anyopaque, @ptrFromInt(0x1)) else null;
+    c.app_rx_keys = if (has_app_rx) dummy_keys else null;
+    c.app_tx_keys = if (has_app_tx) dummy_keys else null;
     return c;
 }
 

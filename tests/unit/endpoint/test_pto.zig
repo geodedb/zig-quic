@@ -135,7 +135,6 @@ test "RFC 9002 §6.2.4 - buildInitialProbe allocates memory correctly" {
 
     // Assert: Allocated slice has correct properties
     try testing.expect(payload.len > 0);
-    try testing.expect(payload.ptr != null);
 }
 
 test "RFC 9002 §6.2.4 - buildHandshakeProbe allocates memory correctly" {
@@ -146,7 +145,6 @@ test "RFC 9002 §6.2.4 - buildHandshakeProbe allocates memory correctly" {
 
     // Assert: Allocated slice has correct properties
     try testing.expect(payload.len > 0);
-    try testing.expect(payload.ptr != null);
 }
 
 test "RFC 9002 §6.2.4 - buildApplicationProbe allocates memory correctly" {
@@ -157,7 +155,6 @@ test "RFC 9002 §6.2.4 - buildApplicationProbe allocates memory correctly" {
 
     // Assert: Allocated slice has correct properties
     try testing.expect(payload.len > 0);
-    try testing.expect(payload.ptr != null);
 }
 
 // =============================================================================

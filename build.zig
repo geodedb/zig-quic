@@ -261,6 +261,9 @@ pub fn build(b: *std.Build) void {
     const quic_transport_params_mod = mkModule(b, "src/quic/transport_params.zig");
     quic_transport_params_mod.addImport("quic_varint", quic_varint_mod);
 
+    // QUIC configuration module
+    const quic_config_mod = mkModule(b, "src/quic/config.zig");
+
     // Note: tls13_mod uses ztls_transport_params_mod from vendor/ztls (defined above)
 
     // ========================================================================
@@ -388,6 +391,11 @@ pub fn build(b: *std.Build) void {
     const endpoint_server_mod = mkModule(b, "src/quic/endpoint/server.zig");
     endpoint_server_mod.addImport("quic_conn", quic_conn_mod);
     endpoint_server_mod.addImport("types", endpoint_types_mod);
+    endpoint_server_mod.addImport("config", quic_config_mod);
+    endpoint_server_mod.addImport("transport_params", quic_transport_params_mod);
+    endpoint_server_mod.addImport("packet", quic_packet_legacy_mod);
+    endpoint_server_mod.addImport("x509", x509_mod);
+    endpoint_server_mod.addImport("sig", sig_mod);
 
     const endpoint_utils_mod = mkModule(b, "src/quic/endpoint/utils.zig");
     endpoint_utils_mod.addImport("quic_conn", quic_conn_mod);
@@ -436,7 +444,6 @@ pub fn build(b: *std.Build) void {
 
     // Endpoint module for socket/event-loop tests
     const loop_backend_mod = mkModule(b, "src/quic/loop_backend.zig");
-    const quic_config_mod = mkModule(b, "src/quic/config.zig");
 
     // Add config import to handshake_integration_mod, frame_handler_mod, and incoming_mod now that quic_config_mod is defined
     endpoint_handshake_integration_mod.addImport("config", quic_config_mod);
@@ -917,6 +924,7 @@ pub fn build(b: *std.Build) void {
 
         const test_recovery_recovery = addTst(b, "tests/unit/recovery/test_recovery.zig", target, optimize);
         test_recovery_recovery.root_module.addImport("recovery", quic_recovery_mod);
+        test_recovery_recovery.root_module.addImport("frame", quic_frame_mod);
         const run_test_recovery_recovery = b.addRunArtifact(test_recovery_recovery);
         test_step.dependOn(&run_test_recovery_recovery.step);
 

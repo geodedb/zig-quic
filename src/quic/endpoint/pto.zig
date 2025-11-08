@@ -250,3 +250,11 @@ pub fn sendPtoProbe(ctx: *PtoContext, kind: types.TimerKind) !void {
         else => return, // Not a PTO timer
     }
 }
+
+/// Placeholder PtoHandler struct for test compatibility.
+/// Full implementation will be provided in future phases.
+pub const PtoHandler = struct {
+    pub fn init() PtoHandler {
+        return .{};
+    }
+};

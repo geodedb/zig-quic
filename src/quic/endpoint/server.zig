@@ -76,8 +76,8 @@ pub fn popAccepted(accepted: *std.ArrayList(*conn_mod.Connection)) ?*conn_mod.Co
 // Phase 4b.5 Session 5: Server Connection Creation
 // =============================================================================
 
-/// Function signature for paced sender callback
-pub const SenderFn = *const fn (endpoint_ptr: *anyopaque, peer: conn_mod.SockAddr, data: []const u8) anyerror!usize;
+/// Function signature for paced sender callback (re-export from conn.zig)
+pub const SenderFn = conn_mod.SendFn;
 
 /// Context for server connection creation.
 /// This focused context replaces passing full Endpoint pointer.
