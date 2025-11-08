@@ -6,7 +6,7 @@
 
 const std = @import("std");
 const types = @import("types");
-const conn_mod = @import("../conn.zig");
+const conn_mod = @import("quic_conn");
 const posix = std.posix;
 
 // =============================================================================

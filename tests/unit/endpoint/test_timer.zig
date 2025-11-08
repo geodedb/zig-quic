@@ -82,8 +82,8 @@ test "RFC 9002 §6.2 - schedule multiple timer kinds" {
 
     _ = try tm.schedule(100, .PtoInitial, null);
     _ = try tm.schedule(200, .PtoHandshake, null);
-    _ = try tm.schedule(300, .PtoAppData, null);
-    _ = try tm.schedule(400, .Idle, null);
+    _ = try tm.schedule(300, .PtoApp, null);
+    _ = try tm.schedule(400, .Generic, null);
 
     try testing.expectEqual(@as(usize, 4), tm.timers.items.len);
 }
@@ -118,7 +118,7 @@ test "RFC 9002 §6.2 - cancel one of multiple timers" {
 
     const id1 = try tm.schedule(100, .PtoInitial, null);
     const id2 = try tm.schedule(200, .PtoHandshake, null);
-    const id3 = try tm.schedule(300, .PtoAppData, null);
+    const id3 = try tm.schedule(300, .PtoApp, null);
 
     try testing.expectEqual(@as(usize, 3), tm.timers.items.len);
 
@@ -167,7 +167,7 @@ test "RFC 9002 §6.2 - nextDeadline returns earliest timer" {
 
     _ = try tm.schedule(300, .PtoInitial, null);
     _ = try tm.schedule(100, .PtoHandshake, null); // Earliest
-    _ = try tm.schedule(200, .PtoAppData, null);
+    _ = try tm.schedule(200, .PtoApp, null);
 
     const deadline = tm.nextDeadline();
     try testing.expect(deadline != null);
@@ -250,7 +250,7 @@ test "RFC 9002 §6.2 - min-heap maintains ordering after inserts" {
     // Insert timers in reverse order
     _ = try tm.schedule(300, .PtoInitial, null);
     _ = try tm.schedule(200, .PtoHandshake, null);
-    _ = try tm.schedule(100, .PtoAppData, null);
+    _ = try tm.schedule(100, .PtoApp, null);
 
     // Root should have earliest deadline
     const root = tm.timers.items[0];
@@ -265,7 +265,7 @@ test "RFC 9002 §6.2 - min-heap maintains ordering after cancel" {
 
     _ = try tm.schedule(100, .PtoInitial, null);
     const id2 = try tm.schedule(200, .PtoHandshake, null);
-    _ = try tm.schedule(300, .PtoAppData, null);
+    _ = try tm.schedule(300, .PtoApp, null);
 
     _ = tm.cancel(id2);
 
@@ -352,7 +352,7 @@ test "RFC 9002 §6.2 - TimerManager supports PTO timer types" {
 
     _ = try tm.schedule(100, .PtoInitial, null);
     _ = try tm.schedule(100, .PtoHandshake, null);
-    _ = try tm.schedule(100, .PtoAppData, null);
+    _ = try tm.schedule(100, .PtoApp, null);
 
     try testing.expectEqual(@as(usize, 3), tm.timers.items.len);
 
@@ -365,7 +365,7 @@ test "RFC 9002 §6.2 - TimerManager supports PTO timer types" {
         switch (t.kind) {
             .PtoInitial => found_initial = true,
             .PtoHandshake => found_handshake = true,
-            .PtoAppData => found_app = true,
+            .PtoApp => found_app = true,
             else => {},
         }
     }
@@ -379,20 +379,20 @@ test "RFC 9002 §6.2 - TimerManager supports idle timeout" {
     var tm = timer.TimerManager.init(test_allocator);
     defer tm.deinit();
 
-    _ = try tm.schedule(30000, .Idle, null);
+    _ = try tm.schedule(30000, .Generic, null);
 
     try testing.expectEqual(@as(usize, 1), tm.timers.items.len);
-    try testing.expectEqual(types.TimerKind.Idle, tm.timers.items[0].kind);
+    try testing.expectEqual(types.TimerKind.Generic, tm.timers.items[0].kind);
 }
 
 test "RFC 9000 §14.2 - TimerManager supports PMTU discovery timers" {
     var tm = timer.TimerManager.init(test_allocator);
     defer tm.deinit();
 
-    _ = try tm.schedule(1000, .PmtuDiscovery, null);
+    _ = try tm.schedule(1000, .Pmtud, null);
 
     try testing.expectEqual(@as(usize, 1), tm.timers.items.len);
-    try testing.expectEqual(types.TimerKind.PmtuDiscovery, tm.timers.items[0].kind);
+    try testing.expectEqual(types.TimerKind.Pmtud, tm.timers.items[0].kind);
 }
 
 test "RFC 9002 §6.2.1 - Timer scheduling uses monotonic time" {

@@ -10,11 +10,13 @@ const types = @import("types");
 /// Maintains a min-heap of timers sorted by deadline.
 pub const TimerManager = struct {
     timers: std.ArrayList(types.Timer),
+    allocator: std.mem.Allocator,
     next_timer_id: u64 = 1,
 
     pub fn init(allocator: std.mem.Allocator) TimerManager {
         return .{
             .timers = std.ArrayList(types.Timer).init(allocator),
+            .allocator = allocator,
         };
     }
 
@@ -25,7 +27,7 @@ pub const TimerManager = struct {
                 // Payload cleanup handled by caller
             }
         }
-        self.timers.deinit();
+        self.timers.deinit(self.allocator);
     }
 
     /// Schedule a new timer and return its ID.
@@ -35,7 +37,7 @@ pub const TimerManager = struct {
         const id = self.next_timer_id;
         self.next_timer_id += 1;
 
-        try self.timers.append(.{
+        try self.timers.append(self.allocator, .{
             .deadline_ms = deadline,
             .id = id,
             .kind = kind,
@@ -74,7 +76,7 @@ pub const TimerManager = struct {
         var expired = std.ArrayList(types.Timer).init(allocator);
 
         while (self.timers.items.len > 0 and self.timers.items[0].deadline_ms <= now) {
-            try expired.append(self.timers.items[0]);
+            try expired.append(allocator, self.timers.items[0]);
             _ = self.timers.swapRemove(0);
             if (self.timers.items.len > 0) {
                 self.heapify(0);

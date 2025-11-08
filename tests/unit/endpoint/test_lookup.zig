@@ -80,7 +80,7 @@ test "RFC 9000 §5.2 - makeKey creates unique keys for different inputs" {
 // =============================================================================
 
 test "RFC 9000 §5.1 - count returns zero for empty table" {
-    const table = lookup.ConnectionTable.init(test_allocator);
+    var table = lookup.ConnectionTable.init(test_allocator);
     defer table.deinit();
 
     try testing.expectEqual(@as(usize, 0), table.count());
@@ -97,7 +97,7 @@ test "RFC 9000 §5.2 - lookup returns null for empty table" {
     const key = lookup.makeKey(1, 2);
     const result = table.lookup(key);
 
-    try testing.expectEqual(@as(?*anyopaque, null), result);
+    try testing.expectEqual(@as(?*conn.Connection, null), result);
 }
 
 test "RFC 9000 §5.2 - lookup returns null for non-existent key" {
@@ -107,7 +107,7 @@ test "RFC 9000 §5.2 - lookup returns null for non-existent key" {
     const key = lookup.makeKey(999, 888);
     const result = table.lookup(key);
 
-    try testing.expectEqual(@as(?*anyopaque, null), result);
+    try testing.expectEqual(@as(?*conn.Connection, null), result);
 }
 
 // =============================================================================
@@ -270,10 +270,10 @@ test "negative: lookup with different key returns null" {
     const key2 = lookup.makeKey(3, 4);
 
     const result1 = table.lookup(key1);
-    try testing.expectEqual(@as(?*anyopaque, null), result1);
+    try testing.expectEqual(@as(?*conn.Connection, null), result1);
 
     const result2 = table.lookup(key2);
-    try testing.expectEqual(@as(?*anyopaque, null), result2);
+    try testing.expectEqual(@as(?*conn.Connection, null), result2);
 }
 
 // =============================================================================
@@ -319,7 +319,7 @@ fn createMockConnection(
 ) !*conn_mod.Connection {
     const c = try allocator.create(conn_mod.Connection);
     c.* = undefined; // Initialize to undefined first
-    c.our_scid.len = our_scid.len;
+    c.our_scid.len = @intCast(our_scid.len);
     @memcpy(c.our_scid.bytes[0..our_scid.len], our_scid);
     c.app_rx_keys = if (has_app_rx) @as(?*anyopaque, @ptrFromInt(0x1)) else null;
     c.app_tx_keys = if (has_app_tx) @as(?*anyopaque, @ptrFromInt(0x1)) else null;

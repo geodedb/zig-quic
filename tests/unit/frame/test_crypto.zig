@@ -538,7 +538,7 @@ test "RFC 9000 §7.5 - CRYPTO data processed in offset order" {
     var pos: usize = 0;
     for (&frames) |*frame| {
         const result = try crypto.decodeCrypto(written[pos..]);
-        types.* = .{ .offset = result.offset, .data = result.data };
+        frame.* = .{ .offset = result.offset, .data = result.data };
         pos += result.n;
     }
 

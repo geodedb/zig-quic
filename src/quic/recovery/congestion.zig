@@ -35,7 +35,7 @@ pub const NewReno = struct {
 
     /// Halve cwnd on loss and set ssthresh accordingly.
     /// RFC 9002 §7.3.3: Recovery Period
-    fn onLoss(self: *NewReno, bytes_lost: usize) void {
+    pub fn onLoss(self: *NewReno, bytes_lost: usize) void {
         const min_wnd = 2 * self.mds;
         if (self.cwnd > min_wnd) self.cwnd = self.cwnd / 2 else self.cwnd = min_wnd;
         self.ssthresh = self.cwnd;
@@ -58,7 +58,7 @@ pub const Cubic = struct {
         self.inner.onAck(bytes_acked);
     }
 
-    fn onLoss(self: *Cubic, bytes_lost: usize) void {
+    pub fn onLoss(self: *Cubic, bytes_lost: usize) void {
         self.inner.onLoss(bytes_lost);
     }
 };

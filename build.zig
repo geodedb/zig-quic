@@ -814,6 +814,7 @@ pub fn build(b: *std.Build) void {
 
         // Frame module tests
         const test_frame_types = addTst(b, "tests/unit/frame/test_types.zig", target, optimize);
+        test_frame_types.root_module.addImport("types", frame_types_mod);
         const run_test_frame_types = b.addRunArtifact(test_frame_types);
         test_step.dependOn(&run_test_frame_types.step);
 

@@ -14,7 +14,7 @@
 const std = @import("std");
 const testing = std.testing;
 
-const types = @import("src/quic/frame/types.zig");
+const types = @import("types");
 
 // =============================================================================
 // FrameType Tests

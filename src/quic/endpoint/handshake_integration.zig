@@ -211,9 +211,6 @@ pub fn processCryptoFrame(
             //
             // For now, Application CRYPTO is rare (NewSessionTicket, KeyUpdate)
             // and not critical for basic operation.
-            _ = ctx;
-            _ = offset;
-            _ = crypto_data;
             break :blk false;
         },
     };
