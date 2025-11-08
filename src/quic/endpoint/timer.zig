@@ -4,7 +4,7 @@
 //! RFC 9000 §14.2: Path MTU Discovery timers
 
 const std = @import("std");
-const types = @import("types.zig");
+const types = @import("types");
 
 /// Timer management state for the endpoint.
 /// Maintains a min-heap of timers sorted by deadline.

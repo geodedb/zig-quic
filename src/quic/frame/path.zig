@@ -5,7 +5,7 @@
 //! RFC 9000 §9: Connection Migration and Path Validation
 
 const std = @import("std");
-const types = @import("types.zig");
+const types = @import("types");
 
 /// Encode PATH_CHALLENGE frame.
 /// RFC 9000 §19.17: PATH_CHALLENGE carries 8 random bytes for path validation.

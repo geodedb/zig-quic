@@ -3,7 +3,7 @@
 //! RFC 9000 §19.6: CRYPTO Frame
 
 const std = @import("std");
-const types = @import("types.zig");
+const types = @import("types");
 const varint = @import("quic_varint");
 
 /// Encode CRYPTO frame.

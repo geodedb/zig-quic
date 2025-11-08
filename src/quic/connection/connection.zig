@@ -19,7 +19,7 @@
 const std = @import("std");
 
 // Import all sub-modules
-pub const types = @import("types.zig");
+pub const types = @import("types");
 pub const crypto_buffer = @import("crypto_buffer.zig");
 pub const packet_number = @import("packet_number.zig");
 pub const ack = @import("ack.zig");

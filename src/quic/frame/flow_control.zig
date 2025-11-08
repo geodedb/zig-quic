@@ -8,7 +8,7 @@
 //! RFC 9000 §4: Flow Control
 
 const std = @import("std");
-const types = @import("types.zig");
+const types = @import("types");
 const varint = @import("quic_varint");
 
 // =============================================================================

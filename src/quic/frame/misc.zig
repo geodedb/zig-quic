@@ -6,7 +6,7 @@
 //! RFC 9000 §19.20: HANDSHAKE_DONE Frame
 
 const std = @import("std");
-const types = @import("types.zig");
+const types = @import("types");
 const varint = @import("quic_varint");
 
 /// Encode PADDING frame (one or more 0x00 bytes).

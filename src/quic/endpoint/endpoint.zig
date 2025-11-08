@@ -16,7 +16,7 @@
 const std = @import("std");
 
 // Import all sub-modules
-pub const types = @import("types.zig");
+pub const types = @import("types");
 pub const timer = @import("timer.zig");
 pub const lookup = @import("lookup.zig");
 pub const io = @import("io.zig");

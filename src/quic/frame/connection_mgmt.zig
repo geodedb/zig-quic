@@ -7,7 +7,7 @@
 //! RFC 9000 §19.5: STOP_SENDING Frame
 
 const std = @import("std");
-const types = @import("types.zig");
+const types = @import("types");
 const varint = @import("quic_varint");
 
 // =============================================================================

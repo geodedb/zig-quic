@@ -15,7 +15,7 @@
 const std = @import("std");
 const testing = std.testing;
 
-const amp = @import("amplification.zig");
+const amp = @import("amplification");
 
 // =============================================================================
 // AmplificationLimits Initialization Tests

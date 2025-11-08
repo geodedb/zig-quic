@@ -5,7 +5,7 @@
 //! RFC 9000 §9.3: Response to Address Change (NAT rebinding)
 
 const std = @import("std");
-const types = @import("types.zig");
+const types = @import("types");
 const conn_mod = @import("../conn.zig");
 const posix = std.posix;
 

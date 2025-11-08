@@ -9,15 +9,15 @@
 const std = @import("std");
 
 // Import all specialized frame modules
-const types = @import("types.zig");
-const misc = @import("misc.zig");
-const crypto_mod = @import("crypto.zig");
-const stream_mod = @import("stream.zig");
-const ack_mod = @import("ack.zig");
-const path_mod = @import("path.zig");
-const conn_mgmt = @import("connection_mgmt.zig");
-const flow_ctrl = @import("flow_control.zig");
-const datagram_mod = @import("datagram.zig");
+const types = @import("types");
+const misc = @import("misc");
+const crypto_mod = @import("crypto");
+const stream_mod = @import("stream");
+const ack_mod = @import("ack");
+const path_mod = @import("path");
+const conn_mgmt = @import("connection_mgmt");
+const flow_ctrl = @import("flow_control");
+const datagram_mod = @import("datagram");
 
 // Re-export types for convenience
 pub const FrameType = types.FrameType;

@@ -5,7 +5,7 @@
 //! RFC 3168: Explicit Congestion Notification
 
 const std = @import("std");
-const types = @import("types.zig");
+const types = @import("types");
 const varint = @import("quic_varint");
 
 /// Encode ACK or ACK_ECN frame.

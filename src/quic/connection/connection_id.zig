@@ -6,7 +6,7 @@
 //! RFC 9000 §10.3: Stateless Reset
 
 const std = @import("std");
-const types = @import("types.zig");
+const types = @import("types");
 const ks = @import("quic_tls");
 
 /// Local connection ID with sequence number and stateless reset token.

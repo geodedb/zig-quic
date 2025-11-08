@@ -3,7 +3,7 @@
 //! RFC 9221: An Unreliable Datagram Extension to QUIC
 
 const std = @import("std");
-const types = @import("types.zig");
+const types = @import("types");
 const varint = @import("quic_varint");
 
 /// Encode DATAGRAM frame.
