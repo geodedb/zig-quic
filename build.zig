@@ -392,6 +392,13 @@ pub fn build(b: *std.Build) void {
     endpoint_utils_mod.addImport("quic_conn", quic_conn_mod);
 
     const endpoint_incoming_mod = mkModule(b, "src/quic/endpoint/incoming.zig");
+    endpoint_incoming_mod.addImport("quic_conn", quic_conn_mod);
+    endpoint_incoming_mod.addImport("packet", quic_packet_legacy_mod);
+    endpoint_incoming_mod.addImport("types", endpoint_types_mod);
+    endpoint_incoming_mod.addImport("vendor_ztls_key_schedule", quic_tls_mod);
+    endpoint_incoming_mod.addImport("crypto_quic", quic_crypto_mod);
+    endpoint_incoming_mod.addImport("frame", quic_frame_mod);
+    endpoint_incoming_mod.addImport("varint", quic_varint_mod);
 
     const endpoint_handshake_integration_mod = mkModule(b, "src/quic/endpoint/handshake_integration.zig");
     endpoint_handshake_integration_mod.addImport("quic_conn", quic_conn_mod);
@@ -405,6 +412,11 @@ pub fn build(b: *std.Build) void {
     const endpoint_pto_mod = mkModule(b, "src/quic/endpoint/pto.zig");
     endpoint_pto_mod.addImport("types", endpoint_types_mod);
     endpoint_pto_mod.addImport("quic_conn", quic_conn_mod);
+
+    const endpoint_frame_handler_mod = mkModule(b, "src/quic/endpoint/frame_handler.zig");
+    endpoint_frame_handler_mod.addImport("quic_conn", quic_conn_mod);
+    endpoint_frame_handler_mod.addImport("frame", quic_frame_mod);
+    endpoint_frame_handler_mod.addImport("packet", quic_packet_legacy_mod);
 
     const endpoint_endpoint_mod = mkModule(b, "src/quic/endpoint/endpoint.zig");
     // Endpoint coordinator imports all sub-modules
@@ -421,8 +433,11 @@ pub fn build(b: *std.Build) void {
     const loop_backend_mod = mkModule(b, "src/quic/loop_backend.zig");
     const quic_config_mod = mkModule(b, "src/quic/config.zig");
 
-    // Add config import to handshake_integration_mod now that quic_config_mod is defined
+    // Add config import to handshake_integration_mod, frame_handler_mod, and incoming_mod now that quic_config_mod is defined
     endpoint_handshake_integration_mod.addImport("config", quic_config_mod);
+    endpoint_frame_handler_mod.addImport("config", quic_config_mod);
+    endpoint_incoming_mod.addImport("config", quic_config_mod);
+    endpoint_incoming_mod.addImport("frame_handler", endpoint_frame_handler_mod);
 
     const quic_endpoint_mod = mkModule(b, "src/quic/endpoint.zig");
     quic_endpoint_mod.addImport("quic_conn", quic_conn_mod);
@@ -712,6 +727,14 @@ pub fn build(b: *std.Build) void {
         test_endpoint_pto.root_module.addImport("types", endpoint_types_mod);
         const run_test_endpoint_pto = b.addRunArtifact(test_endpoint_pto);
         test_step.dependOn(&run_test_endpoint_pto.step);
+
+        const test_endpoint_frame_handler = addTst(b, "tests/unit/endpoint/test_frame_handler.zig", target, optimize);
+        test_endpoint_frame_handler.root_module.addImport("frame_handler", endpoint_frame_handler_mod);
+        test_endpoint_frame_handler.root_module.addImport("frame", quic_frame_mod);
+        test_endpoint_frame_handler.root_module.addImport("quic_conn", quic_conn_mod);
+        test_endpoint_frame_handler.root_module.addImport("config", quic_config_mod);
+        const run_test_endpoint_frame_handler = b.addRunArtifact(test_endpoint_frame_handler);
+        test_step.dependOn(&run_test_endpoint_frame_handler.step);
 
         const test_packet_number = addTst(b, "tests/unit/connection/test_packet_number.zig", target, optimize);
         test_packet_number.root_module.addImport("quic_connection_packet_number", conn_packet_number_mod);

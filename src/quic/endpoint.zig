@@ -22,6 +22,7 @@ const tp = @import("quic_transport_params");
 const logger = @import("quic_logger");
 const byteorder = @import("byteorder");
 const utils = @import("endpoint/utils.zig");
+const pto_mod = @import("endpoint/pto.zig");
 
 const posix = std.posix;
 const builtin = @import("builtin");
@@ -3390,61 +3391,24 @@ pub const Endpoint = struct {
     }
 
     pub fn sendPtoProbe(self: *Endpoint, conn: *conn_mod.Connection, kind: TimerKind) !void {
-        switch (kind) {
-            .PtoInitial => {
-                if (conn.initial_keys_dropped) return; // no more Initial
-                // For sending, use peer's SCID as DCID (what they expect)
-                const dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
-                const scid = conn.our_scid.bytes[0..conn.our_scid.len];
-                // RFC 9000 §12.2: Zero-length DCIDs are valid and must be supported
-                // Derive server Initial TX keys from the original DCID (ODCID)
-                const v2 = conn.version_v2;
-                // Use ODCID for key derivation per RFC 9001 §5.2
-                const derive_dcid = if (conn.original_dcid.len > 0)
-                    conn.original_dcid.bytes[0..conn.original_dcid.len]
-                else if (conn.peer_initial_dcid.len > 0)
-                    conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len]
-                else
-                    dcid; // fallback, should not happen
-                const initial = ks.deriveInitialSecret(v2, derive_dcid);
-                const pair = ks.deriveClientServerInitial(initial);
-                std.debug.print("server PTO: deriving Initial keys with odcid=\n", .{});
-                for (derive_dcid) |b| std.debug.print("{X:0>2}\n", .{b});
-                std.debug.print(" len={}\n", .{derive_dcid.len});
-                const tx_keys: packet.InitialKeys = if (v2) blk: {
-                    const t = ks.deriveKeyIvHpV2(pair.server);
-                    break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
-                } else blk: {
-                    const t = ks.deriveKeyIvHp(pair.server);
-                    break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
-                };
-                // Build a PING probe (ack-eliciting)
-                var frames = std.ArrayList(u8){};
-                defer frames.deinit(self.allocator.*);
-                frames.append(self.allocator.*, @intFromEnum(frame.FrameType.PING)) catch {};
-                const pkt = packet.encodeInitialProtected(self.allocator.*, if (conn.initial_version == 0) 0x00000001 else conn.initial_version, dcid, scid, &[_]u8{}, @as(u32, @truncate(conn.pn_initial_tx)), 4, frames.items, tx_keys) catch return;
-                defer self.allocator.free(pkt);
-                _ = self.sendTo(conn.peer, pkt) catch {};
-                conn.onPacketSent(.Initial, conn.pn_initial_tx, pkt.len, true);
-                conn.pn_initial_tx +%= 1;
-            },
-            .PtoHandshake => {
-                if (conn.hs_tx_keys) |tx_keys| {
-                    const dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
-                    const scid = conn.our_scid.bytes[0..conn.our_scid.len];
-                    var frames = std.ArrayList(u8){};
-                    defer frames.deinit(self.allocator.*);
-                    frames.append(self.allocator.*, @intFromEnum(frame.FrameType.PING)) catch {};
-                    const pkt = packet.encodeHandshakeProtected(self.allocator.*, if (conn.initial_version == 0) 0x00000001 else conn.initial_version, dcid, scid, @as(u32, @truncate(conn.pn_handshake_tx)), 4, frames.items, tx_keys) catch return;
-                    defer self.allocator.free(pkt);
-                    _ = self.sendTo(conn.peer, pkt) catch {};
-                    conn.onPacketSent(.Handshake, conn.pn_handshake_tx, pkt.len, true);
-                    conn.pn_handshake_tx +%= 1;
-                    // No re-arm here; normal timer loop handles it.
-                }
-            },
-            else => return,
-        }
+        // Use pto module helpers (Phase 4b.5 Session 9)
+        const sendFnWrapper = struct {
+            fn send(ctx: *anyopaque, peer: conn_mod.SockAddr, data: []const u8) !usize {
+                const ep: *Endpoint = @ptrCast(@alignCast(ctx));
+                return ep.sendTo(peer, data);
+            }
+        }.send;
+
+        var ctx = pto_mod.PtoContext{
+            .conn = conn,
+            .allocator = self.allocator,
+            .send_ctx = self,
+            .send_fn = sendFnWrapper,
+            .peer = conn.peer,
+        };
+        // Cast TimerKind to the types module version (they're identical)
+        const pto_kind = @as(pto_mod.types.TimerKind, @enumFromInt(@intFromEnum(kind)));
+        try pto_mod.sendPtoProbe(&ctx, pto_kind);
     }
 
     /// Close old connections from the same peer when a new connection completes its handshake.

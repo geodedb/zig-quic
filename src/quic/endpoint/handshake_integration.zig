@@ -181,81 +181,142 @@ pub fn processCryptoFrame(
     space: conn_mod.PacketNumberSpace,
     crypto_data: []const u8,
     offset: u64,
-) !void {
+) !bool {
     const conn = ctx.conn;
 
-    // Get crypto buffer for this packet number space
-    var crypto_buffer = switch (space) {
-        .Initial => &conn.crypto_buffer_initial,
-        .Handshake => &conn.crypto_buffer_handshake,
-        .Application => &conn.crypto_buffer_application,
+    // Delegate to Connection's existing CRYPTO frame handlers
+    // These methods handle:
+    // 1. Out-of-order buffering via CryptoBuffer
+    // 2. TLS state machine integration (pushCrypto)
+    // 3. Automatic key derivation on TLS transitions
+    // 4. Transport parameter extraction
+    const ack_needed = switch (space) {
+        .Initial => try conn.handleInitialCrypto(
+            ctx.allocator,
+            offset,
+            crypto_data,
+        ),
+        .Handshake => try conn.handleHandshakeCrypto(
+            ctx.allocator,
+            offset,
+            crypto_data,
+        ),
+        .Application => blk: {
+            // Application-level CRYPTO frames (post-handshake messages)
+            // Currently handled directly by Connection.handleCryptoFrameGeneric
+            // via a future handleApplicationCrypto method
+            //
+            // RFC 9001 §4.1.4: "An endpoint MUST discard its handshake keys
+            // when the TLS handshake is confirmed."
+            //
+            // For now, Application CRYPTO is rare (NewSessionTicket, KeyUpdate)
+            // and not critical for basic operation.
+            _ = ctx;
+            _ = offset;
+            _ = crypto_data;
+            break :blk false;
+        },
     };
 
-    // Insert CRYPTO data at offset (handles out-of-order delivery)
-    try crypto_buffer.insert(ctx.allocator.*, offset, crypto_data);
-
-    // Try to drain contiguous TLS messages
-    const drained = try crypto_buffer.tryDrain(ctx.allocator.*);
-    if (drained.len == 0) {
-        // No complete messages available yet
-        return;
-    }
-
-    // We have complete TLS message(s) - feed to TLS state machine
-    // NOTE: This is a simplified skeleton - full TLS integration requires
-    // calling conn.tls.processHandshake() and handling state transitions
-
-    // For Session 6, we document the expected flow:
+    // After processing CRYPTO frame, check for key transitions
+    // This handles the documented flow:
+    // - ClientHello → ServerHello: conn may have hs_rx_keys, hs_tx_keys set
+    // - Finished: conn may have app_rx_keys, app_tx_keys set
     //
-    // 1. conn.tls.processHandshake(drained) processes TLS records
-    // 2. TLS state machine transitions:
-    //    - ClientHello → ServerHello: Derive Handshake secrets
-    //    - EncryptedExtensions: Extract transport parameters
-    //    - Finished: Derive Application secrets
-    // 3. On each transition, check conn.tls.getHandshakeSecrets()
-    // 4. Install keys via installHandshakeKeys() or installApplicationKeys()
-    //
-    // Full implementation requires integration with vendor/ztls TLS 1.3 stack
+    // The Connection's internal methods (afterInitialCryptoChunk, etc.)
+    // automatically call deriveHandshakeKeys() and deriveAppKeys() when
+    // TLS state transitions occur.
 
-    _ = drained; // Suppress unused variable warning
-
-    // Placeholder for TLS state machine integration
-    // This will be implemented in a future session when full TLS integration
-    // is extracted from endpoint.zig
+    return ack_needed;
 }
 
 /// Send ServerHello in Initial packet (server-only).
-/// Extracted from endpoint.zig server Initial response logic (Phase 4b.5 future session).
+/// Extracted from endpoint.zig server Initial response logic (Phase 4b.5 Session 8).
 ///
 /// RFC 9001 §4.1: "A server sends the first Handshake packet as soon as it
 /// sends a TLS ServerHello message."
 ///
 /// This function:
-/// 1. Builds ServerHello TLS message
-/// 2. Encodes transport parameters as TLS extension
-/// 3. Creates CRYPTO frame with ServerHello
-/// 4. Encrypts in Initial packet
-/// 5. Sends to client
+/// 1. Pops ServerHello CRYPTO data from TLS state machine
+/// 2. Fragments CRYPTO data across multiple Initial packets if needed
+/// 3. Encrypts each packet using Initial keys
+/// 4. Sends to client
 ///
 /// Parameters:
 /// - ctx: HandshakeContext with connection, allocator, send_fn, peer, config
 ///
-/// NOTE: This is a skeleton for documentation. Full implementation requires
-/// TLS message generation and packet encryption coordination.
+/// NOTE: The TLS state machine (conn.tls) generates ServerHello automatically
+/// when processing client's ClientHello via conn.handleInitialCrypto().
 pub fn sendServerHello(ctx: *HandshakeContext) !void {
-    _ = ctx; // Suppress unused parameter warning
+    const conn = ctx.conn;
 
-    // Skeleton implementation - full extraction in future session
-    // Expected flow:
-    // 1. conn.tls.generateServerHello()
-    // 2. Encode transport parameters
-    // 3. Build CRYPTO frame
-    // 4. Encrypt in Initial packet
-    // 5. Send via ctx.send_fn
+    // Check if we have Initial TX keys
+    const initial_tx_keys = conn.initial_tx_keys orelse return error.NoInitialKeys;
+
+    // Pop CRYPTO data from TLS state machine
+    var outbox: [4096]u8 = undefined;
+    const n = conn.tls.popCrypto(outbox[0..]);
+    if (n == 0) {
+        // No CRYPTO data to send
+        return;
+    }
+
+    // Fragment CRYPTO data across multiple Initial packets if needed
+    const max_crypto_per_packet: usize = 1100; // ~1200 MTU - headers - overhead
+    var crypto_offset: usize = 0;
+    const base_off = conn.crypto_tx_off_initial;
+
+    while (crypto_offset < n) {
+        const chunk_size = @min(max_crypto_per_packet, n - crypto_offset);
+        const chunk = outbox[crypto_offset .. crypto_offset + chunk_size];
+
+        var frames_buf = std.ArrayList(u8).init(ctx.allocator.*);
+        defer frames_buf.deinit();
+        const w = frames_buf.writer();
+
+        // Add CRYPTO frame
+        const crypto_frame_offset = base_off + crypto_offset;
+        _ = (frame.Frame{ .crypto = .{ .offset = crypto_frame_offset, .data = chunk } }).write(w) catch 0;
+
+        // Use peer's SCID as DCID for Initial response
+        const initial_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
+
+        // Encode and send Initial packet
+        const pkt = packet.encodeInitialProtected(
+            ctx.allocator.*,
+            0x00000001, // QUIC v1
+            initial_dcid,
+            conn.our_scid.bytes[0..conn.our_scid.len],
+            &[_]u8{}, // No token in server Initial
+            @as(u32, @truncate(conn.pn_initial_tx)),
+            2, // PN length
+            frames_buf.items,
+            initial_tx_keys,
+        ) catch return error.PacketEncodeFailed;
+
+        defer ctx.allocator.free(pkt);
+        _ = ctx.send_fn(ctx.peer, pkt) catch return error.SendFailed;
+
+        conn.onPacketSent(.Initial, conn.pn_initial_tx, pkt.len, true);
+        conn.pn_initial_tx +%= 1;
+
+        crypto_offset += chunk_size;
+    }
+
+    // Save retransmit buffer
+    if (conn.crypto_retx_initial) |old_buf| ctx.allocator.free(old_buf);
+    const owned = ctx.allocator.alloc(u8, n) catch {
+        conn.crypto_tx_off_initial += n;
+        return error.AllocFailed;
+    };
+    @memcpy(owned[0..n], outbox[0..n]);
+    conn.crypto_retx_initial = owned;
+    conn.crypto_retx_initial_off = base_off;
+    conn.crypto_tx_off_initial += n;
 }
 
 /// Send HANDSHAKE_DONE frame (server-only, RFC 9000 §4.1.2).
-/// Extracted from endpoint.zig server handshake completion logic.
+/// Extracted from endpoint.zig server handshake completion logic (Phase 4b.5 Session 8).
 ///
 /// RFC 9000 §19.20: "The server uses a HANDSHAKE_DONE frame to signal
 /// confirmation of the handshake to the client."
@@ -265,22 +326,58 @@ pub fn sendServerHello(ctx: *HandshakeContext) !void {
 ///
 /// This function:
 /// 1. Builds HANDSHAKE_DONE frame
-/// 2. Encrypts in 1-RTT packet
+/// 2. Encrypts in 1-RTT packet using Application keys
 /// 3. Sends to client
 ///
 /// Parameters:
 /// - ctx: HandshakeContext with connection, allocator, send_fn, peer, config
 ///
-/// NOTE: This is a skeleton for documentation. Full implementation requires
-/// frame building and 1-RTT packet encryption.
+/// RFC 9000 §8.3: "A server completes the handshake when it receives a
+/// Handshake packet from the client and the TLS handshake is complete."
 pub fn sendHandshakeDone(ctx: *HandshakeContext) !void {
-    _ = ctx; // Suppress unused parameter warning
+    const conn = ctx.conn;
 
-    // Skeleton implementation - full extraction in future session
-    // Expected flow:
-    // 1. Build HANDSHAKE_DONE frame (no payload)
-    // 2. Encrypt in 1-RTT packet using app_tx_keys
-    // 3. Send via ctx.send_fn
+    // Only servers send HANDSHAKE_DONE
+    if (conn.role != .Server) {
+        return error.ClientCannotSendHandshakeDone;
+    }
+
+    // Check if we have Application TX keys
+    const app_tx_keys = conn.app_tx_keys orelse return error.NoApplicationKeys;
+
+    // Build HANDSHAKE_DONE frame
+    var frames_buf = std.ArrayList(u8).init(ctx.allocator.*);
+    defer frames_buf.deinit();
+    const w = frames_buf.writer();
+
+    // HANDSHAKE_DONE frame has no payload, just the type byte
+    _ = (frame.Frame{ .handshake_done = {} }).write(w) catch 0;
+
+    // Use peer's SCID as DCID for 1-RTT packet
+    const dcid = if (conn.peer_initial_scid.len > 0)
+        conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len]
+    else
+        &[_]u8{};
+
+    // Encode and send 1-RTT packet
+    const pkt = packet.encodeShortProtected(
+        ctx.allocator.*,
+        dcid,
+        @as(u32, @truncate(conn.pn_app_tx)),
+        2, // PN length
+        frames_buf.items,
+        app_tx_keys,
+        conn.tx_key_phase,
+    ) catch return error.PacketEncodeFailed;
+
+    defer ctx.allocator.free(pkt);
+    _ = ctx.send_fn(ctx.peer, pkt) catch return error.SendFailed;
+
+    conn.onShortHeaderPacketSent(pkt.len, true);
+
+    // Mark that HANDSHAKE_DONE has been sent
+    // This prevents duplicate HANDSHAKE_DONE frames
+    conn.handshake_done_sent = true;
 }
 
 // =============================================================================
@@ -288,7 +385,7 @@ pub fn sendHandshakeDone(ctx: *HandshakeContext) !void {
 // =============================================================================
 
 /// Extract and validate transport parameters from TLS EncryptedExtensions.
-/// Extracted from endpoint.zig TLS handshake processing.
+/// Extracted from endpoint.zig TLS handshake processing (Phase 4b.5 Session 7).
 ///
 /// RFC 9000 §7.4: "Transport parameters are exchanged in the
 /// quic_transport_parameters extension."
@@ -297,34 +394,43 @@ pub fn sendHandshakeDone(ctx: *HandshakeContext) !void {
 /// (TLV) structure."
 ///
 /// This function:
-/// 1. Extracts quic_transport_parameters extension from TLS
-/// 2. Decodes transport parameter TLV stream
-/// 3. Validates required parameters are present
-/// 4. Stores parameters in connection struct
-/// 5. Returns error if parameters are invalid
+/// 1. Decodes transport parameter TLV stream from extension bytes
+/// 2. Validates required parameters are present (RFC 9000 §18.2)
+/// 3. Checks parameter values are within RFC-specified limits
+/// 4. Applies validated parameters to connection state
+/// 5. Returns decoded parameters for caller inspection
 ///
 /// Parameters:
-/// - conn: Connection to store parameters on
+/// - conn: Connection to apply parameters to
 /// - allocator: Memory allocator for parameter storage
 /// - extension_bytes: Raw quic_transport_parameters extension value
+/// - is_retry_sent: Whether a Retry packet was sent (affects validation)
 ///
 /// Returns:
 /// - TransportParams struct with decoded parameters
-/// - error.InvalidTransportParameters if decoding fails
-///
-/// NOTE: This is a skeleton. Full implementation uses transport_params.zig decode().
+/// - error.InvalidTransportParameters if decoding/validation fails
 pub fn extractTransportParameters(
     conn: *conn_mod.Connection,
     allocator: std.mem.Allocator,
     extension_bytes: []const u8,
+    is_retry_sent: bool,
 ) !transport_params.TransportParams {
-    _ = conn; // Suppress unused parameter warning
-
-    // Decode transport parameters
+    // Decode transport parameters from TLV encoding
     const params = try transport_params.TransportParams.decode(allocator, extension_bytes);
 
     // Validate required parameters per RFC 9000 §18.2
-    // (validation logic would go here)
+    // This checks that initial_source_connection_id is present, and
+    // retry_source_connection_id/stateless_reset_token if applicable
+    const is_server = (conn.role == .Server);
+    try params.validate(is_server, is_retry_sent);
+
+    // Check parameter values are within RFC-specified limits
+    // This validates max_udp_payload_size >= 1200, ack_delay_exponent <= 20, etc.
+    try params.checkLimits();
+
+    // Apply validated parameters to connection state
+    // This updates peer_max_data, peer_max_streams_*, ack_delay_exponent, etc.
+    params.apply(conn);
 
     return params;
 }

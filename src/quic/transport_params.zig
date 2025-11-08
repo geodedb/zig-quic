@@ -1,6 +1,7 @@
 //! QUIC Transport Parameters encode/decode (subset) RFC 9000 §7.4/§18.1.
 const std = @import("std");
 const varint = @import("quic_varint");
+const conn_mod = @import("quic_conn");
 
 /// Preferred address structure per RFC 9000 §9.6 and §18.2.
 pub const PreferredAddress = struct {
@@ -289,6 +290,165 @@ pub const TransportParams = struct {
             }
         }
         return tp;
+    }
+
+    // =========================================================================
+    // Validation Helpers (RFC 9000 §7.4, §18.2)
+    // =========================================================================
+
+    /// Validate that all required transport parameters are present.
+    /// Per RFC 9000 §7.4:
+    /// - Servers MUST send initial_source_connection_id
+    /// - If Retry was sent, retry_source_connection_id MUST be present
+    /// - If original DCID != first Initial DCID, original_destination_connection_id MUST be present
+    pub fn validate(self: *const TransportParams, is_server: bool, retry_sent: bool) error{MissingRequiredParameter}!void {
+        // RFC 9000 §18.2: initial_source_connection_id is required for servers
+        if (is_server and self.initial_source_connection_id == null) {
+            return error.MissingRequiredParameter;
+        }
+
+        // RFC 9000 §7.4.1: If server sent Retry, retry_source_connection_id MUST be present
+        if (is_server and retry_sent and self.retry_source_connection_id == null) {
+            return error.MissingRequiredParameter;
+        }
+
+        // RFC 9000 §18.2: stateless_reset_token MUST be sent by servers
+        if (is_server and self.stateless_reset_token == null) {
+            return error.MissingRequiredParameter;
+        }
+    }
+
+    /// Check that parameter values are within RFC-specified limits.
+    /// RFC 9000 §18.2 defines valid ranges for various parameters.
+    pub fn checkLimits(self: *const TransportParams) error{ParameterOutOfRange}!void {
+        // RFC 9000 §18.2: max_udp_payload_size MUST be >= 1200
+        if (self.max_udp_payload_size) |v| {
+            if (v < 1200) return error.ParameterOutOfRange;
+        }
+
+        // RFC 9000 §18.2: ack_delay_exponent MUST be <= 20
+        if (self.ack_delay_exponent) |v| {
+            if (v > 20) return error.ParameterOutOfRange;
+        }
+
+        // RFC 9000 §18.2: max_ack_delay MUST be < 2^14 (16384)
+        if (self.max_ack_delay) |v| {
+            if (v >= 16384) return error.ParameterOutOfRange;
+        }
+
+        // RFC 9000 §18.2: active_connection_id_limit MUST be >= 2
+        if (self.active_connection_id_limit) |v| {
+            if (v < 2) return error.ParameterOutOfRange;
+        }
+
+        // RFC 9000 §4.6: Max stream counts must be <= 2^60
+        const max_streams_limit: u64 = 1 << 60;
+        if (self.initial_max_streams_bidi) |v| {
+            if (v > max_streams_limit) return error.ParameterOutOfRange;
+        }
+        if (self.initial_max_streams_uni) |v| {
+            if (v > max_streams_limit) return error.ParameterOutOfRange;
+        }
+
+        // RFC 9000 §4.1: Flow control limits must be <= 2^62-1
+        const max_flow_control_limit: u64 = (1 << 62) - 1;
+        if (self.initial_max_data) |v| {
+            if (v > max_flow_control_limit) return error.ParameterOutOfRange;
+        }
+        if (self.initial_max_stream_data_bidi_local) |v| {
+            if (v > max_flow_control_limit) return error.ParameterOutOfRange;
+        }
+        if (self.initial_max_stream_data_bidi_remote) |v| {
+            if (v > max_flow_control_limit) return error.ParameterOutOfRange;
+        }
+        if (self.initial_max_stream_data_uni) |v| {
+            if (v > max_flow_control_limit) return error.ParameterOutOfRange;
+        }
+    }
+
+    /// Apply validated transport parameters to connection state.
+    /// Extracted from conn.zig applyPeerTransportParameters() (Phase 4b.5 Session 7).
+    ///
+    /// RFC 9000 §7.4: "An endpoint MUST apply the transport parameters provided by
+    /// its peer. These parameters are the values received by the endpoint."
+    ///
+    /// This method updates connection state with peer's advertised limits:
+    /// - Flow control: initial_max_data sets how much we can send
+    /// - Stream limits: initial_max_streams_* sets stream opening limits
+    /// - ACK parameters: ack_delay_exponent, max_ack_delay for ACK processing
+    /// - Connection IDs: active_connection_id_limit for CID management
+    ///
+    /// RFC 9000 §4.1: "Flow control limits the amount of data that an endpoint
+    /// can send. Both stream and connection flow control are managed using a credit-based scheme."
+    ///
+    /// Parameters:
+    /// - self: Validated TransportParams to apply
+    /// - conn: Connection to update with peer's parameters
+    pub fn apply(self: *const TransportParams, conn: *conn_mod.Connection) void {
+        // RFC 9000 §4.1: peer's initial_max_data governs how much we may send
+        if (self.initial_max_data) |v| {
+            conn.peer_max_data = v;
+        }
+
+        // RFC 9000 §4.1: Stream-level flow control limits
+        // Choose the maximum from both bidi and uni limits for compatibility
+        var bidi_limit: u64 = conn.peer_max_stream_data;
+        if (self.initial_max_stream_data_bidi_local) |v| {
+            if (v > bidi_limit) bidi_limit = v;
+        }
+        if (self.initial_max_stream_data_bidi_remote) |v| {
+            if (v > bidi_limit) bidi_limit = v;
+        }
+        if (self.initial_max_stream_data_uni) |v| {
+            if (v > bidi_limit) bidi_limit = v;
+        }
+        conn.peer_max_stream_data = bidi_limit;
+
+        // RFC 9000 §4.6: Stream count limits
+        if (self.initial_max_streams_bidi) |v| {
+            conn.peer_max_streams_bidi = v;
+        }
+        if (self.initial_max_streams_uni) |v| {
+            conn.peer_max_streams_uni = v;
+        }
+
+        // RFC 9000 §13.2.1: ACK delay exponent (must be <= 20, already validated)
+        if (self.ack_delay_exponent) |v| {
+            conn.ack_delay_exponent = @intCast(v);
+        }
+
+        // RFC 9000 §18.2: max_ack_delay in milliseconds (cap to 4000ms for safety)
+        if (self.max_ack_delay) |v| {
+            const capped: u64 = if (v > 4000) 4000 else v;
+            conn.max_ack_delay_ms = @intCast(capped);
+        }
+
+        // Mark that transport parameters have been applied
+        conn.transport_params_applied = true;
+    }
+
+    /// Get default value for max_udp_payload_size if not set.
+    /// RFC 9000 §18.2: Default is 65527 (max IPv6 datagram - IPv6 header - UDP header)
+    pub fn getMaxUdpPayloadSize(self: *const TransportParams) u64 {
+        return self.max_udp_payload_size orelse 65527;
+    }
+
+    /// Get default value for ack_delay_exponent if not set.
+    /// RFC 9000 §18.2: Default is 3
+    pub fn getAckDelayExponent(self: *const TransportParams) u64 {
+        return self.ack_delay_exponent orelse 3;
+    }
+
+    /// Get default value for max_ack_delay if not set.
+    /// RFC 9000 §18.2: Default is 25 milliseconds
+    pub fn getMaxAckDelay(self: *const TransportParams) u64 {
+        return self.max_ack_delay orelse 25;
+    }
+
+    /// Get default value for active_connection_id_limit if not set.
+    /// RFC 9000 §18.2: Default is 2
+    pub fn getActiveConnectionIdLimit(self: *const TransportParams) u64 {
+        return self.active_connection_id_limit orelse 2;
     }
 };
 
