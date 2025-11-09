@@ -30,6 +30,11 @@ fn createTestConnection() !*conn_mod.Connection {
     // Only initialize fields that frame handlers actually modify
     conn.* = undefined;
     conn.role = .Client;
+    conn.allocator = &test_allocator;  // CRITICAL: needed for onNewConnectionId and pushStreamFrame
+    conn.reset_tokens = std.ArrayList([16]u8){};  // CRITICAL: needed for onNewConnectionId
+    conn.streams_rx = std.AutoHashMap(u64, conn_mod.StreamRx).init(test_allocator);  // CRITICAL: needed for pushStreamFrame
+    conn.incoming_stream_queue = std.ArrayList(u64){};  // CRITICAL: needed for pushStreamFrame
+    conn.stream_recv_aborted = false;  // CRITICAL: needed for pushStreamFrame
     conn.peer_initial_scid = .{ .len = 0 };
     conn.peer_max_data = 0;
     conn.peer_max_stream_data = 0;
@@ -54,6 +59,9 @@ fn createTestConnection() !*conn_mod.Connection {
 // Test helper: Cleanup test connection
 fn destroyTestConnection(conn: *conn_mod.Connection) void {
     conn.initial_token.deinit(test_allocator);
+    conn.reset_tokens.deinit(test_allocator);
+    conn.streams_rx.deinit();
+    conn.incoming_stream_queue.deinit(test_allocator);
     test_allocator.destroy(conn);
 }
 

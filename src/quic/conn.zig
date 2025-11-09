@@ -374,7 +374,7 @@ const AckDesc = struct { largest: u64, first_range: u64, ranges: []const frame.A
 
 // Reassembly support
 const Segment = struct { off: u64, data: []u8 };
-const StreamRx = struct {
+pub const StreamRx = struct {
     recv_off: u64 = 0,
     inbox: std.ArrayList(u8),
     bufs: std.ArrayList(Segment),
