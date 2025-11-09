@@ -730,6 +730,7 @@ pub fn build(b: *std.Build) void {
         test_endpoint_incoming.root_module.addImport("endpoint/utils", endpoint_utils_mod);
         test_endpoint_incoming.root_module.addImport("quic_conn", quic_conn_mod);
         test_endpoint_incoming.root_module.addImport("config", quic_config_mod);
+        test_endpoint_incoming.root_module.addImport("token", quic_token_mod);
         test_endpoint_incoming.root_module.addImport("packet", quic_packet_legacy_mod);
         test_endpoint_incoming.root_module.addImport("varint", quic_varint_mod);
         const run_test_endpoint_incoming = b.addRunArtifact(test_endpoint_incoming);

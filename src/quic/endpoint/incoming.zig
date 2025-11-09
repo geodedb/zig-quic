@@ -808,7 +808,7 @@ pub fn processInitial(
     // Address validation via token (RFC 9000 §8.1.4)
     if (conn.role == .Server and !conn.address_validated and token_bytes.len > 0) {
         const token_mod = @import("token");
-        const client_ip_bytes = @as([*]const u8, @ptrCast(&peer.storage))[0..peer.len];
+        const client_ip_bytes = peer.getIpBytes();
         const secret = ctx.cfg.token_secret orelse "default-retry-secret-16";
         const now_ns: i128 = std.time.nanoTimestamp();
         const now_ms: u64 = @intCast(if (now_ns > 0) @as(u128, @intCast(now_ns)) / std.time.ns_per_ms else 0);
@@ -822,7 +822,7 @@ pub fn processInitial(
     // If address still not validated, consider issuing Retry (RFC 9000 §8.1.1)
     if (conn.role == .Server and !conn.address_validated and ctx.cfg.enable_retry) {
         const token_mod = @import("token");
-        const client_ip_bytes = @as([*]const u8, @ptrCast(&peer.storage))[0..peer.len];
+        const client_ip_bytes = peer.getIpBytes();
         const secret = ctx.cfg.token_secret orelse "default-retry-secret-16";
 
         // Generate Retry token bound to client IP and ODCID

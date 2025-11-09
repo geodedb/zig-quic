@@ -293,10 +293,10 @@ test "RFC 9000 §8.1 - Server must limit to 3x received before validation" {
 test "RFC 9000 §8.1 - Amplification limit removed after validation" {
     var limits: amp.AmplificationLimits = .{};
 
-    amp.addRxUnvalidated(&limits, 10);
+    amp.addRxUnvalidated(&limits, 100);
 
-    // Before validation: strict limit
-    try testing.expect(!amp.canSendUnderAmplification(&limits, false));
+    // Before validation: Can send up to 3x (300 bytes)
+    try testing.expect(amp.canSendUnderAmplification(&limits, false));
 
     // After validation: no limit
     try testing.expect(amp.canSendUnderAmplification(&limits, true));

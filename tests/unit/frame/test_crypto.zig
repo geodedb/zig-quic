@@ -536,9 +536,9 @@ test "RFC 9000 §7.5 - CRYPTO data processed in offset order" {
     // Decode all frames
     var frames: [3]struct { offset: u64, data: []const u8 } = undefined;
     var pos: usize = 0;
-    for (&frames) |*frame| {
+    for (0..frames.len) |i| {
         const result = try crypto.decodeCrypto(written[pos..]);
-        frame.* = .{ .offset = result.offset, .data = result.data };
+        frames[i] = .{ .offset = result.offset, .data = result.data };
         pos += result.n;
     }
 

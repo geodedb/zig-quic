@@ -443,9 +443,14 @@ test "Phase 4b.5 Session 3 - enumerateDcidLength detects stateless reset" {
     // Create a minimal connection with stateless reset token
     var test_conn: conn_mod.Connection = undefined;
     @memset(std.mem.asBytes(&test_conn), 0);
+    test_conn.allocator = &test_allocator;  // Set allocator for the connection
     // Set up connection with peer's stateless reset token
     const reset_token = [_]u8{0xDE, 0xAD, 0xBE, 0xEF} ** 4; // 16-byte token
-    // @memcpy(&test_conn.peer_stateless_reset_token, &reset_token); // Field removed
+    // Initialize reset_tokens ArrayList and add the token (Zig 0.15.1 API)
+    var tokens_list = std.ArrayList([16]u8){};
+    defer tokens_list.deinit(test_allocator);
+    try tokens_list.append(test_allocator, reset_token);
+    test_conn.reset_tokens = tokens_list;
     // Create packet that looks like stateless reset (contains token)
     var fake_packet = std.ArrayList(u8){};
     defer fake_packet.deinit(test_allocator);

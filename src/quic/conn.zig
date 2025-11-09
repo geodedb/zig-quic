@@ -237,6 +237,21 @@ pub const SockAddr = struct {
         @memcpy(@as([*]u8, @ptrCast(&s.storage))[0..s.len], @as([*]const u8, @ptrCast(&sin))[0..s.len]);
         return s;
     }
+
+    /// Extract IP address bytes for token validation (RFC 9000 §8.1).
+    /// Returns a slice pointing to the IP address portion of the sockaddr structure.
+    /// For IPv4: 4 bytes, For IPv6: 16 bytes.
+    pub fn getIpBytes(self: *const SockAddr) []const u8 {
+        const storage_bytes = @as([*]const u8, @ptrCast(&self.storage));
+        if (self.family() == posix.AF.INET) {
+            // IPv4: addr is at offset 4 (after family:u16 + port:u16)
+            return storage_bytes[4..8];
+        } else if (self.family() == posix.AF.INET6) {
+            // IPv6: addr is at offset 8 (after family:u16 + port:u16 + flowinfo:u32)
+            return storage_bytes[8..24];
+        }
+        return &[_]u8{};
+    }
 };
 
 /// Fixed-size Connection ID used in tests/internals.
