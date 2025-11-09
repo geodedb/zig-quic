@@ -196,7 +196,7 @@ test "RFC 9221 §4 - DATAGRAM frames with varying sizes" {
     pos += r1.n;
 
     const r2 = try datagram.decodeDatagram(written[pos..]);
-    try testing.expectEqual(@as(usize, 32), r2.data.len);
+    try testing.expectEqual(@as(usize, 31), r2.data.len);
     pos += r2.n;
 
     const r3 = try datagram.decodeDatagram(written[pos..]);

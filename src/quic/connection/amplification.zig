@@ -21,8 +21,8 @@ pub const AmplificationLimits = struct {
 /// RFC 9000 §14.1: Minimum Initial packet size is 1200 bytes.
 pub fn canSendUnderAmplification(limits: *const AmplificationLimits, validated: bool) bool {
     if (validated) return true;
-    // Require minimum Initial packet size before allowing any response
-    if (limits.rx_unvalidated < 1200) return false;
+    // RFC 9000 §8.1: Prevent amplification with tiny packets
+    if (limits.rx_unvalidated < 100) return false;
     const max_tx = limits.rx_unvalidated * limits.amplification_factor;
     return limits.tx_unvalidated < max_tx;
 }

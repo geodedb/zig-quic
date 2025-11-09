@@ -857,9 +857,8 @@ pub fn processInitial(
         header.offset,
         keys_result.rx_keys,
         if (conn.pn_initial.have_any) conn.pn_initial.max else 0,
-    ) catch |err| {
-        // Decryption failed - log and return
-        _ = err; // Suppress unused variable
+    ) catch {
+        // Decryption failed - return
         return;
     };
     defer ctx.allocator.free(decrypted.payload);
@@ -942,54 +941,59 @@ pub fn processInitial(
     }
 
     // Send ServerHello if we're a server and TLS has responses
-    if (conn.role == .Server and saw_crypto) {
-        if (conn.tls.hasCryptoToSend() and conn.crypto_tx_off_initial == 0) {
-            // ServerHello must be sent in Initial packet (RFC 9001 §4.1.1)
-            const hs_ctx = handshake_integration.HandshakeContext{
-                .conn = conn,
-                .peer = peer,
-                .allocator = ctx.allocator,
-                .send_fn = ctx.send_fn,
-            };
-            handshake_integration.sendServerHello(&hs_ctx) catch |err| {
-                std.debug.print("processInitial: Failed to send ServerHello: {}\n", .{err});
-            };
-        }
+    if (conn.role == .Server and saw_crypto and conn.crypto_tx_off_initial == 0) {
+        // ServerHello must be sent in Initial packet (RFC 9001 §4.1.1)
+        var hs_ctx = handshake_integration.HandshakeContext{
+            .conn = conn,
+            .peer = peer,
+            .allocator = ctx.allocator,
+            .send_fn = ctx.send_fn,
+            .cfg = ctx.cfg,
+        };
+        handshake_integration.sendServerHello(&hs_ctx) catch {
+            // ServerHello sending failed - continue processing
+        };
     }
 
     // Send ACK for received Initial packet
     if (saw_crypto) {
         if (conn.initial_tx_keys) |tx_keys| {
             // Build ACK frame
-            var frames_buf = std.ArrayList(u8){};
-            defer frames_buf.deinit(ctx.allocator.*);
-            const w = frames_buf.writer(ctx.allocator.*);
+            var frames_buf: [4096]u8 = undefined;
+            var frames_stream = std.io.fixedBufferStream(&frames_buf);
+            const w = frames_stream.writer();
 
-            if (conn.buildAckInitial()) |ack_frame| {
-                _ = ack_frame.write(w) catch 0;
+            const ack_desc = conn.buildAckInitial();
+            const ack_frame = frame.Frame{ .ack = .{
+                .largest = ack_desc.largest,
+                .ack_delay = 0,
+                .first_range = ack_desc.first_range,
+                .ranges = ack_desc.ranges,
+            } };
+            _ = ack_frame.write(w) catch 0;
+            const frames_data = frames_stream.getWritten();
 
-                // Use peer's SCID as DCID
-                const initial_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
+            // Use peer's SCID as DCID
+            const initial_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
 
-                // Encode and send Initial ACK packet
-                const pkt = packet.encodeInitialProtected(
-                    ctx.allocator.*,
-                    version,
-                    initial_dcid,
-                    conn.our_scid.bytes[0..conn.our_scid.len],
-                    &[_]u8{}, // No token in ACK packet
-                    @as(u32, @truncate(conn.pn_initial_tx)),
-                    2,
-                    frames_buf.items,
-                    tx_keys,
-                ) catch null;
+            // Encode and send Initial ACK packet
+            const pkt = packet.encodeInitialProtected(
+                ctx.allocator.*,
+                version,
+                initial_dcid,
+                conn.our_scid.bytes[0..conn.our_scid.len],
+                &[_]u8{}, // No token in ACK packet
+                @as(u32, @truncate(conn.pn_initial_tx)),
+                2,
+                frames_data,
+                tx_keys,
+            ) catch null;
 
-                if (pkt) |bytes_out| {
-                    defer ctx.allocator.free(bytes_out);
-                    _ = ctx.send_fn(peer, bytes_out) catch {};
-                    conn.onPacketSent(.Initial, conn.pn_initial_tx, bytes_out.len, false);
-                    conn.pn_initial_tx +%= 1;
-                }
+            if (pkt) |bytes_out| {
+                defer ctx.allocator.free(bytes_out);
+                _ = ctx.send_fn(peer, bytes_out) catch {};
+                conn.onPacketSent(.Initial, conn.pn_initial_tx, bytes_out.len, false);
+                conn.pn_initial_tx +%= 1;
             }
         }
     }

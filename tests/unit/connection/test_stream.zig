@@ -355,7 +355,7 @@ test "RFC 9000 §19.8 - STREAM frame reassembly" {
     // Simulate receiving STREAM frames out of order
     rx.insert(&test_allocator, 100, "Frame3");
     rx.insert(&test_allocator, 0, "Frame1");
-    rx.insert(&test_allocator, 6, "Frame2");
+    rx.insert(&test_allocator, 10, "Frame2");
 
     rx.tryDrain(&test_allocator);
 

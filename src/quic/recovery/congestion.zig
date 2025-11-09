@@ -37,7 +37,8 @@ pub const NewReno = struct {
     /// RFC 9002 §7.3.3: Recovery Period
     pub fn onLoss(self: *NewReno, bytes_lost: usize) void {
         const min_wnd = 2 * self.mds;
-        if (self.cwnd > min_wnd) self.cwnd = self.cwnd / 2 else self.cwnd = min_wnd;
+        self.cwnd = self.cwnd / 2;
+        if (self.cwnd < min_wnd) self.cwnd = min_wnd;
         self.ssthresh = self.cwnd;
         if (self.bytes_in_flight >= bytes_lost) self.bytes_in_flight -= bytes_lost else self.bytes_in_flight = 0;
     }

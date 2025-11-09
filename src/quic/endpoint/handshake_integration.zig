@@ -267,13 +267,14 @@ pub fn sendServerHello(ctx: *HandshakeContext) !void {
         const chunk_size = @min(max_crypto_per_packet, n - crypto_offset);
         const chunk = outbox[crypto_offset .. crypto_offset + chunk_size];
 
-        var frames_buf = std.ArrayList(u8).init(ctx.allocator.*);
-        defer frames_buf.deinit();
-        const w = frames_buf.writer();
+        var frames_buf: [4096]u8 = undefined;
+        var frames_stream = std.io.fixedBufferStream(&frames_buf);
+        const w = frames_stream.writer();
 
         // Add CRYPTO frame
         const crypto_frame_offset = base_off + crypto_offset;
         _ = (frame.Frame{ .crypto = .{ .offset = crypto_frame_offset, .data = chunk } }).write(w) catch 0;
+        const frames_data = frames_stream.getWritten();
 
         // Use peer's SCID as DCID for Initial response
         const initial_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
@@ -287,7 +288,7 @@ pub fn sendServerHello(ctx: *HandshakeContext) !void {
             &[_]u8{}, // No token in server Initial
             @as(u32, @truncate(conn.pn_initial_tx)),
             2, // PN length
-            frames_buf.items,
+            frames_data,
             initial_tx_keys,
         ) catch return error.PacketEncodeFailed;
 
@@ -343,12 +344,13 @@ pub fn sendHandshakeDone(ctx: *HandshakeContext) !void {
     const app_tx_keys = conn.app_tx_keys orelse return error.NoApplicationKeys;
 
     // Build HANDSHAKE_DONE frame
-    var frames_buf = std.ArrayList(u8).init(ctx.allocator.*);
-    defer frames_buf.deinit();
-    const w = frames_buf.writer();
+    var frames_buf: [4096]u8 = undefined;
+    var frames_stream = std.io.fixedBufferStream(&frames_buf);
+    const w = frames_stream.writer();
 
     // HANDSHAKE_DONE frame has no payload, just the type byte
     _ = (frame.Frame{ .handshake_done = {} }).write(w) catch 0;
+    const frames_data = frames_stream.getWritten();
 
     // Use peer's SCID as DCID for 1-RTT packet
     const dcid = if (conn.peer_initial_scid.len > 0)
@@ -362,7 +364,7 @@ pub fn sendHandshakeDone(ctx: *HandshakeContext) !void {
         dcid,
         @as(u32, @truncate(conn.pn_app_tx)),
         2, // PN length
-        frames_buf.items,
+        frames_data,
         app_tx_keys,
         conn.tx_key_phase,
     ) catch return error.PacketEncodeFailed;

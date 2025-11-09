@@ -295,10 +295,11 @@ test "LongHeader encoding includes packet number" {
     var fbs = std.io.fixedBufferStream(&buf);
     const written = try long_hdr.encode(fbs.writer());
 
-    // PN is 2 bytes, should be near end before payload
-    // PN 0xABCD should be encoded as 0xAB, 0xCD (big-endian, last 2 bytes)
-    try testing.expectEqual(@as(u8, 0xAB), buf[written - 2]);
-    try testing.expectEqual(@as(u8, 0xCD), buf[written - 1]);
+    // PN is 2 bytes, should be before payload
+    // PN 0xABCD should be encoded as 0xAB, 0xCD (big-endian)
+    // With 3-byte payload, PN is at written - 3 - 2 = written - 5 and written - 4
+    try testing.expectEqual(@as(u8, 0xAB), buf[written - 5]);
+    try testing.expectEqual(@as(u8, 0xCD), buf[written - 4]);
 }
 
 test "LongHeader encoding includes payload" {

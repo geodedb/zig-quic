@@ -117,13 +117,13 @@ test "RFC 9000 §19.6 - CRYPTO frame with maximum offset" {
     var fbs = std.io.fixedBufferStream(&buf);
     const w = fbs.writer();
 
-    const offset: u64 = 1 << 62; // Max varint value
+    const offset: u64 = (1 << 62) - 1; // Max varint value
     const data = "X";
     _ = try crypto.writeCrypto(w, offset, data);
 
     const result = try crypto.decodeCrypto(fbs.getWritten());
 
-    try testing.expectEqual(@as(u64, 1 << 62), result.offset);
+    try testing.expectEqual(@as(u64, (1 << 62) - 1), result.offset);
 }
 
 // =============================================================================

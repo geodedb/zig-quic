@@ -409,6 +409,9 @@ pub fn build(b: *std.Build) void {
     endpoint_incoming_mod.addImport("frame", quic_frame_mod);
     endpoint_incoming_mod.addImport("varint", quic_varint_mod);
     endpoint_incoming_mod.addImport("token", quic_token_mod);
+    endpoint_incoming_mod.addImport("transport_params", quic_transport_params_mod);
+    endpoint_incoming_mod.addImport("x509", x509_mod);
+    endpoint_incoming_mod.addImport("sig", sig_mod);
 
     const endpoint_handshake_integration_mod = mkModule(b, "src/quic/endpoint/handshake_integration.zig");
     endpoint_handshake_integration_mod.addImport("quic_conn", quic_conn_mod);
@@ -728,6 +731,7 @@ pub fn build(b: *std.Build) void {
         test_endpoint_incoming.root_module.addImport("quic_conn", quic_conn_mod);
         test_endpoint_incoming.root_module.addImport("config", quic_config_mod);
         test_endpoint_incoming.root_module.addImport("packet", quic_packet_legacy_mod);
+        test_endpoint_incoming.root_module.addImport("varint", quic_varint_mod);
         const run_test_endpoint_incoming = b.addRunArtifact(test_endpoint_incoming);
         test_step.dependOn(&run_test_endpoint_incoming.step);
 

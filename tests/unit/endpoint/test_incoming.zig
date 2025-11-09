@@ -413,14 +413,10 @@ test "Phase 4b.5 Session 3 - enumerateDcidLength returns null when all lengths f
         .iv = [_]u8{0xFE} ** 12,
         .hp = [_]u8{0xFD} ** 16,
     };
-    const crypto_keys_wrong = struct {
-        key: []const u8,
-        iv: []const u8,
-        hp: []const u8,
-    }{
-        .key = &wrong_keys.key,
-        .iv = &wrong_keys.iv,
-        .hp = &wrong_keys.hp,
+    const crypto_keys_wrong = packet.AeadKeys{
+        .key = wrong_keys.key,
+        .iv = wrong_keys.iv,
+        .hp = wrong_keys.hp,
     };
     const result = incoming.enumerateDcidLength(
         test_allocator,
@@ -1175,7 +1171,9 @@ fn makeInitialPacket(
     const varint = @import("varint");
     // Calculate packet size
     const header_size = 5 + 1 + dcid.len + 1 + scid.len;
-    const token_len_varint = varint.encode(token.len);
+    var token_len_buf: [8]u8 = undefined;
+    const token_len_size = try varint.encode(token.len, &token_len_buf);
+    const token_len_varint = token_len_buf[0..token_len_size];
     const packet_size = header_size + token_len_varint.len + token.len + 100; // +100 for length and payload
     var pkt = try allocator.alloc(u8, packet_size);
     // Long header with Initial type (0xC0)
@@ -1201,15 +1199,17 @@ fn makeInitialPacket(
         i += scid.len;
     }
     // Token length (varint) and token
-    @memcpy(pkt[i..i + token_len_varint.len], &token_len_varint);
+    @memcpy(pkt[i..i + token_len_varint.len], token_len_varint);
     i += token_len_varint.len;
     if (token.len > 0) {
         @memcpy(pkt[i..i + token.len], token);
         i += token.len;
     }
     // Length and payload (minimal)
-    const payload_len = varint.encode(20);
-    @memcpy(pkt[i..i + payload_len.len], &payload_len);
+    var payload_len_buf: [8]u8 = undefined;
+    const payload_len_size = try varint.encode(20, &payload_len_buf);
+    const payload_len = payload_len_buf[0..payload_len_size];
+    @memcpy(pkt[i..i + payload_len.len], payload_len);
     i += payload_len.len;
     return pkt[0..i + 20];
 }
@@ -1221,13 +1221,13 @@ test "RFC 9000 §7 - processInitial creates new server connection when none exis
         while (it.next()) |c| {
             test_allocator.destroy(c.*);
         }
-        conns.deinit(test_allocator);
+        conns.deinit();
     }
     var config = cfg.QuicConfig{ .alpn = &[_][]const u8{} };
     config.enable_retry = false; // Disable Retry for this test
     var alloc = test_allocator;
     var accepted = std.ArrayList(*conn_mod.Connection){};
-    defer accepted.deinit();
+    defer accepted.deinit(test_allocator);
     var ctx = incoming.RxContext{
         .allocator = &alloc,
         .conns = &conns,
@@ -1258,13 +1258,13 @@ test "RFC 9000 §7 - processInitial reuses existing server connection" {
         while (it.next()) |c| {
             test_allocator.destroy(c.*);
         }
-        conns.deinit(test_allocator);
+        conns.deinit();
     }
     var config = cfg.QuicConfig{ .alpn = &[_][]const u8{} };
     config.enable_retry = false;
     var alloc = test_allocator;
     var accepted = std.ArrayList(*conn_mod.Connection){};
-    defer accepted.deinit();
+    defer accepted.deinit(test_allocator);
     var ctx = incoming.RxContext{
         .allocator = &alloc,
         .conns = &conns,
@@ -1293,17 +1293,20 @@ test "RFC 9000 §7 - processInitial reuses existing server connection" {
 test "RFC 9000 §7 - processInitial on client endpoint does not create server connection" {
     // Client endpoints should not create server connections
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
-    defer conns.deinit(test_allocator);
+    defer conns.deinit();
     var config = cfg.QuicConfig{ .alpn = &[_][]const u8{} };
     var alloc = test_allocator;
     var accepted = std.ArrayList(*conn_mod.Connection){};
-    defer accepted.deinit();
+    defer accepted.deinit(test_allocator);
     var ctx = incoming.RxContext{
         .allocator = &alloc,
         .conns = &conns,
         .cfg = &config,
         .send_fn = mockSend,
         .endpoint_role = .Client, // Client endpoint
+        .schedule_timer_fn = mockScheduleTimerFn,
+        .send_initial_probe_fn = mockSendInitialProbeFn,
+        .test_capture_enabled = false,
         .accepted = &accepted,
     };
     const peer = conn_mod.SockAddr.ipv4(192, 168, 1, 100, 5000);
@@ -1326,7 +1329,7 @@ test "RFC 9000 §8.1.4 - processInitial validates address with valid token" {
         while (it.next()) |c| {
             test_allocator.destroy(c.*);
         }
-        conns.deinit(test_allocator);
+        conns.deinit();
     }
     // const token_mod = @import("quic_token"); // Module not available
     const secret = "test-secret-key-16bytes";
@@ -1336,7 +1339,7 @@ test "RFC 9000 §8.1.4 - processInitial validates address with valid token" {
     config.token_expiry_ms = 60000;
     var alloc = test_allocator;
     var accepted = std.ArrayList(*conn_mod.Connection){};
-    defer accepted.deinit();
+    defer accepted.deinit(test_allocator);
     var ctx = incoming.RxContext{
         .allocator = &alloc,
         .conns = &conns,
@@ -1377,13 +1380,13 @@ test "RFC 9000 §8.1 - processInitial with no token leaves address unvalidated" 
         while (it.next()) |c| {
             test_allocator.destroy(c.*);
         }
-        conns.deinit(test_allocator);
+        conns.deinit();
     }
     var config = cfg.QuicConfig{ .alpn = &[_][]const u8{} };
     config.enable_retry = false;
     var alloc = test_allocator;
     var accepted = std.ArrayList(*conn_mod.Connection){};
-    defer accepted.deinit();
+    defer accepted.deinit(test_allocator);
     var ctx = incoming.RxContext{
         .allocator = &alloc,
         .conns = &conns,
@@ -1422,7 +1425,7 @@ test "RFC 9000 §8.1.1 - processInitial sends Retry when address not validated a
         while (it.next()) |c| {
             test_allocator.destroy(c.*);
         }
-        conns.deinit(test_allocator);
+        conns.deinit();
     }
     var config = cfg.QuicConfig{ .alpn = &[_][]const u8{} };
     config.enable_retry = true; // Enable Retry
@@ -1430,7 +1433,7 @@ test "RFC 9000 §8.1.1 - processInitial sends Retry when address not validated a
     config.token_expiry_ms = 60000;
     var alloc = test_allocator;
     var accepted = std.ArrayList(*conn_mod.Connection){};
-    defer accepted.deinit();
+    defer accepted.deinit(test_allocator);
     var ctx = incoming.RxContext{
         .allocator = &alloc,
         .conns = &conns,
@@ -1461,13 +1464,13 @@ test "RFC 9000 §8.1.1 - processInitial does not send Retry when Retry disabled"
         while (it.next()) |c| {
             test_allocator.destroy(c.*);
         }
-        conns.deinit(test_allocator);
+        conns.deinit();
     }
     var config = cfg.QuicConfig{ .alpn = &[_][]const u8{} };
     config.enable_retry = false; // Disable Retry
     var alloc = test_allocator;
     var accepted = std.ArrayList(*conn_mod.Connection){};
-    defer accepted.deinit();
+    defer accepted.deinit(test_allocator);
     var ctx = incoming.RxContext{
         .allocator = &alloc,
         .conns = &conns,
@@ -1498,11 +1501,11 @@ test "RFC 9000 §8.1.1 - processInitial does not send Retry when Retry disabled"
 test "processInitial handles invalid packet gracefully" {
     // Invalid packet (too short) should return without creating connection
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
-    defer conns.deinit(test_allocator);
+    defer conns.deinit();
     var config = cfg.QuicConfig{ .alpn = &[_][]const u8{} };
     var alloc = test_allocator;
     var accepted = std.ArrayList(*conn_mod.Connection){};
-    defer accepted.deinit();
+    defer accepted.deinit(test_allocator);
     var ctx = incoming.RxContext{
         .allocator = &alloc,
         .conns = &conns,
@@ -1529,13 +1532,13 @@ test "processInitial handles zero-length DCID and SCID" {
         while (it.next()) |c| {
             test_allocator.destroy(c.*);
         }
-        conns.deinit(test_allocator);
+        conns.deinit();
     }
     var config = cfg.QuicConfig{ .alpn = &[_][]const u8{} };
     config.enable_retry = false;
     var alloc = test_allocator;
     var accepted = std.ArrayList(*conn_mod.Connection){};
-    defer accepted.deinit();
+    defer accepted.deinit(test_allocator);
     var ctx = incoming.RxContext{
         .allocator = &alloc,
         .conns = &conns,
