@@ -412,6 +412,7 @@ pub fn build(b: *std.Build) void {
     endpoint_incoming_mod.addImport("transport_params", quic_transport_params_mod);
     endpoint_incoming_mod.addImport("x509", x509_mod);
     endpoint_incoming_mod.addImport("sig", sig_mod);
+    endpoint_incoming_mod.addImport("lookup", endpoint_lookup_mod);
 
     const endpoint_handshake_integration_mod = mkModule(b, "src/quic/endpoint/handshake_integration.zig");
     endpoint_handshake_integration_mod.addImport("quic_conn", quic_conn_mod);
@@ -477,6 +478,8 @@ pub fn build(b: *std.Build) void {
     quic_endpoint_mod.addImport("endpoint/utils.zig", endpoint_utils_mod);
     quic_endpoint_mod.addImport("endpoint/incoming.zig", endpoint_incoming_mod);
     quic_endpoint_mod.addImport("endpoint/frame_handler.zig", endpoint_frame_handler_mod);
+    quic_endpoint_mod.addImport("endpoint/lookup.zig", endpoint_lookup_mod);
+    quic_endpoint_mod.addImport("endpoint/pto.zig", endpoint_pto_mod);
 
     // Public API module (reuse everywhere)
     const quic_api_mod = mkModule(b, "src/quic/api.zig");
@@ -738,6 +741,16 @@ pub fn build(b: *std.Build) void {
         test_endpoint_incoming.root_module.addImport("varint", quic_varint_mod);
         const run_test_endpoint_incoming = b.addRunArtifact(test_endpoint_incoming);
         test_step.dependOn(&run_test_endpoint_incoming.step);
+
+        const test_incoming_session3 = addTst(b, "tests/unit/endpoint/test_incoming_session3.zig", target, optimize);
+        test_incoming_session3.root_module.addImport("incoming", endpoint_incoming_mod);
+        test_incoming_session3.root_module.addImport("endpoint/types", endpoint_types_mod);
+        test_incoming_session3.root_module.addImport("endpoint/lookup", endpoint_lookup_mod);
+        test_incoming_session3.root_module.addImport("quic_conn", quic_conn_mod);
+        test_incoming_session3.root_module.addImport("config", quic_config_mod);
+        test_incoming_session3.root_module.addImport("packet", quic_packet_legacy_mod);
+        const run_test_incoming_session3 = b.addRunArtifact(test_incoming_session3);
+        test_step.dependOn(&run_test_incoming_session3.step);
 
         const test_endpoint_handshake_integration = addTst(b, "tests/unit/endpoint/test_handshake_integration.zig", target, optimize);
         test_endpoint_handshake_integration.root_module.addImport("quic_endpoint_handshake_integration", endpoint_handshake_integration_mod);

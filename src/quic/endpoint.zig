@@ -1095,12 +1095,12 @@ pub const Endpoint = struct {
             }
         }
         if (!is_long) {
-            // Short header 1-RTT processing (RFC 9000 §17.3) matching existing path tuple + DCID.
+            // Short header 1-RTT processing (RFC 9000 §17.3) delegated to incoming.processShortHeader()
+            // Phase 4b.5 Session 3: Integration of modular RX pipeline
             std.debug.print("Processing short header packet - len={}, first_byte={x}\n", .{ bytes.len, bytes[0] });
             if (bytes.len < 1) return;
 
-            // Extract the DCID from the short header packet
-            // First byte is header, then DCID (we need to try different lengths)
+            // Extract the DCID from the short header packet for NAT rebinding detection
             std.debug.print("Short header DCID bytes (after header): ", .{});
             const show_len = @min(20, bytes.len - 1);
             for (bytes[1 .. 1 + show_len]) |b| std.debug.print("{x:0>2} ", .{b});
@@ -1110,7 +1110,7 @@ pub const Endpoint = struct {
             const lookup_result = lookup.findConnectionByDcid(&self.conns, peer, bytes, null);
             const dcid_len = lookup_result.dcid_len;
 
-            // Handle NAT rebinding if detected
+            // Handle NAT rebinding if detected (RFC 9000 §9.3)
             if (lookup_result.nat_rebinding) {
                 if (lookup_result.conn) |c| {
                     const peer_h = hashSockaddr(&peer.storage, peer.len);
@@ -1118,391 +1118,32 @@ pub const Endpoint = struct {
                 }
             }
 
-            const conn = lookup_result.conn orelse {
-                std.debug.print("No connection found for short header packet from peer\n", .{});
-                return;
+            // Create SendFn wrapper (no-op for now - processShortHeader doesn't use it directly)
+            const send_fn = struct {
+                fn send(_: conn_mod.SockAddr, _: []const u8) anyerror!usize {
+                    return 0;
+                }
+            }.send;
+
+            // Create RxContext for incoming.processShortHeader()
+            // Convert EndpointRole to ep_types.EndpointRole
+            const role_converted = @as(ep_types.EndpointRole, @enumFromInt(@intFromEnum(self.role)));
+
+            var rx_ctx = incoming.RxContext{
+                .allocator = self.allocator,
+                .conns = &self.conns,
+                .accepted = &self.accepted,
+                .cfg = &self.cfg,
+                .send_fn = send_fn,
+                .schedule_timer_fn = undefined, // Not used by processShortHeader
+                .send_initial_probe_fn = undefined, // Not used by processShortHeader
+                .test_capture_enabled = self.test_capture_enabled,
+                .endpoint_role = role_converted,
+                .endpoint_ctx = self, // Pass endpoint for sendTo access
             };
-            std.debug.print("=== RECEIVED 1-RTT PACKET === size={}, dcid_len={}, has_app_rx={}, has_app_tx={}\n", .{ bytes.len, dcid_len, conn.app_rx_keys != null, conn.app_tx_keys != null });
 
-            // CRITICAL FIX for Bug #6: Use cached expected_rx_dcid_len if available
-            // Otherwise try systematic enumeration to discover the actual DCID length
-            const try_dcid_len = if (conn.expected_rx_dcid_len) |cached_len|
-                cached_len
-            else
-                dcid_len; // Start with connection-matched length
-
-            std.debug.print("Will try decryption with dcid_len={} (cached={})\n", .{ try_dcid_len, conn.expected_rx_dcid_len != null });
-
-            // Test-only debug: log short-header match and ECN bits/keys state
-            if (self.test_capture_enabled) {
-                const has_rx = (conn.app_rx_keys != null);
-                const has_tx = (conn.app_tx_keys != null);
-                const eb: u8 = if (ecn_bits) |e| (e & 0x03) else 0xff;
-                std.debug.print("APP short: match dcid_len={d} rx_keys={s} tx_keys={s} ecn_bits=0x{x}\n", .{ dcid_len, if (has_rx) "y" else "n", if (has_tx) "y" else "n", eb });
-            }
-            if (ecn_bits) |e| conn.onEcnMark(.Application, e);
-            // Track bytes received from unvalidated address for anti-amplification (RFC 9000 §8.1).
-            conn.addRxUnvalidated(bytes.len);
-            if (conn.app_rx_keys) |rx_keys| {
-                std.debug.print("\n=== 1-RTT DECRYPT ATTEMPT ===\n", .{});
-                std.debug.print("Packet first 32 bytes: ", .{});
-                for (bytes[0..@min(32, bytes.len)]) |b| std.debug.print("{X:0>2} ", .{b});
-                std.debug.print("\nUsing RX keys: key[0..8]=", .{});
-                for (rx_keys.key[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
-                std.debug.print(", iv[0..8]=", .{});
-                for (rx_keys.iv[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
-                std.debug.print(", hp[0..8]=", .{});
-                for (rx_keys.hp[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
-                std.debug.print("\n", .{});
-                // Use extracted decryption function from endpoint/incoming.zig (Phase 4b.5 Session 3)
-                const decrypt_result = incoming.decryptShortHeaderWithKeyRotation(
-                    self.allocator.*,
-                    conn,
-                    bytes,
-                    @intCast(try_dcid_len),
-                ) catch |err| {
-                    if (err == error.StatelessReset) {
-                        std.debug.print("stateless-reset: closing connection\n", .{});
-                        conn.closed = true;
-                    }
-                    return;
-                };
-                const dec_res = decrypt_result.decoded;
-                const used_next = decrypt_result.used_next;
-                const used_prev = decrypt_result.used_prev;
-                defer self.allocator.free(dec_res.payload);
-
-                // Handle key promotion if NEXT keys were used
-                if (used_next) {
-                    if (conn.app_rx_secret) |cur_rx_secret| {
-                        const next_secret = ks.updateTrafficSecret(cur_rx_secret);
-                        const next_keys = if (conn.version_v2)
-                            ks.deriveKeyIvHpV2(next_secret)
-                        else
-                            ks.deriveKeyIvHp(next_secret);
-                        incoming.promoteToNextKeys(conn, next_secret, .{
-                            .key = next_keys.key,
-                            .iv = next_keys.iv,
-                            .hp = next_keys.hp,
-                        });
-                    }
-                }
-
-                std.debug.print("✅ 1-RTT AEAD SUCCESS - payload_len={}, pn={}\n", .{ dec_res.payload.len, dec_res.packet_number });
-                // dec_res.packet_number is already expanded by unprotectInitial - don't expand again!
-                const pn_full: u64 = dec_res.packet_number;
-                conn.trackRecvPnApp(pn_full);
-
-                // Handle previous key cleanup if they were used
-                if (used_prev) {
-                    incoming.decrementPrevKeyAllowance(conn);
-                }
-                // Parse frames from payload
-                var off2: usize = 0;
-                var saw_any: bool = false;
-                var saw_hs_done: bool = false;
-                var saw_close: ?frame.Frame = null;
-                var saw_ack_eliciting: bool = false;
-                const now_ns_ack: u64 = @intCast(std.time.nanoTimestamp());
-
-                // Dummy send function for frame_handler (frames that need to send are handled specially)
-                const dummySend = struct {
-                    fn send(_: conn_mod.SockAddr, _: []const u8) anyerror!usize {
-                        return 0; // Sending handled separately for .datagram and .path_challenge
-                    }
-                }.send;
-
-                // Create FrameContext for frame processing
-                var frame_ctx = frame_handler.FrameContext{
-                    .conn = conn,
-                    .allocator = self.allocator,
-                    .send_fn = dummySend,
-                    .peer = peer,
-                    .space = .Application,
-                    .cfg = &self.cfg,
-                    .endpoint = null,
-                };
-
-                std.debug.print("Parsing frames from payload, total_len={}\n", .{dec_res.payload.len});
-                while (off2 < dec_res.payload.len) {
-                    const fr = frame.decodeOne(dec_res.payload[off2..]) catch |err| {
-                        std.debug.print("Frame decode error at offset {}: {}\n", .{ off2, err });
-                        break;
-                    };
-                    off2 += fr.n;
-
-                    // Handle frames that need to send packets specially (to access self.sendTo)
-                    switch (fr.f) {
-                        .datagram => |d| {
-                            // Process datagram (pushes to receive queue)
-                            conn.pushDatagram(d.data) catch {};
-                            saw_any = true;
-                            // Optional DATAGRAM echo response
-                            if (self.cfg.enable_datagram) {
-                                if (conn.app_tx_keys) |txk| {
-                                    var fb = std.ArrayList(u8){};
-                                    defer fb.deinit(self.allocator.*);
-                                    const w = fb.writer(self.allocator.*);
-                                    _ = (frame.Frame{ .datagram = .{ .data = d.data } }).write(w) catch 0;
-                                    const dcid_sh = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else &[_]u8{};
-                                    const out = packet.encodeShortProtected(self.allocator.*, dcid_sh, @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, txk, conn.tx_key_phase) catch null;
-                                    if (out) |pkt_bytes| {
-                                        defer self.allocator.free(pkt_bytes);
-                                        _ = self.sendTo(peer, pkt_bytes) catch {};
-                                        conn.onShortHeaderPacketSent(pkt_bytes.len, true);
-                                    }
-                                }
-                            }
-                        },
-                        .path_challenge => |pcv| {
-                            // Send PATH_RESPONSE
-                            if (conn.app_tx_keys) |txk| {
-                                var fb = std.ArrayList(u8){};
-                                defer fb.deinit(self.allocator.*);
-                                const w = fb.writer(self.allocator.*);
-                                _ = (frame.Frame{ .path_response = pcv }).write(w) catch 0;
-                                const dcid_sh2 = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else &[_]u8{};
-                                const out = packet.encodeShortProtected(self.allocator.*, dcid_sh2, @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, txk, conn.tx_key_phase) catch null;
-                                if (out) |pkt_bytes| {
-                                    defer self.allocator.free(pkt_bytes);
-                                    _ = self.sendTo(peer, pkt_bytes) catch {};
-                                    conn.onShortHeaderPacketSent(pkt_bytes.len, true);
-                                }
-                            }
-                            saw_ack_eliciting = true;
-                        },
-                        else => {
-                            // Process all other frames using frame_handler module
-                            const result = frame_handler.processFrame(&frame_ctx, fr.f) catch |err| {
-                                std.debug.print("Frame processing error: {}\n", .{err});
-                                continue;
-                            };
-
-                            // Update tracking flags from FrameResult
-                            saw_any = true;
-                            saw_ack_eliciting = saw_ack_eliciting or result.saw_ack_eliciting;
-                            if (result.saw_handshake_done) saw_hs_done = true;
-                            if (result.saw_close) saw_close = fr.f;
-                        },
-                    }
-
-                    // Handle endpoint-specific operations not in frame_handler
-                    switch (fr.f) {
-                        .ack => |a| {
-                            // Forward Application ACK to recovery with actual ranges
-                            conn.onAckReceivedSpace(.Application, a.largest, a.first_range, a.ranges, a.ecn);
-                            // PTO timer cancellation (endpoint-specific)
-                            if (conn.pto_app_active) {
-                                _ = self.cancelTimer(conn.pto_app_id);
-                                conn.pto_app_active = false;
-                            }
-                            // Allow PMTUD state machine to progress upon probe ACK
-                            conn.pmtudOnAckProgress(self);
-                        },
-                        .path_response => |prv| {
-                            // Path validation completion (endpoint-specific)
-                            if (conn.path_validation_pending and std.mem.eql(u8, &conn.path_challenge_data, &prv)) {
-                                self.onPathValidated(conn);
-                            }
-                        },
-                        else => {},
-                    }
-                }
-                // Test-only debug: record whether we saw any ack-eliciting frames
-                if (self.test_capture_enabled) {
-                    std.debug.print("APP saw_any={s}\n", .{if (saw_any) "y" else "n"});
-                }
-                if (saw_ack_eliciting) {
-                    conn.recordAckElicitingRx(.Application, now_ns_ack);
-                }
-                if (saw_hs_done) {
-                    conn.handshake_done_seen = true;
-                    // Client: drop Handshake keys after HANDSHAKE_DONE
-                    conn.hs_rx_keys = null;
-                    conn.hs_tx_keys = null;
-                }
-                if (saw_close) |_| {
-                    conn.closed = true;
-                    return; // stop processing further
-                }
-                // If an ACK_ECN was deferred due to amplification, emit it now when allowed
-                if (conn.ecn_app_ack_pending and conn.app_tx_keys != null and conn.canSendUnderAmplification()) {
-                    var ack_buf = std.ArrayList(u8){};
-                    defer ack_buf.deinit(self.allocator.*);
-                    const w = ack_buf.writer(self.allocator.*);
-                    const ad = conn.buildAckApp();
-                    const ack_ecn_now = conn.getAckEcn(.Application);
-                    if (self.test_capture_enabled and ack_ecn_now != null) {
-                        std.debug.print("APP pending ACK_ECN flush ce={d} ect0={d} ect1={d}\n", .{ ack_ecn_now.?.ce, ack_ecn_now.?.ect0, ack_ecn_now.?.ect1 });
-                    }
-                    const ack_delay = conn.getAckDelayEncoded(.Application, now_ns_ack);
-                    const ackf = frame.Frame{ .ack = .{ .largest = ad.largest, .ack_delay = ack_delay, .first_range = ad.first_range, .ranges = ad.ranges, .ecn = ack_ecn_now } };
-                    _ = ackf.write(w) catch 0;
-                    const dcid_ack = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..@min(conn.peer_initial_scid.len, 4)] else &[_]u8{};
-                    const pkt = packet.encodeShortProtected(self.allocator.*, dcid_ack, @as(u32, @truncate(conn.pn_app_tx)), 2, ack_buf.items, conn.app_tx_keys.?, conn.tx_key_phase) catch null;
-                    if (pkt) |bytes_out| {
-                        defer self.allocator.free(bytes_out);
-                        _ = self.sendTo(peer, bytes_out) catch {};
-                        conn.onShortHeaderPacketSent(bytes_out.len, false);
-                        conn.ecn_app_ack_pending = false;
-                        // Ensure this ACK_ECN is the next captured packet; stop further processing
-                        return;
-                    }
-                }
-                // Enforce AEAD integrity limit: if connection has been marked closed due to limit, send CONNECTION_CLOSE once.
-                if (conn.closed) {
-                    if (conn.app_tx_keys) |tx_keys| {
-                        var fb = std.ArrayList(u8){};
-                        defer fb.deinit(self.allocator.*);
-                        const w = fb.writer(self.allocator.*);
-                        // AEAD_LIMIT_REACHED = 0x0f per RFC 9000 §20
-                        _ = (frame.Frame{ .connection_close = .{ .error_code = 0x0f, .frame_type = 0, .reason = "AEAD integrity limit reached" } }).write(w) catch 0;
-                        // Amplification gating: only send if validated or within 3x limit
-                        const allow_send = conn.canSendUnderAmplification();
-                        if (allow_send) {
-                            const dcid_ack2 = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else &[_]u8{};
-                            const out = packet.encodeShortProtected(self.allocator.*, dcid_ack2, @as(u32, @truncate(conn.pn_app_tx)), 2, fb.items, tx_keys, conn.tx_key_phase) catch null;
-                            if (out) |pkt_bytes| {
-                                defer self.allocator.free(pkt_bytes);
-                                _ = self.sendTo(peer, pkt_bytes) catch {};
-                                conn.onShortHeaderPacketSent(pkt_bytes.len, true);
-                            }
-                        }
-                    }
-                    return;
-                }
-                if (saw_any or (ecn_bits != null)) {
-                    if (self.test_capture_enabled) {
-                        std.debug.print("APP have_tx_keys={s}\n", .{if (conn.app_tx_keys != null) "y" else "n"});
-                    }
-                    if (conn.app_tx_keys) |tx_keys| {
-                        const allow_send = conn.canSendUnderAmplification();
-                        if (self.test_capture_enabled) {
-                            std.debug.print("APP allow_send={s} rx_unval={d} tx_unval={d} validated={s}\n", .{ if (allow_send) "y" else "n", conn.bytes_rx_unvalidated, conn.bytes_tx_unvalidated, if (conn.address_validated) "y" else "n" });
-                        }
-                        // Precompute ACK_ECN selection once to keep consistent across branches
-                        var ack_ecn_common = conn.getAckEcn(.Application);
-                        if (ack_ecn_common == null) {
-                            if (ecn_bits) |e_cur| {
-                                const bcur: u8 = e_cur & 0x03;
-                                if (bcur != 0) {
-                                    ack_ecn_common = switch (bcur) {
-                                        0x01 => .{ .ect0 = 0, .ect1 = 1, .ce = 0 },
-                                        0x02 => .{ .ect0 = 1, .ect1 = 0, .ce = 0 },
-                                        0x03 => .{ .ect0 = 0, .ect1 = 0, .ce = 1 },
-                                        else => null,
-                                    };
-                                }
-                            }
-                        }
-                        // If we observed ECN (ack_ecn_common != null), ensure we emit an ACK frame now (ACK-only if needed).
-                        // If ECN observed and amplification would block, mark pending to ensure next pass sends an ACK_ECN.
-                        if (ack_ecn_common != null and !allow_send) {
-                            conn.ecn_app_ack_pending = true;
-                        }
-                        if (allow_send) {
-                            // If we have ECN to report, emit an immediate ACK-only ACK_ECN to ensure the test observes it
-                            if (ack_ecn_common != null) {
-                                var ack_only = std.ArrayList(u8){};
-                                defer ack_only.deinit(self.allocator.*);
-                                const wa = ack_only.writer(self.allocator.*);
-                                const ad = conn.buildAckApp();
-                                if (self.test_capture_enabled) {
-                                    std.debug.print("APP immediate ACK_ECN ce={d} ect0={d} ect1={d}\n", .{ ack_ecn_common.?.ce, ack_ecn_common.?.ect0, ack_ecn_common.?.ect1 });
-                                }
-                                const ack_delay = conn.getAckDelayEncoded(.Application, now_ns_ack);
-                                const ackf = frame.Frame{ .ack = .{ .largest = ad.largest, .ack_delay = ack_delay, .first_range = ad.first_range, .ranges = ad.ranges, .ecn = ack_ecn_common } };
-                                _ = ackf.write(wa) catch 0;
-                                const dcid_ack3 = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..@min(conn.peer_initial_scid.len, 4)] else &[_]u8{};
-                                const po = packet.encodeShortProtected(self.allocator.*, dcid_ack3, @as(u32, @truncate(conn.pn_app_tx)), 2, ack_only.items, tx_keys, conn.tx_key_phase) catch null;
-                                if (po) |bytes_out0| {
-                                    defer self.allocator.free(bytes_out0);
-                                    _ = self.sendTo(peer, bytes_out0) catch {};
-                                    conn.onShortHeaderPacketSent(bytes_out0.len, false);
-                                }
-                                // Ensure this ACK_ECN is the next captured packet; stop further processing
-                                return;
-                                // Skip building a second ACK to avoid duplicates
-                            } else {
-                                var frames_buf = std.ArrayList(u8){};
-                                defer frames_buf.deinit(self.allocator.*);
-                                const w = frames_buf.writer(self.allocator.*);
-                                const ack_desc = conn.buildAckApp();
-                                // Debug: log ACK_ECN decision for Application space in tests
-                                if (self.test_capture_enabled) {
-                                    std.debug.print("APP ACK (no ECN) allow_send\n", .{});
-                                }
-                                const ack_delay = conn.getAckDelayEncoded(.Application, now_ns_ack);
-                                const ack = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = ack_delay, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges, .ecn = null } };
-                                _ = ack.write(w) catch 0;
-                                // Pace MAX_* emission: include only when values increased since last sent
-                                if (conn.local_max_stream_data > conn.last_sent_max_stream_data) {
-                                    _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = conn.local_max_stream_data } }).write(w) catch {};
-                                    conn.last_sent_max_stream_data = conn.local_max_stream_data;
-                                }
-                                if (conn.local_max_data > conn.last_sent_max_data) {
-                                    _ = (frame.Frame{ .max_data = .{ .max = conn.local_max_data } }).write(w) catch {};
-                                    conn.last_sent_max_data = conn.local_max_data;
-                                }
-                                // Advertise MAX_STREAMS_BIDI early to allow client-initiated stream 0
-                                if (conn.local_max_streams_bidi > conn.last_sent_max_streams_bidi) {
-                                    _ = (frame.Frame{ .max_streams_bidi = .{ .max = conn.local_max_streams_bidi } }).write(w) catch {};
-                                    conn.last_sent_max_streams_bidi = conn.local_max_streams_bidi;
-                                }
-                                // Append any pending NEW_CONNECTION_ID frames (bounded) to piggyback on ACK
-                                // Check pending_new_cid bitset for any set bits (std.bit_set has no isEmpty helper in this Zig version)
-                                var any_pending = false;
-                                {
-                                    var bi: usize = 0;
-                                    while (bi < conn.local_cids.len) : (bi += 1) {
-                                        if (conn.pending_new_cid.isSet(@intCast(bi))) {
-                                            any_pending = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                                if (any_pending) {
-                                    _ = conn.writePendingNewConnectionIds(w, 2) catch 0; // piggyback up to 2
-                                }
-                                const dcid_ack4 = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else &[_]u8{};
-                                const out = packet.encodeShortProtected(self.allocator.*, dcid_ack4, @as(u32, @truncate(conn.pn_app_tx)), 2, frames_buf.items, tx_keys, conn.tx_key_phase) catch null;
-                                if (out) |pkt_bytes| {
-                                    defer self.allocator.free(pkt_bytes);
-                                    _ = self.sendTo(peer, pkt_bytes) catch {};
-                                    conn.onShortHeaderPacketSent(pkt_bytes.len, false);
-                                }
-                            }
-                        } else {
-                            // RFC 9000 §8.1: a server MAY send a single packet containing only ACK
-                            // in response to each received datagram when under amplification limit.
-                            // Emit a pure ACK (no MAX_*) to report ECN counts promptly.
-                            var ack_only = std.ArrayList(u8){};
-                            defer ack_only.deinit(self.allocator.*);
-                            const w2 = ack_only.writer(self.allocator.*);
-                            const ack_desc2 = conn.buildAckApp();
-                            if (self.test_capture_enabled) {
-                                std.debug.print("APP ack-only branch\n", .{});
-                                if (ack_ecn_common) |e2| {
-                                    std.debug.print("APP ACK_ECN ack-only ce={d} ect0={d} ect1={d}\n", .{ e2.ce, e2.ect0, e2.ect1 });
-                                } else {
-                                    std.debug.print("APP ACK ack-only (no ECN)\n", .{});
-                                }
-                            }
-                            const ack_delay2 = conn.getAckDelayEncoded(.Application, now_ns_ack);
-                            const ack2 = frame.Frame{ .ack = .{ .largest = ack_desc2.largest, .ack_delay = ack_delay2, .first_range = ack_desc2.first_range, .ranges = ack_desc2.ranges, .ecn = ack_ecn_common } };
-                            _ = ack2.write(w2) catch 0;
-                            const dcid_ack5 = if (conn.peer_initial_scid.len > 0) conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len] else &[_]u8{};
-                            const out2 = packet.encodeShortProtected(self.allocator.*, dcid_ack5, @as(u32, @truncate(conn.pn_app_tx)), 2, ack_only.items, tx_keys, conn.tx_key_phase) catch null;
-                            if (out2) |pkt_bytes2| {
-                                defer self.allocator.free(pkt_bytes2);
-                                _ = self.sendTo(peer, pkt_bytes2) catch {};
-                                // ACK-only is not ack-eliciting
-                                conn.onShortHeaderPacketSent(pkt_bytes2.len, false);
-                            }
-                        }
-                    }
-                }
-            }
+            // Delegate to modular processShortHeader() implementation
+            incoming.processShortHeader(&rx_ctx, peer, bytes, ecn_bits, send_fn);
             return;
         }
         // Detect NAT rebinding or migration: if we have a known connection for dcid but peer address changed, update and trigger validation

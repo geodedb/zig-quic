@@ -36,6 +36,9 @@ const frame = @import("frame");
 const frame_handler = @import("frame_handler");
 const handshake_integration = @import("handshake_integration");
 
+// Import connection lookup module (Phase 4b.5 Session 3)
+const lookup = @import("lookup");
+
 // Phase 4b.5: Modular extraction using focused context structs.
 // Functions below use RxContext instead of full Endpoint pointer.
 
@@ -242,6 +245,9 @@ pub const RxContext = struct {
     send_initial_probe_fn: SendInitialProbeFn,
     test_capture_enabled: bool,
     endpoint_role: endpoint_types.EndpointRole,
+    /// Optional opaque endpoint pointer for send_fn context (Phase 4b.5 Session 3)
+    /// When non-null, send_fn can use this to access endpoint state
+    endpoint_ctx: ?*anyopaque = null,
 };
 
 /// Helper: Placeholder for IncomingProcessor when needed
@@ -2128,31 +2134,273 @@ pub fn processShortHeader(
     ecn_bits: ?u8,
     send_fn: SendFn,
 ) void {
-    // STEP 1: Connection lookup
+    // =============================================================================
+    // STEP 1: Connection Lookup (RFC 9000 §5.2)
+    // =============================================================================
     // Find connection by peer address + DCID from packet
-    // Note: Full connection lookup logic remains in endpoint.zig for now
-    // This is a simplified version for demonstration
+    // Two-phase lookup: peer_hash + dcid_hash, then DCID-only for NAT rebinding
 
-    // STEP 2: Decrypt with DCID enumeration and key rotation
-    // For demonstration, we'll assume connection is found externally
-    // and passed in via ctx. Full integration will be done when
-    // endpoint.zig is refactored to use this function.
+    const lookup_result = lookup.findConnectionByDcid(
+        ctx.conns,
+        peer,
+        bytes,
+        null, // No path_changed_fn callback - NAT rebinding handled by caller
+    );
 
-    // STEP 3-6: Frame processing and ACK generation
-    // These are handled by the extracted functions above
+    const conn = lookup_result.conn orelse {
+        // No connection found for this peer + DCID combination
+        if (ctx.test_capture_enabled) {
+            std.debug.print("No connection found for short header packet from peer\n", .{});
+        }
+        return;
+    };
 
-    // This function serves as a template for the final integration
-    // which will happen when endpoint.zig is refactored to use
-    // the extracted incoming.zig functions.
+    const dcid_len = lookup_result.dcid_len;
 
-    _ = ctx;
-    _ = peer;
-    _ = bytes;
-    _ = ecn_bits;
-    _ = send_fn;
+    if (ctx.test_capture_enabled) {
+        std.debug.print("=== RECEIVED 1-RTT PACKET === size={}, dcid_len={}, has_app_rx={}, has_app_tx={}\n", .{
+            bytes.len,
+            dcid_len,
+            conn.app_rx_keys != null,
+            conn.app_tx_keys != null,
+        });
+    }
 
-    // NOTE: Full implementation will be completed in later sessions
-    // when endpoint.zig is refactored to delegate to incoming.zig
+    // =============================================================================
+    // STEP 2: ECN and Anti-Amplification Tracking (RFC 3168, RFC 9000 §8.1)
+    // =============================================================================
+
+    // Process ECN bits if provided (RFC 3168)
+    if (ecn_bits) |e| conn.onEcnMark(.Application, e);
+
+    // Track bytes received from unvalidated address for anti-amplification (RFC 9000 §8.1)
+    conn.addRxUnvalidated(bytes.len);
+
+    // Test-only debug: log short-header match and ECN bits/keys state
+    if (ctx.test_capture_enabled) {
+        const has_rx = (conn.app_rx_keys != null);
+        const has_tx = (conn.app_tx_keys != null);
+        const eb: u8 = if (ecn_bits) |e| (e & 0x03) else 0xff;
+        std.debug.print("APP short: match dcid_len={d} rx_keys={s} tx_keys={s} ecn_bits=0x{x}\n", .{
+            dcid_len,
+            if (has_rx) "y" else "n",
+            if (has_tx) "y" else "n",
+            eb,
+        });
+    }
+
+    // =============================================================================
+    // STEP 3: DCID Length Caching and Key Check (Bug #6 fix)
+    // =============================================================================
+
+    // CRITICAL FIX for Bug #6: Use cached expected_rx_dcid_len if available
+    // Otherwise try systematic enumeration to discover the actual DCID length
+    const try_dcid_len = if (conn.expected_rx_dcid_len) |cached_len|
+        cached_len
+    else
+        dcid_len; // Start with connection-matched length
+
+    if (ctx.test_capture_enabled) {
+        std.debug.print("Will try decryption with dcid_len={} (cached={})\n", .{
+            try_dcid_len,
+            conn.expected_rx_dcid_len != null,
+        });
+    }
+
+    // Check if we have application-level RX keys
+    const rx_keys = conn.app_rx_keys orelse {
+        // No RX keys yet - handshake not complete
+        if (ctx.test_capture_enabled) {
+            std.debug.print("No app_rx_keys available, dropping packet\n", .{});
+        }
+        return;
+    };
+
+    // =============================================================================
+    // STEP 4: Packet Decryption with Key Rotation (RFC 9001 §6)
+    // =============================================================================
+
+    if (ctx.test_capture_enabled) {
+        std.debug.print("\n=== 1-RTT DECRYPT ATTEMPT ===\n", .{});
+        std.debug.print("Packet first 32 bytes: ", .{});
+        for (bytes[0..@min(32, bytes.len)]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\nUsing RX keys: key[0..8]=", .{});
+        for (rx_keys.key[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print(", iv[0..8]=", .{});
+        for (rx_keys.iv[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print(", hp[0..8]=", .{});
+        for (rx_keys.hp[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\n", .{});
+    }
+
+    // Use extracted decryption function with key rotation
+    // Tries CURRENT → NEXT → PREV keys automatically
+    const decrypt_result = decryptShortHeaderWithKeyRotation(
+        ctx.allocator.*,
+        conn,
+        bytes,
+        @intCast(try_dcid_len),
+    ) catch |err| {
+        if (err == error.StatelessReset) {
+            if (ctx.test_capture_enabled) {
+                std.debug.print("stateless-reset: closing connection\n", .{});
+            }
+            conn.closed = true;
+        }
+        return;
+    };
+
+    const dec_res = decrypt_result.decoded;
+    const used_next = decrypt_result.used_next;
+    const used_prev = decrypt_result.used_prev;
+    defer ctx.allocator.free(dec_res.payload);
+
+    if (ctx.test_capture_enabled) {
+        std.debug.print("✅ 1-RTT AEAD SUCCESS - payload_len={}, pn={}\n", .{
+            dec_res.payload.len,
+            dec_res.packet_number,
+        });
+    }
+
+    // =============================================================================
+    // STEP 5: NEXT Key Promotion (RFC 9001 §6.1)
+    // =============================================================================
+
+    // Handle key promotion if NEXT keys were used
+    // RFC 9001 §6.1: "After receiving a packet encrypted with the next keys,
+    // an endpoint MUST update to the next keys."
+    if (used_next) {
+        if (conn.app_rx_secret) |cur_rx_secret| {
+            const next_secret = key_schedule.updateTrafficSecret(cur_rx_secret);
+            const next_keys = if (conn.version_v2)
+                key_schedule.deriveKeyIvHpV2(next_secret)
+            else
+                key_schedule.deriveKeyIvHp(next_secret);
+
+            promoteToNextKeys(conn, next_secret, .{
+                .key = next_keys.key,
+                .iv = next_keys.iv,
+                .hp = next_keys.hp,
+            });
+
+            if (ctx.test_capture_enabled) {
+                std.debug.print("🔑 Promoted to NEXT keys after successful decryption\n", .{});
+            }
+        }
+    }
+
+    // =============================================================================
+    // STEP 6: Packet Number Tracking (RFC 9000 §12.3)
+    // =============================================================================
+
+    // dec_res.packet_number is already expanded by decryptShortHeaderWithKeyRotation
+    const pn_full: u64 = dec_res.packet_number;
+    conn.trackRecvPnApp(pn_full);
+
+    if (ctx.test_capture_enabled) {
+        std.debug.print("Tracked packet number: {}\n", .{pn_full});
+    }
+
+    // =============================================================================
+    // STEP 7: PREV Key Cleanup (RFC 9001 §6.5)
+    // =============================================================================
+
+    // Handle previous key cleanup if they were used
+    // RFC 9001 §6.5: "An endpoint MAY retain old keys for a short period
+    // to allow it to decrypt packets that were delayed."
+    if (used_prev) {
+        decrementPrevKeyAllowance(conn);
+
+        if (ctx.test_capture_enabled) {
+            std.debug.print("🔓 Decremented PREV key allowance\n", .{});
+        }
+    }
+
+    // =============================================================================
+    // STEP 8: Frame Processing Integration (RFC 9000 §12.4)
+    // =============================================================================
+
+    // Parse and process all frames from the decrypted payload
+    const frame_result = processFrames(
+        ctx,
+        conn,
+        peer,
+        dec_res.payload,
+        send_fn,
+    ) catch {
+        if (ctx.test_capture_enabled) {
+            std.debug.print("Frame processing failed\n", .{});
+        }
+        return;
+    };
+
+    if (ctx.test_capture_enabled) {
+        std.debug.print("Frame processing result: saw_ack_eliciting={}, saw_handshake_done={}, saw_close={}\n", .{
+            frame_result.saw_ack_eliciting,
+            frame_result.saw_handshake_done,
+            frame_result.saw_close,
+        });
+    }
+
+    // Handle HANDSHAKE_DONE frame (RFC 9000 §19.20)
+    // Client: drop Handshake keys after HANDSHAKE_DONE
+    if (frame_result.saw_handshake_done) {
+        conn.handshake_done_seen = true;
+        conn.hs_rx_keys = null;
+        conn.hs_tx_keys = null;
+
+        if (ctx.test_capture_enabled) {
+            std.debug.print("🤝 HANDSHAKE_DONE received, dropped Handshake keys\n", .{});
+        }
+    }
+
+    // Handle CONNECTION_CLOSE frame (RFC 9000 §10.2)
+    if (frame_result.saw_close) {
+        conn.closed = true;
+
+        if (ctx.test_capture_enabled) {
+            std.debug.print("❌ CONNECTION_CLOSE received, closing connection\n", .{});
+        }
+        return; // Stop processing further
+    }
+
+    // =============================================================================
+    // STEP 9: ACK Generation (RFC 9000 §13.2)
+    // =============================================================================
+
+    // Record ack-eliciting frame receipt for ACK generation
+    if (frame_result.saw_ack_eliciting) {
+        const now_ns_ack: u64 = @intCast(std.time.nanoTimestamp());
+        conn.recordAckElicitingRx(.Application, now_ns_ack);
+
+        if (ctx.test_capture_enabled) {
+            std.debug.print("📨 Recorded ack-eliciting frame receipt\n", .{});
+        }
+    }
+
+    // If an ACK_ECN was deferred due to amplification, emit it now when allowed
+    // RFC 9000 §8.1: "A server MUST NOT send more than three times as many bytes
+    // as the number of bytes it has received prior to validating the client address."
+    if (conn.ecn_app_ack_pending and conn.app_tx_keys != null and conn.canSendUnderAmplification()) {
+        var ack_ctx = AckContext{
+            .allocator = ctx.allocator,
+            .conn = conn,
+            .peer = peer,
+            .send_fn = send_fn,
+            .cfg = ctx.cfg,
+            .test_capture_enabled = ctx.test_capture_enabled,
+        };
+
+        generateAndSendAck(&ack_ctx, frame_result, ecn_bits) catch {
+            if (ctx.test_capture_enabled) {
+                std.debug.print("Failed to generate/send deferred ACK\n", .{});
+            }
+        };
+
+        if (ctx.test_capture_enabled) {
+            std.debug.print("📤 Sent deferred ACK_ECN\n", .{});
+        }
+    }
 }
 
 /// Module marker for Phase 4b.5 Session 3 completion.
