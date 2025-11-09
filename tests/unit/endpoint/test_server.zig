@@ -471,8 +471,8 @@ test "RFC 9000 §8.1.1 - Retry token generation binds client address" {
     );
     defer test_allocator.free(token);
 
-    // Token should be exactly 32 bytes (8 expiry + 8 hash + 16 HMAC tag)
-    try testing.expectEqual(@as(usize, 32), token.len);
+    // Token format: timestamp(8) + ip_len(1) + ip(4) + dcid_len(1) + dcid(4) + hmac(32) = 50 bytes
+    try testing.expectEqual(@as(usize, 50), token.len);
 
     // Token should be different for different client IPs
     const different_ip = [_]u8{ 10, 0, 0, 1 };

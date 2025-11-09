@@ -1,83 +1,205 @@
-//! Stateless Retry token encode/verify (minimal HMAC-based implementation).
+//! QUIC Address Validation Token Module (RFC 9000 §8.1)
 //!
-//! RFC 9000 §8.1.4 describes Retry tokens as opaque values the server can use
-//! to validate a client's address on a subsequent Initial. This module binds
-//! tokens to the client IP and Original DCID using an HMAC-based construction.
+//! This module implements address validation tokens used for:
+//! - Retry packets (RFC 9000 §8.1.2)
+//! - NEW_TOKEN frames (RFC 9000 §8.1.3)
+//!
+//! Token Format:
+//! - Timestamp (8 bytes, big-endian milliseconds since epoch)
+//! - Client IP address (4 or 16 bytes)
+//! - Connection ID (variable length)
+//! - HMAC-SHA256 (32 bytes) over all previous fields
+
 const std = @import("std");
-const byteorder = @import("byteorder");
 
-const H = std.crypto.hash.sha2.Sha256;
+/// Encode a token for address validation.
+/// Returns allocated buffer containing the token.
+///
+/// RFC 9000 §8.1.2: "To protect against handshake replay, the token SHOULD include information
+/// that allows the server to verify that the token was recently generated."
+///
+/// Parameters:
+/// - allocator: Memory allocator
+/// - client_ip: Client IP address bytes (4 for IPv4, 16 for IPv6)
+/// - dcid: Destination Connection ID
+/// - secret: Secret key for HMAC
+/// - validity_ms: Token validity period in milliseconds
+///
+/// Returns: Allocated token bytes (caller must free)
+pub fn encode(
+    allocator: std.mem.Allocator,
+    client_ip: []const u8,
+    dcid: []const u8,
+    secret: []const u8,
+    validity_ms: u64,
+) ![]u8 {
+    const now_ms = @as(u64, @intCast(std.time.milliTimestamp()));
+    const expiry_ms = now_ms + validity_ms;
 
-/// Stateless Retry token view.
-pub const Token = struct {
-    bytes: []const u8,
-};
+    // Token layout: timestamp(8) + ip_len(1) + ip + dcid_len(1) + dcid + hmac(32)
+    const token_size = 8 + 1 + client_ip.len + 1 + dcid.len + 32;
+    const token = try allocator.alloc(u8, token_size);
+    errdefer allocator.free(token);
 
-fn hash64(input: []const u8) u64 {
-    var wy = std.hash.Wyhash.init(0);
-    wy.update(input);
-    return wy.final();
+    var pos: usize = 0;
+
+    // Write expiry timestamp (8 bytes, big-endian)
+    std.mem.writeInt(u64, token[pos..][0..8], expiry_ms, .big);
+    pos += 8;
+
+    // Write IP length and bytes
+    token[pos] = @intCast(client_ip.len);
+    pos += 1;
+    @memcpy(token[pos .. pos + client_ip.len], client_ip);
+    pos += client_ip.len;
+
+    // Write DCID length and bytes
+    token[pos] = @intCast(dcid.len);
+    pos += 1;
+    @memcpy(token[pos .. pos + dcid.len], dcid);
+    pos += dcid.len;
+
+    // Compute HMAC-SHA256 over timestamp + ip + dcid
+    const data_to_sign = token[0..pos];
+    const Hmac = std.crypto.auth.hmac.sha2.HmacSha256;
+    var hmac_out: [32]u8 = undefined;
+    Hmac.create(&hmac_out, data_to_sign, secret);
+    @memcpy(token[pos .. pos + 32], &hmac_out);
+
+    return token;
 }
 
-inline fn writeLe64(out: *[8]u8, v: u64) void {
-    out.* = std.mem.toBytes(byteorder.toEndian(u64, .little, v));
+/// Verify a token for address validation.
+/// Returns true if the token is valid and not expired.
+///
+/// RFC 9000 §8.1.4: "A server validates a client address using a token by checking
+/// that the token signature is valid and that the token is not expired."
+///
+/// Parameters:
+/// - token: Token bytes to verify
+/// - client_ip: Client IP address bytes (4 for IPv4, 16 for IPv6)
+/// - secret: Secret key for HMAC
+/// - now_ms: Current time in milliseconds since epoch
+///
+/// Returns: true if token is valid, false otherwise
+pub fn verify(
+    token: []const u8,
+    client_ip: []const u8,
+    secret: []const u8,
+    now_ms: u64,
+) bool {
+    // Minimum token size: timestamp(8) + ip_len(1) + ip(>=4) + dcid_len(1) + dcid(>=0) + hmac(32)
+    if (token.len < 8 + 1 + 4 + 1 + 0 + 32) return false;
+
+    var pos: usize = 0;
+
+    // Read expiry timestamp
+    const expiry_ms = std.mem.readInt(u64, token[pos..][0..8], .big);
+    pos += 8;
+
+    // Check expiration
+    if (now_ms > expiry_ms) return false;
+
+    // Read and verify IP address
+    const ip_len = token[pos];
+    pos += 1;
+    if (pos + ip_len > token.len - 1 - 32) return false; // Ensure space for dcid_len + hmac
+    if (ip_len != client_ip.len) return false;
+    if (!std.mem.eql(u8, token[pos .. pos + ip_len], client_ip)) return false;
+    pos += ip_len;
+
+    // Read DCID length
+    const dcid_len = token[pos];
+    pos += 1;
+    if (pos + dcid_len + 32 != token.len) return false; // Exact size check
+    pos += dcid_len; // Skip DCID (we don't validate it, just include in HMAC)
+
+    // Verify HMAC
+    const data_to_sign = token[0 .. pos]; // Everything before HMAC
+    const expected_hmac = token[pos .. pos + 32];
+
+    const Hmac = std.crypto.auth.hmac.sha2.HmacSha256;
+    var computed_hmac: [32]u8 = undefined;
+    Hmac.create(&computed_hmac, data_to_sign, secret);
+
+    // Constant-time comparison
+    return std.crypto.timing_safe.eql([32]u8, computed_hmac, expected_hmac[0..32].*);
 }
 
-inline fn readLe64(in: *const [8]u8) u64 {
-    return byteorder.fromEndian(u64, .little, @as(u64, @bitCast(in.*)));
+// =============================================================================
+// Tests
+// =============================================================================
+
+const testing = std.testing;
+const test_allocator = testing.allocator;
+
+test "encode and verify valid token" {
+    const secret = "test-secret-key-for-tokens";
+    const client_ip = [_]u8{ 192, 168, 1, 100 };
+    const dcid = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
+    const validity_ms = 60000; // 60 seconds
+
+    const token = try encode(test_allocator, &client_ip, &dcid, secret, validity_ms);
+    defer test_allocator.free(token);
+
+    const now_ms = @as(u64, @intCast(std.time.milliTimestamp()));
+    try testing.expect(verify(token, &client_ip, secret, now_ms));
 }
 
-/// Layout: [8 bytes expiry_ms_le] || [8 bytes odcid_hash_le] || [16 bytes tag]
-/// tag = HMAC-SHA256(secret, client_ip || odcid_hash_le || expiry_ms_le)[0..16]
-/// RFC 9000 §8.1.4 recommends binding tokens to the client address and the
-/// Original Destination Connection ID so they cannot be replayed by another
-/// client.
-fn makeTag(secret: []const u8, client_ip: []const u8, odcid_hash_le: *const [8]u8, expiry_le: *const [8]u8, out: *[16]u8) void {
-    var mac = std.crypto.auth.hmac.Hmac(H).init(secret);
-    mac.update(client_ip);
-    mac.update(odcid_hash_le);
-    mac.update(expiry_le);
-    var full: [H.digest_length]u8 = undefined;
-    mac.final(&full);
-    @memcpy(out, full[0..16]);
+test "verify rejects expired token" {
+    const secret = "test-secret-key-for-tokens";
+    const client_ip = [_]u8{ 192, 168, 1, 100 };
+    const dcid = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
+    const validity_ms = 1; // 1 millisecond
+
+    const token = try encode(test_allocator, &client_ip, &dcid, secret, validity_ms);
+    defer test_allocator.free(token);
+
+    // Wait for token to expire
+    std.time.sleep(2 * std.time.ns_per_ms);
+
+    const now_ms = @as(u64, @intCast(std.time.milliTimestamp()));
+    try testing.expect(!verify(token, &client_ip, secret, now_ms));
 }
 
-/// Encode a token bound to the client's IP and the client's Original DCID.
-/// Servers SHOULD enforce a bounded lifetime for tokens (§8.1.4); the caller
-/// supplies the expiration interval in milliseconds.
-pub fn encode(alloc: std.mem.Allocator, client_ip: []const u8, odcid: []const u8, secret: []const u8, expiry_ms_from_now: u64) ![]u8 {
-    // Compute absolute expiry in ms using monotonic now as base.
-    const now_ns: i128 = std.time.nanoTimestamp();
-    const now_ms: u64 = @intCast(if (now_ns > 0) @as(u128, @intCast(now_ns)) / std.time.ns_per_ms else 0);
-    const exp_abs: u64 = now_ms + expiry_ms_from_now;
-    var expiry_le: [8]u8 = undefined;
-    writeLe64(&expiry_le, exp_abs);
-    const h: u64 = hash64(odcid);
-    var hash_le: [8]u8 = undefined;
-    writeLe64(&hash_le, h);
-    var tag: [16]u8 = undefined;
-    makeTag(secret, client_ip, &hash_le, &expiry_le, &tag);
-    var out = try alloc.alloc(u8, 8 + 8 + 16);
-    @memcpy(out[0..8], &expiry_le);
-    @memcpy(out[8..16], &hash_le);
-    @memcpy(out[16..32], &tag);
-    return out;
+test "verify rejects wrong IP address" {
+    const secret = "test-secret-key-for-tokens";
+    const client_ip = [_]u8{ 192, 168, 1, 100 };
+    const wrong_ip = [_]u8{ 192, 168, 1, 101 };
+    const dcid = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
+    const validity_ms = 60000;
+
+    const token = try encode(test_allocator, &client_ip, &dcid, secret, validity_ms);
+    defer test_allocator.free(token);
+
+    const now_ms = @as(u64, @intCast(std.time.milliTimestamp()));
+    try testing.expect(!verify(token, &wrong_ip, secret, now_ms));
 }
 
-/// Verify a token under secret and client address at current time. RFC 9000
-/// §8.1.4 requires rejecting tokens whose integrity cannot be verified or whose
-/// expiry has elapsed.
-pub fn verify(token: []const u8, client_ip: []const u8, secret: []const u8, now_ms: u64) bool {
-    if (token.len != 32) return false;
-    var expiry_le: [8]u8 = undefined;
-    @memcpy(&expiry_le, token[0..8]);
-    const exp_abs = readLe64(&expiry_le);
-    if (now_ms > exp_abs) return false;
-    var hash_le: [8]u8 = undefined;
-    @memcpy(&hash_le, token[8..16]);
-    var want: [16]u8 = undefined;
-    makeTag(secret, client_ip, &hash_le, &expiry_le, &want);
-    var got: [16]u8 = undefined;
-    @memcpy(&got, token[16..32]);
-    return std.mem.eql(u8, &want, &got);
+test "verify rejects wrong secret" {
+    const secret = "test-secret-key-for-tokens";
+    const wrong_secret = "wrong-secret-key-for-tokens";
+    const client_ip = [_]u8{ 192, 168, 1, 100 };
+    const dcid = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
+    const validity_ms = 60000;
+
+    const token = try encode(test_allocator, &client_ip, &dcid, secret, validity_ms);
+    defer test_allocator.free(token);
+
+    const now_ms = @as(u64, @intCast(std.time.milliTimestamp()));
+    try testing.expect(!verify(token, &client_ip, wrong_secret, now_ms));
+}
+
+test "verify rejects truncated token" {
+    const secret = "test-secret-key-for-tokens";
+    const client_ip = [_]u8{ 192, 168, 1, 100 };
+    const dcid = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
+    const validity_ms = 60000;
+
+    const token = try encode(test_allocator, &client_ip, &dcid, secret, validity_ms);
+    defer test_allocator.free(token);
+
+    const now_ms = @as(u64, @intCast(std.time.milliTimestamp()));
+    // Try to verify truncated token
+    try testing.expect(!verify(token[0 .. token.len - 1], &client_ip, secret, now_ms));
 }

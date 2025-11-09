@@ -150,9 +150,11 @@ test "Phase 4b.5 - processVersionNegotiation selects QUIC v2 when offered" {
     // Create RX context
     var rx_ctx = createTestRxContext(&test_allocator, &conns, &accepted, &test_cfg);
     // Build Version Negotiation packet
-    // Format: version(0) | dcid_len | dcid | scid_len | scid | supported_versions[]
+    // RFC 9000 §17.2.1: Header Form (1)=1 | Unused (7) | Version (32)=0 | ...
     var vn_packet = std.ArrayList(u8){};
     defer vn_packet.deinit(test_allocator);
+    // First byte with long header form bit set (0x80)
+    try vn_packet.append(test_allocator, 0x80);
     // Version (0x00000000 indicates VN packet)
     try vn_packet.appendSlice(test_allocator, &[_]u8{ 0x00, 0x00, 0x00, 0x00 });
     // DCID length and value (swap with SCID per RFC 9000 §17.2.1)
@@ -1180,43 +1182,48 @@ fn makeInitialPacket(
     const token_len_size = try varint.encode(token.len, &token_len_buf);
     const token_len_varint = token_len_buf[0..token_len_size];
     const packet_size = header_size + token_len_varint.len + token.len + 100; // +100 for length and payload
-    var pkt = try allocator.alloc(u8, packet_size);
+    var temp_buf = try allocator.alloc(u8, packet_size);
+    defer allocator.free(temp_buf);
     // Long header with Initial type (0xC0)
-    pkt[0] = 0xC0;
+    temp_buf[0] = 0xC0;
     // Version (QUIC v1)
-    pkt[1] = 0x00;
-    pkt[2] = 0x00;
-    pkt[3] = 0x00;
-    pkt[4] = 0x01;
+    temp_buf[1] = 0x00;
+    temp_buf[2] = 0x00;
+    temp_buf[3] = 0x00;
+    temp_buf[4] = 0x01;
     // DCID length and DCID
     var i: usize = 5;
-    pkt[i] = @intCast(dcid.len);
+    temp_buf[i] = @intCast(dcid.len);
     i += 1;
     if (dcid.len > 0) {
-        @memcpy(pkt[i..i + dcid.len], dcid);
+        @memcpy(temp_buf[i..i + dcid.len], dcid);
         i += dcid.len;
     }
     // SCID length and SCID
-    pkt[i] = @intCast(scid.len);
+    temp_buf[i] = @intCast(scid.len);
     i += 1;
     if (scid.len > 0) {
-        @memcpy(pkt[i..i + scid.len], scid);
+        @memcpy(temp_buf[i..i + scid.len], scid);
         i += scid.len;
     }
     // Token length (varint) and token
-    @memcpy(pkt[i..i + token_len_varint.len], token_len_varint);
+    @memcpy(temp_buf[i..i + token_len_varint.len], token_len_varint);
     i += token_len_varint.len;
     if (token.len > 0) {
-        @memcpy(pkt[i..i + token.len], token);
+        @memcpy(temp_buf[i..i + token.len], token);
         i += token.len;
     }
     // Length and payload (minimal)
     var payload_len_buf: [8]u8 = undefined;
     const payload_len_size = try varint.encode(20, &payload_len_buf);
     const payload_len = payload_len_buf[0..payload_len_size];
-    @memcpy(pkt[i..i + payload_len.len], payload_len);
+    @memcpy(temp_buf[i..i + payload_len.len], payload_len);
     i += payload_len.len;
-    return pkt[0..i + 20];
+    // Allocate exact-size buffer and copy data
+    const final_size = i + 20;
+    const pkt = try allocator.alloc(u8, final_size);
+    @memcpy(pkt, temp_buf[0..final_size]);
+    return pkt;
 }
 test "RFC 9000 §7 - processInitial creates new server connection when none exists" {
     // RFC 9000 §7: "A server that receives an Initial packet creates a new connection state."
@@ -1339,6 +1346,8 @@ test "RFC 9000 §7 - processInitial on client endpoint does not create server co
     // No server connection should be created
     try testing.expectEqual(@as(usize, 0), conns.count());
 }
+// FIXME: This test is failing - encodeShortProtected error during packet encoding
+// Likely issue: insufficient Connection initialization for packet encoding
 test "RFC 9000 §8.1.4 - processInitial validates address with valid token" {
     // RFC 9000 §8.1.4: "A server validates a client address by including a token
     // in the Initial packet sent by the client"
@@ -1357,7 +1366,7 @@ test "RFC 9000 §8.1.4 - processInitial validates address with valid token" {
         }
         conns.deinit();
     }
-    // const token_mod = @import("quic_token"); // Module not available
+    const token_mod = @import("token");
     const secret = "test-secret-key-16bytes";
     var config = cfg.QuicConfig{ .alpn = &[_][]const u8{} };
     config.enable_retry = false;
@@ -1381,12 +1390,10 @@ test "RFC 9000 §8.1.4 - processInitial validates address with valid token" {
     const dcid = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
     const scid = [_]u8{ 0x11, 0x12, 0x13, 0x14 };
     // Generate a valid token
-    // FIXME: token_mod not available
-    //     const client_ip = [_]u8{ 192, 168, 1, 100 };
-    //     const valid_token = try token_mod.encode(test_allocator, &client_ip, &dcid, secret, 60000);
-    //     defer test_allocator.free(valid_token);
-    // FIXME: valid_token undefined - const pkt = try makeInitialPacket(test_allocator, &dcid, &scid, valid_token);
-    const pkt = try makeInitialPacket(test_allocator, &dcid, &scid, &[_]u8{});
+    const client_ip = [_]u8{ 192, 168, 1, 100 };
+    const valid_token = try token_mod.encode(test_allocator, &client_ip, &dcid, secret, 60000);
+    defer test_allocator.free(valid_token);
+    const pkt = try makeInitialPacket(test_allocator, &dcid, &scid, valid_token);
     defer test_allocator.free(pkt);
     // Process Initial packet with valid token
     incoming.processInitial(&ctx, peer, pkt, packet.QUIC_V1);
@@ -1701,17 +1708,26 @@ test "RFC 9000 §7 - decryptInitialPacket successfully decrypts valid Initial pa
     test_conn.original_dcid.len = 8;
     // Derive keys
     const keys = incoming.deriveInitialKeys(&test_conn, &odcid, packet.QUIC_V1);
-    // Build an encrypted Initial packet using packet.zig functions
-    // For this test, we'll use a simplified approach:
-    // Since we need a properly encrypted packet, we'll verify the function
-    // handles decryption failure gracefully when given invalid data
-    // Create a minimal "encrypted" packet (will fail decryption, but tests the flow)
-    var fake_encrypted = [_]u8{0xC0} ++ [_]u8{0x00} ** 100; // Long header + padding
+    // Create a properly structured Initial packet that will fail at decryption
+    // RFC 9000 §17.2.2: Initial Packet format
+    const fake_encrypted = [_]u8{
+        0xC0, // Long header, Initial packet
+        0x00, 0x00, 0x00, 0x01, // Version (QUIC v1)
+        0x08, // DCID length
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, // DCID
+        0x08, // SCID length
+        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, // SCID
+        0x00, // Token length = 0 (no token)
+        0x40, 0x20, // Payload length varint = 32 bytes
+    } ++ [_]u8{0xAA} ** 32; // 32 bytes of fake encrypted payload
+    // header_offset points to token length field (after DCID/SCID)
+    // Offset = 1 (header) + 4 (version) + 1 (dcid_len) + 8 (dcid) + 1 (scid_len) + 8 (scid) = 23
+    const header_offset = 23;
     // Attempt decryption (should fail with invalid ciphertext)
     const result = incoming.decryptInitialPacket(
         test_allocator,
         &fake_encrypted,
-        0, // header offset
+        header_offset,
         keys.rx_keys,
         0, // largest_pn
     );
@@ -1728,13 +1744,25 @@ test "RFC 9001 §4 - decryptInitialPacket enumerates packet number length" {
     @memcpy(test_conn.original_dcid.bytes[0..8], &odcid);
     test_conn.original_dcid.len = 8;
     const keys = incoming.deriveInitialKeys(&test_conn, &odcid, packet.QUIC_V1);
-    // Test with various PN lengths (would need proper encrypted packets)
-    // For now, verify error handling when all lengths fail
-    var corrupted_packet = [_]u8{0xC0} ++ [_]u8{0xFF} ** 100;
+    // Create a minimally valid Initial packet structure that will fail at decryption
+    // RFC 9000 §17.2.2: Initial Packet
+    const corrupted_packet = [_]u8{
+        0xC0, // Long header, Initial packet
+        0x00, 0x00, 0x00, 0x01, // Version (QUIC v1)
+        0x08, // DCID length
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, // DCID
+        0x08, // SCID length
+        0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, // SCID
+        0x00, // Token length = 0 (no token)
+        0x40, 0x20, // Payload length varint = 32 bytes
+    } ++ [_]u8{0xFF} ** 32; // 32 bytes of corrupted payload
+    // header_offset points to token length field (after DCID/SCID)
+    // Offset = 1 (header) + 4 (version) + 1 (dcid_len) + 8 (dcid) + 1 (scid_len) + 8 (scid) = 23
+    const header_offset = 23;
     const result = incoming.decryptInitialPacket(
         test_allocator,
         &corrupted_packet,
-        0,
+        header_offset,
         keys.rx_keys,
         0,
     );
