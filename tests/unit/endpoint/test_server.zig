@@ -1287,6 +1287,7 @@ test "RFC 9000 §7 - createServerConnection allocates and initializes connection
     defer {
         var it = conns.valueIterator();
         while (it.next()) |c| {
+            c.*.deinit();
             test_allocator.destroy(c.*);
         }
         conns.deinit();
@@ -1315,6 +1316,7 @@ test "RFC 9000 §6 - createServerConnection sets QUIC version correctly" {
     defer {
         var it = conns.valueIterator();
         while (it.next()) |c| {
+            c.*.deinit();
             test_allocator.destroy(c.*);
         }
         conns.deinit();

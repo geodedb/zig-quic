@@ -55,14 +55,14 @@ pub fn shouldExpandStreamWindow(stream_recv_off: u64, local_max_stream_data: u64
 /// Compute new connection flow control limit with adaptive growth.
 /// RFC 9000 §4.1: Connection Flow Control
 pub fn expandConnectionWindow(current_max: u64, growth_factor_num: u64, growth_factor_denom: u64) u64 {
-    const growth = (current_max * growth_factor_num) / growth_factor_denom;
+    const growth = (current_max *% growth_factor_num) / growth_factor_denom;
     return current_max +% growth;
 }
 
 /// Compute new stream flow control limit with adaptive growth.
 /// RFC 9000 §4.2: Stream Flow Control
 pub fn expandStreamWindow(current_max: u64, growth_factor_num: u64, growth_factor_denom: u64) u64 {
-    const growth = (current_max * growth_factor_num) / growth_factor_denom;
+    const growth = (current_max *% growth_factor_num) / growth_factor_denom;
     return current_max +% growth;
 }
 

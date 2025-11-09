@@ -1723,11 +1723,11 @@ pub const Connection = struct {
         // Adaptive growth: scale per active RX streams to avoid single-stream domination
         const active_streams: u64 = @intCast(self.streams_rx.count());
         const denom: u64 = if (active_streams == 0) 1 else active_streams;
-        const stream_threshold: u64 = (self.local_max_stream_data * 3) / 4; // 75%
+        const stream_threshold: u64 = (self.local_max_stream_data *% 3) / 4; // 75%
         if (s.recv_off >= stream_threshold) {
             self.local_max_stream_data +%= (self.local_max_stream_data / 2);
         }
-        const conn_threshold: u64 = (self.local_max_data * 7) / 10; // 70%
+        const conn_threshold: u64 = (self.local_max_data *% 7) / 10; // 70%
         if (self.conn_recv_total >= conn_threshold) {
             const bump = @max(self.local_max_stream_data, self.local_max_data / (4 * denom));
             self.local_max_data +%= bump;
