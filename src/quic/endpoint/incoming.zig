@@ -780,24 +780,20 @@ pub fn processInitial(
             return; // Client endpoints don't create server connections
         }
 
-        // Create ServerContext
+        // Create server connection using Session 5 API
         const server_mod = @import("server.zig");
-        var server_ctx = server_mod.ServerContext{
-            .allocator = ctx.allocator,
-            .conns = ctx.conns,
-            .cfg = ctx.cfg,
-            .sock_fd = @intCast(0), // Will be set by endpoint
-            .endpoint_ptr = undefined, // Will be set by endpoint
-            .sender_fn = undefined, // Will be set by endpoint
+        const config = server_mod.ServerConnectionConfig{
+            .version = version,
+            .client_dcid = header.dcid,
+            .client_scid = header.scid,
         };
 
         // Create and initialize server connection
         const c_new = server_mod.createServerConnection(
-            &server_ctx,
+            ctx.allocator,
+            0, // sock_fd will be set by endpoint
             peer,
-            version,
-            header.dcid,
-            header.scid,
+            config,
         ) catch return;
 
         break :blk c_new;
