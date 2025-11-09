@@ -60,6 +60,11 @@ fn createTestConnection() !*conn_mod.Connection {
 fn destroyTestConnection(conn: *conn_mod.Connection) void {
     conn.initial_token.deinit(test_allocator);
     conn.reset_tokens.deinit(test_allocator);
+    // Clean up individual streams before deiniting the hashmap
+    var it = conn.streams_rx.iterator();
+    while (it.next()) |entry| {
+        entry.value_ptr.deinit(conn.allocator);
+    }
     conn.streams_rx.deinit();
     conn.incoming_stream_queue.deinit(test_allocator);
     test_allocator.destroy(conn);

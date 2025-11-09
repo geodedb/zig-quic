@@ -303,11 +303,21 @@ pub fn processVersionNegotiation(
     // Select compatible version (prefer v2 over v1 if both offered)
     var chosen: u32 = 0;
     var i_sel: usize = 0;
+    // First check if v2 is available
     while (i_sel < vn.versions.len) : (i_sel += 1) {
-        const v = vn.versions[i_sel];
-        if (v == packet.QUIC_V1 or v == packet.QUIC_V2) {
-            chosen = v;
+        if (vn.versions[i_sel] == packet.QUIC_V2) {
+            chosen = packet.QUIC_V2;
             break;
+        }
+    }
+    // If v2 not found, check for v1
+    if (chosen == 0) {
+        i_sel = 0;
+        while (i_sel < vn.versions.len) : (i_sel += 1) {
+            if (vn.versions[i_sel] == packet.QUIC_V1) {
+                chosen = packet.QUIC_V1;
+                break;
+            }
         }
     }
 

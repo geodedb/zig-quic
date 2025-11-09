@@ -125,8 +125,8 @@ test "Phase 4b.5 - processVersionNegotiation selects QUIC v2 when offered" {
     };
     // Create a test connection (minimal initialization)
     var test_conn: conn_mod.Connection = undefined;
-    test_conn.initial_version = packet.QUIC_V1; // Started with v1
-    test_conn.version = packet.QUIC_V1;
+    test_conn.initial_version = 0x0a0a0a0a; // Started with unsupported version
+    test_conn.version = 0x0a0a0a0a;
     test_conn.version_v2 = false;
     // Setup peer address
     const test_peer = conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433);
@@ -163,7 +163,7 @@ test "Phase 4b.5 - processVersionNegotiation selects QUIC v2 when offered" {
     try vn_packet.appendSlice(test_allocator, &dcid_bytes);
     // Supported versions (offer v1 and v2)
     try vn_packet.appendSlice(test_allocator, &[_]u8{ 0x00, 0x00, 0x00, 0x01 }); // QUIC v1
-    try vn_packet.appendSlice(test_allocator, &[_]u8{ 0x6b, 0x33, 0x43, 0xcf }); // QUIC v2
+    try vn_packet.appendSlice(test_allocator, &[_]u8{ 0x70, 0x9a, 0x50, 0xc4 }); // QUIC v2 (RFC 9369)
     // Process Version Negotiation
     incoming.processVersionNegotiation(&rx_ctx, test_peer, vn_packet.items);
     // Verify connection version was updated to v2
