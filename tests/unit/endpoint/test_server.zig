@@ -1930,3 +1930,213 @@ test "createServerConnection with multiple connections to same peer" {
     // Both should be registered in connection table
     try testing.expect(conns.count() >= 2);
 }
+
+// =============================================================================
+// Phase 4b.5 Session 5: createServerConnection() Tests
+// =============================================================================
+
+test "RFC 9000 §7 - createServerConnection initializes server connection" {
+    const peer = SockAddr.ipv4(192, 168, 1, 100, 5000);
+    const client_dcid = [_]u8{ 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11 };
+    const client_scid = [_]u8{ 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88 };
+
+    const config = server.ServerConnectionConfig{
+        .version = packet.QUIC_V1,
+        .client_dcid = &client_dcid,
+        .client_scid = &client_scid,
+    };
+
+    const c = try server.createServerConnection(&test_allocator, 0, peer, config);
+    defer {
+        c.deinit();
+        test_allocator.destroy(c);
+    }
+
+    // Verify role
+    try testing.expectEqual(conn_mod.ConnectionRole.Server, c.role);
+
+    // Verify version fields
+    try testing.expectEqual(packet.QUIC_V1, c.version);
+    try testing.expectEqual(false, c.version_v2);
+    try testing.expectEqual(packet.QUIC_V1, c.initial_version);
+
+    // Verify server generated SCID (should be 8 bytes)
+    try testing.expectEqual(@as(u8, 8), c.our_scid.len);
+
+    // Verify peer CIDs set from client's Initial packet
+    try testing.expectEqual(@as(u8, 8), c.peer_initial_dcid.len);
+    try testing.expectEqualSlices(u8, &client_dcid, c.peer_initial_dcid.bytes[0..8]);
+
+    try testing.expectEqual(@as(u8, 8), c.original_dcid.len);
+    try testing.expectEqualSlices(u8, &client_dcid, c.original_dcid.bytes[0..8]);
+
+    try testing.expectEqual(@as(u8, 8), c.peer_initial_scid.len);
+    try testing.expectEqualSlices(u8, &client_scid, c.peer_initial_scid.bytes[0..8]);
+}
+
+test "RFC 9000 §7 - createServerConnection handles QUIC v2" {
+    const peer = SockAddr.ipv4(10, 0, 0, 1, 8080);
+    const client_dcid = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
+    const client_scid = [_]u8{ 0x05, 0x06, 0x07, 0x08 };
+
+    const config = server.ServerConnectionConfig{
+        .version = packet.QUIC_V2,
+        .client_dcid = &client_dcid,
+        .client_scid = &client_scid,
+    };
+
+    const c = try server.createServerConnection(&test_allocator, 0, peer, config);
+    defer {
+        c.deinit();
+        test_allocator.destroy(c);
+    }
+
+    // Verify v2 flag set
+    try testing.expectEqual(packet.QUIC_V2, c.version);
+    try testing.expectEqual(true, c.version_v2);
+}
+
+test "RFC 9000 §7 - createServerConnection handles zero-length CIDs" {
+    const peer = SockAddr.ipv4(127, 0, 0, 1, 4433);
+    const empty_cid: []const u8 = &[_]u8{};
+
+    const config = server.ServerConnectionConfig{
+        .version = packet.QUIC_V1,
+        .client_dcid = empty_cid,
+        .client_scid = empty_cid,
+    };
+
+    const c = try server.createServerConnection(&test_allocator, 0, peer, config);
+    defer {
+        c.deinit();
+        test_allocator.destroy(c);
+    }
+
+    // Verify zero-length peer CIDs
+    try testing.expectEqual(@as(u8, 0), c.peer_initial_dcid.len);
+    try testing.expectEqual(@as(u8, 0), c.original_dcid.len);
+    try testing.expectEqual(@as(u8, 0), c.peer_initial_scid.len);
+
+    // Server should still generate its own SCID
+    try testing.expectEqual(@as(u8, 8), c.our_scid.len);
+}
+
+test "RFC 9000 §7 - createServerConnection sets congestion control" {
+    const peer = SockAddr.ipv4(172, 16, 0, 1, 443);
+    const client_dcid = [_]u8{0x01};
+    const client_scid = [_]u8{0x02};
+
+    // Test CUBIC
+    {
+        const config = server.ServerConnectionConfig{
+            .version = packet.QUIC_V1,
+            .client_dcid = &client_dcid,
+            .client_scid = &client_scid,
+            .use_cubic = true,
+        };
+
+        const c = try server.createServerConnection(&test_allocator, 0, peer, config);
+        defer {
+            c.deinit();
+            test_allocator.destroy(c);
+        }
+
+        // Verify CUBIC is enabled (rec.cc.is_cubic should be true)
+        try testing.expect(c.rec.cc.is_cubic);
+    }
+
+    // Test NewReno (default)
+    {
+        const config = server.ServerConnectionConfig{
+            .version = packet.QUIC_V1,
+            .client_dcid = &client_dcid,
+            .client_scid = &client_scid,
+            .use_cubic = false,
+        };
+
+        const c = try server.createServerConnection(&test_allocator, 0, peer, config);
+        defer {
+            c.deinit();
+            test_allocator.destroy(c);
+        }
+
+        // Verify NewReno (is_cubic should be false)
+        try testing.expect(!c.rec.cc.is_cubic);
+    }
+}
+
+test "RFC 9000 §7 - createServerConnection configures pacing and max datagram size" {
+    const peer = SockAddr.ipv4(192, 0, 2, 1, 443);
+    const client_dcid = [_]u8{0xAA};
+    const client_scid = [_]u8{0xBB};
+
+    const config = server.ServerConnectionConfig{
+        .version = packet.QUIC_V1,
+        .client_dcid = &client_dcid,
+        .client_scid = &client_scid,
+        .enable_pacing = true,
+        .max_datagram_size = 1450,
+    };
+
+    const c = try server.createServerConnection(&test_allocator, 0, peer, config);
+    defer {
+        c.deinit();
+        test_allocator.destroy(c);
+    }
+
+    // Verify pacing enabled
+    try testing.expect(c.enable_pacing);
+
+    // Verify max datagram size set in congestion control
+    try testing.expectEqual(@as(u16, 1450), c.rec.cc.mds);
+}
+
+test "RFC 9000 §7 - createServerConnection sets allow_insecure flag" {
+    const peer = SockAddr.ipv4(10, 1, 2, 3, 8443);
+    const client_dcid = [_]u8{0x01};
+    const client_scid = [_]u8{0x02};
+
+    const config = server.ServerConnectionConfig{
+        .version = packet.QUIC_V1,
+        .client_dcid = &client_dcid,
+        .client_scid = &client_scid,
+        .allow_insecure = true,
+    };
+
+    const c = try server.createServerConnection(&test_allocator, 0, peer, config);
+    defer {
+        c.deinit();
+        test_allocator.destroy(c);
+    }
+
+    // Verify allow_insecure set
+    try testing.expect(c.tls.allow_insecure);
+}
+
+test "RFC 9000 §7 - createServerConnection handles maximum length CIDs" {
+    const peer = SockAddr.ipv4(198, 51, 100, 1, 443);
+    const max_dcid = [_]u8{0x01} ** 20; // RFC 9000 max CID length
+    const max_scid = [_]u8{0x02} ** 20;
+
+    const config = server.ServerConnectionConfig{
+        .version = packet.QUIC_V1,
+        .client_dcid = &max_dcid,
+        .client_scid = &max_scid,
+    };
+
+    const c = try server.createServerConnection(&test_allocator, 0, peer, config);
+    defer {
+        c.deinit();
+        test_allocator.destroy(c);
+    }
+
+    // Verify maximum CID lengths
+    try testing.expectEqual(@as(u8, 20), c.peer_initial_dcid.len);
+    try testing.expectEqualSlices(u8, &max_dcid, c.peer_initial_dcid.bytes[0..20]);
+
+    try testing.expectEqual(@as(u8, 20), c.original_dcid.len);
+    try testing.expectEqualSlices(u8, &max_dcid, c.original_dcid.bytes[0..20]);
+
+    try testing.expectEqual(@as(u8, 20), c.peer_initial_scid.len);
+    try testing.expectEqualSlices(u8, &max_scid, c.peer_initial_scid.bytes[0..20]);
+}

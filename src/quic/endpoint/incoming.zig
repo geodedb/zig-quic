@@ -39,6 +39,9 @@ const handshake_integration = @import("handshake_integration");
 // Import connection lookup module (Phase 4b.5 Session 3)
 const lookup = @import("lookup");
 
+// Import varint for varint decoding (Phase 4b.5 Session 5)
+const varint = @import("varint");
+
 // Phase 4b.5: Modular extraction using focused context structs.
 // Functions below use RxContext instead of full Endpoint pointer.
 
@@ -639,8 +642,6 @@ pub fn decryptInitialPacket(
     keys: packet.AeadKeys,
     largest_pn: u64,
 ) !DecryptedInitial {
-    const varint = @import("varint");
-
     // Parse token length varint
     var i = header_offset;
     const tok_dec = try varint.decode(bytes[i..]);
@@ -803,7 +804,6 @@ pub fn processInitial(
     };
 
     // Parse token from packet (offset points to token length varint)
-    const varint = @import("varint");
     var i = header.offset;
     const tok_len_dec = varint.decode(bytes[i..]) catch return;
     i += tok_len_dec.n;
@@ -1327,8 +1327,6 @@ fn decryptHandshakePacket(
     rx_keys: conn_mod.Key,
     largest_pn: u64,
 ) !struct { payload: []u8, packet_number: u64 } {
-    const varint = @import("varint");
-
     // Parse length field
     var i = length_offset;
     const len_dec = varint.decode(bytes[i..]) catch return error.InvalidLength;
@@ -2408,3 +2406,207 @@ pub const session_3_complete = true;
 
 /// Session 3 version for documentation
 pub const session_3_version = "Phase 4b.5 Session 3 - Frame Processing and ACK Generation";
+
+// =============================================================================
+// Phase 4b.5 Session 5: Initial Packet Processing
+// =============================================================================
+
+/// Parsed Initial packet header information.
+/// RFC 9000 §17.2.2: Initial Packet Format
+pub const InitialHeaderInfo = struct {
+    /// Destination Connection ID from packet header
+    dcid: []const u8,
+    /// Source Connection ID from packet header
+    scid: []const u8,
+    /// Token field (for address validation)
+    token: []const u8,
+    /// Packet number offset (protected, not yet decrypted)
+    pn_offset: usize,
+    /// Total length of packet from Length field
+    packet_length: u64,
+    /// Version field (already validated to be v1 or v2)
+    version: u32,
+};
+
+/// Parse complete Initial packet header fields including Token and Length.
+/// RFC 9000 §17.2.2: Initial Packet
+///
+/// This is a more complete version than parseInitialHeader(), which only extracts
+/// DCID and SCID. This function additionally parses Token and Length fields.
+///
+/// Format:
+/// ```
+/// Initial Packet {
+///   Header Form (1) = 1,
+///   Fixed Bit (1) = 1,
+///   Long Packet Type (2) = 0,
+///   Reserved Bits (2),
+///   Packet Number Length (2),
+///   Version (32),
+///   Destination Connection ID Length (8),
+///   Destination Connection ID (0..160),
+///   Source Connection ID Length (8),
+///   Source Connection ID (0..160),
+///   Token Length (i),
+///   Token (..),
+///   Length (i),
+///   Packet Number (8..32),
+///   Packet Payload (8..),
+/// }
+/// ```
+///
+/// Parameters:
+/// - bytes: Raw packet bytes starting from first byte
+/// - version: QUIC version from long header (already validated)
+///
+/// Returns:
+/// - InitialHeaderInfo with parsed fields, or error if malformed
+pub fn parseCompleteInitialHeader(bytes: []const u8, version: u32) !InitialHeaderInfo {
+    // RFC 9000 §17.2.2: Initial packet structure
+    //   byte 0: first byte (already validated as long header type 0)
+    //   bytes 1-4: version (32-bit, already parsed)
+    //   byte 5: DCID length
+    //   bytes 6...: DCID, SCID, Token, Length, PN
+
+    if (bytes.len < 6) return error.PacketTooShort;
+
+    var i: usize = 5; // Start after version field (bytes 0-4)
+
+    // Parse DCID length and value
+    const dcid_len = bytes[i];
+    i += 1;
+    if (i + dcid_len > bytes.len) return error.InvalidDcidLength;
+    const dcid = bytes[i .. i + dcid_len];
+    i += dcid_len;
+
+    // Parse SCID length and value
+    if (i >= bytes.len) return error.PacketTooShort;
+    const scid_len = bytes[i];
+    i += 1;
+    if (i + scid_len > bytes.len) return error.InvalidScidLength;
+    const scid = bytes[i .. i + scid_len];
+    i += scid_len;
+
+    // Parse Token Length (varint) and Token
+    if (i >= bytes.len) return error.PacketTooShort;
+    const token_len_result = varint.decode(bytes[i..]) catch return error.InvalidTokenLength;
+    const token_len = token_len_result.value;
+    i += token_len_result.n;
+
+    if (i + token_len > bytes.len) return error.InvalidTokenLength;
+    const token = bytes[i .. i + token_len];
+    i += token_len;
+
+    // Parse Length field (varint)
+    if (i >= bytes.len) return error.PacketTooShort;
+    const length_result = varint.decode(bytes[i..]) catch return error.InvalidLengthField;
+    const packet_length = length_result.value;
+    i += length_result.n;
+
+    // Packet Number starts at current offset (still protected)
+    const pn_offset = i;
+
+    return InitialHeaderInfo{
+        .dcid = dcid,
+        .scid = scid,
+        .token = token,
+        .pn_offset = pn_offset,
+        .packet_length = packet_length,
+        .version = version,
+    };
+}
+
+/// Module marker for Phase 4b.5 Session 5 Initial packet parsing.
+pub const session_5_initial_header_parsing = true;
+
+/// Documentation skeleton for complete Initial packet processing (Sessions 5-6).
+/// RFC 9000 §17.2.2: Initial Packet Processing
+///
+/// NOTE: This is a documentation-only skeleton. The actual processInitial() function
+/// exists at line 741 and is functional. This skeleton documents the intended modular
+/// structure for Phase 4b.5 Sessions 5-6 extraction work.
+///
+/// Planned processing steps (RFC 9000 §7, §8.1):
+/// 1. Parse Initial packet header (DCID, SCID, Token, Length) - DONE via parseCompleteInitialHeader()
+/// 2. Validate token if present (RFC 9000 §8.1.4) - DONE via token.validateInitialToken()
+/// 3. Decide whether to send Retry for address validation (RFC 9000 §8.1.2) - DONE via token.shouldSendRetry()
+/// 4. Look up or create server connection - DONE via server.createServerConnection()
+/// 5. Derive Initial keys from ODCID (RFC 9001 §5.2) - EXISTS as deriveInitialKeys()
+/// 6. Decrypt Initial packet payload (PN + frames) - EXISTS as decryptInitialPacket()
+/// 7. Process CRYPTO frame with TLS ClientHello - TBD Session 6
+/// 8. Generate TLS ServerHello and Initial response - TBD Session 6
+/// 9. Enqueue connection to accepted queue - DONE via server.pushAccepted()
+///
+/// Parameters (planned):
+/// - allocator: Memory allocator
+/// - bytes: Complete Initial packet bytes
+/// - peer: Client socket address
+/// - version: QUIC version
+///
+/// Returns:
+/// - Success/failure status (specific return type TBD in Sessions 5-6)
+pub fn processInitialSkeleton(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    peer: conn_mod.SockAddr,
+    version: u32,
+) !void {
+    _ = allocator;
+    _ = bytes;
+    _ = peer;
+    _ = version;
+
+    // STEP 1: Parse Initial header (implemented)
+    // const header = try parseCompleteInitialHeader(bytes, version);
+
+    // STEP 2: Token validation (Session 5)
+    // const token_valid = if (header.token.len > 0)
+    //     token.validateInitialToken(header.token, peer, secret)
+    // else
+    //     false;
+
+    // STEP 3: Retry decision (Session 5)
+    // const should_retry = token.shouldSendRetry(
+    //     header.token.len > 0,
+    //     header.token,
+    //     peer,
+    //     secret,
+    //     require_retry_policy
+    // );
+    // if (should_retry) {
+    //     // Generate and send Retry packet
+    //     const retry_token = try token.generateRetryToken(allocator, peer, header.dcid, secret, 120000);
+    //     defer allocator.free(retry_token);
+    //     // Send Retry packet via server.encodeRetryPacket()
+    //     return;
+    // }
+
+    // STEP 4: Connection lookup/creation (Session 5)
+    // const conn = try server.createServerConnection(allocator, sock_fd, peer, .{
+    //     .version = version,
+    //     .client_dcid = header.dcid,
+    //     .client_scid = header.scid,
+    //     ...
+    // });
+
+    // STEP 5: Key derivation (Session 6)
+    // const initial_keys = deriveInitialKeys(conn, header.dcid, version);
+
+    // STEP 6: Decrypt packet (Session 6)
+    // const decrypted = try decryptInitialPacket(allocator, bytes, header.pn_offset, initial_keys, 0);
+
+    // STEP 7: Process CRYPTO frame (Session 6)
+    // Process TLS ClientHello via handshake_integration module
+
+    // STEP 8: Generate response (Session 6)
+    // Generate ServerHello, Handshake packets
+
+    // STEP 9: Enqueue connection (Session 5)
+    // server.pushAccepted(allocator, accepted_queue, conn);
+
+    // NOTE: Full implementation will be completed in Sessions 5-6 extraction work
+    return error.NotImplemented;
+}
+
+/// Module marker for Phase 4b.5 Session 5 processInitial skeleton.
+pub const session_5_process_initial_skeleton = true;

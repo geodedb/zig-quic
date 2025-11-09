@@ -1774,3 +1774,221 @@ test "RFC 9001 §4 - decryptInitialPacket enumerates packet number length" {
     // All PN lengths should fail with corrupted data
     try testing.expectError(error.DecryptionFailed, result);
 }
+
+// =============================================================================
+// Phase 4b.5 Session 5: Complete Initial Packet Header Parsing Tests
+// =============================================================================
+
+test "RFC 9000 §17.2.2 - parseCompleteInitialHeader parses valid Initial packet header" {
+    // Create a valid Initial packet header
+    // RFC 9000 §17.2.2: Initial Packet format
+    const valid_packet = [_]u8{
+        0xC0, // Long header, Initial packet (type 0)
+        0x00, 0x00, 0x00, 0x01, // Version (QUIC v1)
+        0x08, // DCID length
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, // DCID
+        0x08, // SCID length
+        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, // SCID
+        0x00, // Token length = 0 (no token)
+        0x40, 0x20, // Payload length varint = 32 bytes
+    } ++ [_]u8{0xAA} ** 32; // 32 bytes of payload (PN + encrypted)
+
+    const result = try incoming.parseCompleteInitialHeader(&valid_packet, packet.QUIC_V1);
+
+    // Verify DCID
+    try testing.expectEqual(@as(usize, 8), result.dcid.len);
+    try testing.expectEqualSlices(u8, &[_]u8{ 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 }, result.dcid);
+
+    // Verify SCID
+    try testing.expectEqual(@as(usize, 8), result.scid.len);
+    try testing.expectEqualSlices(u8, &[_]u8{ 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18 }, result.scid);
+
+    // Verify Token (should be empty)
+    try testing.expectEqual(@as(usize, 0), result.token.len);
+
+    // Verify Packet Length
+    try testing.expectEqual(@as(u64, 32), result.packet_length);
+
+    // Verify PN offset: 1 (header) + 4 (version) + 1 (dcid_len) + 8 (dcid) + 1 (scid_len) + 8 (scid) + 1 (token_len) + 2 (length varint) = 26
+    try testing.expectEqual(@as(usize, 26), result.pn_offset);
+
+    // Verify version
+    try testing.expectEqual(@as(u32, packet.QUIC_V1), result.version);
+}
+
+test "RFC 9000 §17.2.2 - parseCompleteInitialHeader parses Initial packet with token" {
+    // Create an Initial packet with a 16-byte token
+    const token_data = [_]u8{ 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99 };
+    const packet_with_token = [_]u8{
+        0xC0, // Long header, Initial packet
+        0x00, 0x00, 0x00, 0x01, // Version (QUIC v1)
+        0x08, // DCID length
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, // DCID
+        0x08, // SCID length
+        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, // SCID
+        0x10, // Token length = 16 bytes (varint)
+    } ++ token_data ++ [_]u8{
+        0x40, 0x20, // Payload length varint = 32 bytes
+    } ++ [_]u8{0xBB} ** 32; // 32 bytes of payload
+
+    const result = try incoming.parseCompleteInitialHeader(&packet_with_token, packet.QUIC_V1);
+
+    // Verify Token
+    try testing.expectEqual(@as(usize, 16), result.token.len);
+    try testing.expectEqualSlices(u8, &token_data, result.token);
+
+    // Verify PN offset: 1 + 4 + 1 + 8 + 1 + 8 + 1 (token_len) + 16 (token) + 2 (length) = 42
+    try testing.expectEqual(@as(usize, 42), result.pn_offset);
+}
+
+test "RFC 9000 §17.2.2 - parseCompleteInitialHeader handles zero-length DCID and SCID" {
+    // RFC 9000 §17.2: Connection IDs can be zero-length
+    const packet_zero_cid = [_]u8{
+        0xC0, // Long header, Initial packet
+        0x00, 0x00, 0x00, 0x01, // Version (QUIC v1)
+        0x00, // DCID length = 0
+        0x00, // SCID length = 0
+        0x00, // Token length = 0
+        0x40, 0x10, // Payload length varint = 16 bytes
+    } ++ [_]u8{0xCC} ** 16; // 16 bytes of payload
+
+    const result = try incoming.parseCompleteInitialHeader(&packet_zero_cid, packet.QUIC_V1);
+
+    // Verify zero-length CIDs
+    try testing.expectEqual(@as(usize, 0), result.dcid.len);
+    try testing.expectEqual(@as(usize, 0), result.scid.len);
+    try testing.expectEqual(@as(usize, 0), result.token.len);
+
+    // Verify PN offset: 1 + 4 + 1 + 0 + 1 + 0 + 1 + 2 = 10
+    try testing.expectEqual(@as(usize, 10), result.pn_offset);
+}
+
+test "RFC 9000 §17.2.2 - parseCompleteInitialHeader handles maximum length DCID and SCID" {
+    // RFC 9000 §17.2: Maximum CID length is 20 bytes
+    const max_dcid = [_]u8{0x01} ** 20;
+    const max_scid = [_]u8{0x02} ** 20;
+    const packet_max_cid = [_]u8{
+        0xC0, // Long header, Initial packet
+        0x00, 0x00, 0x00, 0x01, // Version (QUIC v1)
+        0x14, // DCID length = 20
+    } ++ max_dcid ++ [_]u8{
+        0x14, // SCID length = 20
+    } ++ max_scid ++ [_]u8{
+        0x00, // Token length = 0
+        0x40, 0x10, // Payload length varint = 16 bytes
+    } ++ [_]u8{0xDD} ** 16; // 16 bytes of payload
+
+    const result = try incoming.parseCompleteInitialHeader(&packet_max_cid, packet.QUIC_V1);
+
+    // Verify maximum-length CIDs
+    try testing.expectEqual(@as(usize, 20), result.dcid.len);
+    try testing.expectEqualSlices(u8, &max_dcid, result.dcid);
+    try testing.expectEqual(@as(usize, 20), result.scid.len);
+    try testing.expectEqualSlices(u8, &max_scid, result.scid);
+
+    // Verify PN offset: 1 + 4 + 1 + 20 + 1 + 20 + 1 + 2 = 50
+    try testing.expectEqual(@as(usize, 50), result.pn_offset);
+}
+
+test "RFC 9000 §17.2.2 - parseCompleteInitialHeader returns PacketTooShort for truncated packet" {
+    // Packet with only 5 bytes (not enough for version + dcid_len)
+    const truncated = [_]u8{ 0xC0, 0x00, 0x00, 0x00, 0x01 };
+    const result = incoming.parseCompleteInitialHeader(&truncated, packet.QUIC_V1);
+    try testing.expectError(error.PacketTooShort, result);
+}
+
+test "RFC 9000 §17.2.2 - parseCompleteInitialHeader returns InvalidDcidLength for truncated DCID" {
+    // Packet claims 8-byte DCID but only has 4 bytes
+    const bad_dcid = [_]u8{
+        0xC0, // Long header, Initial packet
+        0x00, 0x00, 0x00, 0x01, // Version (QUIC v1)
+        0x08, // DCID length = 8 (but packet ends early)
+        0x01, 0x02, 0x03, 0x04, // Only 4 bytes of DCID
+    };
+    const result = incoming.parseCompleteInitialHeader(&bad_dcid, packet.QUIC_V1);
+    try testing.expectError(error.InvalidDcidLength, result);
+}
+
+test "RFC 9000 §17.2.2 - parseCompleteInitialHeader returns InvalidScidLength for truncated SCID" {
+    // Packet has valid DCID but SCID is truncated
+    const bad_scid = [_]u8{
+        0xC0, // Long header, Initial packet
+        0x00, 0x00, 0x00, 0x01, // Version (QUIC v1)
+        0x04, // DCID length = 4
+        0x01, 0x02, 0x03, 0x04, // DCID
+        0x08, // SCID length = 8 (but packet ends early)
+        0x11, 0x12, 0x13, // Only 3 bytes of SCID
+    };
+    const result = incoming.parseCompleteInitialHeader(&bad_scid, packet.QUIC_V1);
+    try testing.expectError(error.InvalidScidLength, result);
+}
+
+test "RFC 9000 §17.2.2 - parseCompleteInitialHeader returns InvalidTokenLength for truncated token" {
+    // Packet has valid CIDs but token is truncated
+    const bad_token = [_]u8{
+        0xC0, // Long header, Initial packet
+        0x00, 0x00, 0x00, 0x01, // Version (QUIC v1)
+        0x04, // DCID length = 4
+        0x01, 0x02, 0x03, 0x04, // DCID
+        0x04, // SCID length = 4
+        0x11, 0x12, 0x13, 0x14, // SCID
+        0x10, // Token length = 16 (varint, but only 2 bytes follow)
+        0xAA, 0xBB, // Only 2 bytes of token
+    };
+    const result = incoming.parseCompleteInitialHeader(&bad_token, packet.QUIC_V1);
+    try testing.expectError(error.InvalidTokenLength, result);
+}
+
+test "RFC 9000 §17.2.2 - parseCompleteInitialHeader returns InvalidLengthField for missing length field" {
+    // Packet has valid CIDs and token but no length field
+    const no_length = [_]u8{
+        0xC0, // Long header, Initial packet
+        0x00, 0x00, 0x00, 0x01, // Version (QUIC v1)
+        0x04, // DCID length = 4
+        0x01, 0x02, 0x03, 0x04, // DCID
+        0x04, // SCID length = 4
+        0x11, 0x12, 0x13, 0x14, // SCID
+        0x00, // Token length = 0
+        // Missing length field
+    };
+    const result = incoming.parseCompleteInitialHeader(&no_length, packet.QUIC_V1);
+    try testing.expectError(error.PacketTooShort, result);
+}
+
+test "RFC 9000 §17.2.2 - parseCompleteInitialHeader handles multi-byte varint token length" {
+    // Use a 2-byte varint for token length (value 256 = 0x4100)
+    const large_token = [_]u8{0xEE} ** 256;
+    var packet_buf: [1024]u8 = undefined;
+    var i: usize = 0;
+
+    // Build packet header
+    packet_buf[i] = 0xC0; // Long header, Initial packet
+    i += 1;
+    packet_buf[i..][0..4].* = [_]u8{ 0x00, 0x00, 0x00, 0x01 }; // Version
+    i += 4;
+    packet_buf[i] = 0x08; // DCID length
+    i += 1;
+    packet_buf[i..][0..8].* = [_]u8{ 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 }; // DCID
+    i += 8;
+    packet_buf[i] = 0x08; // SCID length
+    i += 1;
+    packet_buf[i..][0..8].* = [_]u8{ 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18 }; // SCID
+    i += 8;
+    packet_buf[i..][0..2].* = [_]u8{ 0x41, 0x00 }; // Token length = 256 (2-byte varint)
+    i += 2;
+    @memcpy(packet_buf[i..][0..256], &large_token); // 256-byte token
+    i += 256;
+    packet_buf[i..][0..2].* = [_]u8{ 0x40, 0x10 }; // Payload length = 16
+    i += 2;
+    @memcpy(packet_buf[i..][0..16], &([_]u8{0xFF} ** 16)); // 16 bytes payload
+    i += 16;
+
+    const result = try incoming.parseCompleteInitialHeader(packet_buf[0..i], packet.QUIC_V1);
+
+    // Verify token length
+    try testing.expectEqual(@as(usize, 256), result.token.len);
+    try testing.expectEqualSlices(u8, &large_token, result.token);
+
+    // Verify PN offset: 1 + 4 + 1 + 8 + 1 + 8 + 2 (token_len varint) + 256 (token) + 2 (length) = 283
+    try testing.expectEqual(@as(usize, 283), result.pn_offset);
+}
