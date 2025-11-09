@@ -55,15 +55,23 @@ pub fn shouldExpandStreamWindow(stream_recv_off: u64, local_max_stream_data: u64
 /// Compute new connection flow control limit with adaptive growth.
 /// RFC 9000 §4.1: Connection Flow Control
 pub fn expandConnectionWindow(current_max: u64, growth_factor_num: u64, growth_factor_denom: u64) u64 {
-    const growth = (current_max *% growth_factor_num) / growth_factor_denom;
-    return current_max +% growth;
+    // Saturating multiplication: if overflow, return maxInt
+    const product, const overflowed = @mulWithOverflow(current_max, growth_factor_num);
+    const growth = if (overflowed != 0) std.math.maxInt(u64) else product / growth_factor_denom;
+    // Saturating addition
+    const sum, const add_overflowed = @addWithOverflow(current_max, growth);
+    return if (add_overflowed != 0) std.math.maxInt(u64) else sum;
 }
 
 /// Compute new stream flow control limit with adaptive growth.
 /// RFC 9000 §4.2: Stream Flow Control
 pub fn expandStreamWindow(current_max: u64, growth_factor_num: u64, growth_factor_denom: u64) u64 {
-    const growth = (current_max *% growth_factor_num) / growth_factor_denom;
-    return current_max +% growth;
+    // Saturating multiplication: if overflow, return maxInt
+    const product, const overflowed = @mulWithOverflow(current_max, growth_factor_num);
+    const growth = if (overflowed != 0) std.math.maxInt(u64) else product / growth_factor_denom;
+    // Saturating addition
+    const sum, const add_overflowed = @addWithOverflow(current_max, growth);
+    return if (add_overflowed != 0) std.math.maxInt(u64) else sum;
 }
 
 /// Check if MAX_DATA frame should be sent (local limit increased since last sent).

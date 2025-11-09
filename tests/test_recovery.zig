@@ -52,11 +52,11 @@ test "recovery_on_ack_updates_cwnd_and_bif" {
 
     const space = rec.PacketNumberSpace.Application;
     try r.onPacketSent(space, 1, 1200, true, 0);
-    try r.onPacketSent(space, 2, 1200, true, 1);
+    try r.onPacketSent(space, 2, 1200, true, 10_000_000);
     const before_cwnd = r.cc.cwnd;
     try std.testing.expectEqual(@as(usize, 2400), r.cc.bytes_in_flight);
 
-    const res = r.onAckReceived(space, &[_]u64{2}, 0, 2);
+    const res = r.onAckReceived(space, &[_]u64{2}, 0, 100_000_000);
     try std.testing.expectEqual(@as(usize, 1200), res.bytes_acked);
     try std.testing.expectEqual(@as(usize, 0), res.bytes_lost);
     try std.testing.expect(r.cc.cwnd > before_cwnd);
@@ -69,11 +69,11 @@ test "packet_threshold_loss_marks_and_halves_cwnd" {
 
     const space = rec.PacketNumberSpace.Application;
     try r.onPacketSent(space, 1, 1200, true, 0);
-    try r.onPacketSent(space, 2, 1200, true, 1);
-    try r.onPacketSent(space, 3, 1200, true, 2);
-    try r.onPacketSent(space, 4, 1200, true, 3);
+    try r.onPacketSent(space, 2, 1200, true, 1_000_000);
+    try r.onPacketSent(space, 3, 1200, true, 2_000_000);
+    try r.onPacketSent(space, 4, 1200, true, 3_000_000);
 
-    const res = r.onAckReceived(space, &[_]u64{4}, 0, 4);
+    const res = r.onAckReceived(space, &[_]u64{4}, 0, 30_000_000);
     // pn=1 becomes lost by packet-threshold (kPacketThreshold=3)
     try std.testing.expectEqual(@as(usize, 1200), res.bytes_lost);
     // cwnd increased by acked (1200) from 12000 to 13200, then halved on loss => 6600

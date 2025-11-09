@@ -670,15 +670,18 @@ test "Recovery persistent congestion detection" {
     rec.cc.cwnd = 100000;
     rec.k_pc_threshold = 3;
 
-    // Send packets over a long period
+    // Send 3 packets over a long period spanning > PC period
     try rec.onPacketSent(.Application, 1, 1200, true, 1_000_000);
     try rec.onPacketSent(.Application, 2, 1200, true, 600_000_000); // 600ms later
+    try rec.onPacketSent(.Application, 100, 1200, true, 800_000_000); // 800ms from start
 
-    // ACK only second packet (first is lost over long period)
-    const acked = [_]u64{2};
-    _ = rec.onAckReceived(.Application, &acked, 0, 700_000_000);
+    // ACK only the last packet (first two are lost over long period)
+    // This triggers packet-threshold loss for packets 1 and 2
+    const acked = [_]u64{100};
+    _ = rec.onAckReceived(.Application, &acked, 0, 850_000_000);
 
     // Persistent congestion should drive cwnd to minimum
+    // Span between lost packets: 600_000_000 - 1_000_000 = 599ms > PC period
     try testing.expect(rec.cc.cwnd == 2 * rec.cc.mds);
 }
 

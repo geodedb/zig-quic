@@ -281,11 +281,11 @@ test "boundary: Window expansion with overflow protection" {
     const growth_factor_num: u64 = 2;
     const growth_factor_denom: u64 = 1;
 
-    // Uses saturating arithmetic (+%)
+    // Uses saturating arithmetic to prevent overflow
     const result = fc.expandConnectionWindow(current_max, growth_factor_num, growth_factor_denom);
 
-    // Result should wrap around due to +%
-    try testing.expect(result < current_max); // Wrapped around
+    // Result should saturate at maxInt, not wrap around
+    try testing.expectEqual(std.math.maxInt(u64), result);
 }
 
 test "boundary: clampToFlowControl with zero windows" {
