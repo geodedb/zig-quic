@@ -128,18 +128,21 @@ Based on PHASE_4_STATUS.md:
 
 ---
 
-### ⏳ Session 4: Frame Handler Extraction (PARTIALLY COMPLETE)
+### ✅ Session 4: Frame Handler Extraction (COMPLETE)
 
 **Extraction Status**:
 - ✅ `frame_handler.zig` created (395 lines)
 - ✅ FrameContext struct defined
 - ✅ Frame processing logic extracted
-- ⚠️ Integration with RX pipeline pending
+- ✅ Integration with endpoint.zig complete
+- ✅ Switch statement (lines 1213-1326) replaced with processFrame() calls
+- ✅ Endpoint-specific operations handled via FrameResult flags
 
 **Test Status**:
 - Test file: test_frame_handler.zig (583 lines)
-- Status: Tests passing for extracted logic
-- Integration tests: Pending RX pipeline extraction
+- Status: ✅ All tests passing
+- Integration: ✅ Fully integrated with endpoint frame processing loop
+- Build: ✅ All builds and tests passing
 
 ---
 
@@ -274,9 +277,9 @@ Based on PHASE_4_STATUS.md:
 - ✅ PHASE_4_STATUS.md up to date
 - ✅ RFC_COMPLIANCE_TEST_PLAN.md accurate
 
-### ⏳ Extraction Work
+### ✅ Extraction Work
 - ⏳ Session 3: NOT STARTED
-- ⏳ Session 4: PARTIALLY COMPLETE (frame_handler.zig created)
+- ✅ Session 4: COMPLETE (frame_handler.zig created and integrated)
 - ⏳ Session 5: NOT STARTED
 - ⏳ Session 6: PARTIALLY COMPLETE (handshake_integration.zig created)
 - ⏳ Session 7: NOT STARTED
@@ -382,20 +385,23 @@ Based on PHASE_4_STATUS.md:
 
 ## Conclusion
 
-### Phase 4b.5 Sessions 2-8 Status: **Session 2 Complete, Sessions 3-8 Pending**
+### Phase 4b.5 Sessions 2-8 Status: **Sessions 2 & 4 Complete, Sessions 3,5-8 Pending**
 
 **Current Achievement**:
 - ✅ Session 2: Interface design COMPLETE
+- ✅ Session 4: Frame handler extraction and integration COMPLETE
 - ✅ Module structure established (12 modules)
 - ✅ Primitives extracted and tested (Phase 4b.1-4b.4)
 - ✅ Test infrastructure comprehensive (9,114 lines)
 - ✅ Build stable, all tests passing
+- ✅ Frame processing modularized (endpoint.zig:1213-1326 extracted)
 
 **Remaining Work**:
-- ⏳ Sessions 3-8: Endpoint integration logic extraction
-- ⏳ 8-12 weeks of focused architectural refactoring
+- ⏳ Session 3: RX Pipeline - Short Header Extraction
+- ⏳ Sessions 5-8: Initial packets, TLS, Transport Params, Handshake
+- ⏳ 6-10 weeks of focused architectural refactoring (reduced from 8-12)
 - ⏳ 38 placeholder tests await conversion
-- ⏳ 3,200+ lines of endpoint logic to extract
+- ⏳ 3,100+ lines of endpoint logic to extract
 
 **Risk Assessment**: **LOW**
 - No regressions detected

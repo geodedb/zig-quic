@@ -25,6 +25,7 @@ const utils = @import("endpoint/utils.zig");
 const pto_mod = @import("endpoint/pto.zig");
 const lookup = @import("endpoint/lookup.zig");
 const incoming = @import("endpoint/incoming.zig");
+const frame_handler = @import("endpoint/frame_handler.zig");
 const ep_types = @import("types");
 
 const posix = std.posix;
@@ -1203,6 +1204,25 @@ pub const Endpoint = struct {
                 var saw_close: ?frame.Frame = null;
                 var saw_ack_eliciting: bool = false;
                 const now_ns_ack: u64 = @intCast(std.time.nanoTimestamp());
+
+                // Dummy send function for frame_handler (frames that need to send are handled specially)
+                const dummySend = struct {
+                    fn send(_: conn_mod.SockAddr, _: []const u8) anyerror!usize {
+                        return 0; // Sending handled separately for .datagram and .path_challenge
+                    }
+                }.send;
+
+                // Create FrameContext for frame processing
+                var frame_ctx = frame_handler.FrameContext{
+                    .conn = conn,
+                    .allocator = self.allocator,
+                    .send_fn = dummySend,
+                    .peer = peer,
+                    .space = .Application,
+                    .cfg = &self.cfg,
+                    .endpoint = null,
+                };
+
                 std.debug.print("Parsing frames from payload, total_len={}\n", .{dec_res.payload.len});
                 while (off2 < dec_res.payload.len) {
                     const fr = frame.decodeOne(dec_res.payload[off2..]) catch |err| {
@@ -1210,41 +1230,14 @@ pub const Endpoint = struct {
                         break;
                     };
                     off2 += fr.n;
+
+                    // Handle frames that need to send packets specially (to access self.sendTo)
                     switch (fr.f) {
-                        .ping => {
-                            saw_any = true;
-                            saw_ack_eliciting = true;
-                        },
-                        .new_connection_id => |ncid| {
-                            // Record stateless reset token for later detection
-                            conn.onNewConnectionId(ncid.sequence, ncid.retire_prior_to, ncid.stateless_reset_token);
-                            saw_any = true;
-                            saw_ack_eliciting = true;
-                        },
-                        .retire_connection_id => |rc| {
-                            conn.*.onRetireConnectionId(rc.sequence);
-                            saw_any = true;
-                            saw_ack_eliciting = true;
-                        },
-                        .stream => |s| {
-                            const off: u64 = s.offset orelse 0;
-                            std.debug.print("\n>>> ENDPOINT RECEIVED STREAM FRAME <<<\n", .{});
-                            if (conn.role == .Server) {
-                                std.debug.print("Server received STREAM frame - id={}, off={}, len={}, fin={}\n", .{ s.stream_id, off, s.data.len, s.fin });
-                            } else {
-                                std.debug.print("CLIENT received STREAM frame - id={}, off={}, len={}, fin={}\n", .{ s.stream_id, off, s.data.len, s.fin });
-                            }
-                            std.debug.print("Calling conn.pushStreamFrame()...\n", .{});
-                            conn.pushStreamFrame(s.stream_id, off, s.data, s.fin) catch |err| {
-                                std.debug.print("ERROR: pushStreamFrame failed: {}\n", .{err});
-                            };
-                            std.debug.print("pushStreamFrame returned successfully\n", .{});
-                            saw_any = true;
-                            saw_ack_eliciting = true;
-                        },
                         .datagram => |d| {
+                            // Process datagram (pushes to receive queue)
                             conn.pushDatagram(d.data) catch {};
                             saw_any = true;
+                            // Optional DATAGRAM echo response
                             if (self.cfg.enable_datagram) {
                                 if (conn.app_tx_keys) |txk| {
                                     var fb = std.ArrayList(u8){};
@@ -1261,44 +1254,8 @@ pub const Endpoint = struct {
                                 }
                             }
                         },
-                        .ack => |a| {
-                            // Forward Application ACK to recovery with actual ranges
-                            conn.onAckReceivedSpace(.Application, a.largest, a.first_range, a.ranges, a.ecn);
-                            conn.pto_app_count = 0;
-                            if (conn.pto_app_active) {
-                                _ = self.cancelTimer(conn.pto_app_id);
-                                conn.pto_app_active = false;
-                            }
-                            // Allow PMTUD state machine to progress upon probe ACK
-                            conn.pmtudOnAckProgress(self);
-                        },
-                        .handshake_done => {
-                            saw_hs_done = true;
-                            saw_ack_eliciting = true; // HANDSHAKE_DONE is ack-eliciting
-                        },
-                        .connection_close => {
-                            saw_close = fr.f;
-                        },
-                        .max_stream_data => |m| {
-                            if (m.stream_id == 0) {
-                                conn.peer_max_stream_data = m.max;
-                            }
-                            saw_ack_eliciting = true;
-                        },
-                        .max_data => |md| {
-                            conn.peer_max_data = md.max;
-                            saw_ack_eliciting = true;
-                        },
-                        .max_streams_bidi => |msb| {
-                            conn.peer_max_streams_bidi = msb.max;
-                            saw_ack_eliciting = true;
-                        },
-                        .max_streams_uni => |msu| {
-                            conn.peer_max_streams_uni = msu.max;
-                            saw_ack_eliciting = true;
-                        },
-                        .stream_data_blocked => |_| {},
                         .path_challenge => |pcv| {
+                            // Send PATH_RESPONSE
                             if (conn.app_tx_keys) |txk| {
                                 var fb = std.ArrayList(u8){};
                                 defer fb.deinit(self.allocator.*);
@@ -1312,15 +1269,41 @@ pub const Endpoint = struct {
                                     conn.onShortHeaderPacketSent(pkt_bytes.len, true);
                                 }
                             }
+                            saw_ack_eliciting = true;
+                        },
+                        else => {
+                            // Process all other frames using frame_handler module
+                            const result = frame_handler.processFrame(&frame_ctx, fr.f) catch |err| {
+                                std.debug.print("Frame processing error: {}\n", .{err});
+                                continue;
+                            };
+
+                            // Update tracking flags from FrameResult
+                            saw_any = true;
+                            saw_ack_eliciting = saw_ack_eliciting or result.saw_ack_eliciting;
+                            if (result.saw_handshake_done) saw_hs_done = true;
+                            if (result.saw_close) saw_close = fr.f;
+                        },
+                    }
+
+                    // Handle endpoint-specific operations not in frame_handler
+                    switch (fr.f) {
+                        .ack => |a| {
+                            // Forward Application ACK to recovery with actual ranges
+                            conn.onAckReceivedSpace(.Application, a.largest, a.first_range, a.ranges, a.ecn);
+                            // PTO timer cancellation (endpoint-specific)
+                            if (conn.pto_app_active) {
+                                _ = self.cancelTimer(conn.pto_app_id);
+                                conn.pto_app_active = false;
+                            }
+                            // Allow PMTUD state machine to progress upon probe ACK
+                            conn.pmtudOnAckProgress(self);
                         },
                         .path_response => |prv| {
+                            // Path validation completion (endpoint-specific)
                             if (conn.path_validation_pending and std.mem.eql(u8, &conn.path_challenge_data, &prv)) {
                                 self.onPathValidated(conn);
                             }
-                        },
-                        .new_token => |nt| {
-                            conn.initial_token.clearRetainingCapacity();
-                            _ = conn.initial_token.appendSlice(self.allocator.*, nt.token) catch {};
                         },
                         else => {},
                     }

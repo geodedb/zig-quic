@@ -93,18 +93,23 @@ Total: **11 modules**, **4,223 lines** across modular structure
 - Placeholder tests documented in test_incoming.zig (74 tests)
 - Not yet converted to real implementations
 
-### ⏳ Session 4: Frame Handler Extraction (PARTIALLY COMPLETE)
+### ✅ Session 4: Frame Handler Extraction (COMPLETE)
 
 **Planned Tasks**:
 1. Create Frame Handler Module (3-4 hours)
    - ✅ `frame_handler.zig` exists (395 lines)
    - ✅ Contains frame processing logic
 2. Define FrameContext (1 hour)
-   - ⚠️ Context struct may need integration with RX pipeline
+   - ✅ Context struct defined and functional
 3. Implement processFrame() dispatcher (2 hours)
-   - ⚠️ Needs verification against extraction plan
+   - ✅ Integrated with endpoint.zig frame processing loop
+4. Integration with endpoint.zig (completed)
+   - ✅ frame_handler imported in endpoint.zig
+   - ✅ Switch statement replaced with processFrame() calls
+   - ✅ Endpoint-specific operations handled via FrameResult
+   - ✅ All tests passing
 
-**Status**: Module exists but integration with RX pipeline pending
+**Status**: ✅ COMPLETE - Frame handler fully integrated with endpoint
 
 ### ⏳ Session 5: Initial Packet Extraction Part 1 (NOT STARTED)
 
@@ -368,19 +373,22 @@ $ make clean && make
 
 ## Conclusion
 
-### Phase 4b.5 Sessions 2-8 Status: **NOT STARTED**
+### Phase 4b.5 Sessions 2-8 Status: **Session 2 & 4 COMPLETE**
 
 **What's Complete**:
 - ✅ Session 2: Interface design and planning (COMPLETE)
-- ✅ Module structure created (11 modules)
+- ✅ Session 4: Frame handler extraction and integration (COMPLETE)
+- ✅ Module structure created (12 modules)
 - ✅ Primitives extracted and tested (4b.1-4b.4)
+- ✅ frame_handler.zig integrated with endpoint.zig
 - ✅ Documentation comprehensive
 
 **What Remains**:
-- ⏳ Sessions 3-8: Endpoint integration logic extraction
-- ⏳ Estimated: 8-12 weeks of focused work
+- ⏳ Session 3: RX Pipeline - Short Header Extraction
+- ⏳ Session 5-8: Initial packets, TLS, Transport Params, Handshake
+- ⏳ Estimated: 6-10 weeks of focused work (reduced from 8-12)
 - ⏳ 38 placeholder tests await conversion
-- ⏳ 3,200+ lines of endpoint logic to extract
+- ⏳ 3,100+ lines of endpoint logic to extract
 
 **Current Build Status**: ✅ **ALL TESTS PASSING**
 - No regressions from recent fixes
