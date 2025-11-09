@@ -54,8 +54,8 @@ test "RFC 9000 §3 - StreamRx starts with empty buffers" {
     rx.inbox = std.ArrayList(u8){};
     rx.bufs = std.ArrayList(stream.Segment){};
     defer {
-        rx.inbox.deinit(&test_allocator);
-        rx.bufs.deinit(&test_allocator);
+        rx.inbox.deinit(test_allocator);
+        rx.bufs.deinit(test_allocator);
     }
 
     try testing.expectEqual(@as(usize, 0), rx.inbox.items.len);

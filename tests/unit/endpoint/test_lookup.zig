@@ -17,7 +17,7 @@ const testing = std.testing;
 const lookup = @import("lookup");
 const types = @import("types");
 const conn = @import("quic_conn");
-const packet = @import("packet");
+const packet = @import("quic_packet");
 
 var test_allocator = std.testing.allocator;
 

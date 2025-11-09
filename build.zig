@@ -690,6 +690,7 @@ pub fn build(b: *std.Build) void {
         test_endpoint_lookup.root_module.addImport("types", endpoint_types_mod);
         test_endpoint_lookup.root_module.addImport("quic_conn", quic_conn_mod);
         test_endpoint_lookup.root_module.addImport("endpoint/types", endpoint_types_mod);
+        test_endpoint_lookup.root_module.addImport("quic_packet", quic_packet_legacy_mod);
         const run_test_endpoint_lookup = b.addRunArtifact(test_endpoint_lookup);
         test_step.dependOn(&run_test_endpoint_lookup.step);
 

@@ -324,7 +324,7 @@ pub fn processVersionNegotiation(
 /// DCID length enumeration result
 pub const DcidLengthResult = struct {
     /// Successfully decoded packet, or null if all lengths failed
-    decoded: ?packet.DecodedShortProtected,
+    decoded: ?packet.DecodedShort,
     /// DCID length that succeeded, or 0 if all failed
     dcid_len: u8,
     /// Whether connection appears to be stateless reset
@@ -358,7 +358,7 @@ pub fn enumerateDcidLength(
     allocator: std.mem.Allocator,
     packet_bytes: []const u8,
     initial_dcid_len: usize,
-    app_rx_keys: struct { key: []const u8, iv: []const u8, hp: []const u8 },
+    app_rx_keys: packet.AeadKeys,
     largest_pn: u64,
     conn: ?*conn_mod.Connection,
 ) DcidLengthResult {
@@ -574,8 +574,8 @@ pub fn deriveInitialKeys(
     const keys = packet.initialAeadKeys(is_v2, conn.role == .Server, derive_dcid);
 
     return InitialKeys{
-        .rx_keys = keys.rx,
-        .tx_keys = keys.tx,
+        .rx_keys = packet.AeadKeys{ .key = keys.rx.key, .iv = keys.rx.iv, .hp = keys.rx.hp },
+        .tx_keys = packet.AeadKeys{ .key = keys.tx.key, .iv = keys.tx.iv, .hp = keys.tx.hp },
     };
 }
 
@@ -687,7 +687,7 @@ pub fn decryptInitialPacket(
         // Success! Return decrypted packet
         return DecryptedInitial{
             .payload = payload,
-            .packet_number = result.pn,
+            .packet_number = result,
             .pn_len = pn_len_try,
         };
     }
@@ -949,7 +949,7 @@ pub fn processInitial(
                 .conn = conn,
                 .peer = peer,
                 .allocator = ctx.allocator,
-                .send_fn = send_fn,
+                .send_fn = ctx.send_fn,
             };
             handshake_integration.sendServerHello(&hs_ctx) catch |err| {
                 std.debug.print("processInitial: Failed to send ServerHello: {}\n", .{err});
@@ -986,7 +986,7 @@ pub fn processInitial(
 
                 if (pkt) |bytes_out| {
                     defer ctx.allocator.free(bytes_out);
-                    _ = send_fn(peer, bytes_out) catch {};
+                    _ = ctx.send_fn(peer, bytes_out) catch {};
                     conn.onPacketSent(.Initial, conn.pn_initial_tx, bytes_out.len, false);
                     conn.pn_initial_tx +%= 1;
                 }

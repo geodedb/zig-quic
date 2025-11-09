@@ -1259,7 +1259,7 @@ test "Phase 3 - RFC 9000 §17.2.5: Retry packet format" {
 // =============================================================================
 
 // Test helper: Mock sender function for ServerContext
-fn mockSender(_: *anyopaque, _: *conn.Connection, _: []const u8) anyerror!usize {
+fn mockSender(_: *anyopaque, _: *quic_conn.Connection, _: []const u8) anyerror!usize {
     return 0;
 }
 
