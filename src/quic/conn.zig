@@ -383,7 +383,7 @@ pub const StreamRx = struct {
     fn init() StreamRx {
         return .{ .recv_off = 0, .inbox = std.ArrayList(u8){}, .bufs = std.ArrayList(Segment){}, .fin_off = null };
     }
-    fn deinit(self: *StreamRx, alloc: *std.mem.Allocator) void {
+    pub fn deinit(self: *StreamRx, alloc: *std.mem.Allocator) void {
         for (self.bufs.items) |seg| alloc.free(seg.data);
         self.bufs.deinit(alloc.*);
         self.inbox.deinit(alloc.*);
