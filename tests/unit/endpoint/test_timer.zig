@@ -206,7 +206,7 @@ test "RFC 9002 §6.2 - flush returns empty list for no expired timers" {
     _ = try tm.schedule(1000000, .PtoInitial, null);
 
     var expired = try tm.flush(test_allocator);
-    defer expired.deinit();
+    defer expired.deinit(test_allocator);
 
     try testing.expectEqual(@as(usize, 0), expired.items.len);
     try testing.expectEqual(@as(usize, 1), tm.timers.items.len);
@@ -223,7 +223,7 @@ test "RFC 9002 §6.2 - flush removes expired timers" {
     std.Thread.sleep(1 * std.time.ns_per_ms);
 
     var expired = try tm.flush(test_allocator);
-    defer expired.deinit();
+    defer expired.deinit(test_allocator);
 
     // At least one timer should have expired
     try testing.expect(expired.items.len > 0);
@@ -234,7 +234,7 @@ test "RFC 9002 §6.2 - flush on empty queue returns empty list" {
     defer tm.deinit();
 
     var expired = try tm.flush(test_allocator);
-    defer expired.deinit();
+    defer expired.deinit(test_allocator);
 
     try testing.expectEqual(@as(usize, 0), expired.items.len);
 }

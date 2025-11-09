@@ -57,7 +57,7 @@ const MockState = struct {
     }
 
     fn deinit(self: *MockState) void {
-        self.send_data.deinit();
+        self.send_data.deinit(test_allocator);
     }
 
     fn reset(self: *MockState) void {
@@ -167,7 +167,7 @@ test "Phase 4b.5 - processVersionNegotiation selects QUIC v2 when offered" {
 
     // Setup mock state
     var mock_state = MockState.init(test_allocator);
-    defer mock_state.deinit();
+    defer mock_state.deinit(test_allocator);
     global_mock_state = &mock_state;
     defer global_mock_state = null;
 
@@ -176,7 +176,7 @@ test "Phase 4b.5 - processVersionNegotiation selects QUIC v2 when offered" {
 
     // Build Version Negotiation packet
     // Format: version(0) | dcid_len | dcid | scid_len | scid | supported_versions[]
-    var vn_packet = std.ArrayList(u8).init();
+    var vn_packet = std.ArrayList(u8){};
     defer vn_packet.deinit(test_allocator);
 
     // Version (0x00000000 indicates VN packet)
@@ -236,14 +236,14 @@ test "Phase 4b.5 - processVersionNegotiation ignores when compatible_vn disabled
     try conns.put(key, &test_conn);
 
     var mock_state = MockState.init(test_allocator);
-    defer mock_state.deinit();
+    defer mock_state.deinit(test_allocator);
     global_mock_state = &mock_state;
     defer global_mock_state = null;
 
     var rx_ctx = createTestRxContext(test_allocator, &conns, &accepted, &test_cfg);
 
     // Build minimal VN packet
-    var vn_packet = std.ArrayList(u8).init();
+    var vn_packet = std.ArrayList(u8){};
     defer vn_packet.deinit(test_allocator);
     try vn_packet.appendSlice(&[_]u8{ 0x00, 0x00, 0x00, 0x00 }); // version=0
     try vn_packet.append(8);
@@ -262,7 +262,7 @@ test "Phase 4b.5 - processVersionNegotiation ignores when compatible_vn disabled
 test "Phase 4b.5 - processVersionNegotiation handles unknown connection gracefully" {
     // Setup
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
-    defer conns.deinit();
+    defer conns.deinit(test_allocator);
 
     var accepted = std.ArrayList(*conn_mod.Connection){};
     defer accepted.deinit(test_allocator);
@@ -274,7 +274,7 @@ test "Phase 4b.5 - processVersionNegotiation handles unknown connection graceful
     };
 
     var mock_state = MockState.init(test_allocator);
-    defer mock_state.deinit();
+    defer mock_state.deinit(test_allocator);
     global_mock_state = &mock_state;
     defer global_mock_state = null;
 
@@ -283,13 +283,13 @@ test "Phase 4b.5 - processVersionNegotiation handles unknown connection graceful
     const test_peer = conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433);
 
     // Build VN packet with unknown CID
-    var vn_packet = std.ArrayList(u8).init();
+    var vn_packet = std.ArrayList(u8){};
     defer vn_packet.deinit(test_allocator);
-    try vn_packet.appendSlice(&[_]u8{ 0x00, 0x00, 0x00, 0x00 });
-    try vn_packet.append(8);
-    try vn_packet.appendSlice(&[_]u8{ 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF }); // Unknown CID
-    try vn_packet.append(0);
-    try vn_packet.appendSlice(&[_]u8{ 0x00, 0x00, 0x00, 0x01 });
+    try vn_packet.appendSlice(test_allocator, &[_]u8{ 0x00, 0x00, 0x00, 0x00 });
+    try vn_packet.append(test_allocator, 8);
+    try vn_packet.appendSlice(test_allocator, &[_]u8{ 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF }); // Unknown CID
+    try vn_packet.append(test_allocator, 0);
+    try vn_packet.appendSlice(test_allocator, &[_]u8{ 0x00, 0x00, 0x00, 0x01 });
 
     // Process VN - should return early without crashing
     incoming.processVersionNegotiation(&rx_ctx, test_peer, vn_packet.items);
@@ -576,7 +576,7 @@ test "Phase 4b.5 Session 3 - enumerateDcidLength detects stateless reset" {
     @memcpy(&test_conn.peer_stateless_reset_token, &reset_token);
 
     // Create packet that looks like stateless reset (contains token)
-    var fake_packet = std.ArrayList(u8).init();
+    var fake_packet = std.ArrayList(u8){};
     defer fake_packet.deinit(test_allocator);
 
     // Short header bit + random bytes
@@ -1616,7 +1616,7 @@ test "RFC 9000 §7 - processInitial creates new server connection when none exis
         while (it.next()) |c| {
             test_allocator.destroy(c.*);
         }
-        conns.deinit();
+        conns.deinit(test_allocator);
     }
 
     var config = cfg.QuicConfig{ .alpn = &[_][]const u8{} };
@@ -1654,7 +1654,7 @@ test "RFC 9000 §7 - processInitial reuses existing server connection" {
         while (it.next()) |c| {
             test_allocator.destroy(c.*);
         }
-        conns.deinit();
+        conns.deinit(test_allocator);
     }
 
     var config = cfg.QuicConfig{ .alpn = &[_][]const u8{} };
@@ -1691,7 +1691,7 @@ test "RFC 9000 §7 - processInitial reuses existing server connection" {
 test "RFC 9000 §7 - processInitial on client endpoint does not create server connection" {
     // Client endpoints should not create server connections
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
-    defer conns.deinit();
+    defer conns.deinit(test_allocator);
 
     var config = cfg.QuicConfig{ .alpn = &[_][]const u8{} };
     var alloc = test_allocator;
@@ -1728,7 +1728,7 @@ test "RFC 9000 §8.1.4 - processInitial validates address with valid token" {
         while (it.next()) |c| {
             test_allocator.destroy(c.*);
         }
-        conns.deinit();
+        conns.deinit(test_allocator);
     }
 
     const token_mod = @import("quic_token");
@@ -1781,7 +1781,7 @@ test "RFC 9000 §8.1 - processInitial with no token leaves address unvalidated" 
         while (it.next()) |c| {
             test_allocator.destroy(c.*);
         }
-        conns.deinit();
+        conns.deinit(test_allocator);
     }
 
     var config = cfg.QuicConfig{ .alpn = &[_][]const u8{} };
@@ -1828,7 +1828,7 @@ test "RFC 9000 §8.1.1 - processInitial sends Retry when address not validated a
         while (it.next()) |c| {
             test_allocator.destroy(c.*);
         }
-        conns.deinit();
+        conns.deinit(test_allocator);
     }
 
     var config = cfg.QuicConfig{ .alpn = &[_][]const u8{} };
@@ -1868,7 +1868,7 @@ test "RFC 9000 §8.1.1 - processInitial does not send Retry when Retry disabled"
         while (it.next()) |c| {
             test_allocator.destroy(c.*);
         }
-        conns.deinit();
+        conns.deinit(test_allocator);
     }
 
     var config = cfg.QuicConfig{ .alpn = &[_][]const u8{} };
@@ -1907,7 +1907,7 @@ test "RFC 9000 §8.1.1 - processInitial does not send Retry when Retry disabled"
 test "processInitial handles invalid packet gracefully" {
     // Invalid packet (too short) should return without creating connection
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
-    defer conns.deinit();
+    defer conns.deinit(test_allocator);
 
     var config = cfg.QuicConfig{ .alpn = &[_][]const u8{} };
     var alloc = test_allocator;
@@ -1938,7 +1938,7 @@ test "processInitial handles zero-length DCID and SCID" {
         while (it.next()) |c| {
             test_allocator.destroy(c.*);
         }
-        conns.deinit();
+        conns.deinit(test_allocator);
     }
 
     var config = cfg.QuicConfig{ .alpn = &[_][]const u8{} };

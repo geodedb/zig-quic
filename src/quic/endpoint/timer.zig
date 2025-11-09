@@ -15,7 +15,7 @@ pub const TimerManager = struct {
 
     pub fn init(allocator: std.mem.Allocator) TimerManager {
         return .{
-            .timers = std.ArrayList(types.Timer).init(),
+            .timers = std.ArrayList(types.Timer){},
             .allocator = allocator,
         };
     }
@@ -73,7 +73,7 @@ pub const TimerManager = struct {
     /// Flush expired timers and return them.
     pub fn flush(self: *TimerManager, allocator: std.mem.Allocator) !std.ArrayList(types.Timer) {
         const now = nowMsMonotonic();
-        var expired = std.ArrayList(types.Timer).init();
+        var expired = std.ArrayList(types.Timer){};
 
         while (self.timers.items.len > 0 and self.timers.items[0].deadline_ms <= now) {
             try expired.append(allocator, self.timers.items[0]);
