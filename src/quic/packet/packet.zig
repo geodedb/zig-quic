@@ -15,11 +15,11 @@ pub const header = @import("header.zig");
 // Import legacy packet.zig for current implementations
 const legacy = @import("../packet.zig");
 
-// Re-export types from types module
+// Re-export types from types module and legacy implementations
 pub const PacketNumber = types.PacketNumber;
 pub const LongHeaderType = types.LongHeaderType;
-pub const DecodedShort = types.DecodedShort;
-pub const DecodedInitial = types.DecodedInitial;
+pub const DecodedShort = legacy.DecodedShort;  // Use legacy type to match decodeShortProtected return
+pub const DecodedInitial = legacy.DecodedInitial;  // Use legacy type to match decodeInitialProtected return
 pub const DecodedVN = types.DecodedVN;
 pub const QUIC_V1 = types.QUIC_V1;
 pub const QUIC_V2 = types.QUIC_V2;

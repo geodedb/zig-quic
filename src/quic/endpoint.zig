@@ -23,6 +23,9 @@ const logger = @import("quic_logger");
 const byteorder = @import("byteorder");
 const utils = @import("endpoint/utils.zig");
 const pto_mod = @import("endpoint/pto.zig");
+const lookup = @import("endpoint/lookup.zig");
+const incoming = @import("endpoint/incoming.zig");
+const ep_types = @import("types");
 
 const posix = std.posix;
 const builtin = @import("builtin");
@@ -74,7 +77,7 @@ pub const TimerKind = enum { Generic, PtoInitial, PtoHandshake, PtoApp, Pmtud };
 ///
 /// RFC 9000 §5.1 mandates that servers route packets using tuple + DCID. We use
 /// this composite hash so multipath/path validation still find the right entry.
-pub const Key = struct { peer_hash: u64, dcid_hash: u64 };
+pub const Key = ep_types.Key;
 
 // Note: Utility functions moved to utils module
 // Kept as inline wrappers for backward compatibility
@@ -1102,95 +1105,19 @@ pub const Endpoint = struct {
             for (bytes[1 .. 1 + show_len]) |b| std.debug.print("{x:0>2} ", .{b});
             std.debug.print("", .{});
 
-            const peer_h = hashSockaddr(&peer.storage, peer.len);
-            var found: ?*conn_mod.Connection = null;
-            var dcid_len: usize = 0;
-            // Prefer a match that already has both App RX and TX keys installed (server side) to ensure ACK capability.
-            // Tie-break on longer DCID length.
-            var best: ?*conn_mod.Connection = null;
-            var best_len: usize = 0;
-            var it = self.conns.iterator();
-            std.debug.print("Looking for connection with peer_hash={x}\n", .{peer_h});
-            var checked_count: usize = 0;
-            while (it.next()) |entry| {
-                std.debug.print("  Checking entry: peer_hash={x}, dcid_hash={x}\n", .{ entry.key_ptr.*.peer_hash, entry.key_ptr.*.dcid_hash });
-                if (entry.key_ptr.*.peer_hash != peer_h) {
-                    std.debug.print("    -> peer_hash mismatch, skipping\n", .{});
-                    continue;
-                }
-                checked_count += 1;
-                const c = entry.value_ptr.*;
-                const l: usize = c.our_scid.len;
+            // Use extracted connection lookup from endpoint/lookup.zig (Phase 4b.5 Session 3)
+            const lookup_result = lookup.findConnectionByDcid(&self.conns, peer, bytes, null);
+            const dcid_len = lookup_result.dcid_len;
 
-                std.debug.print("  -> MATCHED peer_hash! Checking conn with our_scid=", .{});
-                for (c.our_scid.bytes[0..l]) |b| std.debug.print("{x:0>2} ", .{b});
-                std.debug.print("(len={}), role={}\n", .{ l, c.role });
-
-                if (l == 0) continue; // do not match ambiguous zero-length DCID
-                if (1 + l > bytes.len) continue;
-                if (!std.mem.eql(u8, c.our_scid.bytes[0..l], bytes[1 .. 1 + l])) {
-                    std.debug.print("DCID mismatch\n", .{});
-                    continue;
-                }
-                std.debug.print("Found matching connection!\n", .{});
-                // Record first match as fallback
-                if (found == null) {
-                    found = c;
-                    dcid_len = l;
-                } else if (l > dcid_len) {
-                    found = c;
-                    dcid_len = l;
-                }
-                const has_rx = (c.app_rx_keys != null);
-                const has_tx = (c.app_tx_keys != null);
-                if (has_rx and has_tx) {
-                    if (best == null or l > best_len) {
-                        best = c;
-                        best_len = l;
-                    }
+            // Handle NAT rebinding if detected
+            if (lookup_result.nat_rebinding) {
+                if (lookup_result.conn) |c| {
+                    const peer_h = hashSockaddr(&peer.storage, peer.len);
+                    self.onPathAddressChanged(c, peer, peer_h, dcid_len);
                 }
             }
-            std.debug.print("Checked {} connections with matching peer_hash. found={}, best={}\n", .{ checked_count, found != null, best != null });
-            if (best) |b| {
-                found = b;
-                dcid_len = best_len;
-            }
-            // NAT rebinding / active migration fallback (RFC 9000 §9.3): try match by DCID across all entries.
-            if (found == null) {
-                std.debug.print("No match with peer_hash, trying all connections\n", .{});
-                var it2 = self.conns.iterator();
-                while (it2.next()) |entry| {
-                    const c = entry.value_ptr.*;
-                    const l: usize = c.our_scid.len;
-                    if (1 + l > bytes.len) continue;
-                    if (l == 0) continue;
 
-                    // Debug: show what we're comparing
-                    if (c.role == .Client) {
-                        std.debug.print("Client conn - our_scid={x} (len={}), packet has DCID starting at byte 1\n", .{
-                            if (l > 0) c.our_scid.bytes[0] else 0,
-                            l,
-                        });
-                        if (bytes.len > 9) {
-                            std.debug.print("Packet bytes[1..9]: {x} {x} {x} {x} {x} {x} {x} {x}\n", .{ bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8] });
-                        }
-                    }
-
-                    if (std.mem.eql(u8, c.our_scid.bytes[0..l], bytes[1 .. 1 + l])) {
-                        std.debug.print("Found match - our_scid len={}, first_byte={x}, packet_dcid_first={x}\n", .{ l, if (l > 0) c.our_scid.bytes[0] else 0, if (1 + l <= bytes.len) bytes[1] else 0 });
-                        found = c;
-                        dcid_len = l;
-                        // Centralized handling for path change and validation (RFC 9000 §9.4/§9.6).
-                        self.onPathAddressChanged(c, peer, peer_h, l);
-                        break;
-                    } else {
-                        if (bytes.len >= 1 + l and c.role == .Client) {
-                            std.debug.print("No match - our_scid[0..8]={x} {x} {x} {x} {x} {x} {x} {x} vs packet[1..9]={x} {x} {x} {x} {x} {x} {x} {x}\n", .{ c.our_scid.bytes[0], c.our_scid.bytes[1], c.our_scid.bytes[2], c.our_scid.bytes[3], c.our_scid.bytes[4], c.our_scid.bytes[5], c.our_scid.bytes[6], c.our_scid.bytes[7], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8] });
-                        }
-                    }
-                }
-            }
-            const conn = found orelse {
+            const conn = lookup_result.conn orelse {
                 std.debug.print("No connection found for short header packet from peer\n", .{});
                 return;
             };
@@ -1226,124 +1153,48 @@ pub const Endpoint = struct {
                 std.debug.print(", hp[0..8]=", .{});
                 for (rx_keys.hp[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
                 std.debug.print("\n", .{});
-                // Attempt decode using current RX keys first. On failure, try derived NEXT keys, then previous keys.
-                var used_next: bool = false;
-                var used_prev: bool = false;
-                // RFC 9000 Appendix A.3: Pass largest received PN for expansion
-                const largest_pn: u64 = if (conn.pn_app.have_any) conn.pn_app.max else 0;
-                std.debug.print("trying dcid_len={}, largest_pn={}\n", .{ try_dcid_len, largest_pn });
-
-                // CRITICAL BUG #6 FIX: Try systematic DCID length enumeration
-                // RFC 9000 §17.2 / §17.3: Short headers omit DCID length; discoverable via matching heuristics.
-                // Try the cached/matched length first, then enumerate all possibilities 0-20
-                var dec_res = packet.decodeShortProtected(self.allocator.*, bytes, try_dcid_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }, largest_pn) catch blk_dec: {
-                    // If decryption fails outright, check for stateless reset token match to fail fast.
-                    if (conn.looksLikeStatelessReset(bytes)) {
+                // Use extracted decryption function from endpoint/incoming.zig (Phase 4b.5 Session 3)
+                const decrypt_result = incoming.decryptShortHeaderWithKeyRotation(
+                    self.allocator.*,
+                    conn,
+                    bytes,
+                    @intCast(try_dcid_len),
+                ) catch |err| {
+                    if (err == error.StatelessReset) {
                         std.debug.print("stateless-reset: closing connection\n", .{});
                         conn.closed = true;
-                        return;
                     }
-
-                    // BUG #6 FIX: If initial attempt failed, try all DCID lengths 0-20 systematically
-                    std.debug.print("DCID length enumeration: trying all lengths 0-20...\n", .{});
-                    var test_len: u8 = 0;
-                    while (test_len <= 20) : (test_len += 1) {
-                        if (test_len == try_dcid_len) {
-                            // Already tried this length above
-                            continue;
-                        }
-                        std.debug.print("  Trying dcid_len={}...\n", .{test_len});
-                        if (packet.decodeShortProtected(self.allocator.*, bytes, test_len, .{ .key = rx_keys.key, .iv = rx_keys.iv, .hp = rx_keys.hp }, largest_pn)) |result| {
-                            // SUCCESS! Cache this length for future packets
-                            std.debug.print("✅ 1-RTT decryption SUCCEEDED with dcid_len={} (was trying {})\n", .{ test_len, try_dcid_len });
-                            conn.expected_rx_dcid_len = test_len;
-                            break :blk_dec result;
-                        } else |_| {
-                            // This length didn't work, continue trying
-                        }
-                    }
-                    std.debug.print("DCID length enumeration: all lengths 0-20 failed\n", .{});
-
-                    // Try derived NEXT keys if we have a RX traffic secret
-                    if (conn.app_rx_secret) |cur_rx_secret| {
-                        const next_secret = ks.updateTrafficSecret(cur_rx_secret);
-                        var mat: packet.AeadKeys = undefined;
-                        if (conn.version_v2) {
-                            const t2 = ks.deriveKeyIvHpV2(next_secret);
-                            mat = .{ .key = t2.key, .iv = t2.iv, .hp = t2.hp };
-                        } else {
-                            const t2 = ks.deriveKeyIvHp(next_secret);
-                            mat = .{ .key = t2.key, .iv = t2.iv, .hp = t2.hp };
-                        }
-                        // Use discovered/cached dcid_len if available
-                        const final_dcid_len = if (conn.expected_rx_dcid_len) |cached| cached else try_dcid_len;
-                        const try_next = packet.decodeShortProtected(self.allocator.*, bytes, final_dcid_len, .{ .key = mat.key, .iv = mat.iv, .hp = mat.hp }, largest_pn) catch blk_prev: {
-                            // Finally, if we have previous RX keys during transition, try them
-                            if (conn.rx_prev_keys) |kp| {
-                                used_prev = true;
-                                break :blk_prev packet.decodeShortProtected(self.allocator.*, bytes, final_dcid_len, .{ .key = kp.key, .iv = kp.iv, .hp = kp.hp }, largest_pn) catch return;
-                            }
-                            // Authentication failed across current/next/prev keys
-                            conn.onAeadAuthFailure();
-                            return;
-                        };
-                        // Promote to NEXT keys on success
-                        used_next = true;
-                        // Preserve current keys as previous (zeroize any older prev first)
-                        if (conn.rx_prev_keys) |*old_prev| {
-                            @memset(&old_prev.key, 0);
-                            @memset(&old_prev.iv, 0);
-                            @memset(&old_prev.hp, 0);
-                        }
-                        conn.rx_prev_keys = rx_keys;
-                        conn.rx_prev_allow = 16; // bounded window for reordering
-                        conn.app_rx_keys = .{ .key = mat.key, .iv = mat.iv, .hp = mat.hp };
-                        conn.app_rx_secret = next_secret;
-                        conn.rx_key_phase = !conn.rx_key_phase;
-                        break :blk_dec try_next;
-                    }
-                    // No secret available for deriving NEXT; try previous only
-                    if (conn.rx_prev_keys) |kp2| {
-                        used_prev = true;
-                        const final_dcid_len = if (conn.expected_rx_dcid_len) |cached| cached else try_dcid_len;
-                        break :blk_dec packet.decodeShortProtected(self.allocator.*, bytes, final_dcid_len, .{ .key = kp2.key, .iv = kp2.iv, .hp = kp2.hp }, largest_pn) catch return;
-                    }
-                    conn.onAeadAuthFailure();
                     return;
                 };
+                const dec_res = decrypt_result.decoded;
+                const used_next = decrypt_result.used_next;
+                const used_prev = decrypt_result.used_prev;
                 defer self.allocator.free(dec_res.payload);
 
-                // Cache the successful DCID length if not already cached
-                if (conn.expected_rx_dcid_len == null) {
-                    conn.expected_rx_dcid_len = @intCast(try_dcid_len);
-                    std.debug.print("✅ Cached successful dcid_len={} for future packets\n", .{try_dcid_len});
+                // Handle key promotion if NEXT keys were used
+                if (used_next) {
+                    if (conn.app_rx_secret) |cur_rx_secret| {
+                        const next_secret = ks.updateTrafficSecret(cur_rx_secret);
+                        const next_keys = if (conn.version_v2)
+                            ks.deriveKeyIvHpV2(next_secret)
+                        else
+                            ks.deriveKeyIvHp(next_secret);
+                        incoming.promoteToNextKeys(conn, next_secret, .{
+                            .key = next_keys.key,
+                            .iv = next_keys.iv,
+                            .hp = next_keys.hp,
+                        });
+                    }
                 }
 
                 std.debug.print("✅ 1-RTT AEAD SUCCESS - payload_len={}, pn={}\n", .{ dec_res.payload.len, dec_res.packet_number });
                 // dec_res.packet_number is already expanded by unprotectInitial - don't expand again!
                 const pn_full: u64 = dec_res.packet_number;
                 conn.trackRecvPnApp(pn_full);
-                // If we decoded with previous keys, decrement allowance and drop them when exhausted
+
+                // Handle previous key cleanup if they were used
                 if (used_prev) {
-                    if (conn.rx_prev_allow > 0) {
-                        conn.rx_prev_allow -= 1;
-                        if (conn.rx_prev_allow == 0) {
-                            if (conn.rx_prev_keys) |*to_zero| {
-                                @memset(&to_zero.key, 0);
-                                @memset(&to_zero.iv, 0);
-                                @memset(&to_zero.hp, 0);
-                            }
-                            conn.rx_prev_keys = null;
-                        }
-                    } else {
-                        // Safety: if allowance already zero, drop prev immediately
-                        if (conn.rx_prev_keys) |*to_zero2| {
-                            @memset(&to_zero2.key, 0);
-                            @memset(&to_zero2.iv, 0);
-                            @memset(&to_zero2.hp, 0);
-                        }
-                        conn.rx_prev_keys = null;
-                    }
+                    incoming.decrementPrevKeyAllowance(conn);
                 }
                 // Parse frames from payload
                 var off2: usize = 0;
