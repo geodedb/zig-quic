@@ -280,7 +280,7 @@ test "LongHeader encoding includes token for Initial" {
 test "LongHeader encoding includes packet number" {
     const dcid = [_]u8{0x00};
     const scid = [_]u8{0x00};
-    const payload = [_]u8{0x00};
+    const payload = [_]u8{ 0xFF, 0xEE, 0xDD };
 
     const long_hdr = header.LongHeader{
         .ty = .Handshake,

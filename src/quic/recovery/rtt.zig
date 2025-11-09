@@ -27,7 +27,10 @@ pub const RttState = struct {
             self.rttvar_ns = measured_rtt_ns / 2;
             return;
         }
-        if (measured_rtt_ns < self.min_rtt_ns) self.min_rtt_ns = measured_rtt_ns;
+        // Only update min_rtt with trustworthy measurements (ack_delay doesn't exceed measured RTT)
+        if (measured_rtt_ns >= ack_delay_ns and measured_rtt_ns < self.min_rtt_ns) {
+            self.min_rtt_ns = measured_rtt_ns;
+        }
         const adjusted = blk: {
             const delayed = if (measured_rtt_ns > ack_delay_ns) measured_rtt_ns - ack_delay_ns else 0;
             // adjusted_rtt = max(delayed, min_rtt)

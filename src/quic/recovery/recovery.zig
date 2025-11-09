@@ -164,14 +164,20 @@ pub const Recovery = struct {
             }
         }
 
-        // Time-threshold scheduling
+        // Time-threshold loss detection and scheduling
         var earliest_loss_time: ?u64 = null;
         if (self.rtt.have_sample) {
             const tt_base = LossDetector.timeThresholdNs(self.rtt.smoothed_rtt_ns, self.rtt.latest_rtt_ns);
             for (sstate.sent.items) |*sp| {
                 if (!sp.acked and !sp.declared_lost and sp.ack_eliciting) {
                     const deadline = sp.time_ns + tt_base;
-                    if (earliest_loss_time == null or deadline < earliest_loss_time.?) {
+                    // Check if packet has already exceeded time threshold
+                    if (now_ns >= deadline) {
+                        sp.declared_lost = true;
+                        bytes_lost += sp.size;
+                        if (first_lost_time == null or sp.time_ns < first_lost_time.?) first_lost_time = sp.time_ns;
+                        if (last_lost_time == null or sp.time_ns > last_lost_time.?) last_lost_time = sp.time_ns;
+                    } else if (earliest_loss_time == null or deadline < earliest_loss_time.?) {
                         earliest_loss_time = deadline;
                     }
                 }

@@ -189,7 +189,7 @@ test "context parses ClientHello and stores handshake view" {
 
     try ctx.processCrypto(.Initial, ch);
 
-    try std.testing.expectEqual(tls13.Context.HandshakePhase.keys_installed, ctx.phase);
+    try std.testing.expectEqual(tls13.HandshakePhase.keys_installed, ctx.phase);
 
     const view_opt = ctx.clientHello();
     try std.testing.expect(view_opt != null);
@@ -384,7 +384,7 @@ test "server verifies client Finished and derives application secrets" {
     try ctx.processCrypto(.Handshake, client_finished);
 
     try std.testing.expect(ctx.handshakeComplete());
-    try std.testing.expectEqual(tls13.Context.HandshakePhase.application_ready, ctx.phase);
+    try std.testing.expectEqual(tls13.HandshakePhase.application_ready, ctx.phase);
     try std.testing.expect(ctx.secrets.slot(.Application, .send).valid);
     try std.testing.expect(ctx.secrets.slot(.Application, .recv).valid);
     try std.testing.expectEqual(@as(usize, 1), metadata_callback_count);
@@ -442,7 +442,7 @@ test "server rejects tampered client Finished" {
 
     try std.testing.expectError(tls13.HandshakeError.FinishedVerifyFailed, ctx.processCrypto(.Handshake, client_finished));
     try std.testing.expect(!ctx.handshakeComplete());
-    try std.testing.expectEqual(tls13.Context.HandshakePhase.keys_installed, ctx.phase);
+    try std.testing.expectEqual(tls13.HandshakePhase.keys_installed, ctx.phase);
     try std.testing.expect(!ctx.secrets.slot(.Application, .send).valid);
     try std.testing.expect(!ctx.secrets.slot(.Application, .recv).valid);
 }

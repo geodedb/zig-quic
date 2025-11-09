@@ -69,11 +69,11 @@ pub const Cubic = struct {
 /// Used only in tests right now; production pacing TBD.
 pub fn computePacingDelayNs(cwnd: usize, bytes_in_flight: usize) u64 {
     // Very simple pacing heuristic:
-    // - No delay if less than half of cwnd is in flight.
+    // - No delay if at most half of cwnd is in flight.
     // - Small delay if between 1/2 and full cwnd.
     // - Larger delay if at or above cwnd.
     if (cwnd == 0) return 0;
-    if (bytes_in_flight < cwnd / 2) return 0;
+    if (bytes_in_flight <= cwnd / 2) return 0;
     if (bytes_in_flight < cwnd) return 250_000; // 0.25 ms
     return 1_000_000; // 1 ms
 }

@@ -130,11 +130,11 @@ test "RFC 9002 §5.3 - smoothed_rtt uses EWMA with 7/8 weight" {
 
 test "RFC 9002 §5.3 - rttvar uses EWMA with 3/4 weight" {
     var rtt: RttState = .{};
-    rtt.onAck(80_000_000, 0); // First: rttvar=40ms
+    rtt.onAck(100_000_000, 0); // First: rttvar=50ms
     const initial_rttvar = rtt.rttvar_ns;
 
-    rtt.onAck(40_000_000, 0); // abs_err = |70 - 40| = 30ms (after first EWMA update)
-    // rttvar = 3/4 * 40 + 1/4 * abs_err
+    rtt.onAck(200_000_000, 0); // abs_err = |100 - 200| = 100ms
+    // rttvar = 3/4 * 50 + 1/4 * 100 = 37.5 + 25 = 62.5ms
     // This is complex due to two-step calculation, just verify it changed
     try testing.expect(rtt.rttvar_ns != initial_rttvar);
 }
