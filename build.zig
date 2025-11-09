@@ -473,7 +473,9 @@ pub fn build(b: *std.Build) void {
     quic_endpoint_mod.addImport("quic_logger", quic_logger_mod);
     quic_endpoint_mod.addImport("byteorder", byteorder_mod);
     quic_endpoint_mod.addImport("quic_version", quic_version_mod);
+    quic_endpoint_mod.addImport("quic_token", quic_token_mod);
     quic_endpoint_mod.addImport("endpoint/utils.zig", endpoint_utils_mod);
+    quic_endpoint_mod.addImport("endpoint/incoming.zig", endpoint_incoming_mod);
 
     // Public API module (reuse everywhere)
     const quic_api_mod = mkModule(b, "src/quic/api.zig");

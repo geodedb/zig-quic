@@ -22,17 +22,17 @@
 
 const std = @import("std");
 const conn_mod = @import("quic_conn");
-const packet = @import("quic_packet");
+const packet = @import("packet");
 const cfg = @import("config");
 const endpoint_types = @import("types");
 const posix = std.posix;
 
 // Import TLS key schedule for key rotation
-const key_schedule = @import("quic_tls");
-const crypto = @import("quic_crypto");
+const key_schedule = @import("vendor_ztls_key_schedule");
+const crypto = @import("crypto_quic");
 
 // Import frame processing modules
-const frame = @import("quic_frame");
+const frame = @import("frame");
 const frame_handler = @import("frame_handler");
 const handshake_integration = @import("handshake_integration");
 

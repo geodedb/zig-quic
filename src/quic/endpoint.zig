@@ -15,7 +15,7 @@ const sig = @import("sig");
 const x509 = @import("x509");
 const crypto = @import("quic_crypto");
 const varint = @import("quic_varint");
-const token_mod = @import("token.zig");
+const token_mod = @import("quic_token");
 const recovery = @import("quic_recovery");
 // Import transport parameters via dedicated module to avoid duplicate root file compilation
 const tp = @import("quic_transport_params");
