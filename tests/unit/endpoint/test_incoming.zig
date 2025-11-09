@@ -285,6 +285,7 @@ test "Phase 4b.5 Session 3 - enumerateDcidLength succeeds with correct initial l
     );
     // Verify success on first try
     try testing.expect(result.decoded != null);
+    defer test_allocator.free(result.decoded.?.payload);
     try testing.expectEqual(@as(u8, dcid_len), result.dcid_len);
     try testing.expect(!result.is_stateless_reset);
 }
@@ -319,6 +320,7 @@ test "Phase 4b.5 Session 3 - enumerateDcidLength falls back to enumeration when 
     );
     // Verify enumeration found correct length
     try testing.expect(result.decoded != null);
+    defer test_allocator.free(result.decoded.?.payload);
     try testing.expectEqual(@as(u8, actual_dcid_len), result.dcid_len);
     try testing.expect(!result.is_stateless_reset);
 }
@@ -351,6 +353,7 @@ test "Phase 4b.5 Session 3 - enumerateDcidLength handles zero-length DCID" {
     );
     // Verify enumeration found zero-length DCID
     try testing.expect(result.decoded != null);
+    defer test_allocator.free(result.decoded.?.payload);
     try testing.expectEqual(@as(u8, 0), result.dcid_len);
     try testing.expect(!result.is_stateless_reset);
 }
@@ -383,6 +386,7 @@ test "Phase 4b.5 Session 3 - enumerateDcidLength handles maximum-length DCID" {
     );
     // Verify enumeration found 20-byte DCID
     try testing.expect(result.decoded != null);
+    defer test_allocator.free(result.decoded.?.payload);
     try testing.expectEqual(@as(u8, dcid_len), result.dcid_len);
     try testing.expect(!result.is_stateless_reset);
 }
@@ -496,6 +500,7 @@ test "Phase 4b.5 Session 3 - enumerateDcidLength enumerates all lengths 0-20" {
         );
         // Verify correct length was discovered
         try testing.expect(result.decoded != null);
+        defer test_allocator.free(result.decoded.?.payload);
         try testing.expectEqual(@as(u8, @intCast(actual_len)), result.dcid_len);
         try testing.expect(!result.is_stateless_reset);
     }
