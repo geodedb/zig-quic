@@ -32,6 +32,7 @@ fn createTestConnection() !*conn_mod.Connection {
     conn.role = .Client;
     conn.allocator = &test_allocator;  // CRITICAL: needed for onNewConnectionId and pushStreamFrame
     conn.reset_tokens = std.ArrayList([16]u8){};  // CRITICAL: needed for onNewConnectionId
+    conn.dgram_inbox = std.ArrayList([]u8){};  // CRITICAL: needed for pushDatagram
     conn.streams_rx = std.AutoHashMap(u64, conn_mod.StreamRx).init(test_allocator);  // CRITICAL: needed for pushStreamFrame
     conn.incoming_stream_queue = std.ArrayList(u64){};  // CRITICAL: needed for pushStreamFrame
     conn.stream_recv_aborted = false;  // CRITICAL: needed for pushStreamFrame
@@ -60,6 +61,11 @@ fn createTestConnection() !*conn_mod.Connection {
 fn destroyTestConnection(conn: *conn_mod.Connection) void {
     conn.initial_token.deinit(test_allocator);
     conn.reset_tokens.deinit(test_allocator);
+    // Clean up datagram inbox
+    for (conn.dgram_inbox.items) |dgram| {
+        test_allocator.free(dgram);
+    }
+    conn.dgram_inbox.deinit(test_allocator);
     // Clean up individual streams before deiniting the hashmap
     var it = conn.streams_rx.iterator();
     while (it.next()) |entry| {

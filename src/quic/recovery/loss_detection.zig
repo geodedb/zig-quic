@@ -19,8 +19,14 @@ pub const LossDetector = struct {
     /// Time threshold as 1.125x of the larger of smoothed/latest RTT.
     /// RFC 9002 §6.1.2: Time Threshold
     pub fn timeThresholdNs(smoothed_rtt_ns: u64, latest_rtt_ns: u64) u64 {
+        const std = @import("std");
         const base = if (smoothed_rtt_ns > latest_rtt_ns) smoothed_rtt_ns else latest_rtt_ns;
-        return base + base / 8; // 1.125x
+        const increment = base / 8;
+        // Saturate at max u64 on overflow to prevent panic in debug mode
+        if (base > std.math.maxInt(u64) - increment) {
+            return std.math.maxInt(u64);
+        }
+        return base + increment; // 1.125x
     }
 };
 

@@ -1285,10 +1285,16 @@ test "RFC 9000 §7 - createServerConnection allocates and initializes connection
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            c.*.deinit();
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1314,10 +1320,16 @@ test "RFC 9000 §6 - createServerConnection sets QUIC version correctly" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            c.*.deinit();
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1349,9 +1361,16 @@ test "RFC 9000 §5.1.1 - createServerConnection generates random 8-byte SCID" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1382,9 +1401,16 @@ test "RFC 9001 §5.2 - createServerConnection copies client DCID to peer_initial
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1412,9 +1438,16 @@ test "RFC 9000 §17.2 - createServerConnection copies client SCID to peer_initia
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1438,9 +1471,16 @@ test "RFC 9000 §5.1 - createServerConnection handles zero-length DCID" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1464,9 +1504,16 @@ test "RFC 9000 §5.1 - createServerConnection handles zero-length SCID" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1489,9 +1536,16 @@ test "RFC 9000 §5.1 - createServerConnection handles maximum-length CIDs (20 by
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1517,9 +1571,16 @@ test "RFC 9002 §7 - createServerConnection configures congestion control" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1549,9 +1610,16 @@ test "RFC 9002 §7.2 - createServerConnection sets max_datagram_size for congest
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1575,9 +1643,16 @@ test "RFC 9000 §7.3 - createServerConnection enables optional pacing" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1607,9 +1682,16 @@ test "RFC 9001 §6.6 - createServerConnection applies AEAD usage limits" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1635,9 +1717,16 @@ test "RFC 9000 §5.2 - createServerConnection registers by client DCID hash" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1672,9 +1761,16 @@ test "RFC 9000 §5.2 - createServerConnection registers by server SCID hash" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1698,9 +1794,16 @@ test "RFC 9000 §18.2 - createServerConnection sets transport parameters correct
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1726,9 +1829,16 @@ test "createServerConnection with insecure mode enabled" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1752,9 +1862,16 @@ test "createServerConnection installs sender callback" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1778,9 +1895,16 @@ test "createServerConnection with multiple connections to same peer" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }

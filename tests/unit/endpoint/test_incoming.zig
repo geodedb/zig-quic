@@ -1222,9 +1222,16 @@ test "RFC 9000 §7 - processInitial creates new server connection when none exis
     // RFC 9000 §7: "A server that receives an Initial packet creates a new connection state."
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*conn_mod.Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1259,9 +1266,16 @@ test "RFC 9000 §7 - processInitial reuses existing server connection" {
     // Server connection already exists, should reuse it
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*conn_mod.Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1330,9 +1344,16 @@ test "RFC 9000 §8.1.4 - processInitial validates address with valid token" {
     // in the Initial packet sent by the client"
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*conn_mod.Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1381,9 +1402,16 @@ test "RFC 9000 §8.1 - processInitial with no token leaves address unvalidated" 
     // No token present → address remains unvalidated
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*conn_mod.Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1426,9 +1454,16 @@ test "RFC 9000 §8.1.1 - processInitial sends Retry when address not validated a
     // Actual Retry packet validation is tested separately
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*conn_mod.Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1465,9 +1500,16 @@ test "RFC 9000 §8.1.1 - processInitial does not send Retry when Retry disabled"
     // Retry disabled in config → no Retry sent
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*conn_mod.Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
@@ -1533,9 +1575,16 @@ test "processInitial handles zero-length DCID and SCID" {
     // RFC 9000 §5.1: Zero-length CIDs are valid
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
     defer {
+        // Collect unique connection pointers (same connection may be stored under multiple keys)
+        var seen = std.AutoHashMap(*conn_mod.Connection, void).init(test_allocator);
+        defer seen.deinit();
         var it = conns.valueIterator();
         while (it.next()) |c| {
-            test_allocator.destroy(c.*);
+            if (!seen.contains(c.*)) {
+                seen.put(c.*, {}) catch {};
+                c.*.deinit();
+                test_allocator.destroy(c.*);
+            }
         }
         conns.deinit();
     }
