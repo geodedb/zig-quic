@@ -526,33 +526,40 @@ This plan breaks down the extraction of `endpoint.zig` (3,698 lines) into **11 s
 
 ## Progress Tracking
 
-### Module Extraction Status
+**IMPORTANT**: See `GAP_ANALYSIS.md` for detailed analysis of actual vs planned implementation (created 2025-11-10).
 
-| Module | Lines | Status | Session | Tests |
-|--------|-------|--------|---------|-------|
-| `incoming.zig` | 246 → ~800 | ⏳ Pending | 3-6 | 12 |
-| `frame_handler.zig` | 0 → ~300 | ⏳ Pending | 4 | 2 |
-| `handshake_integration.zig` | 0 → ~400 | ⏳ Pending | 6-8 | 6 |
-| `client.zig` | 88 → ~200 | ⏳ Pending | 5,7 | 3 |
-| `server.zig` | 67 → ~150 | ⏳ Pending | 5 | 2 |
-| `pto.zig` | 17 → ~200 | ⏳ Pending | 9 | 4 |
-| `lifecycle.zig` | 0 → ~200 | ⏳ Pending | 10 | 4 |
-| `io.zig` | 103 → ~400 | ⏳ Pending | 11 | 3 |
-| `lookup.zig` | 82 → ~150 | ⏳ Pending | 3 | 2 |
-| `timer.zig` | 63 → ~100 | ✅ Complete | - | existing |
-| **endpoint.zig** | **3,698 → ~500** | **⏳ Pending** | **All** | **Unchanged** |
+### Module Extraction Status (ACTUAL as of 2025-11-10)
 
-### Test Conversion Status
+| Module | Planned | Actual | Status | Session | Gap |
+|--------|---------|--------|--------|---------|-----|
+| `incoming.zig` | 246 → ~800 | **2,608** | ✅ Complete (326%) | 3-6 | None |
+| `frame_handler.zig` | 0 → ~300 | **395** | ✅ Complete (132%) | 4 | None |
+| `handshake_integration.zig` | 0 → ~400 | **793** | ✅ Complete (198%) | 6-8 | None |
+| `client.zig` | 88 → ~200 | **95** | ⚠️ Partial (48%) | 5,7 | TP encoding |
+| `server.zig` | 67 → ~150 | **387** | ✅ Complete (258%) | 5 | None |
+| `pto.zig` | 17 → ~200 | **260** | ✅ Complete (130%) | 9 | None |
+| `lifecycle.zig` | 0 → ~200 | **285** | ✅ Complete (143%) | 10 | None |
+| `io.zig` | 103 → ~400 | **383** | ✅ Complete (96%) | 11 | None |
+| `lookup.zig` | 82 → ~150 | **209** | ✅ Complete (139%) | 3 | None |
+| `timer.zig` | 63 → ~100 | **121** | ✅ Complete (121%) | - | None |
+| `utils.zig` (bonus) | Not planned | **84** | ✅ Bonus | 10+ | None |
+| `types.zig` (bonus) | Not planned | **94** | ✅ Bonus | 10+ | None |
+| `endpoint.zig` (coordinator) | Not planned | **69** | ✅ Bonus | 10+ | None |
+| **endpoint.zig (main)** | **3,698 → ~500** | **2,867** | **❌ Partial (574%)** | **All** | **~2,367 lines unextracted** |
+
+### Test Conversion Status (NEEDS AUDIT - See GAP_ANALYSIS.md)
 
 | Test Category | Placeholder | Converted | Session | Status |
 |---------------|-------------|-----------|---------|--------|
-| Short Header | 2 | 0 | 3 | ⏳ Pending |
-| Frame Processing | 2 | 0 | 4 | ⏳ Pending |
-| Initial Packet | 3 | 0 | 6 | ⏳ Pending |
-| Transport Params | 3 | 0 | 7 | ⏳ Pending |
-| Handshake | 0 | 0 | 8 | N/A |
-| PTO | 0 | 0 | 9 | N/A |
-| **Total** | **10+** | **0** | **-** | **⏳** |
+| Short Header | 2 | ⚠️ TBD | 3 | ⚠️ Need audit |
+| Frame Processing | 2 | ⚠️ TBD | 4 | ⚠️ Need audit |
+| Initial Packet | 3 | ⚠️ TBD | 6 | ⚠️ Need audit |
+| Transport Params | 3 | ⚠️ TBD | 7 | ⚠️ Need audit |
+| Handshake | 0 | ⚠️ TBD | 8 | ⚠️ Need audit |
+| PTO | 0 | ⚠️ TBD | 9 | ⚠️ Need audit |
+| **Total** | **10+** | **⚠️ Unknown** | **-** | **⚠️ AUDIT REQUIRED** |
+
+**Build Status (2025-11-10)**: ✅ All tests passing, all interop tests completed
 
 ### Build Status Targets
 
