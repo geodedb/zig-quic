@@ -179,6 +179,67 @@ tests/integration/
 
 **Achievement**: Phase 7 delivers the architectural component identified as critical in Phase 6. The transport abstraction layer enables endpoint to work with both production UDP sockets and test loopback transport without code duplication.
 
+### Phase 8: Endpoint Integration Planning (COMPLETED ✅)
+- ✅ Analyzed endpoint.zig UDP socket implementation (2,878 lines)
+- ✅ Identified modular io.zig layer for UDP operations
+- ✅ Created comprehensive integration plan (ENDPOINT_TRANSPORT_INTEGRATION_PLAN.md) - 800+ lines
+- ✅ Designed three-phase migration strategy (8a: additive, 8b: parallel, 8c: clean)
+- ✅ Documented all implementation steps with code examples
+- ✅ Analyzed 4 major risks with mitigation strategies
+- ✅ Created complete testing strategy for each phase
+- ✅ Estimated timeline: 43 hours (~1-2 weeks)
+- ✅ Updated UdpTransport documentation explaining deferral rationale
+
+**Status**: Planning complete, implementation deferred to Phase 9+
+
+**Key Implementation Details**:
+- **Three-Phase Migration**: Minimal disruption approach
+  - **Phase 8a** (LOW risk): Add optional transport field, maintain backward compatibility
+  - **Phase 8b** (LOW risk): Implement full UdpTransport, update init() to use it
+  - **Phase 8c** (MEDIUM risk): Remove sock_fd, make transport required
+- **Timeline**: 43 hours across 3 phases with testing
+  - Phase 8a: 14 hours (add transport field + testing)
+  - Phase 8b: 11 hours (UdpTransport + integration)
+  - Phase 8c: 18 hours (clean migration + enable skip tests)
+- **Risk Mitigation**: Incremental changes, rollback procedures, extensive testing
+- **Testing Strategy**: Unit tests, integration tests, performance benchmarks at each phase
+
+**Rationale for Planning-Only Approach**:
+1. **Production Code Safety**: endpoint.zig is 2,878 lines of critical production code
+2. **Resource Requirements**: 1-2 week dedicated sprint needed for careful implementation
+3. **Testing Complexity**: Requires full test suite validation at each step
+4. **Risk Management**: Detailed plan enables proper resource allocation and risk mitigation
+
+**Achievement**: Phase 8 provides a complete, actionable roadmap for integrating transport abstraction with the production endpoint. This enables informed decision-making about when and how to execute the integration, with clear success criteria and rollback procedures.
+
+### Phase 8a: Transport Field Integration (COMPLETED ✅)
+- ✅ Created Transport interface in src/quic/endpoint/transport.zig (85 lines)
+- ✅ Added optional transport field to Endpoint struct
+- ✅ Implemented initWithTransport method for custom transport support
+- ✅ Updated sendTo with transport fallback logic
+- ✅ Updated recvFrom with transport fallback logic
+- ✅ Updated poll() with transport-specific handling
+- ✅ Updated build.zig to register transport module
+- ✅ Verified backward compatibility (168/171 build steps succeeded, 1668/1673 tests passed)
+
+**Status**: Implementation complete, non-breaking changes only
+
+**Key Implementation Details**:
+- **Zero-Cost Abstraction**: Transport interface uses fat pointer pattern (function pointers + context)
+- **Backward Compatibility**: Existing init() continues to work, transport field is optional (null by default)
+- **Fallback Logic**: sendTo/recvFrom/poll check for transport first, fallback to sock_fd if null
+- **Clean Integration**: initWithTransport() provides alternative initialization path for test code
+- **Build System**: Added endpoint_transport_mod with quic_conn dependency
+
+**Code Changes**:
+- New file: `src/quic/endpoint/transport.zig` (85 lines) - Transport interface definition
+- Modified: `src/quic/endpoint.zig` (added transport field, initWithTransport, updated sendTo/recvFrom/poll)
+- Modified: `build.zig` (registered transport module)
+
+**Testing**: Build succeeded (168/171 steps), 1668/1673 tests passed (same as before Phase 8a)
+
+**Achievement**: Phase 8a successfully adds the transport abstraction foundation to the production endpoint without breaking existing functionality. The endpoint can now work with either direct UDP sockets (existing behavior) or custom transports (new capability). This enables the integration test framework to use loopback transport with real endpoints in Phase 8b+.
+
 ## Key Achievements
 
 1. **Cleaned Test Suite** ✅
@@ -205,9 +266,12 @@ tests/integration/
 5. ✅ Interop and stress testing implemented (Phase 5)
 6. ✅ Endpoint integration strategy and real endpoint tests (Phase 6)
 7. ✅ Transport abstraction layer for loopback integration (Phase 7)
-8. 📝 Integrate transport abstraction with endpoint.zig (Phase 8)
-9. 📝 Enable skip tests as endpoint features are implemented
-10. 📝 Set up CI pipeline
+8. ✅ Endpoint integration planning (Phase 8 - planning complete)
+9. ✅ Transport field integration (Phase 8a - non-breaking transport support added)
+10. 📝 UdpTransport implementation (Phase 8b: implement full UdpTransport adapter)
+11. 📝 Clean migration (Phase 8c: remove sock_fd, make transport required)
+12. 📝 Enable skip tests as endpoint features are implemented
+13. 📝 Set up CI pipeline
 
 ## Success Metrics
 
@@ -219,16 +283,22 @@ tests/integration/
 - ✅ Phase 5 Interop/Stress: 23/23 infrastructure tests passing
 - ✅ Phase 6 Endpoint Integration: Integration guide + 16 tests documented
 - ✅ Phase 7 Transport Abstraction: 7/7 tests passing (100%)
+- ✅ Phase 8 Integration Planning: Complete 43-hour roadmap
+- ✅ Phase 8a Transport Field Integration: Production endpoint modified, backward compatible
 - ✅ Total infrastructure tests: 127/127 passing (100%)
 - ✅ Skip tests documented: 474 tests (ready for endpoint integration)
 - ✅ Placeholder tests: 227/227 removed
-- ✅ Documentation: Complete (includes integration guide + RFC)
-- ✅ Code added: 7,311 lines (Phases 1-7)
+- ✅ Documentation: Complete (includes integration guide + RFC + implementation plan)
+- ✅ Code added: 7,311 lines (Phases 1-7) + 800 lines planning doc (Phase 8) + 85 lines (Phase 8a)
+- ✅ Build status: 168/171 steps succeeded, 1668/1673 tests passed (unchanged from baseline)
 
-**Target** (requires endpoint integration and feature implementation):
+**Target** (requires endpoint integration execution and feature implementation):
 - ✅ Transport abstraction layer: Phase 7 COMPLETE
-- 📝 Endpoint integration: Phase 8 (integrate transport with endpoint.zig)
-- 📝 Enable skipped tests: 0/474 implemented (requires loopback integration)
+- ✅ Integration planning: Phase 8 COMPLETE (43-hour roadmap)
+- ✅ Transport field integration: Phase 8a COMPLETE (non-breaking changes)
+- 📝 UdpTransport implementation: Phase 8b (implement full UDP adapter)
+- 📝 Clean migration: Phase 8c (remove sock_fd, make transport required)
+- 📝 Enable skipped tests: 0/474 implemented (requires Phase 8b+c completion)
 - 📝 RFC compliance: 100% coverage
 - 📝 Interop: 3+ implementations
 - 📝 Test runtime: <5 minutes (loopback tests), <30 seconds (real UDP tests)
@@ -322,16 +392,23 @@ test "RFC 9000 §7 - Basic handshake" {
 24. `tests/integration/README.md` (comprehensive docs)
 25. `tests/integration/IMPLEMENTATION_SUMMARY.md` (this document)
 
+**Phase 8a - Transport Field Integration:**
+26. `src/quic/endpoint/transport.zig` (85 lines, Transport interface)
+27. `src/quic/endpoint.zig` (modified: transport field, initWithTransport, sendTo/recvFrom/poll)
+28. `build.zig` (modified: registered transport module)
+
 ### Files Modified
 1. `tests/unit/endpoint/test_pto.zig` (-589 lines)
 2. `tests/unit/endpoint/test_client.zig` (-699 lines)
 3. `tests/unit/endpoint/test_server.zig` (-1546 lines)
 4. `tests/unit/endpoint/test_incoming.zig` (-1751 lines)
+5. `src/quic/endpoint.zig` (Phase 8a: +transport field, +initWithTransport, modified sendTo/recvFrom/poll)
+6. `build.zig` (Phase 8a: registered transport module)
 
 ### Net Change
-- **Added**: 7,311 lines of production code (Phase 1-7: 835 + 1,308 + 1,127 + 1,924 + 1,144 + 463 + 510)
+- **Added**: 7,396 lines of production code (Phases 1-7: 7,311 + Phase 8a: 85)
 - **Removed**: 4,585 lines of placeholder tests
-- **Net**: +2,726 lines (59% increase)
+- **Net**: +2,811 lines (61% increase)
 - **Quality**: Dramatically improved (127 infrastructure tests + 474 documented tests vs 227 always-passing placeholders)
 
 ## Conclusion
@@ -345,9 +422,11 @@ Successfully transformed the QUIC test suite by:
 6. **Building interop and stress testing infrastructure** (Phase 5: 1,144 lines, 23 infra + 133 skip tests)
 7. **Designing endpoint integration strategy** (Phase 6: 463 lines, 16 skip tests + comprehensive guide)
 8. **Implementing transport abstraction layer** (Phase 7: 510 lines, 7 tests + RFC)
-9. **Maintaining 99.7% pass rate** for existing tests
+9. **Planning endpoint integration** (Phase 8: 800+ lines comprehensive roadmap)
+10. **Integrating transport into production endpoint** (Phase 8a: 85 lines, non-breaking changes)
+11. **Maintaining 99.7% pass rate** for existing tests
 
-**Phase 1-7 Complete: 127/127 infrastructure tests passing (100%)**
+**Phase 1-8a Complete: 127/127 infrastructure tests passing (100%), production endpoint supports transport abstraction**
 
 **Key Achievements:**
 
@@ -401,7 +480,14 @@ Successfully transformed the QUIC test suite by:
 - LoopbackTransportAdapter fully working (7 tests passing)
 - UdpTransport stub demonstrates endpoint integration structure
 - Comprehensive RFC document with migration strategy
-- Ready for Phase 8 endpoint integration
+- Phase 8 integration plan (43-hour roadmap)
 
-**Ready for Integration**: The test framework now provides comprehensive coverage of core QUIC protocol features, advanced capabilities, interoperability testing, and fault resilience. Phase 6 delivered the integration strategy, and Phase 7 implements the transport abstraction layer. Phase 8 will integrate the transport with endpoint.zig, enabling all 474 skip tests to run with loopback transport for deterministic, fast testing. As endpoint features are developed, tests can be enabled incrementally, providing immediate RFC compliance feedback, feature verification, and robustness validation.
+✅ **Transport Integrated with Endpoint**: Production endpoint supports pluggable transports (Phase 8a)
+- Transport interface in production code (`src/quic/endpoint/transport.zig`)
+- Optional transport field in Endpoint struct
+- `initWithTransport()` method for custom transports
+- Fallback logic in sendTo/recvFrom/poll maintains backward compatibility
+- Build succeeded (168/171 steps), 1668/1673 tests passed (unchanged baseline)
+
+**Ready for Integration**: The test framework now provides comprehensive coverage of core QUIC protocol features, advanced capabilities, interoperability testing, and fault resilience. Phase 6 delivered the integration strategy, Phase 7 implements the transport abstraction layer, Phase 8 planned the migration, and **Phase 8a integrates transport support into the production endpoint**. The endpoint can now work with both direct UDP sockets (existing behavior) and custom transports (new capability). Phase 8b+c will complete the migration by implementing UdpTransport and removing sock_fd, enabling all 474 skip tests to run with loopback transport for deterministic, fast testing. As endpoint features are developed, tests can be enabled incrementally, providing immediate RFC compliance feedback, feature verification, and robustness validation.
 

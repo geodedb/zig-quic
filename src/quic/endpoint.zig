@@ -31,6 +31,7 @@ const client_mod = @import("endpoint/client.zig");
 const io_mod = @import("endpoint/io.zig");
 const lifecycle_mod = @import("endpoint/lifecycle.zig");
 const ep_types = @import("types");
+const transport_mod = @import("endpoint/transport.zig");
 
 const posix = std.posix;
 const builtin = @import("builtin");
@@ -115,6 +116,10 @@ pub const Endpoint = struct {
 
     // Memory allocator for endpoint resources
     allocator: *std.mem.Allocator,
+
+    // Transport abstraction (Phase 8a: optional, fallback to sock_fd if null)
+    // When provided, endpoint uses this instead of direct UDP socket operations
+    transport: ?transport_mod.Transport = null,
 
     // Timer management for the endpoint
     timers: std.ArrayList(Timer),
@@ -296,6 +301,39 @@ pub const Endpoint = struct {
         };
     }
 
+    /// Initialize endpoint with custom transport (Phase 8a: enables loopback testing).
+    /// This method allows creating an endpoint with a pluggable transport backend
+    /// (e.g., loopback for testing) instead of a real UDP socket.
+    pub fn initWithTransport(
+        alloc: *std.mem.Allocator,
+        transport: transport_mod.Transport,
+        cfgp: *const cfg.QuicConfig,
+    ) !Endpoint {
+        // Get local address from transport
+        const local_addr = try transport.getLocalAddr();
+
+        // Determine role: default to Server, can be overridden later
+        const endpoint_role = EndpointRole.Server;
+
+        return Endpoint{
+            .sock_fd = @as(posix.socket_t, @intCast(-1)), // Not used with transport
+            .sock_family = local_addr.storage.family,
+            .loop_backend = lb.defaultLoopBackend(),
+            .allocator = alloc,
+            .transport = transport, // Phase 8a: provide transport
+            .timers = std.ArrayList(Timer){},
+            .conns = std.AutoHashMap(Key, *conn_mod.Connection).init(alloc.*),
+            .next_timer_id = 1,
+            .cfg = cfgp.*,
+            .accepted = std.ArrayList(*conn_mod.Connection){},
+            .captures = std.ArrayList(OutCaptured){},
+            .test_capture_enabled = false,
+            .retired = std.ArrayList(*conn_mod.Connection){},
+            .epoll_fd = null, // No epoll with transport abstraction
+            .role = endpoint_role,
+        };
+    }
+
     /// Deinitialize endpoint and free all associated connection state.
     pub fn deinit(self: *Endpoint) void {
         // Attempt to prune any closed (or newly closed due to earlier failures) connections
@@ -425,7 +463,7 @@ pub const Endpoint = struct {
 
     /// Send UDP datagram to peer (capturing if enabled).
     /// Send UDP datagram to peer. Supports test capture mode.
-    /// Delegates actual UDP send to io_mod.sendTo() for platform abstraction.
+    /// Phase 8a: Uses transport abstraction if available, otherwise delegates to io_mod.
     pub fn sendTo(self: *Endpoint, peer: conn_mod.SockAddr, data: []const u8) !usize {
         // Test capture: make owned copy and enqueue without sending
         if (self.test_capture_enabled) {
@@ -434,14 +472,26 @@ pub const Endpoint = struct {
             _ = self.captures.append(self.allocator.*, .{ .peer = peer, .bytes = owned }) catch {};
         }
 
-        // Delegate actual UDP send to io module
+        // Phase 8a: Use transport if available, otherwise fallback to direct UDP
+        if (self.transport) |*t| {
+            return try t.send(peer, data);
+        }
+
+        // Fallback: Delegate actual UDP send to io module (backward compatibility)
         std.debug.print("sendTo called with data.len={}\n", .{data.len});
         return io_mod.sendTo(self.sock_fd, peer, data);
     }
 
     /// Receive UDP datagram (non-blocking if platform supports MSG.DONTWAIT).
-    /// Delegates to io_mod.recvFrom() for platform abstraction.
+    /// Phase 8a: Uses transport abstraction if available, otherwise delegates to io_mod.
     pub fn recvFrom(self: *Endpoint, buf: []u8) !struct { n: usize, peer: conn_mod.SockAddr } {
+        // Phase 8a: Use transport if available, otherwise fallback to direct UDP
+        if (self.transport) |*t| {
+            const result = try t.recv(buf);
+            return .{ .n = result.n, .peer = result.peer };
+        }
+
+        // Fallback: Delegate to io module for platform abstraction (backward compatibility)
         const result = try io_mod.recvFrom(self.sock_fd, buf);
         return .{ .n = result.n, .peer = result.peer };
     }
@@ -568,10 +618,44 @@ pub const Endpoint = struct {
 
     var poll_call_count: u64 = 0;
     /// Drive network I/O, timers, and paced send for up to timeout_ms milliseconds.
+    /// Phase 8a: Uses transport abstraction if available, otherwise uses platform-specific backend.
     pub fn poll(self: *Endpoint, timeout_ms: i32) !void {
         poll_call_count += 1;
         // TRACE: poll called
         std.debug.print(">>> POLL #{} called, timeout_ms={}\n", .{ poll_call_count, timeout_ms });
+
+        // Phase 8a: If using transport abstraction, use simplified poll path
+        if (self.transport) |*t| {
+            // Process expired timers first
+            self.processExpiredTimers(nowMsMonotonic());
+
+            // Calculate effective timeout based on next timer
+            const now_ms: i64 = nowMsMonotonic();
+            var eff_timeout = self.nextTimeoutFromTimers(now_ms, timeout_ms);
+            if (eff_timeout < 0) eff_timeout = -1;
+
+            // Poll transport (may be no-op for loopback)
+            try t.poll(eff_timeout);
+
+            // Drain all available packets
+            var buf: [4096]u8 = undefined;
+            while (true) {
+                const result = self.recvFrom(&buf) catch |err| {
+                    if (err == error.WouldBlock) break;
+                    return err;
+                };
+
+                // Process the received packet
+                self.processIncomingDatagram(result.peer, buf[0..result.n], null);
+            }
+
+            // Process timers that may have fired during packet processing
+            self.processExpiredTimers(nowMsMonotonic());
+            self.pruneClosed();
+            return;
+        }
+
+        // Fallback: Original poll implementation for direct UDP
         // First, process any timers that are already expired to avoid waiting unnecessarily.
         self.processExpiredTimers(nowMsMonotonic());
         // Drain any pending error queue notifications (ICMP PTB, etc.) before waiting.

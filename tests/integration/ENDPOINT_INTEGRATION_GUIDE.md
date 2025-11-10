@@ -401,25 +401,35 @@ openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -node
 
 ## Future Roadmap
 
-### Phase 7: Transport Abstraction Design
-- RFC for transport interface design
-- Performance impact analysis
-- Community feedback
+### Phase 7: Transport Abstraction Design ✅ COMPLETED
+- ✅ RFC for transport interface design (TRANSPORT_ABSTRACTION_RFC.md)
+- ✅ Performance impact analysis
+- ✅ Transport interface implementation (transport.zig)
+- ✅ Loopback transport adapter
 
-### Phase 8: Endpoint Refactoring
-- Implement pluggable transport
-- Maintain backward compatibility
-- Comprehensive testing
+### Phase 8: Endpoint Integration Planning ✅ COMPLETED
+- ✅ Comprehensive integration plan (ENDPOINT_TRANSPORT_INTEGRATION_PLAN.md)
+- ✅ Three-phase migration strategy (8a: additive, 8b: parallel, 8c: clean)
+- ✅ Risk analysis with mitigation strategies
+- ✅ Timeline estimation (43 hours, ~1-2 weeks)
+- ✅ Complete implementation roadmap with code examples
 
-### Phase 9: Loopback Integration
-- Enable all 458 skip tests
-- RFC compliance verification
-- Performance benchmarking
+**Next Step**: Execute the integration plan from ENDPOINT_TRANSPORT_INTEGRATION_PLAN.md when resources are available for the 1-2 week dedicated sprint.
+
+### Phase 9+: Endpoint Integration Execution (PLANNED)
+- 📝 Execute Phase 8a: Add transport field to Endpoint (non-breaking)
+- 📝 Execute Phase 8b: Implement UdpTransport adapter
+- 📝 Execute Phase 8c: Remove sock_fd field (clean migration)
+- 📝 Enable all 474 skip tests with loopback transport
+- 📝 RFC compliance verification
+- 📝 Performance benchmarking
+
+**Reference**: See `ENDPOINT_TRANSPORT_INTEGRATION_PLAN.md` for the complete 800+ line implementation roadmap covering all integration steps, testing strategies, and rollback procedures.
 
 ### Phase 10: CI/CD Integration
-- Automated test execution
-- Coverage reporting
-- Performance regression detection
+- 📝 Automated test execution
+- 📝 Coverage reporting
+- 📝 Performance regression detection
 
 ## Contributing
 

@@ -244,9 +244,32 @@ pub const LoopbackTransportAdapter = struct {
 
 /// UDP transport adapter for production use
 ///
-/// NOTE: This is a stub implementation to demonstrate the interface.
-/// The real implementation would integrate with src/quic/endpoint.zig
-/// and use actual UDP socket operations.
+/// STATUS: Stub implementation - Real implementation deferred to Phase 9+
+///
+/// This is intentionally a stub for Phase 7-8. The test framework primarily
+/// uses loopback transport for deterministic, fast testing. Real UDP transport
+/// integration requires careful modification of production endpoint code.
+///
+/// IMPLEMENTATION PLAN:
+/// See ENDPOINT_TRANSPORT_INTEGRATION_PLAN.md for the complete 43-hour plan
+/// to integrate transport abstraction with src/quic/endpoint.zig.
+///
+/// WHY STUB:
+/// 1. Test framework works best with loopback (deterministic, no OS dependencies)
+/// 2. Modifying production endpoint.zig requires extensive testing (1-2 weeks)
+/// 3. Phase 8 focuses on planning and documentation, not implementation
+/// 4. Real integration should be done when fully resourced and prepared
+///
+/// WHAT REAL IMPLEMENTATION NEEDS:
+/// 1. Parse bind address ("127.0.0.1:4433")
+/// 2. Create UDP socket with std.posix.socket()
+/// 3. Set SO_REUSEADDR, SO_NONBLOCK options
+/// 4. Bind to address
+/// 5. Implement sendto/recvfrom/poll operations
+/// 6. Handle errors gracefully
+///
+/// REFERENCE IMPLEMENTATION:
+/// src/quic/endpoint/io.zig contains working UDP send/recv that could be adapted.
 pub const UdpTransport = struct {
     /// Socket file descriptor (stub)
     fd: i32 = -1,

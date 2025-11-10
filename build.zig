@@ -405,6 +405,9 @@ pub fn build(b: *std.Build) void {
     const endpoint_utils_mod = mkModule(b, "src/quic/endpoint/utils.zig");
     endpoint_utils_mod.addImport("quic_conn", quic_conn_mod);
 
+    const endpoint_transport_mod = mkModule(b, "src/quic/endpoint/transport.zig");
+    endpoint_transport_mod.addImport("quic_conn", quic_conn_mod);
+
     const endpoint_incoming_mod = mkModule(b, "src/quic/endpoint/incoming.zig");
     endpoint_incoming_mod.addImport("quic_conn", quic_conn_mod);
     endpoint_incoming_mod.addImport("packet", quic_packet_legacy_mod);
@@ -488,6 +491,7 @@ pub fn build(b: *std.Build) void {
     quic_endpoint_mod.addImport("quic_version", quic_version_mod);
     quic_endpoint_mod.addImport("quic_token", quic_token_mod);
     quic_endpoint_mod.addImport("endpoint/utils.zig", endpoint_utils_mod);
+    quic_endpoint_mod.addImport("endpoint/transport.zig", endpoint_transport_mod);
     quic_endpoint_mod.addImport("endpoint/incoming.zig", endpoint_incoming_mod);
     quic_endpoint_mod.addImport("endpoint/frame_handler.zig", endpoint_frame_handler_mod);
     quic_endpoint_mod.addImport("endpoint/lookup.zig", endpoint_lookup_mod);
