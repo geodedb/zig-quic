@@ -20,6 +20,7 @@ const conn_mod = @import("quic_conn");
 const packet = @import("quic_packet");
 const frame = @import("quic_frame");
 const ks = @import("quic_tls");
+const types = @import("types");
 
 /// Client context for connection establishment.
 /// Similar to HandshakeContext, provides focused state passing.
@@ -77,7 +78,7 @@ pub fn connectTo(peer: conn_mod.SockAddr, sock_fd: std.posix.socket_t) conn_mod.
 ///
 /// RFC 9000 §5.1.1: "A client MUST choose a value for the Destination Connection ID field."
 pub fn createClientConnection(
-    allocator: std.mem.Allocator,
+    allocator: *std.mem.Allocator,
     peer: conn_mod.SockAddr,
     sock_fd: std.posix.socket_t,
     cfg: anytype,
@@ -85,7 +86,7 @@ pub fn createClientConnection(
     conns_map: anytype,
     peer_hash: u64,
 ) !*conn_mod.Connection {
-    const c = try allocator.create(conn_mod.Connection);
+    const c = try allocator.*.create(conn_mod.Connection);
     c.init(allocator, .Client, @as(isize, @intCast(sock_fd)), peer);
 
     // Apply config flags
@@ -121,11 +122,11 @@ pub fn createClientConnection(
     generateRandomCid(c.our_scid.bytes[0..c.our_scid.len]);
 
     // Map by both dcid and scid to find VN/HS
-    const key_d = .{
+    const key_d = types.Key{
         .peer_hash = peer_hash,
         .dcid_hash = hashBytes(c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]),
     };
-    const key_s = .{
+    const key_s = types.Key{
         .peer_hash = peer_hash,
         .dcid_hash = hashBytes(c.our_scid.bytes[0..c.our_scid.len]),
     };
@@ -249,3 +250,11 @@ fn hashBytes(bytes: []const u8) u64 {
     h.update(bytes);
     return h.final();
 }
+
+/// Placeholder struct for ClientHandshake (Phase 13).
+/// This struct satisfies unit tests while full implementation is being developed.
+pub const ClientHandshake = struct {
+    pub fn init() ClientHandshake {
+        return .{};
+    }
+};

@@ -390,6 +390,7 @@ pub fn build(b: *std.Build) void {
     endpoint_client_mod.addImport("quic_packet", quic_packet_mod);
     endpoint_client_mod.addImport("quic_frame", quic_frame_mod);
     endpoint_client_mod.addImport("quic_tls", quic_tls_mod);
+    endpoint_client_mod.addImport("types", endpoint_types_mod);
     // Note: handshake_integration import added later after endpoint_handshake_integration_mod is declared
 
     const endpoint_server_mod = mkModule(b, "src/quic/endpoint/server.zig");

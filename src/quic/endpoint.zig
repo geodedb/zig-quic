@@ -486,7 +486,7 @@ pub const Endpoint = struct {
 
         // Delegate to client module for connection creation
         const c = try client_mod.createClientConnection(
-            self.allocator.*,
+            self.allocator,
             peer,
             self.sock_fd,
             self.cfg,
