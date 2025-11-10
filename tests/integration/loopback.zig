@@ -30,7 +30,7 @@ pub const LoopbackTransport = struct {
     config: Config,
 
     /// Random number generator for loss/corruption
-    prng: std.rand.DefaultPrng,
+    prng: std.Random.DefaultPrng,
 
     /// Statistics
     stats: Stats,
@@ -72,7 +72,7 @@ pub const LoopbackTransport = struct {
 
     /// Initialize loopback transport
     pub fn init(allocator: std.mem.Allocator, config: Config) !*LoopbackTransport {
-        var self = try allocator.create(LoopbackTransport);
+        const self = try allocator.create(LoopbackTransport);
         errdefer allocator.destroy(self);
 
         self.* = .{
@@ -80,7 +80,7 @@ pub const LoopbackTransport = struct {
             .queue_a_to_b = try PacketQueue.init(allocator),
             .queue_b_to_a = try PacketQueue.init(allocator),
             .config = config,
-            .prng = std.rand.DefaultPrng.init(@intCast(std.time.milliTimestamp())),
+            .prng = std.Random.DefaultPrng.init(@intCast(std.time.milliTimestamp())),
             .stats = .{},
         };
 
@@ -197,7 +197,7 @@ pub const LoopbackTransport = struct {
     }
 
     /// Get number of packets in flight from A to B
-    pub fn getAtoB QueueLen(self: *const LoopbackTransport) usize {
+    pub fn getAtoBQueueLen(self: *const LoopbackTransport) usize {
         return self.queue_a_to_b.len();
     }
 
@@ -244,7 +244,7 @@ pub const PacketQueue = struct {
     /// Initialize packet queue
     pub fn init(allocator: std.mem.Allocator) !PacketQueue {
         return .{
-            .packets = std.ArrayList(Packet).init(allocator),
+            .packets = std.ArrayList(Packet){},
             .allocator = allocator,
         };
     }
@@ -254,12 +254,12 @@ pub const PacketQueue = struct {
         for (self.packets.items) |pkt| {
             self.allocator.free(pkt.data);
         }
-        self.packets.deinit();
+        self.packets.deinit(self.allocator);
     }
 
     /// Add packet to queue
     pub fn enqueue(self: *PacketQueue, packet: Packet) !void {
-        try self.packets.append(packet);
+        try self.packets.append(self.allocator, packet);
     }
 
     /// Remove and return next packet (if delivery time has passed)

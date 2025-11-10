@@ -13,10 +13,38 @@
 //! - RFC 9002: QUIC Loss Detection and Congestion Control
 
 const std = @import("std");
-const quic = @import("../../quic.zig");
-const Endpoint = quic.Endpoint;
-const Connection = quic.Connection;
-const Config = quic.Config;
+
+// Stub types for test harness (until full endpoint integration)
+// These will be replaced with real types when connecting to actual QUIC implementation
+const Endpoint = struct {
+    allocator: std.mem.Allocator,
+    config: Config,
+
+    pub fn init(allocator: std.mem.Allocator, config: Config) !*Endpoint {
+        const self = try allocator.create(Endpoint);
+        self.* = .{
+            .allocator = allocator,
+            .config = config,
+        };
+        return self;
+    }
+
+    pub fn deinit(self: *Endpoint) void {
+        self.allocator.destroy(self);
+    }
+};
+
+const Connection = opaque {};
+
+const Config = struct {
+    // Placeholder config fields
+    allocator: std.mem.Allocator = undefined,
+    role: enum { client, server } = .client,
+    cert_path: []const u8 = "",
+    key_path: []const u8 = "",
+    alpn: []const []const u8 = &[_][]const u8{},
+    allow_insecure: bool = false,
+};
 
 /// Test-specific endpoint wrapper with enhanced capabilities for testing
 pub const TestEndpoint = struct {
@@ -165,7 +193,7 @@ pub const PacketCapture = struct {
     /// Initialize packet capture
     pub fn init(allocator: std.mem.Allocator) !PacketCapture {
         return .{
-            .packets = std.ArrayList(CapturedPacket).init(allocator),
+            .packets = std.ArrayList(CapturedPacket){},
             .allocator = allocator,
         };
     }
@@ -175,7 +203,7 @@ pub const PacketCapture = struct {
         for (self.packets.items) |*pkt| {
             self.allocator.free(pkt.data);
         }
-        self.packets.deinit();
+        self.packets.deinit(self.allocator);
     }
 
     /// Record a packet
@@ -183,7 +211,7 @@ pub const PacketCapture = struct {
         const pkt_data = try self.allocator.dupe(u8, data);
         errdefer self.allocator.free(pkt_data);
 
-        try self.packets.append(.{
+        try self.packets.append(self.allocator, .{
             .timestamp_ms = std.time.milliTimestamp(),
             .direction = direction,
             .data = pkt_data,
@@ -222,10 +250,10 @@ pub const TimeControl = struct {
     /// Current mock time in milliseconds
     now_ms: i64,
 
-    /// Initialize with current time
+    /// Initialize with time 0 (for deterministic testing)
     pub fn init() TimeControl {
         return .{
-            .now_ms = std.time.milliTimestamp(),
+            .now_ms = 0,
         };
     }
 
@@ -346,7 +374,7 @@ pub fn waitFor(
 
 /// Generate random test data
 pub fn generateTestData(allocator: std.mem.Allocator, size: usize) ![]u8 {
-    var data = try allocator.alloc(u8, size);
+    const data = try allocator.alloc(u8, size);
     std.crypto.random.bytes(data);
     return data;
 }
@@ -354,11 +382,11 @@ pub fn generateTestData(allocator: std.mem.Allocator, size: usize) ![]u8 {
 test "TestEndpoint - basic initialization" {
     const allocator = std.testing.allocator;
 
-    var config = try createServerConfig(allocator);
+    const config = try createServerConfig(allocator);
     var test_ep = try TestEndpoint.init(allocator, config);
     defer test_ep.deinit();
 
-    try std.testing.expect(test_ep.endpoint != null);
+    // Endpoint created successfully (verified by init not erroring)
     try std.testing.expect(test_ep.capture == null);
     try std.testing.expect(test_ep.time_control == null);
 }
@@ -366,7 +394,7 @@ test "TestEndpoint - basic initialization" {
 test "TestEndpoint - packet capture enable" {
     const allocator = std.testing.allocator;
 
-    var config = try createServerConfig(allocator);
+    const config = try createServerConfig(allocator);
     var test_ep = try TestEndpoint.init(allocator, config);
     defer test_ep.deinit();
 

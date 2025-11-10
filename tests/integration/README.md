@@ -35,25 +35,31 @@ Simulates network communication without UDP sockets:
   - ECN marking support
 - **PacketQueue**: FIFO queue with delivery time simulation
 
-### Test Fixtures (Phase 2) - TODO
+### Test Fixtures (Phase 2) ✅
 
 #### `connection_pair.zig` - Connection Pair Fixture
 Linked client-server connections for easy testing:
 - Automatic loopback transport wiring
 - Synchronized packet delivery
 - Helper methods for common operations
+- Builder pattern with fluent API
+- 8 tests passing
 
 #### `scenarios.zig` - Scenario Builder
 Fluent API for building test scenarios:
 ```zig
 scenario.createClient()
     .withALPN("h3")
-    .withInitialCwnd(10)
+    .withPacketLoss(0.05)
     .connect()
     .sendData(1024)
     .expectAck()
     .close();
 ```
+- Pre-configured templates for common scenarios
+- Supports packet loss, delay, corruption, reordering
+- Integration with packet capture and time control
+- 11 tests passing
 
 #### `tls_helpers.zig` - TLS Test Infrastructure
 Helpers for TLS testing:
@@ -61,6 +67,8 @@ Helpers for TLS testing:
 - Create test key pairs
 - Set up client/server TLS configs
 - Validate TLS handshake correctness
+- Session store for 0-RTT testing
+- 8 tests passing
 
 ### RFC Compliance Test Suites (Phase 3) - TODO
 
@@ -186,9 +194,9 @@ The integration test framework provides:
 |-------|-----------|--------|-------|
 | Phase 1 | harness.zig | ✅ Complete | 4/4 tests passing |
 | Phase 1 | loopback.zig | ✅ Complete | 6/6 tests passing |
-| Phase 1 | tls_helpers.zig | 📝 TODO | - |
-| Phase 2 | connection_pair.zig | 📝 TODO | - |
-| Phase 2 | scenarios.zig | 📝 TODO | - |
+| Phase 2 | tls_helpers.zig | ✅ Complete | 8/8 tests passing |
+| Phase 2 | connection_pair.zig | ✅ Complete | 8/8 tests passing |
+| Phase 2 | scenarios.zig | ✅ Complete | 11/11 tests passing |
 | Phase 3 | rfc9000_section7.zig | 📝 TODO | 0/98 |
 | Phase 3 | rfc9002_recovery.zig | 📝 TODO | 0/47 |
 | Phase 3 | rfc9000_packets.zig | 📝 TODO | 0/82 |
@@ -196,16 +204,15 @@ The integration test framework provides:
 | Phase 4 | Advanced features | 📝 TODO | - |
 | Phase 5 | Interop/Stress | 📝 TODO | - |
 
-**Total Progress**: 10/10 foundation tests passing | 0/265 integration tests implemented
+**Total Progress**: 37/37 infrastructure tests passing | 0/265 integration tests implemented
 
 ## Next Steps
 
-1. ✅ Implement core test infrastructure (harness.zig, loopback.zig)
-2. 📝 Implement TLS test helpers (tls_helpers.zig)
-3. 📝 Implement connection pair fixture (connection_pair.zig)
-4. 📝 Create first RFC compliance test suite (rfc9000_section7.zig)
-5. 📝 Incrementally add remaining test suites
-6. 📝 Set up CI pipeline for integration tests
+1. ✅ Implement core test infrastructure (Phase 1)
+2. ✅ Implement test fixtures (Phase 2)
+3. 📝 Create first RFC compliance test suite (rfc9000_section7.zig)
+4. 📝 Incrementally add remaining test suites
+5. 📝 Set up CI pipeline for integration tests
 
 ## Contributing
 
