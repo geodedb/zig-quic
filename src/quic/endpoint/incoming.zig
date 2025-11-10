@@ -1344,7 +1344,7 @@ fn decryptHandshakePacket(
     allocator: std.mem.Allocator,
     bytes: []const u8,
     length_offset: usize,
-    rx_keys: conn_mod.Key,
+    rx_keys: packet.InitialKeys,
     largest_pn: u64,
 ) !struct { payload: []u8, packet_number: u64 } {
     // Parse length field
