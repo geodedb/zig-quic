@@ -820,6 +820,9 @@ pub fn processInitial(
         const our_key = endpoint_types.Key{ .peer_hash = ph, .dcid_hash = hashBytes(c_new.our_scid.bytes[0..c_new.our_scid.len]) };
         _ = ctx.conns.put(our_key, c_new) catch {};
 
+        // Add newly created server connection to accepted list for accept() API
+        _ = ctx.accepted.append(ctx.allocator.*, c_new) catch {};
+
         break :blk c_new;
     };
 
