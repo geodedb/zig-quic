@@ -26,6 +26,7 @@ const pto_mod = @import("endpoint/pto.zig");
 const lookup = @import("endpoint/lookup.zig");
 const incoming = @import("endpoint/incoming.zig");
 const frame_handler = @import("endpoint/frame_handler.zig");
+const handshake_integration = @import("endpoint/handshake_integration.zig");
 const ep_types = @import("types");
 
 const posix = std.posix;
@@ -567,19 +568,8 @@ pub const Endpoint = struct {
         var frames = std.ArrayList(u8){};
         defer frames.deinit(self.allocator.*);
         // Build CRYPTO frame carrying ClientHello
-        // Attach local Transport Parameters (minimal) for interop scaffolding
-        var tpp: tp.TransportParams = .{};
-        // Encode initial limits from connection local defaults
-        tpp.initial_max_data = c.local_max_data;
-        tpp.initial_max_stream_data_bidi_local = c.local_max_stream_data;
-        tpp.initial_max_stream_data_bidi_remote = c.local_max_stream_data;
-        tpp.initial_max_streams_bidi = c.local_max_streams_bidi;
-        tpp.initial_max_streams_uni = 0;
-        const tp_bytes = tp.TransportParams.encode(&tpp, self.allocator.*) catch &[_]u8{};
-        defer {
-            if (tp_bytes.len > 0) self.allocator.free(tp_bytes);
-        }
-        c.setLocalTransportParameters(if (tp_bytes.len > 0) tp_bytes else tp_bytes[0..0]) catch {};
+        // Set up client transport parameters for TLS handshake (Phase 4b.5 Session 7)
+        handshake_integration.setupClientTransportParams(c, self.allocator.*) catch {};
         // Queue ClientHello using full TLS 1.3
         c.tls.queueMinimalClientHello() catch {
             _ = c.tls.queueMinimalClientHelloAuto() catch 0;
@@ -1288,23 +1278,8 @@ pub const Endpoint = struct {
                         self.cfg.inline_server_priv_p256 != null,
                     });
                 }
-                // Set local transport parameters for server (required for QUIC TLS extension)
-                var tpp: tp.TransportParams = .{};
-                tpp.original_destination_connection_id = c_new.peer_initial_dcid.bytes[0..c_new.peer_initial_dcid.len];
-                tpp.initial_source_connection_id = c_new.our_scid.bytes[0..c_new.our_scid.len];
-                tpp.max_idle_timeout = self.cfg.max_idle_timeout_ms;
-                tpp.max_udp_payload_size = self.cfg.max_udp_payload;
-                tpp.initial_max_data = c_new.local_max_data;
-                tpp.initial_max_stream_data_bidi_local = c_new.local_max_stream_data;
-                tpp.initial_max_stream_data_bidi_remote = c_new.local_max_stream_data;
-                tpp.initial_max_stream_data_uni = c_new.local_max_stream_data;
-                tpp.initial_max_streams_bidi = c_new.local_max_streams_bidi;
-                tpp.initial_max_streams_uni = c_new.local_max_streams_uni;
-                const tp_bytes = tp.TransportParams.encode(&tpp, self.allocator.*) catch &[_]u8{};
-                defer {
-                    if (tp_bytes.len > 0) self.allocator.free(tp_bytes);
-                }
-                c_new.setLocalTransportParameters(if (tp_bytes.len > 0) tp_bytes else tp_bytes[0..0]) catch {};
+                // Set local transport parameters for server (Phase 4b.5 Session 7)
+                handshake_integration.setupServerTransportParams(c_new, &self.cfg, self.allocator.*) catch {};
                 c_new.allowed_alpns = self.cfg.alpn;
                 // Enable optional pacing and set CC max_datagram_size
                 c_new.enable_pacing = self.cfg.enable_pacing;

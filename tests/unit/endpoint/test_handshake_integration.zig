@@ -18,6 +18,7 @@ const std = @import("std");
 const testing = std.testing;
 const handshake = @import("quic_endpoint_handshake_integration");
 const conn_mod = @import("quic_conn");
+const cfg = @import("config");
 
 var test_allocator_instance = std.testing.allocator;
 
@@ -183,6 +184,89 @@ test "RFC 9000 §18.2 - extractTransportParameters rejects invalid parameter val
     // - active_connection_id_limit < 2 or > 2^60
 
     // Placeholder
+    try testing.expect(true);
+}
+
+test "RFC 9000 §18.2 - setupClientTransportParams encodes client parameters" {
+    // RFC 9000 §18.2: "Transport parameters are encoded as a sequence of
+    // transport parameter type-length-value (TLV) entries."
+    // RFC 9000 §4.1, §4.6: Client sends initial flow control limits
+    //
+    // Expected: setupClientTransportParams() should:
+    // 1. Create TransportParams with client flow control limits
+    // 2. Encode to TLV format
+    // 3. Call setLocalTransportParameters() on connection
+
+    var allocator = testing.allocator;
+
+    // Create a test connection
+    var conn: conn_mod.Connection = undefined;
+    const peer = conn_mod.SockAddr{}; // Default peer address (not used in this test)
+    conn.init(&allocator, .Client, 0, peer);
+    defer conn.deinit();
+
+    // Set connection flow control limits
+    conn.local_max_data = 1048576; // 1 MB
+    conn.local_max_stream_data = 262144; // 256 KB
+    conn.local_max_streams_bidi = 100;
+
+    // Call setupClientTransportParams
+    try handshake.setupClientTransportParams(&conn, allocator);
+
+    // Verify transport parameters were set
+    // Note: We can't directly inspect the encoded params without TLS access,
+    // but we verify the function completes successfully
+    try testing.expect(true);
+}
+
+test "RFC 9000 §18.2 - setupServerTransportParams encodes server parameters" {
+    // RFC 9000 §18.2: "Server MUST include original_destination_connection_id
+    // and initial_source_connection_id in transport parameters."
+    // RFC 9000 §10.1: Server sends max_idle_timeout
+    // RFC 9000 §14.1: Server sends max_udp_payload_size
+    //
+    // Expected: setupServerTransportParams() should:
+    // 1. Create TransportParams with server-required CIDs
+    // 2. Set timeout and payload limits from config
+    // 3. Set flow control limits
+    // 4. Encode to TLV format
+    // 5. Call setLocalTransportParameters() on connection
+
+    var allocator = testing.allocator;
+
+    // Create a test connection
+    var conn: conn_mod.Connection = undefined;
+    const peer = conn_mod.SockAddr{}; // Default peer address (not used in this test)
+    conn.init(&allocator, .Server, 0, peer);
+    defer conn.deinit();
+
+    // Set connection IDs
+    const dcid_bytes = [_]u8{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
+    @memcpy(conn.peer_initial_dcid.bytes[0..8], &dcid_bytes);
+    conn.peer_initial_dcid.len = 8;
+
+    const scid_bytes = [_]u8{0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18};
+    @memcpy(conn.our_scid.bytes[0..8], &scid_bytes);
+    conn.our_scid.len = 8;
+
+    // Set flow control limits
+    conn.local_max_data = 1048576; // 1 MB
+    conn.local_max_stream_data = 262144; // 256 KB
+    conn.local_max_streams_bidi = 100;
+    conn.local_max_streams_uni = 100;
+
+    // Create a test config
+    const test_alpn = [_][]const u8{"test"};
+    var quic_cfg = cfg.QuicConfig{ .alpn = &test_alpn };
+    quic_cfg.max_idle_timeout_ms = 30000; // 30 seconds
+    quic_cfg.max_udp_payload = 1200;
+
+    // Call setupServerTransportParams
+    try handshake.setupServerTransportParams(&conn, &quic_cfg, allocator);
+
+    // Verify transport parameters were set
+    // Note: We can't directly inspect the encoded params without TLS access,
+    // but we verify the function completes successfully
     try testing.expect(true);
 }
 

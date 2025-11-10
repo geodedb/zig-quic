@@ -480,6 +480,7 @@ pub fn build(b: *std.Build) void {
     quic_endpoint_mod.addImport("endpoint/frame_handler.zig", endpoint_frame_handler_mod);
     quic_endpoint_mod.addImport("endpoint/lookup.zig", endpoint_lookup_mod);
     quic_endpoint_mod.addImport("endpoint/pto.zig", endpoint_pto_mod);
+    quic_endpoint_mod.addImport("endpoint/handshake_integration.zig", endpoint_handshake_integration_mod);
 
     // Public API module (reuse everywhere)
     const quic_api_mod = mkModule(b, "src/quic/api.zig");
@@ -755,6 +756,7 @@ pub fn build(b: *std.Build) void {
         const test_endpoint_handshake_integration = addTst(b, "tests/unit/endpoint/test_handshake_integration.zig", target, optimize);
         test_endpoint_handshake_integration.root_module.addImport("quic_endpoint_handshake_integration", endpoint_handshake_integration_mod);
         test_endpoint_handshake_integration.root_module.addImport("quic_conn", quic_conn_mod);
+        test_endpoint_handshake_integration.root_module.addImport("config", quic_config_mod);
         const run_test_endpoint_handshake_integration = b.addRunArtifact(test_endpoint_handshake_integration);
         test_step.dependOn(&run_test_endpoint_handshake_integration.step);
 

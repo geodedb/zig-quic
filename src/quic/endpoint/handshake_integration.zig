@@ -434,6 +434,113 @@ pub fn extractTransportParameters(
     return params;
 }
 
+/// Set up client-side transport parameters for TLS handshake.
+/// Extracted from endpoint.zig client connection establishment (Phase 4b.5 Session 7).
+///
+/// RFC 9000 §7.4: "Each endpoint includes transport parameters as a
+/// quic_transport_parameters extension in the TLS handshake."
+///
+/// RFC 9000 §18.2: "Transport parameters are specified as follows:
+/// - initial_max_data (0x04)
+/// - initial_max_stream_data_bidi_local (0x05)
+/// - initial_max_stream_data_bidi_remote (0x06)
+/// - initial_max_streams_bidi (0x08)
+/// - initial_max_streams_uni (0x09)"
+///
+/// This function:
+/// 1. Creates TransportParams struct with client-side parameters
+/// 2. Populates flow control limits from connection defaults
+/// 3. Encodes parameters to TLV format
+/// 4. Installs encoded parameters on connection for TLS extension
+///
+/// Parameters:
+/// - conn: Connection to configure transport parameters for
+/// - allocator: Memory allocator for encoding
+///
+/// Returns:
+/// - error.OutOfMemory if encoding fails
+///
+/// Side Effects:
+/// - Calls conn.setLocalTransportParameters() with encoded parameters
+pub fn setupClientTransportParams(
+    conn: *conn_mod.Connection,
+    allocator: std.mem.Allocator,
+) !void {
+    var tpp: transport_params.TransportParams = .{};
+
+    // Encode initial limits from connection local defaults (RFC 9000 §4.1, §4.6)
+    tpp.initial_max_data = conn.local_max_data;
+    tpp.initial_max_stream_data_bidi_local = conn.local_max_stream_data;
+    tpp.initial_max_stream_data_bidi_remote = conn.local_max_stream_data;
+    tpp.initial_max_streams_bidi = conn.local_max_streams_bidi;
+    tpp.initial_max_streams_uni = 0;
+
+    // Encode to TLV format for quic_transport_parameters extension
+    const tp_bytes = try transport_params.TransportParams.encode(&tpp, allocator);
+    defer if (tp_bytes.len > 0) allocator.free(tp_bytes);
+
+    // Install on connection - will be sent in ClientHello
+    try conn.setLocalTransportParameters(if (tp_bytes.len > 0) tp_bytes else tp_bytes[0..0]);
+}
+
+/// Set up server-side transport parameters for TLS handshake.
+/// Extracted from endpoint.zig server connection establishment (Phase 4b.5 Session 7).
+///
+/// RFC 9000 §7.4: "Each endpoint includes transport parameters as a
+/// quic_transport_parameters extension in the TLS handshake."
+///
+/// RFC 9000 §18.2: Server MUST include original_destination_connection_id
+/// and initial_source_connection_id in transport parameters.
+///
+/// This function:
+/// 1. Creates TransportParams struct with server-side parameters
+/// 2. Sets connection IDs (original DCID, initial SCID)
+/// 3. Sets timeouts and payload limits from config
+/// 4. Sets flow control limits from connection defaults
+/// 5. Encodes parameters to TLV format
+/// 6. Installs encoded parameters on connection for TLS extension
+///
+/// Parameters:
+/// - conn: Connection to configure transport parameters for
+/// - cfg: QUIC configuration with timeout and payload settings
+/// - allocator: Memory allocator for encoding
+///
+/// Returns:
+/// - error.OutOfMemory if encoding fails
+///
+/// Side Effects:
+/// - Calls conn.setLocalTransportParameters() with encoded parameters
+pub fn setupServerTransportParams(
+    conn: *conn_mod.Connection,
+    quic_cfg: *const cfg.QuicConfig,
+    allocator: std.mem.Allocator,
+) !void {
+    var tpp: transport_params.TransportParams = .{};
+
+    // Server MUST send original_destination_connection_id (RFC 9000 §18.2)
+    tpp.original_destination_connection_id = conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len];
+    tpp.initial_source_connection_id = conn.our_scid.bytes[0..conn.our_scid.len];
+
+    // Set timeouts and payload limits from config (RFC 9000 §10.1, §14.1)
+    tpp.max_idle_timeout = quic_cfg.max_idle_timeout_ms;
+    tpp.max_udp_payload_size = quic_cfg.max_udp_payload;
+
+    // Set flow control limits from connection defaults (RFC 9000 §4.1, §4.6)
+    tpp.initial_max_data = conn.local_max_data;
+    tpp.initial_max_stream_data_bidi_local = conn.local_max_stream_data;
+    tpp.initial_max_stream_data_bidi_remote = conn.local_max_stream_data;
+    tpp.initial_max_stream_data_uni = conn.local_max_stream_data;
+    tpp.initial_max_streams_bidi = conn.local_max_streams_bidi;
+    tpp.initial_max_streams_uni = conn.local_max_streams_uni;
+
+    // Encode to TLV format for quic_transport_parameters extension
+    const tp_bytes = try transport_params.TransportParams.encode(&tpp, allocator);
+    defer if (tp_bytes.len > 0) allocator.free(tp_bytes);
+
+    // Install on connection - will be sent in ServerHello EncryptedExtensions
+    try conn.setLocalTransportParameters(if (tp_bytes.len > 0) tp_bytes else tp_bytes[0..0]);
+}
+
 /// Module marker for Phase 4b.5 Session 6.
 /// This module extracts TLS handshake integration from endpoint.zig.
 pub const extracted = true; // Session 6 complete when tests pass
