@@ -32,6 +32,7 @@ const io_mod = @import("endpoint/io.zig");
 const lifecycle_mod = @import("endpoint/lifecycle.zig");
 const ep_types = @import("types");
 const transport_mod = @import("endpoint/transport.zig");
+const udp_transport_mod = @import("endpoint/udp_transport.zig");
 
 const posix = std.posix;
 const builtin = @import("builtin");
@@ -105,21 +106,15 @@ pub const EndpointRole = enum {
 /// loss recovery as recommended by RFC 9002 §6.
 pub const Endpoint = struct {
 
-    // Socket file descriptor
-    sock_fd: posix.socket_t,
-
-    // Socket address family (AF_INET or AF_INET6)
-    sock_family: u16,
+    // Transport abstraction (Phase 8c: required, wraps UDP or loopback)
+    // All I/O operations go through this transport interface
+    transport: transport_mod.Transport,
 
     // Event loop backend (os specific)
     loop_backend: lb.LoopBackend,
 
     // Memory allocator for endpoint resources
     allocator: *std.mem.Allocator,
-
-    // Transport abstraction (Phase 8a: optional, fallback to sock_fd if null)
-    // When provided, endpoint uses this instead of direct UDP socket operations
-    transport: ?transport_mod.Transport = null,
 
     // Timer management for the endpoint
     timers: std.ArrayList(Timer),
@@ -148,134 +143,32 @@ pub const Endpoint = struct {
     role: EndpointRole,
 
     /// Initialize a UDP endpoint bound to bind_addr (e.g., "127.0.0.1:0").
+    ///
+    /// Phase 8c: Now uses UdpTransport internally for all socket operations.
+    /// The endpoint creates a UDP socket via the transport abstraction layer.
     pub fn init(alloc: *std.mem.Allocator, bind_addr: []const u8, cfgp: *const cfg.QuicConfig) !Endpoint {
-        // Resolve and bind IPv4 socket for tests; port 0 lets OS choose a free port.
-        var ep_addr = try utils.resolveAny(bind_addr, .udp);
+        // Create UDP transport (handles socket creation, binding, configuration)
+        var udp = try udp_transport_mod.UdpTransport.init(bind_addr);
+        errdefer udp.deinit();
 
-        // Determine address family from resolved address
-        const sa: *const posix.sockaddr = @ptrCast(@alignCast(&ep_addr.storage));
-        const family = sa.family;
+        // Convert to generic transport interface
+        var transport = udp.asTransport();
 
-        std.debug.print("Endpoint init - binding to address family={any}\n", .{family});
-
-        const fd = try posix.socket(family, posix.SOCK.DGRAM, posix.IPPROTO.UDP);
-        errdefer posix.close(fd);
-
-        std.debug.print("Created socket fd={}\n", .{fd});
-
-        // For IPv6 sockets, disable IPV6_V6ONLY to allow dual-stack (IPv4-mapped + IPv6)
-        if (family == posix.AF.INET6) {
-            var v6only: i32 = 0; // 0 = allow both IPv4-mapped and IPv6
-            const IPV6_V6ONLY: i32 = 26; // Standard value for IPV6_V6ONLY
-            _ = posix.setsockopt(fd, posix.IPPROTO.IPV6, IPV6_V6ONLY, std.mem.asBytes(&v6only)) catch {};
-            std.debug.print("Set IPV6_V6ONLY=0 for dual-stack support\n", .{});
-        }
-
-        // Allow fast rebinding in tests
-        var one: i32 = 1;
-        _ = posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, std.mem.asBytes(&one)) catch {};
-        // Linux: enable reception of TOS/TCLASS via ancillary data to read ECN bits per datagram
-        // TEMPORARILY DISABLED: These socket options may interfere with basic UDP reception
-        if (false and builtin.target.os.tag == .linux) {
-            var enable: i32 = 1;
-            // Zig std may not expose IP.RECVTOS; use the Linux value (IP_RECVTOS = 13)
-            const IP_RECVTOS: i32 = 13;
-            _ = posix.setsockopt(fd, posix.IPPROTO.IP, IP_RECVTOS, std.mem.asBytes(&enable)) catch {};
-            // Also request IPv6 traffic class delivery (IPV6_RECVTCLASS = 66)
-            const IPV6_RECVTCLASS: i32 = 66;
-            _ = posix.setsockopt(fd, posix.IPPROTO.IPV6, IPV6_RECVTCLASS, std.mem.asBytes(&enable)) catch {};
-            // Enable Linux error queue reception for ICMP PTB (IPv4/IPv6)
-            const IP_RECVERR: i32 = 11;
-            _ = posix.setsockopt(fd, posix.IPPROTO.IP, IP_RECVERR, std.mem.asBytes(&enable)) catch {};
-            const IPV6_RECVERR: i32 = 25;
-            _ = posix.setsockopt(fd, posix.IPPROTO.IPV6, IPV6_RECVERR, std.mem.asBytes(&enable)) catch {};
-        }
-        // Note: do not rely on O.NONBLOCK here; use MSG.DONTWAIT on Linux in recv loop for portability
-        const sa_ptr: *const posix.sockaddr = @ptrCast(@alignCast(&ep_addr.storage));
-        std.debug.print("Binding socket to address...\n", .{});
-        const bind_len: posix.socklen_t = switch (family) {
-            posix.AF.INET => @intCast(@sizeOf(posix.sockaddr.in)),
-            posix.AF.INET6 => @intCast(@sizeOf(posix.sockaddr.in6)),
-            else => return error.AddressFamilyNotSupported,
-        };
-        try posix.bind(fd, sa_ptr, bind_len);
-        std.debug.print("Socket bound successfully\n", .{});
-
-        // Verify the actual bound address (in case port was 0)
-        var actual_addr = conn_mod.SockAddr{};
-        actual_addr.len = @intCast(@sizeOf(posix.sockaddr.storage));
-        try posix.getsockname(fd, @ptrCast(&actual_addr.storage), &actual_addr.len);
-        // Debug: print actual bound address and port
-        if (actual_addr.storage.family == posix.AF.INET) {
-            const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&actual_addr.storage));
-            const addr_bytes = @as([4]u8, @bitCast(sin.addr));
-            const port = portFromNetwork(sin.port);
-            std.debug.print("Socket bound to {}.{}.{}.{}:{}\n", .{ addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3], port });
-        } else if (actual_addr.storage.family == posix.AF.INET6) {
-            const sin6: *const posix.sockaddr.in6 = @ptrCast(@alignCast(&actual_addr.storage));
-            const port = portFromNetwork(sin6.port);
-            // Check if it's an IPv4-mapped IPv6 address (::ffff:a.b.c.d)
-            const is_ipv4_mapped = sin6.addr[0] == 0 and sin6.addr[1] == 0 and
-                sin6.addr[2] == 0 and sin6.addr[3] == 0 and
-                sin6.addr[4] == 0 and sin6.addr[5] == 0 and
-                sin6.addr[6] == 0 and sin6.addr[7] == 0 and
-                sin6.addr[8] == 0 and sin6.addr[9] == 0 and
-                sin6.addr[10] == 0xff and sin6.addr[11] == 0xff;
-            if (is_ipv4_mapped) {
-                std.debug.print("Socket bound to ::ffff:{}.{}.{}.{}:{} (dual-stack)\n", .{ sin6.addr[12], sin6.addr[13], sin6.addr[14], sin6.addr[15], port });
-            } else {
-                std.debug.print("Socket bound to IPv6 port {}\n", .{port});
-            }
-        }
-
-        // Set socket to non-blocking mode
-        if (builtin.target.os.tag == .windows) {
-            const ws2 = std.os.windows.ws2_32;
-            var nonblock: std.os.windows.ULONG = 1;
-            _ = ws2.ioctlsocket(fd, ws2.FIONBIO, &nonblock);
-        } else {
-            // Set non-blocking mode on Unix
-            const flags = try posix.fcntl(fd, posix.F.GETFL, 0);
-            std.debug.print("Current socket flags: 0x{x}\n", .{flags});
-            const O_NONBLOCK: i32 = 0x800; // O_NONBLOCK value on Linux
-            const new_flags = flags | O_NONBLOCK;
-            std.debug.print("Setting socket flags to: 0x{x}\n", .{new_flags});
-            _ = try posix.fcntl(fd, posix.F.SETFL, new_flags);
-            const verify_flags = try posix.fcntl(fd, posix.F.GETFL, 0);
-            std.debug.print("Socket flags after setting: 0x{x}\n", .{verify_flags});
-            std.debug.print("Has O_NONBLOCK: {}\n", .{(verify_flags & O_NONBLOCK) != 0});
-        }
-
-        // Create epoll instance on Linux
-        var epoll_fd_opt: ?posix.fd_t = null;
-        if (builtin.target.os.tag == .linux) {
-            const linux = std.os.linux;
-            const epfd = try posix.epoll_create1(linux.EPOLL.CLOEXEC);
-
-            // Add the socket to epoll for read events
-            var ev = std.mem.zeroes(linux.epoll_event);
-            ev.events = linux.EPOLL.IN;
-            ev.data.fd = @as(i32, @intCast(fd));
-            try posix.epoll_ctl(epfd, linux.EPOLL.CTL_ADD, fd, &ev);
-
-            epoll_fd_opt = epfd;
-            std.debug.print("Created epoll fd={} and added socket fd={}\n", .{ epfd, fd });
-        }
+        // Get local address from transport
+        const local_addr = try transport.getLocalAddr();
 
         // Determine endpoint role based on the bound port
-        // Server typically binds to a specific port (like 4433), client binds to port 0 (random)
-        const bound_port = if (actual_addr.storage.family == posix.AF.INET) blk: {
-            const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&actual_addr.storage));
+        const bound_port = if (local_addr.storage.family == posix.AF.INET) blk: {
+            const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&local_addr.storage));
             break :blk portFromNetwork(sin.port);
-        } else if (actual_addr.storage.family == posix.AF.INET6) blk: {
-            const sin6: *const posix.sockaddr.in6 = @ptrCast(@alignCast(&actual_addr.storage));
+        } else if (local_addr.storage.family == posix.AF.INET6) blk: {
+            const sin6: *const posix.sockaddr.in6 = @ptrCast(@alignCast(&local_addr.storage));
             break :blk portFromNetwork(sin6.port);
         } else blk: {
             break :blk @as(u16, 0);
         };
 
-        // If we're binding to port 4433 or any specific port in the bind_addr, we're a server
-        // If we're binding to port 0 or got a random port, we're a client
+        // Server binds to specific port (4433, 443), client binds to 0 (random)
         const is_server = std.mem.indexOf(u8, bind_addr, ":4433") != null or
             std.mem.indexOf(u8, bind_addr, ":443") != null or
             (std.mem.indexOf(u8, bind_addr, ":0") == null and bound_port != 0);
@@ -284,8 +177,7 @@ pub const Endpoint = struct {
         std.debug.print("Endpoint role determined as: {any}\n", .{endpoint_role});
 
         return Endpoint{
-            .sock_fd = fd,
-            .sock_family = family,
+            .transport = transport,
             .loop_backend = lb.defaultLoopBackend(),
             .allocator = alloc,
             .timers = std.ArrayList(Timer){},
@@ -296,12 +188,12 @@ pub const Endpoint = struct {
             .captures = std.ArrayList(OutCaptured){},
             .test_capture_enabled = false,
             .retired = std.ArrayList(*conn_mod.Connection){},
-            .epoll_fd = epoll_fd_opt,
+            .epoll_fd = null, // Not used with transport abstraction
             .role = endpoint_role,
         };
     }
 
-    /// Initialize endpoint with custom transport (Phase 8a: enables loopback testing).
+    /// Initialize endpoint with custom transport (Phase 8c: for loopback testing).
     /// This method allows creating an endpoint with a pluggable transport backend
     /// (e.g., loopback for testing) instead of a real UDP socket.
     pub fn initWithTransport(
@@ -309,18 +201,13 @@ pub const Endpoint = struct {
         transport: transport_mod.Transport,
         cfgp: *const cfg.QuicConfig,
     ) !Endpoint {
-        // Get local address from transport
-        const local_addr = try transport.getLocalAddr();
-
         // Determine role: default to Server, can be overridden later
         const endpoint_role = EndpointRole.Server;
 
         return Endpoint{
-            .sock_fd = @as(posix.socket_t, @intCast(-1)), // Not used with transport
-            .sock_family = local_addr.storage.family,
+            .transport = transport,
             .loop_backend = lb.defaultLoopBackend(),
             .allocator = alloc,
-            .transport = transport, // Phase 8a: provide transport
             .timers = std.ArrayList(Timer){},
             .conns = std.AutoHashMap(Key, *conn_mod.Connection).init(alloc.*),
             .next_timer_id = 1,
@@ -417,18 +304,8 @@ pub const Endpoint = struct {
         self.accepted.deinit(self.allocator.*);
         self.timers.deinit(self.allocator.*);
 
-        // Close epoll fd if we have one
-        if (self.epoll_fd) |epfd| {
-            _ = posix.close(epfd);
-        }
-
-        // Close socket
-        if (builtin.target.os.tag == .windows) {
-            const ws2 = std.os.windows.ws2_32;
-            _ = ws2.closesocket(self.sock_fd);
-        } else {
-            _ = posix.close(self.sock_fd);
-        }
+        // Phase 8c: Close transport (which closes underlying socket)
+        self.transport.close();
     }
 
     /// Expire due timers without blocking on I/O (test helper).
@@ -464,6 +341,8 @@ pub const Endpoint = struct {
     /// Send UDP datagram to peer (capturing if enabled).
     /// Send UDP datagram to peer. Supports test capture mode.
     /// Phase 8a: Uses transport abstraction if available, otherwise delegates to io_mod.
+    /// Send UDP datagram to peer via transport abstraction.
+    /// Phase 8c: Always uses transport (no fallback to sock_fd).
     pub fn sendTo(self: *Endpoint, peer: conn_mod.SockAddr, data: []const u8) !usize {
         // Test capture: make owned copy and enqueue without sending
         if (self.test_capture_enabled) {
@@ -472,33 +351,23 @@ pub const Endpoint = struct {
             _ = self.captures.append(self.allocator.*, .{ .peer = peer, .bytes = owned }) catch {};
         }
 
-        // Phase 8a: Use transport if available, otherwise fallback to direct UDP
-        if (self.transport) |*t| {
-            return try t.send(peer, data);
-        }
-
-        // Fallback: Delegate actual UDP send to io module (backward compatibility)
-        std.debug.print("sendTo called with data.len={}\n", .{data.len});
-        return io_mod.sendTo(self.sock_fd, peer, data);
+        // Phase 8c: Always use transport (transport is now required, not optional)
+        return try self.transport.send(peer, data);
     }
 
-    /// Receive UDP datagram (non-blocking if platform supports MSG.DONTWAIT).
-    /// Phase 8a: Uses transport abstraction if available, otherwise delegates to io_mod.
+    /// Receive UDP datagram via transport abstraction (non-blocking).
+    /// Phase 8c: Always uses transport (no fallback to sock_fd).
     pub fn recvFrom(self: *Endpoint, buf: []u8) !struct { n: usize, peer: conn_mod.SockAddr } {
-        // Phase 8a: Use transport if available, otherwise fallback to direct UDP
-        if (self.transport) |*t| {
-            const result = try t.recv(buf);
-            return .{ .n = result.n, .peer = result.peer };
-        }
-
-        // Fallback: Delegate to io module for platform abstraction (backward compatibility)
-        const result = try io_mod.recvFrom(self.sock_fd, buf);
+        // Phase 8c: Always use transport (transport is now required, not optional)
+        const result = try self.transport.recv(buf);
         return .{ .n = result.n, .peer = result.peer };
     }
 
     /// Accept a server connection from initial datagram's peer address.
+    /// Phase 8c: sock_fd set to -1 (I/O goes through endpoint transport)
     pub fn acceptFrom(self: *Endpoint, peer: conn_mod.SockAddr) conn_mod.Connection {
-        return .{ .id = 0, .role = .Server, .sock_fd = sockToIsize(self.sock_fd), .peer = peer, .tls_inbox = std.ArrayList(u8){} };
+        _ = self; // unused
+        return .{ .id = 0, .role = .Server, .sock_fd = -1, .peer = peer, .tls_inbox = std.ArrayList(u8){} };
     }
 
     /// Enqueue accepted server connection for accept().
@@ -523,9 +392,11 @@ pub const Endpoint = struct {
     }
 
     /// Create server-side represented connection (used by client dialing logic).
+    /// Phase 8c: sock_fd set to -1 (I/O goes through endpoint transport)
     pub fn connectTo(self: *Endpoint, hostport: []const u8) !conn_mod.Connection {
+        _ = self; // unused
         const peer = try utils.resolveAny(hostport, .udp);
-        return .{ .id = 0, .role = .Client, .sock_fd = sockToIsize(self.sock_fd), .peer = peer, .tls_inbox = std.ArrayList(u8){} };
+        return .{ .id = 0, .role = .Client, .sock_fd = -1, .peer = peer, .tls_inbox = std.ArrayList(u8){} };
     }
 
     /// Create client-side connection object referencing remote host:port.
@@ -535,10 +406,11 @@ pub const Endpoint = struct {
         const version = if (self.cfg.version == .v2) packet.QUIC_V2 else packet.QUIC_V1;
 
         // Delegate to client module for connection creation
+        // Phase 8c: Pass -1 for sock_fd (I/O now via transport abstraction)
         const c = try client_mod.createClientConnection(
             self.allocator,
             peer,
-            self.sock_fd,
+            -1,
             self.cfg,
             version,
             &self.conns,
@@ -619,78 +491,38 @@ pub const Endpoint = struct {
     var poll_call_count: u64 = 0;
     /// Drive network I/O, timers, and paced send for up to timeout_ms milliseconds.
     /// Phase 8a: Uses transport abstraction if available, otherwise uses platform-specific backend.
+    /// Poll for events with timeout via transport abstraction.
+    /// Phase 8c: Always uses transport (no fallback to sock_fd/epoll).
     pub fn poll(self: *Endpoint, timeout_ms: i32) !void {
         poll_call_count += 1;
         // TRACE: poll called
         std.debug.print(">>> POLL #{} called, timeout_ms={}\n", .{ poll_call_count, timeout_ms });
 
-        // Phase 8a: If using transport abstraction, use simplified poll path
-        if (self.transport) |*t| {
-            // Process expired timers first
-            self.processExpiredTimers(nowMsMonotonic());
-
-            // Calculate effective timeout based on next timer
-            const now_ms: i64 = nowMsMonotonic();
-            var eff_timeout = self.nextTimeoutFromTimers(now_ms, timeout_ms);
-            if (eff_timeout < 0) eff_timeout = -1;
-
-            // Poll transport (may be no-op for loopback)
-            try t.poll(eff_timeout);
-
-            // Drain all available packets
-            var buf: [4096]u8 = undefined;
-            while (true) {
-                const result = self.recvFrom(&buf) catch |err| {
-                    if (err == error.WouldBlock) break;
-                    return err;
-                };
-
-                // Process the received packet
-                self.processIncomingDatagram(result.peer, buf[0..result.n], null);
-            }
-
-            // Process timers that may have fired during packet processing
-            self.processExpiredTimers(nowMsMonotonic());
-            self.pruneClosed();
-            return;
-        }
-
-        // Fallback: Original poll implementation for direct UDP
-        // First, process any timers that are already expired to avoid waiting unnecessarily.
+        // Process expired timers first
         self.processExpiredTimers(nowMsMonotonic());
-        // Drain any pending error queue notifications (ICMP PTB, etc.) before waiting.
-        self.drainErrorQueue();
 
+        // Calculate effective timeout based on next timer
         const now_ms: i64 = nowMsMonotonic();
         var eff_timeout = self.nextTimeoutFromTimers(now_ms, timeout_ms);
         if (eff_timeout < 0) eff_timeout = -1;
 
-        // Guard for coarse timer resolution on some platforms (e.g., Windows):
-        // if a timer is due "now" (eff_timeout == 0), sleep a minimal interval to
-        // ensure the next timestamp crosses the deadline, then flush again.
-        if (eff_timeout == 0 and self.timers.items.len > 0) {
-            std.Thread.sleep(@as(u64, 1) * std.time.ns_per_ms);
-            self.processExpiredTimers(nowMsMonotonic());
-            // Recompute effective timeout after the flush
-            const now_after = nowMsMonotonic();
-            eff_timeout = self.nextTimeoutFromTimers(now_after, timeout_ms);
-            if (eff_timeout < 0) eff_timeout = -1;
+        // Poll transport (blocks until data available or timeout)
+        try self.transport.poll(eff_timeout);
+
+        // Drain all available packets
+        var buf: [4096]u8 = undefined;
+        while (true) {
+            const result = self.recvFrom(&buf) catch |err| {
+                if (err == error.WouldBlock) break;
+                return err;
+            };
+
+            // Process the received packet
+            self.processIncomingDatagram(result.peer, buf[0..result.n], null);
         }
 
-        // Delegate to platform-specific poll backend
-        const backend = lb.defaultLoopBackend();
-        std.debug.print("Using backend: {}\n", .{backend});
-        try self.callPollBackend(backend, eff_timeout);
-
+        // Process timers that may have fired during packet processing
         self.processExpiredTimers(nowMsMonotonic());
-        if (self.timers.items.len > 0 and timeout_ms != 0) {
-            const now2: i64 = nowMsMonotonic();
-            const again: i32 = self.nextTimeoutFromTimers(now2, 0);
-            if (again > 0 and again <= 5) {
-                std.Thread.sleep(@as(u64, @intCast(again)) * std.time.ns_per_ms);
-                self.processExpiredTimers(nowMsMonotonic());
-            }
-        }
         self.pruneClosed();
     }
 
@@ -716,8 +548,9 @@ pub const Endpoint = struct {
             }
         };
 
+        // Phase 8c: Legacy IO path - pass -1 for sock_fd (I/O now via transport)
         const ctx = io_mod.IoContext{
-            .sock_fd = self.sock_fd,
+            .sock_fd = -1,
             .process_fn = ProcessWrapper.process,
             .icmp_ptb_fn = IcmpWrapper.handle,
             .epoll_fd = self.epoll_fd,
@@ -745,8 +578,9 @@ pub const Endpoint = struct {
             }
         };
 
+        // Phase 8c: Legacy IO path - pass -1 for sock_fd (I/O now via transport)
         const ctx = io_mod.IoContext{
-            .sock_fd = self.sock_fd,
+            .sock_fd = -1,
             .process_fn = ProcessWrapper.process,
             .icmp_ptb_fn = IcmpWrapper.handle,
             .epoll_fd = self.epoll_fd,
@@ -804,8 +638,9 @@ pub const Endpoint = struct {
             }
         };
 
+        // Phase 8c: Legacy IO path - pass -1 for sock_fd (I/O now via transport)
         const ctx = io_mod.IoContext{
-            .sock_fd = self.sock_fd,
+            .sock_fd = -1,
             .process_fn = ProcessWrapper.process,
             .icmp_ptb_fn = IcmpWrapper.handle,
             .epoll_fd = if (backend == .epoll) self.epoll_fd else null,
