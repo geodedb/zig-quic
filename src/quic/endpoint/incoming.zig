@@ -786,6 +786,16 @@ pub fn processInitial(
             .version = version,
             .client_dcid = header.dcid,
             .client_scid = header.scid,
+            .server_cert_der = ctx.cfg.inline_server_cert_der,
+            .server_priv_key_der = ctx.cfg.inline_server_priv_p256,
+            .transport_params = null, // Will be set by setupServerTransportParams
+            .use_cubic = (ctx.cfg.cc == .cubic),
+            .allow_insecure = ctx.cfg.allow_insecure,
+            .allowed_alpns = ctx.cfg.alpn,
+            .enable_pacing = ctx.cfg.enable_pacing,
+            .max_datagram_size = ctx.cfg.max_datagram_size,
+            .aead_confidentiality_limit = ctx.cfg.aead_confidentiality_limit_override orelse 0,
+            .aead_integrity_limit = ctx.cfg.aead_integrity_limit_override orelse 0,
         };
 
         // Create and initialize server connection
@@ -795,6 +805,20 @@ pub fn processInitial(
             peer,
             config,
         ) catch return;
+
+        // Set up transport parameters for server (RFC 9000 §18.2)
+        handshake_integration.setupServerTransportParams(c_new, ctx.cfg, ctx.allocator.*) catch {};
+
+        // Register connection in map by peer + client DCID (reusing ph and key from outer scope)
+        _ = ctx.conns.put(key, c_new) catch {
+            c_new.deinit();
+            ctx.allocator.destroy(c_new);
+            return;
+        };
+
+        // Also register by peer + server SCID for Handshake packet lookup
+        const our_key = endpoint_types.Key{ .peer_hash = ph, .dcid_hash = hashBytes(c_new.our_scid.bytes[0..c_new.our_scid.len]) };
+        _ = ctx.conns.put(our_key, c_new) catch {};
 
         break :blk c_new;
     };
