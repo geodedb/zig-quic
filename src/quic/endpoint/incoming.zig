@@ -745,7 +745,9 @@ pub fn processInitial(
     version: u32,
 ) void {
     // Parse Initial header to extract DCID and SCID
-    const header = parseInitialHeader(bytes) catch return;
+    const header = parseInitialHeader(bytes) catch {
+        return;
+    };
 
     // Look up connection by peer hash + client DCID
     const ph = hashSockaddr(&peer.storage, peer.len);
@@ -889,6 +891,22 @@ pub fn processInitial(
     // Derive Initial keys for this connection
     const keys_result = deriveInitialKeys(conn, header.dcid, version);
 
+    // Store Initial keys in connection if not already set
+    if (conn.initial_rx_keys == null) {
+        conn.initial_rx_keys = packet.InitialKeys{
+            .key = keys_result.rx_keys.key,
+            .iv = keys_result.rx_keys.iv,
+            .hp = keys_result.rx_keys.hp,
+        };
+    }
+    if (conn.initial_tx_keys == null) {
+        conn.initial_tx_keys = packet.InitialKeys{
+            .key = keys_result.tx_keys.key,
+            .iv = keys_result.tx_keys.iv,
+            .hp = keys_result.tx_keys.hp,
+        };
+    }
+
     // Decrypt Initial packet
     const decrypted = decryptInitialPacket(
         ctx.allocator.*,
@@ -918,8 +936,7 @@ pub fn processInitial(
     const now_ns: u64 = @intCast(std.time.nanoTimestamp());
 
     while (offset < decrypted.payload.len) {
-        const fr = frame.decodeOne(decrypted.payload[offset..]) catch |err| {
-            std.debug.print("processInitial: Frame decode error at offset {}: {}\n", .{ offset, err });
+        const fr = frame.decodeOne(decrypted.payload[offset..]) catch {
             break;
         };
         offset += fr.n;
@@ -938,8 +955,7 @@ pub fn processInitial(
                     ctx.allocator,
                     cr.offset,
                     cr.data,
-                ) catch |err| blk: {
-                    std.debug.print("processInitial: Failed to process CRYPTO: {}\n", .{err});
+                ) catch blk: {
                     break :blk false;
                 };
 
@@ -991,6 +1007,12 @@ pub fn processInitial(
         };
         handshake_integration.sendServerHello(&hs_ctx) catch {
             // ServerHello sending failed - continue processing
+        };
+
+        // Send Handshake packets if Handshake keys are available
+        // RFC 9001 §4.1: "A server sends the first Handshake packet as soon as it has Handshake keys"
+        handshake_integration.sendHandshakePackets(&hs_ctx) catch {
+            // Handshake packet sending failed - continue processing
         };
     }
 

@@ -287,6 +287,10 @@ pub fn installHandshakeKeys(
     client_secret: [32]u8,
     server_secret: [32]u8,
 ) !void {
+    std.debug.print("installHandshakeKeys: CALLED with role={s}\n", .{if (conn.role == .Server) "Server" else "Client"});
+    std.debug.print("  client_secret[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ client_secret[0], client_secret[1], client_secret[2], client_secret[3] });
+    std.debug.print("  server_secret[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ server_secret[0], server_secret[1], server_secret[2], server_secret[3] });
+
     // Derive Handshake keys from secrets
     // Uses HKDF-Expand-Label per RFC 8446 §7.1 and RFC 9001 §5
     // AES-128-GCM (TLS_AES_128_GCM_SHA256) is the default cipher suite for QUIC
@@ -297,6 +301,9 @@ pub fn installHandshakeKeys(
 
     // Derive server Handshake keys
     const server_keys = key_schedule.deriveKeyIvHp(server_secret);
+
+    std.debug.print("  Derived client_keys: key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ client_keys.key[0], client_keys.key[1], client_keys.key[2], client_keys.key[3] });
+    std.debug.print("  Derived server_keys: key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ server_keys.key[0], server_keys.key[1], server_keys.key[2], server_keys.key[3] });
 
     // Install based on connection role
     // Convert KeyMaterial to packet.InitialKeys by copying fields
@@ -495,21 +502,69 @@ pub fn sendServerHello(ctx: *HandshakeContext) !void {
     const initial_tx_keys = conn.initial_tx_keys orelse return error.NoInitialKeys;
 
     // Pop CRYPTO data from TLS state machine
-    var outbox: [4096]u8 = undefined;
+    // This returns ALL messages: ServerHello + EncryptedExtensions + Certificate + Finished
+    var outbox: [8192]u8 = undefined;
     const n = conn.tls.popCrypto(outbox[0..]);
     if (n == 0) {
         // No CRYPTO data to send
         return;
     }
 
-    // Fragment CRYPTO data across multiple Initial packets if needed
+    // Parse TLS message boundaries to separate ServerHello from Handshake-level messages
+    // TLS handshake message format: [type:1][length:3][data]
+    // ServerHello = 0x02, EncryptedExtensions = 0x08, Certificate = 0x0B, Finished = 0x14
+
+    std.debug.print("sendServerHello: Parsing {} bytes of TLS data\n", .{n});
+
+    if (n < 4) return error.InvalidTlsMessage; // Need at least header
+
+    const msg_type = outbox[0];
+    const msg_len = (@as(u32, outbox[1]) << 16) | (@as(u32, outbox[2]) << 8) | @as(u32, outbox[3]);
+    const total_msg_len = 4 + msg_len; // header + body
+
+    std.debug.print("sendServerHello: First message type=0x{X:0>2}, length={}, total={}\n", .{ msg_type, msg_len, total_msg_len });
+
+    if (total_msg_len > n) return error.TruncatedTlsMessage;
+
+    // Verify first message is ServerHello
+    if (msg_type != 0x02) return error.ExpectedServerHello;
+
+    // Split messages: ServerHello goes in Initial, rest goes in Handshake
+    const serverhello_data = outbox[0..total_msg_len];
+    const remaining_data = outbox[total_msg_len..n];
+
+    std.debug.print("sendServerHello: ServerHello={} bytes, remaining={} bytes\n", .{ serverhello_data.len, remaining_data.len });
+
+    // Store remaining Handshake messages for sendHandshakePackets
+    if (remaining_data.len > 0) {
+        // Free old buffer if exists
+        if (conn.pending_hs_messages) |old_buf| {
+            ctx.allocator.free(old_buf);
+        }
+
+        // Allocate and copy remaining messages
+        const hs_buf = ctx.allocator.alloc(u8, remaining_data.len) catch {
+            return error.AllocFailed;
+        };
+        @memcpy(hs_buf, remaining_data);
+        conn.pending_hs_messages = hs_buf;
+    }
+
+    // Fragment ServerHello CRYPTO data across multiple Initial packets if needed
     const max_crypto_per_packet: usize = 1100; // ~1200 MTU - headers - overhead
     var crypto_offset: usize = 0;
     const base_off = conn.crypto_tx_off_initial;
+    const serverhello_len = serverhello_data.len;
 
-    while (crypto_offset < n) {
-        const chunk_size = @min(max_crypto_per_packet, n - crypto_offset);
-        const chunk = outbox[crypto_offset .. crypto_offset + chunk_size];
+    // Check if we should coalesce with Handshake packet
+    // RFC 9000 §12.2: Initial and Handshake packets MUST be coalesced when possible
+    // We will send a Handshake packet if we have keys (even if just a PING for coalescing)
+    const will_send_handshake = conn.hs_tx_keys != null;
+
+    while (crypto_offset < serverhello_len) {
+        const chunk_size = @min(max_crypto_per_packet, serverhello_len - crypto_offset);
+        const chunk = serverhello_data[crypto_offset .. crypto_offset + chunk_size];
+        const is_last_chunk = (crypto_offset + chunk_size >= serverhello_len);
 
         var frames_buf: [4096]u8 = undefined;
         var frames_stream = std.io.fixedBufferStream(&frames_buf);
@@ -523,7 +578,7 @@ pub fn sendServerHello(ctx: *HandshakeContext) !void {
         // Use peer's SCID as DCID for Initial response
         const initial_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
 
-        // Encode and send Initial packet
+        // Encode Initial packet
         const pkt = packet.encodeInitialProtected(
             ctx.allocator.*,
             0x00000001, // QUIC v1
@@ -537,7 +592,21 @@ pub fn sendServerHello(ctx: *HandshakeContext) !void {
         ) catch return error.PacketEncodeFailed;
 
         defer ctx.allocator.free(pkt);
-        _ = ctx.send_fn(ctx.peer, pkt) catch return error.SendFailed;
+
+        // If this is the last Initial packet and we have Handshake keys, buffer it for coalescing
+        if (is_last_chunk and will_send_handshake) {
+            // Store Initial packet for coalescing
+            if (conn.pending_initial_packet) |old_pkt| {
+                ctx.allocator.free(old_pkt);
+            }
+            const initial_copy = ctx.allocator.alloc(u8, pkt.len) catch return error.AllocFailed;
+            @memcpy(initial_copy, pkt);
+            conn.pending_initial_packet = initial_copy;
+            std.debug.print("sendServerHello: Buffered Initial packet ({} bytes) for coalescing\n", .{pkt.len});
+        } else {
+            // Send Initial packet immediately (not the last one or no Handshake to coalesce)
+            _ = ctx.send_fn(ctx.peer, pkt) catch return error.SendFailed;
+        }
 
         conn.onPacketSent(.Initial, conn.pn_initial_tx, pkt.len, true);
         conn.pn_initial_tx +%= 1;
@@ -545,16 +614,271 @@ pub fn sendServerHello(ctx: *HandshakeContext) !void {
         crypto_offset += chunk_size;
     }
 
-    // Save retransmit buffer
+    // Save retransmit buffer (only ServerHello, not Handshake messages)
     if (conn.crypto_retx_initial) |old_buf| ctx.allocator.free(old_buf);
-    const owned = ctx.allocator.alloc(u8, n) catch {
-        conn.crypto_tx_off_initial += n;
+    const owned = ctx.allocator.alloc(u8, serverhello_len) catch {
+        conn.crypto_tx_off_initial += serverhello_len;
         return error.AllocFailed;
     };
-    @memcpy(owned[0..n], outbox[0..n]);
+    @memcpy(owned[0..serverhello_len], serverhello_data);
     conn.crypto_retx_initial = owned;
     conn.crypto_retx_initial_off = base_off;
-    conn.crypto_tx_off_initial += n;
+    conn.crypto_tx_off_initial += serverhello_len;
+
+    // Mark ServerHello as sent
+    conn.server_hello_sent = true;
+}
+
+/// Send a Handshake packet with just a PING frame (no CRYPTO data).
+/// Used for coalescing when TLS doesn't have Handshake-level messages yet.
+fn sendHandshakePing(ctx: *HandshakeContext) !void {
+    const conn = ctx.conn;
+
+    std.debug.print("sendHandshakePing: ENTER\n", .{});
+
+    // Check if we have Handshake TX keys
+    const hs_tx_keys = conn.hs_tx_keys orelse {
+        std.debug.print("sendHandshakePing: No hs_tx_keys\n", .{});
+        return error.NoHandshakeKeys;
+    };
+    std.debug.print("sendHandshakePing: Retrieved keys from conn - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+        hs_tx_keys.key[0], hs_tx_keys.key[1], hs_tx_keys.key[2], hs_tx_keys.key[3],
+        hs_tx_keys.iv[0], hs_tx_keys.iv[1], hs_tx_keys.iv[2], hs_tx_keys.iv[3],
+    });
+
+    // Build a PING frame with padding
+    // Need at least 3 bytes of payload for header protection with 2-byte PN
+    // (sample_offset=2 + 16 sample bytes = 18 bytes needed, tag adds 16, so need 2+ payload bytes)
+    var frames_buf: [32]u8 = undefined;
+    var frames_stream = std.io.fixedBufferStream(&frames_buf);
+    const w = frames_stream.writer();
+
+    // Write PING frame (1 byte)
+    _ = (frame.Frame{ .ping = {} }).write(w) catch {
+        std.debug.print("sendHandshakePing: Failed to write PING frame\n", .{});
+        return error.FrameEncodeFailed;
+    };
+
+    // Add PADDING frame (at least 2 bytes to ensure enough ciphertext)
+    // PADDING frame is just 0x00 bytes
+    _ = w.writeByte(0x00) catch {};  // PADDING frame type
+    _ = w.writeByte(0x00) catch {};  // Extra padding byte
+
+    const frames_data = frames_stream.getWritten();
+    std.debug.print("sendHandshakePing: Built PING + PADDING frames, {} bytes\n", .{frames_data.len});
+
+    // Use peer's Initial SCID as DCID for Handshake packets (RFC 9000 §7.2)
+    const hs_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
+    std.debug.print("sendHandshakePing: peer_initial_scid.len={}, our_scid.len={}\n", .{ conn.peer_initial_scid.len, conn.our_scid.len });
+
+    // Encode Handshake packet with PING
+    const hs_pkt = packet.encodeHandshakeProtected(
+        ctx.allocator.*,
+        conn.version,
+        hs_dcid,
+        conn.our_scid.bytes[0..conn.our_scid.len],
+        @as(u32, @truncate(conn.pn_handshake_tx)),
+        2, // PN length
+        frames_data,
+        hs_tx_keys,
+    ) catch |err| {
+        std.debug.print("sendHandshakePing: encodeHandshakeProtected FAILED: {}\n", .{err});
+        return error.PacketEncodeFailed;
+    };
+    std.debug.print("sendHandshakePing: Encoded Handshake packet, {} bytes\n", .{hs_pkt.len});
+
+    defer ctx.allocator.free(hs_pkt);
+
+    // Check if we have a pending Initial packet to coalesce
+    if (conn.pending_initial_packet) |initial_pkt| {
+        defer {
+            ctx.allocator.free(initial_pkt);
+            conn.pending_initial_packet = null;
+        }
+
+        // RFC 9000 §12.2: Initial and Handshake packets MUST be coalesced
+        // Create coalesced packet buffer
+        var coalesced_buf: [4096]u8 = undefined;
+        if (initial_pkt.len + hs_pkt.len > coalesced_buf.len) {
+            std.debug.print("sendHandshakePing: Coalesced packet too large ({} + {} > {})\n", .{ initial_pkt.len, hs_pkt.len, coalesced_buf.len });
+            return error.PacketTooLarge;
+        }
+
+        // Copy Initial packet first
+        @memcpy(coalesced_buf[0..initial_pkt.len], initial_pkt);
+        // Append Handshake packet
+        @memcpy(coalesced_buf[initial_pkt.len .. initial_pkt.len + hs_pkt.len], hs_pkt);
+
+        const coalesced_len = initial_pkt.len + hs_pkt.len;
+        std.debug.print("sendHandshakePing: Sending coalesced packet (Initial {} + Handshake {} = {} bytes)\n", .{ initial_pkt.len, hs_pkt.len, coalesced_len });
+
+        // Send the coalesced packet
+        _ = ctx.send_fn(ctx.peer, coalesced_buf[0..coalesced_len]) catch |err| {
+            std.debug.print("sendHandshakePing: send_fn FAILED: {}\n", .{err});
+            return error.SendFailed;
+        };
+    } else {
+        // No Initial packet to coalesce, send Handshake packet alone
+        std.debug.print("sendHandshakePing: No pending Initial packet, sending Handshake alone\n", .{});
+        _ = ctx.send_fn(ctx.peer, hs_pkt) catch |err| {
+            std.debug.print("sendHandshakePing: send_fn FAILED: {}\n", .{err});
+            return error.SendFailed;
+        };
+    }
+
+    conn.onPacketSent(.Handshake, conn.pn_handshake_tx, hs_pkt.len, false); // PING is not ack-eliciting
+    conn.pn_handshake_tx +%= 1;
+    conn.handshake_packet_sent = true; // Mark that we've sent at least one Handshake packet
+
+    std.debug.print("sendHandshakePing: SUCCESS - Sent packet\n", .{});
+}
+
+/// Send Handshake packets with TLS messages (EncryptedExtensions, Certificate, Finished).
+/// RFC 9001 §4.1: "A server sends the first Handshake packet as soon as it has Handshake keys."
+///
+/// This function is called after sendServerHello to send the remaining TLS messages in Handshake
+/// packets. These packets are encrypted with Handshake keys derived after processing ClientHello.
+///
+/// Parameters:
+/// - ctx: HandshakeContext with connection, allocator, send_fn, peer, config
+///
+/// Returns:
+/// - error.NoHandshakeKeys if Handshake TX keys are not available
+/// - error.PacketEncodeFailed if packet encoding fails
+/// - error.SendFailed if UDP send fails
+pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
+    const conn = ctx.conn;
+
+    std.debug.print("sendHandshakePackets: ENTER\n", .{});
+
+    // Check if we have Handshake TX keys
+    const hs_tx_keys = conn.hs_tx_keys orelse {
+        std.debug.print("sendHandshakePackets: No Handshake TX keys\n", .{});
+        return error.NoHandshakeKeys;
+    };
+    std.debug.print("sendHandshakePackets: Have Handshake TX keys\n", .{});
+
+    // Get pending Handshake messages stored by sendServerHello
+    // If there are no pending messages, try popping new data from TLS
+    // (TLS generates Handshake-level messages after keys are installed)
+    var pending_data: []const u8 = undefined;
+    var owns_buffer = false;
+
+    if (conn.pending_hs_messages) |buffered| {
+        std.debug.print("sendHandshakePackets: Using {} bytes of pending messages\n", .{buffered.len});
+        pending_data = buffered;
+        owns_buffer = true;
+        conn.pending_hs_messages = null; // Clear immediately to avoid double-free
+    } else {
+        std.debug.print("sendHandshakePackets: No pending messages, checking TLS for new data\n", .{});
+        // Try to get fresh data from TLS (Handshake-level messages)
+        var outbox: [8192]u8 = undefined;
+        const tls_n = conn.tls.popCrypto(outbox[0..]);
+        std.debug.print("sendHandshakePackets: TLS returned {} bytes\n", .{tls_n});
+        if (tls_n == 0) {
+            // No CRYPTO data, but we should still send a Handshake packet for coalescing
+            // RFC 9000 §12.2: Initial and Handshake packets should be coalesced
+            std.debug.print("sendHandshakePackets: No CRYPTO data, sending PING in Handshake packet\n", .{});
+            return sendHandshakePing(ctx);
+        }
+        pending_data = outbox[0..tls_n];
+        owns_buffer = false; // outbox is stack-allocated
+    }
+
+    defer if (owns_buffer) {
+        ctx.allocator.free(pending_data);
+    };
+
+    const n = pending_data.len;
+    std.debug.print("sendHandshakePackets: Sending {} bytes of CRYPTO data\n", .{n});
+    if (n == 0) {
+        return;
+    }
+
+    // Fragment CRYPTO data across multiple Handshake packets if needed
+    const max_crypto_per_packet: usize = 1100;
+    var crypto_offset: usize = 0;
+    const base_off = conn.crypto_tx_off_handshake;
+
+    var first_packet = true;
+    while (crypto_offset < n) {
+        const chunk_size = @min(max_crypto_per_packet, n - crypto_offset);
+        const chunk = pending_data[crypto_offset .. crypto_offset + chunk_size];
+
+        var frames_buf: [4096]u8 = undefined;
+        var frames_stream = std.io.fixedBufferStream(&frames_buf);
+        const w = frames_stream.writer();
+
+        // Add CRYPTO frame
+        const crypto_frame_offset = base_off + crypto_offset;
+        _ = (frame.Frame{ .crypto = .{ .offset = crypto_frame_offset, .data = chunk } }).write(w) catch 0;
+        const frames_data = frames_stream.getWritten();
+
+        // Use peer's Initial SCID as DCID for Handshake packets (RFC 9000 §7.2)
+        const hs_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
+
+        // Encode Handshake packet
+        const pkt = packet.encodeHandshakeProtected(
+            ctx.allocator.*,
+            conn.version,
+            hs_dcid,
+            conn.our_scid.bytes[0..conn.our_scid.len],
+            @as(u32, @truncate(conn.pn_handshake_tx)),
+            2, // PN length
+            frames_data,
+            hs_tx_keys,
+        ) catch return error.PacketEncodeFailed;
+
+        defer ctx.allocator.free(pkt);
+
+        // For the first packet, check if we need to coalesce with pending Initial
+        if (first_packet and conn.pending_initial_packet != null) {
+            const initial_pkt = conn.pending_initial_packet.?;
+            defer {
+                ctx.allocator.free(initial_pkt);
+                conn.pending_initial_packet = null;
+            }
+
+            // RFC 9000 §12.2: Initial and Handshake packets MUST be coalesced
+            var coalesced_buf: [4096]u8 = undefined;
+            if (initial_pkt.len + pkt.len > coalesced_buf.len) {
+                std.debug.print("sendHandshakePackets: Coalesced packet too large ({} + {} > {})\n", .{ initial_pkt.len, pkt.len, coalesced_buf.len });
+                return error.PacketTooLarge;
+            }
+
+            // Copy Initial packet first
+            @memcpy(coalesced_buf[0..initial_pkt.len], initial_pkt);
+            // Append Handshake packet
+            @memcpy(coalesced_buf[initial_pkt.len .. initial_pkt.len + pkt.len], pkt);
+
+            const coalesced_len = initial_pkt.len + pkt.len;
+            std.debug.print("sendHandshakePackets: Sending coalesced packet (Initial {} + Handshake {} = {} bytes)\n", .{ initial_pkt.len, pkt.len, coalesced_len });
+
+            // Send the coalesced packet
+            _ = ctx.send_fn(ctx.peer, coalesced_buf[0..coalesced_len]) catch return error.SendFailed;
+        } else {
+            // Send Handshake packet alone (not first or no Initial to coalesce)
+            _ = ctx.send_fn(ctx.peer, pkt) catch return error.SendFailed;
+        }
+
+        conn.onPacketSent(.Handshake, conn.pn_handshake_tx, pkt.len, true);
+        conn.pn_handshake_tx +%= 1;
+        conn.handshake_packet_sent = true; // Mark that we've sent at least one Handshake packet
+
+        crypto_offset += chunk_size;
+        first_packet = false;
+    }
+
+    // Save retransmit buffer
+    if (conn.crypto_retx_handshake) |old_buf| ctx.allocator.free(old_buf);
+    const owned = ctx.allocator.alloc(u8, n) catch {
+        conn.crypto_tx_off_handshake += n;
+        return error.AllocFailed;
+    };
+    @memcpy(owned[0..n], pending_data[0..n]);
+    conn.crypto_retx_handshake = owned;
+    conn.crypto_retx_handshake_off = base_off;
+    conn.crypto_tx_off_handshake += n;
 }
 
 /// Send HANDSHAKE_DONE frame (server-only, RFC 9000 §4.1.2).

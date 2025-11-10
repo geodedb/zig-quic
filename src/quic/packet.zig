@@ -601,6 +601,7 @@ pub fn encodeHandshakeProtected(
     keys: InitialKeys,
 ) ![]u8 {
     std.debug.print("encodeHandshakeProtected: CALLED with packet_number={} version=0x{X:0>8}\n", .{ packet_number, version });
+    std.debug.print("encodeHandshakeProtected: Keys at function entry - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ keys.key[0], keys.key[1], keys.key[2], keys.key[3], keys.iv[0], keys.iv[1], keys.iv[2], keys.iv[3] });
     std.debug.print("encodeHandshakeProtected: dcid.len={}, scid.len={}\n", .{ dcid.len, scid.len });
     if (dcid.len > 0) {
         std.debug.print("encodeHandshakeProtected: dcid bytes: ", .{});
@@ -667,9 +668,11 @@ pub fn encodeHandshakeProtected(
     try buf.ensureTotalCapacity(alloc, out_cipher_idx + ct_len);
     try buf.appendNTimes(alloc, 0, ct_len);
 
+    std.debug.print("encodeHandshakeProtected: Keys before header_first - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ keys.key[0], keys.key[1], keys.key[2], keys.key[3] });
     var header_first: u8 = first;
     var pn_mut: [4]u8 = .{0} ** 4;
     @memcpy(pn_mut[0..packet_number_len], pn_slice);
+    std.debug.print("encodeHandshakeProtected: Keys after memcpy - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ keys.key[0], keys.key[1], keys.key[2], keys.key[3] });
 
     const out_cipher = buf.items[out_cipher_idx .. out_cipher_idx + ct_len];
     const suite = crypto.AeadSuite.aes_128_gcm;

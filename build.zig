@@ -387,6 +387,10 @@ pub fn build(b: *std.Build) void {
 
     const endpoint_client_mod = mkModule(b, "src/quic/endpoint/client.zig");
     endpoint_client_mod.addImport("quic_conn", quic_conn_mod);
+    endpoint_client_mod.addImport("quic_packet", quic_packet_mod);
+    endpoint_client_mod.addImport("quic_frame", quic_frame_mod);
+    endpoint_client_mod.addImport("quic_tls", quic_tls_mod);
+    // Note: handshake_integration import added later after endpoint_handshake_integration_mod is declared
 
     const endpoint_server_mod = mkModule(b, "src/quic/endpoint/server.zig");
     endpoint_server_mod.addImport("quic_conn", quic_conn_mod);
@@ -422,6 +426,9 @@ pub fn build(b: *std.Build) void {
     endpoint_handshake_integration_mod.addImport("transport_params", quic_transport_params_mod);
     endpoint_handshake_integration_mod.addImport("vendor_ztls_tls13", tls13_mod);
     endpoint_handshake_integration_mod.addImport("vendor_ztls_key_schedule", quic_tls_mod);
+
+    // Add handshake_integration import to endpoint_client_mod (declared earlier at line ~388)
+    endpoint_client_mod.addImport("handshake_integration", endpoint_handshake_integration_mod);
 
     const endpoint_pto_mod = mkModule(b, "src/quic/endpoint/pto.zig");
     endpoint_pto_mod.addImport("types", endpoint_types_mod);

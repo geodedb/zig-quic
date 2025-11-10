@@ -520,6 +520,8 @@ pub const Connection = struct {
     /// Tracks when the TLS engine has verified the peer's Finished, enabling short-header traffic.
     peer_finished_verified: bool = false,
     server_hello_sent: bool = false,
+    /// Track whether we've sent at least one Handshake packet (for key drop timing)
+    handshake_packet_sent: bool = false,
     session_ticket_sent: bool = false,
     // 0-RTT state
     zero_rtt_keys: ?struct { key: [16]u8, iv: [12]u8, hp: [16]u8 } = null,
@@ -658,6 +660,13 @@ pub const Connection = struct {
     crypto_retx_initial_off: u64 = 0,
     crypto_retx_handshake: ?[]u8 = null,
     crypto_retx_handshake_off: u64 = 0,
+
+    // Pending Handshake-level TLS messages (EncryptedExtensions, Certificate, Finished)
+    // that were popped from TLS but haven't been sent yet (waiting for Handshake keys)
+    pending_hs_messages: ?[]u8 = null,
+
+    // Pending Initial packet for coalescing with Handshake packet (RFC 9000 §12.2)
+    pending_initial_packet: ?[]u8 = null,
 
     // CRYPTO frame reassembly buffers for out-of-order frames
     crypto_buffer_initial: CryptoBuffer = .{},
@@ -909,6 +918,8 @@ pub const Connection = struct {
         // Explicitly initialize crypto retransmit buffers (field defaults not applied on reuse)
         self.crypto_retx_initial = null;
         self.crypto_retx_handshake = null;
+        self.pending_hs_messages = null;
+        self.pending_initial_packet = null;
         // Initialize ack_ranges_buf array
         self.ack_ranges_buf = undefined;
         // Initialize other fields that have defaults but might not be set
@@ -931,6 +942,7 @@ pub const Connection = struct {
         self.handshake_done_sent = false;
         self.peer_finished_verified = false;
         self.server_hello_sent = false;
+        self.handshake_packet_sent = false;
         self.closed = false;
         self.accepted_enqueued = false;
         self.deinit_called = false;
@@ -1013,6 +1025,8 @@ pub const Connection = struct {
         // Free inbox payloads
         if (self.crypto_retx_initial) |b| self.allocator.free(b);
         if (self.crypto_retx_handshake) |b| self.allocator.free(b);
+        if (self.pending_hs_messages) |b| self.allocator.free(b);
+        if (self.pending_initial_packet) |b| self.allocator.free(b);
         while (self.dgram_inbox.items.len > 0) {
             const p = self.dgram_inbox.orderedRemove(0);
             self.allocator.free(p);
@@ -2567,6 +2581,7 @@ pub const Connection = struct {
     /// Emit a Handshake-space PTO probe.
     pub fn sendPtoProbeHandshake(self: *Connection) void {
         const tx = self.hs_tx_keys orelse return;
+        std.debug.print("sendPtoProbeHandshake: Sending PTO probe with keys - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ tx.key[0], tx.key[1], tx.key[2], tx.key[3] });
         var frames = std.ArrayList(u8){};
         defer frames.deinit(self.allocator.*);
         const w = frames.writer(self.allocator.*);
@@ -2770,13 +2785,14 @@ pub const Connection = struct {
 
         // RFC 9001 §4.1.2: Server MUST wait until peer Finished is received before dropping handshake keys.
         // Client can drop immediately after sending its Finished (once TLS outbox flushed).
+        // Additionally, wait until we've sent at least one Handshake packet for coalescing (RFC 9000 §12.2).
         const pending_tls: bool = (self.tls.outbox.items.len > 0);
         const can_drop_hs_keys = if (self.role == .Server)
-            // Server: wait for peer_finished_verified (client Finished received)
-            (self.peer_finished_verified and !pending_tls)
+            // Server: wait for peer_finished_verified (client Finished received) AND first Handshake packet sent
+            (self.peer_finished_verified and !pending_tls and self.handshake_packet_sent)
         else
-            // Client: drop after sending Finished (once outbox flushed)
-            !pending_tls;
+            // Client: drop after sending Finished (once outbox flushed) AND first Handshake packet sent
+            (!pending_tls and self.handshake_packet_sent);
 
         if (can_drop_hs_keys) {
             std.debug.print("{s}: Dropping Handshake keys (peer_finished_verified={}, pending_tls={})\n", .{ if (self.role == .Server) "Server" else "Client", self.peer_finished_verified, pending_tls });

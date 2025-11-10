@@ -239,11 +239,15 @@ pub fn protectPacket(
     }
 
     const ct_len = try aeadEncrypt(suite, aead_key, aead_iv, packet_number, aad, plaintext, out_cipher);
+    std.debug.print("protectPacket: aeadEncrypt returned ct_len={}, plaintext.len={}\n", .{ ct_len, plaintext.len });
 
     // Build HP sample per RFC 9001:
     // - AES: 16 bytes starting 4 bytes after start of PN -> relative to ciphertext (which starts after PN), offset = 4 - pn_len
     // - ChaCha: 16 bytes starting at start of PN -> compose from PN bytes + first (16 - pn_len) bytes of ciphertext
-    if (ct_len < 16) return error.AuthenticationFailed;
+    if (ct_len < 16) {
+        std.debug.print("protectPacket: ERROR ct_len={} < 16, returning AuthenticationFailed\n", .{ct_len});
+        return error.AuthenticationFailed;
+    }
     var sample16: [16]u8 = undefined;
     const pn_len: usize = pn_bytes.len;
     switch (suite) {
@@ -253,7 +257,10 @@ pub fn protectPacket(
             // For 2-byte PN: sample at packet bytes 4-19 = ciphertext bytes 2-17 = offset (4-2)
             // General formula: offset into ciphertext = 4 - pn_len
             const sample_offset: usize = if (pn_len >= 4) 0 else (4 - pn_len);
-            if (sample_offset + 16 > out_cipher.len) return error.AuthenticationFailed;
+            if (sample_offset + 16 > out_cipher.len) {
+                std.debug.print("protectPacket: ERROR sample_offset={} + 16 > out_cipher.len={}\n", .{ sample_offset, out_cipher.len });
+                return error.AuthenticationFailed;
+            }
             @memcpy(sample16[0..], out_cipher[sample_offset .. sample_offset + 16]);
 
             // DIAGNOSTIC: Log ciphertext and sample extraction
@@ -276,7 +283,10 @@ pub fn protectPacket(
         },
         .chacha20_poly1305 => {
             if (pn_len > 4) return error.InvalidPacketNumberLength;
-            if ((16 - pn_len) > out_cipher.len) return error.AuthenticationFailed;
+            if ((16 - pn_len) > out_cipher.len) {
+                std.debug.print("protectPacket: ERROR ChaCha (16 - pn_len={})={} > out_cipher.len={}\n", .{ pn_len, 16 - pn_len, out_cipher.len });
+                return error.AuthenticationFailed;
+            }
             @memcpy(sample16[0..pn_len], pn_bytes);
             @memcpy(sample16[pn_len..], out_cipher[0 .. 16 - pn_len]);
         },

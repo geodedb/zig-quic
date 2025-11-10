@@ -27,6 +27,7 @@ const lookup = @import("endpoint/lookup.zig");
 const incoming = @import("endpoint/incoming.zig");
 const frame_handler = @import("endpoint/frame_handler.zig");
 const handshake_integration = @import("endpoint/handshake_integration.zig");
+const client_mod = @import("endpoint/client.zig");
 const io_mod = @import("endpoint/io.zig");
 const lifecycle_mod = @import("endpoint/lifecycle.zig");
 const ep_types = @import("types");
@@ -480,106 +481,42 @@ pub const Endpoint = struct {
     /// Create client-side connection object referencing remote host:port.
     pub fn connectClient(self: *Endpoint, hostport: []const u8) !*conn_mod.Connection {
         const peer = try resolveAny(hostport, .udp);
-        const c = try self.allocator.create(conn_mod.Connection);
-        c.init(self.allocator, .Client, sockToIsize(self.sock_fd), peer);
-        // Apply config flags
-        c.setUseCubic(self.cfg.cc == .cubic);
-        c.tls.allow_insecure = self.cfg.allow_insecure;
-        c.allowed_alpns = self.cfg.alpn;
-        // Enable optional pacing and set CC max_datagram_size
-        c.enable_pacing = self.cfg.enable_pacing;
-        c.rec.cc.mds = @intCast(self.cfg.max_datagram_size);
-        // Install paced sender callback
-        c.setSender(@ptrCast(self), senderPaced);
-        // Apply AEAD usage limit overrides
-        c.setAeadUsageLimits(self.cfg.aead_confidentiality_limit_override, self.cfg.aead_integrity_limit_override);
-        // Choose initial version from cfg
-        // For now always use QUIC v1 unless explicitly configured for v2.
-        c.version = if (self.cfg.version == .v2) packet.QUIC_V2 else packet.QUIC_V1;
-        c.version_v2 = (c.version == packet.QUIC_V2);
-        c.initial_version = c.version;
-        // Client chooses DCID and SCID (RFC 9000 §5.1.1) prior to deriving Initial secrets.
-        var dcid: [8]u8 = undefined;
-        std.crypto.random.bytes(&dcid);
-        c.peer_initial_dcid.len = @intCast(dcid.len);
-        @memcpy(c.peer_initial_dcid.bytes[0..dcid.len], &dcid);
-        // Preserve original DCID separately for Initial secret derivation (never changes).
-        c.original_dcid.len = c.peer_initial_dcid.len;
-        if (c.original_dcid.len > 0) @memcpy(c.original_dcid.bytes[0..c.original_dcid.len], c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]);
-        c.our_scid.len = 8;
-        std.crypto.random.bytes(c.our_scid.bytes[0..c.our_scid.len]);
-        // Map by both dcid and scid to find VN/HS
         const ph = hashSockaddr(&peer.storage, peer.len);
-        const key_d = Key{ .peer_hash = ph, .dcid_hash = hashBytes(c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]) };
-        const key_s = Key{ .peer_hash = ph, .dcid_hash = hashBytes(c.our_scid.bytes[0..c.our_scid.len]) };
-        _ = self.conns.put(key_d, c) catch {};
-        _ = self.conns.put(key_s, c) catch {};
+        const version = if (self.cfg.version == .v2) packet.QUIC_V2 else packet.QUIC_V1;
+
+        // Delegate to client module for connection creation
+        const c = try client_mod.createClientConnection(
+            self.allocator.*,
+            peer,
+            self.sock_fd,
+            self.cfg,
+            version,
+            &self.conns,
+            ph,
+        );
+
+        // Install paced sender callback (requires Endpoint context)
+        c.setSender(@ptrCast(self), senderPaced);
+
         return c;
     }
 
     /// Transmit minimal Initial packet (PING) to elicit Version Negotiation or SH.
     pub fn clientSendInitialProbe(self: *Endpoint, c: *conn_mod.Connection) !void {
-        const v2 = (c.version == packet.QUIC_V2);
-        // Initial secret derives from the immutable DCID per RFC 9001 §5.1/§5.2.
-        const initial = ks.deriveInitialSecret(v2, if (c.original_dcid.len > 0) c.original_dcid.bytes[0..c.original_dcid.len] else c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]);
-        const pair = ks.deriveClientServerInitial(initial);
-        std.debug.print("client: deriving Initial keys with dcid=\n", .{});
-        for (c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]) |b| std.debug.print("{X:0>2}\n", .{b});
-        std.debug.print(" len={}\n", .{c.peer_initial_dcid.len});
-        const tx_keys: packet.InitialKeys = if (v2) blk: {
-            const t = ks.deriveKeyIvHpV2(pair.client);
-            break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
-        } else blk: {
-            const t = ks.deriveKeyIvHp(pair.client);
-            break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
-        };
-        var frames = std.ArrayList(u8){};
-        defer frames.deinit(self.allocator.*);
-        // Build CRYPTO frame carrying ClientHello
-        // Set up client transport parameters for TLS handshake (Phase 4b.5 Session 7)
+        // Set up client transport parameters for TLS handshake
         handshake_integration.setupClientTransportParams(c, self.allocator.*) catch {};
-        // Queue ClientHello using full TLS 1.3
-        c.tls.queueMinimalClientHello() catch {
-            _ = c.tls.queueMinimalClientHelloAuto() catch 0;
+
+        // Delegate to client module for Initial packet construction and sending
+        var ctx = client_mod.ClientContext{
+            .allocator = self.allocator,
+            .conn = c,
+            .sender_ctx = @ptrCast(self),
+            .send_fn = &Endpoint.sendToWrapper,
+            .peer = c.peer,
         };
-        var crypto_buf: [2048]u8 = undefined;
-        const crypto_len = c.tls.popCrypto(crypto_buf[0..]);
-        if (crypto_len > 0) {
-            const base_off = c.crypto_tx_off_initial;
-            _ = (frame.Frame{ .crypto = .{ .offset = base_off, .data = crypto_buf[0..crypto_len] } }).write(frames.writer(self.allocator.*)) catch 0;
-            // (TEMP) Omit saving retransmit buffer to simplify leak debugging for interop slice.
-            c.crypto_retx_initial_off = base_off;
-            c.crypto_tx_off_initial += crypto_len;
-        } else {
-            frames.append(self.allocator.*, @intFromEnum(frame.FrameType.PING)) catch {};
-        }
-        // Add padding to meet minimum Initial datagram size of 1200 bytes (RFC 9000 §14.1).
-        while (frames.items.len < 1150) frames.append(self.allocator.*, @intFromEnum(frame.FrameType.PADDING)) catch {};
-        // Use any stored Retry token if present
-        const token_slice: []const u8 = c.initial_token.items;
-        const pkt = try packet.encodeInitialProtected(
-            self.allocator.*,
-            c.version,
-            // Client Initial: DCID = our chosen dcid; SCID = our scid
-            // After a Retry, peer_initial_dcid is updated to the SCID from the Retry per RFC 9000 §17.2.5.
-            c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len],
-            c.our_scid.bytes[0..c.our_scid.len],
-            token_slice,
-            @as(u32, @truncate(c.pn_initial_tx)),
-            2,
-            frames.items,
-            tx_keys,
-        );
-        std.debug.print("client: built Initial pn={} dcid=\n", .{c.pn_initial_tx});
-        for (c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]) |b| std.debug.print("{X:0>2}\n", .{b});
-        std.debug.print(" scid=\n", .{});
-        for (c.our_scid.bytes[0..c.our_scid.len]) |b| std.debug.print("{X:0>2}\n", .{b});
-        std.debug.print(" payload_len={}\n", .{frames.items.len});
-        defer self.allocator.free(pkt);
-        const sent = try self.sendTo(c.peer, pkt);
-        c.onPacketSent(.Initial, c.pn_initial_tx, sent, true);
-        c.pn_initial_tx +%= 1;
-        // Arm Initial PTO
+        try client_mod.sendInitialProbe(&ctx);
+
+        // Arm Initial PTO (requires Endpoint context)
         c.computeAndMaybeArmPtoInitial(self);
     }
 

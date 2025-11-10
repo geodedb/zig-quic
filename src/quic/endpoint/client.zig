@@ -16,68 +16,19 @@
 //! - RFC 9001 §5: Packet Protection (Initial secrets)
 
 const std = @import("std");
+const conn_mod = @import("quic_conn");
+const packet = @import("quic_packet");
+const frame = @import("quic_frame");
+const ks = @import("quic_tls");
 
-// Note: These functions currently require access to the full Endpoint structure.
-// For Phase 4a, tests and external code should call these via the Endpoint instance.
-// Full extraction to standalone functions is Phase 4b (future work).
-
-/// Client connection establishment functions are currently implemented in endpoint.zig
-/// due to deep dependencies on Endpoint state (allocator, config, connection table, etc.).
-///
-/// Usage from tests:
-///   const client = @import("endpoint/client.zig");
-///   // Then call via endpoint instance:
-///   const conn = try endpoint.connectClient("localhost:4433");
-///   try endpoint.clientSendInitialProbe(conn);
-///
-/// The following functions are available via Endpoint methods:
-///
-/// **connectTo**(hostport: []const u8) -> Connection
-///   Creates a basic Connection struct for the specified host:port.
-///   Returns a Connection value (not pointer) configured for client role.
-///   RFC 9000 §7: Client initiates connection to server.
-///
-/// **connectClient**(hostport: []const u8) -> *Connection
-///   Creates a fully initialized client Connection with:
-///   - Random 8-byte DCID generation (RFC 9000 §5.1.1)
-///   - Random 8-byte SCID generation
-///   - Configuration application (congestion control, pacing, ALPN)
-///   - AEAD usage limit setup
-///   - Connection table registration
-///   - Version selection (v1 or v2 based on config)
-///   Returns pointer to allocated Connection in endpoint's connection table.
-///
-/// **clientSendInitialProbe**(conn: *Connection) -> void
-///   Sends Initial packet with ClientHello:
-///   - Derives Initial secrets from original DCID (RFC 9001 §5.2)
-///   - Builds CRYPTO frame with ClientHello and transport parameters
-///   - Pads to 1200 bytes minimum (RFC 9000 §14.1)
-///   - Protects packet with Initial keys
-///   - Sends via UDP and arms Initial PTO timer
-///
-/// Example usage:
-/// ```zig
-/// var endpoint = Endpoint.init(allocator, config);
-/// const conn = try endpoint.connectClient("server.example.com:443");
-/// try endpoint.clientSendInitialProbe(conn);
-/// // Connection is now in Handshake state, waiting for ServerHello
-/// ```
-
-/// Module marker for Phase 4a modular structure.
-/// Full implementation extraction is Phase 4b (future work).
-pub const extracted = false; // Set to true when implementations are fully extracted
-
-/// For documentation and test organization, these function signatures represent
-/// the interface that will eventually be extracted. Currently implemented in endpoint.zig.
-pub const Interface = struct {
-    /// Create basic connection struct (not fully initialized)
-    pub const ConnectToSignature = fn (hostport: []const u8) anyerror!@import("quic_conn").Connection;
-
-    /// Create and fully initialize client connection
-    pub const ConnectClientSignature = fn (hostport: []const u8) anyerror!*@import("quic_conn").Connection;
-
-    /// Send Initial packet with ClientHello
-    pub const ClientSendInitialProbeSignature = fn (conn: *@import("quic_conn").Connection) anyerror!void;
+/// Client context for connection establishment.
+/// Similar to HandshakeContext, provides focused state passing.
+pub const ClientContext = struct {
+    allocator: *std.mem.Allocator,
+    conn: *conn_mod.Connection,
+    sender_ctx: ?*anyopaque,
+    send_fn: *const fn (sender_ctx: ?*anyopaque, peer: conn_mod.SockAddr, data: []const u8) anyerror!usize,
+    peer: conn_mod.SockAddr,
 };
 
 /// Helper: Generate random 8-byte Connection ID.
@@ -86,10 +37,215 @@ pub fn generateRandomCid(bytes: []u8) void {
     std.crypto.random.bytes(bytes);
 }
 
-/// Placeholder ClientHandshake struct for test compatibility.
-/// Full implementation will be extracted in Phase 4b.
-pub const ClientHandshake = struct {
-    pub fn init() ClientHandshake {
-        return .{};
+/// Create basic connection struct (not fully initialized).
+/// Returns a Connection value (not pointer) configured for client role.
+/// RFC 9000 §7: Client initiates connection to server.
+///
+/// NOTE: This creates a minimal Connection struct. For fully initialized connections,
+/// use createClientConnection instead.
+pub fn connectTo(peer: conn_mod.SockAddr, sock_fd: std.posix.socket_t) conn_mod.Connection {
+    return .{
+        .id = 0,
+        .role = .Client,
+        .sock_fd = @as(isize, @intCast(sock_fd)),
+        .peer = peer,
+        .tls_inbox = std.ArrayList(u8){},
+    };
+}
+
+/// Create and fully initialize client Connection.
+///
+/// This function:
+/// 1. Allocates Connection struct
+/// 2. Initializes with client role
+/// 3. Applies configuration (congestion control, pacing, ALPN)
+/// 4. Generates random DCIDs and SCIDs (RFC 9000 §5.1.1)
+/// 5. Sets up AEAD usage limits
+/// 6. Registers connection in lookup tables
+///
+/// Parameters:
+/// - allocator: Memory allocator
+/// - peer: Remote endpoint address
+/// - sock_fd: Socket file descriptor
+/// - cfg: QUIC configuration
+/// - version: QUIC version to use (v1 or v2)
+/// - conns_map: Connection lookup table (will be registered with both DCID and SCID)
+/// - peer_hash: Hash of peer address
+///
+/// Returns:
+/// - Pointer to allocated and initialized Connection
+///
+/// RFC 9000 §5.1.1: "A client MUST choose a value for the Destination Connection ID field."
+pub fn createClientConnection(
+    allocator: std.mem.Allocator,
+    peer: conn_mod.SockAddr,
+    sock_fd: std.posix.socket_t,
+    cfg: anytype,
+    version: u32,
+    conns_map: anytype,
+    peer_hash: u64,
+) !*conn_mod.Connection {
+    const c = try allocator.create(conn_mod.Connection);
+    c.init(allocator, .Client, @as(isize, @intCast(sock_fd)), peer);
+
+    // Apply config flags
+    c.setUseCubic(cfg.cc == .cubic);
+    c.tls.allow_insecure = cfg.allow_insecure;
+    c.allowed_alpns = cfg.alpn;
+
+    // Enable optional pacing and set CC max_datagram_size
+    c.enable_pacing = cfg.enable_pacing;
+    c.rec.cc.mds = @intCast(cfg.max_datagram_size);
+
+    // Apply AEAD usage limit overrides
+    c.setAeadUsageLimits(cfg.aead_confidentiality_limit_override, cfg.aead_integrity_limit_override);
+
+    // Set version
+    c.version = version;
+    c.version_v2 = (c.version == packet.QUIC_V2);
+    c.initial_version = c.version;
+
+    // Client chooses DCID and SCID (RFC 9000 §5.1.1) prior to deriving Initial secrets.
+    var dcid: [8]u8 = undefined;
+    generateRandomCid(&dcid);
+    c.peer_initial_dcid.len = @intCast(dcid.len);
+    @memcpy(c.peer_initial_dcid.bytes[0..dcid.len], &dcid);
+
+    // Preserve original DCID separately for Initial secret derivation (never changes).
+    c.original_dcid.len = c.peer_initial_dcid.len;
+    if (c.original_dcid.len > 0) {
+        @memcpy(c.original_dcid.bytes[0..c.original_dcid.len], c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]);
     }
-};
+
+    c.our_scid.len = 8;
+    generateRandomCid(c.our_scid.bytes[0..c.our_scid.len]);
+
+    // Map by both dcid and scid to find VN/HS
+    const key_d = .{
+        .peer_hash = peer_hash,
+        .dcid_hash = hashBytes(c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]),
+    };
+    const key_s = .{
+        .peer_hash = peer_hash,
+        .dcid_hash = hashBytes(c.our_scid.bytes[0..c.our_scid.len]),
+    };
+    _ = conns_map.put(key_d, c) catch {};
+    _ = conns_map.put(key_s, c) catch {};
+
+    return c;
+}
+
+/// Send Initial packet with ClientHello to start QUIC handshake.
+///
+/// RFC 9000 §7: "A client initiates a QUIC connection by sending an Initial packet."
+///
+/// This function:
+/// 1. Derives Initial secrets from DCID (RFC 9001 §5.2)
+/// 2. Sets up client transport parameters
+/// 3. Generates ClientHello via TLS
+/// 4. Builds CRYPTO frame with ClientHello
+/// 5. Pads to 1200 bytes minimum (RFC 9000 §14.1)
+/// 6. Protects packet with Initial keys
+/// 7. Sends via UDP and arms Initial PTO timer
+///
+/// Parameters:
+/// - ctx: ClientContext with connection, allocator, send_fn, and peer address
+///
+/// Returns:
+/// - error.OutOfMemory if allocation fails
+/// - error.* from packet encoding or sending
+///
+/// RFC 9000 §14.1: "A client MUST expand the payload of all UDP datagrams carrying
+/// Initial packets to at least 1200 bytes."
+pub fn sendInitialProbe(ctx: *ClientContext) !void {
+    const c = ctx.conn;
+    const v2 = (c.version == packet.QUIC_V2);
+
+    // Initial secret derives from the immutable DCID per RFC 9001 §5.1/§5.2.
+    const dcid_for_secret = if (c.original_dcid.len > 0)
+        c.original_dcid.bytes[0..c.original_dcid.len]
+    else
+        c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len];
+
+    const initial = ks.deriveInitialSecret(v2, dcid_for_secret);
+    const pair = ks.deriveClientServerInitial(initial);
+
+    std.debug.print("client: deriving Initial keys with dcid=\n", .{});
+    for (c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]) |b| {
+        std.debug.print("{X:0>2}\n", .{b});
+    }
+    std.debug.print(" len={}\n", .{c.peer_initial_dcid.len});
+
+    const tx_keys: packet.InitialKeys = if (v2) blk: {
+        const t = ks.deriveKeyIvHpV2(pair.client);
+        break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
+    } else blk: {
+        const t = ks.deriveKeyIvHp(pair.client);
+        break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
+    };
+
+    var frames = std.ArrayList(u8){};
+    defer frames.deinit(ctx.allocator.*);
+
+    // Build CRYPTO frame carrying ClientHello
+    // Note: Transport parameters must be set up by caller before calling sendInitialProbe
+
+    // Queue ClientHello using full TLS 1.3
+    c.tls.queueMinimalClientHello() catch {
+        _ = c.tls.queueMinimalClientHelloAuto() catch 0;
+    };
+
+    var crypto_buf: [2048]u8 = undefined;
+    const crypto_len = c.tls.popCrypto(crypto_buf[0..]);
+    if (crypto_len > 0) {
+        const base_off = c.crypto_tx_off_initial;
+        _ = (frame.Frame{ .crypto = .{ .offset = base_off, .data = crypto_buf[0..crypto_len] } }).write(frames.writer(ctx.allocator.*)) catch 0;
+        c.crypto_retx_initial_off = base_off;
+        c.crypto_tx_off_initial += crypto_len;
+    } else {
+        frames.append(ctx.allocator.*, @intFromEnum(frame.FrameType.PING)) catch {};
+    }
+
+    // Add padding to meet minimum Initial datagram size of 1200 bytes (RFC 9000 §14.1).
+    while (frames.items.len < 1150) {
+        frames.append(ctx.allocator.*, @intFromEnum(frame.FrameType.PADDING)) catch {};
+    }
+
+    // Use any stored Retry token if present
+    const token_slice: []const u8 = c.initial_token.items;
+    const pkt = try packet.encodeInitialProtected(
+        ctx.allocator.*,
+        c.version,
+        // Client Initial: DCID = our chosen dcid; SCID = our scid
+        // After a Retry, peer_initial_dcid is updated to the SCID from the Retry per RFC 9000 §17.2.5.
+        c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len],
+        c.our_scid.bytes[0..c.our_scid.len],
+        token_slice,
+        @as(u32, @truncate(c.pn_initial_tx)),
+        2,
+        frames.items,
+        tx_keys,
+    );
+
+    std.debug.print("client: built Initial pn={} dcid=\n", .{c.pn_initial_tx});
+    for (c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]) |b| {
+        std.debug.print("{X:0>2}\n", .{b});
+    }
+    std.debug.print(" scid=\n", .{});
+    for (c.our_scid.bytes[0..c.our_scid.len]) |b| {
+        std.debug.print("{X:0>2}\n", .{b});
+    }
+    std.debug.print(" payload_len={}\n", .{frames.items.len});
+
+    defer ctx.allocator.free(pkt);
+    const sent = try ctx.send_fn(ctx.sender_ctx, ctx.peer, pkt);
+    c.onPacketSent(.Initial, c.pn_initial_tx, sent, true);
+    c.pn_initial_tx +%= 1;
+}
+
+/// Helper function to hash bytes (for connection lookup).
+fn hashBytes(bytes: []const u8) u64 {
+    var h = std.hash.Wyhash.init(0);
+    h.update(bytes);
+    return h.final();
+}
