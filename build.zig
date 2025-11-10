@@ -758,6 +758,7 @@ pub fn build(b: *std.Build) void {
         test_endpoint_handshake_integration.root_module.addImport("quic_endpoint_handshake_integration", endpoint_handshake_integration_mod);
         test_endpoint_handshake_integration.root_module.addImport("quic_conn", quic_conn_mod);
         test_endpoint_handshake_integration.root_module.addImport("config", quic_config_mod);
+        test_endpoint_handshake_integration.root_module.addImport("vendor_ztls_key_schedule", quic_tls_mod);
         const run_test_endpoint_handshake_integration = b.addRunArtifact(test_endpoint_handshake_integration);
         test_step.dependOn(&run_test_endpoint_handshake_integration.step);
 

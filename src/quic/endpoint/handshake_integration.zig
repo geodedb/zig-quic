@@ -75,14 +75,15 @@ pub fn installHandshakeKeys(
     server_secret: [32]u8,
 ) !void {
     // Derive Handshake keys from secrets
-    // Uses HKDF-Expand-Label per RFC 8446 §7.1
-    const cipher_suite = .aes_128_gcm; // QUIC mandates AES-128-GCM or ChaCha20-Poly1305
+    // Uses HKDF-Expand-Label per RFC 8446 §7.1 and RFC 9001 §5
+    // AES-128-GCM (TLS_AES_128_GCM_SHA256) is the default cipher suite for QUIC
 
     // Derive client Handshake keys
-    const client_keys = try key_schedule.deriveKeyIvHp(client_secret, cipher_suite);
+    // RFC 9001 §5.1: "key = HKDF-Expand-Label(Secret, "quic key", "", key_length)"
+    const client_keys = key_schedule.deriveKeyIvHp(client_secret);
 
     // Derive server Handshake keys
-    const server_keys = try key_schedule.deriveKeyIvHp(server_secret, cipher_suite);
+    const server_keys = key_schedule.deriveKeyIvHp(server_secret);
 
     // Install based on connection role
     if (conn.role == .Client) {
@@ -124,14 +125,15 @@ pub fn installApplicationKeys(
     server_secret: [32]u8,
 ) !void {
     // Derive Application keys from secrets
-    // Uses HKDF-Expand-Label per RFC 8446 §7.1
-    const cipher_suite = .aes_128_gcm; // QUIC mandates AES-128-GCM or ChaCha20-Poly1305
+    // Uses HKDF-Expand-Label per RFC 8446 §7.1 and RFC 9001 §5
+    // AES-128-GCM (TLS_AES_128_GCM_SHA256) is the default cipher suite for QUIC
 
     // Derive client Application keys
-    const client_keys = try key_schedule.deriveKeyIvHp(client_secret, cipher_suite);
+    // RFC 9001 §5.1: "key = HKDF-Expand-Label(Secret, "quic key", "", key_length)"
+    const client_keys = key_schedule.deriveKeyIvHp(client_secret);
 
     // Derive server Application keys
-    const server_keys = try key_schedule.deriveKeyIvHp(server_secret, cipher_suite);
+    const server_keys = key_schedule.deriveKeyIvHp(server_secret);
 
     // Install based on connection role
     if (conn.role == .Client) {

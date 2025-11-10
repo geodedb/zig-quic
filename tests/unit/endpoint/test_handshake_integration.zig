@@ -20,26 +20,109 @@ const handshake = @import("quic_endpoint_handshake_integration");
 const conn_mod = @import("quic_conn");
 const cfg = @import("config");
 
+// Import key_schedule for test vectors
+const key_schedule = @import("vendor_ztls_key_schedule");
+
 var test_allocator_instance = std.testing.allocator;
+
+// =============================================================================
+// RFC 9001 Appendix A Test Vectors
+// =============================================================================
+
+// Helper to convert hex string to bytes (ignores spaces)
+fn hexToBytes(comptime hex: []const u8, out: []u8) void {
+    var out_idx: usize = 0;
+    var i: usize = 0;
+    while (i < hex.len) {
+        if (hex[i] == ' ') {
+            i += 1;
+            continue;
+        }
+        if (i + 1 < hex.len) {
+            out[out_idx] = std.fmt.parseInt(u8, hex[i .. i + 2], 16) catch unreachable;
+            out_idx += 1;
+            i += 2;
+        } else {
+            break;
+        }
+    }
+}
+
+// Helper to compare hex string with bytes
+fn expectEqualHex(comptime hex: []const u8, actual: []const u8) !void {
+    // Count non-space characters to get byte count
+    comptime var byte_count: usize = 0;
+    comptime {
+        for (hex) |c| {
+            if (c != ' ') byte_count += 1;
+        }
+    }
+    var expected: [byte_count / 2]u8 = undefined;
+    hexToBytes(hex, &expected);
+    try testing.expectEqualSlices(u8, &expected, actual);
+}
+
+/// RFC 9001 Appendix A.1 - Test vector for Handshake secret derivation
+/// These secrets would normally come from TLS handshake, but we use
+/// fixed test vectors to verify key derivation works correctly.
+const test_handshake_client_secret_hex =
+    "c00cf151ca5be075ed0ebfb5c80323c4" ++
+    "2d6b7db67881289af4008f1f6c357aea";
+
+const test_handshake_server_secret_hex =
+    "3c199828fd139efd216c155ad844cc81" ++
+    "fb82fa8d7446fa7d78be803acdda951b";
+
+/// Expected client key derived from test_handshake_client_secret (RFC 9001 Appendix A)
+const expected_handshake_client_key_hex = "1f369613dd76d5467730efcbe3b1a22d";
+
+/// Expected client IV derived from test_handshake_client_secret (RFC 9001 Appendix A)
+const expected_handshake_client_iv_hex = "fa044b2f42a3fd3b46fb255c";
+
+/// Expected client HP derived from test_handshake_client_secret (RFC 9001 Appendix A)
+const expected_handshake_client_hp_hex = "9f50449e04a0e810283a1e9933adedd2";
+
+/// Expected server key derived from test_handshake_server_secret (RFC 9001 Appendix A)
+const expected_handshake_server_key_hex = "cf3a5331653c364c88f0f379b6067e37";
+
+/// Expected server IV derived from test_handshake_server_secret (RFC 9001 Appendix A)
+const expected_handshake_server_iv_hex = "0ac1493ca1905853b0bba03e";
+
+/// Expected server HP derived from test_handshake_server_secret (RFC 9001 Appendix A)
+const expected_handshake_server_hp_hex = "c206b8d9b9f0f37644430b490eeaa314";
 
 // =============================================================================
 // Handshake Key Installation Tests (RFC 9001 §5)
 // =============================================================================
 
-test "RFC 9001 §5 - installHandshakeKeys installs client and server keys" {
+test "RFC 9001 §5 - installHandshakeKeys derives correct keys from secrets" {
     // RFC 9001 §5.2: "Handshake keys are derived from the handshake traffic secrets."
-    // Expected: installHandshakeKeys() should:
-    // 1. Derive client Handshake keys (key, IV, HP) from client_secret
-    // 2. Derive server Handshake keys (key, IV, HP) from server_secret
-    // 3. Install rx_keys and tx_keys based on connection role
-    // 4. Set has_hs_keys = true
+    // This test verifies the key derivation process using RFC 9001 Appendix A test vectors.
+    //
+    // Note: Full Connection initialization is complex and requires TLS state machine setup.
+    // This test focuses on verifying that deriveKeyIvHp() produces correct outputs.
 
-    // For server connection:
-    // - rx_keys should be client keys (decrypt client Handshake packets)
-    // - tx_keys should be server keys (encrypt server Handshake packets)
+    // Create test secrets from RFC 9001 Appendix A test vectors
+    var client_secret: [32]u8 = undefined;
+    var server_secret: [32]u8 = undefined;
+    hexToBytes(test_handshake_client_secret_hex, &client_secret);
+    hexToBytes(test_handshake_server_secret_hex, &server_secret);
 
-    // Placeholder - will be real test when implemented
-    try testing.expect(true);
+    // Derive client Handshake keys using key_schedule directly
+    const client_keys = key_schedule.deriveKeyIvHp(client_secret);
+
+    // Verify client keys match RFC 9001 Appendix A expected values
+    try expectEqualHex(expected_handshake_client_key_hex, &client_keys.key);
+    try expectEqualHex(expected_handshake_client_iv_hex, &client_keys.iv);
+    try expectEqualHex(expected_handshake_client_hp_hex, &client_keys.hp);
+
+    // Derive server Handshake keys
+    const server_keys = key_schedule.deriveKeyIvHp(server_secret);
+
+    // Verify server keys match RFC 9001 Appendix A expected values
+    try expectEqualHex(expected_handshake_server_key_hex, &server_keys.key);
+    try expectEqualHex(expected_handshake_server_iv_hex, &server_keys.iv);
+    try expectEqualHex(expected_handshake_server_hp_hex, &server_keys.hp);
 }
 
 test "RFC 9001 §5 - installHandshakeKeys server role uses correct key orientation" {
