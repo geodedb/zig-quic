@@ -158,15 +158,13 @@ pub const LoopbackTransportAdapter = struct {
         const self: *LoopbackTransportAdapter = @ptrCast(@alignCast(ctx));
         _ = peer;  // Ignore peer, we know where to send based on our side
 
-        // TODO: Implement actual send through loopback queues
-        // if (self.side == .SideA) {
-        //     try self.loopback.sendAtoB(data);
-        // } else {
-        //     try self.loopback.sendBtoA(data);
-        // }
+        // Route packet through appropriate queue based on our side
+        if (self.side == .SideA) {
+            try self.loopback.sendAtoB(data);
+        } else {
+            try self.loopback.sendBtoA(data);
+        }
 
-        // Stub: pretend we sent the data
-        _ = self;
         return data.len;
     }
 
@@ -174,16 +172,21 @@ pub const LoopbackTransportAdapter = struct {
     fn recvFn(ctx: *anyopaque, buf: []u8) anyerror!RecvResult {
         const self: *LoopbackTransportAdapter = @ptrCast(@alignCast(ctx));
 
-        // TODO: Implement actual receive from loopback queues
-        // const received_data = if (self.side == .SideA)
-        //     try self.loopback.recvAtA(buf)
-        // else
-        //     try self.loopback.recvAtB(buf);
+        // Receive from opposite queue based on our side
+        const maybe_len = if (self.side == .SideA)
+            try self.loopback.recvAtA(buf)
+        else
+            try self.loopback.recvAtB(buf);
 
-        // Stub: return no data available
-        _ = self;
-        _ = buf;
-        return error.WouldBlock;
+        // If no packet available, return WouldBlock
+        const n = maybe_len orelse return error.WouldBlock;
+
+        // Return received packet with peer address
+        return RecvResult{
+            .n = n,
+            .peer = self.peer_addr,
+            .ecn = null,  // ECN not yet implemented in loopback
+        };
     }
 
     /// Poll implementation (no-op for loopback)
@@ -241,7 +244,7 @@ test "LoopbackTransportAdapter asTransport" {
     transport.close();
 }
 
-test "LoopbackTransportAdapter send stub" {
+test "LoopbackTransportAdapter send" {
     var lb = try loopback.LoopbackTransport.init(testing.allocator, .{});
     defer lb.deinit();
 
@@ -251,12 +254,15 @@ test "LoopbackTransportAdapter send stub" {
     const test_data = "test packet";
     const peer_addr = SockAddr.ipv4(127, 0, 0, 1, 443);
 
-    // Send should succeed (stub implementation)
+    // Send should succeed and data should be in queue
     const sent = try transport.send(peer_addr, test_data);
     try testing.expectEqual(@as(usize, test_data.len), sent);
+
+    // Verify packet is in the A→B queue
+    try testing.expect(lb.getAtoBQueueLen() == 1);
 }
 
-test "LoopbackTransportAdapter recv stub" {
+test "LoopbackTransportAdapter recv WouldBlock" {
     var lb = try loopback.LoopbackTransport.init(testing.allocator, .{});
     defer lb.deinit();
 
@@ -265,7 +271,40 @@ test "LoopbackTransportAdapter recv stub" {
 
     var buf: [1500]u8 = undefined;
 
-    // Recv should return WouldBlock (stub implementation)
+    // Recv should return WouldBlock (no packets in queue)
     const result = transport.recv(&buf);
     try testing.expectError(error.WouldBlock, result);
+}
+
+test "LoopbackTransportAdapter bidirectional communication" {
+    var lb = try loopback.LoopbackTransport.init(testing.allocator, .{});
+    defer lb.deinit();
+
+    // Create adapters for both sides
+    var adapter_a = LoopbackTransportAdapter.init(lb, .SideA);
+    var adapter_b = LoopbackTransportAdapter.init(lb, .SideB);
+
+    var transport_a = adapter_a.asTransport();
+    var transport_b = adapter_b.asTransport();
+
+    const peer_addr = SockAddr.ipv4(127, 0, 0, 1, 443);
+
+    // Side A sends to Side B
+    const msg_a_to_b = "Hello from A";
+    _ = try transport_a.send(peer_addr, msg_a_to_b);
+
+    // Side B should receive it
+    var buf: [1500]u8 = undefined;
+    const result_b = try transport_b.recv(&buf);
+    try testing.expectEqual(@as(usize, msg_a_to_b.len), result_b.n);
+    try testing.expectEqualStrings(msg_a_to_b, buf[0..result_b.n]);
+
+    // Side B sends to Side A
+    const msg_b_to_a = "Hello from B";
+    _ = try transport_b.send(peer_addr, msg_b_to_a);
+
+    // Side A should receive it
+    const result_a = try transport_a.recv(&buf);
+    try testing.expectEqual(@as(usize, msg_b_to_a.len), result_a.n);
+    try testing.expectEqualStrings(msg_b_to_a, buf[0..result_a.n]);
 }
