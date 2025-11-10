@@ -465,6 +465,9 @@ pub const Connection = struct {
     peer: SockAddr,
     tls_inbox: std.ArrayList(u8),
     tls: tls13.Engine,
+    /// Optional vendor/ztls Context for modular TLS 1.3 integration (Phase 6).
+    /// When non-null, processCryptoFrame uses Context.processCrypto() instead of Engine.
+    tls_context: ?*tls13.Context = null,
     allocator: *std.mem.Allocator,
     // Allowed ALPNs configured on endpoint
     allowed_alpns: []const []const u8 = &[_][]const u8{},
@@ -1221,7 +1224,7 @@ pub const Connection = struct {
         self.negotiated_alpn = copy;
     }
 
-    fn storePeerTransportParams(self: *Connection, encoded: []const u8) !void {
+    pub fn storePeerTransportParams(self: *Connection, encoded: []const u8) !void {
         if (self.peer_transport_params_raw) |existing| {
             if (std.mem.eql(u8, existing, encoded)) return;
             self.allocator.free(existing);
@@ -3204,6 +3207,15 @@ pub const Connection = struct {
         defer arena.deinit();
         const alloc = arena.allocator();
         const tp_dec = tparams.TransportParams.decode(alloc, encoded) catch return error.MalformedTransportParams;
+
+        // RFC 9000 §7.4: Validate required parameters are present
+        // peer_is_server = true if we're a client receiving from server
+        const peer_is_server = (self.role == .Client);
+        const retry_sent = false; // FIXME: Track if Retry was sent by server
+        tp_dec.validate(peer_is_server, retry_sent) catch return error.InvalidTransportParams;
+
+        // RFC 9000 §18.2: Check that parameter values are within allowed ranges
+        tp_dec.checkLimits() catch return error.InvalidTransportParams;
         // Flow control: peer's advertised maxima govern what we may send.
         if (tp_dec.initial_max_data) |v| self.peer_max_data = v;
         // Choose a bidi stream data limit from whichever field is present (take the larger if both).

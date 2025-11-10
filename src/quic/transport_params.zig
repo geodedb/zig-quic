@@ -1,7 +1,6 @@
 //! QUIC Transport Parameters encode/decode (subset) RFC 9000 §7.4/§18.1.
 const std = @import("std");
 const varint = @import("quic_varint");
-const conn_mod = @import("quic_conn");
 
 /// Preferred address structure per RFC 9000 §9.6 and §18.2.
 pub const PreferredAddress = struct {
@@ -366,66 +365,6 @@ pub const TransportParams = struct {
         }
     }
 
-    /// Apply validated transport parameters to connection state.
-    /// Extracted from conn.zig applyPeerTransportParameters() (Phase 4b.5 Session 7).
-    ///
-    /// RFC 9000 §7.4: "An endpoint MUST apply the transport parameters provided by
-    /// its peer. These parameters are the values received by the endpoint."
-    ///
-    /// This method updates connection state with peer's advertised limits:
-    /// - Flow control: initial_max_data sets how much we can send
-    /// - Stream limits: initial_max_streams_* sets stream opening limits
-    /// - ACK parameters: ack_delay_exponent, max_ack_delay for ACK processing
-    /// - Connection IDs: active_connection_id_limit for CID management
-    ///
-    /// RFC 9000 §4.1: "Flow control limits the amount of data that an endpoint
-    /// can send. Both stream and connection flow control are managed using a credit-based scheme."
-    ///
-    /// Parameters:
-    /// - self: Validated TransportParams to apply
-    /// - conn: Connection to update with peer's parameters
-    pub fn apply(self: *const TransportParams, conn: *conn_mod.Connection) void {
-        // RFC 9000 §4.1: peer's initial_max_data governs how much we may send
-        if (self.initial_max_data) |v| {
-            conn.peer_max_data = v;
-        }
-
-        // RFC 9000 §4.1: Stream-level flow control limits
-        // Choose the maximum from both bidi and uni limits for compatibility
-        var bidi_limit: u64 = conn.peer_max_stream_data;
-        if (self.initial_max_stream_data_bidi_local) |v| {
-            if (v > bidi_limit) bidi_limit = v;
-        }
-        if (self.initial_max_stream_data_bidi_remote) |v| {
-            if (v > bidi_limit) bidi_limit = v;
-        }
-        if (self.initial_max_stream_data_uni) |v| {
-            if (v > bidi_limit) bidi_limit = v;
-        }
-        conn.peer_max_stream_data = bidi_limit;
-
-        // RFC 9000 §4.6: Stream count limits
-        if (self.initial_max_streams_bidi) |v| {
-            conn.peer_max_streams_bidi = v;
-        }
-        if (self.initial_max_streams_uni) |v| {
-            conn.peer_max_streams_uni = v;
-        }
-
-        // RFC 9000 §13.2.1: ACK delay exponent (must be <= 20, already validated)
-        if (self.ack_delay_exponent) |v| {
-            conn.ack_delay_exponent = @intCast(v);
-        }
-
-        // RFC 9000 §18.2: max_ack_delay in milliseconds (cap to 4000ms for safety)
-        if (self.max_ack_delay) |v| {
-            const capped: u64 = if (v > 4000) 4000 else v;
-            conn.max_ack_delay_ms = @intCast(capped);
-        }
-
-        // Mark that transport parameters have been applied
-        conn.transport_params_applied = true;
-    }
 
     /// Get default value for max_udp_payload_size if not set.
     /// RFC 9000 §18.2: Default is 65527 (max IPv6 datagram - IPv6 header - UDP header)

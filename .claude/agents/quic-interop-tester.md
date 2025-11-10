@@ -36,20 +36,30 @@ The Zig QUIC implementation is modular and RFC-aligned. When diagnosing interop 
 - `idle.zig` - Idle timeout negotiation (RFC 9000 §10.1)
 
 **Endpoint Layer (`src/quic/endpoint/*`):**
-- `timer.zig` - PTO, loss detection timers (RFC 9002 §6.2)
-- `io.zig` - UDP I/O, ECN marking (RFC 9000 §13.3)
-- `lookup.zig` - Connection routing by CID (RFC 9000 §5.1-5.2)
-- `client.zig`, `server.zig` - Connection establishment (RFC 9000 §7)
-- `pto.zig` - Probe generation (RFC 9002 §6.2)
+- `types.zig` - Timer, Key, EndpointRole types (94 lines) (RFC 9000 §5.1)
+- `timer.zig` - Timer heap for PTO/loss detection (121 lines) (RFC 9002 §6.2)
+- `lookup.zig` - Connection routing by CID (209 lines) (RFC 9000 §5.1-5.2)
+- `io.zig` - UDP I/O, ECN, platform poll backends (383 lines) (RFC 9000 §13.3, RFC 3168) [Phase 11]
+- `client.zig` - Client establishment (95 lines) (RFC 9000 §7)
+- `server.zig` - Server acceptance, address validation (387 lines) (RFC 9000 §7, §8.1)
+- `incoming.zig` - Incoming packet processing (2,608 lines) (RFC 9000 §12-17)
+- `pto.zig` - PTO probe generation (260 lines) (RFC 9002 §6.2)
+- `lifecycle.zig` - Connection lifecycle management (293 lines) (RFC 9000 §10) [Phase 10]
+- `handshake_integration.zig` - TLS handshake integration (793 lines) (RFC 9001)
+- `frame_handler.zig` - Frame processing delegation (395 lines) (RFC 9000 §19)
+- `utils.zig` - Utility functions (84 lines) (RFC 9000)
+- `endpoint.zig` - Thin coordinator, re-exports (69 lines) (RFC 9000)
+
+**Total: 13 modules with 5,791 lines**
 
 **TLS Layer (`vendor/ztls/src/*`):**
 - `tls13.zig` - Handshake state machine (RFC 8446, RFC 9001)
 - `key_schedule.zig` - HKDF key derivation (RFC 9001 §5)
 - `record.zig` - AEAD, header protection (RFC 9001 §5.3-5.4)
 
-**Monolithic Files (legacy):**
-- `src/quic/conn.zig` - Main Connection struct
-- `src/quic/endpoint.zig` - Main Endpoint struct
+**Monolithic Files (legacy, still functional):**
+- `src/quic/conn.zig` - Main Connection struct (3,449 lines)
+- `src/quic/endpoint.zig` - Main Endpoint struct (2,878 lines, down from 3,728)
 
 When an interop test fails, identify which RFC section/feature is failing, then check the corresponding module for potential bugs.
 

@@ -430,6 +430,10 @@ pub fn build(b: *std.Build) void {
     endpoint_pto_mod.addImport("quic_frame", quic_frame_mod);
     endpoint_pto_mod.addImport("quic_tls", quic_tls_mod);
 
+    const endpoint_lifecycle_mod = mkModule(b, "src/quic/endpoint/lifecycle.zig");
+    endpoint_lifecycle_mod.addImport("types", endpoint_types_mod);
+    endpoint_lifecycle_mod.addImport("quic_conn", quic_conn_mod);
+
     const endpoint_frame_handler_mod = mkModule(b, "src/quic/endpoint/frame_handler.zig");
     endpoint_frame_handler_mod.addImport("quic_conn", quic_conn_mod);
     endpoint_frame_handler_mod.addImport("frame", quic_frame_mod);
@@ -480,6 +484,7 @@ pub fn build(b: *std.Build) void {
     quic_endpoint_mod.addImport("endpoint/frame_handler.zig", endpoint_frame_handler_mod);
     quic_endpoint_mod.addImport("endpoint/lookup.zig", endpoint_lookup_mod);
     quic_endpoint_mod.addImport("endpoint/pto.zig", endpoint_pto_mod);
+    quic_endpoint_mod.addImport("endpoint/lifecycle.zig", endpoint_lifecycle_mod);
     quic_endpoint_mod.addImport("endpoint/handshake_integration.zig", endpoint_handshake_integration_mod);
 
     // Public API module (reuse everywhere)
@@ -759,6 +764,7 @@ pub fn build(b: *std.Build) void {
         test_endpoint_handshake_integration.root_module.addImport("quic_conn", quic_conn_mod);
         test_endpoint_handshake_integration.root_module.addImport("config", quic_config_mod);
         test_endpoint_handshake_integration.root_module.addImport("vendor_ztls_key_schedule", quic_tls_mod);
+        test_endpoint_handshake_integration.root_module.addImport("transport_params", quic_transport_params_mod);
         const run_test_endpoint_handshake_integration = b.addRunArtifact(test_endpoint_handshake_integration);
         test_step.dependOn(&run_test_endpoint_handshake_integration.step);
 

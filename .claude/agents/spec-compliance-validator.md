@@ -40,19 +40,26 @@ The QUIC implementation is organized into RFC-aligned modules in `src/quic/conne
 - `connection/error.zig` - Error codes, connection closure, draining state (RFC 9000 §10, §20)
 - `connection/idle.zig` - Idle timeout negotiation and management (RFC 9000 §10.1)
 
-**Endpoint Modules (RFC 9000 Transport):**
-- `endpoint/types.zig` - Timer, Key, EndpointRole types (RFC 9000 §5.1)
-- `endpoint/timer.zig` - Timer heap management (RFC 9002 §6.2)
-- `endpoint/lookup.zig` - Connection routing table (RFC 9000 §5.1-5.2)
-- `endpoint/io.zig` - UDP I/O, ECN handling (RFC 9000 §13.3, RFC 3168)
-- `endpoint/client.zig` - Client connection establishment (RFC 9000 §7)
-- `endpoint/server.zig` - Server acceptance (RFC 9000 §7, §8.1)
-- `endpoint/incoming.zig` - Packet processing (RFC 9000 §12-17)
-- `endpoint/pto.zig` - PTO probe handling (RFC 9002 §6.2)
+**Endpoint Modules (RFC 9000 Transport, RFC 9001 TLS, RFC 9002 Recovery):**
+- `endpoint/types.zig` - Timer, Key, EndpointRole types (94 lines) (RFC 9000 §5.1)
+- `endpoint/timer.zig` - Timer heap management (121 lines) (RFC 9002 §6.2)
+- `endpoint/lookup.zig` - Connection routing table (209 lines) (RFC 9000 §5.1-5.2)
+- `endpoint/io.zig` - UDP I/O, ECN, platform poll backends (383 lines) (RFC 9000 §13.3, RFC 3168) [Phase 11]
+- `endpoint/client.zig` - Client connection establishment (95 lines) (RFC 9000 §7)
+- `endpoint/server.zig` - Server acceptance, address validation (387 lines) (RFC 9000 §7, §8.1)
+- `endpoint/incoming.zig` - Incoming packet processing (2,608 lines) (RFC 9000 §12-17)
+- `endpoint/pto.zig` - PTO probe generation (260 lines) (RFC 9002 §6.2)
+- `endpoint/lifecycle.zig` - Connection lifecycle, stale connection detection (293 lines) (RFC 9000 §10) [Phase 10]
+- `endpoint/handshake_integration.zig` - TLS handshake integration (793 lines) (RFC 9001)
+- `endpoint/frame_handler.zig` - Frame processing delegation (395 lines) (RFC 9000 §19)
+- `endpoint/utils.zig` - Utility functions: hashing, normalization (84 lines) (RFC 9000)
+- `endpoint/endpoint.zig` - Thin coordinator module, re-exports (69 lines) (RFC 9000)
+
+**Total: 13 modules with 5,791 lines** (850 lines extracted from monolithic endpoint.zig)
 
 **Legacy Monolithic Files (still functional):**
 - `src/quic/conn.zig` - Main Connection struct (3,449 lines, re-exports modular types)
-- `src/quic/endpoint.zig` - Main Endpoint struct (3,728 lines)
+- `src/quic/endpoint.zig` - Main Endpoint struct (2,878 lines, down from 3,728) delegates to endpoint/* modules
 
 When validating code, **check both** the relevant module file AND the main conn.zig/endpoint.zig files if they contain Connection/Endpoint struct implementations that use those types.
 

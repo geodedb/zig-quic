@@ -44,21 +44,29 @@ The Zig QUIC implementation is organized into RFC-aligned modules for easier com
 - `idle.zig` - Idle timeout negotiation and management (RFC 9000 §10.1)
 
 **Endpoint Modules (`src/quic/endpoint/*`):**
-- `types.zig` - Timer, Key, EndpointRole (RFC 9000 §5.1)
-- `timer.zig` - Timer heap for PTO/loss detection (RFC 9002 §6.2)
-- `lookup.zig` - Connection ID routing table (RFC 9000 §5.1-5.2)
-- `io.zig` - UDP I/O, ECN marking (RFC 9000 §13.3, RFC 3168)
-- `client.zig`, `server.zig` - Connection establishment (RFC 9000 §7)
-- `incoming.zig` - Packet processing (RFC 9000 §12-17)
-- `pto.zig` - PTO probe generation (RFC 9002 §6.2)
+- `types.zig` - Timer, Key, EndpointRole types (94 lines) (RFC 9000 §5.1)
+- `timer.zig` - Timer heap for PTO/loss detection (121 lines) (RFC 9002 §6.2)
+- `lookup.zig` - Connection ID routing table (209 lines) (RFC 9000 §5.1-5.2)
+- `io.zig` - UDP I/O, ECN, platform poll backends (383 lines) (RFC 9000 §13.3, RFC 3168) [Phase 11]
+- `client.zig` - Client establishment (95 lines) (RFC 9000 §7)
+- `server.zig` - Server acceptance, address validation (387 lines) (RFC 9000 §7, §8.1)
+- `incoming.zig` - Incoming packet processing (2,608 lines) (RFC 9000 §12-17)
+- `pto.zig` - PTO probe generation (260 lines) (RFC 9002 §6.2)
+- `lifecycle.zig` - Connection lifecycle management (293 lines) (RFC 9000 §10) [Phase 10]
+- `handshake_integration.zig` - TLS handshake integration (793 lines) (RFC 9001)
+- `frame_handler.zig` - Frame processing delegation (395 lines) (RFC 9000 §19)
+- `utils.zig` - Utility functions (84 lines) (RFC 9000)
+- `endpoint.zig` - Thin coordinator, re-exports (69 lines) (RFC 9000)
+
+**Total: 13 modules with 5,791 lines**
 
 **TLS Integration (`vendor/ztls/src/*`):**
 - See `vendor/ztls/CLAUDE.md` for TLS 1.3 module structure
 - Key schedule, record layer, handshake, signatures, X.509
 
 **Monolithic Files (legacy, still functional):**
-- `src/quic/conn.zig` - Main Connection implementation (re-exports modular types)
-- `src/quic/endpoint.zig` - Main Endpoint implementation
+- `src/quic/conn.zig` - Main Connection implementation (3,449 lines, re-exports modular types)
+- `src/quic/endpoint.zig` - Main Endpoint implementation (2,878 lines, down from 3,728)
 
 When comparing implementations, **check the relevant module first** (e.g., `connection/packet_number.zig` for PN encoding issues) as it contains the focused implementation. The monolithic files may contain the Connection/Endpoint struct usage.
 

@@ -28,6 +28,7 @@ const incoming = @import("endpoint/incoming.zig");
 const frame_handler = @import("endpoint/frame_handler.zig");
 const handshake_integration = @import("endpoint/handshake_integration.zig");
 const io_mod = @import("endpoint/io.zig");
+const lifecycle_mod = @import("endpoint/lifecycle.zig");
 const ep_types = @import("types");
 
 const posix = std.posix;
@@ -65,20 +66,9 @@ fn nowMsMonotonic() i64 {
     return @as(i64, @intCast(ms));
 }
 
-const Timer = struct {
-    deadline_ms: i64,
-    id: u64,
-    kind: TimerKind = .Generic,
-    conn: ?*conn_mod.Connection = null,
-    // Pacing payload support (Generic kind): when paced is true and payload!=null, send on expiry
-    paced: bool = false,
-    payload: ?[]u8 = null,
-};
-
-/// Endpoint timer kinds: generic app timers plus per-PN-space PTO and PMTUD timers.
-///
-/// PTO timers correspond to RFC 9002 §6.2, while PMTUD follows RFC 9000 §14.2.
-pub const TimerKind = enum { Generic, PtoInitial, PtoHandshake, PtoApp, Pmtud };
+// Use canonical Timer and TimerKind from endpoint/types.zig (imported as ep_types)
+const Timer = ep_types.Timer;
+const TimerKind = ep_types.TimerKind;
 
 /// Hash key combining peer address + destination CID for connection lookup.
 ///
@@ -2722,121 +2712,27 @@ pub const Endpoint = struct {
 
     /// Close old connections from the same peer when a new connection completes its handshake.
     /// This prevents routing packets to stale connections with mismatched keys.
+    /// Delegates to lifecycle module (Phase 10).
     pub fn closeStaleConnectionsForPeer(self: *Endpoint, new_conn: *conn_mod.Connection) void {
-        if (new_conn.app_rx_keys == null) return; // Only run after handshake complete (app keys derived)
-
-        const peer_hash = hashSockaddr(&new_conn.peer.storage, new_conn.peer.len);
-        var to_close = std.ArrayList(*conn_mod.Connection){};
-        defer to_close.deinit(self.allocator.*);
-
-        std.debug.print("closeStaleConnectionsForPeer: new_conn={*}, peer_hash={x:0>16}, checking {} total connections\n", .{ new_conn, peer_hash, self.conns.count() });
-        var it = self.conns.iterator();
-        var checked: usize = 0;
-        var seen = std.ArrayList(*conn_mod.Connection){};
-        defer seen.deinit(self.allocator.*);
-
-        while (it.next()) |e| {
-            const c = e.value_ptr.*;
-            checked += 1;
-
-            // Skip if same connection object
-            if (c == new_conn) {
-                std.debug.print("  [{}] conn={*} - SAME as new_conn (skipping)\n", .{ checked, c });
-                continue;
-            }
-
-            // Skip if we've already processed this connection object
-            var already_seen = false;
-            for (seen.items) |s| {
-                if (s == c) {
-                    already_seen = true;
-                    break;
-                }
-            }
-            if (already_seen) {
-                std.debug.print("  [{}] conn={*} - Already processed (skipping)\n", .{ checked, c });
-                continue;
-            }
-            _ = seen.append(self.allocator.*, c) catch {};
-
-            // Check if this connection is from the same peer
-            const c_peer_hash = hashSockaddr(&c.peer.storage, c.peer.len);
-            std.debug.print("  [{}] conn={*} - peer_hash={x:0>16}, match={}\n", .{ checked, c, c_peer_hash, c_peer_hash == peer_hash });
-            if (c_peer_hash != peer_hash) continue;
-
-            // This is an old connection from the same peer - mark for closure
-            std.debug.print("Closing stale connection with our_scid=", .{});
-            for (c.our_scid.bytes[0..c.our_scid.len]) |b| std.debug.print("{x:0>2} ", .{b});
-            std.debug.print("(peer has new handshake with our_scid=", .{});
-            for (new_conn.our_scid.bytes[0..new_conn.our_scid.len]) |b| std.debug.print("{x:0>2} ", .{b});
-            std.debug.print(")\n", .{});
-
-            _ = to_close.append(self.allocator.*, c) catch continue;
-        }
-
-        // Close all stale connections
-        for (to_close.items) |c| {
-            // Send CONNECTION_CLOSE and mark as closed
-            c.sendConnectionClose(0x00, "Replaced by new connection from same peer") catch {};
-            c.closed = true;
-        }
-
-        std.debug.print("Closed {} stale connection(s) for peer, keeping new connection\n", .{to_close.items.len});
+        var ctx = lifecycle_mod.LifecycleContext{
+            .allocator = self.allocator.*,
+            .conns = &self.conns,
+            .timers = &self.timers,
+            .retired = &self.retired,
+        };
+        lifecycle_mod.closeStaleConnectionsForPeer(&ctx, new_conn);
     }
 
     /// Remove all map entries / timers referencing connections that have transitioned to closed state.
+    /// Delegates to lifecycle module (Phase 10).
     fn pruneClosed(self: *Endpoint) void {
-        // Collect keys referencing closed connections and build a unique set of those connections.
-        var keys = std.ArrayList(Key){};
-        defer keys.deinit(self.allocator.*);
-        var closed_set = std.AutoHashMap(*conn_mod.Connection, void).init(self.allocator.*);
-        defer closed_set.deinit();
-        var it = self.conns.iterator();
-        while (it.next()) |e| {
-            const c = e.value_ptr.*;
-            if (c.closed) {
-                _ = closed_set.put(c, {}) catch continue;
-                // Record this key for removal
-                _ = keys.append(self.allocator.*, e.key_ptr.*) catch {};
-            }
-        }
-        if (closed_set.count() == 0) return; // nothing to prune
-        // Remove collected keys from map
-        for (keys.items) |k| {
-            _ = self.conns.remove(k);
-        }
-        // Cancel timers referencing closed connections (orderedRemove iteration)
-        var ti: usize = 0;
-        while (ti < self.timers.items.len) {
-            const t = self.timers.items[ti];
-            if (t.conn) |tc| {
-                if (closed_set.contains(tc)) {
-                    // Free any paced payload first (unwrap optional)
-                    if (t.paced) {
-                        if (t.payload) |p| self.allocator.free(p);
-                    }
-                    _ = self.timers.orderedRemove(ti);
-                    continue; // do not advance index (next element shifted here)
-                }
-            }
-            ti += 1;
-        }
-        // Move closed connections to retired list (avoid immediate destruction to
-        // prevent use-after-free in external code still holding an opaque pointer).
-        var cit = closed_set.iterator();
-        while (cit.next()) |ce| {
-            const cptr = ce.key_ptr.*;
-            // Ensure not already retired (linear scan; small list expected).
-            var already: bool = false;
-            var rj: usize = 0;
-            while (rj < self.retired.items.len) : (rj += 1) {
-                if (self.retired.items[rj] == cptr) {
-                    already = true;
-                    break;
-                }
-            }
-            if (!already) _ = self.retired.append(self.allocator.*, cptr) catch {};
-        }
+        var ctx = lifecycle_mod.LifecycleContext{
+            .allocator = self.allocator.*,
+            .conns = &self.conns,
+            .timers = &self.timers,
+            .retired = &self.retired,
+        };
+        lifecycle_mod.pruneClosed(&ctx);
     }
 };
 

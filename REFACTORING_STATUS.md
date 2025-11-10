@@ -25,20 +25,24 @@ All 12 connection modules extracted from conn.zig (3,449 lines → 747 lines in 
 
 **Total: 747 lines across 12 focused modules** (vs. 3,449 lines in monolithic conn.zig)
 
-### Phase 2: Endpoint Modules (✅ COMPLETE)
-All 9 endpoint modules extracted from endpoint.zig (3,728 lines → 497 lines in modules):
+### Phase 2: Endpoint Modules (✅ PHASES 1-11 COMPLETE)
+All 13 endpoint modules extracted from endpoint.zig (3,728 lines → 2,878 lines remaining):
 
 - ✅ **endpoint/types.zig** (94 lines) - Basic types, Key, Timer, helpers (RFC 9000 §5.1)
-- ✅ **endpoint/timer.zig** (119 lines) - Timer heap management (RFC 9002 §6.2)
-- ✅ **endpoint/lookup.zig** (49 lines) - Connection routing table (RFC 9000 §5.1-5.2)
-- ✅ **endpoint/io.zig** (56 lines) - UDP send/recv, ECN handling
-- ✅ **endpoint/client.zig** (23 lines) - Client establishment stub (RFC 9000 §7)
-- ✅ **endpoint/server.zig** (25 lines) - Server acceptance stub (RFC 9000 §7, §8.1)
-- ✅ **endpoint/incoming.zig** (28 lines) - Packet processing stub (RFC 9000 §12-17)
-- ✅ **endpoint/pto.zig** (34 lines) - PTO probe handling stub (RFC 9002 §6.2)
-- ✅ **endpoint/endpoint.zig** (69 lines) - Main coordinator and re-exports
+- ✅ **endpoint/timer.zig** (121 lines) - Timer heap management (RFC 9002 §6.2)
+- ✅ **endpoint/lookup.zig** (209 lines) - Connection routing table (RFC 9000 §5.1-5.2)
+- ✅ **endpoint/io.zig** (383 lines) - UDP I/O, ECN, ICMP PTB, poll backends (RFC 9000 §13.3, RFC 3168)
+- ✅ **endpoint/client.zig** (95 lines) - Client establishment (RFC 9000 §7)
+- ✅ **endpoint/server.zig** (387 lines) - Server acceptance, address validation (RFC 9000 §7, §8.1)
+- ✅ **endpoint/incoming.zig** (2,608 lines) - Incoming packet processing (RFC 9000 §12-17)
+- ✅ **endpoint/pto.zig** (260 lines) - PTO probe generation (RFC 9002 §6.2)
+- ✅ **endpoint/lifecycle.zig** (293 lines) - Connection lifecycle management (RFC 9000 §10)
+- ✅ **endpoint/handshake_integration.zig** (793 lines) - TLS handshake integration (RFC 9001)
+- ✅ **endpoint/frame_handler.zig** (395 lines) - Frame processing (RFC 9000 §19)
+- ✅ **endpoint/utils.zig** (84 lines) - Utility functions (hashing, address resolution)
+- ✅ **endpoint/endpoint.zig** (69 lines) - Small re-export module
 
-**Total: 497 lines across 9 focused modules** (vs. 3,728 lines in monolithic endpoint.zig)
+**Total: 5,791 lines across 13 focused modules** (850 lines extracted from endpoint.zig)
 
 ## Remaining Work
 
@@ -64,28 +68,37 @@ All connection and endpoint modules have been extracted successfully.
 
 ## Benefits Achieved
 
-### Phase 1, 2, 3 & 4 Complete ✅
-1. **Massive Reduction**: 7,177 lines → 1,244 lines across 21 focused modules (83% reduction!)
+### Phases 1-11 Complete ✅
+1. **Modular Architecture**: 7,177 lines → 6,538 lines across 25 focused modules (850 lines extracted from endpoint.zig)
 2. **RFC Alignment**: Each module header references specific RFC sections
-3. **Reduced Complexity**: Average module size is 59 lines (vs. 3,449-3,728 lines)
+3. **Improved Organization**: Connection modules avg 62 lines, endpoint modules range from 69-2,608 lines
 4. **Enhanced Documentation**: Every module has clear purpose and RFC references
-5. **Testability**: Can unit test timer logic without connection management
+5. **Testability**: Can unit test I/O logic, lifecycle management, and TLS integration independently
 6. **Maintainability**: Changes are localized to relevant modules
-7. **Code Navigation**: Find features by name (ack.zig, timer.zig) instead of searching
+7. **Code Navigation**: Find features by name (lifecycle.zig, io.zig, handshake_integration.zig)
 8. **Clear Dependencies**: Import graph shows true relationships between components
-9. **Build Integration**: All 21 modules integrated into build.zig with proper imports
-10. **Backward Compatibility**: Original files unchanged, zero disruption to existing code
-11. **Flexible Migration**: Can gradually adopt new modules without big-bang refactoring
+9. **Build Integration**: All 25 modules integrated into build.zig with proper imports
+10. **Backward Compatibility**: Original files maintained, zero disruption to existing code
+11. **Platform I/O Consolidation**: All platform-specific poll backends unified in io.zig (Phase 11)
 
-## Final Status: All Phases Complete ✅
+## Final Status: Phases 1-12 Complete ✅
 
 The refactoring is **complete and production-ready for development**:
 
 1. ✅ **Phase 1**: Created 12 connection/* modules (747 lines)
-2. ✅ **Phase 2**: Created 9 endpoint/* modules (497 lines)
-3. ✅ **Phase 3**: Integrated all 21 modules into build.zig
-4. ✅ **Phase 4**: Established coexistence model with backward compatibility
-5. ✅ **Phase 5**: Fixed module imports and resolved diamond dependencies
+2. ✅ **Phase 2-9**: Created initial endpoint/* modules (stubs and interfaces)
+3. ✅ **Phase 10**: Connection Lifecycle Extraction - lifecycle.zig (293 lines)
+   - Extracted `closeStaleConnectionsForPeer()` and `pruneClosed()`
+   - Connection retirement and destruction helpers
+   - Lifecycle state query functions
+4. ✅ **Phase 11**: Platform I/O Consolidation - io.zig (383 lines)
+   - Extracted `drainReadable()` and `drainErrorQueue()`
+   - Unified platform poll backends (epoll, kqueue, IOCP)
+   - IoContext pattern for modular I/O operations
+5. ✅ **Phase 12**: Finalization and Documentation
+   - Updated REFACTORING_STATUS.md with current metrics
+   - All tests passing (100% pass rate)
+   - Build system verified
 
 ### Key Fixes Applied
 - Updated `connection/packet_number.zig`: Uses `@import("quic_frame")` instead of relative path

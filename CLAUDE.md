@@ -77,16 +77,23 @@ The QUIC implementation uses a **modular, RFC-aligned architecture** in `src/qui
 | `endpoint/types.zig` | RFC 9000 §5.1 | Timer, Key, EndpointRole types |
 | `endpoint/timer.zig` | RFC 9002 §6.2 | Min-heap timer management (PTO, loss detection) |
 | `endpoint/lookup.zig` | RFC 9000 §5.1-5.2 | Connection routing by CID hash |
-| `endpoint/io.zig` | RFC 9000 §13.3, RFC 3168 | UDP I/O operations, ECN marking |
+| `endpoint/io.zig` | RFC 9000 §13.3, RFC 3168 | UDP I/O operations, ECN marking, platform poll backends (Phase 11) |
 | `endpoint/client.zig` | RFC 9000 §7 | Client connection establishment |
 | `endpoint/server.zig` | RFC 9000 §7, §8.1 | Server acceptance, address validation |
-| `endpoint/incoming.zig` | RFC 9000 §12-17 | Incoming packet processing |
+| `endpoint/incoming.zig` | RFC 9000 §12-17 | Incoming packet processing (2,608 lines) |
 | `endpoint/pto.zig` | RFC 9002 §6.2 | PTO probe packet generation |
+| `endpoint/lifecycle.zig` | RFC 9000 §10 | Connection lifecycle management, stale connection detection (Phase 10) |
+| `endpoint/handshake_integration.zig` | RFC 9001 | TLS handshake integration (793 lines) |
+| `endpoint/frame_handler.zig` | RFC 9000 §19 | Frame processing delegation (395 lines) |
+| `endpoint/utils.zig` | RFC 9000 | Utility functions: address hashing, normalization (84 lines) |
+| `endpoint/endpoint.zig` | RFC 9000 | Thin coordinator module, re-exports (69 lines) |
+
+**Total:** 13 modules with 5,791 lines (850 lines extracted from monolithic endpoint.zig)
 
 ### Legacy Monolithic Files (Still Functional)
 
 - **`src/quic/conn.zig`** (3,449 lines) - Main Connection struct implementation, re-exports modular types
-- **`src/quic/endpoint.zig`** (3,728 lines) - Main Endpoint struct implementation
+- **`src/quic/endpoint.zig`** (2,878 lines, down from 3,728) - Main Endpoint struct implementation, delegates to endpoint/* modules
 
 ### TLS Integration
 
@@ -127,6 +134,7 @@ Example: For PN encoding issues (RFC 9000 §12.3) → Check `connection/packet_n
 
 ## Documentation
 
-- `MIGRATION_TO_MODULAR_API.md` - Complete usage guide
-- `REFACTORING_STATUS.md` - Implementation status and metrics
-- Module headers contain RFC section references
+- `MIGRATION_TO_MODULAR_API.md` - Complete usage guide for modular APIs
+- `REFACTORING_STATUS.md` - Implementation status and metrics for all phases
+- `ENDPOINT_ARCHITECTURE.md` - Comprehensive endpoint module architecture documentation (Phase 12)
+- Module headers contain RFC section references and line-by-line implementation details

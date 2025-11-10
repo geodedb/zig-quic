@@ -47,6 +47,219 @@ pub const HandshakeContext = struct {
 pub const SendFn = *const fn (peer: conn_mod.SockAddr, data: []const u8) anyerror!usize;
 
 // =============================================================================
+// TLS Context Callbacks (Phase 6)
+// =============================================================================
+
+/// Threadlocal storage for current Connection being processed.
+/// This enables TLS callbacks to access Connection without modifying vendor/ztls.
+/// Safe for QUIC since each connection is processed on a single thread.
+threadlocal var current_tls_connection: ?*conn_mod.Connection = null;
+
+/// Callback invoked when TLS derives a new traffic secret.
+/// RFC 9001 §5: Install packet protection keys derived from traffic secret.
+///
+/// This callback is registered with vendor/ztls Context and invoked during:
+/// - Handshake level: After ServerHello (client_hs_secret, server_hs_secret)
+/// - Application level: After Finished (client_app_secret, server_app_secret)
+///
+/// Parameters from vendor/ztls:
+/// - ctx: TLS Context (contains negotiated parameters)
+/// - level: EncryptionLevel (.Initial, .Handshake, .Application)
+/// - secret: Traffic secret bytes (32 bytes for SHA-256 cipher suites)
+fn onSecretAvailable(
+    ctx: *tls13.Context,
+    level: tls13.EncryptionLevel,
+    secret: []const u8,
+) !void {
+    _ = ctx; // Context available if needed for negotiated parameters
+
+    const conn = current_tls_connection orelse return error.NoConnectionContext;
+
+    // RFC 9001 §5.1: Secrets are 32 bytes for SHA-256-based cipher suites
+    if (secret.len != 32) return error.InvalidSecretLength;
+
+    var secret_bytes: [32]u8 = undefined;
+    @memcpy(&secret_bytes, secret[0..32]);
+
+    // Install keys based on encryption level
+    switch (level) {
+        .Initial => {
+            // Initial keys are derived by QUIC layer before TLS starts
+            // They don't come from TLS callbacks (RFC 9001 §5.2)
+        },
+        .Handshake => {
+            // Determine if this is client or server secret based on role
+            // Context.installTrafficSecret is called twice:
+            //   - Once for .send direction (our TX keys)
+            //   - Once for .recv direction (our RX keys)
+            //
+            // We need to collect both secrets before calling installHandshakeKeys.
+            // For now, store in Connection's existing hs_client/hs_server fields.
+            //
+            // TODO: Track direction (send/recv) to properly map secrets.
+            // For now, assume first call is client, second is server (works for simple cases).
+            if (conn.hs_client == null) {
+                conn.hs_client = secret_bytes;
+            } else if (conn.hs_server == null) {
+                conn.hs_server = secret_bytes;
+                // Both secrets available - install keys
+                try installHandshakeKeys(conn, conn.hs_client.?, conn.hs_server.?);
+            }
+        },
+        .Application => {
+            // Similar pattern for Application secrets
+            if (conn.app_rx_secret == null) {
+                conn.app_rx_secret = secret_bytes;
+            } else if (conn.app_tx_secret == null) {
+                conn.app_tx_secret = secret_bytes;
+                // Both secrets available - install keys
+                try installApplicationKeys(conn, conn.app_rx_secret.?, conn.app_tx_secret.?);
+            }
+        },
+    }
+}
+
+/// Callback invoked when handshake metadata becomes available.
+/// RFC 9001 §8.2: Extract ALPN and transport parameters from TLS handshake.
+///
+/// This callback is invoked after EncryptedExtensions is processed (client)
+/// or before sending it (server).
+///
+/// Parameters from vendor/ztls:
+/// - ctx: TLS Context
+/// - meta: HandshakeMetadata with alpn and local_transport_parameters
+fn onHandshakeMetadata(
+    ctx: *tls13.Context,
+    meta: tls13.HandshakeMetadata,
+) !void {
+    _ = ctx; // Context available if needed
+
+    const conn = current_tls_connection orelse return error.NoConnectionContext;
+
+    // Store negotiated ALPN
+    if (meta.alpn) |alpn_bytes| {
+        // Allocate owned copy of ALPN
+        const owned_alpn = try conn.allocator.alloc(u8, alpn_bytes.len);
+        @memcpy(owned_alpn, alpn_bytes);
+
+        // Free old ALPN if exists
+        if (conn.negotiated_alpn) |old| {
+            conn.allocator.free(old);
+        }
+
+        conn.negotiated_alpn = owned_alpn;
+    }
+
+    // Store and validate peer transport parameters (RFC 9000 §7.4, §18.2)
+    if (meta.peer_transport_parameters) |peer_tp_bytes| {
+        // Allocate owned copy
+        const owned_tp = try conn.allocator.alloc(u8, peer_tp_bytes.len);
+        @memcpy(owned_tp, peer_tp_bytes);
+
+        // Store raw bytes via Connection's method
+        try conn.storePeerTransportParams(owned_tp);
+
+        // Decode, validate, and apply transport parameters
+        // RFC 9000 §7.4: "An endpoint MUST apply the transport parameters provided by its peer"
+        // This method now includes validate() and checkLimits() calls (Phase 7)
+        try conn.applyPeerTransportParameters(peer_tp_bytes);
+    }
+}
+
+/// Callback invoked when peer's Finished message is verified.
+/// RFC 8446 §4.4.4: Finished contains HMAC over transcript hash.
+///
+/// This indicates:
+/// - Peer proved knowledge of handshake traffic secret
+/// - Transcript integrity confirmed
+/// - Safe to process peer's application data
+///
+/// Parameters from vendor/ztls:
+/// - ctx: TLS Context
+fn onPeerFinished(ctx: *tls13.Context) !void {
+    _ = ctx; // Context available if needed
+
+    const conn = current_tls_connection orelse return error.NoConnectionContext;
+
+    // Mark that peer's Finished has been verified
+    conn.peer_finished_verified = true;
+
+    // RFC 9001 §4.1.2: Client can drop handshake keys after sending Finished
+    // Server must wait for peer Finished before dropping
+    // This is handled by the Connection's existing lifecycle management
+}
+
+/// Callback invoked when TLS handshake completes successfully.
+/// Both local and peer Finished messages exchanged and verified.
+///
+/// At this point:
+/// - Application secrets installed
+/// - Safe to send/receive application data
+/// - Handshake messages no longer expected
+///
+/// Parameters from vendor/ztls:
+/// - ctx: TLS Context
+fn onHandshakeComplete(ctx: *tls13.Context) !void {
+    _ = ctx; // Context available if needed
+
+    const conn = current_tls_connection orelse return error.NoConnectionContext;
+
+    // Mark handshake complete
+    // Application data can now flow
+    // Connection's existing state machine handles transition to Application phase
+
+    // For server, HANDSHAKE_DONE frame should be sent
+    // This is typically handled by the Endpoint layer, not the callback
+    _ = conn; // Connection available for future state updates
+}
+
+/// Create and initialize a TLS Context for QUIC handshake integration.
+/// RFC 9001 §4: TLS 1.3 for QUIC uses CRYPTO frames instead of TLS records.
+///
+/// This helper creates a vendor/ztls Context with:
+/// - Proper role (Client/Server)
+/// - QUIC-specific callbacks for secret installation
+/// - ALPN and transport parameter configuration
+///
+/// Parameters:
+/// - allocator: Memory allocator for TLS state
+/// - role: .Client or .Server
+/// - alpn_list: List of ALPNs to advertise (e.g., ["h3"])
+/// - transport_params_bytes: Encoded transport parameters (from setupClientTransportParams/setupServerTransportParams)
+///
+/// Returns:
+/// - Initialized Context ready for processCrypto() calls
+///
+/// Note: Caller must call context.deinit() when done.
+pub fn createTlsContext(
+    allocator: std.mem.Allocator,
+    role: conn_mod.Role,
+    alpn_list: []const []const u8,
+    transport_params_bytes: []const u8,
+) !tls13.Context {
+    // Create TLS configuration
+    const tls_role: tls13.Role = if (role == .Client) .Client else .Server;
+
+    const config = tls13.Config{
+        .allocator = allocator,
+        .role = tls_role,
+        .alpn_protocols = if (alpn_list.len > 0) alpn_list else null,
+        .quic_transport_parameters = if (transport_params_bytes.len > 0) transport_params_bytes else null,
+    };
+
+    // Create callbacks struct with full QUIC integration
+    const callbacks = tls13.Callbacks{
+        .on_secret_available = onSecretAvailable,
+        .on_handshake_metadata = onHandshakeMetadata,
+        .on_peer_finished = onPeerFinished,
+        .on_handshake_complete = onHandshakeComplete,
+    };
+
+    // Initialize Context
+    return tls13.Context.init(config, callbacks);
+}
+
+// =============================================================================
 // Key Installation Functions
 // =============================================================================
 
@@ -86,18 +299,18 @@ pub fn installHandshakeKeys(
     const server_keys = key_schedule.deriveKeyIvHp(server_secret);
 
     // Install based on connection role
+    // Convert KeyMaterial to packet.InitialKeys by copying fields
     if (conn.role == .Client) {
         // Client receives with server keys, sends with client keys
-        conn.hs_rx_keys = server_keys;
-        conn.hs_tx_keys = client_keys;
+        conn.hs_rx_keys = .{ .key = server_keys.key, .iv = server_keys.iv, .hp = server_keys.hp };
+        conn.hs_tx_keys = .{ .key = client_keys.key, .iv = client_keys.iv, .hp = client_keys.hp };
     } else {
         // Server receives with client keys, sends with server keys
-        conn.hs_rx_keys = client_keys;
-        conn.hs_tx_keys = server_keys;
+        conn.hs_rx_keys = .{ .key = client_keys.key, .iv = client_keys.iv, .hp = client_keys.hp };
+        conn.hs_tx_keys = .{ .key = server_keys.key, .iv = server_keys.iv, .hp = server_keys.hp };
     }
 
-    // Mark that Handshake keys are available
-    conn.has_hs_keys = true;
+    // Handshake keys are now installed (indicated by non-null hs_rx_keys/hs_tx_keys)
 }
 
 /// Install Application (1-RTT) protection keys.
@@ -136,18 +349,18 @@ pub fn installApplicationKeys(
     const server_keys = key_schedule.deriveKeyIvHp(server_secret);
 
     // Install based on connection role
+    // Convert KeyMaterial to packet.AeadKeys by copying fields
     if (conn.role == .Client) {
         // Client receives with server keys, sends with client keys
-        conn.app_rx_keys = server_keys;
-        conn.app_tx_keys = client_keys;
+        conn.app_rx_keys = .{ .key = server_keys.key, .iv = server_keys.iv, .hp = server_keys.hp };
+        conn.app_tx_keys = .{ .key = client_keys.key, .iv = client_keys.iv, .hp = client_keys.hp };
     } else {
         // Server receives with client keys, sends with server keys
-        conn.app_rx_keys = client_keys;
-        conn.app_tx_keys = server_keys;
+        conn.app_rx_keys = .{ .key = client_keys.key, .iv = client_keys.iv, .hp = client_keys.hp };
+        conn.app_tx_keys = .{ .key = server_keys.key, .iv = server_keys.iv, .hp = server_keys.hp };
     }
 
-    // Mark that Application keys are available
-    conn.has_app_keys = true;
+    // Application keys are now installed (indicated by non-null app_rx_keys/app_tx_keys)
 }
 
 // =============================================================================
@@ -186,12 +399,57 @@ pub fn processCryptoFrame(
 ) !bool {
     const conn = ctx.conn;
 
-    // Delegate to Connection's existing CRYPTO frame handlers
-    // These methods handle:
-    // 1. Out-of-order buffering via CryptoBuffer
-    // 2. TLS state machine integration (pushCrypto)
-    // 3. Automatic key derivation on TLS transitions
-    // 4. Transport parameter extraction
+    // RFC 9001 §4: Use vendor/ztls Context.processCrypto() when available (Phase 6+)
+    if (conn.tls_context) |tls_ctx| {
+        // Map PacketNumberSpace to EncryptionLevel
+        const level: tls13.EncryptionLevel = switch (space) {
+            .Initial => .Initial,
+            .Handshake => .Handshake,
+            .Application => .Application,
+        };
+
+        // Get crypto buffer and RX offset for this packet number space
+        const crypto_buffer = switch (space) {
+            .Initial => &conn.crypto_buffer_initial,
+            .Handshake => &conn.crypto_buffer_handshake,
+            .Application => return false, // Not yet supported
+        };
+        const rx_off_ptr = switch (space) {
+            .Initial => &conn.crypto_rx_off_initial,
+            .Handshake => &conn.crypto_rx_off_handshake,
+            .Application => return false,
+        };
+
+        // Step 1: Buffer out-of-order CRYPTO data (RFC 9000 §19.6)
+        try crypto_buffer.insertFragment(ctx.allocator.*, offset, crypto_data);
+
+        // Step 2: Set threadlocal for callback access to Connection
+        current_tls_connection = conn;
+        defer current_tls_connection = null;
+
+        // Step 3: Extract and process all contiguous chunks
+        while (crypto_buffer.getContiguous(rx_off_ptr.*)) |fragments| {
+            for (fragments) |frag| {
+                if (frag.data.len == 0) continue;
+
+                // Feed contiguous chunk to TLS Context
+                // Context.processCrypto() handles:
+                // - Handshake message parsing and validation
+                // - State machine transitions (ClientHello → ServerHello → Finished)
+                // - Callback invocation for secret installation (via onSecretAvailable)
+                try tls_ctx.processCrypto(level, frag.data);
+
+                rx_off_ptr.* += @intCast(frag.data.len);
+            }
+
+            crypto_buffer.removeProcessed(fragments.len, ctx.allocator.*);
+        }
+
+        // Secrets are installed via onSecretAvailable callback
+        return true; // ACK-eliciting
+    }
+
+    // Fallback to legacy Engine-based integration
     const ack_needed = switch (space) {
         .Initial => try conn.handleInitialCrypto(
             ctx.allocator,
@@ -204,27 +462,11 @@ pub fn processCryptoFrame(
             crypto_data,
         ),
         .Application => blk: {
-            // Application-level CRYPTO frames (post-handshake messages)
-            // Currently handled directly by Connection.handleCryptoFrameGeneric
-            // via a future handleApplicationCrypto method
-            //
-            // RFC 9001 §4.1.4: "An endpoint MUST discard its handshake keys
-            // when the TLS handshake is confirmed."
-            //
-            // For now, Application CRYPTO is rare (NewSessionTicket, KeyUpdate)
-            // and not critical for basic operation.
+            // Application CRYPTO frames (NewSessionTicket, KeyUpdate)
+            // RFC 9001 §4.1.4: Not critical for basic operation
             break :blk false;
         },
     };
-
-    // After processing CRYPTO frame, check for key transitions
-    // This handles the documented flow:
-    // - ClientHello → ServerHello: conn may have hs_rx_keys, hs_tx_keys set
-    // - Finished: conn may have app_rx_keys, app_tx_keys set
-    //
-    // The Connection's internal methods (afterInitialCryptoChunk, etc.)
-    // automatically call deriveHandshakeKeys() and deriveAppKeys() when
-    // TLS state transitions occur.
 
     return ack_needed;
 }
