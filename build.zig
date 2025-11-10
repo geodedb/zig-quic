@@ -706,6 +706,7 @@ pub fn build(b: *std.Build) void {
 
         const test_endpoint_io = addTst(b, "tests/unit/endpoint/test_io.zig", target, optimize);
         test_endpoint_io.root_module.addImport("io", endpoint_io_mod);
+        test_endpoint_io.root_module.addImport("quic_conn", quic_conn_mod);
         const run_test_endpoint_io = b.addRunArtifact(test_endpoint_io);
         test_step.dependOn(&run_test_endpoint_io.step);
 

@@ -27,6 +27,7 @@ const lookup = @import("endpoint/lookup.zig");
 const incoming = @import("endpoint/incoming.zig");
 const frame_handler = @import("endpoint/frame_handler.zig");
 const handshake_integration = @import("endpoint/handshake_integration.zig");
+const io_mod = @import("endpoint/io.zig");
 const ep_types = @import("types");
 
 const posix = std.posix;
@@ -38,6 +39,10 @@ const builtin = @import("builtin");
 
 // TEST-ONLY: outbound capture entry (peer + owned bytes)
 const OutCaptured = struct { peer: conn_mod.SockAddr, bytes: []u8 };
+
+// File-level variable to allow callbacks to access endpoint
+// This is safe because endpoints are single-threaded
+var current_io_endpoint: ?*Endpoint = null;
 
 // Note: Byte order conversion functions moved to utils module
 inline fn portFromNetwork(value: u16) u16 {
@@ -710,197 +715,65 @@ pub const Endpoint = struct {
         self.pruneClosed();
     }
 
-    var drain_call_count: u64 = 0;
     fn drainReadable(self: *Endpoint) void {
-        drain_call_count += 1;
-        std.debug.print(">>> drainReadable #{} called on fd={}\n", .{ drain_call_count, self.sock_fd });
-        // Increase buffer size to handle larger Handshake packets (can be up to ~3000 bytes with certificates)
-        var buf: [4096]u8 = undefined;
-        var read_count: usize = 0;
-        while (true) {
-            var peer = conn_mod.SockAddr{};
-            peer.len = @intCast(@sizeOf(posix.sockaddr.storage));
-            // Socket is already non-blocking, no need for MSG_DONTWAIT
-            const flags: u32 = 0;
-            // Linux: prefer recvmsg to extract ECN via ancillary when available; fallback elsewhere.
-            // NOTE: Disabled recvmsg for now due to missing types in std.posix
-            if (false and builtin.target.os.tag == .linux) {
-                std.debug.print("Calling recvmsg on socket fd={}\n", .{self.sock_fd});
-                var iov = [1]posix.iovec{.{ .base = buf[0..].ptr, .len = buf.len }};
-                var ctrl: [64]u8 = undefined;
-                var msg: posix.msghdr = .{
-                    .name = @ptrCast(&peer.storage),
-                    .namelen = peer.len,
-                    .iov = &iov,
-                    .iovlen = 1,
-                    .control = &ctrl,
-                    .controllen = ctrl.len,
-                    .flags = 0,
-                };
-                const linux = std.os.linux;
-                const n_raw = linux.recvmsg(@intCast(self.sock_fd), &msg, flags);
+        // Delegate to io module - but we need self for callbacks
+        // Simple solution: use thread-local for now
+        // TODO: Better solution would be to make IoContext accept an opaque user_data pointer
+        current_io_endpoint = self;
 
-                // Check if error occurred (-1 is returned on error)
-                if (n_raw == @as(usize, @bitCast(@as(isize, -1)))) {
-                    // recvmsg returns -1 on error, errno is set
-                    // For non-blocking sockets, EAGAIN/EWOULDBLOCK is expected
-                    // Just return to try again later
-                    return;
-                }
-
-                const n = n_raw;
-                if (n > 0) {
-                    std.debug.print("recvmsg got {} bytes!\n", .{n});
-                    // Extract ECN from ancillary: IP_TOS (level IPPROTO_IP, type IP_TOS)
-                    var ecn_bits: ?u8 = null;
-                    var off: usize = 0;
-                    while (off + @sizeOf(posix.cmsghdr) <= msg.controllen) {
-                        const cmsg_ptr: *const posix.cmsghdr = @ptrCast(@alignCast(@as(*const anyopaque, @ptrFromInt(@intFromPtr(msg.control) + off))));
-                        const clen = cmsg_ptr.len;
-                        if (clen < @sizeOf(posix.cmsghdr) or off + clen > msg.controllen) break;
-                        const level = cmsg_ptr.level;
-                        const ctype = cmsg_ptr.type;
-                        // CMSG data starts immediately after header
-                        const data_ptr = @as([*]const u8, @ptrFromInt(@intFromPtr(cmsg_ptr) + @sizeOf(posix.cmsghdr)));
-                        // IPPROTO_IP == posix.IPPROTO.IP; IP_TOS constant is 1 on Linux
-                        if (level == posix.IPPROTO.IP and ctype == 1 and clen >= @sizeOf(posix.cmsghdr) + 1) {
-                            const tos = data_ptr[0];
-                            ecn_bits = tos & 0x03; // low 2 bits per RFC 3168
-                        }
-                        // IPv6: level IPPROTO_IPV6 with type IPV6_TCLASS (67) carries traffic class
-                        if (level == posix.IPPROTO.IPV6 and ctype == 67 and clen >= @sizeOf(posix.cmsghdr) + 1) {
-                            const tclass = data_ptr[0];
-                            ecn_bits = tclass & 0x03;
-                        }
-                        // Align to next header (CMSG_ALIGN)
-                        const align_sz: usize = 8;
-                        const adv = (clen + (align_sz - 1)) & ~(align_sz - 1);
-                        off += adv;
-                    }
-                    self.processIncomingDatagram(peer, buf[0..@intCast(n)], ecn_bits);
-                }
-            } else {
-                std.debug.print("Calling recvfrom on socket fd={}, flags={}\n", .{ self.sock_fd, flags });
-                const n_or_err = posix.recvfrom(self.sock_fd, buf[0..], flags, @ptrCast(@alignCast(&peer.storage)), &peer.len);
-                if (n_or_err) |n| {
-                    std.debug.print(">>> recvfrom got {} bytes (read #{} in this drain)!\n", .{ n, read_count + 1 });
-                    // Debug: Log all received packets with source address
-                    if (peer.storage.family == posix.AF.INET) {
-                        const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&peer.storage));
-                        const addr_bytes = @as([4]u8, @bitCast(sin.addr));
-                        std.debug.print("recvfrom {} bytes from {}.{}.{}.{}:{}\n", .{ n, addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3], portFromNetwork(sin.port) });
-                    } else {
-                        std.debug.print("recvfrom got {} bytes from socket {}\n", .{ n, self.sock_fd });
-                    }
-                    read_count += 1;
-                    std.debug.print(">>> About to call processIncomingDatagram with {} bytes\n", .{n});
-                    self.processIncomingDatagram(peer, buf[0..n], null);
-                    std.debug.print(">>> Returned from processIncomingDatagram\n", .{});
-                } else |err| {
-                    switch (err) {
-                        error.WouldBlock => {
-                            // This is normal for non-blocking sockets
-                            std.debug.print("recvfrom returned WouldBlock\n", .{});
-                            // Don't return immediately - this allows us to keep trying
-                            // after epoll_wait indicates data is available
-                            break; // Exit the while loop but don't return from function
-                        },
-                        error.ConnectionResetByPeer => {
-                            std.debug.print("connection reset by peer\n", .{});
-                            return;
-                        },
-                        else => {
-                            std.debug.print("recvfrom error: {}\n", .{err});
-                            return;
-                        },
-                    }
+        const ProcessWrapper = struct {
+            fn process(peer: conn_mod.SockAddr, data: []const u8, ecn_bits: ?u8) void {
+                if (current_io_endpoint) |ep| {
+                    ep.processIncomingDatagram(peer, data, ecn_bits);
                 }
             }
-        }
+        };
+
+        const IcmpWrapper = struct {
+            fn handle(peer: conn_mod.SockAddr, quoted: []const u8, mtu: u16) void {
+                if (current_io_endpoint) |ep| {
+                    ep.handleIcmpPtb(peer, quoted, mtu);
+                }
+            }
+        };
+
+        const ctx = io_mod.IoContext{
+            .sock_fd = self.sock_fd,
+            .process_fn = ProcessWrapper.process,
+            .icmp_ptb_fn = IcmpWrapper.handle,
+            .epoll_fd = self.epoll_fd,
+        };
+        io_mod.drainReadable(&ctx);
+        current_io_endpoint = null;
     }
 
     /// Linux-only: drain MSG_ERRQUEUE to handle ICMP PTB and apply DPLPMTUD clamps.
     fn drainErrorQueue(self: *Endpoint) void {
-        if (builtin.target.os.tag != .linux) return;
-        if (!@hasDecl(std.posix, "recvmsg")) return;
-        // Constants for extended error origin and ICMP types
-        const SO_EE_ORIGIN_ICMP: u8 = 2;
-        const SO_EE_ORIGIN_ICMP6: u8 = 3;
-        const ICMP_DEST_UNREACH: u8 = 3; // IPv4
-        const ICMP_FRAG_NEEDED: u8 = 4; // IPv4 code for PTB
-        const ICMPV6_PKT_TOOBIG: u8 = 2; // IPv6 type
+        // Delegate to io module using thread-local for self reference
+        current_io_endpoint = self;
 
-        // Linux struct sock_extended_err
-        const ExtendedErr = extern struct {
-            ee_errno: i32,
-            ee_origin: u8,
-            ee_type: u8,
-            ee_code: u8,
-            ee_pad: u8,
-            ee_info: u32, // MTU for EMSGSIZE
-            ee_data: u32,
-        };
-
-        while (true) {
-            var peer = conn_mod.SockAddr{};
-            peer.len = @intCast(@sizeOf(posix.sockaddr.storage));
-            var iov_buf: [2048]u8 = undefined;
-            var iov = [1]posix.iovec{.{ .base = &iov_buf, .len = iov_buf.len }};
-            var ctrl: [128]u8 = undefined;
-            var msg: posix.msghdr = .{
-                .name = @ptrCast(&peer.storage),
-                .namelen = peer.len,
-                .iov = &iov,
-                .iovlen = 1,
-                .control = &ctrl,
-                .controllen = ctrl.len,
-                .flags = 0,
-            };
-            const flags: u32 = 0x2000; // MSG_ERRQUEUE
-            const n_or_err = posix.recvmsg(self.sock_fd, &msg, flags);
-            if (n_or_err) |n| {
-                _ = n;
-                var mtu: ?u16 = null;
-                var origin_icmp: bool = false;
-                // Walk control headers to find extended error
-                var off: usize = 0;
-                while (off + @sizeOf(posix.cmsghdr) <= msg.controllen) {
-                    const cmsg_ptr: *const posix.cmsghdr = @ptrCast(@alignCast(@as(*const anyopaque, @ptrFromInt(@intFromPtr(msg.control) + off))));
-                    const clen = cmsg_ptr.len;
-                    if (clen < @sizeOf(posix.cmsghdr) or off + clen > msg.controllen) break;
-                    const level = cmsg_ptr.level;
-                    const ctype = cmsg_ptr.type;
-                    const data_ptr = @as([*]const u8, @ptrFromInt(@intFromPtr(cmsg_ptr) + @sizeOf(posix.cmsghdr)));
-                    if ((level == posix.IPPROTO.IP and ctype == 11) or (level == posix.IPPROTO.IPV6 and ctype == 25)) {
-                        // IP_RECVERR/IPV6_RECVERR data is sock_extended_err
-                        if (clen >= @sizeOf(posix.cmsghdr) + @sizeOf(ExtendedErr)) {
-                            const ee: *const ExtendedErr = @ptrCast(@alignCast(data_ptr));
-                            if (ee.ee_origin == SO_EE_ORIGIN_ICMP and ee.ee_type == ICMP_DEST_UNREACH and ee.ee_code == ICMP_FRAG_NEEDED) {
-                                origin_icmp = true;
-                                mtu = @intCast(@min(ee.ee_info, @as(u32, 0xFFFF)));
-                            } else if (ee.ee_origin == SO_EE_ORIGIN_ICMP6 and ee.ee_type == ICMPV6_PKT_TOOBIG) {
-                                origin_icmp = true;
-                                mtu = @intCast(@min(ee.ee_info, @as(u32, 0xFFFF)));
-                            }
-                        }
-                    }
-                    // Align to next header
-                    const align_sz: usize = 8;
-                    const adv = (clen + (align_sz - 1)) & ~(align_sz - 1);
-                    off += adv;
-                }
-                if (origin_icmp and mtu) |mtu_v| {
-                    // Attempt to spoof-check by matching a short-header QUIC with our DCID present
-                    const quoted = iov_buf[0..];
-                    self.handleIcmpPtb(peer, quoted, mtu_v);
-                }
-            } else |err| {
-                switch (err) {
-                    error.WouldBlock => return,
-                    else => return,
+        const IcmpWrapper = struct {
+            fn handle(peer: conn_mod.SockAddr, quoted: []const u8, mtu: u16) void {
+                if (current_io_endpoint) |ep| {
+                    ep.handleIcmpPtb(peer, quoted, mtu);
                 }
             }
-        }
+        };
+
+        const ProcessWrapper = struct {
+            fn process(_: conn_mod.SockAddr, _: []const u8, _: ?u8) void {
+                // Not used for error queue
+            }
+        };
+
+        const ctx = io_mod.IoContext{
+            .sock_fd = self.sock_fd,
+            .process_fn = ProcessWrapper.process,
+            .icmp_ptb_fn = IcmpWrapper.handle,
+            .epoll_fd = self.epoll_fd,
+        };
+        io_mod.drainErrorQueue(&ctx);
+        current_io_endpoint = null;
     }
 
     /// appears in a plausible short-header QUIC at some reasonable offset.
@@ -932,107 +805,93 @@ pub const Endpoint = struct {
     }
 
     fn poll_epoll_backend(self: *Endpoint, timeout_ms: i32) !void {
-        std.debug.print("poll_epoll_backend called, timeout={}, epoll_fd={?}\n", .{ timeout_ms, self.epoll_fd });
-        // On non-Linux platforms, fallback to a simple sleep + drain to avoid epoll dependency
-        if (builtin.target.os.tag != .linux or self.epoll_fd == null) {
-            std.debug.print("Falling back to sleep+drain\n", .{});
-            if (timeout_ms > 0) std.Thread.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
-            self.drainReadable();
-            return;
-        }
+        // Delegate to io module using thread-local for self reference
+        current_io_endpoint = self;
 
-        // Always try to drain first - UDP packets might be buffered
-        // This ensures we process any pending packets before waiting
-        self.drainReadable();
-
-        // Verify FDs are still valid
-        var check_addr = conn_mod.SockAddr{};
-        check_addr.len = @intCast(@sizeOf(posix.sockaddr.storage));
-        if (posix.getsockname(self.sock_fd, @ptrCast(&check_addr.storage), &check_addr.len)) |_| {
-            std.debug.print("Socket fd={} is still valid\n", .{self.sock_fd});
-        } else |err| {
-            std.debug.print("Socket fd={} is INVALID: {}\n", .{ self.sock_fd, err });
-            return;
-        }
-
-        const linux = std.os.linux;
-
-        // CRITICAL DEBUG: Try manually checking if data is available with MSG_PEEK
-        var peek_buf: [1]u8 = undefined;
-        var peek_addr: posix.sockaddr.storage = undefined;
-        var peek_len: posix.socklen_t = @sizeOf(@TypeOf(peek_addr));
-        const peek_flags = posix.MSG.DONTWAIT | posix.MSG.PEEK;
-        if (posix.recvfrom(self.sock_fd, &peek_buf, @intCast(peek_flags), @ptrCast(&peek_addr), &peek_len)) |peek_n| {
-            std.debug.print("!!!! CRITICAL: recvfrom PEEK shows {} bytes waiting, but epoll didn't trigger!\n", .{peek_n});
-        } else |peek_err| {
-            if (peek_err != error.WouldBlock) {
-                std.debug.print("recvfrom PEEK error: {}\n", .{peek_err});
-            }
-        }
-
-        var events: [16]linux.epoll_event = undefined;
-        std.debug.print("Calling epoll_wait on fd={} with timeout={}\n", .{ self.epoll_fd.?, timeout_ms });
-        const n = posix.epoll_wait(self.epoll_fd.?, &events, timeout_ms);
-
-        if (n > 0) {
-            std.debug.print("epoll_wait returned {} events\n", .{n});
-            for (0..n) |i| {
-                const ev = events[i];
-                std.debug.print("Event {}: fd={}, events=0x{x}\n", .{ i, ev.data.fd, ev.events });
-
-                // Check if our socket is readable or has errors
-                const expected_fd = @as(i32, @intCast(self.sock_fd));
-                std.debug.print("Checking ev.data.fd={} vs expected_fd={}\n", .{ ev.data.fd, expected_fd });
-                // Handle both EPOLLIN (data ready) and EPOLLERR (error condition)
-                // EPOLLERR can occur with ICMP errors on UDP sockets and we need to read to clear them
-                if (ev.data.fd == expected_fd and ((ev.events & linux.EPOLL.IN) != 0 or (ev.events & linux.EPOLL.ERR) != 0)) {
-                    std.debug.print("Socket {} is readable or has error (events=0x{x}) - calling drainReadable\n", .{ self.sock_fd, ev.events });
-                    self.drainReadable();
-                } else {
-                    std.debug.print("Not our socket or not readable/error\n", .{});
+        const ProcessWrapper = struct {
+            fn process(peer: conn_mod.SockAddr, data: []const u8, ecn_bits: ?u8) void {
+                if (current_io_endpoint) |ep| {
+                    ep.processIncomingDatagram(peer, data, ecn_bits);
                 }
             }
-        } else if (n == 0) {
-            // epoll_wait timed out - no data available
-            std.debug.print("epoll_wait timed out (no events)\n", .{});
-        }
+        };
 
-        // Always try to drain after epoll_wait regardless of result
-        // UDP packets might arrive between epoll registration and wait
-        self.drainReadable();
+        const IcmpWrapper = struct {
+            fn handle(peer: conn_mod.SockAddr, quoted: []const u8, mtu: u16) void {
+                if (current_io_endpoint) |ep| {
+                    ep.handleIcmpPtb(peer, quoted, mtu);
+                }
+            }
+        };
+
+        const ctx = io_mod.IoContext{
+            .sock_fd = self.sock_fd,
+            .process_fn = ProcessWrapper.process,
+            .icmp_ptb_fn = IcmpWrapper.handle,
+            .epoll_fd = self.epoll_fd,
+        };
+        try io_mod.pollEpollBackend(&ctx, timeout_ms);
+        current_io_endpoint = null;
     }
 
     fn poll_kqueue_backend(self: *Endpoint, timeout_ms: i32) !void {
-        // On non-kqueue platforms, just perform a sleep-based fallback
-        if (builtin.target.os.tag != .macos and builtin.target.os.tag != .freebsd and builtin.target.os.tag != .netbsd and builtin.target.os.tag != .openbsd and builtin.target.os.tag != .dragonfly) {
-            if (timeout_ms > 0) std.Thread.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
-            self.drainReadable();
-            return;
-        }
-        const io = @import("io/loop_kqueue.zig");
-        var lp = try io.Loop.init();
-        defer lp.deinit();
-        try lp.add(@as(i32, @intCast(self.sock_fd)), true, false);
-        var events: [8]io.Event = undefined;
-        const n = try lp.wait(&events, timeout_ms);
-        _ = n;
-        self.drainReadable();
+        // Delegate to io module using thread-local for self reference
+        current_io_endpoint = self;
+
+        const ProcessWrapper = struct {
+            fn process(peer: conn_mod.SockAddr, data: []const u8, ecn_bits: ?u8) void {
+                if (current_io_endpoint) |ep| {
+                    ep.processIncomingDatagram(peer, data, ecn_bits);
+                }
+            }
+        };
+
+        const IcmpWrapper = struct {
+            fn handle(peer: conn_mod.SockAddr, quoted: []const u8, mtu: u16) void {
+                if (current_io_endpoint) |ep| {
+                    ep.handleIcmpPtb(peer, quoted, mtu);
+                }
+            }
+        };
+
+        const ctx = io_mod.IoContext{
+            .sock_fd = self.sock_fd,
+            .process_fn = ProcessWrapper.process,
+            .icmp_ptb_fn = IcmpWrapper.handle,
+            .epoll_fd = null,
+        };
+        try io_mod.pollKqueueBackend(&ctx, timeout_ms);
+        current_io_endpoint = null;
     }
 
     fn poll_iocp_backend(self: *Endpoint, timeout_ms: i32) !void {
-        if (builtin.target.os.tag != .windows) {
-            if (timeout_ms > 0) std.Thread.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
-            self.drainReadable();
-            return;
-        }
-        const io = @import("io/loop_iocp.zig");
-        var lp = try io.Loop.init();
-        defer lp.deinit();
-        try lp.add(self.sock_fd, true, false);
-        var events: [8]io.Event = undefined;
-        const n = try lp.wait(&events, timeout_ms);
-        _ = n;
-        self.drainReadable();
+        // Delegate to io module using thread-local for self reference
+        current_io_endpoint = self;
+
+        const ProcessWrapper = struct {
+            fn process(peer: conn_mod.SockAddr, data: []const u8, ecn_bits: ?u8) void {
+                if (current_io_endpoint) |ep| {
+                    ep.processIncomingDatagram(peer, data, ecn_bits);
+                }
+            }
+        };
+
+        const IcmpWrapper = struct {
+            fn handle(peer: conn_mod.SockAddr, quoted: []const u8, mtu: u16) void {
+                if (current_io_endpoint) |ep| {
+                    ep.handleIcmpPtb(peer, quoted, mtu);
+                }
+            }
+        };
+
+        const ctx = io_mod.IoContext{
+            .sock_fd = self.sock_fd,
+            .process_fn = ProcessWrapper.process,
+            .icmp_ptb_fn = IcmpWrapper.handle,
+            .epoll_fd = null,
+        };
+        try io_mod.pollIocpBackend(&ctx, timeout_ms);
+        current_io_endpoint = null;
     }
 
     var process_count: u64 = 0; // Global counter to track how many times processIncomingDatagram is called
