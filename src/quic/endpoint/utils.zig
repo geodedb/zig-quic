@@ -82,3 +82,85 @@ pub fn addrToNetwork(value: u32) u32 {
 pub fn sockToIsize(sock: posix.socket_t) isize {
     return @as(isize, @intCast(sock));
 }
+
+/// Parse IPv4 dotted-quad string to network byte order u32.
+/// Returns address suitable for sockaddr.in.s_addr.
+pub fn parseIpv4(s: []const u8) !u32 {
+    var it = std.mem.splitScalar(u8, s, '.');
+    var octets: [4]u8 = .{0} ** 4;
+    var i: usize = 0;
+    while (i < 4) : (i += 1) {
+        const part = it.next() orelse return error.InvalidAddress;
+        const v = try std.fmt.parseInt(u8, part, 10);
+        octets[i] = v;
+    }
+    const host_val: u32 = (@as(u32, octets[0]) << 24) | (@as(u32, octets[1]) << 16) | (@as(u32, octets[2]) << 8) | @as(u32, octets[3]);
+    return addrToNetwork(host_val);
+}
+
+/// Resolve hostname:port string to socket address.
+/// Handles:
+/// - "localhost" -> 127.0.0.1
+/// - "server4"/"server" -> resolves from /etc/hosts or defaults to test IP
+/// - IPv4 dotted-quad addresses
+pub fn resolveAny(hostport: []const u8, proto: enum { udp }) !conn_mod.SockAddr {
+    _ = proto;
+    var parts = std.mem.splitScalar(u8, hostport, ':');
+    const host = parts.next() orelse return error.InvalidAddress;
+    const port_s = parts.next() orelse return error.InvalidAddress;
+    const port = std.fmt.parseInt(u16, port_s, 10) catch return error.InvalidAddress;
+
+    // Handle common hostnames used in tests
+    if (std.mem.eql(u8, host, "localhost")) {
+        return conn_mod.SockAddr.ipv4(127, 0, 0, 1, port);
+    }
+    if (std.mem.eql(u8, host, "server4") or std.mem.eql(u8, host, "server")) {
+        // In Docker, server4 should resolve to the server container
+        // Try to use the IP from /etc/hosts if available
+        const hosts_file = std.fs.openFileAbsolute("/etc/hosts", .{}) catch {
+            // Fallback to a default IP used in tests
+            return conn_mod.SockAddr.ipv4(193, 167, 100, 100, port);
+        };
+        defer hosts_file.close();
+
+        var buf: [4096]u8 = undefined;
+        const bytes_read = hosts_file.readAll(&buf) catch {
+            return conn_mod.SockAddr.ipv4(193, 167, 100, 100, port);
+        };
+        const content = buf[0..bytes_read];
+
+        // Parse /etc/hosts for server4
+        var lines = std.mem.tokenizeScalar(u8, content, '\n');
+        while (lines.next()) |line| {
+            var parts_line = std.mem.tokenizeAny(u8, line, " \t");
+            const ip_str = parts_line.next() orelse continue;
+            while (parts_line.next()) |hostname| {
+                if (std.mem.eql(u8, hostname, "server4") or std.mem.eql(u8, hostname, "server")) {
+                    // Parse the IP address
+                    var ip_parts = std.mem.splitScalar(u8, ip_str, '.');
+                    var octets: [4]u8 = .{0} ** 4;
+                    var i: usize = 0;
+                    while (i < 4) : (i += 1) {
+                        const octet_str = ip_parts.next() orelse break;
+                        octets[i] = std.fmt.parseInt(u8, octet_str, 10) catch break;
+                    }
+                    if (i == 4) {
+                        return conn_mod.SockAddr.ipv4(octets[0], octets[1], octets[2], octets[3], port);
+                    }
+                }
+            }
+        }
+        // Default fallback
+        return conn_mod.SockAddr.ipv4(193, 167, 100, 100, port);
+    }
+
+    // Try dotted-quad IPv4 parse
+    var it = std.mem.splitScalar(u8, host, '.');
+    var oct: [4]u8 = .{0} ** 4;
+    var i: usize = 0;
+    while (i < 4) : (i += 1) {
+        const seg = it.next() orelse return error.InvalidAddress;
+        oct[i] = std.fmt.parseInt(u8, seg, 10) catch return error.InvalidAddress;
+    }
+    return conn_mod.SockAddr.ipv4(oct[0], oct[1], oct[2], oct[3], port);
+}

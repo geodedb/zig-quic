@@ -145,7 +145,7 @@ pub const Endpoint = struct {
     /// Initialize a UDP endpoint bound to bind_addr (e.g., "127.0.0.1:0").
     pub fn init(alloc: *std.mem.Allocator, bind_addr: []const u8, cfgp: *const cfg.QuicConfig) !Endpoint {
         // Resolve and bind IPv4 socket for tests; port 0 lets OS choose a free port.
-        var ep_addr = try resolveAny(bind_addr, .udp);
+        var ep_addr = try utils.resolveAny(bind_addr, .udp);
 
         // Determine address family from resolved address
         const sa: *const posix.sockaddr = @ptrCast(@alignCast(&ep_addr.storage));
@@ -474,13 +474,13 @@ pub const Endpoint = struct {
 
     /// Create server-side represented connection (used by client dialing logic).
     pub fn connectTo(self: *Endpoint, hostport: []const u8) !conn_mod.Connection {
-        const peer = try resolveAny(hostport, .udp);
+        const peer = try utils.resolveAny(hostport, .udp);
         return .{ .id = 0, .role = .Client, .sock_fd = sockToIsize(self.sock_fd), .peer = peer, .tls_inbox = std.ArrayList(u8){} };
     }
 
     /// Create client-side connection object referencing remote host:port.
     pub fn connectClient(self: *Endpoint, hostport: []const u8) !*conn_mod.Connection {
-        const peer = try resolveAny(hostport, .udp);
+        const peer = try utils.resolveAny(hostport, .udp);
         const ph = hashSockaddr(&peer.storage, peer.len);
         const version = if (self.cfg.version == .v2) packet.QUIC_V2 else packet.QUIC_V1;
 
@@ -593,15 +593,10 @@ pub const Endpoint = struct {
             if (eff_timeout < 0) eff_timeout = -1;
         }
 
-        // Always use the platform event loop to wait for readability
-        // This ensures we actually wait for packets to arrive
+        // Delegate to platform-specific poll backend
         const backend = lb.defaultLoopBackend();
         std.debug.print("Using backend: {}\n", .{backend});
-        switch (backend) {
-            .epoll => try self.poll_epoll_backend(eff_timeout),
-            .kqueue => try self.poll_kqueue_backend(eff_timeout),
-            .iocp => try self.poll_iocp_backend(eff_timeout),
-        }
+        try self.callPollBackend(backend, eff_timeout);
 
         self.processExpiredTimers(nowMsMonotonic());
         if (self.timers.items.len > 0 and timeout_ms != 0) {
@@ -704,9 +699,10 @@ pub const Endpoint = struct {
         self.handleIcmpPtb(peer, quoted_udp_payload, reported_mtu);
     }
 
-    fn poll_epoll_backend(self: *Endpoint, timeout_ms: i32) !void {
-        // Delegate to io module using thread-local for self reference
+    /// Helper: Create IoContext and call platform-specific poll backend.
+    fn callPollBackend(self: *Endpoint, backend: lb.LoopBackend, timeout_ms: i32) !void {
         current_io_endpoint = self;
+        defer current_io_endpoint = null;
 
         const ProcessWrapper = struct {
             fn process(peer: conn_mod.SockAddr, data: []const u8, ecn_bits: ?u8) void {
@@ -728,70 +724,14 @@ pub const Endpoint = struct {
             .sock_fd = self.sock_fd,
             .process_fn = ProcessWrapper.process,
             .icmp_ptb_fn = IcmpWrapper.handle,
-            .epoll_fd = self.epoll_fd,
-        };
-        try io_mod.pollEpollBackend(&ctx, timeout_ms);
-        current_io_endpoint = null;
-    }
-
-    fn poll_kqueue_backend(self: *Endpoint, timeout_ms: i32) !void {
-        // Delegate to io module using thread-local for self reference
-        current_io_endpoint = self;
-
-        const ProcessWrapper = struct {
-            fn process(peer: conn_mod.SockAddr, data: []const u8, ecn_bits: ?u8) void {
-                if (current_io_endpoint) |ep| {
-                    ep.processIncomingDatagram(peer, data, ecn_bits);
-                }
-            }
+            .epoll_fd = if (backend == .epoll) self.epoll_fd else null,
         };
 
-        const IcmpWrapper = struct {
-            fn handle(peer: conn_mod.SockAddr, quoted: []const u8, mtu: u16) void {
-                if (current_io_endpoint) |ep| {
-                    ep.handleIcmpPtb(peer, quoted, mtu);
-                }
-            }
-        };
-
-        const ctx = io_mod.IoContext{
-            .sock_fd = self.sock_fd,
-            .process_fn = ProcessWrapper.process,
-            .icmp_ptb_fn = IcmpWrapper.handle,
-            .epoll_fd = null,
-        };
-        try io_mod.pollKqueueBackend(&ctx, timeout_ms);
-        current_io_endpoint = null;
-    }
-
-    fn poll_iocp_backend(self: *Endpoint, timeout_ms: i32) !void {
-        // Delegate to io module using thread-local for self reference
-        current_io_endpoint = self;
-
-        const ProcessWrapper = struct {
-            fn process(peer: conn_mod.SockAddr, data: []const u8, ecn_bits: ?u8) void {
-                if (current_io_endpoint) |ep| {
-                    ep.processIncomingDatagram(peer, data, ecn_bits);
-                }
-            }
-        };
-
-        const IcmpWrapper = struct {
-            fn handle(peer: conn_mod.SockAddr, quoted: []const u8, mtu: u16) void {
-                if (current_io_endpoint) |ep| {
-                    ep.handleIcmpPtb(peer, quoted, mtu);
-                }
-            }
-        };
-
-        const ctx = io_mod.IoContext{
-            .sock_fd = self.sock_fd,
-            .process_fn = ProcessWrapper.process,
-            .icmp_ptb_fn = IcmpWrapper.handle,
-            .epoll_fd = null,
-        };
-        try io_mod.pollIocpBackend(&ctx, timeout_ms);
-        current_io_endpoint = null;
+        switch (backend) {
+            .epoll => try io_mod.pollEpollBackend(&ctx, timeout_ms),
+            .kqueue => try io_mod.pollKqueueBackend(&ctx, timeout_ms),
+            .iocp => try io_mod.pollIocpBackend(&ctx, timeout_ms),
+        }
     }
 
     // Helper: Wrapper for sendTo to match incoming.SendFn signature
@@ -1129,79 +1069,4 @@ fn senderPaced(ctx: *anyopaque, c: *conn_mod.Connection, data: []const u8) !usiz
 
 // Legacy poll_* functions removed - dead code (never called)
 // Modern poll_*_backend() functions are used instead
-
-fn parseIpv4(s: []const u8) !u32 {
-    // Returns address in network byte order (big-endian) for sockaddr.in.s_addr
-    var it = std.mem.splitScalar(u8, s, '.');
-    var octets: [4]u8 = .{0} ** 4;
-    var i: usize = 0;
-    while (i < 4) : (i += 1) {
-        const part = it.next() orelse return error.InvalidAddress;
-        const v = try std.fmt.parseInt(u8, part, 10);
-        octets[i] = v;
-    }
-    const host_val: u32 = (@as(u32, octets[0]) << 24) | (@as(u32, octets[1]) << 16) | (@as(u32, octets[2]) << 8) | @as(u32, octets[3]);
-    return addrToNetwork(host_val);
-}
-
-fn resolveAny(hostport: []const u8, proto: enum { udp }) !conn_mod.SockAddr {
-    _ = proto;
-    var parts = std.mem.splitScalar(u8, hostport, ':');
-    const host = parts.next() orelse return error.InvalidAddress;
-    const port_s = parts.next() orelse return error.InvalidAddress;
-    const port = std.fmt.parseInt(u16, port_s, 10) catch return error.InvalidAddress;
-
-    // Handle common hostnames used in tests
-    if (std.mem.eql(u8, host, "localhost")) {
-        return conn_mod.SockAddr.ipv4(127, 0, 0, 1, port);
-    }
-    if (std.mem.eql(u8, host, "server4") or std.mem.eql(u8, host, "server")) {
-        // In Docker, server4 should resolve to the server container
-        // Try to use the IP from /etc/hosts if available
-        const hosts_file = std.fs.openFileAbsolute("/etc/hosts", .{}) catch {
-            // Fallback to a default IP used in tests
-            return conn_mod.SockAddr.ipv4(193, 167, 100, 100, port);
-        };
-        defer hosts_file.close();
-
-        var buf: [4096]u8 = undefined;
-        const bytes_read = hosts_file.readAll(&buf) catch {
-            return conn_mod.SockAddr.ipv4(193, 167, 100, 100, port);
-        };
-        const content = buf[0..bytes_read];
-
-        // Parse /etc/hosts for server4
-        var lines = std.mem.tokenizeScalar(u8, content, '\n');
-        while (lines.next()) |line| {
-            var parts_line = std.mem.tokenizeAny(u8, line, " \t");
-            const ip_str = parts_line.next() orelse continue;
-            while (parts_line.next()) |hostname| {
-                if (std.mem.eql(u8, hostname, "server4") or std.mem.eql(u8, hostname, "server")) {
-                    // Parse the IP address
-                    var ip_parts = std.mem.splitScalar(u8, ip_str, '.');
-                    var octets: [4]u8 = .{0} ** 4;
-                    var i: usize = 0;
-                    while (i < 4) : (i += 1) {
-                        const octet_str = ip_parts.next() orelse break;
-                        octets[i] = std.fmt.parseInt(u8, octet_str, 10) catch break;
-                    }
-                    if (i == 4) {
-                        return conn_mod.SockAddr.ipv4(octets[0], octets[1], octets[2], octets[3], port);
-                    }
-                }
-            }
-        }
-        // Default fallback
-        return conn_mod.SockAddr.ipv4(193, 167, 100, 100, port);
-    }
-
-    // Try dotted-quad IPv4 parse
-    var it = std.mem.splitScalar(u8, host, '.');
-    var oct: [4]u8 = .{0} ** 4;
-    var i: usize = 0;
-    while (i < 4) : (i += 1) {
-        const seg = it.next() orelse return error.InvalidAddress;
-        oct[i] = std.fmt.parseInt(u8, seg, 10) catch return error.InvalidAddress;
-    }
-    return conn_mod.SockAddr.ipv4(oct[0], oct[1], oct[2], oct[3], port);
-}
+// Helper functions parseIpv4() and resolveAny() moved to utils.zig
