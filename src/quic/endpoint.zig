@@ -423,53 +423,26 @@ pub const Endpoint = struct {
     }
 
     /// Send UDP datagram to peer (capturing if enabled).
+    /// Send UDP datagram to peer. Supports test capture mode.
+    /// Delegates actual UDP send to io_mod.sendTo() for platform abstraction.
     pub fn sendTo(self: *Endpoint, peer: conn_mod.SockAddr, data: []const u8) !usize {
-        std.debug.print("sendTo called with data.len={}\n", .{data.len});
+        // Test capture: make owned copy and enqueue without sending
         if (self.test_capture_enabled) {
-            // Capture: make an owned copy of data and enqueue
             const owned = try self.allocator.alloc(u8, data.len);
             @memcpy(owned, data);
             _ = self.captures.append(self.allocator.*, .{ .peer = peer, .bytes = owned }) catch {};
-            // Also send to socket for integration if desired
-        }
-        if (data.len == 141) {
-            // Extract peer address for debugging
-            const sa: *const posix.sockaddr = @ptrCast(&peer.storage);
-            if (sa.family == posix.AF.INET) {
-                const sin: *const posix.sockaddr.in = @ptrCast(&peer.storage);
-                const addr_bytes = @as([4]u8, @bitCast(sin.addr));
-                std.debug.print("sendTo 141 bytes to IPv4: {}.{}.{}.{}:{}\n", .{ addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3], portFromNetwork(sin.port) });
-            } else if (sa.family == posix.AF.INET6) {
-                const sin6: *const posix.sockaddr.in6 = @ptrCast(&peer.storage);
-                std.debug.print("sendTo 141 bytes to IPv6 port {}\n", .{portFromNetwork(sin6.port)});
-            }
         }
 
-        const sa_ptr: *const posix.sockaddr = @ptrCast(&peer.storage);
-        // Debug the actual address we're sending to
-        if (peer.storage.family == posix.AF.INET) {
-            const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&peer.storage));
-            const addr_bytes = @as([4]u8, @bitCast(sin.addr));
-            std.debug.print("sendto IPv4 {}.{}.{}.{}:{}, fd={}, data.len={}\n", .{ addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3], portFromNetwork(sin.port), self.sock_fd, data.len });
-        } else if (peer.storage.family == posix.AF.INET6) {
-            const sin6: *const posix.sockaddr.in6 = @ptrCast(@alignCast(&peer.storage));
-            std.debug.print("sendto IPv6 port {}, fd={}, data.len={}\n", .{ portFromNetwork(sin6.port), self.sock_fd, data.len });
-        }
-        const result = posix.sendto(self.sock_fd, data, 0, sa_ptr, peer.len);
-        if (result) |n| {
-            std.debug.print("sendto successful: sent {} bytes (of {})\n", .{ n, data.len });
-        } else |err| {
-            std.debug.print("sendto failed: {}\n", .{err});
-        }
-        return result;
+        // Delegate actual UDP send to io module
+        std.debug.print("sendTo called with data.len={}\n", .{data.len});
+        return io_mod.sendTo(self.sock_fd, peer, data);
     }
 
     /// Receive UDP datagram (non-blocking if platform supports MSG.DONTWAIT).
+    /// Delegates to io_mod.recvFrom() for platform abstraction.
     pub fn recvFrom(self: *Endpoint, buf: []u8) !struct { n: usize, peer: conn_mod.SockAddr } {
-        var peer = conn_mod.SockAddr{};
-        peer.len = @intCast(@sizeOf(posix.sockaddr.storage));
-        const n = try posix.recvfrom(self.sock_fd, buf, 0, @ptrCast(&peer.storage), &peer.len);
-        return .{ .n = n, .peer = peer };
+        const result = try io_mod.recvFrom(self.sock_fd, buf);
+        return .{ .n = result.n, .peer = result.peer };
     }
 
     /// Accept a server connection from initial datagram's peer address.
@@ -2763,32 +2736,8 @@ fn senderPaced(ctx: *anyopaque, c: *conn_mod.Connection, data: []const u8) !usiz
     return data.len;
 }
 
-fn poll_epoll(self: *Endpoint, timeout_ms: i32) !void {
-    const io = @import("io/loop_epoll.zig");
-    var lp = try io.Loop.init();
-    defer lp.deinit();
-    try lp.add(@as(i32, @intCast(self.sock_fd)), true, false);
-    var events: [16]io.Event = undefined;
-    _ = try lp.wait(&events, timeout_ms);
-}
-
-fn poll_kqueue(self: *Endpoint, timeout_ms: i32) !void {
-    const io = @import("io/loop_kqueue.zig");
-    var lp = try io.Loop.init();
-    defer lp.deinit();
-    try lp.add(@as(i32, @intCast(self.sock_fd)), true, false);
-    var events: [16]io.Event = undefined;
-    _ = try lp.wait(&events, timeout_ms);
-}
-
-fn poll_iocp(self: *Endpoint, timeout_ms: i32) !void {
-    const io = @import("io/loop_iocp.zig");
-    var lp = try io.Loop.init();
-    defer lp.deinit();
-    try lp.add(@as(i32, @intCast(self.sock_fd)), true, false);
-    var events: [16]io.Event = undefined;
-    _ = try lp.wait(&events, timeout_ms);
-}
+// Legacy poll_* functions removed - dead code (never called)
+// Modern poll_*_backend() functions are used instead
 
 fn parseIpv4(s: []const u8) !u32 {
     // Returns address in network byte order (big-endian) for sockaddr.in.s_addr
