@@ -117,12 +117,45 @@ Supports packet corruption, reordering, and ECN marking simulation for comprehen
 
 Infrastructure ready for address validation and connection migration testing.
 
-### Advanced Feature Testing (Phase 4) - TODO
+### Advanced Feature Testing (Phase 4) ✅
 
-- `migration.zig`: Connection migration (RFC 9000 §9)
-- `flow_control.zig`: Flow control mechanisms
-- `key_update.zig`: Key updates (RFC 9001 §6)
-- `zero_rtt.zig`: 0-RTT and resumption
+#### `migration.zig` - Connection Migration
+53 tests (7 infrastructure + 46 skip):
+- Client-initiated migration (RFC 9000 §9.1-9.2)
+- Server validation of new paths (RFC 9000 §9.3)
+- PATH_CHALLENGE/PATH_RESPONSE (RFC 9000 §8.2)
+- Preferred address mechanism (RFC 9000 §9.6)
+- NAT rebinding detection (RFC 9000 §9.5)
+- Connection ID management during migration
+- Anti-amplification during migration
+
+#### `flow_control.zig` - Flow Control Mechanisms
+62 tests (11 infrastructure + 51 skip):
+- Stream-level flow control (RFC 9000 §4.1)
+- Connection-level flow control (RFC 9000 §4.1)
+- MAX_DATA and MAX_STREAM_DATA frames (RFC 9000 §19.9-19.10)
+- DATA_BLOCKED and STREAM_DATA_BLOCKED frames (RFC 9000 §19.12-19.13)
+- MAX_STREAMS and STREAMS_BLOCKED frames (RFC 9000 §19.11, §19.14)
+- Flow control window management
+
+#### `key_update.zig` - Key Updates
+61 tests (9 infrastructure + 52 skip):
+- Key update initiation (RFC 9001 §6.1)
+- Key phase bit handling (RFC 9001 §6.5)
+- Simultaneous key updates (RFC 9001 §6.5)
+- AEAD usage limits (RFC 9001 §6.6)
+- Old key retention for delayed packets
+- Key derivation from TLS key schedule
+
+#### `zero_rtt.zig` - 0-RTT and Session Resumption
+72 tests (10 infrastructure + 62 skip):
+- Session resumption (RFC 9001 §4.6.1)
+- 0-RTT data transmission (RFC 9000 §2.3)
+- Early data security properties (RFC 9001 §4.6.2)
+- 0-RTT rejection handling (RFC 9001 §4.6.3)
+- Anti-replay mechanisms (RFC 9001 §8.2)
+- Transport parameter validation (RFC 9000 §7.4.1)
+- Session ticket management
 
 ### Interop and Stress Testing (Phase 5) - TODO
 
@@ -207,21 +240,27 @@ The integration test framework provides:
 | Phase 3 | rfc9002_recovery.zig | ✅ Complete | 5 infra + 26 skip (34 total) |
 | Phase 3 | rfc9000_packets.zig | ✅ Complete | 6 infra + 32 skip (46 total) |
 | Phase 3 | rfc9000_section8.zig | ✅ Complete | 4 infra + 30 skip (40 total) |
-| Phase 4 | Advanced features | 📝 TODO | - |
+| Phase 4 | migration.zig | ✅ Complete | 7 infra + 46 skip (53 total) |
+| Phase 4 | flow_control.zig | ✅ Complete | 11 infra + 51 skip (62 total) |
+| Phase 4 | key_update.zig | ✅ Complete | 9 infra + 52 skip (61 total) |
+| Phase 4 | zero_rtt.zig | ✅ Complete | 10 infra + 62 skip (72 total) |
 | Phase 5 | Interop/Stress | 📝 TODO | - |
 
 **Total Progress**:
-- **Infrastructure tests**: 60/60 passing (100%)
-- **Skip tests documented**: 114 tests ready for endpoint integration
-- **Total test framework**: 174 tests created
+- **Infrastructure tests**: 97/97 passing (100%)
+- **Skip tests documented**: 325 tests ready for endpoint integration
+- **Total test framework**: 422 tests created
 
 ## Next Steps
 
 1. ✅ Implement core test infrastructure (Phase 1)
 2. ✅ Implement test fixtures (Phase 2)
-3. 📝 Create first RFC compliance test suite (rfc9000_section7.zig)
-4. 📝 Incrementally add remaining test suites
-5. 📝 Set up CI pipeline for integration tests
+3. ✅ Create RFC compliance test suites (Phase 3)
+4. ✅ Implement advanced feature tests (Phase 4)
+5. 📝 Implement interop and stress tests (Phase 5)
+6. 📝 Integrate with actual QUIC endpoint implementation
+7. 📝 Enable skip tests as endpoint features are implemented
+8. 📝 Set up CI pipeline for integration tests
 
 ## Contributing
 
