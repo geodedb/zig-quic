@@ -57,18 +57,136 @@ test "RFC 9000 §7.1 - Client sends Initial packet" {
 }
 
 test "RFC 9000 §7.1 - Initial packet contains CRYPTO frame with ClientHello" {
-    // SKIP: Requires TLS handshake integration
-    return error.SkipZigTest;
+    // Tier 1 Step 1 Phase 1: ENABLED - Validate CRYPTO frame in Initial packet
+    const allocator = std.testing.allocator;
+
+    // Create connection pair with packet capture enabled
+    var builder = connection_pair.ConnectionPairBuilder.init(allocator);
+    var pair = try builder
+        .withCapture()
+        .build();
+    defer pair.deinit();
+
+    // Establish connection (this triggers Initial packet with ClientHello)
+    try pair.connect();
+
+    // Get captured packets from client
+    const client_packets = pair.getClientPackets();
+    try std.testing.expect(client_packets != null);
+    try std.testing.expect(client_packets.?.len > 0);
+
+    // Find the first Initial packet sent by client
+    const packet_inspector = @import("packet_inspector");
+    var found_initial = false;
+    var found_crypto = false;
+
+    for (client_packets.?) |captured| {
+        if (captured.direction != .sent) continue;
+
+        // Check if this is an Initial packet
+        if (packet_inspector.isInitialPacket(captured.data)) {
+            found_initial = true;
+
+            // Decrypt and check for CRYPTO frame
+            // Client Initial packets use is_client=true for decryption
+            const has_crypto = try packet_inspector.initialPacketHasCryptoFrame(
+                allocator,
+                captured.data,
+                true, // is_client
+            );
+
+            if (has_crypto) {
+                found_crypto = true;
+                break;
+            }
+        }
+    }
+
+    // Verify we found an Initial packet with CRYPTO frame
+    try std.testing.expect(found_initial);
+    try std.testing.expect(found_crypto);
 }
 
 test "RFC 9000 §7.1 - Initial packet uses long header format" {
-    // SKIP: Requires packet encoding
-    return error.SkipZigTest;
+    // Tier 1 Step 1 Phase 1: ENABLED - Validate long header format
+    const allocator = std.testing.allocator;
+
+    // Create connection pair with packet capture
+    var builder = connection_pair.ConnectionPairBuilder.init(allocator);
+    var pair = try builder
+        .withCapture()
+        .build();
+    defer pair.deinit();
+
+    // Establish connection
+    try pair.connect();
+
+    // Get client packets
+    const client_packets = pair.getClientPackets();
+    try std.testing.expect(client_packets != null);
+
+    // Validate that Initial packets use long header format
+    const packet_inspector = @import("packet_inspector");
+    var found_initial_with_long_header = false;
+
+    for (client_packets.?) |captured| {
+        if (captured.direction != .sent) continue;
+
+        // Parse packet header
+        const info = packet_inspector.parsePacketHeader(captured.data) catch continue;
+
+        // Check if this is an Initial packet with long header
+        if (info.packet_type == .Initial and info.is_long_header) {
+            found_initial_with_long_header = true;
+            break;
+        }
+    }
+
+    try std.testing.expect(found_initial_with_long_header);
 }
 
 test "RFC 9000 §7.1 - Initial packet includes token if available" {
-    // SKIP: Requires token management
-    return error.SkipZigTest;
+    // Tier 1 Step 1 Phase 1: ENABLED - Validate token field exists in Initial packets
+    // Note: For first connection without Retry, token is typically empty
+    const allocator = std.testing.allocator;
+
+    // Create connection pair with packet capture
+    var builder = connection_pair.ConnectionPairBuilder.init(allocator);
+    var pair = try builder
+        .withCapture()
+        .build();
+    defer pair.deinit();
+
+    // Establish connection
+    try pair.connect();
+
+    // Get client packets
+    const client_packets = pair.getClientPackets();
+    try std.testing.expect(client_packets != null);
+
+    // Validate that Initial packets have token field (even if empty)
+    const packet_inspector = @import("packet_inspector");
+    var found_initial_with_token_field = false;
+
+    for (client_packets.?) |captured| {
+        if (captured.direction != .sent) continue;
+
+        // Parse packet header
+        const info = packet_inspector.parsePacketHeader(captured.data) catch continue;
+
+        // Check if this is an Initial packet
+        if (info.packet_type == .Initial) {
+            // Token field should exist (even if empty for first connection)
+            if (info.token) |token| {
+                // Token field exists (may be empty, that's fine)
+                _ = token;
+                found_initial_with_token_field = true;
+                break;
+            }
+        }
+    }
+
+    try std.testing.expect(found_initial_with_token_field);
 }
 
 // =============================================================================

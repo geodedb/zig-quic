@@ -14,8 +14,9 @@
 //! - RFC 9000 §12.3: Packet Numbers
 
 const std = @import("std");
-const harness = @import("harness.zig");
+const harness = @import("harness");
 const quic_frame = @import("quic_frame");
+const crypto_quic = @import("quic_crypto_quic");
 
 /// Packet type classification for testing
 pub const PacketType = enum {
@@ -63,7 +64,47 @@ pub const PacketInfo = struct {
 
     /// Original packet bytes
     packet_bytes: []const u8,
+
+    /// Token (only for Initial packets)
+    token: ?[]const u8,
 };
+
+/// VarInt decode result
+const VarIntResult = struct {
+    value: u64,
+    bytes: usize,
+};
+
+/// Decode QUIC variable-length integer (RFC 9000 §16)
+fn decodeVarInt(data: []const u8) !VarIntResult {
+    if (data.len == 0) return error.Truncated;
+
+    const first_byte = data[0];
+    const prefix = (first_byte >> 6) & 0x03;
+
+    const length: usize = switch (prefix) {
+        0 => 1,  // 0b00 - 1 byte
+        1 => 2,  // 0b01 - 2 bytes
+        2 => 4,  // 0b10 - 4 bytes
+        3 => 8,  // 0b11 - 8 bytes
+        else => unreachable,
+    };
+
+    if (data.len < length) return error.Truncated;
+
+    const value: u64 = switch (length) {
+        1 => @as(u64, first_byte & 0x3F),
+        2 => @as(u64, std.mem.readInt(u16, data[0..2], .big) & 0x3FFF),
+        4 => @as(u64, std.mem.readInt(u32, data[0..4], .big) & 0x3FFFFFFF),
+        8 => @as(u64, std.mem.readInt(u64, data[0..8], .big) & 0x3FFFFFFFFFFFFFFF),
+        else => unreachable,
+    };
+
+    return VarIntResult{
+        .value = value,
+        .bytes = length,
+    };
+}
 
 /// Parse packet header without requiring AEAD keys.
 /// Returns packet metadata useful for test assertions.
@@ -122,6 +163,7 @@ fn parseShortHeader(packet_bytes: []const u8) !PacketInfo {
         .pn_length = @intCast(pn_len_bits),
         .payload_offset = pn_offset + pn_len_bits,
         .packet_bytes = packet_bytes,
+        .token = null, // Short headers don't have tokens
     };
 }
 
@@ -179,7 +221,40 @@ fn parseLongHeader(packet_bytes: []const u8) !PacketInfo {
         else => .ApplicationData,
     };
 
-    // For Initial/Handshake/0-RTT, skip token/length fields to find payload
+    // Extract token for Initial packets (RFC 9000 §17.2.2)
+    var token: ?[]const u8 = null;
+    if (packet_type == .Initial) {
+        // Token is a variable-length integer indicating token length, followed by token bytes
+        if (i < packet_bytes.len) {
+            const token_len_result = decodeVarInt(packet_bytes[i..]) catch {
+                // If we can't decode token length, assume no token
+                token = &[_]u8{};
+                return PacketInfo{
+                    .packet_type = packet_type,
+                    .pn_space = pn_space,
+                    .version = version,
+                    .dcid = dcid,
+                    .scid = scid,
+                    .is_long_header = true,
+                    .pn_length = null,
+                    .payload_offset = i,
+                    .packet_bytes = packet_bytes,
+                    .token = token,
+                };
+            };
+
+            const token_len = token_len_result.value;
+            const token_len_bytes = token_len_result.bytes;
+            i += token_len_bytes;
+
+            if (i + token_len <= packet_bytes.len) {
+                token = packet_bytes[i..i + token_len];
+                i += token_len;
+            }
+        }
+    }
+
+    // For Initial/Handshake/0-RTT, skip length fields to find payload
     // This is approximate - real parsing would decode VarInt lengths
     const payload_offset = i; // Simplified
 
@@ -193,6 +268,7 @@ fn parseLongHeader(packet_bytes: []const u8) !PacketInfo {
         .pn_length = null, // Would need to decode further
         .payload_offset = payload_offset,
         .packet_bytes = packet_bytes,
+        .token = token,
     };
 }
 
@@ -233,6 +309,7 @@ fn parseVersionNegotiation(packet_bytes: []const u8) !PacketInfo {
         .pn_length = null,
         .payload_offset = 0,
         .packet_bytes = packet_bytes,
+        .token = null, // VN doesn't have tokens
     };
 }
 
@@ -409,6 +486,131 @@ pub fn hasAckFrame(allocator: std.mem.Allocator, payload: []const u8) !bool {
 /// Check if payload contains HANDSHAKE_DONE frame.
 pub fn hasHandshakeDoneFrame(allocator: std.mem.Allocator, payload: []const u8) !bool {
     return containsFrameType(allocator, payload, .HANDSHAKE_DONE);
+}
+
+// =============================================================================
+// Initial Packet Decryption Helpers (Tier 1 Step 1 Phase 1)
+// =============================================================================
+
+/// Result of decrypting an Initial packet
+pub const DecryptedInitial = struct {
+    /// Decrypted payload containing frames
+    payload: []u8,
+
+    /// Allocator used (for deallocation)
+    allocator: std.mem.Allocator,
+
+    /// Free the decrypted payload
+    pub fn deinit(self: *DecryptedInitial) void {
+        self.allocator.free(self.payload);
+    }
+};
+
+/// Decrypt an Initial packet using derivable Initial secrets.
+/// Initial packets use deterministic keys derived from the DCID (RFC 9001 §5.2).
+///
+/// Parameters:
+/// - allocator: Memory allocator for decrypted payload
+/// - packet_bytes: Raw captured Initial packet (with header protection)
+/// - is_client: true if this is a client Initial, false for server Initial
+///
+/// Returns:
+/// - DecryptedInitial with payload containing frames, or error
+///
+/// Usage:
+/// ```zig
+/// var decrypted = try decryptInitialPacket(allocator, captured.data, true);
+/// defer decrypted.deinit();
+/// const frames = try extractFrames(allocator, decrypted.payload);
+/// ```
+///
+/// RFC 9001 §5.2: Initial Secrets are derived from DCID
+pub fn decryptInitialPacket(
+    allocator: std.mem.Allocator,
+    packet_bytes: []const u8,
+    is_client: bool,
+) !DecryptedInitial {
+    // Parse header to extract DCID and payload offset
+    const info = try parsePacketHeader(packet_bytes);
+    if (info.packet_type != .Initial) {
+        return error.NotInitialPacket;
+    }
+
+    // Call unprotectInitialAutoSample which handles:
+    // 1. Deriving Initial secrets from DCID
+    // 2. Removing header protection
+    // 3. AEAD decryption
+    // 4. Returning just the decrypted payload
+    const result = crypto_quic.unprotectInitialAutoSample(
+        allocator,
+        packet_bytes,
+        is_client,
+    ) catch |err| {
+        std.debug.print("Failed to decrypt Initial packet: {}\n", .{err});
+        return error.InitialDecryptionFailed;
+    };
+
+    return DecryptedInitial{
+        .payload = result.payload,
+        .allocator = allocator,
+    };
+}
+
+/// Check if an Initial packet contains a CRYPTO frame.
+/// Convenience wrapper that decrypts and checks for CRYPTO frame.
+///
+/// Parameters:
+/// - allocator: Memory allocator
+/// - packet_bytes: Raw captured Initial packet
+/// - is_client: true if this is a client Initial
+///
+/// Returns:
+/// - true if CRYPTO frame exists, false otherwise
+///
+/// Usage:
+/// ```zig
+/// const has_crypto = try initialPacketHasCryptoFrame(allocator, captured.data, true);
+/// try std.testing.expect(has_crypto);
+/// ```
+pub fn initialPacketHasCryptoFrame(
+    allocator: std.mem.Allocator,
+    packet_bytes: []const u8,
+    is_client: bool,
+) !bool {
+    var decrypted = try decryptInitialPacket(allocator, packet_bytes, is_client);
+    defer decrypted.deinit();
+
+    return hasCryptoFrame(allocator, decrypted.payload);
+}
+
+/// Extract all frames from an Initial packet.
+/// Convenience wrapper that decrypts and extracts frames.
+///
+/// Parameters:
+/// - allocator: Memory allocator
+/// - packet_bytes: Raw captured Initial packet
+/// - is_client: true if this is a client Initial
+///
+/// Returns:
+/// - ArrayList of FrameInfo, or error
+///
+/// Usage:
+/// ```zig
+/// var frames = try extractFramesFromInitial(allocator, captured.data, true);
+/// defer frames.deinit();
+/// for (frames.items) |frame| {
+///     // Process frame
+/// }
+/// ```
+pub fn extractFramesFromInitial(
+    allocator: std.mem.Allocator,
+    packet_bytes: []const u8,
+    is_client: bool,
+) !std.ArrayList(FrameInfo) {
+    var decrypted = try decryptInitialPacket(allocator, packet_bytes, is_client);
+    defer decrypted.deinit();
+
+    return extractFrames(allocator, decrypted.payload);
 }
 
 // =============================================================================

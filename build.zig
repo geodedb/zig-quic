@@ -639,6 +639,7 @@ pub fn build(b: *std.Build) void {
     const packet_inspector_mod = mkModule(b, "tests/integration/packet_inspector.zig");
     packet_inspector_mod.addImport("harness", integration_harness_mod);
     packet_inspector_mod.addImport("quic_frame", quic_frame_mod);
+    packet_inspector_mod.addImport("quic_crypto_quic", quic_crypto_mod);
 
     // Loss recovery helpers (Phase 21.4: loss detection, RTT estimation, PTO validation for tests)
     const loss_recovery_helpers_mod = mkModule(b, "tests/integration/loss_recovery_helpers.zig");
@@ -654,6 +655,11 @@ pub fn build(b: *std.Build) void {
     const medium_priority_helpers_mod = mkModule(b, "tests/integration/medium_priority_helpers.zig");
     medium_priority_helpers_mod.addImport("harness", integration_harness_mod);
     medium_priority_helpers_mod.addImport("packet_inspector", packet_inspector_mod);
+
+    // Low priority helpers (Phase 23: key updates, 0-RTT, stress, fault injection, interop for tests)
+    const low_priority_helpers_mod = mkModule(b, "tests/integration/low_priority_helpers.zig");
+    low_priority_helpers_mod.addImport("harness", integration_harness_mod);
+    low_priority_helpers_mod.addImport("packet_inspector", packet_inspector_mod);
 
     // Scenario builder (fluent API for test setup)
     const scenarios_mod = mkModule(b, "tests/integration/scenarios.zig");
@@ -1402,6 +1408,22 @@ pub fn build(b: *std.Build) void {
         test_rfc9000_medium.root_module.addImport("loopback", loopback_mod);
         const run_test_rfc9000_medium = b.addRunArtifact(test_rfc9000_medium);
         test_step.dependOn(&run_test_rfc9000_medium.step);
+
+        // RFC 9001 - Advanced TLS Features Tests (Phase 23)
+        const test_rfc9001_advanced = addTst(b, "tests/integration/rfc9001_advanced.zig", target, optimize);
+        test_rfc9001_advanced.root_module.addImport("scenarios", scenarios_mod);
+        test_rfc9001_advanced.root_module.addImport("connection_pair", connection_pair_mod);
+        test_rfc9001_advanced.root_module.addImport("low_priority_helpers", low_priority_helpers_mod);
+        test_rfc9001_advanced.root_module.addImport("packet_inspector", packet_inspector_mod);
+        test_rfc9001_advanced.root_module.addImport("harness", integration_harness_mod);
+        test_rfc9001_advanced.root_module.addImport("loopback", loopback_mod);
+        const run_test_rfc9001_advanced = b.addRunArtifact(test_rfc9001_advanced);
+        test_step.dependOn(&run_test_rfc9001_advanced.step);
+
+        // CI/CD Helpers Unit Tests (Phase 24)
+        const test_ci_helpers = addTst(b, "tests/integration/ci_helpers.zig", target, optimize);
+        const run_test_ci_helpers = b.addRunArtifact(test_ci_helpers);
+        test_step.dependOn(&run_test_ci_helpers.step);
     } else {
         const test_quic = addTst(b, "quic.zig", target, optimize);
         const run_test_quic = b.addRunArtifact(test_quic);
