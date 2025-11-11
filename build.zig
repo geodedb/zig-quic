@@ -1381,6 +1381,15 @@ pub fn build(b: *std.Build) void {
         const run_test_rfc9000_section8 = b.addRunArtifact(test_rfc9000_section8);
         test_step.dependOn(&run_test_rfc9000_section8.step);
 
+        // RFC 9000 Section 4 - Flow Control (Tier 2 Step 6 - 54 tests)
+        const test_flow_control = addTst(b, "tests/integration/flow_control.zig", target, optimize);
+        test_flow_control.root_module.addImport("scenarios", scenarios_mod);
+        test_flow_control.root_module.addImport("connection_pair", connection_pair_mod);
+        test_flow_control.root_module.addImport("harness", integration_harness_mod);
+        test_flow_control.root_module.addImport("loopback", loopback_mod);
+        const run_test_flow_control = b.addRunArtifact(test_flow_control);
+        test_step.dependOn(&run_test_flow_control.step);
+
         // RFC 9000 - Packet Processing Tests (Phase 21.3)
         const test_rfc9000_packets = addTst(b, "tests/integration/rfc9000_packets.zig", target, optimize);
         test_rfc9000_packets.root_module.addImport("scenarios", scenarios_mod);
