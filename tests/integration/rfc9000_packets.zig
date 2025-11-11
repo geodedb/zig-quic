@@ -15,10 +15,11 @@
 //! - RFC 3168: ECN
 
 const std = @import("std");
-const scenarios = @import("scenarios.zig");
-const connection_pair = @import("connection_pair.zig");
-const harness = @import("harness.zig");
-const loopback = @import("loopback.zig");
+const scenarios = @import("scenarios");
+const connection_pair = @import("connection_pair");
+const harness = @import("harness");
+const loopback = @import("loopback");
+const packet_inspector = @import("packet_inspector");
 
 // =============================================================================
 // Infrastructure Tests
@@ -94,6 +95,100 @@ test "MTU enforcement for packet size testing" {
     defer pair.deinit();
 
     try std.testing.expectEqual(@as(u16, 1200), pair.config.transport.mtu);
+}
+
+// =============================================================================
+// Phase 21.3 - Packet Inspector Proof-of-Concept
+// =============================================================================
+
+test "Phase 21.3 - Packet inspector header parsing" {
+    const allocator = std.testing.allocator;
+
+    // Test Initial packet header parsing
+    var packet: [30]u8 = undefined;
+    var i: usize = 0;
+
+    // First byte: Long header + Fixed bit + Type=Initial (00)
+    packet[i] = 0xC0;
+    i += 1;
+
+    // Version (QUIC v1)
+    std.mem.writeInt(u32, packet[i..][0..4], 0x00000001, .big);
+    i += 4;
+
+    // DCID
+    packet[i] = 8;
+    i += 1;
+    @memset(packet[i..i + 8], 0xAA);
+    i += 8;
+
+    // SCID
+    packet[i] = 8;
+    i += 1;
+    @memset(packet[i..i + 8], 0xBB);
+    i += 8;
+
+    const info = try packet_inspector.parsePacketHeader(packet[0..i]);
+
+    try std.testing.expectEqual(packet_inspector.PacketType.Initial, info.packet_type);
+    try std.testing.expectEqual(packet_inspector.PacketNumberSpace.Initial, info.pn_space);
+    try std.testing.expect(info.is_long_header);
+}
+
+test "Phase 21.3 - Packet type detection helpers" {
+    const allocator = std.testing.allocator;
+    _ = allocator;
+
+    // Build Initial packet
+    var packet: [30]u8 = undefined;
+    packet[0] = 0xC0;  // Initial
+    std.mem.writeInt(u32, packet[1..][0..4], 0x00000001, .big);
+    packet[5] = 0;  // DCID len
+    packet[6] = 0;  // SCID len
+
+    try std.testing.expect(packet_inspector.isInitialPacket(&packet));
+    try std.testing.expect(!packet_inspector.isHandshakePacket(&packet));
+    try std.testing.expect(!packet_inspector.isOneRTTPacket(&packet));
+
+    const pn_space = try packet_inspector.getPacketNumberSpace(&packet);
+    try std.testing.expectEqual(packet_inspector.PacketNumberSpace.Initial, pn_space);
+}
+
+test "Phase 21.3 - Packet capture integration" {
+    const allocator = std.testing.allocator;
+
+    // Simulate captured packets
+    var packet1: [30]u8 = undefined;
+    packet1[0] = 0xC0;  // Initial
+    std.mem.writeInt(u32, packet1[1..][0..4], 0x00000001, .big);
+    packet1[5] = 0;
+    packet1[6] = 0;
+
+    var packet2: [30]u8 = undefined;
+    packet2[0] = 0xE0;  // Handshake
+    std.mem.writeInt(u32, packet2[1..][0..4], 0x00000001, .big);
+    packet2[5] = 0;
+    packet2[6] = 0;
+
+    const captured = [_]harness.CapturedPacket{
+        .{ .timestamp_ms = 0, .direction = .sent, .data = &packet1 },
+        .{ .timestamp_ms = 10, .direction = .received, .data = &packet2 },
+    };
+
+    // Count packet types
+    const initial_count = try packet_inspector.countPacketTypeInCapture(&captured, .Initial);
+    const handshake_count = try packet_inspector.countPacketTypeInCapture(&captured, .Handshake);
+
+    try std.testing.expectEqual(@as(usize, 1), initial_count);
+    try std.testing.expectEqual(@as(usize, 1), handshake_count);
+
+    // Find specific packet
+    const initial_pkt = try packet_inspector.findPacketInCapture(&captured, .Initial);
+    try std.testing.expect(initial_pkt != null);
+
+    // Assertion helper
+    try packet_inspector.expectPacketInCapture(&captured, .Initial);
+    try packet_inspector.expectPacketInCapture(&captured, .Handshake);
 }
 
 // =============================================================================

@@ -635,6 +635,11 @@ pub fn build(b: *std.Build) void {
     connection_pair_mod.addImport("endpoint_loopback_helpers", endpoint_loopback_helpers_mod);
     connection_pair_mod.addImport("tls_helpers", tls_helpers_mod);
 
+    // Packet inspector (Phase 21.3: packet header parsing and frame extraction for tests)
+    const packet_inspector_mod = mkModule(b, "tests/integration/packet_inspector.zig");
+    packet_inspector_mod.addImport("harness", integration_harness_mod);
+    packet_inspector_mod.addImport("quic_frame", quic_frame_mod);
+
     // Scenario builder (fluent API for test setup)
     const scenarios_mod = mkModule(b, "tests/integration/scenarios.zig");
     scenarios_mod.addImport("harness", integration_harness_mod);
@@ -1335,9 +1340,20 @@ pub fn build(b: *std.Build) void {
         const test_rfc9000_section7 = addTst(b, "tests/integration/rfc9000_section7.zig", target, optimize);
         test_rfc9000_section7.root_module.addImport("scenarios", scenarios_mod);
         test_rfc9000_section7.root_module.addImport("connection_pair", connection_pair_mod);
+        test_rfc9000_section7.root_module.addImport("packet_inspector", packet_inspector_mod);
         // Note: harness is available through scenarios and connection_pair imports
         const run_test_rfc9000_section7 = b.addRunArtifact(test_rfc9000_section7);
         test_step.dependOn(&run_test_rfc9000_section7.step);
+
+        // RFC 9000 - Packet Processing Tests (Phase 21.3)
+        const test_rfc9000_packets = addTst(b, "tests/integration/rfc9000_packets.zig", target, optimize);
+        test_rfc9000_packets.root_module.addImport("scenarios", scenarios_mod);
+        test_rfc9000_packets.root_module.addImport("connection_pair", connection_pair_mod);
+        test_rfc9000_packets.root_module.addImport("packet_inspector", packet_inspector_mod);
+        test_rfc9000_packets.root_module.addImport("harness", integration_harness_mod);
+        test_rfc9000_packets.root_module.addImport("loopback", loopback_mod);
+        const run_test_rfc9000_packets = b.addRunArtifact(test_rfc9000_packets);
+        test_step.dependOn(&run_test_rfc9000_packets.step);
     } else {
         const test_quic = addTst(b, "quic.zig", target, optimize);
         const run_test_quic = b.addRunArtifact(test_quic);
