@@ -650,6 +650,11 @@ pub fn build(b: *std.Build) void {
     advanced_features_helpers_mod.addImport("harness", integration_harness_mod);
     advanced_features_helpers_mod.addImport("packet_inspector", packet_inspector_mod);
 
+    // Medium priority helpers (Phase 22: address validation, connection migration, flow control for tests)
+    const medium_priority_helpers_mod = mkModule(b, "tests/integration/medium_priority_helpers.zig");
+    medium_priority_helpers_mod.addImport("harness", integration_harness_mod);
+    medium_priority_helpers_mod.addImport("packet_inspector", packet_inspector_mod);
+
     // Scenario builder (fluent API for test setup)
     const scenarios_mod = mkModule(b, "tests/integration/scenarios.zig");
     scenarios_mod.addImport("harness", integration_harness_mod);
@@ -1386,6 +1391,17 @@ pub fn build(b: *std.Build) void {
         test_rfc9000_advanced.root_module.addImport("loopback", loopback_mod);
         const run_test_rfc9000_advanced = b.addRunArtifact(test_rfc9000_advanced);
         test_step.dependOn(&run_test_rfc9000_advanced.step);
+
+        // RFC 9000 - Medium Priority Features Tests (Phase 22)
+        const test_rfc9000_medium = addTst(b, "tests/integration/rfc9000_medium.zig", target, optimize);
+        test_rfc9000_medium.root_module.addImport("scenarios", scenarios_mod);
+        test_rfc9000_medium.root_module.addImport("connection_pair", connection_pair_mod);
+        test_rfc9000_medium.root_module.addImport("medium_priority_helpers", medium_priority_helpers_mod);
+        test_rfc9000_medium.root_module.addImport("packet_inspector", packet_inspector_mod);
+        test_rfc9000_medium.root_module.addImport("harness", integration_harness_mod);
+        test_rfc9000_medium.root_module.addImport("loopback", loopback_mod);
+        const run_test_rfc9000_medium = b.addRunArtifact(test_rfc9000_medium);
+        test_step.dependOn(&run_test_rfc9000_medium.step);
     } else {
         const test_quic = addTst(b, "quic.zig", target, optimize);
         const run_test_quic = b.addRunArtifact(test_quic);
