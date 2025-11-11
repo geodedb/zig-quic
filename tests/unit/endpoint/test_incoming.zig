@@ -105,6 +105,8 @@ fn createTestRxContext(
         .send_fn = mockSendFn,
         .schedule_timer_fn = mockScheduleTimerFn,
         .send_initial_probe_fn = mockSendInitialProbeFn,
+        .test_capture_enabled = false,
+        .endpoint_role = .Server,
     };
 }
 // =============================================================================
@@ -114,9 +116,9 @@ test "RFC 9000 §12 - RxContext initializes with allocator" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
     defer conns.deinit();
-    var accepted = std.ArrayList(*conn_mod.Connection).init(test_allocator);
-    defer accepted.deinit();
-    var test_cfg = cfg.QuicConfig{};
+    var accepted: std.ArrayList(*conn_mod.Connection) = .{};
+    defer accepted.deinit(test_allocator);
+    var test_cfg = cfg.QuicConfig{ .alpn = &[_][]const u8{"test"} };
     const ctx = createTestRxContext(&alloc, &conns, &accepted, &test_cfg);
     try testing.expectEqual(&alloc, ctx.allocator);
 }
@@ -124,9 +126,9 @@ test "RFC 9000 §12 - RxContext holds connection routing table" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
     defer conns.deinit();
-    var accepted = std.ArrayList(*conn_mod.Connection).init(test_allocator);
-    defer accepted.deinit();
-    var test_cfg = cfg.QuicConfig{};
+    var accepted: std.ArrayList(*conn_mod.Connection) = .{};
+    defer accepted.deinit(test_allocator);
+    var test_cfg = cfg.QuicConfig{ .alpn = &[_][]const u8{"test"} };
     const ctx = createTestRxContext(&alloc, &conns, &accepted, &test_cfg);
     try testing.expectEqual(&conns, ctx.conns);
 }
@@ -134,9 +136,9 @@ test "RFC 9000 §12 - RxContext holds accepted connections queue" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
     defer conns.deinit();
-    var accepted = std.ArrayList(*conn_mod.Connection).init(test_allocator);
-    defer accepted.deinit();
-    var test_cfg = cfg.QuicConfig{};
+    var accepted: std.ArrayList(*conn_mod.Connection) = .{};
+    defer accepted.deinit(test_allocator);
+    var test_cfg = cfg.QuicConfig{ .alpn = &[_][]const u8{"test"} };
     const ctx = createTestRxContext(&alloc, &conns, &accepted, &test_cfg);
     try testing.expectEqual(&accepted, ctx.accepted);
 }
@@ -144,9 +146,9 @@ test "RFC 9000 §12 - RxContext holds endpoint configuration" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
     defer conns.deinit();
-    var accepted = std.ArrayList(*conn_mod.Connection).init(test_allocator);
-    defer accepted.deinit();
-    var test_cfg = cfg.QuicConfig{};
+    var accepted: std.ArrayList(*conn_mod.Connection) = .{};
+    defer accepted.deinit(test_allocator);
+    var test_cfg = cfg.QuicConfig{ .alpn = &[_][]const u8{"test"} };
     const ctx = createTestRxContext(&alloc, &conns, &accepted, &test_cfg);
     try testing.expectEqual(&test_cfg, ctx.cfg);
 }
@@ -154,23 +156,23 @@ test "RFC 9000 §12 - RxContext holds send callback" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
     defer conns.deinit();
-    var accepted = std.ArrayList(*conn_mod.Connection).init(test_allocator);
-    defer accepted.deinit();
-    var test_cfg = cfg.QuicConfig{};
+    var accepted: std.ArrayList(*conn_mod.Connection) = .{};
+    defer accepted.deinit(test_allocator);
+    var test_cfg = cfg.QuicConfig{ .alpn = &[_][]const u8{"test"} };
     const ctx = createTestRxContext(&alloc, &conns, &accepted, &test_cfg);
-    // Verify send_fn is set (can't compare function pointers for equality directly)
-    try testing.expect(ctx.send_fn != null);
+    // Verify send_fn is set - function pointers are never null in Zig
+    _ = ctx.send_fn;
 }
 test "RFC 9000 §12 - RxContext holds timer scheduling callback" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
     defer conns.deinit();
-    var accepted = std.ArrayList(*conn_mod.Connection).init(test_allocator);
-    defer accepted.deinit();
-    var test_cfg = cfg.QuicConfig{};
+    var accepted: std.ArrayList(*conn_mod.Connection) = .{};
+    defer accepted.deinit(test_allocator);
+    var test_cfg = cfg.QuicConfig{ .alpn = &[_][]const u8{"test"} };
     const ctx = createTestRxContext(&alloc, &conns, &accepted, &test_cfg);
-    // Verify schedule_timer_fn is set
-    try testing.expect(ctx.schedule_timer_fn != null);
+    // Verify schedule_timer_fn is set - function pointers are never null in Zig
+    _ = ctx.schedule_timer_fn;
 }
 // =============================================================================
 // Mock Function Tests
@@ -193,7 +195,8 @@ test "RFC 9002 §6.2 - mockScheduleTimerFn tracks timer scheduling" {
     global_mock_state = &mock_state;
     defer global_mock_state = null;
     var alloc = test_allocator;
-    var conn = conn_mod.Connection.init(&alloc, 1, conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433), .Server);
+    var conn: conn_mod.Connection = undefined;
+    conn.init(&alloc, .Server, 1, conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433));
     const timer_id = try mockScheduleTimerFn(&conn, .PtoInitial, 1000);
     try testing.expect(mock_state.schedule_timer_called);
     try testing.expectEqual(endpoint_types.TimerKind.PtoInitial, mock_state.timer_kind.?);
@@ -206,7 +209,8 @@ test "RFC 9002 §6.2 - mockSendInitialProbeFn tracks Initial probe sends" {
     global_mock_state = &mock_state;
     defer global_mock_state = null;
     var alloc = test_allocator;
-    var conn = conn_mod.Connection.init(&alloc, 1, conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433), .Server);
+    var conn: conn_mod.Connection = undefined;
+    conn.init(&alloc, .Server, 1, conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433));
     conn.version = 0x00000001; // QUIC v1
     try mockSendInitialProbeFn(&conn);
     try testing.expect(mock_state.initial_probe_called);

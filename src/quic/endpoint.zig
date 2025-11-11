@@ -110,6 +110,9 @@ pub const Endpoint = struct {
     // All I/O operations go through this transport interface
     transport: transport_mod.Transport,
 
+    // Owned UDP transport (heap-allocated, null if using custom transport)
+    owned_udp_transport: ?*udp_transport_mod.UdpTransport = null,
+
     // Event loop backend (os specific)
     loop_backend: lb.LoopBackend,
 
@@ -148,7 +151,11 @@ pub const Endpoint = struct {
     /// The endpoint creates a UDP socket via the transport abstraction layer.
     pub fn init(alloc: *std.mem.Allocator, bind_addr: []const u8, cfgp: *const cfg.QuicConfig) !Endpoint {
         // Create UDP transport (handles socket creation, binding, configuration)
-        var udp = try udp_transport_mod.UdpTransport.init(bind_addr);
+        // IMPORTANT: Must heap-allocate because Transport stores a pointer to it
+        const udp = try alloc.create(udp_transport_mod.UdpTransport);
+        errdefer alloc.destroy(udp);
+
+        udp.* = try udp_transport_mod.UdpTransport.init(bind_addr);
         errdefer udp.deinit();
 
         // Convert to generic transport interface
@@ -178,6 +185,7 @@ pub const Endpoint = struct {
 
         return Endpoint{
             .transport = transport,
+            .owned_udp_transport = udp,
             .loop_backend = lb.defaultLoopBackend(),
             .allocator = alloc,
             .timers = std.ArrayList(Timer){},
@@ -306,6 +314,11 @@ pub const Endpoint = struct {
 
         // Phase 8c: Close transport (which closes underlying socket)
         self.transport.close();
+
+        // Free heap-allocated UDP transport if we own it
+        if (self.owned_udp_transport) |udp| {
+            self.allocator.destroy(udp);
+        }
     }
 
     /// Expire due timers without blocking on I/O (test helper).

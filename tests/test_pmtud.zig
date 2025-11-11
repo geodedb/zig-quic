@@ -6,6 +6,56 @@ const packet = @import("quic_packet");
 const frame = @import("quic_frame");
 const endpoint_mod = @import("quic_endpoint");
 
+// Extract Transport types from endpoint module
+// Access the transport field type from Endpoint struct
+const Endpoint = endpoint_mod.Endpoint;
+const Transport = @TypeOf(@as(Endpoint, undefined).transport);
+const SockAddr = conn_mod.SockAddr;
+
+// Extract RecvResult type from the Transport's recvFn return type
+// The recvFn signature is: *const fn (ctx: *anyopaque, buf: []u8) anyerror!RecvResult
+// So we need to extract the payload type from the error union
+const RecvFnType = @TypeOf(@as(Transport, undefined).recvFn);
+const RecvFnPtrInfo = @typeInfo(RecvFnType);  // TypeInfo with .pointer tag
+const RecvFnActualType = RecvFnPtrInfo.pointer.child;  // Get the function type
+const RecvFnTypeInfo = @typeInfo(RecvFnActualType);  // TypeInfo for the function
+const RecvFnReturnType = RecvFnTypeInfo.@"fn".return_type.?;  // Get the return type (error union)
+const RecvResult = @typeInfo(RecvFnReturnType).error_union.payload;  // Extract payload from error union
+
+/// No-op transport for testing - discards all packets
+const NoopTransport = struct {
+    dummy: u8 = 0,
+
+    fn sendFn(_: *anyopaque, _: SockAddr, data: []const u8) !usize {
+        return data.len; // Discard packet, but report successful send
+    }
+
+    fn recvFn(_: *anyopaque, _: []u8) !RecvResult {
+        return error.WouldBlock; // Never receive anything
+    }
+
+    fn pollFn(_: *anyopaque, _: i32) !void {}
+
+    fn closeFn(_: *anyopaque) void {}
+
+    fn getLocalAddrFn(_: *anyopaque) !SockAddr {
+        return error.Unsupported;
+    }
+
+    pub fn init() Transport {
+        // Context is never used in noop transport, so we can use undefined
+        // All functions ignore their context parameter
+        return .{
+            .sendFn = sendFn,
+            .recvFn = recvFn,
+            .pollFn = pollFn,
+            .closeFn = closeFn,
+            .getLocalAddrFn = getLocalAddrFn,
+            .context = undefined,
+        };
+    }
+};
+
 test "pmtud pacing: paced send occurs under NewReno and CUBIC when cwnd is partially full" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -17,7 +67,8 @@ test "pmtud pacing: paced send occurs under NewReno and CUBIC when cwnd is parti
             var cfg = api.QuicConfig{ .alpn = &[_][]const u8{} };
             cfg.enable_pacing = true;
             cfg.cc = if (use_cubic) .cubic else .newreno;
-            var ep = try endpoint_mod.Endpoint.init(A, "127.0.0.1:0", &cfg);
+            const noop_transport = NoopTransport.init();
+            var ep = try endpoint_mod.Endpoint.initWithTransport(A, noop_transport, &cfg);
             defer ep.deinit();
             // Enable outbound capture to observe pacing behavior
             ep.test_capture_enabled = true;
@@ -62,7 +113,8 @@ test "pmtud with cubic: single outstanding probe with backoff (blackhole)" {
     var cfg = api.QuicConfig{ .alpn = &[_][]const u8{} };
     cfg.enable_pacing = false;
     cfg.cc = .cubic;
-    var ep = try endpoint_mod.Endpoint.init(&alloc, "127.0.0.1:0", &cfg);
+    const noop_transport = NoopTransport.init();
+    var ep = try endpoint_mod.Endpoint.initWithTransport(&alloc, noop_transport, &cfg);
     defer ep.deinit();
     var c = try ep.connectClient("127.0.0.1:10");
     c.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
@@ -95,7 +147,8 @@ test "pmtud with cubic: cwnd insufficient blocks probe and PTO backoff increases
     var cfg = api.QuicConfig{ .alpn = &[_][]const u8{} };
     cfg.enable_pacing = false;
     cfg.cc = .cubic;
-    var ep = try endpoint_mod.Endpoint.init(&alloc, "127.0.0.1:0", &cfg);
+    const noop_transport = NoopTransport.init();
+    var ep = try endpoint_mod.Endpoint.initWithTransport(&alloc, noop_transport, &cfg);
     defer ep.deinit();
     var c = try ep.connectClient("127.0.0.1:12");
     c.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
