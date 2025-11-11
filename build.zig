@@ -640,6 +640,11 @@ pub fn build(b: *std.Build) void {
     packet_inspector_mod.addImport("harness", integration_harness_mod);
     packet_inspector_mod.addImport("quic_frame", quic_frame_mod);
 
+    // Loss recovery helpers (Phase 21.4: loss detection, RTT estimation, PTO validation for tests)
+    const loss_recovery_helpers_mod = mkModule(b, "tests/integration/loss_recovery_helpers.zig");
+    loss_recovery_helpers_mod.addImport("harness", integration_harness_mod);
+    loss_recovery_helpers_mod.addImport("packet_inspector", packet_inspector_mod);
+
     // Scenario builder (fluent API for test setup)
     const scenarios_mod = mkModule(b, "tests/integration/scenarios.zig");
     scenarios_mod.addImport("harness", integration_harness_mod);
@@ -1354,6 +1359,17 @@ pub fn build(b: *std.Build) void {
         test_rfc9000_packets.root_module.addImport("loopback", loopback_mod);
         const run_test_rfc9000_packets = b.addRunArtifact(test_rfc9000_packets);
         test_step.dependOn(&run_test_rfc9000_packets.step);
+
+        // RFC 9002 - Loss Recovery Tests (Phase 21.4)
+        const test_rfc9002_recovery = addTst(b, "tests/integration/rfc9002_recovery.zig", target, optimize);
+        test_rfc9002_recovery.root_module.addImport("scenarios", scenarios_mod);
+        test_rfc9002_recovery.root_module.addImport("connection_pair", connection_pair_mod);
+        test_rfc9002_recovery.root_module.addImport("loss_recovery_helpers", loss_recovery_helpers_mod);
+        test_rfc9002_recovery.root_module.addImport("packet_inspector", packet_inspector_mod);
+        test_rfc9002_recovery.root_module.addImport("harness", integration_harness_mod);
+        test_rfc9002_recovery.root_module.addImport("loopback", loopback_mod);
+        const run_test_rfc9002_recovery = b.addRunArtifact(test_rfc9002_recovery);
+        test_step.dependOn(&run_test_rfc9002_recovery.step);
     } else {
         const test_quic = addTst(b, "quic.zig", target, optimize);
         const run_test_quic = b.addRunArtifact(test_quic);

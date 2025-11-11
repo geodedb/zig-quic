@@ -11,10 +11,12 @@
 //! - RFC 9002: QUIC Loss Detection and Congestion Control
 
 const std = @import("std");
-const scenarios = @import("scenarios.zig");
-const connection_pair = @import("connection_pair.zig");
-const harness = @import("harness.zig");
-const loopback = @import("loopback.zig");
+const scenarios = @import("scenarios");
+const connection_pair = @import("connection_pair");
+const harness = @import("harness");
+const loopback = @import("loopback");
+const loss_recovery_helpers = @import("loss_recovery_helpers");
+const packet_inspector = @import("packet_inspector");
 
 // =============================================================================
 // Infrastructure Tests
@@ -79,6 +81,92 @@ test "Time control enables deterministic PTO testing" {
 
     try std.testing.expectEqual(@as(i64, 1000), pair.server.time_control.?.now_ms);
     try std.testing.expectEqual(@as(i64, 1000), pair.client.time_control.?.now_ms);
+}
+
+// =============================================================================
+// Phase 21.4 - Loss Recovery Helpers Proof-of-Concept
+// =============================================================================
+
+test "Phase 21.4 - Loss detection infrastructure" {
+    const allocator = std.testing.allocator;
+
+    // Simulate captured packets (empty for proof-of-concept)
+    const captured: []const harness.CapturedPacket = &[_]harness.CapturedPacket{};
+
+    // Test detectLossEvents helper
+    var loss_events = try loss_recovery_helpers.detectLossEvents(allocator, captured);
+    defer loss_events.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), loss_events.items.len);
+
+    // Test countRetransmissions helper
+    const retx_count = try loss_recovery_helpers.countRetransmissions(captured);
+    try std.testing.expectEqual(@as(usize, 0), retx_count);
+
+    // Test isPacketAcknowledged helper
+    const is_acked = try loss_recovery_helpers.isPacketAcknowledged(captured, 1);
+    try std.testing.expectEqual(false, is_acked);
+}
+
+test "Phase 21.4 - RTT estimation validation" {
+    const allocator = std.testing.allocator;
+    _ = allocator;
+
+    // Test validateRttReasonable with valid RTT
+    const valid_rtt = loss_recovery_helpers.RttMeasurement{
+        .smoothed_rtt_ms = 50,
+        .rttvar_ms = 10,
+        .min_rtt_ms = 45,
+        .latest_rtt_ms = 52,
+    };
+
+    try loss_recovery_helpers.validateRttReasonable(valid_rtt, 1000);
+
+    // Test with RTT too high (should fail)
+    const high_rtt = loss_recovery_helpers.RttMeasurement{
+        .smoothed_rtt_ms = 1500,
+        .rttvar_ms = 100,
+        .min_rtt_ms = 1000,
+        .latest_rtt_ms = 1600,
+    };
+
+    const result = loss_recovery_helpers.validateRttReasonable(high_rtt, 1000);
+    try std.testing.expectError(error.RttTooHigh, result);
+}
+
+test "Phase 21.4 - PTO timer validation" {
+    const allocator = std.testing.allocator;
+    _ = allocator;
+
+    // Test validatePtoCalculation with correct RFC 9002 §6.2 formula
+    // PTO = smoothed_rtt + max(4*rttvar, kGranularity) + max_ack_delay
+    const rtt = loss_recovery_helpers.RttMeasurement{
+        .smoothed_rtt_ms = 50,
+        .rttvar_ms = 10,
+        .min_rtt_ms = 45,
+        .latest_rtt_ms = 52,
+    };
+
+    // PTO = 50 + max(4*10, 1) + 25 = 50 + 40 + 25 = 115ms
+    const pto = loss_recovery_helpers.PtoState{
+        .pto_timeout_ms = 115,
+        .pto_count = 0,
+        .is_armed = true,
+        .expiry_time_ms = 1000,
+    };
+
+    try loss_recovery_helpers.validatePtoCalculation(rtt, pto);
+
+    // Test with incorrect PTO (should fail)
+    const wrong_pto = loss_recovery_helpers.PtoState{
+        .pto_timeout_ms = 50, // Too low
+        .pto_count = 0,
+        .is_armed = true,
+        .expiry_time_ms = 1000,
+    };
+
+    const result = loss_recovery_helpers.validatePtoCalculation(rtt, wrong_pto);
+    try std.testing.expectError(error.InvalidPtoCalculation, result);
 }
 
 // =============================================================================
