@@ -204,7 +204,8 @@ pub fn extractNewConnectionIdFrames(
     allocator: std.mem.Allocator,
     captured: []const harness.CapturedPacket,
 ) !std.ArrayList(CidEvent) {
-    var events = std.ArrayList(CidEvent).init(allocator);
+    const EventList = std.ArrayList(CidEvent);
+    var events = EventList.init(allocator);
     errdefer events.deinit();
 
     _ = captured;
@@ -224,7 +225,8 @@ pub fn extractRetireConnectionIdFrames(
     allocator: std.mem.Allocator,
     captured: []const harness.CapturedPacket,
 ) !std.ArrayList(CidEvent) {
-    var events = std.ArrayList(CidEvent).init(allocator);
+    const EventList = std.ArrayList(CidEvent);
+    var events = EventList.init(allocator);
     errdefer events.deinit();
 
     _ = captured;
@@ -328,7 +330,8 @@ pub fn extractConnectionCloseFrames(
     allocator: std.mem.Allocator,
     captured: []const harness.CapturedPacket,
 ) !std.ArrayList(ConnectionError) {
-    var errors = std.ArrayList(ConnectionError).init(allocator);
+    const ErrorList = std.ArrayList(ConnectionError);
+    var errors = ErrorList.init(allocator);
     errdefer errors.deinit();
 
     _ = captured;
@@ -482,7 +485,7 @@ pub fn analyzeAdvancedFeatures(
     defer errors.deinit();
 
     // Count Retry packets (stub)
-    var retry_count: usize = 0;
+    const retry_count: usize = 0;
     _ = retry_count;
 
     return AdvancedMetrics{

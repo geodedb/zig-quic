@@ -437,6 +437,7 @@ pub fn build(b: *std.Build) void {
 
     // Add handshake_integration import to endpoint_client_mod (declared earlier at line ~388)
     endpoint_client_mod.addImport("handshake_integration", endpoint_handshake_integration_mod);
+    endpoint_client_mod.addImport("quic_tls13", tls13_mod);
 
     const endpoint_pto_mod = mkModule(b, "src/quic/endpoint/pto.zig");
     endpoint_pto_mod.addImport("types", endpoint_types_mod);
@@ -503,6 +504,8 @@ pub fn build(b: *std.Build) void {
     quic_endpoint_mod.addImport("endpoint/pto.zig", endpoint_pto_mod);
     quic_endpoint_mod.addImport("endpoint/lifecycle.zig", endpoint_lifecycle_mod);
     quic_endpoint_mod.addImport("endpoint/handshake_integration.zig", endpoint_handshake_integration_mod);
+    quic_endpoint_mod.addImport("endpoint/client.zig", endpoint_client_mod);
+    quic_endpoint_mod.addImport("endpoint/server.zig", endpoint_server_mod);
 
     // Public API module (reuse everywhere)
     const quic_api_mod = mkModule(b, "src/quic/api.zig");
@@ -1362,6 +1365,7 @@ pub fn build(b: *std.Build) void {
         test_rfc9000_section7.root_module.addImport("scenarios", scenarios_mod);
         test_rfc9000_section7.root_module.addImport("connection_pair", connection_pair_mod);
         test_rfc9000_section7.root_module.addImport("packet_inspector", packet_inspector_mod);
+        test_rfc9000_section7.root_module.addImport("quic_transport_params", quic_transport_params_mod);
         // Note: harness is available through scenarios and connection_pair imports
         const run_test_rfc9000_section7 = b.addRunArtifact(test_rfc9000_section7);
         test_step.dependOn(&run_test_rfc9000_section7.step);

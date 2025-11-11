@@ -136,7 +136,8 @@ pub fn createClientConnection(
 
     // Initialize TLS Context for modular TLS 1.3 (Phase 21.2)
     // Client doesn't need certificates (server auth only)
-    const ctx_value = handshake_integration.createTlsContext(
+    const tls13 = @import("quic_tls13");
+    const ctx_value: ?tls13.Context = handshake_integration.createTlsContext(
         allocator.*,
         .Client,
         cfg.alpn,

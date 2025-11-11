@@ -1,6 +1,7 @@
 *cweb.log
 *.tmp
 core
+*.a
 
 dist/
 result

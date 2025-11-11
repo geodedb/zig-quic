@@ -213,13 +213,64 @@ test "RFC 9000 §7.2 - Server responds with Initial packet" {
 }
 
 test "RFC 9000 §7.2 - Server Initial contains CRYPTO frame with ServerHello" {
-    // SKIP: Requires TLS handshake integration
+    // SKIP: Requires packet capture infrastructure in EndpointWrapper
+    // TODO: Implement getCapturedPackets() in endpoint_loopback_helpers.zig
     return error.SkipZigTest;
 }
 
 test "RFC 9000 §7.2 - Server sends ACK for client Initial" {
-    // SKIP: Requires packet processing
-    return error.SkipZigTest;
+    // Tier 1 Step 1 Phase 2: ENABLED - Validate server sends ACK frame
+    const allocator = std.testing.allocator;
+
+    // Create connection pair with packet capture enabled
+    var builder = connection_pair.ConnectionPairBuilder.init(allocator);
+    var pair = try builder
+        .withCapture()
+        .build();
+    defer pair.deinit();
+
+    // Establish connection (server should ACK client Initial)
+    try pair.connect();
+
+    // Get captured packets from server
+    const server_packets = pair.getServerPackets();
+    try std.testing.expect(server_packets != null);
+    try std.testing.expect(server_packets.?.len > 0);
+
+    // Find server packet with ACK frame (should be in Initial or Handshake packet)
+    const packet_inspector = @import("packet_inspector");
+    var found_ack = false;
+
+    for (server_packets.?) |captured| {
+        if (captured.direction != .sent) continue;
+
+        // Check Initial packets (server may send ACK in Initial packet)
+        if (packet_inspector.isInitialPacket(captured.data)) {
+            // Decrypt server Initial packet
+            var decrypted = packet_inspector.decryptInitialPacket(
+                allocator,
+                captured.data,
+                false, // is_client=false for server packets
+            ) catch continue;
+            defer decrypted.deinit();
+
+            // Check for ACK frame
+            if (packet_inspector.hasAckFrame(allocator, decrypted.payload) catch false) {
+                found_ack = true;
+                break;
+            }
+        }
+        // Also check Handshake packets (server may send ACK in Handshake packet)
+        else if (packet_inspector.isHandshakePacket(captured.data)) {
+            // For now, we'll assume ACK is in Initial packet
+            // Handshake packet decryption requires handshake keys which are more complex
+            // This will be handled in Phase 4
+            continue;
+        }
+    }
+
+    // Verify we found an ACK frame from server
+    try std.testing.expect(found_ack);
 }
 
 // =============================================================================
@@ -227,18 +278,127 @@ test "RFC 9000 §7.2 - Server sends ACK for client Initial" {
 // =============================================================================
 
 test "RFC 9000 §7.3 - Transport parameters exchanged in TLS extensions" {
-    // SKIP: Requires TLS integration
-    return error.SkipZigTest;
+    // Tier 1 Step 1 Phase 3: ENABLED - Validate transport parameter exchange
+    const allocator = std.testing.allocator;
+
+    // Create connection pair
+    var builder = connection_pair.ConnectionPairBuilder.init(allocator);
+    var pair = try builder.build();
+    defer pair.deinit();
+
+    // Establish connection (triggers transport parameter exchange)
+    try pair.connect();
+
+    // Verify both connections exist
+    try std.testing.expect(pair.client_conn != null);
+    try std.testing.expect(pair.server_conn != null);
+
+    // Check that client received peer (server) transport parameters
+    const client_peer_params = pair.client_conn.?.getPeerTransportParams();
+    try std.testing.expect(client_peer_params != null);
+    try std.testing.expect(client_peer_params.?.len > 0);
+
+    // Check that server received peer (client) transport parameters
+    const server_peer_params = pair.server_conn.?.getPeerTransportParams();
+    try std.testing.expect(server_peer_params != null);
+    try std.testing.expect(server_peer_params.?.len > 0);
+
+    // Both sides should have their own local transport parameters set
+    const client_local_params = pair.client_conn.?.getLocalTransportParams();
+    try std.testing.expect(client_local_params != null);
+
+    const server_local_params = pair.server_conn.?.getLocalTransportParams();
+    try std.testing.expect(server_local_params != null);
 }
 
 test "RFC 9000 §7.3 - Invalid transport parameters cause connection failure" {
-    // SKIP: Requires parameter validation
-    return error.SkipZigTest;
+    // Tier 1 Step 1 Phase 3: ENABLED - Validate parameter validation logic
+    // Note: This tests the validation logic, not actual wire-level rejection
+    const tparams = @import("quic_transport_params");
+
+    // Test 1: Invalid max_udp_payload_size (too small, RFC 9000 §18.2)
+    {
+        var params = tparams.TransportParams{};
+        params.max_udp_payload_size = 1000; // Invalid: must be >= 1200
+
+        // Validation should fail
+        const result = params.checkLimits();
+        try std.testing.expectError(error.InvalidTransportParams, result);
+    }
+
+    // Test 2: Invalid ack_delay_exponent (too large, RFC 9000 §18.2)
+    {
+        var params = tparams.TransportParams{};
+        params.ack_delay_exponent = 21; // Invalid: max is 20
+
+        // Validation should fail
+        const result = params.checkLimits();
+        try std.testing.expectError(error.InvalidTransportParams, result);
+    }
+
+    // Test 3: Invalid max_ack_delay (too large, RFC 9000 §18.2)
+    {
+        var params = tparams.TransportParams{};
+        params.max_ack_delay = 16384; // Invalid: max is 16383 (2^14 - 1)
+
+        // Validation should fail
+        const result = params.checkLimits();
+        try std.testing.expectError(error.InvalidTransportParams, result);
+    }
 }
 
 test "RFC 9000 §7.3 - initial_source_connection_id must match" {
-    // SKIP: Requires parameter validation
-    return error.SkipZigTest;
+    // Tier 1 Step 1 Phase 3: ENABLED - Validate SCID matches transport parameter
+    const allocator = std.testing.allocator;
+    const tparams = @import("quic_transport_params");
+
+    // Create connection pair with packet capture
+    var builder = connection_pair.ConnectionPairBuilder.init(allocator);
+    var pair = try builder
+        .withCapture()
+        .build();
+    defer pair.deinit();
+
+    // Establish connection
+    try pair.connect();
+
+    // Get server's Initial packet to extract SCID
+    const server_packets = pair.getServerPackets();
+    try std.testing.expect(server_packets != null);
+
+    const packet_inspector = @import("packet_inspector");
+    var server_scid: ?[]const u8 = null;
+
+    for (server_packets.?) |captured| {
+        if (captured.direction != .sent) continue;
+
+        if (packet_inspector.isInitialPacket(captured.data)) {
+            const info = try packet_inspector.parsePacketHeader(captured.data);
+            if (info.scid) |scid| {
+                server_scid = scid;
+                break;
+            }
+        }
+    }
+
+    try std.testing.expect(server_scid != null);
+
+    // Get server's transport parameters and decode them
+    const server_params_encoded = pair.server_conn.?.getLocalTransportParams();
+    try std.testing.expect(server_params_encoded != null);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const server_params = try tparams.TransportParams.decode(alloc, server_params_encoded.?);
+
+    // Verify initial_source_connection_id is present (required for servers)
+    try std.testing.expect(server_params.initial_source_connection_id != null);
+
+    // Verify it matches the SCID from the Initial packet
+    const param_scid = server_params.initial_source_connection_id.?;
+    try std.testing.expectEqualSlices(u8, server_scid.?, param_scid);
 }
 
 // =============================================================================
@@ -246,21 +406,59 @@ test "RFC 9000 §7.3 - initial_source_connection_id must match" {
 // =============================================================================
 
 test "RFC 9000 §7.4 - Handshake completes successfully" {
-    // SKIP: Requires full TLS handshake - handshake_done flags not yet set
-    // Current status: Server processes Initial and queues ServerHello, but full
-    // handshake (Certificate, Finished exchange) not yet complete.
-    // TODO: Implement complete TLS handshake flow (Phase 21 Task 1-4)
-    return error.SkipZigTest;
+    // Tier 1 Step 1 Phase 4: ENABLED - Validate handshake completion
+    const allocator = std.testing.allocator;
+
+    var builder = connection_pair.ConnectionPairBuilder.init(allocator);
+    var pair = try builder.build();
+    defer pair.deinit();
+
+    // Establish connection - triggers full handshake
+    try pair.connect();
+
+    // Verify both sides have connections established
+    try std.testing.expect(pair.client_conn != null);
+    try std.testing.expect(pair.server_conn != null);
+
+    // Server should have sent HANDSHAKE_DONE frame
+    try std.testing.expect(pair.server_conn.?.handshake_done_sent);
+
+    // Client should have seen HANDSHAKE_DONE frame
+    try std.testing.expect(pair.client_conn.?.handshake_done_seen);
+
+    // Both sides should have verified peer's Finished message
+    try std.testing.expect(pair.server_conn.?.peer_finished_verified);
+    try std.testing.expect(pair.client_conn.?.peer_finished_verified);
 }
 
 test "RFC 9000 §7.4 - Handshake packets use Handshake packet type" {
-    // SKIP: Requires packet encoding
+    // SKIP: Requires packet capture infrastructure in EndpointWrapper
+    // TODO: Implement getCapturedPackets() in endpoint_loopback_helpers.zig
     return error.SkipZigTest;
 }
 
 test "RFC 9000 §7.4 - 1-RTT keys derived after handshake" {
-    // SKIP: Requires key schedule integration
-    return error.SkipZigTest;
+    // Tier 1 Step 1 Phase 4: ENABLED - Validate 1-RTT key derivation
+    const allocator = std.testing.allocator;
+
+    var builder = connection_pair.ConnectionPairBuilder.init(allocator);
+    var pair = try builder.build();
+    defer pair.deinit();
+
+    try pair.connect();
+
+    try std.testing.expect(pair.client_conn != null);
+    try std.testing.expect(pair.server_conn != null);
+
+    // Both sides should have derived 1-RTT application keys
+    try std.testing.expect(pair.client_conn.?.app_rx_keys != null);
+    try std.testing.expect(pair.client_conn.?.app_tx_keys != null);
+    try std.testing.expect(pair.server_conn.?.app_rx_keys != null);
+    try std.testing.expect(pair.server_conn.?.app_tx_keys != null);
+
+    // Verify hasConfirmedAppTxKeys() helper method
+    try std.testing.expect(pair.client_conn.?.hasConfirmedAppTxKeys());
+    try std.testing.expect(pair.server_conn.?.hasConfirmedAppTxKeys());
 }
 
 // =============================================================================
@@ -443,9 +641,33 @@ test "Connection establishment test framework is operational" {
 // explaining what it should verify.
 
 test "TODO: Client generates random initial DCID (§7.2)" {
-    // Should verify that client generates a random destination CID
-    // for the Initial packet when no CID is provided
-    return error.SkipZigTest;
+    // Tier 1 Step 1 Phase 5: ENABLED - Validate client generates random DCID
+    const allocator = std.testing.allocator;
+
+    // Create two connection pairs to verify randomness
+    var builder1 = connection_pair.ConnectionPairBuilder.init(allocator);
+    var pair1 = try builder1.build();
+    defer pair1.deinit();
+
+    var builder2 = connection_pair.ConnectionPairBuilder.init(allocator);
+    var pair2 = try builder2.build();
+    defer pair2.deinit();
+
+    try pair1.connect();
+    try pair2.connect();
+
+    // Verify both clients have non-empty DCIDs
+    try std.testing.expect(pair1.client_conn != null);
+    try std.testing.expect(pair2.client_conn != null);
+    try std.testing.expect(pair1.client_conn.?.peer_initial_dcid.len > 0);
+    try std.testing.expect(pair2.client_conn.?.peer_initial_dcid.len > 0);
+
+    // Verify the two DCIDs are different (extremely high probability for random generation)
+    const dcid1 = pair1.client_conn.?.peer_initial_dcid.bytes[0..pair1.client_conn.?.peer_initial_dcid.len];
+    const dcid2 = pair2.client_conn.?.peer_initial_dcid.bytes[0..pair2.client_conn.?.peer_initial_dcid.len];
+
+    const are_different = !std.mem.eql(u8, dcid1, dcid2);
+    try std.testing.expect(are_different);
 }
 
 test "TODO: Server echoes client SCID in DCID (§7.2)" {
@@ -461,14 +683,71 @@ test "TODO: Initial packets are padded to min size (§14.1)" {
 }
 
 test "TODO: Connection completes 3-way handshake (§7)" {
-    // Should verify full handshake: Initial, Handshake, 1-RTT
-    return error.SkipZigTest;
+    // Tier 1 Step 1 Phase 5: ENABLED - Validate full handshake flow
+    const allocator = std.testing.allocator;
+
+    var builder = connection_pair.ConnectionPairBuilder.init(allocator);
+    var pair = try builder.build();
+    defer pair.deinit();
+
+    // Complete handshake
+    try pair.connect();
+
+    // Verify both sides exist
+    try std.testing.expect(pair.client_conn != null);
+    try std.testing.expect(pair.server_conn != null);
+
+    const client = pair.client_conn.?;
+    const server = pair.server_conn.?;
+
+    // Verify handshake completion (RFC 9000 §7):
+    // 1. TLS handshake completed (peer Finished verified)
+    try std.testing.expect(client.peer_finished_verified);
+    try std.testing.expect(server.peer_finished_verified);
+
+    // 2. HANDSHAKE_DONE frame exchanged
+    try std.testing.expect(server.handshake_done_sent);
+    try std.testing.expect(client.handshake_done_seen);
+
+    // 3. 1-RTT application keys derived and installed
+    try std.testing.expect(client.app_rx_keys != null);
+    try std.testing.expect(client.app_tx_keys != null);
+    try std.testing.expect(server.app_rx_keys != null);
+    try std.testing.expect(server.app_tx_keys != null);
+
+    // 4. Ready for application data
+    try std.testing.expect(client.hasConfirmedAppTxKeys());
+    try std.testing.expect(server.hasConfirmedAppTxKeys());
 }
 
 test "TODO: Handshake completion clears Initial keys (§4.9.1)" {
-    // Should verify that Initial packet protection keys are
-    // discarded after handshake completion
-    return error.SkipZigTest;
+    // Tier 1 Step 1 Phase 5: ENABLED - Validate Initial keys are dropped after handshake
+    const allocator = std.testing.allocator;
+
+    var builder = connection_pair.ConnectionPairBuilder.init(allocator);
+    var pair = try builder.build();
+    defer pair.deinit();
+
+    // Complete handshake
+    try pair.connect();
+
+    // Verify both sides completed handshake
+    try std.testing.expect(pair.client_conn != null);
+    try std.testing.expect(pair.server_conn != null);
+    try std.testing.expect(pair.client_conn.?.handshake_done_seen);
+    try std.testing.expect(pair.server_conn.?.handshake_done_sent);
+
+    // RFC 9000 §4.9.1: Initial keys MUST be discarded after handshake confirmation
+    // Check that Initial keys are either null or marked as dropped
+    try std.testing.expect(
+        pair.client_conn.?.initial_keys_dropped or
+            (pair.client_conn.?.initial_rx_keys == null and pair.client_conn.?.initial_tx_keys == null)
+    );
+
+    try std.testing.expect(
+        pair.server_conn.?.initial_keys_dropped or
+            (pair.server_conn.?.initial_rx_keys == null and pair.server_conn.?.initial_tx_keys == null)
+    );
 }
 
 test "TODO: Connection ID rotation works correctly (§5.1)" {
