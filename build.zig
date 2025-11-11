@@ -1370,6 +1370,17 @@ pub fn build(b: *std.Build) void {
         const run_test_rfc9000_section7 = b.addRunArtifact(test_rfc9000_section7);
         test_step.dependOn(&run_test_rfc9000_section7.step);
 
+        // RFC 9000 Section 8 - Address Validation (Tier 2 Step 4 - 30 tests)
+        const test_rfc9000_section8 = addTst(b, "tests/integration/rfc9000_section8.zig", target, optimize);
+        test_rfc9000_section8.root_module.addImport("scenarios", scenarios_mod);
+        test_rfc9000_section8.root_module.addImport("connection_pair", connection_pair_mod);
+        test_rfc9000_section8.root_module.addImport("harness", integration_harness_mod);
+        test_rfc9000_section8.root_module.addImport("loopback", loopback_mod);
+        test_rfc9000_section8.root_module.addImport("quic_conn", quic_conn_mod);
+        test_rfc9000_section8.root_module.addImport("quic_connection_amplification", conn_amplification_mod);
+        const run_test_rfc9000_section8 = b.addRunArtifact(test_rfc9000_section8);
+        test_step.dependOn(&run_test_rfc9000_section8.step);
+
         // RFC 9000 - Packet Processing Tests (Phase 21.3)
         const test_rfc9000_packets = addTst(b, "tests/integration/rfc9000_packets.zig", target, optimize);
         test_rfc9000_packets.root_module.addImport("scenarios", scenarios_mod);
