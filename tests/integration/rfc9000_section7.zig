@@ -213,9 +213,54 @@ test "RFC 9000 §7.2 - Server responds with Initial packet" {
 }
 
 test "RFC 9000 §7.2 - Server Initial contains CRYPTO frame with ServerHello" {
-    // SKIP: Requires packet capture infrastructure in EndpointWrapper
-    // TODO: Implement getCapturedPackets() in endpoint_loopback_helpers.zig
-    return error.SkipZigTest;
+    // Tier 1 Step 1: ENABLED - Validate server Initial packet has CRYPTO frame
+    const allocator = std.testing.allocator;
+
+    // Create connection pair with packet capture enabled
+    var builder = connection_pair.ConnectionPairBuilder.init(allocator);
+    var pair = try builder
+        .withCapture()
+        .build();
+    defer pair.deinit();
+
+    // Establish connection (server sends Initial with ServerHello)
+    try pair.connect();
+
+    // Get captured packets from server
+    const server_packets = pair.getServerPackets();
+    try std.testing.expect(server_packets != null);
+    try std.testing.expect(server_packets.?.len > 0);
+
+    // Find the first Initial packet sent by server
+    const packet_inspector = @import("packet_inspector");
+    var found_initial = false;
+    var found_crypto = false;
+
+    for (server_packets.?) |captured| {
+        if (captured.direction != .sent) continue;
+
+        // Check if this is an Initial packet
+        if (packet_inspector.isInitialPacket(captured.data)) {
+            found_initial = true;
+
+            // Decrypt server Initial packet
+            // Server Initial packets use is_client=false for decryption
+            const has_crypto = try packet_inspector.initialPacketHasCryptoFrame(
+                allocator,
+                captured.data,
+                false, // is_client=false for server packets
+            );
+
+            if (has_crypto) {
+                found_crypto = true;
+                break;
+            }
+        }
+    }
+
+    // Verify we found a server Initial packet with CRYPTO frame
+    try std.testing.expect(found_initial);
+    try std.testing.expect(found_crypto);
 }
 
 test "RFC 9000 §7.2 - Server sends ACK for client Initial" {
@@ -432,9 +477,62 @@ test "RFC 9000 §7.4 - Handshake completes successfully" {
 }
 
 test "RFC 9000 §7.4 - Handshake packets use Handshake packet type" {
-    // SKIP: Requires packet capture infrastructure in EndpointWrapper
-    // TODO: Implement getCapturedPackets() in endpoint_loopback_helpers.zig
-    return error.SkipZigTest;
+    // Tier 1 Step 1: ENABLED - Validate Handshake packet type
+    const allocator = std.testing.allocator;
+
+    // Create connection pair with packet capture enabled
+    var builder = connection_pair.ConnectionPairBuilder.init(allocator);
+    var pair = try builder
+        .withCapture()
+        .build();
+    defer pair.deinit();
+
+    // Establish connection (triggers Handshake packet exchange)
+    try pair.connect();
+
+    // Get captured packets from both sides
+    const client_packets = pair.getClientPackets();
+    const server_packets = pair.getServerPackets();
+
+    try std.testing.expect(client_packets != null);
+    try std.testing.expect(server_packets != null);
+
+    // Validate that Handshake packets were sent
+    const packet_inspector = @import("packet_inspector");
+    var found_client_handshake = false;
+    var found_server_handshake = false;
+
+    // Check client packets
+    for (client_packets.?) |captured| {
+        if (captured.direction != .sent) continue;
+
+        if (packet_inspector.isHandshakePacket(captured.data)) {
+            // Parse header to verify packet type
+            const info = try packet_inspector.parsePacketHeader(captured.data);
+            if (info.packet_type == .Handshake and info.is_long_header) {
+                found_client_handshake = true;
+                break;
+            }
+        }
+    }
+
+    // Check server packets
+    for (server_packets.?) |captured| {
+        if (captured.direction != .sent) continue;
+
+        if (packet_inspector.isHandshakePacket(captured.data)) {
+            // Parse header to verify packet type
+            const info = try packet_inspector.parsePacketHeader(captured.data);
+            if (info.packet_type == .Handshake and info.is_long_header) {
+                found_server_handshake = true;
+                break;
+            }
+        }
+    }
+
+    // Verify both sides sent Handshake packets with correct type
+    try std.testing.expect(found_client_handshake);
+    try std.testing.expect(found_server_handshake);
 }
 
 test "RFC 9000 §7.4 - 1-RTT keys derived after handshake" {
@@ -670,16 +768,110 @@ test "TODO: Client generates random initial DCID (§7.2)" {
     try std.testing.expect(are_different);
 }
 
-test "TODO: Server echoes client SCID in DCID (§7.2)" {
-    // Should verify that server uses client's SCID as the DCID
-    // in response packets
-    return error.SkipZigTest;
+test "RFC 9000 §7.2 - Server echoes client SCID in DCID" {
+    // Tier 1 Step 1: ENABLED - Validate server uses client SCID as DCID
+    const allocator = std.testing.allocator;
+
+    // Create connection pair with packet capture enabled
+    var builder = connection_pair.ConnectionPairBuilder.init(allocator);
+    var pair = try builder
+        .withCapture()
+        .build();
+    defer pair.deinit();
+
+    // Establish connection
+    try pair.connect();
+
+    // Get captured packets
+    const client_packets = pair.getClientPackets();
+    const server_packets = pair.getServerPackets();
+
+    try std.testing.expect(client_packets != null);
+    try std.testing.expect(server_packets != null);
+
+    // Extract client's SCID from client Initial packet
+    const packet_inspector = @import("packet_inspector");
+    var client_scid: ?[]const u8 = null;
+
+    for (client_packets.?) |captured| {
+        if (captured.direction != .sent) continue;
+
+        if (packet_inspector.isInitialPacket(captured.data)) {
+            const info = try packet_inspector.parsePacketHeader(captured.data);
+            if (info.scid) |scid| {
+                client_scid = scid;
+                break;
+            }
+        }
+    }
+
+    try std.testing.expect(client_scid != null);
+
+    // Extract server's DCID from server Initial packet
+    var server_dcid: ?[]const u8 = null;
+
+    for (server_packets.?) |captured| {
+        if (captured.direction != .sent) continue;
+
+        if (packet_inspector.isInitialPacket(captured.data)) {
+            const info = try packet_inspector.parsePacketHeader(captured.data);
+            // dcid is []const u8, not optional
+            if (info.dcid.len > 0) {
+                server_dcid = info.dcid;
+                break;
+            }
+        }
+    }
+
+    try std.testing.expect(server_dcid != null);
+
+    // RFC 9000 §7.2: Server MUST use client's SCID as the DCID in response packets
+    try std.testing.expectEqualSlices(u8, client_scid.?, server_dcid.?);
 }
 
-test "TODO: Initial packets are padded to min size (§14.1)" {
-    // Should verify that Initial packets are padded to at least
-    // 1200 bytes to prevent amplification
-    return error.SkipZigTest;
+test "RFC 9000 §14.1 - Initial packets are padded to min size" {
+    // Tier 1 Step 1: ENABLED - Validate Initial packet padding (anti-amplification)
+    const allocator = std.testing.allocator;
+
+    // Create connection pair with packet capture enabled
+    var builder = connection_pair.ConnectionPairBuilder.init(allocator);
+    var pair = try builder
+        .withCapture()
+        .build();
+    defer pair.deinit();
+
+    // Establish connection (client sends first Initial packet)
+    try pair.connect();
+
+    // Get captured packets from client
+    const client_packets = pair.getClientPackets();
+    try std.testing.expect(client_packets != null);
+
+    // RFC 9000 §14.1: A client MUST expand the payload of all UDP datagrams
+    // carrying Initial packets to at least 1200 bytes (minimum QUIC packet size)
+    // This prevents amplification attacks.
+    const packet_inspector = @import("packet_inspector");
+    var found_initial = false;
+    var min_initial_size_met = false;
+
+    for (client_packets.?) |captured| {
+        if (captured.direction != .sent) continue;
+
+        if (packet_inspector.isInitialPacket(captured.data)) {
+            found_initial = true;
+
+            // Check that the UDP datagram (packet data) is at least 1200 bytes
+            // Note: This checks the first Initial packet sent by client
+            if (captured.data.len >= 1200) {
+                min_initial_size_met = true;
+                break;
+            }
+        }
+    }
+
+    // Verify we found an Initial packet and it meets minimum size
+    try std.testing.expect(found_initial);
+    try std.testing.expect(min_initial_size_met);
 }
 
 test "TODO: Connection completes 3-way handshake (§7)" {
