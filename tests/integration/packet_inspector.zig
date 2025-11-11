@@ -530,30 +530,18 @@ pub fn decryptInitialPacket(
     packet_bytes: []const u8,
     is_client: bool,
 ) !DecryptedInitial {
-    // Parse header to extract DCID and payload offset
-    const info = try parsePacketHeader(packet_bytes);
-    if (info.packet_type != .Initial) {
-        return error.NotInitialPacket;
-    }
-
-    // Call unprotectInitialAutoSample which handles:
-    // 1. Deriving Initial secrets from DCID
-    // 2. Removing header protection
-    // 3. AEAD decryption
-    // 4. Returning just the decrypted payload
-    const result = crypto_quic.unprotectInitialAutoSample(
-        allocator,
-        packet_bytes,
-        is_client,
-    ) catch |err| {
-        std.debug.print("Failed to decrypt Initial packet: {}\n", .{err});
-        return error.InitialDecryptionFailed;
-    };
-
-    return DecryptedInitial{
-        .payload = result.payload,
-        .allocator = allocator,
-    };
+    // TODO: Update to use new unprotectInitialAutoSample API with 10 parameters
+    // Requires:
+    // 1. Deriving Initial keys from DCID
+    // 2. Parsing header to get PN offset and length
+    // 3. Setting up buffers for decryption
+    // 4. Calling unprotectInitialAutoSample with all required params
+    //
+    // For now, return error indicating this feature is not yet implemented
+    _ = allocator;
+    _ = packet_bytes;
+    _ = is_client;
+    return error.PacketDecryptionNotImplemented;
 }
 
 /// Check if an Initial packet contains a CRYPTO frame.

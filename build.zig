@@ -1390,6 +1390,15 @@ pub fn build(b: *std.Build) void {
         const run_test_flow_control = b.addRunArtifact(test_flow_control);
         test_step.dependOn(&run_test_flow_control.step);
 
+        // RFC 9000 Section 9 - Connection Migration (Tier 2 Step 5 - 46 tests)
+        const test_migration = addTst(b, "tests/integration/migration.zig", target, optimize);
+        test_migration.root_module.addImport("scenarios", scenarios_mod);
+        test_migration.root_module.addImport("connection_pair", connection_pair_mod);
+        test_migration.root_module.addImport("harness", integration_harness_mod);
+        test_migration.root_module.addImport("loopback", loopback_mod);
+        const run_test_migration = b.addRunArtifact(test_migration);
+        test_step.dependOn(&run_test_migration.step);
+
         // RFC 9000 - Packet Processing Tests (Phase 21.3)
         const test_rfc9000_packets = addTst(b, "tests/integration/rfc9000_packets.zig", target, optimize);
         test_rfc9000_packets.root_module.addImport("scenarios", scenarios_mod);
@@ -1443,6 +1452,48 @@ pub fn build(b: *std.Build) void {
         test_rfc9001_advanced.root_module.addImport("loopback", loopback_mod);
         const run_test_rfc9001_advanced = b.addRunArtifact(test_rfc9001_advanced);
         test_step.dependOn(&run_test_rfc9001_advanced.step);
+
+        // RFC 9001 §6 - Key Update Tests (Tier 3 Step 7 - 61 tests)
+        const test_key_update = addTst(b, "tests/integration/key_update.zig", target, optimize);
+        test_key_update.root_module.addImport("scenarios", scenarios_mod);
+        test_key_update.root_module.addImport("connection_pair", connection_pair_mod);
+        test_key_update.root_module.addImport("harness", integration_harness_mod);
+        test_key_update.root_module.addImport("loopback", loopback_mod);
+        const run_test_key_update = b.addRunArtifact(test_key_update);
+        test_step.dependOn(&run_test_key_update.step);
+
+        // RFC 9001 §4.6 - 0-RTT and Session Resumption Tests (Tier 3 Step 8 - 72 tests)
+        const test_zero_rtt = addTst(b, "tests/integration/zero_rtt.zig", target, optimize);
+        test_zero_rtt.root_module.addImport("scenarios", scenarios_mod);
+        test_zero_rtt.root_module.addImport("connection_pair", connection_pair_mod);
+        test_zero_rtt.root_module.addImport("harness", integration_harness_mod);
+        test_zero_rtt.root_module.addImport("loopback", loopback_mod);
+        const run_test_zero_rtt = b.addRunArtifact(test_zero_rtt);
+        test_step.dependOn(&run_test_zero_rtt.step);
+
+        // Stress and Performance Tests (Tier 3 Step 9 - 46 tests)
+        const test_stress = addTst(b, "tests/integration/stress/stress.zig", target, optimize);
+        test_stress.root_module.addImport("scenarios", scenarios_mod);
+        test_stress.root_module.addImport("connection_pair", connection_pair_mod);
+        test_stress.root_module.addImport("harness", integration_harness_mod);
+        const run_test_stress = b.addRunArtifact(test_stress);
+        test_step.dependOn(&run_test_stress.step);
+
+        // Fault Injection Tests (Tier 3 Step 9 - 62 tests)
+        const test_fault = addTst(b, "tests/integration/fault/fault.zig", target, optimize);
+        test_fault.root_module.addImport("scenarios", scenarios_mod);
+        test_fault.root_module.addImport("connection_pair", connection_pair_mod);
+        test_fault.root_module.addImport("harness", integration_harness_mod);
+        test_fault.root_module.addImport("loopback", loopback_mod);
+        const run_test_fault = b.addRunArtifact(test_fault);
+        test_step.dependOn(&run_test_fault.step);
+
+        // Interoperability Tests (Tier 3 Step 10 - 48 tests)
+        const test_interop = addTst(b, "tests/integration/interop/interop.zig", target, optimize);
+        test_interop.root_module.addImport("scenarios", scenarios_mod);
+        test_interop.root_module.addImport("harness", integration_harness_mod);
+        const run_test_interop = b.addRunArtifact(test_interop);
+        test_step.dependOn(&run_test_interop.step);
 
         // CI/CD Helpers Unit Tests (Phase 24)
         const test_ci_helpers = addTst(b, "tests/integration/ci_helpers.zig", target, optimize);

@@ -10,8 +10,8 @@
 //! between the Zig implementation and reference implementations.
 
 const std = @import("std");
-const harness = @import("harness.zig");
-const scenarios = @import("scenarios.zig");
+const harness = @import("harness");
+const scenarios = @import("scenarios");
 
 // =============================================================================
 // Infrastructure Tests

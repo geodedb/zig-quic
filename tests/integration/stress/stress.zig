@@ -10,9 +10,9 @@
 //! minutes to hours to complete.
 
 const std = @import("std");
-const harness = @import("../harness.zig");
-const scenarios = @import("../scenarios.zig");
-const connection_pair = @import("../connection_pair.zig");
+const harness = @import("harness");
+const scenarios = @import("scenarios");
+const connection_pair = @import("connection_pair");
 
 // =============================================================================
 // Infrastructure Tests

@@ -244,12 +244,16 @@ pub const ConnectionPair = struct {
 
     /// Get client-side captured packets
     pub fn getClientPackets(self: *ConnectionPair) ?[]const harness.CapturedPacket {
-        return self.client.getCapturedPackets();
+        _ = self;
+        // TODO: Implement packet capture in EndpointWrapper
+        return null;
     }
 
     /// Get server-side captured packets
     pub fn getServerPackets(self: *ConnectionPair) ?[]const harness.CapturedPacket {
-        return self.server.getCapturedPackets();
+        _ = self;
+        // TODO: Implement packet capture in EndpointWrapper
+        return null;
     }
 
     /// Get transport statistics

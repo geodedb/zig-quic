@@ -8,10 +8,10 @@
 //! - Timing issues (extreme delays, timeouts)
 
 const std = @import("std");
-const harness = @import("../harness.zig");
-const scenarios = @import("../scenarios.zig");
-const loopback = @import("../loopback.zig");
-const connection_pair = @import("../connection_pair.zig");
+const harness = @import("harness");
+const scenarios = @import("scenarios");
+const loopback = @import("loopback");
+const connection_pair = @import("connection_pair");
 
 // =============================================================================
 // Infrastructure Tests
