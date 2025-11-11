@@ -14,8 +14,11 @@
 
 const std = @import("std");
 
-// Stub types for test harness (until full endpoint integration)
-// These will be replaced with real types when connecting to actual QUIC implementation
+// Phase 14: Stub types for harness (real endpoints via endpoint_loopback_helpers)
+// Note: ConnectionPair uses endpoint_loopback_helpers.EndpointWrapper for real endpoints
+// Harness provides test-specific features that wrap around endpoints
+
+/// Stub endpoint for harness (Phase 14: Real endpoints via EndpointWrapper)
 const Endpoint = struct {
     allocator: std.mem.Allocator,
     config: Config,
@@ -34,10 +37,13 @@ const Endpoint = struct {
     }
 };
 
-const Connection = opaque {};
+/// Stub connection for harness
+const Connection = struct {
+    id: u64,
+};
 
+/// Stub config for harness
 const Config = struct {
-    // Placeholder config fields
     allocator: std.mem.Allocator = undefined,
     role: enum { client, server } = .client,
     cert_path: []const u8 = "",

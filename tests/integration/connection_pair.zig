@@ -8,9 +8,10 @@
 //! - RFC 9001: Using TLS to Secure QUIC
 
 const std = @import("std");
-const harness = @import("harness.zig");
-const loopback = @import("loopback.zig");
-const tls_helpers = @import("tls_helpers.zig");
+const harness = @import("harness");  // Module import (configured in build.zig)
+const loopback = @import("loopback");  // Module import (configured in build.zig)
+const tls_helpers = @import("tls_helpers");  // Module import (configured in build.zig)
+const endpoint_loopback_helpers = @import("endpoint_loopback_helpers");  // Module import (configured in build.zig)
 
 /// Configuration for connection pair
 pub const ConnectionPairConfig = struct {
@@ -41,59 +42,70 @@ pub const ConnectionPair = struct {
     /// Loopback transport for packet exchange
     transport: *loopback.LoopbackTransport,
 
-    /// Server endpoint
-    server: *harness.TestEndpoint,
+    /// Server endpoint wrapper (Phase 14: Uses real Endpoint!)
+    server: endpoint_loopback_helpers.EndpointWrapper,
 
-    /// Client endpoint
-    client: *harness.TestEndpoint,
+    /// Client endpoint wrapper (Phase 14: Uses real Endpoint!)
+    client: endpoint_loopback_helpers.EndpointWrapper,
+
+    /// Loopback transport adapter for client (SideA)
+    client_adapter: endpoint_loopback_helpers.LoopbackTransportAdapter,
+
+    /// Loopback transport adapter for server (SideB)
+    server_adapter: endpoint_loopback_helpers.LoopbackTransportAdapter,
 
     /// Server connection (once established)
-    server_conn: ?*harness.TestConnection,
+    server_conn: ?*endpoint_loopback_helpers.Connection,
 
     /// Client connection (once established)
-    client_conn: ?*harness.TestConnection,
+    client_conn: ?*endpoint_loopback_helpers.Connection,
 
     /// Configuration
     config: ConnectionPairConfig,
 
-    /// Initialize a connection pair
+    /// Initialize a connection pair (Phase 14: Real endpoints!)
     pub fn init(allocator: std.mem.Allocator, config: ConnectionPairConfig) !*ConnectionPair {
-        var self = try allocator.create(ConnectionPair);
+        const self = try allocator.create(ConnectionPair);
         errdefer allocator.destroy(self);
 
         // Create loopback transport
-        self.transport = try loopback.LoopbackTransport.init(allocator, config.transport);
-        errdefer self.transport.deinit();
+        const transport = try loopback.LoopbackTransport.init(allocator, config.transport);
+        errdefer transport.deinit();
 
-        // Create server endpoint
-        const server_config = try harness.createServerConfig(allocator);
-        self.server = try harness.TestEndpoint.init(allocator, server_config);
-        errdefer self.server.deinit();
+        // Create loopback transport adapters
+        // Client = SideA, Server = SideB
+        var client_adapter = endpoint_loopback_helpers.LoopbackTransportAdapter.init(
+            transport,
+            .SideA,
+        );
+        var server_adapter = endpoint_loopback_helpers.LoopbackTransportAdapter.init(
+            transport,
+            .SideB,
+        );
 
-        if (config.enable_capture) {
-            try self.server.enableCapture();
-        }
-        if (config.enable_time_control) {
-            try self.server.enableTimeControl();
-        }
+        // Create client endpoint wrapper (Phase 14: Real Endpoint!)
+        var client_wrapper = try endpoint_loopback_helpers.EndpointWrapper.init(
+            allocator,
+            &client_adapter,
+            .Client,
+        );
+        errdefer client_wrapper.deinit();
 
-        // Create client endpoint
-        const client_config = try harness.createClientConfig(allocator);
-        self.client = try harness.TestEndpoint.init(allocator, client_config);
-        errdefer self.client.deinit();
-
-        if (config.enable_capture) {
-            try self.client.enableCapture();
-        }
-        if (config.enable_time_control) {
-            try self.client.enableTimeControl();
-        }
+        // Create server endpoint wrapper (Phase 14: Real Endpoint!)
+        var server_wrapper = try endpoint_loopback_helpers.EndpointWrapper.init(
+            allocator,
+            &server_adapter,
+            .Server,
+        );
+        errdefer server_wrapper.deinit();
 
         self.* = .{
             .allocator = allocator,
-            .transport = self.transport,
-            .server = self.server,
-            .client = self.client,
+            .transport = transport,
+            .client = client_wrapper,
+            .server = server_wrapper,
+            .client_adapter = client_adapter,
+            .server_adapter = server_adapter,
             .server_conn = null,
             .client_conn = null,
             .config = config,
@@ -102,7 +114,7 @@ pub const ConnectionPair = struct {
         return self;
     }
 
-    /// Clean up connection pair
+    /// Clean up connection pair (Phase 14: Cleans up real endpoints)
     pub fn deinit(self: *ConnectionPair) void {
         if (self.server_conn) |_| {
             // Connection cleanup handled by endpoint
@@ -111,42 +123,93 @@ pub const ConnectionPair = struct {
             // Connection cleanup handled by endpoint
         }
 
+        // Clean up endpoint wrappers (Phase 14: Real endpoints!)
         self.client.deinit();
         self.server.deinit();
+
+        // Clean up loopback transport
         self.transport.deinit();
+
         self.allocator.destroy(self);
     }
 
-    /// Establish connection between client and server
+    /// Establish connection between client and server (Phase 14: Real implementation!)
     pub fn connect(self: *ConnectionPair) !void {
-        // This is a placeholder for the actual connection establishment
-        // In real implementation, would:
-        // 1. Client calls endpoint.connect()
-        // 2. Wire transport callbacks to use loopback
-        // 3. Pump packets through loopback
-        // 4. Wait for handshake completion
+        // Phase 14: Real connection establishment using production Endpoint!
 
-        // For now, just create placeholder connections
-        // Real implementation requires integration with actual Endpoint/Connection API
-        _ = self;
-        return error.NotImplementedYet;
-    }
+        // 1. Create client connection (doesn't send Initial packet yet)
+        const client_conn = try self.client.endpoint.connectClient("127.0.0.1:443");
 
-    /// Exchange packets between client and server
-    pub fn exchangePackets(self: *ConnectionPair) !void {
-        // Process packets in both directions
-        var buf: [4096]u8 = undefined;
+        // 2. Send Initial packet with ClientHello to start handshake
+        try self.client.endpoint.clientSendInitialProbe(client_conn);
 
-        // Server -> Client
-        if (try self.transport.recvAtA(&buf)) |len| {
-            // Would deliver to client endpoint
-            _ = len;
+        // 3. Exchange Initial packets (triggers handshake)
+        try self.exchangePackets();
+
+        // 4. Wait for server to accept connection
+        const max_wait_ms = 1000;
+        var waited_ms: u64 = 0;
+        while (self.server_conn == null and waited_ms < max_wait_ms) : (waited_ms += 10) {
+            try self.exchangePackets();
+
+            // Check if server has accepted
+            if (self.server.endpoint.accepted.items.len > 0) {
+                self.server_conn = self.server.endpoint.accepted.items[0];
+                break;
+            }
+
+            std.Thread.sleep(10 * std.time.ns_per_ms);
         }
 
-        // Client -> Server
-        if (try self.transport.recvAtB(&buf)) |len| {
-            // Would deliver to server endpoint
-            _ = len;
+        if (self.server_conn == null) {
+            return error.ServerConnectionTimeout;
+        }
+
+        self.client_conn = client_conn;
+    }
+
+    /// Exchange packets between client and server (Phase 14: Real implementation!)
+    pub fn exchangePackets(self: *ConnectionPair) !void {
+        // Phase 14: Use endpoint poll() to drive packet delivery!
+        // The endpoints will call transport.recv() internally, which pulls from loopback
+
+        // Poll both endpoints to send/receive packets
+        // Use timeout_ms=0 for non-blocking poll
+        try self.client.endpoint.poll(0);
+        try self.server.endpoint.poll(0);
+    }
+
+    /// Wait for TLS handshake to complete on both sides (Phase 14: Real implementation!)
+    pub fn waitForHandshake(self: *ConnectionPair, timeout_ms: u64) !void {
+        // Phase 14: Poll real connections for handshake completion!
+        const start_time = std.time.milliTimestamp();
+
+        while (true) {
+            // Check if handshake complete on both sides
+            if (self.client_conn) |client_conn| {
+                if (self.server_conn) |server_conn| {
+                    // Client checks handshake_done_seen
+                    // Server checks handshake_done_sent
+                    const client_done = client_conn.handshake_done_seen;
+                    const server_done = server_conn.handshake_done_sent;
+
+                    if (client_done and server_done) {
+                        return; // Handshake complete!
+                    }
+                }
+            }
+
+            // Exchange packets
+            try self.exchangePackets();
+
+            // Check timeout
+            const elapsed = std.time.milliTimestamp() - start_time;
+            if (elapsed > timeout_ms) {
+                return error.HandshakeTimeout;
+            }
+
+            // Small delay
+            std.Thread.sleep(10 * std.time.ns_per_ms);
         }
     }
 

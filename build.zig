@@ -598,6 +598,51 @@ pub fn build(b: *std.Build) void {
     transport_public.addImport("config.zig", quic_config_mod);
     transport_public.addImport("loop_backend.zig", loop_backend_mod);
 
+    // ========================================================================
+    // Phase 14: Integration Test Framework Modules
+    // ========================================================================
+
+    // Loopback transport for in-memory testing
+    const loopback_mod = mkModule(b, "tests/integration/loopback.zig");
+
+    // Loopback transport adapter (adapts loopback to Transport interface)
+    const adapter_mod = mkModule(b, "tests/integration/loopback_transport_adapter.zig");
+    adapter_mod.addImport("loopback", loopback_mod);
+    adapter_mod.addImport("transport", endpoint_transport_mod);
+
+    // Integration test harness (TestEndpoint wrapper with packet capture, time control)
+    const integration_harness_mod = mkModule(b, "tests/integration/harness.zig");
+    integration_harness_mod.addImport("quic_endpoint", quic_endpoint_mod);
+    integration_harness_mod.addImport("quic_conn", quic_conn_mod);
+    integration_harness_mod.addImport("quic_config", quic_config_mod);
+
+    // TLS test helpers (shared by scenarios and connection_pair)
+    const tls_helpers_mod = mkModule(b, "tests/integration/tls_helpers.zig");
+
+    // Endpoint loopback helpers (EndpointWrapper with real Endpoint)
+    const endpoint_loopback_helpers_mod = mkModule(b, "tests/integration/endpoint_loopback_helpers.zig");
+    endpoint_loopback_helpers_mod.addImport("quic_endpoint", quic_endpoint_mod);
+    endpoint_loopback_helpers_mod.addImport("quic_conn", quic_conn_mod);
+    endpoint_loopback_helpers_mod.addImport("quic_config", quic_config_mod);
+    endpoint_loopback_helpers_mod.addImport("loopback", loopback_mod);
+    endpoint_loopback_helpers_mod.addImport("loopback_transport_adapter", adapter_mod);
+    endpoint_loopback_helpers_mod.addImport("transport", endpoint_transport_mod);
+
+    // ConnectionPair fixture (client-server connection for testing)
+    const connection_pair_mod = mkModule(b, "tests/integration/connection_pair.zig");
+    connection_pair_mod.addImport("harness", integration_harness_mod);
+    connection_pair_mod.addImport("loopback", loopback_mod);
+    connection_pair_mod.addImport("endpoint_loopback_helpers", endpoint_loopback_helpers_mod);
+    connection_pair_mod.addImport("tls_helpers", tls_helpers_mod);
+
+    // Scenario builder (fluent API for test setup)
+    const scenarios_mod = mkModule(b, "tests/integration/scenarios.zig");
+    scenarios_mod.addImport("harness", integration_harness_mod);
+    scenarios_mod.addImport("endpoint_loopback_helpers", endpoint_loopback_helpers_mod);
+    scenarios_mod.addImport("connection_pair", connection_pair_mod);
+    scenarios_mod.addImport("loopback", loopback_mod);
+    scenarios_mod.addImport("tls_helpers", tls_helpers_mod);
+
     const qns_endpoint = addExe(b, "qns-endpoint", "cmd/qns-endpoint.zig", target, optimize);
     qns_endpoint.root_module.addImport("quic_api", quic_api_mod);
     qns_endpoint.root_module.addImport("h3_server", h3_server_mod);
@@ -1281,6 +1326,18 @@ pub fn build(b: *std.Build) void {
         test_pmtud.root_module.addImport("quic_endpoint", quic_endpoint_mod);
         const run_test_pmtud = b.addRunArtifact(test_pmtud);
         test_step.dependOn(&run_test_pmtud.step);
+
+        // ========================================================================
+        // Phase 14: Integration Tests (RFC 9000 Tier 1)
+        // ========================================================================
+
+        // RFC 9000 Section 7 - Connection Establishment (26 tests)
+        const test_rfc9000_section7 = addTst(b, "tests/integration/rfc9000_section7.zig", target, optimize);
+        test_rfc9000_section7.root_module.addImport("scenarios", scenarios_mod);
+        test_rfc9000_section7.root_module.addImport("connection_pair", connection_pair_mod);
+        // Note: harness is available through scenarios and connection_pair imports
+        const run_test_rfc9000_section7 = b.addRunArtifact(test_rfc9000_section7);
+        test_step.dependOn(&run_test_rfc9000_section7.step);
     } else {
         const test_quic = addTst(b, "quic.zig", target, optimize);
         const run_test_quic = b.addRunArtifact(test_quic);

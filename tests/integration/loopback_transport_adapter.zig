@@ -27,19 +27,21 @@
 //! ```
 
 const std = @import("std");
-const loopback = @import("loopback.zig");
+const loopback = @import("loopback");  // Module import (configured in build.zig)
+const transport_mod = @import("transport");  // Module import (configured in build.zig)
 
-// Note: These imports require the test to be run via the build system
-// For standalone testing, we define stub types
-const has_quic_modules = @hasDecl(@This(), "testing") and false; // Disabled for now
+// Import real types from transport module
+pub const Transport = transport_mod.Transport;
+pub const SockAddr = transport_mod.SockAddr;
+pub const RecvResult = transport_mod.RecvResult;
 
-// Stub SockAddr type for standalone testing (when not using build system)
-pub const SockAddr = struct {
+// Legacy stub SockAddr type for reference (not used when transport module is available)
+const _LegacySockAddr = struct {
     storage: [128]u8 = [_]u8{0} ** 128,
     len: u32 = 0,
 
-    pub fn ipv4(a: u8, b: u8, c: u8, d: u8, port: u16) SockAddr {
-        var addr = SockAddr{};
+    pub fn ipv4(a: u8, b: u8, c: u8, d: u8, port: u16) _LegacySockAddr {
+        var addr = _LegacySockAddr{};
         // Simplified IPv4 address creation
         addr.storage[0] = 2; // AF_INET
         addr.storage[2] = @intCast((port >> 8) & 0xFF);
@@ -52,50 +54,49 @@ pub const SockAddr = struct {
         return addr;
     }
 
-    pub fn getPort(self: *const SockAddr) u16 {
+    pub fn getPort(self: *const _LegacySockAddr) u16 {
         if (self.len < 4) return 0;
         return (@as(u16, self.storage[2]) << 8) | @as(u16, self.storage[3]);
     }
 };
 
-// Stub RecvResult type for standalone testing
-pub const RecvResult = struct {
-    n: usize,
-    peer: SockAddr,
-    ecn: ?u8 = null,
-};
-
-// Stub Transport type for standalone testing
-pub const Transport = struct {
-    sendFn: *const fn (ctx: *anyopaque, peer: SockAddr, data: []const u8) anyerror!usize,
-    recvFn: *const fn (ctx: *anyopaque, buf: []u8) anyerror!RecvResult,
-    pollFn: ?*const fn (ctx: *anyopaque, timeout_ms: i32) anyerror!void,
-    closeFn: *const fn (ctx: *anyopaque) void,
-    getLocalAddrFn: *const fn (ctx: *anyopaque) anyerror!SockAddr,
-    context: *anyopaque,
-
-    pub fn send(self: *Transport, peer: SockAddr, data: []const u8) !usize {
-        return self.sendFn(self.context, peer, data);
-    }
-
-    pub fn recv(self: *Transport, buf: []u8) !RecvResult {
-        return self.recvFn(self.context, buf);
-    }
-
-    pub fn poll(self: *Transport, timeout_ms: i32) !void {
-        if (self.pollFn) |poll_fn| {
-            try poll_fn(self.context, timeout_ms);
-        }
-    }
-
-    pub fn close(self: *Transport) void {
-        self.closeFn(self.context);
-    }
-
-    pub fn getLocalAddr(self: *Transport) !SockAddr {
-        return self.getLocalAddrFn(self.context);
-    }
-};
+// Legacy stub types commented out - now using real types from transport module
+// pub const RecvResult = struct {
+//     n: usize,
+//     peer: SockAddr,
+//     ecn: ?u8 = null,
+// };
+//
+// pub const Transport = struct {
+//     sendFn: *const fn (ctx: *anyopaque, peer: SockAddr, data: []const u8) anyerror!usize,
+//     recvFn: *const fn (ctx: *anyopaque, buf: []u8) anyerror!RecvResult,
+//     pollFn: ?*const fn (ctx: *anyopaque, timeout_ms: i32) anyerror!void,
+//     closeFn: *const fn (ctx: *anyopaque) void,
+//     getLocalAddrFn: *const fn (ctx: *anyopaque) anyerror!SockAddr,
+//     context: *anyopaque,
+//
+//     pub fn send(self: *Transport, peer: SockAddr, data: []const u8) !usize {
+//         return self.sendFn(self.context, peer, data);
+//     }
+//
+//     pub fn recv(self: *Transport, buf: []u8) !RecvResult {
+//         return self.recvFn(self.context, buf);
+//     }
+//
+//     pub fn poll(self: *Transport, timeout_ms: i32) !void {
+//         if (self.pollFn) |poll_fn| {
+//             try poll_fn(self.context, timeout_ms);
+//         }
+//     }
+//
+//     pub fn close(self: *Transport) void {
+//         self.closeFn(self.context);
+//     }
+//
+//     pub fn getLocalAddr(self: *Transport) !SockAddr {
+//         return self.getLocalAddrFn(self.context);
+//     }
+// };
 
 /// Which side of the loopback connection this adapter represents
 pub const Side = enum {
