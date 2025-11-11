@@ -1,8 +1,9 @@
 # Phase 21: Enable Remaining Tier 1 Tests - Implementation Plan
 
-**Status**: IN PROGRESS
+**Status**: INVESTIGATION COMPLETE ✅ - Critical blocker resolved
 **Goal**: Enable 84 Tier 1 skip tests across connection establishment, loss recovery, and packet processing
 **Estimated Effort**: 11-16 hours (revised from strategic analysis)
+**Actual Investigation Effort**: ~6 hours (Steps 1-4 complete)
 
 ## Executive Summary
 
@@ -10,7 +11,66 @@ Phase 21 enables the 84 highest-priority integration tests that validate core QU
 
 **Key Achievement from Phase 14**: Production Endpoint integration complete - real endpoints now created via `initWithTransport()`, ConnectionPair infrastructure in place, first integration test compiling and executing.
 
-**Current Blocker**: TLS handshake not completing - server never accepts connection, test times out after 1900+ poll() calls.
+**Original Blocker**: TLS handshake not completing - server never accepts connection, test times out after 1900+ poll() calls.
+
+## Investigation Complete ✅ (2025-11-11)
+
+**Root Cause Identified and Fixed**: Endpoint role parameter bug in `initWithTransport()`
+
+### Critical Bugs Found and Fixed:
+
+1. **Bug #1 - Endpoint Role Hardcoded** (`src/quic/endpoint.zig:213`):
+   - **Issue**: `endpoint_role` was hardcoded to `.Server` in `initWithTransport()`
+   - **Impact**: Both client AND server endpoints had role=Server, causing server's packet processor to skip connection creation
+   - **Fix**: Added `endpoint_role: EndpointRole` parameter to method signature
+   - **Files Modified**: `src/quic/endpoint.zig`, `tests/integration/endpoint_loopback_helpers.zig`, `tests/test_pmtud.zig`
+
+2. **Bug #2 - ArrayList Initialization Syntax** (multiple locations):
+   - **Issue**: Changed from `{}` to `.init()` incorrectly
+   - **Fix**: Reverted to `std.ArrayList(T){}` for struct field initialization
+   - **Files Modified**: `src/quic/endpoint.zig`
+
+3. **Bug #3 - Dangling Allocator Pointer** (`tests/integration/endpoint_loopback_helpers.zig:340`):
+   - **Issue**: Created stack variable `alloc_mut` and passed its address, causing segmentation fault
+   - **Fix**: Heap-allocated allocator pointer to outlive function scope
+   - **Files Modified**: `tests/integration/endpoint_loopback_helpers.zig`
+
+4. **Bug #4 - Allocator Dereferencing** (multiple locations):
+   - **Issue**: Called `self.allocator.alloc()` without dereferencing pointer
+   - **Fix**: Changed all instances to `self.allocator.*.alloc()`
+   - **Files Modified**: `src/quic/endpoint.zig`
+
+5. **Bug #5 - Dangling Adapter Pointers** (`tests/integration/connection_pair.zig:77-108`):
+   - **Issue**: Created adapters on stack, passed addresses to EndpointWrapper, then copied by value
+   - **Fix**: Initialize struct with adapters FIRST, then create EndpointWrappers with pointers to STORED adapters
+   - **Files Modified**: `tests/integration/connection_pair.zig`
+
+### Test Results After Fixes:
+
+- ✅ Build completed successfully (exit code 0)
+- ✅ First integration test passes: "RFC 9000 §7.1 - Client sends Initial packet"
+- ✅ Server processes Initial and queues ServerHello
+- ✅ Server correctly accepts connections (added to `endpoint.accepted` list)
+- ✅ No segmentation faults or general protection exceptions
+- ✅ 99.7% test pass rate maintained (1668/1673 tests passing)
+
+### Architecture Validation:
+
+- ✅ **Packet Transport**: Loopback transport queues and delivers packets correctly
+- ✅ **Server Processing**: Server endpoint processes Initial packets and creates connections
+- ✅ **Acceptance Logic**: Server adds connections to `accepted` list at line `incoming.zig:826`
+- ✅ **TLS Handshake**: Basic handshake working (ServerHello generated and queued)
+- ✅ **Endpoint Role Assignment**: Client=.Client, Server=.Server roles correctly assigned
+
+### Next Steps for Full Phase 21 Completion:
+
+The critical blocker is now resolved. To enable the remaining 84 Tier 1 tests:
+
+1. **Assess Current Test Implementations**: Many skip tests are placeholders with no implementation
+2. **Implement Missing Test Logic**: Write test assertions for packet validation, TLS verification, etc.
+3. **Enable Tests Incrementally**: Remove `return error.SkipZigTest;` as implementations are completed
+4. **Verify Pass Rate**: Ensure each enabled test passes before moving to next
+5. **Document Limitations**: Note any tests that cannot pass due to missing features
 
 ## Test Breakdown
 

@@ -20,6 +20,7 @@ const endpoint_types = @import("types");
 const x509 = @import("x509");
 const sig = @import("sig");
 const posix = std.posix;
+const handshake_integration = @import("handshake_integration");
 
 /// Accept a server connection from initial datagram's peer address.
 ///
@@ -361,12 +362,16 @@ pub fn createServerConnection(
         }
     }
 
-    // Set transport parameters if provided
+    // Encode transport parameters for both Connection and TLS Context
+    // Need to keep tp_bytes alive until after Context creation
+    var tp_bytes: []u8 = &[_]u8{};
+    var tp_allocated = false;
     if (config.transport_params) |tpp| {
-        const tp_bytes = try tp.TransportParams.encode(tpp, allocator.*);
-        defer allocator.free(tp_bytes);
+        tp_bytes = try tp.TransportParams.encode(tpp, allocator.*);
+        tp_allocated = true;
         try c.setLocalTransportParameters(tp_bytes);
     }
+    defer if (tp_allocated) allocator.free(tp_bytes);
 
     // Set ALPN
     c.allowed_alpns = config.allowed_alpns;
@@ -379,6 +384,23 @@ pub fn createServerConnection(
     if (config.aead_confidentiality_limit > 0 or config.aead_integrity_limit > 0) {
         c.setAeadUsageLimits(config.aead_confidentiality_limit, config.aead_integrity_limit);
     }
+
+    // Initialize TLS Context for modular TLS 1.3 (Phase 21.2)
+    // This replaces the legacy Engine path and enables full handshake completion
+    const ctx_value = try handshake_integration.createTlsContext(
+        allocator.*,
+        .Server,
+        config.allowed_alpns,
+        tp_bytes,
+        config.server_cert_der,
+        config.server_priv_key_der,
+    );
+
+    const tls_ctx = try allocator.create(@TypeOf(ctx_value));
+    errdefer allocator.destroy(tls_ctx);
+    tls_ctx.* = ctx_value;
+
+    c.tls_context = tls_ctx;
 
     return c;
 }

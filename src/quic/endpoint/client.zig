@@ -21,6 +21,7 @@ const packet = @import("quic_packet");
 const frame = @import("quic_frame");
 const ks = @import("quic_tls");
 const types = @import("types");
+const handshake_integration = @import("handshake_integration");
 
 /// Client context for connection establishment.
 /// Similar to HandshakeContext, provides focused state passing.
@@ -133,6 +134,26 @@ pub fn createClientConnection(
     _ = conns_map.put(key_d, c) catch {};
     _ = conns_map.put(key_s, c) catch {};
 
+    // Initialize TLS Context for modular TLS 1.3 (Phase 21.2)
+    // Client doesn't need certificates (server auth only)
+    const ctx_value = handshake_integration.createTlsContext(
+        allocator.*,
+        .Client,
+        cfg.alpn,
+        &[_]u8{}, // Transport params set separately before handshake
+        null,     // No server cert for client
+        null,     // No server key for client
+    ) catch |err| blk: {
+        std.debug.print("createClientConnection: Failed to create TLS Context: {}\n", .{err});
+        break :blk null;
+    };
+
+    if (ctx_value) |ctx_val| {
+        const tls_ctx = allocator.create(@TypeOf(ctx_val)) catch return c;
+        tls_ctx.* = ctx_val;
+        c.tls_context = tls_ctx;
+    }
+
     return c;
 }
 
@@ -191,18 +212,40 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
     // Build CRYPTO frame carrying ClientHello
     // Note: Transport parameters must be set up by caller before calling sendInitialProbe
 
-    // Queue ClientHello using full TLS 1.3
-    c.tls.queueMinimalClientHello() catch {
-        _ = c.tls.queueMinimalClientHelloAuto() catch 0;
-    };
+    // Phase 21.2: Use Context API if available, otherwise fall back to Engine
+    var crypto_data: ?[]const u8 = null;
+    var owns_crypto = false;
 
-    var crypto_buf: [2048]u8 = undefined;
-    const crypto_len = c.tls.popCrypto(crypto_buf[0..]);
-    if (crypto_len > 0) {
+    if (c.tls_context) |tls_ctx| {
+        // Use modular TLS 1.3 Context
+        const ch_data = tls_ctx.pollCrypto(ctx.allocator.*, .Initial) catch |err| blk: {
+            std.debug.print("sendInitialProbe: Context pollCrypto error: {}\n", .{err});
+            break :blk null;
+        };
+        if (ch_data) |data| {
+            crypto_data = data;
+            owns_crypto = true;
+        }
+    } else {
+        // Legacy Engine path
+        c.tls.queueMinimalClientHello() catch {
+            _ = c.tls.queueMinimalClientHelloAuto() catch 0;
+        };
+
+        var crypto_buf: [2048]u8 = undefined;
+        const crypto_len = c.tls.popCrypto(crypto_buf[0..]);
+        if (crypto_len > 0) {
+            crypto_data = crypto_buf[0..crypto_len];
+            owns_crypto = false;
+        }
+    }
+
+    if (crypto_data) |data| {
+        defer if (owns_crypto) ctx.allocator.free(data);
         const base_off = c.crypto_tx_off_initial;
-        _ = (frame.Frame{ .crypto = .{ .offset = base_off, .data = crypto_buf[0..crypto_len] } }).write(frames.writer(ctx.allocator.*)) catch 0;
+        _ = (frame.Frame{ .crypto = .{ .offset = base_off, .data = data } }).write(frames.writer(ctx.allocator.*)) catch 0;
         c.crypto_retx_initial_off = base_off;
-        c.crypto_tx_off_initial += crypto_len;
+        c.crypto_tx_off_initial += @intCast(data.len);
     } else {
         frames.append(ctx.allocator.*, @intFromEnum(frame.FrameType.PING)) catch {};
     }

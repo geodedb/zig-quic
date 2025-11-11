@@ -246,6 +246,8 @@ test "RFC 9001 §4 - createTlsContext initializes Context with correct role" {
         .Client,
         &alpn_list,
         &tp_bytes,
+        null, // No server cert for client
+        null, // No server key for client
     );
     defer client_ctx.deinit();
 
@@ -259,6 +261,8 @@ test "RFC 9001 §4 - createTlsContext initializes Context with correct role" {
         .Server,
         &alpn_list,
         &tp_bytes,
+        null, // No cert for unit test
+        null, // No key for unit test
     );
     defer server_ctx.deinit();
 

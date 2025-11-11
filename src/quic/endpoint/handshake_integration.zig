@@ -204,13 +204,21 @@ fn onHandshakeComplete(ctx: *tls13.Context) !void {
 
     const conn = current_tls_connection orelse return error.NoConnectionContext;
 
-    // Mark handshake complete
-    // Application data can now flow
-    // Connection's existing state machine handles transition to Application phase
+    // Phase 21.2: Mark handshake complete
+    // RFC 9000 §4.1.2: "A server MUST send a HANDSHAKE_DONE frame as soon as it completes the handshake."
+    // RFC 9001 §4.9.3: "An endpoint MUST discard its handshake keys when the TLS handshake is confirmed."
 
-    // For server, HANDSHAKE_DONE frame should be sent
-    // This is typically handled by the Endpoint layer, not the callback
-    _ = conn; // Connection available for future state updates
+    std.debug.print("onHandshakeComplete: Handshake complete for role={}\n", .{conn.role});
+
+    // For server: Handshake is confirmed, ready to send HANDSHAKE_DONE
+    // The actual HANDSHAKE_DONE frame will be sent by the endpoint layer
+    // when it checks conn.app_tx_keys != null && !conn.handshake_done_sent
+
+    // For client: Handshake is confirmed when HANDSHAKE_DONE received
+    // Client doesn't send HANDSHAKE_DONE, only receives it
+
+    // Mark Application keys as ready (already set via onSecretAvailable callback)
+    // The handshake_done_sent flag will be checked by endpoint layer to send frame
 }
 
 /// Create and initialize a TLS Context for QUIC handshake integration.
@@ -236,6 +244,8 @@ pub fn createTlsContext(
     role: conn_mod.Role,
     alpn_list: []const []const u8,
     transport_params_bytes: []const u8,
+    server_cert_der: ?[]const u8,
+    server_key_der: ?[]const u8,
 ) !tls13.Context {
     // Create TLS configuration
     const tls_role: tls13.Role = if (role == .Client) .Client else .Server;
@@ -245,6 +255,8 @@ pub fn createTlsContext(
         .role = tls_role,
         .alpn_protocols = if (alpn_list.len > 0) alpn_list else null,
         .quic_transport_parameters = if (transport_params_bytes.len > 0) transport_params_bytes else null,
+        .server_cert_der = server_cert_der,
+        .server_key_der = server_key_der,
     };
 
     // Create callbacks struct with full QUIC integration
@@ -502,52 +514,114 @@ pub fn sendServerHello(ctx: *HandshakeContext) !void {
     const initial_tx_keys = conn.initial_tx_keys orelse return error.NoInitialKeys;
 
     // Pop CRYPTO data from TLS state machine
-    // This returns ALL messages: ServerHello + EncryptedExtensions + Certificate + Finished
+    // Try Context API first (generates full server flight), fall back to Engine (legacy)
     var outbox: [8192]u8 = undefined;
-    const n = conn.tls.popCrypto(outbox[0..]);
+    var n: usize = 0;
+    var used_context = false;
+
+    if (conn.tls_context) |tls_ctx| {
+        used_context = true;
+        // Phase 21.2: Use modular TLS 1.3 Context API (vendor/ztls)
+        // Poll Initial level for ServerHello
+        const sh_data = tls_ctx.pollCrypto(ctx.allocator.*, .Initial) catch {
+            // No ServerHello available yet
+            std.debug.print("sendServerHello: Context has no Initial CRYPTO data\n", .{});
+            return;
+        };
+        defer ctx.allocator.free(sh_data);
+
+        if (sh_data.len > outbox.len) return error.OutboxTooSmall;
+        @memcpy(outbox[0..sh_data.len], sh_data);
+        n = sh_data.len;
+
+        std.debug.print("sendServerHello: Context provided {} bytes at Initial level\n", .{n});
+
+        // Also poll Handshake level for Certificate+Finished messages
+        // These are stored in pending_hs_messages for sendHandshakePackets to send later
+        const hs_data = tls_ctx.pollCrypto(ctx.allocator.*, .Handshake) catch |err| blk: {
+            // It's okay if no Handshake data is available yet
+            std.debug.print("sendServerHello: No Handshake CRYPTO data (error: {})\n", .{err});
+            break :blk null;
+        };
+
+        if (hs_data) |hs_msgs| {
+            defer ctx.allocator.free(hs_msgs);
+            std.debug.print("sendServerHello: Context provided {} bytes at Handshake level\n", .{hs_msgs.len});
+
+            // Free old buffer if exists
+            if (conn.pending_hs_messages) |old_buf| {
+                ctx.allocator.free(old_buf);
+            }
+
+            // Allocate and copy Handshake messages
+            const hs_buf = ctx.allocator.alloc(u8, hs_msgs.len) catch {
+                return error.AllocFailed;
+            };
+            @memcpy(hs_buf, hs_msgs);
+            conn.pending_hs_messages = hs_buf;
+        }
+    } else {
+        // Legacy Engine path (Phase 14)
+        n = conn.tls.popCrypto(outbox[0..]);
+        if (n == 0) {
+            // No CRYPTO data to send
+            return;
+        }
+    }
+
     if (n == 0) {
         // No CRYPTO data to send
         return;
     }
 
     // Parse TLS message boundaries to separate ServerHello from Handshake-level messages
-    // TLS handshake message format: [type:1][length:3][data]
-    // ServerHello = 0x02, EncryptedExtensions = 0x08, Certificate = 0x0B, Finished = 0x14
+    // (Note: When using Context API, messages are already separated by encryption level)
+    var serverhello_data: []const u8 = undefined;
 
-    std.debug.print("sendServerHello: Parsing {} bytes of TLS data\n", .{n});
+    if (used_context) {
+        // Context API already separated messages by encryption level
+        serverhello_data = outbox[0..n];
+        std.debug.print("sendServerHello: Context separated messages - ServerHello={} bytes\n", .{serverhello_data.len});
+    } else {
+        // Legacy Engine: Parse and split messages manually
+        // TLS handshake message format: [type:1][length:3][data]
+        // ServerHello = 0x02, EncryptedExtensions = 0x08, Certificate = 0x0B, Finished = 0x14
 
-    if (n < 4) return error.InvalidTlsMessage; // Need at least header
+        std.debug.print("sendServerHello: Parsing {} bytes of TLS data\n", .{n});
 
-    const msg_type = outbox[0];
-    const msg_len = (@as(u32, outbox[1]) << 16) | (@as(u32, outbox[2]) << 8) | @as(u32, outbox[3]);
-    const total_msg_len = 4 + msg_len; // header + body
+        if (n < 4) return error.InvalidTlsMessage; // Need at least header
 
-    std.debug.print("sendServerHello: First message type=0x{X:0>2}, length={}, total={}\n", .{ msg_type, msg_len, total_msg_len });
+        const msg_type = outbox[0];
+        const msg_len = (@as(u32, outbox[1]) << 16) | (@as(u32, outbox[2]) << 8) | @as(u32, outbox[3]);
+        const total_msg_len = 4 + msg_len; // header + body
 
-    if (total_msg_len > n) return error.TruncatedTlsMessage;
+        std.debug.print("sendServerHello: First message type=0x{X:0>2}, length={}, total={}\n", .{ msg_type, msg_len, total_msg_len });
 
-    // Verify first message is ServerHello
-    if (msg_type != 0x02) return error.ExpectedServerHello;
+        if (total_msg_len > n) return error.TruncatedTlsMessage;
 
-    // Split messages: ServerHello goes in Initial, rest goes in Handshake
-    const serverhello_data = outbox[0..total_msg_len];
-    const remaining_data = outbox[total_msg_len..n];
+        // Verify first message is ServerHello
+        if (msg_type != 0x02) return error.ExpectedServerHello;
 
-    std.debug.print("sendServerHello: ServerHello={} bytes, remaining={} bytes\n", .{ serverhello_data.len, remaining_data.len });
+        // Split messages: ServerHello goes in Initial, rest goes in Handshake
+        serverhello_data = outbox[0..total_msg_len];
+        const remaining_data = outbox[total_msg_len..n];
 
-    // Store remaining Handshake messages for sendHandshakePackets
-    if (remaining_data.len > 0) {
-        // Free old buffer if exists
-        if (conn.pending_hs_messages) |old_buf| {
-            ctx.allocator.free(old_buf);
+        std.debug.print("sendServerHello: ServerHello={} bytes, remaining={} bytes\n", .{ serverhello_data.len, remaining_data.len });
+
+        // Store remaining Handshake messages for sendHandshakePackets
+        if (remaining_data.len > 0) {
+            // Free old buffer if exists
+            if (conn.pending_hs_messages) |old_buf| {
+                ctx.allocator.free(old_buf);
+            }
+
+            // Allocate and copy remaining messages
+            const hs_buf = ctx.allocator.alloc(u8, remaining_data.len) catch {
+                return error.AllocFailed;
+            };
+            @memcpy(hs_buf, remaining_data);
+            conn.pending_hs_messages = hs_buf;
         }
-
-        // Allocate and copy remaining messages
-        const hs_buf = ctx.allocator.alloc(u8, remaining_data.len) catch {
-            return error.AllocFailed;
-        };
-        @memcpy(hs_buf, remaining_data);
-        conn.pending_hs_messages = hs_buf;
     }
 
     // Fragment ServerHello CRYPTO data across multiple Initial packets if needed
@@ -771,18 +845,38 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
         conn.pending_hs_messages = null; // Clear immediately to avoid double-free
     } else {
         std.debug.print("sendHandshakePackets: No pending messages, checking TLS for new data\n", .{});
-        // Try to get fresh data from TLS (Handshake-level messages)
-        var outbox: [8192]u8 = undefined;
-        const tls_n = conn.tls.popCrypto(outbox[0..]);
-        std.debug.print("sendHandshakePackets: TLS returned {} bytes\n", .{tls_n});
-        if (tls_n == 0) {
-            // No CRYPTO data, but we should still send a Handshake packet for coalescing
-            // RFC 9000 §12.2: Initial and Handshake packets should be coalesced
-            std.debug.print("sendHandshakePackets: No CRYPTO data, sending PING in Handshake packet\n", .{});
-            return sendHandshakePing(ctx);
+
+        // Try Context API first, fall back to Engine
+        if (conn.tls_context) |tls_ctx| {
+            // Phase 21.2: Use modular TLS 1.3 Context API
+            const hs_data = tls_ctx.pollCrypto(ctx.allocator.*, .Handshake) catch |err| blk: {
+                std.debug.print("sendHandshakePackets: Context returned error: {}\n", .{err});
+                break :blk null;
+            };
+
+            if (hs_data) |data| {
+                std.debug.print("sendHandshakePackets: Context provided {} bytes at Handshake level\n", .{data.len});
+                pending_data = data;
+                owns_buffer = true; // Context allocates with allocator, we must free
+            } else {
+                // No CRYPTO data from Context
+                std.debug.print("sendHandshakePackets: No CRYPTO data from Context, sending PING in Handshake packet\n", .{});
+                return sendHandshakePing(ctx);
+            }
+        } else {
+            // Legacy Engine path
+            var outbox: [8192]u8 = undefined;
+            const tls_n = conn.tls.popCrypto(outbox[0..]);
+            std.debug.print("sendHandshakePackets: TLS returned {} bytes\n", .{tls_n});
+            if (tls_n == 0) {
+                // No CRYPTO data, but we should still send a Handshake packet for coalescing
+                // RFC 9000 §12.2: Initial and Handshake packets should be coalesced
+                std.debug.print("sendHandshakePackets: No CRYPTO data, sending PING in Handshake packet\n", .{});
+                return sendHandshakePing(ctx);
+            }
+            pending_data = outbox[0..tls_n];
+            owns_buffer = false; // outbox is stack-allocated
         }
-        pending_data = outbox[0..tls_n];
-        owns_buffer = false; // outbox is stack-allocated
     }
 
     defer if (owns_buffer) {

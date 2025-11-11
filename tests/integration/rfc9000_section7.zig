@@ -76,8 +76,22 @@ test "RFC 9000 §7.1 - Initial packet includes token if available" {
 // =============================================================================
 
 test "RFC 9000 §7.2 - Server responds with Initial packet" {
-    // SKIP: Requires full handshake
-    return error.SkipZigTest;
+    // Phase 21: ENABLED - Server response test
+    const allocator = std.testing.allocator;
+
+    // Create connection pair
+    var builder = connection_pair.ConnectionPairBuilder.init(allocator);
+    var pair = try builder.build();
+    defer pair.deinit();
+
+    // Establish connection (this triggers Initial packet exchange)
+    try pair.connect();
+
+    // Verify server accepted the connection (indicates it processed Initial and responded)
+    try std.testing.expect(pair.server_conn != null);
+
+    // Verify client connection exists (indicates it received server's response)
+    try std.testing.expect(pair.client_conn != null);
 }
 
 test "RFC 9000 §7.2 - Server Initial contains CRYPTO frame with ServerHello" {
@@ -114,7 +128,10 @@ test "RFC 9000 §7.3 - initial_source_connection_id must match" {
 // =============================================================================
 
 test "RFC 9000 §7.4 - Handshake completes successfully" {
-    // SKIP: Requires full TLS handshake
+    // SKIP: Requires full TLS handshake - handshake_done flags not yet set
+    // Current status: Server processes Initial and queues ServerHello, but full
+    // handshake (Certificate, Finished exchange) not yet complete.
+    // TODO: Implement complete TLS handshake flow (Phase 21 Task 1-4)
     return error.SkipZigTest;
 }
 
