@@ -72,44 +72,36 @@ pub const ConnectionPair = struct {
         const transport = try loopback.LoopbackTransport.init(allocator, config.transport);
         errdefer transport.deinit();
 
-        // Create loopback transport adapters
-        // Client = SideA, Server = SideB
-        var client_adapter = endpoint_loopback_helpers.LoopbackTransportAdapter.init(
-            transport,
-            .SideA,
-        );
-        var server_adapter = endpoint_loopback_helpers.LoopbackTransportAdapter.init(
-            transport,
-            .SideB,
-        );
-
-        // Create client endpoint wrapper (Phase 14: Real Endpoint!)
-        var client_wrapper = try endpoint_loopback_helpers.EndpointWrapper.init(
-            allocator,
-            &client_adapter,
-            .Client,
-        );
-        errdefer client_wrapper.deinit();
-
-        // Create server endpoint wrapper (Phase 14: Real Endpoint!)
-        var server_wrapper = try endpoint_loopback_helpers.EndpointWrapper.init(
-            allocator,
-            &server_adapter,
-            .Server,
-        );
-        errdefer server_wrapper.deinit();
-
+        // Initialize struct with adapters FIRST
+        // Phase 21 fix: Store adapters before creating endpoint wrappers,
+        // so wrappers can hold pointers to STORED adapters (not stack temporaries)
         self.* = .{
             .allocator = allocator,
             .transport = transport,
-            .client = client_wrapper,
-            .server = server_wrapper,
-            .client_adapter = client_adapter,
-            .server_adapter = server_adapter,
+            .client = undefined,  // Will initialize below
+            .server = undefined,  // Will initialize below
+            .client_adapter = endpoint_loopback_helpers.LoopbackTransportAdapter.init(transport, .SideA),
+            .server_adapter = endpoint_loopback_helpers.LoopbackTransportAdapter.init(transport, .SideB),
             .server_conn = null,
             .client_conn = null,
             .config = config,
         };
+
+        // Now create endpoint wrappers with pointers to STORED adapters
+        // This avoids dangling pointer bug where wrappers point to stack temporaries
+        self.client = try endpoint_loopback_helpers.EndpointWrapper.init(
+            allocator,
+            &self.client_adapter,  // Pointer to stored adapter
+            .Client,
+        );
+        errdefer self.client.deinit();
+
+        self.server = try endpoint_loopback_helpers.EndpointWrapper.init(
+            allocator,
+            &self.server_adapter,  // Pointer to stored adapter
+            .Server,
+        );
+        errdefer self.server.deinit();
 
         return self;
     }
@@ -137,13 +129,20 @@ pub const ConnectionPair = struct {
     pub fn connect(self: *ConnectionPair) !void {
         // Phase 14: Real connection establishment using production Endpoint!
 
+        std.debug.print("\n=== ConnectionPair.connect() STARTING ===\n", .{});
+
         // 1. Create client connection (doesn't send Initial packet yet)
+        std.debug.print("[ConnectionPair] Creating client connection...\n", .{});
         const client_conn = try self.client.endpoint.connectClient("127.0.0.1:443");
+        std.debug.print("[ConnectionPair] Client connection created\n", .{});
 
         // 2. Send Initial packet with ClientHello to start handshake
+        std.debug.print("[ConnectionPair] Sending Initial packet...\n", .{});
         try self.client.endpoint.clientSendInitialProbe(client_conn);
+        std.debug.print("[ConnectionPair] Initial packet sent\n", .{});
 
         // 3. Exchange Initial packets (triggers handshake)
+        std.debug.print("[ConnectionPair] Exchanging packets...\n", .{});
         try self.exchangePackets();
 
         // 4. Wait for server to accept connection

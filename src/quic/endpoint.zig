@@ -208,9 +208,9 @@ pub const Endpoint = struct {
         alloc: *std.mem.Allocator,
         transport: transport_mod.Transport,
         cfgp: *const cfg.QuicConfig,
+        endpoint_role: EndpointRole,
     ) !Endpoint {
-        // Determine role: default to Server, can be overridden later
-        const endpoint_role = EndpointRole.Server;
+        // Role now passed as parameter instead of hardcoded
 
         return Endpoint{
             .transport = transport,
@@ -275,7 +275,7 @@ pub const Endpoint = struct {
         var i: usize = 0;
         while (i < self.captures.items.len) : (i += 1) {
             const cap = self.captures.items[i];
-            self.allocator.free(cap.bytes);
+            self.allocator.*.free(cap.bytes);
         }
         self.captures.deinit(self.allocator.*);
         // Free any pending paced payloads in timers
@@ -283,7 +283,7 @@ pub const Endpoint = struct {
         while (j < self.timers.items.len) : (j += 1) {
             const t = self.timers.items[j];
             if (t.paced) {
-                if (t.payload) |p| self.allocator.free(p);
+                if (t.payload) |p| self.allocator.*.free(p);
             }
         }
         // Destroy unique connections referenced by map values
@@ -295,7 +295,7 @@ pub const Endpoint = struct {
             if (!seen.contains(c)) {
                 _ = seen.put(c, {}) catch {};
                 c.deinit();
-                self.allocator.destroy(c);
+                self.allocator.*.destroy(c);
             }
         }
         // Also destroy any retired (already removed from map) connections not yet destroyed.
@@ -304,7 +304,7 @@ pub const Endpoint = struct {
             const c = self.retired.items[ri];
             if (!seen.contains(c)) { // skip if already destroyed above
                 c.deinit();
-                self.allocator.destroy(c);
+                self.allocator.*.destroy(c);
             }
         }
         self.retired.deinit(self.allocator.*);
@@ -317,7 +317,7 @@ pub const Endpoint = struct {
 
         // Free heap-allocated UDP transport if we own it
         if (self.owned_udp_transport) |udp| {
-            self.allocator.destroy(udp);
+            self.allocator.*.destroy(udp);
         }
     }
 
@@ -329,7 +329,7 @@ pub const Endpoint = struct {
     /// Clear all captured outbound packets (test helper).
     pub fn captureClear(self: *Endpoint) void {
         var i: usize = 0;
-        while (i < self.captures.items.len) : (i += 1) self.allocator.free(self.captures.items[i].bytes);
+        while (i < self.captures.items.len) : (i += 1) self.allocator.*.free(self.captures.items[i].bytes);
         self.captures.clearRetainingCapacity();
     }
     /// Return number of captured outbound packets.
@@ -359,7 +359,7 @@ pub const Endpoint = struct {
     pub fn sendTo(self: *Endpoint, peer: conn_mod.SockAddr, data: []const u8) !usize {
         // Test capture: make owned copy and enqueue without sending
         if (self.test_capture_enabled) {
-            const owned = try self.allocator.alloc(u8, data.len);
+            const owned = try self.allocator.*.alloc(u8, data.len);
             @memcpy(owned, data);
             _ = self.captures.append(self.allocator.*, .{ .peer = peer, .bytes = owned }) catch {};
         }
@@ -887,7 +887,7 @@ pub const Endpoint = struct {
                                 if (t.payload) |bytes| {
                                     // Send the paced payload now and free it
                                     _ = self.sendTo(c.peer, bytes) catch {};
-                                    self.allocator.free(bytes);
+                                    self.allocator.*.free(bytes);
                                 }
                             }
                         }
@@ -992,7 +992,7 @@ fn senderPaced(ctx: *anyopaque, c: *conn_mod.Connection, data: []const u8) !usiz
         return self.sendTo(c.peer, data);
     }
     // Own the payload and schedule a paced timer
-    const owned = try self.allocator.alloc(u8, data.len);
+    const owned = try self.allocator.*.alloc(u8, data.len);
     @memcpy(owned, data);
     _ = try self.schedulePaced(c, delay_ns, owned);
     // Report bytes as accepted; actual socket send happens when the timer fires.

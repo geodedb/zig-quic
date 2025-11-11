@@ -68,7 +68,7 @@ test "pmtud pacing: paced send occurs under NewReno and CUBIC when cwnd is parti
             cfg.enable_pacing = true;
             cfg.cc = if (use_cubic) .cubic else .newreno;
             const noop_transport = NoopTransport.init();
-            var ep = try endpoint_mod.Endpoint.initWithTransport(A, noop_transport, &cfg);
+            var ep = try endpoint_mod.Endpoint.initWithTransport(A, noop_transport, &cfg, .Client);
             defer ep.deinit();
             // Enable outbound capture to observe pacing behavior
             ep.test_capture_enabled = true;
@@ -114,7 +114,7 @@ test "pmtud with cubic: single outstanding probe with backoff (blackhole)" {
     cfg.enable_pacing = false;
     cfg.cc = .cubic;
     const noop_transport = NoopTransport.init();
-    var ep = try endpoint_mod.Endpoint.initWithTransport(&alloc, noop_transport, &cfg);
+    var ep = try endpoint_mod.Endpoint.initWithTransport(&alloc, noop_transport, &cfg, .Client);
     defer ep.deinit();
     var c = try ep.connectClient("127.0.0.1:10");
     c.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
@@ -148,7 +148,7 @@ test "pmtud with cubic: cwnd insufficient blocks probe and PTO backoff increases
     cfg.enable_pacing = false;
     cfg.cc = .cubic;
     const noop_transport = NoopTransport.init();
-    var ep = try endpoint_mod.Endpoint.initWithTransport(&alloc, noop_transport, &cfg);
+    var ep = try endpoint_mod.Endpoint.initWithTransport(&alloc, noop_transport, &cfg, .Client);
     defer ep.deinit();
     var c = try ep.connectClient("127.0.0.1:12");
     c.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };

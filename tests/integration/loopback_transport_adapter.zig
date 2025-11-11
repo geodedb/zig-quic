@@ -159,11 +159,17 @@ pub const LoopbackTransportAdapter = struct {
         const self: *LoopbackTransportAdapter = @ptrCast(@alignCast(ctx));
         _ = peer;  // Ignore peer, we know where to send based on our side
 
+        // DEBUG: Trace packet sending
+        const side_name = if (self.side == .SideA) "Client(A)" else "Server(B)";
+        std.debug.print("[{s}] sendFn: sending {} bytes\n", .{ side_name, data.len });
+
         // Route packet through appropriate queue based on our side
         if (self.side == .SideA) {
             try self.loopback.sendAtoB(data);
+            std.debug.print("[{s}] sendFn: queued to A→B\n", .{side_name});
         } else {
             try self.loopback.sendBtoA(data);
+            std.debug.print("[{s}] sendFn: queued to B→A\n", .{side_name});
         }
 
         return data.len;
@@ -173,6 +179,9 @@ pub const LoopbackTransportAdapter = struct {
     fn recvFn(ctx: *anyopaque, buf: []u8) anyerror!RecvResult {
         const self: *LoopbackTransportAdapter = @ptrCast(@alignCast(ctx));
 
+        // DEBUG: Trace packet reception
+        const side_name = if (self.side == .SideA) "Client(A)" else "Server(B)";
+
         // Receive from opposite queue based on our side
         const maybe_len = if (self.side == .SideA)
             try self.loopback.recvAtA(buf)
@@ -180,7 +189,13 @@ pub const LoopbackTransportAdapter = struct {
             try self.loopback.recvAtB(buf);
 
         // If no packet available, return WouldBlock
-        const n = maybe_len orelse return error.WouldBlock;
+        const n = maybe_len orelse {
+            // std.debug.print("[{s}] recvFn: WouldBlock (no packets)\n", .{side_name});
+            return error.WouldBlock;
+        };
+
+        // DEBUG: Log successful reception
+        std.debug.print("[{s}] recvFn: received {} bytes from peer\n", .{ side_name, n });
 
         // Return received packet with peer address
         return RecvResult{

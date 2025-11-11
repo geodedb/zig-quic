@@ -334,13 +334,24 @@ pub const EndpointWrapper = struct {
         const ep = try allocator.create(endpoint_mod.Endpoint);
         errdefer allocator.destroy(ep);
 
+        // Heap-allocate allocator pointer (required because Endpoint stores pointer)
+        // Phase 21 fix: Must outlive the EndpointWrapper to avoid dangling pointer
+        const alloc_ptr = try allocator.create(std.mem.Allocator);
+        errdefer allocator.destroy(alloc_ptr);
+        alloc_ptr.* = allocator;
+
         // Create real endpoint with loopback transport
         // This is the Phase 14 completion: using initWithTransport() as documented
-        var alloc_mut = allocator;
+        // Phase 21 fix: Now correctly passing role parameter and heap-allocated allocator!
+        const endpoint_role = if (role == .Client)
+            endpoint_mod.EndpointRole.Client
+        else
+            endpoint_mod.EndpointRole.Server;
         ep.* = try endpoint_mod.Endpoint.initWithTransport(
-            &alloc_mut,
+            alloc_ptr,
             adapter.asTransport(),
             &quic_config,
+            endpoint_role,
         );
 
         return EndpointWrapper{
@@ -354,9 +365,17 @@ pub const EndpointWrapper = struct {
     /// Clean up endpoint resources
     ///
     /// Phase 14: Now properly cleans up real endpoint
+    /// Phase 21 fix: Also clean up heap-allocated allocator pointer
     pub fn deinit(self: *EndpointWrapper) void {
+        // Save the allocator pointer before destroying endpoint
+        const alloc_ptr = self.endpoint.allocator;
+
         self.endpoint.deinit();
         self.allocator.destroy(self.endpoint);
+
+        // Clean up heap-allocated allocator pointer
+        self.allocator.destroy(alloc_ptr);
+
         // Adapter is owned by helper, not cleaned up here
     }
 
