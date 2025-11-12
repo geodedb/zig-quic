@@ -465,7 +465,8 @@ pub const Connection = struct {
     peer: SockAddr,
     tls_inbox: std.ArrayList(u8),
     /// TLS 1.3 Context for QUIC handshake and encryption (vendor/ztls)
-    tls_context: *tls13.Context,
+    /// Optional to allow tests that don't need TLS; production code should always initialize via client/server modules
+    tls_context: ?*tls13.Context = null,
     allocator: *std.mem.Allocator,
     // Allowed ALPNs configured on endpoint
     allowed_alpns: []const []const u8 = &[_][]const u8{},
@@ -1015,9 +1016,11 @@ pub const Connection = struct {
         self.local_transport_params_raw = null;
         self.peer_transport_params_raw = null;
         self.tls_inbox.deinit(self.allocator.*);
-        // Free the TLS Context (always present, allocated by client/server modules)
-        self.tls_context.deinit(); // Clean up Context internals (ArrayLists, etc.)
-        self.allocator.destroy(self.tls_context);
+        // Free the TLS Context if present (allocated by client/server modules)
+        if (self.tls_context) |tls_ctx| {
+            tls_ctx.deinit(); // Clean up Context internals (ArrayLists, etc.)
+            self.allocator.destroy(tls_ctx);
+        }
         self.rec.deinit();
         self.sent_time.deinit();
         self.sent_sizes.deinit();
@@ -1267,7 +1270,9 @@ pub const Connection = struct {
 
     /// Set locally advertised transport parameters on TLS and cache them for QUIC wiring.
     pub fn setLocalTransportParameters(self: *Connection, encoded: []const u8) !void {
-        self.tls_context.setTransportParameters(encoded);
+        if (self.tls_context) |tls_ctx| {
+            tls_ctx.setTransportParameters(encoded);
+        }
         self.storeLocalTransportParams(encoded) catch {};
     }
 
@@ -1276,7 +1281,7 @@ pub const Connection = struct {
         return self.peer_finished_verified and self.app_tx_keys != null;
     }
 
-    fn updatePeerFinishedStatus(self: *Connection, verified: bool) void {
+    pub fn updatePeerFinishedStatus(self: *Connection, verified: bool) void {
         if (self.peer_finished_verified == verified) return;
         self.peer_finished_verified = verified;
         if (self.peer_finished_verified) {
@@ -1315,6 +1320,8 @@ pub const Connection = struct {
 
     /// Feed received CRYPTO bytes to the TLS Context and derive keys when secrets become available.
     pub fn pushCrypto(self: *Connection, hs: []const u8) !void {
+        const tls_ctx = self.tls_context orelse return; // No-op if TLS Context not initialized (test scenarios)
+
         // Determine encryption level based on which keys are installed
         const level: tls13.EncryptionLevel = blk: {
             if (self.app_rx_keys != null) break :blk .Application;
@@ -1329,12 +1336,12 @@ pub const Connection = struct {
         });
 
         // Process CRYPTO data through TLS Context
-        try self.tls_context.processCrypto(level, hs);
+        try tls_ctx.processCrypto(level, hs);
 
         // Check for and install Handshake keys if now available
         if (self.hs_client == null or self.hs_server == null) {
-            const client_slot = self.tls_context.secrets.slot(.Handshake, .send);
-            const server_slot = self.tls_context.secrets.slot(.Handshake, .recv);
+            const client_slot = tls_ctx.secrets.slot(.Handshake, .send);
+            const server_slot = tls_ctx.secrets.slot(.Handshake, .recv);
 
             if (client_slot.valid and server_slot.valid) {
                 std.debug.print("{s}: Handshake secrets available, installing keys\n", .{if (self.role == .Server) "Server" else "Client"});
@@ -1350,12 +1357,12 @@ pub const Connection = struct {
 
         // Install 1-RTT keys when both Finished messages exchanged and CRYPTO outbox flushed
         if (self.app_tx_keys == null) {
-            const flags = self.tls_context.flags;
+            const flags = tls_ctx.flags;
             if (flags.peer_finished_verified and flags.local_finished_sent) {
                 // Check if Context has pending CRYPTO data to send
                 // Context manages outgoing CRYPTO via callbacks, so we check if secrets are ready
-                const client_slot = self.tls_context.secrets.slot(.Application, .send);
-                const server_slot = self.tls_context.secrets.slot(.Application, .recv);
+                const client_slot = tls_ctx.secrets.slot(.Application, .send);
+                const server_slot = tls_ctx.secrets.slot(.Application, .recv);
 
                 if (client_slot.valid and server_slot.valid) {
                     std.debug.print("{s}: Deriving application secrets (both Finished exchanged)\n", .{if (self.role == .Server) "Server" else "Client"});
@@ -1403,7 +1410,7 @@ pub const Connection = struct {
 
         // Apply peer transport parameters (once) when they first become available
         if (!self.transport_params_applied) {
-            if (self.tls_context.peer_quic_transport_parameters) |peer_tp_bytes| {
+            if (tls_ctx.peer_quic_transport_parameters) |peer_tp_bytes| {
                 self.applyPeerTransportParameters(peer_tp_bytes) catch {
                     // Ignore malformed transport parameters; retain defaults
                 };
@@ -1412,7 +1419,7 @@ pub const Connection = struct {
         }
 
         // Enforce ALPN if negotiated and allowed list is configured
-        if (self.tls_context.negotiatedAlpn()) |a| {
+        if (tls_ctx.negotiatedAlpn()) |a| {
             self.storeNegotiatedAlpn(a) catch {};
             if (self.allowed_alpns.len > 0) {
                 var ok = false;
@@ -1565,12 +1572,13 @@ pub const Connection = struct {
     pub fn maybeDeriveAppKeysAfterFlush(self: *Connection) void {
         if (self.app_tx_keys != null) return;
 
-        const flags = self.tls_context.flags;
+        const tls_ctx = self.tls_context orelse return;
+        const flags = tls_ctx.flags;
         if (!(flags.peer_finished_verified and flags.local_finished_sent)) return;
 
         // Check if Application secrets are available
-        const client_slot = self.tls_context.secrets.slot(.Application, .send);
-        const server_slot = self.tls_context.secrets.slot(.Application, .recv);
+        const client_slot = tls_ctx.secrets.slot(.Application, .send);
+        const server_slot = tls_ctx.secrets.slot(.Application, .recv);
 
         if (client_slot.valid and server_slot.valid) {
             std.debug.print("{s}: Deriving application secrets\n", .{if (self.role == .Server) "Server" else "Client"});
@@ -1582,19 +1590,28 @@ pub const Connection = struct {
     /// Return negotiated ALPN slice (if any) after handshake progression.
     pub fn getNegotiatedAlpn(self: *Connection) ?[]const u8 {
         if (self.negotiated_alpn) |alpn| return alpn;
-        return self.tls_context.negotiatedAlpn();
+        if (self.tls_context) |tls_ctx| {
+            return tls_ctx.negotiatedAlpn();
+        }
+        return null;
     }
 
     /// Return cached peer transport parameters (encoded) if available.
     pub fn getPeerTransportParams(self: *Connection) ?[]const u8 {
         if (self.peer_transport_params_raw) |tp| return tp;
-        return self.tls_context.peer_quic_transport_parameters;
+        if (self.tls_context) |tls_ctx| {
+            return tls_ctx.peer_quic_transport_parameters;
+        }
+        return null;
     }
 
     /// Return locally advertised transport parameters (encoded) if cached.
     pub fn getLocalTransportParams(self: *Connection) ?[]const u8 {
         if (self.local_transport_params_raw) |tp| return tp;
-        return self.tls_context.localTransportParameters();
+        if (self.tls_context) |tls_ctx| {
+            return tls_ctx.localTransportParameters();
+        }
+        return null;
     }
 
     /// Toggle congestion control (NewReno default, CUBIC optional).

@@ -92,7 +92,7 @@ pub fn createClientConnection(
 
     // Apply config flags
     c.setUseCubic(cfg.cc == .cubic);
-    c.tls.allow_insecure = cfg.allow_insecure;
+    // NOTE: allow_insecure is now handled via TLS Context configuration during creation
     c.allowed_alpns = cfg.alpn;
 
     // Enable optional pacing and set CC max_datagram_size
@@ -233,18 +233,23 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
     // Build CRYPTO frame carrying ClientHello
     // Note: Transport parameters must be set up by caller before calling sendInitialProbe
 
+    const tls_ctx = c.tls_context orelse {
+        std.debug.print("sendInitialProbe: TLS Context not initialized\n", .{});
+        return error.NoTlsContext;
+    };
+
     // Set transport parameters on TLS Context
     if (c.local_transport_params_raw) |tp_bytes| {
-        c.tls_context.setTransportParameters(tp_bytes);
+        tls_ctx.setTransportParameters(tp_bytes);
     }
 
     // Start client handshake (generates ClientHello)
-    c.tls_context.startClientHandshake() catch |err| {
+    tls_ctx.startClientHandshake() catch |err| {
         std.debug.print("sendInitialProbe: Context startClientHandshake error: {}\n", .{err});
     };
 
     // Poll for the generated ClientHello
-    const crypto_data = c.tls_context.pollCrypto(ctx.allocator.*, .Initial) catch |err| blk: {
+    const crypto_data = tls_ctx.pollCrypto(ctx.allocator.*, .Initial) catch |err| blk: {
         std.debug.print("sendInitialProbe: Context pollCrypto error: {}\n", .{err});
         break :blk null;
     };

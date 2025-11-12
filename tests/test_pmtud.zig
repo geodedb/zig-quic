@@ -183,17 +183,10 @@ test "pmtud probe builds PING+PADDING to exact UDP payload size" {
     var alloc = gpa.allocator();
 
     // Build a connection with app keys ready
-    var c = conn_mod.Connection{
-        .id = 1,
-        .role = .Client,
-        .sock_fd = 0,
-        .peer = conn_mod.SockAddr.ipv4(127, 0, 0, 1, 5555),
-        .tls_inbox = std.ArrayList(u8){},
-        .tls = @import("quic_tls13").Engine.init(alloc, .Client),
-        .allocator = &alloc,
-    };
+    var c: conn_mod.Connection = undefined;
+    const peer = conn_mod.SockAddr.ipv4(127, 0, 0, 1, 5555);
+    c.init(&alloc, .Client, 0, peer);
     defer c.deinit();
-    c.init(&alloc, .Client, 0, c.peer);
     // Seed minimal 1-RTT TX keys (zeros suffice for encode in tests)
     c.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
     c.peer_finished_verified = true;
@@ -213,17 +206,10 @@ test "pmtud validation raises path_mtu on ACK of probe PN" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
-    var c = conn_mod.Connection{
-        .id = 1,
-        .role = .Client,
-        .sock_fd = 0,
-        .peer = conn_mod.SockAddr.ipv4(127, 0, 0, 1, 5555),
-        .tls_inbox = std.ArrayList(u8){},
-        .tls = @import("quic_tls13").Engine.init(alloc, .Client),
-        .allocator = &alloc,
-    };
+    var c: conn_mod.Connection = undefined;
+    const peer = conn_mod.SockAddr.ipv4(127, 0, 0, 1, 5555);
+    c.init(&alloc, .Client, 0, peer);
     defer c.deinit();
-    c.init(&alloc, .Client, 0, c.peer);
     // Seed minimal 1-RTT TX keys
     c.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
     c.peer_finished_verified = true;
@@ -248,17 +234,10 @@ test "icmp packet too big clamps path_mtu and clears oversize pending" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
-    var c = conn_mod.Connection{
-        .id = 1,
-        .role = .Client,
-        .sock_fd = 0,
-        .peer = conn_mod.SockAddr.ipv4(127, 0, 0, 1, 5555),
-        .tls_inbox = std.ArrayList(u8){},
-        .tls = @import("quic_tls13").Engine.init(alloc, .Client),
-        .allocator = &alloc,
-    };
+    var c: conn_mod.Connection = undefined;
+    const peer = conn_mod.SockAddr.ipv4(127, 0, 0, 1, 5555);
+    c.init(&alloc, .Client, 0, peer);
     defer c.deinit();
-    c.init(&alloc, .Client, 0, c.peer);
     c.path_mtu = 1350;
     c.probe_pending_pn = 42;
     c.probe_pending_size = 1400;
@@ -323,17 +302,10 @@ test "pmtud: send multiple probe sizes and accept only acked size" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
-    var c = conn_mod.Connection{
-        .id = 2,
-        .role = .Client,
-        .sock_fd = 0,
-        .peer = conn_mod.SockAddr.ipv4(127, 0, 0, 1, 5555),
-        .tls_inbox = std.ArrayList(u8){},
-        .tls = @import("quic_tls13").Engine.init(alloc, .Client),
-        .allocator = &alloc,
-    };
+    var c: conn_mod.Connection = undefined;
+    const peer = conn_mod.SockAddr.ipv4(127, 0, 0, 1, 5555);
+    c.init(&alloc, .Client, 0, peer);
     defer c.deinit();
-    c.init(&alloc, .Client, 0, c.peer);
     // For direct sends in this unit test, bypass anti-amplification gating
     c.address_validated = true;
     c.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };

@@ -14,8 +14,8 @@ fn makeConn(allocator: *std.mem.Allocator, role: conn_mod.Role) conn_mod.Connect
 }
 
 fn drivePeerFinished(conn: *conn_mod.Connection, verified: bool) !void {
-    const cb = conn.tls.peer_finished_cb orelse return error.MissingCallback;
-    try cb(conn.tls.peer_finished_ctx, &conn.tls, verified);
+    // Directly update peer finished status (Context handles this internally now)
+    conn.updatePeerFinishedStatus(verified);
 }
 
 fn expectHasConfirmed(conn: *conn_mod.Connection, expected: bool) !void {

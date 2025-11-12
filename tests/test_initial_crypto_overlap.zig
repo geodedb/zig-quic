@@ -11,7 +11,7 @@ test "initial crypto handles overlapping frames" {
 
     var sock = conn_mod.SockAddr{};
     conn.init(&allocator, .Server, -1, sock);
-    conn.tls.allow_insecure = true;
+    // NOTE: allow_insecure is handled via TLS Context configuration
     conn.version = packet.QUIC_V1;
     conn.version_v2 = false;
 

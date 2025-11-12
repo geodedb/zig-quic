@@ -1321,7 +1321,7 @@ pub fn processHandshake(
         defer handshake_integration.clearCurrentConnection();
 
         // Poll for Handshake-level CRYPTO data
-        const tls_ctx = conn.tls_context;
+        const tls_ctx = conn.tls_context orelse return; // No TLS Context, skip processing
         const hs_data = tls_ctx.pollCrypto(ctx.allocator.*, .Handshake) catch |err| blk: {
             // Unimplemented means no data available (expected)
             if (err != error.Unimplemented) {

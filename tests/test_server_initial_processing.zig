@@ -66,8 +66,9 @@ test "server processes Initial and queues response" {
     // Verify the connection is a server
     try std.testing.expectEqual(conn_mod.Role.Server, conn.role);
 
-    // Verify ServerHello was queued
-    try std.testing.expect(conn.tls.sh_seen);
+    // Verify ServerHello was processed (indicated by Handshake keys being installed)
+    // When server processes ClientHello, it derives Handshake secrets and installs keys
+    try std.testing.expect(conn.hs_tx_keys != null);
 
     std.debug.print("Test passed: Server processed Initial and queued ServerHello\n", .{});
 }

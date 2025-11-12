@@ -62,5 +62,5 @@ test "connection setLocalTransportParameters caches encoded bytes" {
 
     const cached = conn.getLocalTransportParams() orelse return error.ExpectedLocalParams;
     try std.testing.expect(std.mem.eql(u8, cached, local_tp[0..]));
-    try std.testing.expect(conn.tls.local_tp != null);
+    try std.testing.expect(conn.local_transport_params_raw != null);
 }

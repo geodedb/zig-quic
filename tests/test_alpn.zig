@@ -2,7 +2,7 @@ const std = @import("std");
 const conn_mod = @import("quic_conn");
 const tls13 = @import("quic_tls13");
 
-// Test that when negotiated ALPN matches allowed list, getter returns it and enforcement does not flip finished_verified.
+// Test that when negotiated ALPN matches allowed list, getter returns it and enforcement does not flip peer_finished_verified.
 test "alpn accept and getter" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -13,14 +13,15 @@ test "alpn accept and getter" {
     defer c.deinit();
 
     c.allowed_alpns = &[_][]const u8{"h3"};
-    c.tls.allow_insecure = false;
-    c.tls.finished_verified = true; // should remain true on accept
+    c.peer_finished_verified = true; // should remain true on accept
 
-    // Directly set ALPN on TLS engine (simulating negotiated value from EncryptedExtensions)
-    c.tls.alpn = try alloc.dupe(u8, "h3");
+    // Directly set negotiated ALPN (simulating negotiated value from EncryptedExtensions)
+    const alpn_copy = try alloc.dupe(u8, "h3");
+    errdefer alloc.free(alpn_copy);
+    c.negotiated_alpn = alpn_copy;
 
     // Validate ALPN against allowed list (inline logic from pushCrypto)
-    if (c.tls.alpn) |a| {
+    if (c.negotiated_alpn) |a| {
         if (c.allowed_alpns.len > 0) {
             var ok = false;
             for (c.allowed_alpns) |p| {
@@ -29,16 +30,16 @@ test "alpn accept and getter" {
                     break;
                 }
             }
-            if (!ok) c.tls.finished_verified = false;
+            if (!ok) c.updatePeerFinishedStatus(false);
         }
     }
 
     const got = c.getNegotiatedAlpn() orelse return error.ExpectedAlpn;
     try std.testing.expect(std.mem.eql(u8, got, "h3"));
-    try std.testing.expect(c.tls.finished_verified);
+    try std.testing.expect(c.peer_finished_verified);
 }
 
-// Test that when negotiated ALPN is not allowed, enforcement flips finished_verified to false.
+// Test that when negotiated ALPN is not allowed, enforcement flips peer_finished_verified to false.
 test "alpn reject not in allowed" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -49,14 +50,15 @@ test "alpn reject not in allowed" {
     defer c.deinit();
 
     c.allowed_alpns = &[_][]const u8{"hq-interop"};
-    c.tls.allow_insecure = false;
-    c.tls.finished_verified = true; // will be cleared on reject
+    c.peer_finished_verified = true; // will be cleared on reject
 
-    // Directly set ALPN on TLS engine (simulating negotiated value from EncryptedExtensions)
-    c.tls.alpn = try alloc.dupe(u8, "h3");
+    // Directly set negotiated ALPN (simulating negotiated value from EncryptedExtensions)
+    const alpn_copy = try alloc.dupe(u8, "h3");
+    errdefer alloc.free(alpn_copy);
+    c.negotiated_alpn = alpn_copy;
 
     // Validate ALPN against allowed list (inline logic from pushCrypto)
-    if (c.tls.alpn) |a| {
+    if (c.negotiated_alpn) |a| {
         if (c.allowed_alpns.len > 0) {
             var ok = false;
             for (c.allowed_alpns) |p| {
@@ -65,9 +67,9 @@ test "alpn reject not in allowed" {
                     break;
                 }
             }
-            if (!ok) c.tls.finished_verified = false;
+            if (!ok) c.updatePeerFinishedStatus(false);
         }
     }
 
-    try std.testing.expect(!c.tls.finished_verified);
+    try std.testing.expect(!c.peer_finished_verified);
 }

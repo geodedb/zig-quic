@@ -511,6 +511,7 @@ pub fn processCryptoFrame(
     offset: u64,
 ) !bool {
     const conn = ctx.conn;
+    const tls_ctx = conn.tls_context orelse return false; // No TLS Context, skip processing
 
     // RFC 9001 §4: Use vendor/ztls Context for CRYPTO processing
     // Map PacketNumberSpace to EncryptionLevel
@@ -549,7 +550,7 @@ pub fn processCryptoFrame(
             // - Handshake message parsing and validation
             // - State machine transitions (ClientHello → ServerHello → Finished)
             // - Callback invocation for secret installation (via onSecretAvailable)
-            try conn.tls_context.processCrypto(level, frag.data);
+            try tls_ctx.processCrypto(level, frag.data);
 
             rx_off_ptr.* += @intCast(frag.data.len);
         }
@@ -580,12 +581,13 @@ pub fn processCryptoFrame(
 /// when processing client's ClientHello via conn.handleInitialCrypto().
 pub fn sendServerHello(ctx: *HandshakeContext) !void {
     const conn = ctx.conn;
+    const tls_ctx = conn.tls_context orelse return error.NoTlsContext;
 
     // Check if we have Initial TX keys
     const initial_tx_keys = conn.initial_tx_keys orelse return error.NoInitialKeys;
 
     // Poll TLS Context for ServerHello at Initial level
-    const sh_data = conn.tls_context.pollCrypto(ctx.allocator.*, .Initial) catch {
+    const sh_data = tls_ctx.pollCrypto(ctx.allocator.*, .Initial) catch {
         // No ServerHello available yet
         std.debug.print("sendServerHello: Context has no Initial CRYPTO data\n", .{});
         return;
@@ -596,7 +598,7 @@ pub fn sendServerHello(ctx: *HandshakeContext) !void {
 
     // Also poll Handshake level for Certificate+Finished messages
     // These are stored in pending_hs_messages for sendHandshakePackets to send later
-    const hs_data = conn.tls_context.pollCrypto(ctx.allocator.*, .Handshake) catch |err| blk: {
+    const hs_data = tls_ctx.pollCrypto(ctx.allocator.*, .Handshake) catch |err| blk: {
         // It's okay if no Handshake data is available yet
         std.debug.print("sendServerHello: No Handshake CRYPTO data (error: {})\n", .{err});
         break :blk null;
@@ -825,6 +827,7 @@ fn sendHandshakePing(ctx: *HandshakeContext) !void {
 /// - error.SendFailed if UDP send fails
 pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
     const conn = ctx.conn;
+    const tls_ctx = conn.tls_context orelse return error.NoTlsContext;
 
     std.debug.print("sendHandshakePackets: ENTER\n", .{});
 
@@ -851,7 +854,7 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
         std.debug.print("sendHandshakePackets: No pending messages, checking TLS Context for new data\n", .{});
 
         // Poll TLS Context for Handshake-level CRYPTO data
-        const hs_data = conn.tls_context.pollCrypto(ctx.allocator.*, .Handshake) catch |err| blk: {
+        const hs_data = tls_ctx.pollCrypto(ctx.allocator.*, .Handshake) catch |err| blk: {
             std.debug.print("sendHandshakePackets: Context pollCrypto(.Handshake) returned error: {s}\n", .{@errorName(err)});
             break :blk null;
         };
