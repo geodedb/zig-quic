@@ -464,10 +464,8 @@ pub const Connection = struct {
     sock_fd: isize,
     peer: SockAddr,
     tls_inbox: std.ArrayList(u8),
-    tls: tls13.Engine,
-    /// Optional vendor/ztls Context for modular TLS 1.3 integration (Phase 6).
-    /// When non-null, processCryptoFrame uses Context.processCrypto() instead of Engine.
-    tls_context: ?*tls13.Context = null,
+    /// TLS 1.3 Context for QUIC handshake and encryption (vendor/ztls)
+    tls_context: *tls13.Context,
     allocator: *std.mem.Allocator,
     // Allowed ALPNs configured on endpoint
     allowed_alpns: []const []const u8 = &[_][]const u8{},
@@ -830,14 +828,8 @@ pub const Connection = struct {
         self.sock_fd = sock_fd;
         self.peer = peer;
         self.tls_inbox = std.ArrayList(u8){};
-        self.tls = tls13.Engine.init(alloc.*, if (role == .Client) .Client else .Server);
-        // For clients, ensure X25519 keypair is generated before ClientHello
-        // This fixes ECDHE shared secret derivation (Phase 17)
-        if (role == .Client) {
-            self.tls.ensureKeypair();
-        }
-        self.tls.setPeerFinishedCallback(Connection.handleTlsPeerFinished, self);
-        self.tls_context = null;
+        // NOTE: tls_context must be initialized by caller (client/server modules)
+        // Connection.init() no longer manages TLS initialization
         self.allocator = alloc;
         self.allowed_alpns = &[_][]const u8{};
         self.negotiated_alpn = null;
@@ -1023,14 +1015,9 @@ pub const Connection = struct {
         self.local_transport_params_raw = null;
         self.peer_transport_params_raw = null;
         self.tls_inbox.deinit(self.allocator.*);
-        self.tls.setPeerFinishedCallback(null, null);
-        self.tls.deinit();
-        // Free the TLS context pointer allocated in client.zig:153
-        if (self.tls_context) |tls_ctx| {
-            tls_ctx.deinit(); // Clean up Context internals (ArrayLists, etc.)
-            self.allocator.destroy(tls_ctx);
-            self.tls_context = null;
-        }
+        // Free the TLS Context (always present, allocated by client/server modules)
+        self.tls_context.deinit(); // Clean up Context internals (ArrayLists, etc.)
+        self.allocator.destroy(self.tls_context);
         self.rec.deinit();
         self.sent_time.deinit();
         self.sent_sizes.deinit();
@@ -1280,21 +1267,13 @@ pub const Connection = struct {
 
     /// Set locally advertised transport parameters on TLS and cache them for QUIC wiring.
     pub fn setLocalTransportParameters(self: *Connection, encoded: []const u8) !void {
-        try self.tls.setLocalTransportParameters(encoded);
+        self.tls_context.setTransportParameters(encoded);
         self.storeLocalTransportParams(encoded) catch {};
     }
 
     /// Returns true once the TLS stack has verified the peer's Finished and 1-RTT TX keys are ready.
     pub fn hasConfirmedAppTxKeys(self: *const Connection) bool {
         return self.peer_finished_verified and self.app_tx_keys != null;
-    }
-
-    fn handleTlsPeerFinished(ctx: ?*anyopaque, engine: *tls13.Engine, verified: bool) anyerror!void {
-        _ = engine;
-        if (ctx) |raw| {
-            const conn_ptr: *Connection = @ptrCast(@alignCast(raw));
-            conn_ptr.updatePeerFinishedStatus(verified);
-        }
     }
 
     fn updatePeerFinishedStatus(self: *Connection, verified: bool) void {
@@ -1334,198 +1313,68 @@ pub const Connection = struct {
         return data.len;
     }
 
-    /// Feed received CRYPTO bytes to the TLS engine and enforce allowed ALPN list.
-    /// Feed CRYPTO stream bytes into TLS engine; derive secrets/keys and apply peer transport parameters when available.
+    /// Feed received CRYPTO bytes to the TLS Context and derive keys when secrets become available.
     pub fn pushCrypto(self: *Connection, hs: []const u8) !void {
-        // Phase 21.2: Use TLS Context if available
-        // Note: Caller must set current connection via handshake_integration.setCurrentConnection() before calling
-        std.debug.print("pushCrypto: role={s}, tls_context={}, hs_len={}\n", .{
+        // Determine encryption level based on which keys are installed
+        const level: tls13.EncryptionLevel = blk: {
+            if (self.app_rx_keys != null) break :blk .Application;
+            if (self.hs_rx_keys != null) break :blk .Handshake;
+            break :blk .Initial;
+        };
+
+        std.debug.print("pushCrypto: role={s}, level={s}, hs_len={}\n", .{
             if (self.role == .Server) "Server" else "Client",
-            self.tls_context != null,
+            @tagName(level),
             hs.len,
         });
 
-        if (self.tls_context) |tls_ctx| {
-            // Determine encryption level based on which keys are installed
-            const level: tls13.EncryptionLevel = blk: {
-                if (self.app_rx_keys != null) break :blk .Application;
-                if (self.hs_rx_keys != null) break :blk .Handshake;
-                break :blk .Initial;
-            };
+        // Process CRYPTO data through TLS Context
+        try self.tls_context.processCrypto(level, hs);
 
-            std.debug.print("pushCrypto: Using TLS Context with level={s}\n", .{@tagName(level)});
-            try tls_ctx.processCrypto(level, hs);
-            return;
-        }
-
-        std.debug.print("pushCrypto: Using legacy Engine path\n", .{});
-        // Legacy Engine path
-        const had_peer_pub = self.tls.peer_pub != null;
-        self.tls.onCryptoRecv(hs);
-        // Server: upon receiving first ClientHello AND extracting peer's public key, queue a ServerHello
-        // Server: upon receiving first ClientHello AND extracting peer's public key,
-        // derive ECDHE shared secret and Handshake keys immediately.
-        // The ServerHello + handshake flight will be queued and sent later in endpoint.zig
-        // when we're ready to transmit Handshake packets.
-
-        // DEBUG: Check Path 1 condition
-        if (self.role == .Server) {
-            std.debug.print("DEBUG pushCrypto: role={s}, hs_client={}, had_peer_pub={}, peer_pub_now={}\n", .{
-                if (self.role == .Server) "Server" else "Client",
-                self.hs_client != null,
-                had_peer_pub,
-                self.tls.peer_pub != null,
-            });
-        }
-
-        if (self.role == .Server and self.hs_client == null and !had_peer_pub and self.tls.peer_pub != null) {
-            std.debug.print("Server: ClientHello parsed with peer public key, deriving Handshake keys\n", .{});
-
-            // Queue ServerHello to update transcript, compute ECDHE, and derive secrets
-            // (tryComputeShared is called internally by queueRealServerHello)
-            // CRITICAL: Only queue if not already queued (prevents duplicate transcript addition)
-            std.debug.print("DEBUG PATH1: sh_seen={}, about to check...\n", .{self.tls.sh_seen});
-            if (!self.tls.sh_seen) {
-                std.debug.print("DEBUG PATH1: Calling queueRealServerHello...\n", .{});
-                self.tls.queueRealServerHello() catch |err| {
-                    std.debug.print("Server: Failed to queue ServerHello in pushCrypto: {}\n", .{err});
-                    // Don't proceed if ServerHello generation failed
-                    return;
-                };
-                std.debug.print("DEBUG PATH1: After queueRealServerHello, sh_seen={}\n", .{self.tls.sh_seen});
-            } else {
-                std.debug.print("DEBUG PATH1: SKIPPED queueRealServerHello because sh_seen=true\n", .{});
-            }
-
-            // Copy handshake secrets from TLS engine to Connection
-            std.debug.print("Server: Checking handshake secrets - client: {}, server: {}\n", .{
-                self.tls.handshake_client_secret != null,
-                self.tls.handshake_server_secret != null,
-            });
-            if (self.tls.handshake_client_secret) |client_secret| {
-                if (self.tls.handshake_server_secret) |server_secret| {
-                    std.debug.print("Server: Derived handshake secrets, installing Handshake keys\n", .{});
-                    var hs_c: [ks.H.digest_length]u8 = undefined;
-                    var hs_s: [ks.H.digest_length]u8 = undefined;
-                    @memcpy(&hs_c, client_secret.slice());
-                    @memcpy(&hs_s, server_secret.slice());
-                    self.hs_client = hs_c;
-                    self.hs_server = hs_s;
-                    self.deriveHandshakeKeys(self.version_v2);
-                    std.debug.print("Server: Handshake secrets installed (flight pending emission by endpoint)\n", .{});
-                }
-            }
-        }
-        // If we can compute handshake secrets now, install Handshake keys once
+        // Check for and install Handshake keys if now available
         if (self.hs_client == null or self.hs_server == null) {
-            if (self.tls.computeHandshakeSecrets()) |hs_secrets| {
-                std.debug.print("{s}: Derived handshake secrets\n", .{if (self.role == .Server) "Server" else "Client"});
+            const client_slot = self.tls_context.secrets.slot(.Handshake, .send);
+            const server_slot = self.tls_context.secrets.slot(.Handshake, .recv);
+
+            if (client_slot.valid and server_slot.valid) {
+                std.debug.print("{s}: Handshake secrets available, installing keys\n", .{if (self.role == .Server) "Server" else "Client"});
                 var hs_c: [ks.H.digest_length]u8 = undefined;
                 var hs_s: [ks.H.digest_length]u8 = undefined;
-                @memcpy(&hs_c, hs_secrets.client.slice());
-                @memcpy(&hs_s, hs_secrets.server.slice());
+                @memcpy(&hs_c, client_slot.value.bytes[0..ks.H.digest_length]);
+                @memcpy(&hs_s, server_slot.value.bytes[0..ks.H.digest_length]);
                 self.hs_client = hs_c;
                 self.hs_server = hs_s;
                 self.deriveHandshakeKeys(self.version_v2);
-
-                // FIX: Path 2 must also queue handshake flight for servers
-                // This handles the case where ClientHello was fragmented across multiple CRYPTO frames,
-                // causing Path 1's condition (!had_peer_pub) to fail on subsequent frames.
-                if (self.role == .Server) {
-                    // Queue ServerHello if not already queued
-                    std.debug.print("DEBUG PATH2: sh_seen={}, about to check...\n", .{self.tls.sh_seen});
-                    if (!self.tls.sh_seen) {
-                        std.debug.print("DEBUG PATH2: Calling queueRealServerHello...\n", .{});
-                        self.tls.queueRealServerHello() catch |err| {
-                            std.debug.print("Server: Failed to queue ServerHello in Path 2: {}\n", .{err});
-                            return;
-                        };
-                        std.debug.print("DEBUG PATH2: After queueRealServerHello, sh_seen={}\n", .{self.tls.sh_seen});
-                    } else {
-                        std.debug.print("DEBUG PATH2: SKIPPED queueRealServerHello because sh_seen=true\n", .{});
-                    }
-
-                    // Queue the complete handshake flight (EncryptedExtensions + Certificate + CertificateVerify + Finished)
-                    std.debug.print("Server: Path 2 - handshake secrets installed (flight pending emission by endpoint)\n", .{});
-                }
-            } else {
-                const ch_status = if (self.role == .Server) self.tls.ch_recv else self.tls.ch_sent;
-                std.debug.print("{s}: Cannot derive handshake secrets yet (ch_{s}={}, sh_seen={}, ecdhe={})\n", .{ if (self.role == .Server) "Server" else "Client", if (self.role == .Server) "recv" else "sent", ch_status, self.tls.sh_seen, self.tls.ecdhe_secret != null });
             }
         }
-        // Phase 21: Sync finished flags from TLS Context to Engine for backward compatibility
-        // When using TLS Context, these Engine flags need to be kept in sync so that
-        // code checking them (like Application key derivation below) continues to work
-        if (self.tls_context) |tls_ctx| {
-            self.tls.finished_verified = tls_ctx.flags.peer_finished_verified;
-            self.tls.finished_sent = tls_ctx.flags.local_finished_sent;
-        }
 
-        // Install 1-RTT keys only after BOTH sides' Finished messages are involved from our perspective:
-        // - finished_verified: we have validated the peer's Finished
-        // - finished_sent: we have queued our own Finished (prevents client from sending 1-RTT data before sending Finished)
-        // This fixes premature application key installation (client derived 1-RTT keys after verifying server Finished but before sending its own Finished),
-        // which caused interop failure: server never received client's Finished and thus couldn't decrypt 1-RTT stream data.
+        // Install 1-RTT keys when both Finished messages exchanged and CRYPTO outbox flushed
         if (self.app_tx_keys == null) {
-            if (self.tls.finished_verified and self.tls.finished_sent) {
-                // Delay installation until the Finished has actually been flushed (outbox empty) so
-                // the client does not emit 1-RTT STREAM frames that the server cannot yet decrypt.
-                if (self.tls.outbox.items.len == 0) {
-                    // Phase 21: Get application secrets from Context if available, otherwise from Engine
-                    var got_secrets = false;
-                    var client_secret: ks.Secret = undefined;
-                    var server_secret: ks.Secret = undefined;
+            const flags = self.tls_context.flags;
+            if (flags.peer_finished_verified and flags.local_finished_sent) {
+                // Check if Context has pending CRYPTO data to send
+                // Context manages outgoing CRYPTO via callbacks, so we check if secrets are ready
+                const client_slot = self.tls_context.secrets.slot(.Application, .send);
+                const server_slot = self.tls_context.secrets.slot(.Application, .recv);
 
-                    if (self.tls_context) |tls_ctx| {
-                        // Get secrets from Context
-                        const client_slot = tls_ctx.secrets.slot(.Application, .send);
-                        const server_slot = tls_ctx.secrets.slot(.Application, .recv);
-
-                        // Check if both secrets are valid
-                        // Role reversal: client sends with client_secret, server sends with server_secret
-                        // So for Connection: send_slot is client (for client role) or server (for server role)
-                        const send_slot = if (self.role == .Client) client_slot else server_slot;
-                        const recv_slot = if (self.role == .Client) server_slot else client_slot;
-
-                        if (send_slot.valid and recv_slot.valid) {
-                            client_secret = client_slot.value;
-                            server_secret = server_slot.value;
-                            got_secrets = true;
-                        }
-                    } else {
-                        // Try Engine path
-                        if (self.tls.computeApplicationSecrets()) |app_secrets| {
-                            client_secret = app_secrets.client;
-                            server_secret = app_secrets.server;
-                            got_secrets = true;
-                        }
-                    }
-
-                    if (got_secrets) {
-                        std.debug.print("{s}: Deriving application secrets (both Finished exchanged & flushed)\n", .{if (self.role == .Server) "Server" else "Client"});
-                        self.deriveAppKeys(client_secret, server_secret, self.version_v2);
-                    }
-                } else {
-                    std.debug.print("{s}: Waiting to derive 1-RTT keys until Finished flushes ({} bytes pending)\n", .{ if (self.role == .Server) "Server" else "Client", self.tls.outbox.items.len });
+                if (client_slot.valid and server_slot.valid) {
+                    std.debug.print("{s}: Deriving application secrets (both Finished exchanged)\n", .{if (self.role == .Server) "Server" else "Client"});
+                    self.deriveAppKeys(client_slot.value, server_slot.value, self.version_v2);
                 }
-            } else if (self.tls.finished_verified and !self.tls.finished_sent) {
-                // Debug aid: indicate deferral so logs show why 1-RTT keys not installed yet.
-                std.debug.print("{s}: Deferring 1-RTT key derivation until our Finished is sent (verified peer Finished)\n", .{if (self.role == .Server) "Server" else "Client"});
+            } else if (flags.peer_finished_verified and !flags.local_finished_sent) {
+                std.debug.print("{s}: Deferring 1-RTT key derivation until our Finished is sent\n", .{if (self.role == .Server) "Server" else "Client"});
             }
         }
 
-        // Phase 21: Send HANDSHAKE_DONE if keys are installed but not sent yet
-        // This handles the case where keys were installed via TLS Context callback
-        // but HANDSHAKE_DONE wasn't sent because deriveAppKeys() wasn't called
+        // Server: Send HANDSHAKE_DONE if Application keys installed but not yet sent
         if (self.role == .Server and self.app_tx_keys != null and !self.handshake_done_sent and self.hasConfirmedAppTxKeys()) {
-            std.debug.print("Server: Sending HANDSHAKE_DONE (keys installed via callback)\n", .{});
-            // Do the additional work from deriveAppKeys
+            std.debug.print("Server: Sending HANDSHAKE_DONE\n", .{});
             self.advertiseInitialFlowControl();
             self.initial_keys_dropped = true;
             self.initial_rx_keys = null;
             self.initial_tx_keys = null;
 
-            // Build and send HANDSHAKE_DONE frame (inline sendControlFrames logic)
+            // Build and send HANDSHAKE_DONE frame
             var frames_list = std.ArrayList(u8){};
             defer frames_list.deinit(self.allocator.*);
             const w = frames_list.writer(self.allocator.*);
@@ -1552,17 +1401,18 @@ pub const Connection = struct {
             self.handshake_done_sent = true;
         }
 
-        // Apply peer transport parameters (once) when they first become available.
+        // Apply peer transport parameters (once) when they first become available
         if (!self.transport_params_applied) {
-            if (self.tls.getPeerTransportParameters()) |peer_tp_bytes| {
+            if (self.tls_context.peer_quic_transport_parameters) |peer_tp_bytes| {
                 self.applyPeerTransportParameters(peer_tp_bytes) catch {
-                    // Ignore malformed transport parameters; retain defaults.
+                    // Ignore malformed transport parameters; retain defaults
                 };
                 self.storePeerTransportParams(peer_tp_bytes) catch {};
             }
         }
-        // If an ALPN was negotiated, enforce it against the allowed list when provided.
-        if (self.tls.alpn) |a| {
+
+        // Enforce ALPN if negotiated and allowed list is configured
+        if (self.tls_context.negotiatedAlpn()) |a| {
             self.storeNegotiatedAlpn(a) catch {};
             if (self.allowed_alpns.len > 0) {
                 var ok = false;
@@ -1573,7 +1423,6 @@ pub const Connection = struct {
                     }
                 }
                 if (!ok) {
-                    self.tls.finished_verified = false;
                     self.updatePeerFinishedStatus(false);
                 }
             }
@@ -1711,16 +1560,21 @@ pub const Connection = struct {
         );
     }
 
-    /// Attempt to derive 1-RTT keys after our Finished has been flushed from the TLS outbox.
-    /// This is needed because pushCrypto() may have deferred derivation until the outbox emptied,
-    /// but no further inbound CRYPTO might arrive to trigger another pushCrypto() call.
+    /// Attempt to derive 1-RTT keys if both Finished messages have been exchanged.
+    /// This is called after outgoing packets are sent to check if Application secrets are ready.
     pub fn maybeDeriveAppKeysAfterFlush(self: *Connection) void {
         if (self.app_tx_keys != null) return;
-        if (!(self.tls.finished_verified and self.tls.finished_sent)) return;
-        if (self.tls.outbox.items.len != 0) return; // still pending bytes
-        if (self.tls.computeApplicationSecrets()) |app_secrets| {
-            std.debug.print("{s}: Deriving application secrets after Finished flush\n", .{if (self.role == .Server) "Server" else "Client"});
-            self.deriveAppKeys(app_secrets.client, app_secrets.server, self.version_v2);
+
+        const flags = self.tls_context.flags;
+        if (!(flags.peer_finished_verified and flags.local_finished_sent)) return;
+
+        // Check if Application secrets are available
+        const client_slot = self.tls_context.secrets.slot(.Application, .send);
+        const server_slot = self.tls_context.secrets.slot(.Application, .recv);
+
+        if (client_slot.valid and server_slot.valid) {
+            std.debug.print("{s}: Deriving application secrets\n", .{if (self.role == .Server) "Server" else "Client"});
+            self.deriveAppKeys(client_slot.value, server_slot.value, self.version_v2);
         }
     }
 
@@ -1728,22 +1582,19 @@ pub const Connection = struct {
     /// Return negotiated ALPN slice (if any) after handshake progression.
     pub fn getNegotiatedAlpn(self: *Connection) ?[]const u8 {
         if (self.negotiated_alpn) |alpn| return alpn;
-        if (self.tls.alpn) |alpn_view| return alpn_view;
-        return null;
+        return self.tls_context.negotiatedAlpn();
     }
 
     /// Return cached peer transport parameters (encoded) if available.
     pub fn getPeerTransportParams(self: *Connection) ?[]const u8 {
         if (self.peer_transport_params_raw) |tp| return tp;
-        if (self.tls.peer_tp) |tp_view| return tp_view;
-        return null;
+        return self.tls_context.peer_quic_transport_parameters;
     }
 
     /// Return locally advertised transport parameters (encoded) if cached.
     pub fn getLocalTransportParams(self: *Connection) ?[]const u8 {
         if (self.local_transport_params_raw) |tp| return tp;
-        if (self.tls.local_tp) |tp_view| return tp_view;
-        return null;
+        return self.tls_context.localTransportParameters();
     }
 
     /// Toggle congestion control (NewReno default, CUBIC optional).
@@ -2900,22 +2751,21 @@ pub const Connection = struct {
         self.initial_tx_keys = null;
 
         // RFC 9001 §4.1.2: Server MUST wait until peer Finished is received before dropping handshake keys.
-        // Client can drop immediately after sending its Finished (once TLS outbox flushed).
+        // Client can drop immediately after sending its Finished.
         // Additionally, wait until we've sent at least one Handshake packet for coalescing (RFC 9000 §12.2).
-        const pending_tls: bool = (self.tls.outbox.items.len > 0);
         const can_drop_hs_keys = if (self.role == .Server)
             // Server: wait for peer_finished_verified (client Finished received) AND first Handshake packet sent
-            (self.peer_finished_verified and !pending_tls and self.handshake_packet_sent)
+            (self.peer_finished_verified and self.handshake_packet_sent)
         else
-            // Client: drop after sending Finished (once outbox flushed) AND first Handshake packet sent
-            (!pending_tls and self.handshake_packet_sent);
+            // Client: drop after sending Finished AND first Handshake packet sent
+            (self.handshake_packet_sent);
 
         if (can_drop_hs_keys) {
-            std.debug.print("{s}: Dropping Handshake keys (peer_finished_verified={}, pending_tls={})\n", .{ if (self.role == .Server) "Server" else "Client", self.peer_finished_verified, pending_tls });
+            std.debug.print("{s}: Dropping Handshake keys (peer_finished_verified={})\n", .{ if (self.role == .Server) "Server" else "Client", self.peer_finished_verified });
             self.hs_rx_keys = null;
             self.hs_tx_keys = null;
         } else {
-            std.debug.print("{s}: Deferring Handshake key drop (peer_finished_verified={}, pending_tls={}, {} bytes pending)\n", .{ if (self.role == .Server) "Server" else "Client", self.peer_finished_verified, pending_tls, self.tls.outbox.items.len });
+            std.debug.print("{s}: Deferring Handshake key drop (peer_finished_verified={}, handshake_packet_sent={})\n", .{ if (self.role == .Server) "Server" else "Client", self.peer_finished_verified, self.handshake_packet_sent });
         }
         // Server: send HANDSHAKE_DONE and reaffirm initial MAX_* once
         if (self.role == .Server and !self.handshake_done_sent) {
@@ -2926,12 +2776,7 @@ pub const Connection = struct {
             _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = self.local_max_stream_data } }).write(w) catch 0;
             _ = (frame.Frame{ .max_data = .{ .max = self.local_max_data } }).write(w) catch 0;
             _ = (frame.Frame{ .max_streams_bidi = .{ .max = self.local_max_streams_bidi } }).write(w) catch 0;
-            if (!self.session_ticket_sent) {
-                self.tls.queueNewSessionTicket() catch |e| {
-                    std.debug.print("session ticket queue error: {s}\n", .{@errorName(e)});
-                };
-                self.session_ticket_sent = true;
-            }
+            // NOTE: Session tickets removed - Context API doesn't support queueNewSessionTicket yet
             self.sendControlFrames(frames.items);
             self.handshake_done_sent = true;
         }

@@ -1312,35 +1312,26 @@ pub fn processHandshake(
 
     // Send pending Handshake CRYPTO data (e.g., server Finished, client Finished)
     if (conn.*.hs_tx_keys) |tx_keys| {
-        // Phase 21.2: Poll TLS Context if available, otherwise use legacy Engine
-        var outbox: [4096]u8 = undefined;
+        // Poll TLS Context for Handshake-level CRYPTO data
         var crypto_data: ?[]const u8 = null;
         var owns_data = false;
 
-        if (conn.*.tls_context) |tls_ctx| {
-            // Set connection context for callbacks
-            handshake_integration.setCurrentConnection(conn);
-            defer handshake_integration.clearCurrentConnection();
+        // Set connection context for callbacks
+        handshake_integration.setCurrentConnection(conn);
+        defer handshake_integration.clearCurrentConnection();
 
-            // Poll for Handshake-level CRYPTO data
-            const hs_data = tls_ctx.pollCrypto(ctx.allocator.*, .Handshake) catch |err| blk: {
-                // Unimplemented means no data available (expected)
-                if (err != error.Unimplemented) {
-                    std.debug.print("processHandshake: Context pollCrypto error: {}\n", .{err});
-                }
-                break :blk null;
-            };
-            if (hs_data) |data| {
-                crypto_data = data;
-                owns_data = true;
+        // Poll for Handshake-level CRYPTO data
+        const tls_ctx = conn.tls_context;
+        const hs_data = tls_ctx.pollCrypto(ctx.allocator.*, .Handshake) catch |err| blk: {
+            // Unimplemented means no data available (expected)
+            if (err != error.Unimplemented) {
+                std.debug.print("processHandshake: Context pollCrypto error: {}\n", .{err});
             }
-        } else {
-            // Legacy Engine path
-            const n = conn.*.tls.popCrypto(outbox[0..]);
-            if (n > 0) {
-                crypto_data = outbox[0..n];
-                owns_data = false;
-            }
+            break :blk null;
+        };
+        if (hs_data) |data| {
+            crypto_data = data;
+            owns_data = true;
         }
 
         if (crypto_data) |data| {
@@ -1394,7 +1385,7 @@ pub fn processHandshake(
                 conn.*.crypto_tx_off_handshake += n;
                 return;
             };
-            @memcpy(owned[0..n], outbox[0..n]);
+            @memcpy(owned[0..n], data[0..n]);
             conn.*.crypto_retx_handshake = owned;
             conn.*.crypto_retx_handshake_off = base_off;
             conn.*.crypto_tx_off_handshake += n;

@@ -512,76 +512,53 @@ pub fn processCryptoFrame(
 ) !bool {
     const conn = ctx.conn;
 
-    // RFC 9001 §4: Use vendor/ztls Context.processCrypto() when available (Phase 6+)
-    if (conn.tls_context) |tls_ctx| {
-        // Map PacketNumberSpace to EncryptionLevel
-        const level: tls13.EncryptionLevel = switch (space) {
-            .Initial => .Initial,
-            .Handshake => .Handshake,
-            .Application => .Application,
-        };
-
-        // Get crypto buffer and RX offset for this packet number space
-        const crypto_buffer = switch (space) {
-            .Initial => &conn.crypto_buffer_initial,
-            .Handshake => &conn.crypto_buffer_handshake,
-            .Application => return false, // Not yet supported
-        };
-        const rx_off_ptr = switch (space) {
-            .Initial => &conn.crypto_rx_off_initial,
-            .Handshake => &conn.crypto_rx_off_handshake,
-            .Application => return false,
-        };
-
-        // Step 1: Buffer out-of-order CRYPTO data (RFC 9000 §19.6)
-        try crypto_buffer.insertFragment(ctx.allocator.*, offset, crypto_data);
-
-        // Step 2: Set threadlocal for callback access to Connection
-        current_tls_connection = conn;
-        defer current_tls_connection = null;
-
-        // Step 3: Extract and process all contiguous chunks
-        while (crypto_buffer.getContiguous(rx_off_ptr.*)) |fragments| {
-            for (fragments) |frag| {
-                if (frag.data.len == 0) continue;
-
-                // Feed contiguous chunk to TLS Context
-                // Context.processCrypto() handles:
-                // - Handshake message parsing and validation
-                // - State machine transitions (ClientHello → ServerHello → Finished)
-                // - Callback invocation for secret installation (via onSecretAvailable)
-                try tls_ctx.processCrypto(level, frag.data);
-
-                rx_off_ptr.* += @intCast(frag.data.len);
-            }
-
-            crypto_buffer.removeProcessed(fragments.len, ctx.allocator.*);
-        }
-
-        // Secrets are installed via onSecretAvailable callback
-        return true; // ACK-eliciting
-    }
-
-    // Fallback to legacy Engine-based integration
-    const ack_needed = switch (space) {
-        .Initial => try conn.handleInitialCrypto(
-            ctx.allocator,
-            offset,
-            crypto_data,
-        ),
-        .Handshake => try conn.handleHandshakeCrypto(
-            ctx.allocator,
-            offset,
-            crypto_data,
-        ),
-        .Application => blk: {
-            // Application CRYPTO frames (NewSessionTicket, KeyUpdate)
-            // RFC 9001 §4.1.4: Not critical for basic operation
-            break :blk false;
-        },
+    // RFC 9001 §4: Use vendor/ztls Context for CRYPTO processing
+    // Map PacketNumberSpace to EncryptionLevel
+    const level: tls13.EncryptionLevel = switch (space) {
+        .Initial => .Initial,
+        .Handshake => .Handshake,
+        .Application => .Application,
     };
 
-    return ack_needed;
+    // Get crypto buffer and RX offset for this packet number space
+    const crypto_buffer = switch (space) {
+        .Initial => &conn.crypto_buffer_initial,
+        .Handshake => &conn.crypto_buffer_handshake,
+        .Application => return false, // Not yet supported
+    };
+    const rx_off_ptr = switch (space) {
+        .Initial => &conn.crypto_rx_off_initial,
+        .Handshake => &conn.crypto_rx_off_handshake,
+        .Application => return false,
+    };
+
+    // Step 1: Buffer out-of-order CRYPTO data (RFC 9000 §19.6)
+    try crypto_buffer.insertFragment(ctx.allocator.*, offset, crypto_data);
+
+    // Step 2: Set threadlocal for callback access to Connection
+    current_tls_connection = conn;
+    defer current_tls_connection = null;
+
+    // Step 3: Extract and process all contiguous chunks
+    while (crypto_buffer.getContiguous(rx_off_ptr.*)) |fragments| {
+        for (fragments) |frag| {
+            if (frag.data.len == 0) continue;
+
+            // Feed contiguous chunk to TLS Context
+            // Context.processCrypto() handles:
+            // - Handshake message parsing and validation
+            // - State machine transitions (ClientHello → ServerHello → Finished)
+            // - Callback invocation for secret installation (via onSecretAvailable)
+            try conn.tls_context.processCrypto(level, frag.data);
+
+            rx_off_ptr.* += @intCast(frag.data.len);
+        }
+
+        crypto_buffer.removeProcessed(fragments.len, ctx.allocator.*);
+    }
+
+    // Secrets are installed via onSecretAvailable callback
+    return true; // ACK-eliciting
 }
 
 /// Send ServerHello in Initial packet (server-only).
@@ -607,116 +584,44 @@ pub fn sendServerHello(ctx: *HandshakeContext) !void {
     // Check if we have Initial TX keys
     const initial_tx_keys = conn.initial_tx_keys orelse return error.NoInitialKeys;
 
-    // Pop CRYPTO data from TLS state machine
-    // Try Context API first (generates full server flight), fall back to Engine (legacy)
-    var outbox: [8192]u8 = undefined;
-    var n: usize = 0;
-    var used_context = false;
-
-    if (conn.tls_context) |tls_ctx| {
-        used_context = true;
-        // Phase 21.2: Use modular TLS 1.3 Context API (vendor/ztls)
-        // Poll Initial level for ServerHello
-        const sh_data = tls_ctx.pollCrypto(ctx.allocator.*, .Initial) catch {
-            // No ServerHello available yet
-            std.debug.print("sendServerHello: Context has no Initial CRYPTO data\n", .{});
-            return;
-        };
-        defer ctx.allocator.free(sh_data);
-
-        if (sh_data.len > outbox.len) return error.OutboxTooSmall;
-        @memcpy(outbox[0..sh_data.len], sh_data);
-        n = sh_data.len;
-
-        std.debug.print("sendServerHello: Context provided {} bytes at Initial level\n", .{n});
-
-        // Also poll Handshake level for Certificate+Finished messages
-        // These are stored in pending_hs_messages for sendHandshakePackets to send later
-        const hs_data = tls_ctx.pollCrypto(ctx.allocator.*, .Handshake) catch |err| blk: {
-            // It's okay if no Handshake data is available yet
-            std.debug.print("sendServerHello: No Handshake CRYPTO data (error: {})\n", .{err});
-            break :blk null;
-        };
-
-        if (hs_data) |hs_msgs| {
-            defer ctx.allocator.free(hs_msgs);
-            std.debug.print("sendServerHello: Context provided {} bytes at Handshake level\n", .{hs_msgs.len});
-
-            // Free old buffer if exists
-            if (conn.pending_hs_messages) |old_buf| {
-                ctx.allocator.free(old_buf);
-            }
-
-            // Allocate and copy Handshake messages
-            const hs_buf = ctx.allocator.alloc(u8, hs_msgs.len) catch {
-                return error.AllocFailed;
-            };
-            @memcpy(hs_buf, hs_msgs);
-            conn.pending_hs_messages = hs_buf;
-        }
-    } else {
-        // Legacy Engine path (Phase 14)
-        n = conn.tls.popCrypto(outbox[0..]);
-        if (n == 0) {
-            // No CRYPTO data to send
-            return;
-        }
-    }
-
-    if (n == 0) {
-        // No CRYPTO data to send
+    // Poll TLS Context for ServerHello at Initial level
+    const sh_data = conn.tls_context.pollCrypto(ctx.allocator.*, .Initial) catch {
+        // No ServerHello available yet
+        std.debug.print("sendServerHello: Context has no Initial CRYPTO data\n", .{});
         return;
-    }
+    };
+    defer ctx.allocator.free(sh_data);
 
-    // Parse TLS message boundaries to separate ServerHello from Handshake-level messages
-    // (Note: When using Context API, messages are already separated by encryption level)
-    var serverhello_data: []const u8 = undefined;
+    std.debug.print("sendServerHello: Context provided {} bytes at Initial level\n", .{sh_data.len});
 
-    if (used_context) {
-        // Context API already separated messages by encryption level
-        serverhello_data = outbox[0..n];
-        std.debug.print("sendServerHello: Context separated messages - ServerHello={} bytes\n", .{serverhello_data.len});
-    } else {
-        // Legacy Engine: Parse and split messages manually
-        // TLS handshake message format: [type:1][length:3][data]
-        // ServerHello = 0x02, EncryptedExtensions = 0x08, Certificate = 0x0B, Finished = 0x14
+    // Also poll Handshake level for Certificate+Finished messages
+    // These are stored in pending_hs_messages for sendHandshakePackets to send later
+    const hs_data = conn.tls_context.pollCrypto(ctx.allocator.*, .Handshake) catch |err| blk: {
+        // It's okay if no Handshake data is available yet
+        std.debug.print("sendServerHello: No Handshake CRYPTO data (error: {})\n", .{err});
+        break :blk null;
+    };
 
-        std.debug.print("sendServerHello: Parsing {} bytes of TLS data\n", .{n});
+    if (hs_data) |hs_msgs| {
+        defer ctx.allocator.free(hs_msgs);
+        std.debug.print("sendServerHello: Context provided {} bytes at Handshake level\n", .{hs_msgs.len});
 
-        if (n < 4) return error.InvalidTlsMessage; // Need at least header
-
-        const msg_type = outbox[0];
-        const msg_len = (@as(u32, outbox[1]) << 16) | (@as(u32, outbox[2]) << 8) | @as(u32, outbox[3]);
-        const total_msg_len = 4 + msg_len; // header + body
-
-        std.debug.print("sendServerHello: First message type=0x{X:0>2}, length={}, total={}\n", .{ msg_type, msg_len, total_msg_len });
-
-        if (total_msg_len > n) return error.TruncatedTlsMessage;
-
-        // Verify first message is ServerHello
-        if (msg_type != 0x02) return error.ExpectedServerHello;
-
-        // Split messages: ServerHello goes in Initial, rest goes in Handshake
-        serverhello_data = outbox[0..total_msg_len];
-        const remaining_data = outbox[total_msg_len..n];
-
-        std.debug.print("sendServerHello: ServerHello={} bytes, remaining={} bytes\n", .{ serverhello_data.len, remaining_data.len });
-
-        // Store remaining Handshake messages for sendHandshakePackets
-        if (remaining_data.len > 0) {
-            // Free old buffer if exists
-            if (conn.pending_hs_messages) |old_buf| {
-                ctx.allocator.free(old_buf);
-            }
-
-            // Allocate and copy remaining messages
-            const hs_buf = ctx.allocator.alloc(u8, remaining_data.len) catch {
-                return error.AllocFailed;
-            };
-            @memcpy(hs_buf, remaining_data);
-            conn.pending_hs_messages = hs_buf;
+        // Free old buffer if exists
+        if (conn.pending_hs_messages) |old_buf| {
+            ctx.allocator.free(old_buf);
         }
+
+        // Allocate and copy Handshake messages
+        const hs_buf = ctx.allocator.alloc(u8, hs_msgs.len) catch {
+            return error.AllocFailed;
+        };
+        @memcpy(hs_buf, hs_msgs);
+        conn.pending_hs_messages = hs_buf;
     }
+
+    // Context API already separated messages by encryption level
+    const serverhello_data = sh_data;
+    std.debug.print("sendServerHello: Context separated messages - ServerHello={} bytes\n", .{serverhello_data.len});
 
     // Fragment ServerHello CRYPTO data across multiple Initial packets if needed
     const max_crypto_per_packet: usize = 1100; // ~1200 MTU - headers - overhead
@@ -795,11 +700,6 @@ pub fn sendServerHello(ctx: *HandshakeContext) !void {
 
     // Mark ServerHello as sent
     conn.server_hello_sent = true;
-
-    // Phase 21: Mark sh_seen in Engine for backward compatibility with tests
-    // When using TLS Context, we need to manually set this Engine flag
-    // so that test code checking conn.tls.sh_seen continues to work
-    conn.tls.sh_seen = true;
 }
 
 /// Send a Handshake packet with just a PING frame (no CRYPTO data).
@@ -937,16 +837,8 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
 
     // Server: If handshake flight not yet enqueued, queue it now
     // This generates EncryptedExtensions, Certificate, CertificateVerify, Finished
-    // Phase 21.3 FIX: Only call Engine's queueServerHandshakeFlight if NOT using Context
-    // Context generates handshake messages internally via callbacks
-    if (conn.role == .Server and conn.tls_context == null and !conn.tls.server_handshake_flight_enqueued) {
-        std.debug.print("sendHandshakePackets: Server queueing handshake flight (Engine path)\n", .{});
-        conn.tls.queueServerHandshakeFlight();
-    }
-
     // Get pending Handshake messages stored by sendServerHello
-    // If there are no pending messages, try popping new data from TLS
-    // (TLS generates Handshake-level messages after keys are installed)
+    // If there are no pending messages, try popping new data from TLS Context
     var pending_data: []const u8 = undefined;
     var owns_buffer = false;
 
@@ -956,39 +848,22 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
         owns_buffer = true;
         conn.pending_hs_messages = null; // Clear immediately to avoid double-free
     } else {
-        std.debug.print("sendHandshakePackets: No pending messages, checking TLS for new data\n", .{});
+        std.debug.print("sendHandshakePackets: No pending messages, checking TLS Context for new data\n", .{});
 
-        // Try Context API first, fall back to Engine
-        if (conn.tls_context) |tls_ctx| {
-            // Phase 21.2: Use modular TLS 1.3 Context API
-            const hs_data = tls_ctx.pollCrypto(ctx.allocator.*, .Handshake) catch |err| blk: {
-                std.debug.print("sendHandshakePackets: Context pollCrypto(.Handshake) returned error: {s}\n", .{@errorName(err)});
-                break :blk null;
-            };
+        // Poll TLS Context for Handshake-level CRYPTO data
+        const hs_data = conn.tls_context.pollCrypto(ctx.allocator.*, .Handshake) catch |err| blk: {
+            std.debug.print("sendHandshakePackets: Context pollCrypto(.Handshake) returned error: {s}\n", .{@errorName(err)});
+            break :blk null;
+        };
 
-            if (hs_data) |data| {
-                std.debug.print("sendHandshakePackets: Context provided {} bytes at Handshake level\n", .{data.len});
-                pending_data = data;
-                owns_buffer = true; // Context allocates with allocator, we must free
-            } else {
-                // No CRYPTO data from Context
-                std.debug.print("sendHandshakePackets: No CRYPTO data from Context, sending PING in Handshake packet\n", .{});
-                return sendHandshakePing(ctx);
-            }
+        if (hs_data) |data| {
+            std.debug.print("sendHandshakePackets: Context provided {} bytes at Handshake level\n", .{data.len});
+            pending_data = data;
+            owns_buffer = true; // Context allocates with allocator, we must free
         } else {
-            // Legacy Engine path
-            std.debug.print("sendHandshakePackets: Using Legacy Engine path, outbox len={}\n", .{conn.tls.outbox.items.len});
-            var outbox: [8192]u8 = undefined;
-            const tls_n = conn.tls.popCrypto(outbox[0..]);
-            std.debug.print("sendHandshakePackets: TLS popCrypto returned {} bytes (outbox len was {})\n", .{tls_n, conn.tls.outbox.items.len + tls_n});
-            if (tls_n == 0) {
-                // No CRYPTO data, but we should still send a Handshake packet for coalescing
-                // RFC 9000 §12.2: Initial and Handshake packets should be coalesced
-                std.debug.print("sendHandshakePackets: No CRYPTO data, sending PING in Handshake packet\n", .{});
-                return sendHandshakePing(ctx);
-            }
-            pending_data = outbox[0..tls_n];
-            owns_buffer = false; // outbox is stack-allocated
+            // No CRYPTO data from Context, send PING for coalescing
+            std.debug.print("sendHandshakePackets: No CRYPTO data from Context, sending PING in Handshake packet\n", .{});
+            return sendHandshakePing(ctx);
         }
     }
 
@@ -1334,32 +1209,8 @@ pub fn setupServerTransportParams(
     // Install on connection - will be sent in ServerHello EncryptedExtensions
     try conn.setLocalTransportParameters(if (tp_bytes.len > 0) tp_bytes else tp_bytes[0..0]);
 
-    // Create TLS context if it doesn't exist yet (server path)
-    // This happens when the server connection was created without transport parameters
-    // and we need to create the TLS context now that we have them
-    if (conn.tls_context == null and conn.role == .Server) {
-        // Create TLS context with the transport parameters
-        const alpn_list = if (conn.allowed_alpns.len > 0)
-            conn.allowed_alpns
-        else
-            &[_][]const u8{};
-
-        const tls_ctx = try createTlsContext(
-            allocator,
-            .Server,
-            alpn_list,
-            if (tp_bytes.len > 0) tp_bytes else tp_bytes[0..0],
-            quic_cfg.inline_server_cert_der,
-            quic_cfg.inline_server_priv_p256,
-        );
-
-        // Store the TLS context on the heap
-        const ctx_ptr = try allocator.create(@TypeOf(tls_ctx));
-        ctx_ptr.* = tls_ctx;
-        conn.tls_context = ctx_ptr;
-
-        std.debug.print("setupServerTransportParams: Created TLS context for server with {} bytes transport params\n", .{tp_bytes.len});
-    }
+    // NOTE: TLS context is now always created during connection initialization
+    // No late creation needed - conn.tls_context is always present
 }
 
 /// Module marker for Phase 4b.5 Session 6.

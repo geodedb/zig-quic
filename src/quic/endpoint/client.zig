@@ -233,47 +233,24 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
     // Build CRYPTO frame carrying ClientHello
     // Note: Transport parameters must be set up by caller before calling sendInitialProbe
 
-    // Phase 21.2: Use Context API if available, otherwise fall back to Engine
-    var crypto_data: ?[]const u8 = null;
-    var owns_crypto = false;
-
-    if (c.tls_context) |tls_ctx| {
-        // Use modular TLS 1.3 Context
-        // Set transport parameters on Context (these were set by setupClientTransportParams in endpoint)
-        if (c.local_transport_params_raw) |tp_bytes| {
-            tls_ctx.setTransportParameters(tp_bytes);
-        }
-
-        // Now tell Context to start the client handshake (generates ClientHello)
-        tls_ctx.startClientHandshake() catch |err| {
-            std.debug.print("sendInitialProbe: Context startClientHandshake error: {}\n", .{err});
-        };
-
-        // Poll for the generated ClientHello
-        const ch_data = tls_ctx.pollCrypto(ctx.allocator.*, .Initial) catch |err| blk: {
-            std.debug.print("sendInitialProbe: Context pollCrypto error: {}\n", .{err});
-            break :blk null;
-        };
-        if (ch_data) |data| {
-            crypto_data = data;
-            owns_crypto = true;
-        }
-    } else {
-        // Legacy Engine path
-        c.tls.queueMinimalClientHello() catch {
-            _ = c.tls.queueMinimalClientHelloAuto() catch 0;
-        };
-
-        var crypto_buf: [2048]u8 = undefined;
-        const crypto_len = c.tls.popCrypto(crypto_buf[0..]);
-        if (crypto_len > 0) {
-            crypto_data = crypto_buf[0..crypto_len];
-            owns_crypto = false;
-        }
+    // Set transport parameters on TLS Context
+    if (c.local_transport_params_raw) |tp_bytes| {
+        c.tls_context.setTransportParameters(tp_bytes);
     }
 
+    // Start client handshake (generates ClientHello)
+    c.tls_context.startClientHandshake() catch |err| {
+        std.debug.print("sendInitialProbe: Context startClientHandshake error: {}\n", .{err});
+    };
+
+    // Poll for the generated ClientHello
+    const crypto_data = c.tls_context.pollCrypto(ctx.allocator.*, .Initial) catch |err| blk: {
+        std.debug.print("sendInitialProbe: Context pollCrypto error: {}\n", .{err});
+        break :blk null;
+    };
+
     if (crypto_data) |data| {
-        defer if (owns_crypto) ctx.allocator.free(data);
+        defer ctx.allocator.free(data);
         const base_off = c.crypto_tx_off_initial;
         _ = (frame.Frame{ .crypto = .{ .offset = base_off, .data = data } }).write(frames.writer(ctx.allocator.*)) catch 0;
         c.crypto_retx_initial_off = base_off;

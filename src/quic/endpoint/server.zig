@@ -356,20 +356,8 @@ pub fn createServerConnection(
     // Configure congestion control
     c.setUseCubic(config.use_cubic);
 
-    // Configure TLS settings
-    c.tls.allow_insecure = config.allow_insecure;
-
-    // Set server certificate if provided
-    if (config.server_cert_der) |cert_der| {
-        if (config.server_priv_key_der) |key_der| {
-            // Infer signature algorithm from certificate
-            const detected_alg = x509.inferSignatureAlgorithm(cert_der) catch sig.SigAlg.ecdsa_secp256r1_sha256;
-            c.tls.setServerCertificate(cert_der, key_der, detected_alg) catch {
-                // Certificate setup failure is non-fatal for testing
-                // Production code should handle this more strictly
-            };
-        }
-    }
+    // NOTE: TLS configuration (certificates, allow_insecure) now handled via TLS Context
+    // Certificates are passed to createTlsContext() below
 
     // Encode transport parameters for both Connection and TLS Context
     // Need to keep tp_bytes alive until after Context creation
@@ -394,29 +382,22 @@ pub fn createServerConnection(
         c.setAeadUsageLimits(config.aead_confidentiality_limit, config.aead_integrity_limit);
     }
 
-    // Initialize TLS Context for modular TLS 1.3 (Phase 21.2)
-    // Only create TLS context if we have transport parameters
-    // If transport_params is null, the context will be created later when params are set
-    if (config.transport_params != null and tp_bytes.len > 0) {
-        // This replaces the legacy Engine path and enables full handshake completion
-        const ctx_value = try handshake_integration.createTlsContext(
-            allocator.*,
-            .Server,
-            config.allowed_alpns,
-            tp_bytes,
-            config.server_cert_der,
-            config.server_priv_key_der,
-        );
+    // Initialize TLS Context for modular TLS 1.3
+    // TLS Context is always created (required, not optional)
+    const ctx_value = try handshake_integration.createTlsContext(
+        allocator.*,
+        .Server,
+        config.allowed_alpns,
+        tp_bytes,
+        config.server_cert_der,
+        config.server_priv_key_der,
+    );
 
-        const tls_ctx = try allocator.create(@TypeOf(ctx_value));
-        errdefer allocator.destroy(tls_ctx);
-        tls_ctx.* = ctx_value;
+    const tls_ctx = try allocator.create(@TypeOf(ctx_value));
+    errdefer allocator.destroy(tls_ctx);
+    tls_ctx.* = ctx_value;
 
-        c.tls_context = tls_ctx;
-    } else {
-        // TLS context will be created when setupServerTransportParams is called
-        c.tls_context = null;
-    }
+    c.tls_context = tls_ctx;
 
     return c;
 }
