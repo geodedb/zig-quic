@@ -337,6 +337,7 @@ pub fn createServerConnection(
         @memcpy(c.original_dcid.bytes[0..c.original_dcid.len], c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]);
     }
 
+
     // Set peer_initial_scid from client's SCID
     // RFC 9000 §7.3: "Servers populate peer_initial_scid from client's SCID"
     c.peer_initial_scid.len = @intCast(@min(config.client_scid.len, c.peer_initial_scid.bytes.len));

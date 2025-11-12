@@ -187,19 +187,40 @@ pub const ConnectionPair = struct {
         // 4. Wait for server to accept connection
         const max_wait_ms = 1000;
         var waited_ms: u64 = 0;
+        var exchange_count: u64 = 0;
         while (self.server_conn == null and waited_ms < max_wait_ms) : (waited_ms += 10) {
+            exchange_count += 1;
             try self.exchangePackets();
 
             // Check if server has accepted
             if (self.server.endpoint.accepted.items.len > 0) {
                 self.server_conn = self.server.endpoint.accepted.items[0];
+                std.debug.print("[ConnectionPair] Server accepted connection after {} exchanges, {}ms\n", .{ exchange_count, waited_ms });
                 break;
+            }
+
+            // Debug: Check connection state
+            if (exchange_count % 10 == 0) {
+                std.debug.print("[ConnectionPair] Waiting for server... (exchanges: {}, time: {}ms)\n", .{ exchange_count, waited_ms });
+                // Check if client has any connections
+                if (self.client.endpoint.conns.count() > 0) {
+                    var iter = self.client.endpoint.conns.iterator();
+                    if (iter.next()) |entry| {
+                        const conn = entry.value_ptr.*;
+                        std.debug.print("  Client conn state: handshake_done_sent={}, pn_initial_tx={}, pn_handshake_tx={}\n", .{
+                            conn.handshake_done_sent,
+                            conn.pn_initial_tx,
+                            conn.pn_handshake_tx,
+                        });
+                    }
+                }
             }
 
             std.Thread.sleep(10 * std.time.ns_per_ms);
         }
 
         if (self.server_conn == null) {
+            std.debug.print("[ConnectionPair] ERROR: Server connection timeout after {} exchanges, {}ms\n", .{ exchange_count, waited_ms });
             return error.ServerConnectionTimeout;
         }
 

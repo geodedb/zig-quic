@@ -145,6 +145,60 @@ This should allow the TLS handshake to proceed and generate ServerHello response
 
 ---
 
+## Phase 3: ConnectionPair.connect() Failures (2025-11-11 - Part 5)
+
+### Issue: Handshake Not Completing in Integration Tests
+
+Several integration tests using ConnectionPair.connect() are failing:
+- `RFC 9000 §17.2.4 - Handshake packet processed`
+- `RFC 9000 §17.3 - Short header packets processed`
+- `RFC 9002 §5 - Initial RTT measurement`
+- `RFC 9000 §8.1 - Address validated after client packet`
+- And others...
+
+### Symptoms
+
+All these tests show a similar pattern:
+1. ConnectionPair.connect() starts successfully
+2. Client connection is created
+3. Initial packet is sent
+4. But then assertions fail indicating handshake didn't complete:
+   - `pn_handshake_tx` remains 0 (no Handshake packets sent)
+   - `app_tx_keys` remains null (no 1-RTT keys derived)
+   - `address_validated` remains false
+
+### Root Cause Analysis
+
+The connection establishment flow appears to be stuck after Initial packet exchange. Possible causes:
+1. TLS handshake messages not being processed correctly
+2. Packet exchange mechanism in test harness not delivering packets
+3. Timing issues with the test polling mechanism
+
+### Debug Findings
+
+Added debug output to ConnectionPair.connect() revealed:
+1. Server accepts connection quickly (after 1 exchange, 0ms)
+2. Multiple AEAD decrypt failures occur during packet exchange:
+   - `AEAD decrypt failed (auto-sample): error.AuthenticationFailed`
+   - Failures happen with various packet numbers
+3. The connection is established but handshake doesn't complete
+
+### Current Status
+
+The connection establishment mechanism is working (server accepts), but the TLS handshake isn't completing. The AEAD decrypt failures suggest issues with:
+- Packet protection/unprotection in the test environment
+- Key derivation or usage
+- Packet number handling
+
+### Impact
+
+11 tests remain failing (1826 passing out of 2314 total):
+- Connection tests that depend on completed handshake
+- Tests checking for derived application keys
+- Tests verifying handshake packet counts
+
+---
+
 ## Second Issue Found (2025-11-11 - Part 3)
 
 After fixing the ClientHello extensions, tests still failed with `error.MissingTransportParameters`.
@@ -208,3 +262,91 @@ The fixes required:
 1. Adding missing TLS extensions to ClientHello (signature algorithms, ALPN, QUIC transport params)
 2. Deferring TLS Context creation when transport parameters aren't available upfront
 3. Using the TLS Engine fallback path for dynamic transport parameter scenarios
+
+---
+
+## Phase 2: Remaining Test Failures (2025-11-11 - Part 4)
+
+### Issue: PacketDecryptionNotImplemented
+
+Many integration tests were failing with `error.PacketDecryptionNotImplemented` in the packet inspector:
+- RFC 9000 §7.1 - Initial packet contains CRYPTO frame
+- RFC 9000 §7.2 - Server Initial contains CRYPTO frame
+- And many others using ConnectionPair.connect()
+
+### Root Cause
+
+The `decryptInitialPacket()` function in `tests/integration/packet_inspector.zig` was not implemented. Tests need this function to decrypt and inspect packet contents for verification.
+
+### Fix Applied
+
+Implemented the `decryptInitialPacket()` function with:
+1. Initial packet header parsing to extract DCID
+2. Initial key derivation using QUIC-TLS key schedule
+3. Header protection removal
+4. AEAD decryption using unprotectInitialAutoSample
+5. Proper role-based key selection (client vs server)
+
+The implementation handles both QUIC v1 and v2, and correctly derives keys based on the packet's DCID.
+
+---
+
+## Summary of Current State (2025-11-11)
+
+### Test Results
+- **Total tests:** 2314
+- **Passing:** 1826 (78.9%)
+- **Failing:** 11
+- **Skipped:** 477
+
+### Key Fixes Applied
+1. ✅ ArrayList API compatibility with Zig 0.15.1
+2. ✅ Added missing TLS extensions to test ClientHello
+3. ✅ Fixed TLS Context transport parameter initialization
+4. ✅ Implemented packet decryption for packet inspector
+5. ✅ Fixed compilation errors in test modules
+
+### Remaining Issues
+1. **ConnectionPair handshake completion** - Server accepts connection but TLS handshake doesn't complete, causing tests to fail on handshake assertions
+2. **AEAD decrypt failures** - Multiple authentication failures during packet decryption in test environment
+
+### Next Steps
+- Investigate AEAD decrypt failures in detail
+- Debug TLS handshake state machine progression
+- Verify packet number space handling in tests
+- Check key derivation and usage in test harness
+
+---
+
+## Phase 6: DCID Investigation (2025-11-11 - Part 6)
+
+### Issue: Server Decrypt Failures with Zero-Length DCID
+
+Investigation revealed misleading debug messages suggesting DCID was being lost during server processing. After extensive tracing:
+
+### Findings
+
+1. **Server correctly handles DCIDs:**
+   - Original DCID is properly set when creating server connections
+   - Key derivation correctly uses original_dcid (8 bytes) even when receiving packets with dcid len=0
+   - The server successfully decrypts Initial packets from clients
+
+2. **Initial ACK packets use zero-length DCID (correct per RFC):**
+   - After Initial handshake, clients send ACK packets with zero-length DCID
+   - This is allowed by RFC 9000 - servers can use zero-length connection IDs
+   - Server correctly falls back to original_dcid for key derivation
+
+3. **Debug output was misleading:**
+   - The decryptInitialPacket function had incorrect debug output trying to extract DCID from packet bytes
+   - This was showing "dcid len=0" incorrectly and causing confusion
+   - Fixed by removing misleading debug messages
+
+### Status
+
+The DCID handling is actually working correctly. The remaining ConnectionPair.connect() failures are due to other issues in the handshake completion flow, not DCID problems.
+
+### Test Status After DCID Investigation
+
+- Still 1826/2314 tests passing (78.9%)
+- 11 tests still failing (all related to ConnectionPair.connect() handshake completion)
+- DCID handling confirmed working correctly

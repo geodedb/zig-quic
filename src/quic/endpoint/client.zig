@@ -119,6 +119,12 @@ pub fn createClientConnection(
         @memcpy(c.original_dcid.bytes[0..c.original_dcid.len], c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]);
     }
 
+    std.debug.print("[createClientConnection] Generated DCID len={} bytes: ", .{c.peer_initial_dcid.len});
+    for (c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]) |b| {
+        std.debug.print("{X:0>2} ", .{b});
+    }
+    std.debug.print("\n", .{});
+
     c.our_scid.len = 8;
     generateRandomCid(c.our_scid.bytes[0..c.our_scid.len]);
 
@@ -193,11 +199,16 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
     const initial = ks.deriveInitialSecret(v2, dcid_for_secret);
     const pair = ks.deriveClientServerInitial(initial);
 
-    std.debug.print("client: deriving Initial keys with dcid=\n", .{});
+    std.debug.print("client: deriving Initial keys with dcid (peer_initial_dcid) len={}: ", .{c.peer_initial_dcid.len});
     for (c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]) |b| {
-        std.debug.print("{X:0>2}\n", .{b});
+        std.debug.print("{X:0>2} ", .{b});
     }
-    std.debug.print(" len={}\n", .{c.peer_initial_dcid.len});
+    std.debug.print("\n", .{});
+    std.debug.print("       original_dcid len={}: ", .{c.original_dcid.len});
+    for (c.original_dcid.bytes[0..c.original_dcid.len]) |b| {
+        std.debug.print("{X:0>2} ", .{b});
+    }
+    std.debug.print("\n", .{});
 
     const tx_keys: packet.InitialKeys = if (v2) blk: {
         const t = ks.deriveKeyIvHpV2(pair.client);
@@ -206,6 +217,10 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
         const t = ks.deriveKeyIvHp(pair.client);
         break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
     };
+
+    std.debug.print("[Client TX] Initial key[0..4]: ", .{});
+    for (tx_keys.key[0..4]) |b| std.debug.print("{X:0>2} ", .{b});
+    std.debug.print("\n", .{});
 
     var frames = std.ArrayList(u8){};
     defer frames.deinit(ctx.allocator.*);

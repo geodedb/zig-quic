@@ -673,6 +673,7 @@ pub fn decryptInitialPacket(
     // Minimum ciphertext must be: 1 byte PN + 16 byte tag = 17 bytes
     if (ciphertext.len < 17) return error.PacketTooShort;
 
+
     // Enumerate PN lengths 1-4 until decryption succeeds
     var pn_len_try: u3 = 1;
     while (pn_len_try <= 4) : (pn_len_try += 1) {
@@ -752,6 +753,7 @@ pub fn processInitial(
     const header = parseInitialHeader(bytes) catch {
         return;
     };
+
 
 
     // Look up connection by peer hash + client DCID
@@ -924,6 +926,10 @@ pub fn processInitial(
             .iv = keys_result.rx_keys.iv,
             .hp = keys_result.rx_keys.hp,
         };
+
+        std.debug.print("[Server RX] Initial key[0..4]: ", .{});
+        for (keys_result.rx_keys.key[0..4]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print(" (dcid len={})\n", .{header.dcid.len});
     }
     if (conn.initial_tx_keys == null) {
         conn.initial_tx_keys = packet.InitialKeys{
@@ -940,8 +946,9 @@ pub fn processInitial(
         header.offset,
         keys_result.rx_keys,
         if (conn.pn_initial.have_any) conn.pn_initial.max else 0,
-    ) catch {
+    ) catch |err| {
         // Decryption failed - return
+        std.debug.print("[Server] Initial decrypt failed: {} (dcid len={})\n", .{ err, header.dcid.len });
         return;
     };
     defer ctx.allocator.free(decrypted.payload);

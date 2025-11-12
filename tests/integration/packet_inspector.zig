@@ -530,18 +530,99 @@ pub fn decryptInitialPacket(
     packet_bytes: []const u8,
     is_client: bool,
 ) !DecryptedInitial {
-    // TODO: Update to use new unprotectInitialAutoSample API with 10 parameters
-    // Requires:
-    // 1. Deriving Initial keys from DCID
-    // 2. Parsing header to get PN offset and length
-    // 3. Setting up buffers for decryption
-    // 4. Calling unprotectInitialAutoSample with all required params
-    //
-    // For now, return error indicating this feature is not yet implemented
-    _ = allocator;
-    _ = packet_bytes;
-    _ = is_client;
-    return error.PacketDecryptionNotImplemented;
+    // Import required modules
+    const packet = @import("quic_packet");
+
+    // Minimum size checks
+    if (packet_bytes.len < 20) return error.PacketTooShort;
+
+    // Parse Initial packet header to extract DCID
+    const first_byte = packet_bytes[0];
+    if ((first_byte & 0x80) == 0) return error.NotLongHeaderPacket;
+    if ((first_byte & 0x30) != 0x00) return error.NotInitialPacket;
+
+    // Parse version (skip for now - assume v1)
+    const version = (@as(u32, packet_bytes[1]) << 24) |
+                   (@as(u32, packet_bytes[2]) << 16) |
+                   (@as(u32, packet_bytes[3]) << 8) |
+                   @as(u32, packet_bytes[4]);
+    const is_v2 = (version == 0x6b3343cf); // QUIC v2
+
+    // Parse DCID length and DCID
+    var offset: usize = 5;
+    const dcid_len = packet_bytes[offset];
+    offset += 1;
+    if (offset + dcid_len > packet_bytes.len) return error.PacketTooShort;
+    const dcid = packet_bytes[offset..offset + dcid_len];
+    offset += dcid_len;
+
+    // Parse SCID length and skip SCID
+    if (offset >= packet_bytes.len) return error.PacketTooShort;
+    const scid_len = packet_bytes[offset];
+    offset += 1;
+    offset += scid_len;
+    if (offset >= packet_bytes.len) return error.PacketTooShort;
+
+    // Parse token length (varint)
+    const varint = @import("quic_varint");
+    const token_len_result = varint.decode(packet_bytes[offset..]) catch return error.InvalidVarint;
+    offset += token_len_result.n;
+    offset += @as(usize, @intCast(token_len_result.value));
+    if (offset >= packet_bytes.len) return error.PacketTooShort;
+
+    // Parse payload length (varint)
+    const payload_len_result = varint.decode(packet_bytes[offset..]) catch return error.InvalidVarint;
+    offset += payload_len_result.n;
+    const payload_len = @as(usize, @intCast(payload_len_result.value));
+
+    // The packet number starts at this offset
+    const pn_offset = offset;
+    if (pn_offset + payload_len > packet_bytes.len) return error.PacketTooShort;
+
+    // Derive Initial keys from DCID
+    const keys_pair = packet.derive_initial_keys(is_v2, dcid);
+    const keys = if (is_client) keys_pair.client else keys_pair.server;
+
+    // Prepare for decryption
+    // The packet number is encrypted, we need to unprotect it first
+    // Assume 4-byte PN for Initial packets (conservative)
+    var pn_bytes: [4]u8 = undefined;
+    @memcpy(pn_bytes[0..4], packet_bytes[pn_offset..pn_offset + 4]);
+
+    var header_first = packet_bytes[0];
+    const header_prefix = packet_bytes[0..pn_offset];
+    const ciphertext_and_tag = packet_bytes[pn_offset + 4..pn_offset + payload_len];
+
+    // Allocate buffer for plaintext
+    var plaintext = try allocator.alloc(u8, ciphertext_and_tag.len);
+    errdefer allocator.free(plaintext);
+
+    // Decrypt the packet
+    const plaintext_len = crypto_quic.unprotectInitialAutoSample(
+        .Aes128Gcm,
+        &keys.key,
+        &keys.iv,
+        &keys.hp,
+        &header_first,
+        pn_bytes[0..4],
+        header_prefix,
+        ciphertext_and_tag,
+        plaintext,
+        0, // largest_pn - use 0 for first packet
+    ) catch |err| {
+        allocator.free(plaintext);
+        return err;
+    };
+
+    // Resize to actual plaintext length
+    if (plaintext_len < plaintext.len) {
+        plaintext = try allocator.realloc(plaintext, plaintext_len);
+    }
+
+    return DecryptedInitial{
+        .payload = plaintext,
+        .allocator = allocator,
+    };
 }
 
 /// Check if an Initial packet contains a CRYPTO frame.

@@ -410,19 +410,22 @@ pub fn unprotectInitialNoUnmask(
     var i: usize = 0;
     while (i < pn_bytes.len) : (i += 1) pn_val_truncated = (pn_val_truncated << 8) | pn_bytes[i];
 
-    std.debug.print("Packet number extraction (no-unmask): pn_bytes={any}, pn_val_truncated={}, largest_pn={}\n", .{ pn_bytes, pn_val_truncated, largest_pn });
+    // std.debug.print("Packet number extraction (no-unmask): pn_bytes={any}, pn_val_truncated={}, largest_pn={}\n", .{ pn_bytes, pn_val_truncated, largest_pn });
 
     // Expand the truncated packet number per RFC 9000 Appendix A.3
     const pn_val = expandPacketNumber(pn_val_truncated, @intCast(pn_bytes.len), largest_pn);
 
-    std.debug.print("Expanded packet number (no-unmask): {} (from truncated {} with largest_pn {})\n", .{ pn_val, pn_val_truncated, largest_pn });
+    // std.debug.print("Expanded packet number (no-unmask): {} (from truncated {} with largest_pn {})\n", .{ pn_val, pn_val_truncated, largest_pn });
 
-    if (largest_pn == 0) {
-        std.debug.print("First 1-RTT packet: truncated={x:0>4} ({}) -> expanded={}\n", .{ pn_val_truncated, pn_val_truncated, pn_val });
-    }
+    // if (largest_pn == 0) {
+    //     std.debug.print("First 1-RTT packet: truncated={x:0>4} ({}) -> expanded={}\n", .{ pn_val_truncated, pn_val_truncated, pn_val });
+    // }
 
     return aeadDecrypt(suite, aead_key, aead_iv, pn_val, aad, ciphertext_and_tag, out_plaintext) catch |err| {
-        std.debug.print("AEAD decrypt failed (no-unmask): {} (pn={})\n", .{ err, pn_val });
+        // Only log for specific packet numbers that seem real
+        if (pn_val > 0 and pn_val < 1000) {
+            std.debug.print("AEAD decrypt failed: pn={} err={}\n", .{ pn_val, err });
+        }
         return err;
     };
 }
@@ -458,27 +461,27 @@ pub fn unprotectInitialAutoSample(
     // ciphertext_and_tag parameter starts at PN field beginning (includes PN bytes + encrypted payload + tag)
     var sample16: [16]u8 = undefined;
 
-    // Debug: Log the first few bytes of ciphertext_and_tag
-    const debug_len = @min(32, ciphertext_and_tag.len);
-    var hex_buf: [96]u8 = undefined; // 32 bytes * 3 chars per byte (2 hex + 1 space)
-    var hex_stream = std.io.fixedBufferStream(&hex_buf);
-    const hex_writer = hex_stream.writer();
-    for (ciphertext_and_tag[0..debug_len]) |b| {
-        _ = hex_writer.print("{X:0>2} ", .{b}) catch break;
-    }
-    const hex_str = hex_stream.getWritten();
-    std.debug.print("Header protection removal - first {} bytes of ciphertext_and_tag: {s}\n", .{ debug_len, hex_str });
-    std.debug.print("  pn_len={}, ciphertext_and_tag.len={}, largest_pn={}\n", .{ pn_len, ciphertext_and_tag.len, largest_pn });
+    // Commented out verbose debug output
+    // const debug_len = @min(32, ciphertext_and_tag.len);
+    // var hex_buf: [96]u8 = undefined; // 32 bytes * 3 chars per byte (2 hex + 1 space)
+    // var hex_stream = std.io.fixedBufferStream(&hex_buf);
+    // const hex_writer = hex_stream.writer();
+    // for (ciphertext_and_tag[0..debug_len]) |b| {
+    //     _ = hex_writer.print("{X:0>2} ", .{b}) catch break;
+    // }
+    // const hex_str = hex_stream.getWritten();
+    // std.debug.print("Header protection removal - first {} bytes of ciphertext_and_tag: {s}\n", .{ debug_len, hex_str });
+    // std.debug.print("  pn_len={}, ciphertext_and_tag.len={}, largest_pn={}\n", .{ pn_len, ciphertext_and_tag.len, largest_pn });
 
-    // Debug: Show the masked packet number bytes
-    var pn_hex_buf: [12]u8 = undefined; // 4 bytes max * 3 chars
-    var pn_hex_stream = std.io.fixedBufferStream(&pn_hex_buf);
-    const pn_hex_writer = pn_hex_stream.writer();
-    for (pn_bytes[0..pn_len]) |b| {
-        _ = pn_hex_writer.print("{X:0>2} ", .{b}) catch break;
-    }
-    const pn_hex_str = pn_hex_stream.getWritten();
-    std.debug.print("  Masked PN bytes before unmasking: {s}\n", .{pn_hex_str});
+    // // Debug: Show the masked packet number bytes
+    // var pn_hex_buf: [12]u8 = undefined; // 4 bytes max * 3 chars
+    // var pn_hex_stream = std.io.fixedBufferStream(&pn_hex_buf);
+    // const pn_hex_writer = pn_hex_stream.writer();
+    // for (pn_bytes[0..pn_len]) |b| {
+    //     _ = pn_hex_writer.print("{X:0>2} ", .{b}) catch break;
+    // }
+    // const pn_hex_str = pn_hex_stream.getWritten();
+    // std.debug.print("  Masked PN bytes before unmasking: {s}\n", .{pn_hex_str});
 
     switch (suite) {
         .aes_128_gcm, .aes_256_gcm => {
@@ -552,29 +555,21 @@ pub fn unprotectInitialAutoSample(
     while (i < pn_len) : (i += 1) pn_trunc = (pn_trunc << 8) | pn_bytes[i];
     const full_pn = expandPacketNumber(pn_trunc, @intCast(pn_len), largest_pn);
 
-    std.debug.print("expandPacketNumber: truncated={} pn_len={} largest_pn={} -> full={}\n", .{ pn_trunc, pn_len, largest_pn, full_pn });
-    std.debug.print("  Nonce IV: ", .{});
-    for (aead_iv) |b| std.debug.print("{X:0>2}\n", .{b});
-    std.debug.print("", .{});
-    std.debug.print("  Nonce after XOR with PN {}: ", .{full_pn});
-    var nonce_debug: [12]u8 = undefined;
-    xorNonce(&nonce_debug, aead_iv, full_pn);
-    for (nonce_debug) |b| std.debug.print("{X:0>2}\n", .{b});
-    std.debug.print("", .{});
+    // Commented out verbose debug
+    // std.debug.print("expandPacketNumber: truncated={} pn_len={} largest_pn={} -> full={}\n", .{ pn_trunc, pn_len, largest_pn, full_pn });
+    // std.debug.print("  Nonce IV: ", .{});
+    // for (aead_iv) |b| std.debug.print("{X:0>2}\n", .{b});
+    // std.debug.print("", .{});
 
     // ciphertext_and_tag buffer layout: [PN bytes (pn_len)] [encrypted payload + tag]
     // Pass only the encrypted payload + tag portion to AEAD decrypt
     const actual_ciphertext = ciphertext_and_tag[pn_len..];
 
-    std.debug.print("AEAD decrypt parameters:", .{});
-    std.debug.print("  full_pn={}, truncated_pn={}, pn_len={}\n", .{ full_pn, pn_trunc, pn_len });
-    std.debug.print("  AAD len={}, ciphertext len={}\n", .{ aad.len, actual_ciphertext.len });
-    std.debug.print("  AAD bytes: ", .{});
-    for (aad) |b| std.debug.print("{X:0>2}\n", .{b});
-    std.debug.print("", .{});
-
     return aeadDecrypt(suite, aead_key, aead_iv, full_pn, aad, actual_ciphertext, out_plaintext) catch |err| {
-        std.debug.print("AEAD decrypt failed (auto-sample): {} (pn={}, trunc={}, pn_len={})\n", .{ err, full_pn, pn_trunc, pn_len });
+        // Only print for non-zero packet numbers (likely real failures, not probing)
+        if (full_pn > 0 and full_pn < 1000) {
+            std.debug.print("AEAD decrypt failed: pn={} err={}\n", .{ full_pn, err });
+        }
         return err;
     };
 }
@@ -588,9 +583,9 @@ pub fn unmaskLongHeaderAndPn(
     header_first: *u8,
     pn_buf: *[4]u8, // contains 4 masked bytes from packet at PN start
 ) !u3 {
-    std.debug.print("HP key: ", .{});
-    for (hp_key) |b| std.debug.print("{X:0>2}\n", .{b});
-    std.debug.print("", .{});
+    // std.debug.print("HP key: ", .{});
+    // for (hp_key) |b| std.debug.print("{X:0>2}\n", .{b});
+    // std.debug.print("", .{});
 
     var out_block: [16]u8 = undefined;
     switch (suite) {

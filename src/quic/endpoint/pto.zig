@@ -158,6 +158,19 @@ pub fn sendPtoProbe(ctx: *PtoContext, kind: types.TimerKind) !void {
             // Derive server Initial TX keys from the original DCID (ODCID)
             const v2 = conn.version_v2;
 
+            // Debug: Check what DCIDs we have
+            std.debug.print("[PTO] Checking DCIDs for key derivation (role={}):\n", .{conn.role});
+            std.debug.print("  original_dcid len={}: ", .{conn.original_dcid.len});
+            if (conn.original_dcid.len > 0) {
+                for (conn.original_dcid.bytes[0..conn.original_dcid.len]) |b| std.debug.print("{X:0>2} ", .{b});
+            }
+            std.debug.print("\n", .{});
+            std.debug.print("  peer_initial_dcid len={}: ", .{conn.peer_initial_dcid.len});
+            if (conn.peer_initial_dcid.len > 0) {
+                for (conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len]) |b| std.debug.print("{X:0>2} ", .{b});
+            }
+            std.debug.print("\n", .{});
+
             // Use ODCID for key derivation per RFC 9001 §5.2
             const derive_dcid = if (conn.original_dcid.len > 0)
                 conn.original_dcid.bytes[0..conn.original_dcid.len]
@@ -169,9 +182,11 @@ pub fn sendPtoProbe(ctx: *PtoContext, kind: types.TimerKind) !void {
             const initial = ks.deriveInitialSecret(v2, derive_dcid);
             const pair = ks.deriveClientServerInitial(initial);
 
-            std.debug.print("server PTO: deriving Initial keys with odcid=\n", .{});
-            for (derive_dcid) |b| std.debug.print("{X:0>2}\n", .{b});
-            std.debug.print(" len={}\n", .{derive_dcid.len});
+            if (conn.role == .Server) {
+                std.debug.print("server PTO: deriving Initial keys with odcid=\n", .{});
+                for (derive_dcid) |b| std.debug.print("{X:0>2}\n", .{b});
+                std.debug.print(" len={}\n", .{derive_dcid.len});
+            }
 
             const tx_keys: packet.InitialKeys = if (v2) blk: {
                 const t = ks.deriveKeyIvHpV2(pair.server);
