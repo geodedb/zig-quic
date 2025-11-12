@@ -318,6 +318,109 @@ The implementation handles both QUIC v1 and v2, and correctly derives keys based
 
 ---
 
+## Phase 12: Header Protection and AEAD Decryption Fixes (2025-11-12)
+
+### Issue: Handshake Packet AEAD Decryption Failures
+
+Tests were failing with consistent AEAD authentication failures for Handshake packets:
+- `decryptHandshakePacket: AEAD decrypt failed: error.AuthenticationFailed`
+- `processHandshake: Decryption failed: error.AeadDecryptFailed`
+
+### Investigation
+
+1. **Header Protection Sample Extraction**
+   - Fixed sample extraction offset calculation
+   - RFC 9001 §5.4.2: Sample is always at offset 4 from PN field start
+   - Previous code incorrectly calculated `4 - pn_len`
+   - Fixed in `incoming.zig:decryptHandshakePacket()` lines 1065-1067
+
+2. **Handshake Secret Ordering**
+   - Fixed secret ordering based on connection role in `onSecretAvailable` callback
+   - Server receives `.send` (server secret) first, then `.recv` (client secret)
+   - Client receives opposite order
+   - Fixed in `handshake_integration.zig` lines 111-131
+
+3. **Server TLS Context Creation**
+   - Fixed missing TLS context for servers
+   - Added creation in `setupServerTransportParams()`
+   - Eliminated "queueRealServerHello called without transport parameters" warning
+
+4. **Test Mocking Issue**
+   - Found tests using mocked zero keys (`[_]u8{0} ** 16`)
+   - Violates "DO NOT MOCK TESTS" directive
+   - Fixed `test_ecn_longitudinal.zig` and `test_ack_ecn_handshake.zig` to use properly derived keys
+
+### Current Status (After Phase 12)
+- **Total tests:** 2347
+- **Passing:** 1840 (78.4%)
+- **Failing:** 22
+- **Skipped:** 485
+
+### Remaining Issues
+- AEAD decryption still failing despite correct HP removal
+- Possible issues with:
+  - Packet number expansion/encoding
+  - AEAD nonce construction
+  - Associated data formation
+  - Key installation timing
+
+---
+
+## Phase 13: Header Protection Fixes and TLS Key Mismatch Discovery (2025-11-12 - Continued)
+
+### Additional Fixes Applied
+
+1. **Fixed Header Protection Removal Logic**
+   - Issue: `headerUnprotect` was being called with zero-length PN bytes, causing `InvalidPacketNumberLength` error
+   - Solution: Manually generate HP mask using AES-ECB to peek at PN length
+   - Then apply same mask to unmask both header byte and PN bytes
+   - Fixed in `incoming.zig:1481-1535`
+
+2. **Simplified HP Mask Application**
+   - Removed double call to `headerUnprotect`
+   - Use single mask generation for both PN length detection and actual unmasking
+   - Ensures consistent mask application
+
+### Critical Discovery: TLS Handshake Key Mismatch
+
+Investigation revealed the root cause of AEAD failures:
+
+**Client and Server are deriving completely different Handshake keys!**
+
+Example from test output:
+- Server derives from secrets (4CE9.../9CEE...):
+  - client_keys: key=51AA061F, hp=EF828DBD
+  - server_keys: key=F7FE85E8, hp=843F3F8D
+
+- Client derives from different secrets (1CF9.../0EF0...):
+  - client_keys: key=7501922B, hp=9EB403C6
+  - server_keys: key=07E657DB, hp=6EA61277
+
+This indicates the TLS handshake is not properly establishing shared secrets between endpoints.
+
+### Root Cause Analysis
+
+The TLS handshake appears to be:
+1. Not completing the key exchange properly
+2. Using test/mocked secrets instead of derived shared secrets
+3. Missing proper ECDHE key agreement
+
+This explains why AEAD authentication consistently fails - the encryption and decryption keys don't match between sender and receiver.
+
+### Current Status (End of Phase 13)
+- **Total tests:** 2347
+- **Passing:** 1840 (78.4%)
+- **Failing:** 22
+- **Skipped:** 485
+
+### Next Steps Required
+- Fix TLS handshake to properly derive shared secrets
+- Ensure ECDHE key exchange completes correctly
+- Verify TLS transcript is consistent between client and server
+- Ensure proper secret derivation from TLS master secret
+
+---
+
 ## Phase 6: DCID Investigation (2025-11-11 - Part 6)
 
 ### Issue: Server Decrypt Failures with Zero-Length DCID
@@ -542,3 +645,180 @@ Remaining issue:
 - ⚠️ Handshake still not completing (times out after server accepts connection)
 - The server accepts the connection after 1 exchange but handshake stalls
 - Need to investigate why client isn't processing server's Handshake packets properly
+
+---
+
+## Phase 9: Coalesced Packet Type Recognition & Handshake Decryption (2025-11-12)
+
+### Critical Bug Discovered
+
+The packet type was being determined ONCE from the first byte of the datagram and used for ALL packets in a coalesced datagram. This meant when processing Initial+Handshake coalesced packets (302 bytes total), both packets were being processed as Initial (type 0) instead of correctly recognizing the second packet as Handshake (type 2).
+
+### Issues Found
+
+1. **Incorrect packet type determination**: The type was calculated once as `const ty = (first >> 4) & 0x03` and reused for all packets
+2. **Wrong decryption function**: `decryptHandshakePacket` was using `unprotectInitialAutoSample` which is specifically for Initial packets
+3. **Incorrect packet number byte extraction**: Was extracting from wrong offset in the packet
+
+### Fixes Applied
+
+#### 1. Fixed Packet Type Recognition (src/quic/endpoint.zig:855-867)
+```zig
+// BEFORE: Used same 'ty' for all packets
+if (ty == 0) { // Initial
+} else if (ty == 2) { // Handshake
+
+// AFTER: Re-parse type from each packet's first byte
+const packet_ty = (packet_bytes[0] >> 4) & 0x03;
+if (packet_ty == 0) { // Initial
+} else if (packet_ty == 2) { // Handshake
+```
+
+#### 2. Implemented Proper Handshake Decryption (src/quic/endpoint/incoming.zig:1503-1548)
+```zig
+// Cannot use unprotectInitialAutoSample for Handshake packets!
+// Manually perform decryption with correct packet type in AAD:
+
+// 1. Extract HP sample and unmask header
+const sample_offset_actual = 4 - @as(usize, actual_pn_len);
+@memcpy(&sample16, full_pn_and_payload[sample_offset_actual .. sample_offset_actual + 16]);
+crypto.headerUnprotect(.aes_128_gcm, &rx_keys.hp, &sample16, &masked_header, masked_pn_bytes[0..actual_pn_len]);
+
+// 2. Build AAD with unmasked header (correct packet type preserved)
+var aad_buf: [256]u8 = undefined;
+aad_buf[0] = masked_header; // Now unmasked with correct type bits
+@memcpy(aad_buf[1 .. 1 + header_prefix.len], header_prefix);
+@memcpy(aad_buf[1 + header_prefix.len .. 1 + header_prefix.len + actual_pn_len], masked_pn_bytes[0..actual_pn_len]);
+const aad = aad_buf[0 .. 1 + header_prefix.len + actual_pn_len];
+
+// 3. AEAD decrypt with correct AAD
+const dec = crypto.aeadDecrypt(.aes_128_gcm, &rx_keys.key, &rx_keys.iv, full_pn, aad, actual_ciphertext, pt_slice);
+```
+
+#### 3. Fixed Packet Number Byte Extraction
+```zig
+// BEFORE: Wrong offset
+@memcpy(masked_pn_bytes[0..actual_pn_len], bytes[i .. i + actual_pn_len]);
+
+// AFTER: Correct - PN bytes are at start of full_pn_and_payload
+@memcpy(masked_pn_bytes[0..actual_pn_len], full_pn_and_payload[0..actual_pn_len]);
+```
+
+### Debug Output Analysis
+
+With fixes, we now see:
+- Initial packet (type 0): 138 bytes extracted at offset 0
+- Handshake packet (type 2): 164 bytes extracted at offset 138
+- Server and Client both install Handshake keys correctly
+- processHandshake is now called for Handshake packets (was being skipped before)
+
+### Current Status
+
+- **Total tests:** 2348
+- **Passing:** 1842 (78.5%)
+- **Failing:** 21
+- **Issue:** Handshake packet AEAD decryption still failing with `error.AuthenticationFailed`
+
+The core packet processing flow is now correct, but there appears to be an issue with the Handshake key derivation or AAD construction that's preventing successful decryption.
+
+## Phase 10: TLS Handshake Integration Fix (Session 11)
+
+### Issues Found
+
+1. **Handshake Secret Ordering Issue**
+   - Location: `endpoint/handshake_integration.zig:101-119`
+   - Problem: onSecretAvailable assumed first call was client secret, second was server secret
+   - Reality: Order depends on role - Server gets .send (server) then .recv (client)
+   - Fix: Check connection role to properly map secrets
+
+2. **Missing Server TLS Context**
+   - Location: `endpoint/handshake_integration.zig:setupServerTransportParams`
+   - Problem: Server created without TLS context, fell back to legacy Engine path
+   - Warning: "queueRealServerHello called without transport parameters"
+   - Fix: Create TLS context in setupServerTransportParams when missing
+
+3. **Header Protection Mask Issues**
+   - Location: `endpoint/incoming.zig:decryptHandshakePacket`
+   - Problem: Header first byte incorrect after unmasking (e.g., 0xEF instead of 0xE0)
+   - Root cause: Header protection removal not working correctly
+   - Status: Under investigation
+
+### Fixes Applied
+
+1. **Fixed Handshake secret ordering** - Check role to correctly map .send/.recv to client/server
+2. **Create TLS context for server** - Added context creation in setupServerTransportParams
+3. **Added comprehensive debug logging** - Track AAD construction and key installation
+
+### Current Status
+
+- **Total tests:** 2348
+- **Passing:** 1841 (78.4%)
+- **Failing:** 22 (regression by 1)
+- **Progress:** Server now gets Handshake secrets and uses TLS Context path
+- **Remaining Issue:** Handshake AEAD decryption still fails due to incorrect AAD first byte
+
+### Next Steps
+
+1. Investigate header protection mask calculation
+2. Verify HP key derivation matches RFC 9001
+3. Check if sample extraction offset is correct for varying PN lengths
+
+## Phase 14: TLS Key Exchange and Packet Padding Fixes (Current Session)
+
+### Issues Found
+
+1. **TLS Traffic Secret Installation Direction Mismatch**
+   - Location: `vendor/ztls/src/tls13/context.zig:2072-2073`
+   - Problem: Client was installing traffic secrets with wrong direction
+   - Client was using: `.send` with `server_hs`, `.recv` with `client_hs`
+   - Should be: `.send` with `client_hs`, `.recv` with `server_hs`
+   - Fix: Corrected traffic secret installation for CLIENT role
+
+2. **Insufficient Packet Payload for Header Protection**
+   - Location: `src/quic/packet.zig` (multiple functions)
+   - Problem: Small payloads (e.g., single PING frame = 1 byte) too small for HP sample extraction
+   - RFC 9001 §5.4.3: Need at least `(4 - pn_len) + 16` bytes of ciphertext for AES
+   - With 2-byte PN and 1-byte payload: only 17 bytes ciphertext, but need 18
+   - Fix: Added automatic padding to ensure minimum plaintext size:
+     - `min_plaintext_len = (4 - pn_len)` for `pn_len < 4`
+     - Pad with PADDING frames (0x00) when needed
+
+### Fixes Applied
+
+1. **Fixed TLS client traffic secret installation**:
+   ```zig
+   // CLIENT uses client_hs for send, server_hs for recv (opposite of server)
+   try self.installTrafficSecret(.Handshake, .send, hs.client_hs);
+   try self.installTrafficSecret(.Handshake, .recv, hs.server_hs);
+   ```
+
+2. **Added minimum payload padding for all packet types**:
+   - `encodeHandshakeProtected`: Pads to minimum size for HP
+   - `encodeShortProtected`: Pads 1-RTT packets
+   - `encode0RTTProtected`: Pads 0-RTT packets
+   - All functions now ensure `plaintext.len >= max(0, 4 - pn_len)`
+
+3. **Cleaned up excessive debug output** to reduce noise
+
+### Current Status
+
+- **Total tests:** 2348
+- **Passing:** 1841 (78.4%)
+- **Failing:** 22 (stable)
+- **Progress:**
+  - Fixed TLS key exchange direction issue
+  - Eliminated packet padding errors
+  - Still seeing AEAD authentication failures in Handshake decryption
+
+### Remaining Issues
+
+- Many small packets (92 with 1-byte payload) still being generated
+- Handshake AEAD decryption still failing with `error.AuthenticationFailed`
+- Tests show "decryptHandshakePacket: AEAD decrypt failed"
+
+### Next Steps
+
+1. Investigate why Handshake keys still don't match between client and server
+2. Verify TLS transcript consistency between endpoints
+3. Check if ECDHE shared secret is computed correctly
+4. Consider endianness issues in mask application

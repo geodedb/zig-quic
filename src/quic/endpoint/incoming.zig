@@ -1172,6 +1172,16 @@ pub fn processHandshake(
         return;
     };
 
+    // Debug: Show packet info and HP key being used
+    std.debug.print("processHandshake: Packet len={}, header offset={}, role={s}\n", .{
+        bytes.len,
+        header.offset,
+        if (conn.*.role == .Client) "Client" else "Server"
+    });
+    std.debug.print("  Using HP key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+        rx_keys.hp[0], rx_keys.hp[1], rx_keys.hp[2], rx_keys.hp[3]
+    });
+
     // Decrypt Handshake packet
     const decrypted = decryptHandshakePacket(
         ctx.allocator.*,
@@ -1250,7 +1260,7 @@ pub fn processHandshake(
             .padding => {},
             else => {
                 // Other frames are unexpected in Handshake packets
-                std.debug.print("processHandshake: Unexpected frame type in Handshake packet\n", .{});
+                std.debug.print("processHandshake: Unexpected frame type in Handshake packet: {}\n", .{fr.f});
             },
         }
     }
@@ -1450,6 +1460,11 @@ fn decryptHandshakePacket(
     i += len_dec.n;
 
     const end_total = i + @as(usize, @intCast(len_dec.value));
+
+    std.debug.print("decryptHandshakePacket: bytes.len={}, length_offset={}, payload_len={}, end_total={}\n", .{
+        bytes.len, length_offset, len_dec.value, end_total,
+    });
+
     if (end_total > bytes.len) return error.PacketTooShort;
 
     const first = bytes[0];
@@ -1459,16 +1474,30 @@ fn decryptHandshakePacket(
     if (full_pn_and_payload.len < 20) return error.PayloadTooShort;
 
     // Step 1: Extract HP sample and unmask header byte to get PN length
+    // RFC 9001 §5.4.2: Sample always starts at offset 4 from PN field start
     var sample16: [16]u8 = undefined;
     @memcpy(&sample16, full_pn_and_payload[4..20]);
 
+    // Manually generate HP mask using AES-ECB
+    const Aes128 = std.crypto.core.aes.Aes128;
+    const aes = Aes128.initEnc(rx_keys.hp[0..16].*);
+    var mask: [16]u8 = undefined;
+    aes.encrypt(&mask, &sample16);
+
+    // Create a copy of first byte and unmask it to get PN length
     var header_peek = first;
-    var dummy_pn = [_]u8{0};
-    crypto.headerProtect(.aes_128_gcm, &rx_keys.hp, &sample16, &header_peek, &dummy_pn) catch {
-        return error.HeaderUnprotectFailed;
-    };
+    // For long header (Handshake), mask only lower 4 bits
+    const mask_bits = mask[0] & 0x0f;
+    header_peek ^= mask_bits;
+
+    std.debug.print("decryptHandshakePacket: PN length detection - original=0x{X:0>2}, mask=0x{X:0>2}, unmasked=0x{X:0>2}\n", .{
+        first, mask_bits, header_peek
+    });
 
     const actual_pn_len: u3 = @intCast((header_peek & 0x03) + 1);
+    std.debug.print("  Detected PN length: {} (from bits 0x{X:0>2})\n", .{
+        actual_pn_len, header_peek & 0x03
+    });
 
     // Step 2: Allocate plaintext buffer
     const expected_pt_len = if (full_pn_and_payload.len > 16 + @as(usize, actual_pn_len))
@@ -1479,39 +1508,109 @@ fn decryptHandshakePacket(
     const pt_slice = try allocator.alloc(u8, if (expected_pt_len > 0) expected_pt_len else 1);
     errdefer allocator.free(pt_slice);
 
-    // Step 3: Call integrated decrypt function
-    var masked_header = first;
-    var masked_pn_bytes: [4]u8 = undefined;
-    @memcpy(masked_pn_bytes[0..actual_pn_len], bytes[i .. i + actual_pn_len]);
+    // Step 3: Unmask header and PN bytes using the already-generated mask
+    // We already have the mask from step 1, so we can just apply it directly
+    var unmasked_header = first;  // Fresh copy of the original masked first byte
+    var unmasked_pn_bytes: [4]u8 = undefined;
+    // The packet number bytes are at the start of full_pn_and_payload
+    @memcpy(unmasked_pn_bytes[0..actual_pn_len], full_pn_and_payload[0..actual_pn_len]);
 
-    const dec = crypto.unprotectInitialAutoSample(
+    std.debug.print("decryptHandshakePacket: Attempting decrypt with pn_len={}, header_prefix.len={}, ciphertext.len={}\n", .{
+        actual_pn_len, header_prefix.len, full_pn_and_payload.len,
+    });
+
+    // Apply the mask we already generated
+    // For long header, mask only lower 4 bits of first byte
+    unmasked_header ^= mask[0] & 0x0f;
+
+    // Apply mask to packet number bytes
+    std.debug.print("decryptHandshakePacket: Unmasking PN bytes:\n", .{});
+    for (unmasked_pn_bytes[0..actual_pn_len], 0..) |*b, idx| {
+        const orig = b.*;
+        const mask_byte = mask[1 + idx];
+        b.* ^= mask_byte;
+        std.debug.print("  PN[{}]: 0x{X:0>2} XOR 0x{X:0>2} = 0x{X:0>2}\n", .{
+            idx, orig, mask_byte, b.*
+        });
+    }
+
+    // Validate that the unmasked header has the correct format for a Handshake packet
+    const expected_first = 0xE0 | @as(u8, actual_pn_len - 1);
+    std.debug.print("decryptHandshakePacket: After HP removal: first=0x{X:0>2}, expected=0x{X:0>2}\n", .{
+        unmasked_header, expected_first
+    });
+
+    // Check if the header byte looks correct (should match expected for Handshake packet)
+    if ((unmasked_header & 0xF0) != 0xE0) {
+        std.debug.print("decryptHandshakePacket: WARNING - First byte doesn't look like Handshake packet after HP removal\n", .{});
+    }
+
+    // Step 4: Build AAD with unmasked header
+    var aad_buf: [256]u8 = undefined;
+    aad_buf[0] = unmasked_header; // Now unmasked
+    @memcpy(aad_buf[1 .. 1 + header_prefix.len], header_prefix);
+    @memcpy(aad_buf[1 + header_prefix.len .. 1 + header_prefix.len + actual_pn_len], unmasked_pn_bytes[0..actual_pn_len]);
+    const aad = aad_buf[0 .. 1 + header_prefix.len + actual_pn_len];
+
+    // Debug: Print AAD components
+    std.debug.print("decryptHandshakePacket AAD: first_byte=0x{X:0>2} (should be ~0xE2-E3 for Handshake), header_prefix.len={}, pn_len={}\n", .{
+        aad[0], header_prefix.len, actual_pn_len
+    });
+    std.debug.print("  AAD bytes: ", .{});
+    for (aad[0..@min(aad.len, 32)]) |b| {
+        std.debug.print("{X:0>2} ", .{b});
+    }
+    std.debug.print("\n", .{});
+
+    // Step 5: Expand packet number
+    var pn_trunc: u64 = 0;
+    var j: usize = 0;
+    while (j < actual_pn_len) : (j += 1) {
+        pn_trunc = (pn_trunc << 8) | unmasked_pn_bytes[j];
+    }
+    const full_pn = crypto.expandPacketNumber(pn_trunc, actual_pn_len, largest_pn);
+
+    std.debug.print("decryptHandshakePacket: PN expansion: truncated={}, pn_len={}, largest_pn={}, expanded={}\n", .{
+        pn_trunc, actual_pn_len, largest_pn, full_pn
+    });
+    std.debug.print("  PN bytes (unmasked): ", .{});
+    for (unmasked_pn_bytes[0..actual_pn_len]) |b| {
+        std.debug.print("{X:0>2} ", .{b});
+    }
+    std.debug.print("\n", .{});
+
+    // Step 4: AEAD decrypt
+    const actual_ciphertext = full_pn_and_payload[actual_pn_len..];
+
+    std.debug.print("decryptHandshakePacket: Using keys for AEAD decrypt:\n", .{});
+    std.debug.print("  key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+        rx_keys.key[0], rx_keys.key[1], rx_keys.key[2], rx_keys.key[3]
+    });
+    std.debug.print("  iv[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+        rx_keys.iv[0], rx_keys.iv[1], rx_keys.iv[2], rx_keys.iv[3]
+    });
+    std.debug.print("  ciphertext_len={}\n", .{actual_ciphertext.len});
+
+    const dec = crypto.aeadDecrypt(
         .aes_128_gcm,
         &rx_keys.key,
         &rx_keys.iv,
-        &rx_keys.hp,
-        &masked_header,
-        masked_pn_bytes[0..actual_pn_len],
-        header_prefix,
-        full_pn_and_payload,
+        full_pn,
+        aad,
+        actual_ciphertext,
         pt_slice,
-        largest_pn,
-    ) catch {
+    ) catch |err| {
+        std.debug.print("decryptHandshakePacket: AEAD decrypt failed: {}\n", .{err});
+        std.debug.print("  Error details: pn={}, aad_len={}, ct_len={}\n", .{
+            full_pn, aad.len, actual_ciphertext.len
+        });
         return error.AeadDecryptFailed;
     };
 
-    // Extract packet number from unmasked bytes
-    var pn_val_be: u64 = 0;
-    var k: usize = 0;
-    while (k < actual_pn_len) : (k += 1) {
-        pn_val_be = (pn_val_be << 8) | masked_pn_bytes[k];
-    }
-
-    // Expand truncated PN
-    const pn_full = crypto.expandPacketNumber(pn_val_be, actual_pn_len, largest_pn);
-
+    // Return decrypted payload and packet number
     return .{
         .payload = pt_slice[0..dec],
-        .packet_number = pn_full,
+        .packet_number = full_pn,
     };
 }
 

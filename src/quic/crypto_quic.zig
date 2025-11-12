@@ -239,13 +239,15 @@ pub fn protectPacket(
     }
 
     const ct_len = try aeadEncrypt(suite, aead_key, aead_iv, packet_number, aad, plaintext, out_cipher);
-    std.debug.print("protectPacket: aeadEncrypt returned ct_len={}, plaintext.len={}\n", .{ ct_len, plaintext.len });
+    // Debug: Only print for very small plaintexts
+    if (plaintext.len < 100) {
+        std.debug.print("protectPacket WARNING: small plaintext.len={}, ct_len={}\n", .{ plaintext.len, ct_len });
+    }
 
     // Build HP sample per RFC 9001:
     // - AES: 16 bytes starting 4 bytes after start of PN -> relative to ciphertext (which starts after PN), offset = 4 - pn_len
     // - ChaCha: 16 bytes starting at start of PN -> compose from PN bytes + first (16 - pn_len) bytes of ciphertext
     if (ct_len < 16) {
-        std.debug.print("protectPacket: ERROR ct_len={} < 16, returning AuthenticationFailed\n", .{ct_len});
         return error.AuthenticationFailed;
     }
     var sample16: [16]u8 = undefined;
@@ -258,33 +260,15 @@ pub fn protectPacket(
             // General formula: offset into ciphertext = 4 - pn_len
             const sample_offset: usize = if (pn_len >= 4) 0 else (4 - pn_len);
             if (sample_offset + 16 > out_cipher.len) {
-                std.debug.print("protectPacket: ERROR sample_offset={} + 16 > out_cipher.len={}\n", .{ sample_offset, out_cipher.len });
+                // This error means the plaintext is too short for header protection
+                // Need at least (4 - pn_len) + 16 bytes of ciphertext
                 return error.AuthenticationFailed;
             }
             @memcpy(sample16[0..], out_cipher[sample_offset .. sample_offset + 16]);
-
-            // DIAGNOSTIC: Log ciphertext and sample extraction
-            std.debug.print("protectPacket: ct_len={}, sample_offset={} (pn_len={}, formula: 4-pn_len={})\n", .{ out_cipher.len, sample_offset, pn_len, 4 - pn_len });
-            const ct_dump = @min(32, out_cipher.len);
-            std.debug.print("protectPacket: ciphertext[0..{}]:", .{ct_dump});
-            for (out_cipher[0..ct_dump], 0..) |b, i| {
-                if (i > 0 and i % 16 == 0) std.debug.print("", .{});
-                if (i % 16 == 0) std.debug.print("  ", .{});
-                std.debug.print("{X:0>2} ", .{b});
-            }
-            std.debug.print("", .{});
-            std.debug.print("protectPacket: HP sample from offset {}:", .{sample_offset});
-            std.debug.print("  ", .{});
-            for (sample16, 0..) |b, i| {
-                std.debug.print("{X:0>2} ", .{b});
-                if (i == 7) std.debug.print(" ", .{});
-            }
-            std.debug.print("", .{});
         },
         .chacha20_poly1305 => {
             if (pn_len > 4) return error.InvalidPacketNumberLength;
             if ((16 - pn_len) > out_cipher.len) {
-                std.debug.print("protectPacket: ERROR ChaCha (16 - pn_len={})={} > out_cipher.len={}\n", .{ pn_len, 16 - pn_len, out_cipher.len });
                 return error.AuthenticationFailed;
             }
             @memcpy(sample16[0..pn_len], pn_bytes);

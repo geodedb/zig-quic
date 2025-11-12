@@ -163,8 +163,24 @@ pub fn encodeShortProtected(
     @memcpy(pn_mut[0..packet_number_len], pn_slice);
     try w.writeAll(pn_slice);
 
+    // RFC 9001 §5.4.3: Ensure minimum payload size for header protection sample extraction
+    // For AES with n-byte PN, need at least (4 - n) bytes offset + 16 bytes sample
+    const min_plaintext_len: usize = if (packet_number_len >= 4) 0 else (4 - packet_number_len);
+    var actual_payload = payload_plaintext;
+    var padded_payload: ?[]u8 = null;
+    defer if (padded_payload) |p| alloc.free(p);
+
+    if (payload_plaintext.len < min_plaintext_len) {
+        // Need to pad the payload to meet minimum size
+        padded_payload = try alloc.alloc(u8, min_plaintext_len);
+        @memcpy(padded_payload.?[0..payload_plaintext.len], payload_plaintext);
+        // Fill rest with PADDING frames (0x00)
+        @memset(padded_payload.?[payload_plaintext.len..], 0x00);
+        actual_payload = padded_payload.?;
+    }
+
     // AEAD encrypt payload
-    const ct_len = payload_plaintext.len + 16;
+    const ct_len = actual_payload.len + 16;
     const out_cipher_idx = buf.items.len;
     try buf.ensureTotalCapacity(alloc, out_cipher_idx + ct_len);
     try buf.appendNTimes(alloc, 0, ct_len);
@@ -185,7 +201,7 @@ pub fn encodeShortProtected(
         &header_first,
         pn_mut[0..packet_number_len],
         buf.items[1 .. 1 + header_prefix_len],
-        payload_plaintext,
+        actual_payload,
         out_cipher,
     );
     std.debug.assert(written == ct_len);
@@ -643,9 +659,27 @@ pub fn encodeHandshakeProtected(
 
     // Handshake packets do not carry a token
 
+    // RFC 9001 §5.4.3: Ensure minimum payload size for header protection sample extraction
+    // For AES with n-byte PN, need at least (4 - n) bytes offset + 16 bytes sample
+    // So ciphertext must be at least max(16, 4 - n + 16) = max(16, 20 - n) bytes
+    // Which means plaintext must be at least max(0, 4 - n) bytes
+    const min_plaintext_len: usize = if (packet_number_len >= 4) 0 else (4 - packet_number_len);
+    var actual_payload = payload_plaintext;
+    var padded_payload: ?[]u8 = null;
+    defer if (padded_payload) |p| alloc.free(p);
+
+    if (payload_plaintext.len < min_plaintext_len) {
+        // Need to pad the payload to meet minimum size
+        padded_payload = try alloc.alloc(u8, min_plaintext_len);
+        @memcpy(padded_payload.?[0..payload_plaintext.len], payload_plaintext);
+        // Fill rest with PADDING frames (0x00)
+        @memset(padded_payload.?[payload_plaintext.len..], 0x00);
+        actual_payload = padded_payload.?;
+    }
+
     // Length varint: pn_len + ciphertext_len, encoded with the minimal length
     // permitted by RFC 9000 §17.2.
-    const ct_len = payload_plaintext.len + 16;
+    const ct_len = actual_payload.len + 16;
     const length_value: usize = @as(usize, packet_number_len) + ct_len;
     var lbuf: [8]u8 = undefined;
     const ll = try varint.encode(length_value, &lbuf);
@@ -676,7 +710,11 @@ pub fn encodeHandshakeProtected(
 
     const out_cipher = buf.items[out_cipher_idx .. out_cipher_idx + ct_len];
     const suite = crypto.AeadSuite.aes_128_gcm;
-    std.debug.print("encodeHandshakeProtected: Using keys - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ keys.key[0], keys.key[1], keys.key[2], keys.key[3], keys.iv[0], keys.iv[1], keys.iv[2], keys.iv[3] });
+    std.debug.print("encodeHandshakeProtected: Using keys - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, hp[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+        keys.key[0], keys.key[1], keys.key[2], keys.key[3],
+        keys.iv[0], keys.iv[1], keys.iv[2], keys.iv[3],
+        keys.hp[0], keys.hp[1], keys.hp[2], keys.hp[3]
+    });
     // Use protectPacket for Handshake packets, not protectInitial
     const written = try crypto.protectPacket(
         suite,
@@ -687,7 +725,7 @@ pub fn encodeHandshakeProtected(
         &header_first,
         pn_mut[0..packet_number_len],
         buf.items[1 .. 1 + header_prefix_len],
-        payload_plaintext,
+        actual_payload,
         out_cipher,
     );
 
@@ -863,10 +901,24 @@ pub fn encode0RTTProtected(
     try w.writeByte(@as(u8, @intCast(scid.len)));
     try w.writeAll(scid);
 
-    // Length field (varint). Encode using the minimal length permitted by
-    // RFC 9000 §17.2.
+    // RFC 9001 §5.4.3: Calculate minimum payload size for header protection sample extraction first
+    const min_plaintext_len: usize = if (pn_len >= 4) 0 else (4 - @as(usize, pn_len));
+    var actual_payload = payload;
+    var padded_payload: ?[]u8 = null;
+    defer if (padded_payload) |p| alloc.free(p);
+
+    if (payload.len < min_plaintext_len) {
+        // Need to pad the payload to meet minimum size
+        padded_payload = try alloc.alloc(u8, min_plaintext_len);
+        @memcpy(padded_payload.?[0..payload.len], payload);
+        // Fill rest with PADDING frames (0x00)
+        @memset(padded_payload.?[payload.len..], 0x00);
+        actual_payload = padded_payload.?;
+    }
+
+    // Now write the length field with the actual payload size
     var len_buf: [8]u8 = undefined;
-    const payload_with_tag_len = payload.len + 16; // AEAD tag
+    const payload_with_tag_len = actual_payload.len + 16; // AEAD tag
     const total_len = pn_len + payload_with_tag_len;
     const len_bytes = try varint.encode(total_len, &len_buf);
     try w.writeAll(len_buf[0..len_bytes]);
@@ -887,8 +939,8 @@ pub fn encode0RTTProtected(
 
     // Encrypt
     const ct_start = buf.items.len;
-    try buf.ensureTotalCapacity(alloc, ct_start + payload.len + 16);
-    buf.items.len = ct_start + payload.len + 16;
+    try buf.ensureTotalCapacity(alloc, ct_start + actual_payload.len + 16);
+    buf.items.len = ct_start + actual_payload.len + 16;
 
     // aeadEncrypt(suite, key, iv, packet_number, aad, plaintext, out)
     _ = try crypto.aeadEncrypt(
@@ -897,7 +949,7 @@ pub fn encode0RTTProtected(
         &keys.iv,
         packet_number,
         aad,
-        payload,
+        actual_payload,
         buf.items[ct_start..],
     );
 

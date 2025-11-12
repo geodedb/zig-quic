@@ -16,16 +16,20 @@ test "handshake space: ECN CE triggers ACK_ECN in server Handshake ACK" {
 
     var c = try ep.connectClient("127.0.0.1:3456");
 
-    // Install symmetric Handshake keys for RX/TX (zeros are fine for tests).
-    const z16 = [_]u8{0} ** 16;
-    const z12 = [_]u8{0} ** 12;
-    c.hs_rx_keys = .{ .key = z16, .iv = z12, .hp = z16 };
-    c.hs_tx_keys = c.hs_rx_keys;
+    // Derive proper Handshake keys from test secrets
+    const ks = @import("quic_tls");
+    const test_client_secret = [_]u8{0x33} ** 32; // Test client secret
+    const test_server_secret = [_]u8{0x44} ** 32; // Test server secret
+    const client_keys = ks.deriveKeyIvHp(test_client_secret);
+    const server_keys = ks.deriveKeyIvHp(test_server_secret);
+    // Client receives with server keys, sends with client keys
+    c.hs_rx_keys = .{ .key = server_keys.key, .iv = server_keys.iv, .hp = server_keys.hp };
+    c.hs_tx_keys = .{ .key = client_keys.key, .iv = client_keys.iv, .hp = client_keys.hp };
 
     // Build a minimal incoming Handshake packet (PING) addressed to this connection (DCID = our_scid).
     var frames = std.ArrayList(u8){};
-    defer frames.deinit(alloc);
-    _ = (frame.Frame{ .ping = {} }).write(frames.writer(alloc)) catch {};
+    defer frames.deinit(A);
+    _ = (frame.Frame{ .ping = {} }).write(frames.writer(A)) catch {};
     const in_pkt = try packet.encodeHandshakeProtected(
         A,
         0x00000001,

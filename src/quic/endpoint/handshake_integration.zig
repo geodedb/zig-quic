@@ -99,32 +99,61 @@ fn onSecretAvailable(
             // They don't come from TLS callbacks (RFC 9001 §5.2)
         },
         .Handshake => {
-            // Determine if this is client or server secret based on role
             // Context.installTrafficSecret is called twice:
-            //   - Once for .send direction (our TX keys)
-            //   - Once for .recv direction (our RX keys)
+            //   - For Server: .send (server secret), then .recv (client secret)
+            //   - For Client: .send (client secret), then .recv (server secret)
             //
             // We need to collect both secrets before calling installHandshakeKeys.
-            // For now, store in Connection's existing hs_client/hs_server fields.
-            //
-            // TODO: Track direction (send/recv) to properly map secrets.
-            // For now, assume first call is client, second is server (works for simple cases).
-            if (conn.hs_client == null) {
-                conn.hs_client = secret_bytes;
-            } else if (conn.hs_server == null) {
-                conn.hs_server = secret_bytes;
-                // Both secrets available - install keys
-                try installHandshakeKeys(conn, conn.hs_client.?, conn.hs_server.?);
+            // RFC 9001 §5: Each endpoint uses its own secret for sending,
+            // and the peer's secret for receiving.
+
+            if (conn.role == .Server) {
+                // Server: first call is server secret (.send), second is client secret (.recv)
+                if (conn.hs_server == null) {
+                    conn.hs_server = secret_bytes;
+                    std.debug.print("onSecretAvailable[Server]: Stored server HS secret (1st call): {X:0>2}{X:0>2}...\n", .{ secret_bytes[0], secret_bytes[1] });
+                } else if (conn.hs_client == null) {
+                    conn.hs_client = secret_bytes;
+                    std.debug.print("onSecretAvailable[Server]: Stored client HS secret (2nd call): {X:0>2}{X:0>2}...\n", .{ secret_bytes[0], secret_bytes[1] });
+                    // Both secrets available - install keys
+                    try installHandshakeKeys(conn, conn.hs_client.?, conn.hs_server.?);
+                }
+            } else {
+                // Client: first call is client secret (.send), second is server secret (.recv)
+                if (conn.hs_client == null) {
+                    conn.hs_client = secret_bytes;
+                    std.debug.print("onSecretAvailable[Client]: Stored client HS secret (1st call): {X:0>2}{X:0>2}...\n", .{ secret_bytes[0], secret_bytes[1] });
+                } else if (conn.hs_server == null) {
+                    conn.hs_server = secret_bytes;
+                    std.debug.print("onSecretAvailable[Client]: Stored server HS secret (2nd call): {X:0>2}{X:0>2}...\n", .{ secret_bytes[0], secret_bytes[1] });
+                    // Both secrets available - install keys
+                    try installHandshakeKeys(conn, conn.hs_client.?, conn.hs_server.?);
+                }
             }
         },
         .Application => {
             // Similar pattern for Application secrets
-            if (conn.app_rx_secret == null) {
-                conn.app_rx_secret = secret_bytes;
-            } else if (conn.app_tx_secret == null) {
-                conn.app_tx_secret = secret_bytes;
-                // Both secrets available - install keys
-                try installApplicationKeys(conn, conn.app_rx_secret.?, conn.app_tx_secret.?);
+            // For Server: .send (server app secret), then .recv (client app secret)
+            // For Client: .send (client app secret), then .recv (server app secret)
+
+            if (conn.role == .Server) {
+                // Server: first is server app secret (.send), second is client app secret (.recv)
+                if (conn.app_tx_secret == null) {
+                    conn.app_tx_secret = secret_bytes;  // Server sends with server secret
+                } else if (conn.app_rx_secret == null) {
+                    conn.app_rx_secret = secret_bytes;  // Server receives with client secret
+                    // Both secrets available - install keys (order: client, server)
+                    try installApplicationKeys(conn, conn.app_rx_secret.?, conn.app_tx_secret.?);
+                }
+            } else {
+                // Client: first is client app secret (.send), second is server app secret (.recv)
+                if (conn.app_tx_secret == null) {
+                    conn.app_tx_secret = secret_bytes;  // Client sends with client secret
+                } else if (conn.app_rx_secret == null) {
+                    conn.app_rx_secret = secret_bytes;  // Client receives with server secret
+                    // Both secrets available - install keys (order: client, server)
+                    try installApplicationKeys(conn, conn.app_tx_secret.?, conn.app_rx_secret.?);
+                }
             }
         },
     }
@@ -325,8 +354,14 @@ pub fn installHandshakeKeys(
     // Derive server Handshake keys
     const server_keys = key_schedule.deriveKeyIvHp(server_secret);
 
-    std.debug.print("  Derived client_keys: key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ client_keys.key[0], client_keys.key[1], client_keys.key[2], client_keys.key[3] });
-    std.debug.print("  Derived server_keys: key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ server_keys.key[0], server_keys.key[1], server_keys.key[2], server_keys.key[3] });
+    std.debug.print("  Derived client_keys: key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, hp[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+        client_keys.key[0], client_keys.key[1], client_keys.key[2], client_keys.key[3],
+        client_keys.hp[0], client_keys.hp[1], client_keys.hp[2], client_keys.hp[3]
+    });
+    std.debug.print("  Derived server_keys: key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, hp[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+        server_keys.key[0], server_keys.key[1], server_keys.key[2], server_keys.key[3],
+        server_keys.hp[0], server_keys.hp[1], server_keys.hp[2], server_keys.hp[3]
+    });
 
     // Install based on connection role
     // Convert KeyMaterial to packet.InitialKeys by copying fields
@@ -334,10 +369,12 @@ pub fn installHandshakeKeys(
         // Client receives with server keys, sends with client keys
         conn.hs_rx_keys = .{ .key = server_keys.key, .iv = server_keys.iv, .hp = server_keys.hp };
         conn.hs_tx_keys = .{ .key = client_keys.key, .iv = client_keys.iv, .hp = client_keys.hp };
+        std.debug.print("installHandshakeKeys: Client installed Handshake keys\n", .{});
     } else {
         // Server receives with client keys, sends with server keys
         conn.hs_rx_keys = .{ .key = client_keys.key, .iv = client_keys.iv, .hp = client_keys.hp };
         conn.hs_tx_keys = .{ .key = server_keys.key, .iv = server_keys.iv, .hp = server_keys.hp };
+        std.debug.print("installHandshakeKeys: Server installed Handshake keys\n", .{});
     }
 
     // Handshake keys are now installed (indicated by non-null hs_rx_keys/hs_tx_keys)
@@ -1221,10 +1258,32 @@ pub fn setupServerTransportParams(
     // Install on connection - will be sent in ServerHello EncryptedExtensions
     try conn.setLocalTransportParameters(if (tp_bytes.len > 0) tp_bytes else tp_bytes[0..0]);
 
-    // Note: If TLS context doesn't exist yet (config.transport_params was null),
-    // the connection will use the legacy TLS Engine path which has the transport
-    // parameters set via setLocalTransportParameters above.
-    // The Context path is preferred when transport params are known upfront.
+    // Create TLS context if it doesn't exist yet (server path)
+    // This happens when the server connection was created without transport parameters
+    // and we need to create the TLS context now that we have them
+    if (conn.tls_context == null and conn.role == .Server) {
+        // Create TLS context with the transport parameters
+        const alpn_list = if (conn.allowed_alpns.len > 0)
+            conn.allowed_alpns
+        else
+            &[_][]const u8{};
+
+        const tls_ctx = try createTlsContext(
+            allocator,
+            .Server,
+            alpn_list,
+            if (tp_bytes.len > 0) tp_bytes else tp_bytes[0..0],
+            quic_cfg.inline_server_cert_der,
+            quic_cfg.inline_server_priv_p256,
+        );
+
+        // Store the TLS context on the heap
+        const ctx_ptr = try allocator.create(@TypeOf(tls_ctx));
+        ctx_ptr.* = tls_ctx;
+        conn.tls_context = ctx_ptr;
+
+        std.debug.print("setupServerTransportParams: Created TLS context for server with transport params\n", .{});
+    }
 }
 
 /// Module marker for Phase 4b.5 Session 6.

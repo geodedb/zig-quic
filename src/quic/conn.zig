@@ -1334,6 +1334,12 @@ pub const Connection = struct {
     pub fn pushCrypto(self: *Connection, hs: []const u8) !void {
         // Phase 21.2: Use TLS Context if available
         // Note: Caller must set current connection via handshake_integration.setCurrentConnection() before calling
+        std.debug.print("pushCrypto: role={s}, tls_context={}, hs_len={}\n", .{
+            if (self.role == .Server) "Server" else "Client",
+            self.tls_context != null,
+            hs.len,
+        });
+
         if (self.tls_context) |tls_ctx| {
             // Determine encryption level based on which keys are installed
             const level: tls13.EncryptionLevel = blk: {
@@ -1342,10 +1348,12 @@ pub const Connection = struct {
                 break :blk .Initial;
             };
 
+            std.debug.print("pushCrypto: Using TLS Context with level={s}\n", .{@tagName(level)});
             try tls_ctx.processCrypto(level, hs);
             return;
         }
 
+        std.debug.print("pushCrypto: Using legacy Engine path\n", .{});
         // Legacy Engine path
         const had_peer_pub = self.tls.peer_pub != null;
         self.tls.onCryptoRecv(hs);

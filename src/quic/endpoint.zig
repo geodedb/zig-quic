@@ -797,7 +797,6 @@ pub const Endpoint = struct {
             // Long header: Need to determine packet length to know how much to consume
             if (remaining.len < 5) break;
             const version: u32 = (@as(u32, remaining[1]) << 24) | (@as(u32, remaining[2]) << 16) | (@as(u32, remaining[3]) << 8) | @as(u32, remaining[4]);
-            const ty = (first >> 4) & 0x03;
 
             // Try to determine packet length to know how much to consume
             var packet_len: usize = remaining.len; // Default to entire remaining buffer
@@ -819,13 +818,13 @@ pub const Endpoint = struct {
                             packet_len = remaining.len; // Use entire buffer for VN
                         }
                         // Retry packets also don't have a length field
-                        else if (ty == 3) {
+                        else if (((first >> 4) & 0x03) == 3) {
                             packet_len = remaining.len; // Use entire buffer for Retry
                         }
                         // Initial, Handshake, and 0-RTT packets have length field
                         else {
                             // For Initial packets, skip token length varint
-                            if (ty == 0 and remaining.len > offset) {
+                            if (((first >> 4) & 0x03) == 0 and remaining.len > offset) {
                                 // Read token length as varint
                                 const token_len_result = varint.decode(remaining[offset..]) catch {
                                     break; // Can't parse, treat as single packet
@@ -852,14 +851,24 @@ pub const Endpoint = struct {
             // Extract just this packet
             const packet_bytes = remaining[0..packet_len];
 
+            // Debug: log packet extraction
+            const packet_ty = (packet_bytes[0] >> 4) & 0x03;
+            std.debug.print("processIncomingDatagram: Extracted type {} packet, len={} from datagram offset={}\n", .{
+                packet_ty,
+                packet_len,
+                bytes.len - remaining.len,
+            });
+
             // Process the packet based on type
+            // Re-parse packet type from THIS packet's first byte (for coalesced packets)
+
             if (version == 0) {
                 incoming.processVersionNegotiation(&rx_ctx, peer, packet_bytes);
-            } else if (ty == 0) {
+            } else if (packet_ty == 0) {
                 incoming.processInitial(&rx_ctx, peer, packet_bytes, version);
-            } else if (ty == 3) {
+            } else if (packet_ty == 3) {
                 self.processRetryPacket(peer, packet_bytes, version);
-            } else if (ty == 2) {
+            } else if (packet_ty == 2) {
                 incoming.processHandshake(&rx_ctx, peer, packet_bytes, version, ecn_bits, rx_ctx.send_fn);
             }
 

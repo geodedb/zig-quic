@@ -63,11 +63,14 @@ test "ECN longitudinal: multi-ACK across spaces with reordering and one loss" {
     }
 
     // Move to Handshake: craft a Handshake PING with CE to bump counts there
-    // Install symmetric Handshake keys and use them for encode/decode to make this deterministic.
-    const z16 = [_]u8{0} ** 16;
-    const z12 = [_]u8{0} ** 12;
-    c.hs_rx_keys = .{ .key = z16, .iv = z12, .hp = z16 };
-    c.hs_tx_keys = c.hs_rx_keys;
+    // Derive proper Handshake keys from test secrets
+    const test_client_secret = [_]u8{0x11} ** 32; // Test client secret
+    const test_server_secret = [_]u8{0x22} ** 32; // Test server secret
+    const client_keys = ks.deriveKeyIvHp(test_client_secret);
+    const server_keys = ks.deriveKeyIvHp(test_server_secret);
+    // Client receives with server keys, sends with client keys
+    c.hs_rx_keys = .{ .key = server_keys.key, .iv = server_keys.iv, .hp = server_keys.hp };
+    c.hs_tx_keys = .{ .key = client_keys.key, .iv = client_keys.iv, .hp = client_keys.hp };
     var fb2 = std.ArrayList(u8){};
     defer fb2.deinit(A);
     _ = (frame.Frame{ .ping = {} }).write(fb2.writer(A)) catch {};
@@ -150,7 +153,10 @@ test "ECN longitudinal: multi-ACK across spaces with reordering and one loss" {
 
     // For 1-RTT testing, we'll use a simpler approach: directly test the connection's ECN counters
     // Install 1-RTT keys on the client connection
-    c.app_tx_keys = .{ .key = z16, .iv = z12, .hp = z16 };
+    const test_key = [_]u8{0x55} ** 16; // Test key
+    const test_iv = [_]u8{0x66} ** 12; // Test IV
+    const test_hp = [_]u8{0x77} ** 16; // Test HP key
+    c.app_tx_keys = .{ .key = test_key, .iv = test_iv, .hp = test_hp };
     c.app_rx_keys = c.app_tx_keys;
 
     // Simulate receiving packets with ECN marks by directly calling onEcnMark
