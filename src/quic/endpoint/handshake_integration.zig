@@ -218,12 +218,8 @@ fn onHandshakeMetadata(
 
     // Store and validate peer transport parameters (RFC 9000 §7.4, §18.2)
     if (meta.peer_transport_parameters) |peer_tp_bytes| {
-        // Allocate owned copy
-        const owned_tp = try conn.allocator.alloc(u8, peer_tp_bytes.len);
-        @memcpy(owned_tp, peer_tp_bytes);
-
-        // Store raw bytes via Connection's method
-        try conn.storePeerTransportParams(owned_tp);
+        // Store raw bytes via Connection's method (makes its own copy)
+        try conn.storePeerTransportParams(peer_tp_bytes);
 
         // Decode, validate, and apply transport parameters
         // RFC 9000 §7.4: "An endpoint MUST apply the transport parameters provided by its peer"
@@ -250,8 +246,12 @@ fn onPeerFinished(ctx: *tls13.Context) !void {
         return error.NoConnectionContext;
     };
 
+    std.debug.print("[onPeerFinished] CALLBACK INVOKED for {s}, conn={*}\n", .{if (conn.role == .Server) "Server" else "Client", conn});
+
     // Mark that peer's Finished has been verified
     conn.peer_finished_verified = true;
+
+    std.debug.print("[onPeerFinished] Set peer_finished_verified=true for {s}, conn={*}, value now={}\n", .{if (conn.role == .Server) "Server" else "Client", conn, conn.peer_finished_verified});
 
     // RFC 9001 §4.1.2: Client can drop handshake keys after sending Finished
     // Server must wait for peer Finished before dropping

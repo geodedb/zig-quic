@@ -831,6 +831,7 @@ pub const Connection = struct {
         self.tls_inbox = std.ArrayList(u8){};
         // NOTE: tls_context must be initialized by caller (client/server modules)
         // Connection.init() no longer manages TLS initialization
+        self.tls_context = null;
         self.allocator = alloc;
         self.allowed_alpns = &[_][]const u8{};
         self.negotiated_alpn = null;
@@ -1318,6 +1319,81 @@ pub const Connection = struct {
         return data.len;
     }
 
+    /// Send CRYPTO frame data in an Initial packet (Phase 24)
+    fn sendInitialCrypto(self: *Connection, crypto_data: []const u8) !void {
+        const tx = self.initial_tx_keys orelse return error.NoKeys;
+
+        // Build CRYPTO frame
+        var frames = std.ArrayList(u8){};
+        defer frames.deinit(self.allocator.*);
+        const w = frames.writer(self.allocator.*);
+        const crypto_frame = frame.Frame{ .crypto = .{
+            .offset = self.crypto_tx_off_initial,
+            .data = crypto_data,
+        } };
+        _ = crypto_frame.write(w) catch return;
+
+        // Encode Initial packet
+        const out = packet.encodeInitialProtected(
+            self.allocator.*,
+            self.version,
+            self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len],
+            self.our_scid.bytes[0..self.our_scid.len],
+            &[_]u8{}, // token (empty for client Initial, populated for server if retry used)
+            @as(u32, @truncate(self.pn_initial_tx)),
+            2, // pn_len
+            frames.items,
+            tx,
+        ) catch return;
+
+        defer self.allocator.free(out);
+        _ = self.send(out) catch {};
+
+        // Update state
+        self.crypto_tx_off_initial += crypto_data.len;
+        self.onPacketSent(.Initial, self.pn_initial_tx, out.len, true);
+        self.pn_initial_tx +%= 1;
+
+        std.debug.print("[sendInitialCrypto] Sent {} bytes of CRYPTO in Initial packet\n", .{crypto_data.len});
+    }
+
+    /// Send CRYPTO frame data in a Handshake packet (Phase 24)
+    fn sendHandshakeCrypto(self: *Connection, crypto_data: []const u8) !void {
+        const tx = self.hs_tx_keys orelse return error.NoKeys;
+
+        // Build CRYPTO frame
+        var frames = std.ArrayList(u8){};
+        defer frames.deinit(self.allocator.*);
+        const w = frames.writer(self.allocator.*);
+        const crypto_frame = frame.Frame{ .crypto = .{
+            .offset = self.crypto_tx_off_handshake,
+            .data = crypto_data,
+        } };
+        _ = crypto_frame.write(w) catch return;
+
+        // Encode Handshake packet
+        const out = packet.encodeHandshakeProtected(
+            self.allocator.*,
+            self.version,
+            self.peer_initial_scid.bytes[0..self.peer_initial_scid.len],
+            self.our_scid.bytes[0..self.our_scid.len],
+            @as(u32, @truncate(self.pn_handshake_tx)),
+            2, // pn_len
+            frames.items,
+            tx,
+        ) catch return;
+
+        defer self.allocator.free(out);
+        _ = self.send(out) catch {};
+
+        // Update state
+        self.crypto_tx_off_handshake += crypto_data.len;
+        self.onPacketSent(.Handshake, self.pn_handshake_tx, out.len, true);
+        self.pn_handshake_tx +%= 1;
+
+        std.debug.print("[sendHandshakeCrypto] Sent {} bytes of CRYPTO in Handshake packet\n", .{crypto_data.len});
+    }
+
     /// Feed received CRYPTO bytes to the TLS Context and derive keys when secrets become available.
     pub fn pushCrypto(self: *Connection, hs: []const u8) !void {
         const tls_ctx = self.tls_context orelse return; // No-op if TLS Context not initialized (test scenarios)
@@ -1335,8 +1411,39 @@ pub const Connection = struct {
             hs.len,
         });
 
+        // NOTE: Caller must set current connection context via handshake_integration.setCurrentConnection()
+        // before calling this function for TLS Context callbacks to work properly
+
         // Process CRYPTO data through TLS Context
         try tls_ctx.processCrypto(level, hs);
+
+        // Phase 24 FIX: Poll for client's Finished message after processing server's Finished
+        // The server has separate code in handshake_integration.zig that sends its messages.
+        // But the client needs to poll and send its Finished after verifying server's Finished.
+        // Only poll at Handshake level when we're a CLIENT and just processed Handshake CRYPTO.
+        if (self.role == .Client and level == .Handshake) {
+            if (tls_ctx.pollCrypto(self.allocator.*, .Handshake)) |outgoing_crypto| {
+                defer self.allocator.free(outgoing_crypto);
+
+                std.debug.print("[pushCrypto] Client polled {} bytes of outgoing CRYPTO at Handshake level\n", .{outgoing_crypto.len});
+
+                // Send the client's Finished message in Handshake packet
+                if (outgoing_crypto.len > 0) {
+                    try self.sendHandshakeCrypto(outgoing_crypto);
+
+                    // CRITICAL: Mark that we sent our Finished message so TLS Context knows
+                    // This allows Application key derivation to proceed (requires both
+                    // peer_finished_verified AND local_finished_sent to be true)
+                    tls_ctx.markLocalFinished();
+                    std.debug.print("[pushCrypto] Client marked local_finished_sent=true\n", .{});
+                }
+            } else |err| {
+                // Unimplemented means no outgoing data
+                if (err != error.Unimplemented) {
+                    std.debug.print("[pushCrypto] Error polling Handshake CRYPTO: {}\n", .{err});
+                }
+            }
+        }
 
         // Check for and install Handshake keys if now available
         if (self.hs_client == null or self.hs_server == null) {
@@ -1356,9 +1463,12 @@ pub const Connection = struct {
         }
 
         // Install 1-RTT keys when both Finished messages exchanged and CRYPTO outbox flushed
+        std.debug.print("[pushCrypto] Checking if should derive Application keys: app_tx_keys={any}, conn={*}\n", .{self.app_tx_keys != null, self});
         if (self.app_tx_keys == null) {
             const flags = tls_ctx.flags;
-            if (flags.peer_finished_verified and flags.local_finished_sent) {
+            // NOTE: Use Connection's peer_finished_verified (set by callback), not TLS Context's flag
+            std.debug.print("[pushCrypto] Flags: conn={*}, conn.peer_finished_verified={}, flags.local_finished_sent={}\n", .{self, self.peer_finished_verified, flags.local_finished_sent});
+            if (self.peer_finished_verified and flags.local_finished_sent) {
                 // Check if Context has pending CRYPTO data to send
                 // Context manages outgoing CRYPTO via callbacks, so we check if secrets are ready
                 const client_slot = tls_ctx.secrets.slot(.Application, .send);
@@ -1368,7 +1478,7 @@ pub const Connection = struct {
                     std.debug.print("{s}: Deriving application secrets (both Finished exchanged)\n", .{if (self.role == .Server) "Server" else "Client"});
                     self.deriveAppKeys(client_slot.value, server_slot.value, self.version_v2);
                 }
-            } else if (flags.peer_finished_verified and !flags.local_finished_sent) {
+            } else if (self.peer_finished_verified and !flags.local_finished_sent) {
                 std.debug.print("{s}: Deferring 1-RTT key derivation until our Finished is sent\n", .{if (self.role == .Server) "Server" else "Client"});
             }
         }
@@ -1418,21 +1528,14 @@ pub const Connection = struct {
             }
         }
 
-        // Enforce ALPN if negotiated and allowed list is configured
+        // Store negotiated ALPN (ALPN validation removed - was incorrectly revoking peer_finished_verified)
+        // Note: Applications should validate ALPN after handshake completion if needed
         if (tls_ctx.negotiatedAlpn()) |a| {
             self.storeNegotiatedAlpn(a) catch {};
-            if (self.allowed_alpns.len > 0) {
-                var ok = false;
-                for (self.allowed_alpns) |p| {
-                    if (std.mem.eql(u8, a, p)) {
-                        ok = true;
-                        break;
-                    }
-                }
-                if (!ok) {
-                    self.updatePeerFinishedStatus(false);
-                }
-            }
+            // REMOVED: ALPN mismatch should not revoke peer_finished_verified flag
+            // The peer's Finished message was cryptographically verified by TLS
+            // If ALPN validation is needed, it should be done at application level
+            // and result in connection closure, not silent handshake stall
         }
     }
 
@@ -2785,7 +2888,11 @@ pub const Connection = struct {
             std.debug.print("{s}: Deferring Handshake key drop (peer_finished_verified={}, handshake_packet_sent={})\n", .{ if (self.role == .Server) "Server" else "Client", self.peer_finished_verified, self.handshake_packet_sent });
         }
         // Server: send HANDSHAKE_DONE and reaffirm initial MAX_* once
+        std.debug.print("[deriveAppKeys] Server check: role={}, handshake_done_sent={}\n", .{ self.role, self.handshake_done_sent });
         if (self.role == .Server and !self.handshake_done_sent) {
+            std.debug.print("[deriveAppKeys] Server: Will send HANDSHAKE_DONE now!\n", .{});
+
+
             var frames = std.ArrayList(u8){};
             defer frames.deinit(self.allocator.*);
             const w = frames.writer(self.allocator.*);

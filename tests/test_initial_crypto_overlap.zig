@@ -2,6 +2,7 @@ const std = @import("std");
 const conn_mod = @import("../src/quic/conn.zig");
 const packet = @import("../src/quic/packet.zig");
 const tp = @import("../src/quic/transport_params.zig");
+const handshake_integration = @import("../src/quic/endpoint/handshake_integration.zig");
 
 test "initial crypto handles overlapping frames" {
     const allocator = std.testing.allocator;
@@ -48,6 +49,10 @@ test "initial crypto handles overlapping frames" {
     };
 
     const partial_len: usize = 60;
+
+    // Set up threadlocal for TLS Context callbacks
+    handshake_integration.setCurrentConnection(&conn);
+    defer handshake_integration.clearCurrentConnection();
 
     const ack1 = try conn.handleInitialCrypto(&allocator, 0, client_hello[0..partial_len]);
     try std.testing.expect(ack1);
