@@ -924,8 +924,10 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
 
     // Server: If handshake flight not yet enqueued, queue it now
     // This generates EncryptedExtensions, Certificate, CertificateVerify, Finished
-    if (conn.role == .Server and !conn.tls.server_handshake_flight_enqueued) {
-        std.debug.print("sendHandshakePackets: Server queueing handshake flight\n", .{});
+    // Phase 21.3 FIX: Only call Engine's queueServerHandshakeFlight if NOT using Context
+    // Context generates handshake messages internally via callbacks
+    if (conn.role == .Server and conn.tls_context == null and !conn.tls.server_handshake_flight_enqueued) {
+        std.debug.print("sendHandshakePackets: Server queueing handshake flight (Engine path)\n", .{});
         conn.tls.queueServerHandshakeFlight();
     }
 
