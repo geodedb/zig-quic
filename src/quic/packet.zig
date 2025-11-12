@@ -695,7 +695,11 @@ pub fn encodeHandshakeProtected(
         @as(u8, @intCast(packet_number & 0xff)),
     };
     const pn_slice = pn_be_full[4 - packet_number_len .. 4];
-    std.debug.print("encodeHandshakeProtected: PN {} encoded as bytes [{X:0>2} {X:0>2}]\n", .{ packet_number, pn_slice[0], if (pn_slice.len > 1) pn_slice[1] else 0 });
+    std.debug.print("encodeHandshakeProtected: PN {} encoded as bytes [", .{packet_number});
+    for (pn_slice) |b| {
+        std.debug.print("{X:0>2} ", .{b});
+    }
+    std.debug.print("]\n", .{});
     try w.writeAll(pn_slice);
 
     const out_cipher_idx = buf.items.len;

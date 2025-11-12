@@ -832,6 +832,17 @@ pub fn processInitial(
             config,
         ) catch return;
 
+        // Debug: Check peer_initial_dcid after server connection creation
+        std.debug.print("processInitial: Server conn created, peer_initial_dcid len={}\n", .{
+            c_new.peer_initial_dcid.len
+        });
+        if (c_new.peer_initial_dcid.len > 0) {
+            std.debug.print("  peer_initial_dcid[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+                c_new.peer_initial_dcid.bytes[0], c_new.peer_initial_dcid.bytes[1],
+                c_new.peer_initial_dcid.bytes[2], c_new.peer_initial_dcid.bytes[3]
+            });
+        }
+
         // Set up transport parameters for server (RFC 9000 §18.2)
         // IMPORTANT: Must be done AFTER connection creation but BEFORE TLS processing
         handshake_integration.setupServerTransportParams(c_new, ctx.cfg, ctx.allocator.*) catch {};
@@ -849,6 +860,10 @@ pub fn processInitial(
         // Also register by peer + server SCID for Handshake packet lookup
         const our_key = endpoint_types.Key{ .peer_hash = ph, .dcid_hash = hashBytes(c_new.our_scid.bytes[0..c_new.our_scid.len]) };
         _ = ctx.conns.put(our_key, c_new) catch {};
+
+        std.debug.print("processInitial: Registered new server conn={*}\n", .{c_new});
+        std.debug.print("  By client DCID hash={X:0>16}\n", .{hashBytes(header.dcid)});
+        std.debug.print("  By server SCID hash={X:0>16}\n", .{hashBytes(c_new.our_scid.bytes[0..c_new.our_scid.len])});
 
         // Add newly created server connection to accepted list for accept() API
         _ = ctx.accepted.append(ctx.allocator.*, c_new) catch {};
@@ -1143,7 +1158,22 @@ pub fn processHandshake(
     const ph = hashSockaddr(&peer.storage, peer.len);
     const key = endpoint_types.Key{ .peer_hash = ph, .dcid_hash = hashBytes(header.dcid) };
 
+    std.debug.print("processHandshake: Looking up conn with peer_hash={X:0>16}, DCID len={}, DCID hash={X:0>16}\n", .{
+        ph, header.dcid.len, hashBytes(header.dcid)
+    });
+
     var c_ptr = ctx.conns.getPtr(key);
+
+    // Debug: Print all registered connections if lookup fails
+    if (c_ptr == null) {
+        std.debug.print("processHandshake: Connection not found. Registered connections:\n", .{});
+        var iter = ctx.conns.iterator();
+        while (iter.next()) |entry| {
+            std.debug.print("  Key: peer_hash={X:0>16}, dcid_hash={X:0>16}, conn={*}\n", .{
+                entry.key_ptr.peer_hash, entry.key_ptr.dcid_hash, entry.value_ptr.*
+            });
+        }
+    }
 
     // Fallback: If lookup failed and DCID is empty, find connection by peer address alone
     // This handles the case where client sends empty DCID in Handshake packets
@@ -1157,7 +1187,7 @@ pub fn processHandshake(
         }
     }
 
-    const conn = c_ptr orelse {
+    const conn = (if (c_ptr) |p| p.* else null) orelse {
         // No connection found - ignore packet
         std.debug.print("processHandshake: Connection not found for Handshake packet\n", .{});
         return;
@@ -1168,19 +1198,29 @@ pub fn processHandshake(
 
     // Check if we have Handshake RX keys
     const rx_keys = conn.*.hs_rx_keys orelse {
-        std.debug.print("processHandshake: No Handshake RX keys available\n", .{});
+        std.debug.print("processHandshake: No Handshake RX keys available for conn={*} role={s}\n", .{
+            conn, if (conn.*.role == .Client) "Client" else "Server"
+        });
         return;
     };
 
-    // Debug: Show packet info and HP key being used
-    std.debug.print("processHandshake: Packet len={}, header offset={}, role={s}\n", .{
+    // Debug: Show packet info and keys being used
+    std.debug.print("processHandshake: Packet len={}, header offset={}, role={s}, conn_ptr={*}\n", .{
         bytes.len,
         header.offset,
-        if (conn.*.role == .Client) "Client" else "Server"
+        if (conn.*.role == .Client) "Client" else "Server",
+        conn
     });
-    std.debug.print("  Using HP key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+    std.debug.print("  RX keys - key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}, hp[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+        rx_keys.key[0], rx_keys.key[1], rx_keys.key[2], rx_keys.key[3],
         rx_keys.hp[0], rx_keys.hp[1], rx_keys.hp[2], rx_keys.hp[3]
     });
+    if (conn.*.hs_tx_keys) |tx_keys| {
+        std.debug.print("  TX keys - key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}, hp[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+            tx_keys.key[0], tx_keys.key[1], tx_keys.key[2], tx_keys.key[3],
+            tx_keys.hp[0], tx_keys.hp[1], tx_keys.hp[2], tx_keys.hp[3]
+        });
+    }
 
     // Decrypt Handshake packet
     const decrypted = decryptHandshakePacket(
@@ -1279,7 +1319,7 @@ pub fn processHandshake(
 
         if (conn.*.tls_context) |tls_ctx| {
             // Set connection context for callbacks
-            handshake_integration.setCurrentConnection(conn.*);
+            handshake_integration.setCurrentConnection(conn);
             defer handshake_integration.clearCurrentConnection();
 
             // Poll for Handshake-level CRYPTO data

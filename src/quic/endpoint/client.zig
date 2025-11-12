@@ -140,6 +140,11 @@ pub fn createClientConnection(
     _ = conns_map.put(key_d, c) catch {};
     _ = conns_map.put(key_s, c) catch {};
 
+    std.debug.print("Client connection registered:\n", .{});
+    std.debug.print("  peer_hash={X:0>16}\n", .{peer_hash});
+    std.debug.print("  By DCID hash={X:0>16} (peer_initial_dcid)\n", .{hashBytes(c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len])});
+    std.debug.print("  By SCID hash={X:0>16} (our_scid)\n", .{hashBytes(c.our_scid.bytes[0..c.our_scid.len])});
+
     // Initialize TLS Context for modular TLS 1.3 (Phase 21.2)
     // Client doesn't need certificates (server auth only)
     const tls13 = @import("quic_tls13");

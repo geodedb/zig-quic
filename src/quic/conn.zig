@@ -831,6 +831,11 @@ pub const Connection = struct {
         self.peer = peer;
         self.tls_inbox = std.ArrayList(u8){};
         self.tls = tls13.Engine.init(alloc.*, if (role == .Client) .Client else .Server);
+        // For clients, ensure X25519 keypair is generated before ClientHello
+        // This fixes ECDHE shared secret derivation (Phase 17)
+        if (role == .Client) {
+            self.tls.ensureKeypair();
+        }
         self.tls.setPeerFinishedCallback(Connection.handleTlsPeerFinished, self);
         self.tls_context = null;
         self.allocator = alloc;

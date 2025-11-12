@@ -331,6 +331,14 @@ pub fn createServerConnection(
         @memcpy(c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len], config.client_dcid[0..c.peer_initial_dcid.len]);
     }
 
+    std.debug.print("createServerConnection: Set peer_initial_dcid from client_dcid, len={}\n", .{c.peer_initial_dcid.len});
+    if (c.peer_initial_dcid.len >= 4) {
+        std.debug.print("  peer_initial_dcid[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+            c.peer_initial_dcid.bytes[0], c.peer_initial_dcid.bytes[1],
+            c.peer_initial_dcid.bytes[2], c.peer_initial_dcid.bytes[3]
+        });
+    }
+
     // Set original_dcid to peer_initial_dcid (for Initial key derivation)
     c.original_dcid.len = c.peer_initial_dcid.len;
     if (c.original_dcid.len > 0) {

@@ -28,6 +28,13 @@ const transport_params = @import("transport_params");
 const tls13 = @import("vendor_ztls_tls13");
 const key_schedule = @import("vendor_ztls_key_schedule");
 
+// Helper function to hash bytes
+inline fn hashBytes(b: []const u8) u64 {
+    var h = std.hash.Wyhash.init(0);
+    h.update(b);
+    return h.final();
+}
+
 /// Context for TLS handshake processing.
 /// Focused context pattern - only includes what's needed for TLS integration.
 pub const HandshakeContext = struct {
@@ -58,11 +65,19 @@ threadlocal var current_tls_connection: ?*conn_mod.Connection = null;
 /// Set the current connection for TLS callbacks.
 /// This must be called before any TLS Context operations that might trigger callbacks.
 pub fn setCurrentConnection(conn: *conn_mod.Connection) void {
+    std.debug.print("setCurrentConnection: Setting conn={*} role={s}\n", .{
+        conn, if (conn.role == .Server) "Server" else "Client"
+    });
     current_tls_connection = conn;
 }
 
 /// Clear the current connection after TLS operations complete.
 pub fn clearCurrentConnection() void {
+    if (current_tls_connection) |conn| {
+        std.debug.print("clearCurrentConnection: Clearing conn={*} role={s}\n", .{
+            conn, if (conn.role == .Server) "Server" else "Client"
+        });
+    }
     current_tls_connection = null;
 }
 
@@ -84,7 +99,15 @@ fn onSecretAvailable(
 ) !void {
     _ = ctx; // Context available if needed for negotiated parameters
 
-    const conn = current_tls_connection orelse return error.NoConnectionContext;
+    const conn = current_tls_connection orelse {
+        std.debug.print("onSecretAvailable ERROR - No current connection set!\n", .{});
+        return error.NoConnectionContext;
+    };
+
+    std.debug.print("onSecretAvailable: conn={*} role={s} level={s} secret[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+        conn, if (conn.role == .Server) "Server" else "Client", @tagName(level),
+        secret[0], secret[1], secret[2], secret[3]
+    });
 
     // RFC 9001 §5.1: Secrets are 32 bytes for SHA-256-based cipher suites
     if (secret.len != 32) return error.InvalidSecretLength;
@@ -174,7 +197,10 @@ fn onHandshakeMetadata(
 ) !void {
     _ = ctx; // Context available if needed
 
-    const conn = current_tls_connection orelse return error.NoConnectionContext;
+    const conn = current_tls_connection orelse {
+        std.debug.print("Callback ERROR - No current connection set!\n", .{});
+        return error.NoConnectionContext;
+    };
 
     // Store negotiated ALPN
     if (meta.alpn) |alpn_bytes| {
@@ -219,7 +245,10 @@ fn onHandshakeMetadata(
 fn onPeerFinished(ctx: *tls13.Context) !void {
     _ = ctx; // Context available if needed
 
-    const conn = current_tls_connection orelse return error.NoConnectionContext;
+    const conn = current_tls_connection orelse {
+        std.debug.print("Callback ERROR - No current connection set!\n", .{});
+        return error.NoConnectionContext;
+    };
 
     // Mark that peer's Finished has been verified
     conn.peer_finished_verified = true;
@@ -242,7 +271,10 @@ fn onPeerFinished(ctx: *tls13.Context) !void {
 fn onHandshakeComplete(ctx: *tls13.Context) !void {
     _ = ctx; // Context available if needed
 
-    const conn = current_tls_connection orelse return error.NoConnectionContext;
+    const conn = current_tls_connection orelse {
+        std.debug.print("Callback ERROR - No current connection set!\n", .{});
+        return error.NoConnectionContext;
+    };
 
     // Phase 21.2: Mark handshake complete
     // RFC 9000 §4.1.2: "A server MUST send a HANDSHAKE_DONE frame as soon as it completes the handshake."
@@ -369,12 +401,18 @@ pub fn installHandshakeKeys(
         // Client receives with server keys, sends with client keys
         conn.hs_rx_keys = .{ .key = server_keys.key, .iv = server_keys.iv, .hp = server_keys.hp };
         conn.hs_tx_keys = .{ .key = client_keys.key, .iv = client_keys.iv, .hp = client_keys.hp };
-        std.debug.print("installHandshakeKeys: Client installed Handshake keys\n", .{});
+        std.debug.print("installHandshakeKeys: Client installed Handshake keys (conn={*})\n", .{conn});
+        std.debug.print("  Client RX HP key: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+            conn.hs_rx_keys.?.hp[0], conn.hs_rx_keys.?.hp[1], conn.hs_rx_keys.?.hp[2], conn.hs_rx_keys.?.hp[3]
+        });
     } else {
         // Server receives with client keys, sends with server keys
         conn.hs_rx_keys = .{ .key = client_keys.key, .iv = client_keys.iv, .hp = client_keys.hp };
         conn.hs_tx_keys = .{ .key = server_keys.key, .iv = server_keys.iv, .hp = server_keys.hp };
-        std.debug.print("installHandshakeKeys: Server installed Handshake keys\n", .{});
+        std.debug.print("installHandshakeKeys: Server installed Handshake keys (conn={*})\n", .{conn});
+        std.debug.print("  Server RX HP key: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+            conn.hs_rx_keys.?.hp[0], conn.hs_rx_keys.?.hp[1], conn.hs_rx_keys.?.hp[2], conn.hs_rx_keys.?.hp[3]
+        });
     }
 
     // Handshake keys are now installed (indicated by non-null hs_rx_keys/hs_tx_keys)
@@ -791,6 +829,10 @@ fn sendHandshakePing(ctx: *HandshakeContext) !void {
 
     // Use peer's Initial SCID as DCID for Handshake packets (RFC 9000 §7.2)
     const hs_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
+
+    std.debug.print("sendHandshakePackets: Using DCID len={}, hash={X:0>16}\n", .{
+        hs_dcid.len, hashBytes(hs_dcid)
+    });
     std.debug.print("sendHandshakePing: peer_initial_scid.len={}, our_scid.len={}\n", .{ conn.peer_initial_scid.len, conn.our_scid.len });
 
     // Encode Handshake packet with PING
@@ -966,6 +1008,14 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
 
         // Use peer's Initial SCID as DCID for Handshake packets (RFC 9000 §7.2)
         const hs_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
+
+        std.debug.print("sendHandshakePackets: Using DCID len={}, hash={X:0>16}, conn={*} role={s}\n", .{
+            hs_dcid.len, hashBytes(hs_dcid), conn, if (conn.role == .Client) "Client" else "Server"
+        });
+        std.debug.print("  TX keys - key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}, hp[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+            hs_tx_keys.key[0], hs_tx_keys.key[1], hs_tx_keys.key[2], hs_tx_keys.key[3],
+            hs_tx_keys.hp[0], hs_tx_keys.hp[1], hs_tx_keys.hp[2], hs_tx_keys.hp[3]
+        });
 
         // Encode Handshake packet
         const pkt = packet.encodeHandshakeProtected(
@@ -1255,6 +1305,17 @@ pub fn setupServerTransportParams(
     const tp_bytes = try transport_params.TransportParams.encode(&tpp, allocator);
     defer if (tp_bytes.len > 0) allocator.free(tp_bytes);
 
+    std.debug.print("setupServerTransportParams: Encoded {} bytes of transport params for conn={*}\n", .{tp_bytes.len, conn});
+    std.debug.print("  original_dcid len={}, initial_scid len={}\n", .{
+        conn.peer_initial_dcid.len, conn.our_scid.len
+    });
+    if (tp_bytes.len > 0) {
+        std.debug.print("  First 8 bytes of transport params: {X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+            tp_bytes[0], tp_bytes[1], tp_bytes[2], tp_bytes[3],
+            tp_bytes[4], tp_bytes[5], tp_bytes[6], tp_bytes[7]
+        });
+    }
+
     // Install on connection - will be sent in ServerHello EncryptedExtensions
     try conn.setLocalTransportParameters(if (tp_bytes.len > 0) tp_bytes else tp_bytes[0..0]);
 
@@ -1282,7 +1343,7 @@ pub fn setupServerTransportParams(
         ctx_ptr.* = tls_ctx;
         conn.tls_context = ctx_ptr;
 
-        std.debug.print("setupServerTransportParams: Created TLS context for server with transport params\n", .{});
+        std.debug.print("setupServerTransportParams: Created TLS context for server with {} bytes transport params\n", .{tp_bytes.len});
     }
 }
 

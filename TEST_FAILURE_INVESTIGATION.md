@@ -421,6 +421,85 @@ This explains why AEAD authentication consistently fails - the encryption and de
 
 ---
 
+## Phase 17: Root Cause - ECDHE Shared Secret Mismatch (2025-11-12 - Current Session)
+
+### Critical Discovery
+
+Added comprehensive debug output to TLS Engine to track ECDHE shared secrets and transcript hashes:
+
+**Client:**
+- ECDHE shared: `01 02 03 04 05 06 07 08` (sequential test pattern!)
+- Transcript: `2D BB A5 8B B8 2F 45 98`
+- Derived client_hs: `81 46 6F 75`
+- Derived server_hs: `E6 AB 58 8C`
+
+**Server:**
+- ECDHE shared: `18 34 A3 27 AB DF 93 5A` (real crypto result)
+- Transcript: `91 FA 9D BF 08 EC 44 25`
+- Derived client_hs: `B1 0E 0D 03`
+- Derived server_hs: `39 F6 67 A3`
+
+**Analysis:** Client and server derive completely different ECDHE shared secrets and transcript hashes, resulting in incompatible handshake keys. This is why AEAD authentication consistently fails.
+
+### Root Cause Identified
+
+The client's ECDHE shared secret `01 02 03 04 05 06 07 08` is a sequential test pattern, not a real X25519 scalar multiplication result. Investigation reveals:
+
+1. **TLS Engine Structure (engine.zig:151-152):**
+   ```zig
+   my_priv: ?[32]u8 = null,  // Client's X25519 private key
+   my_pub: ?[32]u8 = null,   // Client's X25519 public key
+   ```
+
+2. **TLS Engine has `ensureKeypair()` function (engine.zig:304-325):**
+   - Generates X25519 keypair if `my_priv`/`my_pub` are null
+   - Properly clamps private key per RFC 7748
+   - Called from `queueRealServerHello()` for servers
+
+3. **Problem:** Tests that manually construct ClientHellos (like `buildStandardClientHello()`) generate X25519 keypairs but don't save the private key in the TLS Engine's `my_priv` field. When the client later receives ServerHello and needs to compute ECDHE shared secret, it doesn't have its private key.
+
+4. **Unit tests that explicitly call `setEcdhe()` with mock values (01 02 03...) are working as intended** - they're deliberately using test values. The issue is with integration tests that expect real ECDHE but aren't properly initializing the keypair.
+
+### Attempted Fixes
+
+**Fix #1 (Partial):** Added `ensureKeypair()` call in Connection initialization for clients:
+```zig
+// src/quic/conn.zig:836-838
+if (role == .Client) {
+    self.tls.ensureKeypair();
+}
+```
+
+**Result:** Compilation successful after making `ensureKeypair()` public, but tests with mock ECDHE values (01 02 03...) still appear. This is expected for unit tests that deliberately use mocks, but integration tests may still have issues.
+
+### Recommended Next Steps
+
+1. **Distinguish between unit tests (mock ECDHE) and integration tests (real ECDHE)**:
+   - Unit tests with `setEcdhe()` should continue using mock values
+   - Integration tests using ConnectionPair should use real X25519
+
+2. **Verify ClientHello generation path**:
+   - Ensure ConnectionPair tests use engine's own ClientHello generation
+   - OR ensure manual ClientHello builders coordinate with engine's `my_priv`
+
+3. **Add assertion to catch missing private key**:
+   - When computing ECDHE, check if `my_priv` is null and fail fast with clear error
+
+4. **Remove excessive debug output** added during investigation (causing test noise)
+
+5. **Test-specific fix**: For tests building ClientHellos manually, either:
+   - Call `engine.ensureKeypair()` before building ClientHello and use `engine.my_pub`
+   - Save generated private key: `engine.my_priv = sk`
+
+### Current Status (End of Phase 17)
+- **Total tests:** 2044
+- **Passing:** 1731 (84.7% - regression from adding debug output)
+- **Root cause:** ECDHE shared secret mismatch due to missing client private key storage
+- **Fix applied:** Partial (ensureKeypair() call added, but may not cover all test paths)
+- **Recommended:** Remove debug output, verify fix covers all test scenarios
+
+---
+
 ## Phase 6: DCID Investigation (2025-11-11 - Part 6)
 
 ### Issue: Server Decrypt Failures with Zero-Length DCID
@@ -822,3 +901,160 @@ The core packet processing flow is now correct, but there appears to be an issue
 2. Verify TLS transcript consistency between endpoints
 3. Check if ECDHE shared secret is computed correctly
 4. Consider endianness issues in mask application
+
+## Phase 15: Connection Lookup and TLS Context Investigation (Current Session)
+
+### Issues Investigated
+
+1. **Connection Lookup Mismatch (Initially Suspected)**
+   - Added extensive debug logging to track connection registration and lookup
+   - Found that client connections are correctly registered by both:
+     - `peer_initial_dcid` (the server's DCID)
+     - `our_scid` (the client's SCID)
+   - Server connections are registered by:
+     - Client DCID hash for Initial packets
+     - Server SCID hash for Handshake packets
+   - **Result:** Connection lookup is working correctly
+
+2. **peer_initial_scid Tracking**
+   - Verified that server correctly sets `peer_initial_scid` from client's Initial SCID
+   - Client correctly uses `peer_initial_scid` as DCID for Handshake packets (RFC 9000 §7.2)
+   - **Result:** peer_initial_scid tracking is correct
+
+3. **Shared Connection Object in Tests (Initially Suspected)**
+   - Added debug logging to `setCurrentConnection` and `clearCurrentConnection`
+   - Initially saw both client and server installing keys on same connection object address
+   - **Finding:** This was from unit tests that manually call `installHandshakeKeys`
+   - Integration tests use separate client and server connections as expected
+
+### Debug Output Added
+
+1. **Client connection registration logging**:
+   ```zig
+   std.debug.print("Client connection registered:\n", .{});
+   std.debug.print("  peer_hash={X:0>16}\n", .{peer_hash});
+   std.debug.print("  By DCID hash={X:0>16} (peer_initial_dcid)\n", .{...});
+   std.debug.print("  By SCID hash={X:0>16} (our_scid)\n", .{...});
+   ```
+
+2. **Connection lookup debugging**:
+   ```zig
+   std.debug.print("processHandshake: Looking up conn with peer_hash={X:0>16}, DCID len={}, DCID hash={X:0>16}\n", .{
+       ph, header.dcid.len, hashBytes(header.dcid)
+   });
+   ```
+
+3. **TLS Context callback tracking**:
+   ```zig
+   std.debug.print("setCurrentConnection: Setting conn={*} role={s}\n", .{
+       conn, if (conn.role == .Server) "Server" else "Client"
+   });
+   ```
+
+### Key Findings
+
+1. **Connection Lookup Works:** The connection lookup mechanism is functioning correctly. Connections are found but AEAD decryption fails.
+
+2. **Keys Are Being Installed:** Both client and server are installing Handshake keys, but they still fail to decrypt each other's packets.
+
+3. **TLS Context Callbacks:** The threadlocal connection context is being set and cleared properly for TLS callbacks.
+
+### Current Status
+
+- **Total tests:** 2348
+- **Passing:** 1841 (78.4%)
+- **Failing:** 22 (stable)
+- **Root Cause:** AEAD authentication failures in Handshake decryption, not connection lookup issues
+
+### Remaining Issues
+
+The core issue is that Handshake packets fail AEAD authentication, suggesting:
+- Keys are derived differently between client and server
+- Packet construction AAD doesn't match between encryption and decryption
+- Possible TLS transcript divergence between endpoints
+
+### Next Steps
+
+1. Compare the exact keys being used for encryption vs decryption
+2. Verify TLS transcript is identical between client and server
+3. Check if transport parameters are affecting key derivation
+4. Investigate if there's a race condition in key installation timing
+
+## Phase 16: TLS Handshake Message Flow Analysis (Current Session)
+
+### Investigation Approach
+
+Added comprehensive debug logging to trace:
+1. TLS Context crypto processing (`Context.processCrypto`)
+2. Handshake message parsing (ClientHello, ServerHello, etc.)
+3. Secret derivation and installation
+4. Transport parameter encoding and setup
+5. Connection creation and peer_initial_dcid tracking
+
+### Key Findings
+
+1. **TLS Context is Working**:
+   - Both client and server are using TLS Context (not legacy Engine)
+   - CRYPTO data is being processed at Initial and Handshake levels
+   - Handshake messages are being parsed correctly
+
+2. **Transport Parameters are Set**:
+   - Server creates TLS Context with 60-62 bytes of transport parameters
+   - Client has transport parameters set via `setTransportParameters()`
+   - `peer_initial_dcid` is correctly captured from client's Initial DCID
+
+3. **Handshake Secrets are Derived**:
+   - Both client and server derive Handshake secrets via `onSecretAvailable`
+   - Secrets are different between client and server (expected)
+   - Keys are installed via `installHandshakeKeys()`
+
+4. **Handshake Stalls After ServerHello**:
+   - ClientHello messages parsed (type=01, 110-173 bytes)
+   - ServerHello messages parsed (type=02, 86 bytes)
+   - **Missing**: EncryptedExtensions, Certificate, CertificateVerify
+   - Some Finished messages parsed but likely premature
+
+### Root Cause Identified
+
+The handshake is stalling after ServerHello because:
+1. Server generates ServerHello in Initial packet (correct)
+2. Server should then send EncryptedExtensions, Certificate, CertificateVerify, and Finished in Handshake packets
+3. These Handshake packets are either not being sent or not being received/decrypted properly
+4. AEAD authentication failures suggest the Handshake packets are corrupted or using wrong keys
+
+### Debug Output Added
+
+1. **TLS Context processing**:
+   ```zig
+   std.debug.print("Context.processCrypto: role={s}, level={s}, data_len={}\n", .{
+       if (self.config.role == .Server) "Server" else "Client", @tagName(level), data.len
+   });
+   ```
+
+2. **Handshake message parsing**:
+   ```zig
+   std.debug.print("  Parsed handshake message: type={X:0>2} ({s}), len={}\n", .{
+       @intFromEnum(parsed.typ), @tagName(parsed.typ), parsed.body.len
+   });
+   ```
+
+3. **Transport parameter setup**:
+   ```zig
+   std.debug.print("setupServerTransportParams: Encoded {} bytes of transport params for conn={*}\n", .{
+       tp_bytes.len, conn
+   });
+   ```
+
+### Current Test Status
+
+- **Total tests:** 2348
+- **Passing:** 1841 (78.4%)
+- **Failing:** 22 (stable)
+- **Failure pattern:** Handshake timeout after ServerHello
+
+### Next Steps
+
+1. Investigate why server's Handshake messages (EncryptedExtensions, Certificate, etc.) are not being received
+2. Check if server is actually sending these messages after ServerHello
+3. Verify Handshake packet encryption/decryption is using correct keys
+4. Trace the exact point where AEAD authentication fails in Handshake decryption
