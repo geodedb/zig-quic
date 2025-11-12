@@ -90,6 +90,11 @@ fn mockSendInitialProbeFn(conn: *conn_mod.Connection) anyerror!void {
         state.probe_version = conn.version;
     }
 }
+
+fn mockSetupSenderFn(_: *conn_mod.Connection) void {
+    // Mock implementation - no-op for tests
+}
+
 /// Helper to create RxContext for testing
 fn createTestRxContext(
     allocator: *std.mem.Allocator,
@@ -105,6 +110,7 @@ fn createTestRxContext(
         .send_fn = mockSendFn,
         .schedule_timer_fn = mockScheduleTimerFn,
         .send_initial_probe_fn = mockSendInitialProbeFn,
+        .setup_sender_fn = mockSetupSenderFn,
         .test_capture_enabled = false,
         .endpoint_role = .Server,
     };

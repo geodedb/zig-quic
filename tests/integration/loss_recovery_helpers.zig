@@ -85,8 +85,8 @@ pub fn detectLossEvents(
     allocator: std.mem.Allocator,
     captured: []const harness.CapturedPacket,
 ) !std.ArrayList(LossEvent) {
-    var events = std.ArrayList(LossEvent).init(allocator);
-    errdefer events.deinit();
+    var events = std.ArrayList(LossEvent){};
+    errdefer events.deinit(allocator);
 
     // For proof-of-concept, return empty list
     // Real implementation would:

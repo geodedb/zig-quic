@@ -119,7 +119,7 @@ test "Phase 21.5 - Connection ID management infrastructure" {
         allocator,
         captured
     );
-    defer new_cids.deinit();
+    defer new_cids.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 0), new_cids.items.len);
 
@@ -127,7 +127,7 @@ test "Phase 21.5 - Connection ID management infrastructure" {
         allocator,
         captured
     );
-    defer retired_cids.deinit();
+    defer retired_cids.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 0), retired_cids.items.len);
 }
@@ -156,7 +156,7 @@ test "Phase 21.5 - Error handling validation" {
         allocator,
         captured
     );
-    defer errors.deinit();
+    defer errors.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 0), errors.items.len);
 

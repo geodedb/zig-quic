@@ -8,7 +8,7 @@ const ks = @import("quic_tls");
 test "exporter produces stable prefix after application secrets" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){}; defer _ = gpa.deinit();
     const alloc = gpa.allocator();
-    var ctx = tls13.Context.init(.{ .allocator = alloc, .role = .Client }, .{});
+    var ctx = try tls13.Context.init(.{ .allocator = alloc, .role = .Client }, .{});
     defer ctx.deinit();
     const dummy_hs: [ks.H.digest_length]u8 = .{0x11} ** ks.H.digest_length;
     const dummy_hs_secret = ks.Secret.fromSlice(.sha256, &dummy_hs);
@@ -29,7 +29,7 @@ test "exporter produces stable prefix after application secrets" {
 test "key update rotates send and recv secrets" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){}; defer _ = gpa.deinit();
     const alloc = gpa.allocator();
-    var ctx = tls13.Context.init(.{ .allocator = alloc, .role = .Client }, .{});
+    var ctx = try tls13.Context.init(.{ .allocator = alloc, .role = .Client }, .{});
     defer ctx.deinit();
     const init_secret: [ks.H.digest_length]u8 = .{0x33} ** ks.H.digest_length;
     const init_secret_wrap = ks.Secret.fromSlice(.sha256, &init_secret);

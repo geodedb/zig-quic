@@ -319,49 +319,49 @@ pub const TransportParams = struct {
 
     /// Check that parameter values are within RFC-specified limits.
     /// RFC 9000 §18.2 defines valid ranges for various parameters.
-    pub fn checkLimits(self: *const TransportParams) error{ParameterOutOfRange}!void {
+    pub fn checkLimits(self: *const TransportParams) error{InvalidTransportParams}!void {
         // RFC 9000 §18.2: max_udp_payload_size MUST be >= 1200
         if (self.max_udp_payload_size) |v| {
-            if (v < 1200) return error.ParameterOutOfRange;
+            if (v < 1200) return error.InvalidTransportParams;
         }
 
         // RFC 9000 §18.2: ack_delay_exponent MUST be <= 20
         if (self.ack_delay_exponent) |v| {
-            if (v > 20) return error.ParameterOutOfRange;
+            if (v > 20) return error.InvalidTransportParams;
         }
 
         // RFC 9000 §18.2: max_ack_delay MUST be < 2^14 (16384)
         if (self.max_ack_delay) |v| {
-            if (v >= 16384) return error.ParameterOutOfRange;
+            if (v >= 16384) return error.InvalidTransportParams;
         }
 
         // RFC 9000 §18.2: active_connection_id_limit MUST be >= 2
         if (self.active_connection_id_limit) |v| {
-            if (v < 2) return error.ParameterOutOfRange;
+            if (v < 2) return error.InvalidTransportParams;
         }
 
         // RFC 9000 §4.6: Max stream counts must be <= 2^60
         const max_streams_limit: u64 = 1 << 60;
         if (self.initial_max_streams_bidi) |v| {
-            if (v > max_streams_limit) return error.ParameterOutOfRange;
+            if (v > max_streams_limit) return error.InvalidTransportParams;
         }
         if (self.initial_max_streams_uni) |v| {
-            if (v > max_streams_limit) return error.ParameterOutOfRange;
+            if (v > max_streams_limit) return error.InvalidTransportParams;
         }
 
         // RFC 9000 §4.1: Flow control limits must be <= 2^62-1
         const max_flow_control_limit: u64 = (1 << 62) - 1;
         if (self.initial_max_data) |v| {
-            if (v > max_flow_control_limit) return error.ParameterOutOfRange;
+            if (v > max_flow_control_limit) return error.InvalidTransportParams;
         }
         if (self.initial_max_stream_data_bidi_local) |v| {
-            if (v > max_flow_control_limit) return error.ParameterOutOfRange;
+            if (v > max_flow_control_limit) return error.InvalidTransportParams;
         }
         if (self.initial_max_stream_data_bidi_remote) |v| {
-            if (v > max_flow_control_limit) return error.ParameterOutOfRange;
+            if (v > max_flow_control_limit) return error.InvalidTransportParams;
         }
         if (self.initial_max_stream_data_uni) |v| {
-            if (v > max_flow_control_limit) return error.ParameterOutOfRange;
+            if (v > max_flow_control_limit) return error.InvalidTransportParams;
         }
     }
 

@@ -134,8 +134,8 @@ pub fn parseTransportParams(
     allocator: std.mem.Allocator,
     extension_data: []const u8,
 ) !std.ArrayList(TransportParam) {
-    var params = std.ArrayList(TransportParam).init(allocator);
-    errdefer params.deinit();
+    var params = std.ArrayList(TransportParam){};
+    errdefer params.deinit(allocator);
 
     _ = extension_data;
 
@@ -205,8 +205,8 @@ pub fn extractNewConnectionIdFrames(
     captured: []const harness.CapturedPacket,
 ) !std.ArrayList(CidEvent) {
     const EventList = std.ArrayList(CidEvent);
-    var events = EventList.init(allocator);
-    errdefer events.deinit();
+    var events = EventList{};
+    errdefer events.deinit(allocator);
 
     _ = captured;
 
@@ -226,8 +226,8 @@ pub fn extractRetireConnectionIdFrames(
     captured: []const harness.CapturedPacket,
 ) !std.ArrayList(CidEvent) {
     const EventList = std.ArrayList(CidEvent);
-    var events = EventList.init(allocator);
-    errdefer events.deinit();
+    var events = EventList{};
+    errdefer events.deinit(allocator);
 
     _ = captured;
 
@@ -331,8 +331,8 @@ pub fn extractConnectionCloseFrames(
     captured: []const harness.CapturedPacket,
 ) !std.ArrayList(ConnectionError) {
     const ErrorList = std.ArrayList(ConnectionError);
-    var errors = ErrorList.init(allocator);
-    errdefer errors.deinit();
+    var errors = ErrorList{};
+    errdefer errors.deinit(allocator);
 
     _ = captured;
 

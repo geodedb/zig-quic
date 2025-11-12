@@ -501,15 +501,11 @@ pub const Endpoint = struct {
         return false;
     }
 
-    var poll_call_count: u64 = 0;
     /// Drive network I/O, timers, and paced send for up to timeout_ms milliseconds.
     /// Phase 8a: Uses transport abstraction if available, otherwise uses platform-specific backend.
     /// Poll for events with timeout via transport abstraction.
     /// Phase 8c: Always uses transport (no fallback to sock_fd/epoll).
     pub fn poll(self: *Endpoint, timeout_ms: i32) !void {
-        poll_call_count += 1;
-        // TRACE: poll called
-        std.debug.print(">>> POLL #{} called, timeout_ms={}\n", .{ poll_call_count, timeout_ms });
 
         // Process expired timers first
         self.processExpiredTimers(nowMsMonotonic());
@@ -731,10 +727,7 @@ pub const Endpoint = struct {
         self.clientSendInitialProbe(c) catch {};
     }
 
-    var process_count: u64 = 0;
     fn processIncomingDatagram(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8, ecn_bits: ?u8) void {
-        process_count += 1;
-        std.debug.print("PACKET #{}: {} bytes, first=0x{X:0>2}\n", .{ process_count, bytes.len, if (bytes.len > 0) bytes[0] else 0 });
 
         if (bytes.len < 1) return;
 
@@ -771,6 +764,12 @@ pub const Endpoint = struct {
                     return ep.clientSendInitialProbe(conn);
                 }
             }.probe,
+            .setup_sender_fn = struct {
+                fn setup(conn: *conn_mod.Connection) void {
+                    const ep = current_io_endpoint.?;
+                    conn.setSender(@ptrCast(ep), senderPaced);
+                }
+            }.setup,
             .test_capture_enabled = self.test_capture_enabled,
             .endpoint_role = role_converted,
             .endpoint_ctx = self,

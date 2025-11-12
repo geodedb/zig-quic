@@ -297,6 +297,10 @@ test "Session 3 Integration - processShortHeader handles connection not found gr
         }
     }.send;
 
+    const setupSenderFn = struct {
+        fn setup(_: *conn_mod.Connection) void {}
+    }.setup;
+
     var rx_ctx = incoming.RxContext{
         .allocator = &test_allocator,
         .conns = &conns,
@@ -305,6 +309,7 @@ test "Session 3 Integration - processShortHeader handles connection not found gr
         .send_fn = sendFn,
         .schedule_timer_fn = undefined, // Not used in this test
         .send_initial_probe_fn = undefined, // Not used
+        .setup_sender_fn = setupSenderFn,
         .test_capture_enabled = false,
         .endpoint_role = .Server,
         .endpoint_ctx = null,
@@ -369,6 +374,10 @@ test "Session 3 Integration - Short header DCID length enumeration fallback" {
         }
     }.send;
 
+    const setupSenderFn2 = struct {
+        fn setup(_: *conn_mod.Connection) void {}
+    }.setup;
+
     var rx_ctx = incoming.RxContext{
         .allocator = &test_allocator,
         .conns = &conns,
@@ -377,6 +386,7 @@ test "Session 3 Integration - Short header DCID length enumeration fallback" {
         .send_fn = sendFn,
         .schedule_timer_fn = undefined,
         .send_initial_probe_fn = undefined,
+        .setup_sender_fn = setupSenderFn2,
         .test_capture_enabled = false,
         .endpoint_role = .Server,
         .endpoint_ctx = null,

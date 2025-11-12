@@ -57,8 +57,8 @@ pub fn extractKeyUpdateEvents(
     allocator: Allocator,
     captured: []const harness.CapturedPacket,
 ) !std.ArrayList(KeyUpdateEvent) {
-    var events = std.ArrayList(KeyUpdateEvent).init(allocator);
-    errdefer events.deinit();
+    var events = std.ArrayList(KeyUpdateEvent){};
+    errdefer events.deinit(allocator);
 
     // TODO: Iterate through captured packets
     // TODO: Detect Key Phase bit transitions in packet headers
@@ -143,8 +143,8 @@ pub fn extractZeroRttEvents(
     allocator: Allocator,
     captured: []const harness.CapturedPacket,
 ) !std.ArrayList(ZeroRttEvent) {
-    var events = std.ArrayList(ZeroRttEvent).init(allocator);
-    errdefer events.deinit();
+    var events = std.ArrayList(ZeroRttEvent){};
+    errdefer events.deinit(allocator);
 
     // TODO: Iterate through captured packets
     // TODO: Identify 0-RTT packets (packet type 0x01)
@@ -269,15 +269,15 @@ pub fn generateConnectionIds(
     allocator: Allocator,
     count: u32,
 ) !std.ArrayList([8]u8) {
-    var ids = std.ArrayList([8]u8).init(allocator);
-    errdefer ids.deinit();
+    var ids = std.ArrayList([8]u8){};
+    errdefer ids.deinit(allocator);
 
     var i: u32 = 0;
     while (i < count) : (i += 1) {
         var id: [8]u8 = undefined;
         // Generate deterministic but unique IDs
         std.mem.writeInt(u64, &id, i, .big);
-        try ids.append(id);
+        try ids.append(allocator, id);
     }
 
     return ids;
@@ -319,8 +319,8 @@ pub fn extractFaultEvents(
     allocator: Allocator,
     captured: []const harness.CapturedPacket,
 ) !std.ArrayList(FaultEvent) {
-    var events = std.ArrayList(FaultEvent).init(allocator);
-    errdefer events.deinit();
+    var events = std.ArrayList(FaultEvent){};
+    errdefer events.deinit(allocator);
 
     // TODO: Detect retransmissions (indicates packet loss recovery)
     // TODO: Detect duplicate packets
@@ -440,7 +440,7 @@ pub fn expectKeyUpdate(
     captured: []const harness.CapturedPacket,
 ) !void {
     const events = try extractKeyUpdateEvents(allocator, captured);
-    defer events.deinit();
+    defer events.deinit(allocator);
 
     try validateKeyUpdate(events.items);
 
@@ -456,7 +456,7 @@ pub fn expectZeroRttAccepted(
     captured: []const harness.CapturedPacket,
 ) !void {
     const events = try extractZeroRttEvents(allocator, captured);
-    defer events.deinit();
+    defer events.deinit(allocator);
 
     if (!isZeroRttAccepted(events.items)) {
         return error.ZeroRttNotAccepted;
@@ -479,7 +479,7 @@ pub fn expectFaultRecovery(
     captured: []const harness.CapturedPacket,
 ) !void {
     const events = try extractFaultEvents(allocator, captured);
-    defer events.deinit();
+    defer events.deinit(allocator);
 
     try validateFaultRecovery(events.items);
 }
@@ -494,17 +494,17 @@ test "analyzeLowPriorityFeatures - empty capture" {
 
     // Test key update extraction
     var key_events = try extractKeyUpdateEvents(allocator, captured);
-    defer key_events.deinit();
+    defer key_events.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 0), key_events.items.len);
 
     // Test 0-RTT extraction
     var zero_rtt_events = try extractZeroRttEvents(allocator, captured);
-    defer zero_rtt_events.deinit();
+    defer zero_rtt_events.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 0), zero_rtt_events.items.len);
 
     // Test fault extraction
     var fault_events = try extractFaultEvents(allocator, captured);
-    defer fault_events.deinit();
+    defer fault_events.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 0), fault_events.items.len);
 }
 
@@ -644,7 +644,7 @@ test "generateConnectionIds - creates unique IDs" {
     const allocator = std.testing.allocator;
 
     var ids = try generateConnectionIds(allocator, 5);
-    defer ids.deinit();
+    defer ids.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 5), ids.items.len);
 

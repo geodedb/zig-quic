@@ -381,8 +381,8 @@ pub const FrameInfo = struct {
 /// defer frames.deinit();
 /// ```
 pub fn extractFrames(allocator: std.mem.Allocator, payload: []const u8) !std.ArrayList(FrameInfo) {
-    var frames = std.ArrayList(FrameInfo).init(allocator);
-    errdefer frames.deinit();
+    var frames = std.ArrayList(FrameInfo){};
+    errdefer frames.deinit(allocator);
 
     var offset: usize = 0;
     while (offset < payload.len) {
@@ -419,7 +419,7 @@ pub fn extractFrames(allocator: std.mem.Allocator, payload: []const u8) !std.Arr
             .datagram => .DATAGRAM,
         };
 
-        try frames.append(FrameInfo{
+        try frames.append(allocator, FrameInfo{
             .frame_type = frame_type,
             .frame = result.f,
             .offset = offset,
@@ -435,7 +435,7 @@ pub fn extractFrames(allocator: std.mem.Allocator, payload: []const u8) !std.Arr
 /// Count frames of a specific type in payload.
 pub fn countFrameType(allocator: std.mem.Allocator, payload: []const u8, frame_type: quic_frame.FrameType) !usize {
     var frames = try extractFrames(allocator, payload);
-    defer frames.deinit();
+    defer frames.deinit(allocator);
 
     var count: usize = 0;
     for (frames.items) |frame_info| {
@@ -449,7 +449,7 @@ pub fn countFrameType(allocator: std.mem.Allocator, payload: []const u8, frame_t
 /// Check if payload contains a specific frame type.
 pub fn containsFrameType(allocator: std.mem.Allocator, payload: []const u8, frame_type: quic_frame.FrameType) !bool {
     var frames = try extractFrames(allocator, payload);
-    defer frames.deinit();
+    defer frames.deinit(allocator);
 
     for (frames.items) |frame_info| {
         if (frame_info.frame_type == frame_type) {
@@ -463,7 +463,7 @@ pub fn containsFrameType(allocator: std.mem.Allocator, payload: []const u8, fram
 /// Returns null if not found.
 pub fn findFrameType(allocator: std.mem.Allocator, payload: []const u8, frame_type: quic_frame.FrameType) !?FrameInfo {
     var frames = try extractFrames(allocator, payload);
-    defer frames.deinit();
+    defer frames.deinit(allocator);
 
     for (frames.items) |frame_info| {
         if (frame_info.frame_type == frame_type) {
@@ -668,18 +668,18 @@ pub fn expectNoFrameType(allocator: std.mem.Allocator, payload: []const u8, unex
 /// }
 /// ```
 pub fn parseCapture(allocator: std.mem.Allocator, captured: []const harness.CapturedPacket) ![]PacketInfo {
-    var results = std.ArrayList(PacketInfo).init(allocator);
-    defer results.deinit();
+    var results = std.ArrayList(PacketInfo){};
+    defer results.deinit(allocator);
 
     for (captured) |cap| {
         const info = parsePacketHeader(cap.data) catch |err| {
             std.debug.print("Failed to parse captured packet: {}\n", .{err});
             continue;
         };
-        try results.append(info);
+        try results.append(allocator, info);
     }
 
-    return results.toOwnedSlice();
+    return results.toOwnedSlice(allocator);
 }
 
 /// Count packets of specific type in capture.

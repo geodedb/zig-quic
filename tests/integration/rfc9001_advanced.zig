@@ -97,7 +97,7 @@ test "Phase 23 - Key update infrastructure" {
         allocator,
         captured,
     );
-    defer key_events.deinit();
+    defer key_events.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 0), key_events.items.len);
 }
@@ -133,7 +133,7 @@ test "Phase 23 - 0-RTT and session resumption infrastructure" {
         allocator,
         captured,
     );
-    defer zero_rtt_events.deinit();
+    defer zero_rtt_events.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 0), zero_rtt_events.items.len);
 }
@@ -181,7 +181,7 @@ test "Phase 23 - Stress testing infrastructure" {
 
     // Test connection ID generation
     var ids = try low_priority_helpers.generateConnectionIds(allocator, 10);
-    defer ids.deinit();
+    defer ids.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 10), ids.items.len);
 
@@ -248,7 +248,7 @@ test "Phase 23 - Fault injection infrastructure" {
         allocator,
         captured,
     );
-    defer fault_events.deinit();
+    defer fault_events.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 0), fault_events.items.len);
 }

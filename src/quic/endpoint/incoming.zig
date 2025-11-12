@@ -235,6 +235,9 @@ pub const ScheduleTimerFn = *const fn (conn: *conn_mod.Connection, kind: endpoin
 /// Function signature for sending Initial probe (after VN, path migration, etc.)
 pub const SendInitialProbeFn = *const fn (conn: *conn_mod.Connection) anyerror!void;
 
+/// Function signature for setting up connection sender callback
+pub const SetupSenderFn = *const fn (conn: *conn_mod.Connection) void;
+
 /// Context for RX packet processing - contains only what's needed
 /// This focused context replaces passing full Endpoint pointer, enabling
 /// better testability and clearer dependency tracking.
@@ -246,6 +249,7 @@ pub const RxContext = struct {
     send_fn: SendFn,
     schedule_timer_fn: ScheduleTimerFn,
     send_initial_probe_fn: SendInitialProbeFn,
+    setup_sender_fn: SetupSenderFn,
     test_capture_enabled: bool,
     endpoint_role: endpoint_types.EndpointRole,
     /// Optional opaque endpoint pointer for send_fn context (Phase 4b.5 Session 3)
@@ -749,11 +753,29 @@ pub fn processInitial(
         return;
     };
 
+
     // Look up connection by peer hash + client DCID
     const ph = hashSockaddr(&peer.storage, peer.len);
     const key = endpoint_types.Key{ .peer_hash = ph, .dcid_hash = hashBytes(header.dcid) };
 
     var conn: *conn_mod.Connection = blk: {
+        // Special case: Zero-length DCID requires peer-only lookup
+        // RFC 9000 §5.2: Server may use zero-length CIDs
+        if (header.dcid.len == 0) {
+            // Find any server connection from this peer
+            var it = ctx.conns.iterator();
+            while (it.next()) |entry| {
+                const c = entry.value_ptr.*;
+                if (c.role == .Server) {
+                    // Check if peer matches
+                    const c_peer_hash = hashSockaddr(&c.peer.storage, c.peer.len);
+                    if (c_peer_hash == ph) {
+                        break :blk c;
+                    }
+                }
+            }
+        }
+
         // Check if connection already exists
         if (ctx.conns.getPtr(key)) |p| {
             // Found existing connection
@@ -810,6 +832,9 @@ pub fn processInitial(
 
         // Set up transport parameters for server (RFC 9000 §18.2)
         handshake_integration.setupServerTransportParams(c_new, ctx.cfg, ctx.allocator.*) catch {};
+
+        // Set up sender callback so connection can send packets
+        ctx.setup_sender_fn(c_new);
 
         // Register connection in map by peer + client DCID (reusing ph and key from outer scope)
         _ = ctx.conns.put(key, c_new) catch {
@@ -919,6 +944,10 @@ pub fn processInitial(
         return;
     };
     defer ctx.allocator.free(decrypted.payload);
+
+    // Set connection context for TLS Context callbacks (Phase 21.2)
+    handshake_integration.setCurrentConnection(if (@TypeOf(conn) == **conn_mod.Connection) conn.* else conn);
+    defer handshake_integration.clearCurrentConnection();
 
     // Update packet number tracking
     conn.pn_initial.max = decrypted.packet_number;
@@ -1149,6 +1178,10 @@ pub fn processHandshake(
     };
     defer ctx.allocator.free(decrypted.payload);
 
+    // Set connection context for TLS Context callbacks (Phase 21.2)
+    handshake_integration.setCurrentConnection(if (@TypeOf(conn) == **conn_mod.Connection) conn.* else conn);
+    defer handshake_integration.clearCurrentConnection();
+
     // Update packet number tracking
     conn.*.trackRecvPnHandshake(decrypted.packet_number);
 
@@ -1221,9 +1254,40 @@ pub fn processHandshake(
 
     // Send pending Handshake CRYPTO data (e.g., server Finished, client Finished)
     if (conn.*.hs_tx_keys) |tx_keys| {
+        // Phase 21.2: Poll TLS Context if available, otherwise use legacy Engine
         var outbox: [4096]u8 = undefined;
-        const n = conn.*.tls.popCrypto(outbox[0..]);
-        if (n > 0) {
+        var crypto_data: ?[]const u8 = null;
+        var owns_data = false;
+
+        if (conn.*.tls_context) |tls_ctx| {
+            // Set connection context for callbacks
+            handshake_integration.setCurrentConnection(conn.*);
+            defer handshake_integration.clearCurrentConnection();
+
+            // Poll for Handshake-level CRYPTO data
+            const hs_data = tls_ctx.pollCrypto(ctx.allocator.*, .Handshake) catch |err| blk: {
+                // Unimplemented means no data available (expected)
+                if (err != error.Unimplemented) {
+                    std.debug.print("processHandshake: Context pollCrypto error: {}\n", .{err});
+                }
+                break :blk null;
+            };
+            if (hs_data) |data| {
+                crypto_data = data;
+                owns_data = true;
+            }
+        } else {
+            // Legacy Engine path
+            const n = conn.*.tls.popCrypto(outbox[0..]);
+            if (n > 0) {
+                crypto_data = outbox[0..n];
+                owns_data = false;
+            }
+        }
+
+        if (crypto_data) |data| {
+            defer if (owns_data) ctx.allocator.free(data);
+            const n = data.len;
             // Fragment CRYPTO data across multiple packets if needed
             const max_crypto_per_packet: usize = 1100;
             var crypto_offset: usize = 0;
@@ -1231,7 +1295,7 @@ pub fn processHandshake(
 
             while (crypto_offset < n) {
                 const chunk_size = @min(max_crypto_per_packet, n - crypto_offset);
-                const chunk = outbox[crypto_offset .. crypto_offset + chunk_size];
+                const chunk = data[crypto_offset .. crypto_offset + chunk_size];
 
                 var frames_buf = std.ArrayList(u8){};
                 defer frames_buf.deinit(ctx.allocator.*);

@@ -181,7 +181,7 @@ test "context parses ClientHello and stores handshake view" {
     defer alloc.free(server_tp);
 
     const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp };
-    var ctx = tls13.Context.init(config, .{});
+    var ctx = try tls13.Context.init(config, .{});
     defer ctx.deinit();
 
     const ch = try buildStandardClientHello(alloc, null, default_signature_schemes[0..], null);
@@ -219,7 +219,7 @@ test "context captures ClientHello ALPN list" {
     defer alloc.free(server_tp);
 
     const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp };
-    var ctx = tls13.Context.init(config, .{});
+    var ctx = try tls13.Context.init(config, .{});
     defer ctx.deinit();
 
     const client_alpn = [_][]const u8{ "h3", "hq-interop" };
@@ -248,7 +248,7 @@ test "context captures pre_shared_key offer" {
     defer alloc.free(server_tp);
 
     const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp };
-    var ctx = tls13.Context.init(config, .{});
+    var ctx = try tls13.Context.init(config, .{});
     defer ctx.deinit();
 
     const psk_identity = "ticket-123";
@@ -280,7 +280,7 @@ test "server emits ServerHello flight with Finished" {
     defer alloc.free(server_tp);
 
     const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp };
-    var ctx = tls13.Context.init(config, .{});
+    var ctx = try tls13.Context.init(config, .{});
     defer ctx.deinit();
 
     const ch = try buildStandardClientHello(alloc, null, default_signature_schemes[0..], null);
@@ -357,7 +357,7 @@ test "server verifies client Finished and derives application secrets" {
         .quic_transport_parameters = server_tp,
         .alpn_protocols = server_alpn[0..],
     };
-    var ctx = tls13.Context.init(config, callbacks);
+    var ctx = try tls13.Context.init(config, callbacks);
     defer ctx.deinit();
 
     const ch = try buildStandardClientHello(alloc, server_alpn[0..], default_signature_schemes[0..], null);
@@ -413,7 +413,7 @@ test "server rejects tampered client Finished" {
         .quic_transport_parameters = server_tp,
         .alpn_protocols = server_alpn[0..],
     };
-    var ctx = tls13.Context.init(config, .{});
+    var ctx = try tls13.Context.init(config, .{});
     defer ctx.deinit();
 
     const ch = try buildStandardClientHello(alloc, server_alpn[0..], default_signature_schemes[0..], null);
@@ -456,7 +456,7 @@ test "server records negotiated signature algorithm" {
     defer alloc.free(server_tp);
 
     const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp };
-    var ctx = tls13.Context.init(config, .{});
+    var ctx = try tls13.Context.init(config, .{});
     defer ctx.deinit();
 
     const ch = try buildStandardClientHello(alloc, null, default_signature_schemes[0..], null);
@@ -477,7 +477,7 @@ test "server rejects client without compatible signature algorithm" {
     defer alloc.free(server_tp);
 
     const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp };
-    var ctx = tls13.Context.init(config, .{});
+    var ctx = try tls13.Context.init(config, .{});
     defer ctx.deinit();
 
     const incompatible_schemes = [_]u16{0x0403};
@@ -503,7 +503,7 @@ test "server negotiates ALPN when offered" {
         .quic_transport_parameters = server_tp,
         .alpn_protocols = server_alpn[0..],
     };
-    var ctx = tls13.Context.init(config, .{});
+    var ctx = try tls13.Context.init(config, .{});
     defer ctx.deinit();
 
     const client_alpn = [_][]const u8{ "h3", "hq-interop" };
@@ -590,7 +590,7 @@ test "server errors when ALPN required but absent" {
         .quic_transport_parameters = server_tp,
         .alpn_protocols = server_alpn[0..],
     };
-    var ctx = tls13.Context.init(config, .{});
+    var ctx = try tls13.Context.init(config, .{});
     defer ctx.deinit();
 
     const ch = try buildStandardClientHello(alloc, null, default_signature_schemes[0..], null);

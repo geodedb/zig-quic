@@ -219,6 +219,17 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
 
     if (c.tls_context) |tls_ctx| {
         // Use modular TLS 1.3 Context
+        // Set transport parameters on Context (these were set by setupClientTransportParams in endpoint)
+        if (c.local_transport_params_raw) |tp_bytes| {
+            tls_ctx.setTransportParameters(tp_bytes);
+        }
+
+        // Now tell Context to start the client handshake (generates ClientHello)
+        tls_ctx.startClientHandshake() catch |err| {
+            std.debug.print("sendInitialProbe: Context startClientHandshake error: {}\n", .{err});
+        };
+
+        // Poll for the generated ClientHello
         const ch_data = tls_ctx.pollCrypto(ctx.allocator.*, .Initial) catch |err| blk: {
             std.debug.print("sendInitialProbe: Context pollCrypto error: {}\n", .{err});
             break :blk null;

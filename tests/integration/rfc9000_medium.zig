@@ -73,7 +73,7 @@ test "Phase 22 - Address validation infrastructure" {
         allocator,
         captured,
     );
-    defer challenges.deinit();
+    defer challenges.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 0), challenges.items.len);
 
@@ -81,15 +81,14 @@ test "Phase 22 - Address validation infrastructure" {
         allocator,
         captured,
     );
-    defer responses.deinit();
+    defer responses.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 0), responses.items.len);
 
     // Test countSuccessfulPathValidations with no pairs
     const count = try medium_priority_helpers.countSuccessfulPathValidations(
         allocator,
-        &[_]medium_priority_helpers.PathChallenge{},
-        &[_]medium_priority_helpers.PathResponse{},
+        captured
     );
 
     try std.testing.expectEqual(@as(usize, 0), count);
@@ -125,7 +124,7 @@ test "Phase 22 - Connection migration tracking" {
         allocator,
         captured,
     );
-    defer migrations.deinit();
+    defer migrations.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 0), migrations.items.len);
 
@@ -180,15 +179,15 @@ test "Phase 22 - Flow control validation" {
     // Test flow control limit validation (monotonically increasing)
     const valid_updates = [_]medium_priority_helpers.FlowControlUpdate{
         .{
-            .update_type = .max_data,
+            .frame_type = .max_data,
             .stream_id = null,
-            .new_limit = 1000,
+            .limit =1000,
             .timestamp_ms = 1000,
         },
         .{
-            .update_type = .max_data,
+            .frame_type = .max_data,
             .stream_id = null,
-            .new_limit = 2000,
+            .limit =2000,
             .timestamp_ms = 2000,
         },
     };
@@ -198,15 +197,15 @@ test "Phase 22 - Flow control validation" {
     // Test invalid flow control limit detection (decrease)
     const invalid_updates = [_]medium_priority_helpers.FlowControlUpdate{
         .{
-            .update_type = .max_data,
+            .frame_type = .max_data,
             .stream_id = null,
-            .new_limit = 2000,
+            .limit =2000,
             .timestamp_ms = 1000,
         },
         .{
-            .update_type = .max_data,
+            .frame_type = .max_data,
             .stream_id = null,
-            .new_limit = 1000, // Decrease!
+            .limit =1000, // Decrease!
             .timestamp_ms = 2000,
         },
     };
@@ -221,17 +220,16 @@ test "Phase 22 - Flow control validation" {
         allocator,
         captured,
     );
-    defer updates.deinit();
+    defer updates.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 0), updates.items.len);
 
-    var blocked_events = try medium_priority_helpers.findBlockedEvents(
-        allocator,
-        captured,
+    // findBlockedEvents filters from updates, not captured packets
+    const blocked_events = medium_priority_helpers.findBlockedEvents(
+        updates.items
     );
-    defer blocked_events.deinit();
 
-    try std.testing.expectEqual(@as(usize, 0), blocked_events.items.len);
+    try std.testing.expectEqual(@as(usize, 0), blocked_events.len);
 }
 
 // =============================================================================

@@ -832,6 +832,7 @@ pub const Connection = struct {
         self.tls_inbox = std.ArrayList(u8){};
         self.tls = tls13.Engine.init(alloc.*, if (role == .Client) .Client else .Server);
         self.tls.setPeerFinishedCallback(Connection.handleTlsPeerFinished, self);
+        self.tls_context = null;
         self.allocator = alloc;
         self.allowed_alpns = &[_][]const u8{};
         self.negotiated_alpn = null;
@@ -1019,6 +1020,12 @@ pub const Connection = struct {
         self.tls_inbox.deinit(self.allocator.*);
         self.tls.setPeerFinishedCallback(null, null);
         self.tls.deinit();
+        // Free the TLS context pointer allocated in client.zig:153
+        if (self.tls_context) |tls_ctx| {
+            tls_ctx.deinit(); // Clean up Context internals (ArrayLists, etc.)
+            self.allocator.destroy(tls_ctx);
+            self.tls_context = null;
+        }
         self.rec.deinit();
         self.sent_time.deinit();
         self.sent_sizes.deinit();
@@ -1325,6 +1332,21 @@ pub const Connection = struct {
     /// Feed received CRYPTO bytes to the TLS engine and enforce allowed ALPN list.
     /// Feed CRYPTO stream bytes into TLS engine; derive secrets/keys and apply peer transport parameters when available.
     pub fn pushCrypto(self: *Connection, hs: []const u8) !void {
+        // Phase 21.2: Use TLS Context if available
+        // Note: Caller must set current connection via handshake_integration.setCurrentConnection() before calling
+        if (self.tls_context) |tls_ctx| {
+            // Determine encryption level based on which keys are installed
+            const level: tls13.EncryptionLevel = blk: {
+                if (self.app_rx_keys != null) break :blk .Application;
+                if (self.hs_rx_keys != null) break :blk .Handshake;
+                break :blk .Initial;
+            };
+
+            try tls_ctx.processCrypto(level, hs);
+            return;
+        }
+
+        // Legacy Engine path
         const had_peer_pub = self.tls.peer_pub != null;
         self.tls.onCryptoRecv(hs);
         // Server: upon receiving first ClientHello AND extracting peer's public key, queue a ServerHello
@@ -1476,6 +1498,8 @@ pub const Connection = struct {
         self: *Connection,
         allocator: *std.mem.Allocator,
     ) !void {
+        // NOTE: Caller must set current connection context via handshake_integration.setCurrentConnection()
+        // before calling this function for TLS Context to work properly (Phase 21.2)
         while (self.crypto_buffer_initial.getContiguous(self.crypto_rx_off_initial)) |fragments| {
             for (fragments) |frag| {
                 if (frag.data.len == 0) continue;
@@ -1492,6 +1516,8 @@ pub const Connection = struct {
         self: *Connection,
         allocator: *std.mem.Allocator,
     ) !void {
+        // NOTE: Caller must set current connection context via handshake_integration.setCurrentConnection()
+        // before calling this function for TLS Context to work properly (Phase 21.2)
         while (self.crypto_buffer_handshake.getContiguous(self.crypto_rx_off_handshake)) |fragments| {
             for (fragments) |frag| {
                 if (frag.data.len == 0) continue;

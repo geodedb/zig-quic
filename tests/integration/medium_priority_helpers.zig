@@ -116,8 +116,8 @@ pub fn extractPathChallenges(
     allocator: std.mem.Allocator,
     captured: []const harness.CapturedPacket,
 ) !std.ArrayList(PathChallenge) {
-    var challenges = std.ArrayList(PathChallenge).init(allocator);
-    errdefer challenges.deinit();
+    var challenges = std.ArrayList(PathChallenge){};
+    errdefer challenges.deinit(allocator);
 
     _ = captured;
 
@@ -133,8 +133,8 @@ pub fn extractPathResponses(
     allocator: std.mem.Allocator,
     captured: []const harness.CapturedPacket,
 ) !std.ArrayList(PathResponse) {
-    var responses = std.ArrayList(PathResponse).init(allocator);
-    errdefer responses.deinit();
+    var responses = std.ArrayList(PathResponse){};
+    errdefer responses.deinit(allocator);
 
     _ = captured;
 
@@ -167,11 +167,11 @@ pub fn countSuccessfulPathValidations(
     allocator: std.mem.Allocator,
     captured: []const harness.CapturedPacket,
 ) !usize {
-    const challenges = try extractPathChallenges(allocator, captured);
-    defer challenges.deinit();
+    var challenges = try extractPathChallenges(allocator, captured);
+    defer challenges.deinit(allocator);
 
-    const responses = try extractPathResponses(allocator, captured);
-    defer responses.deinit();
+    var responses = try extractPathResponses(allocator, captured);
+    defer responses.deinit(allocator);
 
     var count: usize = 0;
     for (challenges.items) |challenge| {
@@ -202,8 +202,8 @@ pub fn extractMigrationEvents(
     allocator: std.mem.Allocator,
     captured: []const harness.CapturedPacket,
 ) !std.ArrayList(MigrationEvent) {
-    var events = std.ArrayList(MigrationEvent).init(allocator);
-    errdefer events.deinit();
+    var events = std.ArrayList(MigrationEvent){};
+    errdefer events.deinit(allocator);
 
     _ = captured;
 
@@ -251,6 +251,20 @@ pub fn validateMigration(events: []const MigrationEvent) !void {
     }
 }
 
+/// Find migration event by type.
+/// Returns first matching event or null if not found.
+pub fn findMigrationByType(
+    events: []const MigrationEvent,
+    event_type: MigrationEventType,
+) ?MigrationEvent {
+    for (events) |event| {
+        if (event.event_type == event_type) {
+            return event;
+        }
+    }
+    return null;
+}
+
 // =============================================================================
 // Flow Control Helpers
 // =============================================================================
@@ -267,8 +281,8 @@ pub fn extractFlowControlUpdates(
     allocator: std.mem.Allocator,
     captured: []const harness.CapturedPacket,
 ) !std.ArrayList(FlowControlUpdate) {
-    var updates = std.ArrayList(FlowControlUpdate).init(allocator);
-    errdefer updates.deinit();
+    var updates = std.ArrayList(FlowControlUpdate){};
+    errdefer updates.deinit(allocator);
 
     _ = captured;
 
@@ -314,7 +328,7 @@ pub fn validateFlowControlLimits(updates: []const FlowControlUpdate) !void {
                         "MAX_DATA decreased: {} -> {}\n",
                         .{ connection_limit, update.limit }
                     );
-                    return error.FlowControlLimitDecreased;
+                    return error.FlowControlLimitDecrease;
                 }
                 connection_limit = update.limit;
             },
@@ -326,7 +340,7 @@ pub fn validateFlowControlLimits(updates: []const FlowControlUpdate) !void {
                         "MAX_STREAM_DATA decreased for stream {}: {} -> {}\n",
                         .{ stream_id, old_limit, update.limit }
                     );
-                    return error.FlowControlLimitDecreased;
+                    return error.FlowControlLimitDecrease;
                 }
                 try stream_limits.put(stream_id, update.limit);
             },
@@ -340,13 +354,13 @@ pub fn validateFlowControlLimits(updates: []const FlowControlUpdate) !void {
 pub fn findBlockedEvents(
     updates: []const FlowControlUpdate,
 ) []const FlowControlUpdate {
-    var blocked_events = std.ArrayList(FlowControlUpdate).init(std.heap.page_allocator);
+    var blocked_events = std.ArrayList(FlowControlUpdate){};
 
     for (updates) |update| {
         if (update.frame_type == .data_blocked or
             update.frame_type == .stream_data_blocked)
         {
-            blocked_events.append(update) catch break;
+            blocked_events.append(std.heap.page_allocator, update) catch break;
         }
     }
 
@@ -382,7 +396,7 @@ pub fn expectSuccessfulMigration(
     captured: []const harness.CapturedPacket,
 ) !void {
     const events = try extractMigrationEvents(allocator, captured);
-    defer events.deinit();
+    defer events.deinit(allocator);
 
     if (events.items.len == 0) {
         std.debug.print("No migration events found\n", .{});
@@ -399,7 +413,7 @@ pub fn expectValidFlowControl(
     captured: []const harness.CapturedPacket,
 ) !void {
     const updates = try extractFlowControlUpdates(allocator, captured);
-    defer updates.deinit();
+    defer updates.deinit(allocator);
 
     try validateFlowControlLimits(updates.items);
 }
@@ -412,7 +426,7 @@ pub fn expectFlowControlBlocked(
     min_blocked_events: usize,
 ) !void {
     const updates = try extractFlowControlUpdates(allocator, captured);
-    defer updates.deinit();
+    defer updates.deinit(allocator);
 
     const blocked = findBlockedEvents(updates.items);
 
@@ -445,18 +459,18 @@ pub fn analyzeMediumPriorityFeatures(
     captured: []const harness.CapturedPacket,
 ) !MediumPriorityMetrics {
     const challenges = try extractPathChallenges(allocator, captured);
-    defer challenges.deinit();
+    defer challenges.deinit(allocator);
 
     const responses = try extractPathResponses(allocator, captured);
-    defer responses.deinit();
+    defer responses.deinit(allocator);
 
     const validations = try countSuccessfulPathValidations(allocator, captured);
 
     const migrations = try extractMigrationEvents(allocator, captured);
-    defer migrations.deinit();
+    defer migrations.deinit(allocator);
 
     const fc_updates = try extractFlowControlUpdates(allocator, captured);
-    defer fc_updates.deinit();
+    defer fc_updates.deinit(allocator);
 
     const blocked = findBlockedEvents(fc_updates.items);
 
@@ -563,7 +577,7 @@ test "validateFlowControlLimits - limit decrease detected" {
     };
 
     const result = validateFlowControlLimits(&updates);
-    try std.testing.expectError(error.FlowControlLimitDecreased, result);
+    try std.testing.expectError(error.FlowControlLimitDecrease, result);
 }
 
 test "analyzeMediumPriorityFeatures - empty capture" {

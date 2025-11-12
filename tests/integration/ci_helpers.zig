@@ -89,8 +89,8 @@ pub fn findSlowestTests(
     test_cases: []const TestCase,
     limit: usize,
 ) !std.ArrayList(TestCase) {
-    var slowest = std.ArrayList(TestCase).init(allocator);
-    errdefer slowest.deinit();
+    var slowest = std.ArrayList(TestCase){};
+    errdefer slowest.deinit(allocator);
 
     // TODO: Sort test cases by duration and return top N
     // For now, return empty list
@@ -272,12 +272,12 @@ pub fn findSlowTests(
     test_cases: []const TestCase,
     threshold_ms: u64,
 ) !std.ArrayList(TestCase) {
-    var slow_tests = std.ArrayList(TestCase).init(allocator);
-    errdefer slow_tests.deinit();
+    var slow_tests = std.ArrayList(TestCase){};
+    errdefer slow_tests.deinit(allocator);
 
     for (test_cases) |test_case| {
         if (test_case.duration_ms > threshold_ms) {
-            try slow_tests.append(test_case);
+            try slow_tests.append(allocator, test_case);
         }
     }
 

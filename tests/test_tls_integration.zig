@@ -46,7 +46,7 @@ test "context error handling with alert translation" {
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     
-    var ctx = tls13.Context.init(.{ .allocator = alloc, .role = .Server }, .{});
+    var ctx = try tls13.Context.init(.{ .allocator = alloc, .role = .Server }, .{});
     defer ctx.deinit();
     
     // Simulate an error condition
@@ -72,7 +72,7 @@ test "complete TLS integration: Context with alert and replay protection" {
     const alloc = gpa.allocator();
     
     // Initialize Context
-    var ctx = tls13.Context.init(.{ .allocator = alloc, .role = .Server }, .{});
+    var ctx = try tls13.Context.init(.{ .allocator = alloc, .role = .Server }, .{});
     defer ctx.deinit();
     
     // Initialize replay window (would be stored in server state)

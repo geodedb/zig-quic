@@ -197,7 +197,7 @@ test "RFC 9000 §18.2 - max_udp_payload_size minimum 1200" {
     };
 
     const result = params.checkLimits();
-    try std.testing.expectError(error.ParameterOutOfRange, result);
+    try std.testing.expectError(error.InvalidTransportParams, result);
 }
 
 test "RFC 9000 §18.2 - max_udp_payload_size at minimum boundary (1200)" {
@@ -214,7 +214,7 @@ test "RFC 9000 §18.2 - ack_delay_exponent maximum 20" {
     };
 
     const result = params.checkLimits();
-    try std.testing.expectError(error.ParameterOutOfRange, result);
+    try std.testing.expectError(error.InvalidTransportParams, result);
 }
 
 test "RFC 9000 §18.2 - ack_delay_exponent at maximum boundary (20)" {
@@ -231,7 +231,7 @@ test "RFC 9000 §18.2 - max_ack_delay maximum 16383" {
     };
 
     const result = params.checkLimits();
-    try std.testing.expectError(error.ParameterOutOfRange, result);
+    try std.testing.expectError(error.InvalidTransportParams, result);
 }
 
 test "RFC 9000 §18.2 - max_ack_delay at maximum boundary (16383)" {
@@ -248,7 +248,7 @@ test "RFC 9000 §18.2 - active_connection_id_limit minimum 2" {
     };
 
     const result = params.checkLimits();
-    try std.testing.expectError(error.ParameterOutOfRange, result);
+    try std.testing.expectError(error.InvalidTransportParams, result);
 }
 
 test "RFC 9000 §18.2 - active_connection_id_limit at minimum boundary (2)" {
@@ -265,7 +265,7 @@ test "RFC 9000 §4.6 - initial_max_streams_bidi maximum 2^60" {
     };
 
     const result = params.checkLimits();
-    try std.testing.expectError(error.ParameterOutOfRange, result);
+    try std.testing.expectError(error.InvalidTransportParams, result);
 }
 
 test "RFC 9000 §4.6 - initial_max_streams_bidi at maximum boundary (2^60)" {
@@ -282,7 +282,7 @@ test "RFC 9000 §4.6 - initial_max_streams_uni maximum 2^60" {
     };
 
     const result = params.checkLimits();
-    try std.testing.expectError(error.ParameterOutOfRange, result);
+    try std.testing.expectError(error.InvalidTransportParams, result);
 }
 
 test "RFC 9000 §4.1 - initial_max_data maximum 2^62-1" {
@@ -291,7 +291,7 @@ test "RFC 9000 §4.1 - initial_max_data maximum 2^62-1" {
     };
 
     const result = params.checkLimits();
-    try std.testing.expectError(error.ParameterOutOfRange, result);
+    try std.testing.expectError(error.InvalidTransportParams, result);
 }
 
 test "RFC 9000 §4.1 - initial_max_stream_data_bidi_local maximum 2^62-1" {
@@ -300,7 +300,7 @@ test "RFC 9000 §4.1 - initial_max_stream_data_bidi_local maximum 2^62-1" {
     };
 
     const result = params.checkLimits();
-    try std.testing.expectError(error.ParameterOutOfRange, result);
+    try std.testing.expectError(error.InvalidTransportParams, result);
 }
 
 test "RFC 9000 §4.1 - initial_max_stream_data_bidi_remote maximum 2^62-1" {
@@ -309,7 +309,7 @@ test "RFC 9000 §4.1 - initial_max_stream_data_bidi_remote maximum 2^62-1" {
     };
 
     const result = params.checkLimits();
-    try std.testing.expectError(error.ParameterOutOfRange, result);
+    try std.testing.expectError(error.InvalidTransportParams, result);
 }
 
 test "RFC 9000 §4.1 - initial_max_stream_data_uni maximum 2^62-1" {
@@ -318,7 +318,7 @@ test "RFC 9000 §4.1 - initial_max_stream_data_uni maximum 2^62-1" {
     };
 
     const result = params.checkLimits();
-    try std.testing.expectError(error.ParameterOutOfRange, result);
+    try std.testing.expectError(error.InvalidTransportParams, result);
 }
 
 test "RFC 9000 §18.2 - checkLimits success with valid parameters" {

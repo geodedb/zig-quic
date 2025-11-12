@@ -55,6 +55,17 @@ pub const SendFn = *const fn (peer: conn_mod.SockAddr, data: []const u8) anyerro
 /// Safe for QUIC since each connection is processed on a single thread.
 threadlocal var current_tls_connection: ?*conn_mod.Connection = null;
 
+/// Set the current connection for TLS callbacks.
+/// This must be called before any TLS Context operations that might trigger callbacks.
+pub fn setCurrentConnection(conn: *conn_mod.Connection) void {
+    current_tls_connection = conn;
+}
+
+/// Clear the current connection after TLS operations complete.
+pub fn clearCurrentConnection() void {
+    current_tls_connection = null;
+}
+
 /// Callback invoked when TLS derives a new traffic secret.
 /// RFC 9001 §5: Install packet protection keys derived from traffic secret.
 ///
@@ -267,8 +278,8 @@ pub fn createTlsContext(
         .on_handshake_complete = onHandshakeComplete,
     };
 
-    // Initialize Context
-    return tls13.Context.init(config, callbacks);
+    // Initialize Context (may fail if client handshake generation fails)
+    return try tls13.Context.init(config, callbacks);
 }
 
 // =============================================================================

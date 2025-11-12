@@ -283,6 +283,8 @@ test "RFC 9001 §4 - createTlsContext registers callbacks" {
         .Client,
         &alpn_list,
         &tp_bytes,
+        null,
+        null,
     );
     defer ctx.deinit();
 
@@ -475,7 +477,7 @@ test "RFC 9000 §18.2 - extractTransportParameters rejects invalid parameter val
             .max_udp_payload_size = 1199, // Below minimum of 1200
         };
         const result = tp.checkLimits();
-        try testing.expectError(error.ParameterOutOfRange, result);
+        try testing.expectError(error.InvalidTransportParams, result);
     }
 
     // Test 2: ack_delay_exponent > 20 should fail (RFC 9000 §18.2)
@@ -484,7 +486,7 @@ test "RFC 9000 §18.2 - extractTransportParameters rejects invalid parameter val
             .ack_delay_exponent = 21, // Above maximum of 20
         };
         const result = tp.checkLimits();
-        try testing.expectError(error.ParameterOutOfRange, result);
+        try testing.expectError(error.InvalidTransportParams, result);
     }
 
     // Test 3: max_ack_delay >= 16384 should fail (RFC 9000 §18.2)
@@ -493,7 +495,7 @@ test "RFC 9000 §18.2 - extractTransportParameters rejects invalid parameter val
             .max_ack_delay = 16384, // Must be < 2^14
         };
         const result = tp.checkLimits();
-        try testing.expectError(error.ParameterOutOfRange, result);
+        try testing.expectError(error.InvalidTransportParams, result);
     }
 
     // Test 4: active_connection_id_limit < 2 should fail (RFC 9000 §18.2)
@@ -502,7 +504,7 @@ test "RFC 9000 §18.2 - extractTransportParameters rejects invalid parameter val
             .active_connection_id_limit = 1, // Below minimum of 2
         };
         const result = tp.checkLimits();
-        try testing.expectError(error.ParameterOutOfRange, result);
+        try testing.expectError(error.InvalidTransportParams, result);
     }
 
     // Test 5: initial_max_streams_bidi > 2^60 should fail (RFC 9000 §4.6)
@@ -511,7 +513,7 @@ test "RFC 9000 §18.2 - extractTransportParameters rejects invalid parameter val
             .initial_max_streams_bidi = (1 << 60) + 1, // Above maximum
         };
         const result = tp.checkLimits();
-        try testing.expectError(error.ParameterOutOfRange, result);
+        try testing.expectError(error.InvalidTransportParams, result);
     }
 
     // Test 6: initial_max_data > 2^62-1 should fail (RFC 9000 §4.1)
@@ -520,7 +522,7 @@ test "RFC 9000 §18.2 - extractTransportParameters rejects invalid parameter val
             .initial_max_data = (1 << 62), // Above maximum of 2^62-1
         };
         const result = tp.checkLimits();
-        try testing.expectError(error.ParameterOutOfRange, result);
+        try testing.expectError(error.InvalidTransportParams, result);
     }
 
     // Test 7: Valid parameters should pass
