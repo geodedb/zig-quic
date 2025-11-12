@@ -884,6 +884,7 @@ test "TODO: Connection completes 3-way handshake (§7)" {
 
     // Complete handshake
     try pair.connect();
+    try pair.waitForHandshake(5000); // Wait for handshake to complete
 
     // Verify both sides exist
     try std.testing.expect(pair.client_conn != null);
@@ -922,6 +923,7 @@ test "TODO: Handshake completion clears Initial keys (§4.9.1)" {
 
     // Complete handshake
     try pair.connect();
+    try pair.waitForHandshake(5000); // Wait for handshake to complete
 
     // Verify both sides completed handshake
     try std.testing.expect(pair.client_conn != null);

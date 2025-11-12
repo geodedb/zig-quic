@@ -387,7 +387,6 @@ pub fn validateErrorCode(error_code: u64) !void {
     // Check if it's a CRYPTO_ERROR (0x0100-0x01FF)
     if (error_code >= 0x0100 and error_code <= 0x01FF) return;
 
-    std.debug.print("Invalid error code: 0x{X}\n", .{error_code});
     return error.InvalidErrorCode;
 }
 

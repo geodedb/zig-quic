@@ -63,6 +63,12 @@ pub const ConnectionPair = struct {
     /// Configuration
     config: ConnectionPairConfig,
 
+    /// Captured packets from client (SideA) - only allocated if capture enabled
+    client_packets: ?std.ArrayList(harness.CapturedPacket),
+
+    /// Captured packets from server (SideB) - only allocated if capture enabled
+    server_packets: ?std.ArrayList(harness.CapturedPacket),
+
     /// Initialize a connection pair (Phase 14: Real endpoints!)
     pub fn init(allocator: std.mem.Allocator, config: ConnectionPairConfig) !*ConnectionPair {
         const self = try allocator.create(ConnectionPair);
@@ -85,7 +91,16 @@ pub const ConnectionPair = struct {
             .server_conn = null,
             .client_conn = null,
             .config = config,
+            .client_packets = null,
+            .server_packets = null,
         };
+
+        // Initialize capture lists if enabled
+        if (config.enable_capture) {
+            // Initialize empty ArrayLists using empty struct literal (Zig 0.15.1 pattern)
+            self.client_packets = std.ArrayList(harness.CapturedPacket){};
+            self.server_packets = std.ArrayList(harness.CapturedPacket){};
+        }
 
         // Now create endpoint wrappers with pointers to STORED adapters
         // This avoids dangling pointer bug where wrappers point to stack temporaries
@@ -103,6 +118,13 @@ pub const ConnectionPair = struct {
         );
         errdefer self.server.deinit();
 
+        // Set up packet capture if enabled
+        if (config.enable_capture) {
+            transport.capture_a_send_fn = captureClientPacket;
+            transport.capture_b_send_fn = captureServerPacket;
+            transport.capture_user_data = @ptrCast(self);
+        }
+
         return self;
     }
 
@@ -113,6 +135,23 @@ pub const ConnectionPair = struct {
         }
         if (self.client_conn) |_| {
             // Connection cleanup handled by endpoint
+        }
+
+        // Clean up captured packets
+        if (self.client_packets) |packets| {
+            for (packets.items) |captured| {
+                self.allocator.free(captured.data);
+            }
+            var mut_packets = packets;
+            mut_packets.deinit(self.allocator);
+        }
+
+        if (self.server_packets) |packets| {
+            for (packets.items) |captured| {
+                self.allocator.free(captured.data);
+            }
+            var mut_packets = packets;
+            mut_packets.deinit(self.allocator);
         }
 
         // Clean up endpoint wrappers (Phase 14: Real endpoints!)
@@ -182,8 +221,11 @@ pub const ConnectionPair = struct {
     pub fn waitForHandshake(self: *ConnectionPair, timeout_ms: u64) !void {
         // Phase 14: Poll real connections for handshake completion!
         const start_time = std.time.milliTimestamp();
+        var iteration: u64 = 0;
 
         while (true) {
+            iteration += 1;
+
             // Check if handshake complete on both sides
             if (self.client_conn) |client_conn| {
                 if (self.server_conn) |server_conn| {
@@ -204,6 +246,15 @@ pub const ConnectionPair = struct {
             // Check timeout
             const elapsed = std.time.milliTimestamp() - start_time;
             if (elapsed > timeout_ms) {
+                std.debug.print("[waitForHandshake] TIMEOUT after {} iterations\n", .{iteration});
+                if (self.client_conn) |client_conn| {
+                    if (self.server_conn) |server_conn| {
+                        std.debug.print("[waitForHandshake] Final state: client_done={}, server_done={}\n", .{
+                            client_conn.handshake_done_seen,
+                            server_conn.handshake_done_sent,
+                        });
+                    }
+                }
                 return error.HandshakeTimeout;
             }
 
@@ -228,7 +279,7 @@ pub const ConnectionPair = struct {
             }
 
             // Small delay to allow packet delivery
-            std.time.sleep(1 * std.time.ns_per_ms);
+            std.Thread.sleep(1 * std.time.ns_per_ms);
         }
 
         if (iterations >= max_iterations) {
@@ -242,17 +293,63 @@ pub const ConnectionPair = struct {
         self.client.advanceTime(ms);
     }
 
+    /// Capture callback for client (SideA) packets
+    fn captureClientPacket(data: []const u8, timestamp_ms: i64, user_data: ?*anyopaque) void {
+        const self: *ConnectionPair = @ptrCast(@alignCast(user_data));
+
+        // Only capture if list exists
+        if (self.client_packets) |*packets| {
+            // Allocate a copy of the packet data
+            const data_copy = self.allocator.alloc(u8, data.len) catch return;
+            @memcpy(data_copy, data);
+
+            // Add to client capture list
+            packets.append(self.allocator, .{
+                .timestamp_ms = timestamp_ms,
+                .direction = .sent,
+                .data = data_copy,
+            }) catch {
+                self.allocator.free(data_copy);
+                return;
+            };
+        }
+    }
+
+    /// Capture callback for server (SideB) packets
+    fn captureServerPacket(data: []const u8, timestamp_ms: i64, user_data: ?*anyopaque) void {
+        const self: *ConnectionPair = @ptrCast(@alignCast(user_data));
+
+        // Only capture if list exists
+        if (self.server_packets) |*packets| {
+            // Allocate a copy of the packet data
+            const data_copy = self.allocator.alloc(u8, data.len) catch return;
+            @memcpy(data_copy, data);
+
+            // Add to server capture list
+            packets.append(self.allocator, .{
+                .timestamp_ms = timestamp_ms,
+                .direction = .sent,
+                .data = data_copy,
+            }) catch {
+                self.allocator.free(data_copy);
+                return;
+            };
+        }
+    }
+
     /// Get client-side captured packets
     pub fn getClientPackets(self: *ConnectionPair) ?[]const harness.CapturedPacket {
-        _ = self;
-        // TODO: Implement packet capture in EndpointWrapper
+        if (self.client_packets) |packets| {
+            return packets.items;
+        }
         return null;
     }
 
     /// Get server-side captured packets
     pub fn getServerPackets(self: *ConnectionPair) ?[]const harness.CapturedPacket {
-        _ = self;
-        // TODO: Implement packet capture in EndpointWrapper
+        if (self.server_packets) |packets| {
+            return packets.items;
+        }
         return null;
     }
 

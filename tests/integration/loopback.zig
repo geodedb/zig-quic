@@ -35,6 +35,15 @@ pub const LoopbackTransport = struct {
     /// Statistics
     stats: Stats,
 
+    /// Optional capture callback for packets sent by SideA (client)
+    capture_a_send_fn: ?*const fn (data: []const u8, timestamp_ms: i64, user_data: ?*anyopaque) void = null,
+
+    /// Optional capture callback for packets sent by SideB (server)
+    capture_b_send_fn: ?*const fn (data: []const u8, timestamp_ms: i64, user_data: ?*anyopaque) void = null,
+
+    /// User data for capture callbacks
+    capture_user_data: ?*anyopaque = null,
+
     /// Configuration for loopback transport
     pub const Config = struct {
         /// Packet loss rate (0.0 to 1.0)
@@ -82,6 +91,9 @@ pub const LoopbackTransport = struct {
             .config = config,
             .prng = std.Random.DefaultPrng.init(@intCast(std.time.milliTimestamp())),
             .stats = .{},
+            .capture_a_send_fn = null,
+            .capture_b_send_fn = null,
+            .capture_user_data = null,
         };
 
         return self;
@@ -96,11 +108,19 @@ pub const LoopbackTransport = struct {
 
     /// Send packet from endpoint A to endpoint B
     pub fn sendAtoB(self: *LoopbackTransport, data: []const u8) !void {
+        // Capture if callback is registered
+        if (self.capture_a_send_fn) |capture_fn| {
+            capture_fn(data, std.time.milliTimestamp(), self.capture_user_data);
+        }
         try self.send(&self.queue_a_to_b, data);
     }
 
     /// Send packet from endpoint B to endpoint A
     pub fn sendBtoA(self: *LoopbackTransport, data: []const u8) !void {
+        // Capture if callback is registered
+        if (self.capture_b_send_fn) |capture_fn| {
+            capture_fn(data, std.time.milliTimestamp(), self.capture_user_data);
+        }
         try self.send(&self.queue_b_to_a, data);
     }
 

@@ -1212,6 +1212,11 @@ pub fn setupServerTransportParams(
 
     // Install on connection - will be sent in ServerHello EncryptedExtensions
     try conn.setLocalTransportParameters(if (tp_bytes.len > 0) tp_bytes else tp_bytes[0..0]);
+
+    // Note: If TLS context doesn't exist yet (config.transport_params was null),
+    // the connection will use the legacy TLS Engine path which has the transport
+    // parameters set via setLocalTransportParameters above.
+    // The Context path is preferred when transport params are known upfront.
 }
 
 /// Module marker for Phase 4b.5 Session 6.

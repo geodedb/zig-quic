@@ -386,21 +386,28 @@ pub fn createServerConnection(
     }
 
     // Initialize TLS Context for modular TLS 1.3 (Phase 21.2)
-    // This replaces the legacy Engine path and enables full handshake completion
-    const ctx_value = try handshake_integration.createTlsContext(
-        allocator.*,
-        .Server,
-        config.allowed_alpns,
-        tp_bytes,
-        config.server_cert_der,
-        config.server_priv_key_der,
-    );
+    // Only create TLS context if we have transport parameters
+    // If transport_params is null, the context will be created later when params are set
+    if (config.transport_params != null and tp_bytes.len > 0) {
+        // This replaces the legacy Engine path and enables full handshake completion
+        const ctx_value = try handshake_integration.createTlsContext(
+            allocator.*,
+            .Server,
+            config.allowed_alpns,
+            tp_bytes,
+            config.server_cert_der,
+            config.server_priv_key_der,
+        );
 
-    const tls_ctx = try allocator.create(@TypeOf(ctx_value));
-    errdefer allocator.destroy(tls_ctx);
-    tls_ctx.* = ctx_value;
+        const tls_ctx = try allocator.create(@TypeOf(ctx_value));
+        errdefer allocator.destroy(tls_ctx);
+        tls_ctx.* = ctx_value;
 
-    c.tls_context = tls_ctx;
+        c.tls_context = tls_ctx;
+    } else {
+        // TLS context will be created when setupServerTransportParams is called
+        c.tls_context = null;
+    }
 
     return c;
 }

@@ -249,8 +249,24 @@ fn buildClientHello(alloc: std.mem.Allocator) ![]u8 {
     // supported_groups (x25519)
     try ext_buf.appendSlice(alloc, &.{ 0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x1d });
 
-    // signature_algorithms (rsa_pss_rsae_sha256)
-    try ext_buf.appendSlice(alloc, &.{ 0x00, 0x0d, 0x00, 0x04, 0x00, 0x02, 0x04, 0x03 });
+    // signature_algorithms extension (expanded with more algorithms)
+    try ext_buf.appendSlice(alloc, &.{
+        0x00, 0x0d,  // Extension type: signature_algorithms
+        0x00, 0x08,  // Extension length
+        0x00, 0x06,  // List length
+        0x08, 0x04,  // RSA-PSS-RSAE-SHA256
+        0x04, 0x03,  // ECDSA-secp256r1-sha256
+        0x08, 0x07,  // ED25519
+    });
+
+    // ALPN extension (16): Required for QUIC - advertise "h3"
+    try ext_buf.appendSlice(alloc, &.{
+        0x00, 0x10,  // Extension type: ALPN
+        0x00, 0x05,  // Extension length
+        0x00, 0x03,  // ALPN list length
+        0x02,        // ALPN entry length
+        'h', '3',    // "h3" protocol
+    });
 
     // key_share (x25519)
     try ext_buf.appendSlice(alloc, &.{ 0x00, 0x33 });
@@ -262,10 +278,16 @@ fn buildClientHello(alloc: std.mem.Allocator) ![]u8 {
     try ext_buf.appendSlice(alloc, &.{ 0x00, 32 }); // 32 bytes
     try ext_buf.appendSlice(alloc, &pk);
 
-    // QUIC transport parameters extension (0x0039)
-    try ext_buf.appendSlice(alloc, &.{ 0x00, 0x39, 0x00, 0x08 }); // extension type + length (8 bytes)
-    // Minimal transport params: initial_max_data (0x04) = 1MB
-    try ext_buf.appendSlice(alloc, &.{ 0x04, 0x06, 0x80, 0x10, 0x00, 0x00, 0x00, 0x00 });
+    // QUIC transport parameters extension (57/0x39): Required for QUIC
+    // Minimal valid transport parameters
+    try ext_buf.appendSlice(alloc, &.{
+        0x00, 0x39,  // Extension type: quic_transport_params
+        0x00, 0x0c,  // Extension length (12 bytes)
+        // Initial max data (param 0x04) = 1MB
+        0x04, 0x04, 0x80, 0x10, 0x00, 0x00,
+        // Initial max stream data bidi local (param 0x05) = 256KB
+        0x05, 0x04, 0x80, 0x04, 0x00, 0x00,
+    });
 
     const exts_len: u16 = @intCast(ext_buf.items.len);
     try body.appendSlice(alloc, &.{ @intCast(exts_len >> 8), @intCast(exts_len & 0xff) });

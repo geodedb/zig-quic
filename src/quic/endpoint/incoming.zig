@@ -831,6 +831,7 @@ pub fn processInitial(
         ) catch return;
 
         // Set up transport parameters for server (RFC 9000 §18.2)
+        // IMPORTANT: Must be done AFTER connection creation but BEFORE TLS processing
         handshake_integration.setupServerTransportParams(c_new, ctx.cfg, ctx.allocator.*) catch {};
 
         // Set up sender callback so connection can send packets
