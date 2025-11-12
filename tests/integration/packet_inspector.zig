@@ -599,7 +599,7 @@ pub fn decryptInitialPacket(
 
     // Decrypt the packet
     const plaintext_len = crypto_quic.unprotectInitialAutoSample(
-        .Aes128Gcm,
+        .aes_128_gcm,
         &keys.key,
         &keys.iv,
         &keys.hp,

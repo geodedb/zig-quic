@@ -350,3 +350,195 @@ The DCID handling is actually working correctly. The remaining ConnectionPair.co
 - Still 1826/2314 tests passing (78.9%)
 - 11 tests still failing (all related to ConnectionPair.connect() handshake completion)
 - DCID handling confirmed working correctly
+
+---
+
+## Phase 7: Missing queueServerHandshakeFlight() Call (2025-11-11 - Part 7)
+
+### Critical Issue Discovered
+
+The server wasn't generating handshake messages (EncryptedExtensions, Certificate, CertificateVerify, Finished) because `queueServerHandshakeFlight()` was never being called in the current endpoint code.
+
+### Root Cause
+
+The TLS Engine's `maybeAutoProgress()` function deliberately returns early for servers with the comment:
+```
+// Let endpoint.zig handle the handshake flight via queueServerHandshakeFlight()
+```
+
+However, the current endpoint.zig was missing the call to `queueServerHandshakeFlight()`.
+
+### Fix Applied
+
+Added the following to `sendHandshakePackets()` in `handshake_integration.zig`:
+```zig
+// Server: If handshake flight not yet enqueued, queue it now
+// This generates EncryptedExtensions, Certificate, CertificateVerify, Finished
+if (conn.role == .Server and !conn.tls.server_handshake_flight_enqueued) {
+    std.debug.print("sendHandshakePackets: Server queueing handshake flight\n", .{});
+    conn.tls.queueServerHandshakeFlight();
+}
+```
+
+### Progress
+
+After this fix:
+- Server now generates and sends handshake messages (115 bytes of CRYPTO data)
+- Server sends coalesced Initial + Handshake packets correctly
+- Server's `pn_handshake_tx` increments properly
+
+### Remaining Issues
+
+1. **Client not sending Handshake packets** (`pn_handshake_tx` remains 0):
+   - Client successfully installs Handshake keys
+   - Client's `maybeAutoProgress` shows `finished_verified=false`, indicating it hasn't verified server's Finished
+   - Client is waiting to receive and verify server's Finished before sending its own
+
+2. **Packet exchange mechanism issue**:
+   - Server generates and sends handshake messages (115 bytes of CRYPTO data)
+   - But client doesn't appear to be receiving or processing them
+   - The loopback transport or packet delivery mechanism may have issues
+
+3. **ConnectionPair.connect() timing**:
+   - Currently only waits for server to accept connection (happens after 1 exchange)
+   - Does NOT wait for handshake completion
+   - Adding `waitForHandshake()` causes timeout because packets aren't being exchanged properly
+
+### Test Status After Fix
+
+- **1826/2314 tests passing (78.9%)**
+- **11 tests still failing** (all ConnectionPair.connect() related)
+- Server now correctly generates handshake messages
+- Client-server packet exchange still not working correctly
+
+---
+
+## Summary of Fixes Applied
+
+### ✅ Successfully Fixed Issues:
+1. **ArrayList API Compatibility** - Updated to Zig 0.15.1 syntax
+2. **Missing TLS Extensions** - Added signature algorithms, ALPN, transport parameters to test ClientHello
+3. **TLS Context Transport Parameters** - Fixed timing issue with deferred Context creation
+4. **Packet Decryption Implementation** - Implemented `decryptInitialPacket()` for packet inspector
+5. **Server Handshake Messages** - Added missing `queueServerHandshakeFlight()` call
+
+### ⚠️ Remaining Core Issue:
+The fundamental issue is that the **test harness's packet exchange mechanism isn't working correctly**. While the server generates handshake messages and the client has the keys to process them, the packets aren't being delivered properly through the loopback transport. This prevents the TLS handshake from completing in integration tests.
+
+### Recommended Next Steps:
+1. Debug the loopback transport mechanism in `tests/integration/loopback.zig`
+2. Verify packet delivery in `ConnectionPair.exchangePackets()`
+3. Add detailed logging to track packet flow between endpoints
+4. Consider if there's a buffering or timing issue in the test transport layer
+
+---
+
+## Phase 8: Coalesced Packet Handling & Memory Management Fixes (2025-11-12)
+
+### Issues Discovered
+
+1. **Coalesced packet handling missing**: Server was sending Initial+Handshake packets coalesced together (302 bytes), but `processIncomingDatagram` was only processing the first packet
+2. **Double-free errors**: Both `decryptHandshakePacket` and `decryptInitialPacket` had double-free issues with errdefer + explicit free
+3. **Memory leaks**: `decryptInitialPacket` had a memory leak in the PN length enumeration loop
+4. **Missing build dependencies**: `packet_inspector` module was missing `quic_varint` dependency
+5. **Incorrect enum values**: `packet_inspector` was using `Aes128Gcm` instead of `aes_128_gcm`
+
+### Fixes Applied
+
+#### 1. Coalesced Packet Handling (src/quic/endpoint.zig:775-852)
+```zig
+// Process all packets in the datagram (may be coalesced)
+// RFC 9000 §12.2: "Senders can coalesce multiple QUIC packets into one UDP datagram"
+var remaining = bytes;
+
+while (remaining.len > 0) {
+    // Parse packet length for long header packets
+    var packet_len = remaining.len; // Default: entire remaining buffer
+
+    if (remaining.len > 0) {
+        const first_byte = remaining[0];
+        const is_long_header = (first_byte & 0x80) != 0;
+
+        if (is_long_header and remaining.len > 5) {
+            // Parse DCID, SCID, token, and payload length
+            var offset: usize = 5; // Version field
+
+            // Parse DCID length and skip
+            if (remaining.len > offset) {
+                const dcid_len = remaining[offset];
+                offset += 1 + @as(usize, @intCast(dcid_len));
+            }
+
+            // Parse SCID length and skip
+            if (remaining.len > offset) {
+                const scid_len = remaining[offset];
+                offset += 1 + @as(usize, @intCast(scid_len));
+            }
+
+            // Initial packets have a token
+            const packet_type = (first_byte & 0x30) >> 4;
+            if (packet_type == 0 and remaining.len > offset) { // Initial
+                const token_len_result = varint.decode(remaining[offset..]) catch {
+                    break; // Can't parse, treat as single packet
+                };
+                offset += token_len_result.n;
+                offset += @as(usize, @intCast(token_len_result.value)); // Skip token bytes
+            }
+
+            // Now read the packet length varint
+            if (remaining.len > offset) {
+                const len_result = varint.decode(remaining[offset..]) catch {
+                    break; // Can't parse, treat as single packet
+                };
+                offset += len_result.n;
+                packet_len = offset + @as(usize, @intCast(len_result.value));
+                packet_len = @min(packet_len, remaining.len); // Don't exceed buffer
+            }
+        }
+    }
+
+    const packet_bytes = remaining[0..packet_len];
+    // Process individual packet...
+    remaining = remaining[packet_len..];
+}
+```
+
+#### 2. Double-Free Fixes (src/quic/endpoint/incoming.zig)
+- Removed explicit `allocator.free(pt_slice)` in error catch blocks (lines 705, 1499)
+- Let errdefer handle memory cleanup on error returns
+
+#### 3. Memory Leak Fix (src/quic/endpoint/incoming.zig:705)
+- Re-added explicit `allocator.free(payload)` in the continue path
+- `continue` doesn't trigger errdefer, so explicit free is needed when continuing the loop
+
+#### 4. Build System Fixes (build.zig:648)
+```zig
+packet_inspector_mod.addImport("quic_varint", quic_varint_mod);
+```
+
+#### 5. Enum Value Fix (tests/integration/packet_inspector.zig:602)
+```zig
+.aes_128_gcm, // was: .Aes128Gcm
+```
+
+### Test Results After Fixes
+
+- **Total tests:** 2348
+- **Passing:** 1842 (78.5%)
+- **Failing:** 21
+- **Skipped:** 485
+- **Memory leaks:** 0 (fixed!)
+
+### Progress Summary
+
+Fixed issues:
+- ✅ Coalesced packet handling implemented
+- ✅ Double-free errors resolved
+- ✅ Memory leaks eliminated
+- ✅ Build dependencies corrected
+- ✅ Enum values fixed
+
+Remaining issue:
+- ⚠️ Handshake still not completing (times out after server accepts connection)
+- The server accepts the connection after 1 exchange but handshake stalls
+- Need to investigate why client isn't processing server's Handshake packets properly

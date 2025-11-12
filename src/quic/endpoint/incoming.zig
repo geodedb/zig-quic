@@ -1496,7 +1496,6 @@ fn decryptHandshakePacket(
         pt_slice,
         largest_pn,
     ) catch {
-        allocator.free(pt_slice);
         return error.AeadDecryptFailed;
     };
 

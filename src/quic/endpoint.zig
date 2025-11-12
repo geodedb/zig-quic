@@ -728,18 +728,16 @@ pub const Endpoint = struct {
     }
 
     fn processIncomingDatagram(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8, ecn_bits: ?u8) void {
-
-        if (bytes.len < 1) return;
-
-        const first = bytes[0];
-        const is_long = (first & 0x80) != 0;
-
-        // Create RxContext for delegation to incoming.zig modules
-        const role_converted = @as(ep_types.EndpointRole, @enumFromInt(@intFromEnum(self.role)));
+        // Process all packets in the datagram (may be coalesced)
+        // RFC 9000 §12.2: "Senders can coalesce multiple QUIC packets into one UDP datagram"
+        var remaining = bytes;
 
         // Temporarily set global endpoint pointer for callbacks
         current_io_endpoint = self;
         defer current_io_endpoint = null;
+
+        // Create RxContext for delegation to incoming.zig modules
+        const role_converted = @as(ep_types.EndpointRole, @enumFromInt(@intFromEnum(self.role)));
 
         var rx_ctx = incoming.RxContext{
             .allocator = self.allocator,
@@ -775,47 +773,98 @@ pub const Endpoint = struct {
             .endpoint_ctx = self,
         };
 
-        // Short header: Delegate to incoming.processShortHeader()
-        if (!is_long) {
-            // Handle NAT rebinding detection
-            const lookup_result = lookup.findConnectionByDcid(&self.conns, peer, bytes, null);
-            if (lookup_result.nat_rebinding) {
-                if (lookup_result.conn) |c| {
-                    const peer_h = hashSockaddr(&peer.storage, peer.len);
-                    self.onPathAddressChanged(c, peer, peer_h, lookup_result.dcid_len);
+        // Process packets until we've consumed all bytes
+        while (remaining.len > 0) {
+            if (remaining.len < 1) break;
+
+            const first = remaining[0];
+            const is_long = (first & 0x80) != 0;
+
+            // Short header: Process and consume entire remaining buffer
+            if (!is_long) {
+                // Handle NAT rebinding detection
+                const lookup_result = lookup.findConnectionByDcid(&self.conns, peer, remaining, null);
+                if (lookup_result.nat_rebinding) {
+                    if (lookup_result.conn) |c| {
+                        const peer_h = hashSockaddr(&peer.storage, peer.len);
+                        self.onPathAddressChanged(c, peer, peer_h, lookup_result.dcid_len);
+                    }
+                }
+                incoming.processShortHeader(&rx_ctx, peer, remaining, ecn_bits, rx_ctx.send_fn);
+                break; // Short header packet consumes rest of datagram
+            }
+
+            // Long header: Need to determine packet length to know how much to consume
+            if (remaining.len < 5) break;
+            const version: u32 = (@as(u32, remaining[1]) << 24) | (@as(u32, remaining[2]) << 16) | (@as(u32, remaining[3]) << 8) | @as(u32, remaining[4]);
+            const ty = (first >> 4) & 0x03;
+
+            // Try to determine packet length to know how much to consume
+            var packet_len: usize = remaining.len; // Default to entire remaining buffer
+
+            // For long header packets, we need to parse the header to find the packet length
+            // The packet length is encoded after the connection IDs
+            if (remaining.len >= 7) {
+                // Skip to DCID length at byte 5
+                const dcid_len = remaining[5];
+                if (remaining.len >= 6 + dcid_len + 1) {
+                    // Skip DCID and get SCID length
+                    const scid_len = remaining[6 + dcid_len];
+                    if (remaining.len >= 7 + dcid_len + scid_len) {
+                        // Now we're at the variable-length integer for packet length
+                        var offset: usize = 7 + dcid_len + scid_len;
+
+                        // Version Negotiation packets don't have length field
+                        if (version == 0) {
+                            packet_len = remaining.len; // Use entire buffer for VN
+                        }
+                        // Retry packets also don't have a length field
+                        else if (ty == 3) {
+                            packet_len = remaining.len; // Use entire buffer for Retry
+                        }
+                        // Initial, Handshake, and 0-RTT packets have length field
+                        else {
+                            // For Initial packets, skip token length varint
+                            if (ty == 0 and remaining.len > offset) {
+                                // Read token length as varint
+                                const token_len_result = varint.decode(remaining[offset..]) catch {
+                                    break; // Can't parse, treat as single packet
+                                };
+                                offset += token_len_result.n;
+                                offset += @as(usize, @intCast(token_len_result.value)); // Skip token bytes
+                            }
+
+                            // Now read the packet length varint
+                            if (remaining.len > offset) {
+                                const len_result = varint.decode(remaining[offset..]) catch {
+                                    break; // Can't parse, treat as single packet
+                                };
+                                offset += len_result.n;
+                                // packet_len is header_so_far + payload_length + 16 (auth tag)
+                                packet_len = offset + @as(usize, @intCast(len_result.value));
+                                packet_len = @min(packet_len, remaining.len); // Don't exceed buffer
+                            }
+                        }
+                    }
                 }
             }
-            incoming.processShortHeader(&rx_ctx, peer, bytes, ecn_bits, rx_ctx.send_fn);
-            return;
-        }
 
-        // Long header: Parse version and packet type
-        if (bytes.len < 5) return;
-        const version: u32 = (@as(u32, bytes[1]) << 24) | (@as(u32, bytes[2]) << 16) | (@as(u32, bytes[3]) << 8) | @as(u32, bytes[4]);
-        const ty = (first >> 4) & 0x03;
+            // Extract just this packet
+            const packet_bytes = remaining[0..packet_len];
 
-        // Version Negotiation: Delegate to incoming.processVersionNegotiation()
-        if (version == 0) {
-            incoming.processVersionNegotiation(&rx_ctx, peer, bytes);
-            return;
-        }
+            // Process the packet based on type
+            if (version == 0) {
+                incoming.processVersionNegotiation(&rx_ctx, peer, packet_bytes);
+            } else if (ty == 0) {
+                incoming.processInitial(&rx_ctx, peer, packet_bytes, version);
+            } else if (ty == 3) {
+                self.processRetryPacket(peer, packet_bytes, version);
+            } else if (ty == 2) {
+                incoming.processHandshake(&rx_ctx, peer, packet_bytes, version, ecn_bits, rx_ctx.send_fn);
+            }
 
-        // Initial: Delegate to incoming.processInitial()
-        if (ty == 0) {
-            incoming.processInitial(&rx_ctx, peer, bytes, version);
-            return;
-        }
-
-        // Retry: Delegate to helper function
-        if (ty == 3) {
-            self.processRetryPacket(peer, bytes, version);
-            return;
-        }
-
-        // Handshake: Delegate to incoming.processHandshake()
-        if (ty == 2) {
-            incoming.processHandshake(&rx_ctx, peer, bytes, version, ecn_bits, rx_ctx.send_fn);
-            return;
+            // Advance to next packet
+            remaining = remaining[packet_len..];
         }
     }
 

@@ -645,6 +645,7 @@ pub fn build(b: *std.Build) void {
     packet_inspector_mod.addImport("quic_crypto_quic", quic_crypto_mod);
     packet_inspector_mod.addImport("quic_packet", quic_packet_mod);
     packet_inspector_mod.addImport("quic_tls", quic_tls_mod);
+    packet_inspector_mod.addImport("quic_varint", quic_varint_mod);
 
     // Loss recovery helpers (Phase 21.4: loss detection, RTT estimation, PTO validation for tests)
     const loss_recovery_helpers_mod = mkModule(b, "tests/integration/loss_recovery_helpers.zig");

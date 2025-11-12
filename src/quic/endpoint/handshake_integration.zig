@@ -843,6 +843,13 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
     };
     std.debug.print("sendHandshakePackets: Have Handshake TX keys\n", .{});
 
+    // Server: If handshake flight not yet enqueued, queue it now
+    // This generates EncryptedExtensions, Certificate, CertificateVerify, Finished
+    if (conn.role == .Server and !conn.tls.server_handshake_flight_enqueued) {
+        std.debug.print("sendHandshakePackets: Server queueing handshake flight\n", .{});
+        conn.tls.queueServerHandshakeFlight();
+    }
+
     // Get pending Handshake messages stored by sendServerHello
     // If there are no pending messages, try popping new data from TLS
     // (TLS generates Handshake-level messages after keys are installed)
@@ -861,7 +868,7 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
         if (conn.tls_context) |tls_ctx| {
             // Phase 21.2: Use modular TLS 1.3 Context API
             const hs_data = tls_ctx.pollCrypto(ctx.allocator.*, .Handshake) catch |err| blk: {
-                std.debug.print("sendHandshakePackets: Context returned error: {}\n", .{err});
+                std.debug.print("sendHandshakePackets: Context pollCrypto(.Handshake) returned error: {s}\n", .{@errorName(err)});
                 break :blk null;
             };
 
@@ -876,9 +883,10 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
             }
         } else {
             // Legacy Engine path
+            std.debug.print("sendHandshakePackets: Using Legacy Engine path, outbox len={}\n", .{conn.tls.outbox.items.len});
             var outbox: [8192]u8 = undefined;
             const tls_n = conn.tls.popCrypto(outbox[0..]);
-            std.debug.print("sendHandshakePackets: TLS returned {} bytes\n", .{tls_n});
+            std.debug.print("sendHandshakePackets: TLS popCrypto returned {} bytes (outbox len was {})\n", .{tls_n, conn.tls.outbox.items.len + tls_n});
             if (tls_n == 0) {
                 // No CRYPTO data, but we should still send a Handshake packet for coalescing
                 // RFC 9000 §12.2: Initial and Handshake packets should be coalesced
