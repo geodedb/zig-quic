@@ -1453,6 +1453,14 @@ pub const Connection = struct {
                 std.debug.print("{s}: Cannot derive handshake secrets yet (ch_{s}={}, sh_seen={}, ecdhe={})\n", .{ if (self.role == .Server) "Server" else "Client", if (self.role == .Server) "recv" else "sent", ch_status, self.tls.sh_seen, self.tls.ecdhe_secret != null });
             }
         }
+        // Phase 21: Sync finished flags from TLS Context to Engine for backward compatibility
+        // When using TLS Context, these Engine flags need to be kept in sync so that
+        // code checking them (like Application key derivation below) continues to work
+        if (self.tls_context) |tls_ctx| {
+            self.tls.finished_verified = tls_ctx.flags.peer_finished_verified;
+            self.tls.finished_sent = tls_ctx.flags.local_finished_sent;
+        }
+
         // Install 1-RTT keys only after BOTH sides' Finished messages are involved from our perspective:
         // - finished_verified: we have validated the peer's Finished
         // - finished_sent: we have queued our own Finished (prevents client from sending 1-RTT data before sending Finished)
@@ -1463,9 +1471,39 @@ pub const Connection = struct {
                 // Delay installation until the Finished has actually been flushed (outbox empty) so
                 // the client does not emit 1-RTT STREAM frames that the server cannot yet decrypt.
                 if (self.tls.outbox.items.len == 0) {
-                    if (self.tls.computeApplicationSecrets()) |app_secrets| {
+                    // Phase 21: Get application secrets from Context if available, otherwise from Engine
+                    var got_secrets = false;
+                    var client_secret: ks.Secret = undefined;
+                    var server_secret: ks.Secret = undefined;
+
+                    if (self.tls_context) |tls_ctx| {
+                        // Get secrets from Context
+                        const client_slot = tls_ctx.secrets.slot(.Application, .send);
+                        const server_slot = tls_ctx.secrets.slot(.Application, .recv);
+
+                        // Check if both secrets are valid
+                        // Role reversal: client sends with client_secret, server sends with server_secret
+                        // So for Connection: send_slot is client (for client role) or server (for server role)
+                        const send_slot = if (self.role == .Client) client_slot else server_slot;
+                        const recv_slot = if (self.role == .Client) server_slot else client_slot;
+
+                        if (send_slot.valid and recv_slot.valid) {
+                            client_secret = client_slot.value;
+                            server_secret = server_slot.value;
+                            got_secrets = true;
+                        }
+                    } else {
+                        // Try Engine path
+                        if (self.tls.computeApplicationSecrets()) |app_secrets| {
+                            client_secret = app_secrets.client;
+                            server_secret = app_secrets.server;
+                            got_secrets = true;
+                        }
+                    }
+
+                    if (got_secrets) {
                         std.debug.print("{s}: Deriving application secrets (both Finished exchanged & flushed)\n", .{if (self.role == .Server) "Server" else "Client"});
-                        self.deriveAppKeys(app_secrets.client, app_secrets.server, self.version_v2);
+                        self.deriveAppKeys(client_secret, server_secret, self.version_v2);
                     }
                 } else {
                     std.debug.print("{s}: Waiting to derive 1-RTT keys until Finished flushes ({} bytes pending)\n", .{ if (self.role == .Server) "Server" else "Client", self.tls.outbox.items.len });
@@ -1475,6 +1513,45 @@ pub const Connection = struct {
                 std.debug.print("{s}: Deferring 1-RTT key derivation until our Finished is sent (verified peer Finished)\n", .{if (self.role == .Server) "Server" else "Client"});
             }
         }
+
+        // Phase 21: Send HANDSHAKE_DONE if keys are installed but not sent yet
+        // This handles the case where keys were installed via TLS Context callback
+        // but HANDSHAKE_DONE wasn't sent because deriveAppKeys() wasn't called
+        if (self.role == .Server and self.app_tx_keys != null and !self.handshake_done_sent and self.hasConfirmedAppTxKeys()) {
+            std.debug.print("Server: Sending HANDSHAKE_DONE (keys installed via callback)\n", .{});
+            // Do the additional work from deriveAppKeys
+            self.advertiseInitialFlowControl();
+            self.initial_keys_dropped = true;
+            self.initial_rx_keys = null;
+            self.initial_tx_keys = null;
+
+            // Build and send HANDSHAKE_DONE frame (inline sendControlFrames logic)
+            var frames_list = std.ArrayList(u8){};
+            defer frames_list.deinit(self.allocator.*);
+            const w = frames_list.writer(self.allocator.*);
+            _ = (frame.Frame{ .handshake_done = {} }).write(w) catch 0;
+            _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = self.local_max_stream_data } }).write(w) catch 0;
+            _ = (frame.Frame{ .max_data = .{ .max = self.local_max_data } }).write(w) catch 0;
+            _ = (frame.Frame{ .max_streams_bidi = .{ .max = self.local_max_streams_bidi } }).write(w) catch 0;
+
+            const tx = self.app_tx_keys.?;
+            const pkt = packet.encodeShortProtected(
+                self.allocator.*,
+                self.shortHeaderDcid(),
+                @as(u32, @truncate(self.pn_app_tx)),
+                2,
+                frames_list.items,
+                .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
+                self.tx_key_phase,
+            ) catch null;
+            if (pkt) |bytes_out| {
+                defer self.allocator.free(bytes_out);
+                _ = self.send(bytes_out) catch {};
+                self.onShortHeaderPacketSent(bytes_out.len, true);
+            }
+            self.handshake_done_sent = true;
+        }
+
         // Apply peer transport parameters (once) when they first become available.
         if (!self.transport_params_applied) {
             if (self.tls.getPeerTransportParameters()) |peer_tp_bytes| {

@@ -459,13 +459,21 @@ pub fn installApplicationKeys(
         // Client receives with server keys, sends with client keys
         conn.app_rx_keys = .{ .key = server_keys.key, .iv = server_keys.iv, .hp = server_keys.hp };
         conn.app_tx_keys = .{ .key = client_keys.key, .iv = client_keys.iv, .hp = client_keys.hp };
+        // Store secrets for key updates
+        conn.app_rx_secret = server_secret;
+        conn.app_tx_secret = client_secret;
     } else {
         // Server receives with client keys, sends with server keys
         conn.app_rx_keys = .{ .key = client_keys.key, .iv = client_keys.iv, .hp = client_keys.hp };
         conn.app_tx_keys = .{ .key = server_keys.key, .iv = server_keys.iv, .hp = server_keys.hp };
+        // Store secrets for key updates
+        conn.app_rx_secret = client_secret;
+        conn.app_tx_secret = server_secret;
     }
 
     // Application keys are now installed (indicated by non-null app_rx_keys/app_tx_keys)
+    // Note: HANDSHAKE_DONE frame will be sent by Connection.pushCrypto() after
+    // keys are installed and finished flags are synced
 }
 
 // =============================================================================
@@ -787,6 +795,11 @@ pub fn sendServerHello(ctx: *HandshakeContext) !void {
 
     // Mark ServerHello as sent
     conn.server_hello_sent = true;
+
+    // Phase 21: Mark sh_seen in Engine for backward compatibility with tests
+    // When using TLS Context, we need to manually set this Engine flag
+    // so that test code checking conn.tls.sh_seen continues to work
+    conn.tls.sh_seen = true;
 }
 
 /// Send a Handshake packet with just a PING frame (no CRYPTO data).
