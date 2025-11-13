@@ -2895,3 +2895,141 @@ Window reaches capacity BEFORE transfer completes → no stalling!
 
 ---
 
+## Phase 42 Part 18: Time-Based Adaptive Window Growth Implementation
+
+**Date:** 2025-11-13
+**Test Result:** 4/8 passing (same as Part 16/17)
+**Focus:** Implement time-based adaptive window growth inspired by quiche
+
+### Implementation
+
+**File:** `src/quic/conn.zig`
+
+**Added to StreamRx struct (line 401):**
+```zig
+last_window_update_time_us: u64 = 0,  // Timestamp of last window expansion (microseconds)
+```
+
+**Modified window expansion logic (lines 1908-1938):**
+```zig
+// Get current time in microseconds
+const now_us = @as(u64, @intCast(std.time.microTimestamp()));
+const time_since_last_update_us = if (s.last_window_update_time_us == 0)
+    std.math.maxInt(u64)
+else
+    now_us - s.last_window_update_time_us;
+
+// Adaptive growth: if updating within 1 second, assume rapid consumption → double window
+// Otherwise, use conservative 50% growth. (Future: use actual RTT × 2)
+const use_aggressive_growth = time_since_last_update_us < 1_000_000; // 1 second threshold
+
+// Connection-level template bump (for new streams)
+const bump = if (use_aggressive_growth) self.local_max_stream_data else self.local_max_stream_data / 2;
+// ... apply bump ...
+
+// Per-stream window bump
+const stream_bump = if (use_aggressive_growth) s.local_max_stream_data else s.local_max_stream_data / 2;
+// ... apply stream_bump ...
+
+// Update timestamp for next expansion
+s.last_window_update_time_us = now_us;
+```
+
+**Strategy:**
+- **Rapid consumption** (update within 1 second) → 100% growth (double window)
+- **Slow consumption** (> 1 second since last update) → 50% growth (conservative)
+- Simplified version of quiche's RTT-based autotuning (which uses `2 × smoothed_rtt`)
+
+### Test Results
+
+**Before (Part 16):**
+- 4/8 tests passing
+- 1MB transfer: timeout after 32s
+
+**After (Part 18):**
+- 4/8 tests passing (no change)
+- 1MB transfer: timeout after 30s
+
+**Detailed Results:**
+- ✅ Single Stream Echo (21 bytes) - 7.06ms
+- ✅ Multiple Concurrent Streams (4 streams) - 5.17ms
+- ✅ Large Transfer (10KB) - 12.05ms (0.81 MB/s)
+- ✅ **Large Transfer (100KB) - 96.02ms (1.02 MB/s)**
+- ❌ Large Transfer (1MB) - **Still times out**
+- ❌ Multiple Round-trips (10 cycles) - timeout
+- ❌ Bidirectional Simultaneous - timeout
+- ❌ Stream Interleaving (5 streams) - timeout
+
+### Analysis
+
+**Why Didn't This Fix 1MB Transfer?**
+
+The time-based adaptive growth did NOT resolve the 1MB timeout, suggesting the issue is **deeper than window expansion rate**. Possible causes:
+
+**1. Window Expansions Not Being Triggered**
+- Debug logging (`[P42-18-FC]`) should show expansion events
+- If no expansions logged → data not reaching `pushStreamFrame()`
+- If expansions logged but client still stalls → ACKs/MAX_STREAM_DATA not reaching client
+
+**2. MAX_STREAM_DATA Frames Not Being Sent**
+- Code at `incoming.zig:2337-2353` generates MAX_STREAM_DATA frames
+- Condition: `stream.local_max_stream_data > stream.last_sent_max_stream_data`
+- If window expands but frames not sent → endpoint packet generation issue
+
+**3. ACK Generation Issues**
+- Large transfers require frequent ACKs to drive window updates
+- If ACKs delayed/missing → client stalls waiting for acknowledgment
+- Check ACK emission timing and frequency
+
+**4. Stream Acceptance / Processing Issue**
+- Part 15 fixed edge-triggered stream queueing for <= 100KB
+- Larger transfers may hit a different code path
+- Possible: streams not being read fast enough by application layer
+
+**5. Connection-Level Flow Control Bottleneck**
+- Per-stream windows expanding correctly
+- But connection-level `local_max_data` may be limiting
+- Need to verify connection window grows proportionally
+
+### Debug Strategy for Part 19
+
+**Immediate Actions:**
+1. **Add extensive debug logging** to track:
+   - Every window expansion with timestamp
+   - Every MAX_STREAM_DATA frame generation
+   - Every ACK frame sent
+   - Connection-level vs stream-level window values
+   - Data flow through `pushStreamFrame()` → `readStream()` chain
+
+2. **Run 1MB test with debug output** and analyze:
+   - How many window expansions occur?
+   - What window sizes are reached?
+   - At what point does the transfer stall?
+   - Are MAX_STREAM_DATA frames actually being sent?
+
+3. **Check client-side behavior** (if possible):
+   - Is client receiving MAX_STREAM_DATA frames?
+   - What is client's send window state when stalling?
+   - Are there packet loss issues?
+
+4. **Simplify test scenario:**
+   - Test 200KB, 400KB, 800KB to find exact threshold
+   - Determine if issue is transfer size or time-based
+
+### Hypothesis for Next Investigation
+
+**Most Likely:** The issue is not window growth rate but **when/how window updates are communicated to the client**. Suspect:
+- MAX_STREAM_DATA frames generated but not sent in timely manner
+- ACK bundling delaying flow control updates
+- Application-layer not reading data fast enough to trigger more expansions
+
+**Next Steps:**
+1. Enable full flow control debug logging
+2. Run 1MB test and capture complete trace
+3. Analyze exactly where the stall occurs
+4. May need to add explicit MAX_STREAM_DATA frame generation triggers
+
+**Status:** 🔍 **INVESTIGATING** - Adaptive window growth implemented but issue persists. Problem appears to be in window update communication, not expansion strategy.
+
+---
+

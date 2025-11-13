@@ -2336,19 +2336,31 @@ pub fn generateAndSendAck(
 
                     // PHASE 42 PART 9: Send MAX_STREAM_DATA for ALL active streams (RFC 9000 §4.2)
                     // Per-stream flow control requires tracking and updating each stream's window
+                    // PHASE 42 PART 19: Enhanced debug logging to track flow control behavior
                     {
                         var iter = conn.streams_rx.iterator();
+                        var fc_frames_sent: u32 = 0;
                         while (iter.next()) |entry| {
                             const stream_id = entry.key_ptr.*;
                             const stream = entry.value_ptr;
                             if (stream.local_max_stream_data > stream.last_sent_max_stream_data) {
-                                std.debug.print("[FC] Sending MAX_STREAM_DATA(stream={}, max={})\n", .{stream_id, stream.local_max_stream_data});
+                                const delta = stream.local_max_stream_data - stream.last_sent_max_stream_data;
+                                std.debug.print("[P42-19-FC-TX] Sending MAX_STREAM_DATA(stream={}, max={}, delta=+{}, recv_off={}, inbox={})\n",
+                                    .{stream_id, stream.local_max_stream_data, delta, stream.recv_off, stream.inbox.items.len});
                                 _ = (frame.Frame{ .max_stream_data = .{
                                     .stream_id = stream_id,
                                     .max = stream.local_max_stream_data
                                 } }).write(w) catch {};
                                 stream.last_sent_max_stream_data = stream.local_max_stream_data;
+                                fc_frames_sent += 1;
+                            } else if (stream.recv_off > 0) {
+                                // Log active streams that didn't need window update
+                                std.debug.print("[P42-19-FC-SKIP] Stream {} no update needed (local_max={}, last_sent={}, recv_off={}, inbox={})\n",
+                                    .{stream_id, stream.local_max_stream_data, stream.last_sent_max_stream_data, stream.recv_off, stream.inbox.items.len});
                             }
+                        }
+                        if (fc_frames_sent > 0) {
+                            std.debug.print("[P42-19-FC-SUMMARY] Sent {} MAX_STREAM_DATA frames in this ACK packet\n", .{fc_frames_sent});
                         }
                     }
 
