@@ -2757,6 +2757,7 @@ pub const Connection = struct {
     /// Close the connection with an application error code using a 1-RTT CONNECTION_CLOSE.
     /// Build and send CONNECTION_CLOSE (application or transport) with reason string.
     pub fn sendConnectionClose(self: *Connection, app_error_code: u64, reason: []const u8) !void {
+        std.debug.print("DEBUG: sendConnectionClose called with error_code={}, reason=\"{s}\"\n", .{ app_error_code, reason });
         if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
         const tx = self.app_tx_keys.?;
         var frames = std.ArrayList(u8){};
@@ -2775,6 +2776,7 @@ pub const Connection = struct {
         defer self.allocator.free(pkt);
         _ = try self.send(pkt);
         self.onShortHeaderPacketSent(pkt.len, true);
+        std.debug.print("DEBUG: Connection marked as closed after CONNECTION_CLOSE sent\n", .{});
         self.closed = true;
         // Drop any retransmit buffers no longer needed
         if (self.crypto_retx_initial) |b| {
@@ -3143,8 +3145,10 @@ pub const Connection = struct {
     /// Increment integrity failure counter and close if AEAD integrity limit exceeded.
     pub fn onAeadAuthFailure(self: *Connection) void {
         self.aead_rx_invalid_count +%= 1;
+        std.debug.print("DEBUG: onAeadAuthFailure called, count={}/{}\n", .{ self.aead_rx_invalid_count, self.aead_integrity_limit });
         if (self.aead_rx_invalid_count >= self.aead_integrity_limit) {
             // Enter closed state; in a full implementation we would send CONNECTION_CLOSE with AEAD_LIMIT_REACHED.
+            std.debug.print("DEBUG: AEAD integrity limit exceeded, closing connection\n", .{});
             self.closed = true;
         }
     }
@@ -3292,9 +3296,17 @@ pub const Connection = struct {
             return error.WouldBlock;
         }
 
+        // Print queue contents before removal
+        std.debug.print("Queue contents before removal: [", .{});
+        for (self.incoming_stream_queue.items, 0..) |id, idx| {
+            if (idx > 0) std.debug.print(", ", .{});
+            std.debug.print("{}", .{id});
+        }
+        std.debug.print("]\n", .{});
+
         // Remove and return the first stream in the queue
         const stream_id = self.incoming_stream_queue.orderedRemove(0);
-        std.debug.print("DEBUG acceptStream: returning stream_id={}\n", .{stream_id});
+        std.debug.print("DEBUG acceptStream: removed stream_id={}, queue now has {} streams\n", .{ stream_id, self.incoming_stream_queue.items.len });
 
         // Ensure we have RX state for it
         _ = self.ensureStreamRx(stream_id);

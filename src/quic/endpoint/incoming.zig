@@ -2065,6 +2065,7 @@ pub fn processFrames(
 
     // Handle CONNECTION_CLOSE: mark connection as closed
     if (result.saw_close) {
+        std.debug.print("DEBUG: Received CONNECTION_CLOSE frame, closing connection\n", .{});
         conn.closed = true;
     }
 

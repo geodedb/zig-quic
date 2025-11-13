@@ -766,3 +766,85 @@ Need to investigate two areas:
 2. Ensure OpenSSH private key format is correctly parsed
 3. Add fallback/error recovery in signature scheme selection
 
+
+## Phase 42: FINAL_SIZE_ERROR - Server Stream Loop Bug (PARTIAL FIX ⚙️)
+
+**Date:** 2025-11-13  
+**Test:** `make e2e-test-go-comprehensive`  
+**Error:** `FINAL_SIZE_ERROR (local): received offset 21 for stream 0, but final offset was already received at 11`
+
+### Problem Description
+
+After Phase 41 fixed TLS key schedule bugs, test 1 passed but tests 2-8 failed with FINAL_SIZE_ERROR. Client detected protocol violation: server was sending data on stream 0 after it was closed.
+
+### Root Cause: Server Loop Design Bug
+
+**Bug Location:** `cmd/quic-server.zig:148-152`  
+
+Server loop attempted to accept ONE stream per iteration:
+```zig
+// OLD (WRONG):
+const stream_id = api.acceptStream(conn) catch {
+    i += 1;
+    continue;  // Move to next connection after ONE stream!
+};
+```
+
+**Consequence:**  
+- Server accepted stream 0, processed it
+- Never called `acceptStream()` again
+- Streams 4, 8, 12, 16 remained queued but unprocessed
+- Server reused stream 0 for subsequent tests → FINAL_SIZE_ERROR
+
+### The Fix: Accept ALL Pending Streams
+
+**Modified:** `cmd/quic-server.zig:148-172`
+```zig
+// NEW (CORRECT):
+while (true) {
+    const stream_id = api.acceptStream(conn) catch break; // Accept ALL streams
+    // ... read/write on stream_id ...
+}
+i += 1; // Move to next connection AFTER processing all streams
+```
+
+### Test Results After Fix
+
+**Before:**
+- Queue: [0, 4, 8, 12, 16]
+- Accepted: stream 0 only
+- Result: 1/8 tests pass
+
+**After:**  
+- Queue: [0, 4, 8, 12, 16]
+- Accepted: streams 0, 4, 8, 12, 16 ✅
+- Stream data flow: CORRECT ✅
+- Result: 1/8 tests pass (connection still closes prematurely)
+
+Server debug log confirms correct behavior:
+```
+DEBUG: Accepted stream 0
+stream 0 received 21 bytes: ...
+DEBUG: Wrote 21 bytes to stream 0
+DEBUG: Accepted stream 4
+stream 4 received 16 bytes: ...
+DEBUG: Wrote 16 bytes to stream 4
+[... streams 8, 12, 16 processed correctly ...]
+```
+
+### Remaining Issue: Connection Premature Closure
+
+Server processes all streams correctly, but client still sends CONNECTION_CLOSE. Investigation shows:
+1. Server accepts and echoes on correct streams ✅
+2. Client receives responses correctly ✅  
+3. Client sends CONNECTION_CLOSE after stream processing ❌
+
+**Hypothesis:** Issue may be related to:
+- FIN flag handling (stream closure signaling)
+- Concurrent stream timing
+- Test client expectations vs. server behavior
+
+**Status:** Stream acceptance fixed, but full interoperability requires further investigation of stream lifecycle management.
+
+---
+
