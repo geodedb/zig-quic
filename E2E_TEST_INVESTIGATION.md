@@ -502,23 +502,34 @@ The QUIC server is using a DIFFERENT code path to derive application traffic sec
 2. ✅ Compare those secrets with the client's expected secrets
 3. 🔧 Fix the application secret derivation to use vendor/ztls's `deriveApplicationTraffic()`
 
-**6. Actual Root Cause Found:**
+**6. Master Secret Derivation Bug Found (identical to Phase 40):**
 
-`ensureApplicationSecrets()` in vendor/ztls is called from:
-- **Line 1391**: Server, after verifying client Finished message
-- **Line 1408**: Client, after verifying server Finished message
+After adding extensive logging to vendor/ztls, discovered that `ensureApplicationSecrets()` IS being called and application secrets ARE being derived, but with WRONG values.
 
-Since `ensureApplicationSecrets()` is NEVER called, this means:
-- **vendor/ztls Context is NOT processing Finished messages!**
-- **Application secrets are never being derived!**
-- **The QUIC server must be using legacy TLS Engine instead of Context!**
+**Secret Comparison:**
+- Zig Server derives Client HS: `A1EAE59FDDAE5FE1B8246394C70E99918E9518F488AACAE13B741972360780FE`
+- Go Client expects Client HS: `a1eae59fddae5fe1b8246394c70e99918e9518f488aacae13b741972360780FE`
+- ✅ **HANDSHAKE TRAFFIC SECRETS MATCH!**
 
-This explains why:
-- Handshake secrets work (from initial key exchange)
-- Application secrets don't exist (Finished never processed)
-- Stream data can't be decrypted (no 1-RTT keys)
+- Zig Server derives Client APP: `4DF300DCF6282BE577D3F58F6D2F53AC6CBA89715DB962251941B19439D67E26`
+- Go Client expects Client APP: `f95168a22f18a42399e80693da2762b5d8c477fbdee80c9955c43bb2aa269be6`
+- ❌ **APPLICATION TRAFFIC SECRETS MISMATCH!**
 
-**Phase 41 Status:** 🔍 **ROOT CAUSE CONFIRMED - Finished messages not being processed by vendor/ztls Context**
+**Root Cause:** Master secret derivation in `vendor/ztls/src/tls13/key_derivation.zig:253` was using empty slice instead of 32 zero bytes:
+
+```zig
+// BEFORE (BUG):
+const master = ks.extractHash(hash, derived.slice(), &[_]u8{});
+
+// AFTER (FIX):
+const master = ks.extractHash(hash, derived.slice(), &[_]u8{0} ** 32);
+```
+
+According to RFC 8446 §7.1, master secret = HKDF-Extract(salt=derived, IKM=0), where IKM must be 32 zero bytes, not empty.
+
+**Current Status:** Master secret bug fixed in vendor/ztls@149cee6, but application secrets still don't match. Investigation ongoing - transcript hash timing verified correct (CH...ServerFinished), so issue must be elsewhere in HKDF-Expand-Label implementation or hash computation.
+
+**Phase 41 Status:** 🔧 **IN PROGRESS** - Master secret derivation bug found and fixed (identical to Phase 40 bug). Application secrets still don't match - investigating further.
 
 ---
 
