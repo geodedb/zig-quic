@@ -1652,9 +1652,71 @@ std.debug.print("[PHASE42] processInitial: role={s} address_validated={} isLocal
 
 ### Next Investigation Steps
 
-1. Verify `isLocalhost()` returns `true` for 127.0.0.1 with unit test
-2. Check where `address_validated` is checked during Application packet processing
-3. Add debug logging to `canSendUnderAmplification()` to see values during ACK generation
-4. Investigate why ACK generation fix (saw_ack_eliciting) alone didn't improve test results
-5. Consider if the issue is elsewhere - perhaps flow control window updates not being sent?
+1. ✅ Added debug logging to `canSendUnderAmplification()` and `isLocalhost()`
+2. ⏸️ Debug messages not appearing in server output (buffering issue or functions not being called)
+3. **Need new approach**: The amplification limits theory may be incorrect
+
+---
+
+## Phase 42 Part 8: Debug Logging and Re-evaluation (IN PROGRESS 🔍)
+
+**Date:** 2025-11-13
+**Status:** Still 3/8 tests passing after multiple fix attempts
+
+### Changes Made
+
+**Added comprehensive debug logging** to understand amplification behavior:
+
+1. **`canSendUnderAmplification()` (conn.zig:1166-1182)**:
+   - Logs validated status, isLocalhost result, RX/TX byte counts
+   - Shows calculated TX/3 value and final allow/deny decision
+
+2. **`isLocalhost()` (conn.zig:1194-1200)**:
+   - Logs IPv4 address bytes being checked
+   - Shows whether 127.0.0.1 match succeeds
+
+### Observation
+
+**Debug messages don't appear in server output**, suggesting either:
+- Functions aren't being called during the problematic 100KB+ transfers
+- Output is being buffered (unlikely for std.debug.print)
+- Different code path is taken for Application Data packets
+
+### Critical Realization
+
+After multiple fix attempts with no improvement:
+1. ACK generation fix (saw_ack_eliciting) → No improvement
+2. Localhost auto-validation → No improvement
+3. Debug logging → Messages don't appear
+
+**Theory**: The problem may NOT be amplification limits at all.
+
+### Alternative Hypotheses
+
+1. **Flow control window exhaustion without updates**:
+   - Server reads data but doesn't send MAX_STREAM_DATA frames
+   - Client exhausts send window waiting for window updates
+   - ACKs are sent but don't update the window
+
+2. **Stream-level vs connection-level flow control**:
+   - Connection-level window may be fine
+   - Stream-level window may be exhausted
+   - Server not generating MAX_STREAM_DATA frames
+
+3. **Architectural issue with streaming echo**:
+   - The streaming echo pattern (read chunk, write chunk, repeat) may not trigger packet sends
+   - Packets may be queued but not flushed to the network
+   - `writeStream()` may not cause immediate packet transmission
+
+4. **Poll/event loop issue**:
+   - Server may not be polling frequently enough during large transfers
+   - Packets may be generated but not sent due to event loop behavior
+
+### Next Steps
+
+Need to investigate flow control window management rather than amplification limits:
+1. Add debug logging to MAX_STREAM_DATA frame generation
+2. Check if `writeStream()` triggers packet sends or just queues data
+3. Verify flow control window updates are being sent to client
+4. Consider if the issue is in the echo server implementation itself
 

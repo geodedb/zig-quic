@@ -1164,7 +1164,20 @@ pub const Connection = struct {
     /// rx) to avoid overflow for very large counters.
     /// Return true if anti-amplification budget permits sending (server before validation). Uses division to avoid overflow.
     pub fn canSendUnderAmplification(self: *const Connection) bool {
-        if (self.address_validated) return true;
+        const validated = self.address_validated;
+        const is_local = self.isLocalhost();
+        const result = if (validated) true else (self.bytes_tx_unvalidated / 3) <= self.bytes_rx_unvalidated;
+
+        std.debug.print("[AMPLIFICATION] validated={} isLocalhost={} rx={} tx={} tx/3={} allow={}\n", .{
+            validated,
+            is_local,
+            self.bytes_rx_unvalidated,
+            self.bytes_tx_unvalidated,
+            self.bytes_tx_unvalidated / 3,
+            result,
+        });
+
+        if (validated) return true;
         return (self.bytes_tx_unvalidated / 3) <= self.bytes_rx_unvalidated;
     }
 
@@ -1176,8 +1189,16 @@ pub const Connection = struct {
             // IPv4 sockaddr_in structure: family(2) + port(2) + addr(4)
             // Check if address bytes are 127.0.0.1
             if (self.peer.len >= 8) {
-                return addr_bytes[4] == 127 and addr_bytes[5] == 0 and
+                const is_127 = addr_bytes[4] == 127 and addr_bytes[5] == 0 and
                     addr_bytes[6] == 0 and addr_bytes[7] == 1;
+                std.debug.print("[LOCALHOST] IPv4 check: {}.{}.{}.{} -> {}\n", .{
+                    addr_bytes[4],
+                    addr_bytes[5],
+                    addr_bytes[6],
+                    addr_bytes[7],
+                    is_127,
+                });
+                return is_127;
             }
         }
 
