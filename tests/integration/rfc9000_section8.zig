@@ -516,6 +516,9 @@ test "RFC 9000 §8 - Address validation complete workflow" {
     // Establish connection (completes handshake and validates addresses)
     try pair.connect();
 
+    // Phase 36: Wait for handshake to complete (HANDSHAKE_DONE exchange)
+    try pair.waitForHandshake(1000);
+
     // Verify both connections exist
     try std.testing.expect(pair.client_conn != null);
     try std.testing.expect(pair.server_conn != null);
@@ -577,6 +580,9 @@ test "RFC 9000 §8.1 - Address validation via handshake" {
 
     // Establish connection (completes handshake)
     try pair.connect();
+
+    // Phase 36: Wait for handshake to complete (HANDSHAKE_DONE exchange)
+    try pair.waitForHandshake(1000);
 
     // Verify both connections exist
     try std.testing.expect(pair.client_conn != null);

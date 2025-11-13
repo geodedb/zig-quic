@@ -1740,6 +1740,16 @@ pub fn decryptShortHeaderWithKeyRotation(
                 .iv = rx_keys.iv,
                 .hp = rx_keys.hp
             }, largest_pn)) |result| {
+                // Phase 36 FIX: Validate that frames are decodable before accepting this DCID length
+                // RFC 9000 §12.4: First frame must be valid or connection error
+                if (result.payload.len > 0) {
+                    _ = frame.decodeOne(result.payload) catch {
+                        // Frame decode failed, try next DCID length
+                        allocator.free(result.payload);
+                        continue;
+                    };
+                    // Frame decoded successfully! This is the correct DCID length
+                }
                 // SUCCESS! Cache this length for future packets
                 actual_dcid_len = test_len;
                 break :blk_dec result;
