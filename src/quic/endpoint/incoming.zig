@@ -688,14 +688,15 @@ pub fn decryptInitialPacket(
         var pn_masked: [4]u8 = [_]u8{0} ** 4;
         @memcpy(pn_masked[0..@min(4, ciphertext.len)], ciphertext[0..@min(4, ciphertext.len)]);
 
-        // Attempt header protection removal and AEAD decryption
+        // Phase 33 fix: Always pass full 4-byte buffer to allow function to extract actual PN length
+        // The function will use actual_pn_len from unmasked header, not buffer size
         const result = crypto.unprotectInitialAutoSample(
             .aes_128_gcm,
             &keys.key,
             &keys.iv,
             &keys.hp,
             &header_first,
-            pn_masked[0..pn_len_try],
+            &pn_masked, // Pass full buffer, not slice
             header_prefix,
             ciphertext,
             payload,
@@ -1269,6 +1270,13 @@ pub fn processHandshake(
         switch (fr.f) {
             .crypto => |cr| {
                 // Process CRYPTO frame to advance TLS handshake
+                std.debug.print("{s}: Received Handshake CRYPTO frame with {} bytes at offset {} (expected {})\n", .{
+                    if (conn.*.role == .Server) "Server" else "Client",
+                    cr.data.len,
+                    cr.offset,
+                    conn.*.crypto_rx_off_handshake,
+                });
+
                 const ack_needed = conn.*.handleHandshakeCrypto(
                     ctx.allocator,
                     cr.offset,
@@ -1932,14 +1940,19 @@ pub fn processFrames(
     var offset: usize = 0;
     const now_ns: u64 = @intCast(std.time.nanoTimestamp());
 
-    std.debug.print("Parsing frames from payload, total_len={}\n", .{payload.len});
+    std.debug.print("Parsing frames from payload, total_len={}, role={s}\n", .{
+        payload.len,
+        if (conn.role == .Server) "Server" else "Client",
+    });
 
     // Parse frames from payload
     while (offset < payload.len) {
+        const first_byte = if (payload[offset..].len > 0) payload[offset] else 0;
         const fr = frame.decodeOne(payload[offset..]) catch |err| {
-            std.debug.print("Frame decode error at offset {}: {}\n", .{ offset, err });
+            std.debug.print("Frame decode error at offset {}: {} (first_byte=0x{X:0>2})\n", .{ offset, err, first_byte });
             break;
         };
+        std.debug.print("Decoded frame at offset {}: type={s}\n", .{ offset, @tagName(fr.f) });
         offset += fr.n;
 
         // Create frame handler context
@@ -1956,22 +1969,48 @@ pub fn processFrames(
         // Process frame through handler
         const frame_result = try frame_handler.processFrame(&frame_ctx, fr.f);
 
+        std.debug.print("[processFrames] Frame processed: saw_handshake_done={}\n", .{frame_result.saw_handshake_done});
+
         // Accumulate flags
         result.saw_ack_eliciting = result.saw_ack_eliciting or frame_result.saw_ack_eliciting;
         result.saw_handshake_done = result.saw_handshake_done or frame_result.saw_handshake_done;
         result.saw_close = result.saw_close or frame_result.saw_close;
     }
 
+    std.debug.print("[processFrames] Returning result: saw_ack_eliciting={}, saw_handshake_done={}, saw_close={}\n", .{
+        result.saw_ack_eliciting,
+        result.saw_handshake_done,
+        result.saw_close,
+    });
+
     // Record ack-eliciting reception if applicable
     if (result.saw_ack_eliciting) {
         conn.recordAckElicitingRx(.Application, now_ns);
     }
 
-    // Handle HANDSHAKE_DONE: drop Handshake keys
+    // Handle HANDSHAKE_DONE: drop Handshake keys (with conditions)
     if (result.saw_handshake_done) {
+        std.debug.print("[processApplicationFrames] Setting handshake_done_seen=true for {s}\n", .{
+            if (conn.role == .Server) "Server" else "Client",
+        });
         conn.handshake_done_seen = true;
-        conn.hs_rx_keys = null;
-        conn.hs_tx_keys = null;
+
+        // RFC 9001 §4.1.2: Only drop Handshake keys if safe to do so
+        // Client (which receives HANDSHAKE_DONE): drop after first Handshake packet sent
+        const can_drop_hs_keys = if (conn.role == .Client) conn.handshake_packet_sent else false;
+
+        if (can_drop_hs_keys) {
+            std.debug.print("[processApplicationFrames] {s}: Dropping Handshake keys after HANDSHAKE_DONE\n", .{
+                if (conn.role == .Server) "Server" else "Client",
+            });
+            conn.hs_rx_keys = null;
+            conn.hs_tx_keys = null;
+        } else {
+            std.debug.print("[processApplicationFrames] {s}: Deferring Handshake key drop (handshake_packet_sent={})\n", .{
+                if (conn.role == .Server) "Server" else "Client",
+                conn.handshake_packet_sent,
+            });
+        }
     }
 
     // Handle CONNECTION_CLOSE: mark connection as closed
@@ -2378,6 +2417,9 @@ pub fn processShortHeader(
     ecn_bits: ?u8,
     send_fn: SendFn,
 ) void {
+    // Phase 24 DEBUG: Unconditional logging to trace HANDSHAKE_DONE delivery
+    std.debug.print("[processShortHeader] Called for {} bytes\n", .{bytes.len});
+
     // =============================================================================
     // STEP 1: Connection Lookup (RFC 9000 §5.2)
     // =============================================================================
@@ -2393,11 +2435,17 @@ pub fn processShortHeader(
 
     const conn = lookup_result.conn orelse {
         // No connection found for this peer + DCID combination
+        std.debug.print("[processShortHeader] No connection found for short header packet from peer\n", .{});
         if (ctx.test_capture_enabled) {
             std.debug.print("No connection found for short header packet from peer\n", .{});
         }
         return;
     };
+
+    std.debug.print("[processShortHeader] Found connection, role={s}, has_app_rx_keys={}\n", .{
+        if (conn.role == .Server) "Server" else "Client",
+        conn.app_rx_keys != null,
+    });
 
     const dcid_len = lookup_result.dcid_len;
 
@@ -2587,14 +2635,36 @@ pub fn processShortHeader(
     }
 
     // Handle HANDSHAKE_DONE frame (RFC 9000 §19.20)
-    // Client: drop Handshake keys after HANDSHAKE_DONE
+    // Client: drop Handshake keys after HANDSHAKE_DONE (with conditions)
     if (frame_result.saw_handshake_done) {
+        std.debug.print("[processShortHeader] CRITICAL: Setting handshake_done_seen=true for {s}\n", .{
+            if (conn.role == .Server) "Server" else "Client",
+        });
         conn.handshake_done_seen = true;
-        conn.hs_rx_keys = null;
-        conn.hs_tx_keys = null;
 
-        if (ctx.test_capture_enabled) {
-            std.debug.print("🤝 HANDSHAKE_DONE received, dropped Handshake keys\n", .{});
+        // RFC 9001 §4.1.2: Only drop Handshake keys if safe to do so
+        // Client (which receives HANDSHAKE_DONE): drop after first Handshake packet sent
+        const can_drop_hs_keys = if (conn.role == .Client) conn.handshake_packet_sent else false;
+
+        if (can_drop_hs_keys) {
+            std.debug.print("[processShortHeader] {s}: Dropping Handshake keys after HANDSHAKE_DONE\n", .{
+                if (conn.role == .Server) "Server" else "Client",
+            });
+            conn.hs_rx_keys = null;
+            conn.hs_tx_keys = null;
+
+            if (ctx.test_capture_enabled) {
+                std.debug.print("🤝 HANDSHAKE_DONE received, dropped Handshake keys\n", .{});
+            }
+        } else {
+            std.debug.print("[processShortHeader] {s}: Deferring Handshake key drop (handshake_packet_sent={})\n", .{
+                if (conn.role == .Server) "Server" else "Client",
+                conn.handshake_packet_sent,
+            });
+
+            if (ctx.test_capture_enabled) {
+                std.debug.print("🤝 HANDSHAKE_DONE received, deferring Handshake key drop\n", .{});
+            }
         }
     }
 

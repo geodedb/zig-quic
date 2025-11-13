@@ -525,10 +525,33 @@ pub const DecryptedInitial = struct {
 /// ```
 ///
 /// RFC 9001 §5.2: Initial Secrets are derived from DCID
+///
+/// IMPORTANT: For server Initial packets, provide the original client DCID via derivation_dcid parameter.
+/// RFC 9001 §5.2: "Initial packets are protected using keys derived from the Destination
+/// Connection ID field from the client's first Initial packet."
 pub fn decryptInitialPacket(
     allocator: std.mem.Allocator,
     packet_bytes: []const u8,
     is_client: bool,
+) !DecryptedInitial {
+    return decryptInitialPacketWithDcid(allocator, packet_bytes, is_client, null);
+}
+
+/// Decrypt an Initial packet with explicit DCID for key derivation.
+///
+/// Parameters:
+/// - allocator: Memory allocator
+/// - packet_bytes: Raw Initial packet bytes
+/// - is_client: true if decrypting a client Initial packet, false for server Initial
+/// - derivation_dcid: Optional DCID to use for key derivation. If null, extracts from packet.
+///                    For server packets, this should be the original client DCID.
+///
+/// RFC 9001 §5.2: Initial keys are always derived from the client's original DCID
+pub fn decryptInitialPacketWithDcid(
+    allocator: std.mem.Allocator,
+    packet_bytes: []const u8,
+    is_client: bool,
+    derivation_dcid: ?[]const u8,
 ) !DecryptedInitial {
     // Import required modules
     const packet = @import("quic_packet");
@@ -553,7 +576,7 @@ pub fn decryptInitialPacket(
     const dcid_len = packet_bytes[offset];
     offset += 1;
     if (offset + dcid_len > packet_bytes.len) return error.PacketTooShort;
-    const dcid = packet_bytes[offset..offset + dcid_len];
+    const dcid_from_packet = packet_bytes[offset..offset + dcid_len];
     offset += dcid_len;
 
     // Parse SCID length and skip SCID
@@ -580,24 +603,31 @@ pub fn decryptInitialPacket(
     if (pn_offset + payload_len > packet_bytes.len) return error.PacketTooShort;
 
     // Derive Initial keys from DCID
-    const keys_pair = packet.derive_initial_keys(is_v2, dcid);
+    // RFC 9001 §5.2: Use client's original DCID for key derivation
+    // For client packets: use DCID from packet
+    // For server packets: use derivation_dcid (the original client DCID)
+    const dcid_for_keys = derivation_dcid orelse dcid_from_packet;
+
+    const keys_pair = packet.derive_initial_keys(is_v2, dcid_for_keys);
     const keys = if (is_client) keys_pair.client else keys_pair.server;
 
     // Prepare for decryption
     // The packet number is encrypted, we need to unprotect it first
-    // Assume 4-byte PN for Initial packets (conservative)
+    // RFC 9001 §5.4: payload_len includes PN + encrypted frames + AEAD tag
+    // The ciphertext_and_tag should start at PN (not skip it)
     var pn_bytes: [4]u8 = undefined;
     @memcpy(pn_bytes[0..4], packet_bytes[pn_offset..pn_offset + 4]);
 
     var header_first = packet_bytes[0];
     const header_prefix = packet_bytes[0..pn_offset];
-    const ciphertext_and_tag = packet_bytes[pn_offset + 4..pn_offset + payload_len];
+    const ciphertext_and_tag = packet_bytes[pn_offset..pn_offset + payload_len];
 
     // Allocate buffer for plaintext
     var plaintext = try allocator.alloc(u8, ciphertext_and_tag.len);
     errdefer allocator.free(plaintext);
 
     // Decrypt the packet
+    // Note: errdefer on line 636 handles cleanup on error
     const plaintext_len = crypto_quic.unprotectInitialAutoSample(
         .aes_128_gcm,
         &keys.key,
@@ -610,7 +640,6 @@ pub fn decryptInitialPacket(
         plaintext,
         0, // largest_pn - use 0 for first packet
     ) catch |err| {
-        allocator.free(plaintext);
         return err;
     };
 
@@ -623,6 +652,116 @@ pub fn decryptInitialPacket(
         .payload = plaintext,
         .allocator = allocator,
     };
+}
+
+/// Extract just the Initial packet from a potentially coalesced datagram.
+/// RFC 9000 §12.2: A QUIC datagram may contain multiple packets.
+/// This function parses the Initial packet's length field and returns only that portion.
+pub fn extractInitialPacket(datagram: []const u8) ![]const u8 {
+    if (datagram.len < 20) return error.PacketTooShort;
+
+    // Verify it's a long header packet
+    const first_byte = datagram[0];
+    if ((first_byte & 0x80) == 0) return error.NotLongHeaderPacket;
+
+    // Verify it's an Initial packet (type 0x00)
+    if ((first_byte & 0x30) != 0x00) return error.NotInitialPacket;
+
+    // Skip to length field: first_byte(1) + version(4) + dcid_len(1) + dcid + scid_len(1) + scid + token_len + token
+    var offset: usize = 5;
+
+    // Parse DCID
+    const dcid_len = datagram[offset];
+    offset += 1;
+    if (offset + dcid_len > datagram.len) return error.PacketTooShort;
+    offset += dcid_len;
+
+    // Parse SCID
+    if (offset >= datagram.len) return error.PacketTooShort;
+    const scid_len = datagram[offset];
+    offset += 1;
+    if (offset + scid_len > datagram.len) return error.PacketTooShort;
+    offset += scid_len;
+
+    // Parse token length (variable-length integer)
+    if (offset >= datagram.len) return error.PacketTooShort;
+    const token_len_first = datagram[offset];
+    const token_len: usize = blk: {
+        if ((token_len_first & 0xC0) == 0x00) {
+            // 1-byte varint
+            const val = token_len_first & 0x3F;
+            offset += 1;
+            break :blk val;
+        } else if ((token_len_first & 0xC0) == 0x40) {
+            // 2-byte varint
+            if (offset + 2 > datagram.len) return error.PacketTooShort;
+            const val = ((@as(usize, token_len_first & 0x3F) << 8) | datagram[offset + 1]);
+            offset += 2;
+            break :blk val;
+        } else {
+            // For simplicity, don't support 4-byte or 8-byte varints for token length
+            return error.UnsupportedTokenLength;
+        }
+    };
+    if (offset + token_len > datagram.len) return error.PacketTooShort;
+    offset += token_len;
+
+    // Parse payload length (variable-length integer)
+    if (offset >= datagram.len) return error.PacketTooShort;
+    const length_first = datagram[offset];
+    const payload_len: usize = blk: {
+        if ((length_first & 0xC0) == 0x00) {
+            // 1-byte varint
+            const val = length_first & 0x3F;
+            offset += 1;
+            break :blk val;
+        } else if ((length_first & 0xC0) == 0x40) {
+            // 2-byte varint
+            if (offset + 2 > datagram.len) return error.PacketTooShort;
+            const val = ((@as(usize, length_first & 0x3F) << 8) | datagram[offset + 1]);
+            offset += 2;
+            break :blk val;
+        } else if ((length_first & 0xC0) == 0x80) {
+            // 4-byte varint
+            if (offset + 4 > datagram.len) return error.PacketTooShort;
+            const val = ((@as(usize, length_first & 0x3F) << 24) |
+                (@as(usize, datagram[offset + 1]) << 16) |
+                (@as(usize, datagram[offset + 2]) << 8) |
+                datagram[offset + 3]);
+            offset += 4;
+            break :blk val;
+        } else {
+            // 8-byte varint (shouldn't happen for packet length)
+            return error.UnsupportedPacketLength;
+        }
+    };
+
+    // The Initial packet includes everything from start to (offset + payload_len)
+    const packet_end = offset + payload_len;
+    if (packet_end > datagram.len) return error.PacketTooShort;
+
+    return datagram[0..packet_end];
+}
+
+/// Extract the DCID from an Initial packet header without decryption.
+/// Used to get the client's original DCID for decrypting server Initial packets.
+///
+/// RFC 9001 §5.2: Initial keys are derived from the client's first Initial packet DCID.
+pub fn extractInitialDcid(packet_bytes: []const u8) ![]const u8 {
+    if (packet_bytes.len < 20) return error.PacketTooShort;
+
+    const first_byte = packet_bytes[0];
+    if ((first_byte & 0x80) == 0) return error.NotLongHeaderPacket;
+    if ((first_byte & 0x30) != 0x00) return error.NotInitialPacket;
+
+    // Skip version (4 bytes)
+    var offset: usize = 5;
+
+    // Parse DCID length and return DCID
+    const dcid_len = packet_bytes[offset];
+    offset += 1;
+    if (offset + dcid_len > packet_bytes.len) return error.PacketTooShort;
+    return packet_bytes[offset..offset + dcid_len];
 }
 
 /// Check if an Initial packet contains a CRYPTO frame.
@@ -647,6 +786,27 @@ pub fn initialPacketHasCryptoFrame(
     is_client: bool,
 ) !bool {
     var decrypted = try decryptInitialPacket(allocator, packet_bytes, is_client);
+    defer decrypted.deinit();
+
+    return hasCryptoFrame(allocator, decrypted.payload);
+}
+
+/// Check if a server Initial packet contains a CRYPTO frame.
+/// This requires the original client DCID for key derivation.
+///
+/// Parameters:
+/// - allocator: Memory allocator
+/// - datagram_bytes: Raw captured datagram (may be coalesced Initial+Handshake)
+/// - client_dcid: The DCID from the client's first Initial packet (for key derivation)
+pub fn serverInitialHasCryptoFrame(
+    allocator: std.mem.Allocator,
+    datagram_bytes: []const u8,
+    client_dcid: []const u8,
+) !bool {
+    // Extract just the Initial packet portion (in case it's coalesced with Handshake)
+    const initial_packet = try extractInitialPacket(datagram_bytes);
+
+    var decrypted = try decryptInitialPacketWithDcid(allocator, initial_packet, false, client_dcid);
     defer decrypted.deinit();
 
     return hasCryptoFrame(allocator, decrypted.payload);

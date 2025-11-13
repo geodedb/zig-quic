@@ -665,13 +665,19 @@ test "Recovery persistent congestion detection" {
     defer rec.deinit();
 
     rec.rtt.have_sample = true;
-    rec.rtt.smoothed_rtt_ns = 50_000_000;
+    rec.rtt.smoothed_rtt_ns = 50_000_000; // 50ms
     rec.rtt.latest_rtt_ns = 50_000_000;
+    rec.rtt.rttvar_ns = 25_000_000; // 25ms (explicitly set for test clarity)
     rec.cc.cwnd = 100000;
     rec.k_pc_threshold = 3;
 
-    // Send 3 packets over a long period spanning > PC period
-    try rec.onPacketSent(.Application, 1, 1200, true, 1_000_000);
+    // PTO calculation: smoothed_rtt + 4*rttvar + granularity
+    // PTO = 50ms + 4*25ms + 1ms = 151ms
+    // PC period = PTO * k_pc_threshold = 151ms * 3 = 453ms
+    // Need gap > 453ms to trigger persistent congestion
+
+    // Send 3 packets over a long period spanning > PC period (453ms)
+    try rec.onPacketSent(.Application, 1, 1200, true, 1_000_000); // 1ms
     try rec.onPacketSent(.Application, 2, 1200, true, 600_000_000); // 600ms later
     try rec.onPacketSent(.Application, 100, 1200, true, 800_000_000); // 800ms from start
 
@@ -681,7 +687,7 @@ test "Recovery persistent congestion detection" {
     _ = rec.onAckReceived(.Application, &acked, 0, 850_000_000);
 
     // Persistent congestion should drive cwnd to minimum
-    // Span between lost packets: 600_000_000 - 1_000_000 = 599ms > PC period
+    // Span between lost packets: 600_000_000 - 1_000_000 = 599ms > PC period (453ms)
     try testing.expect(rec.cc.cwnd == 2 * rec.cc.mds);
 }
 

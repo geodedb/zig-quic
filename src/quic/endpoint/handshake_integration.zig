@@ -446,12 +446,19 @@ pub fn installApplicationKeys(
     // Uses HKDF-Expand-Label per RFC 8446 §7.1 and RFC 9001 §5
     // AES-128-GCM (TLS_AES_128_GCM_SHA256) is the default cipher suite for QUIC
 
+    std.debug.print("\n[installApplicationKeys] Called for {s}\n", .{if (conn.role == .Server) "Server" else "Client"});
+    std.debug.print("  client_secret[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{client_secret[0], client_secret[1], client_secret[2], client_secret[3]});
+    std.debug.print("  server_secret[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{server_secret[0], server_secret[1], server_secret[2], server_secret[3]});
+
     // Derive client Application keys
     // RFC 9001 §5.1: "key = HKDF-Expand-Label(Secret, "quic key", "", key_length)"
     const client_keys = key_schedule.deriveKeyIvHp(client_secret);
 
     // Derive server Application keys
     const server_keys = key_schedule.deriveKeyIvHp(server_secret);
+
+    std.debug.print("  client_keys.key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{client_keys.key[0], client_keys.key[1], client_keys.key[2], client_keys.key[3]});
+    std.debug.print("  server_keys.key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{server_keys.key[0], server_keys.key[1], server_keys.key[2], server_keys.key[3]});
 
     // Install based on connection role
     // Convert KeyMaterial to packet.AeadKeys by copying fields
@@ -462,6 +469,8 @@ pub fn installApplicationKeys(
         // Store secrets for key updates
         conn.app_rx_secret = server_secret;
         conn.app_tx_secret = client_secret;
+        std.debug.print("  Client: app_rx_keys (server) = {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{server_keys.key[0], server_keys.key[1], server_keys.key[2], server_keys.key[3]});
+        std.debug.print("  Client: app_tx_keys (client) = {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{client_keys.key[0], client_keys.key[1], client_keys.key[2], client_keys.key[3]});
     } else {
         // Server receives with client keys, sends with server keys
         conn.app_rx_keys = .{ .key = client_keys.key, .iv = client_keys.iv, .hp = client_keys.hp };
@@ -469,11 +478,38 @@ pub fn installApplicationKeys(
         // Store secrets for key updates
         conn.app_rx_secret = client_secret;
         conn.app_tx_secret = server_secret;
+        std.debug.print("  Server: app_rx_keys (client) = {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{client_keys.key[0], client_keys.key[1], client_keys.key[2], client_keys.key[3]});
+        std.debug.print("  Server: app_tx_keys (server) = {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{server_keys.key[0], server_keys.key[1], server_keys.key[2], server_keys.key[3]});
     }
 
     // Application keys are now installed (indicated by non-null app_rx_keys/app_tx_keys)
     // Note: HANDSHAKE_DONE frame will be sent by Connection.pushCrypto() after
     // keys are installed and finished flags are synced
+
+    // RFC 9000 §4.9.1: Initial keys MUST be discarded after handshake confirmation
+    // Drop Initial keys immediately when Application keys are installed
+    std.debug.print("  {s}: Dropping Initial keys (Application keys installed)\n", .{if (conn.role == .Server) "Server" else "Client"});
+    conn.initial_keys_dropped = true;
+    conn.initial_rx_keys = null;
+    conn.initial_tx_keys = null;
+
+    // RFC 9001 §4.1.2: Server MUST wait until peer Finished is received before dropping handshake keys.
+    // Client can drop immediately after sending its Finished.
+    // Additionally, wait until we've sent at least one Handshake packet for coalescing (RFC 9000 §12.2).
+    const can_drop_hs_keys = if (conn.role == .Server)
+        // Server: wait for peer_finished_verified (client Finished received) AND first Handshake packet sent
+        (conn.peer_finished_verified and conn.handshake_packet_sent)
+    else
+        // Client: drop after sending Finished AND first Handshake packet sent
+        (conn.handshake_packet_sent);
+
+    if (can_drop_hs_keys) {
+        std.debug.print("  {s}: Dropping Handshake keys (peer_finished_verified={})\n", .{ if (conn.role == .Server) "Server" else "Client", conn.peer_finished_verified });
+        conn.hs_rx_keys = null;
+        conn.hs_tx_keys = null;
+    } else {
+        std.debug.print("  {s}: Deferring Handshake key drop (peer_finished_verified={}, handshake_packet_sent={})\n", .{ if (conn.role == .Server) "Server" else "Client", conn.peer_finished_verified, conn.handshake_packet_sent });
+    }
 }
 
 // =============================================================================

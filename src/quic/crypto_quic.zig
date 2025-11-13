@@ -475,22 +475,6 @@ pub fn unprotectInitialAutoSample(
             const sample_offset: usize = 4;
             if (sample_offset + 16 > ciphertext_and_tag.len) return error.AuthenticationFailed;
             @memcpy(sample16[0..], ciphertext_and_tag[sample_offset .. sample_offset + 16]);
-
-            std.debug.print("HP Sample extraction: pn_len={}, ct_len={}, sample_offset={}\n", .{ pn_len, ciphertext_and_tag.len, sample_offset });
-            std.debug.print("Sample bytes: ", .{});
-            for (sample16) |b| {
-                std.debug.print("{X:0>2} ", .{b});
-            }
-            std.debug.print("", .{});
-
-            // Debug: show what we're extracting the sample from
-            if (ciphertext_and_tag.len <= 32) {
-                std.debug.print("Full ciphertext for sample: ", .{});
-                for (ciphertext_and_tag) |b| {
-                    std.debug.print("{X:0>2} ", .{b});
-                }
-                std.debug.print("", .{});
-            }
         },
         .chacha20_poly1305 => {
             // For ChaCha20, sample is PN bytes (masked) followed by first (16 - pn_len) bytes of ciphertext
@@ -501,43 +485,31 @@ pub fn unprotectInitialAutoSample(
         },
     }
 
-    // Log masked PN bytes before unprotection
-    std.debug.print("Masked PN bytes (len={}): ", .{pn_len});
-    for (pn_bytes[0..pn_len]) |b| {
-        std.debug.print("{X:0>2} ", .{b});
-    }
-    std.debug.print("", .{});
-    std.debug.print("Masked header_first: {X:0>2}\n", .{header_first.*});
-
     // Remove header protection in-place (mutates header_first & pn_bytes) using derived sample
-    if (builtin.is_test) {
-        std.debug.print("Before headerUnprotect: pn_bytes set\n", .{});
-    }
     try headerUnprotect(suite, hp_key, &sample16, header_first, pn_bytes);
 
-    // Log unmasked PN bytes after unprotection
-    std.debug.print("Unmasked PN bytes (len={}): ", .{pn_len});
-    for (pn_bytes) |b| std.debug.print("{X:0>2}\n", .{b});
-    std.debug.print("", .{});
-    std.debug.print("Unmasked header_first: {X:0>2}\n", .{header_first.*});
-    if (builtin.is_test) {
-        std.debug.print("After headerUnprotect: pn_bytes set\n", .{});
-    }
+    // Extract actual PN length from unmasked header byte
+    // RFC 9000 §17.1: Packet Number Length is encoded in bits 0-1 of the first byte
+    // For both long and short headers: pn_len = (first_byte & 0x03) + 1
+    const actual_pn_len: usize = @intCast((header_first.* & 0x03) + 1);
 
-    // Build AAD after unmasking: first byte + header_prefix + pn_bytes
+    // Phase 33: Caller now always passes full 4-byte buffer, so no validation needed
+    // The actual PN length is determined from the unmasked header byte
+
+    // Build AAD after unmasking: first byte + header_prefix + pn_bytes (using actual length)
     var aad_stack: [1024]u8 = undefined;
-    const aad_len = 1 + header_prefix.len + pn_len;
+    const aad_len = 1 + header_prefix.len + actual_pn_len;
     if (aad_len > aad_stack.len) return error.MessageTooLong;
     aad_stack[0] = header_first.*;
     @memcpy(aad_stack[1 .. 1 + header_prefix.len], header_prefix);
-    @memcpy(aad_stack[1 + header_prefix.len .. aad_len], pn_bytes);
+    @memcpy(aad_stack[1 + header_prefix.len .. aad_len], pn_bytes[0..actual_pn_len]);
     const aad = aad_stack[0..aad_len];
 
-    // Expand truncated PN for nonce derivation
+    // Expand truncated PN for nonce derivation (use actual PN length)
     var pn_trunc: u64 = 0;
     var i: usize = 0;
-    while (i < pn_len) : (i += 1) pn_trunc = (pn_trunc << 8) | pn_bytes[i];
-    const full_pn = expandPacketNumber(pn_trunc, @intCast(pn_len), largest_pn);
+    while (i < actual_pn_len) : (i += 1) pn_trunc = (pn_trunc << 8) | pn_bytes[i];
+    const full_pn = expandPacketNumber(pn_trunc, @intCast(actual_pn_len), largest_pn);
 
     // Commented out verbose debug
     // std.debug.print("expandPacketNumber: truncated={} pn_len={} largest_pn={} -> full={}\n", .{ pn_trunc, pn_len, largest_pn, full_pn });
@@ -545,9 +517,9 @@ pub fn unprotectInitialAutoSample(
     // for (aead_iv) |b| std.debug.print("{X:0>2}\n", .{b});
     // std.debug.print("", .{});
 
-    // ciphertext_and_tag buffer layout: [PN bytes (pn_len)] [encrypted payload + tag]
-    // Pass only the encrypted payload + tag portion to AEAD decrypt
-    const actual_ciphertext = ciphertext_and_tag[pn_len..];
+    // ciphertext_and_tag buffer layout: [PN bytes (actual_pn_len)] [encrypted payload + tag]
+    // Pass only the encrypted payload + tag portion to AEAD decrypt (skip the PN bytes)
+    const actual_ciphertext = ciphertext_and_tag[actual_pn_len..];
 
     return aeadDecrypt(suite, aead_key, aead_iv, full_pn, aad, actual_ciphertext, out_plaintext) catch |err| {
         // Only print for non-zero packet numbers (likely real failures, not probing)

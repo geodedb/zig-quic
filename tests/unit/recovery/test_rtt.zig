@@ -27,12 +27,13 @@ test "RttState initializes with no samples" {
     try testing.expect(!rtt.have_sample);
 }
 
-test "RttState initializes all RTT values to zero" {
+test "RttState initializes all RTT values per RFC 9002 Appendix A.2" {
+    // RFC 9002 Appendix A.2: kInitialRtt = 333ms
     const rtt: RttState = .{};
-    try testing.expectEqual(@as(u64, 0), rtt.min_rtt_ns);
-    try testing.expectEqual(@as(u64, 0), rtt.latest_rtt_ns);
-    try testing.expectEqual(@as(u64, 0), rtt.smoothed_rtt_ns);
-    try testing.expectEqual(@as(u64, 0), rtt.rttvar_ns);
+    try testing.expectEqual(@as(u64, 0), rtt.min_rtt_ns); // Only set after first sample
+    try testing.expectEqual(@as(u64, 0), rtt.latest_rtt_ns); // Only set after first sample
+    try testing.expectEqual(@as(u64, 333_000_000), rtt.smoothed_rtt_ns); // 333ms initial RTT
+    try testing.expectEqual(@as(u64, 166_500_000), rtt.rttvar_ns); // initial_rtt / 2
 }
 
 test "RttState initializes max_ack_delay_ns to zero" {
@@ -181,10 +182,12 @@ test "RFC 9002 §6.2.1 - computePtoNs with zero max_ack_delay" {
     try testing.expectEqual(@as(u64, 200_000_000), pto);
 }
 
-test "RFC 9002 §6.2.1 - computePtoNs before first sample returns zero" {
+test "RFC 9002 §6.2.1 - computePtoNs before first sample uses initial RTT" {
+    // RFC 9002 §6.2: Before any RTT samples, use initial RTT
+    // PTO = smoothed(333ms) + 4*rttvar(166.5ms) + max_ack_delay(0) = 999ms
     const rtt: RttState = .{};
     const pto = rtt.computePtoNs();
-    try testing.expectEqual(@as(u64, 0), pto);
+    try testing.expectEqual(@as(u64, 999_000_000), pto); // 999ms
 }
 
 test "RFC 9002 §6.2.1 - computePtoNsWithBackoff with pto_count=0 adds granularity" {

@@ -195,7 +195,10 @@ pub fn handleAck(
 /// RFC 9000 §19.20: "The server uses a HANDSHAKE_DONE frame to signal
 /// confirmation of the handshake to the client."
 pub fn handleHandshakeDone(ctx: *FrameContext) FrameResult {
-    _ = ctx;
+    // Phase 24 DEBUG: Trace HANDSHAKE_DONE reception
+    std.debug.print("[handleHandshakeDone] HANDSHAKE_DONE frame received, role={s}\n", .{
+        if (ctx.conn.role == .Server) "Server" else "Client",
+    });
     return .{
         .saw_ack_eliciting = true,
         .saw_handshake_done = true,

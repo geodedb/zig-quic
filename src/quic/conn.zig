@@ -1471,12 +1471,19 @@ pub const Connection = struct {
             if (self.peer_finished_verified and flags.local_finished_sent) {
                 // Check if Context has pending CRYPTO data to send
                 // Context manages outgoing CRYPTO via callbacks, so we check if secrets are ready
-                const client_slot = tls_ctx.secrets.slot(.Application, .send);
-                const server_slot = tls_ctx.secrets.slot(.Application, .recv);
+                const send_slot = tls_ctx.secrets.slot(.Application, .send);
+                const recv_slot = tls_ctx.secrets.slot(.Application, .recv);
 
-                if (client_slot.valid and server_slot.valid) {
+                if (send_slot.valid and recv_slot.valid) {
+                    // Phase 24 FIX: Slots are role-relative (.send/.recv depend on role)
+                    // CLIENT: send=client secret, recv=server secret
+                    // SERVER: send=server secret, recv=client secret
+                    // But deriveAppKeys expects (client_secret, server_secret) regardless of role
+                    const client_secret = if (self.role == .Client) send_slot.value else recv_slot.value;
+                    const server_secret = if (self.role == .Client) recv_slot.value else send_slot.value;
+
                     std.debug.print("{s}: Deriving application secrets (both Finished exchanged)\n", .{if (self.role == .Server) "Server" else "Client"});
-                    self.deriveAppKeys(client_slot.value, server_slot.value, self.version_v2);
+                    self.deriveAppKeys(client_secret, server_secret, self.version_v2);
                 }
             } else if (self.peer_finished_verified and !flags.local_finished_sent) {
                 std.debug.print("{s}: Deferring 1-RTT key derivation until our Finished is sent\n", .{if (self.role == .Server) "Server" else "Client"});
@@ -1499,6 +1506,10 @@ pub const Connection = struct {
             _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = self.local_max_stream_data } }).write(w) catch 0;
             _ = (frame.Frame{ .max_data = .{ .max = self.local_max_data } }).write(w) catch 0;
             _ = (frame.Frame{ .max_streams_bidi = .{ .max = self.local_max_streams_bidi } }).write(w) catch 0;
+
+            std.debug.print("Server: Sending control frames ({} bytes):", .{frames_list.items.len});
+            for (frames_list.items) |b| std.debug.print(" 0x{X:0>2}", .{b});
+            std.debug.print("\n", .{});
 
             const tx = self.app_tx_keys.?;
             const pkt = packet.encodeShortProtected(
@@ -1680,12 +1691,19 @@ pub const Connection = struct {
         if (!(flags.peer_finished_verified and flags.local_finished_sent)) return;
 
         // Check if Application secrets are available
-        const client_slot = tls_ctx.secrets.slot(.Application, .send);
-        const server_slot = tls_ctx.secrets.slot(.Application, .recv);
+        const send_slot = tls_ctx.secrets.slot(.Application, .send);
+        const recv_slot = tls_ctx.secrets.slot(.Application, .recv);
 
-        if (client_slot.valid and server_slot.valid) {
-            std.debug.print("{s}: Deriving application secrets\n", .{if (self.role == .Server) "Server" else "Client"});
-            self.deriveAppKeys(client_slot.value, server_slot.value, self.version_v2);
+        if (send_slot.valid and recv_slot.valid) {
+            // Phase 24 FIX: Slots are role-relative (.send/.recv depend on role)
+            // CLIENT: send=client secret, recv=server secret
+            // SERVER: send=server secret, recv=client secret
+            // But deriveAppKeys expects (client_secret, server_secret) regardless of role
+            const client_secret = if (self.role == .Client) send_slot.value else recv_slot.value;
+            const server_secret = if (self.role == .Client) recv_slot.value else send_slot.value;
+
+            std.debug.print("{s}: Deriving application secrets (maybeDeriveAppKeysAfterFlush)\n", .{if (self.role == .Server) "Server" else "Client"});
+            self.deriveAppKeys(client_secret, server_secret, self.version_v2);
         }
     }
 

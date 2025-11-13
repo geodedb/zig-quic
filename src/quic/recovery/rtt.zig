@@ -8,11 +8,14 @@ const std = @import("std");
 /// Round-trip time estimator state and PTO computation helpers (RFC 9002 §5-6).
 pub const RttState = struct {
     // All values are in nanoseconds for monotonic arithmetic
+    // RFC 9002 Appendix A.2: kInitialRtt = 333ms
+    const kInitialRttNs: u64 = 333 * std.time.ns_per_ms;
+
     have_sample: bool = false,
     min_rtt_ns: u64 = 0,
     latest_rtt_ns: u64 = 0,
-    smoothed_rtt_ns: u64 = 0,
-    rttvar_ns: u64 = 0,
+    smoothed_rtt_ns: u64 = kInitialRttNs, // RFC 9002 §6.2: Use initial RTT before first sample
+    rttvar_ns: u64 = kInitialRttNs / 2,   // RFC 9002: Initial rttvar = initial_rtt / 2
     max_ack_delay_ns: u64 = 0, // app space only; keep 0 for Initial/Handshake
 
     /// Update RTT estimator on ACK reception with measured RTT and ACK delay.

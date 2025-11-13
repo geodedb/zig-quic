@@ -473,26 +473,20 @@ test "CUBIC congestion control" {
     // Tier 1 Step 2 Phase 6: ENABLED - Validate CUBIC can be enabled
     const allocator = std.testing.allocator;
 
+    // Use builder to enable CUBIC before connection establishment
     var builder = connection_pair.ConnectionPairBuilder.init(allocator);
+    _ = builder.withCubic();
     var pair = try builder.build();
     defer pair.deinit();
-
-    // Enable CUBIC before connection
-    if (pair.client_conn) |client| {
-        client.setUseCubic(true);
-    }
-    if (pair.server_conn) |server| {
-        server.setUseCubic(true);
-    }
 
     try pair.connect();
 
     try std.testing.expect(pair.client_conn != null);
     try std.testing.expect(pair.server_conn != null);
 
-    // Verify CUBIC is enabled
-    try std.testing.expectEqual(true, pair.client_conn.?.rec.use_cubic);
-    try std.testing.expectEqual(true, pair.server_conn.?.rec.use_cubic);
+    // Verify CUBIC is enabled on both endpoints
+    try std.testing.expectEqual(true, pair.client_conn.?.use_cubic);
+    try std.testing.expectEqual(true, pair.server_conn.?.use_cubic);
 
     // Congestion control state should still be initialized
     try std.testing.expect(pair.client_conn.?.rec.cc.cwnd > 0);

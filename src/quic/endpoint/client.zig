@@ -264,13 +264,43 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
         frames.append(ctx.allocator.*, @intFromEnum(frame.FrameType.PING)) catch {};
     }
 
-    // Add padding to meet minimum Initial datagram size of 1200 bytes (RFC 9000 §14.1).
-    while (frames.items.len < 1150) {
+    // Use any stored Retry token if present
+    const token_slice: []const u8 = c.initial_token.items;
+
+    // RFC 9000 §14.1: Client MUST expand Initial packets to at least 1200 bytes
+    // Calculate header overhead to determine required padding
+    const dcid_len = c.peer_initial_dcid.len;
+    const scid_len = c.our_scid.len;
+    const pn_len: usize = 2; // Using 2-byte PN
+
+    // Header: first(1) + version(4) + dcid_len(1) + dcid + scid_len(1) + scid
+    const base_header: usize = 1 + 4 + 1 + dcid_len + 1 + scid_len;
+
+    // Token: varint length + token bytes
+    // For tokens < 64 bytes, varint is 1 byte. For < 16384, it's 2 bytes.
+    const token_varint_len: usize = if (token_slice.len == 0) 1 else if (token_slice.len < 64) 1 else 2;
+    const token_overhead = token_varint_len + token_slice.len;
+
+    // Ciphertext overhead: AEAD tag
+    const aead_tag_len: usize = 16;
+
+    // Length varint: for ~1200 byte packets, this is typically 2 bytes (values < 16384)
+    const length_varint_len: usize = 2;
+
+    // Total overhead = header + token + length varint + PN + AEAD tag
+    const overhead = base_header + token_overhead + length_varint_len + pn_len + aead_tag_len;
+
+    // Minimum packet size per RFC 9000 §14.1
+    const min_packet_size: usize = 1200;
+
+    // Calculate required plaintext size
+    const min_plaintext_size = if (overhead < min_packet_size) min_packet_size - overhead else 0;
+
+    // Add PADDING frames to reach minimum size
+    while (frames.items.len < min_plaintext_size) {
         frames.append(ctx.allocator.*, @intFromEnum(frame.FrameType.PADDING)) catch {};
     }
 
-    // Use any stored Retry token if present
-    const token_slice: []const u8 = c.initial_token.items;
     const pkt = try packet.encodeInitialProtected(
         ctx.allocator.*,
         c.version,

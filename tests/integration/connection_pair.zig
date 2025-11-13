@@ -32,6 +32,9 @@ pub const ConnectionPairConfig = struct {
 
     /// Automatic handshake completion timeout (0 = no auto handshake)
     auto_handshake_timeout_ms: u64 = 0,
+
+    /// Enable CUBIC congestion control on both endpoints
+    use_cubic: bool = false,
 };
 
 /// Linked client-server connection pair
@@ -225,6 +228,16 @@ pub const ConnectionPair = struct {
         }
 
         self.client_conn = client_conn;
+
+        // Apply CUBIC configuration if requested
+        if (self.config.use_cubic) {
+            if (self.client_conn) |client| {
+                client.setUseCubic(true);
+            }
+            if (self.server_conn) |server| {
+                server.setUseCubic(true);
+            }
+        }
     }
 
     /// Exchange packets between client and server (Phase 14: Real implementation!)
@@ -441,6 +454,12 @@ pub const ConnectionPairBuilder = struct {
     /// Enable automatic handshake
     pub fn withAutoHandshake(self: *ConnectionPairBuilder, timeout_ms: u64) *ConnectionPairBuilder {
         self.config.auto_handshake_timeout_ms = timeout_ms;
+        return self;
+    }
+
+    /// Enable CUBIC congestion control
+    pub fn withCubic(self: *ConnectionPairBuilder) *ConnectionPairBuilder {
+        self.config.use_cubic = true;
         return self;
     }
 

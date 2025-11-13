@@ -236,6 +236,27 @@ test "RFC 9000 §7.2 - Server Initial contains CRYPTO frame with ServerHello" {
     var found_initial = false;
     var found_crypto = false;
 
+    // First, extract the client's DCID from client packets (needed for server packet decryption)
+    // RFC 9001 §5.2: Initial keys are derived from client's original DCID
+    const client_packets = pair.getClientPackets();
+    try std.testing.expect(client_packets != null);
+
+    std.debug.print("[TEST §7.2 CRYPTO] Found {} client packets\n", .{client_packets.?.len});
+
+    var client_dcid: ?[]const u8 = null;
+    for (client_packets.?, 0..) |captured, i| {
+        std.debug.print("[TEST §7.2 CRYPTO] Client packet {}: direction={}, len={}\n", .{i, captured.direction, captured.data.len});
+        if (captured.direction != .sent) continue;
+        if (packet_inspector.isInitialPacket(captured.data)) {
+            client_dcid = try packet_inspector.extractInitialDcid(captured.data);
+            std.debug.print("[TEST §7.2 CRYPTO] Extracted client DCID len={}: ", .{client_dcid.?.len});
+            for (client_dcid.?) |b| std.debug.print("{X:0>2} ", .{b});
+            std.debug.print("\n", .{});
+            break;
+        }
+    }
+    try std.testing.expect(client_dcid != null);
+
     for (server_packets.?) |captured| {
         if (captured.direction != .sent) continue;
 
@@ -243,13 +264,18 @@ test "RFC 9000 §7.2 - Server Initial contains CRYPTO frame with ServerHello" {
         if (packet_inspector.isInitialPacket(captured.data)) {
             found_initial = true;
 
-            // Decrypt server Initial packet
-            // Server Initial packets use is_client=false for decryption
-            const has_crypto = try packet_inspector.initialPacketHasCryptoFrame(
+            // Decrypt server Initial packet using client's original DCID
+            const has_crypto = packet_inspector.serverInitialHasCryptoFrame(
                 allocator,
                 captured.data,
-                false, // is_client=false for server packets
-            );
+                client_dcid.?, // Use client's DCID for key derivation
+            ) catch |err| {
+                std.debug.print("ERROR: Failed to decrypt server Initial packet: {}\n", .{err});
+                std.debug.print("  Client DCID len={}: ", .{client_dcid.?.len});
+                for (client_dcid.?) |b| std.debug.print("{X:0>2} ", .{b});
+                std.debug.print("\n  Server packet len={}\n", .{captured.data.len});
+                continue;
+            };
 
             if (has_crypto) {
                 found_crypto = true;
@@ -286,16 +312,35 @@ test "RFC 9000 §7.2 - Server sends ACK for client Initial" {
     const packet_inspector = @import("packet_inspector");
     var found_ack = false;
 
+    // First, extract the client's DCID from client packets (needed for server packet decryption)
+    // RFC 9001 §5.2: Initial keys are derived from client's original DCID
+    const client_packets = pair.getClientPackets();
+    try std.testing.expect(client_packets != null);
+
+    var client_dcid: ?[]const u8 = null;
+    for (client_packets.?) |captured| {
+        if (captured.direction != .sent) continue;
+        if (packet_inspector.isInitialPacket(captured.data)) {
+            client_dcid = try packet_inspector.extractInitialDcid(captured.data);
+            break;
+        }
+    }
+    try std.testing.expect(client_dcid != null);
+
     for (server_packets.?) |captured| {
         if (captured.direction != .sent) continue;
 
         // Check Initial packets (server may send ACK in Initial packet)
         if (packet_inspector.isInitialPacket(captured.data)) {
-            // Decrypt server Initial packet
-            var decrypted = packet_inspector.decryptInitialPacket(
+            // Extract just the Initial packet (may be coalesced with Handshake)
+            const initial_packet = packet_inspector.extractInitialPacket(captured.data) catch continue;
+
+            // Decrypt server Initial packet using client's original DCID
+            var decrypted = packet_inspector.decryptInitialPacketWithDcid(
                 allocator,
-                captured.data,
+                initial_packet,
                 false, // is_client=false for server packets
+                client_dcid.?, // Use client's DCID for key derivation
             ) catch continue;
             defer decrypted.deinit();
 
@@ -460,6 +505,9 @@ test "RFC 9000 §7.4 - Handshake completes successfully" {
 
     // Establish connection - triggers full handshake
     try pair.connect();
+
+    // Wait for handshake to complete (includes HANDSHAKE_DONE exchange)
+    try pair.waitForHandshake(5000);
 
     // Verify both sides have connections established
     try std.testing.expect(pair.client_conn != null);
