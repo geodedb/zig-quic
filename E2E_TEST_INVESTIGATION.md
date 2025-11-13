@@ -2286,3 +2286,109 @@ Testing in progress after implementation...
 
 **Status:** Further investigation needed to identify the actual blocking mechanism.
 
+
+---
+
+## Phase 42 Part 13: Stream Acceptance Bug Discovery (ROOT CAUSE IDENTIFIED ⚠️)
+
+**Date:** 2025-11-13  
+**Test:** `make e2e-test-go-comprehensive`  
+**Phase 42 Part 12 Result:** 3/8 tests passing (unchanged after echo server redesign)
+
+### Hypothesis Tested
+
+After Part 12's flow-control-resilient echo server showed no improvement, added comprehensive debug logging to understand event loop behavior during large transfers:
+
+**Debug Logging Added:**
+1. Event loop iteration counter with 100ms periodic logging
+2. Per-stream cumulative byte counters (total_read, total_written)
+3. Detailed writeStream() results (immediate echo vs buffered)
+4. Stream state transitions (accepted, FIN received, FIN sent)
+
+### Critical Discovery  
+
+**Stream 24 (100KB test) received ONLY 64KB before stalling:**
+
+```
+[P42-13-READ] Stream 24 read 4096 bytes (65536 total read, loop 164)
+[P42-13-ECHO] Stream 24 echoed 1000 bytes (62440 total written, loop 164)
+[P42-13-FIN] Stream 24 received FIN (total read: 65536, total written: 65536, pending: 0)
+[P42-12] Stream 24 sent FIN, complete
+```
+
+**Expected:** 102400 bytes (100KB)  
+**Actual:** 65536 bytes (64KB)  
+**Missing:** 36864 bytes (36KB)
+
+### Root Cause: Stream Acceptance Bug
+
+After stream 24 completed at 64KB, the server entered an infinite loop:
+
+```
+Found peer-initiated stream 0 in RX but not in queue
+Found peer-initiated stream 4 in RX but not in queue
+Found peer-initiated stream 12 in RX but not in queue
+Found peer-initiated stream 20 in RX but not in queue
+Found peer-initiated stream 16 in RX but not in queue
+Found peer-initiated stream 24 in RX but not in queue
+Found peer-initiated stream 8 in RX but not in queue
+Total peer-initiated streams in RX: 7
+DEBUG acceptStream: queue has 0 streams
+[P42-13-LOOP] Iteration 1615, 1 active connections
+```
+
+**The Bug:** `acceptStream()` returns streams once when they first arrive, but never again even if:
+- More data arrives on that stream
+- The stream hasn't sent FIN yet
+- Data is waiting in RX buffers
+
+**Current (Broken) Model:**
+1. Client opens stream, sends 64KB of data
+2. Server calls `acceptStream()` → returns stream_id
+3. Server reads and echoes 64KB
+4. Client sends remaining 36KB of data
+5. Server calls `acceptStream()` → returns null (stream already accepted!)
+6. Remaining 36KB never gets processed
+7. Test times out waiting for echo
+
+**Expected Model:**
+Streams should be "readable" signals, not one-time events. The server needs a way to know when a stream has more data to read, similar to epoll/kqueue edge-triggered vs level-triggered notifications.
+
+### Evidence
+
+**Server Log Analysis:**
+- Total log lines: 29,085
+- Stream 24 completion: Line 14,453 (early in test)
+- Remaining 14,632 lines: Spinning in accept loop
+- Loop iterations after completion: 1615+ iterations with no progress
+
+**Echo Server Confirmation:**
+The Phase 42 Part 12 echo server redesign works perfectly:
+- Handles partial writes correctly (1000 bytes/write observed)
+- Buffers remaining data (3096 bytes buffered repeatedly)
+- Flushes pending data in round-robin fashion
+- Sends FIN only after all data flushed
+
+The echo server is NOT the problem - the stream acceptance mechanism is fundamentally broken.
+
+### Required Fix
+
+The `acceptStream()` API needs to change from:
+- **Current:** "Tell me about NEW streams" (one-time notification)
+- **Required:** "Tell me which streams are READABLE" (continuous readiness signal)
+
+**Possible Solutions:**
+
+1. **Add `pollReadableStreams()` API** - Returns all streams with data to read
+2. **Make `acceptStream()` level-triggered** - Returns stream_id whenever it has unread data  
+3. **Add `hasData(stream_id)` query** - Let application check if stream has more data
+4. **Event-driven callback model** - Callback when stream becomes readable
+
+**Next Steps:**
+1. Examine `acceptStream()` implementation in src/quic/*.zig
+2. Understand the stream queuing/notification mechanism
+3. Design and implement proper stream readiness signaling
+4. Retest with fixed stream acceptance
+
+**Status:** ROOT CAUSE IDENTIFIED - Stream acceptance mechanism is broken for multi-packet transfers.
+
