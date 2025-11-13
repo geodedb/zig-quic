@@ -2052,3 +2052,61 @@ Checked debug output for flow control:
 - Packet loss or congestion control limiting throughput
 - Missing ACKs causing timeout despite flow control being correct
 
+### Phase 42 Part 11: Server Echo Loop Investigation
+
+**Date**: 2025-11-13
+**Status**: IN PROGRESS
+
+#### Hypothesis: Echo Server Abandons Streams on Flow Control Block
+
+Analyzed cmd/quic-server.zig echo loop implementation:
+
+```zig
+while (true) {
+    const stream_id = api.acceptStream(conn) catch break;
+    // Read and echo loop
+    while (true) {
+        const n = api.readStream(conn, stream_id, chunk[0..]) catch break;
+        if (n == 0) break;
+
+        const written = api.writeStream(conn, stream_id, chunk[0..n], false) catch |err| blk: {
+            std.debug.print("DEBUG: writeStream error: {}\n", .{err});
+            break :blk 0;  // Return 0 on error
+        };
+        if (written == 0) {
+            std.debug.print("DEBUG: writeStream returned 0, breaking\n", .{});
+            break;  // EXIT ECHO LOOP!
+        }
+    }
+}
+```
+
+**CRITICAL BUG**: When `writeStream()` returns `error.FlowControlBlocked` (caught → returns 0), the server breaks out of the echo loop and NEVER tries to echo the remaining data again. The stream is abandoned.
+
+**Why This Causes Timeout**:
+1. Client sends 100KB of data
+2. Server reads data into buffer
+3. Server tries to echo back via writeStream()
+4. writeStream() hits flow control limit, returns error.FlowControlBlocked → caught → 0
+5. Server breaks out of loop, abandons stream
+6. Client waits forever for echo data that will never arrive
+7. Timeout after 30 seconds
+
+**Why Small Transfers Work**:
+- 21B, 16B, 10KB transfers fit entirely within initial windows
+- writeStream() never blocks, echoes complete successfully
+
+**Why Large Transfers Fail**:
+- 100KB+ exceed congestion window or require multiple round-trips
+- First few writeStream() calls succeed, then one blocks
+- Server abandons remaining data
+
+#### Solution Required
+
+The server needs to:
+1. Track which streams have partial echo data pending
+2. Continue trying to write when flow control unblocks
+3. Not abandon streams on temporary flow control blocks
+
+This requires redesigning the echo server to maintain state per-stream.
+
