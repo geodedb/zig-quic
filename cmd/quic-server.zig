@@ -149,26 +149,39 @@ pub fn main() !void {
                 const stream_id = api.acceptStream(conn) catch break; // Break when no more streams available
                 std.debug.print("DEBUG: Accepted stream {d}\n", .{stream_id});
 
-                // Read from the accepted stream
-                var buf: [4096]u8 = undefined;
-                const n = api.readStream(conn, stream_id, buf[0..]) catch |err| blk: {
-                    std.debug.print("DEBUG: readStream error: {}\n", .{err});
-                    break :blk 0;
-                };
-                if (n > 0) {
-                    std.debug.print("stream {d} received {d} bytes: ", .{stream_id, n});
-                    for (buf[0..@min(n, 32)]) |b| std.debug.print("{x:0>2} ", .{b});
-                    if (n > 32) std.debug.print("...", .{});
+                // Read ALL data from the stream (loop until no more data)
+                // For large transfers (100KB+), we need to read multiple times
+                var total_read: usize = 0;
+                var stream_buf = std.ArrayListUnmanaged(u8){};
+                defer stream_buf.deinit(alloc);
+
+                while (true) {
+                    var chunk: [4096]u8 = undefined;
+                    const n = api.readStream(conn, stream_id, chunk[0..]) catch |err| blk: {
+                        std.debug.print("DEBUG: readStream error: {}\n", .{err});
+                        break :blk 0;
+                    };
+                    if (n == 0) break; // No more data available
+
+                    stream_buf.appendSlice(alloc, chunk[0..n]) catch break;
+                    total_read += n;
+                    std.debug.print("DEBUG: Read {d} bytes (total {d} bytes so far from stream {d})\n", .{n, total_read, stream_id});
+                }
+
+                if (total_read > 0) {
+                    std.debug.print("stream {d} received {d} bytes total: ", .{stream_id, total_read});
+                    for (stream_buf.items[0..@min(total_read, 32)]) |b| std.debug.print("{x:0>2} ", .{b});
+                    if (total_read > 32) std.debug.print("...", .{});
                     std.debug.print("\n", .{});
 
-                    // Echo back all data with FIN in a single STREAM frame
-                    // This is the recommended pattern: send all data with FIN=true in one frame
+                    // Echo back all data with FIN
                     var total_written: usize = 0;
-                    while (total_written < n) {
-                        // Send remaining data, set FIN=true on the LAST write
-                        const remaining = n - total_written;
-                        const is_last_write = remaining <= 1000; // Assuming max write size ~1000 bytes
-                        const written = api.writeStream(conn, stream_id, buf[total_written..n], is_last_write) catch |err| blk: {
+                    while (total_written < total_read) {
+                        const remaining = total_read - total_written;
+                        const chunk_size = @min(remaining, 1000); // Send in 1KB chunks
+                        const is_last_write = (total_written + chunk_size) >= total_read;
+
+                        const written = api.writeStream(conn, stream_id, stream_buf.items[total_written..total_written+chunk_size], is_last_write) catch |err| blk: {
                             std.debug.print("DEBUG: writeStream error: {}\n", .{err});
                             break :blk 0;
                         };
@@ -177,7 +190,7 @@ pub fn main() !void {
                             break;
                         }
                         total_written += written;
-                        std.debug.print("DEBUG: Wrote {d}/{d} bytes to stream {d} (fin={})\n", .{total_written, n, stream_id, is_last_write});
+                        std.debug.print("DEBUG: Wrote {d}/{d} bytes to stream {d} (fin={})\n", .{total_written, total_read, stream_id, is_last_write});
                     }
                 } else {
                     std.debug.print("DEBUG: No data read from stream {d}\n", .{stream_id});

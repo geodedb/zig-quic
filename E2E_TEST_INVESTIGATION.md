@@ -1163,3 +1163,45 @@ The bug MUST be in one of these layers:
 
 ---
 
+
+---
+
+## Phase 42 Part 4: Server Read Loop Bug - Only Reads First 4KB
+
+### Investigation
+
+After fixing the auto-echo bug, tests 4-8 still timed out. Analysis revealed:
+
+**Bug:** `cmd/quic-server.zig` only called `readStream()` ONCE per stream acceptance:
+```zig
+// BEFORE: Single read, max 4096 bytes
+var buf: [4096]u8 = undefined;
+const n = api.readStream(conn, stream_id, buf[0..]) catch |err| blk: {...};
+// For 100KB transfer: only reads first 4096 bytes!
+```
+
+**Impact:**
+- Test 3 (10KB): Only read first 4096 bytes per call
+- Test 4 (100KB): Only read first 4096 bytes, rest never read → timeout  
+- Tests 5-8: Similar failures
+
+### Fix Applied
+
+Modified `cmd/quic-server.zig:148-198` to loop and read ALL data from each stream until readStream returns 0.
+
+### Test Results After Fix
+
+**Stream data received:**
+- Stream 20: 10,240 bytes in 3 chunks (Test 3) ✅
+- Stream 24: **28,711 bytes** in 8 chunks (Test 4 - only 28% of 102400!)
+
+### Remaining Issue: Flow Control Window Exhaustion
+
+**Root Cause:** Client exhausts ~28KB send window, waits for ACKs. Server processes all available data before returning to event loop that sends ACKs.
+
+**Test Results:** Still 3/8 tests passing
+- ✅ Server CAN read large data now
+- ❌ Flow control prevents large transfers from completing
+
+**Next Investigation:** Server event loop needs to interleave ACK processing with data reading.
+
