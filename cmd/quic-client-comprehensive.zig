@@ -107,7 +107,7 @@ fn testSingleStreamEcho(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Con
     var wrote = false;
     var attempts: usize = 0;
     while (!wrote and attempts < 1000) : (attempts += 1) {
-        const wn = api.writeStream(conn, stream_id, msg) catch |err| switch (err) {
+        const wn = api.writeStream(conn, stream_id, msg, true) catch |err| switch (err) {
             error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked, error.InvalidStream => blk: {
                 try api.poll(ep, 10);
                 break :blk 0;
@@ -155,7 +155,7 @@ fn testMultipleStreams(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Conn
         var wrote = false;
         var attempts: usize = 0;
         while (!wrote and attempts < 500) : (attempts += 1) {
-            const wn = api.writeStream(conn, stream_id, msg) catch |err| switch (err) {
+            const wn = api.writeStream(conn, stream_id, msg, true) catch |err| switch (err) {
                 error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked, error.InvalidStream => blk: {
                     try api.poll(ep, 5);
                     break :blk 0;
@@ -217,11 +217,12 @@ fn testLargeDataTransfer(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Co
         const remaining = size - written;
         const to_write = @min(remaining, chunk_size);
         const chunk = data[written .. written + to_write];
+        const is_last_chunk = (written + to_write >= size);
 
         var chunk_written = false;
         var attempts: usize = 0;
         while (!chunk_written and attempts < 500) : (attempts += 1) {
-            const wn = api.writeStream(conn, stream_id, chunk) catch |err| switch (err) {
+            const wn = api.writeStream(conn, stream_id, chunk, is_last_chunk) catch |err| switch (err) {
                 error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked, error.InvalidStream => blk: {
                     try api.poll(ep, 10);
                     break :blk 0;
@@ -278,7 +279,7 @@ fn testMultipleRoundTrips(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *C
         var wrote = false;
         var attempts: usize = 0;
         while (!wrote and attempts < 500) : (attempts += 1) {
-            const wn = api.writeStream(conn, stream_id, msg) catch |err| switch (err) {
+            const wn = api.writeStream(conn, stream_id, msg, true) catch |err| switch (err) {
                 error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked, error.InvalidStream => blk: {
                     try api.poll(ep, 5);
                     break :blk 0;
@@ -332,7 +333,7 @@ fn testStreamInterleaving(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *C
             var wrote = false;
             var attempts: usize = 0;
             while (!wrote and attempts < 300) : (attempts += 1) {
-                const wn = api.writeStream(conn, stream_id, msg) catch |err| switch (err) {
+                const wn = api.writeStream(conn, stream_id, msg, true) catch |err| switch (err) {
                     error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked, error.InvalidStream => blk: {
                         try api.poll(ep, 5);
                         break :blk 0;

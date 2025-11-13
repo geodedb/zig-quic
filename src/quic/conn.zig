@@ -600,6 +600,7 @@ pub const Connection = struct {
     highest_peer_uni_stream: ?u64 = null,
     // Stream state flags (stream 0 in this slice)
     stream_send_aborted: bool = false,
+    stream_send_fin_sent: bool = false,
     stream_recv_aborted: bool = false,
     stream_recv_fin: bool = false,
     // Flow-control windows (connection and per-stream)
@@ -890,6 +891,7 @@ pub const Connection = struct {
         self.stream_send_off = 0;
         self.stream_txs = std.AutoHashMap(u64, StreamTx).init(alloc.*);
         self.stream_send_aborted = false;
+        self.stream_send_fin_sent = false;
         self.stream_recv_aborted = false;
         // Init incoming stream queue
         self.incoming_stream_queue = std.ArrayList(u64){};
@@ -2180,8 +2182,8 @@ pub const Connection = struct {
 
     /// Write STREAM data enforcing flow-control; may emit *_BLOCKED frames.
     /// Write data to a stream (simplified slice, no FIN flag in this helper slice yet).
-    pub fn writeStream(self: *Connection, id: u64, data: []const u8) !usize {
-        std.debug.print("DEBUG writeStream: stream_id={}, data_len={}\n", .{ id, data.len });
+    pub fn writeStream(self: *Connection, id: u64, data: []const u8, fin: bool) !usize {
+        std.debug.print("DEBUG writeStream: stream_id={}, data_len={}, fin={}\n", .{ id, data.len, fin });
         if (id == 0) {
             // Lazy open of client-initiated stream 0: allow application to call writeStream
             // without an explicit openStream( true ) first. This mirrors common QUIC API
@@ -2193,7 +2195,7 @@ pub const Connection = struct {
                     else => return e,
                 };
             }
-            if (self.stream_send_aborted) return error.StreamStopped;
+            if (self.stream_send_aborted or self.stream_send_fin_sent) return error.StreamStopped;
         } else {
             if (self.stream_txs.getPtr(id) == null) {
                 std.debug.print("DEBUG writeStream: InvalidStream - no TX state for stream {}\n", .{id});
@@ -2215,7 +2217,8 @@ pub const Connection = struct {
             return 0;
         }
         const tx = self.app_tx_keys.?;
-        if (data.len == 0) return 0;
+        // Allow zero-length writes ONLY if fin=true (FIN-only frame)
+        if (data.len == 0 and !fin) return 0;
         const cur_off: u64 = if (id == 0) self.stream_send_off else self.stream_txs.getPtr(id).?.off;
         if (cur_off >= self.peer_max_stream_data) {
             // Signal STREAM_DATA_BLOCKED (coalesced: only once per limit value)
@@ -2248,11 +2251,17 @@ pub const Connection = struct {
         const max_payload: usize = 1000; // keep within typical path-MTU
         const to_send_u64: u64 = @min(window_left, @as(u64, data.len));
         const to_send: usize = @intCast(@min(to_send_u64, @as(u64, max_payload)));
-        if (to_send == 0) return error.FlowControlBlocked;
+        std.debug.print("DEBUG flow control: stream_id={}, data.len={}, cur_off={}, window_left_stream={}, window_left_conn={}, to_send={}\n", .{ id, data.len, cur_off, window_left_stream, window_left_conn, to_send });
+        // Allow to_send=0 ONLY if fin=true (FIN-only frame)
+        if (to_send == 0 and !fin) return error.FlowControlBlocked;
         var frames = std.ArrayList(u8){};
         defer frames.deinit(self.allocator.*);
         const w = frames.writer(self.allocator.*);
-        _ = (frame.Frame{ .stream = .{ .stream_id = id, .offset = cur_off, .fin = false, .data = data[0..to_send] } }).write(w) catch 0;
+        _ = (frame.Frame{ .stream = .{ .stream_id = id, .offset = cur_off, .fin = fin, .data = data[0..to_send] } }).write(w) catch 0;
+        std.debug.print("DEBUG STREAM frame bytes ({} bytes): ", .{frames.items.len});
+        for (frames.items[0..@min(frames.items.len, 40)]) |b| std.debug.print("{x:0>2} ", .{b});
+        if (frames.items.len > 40) std.debug.print("...", .{});
+        std.debug.print("\n", .{});
         const dcid = self.shortHeaderDcid();
         std.debug.print("Server sending STREAM with DCID len={}, first_byte={x}\n", .{ dcid.len, if (dcid.len > 0) dcid[0] else 0 });
         const pkt = try packet.encodeShortProtected(
@@ -2273,8 +2282,14 @@ pub const Connection = struct {
         self.computeAndMaybeArmPto(self);
         if (id == 0) {
             self.stream_send_off += to_send;
+            if (fin) {
+                self.stream_send_fin_sent = true;
+            }
         } else if (self.stream_txs.getPtr(id)) |stx| {
             stx.off += to_send;
+            if (fin) {
+                stx.fin_sent = true;
+            }
         }
         self.conn_send_off += to_send;
         return to_send;
@@ -2412,6 +2427,7 @@ pub const Connection = struct {
         if (stream_id == 0) {
             self.stream_opened = false;
             self.stream_send_aborted = false;
+            self.stream_send_fin_sent = false;
             self.stream_recv_aborted = false;
             self.stream_recv_fin = false;
             self.stream_send_off = 0;

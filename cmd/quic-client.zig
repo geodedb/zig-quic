@@ -72,7 +72,7 @@ pub fn main() !void {
             continue;
         }
         // try to write; if keys not ready, poll and retry
-        const wn = api.writeStream(conn, 0, msg) catch |err| switch (err) {
+        const wn = api.writeStream(conn, 0, msg, true) catch |err| switch (err) {
             error.KeysNotReady => blk: {
                 // Drive timers and inbound CRYPTO while waiting for keys to be ready.
                 // We deliberately avoid calling api.isHandshakeConfirmed() here to

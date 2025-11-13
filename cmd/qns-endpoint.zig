@@ -45,7 +45,9 @@ fn extractPath(url: []const u8) []const u8 {
 fn writeAllStream(ep: *api.QuicEndpoint, conn: *api.QuicConnection, data: []const u8) void {
     var off: usize = 0;
     while (off < data.len) {
-        const n = api.writeStream(conn, 0, data[off..]) catch 0;
+        const remaining = data.len - off;
+        const is_final = (remaining <= 1000); // Will fit in one write
+        const n = api.writeStream(conn, 0, data[off..], is_final) catch 0;
         off += n;
         api.poll(ep, 1) catch {};
     }
@@ -399,8 +401,10 @@ pub fn main() !void {
                 var pad: [1024]u8 = undefined;
                 @memset(pad[0..], 'X');
                 var sent_total: usize = 0;
-                while (sent_total < 70 * 1024) {
-                    const wn = api.writeStream(conn, 0, pad[0..]) catch 0;
+                const total_to_send = 70 * 1024;
+                while (sent_total < total_to_send) {
+                    const is_final_padding = (sent_total + pad.len >= total_to_send);
+                    const wn = api.writeStream(conn, 0, pad[0..], is_final_padding) catch 0;
                     if (wn == 0) {
                         api.poll(ep, 1) catch {};
                     } else {

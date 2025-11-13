@@ -29,15 +29,15 @@ pub const H3Server = struct {
         i += encodeVarint(0x00, ctrl_buf[i..]); // uni stream type: control
         i += encodeVarint(0x04, ctrl_buf[i..]); // SETTINGS
         i += encodeVarint(0, ctrl_buf[i..]); // len=0
-        _ = api.writeStream(conn, ctrl, ctrl_buf[0..i]) catch {};
+        _ = api.writeStream(conn, ctrl, ctrl_buf[0..i], false) catch {};  // H3 control stream stays open
         // QPACK encoder/decoder streams
         if (api.openUni(conn)) |sid| {
             var t: [1]u8 = .{0};
-            _ = api.writeStream(conn, sid, t[0..encodeVarint(0x02, t[0..])]) catch {};
+            _ = api.writeStream(conn, sid, t[0..encodeVarint(0x02, t[0..])], false) catch {};  // QPACK encoder stream stays open
         } else |_| {}
         if (api.openUni(conn)) |sid| {
             var t: [1]u8 = .{0};
-            _ = api.writeStream(conn, sid, t[0..encodeVarint(0x03, t[0..])]) catch {};
+            _ = api.writeStream(conn, sid, t[0..encodeVarint(0x03, t[0..])], false) catch {};  // QPACK decoder stream stays open
         } else |_| {}
         // Event loop: serve each bidi request once
         var tmp: [4096]u8 = undefined;
@@ -139,7 +139,9 @@ pub const H3Server = struct {
     fn writeAll(ep: *api.QuicEndpoint, conn: *api.QuicConnection, sid: u64, data: []const u8) !void {
         var off: usize = 0;
         while (off < data.len) {
-            const n = api.writeStream(conn, sid, data[off..]) catch 0;
+            const remaining = data.len - off;
+            const is_final = (remaining <= 1000); // Will fit in one write
+            const n = api.writeStream(conn, sid, data[off..], is_final) catch 0;
             if (n == 0) {
                 api.poll(ep, 1) catch {};
             } else {

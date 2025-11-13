@@ -846,5 +846,129 @@ Server processes all streams correctly, but client still sends CONNECTION_CLOSE.
 
 **Status:** Stream acceptance fixed, but full interoperability requires further investigation of stream lifecycle management.
 
+### Phase 42 Continuation: FIN Handling Bugs (PARTIAL FIX ⚙️)
+
+**Date:** 2025-11-13
+**Test:** `make e2e-test-go-comprehensive`
+**Error:** `FINAL_SIZE_ERROR (local): received offset 21 for stream 0, but final offset was already received at 11`
+
+#### Problem After Server Loop Fix
+
+After fixing the server loop to accept all pending streams, tests still failed:
+```
+✅ Single Stream Echo
+   └─ Sent 21 bytes, received 11 bytes in 5.537745ms
+❌ Multiple Concurrent Streams (and 6 more tests)
+   └─ Error: FINAL_SIZE_ERROR (local): received offset 21 for stream 0, but final offset was already received at 11
+```
+
+Even the passing test showed **"Sent 21 bytes, received 11 bytes"** - the client only received 11 of 21 bytes!
+
+#### Investigation: FIN-Only Frame Handling
+
+**Key Observations:**
+
+1. Server sends data with fin=false, then sends FIN separately:
+   ```zig
+   _ = api.writeStream(conn, stream_id, buf[0..n], false); // Data
+   _ = api.writeStream(conn, stream_id, &[_]u8{}, true);    // FIN-only frame
+   ```
+
+2. Second call with empty data and fin=true returns 0 without sending anything.
+
+3. Added debug logging revealed FIN frames were NOT being sent.
+
+#### Root Cause: Two Bugs in writeStream()
+
+**Bug 1: Zero-Length Write Guard** (`src/quic/conn.zig:2220`)
+```zig
+// BEFORE (WRONG):
+if (data.len == 0) return 0;  // Blocks ALL zero-length writes!
+
+// AFTER (CORRECT):
+// Allow zero-length writes ONLY if fin=true (FIN-only frame)
+if (data.len == 0 and !fin) return 0;
+```
+
+**Explanation:** The guard prevented FIN-only frames (data.len=0, fin=true) from being sent. FIN-only frames are valid QUIC frames (RFC 9000 §19.8) used to signal stream completion without additional data.
+
+**Bug 2: Flow Control Blocking** (`src/quic/conn.zig:2254`)
+```zig
+// BEFORE (WRONG):
+if (to_send == 0) return error.FlowControlBlocked;  // Blocks FIN frames!
+
+// AFTER (CORRECT):
+// Allow to_send=0 ONLY if fin=true (FIN-only frame)
+if (to_send == 0 and !fin) return error.FlowControlBlocked;
+```
+
+**Explanation:** When data.len=0 for a FIN-only frame, flow control calculated to_send=0, then blocked the frame with FlowControlBlocked error. FIN-only frames should bypass this check per RFC 9000 §4.5.
+
+#### Additional Changes Made
+
+1. **Added `fin` parameter to writeStream() API** (`src/quic/conn.zig:2185`, `src/quic/api.zig:236`)
+2. **Added fin_sent tracking** for stream 0 and multi-streams (`src/quic/conn.zig:603, 2278-2286`)
+3. **Prevent writes after FIN sent** (`src/quic/conn.zig:2198, 2206-2208`)
+4. **Updated server loop** to handle partial writes and send FIN separately (`cmd/quic-server.zig:164-183`)
+5. **Added frame hexdump logging** to verify frame construction (`src/quic/conn.zig:2258-2261`)
+
+#### Verification
+
+After fixes, FIN frames are being sent:
+```
+DEBUG flow control: stream_id=0, data.len=21, cur_off=0, to_send=21
+DEBUG STREAM frame bytes (25 bytes): 0e 00 00 15 48 65 6c 6c 6f 20 66 72 6f 6d 20 47 6f 20 63 6c 69 65 6e 74 21
+DEBUG: Wrote 21/21 bytes to stream 0
+DEBUG STREAM frame bytes (4 bytes): 0f 00 15 00
+DEBUG: Sent FIN on stream 0
+```
+
+**Frame Decoding:**
+- First frame: Type **0x0E** (STREAM+LEN+OFF, no FIN), stream 0, offset 0, length **0x15** (21), then 21 bytes of data
+- Second frame: Type **0x0F** (STREAM+LEN+OFF+FIN), stream 0, offset **0x15** (21), length 0 ✅
+
+#### Remaining Issue: Partial Data Reception Mystery
+
+**Current State:** FIN frames are now being sent correctly, but tests still fail with same error.
+
+**The Mystery:**
+- ✅ Server constructs STREAM frame with all 21 bytes (hexdump confirmed)
+- ✅ Flow control allows all 21 bytes (`to_send=21`)
+- ✅ FIN is sent at offset 21 (correct per RFC 9000 §2.2)
+- ❌ Client only receives **11 bytes** and FIN at **offset 11** (incorrect!)
+
+**Error Analysis:**
+```
+FINAL_SIZE_ERROR: received offset 21 for stream 0, but final offset was already received at 11
+```
+
+This means:
+1. Client received data bytes 0-10 (11 bytes total)
+2. Client received FIN at offset 11 (establishing final size = 11)
+3. Client then received frame at offset 21 (violates final size)
+
+**Implication:** Something is corrupting the first STREAM frame:
+- Losing 10 bytes of data (21 → 11)
+- Adding a FIN flag (no FIN → FIN)
+
+**Hypothesis:** The issue is NOT in:
+- ❌ Frame construction (verified via hexdump - correct)
+- ❌ Flow control (allows all 21 bytes)
+- ❌ FIN handling (now working correctly)
+
+The problem MUST be in:
+- ⚠️ Packet transmission layer
+- ⚠️ Frame packetization (multiple frames in same packet?)
+- ⚠️ Packet encryption/protection
+- ⚠️ Some other layer between frame construction and wire transmission
+
+**Next Investigation Steps:**
+1. Add logging to packet sending path to verify packet contents before encryption
+2. Check if both STREAM frames are being sent in same packet
+3. Use tcpdump/wireshark to capture actual wire bytes
+4. Verify packet serialization doesn't truncate frames
+
+**Status:** ⚙️ **PARTIAL FIX** - FIN handling bugs fixed (2 critical bugs in writeStream), but client still receives partial data (11 of 21 bytes). Frame construction is correct, but something between frame buffer and wire is corrupting the data. Root cause unknown - requires investigation of packet layer.
+
 ---
 

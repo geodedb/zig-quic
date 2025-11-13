@@ -22,7 +22,7 @@ pub fn main() !void {
         api.poll(ep, 10) catch {};
         if (!sent_init) {
             const msg = "ping";
-            _ = api.writeStream(conn, 0, msg) catch 0;
+            _ = api.writeStream(conn, 0, msg, true) catch 0;
             sent_init = true;
         }
         const rn = api.readStream(conn, 0, buf[0..]) catch 0;

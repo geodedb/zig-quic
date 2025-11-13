@@ -233,8 +233,8 @@ pub fn getFirstStream(conn: *Connection) ?QuicStreamId {
 ///
 /// RFC 9000 §4.1/§4.4 specify per-stream flow control. Short writes indicate the
 /// connection cannot exceed the peer's advertised credit.
-pub fn writeStream(conn: *Connection, stream_id: QuicStreamId, data: []const u8) !usize {
-    return conn.writeStream(stream_id, data);
+pub fn writeStream(conn: *Connection, stream_id: QuicStreamId, data: []const u8, fin: bool) !usize {
+    return conn.writeStream(stream_id, data, fin);
 }
 
 /// Read stream data into `buffer`, yielding the number of bytes copied.
