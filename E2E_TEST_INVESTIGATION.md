@@ -216,7 +216,206 @@ if (conn.role == .Server and saw_crypto) {
 4. Determine if error occurs during signature scheme negotiation or certificate parsing
 5. Fix underlying issue or improve error handling to allow handshake continuation
 
-**Phase 39 Status:** 🔄 **IN PROGRESS**
+**Phase 39 Status:** ✅ **RESOLVED**
+
+### Phase 39 Resolution
+
+**Fix Applied:** (src/quic/endpoint/handshake_integration.zig:325-340)
+
+Added ECDSA P-256 (`ecdsa_secp256r1_sha256`) to the TLS configuration's `supported_signature_schemes`:
+
+```zig
+// RFC 8446 §4.2.3: Supported signature schemes for certificate verification
+// Include both ECDSA P-256 and Ed25519 for compatibility with different certificate types
+const supported_schemes = &[_]tls13.SignatureScheme{
+    .ecdsa_secp256r1_sha256,  // ECDSA P-256 (commonly used in certificates)
+    .ed25519,                 // Ed25519 (compact, efficient)
+};
+
+const config = tls13.Config{
+    .allocator = allocator,
+    .role = tls_role,
+    .alpn_protocols = if (alpn_list.len > 0) alpn_list else null,
+    .quic_transport_parameters = if (transport_params_bytes.len > 0) transport_params_bytes else null,
+    .server_cert_der = server_cert_der,
+    .server_key_der = server_key_der,
+    .supported_signature_schemes = supported_schemes,  // ← ADDED
+};
+```
+
+**Result:**
+- ✅ `UnexpectedAlgorithm` error resolved
+- ✅ TLS successfully parses ClientHello
+- ✅ Handshake keys derived and installed
+- ✅ ServerHello generated and sent
+- ✅ Coalesced packet (Initial + Handshake) transmitted
+
+---
+
+## Phase 40: TLS Secret Mismatch (IN PROGRESS 🔄)
+
+**Date:** 2025-11-13
+**Test:** `make e2e-test-go-comprehensive`
+**Error:** Client fails to decrypt Handshake packet - "decryption failed"
+
+### Problem Description
+
+After fixing Phase 39, the server successfully sends ServerHello + Handshake messages in a coalesced packet (Initial 130 bytes + Handshake 647 bytes). The client successfully:
+- ✅ Receives coalesced packet
+- ✅ Decrypts Initial packet containing ServerHello
+- ✅ Installs Handshake Read/Write keys
+- ❌ **FAILS** to decrypt Handshake packet
+
+**Go Client Log:**
+```
+2025/11/13 07:37:36 client Parsed a coalesced packet. Part 1: 130 bytes. Remaining: 647 bytes.
+2025/11/13 07:37:36 client <- Reading packet 1 (130 bytes) for connection (empty), Initial
+2025/11/13 07:37:36 client 	<- &wire.CryptoFrame{Offset: 0, Data length: 90, Offset + Data length: 90}
+2025/11/13 07:37:36 client Installed Handshake Write keys (using TLS_AES_128_GCM_SHA256)
+2025/11/13 07:37:36 client Installed Handshake Read keys (using TLS_AES_128_GCM_SHA256)
+2025/11/13 07:37:36 client Parsed a coalesced packet. Part 2: 647 bytes. Remaining: 0 bytes.
+2025/11/13 07:37:36 client Dropping %!s(logging.PacketType=1) packet (647 bytes) that could not be unpacked. Error: decryption failed
+```
+
+### Root Cause Analysis
+
+**TLS Handshake Secret Mismatch**
+
+The Zig server and Go client derive **completely different** handshake secrets from the same TLS transcript:
+
+**Zig Server Secrets:**
+```
+onSecretAvailable: role=Server level=Handshake
+  secret: 6a53163dbf876ffde562afbae23a3c1b7a41ad76d085eea5a6084f82b7d82072  ← Server HS secret
+onSecretAvailable: role=Server level=Handshake
+  secret: 870ee172be6c1aceccb0ee467d5f54597b04b671b162af82007c0776d7ad0039  ← Client HS secret
+```
+
+**Go Client Secrets (from TLS key log):**
+```
+CLIENT_HANDSHAKE_TRAFFIC_SECRET ... c8979acada231927a6b045379b7d5c059daa426b9ba302a4d712ea5f997e9e26
+SERVER_HANDSHAKE_TRAFFIC_SECRET ... fb53f84b0ae802274803c5d2a909f6e85bbccba534225f72004ce59aeb4d3112
+```
+
+**Analysis:**
+- The secrets are **completely different** (not even close byte-wise)
+- This indicates the TLS transcript hash or key derivation differs between implementations
+- Both sides install keys, but they encrypt/decrypt with different material
+- Result: Server encrypts Handshake packet with keys derived from `6a53163d...` / `870ee172...`
+- Client tries to decrypt with keys derived from `c8979aca...` / `fb53f84b...`
+- Decryption fails with AEAD authentication error
+
+### Investigation Areas
+
+**Possible Causes:**
+1. **TLS Transcript Hash Mismatch:** The running hash of handshake messages differs
+   - ClientHello content/order/extensions might be hashed differently
+   - ServerHello generation might include different content
+   - Transport parameters encoding might differ
+
+2. **Key Schedule Implementation:** vendor/ztls key derivation differs from standard
+   - HKDF-Expand-Label implementation
+   - Early secret, handshake secret computation
+   - Label strings or context inclusion
+
+3. **Certificate/Signature Processing:** ECDSA P-256 implementation differs
+   - Signature generation during CertificateVerify
+   - Certificate chain encoding
+   - Public key format interpretation
+
+4. **Random Values:** Client/server random not properly exchanged
+   - ClientHello.random
+   - ServerHello.random
+
+### Current Status
+
+**Diagnosis:**
+- ✅ Phase 39 resolved: ECDSA P-256 support added
+- ✅ ServerHello successfully generated and sent
+- ✅ Handshake packet successfully generated and sent in coalesced packet
+- ✅ Client successfully decrypts ServerHello from Initial packet
+- ✅ Client successfully installs Handshake keys
+- ❌ **TLS secrets mismatch** - client and server derive completely different handshake secrets
+- ❌ Client fails to decrypt Handshake packet (AEAD authentication failure)
+- 🔄 Need to investigate vendor/ztls TLS 1.3 key schedule implementation
+
+**Key Observation:**
+Both client and server successfully process the same ClientHello and ServerHello messages (proven by client's ability to decrypt Initial packet), yet they derive completely different Handshake secrets. This indicates a fundamental incompatibility in:
+1. Transcript hash computation (hash of handshake messages)
+2. Key schedule implementation (HKDF-Expand-Label or secret derivation)
+3. Random value handling (client_random, server_random)
+
+**Secret Comparison:**
+```
+Zig Server:  Server HS = 6a53163dbf87..., Client HS = 870ee172be6c...
+Go Client:   SERVER_HS = fb53f84b0ae8..., CLIENT_HS = c8979acada23...
+```
+Zero byte overlap - indicates systematic difference, not minor bug.
+
+**Next Steps (High Priority):**
+1. **Add transcript hash logging** in vendor/ztls Context before secret derivation
+2. **Compare transcript hash** between Go client and Zig server
+3. **Verify HKDF-Expand-Label** implementation in vendor/ztls/src/key_schedule.zig
+4. **Check for RFC 8446 compliance** in key derivation (label strings, context inclusion)
+5. **Test with reference implementation** (openssl s_client or wireshark packet dissection)
+
+**Phase 40 Status:** ✅ **RESOLVED**
+
+### Phase 40 Resolution
+
+**Root Cause Identified:**
+
+vendor/ztls had a critical bug in TLS 1.3 key schedule (RFC 8446 §7.1). The early secret derivation was using an **empty slice** instead of **32 zero bytes** for the IKM parameter:
+
+**BEFORE (WRONG):**
+```zig
+// vendor/ztls/src/tls13/key_derivation.zig:126
+const early_secret = ks.extractHash(hash, null, &[_]u8{});  // ❌ Empty slice!
+```
+
+**RFC 8446 §7.1 requires:**
+```
+early_secret = HKDF-Extract(salt=0^HashLen, IKM=0^HashLen)
+```
+Where `0^HashLen` means HashLen zero bytes (32 bytes for SHA-256), NOT an empty slice.
+
+**Evidence:**
+```
+vendor/ztls (WRONG):   Early secret = B613679A0814D9EC772F95D778C35FC5FF1697C493715653C6C712144292C5AD
+RFC 8446 (CORRECT):    Early secret = 33AD0A1C607EC03B09E6CD9893680CE210ADF300AA1F2660E1B22E10F170F92A
+```
+
+This cascaded through the entire key schedule:
+- Wrong early secret → Wrong derived secret
+- Wrong derived secret → Wrong handshake secret
+- Wrong handshake secret → Wrong client/server handshake traffic secrets
+- Wrong traffic secrets → Client cannot decrypt server's Handshake packet
+
+**Fix Applied:** (vendor/ztls/src/tls13/key_derivation.zig:126-129)
+```zig
+// RFC 8446 §7.1: early_secret = HKDF-Extract(0, 0) when no PSK
+// Both salt and IKM must be HashLen zero bytes (32 bytes for SHA-256)
+const zero_ikm: [32]u8 = [_]u8{0} ** 32;
+const early_secret = ks.extractHash(hash, null, &zero_ikm);
+```
+
+**Result:**
+- ✅ TLS handshake secrets now match between Zig server and Go client
+- ✅ Connection established successfully
+- ✅ TLS handshake complete
+- ✅ Stream opened (ID: 0)
+- ✅ Client can decrypt server's Handshake packet
+- ✅ Server can decrypt client's 1-RTT packets
+
+**Verification:**
+```
+$ make e2e-test-go-comprehensive
+2025/11/13 07:59:53 ✅ Connection established
+2025/11/13 07:59:53 ✅ TLS handshake complete
+2025/11/13 07:59:53 ✓ Stream opened (ID: 0)
+```
+
+**Phase 40 Status:** ✅ **RESOLVED - TLS Key Schedule Fixed**
 
 ---
 
@@ -225,9 +424,10 @@ if (conn.role == .Server and saw_crypto) {
 | Phase | Issue | Status | Files Modified |
 |-------|-------|--------|----------------|
 | 38 | Packet number expansion returning wrong value | ✅ RESOLVED | crypto_quic.zig, incoming.zig |
-| 39 | UnexpectedAlgorithm error blocking ServerHello | 🔄 IN PROGRESS | incoming.zig (partial fix) |
+| 39 | UnexpectedAlgorithm error blocking ServerHello | ✅ RESOLVED | handshake_integration.zig |
+| 40 | TLS early secret derivation using empty IKM | ✅ RESOLVED | vendor/ztls key_derivation.zig |
 
-**Key Insight:** The quic-go interop test is now correctly processing packet numbers and ACK frames. The remaining blocker is a TLS layer error that prevents the server from sending its handshake response, even though the initial handshake processing (ClientHello parsing, key derivation) succeeds.
+**Key Achievement:** The Zig QUIC server successfully completes TLS 1.3 handshake with quic-go client! Packet numbers, ACK frames, signature scheme negotiation, and TLS key schedule all work correctly. Connection establishment and stream opening verified.
 
 ### Phase 39 Update: Detailed Error Trace
 
