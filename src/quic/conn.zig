@@ -394,9 +394,19 @@ pub const StreamRx = struct {
     inbox: std.ArrayList(u8),
     bufs: std.ArrayList(Segment),
     fin_off: ?u64 = null,
+    // PHASE 42 PART 9: Per-stream flow control tracking (RFC 9000 §4.2)
+    local_max_stream_data: u64 = 0,       // Current receive window limit for this stream
+    last_sent_max_stream_data: u64 = 0,   // Last MAX_STREAM_DATA value sent to peer
 
     fn init() StreamRx {
-        return .{ .recv_off = 0, .inbox = std.ArrayList(u8){}, .bufs = std.ArrayList(Segment){}, .fin_off = null };
+        return .{
+            .recv_off = 0,
+            .inbox = std.ArrayList(u8){},
+            .bufs = std.ArrayList(Segment){},
+            .fin_off = null,
+            .local_max_stream_data = 0,
+            .last_sent_max_stream_data = 0,
+        };
     }
     pub fn deinit(self: *StreamRx, alloc: *std.mem.Allocator) void {
         for (self.bufs.items) |seg| alloc.free(seg.data);
@@ -2324,6 +2334,20 @@ pub const Connection = struct {
         const rem = s.inbox.items.len - n;
         if (rem > 0) std.mem.copyForwards(u8, s.inbox.items[0..rem], s.inbox.items[n..]);
         s.inbox.shrinkRetainingCapacity(rem);
+
+        // PHASE 42 PART 9: Expand per-stream flow control window (RFC 9000 §4.2)
+        // When application consumes data, grant more receive window to allow peer to send more
+        const bytes_consumed = n;
+        if (bytes_consumed > 0) {
+            // Similar to connection-level flow control, expand window when consumed
+            const old_max = s.local_max_stream_data;
+            // Expand by same factor as connection-level (see conn.zig:1901)
+            const bump = old_max / 2;  // Grow by 50%
+            const new_val, const overflow = @addWithOverflow(old_max, bump);
+            s.local_max_stream_data = if (overflow != 0) std.math.maxInt(u64) else new_val;
+            std.debug.print("[FC] Stream {} read {} bytes, window expanded {} -> {}\n", .{id, bytes_consumed, old_max, s.local_max_stream_data});
+        }
+
         // TRACE: readStream returning data
         // std.debug.print("readStream - returning {} bytes\n", .{n});
         return n;
@@ -3201,7 +3225,10 @@ pub const Connection = struct {
         if (self.dgram_inbox.capacity == 0) self.dgram_inbox = std.ArrayList([]u8){};
         if (self.incoming_stream_queue.capacity == 0) self.incoming_stream_queue = std.ArrayList(u64){};
         if (self.streams_rx.getPtr(id)) |s| return s;
-        const sr = StreamRx.init();
+        var sr = StreamRx.init();
+        // PHASE 42 PART 9: Initialize per-stream flow control window (RFC 9000 §4.2)
+        sr.local_max_stream_data = self.local_max_stream_data;
+        sr.last_sent_max_stream_data = 0;
         self.streams_rx.put(id, sr) catch {};
         return self.streams_rx.getPtr(id).?;
     }

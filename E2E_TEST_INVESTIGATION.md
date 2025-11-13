@@ -1720,3 +1720,140 @@ Need to investigate flow control window management rather than amplification lim
 3. Verify flow control window updates are being sent to client
 4. Consider if the issue is in the echo server implementation itself
 
+---
+
+## Phase 42 Part 9: ROOT CAUSE FOUND - Missing Per-Stream MAX_STREAM_DATA (CRITICAL BUG 🔴)
+
+**Date:** 2025-11-13
+**Status:** Still 3/8 tests passing - **ROOT CAUSE IDENTIFIED**
+
+### Investigation: Flow Control Window Management
+
+Following the alternative hypothesis from Part 8, I investigated how MAX_STREAM_DATA frames are generated.
+
+### Code Analysis
+
+**1. Helper Function Exists But Never Called**
+
+`src/quic/connection/flow_control.zig:83`:
+```zig
+pub fn shouldSendMaxStreamData(local_max_stream_data: u64, last_sent_max_stream_data: u64) bool {
+    return local_max_stream_data > last_sent_max_stream_data;
+}
+```
+
+Searched entire codebase - **this function is NEVER called**!
+
+**2. MAX_STREAM_DATA Frame Generation (incoming.zig:2338-2344)**
+
+```zig
+// Pace MAX_* emission: include only when values increased
+if (conn.local_max_stream_data > conn.last_sent_max_stream_data) {
+    _ = (frame.Frame{ .max_stream_data = .{
+        .stream_id = 0,  // <-- HARDCODED TO STREAM 0!
+        .max = conn.local_max_stream_data
+    } }).write(w) catch {};
+    conn.last_sent_max_stream_data = conn.local_max_stream_data;
+}
+```
+
+**3. Connection Structure (conn.zig)**
+
+```zig
+pub const Connection = struct {
+    streams_rx: std.AutoHashMap(u64, StreamRx) = undefined,  // Per-stream storage
+    local_max_stream_data: u64 = 16 * 1024,  // SINGLE GLOBAL VALUE!
+    last_sent_max_stream_data: u64 = 0,      // SINGLE GLOBAL VALUE!
+    // ...
+}
+```
+
+### ROOT CAUSE
+
+**The implementation has THREE critical bugs:**
+
+1. **Hardcoded stream ID**: MAX_STREAM_DATA frames always use `stream_id = 0`
+   - Only stream 0 gets flow control window updates
+   - All other streams (1, 2, 3, 4, ...) NEVER receive MAX_STREAM_DATA frames
+
+2. **No per-stream tracking**: `local_max_stream_data` is a single connection-level value
+   - Should be tracked per-stream in `StreamRx` structure
+   - Server doesn't know each stream's current window
+
+3. **No iteration over active streams**: Code only sends ONE MAX_STREAM_DATA frame
+   - Should iterate `streams_rx` HashMap and send MAX_STREAM_DATA for each active stream
+   - RFC 9000 §4.2: "Stream flow control is per-stream"
+
+### Why This Explains All Symptoms
+
+**✅ Test 1-3 Pass (Small transfers on stream 0)**:
+- Single stream echo uses stream 0 → gets flow control updates
+- 10KB fits within initial window (16 KB default)
+- Concurrent streams test uses small data on each stream → stays within initial window
+
+**❌ Test 4-8 Fail (Large transfers >100KB)**:
+- Client likely uses stream IDs other than 0 for some tests
+- Even stream 0 exhausts its window on 100KB+ transfers
+- Client waits for MAX_STREAM_DATA frames that NEVER arrive
+- Connection times out after 30 seconds with "no recent network activity"
+
+### Concrete Example
+
+```
+Client opens stream 4 and wants to send 102400 bytes:
+1. Initial window: 16384 bytes (from transport params)
+2. Client sends first 16384 bytes → server receives and ACKs
+3. Server consumes data but NEVER sends MAX_STREAM_DATA(stream_id=4)
+4. Client exhausted send window, waits for permission to send more
+5. Server hardcoded to only send MAX_STREAM_DATA(stream_id=0)
+6. DEADLOCK: Client waiting, server waiting
+7. Timeout after 30 seconds
+```
+
+### Fix Required
+
+Need to implement proper per-stream flow control:
+
+1. **Add fields to StreamRx**:
+   ```zig
+   pub const StreamRx = struct {
+       recv_off: u64 = 0,
+       local_max_stream_data: u64 = 16 * 1024,      // NEW
+       last_sent_max_stream_data: u64 = 0,          // NEW
+       // ... existing fields
+   }
+   ```
+
+2. **Update window when stream consumes data**:
+   - When `readStream()` is called, update that stream's `local_max_stream_data`
+   - Similar logic to connection-level MAX_DATA updates
+
+3. **Send MAX_STREAM_DATA for ALL active streams**:
+   ```zig
+   // Iterate over active streams
+   var iter = conn.streams_rx.iterator();
+   while (iter.next()) |entry| {
+       const stream_id = entry.key_ptr.*;
+       const stream = entry.value_ptr;
+       if (stream.local_max_stream_data > stream.last_sent_max_stream_data) {
+           _ = (frame.Frame{ .max_stream_data = .{
+               .stream_id = stream_id,  // CORRECT!
+               .max = stream.local_max_stream_data
+           } }).write(w) catch {};
+           stream.last_sent_max_stream_data = stream.local_max_stream_data;
+       }
+   }
+   ```
+
+### Impact
+
+**Severity**: CRITICAL - Prevents any large data transfer on non-zero stream IDs
+**RFC Compliance**: Violates RFC 9000 §4.2 (per-stream flow control)
+**Test Impact**: 5/8 tests fail (62.5% failure rate)
+
+### Next Steps
+
+1. Implement per-stream flow control tracking in StreamRx
+2. Update MAX_STREAM_DATA frame generation to iterate all streams
+3. Test and verify 8/8 tests pass
+

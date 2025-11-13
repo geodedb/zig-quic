@@ -2334,13 +2334,22 @@ pub fn generateAndSendAck(
                     } };
                     _ = ack.write(w) catch 0;
 
-                    // Pace MAX_* emission: include only when values increased
-                    if (conn.local_max_stream_data > conn.last_sent_max_stream_data) {
-                        _ = (frame.Frame{ .max_stream_data = .{
-                            .stream_id = 0,
-                            .max = conn.local_max_stream_data
-                        } }).write(w) catch {};
-                        conn.last_sent_max_stream_data = conn.local_max_stream_data;
+                    // PHASE 42 PART 9: Send MAX_STREAM_DATA for ALL active streams (RFC 9000 §4.2)
+                    // Per-stream flow control requires tracking and updating each stream's window
+                    {
+                        var iter = conn.streams_rx.iterator();
+                        while (iter.next()) |entry| {
+                            const stream_id = entry.key_ptr.*;
+                            const stream = entry.value_ptr;
+                            if (stream.local_max_stream_data > stream.last_sent_max_stream_data) {
+                                std.debug.print("[FC] Sending MAX_STREAM_DATA(stream={}, max={})\n", .{stream_id, stream.local_max_stream_data});
+                                _ = (frame.Frame{ .max_stream_data = .{
+                                    .stream_id = stream_id,
+                                    .max = stream.local_max_stream_data
+                                } }).write(w) catch {};
+                                stream.last_sent_max_stream_data = stream.local_max_stream_data;
+                            }
+                        }
                     }
 
                     if (conn.local_max_data > conn.last_sent_max_data) {
