@@ -2520,5 +2520,60 @@ No re-queueing needed - the application layer's round-robin iterator already pro
 3. Commit Phase 42 Part 15 fix if successful
 4. Document final architecture in investigation log
 
-**Status:** Testing fix for queue blocking issue...
+**Status:** ✅ Queue explosion fixed, but transfers stop at 64KB
+
+### Test Results After Smart Queueing
+
+**Queue Improvements:**
+- Before: Stream 24 queued 53 times (massive buildup)
+- After: Max 4 items in queue (clean)
+- Stream 20: Queued 1 time only
+- Stream 24: Queued 1 time only
+
+**Transfer Results:**
+```
+✅ Stream 20: 10240 bytes complete (10KB test)
+⚠️  Stream 24: 65536 bytes transferred (stopped at 64KB, test expects 102KB)
+```
+
+**Test Summary:** 3/8 tests passing
+- ✅ Single Stream Echo (21 bytes)
+- ✅ Multiple Concurrent Streams (4×16 bytes)
+- ✅ Large Transfer (10KB)
+- ❌ Large Transfer (100KB) - Stops at 64KB
+- ❌ Tests 5-8 - All timeout
+
+### Critical Discovery: 64KB Transfer Limit
+
+Stream 24 successfully transfers 64KB but stops before completing the 100KB test.
+This is NOT a stream acceptance issue - the stream IS accepted and processing data.
+
+**Evidence:**
+```
+[P42-15] Stream 24 queued (transition to readable, 1 total in queue)
+[P42-13-READ] Stream 24 read 4096 bytes (4096 total read, loop 104)
+[P42-13-READ] Stream 24 read 4096 bytes (8192 total read, loop 108)
+...
+[P42-13-READ] Stream 24 read 4096 bytes (65536 total read, loop 164)
+[P42-13-FIN] Stream 24 received FIN (total read: 65536, total written: 65536, pending: 0)
+[P42-12] Stream 24 sent FIN, complete
+```
+
+The server received FIN after 64KB, suggesting:
+1. **Client stopped sending** - Flow control window exhausted?
+2. **Missing ACKs** - Server not acknowledging received data?
+3. **Congestion control** - Connection throttled to zero?
+
+**This is a NEW issue, separate from stream acceptance.**
+
+### Next Investigation: Phase 42 Part 16
+
+Need to investigate why transfers stop at exactly 64KB (65536 bytes):
+1. Check flow control window sizes (connection and stream level)
+2. Verify ACK frames are being sent for received data
+3. Check if MAX_STREAM_DATA frames are being sent
+4. Examine congestion controller state
+5. Look for any hard-coded 64KB limits in the codebase
+
+**Status:** Stream acceptance mechanism fixed (queue explosion resolved), moving to flow control investigation.
 
