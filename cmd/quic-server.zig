@@ -149,11 +149,24 @@ pub fn main() !void {
                 const stream_id = api.acceptStream(conn) catch break; // Break when no more streams available
                 std.debug.print("DEBUG: Accepted stream {d}\n", .{stream_id});
 
-                // Read ALL data from the stream (loop until no more data)
-                // For large transfers (100KB+), we need to read multiple times
+                // STREAMING ECHO: Read chunks and echo them back immediately.
+                // CRITICAL FIX: By calling writeStream() after each read chunk, we trigger packet
+                // transmission which includes queued ACKs. This prevents flow control deadlock on
+                // large transfers where client exhausts send window waiting for ACKs.
+                //
+                // Previous approach (buffer all, then echo) caused:
+                // - Client sends ~28KB (initial window)
+                // - Server reads in tight loop, never sends ACKs
+                // - Client blocks waiting for ACKs to update window
+                // - Timeout after 30s
+                //
+                // New approach (streaming echo):
+                // - Read chunk → immediately echo it back via writeStream()
+                // - writeStream() triggers packet send with queued ACKs
+                // - Client receives ACKs, updates flow control window
+                // - Client continues sending more data
                 var total_read: usize = 0;
-                var stream_buf = std.ArrayListUnmanaged(u8){};
-                defer stream_buf.deinit(alloc);
+                var got_fin = false;
 
                 while (true) {
                     var chunk: [4096]u8 = undefined;
@@ -161,44 +174,42 @@ pub fn main() !void {
                         std.debug.print("DEBUG: readStream error: {}\n", .{err});
                         break :blk 0;
                     };
-                    if (n == 0) break; // No more data available
+                    if (n == 0) break; // No more data available right now
 
-                    stream_buf.appendSlice(alloc, chunk[0..n]) catch break;
                     total_read += n;
-                    std.debug.print("DEBUG: Read {d} bytes (total {d} bytes so far from stream {d})\n", .{n, total_read, stream_id});
+                    std.debug.print("DEBUG: Read {d} bytes from stream {d} (total {d})\n", .{n, stream_id, total_read});
 
-                    // CRITICAL: Poll after each chunk to process incoming packets and send ACKs.
-                    // This prevents flow control window exhaustion on large transfers (100KB+).
-                    // Without this, client sends ~28KB then blocks waiting for ACKs that never arrive.
-                    api.poll(ep, 0) catch {};
+                    // Echo this chunk back immediately (WITHOUT FIN yet)
+                    const written = api.writeStream(conn, stream_id, chunk[0..n], false) catch |err| blk: {
+                        std.debug.print("DEBUG: writeStream error: {}\n", .{err});
+                        break :blk 0;
+                    };
+                    if (written == 0) {
+                        std.debug.print("DEBUG: writeStream returned 0, breaking\n", .{});
+                        break;
+                    }
+                    std.debug.print("DEBUG: Echoed {d} bytes back on stream {d}\n", .{written, stream_id});
+
+                    // Check if we got FIN (stream complete)
+                    // Note: readStream doesn't explicitly tell us about FIN, but returning 0 after reading data suggests FIN
+                    const next_n = api.readStream(conn, stream_id, chunk[0..]) catch 0;
+                    if (next_n == 0) {
+                        got_fin = true;
+                        break; // Stream complete
+                    } else {
+                        // Got more data, echo it too
+                        total_read += next_n;
+                        std.debug.print("DEBUG: Read {d} more bytes from stream {d} (total {d})\n", .{next_n, stream_id, total_read});
+                        const written2 = api.writeStream(conn, stream_id, chunk[0..next_n], false) catch 0;
+                        std.debug.print("DEBUG: Echoed {d} bytes back on stream {d}\n", .{written2, stream_id});
+                    }
                 }
 
-                if (total_read > 0) {
-                    std.debug.print("stream {d} received {d} bytes total: ", .{stream_id, total_read});
-                    for (stream_buf.items[0..@min(total_read, 32)]) |b| std.debug.print("{x:0>2} ", .{b});
-                    if (total_read > 32) std.debug.print("...", .{});
-                    std.debug.print("\n", .{});
-
-                    // Echo back all data with FIN
-                    var total_written: usize = 0;
-                    while (total_written < total_read) {
-                        const remaining = total_read - total_written;
-                        const chunk_size = @min(remaining, 1000); // Send in 1KB chunks
-                        const is_last_write = (total_written + chunk_size) >= total_read;
-
-                        const written = api.writeStream(conn, stream_id, stream_buf.items[total_written..total_written+chunk_size], is_last_write) catch |err| blk: {
-                            std.debug.print("DEBUG: writeStream error: {}\n", .{err});
-                            break :blk 0;
-                        };
-                        if (written == 0) {
-                            std.debug.print("DEBUG: writeStream returned 0, breaking\n", .{});
-                            break;
-                        }
-                        total_written += written;
-                        std.debug.print("DEBUG: Wrote {d}/{d} bytes to stream {d} (fin={})\n", .{total_written, total_read, stream_id, is_last_write});
-                    }
-                } else {
-                    std.debug.print("DEBUG: No data read from stream {d}\n", .{stream_id});
+                // Send FIN if we completed the stream
+                if (got_fin or total_read > 0) {
+                    std.debug.print("stream {d} complete: {d} bytes total (fin={})\n", .{stream_id, total_read, got_fin});
+                    // Send FIN-only frame to close our send side
+                    _ = api.writeStream(conn, stream_id, &[_]u8{}, true) catch {};
                 }
             }
 

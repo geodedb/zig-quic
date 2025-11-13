@@ -1320,3 +1320,92 @@ Possible approaches:
 
 **Status:** 🔍 **INVESTIGATING ACK TRANSMISSION MECHANISM** - Need to understand how/when ACKs are flushed and explicitly trigger it during data reading.
 
+
+---
+
+## Phase 42 Part 6: Streaming Echo Attempt - writeStream() Also Doesn't Trigger ACKs
+
+### Hypothesis
+
+Based on Part 5 discovery that `poll()` doesn't trigger ACK sends, I hypothesized that `writeStream()` might trigger packet transmission which would include queued ACKs.
+
+### Implementation
+
+Changed from buffered echo to streaming echo:
+
+**Old Approach** (buffer all, then echo):
+```zig
+while (true) {
+    read chunk → append to buffer
+}
+write entire buffer back
+```
+
+**New Approach** (streaming echo):
+```zig
+while (true) {
+    read chunk
+    immediately writeStream(chunk, fin=false)  // ← Trigger packet send with ACKs?
+}
+writeStream(&[_]u8{}, fin=true)  // Send FIN
+```
+
+**Rationale:** Each `writeStream()` call should trigger packet transmission. Packet transmission should include any queued ACKs. This would update flow control windows continuously.
+
+### Test Result: NO IMPROVEMENT ❌
+
+**Results:** Still 3/8 tests passing, identical timeout pattern.
+```
+✅ Test 1: Single Stream Echo (21 bytes)
+✅ Test 2: Multiple Concurrent Streams (4 streams)  
+✅ Test 3: Large Transfer (10KB)
+❌ Test 4: Large Transfer (102400) - timeout: no recent network activity
+❌ Tests 5-8: Similar timeouts
+```
+
+### Conclus
+
+ion: Neither poll() NOR writeStream() Trigger ACK Transmission
+
+**Critical Discovery:**
+- `api.poll(ep, 0)` after each read chunk → NO improvement
+- `api.writeStream()` after each read chunk → NO improvement
+- Both failed with identical symptoms (timeout at ~28KB)
+
+**What This Means:**
+1. ACKs are queued somewhere during packet processing
+2. But they're NOT sent by either:
+   - `poll()` - Only processes incoming, doesn't flush outgoing
+   - `writeStream()` - Sends STREAM frames but not standalone ACKs
+3. There must be a SEPARATE mechanism for flushing ACK-only packets
+
+### Why Flow Control Still Deadlocks
+
+**The Cycle:**
+1. Client sends 28KB (fills initial window)
+2. Server reads data → ACKs are queued internally
+3. Server calls `poll(0)` → Processes incoming (none) but doesn't send queued ACKs
+4. Server calls `writeStream()` → Sends echo data but not standalone ACKs
+5. Client needs ACKs to update window → Blocks waiting
+6. Server needs more data from client → Blocks waiting  
+7. **DEADLOCK** → Timeout after 30s
+
+### Architectural Issue Identified
+
+The Zig QUIC implementation appears to separate:
+- **ACK generation** (happens during packet processing)
+- **ACK transmission** (happens... somewhere else?)
+
+Neither `poll()` nor `writeStream()` bridge this gap. We need to find the actual ACK flush mechanism or implement one.
+
+### Next Investigation Required
+
+Need to trace through the endpoint/connection code to find:
+1. Where ACKs are queued after packet processing
+2. What event/function actually transmits them
+3. Why small transfers (10KB) work but large ones (100KB+) don't
+   - Hypothesis: Small transfers complete in one event loop iteration
+   - Large transfers need multiple iterations with ACKs in between
+
+**Status:** 🔍 **FUNDAMENTAL ARCHITECTURAL ISSUE** - Need to understand or implement ACK flushing mechanism separate from poll() and writeStream().
+
