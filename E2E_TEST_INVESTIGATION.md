@@ -1205,3 +1205,118 @@ Modified `cmd/quic-server.zig:148-198` to loop and read ALL data from each strea
 
 **Next Investigation:** Server event loop needs to interleave ACK processing with data reading.
 
+
+---
+
+## Phase 42 Part 5: poll() Investigation - Why Interleaved Polling Isn't Sufficient
+
+### Attempted Fix
+
+Added `api.poll(ep, 0)` after each chunk read in the server read loop:
+```zig
+while (true) {
+    var chunk: [4096]u8 = undefined;
+    const n = api.readStream(conn, stream_id, chunk[0..]) catch |err| blk: {...};
+    if (n == 0) break;
+    
+    stream_buf.appendSlice(alloc, chunk[0..n]) catch break;
+    total_read += n;
+    
+    // CRITICAL: Poll after each chunk to process incoming packets and send ACKs
+    api.poll(ep, 0) catch {};  // ← ADDED THIS
+}
+```
+
+### Test Result: NO IMPROVEMENT ❌
+
+**Results:** Still 3/8 tests passing, same timeout errors on large transfers.
+```
+✅ Test 1: Single Stream Echo (21 bytes)
+✅ Test 2: Multiple Concurrent Streams (4 streams)
+✅ Test 3: Large Transfer (10KB)
+❌ Test 4: Large Transfer (102400) - timeout: no recent network activity
+❌ Tests 5-8: Similar timeouts
+```
+
+###  Root Cause Analysis: poll() Doesn't Send ACKs
+
+**What poll() Actually Does** (src/quic/endpoint.zig:508-536):
+```zig
+pub fn poll(self: *Endpoint, timeout_ms: i32) !void {
+    self.processExpiredTimers(nowMsMonotonic());
+    var eff_timeout = self.nextTimeoutFromTimers(now_ms, timeout_ms);
+    
+    // Poll transport (blocks until data available or timeout)
+    try self.transport.poll(eff_timeout);
+    
+    // Drain all available packets
+    while (true) {
+        const result = self.recvFrom(&buf) catch |err| {
+            if (err == error.WouldBlock) break;
+            return err;
+        };
+        // Process INCOMING packets
+        self.processIncomingDatagram(result.peer, buf[0..result.n], null);
+    }
+    
+    self.processExpiredTimers(nowMsMonotonic());
+    self.pruneClosed();
+}
+```
+
+**Key Insight:** `poll()` processes **incoming packets** but does NOT send **outgoing ACKs**!
+
+ACKs are queued during packet processing but only sent later when:
+1. Connection flushes outgoing frames
+2. writeStream() triggers packet transmission
+3. Some other event causes packet sends
+
+### The Real Problem: ACK Transmission Timing
+
+**Sequence of Events:**
+1. Client sends ~28KB of data (fills server's initial flow control window)
+2. Server calls `readStream()` which removes data from receive buffer
+3. Server calls `poll(0)` which processes any incoming packets (but there are none, client is waiting)
+4. Server continues reading more data
+5. **Flow control window is consumed but never updated** because ACKs aren't sent
+6. Client exhausts send window, waits for ACKs that never arrive
+7. Test times out with "no recent network activity"
+
+**Evidence from Previous Testing:**
+- Server reads exactly 28,711 bytes of 102,400 bytes before timeout
+- 28KB ≈ default initial flow control window size
+- Client stops sending after exhausting window
+- Server never sends ACKs to update the window
+
+### Why poll(0) Doesn't Help
+
+1. **No packets to receive:** Client has stopped sending because it hit flow control limit
+2. **No ACKs sent:** poll() only processes incoming, doesn't flush outgoing
+3. **Timeout=0:** Returns immediately if no packets available, doesn't help with ACK timing
+
+### Architectural Issue
+
+The server architecture assumes:
+- Application reads data from streams
+- Control returns to main event loop
+- Main loop processes connections and flushes outgoing frames
+- ACKs get sent during connection processing
+
+But our tight read loop:
+- Stays in readStream() loop without returning to main event loop
+- Never gives connection a chance to flush ACKs
+- Flow control window never gets updated
+- Client hangs waiting for ACKs
+
+### Next Investigation: Need Explicit ACK Transmission
+
+The fix requires finding a way to **explicitly send ACKs** during data reading, not just process incoming packets.
+
+Possible approaches:
+1. **Find connection flush function** - Force send of queued ACKs
+2. **Call writeStream with 0 bytes** - Might trigger ACK transmission
+3. **Restructure event loop** - Return to main loop periodically during large reads
+4. **Modify readStream API** - Have it automatically trigger ACK sends
+
+**Status:** 🔍 **INVESTIGATING ACK TRANSMISSION MECHANISM** - Need to understand how/when ACKs are flushed and explicitly trigger it during data reading.
+

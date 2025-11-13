@@ -166,6 +166,11 @@ pub fn main() !void {
                     stream_buf.appendSlice(alloc, chunk[0..n]) catch break;
                     total_read += n;
                     std.debug.print("DEBUG: Read {d} bytes (total {d} bytes so far from stream {d})\n", .{n, total_read, stream_id});
+
+                    // CRITICAL: Poll after each chunk to process incoming packets and send ACKs.
+                    // This prevents flow control window exhaustion on large transfers (100KB+).
+                    // Without this, client sends ~28KB then blocks waiting for ACKs that never arrive.
+                    api.poll(ep, 0) catch {};
                 }
 
                 if (total_read > 0) {
