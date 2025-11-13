@@ -627,6 +627,7 @@ pub fn decryptInitialPacketWithDcid(
     errdefer allocator.free(plaintext);
 
     // Decrypt the packet
+    // Phase 34 fix: Pass full 4-byte buffer instead of slice (consistent with Phase 33 fix)
     // Note: errdefer on line 636 handles cleanup on error
     const plaintext_len = crypto_quic.unprotectInitialAutoSample(
         .aes_128_gcm,
@@ -634,7 +635,7 @@ pub fn decryptInitialPacketWithDcid(
         &keys.iv,
         &keys.hp,
         &header_first,
-        pn_bytes[0..4],
+        &pn_bytes, // Pass full array, not slice
         header_prefix,
         ciphertext_and_tag,
         plaintext,
