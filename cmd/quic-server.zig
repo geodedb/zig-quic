@@ -161,11 +161,14 @@ pub fn main() !void {
                     if (n > 32) std.debug.print("...", .{});
                     std.debug.print("\n", .{});
 
-                    // Echo back all data, looping until all bytes are sent
+                    // Echo back all data with FIN in a single STREAM frame
+                    // This is the recommended pattern: send all data with FIN=true in one frame
                     var total_written: usize = 0;
                     while (total_written < n) {
-                        // Only set fin=false for now, we'll send fin in a separate call after all data is sent
-                        const written = api.writeStream(conn, stream_id, buf[total_written..n], false) catch |err| blk: {
+                        // Send remaining data, set FIN=true on the LAST write
+                        const remaining = n - total_written;
+                        const is_last_write = remaining <= 1000; // Assuming max write size ~1000 bytes
+                        const written = api.writeStream(conn, stream_id, buf[total_written..n], is_last_write) catch |err| blk: {
                             std.debug.print("DEBUG: writeStream error: {}\n", .{err});
                             break :blk 0;
                         };
@@ -174,12 +177,7 @@ pub fn main() !void {
                             break;
                         }
                         total_written += written;
-                        std.debug.print("DEBUG: Wrote {d}/{d} bytes to stream {d}\n", .{total_written, n, stream_id});
-                    }
-                    // Now send FIN to indicate stream is complete
-                    if (total_written == n) {
-                        _ = api.writeStream(conn, stream_id, &[_]u8{}, true) catch {};
-                        std.debug.print("DEBUG: Sent FIN on stream {d}\n", .{stream_id});
+                        std.debug.print("DEBUG: Wrote {d}/{d} bytes to stream {d} (fin={})\n", .{total_written, n, stream_id, is_last_write});
                     }
                 } else {
                     std.debug.print("DEBUG: No data read from stream {d}\n", .{stream_id});

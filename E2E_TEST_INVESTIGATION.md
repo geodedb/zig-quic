@@ -970,5 +970,112 @@ The problem MUST be in:
 
 **Status:** ⚙️ **PARTIAL FIX** - FIN handling bugs fixed (2 critical bugs in writeStream), but client still receives partial data (11 of 21 bytes). Frame construction is correct, but something between frame buffer and wire is corrupting the data. Root cause unknown - requires investigation of packet layer.
 
+### Phase 42 Deep Dive: The "11 of 21 Bytes" Mystery (INVESTIGATING 🔍)
+
+**Date:** 2025-11-13
+**Current Status:** 1/8 tests passing, all failures show "Sent 21 bytes, received 11 bytes"
+
+#### Approach 1: Separate FIN Frame (FAILED)
+
+**Implementation:** Send data frame (fin=false), then send FIN-only frame (fin=true)
+- Fixed zero-length write blocking
+- Fixed flow control blocking of FIN frames
+- Result: Client still receives only 11 bytes
+
+**Server logs confirmed:**
+```
+DEBUG STREAM frame bytes (25 bytes): 0e 00 00 15 48 65 6c 6c 6f ... (21 bytes)
+About to call send() with 44 bytes
+send() returned 44 bytes
+DEBUG STREAM frame bytes (4 bytes): 0f 00 15 00
+About to call send() with 23 bytes
+send() returned 23 bytes
+```
+
+Both packets sent successfully, but client only received 11 bytes.
+
+#### Approach 2: FIN in Same Frame as Data (FAILED)
+
+**Implementation:** Send all data with FIN=true in a single STREAM frame
+- Modified server to set fin=true on last write
+- Single packet with data + FIN
+
+**Server logs confirmed:**
+```
+DEBUG writeStream: stream_id=0, data_len=21, fin=true
+DEBUG flow control: stream_id=0, data.len=21, cur_off=0, to_send=21
+DEBUG STREAM frame bytes (25 bytes): 0f 00 00 15 48 65 6c 6c 6f 20 66 72 6f 6d 20 47 6f 20 63 6c 69 65 6e 74 21
+About to call send() with 44 bytes
+send() returned 44 bytes (but client receives only 11!)
+```
+
+**Frame decoding verification:**
+- Type: `0x0F` = STREAM + **FIN** + LEN + OFF ✅
+- Stream ID: `0x00` = 0 ✅
+- Offset: `0x00` = 0 ✅
+- Length: `0x15` = 21 ✅
+- Data: All 21 bytes present ✅
+
+**Result:** Same issue - client still receives only 11 bytes despite perfect frame construction!
+
+#### Critical Observations
+
+**What's Verified Correct:**
+1. ✅ Server receives all 21 bytes from client (hexdump: `48 65 6c 6c 6f 20 66 72 6f 6d 20 47 6f 20 63 6c 69 65 6e 74 21`)
+2. ✅ STREAM frame plaintext buffer is perfect (25 bytes: 4-byte header + 21-byte payload)
+3. ✅ Frame encoding follows RFC 9000 §19.8 exactly
+4. ✅ `encodeShortProtected()` produces 44-byte encrypted packet
+5. ✅ `send()` syscall returns 44 (success)
+6. ✅ Server processes all streams correctly (0, 4, 8, 12, 16)
+
+**What's Failing:**
+1. ❌ Client (quic-go) reports receiving only **11 bytes** on stream 0
+2. ❌ Client establishes final size = 11 for stream 0
+3. ❌ Client rejects subsequent data with FINAL_SIZE_ERROR
+4. ❌ Tests 2-8 fail immediately after test 1
+
+**The Consistency Pattern:**
+- Always exactly **11 bytes** received (not 10, not 12, not random)
+- Happens with both separate FIN frames AND combined FIN+data frames
+- Happens consistently across all test runs
+- First test "passes" but with partial data
+- All subsequent tests fail due to protocol violation
+
+#### Hypothesis: Not a Frame Bug, But a Packet/Encryption Bug
+
+Given that:
+- Frame plaintext is perfect ✅
+- Packet send succeeds ✅
+- Yet client consistently receives 11 of 21 bytes ❌
+
+The bug MUST be in one of these layers:
+1. **Packet encryption** (`encodeShortProtected` in `src/quic/packet/packet.zig`)
+2. **Packet serialization** (how frames are written to packet buffer)
+3. **AEAD encryption** (data corruption during encryption)
+4. **Packet number encoding** (truncating packet inadvertently)
+
+#### Why Not a quic-go Client Bug?
+
+- quic-go is a mature, widely-used QUIC implementation
+- Other streams (4, 8, 12, 16) echo correctly with 16 bytes
+- The "11 bytes" is too consistent to be random client behavior
+- Client correctly complains about protocol violation (FINAL_SIZE_ERROR)
+
+#### Next Investigation Steps
+
+1. **Add packet encryption logging** - Log encrypted packet bytes before send()
+2. **Inspect encodeShortProtected** - Check for off-by-one errors, buffer handling bugs
+3. **Use tcpdump/Wireshark** - Capture actual wire bytes to see what's transmitted
+4. **Compare with reference** - Check how quiche implements packet encryption
+5. **Test with different data sizes** - Does "11" have significance? (header size?)
+
+**Key Question:** Why exactly 11 bytes? Is there a relationship to:
+- QUIC short header size? (varies, typically 1-20 bytes)
+- Some MTU or buffer limit?
+- A varint encoding bug?
+- An off-by-11 error somewhere?
+
+**Status:** 🔍 **DEEP INVESTIGATION REQUIRED** - Frame layer is correct, issue is in packet encryption/serialization layer. Need to trace encrypted packet bytes to wire.
+
 ---
 
