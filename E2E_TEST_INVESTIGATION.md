@@ -2110,3 +2110,147 @@ The server needs to:
 
 This requires redesigning the echo server to maintain state per-stream.
 
+
+## Phase 42 Part 12: Echo Server Flow Control Resilience ⚙️
+
+**Date:** 2025-11-13  
+**Test Results Before:** 3/8 tests passing (21B, 4×16B, 10KB)  
+**Test Results After:** Testing in progress...
+
+### Problem Identified
+
+Phase 42 Parts 9-10 implemented correct per-stream flow control, but tests still failed at 100KB transfers. Analysis revealed the root cause was NOT in the flow control implementation itself, but in the echo server loop design.
+
+**Root Cause:** Server echo loop in `cmd/quic-server.zig:183-191` abandoned streams when `writeStream()` returned any error:
+
+```zig
+// BROKEN CODE:
+const written = api.writeStream(conn, stream_id, chunk[0..n], false) catch |err| blk: {
+    std.debug.print("DEBUG: writeStream error: {}\n", .{err});
+    break :blk 0;  // Returns 0 on ANY error
+};
+if (written == 0) {
+    std.debug.print("DEBUG: writeStream returned 0, breaking\n", .{});
+    break;  // EXIT LOOP - STREAM ABANDONED!
+}
+```
+
+When `writeStream()` hits congestion control or flow control limits, it returns `error.FlowControlBlocked`. The echo server caught this, returned 0, then broke out of the loop and NEVER retried writing the remaining data. The stream was permanently abandoned with partial data sent.
+
+**Why Small Transfers Worked:**
+- 21B, 16B×4, 10KB fit entirely within initial congestion/flow control windows
+- writeStream() never blocked, stream never abandoned
+- Tests passed
+
+**Why Large Transfers Failed:**
+- 100KB+ eventually hit congestion or flow control limits  
+- writeStream() blocks → stream abandoned → client waits forever
+- Timeout after 30 seconds
+
+### Implementation: Flow-Control-Resilient Echo Server
+
+**Modified:** `cmd/quic-server.zig:103-280`
+
+Complete redesign of echo server to handle flow control blocks gracefully:
+
+#### 1. Per-Stream State Tracking
+```zig
+const StreamState = struct {
+    pending_write: std.ArrayListUnmanaged(u8) = .{},  // Data waiting to be written
+    got_fin: bool = false,             // Received FIN from peer
+    sent_fin: bool = false,            // Sent FIN to peer
+};
+
+const ConnState = struct {
+    conn: *api.QuicConnection,
+    streams: std.AutoHashMap(u64, StreamState),
+    allocator: std.mem.Allocator,
+};
+```
+
+#### 2. Round-Robin Stream Processing
+```zig
+// Accept ALL newly available streams upfront
+while (api.acceptStream(conn)) |stream_id| {
+    conn_state.streams.put(stream_id, .{}) catch {};
+}
+
+// Process all active streams in round-robin fashion
+var stream_iter = conn_state.streams.iterator();
+while (stream_iter.next()) |entry| {
+    const stream_id = entry.key_ptr.*;
+    var stream = entry.value_ptr;
+    // ... process this stream ...
+}
+```
+
+#### 3. Flush Pending Writes First
+```zig
+// Step 1: Try to flush pending writes (flow control may have unblocked)
+if (stream.pending_write.items.len > 0) {
+    const written: usize = api.writeStream(conn, stream_id, stream.pending_write.items, false) catch |err| blk: {
+        if (err == error.FlowControlBlocked) {
+            continue; // Try next stream, will retry this one next iteration
+        }
+        break :blk 0;
+    };
+    
+    if (written > 0) {
+        // Remove written bytes from pending buffer
+        const remaining = stream.pending_write.items.len - written;
+        if (remaining > 0) {
+            std.mem.copyForwards(u8, stream.pending_write.items[0..remaining], stream.pending_write.items[written..]);
+        }
+        stream.pending_write.shrinkRetainingCapacity(remaining);
+    }
+    
+    // Skip reading more until we flush pending data
+    if (stream.pending_write.items.len > 0) {
+        continue;
+    }
+}
+```
+
+#### 4. Buffer Data When Blocked
+```zig
+// Step 2: Read new data from stream
+const n: usize = api.readStream(conn, stream_id, chunk[0..]) catch 0;
+
+if (n > 0) {
+    // Try to echo immediately
+    const written: usize = api.writeStream(conn, stream_id, chunk[0..n], false) catch |err| blk: {
+        if (err == error.FlowControlBlocked) {
+            // Buffer the data for later retry
+            stream.pending_write.appendSlice(conn_state.allocator, chunk[0..n]) catch {};
+            break :blk 0;
+        }
+        break :blk 0;
+    };
+    
+    // If partial write, buffer remainder
+    if (written > 0 and written < n) {
+        stream.pending_write.appendSlice(conn_state.allocator, chunk[written..n]) catch {};
+    }
+}
+```
+
+#### 5. Complete Stream After All Data Flushed
+```zig
+// Step 3: If got FIN and no pending data, send FIN back
+if (stream.got_fin and stream.pending_write.items.len == 0 and !stream.sent_fin) {
+    _ = api.writeStream(conn, stream_id, &[_]u8{}, true) catch {};
+    stream.sent_fin = true;
+}
+```
+
+### Key Design Principles
+
+1. **Never Abandon Streams:** Flow control blocks are temporary - buffer data and retry
+2. **Round-Robin Fairness:** Process all streams each iteration, preventing starvation
+3. **Flush Before Read:** Prioritize sending buffered data over reading new data
+4. **Graceful FIN Handling:** Only send FIN after all buffered data is flushed
+
+### Test Results
+
+Testing in progress after implementation...
+

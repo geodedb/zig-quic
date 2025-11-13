@@ -100,14 +100,47 @@ pub fn main() !void {
 
     std.debug.print("listening on {s}\n", .{bind_addr});
 
-    // Keep track of active connections
-    var active_conns = std.ArrayListUnmanaged(*api.QuicConnection){};
-    defer active_conns.deinit(alloc);
-    defer {
-        for (active_conns.items) |conn| {
-            api.destroy(ep, conn);
+    // PHASE 42 PART 12: Per-stream state tracking for flow control resilience
+    const StreamState = struct {
+        pending_write: std.ArrayListUnmanaged(u8) = .{},  // Data waiting to be written
+        got_fin: bool = false,             // Received FIN from peer
+        sent_fin: bool = false,            // Sent FIN to peer
+
+        fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            self.pending_write.deinit(allocator);
         }
-        active_conns.deinit();
+    };
+
+    const ConnState = struct {
+        conn: *api.QuicConnection,
+        streams: std.AutoHashMap(u64, StreamState),
+        allocator: std.mem.Allocator,
+
+        fn init(allocator: std.mem.Allocator, connection: *api.QuicConnection) @This() {
+            return .{
+                .conn = connection,
+                .streams = std.AutoHashMap(u64, StreamState).init(allocator),
+                .allocator = allocator,
+            };
+        }
+
+        fn deinit(self: *@This()) void {
+            var iter = self.streams.iterator();
+            while (iter.next()) |entry| {
+                entry.value_ptr.deinit(self.allocator);
+            }
+            self.streams.deinit();
+        }
+    };
+
+    // Keep track of active connections
+    var active_conns = std.ArrayListUnmanaged(ConnState){};
+    defer {
+        for (active_conns.items) |*conn_state| {
+            api.destroy(ep, conn_state.conn);
+            conn_state.deinit();
+        }
+        active_conns.deinit(alloc);
     }
 
     while (true) {
@@ -118,18 +151,21 @@ pub fn main() !void {
         // Accept all newly-ready connections
         while (api.tryAccept(ep)) |conn| {
             std.debug.print("accepted connection\n", .{});
-            active_conns.append(alloc, conn) catch {};
+            const conn_state = ConnState.init(alloc, conn);
+            active_conns.append(alloc, conn_state) catch {};
         }
 
         // Process all active connections
         var i: usize = 0;
         while (i < active_conns.items.len) {
-            const conn = active_conns.items[i];
+            var conn_state = &active_conns.items[i];
+            const conn = conn_state.conn;
 
             // Check if connection is drained (closed)
             if (api.isDrained(conn)) {
                 std.debug.print("connection closed\n", .{});
                 api.destroy(ep, conn);
+                conn_state.deinit();
                 _ = active_conns.swapRemove(i);
                 continue; // Don't increment i, check the swapped element
             }
@@ -143,73 +179,93 @@ pub fn main() !void {
                 }
             }
 
-            // Handle stream data (echo server)
-            // Accept and process ALL pending streams (not just one!)
-            while (true) {
-                const stream_id = api.acceptStream(conn) catch break; // Break when no more streams available
-                std.debug.print("DEBUG: Accepted stream {d}\n", .{stream_id});
+            // PHASE 42 PART 12: Flow-control-resilient stream echo
+            // Accept all newly available streams
+            while (api.acceptStream(conn)) |stream_id| {
+                std.debug.print("[P42-12] Accepted stream {}\n", .{stream_id});
+                conn_state.streams.put(stream_id, .{}) catch {};
+            } else |_| {}
 
-                // STREAMING ECHO: Read chunks and echo them back immediately.
-                // CRITICAL FIX: By calling writeStream() after each read chunk, we trigger packet
-                // transmission which includes queued ACKs. This prevents flow control deadlock on
-                // large transfers where client exhausts send window waiting for ACKs.
-                //
-                // Previous approach (buffer all, then echo) caused:
-                // - Client sends ~28KB (initial window)
-                // - Server reads in tight loop, never sends ACKs
-                // - Client blocks waiting for ACKs to update window
-                // - Timeout after 30s
-                //
-                // New approach (streaming echo):
-                // - Read chunk → immediately echo it back via writeStream()
-                // - writeStream() triggers packet send with queued ACKs
-                // - Client receives ACKs, updates flow control window
-                // - Client continues sending more data
-                var total_read: usize = 0;
-                var got_fin = false;
+            // Process all active streams in round-robin fashion
+            var stream_iter = conn_state.streams.iterator();
+            while (stream_iter.next()) |entry| {
+                const stream_id = entry.key_ptr.*;
+                var stream = entry.value_ptr;
 
-                while (true) {
-                    var chunk: [4096]u8 = undefined;
-                    const n = api.readStream(conn, stream_id, chunk[0..]) catch |err| blk: {
-                        std.debug.print("DEBUG: readStream error: {}\n", .{err});
+                // Skip if already completed
+                if (stream.sent_fin) continue;
+
+                // Step 1: Try to flush pending writes first (flow control may have unblocked)
+                if (stream.pending_write.items.len > 0) {
+                    const written: usize = api.writeStream(conn, stream_id, stream.pending_write.items, false) catch |err| blk: {
+                        if (err == error.FlowControlBlocked) {
+                            std.debug.print("[P42-12] Stream {} still blocked, {} bytes pending\n", .{stream_id, stream.pending_write.items.len});
+                            continue; // Try next stream, will retry this one next iteration
+                        }
+                        std.debug.print("[P42-12] Stream {} write error: {}\n", .{stream_id, err});
                         break :blk 0;
                     };
-                    if (n == 0) break; // No more data available right now
 
-                    total_read += n;
-                    std.debug.print("DEBUG: Read {d} bytes from stream {d} (total {d})\n", .{n, stream_id, total_read});
-
-                    // Echo this chunk back immediately (WITHOUT FIN yet)
-                    const written = api.writeStream(conn, stream_id, chunk[0..n], false) catch |err| blk: {
-                        std.debug.print("DEBUG: writeStream error: {}\n", .{err});
-                        break :blk 0;
-                    };
-                    if (written == 0) {
-                        std.debug.print("DEBUG: writeStream returned 0, breaking\n", .{});
-                        break;
+                    if (written > 0) {
+                        std.debug.print("[P42-12] Stream {} flushed {} of {} pending bytes\n", .{stream_id, written, stream.pending_write.items.len});
+                        // Remove written bytes from pending buffer
+                        const remaining = stream.pending_write.items.len - written;
+                        if (remaining > 0) {
+                            std.mem.copyForwards(u8, stream.pending_write.items[0..remaining], stream.pending_write.items[written..]);
+                        }
+                        stream.pending_write.shrinkRetainingCapacity(remaining);
                     }
-                    std.debug.print("DEBUG: Echoed {d} bytes back on stream {d}\n", .{written, stream_id});
 
-                    // Check if we got FIN (stream complete)
-                    // Note: readStream doesn't explicitly tell us about FIN, but returning 0 after reading data suggests FIN
-                    const next_n = api.readStream(conn, stream_id, chunk[0..]) catch 0;
-                    if (next_n == 0) {
-                        got_fin = true;
-                        break; // Stream complete
-                    } else {
-                        // Got more data, echo it too
-                        total_read += next_n;
-                        std.debug.print("DEBUG: Read {d} more bytes from stream {d} (total {d})\n", .{next_n, stream_id, total_read});
-                        const written2 = api.writeStream(conn, stream_id, chunk[0..next_n], false) catch 0;
-                        std.debug.print("DEBUG: Echoed {d} bytes back on stream {d}\n", .{written2, stream_id});
+                    // If still have pending data, skip reading more until we flush
+                    if (stream.pending_write.items.len > 0) {
+                        continue;
                     }
                 }
 
-                // Send FIN if we completed the stream
-                if (got_fin or total_read > 0) {
-                    std.debug.print("stream {d} complete: {d} bytes total (fin={})\n", .{stream_id, total_read, got_fin});
-                    // Send FIN-only frame to close our send side
+                // Step 2: Read new data from stream
+                if (!stream.got_fin) {
+                    var chunk: [4096]u8 = undefined;
+                    const n: usize = api.readStream(conn, stream_id, chunk[0..]) catch |err| blk: {
+                        std.debug.print("[P42-12] Stream {} read error: {}\n", .{stream_id, err});
+                        break :blk 0;
+                    };
+
+                    if (n > 0) {
+                        std.debug.print("[P42-12] Stream {} read {} bytes\n", .{stream_id, n});
+
+                        // Try to echo immediately
+                        const written: usize = api.writeStream(conn, stream_id, chunk[0..n], false) catch |err| blk: {
+                            if (err == error.FlowControlBlocked) {
+                                std.debug.print("[P42-12] Stream {} flow control blocked, buffering {} bytes\n", .{stream_id, n});
+                                // Buffer the data for later retry
+                                stream.pending_write.appendSlice(conn_state.allocator, chunk[0..n]) catch {};
+                                break :blk 0;
+                            }
+                            std.debug.print("[P42-12] Stream {} write error: {}\n", .{stream_id, err});
+                            break :blk 0;
+                        };
+
+                        if (written > 0) {
+                            std.debug.print("[P42-12] Stream {} echoed {} bytes\n", .{stream_id, written});
+
+                            // If partial write, buffer remainder
+                            if (written < n) {
+                                stream.pending_write.appendSlice(conn_state.allocator, chunk[written..n]) catch {};
+                                std.debug.print("[P42-12] Stream {} partial write, buffered {} bytes\n", .{stream_id, n - written});
+                            }
+                        }
+                    } else {
+                        // readStream returned 0, likely got FIN
+                        stream.got_fin = true;
+                        std.debug.print("[P42-12] Stream {} received FIN\n", .{stream_id});
+                    }
+                }
+
+                // Step 3: If got FIN and no pending data, send FIN back
+                if (stream.got_fin and stream.pending_write.items.len == 0 and !stream.sent_fin) {
                     _ = api.writeStream(conn, stream_id, &[_]u8{}, true) catch {};
+                    stream.sent_fin = true;
+                    std.debug.print("[P42-12] Stream {} sent FIN, complete\n", .{stream_id});
                 }
             }
 
