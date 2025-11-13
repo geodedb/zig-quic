@@ -199,6 +199,14 @@ pub fn protectPacket(
     plaintext: []const u8,
     out_cipher: []u8,
 ) !usize {
+    // Log plaintext input at the very start
+    std.debug.print("protectPacket INPUT: plaintext.len={} out_cipher.len={}\n", .{ plaintext.len, out_cipher.len });
+    if (plaintext.len > 0) {
+        std.debug.print("protectPacket INPUT: plaintext first 30 bytes: ", .{});
+        for (plaintext[0..@min(plaintext.len, 30)]) |b| std.debug.print("{x:0>2} ", .{b});
+        std.debug.print("\n", .{});
+    }
+
     // Build AAD: header_first || header_prefix || pn_bytes (pre-HP)
     var aad_stack: [1024]u8 = undefined;
     const aad_len = 1 + header_prefix.len + pn_bytes.len;

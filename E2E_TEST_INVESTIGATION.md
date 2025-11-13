@@ -968,6 +968,90 @@ The problem MUST be in:
 3. Use tcpdump/wireshark to capture actual wire bytes
 4. Verify packet serialization doesn't truncate frames
 
+---
+
+## Phase 42 Part 3: ROOT CAUSE IDENTIFIED - Auto-Echo Conflict ✅ FIXED
+
+### The Mystery Solved
+
+After adding `protectPacket` logging to trace plaintext frames before encryption, I discovered:
+
+```
+protectPacket INPUT: plaintext.len=15 out_cipher.len=31
+protectPacket INPUT: plaintext first 30 bytes: 0f 00 00 0b 48 65 6c 6c 6f 20 51 55 49 43 0a
+DEBUG writeStream: stream_id=0, data_len=21, fin=true
+DEBUG STREAM frame bytes (25 bytes): 0f 00 00 15 48 65 6c 6c 6f 20 66 72 6f 6d 20 47 6f 20 63 6c 69 65 6e 74 21
+protectPacket INPUT: plaintext.len=25 out_cipher.len=41
+protectPacket INPUT: plaintext first 30 bytes: 0f 00 00 15 48 65 6c 6c 6f 20 66 72 6f 6d 20 47 6f 20 63 6c 69 65 6e 74 21
+```
+
+**The Smoking Gun:**
+- Frame with "Hello QUIC\n" (11 bytes) sent BEFORE application calls writeStream
+- Frame with "Hello from Go client!" (21 bytes) sent AFTER application echo
+- BOTH frames on stream 0, offset 0, with FIN=true → FINAL_SIZE_ERROR!
+
+### Root Cause
+
+**File:** `src/quic/conn.zig:1864-1878`
+**Code:** Auto-echo implementation in stream data reception
+
+```zig
+// Auto-echo implementation (temporary): If server receives first bytes on stream 0, send simple response once.
+if (self.role == .Server and stream_id == 0 and offset == 0 and data.len > 0 and !self.app_echo_sent and self.app_tx_keys != null) {
+    const resp = "Hello QUIC\n"; // Minimal body
+    // ... send frame with offset=0, FIN=true ...
+}
+```
+
+**Problem Sequence:**
+1. Client sends "Hello from Go client!" (21 bytes) on stream 0
+2. **Auto-echo triggers** → sends "Hello QUIC\n" (11 bytes) with offset=0, FIN=true → final size = 11
+3. **Application echo** → sends "Hello from Go client!" (21 bytes) with offset=0, FIN=true → final size = 21
+4. **Client sees FINAL_SIZE_ERROR** → inconsistent final offset (11 vs 21)
+
+### Fix Applied
+
+**Commit:** Disabled auto-echo feature in conn.zig:1864-1869
+
+```zig
+// Auto-echo implementation DISABLED: This conflicts with application-level echo servers.
+// The auto-echo would send "Hello QUIC\n" (11 bytes) on stream 0 with offset=0 and FIN=true,
+// then the application would send its own response also with offset=0 and FIN=true,
+// causing FINAL_SIZE_ERROR because the client sees two different final sizes (11 vs actual).
+// Applications should handle their own echo logic (see cmd/quic-server.zig).
+_ = self.app_echo_sent; // Suppress unused field warning
+```
+
+### Test Results After Fix
+
+**Before:**
+- ✅ Test 1: Single Stream Echo (but received 11 of 21 bytes)
+- ❌ Tests 2-8: FINAL_SIZE_ERROR
+
+**After:**
+- ✅ Test 1: Single Stream Echo (**Sent 21 bytes, received 21 bytes**)
+- ✅ Test 2: Multiple Concurrent Streams (**4 streams completed**)
+- ✅ Test 3: Large Transfer (10KB) (**10240 bytes transferred**)
+- ❌ Tests 4-8: Timeout (no recent network activity)
+
+**Progress: 3/8 tests passing** (up from 1/8!)
+
+### New Issues Discovered
+
+Tests 4-8 fail with "timeout: no recent network activity" during larger transfers (100KB, 1MB). This is a **separate issue** from FINAL_SIZE_ERROR - likely related to:
+- Flow control window exhaustion
+- Missing ACK handling
+- Lost packet retransmission
+- Congestion control issues
+
+### Lessons Learned
+
+1. **Legacy test code conflicts with production features** - Auto-echo was a temporary testing feature that should have been removed or made conditional
+2. **Thorough logging pays off** - Adding protectPacket logging revealed frames being sent before application code
+3. **Protocol violations have clear symptoms** - FINAL_SIZE_ERROR clearly indicated duplicate final sizes on same stream
+
+---
+
 **Status:** ⚙️ **PARTIAL FIX** - FIN handling bugs fixed (2 critical bugs in writeStream), but client still receives partial data (11 of 21 bytes). Frame construction is correct, but something between frame buffer and wire is corrupting the data. Root cause unknown - requires investigation of packet layer.
 
 ### Phase 42 Deep Dive: The "11 of 21 Bytes" Mystery (INVESTIGATING 🔍)

@@ -1861,21 +1861,12 @@ pub const Connection = struct {
             s.insert(self.allocator, offset, data);
             s.tryDrain(self.allocator);
         }
-        // Auto-echo implementation (temporary): If server receives first bytes on stream 0, send simple response once.
-        if (self.role == .Server and stream_id == 0 and offset == 0 and data.len > 0 and !self.app_echo_sent and self.app_tx_keys != null) {
-            const resp = "Hello QUIC\n"; // Minimal body
-            var fb = std.ArrayList(u8){};
-            defer fb.deinit(self.allocator.*);
-            const w = fb.writer(self.allocator.*);
-            _ = (frame.Frame{ .stream = .{ .stream_id = 0, .offset = 0, .fin = true, .data = resp } }).write(w) catch {};
-            if (packet.encodeShortProtected(self.allocator.*, self.shortHeaderDcid(), @as(u32, @truncate(self.pn_app_tx)), 2, fb.items, self.app_tx_keys.?, self.tx_key_phase)) |pkt_bytes| {
-                defer self.allocator.free(pkt_bytes);
-                _ = self.send(pkt_bytes) catch {};
-                self.onShortHeaderPacketSent(pkt_bytes.len, true);
-                self.app_echo_sent = true;
-                std.debug.print("AUTO-ECHO: Sent {} bytes response on stream 0 (pn_app_tx={})\n", .{ pkt_bytes.len, self.pn_app_tx });
-            } else |_| {}
-        }
+        // Auto-echo implementation DISABLED: This conflicts with application-level echo servers.
+        // The auto-echo would send "Hello QUIC\n" (11 bytes) on stream 0 with offset=0 and FIN=true,
+        // then the application would send its own response also with offset=0 and FIN=true,
+        // causing FINAL_SIZE_ERROR because the client sees two different final sizes (11 vs actual).
+        // Applications should handle their own echo logic (see cmd/quic-server.zig).
+        _ = self.app_echo_sent; // Suppress unused field warning
         // Update connection RX accounting
         self.conn_recv_total +%= data.len;
         // Flow-control: if we've consumed more than 50% of advertised windows, bump and let endpoint send MAX_* on next ACK
