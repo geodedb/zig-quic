@@ -2743,10 +2743,17 @@ pub fn processShortHeader(
         }
     }
 
-    // If an ACK_ECN was deferred due to amplification, emit it now when allowed
+    // RFC 9000 §13.2.1: "An endpoint SHOULD send an ACK frame after receiving at least two
+    // ack-eliciting packets." For simplicity and immediate flow control feedback, send ACK
+    // immediately when ack-eliciting frames are received OR when ECN ACK is pending.
+    //
+    // CRITICAL FIX (Phase 42 Part 7): Send ACKs for ALL ack-eliciting packets, not just ECN!
+    // Previous bug: ACKs were only sent when ecn_app_ack_pending==true, causing flow control
+    // deadlock on large transfers where client exhausted send window waiting for ACKs.
+    //
     // RFC 9000 §8.1: "A server MUST NOT send more than three times as many bytes
     // as the number of bytes it has received prior to validating the client address."
-    if (conn.ecn_app_ack_pending and conn.app_tx_keys != null and conn.canSendUnderAmplification()) {
+    if ((frame_result.saw_ack_eliciting or conn.ecn_app_ack_pending) and conn.app_tx_keys != null) {
         var ack_ctx = AckContext{
             .allocator = ctx.allocator,
             .conn = conn,
@@ -2758,12 +2765,15 @@ pub fn processShortHeader(
 
         generateAndSendAck(&ack_ctx, frame_result, ecn_bits) catch {
             if (ctx.test_capture_enabled) {
-                std.debug.print("Failed to generate/send deferred ACK\n", .{});
+                std.debug.print("Failed to generate/send ACK\n", .{});
             }
         };
 
         if (ctx.test_capture_enabled) {
-            std.debug.print("📤 Sent deferred ACK_ECN\n", .{});
+            std.debug.print("📤 Sent ACK (ack_eliciting={}, ecn_pending={})\n", .{
+                frame_result.saw_ack_eliciting,
+                conn.ecn_app_ack_pending,
+            });
         }
     }
 }

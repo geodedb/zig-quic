@@ -1409,3 +1409,97 @@ Need to trace through the endpoint/connection code to find:
 
 **Status:** 🔍 **FUNDAMENTAL ARCHITECTURAL ISSUE** - Need to understand or implement ACK flushing mechanism separate from poll() and writeStream().
 
+---
+
+## Phase 42 Part 7: Root Cause Found - ACKs Only Sent for ECN Packets! (ATTEMPTED FIX ⚙️)
+
+**Date:** 2025-11-13  
+**Current Status:** 3/8 tests passing (same as before fix attempt)
+
+### Root Cause Discovery
+
+Through systematic code tracing, found the ACK transmission bug in `src/quic/endpoint/incoming.zig:2732-2769`:
+
+**The Bug:**
+```zig
+// Lines 2746-2768 (BEFORE FIX):
+if (conn.ecn_app_ack_pending and conn.app_tx_keys != null and conn.canSendUnderAmplification()) {
+    var ack_ctx = AckContext{...};
+    generateAndSendAck(&ack_ctx, frame_result, ecn_bits) catch {...};
+}
+```
+
+**Problem:**
+- ACKs are ONLY sent when `conn.ecn_app_ack_pending == true`
+- `ecn_app_ack_pending` is ONLY set when ECN bits are observed (conn.zig:1128)
+- For normal (non-ECN) ack-eliciting frames → **NO ACKs sent at all!**
+
+**Flow Control Deadlock Mechanism:**
+1. Client sends STREAM frames (ack-eliciting, no ECN)
+2. Server processes frames, sees `saw_ack_eliciting=true`
+3. Server calls `recordAckElicitingRx()` → just records, doesn't send
+4. Server checks `ecn_app_ack_pending` → false (no ECN observed)
+5. Server skips `generateAndSendAck()` → **NO ACK sent!**
+6. Client exhausts flow control window waiting for ACKs
+7. **DEADLOCK** → Timeout after 30s
+
+### The Fix (Attempted)
+
+**File:** `src/quic/endpoint/incoming.zig:2756`
+
+**BEFORE:**
+```zig
+if (conn.ecn_app_ack_pending and conn.app_tx_keys != null and conn.canSendUnderAmplification()) {
+```
+
+**AFTER:**
+```zig
+if ((frame_result.saw_ack_eliciting or conn.ecn_app_ack_pending) and conn.app_tx_keys != null) {
+```
+
+**Changes:**
+1. Send ACKs for ALL ack-eliciting frames (not just ECN)
+2. Removed `canSendUnderAmplification()` check from outer condition  
+   (still checked inside `generateAndSendAck()`)
+
+### Test Result
+
+**Status:** NO IMPROVEMENT ❌  
+Still 3/8 tests passing with identical failure pattern:
+- ✅ Tests 1-3 pass (21B, concurrent streams, 10KB)
+- ❌ Tests 4-8 fail (100KB+) with "timeout: no recent network activity"
+
+**Log:** `/tmp/phase42_part7_ack_fix.log`
+
+### Analysis
+
+The fix correctly identifies when ACKs should be sent, but they're still not being transmitted. Possible reasons:
+
+1. **Amplification Limits Blocking:**
+   - `generateAndSendAck()` still checks `allow_send = conn.canSendUnderAmplification()` internally
+   - If `address_validated==false` and amplification limit reached → ACKs blocked
+   - Even though we're on localhost (127.0.0.1)
+
+2. **ACK Queuing vs Transmission:**
+   - `generateAndSendAck()` may be queuing ACKs but not flushing to network
+   - Need to verify actual `send_fn()` calls happening
+
+3. **Server Event Loop Timing:**
+   - ACKs may be generated after `writeStream()` returns
+   - Next `poll()` may not occur in time for large transfers
+
+### Next Steps
+
+1. Add debug logging to track:
+   - `canSendUnderAmplification()` return values
+   - `generateAndSendAck()` execution path  
+   - Actual `send_fn()` calls with byte counts
+
+2. Verify amplification accounting:
+   - Check `bytes_rx_unvalidated` and `bytes_tx_unvalidated`
+   - Confirm `address_validated` state on localhost
+
+3. Consider forcing ACK sends for localhost/validated addresses
+
+**Status:** 🔍 **ROOT CAUSE IDENTIFIED BUT FIX INCOMPLETE** - ACK generation condition fixed, but amplification limits or transmission path still blocking ACK delivery.
+
