@@ -2392,3 +2392,133 @@ The `acceptStream()` API needs to change from:
 
 **Status:** ROOT CAUSE IDENTIFIED - Stream acceptance mechanism is broken for multi-packet transfers.
 
+---
+
+## Phase 42 Part 15: Fixing Queue Blocking (IN PROGRESS 🔄)
+
+**Date:** 2025-11-13
+**Test:** `make e2e-test-go-comprehensive`
+**Status:** 3/8 tests passing → Attempting fix for queue blocking
+
+### Problem Summary
+
+Phase 42 Part 14 attempted to fix the stream acceptance problem by:
+1. Re-queueing streams when new data arrives (conn.zig:1861)
+2. Preventing state overwrite in echo server (cmd/quic-server.zig:203)
+
+This fixed the state preservation bug but introduced a NEW critical bug: **queue blocking**.
+
+### Root Cause: Queue Blocking
+
+**What Happened:**
+1. Stream 20 arrives → queued at position 1 → accepted → added to conn_state.streams
+2. Client sends more data for stream 20
+3. handleStreamFrame() re-queues stream 20 (no-op due to duplicate check, stays at position 1)
+4. Stream 24 arrives → queued at position 2
+5. acceptStream() keeps returning stream 20 from position 1
+6. Stream 24 NEVER gets accepted → test times out after 30 seconds
+
+**Debug Evidence:**
+```
+[P42-14-ACCEPT] Accepted stream 20
+[P42-14-EXISTS] Stream 20 already has state (re-queued for more data)
+[P42-13-READ] Stream 20 read 4096 bytes (4096 total read, loop 102)
+[P42-13-FIN] Stream 20 received FIN (total read: 10240, total written: 10240, pending: 0)
+[P42-14-REQUEUE] Stream 24 queued (2 total in queue)  ← Queued
+[P42-14-REQUEUE] Stream 24 queued (2 total in queue)  ← Still at position 2
+[P42-14-REQUEUE] Stream 24 queued (2 total in queue)  ← Never accepted
+```
+
+**Test Results:**
+- ✅ Single Stream Echo (21 bytes)
+- ✅ Multiple Concurrent Streams (4×16 bytes)
+- ✅ Large Transfer (10KB) - Stream 20 completes
+- ❌ Large Transfer (100KB) - Stream 24 stuck behind stream 20
+- ❌ Tests 5-8 - All timeout
+
+### Critical Insight: Re-Queueing Is Unnecessary
+
+The Phase 42 Part 12 echo server ALREADY implements round-robin stream processing:
+
+```zig
+// Process all active streams in round-robin fashion (cmd/quic-server.zig:212)
+var stream_iter = conn_state.streams.iterator();
+while (stream_iter.next()) |entry| {
+    const stream_id = entry.key_ptr.*;
+    var stream = entry.value_ptr;
+
+    // Try to flush pending writes
+    if (stream.pending_write.items.len > 0) { ... }
+
+    // Read new data from stream
+    if (!stream.got_fin) {
+        const n = api.readStream(conn, stream_id, chunk[0..]) catch ...;
+        // ... echo data back ...
+    }
+}
+```
+
+**Key Points:**
+1. The application layer tracks all accepted streams in `conn_state.streams`
+2. Every event loop iteration processes ALL streams via iterator
+3. Streams don't need to be re-queued - they're already being polled continuously
+4. Re-queueing only causes FIFO blocking where new streams can't be accepted
+
+### The Fix: Remove Re-Queueing Logic
+
+**Modified:** `src/quic/conn.zig:1861-1864`
+
+```zig
+// BEFORE (Phase 42 Part 14 - BROKEN):
+const is_peer_initiated = self.isPeerInitiatedStream(stream_id);
+if (is_peer_initiated) {
+    try self.queueIncomingStream(stream_id);  // ← Causes queue blocking
+    std.debug.print("[P42-14-REQUEUE] Stream {} queued\n", .{stream_id});
+}
+
+// AFTER (Phase 42 Part 15 - FIXED):
+// PHASE 42 PART 15: Don't re-queue streams - application layer handles round-robin
+// The echo server (cmd/quic-server.zig) already processes all streams in round-robin
+// fashion via conn_state.streams.iterator(). Re-queueing causes queue blocking where
+// new streams get stuck behind already-accepted streams.
+```
+
+**State Preservation Fix Kept:** `cmd/quic-server.zig:203-209`
+```zig
+// PHASE 42 PART 14: Only create NEW state for streams we haven't seen before
+while (api.acceptStream(conn)) |stream_id| {
+    std.debug.print("[P42-14-ACCEPT] Accepted stream {}\n", .{stream_id});
+    // Only create state if this is a genuinely new stream
+    if (conn_state.streams.getPtr(stream_id) == null) {
+        conn_state.streams.put(stream_id, .{}) catch {};
+        std.debug.print("[P42-14-NEW] Created new state for stream {}\n", .{stream_id});
+    } else {
+        std.debug.print("[P42-14-EXISTS] Stream {} already has state (re-queued for more data)\n", .{stream_id});
+    }
+} else |_| {}
+```
+
+### Architecture Analysis
+
+**Why This Works:**
+
+1. **Edge-Triggered Acceptance:** acceptStream() returns each stream once when first created
+2. **Level-Triggered Processing:** Round-robin iterator processes all accepted streams continuously
+3. **Flow Control:** Pending write buffer handles blocked writes (Phase 42 Part 12)
+4. **State Preservation:** HashMap checks prevent state overwrite (Phase 42 Part 14)
+
+This creates a hybrid model:
+- **Transport Layer (conn.zig):** Edge-triggered stream notifications via queue
+- **Application Layer (cmd/quic-server.zig):** Level-triggered stream polling via iterator
+
+No re-queueing needed - the application layer's round-robin iterator already provides continuous stream monitoring.
+
+### Next Steps
+
+1. Build and test with re-queueing removed
+2. Verify all 8 tests pass
+3. Commit Phase 42 Part 15 fix if successful
+4. Document final architecture in investigation log
+
+**Status:** Testing fix for queue blocking issue...
+

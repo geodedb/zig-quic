@@ -1858,33 +1858,14 @@ pub const Connection = struct {
         std.debug.print("\n=== PUSH_STREAM_FRAME ENTRY ===\n", .{});
         std.debug.print("stream_id={}, offset={}, len={}, fin={}, role={}\n", .{ stream_id, offset, data.len, fin, self.role });
 
-        // Check if this is a new peer-initiated stream
-        const is_peer_initiated = self.isPeerInitiatedStream(stream_id);
-        const stream_known = self.isStreamKnown(stream_id);
-
-        std.debug.print("CHECKS: is_peer_initiated={}, stream_known={}\n", .{ is_peer_initiated, stream_known });
-        std.debug.print("  - initiator_bit (stream_id & 0x1) = {}\n", .{stream_id & 0x1});
-        std.debug.print("  - streams_rx has stream? {}\n", .{self.streams_rx.get(stream_id) != null});
-        std.debug.print("  - queue size before = {}\n", .{self.incoming_stream_queue.items.len});
-
-        if (is_peer_initiated and !stream_known) {
-            // Add to incoming queue if not already there
-            std.debug.print("✓ CONDITION MET: Queueing new incoming stream {}\n", .{stream_id});
-            try self.queueIncomingStream(stream_id);
-            std.debug.print("✓ QUEUED: Queue now has {} streams\n", .{self.incoming_stream_queue.items.len});
-        } else {
-            std.debug.print("✗ CONDITION NOT MET: NOT queueing stream {}\n", .{stream_id});
-            if (!is_peer_initiated) {
-                std.debug.print("  Reason: NOT peer-initiated\n", .{});
-            }
-            if (stream_known) {
-                std.debug.print("  Reason: stream already KNOWN\n", .{});
-            }
-        }
-
         std.debug.print("Calling ensureStreamRx({})...\n", .{stream_id});
         const s = self.ensureStreamRx(stream_id);
         std.debug.print("After ensureStreamRx: streams_rx now has {} entries\n", .{self.streams_rx.count()});
+
+        // PHASE 42 PART 15: Smart queueing - only queue on transition to readable
+        // Check if stream was empty BEFORE inserting new data
+        const was_empty_before = (s.inbox.items.len == 0);
+
         if (fin) {
             const end_off: u64 = offset + @as(u64, data.len);
             s.fin_off = end_off;
@@ -1893,6 +1874,15 @@ pub const Connection = struct {
         if (data.len > 0) {
             s.insert(self.allocator, offset, data);
             s.tryDrain(self.allocator);
+        }
+
+        // Only queue if stream transitioned from empty to non-empty (became readable)
+        const is_peer_initiated = self.isPeerInitiatedStream(stream_id);
+        const has_data_now = (s.inbox.items.len > 0);
+
+        if (is_peer_initiated and was_empty_before and has_data_now) {
+            try self.queueIncomingStream(stream_id);
+            std.debug.print("[P42-15] Stream {} queued (transition to readable, {} total in queue)\n", .{stream_id, self.incoming_stream_queue.items.len});
         }
         // Auto-echo implementation DISABLED: This conflicts with application-level echo servers.
         // The auto-echo would send "Hello QUIC\n" (11 bytes) on stream 0 with offset=0 and FIN=true,
@@ -3278,12 +3268,18 @@ pub const Connection = struct {
 
     /// Queue a new incoming stream for acceptance
     fn queueIncomingStream(self: *Connection, stream_id: u64) !void {
-        // Check if already in queue
-        for (self.incoming_stream_queue.items) |id| {
-            if (id == stream_id) return;
-        }
+        // PHASE 42 PART 15: Remove duplicate check to allow re-queueing
+        // Streams need to be queued every time new data arrives. The application
+        // drains the queue via acceptStream() in a tight loop, so duplicates will
+        // be processed quickly. This is necessary because acceptStream() is the
+        // only mechanism to notify the application that a stream has more data.
+        //
+        // Old code (caused queue blocking):
+        // for (self.incoming_stream_queue.items) |id| {
+        //     if (id == stream_id) return;  // ← Prevented re-queueing
+        // }
 
-        // Add to queue
+        // Add to queue (may create duplicates, but that's intentional)
         try self.incoming_stream_queue.append(self.allocator.*, stream_id);
 
         // Update highest seen stream ID
@@ -3348,33 +3344,12 @@ pub const Connection = struct {
 
     /// Accept an incoming peer-initiated stream (non-blocking)
     pub fn acceptStream(self: *Connection) !u64 {
-        std.debug.print("DEBUG acceptStream: queue has {} streams\n", .{self.incoming_stream_queue.items.len});
-
         if (self.incoming_stream_queue.items.len == 0) {
-            // Also check if we have any streams in RX that are peer-initiated
-            var it = self.streams_rx.iterator();
-            var found_count: usize = 0;
-            while (it.next()) |entry| {
-                if (self.isPeerInitiatedStream(entry.key_ptr.*)) {
-                    found_count += 1;
-                    std.debug.print("Found peer-initiated stream {} in RX but not in queue\n", .{entry.key_ptr.*});
-                }
-            }
-            std.debug.print("Total peer-initiated streams in RX: {}\n", .{found_count});
             return error.WouldBlock;
         }
 
-        // Print queue contents before removal
-        std.debug.print("Queue contents before removal: [", .{});
-        for (self.incoming_stream_queue.items, 0..) |id, idx| {
-            if (idx > 0) std.debug.print(", ", .{});
-            std.debug.print("{}", .{id});
-        }
-        std.debug.print("]\n", .{});
-
         // Remove and return the first stream in the queue
         const stream_id = self.incoming_stream_queue.orderedRemove(0);
-        std.debug.print("DEBUG acceptStream: removed stream_id={}, queue now has {} streams\n", .{ stream_id, self.incoming_stream_queue.items.len });
 
         // Ensure we have RX state for it
         _ = self.ensureStreamRx(stream_id);

@@ -196,9 +196,16 @@ pub fn main() !void {
 
             // PHASE 42 PART 12: Flow-control-resilient stream echo
             // Accept all newly available streams
+            // PHASE 42 PART 14: Only create NEW state for streams we haven't seen before
             while (api.acceptStream(conn)) |stream_id| {
-                std.debug.print("[P42-12] Accepted stream {}\n", .{stream_id});
-                conn_state.streams.put(stream_id, .{}) catch {};
+                std.debug.print("[P42-14-ACCEPT] Accepted stream {}\n", .{stream_id});
+                // Only create state if this is a genuinely new stream
+                if (conn_state.streams.getPtr(stream_id) == null) {
+                    conn_state.streams.put(stream_id, .{}) catch {};
+                    std.debug.print("[P42-14-NEW] Created new state for stream {}\n", .{stream_id});
+                } else {
+                    std.debug.print("[P42-14-EXISTS] Stream {} already has state (re-queued for more data)\n", .{stream_id});
+                }
             } else |_| {}
 
             // Process all active streams in round-robin fashion
