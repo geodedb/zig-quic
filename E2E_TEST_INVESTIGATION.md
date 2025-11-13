@@ -419,6 +419,93 @@ $ make e2e-test-go-comprehensive
 
 ---
 
+## Phase 41: Stream Data Timeout Investigation
+
+**Phase 41 Status:** 🔍 **INVESTIGATING**
+
+### Problem
+
+Connection establishes successfully, TLS handshake completes, and stream opens, but all stream data tests timeout with "no recent network activity":
+
+```
+2025/11/13 08:07:20 ✅ Connection established
+2025/11/13 08:07:20 ✅ TLS handshake complete
+2025/11/13 08:07:20 ✓ Stream opened (ID: 0)
+2025/11/13 08:07:50 ❌ Single Stream Echo
+2025/11/13 08:07:50    └─ Error: timeout: no recent network activity
+```
+
+**All 8 tests fail:**
+- ❌ Single Stream Echo
+- ❌ Multiple Concurrent Streams
+- ❌ Large Transfer (10240)
+- ❌ Large Transfer (102400)
+- ❌ Large Transfer (1048576)
+- ❌ Multiple Round-trips
+- ❌ Bidirectional Simultaneous
+- ❌ Stream Interleaving
+
+### Initial Observations
+
+1. **What works:**
+   - ✅ Initial packet exchange
+   - ✅ TLS 1.3 handshake completes
+   - ✅ Encryption level transitions (Initial → Handshake → Application)
+   - ✅ Stream opening (client opens stream ID 0)
+
+2. **What doesn't work:**
+   - ❌ Stream data exchange
+   - ❌ Client writes hang (30s timeout)
+   - ❌ Server not responding to stream data
+
+### Investigation Plan
+
+1. ✅ **Check server logs** - Is server receiving STREAM frames?
+2. ✅ **Check server stream handling** - Is server reading/echoing data?
+3. ✅ **Check ACK generation** - Is server ACKing received STREAM frames?
+4. ✅ **Check flow control** - Are flow control limits blocking data?
+5. ✅ **Packet capture analysis** - What packets are being exchanged?
+
+### Investigation Findings
+
+**1. Server is receiving 1-RTT packets but cannot decrypt them:**
+```
+AEAD decrypt failed: pn=194 err=error.AuthenticationFailed
+AEAD decrypt failed: pn=246 err=error.AuthenticationFailed
+AEAD decrypt failed: pn=140 err=error.AuthenticationFailed
+```
+
+**2. Application-level keys ARE being installed:**
+```
+[installApplicationKeys] Called for Server
+  Server: Dropping Initial keys (Application keys installed)
+```
+
+**3. Client application secrets (from TLS key log):**
+```
+CLIENT_TRAFFIC_SECRET_0 2943071bf...5f58434 624a217095a6858ec56f3f2ddd6373fcbcaf488620e8932c5877b4f741eb79ca
+SERVER_TRAFFIC_SECRET_0 2943071bf...5f58434 1d65c60c436892a7137b2dc9d8c27ae4e7b9ae1341ec197089275242be8c2e96
+```
+
+**4. Verified vendor/ztls `deriveApplicationTraffic()` has logging but is NEVER called:**
+- Added logging to `vendor/ztls/src/tls13/key_derivation.zig:deriveApplicationTraffic()`
+- Added logging to `vendor/ztls/src/tls13/context.zig:ensureApplicationSecrets()`
+- Neither function is called during test execution
+- This means application secrets are being derived elsewhere!
+
+**5. Root Cause Hypothesis:**
+The QUIC server is using a DIFFERENT code path to derive application traffic secrets that bypasses vendor/ztls's RFC 8446-compliant key schedule. The application secrets being used are WRONG, causing AEAD decryption to fail on client-sent 1-RTT packets containing STREAM frames.
+
+### Next Steps
+
+1. Find where application secrets are actually being derived in the codebase
+2. Compare those secrets with the client's expected secrets
+3. Fix the application secret derivation to use vendor/ztls's `deriveApplicationTraffic()`
+
+**Phase 41 Status:** 🔍 **INVESTIGATING - Root cause identified, fix in progress**
+
+---
+
 ## Summary
 
 | Phase | Issue | Status | Files Modified |
@@ -426,8 +513,9 @@ $ make e2e-test-go-comprehensive
 | 38 | Packet number expansion returning wrong value | ✅ RESOLVED | crypto_quic.zig, incoming.zig |
 | 39 | UnexpectedAlgorithm error blocking ServerHello | ✅ RESOLVED | handshake_integration.zig |
 | 40 | TLS early secret derivation using empty IKM | ✅ RESOLVED | vendor/ztls key_derivation.zig |
+| 41 | Stream data timeout - server not responding to STREAM frames | 🔍 INVESTIGATING | TBD |
 
-**Key Achievement:** The Zig QUIC server successfully completes TLS 1.3 handshake with quic-go client! Packet numbers, ACK frames, signature scheme negotiation, and TLS key schedule all work correctly. Connection establishment and stream opening verified.
+**Key Achievement:** The Zig QUIC server successfully completes TLS 1.3 handshake with quic-go client! Packet numbers, ACK frames, signature scheme negotiation, and TLS key schedule all work correctly. Connection establishment and stream opening verified. Now investigating stream data exchange.
 
 ### Phase 39 Update: Detailed Error Trace
 
