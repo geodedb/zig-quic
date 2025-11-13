@@ -465,6 +465,8 @@ const StreamTx = struct {
     off: u64 = 0,
     fin_sent: bool = false,
     aborted: bool = false,
+    // PHASE 42 PART 10: Per-stream send-side flow control (RFC 9000 §4.2)
+    peer_max_stream_data: u64 = 0,  // Peer's receive window limit for this stream
 };
 
 /// Connection state and helpers for QUIC handshake, recovery, and 1-RTT.
@@ -2150,7 +2152,8 @@ pub const Connection = struct {
             }
             _ = self.ensureStreamRx(stream_id);
             if (self.stream_txs.getPtr(stream_id) == null) {
-                _ = self.stream_txs.put(stream_id, .{}) catch {};
+                // PHASE 42 PART 10: Initialize per-stream peer window from connection default
+                _ = self.stream_txs.put(stream_id, .{ .peer_max_stream_data = self.peer_max_stream_data }) catch {};
             }
             return stream_id;
         } else {
@@ -2165,7 +2168,8 @@ pub const Connection = struct {
             self.opened_uni += 1;
             // TX-only from our perspective, but install TX state for writeStream()
             if (self.stream_txs.getPtr(stream_id) == null) {
-                _ = self.stream_txs.put(stream_id, .{}) catch {};
+                // PHASE 42 PART 10: Initialize per-stream peer window from connection default
+                _ = self.stream_txs.put(stream_id, .{ .peer_max_stream_data = self.peer_max_stream_data }) catch {};
             }
             return stream_id;
         }
@@ -2241,15 +2245,24 @@ pub const Connection = struct {
         const tx = self.app_tx_keys.?;
         // Allow zero-length writes ONLY if fin=true (FIN-only frame)
         if (data.len == 0 and !fin) return 0;
-        const cur_off: u64 = if (id == 0) self.stream_send_off else self.stream_txs.getPtr(id).?.off;
-        if (cur_off >= self.peer_max_stream_data) {
+
+        // PHASE 42 PART 10: Get per-stream TX state for flow control
+        const tx_state = if (id == 0)
+            &StreamTx{ .off = self.stream_send_off, .peer_max_stream_data = self.peer_max_stream_data }
+        else
+            self.stream_txs.getPtr(id).?;
+
+        const cur_off: u64 = tx_state.off;
+        const peer_stream_limit: u64 = tx_state.peer_max_stream_data;
+
+        if (cur_off >= peer_stream_limit) {
             // Signal STREAM_DATA_BLOCKED (coalesced: only once per limit value)
-            if (self.last_stream_data_blocked_limit != self.peer_max_stream_data) {
-                self.last_stream_data_blocked_limit = self.peer_max_stream_data;
+            if (self.last_stream_data_blocked_limit != peer_stream_limit) {
+                self.last_stream_data_blocked_limit = peer_stream_limit;
                 var fb1 = std.ArrayList(u8){};
                 defer fb1.deinit(self.allocator.*);
                 const w1 = fb1.writer(self.allocator.*);
-                _ = (frame.Frame{ .stream_data_blocked = .{ .stream_id = id, .limit = self.peer_max_stream_data } }).write(w1) catch 0;
+                _ = (frame.Frame{ .stream_data_blocked = .{ .stream_id = id, .limit = peer_stream_limit } }).write(w1) catch 0;
                 self.sendControlFrames(fb1.items);
             }
             return error.FlowControlBlocked;
@@ -2267,13 +2280,13 @@ pub const Connection = struct {
             }
             return error.FlowControlBlocked;
         }
-        const window_left_stream: u64 = self.peer_max_stream_data - cur_off;
+        const window_left_stream: u64 = peer_stream_limit - cur_off;
         const window_left_conn: u64 = self.peer_max_data - self.conn_send_off;
         const window_left: u64 = if (window_left_stream < window_left_conn) window_left_stream else window_left_conn;
         const max_payload: usize = 1000; // keep within typical path-MTU
         const to_send_u64: u64 = @min(window_left, @as(u64, data.len));
         const to_send: usize = @intCast(@min(to_send_u64, @as(u64, max_payload)));
-        std.debug.print("DEBUG flow control: stream_id={}, data.len={}, cur_off={}, window_left_stream={}, window_left_conn={}, to_send={}\n", .{ id, data.len, cur_off, window_left_stream, window_left_conn, to_send });
+        std.debug.print("[FC-TX] writeStream: stream_id={}, data.len={}, cur_off={}, peer_limit={}, window_left_stream={}, window_left_conn={}, to_send={}\n", .{ id, data.len, cur_off, peer_stream_limit, window_left_stream, window_left_conn, to_send });
         // Allow to_send=0 ONLY if fin=true (FIN-only frame)
         if (to_send == 0 and !fin) return error.FlowControlBlocked;
         var frames = std.ArrayList(u8){};
@@ -3371,7 +3384,8 @@ pub const Connection = struct {
         const is_bidi = (dir_bit == 0);
         if (is_bidi) {
             if (self.stream_txs.getPtr(stream_id) == null) {
-                _ = self.stream_txs.put(stream_id, .{}) catch {};
+                // PHASE 42 PART 10: Initialize per-stream peer window from connection default
+                _ = self.stream_txs.put(stream_id, .{ .peer_max_stream_data = self.peer_max_stream_data }) catch {};
             }
         }
 
@@ -3395,7 +3409,8 @@ pub const Connection = struct {
                 const is_bidi = (dir_bit == 0);
                 if (is_bidi) {
                     if (self.stream_txs.getPtr(stream_id) == null) {
-                        _ = self.stream_txs.put(stream_id, .{}) catch {};
+                        // PHASE 42 PART 10: Initialize per-stream peer window from connection default
+                        _ = self.stream_txs.put(stream_id, .{ .peer_max_stream_data = self.peer_max_stream_data }) catch {};
                     }
                 }
                 return stream_id;

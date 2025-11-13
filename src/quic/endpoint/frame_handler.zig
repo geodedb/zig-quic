@@ -224,9 +224,13 @@ pub fn handleMaxStreamData(
     ctx: *FrameContext,
     m: frame.MaxStreamData,
 ) FrameResult {
-    // FIXME: Only stream_id 0 is handled - should support all streams
-    if (m.stream_id == 0) {
-        ctx.conn.peer_max_stream_data = m.max;
+    // PHASE 42 PART 10: Update per-stream send-side flow control window (RFC 9000 §4.2)
+    if (ctx.conn.stream_txs.getPtr(m.stream_id)) |tx| {
+        tx.peer_max_stream_data = m.max;
+        std.debug.print("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) updated per-stream window\n", .{m.stream_id, m.max});
+    } else {
+        // Stream not yet created on our side - ignore or create entry
+        std.debug.print("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) but stream TX not initialized yet\n", .{m.stream_id, m.max});
     }
     return .{ .saw_ack_eliciting = true };
 }

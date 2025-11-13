@@ -1851,9 +1851,123 @@ Need to implement proper per-stream flow control:
 **RFC Compliance**: Violates RFC 9000 §4.2 (per-stream flow control)
 **Test Impact**: 5/8 tests fail (62.5% failure rate)
 
-### Next Steps
+### Phase 42 Part 9 Fix Implementation
 
-1. Implement per-stream flow control tracking in StreamRx
-2. Update MAX_STREAM_DATA frame generation to iterate all streams
-3. Test and verify 8/8 tests pass
+Implemented comprehensive per-stream receive-side flow control:
+
+1. **Modified src/quic/conn.zig:392-410** - Added per-stream flow control fields to StreamRx:
+   ```zig
+   pub const StreamRx = struct {
+       local_max_stream_data: u64 = 0,       // Current receive window limit
+       last_sent_max_stream_data: u64 = 0,   // Last MAX_STREAM_DATA sent
+       // ... other fields
+   }
+   ```
+
+2. **Modified src/quic/conn.zig:3209-3220** - Initialize windows on stream creation:
+   ```zig
+   sr.local_max_stream_data = self.local_max_stream_data;
+   sr.last_sent_max_stream_data = 0;
+   ```
+
+3. **Modified src/quic/conn.zig:2338-2349** - Expand window when data consumed:
+   ```zig
+   const bump = old_max / 2;  // Grow by 50%
+   s.local_max_stream_data = if (overflow != 0) std.math.maxInt(u64) else new_val;
+   ```
+
+4. **Modified src/quic/endpoint/incoming.zig:2337-2353** - Send MAX_STREAM_DATA for ALL streams:
+   ```zig
+   var iter = conn.streams_rx.iterator();
+   while (iter.next()) |entry| {
+       const stream_id = entry.key_ptr.*;
+       const stream = entry.value_ptr;
+       if (stream.local_max_stream_data > stream.last_sent_max_stream_data) {
+           _ = (frame.Frame{ .max_stream_data = .{
+               .stream_id = stream_id,  // NOT hardcoded to 0!
+               .max = stream.local_max_stream_data
+           } }).write(w) catch {};
+           stream.last_sent_max_stream_data = stream.local_max_stream_data;
+       }
+   }
+   ```
+
+### Phase 42 Part 9 Test Results (2025-11-13 15:53:47)
+
+Ran `make e2e-test-go-comprehensive` after implementing per-stream receive-side flow control.
+
+**Results**: 3/8 tests passing (NO IMPROVEMENT)
+
+```
+✅ Single Stream Echo (21 bytes)        - 6.05ms
+✅ Multiple Concurrent Streams (4)      - 5.19ms
+✅ Large Transfer (10KB)                - 11.63ms (0.84 MB/s)
+❌ Large Transfer (102400 bytes)        - timeout: no recent network activity
+❌ Large Transfer (1048576 bytes)       - timeout: no recent network activity
+❌ Multiple Round-trips (10 cycles)     - timeout: no recent network activity
+❌ Bidirectional Simultaneous           - timeout: no recent network activity
+❌ Stream Interleaving (5 streams)      - timeout: no recent network activity
+```
+
+### Phase 42 Part 9 Debug Output Analysis
+
+Checked `/tmp/e2e-go-comprehensive.log` for `[FC]` debug messages:
+
+```
+[FC] Sending MAX_STREAM_DATA(stream=0, max=524288)
+[FC] Sending MAX_STREAM_DATA(stream=1, max=524288)
+[FC] Sending MAX_STREAM_DATA(stream=4, max=524288)
+[FC] Stream 0 read 21 bytes, window expanded 524288 -> 786432
+[FC] Sending MAX_STREAM_DATA(stream=0, max=786432)
+[FC] Stream 24 read 16 bytes, window expanded 1048576 -> 1119744
+[FC] Sending MAX_STREAM_DATA(stream=24, max=1119744)
+```
+
+**Key Findings**:
+- MAX_STREAM_DATA frames ARE being sent for multiple streams (0, 1, 4, 5, 8, 12, 16, 20, 24)
+- Windows ARE expanding correctly (Stream 24 reached 1,119,744 bytes)
+- Per-stream receive-side flow control implementation is WORKING CORRECTLY
+
+**Critical Realization**: The problem is NOT in receive-side flow control (server receiving from client). The issue is in **send-side flow control** (server sending back to client).
+
+### Phase 42 Part 10: Send-Side Flow Control Investigation
+
+**Date**: 2025-11-13
+**Status**: IN PROGRESS
+
+#### Problem Hypothesis
+
+The server needs per-stream tracking of the peer's (client's) receive window limits when sending data.
+
+**Evidence from Code Analysis**:
+
+1. **src/quic/conn.zig:619** - `peer_max_stream_data` is a SINGLE GLOBAL value:
+   ```zig
+   peer_max_stream_data: u64 = 16 * 1024,  // GLOBAL - should be per-stream!
+   ```
+
+2. **src/quic/conn.zig:2245-2270** - writeStream() uses this global value for flow control:
+   ```zig
+   pub fn writeStream(self: *Connection, id: u64, data: []const u8) !usize {
+       // ...
+       const peer_limit = self.peer_max_stream_data;  // GLOBAL VALUE!
+       // ...
+   }
+   ```
+
+**Impact**: When the server echoes data back to the client on multiple streams:
+- Server doesn't know each stream's individual send window limit from the client
+- Server may be blocked because it thinks the global limit applies to all streams
+- Client sends MAX_STREAM_DATA frames for individual streams, but server doesn't track them per-stream
+
+#### Root Cause: Missing StreamTx Per-Stream Send Tracking
+
+The current architecture has:
+- **StreamRx** (receive-side): Tracks data received FROM peer, has per-stream flow control
+- **StreamTx** (send-side): MISSING per-stream tracking of peer's receive window
+
+The server needs to:
+1. Track `peer_max_stream_data` per-stream (not globally)
+2. Update this value when receiving MAX_STREAM_DATA frames from the client
+3. Use per-stream limits in writeStream() flow control checks
 
