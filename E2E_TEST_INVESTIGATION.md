@@ -1971,3 +1971,84 @@ The server needs to:
 2. Update this value when receiving MAX_STREAM_DATA frames from the client
 3. Use per-stream limits in writeStream() flow control checks
 
+#### Phase 42 Part 10 Implementation
+
+Implemented comprehensive per-stream send-side flow control:
+
+1. **Modified src/quic/conn.zig:464-470** - Added peer_max_stream_data to StreamTx:
+   ```zig
+   const StreamTx = struct {
+       off: u64 = 0,
+       fin_sent: bool = false,
+       aborted: bool = false,
+       peer_max_stream_data: u64 = 0,  // Per-stream peer receive window limit
+   };
+   ```
+
+2. **Modified src/quic/conn.zig:2156,2172,3379,3404** - Initialize peer window on stream creation:
+   ```zig
+   _ = self.stream_txs.put(stream_id, .{ .peer_max_stream_data = self.peer_max_stream_data }) catch {};
+   ```
+
+3. **Modified src/quic/endpoint/frame_handler.zig:227-236** - Update per-stream limits when receiving MAX_STREAM_DATA:
+   ```zig
+   pub fn handleMaxStreamData(ctx: *FrameContext, m: frame.MaxStreamData) FrameResult {
+       if (ctx.conn.stream_txs.getPtr(m.stream_id)) |tx| {
+           tx.peer_max_stream_data = m.max;
+           std.debug.print("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={})\n", .{m.stream_id, m.max});
+       }
+       return .{ .saw_ack_eliciting = true };
+   }
+   ```
+
+4. **Modified src/quic/conn.zig:2249-2289** - Use per-stream limits in writeStream():
+   ```zig
+   const tx_state = if (id == 0)
+       &StreamTx{ .off = self.stream_send_off, .peer_max_stream_data = self.peer_max_stream_data }
+   else
+       self.stream_txs.getPtr(id).?;
+   const peer_stream_limit: u64 = tx_state.peer_max_stream_data;
+   // Use peer_stream_limit for flow control checks
+   ```
+
+### Phase 42 Part 10 Test Results (2025-11-13 16:02:26)
+
+Ran `make e2e-test-go-comprehensive` after implementing per-stream send-side flow control.
+
+**Results**: 3/8 tests passing (NO IMPROVEMENT)
+
+```
+✅ Single Stream Echo (21 bytes)        - 6.03ms
+✅ Multiple Concurrent Streams (4)      - 5.84ms
+✅ Large Transfer (10KB)                - 10.01ms (0.98 MB/s)
+❌ Large Transfer (102400 bytes)        - timeout: no recent network activity
+❌ Large Transfer (1048576 bytes)       - timeout: no recent network activity
+❌ Multiple Round-trips (10 cycles)     - timeout: no recent network activity
+❌ Bidirectional Simultaneous           - timeout: no recent network activity
+❌ Stream Interleaving (5 streams)      - timeout: no recent network activity
+```
+
+### Phase 42 Part 10 Debug Analysis
+
+Checked debug output for flow control:
+
+**Key Observations**:
+1. Per-stream send-side flow control is working - all streams show `peer_limit=524288` (512KB initial window)
+2. Server sends MAX_STREAM_DATA frames correctly (receive-side) - client should be able to send data
+3. **CRITICAL FINDING**: Server does NOT receive any MAX_STREAM_DATA frames from client
+   - No `[FC-TX] Received MAX_STREAM_DATA` log messages appear
+   - Server cannot expand send windows beyond initial 524KB limit
+   - But tests are failing at only 100KB transfer, well below the 512KB limit
+
+**Debug Sample**:
+```
+[FC-TX] writeStream: stream_id=20, data.len=4096, cur_off=0, peer_limit=524288, window_left_stream=524288, to_send=1000
+[FC-TX] writeStream: stream_id=20, data.len=4096, cur_off=1000, peer_limit=524288, window_left_stream=523288, to_send=1000
+```
+
+**New Hypothesis**: The issue is NOT flow control windows (512KB >> 100KB). The problem might be:
+- Incorrect transport parameter exchange (initial window mismatch)
+- Echo server implementation issue (not reading fast enough)
+- Packet loss or congestion control limiting throughput
+- Missing ACKs causing timeout despite flow control being correct
+
