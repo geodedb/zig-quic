@@ -1169,7 +1169,7 @@ pub const Connection = struct {
     }
 
     /// Check if the peer address is localhost (127.0.0.1 or ::1)
-    fn isLocalhost(self: *const Connection) bool {
+    pub fn isLocalhost(self: *const Connection) bool {
         // Check IPv4 localhost (127.0.0.1)
         if (self.peer.storage.family == posix.AF.INET) {
             const addr_bytes = @as([*]const u8, @ptrCast(&self.peer.storage));

@@ -1575,3 +1575,86 @@ pub fn canSendUnderAmplification(self: *const Connection) bool {
 
 **Status:** 🔍 **ROOT CAUSE NARROWED DOWN** - Localhost address validation not working, blocking ACK sends via amplification limits.
 
+---
+
+## Phase 42 Part 7 (Fix Applied): Localhost Auto-Validation (TESTING 🧪)
+
+**Date:** 2025-11-13
+**Fix Location:** `src/quic/endpoint/incoming.zig:906-913`
+
+### The Fix
+
+Added localhost auto-validation during Initial packet processing to bypass unnecessary amplification limits:
+
+```zig
+// PHASE 42 PART 7 FIX: Auto-validate localhost addresses to avoid unnecessary amplification limits
+// RFC 9000 §8.1 allows servers to skip address validation for trusted addresses
+if (conn.role == .Server and !conn.address_validated and conn.isLocalhost()) {
+    std.debug.print("[LOCALHOST] Auto-validating localhost address - bypassing amplification limits\n", .{});
+    conn.address_validated = true;
+    conn.bytes_rx_unvalidated = 0;
+    conn.bytes_tx_unvalidated = 0;
+}
+```
+
+**Location in Code Flow:**
+- Called during `processInitial()` after token verification (line 900-903)
+- Before Retry packet generation logic (line 915+)
+- Ensures localhost addresses are trusted from connection establishment
+
+### Expected Impact
+
+**Before Fix:**
+- Localhost connections treated as unvalidated → Amplification limits applied
+- `canSendUnderAmplification()` returns `false` → ACKs blocked
+- Flow control deadlock on transfers >~28KB (initial window)
+
+**After Fix:**
+- Localhost connections auto-validated → `address_validated=true`
+- `canSendUnderAmplification()` returns `true` immediately
+- ACKs sent without restriction → Flow control works correctly
+- Expected result: **8/8 tests passing** ✅
+
+### RFC Compliance
+
+**RFC 9000 §8.1 - Address Validation:**
+> "A server MAY skip address validation for any IP address that it considers to be trusted."
+
+Localhost (127.0.0.1, ::1) is definitionally trusted - packets cannot be spoofed from loopback addresses.
+
+**Status:** ⚠️ **FIX APPLIED, NO IMPROVEMENT** - Localhost auto-validation implemented but tests still show 3/8 passing.
+
+### Test Results After Fix
+
+**Build**: ✅ Successful
+**Test Run**: Still 3/8 tests passing (no change)
+- ✅ Test 1: Single Stream Echo (21 bytes)
+- ✅ Test 2: Multiple Concurrent Streams
+- ✅ Test 3: Large Transfer (10KB)
+- ❌ Tests 4-8: Still timing out after 30 seconds
+
+### Debug Investigation
+
+Added debug logging to verify localhost detection:
+```zig
+const is_localhost = conn.isLocalhost();
+std.debug.print("[PHASE42] processInitial: role={s} address_validated={} isLocalhost={}\n", .{
+    if (conn.role == .Server) "Server" else "Client",
+    conn.address_validated,
+    is_localhost,
+});
+```
+
+**Observation**: Debug messages not appearing in server output, suggesting either:
+1. The `processInitial` function isn't being called for subsequent packets (only first Initial)
+2. Address validation happens elsewhere for Application-level packets
+3. The `isLocalhost()` function isn't detecting 127.0.0.1 correctly
+
+### Next Investigation Steps
+
+1. Verify `isLocalhost()` returns `true` for 127.0.0.1 with unit test
+2. Check where `address_validated` is checked during Application packet processing
+3. Add debug logging to `canSendUnderAmplification()` to see values during ACK generation
+4. Investigate why ACK generation fix (saw_ack_eliciting) alone didn't improve test results
+5. Consider if the issue is elsewhere - perhaps flow control window updates not being sent?
+

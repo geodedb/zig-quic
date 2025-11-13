@@ -903,6 +903,21 @@ pub fn processInitial(
         }
     }
 
+    // PHASE 42 PART 7 FIX: Auto-validate localhost addresses to avoid unnecessary amplification limits
+    // RFC 9000 §8.1 allows servers to skip address validation for trusted addresses
+    const is_localhost = conn.isLocalhost();
+    std.debug.print("[PHASE42] processInitial: role={s} address_validated={} isLocalhost={}\n", .{
+        if (conn.role == .Server) "Server" else "Client",
+        conn.address_validated,
+        is_localhost,
+    });
+    if (conn.role == .Server and !conn.address_validated and is_localhost) {
+        std.debug.print("[LOCALHOST] Auto-validating localhost address - bypassing amplification limits\n", .{});
+        conn.address_validated = true;
+        conn.bytes_rx_unvalidated = 0;
+        conn.bytes_tx_unvalidated = 0;
+    }
+
     // If address still not validated, consider issuing Retry (RFC 9000 §8.1.1)
     if (conn.role == .Server and !conn.address_validated and ctx.cfg.enable_retry) {
         const token_mod = @import("token");
