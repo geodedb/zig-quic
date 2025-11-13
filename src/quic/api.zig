@@ -65,7 +65,7 @@ pub fn connect(ep: *QuicEndpoint, server_addr: []const u8, server_name: []const 
         ep.allocator.destroy(conn);
     }
     if (server_name.len != 0) {
-        try conn.tls.setServerName(server_name);
+        try conn.setServerName(server_name);
     }
     try ep.clientSendInitialProbe(conn);
     return conn;

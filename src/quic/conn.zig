@@ -1005,6 +1005,18 @@ pub const Connection = struct {
         self.last_ack_eliciting_rx_app_ns = 0;
     }
 
+    /// Set the expected server name (SNI) for TLS certificate validation on client connections.
+    /// This is a compatibility wrapper for the API layer that worked with legacy TLS Engine.
+    /// Currently a no-op as server name validation is not yet implemented in TLS Context.
+    /// TODO: Implement server name validation in TLS Context for production use.
+    pub fn setServerName(self: *Connection, server_name: []const u8) !void {
+        _ = self;
+        _ = server_name;
+        // NOTE: TLS Context does not currently support server_name validation.
+        // This method exists for API compatibility and should be implemented
+        // when certificate validation is added to TLS Context.
+    }
+
     /// Release resources held by this Connection (payloads, maps, TLS state).
     /// Free dynamic resources (lists, maps, TLS engine) owned by the connection.
     pub fn deinit(self: *Connection) void {
@@ -1415,7 +1427,15 @@ pub const Connection = struct {
         // before calling this function for TLS Context callbacks to work properly
 
         // Process CRYPTO data through TLS Context
-        try tls_ctx.processCrypto(level, hs);
+        tls_ctx.processCrypto(level, hs) catch |err| {
+            std.debug.print("pushCrypto: processCrypto failed with error: {}\n", .{err});
+            std.debug.print("  role={s}, level={s}, hs_len={}\n", .{
+                if (self.role == .Server) "Server" else "Client",
+                @tagName(level),
+                hs.len,
+            });
+            return err;
+        };
 
         // Phase 24 FIX: Poll for client's Finished message after processing server's Finished
         // The server has separate code in handshake_integration.zig that sends its messages.

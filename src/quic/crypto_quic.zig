@@ -431,7 +431,7 @@ pub fn unprotectInitialAutoSample(
     ciphertext_and_tag: []const u8,
     out_plaintext: []u8,
     largest_pn: u64,
-) !usize {
+) !u64 {
     if (ciphertext_and_tag.len < 16) return error.AuthenticationFailed;
     const pn_len = pn_bytes.len;
     if (pn_len == 0 or pn_len > 4) return error.InvalidPacketNumberLength;
@@ -509,25 +509,33 @@ pub fn unprotectInitialAutoSample(
     var pn_trunc: u64 = 0;
     var i: usize = 0;
     while (i < actual_pn_len) : (i += 1) pn_trunc = (pn_trunc << 8) | pn_bytes[i];
+
+    std.debug.print("[unprotectInitial] PN bytes after unmasking: ", .{});
+    var j: usize = 0;
+    while (j < actual_pn_len) : (j += 1) {
+        std.debug.print("{X:0>2} ", .{pn_bytes[j]});
+    }
+    std.debug.print("\n", .{});
+    std.debug.print("[unprotectInitial] truncated={} actual_pn_len={} largest_pn={}\n", .{ pn_trunc, actual_pn_len, largest_pn });
+
     const full_pn = expandPacketNumber(pn_trunc, @intCast(actual_pn_len), largest_pn);
 
-    // Commented out verbose debug
-    // std.debug.print("expandPacketNumber: truncated={} pn_len={} largest_pn={} -> full={}\n", .{ pn_trunc, pn_len, largest_pn, full_pn });
-    // std.debug.print("  Nonce IV: ", .{});
-    // for (aead_iv) |b| std.debug.print("{X:0>2}\n", .{b});
-    // std.debug.print("", .{});
+    std.debug.print("[unprotectInitial] expanded to full_pn={}\n", .{full_pn});
 
     // ciphertext_and_tag buffer layout: [PN bytes (actual_pn_len)] [encrypted payload + tag]
     // Pass only the encrypted payload + tag portion to AEAD decrypt (skip the PN bytes)
     const actual_ciphertext = ciphertext_and_tag[actual_pn_len..];
 
-    return aeadDecrypt(suite, aead_key, aead_iv, full_pn, aad, actual_ciphertext, out_plaintext) catch |err| {
+    _ = aeadDecrypt(suite, aead_key, aead_iv, full_pn, aad, actual_ciphertext, out_plaintext) catch |err| {
         // Only print for non-zero packet numbers (likely real failures, not probing)
         if (full_pn > 0 and full_pn < 1000) {
             std.debug.print("AEAD decrypt failed: pn={} err={}\n", .{ full_pn, err });
         }
         return err;
     };
+
+    // Return the expanded packet number, not the plaintext length
+    return full_pn;
 }
 
 /// Unmask long header first byte and up to 4 PN bytes using the given hp_key and sample.

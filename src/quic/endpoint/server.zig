@@ -348,9 +348,17 @@ pub fn createServerConnection(
 
     // Set peer_initial_scid from client's SCID
     // RFC 9000 §7.3: "Servers populate peer_initial_scid from client's SCID"
+    std.debug.print("createServerConnection: client_scid.len={}\n", .{config.client_scid.len});
     c.peer_initial_scid.len = @intCast(@min(config.client_scid.len, c.peer_initial_scid.bytes.len));
     if (c.peer_initial_scid.len > 0) {
         @memcpy(c.peer_initial_scid.bytes[0..c.peer_initial_scid.len], config.client_scid[0..c.peer_initial_scid.len]);
+    }
+    std.debug.print("createServerConnection: Set peer_initial_scid.len={}\n", .{c.peer_initial_scid.len});
+    if (c.peer_initial_scid.len >= 4) {
+        std.debug.print("  peer_initial_scid[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+            c.peer_initial_scid.bytes[0], c.peer_initial_scid.bytes[1],
+            c.peer_initial_scid.bytes[2], c.peer_initial_scid.bytes[3]
+        });
     }
 
     // Configure congestion control

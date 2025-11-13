@@ -104,10 +104,15 @@ fn onSecretAvailable(
         return error.NoConnectionContext;
     };
 
-    std.debug.print("onSecretAvailable: conn={*} role={s} level={s} secret[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
-        conn, if (conn.role == .Server) "Server" else "Client", @tagName(level),
-        secret[0], secret[1], secret[2], secret[3]
+    // Log full secret for debugging (first 32 bytes in hex)
+    std.debug.print("onSecretAvailable: conn={*} role={s} level={s}\n", .{
+        conn, if (conn.role == .Server) "Server" else "Client", @tagName(level)
     });
+    std.debug.print("  secret: ", .{});
+    for (secret) |byte| {
+        std.debug.print("{x:0>2}", .{byte});
+    }
+    std.debug.print("\n", .{});
 
     // RFC 9001 §5.1: Secrets are 32 bytes for SHA-256-based cipher suites
     if (secret.len != 32) return error.InvalidSecretLength;
@@ -322,6 +327,13 @@ pub fn createTlsContext(
     // Create TLS configuration
     const tls_role: tls13.Role = if (role == .Client) .Client else .Server;
 
+    // RFC 8446 §4.2.3: Supported signature schemes for certificate verification
+    // Include both ECDSA P-256 and Ed25519 for compatibility with different certificate types
+    const supported_schemes = &[_]tls13.SignatureScheme{
+        .ecdsa_secp256r1_sha256,  // ECDSA P-256 (commonly used in certificates)
+        .ed25519,                 // Ed25519 (compact, efficient)
+    };
+
     const config = tls13.Config{
         .allocator = allocator,
         .role = tls_role,
@@ -329,6 +341,7 @@ pub fn createTlsContext(
         .quic_transport_parameters = if (transport_params_bytes.len > 0) transport_params_bytes else null,
         .server_cert_der = server_cert_der,
         .server_key_der = server_key_der,
+        .supported_signature_schemes = supported_schemes,
     };
 
     // Create callbacks struct with full QUIC integration
@@ -984,7 +997,11 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
             std.debug.print("sendHandshakePackets: Sending coalesced packet (Initial {} + Handshake {} = {} bytes)\n", .{ initial_pkt.len, pkt.len, coalesced_len });
 
             // Send the coalesced packet
-            _ = ctx.send_fn(ctx.peer, coalesced_buf[0..coalesced_len]) catch return error.SendFailed;
+            const bytes_sent = ctx.send_fn(ctx.peer, coalesced_buf[0..coalesced_len]) catch |err| {
+                std.debug.print("sendHandshakePackets: send_fn FAILED with error: {}\n", .{err});
+                return error.SendFailed;
+            };
+            std.debug.print("sendHandshakePackets: send_fn returned {} bytes sent\n", .{bytes_sent});
         } else {
             // Send Handshake packet alone (not first or no Initial to coalesce)
             _ = ctx.send_fn(ctx.peer, pkt) catch return error.SendFailed;

@@ -107,14 +107,14 @@ fn benchmarkHandshakeSecrets(config: BenchConfig) !void {
 fn benchmarkContextCreation(alloc: std.mem.Allocator, config: BenchConfig) !void {
     var i: usize = 0;
     while (i < config.warmup) : (i += 1) {
-        var ctx = tls13.Context.init(.{ .allocator = alloc, .role = .Server }, .{});
+        var ctx = try tls13.Context.init(.{ .allocator = alloc, .role = .Server }, .{});
         ctx.deinit();
     }
-    
+
     const start = std.time.nanoTimestamp();
     i = 0;
     while (i < config.iterations) : (i += 1) {
-        var ctx = tls13.Context.init(.{ .allocator = alloc, .role = .Server }, .{});
+        var ctx = try tls13.Context.init(.{ .allocator = alloc, .role = .Server }, .{});
         ctx.deinit();
     }
     const end = std.time.nanoTimestamp();

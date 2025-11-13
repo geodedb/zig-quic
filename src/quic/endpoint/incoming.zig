@@ -809,6 +809,15 @@ pub fn processInitial(
 
         // Create server connection using Session 5 API
         const server_mod = @import("server.zig");
+
+        // Debug: Log client SCID from header
+        std.debug.print("processInitial: Parsed Initial header - client_scid.len={}\n", .{header.scid.len});
+        if (header.scid.len >= 4) {
+            std.debug.print("  client_scid[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+                header.scid[0], header.scid[1], header.scid[2], header.scid[3]
+            });
+        }
+
         const config = server_mod.ServerConnectionConfig{
             .version = version,
             .client_dcid = header.dcid,
@@ -956,26 +965,34 @@ pub fn processInitial(
     }
 
     // Decrypt Initial packet
+    const largest_pn = if (conn.pn_initial.have_any) conn.pn_initial.max else 0;
+    std.debug.print("[processInitial] Before decrypt: largest_pn_for_expansion={}\n", .{largest_pn});
     const decrypted = decryptInitialPacket(
         ctx.allocator.*,
         bytes,
         header.offset,
         keys_result.rx_keys,
-        if (conn.pn_initial.have_any) conn.pn_initial.max else 0,
+        largest_pn,
     ) catch |err| {
         // Decryption failed - return
         std.debug.print("[Server] Initial decrypt failed: {} (dcid len={})\n", .{ err, header.dcid.len });
         return;
     };
     defer ctx.allocator.free(decrypted.payload);
+    std.debug.print("[processInitial] After decrypt: expanded packet_number={}\n", .{decrypted.packet_number});
 
     // Set connection context for TLS Context callbacks (Phase 21.2)
     handshake_integration.setCurrentConnection(if (@TypeOf(conn) == **conn_mod.Connection) conn.* else conn);
     defer handshake_integration.clearCurrentConnection();
 
-    // Update packet number tracking
-    conn.pn_initial.max = decrypted.packet_number;
-    conn.pn_initial.have_any = true;
+    // Update packet number tracking (RFC 9000 §13.2)
+    // MUST use trackRecvPnInitial() to properly update the bitmap window
+    std.debug.print("[processInitial] Tracking received packet number: {}\n", .{decrypted.packet_number});
+    conn.trackRecvPnInitial(decrypted.packet_number);
+    std.debug.print("[processInitial] After tracking - pn_initial.max={}, have_any={}\n", .{
+        conn.pn_initial.max,
+        conn.pn_initial.have_any,
+    });
 
     // Track bytes received from unvalidated address (anti-amplification)
     if (conn.role == .Server and !conn.address_validated) {
@@ -1008,7 +1025,8 @@ pub fn processInitial(
                     ctx.allocator,
                     cr.offset,
                     cr.data,
-                ) catch blk: {
+                ) catch |err| blk: {
+                    std.debug.print("processInitial: handleInitialCrypto error: {}\n", .{err});
                     break :blk false;
                 };
 
@@ -1049,7 +1067,13 @@ pub fn processInitial(
     }
 
     // Send ServerHello if we're a server and TLS has responses
-    if (conn.role == .Server and saw_crypto and conn.crypto_tx_off_initial == 0) {
+    // Try after each CRYPTO frame in case ClientHello is fragmented
+    std.debug.print("[processInitial] Checking ServerHello condition: role={s}, saw_crypto={}\n", .{
+        if (conn.role == .Server) "Server" else "Client",
+        saw_crypto,
+    });
+    if (conn.role == .Server and saw_crypto) {
+        std.debug.print("[processInitial] Attempting to send ServerHello...\n", .{});
         // ServerHello must be sent in Initial packet (RFC 9001 §4.1.1)
         var hs_ctx = handshake_integration.HandshakeContext{
             .conn = conn,
@@ -1078,6 +1102,15 @@ pub fn processInitial(
             const w = frames_stream.writer();
 
             const ack_desc = conn.buildAckInitial();
+            std.debug.print("[processInitial] Building ACK: largest={}, first_range={}, ranges_len={}\n", .{
+                ack_desc.largest,
+                ack_desc.first_range,
+                ack_desc.ranges.len,
+            });
+            std.debug.print("[processInitial] pn_initial: max={}, have_any={}\n", .{
+                conn.pn_initial.max,
+                conn.pn_initial.have_any,
+            });
             const ack_frame = frame.Frame{ .ack = .{
                 .largest = ack_desc.largest,
                 .ack_delay = 0,
@@ -1086,6 +1119,13 @@ pub fn processInitial(
             } };
             _ = ack_frame.write(w) catch 0;
             const frames_data = frames_stream.getWritten();
+
+            // Debug: Print ACK frame bytes
+            std.debug.print("[processInitial] ACK frame bytes ({} bytes): ", .{frames_data.len});
+            for (frames_data) |b| {
+                std.debug.print("{X:0>2} ", .{b});
+            }
+            std.debug.print("\n", .{});
 
             // Use peer's SCID as DCID
             const initial_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
