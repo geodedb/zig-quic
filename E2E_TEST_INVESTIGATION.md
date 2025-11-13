@@ -1503,3 +1503,75 @@ The fix correctly identifies when ACKs should be sent, but they're still not bei
 
 **Status:** 🔍 **ROOT CAUSE IDENTIFIED BUT FIX INCOMPLETE** - ACK generation condition fixed, but amplification limits or transmission path still blocking ACK delivery.
 
+
+---
+
+## Phase 42 Part 7 (Continued): Amplification Limits Blocking ACKs (INVESTIGATING 🔍)
+
+**Date:** 2025-11-13  
+**Current Status:** 3/8 tests passing
+
+### Debug Findings
+
+Added debug logging to `generateAndSendAck()` (incoming.zig:2228) and discovered the real blocker:
+
+```
+[ACK DEBUG] allow_send=n rx_unval=1232 tx_unval=1293 validated=n
+```
+
+**Critical Discovery:**
+1. **`allow_send=n`** - ACKs are BLOCKED by amplification limit check!
+2. **`validated=n`** - Address is NOT validated, even for localhost (127.0.0.1)!
+3. **Amplification math**: `tx_unval / 3 = 1293 / 3 = 431 bytes`
+4. **Should pass**: `431 <= 1232 (rx_unval)` ✓ But `allow_send=n` shows it fails!
+
+### Root Cause Chain
+
+1. **Primary bug (FIXED)**: ACKs only sent for ECN packets → Now sends for all ack-eliciting frames
+2. **Secondary bug (ACTIVE)**: Localhost not validated → Amplification limits applied unnecessarily
+3. **Tertiary bug (SUSPECTED)**: Amplification accounting or logic error in `canSendUnderAmplification()`
+
+### Analysis of `canSendUnderAmplification()` (conn.zig:1166-1169)
+
+```zig
+pub fn canSendUnderAmplification(self: *const Connection) bool {
+    if (self.address_validated) return true;  // ← Should be true for localhost!
+    return (self.bytes_tx_unvalidated / 3) <= self.bytes_rx_unvalidated;
+}
+```
+
+**Expected behavior for localhost:**
+- `address_validated` should be `true` for 127.0.0.1
+- Function should return `true` immediately
+- No amplification limits applied
+
+**Actual behavior:**
+- `address_validated=false` (WHY??)
+- Falls through to amplification check
+- Check fails despite correct math (431 <= 1232)
+
+### Hypotheses
+
+**Hypothesis 1: Localhost Detection Not Working**
+- `isLocalhost()` function (conn.zig:1172) not being called during connection setup
+- Address validation logic missing for server-side connections
+- Need to find where `address_validated` is set
+
+**Hypothesis 2: Integer Division Bug**
+- Zig integer division: `1293 / 3 = 431` (truncates)
+- But comparison uses `<=` so should still pass
+- Unless there's overflow/underflow somewhere
+
+**Hypothesis 3: Anti-Amplification Logic Inverted**
+- Maybe the condition is backwards?
+- Test: Try inverting the comparison
+
+### Next Investigation Steps
+
+1. Find where `address_validated` is set for incoming connections
+2. Verify `isLocalhost()` is called during server accept
+3. Add debug logging to `canSendUnderAmplification()` to see exact values
+4. Check if there's a separate code path for setting `address_validated` on servers
+
+**Status:** 🔍 **ROOT CAUSE NARROWED DOWN** - Localhost address validation not working, blocking ACK sends via amplification limits.
+

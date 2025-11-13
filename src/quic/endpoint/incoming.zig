@@ -2224,14 +2224,13 @@ pub fn generateAndSendAck(
         if (conn.app_tx_keys) |tx_keys| {
             const allow_send = conn.canSendUnderAmplification();
 
-            if (ack_ctx.test_capture_enabled) {
-                std.debug.print("APP allow_send={s} rx_unval={d} tx_unval={d} validated={s}\n", .{
-                    if (allow_send) "y" else "n",
-                    conn.bytes_rx_unvalidated,
-                    conn.bytes_tx_unvalidated,
-                    if (conn.address_validated) "y" else "n"
-                });
-            }
+            // PHASE 42 DEBUG: Always log amplification state to diagnose ACK blocking
+            std.debug.print("[ACK DEBUG] allow_send={s} rx_unval={d} tx_unval={d} validated={s}\n", .{
+                if (allow_send) "y" else "n",
+                conn.bytes_rx_unvalidated,
+                conn.bytes_tx_unvalidated,
+                if (conn.address_validated) "y" else "n"
+            });
 
             // Precompute ACK_ECN selection to keep consistent across branches
             var ack_ecn_common = conn.getAckEcn(.Application);
