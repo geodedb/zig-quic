@@ -615,11 +615,15 @@ pub fn decryptInitialPacketWithDcid(
     // The packet number is encrypted, we need to unprotect it first
     // RFC 9001 §5.4: payload_len includes PN + encrypted frames + AEAD tag
     // The ciphertext_and_tag should start at PN (not skip it)
-    var pn_bytes: [4]u8 = undefined;
-    @memcpy(pn_bytes[0..4], packet_bytes[pn_offset..pn_offset + 4]);
+    // Phase 35 fix: Initialize to zeros (not undefined) to match production code
+    // If copy_len < 4, remaining bytes must be zero, not garbage
+    var pn_bytes: [4]u8 = [_]u8{0} ** 4;
+    const copy_len = @min(4, payload_len);
+    @memcpy(pn_bytes[0..copy_len], packet_bytes[pn_offset..pn_offset + copy_len]);
 
     var header_first = packet_bytes[0];
-    const header_prefix = packet_bytes[0..pn_offset];
+    // Phase 35 fix: header_prefix should EXCLUDE byte 0 (header_first), just like production code
+    const header_prefix = packet_bytes[1..pn_offset]; // Everything between header_first and PN
     const ciphertext_and_tag = packet_bytes[pn_offset..pn_offset + payload_len];
 
     // Allocate buffer for plaintext
@@ -628,7 +632,7 @@ pub fn decryptInitialPacketWithDcid(
 
     // Decrypt the packet
     // Phase 34 fix: Pass full 4-byte buffer instead of slice (consistent with Phase 33 fix)
-    // Note: errdefer on line 636 handles cleanup on error
+    // Note: errdefer on line 633 handles cleanup on error
     const plaintext_len = crypto_quic.unprotectInitialAutoSample(
         .aes_128_gcm,
         &keys.key,

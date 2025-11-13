@@ -3419,3 +3419,225 @@ With crashes eliminated and 6 tests remaining:
 ---
 
 **Phase 33 Status:** COMPLETED ✅ - Crashes fixed, test count improved (+7), ready for next phase.
+
+## Phase 34: Test Utility Consistency Fix (2025-11-12)
+
+### Issue: packet_inspector Using Outdated Buffer Pattern
+
+After Phase 33 fixed the enumeration loop to pass full buffers, the test utility `packet_inspector.zig` was still using the old slice pattern, creating inconsistency between production code and test utilities.
+
+### Root Cause
+
+**File:** `tests/integration/packet_inspector.zig` (line 637)
+
+**Problem:**
+The packet inspector was still using the old enumeration pattern:
+```zig
+const plaintext_len = crypto_quic.unprotectInitialAutoSample(
+    .aes_128_gcm,
+    &keys.key,
+    &keys.iv,
+    &keys.hp,
+    &header_first,
+    pn_bytes[0..4],  // ← Passing slice instead of full buffer
+    header_prefix,
+    ciphertext_and_tag,
+    plaintext,
+    0,
+) catch |err| {
+    return err;
+};
+```
+
+Phase 33 changed production code in `endpoint/incoming.zig` to:
+```zig
+&pn_masked  // Pass full 4-byte buffer, not slice
+```
+
+### The Fix
+
+**Updated packet_inspector to match production code pattern:**
+```zig
+// Phase 34 fix: Pass full 4-byte buffer instead of slice (consistent with Phase 33 fix)
+const plaintext_len = crypto_quic.unprotectInitialAutoSample(
+    .aes_128_gcm,
+    &keys.key,
+    &keys.iv,
+    &keys.hp,
+    &header_first,
+    &pn_bytes,  // ← Pass full array reference, not slice
+    header_prefix,
+    ciphertext_and_tag,
+    plaintext,
+    0, // largest_pn - use 0 for first packet
+) catch |err| {
+    return err;
+};
+```
+
+### Files Modified
+
+1. **`tests/integration/packet_inspector.zig`** (line 638)
+   - Changed: `pn_bytes[0..4]` → `&pn_bytes`
+   - Added comment explaining Phase 34 consistency fix
+
+### Test Results
+
+**Before Phase 34:**
+- Passing: 1857/2348 (79.1%)
+- Failing: 6
+- Status: Inconsistency between production and test code
+
+**After Phase 34:**
+- Passing: 1857/2348 (79.1%)
+- Failing: 6
+- Status: **No regression** - consistency maintained, test utility now matches production pattern
+
+### Analysis
+
+The Phase 34 fix ensures test utilities follow the same buffer management pattern as production code. While this didn't fix the 6 remaining test failures, it prevents future issues from inconsistent patterns and makes the codebase more maintainable.
+
+**Why No Test Count Change:**
+The 6 failing tests all fail in `ConnectionPair.connect()` workflow with extensive debug output showing packet encryption/decryption working correctly. The issue appears to be in the test harness connection establishment, not in the crypto implementation that packet_inspector tests.
+
+### Remaining Failures
+
+All 6 failing tests show the same pattern - they fail during `ConnectionPair.connect()`:
+
+1. `RFC 9000 §7.1 - Initial packet contains CRYPTO frame with ClientHello`
+2. `RFC 9000 §7.2 - Server Initial contains CRYPTO frame with ServerHello`
+3. `RFC 9000 §7.2 - Server sends ACK for client Initial`
+4. `RFC 9000 §7.3 - Transport parameters exchanged in TLS extensions`
+5. `RFC 9000 §8 - Address validation complete workflow`
+6. `RFC 9000 §8.1 - Address validation via handshake`
+
+**Pattern:**
+All fail with error message: `error: 'test' failed: === ConnectionPair.connect() STARTING ===`
+
+This suggests the issue is in the test infrastructure's `ConnectionPair.connect()` method rather than in the packet encryption/decryption code itself.
+
+### Next Investigation
+
+Need to examine:
+1. `tests/integration/connection_pair.zig` - ConnectionPair implementation
+2. The `connect()` method workflow
+3. Why connection establishment fails in test environment
+
+### Lessons Learned
+
+1. **Consistency Matters:** Test utilities must match production code patterns
+2. **Buffer Management:** Using full buffers vs slices must be consistent across codebase
+3. **Test Infrastructure vs Implementation:** Distinguish between test harness failures and actual implementation bugs
+
+---
+
+**Phase 34 Status:** COMPLETED ✅ - Test utility consistency restored, ready to investigate ConnectionPair.connect() failures.
+
+## Phase 35: Packet Inspector AAD Fix (2025-11-12)
+
+### Issue: Incorrect AAD Construction Causing AEAD Decryption Failures
+
+After Phase 34 established consistency between test and production code for buffer passing, 6 tests were still failing with `error.AuthenticationFailed` during AEAD decryption of captured Initial packets.
+
+### Root Cause Analysis
+
+**Deep Investigation:**
+1. Keys were correct (verified DCID extraction and key derivation matched)
+2. Packet numbers were correct (PN=0 for Initial packets)
+3. But AEAD decryption consistently failed with AuthenticationFailed
+
+**The Bug:**
+In `packet_inspector.zig` line 644 (old):
+```zig
+const header_prefix = packet_bytes[0..pn_offset];  // INCLUDES byte 0
+```
+
+Production code in `endpoint/incoming.zig` line 669:
+```zig
+const header_prefix = bytes[1..i];  // EXCLUDES byte 0 (header_first)
+```
+
+**Why This Caused Failure:**
+AAD (Additional Authenticated Data) is constructed as: `[unmasked_header_first] + [header_prefix] + [unmasked_pn_bytes]`
+
+With the bug:
+- `aad[0]` = unmasked header byte (C1)
+- `aad[1]` = first byte of header_prefix = **MASKED** header byte (C8)  ← WRONG!
+- `aad[2..]` = rest of header + PN
+
+The AAD contained the header byte TWICE (once unmasked, once masked), causing a mismatch with the AAD used during encryption, which made AEAD authentication fail.
+
+### The Fix
+
+**Updated packet_inspector.zig:**
+```zig
+// Phase 35 fix: header_prefix should EXCLUDE byte 0 (header_first), just like production code
+const header_prefix = packet_bytes[1..pn_offset]; // Everything between header_first and PN
+```
+
+This ensures AAD construction matches production code:
+- `aad[0]` = unmasked header byte (C1)
+- `aad[1..]` = header_prefix (bytes 1 to pn_offset-1) + unmasked_pn_bytes
+
+### Additional Fixes
+
+While investigating, also fixed:
+1. **pn_bytes initialization** (line 623): Changed from `undefined` to `[_]u8{0} ** 4` to match production code
+2. **Bounds check** (line 624): Added `@min(4, payload_len)` to prevent reading beyond buffer
+
+### Files Modified
+
+1. **`tests/integration/packet_inspector.zig`**
+   - Line 623: Initialize pn_bytes to zeros instead of undefined
+   - Line 624: Use @min for bounds checking
+   - Line 628: Fix header_prefix to exclude byte 0
+
+2. **`tests/integration/rfc9000_section7.zig`**
+   - Removed temporary debug output (test file cleanup)
+
+### Test Results
+
+**Before Phase 35:**
+- Passing: 1857/2348 (79.1%)
+- Failing: 6
+- Status: AEAD decryption failing for all packet_inspector tests
+
+**After Phase 35:**
+- Passing: 1860/2348 (79.2%)
+- Failing: 3
+- Status: **+3 tests fixed**, AEAD decryption now working correctly
+
+**Tests Fixed:**
+- `RFC 9000 §7.1 - Initial packet contains CRYPTO frame with ClientHello`
+- `RFC 9000 §7.2 - Server Initial contains CRYPTO frame with ServerHello`
+- `RFC 9000 §7.2 - Server sends ACK for client Initial`
+
+**Remaining Failures:**
+3 tests still failing (not related to packet_inspector/AEAD decryption)
+
+### Technical Details
+
+**AEAD Authentication:**
+- AEAD (Authenticated Encryption with Associated Data) verifies both ciphertext AND associated data
+- Even a single bit difference in AAD causes authentication failure
+- The masked vs unmasked header byte difference was enough to fail authentication
+
+**Header Protection:**
+- RFC 9001 §5.4: Header protection masks the first byte and packet number bytes
+- Unmasking is done in-place on `header_first` and `pn_bytes`
+- But `header_prefix` is a slice of the original packet bytes, so it contains masked values
+- AAD must be built with UNmasked header_first, but header_prefix should NOT include it
+
+### Lessons Learned
+
+1. **AAD Matters**: Even tiny differences in AAD cause AEAD auth failures
+2. **Buffer Overlap**: When extracting components for crypto operations, ensure no overlap/duplication
+3. **Production Code Patterns**: Always match production code patterns exactly, especially for crypto
+4. **Systematic Debugging**: Used debug output to trace:
+   - DCID extraction → Keys correct ✓
+   - PN unmasking → PN correct ✓  
+   - AAD construction → Found the bug! ✗
+
+---
+
+**Phase 35 Status:** COMPLETED ✅ - Packet inspector AAD bug fixed, +3 tests passing, AEAD decryption working correctly.
