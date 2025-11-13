@@ -498,11 +498,27 @@ The QUIC server is using a DIFFERENT code path to derive application traffic sec
 
 ### Next Steps
 
-1. Find where application secrets are actually being derived in the codebase
-2. Compare those secrets with the client's expected secrets
-3. Fix the application secret derivation to use vendor/ztls's `deriveApplicationTraffic()`
+1. ✅ Find where application secrets are actually being derived in the codebase
+2. ✅ Compare those secrets with the client's expected secrets
+3. 🔧 Fix the application secret derivation to use vendor/ztls's `deriveApplicationTraffic()`
 
-**Phase 41 Status:** 🔍 **INVESTIGATING - Root cause identified, fix in progress**
+**6. Actual Root Cause Found:**
+
+`ensureApplicationSecrets()` in vendor/ztls is called from:
+- **Line 1391**: Server, after verifying client Finished message
+- **Line 1408**: Client, after verifying server Finished message
+
+Since `ensureApplicationSecrets()` is NEVER called, this means:
+- **vendor/ztls Context is NOT processing Finished messages!**
+- **Application secrets are never being derived!**
+- **The QUIC server must be using legacy TLS Engine instead of Context!**
+
+This explains why:
+- Handshake secrets work (from initial key exchange)
+- Application secrets don't exist (Finished never processed)
+- Stream data can't be decrypted (no 1-RTT keys)
+
+**Phase 41 Status:** 🔍 **ROOT CAUSE CONFIRMED - Finished messages not being processed by vendor/ztls Context**
 
 ---
 
