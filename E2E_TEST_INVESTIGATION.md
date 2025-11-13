@@ -3033,3 +3033,284 @@ The time-based adaptive growth did NOT resolve the 1MB timeout, suggesting the i
 
 ---
 
+## Phase 42 Part 19: Comprehensive Flow Control Debug Logging
+
+**Date:** 2025-11-13
+**Test Result:** 4/8 passing (same as Parts 16-18)
+**Focus:** Add detailed logging to identify where MAX_STREAM_DATA frames are (or aren't) being generated
+
+### Problem Description
+
+After implementing time-based adaptive window growth in Part 18, the 1MB transfer still times out. The previous hypothesis was that window updates weren't being communicated to the client. Part 19 adds comprehensive debug logging to verify this.
+
+### Implementation
+
+**File:** `src/quic/endpoint/incoming.zig:2337-2365`
+
+Enhanced the MAX_STREAM_DATA frame generation loop with three logging levels:
+
+```zig
+// PHASE 42 PART 9: Send MAX_STREAM_DATA for ALL active streams (RFC 9000 §4.2)
+// PHASE 42 PART 19: Enhanced debug logging to track flow control behavior
+{
+    var iter = conn.streams_rx.iterator();
+    var fc_frames_sent: u32 = 0;
+    while (iter.next()) |entry| {
+        const stream_id = entry.key_ptr.*;
+        const stream = entry.value_ptr;
+        if (stream.local_max_stream_data > stream.last_sent_max_stream_data) {
+            const delta = stream.local_max_stream_data - stream.last_sent_max_stream_data;
+            std.debug.print("[P42-19-FC-TX] Sending MAX_STREAM_DATA(stream={}, max={}, delta=+{}, recv_off={}, inbox={})\n",
+                .{stream_id, stream.local_max_stream_data, delta, stream.recv_off, stream.inbox.items.len});
+            _ = (frame.Frame{ .max_stream_data = .{
+                .stream_id = stream_id,
+                .max = stream.local_max_stream_data
+            } }).write(w) catch {};
+            stream.last_sent_max_stream_data = stream.local_max_stream_data;
+            fc_frames_sent += 1;
+        } else if (stream.recv_off > 0) {
+            std.debug.print("[P42-19-FC-SKIP] Stream {} no update needed (local_max={}, last_sent={}, recv_off={}, inbox={})\n",
+                .{stream_id, stream.local_max_stream_data, stream.last_sent_max_stream_data, stream.recv_off, stream.inbox.items.len});
+        }
+    }
+    if (fc_frames_sent > 0) {
+        std.debug.print("[P42-19-FC-SUMMARY] Sent {} MAX_STREAM_DATA frames in this ACK packet\n", .{fc_frames_sent});
+    }
+}
+```
+
+**Logging Levels:**
+1. **`[P42-19-FC-TX]`** - Logs every MAX_STREAM_DATA frame sent with stream ID, new window size, delta, receive offset, and inbox size
+2. **`[P42-19-FC-SKIP]`** - Logs active streams that didn't need window updates (no expansion or already sent)
+3. **`[P42-19-FC-SUMMARY]`** - Logs count of flow control frames sent in each ACK packet
+
+### Test Results
+
+**Build:** ✅ Success
+```bash
+zig build
+```
+
+**Test Execution:**
+```bash
+make e2e-test-go-comprehensive
+```
+
+**Results:** 4/8 tests passing (no change from Parts 16-18)
+- ✅ Single Stream Echo (21 bytes) - 6.48ms
+- ✅ Multiple Concurrent Streams (4 streams) - 5.32ms
+- ✅ Large Transfer (10KB) - 11.24ms (0.87 MB/s)
+- ✅ Large Transfer (100KB) - 114.62ms (0.85 MB/s)
+- ❌ Large Transfer (1MB) - **timeout after 30s**
+- ❌ Multiple Round-trips (10 cycles) - timeout
+- ❌ Bidirectional Simultaneous - timeout
+- ❌ Stream Interleaving (5 streams) - timeout
+
+### Debug Log Analysis
+
+**Log Location:** `/tmp/phase42_part19_debug.log` (32,946 lines)
+
+**Key Findings:**
+
+1. **MAX_STREAM_DATA Frames ARE Being Sent:**
+```
+[P42-19-FC-TX] Sending MAX_STREAM_DATA(stream=0, max=65536, delta=+65536, recv_off=21, inbox=21)
+[P42-19-FC-SUMMARY] Sent 1 MAX_STREAM_DATA frames in this ACK packet
+```
+
+2. **Flow Control Mechanism Working Correctly for Small/Medium Transfers:**
+   - Stream 0 (21B echo): Window expanded from initial 64KB
+   - Multiple concurrent streams: Each stream gets independent window updates
+   - 10KB transfer: Flow control frames generated as expected
+   - 100KB transfer: Multiple window expansions logged
+
+3. **No Evidence of Missing Flow Control Frames:**
+   - For passing tests, debug logs show proper frame generation
+   - Condition `stream.local_max_stream_data > stream.last_sent_max_stream_data` triggers correctly
+   - Frames bundled with ACK packets as designed
+
+### Critical Discovery
+
+**The 1MB timeout is NOT caused by missing MAX_STREAM_DATA frames.**
+
+The comprehensive logging confirms that:
+- Window expansion logic (Part 18) is executing
+- MAX_STREAM_DATA frames are being generated
+- Frames are being sent in ACK packets
+
+**This means the issue lies elsewhere:**
+
+**Possible Root Causes:**
+1. **ACK Timing/Bundling** - MAX_STREAM_DATA frames generated but ACK packets delayed
+2. **Application-Layer Read Rate** - Server not reading data fast enough to trigger expansions
+3. **Packet Loss** - Frames sent but lost in transit (unlikely on localhost)
+4. **Test Environment** - Go client behavior or timeout configuration
+5. **Connection-Level Flow Control** - Per-stream windows expanding but connection window limiting
+
+### Next Investigation Strategy
+
+Since MAX_STREAM_DATA frame generation is confirmed working, the focus shifts to:
+
+1. **ACK Packet Transmission Timing**
+   - When are ACK packets with MAX_STREAM_DATA actually sent?
+   - Is there batching/delay causing stalls?
+
+2. **Application-Layer Behavior**
+   - Is `cmd/quic-server.zig` reading data fast enough?
+   - Are streams being processed in round-robin order correctly?
+
+3. **End-to-End Flow Control Trace**
+   - Capture exact sequence: data arrives → window expands → MAX_STREAM_DATA generated → ACK sent → client receives
+   - Identify where the 1MB transfer stalls in this chain
+
+4. **Connection Window vs Stream Window**
+   - Add logging for connection-level `local_max_data`
+   - Verify connection window isn't bottlenecking stream windows
+
+5. **Packet Capture Analysis**
+   - Use tcpdump/wireshark to verify frames actually sent on wire
+   - Compare successful 100KB vs failing 1MB transfer
+
+### Commits
+
+**Commit:** `d4ee87e` - "feat(phase42-part19): add comprehensive flow control debug logging"
+
+**Changes:**
+- `src/quic/endpoint/incoming.zig` - Added 3-level debug logging (TX, SKIP, SUMMARY)
+- Build successful
+- Tests still 4/8 passing
+
+### Conclusion
+
+Phase 42 Part 19 successfully added diagnostic infrastructure to trace flow control behavior. The key finding is that **MAX_STREAM_DATA frames ARE being generated correctly** for small and medium transfers, which means:
+
+- The window expansion logic (Parts 16-18) is functioning
+- The frame generation code (Part 9, `incoming.zig:2337-2353`) is working
+- The issue preventing 1MB transfers is NOT in the flow control frame generation
+
+**The bottleneck must be in timing, ACK delivery, application-layer reading, or other system-level behavior.**
+
+**Status:** ✅ **DEBUG INFRASTRUCTURE ADDED** - Flow control frames confirmed working up to 100KB. 1MB timeout requires investigation beyond frame generation.
+
+### CRITICAL ADDENDUM: Root Cause Discovered! 🔍
+
+**Date:** 2025-11-13 (Same session as Part 19)
+**Discovery:** While analyzing the Part 19 debug logs, a **breakthrough discovery** was made that completely changes the direction of investigation.
+
+### The Real Problem: AEAD Decrypt Failures, NOT Flow Control
+
+**Evidence:**
+
+1. **560 AEAD decrypt failures** in a single comprehensive test run:
+```bash
+$ grep "AEAD decrypt failed" /tmp/e2e-go-comprehensive.log | wc -l
+560
+```
+
+2. **Stream 24 (100KB test) incomplete data receipt:**
+   - Client reports: "✅ Transferred 102400 bytes in 108.858533ms (0.90 MB/s)"
+   - Server received: Only **89888 bytes** out of 102400 (12512 bytes missing!)
+   - Server log: `[P42-13-FIN] Stream 24 received FIN (total read: 89888, total written: 89888, pending: 0)`
+
+3. **Stream 28 (1MB test) never created:**
+   - No mention of stream 28 anywhere in server logs
+   - Connection becomes unusable after stream 24 completes
+   - 30-second timeout with "no recent network activity"
+
+4. **Pattern of failures:**
+   - Small transfers (21B, 4×16B, 10KB): **Work perfectly** ✅
+   - Medium transfer (100KB): **Partial success** (88% received) ⚠️
+   - Large transfer (1MB): **Complete failure** (0% received) ❌
+
+### Why This Was Missed
+
+The symptoms **looked exactly like flow control issues**:
+- Transfers stalling after certain amounts of data ✓
+- Timeout errors ✓
+- "No recent network activity" ✓
+
+But the root cause is **packet decryption failures**, not flow control windows.
+
+### Analysis
+
+**Flow Control Working Correctly:**
+- Server receive windows expanding to 1.47GB (way more than needed)
+- MAX_STREAM_DATA frames being generated and sent
+- Client's receive window at 512KB (sufficient for 100KB test)
+
+**AEAD Failures Causing Data Loss:**
+- 560 packets failed to decrypt during the test run
+- These failures prevent data from reaching the application layer
+- Client retransmits, but retransmissions also fail to decrypt
+- Eventually client times out or sends incomplete data with FIN
+
+**Possible Causes:**
+
+1. **Duplicate Packet Numbers from Retransmissions:**
+   - RFC 9000 requires unique, monotonically increasing PNs
+   - If client retransmits with same PN, AEAD will reject (nonce reuse)
+   - Server might not be ACKing received packets properly
+
+2. **Key Update Issues:**
+   - QUIC performs periodic key updates for security
+   - If server/client desynchronized on which keys to use
+   - Packets encrypted with new key but decrypted with old key (or vice versa)
+
+3. **Packet Number Expansion Bugs:**
+   - QUIC sends truncated PNs (1-4 bytes) to save bandwidth
+   - Receiver must expand truncated PN to full 64-bit value
+   - If expansion logic is buggy, wrong PN → wrong nonce → AEAD failure
+
+4. **ACK Delay/Missing ACKs:**
+   - If server doesn't ACK received packets promptly
+   - Client thinks packets were lost and retransmits
+   - Retransmissions with same PN fail to decrypt
+
+### Impact on Previous Investigation
+
+**All of Phase 42 Parts 16-19 focused on flow control, which was NOT the root cause:**
+- Part 16: Per-stream window expansion - **Helped, but didn't fix root cause**
+- Part 17: RFC compliance verification - **Confirmed we're compliant, but wrong focus**
+- Part 18: Adaptive window growth - **No improvement, wrong problem**
+- Part 19: Debug logging - **SUCCESS! Revealed the real issue**
+
+**The 100KB→1MB jump isn't about window size, it's about packet loss tolerance:**
+- 100KB ≈ 100 packets: Some packet loss tolerable (88% success)
+- 1MB ≈ 1000 packets: Packet loss rate too high (0% success)
+- As transfer size increases, cumulative effect of AEAD failures becomes catastrophic
+
+### Next Steps (Phase 42 Part 20)
+
+**IMMEDIATELY PIVOT TO AEAD/PACKET INVESTIGATION:**
+
+1. **Add Packet Number Tracking Debug Logging:**
+   - Log every received PN and check for duplicates
+   - Track PN sequence to detect gaps/out-of-order
+   - Identify if failures are retransmissions or new packets
+
+2. **Add ACK Generation Debug Logging:**
+   - Log when ACKs are generated
+   - Log what PN ranges are being ACKed
+   - Verify ACKs are sent promptly after receiving data
+
+3. **Investigate Key Update Behavior:**
+   - Log when key updates occur
+   - Track which key generation is used for encryption/decryption
+   - Check for key desynchronization
+
+4. **Verify Packet Number Expansion Logic:**
+   - Review `src/quic/connection/packet_number.zig`
+   - Add logging for PN expansion: truncated→full
+   - Test edge cases (PN wraparound, large gaps)
+
+5. **Analyze AEAD Failure Pattern:**
+   - Are failures random or clustered?
+   - Do they correlate with specific PN values?
+   - Are they from specific packet types (STREAM vs ACK)?
+
+**This is a paradigm shift - the problem is in the transport layer (packet handling), not the application layer (flow control).**
+
+**Status:** 🚨 **CRITICAL DISCOVERY** - Real issue is AEAD decrypt failures (560 per test), not flow control. Investigation pivoting to packet number handling, ACK generation, and key management.
+
+---
+
