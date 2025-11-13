@@ -2254,3 +2254,35 @@ if (stream.got_fin and stream.pending_write.items.len == 0 and !stream.sent_fin)
 
 Testing in progress after implementation...
 
+
+### Test Results After Implementation
+
+**Result:** 3/8 tests passing (UNCHANGED ❌)
+
+```
+✅ Single Stream Echo (21 bytes) - 7.2ms
+✅ Multiple Concurrent Streams (4 × 16 bytes) - 5.0ms
+✅ Large Transfer (10KB) - 13.5ms @ 0.72 MB/s
+❌ Large Transfer (100KB) - timeout: no recent network activity
+❌ Large Transfer (1MB) - timeout: no recent network activity
+❌ Multiple Round-trips - timeout: no recent network activity
+❌ Bidirectional Simultaneous - timeout: no recent network activity
+❌ Stream Interleaving - timeout: no recent network activity
+```
+
+**Analysis:** The flow-control-resilient echo server implementation did NOT resolve the timeout issue. Tests still fail at exactly the same point (100KB transfer). This indicates the root cause is NOT the echo server loop abandoning streams, but something deeper in the packet processing or event loop.
+
+**Possible Root Causes:**
+1. **Event loop starvation:** Server may be stuck processing streams without calling `poll()` to handle incoming packets
+2. **Missing packet transmission:** Buffered echo data may not be triggering actual packet sends
+3. **ACK/flow control frame generation:** Server may not be sending ACK or MAX_STREAM_DATA frames during stream processing
+4. **Connection-level issue:** Some connection-level timeout or state machine issue
+
+**Next Steps Required:**
+- Add detailed server-side debug logging to understand where processing stalls
+- Verify poll() is being called regularly during large transfers
+- Check if packets are actually being sent when data is "echoed"
+- Investigate whether ACKs are being generated and transmitted
+
+**Status:** Further investigation needed to identify the actual blocking mechanism.
+
