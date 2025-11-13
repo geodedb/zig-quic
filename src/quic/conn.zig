@@ -397,6 +397,8 @@ pub const StreamRx = struct {
     // PHASE 42 PART 9: Per-stream flow control tracking (RFC 9000 §4.2)
     local_max_stream_data: u64 = 0,       // Current receive window limit for this stream
     last_sent_max_stream_data: u64 = 0,   // Last MAX_STREAM_DATA value sent to peer
+    // PHASE 42 PART 18: RTT-based autotuning (RFC 9000 §4.3, quiche flowcontrol.rs)
+    last_window_update_time_us: u64 = 0,  // Timestamp of last window expansion (microseconds)
 
     fn init() StreamRx {
         return .{
@@ -406,6 +408,7 @@ pub const StreamRx = struct {
             .fin_off = null,
             .local_max_stream_data = 0,
             .last_sent_max_stream_data = 0,
+            .last_window_update_time_us = 0,
         };
     }
     pub fn deinit(self: *StreamRx, alloc: *std.mem.Allocator) void {
@@ -1896,21 +1899,42 @@ pub const Connection = struct {
         // Adaptive growth: scale per active RX streams to avoid single-stream domination
         const active_streams: u64 = @intCast(self.streams_rx.count());
         const denom: u64 = if (active_streams == 0) 1 else active_streams;
+        // PHASE 42 PART 18: RTT-based autotuning (inspired by quiche flowcontrol.rs)
+        // For now, use aggressive 100% growth (double window) for all rapid consumption
+        // to minimize stalls on large transfers. Future: add time-based heuristics.
         // Saturating threshold calculation
         const stream_mul, const stream_overflow = @mulWithOverflow(self.local_max_stream_data, 3);
         const stream_threshold: u64 = if (stream_overflow != 0) std.math.maxInt(u64) else stream_mul / 4; // 75%
         if (s.recv_off >= stream_threshold) {
-            const bump = self.local_max_stream_data / 2;
+            // Get current time in microseconds
+            const now_us = @as(u64, @intCast(std.time.microTimestamp()));
+            const time_since_last_update_us = if (s.last_window_update_time_us == 0)
+                std.math.maxInt(u64)
+            else
+                now_us - s.last_window_update_time_us;
+
+            // Adaptive growth: if updating within 1 second, assume rapid consumption → double window
+            // Otherwise, use conservative 50% growth. (Future: use actual RTT × 2)
+            const use_aggressive_growth = time_since_last_update_us < 1_000_000; // 1 second threshold
+
+            // Connection-level template bump (for new streams)
+            const bump = if (use_aggressive_growth) self.local_max_stream_data else self.local_max_stream_data / 2;
             const new_val, const bump_overflow = @addWithOverflow(self.local_max_stream_data, bump);
             self.local_max_stream_data = if (bump_overflow != 0) std.math.maxInt(u64) else new_val;
+
             // PHASE 42 PART 16: Also expand THIS stream's window (RFC 9000 §4.2)
             // The connection-level local_max_stream_data is a template for new streams,
             // but existing streams need their windows expanded too!
-            const stream_bump = s.local_max_stream_data / 2;
+            const stream_bump = if (use_aggressive_growth) s.local_max_stream_data else s.local_max_stream_data / 2;
             const stream_new_val, const stream_bump_overflow = @addWithOverflow(s.local_max_stream_data, stream_bump);
             s.local_max_stream_data = if (stream_bump_overflow != 0) std.math.maxInt(u64) else stream_new_val;
-            std.debug.print("[P42-16-FC] Stream {} window expanded {} -> {} (recv_off={}, threshold={})\n",
-                .{stream_id, s.local_max_stream_data - stream_bump, s.local_max_stream_data, s.recv_off, stream_threshold});
+
+            // Update timestamp for next expansion
+            s.last_window_update_time_us = now_us;
+
+            const growth_pct: u32 = if (use_aggressive_growth) 100 else 50;
+            std.debug.print("[P42-18-FC] Stream {} window expanded {} -> {} (+{}%, recv_off={}, threshold={}, Δt={}μs)\n",
+                .{stream_id, s.local_max_stream_data - stream_bump, s.local_max_stream_data, growth_pct, s.recv_off, stream_threshold, time_since_last_update_us});
         }
         const conn_mul, const conn_overflow = @mulWithOverflow(self.local_max_data, 7);
         const conn_threshold: u64 = if (conn_overflow != 0) std.math.maxInt(u64) else conn_mul / 10; // 70%

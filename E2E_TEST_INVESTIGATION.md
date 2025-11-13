@@ -2684,3 +2684,214 @@ The fix successfully broke through the 64KB barrier:
 
 ---
 
+
+## Phase 42 Part 17: Investigating 1MB Transfer Timeout (IN PROGRESS 🔍)
+
+**Date:** 2025-11-13  
+**Test:** `make e2e-test-go-comprehensive`  
+**Current Result:** 4/8 tests passing (100KB limit)
+
+### Problem Description
+
+After successfully breaking through the 64KB barrier in Part 16, transfers now work up to 100KB but still timeout on 1MB transfers.
+
+**Test Results:**
+- ✅ Single Stream Echo (21 bytes) - 7.17ms
+- ✅ Multiple Concurrent Streams (4 streams) - 6.31ms
+- ✅ Large Transfer (10KB) - 10.78ms (0.91 MB/s)
+- ✅ **Large Transfer (100KB) - 102.08ms (0.96 MB/s)** ← NOW WORKS!
+- ❌ Large Transfer (1MB) - timeout after 32s
+- ❌ Multiple Round-trips - timeout
+- ❌ Bidirectional Simultaneous - timeout
+- ❌ Stream Interleaving - timeout
+
+### Analysis
+
+**What Works:**
+- Per-stream flow control window expansion (Part 16 fix)
+- Windows expand by 50% when 75% consumed
+- 100KB transfers complete successfully at ~1 MB/s
+
+**What Doesn't Work:**
+- 1MB transfers timeout after 32 seconds
+- Timeout suggests flow control stall, not complete failure
+- Client likely exhausts window and waits for updates that don't arrive fast enough
+
+### Hypotheses
+
+**1. Window Expansion Not Aggressive Enough for 1MB:**
+- 50% growth rate may be too slow for very large transfers
+- Need to profile actual window sizes during 1MB transfer
+- May need adaptive growth (larger bumps for larger windows)
+
+**2. Threshold Too High (75%):**
+- Waiting until 75% consumed may cause delays
+- Client might stall waiting for window updates
+- Consider lowering threshold to 50% or even 25% for large transfers
+
+**3. Connection-Level Flow Control:**
+- May be hitting connection-level `local_max_data` limit
+- Connection window also needs to expand aggressively
+- Need to verify connection window is growing sufficiently
+
+**4. Packet Loss or Congestion Control:**
+- Large transfers may trigger loss detection
+- Congestion controller might be throttling too aggressively
+- RTT estimates might be causing timeouts
+
+### Next Investigation Steps
+
+1. **Profile flow control windows during 1MB transfer:**
+   - Add detailed logging of window expansions
+   - Track how quickly windows grow
+   - Identify if stall occurs at specific window size
+
+2. **Increase window growth rate:**
+   - Try 2x growth instead of 1.5x (100% vs 50%)
+   - Consider exponential growth for very large windows
+   - Implement adaptive strategy based on transfer size
+
+3. **Lower expansion threshold:**
+   - Try triggering at 50% instead of 75%
+   - More frequent updates = less client stalling
+   - Trade-off: more MAX_STREAM_DATA frames sent
+
+4. **Check connection-level flow control:**
+   - Ensure `local_max_data` grows sufficiently
+   - Verify connection window doesn't bottleneck stream windows
+   - Add connection window debug logging
+
+**Status:** 🔍 **INVESTIGATING** - 4/8 tests passing is significant progress. Need to optimize flow control for multi-megabyte transfers.
+
+---
+
+## Phase 42 Part 17: RFC 9000 Compliance Verification
+
+**Date:** 2025-11-13
+**Test Result:** 4/8 passing (same as Part 16)
+**Focus:** Verify window expansion strategy complies with RFC 9000 requirements
+
+### RFC Compliance Check
+
+Used `spec-compliance-validator` agent to verify our flow control implementation against RFC 9000 §4 (Flow Control).
+
+**Current Implementation:**
+- **Threshold:** Expand when `recv_off >= 75%` of window (conn.zig:1902)
+- **Growth Rate:** Increase window by 50% (1.5x) (conn.zig:1904, 1907)
+- **Application:** Both connection-level template AND per-stream windows
+
+### RFC 9000 Findings
+
+**✅ FULLY COMPLIANT**
+
+RFC 9000 §4.2 states: **"Implementations decide when and how much credit to advertise in MAX_STREAM_DATA and MAX_DATA frames"** (lines 1096-1098)
+
+The specification **explicitly delegates** window expansion strategy to implementations. There are NO mandatory requirements for:
+- When to expand windows (threshold percentage)
+- How much to expand (growth rate)
+- Frequency of MAX_STREAM_DATA frame generation
+
+**What RFC 9000 DOES Require:**
+1. ✅ Send MAX_STREAM_DATA frames when windows expand (we do - incoming.zig:2337-2353)
+2. ✅ Track per-stream flow control windows (we do - StreamRx struct, conn.zig:392-410)
+3. ✅ Update both connection and stream windows (we do - conn.zig:1900-1913)
+4. ✅ Prevent integer overflow (we do - using @addWithOverflow with saturation)
+
+### Performance Recommendations from RFC 9000 §4.3
+
+While compliant, RFC 9000 §4.3 provides **advisory guidance** on performance:
+
+**"If an endpoint cannot ensure that its peer always has available flow control credit that is greater than the peer's bandwidth-delay product on this connection, its receive throughput will be limited by flow control."** (lines 1135-1138)
+
+**Bandwidth-Delay Product (BDP) Issue:**
+- On a 100ms RTT link at 10 Mbps: BDP = 125 KB
+- With 16KB initial window and 50% growth, reaching 125KB requires ~6 RTT rounds
+- Each RTT stall = 100ms delay = 600ms to reach full throughput
+
+**Reference Implementation Comparison (Cloudflare's quiche):**
+
+From `forks/quiche/quiche/src/flowcontrol.rs:115-122`:
+```rust
+// Double window if updates occur within 2×RTT (aggressive growth)
+if time_since_last_update < 2 * rtt {
+    new_window = old_window * 2;  // 100% growth
+} else {
+    new_window = old_window * 1.5; // 50% growth (fallback)
+}
+```
+
+Quiche uses **RTT-based autotuning**:
+- Fast consumption (< 2×RTT between updates) → 100% growth (double window)
+- Slow consumption → 50% growth (conservative)
+- Adapts to actual transfer patterns
+
+### Why Our Fixed Strategy Causes 1MB Timeout
+
+**Growth Analysis:**
+Starting from 64KB initial window with 50% growth:
+1. 64KB → 96KB (after 48KB consumed at 75% threshold)
+2. 96KB → 144KB
+3. 144KB → 216KB
+4. 216KB → 324KB
+5. 324KB → 486KB
+6. 486KB → 729KB
+7. 729KB → 1093KB ← **Finally reaches 1MB capacity**
+
+**Problem:** Each expansion requires consuming 75% of window first:
+- Step 1: Consume 48KB
+- Step 2: Consume 72KB
+- Step 3: Consume 108KB
+- Step 4: Consume 162KB
+- Step 5: Consume 243KB
+- Step 6: Consume 365KB
+- Step 7: Consume 547KB
+
+**Total data consumed before window reaches 1MB:** ~1.5 MB!
+
+This means:
+1. Transfer starts
+2. Window fills → client stalls → window expands → transfer resumes
+3. **Repeat 7 times** with increasing delays
+4. Total stalls >> 1MB data → timeout
+
+### Comparison: quiche's RTT-Based Approach
+
+With 100% growth (doubling) for rapid consumption:
+1. 64KB → 128KB
+2. 128KB → 256KB
+3. 256KB → 512KB
+4. 512KB → 1024KB ← **Reaches 1MB in 4 steps**
+
+**Data consumed:** 48KB + 96KB + 192KB + 384KB = 720KB ← **Less than 1MB!**
+
+Window reaches capacity BEFORE transfer completes → no stalling!
+
+### Recommendations (Priority Order)
+
+**1. HIGH IMPACT: Add RTT-Based Window Doubling** 🎯
+- Track `last_window_update_time` per stream
+- If update occurs within `2 × smoothed_rtt` → double window (100% growth)
+- Else → use conservative 50% growth
+- **Expected Result:** 1MB test should pass
+
+**2. MEDIUM IMPACT: Track Last Update Time**
+- Add `last_window_update_time` to StreamRx struct
+- Prevent excessive MAX_STREAM_DATA generation
+- Only expand if: `recv_off >= threshold AND time_since_update > rtt/2`
+
+**3. LOW IMPACT: Unify Thresholds**
+- Stream window uses 75% threshold (line 1901)
+- Connection window uses 70% threshold (line 1916)
+- Consider unifying to 50% (quiche's choice) for more aggressive updates
+
+### Next Steps
+
+1. **Implement RTT-based autotuning** in `conn.zig:1900-1913`
+2. **Add `last_window_update_time`** to StreamRx struct (conn.zig:392)
+3. **Rebuild and test** with `make e2e-test-go-comprehensive`
+4. **Document results** in Part 18
+
+**Status:** ✅ **RFC COMPLIANT** but needs **RTT-based autotuning** for optimal performance on large transfers.
+
+---
+
