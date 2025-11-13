@@ -2577,3 +2577,110 @@ Need to investigate why transfers stop at exactly 64KB (65536 bytes):
 
 **Status:** Stream acceptance mechanism fixed (queue explosion resolved), moving to flow control investigation.
 
+## Phase 42 Part 16: Per-Stream Flow Control Window Expansion (PARTIAL FIX ✅)
+
+**Date:** 2025-11-13  
+**Test:** `make e2e-test-go-comprehensive`  
+**Initial Result:** 3/8 tests passing (10KB limit)  
+**After Fix:** 4/8 tests passing (100KB limit) ⬆️
+
+### Problem Description
+
+After fixing the queue blocking in Part 15, transfers were still stopping at exactly 64KB (65536 bytes). The 100KB test expected 102400 bytes but received only 65536 bytes.
+
+**Evidence:**
+```
+[P42-13-READ] Stream 24 read 4096 bytes (65536 total read, loop 164)
+[P42-13-FIN] Stream 24 received FIN (total read: 65536, total written: 65536, pending: 0)
+```
+
+The client sent FIN after exactly 64KB, suggesting the client's send window was exhausted and never expanded.
+
+### Root Cause Analysis
+
+**File:** `src/quic/conn.zig:1900-1906`
+
+The code was expanding the **connection-level** `self.local_max_stream_data` (used as a template for new streams), but NOT expanding the **current stream's** `s.local_max_stream_data`.
+
+**Sequence of events:**
+1. Stream created via `ensureStreamRx()` (line 3233)
+2. Per-stream window initialized: `sr.local_max_stream_data = self.local_max_stream_data` (64KB)
+3. Data arrives, `pushStreamFrame()` called (line 1855)
+4. Code at line 1900-1906 checks `s.recv_off >= stream_threshold`
+5. If threshold reached, expands `self.local_max_stream_data` (connection-level template)
+6. **BUG:** Stream's `s.local_max_stream_data` NOT updated!
+7. In `incoming.zig:2344`, condition `stream.local_max_stream_data > stream.last_sent_max_stream_data` stays false
+8. MAX_STREAM_DATA frames not sent to client
+9. Client's send window exhausted at 64KB
+
+### The Fix
+
+**File:** `src/quic/conn.zig:1906-1913`
+
+Added per-stream window expansion when data is received:
+
+```zig
+// PHASE 42 PART 16: Also expand THIS stream's window (RFC 9000 §4.2)
+// The connection-level local_max_stream_data is a template for new streams,
+// but existing streams need their windows expanded too!
+const stream_bump = s.local_max_stream_data / 2;
+const stream_new_val, const stream_bump_overflow = @addWithOverflow(s.local_max_stream_data, stream_bump);
+s.local_max_stream_data = if (stream_bump_overflow != 0) std.math.maxInt(u64) else stream_new_val;
+std.debug.print("[P42-16-FC] Stream {} window expanded {} -> {} (recv_off={}, threshold={})\n",
+    .{stream_id, s.local_max_stream_data - stream_bump, s.local_max_stream_data, s.recv_off, stream_threshold});
+```
+
+Now when a stream receives data past 75% of its window:
+1. Connection-level template `self.local_max_stream_data` is expanded (for new streams)
+2. **Current stream's** `s.local_max_stream_data` is ALSO expanded by 50%
+3. Condition in `incoming.zig:2344` becomes true
+4. MAX_STREAM_DATA frame sent to client
+5. Client's send window expanded, transfer continues
+
+### Test Results
+
+**Before Fix (Part 15):**
+- ✅ Single Stream Echo (21 bytes)
+- ✅ Multiple Concurrent Streams (4×16 bytes)
+- ✅ Large Transfer (10KB)
+- ❌ Large Transfer (100KB) - **Stopped at 64KB**
+- ❌ Large Transfer (1MB)
+- ❌ Multiple Round-trips
+- ❌ Bidirectional Simultaneous
+- ❌ Stream Interleaving
+
+**Result:** 3/8 passing
+
+**After Fix (Part 16):**
+- ✅ Single Stream Echo (21 bytes)
+- ✅ Multiple Concurrent Streams (4×16 bytes)
+- ✅ Large Transfer (10KB)
+- ✅ **Large Transfer (100KB) - NOW WORKS!** ⬆️
+- ❌ Large Transfer (1MB) - **Still times out after ~30s**
+- ❌ Multiple Round-trips
+- ❌ Bidirectional Simultaneous
+- ❌ Stream Interleaving
+
+**Result:** 4/8 passing ✅ **+25% improvement**
+
+### Analysis
+
+The fix successfully broke through the 64KB barrier:
+- 100KB test: `Transferred 102400 bytes in 110.444146ms (0.88 MB/s)` ✅
+- Per-stream flow control window now expands dynamically
+- MAX_STREAM_DATA frames being sent correctly
+
+**Remaining Issues:**
+- 1MB test still times out (30s timeout)
+- Tests 6-8 all timeout
+
+**Next Steps (Phase 42 Part 17):**
+1. Investigate why 1MB transfer times out
+2. Check for additional flow control bottlenecks
+3. Examine larger window expansion strategies for multi-megabyte transfers
+4. Look into other timeout causes (Multiple Round-trips, Bidirectional, Interleaving)
+
+**Status:** Partial success - 64KB barrier broken, but larger transfers still fail.
+
+---
+

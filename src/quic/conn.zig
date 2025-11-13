@@ -1903,6 +1903,14 @@ pub const Connection = struct {
             const bump = self.local_max_stream_data / 2;
             const new_val, const bump_overflow = @addWithOverflow(self.local_max_stream_data, bump);
             self.local_max_stream_data = if (bump_overflow != 0) std.math.maxInt(u64) else new_val;
+            // PHASE 42 PART 16: Also expand THIS stream's window (RFC 9000 §4.2)
+            // The connection-level local_max_stream_data is a template for new streams,
+            // but existing streams need their windows expanded too!
+            const stream_bump = s.local_max_stream_data / 2;
+            const stream_new_val, const stream_bump_overflow = @addWithOverflow(s.local_max_stream_data, stream_bump);
+            s.local_max_stream_data = if (stream_bump_overflow != 0) std.math.maxInt(u64) else stream_new_val;
+            std.debug.print("[P42-16-FC] Stream {} window expanded {} -> {} (recv_off={}, threshold={})\n",
+                .{stream_id, s.local_max_stream_data - stream_bump, s.local_max_stream_data, s.recv_off, stream_threshold});
         }
         const conn_mul, const conn_overflow = @mulWithOverflow(self.local_max_data, 7);
         const conn_threshold: u64 = if (conn_overflow != 0) std.math.maxInt(u64) else conn_mul / 10; // 70%
