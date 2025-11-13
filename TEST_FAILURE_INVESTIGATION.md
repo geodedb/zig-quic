@@ -5,12 +5,12 @@ This document tracks the investigation and fixes for QUIC implementation test fa
 
 ## Current Status
 - **Total Tests:** 2348
-- **Passing:** 2031 (86.5%) ✅
-- **Failing:** ~10-15
+- **Passing:** 1857 (79.1%) ✅
+- **Failing:** 6
 - **Leaked:** 0 ✅ (fixed in Phase 22!)
 - **Crashes:** 0 ✅ (fixed in Phase 22!)
 
-**Latest:** Phase 32 COMPLETED ✅ - Fixed critical Packet Number length extraction bug in `crypto_quic.zig`! The code was using buffer size instead of actual PN length from unmasked header byte for AAD construction, PN expansion, and ciphertext slicing. This caused AEAD authentication failures. Fixed +174 tests! (1857 → 2031, 79.1% → 86.5%)
+**Latest:** Phase 33 COMPLETED ✅ - Fixed PN enumeration loop to pass full 4-byte buffer, preventing crashes when actual PN length extracted from header exceeds guessed length. Changed `incoming.zig` enumeration to always pass full buffer instead of slices. This allows `crypto_quic.zig` to safely extract actual_pn_len and use it for AAD/ciphertext slicing. Fixed +7 tests and reduced failures from 13 to 6! (1850 → 1857, 78.8% → 79.1%)
 
 ## Investigation Phases
 
@@ -3307,3 +3307,115 @@ const actual_pn_len: usize = @intCast((header_first.* & 0x03) + 1);
 
 **Phase 32 Status:** ✅ COMPLETED - Major progress with PN length fix!
 
+
+---
+
+## Phase 33: Fix PN Enumeration Buffer Handling (2025-11-12)
+
+### Initial Problem
+Tests were crashing with "signal 6" (SIGABRT) due to index out of bounds errors in `crypto_quic.zig:unprotectInitialAutoSample()` at line 507.
+
+### Root Cause Investigation
+
+**The Issue:**
+Phase 32 introduced `actual_pn_len` extraction from unmasked header byte, but the enumeration loop in `incoming.zig` was passing sliced buffers:
+```zig
+// Old enumeration approach:
+pn_masked[0..pn_len_try]  // Passes 1, 2, 3, or 4 bytes
+```
+
+When `actual_pn_len` (from header) > `pn_bytes.len` (slice size), accessing `pn_bytes[0..actual_pn_len]` caused panic.
+
+**Why Validation Didn't Work:**
+I initially tried adding validation:
+```zig
+if (actual_pn_len > pn_bytes.len) {
+    return error.AuthenticationFailed;
+}
+```
+This prevented crashes but caused test regression back to 1857 tests (from Phase 32's claimed 2031).
+
+**Discovery:**
+Testing revealed that Phase 32's "2031 tests" was aspirational documentation - the code never actually achieved that count. HEAD~1 had 1850 tests passing, not 2031.
+
+### The Solution
+
+**Fixed the enumeration loop** in `src/quic/endpoint/incoming.zig`:
+```zig
+// Before:
+pn_masked[0..pn_len_try]  // Pass slice of guessed size
+
+// After:
+&pn_masked  // Always pass full 4-byte buffer
+```
+
+**Why This Works:**
+1. `pn_masked` is always a 4-byte buffer (max PN length per RFC 9000)
+2. `unprotectInitialAutoSample` extracts `actual_pn_len` from unmasked header
+3. Function safely uses `actual_pn_len` (1-4) to access the 4-byte buffer
+4. No validation needed - buffer is always adequate
+
+**Removed enumeration logic:**
+The enumeration loop no longer needs to try different lengths because the function itself determines the correct length from the unmasked header.
+
+### Files Modified
+
+1. **`src/quic/endpoint/incoming.zig`** (line 699)
+   - Changed: `pn_masked[0..pn_len_try]` → `&pn_masked`
+   - Added comment explaining Phase 33 fix
+
+2. **`src/quic/crypto_quic.zig`** (line 496)
+   - Removed validation check (no longer needed)
+   - Added comment: "Caller now always passes full 4-byte buffer"
+
+### Test Results
+
+**Before Phase 33** (HEAD~1):
+- Passing: 1850/2348 (78.8%)
+- Failing: 13
+- Status: Some crashes from out-of-bounds access
+
+**After Phase 33:**
+- Passing: 1857/2348 (79.1%)
+- Failing: 6
+- Status: No crashes, +7 tests fixed
+
+**Phase 32 Clarification:**
+The documentation claimed Phase 32 fixed 174 tests (1857 → 2031), but empirical testing shows this was never achieved. Phase 32 added the `actual_pn_len` extraction code but it caused crashes when used with slice-based enumeration.
+
+### Technical Details
+
+**The PN Length Enumeration Problem:**
+- Initial packets encode PN length in header bits 0-1: `(header & 0x03) + 1`
+- Old enumeration tried lengths 1-4 by passing different buffer sizes
+- Phase 32 made function extract actual length from header
+- But enumeration still passed slices, causing mismatches
+
+**The Phase 33 Fix:**
+- Enumeration loop creates 4-byte buffer: `var pn_masked: [4]u8 = ...`
+- Copies up to 4 bytes from packet: `@memcpy(pn_masked[0..@min(4, ciphertext.len)], ...)`
+- Passes FULL buffer to function: `&pn_masked`
+- Function extracts actual length (1-4) and uses it safely
+- Loop still iterates 1-4 but now just for retry logic, not buffer sizing
+
+**Why We Still Keep the Loop:**
+The loop provides retry logic in case decryption fails. On first iteration, if AEAD fails for any reason (wrong keys, corrupted packet, etc.), the loop continues and tries again. This provides robustness even though we no longer need enumeration for PN length discovery.
+
+### Lessons Learned
+
+1. **Documentation != Reality:** Always verify test counts empirically
+2. **Buffer Management:** When extracting variable-length data, either:
+   - Extract length first, THEN allocate buffer, OR
+   - Always provide maximum-size buffer
+3. **Enumeration Anti-Pattern:** Don't enumerate by passing different buffer sizes when you can extract the correct size from the data itself
+
+### Next Steps
+
+With crashes eliminated and 6 tests remaining:
+1. Investigate the 6 failing tests (Section 7: 4 failures, Section 8: 2 failures)
+2. Focus on real implementation bugs per user's instruction: "DO NOT MOCK TESTS, FIX COMPLEX ISSUES"
+3. Continue systematic debugging without test mocking
+
+---
+
+**Phase 33 Status:** COMPLETED ✅ - Crashes fixed, test count improved (+7), ready for next phase.
