@@ -618,6 +618,100 @@ The remaining FINAL_SIZE_ERROR failures are NOT cryptographic - they indicate th
 
 ---
 
+## Phase 42: FINAL_SIZE_ERROR - Stream Management Issue (IN PROGRESS 🔄)
+
+**Date:** 2025-11-13
+**Test:** `make e2e-test-go-comprehensive`
+**Error:** `FINAL_SIZE_ERROR (local): received offset 21 for stream 0, but final offset was already received at 11`
+
+### Problem Description
+
+After fixing Phase 41 (TLS 1.3 key schedule), the first test now passes but 7 remaining tests fail with the same error:
+
+```
+✅ Single Stream Echo
+   └─ Sent 21 bytes, received 11 bytes in 5.435977ms
+
+❌ Multiple Concurrent Streams
+   └─ Error: stream 0 read: FINAL_SIZE_ERROR (local): received offset 21 for stream 0,
+             but final offset was already received at 11
+```
+
+### Root Cause Analysis
+
+**What the error means:**
+- RFC 9000 §2.2: A stream has a "final size" which is the total number of bytes sent
+- The final size is communicated via the FIN bit in STREAM frames
+- Once a stream receives FIN at a particular offset, no more data can be sent beyond that offset
+- Client received FIN at offset 11 on stream 0 (from first test)
+- Server then sent more data at offset 21 on stream 0 (in second test)
+- This violates QUIC protocol - stream 0 was already closed with final size 11
+
+**What's happening:**
+1. Test 1 (Single Stream Echo):
+   - Client opens stream 0
+   - Client sends "Hello from Go client" (21 bytes)
+   - Server echoes "Hello World" (11 bytes) with FIN
+   - Client receives response and closes stream 0
+   - ✅ Test passes
+
+2. Test 2 (Multiple Concurrent Streams):
+   - Client tries to open NEW streams (should be streams 4, 8, 12...)
+   - BUT server is somehow sending data on stream 0 again
+   - Client rejects: "stream 0 already closed at offset 11"
+   - ❌ Test fails
+
+**The server bug:**
+The server is reusing stream 0 for subsequent tests instead of:
+- Properly closing stream 0 after the first test
+- Accepting NEW stream IDs for subsequent tests
+
+### Investigation Plan
+
+1. ✅ **Verify test results** - Confirmed 1/8 passing, 7/8 failing with FINAL_SIZE_ERROR
+2. 🔄 **Check server stream handling** - Review cmd/quic-server.zig echo logic
+3. 🔄 **Check acceptStream() behavior** - Does it properly return new stream IDs?
+4. 🔄 **Check writeStream() behavior** - Is it checking if stream is closed?
+5. 🔄 **Add stream state tracking** - Server needs to track which streams are open/closed
+
+### Server Code Analysis
+
+**Current implementation** (cmd/quic-server.zig:146-177):
+```zig
+// Try to accept an incoming stream
+const stream_id = api.acceptStream(conn) catch {
+    // No stream available yet, continue to next connection
+    i += 1;
+    continue;
+};
+
+// Read from the accepted stream
+var buf: [4096]u8 = undefined;
+const n = api.readStream(conn, stream_id, buf[0..]) catch 0;
+if (n > 0) {
+    // Echo back
+    const written = api.writeStream(conn, stream_id, buf[0..n]) catch 0;
+}
+```
+
+**Potential issues:**
+1. Server calls `acceptStream()` in a loop - is it returning the same stream ID repeatedly?
+2. Server doesn't track which streams have been closed
+3. Server doesn't check if a stream is in a valid state before writing
+4. Server might be caching stream_id across loop iterations
+
+### Next Steps
+
+1. Add logging to see what stream IDs `acceptStream()` returns
+2. Check if `acceptStream()` is incorrectly returning 0 for all calls
+3. Review `acceptStream()` implementation in src/quic/api.zig
+4. Check stream state machine in src/quic/connection/stream.zig
+5. Verify that closed streams are properly marked and not reused
+
+**Phase 42 Status:** 🔍 **INVESTIGATING** - Server appears to be reusing stream 0 instead of accepting new streams
+
+---
+
 ## Summary
 
 | Phase | Issue | Status | Files Modified |
