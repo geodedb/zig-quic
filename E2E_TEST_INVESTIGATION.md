@@ -527,7 +527,20 @@ const master = ks.extractHash(hash, derived.slice(), &[_]u8{0} ** 32);
 
 According to RFC 8446 §7.1, master secret = HKDF-Extract(salt=derived, IKM=0), where IKM must be 32 zero bytes, not empty.
 
-**Current Status:** Master secret bug fixed in vendor/ztls@149cee6, but application secrets still don't match. Investigation ongoing - transcript hash timing verified correct (CH...ServerFinished), so issue must be elsewhere in HKDF-Expand-Label implementation or hash computation.
+**Current Status:**
+- Master secret bug fixed in vendor/ztls@149cee6 (IKM verified: len=32, all zeros ✓)
+- Application secrets still don't match despite all inputs being verified correct:
+  * ✅ Handshake secret: `9CF11A9887D3B3C080999A91353746A1373B3FE1A9E4EFF11BFDCBB58AEEF48E`
+  * ✅ Transcript hash timing: Computed after server Finished, before client Finished
+  * ✅ IKM for master secret: 32 zero bytes
+  * ✅ HKDF-Expand-Label implementation: Looks RFC-compliant
+  * ❌ Output doesn't match: Client APP should be `cc377340...`, server derives `90C20138...`
+
+**Next Investigation Steps:**
+1. Compare actual transcript CONTENT (not just timing) between client and server
+2. Manually compute HKDF with known inputs to verify algorithm correctness
+3. Check if there's a byte order or encoding issue in HkdfLabel structure
+4. Verify Zig's std.crypto.kdf.hkdf matches RFC 5869 exactly
 
 **Phase 41 Status:** 🔧 **IN PROGRESS** - Master secret derivation bug found and fixed (identical to Phase 40 bug). Application secrets still don't match - investigating further.
 
