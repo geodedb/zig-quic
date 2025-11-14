@@ -126,6 +126,13 @@ pub const Recovery = struct {
         var largest_pn: u64 = sstate.largest_acked orelse 0;
         var largest_acked_pkt_time: ?u64 = null;
 
+        // PHASE 42 PART 22: Log ACK reception
+        std.debug.print("[P42-22-ACK-RX] 📥 space={s} acked_count={d} prev_largest={d}\n", .{
+            @tagName(space),
+            acked.len,
+            sstate.largest_acked orelse 0,
+        });
+
         // Mark acked packets
         for (acked) |pn| {
             for (sstate.sent.items) |*sp| {
@@ -143,7 +150,18 @@ pub const Recovery = struct {
         }
         if (largest_acked_pkt_time) |t_ack| {
             const measured = if (now_ns > t_ack) now_ns - t_ack else 0;
+            const old_smoothed = self.rtt.smoothed_rtt_ns;
+            const old_rttvar = self.rtt.rttvar_ns;
             self.rtt.onAck(measured, ack_delay_ns);
+
+            // PHASE 42 PART 22: Log RTT update
+            std.debug.print("[P42-22-RTT] 🕐 measured={d}us old_smoothed={d}us new_smoothed={d}us old_rttvar={d}us new_rttvar={d}us\n", .{
+                measured / 1000,
+                old_smoothed / 1000,
+                self.rtt.smoothed_rtt_ns / 1000,
+                old_rttvar / 1000,
+                self.rtt.rttvar_ns / 1000,
+            });
         }
         if (largest_pn != (sstate.largest_acked orelse 0)) sstate.largest_acked = largest_pn;
 
@@ -151,14 +169,26 @@ pub const Recovery = struct {
         var bytes_lost: usize = 0;
         var first_lost_time: ?u64 = null;
         var last_lost_time: ?u64 = null;
+        var pkt_threshold_lost_count: usize = 0;
         if (sstate.largest_acked) |la| {
             for (sstate.sent.items) |*sp| {
                 if (!sp.acked and !sp.declared_lost) {
                     if (self.loss.isPacketThresholdLost(la, sp.pn)) {
                         sp.declared_lost = true;
                         bytes_lost += sp.size;
+                        pkt_threshold_lost_count += 1;
                         if (first_lost_time == null or sp.time_ns < first_lost_time.?) first_lost_time = sp.time_ns;
                         if (last_lost_time == null or sp.time_ns > last_lost_time.?) last_lost_time = sp.time_ns;
+
+                        // PHASE 42 PART 22: Log packet-threshold loss
+                        std.debug.print("[P42-22-LOSS-PKT] ❌ space={s} pn={d} largest_acked={d} gap={d} threshold={d} bytes={d}\n", .{
+                            @tagName(space),
+                            sp.pn,
+                            la,
+                            la - sp.pn,
+                            self.loss.packet_threshold,
+                            sp.size,
+                        });
                     }
                 }
             }
@@ -166,6 +196,7 @@ pub const Recovery = struct {
 
         // Time-threshold loss detection and scheduling
         var earliest_loss_time: ?u64 = null;
+        var time_threshold_lost_count: usize = 0;
         if (self.rtt.have_sample) {
             const tt_base = LossDetector.timeThresholdNs(self.rtt.smoothed_rtt_ns, self.rtt.latest_rtt_ns);
             for (sstate.sent.items) |*sp| {
@@ -175,6 +206,18 @@ pub const Recovery = struct {
                     if (now_ns >= deadline) {
                         sp.declared_lost = true;
                         bytes_lost += sp.size;
+                        time_threshold_lost_count += 1;
+                        const age_us = (now_ns - sp.time_ns) / 1000;
+
+                        // PHASE 42 PART 22: Log time-threshold loss
+                        std.debug.print("[P42-22-LOSS-TIME] ⏱️  space={s} pn={d} age={d}us threshold={d}us bytes={d}\n", .{
+                            @tagName(space),
+                            sp.pn,
+                            age_us,
+                            tt_base / 1000,
+                            sp.size,
+                        });
+
                         if (first_lost_time == null or sp.time_ns < first_lost_time.?) first_lost_time = sp.time_ns;
                         if (last_lost_time == null or sp.time_ns > last_lost_time.?) last_lost_time = sp.time_ns;
                     } else if (earliest_loss_time == null or deadline < earliest_loss_time.?) {
@@ -184,6 +227,16 @@ pub const Recovery = struct {
             }
         }
         sstate.loss_time_ns = earliest_loss_time;
+
+        // PHASE 42 PART 22: Summarize loss detection for this ACK
+        if (bytes_lost > 0) {
+            std.debug.print("[P42-22-LOSS-SUM] 📊 space={s} total_lost={d}B pkt_thresh={d} time_thresh={d}\n", .{
+                @tagName(space),
+                bytes_lost,
+                pkt_threshold_lost_count,
+                time_threshold_lost_count,
+            });
+        }
 
         // Congestion control accounting
         if (bytes_acked > 0) self.ccOnAck(bytes_acked, now_ns);
@@ -220,6 +273,10 @@ pub const Recovery = struct {
     fn ccOnAck(self: *Recovery, bytes_acked: usize, now_ns: u64) void {
         _ = now_ns; // reserved for future pacing hooks
         if (bytes_acked == 0) return;
+
+        const old_cwnd = self.cc.cwnd;
+        const old_inflight = self.cc.bytes_in_flight;
+
         if (self.cc.cwnd < self.cc.ssthresh) {
             // Slow start: cwnd grows by bytes_acked
             self.cc.cwnd += bytes_acked;
@@ -229,15 +286,40 @@ pub const Recovery = struct {
             self.cc.cwnd += inc;
         }
         if (self.cc.bytes_in_flight >= bytes_acked) self.cc.bytes_in_flight -= bytes_acked else self.cc.bytes_in_flight = 0;
+
+        // PHASE 42 PART 22: Log congestion control state change
+        std.debug.print("[P42-22-CC-ACK] 📈 acked={d}B cwnd: {d}→{d} inflight: {d}→{d} ssthresh={d} mode={s}\n", .{
+            bytes_acked,
+            old_cwnd,
+            self.cc.cwnd,
+            old_inflight,
+            self.cc.bytes_in_flight,
+            self.cc.ssthresh,
+            if (old_cwnd < self.cc.ssthresh) "slow_start" else "cong_avoid",
+        });
     }
 
     /// Cut cwnd on loss (1/2) with floor at 2*mds; reduce bytes_in_flight by lost bytes.
     fn ccOnLoss(self: *Recovery, bytes_lost: usize) void {
         if (bytes_lost == 0) return;
+
+        const old_cwnd = self.cc.cwnd;
+        const old_inflight = self.cc.bytes_in_flight;
+
         const min_wnd: usize = 2 * self.cc.mds;
         self.cc.cwnd = @max(self.cc.cwnd / 2, min_wnd);
         self.cc.ssthresh = self.cc.cwnd;
         if (self.cc.bytes_in_flight >= bytes_lost) self.cc.bytes_in_flight -= bytes_lost else self.cc.bytes_in_flight = 0;
+
+        // PHASE 42 PART 22: Log congestion control loss reaction
+        std.debug.print("[P42-22-CC-LOSS] 📉 lost={d}B cwnd: {d}→{d} inflight: {d}→{d} ssthresh={d}\n", .{
+            bytes_lost,
+            old_cwnd,
+            self.cc.cwnd,
+            old_inflight,
+            self.cc.bytes_in_flight,
+            self.cc.ssthresh,
+        });
     }
 
     /// React to ECN-CE by reducing cwnd like a loss event (without changing bytes_in_flight).
@@ -305,7 +387,17 @@ pub const Recovery = struct {
         }
         if (!any_in_flight) return null;
         const base = self.rtt.computePtoNsWithBackoff(self.pto_count, self.timer_granularity_ns);
-        return now_ns + base;
+        const deadline = now_ns + base;
+
+        // PHASE 42 PART 22: Log PTO calculation
+        std.debug.print("[P42-22-PTO-CALC] ⏰ pto_count={d} base={d}us deadline_from_now={d}us smoothed_rtt={d}us\n", .{
+            self.pto_count,
+            base / 1000,
+            (deadline - now_ns) / 1000,
+            self.rtt.smoothed_rtt_ns / 1000,
+        });
+
+        return deadline;
     }
 
     /// Compute next PTO deadline for a given space relative to now.
