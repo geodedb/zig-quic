@@ -2505,3 +2505,50 @@ Simplified to only send initial MAX_STREAM_DATA when stream receives first data:
 2. Capture server-side `[P57-14-READ]` telemetry to ensure the new drain loop is activating during large transfers
 3. Investigate client timeouts now that server read throughput is no longer the bottleneck (focus on ACK scheduling / retransmission)
 
+## Phase 57 Part 15: Flush Pending Writes in Loops + Raise Payload Size
+
+**Date:** 2025-11-14  
+**Status:** IN PROGRESS ❌  
+**Issue:** Even after improving stream draining, the server echoed data at only ~1200 bytes per event-loop iteration, creating a 30 s stall for 1 MB transfers
+
+### Test Results (Go comprehensive suite – 2025-11-14 12:44:16)
+- ✅ Single Stream Echo (21B)  
+- ✅ Multiple Concurrent Streams  
+- ✅ Large Transfer 10KB  
+- ✅ Large Transfer 100KB  
+- ❌ Large Transfer 1MB – `timeout: no recent network activity`  
+- ❌ Multiple Round-trips – timeout  
+- ❌ Bidirectional Simultaneous – timeout  
+- ❌ Stream Interleaving – timeout
+
+### Root Cause
+- Before Part 15 the server attempted to flush pending echoes **only once per event loop**, sending a single STREAM packet capped at 1000 bytes (see `writeStream` `max_payload=1000`)
+- Logs (e.g. `/tmp/e2e-go-comprehensive.log` lines 49841–58395) show `[P42-13-FLUSH]` repeating with just 1000 byte writes, leaving tens of kilobytes buffered
+- With a 20 ms poll interval this limited throughput to ~50 KB/s which is far below the 1 MB workload requirement and triggered the “no recent activity” timeout
+- quinn/quiche servers loop on their send paths until `WouldBlock`, draining as much as congestion control allows each iteration; our implementation stopped after the first partial send
+
+### The Fix
+
+**Files:**  
+- `cmd/quic-server.zig:218-313`  
+  - Step 1 (pending write flush) now loops while data remains and writes succeed, matching quinn/quiche behavior
+  - Added `[P42-13-FLUSH]` telemetry for each chunk flushed; `[P42-13-FC-BLOCKED]` now only breaks the loop when flow control truly blocks
+  - Step 2 drain loop continues to avoid rereading while pending data exists
+- `src/quic/conn.zig:2336-2343`  
+  - Increased `max_payload` from 1000 to 1200 bytes to match QUIC’s typical 1232-byte UDP payload minus headers
+
+### Impact
+- Server now flushes dozens of STREAM packets per iteration (see new `[P42-13-FLUSH] … 1200 bytes …` series), eliminating the artificial ~50 KB/s cap
+- First two comprehensive tests now show reduced buffered data and faster echo for the 10 KB/100 KB cases
+- 1 MB transfers still fail because additional congestion-control / ACK scheduling issues prevent data arrival after ~96 KB (only two `[P57-14-READ]` entries observed), but the TX bottleneck has been removed
+
+### Commits Made
+- **feat: Phase 57 Part 14 - Drain multiple 64KB reads per loop** (c0237ff) – introduces Part 14 draining loop
+- **fix: Use @min() builtin instead of std.math.min** (8233394) – Zig 0.15 compatibility for threshold calculation
+- **feat: Phase 57 Part 15 - Flush pending writes in loops** (c0237ff merged) – same commit adds multi-flush logic and documentation updates
+
+### Next Steps
+1. Instrument `[P57-14-READ]` counts and ACK telemetry around stream 24 to confirm that the server stalls because no further data arrives after ~96 KB
+2. Audit ACK scheduling + PTO to determine why ACKs stop at packet number ~32 while the client expects more credit (suspect loss recovery / ACK delay bug)
+3. Compare against quinn/quiche send-path pacing to ensure we keep transmitting while pending echoes exist (may need per-connection send loop similar to quinn’s `send_streams`)
+

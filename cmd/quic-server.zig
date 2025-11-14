@@ -222,31 +222,30 @@ pub fn main() !void {
 
                 // Step 1: Try to flush pending writes first (flow control may have unblocked)
                 if (stream.pending_write.items.len > 0) {
-                    std.debug.print("[P42-13] Stream {} flushing {} pending bytes (loop {})\n", .{stream_id, stream.pending_write.items.len, loop_count});
-                    const written: usize = api.writeStream(conn, stream_id, stream.pending_write.items, false) catch |err| blk: {
-                        if (err == error.FlowControlBlocked) {
-                            std.debug.print("[P42-13-FC-BLOCKED] Stream {} still blocked, {} bytes pending (loop {})\n", .{stream_id, stream.pending_write.items.len, loop_count});
-                            continue; // Try next stream, will retry this one next iteration
-                        }
-                        std.debug.print("[P42-13-ERROR] Stream {} write error: {} (loop {})\n", .{stream_id, err, loop_count});
-                        break :blk 0;
-                    };
+                    while (stream.pending_write.items.len > 0) {
+                        std.debug.print("[P42-13] Stream {} flushing {} pending bytes (loop {})\n", .{stream_id, stream.pending_write.items.len, loop_count});
+                        const written: usize = api.writeStream(conn, stream_id, stream.pending_write.items, false) catch |err| blk: {
+                            if (err == error.FlowControlBlocked) {
+                                std.debug.print("[P42-13-FC-BLOCKED] Stream {} still blocked, {} bytes pending (loop {})\n", .{stream_id, stream.pending_write.items.len, loop_count});
+                                break;
+                            }
+                            std.debug.print("[P42-13-ERROR] Stream {} write error: {} (loop {})\n", .{stream_id, err, loop_count});
+                            break :blk 0;
+                        };
 
-                    if (written > 0) {
+                        if (written == 0) break;
+
                         stream.total_written += written;
-                        std.debug.print("[P42-13-FLUSH] Stream {} flushed {} bytes ({} total written, {} still pending)\n", .{stream_id, written, stream.total_written, stream.pending_write.items.len});
-                        // Remove written bytes from pending buffer
                         const remaining = stream.pending_write.items.len - written;
                         if (remaining > 0) {
                             std.mem.copyForwards(u8, stream.pending_write.items[0..remaining], stream.pending_write.items[written..]);
                         }
                         stream.pending_write.shrinkRetainingCapacity(remaining);
+                        std.debug.print("[P42-13-FLUSH] Stream {} flushed {} bytes ({} total written, {} still pending)\n",
+                            .{stream_id, written, stream.total_written, stream.pending_write.items.len});
                     }
 
-                    // If still have pending data, skip reading more until we flush
-                    if (stream.pending_write.items.len > 0) {
-                        continue;
-                    }
+                    if (stream.pending_write.items.len > 0) continue;
                 }
 
                 // Step 2: Read new data from stream (drain aggressively each iteration)

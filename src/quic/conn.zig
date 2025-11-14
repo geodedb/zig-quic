@@ -2336,7 +2336,7 @@ pub const Connection = struct {
         const window_left_stream: u64 = peer_stream_limit - cur_off;
         const window_left_conn: u64 = self.peer_max_data - self.conn_send_off;
         const window_left: u64 = if (window_left_stream < window_left_conn) window_left_stream else window_left_conn;
-        const max_payload: usize = 1000; // keep within typical path-MTU
+        const max_payload: usize = 1200; // align with QUIC default UDP payload
         const to_send_u64: u64 = @min(window_left, @as(u64, data.len));
         const to_send: usize = @intCast(@min(to_send_u64, @as(u64, max_payload)));
         std.debug.print("[FC-TX] writeStream: stream_id={}, data.len={}, cur_off={}, peer_limit={}, window_left_stream={}, window_left_conn={}, to_send={}\n", .{ id, data.len, cur_off, peer_stream_limit, window_left_stream, window_left_conn, to_send });
