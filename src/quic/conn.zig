@@ -401,6 +401,8 @@ pub const StreamRx = struct {
     last_window_update_time_us: u64 = 0,  // Timestamp of last window expansion (microseconds)
     // PHASE 46: Quinn-style flow control tracking
     initial_window_size: u64 = 0,         // Initial window size for threshold calculation
+    // PHASE 57 PART 11: Track bytes consumed by application (like quinn's assembler.bytes_read())
+    bytes_consumed_total: u64 = 0,        // Total bytes consumed by application via readStream()
 
     fn init() StreamRx {
         return .{
@@ -412,6 +414,7 @@ pub const StreamRx = struct {
             .last_sent_max_stream_data = 0,
             .last_window_update_time_us = 0,
             .initial_window_size = 0,
+            .bytes_consumed_total = 0,
         };
     }
     pub fn deinit(self: *StreamRx, alloc: *std.mem.Allocator) void {
@@ -2431,19 +2434,24 @@ pub const Connection = struct {
         if (rem > 0) std.mem.copyForwards(u8, s.inbox.items[0..rem], s.inbox.items[n..]);
         s.inbox.shrinkRetainingCapacity(rem);
 
-        // PHASE 46: Quinn-style flow control - expand window and trigger update check
-        // When application consumes data, grant more receive window to allow peer to send more
+        // PHASE 57 PART 11: Quinn-style flow control - calculate max_stream_data from bytes consumed
+        // Quinn uses: max_stream_data = bytes_read() + stream_receive_window
+        // We track bytes_consumed_total and use initial_window_size as the receive window
         const bytes_consumed = n;
         if (bytes_consumed > 0) {
-            // Similar to connection-level flow control, expand window when consumed
+            s.bytes_consumed_total += bytes_consumed;
+            
+            // Calculate max_stream_data like quinn: bytes_consumed + receive_window
+            // Use initial_window_size as the fixed receive window (like quinn's stream_receive_window)
+            const receive_window = if (s.initial_window_size > 0) s.initial_window_size else self.local_max_stream_data;
+            const new_max_stream_data = s.bytes_consumed_total + receive_window;
+            
             const old_max = s.local_max_stream_data;
-            // Expand by same factor as connection-level (see conn.zig:1901)
-            const bump = old_max / 2;  // Grow by 50%
-            const new_val, const overflow = @addWithOverflow(old_max, bump);
-            s.local_max_stream_data = if (overflow != 0) std.math.maxInt(u64) else new_val;
-            std.debug.print("[FC] Stream {} read {} bytes, window expanded {} -> {}\n", .{id, bytes_consumed, old_max, s.local_max_stream_data});
+            s.local_max_stream_data = new_max_stream_data;
+            std.debug.print("[FC] Stream {} read {} bytes (total consumed: {}), max_stream_data: {} -> {} (receive_window={})\n", 
+                .{id, bytes_consumed, s.bytes_consumed_total, old_max, s.local_max_stream_data, receive_window});
 
-            // PHASE 46: Trigger flow control frame generation after window expansion
+            // PHASE 46: Trigger flow control frame generation after window update
             // This ensures timely updates when data is consumed (quinn-style)
             self.advertiseInitialFlowControl();
         }
