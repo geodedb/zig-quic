@@ -84,3 +84,44 @@ RESULTS: 0 passed, 8 failed, 8 total
 The fact that connection establishment and TLS handshake still work suggests the issue is specifically in the stream/data handling layer, likely introduced by recent debugging changes that were meant to diagnose the original timeout issues but have instead made the problem worse.
 
 **Immediate Action Required:** Roll back recent changes or identify and fix the regression before continuing with any further debugging.
+
+## Phase 42 Part 24: REGRESSION RESOLVED ✅
+
+**Date:** 2025-11-14
+**Resolution:** Reverted debug instrumentation from recovery.zig
+
+### Resolution Steps
+
+1. **Identified root cause:** Debug print statements added to `src/quic/recovery/recovery.zig` during Phase 42 Part 22
+2. **Reverted changes:** `git checkout HEAD -- src/quic/recovery/recovery.zig src/quic/endpoint/incoming.zig`
+3. **Clean rebuild:** Removed cache and rebuilt binary without debug code
+4. **Test results confirmed:** 4/8 tests passing again (back to baseline)
+
+### Verified Test Results After Fix
+
+```
+============================================================
+RESULTS: 4 passed, 4 failed, 8 total
+============================================================
+✅ Single Stream Echo - 21 bytes in 6.31ms
+✅ Multiple Concurrent Streams - 4 streams in 4.91ms
+✅ Large Transfer (10KB) - 0.91 MB/s
+✅ Large Transfer (100KB) - 0.87 MB/s
+❌ Large Transfer (1MB) - timeout: no recent network activity
+❌ Multiple Round-trips - timeout: no recent network activity
+❌ Bidirectional Simultaneous - timeout: no recent network activity
+❌ Stream Interleaving - timeout: no recent network activity
+```
+
+### Key Learning
+
+Debug instrumentation using `std.debug.print` in performance-critical paths can cause severe regressions. The print statements in the recovery system likely disrupted packet timing and flow control, causing complete stream failure.
+
+## Phase 43: Continuing Original Investigation
+
+With the regression resolved, we can now continue investigating the original issues:
+1. Large transfers (1MB+) timing out
+2. Multiple round-trips failing
+3. Bidirectional and interleaved streams not working
+
+The focus should be on flow control windows and ACK timing for large data transfers.
