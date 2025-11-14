@@ -1881,9 +1881,10 @@ pub const Connection = struct {
         const s = self.ensureStreamRx(stream_id);
         std.debug.print("After ensureStreamRx: streams_rx now has {} entries\n", .{self.streams_rx.count()});
 
-        // PHASE 42 PART 15: Smart queueing - only queue on transition to readable
-        // Check if stream was empty BEFORE inserting new data
-        const was_empty_before = (s.inbox.items.len == 0);
+        // PHASE 57 PART 6: Always re-queue streams when new data arrives
+        // This matches the design intent from Phase 42 Part 15 (see queueIncomingStream comment)
+        // The application drains the queue via acceptStream() in a tight loop, so duplicates
+        // are processed quickly and provide notification that more data is available.
 
         if (fin) {
             const end_off: u64 = offset + @as(u64, data.len);
@@ -1895,13 +1896,13 @@ pub const Connection = struct {
             s.tryDrain(self.allocator);
         }
 
-        // Only queue if stream transitioned from empty to non-empty (became readable)
+        // Queue stream every time new data arrives (not just first time)
         const is_peer_initiated = self.isPeerInitiatedStream(stream_id);
         const has_data_now = (s.inbox.items.len > 0);
 
-        if (is_peer_initiated and was_empty_before and has_data_now) {
+        if (is_peer_initiated and has_data_now) {
             try self.queueIncomingStream(stream_id);
-            std.debug.print("[P42-15] Stream {} queued (transition to readable, {} total in queue)\n", .{stream_id, self.incoming_stream_queue.items.len});
+            std.debug.print("[P57-6-QUEUE] Stream {} queued ({} bytes in inbox, {} total in queue)\n", .{stream_id, s.inbox.items.len, self.incoming_stream_queue.items.len});
         }
         // Auto-echo implementation DISABLED: This conflicts with application-level echo servers.
         // The auto-echo would send "Hello QUIC\n" (11 bytes) on stream 0 with offset=0 and FIN=true,

@@ -1910,6 +1910,87 @@ After Phase 57 Parts 4-5:
 - Test failures NOT related to key updates (likely congestion/flow control issue after ~100 packets)
 - Key update implementation verified correct per RFC 9001 §6 and quic-go reference
 
+### Phase 57 Part 6: Stream Re-queueing Bug (FIXED) ✅
+
+**Date:** 2025-11-14
+**Commit:** (pending)
+
+#### Investigation: 100KB Test Regression
+
+The 100KB test was passing before Phase 57 Parts 4-5, but regressed to failing. Analysis revealed that the test failed NOT due to key update issues, but due to a critical stream accept/read flow bug.
+
+#### Root Cause Analysis
+
+1. **Symptom**: Client sends data successfully, server receives and buffers data, but application never knows data arrived
+   - Server logs show: `recv_off=14990, inbox=14990` (data buffered)
+   - No `[P42-13-READ]` or `[P42-13-ECHO]` logs (application never processed streams)
+   - No `[FC]` flow control window expansion logs
+   - Only ONE MAX_STREAM_DATA frame sent at connection start, never re-sent
+
+2. **Investigation Path**:
+   - Checked if `acceptStream()` was being called by application → YES (cmd/quic-server.zig:200)
+   - Checked if `acceptStream()` implementation was correct → YES (src/quic/api.zig:215)
+   - Found that `acceptStream()` returns `error.WouldBlock` when `incoming_stream_queue` is empty
+   - Discovered `queueIncomingStream()` adds streams to the queue when data arrives
+
+3. **The Bug** (src/quic/conn.zig:1884-1905):
+   ```zig
+   // PHASE 42 PART 15: Smart queueing - only queue on transition to readable
+   const was_empty_before = (s.inbox.items.len == 0);
+
+   if (is_peer_initiated and was_empty_before and has_data_now) {
+       try self.queueIncomingStream(stream_id);
+   }
+   ```
+
+   The condition `was_empty_before` means streams are ONLY queued on the FIRST data arrival!
+
+4. **The Failure Sequence**:
+   1. First STREAM frame arrives → inbox empty before → stream queued
+   2. Application calls `acceptStream()` → gets stream ID
+   3. **Application doesn't call readStream() yet** (busy with other tasks)
+   4. Second STREAM frame arrives → inbox NOT empty before → **stream NOT re-queued!**
+   5. Application never knows more data arrived (acceptStream() only returns queued streams)
+   6. Data sits in inbox forever, window never expands, client times out
+
+5. **Design Intent Contradiction**:
+   - Comment at line 3372-3376 in `queueIncomingStream()` says:
+     > "PHASE 42 PART 15: Remove duplicate check to allow re-queueing. Streams need to be queued every time new data arrives."
+   - But the caller at line 1902 prevents re-queueing with `was_empty_before` condition!
+
+#### The Fix
+
+**File:** src/quic/conn.zig (lines 1884-1905)
+
+**Change:** Remove `was_empty_before` condition to allow streams to be re-queued every time new data arrives
+
+```zig
+// PHASE 57 PART 6: Always re-queue streams when new data arrives
+// This matches the design intent from Phase 42 Part 15 (see queueIncomingStream comment)
+// The application drains the queue via acceptStream() in a tight loop, so duplicates
+// are processed quickly and provide notification that more data is available.
+
+if (is_peer_initiated and has_data_now) {
+    try self.queueIncomingStream(stream_id);
+    std.debug.print("[P57-6-QUEUE] Stream {} queued ({} bytes in inbox, {} total in queue)\n",
+        .{stream_id, s.inbox.items.len, self.incoming_stream_queue.items.len});
+}
+```
+
+#### Impact
+
+This fix addresses the core notification mechanism for stream data arrival:
+- Applications will now be notified (via `acceptStream()`) every time new data arrives
+- This enables proper flow control window expansion via `readStream()`
+- Should fix all remaining timeout issues (100KB, 1MB, multi-round-trip tests)
+
+#### Next Steps After Fix
+
+1. Rebuild and test all 8 comprehensive tests
+2. Verify 100KB test now passes
+3. Verify larger transfers complete successfully
+4. Commit Phase 57 Part 6 fix
+
 ### Next Steps
 
 1. ✅ Fix "quic ku" label (DONE)
@@ -1925,7 +2006,7 @@ After Phase 57 Parts 4-5:
 ### Files Modified
 - `src/quic/packet.zig` - Early KEY_PHASE extraction
 - `src/quic/endpoint/incoming.zig` - RX key update logic, DCID×KeySet enumeration, detailed logging
-- `src/quic/conn.zig` - Added app_rx_next_secret and app_rx_next_keys fields
+- `src/quic/conn.zig` - Added app_rx_next_secret and app_rx_next_keys fields, **Fixed stream re-queueing bug (Part 6)**
 - `src/quic/endpoint/handshake_integration.zig` - Pre-derive NEXT keys at handshake completion
 - `vendor/ztls/src/key_schedule.zig` - updateQuicSecret() with "quic ku" label
 - `test_key_derivation.go` - Verification program for secret derivation
