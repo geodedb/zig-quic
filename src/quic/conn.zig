@@ -1922,47 +1922,10 @@ pub const Connection = struct {
         _ = self.app_echo_sent; // Suppress unused field warning
         // Update connection RX accounting
         self.conn_recv_total +%= data.len;
-        // Flow-control: if we've consumed more than 50% of advertised windows, bump and let endpoint send MAX_* on next ACK
-        // Adaptive growth: scale per active RX streams to avoid single-stream domination
-        const active_streams: u64 = @intCast(self.streams_rx.count());
-        const denom: u64 = if (active_streams == 0) 1 else active_streams;
-        // PHASE 42 PART 18: RTT-based autotuning (inspired by quiche flowcontrol.rs)
-        // For now, use aggressive 100% growth (double window) for all rapid consumption
-        // to minimize stalls on large transfers. Future: add time-based heuristics.
-        // Saturating threshold calculation
-        const stream_mul, const stream_overflow = @mulWithOverflow(self.local_max_stream_data, 3);
-        const stream_threshold: u64 = if (stream_overflow != 0) std.math.maxInt(u64) else stream_mul / 8; // 12.5% (matches quinn - RFC 9000 §4.1)
-        if (s.recv_off >= stream_threshold) {
-            // Get current time in microseconds
-            const now_us = @as(u64, @intCast(std.time.microTimestamp()));
-            const time_since_last_update_us = if (s.last_window_update_time_us == 0)
-                std.math.maxInt(u64)
-            else
-                now_us - s.last_window_update_time_us;
-
-            // Adaptive growth: if updating within 1 second, assume rapid consumption → double window
-            // Otherwise, use conservative 50% growth. (Future: use actual RTT × 2)
-            const use_aggressive_growth = time_since_last_update_us < 1_000_000; // 1 second threshold
-
-            // Connection-level template bump (for new streams)
-            const bump = if (use_aggressive_growth) self.local_max_stream_data else self.local_max_stream_data / 2;
-            const new_val, const bump_overflow = @addWithOverflow(self.local_max_stream_data, bump);
-            self.local_max_stream_data = if (bump_overflow != 0) std.math.maxInt(u64) else new_val;
-
-            // PHASE 42 PART 16: Also expand THIS stream's window (RFC 9000 §4.2)
-            // The connection-level local_max_stream_data is a template for new streams,
-            // but existing streams need their windows expanded too!
-            const stream_bump = if (use_aggressive_growth) s.local_max_stream_data else s.local_max_stream_data / 2;
-            const stream_new_val, const stream_bump_overflow = @addWithOverflow(s.local_max_stream_data, stream_bump);
-            s.local_max_stream_data = if (stream_bump_overflow != 0) std.math.maxInt(u64) else stream_new_val;
-
-            // Update timestamp for next expansion
-            s.last_window_update_time_us = now_us;
-
-            const growth_pct: u32 = if (use_aggressive_growth) 100 else 50;
-            std.debug.print("[P42-18-FC] Stream {} window expanded {} -> {} (+{}%, recv_off={}, threshold={}, Δt={}μs)\n",
-                .{stream_id, s.local_max_stream_data - stream_bump, s.local_max_stream_data, growth_pct, s.recv_off, stream_threshold, time_since_last_update_us});
-        }
+        // PHASE 57 PART 11: Flow control is now handled in readStream() using quinn-style calculation
+        // (max_stream_data = bytes_consumed + receive_window)
+        // We no longer expand windows here based on recv_off, as that conflicts with the quinn approach.
+        // Window updates are triggered when the application consumes data via readStream().
         const conn_mul, const conn_overflow = @mulWithOverflow(self.local_max_data, 7);
         const conn_threshold: u64 = if (conn_overflow != 0) std.math.maxInt(u64) else conn_mul / 10; // 70%
         if (self.conn_recv_total >= conn_threshold) {
