@@ -1352,8 +1352,19 @@ pub const Connection = struct {
     pub fn send(self: *Connection, data: []const u8) !usize {
         // Amplification guard: if address not validated and we already exceeded 3x budget, refuse to send
         if (self.overAmplification()) return error.WouldBlock;
-        if (data.len == 141) {
-            std.debug.print("send() called with 141 bytes, sender_fn={}\n", .{self.sender_fn != null});
+
+        // PHASE 48: Basic congestion control - check if we have room in cwnd
+        // Only check for data packets (not handshake/initial)
+        if (self.hasConfirmedAppTxKeys()) {
+            const available_cwnd = if (self.rec.cc.cwnd > self.rec.cc.bytes_in_flight)
+                self.rec.cc.cwnd - self.rec.cc.bytes_in_flight
+            else
+                0;
+
+            if (available_cwnd < data.len) {
+                // Congestion window exhausted - cannot send
+                return error.WouldBlock;
+            }
         }
         if (self.sender_fn) |f| {
             const ctx = self.sender_ctx orelse return data.len;

@@ -449,3 +449,79 @@ Must integrate congestion control into the connection logic:
 3. Update congestion state on ACK/loss
 4. Implement basic packet pacing
 5. Test with 1MB transfers
+
+## Phase 48: Basic Congestion Control Implementation - Partial Fix
+
+**Date:** 2025-11-14
+**Focus:** Initial implementation of congestion control checking
+
+### Implementation Details
+
+Added basic congestion control enforcement to `conn.zig` line 1356-1368:
+
+```zig
+// PHASE 48: Basic congestion control - check if we have room in cwnd
+// Only check for data packets (not handshake/initial)
+if (self.hasConfirmedAppTxKeys()) {
+    const available_cwnd = if (self.rec.cc.cwnd > self.rec.cc.bytes_in_flight)
+        self.rec.cc.cwnd - self.rec.cc.bytes_in_flight
+    else
+        0;
+
+    if (available_cwnd < data.len) {
+        // Congestion window exhausted - cannot send
+        return error.WouldBlock;
+    }
+}
+```
+
+### Test Results After Phase 48
+
+```
+============================================================
+RESULTS: 4 passed, 4 failed, 8 total
+============================================================
+✅ Single Stream Echo - 21 bytes in 6.65ms
+✅ Multiple Concurrent Streams - 4 streams in 6.01ms
+✅ Large Transfer (10KB) - 0.80 MB/s
+✅ Large Transfer (100KB) - 0.83 MB/s
+❌ Large Transfer (1MB) - timeout: no recent network activity
+❌ Multiple Round-trips - timeout: no recent network activity
+❌ Bidirectional Simultaneous - timeout: no recent network activity
+❌ Stream Interleaving - timeout: no recent network activity
+```
+
+### Analysis
+
+**No improvement** from the basic congestion control check. Still 4/8 tests passing. This indicates deeper problems:
+
+1. **Recovery System Already Initialized:**
+   - `conn.zig` line 889: `self.rec = recovery.Recovery.init(alloc.*)`
+   - Recovery struct is created but not fully integrated
+
+2. **Existing Hooks Found:**
+   - Line 3211: `onShortHeaderPacketSent` calls `self.rec.onPacketSent()`
+   - Line 2620: `onAckReceivedSpace` calls `self.rec.onAckReceivedWithEcn()`
+   - So the recovery system IS being notified of events
+
+3. **Missing Critical Pieces:**
+   - **bytes_in_flight tracking:** Not properly updated when packets are sent
+   - **cwnd growth:** Not increasing on successful ACKs during slow-start/congestion avoidance
+   - **Initial cwnd too small:** 12KB might be insufficient for 1MB transfers
+   - **No pacing:** Still sending bursts rather than paced packets
+
+### Why 1MB Still Fails
+
+The congestion control check alone isn't enough because:
+- Initial cwnd of 12KB means only 12KB can be sent initially
+- Without proper cwnd growth on ACKs, window never expands
+- 1MB transfer needs cwnd to grow from 12KB → 1MB+ through successful transmissions
+- Current implementation blocks sending but doesn't enable growth
+
+### Next Investigation Steps
+
+Need to verify and fix:
+1. **bytes_in_flight tracking** - Ensure it's updated on packet send and ACK
+2. **cwnd growth logic** - Implement proper slow-start and congestion avoidance
+3. **Loss detection** - Verify retransmissions are happening
+4. **Packet pacing** - Add inter-packet delays to prevent bursts
