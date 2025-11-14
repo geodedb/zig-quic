@@ -219,6 +219,7 @@ pub const DecodedShort = struct {
     packet_number: u64, // Changed from u32 to support full QUIC packet number range
     packet_number_len: u3,
     payload: []u8,
+    key_phase: bool, // PHASE 57: KEY_PHASE bit from short header (RFC 9001 §5.4)
 };
 
 /// Decode and unprotect a short-header packet given dcid_len for header parsing.
@@ -306,7 +307,12 @@ pub fn decodeShortProtected(
 
     std.debug.print("decodeShortProtected: truncated PN={} -> expanded PN={} (largest_pn={})\n", .{ pn_val_truncated, pn_val_expanded, largest_pn });
 
-    return .{ .packet_number = pn_val_expanded, .packet_number_len = pn_len, .payload = payload };
+    // PHASE 57: Extract KEY_PHASE bit from unmasked header (RFC 9001 §5.4)
+    // Bit 0x04 indicates which key phase is in use
+    const key_phase = (tmp_first & 0x04) != 0;
+    std.debug.print("decodeShortProtected: KEY_PHASE bit = {} (header_first=0x{X:0>2})\n", .{ key_phase, tmp_first });
+
+    return .{ .packet_number = pn_val_expanded, .packet_number_len = pn_len, .payload = payload, .key_phase = key_phase };
 }
 
 /// Temporary legacy shim for older tests that haven't been updated to pass `largest_pn`.
