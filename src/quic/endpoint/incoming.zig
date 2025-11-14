@@ -2673,7 +2673,37 @@ pub fn processShortHeader(
 
     // dec_res.packet_number is already expanded by decryptShortHeaderWithKeyRotation
     const pn_full: u64 = dec_res.packet_number;
+
+    // PHASE 42 PART 20: Capture PN state BEFORE tracking for duplicate/gap detection
+    const prev_largest_pn = conn.pn_app.max;
+    const had_any_before = conn.pn_app.have_any;
+
     conn.trackRecvPnApp(pn_full);
+
+    // PHASE 42 PART 20: Comprehensive packet number tracking debug logging
+    // This helps identify duplicate PNs (AEAD failures) and packet loss (gaps)
+    const is_duplicate = (pn_full <= prev_largest_pn and had_any_before);
+    const has_gap = (pn_full > prev_largest_pn + 1 and had_any_before);
+    const gap_size: i64 = if (has_gap) @as(i64, @intCast(pn_full)) - @as(i64, @intCast(prev_largest_pn)) - 1 else 0;
+
+    if (is_duplicate) {
+        std.debug.print("[P42-20-PN-DUP] ⚠️  DUPLICATE PN! pn={}, prev_largest={}, gap_from_largest={}\n", .{
+            pn_full,
+            prev_largest_pn,
+            @as(i64, @intCast(prev_largest_pn)) - @as(i64, @intCast(pn_full)),
+        });
+    } else if (has_gap) {
+        std.debug.print("[P42-20-PN-GAP] ⚠️  GAP DETECTED! pn={}, prev_largest={}, gap_size={} packets missing\n", .{
+            pn_full,
+            prev_largest_pn,
+            gap_size,
+        });
+    } else {
+        std.debug.print("[P42-20-PN-OK] ✓ Sequential PN received: pn={}, prev_largest={}\n", .{
+            pn_full,
+            prev_largest_pn,
+        });
+    }
 
     if (ctx.test_capture_enabled) {
         std.debug.print("Tracked packet number: {}\n", .{pn_full});
