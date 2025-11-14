@@ -1813,14 +1813,19 @@ pub fn decryptShortHeaderWithKeyRotation(
             }
         }
 
+        // PHASE 57: Enhanced logging for key update fallback path
+        std.debug.print("[PHASE57-FALLBACK] 🔄 Current keys failed, trying NEXT keys fallback\n", .{});
+
         // Try derived NEXT keys if we have a RX traffic secret
         if (conn.app_rx_secret) |cur_rx_secret| {
+            std.debug.print("[PHASE57-FALLBACK] Deriving NEXT RX secret from current secret...\n", .{});
             const next_secret = key_schedule.updateTrafficSecret(cur_rx_secret);
             const mat = if (conn.version_v2)
                 key_schedule.deriveKeyIvHpV2(next_secret)
             else
                 key_schedule.deriveKeyIvHp(next_secret);
 
+            std.debug.print("[PHASE57-FALLBACK] Attempting decrypt with NEXT keys...\n", .{});
             // Use discovered/cached dcid_len if available
             const final_dcid_len = if (conn.expected_rx_dcid_len) |cached| cached else try_dcid_len;
             const try_next = packet.decodeShortProtected(allocator, bytes, final_dcid_len, .{
@@ -1828,6 +1833,8 @@ pub fn decryptShortHeaderWithKeyRotation(
                 .iv = mat.iv,
                 .hp = mat.hp
             }, largest_pn) catch blk_prev: {
+                std.debug.print("[PHASE57-FALLBACK] ❌ NEXT keys also failed, trying PREV keys...\n", .{});
+
                 // Finally, if we have previous RX keys during transition, try them
                 if (conn.rx_prev_keys) |kp| {
                     used_prev = true;
@@ -1847,9 +1854,12 @@ pub fn decryptShortHeaderWithKeyRotation(
             };
 
             // Promote to NEXT keys on success
+            std.debug.print("[PHASE57-FALLBACK] ✅ SUCCESS! Decrypted with NEXT keys, will promote\n", .{});
             used_next = true;
             actual_dcid_len = final_dcid_len;
             break :blk_dec try_next;
+        } else {
+            std.debug.print("[PHASE57-FALLBACK] ⚠️ No app_rx_secret available for NEXT key derivation\n", .{});
         }
 
         // No secret available for deriving NEXT; try previous only
@@ -1873,6 +1883,42 @@ pub fn decryptShortHeaderWithKeyRotation(
     // Cache the successful DCID length if not already cached
     if (conn.expected_rx_dcid_len == null) {
         conn.expected_rx_dcid_len = actual_dcid_len;
+    }
+
+    // PHASE 57 PART 2: Check if packet KEY_PHASE differs from connection RX key phase
+    // RFC 9001 §6: "Each packet contains a key phase bit that indicates which packet
+    // protection keys are used to protect the packet."
+    // If key_phase != rx_key_phase, peer has initiated key update (even if we successfully
+    // decrypted with current keys, which shouldn't happen but handle defensively)
+    if (!used_next and !used_prev and decoded.key_phase != conn.rx_key_phase) {
+        std.debug.print("[PHASE57-KEY-UPDATE] 🔑 KEY_PHASE mismatch detected! packet_kp={} conn_rx_kp={} pn={}\n", .{
+            decoded.key_phase,
+            conn.rx_key_phase,
+            decoded.packet_number,
+        });
+        std.debug.print("[PHASE57-KEY-UPDATE] Peer initiated key update - will promote to NEXT keys\n", .{});
+        used_next = true; // Trigger key promotion in caller
+    }
+
+    // PHASE 57: Enhanced logging for key phase tracking
+    if (used_next) {
+        std.debug.print("[PHASE57-DECRYPT] ✅ Decrypted with NEXT keys: pn={} key_phase={} conn_rx_kp={}\n", .{
+            decoded.packet_number,
+            decoded.key_phase,
+            conn.rx_key_phase,
+        });
+    } else if (used_prev) {
+        std.debug.print("[PHASE57-DECRYPT] ✅ Decrypted with PREV keys: pn={} key_phase={} conn_rx_kp={}\n", .{
+            decoded.packet_number,
+            decoded.key_phase,
+            conn.rx_key_phase,
+        });
+    } else {
+        std.debug.print("[PHASE57-DECRYPT] ✅ Decrypted with CURRENT keys: pn={} key_phase={} conn_rx_kp={}\n", .{
+            decoded.packet_number,
+            decoded.key_phase,
+            conn.rx_key_phase,
+        });
     }
 
     return ShortDecryptResult{
@@ -1905,6 +1951,14 @@ pub fn promoteToNextKeys(
     next_secret: [32]u8,
     next_keys: packet.AeadKeys,
 ) void {
+    // PHASE 57: Log key promotion
+    const old_key_phase = conn.rx_key_phase;
+    const new_key_phase = !old_key_phase;
+    std.debug.print("[PHASE57-KEY-PROMOTE] 🔑 Promoting to NEXT RX keys: rx_key_phase {} → {}\n", .{
+        old_key_phase,
+        new_key_phase,
+    });
+
     // Preserve current keys as previous (zeroize any older prev first)
     if (conn.rx_prev_keys) |*old_prev| {
         @memset(&old_prev.key, 0);
@@ -1918,6 +1972,8 @@ pub fn promoteToNextKeys(
     conn.app_rx_keys = .{ .key = next_keys.key, .iv = next_keys.iv, .hp = next_keys.hp };
     conn.app_rx_secret = next_secret;
     conn.rx_key_phase = !conn.rx_key_phase;
+
+    std.debug.print("[PHASE57-KEY-PROMOTE] ✅ Key promotion complete - ready for next packet\n", .{});
 }
 
 /// Decrement previous key allowance after using rx_prev_keys.
@@ -2691,6 +2747,7 @@ pub fn processShortHeader(
     // RFC 9001 §6.1: "After receiving a packet encrypted with the next keys,
     // an endpoint MUST update to the next keys."
     if (used_next) {
+        std.debug.print("[PHASE57-STEP5] 🔄 used_next=true, deriving NEXT secret and promoting keys\n", .{});
         if (conn.app_rx_secret) |cur_rx_secret| {
             const next_secret = key_schedule.updateTrafficSecret(cur_rx_secret);
             const next_keys = if (conn.version_v2)
@@ -2698,6 +2755,7 @@ pub fn processShortHeader(
             else
                 key_schedule.deriveKeyIvHp(next_secret);
 
+            std.debug.print("[PHASE57-STEP5] Calling promoteToNextKeys()...\n", .{});
             promoteToNextKeys(conn, next_secret, .{
                 .key = next_keys.key,
                 .iv = next_keys.iv,
@@ -2707,7 +2765,11 @@ pub fn processShortHeader(
             if (ctx.test_capture_enabled) {
                 std.debug.print("🔑 Promoted to NEXT keys after successful decryption\n", .{});
             }
+        } else {
+            std.debug.print("[PHASE57-STEP5] ⚠️ WARNING: used_next=true but no app_rx_secret!\n", .{});
         }
+    } else {
+        std.debug.print("[PHASE57-STEP5] ✓ used_next=false, no key promotion needed\n", .{});
     }
 
     // =============================================================================
