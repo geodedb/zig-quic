@@ -1761,10 +1761,21 @@ pub fn decryptShortHeaderWithKeyRotation(
     bytes: []const u8,
     try_dcid_len: u8,
 ) !ShortDecryptResult {
+    return decryptShortHeaderWithKeyRotationInternal(allocator, conn, bytes, try_dcid_len, false);
+}
+
+fn decryptShortHeaderWithKeyRotationInternal(
+    allocator: std.mem.Allocator,
+    conn: *conn_mod.Connection,
+    bytes: []const u8,
+    try_dcid_len: u8,
+    forced_attempted: bool,
+) !ShortDecryptResult {
     const rx_keys = conn.app_rx_keys orelse return error.NoApplicationKeys;
 
     // RFC 9000 Appendix A.3: Pass largest received PN for expansion
     const largest_pn: u64 = if (conn.pn_app.have_any) conn.pn_app.max else 0;
+    const should_log_attempts = largest_pn >= 80;
 
     var used_next = false;
     var used_prev = false;
@@ -1789,72 +1800,124 @@ pub fn decryptShortHeaderWithKeyRotation(
         // PHASE 57 Part 7: Removed excessive per-packet debug logging (performance issue)
 
         // Enumerate ALL combinations of DCID length (0-20) × Key set (CURRENT, NEXT, PREV)
-        var test_len: u8 = 0;
-        while (test_len <= 20) : (test_len += 1) {
-            // Try 1: CURRENT keys
-            if (packet.decodeShortProtected(allocator, bytes, test_len, .{
-                .key = rx_keys.key,
-                .iv = rx_keys.iv,
-                .hp = rx_keys.hp
-            }, largest_pn)) |result| {
-                // Validate frame decodability (RFC 9000 §12.4)
-                if (result.payload.len > 0) {
-                    _ = frame.decodeOne(result.payload) catch {
-                        allocator.free(result.payload);
-                        continue; // Frame decode failed, try next combination
-                    };
-                }
-                // SUCCESS with CURRENT keys!
-                std.debug.print("[PHASE57] ✅ Decrypted with CURRENT keys: dcid_len={} pn={}\n", .{ test_len, result.packet_number });
-                actual_dcid_len = test_len;
-                break :blk_dec result;
-            } else |_| {}
+    const max_dcid_len: u8 = 20;
+    var candidates: [21]u8 = undefined;
+    var cand_count: usize = 0;
 
-            // Try 2: NEXT keys (if available)
+    if (try_dcid_len <= max_dcid_len) {
+        candidates[cand_count] = try_dcid_len;
+        cand_count += 1;
+    }
+
+    var len_iter: u8 = 0;
+    while (len_iter <= max_dcid_len) : (len_iter += 1) {
+        if (try_dcid_len <= max_dcid_len and len_iter == try_dcid_len) continue;
+        candidates[cand_count] = len_iter;
+        cand_count += 1;
+    }
+
+    var cand_index: usize = 0;
+    while (cand_index < cand_count) : (cand_index += 1) {
+        const test_len = candidates[cand_index];
+
+        if (should_log_attempts) {
+            std.debug.print("[PHASE57-TRY] key_set=CURRENT dcid_len={} rx_phase={} largest={} forced={}\n", .{
+                test_len,
+                conn.rx_key_phase,
+                largest_pn,
+                forced_attempted,
+            });
+        }
+
+        if (packet.decodeShortProtected(allocator, bytes, test_len, .{
+            .key = rx_keys.key,
+            .iv = rx_keys.iv,
+            .hp = rx_keys.hp,
+        }, largest_pn)) |result| {
+            if (result.payload.len > 0) {
+                _ = frame.decodeOne(result.payload) catch {
+                    allocator.free(result.payload);
+                    continue;
+                };
+            }
+            std.debug.print("[PHASE57] ✅ Decrypted with CURRENT keys: dcid_len={} pn={}\n", .{ test_len, result.packet_number });
+            actual_dcid_len = test_len;
+            break :blk_dec result;
+        } else |_| {
             if (next_keys_opt) |next_mat| {
-                // PHASE 57 Part 7: Removed per-iteration debug log (performance)
-                if (packet.decodeShortProtected(allocator, bytes, test_len, .{
+                if (packet.decodeShortProtectedWithHp(allocator, bytes, test_len, rx_keys.hp, .{
                     .key = next_mat.key,
                     .iv = next_mat.iv,
-                    .hp = next_mat.hp
-                }, largest_pn)) |result| {
-                    // Validate frame decodability
-                    if (result.payload.len > 0) {
-                        _ = frame.decodeOne(result.payload) catch {
-                            allocator.free(result.payload);
+                    .hp = next_mat.hp,
+                }, largest_pn)) |hybrid| {
+                    std.debug.print("[PHASE57-HYBRID] CURRENT hp + NEXT AEAD succeeded (dcid_len={})\n", .{test_len});
+                    if (hybrid.payload.len > 0) {
+                        _ = frame.decodeOne(hybrid.payload) catch {
+                            allocator.free(hybrid.payload);
                             continue;
                         };
                     }
-                    // SUCCESS with NEXT keys!
-                    std.debug.print("[PHASE57] ✅ Decrypted with NEXT keys: dcid_len={} pn={} - will promote\n", .{ test_len, result.packet_number });
                     used_next = true;
                     actual_dcid_len = test_len;
-                    break :blk_dec result;
-                } else |_| {}
-            }
-
-            // Try 3: PREV keys (if available)
-            if (conn.rx_prev_keys) |kp| {
-                if (packet.decodeShortProtected(allocator, bytes, test_len, .{
-                    .key = kp.key,
-                    .iv = kp.iv,
-                    .hp = kp.hp
-                }, largest_pn)) |result| {
-                    // Validate frame decodability
-                    if (result.payload.len > 0) {
-                        _ = frame.decodeOne(result.payload) catch {
-                            allocator.free(result.payload);
-                            continue;
-                        };
-                    }
-                    // SUCCESS with PREV keys!
-                    std.debug.print("[PHASE57] ✅ Decrypted with PREV keys: dcid_len={} pn={}\n", .{ test_len, result.packet_number });
-                    used_prev = true;
-                    actual_dcid_len = test_len;
-                    break :blk_dec result;
+                    break :blk_dec hybrid;
                 } else |_| {}
             }
         }
+
+        if (next_keys_opt) |next_mat| {
+            if (should_log_attempts) {
+                std.debug.print("[PHASE57-TRY] key_set=NEXT dcid_len={} rx_phase={} largest={} forced={}\n", .{
+                    test_len,
+                    conn.rx_key_phase,
+                    largest_pn,
+                    forced_attempted,
+                });
+            }
+            if (packet.decodeShortProtected(allocator, bytes, test_len, .{
+                .key = next_mat.key,
+                .iv = next_mat.iv,
+                .hp = next_mat.hp,
+            }, largest_pn)) |result| {
+                if (result.payload.len > 0) {
+                    _ = frame.decodeOne(result.payload) catch {
+                        allocator.free(result.payload);
+                        continue;
+                    };
+                }
+                std.debug.print("[PHASE57] ✅ Decrypted with NEXT keys: dcid_len={} pn={} - will promote\n", .{ test_len, result.packet_number });
+                used_next = true;
+                actual_dcid_len = test_len;
+                break :blk_dec result;
+            } else |_| {}
+        }
+
+        if (conn.rx_prev_keys) |kp| {
+            if (should_log_attempts) {
+                std.debug.print("[PHASE57-TRY] key_set=PREV dcid_len={} rx_phase={} largest={} forced={}\n", .{
+                    test_len,
+                    conn.rx_key_phase,
+                    largest_pn,
+                    forced_attempted,
+                });
+            }
+            if (packet.decodeShortProtected(allocator, bytes, test_len, .{
+                .key = kp.key,
+                .iv = kp.iv,
+                .hp = kp.hp,
+            }, largest_pn)) |result| {
+                if (result.payload.len > 0) {
+                    _ = frame.decodeOne(result.payload) catch {
+                        allocator.free(result.payload);
+                        continue;
+                    };
+                }
+                std.debug.print("[PHASE57] ✅ Decrypted with PREV keys: dcid_len={} pn={}\n", .{ test_len, result.packet_number });
+                used_prev = true;
+                actual_dcid_len = test_len;
+                break :blk_dec result;
+            } else |_| {}
+        }
+    }
 
         // All combinations exhausted - attempt forced key update before giving up
         if (tryForceKeyUpdateAndDecrypt(allocator, conn, bytes, largest_pn)) |forced| {
@@ -1868,6 +1931,11 @@ pub fn decryptShortHeaderWithKeyRotation(
         }
 
         std.debug.print("[PHASE57] ❌ All DCID×KeySet combinations failed (0-20 × [CURRENT,NEXT,PREV])\n", .{});
+        if (!forced_attempted and conn.app_rx_next_secret != null and conn.app_rx_next_keys != null) {
+            std.debug.print("[PHASE57] ⚠️ Forcing promotion to NEXT keys after repeated auth failures\n", .{});
+            promoteToNextKeys(conn, conn.app_rx_next_secret.?, conn.app_rx_next_keys.?);
+            return decryptShortHeaderWithKeyRotationInternal(allocator, conn, bytes, try_dcid_len, true);
+        }
         conn.onAeadAuthFailure();
         return error.AuthenticationFailed;
     };
@@ -1928,12 +1996,40 @@ fn tryForceKeyUpdateAndDecrypt(
     largest_pn: u64,
 ) ?ShortDecryptResult {
     const current_secret = conn.app_rx_secret orelse return null;
+    const current_keys = conn.app_rx_keys orelse return null;
+
+    const next_keys_present = conn.app_rx_next_keys != null;
+    const next_secret_present = conn.app_rx_next_secret != null;
+    std.debug.print("[PHASE57] fallback invoked: rx_key_phase={} next_keys_present={} next_secret_present={} largest_pn={}\n", .{
+        conn.rx_key_phase,
+        next_keys_present,
+        next_secret_present,
+        largest_pn,
+    });
+    const current_key_hex = std.fmt.bytesToHex(&current_keys.key, .lower);
+    var next_key_hex_storage: [32]u8 = undefined;
+    const next_key_hex: []const u8 = if (conn.app_rx_next_keys) |nk| blk: {
+        next_key_hex_storage = std.fmt.bytesToHex(&nk.key, .lower);
+        break :blk next_key_hex_storage[0..];
+    } else "null";
+    std.debug.print("[PHASE57] current_key={s} next_key={s}\n", .{
+        current_key_hex[0..],
+        next_key_hex,
+    });
 
     const forced_secret = key_schedule.updateQuicSecret(current_secret);
     const forced_mat = if (conn.version_v2)
         key_schedule.deriveKeyIvHpV2(forced_secret)
     else
         key_schedule.deriveKeyIvHp(forced_secret);
+
+    std.debug.print("[PHASE57] Forced key derivation: base_secret={s} next_secret={s} key={s} iv={s} hp={s}\n", .{
+        std.fmt.bytesToHex(current_secret, .lower),
+        std.fmt.bytesToHex(&forced_secret, .lower),
+        std.fmt.bytesToHex(&forced_mat.key, .lower),
+        std.fmt.bytesToHex(&forced_mat.iv, .lower),
+        std.fmt.bytesToHex(&forced_mat.hp, .lower),
+    });
 
     var test_len: u8 = 0;
     while (test_len <= 20) : (test_len += 1) {
@@ -2806,6 +2902,7 @@ pub fn processShortHeader(
             if (conn.app_rx_next_keys) |next_keys| {
                 std.debug.print("[PHASE57-STEP5] Calling promoteToNextKeys()...\n", .{});
                 promoteToNextKeys(conn, next_secret, next_keys);
+                conn.syncTxKeysAfterRxUpdate();
 
                 if (ctx.test_capture_enabled) {
                     std.debug.print("🔑 Promoted to NEXT keys after successful decryption\n", .{});

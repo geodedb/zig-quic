@@ -234,6 +234,18 @@ pub fn decodeShortProtected(
     keys: AeadKeys,
     largest_pn: u64,
 ) !DecodedShort {
+    return decodeShortProtectedWithHp(alloc, packet_bytes, dcid_len, keys.hp, keys, largest_pn);
+}
+
+/// Decode short header using a custom HP key (useful for key-update hybrids).
+pub fn decodeShortProtectedWithHp(
+    alloc: std.mem.Allocator,
+    packet_bytes: []const u8,
+    dcid_len: usize,
+    hp_key: [16]u8,
+    keys: AeadKeys,
+    largest_pn: u64,
+) !DecodedShort {
     if (packet_bytes.len < 1 + dcid_len + 1) return error.Truncated;
     var i: usize = 0;
     const header_first_masked: u8 = packet_bytes[0];
@@ -264,7 +276,7 @@ pub fn decodeShortProtected(
     // Determine actual PN length by unmasking header+PN on a temporary copy
     var tmp_first = header_first_masked;
     var tmp_pn: [4]u8 = pn_masked4;
-    const pn_len: u3 = try crypto.unmaskLongHeaderAndPn(.aes_128_gcm, &keys.hp, &sample16, &tmp_first, &tmp_pn);
+    const pn_len: u3 = try crypto.unmaskLongHeaderAndPn(.aes_128_gcm, &hp_key, &sample16, &tmp_first, &tmp_pn);
 
     // PHASE 57 FIX CRITICAL: Extract KEY_PHASE bit immediately after HP removal,
     // BEFORE AEAD decryption, so we have it available even if decryption fails.

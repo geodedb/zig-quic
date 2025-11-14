@@ -3160,6 +3160,32 @@ pub const Connection = struct {
         }
     }
 
+    /// Remote key update observed: align our TX keys to the same phase immediately.
+    pub fn syncTxKeysAfterRxUpdate(self: *Connection) void {
+        if (self.app_tx_secret == null or self.app_tx_keys == null) return;
+        if (self.tx_key_phase == self.rx_key_phase) return;
+        const next_secret = ks.updateQuicSecret(self.app_tx_secret.?);
+        const next_mat = if (self.version_v2)
+            ks.deriveKeyIvHpV2(next_secret)
+        else
+            ks.deriveKeyIvHp(next_secret);
+        if (self.tx_prev_keys) |*kp| {
+            zeroKeys(kp);
+        }
+        self.tx_prev_keys = self.app_tx_keys;
+        self.app_tx_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = next_mat.hp };
+        self.app_tx_secret = next_secret;
+        self.tx_key_phase = self.rx_key_phase;
+        self.tx_update_in_progress = true;
+        self.tx_update_start_pn = self.pn_app_tx;
+        self.tx_sent_packets_since_key = 0;
+        self.tx_sent_bytes_since_key = 0;
+        std.debug.print("[PHASE57-TX] Synced TX keys to phase={} start_pn={}\n", .{
+            @intFromBool(self.tx_key_phase),
+            self.tx_update_start_pn,
+        });
+    }
+
     /// Read first available stream data (any stream). Returns error.WouldBlock if none.
     pub fn readAnyStream(self: *Connection, buf: []u8) !struct { id: u64, n: usize } {
         var it2 = self.streams_rx.iterator();

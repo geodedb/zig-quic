@@ -2715,8 +2715,27 @@ Latest test: `make e2e-test-go-comprehensive` at 15:01:39 → **4 / 8** (large t
   - `NEXT` keys (derived via `ks.updateQuicSecret`) also fail, but the offline run shows header protection expanding the PN to **4 bytes instead of the logged 2**, proving that applying the NEXT hp key to the captured ciphertext corrupts the packet number field before AEAD even runs.
 - Because the failure reproduces outside the endpoint, the bug is definitively in our header protection removal logic for NEXT keys (likely sample construction or DCID enumeration), not in AEAD/AAD slice handling.
 
+### Hybrid Decode Experiment (2025-11-14 17:20)
+- Updated `phase57_dump_check.zig` now tries all combinations of HP/AES material. Output:
+  ```
+  CURRENT hp + CURRENT AEAD  → AuthenticationFailed
+  NEXT hp    + NEXT AEAD     → pn_len=4 garbage
+  TLS traffic-upd variant    → pn_len=3 garbage
+  CURRENT hp + NEXT AEAD     → ✅ pn=101 key_phase=true payload_len=1288
+  ```
+  This matches quinn/quiche’s design where header unmasking is decoupled from AEAD; we can legally reuse the old HP key while switching the AEAD secret as soon as the peer flips KEY_PHASE.
+- Implemented `packet.decodeShortProtectedWithHp()` so the RX path can reuse the CURRENT hp key but inject NEXT AEAD material when the initial decrypt fails. Logs now show `[PHASE57-HYBRID] CURRENT hp + NEXT AEAD succeeded (dcid_len=8)` before `[PHASE57-DECRYPT] ✅ Decrypted with NEXT keys: pn=100 …`.
+
+### TX Key Synchronisation
+- Added `Connection.syncTxKeysAfterRxUpdate()` so that as soon as we decrypt with NEXT keys, we also roll our transmit secrets via `ks.updateQuicSecret` (matching @forks/quiche @forks/quinn). This prevents the Go client from tripping `KEY_UPDATE_ERROR` after receiving ACKs on the new generation.
+
 ### Next Steps
 1. Land the packet dump under the existing Phase 57 logging gate so that release builds remain unaffected.
 2. Re-run `make e2e-test-go-comprehensive` to capture the first KEY_PHASE=1 failure into `/tmp/phase57-short-header.bin` for offline analysis.
 3. Use the dump to compare our AAD/nonces with quiche/quinn and unblock the large-stream fix.
+
+### Latest Test (Go comprehensive @ 18:04)
+- ✅ Single-stream echo, concurrent streams, 10 KB transfer.
+- ❌ Large transfer 100 KB / 1 MB, Multiple Round-trips, Bidirectional simultaneous, Stream interleaving – still `timeout: no recent network activity` after ~100 KB even though key update now succeeds.
+- Action: instrument `[P42-13-FLUSH]` / `[P57-14-READ]` again on the new build to see why throughput stalls after ~120 KB now that decryption stays alive.
 

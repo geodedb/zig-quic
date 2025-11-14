@@ -19,6 +19,12 @@ const KeyMaterial = struct {
     hp: [16]u8,
 };
 
+const HeaderInfo = struct {
+    header_first: u8,
+    pn_len: usize,
+    pn_bytes: [4]u8,
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -41,9 +47,10 @@ pub fn main() !void {
     printKeyMaterial("NEXT", next_keys);
     printKeyMaterial("TLS-NEXT", tls_next_keys);
 
-    try attemptDecode("CURRENT", current_keys, meta.*, packet_bytes, allocator);
-    try attemptDecode("NEXT", next_keys, meta.*, packet_bytes, allocator);
-    try attemptDecode("TLS-NEXT", tls_next_keys, meta.*, packet_bytes, allocator);
+    try attemptCombination("CURRENT", current_keys, current_keys, meta.*, packet_bytes, allocator);
+    try attemptCombination("NEXT", next_keys, next_keys, meta.*, packet_bytes, allocator);
+    try attemptCombination("TLS-NEXT", tls_next_keys, tls_next_keys, meta.*, packet_bytes, allocator);
+    try attemptCombination("HP-CURRENT + AEAD-NEXT", current_keys, next_keys, meta.*, packet_bytes, allocator);
 }
 
 fn keyMaterial(mat: anytype) KeyMaterial {
@@ -67,87 +74,109 @@ fn dumpHex(bytes: []const u8) void {
     }
 }
 
-fn attemptDecode(label: []const u8, keys: KeyMaterial, meta: Meta, packet_bytes: []const u8, allocator: std.mem.Allocator) !void {
-    std.debug.print("\n========== {s} ==========" , .{label});
-    const result = decryptShortHeader(keys, meta, packet_bytes, allocator) catch |err| {
-        std.debug.print("\n[{s}] ❌ decrypt failed: {}\n", .{ label, err });
+fn attemptCombination(
+    label: []const u8,
+    hp_keys: KeyMaterial,
+    aead_keys: KeyMaterial,
+    meta: Meta,
+    packet_bytes: []const u8,
+    allocator: std.mem.Allocator,
+) !void {
+    std.debug.print("\n========== {s} ==========\n", .{label});
+    const header = unmaskHeader(label, hp_keys, meta, packet_bytes) catch |err| {
+        std.debug.print("[{s}] ❌ header decrypt failed: {}\n", .{ label, err });
         return;
     };
-    defer allocator.free(result.payload);
-    std.debug.print("\n[{s}] ✅ pn={} key_phase={} payload_len={} bytes\n", .{ label, result.pn, result.key_phase, result.payload.len });
+    try decryptWithHeader(label, header, aead_keys, meta, packet_bytes, allocator);
 }
 
-const DecryptResult = struct {
-    pn: u64,
-    key_phase: bool,
-    payload: []u8,
-};
-
-fn decryptShortHeader(keys: KeyMaterial, meta: Meta, packet_bytes: []const u8, allocator: std.mem.Allocator) !DecryptResult {
-    if (packet_bytes.len < 1 + meta.dcid_len + meta.pn_len + 16) return error.PacketTooShort;
+fn unmaskHeader(
+    label: []const u8,
+    keys: KeyMaterial,
+    meta: Meta,
+    packet_bytes: []const u8,
+) !HeaderInfo {
+    if (packet_bytes.len < 1 + meta.dcid_len + 4 + 16) return error.PacketTooShort;
     var header_first = packet_bytes[0];
-    const dcid = packet_bytes[1 .. 1 + meta.dcid_len];
     const pn_start = 1 + meta.dcid_len;
-    var pn_masked4: [4]u8 = .{0} ** 4;
+    var pn_masked: [4]u8 = .{0} ** 4;
     const avail = @min(@as(usize, 4), packet_bytes.len - pn_start);
-    std.mem.copyForwards(u8, pn_masked4[0..avail], packet_bytes[pn_start .. pn_start + avail]);
+    std.mem.copyForwards(u8, pn_masked[0..avail], packet_bytes[pn_start .. pn_start + avail]);
     const sample_start = pn_start + 4;
     if (sample_start + 16 > packet_bytes.len) return error.SampleOutOfRange;
     var sample: [16]u8 = undefined;
     std.mem.copyForwards(u8, sample[0..], packet_bytes[sample_start .. sample_start + 16]);
 
-    var pn_unmasked = pn_masked4;
-    const pn_len = removeHeaderProtection(&keys.hp, &sample, &header_first, &pn_unmasked);
-    if (pn_len != meta.pn_len) {
-        std.debug.print("[WARN] pn_len from HP={} (meta={})\n", .{ pn_len, meta.pn_len });
-    }
+    var mask: [16]u8 = undefined;
+    var ctx = Aes128.initEnc(keys.hp);
+    ctx.encrypt(&mask, &sample);
+
+    header_first ^= mask[0] & 0x1f;
+    var pn_unmasked = pn_masked;
+    var i: usize = 0;
+    while (i < 4) : (i += 1) pn_unmasked[i] ^= mask[i + 1];
+    const pn_len = @as(usize, (header_first & 0x03) + 1);
+    std.debug.print("[{s}] header_first_after=0x{X:0>2} pn_len={} key_phase={}\n", .{
+        label,
+        header_first,
+        pn_len,
+        (header_first & 0x04) != 0,
+    });
+    return HeaderInfo{ .header_first = header_first, .pn_len = pn_len, .pn_bytes = pn_unmasked };
+}
+
+fn decryptWithHeader(
+    label: []const u8,
+    header: HeaderInfo,
+    keys: KeyMaterial,
+    meta: Meta,
+    packet_bytes: []const u8,
+    allocator: std.mem.Allocator,
+) !void {
+    const dcid = packet_bytes[1 .. 1 + meta.dcid_len];
+    const pn_start = 1 + meta.dcid_len;
+    const pn_len = header.pn_len;
 
     var truncated: u64 = 0;
     var i: usize = 0;
     while (i < pn_len) : (i += 1) {
-        truncated = (truncated << 8) | pn_unmasked[i];
+        truncated = (truncated << 8) | header.pn_bytes[i];
     }
     const full_pn = expandPacketNumber(truncated, @intCast(pn_len), meta.largest_pn);
-    const key_phase = (header_first & 0x04) != 0;
 
     const ct = packet_bytes[pn_start + pn_len ..];
     if (ct.len < 16) return error.TruncatedCiphertext;
+
     const aad_len = 1 + dcid.len + pn_len;
     const aad = try allocator.alloc(u8, aad_len);
     defer allocator.free(aad);
-    aad[0] = header_first;
+    aad[0] = header.header_first;
     std.mem.copyForwards(u8, aad[1 .. 1 + dcid.len], dcid);
-    std.mem.copyForwards(u8, aad[1 + dcid.len .. aad_len], pn_unmasked[0..pn_len]);
+    std.mem.copyForwards(u8, aad[1 + dcid.len .. aad_len], header.pn_bytes[0..pn_len]);
 
     const plaintext = try allocator.alloc(u8, ct.len - 16);
-    errdefer allocator.free(plaintext);
+    defer allocator.free(plaintext);
 
     var nonce = keys.iv;
     var pn_tmp = full_pn;
-    var idx: usize = 0;
-    while (idx < 8) : (idx += 1) {
-        const pos = nonce.len - 1 - idx;
+    i = 0;
+    while (i < 8) : (i += 1) {
+        const pos = nonce.len - 1 - i;
         nonce[pos] ^= @as(u8, @truncate(pn_tmp & 0xff));
         pn_tmp >>= 8;
     }
 
     var tag: [16]u8 = undefined;
     std.mem.copyForwards(u8, tag[0..], ct[ct.len - 16 ..]);
-    Aes128Gcm.decrypt(plaintext, ct[0 .. ct.len - 16], tag, aad, nonce, keys.key) catch return error.AuthenticationFailed;
+    Aes128Gcm.decrypt(plaintext, ct[0 .. ct.len - 16], tag, aad, nonce, keys.key) catch |err| {
+        std.debug.print("[{s}] ❌ decrypt failed: {}\n", .{ label, err });
+        return;
+    };
 
-    return DecryptResult{ .pn = full_pn, .key_phase = key_phase, .payload = plaintext };
-}
-
-fn removeHeaderProtection(hp_key: *const [16]u8, sample16: *const [16]u8, header_first: *u8, pn_buf: *[4]u8) u3 {
-    var mask: [16]u8 = undefined;
-    var ctx = Aes128.initEnc(hp_key.*);
-    ctx.encrypt(&mask, sample16);
-    const is_long = (header_first.* & 0x80) != 0;
-    const hdr_mask: u8 = if (is_long) 0x0f else 0x1f;
-    header_first.* ^= (mask[0] & hdr_mask);
-    var i: usize = 0;
-    while (i < 4) : (i += 1) pn_buf.*[i] ^= mask[i + 1];
-    return @as(u3, @intCast((header_first.* & 0x03))) + 1;
+    std.debug.print(
+        "[{s}] ✅ pn={} key_phase={} payload_len={} bytes\n",
+        .{ label, full_pn, (header.header_first & 0x04) != 0, plaintext.len },
+    );
 }
 
 fn expandPacketNumber(truncated: u64, pn_len: u3, largest_pn: u64) u64 {
