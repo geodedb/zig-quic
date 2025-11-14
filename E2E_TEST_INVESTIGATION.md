@@ -1246,3 +1246,225 @@ Available: -90039 (NEGATIVE - congestion window exceeded!)
 - Single small tests work fine
 - But as soon as data volume increases past 100KB, connection becomes unstable
 - Prevents any real-world usage scenario (file transfer, streaming, etc.)
+
+### Fix Applied: Re-enable ACK Processing
+
+**Location:** `src/quic/endpoint/frame_handler.zig:178`
+
+**Original (Buggy) Code:**
+```zig
+pub fn handleAck(ctx: *FrameContext, a: frame.Ack) FrameResult {
+    // NOTE: Commented out for unit testing - requires rec (Recovery) struct initialization
+    // ctx.conn.onAckReceivedSpace(.Application, a.largest, a.first_range, a.ranges, a.ecn);
+    _ = a; // Suppress unused parameter warning
+    ...
+}
+```
+
+**Fixed Code:**
+```zig
+pub fn handleAck(ctx: *FrameContext, a: frame.Ack) FrameResult {
+    // PHASE 56 FIX: Re-enable ACK processing (was disabled for unit testing)
+    ctx.conn.onAckReceivedSpace(.Application, a.largest, a.first_range, a.ranges, a.ecn);
+    ...
+}
+```
+
+**Why This Was Critical:**
+The comment "Commented out for unit testing" indicates this was a temporary change during development that was never reverted. Without ACK processing:
+1. Congestion control cannot function (no cwnd growth)
+2. Loss detection cannot work (no packet tracking)
+3. Flow control becomes one-directional
+4. Connection quality degradation not detected
+5. No way to determine which packets arrived successfully
+
+This single commented line broke the entire QUIC reliability mechanism!
+
+### Verification: ACK Processing Now Working
+
+**Server Logs After Fix:**
+```
+[PHASE49-CC] ✅ ACK: acked=210B cwnd: 12000→12210 inflight: 849→639 ssthresh=... mode=slow_start available=11571B
+[PHASE49-CC] ✅ ACK: acked=719B cwnd: 12210→12929 inflight: 704→0 ssthresh=... mode=slow_start available=12929B
+[PHASE49-CC] ✅ ACK: acked=2049B cwnd: 13866→15915 inflight: 1707→0 ssthresh=... mode=slow_start available=15915B
+```
+
+**Metrics:**
+- ✅ **bytes_in_flight** properly decreases as packets are acked (849→639→0)
+- ✅ **cwnd** grows correctly in slow-start (12000 → 15915, +33% growth)
+- ✅ **inflight < cwnd** maintained at all times (no overflow)
+- ✅ **available window** shows healthy capacity (11-15KB)
+- ✅ **ACK frames** successfully processed in Application space
+- ✅ **Congestion control** responding to network conditions
+
+### Test Results After Phase 56 Fix
+
+```
+============================================================
+RESULTS: 4 passed, 4 failed, 8 total
+============================================================
+✅ Single Stream Echo - 21 bytes in 8.0ms
+✅ Multiple Concurrent Streams - 4 streams in 6.6ms
+✅ Large Transfer (10KB) - 10240 bytes in 11.9ms (0.82 MB/s)
+✅ Large Transfer (100KB) - 102400 bytes in 122.6ms (0.80 MB/s)
+❌ Large Transfer (1MB) - timeout: no recent network activity
+❌ Multiple Round-trips - timeout: no recent network activity
+❌ Bidirectional Simultaneous - timeout: no recent network activity
+❌ Stream Interleaving - timeout: no recent network activity
+```
+
+**Progress Assessment:**
+- ✅ **Phase 56 fixed critical ACK processing bug**
+- ✅ **Congestion control now functioning**
+- ✅ **bytes_in_flight accounting correct**
+- ❌ **1MB+ tests still fail** (new issue discovered - see Phase 57)
+
+### Commits Made
+
+**Commit 3:** fix: Phase 56 - Re-enable ACK frame processing (ae08c70)
+- Uncommented onAckReceivedSpace() call in frame_handler.zig
+- Restored congestion control functionality
+- Fixed bytes_in_flight accounting
+- Critical bug fix enabling proper QUIC reliability
+
+## Phase 57: AEAD Failures After Packet Number 99
+
+**Date:** 2025-11-14
+**Focus:** Investigate why all packets after pn=99 fail AEAD decryption
+
+### Discovery: Hard Cutoff at Packet 100
+
+After Phase 56 fix (ACK processing enabled), server logs reveal a new pattern:
+
+**Successful Decryption (pn=0 to 99):**
+```
+[P42-20-PN-OK] ✓ Sequential PN received: pn=97, prev_largest=96
+[P42-20-PN-OK] ✓ Sequential PN received: pn=98, prev_largest=97
+[P42-20-PN-OK] ✓ Sequential PN received: pn=99, prev_largest=98
+```
+
+**Complete Failure (pn=100+):**
+```
+AEAD decrypt failed: pn=100 err=error.AuthenticationFailed
+AEAD decrypt failed: pn=128 err=error.AuthenticationFailed  (retry with different interpretation)
+AEAD decrypt failed: pn=216 err=error.AuthenticationFailed  (retry with different interpretation)
+AEAD decrypt failed: pn=67 err=error.AuthenticationFailed   (retry with different interpretation)
+... (continues with all subsequent packets)
+```
+
+### Pattern Analysis
+
+**Observations:**
+1. **Exact boundary:** Packets 0-99 decrypt successfully, 100+ all fail
+2. **Multiple retry attempts:** Server tries different PN interpretations (pn_start positions), all fail
+3. **No recovery:** Once failures start, ALL subsequent packets fail
+4. **Connection stalls:** Client times out after 30 seconds waiting for responses
+5. **Packet 99 context:**
+   - Stream 24, offset 85917, len=1282 (part of 100KB test)
+   - Server sends ACK for pn=99 as its own pn=103
+   - Next incoming packet cannot be decrypted at all
+
+**Why Multiple PN Attempts?**
+The server's packet number expansion algorithm tries different `pn_start` offsets (1-9 bytes into packet) because the first AEAD decrypt failed. This is normal fallback behavior when header protection unmasks an unexpected packet number. But if ALL attempts fail, it means the packet genuinely cannot be decrypted with the current keys.
+
+### Hypothesis: Potential Root Causes
+
+1. **Packet Number Encoding Boundary:**
+   - At pn=100, encoding switches from 1-byte to 2-byte?
+   - Server expecting different encoding than client is sending?
+   - PN expansion algorithm has off-by-one error at 100?
+
+2. **Key Update at PN=100:**
+   - QUIC allows key updates during connection
+   - Client may trigger key update at pn=100 boundary
+   - Server not processing KEY_UPDATE frame or installing new keys
+   - Would cause all subsequent packets to fail with old keys
+
+3. **AEAD Usage Limit:**
+   - RFC 9001 §6.6 specifies AEAD usage limits
+   - AES-128-GCM limit: 2^23 packets (~8.4 million)
+   - At pn=100, far below limit - unlikely root cause
+   - But implementation may have incorrect limit check
+
+4. **Nonce Generation Error:**
+   - QUIC nonce = IV XOR packet_number (RFC 9001 §5.3)
+   - If packet number encoding changes, nonce construction may break
+   - But this should cause gradual failures, not hard cutoff
+
+5. **State Corruption:**
+   - Something in connection state gets corrupted after processing 100 packets
+   - Could be in packet number tracking, key storage, or crypto context
+   - Would need to audit all state mutations during packet processing
+
+### Diagnostic Evidence
+
+**Last Successful Packet (pn=99):**
+```
+Decoded pn_len from header: 2
+pn_buf after unmasking: { 0, 99 }, using pn_len=2
+decodeShortProtected: truncated PN=99 -> expanded PN=99 (largest_pn=98)
+[P42-20-PN-OK] ✓ Sequential PN received: pn=99, prev_largest=98
+Parsing frames from payload, total_len=1288, role=Server
+Decoded frame at offset 0: type=stream
+```
+
+**First Failed Packet (pn=100):**
+```
+SHORT HEADER HP: pn_start=9, sample_offset=13, packet_len=1315
+pn_buf after unmasking: { 0, 100, 195, 60 }, using pn_len=2
+AEAD decrypt failed: pn=100 err=error.AuthenticationFailed
+```
+
+**Key Details:**
+- Same pn_len=2 for both pn=99 and pn=100
+- Packet number expansion looks correct (truncated 100 → full 100)
+- Header protection succeeded (got valid-looking PN bytes)
+- But AEAD authentication fails
+
+**This points to either:**
+- Wrong traffic secret being used starting at pn=100
+- Or keys are correct but AAD construction is wrong
+- Or nonce is being computed incorrectly
+
+### Next Investigation Steps
+
+1. **Check for KEY_UPDATE frames:**
+   - Search server logs for KEY_UPDATE frame processing
+   - Verify client isn't sending key update at pn=100
+   - If found, check key derivation and installation
+
+2. **Audit packet number encoding:**
+   - Verify PN encoding matches RFC 9000 §17.1
+   - Check if there's a boundary condition at 100
+   - Compare with quinn/quiche implementations
+
+3. **Verify nonce construction:**
+   - Log nonce values for pn=99 and pn=100
+   - Verify IV XOR packet_number calculation
+   - Check for integer overflow or type issues
+
+4. **Inspect AEAD context:**
+   - Verify correct traffic secret in use
+   - Check if crypto context gets reset/corrupted
+   - Log key material (in debug mode only!)
+
+5. **Compare with Reference Implementations:**
+   - Check @forks/quinn for packet 100 handling
+   - Look for known issues in @forks/quiche
+   - See if there are special cases around PN boundaries
+
+### Severity Assessment
+
+**CRITICAL:** This is a complete showstopper for real-world usage.
+- Connections limited to first 100 packets
+- At ~1350 bytes/packet, that's only ~135KB before total failure
+- 100KB test barely succeeds, 1MB test impossible
+- This affects ANY connection that sends >100 packets
+
+**Hypothesis Priority:**
+1. **Key Update** (most likely) - explains sudden complete failure
+2. **PN Encoding** (medium) - explains boundary at exactly 100
+3. **State Corruption** (possible) - would need deeper investigation
+4. **Nonce Error** (unlikely) - would cause earlier failures
+
+The fact that it's EXACTLY at packet 100 (not 99 or 101) strongly suggests intentional behavior like key update or a hard-coded boundary check.
