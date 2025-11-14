@@ -99,7 +99,21 @@ pub const Recovery = struct {
     pub fn onPacketSent(self: *Recovery, space: PacketNumberSpace, pn: u64, bytes: usize, ack_eliciting: bool, now_ns: u64) !void {
         const idx = spaceIdx(space);
         try self.spaces[idx].sent.append(self.spaces[idx].allocator, .{ .pn = pn, .time_ns = now_ns, .size = bytes, .ack_eliciting = ack_eliciting });
+
+        const old_inflight = self.cc.bytes_in_flight;
         if (ack_eliciting) self.cc.bytes_in_flight += bytes;
+
+        // PHASE 50: Always log to see if function is called
+        std.debug.print("[PHASE50-CC] onPacketSent: space={s} pn={d} bytes={d} ack_eliciting={} inflight: {d}→{d} cwnd={d}\n", .{
+            @tagName(space),
+            pn,
+            bytes,
+            ack_eliciting,
+            old_inflight,
+            self.cc.bytes_in_flight,
+            self.cc.cwnd,
+        });
+
         // Schedule time-threshold loss if we have an RTT sample; do not promote here.
         if (ack_eliciting and self.rtt.have_sample) {
             const tt_base = LossDetector.timeThresholdNs(self.rtt.smoothed_rtt_ns, self.rtt.latest_rtt_ns);
@@ -287,8 +301,8 @@ pub const Recovery = struct {
         }
         if (self.cc.bytes_in_flight >= bytes_acked) self.cc.bytes_in_flight -= bytes_acked else self.cc.bytes_in_flight = 0;
 
-        // PHASE 42 PART 22: Log congestion control state change
-        std.debug.print("[P42-22-CC-ACK] 📈 acked={d}B cwnd: {d}→{d} inflight: {d}→{d} ssthresh={d} mode={s}\n", .{
+        // PHASE 49: Enhanced CC logging
+        std.debug.print("[PHASE49-CC] ✅ ACK: acked={d}B cwnd: {d}→{d} inflight: {d}→{d} ssthresh={d} mode={s} available={d}B\n", .{
             bytes_acked,
             old_cwnd,
             self.cc.cwnd,
@@ -296,6 +310,7 @@ pub const Recovery = struct {
             self.cc.bytes_in_flight,
             self.cc.ssthresh,
             if (old_cwnd < self.cc.ssthresh) "slow_start" else "cong_avoid",
+            if (self.cc.cwnd > self.cc.bytes_in_flight) self.cc.cwnd - self.cc.bytes_in_flight else 0,
         });
     }
 

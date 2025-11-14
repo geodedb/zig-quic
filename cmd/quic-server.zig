@@ -252,41 +252,47 @@ pub fn main() !void {
                 // Step 2: Read new data from stream
                 if (!stream.got_fin) {
                     var chunk: [4096]u8 = undefined;
-                    const n: usize = api.readStream(conn, stream_id, chunk[0..]) catch |err| blk: {
-                        std.debug.print("[P42-13-ERROR] Stream {} read error: {} (loop {})\n", .{stream_id, err, loop_count});
-                        break :blk 0;
-                    };
+                    // PHASE 55 FIX: Don't confuse WouldBlock with FIN
+                    const read_result = api.readStream(conn, stream_id, chunk[0..]);
 
-                    if (n > 0) {
-                        stream.total_read += n;
-                        std.debug.print("[P42-13-READ] Stream {} read {} bytes ({} total read, loop {})\n", .{stream_id, n, stream.total_read, loop_count});
+                    if (read_result) |n| {
+                        if (n > 0) {
+                            stream.total_read += n;
+                            std.debug.print("[P42-13-READ] Stream {} read {} bytes ({} total read, loop {})\n", .{stream_id, n, stream.total_read, loop_count});
 
-                        // Try to echo immediately
-                        const written: usize = api.writeStream(conn, stream_id, chunk[0..n], false) catch |err| blk: {
-                            if (err == error.FlowControlBlocked) {
-                                std.debug.print("[P42-13-FC-BLOCKED] Stream {} immediate echo blocked, buffering {} bytes (loop {})\n", .{stream_id, n, loop_count});
-                                // Buffer the data for later retry
-                                stream.pending_write.appendSlice(conn_state.allocator, chunk[0..n]) catch {};
+                            // Try to echo immediately
+                            const written: usize = api.writeStream(conn, stream_id, chunk[0..n], false) catch |err| blk: {
+                                if (err == error.FlowControlBlocked) {
+                                    std.debug.print("[P42-13-FC-BLOCKED] Stream {} immediate echo blocked, buffering {} bytes (loop {})\n", .{stream_id, n, loop_count});
+                                    // Buffer the data for later retry
+                                    stream.pending_write.appendSlice(conn_state.allocator, chunk[0..n]) catch {};
+                                    break :blk 0;
+                                }
+                                std.debug.print("[P42-13-ERROR] Stream {} immediate echo error: {} (loop {})\n", .{stream_id, err, loop_count});
                                 break :blk 0;
-                            }
-                            std.debug.print("[P42-13-ERROR] Stream {} immediate echo error: {} (loop {})\n", .{stream_id, err, loop_count});
-                            break :blk 0;
-                        };
+                            };
 
-                        if (written > 0) {
-                            stream.total_written += written;
-                            std.debug.print("[P42-13-ECHO] Stream {} echoed {} bytes ({} total written, loop {})\n", .{stream_id, written, stream.total_written, loop_count});
+                            if (written > 0) {
+                                stream.total_written += written;
+                                std.debug.print("[P42-13-ECHO] Stream {} echoed {} bytes ({} total written, loop {})\n", .{stream_id, written, stream.total_written, loop_count});
 
-                            // If partial write, buffer remainder
-                            if (written < n) {
-                                stream.pending_write.appendSlice(conn_state.allocator, chunk[written..n]) catch {};
-                                std.debug.print("[P42-13-PARTIAL] Stream {} partial echo, buffered {} bytes (loop {})\n", .{stream_id, n - written, loop_count});
+                                // If partial write, buffer remainder
+                                if (written < n) {
+                                    stream.pending_write.appendSlice(conn_state.allocator, chunk[written..n]) catch {};
+                                    std.debug.print("[P42-13-PARTIAL] Stream {} partial echo, buffered {} bytes (loop {})\n", .{stream_id, n - written, loop_count});
+                                }
                             }
+                        } else {
+                            // readStream returned 0 successfully - this is a real FIN
+                            stream.got_fin = true;
+                            std.debug.print("[P42-13-FIN] Stream {} received FIN (total read: {}, total written: {}, pending: {})\n", .{stream_id, stream.total_read, stream.total_written, stream.pending_write.items.len});
                         }
-                    } else {
-                        // readStream returned 0, likely got FIN
-                        stream.got_fin = true;
-                        std.debug.print("[P42-13-FIN] Stream {} received FIN (total read: {}, total written: {}, pending: {})\n", .{stream_id, stream.total_read, stream.total_written, stream.pending_write.items.len});
+                    } else |err| {
+                        // Error reading - WouldBlock just means no data available yet, continue
+                        if (err != error.WouldBlock) {
+                            std.debug.print("[P42-13-ERROR] Stream {} read error: {} (loop {})\n", .{stream_id, err, loop_count});
+                        }
+                        // Don't mark got_fin for WouldBlock - just continue to next iteration
                     }
                 }
 
