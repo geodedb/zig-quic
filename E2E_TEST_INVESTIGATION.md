@@ -2552,3 +2552,25 @@ Simplified to only send initial MAX_STREAM_DATA when stream receives first data:
 2. Audit ACK scheduling + PTO to determine why ACKs stop at packet number ~32 while the client expects more credit (suspect loss recovery / ACK delay bug)
 3. Compare against quinn/quiche send-path pacing to ensure we keep transmitting while pending echoes exist (may need per-connection send loop similar to quinn’s `send_streams`)
 
+## Phase 57 Part 16: AEAD Failures After Packet Number 100 (Key Update)
+
+**Date:** 2025-11-14  
+**Status:** IN PROGRESS ❌  
+**Issue:** Even with the improved TX/RX loops, all 1 MB transfers still stall immediately after packet number ~100 due to repeated `error.AuthenticationFailed`
+
+### Evidence
+- `/tmp/e2e-go-comprehensive.log` shows the last successful decrypt as `[PHASE57-DECRYPT] … pn=100 key_phase=false`
+- Immediately afterward we see dozens of `AEAD decrypt failed: pn=101 err=error.AuthenticationFailed` entries (e.g., lines 27810, 68898, 69135)
+- The log also records `[PHASE57] ❌ All DCID×KeySet combinations failed (0-20 × [CURRENT,NEXT,PREV])`, confirming that CURRENT/NEXT/PREV keys all fail
+- No `[PHASE57-KEY-PROMOTE]` messages appear, meaning we never successfully promoted to next-generation keys after the client’s first key update
+
+### Investigation
+- Added a forced key-update fallback inside `decryptShortHeaderWithKeyRotation` that derives new NEXT keys from the current secret when all combinations fail
+- Despite deriving fresh keys via `key_schedule.updateQuicSecret`, decrypting pn=101 still fails, suggesting our derived secrets don’t match quic-go’s
+- Conclusion: key schedule derivation is still incorrect (likely wrong label/secret or not synchronized with quic-go’s HKDF)
+
+### Next Steps
+1. Capture the TLS key log (`/tmp/tls_keys_comprehensive.log`) and write a small verifier to derive QUIC “quic ku” secrets, comparing them with Zig’s key schedule output
+2. Instrument `[PHASE57]` logs to print the derived NEXT secret/key material when the fallback fires to confirm mismatches
+3. Once the derived values match quic-go’s key schedule, re-run the comprehensive suite to validate that pn>100 packets decrypt successfully
+

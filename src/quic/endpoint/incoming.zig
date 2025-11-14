@@ -1856,7 +1856,17 @@ pub fn decryptShortHeaderWithKeyRotation(
             }
         }
 
-        // All combinations exhausted - authentication failed
+        // All combinations exhausted - attempt forced key update before giving up
+        if (tryForceKeyUpdateAndDecrypt(allocator, conn, bytes, largest_pn)) |forced| {
+            std.debug.print("[PHASE57] ⚠️ Forced key update derived from current secret (dcid_len={}, pn={})\n", .{
+                forced.dcid_len,
+                forced.decoded.packet_number,
+            });
+            used_next = true;
+            actual_dcid_len = forced.dcid_len;
+            break :blk_dec forced.decoded;
+        }
+
         std.debug.print("[PHASE57] ❌ All DCID×KeySet combinations failed (0-20 × [CURRENT,NEXT,PREV])\n", .{});
         conn.onAeadAuthFailure();
         return error.AuthenticationFailed;
@@ -1909,6 +1919,53 @@ pub fn decryptShortHeaderWithKeyRotation(
         .used_prev = used_prev,
         .dcid_len = actual_dcid_len,
     };
+}
+
+fn tryForceKeyUpdateAndDecrypt(
+    allocator: std.mem.Allocator,
+    conn: *conn_mod.Connection,
+    bytes: []const u8,
+    largest_pn: u64,
+) ?ShortDecryptResult {
+    const current_secret = conn.app_rx_secret orelse return null;
+
+    const forced_secret = key_schedule.updateQuicSecret(current_secret);
+    const forced_mat = if (conn.version_v2)
+        key_schedule.deriveKeyIvHpV2(forced_secret)
+    else
+        key_schedule.deriveKeyIvHp(forced_secret);
+
+    var test_len: u8 = 0;
+    while (test_len <= 20) : (test_len += 1) {
+        if (packet.decodeShortProtected(allocator, bytes, test_len, .{
+            .key = forced_mat.key,
+            .iv = forced_mat.iv,
+            .hp = forced_mat.hp,
+        }, largest_pn)) |result| {
+            if (result.payload.len > 0) {
+                _ = frame.decodeOne(result.payload) catch {
+                    allocator.free(result.payload);
+                    continue;
+                };
+            }
+
+            conn.app_rx_next_secret = forced_secret;
+            conn.app_rx_next_keys = .{
+                .key = forced_mat.key,
+                .iv = forced_mat.iv,
+                .hp = forced_mat.hp,
+            };
+
+            return ShortDecryptResult{
+                .decoded = result,
+                .used_next = true,
+                .used_prev = false,
+                .dcid_len = test_len,
+            };
+        } else |_| {}
+    }
+
+    return null;
 }
 
 /// Promote connection to NEXT application keys after successful decryption.
