@@ -1251,27 +1251,33 @@ fn dumpPhase57Files(ctx: Phase57DumpContext) void {
 
     if (cwd.createFile(meta_path, .{ .truncate = true })) |file| {
         defer file.close();
-        const writer = file.writer();
-        _ = writer.print("pn_preview={}\nkey_phase={}\nlargest_pn={}\nheader_first_masked=0x{X:0>2}\ndcid_len={}\npn_len={}\npn_start={}\ndcid_hex=", .{
-            ctx.pn_preview,
-            ctx.key_phase,
-            ctx.largest_pn,
-            ctx.header_first_masked,
-            ctx.dcid_len,
-            ctx.pn_len,
-            ctx.pn_start,
-        }) catch {};
-        writeHex(writer, ctx.header_prefix) catch {};
-        _ = writer.writeAll("\npn_masked_hex=") catch {};
-        writeHex(writer, ctx.pn_masked) catch {};
-        _ = writer.writeAll("\n\n") catch {};
+        writeLine(file, "pn_preview={}\n", .{ctx.pn_preview});
+        writeLine(file, "key_phase={}\n", .{ctx.key_phase});
+        writeLine(file, "largest_pn={}\n", .{ctx.largest_pn});
+        writeLine(file, "header_first_masked=0x{X:0>2}\n", .{ctx.header_first_masked});
+        writeLine(file, "dcid_len={}\n", .{ctx.dcid_len});
+        writeLine(file, "pn_len={}\n", .{ctx.pn_len});
+        writeLine(file, "pn_start={}\n", .{ctx.pn_start});
+        writeHexLine(file, "dcid_hex=", ctx.header_prefix);
+        writeHexLine(file, "pn_masked_hex=", ctx.pn_masked);
     } else |err| {
         std.debug.print("[PHASE57-DUMP] failed to write {s}: {}\n", .{ meta_path, err });
     }
 }
 
-fn writeHex(writer: anytype, bytes: []const u8) !void {
-    for (bytes) |b| {
-        try writer.print("{X:0>2}", .{b});
+fn writeLine(file: std.fs.File, comptime fmt: []const u8, args: anytype) void {
+    var buf: [160]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, fmt, args) catch return;
+    file.writeAll(line) catch {};
+}
+
+fn writeHexLine(file: std.fs.File, label: []const u8, bytes: []const u8) void {
+    file.writeAll(label) catch return;
+    var idx: usize = 0;
+    var byte_buf: [2]u8 = undefined;
+    while (idx < bytes.len) : (idx += 1) {
+        _ = std.fmt.bufPrint(&byte_buf, "{X:0>2}", .{bytes[idx]}) catch return;
+        file.writeAll(&byte_buf) catch return;
     }
+    file.writeAll("\n") catch {};
 }
