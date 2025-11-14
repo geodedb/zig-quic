@@ -2041,10 +2041,54 @@ Since the stream re-queueing fix should have addressed the notification mechanis
    - `readStream()` (src/quic/conn.zig:2426-2441) - expands by 50% when application consumes data
    - If neither is triggering, windows stay at initial 2MB
 
-#### Next Investigation Steps
+#### Performance Fix Applied (Continued)
 
-1. **Profile DCID Enumeration Performance**: Remove/reduce PHASE57 debug logging, measure packet processing time
-2. **Add Application Event Loop Instrumentation**: Log acceptStream() frequency, readStream() calls
-3. **Verify Window Expansion is Triggering**: Check if `[P42-18-FC]` or `[FC]` logs appear
-4. **Check Reference Implementations**: Compare with quiche/quinn flow control and stream acceptance patterns
+**Changes Made** (src/quic/endpoint/incoming.zig:1789-1860):
+
+1. **Removed Per-Packet Key Availability Logging** (lines 1789-1797):
+   ```zig
+   // BEFORE (EVERY PACKET):
+   if (next_keys_opt != null) {
+       std.debug.print("[PHASE57-DEBUG] NEXT keys available for enumeration\n", .{});
+   } else {
+       std.debug.print("[PHASE57-DEBUG] NEXT keys NOT available (app_rx_secret is null)\n", .{});
+   }
+   if (conn.rx_prev_keys != null) {
+       std.debug.print("[PHASE57-DEBUG] PREV keys available for enumeration\n", .{});
+   }
+
+   // AFTER (REMOVED):
+   // PHASE 57 Part 7: Removed excessive per-packet debug logging (performance issue)
+   ```
+
+2. **Removed Per-Iteration "Trying NEXT keys" Log** (line 1815):
+   ```zig
+   // BEFORE (UP TO 21 TIMES PER PACKET):
+   if (next_keys_opt) |next_mat| {
+       std.debug.print("[PHASE57-DEBUG] Trying NEXT keys at dcid_len={}\n", .{test_len});
+
+   // AFTER (REMOVED):
+   if (next_keys_opt) |next_mat| {
+       // PHASE 57 Part 7: Removed per-iteration debug log (performance)
+   ```
+
+**Impact Analysis**:
+- **Before**: Up to 24+ debug prints per packet (3 key availability + 21 "Trying NEXT" iterations)
+- **After**: Only success messages remain (1 print on successful decryption)
+- **Expected Improvement**: ~95% reduction in debug I/O, should eliminate event loop backlog
+
+**Retained Diagnostic Logging** (useful for debugging):
+- Line 1808: `[PHASE57] ✅ Decrypted with CURRENT keys: dcid_len={} pn={}` (success only)
+- Line 1829: `[PHASE57] ✅ Decrypted with NEXT keys: dcid_len={} pn={} - will promote` (success only)
+- Line 1851: `[PHASE57] ✅ Decrypted with PREV keys: dcid_len={} pn={}` (success only)
+- Line 1860: `[PHASE57] ❌ All DCID×KeySet combinations failed` (auth failure only)
+
+These retained logs fire once per packet (on success/failure), not per iteration, making them acceptable for diagnostics.
+
+#### Next Steps for Verification
+
+1. **Test with quic-go Client**: Run comprehensive test suite to verify large stream transfers complete
+2. **Monitor Server Logs**: Confirm debug output volume is reduced by ~95%
+3. **Profile Packet Processing**: Measure time from packet arrival to `acceptStream()` notification
+4. **If Still Failing**: Add application event loop instrumentation to identify remaining bottlenecks
 

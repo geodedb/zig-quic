@@ -1786,15 +1786,7 @@ pub fn decryptShortHeaderWithKeyRotation(
             return error.StatelessReset;
         }
 
-        // Debug logging for key availability
-        if (next_keys_opt != null) {
-            std.debug.print("[PHASE57-DEBUG] NEXT keys available for enumeration\n", .{});
-        } else {
-            std.debug.print("[PHASE57-DEBUG] NEXT keys NOT available (app_rx_secret is null)\n", .{});
-        }
-        if (conn.rx_prev_keys != null) {
-            std.debug.print("[PHASE57-DEBUG] PREV keys available for enumeration\n", .{});
-        }
+        // PHASE 57 Part 7: Removed excessive per-packet debug logging (performance issue)
 
         // Enumerate ALL combinations of DCID length (0-20) × Key set (CURRENT, NEXT, PREV)
         var test_len: u8 = 0;
@@ -1820,7 +1812,7 @@ pub fn decryptShortHeaderWithKeyRotation(
 
             // Try 2: NEXT keys (if available)
             if (next_keys_opt) |next_mat| {
-                std.debug.print("[PHASE57-DEBUG] Trying NEXT keys at dcid_len={}\n", .{test_len});
+                // PHASE 57 Part 7: Removed per-iteration debug log (performance)
                 if (packet.decodeShortProtected(allocator, bytes, test_len, .{
                     .key = next_mat.key,
                     .iv = next_mat.iv,
