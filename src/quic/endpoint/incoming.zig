@@ -1819,14 +1819,29 @@ pub fn decryptShortHeaderWithKeyRotation(
         // Try derived NEXT keys if we have a RX traffic secret
         if (conn.app_rx_secret) |cur_rx_secret| {
             std.debug.print("[PHASE57-FALLBACK] Deriving NEXT RX secret from current secret using 'quic ku' label...\n", .{});
+            std.debug.print("[PHASE57-FALLBACK] Current RX secret: ", .{});
+            for (cur_rx_secret) |b| std.debug.print("{x:0>2}", .{b});
+            std.debug.print("\n", .{});
             // PHASE 57 FIX: Use updateQuicSecret() which uses "quic ku" label (RFC 9001 §6)
             // NOT updateTrafficSecret() which uses "traffic upd" (TLS 1.3 §7.2)
             const next_secret = key_schedule.updateQuicSecret(cur_rx_secret);
+            std.debug.print("[PHASE57-FALLBACK] Derived NEXT RX secret: ", .{});
+            for (next_secret) |b| std.debug.print("{x:0>2}", .{b});
+            std.debug.print("\n", .{});
             const mat = if (conn.version_v2)
                 key_schedule.deriveKeyIvHpV2(next_secret)
             else
                 key_schedule.deriveKeyIvHp(next_secret);
 
+            std.debug.print("[PHASE57-FALLBACK] Derived NEXT key: ", .{});
+            for (mat.key) |b| std.debug.print("{x:0>2}", .{b});
+            std.debug.print("\n", .{});
+            std.debug.print("[PHASE57-FALLBACK] Derived NEXT IV: ", .{});
+            for (mat.iv) |b| std.debug.print("{x:0>2}", .{b});
+            std.debug.print("\n", .{});
+            std.debug.print("[PHASE57-FALLBACK] Derived NEXT HP: ", .{});
+            for (mat.hp) |b| std.debug.print("{x:0>2}", .{b});
+            std.debug.print("\n", .{});
             std.debug.print("[PHASE57-FALLBACK] Attempting decrypt with NEXT keys...\n", .{});
             // Use discovered/cached dcid_len if available
             const final_dcid_len = if (conn.expected_rx_dcid_len) |cached| cached else try_dcid_len;

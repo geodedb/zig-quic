@@ -314,9 +314,7 @@ pub fn decodeShortProtected(
 
     std.debug.print("decodeShortProtected: truncated PN={} -> expanded PN={} (largest_pn={})\n", .{ pn_val_truncated, pn_val_expanded, largest_pn });
 
-    // PHASE 57: Extract KEY_PHASE bit from unmasked header (RFC 9001 §5.4)
-    // Bit 0x04 indicates which key phase is in use
-    const key_phase = (tmp_first & 0x04) != 0;
+    // PHASE 57: Validation logging for KEY_PHASE (already extracted at line 271)
     std.debug.print("decodeShortProtected: KEY_PHASE bit = {} (header_first=0x{X:0>2})\n", .{ key_phase, tmp_first });
 
     return .{ .packet_number = pn_val_expanded, .packet_number_len = pn_len, .payload = payload, .key_phase = key_phase };
