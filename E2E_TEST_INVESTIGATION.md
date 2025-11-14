@@ -1684,7 +1684,135 @@ Possible key derivation mismatch between our implementation and quic-go:
 4. Check if quic-go uses different hash (SHA-384 instead of SHA-256)
 5. Consider using TLS KeyLog to compare secrets with quic-go
 
+### Part 3: Root Cause Analysis and Critical Bug Discovery ✅
+
+**Date**: 2025-11-14 (continued)
+**Commits**: 3e4a2e4, 2e44b59
+
+#### Discovery 1: Wrong HKDF Label (FIXED) ✅
+
+**Investigation**:
+- Compared our implementation against quiche (Cloudflare's QUIC implementation)
+- Found in `@forks/quiche/quiche/src/crypto/mod.rs:432`: `const LABEL: &[u8] = b"quic ku"`
+- Our code was using `"traffic upd"` (TLS 1.3 KeyUpdate, RFC 8446 §7.2)
+- QUIC uses `"quic ku"` (RFC 9001 §6)
+
+**Root Cause**:
+```zig
+// WRONG: TLS 1.3 label
+expandLabelHash(hash, current_secret, "traffic upd", &[_]u8{}, next.sliceMut())
+
+// CORRECT: QUIC label
+expandLabelHash(hash, current_secret, "quic ku", &[_]u8{}, next.sliceMut())
+```
+
+**Fix** (`vendor/ztls/src/key_schedule.zig:181-196, 583-607`):
+- Added `updateQuicSecretHash()` using `"quic ku"` label
+- Added `updateQuicSecret()` wrapper for [32]u8 secrets
+- Updated incoming.zig to call `updateQuicSecret()` instead of `updateTrafficSecret()`
+- Verified derivation matches quic-go via test program `test_key_derivation.go`
+
+**Verification Result**: ✅ Derived secrets match quic-go exactly!
+
+#### Discovery 2: Early KEY_PHASE Extraction (FIXED) ✅
+
+**Problem**: KEY_PHASE was extracted AFTER AEAD decryption (line 310). If AEAD failed, we returned error at line 295, never extracting KEY_PHASE.
+
+**Fix** (`src/quic/packet.zig:267-272`):
+- Moved KEY_PHASE extraction to immediately after HP removal
+- Now extracted BEFORE AEAD decryption attempt
+- Allows incoming.zig to see KEY_PHASE even when current keys fail
+
+```zig
+// PHASE 57 FIX CRITICAL: Extract KEY_PHASE bit immediately after HP removal,
+// BEFORE AEAD decryption, so we have it available even if decryption fails.
+const key_phase = (tmp_first & 0x04) != 0;
+```
+
+#### Discovery 3: Key Derivation Is Correct But AEAD Still Fails ⚠️
+
+**Comprehensive Verification** (via `test_key_iv_derivation.go`):
+```
+✅ NEXT secret derivation: 4a4ca912... (matches quic-go)
+✅ NEXT key derivation:    3b56e45f... (matches quic-go)
+✅ NEXT IV derivation:     21c8016d... (matches quic-go)
+✅ NEXT HP derivation:     ccc13716... (matches quic-go)
+```
+
+All cryptographic operations are 100% correct per RFC 9001 §6!
+
+#### Discovery 4: THE REAL BUG - DCID×KeySet Enumeration Issue ⚠️ CRITICAL
+
+**Breakthrough Discovery**:
+
+Packet 100 appears with DIFFERENT KEY_PHASE values depending on DCID length tried:
+```
+# Attempt 1 (DCID length X):
+header_first_after=0x54 → KEY_PHASE=true (0x54 & 0x04 = 0x04)
+
+# Attempt 2 (DCID length Y):
+header_first_after=0x58 → KEY_PHASE=false (0x58 & 0x04 = 0x00)
+```
+
+**Root Cause Analysis**:
+
+When DCID length is WRONG:
+1. HP sample offset is wrong
+2. HP removal produces GARBAGE header_first value
+3. Extracted KEY_PHASE bit is GARBAGE (random!)
+4. Packet number extraction is GARBAGE
+5. AEAD AAD construction is GARBAGE
+6. AEAD authentication MUST fail
+
+**Current (Broken) Logic**:
+```
+for each DCID length 0-20:
+    try CURRENT keys
+    if AEAD succeeds: done
+// If all fail, try NEXT keys with cached DCID length
+```
+
+**Problem**: We only try CURRENT keys during DCID enumeration! When key update happens:
+- Packet 101+ encrypted with NEXT keys
+- DCID enumeration tries only CURRENT keys
+- All DCID lengths fail with CURRENT keys
+- We extract garbage KEY_PHASE from failed attempts
+- We try NEXT keys with WRONG DCID length
+- AEAD fails again
+
+**Correct Logic** (to be implemented):
+```
+for each DCID length 0-20:
+    for each key set (CURRENT, NEXT, PREV):
+        try keys
+        if AEAD succeeds:
+            cache correct DCID length
+            return success
+```
+
+**Reference**: quic-go extracts KEY_PHASE AFTER finding correct DCID length and successfully decrypting. It passes `kp protocol.KeyPhaseBit` to `updatableAEAD.Open()` only after HP removal succeeded.
+
+#### Test Results: Still 4/8 Passing
+
+Despite correct key derivation:
+- ✅ Single echo, Multiple concurrent, 10KB, 100KB
+- ❌ 1MB, Multiple round-trips, Bidirectional, Stream interleaving
+- Failures due to DCID×KeySet enumeration bug
+
+### Next Steps
+
+1. ✅ Fix "quic ku" label (DONE)
+2. ✅ Move KEY_PHASE extraction before AEAD (DONE)
+3. ✅ Verify key derivation correctness (DONE - 100% correct!)
+4. ⚠️ **IMPLEMENT DCID×KeySet enumeration** (IN PROGRESS)
+   - Modify DCID enumeration loop to try ALL key sets
+   - Cache working DCID length across key updates
+   - Only trust KEY_PHASE after successful decrypt
+
 ### Files Modified
-- `src/quic/packet.zig` - KEY_PHASE extraction
-- `src/quic/endpoint/incoming.zig` - RX key update logic, fallback handling, logging
+- `src/quic/packet.zig` - Early KEY_PHASE extraction
+- `src/quic/endpoint/incoming.zig` - RX key update logic, detailed logging
+- `vendor/ztls/src/key_schedule.zig` - updateQuicSecret() with "quic ku" label
+- `test_key_derivation.go` - Verification program for secret derivation
+- `test_key_iv_derivation.go` - Verification program for key/IV/HP derivation
 
