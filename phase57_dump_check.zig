@@ -34,13 +34,37 @@ pub fn main() !void {
     const current_keys = keyMaterial(ks.deriveKeyIvHp(client_secret));
     const next_secret = ks.updateQuicSecret(client_secret);
     const next_keys = keyMaterial(ks.deriveKeyIvHp(next_secret));
+    const tls_next_secret = ks.updateTrafficSecret(client_secret);
+    const tls_next_keys = keyMaterial(ks.deriveKeyIvHp(tls_next_secret));
+
+    printKeyMaterial("CURRENT", current_keys);
+    printKeyMaterial("NEXT", next_keys);
+    printKeyMaterial("TLS-NEXT", tls_next_keys);
 
     try attemptDecode("CURRENT", current_keys, meta.*, packet_bytes, allocator);
     try attemptDecode("NEXT", next_keys, meta.*, packet_bytes, allocator);
+    try attemptDecode("TLS-NEXT", tls_next_keys, meta.*, packet_bytes, allocator);
 }
 
 fn keyMaterial(mat: anytype) KeyMaterial {
     return KeyMaterial{ .key = mat.key, .iv = mat.iv, .hp = mat.hp };
+}
+
+fn printKeyMaterial(label: []const u8, mat: KeyMaterial) void {
+    std.debug.print("{s} key=", .{label});
+    dumpHex(mat.key[0..]);
+    std.debug.print(" iv=", .{});
+    dumpHex(mat.iv[0..]);
+    std.debug.print(" hp=", .{});
+    dumpHex(mat.hp[0..]);
+    std.debug.print("\n", .{});
+}
+
+fn dumpHex(bytes: []const u8) void {
+    var i: usize = 0;
+    while (i < bytes.len) : (i += 1) {
+        std.debug.print("{X:0>2}", .{bytes[i]});
+    }
 }
 
 fn attemptDecode(label: []const u8, keys: KeyMaterial, meta: Meta, packet_bytes: []const u8, allocator: std.mem.Allocator) !void {
@@ -193,6 +217,7 @@ fn readClientSecret(allocator: std.mem.Allocator, path: []const u8) ![32]u8 {
     const contents = try std.fs.cwd().readFileAlloc(allocator, path, 4096);
     defer allocator.free(contents);
     var it = std.mem.tokenizeScalar(u8, contents, '\n');
+    var latest: ?[32]u8 = null;
     while (it.next()) |line| {
         if (!std.mem.startsWith(u8, line, "CLIENT_TRAFFIC_SECRET_0")) continue;
         var parts = std.mem.tokenizeScalar(u8, line, ' ');
@@ -204,9 +229,9 @@ fn readClientSecret(allocator: std.mem.Allocator, path: []const u8) ![32]u8 {
         if (tmp.len != 32) return error.InvalidSecretLength;
         var secret: [32]u8 = undefined;
         std.mem.copyForwards(u8, &secret, tmp);
-        return secret;
+        latest = secret;
     }
-    return error.SecretNotFound;
+    return latest orelse error.SecretNotFound;
 }
 
 fn hexToBytes(allocator: std.mem.Allocator, hex: []const u8) ![]u8 {
