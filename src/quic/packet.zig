@@ -7,6 +7,8 @@ const crypto = @import("quic_crypto");
 const builtin = @import("builtin");
 const logger = @import("quic_logger");
 
+var phase57_dump_done = false;
+
 // QUIC packet (RFC-9000):  A complete processable unit of QUIC that can be
 //       encapsulated in a UDP datagram.  One or more QUIC packets can be
 //       encapsulated in a single UDP datagram.
@@ -271,6 +273,16 @@ pub fn decodeShortProtected(
     const key_phase = (tmp_first & 0x04) != 0;
     std.debug.print("decodeShortProtected: EARLY KEY_PHASE extraction = {} (header_first=0x{X:0>2})\n", .{ key_phase, tmp_first });
 
+    // Pre-compute truncated PN (for logging) before attempting AEAD decrypt.
+    var pn_val_truncated: u32 = 0;
+    {
+        var j_trunc: usize = 0;
+        while (j_trunc < pn_len) : (j_trunc += 1) {
+            pn_val_truncated = (pn_val_truncated << 8) | tmp_pn[j_trunc];
+        }
+    }
+    const pn_val_expanded_preview = crypto.expandPacketNumber(pn_val_truncated, @intCast(pn_len), largest_pn);
+
     // Ciphertext+tag begins after PN (using actual pn_len)
     const ct = packet_bytes[pn_start + pn_len ..];
     if (ct.len < 16) return error.Truncated;
@@ -294,23 +306,71 @@ pub fn decodeShortProtected(
 
     // Check decryption result
     if (decrypt_result) |_| {
-        // Success - continue to compute PN
+        // Success - continue using precomputed PN.
     } else |err| {
-        // Decryption failed - free payload and return error
-        // The caller (endpoint.zig) will handle DCID length enumeration
+        if (largest_pn >= 80 or pn_val_expanded_preview >= 80) {
+            std.debug.print("[PHASE57-AEAD] fail pn_preview={} pn_len={} pn_trunc=0x{x} key_phase={} dcid_len={} largest={} pn_start={} err={}\n", .{
+                pn_val_expanded_preview,
+                pn_len,
+                pn_val_truncated,
+                key_phase,
+                dcid_len,
+                largest_pn,
+                pn_start,
+                err,
+            });
+
+            var nonce_log = keys.iv;
+            var pn_tmp = pn_val_expanded_preview;
+            var byte_idx: usize = 0;
+            while (byte_idx < 8) : (byte_idx += 1) {
+                const pos = nonce_log.len - 1 - byte_idx;
+                nonce_log[pos] ^= @as(u8, @truncate(pn_tmp & 0xff));
+                pn_tmp >>= 8;
+            }
+            std.debug.print("[PHASE57-AEAD] expect_nonce=", .{});
+            for (nonce_log) |b| std.debug.print("{X:0>2}", .{b});
+            std.debug.print("\n", .{});
+
+            var aad_buf: [1 + 32 + 4]u8 = undefined;
+            const aad_len = 1 + header_prefix.len + pn_len;
+            aad_buf[0] = tmp_first;
+            @memcpy(aad_buf[1 .. 1 + header_prefix.len], header_prefix);
+            @memcpy(aad_buf[1 + header_prefix.len .. aad_len], tmp_pn[0..pn_len]);
+            std.debug.print("[PHASE57-AEAD] expect_aad=", .{});
+            var aad_idx: usize = 0;
+            while (aad_idx < aad_len) : (aad_idx += 1) {
+                std.debug.print("{X:0>2}", .{aad_buf[aad_idx]});
+            }
+            std.debug.print("\n", .{});
+
+            std.debug.print("[PHASE57-AEAD] key_set_material key=", .{});
+            for (keys.key) |b| std.debug.print("{X:0>2}", .{b});
+            std.debug.print(" hp=", .{});
+            for (keys.hp) |b| std.debug.print("{X:0>2}", .{b});
+            std.debug.print(" iv=", .{});
+            for (keys.iv) |b| std.debug.print("{X:0>2}", .{b});
+            std.debug.print("\n", .{});
+
+            maybeDumpPhase57Failure(.{
+                .packet = packet_bytes,
+                .header_first_masked = header_first_masked,
+                .header_prefix = header_prefix,
+                .pn_masked = pn_masked4[0..avail],
+                .ciphertext_and_tag = ct,
+                .pn_start = pn_start,
+                .pn_len = pn_len,
+                .pn_preview = pn_val_expanded_preview,
+                .dcid_len = dcid_len,
+                .key_phase = key_phase,
+                .largest_pn = largest_pn,
+            });
+        }
         alloc.free(payload);
         return err;
     }
 
-    // Compute PN value from the previously unmasked temporary PN bytes
-    var pn_val_truncated: u32 = 0;
-    var j: usize = 0;
-    while (j < pn_len) : (j += 1) pn_val_truncated = (pn_val_truncated << 8) | tmp_pn[j];
-
-    // CRITICAL FIX: Expand the packet number per RFC 9000 Appendix A.3
-    // unprotectInitial() already expanded it internally for decryption,
-    // but we need to return the expanded value to endpoint.zig
-    const pn_val_expanded = crypto.expandPacketNumber(pn_val_truncated, @intCast(pn_len), largest_pn);
+    const pn_val_expanded = pn_val_expanded_preview;
 
     std.debug.print("decodeShortProtected: truncated PN={} -> expanded PN={} (largest_pn={})\n", .{ pn_val_truncated, pn_val_expanded, largest_pn });
 
@@ -1127,4 +1187,52 @@ pub fn verifyRetry(odcid: []const u8, retry_packet: []const u8) bool {
     const version_v2 = (version == QUIC_V2);
     const calc = crypto.computeRetryIntegrityTag(version_v2, odcid, retry_wo_tag);
     return std.mem.eql(u8, &calc, tag);
+}
+
+const Phase57DumpContext = struct {
+    packet: []const u8,
+    header_first_masked: u8,
+    header_prefix: []const u8,
+    pn_masked: []const u8,
+    ciphertext_and_tag: []const u8,
+    pn_start: usize,
+    pn_len: usize,
+    pn_preview: u64,
+    dcid_len: usize,
+    key_phase: bool,
+    largest_pn: u64,
+};
+
+fn maybeDumpPhase57Failure(ctx: Phase57DumpContext) void {
+    if (phase57_dump_done) return;
+    phase57_dump_done = true;
+    std.debug.print("[PHASE57-DUMP] captured failing short header: pn_preview={} key_phase={} largest_pn={}\n", .{
+        ctx.pn_preview,
+        ctx.key_phase,
+        ctx.largest_pn,
+    });
+    std.debug.print("[PHASE57-DUMP] header_first_masked=0x{X:0>2} dcid_len={} pn_len={} pn_start={}\n", .{
+        ctx.header_first_masked,
+        ctx.dcid_len,
+        ctx.pn_len,
+        ctx.pn_start,
+    });
+    printBytesHex("[PHASE57-DUMP] dcid", ctx.header_prefix, 64);
+    printBytesHex("[PHASE57-DUMP] pn_masked", ctx.pn_masked, 16);
+    printBytesHex("[PHASE57-DUMP] ciphertext+tag", ctx.ciphertext_and_tag, 256);
+    printBytesHex("[PHASE57-DUMP] packet", ctx.packet, 512);
+    std.debug.print("[PHASE57-DUMP] ---- END ----\n", .{});
+}
+
+fn printBytesHex(label: []const u8, bytes: []const u8, limit: usize) void {
+    std.debug.print("{s}=", .{label});
+    var i: usize = 0;
+    const max = @min(limit, bytes.len);
+    while (i < max) : (i += 1) {
+        std.debug.print("{X:0>2}", .{bytes[i]});
+    }
+    if (bytes.len > limit) {
+        std.debug.print("...(+{} bytes)", .{bytes.len - limit});
+    }
+    std.debug.print("\n", .{});
 }
