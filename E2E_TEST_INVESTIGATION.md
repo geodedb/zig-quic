@@ -2409,8 +2409,8 @@ const effective_threshold = std.math.max(threshold, min_threshold);
 ```
 
 **Impact:**
-- Effective threshold is now max(256KB, 32KB) = 256KB for large windows
-- But for smaller windows or when reads are small, ensures 32KB minimum
+- Effective threshold is now min(256KB, 32KB) = 32KB for large windows
+- Ensures updates happen at least every 32KB consumed, regardless of window size
 - With 4KB reads, updates happen every 8 reads (32KB) instead of every 64 reads (256KB)
 - More frequent updates prevent client from exhausting send window
 
