@@ -1468,3 +1468,136 @@ AEAD decrypt failed: pn=100 err=error.AuthenticationFailed
 4. **Nonce Error** (unlikely) - would cause earlier failures
 
 The fact that it's EXACTLY at packet 100 (not 99 or 101) strongly suggests intentional behavior like key update or a hard-coded boundary check.
+
+### Root Cause Identified: Missing RX Key Update Handling
+
+**Discovery:** Found the smoking gun in Quinn's source code:
+
+```rust
+// quinn-proto/src/connection/mod.rs
+// "Inspired by quic-go's similar behavior of performing the first key update
+//  at the 100th short-header packet."
+key_phase_size: rng.random_range(10..1000),
+```
+
+**quic-go client automatically triggers key update at packet 100!**
+
+### The Key Update Process (RFC 9001)
+
+When a QUIC endpoint wants to update keys (for security or testing):
+
+1. **Sender Side:**
+   - Derives next generation keys using HKDF-Expand-Label("quic ku")
+   - Toggles the KEY_PHASE bit (0x04) in short header first byte
+   - Starts encrypting packets with new keys
+
+2. **Receiver Side (CRITICAL - WE'RE MISSING THIS):**
+   - Extracts KEY_PHASE bit from incoming packet header
+   - If bit differs from expected phase:
+     - Derive next generation RX keys
+     - Attempt decrypt with next keys
+     - If successful: Update RX keys and key phase tracking
+     - If fails: Packet is corrupted/invalid
+   - If bit matches expected phase:
+     - Decrypt with current keys as normal
+
+### What We're Currently Doing (WRONG)
+
+**Location:** `src/quic/packet.zig:decodeShortProtected()`
+
+```zig
+const header_first_masked: u8 = packet_bytes[0];
+// ... unmask header ...
+// Decrypt using current keys ONLY
+const decrypt_result = crypto.unprotectInitialNoUnmask(..., &keys.key, ...);
+```
+
+**Problems:**
+1. ❌ Never extract KEY_PHASE bit (0x04) from header
+2. ❌ Never check if it differs from expected phase
+3. ❌ Never try alternate key generation on mismatch
+4. ❌ Always use same RX keys regardless of KEY_PHASE bit
+
+**Result:** When client toggles KEY_PHASE at packet 100:
+- Server tries to decrypt with old keys
+- AEAD authentication fails (wrong keys!)
+- All subsequent packets fail
+- Connection stalls
+
+### What We Should Be Doing
+
+**Pseudocode:**
+```zig
+const header_first = unmasked_header_first_byte;
+const packet_key_phase = (header_first & 0x04) != 0;
+
+if (packet_key_phase != conn.rx_key_phase) {
+    // Key phase mismatch - peer performed key update
+    
+    // Derive next RX keys
+    const next = crypto_quic.deriveNextAppKeys(conn.app_rx_secret, false);
+    
+    // Try decrypting with next generation keys
+    if (crypto.aeadDecrypt(next.keys, ...)) |payload| {
+        // Success! Update our RX state
+        conn.app_rx_secret = next.next_secret;
+        conn.app_rx_keys = next.keys;
+        conn.rx_key_phase = packet_key_phase;
+        return payload;
+    } else {
+        // Still failed - packet is actually corrupted
+        return error.AuthenticationFailed;
+    }
+} else {
+    // Key phase matches - decrypt with current keys
+    return crypto.aeadDecrypt(conn.app_rx_keys, ...);
+}
+```
+
+### Why This Exists
+
+**Purpose:** Key updates provide forward secrecy and prevent AEAD exhaustion:
+- RFC 9001 §6: "Endpoints MUST be able to receive packets that use old keys"
+- RFC 9001 §6.1: "An endpoint MUST update keys when a packet with mismatched KEY_PHASE arrives"  
+- RFC 9001 §6.6: "MUST initiate key update before AEAD confidentiality limit"
+
+**Testing:** quic-go and quinn intentionally trigger early key updates (at ~100 packets) to ensure implementations handle them correctly. This is a **conformance test**.
+
+### Implementation Status
+
+**What We Have:**
+- ✅ TX key update support (lines 3129-3210 in conn.zig)
+- ✅ `deriveNextAppKeys()` function in crypto_quic.zig
+- ✅ Key phase tracking variables (tx_key_phase, rx_key_phase)
+- ✅ AEAD limit tracking
+
+**What's Missing:**
+- ❌ KEY_PHASE bit extraction from short header
+- ❌ RX key phase mismatch detection  
+- ❌ Automatic RX key derivation on mismatch
+- ❌ Fallback decrypt with next generation keys
+- ❌ RX key/phase state update on successful decrypt
+
+### Fix Complexity Assessment
+
+**Moderate Complexity** - Need to modify:
+1. `src/quic/packet.zig:decodeShortProtected()` - Extract KEY_PHASE bit, return it
+2. `src/quic/endpoint/incoming.zig:processShortHeader()` - Handle key phase mismatch
+3. `src/quic/conn.zig` - Add helper function for RX key update
+4. Consider concurrency: What if TX and RX key updates happen simultaneously?
+
+**Estimated Changes:** ~100-150 lines across 3 files
+
+**Testing:** After fix, should handle:
+- Single key update (packet 100)
+- Multiple key updates (every N packets)
+- Concurrent TX/RX key updates
+- Out-of-order packets spanning key update boundary
+
+### References
+
+- RFC 9001 §6: "Key Update"
+- RFC 9001 §6.1: "Initiating a Key Update"
+- RFC 9001 §6.4: "Receiving Out-of-Order Protected Packets"
+- Quinn: `quinn-proto/src/connection/spaces.rs:decrypt_packet()`
+- quiche: `quiche/src/packet.rs:decrypt_hdr()` + key update logic
