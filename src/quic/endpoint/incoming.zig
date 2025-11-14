@@ -2236,15 +2236,33 @@ pub fn generateAndSendAck(
             std.debug.print("APP have_tx_keys={s}\n", .{if (conn.app_tx_keys != null) "y" else "n"});
         }
 
+        // PHASE 42 PART 21: Comprehensive ACK timing and trigger logging
+        const ack_trigger_ns = now_ns;
+        const last_rx_ns = conn.last_ack_eliciting_rx_app_ns;
+        const delay_since_rx_us = if (last_rx_ns > 0 and ack_trigger_ns >= last_rx_ns)
+            (ack_trigger_ns - last_rx_ns) / 1000
+        else
+            0;
+
+        std.debug.print("[P42-21-ACK-TRIGGER] ⏰ ACK triggered: saw_ack_elicit={s} ecn={s} delay_since_rx={d}us\n", .{
+            if (frame_result.saw_ack_eliciting) "Y" else "N",
+            if (ecn_bits != null) "Y" else "N",
+            delay_since_rx_us,
+        });
+
         if (conn.app_tx_keys) |tx_keys| {
             const allow_send = conn.canSendUnderAmplification();
 
-            // PHASE 42 DEBUG: Always log amplification state to diagnose ACK blocking
-            std.debug.print("[ACK DEBUG] allow_send={s} rx_unval={d} tx_unval={d} validated={s}\n", .{
-                if (allow_send) "y" else "n",
+            // PHASE 42 PART 21: Enhanced amplification logging with timing context
+            std.debug.print("[P42-21-ACK-AMPLIF] allow_send={s} rx_unval={d} tx_unval={d} validated={s} ratio={d:.2}\n", .{
+                if (allow_send) "Y" else "N",
                 conn.bytes_rx_unvalidated,
                 conn.bytes_tx_unvalidated,
-                if (conn.address_validated) "y" else "n"
+                if (conn.address_validated) "Y" else "N",
+                if (conn.bytes_rx_unvalidated > 0)
+                    @as(f64, @floatFromInt(conn.bytes_tx_unvalidated)) / @as(f64, @floatFromInt(conn.bytes_rx_unvalidated))
+                else
+                    0.0,
             });
 
             // Precompute ACK_ECN selection to keep consistent across branches
@@ -2309,7 +2327,19 @@ pub fn generateAndSendAck(
 
                     if (po) |bytes_out0| {
                         defer ack_ctx.allocator.free(bytes_out0);
+                        const send_start_ns = std.time.nanoTimestamp();
                         _ = ack_ctx.send_fn(ack_ctx.peer, bytes_out0) catch {};
+                        const send_end_ns = std.time.nanoTimestamp();
+                        const send_duration_us = @as(u64, @intCast(@abs(send_end_ns - send_start_ns))) / 1000;
+                        const total_delay_us = delay_since_rx_us + send_duration_us;
+
+                        std.debug.print("[P42-21-ACK-SENT] ✅ ECN ACK sent: pkt_len={d}B largest={d} delay_rx_to_tx={d}us send_us={d}us total={d}us\n", .{
+                            bytes_out0.len,
+                            ad.largest,
+                            delay_since_rx_us,
+                            send_duration_us,
+                            total_delay_us,
+                        });
                         conn.onShortHeaderPacketSent(bytes_out0.len, false);
                     }
                     return; // Stop further processing
@@ -2410,12 +2440,25 @@ pub fn generateAndSendAck(
 
                     if (out) |pkt_bytes| {
                         defer ack_ctx.allocator.free(pkt_bytes);
+                        const send_start_ns = std.time.nanoTimestamp();
                         _ = ack_ctx.send_fn(ack_ctx.peer, pkt_bytes) catch {};
+                        const send_end_ns = std.time.nanoTimestamp();
+                        const send_duration_us = @as(u64, @intCast(@abs(send_end_ns - send_start_ns))) / 1000;
+                        const total_delay_us = delay_since_rx_us + send_duration_us;
+
+                        std.debug.print("[P42-21-ACK-SENT] ✅ Normal ACK sent: pkt_len={d}B largest={d} delay_rx_to_tx={d}us send_us={d}us total={d}us\n", .{
+                            pkt_bytes.len,
+                            ack_desc.largest,
+                            delay_since_rx_us,
+                            send_duration_us,
+                            total_delay_us,
+                        });
                         conn.onShortHeaderPacketSent(pkt_bytes.len, false);
                     }
                 }
             } else {
                 // RFC 9000 §8.1: Send ACK-only when under amplification limit
+                std.debug.print("[P42-21-ACK-BLOCKED] ⚠️  ACK blocked by amplification limit\n", .{});
                 var ack_only = std.ArrayList(u8){};
                 defer ack_only.deinit(ack_ctx.allocator.*);
                 const w2 = ack_only.writer(ack_ctx.allocator.*);
