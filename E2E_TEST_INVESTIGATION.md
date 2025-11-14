@@ -2012,3 +2012,39 @@ This fix addresses the core notification mechanism for stream data arrival:
 - `test_key_derivation.go` - Verification program for secret derivation
 - `test_key_iv_derivation.go` - Verification program for key/IV/HP derivation
 
+
+### Phase 57 Part 7: Large Stream Failures Continue (INVESTIGATING) 🔍
+
+**Date:** 2025-11-14
+**Status:** User reports large streams still failing after Part 6 fix
+
+#### Post-Part 6 Status
+
+After committing Phase 57 Part 6 stream re-queueing fix (commits eb00b0d, 463d73f), user reports that large streams are still failing.
+
+#### Investigation Areas
+
+Since the stream re-queueing fix should have addressed the notification mechanism, there must be additional issues:
+
+1. **Application Event Loop Performance**: The DCID×KeySet enumeration (Part 4) tries up to 63 combinations per packet (21 DCID lengths × 3 key sets). With debug logging, this could slow the event loop enough that:
+   - `acceptStream()` isn't called frequently enough
+   - Packet processing backlog accumulates
+   - Flow control updates are delayed
+
+2. **Stream Processing After Accept**: Even if streams are re-queued correctly:
+   - Application must call `readStream()` to consume data
+   - If `readStream()` isn't called,  flow control window never expands
+   - This would recreate the same symptoms as before Part 6
+
+3. **Flow Control Window Expansion Logic**: Two places expand windows:
+   - `pushStreamFrame()` (src/quic/conn.zig:1924-1954) - expands when recv_off >= 75% threshold
+   - `readStream()` (src/quic/conn.zig:2426-2441) - expands by 50% when application consumes data
+   - If neither is triggering, windows stay at initial 2MB
+
+#### Next Investigation Steps
+
+1. **Profile DCID Enumeration Performance**: Remove/reduce PHASE57 debug logging, measure packet processing time
+2. **Add Application Event Loop Instrumentation**: Log acceptStream() frequency, readStream() calls
+3. **Verify Window Expansion is Triggering**: Check if `[P42-18-FC]` or `[FC]` logs appear
+4. **Check Reference Implementations**: Compare with quiche/quinn flow control and stream acceptance patterns
+
