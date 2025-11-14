@@ -264,6 +264,13 @@ pub fn decodeShortProtected(
     var tmp_pn: [4]u8 = pn_masked4;
     const pn_len: u3 = try crypto.unmaskLongHeaderAndPn(.aes_128_gcm, &keys.hp, &sample16, &tmp_first, &tmp_pn);
 
+    // PHASE 57 FIX CRITICAL: Extract KEY_PHASE bit immediately after HP removal,
+    // BEFORE AEAD decryption, so we have it available even if decryption fails.
+    // This allows incoming.zig to know which key phase the packet uses and decide
+    // whether to try NEXT keys.
+    const key_phase = (tmp_first & 0x04) != 0;
+    std.debug.print("decodeShortProtected: EARLY KEY_PHASE extraction = {} (header_first=0x{X:0>2})\n", .{ key_phase, tmp_first });
+
     // Ciphertext+tag begins after PN (using actual pn_len)
     const ct = packet_bytes[pn_start + pn_len ..];
     if (ct.len < 16) return error.Truncated;

@@ -1818,8 +1818,10 @@ pub fn decryptShortHeaderWithKeyRotation(
 
         // Try derived NEXT keys if we have a RX traffic secret
         if (conn.app_rx_secret) |cur_rx_secret| {
-            std.debug.print("[PHASE57-FALLBACK] Deriving NEXT RX secret from current secret...\n", .{});
-            const next_secret = key_schedule.updateTrafficSecret(cur_rx_secret);
+            std.debug.print("[PHASE57-FALLBACK] Deriving NEXT RX secret from current secret using 'quic ku' label...\n", .{});
+            // PHASE 57 FIX: Use updateQuicSecret() which uses "quic ku" label (RFC 9001 §6)
+            // NOT updateTrafficSecret() which uses "traffic upd" (TLS 1.3 §7.2)
+            const next_secret = key_schedule.updateQuicSecret(cur_rx_secret);
             const mat = if (conn.version_v2)
                 key_schedule.deriveKeyIvHpV2(next_secret)
             else
@@ -2749,7 +2751,8 @@ pub fn processShortHeader(
     if (used_next) {
         std.debug.print("[PHASE57-STEP5] 🔄 used_next=true, deriving NEXT secret and promoting keys\n", .{});
         if (conn.app_rx_secret) |cur_rx_secret| {
-            const next_secret = key_schedule.updateTrafficSecret(cur_rx_secret);
+            // PHASE 57 FIX: Use updateQuicSecret() for QUIC key updates (RFC 9001 §6 "quic ku")
+            const next_secret = key_schedule.updateQuicSecret(cur_rx_secret);
             const next_keys = if (conn.version_v2)
                 key_schedule.deriveKeyIvHpV2(next_secret)
             else
