@@ -2421,3 +2421,39 @@ const effective_threshold = std.math.max(threshold, min_threshold);
 - Prevents client from exhausting send window with small reads
 - Updates now happen at least every 8 reads (32KB) instead of every 64 reads (256KB)
 
+## Phase 57 Part 13: Simplify Initial MAX_STREAM_DATA Logic
+
+**Date:** 2025-11-14
+**Status:** FIXED ✅
+**Issue:** Complex logic in pushStreamFrame() for sending MAX_STREAM_DATA
+
+### Root Cause
+
+Attempted to send MAX_STREAM_DATA proactively when data arrives, but:
+- `bytes_consumed_total` hasn't changed yet in `pushStreamFrame()` (only changes in `readStream()`)
+- Calculating `max_stream_data` based on `bytes_consumed_total` gives same value as before
+- Won't trigger updates until application actually reads data
+
+### The Fix
+
+**File:** `src/quic/conn.zig:1911-1937`
+
+Simplified to only send initial MAX_STREAM_DATA when stream receives first data:
+- For new streams (`last_sent_max_stream_data == 0`), send initial window size
+- Subsequent updates are handled in `readStream()` when application consumes data
+- Matches quinn's pattern: initial update on first data, then updates on consumption
+
+**Impact:**
+- Cleaner logic: initial update on data arrival, subsequent updates on consumption
+- Avoids complex calculations in `pushStreamFrame()` that don't work correctly
+- Updates still happen frequently enough via `readStream()` with 32KB threshold
+
+### Commits Made
+
+**Commit:** fix: Phase 57 Part 13 - Send MAX_STREAM_DATA proactively when data arrives (b9831cd)
+- Attempted proactive updates (reverted in next commit)
+
+**Commit:** fix: Phase 57 Part 13 - Simplify initial MAX_STREAM_DATA logic
+- Simplified to only send initial MAX_STREAM_DATA on first data arrival
+- Subsequent updates handled in readStream() with proper quinn-style calculation
+
