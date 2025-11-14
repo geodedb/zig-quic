@@ -160,9 +160,36 @@ The increased window size didn't fix the issue, suggesting deeper problems:
 2. **Flow control credit tracking bug** - Credits may not be properly tracked/updated
 3. **Stream state machine issue** - Stream may be stuck waiting for window updates
 
+### Deep Investigation Results
+
+#### Finding 1: MAX_STREAM_DATA Frames Never Sent
+Examined `conn.zig` and found critical issue in `sendFlowControlFrames` (lines 2090-2093):
+- Only sends MAX_STREAM_DATA for stream 0
+- Uses hardcoded `self.local_max_stream_data` (stream 0 only)
+- Never iterates through other streams to send their MAX_STREAM_DATA frames
+- Result: Non-zero streams never get window updates
+
+#### Finding 2: Per-Stream Flow Control Tracking Exists
+StreamRx struct (lines 398-400) has proper fields:
+- `local_max_stream_data` - Current receive window limit
+- `last_sent_max_stream_data` - Last MAX_STREAM_DATA value sent
+- But these values are only used for stream 0
+
+#### Finding 3: Window Expansion Logic Works But Doesn't Notify Peer
+`readStream` function (lines 2373-2384):
+- Properly expands window when data is consumed
+- Increases `local_max_stream_data` by 50%
+- But never sends MAX_STREAM_DATA frame to inform peer
+- Result: Sender stalls waiting for window update that never comes
+
+#### Finding 4: Test Server Limitation
+`test_quic_server.zig` only handles stream 0:
+- Echo logic only processes stream ID 0
+- Multi-stream tests fail because other streams are ignored
+- This is separate from the flow control issue but also causes failures
+
 ### Next Steps
 
-Need to investigate:
-1. Whether MAX_STREAM_DATA frames are actually being sent
-2. How flow control credits are tracked and updated
-3. Why even with 10MB windows, 1MB transfers still timeout
+Need to fix two separate issues:
+1. **Implement proper MAX_STREAM_DATA frame generation** - Must iterate through all active streams and send MAX_STREAM_DATA when their windows expand
+2. **Fix test server to handle multiple streams** - Server must echo on all client-initiated bidirectional streams (0, 4, 8, 12, ...)
