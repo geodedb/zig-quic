@@ -173,11 +173,9 @@ pub fn handleAck(
     ctx: *FrameContext,
     a: frame.Ack,
 ) FrameResult {
+    // PHASE 56 FIX: Re-enable ACK processing (was disabled for unit testing)
     // Forward Application ACK to recovery with actual ranges
-    // NOTE: Commented out for unit testing - requires rec (Recovery) struct initialization
-    // Full integration tested at endpoint level
-    // ctx.conn.onAckReceivedSpace(.Application, a.largest, a.first_range, a.ranges, a.ecn);
-    _ = a; // Suppress unused parameter warning
+    ctx.conn.onAckReceivedSpace(.Application, a.largest, a.first_range, a.ranges, a.ecn);
 
     // Cancel PTO timer on ACK receipt (RFC 9002 §6.2.1)
     ctx.conn.pto_app_count = 0;
