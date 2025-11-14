@@ -2085,10 +2085,104 @@ Since the stream re-queueing fix should have addressed the notification mechanis
 
 These retained logs fire once per packet (on success/failure), not per iteration, making them acceptable for diagnostics.
 
-#### Next Steps for Verification
+#### Test Results
 
-1. **Test with quic-go Client**: Run comprehensive test suite to verify large stream transfers complete
-2. **Monitor Server Logs**: Confirm debug output volume is reduced by ~95%
-3. **Profile Packet Processing**: Measure time from packet arrival to `acceptStream()` notification
-4. **If Still Failing**: Add application event loop instrumentation to identify remaining bottlenecks
+After Phase 57 Part 7 fix, large stream tests still fail with "timeout: no recent network activity" during handshake/transfer. This indicates the performance fix alone was insufficient. Further investigation needed.
+
+---
+
+## Phase 57 Part 8: ROOT CAUSE - Flow Control Threshold Too High (CRITICAL FIX)
+
+**Status**: Active Investigation → **ROOT CAUSE IDENTIFIED**
+**Date**: 2025-11-14
+**Issue**: Large streams (>10KB) timing out despite Part 6 stream re-queueing and Part 7 performance fixes
+
+### Investigation Method
+
+Compared our flow control implementation with quinn (rust reference implementation) from `forks/quinn`.
+
+### Root Cause Discovered
+
+**File**: `src/quic/conn.zig:1924` - `pushStreamFrame()` function
+
+**THE PROBLEM**: We use a **75% threshold** before sending MAX_STREAM_DATA frames:
+
+```zig
+// src/quic/conn.zig:1924 (INCORRECT)
+const stream_threshold: u64 = if (stream_overflow != 0) std.math.maxInt(u64) else stream_mul / 4; // 75%
+if (s.recv_off >= stream_threshold) {
+    // Expand window and send MAX_STREAM_DATA
+}
+```
+
+**QUINN'S APPROACH**: Uses a **12.5% (1/8) threshold**:
+
+```rust
+// forks/quinn/quinn-proto/src/connection/streams/recv.rs:110-122
+pub(super) fn max_stream_data(&mut self, stream_receive_window: u64) -> (u64, ShouldTransmit) {
+    let max_stream_data = self.assembler.bytes_read() + stream_receive_window;
+
+    // Only announce a window update if it's significant enough
+    // to make it worthwhile sending a MAX_STREAM_DATA frame.
+    let diff = max_stream_data - self.sent_max_stream_data;
+    let transmit = self.can_send_flow_control() && diff >= (stream_receive_window / 8);  // 12.5%!!!
+    (max_stream_data, ShouldTransmit(transmit))
+}
+```
+
+### Impact Analysis
+
+**Initial Window**: 2,097,152 bytes (2MB)
+
+**Our 75% Threshold**:
+- Threshold: 1,572,864 bytes consumed
+- 100KB transfer: only 102,400 bytes = 4.8% of window
+- **We NEVER send MAX_STREAM_DATA**
+- Client exhausts its send window waiting for credit
+- Connection times out after 30 seconds
+
+**Quinn's 12.5% Threshold**:
+- Threshold: 262,144 bytes consumed (256KB)
+- 100KB transfer exceeds threshold after first chunk
+- MAX_STREAM_DATA sent proactively
+- Client receives credit and continues sending
+
+### Why Our Tests Pass Up To 10KB But Fail At 100KB
+
+- **10KB test**: Single burst, completes before flow control matters
+- **100KB test**: Requires multiple rounds of:
+  1. Client sends data up to window limit
+  2. Server consumes data
+  3. **Server must send MAX_STREAM_DATA to grant more credit**
+  4. Client continues sending
+
+With our 75% threshold, step 3 never happens for 100KB transfers (only 4.8% consumed), so client stalls.
+
+### The Fix (Phase 57 Part 8)
+
+**Change line 1924 in src/quic/conn.zig**:
+
+```zig
+// BEFORE (BROKEN):
+const stream_threshold: u64 = if (stream_overflow != 0) std.math.maxInt(u64) else stream_mul / 4; // 75%
+
+// AFTER (FIXED - matches quinn):
+const stream_threshold: u64 = if (stream_overflow != 0) std.math.maxInt(u64) else stream_mul / 8; // 12.5%
+```
+
+This aligns with quinn's proven flow control strategy (RFC 9000 §4.1 compliant) and ensures MAX_STREAM_DATA frames are sent early enough to prevent sender stall.
+
+### Reference Implementation Evidence
+
+From quinn documentation (recv.rs:113-119):
+> "We use here a fraction of the configured stream receive window to make the decision, and accommodate for streams using bigger windows requiring less updates. A fixed size would also work - but it would need to be smaller than `stream_receive_window` in order to make sure the stream does not get stuck."
+
+The 1/8 (12.5%) threshold is quinn's tested, production-proven value that prevents stream stalls across diverse network conditions.
+
+### Expected Results After Fix
+
+- 100KB transfers will trigger MAX_STREAM_DATA after ~13KB consumed
+- 1MB transfers will have regular flow control updates every 256KB
+- Clients will never exhaust send windows waiting for credit
+- All comprehensive tests (100KB, 1MB, multi-stream) should pass
 

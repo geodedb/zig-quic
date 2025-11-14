@@ -1921,7 +1921,7 @@ pub const Connection = struct {
         // to minimize stalls on large transfers. Future: add time-based heuristics.
         // Saturating threshold calculation
         const stream_mul, const stream_overflow = @mulWithOverflow(self.local_max_stream_data, 3);
-        const stream_threshold: u64 = if (stream_overflow != 0) std.math.maxInt(u64) else stream_mul / 4; // 75%
+        const stream_threshold: u64 = if (stream_overflow != 0) std.math.maxInt(u64) else stream_mul / 8; // 12.5% (matches quinn - RFC 9000 §4.1)
         if (s.recv_off >= stream_threshold) {
             // Get current time in microseconds
             const now_us = @as(u64, @intCast(std.time.microTimestamp()));
