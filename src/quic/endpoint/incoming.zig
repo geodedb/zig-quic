@@ -58,6 +58,16 @@ inline fn hashSockaddr(sa: *const posix.sockaddr.storage, len: u32) u64 {
     return hashBytes(bytes);
 }
 
+fn addDcidCandidate(len: u8, list: []u8, count: *usize, max_len: u8) void {
+    if (len > max_len) return;
+    var idx: usize = 0;
+    while (idx < count.*) : (idx += 1) {
+        if (list[idx] == len) return;
+    }
+    list[count.*] = len;
+    count.* += 1;
+}
+
 /// Incoming packet processing functions are currently implemented in endpoint.zig
 /// due to extensive dependencies on Endpoint state (socket, connections, config, etc.).
 ///
@@ -1801,19 +1811,16 @@ fn decryptShortHeaderWithKeyRotationInternal(
 
         // Enumerate ALL combinations of DCID length (0-20) × Key set (CURRENT, NEXT, PREV)
     const max_dcid_len: u8 = 20;
-    var candidates: [21]u8 = undefined;
+    var candidates: [max_dcid_len + 2]u8 = undefined;
     var cand_count: usize = 0;
-
-    if (try_dcid_len <= max_dcid_len) {
-        candidates[cand_count] = try_dcid_len;
-        cand_count += 1;
+    addDcidCandidate(try_dcid_len, candidates[0..], &cand_count, max_dcid_len);
+    if (conn.expected_rx_dcid_len) |cached_len| {
+        addDcidCandidate(cached_len, candidates[0..], &cand_count, max_dcid_len);
     }
 
     var len_iter: u8 = 0;
     while (len_iter <= max_dcid_len) : (len_iter += 1) {
-        if (try_dcid_len <= max_dcid_len and len_iter == try_dcid_len) continue;
-        candidates[cand_count] = len_iter;
-        cand_count += 1;
+        addDcidCandidate(len_iter, candidates[0..], &cand_count, max_dcid_len);
     }
 
     var cand_index: usize = 0;
@@ -1940,10 +1947,8 @@ fn decryptShortHeaderWithKeyRotationInternal(
         return error.AuthenticationFailed;
     };
 
-    // Cache the successful DCID length if not already cached
-    if (conn.expected_rx_dcid_len == null) {
-        conn.expected_rx_dcid_len = actual_dcid_len;
-    }
+    // Cache the successful DCID length for future packets (DCIDs may change post-handshake)
+    conn.expected_rx_dcid_len = actual_dcid_len;
 
     // PHASE 57 PART 2: Check if packet KEY_PHASE differs from connection RX key phase
     // RFC 9001 §6: "Each packet contains a key phase bit that indicates which packet
@@ -2819,17 +2824,13 @@ pub fn processShortHeader(
     // STEP 3: DCID Length Caching and Key Check (Bug #6 fix)
     // =============================================================================
 
-    // CRITICAL FIX for Bug #6: Use cached expected_rx_dcid_len if available
-    // Otherwise try systematic enumeration to discover the actual DCID length
-    const try_dcid_len = if (conn.expected_rx_dcid_len) |cached_len|
-        cached_len
-    else
-        dcid_len; // Start with connection-matched length
+    const observed_dcid_len = dcid_len;
+    const cached_dcid_len = conn.expected_rx_dcid_len;
 
     if (ctx.test_capture_enabled) {
-        std.debug.print("Will try decryption with dcid_len={} (cached={})\n", .{
-            try_dcid_len,
-            conn.expected_rx_dcid_len != null,
+        std.debug.print("Will try decryption with observed_dcid_len={} cached_dcid_len={}\n", .{
+            observed_dcid_len,
+            if (cached_dcid_len) |c| c else 0xff,
         });
     }
 
@@ -2865,7 +2866,7 @@ pub fn processShortHeader(
         ctx.allocator.*,
         conn,
         bytes,
-        @intCast(try_dcid_len),
+        @intCast(observed_dcid_len),
     ) catch |err| {
         if (err == error.StatelessReset) {
             if (ctx.test_capture_enabled) {

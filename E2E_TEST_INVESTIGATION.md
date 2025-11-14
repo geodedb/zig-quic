@@ -2739,3 +2739,22 @@ Latest test: `make e2e-test-go-comprehensive` at 15:01:39 → **4 / 8** (large t
 - ❌ Large transfer 100 KB / 1 MB, Multiple Round-trips, Bidirectional simultaneous, Stream interleaving – still `timeout: no recent network activity` after ~100 KB even though key update now succeeds.
 - Action: instrument `[P42-13-FLUSH]` / `[P57-14-READ]` again on the new build to see why throughput stalls after ~120 KB now that decryption stays alive.
 
+## Phase 57 Part 22: DCID Length Resync Still Stalls at pn≈100
+
+**Date:** 2025-11-14  
+**Status:** In Progress  
+**Issue:** After adopting the hybrid decrypt + TX sync, the server still echoes only ~95 KB before the Go client times out. ACK telemetry (`P42-22-ACK-RX`) stops at `prev_largest=31`, and there are no `[PHASE57-DECRYPT]` entries beyond pn 100 even though we expect 1 MB of client data. Logs show repeated `[PHASE57] ❌ All DCID×KeySet combinations failed` with wildly different `dcid_len` guesses, which strongly suggests we never adapt when the client drops its short-header DCID length from 8 bytes (early handshake) down to 0 bytes (post-handshake).
+
+### Change
+- Reordered the DCID length enumeration inside `decryptShortHeaderWithKeyRotationInternal()` so that we always try the *observed* short-header DCID length (from the lookup result) first, then the cached guess, then the rest of the 0‑20 brute-force list.  
+- Cache now updates on every successful decrypt instead of only the first time, allowing the server to track mid-connection DCID shrinkage (matching quiche/quinn behaviour where the active DCID can change once the client validates the path).
+
+### Result (Go comprehensive @ 18:23)
+- Suite is still **3 / 8**. `[PHASE57-DECRYPT]` logs end at pn 100 and the connection sends only ~95 KB before the client reports `timeout: no recent network activity`. `[PHASE57] ❌ …` continues to fire for every packet after pn 100, so the DCID ranking tweak alone is insufficient.
+- ACK telemetry still stops at `prev_largest=31`, confirming we never successfully decrypt the client’s ACK-only packets once the short-header DCID changes.
+
+### Next Steps
+1. Extend the `[PHASE57-DUMP]` tooling to capture *multiple* failures per connection (e.g., the first post-handshake short-header with `dcid_len=0`) so we can feed those dumps into `phase57_dump_check.zig` and mirror quinn/quiche’s behaviour packet-by-packet.
+2. Compare the captured ACK-only dump against @forks/quiche’s `updatable_aead::decrypt_hdr` to see whether we need additional hybrid combinations (e.g., NEXT hp + CURRENT AEAD) when the peer simultaneously shrinks the DCID and flips KEY_PHASE.
+3. Once we can decrypt ACK-only traffic again, re-run the Go suite to see whether large transfers progress beyond 100 KB.
+

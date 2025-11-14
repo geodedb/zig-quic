@@ -16,11 +16,12 @@
 - Fresh instrumentation writes the first failing pn≥100 packet to `/tmp/phase57-short-header.{bin,meta}`. The new `phase57_dump_check.zig` tool replays that dump offline and shows that CURRENT keys hit `error.AuthenticationFailed` while NEXT keys corrupt the packet number length (PN reported as 4 bytes instead of the expected 2). This nails the regression down to the header-protection removal path for NEXT keys, not AEAD or key derivation.
 - Hybrid replay (`CURRENT hp + NEXT AEAD`) succeeds, matching quiche/quinn’s approach of unmasking headers separately from AEAD. We ported that behaviour into `packet.decodeShortProtectedWithHp()` and log `[PHASE57-HYBRID] …` when it triggers.
 - Promoting RX keys now also calls `conn.syncTxKeysAfterRxUpdate()`, ensuring ACKs leave the server with the new key phase so quic-go no longer aborts with `KEY_UPDATE_ERROR`.
+- DCID handling still needs work: ACK telemetry (`P42-22-ACK-RX`) stops around pn 31 and `[PHASE57-DECRYPT]` never logs beyond pn 100. We now reorder the DCID probes so the observed short-header length is tried first and cache the discovered length on every success, but decrypt still fails once the peer switches to `dcid_len=0`, so additional capture/analysis is planned.
 
 ### Immediate Plan
 1. **Packet dump instrumentation:** Extend `packet.decodeShortProtected` to capture the complete short-header datagram (first byte, DCID, masked PN bytes, ciphertext+tag) plus metadata the first time a pn ≥ 100 decrypt fails. This replaces tcpdump/qlog requirements and keeps the investigation self-contained.
 2. **Offline verifier:** Replay the dump with a minimal Zig program that reconstructs the nonce/AAD and calls the same AEAD primitives quic-go uses. This will tell us whether the runtime failure is due to slice corruption vs. header protection.
-3. **Spec cross-check:** Once the failing ciphertext is reproducible offline, diff our header decryption flow against @forks/quinn and @forks/quiche to locate any divergence (sample offsets, PN slicing, AAD construction).
+3. **Spec cross-check:** Once the failing ciphertext is reproducible offline (including the first short-header with `dcid_len=0`), diff our header decryption flow against @forks/quinn and @forks/quiche to locate any divergence (sample offsets, PN slicing, AAD construction).
 
 See `E2E_TEST_INVESTIGATION.md` §“Phase 57 Part 21” for detailed logs, commands, and next steps.
 
