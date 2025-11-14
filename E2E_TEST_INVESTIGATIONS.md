@@ -13,6 +13,7 @@
 - The first KEY_PHASE=1 packet logs `[PHASE57-AEAD] fail pn_preview=101 … key_phase=true` even though header protection succeeded with the CURRENT hp key. AEAD immediately returns `error.AuthenticationFailed`.
 - NEXT keys, which we pre-derived from the TLS key log (`key=4d105b…`, `iv=bb26da…`, `hp=afa46d…`), produce garbage packet numbers (`pn_preview≈9,560`) and bogus key-phase bits, implying the ciphertext/AAD inputs no longer line up between attempts.
 - Deriving the same NEXT material via a standalone Zig helper that ingests `/tmp/tls_keys_comprehensive.log` confirms our key schedule matches quic-go’s; the mismatch must therefore originate in how we carve the ciphertext slice or manage state between CURRENT and NEXT attempts.
+- Fresh instrumentation writes the first failing pn≥100 packet to `/tmp/phase57-short-header.{bin,meta}`. The new `phase57_dump_check.zig` tool replays that dump offline and shows that CURRENT keys hit `error.AuthenticationFailed` while NEXT keys corrupt the packet number length (PN reported as 4 bytes instead of the expected 2). This nails the regression down to the header-protection removal path for NEXT keys, not AEAD or key derivation.
 
 ### Immediate Plan
 1. **Packet dump instrumentation:** Extend `packet.decodeShortProtected` to capture the complete short-header datagram (first byte, DCID, masked PN bytes, ciphertext+tag) plus metadata the first time a pn ≥ 100 decrypt fails. This replaces tcpdump/qlog requirements and keeps the investigation self-contained.

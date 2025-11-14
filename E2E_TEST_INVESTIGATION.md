@@ -2708,6 +2708,13 @@ Latest test: `make e2e-test-go-comprehensive` at 15:01:39 → **4 / 8** (large t
 2. Build a tiny Zig verifier that consumes the dump and `/tmp/tls_keys_comprehensive.log`, then calls the same AEAD functions quic-go uses. If offline decrypt succeeds, we focus on slice handling in the runtime path; if it fails, header protection is still removing the wrong bytes.
 3. Mirror quinn/quiche’s header decryption flow against our dump once we can reproduce the failure deterministically.
 
+### Offline Replay (2025-11-14 16:30)
+- New `[PHASE57-DUMP]` instrumentation now writes the first failing pn≥100 packet into `/tmp/phase57-short-header.bin` plus metadata (`dcid_len=8`, `pn_len=2`, `header_first_masked=0x41`, `pn_preview=101`).
+- The standalone helper `phase57_dump_check.zig` (committed in `main`) replays that dump using TLS secrets from `/tmp/tls_keys_comprehensive.log`. Results:
+  - `CURRENT` keys (KEY_PHASE=0) fail with `error.AuthenticationFailed`, confirming the runtime behaviour.
+  - `NEXT` keys (derived via `ks.updateQuicSecret`) also fail, but the offline run shows header protection expanding the PN to **4 bytes instead of the logged 2**, proving that applying the NEXT hp key to the captured ciphertext corrupts the packet number field before AEAD even runs.
+- Because the failure reproduces outside the endpoint, the bug is definitively in our header protection removal logic for NEXT keys (likely sample construction or DCID enumeration), not in AEAD/AAD slice handling.
+
 ### Next Steps
 1. Land the packet dump under the existing Phase 57 logging gate so that release builds remain unaffected.
 2. Re-run `make e2e-test-go-comprehensive` to capture the first KEY_PHASE=1 failure into `/tmp/phase57-short-header.bin` for offline analysis.
