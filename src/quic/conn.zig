@@ -1904,6 +1904,13 @@ pub const Connection = struct {
             try self.queueIncomingStream(stream_id);
             std.debug.print("[P57-6-QUEUE] Stream {} queued ({} bytes in inbox, {} total in queue)\n", .{stream_id, s.inbox.items.len, self.incoming_stream_queue.items.len});
         }
+
+        // PHASE 57 PART 10: Send initial MAX_STREAM_DATA when stream receives first data
+        // This ensures the peer knows the initial window size immediately, not just after first read
+        if (is_peer_initiated and s.last_sent_max_stream_data == 0 and self.hasConfirmedAppTxKeys()) {
+            // Send initial MAX_STREAM_DATA to advertise the window
+            self.advertiseInitialFlowControl();
+        }
         // Auto-echo implementation DISABLED: This conflicts with application-level echo servers.
         // The auto-echo would send "Hello QUIC\n" (11 bytes) on stream 0 with offset=0 and FIN=true,
         // then the application would send its own response also with offset=0 and FIN=true,
