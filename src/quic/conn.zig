@@ -1926,13 +1926,7 @@ pub const Connection = struct {
         // (max_stream_data = bytes_consumed + receive_window)
         // We no longer expand windows here based on recv_off, as that conflicts with the quinn approach.
         // Window updates are triggered when the application consumes data via readStream().
-        const conn_mul, const conn_overflow = @mulWithOverflow(self.local_max_data, 7);
-        const conn_threshold: u64 = if (conn_overflow != 0) std.math.maxInt(u64) else conn_mul / 10; // 70%
-        if (self.conn_recv_total >= conn_threshold) {
-            const bump = @max(self.local_max_stream_data, self.local_max_data / (4 * denom));
-            const new_val, const add_overflow = @addWithOverflow(self.local_max_data, bump);
-            self.local_max_data = if (add_overflow != 0) std.math.maxInt(u64) else new_val;
-        }
+        // Connection-level flow control expansion is handled separately if needed.
     }
 
     /// Ingest a DATAGRAM frame payload (owned copy).
