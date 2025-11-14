@@ -1601,3 +1601,90 @@ if (packet_key_phase != conn.rx_key_phase) {
 - RFC 9001 §6.4: "Receiving Out-of-Order Protected Packets"
 - Quinn: `quinn-proto/src/connection/spaces.rs:decrypt_packet()`
 - quiche: `quiche/src/packet.rs:decrypt_hdr()` + key update logic
+
+## Phase 57: RX Key Update Implementation and Debugging
+
+**Date**: 2025-11-14
+**Commit**: 47f7dd5
+
+### Investigation Summary
+
+Implemented RFC 9001 §6 key update handling for RX (receive) path. quic-go client intentionally triggers key update at packet 100 for conformance testing (per quinn reference implementation comment).
+
+### Part 1: KEY_PHASE Bit Extraction ✅
+
+**Changes** (`src/quic/packet.zig:310-315, 222`):
+- Modified `DecodedShort` struct to include `key_phase: bool` field
+- Extract KEY_PHASE bit (0x04) from unmasked short header first byte
+- Return key phase in decryption result for upstream handling
+
+```zig
+const key_phase = (tmp_first & 0x04) != 0;
+return .{ .packet_number = pn_val_expanded, .packet_number_len = pn_len, .payload = payload, .key_phase = key_phase };
+```
+
+### Part 2: RX Key Update Logic ⚠️ WIP
+
+**Changes** (`src/quic/endpoint/incoming.zig`):
+
+1. **Key Phase Mismatch Detection** (lines 1878-1912):
+   - After successful decryption, check `decoded.key_phase != conn.rx_key_phase`
+   - If mismatch detected, set `used_next = true` to trigger promotion
+   - Added comprehensive logging for all decryption paths (CURRENT/NEXT/PREV)
+
+2. **Enhanced Fallback Logic** (lines 1816-1863):
+   - Current keys fail → Try NEXT keys (derive via `updateTrafficSecret()`)
+   - NEXT keys fail → Try PREV keys  
+   - PREV keys fail → Return AuthenticationFailed
+   - Added detailed logging at each step
+
+3. **Key Promotion Logging** (lines 1944-1967):
+   - Log rx_key_phase transitions (false → true, true → false)
+   - Confirm promotion completion
+
+### Current Status: NEXT Keys Not Matching
+
+**Observed Behavior**:
+```
+[PHASE57-DECRYPT] ✅ Decrypted with CURRENT keys: pn=99 key_phase=false conn_rx_kp=false
+[PHASE57-FALLBACK] 🔄 Current keys failed, trying NEXT keys fallback
+[PHASE57-FALLBACK] Deriving NEXT RX secret from current secret...
+[PHASE57-FALLBACK] Attempting decrypt with NEXT keys...
+AEAD decrypt failed: pn=100 err=error.AuthenticationFailed
+[PHASE57-FALLBACK] ❌ NEXT keys also failed, trying PREV keys...
+```
+
+**Analysis**:
+- ✅ Fallback logic triggers correctly after current keys fail
+- ✅ NEXT secret derivation executes via `key_schedule.updateTrafficSecret()`
+- ❌ Derived NEXT keys don't match peer's updated keys
+- ❌ AEAD authentication fails on pn=100 with NEXT keys
+
+**Hypothesis**:
+Possible key derivation mismatch between our implementation and quic-go:
+1. Using wrong base secret for derivation?
+2. Label mismatch in HKDF-Expand-Label?
+3. Hash algorithm mismatch (SHA-256 vs SHA-384)?
+4. Key material extraction issue?
+
+**Test Results**: 4/8 passing (unchanged from Phase 56)
+- ✅ Single echo, Multiple concurrent, 10KB, 100KB
+- ❌ 1MB, Multiple round-trips, Bidirectional, Stream interleaving
+- All failures due to connection stall at packet 100
+
+### RFC References
+- **RFC 9001 §6**: Key Update - "endpoints can update keys to improve forward secrecy"
+- **RFC 9001 §6.1**: Initiating Key Update - KEY_PHASE bit toggle signals update
+- **RFC 8446 §4.6.3**: Traffic Secret Update - HKDF-Expand-Label with "traffic upd"
+
+### Next Steps
+1. Add hex dump logging of app_rx_secret before derivation
+2. Compare updateTrafficSecret() output with quic-go's implementation
+3. Verify HKDF-Expand-Label("traffic upd") matches RFC 8446 §7.2
+4. Check if quic-go uses different hash (SHA-384 instead of SHA-256)
+5. Consider using TLS KeyLog to compare secrets with quic-go
+
+### Files Modified
+- `src/quic/packet.zig` - KEY_PHASE extraction
+- `src/quic/endpoint/incoming.zig` - RX key update logic, fallback handling, logging
+
