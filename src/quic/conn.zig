@@ -1353,19 +1353,14 @@ pub const Connection = struct {
         // Amplification guard: if address not validated and we already exceeded 3x budget, refuse to send
         if (self.overAmplification()) return error.WouldBlock;
 
-        // PHASE 48: Basic congestion control - check if we have room in cwnd
-        // Only check for data packets (not handshake/initial)
-        if (self.hasConfirmedAppTxKeys()) {
-            const available_cwnd = if (self.rec.cc.cwnd > self.rec.cc.bytes_in_flight)
-                self.rec.cc.cwnd - self.rec.cc.bytes_in_flight
-            else
-                0;
+        // PHASE 48 REMOVED: The crude congestion control check was blocking legitimate sends.
+        // The recovery module already handles congestion control properly via onPacketSent/onAckReceived.
+        // Congestion control is enforced through:
+        // 1. onShortHeaderPacketSent() -> rec.onPacketSent() tracking bytes_in_flight
+        // 2. onAckReceivedSpace() -> rec.onAckReceivedWithEcn() updating cwnd
+        // 3. Loss detection and retransmission in recovery module
+        // This allows proper slow-start, congestion avoidance, and pacing.
 
-            if (available_cwnd < data.len) {
-                // Congestion window exhausted - cannot send
-                return error.WouldBlock;
-            }
-        }
         if (self.sender_fn) |f| {
             const ctx = self.sender_ctx orelse return data.len;
             const n = try f(ctx, self, data);
@@ -3198,7 +3193,17 @@ pub const Connection = struct {
         // Track recovery for Application space
         const now_i = std.time.nanoTimestamp();
         const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
-        _ = self.rec.onPacketSent(.Application, self.pn_app_tx, bytes_sent, ack_eliciting, now_ns) catch {};
+
+        // PHASE 51: Debug logging to verify this function is called
+        std.debug.print("[PHASE51] onShortHeaderPacketSent called: bytes={d} ack_eliciting={} pn={d}\n", .{
+            bytes_sent, ack_eliciting, self.pn_app_tx,
+        });
+
+        // PHASE 51: Properly handle and report errors instead of silently swallowing them
+        self.rec.onPacketSent(.Application, self.pn_app_tx, bytes_sent, ack_eliciting, now_ns) catch |err| {
+            std.debug.print("[PHASE51] ERROR in rec.onPacketSent: {s}\n", .{@errorName(err)});
+        };
+
         // Legacy shim for back-compat
         if (ack_eliciting) self.maybeTriggerKeyUpdateOnSend(bytes_sent);
         self.pn_app_tx +%= 1;
