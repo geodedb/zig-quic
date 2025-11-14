@@ -2098,7 +2098,7 @@ pub const Connection = struct {
             // With 4KB reads, we need updates more frequently than every 256KB
             // Use minimum of 1/8 window or 32KB to ensure updates happen at least every 8 reads
             const min_threshold: u64 = 32 * 1024;  // 32KB minimum
-            const effective_threshold = std.math.min(threshold, min_threshold);
+            const effective_threshold = @min(threshold, min_threshold);
 
             // Only send if increase is significant (at least threshold)
             if (increase >= effective_threshold and increase > 0) {
