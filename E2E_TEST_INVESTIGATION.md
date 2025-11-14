@@ -392,3 +392,60 @@ The 1MB transfer consistently times out, which suggests:
 4. **Stream state machine bugs** - Streams may get stuck in certain states
 
 The quinn-style flow control pattern is now implemented correctly, but further investigation is needed to identify why exactly 1MB transfers fail at the window boundary.
+
+## Phase 47: CRITICAL Discovery - No Congestion Control ⚠️
+
+**Date:** 2025-11-14
+**Focus:** Root cause analysis of 1MB transfer failures
+
+### Critical Finding: Congestion Control Not Implemented
+
+Investigation revealed that while the QUIC implementation has congestion control modules (`src/quic/recovery/congestion.zig`), they are **never used**:
+
+1. **Modules exist but disconnected:**
+   - `src/quic/recovery/congestion.zig` defines NewReno and CUBIC controllers
+   - Initial cwnd set to 12KB (10 * 1200 bytes)
+   - Functions for `onPacketSent`, `onAck`, `onLoss` defined
+
+2. **No integration in conn.zig or endpoint.zig:**
+   - Searched for `Recovery`, `recovery`, `cwnd`, `congestion` - NO matches
+   - Congestion control is completely absent from the connection logic
+   - No packet pacing, no congestion window enforcement
+
+3. **Impact on large transfers:**
+   - Without congestion control, sender floods network with packets
+   - No slow-start means immediate burst of full window
+   - No congestion avoidance means no response to packet loss
+   - No pacing causes packet drops and receiver overwhelm
+
+### Why This Causes 1MB Failures
+
+The 1MB transfer failure is now explained:
+- **No congestion window:** Sender tries to send entire 1MB immediately
+- **Network flooding:** Rapid packet transmission causes drops
+- **No recovery:** Lost packets aren't detected/retransmitted properly
+- **Timeout:** Connection stalls waiting for ACKs that never arrive
+
+### Comparison with Working Implementations
+
+**Quinn (Rust):** Integrates congestion control throughout:
+- Checks cwnd before sending packets
+- Updates cwnd on ACK/loss events
+- Implements pacing between packets
+- Uses CUBIC by default with NewReno fallback
+
+**Our Implementation:** Missing critical RFC 9002 requirements:
+- ❌ No congestion window tracking
+- ❌ No slow-start implementation
+- ❌ No congestion avoidance
+- ❌ No packet pacing
+- ❌ No loss recovery integration
+
+### Next Steps
+
+Must integrate congestion control into the connection logic:
+1. Add Recovery field to Connection struct
+2. Check cwnd before sending packets
+3. Update congestion state on ACK/loss
+4. Implement basic packet pacing
+5. Test with 1MB transfers
