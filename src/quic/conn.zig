@@ -2087,11 +2087,37 @@ pub const Connection = struct {
         defer frames.deinit(self.allocator.*);
         const w = frames.writer(self.allocator.*);
         var wrote: bool = false;
-        if (self.local_max_stream_data > self.last_sent_max_stream_data) {
-            _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = self.local_max_stream_data } }).write(w) catch 0;
-            self.last_sent_max_stream_data = self.local_max_stream_data;
-            wrote = true;
+
+        // PHASE 44: Send MAX_STREAM_DATA for ALL streams that need window updates
+        // Iterate through all active streams and send MAX_STREAM_DATA where needed
+        var it = self.streams_rx.iterator();
+        while (it.next()) |entry| {
+            const stream_id = entry.key_ptr.*;
+            const stream_rx = entry.value_ptr;
+
+            // Check if this stream needs a MAX_STREAM_DATA frame sent
+            if (stream_rx.local_max_stream_data > stream_rx.last_sent_max_stream_data) {
+                _ = (frame.Frame{ .max_stream_data = .{
+                    .stream_id = stream_id,
+                    .max = stream_rx.local_max_stream_data
+                } }).write(w) catch 0;
+                stream_rx.last_sent_max_stream_data = stream_rx.local_max_stream_data;
+                wrote = true;
+                std.debug.print("[PHASE 44] Sending MAX_STREAM_DATA for stream {}: max={}\n",
+                    .{stream_id, stream_rx.local_max_stream_data});
+            }
         }
+
+        // Also handle the legacy stream 0 fields for backward compatibility
+        if (self.local_max_stream_data > self.last_sent_max_stream_data) {
+            // Only send for stream 0 if not already handled above
+            if (self.streams_rx.get(0) == null) {
+                _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = self.local_max_stream_data } }).write(w) catch 0;
+                self.last_sent_max_stream_data = self.local_max_stream_data;
+                wrote = true;
+            }
+        }
+
         if (self.local_max_data > self.last_sent_max_data) {
             _ = (frame.Frame{ .max_data = .{ .max = self.local_max_data } }).write(w) catch 0;
             self.last_sent_max_data = self.local_max_data;

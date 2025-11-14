@@ -193,3 +193,91 @@ StreamRx struct (lines 398-400) has proper fields:
 Need to fix two separate issues:
 1. **Implement proper MAX_STREAM_DATA frame generation** - Must iterate through all active streams and send MAX_STREAM_DATA when their windows expand
 2. **Fix test server to handle multiple streams** - Server must echo on all client-initiated bidirectional streams (0, 4, 8, 12, ...)
+
+## Phase 44: Implementing MAX_STREAM_DATA and Multi-Stream Fixes
+
+**Date:** 2025-11-14
+**Focus:** Fix flow control frame generation and test server multi-stream handling
+
+### Changes Implemented
+
+#### 1. Fixed MAX_STREAM_DATA Frame Generation (conn.zig:2083-2132)
+
+Modified `advertiseInitialFlowControl` function to iterate through all active streams and send MAX_STREAM_DATA frames when their windows have expanded:
+
+```zig
+// Iterate through all active streams and send MAX_STREAM_DATA where needed
+var it = self.streams_rx.iterator();
+while (it.next()) |entry| {
+    const stream_id = entry.key_ptr.*;
+    const stream_rx = entry.value_ptr;
+
+    if (stream_rx.local_max_stream_data > stream_rx.last_sent_max_stream_data) {
+        _ = (frame.Frame{ .max_stream_data = .{
+            .stream_id = stream_id,
+            .max = stream_rx.local_max_stream_data
+        } }).write(w) catch 0;
+        stream_rx.last_sent_max_stream_data = stream_rx.local_max_stream_data;
+        wrote = true;
+    }
+}
+```
+
+#### 2. Fixed Test Server Multi-Stream Handling (test_quic_server.zig:82-132)
+
+Modified the test server to properly handle multiple concurrent streams:
+
+```zig
+// Handle multiple streams (0, 4, 8, 12, 16, ...)
+// Client-initiated bidirectional streams have IDs: 0, 4, 8, 12...
+var stream_id: u64 = 0;
+var buf: [65536]u8 = undefined;  // 64KB buffer for large transfers
+
+while (stream_id < 256) : (stream_id += 4) {
+    const n = conn.readStream(stream_id, buf[0..]) catch 0;
+
+    if (n > 0) {
+        // Echo back immediately on the same stream
+        const written = conn.writeStream(stream_id, buf[0..n]) catch 0;
+        // Track partial writes that may indicate flow control issues
+    }
+}
+```
+
+### Test Results After Phase 44 Fixes
+
+```
+============================================================
+RESULTS: 4 passed, 4 failed, 8 total
+============================================================
+✅ Single Stream Echo - 21 bytes in 6.8ms
+✅ Multiple Concurrent Streams - 4 streams in 4.5ms
+✅ Large Transfer (10KB) - 0.88 MB/s
+✅ Large Transfer (100KB) - 1.07 MB/s
+❌ Large Transfer (1MB) - timeout: no recent network activity
+❌ Multiple Round-trips - timeout: no recent network activity
+❌ Bidirectional Simultaneous - timeout: no recent network activity
+❌ Stream Interleaving - timeout: no recent network activity
+```
+
+### Analysis
+
+The fixes partially addressed the issues but did not fully resolve them:
+
+1. **MAX_STREAM_DATA generation fix** - Now properly iterates through all streams
+2. **Test server multi-stream support** - Now handles all client-initiated bidirectional streams
+
+However, tests still fail for:
+- 1MB transfers (exactly at window size limit)
+- Multiple round-trips
+- Bidirectional simultaneous transfers
+- Stream interleaving
+
+### Remaining Issues
+
+The 1MB transfer still times out, suggesting additional problems:
+
+1. **Flow control updates not being sent frequently enough** - May need to send MAX_STREAM_DATA frames proactively, not just in `advertiseInitialFlowControl`
+2. **ACK timing issues** - Delayed ACKs may be causing sender to stall
+3. **Congestion control limitations** - May be preventing sender from sending enough data
+4. **Stream state machine issues** - Streams may not be properly transitioning between states

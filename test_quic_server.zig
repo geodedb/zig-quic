@@ -79,25 +79,55 @@ pub fn main() !void {
     std.debug.print("QUIC server listening on {s}\n", .{bind_addr});
     std.debug.print("Entering poll loop...\n", .{});
 
-    // Main server loop (non-blocking accept + echo)
+    // Main server loop - handle multiple streams per connection
+    var connections = std.ArrayList(*quic.Connection).init(allocator);
+    defer connections.deinit();
+
     while (true) {
         endpoint.poll(20) catch {};
         endpoint.processTimers() catch |err| std.debug.print("Timer processing error: {}\n", .{err});
+
+        // Accept new connections
         while (endpoint.tryAccept()) |conn| {
             std.debug.print("Accepted new QUIC connection!\n", .{});
-            var buf: [1024]u8 = undefined;
-            var opened = false;
-            var loops: usize = 0;
-            while (loops < 2000) : (loops += 1) {
-                endpoint.poll(0) catch {};
-                const n = conn.readStream(0, buf[0..]) catch 0;
-                if (n > 0) {
-                    if (!opened) { opened = true; std.debug.print("stream0 opened rx {d}\n", .{n}); }
-                    _ = conn.writeStream(0, buf[0..n]) catch 0;
-                }
-                if (conn.closed) break;
-            }
+            try connections.append(conn);
         }
+
+        // Process all active connections
+        var i: usize = 0;
+        while (i < connections.items.len) {
+            const conn = connections.items[i];
+
+            if (conn.closed) {
+                std.debug.print("Connection closed, removing from list\n", .{});
+                _ = connections.swapRemove(i);
+                continue;
+            }
+
+            // PHASE 44: Handle multiple streams (0, 4, 8, 12, 16, ...)
+            // Client-initiated bidirectional streams have IDs: 0, 4, 8, 12...
+            var stream_id: u64 = 0;
+            var buf: [65536]u8 = undefined;  // 64KB buffer for large transfers
+
+            while (stream_id < 256) : (stream_id += 4) {
+                const n = conn.readStream(stream_id, buf[0..]) catch 0;
+
+                if (n > 0) {
+                    // Echo back immediately on the same stream
+                    const written = conn.writeStream(stream_id, buf[0..n]) catch 0;
+
+                    if (written < n) {
+                        std.debug.print("[PHASE 44] Stream {} partial write: {} of {} bytes (flow control?)\n",
+                            .{stream_id, written, n});
+                    } else if (written > 0) {
+                        std.debug.print("[PHASE 44] Stream {} echo: {} bytes\n", .{stream_id, written});
+                    }
+                }
+            }
+
+            i += 1;
+        }
+
         std.time.sleep(500_000); // 0.5ms throttle
     }
 }
