@@ -1913,7 +1913,7 @@ After Phase 57 Parts 4-5:
 ### Phase 57 Part 6: Stream Re-queueing Bug (FIXED) ✅
 
 **Date:** 2025-11-14
-**Commit:** (pending)
+**Commit:** eb00b0d
 
 #### Investigation: 100KB Test Regression
 
