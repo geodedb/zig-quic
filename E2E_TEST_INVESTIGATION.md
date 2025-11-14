@@ -2186,3 +2186,85 @@ The 1/8 (12.5%) threshold is quinn's tested, production-proven value that preven
 - Clients will never exhaust send windows waiting for credit
 - All comprehensive tests (100KB, 1MB, multi-stream) should pass
 
+## Phase 57 Part 9: Large Stream Failures Continue - Deep Investigation
+
+**Date:** 2025-11-14
+**Status:** Active Investigation
+**Issue:** Large streams (>100KB) still timing out despite Phase 57 Part 8 threshold fix
+
+### Current State
+
+After Phase 57 Part 8 fix (75% → 12.5% threshold), large stream tests continue to fail:
+- ✅ Single echo (21 bytes) - PASSING
+- ✅ Multiple concurrent streams - PASSING  
+- ✅ 10KB transfer - PASSING
+- ✅ 100KB transfer - PASSING (improved from previous failures)
+- ❌ 1MB transfer - FAILING (timeout: no recent network activity)
+- ❌ Multiple round-trips - FAILING
+- ❌ Bidirectional simultaneous - FAILING
+- ❌ Stream interleaving - FAILING
+
+### Investigation Areas
+
+#### 1. Flow Control Update Frequency
+
+**Current Implementation:**
+- Server reads data in 4KB chunks (`cmd/quic-server.zig:254`)
+- Each read expands window by 50% (`src/quic/conn.zig:2434`)
+- `advertiseInitialFlowControl()` called after each read (`src/quic/conn.zig:2441`)
+- MAX_STREAM_DATA sent when increase >= 1/8 of initial window (256KB for 2MB initial window)
+
+**Potential Issue:**
+- For 1MB streams, client sends data in bursts up to send window limit
+- Server reads 4KB at a time, expanding window gradually
+- If server reads slowly or infrequently, client may exhaust send window before flow control update arrives
+- Need to verify server is reading frequently enough
+
+#### 2. Server Event Loop Performance
+
+**Current Implementation:**
+- Server processes streams in round-robin fashion (`cmd/quic-server.zig:212-214`)
+- Each iteration processes all active streams
+- Streams are re-queued when new data arrives (Phase 57 Part 6 fix)
+
+**Potential Issue:**
+- If event loop is slow (e.g., due to debug logging), streams may not be processed frequently enough
+- Large streams require many read iterations (1MB / 4KB = 256 reads)
+- If each iteration takes too long, client may timeout waiting for echo
+
+#### 3. Flow Control Window Expansion Logic
+
+**Current Implementation:**
+- Window expands by 50% on each read (`src/quic/conn.zig:2434`)
+- Threshold check uses initial window size (2MB) → threshold = 256KB
+- MAX_STREAM_DATA sent when increase >= threshold
+
+**Analysis:**
+- First read: 2MB → 3MB (increase = 1MB) → sends MAX_STREAM_DATA ✅
+- Second read: 3MB → 4.5MB (increase = 1.5MB) → sends MAX_STREAM_DATA ✅
+- Pattern should work correctly
+
+**Potential Issue:**
+- If `last_sent_max_stream_data` is not updated correctly, threshold check may fail
+- Need to verify `last_sent_max_stream_data` tracking
+
+#### 4. Control Frame Transmission
+
+**Current Implementation:**
+- `sendControlFrames()` sends frames immediately (`src/quic/conn.zig:2062-2080`)
+- No congestion window check before sending control frames
+- Control frames are ACK-eliciting
+
+**Potential Issue:**
+- If congestion window is full, control frames may be delayed
+- This could cause flow control updates to arrive late
+- Need to verify control frames are sent promptly
+
+### Next Steps
+
+1. **Add detailed logging** to track flow control updates for large streams
+2. **Verify server read frequency** - ensure streams are processed frequently enough
+3. **Check control frame transmission** - verify MAX_STREAM_DATA frames are sent immediately
+4. **Compare with quinn/quiche** - verify our implementation matches reference behavior
+5. **Test with reduced chunk size** - try reading in smaller chunks to trigger more frequent updates
+
