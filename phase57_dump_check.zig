@@ -11,6 +11,8 @@ const Meta = struct {
     dcid_len: usize,
     pn_len: usize,
     pn_start: usize,
+    attempt_label: ?[]u8 = null,
+    dcid_candidate: ?u8 = null,
 };
 
 const KeyMaterial = struct {
@@ -30,10 +32,38 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const meta = try readMeta(allocator, "/tmp/phase57-short-header.meta");
-    defer allocator.destroy(meta);
+    var args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
 
-    const packet_bytes = try std.fs.cwd().readFileAlloc(allocator, "/tmp/phase57-short-header.bin", 4096);
+    var dump_path: []const u8 = "/tmp/phase57-short-header.bin";
+    var meta_path: []const u8 = "/tmp/phase57-short-header.meta";
+    var dump_path_buf: ?[]u8 = null;
+    var meta_path_buf: ?[]u8 = null;
+    defer if (dump_path_buf) |buf| allocator.free(buf);
+    defer if (meta_path_buf) |buf| allocator.free(buf);
+
+    if (args.len > 1) {
+        const id = try std.fmt.parseInt(u8, args[1], 10);
+        dump_path_buf = try std.fmt.allocPrint(allocator, "/tmp/phase57-short-header-{}.bin", .{id});
+        meta_path_buf = try std.fmt.allocPrint(allocator, "/tmp/phase57-short-header-{}.meta", .{id});
+        dump_path = dump_path_buf.?;
+        meta_path = meta_path_buf.?;
+    }
+
+    const meta = try readMeta(allocator, meta_path);
+    defer {
+        if (meta.attempt_label) |label| allocator.free(label);
+        allocator.destroy(meta);
+    }
+
+    if (meta.attempt_label) |label| {
+        std.debug.print("Loaded dump attempt_label={s} dcid_candidate={}\n", .{
+            label,
+            meta.dcid_candidate orelse 0xff,
+        });
+    }
+
+    const packet_bytes = try std.fs.cwd().readFileAlloc(allocator, dump_path, 16384);
     defer allocator.free(packet_bytes);
 
     const client_secret = try readClientSecret(allocator, "/tmp/tls_keys_comprehensive.log");
@@ -208,6 +238,8 @@ fn readMeta(allocator: std.mem.Allocator, path: []const u8) !*Meta {
         .dcid_len = 0,
         .pn_len = 0,
         .pn_start = 0,
+        .attempt_label = null,
+        .dcid_candidate = null,
     };
 
     var it = std.mem.tokenizeScalar(u8, contents, '\n');
@@ -232,6 +264,10 @@ fn readMeta(allocator: std.mem.Allocator, path: []const u8) !*Meta {
             meta.pn_len = try std.fmt.parseInt(usize, trimmed, 10);
         } else if (std.mem.eql(u8, key, "pn_start")) {
             meta.pn_start = try std.fmt.parseInt(usize, trimmed, 10);
+        } else if (std.mem.eql(u8, key, "attempt_label")) {
+            meta.attempt_label = try allocator.dupe(u8, trimmed);
+        } else if (std.mem.eql(u8, key, "dcid_candidate")) {
+            meta.dcid_candidate = try std.fmt.parseInt(u8, trimmed, 10);
         }
     }
     return meta;

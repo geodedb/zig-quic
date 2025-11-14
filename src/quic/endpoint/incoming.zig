@@ -1836,6 +1836,7 @@ fn decryptShortHeaderWithKeyRotationInternal(
             });
         }
 
+        packet.phase57SetAttemptLabel("CURRENT");
         if (packet.decodeShortProtected(allocator, bytes, test_len, .{
             .key = rx_keys.key,
             .iv = rx_keys.iv,
@@ -1852,6 +1853,7 @@ fn decryptShortHeaderWithKeyRotationInternal(
             break :blk_dec result;
         } else |_| {
             if (next_keys_opt) |next_mat| {
+                packet.phase57SetAttemptLabel("HYBRID_CURRENT_NEXT");
                 if (packet.decodeShortProtectedWithHp(allocator, bytes, test_len, rx_keys.hp, .{
                     .key = next_mat.key,
                     .iv = next_mat.iv,
@@ -1880,6 +1882,7 @@ fn decryptShortHeaderWithKeyRotationInternal(
                     forced_attempted,
                 });
             }
+            packet.phase57SetAttemptLabel("NEXT");
             if (packet.decodeShortProtected(allocator, bytes, test_len, .{
                 .key = next_mat.key,
                 .iv = next_mat.iv,
@@ -1907,6 +1910,7 @@ fn decryptShortHeaderWithKeyRotationInternal(
                     forced_attempted,
                 });
             }
+            packet.phase57SetAttemptLabel("PREV");
             if (packet.decodeShortProtected(allocator, bytes, test_len, .{
                 .key = kp.key,
                 .iv = kp.iv,
@@ -2038,6 +2042,7 @@ fn tryForceKeyUpdateAndDecrypt(
 
     var test_len: u8 = 0;
     while (test_len <= 20) : (test_len += 1) {
+        packet.phase57SetAttemptLabel("FORCED");
         if (packet.decodeShortProtected(allocator, bytes, test_len, .{
             .key = forced_mat.key,
             .iv = forced_mat.iv,

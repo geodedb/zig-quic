@@ -2755,6 +2755,6 @@ Latest test: `make e2e-test-go-comprehensive` at 15:01:39 → **4 / 8** (large t
 
 ### Next Steps
 1. Extend the `[PHASE57-DUMP]` tooling to capture *multiple* failures per connection (e.g., the first post-handshake short-header with `dcid_len=0`) so we can feed those dumps into `phase57_dump_check.zig` and mirror quinn/quiche’s behaviour packet-by-packet.
-2. Compare the captured ACK-only dump against @forks/quiche’s `updatable_aead::decrypt_hdr` to see whether we need additional hybrid combinations (e.g., NEXT hp + CURRENT AEAD) when the peer simultaneously shrinks the DCID and flips KEY_PHASE.
+2. Compare the captured ACK-only dump against @forks/msquic’s header-protection logic (see `msquic/src/core/packet_space.cpp` + `packet_header.cpp`) to see whether we need additional hybrid combinations (e.g., NEXT hp + CURRENT AEAD) when the peer simultaneously shrinks the DCID and flips KEY_PHASE. Keep @forks/quiche/@forks/quinn on hand only as secondary references once the MsQuic behaviour is understood.
 3. Once we can decrypt ACK-only traffic again, re-run the Go suite to see whether large transfers progress beyond 100 KB.
 

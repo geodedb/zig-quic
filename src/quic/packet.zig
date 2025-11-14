@@ -7,7 +7,12 @@ const crypto = @import("quic_crypto");
 const builtin = @import("builtin");
 const logger = @import("quic_logger");
 
-var phase57_dump_done = false;
+const phase57_dump_max: u8 = 3;
+var phase57_dump_count: u8 = 0;
+var phase57_attempt_label: []const u8 = "UNSET";
+pub fn phase57SetAttemptLabel(label: []const u8) void {
+    phase57_attempt_label = label;
+}
 
 // QUIC packet (RFC-9000):  A complete processable unit of QUIC that can be
 //       encapsulated in a UDP datagram.  One or more QUIC packets can be
@@ -246,6 +251,7 @@ pub fn decodeShortProtectedWithHp(
     keys: AeadKeys,
     largest_pn: u64,
 ) !DecodedShort {
+    const attempt_label_snapshot = phase57_attempt_label;
     if (packet_bytes.len < 1 + dcid_len + 1) return error.Truncated;
     var i: usize = 0;
     const header_first_masked: u8 = packet_bytes[0];
@@ -376,6 +382,8 @@ pub fn decodeShortProtectedWithHp(
                 .dcid_len = dcid_len,
                 .key_phase = key_phase,
                 .largest_pn = largest_pn,
+                .key_set_label = attempt_label_snapshot,
+                .dcid_candidate = @intCast(dcid_len),
             });
         }
         alloc.free(payload);
@@ -1213,15 +1221,20 @@ const Phase57DumpContext = struct {
     dcid_len: usize,
     key_phase: bool,
     largest_pn: u64,
+    key_set_label: []const u8,
+    dcid_candidate: u8,
 };
 
 fn maybeDumpPhase57Failure(ctx: Phase57DumpContext) void {
-    if (phase57_dump_done) return;
-    phase57_dump_done = true;
-    std.debug.print("[PHASE57-DUMP] captured failing short header: pn_preview={} key_phase={} largest_pn={}\n", .{
+    if (phase57_dump_count >= phase57_dump_max) return;
+    phase57_dump_count += 1;
+    const dump_id = phase57_dump_count;
+    std.debug.print("[PHASE57-DUMP] captured failing short header #{d}: pn_preview={} key_phase={} largest_pn={} label={s}\n", .{
+        dump_id,
         ctx.pn_preview,
         ctx.key_phase,
         ctx.largest_pn,
+        ctx.key_set_label,
     });
     std.debug.print("[PHASE57-DUMP] header_first_masked=0x{X:0>2} dcid_len={} pn_len={} pn_start={}\n", .{
         ctx.header_first_masked,
@@ -1233,7 +1246,7 @@ fn maybeDumpPhase57Failure(ctx: Phase57DumpContext) void {
     printBytesHex("[PHASE57-DUMP] pn_masked", ctx.pn_masked, 16);
     printBytesHex("[PHASE57-DUMP] ciphertext+tag", ctx.ciphertext_and_tag, 256);
     printBytesHex("[PHASE57-DUMP] packet", ctx.packet, 512);
-    dumpPhase57Files(ctx);
+    dumpPhase57Files(ctx, dump_id);
     std.debug.print("[PHASE57-DUMP] ---- END ----\n", .{});
 }
 
@@ -1250,10 +1263,13 @@ fn printBytesHex(label: []const u8, bytes: []const u8, limit: usize) void {
     std.debug.print("\n", .{});
 }
 
-fn dumpPhase57Files(ctx: Phase57DumpContext) void {
+fn dumpPhase57Files(ctx: Phase57DumpContext, dump_id: u8) void {
     const cwd = std.fs.cwd();
-    const packet_path = "/tmp/phase57-short-header.bin";
-    const meta_path = "/tmp/phase57-short-header.meta";
+    var packet_path_buf: [64]u8 = undefined;
+    var meta_path_buf: [64]u8 = undefined;
+    const packet_path = std.fmt.bufPrint(&packet_path_buf, "/tmp/phase57-short-header-{d}.bin", .{dump_id}) catch return;
+    const meta_path = std.fmt.bufPrint(&meta_path_buf, "/tmp/phase57-short-header-{d}.meta", .{dump_id}) catch return;
+
     if (cwd.createFile(packet_path, .{ .truncate = true })) |file| {
         defer file.close();
         file.writeAll(ctx.packet) catch {};
@@ -1270,11 +1286,44 @@ fn dumpPhase57Files(ctx: Phase57DumpContext) void {
         writeLine(file, "dcid_len={}\n", .{ctx.dcid_len});
         writeLine(file, "pn_len={}\n", .{ctx.pn_len});
         writeLine(file, "pn_start={}\n", .{ctx.pn_start});
+        writeLine(file, "attempt_label={s}\n", .{ctx.key_set_label});
+        writeLine(file, "dcid_candidate={}\n", .{ctx.dcid_candidate});
         writeHexLine(file, "dcid_hex=", ctx.header_prefix);
         writeHexLine(file, "pn_masked_hex=", ctx.pn_masked);
     } else |err| {
         std.debug.print("[PHASE57-DUMP] failed to write {s}: {}\n", .{ meta_path, err });
     }
+
+    if (dump_id == 1) {
+        copyPhase57File(ctx.packet, "/tmp/phase57-short-header.bin");
+        copyPhase57Meta(ctx, "/tmp/phase57-short-header.meta");
+    }
+}
+
+fn copyPhase57File(data: []const u8, path: []const u8) void {
+    const cwd = std.fs.cwd();
+    if (cwd.createFile(path, .{ .truncate = true })) |file| {
+        defer file.close();
+        file.writeAll(data) catch {};
+    } else |_| {}
+}
+
+fn copyPhase57Meta(ctx: Phase57DumpContext, path: []const u8) void {
+    const cwd = std.fs.cwd();
+    if (cwd.createFile(path, .{ .truncate = true })) |file| {
+        defer file.close();
+        writeLine(file, "pn_preview={}\n", .{ctx.pn_preview});
+        writeLine(file, "key_phase={}\n", .{ctx.key_phase});
+        writeLine(file, "largest_pn={}\n", .{ctx.largest_pn});
+        writeLine(file, "header_first_masked=0x{X:0>2}\n", .{ctx.header_first_masked});
+        writeLine(file, "dcid_len={}\n", .{ctx.dcid_len});
+        writeLine(file, "pn_len={}\n", .{ctx.pn_len});
+        writeLine(file, "pn_start={}\n", .{ctx.pn_start});
+        writeLine(file, "attempt_label={s}\n", .{ctx.key_set_label});
+        writeLine(file, "dcid_candidate={}\n", .{ctx.dcid_candidate});
+        writeHexLine(file, "dcid_hex=", ctx.header_prefix);
+        writeHexLine(file, "pn_masked_hex=", ctx.pn_masked);
+    } else |_| {}
 }
 
 fn writeLine(file: std.fs.File, comptime fmt: []const u8, args: anytype) void {
