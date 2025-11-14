@@ -2574,3 +2574,142 @@ Simplified to only send initial MAX_STREAM_DATA when stream receives first data:
 2. Instrument `[PHASE57]` logs to print the derived NEXT secret/key material when the fallback fires to confirm mismatches
 3. Once the derived values match quic-go’s key schedule, re-run the comprehensive suite to validate that pn>100 packets decrypt successfully
 
+## Phase 57 Part 17: Forced Key Promotion Still Cannot Decrypt pn≥100
+
+**Date:** 2025-11-14  
+**Status:** Active Investigation  
+**Issue:** Even after deriving the correct “quic ku” secrets, the server refuses to decrypt the client’s first KEY_PHASE=1 packets
+
+### Instrumentation Summary
+- Added `[PHASE57] fallback invoked` logging (lines 1932-1944) to dump:
+  - `rx_key_phase`
+  - Whether `app_rx_next_secret`/`app_rx_next_keys` are present
+  - The actual AES keys (`current_key`, `next_key`)
+- Forced derivation now prints the full `base_secret`, derived `next_secret`, key/IV/HP values so they can be compared against the Go client’s `SSLKEYLOGFILE`.
+- Results from the 14:17:30 comprehensive run:
+  - `base_secret` logged by Zig matches the `CLIENT_TRAFFIC_SECRET_0` emitted by quic-go (`/tmp/tls_keys_comprehensive.log`).
+  - The derived keys (`current_key=cbaad2ff6bc2f392...`, `next_key=c2001cdfa81b442b...`) match a standalone HKDF script using the same key log. So key derivation is correct.
+  - Despite that, every packet with `pn ≥ 100` still fails authentication (`error.AuthenticationFailed`), so the failure is not caused by secret mismatch.
+
+### Forced Promotion Experiment
+- Added a “force promotion” path in `decryptShortHeaderWithKeyRotation` (lines 1758-1888):
+  - After exhausting all DCID × {CURRENT,NEXT,PREV} combinations and the ad-hoc derivation fallback, the code now calls `promoteToNextKeys()` and retries exactly once.
+  - This mirrors quinn/quiche behavior where the receiver promotes as soon as it sees `KEY_PHASE` flip, even if the first packet could not be decrypted.
+- Observations:
+  - `[PHASE57] ⚠️ Forcing promotion to NEXT keys after repeated auth failures` fires repeatedly (28+ times during the run).
+  - `[PHASE57-KEY-PROMOTE]` confirms `rx_key_phase` toggles (false → true → false …), so promotion works mechanically.
+  - Nevertheless, every retry still ends with `error.AuthenticationFailed`. Even after forcibly advancing to the next generation, packets using the client’s new keys cannot be decrypted.
+
+### Updated Findings
+- The server’s RX path now:
+  1. Tries CURRENT ⇒ NEXT ⇒ PREV keys for DCID lengths 0..20.
+  2. Derives a fresh NEXT secret via `key_schedule.updateQuicSecret` if all previous attempts fail.
+  3. Forces a key promotion and retries once when everything else fails.
+- Despite these steps, pn≥100 packets still fail authentication:
+  - Next-key material matches quic-go’s HKDF output.
+  - KEY_PHASE detection works (header logs show `key_phase=true` for pn≈101).
+  - Promotion toggles `conn.rx_key_phase`, but decrypt still fails.
+- This rules out “missing key promotion” and “wrong HKDF label” as root causes; the remaining suspect is the AEAD invocation (nonce/AAD construction or packet-number expansion) for the first KEY_PHASE=1 packets.
+
+### Next Actions
+1. Capture one failing ciphertext (pn≈101) and dump the nonce/AAD values fed into `crypto.unprotectInitialNoUnmask` to compare against quic-go’s values.
+2. Review `packet.decodeShortProtected` for pn-length handling once `pn_len` shrinks to 1 byte (pn=0x64). Confirm that the truncated PN expansion matches quic-go’s calculation.
+3. Cross-check quic-go’s `updatable_aead` behavior to see whether they reset any decrypt state (e.g., nonce base) when `key_phase` toggles; replicate if needed.
+
+## Phase 57 Part 18: DCID×Key Probing Shows Correct PN, AEAD Still Fails
+
+**Date:** 2025-11-14  
+**Status:** Active Investigation  
+**Issue:** Exhaustive logging proves we eventually decode `pn=100` with the correct DCID length (19 bytes), yet AEAD authentication still fails, pointing to a nonce/AAD mismatch.
+
+### Instrumentation Updates
+- Added `[PHASE57-TRY] key_set=…` logs in `decryptShortHeaderWithKeyRotationInternal()` to show every `(dcid_len, key_set)` combination we attempt. During the 14:42:37 run the loop enumerated dcid lengths 0→20, and the connection’s actual DCID length surfaced as **19** (see `/tmp/e2e-go-comprehensive.log` lines ~193900).
+- Extended `packet.decodeShortProtected()` to log `[PHASE57-AEAD] fail pn_preview=… pn_len=… pn_trunc=… key_phase=… dcid_len=… largest=…` whenever AEAD rejects the packet. Highlights from the latest run:
+  - For incorrect `dcid_len` guesses the truncated PN explodes to random values (e.g., `pn_preview=3983922889`), confirming that header protection removal is sensitive to the DCID length.
+  - When `dcid_len=19` we finally see `pn_trunc=0x64`, `pn_preview=100`, and `key_phase=true`, proving the parser produced the **exact** packet number that quic-go encrypted. AEAD still returns `error.AuthenticationFailed`.
+- Added `[PHASE57-NONCE]` and `[PHASE57-AAD]` instrumentation inside `crypto_quic.zig` (guarded by `pn>=80`) to dump the derived nonce (`IV XOR PN`) and the AAD prefix before every failing decrypt. These logs will let us compare the server’s inputs with quic-go’s `updatable_aead.Open`, which uses `aead.open_with_u64_counter(pn, header, ciphertext)`.
+
+### Current Findings
+- The Go client’s TLS secrets and our HKDF outputs match bit-for-bit (Phase 57 Part 17).
+- DCID enumeration confirms we apply header protection masks at the correct offsets, and packet-number expansion returns `pn=100` when `dcid_len=19`.
+- Because AEAD failure persists even when the parsed PN is correct, the remaining suspects are **nonce/AAD construction** or **IV usage** when KEY_PHASE flips. This narrows the search to the code around `crypto.unprotectInitialNoUnmask`, which currently mirrors the Initial packet logic and has not yet been validated against quinn/quiche for 1-RTT key updates.
+
+### Next Steps
+1. Capture the new `[PHASE57-NONCE]` / `[PHASE57-AAD]` log lines for a failing packet and compare them to quic-go’s expected values (computed from `/tmp/tls_keys_comprehensive.log` using the `nonce = iv ^ pn` rule in `internal/handshake/updatable_aead.go`).
+2. If the nonce differs, patch `xorNonce` / IV handling to match quic-go/quiche (they XOR only the low 8 bytes with the PN in big-endian order).
+3. If the nonce matches, diff the encoded AAD (first byte + DCID + PN bytes) against quic-go’s `header` buffer inside `decrypt_hdr` to ensure we are not mutating header bytes between attempts.
+4. Once the AEAD inputs match the reference implementations, re-run `make e2e-test-go-comprehensive` to verify whether pn≥100 decrypt succeeds and the 1 MB transfer exits the timeout regime.
+
+## Phase 57 Part 19: Header Protection Still Outputs Garbage PN with Correct Keys
+
+**Date:** 2025-11-14  
+**Status:** Active Investigation  
+**Issue:** With full nonce/AAD/key logging enabled, we confirmed that header protection removal is producing garbage packet numbers even when:
+1. The DCID length is correct (8 bytes) and
+2. The header-protection key/IV match the Go client’s TLS key log.
+
+### Evidence from 15:01:39 Run
+- New `[PHASE57-AEAD] expect_nonce=…` and `expect_aad=…` logs now accompany every AEAD failure. When the client first flips KEY_PHASE, the attempt with `dcid_len=8` and `key_set=NEXT` prints:
+
+  ```
+  [PHASE57-AEAD] fail pn_preview=188 pn_len=1 pn_trunc=0xbc key_phase=false dcid_len=8 largest=99 pn_start=9 err=error.AuthenticationFailed
+  [PHASE57-AEAD] expect_nonce=F2E295A729A2B46FD0F5A502
+  [PHASE57-AEAD] expect_aad=569A671DE6F12DB831DD822C4CD14D7F9784DE2B0BC
+  [PHASE57-AEAD] key_set_material key=64C8AD17FEAE93474911EA13A31BFE62 hp=905A44AFD1474C502FD9B6FC9E33BBBB iv=47B529EC65B20446C6597F90
+  ```
+
+- Using `/tmp/tls_keys_comprehensive.log` we derived the *same* Next-generation key/iv/hp values (see `derive.zig` scratch script); XORing the logged nonce with the IV recovers a packet number of **209454**, not 100. This proves header protection is still removing masks incorrectly.
+- For comparison, packets before the key update (KEY_PHASE=false, pn≤97) show `[PHASE57] ✅ Decrypted with CURRENT keys: dcid_len=8 pn=97`, so our DCID enumeration and `expandPacketNumber` logic work fine for KEY_PHASE=0.
+- Conclusion: the key update causes header-protection removal to go off the rails even though we now pass the exact hp/key/iv material the client uses. The truncated PN bytes extracted after unmasking (`0xbc`, `0xb40245`, etc.) are simply wrong.
+
+### Hypothesis
+- The failure is isolated to the *header protection removal stage*; AEAD never even sees the correct PN/AAD.
+- Either the sample offset (`pn_start + 4`) or the internal HP routine is being fed the wrong data when `pn_len` changes under masked headers. quiche/quinn both decode `pn_len` from the masked byte **after** removing HP; we follow the same approach, but our attempt to unmask with the NEXT hp key is still producing garbage.
+
+### Next Steps
+1. Capture the raw short-header datagram (e.g., via `tcpdump -i lo -w ... port 4433`) for the first KEY_PHASE=1 packet and attempt to decrypt it offline using the TLS key log + quic-go’s `qlog` tools. That will tell us definitively what the truncated PN and header-first byte should be.
+2. Compare our `crypto.unmaskLongHeaderAndPn` implementation with quiche/quinn (both of which use AES-ECB on the hp key). Look specifically at how they feed the 16-byte sample when the PN length is guessed — we may need to try the cached DCID length **first** (instead of iterating from 0) so that the first hp attempt already uses the correct sample.
+3. Update the enumerator to try `try_dcid_len` before brute-forcing 0-20. This should guarantee that the first candidate uses the cached DCID length (8), reducing the chance of sample misalignment before we switch hp keys.
+4. Once header protection yields the correct truncated PN (`0x64`), re-run the Go suite and verify whether pn ≥ 100 decrypts and the large-stream scenarios exit the timeout loop.
+
+Latest test: `make e2e-test-go-comprehensive` at 15:01:39 → **4 / 8** (large transfer 1 MB, multi round-trips, bidirectional simultaneous, stream interleaving still timeout). Logs contain the detailed nonce/AAD/key material needed for offline validation.
+
+## Phase 57 Part 20: Try Cached DCID Length Before Brute Force
+
+**Date:** 2025-11-14  
+**Status:** In Progress  
+**Issue:** Even though we already know the peer’s short-header DCID length (8 bytes), the old implementation always started enumeration at length 0 and only tried the cached value after exhausting multiple bad guesses. When KEY_PHASE flips, every wrong guess corrupts the HP sample and makes it harder to reason about the real failure.
+
+### Change
+- `decryptShortHeaderWithKeyRotationInternal()` now builds an ordered candidate list: the cached `try_dcid_len` is attempted first, followed by the remaining lengths 0‑20 (skipping duplicates). This mirrors quiche/quinn’s behavior of always testing known DCID info before falling back to brute-force.
+
+### Results (Go comprehensive @ 15:13:48)
+- Suite still finishes **4 / 8** (1 MB transfer, multi round-trips, bidirectional simultaneous, stream interleaving continue to timeout), so the user-visible failure remains.
+- Logs confirm the first `[PHASE57-TRY]` entry now uses `dcid_len=8`, greatly reducing the number of bogus `pn_preview` values before we switch hp keys. Despite that, the KEY_PHASE=1 packets still emerge with nonsense packet numbers, which means the core issue documented in Part 19 (header protection removal) is unaffected by the enumeration order.
+
+### Next Steps
+1. Capture the first KEY_PHASE=1 short header on the wire and decrypt it offline using the TLS key log to see what pn/truncated bytes the client actually sent.
+2. Compare our `crypto.unmaskLongHeaderAndPn` with quiche/quinn to verify sample extraction and pn-byte handling; fix any divergence so that the first attempt with `dcid_len=8` and NEXT hp keys yields a sane `pn_preview`.
+3. Re-run `make e2e-test-go-comprehensive` once HP removal produces `pn=100` to confirm whether the large-stream regressions disappear.
+
+## Phase 57 Part 21: Capture Short-Header Ciphertexts for Offline AEAD Verification
+
+**Date:** 2025-11-14  
+**Status:** Active Investigation  
+**Issue:** Even after prioritising the cached DCID length (Part 20), every KEY_PHASE=1 packet still fails authentication. CURRENT keys unmask to `pn=101` with `key_phase=true`, yet AEAD rejects the payload. NEXT keys, despite matching the TLS-derived material, produce garbage header bits. We need to capture the exact ciphertext/AAD inputs to decide whether the failure lives in our slice handling or the HP stage.
+
+### Evidence
+- `make e2e-test-go-comprehensive` @ 15:28 shows `[PHASE57-AEAD] fail pn_preview=101 pn_len=2 pn_trunc=0x65 key_phase=true dcid_len=8 largest=100`, immediately followed by `key_set=NEXT` reporting `pn_preview=9560 key_phase=false`. This contradiction implies the current HP key still matches the packet while the NEXT key does not.
+- Running `scratch_dump_secret.zig` against `/tmp/tls_keys_comprehensive.log` confirms that the pre-derived NEXT material (`key=4d105b9b8bad4ecee178387b1bc1531a`, `iv=bb26da5c3951dfba6a9a3171`, `hp=afa46de7637df783c8a8b7b3bcda5a35`) matches the TLS log exactly, so the key schedule itself is not at fault.
+- Because CURRENT keys recover the masked header and PN, the remaining suspects are (a) corrupted ciphertext/AAD slices between HP removal and AEAD, or (b) state getting mutated between the CURRENT and NEXT attempts.
+
+### Plan
+1. Instrument `packet.decodeShortProtected` to dump the complete short-header datagram (first byte, DCID, masked PN bytes, ciphertext+tag) plus metadata (key set, dcid_len, pn_preview) the first time `pn ≥ 100` fails with `error.AuthenticationFailed`. This enables offline replay without tcpdump.
+2. Build a tiny Zig verifier that consumes the dump and `/tmp/tls_keys_comprehensive.log`, then calls the same AEAD functions quic-go uses. If offline decrypt succeeds, we focus on slice handling in the runtime path; if it fails, header protection is still removing the wrong bytes.
+3. Mirror quinn/quiche’s header decryption flow against our dump once we can reproduce the failure deterministically.
+
+### Next Steps
+1. Land the packet dump under the existing Phase 57 logging gate so that release builds remain unaffected.
+2. Re-run `make e2e-test-go-comprehensive` to capture the first KEY_PHASE=1 failure into `/tmp/phase57-short-header.bin` for offline analysis.
+3. Use the dump to compare our AAD/nonces with quiche/quinn and unblock the large-stream fix.
+
