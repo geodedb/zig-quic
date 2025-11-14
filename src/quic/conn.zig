@@ -2088,10 +2088,16 @@ pub const Connection = struct {
                 stream_rx.initial_window_size
             else
                 stream_rx.local_max_stream_data;
-            const threshold = window >> 3;  // Divide by 8 using bit shift
+            const threshold = window >> 3;  // Divide by 8 using bit shift (256KB for 2MB window)
+            
+            // PHASE 57 PART 12: Use minimum threshold to ensure frequent updates for small reads
+            // With 4KB reads, we need updates more frequently than every 256KB
+            // Use minimum of 1/8 window or 32KB to ensure updates happen at least every 8 reads
+            const min_threshold: u64 = 32 * 1024;  // 32KB minimum
+            const effective_threshold = std.math.max(threshold, min_threshold);
 
-            // Only send if increase is significant (at least 1/8 of window)
-            if (increase >= threshold and increase > 0) {
+            // Only send if increase is significant (at least threshold)
+            if (increase >= effective_threshold and increase > 0) {
                 _ = (frame.Frame{ .max_stream_data = .{
                     .stream_id = stream_id,
                     .max = stream_rx.local_max_stream_data
@@ -2099,7 +2105,7 @@ pub const Connection = struct {
                 stream_rx.last_sent_max_stream_data = stream_rx.local_max_stream_data;
                 wrote = true;
                 std.debug.print("[PHASE 46] Sending MAX_STREAM_DATA for stream {}: max={} (increase={}, threshold={})\n",
-                    .{stream_id, stream_rx.local_max_stream_data, increase, threshold});
+                    .{stream_id, stream_rx.local_max_stream_data, increase, effective_threshold});
             }
         }
 
