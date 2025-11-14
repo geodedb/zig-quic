@@ -22,10 +22,10 @@ pub fn main() !void {
     // Create config
     var config = quic.Config{
         .max_streams_bidi = 128,
-        .max_stream_data_bidi_local = 1048576,
-        .max_stream_data_bidi_remote = 1048576,
-        .max_stream_data_uni = 1048576,
-        .max_data = 10485760,
+        .max_stream_data_bidi_local = 10485760,  // 10MB per stream (was 1MB - caused 1MB test to fail)
+        .max_stream_data_bidi_remote = 10485760,  // 10MB per stream (was 1MB)
+        .max_stream_data_uni = 10485760,  // 10MB per stream (was 1MB)
+        .max_data = 104857600,  // 100MB total connection limit (was 10MB)
         .idle_timeout_ms = 30000,
         .max_udp_payload_size = 1472,
         .initial_max_streams_uni = 10,

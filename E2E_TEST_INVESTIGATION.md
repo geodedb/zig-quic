@@ -125,3 +125,44 @@ With the regression resolved, we can now continue investigating the original iss
 3. Bidirectional and interleaved streams not working
 
 The focus should be on flow control windows and ACK timing for large data transfers.
+
+## Phase 43: Flow Control Window Investigation
+
+**Date:** 2025-11-14
+
+### Root Cause Discovery
+
+Found that `test_quic_server.zig` had flow control windows set to exactly 1MB:
+```zig
+.max_stream_data_bidi_local = 1048576,  // 1MB limit
+.max_stream_data_bidi_remote = 1048576,  // 1MB limit
+.max_stream_data_uni = 1048576,  // 1MB limit
+```
+
+This explains why 1MB tests fail - the window is exactly the test size with no headroom.
+
+### Attempted Fix
+
+Increased windows to 10MB in test_quic_server.zig:
+```zig
+.max_stream_data_bidi_local = 10485760,  // 10MB per stream
+.max_stream_data_bidi_remote = 10485760,  // 10MB per stream
+.max_stream_data_uni = 10485760,  // 10MB per stream
+.max_data = 104857600,  // 100MB total connection limit
+```
+
+**Result:** Still fails - 4/8 tests passing (no improvement)
+
+### Analysis
+
+The increased window size didn't fix the issue, suggesting deeper problems:
+1. **MAX_STREAM_DATA frames not being sent** - The server may not be sending flow control updates
+2. **Flow control credit tracking bug** - Credits may not be properly tracked/updated
+3. **Stream state machine issue** - Stream may be stuck waiting for window updates
+
+### Next Steps
+
+Need to investigate:
+1. Whether MAX_STREAM_DATA frames are actually being sent
+2. How flow control credits are tracked and updated
+3. Why even with 10MB windows, 1MB transfers still timeout
