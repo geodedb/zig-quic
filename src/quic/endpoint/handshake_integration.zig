@@ -482,6 +482,17 @@ pub fn installApplicationKeys(
         // Store secrets for key updates
         conn.app_rx_secret = server_secret;
         conn.app_tx_secret = client_secret;
+
+        // PHASE 57 Part 5: Pre-derive NEXT RX keys (RFC 9001 §6, quic-go updatable_aead.go:146-147)
+        // Derive at installation time (NOT per-packet) to maintain one-generation-ahead invariant
+        conn.app_rx_next_secret = key_schedule.updateQuicSecret(server_secret);
+        const next_mat = if (conn.version_v2)
+            key_schedule.deriveKeyIvHpV2(conn.app_rx_next_secret.?)
+        else
+            key_schedule.deriveKeyIvHp(conn.app_rx_next_secret.?);
+        conn.app_rx_next_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = next_mat.hp };
+        std.debug.print("[PHASE57-INSTALL] Client: Pre-derived NEXT RX keys from generation 0 secret\n", .{});
+
         std.debug.print("  Client: app_rx_keys (server) = {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{server_keys.key[0], server_keys.key[1], server_keys.key[2], server_keys.key[3]});
         std.debug.print("  Client: app_tx_keys (client) = {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{client_keys.key[0], client_keys.key[1], client_keys.key[2], client_keys.key[3]});
     } else {
@@ -491,6 +502,17 @@ pub fn installApplicationKeys(
         // Store secrets for key updates
         conn.app_rx_secret = client_secret;
         conn.app_tx_secret = server_secret;
+
+        // PHASE 57 Part 5: Pre-derive NEXT RX keys (RFC 9001 §6, quic-go updatable_aead.go:146-147)
+        // Derive at installation time (NOT per-packet) to maintain one-generation-ahead invariant
+        conn.app_rx_next_secret = key_schedule.updateQuicSecret(client_secret);
+        const next_mat = if (conn.version_v2)
+            key_schedule.deriveKeyIvHpV2(conn.app_rx_next_secret.?)
+        else
+            key_schedule.deriveKeyIvHp(conn.app_rx_next_secret.?);
+        conn.app_rx_next_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = next_mat.hp };
+        std.debug.print("[PHASE57-INSTALL] Server: Pre-derived NEXT RX keys from generation 0 secret\n", .{});
+
         std.debug.print("  Server: app_rx_keys (client) = {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{client_keys.key[0], client_keys.key[1], client_keys.key[2], client_keys.key[3]});
         std.debug.print("  Server: app_tx_keys (server) = {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{server_keys.key[0], server_keys.key[1], server_keys.key[2], server_keys.key[3]});
     }

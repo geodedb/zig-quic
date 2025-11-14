@@ -1770,129 +1770,102 @@ pub fn decryptShortHeaderWithKeyRotation(
     var used_prev = false;
     var actual_dcid_len = try_dcid_len;
 
-    // CRITICAL BUG #6 FIX: Try systematic DCID length enumeration
-    // RFC 9000 §17.2 / §17.3: Short headers omit DCID length; discoverable via matching heuristics.
-    // Try the cached/matched length first, then enumerate all possibilities 0-20
-    const decoded = packet.decodeShortProtected(allocator, bytes, try_dcid_len, .{
-        .key = rx_keys.key,
-        .iv = rx_keys.iv,
-        .hp = rx_keys.hp
-    }, largest_pn) catch blk_dec: {
-        // If decryption fails outright, check for stateless reset token match to fail fast.
+    // PHASE 57 PART 4 FIX: DCID×KeySet enumeration
+    // RFC 9000 §17.2/§17.3: Short headers omit DCID length; RFC 9001 §6: KEY_PHASE toggles key generation
+    // CRITICAL: Cannot trust KEY_PHASE bit until we find correct DCID length!
+    // When DCID length is wrong, HP removal produces garbage, including garbage KEY_PHASE.
+    // Solution: Try ALL key sets (CURRENT, NEXT, PREV) for EACH DCID length (0-20)
+
+    // PHASE 57 Part 5: Use pre-derived NEXT keys (installed at handshake completion)
+    // This avoids per-packet derivation and maintains one-generation-ahead invariant
+    const next_keys_opt = conn.app_rx_next_keys;
+
+    const decoded = blk_dec: {
+        // Check for stateless reset before enumeration
         if (conn.looksLikeStatelessReset(bytes)) {
             return error.StatelessReset;
         }
 
-        // BUG #6 FIX: If initial attempt failed, try all DCID lengths 0-20 systematically
+        // Debug logging for key availability
+        if (next_keys_opt != null) {
+            std.debug.print("[PHASE57-DEBUG] NEXT keys available for enumeration\n", .{});
+        } else {
+            std.debug.print("[PHASE57-DEBUG] NEXT keys NOT available (app_rx_secret is null)\n", .{});
+        }
+        if (conn.rx_prev_keys != null) {
+            std.debug.print("[PHASE57-DEBUG] PREV keys available for enumeration\n", .{});
+        }
+
+        // Enumerate ALL combinations of DCID length (0-20) × Key set (CURRENT, NEXT, PREV)
         var test_len: u8 = 0;
         while (test_len <= 20) : (test_len += 1) {
-            if (test_len == try_dcid_len) {
-                // Already tried this length above
-                continue;
-            }
+            // Try 1: CURRENT keys
             if (packet.decodeShortProtected(allocator, bytes, test_len, .{
                 .key = rx_keys.key,
                 .iv = rx_keys.iv,
                 .hp = rx_keys.hp
             }, largest_pn)) |result| {
-                // Phase 36 FIX: Validate that frames are decodable before accepting this DCID length
-                // RFC 9000 §12.4: First frame must be valid or connection error
+                // Validate frame decodability (RFC 9000 §12.4)
                 if (result.payload.len > 0) {
                     _ = frame.decodeOne(result.payload) catch {
-                        // Frame decode failed, try next DCID length
                         allocator.free(result.payload);
-                        continue;
+                        continue; // Frame decode failed, try next combination
                     };
-                    // Frame decoded successfully! This is the correct DCID length
                 }
-                // SUCCESS! Cache this length for future packets
+                // SUCCESS with CURRENT keys!
+                std.debug.print("[PHASE57] ✅ Decrypted with CURRENT keys: dcid_len={} pn={}\n", .{ test_len, result.packet_number });
                 actual_dcid_len = test_len;
                 break :blk_dec result;
-            } else |_| {
-                // This length didn't work, continue trying
+            } else |_| {}
+
+            // Try 2: NEXT keys (if available)
+            if (next_keys_opt) |next_mat| {
+                std.debug.print("[PHASE57-DEBUG] Trying NEXT keys at dcid_len={}\n", .{test_len});
+                if (packet.decodeShortProtected(allocator, bytes, test_len, .{
+                    .key = next_mat.key,
+                    .iv = next_mat.iv,
+                    .hp = next_mat.hp
+                }, largest_pn)) |result| {
+                    // Validate frame decodability
+                    if (result.payload.len > 0) {
+                        _ = frame.decodeOne(result.payload) catch {
+                            allocator.free(result.payload);
+                            continue;
+                        };
+                    }
+                    // SUCCESS with NEXT keys!
+                    std.debug.print("[PHASE57] ✅ Decrypted with NEXT keys: dcid_len={} pn={} - will promote\n", .{ test_len, result.packet_number });
+                    used_next = true;
+                    actual_dcid_len = test_len;
+                    break :blk_dec result;
+                } else |_| {}
+            }
+
+            // Try 3: PREV keys (if available)
+            if (conn.rx_prev_keys) |kp| {
+                if (packet.decodeShortProtected(allocator, bytes, test_len, .{
+                    .key = kp.key,
+                    .iv = kp.iv,
+                    .hp = kp.hp
+                }, largest_pn)) |result| {
+                    // Validate frame decodability
+                    if (result.payload.len > 0) {
+                        _ = frame.decodeOne(result.payload) catch {
+                            allocator.free(result.payload);
+                            continue;
+                        };
+                    }
+                    // SUCCESS with PREV keys!
+                    std.debug.print("[PHASE57] ✅ Decrypted with PREV keys: dcid_len={} pn={}\n", .{ test_len, result.packet_number });
+                    used_prev = true;
+                    actual_dcid_len = test_len;
+                    break :blk_dec result;
+                } else |_| {}
             }
         }
 
-        // PHASE 57: Enhanced logging for key update fallback path
-        std.debug.print("[PHASE57-FALLBACK] 🔄 Current keys failed, trying NEXT keys fallback\n", .{});
-
-        // Try derived NEXT keys if we have a RX traffic secret
-        if (conn.app_rx_secret) |cur_rx_secret| {
-            std.debug.print("[PHASE57-FALLBACK] Deriving NEXT RX secret from current secret using 'quic ku' label...\n", .{});
-            std.debug.print("[PHASE57-FALLBACK] Current RX secret: ", .{});
-            for (cur_rx_secret) |b| std.debug.print("{x:0>2}", .{b});
-            std.debug.print("\n", .{});
-            // PHASE 57 FIX: Use updateQuicSecret() which uses "quic ku" label (RFC 9001 §6)
-            // NOT updateTrafficSecret() which uses "traffic upd" (TLS 1.3 §7.2)
-            const next_secret = key_schedule.updateQuicSecret(cur_rx_secret);
-            std.debug.print("[PHASE57-FALLBACK] Derived NEXT RX secret: ", .{});
-            for (next_secret) |b| std.debug.print("{x:0>2}", .{b});
-            std.debug.print("\n", .{});
-            const mat = if (conn.version_v2)
-                key_schedule.deriveKeyIvHpV2(next_secret)
-            else
-                key_schedule.deriveKeyIvHp(next_secret);
-
-            std.debug.print("[PHASE57-FALLBACK] Derived NEXT key: ", .{});
-            for (mat.key) |b| std.debug.print("{x:0>2}", .{b});
-            std.debug.print("\n", .{});
-            std.debug.print("[PHASE57-FALLBACK] Derived NEXT IV: ", .{});
-            for (mat.iv) |b| std.debug.print("{x:0>2}", .{b});
-            std.debug.print("\n", .{});
-            std.debug.print("[PHASE57-FALLBACK] Derived NEXT HP: ", .{});
-            for (mat.hp) |b| std.debug.print("{x:0>2}", .{b});
-            std.debug.print("\n", .{});
-            std.debug.print("[PHASE57-FALLBACK] Attempting decrypt with NEXT keys...\n", .{});
-            // Use discovered/cached dcid_len if available
-            const final_dcid_len = if (conn.expected_rx_dcid_len) |cached| cached else try_dcid_len;
-            const try_next = packet.decodeShortProtected(allocator, bytes, final_dcid_len, .{
-                .key = mat.key,
-                .iv = mat.iv,
-                .hp = mat.hp
-            }, largest_pn) catch blk_prev: {
-                std.debug.print("[PHASE57-FALLBACK] ❌ NEXT keys also failed, trying PREV keys...\n", .{});
-
-                // Finally, if we have previous RX keys during transition, try them
-                if (conn.rx_prev_keys) |kp| {
-                    used_prev = true;
-                    break :blk_prev packet.decodeShortProtected(allocator, bytes, final_dcid_len, .{
-                        .key = kp.key,
-                        .iv = kp.iv,
-                        .hp = kp.hp
-                    }, largest_pn) catch {
-                        // Authentication failed across current/next/prev keys
-                        conn.onAeadAuthFailure();
-                        return error.AuthenticationFailed;
-                    };
-                }
-                // No previous keys available
-                conn.onAeadAuthFailure();
-                return error.AuthenticationFailed;
-            };
-
-            // Promote to NEXT keys on success
-            std.debug.print("[PHASE57-FALLBACK] ✅ SUCCESS! Decrypted with NEXT keys, will promote\n", .{});
-            used_next = true;
-            actual_dcid_len = final_dcid_len;
-            break :blk_dec try_next;
-        } else {
-            std.debug.print("[PHASE57-FALLBACK] ⚠️ No app_rx_secret available for NEXT key derivation\n", .{});
-        }
-
-        // No secret available for deriving NEXT; try previous only
-        if (conn.rx_prev_keys) |kp2| {
-            used_prev = true;
-            const final_dcid_len = if (conn.expected_rx_dcid_len) |cached| cached else try_dcid_len;
-            break :blk_dec packet.decodeShortProtected(allocator, bytes, final_dcid_len, .{
-                .key = kp2.key,
-                .iv = kp2.iv,
-                .hp = kp2.hp
-            }, largest_pn) catch {
-                conn.onAeadAuthFailure();
-                return error.AuthenticationFailed;
-            };
-        }
-
+        // All combinations exhausted - authentication failed
+        std.debug.print("[PHASE57] ❌ All DCID×KeySet combinations failed (0-20 × [CURRENT,NEXT,PREV])\n", .{});
         conn.onAeadAuthFailure();
         return error.AuthenticationFailed;
     };
@@ -1976,6 +1949,16 @@ pub fn promoteToNextKeys(
         new_key_phase,
     });
 
+    // PHASE 57 Part 5: Re-derive NEXT keys from the current NEXT secret BEFORE promotion
+    // This maintains the one-generation-ahead invariant (quic-go updatable_aead.go:120-123)
+    // Derive NEXT from the NEXT secret (the one we're about to promote)
+    const new_next_secret = key_schedule.updateQuicSecret(next_secret);
+    const new_next_mat = if (conn.version_v2)
+        key_schedule.deriveKeyIvHpV2(new_next_secret)
+    else
+        key_schedule.deriveKeyIvHp(new_next_secret);
+    std.debug.print("[PHASE57-KEY-PROMOTE] 🔄 Pre-derived new NEXT keys before promotion\n", .{});
+
     // Preserve current keys as previous (zeroize any older prev first)
     if (conn.rx_prev_keys) |*old_prev| {
         @memset(&old_prev.key, 0);
@@ -1985,10 +1968,14 @@ pub fn promoteToNextKeys(
     conn.rx_prev_keys = conn.app_rx_keys;
     conn.rx_prev_allow = 16; // bounded window for reordering
 
-    // Install NEXT keys as current
+    // Install NEXT keys/secret as current
     conn.app_rx_keys = .{ .key = next_keys.key, .iv = next_keys.iv, .hp = next_keys.hp };
     conn.app_rx_secret = next_secret;
     conn.rx_key_phase = !conn.rx_key_phase;
+
+    // Install the pre-derived NEXT keys/secret
+    conn.app_rx_next_secret = new_next_secret;
+    conn.app_rx_next_keys = .{ .key = new_next_mat.key, .iv = new_next_mat.iv, .hp = new_next_mat.hp };
 
     std.debug.print("[PHASE57-KEY-PROMOTE] ✅ Key promotion complete - ready for next packet\n", .{});
 }
@@ -2764,27 +2751,21 @@ pub fn processShortHeader(
     // RFC 9001 §6.1: "After receiving a packet encrypted with the next keys,
     // an endpoint MUST update to the next keys."
     if (used_next) {
-        std.debug.print("[PHASE57-STEP5] 🔄 used_next=true, deriving NEXT secret and promoting keys\n", .{});
-        if (conn.app_rx_secret) |cur_rx_secret| {
-            // PHASE 57 FIX: Use updateQuicSecret() for QUIC key updates (RFC 9001 §6 "quic ku")
-            const next_secret = key_schedule.updateQuicSecret(cur_rx_secret);
-            const next_keys = if (conn.version_v2)
-                key_schedule.deriveKeyIvHpV2(next_secret)
-            else
-                key_schedule.deriveKeyIvHp(next_secret);
+        // PHASE 57 Part 5: Use pre-derived NEXT keys (already used for decryption)
+        std.debug.print("[PHASE57-STEP5] 🔄 used_next=true, promoting pre-derived NEXT keys\n", .{});
+        if (conn.app_rx_next_secret) |next_secret| {
+            if (conn.app_rx_next_keys) |next_keys| {
+                std.debug.print("[PHASE57-STEP5] Calling promoteToNextKeys()...\n", .{});
+                promoteToNextKeys(conn, next_secret, next_keys);
 
-            std.debug.print("[PHASE57-STEP5] Calling promoteToNextKeys()...\n", .{});
-            promoteToNextKeys(conn, next_secret, .{
-                .key = next_keys.key,
-                .iv = next_keys.iv,
-                .hp = next_keys.hp,
-            });
-
-            if (ctx.test_capture_enabled) {
-                std.debug.print("🔑 Promoted to NEXT keys after successful decryption\n", .{});
+                if (ctx.test_capture_enabled) {
+                    std.debug.print("🔑 Promoted to NEXT keys after successful decryption\n", .{});
+                }
+            } else {
+                std.debug.print("[PHASE57-STEP5] ⚠️ WARNING: used_next=true but no app_rx_next_keys!\n", .{});
             }
         } else {
-            std.debug.print("[PHASE57-STEP5] ⚠️ WARNING: used_next=true but no app_rx_secret!\n", .{});
+            std.debug.print("[PHASE57-STEP5] ⚠️ WARNING: used_next=true but no app_rx_next_secret!\n", .{});
         }
     } else {
         std.debug.print("[PHASE57-STEP5] ✓ used_next=false, no key promotion needed\n", .{});

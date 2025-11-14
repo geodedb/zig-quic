@@ -511,6 +511,11 @@ pub const Connection = struct {
     // Track current TLS application traffic secrets for RX/TX to support Key Update
     app_rx_secret: ?[ks.H.digest_length]u8 = null,
     app_tx_secret: ?[ks.H.digest_length]u8 = null,
+    // PHASE 57 Part 5: Pre-derived NEXT generation keys (RFC 9001 §6)
+    // These are derived when CURRENT keys are installed and updated when keys are promoted
+    // This avoids per-packet derivation and maintains the one-generation-ahead invariant
+    app_rx_next_secret: ?[ks.H.digest_length]u8 = null,
+    app_rx_next_keys: ?packet.AeadKeys = null,
     // Short header key phase tracking (false = phase 0, true = phase 1)
     rx_key_phase: bool = false,
     tx_key_phase: bool = false,
