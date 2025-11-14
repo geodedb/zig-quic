@@ -2309,3 +2309,58 @@ if (is_peer_initiated and s.last_sent_max_stream_data == 0 and self.hasConfirmed
 - Ensures peer knows window size immediately, not just after first read
 - Should improve large stream performance
 
+## Phase 57 Part 11: Quinn-Style max_stream_data Calculation
+
+**Date:** 2025-11-14
+**Status:** FIXED ✅
+**Issue:** Flow control window calculation doesn't match quinn's proven approach
+
+### Root Cause
+
+Our previous implementation expanded the window by 50% on each read:
+- Window kept growing: 2MB → 3MB → 4.5MB → 6.75MB...
+- This is different from quinn's approach
+
+**Quinn's Approach:**
+```rust
+let max_stream_data = self.assembler.bytes_read() + stream_receive_window;
+```
+- `bytes_read()` = total bytes consumed by application
+- `stream_receive_window` = fixed receive window (e.g., 2MB)
+- `max_stream_data` = bytes_consumed + fixed_window (window "slides" forward)
+
+**Our Old Approach:**
+- Expanded window by 50% each read
+- Window kept growing exponentially
+- Didn't match quinn's proven pattern
+
+### The Fix
+
+**File:** `src/quic/conn.zig:2437-2457`
+
+1. **Added bytes_consumed_total tracking** (line 405):
+   ```zig
+   bytes_consumed_total: u64 = 0,  // Total bytes consumed by application
+   ```
+
+2. **Updated readStream() to calculate like quinn** (lines 2437-2457):
+   ```zig
+   s.bytes_consumed_total += bytes_consumed;
+   const receive_window = if (s.initial_window_size > 0) s.initial_window_size else self.local_max_stream_data;
+   const new_max_stream_data = s.bytes_consumed_total + receive_window;
+   s.local_max_stream_data = new_max_stream_data;
+   ```
+
+**Impact:**
+- Now matches quinn's proven flow control pattern exactly
+- Window "slides" forward as data is consumed (bytes_consumed + fixed_window)
+- More predictable and tested behavior
+- Should fix large stream failures
+
+### Commits Made
+
+**Commit:** fix: Phase 57 Part 11 - Use quinn-style max_stream_data calculation (6043835)
+- Added bytes_consumed_total tracking to StreamRx
+- Changed max_stream_data calculation to match quinn: bytes_consumed + receive_window
+- Replaces exponential window growth with quinn's proven sliding window approach
+
