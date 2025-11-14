@@ -2364,3 +2364,12 @@ let max_stream_data = self.assembler.bytes_read() + stream_receive_window;
 - Changed max_stream_data calculation to match quinn: bytes_consumed + receive_window
 - Replaces exponential window growth with quinn's proven sliding window approach
 
+**Commit:** fix: Phase 57 Part 11 - Remove conflicting flow control logic from pushStreamFrame (88c5152)
+- Removed old window expansion logic from pushStreamFrame() that conflicted with quinn-style approach
+- Flow control updates now only happen in readStream() when application consumes data
+- Eliminates race conditions between two different flow control mechanisms
+
+**Commit:** fix: Phase 57 Part 11 - Remove broken denom reference in connection flow control
+- Fixed compilation error from removed denom variable
+- Connection-level flow control expansion removed (handled separately if needed)
+
