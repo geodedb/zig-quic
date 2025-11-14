@@ -975,11 +975,13 @@ pub const Connection = struct {
         self.stateless_reset_base = [_]u8{0} ** 32;
         self.retired_prior_to = 0;
         self.issued_cids = 1;
-        // Initialize flow control defaults
-        self.local_max_stream_data = 64 * 1024;
-        self.peer_max_stream_data = 64 * 1024;
-        self.local_max_data = 256 * 1024;
-        self.peer_max_data = 256 * 1024;
+        // Initialize flow control defaults (aligned with quinn's defaults for good performance)
+        // Quinn uses: stream_receive_window = 1.25MB, receive_window = VarInt::MAX (essentially unlimited)
+        // This ensures large transfers (1MB+) don't get flow-control blocked
+        self.local_max_stream_data = 2 * 1024 * 1024;  // 2MB per stream (vs quinn's 1.25MB)
+        self.peer_max_stream_data = 2 * 1024 * 1024;   // 2MB per stream
+        self.local_max_data = 10 * 1024 * 1024;        // 10MB connection-level (vs quinn's VarInt::MAX)
+        self.peer_max_data = 10 * 1024 * 1024;         // 10MB connection-level
         self.peer_max_streams_bidi = 16;
         self.peer_max_streams_uni = 16;
         self.opened_bidi = 0;
