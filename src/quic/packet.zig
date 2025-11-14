@@ -1221,6 +1221,7 @@ fn maybeDumpPhase57Failure(ctx: Phase57DumpContext) void {
     printBytesHex("[PHASE57-DUMP] pn_masked", ctx.pn_masked, 16);
     printBytesHex("[PHASE57-DUMP] ciphertext+tag", ctx.ciphertext_and_tag, 256);
     printBytesHex("[PHASE57-DUMP] packet", ctx.packet, 512);
+    dumpPhase57Files(ctx);
     std.debug.print("[PHASE57-DUMP] ---- END ----\n", .{});
 }
 
@@ -1235,4 +1236,42 @@ fn printBytesHex(label: []const u8, bytes: []const u8, limit: usize) void {
         std.debug.print("...(+{} bytes)", .{bytes.len - limit});
     }
     std.debug.print("\n", .{});
+}
+
+fn dumpPhase57Files(ctx: Phase57DumpContext) void {
+    const cwd = std.fs.cwd();
+    const packet_path = "/tmp/phase57-short-header.bin";
+    const meta_path = "/tmp/phase57-short-header.meta";
+    if (cwd.createFile(packet_path, .{ .truncate = true })) |file| {
+        defer file.close();
+        file.writeAll(ctx.packet) catch {};
+    } else |err| {
+        std.debug.print("[PHASE57-DUMP] failed to write {s}: {}\n", .{ packet_path, err });
+    }
+
+    if (cwd.createFile(meta_path, .{ .truncate = true })) |file| {
+        defer file.close();
+        const writer = file.writer();
+        _ = writer.print("pn_preview={}\nkey_phase={}\nlargest_pn={}\nheader_first_masked=0x{X:0>2}\ndcid_len={}\npn_len={}\npn_start={}\ndcid_hex=", .{
+            ctx.pn_preview,
+            ctx.key_phase,
+            ctx.largest_pn,
+            ctx.header_first_masked,
+            ctx.dcid_len,
+            ctx.pn_len,
+            ctx.pn_start,
+        }) catch {};
+        writeHex(writer, ctx.header_prefix) catch {};
+        _ = writer.writeAll("\npn_masked_hex=") catch {};
+        writeHex(writer, ctx.pn_masked) catch {};
+        _ = writer.writeAll("\n\n") catch {};
+    } else |err| {
+        std.debug.print("[PHASE57-DUMP] failed to write {s}: {}\n", .{ meta_path, err });
+    }
+}
+
+fn writeHex(writer: anytype, bytes: []const u8) !void {
+    for (bytes) |b| {
+        try writer.print("{X:0>2}", .{b});
+    }
 }
