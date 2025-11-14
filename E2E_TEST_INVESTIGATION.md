@@ -281,3 +281,114 @@ The 1MB transfer still times out, suggesting additional problems:
 2. **ACK timing issues** - Delayed ACKs may be causing sender to stall
 3. **Congestion control limitations** - May be preventing sender from sending enough data
 4. **Stream state machine issues** - Streams may not be properly transitioning between states
+
+## Phase 45: Quinn Implementation Investigation
+
+**Date:** 2025-11-14
+**Focus:** Understanding how quinn (Rust QUIC implementation) handles flow control
+
+### Key Findings from Quinn
+
+Analyzed the quinn QUIC implementation at `forks/quinn/quinn-proto` to understand their flow control approach:
+
+#### 1. Smart MAX_STREAM_DATA Generation (`connection/streams/recv.rs`)
+Quinn implements intelligent flow control window updates with these key features:
+
+- **Threshold-based updates (lines 110-123):** Only sends MAX_STREAM_DATA when the increase is significant - at least 1/8 of the stream receive window. This avoids excessive control frames while ensuring timely updates.
+  ```rust
+  let diff = max_stream_data - self.sent_max_stream_data;
+  let transmit = self.can_send_flow_control() && diff >= (stream_receive_window / 8);
+  ```
+
+- **Tracking sent values (lines 130-134):** Records what MAX_STREAM_DATA value was sent to avoid redundant transmissions.
+
+- **Conditional sending (lines 148-152):** Only sends flow control updates when:
+  - Final stream offset is unknown (stream still active)
+  - Stream hasn't been stopped
+  - Significant window expansion has occurred
+
+#### 2. Per-Stream Tracking
+Each receive stream maintains:
+- `sent_max_stream_data`: Last advertised window limit
+- `local_max_stream_data`: Current receive window
+- `assembler.bytes_read()`: Bytes consumed by application
+
+#### 3. Key Differences from Our Implementation
+
+**Our Implementation Issues:**
+- Only sends MAX_STREAM_DATA in `advertiseInitialFlowControl` function
+- No intelligent threshold for when to send updates
+- Missing per-stream tracking of sent values
+- No proactive window expansion on data consumption
+
+**Quinn's Approach:**
+- Calculates window updates dynamically as data is consumed
+- Uses 1/8 window threshold to balance efficiency and responsiveness
+- Tracks sent values to avoid redundant frames
+- Integrates flow control updates into regular packet generation
+
+### Recommended Fixes
+
+Based on quinn's approach, we should:
+
+1. **Add per-stream MAX_STREAM_DATA tracking:** Track `last_sent_max_stream_data` for each stream
+2. **Implement threshold-based updates:** Only send when window increases by at least 1/8
+3. **Move flow control updates to packet generation:** Check all active streams during packet assembly, not just in `advertiseInitialFlowControl`
+4. **Send updates when data is consumed:** When application reads data via `readStream`, calculate if window update is needed
+
+## Phase 46: Quinn-Style Flow Control Implementation
+
+**Date:** 2025-11-14
+**Focus:** Implement quinn's threshold-based flow control approach
+
+### Changes Implemented
+
+1. **Added initial window tracking (conn.zig:403)**
+   - Added `initial_window_size` field to StreamRx structure
+   - Set during stream initialization in `ensureStreamRx` (line 3297)
+   - Used for calculating the 1/8 threshold
+
+2. **Threshold-based MAX_STREAM_DATA updates (conn.zig:2094-2123)**
+   - Calculate increase amount between current and last sent values
+   - Use 1/8 of initial window size as threshold (bit shift: `window >> 3`)
+   - Only send MAX_STREAM_DATA when increase is significant
+   - Prevents excessive control frames while ensuring timely updates
+
+3. **Trigger updates on data consumption (conn.zig:2413-2428)**
+   - Call `advertiseInitialFlowControl` after window expansion in `readStream`
+   - Ensures flow control frames are sent promptly when data is consumed
+   - Follows quinn's pattern of checking during regular operation
+
+### Test Results After Phase 46
+
+```
+============================================================
+RESULTS: 4 passed, 4 failed, 8 total
+============================================================
+✅ Single Stream Echo - 21 bytes in 6.88ms
+✅ Multiple Concurrent Streams - 4 streams in 6.15ms
+✅ Large Transfer (10KB) - 0.77 MB/s
+✅ Large Transfer (100KB) - 0.82 MB/s
+❌ Large Transfer (1MB) - timeout: no recent network activity
+❌ Multiple Round-trips - timeout: no recent network activity
+❌ Bidirectional Simultaneous - timeout: no recent network activity
+❌ Stream Interleaving - timeout: no recent network activity
+```
+
+### Analysis
+
+The quinn-style flow control improvements were successfully implemented but did not resolve the 1MB transfer timeout. The issue appears to be deeper than just flow control timing:
+
+1. **Threshold rule working:** The 1/8 threshold prevents excessive MAX_STREAM_DATA frames
+2. **Updates on consumption working:** Flow control frames are sent when data is read
+3. **Still failing at 1MB:** The exact window size limit suggests a different root cause
+
+### Remaining Issues
+
+The 1MB transfer consistently times out, which suggests:
+1. **Congestion control limitations** - May be preventing sender from sending enough data
+2. **ACK processing delays** - Delayed ACKs could cause sender to stall
+3. **Packet loss recovery issues** - Lost packets may not be retransmitted properly
+4. **Stream state machine bugs** - Streams may get stuck in certain states
+
+The quinn-style flow control pattern is now implemented correctly, but further investigation is needed to identify why exactly 1MB transfers fail at the window boundary.

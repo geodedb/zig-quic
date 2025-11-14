@@ -399,6 +399,8 @@ pub const StreamRx = struct {
     last_sent_max_stream_data: u64 = 0,   // Last MAX_STREAM_DATA value sent to peer
     // PHASE 42 PART 18: RTT-based autotuning (RFC 9000 §4.3, quiche flowcontrol.rs)
     last_window_update_time_us: u64 = 0,  // Timestamp of last window expansion (microseconds)
+    // PHASE 46: Quinn-style flow control tracking
+    initial_window_size: u64 = 0,         // Initial window size for threshold calculation
 
     fn init() StreamRx {
         return .{
@@ -409,6 +411,7 @@ pub const StreamRx = struct {
             .local_max_stream_data = 0,
             .last_sent_max_stream_data = 0,
             .last_window_update_time_us = 0,
+            .initial_window_size = 0,
         };
     }
     pub fn deinit(self: *StreamRx, alloc: *std.mem.Allocator) void {
@@ -2088,23 +2091,34 @@ pub const Connection = struct {
         const w = frames.writer(self.allocator.*);
         var wrote: bool = false;
 
-        // PHASE 44: Send MAX_STREAM_DATA for ALL streams that need window updates
-        // Iterate through all active streams and send MAX_STREAM_DATA where needed
+        // PHASE 46: Quinn-style flow control with 1/8 threshold
+        // Only send MAX_STREAM_DATA when increase is significant (at least 1/8 of window)
         var it = self.streams_rx.iterator();
         while (it.next()) |entry| {
             const stream_id = entry.key_ptr.*;
             const stream_rx = entry.value_ptr;
 
-            // Check if this stream needs a MAX_STREAM_DATA frame sent
-            if (stream_rx.local_max_stream_data > stream_rx.last_sent_max_stream_data) {
+            // Calculate the increase amount
+            const increase = stream_rx.local_max_stream_data -| stream_rx.last_sent_max_stream_data;
+
+            // Calculate threshold (1/8 of initial window size to avoid division)
+            // Use initial_window_size if set, otherwise fall back to current window
+            const window = if (stream_rx.initial_window_size > 0)
+                stream_rx.initial_window_size
+            else
+                stream_rx.local_max_stream_data;
+            const threshold = window >> 3;  // Divide by 8 using bit shift
+
+            // Only send if increase is significant (at least 1/8 of window)
+            if (increase >= threshold and increase > 0) {
                 _ = (frame.Frame{ .max_stream_data = .{
                     .stream_id = stream_id,
                     .max = stream_rx.local_max_stream_data
                 } }).write(w) catch 0;
                 stream_rx.last_sent_max_stream_data = stream_rx.local_max_stream_data;
                 wrote = true;
-                std.debug.print("[PHASE 44] Sending MAX_STREAM_DATA for stream {}: max={}\n",
-                    .{stream_id, stream_rx.local_max_stream_data});
+                std.debug.print("[PHASE 46] Sending MAX_STREAM_DATA for stream {}: max={} (increase={}, threshold={})\n",
+                    .{stream_id, stream_rx.local_max_stream_data, increase, threshold});
             }
         }
 
@@ -2396,7 +2410,7 @@ pub const Connection = struct {
         if (rem > 0) std.mem.copyForwards(u8, s.inbox.items[0..rem], s.inbox.items[n..]);
         s.inbox.shrinkRetainingCapacity(rem);
 
-        // PHASE 42 PART 9: Expand per-stream flow control window (RFC 9000 §4.2)
+        // PHASE 46: Quinn-style flow control - expand window and trigger update check
         // When application consumes data, grant more receive window to allow peer to send more
         const bytes_consumed = n;
         if (bytes_consumed > 0) {
@@ -2407,6 +2421,10 @@ pub const Connection = struct {
             const new_val, const overflow = @addWithOverflow(old_max, bump);
             s.local_max_stream_data = if (overflow != 0) std.math.maxInt(u64) else new_val;
             std.debug.print("[FC] Stream {} read {} bytes, window expanded {} -> {}\n", .{id, bytes_consumed, old_max, s.local_max_stream_data});
+
+            // PHASE 46: Trigger flow control frame generation after window expansion
+            // This ensures timely updates when data is consumed (quinn-style)
+            self.advertiseInitialFlowControl();
         }
 
         // TRACE: readStream returning data
@@ -3290,6 +3308,8 @@ pub const Connection = struct {
         // PHASE 42 PART 9: Initialize per-stream flow control window (RFC 9000 §4.2)
         sr.local_max_stream_data = self.local_max_stream_data;
         sr.last_sent_max_stream_data = 0;
+        // PHASE 46: Store initial window size for quinn-style threshold calculation
+        sr.initial_window_size = self.local_max_stream_data;
         self.streams_rx.put(id, sr) catch {};
         return self.streams_rx.getPtr(id).?;
     }
