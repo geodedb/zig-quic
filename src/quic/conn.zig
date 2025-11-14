@@ -1908,11 +1908,32 @@ pub const Connection = struct {
             std.debug.print("[P57-6-QUEUE] Stream {} queued ({} bytes in inbox, {} total in queue)\n", .{stream_id, s.inbox.items.len, self.incoming_stream_queue.items.len});
         }
 
-        // PHASE 57 PART 10: Send initial MAX_STREAM_DATA when stream receives first data
-        // This ensures the peer knows the initial window size immediately, not just after first read
-        if (is_peer_initiated and s.last_sent_max_stream_data == 0 and self.hasConfirmedAppTxKeys()) {
-            // Send initial MAX_STREAM_DATA to advertise the window
-            self.advertiseInitialFlowControl();
+        // PHASE 57 PART 13: Check and send MAX_STREAM_DATA when data arrives (like quinn)
+        // Quinn checks max_stream_data when stream becomes readable, not just when app reads
+        // This ensures proactive updates even if application reads slowly
+        if (is_peer_initiated and self.hasConfirmedAppTxKeys()) {
+            // Calculate current max_stream_data using quinn-style: bytes_consumed + receive_window
+            const receive_window = if (s.initial_window_size > 0) s.initial_window_size else self.local_max_stream_data;
+            const current_max_stream_data = s.bytes_consumed_total + receive_window;
+            
+            // Check if we need to send update (increase >= threshold)
+            const increase = current_max_stream_data -| s.last_sent_max_stream_data;
+            const window = if (s.initial_window_size > 0) s.initial_window_size else current_max_stream_data;
+            const threshold = window >> 3;  // 1/8 of window
+            const min_threshold: u64 = 32 * 1024;  // 32KB minimum
+            const effective_threshold = std.math.min(threshold, min_threshold);
+            
+            if (increase >= effective_threshold and increase > 0) {
+                // Update local_max_stream_data to match calculated value
+                s.local_max_stream_data = current_max_stream_data;
+                // Send the update
+                self.advertiseInitialFlowControl();
+            } else if (s.last_sent_max_stream_data == 0) {
+                // PHASE 57 PART 10: Send initial MAX_STREAM_DATA when stream receives first data
+                // This ensures the peer knows the initial window size immediately
+                s.local_max_stream_data = current_max_stream_data;
+                self.advertiseInitialFlowControl();
+            }
         }
         // Auto-echo implementation DISABLED: This conflicts with application-level echo servers.
         // The auto-echo would send "Hello QUIC\n" (11 bytes) on stream 0 with offset=0 and FIN=true,
