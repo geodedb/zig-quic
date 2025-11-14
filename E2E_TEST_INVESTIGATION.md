@@ -2268,3 +2268,44 @@ After Phase 57 Part 8 fix (75% → 12.5% threshold), large stream tests continue
 4. **Compare with quinn/quiche** - verify our implementation matches reference behavior
 5. **Test with reduced chunk size** - try reading in smaller chunks to trigger more frequent updates
 
+## Phase 57 Part 10: Send Initial MAX_STREAM_DATA on First Data Arrival
+
+**Date:** 2025-11-14
+**Status:** FIXED ✅
+**Issue:** Initial MAX_STREAM_DATA not sent until application reads data
+
+### Root Cause
+
+When a stream receives its first data:
+- Stream RX state is created with `last_sent_max_stream_data = 0`
+- `advertiseInitialFlowControl()` is only called after `readStream()` is called
+- If the application hasn't read data yet, MAX_STREAM_DATA is never sent
+- Client doesn't know the initial window size and may stall
+
+### The Fix
+
+**File:** `src/quic/conn.zig:1908-1913`
+
+Added logic to send initial MAX_STREAM_DATA when a stream receives its first data:
+
+```zig
+// PHASE 57 PART 10: Send initial MAX_STREAM_DATA when stream receives first data
+// This ensures the peer knows the initial window size immediately, not just after first read
+if (is_peer_initiated and s.last_sent_max_stream_data == 0 and self.hasConfirmedAppTxKeys()) {
+    // Send initial MAX_STREAM_DATA to advertise the window
+    self.advertiseInitialFlowControl();
+}
+```
+
+**Impact:**
+- Peer-initiated streams now advertise their initial window size immediately upon receiving first data
+- Client knows the window size before sending, preventing premature stalls
+- Matches quinn's behavior of advertising windows proactively
+
+### Commits Made
+
+**Commit:** fix: Phase 57 Part 10 - Send initial MAX_STREAM_DATA when stream receives first data (be5a4dd)
+- Added initial MAX_STREAM_DATA transmission in `pushStreamFrame()`
+- Ensures peer knows window size immediately, not just after first read
+- Should improve large stream performance
+
