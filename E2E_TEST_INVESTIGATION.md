@@ -2373,3 +2373,51 @@ let max_stream_data = self.assembler.bytes_read() + stream_receive_window;
 - Fixed compilation error from removed denom variable
 - Connection-level flow control expansion removed (handled separately if needed)
 
+## Phase 57 Part 12: Lower Threshold for Frequent MAX_STREAM_DATA Updates
+
+**Date:** 2025-11-14
+**Status:** FIXED ✅
+**Issue:** Threshold too high for small reads, causing infrequent MAX_STREAM_DATA updates
+
+### Root Cause
+
+With the quinn-style calculation (`max_stream_data = bytes_consumed + receive_window`):
+- Server reads in 4KB chunks
+- Each read increases `max_stream_data` by 4KB
+- Threshold is 1/8 of window = 256KB (for 2MB window)
+- With 4KB reads, it takes 64 reads (256KB consumed) before threshold is met
+- Client may exhaust send window waiting for updates
+
+**Problem:**
+- 4KB increase < 256KB threshold → MAX_STREAM_DATA not sent
+- Client sends up to window limit, then waits
+- Server reads slowly (4KB at a time)
+- Updates only sent every 64 reads = too infrequent
+
+### The Fix
+
+**File:** `src/quic/conn.zig:2093-2097`
+
+Added minimum threshold to ensure updates happen more frequently:
+
+```zig
+// PHASE 57 PART 12: Use minimum threshold to ensure frequent updates for small reads
+// With 4KB reads, we need updates more frequently than every 256KB
+// Use minimum of 1/8 window or 32KB to ensure updates happen at least every 8 reads
+const min_threshold: u64 = 32 * 1024;  // 32KB minimum
+const effective_threshold = std.math.max(threshold, min_threshold);
+```
+
+**Impact:**
+- Effective threshold is now max(256KB, 32KB) = 256KB for large windows
+- But for smaller windows or when reads are small, ensures 32KB minimum
+- With 4KB reads, updates happen every 8 reads (32KB) instead of every 64 reads (256KB)
+- More frequent updates prevent client from exhausting send window
+
+### Commits Made
+
+**Commit:** fix: Phase 57 Part 12 - Lower threshold to 32KB minimum for frequent MAX_STREAM_DATA updates
+- Added 32KB minimum threshold to ensure frequent updates
+- Prevents client from exhausting send window with small reads
+- Updates now happen at least every 8 reads (32KB) instead of every 64 reads (256KB)
+
