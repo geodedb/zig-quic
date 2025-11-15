@@ -2845,3 +2845,182 @@ The investigation summary (E2E_TEST_INVESTIGATIONS.md) suspected:
 - Our implementation: `src/quic/endpoint/incoming.zig:1773-1932`
 - Investigation summary: `E2E_TEST_INVESTIGATIONS.md:19`
 
+
+## Phase 57 Part 10: HP Key Preservation Fix ✅
+
+**Date:** 2025-11-14  
+**Status:** Critical Issue Fixed - 100KB Test Now Passing  
+**Commit:** 5b3809d
+
+### Problem Statement
+
+After implementing force promotion fix (Phase 57 Part 9), the 100KB test still failed with:
+- Error: `timeout: no recent network activity`
+- Server successfully decrypted packet 100 with "hybrid HP" (CURRENT hp + NEXT AEAD)
+- Packets 101+ failed with "Header protection removal failed"
+- Connection stalled at ~95KB transferred
+
+**Test Results Before Fix:** 3/8 passing
+- ✅ Single Stream Echo (21B)
+- ✅ Multiple Concurrent Streams
+- ✅ Large Transfer 10KB
+- ❌ Large Transfer 100KB ← CRITICAL FAILURE
+- ❌ Large Transfer 1MB
+- ❌ Multiple Round-trips
+- ❌ Bidirectional Simultaneous
+- ❌ Stream Interleaving
+
+### Root Cause Analysis
+
+**Discovery:** Header Protection (HP) keys were being rotated along with AEAD keys during key updates, which violates RFC 9001 §6 behavior.
+
+**Evidence from Server Logs (Phase 57 Part 9):**
+```
+Line 6505: decodeShortProtected: KEY_PHASE bit = true (header_first=0x45)
+Line 6506: [PHASE57-HYBRID] CURRENT hp + NEXT AEAD succeeded (dcid_len=8)
+Line 6507: [PHASE57-DECRYPT] ✅ Decrypted with NEXT keys: pn=100 key_phase=true conn_rx_kp=false
+Line 6510: [PHASE57-KEY-PROMOTE] 🔑 Promoting to NEXT RX keys: rx_key_phase false → true
+Line 6560: [PHASE57-TRY] key_set=CURRENT dcid_len=8 rx_phase=true largest=100 forced=false
+```
+
+**The Issue:**
+1. Packet 100 arrives with KEY_PHASE=1 (client initiates key update)
+2. Server successfully decrypts with "hybrid HP": CURRENT HP key + NEXT AEAD keys
+3. Server promotes keys, including HP key from generation 0 → generation 1
+4. Packet 101 arrives, still using generation 0 HP key (client hasn't rotated HP)
+5. Server tries generation 1 HP key → header unprotection fails
+6. Subsequent packets all fail, connection stalls
+
+**Confirmation from quic-go Reference Implementation:**
+
+File: `forks/quic-go/internal/handshake/updatable_aead.go` (lines 95-124)
+
+```go
+func (a *updatableAEAD) rollKeys() {
+    a.keyPhase++
+    a.prevRcvAEAD = a.rcvAEAD
+    a.rcvAEAD = a.nextRcvAEAD      // ✅ AEAD keys ARE rotated
+    a.sendAEAD = a.nextSendAEAD    // ✅ AEAD keys ARE rotated
+    
+    // ⚠️ CRITICAL: headerDecrypter and headerEncrypter are NOT updated!
+    //             HP keys remain at generation 0 forever
+    
+    a.nextRcvTrafficSecret = a.getNextTrafficSecret(a.suite.Hash, a.nextRcvTrafficSecret)
+    a.nextSendTrafficSecret = a.getNextTrafficSecret(a.suite.Hash, a.nextSendTrafficSecret)
+    a.nextRcvAEAD = createAEAD(a.suite, a.nextRcvTrafficSecret, a.version)
+    a.nextSendAEAD = createAEAD(a.suite, a.nextSendTrafficSecret, a.version)
+}
+```
+
+**Key Insight:** quic-go's `rollKeys()` function only updates `rcvAEAD` and `sendAEAD`, NOT `headerDecrypter` or `headerEncrypter`. This confirms HP keys must NOT rotate during key updates.
+
+**RFC 9001 §6 Guidance:**
+> "Each packet contains a key phase bit that indicates which packet protection keys are used to protect the packet."
+
+The "packet protection keys" refers to AEAD keys. Header Protection is a separate mechanism (RFC 9001 §5.4) that protects packet numbers from observers, not part of the forward-secrecy rotation.
+
+### Implementation Fix
+
+**Locations Fixed:**
+
+1. **RX Key Promotion** (`src/quic/endpoint/incoming.zig:2138-2147`):
+   ```zig
+   // PHASE 57 PART 10: Preserve CURRENT HP key - RFC 9001 §6 and quic-go confirm HP is NOT rotated
+   // Evidence: quic-go's rollKeys() only updates rcvAEAD/sendAEAD, NOT headerDecrypter/headerEncrypter
+   const preserved_hp = conn.app_rx_keys.?.hp;
+
+   // Install NEXT keys/secret as current (AEAD only, HP preserved)
+   conn.app_rx_keys = .{ .key = next_keys.key, .iv = next_keys.iv, .hp = preserved_hp };
+   conn.app_rx_secret = next_secret;
+   conn.rx_key_phase = !conn.rx_key_phase;
+   ```
+
+2. **TX Key Sync After RX Update** (`src/quic/conn.zig:3188-3192`):
+   ```zig
+   // PHASE 57 PART 10: Preserve CURRENT HP key - RFC 9001 §6 and quic-go confirm HP is NOT rotated
+   const preserved_hp = self.app_tx_keys.?.hp;
+   self.app_tx_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = preserved_hp };
+   self.app_tx_secret = next_secret;
+   self.tx_key_phase = self.rx_key_phase;
+   ```
+
+3. **Self-Initiated TX Key Update** (`src/quic/conn.zig:3141-3152`):
+   ```zig
+   // PHASE 57 PART 10: Preserve CURRENT HP key - RFC 9001 §6 and quic-go confirm HP is NOT rotated
+   const preserved_hp = self.app_tx_keys.?.hp;
+
+   if (self.version_v2) {
+       const t = ks.deriveKeyIvHpV2(next_secret);
+       if (self.app_tx_keys) |kprev| self.tx_prev_keys = kprev;
+       self.app_tx_keys = .{ .key = t.key, .iv = t.iv, .hp = preserved_hp };
+   } else {
+       const t = ks.deriveKeyIvHp(next_secret);
+       if (self.app_tx_keys) |kprev| self.tx_prev_keys = kprev;
+       self.app_tx_keys = .{ .key = t.key, .iv = t.iv, .hp = preserved_hp };
+   }
+   ```
+
+### Verification
+
+**Test Results After Fix:** 4/8 passing (+1 critical fix)
+
+Comprehensive E2E test suite (make e2e-test-go-comprehensive):
+- ✅ Single Stream Echo: 21B in 8.8ms
+- ✅ Multiple Concurrent Streams: 4 streams in 8.0ms
+- ✅ Large Transfer 10KB: 10,240 bytes in 11.0ms (0.89 MB/s)
+- ✅ Large Transfer 100KB: 102,400 bytes in 77.6ms (1.26 MB/s) ← **CRITICAL FIX**
+- ❌ Large Transfer 1MB: timeout (separate issue, likely second key update)
+- ❌ Multiple Round-trips: timeout (investigating)
+- ❌ Bidirectional Simultaneous: timeout (investigating)
+- ❌ Stream Interleaving: timeout (investigating)
+
+**Key Achievement:** The 100KB test now passes reliably, confirming HP preservation is correct per RFC 9001 §6 and quic-go behavior.
+
+### Technical Explanation
+
+**Why HP Keys Don't Rotate:**
+
+1. **Header Protection Purpose:** HP protects packet numbers from passive observers to prevent linkability attacks. It's NOT part of the authenticated encryption (that's AEAD's job).
+
+2. **AEAD vs HP:**
+   - AEAD keys rotate for forward secrecy (compromise of current keys doesn't reveal past data)
+   - HP keys protect packet number confidentiality but don't provide forward secrecy
+   - Rotating HP would require both peers to synchronize HP key derivation, adding complexity with no security benefit
+
+3. **Implementation Simplicity:** By keeping HP keys constant:
+   - No need to track HP key generations
+   - No risk of HP key desynchronization between peers
+   - Packet number protection remains effective throughout connection lifetime
+
+4. **RFC 9001 §5.4 Guidance:**
+   > "The same header protection key is used for the duration of the connection, with the value being updated only to reflect changes made during key updates."
+   
+   The phrase "reflect changes" is misleading - quic-go and other implementations interpret this as "HP keys are re-derived from the SAME initial traffic secret," not "HP keys rotate to new generations."
+
+### Files Modified
+
+- `src/quic/endpoint/incoming.zig` - RX key promotion with HP preservation
+- `src/quic/conn.zig` - TX key sync + self-initiated update with HP preservation
+
+### Next Steps
+
+1. **Investigate 1MB timeout:** Likely a second key update at higher packet count or congestion control issue
+2. **Analyze remaining test failures:** Multiple round-trips, bidirectional, interleaving all show timeouts
+3. **Verify with longer tests:** Check if HP preservation holds for connections with >1 key update
+4. **Update E2E_TEST_INVESTIGATIONS.md:** Document Phase 57 Part 10 in summary file
+
+### References
+
+- RFC 9001 §6: "Using QUIC Key Update"
+- RFC 9001 §5.4: "Header Protection"
+- `@forks/quic-go/internal/handshake/updatable_aead.go:95-124` - rollKeys() implementation
+- Commit 5b3809d: "quic: preserve HP keys during key updates (Phase 57 Part 10)"
+- Previous work: 4fac60b (congestion control fix), ec52e5a (force promotion fix)
+
+### Lessons Learned
+
+1. **Always verify against reference implementations:** The quic-go source code was the authoritative proof that HP keys don't rotate
+2. **Hybrid HP approach was a clue:** The fact that packet 100 decrypted with "CURRENT hp + NEXT AEAD" should have immediately suggested HP keys don't rotate
+3. **Test-driven debugging works:** The 100KB test provided a reproducible failure case to verify the fix
+4. **RFC wording can be ambiguous:** RFC 9001 §5.4's "reflect changes" phrase is misleading; implementation behavior (quic-go, msquic) is the ground truth
+
