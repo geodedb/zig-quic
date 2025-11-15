@@ -1948,11 +1948,17 @@ fn decryptShortHeaderWithKeyRotationInternal(
         }
 
         std.debug.print("[PHASE57] ❌ All DCID×KeySet combinations failed (0-20 × [CURRENT,NEXT,PREV])\n", .{});
-        if (!forced_attempted and conn.app_rx_next_secret != null and conn.app_rx_next_keys != null) {
-            std.debug.print("[PHASE57] ⚠️ Forcing promotion to NEXT keys after repeated auth failures\n", .{});
-            promoteToNextKeys(conn, conn.app_rx_next_secret.?, conn.app_rx_next_keys.?);
-            return decryptShortHeaderWithKeyRotationInternal(allocator, conn, bytes, try_dcid_len, true);
-        }
+        // PHASE 57 PART 9: Removed buggy force promotion that was flipping rx_key_phase prematurely.
+        // Force promotion was promoting keys BEFORE successfully decrypting with NEXT keys,
+        // causing rx_key_phase to match incoming key_phase and selecting wrong key generation.
+        // The server should ONLY promote after successfully decrypting with NEXT keys.
+        // See: PHASE57_PART8_SUMMARY.md - ACK decryption failures due to premature key promotion.
+        //
+        // if (!forced_attempted and conn.app_rx_next_secret != null and conn.app_rx_next_keys != null) {
+        //     std.debug.print("[PHASE57] ⚠️ Forcing promotion to NEXT keys after repeated auth failures\n", .{});
+        //     promoteToNextKeys(conn, conn.app_rx_next_secret.?, conn.app_rx_next_keys.?);
+        //     return decryptShortHeaderWithKeyRotationInternal(allocator, conn, bytes, try_dcid_len, true);
+        // }
         conn.onAeadAuthFailure();
         return error.AuthenticationFailed;
     };
