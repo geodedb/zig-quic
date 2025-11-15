@@ -3137,14 +3137,18 @@ pub const Connection = struct {
         if (self.tx_sent_packets_since_key >= pkt_thr or self.tx_sent_bytes_since_key >= byte_thr) {
             // Start TX update: derive next secret and keys, toggle tx key phase
             const next_secret = ks.updateTrafficSecret(self.app_tx_secret.?);
+
+            // PHASE 57 PART 10: Preserve CURRENT HP key - RFC 9001 §6 and quic-go confirm HP is NOT rotated
+            const preserved_hp = self.app_tx_keys.?.hp;
+
             if (self.version_v2) {
                 const t = ks.deriveKeyIvHpV2(next_secret);
                 if (self.app_tx_keys) |kprev| self.tx_prev_keys = kprev;
-                self.app_tx_keys = .{ .key = t.key, .iv = t.iv, .hp = t.hp };
+                self.app_tx_keys = .{ .key = t.key, .iv = t.iv, .hp = preserved_hp };
             } else {
                 const t = ks.deriveKeyIvHp(next_secret);
                 if (self.app_tx_keys) |kprev| self.tx_prev_keys = kprev;
-                self.app_tx_keys = .{ .key = t.key, .iv = t.iv, .hp = t.hp };
+                self.app_tx_keys = .{ .key = t.key, .iv = t.iv, .hp = preserved_hp };
             }
             self.app_tx_secret = next_secret;
             self.tx_key_phase = !self.tx_key_phase;
@@ -3184,7 +3188,10 @@ pub const Connection = struct {
             zeroKeys(kp);
         }
         self.tx_prev_keys = self.app_tx_keys;
-        self.app_tx_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = next_mat.hp };
+
+        // PHASE 57 PART 10: Preserve CURRENT HP key - RFC 9001 §6 and quic-go confirm HP is NOT rotated
+        const preserved_hp = self.app_tx_keys.?.hp;
+        self.app_tx_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = preserved_hp };
         self.app_tx_secret = next_secret;
         self.tx_key_phase = self.rx_key_phase;
         self.tx_update_in_progress = true;

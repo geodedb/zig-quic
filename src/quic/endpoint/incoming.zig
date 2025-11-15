@@ -2135,10 +2135,16 @@ pub fn promoteToNextKeys(
     conn.rx_prev_keys = conn.app_rx_keys;
     conn.rx_prev_allow = 16; // bounded window for reordering
 
-    // Install NEXT keys/secret as current
-    conn.app_rx_keys = .{ .key = next_keys.key, .iv = next_keys.iv, .hp = next_keys.hp };
+    // PHASE 57 PART 10: Preserve CURRENT HP key - RFC 9001 §6 and quic-go confirm HP is NOT rotated
+    // Evidence: quic-go's rollKeys() only updates rcvAEAD/sendAEAD, NOT headerDecrypter/headerEncrypter
+    const preserved_hp = conn.app_rx_keys.?.hp;
+
+    // Install NEXT keys/secret as current (AEAD only, HP preserved)
+    conn.app_rx_keys = .{ .key = next_keys.key, .iv = next_keys.iv, .hp = preserved_hp };
     conn.app_rx_secret = next_secret;
     conn.rx_key_phase = !conn.rx_key_phase;
+
+    std.debug.print("[PHASE57-HP-PRESERVE] HP key preserved during promotion (not rotated per RFC 9001 §6)\n", .{});
 
     // Install the pre-derived NEXT keys/secret
     conn.app_rx_next_secret = new_next_secret;
