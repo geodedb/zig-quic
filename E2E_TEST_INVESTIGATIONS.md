@@ -4,10 +4,10 @@
 
 ## 2025-11-14 – Large-Stream 100KB+ Failures
 
-**Status:** Phase 57 Part 9 Completed, Part 10 In Progress
-**Failing tests:** Go comprehensive suite – Large Transfer 100KB, 1MB, Multi Round-trips, Bidirectional Simultaneous, Stream Interleaving (all timing out after 30s)
-**Test results:** 3/8 passing (Single Stream Echo 21B, Multiple Concurrent Streams, Large Transfer 10KB)
-**Commits:** 4fac60b - congestion control fix, ec52e5a - force promotion fix
+**Status:** Phase 57 Part 10 Completed
+**Failing tests:** Go comprehensive suite – Large Transfer 1MB, Multi Round-trips, Bidirectional Simultaneous, Stream Interleaving (all timing out after 30s)
+**Test results:** 4/8 passing (Single Stream Echo 21B, Multiple Concurrent Streams, Large Transfer 10KB, **Large Transfer 100KB ✅**)
+**Commits:** 4fac60b - congestion control fix, ec52e5a - force promotion fix, 5b3809d - HP preservation fix
 
 ### Phase 57 Part 8 - Congestion Control Violation (✅ FIXED)
 
@@ -73,28 +73,65 @@ Disabled force promotion code block entirely:
 
 **Analysis:** Force promotion fix was necessary but not sufficient. Additional investigation revealed rx_key_phase=true at largest=100 even with force promotion disabled, suggesting another source of premature key phase modification.
 
-### Phase 57 Part 10 - Additional Key Phase Issues (❌ IN PROGRESS)
+### Phase 57 Part 10 - HP Key Preservation (✅ FIXED)
 
-**Discovery:** Even with force promotion disabled, rx_key_phase is set to true prematurely
+**Root Cause #3:** Header Protection (HP) keys were being rotated along with AEAD keys during key updates, violating RFC 9001 §6 behavior
 
-**Evidence:**
+**Discovery Process:**
+1. After force promotion fix, 100KB test still failed with "timeout: no recent network activity"
+2. Server successfully decrypted packet 100 with "hybrid HP" (CURRENT hp + NEXT AEAD)
+3. Packets 101+ failed with "Header protection removal failed"
+4. Analysis of quic-go reference implementation revealed HP keys must NOT rotate
+
+**Evidence from quic-go** (`forks/quic-go/internal/handshake/updatable_aead.go:95-124`):
+```go
+func (a *updatableAEAD) rollKeys() {
+    a.rcvAEAD = a.nextRcvAEAD      // AEAD keys ARE rotated
+    a.sendAEAD = a.nextSendAEAD
+    // headerDecrypter and headerEncrypter NOT updated - HP keys remain constant!
+}
 ```
-[PHASE57-TRY] key_set=CURRENT dcid_len=8 rx_phase=true largest=100 forced=false
-```
 
-This shows `rx_key_phase=true` when processing packet at largest=100, but packet 101 is the first with `key_phase=true` from client.
+**The Issue:**
+1. Packet 100 arrives with KEY_PHASE=1, successfully decrypts with CURRENT hp + NEXT AEAD
+2. Server promotes keys, INCLUDING HP key from generation 0 → generation 1
+3. Packet 101 arrives, still using generation 0 HP key
+4. Server tries generation 1 HP key → header unprotection fails
+5. Connection stalls
 
-**Hypothesis:**
-1. Server TX key update might be triggering RX phase flip incorrectly
-2. Some other code path sets rx_key_phase without successful decryption
-3. Possible in conn.zig initialization code around line 3035
-4. May be related to hybrid HP approach (CURRENT hp + NEXT AEAD)
+**Fix Implemented (Commit 5b3809d):**
+Preserve CURRENT HP key during all three key update scenarios:
 
-**Next Steps:**
-1. Search all locations that modify rx_key_phase
-2. Add instrumentation to track rx_key_phase modifications with stack traces
-3. Compare with msquic key update implementation
-4. Fix proper key selection after promotion
+1. RX key promotion (incoming.zig:2138-2147):
+   ```zig
+   const preserved_hp = conn.app_rx_keys.?.hp;
+   conn.app_rx_keys = .{ .key = next_keys.key, .iv = next_keys.iv, .hp = preserved_hp };
+   ```
+
+2. TX key sync after RX update (conn.zig:3188-3190):
+   ```zig
+   const preserved_hp = self.app_tx_keys.?.hp;
+   self.app_tx_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = preserved_hp };
+   ```
+
+3. Self-initiated TX key update (conn.zig:3141-3152):
+   ```zig
+   const preserved_hp = self.app_tx_keys.?.hp;
+   self.app_tx_keys = .{ .key = t.key, .iv = t.iv, .hp = preserved_hp };
+   ```
+
+**Verification:**
+- Test results improved from 3/8 to 4/8 passing
+- **100KB test now PASSES:** 102,400 bytes in 77.6ms (1.26 MB/s) ✅
+- Critical milestone: First >10KB transfer working correctly
+
+**Why HP Keys Don't Rotate:**
+- HP protects packet numbers from passive observers (linkability attacks)
+- NOT part of authenticated encryption (that's AEAD's job)
+- Rotating HP would require peer synchronization with no security benefit
+- AEAD keys rotate for forward secrecy; HP keys remain constant for simplicity
+
+**Reference:** RFC 9001 §6, quic-go updatable_aead.go:95-124, @forks/msquic packet_space.cpp
 
 ### Previous Key Update Work (Phase 57 Parts 1-21)
 - CURRENT keys decrypt up to packet number 100 with `key_phase=false`
@@ -103,13 +140,32 @@ This shows `rx_key_phase=true` when processing packet at largest=100, but packet
 - TX key sync after RX update prevents `KEY_UPDATE_ERROR`
 - DCID handling improvements (length caching, reordered probes)
 
-### Immediate Plan (Phase 57 Part 9)
-1. **Review key update state machine:** Check why server doesn't transition to NEXT keys when receiving `key_phase=true`
-2. **Verify NEXT key installation:** Ensure NEXT keys are derived and available for decryption
-3. **Fix key selection logic:** Server should try NEXT keys when KEY_PHASE bit is set
-4. **Test ACK decryption:** Verify ACKs decrypt successfully, bytes_in_flight decreases
-5. **Fix event loop:** Add yield/poll mechanism to prevent read path starvation
+### Next Steps (Phase 57 Part 11+)
 
-**Expected Outcome:** ACKs decrypt successfully → bytes_in_flight decreases → cwnd opens → large transfers complete
+**Current Status:**
+- ✅ 100KB test now passing (HP preservation fix successful)
+- ❌ 1MB, Multiple Round-trips, Bidirectional, Stream Interleaving still failing
+- 4/8 tests passing (50% success rate)
 
-See `PHASE57_PART8_SUMMARY.md` for detailed congestion control analysis and `E2E_TEST_INVESTIGATION.md` for full investigation history.
+**Remaining Issues to Investigate:**
+1. **1MB timeout:** Likely a second key update at higher packet count (~200-300 packets)
+   - quic-go triggers key update every 64 packets or 64KB (conn.zig:3135-3136)
+   - 1MB transfer would trigger multiple key updates
+   - Possible issue with subsequent key rotations beyond the first update
+
+2. **Multiple round-trips timeout:** May be related to bidirectional data flow during key updates
+   - Need to verify TX key updates work correctly when client is also sending
+
+3. **Bidirectional/Interleaving timeouts:** Complex interaction between concurrent streams and key updates
+   - Possible race conditions in key promotion logic
+   - Stream multiplexing during key phase transitions
+
+**Investigation Plan:**
+1. Run 1MB test with verbose logging to capture second key update behavior
+2. Check if HP preservation holds for subsequent key rotations (generation 0→1→2...)
+3. Verify TX/RX key sync when both peers initiate updates simultaneously
+4. Add test for multiple sequential key updates (e.g., transfer 10MB to force several rotations)
+
+**Expected Outcome:** 8/8 tests passing once all key update edge cases are handled
+
+See `E2E_TEST_INVESTIGATION.md` for full investigation history (2,600+ lines, 10+ phases documented).
