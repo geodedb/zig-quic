@@ -2,26 +2,79 @@
 
 > Canonical deep-dive log lives in `E2E_TEST_INVESTIGATION.md`. Use this summary when you need the current status without wading through 2,600+ lines of notes.
 
-## 2025-11-14 – Large-Stream 1 MB Failures
+## 2025-11-14 – Large-Stream 100KB+ Failures
 
-**Status:** Active Investigation (Phase 57 Part 21)  
-**Failing tests:** Go comprehensive suite – Large Transfer 1 MB, Multi Round-trips, Bidirectional Simultaneous, Stream Interleaving (all timing out after ~96 KB)  
-**Primary suspect:** 1-RTT key update (KEY_PHASE flip) breaks decryption of client packets ≥ pn 100
+**Status:** Phase 57 Part 8 Completed, Part 9 In Progress
+**Failing tests:** Go comprehensive suite – Large Transfer 100KB, 1MB, Multi Round-trips, Bidirectional Simultaneous, Stream Interleaving (all timing out after 30s)
+**Test results:** 3/8 passing (Single Stream Echo 21B, Multiple Concurrent Streams, Large Transfer 10KB)
+**Commit:** 4fac60b - congestion control fix
 
-### Findings
-- CURRENT keys still decrypt up to packet number 100 with `key_phase=false`, so flow control and application I/O are no longer the bottleneck (Parts 14–15).
-- The first KEY_PHASE=1 packet logs `[PHASE57-AEAD] fail pn_preview=101 … key_phase=true` even though header protection succeeded with the CURRENT hp key. AEAD immediately returns `error.AuthenticationFailed`.
-- NEXT keys, which we pre-derived from the TLS key log (`key=4d105b…`, `iv=bb26da…`, `hp=afa46d…`), produce garbage packet numbers (`pn_preview≈9,560`) and bogus key-phase bits, implying the ciphertext/AAD inputs no longer line up between attempts.
-- Deriving the same NEXT material via a standalone Zig helper that ingests `/tmp/tls_keys_comprehensive.log` confirms our key schedule matches quic-go’s; the mismatch must therefore originate in how we carve the ciphertext slice or manage state between CURRENT and NEXT attempts.
-- Fresh instrumentation writes the first failing pn≥100 packet to `/tmp/phase57-short-header.{bin,meta}`. The new `phase57_dump_check.zig` tool replays that dump offline and shows that CURRENT keys hit `error.AuthenticationFailed` while NEXT keys corrupt the packet number length (PN reported as 4 bytes instead of the expected 2). This nails the regression down to the header-protection removal path for NEXT keys, not AEAD or key derivation.
-- Hybrid replay (`CURRENT hp + NEXT AEAD`) succeeds, matching quiche/quinn’s approach of unmasking headers separately from AEAD. We ported that behaviour into `packet.decodeShortProtectedWithHp()` and log `[PHASE57-HYBRID] …` when it triggers.
-- Promoting RX keys now also calls `conn.syncTxKeysAfterRxUpdate()`, ensuring ACKs leave the server with the new key phase so quic-go no longer aborts with `KEY_UPDATE_ERROR`.
-- DCID handling still needs work: ACK telemetry (`P42-22-ACK-RX`) stops around pn 31 and `[PHASE57-DECRYPT]` never logs beyond pn 100. We now reorder the DCID probes so the observed short-header length is tried first and cache the discovered length on every success, but decrypt still fails once the peer switches to `dcid_len=0`, so additional capture/analysis (guided by @forks/msquic’s header-protection logic) is planned.
+### Phase 57 Part 8 - Congestion Control Violation (✅ FIXED)
 
-### Immediate Plan
-1. **Packet dump instrumentation:** Extend `packet.decodeShortProtected` to capture the complete short-header datagram (first byte, DCID, masked PN bytes, ciphertext+tag) plus metadata the first time a pn ≥ 100 decrypt fails. This replaces tcpdump/qlog requirements and keeps the investigation self-contained.
-2. **Offline verifier:** Replay the dump with a minimal Zig program that reconstructs the nonce/AAD and calls the same AEAD primitives quic-go uses. This will tell us whether the runtime failure is due to slice corruption vs. header protection.
-3. **Spec cross-check:** Once the failing ciphertext is reproducible offline (including the first short-header with `dcid_len=0`), diff our header decryption flow against @forks/msquic first (e.g., `packet_header.cpp` + `packet_space.cpp`), then consult @forks/quinn/@forks/quiche only if we still can’t explain the divergence.
+**Root Cause #1:** Missing congestion control check in `writeStream()` (src/quic/conn.zig:2346-2354)
 
-See `E2E_TEST_INVESTIGATION.md` §“Phase 57 Part 21” for detailed logs, commands, and next steps.
+**Evidence:**
+- Server sent 110KB when cwnd was only 15KB (7x overrun)
+- Violated RFC 9002 §7 requirement: `bytes_in_flight < cwnd` before sending
+- 80 packets (PN 124-203) exceeded congestion window
+- Maximum overrun: 95,181 bytes at PN 203
 
+**Fix Implemented:**
+```zig
+// PHASE 57 PART 8: Check congestion control before sending (RFC 9002 §7)
+// msquic: forks/msquic/src/core/cubic.c:189
+const bytes_in_flight = self.rec.cc.bytes_in_flight;
+const cwnd = self.rec.cc.cwnd;
+if (bytes_in_flight >= cwnd) {
+    return error.CongestionControlBlocked;
+}
+```
+
+**Reference:** @forks/msquic/src/core/cubic.c:189 - `if (BytesInFlight >= CongestionWindow) SendAllowance = 0`
+
+### Phase 57 Part 9 - ACK Decryption Failures (❌ IN PROGRESS)
+
+**Root Cause #2:** ACK packets fail to decrypt → bytes_in_flight never freed → cwnd stays blocked forever
+
+**Evidence:**
+```
+[CC-BLOCKED] bytes_in_flight=15389 >= cwnd=15077, blocking send
+[P42-13-ERROR] Stream 24 write error: error.CongestionControlBlocked (loop 587)
+[PHASE57-AEAD] fail pn_preview=55373 key_phase=true ... err=error.AuthenticationFailed
+[P42-13-ERROR] Stream 24 write error: error.CongestionControlBlocked (loop 588)
+```
+
+**Failure Chain:**
+1. Server sends packets until cwnd full (bytes_in_flight=15389, cwnd=15077)
+2. Congestion control correctly blocks further sends ✅
+3. Client sends ACK packets with `key_phase=true`
+4. Server attempts decryption expecting `key_phase=false` ❌
+5. All ACK decryption fails → bytes_in_flight never decreases
+6. Server enters infinite write-retry loop (loops 587-593+)
+7. Read path starved, no ACKs processed
+8. Client times out after 30 seconds
+
+**Key Phase Mismatch:**
+- All failed ACKs show `key_phase=true` (KEY_PHASE bit set)
+- Server expects `key_phase=false` (using CURRENT keys)
+- Related to key update implementation from Phase 57 Parts 1-6
+
+**Additional Issue:** Event loop starvation - tight write-retry loop blocks read path
+
+### Previous Key Update Work (Phase 57 Parts 1-21)
+- CURRENT keys decrypt up to packet number 100 with `key_phase=false`
+- KEY_PHASE=1 packets at pn≥100 fail with `error.AuthenticationFailed`
+- Hybrid HP approach (CURRENT hp + NEXT AEAD) implemented
+- TX key sync after RX update prevents `KEY_UPDATE_ERROR`
+- DCID handling improvements (length caching, reordered probes)
+
+### Immediate Plan (Phase 57 Part 9)
+1. **Review key update state machine:** Check why server doesn't transition to NEXT keys when receiving `key_phase=true`
+2. **Verify NEXT key installation:** Ensure NEXT keys are derived and available for decryption
+3. **Fix key selection logic:** Server should try NEXT keys when KEY_PHASE bit is set
+4. **Test ACK decryption:** Verify ACKs decrypt successfully, bytes_in_flight decreases
+5. **Fix event loop:** Add yield/poll mechanism to prevent read path starvation
+
+**Expected Outcome:** ACKs decrypt successfully → bytes_in_flight decreases → cwnd opens → large transfers complete
+
+See `PHASE57_PART8_SUMMARY.md` for detailed congestion control analysis and `E2E_TEST_INVESTIGATION.md` for full investigation history.
