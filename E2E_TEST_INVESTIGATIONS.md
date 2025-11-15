@@ -4,10 +4,10 @@
 
 ## 2025-11-14 – Large-Stream 100KB+ Failures
 
-**Status:** Phase 57 Part 8 Completed, Part 9 In Progress
+**Status:** Phase 57 Part 9 Completed, Part 10 In Progress
 **Failing tests:** Go comprehensive suite – Large Transfer 100KB, 1MB, Multi Round-trips, Bidirectional Simultaneous, Stream Interleaving (all timing out after 30s)
 **Test results:** 3/8 passing (Single Stream Echo 21B, Multiple Concurrent Streams, Large Transfer 10KB)
-**Commit:** 4fac60b - congestion control fix
+**Commits:** 4fac60b - congestion control fix, ec52e5a - force promotion fix
 
 ### Phase 57 Part 8 - Congestion Control Violation (✅ FIXED)
 
@@ -32,34 +32,69 @@ if (bytes_in_flight >= cwnd) {
 
 **Reference:** @forks/msquic/src/core/cubic.c:189 - `if (BytesInFlight >= CongestionWindow) SendAllowance = 0`
 
-### Phase 57 Part 9 - ACK Decryption Failures (❌ IN PROGRESS)
+### Phase 57 Part 9 - Force Promotion Bug (✅ FIXED)
 
-**Root Cause #2:** ACK packets fail to decrypt → bytes_in_flight never freed → cwnd stays blocked forever
+**Root Cause #2A:** Buggy "force promotion" code prematurely flipped rx_key_phase before successfully decrypting with NEXT keys
+
+**Evidence from logs:**
+```
+[PHASE57-KEY-PROMOTE] ✅ Key promotion complete  (BEFORE pn=101 processing!)
+[P42-20-PN-OK] ✓ Sequential PN received: pn=101, prev_largest=100
+[PHASE57-TRY] key_set=CURRENT dcid_len=8 rx_phase=true largest=100 forced=false
+```
+
+**The Bug (src/quic/endpoint/incoming.zig:1951-1961):**
+Experimental code promoted keys AFTER all decryption attempts failed, not after successful NEXT key decryption:
+```zig
+if (!forced_attempted and conn.app_rx_next_secret != null and conn.app_rx_next_keys != null) {
+    std.debug.print("[PHASE57] ⚠️ Forcing promotion to NEXT keys after repeated auth failures\n", .{});
+    promoteToNextKeys(conn, conn.app_rx_next_secret.?, conn.app_rx_next_keys.?);
+    return decryptShortHeaderWithKeyRotationInternal(..., true);  // Retry with forced flag
+}
+```
+
+**Why It Failed:**
+1. Packet 100 arrives with `key_phase=true`
+2. All decryption attempts with CURRENT/NEXT/PREV keys fail (wrong DCID length, wrong HP, etc.)
+3. Force promotion triggers, sets `rx_key_phase=true` BEFORE any successful decrypt
+4. Packet 101 arrives, now server has `rx_key_phase=true` matching packet's `key_phase=true`
+5. Server tries CURRENT keys (which are wrong generation)
+6. ACK decryption fails forever
+
+**Fix Applied (Commit ec52e5a):**
+Disabled force promotion code block entirely:
+```zig
+// PHASE 57 PART 9: Removed buggy force promotion that was flipping rx_key_phase prematurely.
+// The server should ONLY promote after successfully decrypting with NEXT keys.
+// See: PHASE57_PART8_SUMMARY.md - ACK decryption failures due to premature key promotion.
+```
+
+**Result:** Still 3/8 passing (no improvement yet)
+
+**Analysis:** Force promotion fix was necessary but not sufficient. Additional investigation revealed rx_key_phase=true at largest=100 even with force promotion disabled, suggesting another source of premature key phase modification.
+
+### Phase 57 Part 10 - Additional Key Phase Issues (❌ IN PROGRESS)
+
+**Discovery:** Even with force promotion disabled, rx_key_phase is set to true prematurely
 
 **Evidence:**
 ```
-[CC-BLOCKED] bytes_in_flight=15389 >= cwnd=15077, blocking send
-[P42-13-ERROR] Stream 24 write error: error.CongestionControlBlocked (loop 587)
-[PHASE57-AEAD] fail pn_preview=55373 key_phase=true ... err=error.AuthenticationFailed
-[P42-13-ERROR] Stream 24 write error: error.CongestionControlBlocked (loop 588)
+[PHASE57-TRY] key_set=CURRENT dcid_len=8 rx_phase=true largest=100 forced=false
 ```
 
-**Failure Chain:**
-1. Server sends packets until cwnd full (bytes_in_flight=15389, cwnd=15077)
-2. Congestion control correctly blocks further sends ✅
-3. Client sends ACK packets with `key_phase=true`
-4. Server attempts decryption expecting `key_phase=false` ❌
-5. All ACK decryption fails → bytes_in_flight never decreases
-6. Server enters infinite write-retry loop (loops 587-593+)
-7. Read path starved, no ACKs processed
-8. Client times out after 30 seconds
+This shows `rx_key_phase=true` when processing packet at largest=100, but packet 101 is the first with `key_phase=true` from client.
 
-**Key Phase Mismatch:**
-- All failed ACKs show `key_phase=true` (KEY_PHASE bit set)
-- Server expects `key_phase=false` (using CURRENT keys)
-- Related to key update implementation from Phase 57 Parts 1-6
+**Hypothesis:**
+1. Server TX key update might be triggering RX phase flip incorrectly
+2. Some other code path sets rx_key_phase without successful decryption
+3. Possible in conn.zig initialization code around line 3035
+4. May be related to hybrid HP approach (CURRENT hp + NEXT AEAD)
 
-**Additional Issue:** Event loop starvation - tight write-retry loop blocks read path
+**Next Steps:**
+1. Search all locations that modify rx_key_phase
+2. Add instrumentation to track rx_key_phase modifications with stack traces
+3. Compare with msquic key update implementation
+4. Fix proper key selection after promotion
 
 ### Previous Key Update Work (Phase 57 Parts 1-21)
 - CURRENT keys decrypt up to packet number 100 with `key_phase=false`
