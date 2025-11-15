@@ -1,0 +1,14 @@
+const std = @import("std");
+const ks = @import("vendor/ztls/src/key_schedule.zig");
+
+pub fn main() !void {
+    const secret = [32]u8{ 0x60,0xd2,0x17,0x67,0x7a,0x83,0x14,0xdc,0xd4,0x56,0xe0,0x35,0xc7,0x1d,0xd4,0x33,0x66,0x7a,0x2f,0x21,0xdb,0xdb,0x77,0x6b,0xe7,0x0a,0x3c,0xe0,0x93,0x4b,0x1f,0xbd };
+    const next = ks.updateQuicSecret(secret);
+    const mat = ks.deriveKeyIvHp(next);
+    std.debug.print("next={s}\nkey={s}\niv={s}\nhp={s}\n", .{
+        std.fmt.bytesToHex(&next, .lower),
+        std.fmt.bytesToHex(&mat.key, .lower),
+        std.fmt.bytesToHex(&mat.iv, .lower),
+        std.fmt.bytesToHex(&mat.hp, .lower),
+    });
+}

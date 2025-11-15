@@ -491,7 +491,12 @@ pub fn installApplicationKeys(
         else
             key_schedule.deriveKeyIvHp(conn.app_rx_next_secret.?);
         conn.app_rx_next_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = next_mat.hp };
-        std.debug.print("[PHASE57-INSTALL] Client: Pre-derived NEXT RX keys from generation 0 secret\n", .{});
+        std.debug.print("[PHASE57-INSTALL] Client: next_secret={s} key={s} iv={s} hp={s}\n", .{
+            std.fmt.bytesToHex(conn.app_rx_next_secret.?[0..], .lower),
+            std.fmt.bytesToHex(&next_mat.key, .lower),
+            std.fmt.bytesToHex(&next_mat.iv, .lower),
+            std.fmt.bytesToHex(&next_mat.hp, .lower),
+        });
 
         std.debug.print("  Client: app_rx_keys (server) = {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{server_keys.key[0], server_keys.key[1], server_keys.key[2], server_keys.key[3]});
         std.debug.print("  Client: app_tx_keys (client) = {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{client_keys.key[0], client_keys.key[1], client_keys.key[2], client_keys.key[3]});
@@ -511,7 +516,12 @@ pub fn installApplicationKeys(
         else
             key_schedule.deriveKeyIvHp(conn.app_rx_next_secret.?);
         conn.app_rx_next_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = next_mat.hp };
-        std.debug.print("[PHASE57-INSTALL] Server: Pre-derived NEXT RX keys from generation 0 secret\n", .{});
+        std.debug.print("[PHASE57-INSTALL] Server: next_secret={s} key={s} iv={s} hp={s}\n", .{
+            std.fmt.bytesToHex(conn.app_rx_next_secret.?[0..], .lower),
+            std.fmt.bytesToHex(&next_mat.key, .lower),
+            std.fmt.bytesToHex(&next_mat.iv, .lower),
+            std.fmt.bytesToHex(&next_mat.hp, .lower),
+        });
 
         std.debug.print("  Server: app_rx_keys (client) = {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{client_keys.key[0], client_keys.key[1], client_keys.key[2], client_keys.key[3]});
         std.debug.print("  Server: app_tx_keys (server) = {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{server_keys.key[0], server_keys.key[1], server_keys.key[2], server_keys.key[3]});

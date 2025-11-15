@@ -736,8 +736,18 @@ pub fn extractInitialPacket(datagram: []const u8) ![]const u8 {
             offset += 4;
             break :blk val;
         } else {
-            // 8-byte varint (shouldn't happen for packet length)
-            return error.UnsupportedPacketLength;
+            // 8-byte varint
+            if (offset + 8 > datagram.len) return error.PacketTooShort;
+            const val = ((@as(usize, length_first & 0x3F) << 56) |
+                (@as(usize, datagram[offset + 1]) << 48) |
+                (@as(usize, datagram[offset + 2]) << 40) |
+                (@as(usize, datagram[offset + 3]) << 32) |
+                (@as(usize, datagram[offset + 4]) << 24) |
+                (@as(usize, datagram[offset + 5]) << 16) |
+                (@as(usize, datagram[offset + 6]) << 8) |
+                datagram[offset + 7]);
+            offset += 8;
+            break :blk val;
         }
     };
 

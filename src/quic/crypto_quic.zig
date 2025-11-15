@@ -534,6 +534,27 @@ pub fn unprotectInitialAutoSample(
     // Pass only the encrypted payload + tag portion to AEAD decrypt (skip the PN bytes)
     const actual_ciphertext = ciphertext_and_tag[actual_pn_len..];
 
+    if (full_pn >= 80 or largest_pn >= 80) {
+        var nonce_preview: [12]u8 = undefined;
+        xorNonce(&nonce_preview, aead_iv, full_pn);
+        std.debug.print("[PHASE57-NONCE] pn={} nonce=", .{full_pn});
+        var nidx: usize = 0;
+        while (nidx < nonce_preview.len) : (nidx += 1) {
+            std.debug.print("{X:0>2}", .{nonce_preview[nidx]});
+        }
+        std.debug.print(" aad_len={} header_first=0x{X:0>2}\n", .{ aad.len, header_first.* });
+        const aad_preview_len = @min(aad.len, 64);
+        std.debug.print("[PHASE57-AAD] pn={} aad_prefix=", .{full_pn});
+        var aidx: usize = 0;
+        while (aidx < aad_preview_len) : (aidx += 1) {
+            std.debug.print("{X:0>2}", .{aad[aidx]});
+        }
+        if (aad_preview_len < aad.len) {
+            std.debug.print("...", .{});
+        }
+        std.debug.print("\n", .{});
+    }
+
     _ = aeadDecrypt(suite, aead_key, aead_iv, full_pn, aad, actual_ciphertext, out_plaintext) catch |err| {
         // Only print for non-zero packet numbers (likely real failures, not probing)
         if (full_pn > 0 and full_pn < 1000) {

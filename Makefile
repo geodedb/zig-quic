@@ -31,7 +31,7 @@ TARGETS = \
 # Default target runs full CI including cross-compilation
 all: ci cross-compile-quick interop
 
-build: kill
+build: kill clean
 	$(ZIG) build $(ZIG_FLAGS)
 	$(ZIG) build cli $(ZIG_FLAGS)
 

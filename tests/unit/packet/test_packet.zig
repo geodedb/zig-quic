@@ -42,6 +42,7 @@ test "coordinator re-exports DecodedShort from types module" {
         .packet_number = 1,
         .packet_number_len = 1,
         .payload = &payload,
+        .key_phase = false,
     };
     try testing.expectEqual(@as(u64, 1), decoded.packet_number);
 }
@@ -378,6 +379,7 @@ test "RFC 9000 §17 - coordinator provides all packet types" {
         .packet_number = 0,
         .packet_number_len = 1,
         .payload = &payload,
+        .key_phase = false,
     };
     _ = short;
 }

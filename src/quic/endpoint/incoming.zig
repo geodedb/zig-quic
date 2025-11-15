@@ -1807,17 +1807,23 @@ fn decryptShortHeaderWithKeyRotationInternal(
             return error.StatelessReset;
         }
 
-        // PHASE 57 Part 7: Removed excessive per-packet debug logging (performance issue)
+        // PHASE 57 Part 7: DCID enumeration optimized per msquic reference
+        // msquic uses a fixed, cached DCID length (forks/msquic/src/core/packet.c:146)
+        // Strategy: Try cached length FIRST with all key sets, then enumerate as fallback
 
-        // Enumerate ALL combinations of DCID length (0-20) × Key set (CURRENT, NEXT, PREV)
     const max_dcid_len: u8 = 20;
     var candidates: [max_dcid_len + 2]u8 = undefined;
     var cand_count: usize = 0;
-    addDcidCandidate(try_dcid_len, candidates[0..], &cand_count, max_dcid_len);
+
+    // PRIORITY 1: Cached DCID length (from previous successful decrypt)
     if (conn.expected_rx_dcid_len) |cached_len| {
         addDcidCandidate(cached_len, candidates[0..], &cand_count, max_dcid_len);
     }
 
+    // PRIORITY 2: Observed DCID length (from packet structure)
+    addDcidCandidate(try_dcid_len, candidates[0..], &cand_count, max_dcid_len);
+
+    // PRIORITY 3: Enumerate all other lengths (fallback for edge cases)
     var len_iter: u8 = 0;
     while (len_iter <= max_dcid_len) : (len_iter += 1) {
         addDcidCandidate(len_iter, candidates[0..], &cand_count, max_dcid_len);
