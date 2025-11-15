@@ -2342,6 +2342,17 @@ pub const Connection = struct {
         std.debug.print("[FC-TX] writeStream: stream_id={}, data.len={}, cur_off={}, peer_limit={}, window_left_stream={}, window_left_conn={}, to_send={}\n", .{ id, data.len, cur_off, peer_stream_limit, window_left_stream, window_left_conn, to_send });
         // Allow to_send=0 ONLY if fin=true (FIN-only frame)
         if (to_send == 0 and !fin) return error.FlowControlBlocked;
+
+        // PHASE 57 PART 8: Check congestion control before sending (RFC 9002 §7)
+        // msquic: forks/msquic/src/core/cubic.c:189 - if (BytesInFlight >= CongestionWindow) SendAllowance = 0
+        const bytes_in_flight = self.rec.cc.bytes_in_flight;
+        const cwnd = self.rec.cc.cwnd;
+        if (bytes_in_flight >= cwnd) {
+            std.debug.print("[CC-BLOCKED] bytes_in_flight={} >= cwnd={}, blocking send\n", .{ bytes_in_flight, cwnd });
+            return error.CongestionControlBlocked;
+        }
+        std.debug.print("[CC-OK] bytes_in_flight={} < cwnd={}, available={}\n", .{ bytes_in_flight, cwnd, cwnd - bytes_in_flight });
+
         var frames = std.ArrayList(u8){};
         defer frames.deinit(self.allocator.*);
         const w = frames.writer(self.allocator.*);
