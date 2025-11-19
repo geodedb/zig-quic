@@ -1363,3 +1363,125 @@ Re-attempt packet batching WITHOUT debug logging, or investigate alternative app
 - Option B: Study `@forks/quic-go` event loop architecture
 - Option C: Event loop interleaving improvements
 - Option D: Investigate server-side bidirectional stream handling in quic-go
+
+## Phase 57 Part 19: Async Send Queue Foundation (IN PROGRESS)
+
+**Status:** 🔨 Architecture implemented, integration pending
+**Commit:** 96586ad - Add async send queue module
+**Objective:** Create asynchronous send queue to decouple packet assembly from socket writes
+
+### Problem Statement
+
+**Root Cause of Bidirectional Test Failures:**
+
+The current architecture has a single-threaded event loop that blocks on socket writes:
+
+```
+Main Event Loop (cmd/quic-server.zig):
+1. Read from client → process → assemble response
+2. Call api.writeStream() → Connection.send() → sendTo()  [BLOCKS HERE]
+3. Cannot read more client data while blocked in sendTo()
+4. Deadlock: Client waits for echoes, server stuck in send, both timeout
+```
+
+When socket send buffer is full during bidirectional streaming:
+- `posix.sendto()` blocks at `endpoint/io.zig:47`
+- Event loop cannot receive packets, process ACKs, or send flow control updates
+- Creates deadlock in bidirectional scenarios where both sides send simultaneously
+
+### Solution Architecture
+
+**Two-Thread Design** (inspired by `@forks/quic-go/send_queue.go`):
+
+```
+Main Thread (Fast Path):          Sender Thread (Blocking OK):
+┌────────────────────────┐        ┌──────────────────────────┐
+│ Process received pkts  │        │ Dequeue SendJob          │
+│ Assemble outgoing pkts │   →    │ Call sendTo() (blocking) │
+│ Enqueue (non-blocking) │   ←    │ Signal space available   │
+│ Continue processing    │        │ Repeat                   │
+└────────────────────────┘        └──────────────────────────┘
+         ↓                                    ↑
+   wouldBlock()?                      Mutex + CondVar
+```
+
+**Key Components:**
+
+1. **SendQueue** (`src/quic/endpoint/send_queue.zig`, 171 lines):
+   - Bounded buffer with capacity 8-16 (quic-go uses 8)
+   - Mutex-protected job queue
+   - Condition variables for synchronization
+   - `wouldBlock()` provides backpressure when full
+
+2. **SendJob** struct:
+   - Packet data (owned by queue, freed after send)
+   - Destination peer address
+   - Allocator for cleanup
+
+3. **Integration Points** (not yet implemented):
+   - Endpoint initialization: Create and start SendQueue
+   - Connection.send(): Enqueue instead of direct sendto
+   - Event loop: Check for pending receives between send batches
+
+### Implementation Details
+
+**Created Files:**
+- `src/quic/endpoint/send_queue.zig` (171 lines)
+  - `SendQueue` struct with bounded FIFO
+  - `init()` / `start()` / `deinit()` lifecycle
+  - `send()` non-blocking enqueue (returns `error.WouldBlock` if full)
+  - `wouldBlock()` check for backpressure
+  - `senderThreadFn()` background thread that dequeues and writes
+
+**Build Configuration:**
+- Added `endpoint_send_queue_mod` in `build.zig` (lines 388-390)
+- Dependencies: `quic_conn`, `endpoint_io`
+
+**Thread Safety:**
+- Mutex protects job queue access
+- `cond_has_work` signals sender thread when jobs available
+- `cond_space_available` signals main thread when queue has space
+- Shutdown flag for graceful termination
+
+### Benefits
+
+1. **Non-blocking event loop:** Main thread never blocks on socket writes
+2. **True bidirectional streaming:** Can receive while sending
+3. **Backpressure control:** Bounded queue prevents unbounded memory growth
+4. **Based on proven design:** quic-go uses this architecture successfully
+
+### Remaining Work
+
+**Phase 57 Part 19A** (Next):
+1. Simplify initial implementation (consider non-threaded approach first)
+2. Add receive prioritization to event loop (check for packets between sends)
+3. Test basic packet batching without threading
+
+**Phase 57 Part 19B** (Full Integration):
+1. Integrate SendQueue with Endpoint initialization
+2. Modify Connection.send() to use async queue
+3. Add automatic MAX_STREAM_DATA triggering (75% window threshold)
+4. Comprehensive bidirectional streaming tests
+
+**Phase 57 Part 19C** (Optimization):
+1. Implement packet batching with safety checks
+2. Add GSO (Generic Segmentation Offload) support
+3. Performance tuning and benchmarking
+
+### Reference Implementation
+
+**quic-go Architecture** (`@forks/quic-go/`):
+- `send_queue.go`: Async send queue with buffered channel
+- `connection.go:558-750`: Two-goroutine run loop
+- `connection.go:2498-2532`: Packet batching with receive prioritization
+- `base_flow_controller.go:73-77`: Automatic MAX_STREAM_DATA at 75% threshold
+
+### Current Status
+
+✅ Async send queue module created and compiles
+✅ Build system updated
+✅ Architecture documented
+⏳ Integration with Endpoint pending
+⏳ Testing pending
+
+**Next Step:** Implement simpler iterative solution with receive prioritization before full threading infrastructure.
