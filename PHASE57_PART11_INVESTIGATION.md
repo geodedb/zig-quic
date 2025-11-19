@@ -211,3 +211,88 @@ These fixes ensure:
 - All MAX_STREAM_DATA updates are preserved, even for streams not yet initialized
 - Better debugging with detailed logging
 
+## Critical Discovery: ALPN Mismatch (2025-11-19 Part 11B)
+
+### Root Cause
+
+Tests were failing with `error.AlpnNegotiationFailed` during TLS handshake because:
+- **Server default ALPN**: "hq-interop" (cmd/quic-server.zig:19)
+- **Client requested ALPN**: "zig-quic-test"
+
+### Symptoms
+
+```
+pushCrypto: processCrypto failed with error: error.AlpnNegotiationFailed
+  role=Server, level=Initial, hs_len=255
+processInitial: handleInitialCrypto error: error.AlpnNegotiationFailed
+```
+
+The handshake would fail after the ClientHello, preventing any data transfer.
+
+### Fix
+
+Server has `--alpn` flag support. Start with correct ALPN:
+```bash
+./zig-out/bin/quic-server --alpn zig-quic-test --bind 127.0.0.1:4433 \
+  --cert vendor/ztls/tests/test_certs/p256_cert.pem \
+  --key vendor/ztls/tests/test_certs/p256_key.pem
+```
+
+### Result After ALPN Fix
+
+Handshake now completes successfully, but tests fail at exactly 64KB:
+```
+=== Test: 100KB with default (size=102400, window=0) ===
+Sent 102400 bytes
+❌ Read failed after 65536 bytes: timeout: no recent network activity
+
+=== Test: 1MB with default (size=1048576, window=0) ===
+Sent 1048576 bytes
+❌ Read failed after 65536 bytes: timeout: no recent network activity
+
+=== Test: 1MB with 2MB window (size=1048576, window=2097152) ===
+Sent 1048576 bytes
+❌ Read failed after 65536 bytes: timeout: no recent network activity
+```
+
+**All three tests stop at exactly 65536 bytes (64KB)**.
+
+## New Issue: 64KB Transfer Stall (2025-11-19)
+
+### Observations
+
+1. **Precise failure point**: All tests stop at exactly 65536 bytes received
+2. **Independent of window size**: Even with 2MB window, still stops at 64KB
+3. **Handshake succeeds**: Application keys installed successfully
+4. **First 64KB works**: Data transfer starts correctly
+
+### Hypothesis
+
+This is likely a **key update issue** rather than flow control:
+
+1. **quic-go triggers key updates at 64KB** (mentioned in conn.zig:3135-3136)
+2. **Phase 57 Parts 1-10** spent extensive effort fixing key update bugs:
+   - Part 8: Congestion control violation
+   - Part 9: Force promotion bug
+   - Part 10: HP key preservation
+3. **100KB test was passing** after HP fix in Part 10 (E2E_TEST_INVESTIGATIONS.md)
+4. **Exact 64KB boundary** is too precise to be coincidental
+
+### Comparison with Previous Success
+
+From E2E_TEST_INVESTIGATIONS.md Phase 57 Part 10:
+- **100KB test PASSED**: 102,400 bytes in 77.6ms (1.26 MB/s) ✅
+
+The difference suggests:
+- Previous comprehensive tests may have used different code paths
+- This simple echo pattern may trigger a specific key update bug
+- The 64KB stall could be related to TX-initiated key updates vs RX-initiated
+
+### Next Investigation Steps
+
+1. Add verbose key update logging around 64KB mark
+2. Check if key update is triggered when sending 64KB
+3. Verify TX key update works correctly (previous fixes focused on RX)
+4. Compare with working 100KB comprehensive test behavior
+5. Check if issue is specific to echo pattern (send all, then read all)
+

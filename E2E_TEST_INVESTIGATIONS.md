@@ -214,3 +214,16 @@ Server respects client's 512KB limit correctly, but client isn't sending MAX_STR
 - Build and test with the frame handling fixes
 - Add logging to track if MAX_STREAM_DATA frames are being received
 - Investigate why client might not be sending window updates
+
+**ALPN Mismatch Discovery (2025-11-19 11:37):**
+- **Root Cause**: Server default ALPN "hq-interop" != Client requested "zig-quic-test"
+- **Symptom**: `error.AlpnNegotiationFailed` preventing handshake completion
+- **Fix**: Start server with `--alpn zig-quic-test` flag
+- **Result**: Handshake completes, but transfers stall at exactly 64KB
+
+**64KB Transfer Stall (2025-11-19 11:40):**
+- **All tests stop at exactly 65536 bytes** (100KB, 1MB with 512KB window, 1MB with 2MB window)
+- **Independent of window size**: Not a flow control issue
+- **Hypothesis**: Key update issue at 64KB boundary (quic-go triggers updates every 64KB)
+- **Context**: 100KB test passed in Phase 57 Part 10, suggesting specific code path bug
+- **Next**: Investigate TX-side key update handling
