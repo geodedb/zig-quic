@@ -13,7 +13,7 @@
 const std = @import("std");
 const posix = std.posix;
 const conn_mod = @import("quic_conn");
-const io = @import("endpoint_io");
+const io = @import("io.zig");
 
 /// A packet job to be sent.
 const SendJob = struct {
@@ -29,8 +29,8 @@ const SendJob = struct {
 /// Async send queue with bounded buffer.
 /// Prevents main event loop from blocking on socket writes.
 pub const SendQueue = struct {
-    /// Ring buffer for send jobs (bounded capacity)
-    jobs: std.fifo.LinearFifo(SendJob, .Dynamic),
+    /// ArrayList for send jobs (bounded capacity)
+    jobs: std.ArrayList(SendJob),
     /// Mutex to protect jobs queue
     mutex: std.Thread.Mutex = .{},
     /// Condition variable to signal sender thread
@@ -53,11 +53,12 @@ pub const SendQueue = struct {
     pub fn init(allocator: std.mem.Allocator, sock_fd: posix.socket_t, capacity: usize) !*SendQueue {
         const self = try allocator.create(SendQueue);
         self.* = SendQueue{
-            .jobs = std.fifo.LinearFifo(SendJob, .Dynamic).init(allocator),
+            .jobs = .{},
             .capacity = capacity,
             .sock_fd = sock_fd,
             .allocator = allocator,
         };
+        try self.jobs.ensureTotalCapacity(allocator, capacity);
         return self;
     }
 
@@ -80,11 +81,11 @@ pub const SendQueue = struct {
         }
 
         // Free any remaining jobs
-        while (self.jobs.readItem()) |*job| {
+        for (self.jobs.items) |*job| {
             job.deinit();
         }
 
-        self.jobs.deinit();
+        self.jobs.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -93,7 +94,7 @@ pub const SendQueue = struct {
     pub fn wouldBlock(self: *SendQueue) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
-        return self.jobs.count >= self.capacity;
+        return self.jobs.items.len >= self.capacity;
     }
 
     /// Enqueue a packet for sending (non-blocking if space available).
@@ -104,12 +105,12 @@ pub const SendQueue = struct {
         defer self.mutex.unlock();
 
         // Check if queue is full
-        if (self.jobs.count >= self.capacity) {
+        if (self.jobs.items.len >= self.capacity) {
             return error.WouldBlock;
         }
 
         // Enqueue the job
-        try self.jobs.writeItem(SendJob{
+        try self.jobs.append(self.allocator, SendJob{
             .data = data,
             .peer = peer,
             .allocator = allocator,
@@ -131,17 +132,19 @@ pub const SendQueue = struct {
                 defer self.mutex.unlock();
 
                 // Wait for work or shutdown
-                while (self.jobs.count == 0 and !self.shutdown) {
+                while (self.jobs.items.len == 0 and !self.shutdown) {
                     self.cond_has_work.wait(&self.mutex);
                 }
 
                 // Check shutdown
-                if (self.shutdown and self.jobs.count == 0) {
+                if (self.shutdown and self.jobs.items.len == 0) {
                     return;
                 }
 
-                // Dequeue job
-                job = self.jobs.readItem();
+                // Dequeue job (remove from front of queue)
+                if (self.jobs.items.len > 0) {
+                    job = self.jobs.orderedRemove(0);
+                }
             }
 
             // Send the packet (outside mutex - blocking is OK here)
@@ -168,7 +171,7 @@ pub const SendQueue = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        while (self.jobs.count >= self.capacity and !self.shutdown) {
+        while (self.jobs.items.len >= self.capacity and !self.shutdown) {
             self.cond_space_available.wait(&self.mutex);
         }
     }

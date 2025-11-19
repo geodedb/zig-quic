@@ -1485,3 +1485,196 @@ Main Thread (Fast Path):          Sender Thread (Blocking OK):
 ⏳ Testing pending
 
 **Next Step:** Implement simpler iterative solution with receive prioritization before full threading infrastructure.
+
+## Phase 57 Part 19A: Async Send Queue Integration and Test Results
+
+**Status:** ❌ FAILED - Async send queue did not fix bidirectional streaming, caused 45% performance degradation
+**Failing tests:** Multiple Round-trips, Bidirectional Simultaneous, Stream Interleaving (context deadline exceeded)
+**Test results:** 5/8 passing (same as Phase 57 Part 17 baseline)
+**Implementation:** Completed async SendQueue module with 2-thread architecture, integrated into endpoint.zig
+
+### Test Results Comparison
+
+**Phase 57 Part 17 (baseline):**
+- ✅ Single Stream Echo: 156ms
+- ✅ Multiple Concurrent Streams: 112ms
+- ✅ Large Transfer (10KB): 266ms
+- ✅ Large Transfer (100KB): 1.6s
+- ✅ Large Transfer (1MB): 25.3s (0.04 MB/s)
+- ❌ Multiple Round-trips: timeout at round 9
+- ❌ Bidirectional Simultaneous: timeout
+- ❌ Stream Interleaving: timeout
+
+**Phase 57 Part 19A (async send queue):**
+- ✅ Single Stream Echo: 303ms (**94% slower**)
+- ✅ Multiple Concurrent Streams: 189ms (**68% slower**)
+- ✅ Large Transfer (10KB): 424ms (**59% slower**)
+- ✅ Large Transfer (100KB): 2.9s (**81% slower**)
+- ✅ Large Transfer (1MB): 36.6s (**45% slower**, 0.03 MB/s)
+- ❌ Multiple Round-trips: context deadline exceeded
+- ❌ Bidirectional Simultaneous: context deadline exceeded
+- ❌ Stream Interleaving: context deadline exceeded
+
+### Root Cause Analysis
+
+**Why async send queue failed:**
+
+The sendTo() implementation (src/quic/endpoint.zig:388-397) falls back to **blocking direct send** when the queue is full:
+
+```zig
+sq.send(peer, owned, self.allocator.*) catch |err| {
+    self.allocator.*.free(owned);
+    if (err == error.WouldBlock) {
+        // Queue is full, send directly (this will block but prevents data loss)
+        return try self.transport.send(peer, data);  // ← BLOCKING CALL!
+    }
+    return err;
+};
+```
+
+**Failure mechanism:**
+1. During bidirectional streaming, client sends data rapidly
+2. Server's send queue fills up (capacity is only 8 packets)
+3. **Critical issue:** Falls back to blocking `posix.sendto()` calls
+4. Event loop blocks on socket write, can't process incoming packets
+5. Client times out waiting for response → connection deadlocks
+
+**Performance degradation causes:**
+1. **Memory overhead:** Every packet copied for queue ownership (383-386)
+2. **Thread synchronization:** Mutex contention on every enqueue (send_queue.zig:104, 120)
+3. **Context switching:** Background sender thread adds scheduling overhead
+4. **Queue full fallback:** When queue fills, falls back to blocking send defeating purpose
+
+### Implementation Details
+
+**Files Modified:**
+- `src/quic/endpoint.zig:33` - Added send_queue import
+- `src/quic/endpoint.zig:149` - Added send_queue field
+- `src/quic/endpoint.zig:164-167` - Initialize and start SendQueue
+- `src/quic/endpoint.zig:324-327` - Cleanup SendQueue in deinit()
+- `src/quic/endpoint.zig:381-401` - Modified sendTo() to use async queue
+- `src/quic/endpoint/send_queue.zig` - New 177-line module with 2-thread architecture
+
+**SendQueue Architecture:**
+- **Capacity:** 8 packets (matching quic-go)
+- **Data Structure:** std.ArrayList (migrated from LinearFifo for Zig 0.15.1)
+- **Main Thread:** Enqueues packets (non-blocking if space available)
+- **Sender Thread:** Dequeues and sends via socket (blocking OK here)
+- **Synchronization:** Mutex + 2 condition variables (cond_has_work, cond_space_available)
+
+**Build Issues Fixed:**
+1. std.fifo.LinearFifo removed in Zig 0.15.1 → migrated to ArrayList
+2. ArrayList methods require explicit allocator parameter
+3. Module import changed from `@import("endpoint_io")` to `@import("io.zig")`
+4. API changes: `.count` → `.items.len`, `.readItem()` → `.orderedRemove(0)`
+
+### Why This Approach Cannot Work
+
+The fundamental issue is that a small bounded queue (capacity 8) is insufficient for high-throughput bidirectional streaming:
+
+1. **Queue saturation:** 8 packets = ~12KB at 1500 MTU, fills in milliseconds during large transfers
+2. **Fallback defeats purpose:** When queue is full, must choose between:
+   - Block on send (what we do now) → event loop stalls, same deadlock
+   - Drop packets → data loss, connection breaks
+   - Wait for space → event loop stalls, same deadlock
+
+3. **Memory copies hurt performance:** Every packet duplicated for ownership transfer
+4. **Thread overhead:** Synchronization and context switching add latency
+
+### Lessons Learned
+
+**What we learned:**
+1. Async send queue alone is insufficient - queue fills too quickly
+2. Small bounded queues (8 packets) cannot absorb bidirectional traffic bursts
+3. Blocking fallback defeats the non-blocking design goal
+4. Thread synchronization overhead is significant for per-packet operations
+
+**What is actually needed:**
+Based on quic-go analysis, the solution requires:
+1. **Receive prioritization in event loop** - Check for incoming packets between sends
+2. **Non-blocking socket operations** - Use EAGAIN/EWOULDBLOCK, don't wait
+3. **Efficient event loop design** - Poll for receives frequently, don't monopolize CPU with sends
+4. **Optional: Larger queue** - If using async queue, need 64+ packets capacity
+
+### Next Steps - Option C: Receive Prioritization (Recommended)
+
+Instead of async send queue, implement receive-prioritized event loop:
+
+**Implementation plan:**
+1. **Modify event loop** (cmd/quic-server.zig):
+   - Check for incoming packets BEFORE each send operation
+   - Exit send loop early if packets are waiting
+   - Process all receives before resuming sends
+
+2. **Pattern from quic-go** (`forks/quic-go/connection.go:2498-2532`):
+   ```go
+   for {
+       // Check for incoming packets
+       select {
+       case p := <-receiveChan:
+           processPacket(p)
+           continue  // Prioritize receive
+       default:
+           // No packets waiting, can send
+       }
+
+       // Send up to N packets
+       sent := sendBatch(maxPackets)
+       if sent == 0 {
+           break
+       }
+   }
+   ```
+
+3. **Benefits:**
+   - No memory copies
+   - No threading overhead
+   - Simpler implementation
+   - Proven pattern from quic-go
+
+**Alternative: Revert to Phase 57 Part 17**
+- Phase 57 Part 17 remains the best current state (5/8 passing, better performance)
+- Async send queue code can be kept as reference but not used
+
+### Files to Modify for Option C
+
+**cmd/quic-server.zig event loop:**
+- Add poll() call before batch sends
+- Check socket for POLLIN events
+- Exit send loop early if receives pending
+- Resume sends only after processing all receives
+
+**No changes needed to:**
+- src/quic/endpoint.zig (can remove SendQueue integration)
+- src/quic/conn.zig
+- src/quic/recovery/* (congestion control working correctly)
+
+### Updated Remaining Work
+
+**Phase 57 Part 19B - Receive Prioritization** (Recommended Next):
+1. Implement receive-prioritized event loop in cmd/quic-server.zig
+2. Add poll() check for POLLIN before send batches
+3. Test bidirectional streaming with prioritization
+4. Compare performance with Phase 57 Part 17 baseline
+
+**Phase 57 Part 19C - Alternative: Larger Queue** (If 19B insufficient):
+1. Increase SendQueue capacity to 64-128 packets
+2. Better handling of queue full condition (don't block)
+3. Consider using io_uring for true async I/O
+
+**Phase 57 Part 20 - Other Optimizations:**
+1. Packet batching (Option A from Part 17)
+2. GSO (Generic Segmentation Offload)
+3. Automatic MAX_STREAM_DATA at 75% window
+
+### Test Artifacts
+
+**Test logs:**
+- `/tmp/test_results_phase57_part19a.log` - Comprehensive test results
+- `/tmp/server_phase57_part19a.log` - Server execution log
+- `/tmp/tls_keys_phase57_part19a.log` - TLS key log
+
+**Files created:**
+- `src/quic/endpoint/send_queue.zig` (177 lines)
+- Build system module registration (build.zig:388-390)
+
