@@ -21,6 +21,8 @@ const posix = std.posix;
 pub const QuicConfig = config.QuicConfig;
 /// QUIC endpoint that owns sockets and connection state.
 pub const QuicEndpoint = endpoint.Endpoint;
+/// Metadata about a poll iteration (number of datagrams processed).
+pub const PollStats = endpoint.PollStats;
 /// Event loop backend abstraction for timer/poll integration.
 pub const LoopBackend = loop_backend.LoopBackend;
 /// Alias for the QUIC connection type exposed to API consumers.
@@ -94,6 +96,11 @@ pub fn cancelTimer(ep: *QuicEndpoint, id: u64) bool {
 /// Drive network IO and timers for up to `timeout_ms` milliseconds.
 pub fn poll(ep: *QuicEndpoint, timeout_ms: i32) !void {
     return ep.poll(timeout_ms);
+}
+
+/// Drive IO like `poll` but report how many datagrams were drained.
+pub fn pollStats(ep: *QuicEndpoint, timeout_ms: i32) !PollStats {
+    return ep.pollWithStats(timeout_ms);
 }
 
 /// Poll repeatedly with zero timeout to advance outstanding work.

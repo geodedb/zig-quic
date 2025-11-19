@@ -30,7 +30,6 @@ const handshake_integration = @import("endpoint/handshake_integration.zig");
 const client_mod = @import("endpoint/client.zig");
 const io_mod = @import("endpoint/io.zig");
 const lifecycle_mod = @import("endpoint/lifecycle.zig");
-const send_queue_mod = @import("endpoint/send_queue.zig");
 const ep_types = @import("types");
 const transport_mod = @import("endpoint/transport.zig");
 const udp_transport_mod = @import("endpoint/udp_transport.zig");
@@ -73,6 +72,10 @@ fn nowMsMonotonic() i64 {
 // Use canonical Timer and TimerKind from endpoint/types.zig (imported as ep_types)
 const Timer = ep_types.Timer;
 const TimerKind = ep_types.TimerKind;
+/// Observability for poll loops (number of datagrams drained per iteration).
+pub const PollStats = struct {
+    packets_processed: usize = 0,
+};
 
 /// Hash key combining peer address + destination CID for connection lookup.
 ///
@@ -145,8 +148,6 @@ pub const Endpoint = struct {
     epoll_fd: ?posix.fd_t = null,
     // Endpoint role (Client or Server)
     role: EndpointRole,
-    // Async send queue for non-blocking packet transmission (Phase 57 Part 19A)
-    send_queue: ?*send_queue_mod.SendQueue = null,
 
     /// Initialize a UDP endpoint bound to bind_addr (e.g., "127.0.0.1:0").
     ///
@@ -160,11 +161,6 @@ pub const Endpoint = struct {
 
         udp.* = try udp_transport_mod.UdpTransport.init(bind_addr);
         errdefer udp.deinit();
-
-        // Phase 57 Part 19A: Create and start async send queue (capacity 8 as per quic-go)
-        const send_queue = try send_queue_mod.SendQueue.init(alloc.*, udp.fd, 8);
-        errdefer send_queue.deinit();
-        try send_queue.start();
 
         // Convert to generic transport interface
         var transport = udp.asTransport();
@@ -206,7 +202,6 @@ pub const Endpoint = struct {
             .retired = std.ArrayList(*conn_mod.Connection){},
             .epoll_fd = null, // Not used with transport abstraction
             .role = endpoint_role,
-            .send_queue = send_queue, // Phase 57 Part 19A
         };
     }
 
@@ -321,11 +316,6 @@ pub const Endpoint = struct {
         self.accepted.deinit(self.allocator.*);
         self.timers.deinit(self.allocator.*);
 
-        // Phase 57 Part 19A: Clean up async send queue (must be before transport close)
-        if (self.send_queue) |sq| {
-            sq.deinit();
-        }
-
         // Phase 8c: Close transport (which closes underlying socket)
         self.transport.close();
 
@@ -378,29 +368,7 @@ pub const Endpoint = struct {
             _ = self.captures.append(self.allocator.*, .{ .peer = peer, .bytes = owned }) catch {};
         }
 
-        // Phase 57 Part 19A: Use async send queue to avoid blocking on socket writes
-        if (self.send_queue) |sq| {
-            // Make a copy of the data (SendQueue takes ownership)
-            const owned = try self.allocator.*.alloc(u8, data.len);
-            errdefer self.allocator.*.free(owned);
-            @memcpy(owned, data);
-
-            // Try to enqueue (non-blocking if space available)
-            sq.send(peer, owned, self.allocator.*) catch |err| {
-                // Queue full - free the copy and fall back to direct send
-                self.allocator.*.free(owned);
-                if (err == error.WouldBlock) {
-                    // Queue is full, send directly (this will block but prevents data loss)
-                    return try self.transport.send(peer, data);
-                }
-                return err;
-            };
-
-            // Return data length - actual send happens asynchronously
-            return data.len;
-        }
-
-        // Phase 8c: Fallback to direct transport (for tests or if send_queue not initialized)
+        // Phase 8c: Always use transport directly for sends (single-threaded event loop)
         return try self.transport.send(peer, data);
     }
 
@@ -542,6 +510,13 @@ pub const Endpoint = struct {
     /// Poll for events with timeout via transport abstraction.
     /// Phase 8c: Always uses transport (no fallback to sock_fd/epoll).
     pub fn poll(self: *Endpoint, timeout_ms: i32) !void {
+        _ = try self.pollWithStats(timeout_ms);
+    }
+
+    /// Variant of poll that returns the number of datagrams processed.
+    /// Useful for callers that need to prioritize receives over sends.
+    pub fn pollWithStats(self: *Endpoint, timeout_ms: i32) !PollStats {
+        var stats = PollStats{};
 
         // Process expired timers first
         self.processExpiredTimers(nowMsMonotonic());
@@ -564,11 +539,14 @@ pub const Endpoint = struct {
 
             // Process the received packet
             self.processIncomingDatagram(result.peer, buf[0..result.n], null);
+            stats.packets_processed += 1;
         }
 
         // Process timers that may have fired during packet processing
         self.processExpiredTimers(nowMsMonotonic());
         self.pruneClosed();
+
+        return stats;
     }
 
     fn drainReadable(self: *Endpoint) void {
