@@ -830,3 +830,137 @@ All buffering approaches fail because they address the **wrong problem**:
 - Bidirectional test may have ordering issue
 - Sender goroutine finishes before receiver starts?
 - Check quic-go client logs to see actual behavior
+
+---
+
+## Phase 57 Part 16: Read Limiting Per Iteration (FAILED - Performance Catastrophe)
+
+**Date:** 2025-11-19
+**Hypothesis:** Limit `max_reads_per_iter` from 64 to 2 to prevent 1MB burst accumulation
+**Expected Outcome:** Slower reads → more time for flushes → bidirectional test passes
+**Actual Outcome:** CATASTROPHIC PERFORMANCE DEGRADATION - 28× slower, MORE tests fail
+
+### Implementation
+
+Changed `cmd/quic-server.zig` line 295:
+```zig
+// BEFORE (Phase 57 Part 15):
+const max_reads_per_iter: usize = 64;
+
+// AFTER (Phase 57 Part 16):
+const max_reads_per_iter: usize = 2;  // Limit to prevent burst accumulation
+```
+
+Also removed Phase 57 Part 15 16KB buffer threshold (lines 268-277) since limiting reads should make it unnecessary.
+
+### Test Results
+
+**Result: 5/8 tests passing (WORSE than 6/8 baseline!)**
+
+```
+✅ Single Stream Echo - 481ms (was 7.5ms - 64× SLOWER!)
+✅ Multiple Concurrent Streams - 285ms (was 10.5ms - 27× slower)
+✅ Large Transfer (10KB) - 648ms (was 22.8ms - 28× slower, 0.02 MB/s vs 0.43 MB/s)
+✅ Large Transfer (100KB) - 3.26s (was 121ms - 27× slower, 0.03 MB/s vs 0.81 MB/s)
+✅ Large Transfer (1MB) - 39.5s (was 1.42s - 28× SLOWER!, 0.03 MB/s vs 0.70 MB/s)
+❌ Multiple Round-trips - context deadline exceeded (was PASSING in Part 15!)
+❌ Bidirectional Simultaneous - context deadline exceeded (still failing)
+❌ Stream Interleaving - context deadline exceeded (still failing)
+```
+
+### Critical Analysis: Why This Failed So Badly
+
+**1. Event Loop Throttling**
+- With `max_reads_per_iter = 64`: server can read up to 64 × 65KB = 4MB per iteration
+- With `max_reads_per_iter = 2`: server can only read 2 × 65KB = 130KB per iteration
+- For 1MB transfer:
+  - Before: ~16 read iterations (1MB / 65KB)
+  - After: ~512 read iterations (1MB / 2KB effective throughput)
+- **The event loop became 32× slower for large transfers**
+
+**2. Multiple Round-trips Now Fails**
+- This test WAS passing with Part 15 (6/8)
+- Now fails with timeout
+- The test has 10-second deadline, but server is now SO SLOW it can't complete in time
+- Proves that limiting reads TOO MUCH breaks even simple tests
+
+**3. Bidirectional/Interleaving Still Fail**
+- Limiting reads didn't help these tests at all
+- They still timeout (30-second deadlines)
+- Suggests the problem is NOT about read burst size
+
+### Root Cause Discovery
+
+**The REAL problem is NOT read burst size - it's event loop architecture:**
+
+1. **quic-go advantage:** Uses `io.Copy(stream, stream)` which can **block on reads**
+   - Go's scheduler handles blocking gracefully
+   - While one goroutine blocks on read, another can continue writing
+   - QUIC layer manages flow control independently
+
+2. **Our limitation:** Single-threaded event loop **cannot block**
+   - Must drain ALL available data immediately
+   - Cannot interleave reads and writes naturally
+   - If we throttle reads, we throttle EVERYTHING
+
+3. **The chicken-and-egg problem remains:**
+   - Server reads data → buffers it → tries to flush
+   - Flush is slow (1150 bytes/iter) due to flow control
+   - Buffer grows faster than it drains
+   - Client waits for echoes before sending MAX_STREAM_DATA
+   - Server stays blocked forever
+
+### Fundamental Insight
+
+**Limiting reads per iteration addresses the WRONG problem:**
+- ❌ We thought: "Reading too fast causes buffer overflow"
+- ✅ Reality: "Event loop needs BOTH aggressive reading AND effective flushing"
+
+**The real issue:**
+- Flushes don't happen frequently ENOUGH during read bursts
+- With Part 15 (no limit), server reads 1MB then flushes 1150 bytes
+- With Part 16 (limit=2), server reads 130KB then flushes... still only 1150 bytes!
+- **The flush rate is the bottleneck, not the read rate**
+
+### Why Flush Rate Is So Slow
+
+From Phase 57 Part 15 logs:
+```
+[P42-13-FLUSH] Stream 28 flushed 1150 bytes (2300 total written, 1046276 still pending)
+```
+
+Possible causes (needs investigation):
+1. **Congestion control:** cwnd might be limiting packet sends
+2. **Pacing:** Rate-based pacing might be throttling sends
+3. **Flow control:**client's rx window might be exhausted
+4. **Packet coalescing:** Server might be batching writes inefficiently
+
+### Lessons Learned
+
+1. **Don't throttle the event loop** - it breaks everything
+2. **The problem is not HOW MUCH we read** - it's WHEN we flush
+3. **Single-threaded event loops need careful balancing** - can't just limit one side
+4. **Buffer thresholds and read limits attack symptoms, not root cause**
+
+### Next Steps
+
+Since all threshold/limit approaches (Parts 13, 13B, 14, 15, 16) have failed, we need to investigate the actual bottleneck:
+
+**Option A: Investigate slow flush rate (PRIORITY)**
+- Why only 1150 bytes per flush when we have 512KB flow control window?
+- Check congestion control state (cwnd, pacing_rate)
+- Check client's rx flow control window
+- Verify packet send path isn't artificially limiting throughput
+
+**Option B: Interleave reads and writes better**
+- Instead of "read all → flush all", do "read some → flush some → repeat"
+- Try max_reads_per_iter = 8 (middle ground)
+- Force flush attempt after each read, not just at end
+
+**Option C: Proactive flow control updates**
+- Server sends MAX_STREAM_DATA after reading (not waiting for BLOCKED)
+- Might unblock client receiver sooner
+
+**Option D: Architecture change**
+- Consider multi-threaded approach (separate read/write threads)
+- Or use Zig async/await (if suitable for QUIC event loop)

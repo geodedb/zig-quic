@@ -265,16 +265,8 @@ pub fn main() !void {
                             .{stream_id, written, stream.total_written, stream.pending_write.items.len});
                     }
 
-                    // PHASE 57 PART 15: Hybrid approach - allow reads if pending < 16KB
-                    // This enables bidirectional communication for small amounts of data
-                    // while preventing OOM from unbounded buffering
-                    // Reference: QUIC implementations typically use 16-64KB buffers
-                    const SMALL_BUFFER_THRESHOLD: usize = 16 * 1024; // 16KB
-                    if (stream.pending_write.items.len > SMALL_BUFFER_THRESHOLD) {
-                        std.debug.print("[P57-15-SKIP] Stream {} skipping read, pending={} bytes > {}KB threshold\n",
-                            .{stream_id, stream.pending_write.items.len, SMALL_BUFFER_THRESHOLD / 1024});
-                        continue;
-                    }
+                    // PHASE 57 PART 16: Removed buffer threshold - now using read limiting instead
+                    // (See max_reads_per_iter below for the actual fix)
                 }
 
                 // Server push progression
@@ -297,7 +289,10 @@ pub fn main() !void {
                 // quic-go NEVER blocks reads based on pending writes - they are independent!
                 if (!stream.got_fin) {
                     var chunk: [64 * 1024]u8 = undefined; // 64KB buffer similar to quinn/quiche examples
-                    const max_reads_per_iter: usize = 64; // increased to drain large transfers faster
+                    // PHASE 57 PART 16: Limit to 2 reads per iteration to prevent burst accumulation
+                    // This prevents 1MB bursts (16 × 65KB) that overwhelm flow control
+                    // Allows flush phase to drain before reading more, enabling bidirectional
+                    const max_reads_per_iter: usize = 2;
                     var reads_this_iter: usize = 0;
 
                     // REMOVED: pending_write.items.len == 0 check that caused deadlock
