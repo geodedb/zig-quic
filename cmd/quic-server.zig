@@ -265,6 +265,8 @@ pub fn main() !void {
                             .{stream_id, written, stream.total_written, stream.pending_write.items.len});
                     }
 
+                    // PHASE 57 PART 12B REVERTED: The continue is needed for Multiple Round-trips
+                    // Removing it caused regression from 6/8 to 5/8 passing tests
                     if (stream.pending_write.items.len > 0) continue;
                 }
 

@@ -358,3 +358,56 @@ Server logs reveal tests fail **BEFORE** reaching echo logic:
 - Check if client-side is stuck during stream opening
 - Verify server accepts multiple concurrent streams correctly
 - Add detailed logging for stream creation and early data frames
+
+---
+
+## Phase 57 Part 12C: Failed Attempt to Remove Continue Statement (REVERTED)
+
+### Investigation Date
+2025-11-19
+
+### Hypothesis
+Since quic-go uses `io.Copy(stream, stream)` which allows independent read/write operations, maybe the `continue` statement at `cmd/quic-server.zig:268` is the root cause. This `continue` skips blocked streams entirely, preventing them from reading new data while writes are pending.
+
+### Implementation Attempted
+Removed the `continue` statement at line 268 and replaced with comment:
+```zig
+// PHASE 57 PART 12B REVERTED: The continue is needed for Multiple Round-trips
+// Removing it caused regression from 6/8 to 5/8 passing tests
+if (stream.pending_write.items.len > 0) continue;
+```
+
+### Test Results
+**REGRESSION**: Tests went from 6/8 passing to 5/8 passing
+
+**Passed (5)**:
+- ✅ Single Stream Echo
+- ✅ Multiple Concurrent Streams
+- ✅ Large Transfer (10KB)
+- ✅ Large Transfer (100KB)
+- ✅ Large Transfer (1MB)
+
+**Failed (3)**:
+- ❌ Multiple Round-trips (NEW FAILURE - was passing before!)
+- ❌ Bidirectional Simultaneous (still failing)
+- ❌ Stream Interleaving (still failing)
+
+### Analysis
+1. **The `continue` statement is necessary** for the "Multiple Round-trips" test to pass
+2. Removing it causes streams to accumulate unbounded data in `pending_write` buffers
+3. Server logs show massive buffering on Stream 28 (1MB test):
+   - Read 1,048,576 bytes total
+   - Buffered up to 1,047,426 bytes in pending_write
+   - Server correctly buffers and flushes, but causes test timeouts
+
+4. **The problem is NOT the `continue` statement** - it's actually needed for flow control to work properly
+5. The failing tests must have a different root cause
+
+### Conclusion
+**REVERTED** the change as it made things worse. The `continue` statement serves a purpose: it prevents reading more data when a stream is already blocked on writes. Without it, streams accumulate excessive buffered data which can lead to timeouts.
+
+### Next Steps
+Need to investigate why Bidirectional and Interleaving tests fail WITHOUT changing the `continue` logic. The root cause must be elsewhere in:
+1. Stream initialization/handshake
+2. Frame processing order
+3. Client-server synchronization
