@@ -265,7 +265,16 @@ pub fn main() !void {
                             .{stream_id, written, stream.total_written, stream.pending_write.items.len});
                     }
 
-                    if (stream.pending_write.items.len > 0) continue;
+                    // PHASE 57 PART 15: Hybrid approach - allow reads if pending < 16KB
+                    // This enables bidirectional communication for small amounts of data
+                    // while preventing OOM from unbounded buffering
+                    // Reference: QUIC implementations typically use 16-64KB buffers
+                    const SMALL_BUFFER_THRESHOLD: usize = 16 * 1024; // 16KB
+                    if (stream.pending_write.items.len > SMALL_BUFFER_THRESHOLD) {
+                        std.debug.print("[P57-15-SKIP] Stream {} skipping read, pending={} bytes > {}KB threshold\n",
+                            .{stream_id, stream.pending_write.items.len, SMALL_BUFFER_THRESHOLD / 1024});
+                        continue;
+                    }
                 }
 
                 // Server push progression

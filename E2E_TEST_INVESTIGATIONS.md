@@ -622,3 +622,211 @@ This suggests:
 2. Investigate if server-push mechanism (lines 274-286) interferes with echo logic
 3. Check if client-side is actually reading echo data or if it's being buffered
 4. Consider multi-threaded approach for flush operations (complex change)
+
+---
+
+## Phase 57 Part 15: Hybrid Buffering Approach (16KB Threshold) - FAILED
+
+**Date:** 2025-11-19
+**Result:** 6/8 passing (SAME as baseline - NO IMPROVEMENT)
+**Commit:** 98cb3b8 (reverted to baseline first)
+
+### Hypothesis
+
+After Phase 57 Part 14 showed that "always buffer" breaks Multiple Round-trips, we tested a **hybrid approach**:
+- Allow reads when `pending_write < 16KB` (enables bidirectional for small messages)
+- Block reads when `pending_write > 16KB` (prevents unbounded memory growth)
+
+Rationale: Bidirectional test sends small messages ("Message 0", etc.), should fit within 16KB threshold.
+
+### Implementation (cmd/quic-server.zig:268-277)
+
+Reverted to Phase 57 Part 12 baseline, then modified:
+
+**Before (Phase 57 Part 12):**
+```zig
+// Line 268
+if (stream.pending_write.items.len > 0) continue;
+```
+
+**After (Phase 57 Part 15):**
+```zig
+// PHASE 57 PART 15: Hybrid approach - allow reads if pending < 16KB
+// This enables bidirectional communication for small amounts of data
+// while preventing OOM from unbounded buffering
+// Reference: QUIC implementations typically use 16-64KB buffers
+const SMALL_BUFFER_THRESHOLD: usize = 16 * 1024; // 16KB
+if (stream.pending_write.items.len > SMALL_BUFFER_THRESHOLD) {
+    std.debug.print("[P57-15-SKIP] Stream {} skipping read, pending={} bytes > {}KB threshold\n",
+        .{stream_id, stream.pending_write.items.len, SMALL_BUFFER_THRESHOLD / 1024});
+    continue;
+}
+```
+
+### Test Results (Phase 57 Part 15)
+
+**6/8 PASSING** - SAME AS BASELINE (NO IMPROVEMENT)
+
+```
+============================================================
+2025/11/19 13:59:35 📊 TEST SUMMARY
+============================================================
+✅ Single Stream Echo - 7.5ms
+✅ Multiple Concurrent Streams - 10.5ms
+✅ Large Transfer (10KB) - 22.8ms (0.43 MB/s)
+✅ Large Transfer (100KB) - 121ms (0.81 MB/s)
+✅ Large Transfer (1MB) - 1.42s (0.70 MB/s)
+✅ Multiple Round-trips - 2.12s (avg: 212ms per round)
+❌ Bidirectional Simultaneous - timeout: no recent network activity
+❌ Stream Interleaving - timeout: no recent network activity
+
+RESULTS: 6 passed, 2 failed, 8 total
+```
+
+### Root Cause Analysis
+
+Detailed log investigation revealed **flow control deadlock**:
+
+#### Critical Findings from Server Logs
+
+**1. Massive Buffer Accumulation (Stream 28 - Bidirectional test):**
+```
+[P57-14-READ] Stream 28 read 65536 bytes (524288 total read, loop 1146, reads_iter=8, pending_write=457602)
+```
+- Server reads **1,048,576 bytes (1MB)** in a single event loop iteration (16 reads × 65KB)
+- Buffer grows to **981,890 bytes** before any flush attempt
+- Far exceeds 16KB threshold immediately
+
+**2. Extremely Slow Flush Rate:**
+```
+[P42-13-FLUSH] Stream 28 flushed 1150 bytes (2300 total written, 1046276 still pending)
+[P42-13-FLUSH] Stream 28 flushed 1150 bytes (3450 total written, 1045126 still pending)
+[P42-13-FLUSH] Stream 28 flushed 1150 bytes (4600 total written, 1043976 still pending)
+```
+- Server can only write **1150 bytes per flush iteration**
+- To drain 1MB buffer: **1,047,426 / 1,150 ≈ 911 iterations** needed!
+- Flow control window from client is TINY
+
+**3. No MAX_STREAM_DATA Updates:**
+```bash
+$ grep "Stream 28" server.log | grep "MAX_STREAM_DATA"
+# NO OUTPUT - Client never increases flow control window!
+```
+
+#### The Deadlock Mechanism
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ 1. Client sends 1MB data rapidly (bidirectional test)  │
+│    ↓                                                     │
+│ 2. Server reads all 1MB in ONE event loop (16 × 65KB)  │
+│    ↓                                                     │
+│ 3. Server tries to echo → flow control BLOCKS           │
+│    - Client's initial window: 524288 bytes (512KB)      │
+│    - Server can only send 1150 bytes/iteration          │
+│    ↓                                                     │
+│ 4. pending_write = 981,890 bytes (>> 16KB threshold)    │
+│    ↓                                                     │
+│ 5. Threshold prevents reading more data                 │
+│    ↓                                                     │
+│ 6. Server flushes slowly (1150 bytes/iter × 911 iters)  │
+│    ↓                                                     │
+│ 7. Client's receiver goroutine waits for echoes         │
+│    - Blocks on stream.Read() waiting for echo data      │
+│    - Never reads → Never sends MAX_STREAM_DATA updates  │
+│    - Flow control window NEVER increases                │
+│    ↓                                                     │
+│ 8. DEADLOCK: Server can't flush fast enough             │
+│             Client can't read (no echoes coming)         │
+│             Flow control window stuck at initial value   │
+└─────────────────────────────────────────────────────────┘
+```
+
+#### Why 16KB Threshold Doesn't Help
+
+1. **Buffer fills too fast:** Server reads 1MB before threshold check
+2. **Flush too slow:** 1150 bytes/iteration means buffer NEVER drops below 16KB
+3. **Flow control stuck:** Client doesn't increase window (not reading echoes)
+4. **Threshold becomes permanent block:** Once buffer > 16KB, stays there forever
+
+### Flow Control Analysis
+
+**Client's Transport Parameters:**
+```
+[FC-TRANSPORT-PARAMS] Client advertises initial_max_stream_data_bidi_remote=524288 (512KB)
+```
+
+**Problem:** Client gives 512KB initial window, but:
+- Never sends MAX_STREAM_DATA updates for stream 28
+- Server exhaust window trying to echo 1MB
+- Window remains at initial 512KB value
+- Server blocked at ~1150 bytes/write (tiny fraction of window)
+
+**Why only 1150 bytes per write?**
+Likely congestion control or packet size limits, not just flow control.
+
+### Comparison: Phase 57 Part 15 vs Baseline
+
+| Metric | Baseline (Part 12) | Part 15 (16KB threshold) |
+|--------|-------------------|--------------------------|
+| Passing Tests | 6/8 | 6/8 |
+| Single Echo | ✅ | ✅ |
+| Multiple Concurrent | ✅ | ✅ |
+| 10KB/100KB/1MB Transfers | ✅ | ✅ |
+| Multiple Round-trips | ✅ | ✅ |
+| Bidirectional Simultaneous | ❌ | ❌ (same deadlock) |
+| Stream Interleaving | ❌ | ❌ (same deadlock) |
+
+**Conclusion:** 16KB threshold provides NO benefit over baseline.
+
+### Why Buffer Limits (13, 13B, 14, 15) All Failed
+
+All buffering approaches fail because they address the **wrong problem**:
+
+1. **Phase 57 Part 13:** 256KB limit → behaves like no limit (buffer fits within it)
+2. **Phase 57 Part 13B:** 64KB limit → buffer exceeds limit immediately, blocks reads forever
+3. **Phase 57 Part 14:** "Always buffer" → breaks Multiple Round-trips (5/8 passing)
+4. **Phase 57 Part 15:** 16KB hybrid → buffer exceeds threshold in first iteration
+
+**Real Problem:**
+- Server reads TOO FAST (1MB in one iteration)
+- Server flushes TOO SLOW (1150 bytes per iteration)
+- Client doesn't update flow control windows (not reading echoes)
+- This creates a **chicken-and-egg deadlock** no buffer limit can solve
+
+### Key Insights
+
+1. **Single-threaded event loop limitation:**
+   - Reads 16 × 65KB chunks before checking buffer size
+   - Cannot interleave small reads with flushes
+
+2. **Flow control deadlock:**
+   - Client blocks reading until echoes arrive
+   - Server blocks writing due to exhausted flow control window
+   - Neither can make progress
+
+3. **Buffer thresholds are ineffective:**
+   - Threshold checked AFTER massive read burst
+   - Buffer size jumps 0 → 981KB instantly
+   - Any threshold < 1MB is immediately exceeded
+
+### Next Investigation Areas
+
+**Option 1: Limit reads per iteration**
+- Instead of reading until no data available, limit to 1-2 reads per stream per iteration
+- This would prevent 1MB burst accumulation
+- Allow flush phase to drain before reading more
+
+**Option 2: Proactive MAX_STREAM_DATA sending**
+- Server should send MAX_STREAM_DATA updates when it READS data (not just when client requests)
+- This might unblock client's receiver goroutine
+
+**Option 3: Fix flush rate**
+- Investigate why server can only write 1150 bytes per iteration
+- May be congestion control, pacing, or packet coalescing issue
+- Should be able to flush much faster with 512KB flow control window
+
+**Option 4: Investigate test pattern**
+- Bidirectional test may have ordering issue
+- Sender goroutine finishes before receiver starts?
+- Check quic-go client logs to see actual behavior
