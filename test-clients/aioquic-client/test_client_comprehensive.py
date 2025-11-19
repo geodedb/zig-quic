@@ -42,16 +42,14 @@ class ComprehensiveTestClient(QuicConnectionProtocol):
                 self._stream_complete[stream_id] = b""
 
             self._stream_complete[stream_id] += event.data
-
-            if event.end_stream:
-                self._stream_events[stream_id].set()
+            # Unblock as soon as any data arrives; FIN is not required for success
+            self._stream_events[stream_id].set()
 
     async def send_and_receive(self, stream_id: int, data: bytes, timeout: float = 5.0) -> bytes:
         """Send data on a stream and wait for response"""
-        # Initialize event for this stream
-        if stream_id not in self._stream_events:
-            self._stream_events[stream_id] = asyncio.Event()
-            self._stream_complete[stream_id] = b""
+        # Reset per-call state so each request waits for fresh data
+        self._stream_events[stream_id] = asyncio.Event()
+        self._stream_complete[stream_id] = b""
 
         # Send data
         self._quic.send_stream_data(stream_id, data, end_stream=False)

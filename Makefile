@@ -542,8 +542,13 @@ e2e-test-python-comprehensive: build
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \
+		CLIENT_DIR=$$(pwd)/test-clients/aioquic-client; \
+		VENV_DIR=$$CLIENT_DIR/.venv; \
+		echo "Ensuring aioquic venv at $$VENV_DIR..."; \
+		python3 -m venv $$VENV_DIR >/tmp/e2e-python-pip.log 2>&1 || true; \
+		$$VENV_DIR/bin/pip install -r $$CLIENT_DIR/requirements.txt >>/tmp/e2e-python-pip.log 2>&1 || true; \
 		echo "Running comprehensive Python test suite..."; \
-		cd test-clients/aioquic-client && timeout 60 python3 test_client_comprehensive.py --host 127.0.0.1 --port 4433 2>&1 | tee /tmp/e2e-python-comprehensive-client.log || true; \
+		cd $$CLIENT_DIR && timeout 60 $$VENV_DIR/bin/python test_client_comprehensive.py --host 127.0.0.1 --port 4433 2>&1 | tee /tmp/e2e-python-comprehensive-client.log || true; \
 		kill $$SERVER_PID 2>/dev/null || true; \
 		sleep 1; \
 		echo ""; \
@@ -563,10 +568,11 @@ e2e-test-rust-comprehensive: build
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \
+		CLIENT_DIR=$$(pwd)/test-clients/quinn-client; \
 		echo "Building quinn comprehensive test client..."; \
-		cd test-clients/quinn-client && cargo build --release --bin quinn-test-client-comprehensive 2>&1 | grep -E "Compiling|Finished" || true; \
+		cd $$CLIENT_DIR && cargo build --release --bin quinn-test-client-comprehensive 2>&1 | grep -E "Compiling|Finished" || true; \
 		echo "Running comprehensive Rust test suite..."; \
-		cd test-clients/quinn-client && timeout 60 ./target/release/quinn-test-client-comprehensive --addr 127.0.0.1:4433 --server-name test.local 2>&1 | tee /tmp/e2e-rust-comprehensive-client.log || true; \
+		cd $$CLIENT_DIR && timeout 60 ./target/release/quinn-test-client-comprehensive --addr 127.0.0.1:4433 --server-name test.local 2>&1 | tee /tmp/e2e-rust-comprehensive-client.log || true; \
 		kill $$SERVER_PID 2>/dev/null || true; \
 		sleep 1; \
 		echo ""; \

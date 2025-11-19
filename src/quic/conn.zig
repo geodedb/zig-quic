@@ -2417,7 +2417,11 @@ pub const Connection = struct {
         };
         // TRACE: readStream inbox status
         // std.debug.print("readStream - inbox has {} bytes\n", .{s.inbox.items.len});
-        if (s.inbox.items.len == 0) return error.WouldBlock;
+        if (s.inbox.items.len == 0) {
+            // If FIN offset reached and no buffered data remains, surface FIN as 0-length read.
+            if (s.isFinished()) return 0;
+            return error.WouldBlock;
+        }
         const n: usize = @min(buf.len, s.inbox.items.len);
         @memcpy(buf[0..n], s.inbox.items[0..n]);
         const rem = s.inbox.items.len - n;

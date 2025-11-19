@@ -21,7 +21,7 @@ pub fn main() !void {
 
     var connect: []const u8 = "127.0.0.1:4433";
     var sni: []const u8 = "test.local";
-    var alpn: []const u8 = "h3";
+    var alpn: []const u8 = "hq-interop";
     var insecure = true;
 
     while (args.next()) |a| {
