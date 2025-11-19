@@ -2704,6 +2704,41 @@ Simplified to only send initial MAX_STREAM_DATA when stream receives first data:
 3. Update the enumerator to try `try_dcid_len` before brute-forcing 0-20. This should guarantee that the first candidate uses the cached DCID length (8), reducing the chance of sample misalignment before we switch hp keys.
 4. Once header protection yields the correct truncated PN (`0x64`), re-run the Go suite and verify whether pn ≥ 100 decrypts and the large-stream scenarios exit the timeout loop.
 
+## Phase 57 Part 20: Server Push Disabled – Bidirectional/Interleaving Resolved ✅
+
+**Date:** 2025-11-19  
+**Status:** Comprehensive Go suite now 8/8 passing  
+**Context:** Receive-prioritization experiment regressed to 1/8 passing. Further analysis showed unsolicited server push traffic was consuming flow-control/congestion budget and starving client-initiated streams.
+
+### Root Cause
+- `cmd/quic-server.zig` unconditionally sent a 1 MB server-initiated stream (stream 1) for every connection.
+- The quic-go comprehensive client never reads server-initiated streams, so the push data occupied congestion window and peer flow-control credits without being drained.
+- Combined with the earlier receive-priority helper (now removed), echo writes were skipped and most client streams timed out.
+
+### Fixes Implemented
+1. **Removed receive-prioritization helper** that pre-empted echo handling.
+2. **Disabled server push by default** via `enable_server_push = false` (feature still gated for future experiments).
+   - File changed: `cmd/quic-server.zig`
+   - Effect: No unsolicited 1 MB stream is sent; congestion/FC headroom is dedicated to client echoes.
+
+### Verification (quic-test/test-client-comprehensive)
+```
+RESULTS: 8 passed, 0 failed, 8 total
+✅ Single Stream Echo - 6.6ms
+✅ Multiple Concurrent Streams - 7.3ms
+✅ Large Transfer (10KB) - 19.5ms (0.50 MB/s)
+✅ Large Transfer (100KB) - 118ms (0.83 MB/s)
+✅ Large Transfer (1MB) - 1.41s (0.71 MB/s)
+✅ Multiple Round-trips - 10 cycles in 1.48s (avg 148ms)
+✅ Bidirectional Simultaneous - 10 send/receives in 106ms
+✅ Stream Interleaving - 5 streams, 5 rounds in 10ms
+```
+
+### Notes / Follow-ups
+- Ports were checked/cleared and the server was killed after testing.
+- If server push is re-enabled, make it opt-in via CLI flag and ensure clients consume or RESET the pushed stream to avoid FC/cwnd starvation.
+- Next: keep push disabled for e2e until a proper push consumption path exists (or add test harness support).
+
 Latest test: `make e2e-test-go-comprehensive` at 15:01:39 → **4 / 8** (large transfer 1 MB, multi round-trips, bidirectional simultaneous, stream interleaving still timeout). Logs contain the detailed nonce/AAD/key material needed for offline validation.
 
 ## Phase 57 Part 20: Try Cached DCID Length Before Brute Force
@@ -3073,4 +3108,3 @@ Comprehensive E2E test suite (make e2e-test-go-comprehensive):
 
 **Files Modified:**
 - `src/quic/endpoint/frame_handler.zig` - handleMaxStreamData, handleMaxData
-

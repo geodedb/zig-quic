@@ -2,18 +2,6 @@ const std = @import("std");
 const api = @import("quic_api");
 const pem = @import("quic_api").pem;
 
-fn prioritizeIncoming(ep: *api.QuicEndpoint, loop_count: u64) bool {
-    const stats = api.pollStats(ep, 0) catch |err| {
-        std.debug.print("[RECV-PRIO] pollStats error (loop {}): {}\n", .{loop_count, err});
-        return false;
-    };
-    if (stats.packets_processed > 0) {
-        std.debug.print("[RECV-PRIO] drained {} packets before continuing sends (loop {})\n", .{stats.packets_processed, loop_count});
-        return true;
-    }
-    return false;
-}
-
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -161,6 +149,8 @@ pub fn main() !void {
     var loop_count: u64 = 0;
     var last_debug_time = std.time.milliTimestamp();
 
+    // Server push is disabled for now; keep knobs in place for future experiments.
+    const enable_server_push = false;
     var push_active: bool = false;
     const push_stream_id: u64 = 1; // server-initiated bidi stream id (odd => server-initiated)
     const push_target: usize = 1048576;
@@ -168,7 +158,6 @@ pub fn main() !void {
     var push_buf: ?[]u8 = null;
     while (true) {
         loop_count += 1;
-        var recv_priority_triggered = false;
         const now = std.time.milliTimestamp();
 
         // Log event loop iterations every 100ms during active processing
@@ -186,8 +175,7 @@ pub fn main() !void {
             std.debug.print("accepted connection\n", .{});
             const conn_state = ConnState.init(alloc, conn);
             active_conns.append(alloc, conn_state) catch {};
-            // Initialize push buffer and perform initial send burst
-            if (!push_active) {
+            if (enable_server_push and !push_active) {
                 push_active = true;
                 if (push_buf == null) {
                     const tmp = try alloc.alloc(u8, push_target);
@@ -196,21 +184,16 @@ pub fn main() !void {
                 }
                 const initial_burst = @min(push_target - push_sent, 64 * 1024);
                 if (initial_burst > 0) {
-                    if (!recv_priority_triggered and prioritizeIncoming(ep, loop_count)) {
-                        recv_priority_triggered = true;
-                    }
-                    if (!recv_priority_triggered) {
-                        const written = api.writeStream(conn, push_stream_id, push_buf.?[push_sent .. push_sent + initial_burst], false) catch 0;
-                        push_sent += written;
-                        std.debug.print("[SERVER-PUSH] initial wrote={} total={} target={}\n", .{written, push_sent, push_target});
-                    }
+                    const written = api.writeStream(conn, push_stream_id, push_buf.?[push_sent .. push_sent + initial_burst], false) catch 0;
+                    push_sent += written;
+                    std.debug.print("[SERVER-PUSH] initial wrote={} total={} target={}\n", .{written, push_sent, push_target});
                 }
             }
         }
 
         // Process all active connections
         var i: usize = 0;
-        conn_loop: while (i < active_conns.items.len) {
+        while (i < active_conns.items.len) {
             var conn_state = &active_conns.items[i];
             const conn = conn_state.conn;
 
@@ -228,12 +211,7 @@ pub fn main() !void {
                 var dgram_buf: [2048]u8 = undefined;
                 const dn = api.recvDatagram(conn, &dgram_buf) catch 0;
                 if (dn > 0) {
-                    if (!recv_priority_triggered and prioritizeIncoming(ep, loop_count)) {
-                        recv_priority_triggered = true;
-                    }
-                    if (!recv_priority_triggered) {
-                        _ = api.sendDatagram(conn, dgram_buf[0..dn]) catch 0;
-                    }
+                    _ = api.sendDatagram(conn, dgram_buf[0..dn]) catch 0;
                 }
             }
 
@@ -255,7 +233,6 @@ pub fn main() !void {
             var stream_iter = conn_state.streams.iterator();
             var streams_processed: usize = 0;
             while (stream_iter.next()) |entry| {
-                if (recv_priority_triggered) break;
                 const stream_id = entry.key_ptr.*;
                 var stream = entry.value_ptr;
 
@@ -267,10 +244,6 @@ pub fn main() !void {
                 // Step 1: Try to flush pending writes first (flow control may have unblocked)
                 if (stream.pending_write.items.len > 0) {
                     while (stream.pending_write.items.len > 0) {
-                        if (!recv_priority_triggered and prioritizeIncoming(ep, loop_count)) {
-                            recv_priority_triggered = true;
-                        }
-                        if (recv_priority_triggered) break;
                         std.debug.print("[P42-13] Stream {} flushing {} pending bytes (loop {})\n", .{stream_id, stream.pending_write.items.len, loop_count});
                         const written: usize = api.writeStream(conn, stream_id, stream.pending_write.items, false) catch |err| blk: {
                             if (err == error.FlowControlBlocked) {
@@ -296,20 +269,15 @@ pub fn main() !void {
                 }
 
                 // Server push progression
-                if (push_active and push_sent < push_target) {
+                if (enable_server_push and push_active and push_sent < push_target) {
                     const chunk = @min(push_target - push_sent, 64 * 1024);
-                    if (!recv_priority_triggered and prioritizeIncoming(ep, loop_count)) {
-                        recv_priority_triggered = true;
-                    }
-                    if (!recv_priority_triggered) {
-                        const wrote = api.writeStream(conn, push_stream_id, push_buf.?[push_sent .. push_sent + chunk], false) catch 0;
-                        if (wrote > 0) {
-                            push_sent += wrote;
-                            std.debug.print("[SERVER-PUSH] wrote={} total={} target={}\n", .{wrote, push_sent, push_target});
-                            if (push_sent == push_target) {
-                                _ = api.writeStream(conn, push_stream_id, &[_]u8{}, true) catch {};
-                                std.debug.print("[SERVER-PUSH] FIN sent total={}\n", .{push_sent});
-                            }
+                    const wrote = api.writeStream(conn, push_stream_id, push_buf.?[push_sent .. push_sent + chunk], false) catch 0;
+                    if (wrote > 0) {
+                        push_sent += wrote;
+                        std.debug.print("[SERVER-PUSH] wrote={} total={} target={}\n", .{wrote, push_sent, push_target});
+                        if (push_sent == push_target) {
+                            _ = api.writeStream(conn, push_stream_id, &[_]u8{}, true) catch {};
+                            std.debug.print("[SERVER-PUSH] FIN sent total={}\n", .{push_sent});
                         }
                     }
                 }
@@ -343,10 +311,6 @@ pub fn main() !void {
                                     // Loop to write entire read buffer (may exceed single packet max)
                                     var write_off: usize = 0;
                                     while (write_off < n) {
-                                        if (!recv_priority_triggered and prioritizeIncoming(ep, loop_count)) {
-                                            recv_priority_triggered = true;
-                                        }
-                                        if (recv_priority_triggered) break;
                                         const slice_len = n - write_off;
                                         const written: usize = api.writeStream(conn, stream_id, chunk[write_off .. n], false) catch |err| blk: {
                                             if (err == error.FlowControlBlocked or err == error.CongestionControlBlocked) {
@@ -396,24 +360,12 @@ pub fn main() !void {
 
                 // Step 3: If got FIN and no pending data, send FIN back
                 if (stream.got_fin and stream.pending_write.items.len == 0 and !stream.sent_fin) {
-                    if (!recv_priority_triggered and prioritizeIncoming(ep, loop_count)) {
-                        recv_priority_triggered = true;
-                    }
-                    if (!recv_priority_triggered) {
-                        _ = api.writeStream(conn, stream_id, &[_]u8{}, true) catch {};
-                        stream.sent_fin = true;
-                        std.debug.print("[P42-12] Stream {} sent FIN, complete\n", .{stream_id});
-                    }
+                    _ = api.writeStream(conn, stream_id, &[_]u8{}, true) catch {};
+                    stream.sent_fin = true;
+                    std.debug.print("[P42-12] Stream {} sent FIN, complete\n", .{stream_id});
                 }
             }
-
-            if (recv_priority_triggered) break :conn_loop;
-
             i += 1;
-        }
-
-        if (recv_priority_triggered) {
-            continue;
         }
     } // main event loop
 
