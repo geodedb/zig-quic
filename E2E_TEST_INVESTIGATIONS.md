@@ -227,4 +227,11 @@ Server respects client's 512KB limit correctly, but client isn't sending MAX_STR
 - **Independent of ALPN**: Happens with both "zig-quic-test" AND "hq-interop" ✅ Confirmed (2025-11-19 12:00)
 - **Hypothesis CONFIRMED**: Key update issue at 64KB boundary (quic-go triggers updates every 64KB)
 - **Test Evidence**: Ran 100KB test with "hq-interop" ALPN - still stops at 65536 bytes
-- **Next**: Investigate TX-side key update handling (RX side was fixed in Parts 8-10)
+
+**Root Cause & Fix (2025-11-19 12:06):**
+- **Bug**: TX key updates used TLS "traffic upd" label instead of QUIC "quic ku" label (RFC 9001 §6)
+- **Location**: `src/quic/conn.zig:3149` called `updateTrafficSecret()` instead of `updateQuicSecret()`
+- **Impact**: Server derived incompatible keys → client couldn't decrypt packets after 64KB
+- **Fix**: Changed to `updateQuicSecret()` (uses "quic ku" label per RFC 9001 §6)
+- **Result**: ✅ **100KB test PASSES** - received all 102400 bytes, passed 64KB boundary
+- **Commit**: d85a05f - Phase 57 Part 11D TX key update label fix

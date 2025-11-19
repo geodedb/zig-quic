@@ -313,14 +313,66 @@ Progress: 65536/102400 bytes
 3. Exact 64KB boundary: Too precise to be coincidental
 4. quic-go triggers key updates every 64KB (conn.zig:3135-3136)
 
-### Next Investigation Steps
+### Phase 57 Part 11D - TX Key Update Label Bug (✅ FIXED - 2025-11-19 12:06)
 
-1. Enable verbose key update logging and rebuild server
-2. Check if server initiates TX key update when sending 64KB
-3. Verify TX key update implementation (RX key update was fixed in Parts 8-10)
-4. Look for TX key update bugs similar to RX issues:
-   - Missing HP key preservation on TX side?
-   - TX key phase bit handling?
-   - Key derivation for outgoing packets?
-5. Compare TX vs RX key update paths in the codebase
+**Root Cause #4:** Server TX key updates were using wrong key derivation label
+
+**Bug Location:** `src/quic/conn.zig:3149` in `maybeTriggerKeyUpdateOnSend()`
+```zig
+// WRONG: Uses TLS "traffic upd" label
+const next_secret = ks.updateTrafficSecret(self.app_tx_secret.?);
+```
+
+**Evidence:**
+1. `vendor/ztls/src/key_schedule.zig:177` - `updateTrafficSecretHash` uses **"traffic upd"** (TLS label)
+2. `vendor/ztls/src/key_schedule.zig:189` - `updateQuicSecretHash` uses **"quic ku"** (QUIC label, RFC 9001 §6)
+3. Server was calling wrong function → derived incompatible TX keys
+4. Client (quic-go) uses "quic ku" label → couldn't decrypt server's updated packets
+
+**Why It Caused 64KB Stall:**
+1. Server sends first 64KB successfully with initial keys
+2. At 64KB boundary: `maybeTriggerKeyUpdateOnSend()` triggers (line 3147)
+3. Server derives NEXT secret using **TLS "traffic upd"** label (wrong!)
+4. Server sends packets 64KB+ with KEY_PHASE=1 bit and wrong keys
+5. Client tries to decrypt with keys derived using **QUIC "quic ku"** label (correct)
+6. Keys don't match → authentication fails → packets dropped
+7. Transfer stalls at exactly 65536 bytes
+
+**Fix Applied (Commit d85a05f):**
+```zig
+// CORRECT: Use QUIC "quic ku" label, not TLS "traffic upd" (RFC 9001 §6)
+const next_secret = ks.updateQuicSecret(self.app_tx_secret.?);
+```
+
+**Test Results After Fix:**
+```
+Progress: 64400/102400 bytes
+Progress: 65536/102400 bytes  ← Previously stopped here!
+Progress: 66686/102400 bytes  ← NOW CONTINUES! ✅
+Progress: 67836/102400 bytes
+... (all progress lines)
+Progress: 102400/102400 bytes ← COMPLETE SUCCESS! ✅
+```
+
+**Verification:**
+- 100KB test: **102400 bytes received** (was 65536 before fix)
+- Transfer passed 64KB key update boundary successfully
+- Client successfully decrypted packets with updated keys
+
+**Impact:**
+- **Critical bug fix** - TX key updates now use RFC 9001 §6 compliant "quic ku" label
+- Enables transfers >64KB by fixing key update interoperability with quic-go
+- Matches RX key update implementation (which already used "quic ku")
+
+**Reference:**
+- RFC 9001 §6: QUIC uses "quic ku" label for key updates, NOT TLS "traffic upd"
+- quic-go: `forks/quic-go/internal/handshake/updatable_aead.go` - uses "quic ku"
+- ztls: `vendor/ztls/src/key_schedule.zig:186-191` - `updateQuicSecretHash` with "quic ku"
+
+**Files Modified:**
+- `src/quic/conn.zig:3149-3150` - Changed `updateTrafficSecret` to `updateQuicSecret`
+
+**Next Steps:**
+- Test larger transfers (1MB, 10MB) to verify multiple key updates work
+- Run comprehensive test suite to ensure fix doesn't break other scenarios
 

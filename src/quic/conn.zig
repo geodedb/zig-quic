@@ -3146,7 +3146,8 @@ pub const Connection = struct {
         const byte_thr: u64 = 64 * 1024;
         if (self.tx_sent_packets_since_key >= pkt_thr or self.tx_sent_bytes_since_key >= byte_thr) {
             // Start TX update: derive next secret and keys, toggle tx key phase
-            const next_secret = ks.updateTrafficSecret(self.app_tx_secret.?);
+            // PHASE 57 PART 11D: Use QUIC "quic ku" label, not TLS "traffic upd" (RFC 9001 §6)
+            const next_secret = ks.updateQuicSecret(self.app_tx_secret.?);
 
             // PHASE 57 PART 10: Preserve CURRENT HP key - RFC 9001 §6 and quic-go confirm HP is NOT rotated
             const preserved_hp = self.app_tx_keys.?.hp;
