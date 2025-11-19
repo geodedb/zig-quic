@@ -224,6 +224,7 @@ Server respects client's 512KB limit correctly, but client isn't sending MAX_STR
 **64KB Transfer Stall (2025-11-19 11:40):**
 - **All tests stop at exactly 65536 bytes** (100KB, 1MB with 512KB window, 1MB with 2MB window)
 - **Independent of window size**: Not a flow control issue
-- **Hypothesis**: Key update issue at 64KB boundary (quic-go triggers updates every 64KB)
-- **Context**: 100KB test passed in Phase 57 Part 10, suggesting specific code path bug
-- **Next**: Investigate TX-side key update handling
+- **Independent of ALPN**: Happens with both "zig-quic-test" AND "hq-interop" ✅ Confirmed (2025-11-19 12:00)
+- **Hypothesis CONFIRMED**: Key update issue at 64KB boundary (quic-go triggers updates every 64KB)
+- **Test Evidence**: Ran 100KB test with "hq-interop" ALPN - still stops at 65536 bytes
+- **Next**: Investigate TX-side key update handling (RX side was fixed in Parts 8-10)

@@ -288,11 +288,39 @@ The difference suggests:
 - This simple echo pattern may trigger a specific key update bug
 - The 64KB stall could be related to TX-initiated key updates vs RX-initiated
 
+### Critical Test Result: ALPN is NOT the Issue (2025-11-19 12:00)
+
+**Test Performed:**
+- Ran 100KB echo test with "hq-interop" ALPN (matching Phase 57 Part 6)
+- Expected: Transfer to complete successfully (like Part 6)
+- **Result: FAILED at exactly 65536 bytes (64KB)** ❌
+
+**Proof:**
+```
+Progress: 64400/102400 bytes
+Progress: 65536/102400 bytes
+❌ Timeout: received 65536/102400 bytes
+```
+
+**Conclusion:**
+- **64KB stall happens with BOTH "hq-interop" AND "zig-quic-test" ALPN protocols**
+- **ALPN choice is NOT the cause of the 64KB transfer stall**
+- This confirms the hypothesis: Issue is related to **key updates at 64KB boundary**
+
+**Evidence Summary:**
+1. "zig-quic-test" ALPN: Stops at 65536 bytes ✅ Confirmed
+2. "hq-interop" ALPN: Stops at 65536 bytes ✅ Confirmed
+3. Exact 64KB boundary: Too precise to be coincidental
+4. quic-go triggers key updates every 64KB (conn.zig:3135-3136)
+
 ### Next Investigation Steps
 
-1. Add verbose key update logging around 64KB mark
-2. Check if key update is triggered when sending 64KB
-3. Verify TX key update works correctly (previous fixes focused on RX)
-4. Compare with working 100KB comprehensive test behavior
-5. Check if issue is specific to echo pattern (send all, then read all)
+1. Enable verbose key update logging and rebuild server
+2. Check if server initiates TX key update when sending 64KB
+3. Verify TX key update implementation (RX key update was fixed in Parts 8-10)
+4. Look for TX key update bugs similar to RX issues:
+   - Missing HP key preservation on TX side?
+   - TX key phase bit handling?
+   - Key derivation for outgoing packets?
+5. Compare TX vs RX key update paths in the codebase
 
