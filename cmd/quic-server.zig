@@ -265,9 +265,10 @@ pub fn main() !void {
                             .{stream_id, written, stream.total_written, stream.pending_write.items.len});
                     }
 
-                    // PHASE 57 PART 12B REVERTED: The continue is needed for Multiple Round-trips
-                    // Removing it caused regression from 6/8 to 5/8 passing tests
-                    if (stream.pending_write.items.len > 0) continue;
+                    // PHASE 57 PART 14: No backpressure check with new always-buffer architecture
+                    // The flush phase (lines 241-266) continuously drains pending_write
+                    // QUIC's own flow control prevents client from sending unlimited data
+                    // If OOM occurs, we can add a large limit (e.g., 10MB) later
                 }
 
                 // Server push progression
@@ -305,43 +306,13 @@ pub fn main() !void {
                                 std.debug.print("[P57-14-READ] Stream {} read {} bytes ({} total read, loop {}, reads_iter={}, pending_write={})\n",
                                     .{stream_id, n, stream.total_read, loop_count, reads_this_iter, stream.pending_write.items.len});
 
-                                // PHASE 57 PART 12: Only try immediate echo if no pending writes
-                                // If we're already blocked, buffer ALL new reads to prevent unbounded growth
-                                if (stream.pending_write.items.len == 0) {
-                                    // Try to echo immediately
-                                    // Loop to write entire read buffer (may exceed single packet max)
-                                    var write_off: usize = 0;
-                                    while (write_off < n) {
-                                        const slice_len = n - write_off;
-                                        const written: usize = api.writeStream(conn, stream_id, chunk[write_off .. n], false) catch |err| blk: {
-                                            if (err == error.FlowControlBlocked or err == error.CongestionControlBlocked) {
-                                                std.debug.print("[P42-13-FC/CC-BLOCKED] Stream {} blocked mid-chunk, buffering {} bytes (loop {})\n", .{stream_id, n - write_off, loop_count});
-                                                stream.pending_write.appendSlice(conn_state.allocator, chunk[write_off .. n]) catch {};
-                                                break :blk 0;
-                                            }
-                                            std.debug.print("[P42-13-ERROR] Stream {} write error: {} (loop {})\n", .{stream_id, err, loop_count});
-                                            break :blk 0;
-                                        };
-                                        if (written == 0) break; // blocked or error
-                                        stream.total_written += written;
-                                        write_off += written;
-                                        if (written < slice_len) {
-                                            // Partial: buffer remainder
-                                            stream.pending_write.appendSlice(conn_state.allocator, chunk[write_off .. n]) catch {};
-                                            std.debug.print("[P42-13-PARTIAL] Stream {} partial echo, buffered {} bytes (loop {})\n", .{stream_id, n - write_off, loop_count});
-                                            break;
-                                        }
-                                    }
-                                    const fully_echoed = write_off == n;
-                                    if (fully_echoed) {
-                                        std.debug.print("[P42-13-ECHO] Stream {} echoed {} bytes ({} total written, loop {})\n", .{stream_id, n, stream.total_written, loop_count});
-                                    }
-                                } else {
-                                    // Already blocked, buffer this read instead of trying to echo
-                                    stream.pending_write.appendSlice(conn_state.allocator, chunk[0..n]) catch {};
-                                    std.debug.print("[P57-12-BUFFER] Stream {} buffered {} bytes (already blocked, pending={}, loop {})\n",
-                                        .{stream_id, n, stream.pending_write.items.len, loop_count});
-                                }
+                                // PHASE 57 PART 14: Fully decouple read/write - ALWAYS buffer, NEVER synchronous echo
+                                // This matches quic-go architecture where Write() buffers and returns immediately
+                                // Reference: @forks/quic-go/send_stream.go:128 - dataForWriting buffer model
+                                // The flush phase (lines 241-266) handles all actual packet sends
+                                stream.pending_write.appendSlice(conn_state.allocator, chunk[0..n]) catch {};
+                                std.debug.print("[P57-14-BUFFER] Stream {} buffered {} bytes (pending={}, loop {})\n",
+                                    .{stream_id, n, stream.pending_write.items.len, loop_count});
                             } else {
                                 // readStream returned 0 successfully - this is a real FIN
                                 stream.got_fin = true;

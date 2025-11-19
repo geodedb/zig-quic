@@ -411,3 +411,214 @@ Need to investigate why Bidirectional and Interleaving tests fail WITHOUT changi
 1. Stream initialization/handshake
 2. Frame processing order
 3. Client-server synchronization
+
+---
+
+## Phase 57 Part 13: Buffer Limit Approach (FAILED)
+
+### Investigation Date
+2025-11-19
+
+### Hypothesis
+Instead of unconditionally skipping streams with pending writes (`continue`), try adding a buffer limit. This would allow some bidirectional communication while preventing unbounded buffering.
+
+### Implementation Attempted (Part 13)
+Added 256KB buffer limit to replace unconditional `continue`:
+```zig
+// PHASE 57 PART 13: Apply buffer limit instead of unconditional continue
+// Use 256KB limit to allow bidirectional communication while preventing OOM
+const MAX_PENDING_BUFFER: usize = 256 * 1024; // 256KB max buffering
+if (stream.pending_write.items.len > MAX_PENDING_BUFFER) {
+    std.debug.print("[P57-13-BACKPRESSURE] Stream {} skipping read, pending={} bytes\n",
+        .{stream_id, stream.pending_write.items.len});
+    continue;
+}
+```
+
+### Test Results (Part 13)
+**SAME AS REMOVING CONTINUE ENTIRELY**: 5/8 passing
+
+**Passed (5)**:
+- ✅ Single Stream Echo
+- ✅ Multiple Concurrent Streams
+- ✅ Large Transfer (10KB)
+- ✅ Large Transfer (100KB)
+- ✅ Large Transfer (1MB)
+
+**Failed (3)**:
+- ❌ Multiple Round-trips (context deadline exceeded - was passing with baseline!)
+- ❌ Bidirectional Simultaneous (context deadline exceeded)
+- ❌ Stream Interleaving (context deadline exceeded)
+
+### Analysis (Part 13)
+The 256KB limit was too large and behaved identically to having no limit at all. Streams still accumulated excessive buffered data before the limit was reached.
+
+### Implementation Attempted (Part 13B)
+Reduced buffer limit to 64KB to be more conservative:
+```zig
+// PHASE 57 PART 13B: Apply gentle backpressure to prevent unbounded buffering
+// Use smaller limit (64KB) to allow bidirectional communication while preventing OOM
+// Reference: @forks/quic-go/send_stream.go:143 - buffers frames up to 64KB
+const MAX_PENDING_BUFFER: usize = 64 * 1024; // 64KB max buffering (typical QUIC frame size)
+```
+
+### Test Results (Part 13B)
+Test did not complete due to shell syntax error, but expectation was similar to Part 13 results.
+
+### Conclusion
+Buffer limit approach did not solve the underlying issue. The problem is not just about limiting buffer size, but about the fundamental architecture of how reads and writes are coupled.
+
+---
+
+## Phase 57 Part 14: Full Read/Write Architectural Refactoring (FAILED)
+
+### Investigation Date
+2025-11-19
+
+### Hypothesis
+Based on analysis of `@forks/quic-go/send_stream.go` and `@forks/quic-go/receive_stream.go`, the quic-go architecture uses completely independent read/write paths:
+- **Write()** buffers data immediately and returns (lines 93-211 in send_stream.go)
+- **Read()** operates independently (lines 84-237 in receive_stream.go)
+- The echo server uses `io.Copy(stream, stream)` which leverages this independence
+
+Our implementation was trying to echo synchronously (read → immediately write), which blocks when flow control prevents immediate writes.
+
+### Architectural Changes Implemented
+
+**Change 1: Removed Backpressure Check (cmd/quic-server.zig:268-271)**
+
+Before:
+```zig
+// PHASE 57 PART 13B: Apply gentle backpressure
+const MAX_PENDING_BUFFER: usize = 64 * 1024;
+if (stream.pending_write.items.len > MAX_PENDING_BUFFER) {
+    continue;
+}
+```
+
+After:
+```zig
+// PHASE 57 PART 14: No backpressure check with new always-buffer architecture
+// The flush phase (lines 241-266) continuously drains pending_write
+// QUIC's own flow control prevents client from sending unlimited data
+// If OOM occurs, we can add a large limit (e.g., 10MB) later
+```
+
+**Change 2: Simplified Read/Buffer Logic (cmd/quic-server.zig:314-320)**
+
+Before (Phase 57 Part 12):
+```zig
+if (stream.pending_write.items.len == 0) {
+    // Try to echo immediately (synchronous write)
+    var write_off: usize = 0;
+    while (write_off < n) {
+        // ... complex immediate echo logic with partial write handling ...
+    }
+} else {
+    // Already blocked, buffer this read instead
+    stream.pending_write.appendSlice(conn_state.allocator, chunk[0..n]) catch {};
+}
+```
+
+After (Phase 57 Part 14):
+```zig
+// PHASE 57 PART 14: Fully decouple read/write - ALWAYS buffer, NEVER synchronous echo
+// This matches quic-go architecture where Write() buffers and returns immediately
+// Reference: @forks/quic-go/send_stream.go:128 - dataForWriting buffer model
+// The flush phase (lines 241-266) handles all actual packet sends
+stream.pending_write.appendSlice(conn_state.allocator, chunk[0..n]) catch {};
+std.debug.print("[P57-14-BUFFER] Stream {} buffered {} bytes (pending={}, loop {})\n",
+    .{stream_id, n, stream.pending_write.items.len, loop_count});
+```
+
+### Key Architectural Changes
+1. **Removed all immediate echo logic** - No more synchronous write attempts
+2. **Always buffer reads** - Every read goes into `pending_write` buffer
+3. **Removed backpressure checks** - No more `continue` statements
+4. **Flush phase handles all writes** - Lines 241-266 drain buffers asynchronously
+
+### Test Results (Phase 57 Part 14)
+**STILL 5/8 PASSING** (Same as all buffer-limit approaches)
+
+```
+============================================================
+2025/11/19 13:44:44 📊 TEST SUMMARY
+============================================================
+✅ Single Stream Echo - 961ms
+✅ Multiple Concurrent Streams - 751ms
+✅ Large Transfer (10KB) - 1.3s
+✅ Large Transfer (100KB) - 6.3s
+✅ Large Transfer (1MB) - 59.5s
+❌ Multiple Round-trips - context deadline exceeded (NEW FAILURE - was passing!)
+❌ Bidirectional Simultaneous - context deadline exceeded
+❌ Stream Interleaving - context deadline exceeded
+
+RESULTS: 5 passed, 3 failed, 8 total
+```
+
+### Critical Analysis
+
+**What the Refactoring Achieved:**
+1. ✅ Successfully decoupled read/write paths (matches quic-go architecture)
+2. ✅ Removed all synchronous echo logic
+3. ✅ Simplified buffer management
+
+**What It Did NOT Achieve:**
+1. ❌ Did not fix Bidirectional Simultaneous test
+2. ❌ Did not fix Stream Interleaving test
+3. ❌ **Broke Multiple Round-trips test** (was passing with baseline)
+
+**Why It Still Fails:**
+
+Even with "always buffer" approach, the architecture may still have timing issues:
+
+1. Server reads data → buffers in `pending_write`
+2. Flush phase tries to write but blocked by flow control
+3. Client expects echo responses before sending more data
+4. Server keeps buffering but can't flush fast enough
+5. Potential deadlock or very slow progress
+
+The fact that **Multiple Round-trips now fails** (was passing with 6/8 baseline) suggests the "always buffer" approach may be too aggressive and removes necessary flow control coordination.
+
+### Reference Implementation Analysis
+
+**quic-go's `io.Copy()` Pattern** (@forks/quic-go/example/echo/echo.go:51):
+```go
+_, err = io.Copy(loggingWriter{stream}, stream)
+```
+
+This works because:
+- `stream.Read()` blocks until data is available (receive_stream.go:84-237)
+- `stream.Write()` buffers and returns immediately (send_stream.go:93-211)
+- Go's scheduler handles the concurrent blocking/non-blocking operations
+- QUIC layer manages flow control windows independently
+
+**Our Implementation Limitation:**
+- Single-threaded event loop cannot block on reads
+- Must poll for available data each iteration
+- Flush and read phases both compete for iteration time
+- If flush is slow, reads accumulate; if reads are disabled, deadlock occurs
+
+### Conclusion
+
+The full architectural refactoring to match quic-go's buffering model **did not solve the deadlock issue** and actually **made things worse** by breaking the Multiple Round-trips test.
+
+This suggests:
+1. The problem is more fundamental than just synchronous vs buffered echo
+2. The single-threaded event loop architecture may not be compatible with "always buffer" approach
+3. Some form of backpressure (like the original `continue`) is necessary
+4. The root cause of Bidirectional/Interleaving failures may be elsewhere entirely
+
+### Next Steps
+
+**Investigation Required:**
+1. Why does "always buffer" break Multiple Round-trips (sequential test)?
+2. Is the flush phase efficient enough to drain buffers in time?
+3. Do we need a hybrid approach (immediate echo for small data, buffer for large)?
+4. Are Bidirectional/Interleaving failures actually unrelated to read/write coupling?
+
+**Potential Approaches:**
+1. Add detailed timing analysis of flush vs read phases
+2. Investigate if server-push mechanism (lines 274-286) interferes with echo logic
+3. Check if client-side is actually reading echo data or if it's being buffered
+4. Consider multi-threaded approach for flush operations (complex change)
