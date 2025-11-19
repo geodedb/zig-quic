@@ -269,3 +269,56 @@ RESULTS: 6 passed, 2 failed, 8 total
 - 1MB transfer took 25.97 seconds (0.04 MB/s) - slower than ideal but functional
 - Each key update adds overhead but all complete successfully
 - No authentication failures or key phase mismatches observed
+
+### Phase 57 Part 12 - Bidirectional Communication Investigation (🔧 IN PROGRESS)
+
+**Date:** 2025-11-19
+**Status:** Root cause identified, fix requires more careful implementation
+**Current:** 6/8 tests passing
+
+**Root Cause Identified:**
+
+Server echo logic in `cmd/quic-server.zig:291` blocks reading when writes are buffered:
+```zig
+while (!stream.got_fin and stream.pending_write.items.len == 0 and reads_this_iter < max_reads_per_iter) {
+```
+
+The condition `pending_write.items.len == 0` creates a deadlock for bidirectional communication:
+
+**Failure Scenario (Bidirectional Simultaneous test):**
+1. Client sends "Message 0" → Server reads, tries to echo
+2. Write is blocked (flow control/congestion) → buffered to `pending_write`
+3. Client continues sending "Message 1", "Message 2" (concurrent goroutine)
+4. Server **CANNOT read new messages** because `pending_write` is not empty
+5. Client's reader goroutine blocks waiting for echoes that never arrive
+6. Deadlock → timeout after 30 seconds
+
+**Failure Scenario (Stream Interleaving test):**
+1. Client sends data to streams 0, 1, 2, 3, 4 in round-robin (25 messages total)
+2. Server reads from stream 0, tries to echo, gets blocked → buffers to `pending_write`
+3. Server processes other streams but each gets blocked similarly
+4. Server processes streams in round-robin, but those with `pending_write` **cannot read more data**
+5. Messages pile up unread, client tries to read responses that haven't been sent
+6. Timeout
+
+**Fix Attempt (Reverted):**
+
+Changed condition to allow reading with buffered writes up to 512KB limit:
+```zig
+const MAX_PENDING_BUFFER: usize = 512 * 1024;
+while (!stream.got_fin and stream.pending_write.items.len < MAX_PENDING_BUFFER and reads_this_iter < max_reads_per_iter) {
+```
+
+**Result:** Broke "Multiple Round-trips" test (6/8 → 5/8 passing)
+- Test was passing before, failed after change
+- Suggests fix needs more careful consideration of stream state management
+
+**Next Steps:**
+- Analyze why fix broke Multiple Round-trips test
+- Consider alternative approaches (separate read/write phases, smarter buffering)
+- May need to refactor stream processing logic for true bidirectional support
+- Reference quic-go echo server implementation for comparison
+
+**Files to investigate:**
+- `cmd/quic-server.zig:285-353` - Stream read/write/echo logic
+- `@forks/quic-go` - Reference implementation for concurrent read/write patterns
