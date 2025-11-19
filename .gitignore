@@ -38,3 +38,4 @@ zig-out/
 
 # ignore mac files
 .DS_Store
+.bash_history

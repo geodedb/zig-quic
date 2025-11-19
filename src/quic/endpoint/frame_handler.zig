@@ -222,13 +222,26 @@ pub fn handleMaxStreamData(
     ctx: *FrameContext,
     m: frame.MaxStreamData,
 ) FrameResult {
-    // PHASE 42 PART 10: Update per-stream send-side flow control window (RFC 9000 §4.2)
+    // PHASE 57 PART 11: Update per-stream send-side flow control window (RFC 9000 §4.2)
+    // RFC 9000 §4.1: MAX_STREAM_DATA can only increase the limit
     if (ctx.conn.stream_txs.getPtr(m.stream_id)) |tx| {
-        tx.peer_max_stream_data = m.max;
-        std.debug.print("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) updated per-stream window\n", .{m.stream_id, m.max});
+        if (m.max > tx.peer_max_stream_data) {
+            const old_max = tx.peer_max_stream_data;
+            tx.peer_max_stream_data = m.max;
+            std.debug.print("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) increased window from {}\n",
+                .{m.stream_id, m.max, old_max});
+        } else {
+            std.debug.print("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) ignored (current={})\n",
+                .{m.stream_id, m.max, tx.peer_max_stream_data});
+        }
     } else {
-        // Stream not yet created on our side - ignore or create entry
-        std.debug.print("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) but stream TX not initialized yet\n", .{m.stream_id, m.max});
+        // Stream not yet created on our side - store for when it is created
+        // Create TX state entry with the advertised limit
+        std.debug.print("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) creating TX state\n",
+            .{m.stream_id, m.max});
+        ctx.conn.stream_txs.put(m.stream_id, .{ .peer_max_stream_data = m.max }) catch {
+            std.debug.print("[FC-TX] Failed to create TX state for stream {}\n", .{m.stream_id});
+        };
     }
     return .{ .saw_ack_eliciting = true };
 }
@@ -242,7 +255,16 @@ pub fn handleMaxData(
     ctx: *FrameContext,
     md: frame.MaxData,
 ) FrameResult {
-    ctx.conn.peer_max_data = md.max;
+    // PHASE 57 PART 11: Only update if new limit is greater (RFC 9000 §4.1)
+    if (md.max > ctx.conn.peer_max_data) {
+        const old_max = ctx.conn.peer_max_data;
+        ctx.conn.peer_max_data = md.max;
+        std.debug.print("[FC-CONN] Received MAX_DATA(max={}) increased from {}\n",
+            .{md.max, old_max});
+    } else {
+        std.debug.print("[FC-CONN] Received MAX_DATA(max={}) ignored (current={})\n",
+            .{md.max, ctx.conn.peer_max_data});
+    }
     return .{ .saw_ack_eliciting = true };
 }
 
