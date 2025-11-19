@@ -149,6 +149,11 @@ pub fn main() !void {
     var loop_count: u64 = 0;
     var last_debug_time = std.time.milliTimestamp();
 
+    var push_active: bool = false;
+    const push_stream_id: u64 = 1; // server-initiated bidi stream id (odd => server-initiated)
+    const push_target: usize = 1048576;
+    var push_sent: usize = 0;
+    var push_buf: ?[]u8 = null;
     while (true) {
         loop_count += 1;
         const now = std.time.milliTimestamp();
@@ -161,13 +166,28 @@ pub fn main() !void {
 
         // Drive I/O with a reasonable timeout to allow proper event-driven I/O
         // This replaces the busy-wait pattern with proper blocking I/O
-        api.poll(ep, 20) catch {};
+        api.poll(ep, if (active_conns.items.len > 0) 5 else 20) catch {}; // adaptive shorter poll for active transfers
 
         // Accept all newly-ready connections
         while (api.tryAccept(ep)) |conn| {
             std.debug.print("accepted connection\n", .{});
             const conn_state = ConnState.init(alloc, conn);
             active_conns.append(alloc, conn_state) catch {};
+            // Initialize push buffer and perform initial send burst
+            if (!push_active) {
+                push_active = true;
+                if (push_buf == null) {
+                    const tmp = try alloc.alloc(u8, push_target);
+                    @memset(tmp, '\xAB');
+                    push_buf = tmp;
+                }
+                const initial_burst = @min(push_target - push_sent, 64 * 1024);
+                if (initial_burst > 0) {
+                    const written = api.writeStream(conn, push_stream_id, push_buf.?[push_sent .. push_sent + initial_burst], false) catch 0;
+                    push_sent += written;
+                    std.debug.print("[SERVER-PUSH] initial wrote={} total={} target={}\n", .{written, push_sent, push_target});
+                }
+            }
         }
 
         // Process all active connections
@@ -248,10 +268,24 @@ pub fn main() !void {
                     if (stream.pending_write.items.len > 0) continue;
                 }
 
+                // Server push progression
+                if (push_active and push_sent < push_target) {
+                    const chunk = @min(push_target - push_sent, 64 * 1024);
+                    const wrote = api.writeStream(conn, push_stream_id, push_buf.?[push_sent .. push_sent + chunk], false) catch 0;
+                    if (wrote > 0) {
+                        push_sent += wrote;
+                        std.debug.print("[SERVER-PUSH] wrote={} total={} target={}\n", .{wrote, push_sent, push_target});
+                        if (push_sent == push_target) {
+                            _ = api.writeStream(conn, push_stream_id, &[_]u8{}, true) catch {};
+                            std.debug.print("[SERVER-PUSH] FIN sent total={}\n", .{push_sent});
+                        }
+                    }
+                }
+
                 // Step 2: Read new data from stream (drain aggressively each iteration)
                 if (!stream.got_fin) {
                     var chunk: [64 * 1024]u8 = undefined; // 64KB buffer similar to quinn/quiche examples
-                    const max_reads_per_iter: usize = 8;
+                    const max_reads_per_iter: usize = 64; // increased to drain large transfers faster
                     var reads_this_iter: usize = 0;
 
                     while (!stream.got_fin and stream.pending_write.items.len == 0 and reads_this_iter < max_reads_per_iter) {
@@ -266,34 +300,33 @@ pub fn main() !void {
                                     .{stream_id, n, stream.total_read, loop_count, reads_this_iter});
 
                                 // Try to echo immediately
-                                const written: usize = api.writeStream(conn, stream_id, chunk[0..n], false) catch |err| blk: {
-                                    if (err == error.FlowControlBlocked) {
-                                        std.debug.print("[P42-13-FC-BLOCKED] Stream {} immediate echo blocked, buffering {} bytes (loop {})\n",
-                                            .{stream_id, n, loop_count});
-                                        // Buffer the data for later retry
-                                        stream.pending_write.appendSlice(conn_state.allocator, chunk[0..n]) catch {};
+                                // Loop to write entire read buffer (may exceed single packet max)
+                                var write_off: usize = 0;
+                                while (write_off < n) {
+                                    const slice_len = n - write_off;
+                                    const written: usize = api.writeStream(conn, stream_id, chunk[write_off .. n], false) catch |err| blk: {
+                                        if (err == error.FlowControlBlocked or err == error.CongestionControlBlocked) {
+                                            std.debug.print("[P42-13-FC/CC-BLOCKED] Stream {} blocked mid-chunk, buffering {} bytes (loop {})\n", .{stream_id, n - write_off, loop_count});
+                                            stream.pending_write.appendSlice(conn_state.allocator, chunk[write_off .. n]) catch {};
+                                            break :blk 0;
+                                        }
+                                        std.debug.print("[P42-13-ERROR] Stream {} write error: {} (loop {})\n", .{stream_id, err, loop_count});
                                         break :blk 0;
-                                    }
-                                    std.debug.print("[P42-13-ERROR] Stream {} immediate echo error: {} (loop {})\n", .{stream_id, err, loop_count});
-                                    break :blk 0;
-                                };
-
-                                if (written > 0) {
+                                    };
+                                    if (written == 0) break; // blocked or error
                                     stream.total_written += written;
-                                    std.debug.print("[P42-13-ECHO] Stream {} echoed {} bytes ({} total written, loop {})\n",
-                                        .{stream_id, written, stream.total_written, loop_count});
-
-                                    // If partial write, buffer remainder
-                                    if (written < n) {
-                                        stream.pending_write.appendSlice(conn_state.allocator, chunk[written..n]) catch {};
-                                        std.debug.print("[P42-13-PARTIAL] Stream {} partial echo, buffered {} bytes (loop {})\n",
-                                            .{stream_id, n - written, loop_count});
-                                        break; // Need to flush buffered data before reading more
+                                    write_off += written;
+                                    if (written < slice_len) {
+                                        // Partial: buffer remainder
+                                        stream.pending_write.appendSlice(conn_state.allocator, chunk[write_off .. n]) catch {};
+                                        std.debug.print("[P42-13-PARTIAL] Stream {} partial echo, buffered {} bytes (loop {})\n", .{stream_id, n - write_off, loop_count});
+                                        break;
                                     }
                                 }
-
-                                // Continue draining if we still have room this iteration
-                                continue;
+                                const fully_echoed = write_off == n;
+                                if (fully_echoed) {
+                                    std.debug.print("[P42-13-ECHO] Stream {} echoed {} bytes ({} total written, loop {})\n", .{stream_id, n, stream.total_written, loop_count});
+                                }
                             } else {
                                 // readStream returned 0 successfully - this is a real FIN
                                 stream.got_fin = true;
