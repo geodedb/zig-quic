@@ -265,8 +265,6 @@ pub fn main() !void {
                             .{stream_id, written, stream.total_written, stream.pending_write.items.len});
                     }
 
-                    // PHASE 57 PART 16: Removed buffer threshold - now using read limiting instead
-                    // (See max_reads_per_iter below for the actual fix)
                 }
 
                 // Server push progression
@@ -289,10 +287,8 @@ pub fn main() !void {
                 // quic-go NEVER blocks reads based on pending writes - they are independent!
                 if (!stream.got_fin) {
                     var chunk: [64 * 1024]u8 = undefined; // 64KB buffer similar to quinn/quiche examples
-                    // PHASE 57 PART 16: Limit to 2 reads per iteration to prevent burst accumulation
-                    // This prevents 1MB bursts (16 × 65KB) that overwhelm flow control
-                    // Allows flush phase to drain before reading more, enabling bidirectional
-                    const max_reads_per_iter: usize = 2;
+                    // PHASE 57 PART 17: Restore baseline (no read limiting) for flush rate investigation
+                    const max_reads_per_iter: usize = 64;
                     var reads_this_iter: usize = 0;
 
                     // REMOVED: pending_write.items.len == 0 check that caused deadlock

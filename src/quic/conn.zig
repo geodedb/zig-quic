@@ -704,7 +704,8 @@ pub const Connection = struct {
     /// Current believed path MTU (UDP payload size), never below 1200. RFC 9000
     /// §14.1 mandates a minimum of 1200 bytes for Initials and recommends
     /// probing larger sizes via DPLPMTUD.
-    path_mtu: u16 = 1200,
+    /// PHASE 57 PART 17: Increased from 1200 to 1500 (Ethernet MTU) to fix slow flush rate
+    path_mtu: u16 = 1500,
     /// Pending probe PN (Application space) awaiting ACK to validate path MTU
     /// per RFC 9000 §14.3.
     probe_pending_pn: ?u64 = null,
@@ -1014,7 +1015,8 @@ pub const Connection = struct {
         self.crypto_buffer_initial = .{};
         self.crypto_buffer_handshake = .{};
         // Initialize PMTUD state
-        self.path_mtu = 1200;
+        // PHASE 57 PART 17: Use 1500 (Ethernet MTU) instead of 1200 (IPv6 minimum)
+        self.path_mtu = 1500;
         self.probe_pending_pn = null;
         self.probe_pending_size = 0;
         self.pmtud_state = .Disabled;
