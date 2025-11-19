@@ -270,11 +270,11 @@ RESULTS: 6 passed, 2 failed, 8 total
 - Each key update adds overhead but all complete successfully
 - No authentication failures or key phase mismatches observed
 
-### Phase 57 Part 12 - Bidirectional Communication Investigation (🔧 IN PROGRESS)
+### Phase 57 Part 12 - Bidirectional Communication Investigation (✅ PARTIAL FIX)
 
 **Date:** 2025-11-19
-**Status:** Root cause identified, fix requires more careful implementation
-**Current:** 6/8 tests passing
+**Status:** Read/write decoupling implemented, tests still fail for different reason
+**Current:** 6/8 tests passing (maintained baseline)
 
 **Root Cause Identified:**
 
@@ -293,32 +293,68 @@ The condition `pending_write.items.len == 0` creates a deadlock for bidirectiona
 5. Client's reader goroutine blocks waiting for echoes that never arrive
 6. Deadlock → timeout after 30 seconds
 
-**Failure Scenario (Stream Interleaving test):**
-1. Client sends data to streams 0, 1, 2, 3, 4 in round-robin (25 messages total)
-2. Server reads from stream 0, tries to echo, gets blocked → buffers to `pending_write`
-3. Server processes other streams but each gets blocked similarly
-4. Server processes streams in round-robin, but those with `pending_write` **cannot read more data**
-5. Messages pile up unread, client tries to read responses that haven't been sent
-6. Timeout
+**quic-go Reference Analysis:**
 
-**Fix Attempt (Reverted):**
+Analyzed `@forks/quic-go/example/echo/echo.go` and stream implementations:
+- **Echo server (line 51)**: Uses `io.Copy(stream, stream)` - reads and writes on same stream
+- **SendStream** (send_stream.go:93-211): Write never checks read state
+- **ReceiveStream** (receive_stream.go:84-237): Read never checks write state
+- **Key principle**: Reads and writes are **completely independent** operations
 
-Changed condition to allow reading with buffered writes up to 512KB limit:
+**Fix Implemented (Commit 288dc54):**
+
+Removed `pending_write.items.len == 0` check from read loop (cmd/quic-server.zig:295):
 ```zig
-const MAX_PENDING_BUFFER: usize = 512 * 1024;
-while (!stream.got_fin and stream.pending_write.items.len < MAX_PENDING_BUFFER and reads_this_iter < max_reads_per_iter) {
+// REMOVED: pending_write.items.len == 0 check that caused deadlock
+while (!stream.got_fin and reads_this_iter < max_reads_per_iter) {
 ```
 
-**Result:** Broke "Multiple Round-trips" test (6/8 → 5/8 passing)
-- Test was passing before, failed after change
-- Suggests fix needs more careful consideration of stream state management
+Added conditional echo logic to prevent unbounded growth:
+```zig
+if (stream.pending_write.items.len == 0) {
+    // Try immediate echo (normal flow)
+    var write_off: usize = 0;
+    while (write_off < n) {
+        // ... echo implementation ...
+    }
+} else {
+    // Already blocked, buffer this read instead of trying to echo
+    stream.pending_write.appendSlice(conn_state.allocator, chunk[0..n]) catch {};
+}
+```
+
+**Test Results After Fix:**
+```
+✅ Single Stream Echo - 21 bytes in 147ms
+✅ Multiple Concurrent Streams - 4 streams in 181ms
+✅ Large Transfer (10KB) - 10240 bytes in 284ms (0.03 MB/s)
+✅ Large Transfer (100KB) - 102400 bytes in 2.08s (0.05 MB/s)
+✅ Large Transfer (1MB) - 1048576 bytes in 26.98s (0.04 MB/s)
+✅ Multiple Round-trips - 10 cycles in 14.37s (avg: 1.44s per round)  ← Still passing!
+❌ Bidirectional Simultaneous - context deadline exceeded
+❌ Stream Interleaving - context deadline exceeded
+```
+
+**Critical Discovery:**
+
+Server logs reveal tests fail **BEFORE** reaching echo logic:
+- **0 buffering events** logged (P57-12-BUFFER never triggered)
+- **No "Message" data** from failing tests reached the server
+- **165K lines** of server activity but no test-specific stream data
+
+**Conclusion:**
+
+1. ✅ **Decoupling fix is correct** - matches quic-go's independent read/write design
+2. ✅ **No regression** - Multiple Round-trips still passes (unlike first naive attempt)
+3. ❌ **Tests fail for different reason** - Failures occur during stream setup, not echo buffering
+4. **Next investigation**: Why do Bidirectional/Interleaving tests timeout before sending data?
+
+**Commits:**
+- 288dc54: Decouple stream reads from writes (Phase 57 Part 12)
+- b6d2151: Document Phase 57 Part 12 investigation (first attempt)
 
 **Next Steps:**
-- Analyze why fix broke Multiple Round-trips test
-- Consider alternative approaches (separate read/write phases, smarter buffering)
-- May need to refactor stream processing logic for true bidirectional support
-- Reference quic-go echo server implementation for comparison
-
-**Files to investigate:**
-- `cmd/quic-server.zig:285-353` - Stream read/write/echo logic
-- `@forks/quic-go` - Reference implementation for concurrent read/write patterns
+- Investigate early stream lifecycle for Bidirectional/Interleaving tests
+- Check if client-side is stuck during stream opening
+- Verify server accepts multiple concurrent streams correctly
+- Add detailed logging for stream creation and early data frames
