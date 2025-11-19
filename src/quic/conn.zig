@@ -1483,6 +1483,15 @@ pub const Connection = struct {
             @tagName(level),
             hs.len,
         });
+        if (self.role == .Client and level == .Handshake) {
+            const head_len: usize = if (hs.len < 16) hs.len else 16;
+            std.debug.print("[TLS-HS-CLIENT] Handshake bytes head ({}): {any}\n", .{ head_len, hs[0..head_len] });
+            if (hs.len > 96) {
+                const mid_start: usize = 80;
+                const mid_end: usize = if (hs.len < 112) hs.len else 112;
+                std.debug.print("[TLS-HS-CLIENT] Handshake bytes mid ({}..{}): {any}\n", .{ mid_start, mid_end, hs[mid_start..mid_end] });
+            }
+        }
 
         // NOTE: Caller must set current connection context via handshake_integration.setCurrentConnection()
         // before calling this function for TLS Context callbacks to work properly
