@@ -1,4 +1,36 @@
 
+# E2E Test Investigation
+
+## Phase 57 Part 11: Flow Control Root Cause Analysis ✅
+
+**Date:** 2025-11-19
+**Previous Status:** 4/8 tests passing after HP preservation fix (Phase 57 Part 10)
+**Current Status:** Root cause identified - quic-go 512KB default window
+
+### Critical Discovery
+
+The 1MB test failure is NOT due to key update issues (as initially suspected) but due to flow control window exhaustion:
+
+1. **quic-go Default Window**: 512KB (`DefaultInitialMaxStreamData`)
+   - Located in `forks/quic-go/internal/protocol/params.go:25`
+   - Formula: `(1 << 10) * 512 = 524,288 bytes`
+
+2. **Transport Parameter Bug Fixed**:
+   - Previously: Server incorrectly took MAXIMUM of all stream limits
+   - Fixed: Now uses `initial_max_stream_data_bidi_local` for client-initiated streams
+   - RFC 9000 §18.2 compliant
+
+3. **Remaining Issue**:
+   - Server respects client's 512KB limit correctly
+   - Client needs to send MAX_STREAM_DATA frames for >512KB transfers
+   - Frame generation/processing needs investigation
+
+### Impact on Test Results
+
+- 100KB test: ✅ Passes (under 512KB limit)
+- 1MB test: ❌ Fails (exceeds 512KB, needs window expansion)
+- Solution: Either configure larger initial windows or fix MAX_STREAM_DATA generation
+
 ## Phase 42 Part 23: CRITICAL REGRESSION - Complete Test Failure ⚠️
 
 **Date:** 2025-11-14
