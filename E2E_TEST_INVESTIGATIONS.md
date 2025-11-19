@@ -8,7 +8,8 @@
 **Fix:** Disabled unsolicited 1 MB server push and removed receive-prioritization helper that pre-empted echo handling. `cmd/quic-server.zig` now gates server push behind `enable_server_push=false` (no push by default).  
 **Previous regression:** Receive-priority experiment + server push dropped suite to 1/8 passing. Root cause was congestion/flow-control starvation from unconsumed server-initiated stream.  
 **Key test results (quic-go client):** Multiple Round-trips 1.48s, Bidirectional Simultaneous 106ms, Stream Interleaving 10ms; Large Transfer 1MB 1.41s (0.71 MB/s).  
-**Next:** Keep push disabled for e2e; if re-enabling, add client consumption/RESET to avoid FC/cwnd starvation.
+**Next:** Keep push disabled for e2e; if re-enabling, add client consumption/RESET to avoid FC/cwnd starvation.  
+**Cross-client status (2025-11-19):** ✅ Go, ✅ Python (aioquic via venv), ✅ Rust (quinn), ❌ Zig (handshake fails with `TLS: Unknown handshake type byte=0x27`), ⚠️ x/net/quic still fails to open stream.
 
 ## 2025-11-14 – Large-Stream 100KB+ Failures
 

@@ -3108,3 +3108,11 @@ Comprehensive E2E test suite (make e2e-test-go-comprehensive):
 
 **Files Modified:**
 - `src/quic/endpoint/frame_handler.zig` - handleMaxStreamData, handleMaxData
+
+## Phase 57 Part 20B: Cross-client comprehensive status (2025-11-19)
+
+- ✅ Go (quic-go) comprehensive: 8/8 passing after disabling server push
+- ✅ Python (aioquic): 6/6 passing after adding venv requirements and resetting per-stream events (no FIN required)
+- ✅ Rust (quinn): 8/8 passing after surfacing FIN from `readStream` when FIN offset reached
+- ❌ Zig comprehensive client: Handshake fails with `TLS: Unknown handshake type byte=0x27` while parsing server Handshake CRYPTO (`first_byte=0xE1`); need to inspect handshake CRYPTO reassembly/decrypt path.
+- ⚠️ x/net/quic client: still fails to open stream (connection closed before stream creation)
