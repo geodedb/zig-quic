@@ -169,3 +169,48 @@ Preserve CURRENT HP key during all three key update scenarios:
 **Expected Outcome:** 8/8 tests passing once all key update edge cases are handled
 
 See `E2E_TEST_INVESTIGATION.md` for full investigation history (2,600+ lines, 10+ phases documented).
+
+### Phase 57 Part 11 - Flow Control Investigation (🔧 IN PROGRESS)
+
+**Date:** 2025-11-19
+**Status:** 4/8 tests passing - investigating flow control issues
+
+**Key Discoveries:**
+
+1. **quic-go Default Window:** 512KB (`DefaultInitialMaxStreamData`)
+   - Located in `forks/quic-go/internal/protocol/params.go:25`
+   - Formula: `(1 << 10) * 512 = 524,288 bytes`
+   - Explains why 1MB test blocks after ~974KB
+
+2. **Transport Parameter Fix Applied (Commit 19c7668):**
+   - Fixed incorrect use of MAXIMUM of all stream limits
+   - Now correctly uses `initial_max_stream_data_bidi_local` for client-initiated streams
+   - RFC 9000 §18.2 compliant
+
+3. **MAX_STREAM_DATA Frame Handling Bugs Fixed (Commit ce6451a):**
+   - **Bug 1:** Frames blindly overwrote values without checking if new > old (violates RFC 9000 §4.1)
+   - **Bug 2:** MAX_STREAM_DATA frames were ignored if TX state didn't exist yet
+   - **Fix:** Only update windows if new value is greater than current
+   - **Fix:** Create TX state entry when MAX_STREAM_DATA arrives for non-existent stream
+   - Added detailed `[FC-TX]` and `[FC-CONN]` logging for debugging
+
+**Files Modified:**
+- `src/quic/conn.zig:3555-3579` - Transport parameter handling
+- `src/quic/endpoint/frame_handler.zig:221-269` - MAX_STREAM_DATA/MAX_DATA handlers
+
+**Remaining Issue:**
+Server respects client's 512KB limit correctly, but client isn't sending MAX_STREAM_DATA frames to expand the window for >512KB transfers. Need to verify if:
+- Client is actually reading the echo data
+- Window update threshold (25% in quic-go) is being reached
+- MAX_STREAM_DATA frames are being sent but lost/ignored
+
+**Commits:**
+- 19c7668: Fixed transport parameter handling for flow control
+- 3a1795c: Updated E2E_TEST_INVESTIGATION.md with Phase 57 Part 11 findings
+- ce6451a: Fixed MAX_STREAM_DATA and MAX_DATA frame handling
+- 5711b89: Documented MAX_STREAM_DATA frame handling fixes
+
+**Next Steps:**
+- Build and test with the frame handling fixes
+- Add logging to track if MAX_STREAM_DATA frames are being received
+- Investigate why client might not be sending window updates
