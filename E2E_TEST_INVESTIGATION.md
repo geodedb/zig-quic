@@ -3056,3 +3056,21 @@ Comprehensive E2E test suite (make e2e-test-go-comprehensive):
 3. **Test-driven debugging works:** The 100KB test provided a reproducible failure case to verify the fix
 4. **RFC wording can be ambiguous:** RFC 9001 §5.4's "reflect changes" phrase is misleading; implementation behavior (quic-go, msquic) is the ground truth
 
+
+### Phase 57 Part 11 Update 2: MAX_STREAM_DATA Frame Handling (ce6451a)
+
+**Issue:** MAX_STREAM_DATA and MAX_DATA frames were not RFC-compliant  
+**Impact:** Could cause incorrect flow control window behavior
+
+**Bugs Found:**
+1. Frames blindly overwrote values without checking if new > old (violates RFC 9000 §4.1)
+2. MAX_STREAM_DATA frames were ignored if TX state didn't exist yet
+
+**Fixes:**
+- Only update windows if new value is greater than current
+- Create TX state entry when MAX_STREAM_DATA arrives for non-existent stream
+- Add detailed logging for flow control debugging
+
+**Files Modified:**
+- `src/quic/endpoint/frame_handler.zig` - handleMaxStreamData, handleMaxData
+

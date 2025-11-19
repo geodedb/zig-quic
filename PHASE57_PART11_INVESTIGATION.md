@@ -161,3 +161,53 @@ Client (quic-go) needs to send MAX_STREAM_DATA frames to expand window beyond in
 ## Summary
 
 Phase 57 Part 11 revealed that the 1MB test failure is due to flow control exhaustion with quic-go's default 512KB stream window. The server correctly respects this limit but the client isn't sending MAX_STREAM_DATA frames to expand the window for larger transfers. This is a fundamentally different issue from the key update problems solved in Parts 1-10.
+## Additional Fix: MAX_STREAM_DATA Frame Handling (ce6451a)
+
+### Bug Discovery
+
+Found issues in `handleMaxStreamData` and `handleMaxData`:
+
+1. **Non-RFC-Compliant Updates:**
+   - Frames were blindly overwriting values without checking if new value > old value
+   - RFC 9000 §4.1: Flow control limits can only INCREASE, never decrease
+   - Could lead to incorrect window reductions if stale/duplicate frames received
+
+2. **Missing TX State Handling:**
+   - If MAX_STREAM_DATA arrived before stream TX state existed, it was ignored
+   - This could lose window updates for streams not yet fully initialized
+
+### Fixes Applied
+
+**src/quic/endpoint/frame_handler.zig:handleMaxStreamData:**
+```zig
+// Only update if new limit is greater
+if (m.max > tx.peer_max_stream_data) {
+    tx.peer_max_stream_data = m.max;
+    // Log increase
+} else {
+    // Log ignored update
+}
+
+// Create TX state if doesn't exist
+if (stream_txs.getPtr() == null) {
+    stream_txs.put(stream_id, .{ .peer_max_stream_data = m.max });
+}
+```
+
+**src/quic/endpoint/frame_handler.zig:handleMaxData:**
+```zig
+// Only update if new limit is greater
+if (md.max > ctx.conn.peer_max_data) {
+    ctx.conn.peer_max_data = md.max;
+    // Log increase
+}
+```
+
+### Impact
+
+These fixes ensure:
+- RFC-compliant flow control window updates
+- No accidental window reductions from stale frames
+- All MAX_STREAM_DATA updates are preserved, even for streams not yet initialized
+- Better debugging with detailed logging
+
