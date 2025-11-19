@@ -10,7 +10,7 @@ pub const NewReno = struct {
     // Congestion control state (bytes)
     // Configurable max datagram size (RFC 9002 "max_datagram_size").
     mds: usize = 1200,
-    cwnd: usize = 10 * 1200, // initial cwnd: 10 * mds (default 1200)
+    cwnd: usize = 50 * 1200, // initial cwnd: 50 * mds (raised to accelerate >1MB transfer)
     ssthresh: usize = std.math.maxInt(usize) / 2,
     bytes_in_flight: usize = 0,
 

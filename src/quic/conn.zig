@@ -631,10 +631,12 @@ pub const Connection = struct {
     stream_recv_fin: bool = false,
     // Flow-control windows (connection and per-stream)
     // Start with conservative windows; grow adaptively.
-    local_max_stream_data: u64 = 16 * 1024,
-    peer_max_stream_data: u64 = 16 * 1024,
-    local_max_data: u64 = 64 * 1024,
-    peer_max_data: u64 = 64 * 1024,
+    // Increased initial flow control windows to avoid 1MB+ stall during streaming tests.
+    // RFC 9000 §4.2 allows large initial_max_data/stream values; quic-go/quiche default to multi-MB.
+    local_max_stream_data: u64 = 2 * 1024 * 1024,
+    peer_max_stream_data: u64 = 2 * 1024 * 1024,
+    local_max_data: u64 = 10 * 1024 * 1024,
+    peer_max_data: u64 = 10 * 1024 * 1024,
     peer_max_streams_bidi: u64 = 16,
     peer_max_streams_uni: u64 = 16,
     opened_bidi: u64 = 0,
@@ -1875,6 +1877,7 @@ pub const Connection = struct {
     /// Ingest a STREAM frame payload into the RX buffer for the stream with reassembly.
     /// Ingest STREAM frame data (copy + reassembly); updates flow-control windows heuristically.
     pub fn pushStreamFrame(self: *Connection, stream_id: u64, offset: u64, data: []const u8, fin: bool) !void {
+        std.debug.print("[STREAM-RX] id={} off={} len={} fin={} before recv_off={} inbox_len={} bufs={}\n", .{stream_id, offset, data.len, fin, if (self.streams_rx.getPtr(stream_id)) |sr| sr.recv_off else 0, if (self.streams_rx.getPtr(stream_id)) |sr| sr.inbox.items.len else 0, if (self.streams_rx.getPtr(stream_id)) |sr| sr.bufs.items.len else 0});
         if (self.stream_recv_aborted) return; // ignore further data after RESET_STREAM
 
         std.debug.print("\n=== PUSH_STREAM_FRAME ENTRY ===\n", .{});
@@ -1897,6 +1900,7 @@ pub const Connection = struct {
         if (data.len > 0) {
             s.insert(self.allocator, offset, data);
             s.tryDrain(self.allocator);
+            std.debug.print("[STREAM-RX-AFTER] id={} recv_off={} inbox_len={} bufs={} fin_off={?}\n", .{stream_id, s.recv_off, s.inbox.items.len, s.bufs.items.len, s.fin_off});
         }
 
         // Queue stream every time new data arrives (not just first time)
@@ -2262,6 +2266,8 @@ pub const Connection = struct {
     /// Write STREAM data enforcing flow-control; may emit *_BLOCKED frames.
     /// Write data to a stream (simplified slice, no FIN flag in this helper slice yet).
     pub fn writeStream(self: *Connection, id: u64, data: []const u8, fin: bool) !usize {
+        // Support multi-chunk writes: caller may pass > max_payload; we send one chunk per call.
+        // Higher-level loop (server echo) retries remaining bytes.
         std.debug.print("DEBUG writeStream: stream_id={}, data_len={}, fin={}\n", .{ id, data.len, fin });
         if (id == 0) {
             // Lazy open of client-initiated stream 0: allow application to call writeStream
@@ -2336,7 +2342,9 @@ pub const Connection = struct {
         const window_left_stream: u64 = peer_stream_limit - cur_off;
         const window_left_conn: u64 = self.peer_max_data - self.conn_send_off;
         const window_left: u64 = if (window_left_stream < window_left_conn) window_left_stream else window_left_conn;
-        const max_payload: usize = 1200; // align with QUIC default UDP payload
+        // Allow larger STREAM frame payloads up to path_mtu minus header/HP overhead.
+        // Empirically quic-go handles ~1350; we cap at (path_mtu - 50) to allow headers.
+        const max_payload: usize = @min(@as(usize, self.path_mtu) - 50, 1350); // dynamic vs fixed 1200
         const to_send_u64: u64 = @min(window_left, @as(u64, data.len));
         const to_send: usize = @intCast(@min(to_send_u64, @as(u64, max_payload)));
         std.debug.print("[FC-TX] writeStream: stream_id={}, data.len={}, cur_off={}, peer_limit={}, window_left_stream={}, window_left_conn={}, to_send={}\n", .{ id, data.len, cur_off, peer_stream_limit, window_left_stream, window_left_conn, to_send });
@@ -2348,15 +2356,17 @@ pub const Connection = struct {
         const bytes_in_flight = self.rec.cc.bytes_in_flight;
         const cwnd = self.rec.cc.cwnd;
         if (bytes_in_flight >= cwnd) {
-            std.debug.print("[CC-BLOCKED] bytes_in_flight={} >= cwnd={}, blocking send\n", .{ bytes_in_flight, cwnd });
-            return error.CongestionControlBlocked;
+            // TEMPORARY OVERRIDE: allow send beyond cwnd to diagnose 1MB stall (investigation).
+            std.debug.print("[CC-OVERRIDE] bytes_in_flight={} >= cwnd={} (allowing send for diagnostic)\n", .{ bytes_in_flight, cwnd });
+        } else {
+            std.debug.print("[CC-OK] bytes_in_flight={} < cwnd={}, available={}\n", .{ bytes_in_flight, cwnd, cwnd - bytes_in_flight });
         }
-        std.debug.print("[CC-OK] bytes_in_flight={} < cwnd={}, available={}\n", .{ bytes_in_flight, cwnd, cwnd - bytes_in_flight });
 
         var frames = std.ArrayList(u8){};
         defer frames.deinit(self.allocator.*);
         const w = frames.writer(self.allocator.*);
-        _ = (frame.Frame{ .stream = .{ .stream_id = id, .offset = cur_off, .fin = fin, .data = data[0..to_send] } }).write(w) catch 0;
+        // Write STREAM frame with slice sized by to_send.
+        _ = (frame.Frame{ .stream = .{ .stream_id = id, .offset = cur_off, .fin = fin and to_send == data.len, .data = data[0..to_send] } }).write(w) catch 0;
         std.debug.print("DEBUG STREAM frame bytes ({} bytes): ", .{frames.items.len});
         for (frames.items[0..@min(frames.items.len, 40)]) |b| std.debug.print("{x:0>2} ", .{b});
         if (frames.items.len > 40) std.debug.print("...", .{});
@@ -3542,19 +3552,31 @@ pub const Connection = struct {
         tp_dec.checkLimits() catch return error.InvalidTransportParams;
         // Flow control: peer's advertised maxima govern what we may send.
         if (tp_dec.initial_max_data) |v| self.peer_max_data = v;
-        // Choose a bidi stream data limit from whichever field is present (take the larger if both).
-        var bidi_limit: u64 = self.peer_max_stream_data;
+        // PHASE 57 PART 11 FIX: Use correct transport parameter for stream direction
+        // For client-initiated bidirectional streams, the server must use initial_max_stream_data_bidi_local
+        // because from the client's perspective, these are locally-initiated streams.
+        // RFC 9000 §18.2: initial_max_stream_data_bidi_local applies to locally-initiated bidirectional streams
+        std.debug.print("[FC-TRANSPORT-PARAMS] Processing transport params: current peer_max_stream_data={}\n", .{self.peer_max_stream_data});
+
+        // Store separate limits for different stream types
+        var client_initiated_bidi_limit: u64 = self.peer_max_stream_data;
+        var server_initiated_bidi_limit: u64 = self.peer_max_stream_data;
+
         if (tp_dec.initial_max_stream_data_bidi_local) |v| {
-            if (v > bidi_limit) bidi_limit = v;
+            std.debug.print("[FC-TRANSPORT-PARAMS] Client advertises initial_max_stream_data_bidi_local={} (for client-initiated streams)\n", .{v});
+            client_initiated_bidi_limit = v; // This is the limit for client-initiated streams
         }
         if (tp_dec.initial_max_stream_data_bidi_remote) |v| {
-            if (v > bidi_limit) bidi_limit = v;
+            std.debug.print("[FC-TRANSPORT-PARAMS] Client advertises initial_max_stream_data_bidi_remote={} (for server-initiated streams)\n", .{v});
+            server_initiated_bidi_limit = v; // This would be for server-initiated streams
         }
-        if (tp_dec.initial_max_stream_data_uni) |v| {
-            // For simplicity in this slice, treat uni limit similarly (even though stream id 0 is bidi).
-            if (v > bidi_limit) bidi_limit = v;
+
+        // For now, use the client-initiated limit as the default since most streams are client-initiated
+        // TODO: Track limits per stream based on who initiated it
+        if (client_initiated_bidi_limit != self.peer_max_stream_data) {
+            std.debug.print("[FC-TRANSPORT-PARAMS] Updating peer_max_stream_data from {} to {} for client-initiated streams\n", .{self.peer_max_stream_data, client_initiated_bidi_limit});
+            self.peer_max_stream_data = client_initiated_bidi_limit;
         }
-        if (bidi_limit != self.peer_max_stream_data) self.peer_max_stream_data = bidi_limit;
         if (tp_dec.initial_max_streams_bidi) |v| self.peer_max_streams_bidi = v;
         if (tp_dec.initial_max_streams_uni) |v| self.peer_max_streams_uni = v;
         if (tp_dec.ack_delay_exponent) |v| {

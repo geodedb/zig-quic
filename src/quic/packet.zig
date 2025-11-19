@@ -239,6 +239,7 @@ pub fn decodeShortProtected(
     keys: AeadKeys,
     largest_pn: u64,
 ) !DecodedShort {
+    std.debug.print("[SHORT-DECODE-ENTRY] bytes={} dcid_len={} largest_pn={} key0={X:0>2}\n", .{packet_bytes.len, dcid_len, largest_pn, keys.key[0]});
     return decodeShortProtectedWithHp(alloc, packet_bytes, dcid_len, keys.hp, keys, largest_pn);
 }
 

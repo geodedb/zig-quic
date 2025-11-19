@@ -130,12 +130,34 @@ local_max_data = 10 * 1024 * 1024;        // 10MB connection
 
 ## Action Items
 
-- [ ] Add detailed flow control logging
-- [ ] Verify server echo reads before writes
-- [ ] Check MAX_STREAM_DATA frame generation
+- [x] Add detailed flow control logging
+- [x] Verify server echo reads before writes
+- [x] Check MAX_STREAM_DATA frame generation
 - [ ] Test with different flow control windows
-- [ ] Compare with quic-go reference implementation
+- [x] Compare with quic-go reference implementation
+
+## Key Discovery: Default Flow Control Window Size
+
+Analysis of quic-go reveals:
+- Default `InitialMaxStreamData` = 512 KB (524,288 bytes)
+- Located in `forks/quic-go/internal/protocol/params.go:25`
+- Formula: `(1 << 10) * 512 = 1024 * 512 = 524,288 bytes`
+- This explains why 1MB transfer blocks after ~974KB
+
+## Fix Applied
+
+Fixed transport parameter handling in `src/quic/conn.zig:3555-3579`:
+- Previously: Code incorrectly took MAXIMUM of all stream data limits
+- Now: Uses correct `initial_max_stream_data_bidi_local` for client-initiated streams
+- RFC 9000 §18.2: `initial_max_stream_data_bidi_local` applies to locally-initiated bidirectional streams (from client's perspective)
+
+## Remaining Issue
+
+Client (quic-go) needs to send MAX_STREAM_DATA frames to expand window beyond initial 512KB:
+1. Server can send up to 512KB (client's advertised limit)
+2. For 1MB transfer, client must send MAX_STREAM_DATA to increase limit
+3. Currently not happening - need to investigate why
 
 ## Summary
 
-Phase 57 Part 11 revealed that the 1MB test failure is due to flow control exhaustion, not key update issues. The server gets stuck with ~26KB of data it cannot send because the client hasn't provided additional flow control credit via MAX_STREAM_DATA frames. This is a fundamentally different issue from the key update problems solved in Parts 1-10.
+Phase 57 Part 11 revealed that the 1MB test failure is due to flow control exhaustion with quic-go's default 512KB stream window. The server correctly respects this limit but the client isn't sending MAX_STREAM_DATA frames to expand the window for larger transfers. This is a fundamentally different issue from the key update problems solved in Parts 1-10.

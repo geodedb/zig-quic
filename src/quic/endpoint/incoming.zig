@@ -395,6 +395,7 @@ pub fn enumerateDcidLength(
     largest_pn: u64,
     conn: ?*conn_mod.Connection,
 ) DcidLengthResult {
+    std.debug.print("[ENUM-SHORT] Start enumerateDcidLength initial_len={} bytes_len={} largest_pn={}\n", .{initial_dcid_len, packet_bytes.len, largest_pn});
     // Try initial length first
     if (packet.decodeShortProtected(
         allocator,
@@ -1829,6 +1830,7 @@ fn decryptShortHeaderWithKeyRotationInternal(
         addDcidCandidate(len_iter, candidates[0..], &cand_count, max_dcid_len);
     }
 
+    std.debug.print("[APP-PATH] Enter enumerateDcidLength (short header) bytes_len={} try_dcid_len={} largest_pn={} conn_set={}\n", .{bytes.len, try_dcid_len, largest_pn, true});
     var cand_index: usize = 0;
     while (cand_index < cand_count) : (cand_index += 1) {
         const test_len = candidates[cand_index];
@@ -1843,6 +1845,7 @@ fn decryptShortHeaderWithKeyRotationInternal(
         }
 
         packet.phase57SetAttemptLabel("CURRENT");
+        std.debug.print("[APP-DECODE] TRY CURRENT dcid_len={} largest_pn={} rx_phase={} bytes={}\n", .{test_len, largest_pn, conn.rx_key_phase, bytes.len});
         if (packet.decodeShortProtected(allocator, bytes, test_len, .{
             .key = rx_keys.key,
             .iv = rx_keys.iv,
@@ -1889,6 +1892,7 @@ fn decryptShortHeaderWithKeyRotationInternal(
                 });
             }
             packet.phase57SetAttemptLabel("NEXT");
+            std.debug.print("[APP-DECODE] TRY NEXT dcid_len={} largest_pn={} rx_phase={} bytes={}\n", .{test_len, largest_pn, conn.rx_key_phase, bytes.len});
             if (packet.decodeShortProtected(allocator, bytes, test_len, .{
                 .key = next_mat.key,
                 .iv = next_mat.iv,
@@ -1917,6 +1921,7 @@ fn decryptShortHeaderWithKeyRotationInternal(
                 });
             }
             packet.phase57SetAttemptLabel("PREV");
+            std.debug.print("[APP-DECODE] TRY PREV dcid_len={} largest_pn={} rx_phase={} bytes={}\n", .{test_len, largest_pn, conn.rx_key_phase, bytes.len});
             if (packet.decodeShortProtected(allocator, bytes, test_len, .{
                 .key = kp.key,
                 .iv = kp.iv,
@@ -2055,6 +2060,7 @@ fn tryForceKeyUpdateAndDecrypt(
     var test_len: u8 = 0;
     while (test_len <= 20) : (test_len += 1) {
         packet.phase57SetAttemptLabel("FORCED");
+        std.debug.print("[APP-DECODE] TRY FORCED dcid_len={} largest_pn={} bytes={}\n", .{test_len, largest_pn, bytes.len});
         if (packet.decodeShortProtected(allocator, bytes, test_len, .{
             .key = forced_mat.key,
             .iv = forced_mat.iv,
@@ -2251,6 +2257,10 @@ pub fn processFrames(
             break;
         };
         std.debug.print("Decoded frame at offset {}: type={s}\n", .{ offset, @tagName(fr.f) });
+        if (fr.f == .stream) {
+            const s = fr.f.stream;
+            std.debug.print("[STREAM-FRAME] id={} off={} len={} fin={}\n", .{ s.stream_id, s.offset orelse 0, s.data.len, s.fin });
+        }
         offset += fr.n;
 
         // Create frame handler context
@@ -2284,6 +2294,23 @@ pub fn processFrames(
     // Record ack-eliciting reception if applicable
     if (result.saw_ack_eliciting) {
         conn.recordAckElicitingRx(.Application, now_ns);
+        if (conn.app_tx_keys) |tx_keys| {
+            var fb: [256]u8 = undefined;
+            var fbs = std.io.fixedBufferStream(&fb);
+            const w = fbs.writer();
+            const ack_desc = conn.buildAckApp();
+            const ack_frame = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = 0, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges } };
+            _ = ack_frame.write(w) catch 0;
+            const frames_data = fbs.getWritten();
+            const dcid_sh = conn.shortHeaderDcid();
+            if (packet.encodeShortProtected(ctx.allocator.*, dcid_sh, @as(u32, @truncate(conn.pn_app_tx)), 2, frames_data, tx_keys, conn.tx_key_phase)) |pkt_bytes| {
+                defer ctx.allocator.free(pkt_bytes);
+                _ = ctx.send_fn(peer, pkt_bytes) catch {};
+                conn.onShortHeaderPacketSent(pkt_bytes.len, false);
+                std.debug.print("[APP-ACK] immediate ack largest={} pn={} bytes={}\n", .{ack_desc.largest, conn.pn_app_tx, pkt_bytes.len});
+                conn.pn_app_tx +%= 1;
+            } else |_| {}
+        }
     }
 
     // Handle HANDSHAKE_DONE: drop Handshake keys (with conditions)
@@ -2607,6 +2634,7 @@ pub fn generateAndSendAck(
                             const stream_id = entry.key_ptr.*;
                             const stream = entry.value_ptr;
                             if (stream.local_max_stream_data > stream.last_sent_max_stream_data) {
+                        std.debug.print("[RX-INSTR] stream={} recv_off={} inbox_len={} local_max_stream_data={} last_sent={} fin_off={?}\n", .{stream_id, stream.recv_off, stream.inbox.items.len, stream.local_max_stream_data, stream.last_sent_max_stream_data, stream.fin_off});
                                 const delta = stream.local_max_stream_data - stream.last_sent_max_stream_data;
                                 std.debug.print("[P42-19-FC-TX] Sending MAX_STREAM_DATA(stream={}, max={}, delta=+{}, recv_off={}, inbox={})\n",
                                     .{stream_id, stream.local_max_stream_data, delta, stream.recv_off, stream.inbox.items.len});
@@ -2772,6 +2800,9 @@ pub fn generateAndSendAck(
 /// Returns: void (errors are logged but not propagated)
 ///
 /// RFC 9000 §12: "QUIC packets are carried in UDP datagrams."
+var g_app_decrypt_start: u64 = 0;
+var g_app_decrypt_success: u64 = 0;
+
 pub fn processShortHeader(
     ctx: *RxContext,
     peer: conn_mod.SockAddr,
@@ -2859,6 +2890,7 @@ pub fn processShortHeader(
 
     // Check if we have application-level RX keys
     const rx_keys = conn.app_rx_keys orelse {
+        std.debug.print("[APP-SHORT-NO-KEYS] dropping short header packet (pn tracking can't proceed)\n", .{});
         // No RX keys yet - handshake not complete
         if (ctx.test_capture_enabled) {
             std.debug.print("No app_rx_keys available, dropping packet\n", .{});
@@ -2885,6 +2917,8 @@ pub fn processShortHeader(
 
     // Use extracted decryption function with key rotation
     // Tries CURRENT → NEXT → PREV keys automatically
+    g_app_decrypt_start += 1;
+    std.debug.print("[APP-DECRYPT-START] attempt={} dcid_len={} bytes={} cached={?}\n", .{g_app_decrypt_start, observed_dcid_len, bytes.len, conn.expected_rx_dcid_len});
     const decrypt_result = decryptShortHeaderWithKeyRotation(
         ctx.allocator.*,
         conn,
@@ -2901,6 +2935,34 @@ pub fn processShortHeader(
     };
 
     const dec_res = decrypt_result.decoded;
+    g_app_decrypt_success += 1;
+    std.debug.print("[APP-DECRYPT-SUCCESS] attempt={} pn={} payload_len={} used_next={} used_prev={} rx_phase={} success_ratio={}/{}\n", .{g_app_decrypt_start, decrypt_result.decoded.packet_number, decrypt_result.decoded.payload.len, decrypt_result.used_next, decrypt_result.used_prev, conn.rx_key_phase, g_app_decrypt_success, g_app_decrypt_start});
+    // Frame parsing & ACK generation (Application)
+    std.debug.print("[APP-DISPATCH] Parsing 1-RTT frames payload_len={} pn={}\n", .{dec_res.payload.len, dec_res.packet_number});
+    if (dec_res.payload.len == 0) std.debug.print("[APP-DISPATCH] EMPTY-PAYLOAD pn={} suspect header protection/DCID length issue\n", .{dec_res.packet_number});
+    // Fallback manual STREAM frame scan if decodeOne misses
+    var scan_i: usize = 0; var stream_scan_hits: usize = 0;
+    while (scan_i < dec_res.payload.len) : (scan_i += 1) {
+        const b = dec_res.payload[scan_i];
+        if ((b & 0xF8) == 0x08) { // STREAM frame type range
+            stream_scan_hits += 1;
+            std.debug.print("[APP-STREAM-SCAN] hit at offset={} type_byte=0x{X:0>2}\n", .{scan_i, b});
+            break; // only need first indication
+        }
+    }
+    if (stream_scan_hits == 0 and dec_res.payload.len > 0) std.debug.print("[APP-STREAM-SCAN] no STREAM type bytes found in first {} bytes\n", .{dec_res.payload.len});
+    // Hex dump first up to 64 bytes of decrypted payload for diagnostics
+    const dump_len: usize = @min(dec_res.payload.len, 64);
+    if (dump_len > 0) {
+        std.debug.print("[APP-PAYLOAD-HEX] ", .{});
+        var di: usize = 0; while (di < dump_len) : (di += 1) std.debug.print("{X:0>2} ", .{dec_res.payload[di]});
+        std.debug.print("\n", .{});
+    }
+    const frames_result = processFrames(ctx, conn, peer, dec_res.payload, send_fn) catch {
+        std.debug.print("[APP-DISPATCH] processFrames error (payload_len={})\n", .{dec_res.payload.len});
+        return;
+    };
+    if (frames_result.saw_ack_eliciting) std.debug.print("[APP-DISPATCH] ack-eliciting pn={}\n", .{dec_res.packet_number});
     const used_next = decrypt_result.used_next;
     const used_prev = decrypt_result.used_prev;
     defer ctx.allocator.free(dec_res.payload);
