@@ -6,6 +6,26 @@ core
 dist/
 result
 
+# Tooling / virtualenvs
+.venv/
+venv/
+**/.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local env files
+.env
+.envrc
+
+# Build artifacts
+*.o
+*.obj
+*.pyc
+*.pyd
+*.pyo
+
 # But preserve important cmd files
 !cmd/
 
