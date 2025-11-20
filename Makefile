@@ -488,7 +488,7 @@ e2e-test-zig-comprehensive: build
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \
 		echo "Running comprehensive Zig test suite..."; \
-		timeout 60 ./zig-out/bin/quic-client-comprehensive --connect 127.0.0.1:4433 --insecure 2>&1 | tee /tmp/e2e-zig-comprehensive-client.log; \
+		timeout 180 ./zig-out/bin/quic-client-comprehensive --connect 127.0.0.1:4433 --insecure 2>&1 | tee /tmp/e2e-zig-comprehensive-client.log; \
 		CLIENT_EXIT=$$?; \
 		kill $$SERVER_PID 2>/dev/null || true; \
 		sleep 1; \

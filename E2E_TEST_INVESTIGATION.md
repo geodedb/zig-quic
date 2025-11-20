@@ -1,6 +1,12 @@
 
 # E2E Test Investigation
 
+## 2025-11-20 – Zig client handshake fixed; stream-0 echo missing
+
+- Root cause for `TLS: Unknown handshake type` on Zig client: ztls `CryptoBuffer.consume` used `copyBackwards`, corrupting buffered Handshake bytes after EncryptedExtensions. Switched to `copyForwards` (context.zig + handshake_state.zig). Added handshake payload hash/type logging in `sendHandshakePackets` and client `pushCrypto`; server/client hashes now match and EE/Certificate/CertVerify/Finished all parse.
+- Harness changes: comprehensive timeout increased to 180s; stream allocation uses `openBidiStreamWithRetry` with extra polling; freed allocPrint’d test names to avoid gpa leak.
+- Current state: handshake succeeds and suite runs, but the “Single Stream Echo” test still reads 0 bytes (others nominal). Bytes in flight spike (`CC-OVERRIDE` warnings). Need to trace server echo path/acks for stream 0.
+
 ## Phase 57 Part 11: Flow Control Root Cause Analysis ✅
 
 **Date:** 2025-11-19

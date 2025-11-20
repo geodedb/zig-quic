@@ -395,14 +395,14 @@ pub const StreamRx = struct {
     bufs: std.ArrayList(Segment),
     fin_off: ?u64 = null,
     // PHASE 42 PART 9: Per-stream flow control tracking (RFC 9000 §4.2)
-    local_max_stream_data: u64 = 0,       // Current receive window limit for this stream
-    last_sent_max_stream_data: u64 = 0,   // Last MAX_STREAM_DATA value sent to peer
+    local_max_stream_data: u64 = 0, // Current receive window limit for this stream
+    last_sent_max_stream_data: u64 = 0, // Last MAX_STREAM_DATA value sent to peer
     // PHASE 42 PART 18: RTT-based autotuning (RFC 9000 §4.3, quiche flowcontrol.rs)
-    last_window_update_time_us: u64 = 0,  // Timestamp of last window expansion (microseconds)
+    last_window_update_time_us: u64 = 0, // Timestamp of last window expansion (microseconds)
     // PHASE 46: Quinn-style flow control tracking
-    initial_window_size: u64 = 0,         // Initial window size for threshold calculation
+    initial_window_size: u64 = 0, // Initial window size for threshold calculation
     // PHASE 57 PART 11: Track bytes consumed by application (like quinn's assembler.bytes_read())
-    bytes_consumed_total: u64 = 0,        // Total bytes consumed by application via readStream()
+    bytes_consumed_total: u64 = 0, // Total bytes consumed by application via readStream()
 
     fn init() StreamRx {
         return .{
@@ -475,7 +475,7 @@ const StreamTx = struct {
     fin_sent: bool = false,
     aborted: bool = false,
     // PHASE 42 PART 10: Per-stream send-side flow control (RFC 9000 §4.2)
-    peer_max_stream_data: u64 = 0,  // Peer's receive window limit for this stream
+    peer_max_stream_data: u64 = 0, // Peer's receive window limit for this stream
 };
 
 /// Connection state and helpers for QUIC handshake, recovery, and 1-RTT.
@@ -989,10 +989,10 @@ pub const Connection = struct {
         // Initialize flow control defaults (aligned with quinn's defaults for good performance)
         // Quinn uses: stream_receive_window = 1.25MB, receive_window = VarInt::MAX (essentially unlimited)
         // This ensures large transfers (1MB+) don't get flow-control blocked
-        self.local_max_stream_data = 2 * 1024 * 1024;  // 2MB per stream (vs quinn's 1.25MB)
-        self.peer_max_stream_data = 2 * 1024 * 1024;   // 2MB per stream
-        self.local_max_data = 10 * 1024 * 1024;        // 10MB connection-level (vs quinn's VarInt::MAX)
-        self.peer_max_data = 10 * 1024 * 1024;         // 10MB connection-level
+        self.local_max_stream_data = 2 * 1024 * 1024; // 2MB per stream (vs quinn's 1.25MB)
+        self.peer_max_stream_data = 2 * 1024 * 1024; // 2MB per stream
+        self.local_max_data = 10 * 1024 * 1024; // 10MB connection-level (vs quinn's VarInt::MAX)
+        self.peer_max_data = 10 * 1024 * 1024; // 10MB connection-level
         self.peer_max_streams_bidi = 16;
         self.peer_max_streams_uni = 16;
         self.opened_bidi = 0;
@@ -1491,6 +1491,15 @@ pub const Connection = struct {
                 const mid_end: usize = if (hs.len < 112) hs.len else 112;
                 std.debug.print("[TLS-HS-CLIENT] Handshake bytes mid ({}..{}): {any}\n", .{ mid_start, mid_end, hs[mid_start..mid_end] });
             }
+            var h = std.hash.Wyhash.init(0);
+            h.update(hs);
+            const hash = h.final();
+            const tail_len: usize = if (hs.len < 16) hs.len else 16;
+            std.debug.print("[TLS-HS-CLIENT] Handshake hash=0x{X:0>16}, tail ({}): {any}\n", .{
+                hash,
+                tail_len,
+                hs[hs.len - tail_len ..],
+            });
         }
 
         // NOTE: Caller must set current connection context via handshake_integration.setCurrentConnection()
@@ -1553,11 +1562,11 @@ pub const Connection = struct {
         }
 
         // Install 1-RTT keys when both Finished messages exchanged and CRYPTO outbox flushed
-        std.debug.print("[pushCrypto] Checking if should derive Application keys: app_tx_keys={any}, conn={*}\n", .{self.app_tx_keys != null, self});
+        std.debug.print("[pushCrypto] Checking if should derive Application keys: app_tx_keys={any}, conn={*}\n", .{ self.app_tx_keys != null, self });
         if (self.app_tx_keys == null) {
             const flags = tls_ctx.flags;
             // NOTE: Use Connection's peer_finished_verified (set by callback), not TLS Context's flag
-            std.debug.print("[pushCrypto] Flags: conn={*}, conn.peer_finished_verified={}, flags.local_finished_sent={}\n", .{self, self.peer_finished_verified, flags.local_finished_sent});
+            std.debug.print("[pushCrypto] Flags: conn={*}, conn.peer_finished_verified={}, flags.local_finished_sent={}\n", .{ self, self.peer_finished_verified, flags.local_finished_sent });
             if (self.peer_finished_verified and flags.local_finished_sent) {
                 // Check if Context has pending CRYPTO data to send
                 // Context manages outgoing CRYPTO via callbacks, so we check if secrets are ready
@@ -1691,6 +1700,10 @@ pub const Connection = struct {
     ) !bool {
         var ack_eliciting = false;
         const expected = expected_offset.*;
+        const is_handshake = expected_offset == &self.crypto_rx_off_handshake;
+        if (self.role == .Client and is_handshake) {
+            std.debug.print("[CRYPTO-HS-CLIENT] recv offset={} len={} expected={}\n", .{ offset, data.len, expected });
+        }
 
         if (offset == expected) {
             if (data.len > 0) {
@@ -1888,7 +1901,7 @@ pub const Connection = struct {
     /// Ingest a STREAM frame payload into the RX buffer for the stream with reassembly.
     /// Ingest STREAM frame data (copy + reassembly); updates flow-control windows heuristically.
     pub fn pushStreamFrame(self: *Connection, stream_id: u64, offset: u64, data: []const u8, fin: bool) !void {
-        std.debug.print("[STREAM-RX] id={} off={} len={} fin={} before recv_off={} inbox_len={} bufs={}\n", .{stream_id, offset, data.len, fin, if (self.streams_rx.getPtr(stream_id)) |sr| sr.recv_off else 0, if (self.streams_rx.getPtr(stream_id)) |sr| sr.inbox.items.len else 0, if (self.streams_rx.getPtr(stream_id)) |sr| sr.bufs.items.len else 0});
+        std.debug.print("[STREAM-RX] id={} off={} len={} fin={} before recv_off={} inbox_len={} bufs={}\n", .{ stream_id, offset, data.len, fin, if (self.streams_rx.getPtr(stream_id)) |sr| sr.recv_off else 0, if (self.streams_rx.getPtr(stream_id)) |sr| sr.inbox.items.len else 0, if (self.streams_rx.getPtr(stream_id)) |sr| sr.bufs.items.len else 0 });
         if (self.stream_recv_aborted) return; // ignore further data after RESET_STREAM
 
         std.debug.print("\n=== PUSH_STREAM_FRAME ENTRY ===\n", .{});
@@ -1911,7 +1924,7 @@ pub const Connection = struct {
         if (data.len > 0) {
             s.insert(self.allocator, offset, data);
             s.tryDrain(self.allocator);
-            std.debug.print("[STREAM-RX-AFTER] id={} recv_off={} inbox_len={} bufs={} fin_off={?}\n", .{stream_id, s.recv_off, s.inbox.items.len, s.bufs.items.len, s.fin_off});
+            std.debug.print("[STREAM-RX-AFTER] id={} recv_off={} inbox_len={} bufs={} fin_off={?}\n", .{ stream_id, s.recv_off, s.inbox.items.len, s.bufs.items.len, s.fin_off });
         }
 
         // Queue stream every time new data arrives (not just first time)
@@ -1920,7 +1933,7 @@ pub const Connection = struct {
 
         if (is_peer_initiated and has_data_now) {
             try self.queueIncomingStream(stream_id);
-            std.debug.print("[P57-6-QUEUE] Stream {} queued ({} bytes in inbox, {} total in queue)\n", .{stream_id, s.inbox.items.len, self.incoming_stream_queue.items.len});
+            std.debug.print("[P57-6-QUEUE] Stream {} queued ({} bytes in inbox, {} total in queue)\n", .{ stream_id, s.inbox.items.len, self.incoming_stream_queue.items.len });
         }
 
         // PHASE 57 PART 13: Send initial MAX_STREAM_DATA when stream receives first data
@@ -1929,7 +1942,7 @@ pub const Connection = struct {
         if (is_peer_initiated and s.last_sent_max_stream_data == 0 and self.hasConfirmedAppTxKeys()) {
             // Initialize local_max_stream_data to initial window size for new streams
             const receive_window = if (s.initial_window_size > 0) s.initial_window_size else self.local_max_stream_data;
-            s.local_max_stream_data = receive_window;  // bytes_consumed_total is 0 for new streams
+            s.local_max_stream_data = receive_window; // bytes_consumed_total is 0 for new streams
             // Send initial MAX_STREAM_DATA to advertise the window
             self.advertiseInitialFlowControl();
         }
@@ -2107,24 +2120,20 @@ pub const Connection = struct {
                 stream_rx.initial_window_size
             else
                 stream_rx.local_max_stream_data;
-            const threshold = window >> 3;  // Divide by 8 using bit shift (256KB for 2MB window)
-            
+            const threshold = window >> 3; // Divide by 8 using bit shift (256KB for 2MB window)
+
             // PHASE 57 PART 12: Use minimum threshold to ensure frequent updates for small reads
             // With 4KB reads, we need updates more frequently than every 256KB
             // Use minimum of 1/8 window or 32KB to ensure updates happen at least every 8 reads
-            const min_threshold: u64 = 32 * 1024;  // 32KB minimum
+            const min_threshold: u64 = 32 * 1024; // 32KB minimum
             const effective_threshold = @min(threshold, min_threshold);
 
             // Only send if increase is significant (at least threshold)
             if (increase >= effective_threshold and increase > 0) {
-                _ = (frame.Frame{ .max_stream_data = .{
-                    .stream_id = stream_id,
-                    .max = stream_rx.local_max_stream_data
-                } }).write(w) catch 0;
+                _ = (frame.Frame{ .max_stream_data = .{ .stream_id = stream_id, .max = stream_rx.local_max_stream_data } }).write(w) catch 0;
                 stream_rx.last_sent_max_stream_data = stream_rx.local_max_stream_data;
                 wrote = true;
-                std.debug.print("[PHASE 46] Sending MAX_STREAM_DATA for stream {}: max={} (increase={}, threshold={})\n",
-                    .{stream_id, stream_rx.local_max_stream_data, increase, effective_threshold});
+                std.debug.print("[PHASE 46] Sending MAX_STREAM_DATA for stream {}: max={} (increase={}, threshold={})\n", .{ stream_id, stream_rx.local_max_stream_data, increase, effective_threshold });
             }
         }
 
@@ -2402,12 +2411,12 @@ pub const Connection = struct {
         self.computeAndMaybeArmPto(self);
         if (id == 0) {
             self.stream_send_off += to_send;
-            if (fin) {
+            if (fin and to_send == data.len) {
                 self.stream_send_fin_sent = true;
             }
         } else if (self.stream_txs.getPtr(id)) |stx| {
             stx.off += to_send;
-            if (fin) {
+            if (fin and to_send == data.len) {
                 stx.fin_sent = true;
             }
         }
@@ -2443,16 +2452,15 @@ pub const Connection = struct {
         const bytes_consumed = n;
         if (bytes_consumed > 0) {
             s.bytes_consumed_total += bytes_consumed;
-            
+
             // Calculate max_stream_data like quinn: bytes_consumed + receive_window
             // Use initial_window_size as the fixed receive window (like quinn's stream_receive_window)
             const receive_window = if (s.initial_window_size > 0) s.initial_window_size else self.local_max_stream_data;
             const new_max_stream_data = s.bytes_consumed_total + receive_window;
-            
+
             const old_max = s.local_max_stream_data;
             s.local_max_stream_data = new_max_stream_data;
-            std.debug.print("[FC] Stream {} read {} bytes (total consumed: {}), max_stream_data: {} -> {} (receive_window={})\n", 
-                .{id, bytes_consumed, s.bytes_consumed_total, old_max, s.local_max_stream_data, receive_window});
+            std.debug.print("[FC] Stream {} read {} bytes (total consumed: {}), max_stream_data: {} -> {} (receive_window={})\n", .{ id, bytes_consumed, s.bytes_consumed_total, old_max, s.local_max_stream_data, receive_window });
 
             // PHASE 46: Trigger flow control frame generation after window update
             // This ensures timely updates when data is consumed (quinn-style)
@@ -3095,7 +3103,6 @@ pub const Connection = struct {
         if (self.role == .Server and !self.handshake_done_sent) {
             std.debug.print("[deriveAppKeys] Server: Will send HANDSHAKE_DONE now!\n", .{});
 
-
             var frames = std.ArrayList(u8){};
             defer frames.deinit(self.allocator.*);
             const w = frames.writer(self.allocator.*);
@@ -3590,7 +3597,7 @@ pub const Connection = struct {
         // For now, use the client-initiated limit as the default since most streams are client-initiated
         // TODO: Track limits per stream based on who initiated it
         if (client_initiated_bidi_limit != self.peer_max_stream_data) {
-            std.debug.print("[FC-TRANSPORT-PARAMS] Updating peer_max_stream_data from {} to {} for client-initiated streams\n", .{self.peer_max_stream_data, client_initiated_bidi_limit});
+            std.debug.print("[FC-TRANSPORT-PARAMS] Updating peer_max_stream_data from {} to {} for client-initiated streams\n", .{ self.peer_max_stream_data, client_initiated_bidi_limit });
             self.peer_max_stream_data = client_initiated_bidi_limit;
         }
         if (tp_dec.initial_max_streams_bidi) |v| self.peer_max_streams_bidi = v;

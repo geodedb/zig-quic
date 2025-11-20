@@ -9,7 +9,23 @@ const TestResult = struct {
     success: bool,
     details: []const u8,
     elapsed_ms: u64,
+    name_owned: bool = false,
 };
+
+fn openBidiStreamWithRetry(ep: *QuicEndpoint, conn: *Connection, max_attempts: usize, poll_ms: i32) !u64 {
+    var attempts: usize = 0;
+    while (attempts < max_attempts) : (attempts += 1) {
+        const sid = api.openStream(conn, true) catch |err| switch (err) {
+            error.OutOfStreams => {
+                try api.poll(ep, poll_ms);
+                continue;
+            },
+            else => return err,
+        };
+        return sid;
+    }
+    return error.OutOfStreams;
+}
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -37,7 +53,7 @@ pub fn main() !void {
     }
 
     std.debug.print("\n🚀 Starting Comprehensive QUIC Test Suite (Zig)\n", .{});
-    std.debug.print("="**60 ++ "\n", .{});
+    std.debug.print("=" ** 60 ++ "\n", .{});
     std.debug.print("📡 Connecting to {s}\n\n", .{connect});
 
     var cfg = api.QuicConfig{
@@ -69,6 +85,9 @@ pub fn main() !void {
     defer {
         for (results.items) |result| {
             alloc.free(result.details);
+            if (result.name_owned) {
+                alloc.free(result.name);
+            }
         }
         results.deinit(alloc);
     }
@@ -100,7 +119,7 @@ fn testSingleStreamEcho(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Con
     std.debug.print("📝 Test 1: Single stream echo\n", .{});
     const start = std.time.milliTimestamp();
 
-    const stream_id: u64 = 0;
+    const stream_id = try openBidiStreamWithRetry(ep, conn, 50, 10);
     const msg = "Hello from Zig!";
 
     // Write message
@@ -146,8 +165,9 @@ fn testMultipleStreams(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Conn
     std.debug.print("📝 Test 2: Multiple concurrent streams ({d} streams)\n", .{num_streams});
     const start = std.time.milliTimestamp();
 
-    var stream_id: u64 = 0;
-    while (stream_id < num_streams * 4) : (stream_id += 4) { // Client-initiated bidirectional streams: 0, 4, 8, ...
+    var stream_idx: usize = 0;
+    while (stream_idx < num_streams) : (stream_idx += 1) {
+        const stream_id = try openBidiStreamWithRetry(ep, conn, 100, 5);
         var msg_buf: [100]u8 = undefined;
         const msg = try std.fmt.bufPrint(&msg_buf, "Stream {d} message", .{stream_id});
 
@@ -163,7 +183,11 @@ fn testMultipleStreams(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Conn
                 else => return err,
             };
             if (wn > 0) wrote = true;
-            if (!wrote) try api.poll(ep, 5);
+            if (!wrote) {
+                try api.poll(ep, 5);
+            } else {
+                try api.poll(ep, 0);
+            }
         }
 
         // Read response
@@ -203,7 +227,7 @@ fn testLargeDataTransfer(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Co
     std.debug.print("📝 Test: Large data transfer ({s})\n", .{size_name});
     const start = std.time.milliTimestamp();
 
-    const stream_id: u64 = 0; // Reuse stream 0 for large transfers
+    const stream_id = try openBidiStreamWithRetry(ep, conn, 100, 10); // Allocate a fresh bidi stream for large transfers
 
     // Generate random data
     const data = try alloc.alloc(u8, size);
@@ -233,7 +257,11 @@ fn testLargeDataTransfer(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Co
                 written += wn;
                 chunk_written = true;
             }
-            if (!chunk_written) try api.poll(ep, 10);
+            if (!chunk_written) {
+                try api.poll(ep, 10);
+            } else {
+                try api.poll(ep, 0);
+            }
         }
     }
 
@@ -254,13 +282,16 @@ fn testLargeDataTransfer(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Co
         0.0;
 
     const details = try std.fmt.allocPrint(alloc.*, "Transferred {d} bytes in {d}ms ({d:.2} MB/s)", .{ size, elapsed, throughput_mbps });
+    const name = try std.fmt.allocPrint(alloc.*, "Large Transfer ({s})", .{size_name});
+    errdefer alloc.free(name);
 
     std.debug.print("✅ {s}\n\n", .{details});
     return TestResult{
-        .name = try std.fmt.allocPrint(alloc.*, "Large Transfer ({s})", .{size_name}),
+        .name = name,
         .success = written == size,
         .details = details,
         .elapsed_ms = elapsed,
+        .name_owned = true,
     };
 }
 
@@ -268,18 +299,19 @@ fn testMultipleRoundTrips(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *C
     std.debug.print("📝 Test: Multiple round-trips ({d} cycles)\n", .{num_rounds});
     const start = std.time.milliTimestamp();
 
-    const stream_id: u64 = 0; // Reuse stream 0
+    const stream_id = try openBidiStreamWithRetry(ep, conn, 100, 5);
     var round: usize = 0;
 
     while (round < num_rounds) : (round += 1) {
         var msg_buf: [100]u8 = undefined;
         const msg = try std.fmt.bufPrint(&msg_buf, "Round {d}", .{round});
+        const is_last = (round + 1 == num_rounds);
 
         // Write
         var wrote = false;
         var attempts: usize = 0;
         while (!wrote and attempts < 500) : (attempts += 1) {
-            const wn = api.writeStream(conn, stream_id, msg, true) catch |err| switch (err) {
+            const wn = api.writeStream(conn, stream_id, msg, is_last) catch |err| switch (err) {
                 error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked, error.InvalidStream => blk: {
                     try api.poll(ep, 5);
                     break :blk 0;
@@ -287,7 +319,11 @@ fn testMultipleRoundTrips(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *C
                 else => return err,
             };
             if (wn > 0) wrote = true;
-            if (!wrote) try api.poll(ep, 5);
+            if (!wrote) {
+                try api.poll(ep, 5);
+            } else {
+                try api.poll(ep, 0);
+            }
         }
 
         // Read response
@@ -319,13 +355,20 @@ fn testStreamInterleaving(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *C
 
     // Use only streams 0 and 4 to avoid hitting max_streams limit
     const actual_streams = @min(num_streams, 2);
+    var stream_ids = try alloc.alloc(u64, actual_streams);
+    defer alloc.free(stream_ids);
+    var open_idx: usize = 0;
+    while (open_idx < actual_streams) : (open_idx += 1) {
+        stream_ids[open_idx] = try openBidiStreamWithRetry(ep, conn, 100, 5);
+    }
 
     // Send data in round-robin fashion across multiple streams
     var round: usize = 0;
     while (round < 5) : (round += 1) {
         var stream_idx: usize = 0;
         while (stream_idx < actual_streams) : (stream_idx += 1) {
-            const stream_id = stream_idx * 4; // Use streams 0 and 4
+            const stream_id = stream_ids[stream_idx];
+            const is_last_round = (round + 1 == 5);
 
             var msg_buf: [100]u8 = undefined;
             const msg = try std.fmt.bufPrint(&msg_buf, "Stream {d}, Round {d}", .{ stream_id, round });
@@ -333,7 +376,7 @@ fn testStreamInterleaving(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *C
             var wrote = false;
             var attempts: usize = 0;
             while (!wrote and attempts < 300) : (attempts += 1) {
-                const wn = api.writeStream(conn, stream_id, msg, true) catch |err| switch (err) {
+                const wn = api.writeStream(conn, stream_id, msg, is_last_round) catch |err| switch (err) {
                     error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked, error.InvalidStream => blk: {
                         try api.poll(ep, 5);
                         break :blk 0;
@@ -341,7 +384,11 @@ fn testStreamInterleaving(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *C
                     else => return err,
                 };
                 if (wn > 0) wrote = true;
-                if (!wrote) try api.poll(ep, 5);
+                if (!wrote) {
+                    try api.poll(ep, 5);
+                } else {
+                    try api.poll(ep, 0);
+                }
             }
         }
     }
@@ -349,7 +396,7 @@ fn testStreamInterleaving(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *C
     // Read responses from all streams
     var stream_idx: usize = 0;
     while (stream_idx < actual_streams) : (stream_idx += 1) {
-        const stream_id = stream_idx * 4;
+        const stream_id = stream_ids[stream_idx];
         var rbuf: [1024]u8 = undefined;
         var polls: usize = 0;
         while (polls < 200) : (polls += 1) {
@@ -372,9 +419,9 @@ fn testStreamInterleaving(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *C
 }
 
 fn printTestSummary(results: []const TestResult) void {
-    std.debug.print("\n" ++ "="**60 ++ "\n", .{});
+    std.debug.print("\n" ++ "=" ** 60 ++ "\n", .{});
     std.debug.print("📊 TEST SUMMARY\n", .{});
-    std.debug.print("="**60 ++ "\n", .{});
+    std.debug.print("=" ** 60 ++ "\n", .{});
 
     var passed: usize = 0;
     var failed: usize = 0;
@@ -391,7 +438,7 @@ fn printTestSummary(results: []const TestResult) void {
         std.debug.print("   └─ {s}\n", .{result.details});
     }
 
-    std.debug.print("\n" ++ "="**60 ++ "\n", .{});
+    std.debug.print("\n" ++ "=" ** 60 ++ "\n", .{});
     std.debug.print("RESULTS: {d} passed, {d} failed, {d} total\n", .{ passed, failed, results.len });
-    std.debug.print("="**60 ++ "\n", .{});
+    std.debug.print("=" ** 60 ++ "\n", .{});
 }

@@ -2,6 +2,15 @@
 
 > Canonical deep-dive log lives in `E2E_TEST_INVESTIGATION.md`. Use this summary when you need the current status without wading through 2,600+ lines of notes.
 
+## 2025-11-20 – Zig handshake fixed, stream echo still flaky
+
+**Status:** Handshake parses cleanly; Zig comprehensive runs to completion but `Single Stream Echo` still reads 0 bytes (others nominal).  
+**Fixes:**  
+- ztls handshake buffer now shifts with `copyForwards` (was `copyBackwards`, corrupting the buffer after EncryptedExtensions).  
+- Added handshake payload hash/type logging on server/client; hashes match and messages parse (EE/Certificate/CertVerify/Finished).  
+- Harness tweaks: `timeout` bumped to 180s, stream opens use `openBidiStreamWithRetry` with extra polling, freed alloc’ed test names to avoid gpa leak.  
+**Remaining gap:** need to chase why stream 0 echo is missing; consider checking server echo path/logs and congestion/ack handling (bytes_in_flight stays very high with `CC-OVERRIDE` logs).
+
 ## 2025-11-19 – Bidirectional & Interleaving Fixed (All 8/8 Passing)
 
 **Status:** ✅ 8/8 comprehensive tests passing  
