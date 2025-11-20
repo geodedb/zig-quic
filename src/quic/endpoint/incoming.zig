@@ -917,10 +917,11 @@ pub fn processInitial(
     // PHASE 42 PART 7 FIX: Auto-validate localhost addresses to avoid unnecessary amplification limits
     // RFC 9000 §8.1 allows servers to skip address validation for trusted addresses
     const is_localhost = conn.isLocalhost();
-    std.debug.print("[PHASE42] processInitial: role={s} address_validated={} isLocalhost={}\n", .{
+    std.debug.print("[PHASE42] processInitial: role={s} address_validated={} isLocalhost={} enable_retry={}\n", .{
         if (conn.role == .Server) "Server" else "Client",
         conn.address_validated,
         is_localhost,
+        ctx.cfg.enable_retry,
     });
     // Skip localhost auto-validation if retry is explicitly enabled (allows testing retry mechanism)
     if (conn.role == .Server and !conn.address_validated and is_localhost and !ctx.cfg.enable_retry) {
