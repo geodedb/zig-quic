@@ -51,10 +51,8 @@ fn resolveBindAddr(bind_addr: []const u8) !SockAddr {
         }
     }
 
-    // Use the SockAddr.ipv4() helper from conn.zig (imported via transport.zig)
-    // Note: SockAddr is imported from transport.zig which re-exports from conn.zig
-    const conn_mod = @import("conn.zig");
-    return conn_mod.SockAddr.ipv4(octets[0], octets[1], octets[2], octets[3], port);
+    // Use the SockAddr.ipv4() helper (re-exported from transport.zig at line 22)
+    return SockAddr.ipv4(octets[0], octets[1], octets[2], octets[3], port);
 }
 
 /// UDP transport adapter for production use
