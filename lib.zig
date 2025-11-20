@@ -50,7 +50,7 @@
 // teardown, and a stateless mechanism provides for termination of
 // connections after one endpoint has lost state.
 // Core modules - using named imports configured in build.zig
-const api = @import("src/quic/api.zig");
+const api = @import("quic_api");
 const tls13 = @import("quic_tls13");
 const frame_mod = @import("quic_frame");
 const packet_mod = @import("quic_packet");
@@ -59,13 +59,15 @@ const transport_params = @import("quic_transport_params");
 const crypto_mod = @import("quic_crypto");
 const config_mod = @import("config.zig");
 const logger_mod = @import("quic_logger");
+const h3_server_mod = @import("h3_server");
+const h3_client_mod = @import("h3_client");
 
 // ============================================================================
 // Utility Modules
 // ============================================================================
 
-/// PEM certificate/key parsing utilities
-pub const pem = @import("src/quic/pem.zig");
+/// PEM certificate/key parsing utilities (re-exported from the public API)
+pub const pem = api.pem;
 
 /// Byteorder utilities (used internally by conn, endpoint, varint, and token modules)
 /// Note: When using this library as a vendor dependency, you may need to configure
@@ -90,6 +92,8 @@ pub const QuicConfig = api.QuicConfig;
 pub const QuicEndpoint = api.QuicEndpoint;
 pub const QuicConnection = api.QuicConnection;
 pub const QuicStreamId = api.QuicStreamId;
+pub const PollStats = api.PollStats;
+pub const AcceptError = api.AcceptError;
 
 pub const deriveInitialSecretsForConfig = api.deriveInitialSecretsForConfig;
 pub const defaultLoopBackend = api.defaultLoopBackend;
@@ -231,3 +235,19 @@ pub const unprotectPacket = crypto_mod.unprotectPacket;
 
 /// Detailed QUIC configuration (from config.zig)
 pub const DetailedQuicConfig = config_mod.QuicConfig;
+
+// ============================================================================
+// HTTP/3 Helpers
+// ============================================================================
+
+/// HTTP/3 server/client helpers built atop the QUIC core exports.
+pub const h3 = struct {
+    pub const server = h3_server_mod;
+    pub const client = h3_client_mod;
+
+    pub const H3Server = h3_server_mod.H3Server;
+    pub const encodeVarint = h3_client_mod.encodeVarint;
+    pub const buildSimpleGetHeaders = h3_client_mod.buildSimpleGetHeaders;
+    pub const buildRequestFrame = h3_client_mod.buildRequestFrame;
+    pub const h3Get = h3_client_mod.h3Get;
+};

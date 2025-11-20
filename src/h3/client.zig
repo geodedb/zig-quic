@@ -168,7 +168,7 @@ pub fn buildRequestFrame(host: []const u8, path: []const u8, out: []u8) ?usize {
 fn writeAll(ep: *api.QuicEndpoint, conn: *api.QuicConnection, sid: u64, data: []const u8) void {
     var off: usize = 0;
     while (off < data.len) {
-        const n = api.writeStream(conn, sid, data[off..]) catch 0;
+        const n = api.writeStream(conn, sid, data[off..], false) catch 0;
         if (n == 0) {
             api.poll(ep, 1) catch {};
         } else {

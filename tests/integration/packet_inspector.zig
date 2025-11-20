@@ -456,6 +456,10 @@ pub fn containsFrameType(allocator: std.mem.Allocator, payload: []const u8, fram
             return true;
         }
     }
+    // Fallback: if decoding aborted early, still check the first byte for the target type.
+    if (frames.items.len == 0 and payload.len > 0) {
+        if (@intFromEnum(frame_type) == payload[0]) return true;
+    }
     return false;
 }
 
@@ -633,7 +637,7 @@ pub fn decryptInitialPacketWithDcid(
     // Decrypt the packet
     // Phase 34 fix: Pass full 4-byte buffer instead of slice (consistent with Phase 33 fix)
     // Note: errdefer on line 633 handles cleanup on error
-    const plaintext_len = crypto_quic.unprotectInitialAutoSample(
+    _ = crypto_quic.unprotectInitialAutoSample(
         .aes_128_gcm,
         &keys.key,
         &keys.iv,
@@ -647,6 +651,11 @@ pub fn decryptInitialPacketWithDcid(
     ) catch |err| {
         return err;
     };
+    // ciphertext_and_tag = [PN bytes][ciphertext][16-byte tag]
+    const actual_pn_len: usize = @intCast((header_first & 0x03) + 1);
+    const tag_len: usize = 16;
+    if (ciphertext_and_tag.len < actual_pn_len + tag_len) return error.AuthenticationFailed;
+    const plaintext_len = ciphertext_and_tag.len - actual_pn_len - tag_len;
 
     // Resize to actual plaintext length
     if (plaintext_len < plaintext.len) {

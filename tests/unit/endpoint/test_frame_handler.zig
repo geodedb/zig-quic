@@ -19,6 +19,7 @@ const frame_handler = @import("frame_handler");
 const frame = @import("frame");
 const conn_mod = @import("quic_conn");
 const cfg = @import("config");
+const recovery = @import("quic_recovery");
 
 var test_allocator = std.testing.allocator;
 
@@ -34,6 +35,7 @@ fn createTestConnection() !*conn_mod.Connection {
     conn.reset_tokens = std.ArrayList([16]u8){};  // CRITICAL: needed for onNewConnectionId
     conn.dgram_inbox = std.ArrayList([]u8){};  // CRITICAL: needed for pushDatagram
     conn.streams_rx = std.AutoHashMap(u64, conn_mod.StreamRx).init(test_allocator);  // CRITICAL: needed for pushStreamFrame
+    conn.stream_txs = std.AutoHashMap(u64, conn_mod.StreamTx).init(test_allocator);  // CRITICAL: required for MAX_STREAM_DATA
     conn.incoming_stream_queue = std.ArrayList(u64){};  // CRITICAL: needed for pushStreamFrame
     conn.stream_recv_aborted = false;  // CRITICAL: needed for pushStreamFrame
     conn.peer_initial_scid = .{ .len = 0 };
@@ -48,6 +50,8 @@ fn createTestConnection() !*conn_mod.Connection {
     conn.hs_rx_keys = null;
     conn.hs_tx_keys = null;
     conn.closed = false;
+    conn.rec = recovery.Recovery.init(test_allocator);
+    conn.path_mtu = 1200;
     conn.path_validation_pending = false;
     conn.path_challenge_data = [_]u8{0} ** 8;
     conn.initial_token = std.ArrayList(u8){};
@@ -72,7 +76,10 @@ fn destroyTestConnection(conn: *conn_mod.Connection) void {
         entry.value_ptr.deinit(conn.allocator);
     }
     conn.streams_rx.deinit();
+    // StreamTx has no allocations, just deinit the hashmap
+    conn.stream_txs.deinit();
     conn.incoming_stream_queue.deinit(test_allocator);
+    conn.rec.deinit();
     test_allocator.destroy(conn);
 }
 
@@ -298,7 +305,9 @@ test "RFC 9000 §19.10 - MAX_STREAM_DATA updates peer limit" {
 
     const result = frame_handler.handleMaxStreamData(&ctx, m);
 
-    try testing.expectEqual(@as(u64, 65536), conn.peer_max_stream_data);
+    // Check per-stream TX state (PHASE 57 PART 11: per-stream flow control)
+    const tx = conn.stream_txs.get(0) orelse unreachable;
+    try testing.expectEqual(@as(u64, 65536), tx.peer_max_stream_data);
     try testing.expect(result.saw_ack_eliciting);
 }
 
@@ -560,7 +569,6 @@ test "RFC 9000 §4 - Flow control limits are updated correctly" {
     const conn = try createTestConnection();
     defer destroyTestConnection(conn);
     conn.peer_max_data = 1000;
-    conn.peer_max_stream_data = 500;
     conn.peer_max_streams_bidi = 10;
     conn.peer_max_streams_uni = 5;
     var ctx = createTestContext(conn);
@@ -569,9 +577,10 @@ test "RFC 9000 §4 - Flow control limits are updated correctly" {
     _ = frame_handler.handleMaxData(&ctx, .{ .max = 2000 });
     try testing.expectEqual(@as(u64, 2000), conn.peer_max_data);
 
-    // Update MAX_STREAM_DATA
+    // Update MAX_STREAM_DATA (PHASE 57 PART 11: per-stream flow control)
     _ = frame_handler.handleMaxStreamData(&ctx, .{ .stream_id = 0, .max = 1000 });
-    try testing.expectEqual(@as(u64, 1000), conn.peer_max_stream_data);
+    const tx = conn.stream_txs.get(0) orelse unreachable;
+    try testing.expectEqual(@as(u64, 1000), tx.peer_max_stream_data);
 
     // Update MAX_STREAMS (bidi)
     _ = frame_handler.handleMaxStreamsBidi(&ctx, .{ .max = 20 });

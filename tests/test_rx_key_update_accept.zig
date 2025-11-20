@@ -60,7 +60,8 @@ test "rx key update: promote on next-phase and consume prev window" {
     c.tx_key_phase = false;
 
     // Craft a short packet from peer using NEXT-phase keys (kp=1) to trigger promotion.
-    const next_rx_secret = @import("quic_tls").updateTrafficSecret(c.app_rx_secret.?);
+    // RFC 9001 §6: Use updateQuicSecret (with "quic ku" label) not updateTrafficSecret
+    const next_rx_secret = ks.updateQuicSecret(c.app_rx_secret.?);
     const next_rx_secret_wrap = ks.Secret.fromSlice(.sha256, &next_rx_secret);
     const next_rx = tls13.deriveQuicAppKeys(.sha256, &next_rx_secret_wrap, false);
 

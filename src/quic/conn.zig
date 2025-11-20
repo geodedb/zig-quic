@@ -470,7 +470,7 @@ const EcnCounter = struct {
 };
 
 // Per-stream transmit bookkeeping (offset + flags) for multi-stream support.
-const StreamTx = struct {
+pub const StreamTx = struct {
     off: u64 = 0,
     fin_sent: bool = false,
     aborted: bool = false,

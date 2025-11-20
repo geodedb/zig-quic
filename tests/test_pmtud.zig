@@ -218,6 +218,9 @@ test "pmtud validation raises path_mtu on ACK of probe PN" {
     // Set peer_initial_scid so DCID is included in short header packets
     c.peer_initial_scid.len = 4;
     std.mem.copyForwards(u8, c.peer_initial_scid.bytes[0..4], "PEER");
+    // Start PMTUD search from the RFC minimum to validate raising logic.
+    c.path_mtu = 1200;
+    c.rec.cc.mds = 1200;
 
     const target: u16 = 1300;
     const old_mtu = c.path_mtu;

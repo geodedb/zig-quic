@@ -1,7 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const api = @import("api.zig");
-const tls = std.crypto.tls;
+const api = @import("quic_api");
 
 //! High-level QUIC transport layer providing connection and stream management.
 //! This layer provides a convenient interface for building QUIC applications.

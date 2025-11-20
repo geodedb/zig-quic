@@ -922,7 +922,8 @@ pub fn processInitial(
         conn.address_validated,
         is_localhost,
     });
-    if (conn.role == .Server and !conn.address_validated and is_localhost) {
+    // Skip localhost auto-validation if retry is explicitly enabled (allows testing retry mechanism)
+    if (conn.role == .Server and !conn.address_validated and is_localhost and !ctx.cfg.enable_retry) {
         std.debug.print("[LOCALHOST] Auto-validating localhost address - bypassing amplification limits\n", .{});
         conn.address_validated = true;
         conn.bytes_rx_unvalidated = 0;
@@ -1787,6 +1788,18 @@ fn decryptShortHeaderWithKeyRotationInternal(
     // RFC 9000 Appendix A.3: Pass largest received PN for expansion
     const largest_pn: u64 = if (conn.pn_app.have_any) conn.pn_app.max else 0;
     const should_log_attempts = largest_pn >= 80;
+
+    // Ensure NEXT keys are always pre-derived so we can decode peer-initiated key updates
+    if (conn.app_rx_next_keys == null and conn.app_rx_secret != null) {
+        const cur_secret = conn.app_rx_secret.?;
+        const next_secret = key_schedule.updateQuicSecret(cur_secret);
+        const next_mat = if (conn.version_v2)
+            key_schedule.deriveKeyIvHpV2(next_secret)
+        else
+            key_schedule.deriveKeyIvHp(next_secret);
+        conn.app_rx_next_secret = next_secret;
+        conn.app_rx_next_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = next_mat.hp };
+    }
 
     var used_next = false;
     var used_prev = false;

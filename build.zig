@@ -532,7 +532,7 @@ pub fn build(b: *std.Build) void {
     quic_api_mod.addImport("quic_version", quic_version_mod);
 
     // Export named module for dependents: @import("quic")
-    const quic_mod = b.addModule("quic", .{ .root_source_file = rp("src/quic/api.zig") }); // module API still supports root_source_file
+    const quic_mod = b.addModule("quic", .{ .root_source_file = rp("lib.zig") }); // aggregate export surface
     quic_mod.addImport("quic_endpoint", quic_endpoint_mod);
     quic_mod.addImport("quic_crypto", quic_crypto_mod);
     quic_mod.addImport("quic_frame", quic_frame_mod);
@@ -541,6 +541,11 @@ pub fn build(b: *std.Build) void {
     quic_mod.addImport("quic_tls13", tls13_mod);
     quic_mod.addImport("quic_conn", quic_conn_mod);
     quic_mod.addImport("quic_packet", quic_packet_mod);
+    quic_mod.addImport("config.zig", quic_config_mod);
+    quic_mod.addImport("quic_transport_params", quic_transport_params_mod);
+    quic_mod.addImport("quic_logger", quic_logger_mod);
+    quic_mod.addImport("byteorder", byteorder_mod);
+    quic_mod.addImport("quic_api", quic_api_mod);
 
     // CLI binaries (scaffold): quic-client, quic-server + debug clients
     const quic_client = addExe(b, "quic-client", "cmd/quic-client.zig", target, optimize);
@@ -576,10 +581,12 @@ pub fn build(b: *std.Build) void {
     const h3_client_mod = b.addModule("h3_client", .{ .root_source_file = rp("src/h3/client.zig") });
     h3_client_mod.addImport("quic_api", quic_api_mod);
     h3_client_mod.addImport("quic_api", quic_api_mod);
+    quic_mod.addImport("h3_server", h3_server_mod);
+    quic_mod.addImport("h3_client", h3_client_mod);
 
     // High-level transport API module
     const transport_mod = mkModule(b, "src/quic/transport.zig");
-    transport_mod.addImport("api", quic_api_mod);
+    transport_mod.addImport("quic_api", quic_api_mod);
     transport_mod.addImport("quic_endpoint", quic_endpoint_mod);
     transport_mod.addImport("quic_conn", quic_conn_mod);
     transport_mod.addImport("quic_crypto", quic_crypto_mod);
@@ -590,7 +597,7 @@ pub fn build(b: *std.Build) void {
     transport_mod.addImport("config.zig", quic_config_mod);
     transport_mod.addImport("loop_backend.zig", loop_backend_mod);
     const transport_public = b.addModule("transport", .{ .root_source_file = rp("src/quic/transport.zig") });
-    transport_public.addImport("api", quic_api_mod);
+    transport_public.addImport("quic_api", quic_api_mod);
     transport_public.addImport("quic_endpoint", quic_endpoint_mod);
     transport_public.addImport("quic_conn", quic_conn_mod);
     transport_public.addImport("quic_crypto", quic_crypto_mod);
@@ -764,6 +771,12 @@ pub fn build(b: *std.Build) void {
             const run_test_h3_loop = b.addRunArtifact(test_h3_loop);
             test_step.dependOn(&run_test_h3_loop.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "public_quic_exports")) {
+            const test_public_exports = addTst(b, "tests/test_public_quic_exports.zig", target, optimize);
+            test_public_exports.root_module.addImport("quic", quic_mod);
+            const run_test_public_exports = b.addRunArtifact(test_public_exports);
+            test_step.dependOn(&run_test_public_exports.step);
+            return;
         }
     }
 
@@ -772,6 +785,11 @@ pub fn build(b: *std.Build) void {
         test_byteorder.root_module.addImport("byteorder", byteorder_mod);
         const run_test_byteorder = b.addRunArtifact(test_byteorder);
         test_step.dependOn(&run_test_byteorder.step);
+
+        const test_public_exports = addTst(b, "tests/test_public_quic_exports.zig", target, optimize);
+        test_public_exports.root_module.addImport("quic", quic_mod);
+        const run_test_public_exports = b.addRunArtifact(test_public_exports);
+        test_step.dependOn(&run_test_public_exports.step);
 
         // ========================================================================
         // Phase 1 Unit Tests: Foundation Modules (RFC-based)
@@ -873,6 +891,7 @@ pub fn build(b: *std.Build) void {
         test_endpoint_frame_handler.root_module.addImport("frame", quic_frame_mod);
         test_endpoint_frame_handler.root_module.addImport("quic_conn", quic_conn_mod);
         test_endpoint_frame_handler.root_module.addImport("config", quic_config_mod);
+        test_endpoint_frame_handler.root_module.addImport("quic_recovery", quic_recovery_mod);
         const run_test_endpoint_frame_handler = b.addRunArtifact(test_endpoint_frame_handler);
         test_step.dependOn(&run_test_endpoint_frame_handler.step);
 
