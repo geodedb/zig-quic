@@ -1901,6 +1901,7 @@ pub const Connection = struct {
     /// Ingest a STREAM frame payload into the RX buffer for the stream with reassembly.
     /// Ingest STREAM frame data (copy + reassembly); updates flow-control windows heuristically.
     pub fn pushStreamFrame(self: *Connection, stream_id: u64, offset: u64, data: []const u8, fin: bool) !void {
+        std.debug.print("[CONN-PTR-PUSH] conn=0x{x} stream_id={}\n", .{ @intFromPtr(self), stream_id });
         std.debug.print("[STREAM-RX] id={} off={} len={} fin={} before recv_off={} inbox_len={} bufs={}\n", .{ stream_id, offset, data.len, fin, if (self.streams_rx.getPtr(stream_id)) |sr| sr.recv_off else 0, if (self.streams_rx.getPtr(stream_id)) |sr| sr.inbox.items.len else 0, if (self.streams_rx.getPtr(stream_id)) |sr| sr.bufs.items.len else 0 });
         if (self.stream_recv_aborted) return; // ignore further data after RESET_STREAM
 
@@ -2427,12 +2428,14 @@ pub const Connection = struct {
     /// Read from STREAM into buf; returns number of bytes or WouldBlock.
     /// Read reassembled bytes from a stream into buf; returns number copied or WouldBlock.
     pub fn readStream(self: *Connection, id: u64, buf: []u8) !usize {
+        std.debug.print("[CONN-PTR-READ] conn=0x{x} stream_id={} buf_len={}\n", .{ @intFromPtr(self), id, buf.len });
         // TRACE: readStream called
         // std.debug.print("readStream called - id={}, buf_len={}\n", .{id, buf.len});
         var s = self.streams_rx.getPtr(id) orelse {
             std.debug.print("readStream - stream {} not found in RX map\n", .{id});
             return error.InvalidStream;
         };
+        std.debug.print("[CONN-PTR-READ] inbox_len={} streams_rx_count={}\n", .{ s.inbox.items.len, self.streams_rx.count() });
         // TRACE: readStream inbox status
         // std.debug.print("readStream - inbox has {} bytes\n", .{s.inbox.items.len});
         if (s.inbox.items.len == 0) {
