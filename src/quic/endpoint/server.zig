@@ -309,8 +309,8 @@ pub fn createServerConnection(
     config: ServerConnectionConfig,
 ) !*conn_mod.Connection {
     // Allocate connection struct
-    const c = try allocator.create(conn_mod.Connection);
-    errdefer allocator.destroy(c);
+    const c = try allocator.*.create(conn_mod.Connection);
+    errdefer allocator.*.destroy(c);
 
     // Initialize connection with server role
     c.init(allocator, .Server, @as(isize, @intCast(sock_fd)), peer);

@@ -1033,10 +1033,15 @@ pub fn processInitial(
     var saw_ack_eliciting: bool = false;
     const now_ns: u64 = @intCast(std.time.nanoTimestamp());
 
+    std.debug.print("[processInitial] Decrypted payload length: {} bytes\n", .{decrypted.payload.len});
+
     while (offset < decrypted.payload.len) {
-        const fr = frame.decodeOne(decrypted.payload[offset..]) catch {
+        std.debug.print("[processInitial] Decoding frame at offset {}/{}\n", .{offset, decrypted.payload.len});
+        const fr = frame.decodeOne(decrypted.payload[offset..]) catch |err| {
+            std.debug.print("[processInitial] Frame decode error at offset {}: {}\n", .{offset, err});
             break;
         };
+        std.debug.print("[processInitial] Decoded frame type: {}\n", .{std.meta.activeTag(fr.f)});
         offset += fr.n;
 
         switch (fr.f) {
@@ -1055,6 +1060,19 @@ pub fn processInitial(
                     cr.data,
                 ) catch |err| blk: {
                     std.debug.print("processInitial: handleInitialCrypto error: {}\n", .{err});
+
+                    // BUGFIX: Handle DuplicateClientHello gracefully
+                    // This happens when the client retransmits an Initial packet we already processed.
+                    // The TLS context rejects it as duplicate, but this is normal QUIC behavior.
+                    // We should NOT destroy the TLS context - just ignore the duplicate and continue.
+                    if (err == error.DuplicateClientHello) {
+                        std.debug.print("processInitial: Ignoring duplicate ClientHello (likely retransmission)\n", .{});
+                        // Continue processing - the TLS state machine is still valid
+                        // We may have already sent ServerHello, or we're about to
+                        break :blk true; // Treat as if we saw crypto data
+                    }
+
+                    // For other errors, log and skip this frame
                     break :blk false;
                 };
 

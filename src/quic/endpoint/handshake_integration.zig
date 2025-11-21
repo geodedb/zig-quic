@@ -322,10 +322,13 @@ pub fn createTlsContext(
     const tls_role: tls13.Role = if (role == .Client) .Client else .Server;
 
     // RFC 8446 §4.2.3: Supported signature schemes for certificate verification
-    // Include both ECDSA P-256 and Ed25519 for compatibility with different certificate types
+    // Include ECDSA, Ed25519, and RSA-PSS for compatibility with different certificate types
     const supported_schemes = &[_]tls13.SignatureScheme{
         .ecdsa_secp256r1_sha256, // ECDSA P-256 (commonly used in certificates)
         .ed25519, // Ed25519 (compact, efficient)
+        .rsa_pss_rsae_sha256, // RSA-PSS with SHA-256 (required for RSA certificates in TLS 1.3)
+        .rsa_pss_rsae_sha384, // RSA-PSS with SHA-384
+        .rsa_pss_rsae_sha512, // RSA-PSS with SHA-512
     };
 
     const config = tls13.Config{

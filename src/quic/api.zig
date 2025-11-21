@@ -44,7 +44,7 @@ pub const AcceptError = error{WouldBlock};
 pub fn endpointInit(alloc: *std.mem.Allocator, bind_addr: []const u8, cfg: *const QuicConfig) !*QuicEndpoint {
     const ep = try alloc.create(QuicEndpoint);
     errdefer alloc.destroy(ep);
-    ep.* = try QuicEndpoint.init(alloc, bind_addr, cfg);
+    ep.* = try QuicEndpoint.init(alloc.*, bind_addr, cfg);
     return ep;
 }
 

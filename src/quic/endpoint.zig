@@ -121,7 +121,7 @@ pub const Endpoint = struct {
     loop_backend: lb.LoopBackend,
 
     // Memory allocator for endpoint resources
-    allocator: *std.mem.Allocator,
+    allocator: std.mem.Allocator,
 
     // Timer management for the endpoint
     timers: std.ArrayList(Timer),
@@ -153,7 +153,7 @@ pub const Endpoint = struct {
     ///
     /// Phase 8c: Now uses UdpTransport internally for all socket operations.
     /// The endpoint creates a UDP socket via the transport abstraction layer.
-    pub fn init(alloc: *std.mem.Allocator, bind_addr: []const u8, cfgp: *const cfg.QuicConfig) !Endpoint {
+    pub fn init(alloc: std.mem.Allocator, bind_addr: []const u8, cfgp: *const cfg.QuicConfig) !Endpoint {
         // Create UDP transport (handles socket creation, binding, configuration)
         // IMPORTANT: Must heap-allocate because Transport stores a pointer to it
         const udp = try alloc.create(udp_transport_mod.UdpTransport);
@@ -193,7 +193,7 @@ pub const Endpoint = struct {
             .loop_backend = lb.defaultLoopBackend(),
             .allocator = alloc,
             .timers = std.ArrayList(Timer){},
-            .conns = std.AutoHashMap(Key, *conn_mod.Connection).init(alloc.*),
+            .conns = std.AutoHashMap(Key, *conn_mod.Connection).init(alloc),
             .next_timer_id = 1,
             .cfg = cfgp.*,
             .accepted = std.ArrayList(*conn_mod.Connection){},
@@ -248,7 +248,7 @@ pub const Endpoint = struct {
         self.pruneClosed();
         // Instrumentation: list any remaining connection pointers (map values) before cleanup
         if (builtin.mode == .Debug) {
-            var unique = std.AutoHashMap(*conn_mod.Connection, usize).init(self.allocator.*);
+            var unique = std.AutoHashMap(*conn_mod.Connection, usize).init(self.allocator);
             defer unique.deinit();
             var cit = self.conns.iterator();
             while (cit.next()) |e| {
@@ -279,19 +279,19 @@ pub const Endpoint = struct {
         var i: usize = 0;
         while (i < self.captures.items.len) : (i += 1) {
             const cap = self.captures.items[i];
-            self.allocator.*.free(cap.bytes);
+            self.allocator.free(cap.bytes);
         }
-        self.captures.deinit(self.allocator.*);
+        self.captures.deinit(self.allocator);
         // Free any pending paced payloads in timers
         var j: usize = 0;
         while (j < self.timers.items.len) : (j += 1) {
             const t = self.timers.items[j];
             if (t.paced) {
-                if (t.payload) |p| self.allocator.*.free(p);
+                if (t.payload) |p| self.allocator.free(p);
             }
         }
         // Destroy unique connections referenced by map values
-        var seen = std.AutoHashMap(*conn_mod.Connection, void).init(self.allocator.*);
+        var seen = std.AutoHashMap(*conn_mod.Connection, void).init(self.allocator);
         defer seen.deinit();
         var it = self.conns.iterator();
         while (it.next()) |e| {
@@ -299,7 +299,7 @@ pub const Endpoint = struct {
             if (!seen.contains(c)) {
                 _ = seen.put(c, {}) catch {};
                 c.deinit();
-                self.allocator.*.destroy(c);
+                self.allocator.destroy(c);
             }
         }
         // Also destroy any retired (already removed from map) connections not yet destroyed.
@@ -308,20 +308,20 @@ pub const Endpoint = struct {
             const c = self.retired.items[ri];
             if (!seen.contains(c)) { // skip if already destroyed above
                 c.deinit();
-                self.allocator.*.destroy(c);
+                self.allocator.destroy(c);
             }
         }
-        self.retired.deinit(self.allocator.*);
+        self.retired.deinit(self.allocator);
         self.conns.deinit();
-        self.accepted.deinit(self.allocator.*);
-        self.timers.deinit(self.allocator.*);
+        self.accepted.deinit(self.allocator);
+        self.timers.deinit(self.allocator);
 
         // Phase 8c: Close transport (which closes underlying socket)
         self.transport.close();
 
         // Free heap-allocated UDP transport if we own it
         if (self.owned_udp_transport) |udp| {
-            self.allocator.*.destroy(udp);
+            self.allocator.destroy(udp);
         }
     }
 
@@ -333,7 +333,7 @@ pub const Endpoint = struct {
     /// Clear all captured outbound packets (test helper).
     pub fn captureClear(self: *Endpoint) void {
         var i: usize = 0;
-        while (i < self.captures.items.len) : (i += 1) self.allocator.*.free(self.captures.items[i].bytes);
+        while (i < self.captures.items.len) : (i += 1) self.allocator.free(self.captures.items[i].bytes);
         self.captures.clearRetainingCapacity();
     }
     /// Return number of captured outbound packets.
@@ -363,9 +363,9 @@ pub const Endpoint = struct {
     pub fn sendTo(self: *Endpoint, peer: conn_mod.SockAddr, data: []const u8) !usize {
         // Test capture: make owned copy and enqueue without sending
         if (self.test_capture_enabled) {
-            const owned = try self.allocator.*.alloc(u8, data.len);
+            const owned = try self.allocator.alloc(u8, data.len);
             @memcpy(owned, data);
-            _ = self.captures.append(self.allocator.*, .{ .peer = peer, .bytes = owned }) catch {};
+            _ = self.captures.append(self.allocator, .{ .peer = peer, .bytes = owned }) catch {};
         }
 
         // Phase 8c: Always use transport directly for sends (single-threaded event loop)
@@ -389,7 +389,7 @@ pub const Endpoint = struct {
 
     /// Enqueue accepted server connection for accept().
     fn pushAccepted(self: *Endpoint, c: *conn_mod.Connection) void {
-        self.accepted.append(self.allocator.*, c) catch {};
+        self.accepted.append(self.allocator, c) catch {};
     }
 
     /// Pop next accepted server-side connection if available.
@@ -425,7 +425,7 @@ pub const Endpoint = struct {
         // Delegate to client module for connection creation
         // Phase 8c: Pass -1 for sock_fd (I/O now via transport abstraction)
         const c = try client_mod.createClientConnection(
-            self.allocator,
+            &self.allocator,
             peer,
             -1,
             self.cfg,
@@ -443,11 +443,11 @@ pub const Endpoint = struct {
     /// Transmit minimal Initial packet (PING) to elicit Version Negotiation or SH.
     pub fn clientSendInitialProbe(self: *Endpoint, c: *conn_mod.Connection) !void {
         // Set up client transport parameters for TLS handshake
-        handshake_integration.setupClientTransportParams(c, self.allocator.*) catch {};
+        handshake_integration.setupClientTransportParams(c, self.allocator) catch {};
 
         // Delegate to client module for Initial packet construction and sending
         var ctx = client_mod.ClientContext{
-            .allocator = self.allocator,
+            .allocator = &self.allocator,
             .conn = c,
             .sender_ctx = @ptrCast(self),
             .send_fn = &Endpoint.sendToWrapper,
@@ -465,7 +465,7 @@ pub const Endpoint = struct {
         self.next_timer_id +%= 1;
         const now_ms: i64 = nowMsMonotonic();
         const deadline: i64 = now_ms + @as(i64, @intCast(delay_ms));
-        try self.timers.append(self.allocator.*, .{ .deadline_ms = deadline, .id = id, .kind = .Generic, .conn = null });
+        try self.timers.append(self.allocator, .{ .deadline_ms = deadline, .id = id, .kind = .Generic, .conn = null });
         return id;
     }
 
@@ -476,7 +476,7 @@ pub const Endpoint = struct {
         const now_ms: i64 = nowMsMonotonic();
         const deadline: i64 = now_ms + @as(i64, @intCast(delay_ms));
         // PTO and probe timers follow RFC 9002 §6 (loss detection) and §7 (PMTUD pacing).
-        try self.timers.append(self.allocator.*, .{ .deadline_ms = deadline, .id = id, .kind = kind, .conn = c });
+        try self.timers.append(self.allocator, .{ .deadline_ms = deadline, .id = id, .kind = kind, .conn = c });
         return id;
     }
 
@@ -489,7 +489,7 @@ pub const Endpoint = struct {
         if (delay_ms_u64 == 0) delay_ms_u64 = 1; // minimum 1ms to avoid busy spinning
         if (delay_ms_u64 > 100) delay_ms_u64 = 100; // keep deterministic and fast in tests
         const deadline: i64 = now_ms + @as(i64, @intCast(@min(delay_ms_u64, @as(u64, std.math.maxInt(u32)))));
-        try self.timers.append(self.allocator.*, .{ .deadline_ms = deadline, .id = id, .kind = .Generic, .conn = c, .paced = true, .payload = owned_bytes });
+        try self.timers.append(self.allocator, .{ .deadline_ms = deadline, .id = id, .kind = .Generic, .conn = c, .paced = true, .payload = owned_bytes });
         return id;
     }
 
@@ -730,7 +730,7 @@ pub const Endpoint = struct {
 
         // Store token and update version/DCID for next Initial
         c.initial_token.clearRetainingCapacity();
-        _ = c.initial_token.appendSlice(self.allocator.*, token_bytes) catch {};
+        _ = c.initial_token.appendSlice(self.allocator, token_bytes) catch {};
         c.version = version;
         c.version_v2 = (version == packet.QUIC_V2);
         c.initial_version = version;
@@ -754,7 +754,7 @@ pub const Endpoint = struct {
         const role_converted = @as(ep_types.EndpointRole, @enumFromInt(@intFromEnum(self.role)));
 
         var rx_ctx = incoming.RxContext{
-            .allocator = self.allocator,
+            .allocator = &self.allocator,
             .conns = &self.conns,
             .accepted = &self.accepted,
             .cfg = &self.cfg,
@@ -958,7 +958,7 @@ pub const Endpoint = struct {
                                 if (t.payload) |bytes| {
                                     // Send the paced payload now and free it
                                     _ = self.sendTo(c.peer, bytes) catch {};
-                                    self.allocator.*.free(bytes);
+                                    self.allocator.free(bytes);
                                 }
                             }
                         }
@@ -1007,7 +1007,7 @@ pub const Endpoint = struct {
 
         var ctx = pto_mod.PtoContext{
             .conn = conn,
-            .allocator = self.allocator,
+            .allocator = &self.allocator,
             .send_ctx = self,
             .send_fn = sendFnWrapper,
             .peer = conn.peer,
@@ -1022,7 +1022,7 @@ pub const Endpoint = struct {
     /// Delegates to lifecycle module (Phase 10).
     pub fn closeStaleConnectionsForPeer(self: *Endpoint, new_conn: *conn_mod.Connection) void {
         var ctx = lifecycle_mod.LifecycleContext{
-            .allocator = self.allocator.*,
+            .allocator = &self.allocator,
             .conns = &self.conns,
             .timers = &self.timers,
             .retired = &self.retired,
@@ -1034,7 +1034,7 @@ pub const Endpoint = struct {
     /// Delegates to lifecycle module (Phase 10).
     fn pruneClosed(self: *Endpoint) void {
         var ctx = lifecycle_mod.LifecycleContext{
-            .allocator = self.allocator.*,
+            .allocator = self.allocator,
             .conns = &self.conns,
             .timers = &self.timers,
             .retired = &self.retired,
@@ -1063,7 +1063,7 @@ fn senderPaced(ctx: *anyopaque, c: *conn_mod.Connection, data: []const u8) !usiz
         return self.sendTo(c.peer, data);
     }
     // Own the payload and schedule a paced timer
-    const owned = try self.allocator.*.alloc(u8, data.len);
+    const owned = try self.allocator.alloc(u8, data.len);
     @memcpy(owned, data);
     _ = try self.schedulePaced(c, delay_ns, owned);
     // Report bytes as accepted; actual socket send happens when the timer fires.
