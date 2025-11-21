@@ -1392,6 +1392,11 @@ pub fn processHandshake(
                 // Note: Actual timer cancellation requires endpoint access - handled by caller
             },
             .padding => {},
+            .ping => {
+                // PING frames are allowed in Handshake packets (RFC 9000 §19.2)
+                // They're used for keepalive and connection validation
+                // No action needed - the packet itself will trigger ACK generation
+            },
             else => {
                 // Other frames are unexpected in Handshake packets
                 std.debug.print("processHandshake: Unexpected frame type in Handshake packet: {}\n", .{fr.f});
