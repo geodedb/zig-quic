@@ -469,6 +469,11 @@ const EcnCounter = struct {
     seen_any: bool = false,
 };
 
+const trace_enabled = false;
+inline fn trace(comptime fmt: []const u8, args: anytype) void {
+    if (trace_enabled) std.debug.print(fmt, args);
+}
+
 // Per-stream transmit bookkeeping (offset + flags) for multi-stream support.
 pub const StreamTx = struct {
     off: u64 = 0,
@@ -2289,7 +2294,7 @@ pub const Connection = struct {
     pub fn writeStream(self: *Connection, id: u64, data: []const u8, fin: bool) !usize {
         // Support multi-chunk writes: caller may pass > max_payload; we send one chunk per call.
         // Higher-level loop (server echo) retries remaining bytes.
-        std.debug.print("DEBUG writeStream: stream_id={}, data_len={}, fin={}\n", .{ id, data.len, fin });
+        trace("DEBUG writeStream: stream_id={}, data_len={}, fin={}\n", .{ id, data.len, fin });
         if (id == 0) {
             // Lazy open of client-initiated stream 0: allow application to call writeStream
             // without an explicit openStream( true ) first. This mirrors common QUIC API
@@ -2304,13 +2309,13 @@ pub const Connection = struct {
             if (self.stream_send_aborted or self.stream_send_fin_sent) return error.StreamStopped;
         } else {
             if (self.stream_txs.getPtr(id) == null) {
-                std.debug.print("DEBUG writeStream: InvalidStream - no TX state for stream {}\n", .{id});
+                trace("DEBUG writeStream: InvalidStream - no TX state for stream {}\n", .{id});
                 return error.InvalidStream;
             }
             // Safely inspect per-stream TX state (abort / FIN flags)
             if (self.stream_txs.getPtr(id)) |st| {
                 if (st.aborted or st.fin_sent) {
-                    std.debug.print("DEBUG writeStream: StreamStopped - aborted={} fin_sent={}\n", .{ st.aborted, st.fin_sent });
+                    trace("DEBUG writeStream: StreamStopped - aborted={} fin_sent={}\n", .{ st.aborted, st.fin_sent });
                     return error.StreamStopped;
                 }
             }
@@ -2319,7 +2324,7 @@ pub const Connection = struct {
         if (!self.hasConfirmedAppTxKeys()) {
             // If handshake is not complete, return 0 to indicate no data sent
             // The caller can retry later when the connection is ready
-            std.debug.print("DEBUG writeStream: No confirmed app TX keys yet\n", .{});
+            trace("DEBUG writeStream: No confirmed app TX keys yet\n", .{});
             return 0;
         }
         const tx = self.app_tx_keys.?;
@@ -2428,14 +2433,14 @@ pub const Connection = struct {
     /// Read from STREAM into buf; returns number of bytes or WouldBlock.
     /// Read reassembled bytes from a stream into buf; returns number copied or WouldBlock.
     pub fn readStream(self: *Connection, id: u64, buf: []u8) !usize {
-        std.debug.print("[CONN-PTR-READ] conn=0x{x} stream_id={} buf_len={}\n", .{ @intFromPtr(self), id, buf.len });
+        trace("[CONN-PTR-READ] conn=0x{x} stream_id={} buf_len={}\n", .{ @intFromPtr(self), id, buf.len });
         // TRACE: readStream called
         // std.debug.print("readStream called - id={}, buf_len={}\n", .{id, buf.len});
         var s = self.streams_rx.getPtr(id) orelse {
             std.debug.print("readStream - stream {} not found in RX map\n", .{id});
             return error.InvalidStream;
         };
-        std.debug.print("[CONN-PTR-READ] inbox_len={} streams_rx_count={}\n", .{ s.inbox.items.len, self.streams_rx.count() });
+        trace("[CONN-PTR-READ] inbox_len={} streams_rx_count={}\n", .{ s.inbox.items.len, self.streams_rx.count() });
         // TRACE: readStream inbox status
         // std.debug.print("readStream - inbox has {} bytes\n", .{s.inbox.items.len});
         if (s.inbox.items.len == 0) {

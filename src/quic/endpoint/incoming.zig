@@ -892,6 +892,12 @@ pub fn processInitial(
         break :blk c_new;
     };
 
+    // For client connections, capture the peer's Initial DCID/SCID so short-header
+    // packets use the server-chosen SCID as the destination connection ID.
+    if (conn.role == .Client) {
+        conn.setPeerInitialCids(header.dcid, header.scid);
+    }
+
     // Parse token from packet (offset points to token length varint)
     var i = header.offset;
     const tok_len_dec = varint.decode(bytes[i..]) catch return;
