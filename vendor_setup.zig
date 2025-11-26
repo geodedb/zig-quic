@@ -64,14 +64,15 @@ pub fn setupModules(
     // Core byteorder module - REQUIRED by multiple QUIC modules
     const byteorder_mod = mkModule(b, quic_path, "src/byteorder/byteorder.zig");
 
-    // TLS/crypto modules - use @vendor/ztls directly instead of vendor/quic/vendor/ztls
-    const ztls_path = "vendor/ztls";
+    // TLS/crypto modules - ztls is vendored inside vendor/quic/vendor/ztls
+    const ztls_path = b.pathJoin(&.{ quic_path, "vendor/ztls" });
     const quic_tls_mod = mkModule(b, ztls_path, "src/key_schedule.zig");
     const quic_crypto_mod = mkModule(b, quic_path, "src/quic/crypto_quic.zig");
     const asn1_mod = mkModule(b, ztls_path, "src/asn1.zig");
     const sig_mod = mkModule(b, ztls_path, "src/sig.zig");
     const x509_mod = mkModule(b, ztls_path, "src/x509.zig");
     const sct_mod = mkModule(b, ztls_path, "src/sct.zig");
+    const zero_rtt_mod = mkModule(b, ztls_path, "src/zero_rtt.zig");
     const quic_tls13_mod = mkModule(b, ztls_path, "src/tls13.zig");
     const tls13_full_mod = mkModule(b, ztls_path, "src/tls13_full.zig");
 
@@ -240,6 +241,7 @@ pub fn setupModules(
     // TLS13 module dependencies
     quic_tls13_mod.addImport("tls13_full", tls13_full_mod);
     quic_tls13_mod.addImport("sct", sct_mod);
+    quic_tls13_mod.addImport("zero_rtt", zero_rtt_mod);
     quic_tls13_mod.addImport("quic_tls", quic_tls_mod);
     quic_tls13_mod.addImport("asn1", asn1_mod);
     quic_tls13_mod.addImport("sig", sig_mod);
