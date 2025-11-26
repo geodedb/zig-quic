@@ -21,7 +21,7 @@ test "server sends PTO probe with zero-length DCID" {
         .alpn = &[_][]const u8{"h3"},
         .allow_insecure = true,
     };
-    var ep = try endpoint.Endpoint.init(&alloc, "127.0.0.1:4435", &cfg);
+    var ep = try endpoint.Endpoint.init(alloc, "127.0.0.1:4435", &cfg);
     defer ep.deinit();
     ep.test_capture_enabled = true;
     ep.captureClear();
@@ -128,7 +128,7 @@ test "server sends Handshake PTO probe with zero-length DCID" {
         .alpn = &[_][]const u8{"h3"},
         .allow_insecure = true,
     };
-    var ep = try endpoint.Endpoint.init(&alloc, "127.0.0.1:4436", &cfg);
+    var ep = try endpoint.Endpoint.init(alloc, "127.0.0.1:4436", &cfg);
     defer ep.deinit();
     ep.test_capture_enabled = true;
 

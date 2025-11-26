@@ -19,7 +19,7 @@ test "server coalesces zero-length DCID handshakes" {
         .alpn = &[_][]const u8{"h3"},
         .allow_insecure = true,
     };
-    var ep = try endpoint.Endpoint.init(&alloc, "127.0.0.1:4434", &cfg);
+    var ep = try endpoint.Endpoint.init(alloc, "127.0.0.1:4434", &cfg);
     defer ep.deinit();
     ep.test_capture_enabled = true;
     ep.captureClear();

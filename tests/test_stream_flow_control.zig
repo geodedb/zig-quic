@@ -257,7 +257,7 @@ test "endpoint ACK includes updated MAX_* after threshold bumps" {
     const A = gpa.allocator();
 
     // Spin up endpoint with capture
-    var ep = try endpoint.Endpoint.init(&A, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
+    var ep = try endpoint.Endpoint.init(A, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
     defer ep.deinit();
     ep.test_capture_enabled = true;
     ep.captureClear();
@@ -420,7 +420,7 @@ test "endpoint ACK does not include redundant MAX_* when values unchanged" {
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 
-    var ep = try endpoint.Endpoint.init(&A, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
+    var ep = try endpoint.Endpoint.init(A, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
     defer ep.deinit();
     ep.test_capture_enabled = true;
     ep.captureClear();

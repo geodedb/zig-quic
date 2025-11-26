@@ -9,7 +9,7 @@ test "endpoint emits ACK_ECN when ECN CE observed on incoming short packet" {
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
-    var ep = try endpoint.Endpoint.init(&alloc, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
+    var ep = try endpoint.Endpoint.init(alloc, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
     defer ep.deinit();
     ep.test_capture_enabled = true;
     ep.captureClear();

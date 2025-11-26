@@ -16,7 +16,7 @@ test "server responds to client Initial" {
         .alpn = &[_][]const u8{"h3"},
         .allow_insecure = true,
     };
-    var ep = try endpoint.Endpoint.init(&alloc, "127.0.0.1:4433", &cfg);
+    var ep = try endpoint.Endpoint.init(alloc, "127.0.0.1:4433", &cfg);
     defer ep.deinit();
     ep.test_capture_enabled = true;
 

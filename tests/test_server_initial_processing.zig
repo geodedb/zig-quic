@@ -15,7 +15,7 @@ test "server processes Initial and queues response" {
         .alpn = &[_][]const u8{"h3"},
         .allow_insecure = true,
     };
-    var ep = try endpoint.Endpoint.init(&alloc, "127.0.0.1:4433", &cfg);
+    var ep = try endpoint.Endpoint.init(alloc, "127.0.0.1:4433", &cfg);
     defer ep.deinit();
 
     // Build a minimal Initial packet from client

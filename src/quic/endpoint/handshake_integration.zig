@@ -305,6 +305,7 @@ fn onHandshakeComplete(ctx: *tls13.Context) !void {
 /// - role: .Client or .Server
 /// - alpn_list: List of ALPNs to advertise (e.g., ["h3"])
 /// - transport_params_bytes: Encoded transport parameters (from setupClientTransportParams/setupServerTransportParams)
+/// - allow_insecure: Skip certificate validation (for testing with self-signed certs)
 ///
 /// Returns:
 /// - Initialized Context ready for processCrypto() calls
@@ -317,6 +318,7 @@ pub fn createTlsContext(
     transport_params_bytes: []const u8,
     server_cert_der: ?[]const u8,
     server_key_der: ?[]const u8,
+    allow_insecure: bool,
 ) !tls13.Context {
     // Create TLS configuration
     const tls_role: tls13.Role = if (role == .Client) .Client else .Server;
@@ -339,6 +341,7 @@ pub fn createTlsContext(
         .server_cert_der = server_cert_der,
         .server_key_der = server_key_der,
         .supported_signature_schemes = supported_schemes,
+        .allow_insecure = allow_insecure,
     };
 
     // Create callbacks struct with full QUIC integration

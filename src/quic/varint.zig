@@ -116,6 +116,41 @@ pub fn decode(data: []const u8) Error!struct { n: usize, value: u64 } {
     return .{ .n = len, .value = v };
 }
 
+/// Decode a QUIC varint from a reader. Returns the value.
+pub fn decodeReader(reader: anytype) !u64 {
+    const first = try reader.readByte();
+    const prefix = first >> 6;
+    const len: usize = switch (prefix) {
+        0 => 1,
+        1 => 2,
+        2 => 4,
+        3 => 8,
+        else => unreachable,
+    };
+
+    if (len == 1) return (first & 0x3f);
+
+    var tmp: [8]u8 = undefined;
+    tmp[0] = first & 0x3f;
+    try reader.readNoEof(tmp[1..len]);
+
+    switch (len) {
+        2 => {
+            const decoded = byteorder.decode(u16, .big, tmp[0..2]) catch unreachable;
+            return @as(u64, decoded.value);
+        },
+        4 => {
+            const decoded = byteorder.decode(u32, .big, tmp[0..4]) catch unreachable;
+            return @as(u64, decoded.value);
+        },
+        8 => {
+            const decoded = byteorder.decode(u64, .big, tmp[0..8]) catch unreachable;
+            return decoded.value;
+        },
+        else => unreachable,
+    }
+}
+
 /// Encode value using QUIC varint into out. Returns bytes written.
 /// RFC 9000 §16 defines the encoding sizes, while §12.4 mandates using the
 /// minimum-length encoding for integer fields unless otherwise specified (for

@@ -29,7 +29,7 @@ test "migration: back-to-back rebinds then validate latest only (older stays gat
     const A = gpa.allocator();
 
     var cfg = api.QuicConfig{ .alpn = &[_][]const u8{} };
-    var ep = try endpoint.Endpoint.init(&A, "127.0.0.1:0", &cfg);
+    var ep = try endpoint.Endpoint.init(A, "127.0.0.1:0", &cfg);
     defer ep.deinit();
     ep.test_capture_enabled = true;
     ep.captureClear();
@@ -96,7 +96,7 @@ test "migration: validation timeout keeps 3x gating on new path" {
     const A = gpa.allocator();
 
     var cfg = api.QuicConfig{ .alpn = &[_][]const u8{} };
-    var ep = try endpoint.Endpoint.init(&A, "127.0.0.1:0", &cfg);
+    var ep = try endpoint.Endpoint.init(A, "127.0.0.1:0", &cfg);
     defer ep.deinit();
     ep.test_capture_enabled = true;
     ep.captureClear();
@@ -133,7 +133,7 @@ test "migration: server-initiated migration to preferred address with validation
     const A = gpa.allocator();
 
     var cfg = api.QuicConfig{ .alpn = &[_][]const u8{} };
-    var ep = try endpoint.Endpoint.init(&A, "127.0.0.1:0", &cfg);
+    var ep = try endpoint.Endpoint.init(A, "127.0.0.1:0", &cfg);
     defer ep.deinit();
     ep.test_capture_enabled = true;
     ep.captureClear();
@@ -220,7 +220,7 @@ test "migration: rebind after PATH_RESPONSE reordered before another rebind" {
     const A = gpa.allocator();
 
     var cfg = api.QuicConfig{ .alpn = &[_][]const u8{} };
-    var ep = try endpoint.Endpoint.init(&A, "127.0.0.1:0", &cfg);
+    var ep = try endpoint.Endpoint.init(A, "127.0.0.1:0", &cfg);
     defer ep.deinit();
     ep.test_capture_enabled = true;
     ep.captureClear();

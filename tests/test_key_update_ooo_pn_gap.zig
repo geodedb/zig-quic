@@ -35,7 +35,7 @@ test "key update: OOO prev-phase across PN gaps accepted only within window" {
     const app_cli = tls13.deriveApplicationTrafficFromEcdhe(cli.ecdhe_secret.?, th);
     const app_srv = tls13.deriveApplicationTrafficFromEcdhe(srv.ecdhe_secret.?, th);
 
-    var ep = try endpoint.Endpoint.init(&A, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
+    var ep = try endpoint.Endpoint.init(A, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
     defer ep.deinit();
     var c = try ep.connectClient("127.0.0.1:11");
 

@@ -11,7 +11,7 @@ test "client_ignores_tampered_retry" {
     var alloc = gpa.allocator();
 
     // Create server endpoint - use port 4433 to ensure it's recognized as a server
-    var ep = try endpoint.Endpoint.init(&alloc, "127.0.0.1:4433", &.{ .alpn = &[_][]const u8{} });
+    var ep = try endpoint.Endpoint.init(alloc, "127.0.0.1:4433", &.{ .alpn = &[_][]const u8{} });
     defer ep.deinit();
     ep.cfg.enable_retry = true;
     ep.cfg.token_secret = "test-secret";

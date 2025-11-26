@@ -44,7 +44,7 @@ test "nat rebinding enforces 3x before validation across repeated rebindings" {
     var alloc = gpa.allocator();
 
     var cfg = api.QuicConfig{ .alpn = &[_][]const u8{} };
-    var ep = try endpoint.Endpoint.init(&alloc, "127.0.0.1:0", &cfg);
+    var ep = try endpoint.Endpoint.init(alloc, "127.0.0.1:0", &cfg);
     defer ep.deinit();
     ep.test_capture_enabled = true;
     ep.captureClear();

@@ -52,6 +52,12 @@ pub fn expandPacketNumber(truncated: u64, pn_len: u3, largest_pn: u64) u64 {
 /// Supported AEAD suites for QUIC-TLS binding (re-exported from Zig crypto module).
 pub const AeadSuite = crypto_impl.AeadSuite;
 
+/// Result from unprotectInitialAutoSample containing packet number and actual PN length.
+pub const UnprotectResult = struct {
+    packet_number: u64,
+    pn_len: u3, // Actual PN length (1-4) determined from unmasked header
+};
+
 /// Encrypt plaintext with associated data using the given suite.
 /// The nonce is constructed as iv XOR packet_number (left-padded to iv length) per RFC 9001.
 /// The output buffer must have capacity plaintext.len + 16 (tag).
@@ -439,7 +445,7 @@ pub fn unprotectInitialAutoSample(
     ciphertext_and_tag: []const u8,
     out_plaintext: []u8,
     largest_pn: u64,
-) !u64 {
+) !UnprotectResult {
     if (ciphertext_and_tag.len < 16) return error.AuthenticationFailed;
     const pn_len = pn_bytes.len;
     if (pn_len == 0 or pn_len > 4) return error.InvalidPacketNumberLength;
@@ -563,8 +569,11 @@ pub fn unprotectInitialAutoSample(
         return err;
     };
 
-    // Return the expanded packet number, not the plaintext length
-    return full_pn;
+    // Return the expanded packet number and actual PN length
+    return UnprotectResult{
+        .packet_number = full_pn,
+        .pn_len = @intCast(actual_pn_len),
+    };
 }
 
 /// Unmask long header first byte and up to 4 PN bytes using the given hp_key and sample.

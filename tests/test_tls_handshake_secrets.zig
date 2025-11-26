@@ -47,7 +47,8 @@ test "tls13 handshake traffic secrets transition (deterministic input)" {
     t.update(ch_msg);
     t.update(sh_msg);
     const th = t.finalize(.sha256);
-    const hs2 = tls13.deriveHandshakeTraffic(.sha256, &ecdhe, th);
+    const early_secret = tls13.deriveEarlySecret(.sha256, null);
+    const hs2 = tls13.deriveHandshakeTraffic(.sha256, &ecdhe, th, &early_secret);
 
     try std.testing.expectEqualSlices(u8, hs2.client_hs.slice(), hs.client.slice());
     try std.testing.expectEqualSlices(u8, hs2.server_hs.slice(), hs.server.slice());

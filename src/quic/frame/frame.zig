@@ -7,6 +7,7 @@
 //! RFC 9221: DATAGRAM Extension
 
 const std = @import("std");
+const varint = @import("quic_varint");
 
 // Import all specialized frame modules
 const types = @import("types");
@@ -292,6 +293,19 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
         };
     }
 
+    // APPLICATION_CLOSE (0x1d) - similar to CONNECTION_CLOSE but no frame_type field
+    if (t == @intFromEnum(FrameType.APPLICATION_CLOSE)) {
+        const result = try conn_mgmt.decodeApplicationClose(buf);
+        return .{
+            .f = Frame{ .connection_close = .{
+                .error_code = result.error_code,
+                .frame_type = 0, // APPLICATION_CLOSE doesn't have frame_type
+                .reason = result.reason,
+            } },
+            .n = result.n,
+        };
+    }
+
     if (t == @intFromEnum(FrameType.STOP_SENDING)) {
         const result = try conn_mgmt.decodeStopSending(buf);
         return .{
@@ -322,15 +336,206 @@ pub fn parse(buf: []const u8) !struct { frame: Frame, n: usize } {
 }
 
 /// Placeholder for future streaming encoder API.
+/// Encode this frame to the writer.
 pub fn encode(frame: Frame, w: anytype) !void {
-    _ = frame;
-    _ = w;
-    return error.NotImplemented;
+    _ = try frame.write(w);
 }
 
-/// Placeholder for future streaming decoder API.
+/// Decode a frame from the reader. Allocates dynamic content using `alloc`.
 pub fn decode(r: anytype, alloc: std.mem.Allocator) !Frame {
-    _ = r;
-    _ = alloc;
-    return error.NotImplemented;
+    const t = try r.readByte();
+
+    // PADDING
+    if (t == @intFromEnum(FrameType.PADDING)) {
+        return Frame{ .padding = 1 };
+    }
+
+    // PING
+    if (t == @intFromEnum(FrameType.PING)) {
+        return Frame{ .ping = {} };
+    }
+
+    // CRYPTO
+    if (t == @intFromEnum(FrameType.CRYPTO)) {
+        const offset = try varint.decodeReader(r);
+        const len = try varint.decodeReader(r);
+        const data = try alloc.alloc(u8, @intCast(len));
+        try r.readNoEof(data);
+        return Frame{ .crypto = .{ .offset = offset, .data = data } };
+    }
+
+    // ACK / ACK_ECN
+    if (t == @intFromEnum(FrameType.ACK) or t == @intFromEnum(FrameType.ACK_ECN)) {
+        const largest = try varint.decodeReader(r);
+        const ack_delay = try varint.decodeReader(r);
+        const range_count = try varint.decodeReader(r);
+        const first_range = try varint.decodeReader(r);
+
+        // Allocate ranges
+        const ranges = try alloc.alloc(AckRange, @intCast(range_count));
+        var i: usize = 0;
+        while (i < range_count) : (i += 1) {
+            const gap = try varint.decodeReader(r);
+            const len = try varint.decodeReader(r);
+            ranges[i] = .{ .gap = gap, .len = len };
+        }
+
+        var ecn: ?EcnCounts = null;
+        if (t == @intFromEnum(FrameType.ACK_ECN)) {
+            const ect0 = try varint.decodeReader(r);
+            const ect1 = try varint.decodeReader(r);
+            const ce = try varint.decodeReader(r);
+            ecn = .{ .ect0 = ect0, .ect1 = ect1, .ce = ce };
+        }
+
+        return Frame{
+            .ack = .{
+                .largest = largest,
+                .ack_delay = ack_delay,
+                .first_range = first_range,
+                .ranges = ranges,
+                .ecn = ecn,
+            },
+        };
+    }
+
+    // STREAM
+    if ((t & 0xf8) == @intFromEnum(FrameType.STREAM)) {
+        const OFF: u8 = 0x04;
+        const LEN: u8 = 0x02;
+        const FIN: u8 = 0x01;
+        const has_off = (t & OFF) != 0;
+        const has_len = (t & LEN) != 0;
+        const fin = (t & FIN) != 0;
+
+        const stream_id = try varint.decodeReader(r);
+        const offset = if (has_off) try varint.decodeReader(r) else null;
+
+        var data: []u8 = undefined;
+        if (has_len) {
+            const len = try varint.decodeReader(r);
+            data = try alloc.alloc(u8, @intCast(len));
+            try r.readNoEof(data);
+        } else {
+            // Read until EOF (bounded)
+            data = try r.readAllAlloc(alloc, 65536);
+        }
+
+        return Frame{ .stream = .{ .stream_id = stream_id, .offset = offset, .fin = fin, .data = data } };
+    }
+
+    // DATAGRAM
+    if (t == @intFromEnum(FrameType.DATAGRAM)) {
+        const len = try varint.decodeReader(r);
+        const data = try alloc.alloc(u8, @intCast(len));
+        try r.readNoEof(data);
+        return Frame{ .datagram = .{ .data = data } };
+    }
+
+    // NEW_CONNECTION_ID
+    if (t == @intFromEnum(FrameType.NEW_CONNECTION_ID)) {
+        const seq = try varint.decodeReader(r);
+        const retire = try varint.decodeReader(r);
+        const len = try r.readByte();
+        const cid = try alloc.alloc(u8, len);
+        try r.readNoEof(cid);
+        var token: [16]u8 = undefined;
+        try r.readNoEof(&token);
+        return Frame{ .new_connection_id = .{
+            .sequence = seq,
+            .retire_prior_to = retire,
+            .connection_id = cid,
+            .stateless_reset_token = token,
+        } };
+    }
+
+    // RETIRE_CONNECTION_ID
+    if (t == @intFromEnum(FrameType.RETIRE_CONNECTION_ID)) {
+        const seq = try varint.decodeReader(r);
+        return Frame{ .retire_connection_id = .{ .sequence = seq } };
+    }
+
+    // PATH_CHALLENGE
+    if (t == @intFromEnum(FrameType.PATH_CHALLENGE)) {
+        var data: [8]u8 = undefined;
+        try r.readNoEof(&data);
+        return Frame{ .path_challenge = data };
+    }
+
+    // PATH_RESPONSE
+    if (t == @intFromEnum(FrameType.PATH_RESPONSE)) {
+        var data: [8]u8 = undefined;
+        try r.readNoEof(&data);
+        return Frame{ .path_response = data };
+    }
+
+    // HANDSHAKE_DONE
+    if (t == @intFromEnum(FrameType.HANDSHAKE_DONE)) {
+        return Frame{ .handshake_done = {} };
+    }
+
+    // CONNECTION_CLOSE
+    if (t == @intFromEnum(FrameType.CONNECTION_CLOSE)) {
+        const ec = try varint.decodeReader(r);
+        const ft = try varint.decodeReader(r);
+        const len = try varint.decodeReader(r);
+        const reason = try alloc.alloc(u8, @intCast(len));
+        try r.readNoEof(reason);
+        return Frame{ .connection_close = .{ .error_code = ec, .frame_type = ft, .reason = reason } };
+    }
+
+    // Flow Control & Others
+    if (t == @intFromEnum(FrameType.MAX_DATA)) {
+        const max = try varint.decodeReader(r);
+        return Frame{ .max_data = .{ .max = max } };
+    }
+    if (t == @intFromEnum(FrameType.MAX_STREAM_DATA)) {
+        const sid = try varint.decodeReader(r);
+        const max = try varint.decodeReader(r);
+        return Frame{ .max_stream_data = .{ .stream_id = sid, .max = max } };
+    }
+    if (t == @intFromEnum(FrameType.MAX_STREAMS_BIDI)) {
+        const max = try varint.decodeReader(r);
+        return Frame{ .max_streams_bidi = .{ .max = max } };
+    }
+    if (t == @intFromEnum(FrameType.MAX_STREAMS_UNI)) {
+        const max = try varint.decodeReader(r);
+        return Frame{ .max_streams_uni = .{ .max = max } };
+    }
+    if (t == @intFromEnum(FrameType.DATA_BLOCKED)) {
+        const limit = try varint.decodeReader(r);
+        return Frame{ .data_blocked = .{ .limit = limit } };
+    }
+    if (t == @intFromEnum(FrameType.STREAM_DATA_BLOCKED)) {
+        const sid = try varint.decodeReader(r);
+        const limit = try varint.decodeReader(r);
+        return Frame{ .stream_data_blocked = .{ .stream_id = sid, .limit = limit } };
+    }
+    if (t == @intFromEnum(FrameType.STREAMS_BLOCKED_BIDI)) {
+        const max = try varint.decodeReader(r);
+        return Frame{ .streams_blocked_bidi = .{ .max = max } };
+    }
+    if (t == @intFromEnum(FrameType.STREAMS_BLOCKED_UNI)) {
+        const max = try varint.decodeReader(r);
+        return Frame{ .streams_blocked_uni = .{ .max = max } };
+    }
+    if (t == @intFromEnum(FrameType.NEW_TOKEN)) {
+        const len = try varint.decodeReader(r);
+        const token = try alloc.alloc(u8, @intCast(len));
+        try r.readNoEof(token);
+        return Frame{ .new_token = .{ .token = token } };
+    }
+    if (t == @intFromEnum(FrameType.STOP_SENDING)) {
+        const sid = try varint.decodeReader(r);
+        const ec = try varint.decodeReader(r);
+        return Frame{ .stop_sending = .{ .stream_id = sid, .error_code = ec } };
+    }
+    if (t == @intFromEnum(FrameType.RESET_STREAM)) {
+        const sid = try varint.decodeReader(r);
+        const ec = try varint.decodeReader(r);
+        const fs = try varint.decodeReader(r);
+        return Frame{ .reset_stream = .{ .stream_id = sid, .error_code = ec, .final_size = fs } };
+    }
+
+    return error.Unsupported;
 }

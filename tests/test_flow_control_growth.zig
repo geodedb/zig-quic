@@ -11,7 +11,7 @@ test "flow control adaptive growth thresholds" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
-    var ep = try endpoint.Endpoint.init(&A, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
+    var ep = try endpoint.Endpoint.init(A, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
     defer ep.deinit();
     ep.test_capture_enabled = true;
     ep.captureClear();

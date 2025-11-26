@@ -7,10 +7,10 @@ const packet = @import("quic_packet");
 test "connection migration with PATH_CHALLENGE and PATH_RESPONSE" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
-    var alloc = gpa.allocator();
+    const alloc = gpa.allocator();
 
     // Create endpoint and connection
-    var ep = try endpoint_mod.Endpoint.init(&alloc, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
+    var ep = try endpoint_mod.Endpoint.init(alloc, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
     defer ep.deinit();
 
     var conn = try ep.connectClient("127.0.0.1:4433");
@@ -49,7 +49,7 @@ test "NAT rebinding detection" {
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 
-    var ep = try endpoint_mod.Endpoint.init(&alloc, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
+    var ep = try endpoint_mod.Endpoint.init(alloc, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
     defer ep.deinit();
 
     // Create a server connection

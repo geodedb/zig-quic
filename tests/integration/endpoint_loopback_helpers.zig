@@ -308,6 +308,8 @@ pub const EndpointWrapper = struct {
     role: EndpointRole,
     /// Memory allocator
     allocator: std.mem.Allocator,
+    /// Heap-allocated allocator pointer (for cleanup)
+    alloc_ptr: *std.mem.Allocator,
 
     /// Initialize endpoint wrapper with real production endpoint
     ///
@@ -359,6 +361,7 @@ pub const EndpointWrapper = struct {
             .adapter = adapter,
             .role = role,
             .allocator = allocator,
+            .alloc_ptr = alloc_ptr,
         };
     }
 
@@ -367,14 +370,11 @@ pub const EndpointWrapper = struct {
     /// Phase 14: Now properly cleans up real endpoint
     /// Phase 21 fix: Also clean up heap-allocated allocator pointer
     pub fn deinit(self: *EndpointWrapper) void {
-        // Save the allocator pointer before destroying endpoint
-        const alloc_ptr = self.endpoint.allocator;
-
         self.endpoint.deinit();
         self.allocator.destroy(self.endpoint);
 
         // Clean up heap-allocated allocator pointer
-        self.allocator.destroy(alloc_ptr);
+        self.allocator.destroy(self.alloc_ptr);
 
         // Adapter is owned by helper, not cleaned up here
     }

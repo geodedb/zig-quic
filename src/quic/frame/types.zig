@@ -30,6 +30,7 @@ pub const FrameType = enum(u8) {
     PATH_CHALLENGE = 0x1a,
     PATH_RESPONSE = 0x1b,
     CONNECTION_CLOSE = 0x1c,
+    APPLICATION_CLOSE = 0x1d, // RFC 9000 §19.19 - application-level close (no frame_type field)
     HANDSHAKE_DONE = 0x1e,
     DATAGRAM = 0x30, // RFC 9221 (optional)
 };

@@ -82,16 +82,17 @@ fn benchmarkHandshakeSecrets(config: BenchConfig) !void {
     const ecdhe_secret = [_]u8{0x11} ** 32;
     const transcript_hash_data = [_]u8{0x22} ** 32;
     const transcript_hash = ks.Secret.fromSlice(hash, &transcript_hash_data);
+    const early_secret = tls13.deriveEarlySecret(hash, null);
 
     var i: usize = 0;
     while (i < config.warmup) : (i += 1) {
-        _ = tls13.deriveHandshakeTraffic(hash, &ecdhe_secret, transcript_hash);
+        _ = tls13.deriveHandshakeTraffic(hash, &ecdhe_secret, transcript_hash, &early_secret);
     }
 
     const start = std.time.nanoTimestamp();
     i = 0;
     while (i < config.iterations) : (i += 1) {
-        _ = tls13.deriveHandshakeTraffic(hash, &ecdhe_secret, transcript_hash);
+        _ = tls13.deriveHandshakeTraffic(hash, &ecdhe_secret, transcript_hash, &early_secret);
     }
     const end = std.time.nanoTimestamp();
 

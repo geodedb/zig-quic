@@ -155,6 +155,7 @@ pub fn createClientConnection(
         &[_]u8{}, // Transport params set separately before handshake
         null,     // No server cert for client
         null,     // No server key for client
+        cfg.allow_insecure,
     ) catch |err| blk: {
         std.debug.print("createClientConnection: Failed to create TLS Context: {}\n", .{err});
         break :blk null;

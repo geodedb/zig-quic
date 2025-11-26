@@ -12,7 +12,7 @@ test "aead integrity limit triggers connection close" {
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 
-    var ep = try endpoint.Endpoint.init(&A, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{}, .aead_integrity_limit_override = 2 });
+    var ep = try endpoint.Endpoint.init(A, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{}, .aead_integrity_limit_override = 2 });
     defer ep.deinit();
     ep.test_capture_enabled = true;
     ep.captureClear();

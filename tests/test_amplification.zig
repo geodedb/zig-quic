@@ -10,7 +10,7 @@ test "anti_amplification_counters_update" {
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 
-    var ep = try endpoint.Endpoint.init(&alloc, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
+    var ep = try endpoint.Endpoint.init(alloc, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
     defer ep.deinit();
 
     // Enable capture and start with empty ring

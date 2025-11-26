@@ -29,7 +29,7 @@ TARGETS = \
 .PHONY: test-all-clients test-all-clients-verbose kill
 
 # Default target runs full CI including cross-compilation
-all: ci cross-compile-quick interop
+all: ci cross-compile-quick interop e2e-test-all e2e-comprehensive
 
 build: kill clean
 	$(ZIG) build $(ZIG_FLAGS)
@@ -346,7 +346,7 @@ e2e-test-go: build
 	@echo "========== E2E Test: Go Client (quic-go) =========="
 	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
 	@echo "Starting Zig server..."
-	@bash -c './zig-out/bin/quic-server 127.0.0.1:4433 --cert server.crt --key server.key > /tmp/e2e-go.log 2>&1 & \
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key --insecure > /tmp/e2e-go.log 2>&1 & \
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \
@@ -360,8 +360,8 @@ e2e-test-go: build
 		sleep 1; \
 		echo ""; \
 		echo "=== Server Log Analysis ==="; \
-		if grep -q "recvfrom got" /tmp/e2e-go.log; then \
-			COUNT=$$(grep -c "recvfrom got" /tmp/e2e-go.log); \
+		if grep -q "processIncomingDatagram" /tmp/e2e-go.log; then \
+			COUNT=$$(grep -c "processIncomingDatagram" /tmp/e2e-go.log); \
 			echo "✅ Server received $$COUNT packets from Go client"; \
 			grep "processIncomingDatagram" /tmp/e2e-go.log | head -5 || true; \
 		else \
@@ -373,7 +373,7 @@ e2e-test-go-comprehensive: build
 	@echo "========== E2E Comprehensive Test: Go Client (quic-go) =========="
 	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
 	@echo "Starting Zig server with TLS..."
-	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key > /tmp/e2e-go-comprehensive.log 2>&1 & \
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key --insecure > /tmp/e2e-go-comprehensive.log 2>&1 & \
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \
@@ -394,25 +394,25 @@ e2e-test-python: build
 	@echo "========== E2E Test: Python Client (aioquic) =========="
 	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
 	@echo "Starting Zig server..."
-	@bash -c './zig-out/bin/quic-server 127.0.0.1:4433  --cert server.crt --key server.key > /tmp/e2e-python.log 2>&1 & \
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key --insecure > /tmp/e2e-python.log 2>&1 & \
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \
+		CLIENT_DIR=$$(pwd)/test-clients/aioquic-client; \
+		VENV_DIR=$$CLIENT_DIR/.venv; \
+		echo "Ensuring aioquic venv at $$VENV_DIR..."; \
+		python3 -m venv $$VENV_DIR >/tmp/e2e-python-pip.log 2>&1 || true; \
+		$$VENV_DIR/bin/pip install -r $$CLIENT_DIR/requirements.txt >>/tmp/e2e-python-pip.log 2>&1 || true; \
 		echo "Running Python client..."; \
-		if [ -f /tmp/aioquic_test_client.py ]; then \
-			cd /tmp && timeout 10 python3 aioquic_test_client.py 2>&1 | tee /tmp/e2e-python-client.log || true; \
-		else \
-			echo "Creating Python test client..."; \
-			echo -e "import asyncio\\nimport logging\\nfrom aioquic.asyncio import connect\\nfrom aioquic.quic.configuration import QuicConfiguration\\n\\nlogging.basicConfig(level=logging.DEBUG)\\n\\nasync def main():\\n    config = QuicConfiguration(is_client=True, verify_mode=0)\\n\\n    async with connect(\"127.0.0.1\", 4433, configuration=config) as protocol:\\n        await protocol.wait_closed()\\n\\nif __name__ == \"__main__\":\\n    asyncio.run(main())" > /tmp/aioquic_test_client.py && \
-			cd /tmp && timeout 10 python3 aioquic_test_client.py 2>&1 | tee /tmp/e2e-python-client.log || true; \
-		fi; \
+		cd $$CLIENT_DIR && timeout 10 $$VENV_DIR/bin/python test_client.py --host 127.0.0.1 --port 4433 2>&1 | tee /tmp/e2e-python-client.log || true; \
 		kill $$SERVER_PID 2>/dev/null || true; \
 		sleep 1; \
 		echo ""; \
 		echo "=== Server Log Analysis ==="; \
-		if grep -q "recvfrom got" /tmp/e2e-python.log; then \
-			COUNT=$$(grep -c "recvfrom got" /tmp/e2e-python.log); \
+		if grep -q "processIncomingDatagram" /tmp/e2e-python.log; then \
+			COUNT=$$(grep -c "processIncomingDatagram" /tmp/e2e-python.log); \
 			echo "✅ Server received $$COUNT packets from Python client"; \
+			grep "processIncomingDatagram" /tmp/e2e-python.log | head -5 || true; \
 		else \
 			echo "❌ Server did not receive packets from Python client"; \
 		fi'
@@ -422,32 +422,23 @@ e2e-test-rust: build
 	@echo "========== E2E Test: Rust Client (quinn) =========="
 	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
 	@echo "Starting Zig server..."
-	@bash -c './zig-out/bin/quic-server 127.0.0.1:4433  --cert server.crt --key server.key > /tmp/e2e-rust.log 2>&1 & \
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key --insecure > /tmp/e2e-rust.log 2>&1 & \
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \
+		CLIENT_DIR=$$(pwd)/test-clients/quinn-client; \
+		echo "Building quinn test client..."; \
+		cd $$CLIENT_DIR && cargo build --release --bin quinn-test-client 2>&1 | grep -E "Compiling|Finished" || true; \
 		echo "Running Rust client..."; \
-		if [ -f /tmp/quinn-test/target/release/quinn-test-client ]; then \
-			cd /tmp/quinn-test && RUST_LOG=info timeout 10 ./target/release/quinn-test-client 2>&1 | tee /tmp/e2e-rust-client.log || true; \
-		else \
-			echo "Building Rust Quinn client..."; \
-			cd /tmp && \
-			if [ ! -d quinn-test ]; then \
-				mkdir -p quinn-test/src && \
-				cd quinn-test && \
-				cargo init --name quinn-test-client && \
-				cargo add quinn tokio rustls anyhow log env_logger && \
-				cargo build --release; \
-			fi && \
-			cd /tmp/quinn-test && RUST_LOG=info timeout 10 cargo run --release 2>&1 | tee /tmp/e2e-rust-client.log || true; \
-		fi; \
+		cd $$CLIENT_DIR && RUST_LOG=info timeout 10 ./target/release/quinn-test-client --addr 127.0.0.1:4433 --server-name test.local 2>&1 | tee /tmp/e2e-rust-client.log || true; \
 		kill $$SERVER_PID 2>/dev/null || true; \
 		sleep 1; \
 		echo ""; \
 		echo "=== Server Log Analysis ==="; \
-		if grep -q "recvfrom got" /tmp/e2e-rust.log; then \
-			COUNT=$$(grep -c "recvfrom got" /tmp/e2e-rust.log); \
+		if grep -q "processIncomingDatagram" /tmp/e2e-rust.log; then \
+			COUNT=$$(grep -c "processIncomingDatagram" /tmp/e2e-rust.log); \
 			echo "✅ Server received $$COUNT packets from Rust client"; \
+			grep "processIncomingDatagram" /tmp/e2e-rust.log | head -5 || true; \
 		else \
 			echo "❌ Server did not receive packets from Rust client"; \
 		fi'
@@ -457,7 +448,7 @@ e2e-test-zig: build
 	@echo "========== E2E Test: Zig Client =========="
 	@bash -c 'killall quic-server quic-client 2>/dev/null || true; sleep 1'
 	@echo "Starting Zig server..."
-	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433  --cert server.crt --key server.key > /tmp/e2e-zig.log 2>&1 & \
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key --insecure > /tmp/e2e-zig.log 2>&1 & \
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \
@@ -483,7 +474,7 @@ e2e-test-zig-comprehensive: build
 	@echo "========== E2E Comprehensive Test: Zig Client =========="
 	@bash -c 'killall quic-server quic-client quic-client-comprehensive 2>/dev/null || true; sleep 1'
 	@echo "Starting Zig server with TLS..."
-	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key > /tmp/e2e-zig-comprehensive.log 2>&1 & \
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key --insecure > /tmp/e2e-zig-comprehensive.log 2>&1 & \
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \
@@ -507,7 +498,7 @@ e2e-test-python-comprehensive: build
 	@echo "========== E2E Comprehensive Test: Python Client (aioquic) =========="
 	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
 	@echo "Starting Zig server with TLS..."
-	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key > /tmp/e2e-python-comprehensive.log 2>&1 & \
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key --insecure > /tmp/e2e-python-comprehensive.log 2>&1 & \
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \
@@ -533,7 +524,7 @@ e2e-test-rust-comprehensive: build
 	@echo "========== E2E Comprehensive Test: Rust Client (Quinn) =========="
 	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
 	@echo "Starting Zig server with TLS..."
-	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key > /tmp/e2e-rust-comprehensive.log 2>&1 & \
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key --insecure > /tmp/e2e-rust-comprehensive.log 2>&1 & \
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \

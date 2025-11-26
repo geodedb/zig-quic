@@ -637,7 +637,7 @@ pub fn decryptInitialPacketWithDcid(
     // Decrypt the packet
     // Phase 34 fix: Pass full 4-byte buffer instead of slice (consistent with Phase 33 fix)
     // Note: errdefer on line 633 handles cleanup on error
-    _ = crypto_quic.unprotectInitialAutoSample(
+    const result = crypto_quic.unprotectInitialAutoSample(
         .aes_128_gcm,
         &keys.key,
         &keys.iv,
@@ -652,7 +652,7 @@ pub fn decryptInitialPacketWithDcid(
         return err;
     };
     // ciphertext_and_tag = [PN bytes][ciphertext][16-byte tag]
-    const actual_pn_len: usize = @intCast((header_first & 0x03) + 1);
+    const actual_pn_len: usize = @intCast(result.pn_len);
     const tag_len: usize = 16;
     if (ciphertext_and_tag.len < actual_pn_len + tag_len) return error.AuthenticationFailed;
     const plaintext_len = ciphertext_and_tag.len - actual_pn_len - tag_len;

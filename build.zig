@@ -799,6 +799,22 @@ pub fn build(b: *std.Build) void {
         const run_test_conn_types = b.addRunArtifact(test_conn_types);
         test_step.dependOn(&run_test_conn_types.step);
 
+        const test_frame_streaming = addTst(b, "tests/test_frame_streaming.zig", target, optimize);
+        test_frame_streaming.root_module.addImport("quic_frame", quic_frame_mod);
+        test_frame_streaming.root_module.addImport("quic_varint", quic_varint_mod);
+        const run_test_frame_streaming = b.addRunArtifact(test_frame_streaming);
+        test_step.dependOn(&run_test_frame_streaming.step);
+
+        const test_path_validation = addTst(b, "tests/test_path_validation.zig", target, optimize);
+        test_path_validation.root_module.addImport("quic_api", quic_api_mod);
+        test_path_validation.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        test_path_validation.root_module.addImport("quic_conn", quic_conn_mod);
+        test_path_validation.root_module.addImport("quic_packet", quic_packet_mod);
+        test_path_validation.root_module.addImport("quic_frame", quic_frame_mod);
+        const run_test_path_validation = b.addRunArtifact(test_path_validation);
+        const test_pv_step = b.step("test-path-validation", "Run path validation tests");
+        test_pv_step.dependOn(&run_test_path_validation.step);
+
         const test_endpoint_types = addTst(b, "tests/unit/endpoint/test_types.zig", target, optimize);
         test_endpoint_types.root_module.addImport("quic_endpoint_types", endpoint_types_mod);
         test_endpoint_types.root_module.addImport("quic_connection_types", conn_types_mod);

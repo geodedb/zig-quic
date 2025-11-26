@@ -718,11 +718,24 @@ pub fn decryptInitialPacket(
             continue;
         };
 
-        // Success! Return decrypted packet
+        // Calculate correct payload size: ciphertext - pn_len - 16 byte tag
+        // The allocated buffer is ciphertext.len - 16, but actual data is smaller
+        const actual_pn_len: usize = @intCast(result.pn_len);
+        const actual_payload_len = ciphertext.len - actual_pn_len - 16;
+
+        // Resize the buffer to match actual payload length
+        // This ensures free() works correctly with the returned slice
+        const resized_payload = allocator.realloc(payload, actual_payload_len) catch {
+            // Realloc failed - free original and return error
+            allocator.free(payload);
+            return error.OutOfMemory;
+        };
+
+        // Success! Return decrypted packet with correctly-sized payload
         return DecryptedInitial{
-            .payload = payload,
-            .packet_number = result,
-            .pn_len = pn_len_try,
+            .payload = resized_payload,
+            .packet_number = result.packet_number,
+            .pn_len = result.pn_len,
         };
     }
 
@@ -1044,7 +1057,13 @@ pub fn processInitial(
     while (offset < decrypted.payload.len) {
         std.debug.print("[processInitial] Decoding frame at offset {}/{}\n", .{offset, decrypted.payload.len});
         const fr = frame.decodeOne(decrypted.payload[offset..]) catch |err| {
-            std.debug.print("[processInitial] Frame decode error at offset {}: {}\n", .{offset, err});
+            const first_byte = if (offset < decrypted.payload.len) decrypted.payload[offset] else 0;
+            // RFC 9000 §12.4: Endpoints MUST ignore unknown frame types
+            if (err == error.Unsupported) {
+                std.debug.print("[processInitial] Ignoring unknown frame type 0x{X:0>2} at offset {} (RFC 9000 §12.4)\n", .{ first_byte, offset });
+                break; // Can't continue without knowing frame length
+            }
+            std.debug.print("[processInitial] Frame decode error at offset {}: {} (first_byte=0x{X:0>2})\n", .{ offset, err, first_byte });
             break;
         };
         std.debug.print("[processInitial] Decoded frame type: {}\n", .{std.meta.activeTag(fr.f)});

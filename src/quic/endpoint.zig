@@ -219,7 +219,7 @@ pub const Endpoint = struct {
         return Endpoint{
             .transport = transport,
             .loop_backend = lb.defaultLoopBackend(),
-            .allocator = alloc,
+            .allocator = alloc.*,
             .timers = std.ArrayList(Timer){},
             .conns = std.AutoHashMap(Key, *conn_mod.Connection).init(alloc.*),
             .next_timer_id = 1,

@@ -30,7 +30,7 @@ test "rx key update: exhaust previous-key allowance then reject further prev-pha
     const app_cli = tls13.deriveApplicationTrafficFromEcdhe(cli.ecdhe_secret.?, th);
     const app_srv = tls13.deriveApplicationTrafficFromEcdhe(srv.ecdhe_secret.?, th);
 
-    var ep = try endpoint.Endpoint.init(&A, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
+    var ep = try endpoint.Endpoint.init(A, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
     defer ep.deinit();
     var c = try ep.connectClient("127.0.0.1:3");
     const rx0 = tls13.deriveQuicAppKeys(app_srv.client_app, false);
@@ -78,7 +78,7 @@ test "tx key update: rapid trigger then finalize on ACK zeroizes prev keys" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     var A = gpa.allocator();
-    var ep = try endpoint.Endpoint.init(&A, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
+    var ep = try endpoint.Endpoint.init(A, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
     defer ep.deinit();
     var c = try ep.connectClient("127.0.0.1:4");
     // Seed app secrets/keys (zeros OK for structure)

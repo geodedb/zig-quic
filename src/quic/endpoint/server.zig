@@ -399,6 +399,7 @@ pub fn createServerConnection(
         tp_bytes,
         config.server_cert_der,
         config.server_priv_key_der,
+        config.allow_insecure,
     );
 
     const tls_ctx = try allocator.create(@TypeOf(ctx_value));

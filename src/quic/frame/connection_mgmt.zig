@@ -203,6 +203,40 @@ pub fn decodeConnectionClose(buf: []const u8) !struct {
     };
 }
 
+/// Decode APPLICATION_CLOSE frame (0x1d).
+/// RFC 9000 §19.19: Format is Type + Error Code + Reason Length + Reason.
+/// Unlike CONNECTION_CLOSE (0x1c), this does NOT include a Frame Type field.
+pub fn decodeApplicationClose(buf: []const u8) !struct {
+    error_code: u64,
+    reason: []const u8,
+    n: usize,
+} {
+    if (buf.len == 0) return error.Truncated;
+    if (buf[0] != @intFromEnum(types.FrameType.APPLICATION_CLOSE)) return error.InvalidFrameType;
+
+    var i: usize = 1;
+
+    // Error Code
+    const ec = try varint.decode(buf[i..]);
+    i += ec.n;
+
+    // Reason Phrase Length
+    const rl = try varint.decode(buf[i..]);
+    i += rl.n;
+
+    // Reason Phrase
+    if (rl.value > @as(u64, buf.len - i)) return error.Truncated;
+    const rlen: usize = @intCast(rl.value);
+    const reason = buf[i .. i + rlen];
+    i += rlen;
+
+    return .{
+        .error_code = ec.value,
+        .reason = reason,
+        .n = i,
+    };
+}
+
 // =============================================================================
 // STOP_SENDING Frame
 // =============================================================================

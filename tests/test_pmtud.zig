@@ -252,10 +252,10 @@ test "icmp packet too big clamps path_mtu and clears oversize pending" {
 test "icmp ptb spoof-check: only applies when DCID matches known connection" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
-    var alloc = gpa.allocator();
+    const alloc = gpa.allocator();
     // Build endpoint and a client connection mapping
     var cfg = api.QuicConfig{ .alpn = &[_][]const u8{} };
-    var ep = try endpoint_mod.Endpoint.init(&alloc, "127.0.0.1:0", &cfg);
+    var ep = try endpoint_mod.Endpoint.init(alloc, "127.0.0.1:0", &cfg);
     defer ep.deinit();
     var c = try ep.connectClient("127.0.0.1:9");
     // Seed minimal 1-RTT TX keys and DCID for short header
@@ -285,9 +285,9 @@ test "icmp ptb spoof-check: only applies when DCID matches known connection" {
 test "icmp ptb spoof corner: quoted header too short is ignored" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
-    var alloc = gpa.allocator();
+    const alloc = gpa.allocator();
     var cfg = @import("quic_api").QuicConfig{ .alpn = &[_][]const u8{} };
-    var ep = try endpoint_mod.Endpoint.init(&alloc, "127.0.0.1:0", &cfg);
+    var ep = try endpoint_mod.Endpoint.init(alloc, "127.0.0.1:0", &cfg);
     defer ep.deinit();
     var c = try ep.connectClient("127.0.0.1:9");
     c.our_scid.len = 4;
@@ -336,11 +336,11 @@ test "pmtud: send multiple probe sizes and accept only acked size" {
 test "pmtud state machine sends probes and raises mtu upon ack progression" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
-    var alloc = gpa.allocator();
+    const alloc = gpa.allocator();
     // Use endpoint to drive timers; attach one connection with TX keys
     var cfg = api.QuicConfig{ .alpn = &[_][]const u8{} };
     cfg.enable_pacing = false;
-    var ep = try endpoint_mod.Endpoint.init(&alloc, "127.0.0.1:0", &cfg);
+    var ep = try endpoint_mod.Endpoint.init(alloc, "127.0.0.1:0", &cfg);
     defer ep.deinit();
     var c = try ep.connectClient("127.0.0.1:9");
     c.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
@@ -367,9 +367,9 @@ test "pmtud state machine sends probes and raises mtu upon ack progression" {
 test "icmp ptb ipv6 minimal quote length required" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
-    var alloc = gpa.allocator();
+    const alloc = gpa.allocator();
     var cfg = api.QuicConfig{ .alpn = &[_][]const u8{} };
-    var ep = try endpoint_mod.Endpoint.init(&alloc, "127.0.0.1:0", &cfg);
+    var ep = try endpoint_mod.Endpoint.init(alloc, "127.0.0.1:0", &cfg);
     defer ep.deinit();
     var c = try ep.connectClient("127.0.0.1:9");
     c.our_scid.len = 4;
@@ -387,9 +387,9 @@ test "icmp ptb ipv6 minimal quote length required" {
 test "icmp ptb ipv6 EH offset scan: accept DCID match beyond base header" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
-    var alloc = gpa.allocator();
+    const alloc = gpa.allocator();
     var cfg = api.QuicConfig{ .alpn = &[_][]const u8{} };
-    var ep = try endpoint_mod.Endpoint.init(&alloc, "127.0.0.1:0", &cfg);
+    var ep = try endpoint_mod.Endpoint.init(alloc, "127.0.0.1:0", &cfg);
     defer ep.deinit();
     var c = try ep.connectClient("127.0.0.1:9");
     c.our_scid.len = 4;
@@ -410,10 +410,10 @@ test "icmp ptb ipv6 EH offset scan: accept DCID match beyond base header" {
 test "pmtud pacing: single outstanding probe with backoff on blackhole" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
-    var alloc = gpa.allocator();
+    const alloc = gpa.allocator();
     var cfg = api.QuicConfig{ .alpn = &[_][]const u8{} };
     cfg.enable_pacing = false;
-    var ep = try endpoint_mod.Endpoint.init(&alloc, "127.0.0.1:0", &cfg);
+    var ep = try endpoint_mod.Endpoint.init(alloc, "127.0.0.1:0", &cfg);
     defer ep.deinit();
     var c = try ep.connectClient("127.0.0.1:10");
     c.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
@@ -443,10 +443,10 @@ test "pmtud pacing: single outstanding probe with backoff on blackhole" {
 test "pmtud pacing: do not send probe when cwnd insufficient; respects PTO backoff" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
-    var alloc = gpa.allocator();
+    const alloc = gpa.allocator();
     var cfg = api.QuicConfig{ .alpn = &[_][]const u8{} };
     cfg.enable_pacing = false;
-    var ep = try endpoint_mod.Endpoint.init(&alloc, "127.0.0.1:0", &cfg);
+    var ep = try endpoint_mod.Endpoint.init(alloc, "127.0.0.1:0", &cfg);
     defer ep.deinit();
     var c = try ep.connectClient("127.0.0.1:12");
     c.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
