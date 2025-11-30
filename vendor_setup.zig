@@ -168,12 +168,14 @@ pub fn setupModules(
     endpoint_handshake_integration_mod.addImport("vendor_ztls_tls13", quic_tls13_mod);
     endpoint_handshake_integration_mod.addImport("vendor_ztls_key_schedule", quic_tls_mod);
     endpoint_handshake_integration_mod.addImport("config", config_mod);
+    endpoint_handshake_integration_mod.addImport("quic_logger", quic_logger_mod);
 
     const endpoint_frame_handler_mod = mkModule(b, quic_path, "src/quic/endpoint/frame_handler.zig");
     endpoint_frame_handler_mod.addImport("quic_conn", quic_conn_mod);
     endpoint_frame_handler_mod.addImport("frame", quic_frame_mod);
     endpoint_frame_handler_mod.addImport("packet", quic_packet_mod);
     endpoint_frame_handler_mod.addImport("config", config_mod);
+    endpoint_frame_handler_mod.addImport("quic_logger", quic_logger_mod);
 
     const endpoint_client_mod = mkModule(b, quic_path, "src/quic/endpoint/client.zig");
     endpoint_client_mod.addImport("quic_conn", quic_conn_mod);
@@ -183,6 +185,7 @@ pub fn setupModules(
     endpoint_client_mod.addImport("types", endpoint_types_mod);
     endpoint_client_mod.addImport("handshake_integration", endpoint_handshake_integration_mod);
     endpoint_client_mod.addImport("quic_tls13", quic_tls13_mod);
+    endpoint_client_mod.addImport("quic_logger", quic_logger_mod);
 
     const endpoint_server_mod = mkModule(b, quic_path, "src/quic/endpoint/server.zig");
     endpoint_server_mod.addImport("quic_conn", quic_conn_mod);
@@ -209,6 +212,7 @@ pub fn setupModules(
     endpoint_incoming_mod.addImport("config", config_mod);
     endpoint_incoming_mod.addImport("frame_handler", endpoint_frame_handler_mod);
     endpoint_incoming_mod.addImport("handshake_integration", endpoint_handshake_integration_mod);
+    endpoint_incoming_mod.addImport("quic_logger", quic_logger_mod);
 
     // Main endpoint module with submodule imports using relative paths
     const quic_endpoint_mod = mkModule(b, quic_path, "src/quic/endpoint.zig");

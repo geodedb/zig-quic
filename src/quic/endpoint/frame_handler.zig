@@ -14,6 +14,7 @@
 //! Phase 4b.5 Session 4: Extract frame handlers from endpoint.zig:1347-1475
 
 const std = @import("std");
+const logger = @import("quic_logger");
 const conn_mod = @import("quic_conn");
 const frame = @import("frame");
 const packet = @import("packet");
@@ -103,18 +104,18 @@ pub fn handleStream(
     s: frame.Stream,
 ) !FrameResult {
     const off: u64 = s.offset orelse 0;
-    std.debug.print("\n>>> ENDPOINT RECEIVED STREAM FRAME <<<\n", .{});
+    logger.debugPrint("\n>>> ENDPOINT RECEIVED STREAM FRAME <<<\n", .{});
     if (ctx.conn.role == .Server) {
-        std.debug.print("Server received STREAM frame - id={}, off={}, len={}, fin={}\n", .{ s.stream_id, off, s.data.len, s.fin });
+        logger.debugPrint("Server received STREAM frame - id={}, off={}, len={}, fin={}\n", .{ s.stream_id, off, s.data.len, s.fin });
     } else {
-        std.debug.print("CLIENT received STREAM frame - id={}, off={}, len={}, fin={}\n", .{ s.stream_id, off, s.data.len, s.fin });
+        logger.debugPrint("CLIENT received STREAM frame - id={}, off={}, len={}, fin={}\n", .{ s.stream_id, off, s.data.len, s.fin });
     }
-    std.debug.print("Calling conn.pushStreamFrame()...\n", .{});
+    logger.debugPrint("Calling conn.pushStreamFrame()...\n", .{});
     ctx.conn.pushStreamFrame(s.stream_id, off, s.data, s.fin) catch |err| {
-        std.debug.print("ERROR: pushStreamFrame failed: {}\n", .{err});
+        logger.debugPrint("ERROR: pushStreamFrame failed: {}\n", .{err});
         return err;
     };
-    std.debug.print("pushStreamFrame returned successfully\n", .{});
+    logger.debugPrint("pushStreamFrame returned successfully\n", .{});
     return .{ .saw_ack_eliciting = true };
 }
 
@@ -194,7 +195,7 @@ pub fn handleAck(
 /// confirmation of the handshake to the client."
 pub fn handleHandshakeDone(ctx: *FrameContext) FrameResult {
     // Phase 24 DEBUG: Trace HANDSHAKE_DONE reception
-    std.debug.print("[handleHandshakeDone] HANDSHAKE_DONE frame received, role={s}\n", .{
+    logger.debugPrint("[handleHandshakeDone] HANDSHAKE_DONE frame received, role={s}\n", .{
         if (ctx.conn.role == .Server) "Server" else "Client",
     });
     return .{
@@ -228,19 +229,19 @@ pub fn handleMaxStreamData(
         if (m.max > tx.peer_max_stream_data) {
             const old_max = tx.peer_max_stream_data;
             tx.peer_max_stream_data = m.max;
-            std.debug.print("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) increased window from {}\n",
+            logger.debugPrint("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) increased window from {}\n",
                 .{m.stream_id, m.max, old_max});
         } else {
-            std.debug.print("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) ignored (current={})\n",
+            logger.debugPrint("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) ignored (current={})\n",
                 .{m.stream_id, m.max, tx.peer_max_stream_data});
         }
     } else {
         // Stream not yet created on our side - store for when it is created
         // Create TX state entry with the advertised limit
-        std.debug.print("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) creating TX state\n",
+        logger.debugPrint("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) creating TX state\n",
             .{m.stream_id, m.max});
         ctx.conn.stream_txs.put(m.stream_id, .{ .peer_max_stream_data = m.max }) catch {
-            std.debug.print("[FC-TX] Failed to create TX state for stream {}\n", .{m.stream_id});
+            logger.debugPrint("[FC-TX] Failed to create TX state for stream {}\n", .{m.stream_id});
         };
     }
     return .{ .saw_ack_eliciting = true };
@@ -259,10 +260,10 @@ pub fn handleMaxData(
     if (md.max > ctx.conn.peer_max_data) {
         const old_max = ctx.conn.peer_max_data;
         ctx.conn.peer_max_data = md.max;
-        std.debug.print("[FC-CONN] Received MAX_DATA(max={}) increased from {}\n",
+        logger.debugPrint("[FC-CONN] Received MAX_DATA(max={}) increased from {}\n",
             .{md.max, old_max});
     } else {
-        std.debug.print("[FC-CONN] Received MAX_DATA(max={}) ignored (current={})\n",
+        logger.debugPrint("[FC-CONN] Received MAX_DATA(max={}) ignored (current={})\n",
             .{md.max, ctx.conn.peer_max_data});
     }
     return .{ .saw_ack_eliciting = true };

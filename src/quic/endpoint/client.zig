@@ -16,6 +16,7 @@
 //! - RFC 9001 §5: Packet Protection (Initial secrets)
 
 const std = @import("std");
+const logger = @import("quic_logger");
 const conn_mod = @import("quic_conn");
 const packet = @import("quic_packet");
 const frame = @import("quic_frame");
@@ -119,11 +120,11 @@ pub fn createClientConnection(
         @memcpy(c.original_dcid.bytes[0..c.original_dcid.len], c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]);
     }
 
-    std.debug.print("[createClientConnection] Generated DCID len={} bytes: ", .{c.peer_initial_dcid.len});
+    logger.debugPrint("[createClientConnection] Generated DCID len={} bytes: ", .{c.peer_initial_dcid.len});
     for (c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]) |b| {
-        std.debug.print("{X:0>2} ", .{b});
+        logger.debugPrint("{X:0>2} ", .{b});
     }
-    std.debug.print("\n", .{});
+    logger.debugPrint("\n", .{});
 
     c.our_scid.len = 8;
     generateRandomCid(c.our_scid.bytes[0..c.our_scid.len]);
@@ -140,10 +141,10 @@ pub fn createClientConnection(
     _ = conns_map.put(key_d, c) catch {};
     _ = conns_map.put(key_s, c) catch {};
 
-    std.debug.print("Client connection registered:\n", .{});
-    std.debug.print("  peer_hash={X:0>16}\n", .{peer_hash});
-    std.debug.print("  By DCID hash={X:0>16} (peer_initial_dcid)\n", .{hashBytes(c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len])});
-    std.debug.print("  By SCID hash={X:0>16} (our_scid)\n", .{hashBytes(c.our_scid.bytes[0..c.our_scid.len])});
+    logger.debugPrint("Client connection registered:\n", .{});
+    logger.debugPrint("  peer_hash={X:0>16}\n", .{peer_hash});
+    logger.debugPrint("  By DCID hash={X:0>16} (peer_initial_dcid)\n", .{hashBytes(c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len])});
+    logger.debugPrint("  By SCID hash={X:0>16} (our_scid)\n", .{hashBytes(c.our_scid.bytes[0..c.our_scid.len])});
 
     // Initialize TLS Context for modular TLS 1.3 (Phase 21.2)
     // Client doesn't need certificates (server auth only)
@@ -157,7 +158,7 @@ pub fn createClientConnection(
         null,     // No server key for client
         cfg.allow_insecure,
     ) catch |err| blk: {
-        std.debug.print("createClientConnection: Failed to create TLS Context: {}\n", .{err});
+        logger.debugPrint("createClientConnection: Failed to create TLS Context: {}\n", .{err});
         break :blk null;
     };
 
@@ -205,16 +206,16 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
     const initial = ks.deriveInitialSecret(v2, dcid_for_secret);
     const pair = ks.deriveClientServerInitial(initial);
 
-    std.debug.print("client: deriving Initial keys with dcid (peer_initial_dcid) len={}: ", .{c.peer_initial_dcid.len});
+    logger.debugPrint("client: deriving Initial keys with dcid (peer_initial_dcid) len={}: ", .{c.peer_initial_dcid.len});
     for (c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]) |b| {
-        std.debug.print("{X:0>2} ", .{b});
+        logger.debugPrint("{X:0>2} ", .{b});
     }
-    std.debug.print("\n", .{});
-    std.debug.print("       original_dcid len={}: ", .{c.original_dcid.len});
+    logger.debugPrint("\n", .{});
+    logger.debugPrint("       original_dcid len={}: ", .{c.original_dcid.len});
     for (c.original_dcid.bytes[0..c.original_dcid.len]) |b| {
-        std.debug.print("{X:0>2} ", .{b});
+        logger.debugPrint("{X:0>2} ", .{b});
     }
-    std.debug.print("\n", .{});
+    logger.debugPrint("\n", .{});
 
     const tx_keys: packet.InitialKeys = if (v2) blk: {
         const t = ks.deriveKeyIvHpV2(pair.client);
@@ -224,9 +225,9 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
         break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
     };
 
-    std.debug.print("[Client TX] Initial key[0..4]: ", .{});
-    for (tx_keys.key[0..4]) |b| std.debug.print("{X:0>2} ", .{b});
-    std.debug.print("\n", .{});
+    logger.debugPrint("[Client TX] Initial key[0..4]: ", .{});
+    for (tx_keys.key[0..4]) |b| logger.debugPrint("{X:0>2} ", .{b});
+    logger.debugPrint("\n", .{});
 
     var frames = std.ArrayList(u8){};
     defer frames.deinit(ctx.allocator.*);
@@ -235,7 +236,7 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
     // Note: Transport parameters must be set up by caller before calling sendInitialProbe
 
     const tls_ctx = c.tls_context orelse {
-        std.debug.print("sendInitialProbe: TLS Context not initialized\n", .{});
+        logger.debugPrint("sendInitialProbe: TLS Context not initialized\n", .{});
         return error.NoTlsContext;
     };
 
@@ -246,12 +247,12 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
 
     // Start client handshake (generates ClientHello)
     tls_ctx.startClientHandshake() catch |err| {
-        std.debug.print("sendInitialProbe: Context startClientHandshake error: {}\n", .{err});
+        logger.debugPrint("sendInitialProbe: Context startClientHandshake error: {}\n", .{err});
     };
 
     // Poll for the generated ClientHello
     const crypto_data = tls_ctx.pollCrypto(ctx.allocator.*, .Initial) catch |err| blk: {
-        std.debug.print("sendInitialProbe: Context pollCrypto error: {}\n", .{err});
+        logger.debugPrint("sendInitialProbe: Context pollCrypto error: {}\n", .{err});
         break :blk null;
     };
 
@@ -316,15 +317,15 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
         tx_keys,
     );
 
-    std.debug.print("client: built Initial pn={} dcid=\n", .{c.pn_initial_tx});
+    logger.debugPrint("client: built Initial pn={} dcid=\n", .{c.pn_initial_tx});
     for (c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]) |b| {
-        std.debug.print("{X:0>2}\n", .{b});
+        logger.debugPrint("{X:0>2}\n", .{b});
     }
-    std.debug.print(" scid=\n", .{});
+    logger.debugPrint(" scid=\n", .{});
     for (c.our_scid.bytes[0..c.our_scid.len]) |b| {
-        std.debug.print("{X:0>2}\n", .{b});
+        logger.debugPrint("{X:0>2}\n", .{b});
     }
-    std.debug.print(" payload_len={}\n", .{frames.items.len});
+    logger.debugPrint(" payload_len={}\n", .{frames.items.len});
 
     defer ctx.allocator.free(pkt);
     const sent = try ctx.send_fn(ctx.sender_ctx, ctx.peer, pkt);

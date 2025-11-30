@@ -28,7 +28,7 @@ fn dumpBytes(label: []const u8, bytes: []const u8) void {
         _ = list.writer(std.heap.page_allocator).print("{x:0>2}", .{bytes[i]}) catch break;
         if (i + 1 < bytes.len) _ = list.append(std.heap.page_allocator, ' ') catch break;
     }
-    std.debug.print("{s}: {s}\n", .{ label, list.items });
+    logger.debugPrint("{s}: {s}\n", .{ label, list.items });
 }
 
 /// Packet number type alias.
@@ -198,7 +198,7 @@ pub fn encodeShortProtected(
     // Previously we passed pn_trunc_val here, causing decrypt side (which expands PN) to derive a different
     // nonce -> authentication failures for 1-RTT short header packets once packet numbers exceeded the
     // truncated range. Fix: pass the original full packet_number to protectInitial/protectPacket.
-    std.debug.print("encodeShortProtected: pn={} (0x{x}) pn_len={} dcid={s}\n", .{ packet_number, packet_number, packet_number_len, dcid });
+    logger.debugPrint("encodeShortProtected: pn={} (0x{x}) pn_len={} dcid={s}\n", .{ packet_number, packet_number, packet_number_len, dcid });
     const written = try crypto.protectInitial(
         suite,
         &keys.key,
@@ -239,7 +239,7 @@ pub fn decodeShortProtected(
     keys: AeadKeys,
     largest_pn: u64,
 ) !DecodedShort {
-    std.debug.print("[SHORT-DECODE-ENTRY] bytes={} dcid_len={} largest_pn={} key0={X:0>2}\n", .{packet_bytes.len, dcid_len, largest_pn, keys.key[0]});
+    logger.debugPrint("[SHORT-DECODE-ENTRY] bytes={} dcid_len={} largest_pn={} key0={X:0>2}\n", .{packet_bytes.len, dcid_len, largest_pn, keys.key[0]});
     return decodeShortProtectedWithHp(alloc, packet_bytes, dcid_len, keys.hp, keys, largest_pn);
 }
 
@@ -275,10 +275,10 @@ pub fn decodeShortProtectedWithHp(
     var sample16: [16]u8 = undefined;
     @memcpy(sample16[0..], packet_bytes[pn_start + 4 .. pn_start + 4 + 16]);
 
-    std.debug.print("SHORT HEADER HP: pn_start={}, sample_offset={}, packet_len={}\n", .{ pn_start, pn_start + 4, packet_bytes.len });
-    std.debug.print("SHORT HEADER HP: sample16 = ", .{});
-    for (sample16) |b| std.debug.print("{X:0>2} ", .{b});
-    std.debug.print("\n", .{});
+    logger.debugPrint("SHORT HEADER HP: pn_start={}, sample_offset={}, packet_len={}\n", .{ pn_start, pn_start + 4, packet_bytes.len });
+    logger.debugPrint("SHORT HEADER HP: sample16 = ", .{});
+    for (sample16) |b| logger.debugPrint("{X:0>2} ", .{b});
+    logger.debugPrint("\n", .{});
 
     // Determine actual PN length by unmasking header+PN on a temporary copy
     var tmp_first = header_first_masked;
@@ -290,7 +290,7 @@ pub fn decodeShortProtectedWithHp(
     // This allows incoming.zig to know which key phase the packet uses and decide
     // whether to try NEXT keys.
     const key_phase = (tmp_first & 0x04) != 0;
-    std.debug.print("decodeShortProtected: EARLY KEY_PHASE extraction = {} (header_first=0x{X:0>2})\n", .{ key_phase, tmp_first });
+    logger.debugPrint("decodeShortProtected: EARLY KEY_PHASE extraction = {} (header_first=0x{X:0>2})\n", .{ key_phase, tmp_first });
 
     // Pre-compute truncated PN (for logging) before attempting AEAD decrypt.
     var pn_val_truncated: u32 = 0;
@@ -328,7 +328,7 @@ pub fn decodeShortProtectedWithHp(
         // Success - continue using precomputed PN.
     } else |err| {
         if (largest_pn >= 80 or pn_val_expanded_preview >= 80) {
-            std.debug.print("[PHASE57-AEAD] fail pn_preview={} pn_len={} pn_trunc=0x{x} key_phase={} dcid_len={} largest={} pn_start={} err={}\n", .{
+            logger.debugPrint("[PHASE57-AEAD] fail pn_preview={} pn_len={} pn_trunc=0x{x} key_phase={} dcid_len={} largest={} pn_start={} err={}\n", .{
                 pn_val_expanded_preview,
                 pn_len,
                 pn_val_truncated,
@@ -347,29 +347,29 @@ pub fn decodeShortProtectedWithHp(
                 nonce_log[pos] ^= @as(u8, @truncate(pn_tmp & 0xff));
                 pn_tmp >>= 8;
             }
-            std.debug.print("[PHASE57-AEAD] expect_nonce=", .{});
-            for (nonce_log) |b| std.debug.print("{X:0>2}", .{b});
-            std.debug.print("\n", .{});
+            logger.debugPrint("[PHASE57-AEAD] expect_nonce=", .{});
+            for (nonce_log) |b| logger.debugPrint("{X:0>2}", .{b});
+            logger.debugPrint("\n", .{});
 
             var aad_buf: [1 + 32 + 4]u8 = undefined;
             const aad_len = 1 + header_prefix.len + pn_len;
             aad_buf[0] = tmp_first;
             @memcpy(aad_buf[1 .. 1 + header_prefix.len], header_prefix);
             @memcpy(aad_buf[1 + header_prefix.len .. aad_len], tmp_pn[0..pn_len]);
-            std.debug.print("[PHASE57-AEAD] expect_aad=", .{});
+            logger.debugPrint("[PHASE57-AEAD] expect_aad=", .{});
             var aad_idx: usize = 0;
             while (aad_idx < aad_len) : (aad_idx += 1) {
-                std.debug.print("{X:0>2}", .{aad_buf[aad_idx]});
+                logger.debugPrint("{X:0>2}", .{aad_buf[aad_idx]});
             }
-            std.debug.print("\n", .{});
+            logger.debugPrint("\n", .{});
 
-            std.debug.print("[PHASE57-AEAD] key_set_material key=", .{});
-            for (keys.key) |b| std.debug.print("{X:0>2}", .{b});
-            std.debug.print(" hp=", .{});
-            for (keys.hp) |b| std.debug.print("{X:0>2}", .{b});
-            std.debug.print(" iv=", .{});
-            for (keys.iv) |b| std.debug.print("{X:0>2}", .{b});
-            std.debug.print("\n", .{});
+            logger.debugPrint("[PHASE57-AEAD] key_set_material key=", .{});
+            for (keys.key) |b| logger.debugPrint("{X:0>2}", .{b});
+            logger.debugPrint(" hp=", .{});
+            for (keys.hp) |b| logger.debugPrint("{X:0>2}", .{b});
+            logger.debugPrint(" iv=", .{});
+            for (keys.iv) |b| logger.debugPrint("{X:0>2}", .{b});
+            logger.debugPrint("\n", .{});
 
             maybeDumpPhase57Failure(.{
                 .packet = packet_bytes,
@@ -393,10 +393,10 @@ pub fn decodeShortProtectedWithHp(
 
     const pn_val_expanded = pn_val_expanded_preview;
 
-    std.debug.print("decodeShortProtected: truncated PN={} -> expanded PN={} (largest_pn={})\n", .{ pn_val_truncated, pn_val_expanded, largest_pn });
+    logger.debugPrint("decodeShortProtected: truncated PN={} -> expanded PN={} (largest_pn={})\n", .{ pn_val_truncated, pn_val_expanded, largest_pn });
 
     // PHASE 57: Validation logging for KEY_PHASE (already extracted at line 271)
-    std.debug.print("decodeShortProtected: KEY_PHASE bit = {} (header_first=0x{X:0>2})\n", .{ key_phase, tmp_first });
+    logger.debugPrint("decodeShortProtected: KEY_PHASE bit = {} (header_first=0x{X:0>2})\n", .{ key_phase, tmp_first });
 
     return .{ .packet_number = pn_val_expanded, .packet_number_len = pn_len, .payload = payload, .key_phase = key_phase };
 }
@@ -708,18 +708,18 @@ pub fn encodeHandshakeProtected(
     payload_plaintext: []const u8,
     keys: InitialKeys,
 ) ![]u8 {
-    std.debug.print("encodeHandshakeProtected: CALLED with packet_number={} version=0x{X:0>8}\n", .{ packet_number, version });
-    std.debug.print("encodeHandshakeProtected: Keys at function entry - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ keys.key[0], keys.key[1], keys.key[2], keys.key[3], keys.iv[0], keys.iv[1], keys.iv[2], keys.iv[3] });
-    std.debug.print("encodeHandshakeProtected: dcid.len={}, scid.len={}\n", .{ dcid.len, scid.len });
+    logger.debugPrint("encodeHandshakeProtected: CALLED with packet_number={} version=0x{X:0>8}\n", .{ packet_number, version });
+    logger.debugPrint("encodeHandshakeProtected: Keys at function entry - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ keys.key[0], keys.key[1], keys.key[2], keys.key[3], keys.iv[0], keys.iv[1], keys.iv[2], keys.iv[3] });
+    logger.debugPrint("encodeHandshakeProtected: dcid.len={}, scid.len={}\n", .{ dcid.len, scid.len });
     if (dcid.len > 0) {
-        std.debug.print("encodeHandshakeProtected: dcid bytes: ", .{});
-        for (dcid) |b| std.debug.print("{X:0>2}\n", .{b});
-        std.debug.print("", .{});
+        logger.debugPrint("encodeHandshakeProtected: dcid bytes: ", .{});
+        for (dcid) |b| logger.debugPrint("{X:0>2}\n", .{b});
+        logger.debugPrint("", .{});
     }
     if (scid.len > 0) {
-        std.debug.print("encodeHandshakeProtected: scid bytes: ", .{});
-        for (scid) |b| std.debug.print("{X:0>2}\n", .{b});
-        std.debug.print("", .{});
+        logger.debugPrint("encodeHandshakeProtected: scid bytes: ", .{});
+        for (scid) |b| logger.debugPrint("{X:0>2}\n", .{b});
+        logger.debugPrint("", .{});
     }
     if (packet_number_len < 1 or packet_number_len > 4) return error.InvalidPacketNumberLength;
 
@@ -732,7 +732,7 @@ pub fn encodeHandshakeProtected(
     // We don't need to OR type_bits because 0xe0 already includes Handshake type
     const pn_bits: u8 = @as(u8, packet_number_len - 1) & 0x03;
     const first: u8 = 0xe0 | pn_bits;
-    std.debug.print("encodeHandshakeProtected: packet_number_len={}, pn_bits={}, first=0x{X:0>2}\n", .{ packet_number_len, pn_bits, first });
+    logger.debugPrint("encodeHandshakeProtected: packet_number_len={}, pn_bits={}, first=0x{X:0>2}\n", .{ packet_number_len, pn_bits, first });
 
     const w = buf.writer(alloc);
     try w.writeByte(first);
@@ -742,7 +742,7 @@ pub fn encodeHandshakeProtected(
         @as(u8, @intCast((version >> 8) & 0xff)),
         @as(u8, @intCast(version & 0xff)),
     };
-    std.debug.print("encodeHandshakeProtected: writing version bytes {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ be_ver[0], be_ver[1], be_ver[2], be_ver[3] });
+    logger.debugPrint("encodeHandshakeProtected: writing version bytes {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ be_ver[0], be_ver[1], be_ver[2], be_ver[3] });
     try w.writeAll(&be_ver);
     try w.writeByte(@as(u8, @intCast(dcid.len)));
     try w.writeAll(dcid);
@@ -778,7 +778,7 @@ pub fn encodeHandshakeProtected(
     try w.writeAll(lbuf[0..ll]);
 
     const header_prefix_len = buf.items.len - 1;
-    std.debug.print("encodeHandshakeProtected: payload_len={}, ct_len={}, pn_len={}, length_value={}\n", .{ payload_plaintext.len, ct_len, packet_number_len, length_value });
+    logger.debugPrint("encodeHandshakeProtected: payload_len={}, ct_len={}, pn_len={}, length_value={}\n", .{ payload_plaintext.len, ct_len, packet_number_len, length_value });
 
     var pn_be_full: [4]u8 = .{
         @as(u8, @intCast((packet_number >> 24) & 0xff)),
@@ -787,26 +787,26 @@ pub fn encodeHandshakeProtected(
         @as(u8, @intCast(packet_number & 0xff)),
     };
     const pn_slice = pn_be_full[4 - packet_number_len .. 4];
-    std.debug.print("encodeHandshakeProtected: PN {} encoded as bytes [", .{packet_number});
+    logger.debugPrint("encodeHandshakeProtected: PN {} encoded as bytes [", .{packet_number});
     for (pn_slice) |b| {
-        std.debug.print("{X:0>2} ", .{b});
+        logger.debugPrint("{X:0>2} ", .{b});
     }
-    std.debug.print("]\n", .{});
+    logger.debugPrint("]\n", .{});
     try w.writeAll(pn_slice);
 
     const out_cipher_idx = buf.items.len;
     try buf.ensureTotalCapacity(alloc, out_cipher_idx + ct_len);
     try buf.appendNTimes(alloc, 0, ct_len);
 
-    std.debug.print("encodeHandshakeProtected: Keys before header_first - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ keys.key[0], keys.key[1], keys.key[2], keys.key[3] });
+    logger.debugPrint("encodeHandshakeProtected: Keys before header_first - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ keys.key[0], keys.key[1], keys.key[2], keys.key[3] });
     var header_first: u8 = first;
     var pn_mut: [4]u8 = .{0} ** 4;
     @memcpy(pn_mut[0..packet_number_len], pn_slice);
-    std.debug.print("encodeHandshakeProtected: Keys after memcpy - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ keys.key[0], keys.key[1], keys.key[2], keys.key[3] });
+    logger.debugPrint("encodeHandshakeProtected: Keys after memcpy - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ keys.key[0], keys.key[1], keys.key[2], keys.key[3] });
 
     const out_cipher = buf.items[out_cipher_idx .. out_cipher_idx + ct_len];
     const suite = crypto.AeadSuite.aes_128_gcm;
-    std.debug.print("encodeHandshakeProtected: Using keys - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, hp[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+    logger.debugPrint("encodeHandshakeProtected: Using keys - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, hp[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
         keys.key[0], keys.key[1], keys.key[2], keys.key[3],
         keys.iv[0], keys.iv[1], keys.iv[2], keys.iv[3],
         keys.hp[0], keys.hp[1], keys.hp[2], keys.hp[3]
@@ -827,11 +827,11 @@ pub fn encodeHandshakeProtected(
 
     // CRITICAL: Verify that the actual encrypted length matches our precalculated length
     if (written != ct_len) {
-        std.debug.print("LENGTH MISMATCH BUG DETECTED: protectPacket wrote {} bytes, but we calculated ct_len={}\n", .{ written, ct_len });
-        std.debug.print("  payload_plaintext.len={}, packet_number_len={}, expected_tag_len=16\n", .{ payload_plaintext.len, packet_number_len });
-        std.debug.print("  Declared length_value in header={} (pn_len + ct_len)\n", .{length_value});
-        std.debug.print("  Actual packet will have length={} (pn_len + written)\n", .{@as(usize, packet_number_len) + written});
-        std.debug.print("  This will cause a {} byte discrepancy!\n", .{@as(i64, @intCast(ct_len)) - @as(i64, @intCast(written))});
+        logger.debugPrint("LENGTH MISMATCH BUG DETECTED: protectPacket wrote {} bytes, but we calculated ct_len={}\n", .{ written, ct_len });
+        logger.debugPrint("  payload_plaintext.len={}, packet_number_len={}, expected_tag_len=16\n", .{ payload_plaintext.len, packet_number_len });
+        logger.debugPrint("  Declared length_value in header={} (pn_len + ct_len)\n", .{length_value});
+        logger.debugPrint("  Actual packet will have length={} (pn_len + written)\n", .{@as(usize, packet_number_len) + written});
+        logger.debugPrint("  This will cause a {} byte discrepancy!\n", .{@as(i64, @intCast(ct_len)) - @as(i64, @intCast(written))});
         // Strict length verification enabled
         return error.LengthMismatch;
     }
@@ -841,34 +841,34 @@ pub fn encodeHandshakeProtected(
     const pn_offset = 1 + header_prefix_len;
     @memcpy(buf.items[pn_offset .. pn_offset + packet_number_len], pn_mut[0..packet_number_len]);
 
-    std.debug.print("encodeHandshakeProtected: AFTER header protection - first byte changed from 0x{X:0>2} to 0x{X:0>2}\n", .{ first, header_first });
-    std.debug.print("encodeHandshakeProtected: Final packet first 5 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ buf.items[0], buf.items[1], buf.items[2], buf.items[3], buf.items[4] });
+    logger.debugPrint("encodeHandshakeProtected: AFTER header protection - first byte changed from 0x{X:0>2} to 0x{X:0>2}\n", .{ first, header_first });
+    logger.debugPrint("encodeHandshakeProtected: Final packet first 5 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ buf.items[0], buf.items[1], buf.items[2], buf.items[3], buf.items[4] });
 
     // DIAGNOSTIC: Hexdump first 64 bytes of Handshake packet for analysis
-    std.debug.print("=== HANDSHAKE PACKET HEXDUMP (first 64 bytes) ===\n", .{});
+    logger.debugPrint("=== HANDSHAKE PACKET HEXDUMP (first 64 bytes) ===\n", .{});
     const dump_len = @min(64, buf.items.len);
     var dump_idx: usize = 0;
     while (dump_idx < dump_len) : (dump_idx += 16) {
         const line_end = @min(dump_idx + 16, dump_len);
-        std.debug.print("{X:0>4}: ", .{dump_idx});
+        logger.debugPrint("{X:0>4}: ", .{dump_idx});
         var line_idx = dump_idx;
         while (line_idx < line_end) : (line_idx += 1) {
-            std.debug.print("{X:0>2} ", .{buf.items[line_idx]});
+            logger.debugPrint("{X:0>2} ", .{buf.items[line_idx]});
         }
-        std.debug.print("", .{});
+        logger.debugPrint("", .{});
     }
-    std.debug.print("=== END HEXDUMP (total packet size: {} bytes) ===\n", .{buf.items.len});
+    logger.debugPrint("=== END HEXDUMP (total packet size: {} bytes) ===\n", .{buf.items.len});
 
     // FINAL VERIFICATION: Ensure packet length matches what we declared in the header
     const expected_total_len = (1 + header_prefix_len) + packet_number_len + written;
     if (buf.items.len != expected_total_len) {
-        std.debug.print("FINAL PACKET LENGTH MISMATCH: buf.len={}, expected={} (header={}, pn={}, payload={})\n", .{ buf.items.len, expected_total_len, 1 + header_prefix_len, packet_number_len, written });
+        logger.debugPrint("FINAL PACKET LENGTH MISMATCH: buf.len={}, expected={} (header={}, pn={}, payload={})\n", .{ buf.items.len, expected_total_len, 1 + header_prefix_len, packet_number_len, written });
         // Strict length verification enabled
         return error.PacketLengthMismatch;
     }
 
     // Log successful packet construction with length verification
-    std.debug.print("encodeHandshakeProtected: SUCCESS - packet length verified: declared_in_header={}, actual_packet_len={}\n", .{ length_value, buf.items.len - (1 + header_prefix_len) });
+    logger.debugPrint("encodeHandshakeProtected: SUCCESS - packet length verified: declared_in_header={}, actual_packet_len={}\n", .{ length_value, buf.items.len - (1 + header_prefix_len) });
 
     return buf.toOwnedSlice(alloc);
 }
@@ -1230,14 +1230,14 @@ fn maybeDumpPhase57Failure(ctx: Phase57DumpContext) void {
     if (phase57_dump_count >= phase57_dump_max) return;
     phase57_dump_count += 1;
     const dump_id = phase57_dump_count;
-    std.debug.print("[PHASE57-DUMP] captured failing short header #{d}: pn_preview={} key_phase={} largest_pn={} label={s}\n", .{
+    logger.debugPrint("[PHASE57-DUMP] captured failing short header #{d}: pn_preview={} key_phase={} largest_pn={} label={s}\n", .{
         dump_id,
         ctx.pn_preview,
         ctx.key_phase,
         ctx.largest_pn,
         ctx.key_set_label,
     });
-    std.debug.print("[PHASE57-DUMP] header_first_masked=0x{X:0>2} dcid_len={} pn_len={} pn_start={}\n", .{
+    logger.debugPrint("[PHASE57-DUMP] header_first_masked=0x{X:0>2} dcid_len={} pn_len={} pn_start={}\n", .{
         ctx.header_first_masked,
         ctx.dcid_len,
         ctx.pn_len,
@@ -1248,20 +1248,20 @@ fn maybeDumpPhase57Failure(ctx: Phase57DumpContext) void {
     printBytesHex("[PHASE57-DUMP] ciphertext+tag", ctx.ciphertext_and_tag, 256);
     printBytesHex("[PHASE57-DUMP] packet", ctx.packet, 512);
     dumpPhase57Files(ctx, dump_id);
-    std.debug.print("[PHASE57-DUMP] ---- END ----\n", .{});
+    logger.debugPrint("[PHASE57-DUMP] ---- END ----\n", .{});
 }
 
 fn printBytesHex(label: []const u8, bytes: []const u8, limit: usize) void {
-    std.debug.print("{s}=", .{label});
+    logger.debugPrint("{s}=", .{label});
     var i: usize = 0;
     const max = @min(limit, bytes.len);
     while (i < max) : (i += 1) {
-        std.debug.print("{X:0>2}", .{bytes[i]});
+        logger.debugPrint("{X:0>2}", .{bytes[i]});
     }
     if (bytes.len > limit) {
-        std.debug.print("...(+{} bytes)", .{bytes.len - limit});
+        logger.debugPrint("...(+{} bytes)", .{bytes.len - limit});
     }
-    std.debug.print("\n", .{});
+    logger.debugPrint("\n", .{});
 }
 
 fn dumpPhase57Files(ctx: Phase57DumpContext, dump_id: u8) void {
@@ -1275,7 +1275,7 @@ fn dumpPhase57Files(ctx: Phase57DumpContext, dump_id: u8) void {
         defer file.close();
         file.writeAll(ctx.packet) catch {};
     } else |err| {
-        std.debug.print("[PHASE57-DUMP] failed to write {s}: {}\n", .{ packet_path, err });
+        logger.debugPrint("[PHASE57-DUMP] failed to write {s}: {}\n", .{ packet_path, err });
     }
 
     if (cwd.createFile(meta_path, .{ .truncate = true })) |file| {
@@ -1292,7 +1292,7 @@ fn dumpPhase57Files(ctx: Phase57DumpContext, dump_id: u8) void {
         writeHexLine(file, "dcid_hex=", ctx.header_prefix);
         writeHexLine(file, "pn_masked_hex=", ctx.pn_masked);
     } else |err| {
-        std.debug.print("[PHASE57-DUMP] failed to write {s}: {}\n", .{ meta_path, err });
+        logger.debugPrint("[PHASE57-DUMP] failed to write {s}: {}\n", .{ meta_path, err });
     }
 
     if (dump_id == 1) {

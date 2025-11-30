@@ -5,6 +5,7 @@
 //! processing can consume them in order without reallocation churn.
 
 const std = @import("std");
+const logger = @import("quic_logger");
 
 /// Fragment representing a piece of CRYPTO data at a specific offset.
 pub const Fragment = struct {
@@ -29,7 +30,7 @@ pub const CryptoBuffer = struct {
         // If buffer is full, skip adding this fragment to prevent memory corruption
         // In normal operation with in-order CRYPTO frames, this should never happen
         if (self.count >= self.fragments.len) {
-            std.debug.print("WARNING: CryptoBuffer full (count={}, max={}), skipping fragment at offset {}\n", .{ self.count, self.fragments.len, offset });
+            logger.debugPrint("WARNING: CryptoBuffer full (count={}, max={}), skipping fragment at offset {}\n", .{ self.count, self.fragments.len, offset });
             return error.BufferFull;
         }
 

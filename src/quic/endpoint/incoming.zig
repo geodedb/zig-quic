@@ -21,6 +21,7 @@
 //! - RFC 3168: Explicit Congestion Notification (ECN)
 
 const std = @import("std");
+const logger = @import("quic_logger");
 const conn_mod = @import("quic_conn");
 const packet = @import("packet");
 const cfg = @import("config");
@@ -395,7 +396,7 @@ pub fn enumerateDcidLength(
     largest_pn: u64,
     conn: ?*conn_mod.Connection,
 ) DcidLengthResult {
-    std.debug.print("[ENUM-SHORT] Start enumerateDcidLength initial_len={} bytes_len={} largest_pn={}\n", .{initial_dcid_len, packet_bytes.len, largest_pn});
+    logger.debugPrint("[ENUM-SHORT] Start enumerateDcidLength initial_len={} bytes_len={} largest_pn={}\n", .{initial_dcid_len, packet_bytes.len, largest_pn});
     // Try initial length first
     if (packet.decodeShortProtected(
         allocator,
@@ -835,9 +836,9 @@ pub fn processInitial(
         const server_mod = @import("server.zig");
 
         // Debug: Log client SCID from header
-        std.debug.print("processInitial: Parsed Initial header - client_scid.len={}\n", .{header.scid.len});
+        logger.debugPrint("processInitial: Parsed Initial header - client_scid.len={}\n", .{header.scid.len});
         if (header.scid.len >= 4) {
-            std.debug.print("  client_scid[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+            logger.debugPrint("  client_scid[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
                 header.scid[0], header.scid[1], header.scid[2], header.scid[3]
             });
         }
@@ -867,11 +868,11 @@ pub fn processInitial(
         ) catch return;
 
         // Debug: Check peer_initial_dcid after server connection creation
-        std.debug.print("processInitial: Server conn created, peer_initial_dcid len={}\n", .{
+        logger.debugPrint("processInitial: Server conn created, peer_initial_dcid len={}\n", .{
             c_new.peer_initial_dcid.len
         });
         if (c_new.peer_initial_dcid.len > 0) {
-            std.debug.print("  peer_initial_dcid[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+            logger.debugPrint("  peer_initial_dcid[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
                 c_new.peer_initial_dcid.bytes[0], c_new.peer_initial_dcid.bytes[1],
                 c_new.peer_initial_dcid.bytes[2], c_new.peer_initial_dcid.bytes[3]
             });
@@ -895,9 +896,9 @@ pub fn processInitial(
         const our_key = endpoint_types.Key{ .peer_hash = ph, .dcid_hash = hashBytes(c_new.our_scid.bytes[0..c_new.our_scid.len]) };
         _ = ctx.conns.put(our_key, c_new) catch {};
 
-        std.debug.print("processInitial: Registered new server conn={*}\n", .{c_new});
-        std.debug.print("  By client DCID hash={X:0>16}\n", .{hashBytes(header.dcid)});
-        std.debug.print("  By server SCID hash={X:0>16}\n", .{hashBytes(c_new.our_scid.bytes[0..c_new.our_scid.len])});
+        logger.debugPrint("processInitial: Registered new server conn={*}\n", .{c_new});
+        logger.debugPrint("  By client DCID hash={X:0>16}\n", .{hashBytes(header.dcid)});
+        logger.debugPrint("  By server SCID hash={X:0>16}\n", .{hashBytes(c_new.our_scid.bytes[0..c_new.our_scid.len])});
 
         // Add newly created server connection to accepted list for accept() API
         _ = ctx.accepted.append(ctx.allocator.*, c_new) catch {};
@@ -936,7 +937,7 @@ pub fn processInitial(
     // PHASE 42 PART 7 FIX: Auto-validate localhost addresses to avoid unnecessary amplification limits
     // RFC 9000 §8.1 allows servers to skip address validation for trusted addresses
     const is_localhost = conn.isLocalhost();
-    std.debug.print("[PHASE42] processInitial: role={s} address_validated={} isLocalhost={} enable_retry={}\n", .{
+    logger.debugPrint("[PHASE42] processInitial: role={s} address_validated={} isLocalhost={} enable_retry={}\n", .{
         if (conn.role == .Server) "Server" else "Client",
         conn.address_validated,
         is_localhost,
@@ -944,7 +945,7 @@ pub fn processInitial(
     });
     // Skip localhost auto-validation if retry is explicitly enabled (allows testing retry mechanism)
     if (conn.role == .Server and !conn.address_validated and is_localhost and !ctx.cfg.enable_retry) {
-        std.debug.print("[LOCALHOST] Auto-validating localhost address - bypassing amplification limits\n", .{});
+        logger.debugPrint("[LOCALHOST] Auto-validating localhost address - bypassing amplification limits\n", .{});
         conn.address_validated = true;
         conn.bytes_rx_unvalidated = 0;
         conn.bytes_tx_unvalidated = 0;
@@ -999,9 +1000,9 @@ pub fn processInitial(
             .hp = keys_result.rx_keys.hp,
         };
 
-        std.debug.print("[Server RX] Initial key[0..4]: ", .{});
-        for (keys_result.rx_keys.key[0..4]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print(" (dcid len={})\n", .{header.dcid.len});
+        logger.debugPrint("[Server RX] Initial key[0..4]: ", .{});
+        for (keys_result.rx_keys.key[0..4]) |b| logger.debugPrint("{X:0>2} ", .{b});
+        logger.debugPrint(" (dcid len={})\n", .{header.dcid.len});
     }
     if (conn.initial_tx_keys == null) {
         conn.initial_tx_keys = packet.InitialKeys{
@@ -1013,7 +1014,7 @@ pub fn processInitial(
 
     // Decrypt Initial packet
     const largest_pn = if (conn.pn_initial.have_any) conn.pn_initial.max else 0;
-    std.debug.print("[processInitial] Before decrypt: largest_pn_for_expansion={}\n", .{largest_pn});
+    logger.debugPrint("[processInitial] Before decrypt: largest_pn_for_expansion={}\n", .{largest_pn});
     const decrypted = decryptInitialPacket(
         ctx.allocator.*,
         bytes,
@@ -1022,11 +1023,11 @@ pub fn processInitial(
         largest_pn,
     ) catch |err| {
         // Decryption failed - return
-        std.debug.print("[Server] Initial decrypt failed: {} (dcid len={})\n", .{ err, header.dcid.len });
+        logger.debugPrint("[Server] Initial decrypt failed: {} (dcid len={})\n", .{ err, header.dcid.len });
         return;
     };
     defer ctx.allocator.free(decrypted.payload);
-    std.debug.print("[processInitial] After decrypt: expanded packet_number={}\n", .{decrypted.packet_number});
+    logger.debugPrint("[processInitial] After decrypt: expanded packet_number={}\n", .{decrypted.packet_number});
 
     // Set connection context for TLS Context callbacks (Phase 21.2)
     handshake_integration.setCurrentConnection(if (@TypeOf(conn) == **conn_mod.Connection) conn.* else conn);
@@ -1034,9 +1035,9 @@ pub fn processInitial(
 
     // Update packet number tracking (RFC 9000 §13.2)
     // MUST use trackRecvPnInitial() to properly update the bitmap window
-    std.debug.print("[processInitial] Tracking received packet number: {}\n", .{decrypted.packet_number});
+    logger.debugPrint("[processInitial] Tracking received packet number: {}\n", .{decrypted.packet_number});
     conn.trackRecvPnInitial(decrypted.packet_number);
-    std.debug.print("[processInitial] After tracking - pn_initial.max={}, have_any={}\n", .{
+    logger.debugPrint("[processInitial] After tracking - pn_initial.max={}, have_any={}\n", .{
         conn.pn_initial.max,
         conn.pn_initial.have_any,
     });
@@ -1052,27 +1053,27 @@ pub fn processInitial(
     var saw_ack_eliciting: bool = false;
     const now_ns: u64 = @intCast(std.time.nanoTimestamp());
 
-    std.debug.print("[processInitial] Decrypted payload length: {} bytes\n", .{decrypted.payload.len});
+    logger.debugPrint("[processInitial] Decrypted payload length: {} bytes\n", .{decrypted.payload.len});
 
     while (offset < decrypted.payload.len) {
-        std.debug.print("[processInitial] Decoding frame at offset {}/{}\n", .{offset, decrypted.payload.len});
+        logger.debugPrint("[processInitial] Decoding frame at offset {}/{}\n", .{offset, decrypted.payload.len});
         const fr = frame.decodeOne(decrypted.payload[offset..]) catch |err| {
             const first_byte = if (offset < decrypted.payload.len) decrypted.payload[offset] else 0;
             // RFC 9000 §12.4: Endpoints MUST ignore unknown frame types
             if (err == error.Unsupported) {
-                std.debug.print("[processInitial] Ignoring unknown frame type 0x{X:0>2} at offset {} (RFC 9000 §12.4)\n", .{ first_byte, offset });
+                logger.debugPrint("[processInitial] Ignoring unknown frame type 0x{X:0>2} at offset {} (RFC 9000 §12.4)\n", .{ first_byte, offset });
                 break; // Can't continue without knowing frame length
             }
-            std.debug.print("[processInitial] Frame decode error at offset {}: {} (first_byte=0x{X:0>2})\n", .{ offset, err, first_byte });
+            logger.debugPrint("[processInitial] Frame decode error at offset {}: {} (first_byte=0x{X:0>2})\n", .{ offset, err, first_byte });
             break;
         };
-        std.debug.print("[processInitial] Decoded frame type: {}\n", .{std.meta.activeTag(fr.f)});
+        logger.debugPrint("[processInitial] Decoded frame type: {}\n", .{std.meta.activeTag(fr.f)});
         offset += fr.n;
 
         switch (fr.f) {
             .crypto => |cr| {
                 // Process CRYPTO frame to advance TLS handshake
-                std.debug.print("{s}: Received Initial CRYPTO frame with {} bytes at offset {} (expected {})\n", .{
+                logger.debugPrint("{s}: Received Initial CRYPTO frame with {} bytes at offset {} (expected {})\n", .{
                     if (conn.role == .Server) "Server" else "Client",
                     cr.data.len,
                     cr.offset,
@@ -1084,14 +1085,14 @@ pub fn processInitial(
                     cr.offset,
                     cr.data,
                 ) catch |err| blk: {
-                    std.debug.print("processInitial: handleInitialCrypto error: {}\n", .{err});
+                    logger.debugPrint("processInitial: handleInitialCrypto error: {}\n", .{err});
 
                     // BUGFIX: Handle DuplicateClientHello gracefully
                     // This happens when the client retransmits an Initial packet we already processed.
                     // The TLS context rejects it as duplicate, but this is normal QUIC behavior.
                     // We should NOT destroy the TLS context - just ignore the duplicate and continue.
                     if (err == error.DuplicateClientHello) {
-                        std.debug.print("processInitial: Ignoring duplicate ClientHello (likely retransmission)\n", .{});
+                        logger.debugPrint("processInitial: Ignoring duplicate ClientHello (likely retransmission)\n", .{});
                         // Continue processing - the TLS state machine is still valid
                         // We may have already sent ServerHello, or we're about to
                         break :blk true; // Treat as if we saw crypto data
@@ -1107,7 +1108,7 @@ pub fn processInitial(
 
                     // Check if app keys are now ready (handshake complete)
                     if (conn.app_rx_keys != null and conn.app_tx_keys != null) {
-                        std.debug.print("processInitial: App keys ready - handshake complete\n", .{});
+                        logger.debugPrint("processInitial: App keys ready - handshake complete\n", .{});
                         // Endpoint will handle closeStaleConnectionsForPeer via callback
                     }
                 }
@@ -1127,7 +1128,7 @@ pub fn processInitial(
             },
             else => {
                 // Other frames are unexpected in Initial packets but ignored per RFC 9000 §12.4
-                std.debug.print("processInitial: Unexpected frame type in Initial packet\n", .{});
+                logger.debugPrint("processInitial: Unexpected frame type in Initial packet\n", .{});
             },
         }
     }
@@ -1139,12 +1140,12 @@ pub fn processInitial(
 
     // Send ServerHello if we're a server and TLS has responses
     // Try after each CRYPTO frame in case ClientHello is fragmented
-    std.debug.print("[processInitial] Checking ServerHello condition: role={s}, saw_crypto={}\n", .{
+    logger.debugPrint("[processInitial] Checking ServerHello condition: role={s}, saw_crypto={}\n", .{
         if (conn.role == .Server) "Server" else "Client",
         saw_crypto,
     });
     if (conn.role == .Server and saw_crypto) {
-        std.debug.print("[processInitial] Attempting to send ServerHello...\n", .{});
+        logger.debugPrint("[processInitial] Attempting to send ServerHello...\n", .{});
         // ServerHello must be sent in Initial packet (RFC 9001 §4.1.1)
         var hs_ctx = handshake_integration.HandshakeContext{
             .conn = conn,
@@ -1173,12 +1174,12 @@ pub fn processInitial(
             const w = frames_stream.writer();
 
             const ack_desc = conn.buildAckInitial();
-            std.debug.print("[processInitial] Building ACK: largest={}, first_range={}, ranges_len={}\n", .{
+            logger.debugPrint("[processInitial] Building ACK: largest={}, first_range={}, ranges_len={}\n", .{
                 ack_desc.largest,
                 ack_desc.first_range,
                 ack_desc.ranges.len,
             });
-            std.debug.print("[processInitial] pn_initial: max={}, have_any={}\n", .{
+            logger.debugPrint("[processInitial] pn_initial: max={}, have_any={}\n", .{
                 conn.pn_initial.max,
                 conn.pn_initial.have_any,
             });
@@ -1192,11 +1193,11 @@ pub fn processInitial(
             const frames_data = frames_stream.getWritten();
 
             // Debug: Print ACK frame bytes
-            std.debug.print("[processInitial] ACK frame bytes ({} bytes): ", .{frames_data.len});
+            logger.debugPrint("[processInitial] ACK frame bytes ({} bytes): ", .{frames_data.len});
             for (frames_data) |b| {
-                std.debug.print("{X:0>2} ", .{b});
+                logger.debugPrint("{X:0>2} ", .{b});
             }
-            std.debug.print("\n", .{});
+            logger.debugPrint("\n", .{});
 
             // Use peer's SCID as DCID
             const initial_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
@@ -1270,7 +1271,7 @@ pub fn processHandshake(
     const ph = hashSockaddr(&peer.storage, peer.len);
     const key = endpoint_types.Key{ .peer_hash = ph, .dcid_hash = hashBytes(header.dcid) };
 
-    std.debug.print("processHandshake: Looking up conn with peer_hash={X:0>16}, DCID len={}, DCID hash={X:0>16}\n", .{
+    logger.debugPrint("processHandshake: Looking up conn with peer_hash={X:0>16}, DCID len={}, DCID hash={X:0>16}\n", .{
         ph, header.dcid.len, hashBytes(header.dcid)
     });
 
@@ -1278,10 +1279,10 @@ pub fn processHandshake(
 
     // Debug: Print all registered connections if lookup fails
     if (c_ptr == null) {
-        std.debug.print("processHandshake: Connection not found. Registered connections:\n", .{});
+        logger.debugPrint("processHandshake: Connection not found. Registered connections:\n", .{});
         var iter = ctx.conns.iterator();
         while (iter.next()) |entry| {
-            std.debug.print("  Key: peer_hash={X:0>16}, dcid_hash={X:0>16}, conn={*}\n", .{
+            logger.debugPrint("  Key: peer_hash={X:0>16}, dcid_hash={X:0>16}, conn={*}\n", .{
                 entry.key_ptr.peer_hash, entry.key_ptr.dcid_hash, entry.value_ptr.*
             });
         }
@@ -1301,7 +1302,7 @@ pub fn processHandshake(
 
     const conn = (if (c_ptr) |p| p.* else null) orelse {
         // No connection found - ignore packet
-        std.debug.print("processHandshake: Connection not found for Handshake packet\n", .{});
+        logger.debugPrint("processHandshake: Connection not found for Handshake packet\n", .{});
         return;
     };
 
@@ -1310,25 +1311,25 @@ pub fn processHandshake(
 
     // Check if we have Handshake RX keys
     const rx_keys = conn.*.hs_rx_keys orelse {
-        std.debug.print("processHandshake: No Handshake RX keys available for conn={*} role={s}\n", .{
+        logger.debugPrint("processHandshake: No Handshake RX keys available for conn={*} role={s}\n", .{
             conn, if (conn.*.role == .Client) "Client" else "Server"
         });
         return;
     };
 
     // Debug: Show packet info and keys being used
-    std.debug.print("processHandshake: Packet len={}, header offset={}, role={s}, conn_ptr={*}\n", .{
+    logger.debugPrint("processHandshake: Packet len={}, header offset={}, role={s}, conn_ptr={*}\n", .{
         bytes.len,
         header.offset,
         if (conn.*.role == .Client) "Client" else "Server",
         conn
     });
-    std.debug.print("  RX keys - key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}, hp[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+    logger.debugPrint("  RX keys - key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}, hp[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
         rx_keys.key[0], rx_keys.key[1], rx_keys.key[2], rx_keys.key[3],
         rx_keys.hp[0], rx_keys.hp[1], rx_keys.hp[2], rx_keys.hp[3]
     });
     if (conn.*.hs_tx_keys) |tx_keys| {
-        std.debug.print("  TX keys - key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}, hp[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+        logger.debugPrint("  TX keys - key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}, hp[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
             tx_keys.key[0], tx_keys.key[1], tx_keys.key[2], tx_keys.key[3],
             tx_keys.hp[0], tx_keys.hp[1], tx_keys.hp[2], tx_keys.hp[3]
         });
@@ -1342,7 +1343,7 @@ pub fn processHandshake(
         rx_keys,
         if (conn.*.pn_handshake.have_any) conn.*.pn_handshake.max else 0,
     ) catch |err| {
-        std.debug.print("processHandshake: Decryption failed: {}\n", .{err});
+        logger.debugPrint("processHandshake: Decryption failed: {}\n", .{err});
         conn.*.onAeadAuthFailure();
         return;
     };
@@ -1359,7 +1360,7 @@ pub fn processHandshake(
     // proves the client received the server's Initial (which provided handshake keys).
     // This validates the client's address for anti-amplification purposes.
     if (conn.*.role == .Server and !conn.*.address_validated) {
-        std.debug.print("processHandshake: Validating client address after Handshake packet\n", .{});
+        logger.debugPrint("processHandshake: Validating client address after Handshake packet\n", .{});
         conn.*.address_validated = true;
         conn.*.bytes_rx_unvalidated = 0;
         conn.*.bytes_tx_unvalidated = 0;
@@ -1373,7 +1374,7 @@ pub fn processHandshake(
 
     while (offset < decrypted.payload.len) {
         const fr = frame.decodeOne(decrypted.payload[offset..]) catch |err| {
-            std.debug.print("processHandshake: Frame decode error at offset {}: {}\n", .{ offset, err });
+            logger.debugPrint("processHandshake: Frame decode error at offset {}: {}\n", .{ offset, err });
             break;
         };
         offset += fr.n;
@@ -1381,7 +1382,7 @@ pub fn processHandshake(
         switch (fr.f) {
             .crypto => |cr| {
                 // Process CRYPTO frame to advance TLS handshake
-                std.debug.print("{s}: Received Handshake CRYPTO frame with {} bytes at offset {} (expected {})\n", .{
+                logger.debugPrint("{s}: Received Handshake CRYPTO frame with {} bytes at offset {} (expected {})\n", .{
                     if (conn.*.role == .Server) "Server" else "Client",
                     cr.data.len,
                     cr.offset,
@@ -1393,7 +1394,7 @@ pub fn processHandshake(
                     cr.offset,
                     cr.data,
                 ) catch |err| blk: {
-                    std.debug.print("processHandshake: Failed to process CRYPTO: {}\n", .{err});
+                    logger.debugPrint("processHandshake: Failed to process CRYPTO: {}\n", .{err});
                     break :blk false;
                 };
 
@@ -1403,7 +1404,7 @@ pub fn processHandshake(
 
                     // Check if app keys are now ready (handshake complete)
                     if (conn.*.app_rx_keys != null and conn.*.app_tx_keys != null) {
-                        std.debug.print("processHandshake: App keys ready - handshake complete\n", .{});
+                        logger.debugPrint("processHandshake: App keys ready - handshake complete\n", .{});
                         // Endpoint will handle closeStaleConnectionsForPeer via callback
                     }
                 }
@@ -1424,7 +1425,7 @@ pub fn processHandshake(
             },
             else => {
                 // Other frames are unexpected in Handshake packets
-                std.debug.print("processHandshake: Unexpected frame type in Handshake packet: {}\n", .{fr.f});
+                logger.debugPrint("processHandshake: Unexpected frame type in Handshake packet: {}\n", .{fr.f});
             },
         }
     }
@@ -1449,7 +1450,7 @@ pub fn processHandshake(
         const hs_data = tls_ctx.pollCrypto(ctx.allocator.*, .Handshake) catch |err| blk: {
             // Unimplemented means no data available (expected)
             if (err != error.Unimplemented) {
-                std.debug.print("processHandshake: Context pollCrypto error: {}\n", .{err});
+                logger.debugPrint("processHandshake: Context pollCrypto error: {}\n", .{err});
             }
             break :blk null;
         };
@@ -1616,7 +1617,7 @@ fn decryptHandshakePacket(
 
     const end_total = i + @as(usize, @intCast(len_dec.value));
 
-    std.debug.print("decryptHandshakePacket: bytes.len={}, length_offset={}, payload_len={}, end_total={}\n", .{
+    logger.debugPrint("decryptHandshakePacket: bytes.len={}, length_offset={}, payload_len={}, end_total={}\n", .{
         bytes.len, length_offset, len_dec.value, end_total,
     });
 
@@ -1645,12 +1646,12 @@ fn decryptHandshakePacket(
     const mask_bits = mask[0] & 0x0f;
     header_peek ^= mask_bits;
 
-    std.debug.print("decryptHandshakePacket: PN length detection - original=0x{X:0>2}, mask=0x{X:0>2}, unmasked=0x{X:0>2}\n", .{
+    logger.debugPrint("decryptHandshakePacket: PN length detection - original=0x{X:0>2}, mask=0x{X:0>2}, unmasked=0x{X:0>2}\n", .{
         first, mask_bits, header_peek
     });
 
     const actual_pn_len: u3 = @intCast((header_peek & 0x03) + 1);
-    std.debug.print("  Detected PN length: {} (from bits 0x{X:0>2})\n", .{
+    logger.debugPrint("  Detected PN length: {} (from bits 0x{X:0>2})\n", .{
         actual_pn_len, header_peek & 0x03
     });
 
@@ -1670,7 +1671,7 @@ fn decryptHandshakePacket(
     // The packet number bytes are at the start of full_pn_and_payload
     @memcpy(unmasked_pn_bytes[0..actual_pn_len], full_pn_and_payload[0..actual_pn_len]);
 
-    std.debug.print("decryptHandshakePacket: Attempting decrypt with pn_len={}, header_prefix.len={}, ciphertext.len={}\n", .{
+    logger.debugPrint("decryptHandshakePacket: Attempting decrypt with pn_len={}, header_prefix.len={}, ciphertext.len={}\n", .{
         actual_pn_len, header_prefix.len, full_pn_and_payload.len,
     });
 
@@ -1679,25 +1680,25 @@ fn decryptHandshakePacket(
     unmasked_header ^= mask[0] & 0x0f;
 
     // Apply mask to packet number bytes
-    std.debug.print("decryptHandshakePacket: Unmasking PN bytes:\n", .{});
+    logger.debugPrint("decryptHandshakePacket: Unmasking PN bytes:\n", .{});
     for (unmasked_pn_bytes[0..actual_pn_len], 0..) |*b, idx| {
         const orig = b.*;
         const mask_byte = mask[1 + idx];
         b.* ^= mask_byte;
-        std.debug.print("  PN[{}]: 0x{X:0>2} XOR 0x{X:0>2} = 0x{X:0>2}\n", .{
+        logger.debugPrint("  PN[{}]: 0x{X:0>2} XOR 0x{X:0>2} = 0x{X:0>2}\n", .{
             idx, orig, mask_byte, b.*
         });
     }
 
     // Validate that the unmasked header has the correct format for a Handshake packet
     const expected_first = 0xE0 | @as(u8, actual_pn_len - 1);
-    std.debug.print("decryptHandshakePacket: After HP removal: first=0x{X:0>2}, expected=0x{X:0>2}\n", .{
+    logger.debugPrint("decryptHandshakePacket: After HP removal: first=0x{X:0>2}, expected=0x{X:0>2}\n", .{
         unmasked_header, expected_first
     });
 
     // Check if the header byte looks correct (should match expected for Handshake packet)
     if ((unmasked_header & 0xF0) != 0xE0) {
-        std.debug.print("decryptHandshakePacket: WARNING - First byte doesn't look like Handshake packet after HP removal\n", .{});
+        logger.debugPrint("decryptHandshakePacket: WARNING - First byte doesn't look like Handshake packet after HP removal\n", .{});
     }
 
     // Step 4: Build AAD with unmasked header
@@ -1708,14 +1709,14 @@ fn decryptHandshakePacket(
     const aad = aad_buf[0 .. 1 + header_prefix.len + actual_pn_len];
 
     // Debug: Print AAD components
-    std.debug.print("decryptHandshakePacket AAD: first_byte=0x{X:0>2} (should be ~0xE2-E3 for Handshake), header_prefix.len={}, pn_len={}\n", .{
+    logger.debugPrint("decryptHandshakePacket AAD: first_byte=0x{X:0>2} (should be ~0xE2-E3 for Handshake), header_prefix.len={}, pn_len={}\n", .{
         aad[0], header_prefix.len, actual_pn_len
     });
-    std.debug.print("  AAD bytes: ", .{});
+    logger.debugPrint("  AAD bytes: ", .{});
     for (aad[0..@min(aad.len, 32)]) |b| {
-        std.debug.print("{X:0>2} ", .{b});
+        logger.debugPrint("{X:0>2} ", .{b});
     }
-    std.debug.print("\n", .{});
+    logger.debugPrint("\n", .{});
 
     // Step 5: Expand packet number
     var pn_trunc: u64 = 0;
@@ -1725,26 +1726,26 @@ fn decryptHandshakePacket(
     }
     const full_pn = crypto.expandPacketNumber(pn_trunc, actual_pn_len, largest_pn);
 
-    std.debug.print("decryptHandshakePacket: PN expansion: truncated={}, pn_len={}, largest_pn={}, expanded={}\n", .{
+    logger.debugPrint("decryptHandshakePacket: PN expansion: truncated={}, pn_len={}, largest_pn={}, expanded={}\n", .{
         pn_trunc, actual_pn_len, largest_pn, full_pn
     });
-    std.debug.print("  PN bytes (unmasked): ", .{});
+    logger.debugPrint("  PN bytes (unmasked): ", .{});
     for (unmasked_pn_bytes[0..actual_pn_len]) |b| {
-        std.debug.print("{X:0>2} ", .{b});
+        logger.debugPrint("{X:0>2} ", .{b});
     }
-    std.debug.print("\n", .{});
+    logger.debugPrint("\n", .{});
 
     // Step 4: AEAD decrypt
     const actual_ciphertext = full_pn_and_payload[actual_pn_len..];
 
-    std.debug.print("decryptHandshakePacket: Using keys for AEAD decrypt:\n", .{});
-    std.debug.print("  key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+    logger.debugPrint("decryptHandshakePacket: Using keys for AEAD decrypt:\n", .{});
+    logger.debugPrint("  key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
         rx_keys.key[0], rx_keys.key[1], rx_keys.key[2], rx_keys.key[3]
     });
-    std.debug.print("  iv[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
+    logger.debugPrint("  iv[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
         rx_keys.iv[0], rx_keys.iv[1], rx_keys.iv[2], rx_keys.iv[3]
     });
-    std.debug.print("  ciphertext_len={}\n", .{actual_ciphertext.len});
+    logger.debugPrint("  ciphertext_len={}\n", .{actual_ciphertext.len});
 
     const dec = crypto.aeadDecrypt(
         .aes_128_gcm,
@@ -1755,8 +1756,8 @@ fn decryptHandshakePacket(
         actual_ciphertext,
         pt_slice,
     ) catch |err| {
-        std.debug.print("decryptHandshakePacket: AEAD decrypt failed: {}\n", .{err});
-        std.debug.print("  Error details: pn={}, aad_len={}, ct_len={}\n", .{
+        logger.debugPrint("decryptHandshakePacket: AEAD decrypt failed: {}\n", .{err});
+        logger.debugPrint("  Error details: pn={}, aad_len={}, ct_len={}\n", .{
             full_pn, aad.len, actual_ciphertext.len
         });
         return error.AeadDecryptFailed;
@@ -1892,13 +1893,13 @@ fn decryptShortHeaderWithKeyRotationInternal(
         addDcidCandidate(len_iter, candidates[0..], &cand_count, max_dcid_len);
     }
 
-    std.debug.print("[APP-PATH] Enter enumerateDcidLength (short header) bytes_len={} try_dcid_len={} largest_pn={} conn_set={}\n", .{bytes.len, try_dcid_len, largest_pn, true});
+    logger.debugPrint("[APP-PATH] Enter enumerateDcidLength (short header) bytes_len={} try_dcid_len={} largest_pn={} conn_set={}\n", .{bytes.len, try_dcid_len, largest_pn, true});
     var cand_index: usize = 0;
     while (cand_index < cand_count) : (cand_index += 1) {
         const test_len = candidates[cand_index];
 
         if (should_log_attempts) {
-            std.debug.print("[PHASE57-TRY] key_set=CURRENT dcid_len={} rx_phase={} largest={} forced={}\n", .{
+            logger.debugPrint("[PHASE57-TRY] key_set=CURRENT dcid_len={} rx_phase={} largest={} forced={}\n", .{
                 test_len,
                 conn.rx_key_phase,
                 largest_pn,
@@ -1907,7 +1908,7 @@ fn decryptShortHeaderWithKeyRotationInternal(
         }
 
         packet.phase57SetAttemptLabel("CURRENT");
-        std.debug.print("[APP-DECODE] TRY CURRENT dcid_len={} largest_pn={} rx_phase={} bytes={}\n", .{test_len, largest_pn, conn.rx_key_phase, bytes.len});
+        logger.debugPrint("[APP-DECODE] TRY CURRENT dcid_len={} largest_pn={} rx_phase={} bytes={}\n", .{test_len, largest_pn, conn.rx_key_phase, bytes.len});
         if (packet.decodeShortProtected(allocator, bytes, test_len, .{
             .key = rx_keys.key,
             .iv = rx_keys.iv,
@@ -1919,7 +1920,7 @@ fn decryptShortHeaderWithKeyRotationInternal(
                     continue;
                 };
             }
-            std.debug.print("[PHASE57] ✅ Decrypted with CURRENT keys: dcid_len={} pn={}\n", .{ test_len, result.packet_number });
+            logger.debugPrint("[PHASE57] ✅ Decrypted with CURRENT keys: dcid_len={} pn={}\n", .{ test_len, result.packet_number });
             actual_dcid_len = test_len;
             break :blk_dec result;
         } else |_| {
@@ -1930,7 +1931,7 @@ fn decryptShortHeaderWithKeyRotationInternal(
                     .iv = next_mat.iv,
                     .hp = next_mat.hp,
                 }, largest_pn)) |hybrid| {
-                    std.debug.print("[PHASE57-HYBRID] CURRENT hp + NEXT AEAD succeeded (dcid_len={})\n", .{test_len});
+                    logger.debugPrint("[PHASE57-HYBRID] CURRENT hp + NEXT AEAD succeeded (dcid_len={})\n", .{test_len});
                     if (hybrid.payload.len > 0) {
                         _ = frame.decodeOne(hybrid.payload) catch {
                             allocator.free(hybrid.payload);
@@ -1946,7 +1947,7 @@ fn decryptShortHeaderWithKeyRotationInternal(
 
         if (next_keys_opt) |next_mat| {
             if (should_log_attempts) {
-                std.debug.print("[PHASE57-TRY] key_set=NEXT dcid_len={} rx_phase={} largest={} forced={}\n", .{
+                logger.debugPrint("[PHASE57-TRY] key_set=NEXT dcid_len={} rx_phase={} largest={} forced={}\n", .{
                     test_len,
                     conn.rx_key_phase,
                     largest_pn,
@@ -1954,7 +1955,7 @@ fn decryptShortHeaderWithKeyRotationInternal(
                 });
             }
             packet.phase57SetAttemptLabel("NEXT");
-            std.debug.print("[APP-DECODE] TRY NEXT dcid_len={} largest_pn={} rx_phase={} bytes={}\n", .{test_len, largest_pn, conn.rx_key_phase, bytes.len});
+            logger.debugPrint("[APP-DECODE] TRY NEXT dcid_len={} largest_pn={} rx_phase={} bytes={}\n", .{test_len, largest_pn, conn.rx_key_phase, bytes.len});
             if (packet.decodeShortProtected(allocator, bytes, test_len, .{
                 .key = next_mat.key,
                 .iv = next_mat.iv,
@@ -1966,7 +1967,7 @@ fn decryptShortHeaderWithKeyRotationInternal(
                         continue;
                     };
                 }
-                std.debug.print("[PHASE57] ✅ Decrypted with NEXT keys: dcid_len={} pn={} - will promote\n", .{ test_len, result.packet_number });
+                logger.debugPrint("[PHASE57] ✅ Decrypted with NEXT keys: dcid_len={} pn={} - will promote\n", .{ test_len, result.packet_number });
                 used_next = true;
                 actual_dcid_len = test_len;
                 break :blk_dec result;
@@ -1975,7 +1976,7 @@ fn decryptShortHeaderWithKeyRotationInternal(
 
         if (conn.rx_prev_keys) |kp| {
             if (should_log_attempts) {
-                std.debug.print("[PHASE57-TRY] key_set=PREV dcid_len={} rx_phase={} largest={} forced={}\n", .{
+                logger.debugPrint("[PHASE57-TRY] key_set=PREV dcid_len={} rx_phase={} largest={} forced={}\n", .{
                     test_len,
                     conn.rx_key_phase,
                     largest_pn,
@@ -1983,7 +1984,7 @@ fn decryptShortHeaderWithKeyRotationInternal(
                 });
             }
             packet.phase57SetAttemptLabel("PREV");
-            std.debug.print("[APP-DECODE] TRY PREV dcid_len={} largest_pn={} rx_phase={} bytes={}\n", .{test_len, largest_pn, conn.rx_key_phase, bytes.len});
+            logger.debugPrint("[APP-DECODE] TRY PREV dcid_len={} largest_pn={} rx_phase={} bytes={}\n", .{test_len, largest_pn, conn.rx_key_phase, bytes.len});
             if (packet.decodeShortProtected(allocator, bytes, test_len, .{
                 .key = kp.key,
                 .iv = kp.iv,
@@ -1995,7 +1996,7 @@ fn decryptShortHeaderWithKeyRotationInternal(
                         continue;
                     };
                 }
-                std.debug.print("[PHASE57] ✅ Decrypted with PREV keys: dcid_len={} pn={}\n", .{ test_len, result.packet_number });
+                logger.debugPrint("[PHASE57] ✅ Decrypted with PREV keys: dcid_len={} pn={}\n", .{ test_len, result.packet_number });
                 used_prev = true;
                 actual_dcid_len = test_len;
                 break :blk_dec result;
@@ -2005,7 +2006,7 @@ fn decryptShortHeaderWithKeyRotationInternal(
 
         // All combinations exhausted - attempt forced key update before giving up
         if (tryForceKeyUpdateAndDecrypt(allocator, conn, bytes, largest_pn)) |forced| {
-            std.debug.print("[PHASE57] ⚠️ Forced key update derived from current secret (dcid_len={}, pn={})\n", .{
+            logger.debugPrint("[PHASE57] ⚠️ Forced key update derived from current secret (dcid_len={}, pn={})\n", .{
                 forced.dcid_len,
                 forced.decoded.packet_number,
             });
@@ -2014,7 +2015,7 @@ fn decryptShortHeaderWithKeyRotationInternal(
             break :blk_dec forced.decoded;
         }
 
-        std.debug.print("[PHASE57] ❌ All DCID×KeySet combinations failed (0-20 × [CURRENT,NEXT,PREV])\n", .{});
+        logger.debugPrint("[PHASE57] ❌ All DCID×KeySet combinations failed (0-20 × [CURRENT,NEXT,PREV])\n", .{});
         // PHASE 57 PART 9: Removed buggy force promotion that was flipping rx_key_phase prematurely.
         // Force promotion was promoting keys BEFORE successfully decrypting with NEXT keys,
         // causing rx_key_phase to match incoming key_phase and selecting wrong key generation.
@@ -2022,7 +2023,7 @@ fn decryptShortHeaderWithKeyRotationInternal(
         // See: PHASE57_PART8_SUMMARY.md - ACK decryption failures due to premature key promotion.
         //
         // if (!forced_attempted and conn.app_rx_next_secret != null and conn.app_rx_next_keys != null) {
-        //     std.debug.print("[PHASE57] ⚠️ Forcing promotion to NEXT keys after repeated auth failures\n", .{});
+        //     logger.debugPrint("[PHASE57] ⚠️ Forcing promotion to NEXT keys after repeated auth failures\n", .{});
         //     promoteToNextKeys(conn, conn.app_rx_next_secret.?, conn.app_rx_next_keys.?);
         //     return decryptShortHeaderWithKeyRotationInternal(allocator, conn, bytes, try_dcid_len, true);
         // }
@@ -2039,30 +2040,30 @@ fn decryptShortHeaderWithKeyRotationInternal(
     // If key_phase != rx_key_phase, peer has initiated key update (even if we successfully
     // decrypted with current keys, which shouldn't happen but handle defensively)
     if (!used_next and !used_prev and decoded.key_phase != conn.rx_key_phase) {
-        std.debug.print("[PHASE57-KEY-UPDATE] 🔑 KEY_PHASE mismatch detected! packet_kp={} conn_rx_kp={} pn={}\n", .{
+        logger.debugPrint("[PHASE57-KEY-UPDATE] 🔑 KEY_PHASE mismatch detected! packet_kp={} conn_rx_kp={} pn={}\n", .{
             decoded.key_phase,
             conn.rx_key_phase,
             decoded.packet_number,
         });
-        std.debug.print("[PHASE57-KEY-UPDATE] Peer initiated key update - will promote to NEXT keys\n", .{});
+        logger.debugPrint("[PHASE57-KEY-UPDATE] Peer initiated key update - will promote to NEXT keys\n", .{});
         used_next = true; // Trigger key promotion in caller
     }
 
     // PHASE 57: Enhanced logging for key phase tracking
     if (used_next) {
-        std.debug.print("[PHASE57-DECRYPT] ✅ Decrypted with NEXT keys: pn={} key_phase={} conn_rx_kp={}\n", .{
+        logger.debugPrint("[PHASE57-DECRYPT] ✅ Decrypted with NEXT keys: pn={} key_phase={} conn_rx_kp={}\n", .{
             decoded.packet_number,
             decoded.key_phase,
             conn.rx_key_phase,
         });
     } else if (used_prev) {
-        std.debug.print("[PHASE57-DECRYPT] ✅ Decrypted with PREV keys: pn={} key_phase={} conn_rx_kp={}\n", .{
+        logger.debugPrint("[PHASE57-DECRYPT] ✅ Decrypted with PREV keys: pn={} key_phase={} conn_rx_kp={}\n", .{
             decoded.packet_number,
             decoded.key_phase,
             conn.rx_key_phase,
         });
     } else {
-        std.debug.print("[PHASE57-DECRYPT] ✅ Decrypted with CURRENT keys: pn={} key_phase={} conn_rx_kp={}\n", .{
+        logger.debugPrint("[PHASE57-DECRYPT] ✅ Decrypted with CURRENT keys: pn={} key_phase={} conn_rx_kp={}\n", .{
             decoded.packet_number,
             decoded.key_phase,
             conn.rx_key_phase,
@@ -2088,7 +2089,7 @@ fn tryForceKeyUpdateAndDecrypt(
 
     const next_keys_present = conn.app_rx_next_keys != null;
     const next_secret_present = conn.app_rx_next_secret != null;
-    std.debug.print("[PHASE57] fallback invoked: rx_key_phase={} next_keys_present={} next_secret_present={} largest_pn={}\n", .{
+    logger.debugPrint("[PHASE57] fallback invoked: rx_key_phase={} next_keys_present={} next_secret_present={} largest_pn={}\n", .{
         conn.rx_key_phase,
         next_keys_present,
         next_secret_present,
@@ -2100,7 +2101,7 @@ fn tryForceKeyUpdateAndDecrypt(
         next_key_hex_storage = std.fmt.bytesToHex(&nk.key, .lower);
         break :blk next_key_hex_storage[0..];
     } else "null";
-    std.debug.print("[PHASE57] current_key={s} next_key={s}\n", .{
+    logger.debugPrint("[PHASE57] current_key={s} next_key={s}\n", .{
         current_key_hex[0..],
         next_key_hex,
     });
@@ -2111,7 +2112,7 @@ fn tryForceKeyUpdateAndDecrypt(
     else
         key_schedule.deriveKeyIvHp(forced_secret);
 
-    std.debug.print("[PHASE57] Forced key derivation: base_secret={s} next_secret={s} key={s} iv={s} hp={s}\n", .{
+    logger.debugPrint("[PHASE57] Forced key derivation: base_secret={s} next_secret={s} key={s} iv={s} hp={s}\n", .{
         std.fmt.bytesToHex(current_secret, .lower),
         std.fmt.bytesToHex(&forced_secret, .lower),
         std.fmt.bytesToHex(&forced_mat.key, .lower),
@@ -2122,7 +2123,7 @@ fn tryForceKeyUpdateAndDecrypt(
     var test_len: u8 = 0;
     while (test_len <= 20) : (test_len += 1) {
         packet.phase57SetAttemptLabel("FORCED");
-        std.debug.print("[APP-DECODE] TRY FORCED dcid_len={} largest_pn={} bytes={}\n", .{test_len, largest_pn, bytes.len});
+        logger.debugPrint("[APP-DECODE] TRY FORCED dcid_len={} largest_pn={} bytes={}\n", .{test_len, largest_pn, bytes.len});
         if (packet.decodeShortProtected(allocator, bytes, test_len, .{
             .key = forced_mat.key,
             .iv = forced_mat.iv,
@@ -2179,7 +2180,7 @@ pub fn promoteToNextKeys(
     // PHASE 57: Log key promotion
     const old_key_phase = conn.rx_key_phase;
     const new_key_phase = !old_key_phase;
-    std.debug.print("[PHASE57-KEY-PROMOTE] 🔑 Promoting to NEXT RX keys: rx_key_phase {} → {}\n", .{
+    logger.debugPrint("[PHASE57-KEY-PROMOTE] 🔑 Promoting to NEXT RX keys: rx_key_phase {} → {}\n", .{
         old_key_phase,
         new_key_phase,
     });
@@ -2192,7 +2193,7 @@ pub fn promoteToNextKeys(
         key_schedule.deriveKeyIvHpV2(new_next_secret)
     else
         key_schedule.deriveKeyIvHp(new_next_secret);
-    std.debug.print("[PHASE57-KEY-PROMOTE] 🔄 Pre-derived new NEXT keys before promotion\n", .{});
+    logger.debugPrint("[PHASE57-KEY-PROMOTE] 🔄 Pre-derived new NEXT keys before promotion\n", .{});
 
     // Preserve current keys as previous (zeroize any older prev first)
     if (conn.rx_prev_keys) |*old_prev| {
@@ -2212,13 +2213,13 @@ pub fn promoteToNextKeys(
     conn.app_rx_secret = next_secret;
     conn.rx_key_phase = !conn.rx_key_phase;
 
-    std.debug.print("[PHASE57-HP-PRESERVE] HP key preserved during promotion (not rotated per RFC 9001 §6)\n", .{});
+    logger.debugPrint("[PHASE57-HP-PRESERVE] HP key preserved during promotion (not rotated per RFC 9001 §6)\n", .{});
 
     // Install the pre-derived NEXT keys/secret
     conn.app_rx_next_secret = new_next_secret;
     conn.app_rx_next_keys = .{ .key = new_next_mat.key, .iv = new_next_mat.iv, .hp = new_next_mat.hp };
 
-    std.debug.print("[PHASE57-KEY-PROMOTE] ✅ Key promotion complete - ready for next packet\n", .{});
+    logger.debugPrint("[PHASE57-KEY-PROMOTE] ✅ Key promotion complete - ready for next packet\n", .{});
 }
 
 /// Decrement previous key allowance after using rx_prev_keys.
@@ -2306,7 +2307,7 @@ pub fn processFrames(
     var offset: usize = 0;
     const now_ns: u64 = @intCast(std.time.nanoTimestamp());
 
-    std.debug.print("Parsing frames from payload, total_len={}, role={s}\n", .{
+    logger.debugPrint("Parsing frames from payload, total_len={}, role={s}\n", .{
         payload.len,
         if (conn.role == .Server) "Server" else "Client",
     });
@@ -2315,13 +2316,13 @@ pub fn processFrames(
     while (offset < payload.len) {
         const first_byte = if (payload[offset..].len > 0) payload[offset] else 0;
         const fr = frame.decodeOne(payload[offset..]) catch |err| {
-            std.debug.print("Frame decode error at offset {}: {} (first_byte=0x{X:0>2})\n", .{ offset, err, first_byte });
+            logger.debugPrint("Frame decode error at offset {}: {} (first_byte=0x{X:0>2})\n", .{ offset, err, first_byte });
             break;
         };
-        std.debug.print("Decoded frame at offset {}: type={s}\n", .{ offset, @tagName(fr.f) });
+        logger.debugPrint("Decoded frame at offset {}: type={s}\n", .{ offset, @tagName(fr.f) });
         if (fr.f == .stream) {
             const s = fr.f.stream;
-            std.debug.print("[STREAM-FRAME] id={} off={} len={} fin={}\n", .{ s.stream_id, s.offset orelse 0, s.data.len, s.fin });
+            logger.debugPrint("[STREAM-FRAME] id={} off={} len={} fin={}\n", .{ s.stream_id, s.offset orelse 0, s.data.len, s.fin });
         }
         offset += fr.n;
 
@@ -2339,7 +2340,7 @@ pub fn processFrames(
         // Process frame through handler
         const frame_result = try frame_handler.processFrame(&frame_ctx, fr.f);
 
-        std.debug.print("[processFrames] Frame processed: saw_handshake_done={}\n", .{frame_result.saw_handshake_done});
+        logger.debugPrint("[processFrames] Frame processed: saw_handshake_done={}\n", .{frame_result.saw_handshake_done});
 
         // Accumulate flags
         result.saw_ack_eliciting = result.saw_ack_eliciting or frame_result.saw_ack_eliciting;
@@ -2347,7 +2348,7 @@ pub fn processFrames(
         result.saw_close = result.saw_close or frame_result.saw_close;
     }
 
-    std.debug.print("[processFrames] Returning result: saw_ack_eliciting={}, saw_handshake_done={}, saw_close={}\n", .{
+    logger.debugPrint("[processFrames] Returning result: saw_ack_eliciting={}, saw_handshake_done={}, saw_close={}\n", .{
         result.saw_ack_eliciting,
         result.saw_handshake_done,
         result.saw_close,
@@ -2369,7 +2370,7 @@ pub fn processFrames(
                 defer ctx.allocator.free(pkt_bytes);
                 _ = ctx.send_fn(peer, pkt_bytes) catch {};
                 conn.onShortHeaderPacketSent(pkt_bytes.len, false);
-                std.debug.print("[APP-ACK] immediate ack largest={} pn={} bytes={}\n", .{ack_desc.largest, conn.pn_app_tx, pkt_bytes.len});
+                logger.debugPrint("[APP-ACK] immediate ack largest={} pn={} bytes={}\n", .{ack_desc.largest, conn.pn_app_tx, pkt_bytes.len});
                 conn.pn_app_tx +%= 1;
             } else |_| {}
         }
@@ -2377,7 +2378,7 @@ pub fn processFrames(
 
     // Handle HANDSHAKE_DONE: drop Handshake keys (with conditions)
     if (result.saw_handshake_done) {
-        std.debug.print("[processApplicationFrames] Setting handshake_done_seen=true for {s}\n", .{
+        logger.debugPrint("[processApplicationFrames] Setting handshake_done_seen=true for {s}\n", .{
             if (conn.role == .Server) "Server" else "Client",
         });
         conn.handshake_done_seen = true;
@@ -2387,13 +2388,13 @@ pub fn processFrames(
         const can_drop_hs_keys = if (conn.role == .Client) conn.handshake_packet_sent else false;
 
         if (can_drop_hs_keys) {
-            std.debug.print("[processApplicationFrames] {s}: Dropping Handshake keys after HANDSHAKE_DONE\n", .{
+            logger.debugPrint("[processApplicationFrames] {s}: Dropping Handshake keys after HANDSHAKE_DONE\n", .{
                 if (conn.role == .Server) "Server" else "Client",
             });
             conn.hs_rx_keys = null;
             conn.hs_tx_keys = null;
         } else {
-            std.debug.print("[processApplicationFrames] {s}: Deferring Handshake key drop (handshake_packet_sent={})\n", .{
+            logger.debugPrint("[processApplicationFrames] {s}: Deferring Handshake key drop (handshake_packet_sent={})\n", .{
                 if (conn.role == .Server) "Server" else "Client",
                 conn.handshake_packet_sent,
             });
@@ -2402,7 +2403,7 @@ pub fn processFrames(
 
     // Handle CONNECTION_CLOSE: mark connection as closed
     if (result.saw_close) {
-        std.debug.print("DEBUG: Received CONNECTION_CLOSE frame, closing connection\n", .{});
+        logger.debugPrint("DEBUG: Received CONNECTION_CLOSE frame, closing connection\n", .{});
         conn.closed = true;
     }
 
@@ -2454,7 +2455,7 @@ pub fn generateAndSendAck(
 
     // Test-only debug logging
     if (ack_ctx.test_capture_enabled) {
-        std.debug.print("APP saw_any={s}\n", .{if (frame_result.saw_ack_eliciting) "y" else "n"});
+        logger.debugPrint("APP saw_any={s}\n", .{if (frame_result.saw_ack_eliciting) "y" else "n"});
     }
 
     // Check if connection is closed (from CONNECTION_CLOSE frame)
@@ -2471,7 +2472,7 @@ pub fn generateAndSendAck(
         const ack_ecn_now = conn.getAckEcn(.Application);
 
         if (ack_ctx.test_capture_enabled and ack_ecn_now != null) {
-            std.debug.print("APP pending ACK_ECN flush ce={d} ect0={d} ect1={d}\n", .{
+            logger.debugPrint("APP pending ACK_ECN flush ce={d} ect0={d} ect1={d}\n", .{
                 ack_ecn_now.?.ce, ack_ecn_now.?.ect0, ack_ecn_now.?.ect1
             });
         }
@@ -2555,7 +2556,7 @@ pub fn generateAndSendAck(
     // Generate ACK if we saw ack-eliciting frames or ECN bits
     if (frame_result.saw_ack_eliciting or (ecn_bits != null)) {
         if (ack_ctx.test_capture_enabled) {
-            std.debug.print("APP have_tx_keys={s}\n", .{if (conn.app_tx_keys != null) "y" else "n"});
+            logger.debugPrint("APP have_tx_keys={s}\n", .{if (conn.app_tx_keys != null) "y" else "n"});
         }
 
         // PHASE 42 PART 21: Comprehensive ACK timing and trigger logging
@@ -2566,7 +2567,7 @@ pub fn generateAndSendAck(
         else
             0;
 
-        std.debug.print("[P42-21-ACK-TRIGGER] ⏰ ACK triggered: saw_ack_elicit={s} ecn={s} delay_since_rx={d}us\n", .{
+        logger.debugPrint("[P42-21-ACK-TRIGGER] ⏰ ACK triggered: saw_ack_elicit={s} ecn={s} delay_since_rx={d}us\n", .{
             if (frame_result.saw_ack_eliciting) "Y" else "N",
             if (ecn_bits != null) "Y" else "N",
             delay_since_rx_us,
@@ -2576,7 +2577,7 @@ pub fn generateAndSendAck(
             const allow_send = conn.canSendUnderAmplification();
 
             // PHASE 42 PART 21: Enhanced amplification logging with timing context
-            std.debug.print("[P42-21-ACK-AMPLIF] allow_send={s} rx_unval={d} tx_unval={d} validated={s} ratio={d:.2}\n", .{
+            logger.debugPrint("[P42-21-ACK-AMPLIF] allow_send={s} rx_unval={d} tx_unval={d} validated={s} ratio={d:.2}\n", .{
                 if (allow_send) "Y" else "N",
                 conn.bytes_rx_unvalidated,
                 conn.bytes_tx_unvalidated,
@@ -2617,7 +2618,7 @@ pub fn generateAndSendAck(
                     const ad = conn.buildAckApp();
 
                     if (ack_ctx.test_capture_enabled) {
-                        std.debug.print("APP immediate ACK_ECN ce={d} ect0={d} ect1={d}\n", .{
+                        logger.debugPrint("APP immediate ACK_ECN ce={d} ect0={d} ect1={d}\n", .{
                             ack_ecn_common.?.ce, ack_ecn_common.?.ect0, ack_ecn_common.?.ect1
                         });
                     }
@@ -2655,7 +2656,7 @@ pub fn generateAndSendAck(
                         const send_duration_us = @as(u64, @intCast(@abs(send_end_ns - send_start_ns))) / 1000;
                         const total_delay_us = delay_since_rx_us + send_duration_us;
 
-                        std.debug.print("[P42-21-ACK-SENT] ✅ ECN ACK sent: pkt_len={d}B largest={d} delay_rx_to_tx={d}us send_us={d}us total={d}us\n", .{
+                        logger.debugPrint("[P42-21-ACK-SENT] ✅ ECN ACK sent: pkt_len={d}B largest={d} delay_rx_to_tx={d}us send_us={d}us total={d}us\n", .{
                             bytes_out0.len,
                             ad.largest,
                             delay_since_rx_us,
@@ -2673,7 +2674,7 @@ pub fn generateAndSendAck(
                     const ack_desc = conn.buildAckApp();
 
                     if (ack_ctx.test_capture_enabled) {
-                        std.debug.print("APP ACK (no ECN) allow_send\n", .{});
+                        logger.debugPrint("APP ACK (no ECN) allow_send\n", .{});
                     }
 
                     const ack_delay = conn.getAckDelayEncoded(.Application, now_ns);
@@ -2696,9 +2697,9 @@ pub fn generateAndSendAck(
                             const stream_id = entry.key_ptr.*;
                             const stream = entry.value_ptr;
                             if (stream.local_max_stream_data > stream.last_sent_max_stream_data) {
-                        std.debug.print("[RX-INSTR] stream={} recv_off={} inbox_len={} local_max_stream_data={} last_sent={} fin_off={?}\n", .{stream_id, stream.recv_off, stream.inbox.items.len, stream.local_max_stream_data, stream.last_sent_max_stream_data, stream.fin_off});
+                        logger.debugPrint("[RX-INSTR] stream={} recv_off={} inbox_len={} local_max_stream_data={} last_sent={} fin_off={?}\n", .{stream_id, stream.recv_off, stream.inbox.items.len, stream.local_max_stream_data, stream.last_sent_max_stream_data, stream.fin_off});
                                 const delta = stream.local_max_stream_data - stream.last_sent_max_stream_data;
-                                std.debug.print("[P42-19-FC-TX] Sending MAX_STREAM_DATA(stream={}, max={}, delta=+{}, recv_off={}, inbox={})\n",
+                                logger.debugPrint("[P42-19-FC-TX] Sending MAX_STREAM_DATA(stream={}, max={}, delta=+{}, recv_off={}, inbox={})\n",
                                     .{stream_id, stream.local_max_stream_data, delta, stream.recv_off, stream.inbox.items.len});
                                 _ = (frame.Frame{ .max_stream_data = .{
                                     .stream_id = stream_id,
@@ -2708,12 +2709,12 @@ pub fn generateAndSendAck(
                                 fc_frames_sent += 1;
                             } else if (stream.recv_off > 0) {
                                 // Log active streams that didn't need window update
-                                std.debug.print("[P42-19-FC-SKIP] Stream {} no update needed (local_max={}, last_sent={}, recv_off={}, inbox={})\n",
+                                logger.debugPrint("[P42-19-FC-SKIP] Stream {} no update needed (local_max={}, last_sent={}, recv_off={}, inbox={})\n",
                                     .{stream_id, stream.local_max_stream_data, stream.last_sent_max_stream_data, stream.recv_off, stream.inbox.items.len});
                             }
                         }
                         if (fc_frames_sent > 0) {
-                            std.debug.print("[P42-19-FC-SUMMARY] Sent {} MAX_STREAM_DATA frames in this ACK packet\n", .{fc_frames_sent});
+                            logger.debugPrint("[P42-19-FC-SUMMARY] Sent {} MAX_STREAM_DATA frames in this ACK packet\n", .{fc_frames_sent});
                         }
                     }
 
@@ -2769,7 +2770,7 @@ pub fn generateAndSendAck(
                         const send_duration_us = @as(u64, @intCast(@abs(send_end_ns - send_start_ns))) / 1000;
                         const total_delay_us = delay_since_rx_us + send_duration_us;
 
-                        std.debug.print("[P42-21-ACK-SENT] ✅ Normal ACK sent: pkt_len={d}B largest={d} delay_rx_to_tx={d}us send_us={d}us total={d}us\n", .{
+                        logger.debugPrint("[P42-21-ACK-SENT] ✅ Normal ACK sent: pkt_len={d}B largest={d} delay_rx_to_tx={d}us send_us={d}us total={d}us\n", .{
                             pkt_bytes.len,
                             ack_desc.largest,
                             delay_since_rx_us,
@@ -2781,20 +2782,20 @@ pub fn generateAndSendAck(
                 }
             } else {
                 // RFC 9000 §8.1: Send ACK-only when under amplification limit
-                std.debug.print("[P42-21-ACK-BLOCKED] ⚠️  ACK blocked by amplification limit\n", .{});
+                logger.debugPrint("[P42-21-ACK-BLOCKED] ⚠️  ACK blocked by amplification limit\n", .{});
                 var ack_only = std.ArrayList(u8){};
                 defer ack_only.deinit(ack_ctx.allocator.*);
                 const w2 = ack_only.writer(ack_ctx.allocator.*);
                 const ack_desc2 = conn.buildAckApp();
 
                 if (ack_ctx.test_capture_enabled) {
-                    std.debug.print("APP ack-only branch\n", .{});
+                    logger.debugPrint("APP ack-only branch\n", .{});
                     if (ack_ecn_common) |e2| {
-                        std.debug.print("APP ACK_ECN ack-only ce={d} ect0={d} ect1={d}\n", .{
+                        logger.debugPrint("APP ACK_ECN ack-only ce={d} ect0={d} ect1={d}\n", .{
                             e2.ce, e2.ect0, e2.ect1
                         });
                     } else {
-                        std.debug.print("APP ACK ack-only (no ECN)\n", .{});
+                        logger.debugPrint("APP ACK ack-only (no ECN)\n", .{});
                     }
                 }
 
@@ -2873,7 +2874,7 @@ pub fn processShortHeader(
     send_fn: SendFn,
 ) void {
     // Phase 24 DEBUG: Unconditional logging to trace HANDSHAKE_DONE delivery
-    std.debug.print("[processShortHeader] Called for {} bytes\n", .{bytes.len});
+    logger.debugPrint("[processShortHeader] Called for {} bytes\n", .{bytes.len});
 
     // =============================================================================
     // STEP 1: Connection Lookup (RFC 9000 §5.2)
@@ -2890,14 +2891,14 @@ pub fn processShortHeader(
 
     const conn = lookup_result.conn orelse {
         // No connection found for this peer + DCID combination
-        std.debug.print("[processShortHeader] No connection found for short header packet from peer\n", .{});
+        logger.debugPrint("[processShortHeader] No connection found for short header packet from peer\n", .{});
         if (ctx.test_capture_enabled) {
-            std.debug.print("No connection found for short header packet from peer\n", .{});
+            logger.debugPrint("No connection found for short header packet from peer\n", .{});
         }
         return;
     };
 
-    std.debug.print("[processShortHeader] Found connection, role={s}, has_app_rx_keys={}\n", .{
+    logger.debugPrint("[processShortHeader] Found connection, role={s}, has_app_rx_keys={}\n", .{
         if (conn.role == .Server) "Server" else "Client",
         conn.app_rx_keys != null,
     });
@@ -2905,7 +2906,7 @@ pub fn processShortHeader(
     const dcid_len = lookup_result.dcid_len;
 
     if (ctx.test_capture_enabled) {
-        std.debug.print("=== RECEIVED 1-RTT PACKET === size={}, dcid_len={}, has_app_rx={}, has_app_tx={}\n", .{
+        logger.debugPrint("=== RECEIVED 1-RTT PACKET === size={}, dcid_len={}, has_app_rx={}, has_app_tx={}\n", .{
             bytes.len,
             dcid_len,
             conn.app_rx_keys != null,
@@ -2928,7 +2929,7 @@ pub fn processShortHeader(
         const has_rx = (conn.app_rx_keys != null);
         const has_tx = (conn.app_tx_keys != null);
         const eb: u8 = if (ecn_bits) |e| (e & 0x03) else 0xff;
-        std.debug.print("APP short: match dcid_len={d} rx_keys={s} tx_keys={s} ecn_bits=0x{x}\n", .{
+        logger.debugPrint("APP short: match dcid_len={d} rx_keys={s} tx_keys={s} ecn_bits=0x{x}\n", .{
             dcid_len,
             if (has_rx) "y" else "n",
             if (has_tx) "y" else "n",
@@ -2944,7 +2945,7 @@ pub fn processShortHeader(
     const cached_dcid_len = conn.expected_rx_dcid_len;
 
     if (ctx.test_capture_enabled) {
-        std.debug.print("Will try decryption with observed_dcid_len={} cached_dcid_len={}\n", .{
+        logger.debugPrint("Will try decryption with observed_dcid_len={} cached_dcid_len={}\n", .{
             observed_dcid_len,
             if (cached_dcid_len) |c| c else 0xff,
         });
@@ -2952,10 +2953,10 @@ pub fn processShortHeader(
 
     // Check if we have application-level RX keys
     const rx_keys = conn.app_rx_keys orelse {
-        std.debug.print("[APP-SHORT-NO-KEYS] dropping short header packet (pn tracking can't proceed)\n", .{});
+        logger.debugPrint("[APP-SHORT-NO-KEYS] dropping short header packet (pn tracking can't proceed)\n", .{});
         // No RX keys yet - handshake not complete
         if (ctx.test_capture_enabled) {
-            std.debug.print("No app_rx_keys available, dropping packet\n", .{});
+            logger.debugPrint("No app_rx_keys available, dropping packet\n", .{});
         }
         return;
     };
@@ -2965,22 +2966,22 @@ pub fn processShortHeader(
     // =============================================================================
 
     if (ctx.test_capture_enabled) {
-        std.debug.print("\n=== 1-RTT DECRYPT ATTEMPT ===\n", .{});
-        std.debug.print("Packet first 32 bytes: ", .{});
-        for (bytes[0..@min(32, bytes.len)]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("\nUsing RX keys: key[0..8]=", .{});
-        for (rx_keys.key[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print(", iv[0..8]=", .{});
-        for (rx_keys.iv[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print(", hp[0..8]=", .{});
-        for (rx_keys.hp[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("\n", .{});
+        logger.debugPrint("\n=== 1-RTT DECRYPT ATTEMPT ===\n", .{});
+        logger.debugPrint("Packet first 32 bytes: ", .{});
+        for (bytes[0..@min(32, bytes.len)]) |b| logger.debugPrint("{X:0>2} ", .{b});
+        logger.debugPrint("\nUsing RX keys: key[0..8]=", .{});
+        for (rx_keys.key[0..8]) |b| logger.debugPrint("{X:0>2} ", .{b});
+        logger.debugPrint(", iv[0..8]=", .{});
+        for (rx_keys.iv[0..8]) |b| logger.debugPrint("{X:0>2} ", .{b});
+        logger.debugPrint(", hp[0..8]=", .{});
+        for (rx_keys.hp[0..8]) |b| logger.debugPrint("{X:0>2} ", .{b});
+        logger.debugPrint("\n", .{});
     }
 
     // Use extracted decryption function with key rotation
     // Tries CURRENT → NEXT → PREV keys automatically
     g_app_decrypt_start += 1;
-    std.debug.print("[APP-DECRYPT-START] attempt={} dcid_len={} bytes={} cached={?}\n", .{g_app_decrypt_start, observed_dcid_len, bytes.len, conn.expected_rx_dcid_len});
+    logger.debugPrint("[APP-DECRYPT-START] attempt={} dcid_len={} bytes={} cached={?}\n", .{g_app_decrypt_start, observed_dcid_len, bytes.len, conn.expected_rx_dcid_len});
     const decrypt_result = decryptShortHeaderWithKeyRotation(
         ctx.allocator.*,
         conn,
@@ -2989,7 +2990,7 @@ pub fn processShortHeader(
     ) catch |err| {
         if (err == error.StatelessReset) {
             if (ctx.test_capture_enabled) {
-                std.debug.print("stateless-reset: closing connection\n", .{});
+                logger.debugPrint("stateless-reset: closing connection\n", .{});
             }
             conn.closed = true;
         }
@@ -2998,39 +2999,39 @@ pub fn processShortHeader(
 
     const dec_res = decrypt_result.decoded;
     g_app_decrypt_success += 1;
-    std.debug.print("[APP-DECRYPT-SUCCESS] attempt={} pn={} payload_len={} used_next={} used_prev={} rx_phase={} success_ratio={}/{}\n", .{g_app_decrypt_start, decrypt_result.decoded.packet_number, decrypt_result.decoded.payload.len, decrypt_result.used_next, decrypt_result.used_prev, conn.rx_key_phase, g_app_decrypt_success, g_app_decrypt_start});
+    logger.debugPrint("[APP-DECRYPT-SUCCESS] attempt={} pn={} payload_len={} used_next={} used_prev={} rx_phase={} success_ratio={}/{}\n", .{g_app_decrypt_start, decrypt_result.decoded.packet_number, decrypt_result.decoded.payload.len, decrypt_result.used_next, decrypt_result.used_prev, conn.rx_key_phase, g_app_decrypt_success, g_app_decrypt_start});
     // Frame parsing & ACK generation (Application)
-    std.debug.print("[APP-DISPATCH] Parsing 1-RTT frames payload_len={} pn={}\n", .{dec_res.payload.len, dec_res.packet_number});
-    if (dec_res.payload.len == 0) std.debug.print("[APP-DISPATCH] EMPTY-PAYLOAD pn={} suspect header protection/DCID length issue\n", .{dec_res.packet_number});
+    logger.debugPrint("[APP-DISPATCH] Parsing 1-RTT frames payload_len={} pn={}\n", .{dec_res.payload.len, dec_res.packet_number});
+    if (dec_res.payload.len == 0) logger.debugPrint("[APP-DISPATCH] EMPTY-PAYLOAD pn={} suspect header protection/DCID length issue\n", .{dec_res.packet_number});
     // Fallback manual STREAM frame scan if decodeOne misses
     var scan_i: usize = 0; var stream_scan_hits: usize = 0;
     while (scan_i < dec_res.payload.len) : (scan_i += 1) {
         const b = dec_res.payload[scan_i];
         if ((b & 0xF8) == 0x08) { // STREAM frame type range
             stream_scan_hits += 1;
-            std.debug.print("[APP-STREAM-SCAN] hit at offset={} type_byte=0x{X:0>2}\n", .{scan_i, b});
+            logger.debugPrint("[APP-STREAM-SCAN] hit at offset={} type_byte=0x{X:0>2}\n", .{scan_i, b});
             break; // only need first indication
         }
     }
-    if (stream_scan_hits == 0 and dec_res.payload.len > 0) std.debug.print("[APP-STREAM-SCAN] no STREAM type bytes found in first {} bytes\n", .{dec_res.payload.len});
+    if (stream_scan_hits == 0 and dec_res.payload.len > 0) logger.debugPrint("[APP-STREAM-SCAN] no STREAM type bytes found in first {} bytes\n", .{dec_res.payload.len});
     // Hex dump first up to 64 bytes of decrypted payload for diagnostics
     const dump_len: usize = @min(dec_res.payload.len, 64);
     if (dump_len > 0) {
-        std.debug.print("[APP-PAYLOAD-HEX] ", .{});
-        var di: usize = 0; while (di < dump_len) : (di += 1) std.debug.print("{X:0>2} ", .{dec_res.payload[di]});
-        std.debug.print("\n", .{});
+        logger.debugPrint("[APP-PAYLOAD-HEX] ", .{});
+        var di: usize = 0; while (di < dump_len) : (di += 1) logger.debugPrint("{X:0>2} ", .{dec_res.payload[di]});
+        logger.debugPrint("\n", .{});
     }
     const frames_result = processFrames(ctx, conn, peer, dec_res.payload, send_fn) catch {
-        std.debug.print("[APP-DISPATCH] processFrames error (payload_len={})\n", .{dec_res.payload.len});
+        logger.debugPrint("[APP-DISPATCH] processFrames error (payload_len={})\n", .{dec_res.payload.len});
         return;
     };
-    if (frames_result.saw_ack_eliciting) std.debug.print("[APP-DISPATCH] ack-eliciting pn={}\n", .{dec_res.packet_number});
+    if (frames_result.saw_ack_eliciting) logger.debugPrint("[APP-DISPATCH] ack-eliciting pn={}\n", .{dec_res.packet_number});
     const used_next = decrypt_result.used_next;
     const used_prev = decrypt_result.used_prev;
     defer ctx.allocator.free(dec_res.payload);
 
     if (ctx.test_capture_enabled) {
-        std.debug.print("✅ 1-RTT AEAD SUCCESS - payload_len={}, pn={}\n", .{
+        logger.debugPrint("✅ 1-RTT AEAD SUCCESS - payload_len={}, pn={}\n", .{
             dec_res.payload.len,
             dec_res.packet_number,
         });
@@ -3045,24 +3046,24 @@ pub fn processShortHeader(
     // an endpoint MUST update to the next keys."
     if (used_next) {
         // PHASE 57 Part 5: Use pre-derived NEXT keys (already used for decryption)
-        std.debug.print("[PHASE57-STEP5] 🔄 used_next=true, promoting pre-derived NEXT keys\n", .{});
+        logger.debugPrint("[PHASE57-STEP5] 🔄 used_next=true, promoting pre-derived NEXT keys\n", .{});
         if (conn.app_rx_next_secret) |next_secret| {
             if (conn.app_rx_next_keys) |next_keys| {
-                std.debug.print("[PHASE57-STEP5] Calling promoteToNextKeys()...\n", .{});
+                logger.debugPrint("[PHASE57-STEP5] Calling promoteToNextKeys()...\n", .{});
                 promoteToNextKeys(conn, next_secret, next_keys);
                 conn.syncTxKeysAfterRxUpdate();
 
                 if (ctx.test_capture_enabled) {
-                    std.debug.print("🔑 Promoted to NEXT keys after successful decryption\n", .{});
+                    logger.debugPrint("🔑 Promoted to NEXT keys after successful decryption\n", .{});
                 }
             } else {
-                std.debug.print("[PHASE57-STEP5] ⚠️ WARNING: used_next=true but no app_rx_next_keys!\n", .{});
+                logger.debugPrint("[PHASE57-STEP5] ⚠️ WARNING: used_next=true but no app_rx_next_keys!\n", .{});
             }
         } else {
-            std.debug.print("[PHASE57-STEP5] ⚠️ WARNING: used_next=true but no app_rx_next_secret!\n", .{});
+            logger.debugPrint("[PHASE57-STEP5] ⚠️ WARNING: used_next=true but no app_rx_next_secret!\n", .{});
         }
     } else {
-        std.debug.print("[PHASE57-STEP5] ✓ used_next=false, no key promotion needed\n", .{});
+        logger.debugPrint("[PHASE57-STEP5] ✓ used_next=false, no key promotion needed\n", .{});
     }
 
     // =============================================================================
@@ -3085,26 +3086,26 @@ pub fn processShortHeader(
     const gap_size: i64 = if (has_gap) @as(i64, @intCast(pn_full)) - @as(i64, @intCast(prev_largest_pn)) - 1 else 0;
 
     if (is_duplicate) {
-        std.debug.print("[P42-20-PN-DUP] ⚠️  DUPLICATE PN! pn={}, prev_largest={}, gap_from_largest={}\n", .{
+        logger.debugPrint("[P42-20-PN-DUP] ⚠️  DUPLICATE PN! pn={}, prev_largest={}, gap_from_largest={}\n", .{
             pn_full,
             prev_largest_pn,
             @as(i64, @intCast(prev_largest_pn)) - @as(i64, @intCast(pn_full)),
         });
     } else if (has_gap) {
-        std.debug.print("[P42-20-PN-GAP] ⚠️  GAP DETECTED! pn={}, prev_largest={}, gap_size={} packets missing\n", .{
+        logger.debugPrint("[P42-20-PN-GAP] ⚠️  GAP DETECTED! pn={}, prev_largest={}, gap_size={} packets missing\n", .{
             pn_full,
             prev_largest_pn,
             gap_size,
         });
     } else {
-        std.debug.print("[P42-20-PN-OK] ✓ Sequential PN received: pn={}, prev_largest={}\n", .{
+        logger.debugPrint("[P42-20-PN-OK] ✓ Sequential PN received: pn={}, prev_largest={}\n", .{
             pn_full,
             prev_largest_pn,
         });
     }
 
     if (ctx.test_capture_enabled) {
-        std.debug.print("Tracked packet number: {}\n", .{pn_full});
+        logger.debugPrint("Tracked packet number: {}\n", .{pn_full});
     }
 
     // =============================================================================
@@ -3118,7 +3119,7 @@ pub fn processShortHeader(
         decrementPrevKeyAllowance(conn);
 
         if (ctx.test_capture_enabled) {
-            std.debug.print("🔓 Decremented PREV key allowance\n", .{});
+            logger.debugPrint("🔓 Decremented PREV key allowance\n", .{});
         }
     }
 
@@ -3135,13 +3136,13 @@ pub fn processShortHeader(
         send_fn,
     ) catch {
         if (ctx.test_capture_enabled) {
-            std.debug.print("Frame processing failed\n", .{});
+            logger.debugPrint("Frame processing failed\n", .{});
         }
         return;
     };
 
     if (ctx.test_capture_enabled) {
-        std.debug.print("Frame processing result: saw_ack_eliciting={}, saw_handshake_done={}, saw_close={}\n", .{
+        logger.debugPrint("Frame processing result: saw_ack_eliciting={}, saw_handshake_done={}, saw_close={}\n", .{
             frame_result.saw_ack_eliciting,
             frame_result.saw_handshake_done,
             frame_result.saw_close,
@@ -3151,7 +3152,7 @@ pub fn processShortHeader(
     // Handle HANDSHAKE_DONE frame (RFC 9000 §19.20)
     // Client: drop Handshake keys after HANDSHAKE_DONE (with conditions)
     if (frame_result.saw_handshake_done) {
-        std.debug.print("[processShortHeader] CRITICAL: Setting handshake_done_seen=true for {s}\n", .{
+        logger.debugPrint("[processShortHeader] CRITICAL: Setting handshake_done_seen=true for {s}\n", .{
             if (conn.role == .Server) "Server" else "Client",
         });
         conn.handshake_done_seen = true;
@@ -3161,23 +3162,23 @@ pub fn processShortHeader(
         const can_drop_hs_keys = if (conn.role == .Client) conn.handshake_packet_sent else false;
 
         if (can_drop_hs_keys) {
-            std.debug.print("[processShortHeader] {s}: Dropping Handshake keys after HANDSHAKE_DONE\n", .{
+            logger.debugPrint("[processShortHeader] {s}: Dropping Handshake keys after HANDSHAKE_DONE\n", .{
                 if (conn.role == .Server) "Server" else "Client",
             });
             conn.hs_rx_keys = null;
             conn.hs_tx_keys = null;
 
             if (ctx.test_capture_enabled) {
-                std.debug.print("🤝 HANDSHAKE_DONE received, dropped Handshake keys\n", .{});
+                logger.debugPrint("🤝 HANDSHAKE_DONE received, dropped Handshake keys\n", .{});
             }
         } else {
-            std.debug.print("[processShortHeader] {s}: Deferring Handshake key drop (handshake_packet_sent={})\n", .{
+            logger.debugPrint("[processShortHeader] {s}: Deferring Handshake key drop (handshake_packet_sent={})\n", .{
                 if (conn.role == .Server) "Server" else "Client",
                 conn.handshake_packet_sent,
             });
 
             if (ctx.test_capture_enabled) {
-                std.debug.print("🤝 HANDSHAKE_DONE received, deferring Handshake key drop\n", .{});
+                logger.debugPrint("🤝 HANDSHAKE_DONE received, deferring Handshake key drop\n", .{});
             }
         }
     }
@@ -3187,7 +3188,7 @@ pub fn processShortHeader(
         conn.closed = true;
 
         if (ctx.test_capture_enabled) {
-            std.debug.print("❌ CONNECTION_CLOSE received, closing connection\n", .{});
+            logger.debugPrint("❌ CONNECTION_CLOSE received, closing connection\n", .{});
         }
         return; // Stop processing further
     }
@@ -3202,7 +3203,7 @@ pub fn processShortHeader(
         conn.recordAckElicitingRx(.Application, now_ns_ack);
 
         if (ctx.test_capture_enabled) {
-            std.debug.print("📨 Recorded ack-eliciting frame receipt\n", .{});
+            logger.debugPrint("📨 Recorded ack-eliciting frame receipt\n", .{});
         }
     }
 
@@ -3228,12 +3229,12 @@ pub fn processShortHeader(
 
         generateAndSendAck(&ack_ctx, frame_result, ecn_bits) catch {
             if (ctx.test_capture_enabled) {
-                std.debug.print("Failed to generate/send ACK\n", .{});
+                logger.debugPrint("Failed to generate/send ACK\n", .{});
             }
         };
 
         if (ctx.test_capture_enabled) {
-            std.debug.print("📤 Sent ACK (ack_eliciting={}, ecn_pending={})\n", .{
+            logger.debugPrint("📤 Sent ACK (ack_eliciting={}, ecn_pending={})\n", .{
                 frame_result.saw_ack_eliciting,
                 conn.ecn_app_ack_pending,
             });

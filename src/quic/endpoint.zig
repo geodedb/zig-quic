@@ -185,7 +185,7 @@ pub const Endpoint = struct {
             (std.mem.indexOf(u8, bind_addr, ":0") == null and bound_port != 0);
         const endpoint_role = if (is_server) EndpointRole.Server else EndpointRole.Client;
 
-        std.debug.print("Endpoint role determined as: {any}\n", .{endpoint_role});
+        logger.debugPrint("Endpoint role determined as: {any}\n", .{endpoint_role});
 
         return Endpoint{
             .transport = transport,
@@ -257,10 +257,10 @@ pub const Endpoint = struct {
                 _ = unique.put(c, idx + 1) catch {};
             }
             if (unique.count() > 0) {
-                std.debug.print("endpoint.deinit: {d} unique conn(s) still referenced by map; dumping counts\n", .{unique.count()});
+                logger.debugPrint("endpoint.deinit: {d} unique conn(s) still referenced by map; dumping counts\n", .{unique.count()});
                 var uit = unique.iterator();
                 while (uit.next()) |ve| {
-                    std.debug.print("  conn ptr={*} ref_count={d}\n", .{ ve.key_ptr.*, ve.value_ptr.* });
+                    logger.debugPrint("  conn ptr={*} ref_count={d}\n", .{ ve.key_ptr.*, ve.value_ptr.* });
                 }
                 // Also dump timers referencing a connection
                 var ti: usize = 0;
@@ -269,10 +269,10 @@ pub const Endpoint = struct {
                     const t = self.timers.items[ti];
                     if (t.conn) |tc| {
                         timer_conn_refs += 1;
-                        std.debug.print("  timer id={d} kind={any} conn={*}\n", .{ t.id, t.kind, tc });
+                        logger.debugPrint("  timer id={d} kind={any} conn={*}\n", .{ t.id, t.kind, tc });
                     }
                 }
-                if (timer_conn_refs > 0) std.debug.print("  timers referencing connections: {d}\n", .{timer_conn_refs});
+                if (timer_conn_refs > 0) logger.debugPrint("  timers referencing connections: {d}\n", .{timer_conn_refs});
             }
         }
         // Free captured payloads
@@ -867,7 +867,7 @@ pub const Endpoint = struct {
 
             // Debug: log packet extraction
             const packet_ty = (packet_bytes[0] >> 4) & 0x03;
-            std.debug.print("processIncomingDatagram: Extracted type {} packet, len={} from datagram offset={}\n", .{
+            logger.debugPrint("processIncomingDatagram: Extracted type {} packet, len={} from datagram offset={}\n", .{
                 packet_ty,
                 packet_len,
                 bytes.len - remaining.len,
@@ -914,7 +914,7 @@ pub const Endpoint = struct {
         _ = self.conns.put(new_key, c) catch {};
         // Trigger PATH_CHALLENGE if 1-RTT keys are available (§9.3):
         c.sendPathChallenge();
-        std.debug.print("path: change detected dcid_len={d} triggering validation (phase={d})\n", .{ dcid_len, @intFromBool(c.tx_key_phase) });
+        logger.debugPrint("path: change detected dcid_len={d} triggering validation (phase={d})\n", .{ dcid_len, @intFromBool(c.tx_key_phase) });
     }
 
     /// Mark path validated and clear unvalidated counters consistently.
@@ -924,7 +924,7 @@ pub const Endpoint = struct {
         c.address_validated = true;
         c.bytes_rx_unvalidated = 0;
         c.bytes_tx_unvalidated = 0;
-        std.debug.print("path: validated (peer={d} bytes_rx_unval reset)\n", .{c.peer.len});
+        logger.debugPrint("path: validated (peer={d} bytes_rx_unval reset)\n", .{c.peer.len});
     }
 
     fn nextTimeoutFromTimers(self: *Endpoint, now_ms: i64, requested_timeout_ms: i32) i32 {
@@ -1053,7 +1053,7 @@ fn senderPaced(ctx: *anyopaque, c: *conn_mod.Connection, data: []const u8) !usiz
             if (sa.family == posix.AF.INET) {
                 const sin: *const posix.sockaddr.in = @ptrCast(&c.peer.storage);
                 const addr_bytes = @as([4]u8, @bitCast(sin.addr));
-                std.debug.print("senderPaced using peer addr {}.{}.{}.{}:{}\n", .{ addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3], portFromNetwork(sin.port) });
+                logger.debugPrint("senderPaced using peer addr {}.{}.{}.{}:{}\n", .{ addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3], portFromNetwork(sin.port) });
             }
         }
         return self.sendTo(c.peer, data);

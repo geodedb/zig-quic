@@ -6,6 +6,7 @@
 //! RFC 9002: QUIC Loss Detection and Congestion Control
 
 const std = @import("std");
+const logger = @import("quic_logger");
 const frame = @import("quic_frame");
 
 // Import recovery submodules
@@ -104,7 +105,7 @@ pub const Recovery = struct {
         if (ack_eliciting) self.cc.bytes_in_flight += bytes;
 
         // PHASE 50: Always log to see if function is called
-        std.debug.print("[PHASE50-CC] onPacketSent: space={s} pn={d} bytes={d} ack_eliciting={} inflight: {d}→{d} cwnd={d}\n", .{
+        logger.debugPrint("[PHASE50-CC] onPacketSent: space={s} pn={d} bytes={d} ack_eliciting={} inflight: {d}→{d} cwnd={d}\n", .{
             @tagName(space),
             pn,
             bytes,
@@ -141,7 +142,7 @@ pub const Recovery = struct {
         var largest_acked_pkt_time: ?u64 = null;
 
         // PHASE 42 PART 22: Log ACK reception
-        std.debug.print("[P42-22-ACK-RX] 📥 space={s} acked_count={d} prev_largest={d}\n", .{
+        logger.debugPrint("[P42-22-ACK-RX] 📥 space={s} acked_count={d} prev_largest={d}\n", .{
             @tagName(space),
             acked.len,
             sstate.largest_acked orelse 0,
@@ -169,7 +170,7 @@ pub const Recovery = struct {
             self.rtt.onAck(measured, ack_delay_ns);
 
             // PHASE 42 PART 22: Log RTT update
-            std.debug.print("[P42-22-RTT] 🕐 measured={d}us old_smoothed={d}us new_smoothed={d}us old_rttvar={d}us new_rttvar={d}us\n", .{
+            logger.debugPrint("[P42-22-RTT] 🕐 measured={d}us old_smoothed={d}us new_smoothed={d}us old_rttvar={d}us new_rttvar={d}us\n", .{
                 measured / 1000,
                 old_smoothed / 1000,
                 self.rtt.smoothed_rtt_ns / 1000,
@@ -195,7 +196,7 @@ pub const Recovery = struct {
                         if (last_lost_time == null or sp.time_ns > last_lost_time.?) last_lost_time = sp.time_ns;
 
                         // PHASE 42 PART 22: Log packet-threshold loss
-                        std.debug.print("[P42-22-LOSS-PKT] ❌ space={s} pn={d} largest_acked={d} gap={d} threshold={d} bytes={d}\n", .{
+                        logger.debugPrint("[P42-22-LOSS-PKT] ❌ space={s} pn={d} largest_acked={d} gap={d} threshold={d} bytes={d}\n", .{
                             @tagName(space),
                             sp.pn,
                             la,
@@ -224,7 +225,7 @@ pub const Recovery = struct {
                         const age_us = (now_ns - sp.time_ns) / 1000;
 
                         // PHASE 42 PART 22: Log time-threshold loss
-                        std.debug.print("[P42-22-LOSS-TIME] ⏱️  space={s} pn={d} age={d}us threshold={d}us bytes={d}\n", .{
+                        logger.debugPrint("[P42-22-LOSS-TIME] ⏱️  space={s} pn={d} age={d}us threshold={d}us bytes={d}\n", .{
                             @tagName(space),
                             sp.pn,
                             age_us,
@@ -244,7 +245,7 @@ pub const Recovery = struct {
 
         // PHASE 42 PART 22: Summarize loss detection for this ACK
         if (bytes_lost > 0) {
-            std.debug.print("[P42-22-LOSS-SUM] 📊 space={s} total_lost={d}B pkt_thresh={d} time_thresh={d}\n", .{
+            logger.debugPrint("[P42-22-LOSS-SUM] 📊 space={s} total_lost={d}B pkt_thresh={d} time_thresh={d}\n", .{
                 @tagName(space),
                 bytes_lost,
                 pkt_threshold_lost_count,
@@ -302,7 +303,7 @@ pub const Recovery = struct {
         if (self.cc.bytes_in_flight >= bytes_acked) self.cc.bytes_in_flight -= bytes_acked else self.cc.bytes_in_flight = 0;
 
         // PHASE 49: Enhanced CC logging
-        std.debug.print("[PHASE49-CC] ✅ ACK: acked={d}B cwnd: {d}→{d} inflight: {d}→{d} ssthresh={d} mode={s} available={d}B\n", .{
+        logger.debugPrint("[PHASE49-CC] ✅ ACK: acked={d}B cwnd: {d}→{d} inflight: {d}→{d} ssthresh={d} mode={s} available={d}B\n", .{
             bytes_acked,
             old_cwnd,
             self.cc.cwnd,
@@ -327,7 +328,7 @@ pub const Recovery = struct {
         if (self.cc.bytes_in_flight >= bytes_lost) self.cc.bytes_in_flight -= bytes_lost else self.cc.bytes_in_flight = 0;
 
         // PHASE 42 PART 22: Log congestion control loss reaction
-        std.debug.print("[P42-22-CC-LOSS] 📉 lost={d}B cwnd: {d}→{d} inflight: {d}→{d} ssthresh={d}\n", .{
+        logger.debugPrint("[P42-22-CC-LOSS] 📉 lost={d}B cwnd: {d}→{d} inflight: {d}→{d} ssthresh={d}\n", .{
             bytes_lost,
             old_cwnd,
             self.cc.cwnd,
@@ -405,7 +406,7 @@ pub const Recovery = struct {
         const deadline = now_ns + base;
 
         // PHASE 42 PART 22: Log PTO calculation
-        std.debug.print("[P42-22-PTO-CALC] ⏰ pto_count={d} base={d}us deadline_from_now={d}us smoothed_rtt={d}us\n", .{
+        logger.debugPrint("[P42-22-PTO-CALC] ⏰ pto_count={d} base={d}us deadline_from_now={d}us smoothed_rtt={d}us\n", .{
             self.pto_count,
             base / 1000,
             (deadline - now_ns) / 1000,

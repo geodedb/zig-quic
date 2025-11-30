@@ -12,6 +12,7 @@
 //! - Connection routing callbacks
 
 const std = @import("std");
+const logger = @import("quic_logger");
 const posix = std.posix;
 const builtin = @import("builtin");
 const conn_mod = @import("quic_conn");
@@ -107,7 +108,7 @@ pub fn drainReadable(ctx: *const IoContext) void {
         // Linux: prefer recvmsg to extract ECN via ancillary when available; fallback elsewhere.
         // NOTE: Disabled recvmsg for now due to missing types in std.posix
         if (false and builtin.target.os.tag == .linux) {
-            std.debug.print("Calling recvmsg on socket fd={}\n", .{ctx.sock_fd});
+            logger.debugPrint("Calling recvmsg on socket fd={}\n", .{ctx.sock_fd});
             var iov = [1]posix.iovec{.{ .base = buf[0..].ptr, .len = buf.len }};
             var ctrl: [64]u8 = undefined;
             var msg: posix.msghdr = .{
@@ -131,7 +132,7 @@ pub fn drainReadable(ctx: *const IoContext) void {
 
             const n = n_raw;
             if (n > 0) {
-                std.debug.print("recvmsg got {} bytes!\n", .{n});
+                logger.debugPrint("recvmsg got {} bytes!\n", .{n});
                 // Extract ECN from ancillary: IP_TOS (level IPPROTO_IP, type IP_TOS)
                 var ecn_bits: ?u8 = null;
                 var off: usize = 0;
@@ -161,35 +162,35 @@ pub fn drainReadable(ctx: *const IoContext) void {
                 ctx.process_fn(peer, buf[0..@intCast(n)], ecn_bits);
             }
         } else {
-            std.debug.print("Calling recvfrom on socket fd={}, flags={}\n", .{ ctx.sock_fd, flags });
+            logger.debugPrint("Calling recvfrom on socket fd={}, flags={}\n", .{ ctx.sock_fd, flags });
             const n_or_err = posix.recvfrom(ctx.sock_fd, buf[0..], flags, @ptrCast(@alignCast(&peer.storage)), &peer.len);
             if (n_or_err) |n| {
-                std.debug.print(">>> recvfrom got {} bytes (read #{} in this drain)!\n", .{ n, read_count + 1 });
+                logger.debugPrint(">>> recvfrom got {} bytes (read #{} in this drain)!\n", .{ n, read_count + 1 });
                 // Debug: Log all received packets with source address
                 if (peer.storage.family == posix.AF.INET) {
                     const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&peer.storage));
                     const addr_bytes = @as([4]u8, @bitCast(sin.addr));
-                    std.debug.print("recvfrom {} bytes from {}.{}.{}.{}:{}\n", .{ n, addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3], portFromNetwork(sin.port) });
+                    logger.debugPrint("recvfrom {} bytes from {}.{}.{}.{}:{}\n", .{ n, addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3], portFromNetwork(sin.port) });
                 } else {
-                    std.debug.print("recvfrom got {} bytes from socket {}\n", .{ n, ctx.sock_fd });
+                    logger.debugPrint("recvfrom got {} bytes from socket {}\n", .{ n, ctx.sock_fd });
                 }
                 read_count += 1;
-                std.debug.print(">>> About to call process callback with {} bytes\n", .{n});
+                logger.debugPrint(">>> About to call process callback with {} bytes\n", .{n});
                 ctx.process_fn(peer, buf[0..n], null);
-                std.debug.print(">>> Returned from process callback\n", .{});
+                logger.debugPrint(">>> Returned from process callback\n", .{});
             } else |err| {
                 switch (err) {
                     error.WouldBlock => {
                         // This is normal for non-blocking sockets
-                        std.debug.print("recvfrom returned WouldBlock\n", .{});
+                        logger.debugPrint("recvfrom returned WouldBlock\n", .{});
                         break; // Exit the while loop
                     },
                     error.ConnectionResetByPeer => {
-                        std.debug.print("connection reset by peer\n", .{});
+                        logger.debugPrint("connection reset by peer\n", .{});
                         return;
                     },
                     else => {
-                        std.debug.print("recvfrom error: {}\n", .{err});
+                        logger.debugPrint("recvfrom error: {}\n", .{err});
                         return;
                     },
                 }
@@ -287,11 +288,11 @@ pub fn drainErrorQueue(ctx: *const IoContext) void {
 /// Linux epoll backend for event loop.
 /// RFC 9000 §13.3: Endpoints should efficiently wait for incoming datagrams.
 pub fn pollEpollBackend(ctx: *const IoContext, timeout_ms: i32) !void {
-    std.debug.print("poll_epoll_backend called, timeout={}, epoll_fd={?}\n", .{ timeout_ms, ctx.epoll_fd });
+    logger.debugPrint("poll_epoll_backend called, timeout={}, epoll_fd={?}\n", .{ timeout_ms, ctx.epoll_fd });
 
     // On non-Linux platforms, fallback to a simple sleep + drain
     if (builtin.target.os.tag != .linux or ctx.epoll_fd == null) {
-        std.debug.print("Falling back to sleep+drain\n", .{});
+        logger.debugPrint("Falling back to sleep+drain\n", .{});
         if (timeout_ms > 0) std.Thread.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
         drainReadable(ctx);
         return;
@@ -304,9 +305,9 @@ pub fn pollEpollBackend(ctx: *const IoContext, timeout_ms: i32) !void {
     var check_addr = conn_mod.SockAddr{};
     check_addr.len = @intCast(@sizeOf(posix.sockaddr.storage));
     if (posix.getsockname(ctx.sock_fd, @ptrCast(&check_addr.storage), &check_addr.len)) |_| {
-        std.debug.print("Socket fd={} is still valid\n", .{ctx.sock_fd});
+        logger.debugPrint("Socket fd={} is still valid\n", .{ctx.sock_fd});
     } else |err| {
-        std.debug.print("Socket fd={} is INVALID: {}\n", .{ ctx.sock_fd, err });
+        logger.debugPrint("Socket fd={} is INVALID: {}\n", .{ ctx.sock_fd, err });
         return;
     }
 
@@ -318,35 +319,35 @@ pub fn pollEpollBackend(ctx: *const IoContext, timeout_ms: i32) !void {
     var peek_len: posix.socklen_t = @sizeOf(@TypeOf(peek_addr));
     const peek_flags = posix.MSG.DONTWAIT | posix.MSG.PEEK;
     if (posix.recvfrom(ctx.sock_fd, &peek_buf, @intCast(peek_flags), @ptrCast(&peek_addr), &peek_len)) |peek_n| {
-        std.debug.print("!!!! recvfrom PEEK shows {} bytes waiting!\n", .{peek_n});
+        logger.debugPrint("!!!! recvfrom PEEK shows {} bytes waiting!\n", .{peek_n});
     } else |peek_err| {
         if (peek_err != error.WouldBlock) {
-            std.debug.print("recvfrom PEEK error: {}\n", .{peek_err});
+            logger.debugPrint("recvfrom PEEK error: {}\n", .{peek_err});
         }
     }
 
     var events: [16]linux.epoll_event = undefined;
-    std.debug.print("Calling epoll_wait on fd={} with timeout={}\n", .{ ctx.epoll_fd.?, timeout_ms });
+    logger.debugPrint("Calling epoll_wait on fd={} with timeout={}\n", .{ ctx.epoll_fd.?, timeout_ms });
     const n = posix.epoll_wait(ctx.epoll_fd.?, &events, timeout_ms);
 
     if (n > 0) {
-        std.debug.print("epoll_wait returned {} events\n", .{n});
+        logger.debugPrint("epoll_wait returned {} events\n", .{n});
         for (0..n) |i| {
             const ev = events[i];
-            std.debug.print("Event {}: fd={}, events=0x{x}\n", .{ i, ev.data.fd, ev.events });
+            logger.debugPrint("Event {}: fd={}, events=0x{x}\n", .{ i, ev.data.fd, ev.events });
 
             const expected_fd = @as(i32, @intCast(ctx.sock_fd));
-            std.debug.print("Checking ev.data.fd={} vs expected_fd={}\n", .{ ev.data.fd, expected_fd });
+            logger.debugPrint("Checking ev.data.fd={} vs expected_fd={}\n", .{ ev.data.fd, expected_fd });
             // Handle both EPOLLIN (data ready) and EPOLLERR (error condition)
             if (ev.data.fd == expected_fd and ((ev.events & linux.EPOLL.IN) != 0 or (ev.events & linux.EPOLL.ERR) != 0)) {
-                std.debug.print("Socket {} is readable or has error - calling drainReadable\n", .{ctx.sock_fd});
+                logger.debugPrint("Socket {} is readable or has error - calling drainReadable\n", .{ctx.sock_fd});
                 drainReadable(ctx);
             } else {
-                std.debug.print("Not our socket or not readable/error\n", .{});
+                logger.debugPrint("Not our socket or not readable/error\n", .{});
             }
         }
     } else if (n == 0) {
-        std.debug.print("epoll_wait timed out (no events)\n", .{});
+        logger.debugPrint("epoll_wait timed out (no events)\n", .{});
     }
 
     // Always try to drain after epoll_wait

@@ -6,6 +6,26 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+/// Compile-time flag to enable/disable verbose debug prints.
+/// Set to false for production builds to eliminate all QUIC debug output.
+/// This controls the std.debug.print calls throughout the QUIC library.
+pub const enable_debug_prints: bool = false;
+
+/// Debug print wrapper - compiles to nothing when debug prints are disabled.
+/// Use this instead of std.debug.print for QUIC library debugging.
+pub inline fn debugPrint(comptime fmt: []const u8, args: anytype) void {
+    if (comptime !enable_debug_prints) return;
+    std.debug.print(fmt, args);
+}
+
+/// Debug print for hex bytes - compiles to nothing when debug prints are disabled.
+pub inline fn debugPrintHex(comptime prefix: []const u8, bytes: []const u8) void {
+    if (comptime !enable_debug_prints) return;
+    std.debug.print("{s}", .{prefix});
+    for (bytes) |b| std.debug.print("{X:0>2} ", .{b});
+    std.debug.print("\n", .{});
+}
+
 /// Log level enumeration for controlling verbosity
 pub const Level = enum(u8) {
     debug,

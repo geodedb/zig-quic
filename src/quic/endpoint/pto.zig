@@ -16,6 +16,7 @@
 //! Phase 4b.5 Session 9: Extract PTO probe generation from endpoint.zig:3392-3448
 
 const std = @import("std");
+const logger = @import("quic_logger");
 pub const types = @import("types");
 const conn_mod = @import("quic_conn");
 const packet = @import("quic_packet");
@@ -159,17 +160,17 @@ pub fn sendPtoProbe(ctx: *PtoContext, kind: types.TimerKind) !void {
             const v2 = conn.version_v2;
 
             // Debug: Check what DCIDs we have
-            std.debug.print("[PTO] Checking DCIDs for key derivation (role={}):\n", .{conn.role});
-            std.debug.print("  original_dcid len={}: ", .{conn.original_dcid.len});
+            logger.debugPrint("[PTO] Checking DCIDs for key derivation (role={}):\n", .{conn.role});
+            logger.debugPrint("  original_dcid len={}: ", .{conn.original_dcid.len});
             if (conn.original_dcid.len > 0) {
-                for (conn.original_dcid.bytes[0..conn.original_dcid.len]) |b| std.debug.print("{X:0>2} ", .{b});
+                for (conn.original_dcid.bytes[0..conn.original_dcid.len]) |b| logger.debugPrint("{X:0>2} ", .{b});
             }
-            std.debug.print("\n", .{});
-            std.debug.print("  peer_initial_dcid len={}: ", .{conn.peer_initial_dcid.len});
+            logger.debugPrint("\n", .{});
+            logger.debugPrint("  peer_initial_dcid len={}: ", .{conn.peer_initial_dcid.len});
             if (conn.peer_initial_dcid.len > 0) {
-                for (conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len]) |b| std.debug.print("{X:0>2} ", .{b});
+                for (conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len]) |b| logger.debugPrint("{X:0>2} ", .{b});
             }
-            std.debug.print("\n", .{});
+            logger.debugPrint("\n", .{});
 
             // Use ODCID for key derivation per RFC 9001 §5.2
             const derive_dcid = if (conn.original_dcid.len > 0)
@@ -183,9 +184,9 @@ pub fn sendPtoProbe(ctx: *PtoContext, kind: types.TimerKind) !void {
             const pair = ks.deriveClientServerInitial(initial);
 
             if (conn.role == .Server) {
-                std.debug.print("server PTO: deriving Initial keys with odcid=\n", .{});
-                for (derive_dcid) |b| std.debug.print("{X:0>2}\n", .{b});
-                std.debug.print(" len={}\n", .{derive_dcid.len});
+                logger.debugPrint("server PTO: deriving Initial keys with odcid=\n", .{});
+                for (derive_dcid) |b| logger.debugPrint("{X:0>2}\n", .{b});
+                logger.debugPrint(" len={}\n", .{derive_dcid.len});
             }
 
             const tx_keys: packet.InitialKeys = if (v2) blk: {
