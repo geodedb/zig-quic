@@ -2296,21 +2296,40 @@ pub const Connection = struct {
         // Higher-level loop (server echo) retries remaining bytes.
         trace("DEBUG writeStream: stream_id={}, data_len={}, fin={}\n", .{ id, data.len, fin });
         if (id == 0) {
-            // Lazy open of client-initiated stream 0: allow application to call writeStream
-            // without an explicit openStream( true ) first. This mirrors common QUIC API
-            // ergonomics where the first write on stream 0 implicitly opens it.
+            // Handle stream 0 specially. For client-initiated stream 0:
+            // - Client role: lazy open if not already opened
+            // - Server role: just mark as opened (client already opened it)
             if (!self.stream_opened) {
-                _ = self.openStream(true) catch |e| switch (e) {
-                    // Propagate flow-control exhaustion semantics; other errors surface directly.
-                    error.OutOfStreams => return e,
-                    else => return e,
-                };
+                // Check if this is a client-initiated stream (bit 0 = 0) and we're the server
+                const is_client_initiated = (id & 1) == 0;
+                if (self.role == .Server and is_client_initiated) {
+                    // Server responding on client-initiated stream - just mark opened, don't call openStream
+                    self.stream_opened = true;
+                    _ = self.ensureStreamRx(id);
+                    if (self.stream_txs.getPtr(id) == null) {
+                        _ = self.stream_txs.put(id, .{ .peer_max_stream_data = self.peer_max_stream_data }) catch {};
+                    }
+                } else {
+                    // Client or server-initiated stream - normal openStream path
+                    _ = self.openStream(true) catch |e| switch (e) {
+                        error.OutOfStreams => return e,
+                        else => return e,
+                    };
+                }
             }
             if (self.stream_send_aborted or self.stream_send_fin_sent) return error.StreamStopped;
         } else {
             if (self.stream_txs.getPtr(id) == null) {
-                trace("DEBUG writeStream: InvalidStream - no TX state for stream {}\n", .{id});
-                return error.InvalidStream;
+                // Check if this is a client-initiated stream and we're the server
+                const is_client_initiated = (id & 1) == 0;
+                if (self.role == .Server and is_client_initiated) {
+                    // Server responding on client-initiated stream - initialize TX state
+                    _ = self.ensureStreamRx(id);
+                    _ = self.stream_txs.put(id, .{ .peer_max_stream_data = self.peer_max_stream_data }) catch {};
+                } else {
+                    trace("DEBUG writeStream: InvalidStream - no TX state for stream {}\n", .{id});
+                    return error.InvalidStream;
+                }
             }
             // Safely inspect per-stream TX state (abort / FIN flags)
             if (self.stream_txs.getPtr(id)) |st| {
