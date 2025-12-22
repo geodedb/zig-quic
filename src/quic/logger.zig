@@ -15,12 +15,14 @@ pub const enable_debug_prints: bool = true;
 /// Use this instead of std.debug.print for QUIC library debugging.
 pub inline fn debugPrint(comptime fmt: []const u8, args: anytype) void {
     if (comptime !enable_debug_prints) return;
+    if (!levelEnabled(.debug)) return;
     std.debug.print(fmt, args);
 }
 
 /// Debug print for hex bytes - compiles to nothing when debug prints are disabled.
 pub inline fn debugPrintHex(comptime prefix: []const u8, bytes: []const u8) void {
     if (comptime !enable_debug_prints) return;
+    if (!levelEnabled(.debug)) return;
     std.debug.print("{s}", .{prefix});
     for (bytes) |b| std.debug.print("{X:0>2} ", .{b});
     std.debug.print("\n", .{});

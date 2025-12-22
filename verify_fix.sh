@@ -2,6 +2,7 @@
 set -e
 
 # Generate certs if not exist (P-256)
+rm -f server.key server.crt
 openssl req -x509 -newkey ec:<(openssl ecparam -name prime256v1) -keyout server.key -out server.crt -days 365 -nodes -subj "/CN=localhost"
 
 # Kill any existing server

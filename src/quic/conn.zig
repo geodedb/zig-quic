@@ -2875,17 +2875,16 @@ pub const Connection = struct {
         const w = frames.writer(self.allocator.*);
         _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
 
-        logger.debugPrint("sendPtoProbeInitial (role={any}): Sending Probe with SCID=\n", .{self.role});
-        for (self.our_scid.bytes[0..self.our_scid.len]) |b| logger.debugPrint("{x:0>2}\n", .{b});
-        logger.debugPrint(" (len={}) to peer DCID=\n", .{self.our_scid.len});
-        for (self.peer_initial_scid.bytes[0..self.peer_initial_scid.len]) |b| logger.debugPrint("{x:0>2}\n", .{b});
-        logger.debugPrint(" (len={})\n", .{self.peer_initial_scid.len});
+        const dest_cid = if (self.role == .Client)
+            self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len]
+        else
+            self.peer_initial_scid.bytes[0..self.peer_initial_scid.len];
 
         const out = packet.encodeInitialProtected(
             self.allocator.*,
             self.version,
-            // DCID = client's Initial SCID; SCID = our chosen SCID
-            self.peer_initial_scid.bytes[0..self.peer_initial_scid.len],
+            // DCID destination
+            dest_cid,
             self.our_scid.bytes[0..self.our_scid.len],
             &[_]u8{},
             @as(u32, @truncate(self.pn_initial_tx)),

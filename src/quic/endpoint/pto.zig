@@ -75,7 +75,6 @@ pub const version = "Phase 4b.5 Session 9 - PTO Probe Extraction";
 ///   Each time a PTO timer expires, the connection doubles the PTO delay
 ///   for the next timeout. This exponential backoff prevents overwhelming
 ///   the network during packet loss.
-
 /// Helper: Check if a timer kind is a PTO timer.
 /// Used to identify PTO timers vs generic or PMTUD timers.
 pub fn isPtoTimer(kind: types.TimerKind) bool {
@@ -151,8 +150,11 @@ pub fn sendPtoProbe(ctx: *PtoContext, kind: types.TimerKind) !void {
             // it first successfully processes a Handshake packet."
             if (conn.initial_keys_dropped) return; // No more Initial
 
-            // For sending, use peer's SCID as DCID (what they expect)
-            const dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
+            // For sending, use proper DCID based on role
+            const dcid = if (conn.role == .Client)
+                conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len]
+            else
+                conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
             const scid = conn.our_scid.bytes[0..conn.our_scid.len];
 
             // RFC 9000 §12.2: Zero-length DCIDs are valid and must be supported
