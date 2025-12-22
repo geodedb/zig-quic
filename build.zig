@@ -185,6 +185,9 @@ pub fn build(b: *std.Build) void {
     const quic_token_mod = mkModule(b, "src/quic/token.zig");
     quic_token_mod.addImport("byteorder", byteorder_mod);
 
+    // Logger module for QUIC library (local QUIC logger, not vendored TLS logger)
+    const quic_logger_mod = mkModule(b, "src/quic/logger.zig");
+
     // ========================================================================
     // Packet Sub-Modules (Phase 7 Refactoring)
     // ========================================================================
@@ -204,6 +207,7 @@ pub fn build(b: *std.Build) void {
     quic_packet_legacy_mod.addImport("quic_crypto", quic_crypto_mod);
     quic_packet_legacy_mod.addImport("quic_varint", quic_varint_mod);
     quic_packet_legacy_mod.addImport("quic_version", quic_version_mod);
+    quic_packet_legacy_mod.addImport("quic_logger", quic_logger_mod);
     quic_packet_mod.addImport("../packet.zig", quic_packet_legacy_mod);
 
     // ========================================================================
@@ -289,14 +293,10 @@ pub fn build(b: *std.Build) void {
         // Placeholder: runtime selection occurs via config; both controllers are in same module
     }
 
-    // Logger module for QUIC library (local QUIC logger, not vendored TLS logger)
-    const quic_logger_mod = mkModule(b, "src/quic/logger.zig");
-
     // Add logger to modules that need it
     quic_crypto_mod.addImport("quic_logger", quic_logger_mod);
     quic_packet_mod.addImport("quic_logger", quic_logger_mod);
     quic_recovery_mod.addImport("quic_logger", quic_logger_mod);
-    conn_crypto_buffer_mod.addImport("quic_logger", quic_logger_mod);
 
     // Note: alert_mod, zero_rtt_mod, and tls logger are now imported from vendor/ztls above
 
@@ -307,6 +307,7 @@ pub fn build(b: *std.Build) void {
     conn_types_mod.addImport("byteorder", byteorder_mod);
 
     const conn_crypto_buffer_mod = mkModule(b, "src/quic/connection/crypto_buffer.zig");
+    conn_crypto_buffer_mod.addImport("quic_logger", quic_logger_mod);
 
     const conn_packet_number_mod = mkModule(b, "src/quic/connection/packet_number.zig");
     conn_packet_number_mod.addImport("quic_frame", quic_frame_mod);
@@ -560,6 +561,7 @@ pub fn build(b: *std.Build) void {
     const quic_client = addExe(b, "quic-client", "cmd/quic-client.zig", target, optimize);
     quic_client.root_module.addImport("quic_api", quic_api_mod);
     const install_quic_client = b.addInstallArtifact(quic_client, .{});
+    b.getInstallStep().dependOn(&install_quic_client.step);
 
     const quic_client_comprehensive = addExe(b, "quic-client-comprehensive", "cmd/quic-client-comprehensive.zig", target, optimize);
     quic_client_comprehensive.root_module.addImport("quic_api", quic_api_mod);

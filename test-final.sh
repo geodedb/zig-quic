@@ -5,7 +5,7 @@ killall quic-server 2>/dev/null || true
 sleep 1
 
 echo "Starting server..."
-.zig-cache/o/35a4e4f181966738209cd338f7e527c8/quic-server --bind 127.0.0.1:4433 --insecure > /tmp/final-test.log 2>&1 &
+./zig-out/bin/quic-server --bind 127.0.0.1:4433 --insecure > /tmp/final-test.log 2>&1 &
 SERVER_PID=$!
 echo "Server PID: $SERVER_PID"
 

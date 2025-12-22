@@ -624,6 +624,28 @@ pub fn processCryptoFrame(
             // - Callback invocation for secret installation (via onSecretAvailable)
             try tls_ctx.processCrypto(level, frag.data);
 
+            // FIX: Poll for client's Finished message (Handshake level) if we are a client
+            // This mirrors the logic in conn.zig pushCrypto() which was missed during extraction
+            if (conn.role == .Client and level == .Handshake) {
+                if (tls_ctx.pollCrypto(ctx.allocator.*, .Handshake)) |outgoing_crypto| {
+                    defer ctx.allocator.free(outgoing_crypto);
+
+                    if (outgoing_crypto.len > 0) {
+                        logger.debugPrint("[processCryptoFrame] Client polled {} bytes of outgoing CRYPTO at Handshake level\n", .{outgoing_crypto.len});
+
+                        try conn.sendHandshakeCrypto(outgoing_crypto);
+
+                        // Mark that we sent our Finished message so TLS Context knows
+                        tls_ctx.markLocalFinished();
+                        logger.debugPrint("[processCryptoFrame] Client marked local_finished_sent=true\n", .{});
+                    }
+                } else |err| {
+                    if (err != error.Unimplemented) {
+                        logger.debugPrint("[processCryptoFrame] Error polling Handshake CRYPTO: {}\n", .{err});
+                    }
+                }
+            }
+
             rx_off_ptr.* += @intCast(frag.data.len);
         }
 

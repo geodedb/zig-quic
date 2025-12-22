@@ -1436,7 +1436,7 @@ pub const Connection = struct {
     }
 
     /// Send CRYPTO frame data in a Handshake packet (Phase 24)
-    fn sendHandshakeCrypto(self: *Connection, crypto_data: []const u8) !void {
+    pub fn sendHandshakeCrypto(self: *Connection, crypto_data: []const u8) !void {
         const tx = self.hs_tx_keys orelse return error.NoKeys;
 
         // Build CRYPTO frame
@@ -2862,11 +2862,12 @@ pub const Connection = struct {
         // Derive server initial TX keys on demand
         const initial = ks.deriveInitialSecret(self.version_v2, self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len]);
         const pair = ks.deriveClientServerInitial(initial);
+        const keys = if (self.role == .Client) pair.client else pair.server;
         const txk: packet.InitialKeys = if (self.version_v2) blk: {
-            const t = ks.deriveKeyIvHpV2(pair.server);
+            const t = ks.deriveKeyIvHpV2(keys);
             break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
         } else blk: {
-            const t = ks.deriveKeyIvHp(pair.server);
+            const t = ks.deriveKeyIvHp(keys);
             break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
         };
         var frames = std.ArrayList(u8){};
@@ -2874,9 +2875,9 @@ pub const Connection = struct {
         const w = frames.writer(self.allocator.*);
         _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
 
-        logger.debugPrint("Server: Sending Initial response with SCID=\n", .{});
+        logger.debugPrint("sendPtoProbeInitial (role={any}): Sending Probe with SCID=\n", .{self.role});
         for (self.our_scid.bytes[0..self.our_scid.len]) |b| logger.debugPrint("{x:0>2}\n", .{b});
-        logger.debugPrint(" (len={}) to client DCID=\n", .{self.our_scid.len});
+        logger.debugPrint(" (len={}) to peer DCID=\n", .{self.our_scid.len});
         for (self.peer_initial_scid.bytes[0..self.peer_initial_scid.len]) |b| logger.debugPrint("{x:0>2}\n", .{b});
         logger.debugPrint(" (len={})\n", .{self.peer_initial_scid.len});
 
