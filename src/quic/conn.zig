@@ -1607,7 +1607,8 @@ pub const Connection = struct {
             defer frames_list.deinit(self.allocator.*);
             const w = frames_list.writer(self.allocator.*);
             _ = (frame.Frame{ .handshake_done = {} }).write(w) catch 0;
-            _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = self.local_max_stream_data } }).write(w) catch 0;
+            // FIXED: Do NOT send MAX_STREAM_DATA for stream 0 unconditionally.
+            // _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = self.local_max_stream_data } }).write(w) catch 0;
             _ = (frame.Frame{ .max_data = .{ .max = self.local_max_data } }).write(w) catch 0;
             _ = (frame.Frame{ .max_streams_bidi = .{ .max = self.local_max_streams_bidi } }).write(w) catch 0;
 
@@ -2147,7 +2148,8 @@ pub const Connection = struct {
         if (self.local_max_stream_data > self.last_sent_max_stream_data) {
             // Only send for stream 0 if not already handled above
             if (self.streams_rx.get(0) == null) {
-                _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = self.local_max_stream_data } }).write(w) catch 0;
+                // FIXED: Do NOT send MAX_STREAM_DATA for stream 0 in legacy block.
+                // _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = self.local_max_stream_data } }).write(w) catch 0;
                 self.last_sent_max_stream_data = self.local_max_stream_data;
                 wrote = true;
             }
@@ -3134,7 +3136,8 @@ pub const Connection = struct {
             defer frames.deinit(self.allocator.*);
             const w = frames.writer(self.allocator.*);
             _ = (frame.Frame{ .handshake_done = {} }).write(w) catch 0;
-            _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = self.local_max_stream_data } }).write(w) catch 0;
+            // FIXED: Do NOT send MAX_STREAM_DATA for stream 0 unconditionally. It violates RFC 9000 if stream 0 is not open.
+            // _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = self.local_max_stream_data } }).write(w) catch 0;
             _ = (frame.Frame{ .max_data = .{ .max = self.local_max_data } }).write(w) catch 0;
             _ = (frame.Frame{ .max_streams_bidi = .{ .max = self.local_max_streams_bidi } }).write(w) catch 0;
             // NOTE: Session tickets removed - Context API doesn't support queueNewSessionTicket yet
