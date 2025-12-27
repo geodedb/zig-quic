@@ -1249,6 +1249,12 @@ pub fn setupClientTransportParams(
 ) !void {
     var tpp: transport_params.TransportParams = .{};
 
+    // RFC 9000 §18.2: Client MUST include initial_source_connection_id
+    // This is the SCID the client is using (our_scid)
+    if (conn.our_scid.len > 0) {
+        tpp.initial_source_connection_id = conn.our_scid.bytes[0..conn.our_scid.len];
+    }
+
     // Encode initial limits from connection local defaults (RFC 9000 §4.1, §4.6)
     tpp.initial_max_data = conn.local_max_data;
     tpp.initial_max_stream_data_bidi_local = conn.local_max_stream_data;

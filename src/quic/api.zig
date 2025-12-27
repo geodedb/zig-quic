@@ -152,7 +152,7 @@ pub fn handshakeDoneSeen(conn: *Connection) bool {
 /// RFC 9001 §4 details the TLS handshake transcript. The underlying connection
 /// tracks that transcript and flips this flag when both sides confirmed keys.
 pub fn handshakeComplete(conn: *Connection) bool {
-    return conn.tls.handshakeComplete();
+    return conn.hasConfirmedAppTxKeys();
 }
 
 /// Determine if 1-RTT keys are confirmed per QUIC handshake rules.
