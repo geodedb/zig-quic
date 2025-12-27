@@ -159,8 +159,43 @@ pub fn resolveAny(hostport: []const u8, proto: enum { udp }) !conn_mod.SockAddr 
     var oct: [4]u8 = .{0} ** 4;
     var i: usize = 0;
     while (i < 4) : (i += 1) {
-        const seg = it.next() orelse return error.InvalidAddress;
-        oct[i] = std.fmt.parseInt(u8, seg, 10) catch return error.InvalidAddress;
+        const seg = it.next() orelse break;
+        oct[i] = std.fmt.parseInt(u8, seg, 10) catch break;
     }
-    return conn_mod.SockAddr.ipv4(oct[0], oct[1], oct[2], oct[3], port);
+    if (i == 4 and it.next() == null) {
+        return conn_mod.SockAddr.ipv4(oct[0], oct[1], oct[2], oct[3], port);
+    }
+
+    // Fallback: Check /etc/hosts for ANY hostname
+    // In Docker, containers are in /etc/hosts
+    if (std.fs.openFileAbsolute("/etc/hosts", .{})) |hosts_file| {
+        defer hosts_file.close();
+
+        var buf: [4096]u8 = undefined;
+        if (hosts_file.readAll(&buf)) |bytes_read| {
+            const content = buf[0..bytes_read];
+            var lines = std.mem.tokenizeScalar(u8, content, '\n');
+            while (lines.next()) |line| {
+                var parts_line = std.mem.tokenizeAny(u8, line, " \t");
+                const ip_str = parts_line.next() orelse continue;
+                while (parts_line.next()) |hostname| {
+                    if (std.mem.eql(u8, hostname, host)) {
+                        // Found match, parse IP
+                        var ip_parts = std.mem.splitScalar(u8, ip_str, '.');
+                        var ip_octs: [4]u8 = .{0} ** 4;
+                        var j: usize = 0;
+                        while (j < 4) : (j += 1) {
+                            const oct_str = ip_parts.next() orelse break;
+                            ip_octs[j] = std.fmt.parseInt(u8, oct_str, 10) catch break;
+                        }
+                        if (j == 4) {
+                            return conn_mod.SockAddr.ipv4(ip_octs[0], ip_octs[1], ip_octs[2], ip_octs[3], port);
+                        }
+                    }
+                }
+            }
+        } else |_| {}
+    } else |_| {}
+
+    return error.InvalidAddress;
 }
