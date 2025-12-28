@@ -25,7 +25,7 @@ variables:
     paths:
       - zig-${ZIG_VERSION}/
   before_script:
-    - apt-get update && apt-get install -y curl xz-utils make git
+    - apt-get update && apt-get install -y curl xz-utils make git libssl-dev
     - |
       if [ ! -f "zig-${ZIG_VERSION}/zig" ]; then
         ARCH=$(uname -m)
