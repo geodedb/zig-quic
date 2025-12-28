@@ -120,6 +120,7 @@ build-macos:
   stage: build
   tags:
     - saas-macos-medium-m1
+  allow_failure: true  # OpenSSL may not be available on GitLab macOS runners
   cache:
     key: "macos-zig-${ZIG_VERSION}"
     paths:
@@ -152,6 +153,7 @@ build-windows:
   tags:
     - saas-windows-medium-amd64
   timeout: 120 minutes
+  allow_failure: true  # OpenSSL not available on GitLab Windows runners
   variables:
     # Disable default checkout and submodules - we handle manually with sparse checkout
     GIT_STRATEGY: none
