@@ -1,8 +1,15 @@
-# CHANGELOG
+# Changelog
 
-## [Current] - 2025-09-20
+All notable changes to this project will be documented in this file.
 
-### Current Implementation Status 🎆
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.1.0] - 2026-01-24
+
+### Added
 
 #### 0-RTT Implementation
 - Complete 0-RTT data transmission and reception
@@ -24,7 +31,7 @@
 - PATH_CHALLENGE and PATH_RESPONSE frame handling
 - NAT rebinding detection and handling
 - Multiple path management support
-- Migration state transitions (None → Probing → Validated/Failed)
+- Migration state transitions (None -> Probing -> Validated/Failed)
 - Comprehensive tests in `test_connection_migration.zig`
 
 #### Preferred Address
@@ -46,21 +53,7 @@
 - Enhanced README with implementation highlights
 - Detailed interop testing documentation
 
-### Changed
-- Updated `cmd/qns-endpoint.zig` to support all test cases
-- Enhanced `build.zig` with new test integrations
-- Improved error handling in packet processing
-- Optimized memory allocation patterns
-
-### Fixed
-- Connection ID management in short headers
-- Key update retention window
-- ECN counter tracking
-- Path validation timing
-
-## Implementation Milestones
-
-### Added
+#### Interoperability
 - Interoperability test infrastructure
 - Docker compose configuration for 18 QUIC implementations
 - GitHub Actions workflows for automated testing
@@ -68,14 +61,7 @@
 - ChaCha20-Poly1305 cipher suite
 - Multiconnect test case support
 
-### Changed
-- Enhanced transport parameter negotiation
-- Improved connection ID rotation
-- Updated ALPN handling
-
-## Architecture Highlights
-
-### Added
+#### Core Implementation
 - Core QUIC v1 implementation
 - Basic TLS 1.3 integration
 - Initial packet types (Initial, Handshake, Short)
@@ -86,8 +72,6 @@
 - Varint encoding/decoding
 - CLI tools (quic-client, quic-server, quic-varint)
 - Initial test suite
-
-### Features at Initial Release
 - RFC 9000 transport protocol basics
 - RFC 9001 TLS integration
 - RFC 9002 loss recovery
@@ -95,3 +79,21 @@
 - X25519 key exchange
 - NewReno congestion control
 - Basic ECN support
+
+### Changed
+- Updated `cmd/qns-endpoint.zig` to support all test cases
+- Enhanced `build.zig` with new test integrations
+- Improved error handling in packet processing
+- Optimized memory allocation patterns
+- Enhanced transport parameter negotiation
+- Improved connection ID rotation
+- Updated ALPN handling
+
+### Fixed
+- Connection ID management in short headers
+- Key update retention window
+- ECN counter tracking
+- Path validation timing
+
+[Unreleased]: https://gitlab.com/devnw/quic/-/compare/v0.1.0...HEAD
+[0.1.0]: https://gitlab.com/devnw/quic/-/releases/v0.1.0
