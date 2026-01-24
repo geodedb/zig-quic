@@ -1,0 +1,24 @@
+--- /home/benji/src/spyder/quic/forks/quic-go/packet_packer.go	2025-10-30 12:19:35.513656995 -0400
++++ /home/benji/src/spyder/quic/test-clients/quic-go-client/vendor/quic-go/packet_packer.go	2025-11-01 15:54:29.990250123 -0400
+@@ -331,6 +331,7 @@
+ // It packs an Initial / Handshake if there is data to send in these packet number spaces.
+ // It should only be called before the handshake is confirmed.
+ func (p *packetPacker) PackCoalescedPacket(onlyAck bool, maxSize protocol.ByteCount, now monotime.Time, v protocol.Version) (*coalescedPacket, error) {
++	fmt.Printf("[PACKER] Packing coalesced packet: only_ack=%t, max_size=%d\n", onlyAck, maxSize)
+ 	var (
+ 		initialHdr, handshakeHdr, zeroRTTHdr                            *wire.ExtendedHeader
+ 		initialPayload, handshakePayload, zeroRTTPayload, oneRTTPayload payload
+@@ -993,11 +994,13 @@
+ }
+ 
+ func (p *packetPacker) encryptPacket(raw []byte, sealer sealer, pn protocol.PacketNumber, payloadOffset, pnLen protocol.ByteCount) []byte {
++	fmt.Printf("[PACKER] Encrypting packet: pn=%d, payload_offset=%d, pn_len=%d\n", pn, payloadOffset, pnLen)
+ 	_ = sealer.Seal(raw[payloadOffset:payloadOffset], raw[payloadOffset:], pn, raw[:payloadOffset])
+ 	raw = raw[:len(raw)+sealer.Overhead()]
+ 	// apply header protection
+ 	pnOffset := payloadOffset - pnLen
+ 	sealer.EncryptHeader(raw[pnOffset+4:pnOffset+4+16], &raw[0], raw[pnOffset:payloadOffset])
++	fmt.Printf("[PACKER] Packet encrypted and header protection applied\n")
+ 	return raw
+ }
+ 

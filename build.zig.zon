@@ -1,0 +1,7 @@
+.{
+    .name = .quic,
+    .version = "0.1.0",
+    .fingerprint = 0xc0795252512a1280,
+    .paths = .{""},
+    .dependencies = .{},
+}

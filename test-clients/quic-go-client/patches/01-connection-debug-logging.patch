@@ -1,0 +1,18 @@
+--- /home/benji/src/spyder/quic/forks/quic-go/connection.go	2025-10-30 12:19:35.494656660 -0400
++++ /home/benji/src/spyder/quic/test-clients/quic-go-client/vendor/quic-go/connection.go	2025-11-01 15:52:42.959459186 -0400
+@@ -981,6 +981,7 @@
+ 	}
+ 
+ 	c.handshakeConfirmed = true
++	fmt.Printf("[CONN] Handshake confirmed, dropping handshake packet space\n")
+ 	c.cryptoStreamHandler.SetHandshakeConfirmed()
+ 
+ 	if !c.config.DisablePathMTUDiscovery && c.conn.capabilities().DF {
+@@ -1614,6 +1615,7 @@
+ ) error {
+ 	if !c.receivedFirstPacket {
+ 		c.receivedFirstPacket = true
++		fmt.Printf("[CONN] First packet received from server, switching to new conn ID: %s\n", hdr.SrcConnectionID)
+ 		if !c.versionNegotiated && c.qlogger != nil {
+ 			var clientVersions, serverVersions []Version
+ 			switch c.perspective {
