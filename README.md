@@ -12,6 +12,14 @@ Zig std-only QUIC v1/v2 implementation (Zig 0.15.1/0.14.x). **Production-grade**
 - **63 comprehensive tests** passing
 - **Interoperability tested** against 18 QUIC implementations
 
+## Status
+
+| Aspect | Info |
+|--------|------|
+| API Stability | Production |
+| Zig Version | 0.14.0+ |
+| Platforms | Linux, macOS, Windows |
+
 ## Core Features
 
 - ✅ **Transport**: All frame types, connection ID management, path validation
