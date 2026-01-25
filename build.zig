@@ -3,24 +3,12 @@
 
 const std = @import("std");
 
-fn rp(s: []const u8) std.Build.LazyPath {
-    if (@hasField(std.Build.LazyPath, "path")) {
-        return .{ .path = s };
-    } else {
-        return .{ .cwd_relative = s };
-    }
-}
-
 fn mkModule(b: *std.Build, path: []const u8) *std.Build.Module {
-    if (@hasDecl(std.Build, "createModule")) {
-        return b.createModule(.{ .root_source_file = rp(path) });
-    } else {
-        return b.createModule(.{ .root_source_file = rp(path) });
-    }
+    return b.createModule(.{ .root_source_file = b.path(path) });
 }
 
 fn addExe(b: *std.Build, name: []const u8, path: []const u8, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
-    var exe = b.addExecutable(.{ .name = name, .root_module = b.createModule(.{ .root_source_file = rp(path), .target = target, .optimize = optimize }) });
+    var exe = b.addExecutable(.{ .name = name, .root_module = b.createModule(.{ .root_source_file = b.path(path), .target = target, .optimize = optimize }) });
 
     // Link OpenSSL for crypto operations (required for QUIC AEAD compatibility)
     // Note: On Windows, OpenSSL is optional since it may not be available on CI runners
@@ -37,7 +25,7 @@ fn addExe(b: *std.Build, name: []const u8, path: []const u8, target: std.Build.R
 }
 
 fn addTst(b: *std.Build, path: []const u8, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
-    var tst = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = rp(path), .target = target, .optimize = optimize }) });
+    var tst = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path(path), .target = target, .optimize = optimize }) });
 
     // Link OpenSSL for crypto operations (required for QUIC AEAD compatibility)
     // Note: On Windows, OpenSSL is optional since it may not be available on CI runners
@@ -133,50 +121,22 @@ pub fn build(b: *std.Build) void {
     const byteorder_mod = mkModule(b, "src/byteorder/byteorder.zig");
 
     // ========================================================================
-    // Vendored TLS Library (vendor/ztls)
+    // External TLS Library (from build.zig.zon dependency)
     // ========================================================================
-    // Import TLS modules from the vendored ztls library instead of local implementation
-    const ztls_byteorder_mod = mkModule(b, "vendor/ztls/src/byteorder.zig");
-    const ztls_varint_mod = mkModule(b, "vendor/ztls/src/varint.zig");
-    ztls_varint_mod.addImport("byteorder", ztls_byteorder_mod);
+    // Import TLS modules from the external tls library instead of vendored implementation
+    const tls_dep = b.dependency("tls", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
-    const ztls_transport_params_mod = mkModule(b, "vendor/ztls/src/quic_transport_params.zig");
-    ztls_transport_params_mod.addImport("varint", ztls_varint_mod);
-
-    const quic_tls_mod = mkModule(b, "vendor/ztls/src/key_schedule.zig");
-    const tls_record_mod = mkModule(b, "vendor/ztls/src/record.zig");
-    tls_record_mod.addImport("quic_tls", quic_tls_mod);
-
-    const alert_mod = mkModule(b, "vendor/ztls/src/alert.zig");
-    const asn1_mod = mkModule(b, "vendor/ztls/src/asn1.zig");
-    const sig_mod = mkModule(b, "vendor/ztls/src/sig.zig");
-    sig_mod.addImport("asn1", asn1_mod);
-
-    const x509_mod = mkModule(b, "vendor/ztls/src/x509.zig");
-    x509_mod.addImport("asn1", asn1_mod);
-    x509_mod.addImport("sig", sig_mod);
-
-    const zero_rtt_mod = mkModule(b, "vendor/ztls/src/zero_rtt.zig");
-    zero_rtt_mod.addImport("quic_tls", quic_tls_mod);
-
-    const ztls_logger_mod = mkModule(b, "vendor/ztls/src/quic_logger.zig");
-    const tls13_full_mod = mkModule(b, "vendor/ztls/src/tls13_full.zig");
-    const ocsp_mod = mkModule(b, "vendor/ztls/src/ocsp.zig");
-    ocsp_mod.addImport("asn1", asn1_mod);
-    ocsp_mod.addImport("x509", x509_mod);
-    const sct_mod = mkModule(b, "vendor/ztls/src/sct.zig");
-
-    const tls13_mod = mkModule(b, "vendor/ztls/src/tls13.zig");
-    tls13_mod.addImport("quic_tls", quic_tls_mod);
-    tls13_mod.addImport("x509", x509_mod);
-    tls13_mod.addImport("sig", sig_mod);
-    tls13_mod.addImport("alert", alert_mod);
-    tls13_mod.addImport("zero_rtt", zero_rtt_mod);
-    tls13_mod.addImport("tls13_full", tls13_full_mod);
-    tls13_mod.addImport("quic_logger", ztls_logger_mod);
-    tls13_mod.addImport("quic_transport_params", ztls_transport_params_mod);
-    tls13_mod.addImport("ocsp", ocsp_mod);
-    tls13_mod.addImport("sct", sct_mod);
+    // Get TLS modules from the external dependency (only the ones actually used)
+    const quic_tls_mod = tls_dep.module("quic_tls");
+    const tls13_mod = tls_dep.module("tls13");
+    const alert_mod = tls_dep.module("alert");
+    const sig_mod = tls_dep.module("sig");
+    const x509_mod = tls_dep.module("x509");
+    const zero_rtt_mod = tls_dep.module("zero_rtt");
+    const tls_record_mod = tls_dep.module("record");
 
     // QUIC crypto and packet modules
     const quic_crypto_mod = mkModule(b, "src/quic/crypto_quic.zig");
@@ -551,7 +511,7 @@ pub fn build(b: *std.Build) void {
     quic_api_mod.addImport("quic_version", quic_version_mod);
 
     // Export named module for dependents: @import("quic")
-    const quic_mod = b.addModule("quic", .{ .root_source_file = rp("lib.zig") }); // aggregate export surface
+    const quic_mod = b.addModule("quic", .{ .root_source_file = b.path("lib.zig") }); // aggregate export surface
     quic_mod.addImport("quic_endpoint", quic_endpoint_mod);
     quic_mod.addImport("quic_crypto", quic_crypto_mod);
     quic_mod.addImport("quic_frame", quic_frame_mod);
@@ -595,10 +555,10 @@ pub fn build(b: *std.Build) void {
     h3_server_mod.addImport("quic_api", quic_api_mod);
     h3_server_mod.addImport("quic_conn", quic_conn_mod);
     // Export for dependents as named imports
-    const h3_mod = b.addModule("h3_server", .{ .root_source_file = rp("src/h3/server.zig") });
+    const h3_mod = b.addModule("h3_server", .{ .root_source_file = b.path("src/h3/server.zig") });
     h3_mod.addImport("quic_api", quic_api_mod);
     h3_mod.addImport("quic_conn", quic_conn_mod);
-    const h3_client_mod = b.addModule("h3_client", .{ .root_source_file = rp("src/h3/client.zig") });
+    const h3_client_mod = b.addModule("h3_client", .{ .root_source_file = b.path("src/h3/client.zig") });
     h3_client_mod.addImport("quic_api", quic_api_mod);
     h3_client_mod.addImport("quic_api", quic_api_mod);
     quic_mod.addImport("h3_server", h3_server_mod);
@@ -616,7 +576,7 @@ pub fn build(b: *std.Build) void {
     transport_mod.addImport("quic_packet", quic_packet_mod);
     transport_mod.addImport("config.zig", quic_config_mod);
     transport_mod.addImport("loop_backend.zig", loop_backend_mod);
-    const transport_public = b.addModule("transport", .{ .root_source_file = rp("src/quic/transport.zig") });
+    const transport_public = b.addModule("transport", .{ .root_source_file = b.path("src/quic/transport.zig") });
     transport_public.addImport("quic_api", quic_api_mod);
     transport_public.addImport("quic_endpoint", quic_endpoint_mod);
     transport_public.addImport("quic_conn", quic_conn_mod);
