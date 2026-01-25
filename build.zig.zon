@@ -1,6 +1,6 @@
 .{
     .name = .quic,
-    .version = "0.1.0",
+    .version = "0.1.1",
     .fingerprint = 0xc0795252512a1280,
     .minimum_zig_version = "0.15.1",
     .paths = .{
@@ -15,7 +15,8 @@
     .dependencies = .{
         // TLS 1.3 implementation (used for QUIC-TLS integration)
         .tls = .{
-            .path = "../tls",
+            .url = "git+https://gitlab.com/devnw/zig/tls.git",
+            .hash = "tls-0.1.0-mtEaLEtsEQAcNcPqUq9or5b7zwp9seF_JIhc74uLLvBz",
         },
     },
 }
