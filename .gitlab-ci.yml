@@ -84,7 +84,9 @@ interop-test:
   stage: test
   image: docker:27
   services:
-    - docker:27-dind
+    - name: docker:27-dind
+      alias: docker
+      command: ["--tls=false"]
   needs:
     - build
   rules:
@@ -92,9 +94,10 @@ interop-test:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
   variables:
-    # Use non-TLS Docker connection for Kubernetes runners
+    # Use non-TLS Docker connection
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
+    DOCKER_DRIVER: overlay2
     # Compose project name to avoid conflicts
     COMPOSE_PROJECT_NAME: "interop_ci_${CI_JOB_ID}"
   before_script:
@@ -104,18 +107,22 @@ interop-test:
     - mkdir -p ~/.docker/cli-plugins
     - curl -fsSL "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-x86_64" -o ~/.docker/cli-plugins/docker-compose
     - chmod +x ~/.docker/cli-plugins/docker-compose
-    # Wait for Docker daemon to be ready (DinD takes time to start)
+    # Wait for Docker daemon to be ready (DinD takes time to start on Kubernetes)
     - |
-      echo "Waiting for Docker daemon..."
-      for i in $(seq 1 30); do
+      echo "Waiting for Docker daemon at $DOCKER_HOST..."
+      for i in $(seq 1 60); do
         if docker info >/dev/null 2>&1; then
-          echo "Docker daemon is ready"
+          echo "Docker daemon is ready!"
+          docker info
           break
         fi
-        echo "Waiting... ($i/30)"
+        if [ $i -eq 60 ]; then
+          echo "Docker daemon failed to start after 120 seconds"
+          exit 1
+        fi
+        echo "Waiting... ($i/60)"
         sleep 2
       done
-      docker info || { echo "Docker daemon failed to start"; exit 1; }
     # Clone quic-interop-runner for certs and test infrastructure
     - git clone --depth 1 https://github.com/quic-interop/quic-interop-runner.git examples/interop/quic-interop-runner
     # Create necessary directories for docker-compose volumes
