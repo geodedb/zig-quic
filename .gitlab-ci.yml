@@ -3,26 +3,49 @@
 # Copyright (c) 2024-2025 CodePros
 
 include:
-  # Security scanning (Advanced SAST enabled by default)
-  - component: gitlab.com/devnw/ci-catalog/security-sast@v1.7.1
+  # Zig build and test
+  - component: gitlab.com/devnw/ci-catalog/zig-build@~latest
+    inputs:
+      stage: build
+      zig_version: '0.15.1'
+      build_options: '-Drelease-safe=true cli'
+      extra_packages: 'libssl-dev'
+
+  - component: gitlab.com/devnw/ci-catalog/zig-test@~latest
+    inputs:
+      stage: test
+      zig_version: '0.15.1'
+      extra_packages: 'libssl-dev'
+
+  # Security scanning
+  - component: gitlab.com/devnw/ci-catalog/security-sast@~latest
     inputs:
       stage: security
-  - component: gitlab.com/devnw/ci-catalog/security-dependency-scanning@v1.7.1
+
+  - component: gitlab.com/devnw/ci-catalog/security-dependency-scanning@~latest
     inputs:
       stage: security
-  - component: gitlab.com/devnw/ci-catalog/security-secrets@v1.7.1
+
+  - component: gitlab.com/devnw/ci-catalog/security-secrets@~latest
     inputs:
       stage: security
-  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@v1.7.1
+
+  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@~latest
+    inputs:
+      stage: security
 
   # SBOM generation and scanning
-  - component: gitlab.com/devnw/ci-catalog/sbom-generate@v1.7.1
-  - component: gitlab.com/devnw/ci-catalog/sbom-scan@v1.7.1
+  - component: gitlab.com/devnw/ci-catalog/sbom-generate@~latest
     inputs:
+      stage: sbom
+
+  - component: gitlab.com/devnw/ci-catalog/sbom-scan@~latest
+    inputs:
+      stage: sbom
       allow_failure: true
 
   # Release creation
-  - component: gitlab.com/devnw/ci-catalog/release-semantic@v1.7.1
+  - component: gitlab.com/devnw/ci-catalog/release-semantic@~latest
     inputs:
       stage: release
 
@@ -39,47 +62,6 @@ stages:
   - release
   - maintenance
 
-# Build the Zig QUIC library and CLI tools
-build:
-  stage: build
-  image: debian:bookworm-slim
-  variables:
-    ZIG_VERSION: "0.15.1"
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    - if: $CI_COMMIT_TAG
-  before_script:
-    - apt-get update && apt-get install -y --no-install-recommends curl xz-utils ca-certificates libssl-dev
-    - curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | tar -xJ
-    - mv zig-x86_64-linux-${ZIG_VERSION} /opt/zig
-    - export PATH="/opt/zig:$PATH"
-  script:
-    # Build library and CLI tools (including qns-endpoint for interop tests)
-    - /opt/zig/zig build -Drelease-safe=true install cli
-  artifacts:
-    paths:
-      - zig-out/
-    expire_in: 1 day
-
-# Run unit tests
-unit-test:
-  stage: test
-  image: debian:bookworm-slim
-  variables:
-    ZIG_VERSION: "0.15.1"
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    - if: $CI_COMMIT_TAG
-  before_script:
-    - apt-get update && apt-get install -y --no-install-recommends curl xz-utils ca-certificates libssl-dev
-    - curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | tar -xJ
-    - mv zig-x86_64-linux-${ZIG_VERSION} /opt/zig
-    - export PATH="/opt/zig:$PATH"
-  script:
-    - /opt/zig/zig build test
-
 # QUIC interoperability testing against other implementations
 # Uses GitLab shared runners which support Docker-in-Docker
 interop-test:
@@ -90,7 +72,8 @@ interop-test:
   tags:
     - saas-linux-medium-amd64
   needs:
-    - build
+    - job: "zig-build-0.15.1"
+      artifacts: true
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
@@ -100,16 +83,12 @@ interop-test:
     DOCKER_TLS_CERTDIR: "/certs"
     DOCKER_TLS_VERIFY: "1"
     DOCKER_CERT_PATH: "/certs/client"
-    # Compose project name to avoid conflicts
     COMPOSE_PROJECT_NAME: "interop_ci_${CI_JOB_ID}"
   before_script:
-    # Install required tools
     - apk add --no-cache bash git curl
-    # Install docker compose plugin
     - mkdir -p ~/.docker/cli-plugins
     - curl -fsSL "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-x86_64" -o ~/.docker/cli-plugins/docker-compose
     - chmod +x ~/.docker/cli-plugins/docker-compose
-    # Wait for Docker daemon to be ready
     - |
       echo "Waiting for Docker daemon..."
       for i in $(seq 1 30); do
@@ -125,26 +104,19 @@ interop-test:
         echo "Waiting... ($i/30)"
         sleep 2
       done
-    # Clone quic-interop-runner for certs and test infrastructure
     - git clone --depth 1 https://github.com/quic-interop/quic-interop-runner.git examples/interop/quic-interop-runner
-    # Create necessary directories for docker-compose volumes
     - mkdir -p examples/interop/quic-network-simulator/logs/sim
     - mkdir -p examples/interop/quic-network-simulator/logs/server
     - mkdir -p examples/interop/quic-network-simulator/logs/client
     - mkdir -p examples/interop/quic-network-simulator/www
     - mkdir -p examples/interop/quic-network-simulator/downloads
-    # Create test files for transfer tests
     - dd if=/dev/urandom of=examples/interop/quic-network-simulator/www/index.html bs=1024 count=1 2>/dev/null
     - dd if=/dev/urandom of=examples/interop/quic-network-simulator/www/5000 bs=5000 count=1 2>/dev/null
     - dd if=/dev/urandom of=examples/interop/quic-network-simulator/www/10000 bs=10000 count=1 2>/dev/null
   script:
-    # Build the zig-qns Docker image using pre-built binary from build stage
     - docker build -f examples/interop/zig-qns/Dockerfile -t zig-qns:local .
-    # Pull the quic-go interop image for testing
     - docker pull martenseemann/quic-go-interop:latest
     - docker pull martenseemann/quic-network-simulator:latest
-    # Run basic interop tests (zig server <-> quic-go client and vice versa)
-    # Test 1: Zig server with quic-go client - handshake
     - |
       echo "=== Test: Zig server <-> quic-go client (handshake) ==="
       export SERVER_IMAGE="zig-qns:local"
@@ -154,7 +126,6 @@ interop-test:
       sleep 10
       timeout 120 docker compose -f examples/interop/docker-compose.full.yml --profile generic up --abort-on-container-exit --timeout 30 server client || true
       docker compose -f examples/interop/docker-compose.full.yml --profile generic down -v || true
-    # Test 2: quic-go server with Zig client - handshake
     - |
       echo "=== Test: quic-go server <-> Zig client (handshake) ==="
       export SERVER_IMAGE="martenseemann/quic-go-interop:latest"
@@ -164,7 +135,6 @@ interop-test:
       sleep 10
       timeout 120 docker compose -f examples/interop/docker-compose.full.yml --profile generic up --abort-on-container-exit --timeout 30 server client || true
       docker compose -f examples/interop/docker-compose.full.yml --profile generic down -v || true
-    # Test 3: Zig server with quic-go client - transfer
     - |
       echo "=== Test: Zig server <-> quic-go client (transfer) ==="
       export SERVER_IMAGE="zig-qns:local"
@@ -174,7 +144,6 @@ interop-test:
       sleep 10
       timeout 120 docker compose -f examples/interop/docker-compose.full.yml --profile generic up --abort-on-container-exit --timeout 30 server client || true
       docker compose -f examples/interop/docker-compose.full.yml --profile generic down -v || true
-    # Test 4: quic-go server with Zig client - transfer
     - |
       echo "=== Test: quic-go server <-> Zig client (transfer) ==="
       export SERVER_IMAGE="martenseemann/quic-go-interop:latest"
@@ -193,7 +162,6 @@ interop-test:
   allow_failure: true
 
 # Scheduled job to update Go dependencies for interop testing
-# This runs weekly and creates a merge request if updates are available
 update-go-dependencies:
   stage: maintenance
   image: golang:1.24
@@ -205,13 +173,9 @@ update-go-dependencies:
     - git config --global user.name "DevNW CI Bot"
   script:
     - |
-      # Create a branch for the updates
       BRANCH_NAME="ci/update-go-deps-$(date +%Y%m%d)"
       git checkout -b "$BRANCH_NAME"
 
-      UPDATED=false
-
-      # Update each Go module
       for dir in quic-test quic-test/xnet-quic test_clients/go examples/interop test-clients/quic-go-client; do
         if [ -f "$dir/go.mod" ]; then
           echo "Updating $dir..."
@@ -222,13 +186,11 @@ update-go-dependencies:
         fi
       done
 
-      # Check if there are changes
       if git diff --quiet; then
         echo "No dependency updates available"
         exit 0
       fi
 
-      # Commit and push changes
       git add -A
       git commit -m "chore: Update Go dependencies (automated)
 
@@ -244,4 +206,3 @@ update-go-dependencies:
 
       echo "Created merge request for dependency updates"
   allow_failure: true
-
