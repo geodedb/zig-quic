@@ -45,7 +45,7 @@ include:
       allow_failure: true
 
   # Release creation (with proper release notes from commits/tags)
-  - component: gitlab.com/devnw/ci-catalog/release-semantic@v1.9.6
+  - component: gitlab.com/devnw/ci-catalog/release-semantic@v1.9.7
     inputs:
       stage: release
 
