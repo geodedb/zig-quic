@@ -55,7 +55,8 @@ build:
     - mv zig-x86_64-linux-${ZIG_VERSION} /opt/zig
     - export PATH="/opt/zig:$PATH"
   script:
-    - /opt/zig/zig build -Drelease-safe=true install
+    # Build library and CLI tools (including qns-endpoint for interop tests)
+    - /opt/zig/zig build -Drelease-safe=true install cli
   artifacts:
     paths:
       - zig-out/
