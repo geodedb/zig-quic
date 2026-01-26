@@ -68,3 +68,6 @@ server.key
 quic-test/quicgo-client
 test-clients/quic-go-client/quic-go-test-client
 test-clients/quic-go-client/main
+
+# Test certificates (generated locally, CI generates its own)
+tests/certs/
