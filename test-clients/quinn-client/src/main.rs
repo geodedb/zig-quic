@@ -49,8 +49,8 @@ async fn run_test(opt: Opt) -> Result<()> {
         .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
         .with_no_client_auth();
 
-    // Set ALPN protocol
-    crypto.alpn_protocols = vec![b"quic-zig/1".to_vec()];
+    // Set ALPN protocol (hq-interop is the standard QUIC interop protocol)
+    crypto.alpn_protocols = vec![b"hq-interop".to_vec()];
 
     // Create quinn client config
     let client_config = ClientConfig::new(Arc::new(

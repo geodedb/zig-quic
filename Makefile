@@ -312,7 +312,7 @@ interop-clean:
 # Build Go test client
 setup-go-client:
 	@echo "========== Building Go test client =========="
-	@cd test_clients/go && go build -o test-client main.go
+	@cd test-clients/quic-go-client && go build -o quic-go-test-client .
 	@echo "✓ Go test client built"
 
 # Setup Python test client environment
@@ -326,7 +326,7 @@ setup-python-client:
 # Build Rust test client
 setup-rust-client:
 	@echo "========== Building Rust test client =========="
-	@cd test_clients/rust && cargo build --release
+	@cd test-clients/quinn-client && cargo build --release
 	@echo "✓ Rust test client built"
 
 # Build Zig test client (already built with main build)
@@ -346,7 +346,7 @@ e2e-test-go: build
 	@echo "========== E2E Test: Go Client (quic-go) =========="
 	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
 	@echo "Starting Zig server..."
-	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key --insecure > /tmp/e2e-go.log 2>&1 & \
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert tests/certs/self-signed/cert.pem --key tests/certs/self-signed/key.pem --insecure > /tmp/e2e-go.log 2>&1 & \
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \
@@ -373,7 +373,7 @@ e2e-test-go-comprehensive: build
 	@echo "========== E2E Comprehensive Test: Go Client (quic-go) =========="
 	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
 	@echo "Starting Zig server with TLS..."
-	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key --insecure > /tmp/e2e-go-comprehensive.log 2>&1 & \
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert tests/certs/self-signed/cert.pem --key tests/certs/self-signed/key.pem --insecure > /tmp/e2e-go-comprehensive.log 2>&1 & \
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \
@@ -394,7 +394,7 @@ e2e-test-python: build
 	@echo "========== E2E Test: Python Client (aioquic) =========="
 	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
 	@echo "Starting Zig server..."
-	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key --insecure > /tmp/e2e-python.log 2>&1 & \
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert tests/certs/self-signed/cert.pem --key tests/certs/self-signed/key.pem --insecure > /tmp/e2e-python.log 2>&1 & \
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \
@@ -422,7 +422,7 @@ e2e-test-rust: build
 	@echo "========== E2E Test: Rust Client (quinn) =========="
 	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
 	@echo "Starting Zig server..."
-	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key --insecure > /tmp/e2e-rust.log 2>&1 & \
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert tests/certs/self-signed/cert.pem --key tests/certs/self-signed/key.pem --insecure > /tmp/e2e-rust.log 2>&1 & \
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \
@@ -448,7 +448,7 @@ e2e-test-zig: build
 	@echo "========== E2E Test: Zig Client =========="
 	@bash -c 'killall quic-server quic-client 2>/dev/null || true; sleep 1'
 	@echo "Starting Zig server..."
-	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key --insecure > /tmp/e2e-zig.log 2>&1 & \
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert tests/certs/self-signed/cert.pem --key tests/certs/self-signed/key.pem --insecure > /tmp/e2e-zig.log 2>&1 & \
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \
@@ -474,7 +474,7 @@ e2e-test-zig-comprehensive: build
 	@echo "========== E2E Comprehensive Test: Zig Client =========="
 	@bash -c 'killall quic-server quic-client quic-client-comprehensive 2>/dev/null || true; sleep 1'
 	@echo "Starting Zig server with TLS..."
-	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key --insecure > /tmp/e2e-zig-comprehensive.log 2>&1 & \
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert tests/certs/self-signed/cert.pem --key tests/certs/self-signed/key.pem --insecure > /tmp/e2e-zig-comprehensive.log 2>&1 & \
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \
@@ -498,7 +498,7 @@ e2e-test-python-comprehensive: build
 	@echo "========== E2E Comprehensive Test: Python Client (aioquic) =========="
 	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
 	@echo "Starting Zig server with TLS..."
-	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key --insecure > /tmp/e2e-python-comprehensive.log 2>&1 & \
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert tests/certs/self-signed/cert.pem --key tests/certs/self-signed/key.pem --insecure > /tmp/e2e-python-comprehensive.log 2>&1 & \
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \
@@ -524,7 +524,7 @@ e2e-test-rust-comprehensive: build
 	@echo "========== E2E Comprehensive Test: Rust Client (Quinn) =========="
 	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
 	@echo "Starting Zig server with TLS..."
-	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server.crt --key server.key --insecure > /tmp/e2e-rust-comprehensive.log 2>&1 & \
+	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert tests/certs/self-signed/cert.pem --key tests/certs/self-signed/key.pem --insecure > /tmp/e2e-rust-comprehensive.log 2>&1 & \
 		SERVER_PID=$$!; \
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \

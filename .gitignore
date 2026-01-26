@@ -59,3 +59,7 @@ zig-out/
 # ignore mac files
 .DS_Store
 .bash_history
+
+# Symlinks to test certificates (generated locally, not committed)
+server.crt
+server.key

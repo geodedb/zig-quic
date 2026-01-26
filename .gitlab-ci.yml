@@ -57,10 +57,185 @@ default:
 stages:
   - build
   - test
+  - e2e
   - security
   - sbom
   - release
   - maintenance
+
+# E2E tests with multiple QUIC client implementations
+# Tests Python (aioquic), Go (quic-go), Rust (quinn), and Zig clients
+# Generate test certificates for E2E tests
+.generate-test-certs: &generate-test-certs
+  - |
+    openssl ecparam -genkey -name prime256v1 -out server.key.pem
+    openssl req -new -x509 -key server.key.pem -out server.crt.pem -days 1 \
+      -subj "/CN=localhost/O=Test/C=US" \
+      -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+    # Rename to avoid GitLab pattern blocking
+    mv server.key.pem server-key.pem
+    mv server.crt.pem server-cert.pem
+
+e2e-test-python:
+  stage: e2e
+  image: python:3.12-slim
+  tags:
+    - saas-linux-medium-amd64
+  needs:
+    - job: "zig-build-0.15.1"
+      artifacts: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends curl xz-utils ca-certificates openssl
+    # Install Zig
+    - curl -L "https://ziglang.org/download/0.15.1/zig-linux-x86_64-0.15.1.tar.xz" | tar -xJ
+    - export PATH="$PWD/zig-linux-x86_64-0.15.1:$PATH"
+    # Install aioquic
+    - pip install --no-cache-dir aioquic
+    # Generate test certificates
+    - *generate-test-certs
+  script:
+    - export PATH="$PWD/zig-linux-x86_64-0.15.1:$PATH"
+    # Build server if not already built
+    - test -f zig-out/bin/quic-server || zig build cli
+    # Start server
+    - ./zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server-cert.pem --key server-key.pem --insecure > /tmp/server.log 2>&1 &
+    - SERVER_PID=$!
+    - sleep 3
+    # Run Python client
+    - cd test-clients/aioquic-client
+    - python test_client.py --host 127.0.0.1 --port 4433 2>&1 | tee /tmp/client.log
+    - kill $SERVER_PID 2>/dev/null || true
+    # Check for success
+    - grep -q "Test completed successfully" /tmp/client.log
+  artifacts:
+    when: always
+    paths:
+      - /tmp/*.log
+    expire_in: 7 days
+
+e2e-test-go:
+  stage: e2e
+  image: golang:1.23
+  tags:
+    - saas-linux-medium-amd64
+  needs:
+    - job: "zig-build-0.15.1"
+      artifacts: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends curl xz-utils ca-certificates openssl
+    # Install Zig
+    - curl -L "https://ziglang.org/download/0.15.1/zig-linux-x86_64-0.15.1.tar.xz" | tar -xJ
+    - export PATH="$PWD/zig-linux-x86_64-0.15.1:$PATH"
+    # Build Go client
+    - cd test-clients/quic-go-client && go build -o quic-go-test-client . && cd ../..
+    # Generate test certificates
+    - *generate-test-certs
+  script:
+    - export PATH="$PWD/zig-linux-x86_64-0.15.1:$PATH"
+    # Build server if not already built
+    - test -f zig-out/bin/quic-server || zig build cli
+    # Start server
+    - ./zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server-cert.pem --key server-key.pem --insecure > /tmp/server.log 2>&1 &
+    - SERVER_PID=$!
+    - sleep 3
+    # Run Go client
+    - cd test-clients/quic-go-client
+    - ./quic-go-test-client -addr 127.0.0.1:4433 -verbose 2>&1 | tee /tmp/client.log
+    - kill $SERVER_PID 2>/dev/null || true
+    # Check for success
+    - grep -q "Test completed successfully" /tmp/client.log
+  artifacts:
+    when: always
+    paths:
+      - /tmp/*.log
+    expire_in: 7 days
+
+e2e-test-rust:
+  stage: e2e
+  image: rust:1.83
+  tags:
+    - saas-linux-medium-amd64
+  needs:
+    - job: "zig-build-0.15.1"
+      artifacts: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends curl xz-utils ca-certificates openssl
+    # Install Zig
+    - curl -L "https://ziglang.org/download/0.15.1/zig-linux-x86_64-0.15.1.tar.xz" | tar -xJ
+    - export PATH="$PWD/zig-linux-x86_64-0.15.1:$PATH"
+    # Build Rust client
+    - cd test-clients/quinn-client && cargo build --release && cd ../..
+    # Generate test certificates
+    - *generate-test-certs
+  script:
+    - export PATH="$PWD/zig-linux-x86_64-0.15.1:$PATH"
+    # Build server if not already built
+    - test -f zig-out/bin/quic-server || zig build cli
+    # Start server
+    - ./zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server-cert.pem --key server-key.pem --insecure > /tmp/server.log 2>&1 &
+    - SERVER_PID=$!
+    - sleep 3
+    # Run Rust client
+    - cd test-clients/quinn-client
+    - RUST_LOG=info ./target/release/quinn-test-client --addr 127.0.0.1:4433 --server-name localhost 2>&1 | tee /tmp/client.log
+    - kill $SERVER_PID 2>/dev/null || true
+    # Check for success
+    - grep -q "Test completed successfully" /tmp/client.log
+  artifacts:
+    when: always
+    paths:
+      - /tmp/*.log
+    expire_in: 7 days
+
+e2e-test-zig:
+  stage: e2e
+  image: debian:bookworm-slim
+  tags:
+    - saas-linux-medium-amd64
+  needs:
+    - job: "zig-build-0.15.1"
+      artifacts: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends curl xz-utils ca-certificates openssl
+    # Install Zig
+    - curl -L "https://ziglang.org/download/0.15.1/zig-linux-x86_64-0.15.1.tar.xz" | tar -xJ
+    - export PATH="$PWD/zig-linux-x86_64-0.15.1:$PATH"
+    # Generate test certificates
+    - *generate-test-certs
+  script:
+    - export PATH="$PWD/zig-linux-x86_64-0.15.1:$PATH"
+    # Build server and client if not already built
+    - test -f zig-out/bin/quic-server || zig build cli
+    # Start server
+    - ./zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server-cert.pem --key server-key.pem --insecure > /tmp/server.log 2>&1 &
+    - SERVER_PID=$!
+    - sleep 3
+    # Run Zig client
+    - timeout 30 ./zig-out/bin/quic-client --addr 127.0.0.1:4433 --insecure 2>&1 | tee /tmp/client.log || true
+    - kill $SERVER_PID 2>/dev/null || true
+    # Check server accepted connection
+    - grep -q "accepted connection" /tmp/server.log || grep -q "active connections" /tmp/server.log
+  artifacts:
+    when: always
+    paths:
+      - /tmp/*.log
+    expire_in: 7 days
 
 # QUIC interoperability testing against other implementations
 # Uses GitLab shared runners which support Docker-in-Docker
