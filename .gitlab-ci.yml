@@ -4,48 +4,48 @@
 
 include:
   # Zig build and test
-  - component: gitlab.com/devnw/ci-catalog/zig-build@~latest
+  - component: gitlab.com/devnw/ci-catalog/zig-build@v1.9.5
     inputs:
       stage: build
       zig_version: '0.15.1'
       build_options: '-Drelease-safe=true cli'
       extra_packages: 'libssl-dev'
 
-  - component: gitlab.com/devnw/ci-catalog/zig-test@~latest
+  - component: gitlab.com/devnw/ci-catalog/zig-test@v1.9.5
     inputs:
       stage: test
       zig_version: '0.15.1'
       extra_packages: 'libssl-dev'
 
   # Security scanning
-  - component: gitlab.com/devnw/ci-catalog/security-sast@~latest
+  - component: gitlab.com/devnw/ci-catalog/security-sast@v1.9.5
     inputs:
       stage: security
 
-  - component: gitlab.com/devnw/ci-catalog/security-dependency-scanning@~latest
+  - component: gitlab.com/devnw/ci-catalog/security-dependency-scanning@v1.9.5
     inputs:
       stage: security
 
-  - component: gitlab.com/devnw/ci-catalog/security-secrets@~latest
+  - component: gitlab.com/devnw/ci-catalog/security-secrets@v1.9.5
     inputs:
       stage: security
 
-  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@~latest
+  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@v1.9.5
     inputs:
       stage: security
 
   # SBOM generation and scanning
-  - component: gitlab.com/devnw/ci-catalog/sbom-generate@~latest
+  - component: gitlab.com/devnw/ci-catalog/sbom-generate@v1.9.5
     inputs:
       stage: sbom
 
-  - component: gitlab.com/devnw/ci-catalog/sbom-scan@~latest
+  - component: gitlab.com/devnw/ci-catalog/sbom-scan@v1.9.5
     inputs:
       stage: sbom
       allow_failure: true
 
   # Release creation
-  - component: gitlab.com/devnw/ci-catalog/release-semantic@~latest
+  - component: gitlab.com/devnw/ci-catalog/release-semantic@v1.9.5
     inputs:
       stage: release
 
