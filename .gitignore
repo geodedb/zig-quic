@@ -63,3 +63,8 @@ zig-out/
 # Symlinks to test certificates (generated locally, not committed)
 server.crt
 server.key
+
+# Go client binaries (built locally)
+quic-test/quicgo-client
+test-clients/quic-go-client/quic-go-test-client
+test-clients/quic-go-client/main
