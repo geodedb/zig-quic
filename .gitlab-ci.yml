@@ -80,47 +80,47 @@ unit-test:
     - /opt/zig/zig build test
 
 # QUIC interoperability testing against other implementations
+# NOTE: Requires a runner with Docker support (privileged mode for DinD)
 interop-test:
   stage: test
-  image: docker:27
-  services:
-    - name: docker:27-dind
-      alias: docker
-      command: ["--tls=false"]
+  image: docker:27-dind
   needs:
     - build
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
+  tags:
+    - company
+    - linux
+    - docker
   variables:
-    # Use non-TLS Docker connection
-    DOCKER_HOST: tcp://docker:2375
-    DOCKER_TLS_CERTDIR: ""
-    DOCKER_DRIVER: overlay2
     # Compose project name to avoid conflicts
     COMPOSE_PROJECT_NAME: "interop_ci_${CI_JOB_ID}"
   before_script:
+    # Start Docker daemon in the background
+    - dockerd-entrypoint.sh &
+    - sleep 5
     # Install required tools
     - apk add --no-cache bash git curl
     # Install docker compose plugin
     - mkdir -p ~/.docker/cli-plugins
     - curl -fsSL "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-x86_64" -o ~/.docker/cli-plugins/docker-compose
     - chmod +x ~/.docker/cli-plugins/docker-compose
-    # Wait for Docker daemon to be ready (DinD takes time to start on Kubernetes)
+    # Wait for Docker daemon to be ready
     - |
-      echo "Waiting for Docker daemon at $DOCKER_HOST..."
-      for i in $(seq 1 60); do
+      echo "Waiting for Docker daemon..."
+      for i in $(seq 1 30); do
         if docker info >/dev/null 2>&1; then
           echo "Docker daemon is ready!"
           docker info
           break
         fi
-        if [ $i -eq 60 ]; then
-          echo "Docker daemon failed to start after 120 seconds"
+        if [ $i -eq 30 ]; then
+          echo "Docker daemon failed to start after 60 seconds"
           exit 1
         fi
-        echo "Waiting... ($i/60)"
+        echo "Waiting... ($i/30)"
         sleep 2
       done
     # Clone quic-interop-runner for certs and test infrastructure
