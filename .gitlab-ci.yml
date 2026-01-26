@@ -44,8 +44,8 @@ include:
       stage: sbom
       allow_failure: true
 
-  # Release creation
-  - component: gitlab.com/devnw/ci-catalog/release-semantic@v1.9.5
+  # Release creation (with proper release notes from commits/tags)
+  - component: gitlab.com/devnw/ci-catalog/release-semantic@v1.9.6
     inputs:
       stage: release
 
