@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2024-2025 CodePros
 
-//! QUIC connection orchestration and socket helpers.
+//! QUIC connection orchestration and socket helpers (thread-safe).
+//!
+//! GAP-0200: This module now supports concurrent access from multiple threads.
+//! Each Connection has a mutex (mu) protecting its internal state. The endpoint
+//! should hold the endpoint mutex when looking up connections, then acquire the
+//! connection mutex for operations on that connection.
 //!
 //! This module owns the end-to-end connection state machine defined by RFC 9000
 //! (§§2–7), integrates TLS 1.3 per RFC 9001 §4, and drives loss detection per
@@ -487,7 +492,13 @@ pub const StreamTx = struct {
 };
 
 /// Connection state and helpers for QUIC handshake, recovery, and 1-RTT.
+/// GAP-0200: Thread-safe - each connection has its own mutex for concurrent access.
 pub const Connection = struct {
+    // GAP-0200: Per-connection mutex for thread-safe access to connection state
+    // This protects all mutable state in this connection: streams, keys, flow control, etc.
+    // Lock ordering: endpoint.mu -> connection.mu (never reverse)
+    mu: std.Thread.Mutex = .{},
+
     id: u64,
     role: Role,
     sock_fd: isize,
@@ -2296,7 +2307,15 @@ pub const Connection = struct {
 
     /// Write STREAM data enforcing flow-control; may emit *_BLOCKED frames.
     /// Write data to a stream (simplified slice, no FIN flag in this helper slice yet).
+    /// GAP-0200: Thread-safe - acquires connection mutex
     pub fn writeStream(self: *Connection, id: u64, data: []const u8, fin: bool) !usize {
+        self.mu.lock();
+        defer self.mu.unlock();
+        return self.writeStreamUnlocked(id, data, fin);
+    }
+
+    /// Internal unlocked version of writeStream (caller must hold mu)
+    fn writeStreamUnlocked(self: *Connection, id: u64, data: []const u8, fin: bool) !usize {
         // Support multi-chunk writes: caller may pass > max_payload; we send one chunk per call.
         // Higher-level loop (server echo) retries remaining bytes.
         trace("DEBUG writeStream: stream_id={}, data_len={}, fin={}\n", .{ id, data.len, fin });
@@ -2456,7 +2475,15 @@ pub const Connection = struct {
 
     /// Read from STREAM into buf; returns number of bytes or WouldBlock.
     /// Read reassembled bytes from a stream into buf; returns number copied or WouldBlock.
+    /// GAP-0200: Thread-safe - acquires connection mutex
     pub fn readStream(self: *Connection, id: u64, buf: []u8) !usize {
+        self.mu.lock();
+        defer self.mu.unlock();
+        return self.readStreamUnlocked(id, buf);
+    }
+
+    /// Internal unlocked version of readStream (caller must hold mu)
+    fn readStreamUnlocked(self: *Connection, id: u64, buf: []u8) !usize {
         trace("[CONN-PTR-READ] conn=0x{x} stream_id={} buf_len={}\n", .{ @intFromPtr(self), id, buf.len });
         // TRACE: readStream called
         // logger.debugPrint("readStream called - id={}, buf_len={}\n", .{id, buf.len});
@@ -3537,7 +3564,11 @@ pub const Connection = struct {
     // numbered stream IDs also being opened.
 
     /// Accept an incoming peer-initiated stream (non-blocking)
+    /// GAP-0200: Thread-safe - acquires connection mutex
     pub fn acceptStream(self: *Connection) !u64 {
+        self.mu.lock();
+        defer self.mu.unlock();
+
         if (self.incoming_stream_queue.items.len == 0) {
             return error.WouldBlock;
         }

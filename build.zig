@@ -1517,6 +1517,15 @@ pub fn build(b: *std.Build) void {
         const test_ci_helpers = addTst(b, "tests/integration/ci_helpers.zig", target, optimize);
         const run_test_ci_helpers = b.addRunArtifact(test_ci_helpers);
         test_step.dependOn(&run_test_ci_helpers.step);
+
+        // GAP-0200: Thread-Safety Unit Tests
+        const test_thread_safety = addTst(b, "tests/test_thread_safety.zig", target, optimize);
+        test_thread_safety.root_module.addImport("quic", quic_api_mod);
+        test_thread_safety.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        test_thread_safety.root_module.addImport("quic_conn", quic_conn_mod);
+        test_thread_safety.root_module.addImport("quic_config", quic_config_mod);
+        const run_test_thread_safety = b.addRunArtifact(test_thread_safety);
+        test_step.dependOn(&run_test_thread_safety.step);
     } else {
         const test_quic = addTst(b, "quic.zig", target, optimize);
         const run_test_quic = b.addRunArtifact(test_quic);

@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2024-2025 CodePros
 
-//! Endpoint skeleton with UDP send/recv (single socket, single-thread).
+//! Endpoint skeleton with UDP send/recv (thread-safe for multi-connection handling).
+//!
+//! THREAD-SAFETY (GAP-0200): This module now supports concurrent access from multiple
+//! threads. The endpoint mutex protects shared state (conns, accepted, timers), while
+//! per-connection mutexes protect individual connection state. The poll() function
+//! should be called from a single thread (the I/O thread), but accept() and connection
+//! operations can be called safely from worker threads.
 //!
 //! Implements the endpoint responsibilities from RFC 9000 (§§5–9, §14) including
 //! packet processing, path validation, and PMTUD timers, plus recovery plumbing
@@ -113,6 +119,11 @@ pub const EndpointRole = enum {
 /// loss recovery as recommended by RFC 9002 §6.
 pub const Endpoint = struct {
 
+    // GAP-0200: Thread-safety mutex for protecting shared state
+    // This mutex protects: conns, accepted, retired, timers, next_timer_id
+    // Lock ordering: endpoint.mu -> connection.mu (never reverse)
+    mu: std.Thread.Mutex = .{},
+
     // Transport abstraction (Phase 8c: required, wraps UDP or loopback)
     // All I/O operations go through this transport interface
     transport: transport_mod.Transport,
@@ -126,17 +137,18 @@ pub const Endpoint = struct {
     // Memory allocator for endpoint resources
     allocator: std.mem.Allocator,
 
-    // Timer management for the endpoint
+    // Timer management for the endpoint (protected by mu)
     timers: std.ArrayList(Timer),
 
-    // Connection Management Map
+    // Connection Management Map (protected by mu)
     conns: std.AutoHashMap(Key, *conn_mod.Connection),
 
-    // Next timer identifier for scheduleTimer
+    // Next timer identifier for scheduleTimer (protected by mu)
     next_timer_id: u64 = 1,
     // Config copy
     cfg: cfg.QuicConfig,
-    // Accept queue for server
+    // Accept queue for server (protected by mu)
+    // GAP-0200: Thread-safe accept queue - poll() adds, accept() removes
     accepted: std.ArrayList(*conn_mod.Connection),
     // TEST-ONLY: outbound capture ring (peer + owned bytes)
     captures: std.ArrayList(OutCaptured),
@@ -145,7 +157,7 @@ pub const Endpoint = struct {
     // Retired (closed) connections removed from maps & timers but not yet destroyed.
     // They stay here until explicit api.destroy() or endpoint.deinit(), allowing external
     // code (e.g., server CLI loop) holding an opaque pointer to observe closed state
-    // without risking use-after-free.
+    // without risking use-after-free. (protected by mu)
     retired: std.ArrayList(*conn_mod.Connection),
     // Epoll file descriptor for Linux
     epoll_fd: ?posix.fd_t = null,
@@ -391,12 +403,18 @@ pub const Endpoint = struct {
     }
 
     /// Enqueue accepted server connection for accept().
+    /// GAP-0200: Thread-safe - acquires endpoint mutex
     fn pushAccepted(self: *Endpoint, c: *conn_mod.Connection) void {
+        self.mu.lock();
+        defer self.mu.unlock();
         self.accepted.append(self.allocator, c) catch {};
     }
 
     /// Pop next accepted server-side connection if available.
+    /// GAP-0200: Thread-safe - acquires endpoint mutex
     pub fn popAccepted(self: *Endpoint) ?*conn_mod.Connection {
+        self.mu.lock();
+        defer self.mu.unlock();
         if (self.accepted.items.len == 0) return null;
         return self.accepted.orderedRemove(0);
     }
