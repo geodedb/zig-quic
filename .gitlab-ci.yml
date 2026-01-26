@@ -1,9 +1,6 @@
 # GitLab CI/CD Configuration
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2024-2025 CodePros
-#
-# NOTE: Build/test skipped - requires Zig 0.15.x which is not yet released.
-# Security scanning is enabled.
 
 include:
   # Security scanning (Advanced SAST enabled by default)
@@ -35,10 +32,145 @@ default:
     - linux
 
 stages:
+  - build
+  - test
   - security
   - sbom
   - release
   - maintenance
+
+# Build the Zig QUIC library and CLI tools
+build:
+  stage: build
+  image: debian:bookworm-slim
+  variables:
+    ZIG_VERSION: "0.15.1"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends curl xz-utils ca-certificates
+    - curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" | tar -xJ
+    - mv zig-linux-x86_64-${ZIG_VERSION} /opt/zig
+    - export PATH="/opt/zig:$PATH"
+  script:
+    - /opt/zig/zig build -Drelease-safe=true install
+  artifacts:
+    paths:
+      - zig-out/
+    expire_in: 1 day
+
+# Run unit tests
+unit-test:
+  stage: test
+  image: debian:bookworm-slim
+  variables:
+    ZIG_VERSION: "0.15.1"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends curl xz-utils ca-certificates
+    - curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" | tar -xJ
+    - mv zig-linux-x86_64-${ZIG_VERSION} /opt/zig
+    - export PATH="/opt/zig:$PATH"
+  script:
+    - /opt/zig/zig build test
+
+# QUIC interoperability testing against other implementations
+interop-test:
+  stage: test
+  image: docker:27
+  services:
+    - docker:27-dind
+  needs:
+    - build
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_CERT_PATH: "/certs/client"
+    # Compose project name to avoid conflicts
+    COMPOSE_PROJECT_NAME: "interop_ci_${CI_JOB_ID}"
+  before_script:
+    # Install required tools
+    - apk add --no-cache bash git curl
+    # Install docker compose plugin
+    - mkdir -p ~/.docker/cli-plugins
+    - curl -fsSL "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-x86_64" -o ~/.docker/cli-plugins/docker-compose
+    - chmod +x ~/.docker/cli-plugins/docker-compose
+    # Clone quic-interop-runner for certs and test infrastructure
+    - git clone --depth 1 https://github.com/quic-interop/quic-interop-runner.git examples/interop/quic-interop-runner
+    # Create necessary directories for docker-compose volumes
+    - mkdir -p examples/interop/quic-network-simulator/logs/sim
+    - mkdir -p examples/interop/quic-network-simulator/logs/server
+    - mkdir -p examples/interop/quic-network-simulator/logs/client
+    - mkdir -p examples/interop/quic-network-simulator/www
+    - mkdir -p examples/interop/quic-network-simulator/downloads
+    # Create test files for transfer tests
+    - dd if=/dev/urandom of=examples/interop/quic-network-simulator/www/index.html bs=1024 count=1 2>/dev/null
+    - dd if=/dev/urandom of=examples/interop/quic-network-simulator/www/5000 bs=5000 count=1 2>/dev/null
+    - dd if=/dev/urandom of=examples/interop/quic-network-simulator/www/10000 bs=10000 count=1 2>/dev/null
+  script:
+    # Build the zig-qns Docker image using pre-built binary from build stage
+    - docker build -f examples/interop/zig-qns/Dockerfile -t zig-qns:local .
+    # Pull the quic-go interop image for testing
+    - docker pull martenseemann/quic-go-interop:latest
+    - docker pull martenseemann/quic-network-simulator:latest
+    # Run basic interop tests (zig server <-> quic-go client and vice versa)
+    # Test 1: Zig server with quic-go client - handshake
+    - |
+      echo "=== Test: Zig server <-> quic-go client (handshake) ==="
+      export SERVER_IMAGE="zig-qns:local"
+      export CLIENT_IMAGE="martenseemann/quic-go-interop:latest"
+      export TESTCASE="handshake"
+      docker compose -f examples/interop/docker-compose.full.yml --profile generic up -d sim
+      sleep 10
+      timeout 120 docker compose -f examples/interop/docker-compose.full.yml --profile generic up --abort-on-container-exit --timeout 30 server client || true
+      docker compose -f examples/interop/docker-compose.full.yml --profile generic down -v || true
+    # Test 2: quic-go server with Zig client - handshake
+    - |
+      echo "=== Test: quic-go server <-> Zig client (handshake) ==="
+      export SERVER_IMAGE="martenseemann/quic-go-interop:latest"
+      export CLIENT_IMAGE="zig-qns:local"
+      export TESTCASE="handshake"
+      docker compose -f examples/interop/docker-compose.full.yml --profile generic up -d sim
+      sleep 10
+      timeout 120 docker compose -f examples/interop/docker-compose.full.yml --profile generic up --abort-on-container-exit --timeout 30 server client || true
+      docker compose -f examples/interop/docker-compose.full.yml --profile generic down -v || true
+    # Test 3: Zig server with quic-go client - transfer
+    - |
+      echo "=== Test: Zig server <-> quic-go client (transfer) ==="
+      export SERVER_IMAGE="zig-qns:local"
+      export CLIENT_IMAGE="martenseemann/quic-go-interop:latest"
+      export TESTCASE="transfer"
+      docker compose -f examples/interop/docker-compose.full.yml --profile generic up -d sim
+      sleep 10
+      timeout 120 docker compose -f examples/interop/docker-compose.full.yml --profile generic up --abort-on-container-exit --timeout 30 server client || true
+      docker compose -f examples/interop/docker-compose.full.yml --profile generic down -v || true
+    # Test 4: quic-go server with Zig client - transfer
+    - |
+      echo "=== Test: quic-go server <-> Zig client (transfer) ==="
+      export SERVER_IMAGE="martenseemann/quic-go-interop:latest"
+      export CLIENT_IMAGE="zig-qns:local"
+      export TESTCASE="transfer"
+      docker compose -f examples/interop/docker-compose.full.yml --profile generic up -d sim
+      sleep 10
+      timeout 120 docker compose -f examples/interop/docker-compose.full.yml --profile generic up --abort-on-container-exit --timeout 30 server client || true
+      docker compose -f examples/interop/docker-compose.full.yml --profile generic down -v || true
+    - echo "Interop tests completed"
+  artifacts:
+    when: always
+    paths:
+      - examples/interop/quic-network-simulator/logs/
+    expire_in: 7 days
+  allow_failure: true
 
 # Scheduled job to update Go dependencies for interop testing
 # This runs weekly and creates a merge request if updates are available
