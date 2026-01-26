@@ -46,15 +46,7 @@ func main() {
 	}
 	defer conn.CloseWithError(0, "")
 
-	log.Printf("✓ Connection established")
-
-	// Wait for handshake to complete
-	select {
-	case <-conn.HandshakeComplete():
-		log.Printf("✓ TLS handshake complete")
-	case <-ctx.Done():
-		log.Fatalf("Handshake timeout")
-	}
+	log.Printf("✓ Connection established (handshake complete)")
 
 	// Open a stream and send a simple HTTP/0.9 request
 	stream, err := conn.OpenStreamSync(ctx)
