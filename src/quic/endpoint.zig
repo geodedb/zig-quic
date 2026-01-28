@@ -53,9 +53,9 @@ const builtin = @import("builtin");
 // TEST-ONLY: outbound capture entry (peer + owned bytes)
 const OutCaptured = struct { peer: conn_mod.SockAddr, bytes: []u8 };
 
-// File-level variable to allow callbacks to access endpoint
-// This is safe because endpoints are single-threaded
-var current_io_endpoint: ?*Endpoint = null;
+// Thread-local variable to allow callbacks to access endpoint
+// Must be threadlocal to support multiple endpoints in different threads
+threadlocal var current_io_endpoint: ?*Endpoint = null;
 
 // Note: Byte order conversion functions moved to utils module
 inline fn portFromNetwork(value: u16) u16 {
