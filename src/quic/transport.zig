@@ -55,9 +55,11 @@ pub const QuicTransport = struct {
         // RFC 9000 §4.2 connection-level flow control (MAX_DATA)
         max_data: u64 = 100 * 1024 * 1024, // 100MB per connection
         /// Path to the TLS certificate file.
-        cert_path: []const u8 = "certs/server.crt",
+        /// NOTE: Default points to TEST certificates - configure properly for production!
+        cert_path: []const u8 = "tests/certs/cert.pem",
         /// Path to the TLS private key file.
-        key_path: []const u8 = "certs/server.key",
+        /// NOTE: Default points to TEST key - configure properly for production!
+        key_path: []const u8 = "tests/certs/key.pem",
         /// Optional path to CA certificate for client authentication (RFC 9001 §4.4.2).
         ca_path: ?[]const u8 = null,
     };

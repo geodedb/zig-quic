@@ -60,6 +60,18 @@ zig-out/
 .DS_Store
 .bash_history
 
+# Private keys and certificates - NEVER commit (blocked by server policy)
+# Generate locally with: openssl ecparam -genkey -name prime256v1 -out key.pem
+# See tests/certs/README.md for generation instructions
+*.key
+*.pem
+*.crt
+*.der
+
+# But preserve README files that explain certificate generation
+!tests/certs/README.md
+!examples/interop/certs/README.md
+
 # Symlinks to test certificates (generated locally, not committed)
 server.crt
 server.key
@@ -68,6 +80,3 @@ server.key
 quic-test/quicgo-client
 test-clients/quic-go-client/quic-go-test-client
 test-clients/quic-go-client/main
-
-# Test certificates (generated locally, CI generates its own)
-tests/certs/

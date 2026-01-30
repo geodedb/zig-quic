@@ -1,6 +1,11 @@
 # Gitleaks Configuration
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2024-2025 CodePros
+#
+# SECURITY NOTE: This configuration is intentionally restrictive.
+# Only specific test fixture paths are allowed. Do not add blanket
+# file extension allowlists (e.g., .*\.key$) as this defeats the
+# purpose of secret detection.
 
 title = "Gitleaks Configuration"
 
@@ -8,40 +13,56 @@ title = "Gitleaks Configuration"
 useDefault = true
 
 [allowlist]
-description = "Global allowlist"
+description = "Allowlist for known test fixtures and false positives"
+
+# Only allow specific paths for test certificates - NOT blanket extensions
 paths = [
-  '''testdata''',
-  '''tests/.*''',
+  # Test data directories with known test fixtures
+  '''tests/certs/.*''',
+  '''tests/fixtures/.*''',
+  # Interop test certificates (clearly marked as test-only)
+  '''examples/interop/certs/.*''',
+  '''clients/python/examples/interop/certs/.*''',
+  # Zig build artifacts (not source)
   '''\.zig-cache''',
   '''zig-out''',
+  # RFC specification documents (may contain example keys)
+  '''specs/.*\.txt$''',
+  # Vendor directories
   '''vendor''',
-  '''data/.*''',
-  '''certs/.*''',
-  '''specs/.*''',
-  '''clients/.*''',
-  '''.*\.key$''',
-  '''.*\.pem$''',
-  '''.*\.crt$''',
-  '''.*\.der$''',
-  '''server\.crt$''',
-  '''server\.key$''',
-  '''.*_test\.zig$''',
-  '''.*test_.*\.zig$''',
-  '''.*\.go$''',
-  '''.*\.md$''',
-  '''.*\.log$''',
 ]
-regexes = [
-  '''-----BEGIN.*PRIVATE KEY-----''',
-]
+
+# Stopwords for variable/function names that contain "secret" but are not secrets
+# These are legitimate code identifiers, not actual credentials
 stopwords = [
+  # QUIC/TLS key derivation variable names (RFC 9001)
   "ecdhe_secret",
   "initial_secret",
   "client_secret",
+  "server_secret",
+  "handshake_secret",
+  "master_secret",
   "app_rx_secret",
   "app_tx_secret",
+  "early_secret",
+  # Key derivation function names
   "deriveKeyIvHp",
+  "derive_secret",
+  "expandLabel",
+  "hkdf_expand",
+  # Test fixture variable names
   "test_client_secret",
   "test_server_secret",
+  "test_secret",
+  # Certificate field names
   "keyCertSign",
+  "keyEncipherment",
+  "digitalSignature",
+  # QUIC transport parameter names
+  "stateless_reset_token",
+  "token_secret",
 ]
+
+# NOTE: No regex allowlist for private keys.
+# If you need to commit test keys, place them in tests/certs/ or tests/fixtures/
+# and ensure they are clearly documented as TEST ONLY.

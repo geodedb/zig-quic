@@ -7,6 +7,10 @@
 
 const std = @import("std");
 
+/// Maximum tolerable backward clock skew before triggering timeout (5 seconds in ns).
+/// CWE-191 mitigation: Prevents attackers from keeping connections alive via clock manipulation.
+const MAX_CLOCK_SKEW_NS: u64 = 5 * std.time.ns_per_s;
+
 /// Idle timeout timer state.
 /// RFC 9000 §10.1: An endpoint closes the connection if it does not send or receive packets for the idle timeout period.
 pub const IdleTimer = struct {
@@ -29,6 +33,10 @@ pub const IdleTimer = struct {
     /// Whether idle timeout is enabled.
     /// RFC 9000 §10.1: Disabled if either peer advertises 0.
     enabled: bool = false,
+
+    /// Count of significant backward clock skew events detected.
+    /// CWE-191 mitigation: Triggers timeout if clock manipulation detected.
+    clock_skew_count: u8 = 0,
 
     /// Initialize idle timer with local timeout preference.
     /// RFC 9000 §10.1: Each endpoint advertises an idle_timeout in transport parameters.
@@ -62,6 +70,8 @@ pub const IdleTimer = struct {
     /// RFC 9000 §10.1: The idle timer resets whenever a packet is sent or received.
     pub fn onActivity(self: *IdleTimer, now_ns: u64) void {
         self.last_activity_ns = now_ns;
+        // Reset clock skew counter on legitimate activity
+        self.clock_skew_count = 0;
     }
 
     /// Update on packet sent.
@@ -78,25 +88,57 @@ pub const IdleTimer = struct {
 
     /// Check if idle timeout has expired.
     /// RFC 9000 §10.1.2: The connection is closed if no packets are sent or received for the idle timeout period.
-    pub fn isExpired(self: *const IdleTimer, now_ns: u64) bool {
+    /// CWE-191 mitigation: Handles backward clock skew safely.
+    pub fn isExpired(self: *IdleTimer, now_ns: u64) bool {
         if (!self.enabled) return false;
         if (self.effective_timeout_ms == 0) return false;
 
         const timeout_ns = self.effective_timeout_ms * std.time.ns_per_ms;
-        const elapsed_ns = if (now_ns > self.last_activity_ns) now_ns - self.last_activity_ns else 0;
 
+        // CWE-191 mitigation: Detect significant backward clock skew.
+        // If clock went backward by more than MAX_CLOCK_SKEW_NS, count it as
+        // potential clock manipulation and trigger timeout after 3 occurrences.
+        if (now_ns < self.last_activity_ns) {
+            const backward_skew = self.last_activity_ns - now_ns;
+            if (backward_skew > MAX_CLOCK_SKEW_NS) {
+                // Significant backward clock skew detected
+                self.clock_skew_count +|= 1; // saturating add
+                if (self.clock_skew_count >= 3) {
+                    // Too many clock skew events - treat as timeout to prevent
+                    // connections staying alive indefinitely via clock manipulation
+                    return true;
+                }
+            }
+            // For small backward skews, use 0 elapsed (clock jitter is normal)
+            return false;
+        }
+
+        const elapsed_ns = now_ns - self.last_activity_ns;
         return elapsed_ns >= timeout_ns;
     }
 
     /// Get time until idle timeout expires (nanoseconds).
     /// Returns null if idle timeout is disabled or has already expired.
+    /// CWE-191 mitigation: Handles backward clock skew safely.
     pub fn timeUntilExpiry(self: *const IdleTimer, now_ns: u64) ?u64 {
         if (!self.enabled) return null;
         if (self.effective_timeout_ms == 0) return null;
 
         const timeout_ns = self.effective_timeout_ms * std.time.ns_per_ms;
-        const elapsed_ns = if (now_ns > self.last_activity_ns) now_ns - self.last_activity_ns else 0;
 
+        // Handle backward clock skew: if clock went backward, return full timeout
+        // to prevent busy-waiting (small skew is normal clock jitter)
+        if (now_ns < self.last_activity_ns) {
+            const backward_skew = self.last_activity_ns - now_ns;
+            if (backward_skew > MAX_CLOCK_SKEW_NS) {
+                // Significant backward skew - if too many, report expired
+                if (self.clock_skew_count >= 3) return null;
+            }
+            // For small skews, return full timeout period
+            return timeout_ns;
+        }
+
+        const elapsed_ns = now_ns - self.last_activity_ns;
         if (elapsed_ns >= timeout_ns) return null; // Already expired
 
         return timeout_ns - elapsed_ns;

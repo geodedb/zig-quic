@@ -37,6 +37,19 @@ fn dumpBytes(label: []const u8, bytes: []const u8) void {
 /// Packet number type alias.
 pub const PacketNumber = u64;
 
+/// RFC 9000 §5.1: Maximum Connection ID length (20 bytes).
+/// CWE-195 mitigation: Validate before casting to u8.
+pub const MAX_CID_LENGTH: usize = 20;
+
+/// Validate CID length per RFC 9000 §5.1.
+/// Returns error.InvalidCidLength if length exceeds 20 bytes.
+pub fn validateCidLength(len: usize) !u8 {
+    if (len > MAX_CID_LENGTH) {
+        return error.InvalidCidLength;
+    }
+    return @as(u8, @intCast(len));
+}
+
 /// Long header type discriminator used when encoding/decoding.
 pub const LongHeaderType = enum { Initial, Handshake };
 
@@ -66,11 +79,11 @@ pub const LongHeader = struct {
         // Version
         var be: [4]u8 = .{ @as(u8, @intCast(self.version >> 24)), @as(u8, @intCast((self.version >> 16) & 0xff)), @as(u8, @intCast((self.version >> 8) & 0xff)), @as(u8, @intCast(self.version & 0xff)) };
         try w.writeAll(&be);
-        // DCID Len + DCID
-        try w.writeByte(@as(u8, @intCast(self.dcid.len)));
+        // DCID Len + DCID (RFC 9000 §5.1: max 20 bytes)
+        try w.writeByte(try validateCidLength(self.dcid.len));
         try w.writeAll(self.dcid);
-        // SCID Len + SCID
-        try w.writeByte(@as(u8, @intCast(self.scid.len)));
+        // SCID Len + SCID (RFC 9000 §5.1: max 20 bytes)
+        try w.writeByte(try validateCidLength(self.scid.len));
         try w.writeAll(self.scid);
         var total: usize = 1 + 4 + 1 + self.dcid.len + 1 + self.scid.len;
         // Initial token (only for Initial)
@@ -488,9 +501,10 @@ pub fn encodeInitialProtected(
     try w.writeByte(first);
     var be_ver: [4]u8 = .{ @as(u8, @intCast(version >> 24)), @as(u8, @intCast((version >> 16) & 0xff)), @as(u8, @intCast((version >> 8) & 0xff)), @as(u8, @intCast(version & 0xff)) };
     try w.writeAll(&be_ver);
-    try w.writeByte(@as(u8, @intCast(dcid.len)));
+    // RFC 9000 §5.1: Validate CID lengths (max 20 bytes)
+    try w.writeByte(try validateCidLength(dcid.len));
     try w.writeAll(dcid);
-    try w.writeByte(@as(u8, @intCast(scid.len)));
+    try w.writeByte(try validateCidLength(scid.len));
     try w.writeAll(scid);
 
     if (token.len > 0) {
@@ -747,9 +761,10 @@ pub fn encodeHandshakeProtected(
     };
     logger.debugPrint("encodeHandshakeProtected: writing version bytes {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ be_ver[0], be_ver[1], be_ver[2], be_ver[3] });
     try w.writeAll(&be_ver);
-    try w.writeByte(@as(u8, @intCast(dcid.len)));
+    // RFC 9000 §5.1: Validate CID lengths (max 20 bytes)
+    try w.writeByte(try validateCidLength(dcid.len));
     try w.writeAll(dcid);
-    try w.writeByte(@as(u8, @intCast(scid.len)));
+    try w.writeByte(try validateCidLength(scid.len));
     try w.writeAll(scid);
 
     // Handshake packets do not carry a token
@@ -893,11 +908,11 @@ pub fn encodeVersionNegotiation(alloc: std.mem.Allocator, dcid: []const u8, scid
     try w.writeByte(0x80);
     // Version = 0x00000000
     try w.writeAll(&[_]u8{ 0, 0, 0, 0 });
-    // DCID Len + DCID
-    try w.writeByte(@as(u8, @intCast(dcid.len)));
+    // DCID Len + DCID (RFC 9000 §5.1: max 20 bytes)
+    try w.writeByte(try validateCidLength(dcid.len));
     try w.writeAll(dcid);
-    // SCID Len + SCID
-    try w.writeByte(@as(u8, @intCast(scid.len)));
+    // SCID Len + SCID (RFC 9000 §5.1: max 20 bytes)
+    try w.writeByte(try validateCidLength(scid.len));
     try w.writeAll(scid);
     // Supported versions (4-byte big-endian each)
     var i: usize = 0;
@@ -992,12 +1007,12 @@ pub fn encode0RTTProtected(
     var be: [4]u8 = .{ @as(u8, @intCast(version >> 24)), @as(u8, @intCast((version >> 16) & 0xff)), @as(u8, @intCast((version >> 8) & 0xff)), @as(u8, @intCast(version & 0xff)) };
     try w.writeAll(&be);
 
-    // DCID
-    try w.writeByte(@as(u8, @intCast(dcid.len)));
+    // DCID (RFC 9000 §5.1: max 20 bytes)
+    try w.writeByte(try validateCidLength(dcid.len));
     try w.writeAll(dcid);
 
-    // SCID
-    try w.writeByte(@as(u8, @intCast(scid.len)));
+    // SCID (RFC 9000 §5.1: max 20 bytes)
+    try w.writeByte(try validateCidLength(scid.len));
     try w.writeAll(scid);
 
     // RFC 9001 §5.4.3: Calculate minimum payload size for header protection sample extraction first
@@ -1162,11 +1177,11 @@ pub fn encodeRetry(alloc: std.mem.Allocator, version: u32, dcid: []const u8, sci
     // Version
     var be_ver: [4]u8 = .{ @as(u8, @intCast(version >> 24)), @as(u8, @intCast((version >> 16) & 0xff)), @as(u8, @intCast((version >> 8) & 0xff)), @as(u8, @intCast(version & 0xff)) };
     try w.writeAll(&be_ver);
-    // DCID Len + DCID (equals client's SCID)
-    try w.writeByte(@as(u8, @intCast(dcid.len)));
+    // DCID Len + DCID (equals client's SCID, RFC 9000 §5.1: max 20 bytes)
+    try w.writeByte(try validateCidLength(dcid.len));
     try w.writeAll(dcid);
-    // SCID Len + SCID
-    try w.writeByte(@as(u8, @intCast(scid.len)));
+    // SCID Len + SCID (RFC 9000 §5.1: max 20 bytes)
+    try w.writeByte(try validateCidLength(scid.len));
     try w.writeAll(scid);
     // Token
     try w.writeAll(token);

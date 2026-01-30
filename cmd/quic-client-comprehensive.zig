@@ -38,7 +38,7 @@ pub fn main() !void {
     var connect: []const u8 = "127.0.0.1:4433";
     var sni: []const u8 = "test.local";
     var alpn: []const u8 = "hq-interop";
-    var insecure = true;
+    var insecure = false; // Default to secure mode
 
     while (args.next()) |a| {
         if (std.mem.eql(u8, a, "--connect")) {
@@ -49,7 +49,21 @@ pub fn main() !void {
             alpn = args.next().?;
         } else if (std.mem.eql(u8, a, "--insecure")) {
             insecure = true;
+        } else if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h")) {
+            std.debug.print("Usage: quic-client-comprehensive [options]\n", .{});
+            std.debug.print("  --connect <host:port>  Server address (default: 127.0.0.1:4433)\n", .{});
+            std.debug.print("  --sni <hostname>       SNI hostname (default: test.local)\n", .{});
+            std.debug.print("  --alpn <protocol>      ALPN protocol (default: hq-interop)\n", .{});
+            std.debug.print("  --insecure             Skip TLS certificate validation (TESTING ONLY)\n", .{});
+            return;
         }
+    }
+
+    // Security warning when insecure mode is enabled
+    if (insecure) {
+        std.debug.print("\n", .{});
+        std.debug.print("WARNING: TLS certificate validation DISABLED (--insecure)\n", .{});
+        std.debug.print("         DO NOT use in production - connections may be intercepted!\n", .{});
     }
 
     std.debug.print("\n🚀 Starting Comprehensive QUIC Test Suite (Zig)\n", .{});

@@ -41,6 +41,38 @@ This project implements the following security measures:
 - SPDX license identifiers in all source files
 - Apache-2.0 license
 
+## Known Security Limitations
+
+The following security features are not yet implemented. Users should be aware of these limitations when deploying this implementation:
+
+### Certificate Revocation (OCSP/CRL)
+
+**Status:** Not Implemented
+
+This implementation does not currently support:
+- **OCSP (Online Certificate Status Protocol)** - RFC 6960
+- **OCSP Stapling** - RFC 6066
+- **CRL (Certificate Revocation Lists)** - RFC 5280
+
+**Impact:** If a certificate authority revokes a certificate (e.g., due to key compromise), this implementation will continue to accept the revoked certificate until it expires naturally.
+
+**Recommendation for high-security deployments:**
+- Use short-lived certificates (e.g., 90 days or less)
+- Implement certificate pinning at the application layer
+- Monitor for certificate revocation events via external means
+- Consider using a TLS-terminating proxy that supports OCSP/CRL
+
+**Tracking:** This limitation is tracked in the implementation roadmap.
+
+### Test Certificates
+
+**WARNING:** The repository contains test certificates in `tests/certs/` and `examples/interop/certs/`. These are:
+- Self-signed with no chain of trust
+- Publicly committed (private keys are public)
+- **NOT suitable for production use**
+
+Always use properly issued certificates from a trusted CA in production deployments.
+
 ## Security Updates
 
 Security updates will be released as patch versions. Subscribe to releases to be notified.

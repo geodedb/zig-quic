@@ -76,6 +76,10 @@
           };
           devShell = pkgs.mkShell {
             shellHook = ''
+              # --- Helper functions ---------------------------------------------------------
+              warn() { printf '\033[1;33m[WARN]\033[0m %s\n' "$*" >&2; }
+              security_notice() { printf '\033[1;35m[SECURITY]\033[0m %s\n' "$*" >&2; }
+
               # --- Python path --------------------------------------------------------------
               # Use the Python 3 environment with all required packages (cffi, aioquic, etc)
               # This ensures we use Python 3.12 with cffi instead of the system Python 3.13
@@ -111,7 +115,10 @@
               
               # Export a real token value (command substitution was missing before)
               export GITHUB_TOKEN="$(${pkgs.gh}/bin/gh auth token 2>/dev/null || true)"
-              
+              if [ -n "''${GITHUB_TOKEN}" ]; then
+                security_notice "GITHUB_TOKEN exported to environment (do not expose in logs/processes)"
+              fi
+
               # --- Vault login & secret retrieval ------------------------------------------
               export VAULT_ADDR="https://pki.devnw.com"
               
@@ -125,10 +132,16 @@
               # Pull secrets (command substitutions were previously double-$-escaped)
               OPENAI_API_KEY="$(${pkgs.vault}/bin/vault kv get -mount=secret -field=token /dev/openai/actions-primary 2>/dev/null || echo "")"
               export OPENAI_API_KEY
-              
+              if [ -n "''${OPENAI_API_KEY}" ]; then
+                security_notice "OPENAI_API_KEY exported to environment (do not expose in logs/processes)"
+              fi
+
               CACHIX_AUTH_TOKEN="$(${pkgs.vault}/bin/vault kv get -mount=secret -field=token /cicd/gh/cachix 2>/dev/null || echo "")"
               export CACHIX_AUTH_TOKEN
-              
+              if [ -n "''${CACHIX_AUTH_TOKEN}" ]; then
+                security_notice "CACHIX_AUTH_TOKEN exported to environment (do not expose in logs/processes)"
+              fi
+
               # --- Nix configuration & Cachix ----------------------------------------------
               # Use ''${VAR} to avoid Nix interpolation while still expanding in bash.
               NIX_CONFIG="experimental-features = nix-command flakes

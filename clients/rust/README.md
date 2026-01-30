@@ -4,10 +4,27 @@ Simple QUIC test client using the quinn library for testing interoperability wit
 
 ## Prerequisites
 
-Install Rust toolchain from https://rustup.rs/ if not already installed:
+Install Rust toolchain from https://rustup.rs/ if not already installed.
 
+**Recommended (safer)**: Use your system package manager:
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# Ubuntu/Debian
+sudo apt install rustc cargo
+
+# macOS with Homebrew
+brew install rust
+
+# Arch Linux
+sudo pacman -S rust
+```
+
+**Alternative**: Download from rustup.rs (review the script first):
+```bash
+# SECURITY NOTE: Always review scripts before executing them
+# Download first, inspect, then run:
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o rustup-init.sh
+less rustup-init.sh  # Review the script
+sh rustup-init.sh
 ```
 
 ## Build

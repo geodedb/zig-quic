@@ -281,6 +281,15 @@ pub const RxContext = struct {
     /// Optional opaque endpoint pointer for send_fn context (Phase 4b.5 Session 3)
     /// When non-null, send_fn can use this to access endpoint state
     endpoint_ctx: ?*anyopaque = null,
+    /// Generated token secret for Retry/NEW_TOKEN when cfg.token_secret is null.
+    /// This is a pointer to the endpoint's generated 32-byte cryptographic secret,
+    /// replacing the hardcoded fallback that was predictable and insecure.
+    generated_token_secret: *const [32]u8 = undefined,
+    /// Maximum concurrent connections (CWE-400 mitigation).
+    /// Enforces RFC 9000 §8.1 rate-limiting recommendation.
+    /// New connections are rejected when active count >= max_connections.
+    /// Set to 0 for unlimited (not recommended for production).
+    max_connections: usize = 10000,
 };
 
 /// Helper: Placeholder for IncomingProcessor when needed
@@ -847,6 +856,16 @@ pub fn processInitial(
             return; // Client endpoints don't create server connections
         }
 
+        // CWE-400 mitigation: Enforce connection limit before creating new connections.
+        // RFC 9000 §8.1 recommends servers implement rate-limiting to prevent DoS.
+        // When at capacity, silently drop the Initial packet (do not send error to avoid amplification).
+        if (ctx.max_connections > 0 and ctx.conns.count() >= ctx.max_connections) {
+            logger.debugPrint("processInitial: Connection limit reached ({}/{}), dropping Initial packet\n", .{
+                ctx.conns.count(), ctx.max_connections
+            });
+            return; // Drop packet - do not create connection
+        }
+
         // Create server connection using Session 5 API
         const server_mod = @import("server.zig");
 
@@ -939,7 +958,9 @@ pub fn processInitial(
     if (conn.role == .Server and !conn.address_validated and token_bytes.len > 0) {
         const token_mod = @import("token");
         const client_ip_bytes = peer.getIpBytes();
-        const secret = ctx.cfg.token_secret orelse "default-retry-secret-16";
+        // Use user-provided secret if available, otherwise use the cryptographically
+        // random secret generated at endpoint init (never use a hardcoded fallback)
+        const secret = ctx.cfg.token_secret orelse ctx.generated_token_secret;
         const now_ns: i128 = std.time.nanoTimestamp();
         const now_ms: u64 = @intCast(if (now_ns > 0) @as(u128, @intCast(now_ns)) / std.time.ns_per_ms else 0);
 
@@ -970,7 +991,9 @@ pub fn processInitial(
     if (conn.role == .Server and !conn.address_validated and ctx.cfg.enable_retry) {
         const token_mod = @import("token");
         const client_ip_bytes = peer.getIpBytes();
-        const secret = ctx.cfg.token_secret orelse "default-retry-secret-16";
+        // Use user-provided secret if available, otherwise use the cryptographically
+        // random secret generated at endpoint init (never use a hardcoded fallback)
+        const secret = ctx.cfg.token_secret orelse ctx.generated_token_secret;
 
         // Generate Retry token bound to client IP and ODCID
         const retry_tok = token_mod.encode(

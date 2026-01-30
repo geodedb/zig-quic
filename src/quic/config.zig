@@ -47,6 +47,9 @@ pub const QuicConfig = struct {
     // AEAD usage limit overrides (tests/dev). RFC 9001 §6.6 supplies defaults.
     aead_confidentiality_limit_override: ?u64 = null,
     aead_integrity_limit_override: ?u64 = null,
+    // Maximum concurrent connections (RFC 9000 §8.1 rate-limiting recommendation).
+    // Protects against DoS via unbounded connection creation. 0 = unlimited.
+    max_connections: usize = 10000,
     // Inline test/server certificate and raw P-256 private key (DER cert, 32-byte scalar) (RFC 9001 §4.4)
     inline_server_cert_der: ?[]const u8 = null,
     inline_server_priv_p256: ?[]const u8 = null,

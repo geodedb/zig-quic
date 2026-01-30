@@ -118,10 +118,16 @@ pub fn main() !void {
         log("endpoint: NAT rebinding detection enabled");
     }
 
+    // NOTE: allow_insecure=true is REQUIRED for QNS interop testing.
+    // The QUIC Network Simulator uses self-signed certificates and other
+    // implementations expect clients to skip certificate validation.
+    // This is ONLY acceptable in the controlled interop test environment.
+    log("WARNING: TLS certificate validation disabled for interop testing");
     var cfg = api.QuicConfig{
         // Advertise common interop ALPNs: RFC h3 and HQ variants used by older runners
         .alpn = &[_][]const u8{ "h3", "hq-29", "hq-interop" },
-        .allow_insecure = true, // runner provides cert; we skip validation for now
+        // SECURITY: Insecure mode required for QNS interop - DO NOT use in production
+        .allow_insecure = true,
         .enable_datagram = false,
         .compatible_vn = false,
         .enable_retry = false,
@@ -164,8 +170,9 @@ pub fn main() !void {
     if (cert_ok != null and key_path_sel != null) {
         cfg.cert_path = "/certs/cert.pem";
         cfg.key_path = key_path_sel;
-        cfg.allow_insecure = true; // clients may skip verification for now
-        log("server: TLS enabled with provided certificate");
+        // SECURITY: Insecure mode required for QNS interop - clients use self-signed certs
+        cfg.allow_insecure = true;
+        log("server: TLS enabled with provided certificate (insecure mode for interop)");
     }
 
     if (std.mem.eql(u8, role, "server")) {

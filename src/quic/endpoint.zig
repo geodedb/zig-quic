@@ -3,11 +3,26 @@
 
 //! Endpoint skeleton with UDP send/recv (thread-safe for multi-connection handling).
 //!
-//! THREAD-SAFETY (GAP-0200): This module now supports concurrent access from multiple
-//! threads. The endpoint mutex protects shared state (conns, accepted, timers), while
-//! per-connection mutexes protect individual connection state. The poll() function
-//! should be called from a single thread (the I/O thread), but accept() and connection
-//! operations can be called safely from worker threads.
+//! ## Threading Model (CWE-366 Mitigation)
+//!
+//! **IMPORTANT**: This implementation uses the following threading model:
+//!
+//! 1. **I/O Thread**: A single thread should call `poll()` and process incoming packets.
+//!    This thread handles packet decryption, frame parsing, and state updates.
+//!
+//! 2. **Application Threads**: Multiple threads may safely call:
+//!    - `accept()` - Accept new incoming connections
+//!    - `Connection.readStream()` - Read data from streams
+//!    - `Connection.writeStream()` - Write data to streams
+//!    - `Connection.acceptStream()` - Accept peer-initiated streams
+//!
+//! **Thread Safety Implementation**:
+//! - `current_io_endpoint` is `threadlocal` to support multiple endpoints in separate threads
+//! - Each `Connection` has a `mu: std.Thread.Mutex` protecting internal state
+//! - Stream maps (`streams_rx`, `stream_txs`) are protected by the connection mutex
+//! - All public stream APIs acquire the connection mutex before accessing state
+//!
+//! **Lock Ordering**: Always acquire endpoint lock before connection lock to prevent deadlocks.
 //!
 //! Implements the endpoint responsibilities from RFC 9000 (§§5–9, §14) including
 //! packet processing, path validation, and PMTUD timers, plus recovery plumbing
@@ -164,6 +179,11 @@ pub const Endpoint = struct {
     // Endpoint role (Client or Server)
     role: EndpointRole,
 
+    // Generated token secret for Retry/NEW_TOKEN if user doesn't provide one.
+    // 32 bytes of cryptographically random data generated at endpoint init.
+    // This replaces the hardcoded fallback to prevent predictable tokens.
+    generated_token_secret: [32]u8 = undefined,
+
     /// Initialize a UDP endpoint bound to bind_addr (e.g., "127.0.0.1:0").
     ///
     /// Phase 8c: Now uses UdpTransport internally for all socket operations.
@@ -202,6 +222,11 @@ pub const Endpoint = struct {
 
         logger.debugPrint("Endpoint role determined as: {any}\n", .{endpoint_role});
 
+        // Generate cryptographically random token secret if not provided in config.
+        // This prevents using a hardcoded fallback which would be predictable.
+        var generated_secret: [32]u8 = undefined;
+        std.crypto.random.bytes(&generated_secret);
+
         return Endpoint{
             .transport = transport,
             .owned_udp_transport = udp,
@@ -217,6 +242,7 @@ pub const Endpoint = struct {
             .retired = std.ArrayList(*conn_mod.Connection){},
             .epoll_fd = null, // Not used with transport abstraction
             .role = endpoint_role,
+            .generated_token_secret = generated_secret,
         };
     }
 
@@ -230,6 +256,10 @@ pub const Endpoint = struct {
         endpoint_role: EndpointRole,
     ) !Endpoint {
         // Role now passed as parameter instead of hardcoded
+
+        // Generate cryptographically random token secret if not provided in config.
+        var generated_secret: [32]u8 = undefined;
+        std.crypto.random.bytes(&generated_secret);
 
         return Endpoint{
             .transport = transport,
@@ -245,6 +275,7 @@ pub const Endpoint = struct {
             .retired = std.ArrayList(*conn_mod.Connection){},
             .epoll_fd = null, // No epoll with transport abstraction
             .role = endpoint_role,
+            .generated_token_secret = generated_secret,
         };
     }
 
@@ -806,6 +837,8 @@ pub const Endpoint = struct {
             .test_capture_enabled = self.test_capture_enabled,
             .endpoint_role = role_converted,
             .endpoint_ctx = self,
+            .generated_token_secret = &self.generated_token_secret,
+            .max_connections = self.cfg.max_connections,
         };
 
         // Process packets until we've consumed all bytes

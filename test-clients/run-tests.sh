@@ -3,6 +3,9 @@
 # Interoperability Test Script for Zig QUIC Server
 # Tests connectivity with quic-go, aioquic, and quinn clients
 #
+# SECURITY NOTE: This script uses direct command execution instead of eval
+# for improved security. All test commands are hardcoded - never pass
+# user input to the test execution functions.
 
 set -e
 
@@ -12,12 +15,16 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+# Get script directory for relative paths
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
 # Test configuration
 SERVER_HOST="127.0.0.1"
 SERVER_PORT="4433"
-SERVER_BINARY="/home/benji/src/spyder/quic/zig-out/bin/quic-server"
-CERT_PATH="/home/benji/src/spyder/quic/certs/cert.pem"
-KEY_PATH="/home/benji/src/spyder/quic/certs/key.pem"
+SERVER_BINARY="${PROJECT_ROOT}/zig-out/bin/quic-server"
+CERT_PATH="${PROJECT_ROOT}/tests/certs/cert.pem"
+KEY_PATH="${PROJECT_ROOT}/tests/certs/key.pem"
 
 # Test result tracking
 TESTS_RUN=0
@@ -32,10 +39,11 @@ echo "Testing Zig QUIC server with Length field fixes"
 echo "Server: ${SERVER_HOST}:${SERVER_PORT}"
 echo ""
 
-# Function to run a test
+# Function to run a test command directly (no eval)
+# Arguments: test_name, command with args as separate parameters
 run_test() {
     local test_name="$1"
-    local test_command="$2"
+    shift  # Remove test_name from arguments
 
     TESTS_RUN=$((TESTS_RUN + 1))
     echo ""
@@ -43,7 +51,9 @@ run_test() {
     echo "Test ${TESTS_RUN}: ${test_name}"
     echo "----------------------------------------"
 
-    if eval "$test_command" 2>&1 | tee "/tmp/test-${TESTS_RUN}.log"; then
+    # Execute command directly with all remaining arguments
+    # This is safer than eval as it doesn't interpret shell metacharacters
+    if "$@" 2>&1 | tee "/tmp/test-${TESTS_RUN}.log"; then
         echo -e "${GREEN}✓ PASS${NC}: ${test_name}"
         TESTS_PASSED=$((TESTS_PASSED + 1))
         return 0
@@ -83,17 +93,20 @@ fi
 echo -e "${GREEN}Server is running${NC}"
 echo ""
 
-# Test 1: quic-go client
+# Test 1: quic-go client (command executed directly, not via eval)
 run_test "quic-go (Go) client" \
-    "/home/benji/src/spyder/quic/test-clients/quic-go-client/quic-go-test-client --addr ${SERVER_HOST}:${SERVER_PORT}"
+    "${SCRIPT_DIR}/quic-go-client/quic-go-test-client" \
+    --addr "${SERVER_HOST}:${SERVER_PORT}"
 
 # Test 2: aioquic client
 run_test "aioquic (Python) client" \
-    "python3 /home/benji/src/spyder/quic/test-clients/aioquic-client/test_client.py --host ${SERVER_HOST} --port ${SERVER_PORT}"
+    python3 "${SCRIPT_DIR}/aioquic-client/test_client.py" \
+    --host "${SERVER_HOST}" --port "${SERVER_PORT}"
 
 # Test 3: quinn client
 run_test "quinn (Rust) client" \
-    "/home/benji/src/spyder/quic/test-clients/quinn-client/target/release/quinn-test-client --addr ${SERVER_HOST}:${SERVER_PORT} --server-name localhost"
+    "${SCRIPT_DIR}/quinn-client/target/release/quinn-test-client" \
+    --addr "${SERVER_HOST}:${SERVER_PORT}" --server-name localhost
 
 # Stop server
 echo ""

@@ -3,11 +3,19 @@
 # - Avoids sudo if it's broken or unavailable
 # - Multi-user Nix only when systemd+sudo are healthy
 #
+# SECURITY WARNING:
+# This script downloads and executes code from the internet (nixos.org).
+# Before running this script, you should:
+# 1. Verify you trust the Nix project (https://nixos.org)
+# 2. Review the installer manually: curl https://nixos.org/nix/install | less
+# 3. Consider using your OS package manager instead if available
+#
 # Usage: ./install_pkgs.sh
 # Env:
 #   FORCE_SINGLE_USER=1  # Force single-user install of Nix
 #   NO_SUDO=1            # Never attempt to use sudo
 #   NONINTERACTIVE=1     # Auto-accept prompts where supported
+#   SKIP_VERIFY=1        # Skip installer verification (not recommended)
 #
 # Re-run safe.
 
@@ -116,9 +124,34 @@ install_nix() {
     return 0
   fi
 
+  warn "SECURITY: About to download installer from nixos.org"
+  warn "Review the source at: https://github.com/NixOS/nix/blob/master/scripts/install-nix-from-closure.sh"
+
   local installer="/tmp/nix-install.$$"
+
+  # Download the installer
+  log "Downloading Nix installer..."
   curl -fsSL https://nixos.org/nix/install -o "$installer"
   trap 'rm -f "$installer"' EXIT
+
+  # Basic sanity check: verify it looks like a shell script
+  if ! head -1 "$installer" | grep -q "^#!"; then
+    die "Downloaded file does not appear to be a shell script. Aborting for safety."
+  fi
+
+  # Verify it contains expected Nix installer markers
+  if ! grep -q "nix-store" "$installer" || ! grep -q "NIX_" "$installer"; then
+    die "Downloaded file does not appear to be the Nix installer. Aborting for safety."
+  fi
+
+  log "Basic installer verification passed"
+
+  # Optional: Skip interactive confirmation in non-interactive mode
+  if [[ "${NONINTERACTIVE:-0}" != "1" ]] && [[ "${SKIP_VERIFY:-0}" != "1" ]]; then
+    warn "You can review the installer at: $installer"
+    warn "Press Enter to continue or Ctrl+C to abort..."
+    read -r
+  fi
 
   local nonint=()
   [[ "${NONINTERACTIVE:-0}" == "1" ]] && nonint+=(--yes)

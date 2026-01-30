@@ -1920,13 +1920,22 @@ pub const Connection = struct {
 
     /// Ingest a STREAM frame payload into the RX buffer for the stream with reassembly.
     /// Ingest STREAM frame data (copy + reassembly); updates flow-control windows heuristically.
+    /// CWE-366 mitigation: Thread-safe - acquires connection mutex to protect stream maps.
     pub fn pushStreamFrame(self: *Connection, stream_id: u64, offset: u64, data: []const u8, fin: bool) !void {
+        self.mu.lock();
+        defer self.mu.unlock();
+
         logger.debugPrint("[CONN-PTR-PUSH] conn=0x{x} stream_id={}\n", .{ @intFromPtr(self), stream_id });
         logger.debugPrint("[STREAM-RX] id={} off={} len={} fin={} before recv_off={} inbox_len={} bufs={}\n", .{ stream_id, offset, data.len, fin, if (self.streams_rx.getPtr(stream_id)) |sr| sr.recv_off else 0, if (self.streams_rx.getPtr(stream_id)) |sr| sr.inbox.items.len else 0, if (self.streams_rx.getPtr(stream_id)) |sr| sr.bufs.items.len else 0 });
         if (self.stream_recv_aborted) return; // ignore further data after RESET_STREAM
 
         logger.debugPrint("\n=== PUSH_STREAM_FRAME ENTRY ===\n", .{});
         logger.debugPrint("stream_id={}, offset={}, len={}, fin={}, role={}\n", .{ stream_id, offset, data.len, fin, self.role });
+
+        // CWE-400 mitigation: Validate peer-initiated streams don't exceed our limits.
+        // RFC 9000 §4.6: Peers MUST NOT exceed our advertised MAX_STREAMS limits.
+        // If exceeded, this is a STREAM_LIMIT_ERROR (0x04) per RFC 9000 §20.
+        try self.validatePeerStreamLimit(stream_id);
 
         logger.debugPrint("Calling ensureStreamRx({})...\n", .{stream_id});
         const s = self.ensureStreamRx(stream_id);
@@ -3471,6 +3480,41 @@ pub const Connection = struct {
         } else {
             // If we're the server, peer-initiated means client-initiated
             return is_client_initiated;
+        }
+    }
+
+    /// CWE-400 mitigation: Validate peer-initiated stream against local limits.
+    /// RFC 9000 §4.6: "An endpoint MUST NOT open more streams than the peer permits."
+    /// Returns error.StreamLimitExceeded if the peer exceeds our advertised limits.
+    pub fn validatePeerStreamLimit(self: *const Connection, stream_id: u64) !void {
+        // Only check peer-initiated streams
+        if (!self.isPeerInitiatedStream(stream_id)) return;
+
+        // Already known stream - no limit check needed
+        if (self.streams_rx.get(stream_id) != null) return;
+
+        // Extract stream number and type from stream ID
+        // Stream ID format: [stream_num:62][dir:1][initiator:1]
+        const stream_num = stream_id >> 2;
+        const dir_bit = (stream_id >> 1) & 0x1;
+        const is_bidi = (dir_bit == 0);
+
+        if (is_bidi) {
+            // Check against local_max_streams_bidi (what we advertised to peer)
+            if (stream_num >= self.local_max_streams_bidi) {
+                logger.debugPrint("validatePeerStreamLimit: Peer exceeded bidi stream limit (stream_num={}, limit={})\n", .{
+                    stream_num, self.local_max_streams_bidi
+                });
+                return error.StreamLimitExceeded;
+            }
+        } else {
+            // Check against local_max_streams_uni
+            if (stream_num >= self.local_max_streams_uni) {
+                logger.debugPrint("validatePeerStreamLimit: Peer exceeded uni stream limit (stream_num={}, limit={})\n", .{
+                    stream_num, self.local_max_streams_uni
+                });
+                return error.StreamLimitExceeded;
+            }
         }
     }
 
