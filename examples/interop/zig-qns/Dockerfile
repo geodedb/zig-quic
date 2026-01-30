@@ -1,4 +1,4 @@
-FROM martenseemann/quic-network-simulator-endpoint:latest
+FROM martenseemann/quic-network-simulator-endpoint@sha256:3b2b9e6fa317da238c8140a7b6d2bf8d4d45a8464b873eecac3ff2a32520b71a
 
 # Expect a prebuilt qns-endpoint copied from host to make builds deterministic and offline-friendly.
 # Build locally before invoking docker:

@@ -26,9 +26,14 @@ Generated test certificates are:
 
 ## Generating Test Certificates
 
-**You must run these commands before running tests:**
+If OpenSSL is available, the test suite will auto-generate these files on demand.
+You can also generate them manually:
 
 ```bash
+# One-shot helper
+./create_test_certs.sh
+
+# Or generate manually:
 # Generate EC P-256 certificate (recommended for testing)
 openssl ecparam -genkey -name prime256v1 -out key.pem
 openssl req -new -x509 -key key.pem -out cert.pem -days 365 \

@@ -9,7 +9,7 @@ version: "3.5"
 
 services:
   sim:
-    image: martenseemann/quic-network-simulator
+    image: martenseemann/quic-network-simulator@sha256:c23d82a55caffe681b1bdae65d4d30d23e1283141a414a7f02ee56cf15f9c6b9
     container_name: sim
     hostname: sim
     stdin_open: true

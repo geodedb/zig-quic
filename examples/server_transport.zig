@@ -35,9 +35,9 @@ pub fn main() !void {
         .port = port,
         .max_connections = 100,
         .idle_timeout_ms = 30000,
-        // WARNING: Test certificates - configure for production!
-        .cert_path = "tests/certs/cert.pem",
-        .key_path = "tests/certs/key.pem",
+        // Provide valid certificates for production use.
+        .cert_path = "certs/server.crt",
+        .key_path = "certs/server.key",
     };
 
     // Initialize the transport

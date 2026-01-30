@@ -66,14 +66,11 @@ This implementation does not currently support:
 
 ### Test Certificates
 
-**WARNING:** The repository contains test certificates in `tests/certs/` and `examples/interop/certs/`. These are:
-- Self-signed with no chain of trust
-- Publicly committed (private keys are public)
-- **NOT suitable for production use**
+**WARNING:** Test certificates are generated locally under `tests/certs/` and `examples/interop/certs/`.
+They are self-signed, not suitable for production, and are intentionally excluded from version control.
 
 Always use properly issued certificates from a trusted CA in production deployments.
 
 ## Security Updates
 
 Security updates will be released as patch versions. Subscribe to releases to be notified.
-

@@ -156,7 +156,7 @@ For ease of use, this library includes a high-level transport layer that provide
 
 ### Features
 
-- **Automatic TLS Management**: Auto-generates self-signed certificates when not provided
+- **Secure TLS Defaults**: Explicit certificates required; optional self-signed generation for local testing
 - **Connection Pooling**: Manages multiple connections efficiently
 - **Stream Management**: Easy-to-use stream API with read/write helpers
 - **Client & Server**: Full support for both client and server sides
@@ -182,6 +182,8 @@ const transport = @import("quic");
 // Server example
 var quic_transport = try transport.QuicTransport.init(allocator, .{
     .port = 4433,
+    .cert_path = "certs/server.crt",
+    .key_path = "certs/server.key",
 });
 defer quic_transport.deinit();
 
@@ -196,12 +198,15 @@ while (true) {
 var client = transport.QuicClient.init(allocator);
 defer client.deinit();
 
-try client.connect("127.0.0.1", 4433);
+try client.connectEx("127.0.0.1", 4433, "certs/ca.crt", null, null);
 const stream = try client.openStream(true);
 defer stream.close();
 
 try stream.writeAll("Hello, QUIC!");
 ```
+
+Generate certificates with OpenSSL (or run `./create_test_certs.sh` for local testing) and
+ensure `cert_path`, `key_path`, and `ca` point to the correct files.
 
 ### Building Examples
 
@@ -212,10 +217,13 @@ Build and run the transport layer examples:
 zig build examples
 
 # Run server
+# (Generate `certs/server.crt` and `certs/server.key` beforehand.)
 ./zig-out/bin/server-transport
 
 # Run client (in another terminal)
-./zig-out/bin/client-transport
+./zig-out/bin/client-transport 127.0.0.1 4433 certs/ca.crt
+# Or, for local testing only:
+# ./zig-out/bin/client-transport 127.0.0.1 4433 --insecure
 ```
 
 See [docs/TRANSPORT_LAYER.md](docs/TRANSPORT_LAYER.md) for complete API documentation.

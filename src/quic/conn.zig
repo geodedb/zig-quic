@@ -512,6 +512,8 @@ pub const Connection = struct {
     allowed_alpns: []const []const u8 = &[_][]const u8{},
     /// Negotiated ALPN cached for outer layers (owned slice, may be null prior to EncryptedExtensions)
     negotiated_alpn: ?[]u8 = null,
+    /// Server name (SNI) expected by the client for certificate validation (owned slice).
+    server_name: ?[]u8 = null,
     /// Locally advertised QUIC transport parameters (encoded) cached for reuse.
     local_transport_params_raw: ?[]u8 = null,
     /// Peer-provided QUIC transport parameters (encoded) cached after validation.
@@ -884,6 +886,7 @@ pub const Connection = struct {
         self.allocator = alloc;
         self.allowed_alpns = &[_][]const u8{};
         self.negotiated_alpn = null;
+        self.server_name = null;
         self.local_transport_params_raw = null;
         self.peer_transport_params_raw = null;
         self.enable_pacing = false;
@@ -1059,15 +1062,17 @@ pub const Connection = struct {
     }
 
     /// Set the expected server name (SNI) for TLS certificate validation on client connections.
-    /// This is a compatibility wrapper for the API layer that worked with legacy TLS Engine.
-    /// Currently a no-op as server name validation is not yet implemented in TLS Context.
-    /// TODO: Implement server name validation in TLS Context for production use.
+    /// This updates the TLS context so ClientHello includes SNI and hostname checks run.
     pub fn setServerName(self: *Connection, server_name: []const u8) !void {
-        _ = self;
-        _ = server_name;
-        // NOTE: TLS Context does not currently support server_name validation.
-        // This method exists for API compatibility and should be implemented
-        // when certificate validation is added to TLS Context.
+        if (server_name.len == 0) return;
+        if (self.server_name) |old| {
+            self.allocator.free(old);
+        }
+        const owned = try self.allocator.dupe(u8, server_name);
+        self.server_name = owned;
+        if (self.tls_context) |tls_ctx| {
+            tls_ctx.config.server_name = owned;
+        }
     }
 
     /// Release resources held by this Connection (payloads, maps, TLS state).
@@ -1076,6 +1081,7 @@ pub const Connection = struct {
         if (self.deinit_called) return;
         self.deinit_called = true;
         if (self.negotiated_alpn) |alpn| self.allocator.free(alpn);
+        if (self.server_name) |name| self.allocator.free(name);
         if (self.local_transport_params_raw) |tp| self.allocator.free(tp);
         if (self.peer_transport_params_raw) |tp| self.allocator.free(tp);
         self.negotiated_alpn = null;

@@ -26,6 +26,11 @@ SERVER_BINARY="${PROJECT_ROOT}/zig-out/bin/quic-server"
 CERT_PATH="${PROJECT_ROOT}/tests/certs/cert.pem"
 KEY_PATH="${PROJECT_ROOT}/tests/certs/key.pem"
 
+if [[ ! -f "$CERT_PATH" || ! -f "$KEY_PATH" ]]; then
+  echo "Test certificates missing; generating with create_test_certs.sh"
+  "${PROJECT_ROOT}/create_test_certs.sh"
+fi
+
 # Test result tracking
 TESTS_RUN=0
 TESTS_PASSED=0

@@ -2,14 +2,14 @@
 
 **WARNING: FOR INTEROPERABILITY TESTING ONLY - DO NOT USE IN PRODUCTION**
 
-This directory contains test certificates specifically for QUIC interoperability
-testing with other implementations (quic-go, aioquic, quinn, etc.).
+This directory is for locally generated test certificates used in QUIC interoperability
+testing with other implementations (quic-go, aioquic, quinn, etc.). Certificate files
+are intentionally excluded from version control.
 
 ## Security Warning
 
-These certificates are:
+Generated certificates are:
 - Self-signed with no chain of trust
-- Committed to a public repository
 - NOT suitable for any production use
 - Only for testing QUIC protocol compatibility
 

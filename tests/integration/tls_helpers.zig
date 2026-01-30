@@ -45,6 +45,100 @@ pub const TestCertKeyPair = struct {
     }
 };
 
+fn pathExists(path: []const u8) bool {
+    std.fs.cwd().access(path, .{}) catch return false;
+    return true;
+}
+
+fn runOpenSsl(allocator: std.mem.Allocator, argv: []const []const u8) !void {
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = argv,
+    }) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    if (result.term != .Exited or result.term.Exited != 0) {
+        return error.TestCertsUnavailable;
+    }
+}
+
+/// Ensure test certificate files exist on disk, generating them with OpenSSL if missing.
+pub fn ensureTestCertFiles(allocator: std.mem.Allocator) !void {
+    const cert_path = "tests/certs/cert.pem";
+    const key_path = "tests/certs/key.pem";
+    const rsa_cert_path = "tests/certs/server-rsa.crt";
+    const rsa_key_path = "tests/certs/server-rsa.key";
+
+    const cert_exists = pathExists(cert_path);
+    const key_exists = pathExists(key_path);
+    const rsa_cert_exists = pathExists(rsa_cert_path);
+    const rsa_key_exists = pathExists(rsa_key_path);
+
+    if (cert_exists and key_exists and rsa_cert_exists and rsa_key_exists) return;
+
+    std.fs.cwd().makePath("tests/certs") catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+
+    if (!(cert_exists and key_exists)) {
+        try runOpenSsl(allocator, &[_][]const u8{
+            "openssl",
+            "ecparam",
+            "-genkey",
+            "-name",
+            "prime256v1",
+            "-out",
+            key_path,
+        });
+        try runOpenSsl(allocator, &[_][]const u8{
+            "openssl",
+            "req",
+            "-new",
+            "-x509",
+            "-key",
+            key_path,
+            "-out",
+            cert_path,
+            "-days",
+            "365",
+            "-subj",
+            "/CN=localhost/O=Test/C=US",
+            "-addext",
+            "subjectAltName=DNS:localhost,IP:127.0.0.1",
+        });
+    }
+
+    if (!(rsa_cert_exists and rsa_key_exists)) {
+        try runOpenSsl(allocator, &[_][]const u8{
+            "openssl",
+            "genrsa",
+            "-out",
+            rsa_key_path,
+            "2048",
+        });
+        try runOpenSsl(allocator, &[_][]const u8{
+            "openssl",
+            "req",
+            "-new",
+            "-x509",
+            "-key",
+            rsa_key_path,
+            "-out",
+            rsa_cert_path,
+            "-days",
+            "365",
+            "-subj",
+            "/CN=localhost/O=Test/C=US",
+            "-addext",
+            "subjectAltName=DNS:localhost,IP:127.0.0.1",
+        });
+    }
+}
+
 /// Generate a self-signed certificate and key pair for testing
 ///
 /// This is a placeholder implementation that uses pre-generated test certificates.
@@ -55,6 +149,8 @@ pub fn generateSelfSignedCert(
     config: TestCertConfig,
 ) !TestCertKeyPair {
     _ = config;
+
+    try ensureTestCertFiles(allocator);
 
     // For now, use the existing test certificates
     // In a full implementation, this would call OpenSSL to generate certs
@@ -126,7 +222,9 @@ pub fn createServerTlsConfig(
     allocator: std.mem.Allocator,
     tls_config: TlsTestConfig,
 ) !ServerTlsConfig {
-    _ = allocator;
+    if (tls_config.cert_path == null or tls_config.key_path == null) {
+        try ensureTestCertFiles(allocator);
+    }
 
     return ServerTlsConfig{
         .cert_path = tls_config.cert_path orelse "tests/certs/cert.pem",
@@ -373,11 +471,7 @@ test "TLS helpers - generate self-signed cert" {
 
     const config = TestCertConfig{};
     var pair = generateSelfSignedCert(allocator, config) catch |err| {
-        // Skip test if test certs don't exist
-        if (err == error.FileNotFound) {
-            std.debug.print("Test skipped: tests/certs/ files not found\n", .{});
-            return;
-        }
+        if (err == error.SkipZigTest) return error.SkipZigTest;
         return err;
     };
     defer pair.deinit();

@@ -1,8 +1,26 @@
 #!/bin/bash
 
 # Create test certificate directories
+mkdir -p tests/certs
 mkdir -p tests/certs/valid
 mkdir -p tests/certs/self-signed
+
+# Generate root-level certs used by tests if missing
+if [ ! -f tests/certs/cert.pem ] || [ ! -f tests/certs/key.pem ]; then
+    echo "Creating root test ECDSA certificate (tests/certs/cert.pem)..."
+    openssl ecparam -genkey -name prime256v1 -out tests/certs/key.pem
+    openssl req -new -x509 -key tests/certs/key.pem -out tests/certs/cert.pem -days 365 \
+        -subj "/CN=localhost/O=Test/C=US" \
+        -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+fi
+
+if [ ! -f tests/certs/server-rsa.crt ] || [ ! -f tests/certs/server-rsa.key ]; then
+    echo "Creating root test RSA certificate (tests/certs/server-rsa.crt)..."
+    openssl genrsa -out tests/certs/server-rsa.key 2048
+    openssl req -new -x509 -key tests/certs/server-rsa.key -out tests/certs/server-rsa.crt -days 365 \
+        -subj "/CN=localhost/O=Test/C=US" \
+        -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+fi
 
 # Function to generate ECDSA P-256 certificate
 generate_ecdsa_cert() {
@@ -59,6 +77,11 @@ generate_rsa_cert "tests/certs/self-signed" "/CN=localhost-rsa/O=Self-Signed/C=U
 echo "Certificate generation complete!"
 echo ""
 echo "Files created:"
+echo "  Root test certificates:"
+echo "    - tests/certs/cert.pem (ECDSA)"
+echo "    - tests/certs/key.pem (ECDSA)"
+echo "    - tests/certs/server-rsa.crt (RSA)"
+echo "    - tests/certs/server-rsa.key (RSA)"
 echo "  Valid certificates:"
 echo "    - tests/certs/valid/cert.pem (ECDSA)"
 echo "    - tests/certs/valid/key.pem (ECDSA)"

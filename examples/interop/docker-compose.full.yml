@@ -20,7 +20,7 @@
 
 services:
   sim:
-    image: martenseemann/quic-network-simulator
+    image: martenseemann/quic-network-simulator@sha256:c23d82a55caffe681b1bdae65d4d30d23e1283141a414a7f02ee56cf15f9c6b9
     container_name: ${COMPOSE_PROJECT_NAME}_sim
     hostname: sim
     stdin_open: true
@@ -109,7 +109,7 @@ services:
 
   # quic-go implementation
   quic-go-server:
-    image: martenseemann/quic-go-interop:latest
+    image: martenseemann/quic-go-interop@sha256:aa7949c0a4a036390aac69227264b48f114c3467776cb047ba5c1cde671e021b
     container_name: quic-go-server
     hostname: server
     stdin_open: true
@@ -138,7 +138,7 @@ services:
       - quic-go
 
   quic-go-client:
-    image: martenseemann/quic-go-interop:latest
+    image: martenseemann/quic-go-interop@sha256:aa7949c0a4a036390aac69227264b48f114c3467776cb047ba5c1cde671e021b
     container_name: quic-go-client
     hostname: client
     stdin_open: true

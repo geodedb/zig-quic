@@ -13,6 +13,15 @@ pub fn main() !void {
 
     const server_addr = if (args.len > 1) args[1] else "127.0.0.1";
     const server_port = if (args.len > 2) try std.fmt.parseInt(u16, args[2], 10) else 4433;
+    var ca_path: ?[]const u8 = null;
+    var allow_insecure = false;
+    if (args.len > 3) {
+        if (std.mem.eql(u8, args[3], "--insecure")) {
+            allow_insecure = true;
+        } else {
+            ca_path = args[3];
+        }
+    }
 
     std.debug.print("Connecting to {s}:{d}\n", .{ server_addr, server_port });
 
@@ -20,8 +29,15 @@ pub fn main() !void {
     var client = transport.QuicClient.init(allocator);
     defer client.deinit();
 
-    // Connect to the server
-    try client.connect(server_addr, server_port);
+    // Connect to the server (secure by default)
+    if (allow_insecure) {
+        try client.connectInsecure(server_addr, server_port, true);
+    } else if (ca_path) |ca| {
+        try client.connectEx(server_addr, server_port, ca, null, null);
+    } else {
+        std.debug.print("Missing CA certificate path. Provide a CA path as the third arg or use --insecure for local testing.\n", .{});
+        return error.MissingCaCert;
+    }
     std.debug.print("Connected successfully\n", .{});
 
     // Wait for handshake to complete

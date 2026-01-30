@@ -13,6 +13,7 @@
 //! - RFC 9002: QUIC Loss Detection and Congestion Control
 
 const std = @import("std");
+const tls_helpers = @import("tls_helpers");
 
 // Phase 14: Stub types for harness (real endpoints via endpoint_loopback_helpers)
 // Note: ConnectionPair uses endpoint_loopback_helpers.EndpointWrapper for real endpoints
@@ -340,12 +341,15 @@ pub const ConnectionStats = struct {
 
 /// Helper to create a test server configuration
 pub fn createServerConfig(allocator: std.mem.Allocator) !Config {
+    tls_helpers.ensureTestCertFiles(allocator) catch |err| {
+        if (err == error.SkipZigTest) return error.SkipZigTest;
+        return err;
+    };
     var config = Config{};
     config.role = .server;
     config.cert_path = "tests/certs/cert.pem";
     config.key_path = "tests/certs/key.pem";
     config.alpn = &[_][]const u8{"test"};
-    _ = allocator;
     return config;
 }
 

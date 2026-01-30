@@ -245,7 +245,10 @@ interop-test:
   before_script:
     - apk add --no-cache bash git curl
     - mkdir -p ~/.docker/cli-plugins
-    - curl -fsSL "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-x86_64" -o ~/.docker/cli-plugins/docker-compose
+    - DOCKER_COMPOSE_VERSION="v2.32.4"
+    - DOCKER_COMPOSE_SHA256="ed1917fb54db184192ea9d0717bcd59e3662ea79db48bff36d3475516c480a6b"
+    - curl -fsSL "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-linux-x86_64" -o ~/.docker/cli-plugins/docker-compose
+    - echo "${DOCKER_COMPOSE_SHA256}  ~/.docker/cli-plugins/docker-compose" | sha256sum -c -
     - chmod +x ~/.docker/cli-plugins/docker-compose
     - |
       echo "Waiting for Docker daemon..."
@@ -262,7 +265,12 @@ interop-test:
         echo "Waiting... ($i/30)"
         sleep 2
       done
-    - git clone --depth 1 https://github.com/quic-interop/quic-interop-runner.git examples/interop/quic-interop-runner
+    - QUIC_INTEROP_RUNNER_COMMIT="93303cc97699d0b71651265b066fedbf6a84d4ec"
+    - git init examples/interop/quic-interop-runner
+    - git -C examples/interop/quic-interop-runner remote add origin https://github.com/quic-interop/quic-interop-runner.git
+    - git -C examples/interop/quic-interop-runner fetch --depth 1 origin "${QUIC_INTEROP_RUNNER_COMMIT}"
+    - git -C examples/interop/quic-interop-runner checkout --detach FETCH_HEAD
+    - test "$(git -C examples/interop/quic-interop-runner rev-parse HEAD)" = "${QUIC_INTEROP_RUNNER_COMMIT}"
     - mkdir -p examples/interop/quic-network-simulator/logs/sim
     - mkdir -p examples/interop/quic-network-simulator/logs/server
     - mkdir -p examples/interop/quic-network-simulator/logs/client
@@ -273,12 +281,14 @@ interop-test:
     - dd if=/dev/urandom of=examples/interop/quic-network-simulator/www/10000 bs=10000 count=1 2>/dev/null
   script:
     - docker build -f examples/interop/zig-qns/Dockerfile -t zig-qns:local .
-    - docker pull martenseemann/quic-go-interop:latest
-    - docker pull martenseemann/quic-network-simulator:latest
+    - export QUIC_GO_IMAGE="martenseemann/quic-go-interop@sha256:aa7949c0a4a036390aac69227264b48f114c3467776cb047ba5c1cde671e021b"
+    - export QNS_IMAGE="martenseemann/quic-network-simulator@sha256:c23d82a55caffe681b1bdae65d4d30d23e1283141a414a7f02ee56cf15f9c6b9"
+    - docker pull "${QUIC_GO_IMAGE}"
+    - docker pull "${QNS_IMAGE}"
     - |
       echo "=== Test: Zig server <-> quic-go client (handshake) ==="
       export SERVER_IMAGE="zig-qns:local"
-      export CLIENT_IMAGE="martenseemann/quic-go-interop:latest"
+      export CLIENT_IMAGE="${QUIC_GO_IMAGE}"
       export TESTCASE="handshake"
       docker compose -f examples/interop/docker-compose.full.yml --profile generic up -d sim
       sleep 10
@@ -286,7 +296,7 @@ interop-test:
       docker compose -f examples/interop/docker-compose.full.yml --profile generic down -v || true
     - |
       echo "=== Test: quic-go server <-> Zig client (handshake) ==="
-      export SERVER_IMAGE="martenseemann/quic-go-interop:latest"
+      export SERVER_IMAGE="${QUIC_GO_IMAGE}"
       export CLIENT_IMAGE="zig-qns:local"
       export TESTCASE="handshake"
       docker compose -f examples/interop/docker-compose.full.yml --profile generic up -d sim
@@ -296,7 +306,7 @@ interop-test:
     - |
       echo "=== Test: Zig server <-> quic-go client (transfer) ==="
       export SERVER_IMAGE="zig-qns:local"
-      export CLIENT_IMAGE="martenseemann/quic-go-interop:latest"
+      export CLIENT_IMAGE="${QUIC_GO_IMAGE}"
       export TESTCASE="transfer"
       docker compose -f examples/interop/docker-compose.full.yml --profile generic up -d sim
       sleep 10
@@ -304,7 +314,7 @@ interop-test:
       docker compose -f examples/interop/docker-compose.full.yml --profile generic down -v || true
     - |
       echo "=== Test: quic-go server <-> Zig client (transfer) ==="
-      export SERVER_IMAGE="martenseemann/quic-go-interop:latest"
+      export SERVER_IMAGE="${QUIC_GO_IMAGE}"
       export CLIENT_IMAGE="zig-qns:local"
       export TESTCASE="transfer"
       docker compose -f examples/interop/docker-compose.full.yml --profile generic up -d sim

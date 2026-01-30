@@ -4,7 +4,7 @@ The transport layer provides a high-level, easy-to-use interface for building QU
 
 ## Features
 
-- **Automatic TLS Management**: Auto-generates self-signed certificates when not provided
+- **Secure TLS Defaults**: Requires explicit certificates; optional self-signed generation for local testing
 - **Connection Pooling**: Manages multiple connections efficiently
 - **Stream Management**: Easy-to-use stream API with read/write helpers
 - **Client & Server**: Full support for both client and server sides
@@ -95,7 +95,7 @@ var client = transport.QuicClient.init(allocator);
 defer client.deinit();
 
 // Connect to server
-try client.connect("127.0.0.1", 4433);
+try client.connectEx("127.0.0.1", 4433, "certs/ca.crt", null, null);
 
 // Wait for handshake to complete
 try client.waitForHandshake();
@@ -143,9 +143,11 @@ Server-side configuration options:
 | `idle_timeout_ms` | `u64` | `30000` | Idle timeout in milliseconds |
 | `max_stream_data` | `u64` | `10MB` | Maximum data per stream |
 | `max_data` | `u64` | `100MB` | Maximum data per connection |
-| `cert_path` | `[]const u8` | `"certs/server.crt"` | Path to TLS certificate |
-| `key_path` | `[]const u8` | `"certs/server.key"` | Path to TLS private key |
+| `cert_path` | `?[]const u8` | `null` | Path to TLS certificate |
+| `key_path` | `?[]const u8` | `null` | Path to TLS private key |
 | `ca_path` | `?[]const u8` | `null` | Path to CA certificate (for mTLS) |
+| `allow_insecure` | `bool` | `false` | Skip certificate validation (testing only) |
+| `auto_generate_certs` | `bool` | `false` | Auto-generate self-signed cert/key (testing only) |
 
 ## Examples
 
@@ -162,6 +164,8 @@ pub fn main() !void {
 
     const config = transport.QuicTransport.Config{
         .port = 8443,
+        .cert_path = "certs/server.crt",
+        .key_path = "certs/server.key",
     };
 
     var quic_transport = try transport.QuicTransport.init(allocator, config);
@@ -213,7 +217,7 @@ pub fn main() !void {
     var client = transport.QuicClient.init(allocator);
     defer client.deinit();
 
-    try client.connect("127.0.0.1", 8443);
+    try client.connectEx("127.0.0.1", 8443, "certs/ca.crt", null, null);
     try client.waitForHandshake();
 
     const stream = try client.getStream();
@@ -230,11 +234,11 @@ pub fn main() !void {
 
 ## Certificate Management
 
-The transport layer automatically handles TLS certificates:
+The transport layer requires explicit certificates by default:
 
-1. **Automatic Generation**: If certificates are not found, the server will attempt to generate self-signed certificates using OpenSSL
-2. **Fallback to Insecure**: If OpenSSL is not available, the server will fall back to insecure mode (not recommended for production)
-3. **Custom Certificates**: Provide your own certificates via the configuration
+1. **Explicit Certificates**: Provide `cert_path` and `key_path` in the configuration
+2. **Optional Auto-Generation**: Set `auto_generate_certs = true` to create self-signed certs for local testing
+3. **No Fail-Open**: Missing or invalid certs return an error instead of disabling TLS
 
 ### Generating Certificates Manually
 
@@ -246,6 +250,10 @@ openssl req -x509 -newkey rsa:4096 \
     -days 365 -nodes \
     -subj "/C=US/ST=State/L=City/O=Company/CN=localhost"
 ```
+
+For local development, you can also run `./create_test_certs.sh` to generate
+test certificates under `tests/certs/` and point `cert_path`/`key_path` there
+(testing only).
 
 ## Logging
 
@@ -274,6 +282,8 @@ Enable mutual TLS by providing a CA certificate:
 ```zig
 const config = transport.QuicTransport.Config{
     .port = 8443,
+    .cert_path = "certs/server.crt",
+    .key_path = "certs/server.key",
     .ca_path = "certs/ca.crt", // Require client certificates
 };
 ```

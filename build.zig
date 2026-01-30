@@ -1277,6 +1277,12 @@ pub fn build(b: *std.Build) void {
         const run_test_conn_metadata = b.addRunArtifact(test_conn_metadata);
         test_step.dependOn(&run_test_conn_metadata.step);
 
+        const test_conn_server_name = addTst(b, "tests/test_connection_server_name.zig", target, optimize);
+        test_conn_server_name.root_module.addImport("quic_conn", quic_conn_mod);
+        test_conn_server_name.root_module.addImport("quic_tls13", tls13_mod);
+        const run_test_conn_server_name = b.addRunArtifact(test_conn_server_name);
+        test_step.dependOn(&run_test_conn_server_name.step);
+
         // Regression test for TLS Error 266 (zero-length SCID in 1-RTT packets)
         const test_zero_scid_1rtt = addTst(b, "tests/test_zero_length_scid_1rtt.zig", target, optimize);
         test_zero_scid_1rtt.root_module.addImport("quic_api", quic_api_mod);
