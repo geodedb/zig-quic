@@ -20,9 +20,18 @@ paths = [
   # Test data directories with known test fixtures
   '''tests/certs/.*''',
   '''tests/fixtures/.*''',
+  # Test certificate directories with development-only keys
+  '''certs/.*''',
+  '''data/.*''',
   # Interop test certificates (clearly marked as test-only)
   '''examples/interop/certs/.*''',
   '''clients/python/examples/interop/certs/.*''',
+  # PEM parsing source code (contains header string literals, not actual keys)
+  '''src/quic/pem\.zig$''',
+  # Test files with test vectors (RFC-defined test data, not real secrets)
+  '''tests/test_.*\.zig$''',
+  '''tests/unit/.*\.zig$''',
+  '''.*_test\.zig$''',
   # Zig build artifacts (not source)
   '''\.zig-cache''',
   '''zig-out''',
