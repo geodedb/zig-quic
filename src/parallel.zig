@@ -5,6 +5,51 @@
 //!
 //! Provides high-performance parallel implementations of compute-intensive
 //! QUIC operations including AEAD encryption/decryption and header protection.
+//!
+//! ## Overview
+//!
+//! This module enables parallel processing of QUIC cryptographic operations
+//! using the spice thread pool with fork/join work-stealing. Operations
+//! automatically fall back to sequential processing when spice is disabled
+//! or input sizes are below thresholds.
+//!
+//! ## Build Configuration
+//!
+//! Enable parallel processing with `-Dspice=true` (default: enabled).
+//! Disable with `-Dspice=false` for sequential-only execution.
+//!
+//! ## Usage Example
+//!
+//! ```zig
+//! const parallel = @import("parallel.zig");
+//!
+//! // Encrypt multiple packets in parallel
+//! var inputs: [8]parallel.AeadEncryptInput = undefined;
+//! var outputs: [8][]u8 = undefined;
+//! var results: [8]parallel.AeadEncryptResult = undefined;
+//!
+//! // Initialize inputs with keys, IVs, plaintext...
+//! parallel.parallelAeadEncrypt(.aes_128_gcm, &inputs, &outputs, &results);
+//!
+//! // Check results
+//! for (results) |result| {
+//!     if (result.success) {
+//!         // Use encrypted data
+//!     }
+//! }
+//!
+//! // Cleanup: call deinitPool() when done with parallel operations
+//! parallel.deinitPool();
+//! ```
+//!
+//! ## Performance Thresholds
+//!
+//! | Operation          | Threshold | Sequential Below |
+//! |--------------------|-----------|------------------|
+//! | AEAD Encrypt       | 4 packets | Yes              |
+//! | AEAD Decrypt       | 4 packets | Yes              |
+//! | Header Protection  | 8 packets | Yes              |
+//! | Loss Detection     | 64 packets| Yes              |
 
 const std = @import("std");
 const build_options = @import("build_options");
@@ -657,5 +702,238 @@ test "parallel loss detect" {
     );
 
     // Packets 0-92 should be lost (95 - 3 = 92)
+    try std.testing.expect(result.lost_count > 0);
+}
+
+test "parallel aead encrypt - empty input" {
+    var inputs: [0]AeadEncryptInput = undefined;
+    var outputs: [0][]u8 = undefined;
+    var results: [0]AeadEncryptResult = undefined;
+
+    parallelAeadEncrypt(.aes_128_gcm, &inputs, &outputs, &results);
+    // Should handle empty arrays without error
+}
+
+test "parallel aead encrypt - single item below threshold" {
+    const allocator = std.testing.allocator;
+    const count = 1;
+
+    var inputs: [count]AeadEncryptInput = undefined;
+    var outputs: [count][]u8 = undefined;
+    var results: [count]AeadEncryptResult = undefined;
+
+    const key = [_]u8{0x01} ** 16;
+    const iv = [_]u8{0x02} ** 12;
+    const plaintext = "test";
+
+    inputs[0] = .{
+        .key = &key,
+        .iv = &iv,
+        .packet_number = 0,
+        .aad = "aad",
+        .plaintext = plaintext,
+    };
+    outputs[0] = try allocator.alloc(u8, plaintext.len + 16);
+    defer allocator.free(outputs[0]);
+
+    parallelAeadEncrypt(.aes_128_gcm, &inputs, &outputs, &results);
+    try std.testing.expect(results[0].success);
+}
+
+test "parallel aead encrypt - at threshold boundary" {
+    if (!build_options.enable_spice) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const count = 4; // Exactly at threshold
+
+    var inputs: [count]AeadEncryptInput = undefined;
+    var outputs: [count][]u8 = undefined;
+    var results: [count]AeadEncryptResult = undefined;
+
+    const key = [_]u8{0x01} ** 16;
+    const iv = [_]u8{0x02} ** 12;
+    const plaintext = "test data";
+
+    for (&inputs, 0..) |*input, i| {
+        input.* = .{
+            .key = &key,
+            .iv = &iv,
+            .packet_number = @intCast(i),
+            .aad = "header",
+            .plaintext = plaintext,
+        };
+        outputs[i] = try allocator.alloc(u8, plaintext.len + 16);
+    }
+    defer for (&outputs) |out| allocator.free(out);
+
+    parallelAeadEncrypt(.aes_128_gcm, &inputs, &outputs, &results);
+
+    for (results) |result| {
+        try std.testing.expect(result.success);
+    }
+}
+
+test "parallel aead decrypt - basic" {
+    if (!build_options.enable_spice) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const count = 8;
+
+    const key = [_]u8{0x01} ** 16;
+    const iv = [_]u8{0x02} ** 12;
+    const plaintext = "test data";
+    const aad = "header";
+
+    // First encrypt
+    var ciphertexts: [count][]u8 = undefined;
+    for (&ciphertexts) |*ct| {
+        ct.* = try allocator.alloc(u8, plaintext.len + 16);
+    }
+    defer for (&ciphertexts) |ct| allocator.free(ct);
+
+    var enc_inputs: [count]AeadEncryptInput = undefined;
+    var enc_results: [count]AeadEncryptResult = undefined;
+    for (&enc_inputs, 0..) |*input, i| {
+        input.* = .{
+            .key = &key,
+            .iv = &iv,
+            .packet_number = @intCast(i),
+            .aad = aad,
+            .plaintext = plaintext,
+        };
+    }
+    parallelAeadEncrypt(.aes_128_gcm, &enc_inputs, &ciphertexts, &enc_results);
+
+    // Now decrypt
+    var dec_inputs: [count]AeadDecryptInput = undefined;
+    var dec_outputs: [count][]u8 = undefined;
+    var dec_results: [count]AeadDecryptResult = undefined;
+
+    for (&dec_inputs, 0..) |*input, i| {
+        input.* = .{
+            .key = &key,
+            .iv = &iv,
+            .packet_number = @intCast(i),
+            .aad = aad,
+            .ciphertext_and_tag = ciphertexts[i],
+        };
+        dec_outputs[i] = try allocator.alloc(u8, plaintext.len);
+    }
+    defer for (&dec_outputs) |out| allocator.free(out);
+
+    parallelAeadDecrypt(.aes_128_gcm, &dec_inputs, &dec_outputs, &dec_results);
+
+    for (dec_results) |result| {
+        try std.testing.expect(result.success);
+        try std.testing.expect(!result.auth_failed);
+    }
+}
+
+test "parallel header protect - basic" {
+    if (!build_options.enable_spice) return error.SkipZigTest;
+
+    var inputs: [16]HeaderProtectInput = undefined;
+    var masks: [16][5]u8 = undefined;
+
+    const hp_key = [_]u8{0x01} ** 16;
+    const sample = [_]u8{0x02} ** 16;
+
+    for (&inputs) |*input| {
+        input.* = .{
+            .hp_key = &hp_key,
+            .sample = sample,
+        };
+    }
+
+    parallelHeaderProtect(.aes_128_gcm, &inputs, &masks);
+
+    // Verify masks are computed (non-zero for valid keys)
+    for (masks) |mask| {
+        var non_zero = false;
+        for (mask) |b| {
+            if (b != 0) {
+                non_zero = true;
+                break;
+            }
+        }
+        try std.testing.expect(non_zero);
+    }
+}
+
+test "parallel header protect - chacha20" {
+    if (!build_options.enable_spice) return error.SkipZigTest;
+
+    var inputs: [8]HeaderProtectInput = undefined;
+    var masks: [8][5]u8 = undefined;
+
+    const hp_key = [_]u8{0x01} ** 32;
+    const sample = [_]u8{0x02} ** 16;
+
+    for (&inputs) |*input| {
+        input.* = .{
+            .hp_key = &hp_key,
+            .sample = sample,
+        };
+    }
+
+    parallelHeaderProtect(.chacha20_poly1305, &inputs, &masks);
+
+    for (masks) |mask| {
+        var non_zero = false;
+        for (mask) |b| {
+            if (b != 0) {
+                non_zero = true;
+                break;
+            }
+        }
+        try std.testing.expect(non_zero);
+    }
+}
+
+test "parallel loss detect - no losses" {
+    if (!build_options.enable_spice) return error.SkipZigTest;
+
+    var sent_packets: [64]SentPacketInfo = undefined;
+    for (&sent_packets, 0..) |*sp, i| {
+        sp.* = .{
+            .packet_number = @intCast(i),
+            .size = 1200,
+            .time_sent_ns = @intCast(i * 1_000_000),
+            .ack_eliciting = true,
+            .declared_lost = false,
+        };
+    }
+
+    const result = parallelLossDetect(
+        &sent_packets,
+        0, // largest_acked = 0, no losses possible
+        3,
+        100_000_000,
+        0, // now = 0
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), result.lost_count);
+}
+
+test "parallel loss detect - below threshold uses sequential" {
+    var sent_packets: [32]SentPacketInfo = undefined;
+    for (&sent_packets, 0..) |*sp, i| {
+        sp.* = .{
+            .packet_number = @intCast(i),
+            .size = 1200,
+            .time_sent_ns = @intCast(i * 1_000_000),
+            .ack_eliciting = true,
+            .declared_lost = false,
+        };
+    }
+
+    const result = parallelLossDetect(
+        &sent_packets,
+        30,
+        3,
+        100_000_000,
+        200_000_000,
+    );
+
     try std.testing.expect(result.lost_count > 0);
 }
