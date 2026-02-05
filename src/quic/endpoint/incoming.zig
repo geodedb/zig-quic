@@ -2728,7 +2728,7 @@ pub fn generateAndSendAck(
                     // PHASE 42 PART 9: Send MAX_STREAM_DATA for ALL active streams (RFC 9000 §4.2)
                     // Per-stream flow control requires tracking and updating each stream's window
                     // PHASE 42 PART 19: Enhanced debug logging to track flow control behavior
-                    {
+                    if (conn.streams_rx_init) {
                         var iter = conn.streams_rx.iterator();
                         var fc_frames_sent: u32 = 0;
                         while (iter.next()) |entry| {

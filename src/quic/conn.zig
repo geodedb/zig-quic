@@ -635,12 +635,14 @@ pub const Connection = struct {
     // DATAGRAM inbox - use .empty for safe default (Zig 0.15 ArrayListUnmanaged)
     dgram_inbox: std.ArrayList([]u8) = .empty,
     // Streams RX map and simple stream-0 TX counters
-    // Note: HashMaps need explicit init() before use - checked via initialized flag
+    // Note: HashMaps need explicit init() before use - tracked via _init flags
     streams_rx: std.AutoHashMap(u64, StreamRx) = undefined,
+    streams_rx_init: bool = false,
     stream_opened: bool = false,
     stream_send_off: u64 = 0,
     // Multi-stream TX state map (extended): track offset/flags per stream id
     stream_txs: std.AutoHashMap(u64, StreamTx) = undefined,
+    stream_txs_init: bool = false,
     // Queue of incoming peer-initiated streams waiting to be accepted
     incoming_stream_queue: std.ArrayList(u64) = .empty,
     // Track highest peer-initiated stream ID seen (for each type)
@@ -939,9 +941,11 @@ pub const Connection = struct {
         self.dgram_inbox = .empty;
         // Init streams map
         self.streams_rx = std.AutoHashMap(u64, StreamRx).init(alloc.*);
+        self.streams_rx_init = true;
         self.stream_opened = false;
         self.stream_send_off = 0;
         self.stream_txs = std.AutoHashMap(u64, StreamTx).init(alloc.*);
+        self.stream_txs_init = true;
         self.stream_send_aborted = false;
         self.stream_send_fin_sent = false;
         self.stream_recv_aborted = false;
@@ -1107,14 +1111,16 @@ pub const Connection = struct {
             self.allocator.free(p);
         }
         self.dgram_inbox.deinit(self.allocator.*);
-        // Deinit all streams
-        var it = self.streams_rx.iterator();
-        while (it.next()) |e| {
-            var s = e.value_ptr.*;
-            s.deinit(self.allocator);
+        // Deinit all streams (only if initialized)
+        if (self.streams_rx_init) {
+            var it = self.streams_rx.iterator();
+            while (it.next()) |e| {
+                var s = e.value_ptr.*;
+                s.deinit(self.allocator);
+            }
+            self.streams_rx.deinit();
         }
-        self.streams_rx.deinit();
-        if (self.stream_txs.capacity() != 0) self.stream_txs.deinit();
+        if (self.stream_txs_init) self.stream_txs.deinit();
         // Free incoming stream queue
         if (self.incoming_stream_queue.capacity != 0) self.incoming_stream_queue.deinit(self.allocator.*);
         // Free reset tokens / initial token buffers once (previous code double-deinited)
@@ -3461,8 +3467,11 @@ pub const Connection = struct {
     }
 
     fn ensureStreamRx(self: *Connection, id: u64) *StreamRx {
-        // Ensure hashmaps are initialized - they can't use .empty
-        if (self.streams_rx.capacity() == 0) self.streams_rx = std.AutoHashMap(u64, StreamRx).init(self.allocator.*);
+        // Ensure hashmaps are initialized - they can't use .empty (tracked via _init flag)
+        if (!self.streams_rx_init) {
+            self.streams_rx = std.AutoHashMap(u64, StreamRx).init(self.allocator.*);
+            self.streams_rx_init = true;
+        }
         // ArrayLists use .empty default, which has capacity=0 but is valid - no need to reinitialize
         if (self.streams_rx.getPtr(id)) |s| return s;
         var sr = StreamRx.init();
