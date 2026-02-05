@@ -46,7 +46,7 @@ const SpaceState = struct {
 
     fn init(alloc: std.mem.Allocator) SpaceState {
         return .{
-            .sent = .{},
+            .sent = std.ArrayList(SentPacket).empty,
             .allocator = alloc,
         };
     }
