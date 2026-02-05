@@ -2437,8 +2437,9 @@ pub const Connection = struct {
 
         // PHASE 57 PART 8: Check congestion control before sending (RFC 9002 §7)
         // msquic: forks/msquic/src/core/cubic.c:189 - if (BytesInFlight >= CongestionWindow) SendAllowance = 0
-        const bytes_in_flight = self.rec.cc.bytes_in_flight;
-        const cwnd = self.rec.cc.cwnd;
+        const cc_state = self.rec.getCongestionState();
+        const bytes_in_flight = cc_state.bytes_in_flight;
+        const cwnd = cc_state.cwnd;
         if (bytes_in_flight >= cwnd) {
             // TEMPORARY OVERRIDE: allow send beyond cwnd to diagnose 1MB stall (investigation).
             logger.debugPrint("[CC-OVERRIDE] bytes_in_flight={} >= cwnd={} (allowing send for diagnostic)\n", .{ bytes_in_flight, cwnd });
@@ -3379,8 +3380,9 @@ pub const Connection = struct {
         if (target_udp_payload < 1200) return error.InvalidProbeSize;
         // CC-aware pacing guard: do not send a probe if it would exceed cwnd.
         // This keeps PMTUD probing from competing with data under tight congestion windows.
-        const bif: usize = self.rec.cc.bytes_in_flight;
-        const cwnd: usize = self.rec.cc.cwnd;
+        const cc_state = self.rec.getCongestionState();
+        const bif: usize = cc_state.bytes_in_flight;
+        const cwnd: usize = cc_state.cwnd;
         if (bif + target_udp_payload > cwnd) {
             return error.WouldBlock;
         }
@@ -3731,7 +3733,7 @@ pub const Connection = struct {
             if (v >= 1200 and v <= 65527) {
                 const lim: u16 = @intCast(v);
                 if (lim < self.path_mtu) self.path_mtu = lim;
-                if (lim < self.rec.cc.mds) self.rec.cc.mds = lim;
+                if (lim < self.rec.getMds()) self.rec.setMds(lim);
                 self.peer_max_udp_payload_size = lim;
             }
         }
