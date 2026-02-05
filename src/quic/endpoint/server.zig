@@ -291,6 +291,8 @@ pub const ServerConnectionConfig = struct {
     aead_confidentiality_limit: u64 = 0,
     /// AEAD integrity limit override (0 = use default)
     aead_integrity_limit: u64 = 0,
+    /// Require client certificate authentication (mTLS)
+    require_client_cert: bool = false,
 };
 
 /// Create a server-side connection from an Initial packet.
@@ -412,6 +414,9 @@ pub fn createServerConnection(
         config.server_cert_der,
         config.server_priv_key_der,
         config.allow_insecure,
+        config.require_client_cert,
+        null, // Server doesn't need client cert/key
+        null,
     );
 
     const tls_ctx = try allocator.create(@TypeOf(ctx_value));

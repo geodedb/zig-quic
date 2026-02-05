@@ -53,4 +53,9 @@ pub const QuicConfig = struct {
     // Inline test/server certificate and raw P-256 private key (DER cert, 32-byte scalar) (RFC 9001 §4.4)
     inline_server_cert_der: ?[]const u8 = null,
     inline_server_priv_p256: ?[]const u8 = null,
+    // mTLS: Server requests client certificate (RFC 8446 §4.3.2, RFC 9001 initial handshake only)
+    require_client_cert: bool = false,
+    // mTLS: Client certificate and private key (DER-encoded) for mutual authentication
+    inline_client_cert_der: ?[]const u8 = null,
+    inline_client_priv_key: ?[]const u8 = null,
 };

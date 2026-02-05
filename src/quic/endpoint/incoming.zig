@@ -891,6 +891,7 @@ pub fn processInitial(
             .max_datagram_size = ctx.cfg.max_datagram_size,
             .aead_confidentiality_limit = ctx.cfg.aead_confidentiality_limit_override orelse 0,
             .aead_integrity_limit = ctx.cfg.aead_integrity_limit_override orelse 0,
+            .require_client_cert = ctx.cfg.require_client_cert,
         };
 
         // Create and initialize server connection

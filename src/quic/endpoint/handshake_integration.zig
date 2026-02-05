@@ -323,6 +323,9 @@ pub fn createTlsContext(
     server_cert_der: ?[]const u8,
     server_key_der: ?[]const u8,
     allow_insecure: bool,
+    request_client_cert: bool,
+    client_cert_der: ?[]const u8,
+    client_key_der: ?[]const u8,
 ) !tls13.Context {
     // Create TLS configuration
     const tls_role: tls13.Role = if (role == .Client) .Client else .Server;
@@ -346,6 +349,9 @@ pub fn createTlsContext(
         .server_key_der = server_key_der,
         .supported_signature_schemes = supported_schemes,
         .allow_insecure = allow_insecure,
+        .request_client_cert = request_client_cert,
+        .client_cert_der = client_cert_der,
+        .client_key_der = client_key_der,
     };
 
     // Create callbacks struct with full QUIC integration

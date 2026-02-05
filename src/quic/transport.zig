@@ -66,6 +66,8 @@ pub const QuicTransport = struct {
         allow_insecure: bool = false,
         /// Auto-generate a self-signed certificate if cert/key are missing. Off by default.
         auto_generate_certs: bool = false,
+        /// Require client certificate authentication (mTLS). Server only.
+        require_client_cert: bool = false,
     };
 
     /// Initializes a new QUIC transport with the given configuration.
@@ -219,6 +221,7 @@ pub const QuicTransport = struct {
             .aead_integrity_limit_override = null,
             .inline_server_cert_der = inline_cert_der,
             .inline_server_priv_p256 = inline_priv_key,
+            .require_client_cert = self.config.require_client_cert,
         };
 
         logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_server\",\"msg\":\"initializing endpoint\",\"bind_addr\":\"{s}\"}}\n", .{bind_addr});

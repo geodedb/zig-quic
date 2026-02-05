@@ -802,6 +802,18 @@ pub fn build(b: *std.Build) void {
         const run_test_public_exports = b.addRunArtifact(test_public_exports);
         test_step.dependOn(&run_test_public_exports.step);
 
+        // mTLS config field tests
+        const test_mtls_config = addTst(b, "tests/test_mtls_config.zig", target, optimize);
+        test_mtls_config.root_module.addImport("config", quic_config_mod);
+        const run_test_mtls_config = b.addRunArtifact(test_mtls_config);
+        test_step.dependOn(&run_test_mtls_config.step);
+
+        // mTLS export verification tests
+        const test_mtls_exports = addTst(b, "tests/test_mtls_exports.zig", target, optimize);
+        test_mtls_exports.root_module.addImport("quic", quic_mod);
+        const run_test_mtls_exports = b.addRunArtifact(test_mtls_exports);
+        test_step.dependOn(&run_test_mtls_exports.step);
+
         // ========================================================================
         // Phase 1 Unit Tests: Foundation Modules (RFC-based)
         // ========================================================================

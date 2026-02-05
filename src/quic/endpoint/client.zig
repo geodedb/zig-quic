@@ -172,6 +172,9 @@ pub fn createClientConnection(
         null,     // No server cert for client
         null,     // No server key for client
         cfg.allow_insecure,
+        false, // Client doesn't request client certs
+        cfg.inline_client_cert_der,
+        cfg.inline_client_priv_key,
     ) catch |err| blk: {
         logger.debugPrint("createClientConnection: Failed to create TLS Context: {}\n", .{err});
         break :blk null;

@@ -249,6 +249,9 @@ test "RFC 9001 §4 - createTlsContext initializes Context with correct role" {
         null, // No server cert for client
         null, // No server key for client
         true, // allow_insecure for testing
+        false, // request_client_cert
+        null, // client_cert_der
+        null, // client_key_der
     );
     defer client_ctx.deinit();
 
@@ -265,6 +268,9 @@ test "RFC 9001 §4 - createTlsContext initializes Context with correct role" {
         null, // No cert for unit test
         null, // No key for unit test
         true, // allow_insecure for testing
+        false, // request_client_cert
+        null, // client_cert_der
+        null, // client_key_der
     );
     defer server_ctx.deinit();
 
@@ -288,6 +294,9 @@ test "RFC 9001 §4 - createTlsContext registers callbacks" {
         null,
         null,
         true, // allow_insecure for testing
+        false, // request_client_cert
+        null, // client_cert_der
+        null, // client_key_der
     );
     defer ctx.deinit();
 
