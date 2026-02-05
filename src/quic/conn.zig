@@ -632,16 +632,17 @@ pub const Connection = struct {
     pto_initial_count: u32 = 0,
     pto_handshake_count: u32 = 0,
     pto_app_count: u32 = 0,
-    // DATAGRAM inbox
-    dgram_inbox: std.ArrayList([]u8) = undefined,
+    // DATAGRAM inbox - use .empty for safe default (Zig 0.15 ArrayListUnmanaged)
+    dgram_inbox: std.ArrayList([]u8) = .empty,
     // Streams RX map and simple stream-0 TX counters
+    // Note: HashMaps need explicit init() before use - checked via initialized flag
     streams_rx: std.AutoHashMap(u64, StreamRx) = undefined,
     stream_opened: bool = false,
     stream_send_off: u64 = 0,
     // Multi-stream TX state map (extended): track offset/flags per stream id
     stream_txs: std.AutoHashMap(u64, StreamTx) = undefined,
     // Queue of incoming peer-initiated streams waiting to be accepted
-    incoming_stream_queue: std.ArrayList(u64) = undefined,
+    incoming_stream_queue: std.ArrayList(u64) = .empty,
     // Track highest peer-initiated stream ID seen (for each type)
     highest_peer_bidi_stream: ?u64 = null,
     highest_peer_uni_stream: ?u64 = null,
@@ -671,8 +672,8 @@ pub const Connection = struct {
     address_validated: bool = false,
     bytes_rx_unvalidated: u64 = 0,
     bytes_tx_unvalidated: u64 = 0,
-    // Retry token buffer
-    initial_token: std.ArrayList(u8) = undefined,
+    // Retry token buffer - use .empty for safe default (Zig 0.15 ArrayListUnmanaged)
+    initial_token: std.ArrayList(u8) = .empty,
     // Simple path validation & tokens
     /// PATH_CHALLENGE validation state per RFC 9000 §9; true until a matching
     /// PATH_RESPONSE arrives for the outstanding challenge data.
@@ -684,7 +685,7 @@ pub const Connection = struct {
     new_token_sent: bool = false,
     // Stateless reset tokens advertised by peer via NEW_CONNECTION_ID
     /// Peer-advertised stateless reset tokens (RFC 9000 §10.3, §19.15).
-    reset_tokens: std.ArrayList([16]u8) = undefined,
+    reset_tokens: std.ArrayList([16]u8) = .empty,
     // Congestion controllers and selection flag (legacy; Recovery.cc is authoritative)
     use_cubic: bool = false,
     cc_nr: recovery.NewReno = .{},
@@ -934,8 +935,8 @@ pub const Connection = struct {
         self.pto_handshake_count = 0;
         self.pto_app_count = 0;
         self.timer_granularity_ns = std.time.ns_per_ms;
-        // Init DATAGRAM inbox
-        self.dgram_inbox = std.ArrayList([]u8){};
+        // Init DATAGRAM inbox - use .empty for Zig 0.15 ArrayListUnmanaged
+        self.dgram_inbox = .empty;
         // Init streams map
         self.streams_rx = std.AutoHashMap(u64, StreamRx).init(alloc.*);
         self.stream_opened = false;
@@ -944,8 +945,8 @@ pub const Connection = struct {
         self.stream_send_aborted = false;
         self.stream_send_fin_sent = false;
         self.stream_recv_aborted = false;
-        // Init incoming stream queue
-        self.incoming_stream_queue = std.ArrayList(u64){};
+        // Init incoming stream queue - use .empty for Zig 0.15 ArrayListUnmanaged
+        self.incoming_stream_queue = .empty;
         self.highest_peer_bidi_stream = null;
         self.highest_peer_uni_stream = null;
         self.stream_recv_fin = false;
@@ -959,15 +960,15 @@ pub const Connection = struct {
         self.path_challenge_data = .{0} ** 8;
         self.new_token_pending = false;
         self.new_token_sent = false;
-        self.reset_tokens = std.ArrayList([16]u8){};
+        self.reset_tokens = .empty;
         // CC default to NewReno; endpoint can flip use_cubic
         self.use_cubic = false;
         self.cc_nr = .{};
         self.cc_cubic = .{};
         // ensure recovery knows CC mode
         self.rec.setCcMode(false);
-        // Initialize retry token buffer to match deinit symmetry
-        self.initial_token = std.ArrayList(u8){};
+        // Initialize retry token buffer to match deinit symmetry - use .empty for Zig 0.15
+        self.initial_token = .empty;
         // Explicitly initialize crypto retransmit buffers (field defaults not applied on reuse)
         self.crypto_retx_initial = null;
         self.crypto_retx_handshake = null;
@@ -3460,9 +3461,9 @@ pub const Connection = struct {
     }
 
     fn ensureStreamRx(self: *Connection, id: u64) *StreamRx {
+        // Ensure hashmaps are initialized - they can't use .empty
         if (self.streams_rx.capacity() == 0) self.streams_rx = std.AutoHashMap(u64, StreamRx).init(self.allocator.*);
-        if (self.dgram_inbox.capacity == 0) self.dgram_inbox = std.ArrayList([]u8){};
-        if (self.incoming_stream_queue.capacity == 0) self.incoming_stream_queue = std.ArrayList(u64){};
+        // ArrayLists use .empty default, which has capacity=0 but is valid - no need to reinitialize
         if (self.streams_rx.getPtr(id)) |s| return s;
         var sr = StreamRx.init();
         // PHASE 42 PART 9: Initialize per-stream flow control window (RFC 9000 §4.2)

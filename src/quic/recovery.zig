@@ -190,7 +190,8 @@ const SpaceState = struct {
     ecn_seen_any: bool = false,
 
     fn init(alloc: std.mem.Allocator) SpaceState {
-        return .{ .sent = std.ArrayList(SentPacket){}, .allocator = alloc };
+        // Use .empty for proper Zig 0.15 ArrayListUnmanaged initialization
+        return .{ .sent = .empty, .allocator = alloc };
     }
     fn deinit(self: *SpaceState) void {
         self.sent.deinit(self.allocator);
