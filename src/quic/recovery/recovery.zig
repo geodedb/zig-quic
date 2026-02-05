@@ -45,7 +45,10 @@ const SpaceState = struct {
     ecn_seen_any: bool = false,
 
     fn init(alloc: std.mem.Allocator) SpaceState {
-        return .{ .sent = std.ArrayList(SentPacket){}, .allocator = alloc };
+        return .{
+            .sent = .{},
+            .allocator = alloc,
+        };
     }
     fn deinit(self: *SpaceState) void {
         self.sent.deinit(self.allocator);
@@ -108,7 +111,8 @@ pub const Recovery = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         const idx = spaceIdx(space);
-        try self.spaces[idx].sent.append(self.spaces[idx].allocator, .{ .pn = pn, .time_ns = now_ns, .size = bytes, .ack_eliciting = ack_eliciting });
+        const alloc = self.spaces[idx].allocator;
+        try self.spaces[idx].sent.append(alloc, .{ .pn = pn, .time_ns = now_ns, .size = bytes, .ack_eliciting = ack_eliciting });
 
         const old_inflight = self.cc.bytes_in_flight;
         if (ack_eliciting) self.cc.bytes_in_flight += bytes;
