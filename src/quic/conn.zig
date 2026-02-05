@@ -614,8 +614,11 @@ pub const Connection = struct {
     // Recovery integration: RFC 9002 RTT/loss/CC/PTO
     rec: recovery.Recovery = undefined,
     // Legacy send-time/size tracking (kept for backward-compat; no longer used for loss)
+    // Note: HashMaps need explicit init() before use - tracked via _init flags
     sent_time: std.AutoHashMap(u64, i128) = undefined,
+    sent_time_init: bool = false,
     sent_sizes: std.AutoHashMap(u64, u16) = undefined,
+    sent_sizes_init: bool = false,
     largest_acked: u64 = 0,
     // RTT estimators per space (deprecated by rec.rtt for App)
     rtt_initial: recovery.RttState = .{},
@@ -869,6 +872,7 @@ pub const Connection = struct {
 
     /// Return true when the receive side of the stream has reached FIN.
     pub fn isStreamFinished(self: *Connection, id: u64) bool {
+        if (!self.streams_rx_init) return false;
         if (self.streams_rx.getPtr(id)) |rx| {
             return rx.isFinished();
         }
@@ -1099,8 +1103,8 @@ pub const Connection = struct {
             self.allocator.destroy(tls_ctx);
         }
         self.rec.deinit();
-        self.sent_time.deinit();
-        self.sent_sizes.deinit();
+        if (self.sent_time_init) self.sent_time.deinit();
+        if (self.sent_sizes_init) self.sent_sizes.deinit();
         // Free inbox payloads
         if (self.crypto_retx_initial) |b| self.allocator.free(b);
         if (self.crypto_retx_handshake) |b| self.allocator.free(b);
@@ -2149,41 +2153,43 @@ pub const Connection = struct {
 
         // PHASE 46: Quinn-style flow control with 1/8 threshold
         // Only send MAX_STREAM_DATA when increase is significant (at least 1/8 of window)
-        var it = self.streams_rx.iterator();
-        while (it.next()) |entry| {
-            const stream_id = entry.key_ptr.*;
-            const stream_rx = entry.value_ptr;
+        if (self.streams_rx_init) {
+            var it = self.streams_rx.iterator();
+            while (it.next()) |entry| {
+                const stream_id = entry.key_ptr.*;
+                const stream_rx = entry.value_ptr;
 
-            // Calculate the increase amount
-            const increase = stream_rx.local_max_stream_data -| stream_rx.last_sent_max_stream_data;
+                // Calculate the increase amount
+                const increase = stream_rx.local_max_stream_data -| stream_rx.last_sent_max_stream_data;
 
-            // Calculate threshold (1/8 of initial window size to avoid division)
-            // Use initial_window_size if set, otherwise fall back to current window
-            const window = if (stream_rx.initial_window_size > 0)
-                stream_rx.initial_window_size
-            else
-                stream_rx.local_max_stream_data;
-            const threshold = window >> 3; // Divide by 8 using bit shift (256KB for 2MB window)
+                // Calculate threshold (1/8 of initial window size to avoid division)
+                // Use initial_window_size if set, otherwise fall back to current window
+                const window = if (stream_rx.initial_window_size > 0)
+                    stream_rx.initial_window_size
+                else
+                    stream_rx.local_max_stream_data;
+                const threshold = window >> 3; // Divide by 8 using bit shift (256KB for 2MB window)
 
-            // PHASE 57 PART 12: Use minimum threshold to ensure frequent updates for small reads
-            // With 4KB reads, we need updates more frequently than every 256KB
-            // Use minimum of 1/8 window or 32KB to ensure updates happen at least every 8 reads
-            const min_threshold: u64 = 32 * 1024; // 32KB minimum
-            const effective_threshold = @min(threshold, min_threshold);
+                // PHASE 57 PART 12: Use minimum threshold to ensure frequent updates for small reads
+                // With 4KB reads, we need updates more frequently than every 256KB
+                // Use minimum of 1/8 window or 32KB to ensure updates happen at least every 8 reads
+                const min_threshold: u64 = 32 * 1024; // 32KB minimum
+                const effective_threshold = @min(threshold, min_threshold);
 
-            // Only send if increase is significant (at least threshold)
-            if (increase >= effective_threshold and increase > 0) {
-                _ = (frame.Frame{ .max_stream_data = .{ .stream_id = stream_id, .max = stream_rx.local_max_stream_data } }).write(w) catch 0;
-                stream_rx.last_sent_max_stream_data = stream_rx.local_max_stream_data;
-                wrote = true;
-                logger.debugPrint("[PHASE 46] Sending MAX_STREAM_DATA for stream {}: max={} (increase={}, threshold={})\n", .{ stream_id, stream_rx.local_max_stream_data, increase, effective_threshold });
+                // Only send if increase is significant (at least threshold)
+                if (increase >= effective_threshold and increase > 0) {
+                    _ = (frame.Frame{ .max_stream_data = .{ .stream_id = stream_id, .max = stream_rx.local_max_stream_data } }).write(w) catch 0;
+                    stream_rx.last_sent_max_stream_data = stream_rx.local_max_stream_data;
+                    wrote = true;
+                    logger.debugPrint("[PHASE 46] Sending MAX_STREAM_DATA for stream {}: max={} (increase={}, threshold={})\n", .{ stream_id, stream_rx.local_max_stream_data, increase, effective_threshold });
+                }
             }
         }
 
         // Also handle the legacy stream 0 fields for backward compatibility
         if (self.local_max_stream_data > self.last_sent_max_stream_data) {
             // Only send for stream 0 if not already handled above
-            if (self.streams_rx.get(0) == null) {
+            if (!self.streams_rx_init or self.streams_rx.get(0) == null) {
                 // FIXED: Do NOT send MAX_STREAM_DATA for stream 0 in legacy block.
                 // _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = self.local_max_stream_data } }).write(w) catch 0;
                 self.last_sent_max_stream_data = self.local_max_stream_data;
@@ -2510,6 +2516,10 @@ pub const Connection = struct {
         trace("[CONN-PTR-READ] conn=0x{x} stream_id={} buf_len={}\n", .{ @intFromPtr(self), id, buf.len });
         // TRACE: readStream called
         // logger.debugPrint("readStream called - id={}, buf_len={}\n", .{id, buf.len});
+        if (!self.streams_rx_init) {
+            logger.debugPrint("readStream - streams_rx not initialized\n", .{});
+            return error.InvalidStream;
+        }
         var s = self.streams_rx.getPtr(id) orelse {
             logger.debugPrint("readStream - stream {} not found in RX map\n", .{id});
             return error.InvalidStream;
@@ -2657,9 +2667,11 @@ pub const Connection = struct {
     /// Safe to call multiple times; no-op if stream not present.
     /// Tear down local bookkeeping for a stream (called after FIN/RESET & application consumption).
     pub fn teardownStream(self: *Connection, stream_id: u64) void {
-        if (self.streams_rx.getPtr(stream_id)) |sr| {
-            sr.deinit(self.allocator);
-            _ = self.streams_rx.remove(stream_id);
+        if (self.streams_rx_init) {
+            if (self.streams_rx.getPtr(stream_id)) |sr| {
+                sr.deinit(self.allocator);
+                _ = self.streams_rx.remove(stream_id);
+            }
         }
         if (stream_id == 0) {
             self.stream_opened = false;
@@ -3322,6 +3334,7 @@ pub const Connection = struct {
 
     /// Read first available stream data (any stream). Returns error.WouldBlock if none.
     pub fn readAnyStream(self: *Connection, buf: []u8) !struct { id: u64, n: usize } {
+        if (!self.streams_rx_init) return error.WouldBlock;
         var it2 = self.streams_rx.iterator();
         while (it2.next()) |e| {
             const sid = e.key_ptr.*;
@@ -3459,8 +3472,15 @@ pub const Connection = struct {
         const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
         _ = self.rec.onPacketSent(space, pn, bytes, ack_eliciting, now_ns) catch {};
         // Legacy maps retained for compatibility with tests expecting them
-        if (self.sent_time.capacity() == 0) self.sent_time = std.AutoHashMap(u64, i128).init(self.allocator.*);
-        if (self.sent_sizes.capacity() == 0) self.sent_sizes = std.AutoHashMap(u64, u16).init(self.allocator.*);
+        // Use proper init flags to avoid accessing undefined HashMaps
+        if (!self.sent_time_init) {
+            self.sent_time = std.AutoHashMap(u64, i128).init(self.allocator.*);
+            self.sent_time_init = true;
+        }
+        if (!self.sent_sizes_init) {
+            self.sent_sizes = std.AutoHashMap(u64, u16).init(self.allocator.*);
+            self.sent_sizes_init = true;
+        }
         _ = self.sent_time.put(pn, @as(i128, @intCast(now_ns))) catch {};
         _ = self.sent_sizes.put(pn, @intCast(@min(bytes, @as(usize, std.math.maxInt(u16))))) catch {};
         self.ccOnPacketSent(bytes, ack_eliciting);
@@ -3509,7 +3529,7 @@ pub const Connection = struct {
         if (!self.isPeerInitiatedStream(stream_id)) return;
 
         // Already known stream - no limit check needed
-        if (self.streams_rx.get(stream_id) != null) return;
+        if (self.streams_rx_init and self.streams_rx.get(stream_id) != null) return;
 
         // Extract stream number and type from stream ID
         // Stream ID format: [stream_num:62][dir:1][initiator:1]
@@ -3538,8 +3558,10 @@ pub const Connection = struct {
 
     /// Check if we already know about this stream
     fn isStreamKnown(self: *const Connection, stream_id: u64) bool {
-        // Check if it's in our RX map
-        if (self.streams_rx.get(stream_id) != null) return true;
+        // Check if it's in our RX map (only if initialized)
+        if (self.streams_rx_init) {
+            if (self.streams_rx.get(stream_id) != null) return true;
+        }
 
         // Check if it's already in the incoming queue
         for (self.incoming_stream_queue.items) |id| {
@@ -3662,6 +3684,7 @@ pub const Connection = struct {
     /// Get the first available stream from received data (for compatibility)
     pub fn getFirstStream(self: *Connection) ?u64 {
         // Check if we have any streams in RX map that are peer-initiated
+        if (!self.streams_rx_init) return null;
         var it = self.streams_rx.iterator();
         while (it.next()) |entry| {
             const stream_id = entry.key_ptr.*;
@@ -3669,7 +3692,7 @@ pub const Connection = struct {
                 // Ensure TX state for bidirectional streams
                 const dir_bit = (stream_id >> 1) & 0x1;
                 const is_bidi = (dir_bit == 0);
-                if (is_bidi) {
+                if (is_bidi and self.stream_txs_init) {
                     if (self.stream_txs.getPtr(stream_id) == null) {
                         // PHASE 42 PART 10: Initialize per-stream peer window from connection default
                         _ = self.stream_txs.put(stream_id, .{ .peer_max_stream_data = self.peer_max_stream_data }) catch {};
