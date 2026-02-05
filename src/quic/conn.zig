@@ -2278,6 +2278,7 @@ pub const Connection = struct {
                 self.stream_opened = true;
             }
             _ = self.ensureStreamRx(stream_id);
+            self.ensureStreamTxInit();
             if (self.stream_txs.getPtr(stream_id) == null) {
                 // PHASE 42 PART 10: Initialize per-stream peer window from connection default
                 _ = self.stream_txs.put(stream_id, .{ .peer_max_stream_data = self.peer_max_stream_data }) catch {};
@@ -2294,6 +2295,7 @@ pub const Connection = struct {
             const stream_id: u64 = (stream_num << 2) | initiator_bit | (dir_bit << 1);
             self.opened_uni += 1;
             // TX-only from our perspective, but install TX state for writeStream()
+            self.ensureStreamTxInit();
             if (self.stream_txs.getPtr(stream_id) == null) {
                 // PHASE 42 PART 10: Initialize per-stream peer window from connection default
                 _ = self.stream_txs.put(stream_id, .{ .peer_max_stream_data = self.peer_max_stream_data }) catch {};
@@ -2358,6 +2360,7 @@ pub const Connection = struct {
                     // Server responding on client-initiated stream - just mark opened, don't call openStream
                     self.stream_opened = true;
                     _ = self.ensureStreamRx(id);
+                    self.ensureStreamTxInit();
                     if (self.stream_txs.getPtr(id) == null) {
                         _ = self.stream_txs.put(id, .{ .peer_max_stream_data = self.peer_max_stream_data }) catch {};
                     }
@@ -2371,6 +2374,7 @@ pub const Connection = struct {
             }
             if (self.stream_send_aborted or self.stream_send_fin_sent) return error.StreamStopped;
         } else {
+            self.ensureStreamTxInit();
             if (self.stream_txs.getPtr(id) == null) {
                 // Check if this is a client-initiated stream and we're the server
                 const is_client_initiated = (id & 1) == 0;
@@ -2570,8 +2574,9 @@ pub const Connection = struct {
         _ = app_error_code;
         if (id == 0) {
             if (self.stream_send_aborted) return error.StreamStopped;
-        } else if (self.stream_txs.getPtr(id) == null) {
-            return error.InvalidStream;
+        } else {
+            if (!self.stream_txs_init) return error.InvalidStream;
+            if (self.stream_txs.getPtr(id) == null) return error.InvalidStream;
         }
         if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
         const tx = self.app_tx_keys.?;
@@ -2602,8 +2607,10 @@ pub const Connection = struct {
         // Mark stream as aborted for sending further STREAM frames
         if (stream_id == 0) {
             self.stream_send_aborted = true;
-        } else if (self.stream_txs.getPtr(stream_id)) |st| {
-            st.aborted = true;
+        } else if (self.stream_txs_init) {
+            if (self.stream_txs.getPtr(stream_id)) |st| {
+                st.aborted = true;
+            }
         }
         var frames = std.ArrayList(u8){};
         defer frames.deinit(self.allocator.*);
@@ -2681,7 +2688,7 @@ pub const Connection = struct {
             self.stream_recv_fin = false;
             self.stream_send_off = 0;
         }
-        if (stream_id != 0) {
+        if (stream_id != 0 and self.stream_txs_init) {
             _ = self.stream_txs.remove(stream_id);
         }
     }
@@ -3486,6 +3493,14 @@ pub const Connection = struct {
         self.ccOnPacketSent(bytes, ack_eliciting);
     }
 
+    /// Ensure stream_txs HashMap is initialized
+    fn ensureStreamTxInit(self: *Connection) void {
+        if (!self.stream_txs_init) {
+            self.stream_txs = std.AutoHashMap(u64, StreamTx).init(self.allocator.*);
+            self.stream_txs_init = true;
+        }
+    }
+
     fn ensureStreamRx(self: *Connection, id: u64) *StreamRx {
         // Ensure hashmaps are initialized - they can't use .empty (tracked via _init flag)
         if (!self.streams_rx_init) {
@@ -3667,6 +3682,7 @@ pub const Connection = struct {
         const dir_bit = (stream_id >> 1) & 0x1;
         const is_bidi = (dir_bit == 0);
         if (is_bidi) {
+            self.ensureStreamTxInit();
             if (self.stream_txs.getPtr(stream_id) == null) {
                 // PHASE 42 PART 10: Initialize per-stream peer window from connection default
                 _ = self.stream_txs.put(stream_id, .{ .peer_max_stream_data = self.peer_max_stream_data }) catch {};

@@ -228,6 +228,12 @@ pub fn handleMaxStreamData(
 ) FrameResult {
     // PHASE 57 PART 11: Update per-stream send-side flow control window (RFC 9000 §4.2)
     // RFC 9000 §4.1: MAX_STREAM_DATA can only increase the limit
+    // Check if stream_txs is initialized before accessing
+    if (!ctx.conn.stream_txs_init) {
+        logger.debugPrint("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) but stream_txs not initialized\n",
+            .{m.stream_id, m.max});
+        return .{ .saw_ack_eliciting = true };
+    }
     if (ctx.conn.stream_txs.getPtr(m.stream_id)) |tx| {
         if (m.max > tx.peer_max_stream_data) {
             const old_max = tx.peer_max_stream_data;
