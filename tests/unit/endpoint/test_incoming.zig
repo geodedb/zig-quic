@@ -266,6 +266,75 @@ test "RFC 9000 §13.4 - EcnCodepoint enum conversion from extracted bits" {
 }
 
 // =============================================================================
+// Closed Connection Guard Tests (RFC 9000 §10.2)
+// =============================================================================
+
+test "RFC 9000 §10.2 - processFrames returns empty result for closed connection" {
+    // RFC 9000 §10.2: An endpoint that is closing or draining MUST NOT process
+    // further received packets. After CONNECTION_CLOSE is sent, frames for the
+    // connection must be discarded to prevent accessing inconsistent state.
+    var mock_state = MockState.init(test_allocator);
+    defer mock_state.deinit();
+    global_mock_state = &mock_state;
+    defer global_mock_state = null;
+
+    var alloc = test_allocator;
+    var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
+    defer conns.deinit();
+    var accepted: std.ArrayList(*conn_mod.Connection) = .{};
+    defer accepted.deinit(test_allocator);
+    var test_cfg = cfg.QuicConfig{ .alpn = &[_][]const u8{"test"} };
+    var ctx = createTestRxContext(&alloc, &conns, &accepted, &test_cfg);
+
+    // Create a connection and mark it as closed
+    var conn: conn_mod.Connection = undefined;
+    conn.init(&alloc, .Server, -1, conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433));
+    defer conn.deinit();
+    conn.closed = true;
+
+    // Create a dummy payload with a PING frame (type 0x01)
+    const payload = &[_]u8{0x01};
+    const peer = conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433);
+
+    // processFrames should return early with empty result for closed connections
+    const result = try incoming.processFrames(&ctx, &conn, peer, payload, mockSendFn);
+    try testing.expect(!result.saw_ack_eliciting);
+    // Verify that no data was sent (frames were not processed)
+    try testing.expect(!mock_state.send_called);
+}
+
+test "RFC 9000 §10.2 - processFrames processes frames for non-closed connection" {
+    // Verify that processFrames still works for open connections (regression check)
+    var mock_state = MockState.init(test_allocator);
+    defer mock_state.deinit();
+    global_mock_state = &mock_state;
+    defer global_mock_state = null;
+
+    var alloc = test_allocator;
+    var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
+    defer conns.deinit();
+    var accepted: std.ArrayList(*conn_mod.Connection) = .{};
+    defer accepted.deinit(test_allocator);
+    var test_cfg = cfg.QuicConfig{ .alpn = &[_][]const u8{"test"} };
+    var ctx = createTestRxContext(&alloc, &conns, &accepted, &test_cfg);
+
+    // Create a connection that is NOT closed
+    var conn: conn_mod.Connection = undefined;
+    conn.init(&alloc, .Server, -1, conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433));
+    defer conn.deinit();
+    try testing.expect(!conn.closed);
+
+    // Create a PING frame (type 0x01) - this is ack-eliciting per RFC 9000 §19.2
+    const payload = &[_]u8{0x01};
+    const peer = conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433);
+
+    // processFrames should process the PING frame for non-closed connections
+    const result = try incoming.processFrames(&ctx, &conn, peer, payload, mockSendFn);
+    // PING is an ack-eliciting frame
+    try testing.expect(result.saw_ack_eliciting);
+}
+
+// =============================================================================
 // End of Unit Tests
 // =============================================================================
 //

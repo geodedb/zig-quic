@@ -2342,6 +2342,11 @@ pub fn processFrames(
     payload: []const u8,
     send_fn: SendFn,
 ) !FrameProcessResult {
+    // RFC 9000 §10.2: Discard frames for connections in the closing/draining state.
+    // After sendConnectionClose() sets closed=true, no further frame processing
+    // should occur to prevent accessing inconsistent connection state.
+    if (conn.closed) return FrameProcessResult{};
+
     var result = FrameProcessResult{};
     var offset: usize = 0;
     const now_ns: u64 = @intCast(std.time.nanoTimestamp());
@@ -2936,6 +2941,14 @@ pub fn processShortHeader(
         }
         return;
     };
+
+    // RFC 9000 §10.2: Once a connection is closed, further packets MUST be
+    // discarded. The connection will be removed from the tracking tables by
+    // pruneClosed() at the end of the current poll() cycle.
+    if (conn.closed) {
+        logger.debugPrint("[processShortHeader] Dropping packet for closed connection\n", .{});
+        return;
+    }
 
     logger.debugPrint("[processShortHeader] Found connection, role={s}, has_app_rx_keys={}\n", .{
         if (conn.role == .Server) "Server" else "Client",
