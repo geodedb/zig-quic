@@ -5,6 +5,7 @@ const packet = @import("quic_packet");
 const frame = @import("quic_frame");
 const varint = @import("quic_varint");
 const ks = @import("quic_tls");
+const test_certs = @import("test_certs");
 
 // Verify that when a client Initial arrives with a zero-length Source Connection ID,
 // the server responds with both Initial and Handshake packets that use a zero-length
@@ -18,6 +19,8 @@ test "server coalesces zero-length DCID handshakes" {
     var cfg = @import("config.zig").QuicConfig{
         .alpn = &[_][]const u8{"h3"},
         .allow_insecure = true,
+        .inline_server_cert_der = test_certs.server_cert_der,
+        .inline_server_priv_p256 = test_certs.server_key_der,
     };
     var ep = try endpoint.Endpoint.init(alloc, "127.0.0.1:4434", &cfg);
     defer ep.deinit();

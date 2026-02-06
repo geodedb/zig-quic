@@ -640,6 +640,9 @@ pub fn build(b: *std.Build) void {
     // TLS test helpers (shared by scenarios and connection_pair)
     const tls_helpers_mod = mkModule(b, "tests/integration/tls_helpers.zig");
 
+    // Shared Ed25519 test cert/key constants for tests requiring server certificates
+    const test_certs_mod = mkModule(b, "tests/helpers/test_ed25519_certs.zig");
+
     // Endpoint loopback helpers (EndpointWrapper with real Endpoint)
     const endpoint_loopback_helpers_mod = mkModule(b, "tests/integration/endpoint_loopback_helpers.zig");
     endpoint_loopback_helpers_mod.addImport("quic_endpoint", quic_endpoint_mod);
@@ -648,6 +651,7 @@ pub fn build(b: *std.Build) void {
     endpoint_loopback_helpers_mod.addImport("loopback", loopback_mod);
     endpoint_loopback_helpers_mod.addImport("loopback_transport_adapter", adapter_mod);
     endpoint_loopback_helpers_mod.addImport("transport", endpoint_transport_mod);
+    endpoint_loopback_helpers_mod.addImport("test_certs", test_certs_mod);
 
     // ConnectionPair fixture (client-server connection for testing)
     const connection_pair_mod = mkModule(b, "tests/integration/connection_pair.zig");
@@ -1121,6 +1125,7 @@ pub fn build(b: *std.Build) void {
         test_tls_context.root_module.addImport("quic_tls13", tls13_mod);
         test_tls_context.root_module.addImport("quic_tls", quic_tls_mod);
         test_tls_context.root_module.addImport("quic_transport_params", quic_transport_params_mod);
+        test_tls_context.root_module.addImport("test_certs", test_certs_mod);
         const run_test_tls_context = b.addRunArtifact(test_tls_context);
         test_step.dependOn(&run_test_tls_context.step);
 
@@ -1205,6 +1210,7 @@ pub fn build(b: *std.Build) void {
         test_server_initial.root_module.addImport("quic_varint", quic_varint_mod);
         test_server_initial.root_module.addImport("quic_tls", quic_tls_mod);
         test_server_initial.root_module.addImport("config.zig", quic_config_mod);
+        test_server_initial.root_module.addImport("test_certs", test_certs_mod);
         const run_test_server_initial = b.addRunArtifact(test_server_initial);
         test_step.dependOn(&run_test_server_initial.step);
 
@@ -1264,6 +1270,7 @@ pub fn build(b: *std.Build) void {
         test_zero_scid.root_module.addImport("quic_varint", quic_varint_mod);
         test_zero_scid.root_module.addImport("quic_tls", quic_tls_mod);
         test_zero_scid.root_module.addImport("config.zig", quic_config_mod);
+        test_zero_scid.root_module.addImport("test_certs", test_certs_mod);
         const run_test_zero_scid = b.addRunArtifact(test_zero_scid);
         test_step.dependOn(&run_test_zero_scid.step);
 
@@ -1274,6 +1281,7 @@ pub fn build(b: *std.Build) void {
         test_pto_zero_dcid.root_module.addImport("quic_frame", quic_frame_mod);
         test_pto_zero_dcid.root_module.addImport("quic_tls", quic_tls_mod);
         test_pto_zero_dcid.root_module.addImport("config.zig", quic_config_mod);
+        test_pto_zero_dcid.root_module.addImport("test_certs", test_certs_mod);
         const run_test_pto_zero_dcid = b.addRunArtifact(test_pto_zero_dcid);
         test_step.dependOn(&run_test_pto_zero_dcid.step);
 

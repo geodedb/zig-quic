@@ -70,6 +70,7 @@ test "initial->handshake pipeline in-process" {
     // Feed CRYPTO to server TLS engine and set ecdhe_secret deterministically
     var eng = tls13.Engine.init(alloc, .Server);
     defer eng.deinit();
+    eng.allow_insecure = true; // Skip TP validation for minimal test messages
     eng.ecdhe_secret = &hex(32, "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20");
 
     var off: usize = 0;

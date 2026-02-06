@@ -5,6 +5,7 @@ const packet = @import("quic_packet");
 const frame = @import("quic_frame");
 const varint = @import("quic_varint");
 const ks = @import("quic_tls");
+const test_certs = @import("test_certs");
 
 test "server responds to client Initial" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -15,6 +16,8 @@ test "server responds to client Initial" {
     var cfg = @import("config.zig").QuicConfig{
         .alpn = &[_][]const u8{"h3"},
         .allow_insecure = true,
+        .inline_server_cert_der = test_certs.server_cert_der,
+        .inline_server_priv_p256 = test_certs.server_key_der,
     };
     var ep = try endpoint.Endpoint.init(alloc, "127.0.0.1:4433", &cfg);
     defer ep.deinit();

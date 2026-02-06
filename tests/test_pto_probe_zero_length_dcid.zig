@@ -4,6 +4,7 @@ const conn_mod = @import("quic_conn");
 const packet = @import("quic_packet");
 const frame = @import("quic_frame");
 const ks = @import("quic_tls");
+const test_certs = @import("test_certs");
 
 // Regression test for TLS Error 266 (0x010a)
 // Verify that the server can send PTO probes for Initial packets when the client
@@ -20,6 +21,8 @@ test "server sends PTO probe with zero-length DCID" {
     var cfg = @import("config.zig").QuicConfig{
         .alpn = &[_][]const u8{"h3"},
         .allow_insecure = true,
+        .inline_server_cert_der = test_certs.server_cert_der,
+        .inline_server_priv_p256 = test_certs.server_key_der,
     };
     var ep = try endpoint.Endpoint.init(alloc, "127.0.0.1:4435", &cfg);
     defer ep.deinit();
@@ -127,6 +130,8 @@ test "server sends Handshake PTO probe with zero-length DCID" {
     var cfg = @import("config.zig").QuicConfig{
         .alpn = &[_][]const u8{"h3"},
         .allow_insecure = true,
+        .inline_server_cert_der = test_certs.server_cert_der,
+        .inline_server_priv_p256 = test_certs.server_key_der,
     };
     var ep = try endpoint.Endpoint.init(alloc, "127.0.0.1:4436", &cfg);
     defer ep.deinit();

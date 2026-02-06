@@ -280,6 +280,7 @@ const adapter_mod = @import("loopback_transport_adapter");  // Module import (co
 const endpoint_mod = @import("quic_endpoint");
 const conn_mod = @import("quic_conn");
 const config_mod = @import("quic_config");
+const test_certs = @import("test_certs");
 
 /// Re-export types for convenience
 pub const LoopbackTransportAdapter = adapter_mod.LoopbackTransportAdapter;
@@ -327,9 +328,11 @@ pub const EndpointWrapper = struct {
         // Only alpn is required, allow_insecure enables testing without real certs
         const quic_config = config_mod.QuicConfig{
             .alpn = &[_][]const u8{"test"},
-            .allow_insecure = true,  // For testing only - skip cert verification
+            .allow_insecure = true, // For testing only - skip cert verification
             .max_idle_timeout_ms = 30000,
             .max_udp_payload = 1350,
+            .inline_server_cert_der = test_certs.server_cert_der,
+            .inline_server_priv_p256 = test_certs.server_key_der,
         };
 
         // Heap-allocate endpoint (required because we return a pointer)
