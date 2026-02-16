@@ -55,7 +55,7 @@ pub fn main() !void {
 
         // Accept a new connection
         const conn = quic_transport.accept() catch |err| {
-            if (err == transport.QuicError.ConnectionFailed) {
+            if (err == transport.QuicError.ConnectionFailed or err == transport.QuicError.WouldBlock) {
                 continue; // No connection available yet
             }
             return err;

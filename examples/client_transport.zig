@@ -41,7 +41,7 @@ pub fn main() !void {
     std.debug.print("Connected successfully\n", .{});
 
     // Wait for handshake to complete
-    try client.waitForHandshake();
+    try client.waitForHandshake(5);
     std.debug.print("Handshake completed\n", .{});
 
     // Get a stream

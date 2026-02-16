@@ -88,7 +88,7 @@ With datagram enabled, the server will echo any DATAGRAM payloads. When `--retry
 
 ## Docs
 
-- Gap analysis: `docs/GAP.md`
+- Gap analysis: `docs/GAP_ANALYSIS.md`
 - Design: `docs/DESIGN.md`
 
 ## Using from another Zig project
@@ -226,7 +226,7 @@ zig build examples
 # ./zig-out/bin/client-transport 127.0.0.1 4433 --insecure
 ```
 
-See [docs/TRANSPORT_LAYER.md](docs/TRANSPORT_LAYER.md) for complete API documentation.
+See [docs/TRANSPORT_LAYER.md](docs/TRANSPORT_LAYER.md) for complete API documentation and [docs/GEODE_TRANSPORT_MIGRATION.md](docs/GEODE_TRANSPORT_MIGRATION.md) for migration from geode/bootstrap transport shims.
 
 ## Process helpers
 
@@ -246,7 +246,7 @@ See [docs/TRANSPORT_LAYER.md](docs/TRANSPORT_LAYER.md) for complete API document
 
 ## CI
 
-GitHub Actions matrix builds on ubuntu, windows, macOS. One job pins Zig 0.15.1 for compatibility; another runs on 0.15.1. Doccheck enforces public symbol docs and GAP.md must be bumped when code changes.
+GitLab CI runs Zig build/test components, cross-language e2e interop smoke tests, security scans, SBOM generation/scanning, and semantic release automation. Quality and security tracking live in `docs/GAP_ANALYSIS.md` and `docs/QUALITY_GAP_ANALYSIS.md`.
 
 ## Implementation Details
 

@@ -42,7 +42,7 @@ while (true) {
     try quic_transport.poll(10); // Poll for incoming packets
 
     const conn = quic_transport.accept() catch |err| {
-        if (err == transport.QuicError.ConnectionFailed) continue;
+        if (err == transport.QuicError.WouldBlock) continue;
         return err;
     };
 
@@ -74,7 +74,8 @@ var buf: [4096]u8 = undefined;
 const n = try stream.read(&buf);
 
 // Write data
-try stream.write("Hello, QUIC!");
+const written = try stream.write("Hello, QUIC!");
+_ = written;
 
 // Write all data (handles fragmentation)
 try stream.writeAll(large_data);
@@ -98,7 +99,7 @@ defer client.deinit();
 try client.connectEx("127.0.0.1", 4433, "certs/ca.crt", null, null);
 
 // Wait for handshake to complete
-try client.waitForHandshake();
+try client.waitForHandshake(5);
 
 // Get a stream
 const stream = try client.getStream();
@@ -114,12 +115,20 @@ const n = try stream.read(&buf);
 
 ```zig
 pub const QuicError = error{
+    InitFailed,
     ConnectionFailed,
     StreamFailed,
+    WriteError,
+    ReadError,
     InvalidAddress,
     CertificateError,
     EndpointInitFailed,
     AcceptFailed,
+    HandshakeError,
+    Timeout,
+    WouldBlock,
+    Closed,
+    InvalidState,
     HandshakeFailed,
     TransportParametersFailed,
     FlowControlViolation,
@@ -218,7 +227,7 @@ pub fn main() !void {
     defer client.deinit();
 
     try client.connectEx("127.0.0.1", 8443, "certs/ca.crt", null, null);
-    try client.waitForHandshake();
+    try client.waitForHandshake(5);
 
     const stream = try client.getStream();
     defer stream.deinit();
@@ -243,8 +252,8 @@ The transport layer requires explicit certificates by default:
 ### Generating Certificates Manually
 
 ```bash
-# Generate self-signed certificate
-openssl req -x509 -newkey rsa:4096 \
+# Generate self-signed ECDSA P-256 certificate
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
     -keyout certs/server.key \
     -out certs/server.crt \
     -days 365 -nodes \
@@ -267,11 +276,11 @@ The transport layer outputs structured JSON logs for easy parsing:
 
 ## Best Practices
 
-1. **Always close resources**: Use `defer` to ensure connections and streams are properly closed
-2. **Handle errors gracefully**: Check for `ConnectionFailed` and continue accepting new connections
-3. **Use threading**: Spawn threads to handle multiple connections concurrently
-4. **Poll regularly**: Call `poll()` regularly to process incoming packets
-5. **Wait for handshake**: Always call `waitForHandshake()` on the client before using streams
+1. **Always close resources**: Use `defer` to ensure connections and streams are properly closed.
+2. **Use the nonblocking contract**: Treat `QuicError.WouldBlock` as retryable control flow.
+3. **Use transport-owned cleanup**: Call `destroyConnection(conn)` from workers and `drainPendingDestroy()` in the main poll/accept loop.
+4. **Poll regularly**: Call `poll()` regularly to process incoming packets and timers.
+5. **Wait for handshake**: Always call `waitForHandshake(timeout_secs)` on the client before using streams.
 
 ## Advanced Features
 
@@ -310,3 +319,4 @@ try client.connectInsecure("127.0.0.1", 8443, true);
 - [QUIC Protocol Specification](https://www.rfc-editor.org/rfc/rfc9000.html)
 - [TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446.html)
 - [HTTP/3](https://www.rfc-editor.org/rfc/rfc9114.html)
+- [Geode And Dependent-System Migration Guide](GEODE_TRANSPORT_MIGRATION.md)

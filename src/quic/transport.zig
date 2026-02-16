@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2024-2025 CodePros
 
-const std = @import("std");
-const qlog = @import("quic_logger");
-const builtin = @import("builtin");
-const api = @import("quic_api");
-
 //! High-level QUIC transport layer providing connection and stream management.
 //! This layer provides a convenient interface for building QUIC applications.
 //!
@@ -13,20 +8,69 @@ const api = @import("quic_api");
 //! connection lifecycle) that this abstraction orchestrates. Stream helpers map
 //! directly to §§2–4, while TLS handling aligns with RFC 9001 §4.
 
+const std = @import("std");
+const logger = @import("quic_logger");
+const builtin = @import("builtin");
+const api = @import("quic_api");
+
 /// Errors that can occur during QUIC operations.
 pub const QuicError = error{
+    InitFailed,
     ConnectionFailed,
     StreamFailed,
+    WriteError,
+    ReadError,
     InvalidAddress,
     CertificateError,
     EndpointInitFailed,
     AcceptFailed,
     HandshakeFailed,
+    HandshakeError,
+    Timeout,
+    WouldBlock,
+    Closed,
+    InvalidState,
     TransportParametersFailed,
     FlowControlViolation,
     ProtocolViolation,
     IdleTimeout,
     ConnectionClosed,
+};
+
+/// Readers-writer synchronization for endpoint poll() vs concurrent stream I/O.
+///
+/// Endpoint poll mutates connection stream state for all active connections.
+/// Handler threads doing read/write on the same connection tree must not race
+/// with poll's mutable map access.
+pub const PollSync = struct {
+    poll_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    active_io_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+
+    pub fn enterIo(self: *PollSync) void {
+        while (true) {
+            _ = self.active_io_count.fetchAdd(1, .seq_cst);
+            if (!self.poll_requested.load(.seq_cst)) return;
+            _ = self.active_io_count.fetchSub(1, .seq_cst);
+            while (self.poll_requested.load(.seq_cst)) {
+                std.Thread.sleep(50 * std.time.ns_per_us);
+            }
+        }
+    }
+
+    pub fn leaveIo(self: *PollSync) void {
+        _ = self.active_io_count.fetchSub(1, .seq_cst);
+    }
+
+    pub fn enterPoll(self: *PollSync) void {
+        self.poll_requested.store(true, .seq_cst);
+        while (self.active_io_count.load(.seq_cst) > 0) {
+            std.Thread.sleep(50 * std.time.ns_per_us);
+        }
+    }
+
+    pub fn leavePoll(self: *PollSync) void {
+        self.poll_requested.store(false, .seq_cst);
+    }
 };
 
 /// High-level QUIC transport for managing endpoints and connections.
@@ -35,6 +79,10 @@ pub const QuicTransport = struct {
     config: Config,
     endpoint: ?*api.QuicEndpoint = null,
     connections: std.ArrayList(*QuicConnection),
+    connections_mutex: std.Thread.Mutex = .{},
+    pending_destroy: std.ArrayList(*api.QuicConnection),
+    pending_destroy_mutex: std.Thread.Mutex = .{},
+    poll_sync: PollSync = .{},
     /// Path to the TLS certificate file.
     cert_path: ?[]const u8,
     /// Path to the TLS private key file.
@@ -76,6 +124,7 @@ pub const QuicTransport = struct {
             .allocator = allocator,
             .config = config,
             .connections = try std.ArrayList(*QuicConnection).initCapacity(allocator, 0),
+            .pending_destroy = try std.ArrayList(*api.QuicConnection).initCapacity(allocator, 0),
             .cert_path = config.cert_path,
             .key_path = config.key_path,
         };
@@ -83,12 +132,27 @@ pub const QuicTransport = struct {
 
     /// Deinitializes the transport, closing all connections and releasing resources.
     pub fn deinit(self: *QuicTransport) void {
-        // Close all active connections first to avoid using a torn-down endpoint
-        for (self.connections.items) |conn| {
+        self.drainPendingDestroy();
+
+        self.connections_mutex.lock();
+        var conns = self.connections;
+        self.connections = .empty;
+        self.connections_mutex.unlock();
+
+        for (conns.items) |conn| {
+            const inner = conn.quic_connection orelse conn.inner;
             conn.close();
+            if (self.endpoint) |ep| {
+                api.destroy(ep, inner);
+            } else {
+                inner.deinit();
+            }
             self.allocator.destroy(conn);
         }
-        self.connections.deinit(self.allocator);
+        conns.deinit(self.allocator);
+
+        self.drainPendingDestroy();
+        self.pending_destroy.deinit(self.allocator);
         // Now deinitialize endpoint
         if (self.endpoint) |ep| {
             api.endpointDeinit(ep);
@@ -135,7 +199,11 @@ pub const QuicTransport = struct {
             key_exists = false;
         };
 
-        const bind_addr = try std.fmt.allocPrint(self.allocator, "{s}:{d}", .{ self.config.address, self.config.port });
+        const bind_host = if (std.mem.eql(u8, self.config.address, "localhost"))
+            "127.0.0.1"
+        else
+            self.config.address;
+        const bind_addr = try std.fmt.allocPrint(self.allocator, "{s}:{d}", .{ bind_host, self.config.port });
         defer self.allocator.free(bind_addr);
 
         // Auto-generate self-signed certificates only when explicitly enabled.
@@ -152,7 +220,7 @@ pub const QuicTransport = struct {
         }
 
         // Print startup JSON exactly once
-        logger.debugPrint("{{\"component\":\"transport\",\"transport\":\"quic\",\"tls\":\"true\",\"port\":{}}}\n", .{ self.config.port });
+        logger.debugPrint("{{\"component\":\"transport\",\"transport\":\"quic\",\"tls\":\"true\",\"port\":{}}}\n", .{self.config.port});
         logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_server\",\"msg\":\"server startup\",\"use_tls\":true,\"cert_exists\":{},\"key_exists\":{}}}\n", .{ cert_exists, key_exists });
 
         // Load certificate files (TLS required)
@@ -219,6 +287,7 @@ pub const QuicTransport = struct {
             .ca_path = if (self.config.ca_path) |p| p else null,
             .aead_confidentiality_limit_override = null,
             .aead_integrity_limit_override = null,
+            .max_connections = self.config.max_connections,
             .inline_server_cert_der = inline_cert_der,
             .inline_server_priv_p256 = inline_priv_key,
             .require_client_cert = self.config.require_client_cert,
@@ -232,7 +301,7 @@ pub const QuicTransport = struct {
         if (self.config.ca_path != null) {
             logger.debugPrint("{{\"level\":\"INFO\",\"msg\":\"mTLS: client certs required\"}}\n", .{});
         }
-        logger.debugPrint("{{\"component\":\"transport\",\"transport\":\"quic\",\"tls\":\"true\",\"port\":{d}}}\n", .{ self.config.port });
+        logger.debugPrint("{{\"component\":\"transport\",\"transport\":\"quic\",\"tls\":\"true\",\"port\":{d}}}\n", .{self.config.port});
     }
 
     fn generateSelfSignedCert(self: *QuicTransport, cert_path: []const u8, key_path: []const u8) !void {
@@ -253,9 +322,22 @@ pub const QuicTransport = struct {
         const result = try std.process.Child.run(.{
             .allocator = self.allocator,
             .argv = &[_][]const u8{
-                "openssl", "req",       "-x509", "-newkey",                               "rsa:4096",
-                "-keyout", key_path,    "-out",  cert_path,                               "-days",
-                "365",     "-nodes",      "-subj", "/C=US/ST=State/L=City/O=Geode/CN=localhost",
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "ec",
+                "-pkeyopt",
+                "ec_paramgen_curve:prime256v1",
+                "-nodes",
+                "-keyout",
+                key_path,
+                "-out",
+                cert_path,
+                "-days",
+                "365",
+                "-subj",
+                "/CN=localhost",
             },
         });
         defer self.allocator.free(result.stdout);
@@ -278,35 +360,113 @@ pub const QuicTransport = struct {
         }
     }
 
+    /// Process deferred connection destructions queued by worker threads.
+    /// Must be called by the polling thread.
+    pub fn drainPendingDestroy(self: *QuicTransport) void {
+        self.pending_destroy_mutex.lock();
+        defer self.pending_destroy_mutex.unlock();
+        if (self.pending_destroy.items.len == 0) return;
+
+        self.poll_sync.enterPoll();
+        defer self.poll_sync.leavePoll();
+
+        for (self.pending_destroy.items) |inner_conn| {
+            if (self.endpoint) |ep| {
+                api.destroy(ep, inner_conn);
+            } else {
+                inner_conn.deinit();
+            }
+        }
+        self.pending_destroy.clearRetainingCapacity();
+    }
+
+    fn wrapAcceptedConnection(self: *QuicTransport, quic_conn: *api.QuicConnection) !*QuicConnection {
+        const conn = try self.allocator.create(QuicConnection);
+        conn.* = QuicConnection{
+            .allocator = self.allocator,
+            .quic_connection = quic_conn,
+            .inner = quic_conn,
+            .streams = .empty,
+            .poll_sync = &self.poll_sync,
+        };
+
+        self.connections_mutex.lock();
+        defer self.connections_mutex.unlock();
+        try self.connections.append(self.allocator, conn);
+        return conn;
+    }
+
     /// Accepts an incoming QUIC connection from a client.
     ///
     /// Returns only after the API reports a completed handshake flight per
     /// RFC 9000 §7.2, ensuring applications see connections that survived anti-
     /// amplification and Retry handling.
     pub fn accept(self: *QuicTransport) !*QuicConnection {
-        // CANARY: REQ=REQ-GQL-074; FEATURE="Network Transport"; ASPECT=QUICAccept; STATUS=TESTED; TEST=TestCANARY_REQ_GQL_074_QUICAccept; OWNER=wire; UPDATED=2025-09-22
-
-        logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_server\",\"msg\":\"attempting to accept connection\"}}\n", .{});
-
         if (self.endpoint) |ep| {
-            // Accept from QUIC endpoint
-            logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_server\",\"msg\":\"calling api.accept\"}}\n", .{});
-            const quic_conn = try api.accept(ep);
-            logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_server\",\"msg\":\"api.accept returned successfully\"}}\n", .{});
+            var poll_count: usize = 0;
+            var pending_conn: ?*api.QuicConnection = null;
 
-            const conn = try self.allocator.create(QuicConnection);
-            conn.* = QuicConnection{
-                .allocator = self.allocator,
-                .quic_connection = quic_conn,
-                .streams = std.ArrayList(*QuicStream){},
-            };
+            while (poll_count < 300) : (poll_count += 1) {
+                self.drainPendingDestroy();
+                self.poll_sync.enterPoll();
+                ep.poll(10) catch |err| {
+                    self.poll_sync.leavePoll();
+                    return err;
+                };
+                self.poll_sync.leavePoll();
 
-            try self.connections.append(self.allocator, conn);
-            logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_server\",\"msg\":\"connection accepted and added to pool\",\"total_connections\":{}}}\n", .{self.connections.items.len});
-            return conn;
+                if (pending_conn == null) {
+                    pending_conn = api.tryAccept(ep);
+                }
+                if (pending_conn) |qc| {
+                    if (api.hasIncomingStreams(qc)) {
+                        return self.wrapAcceptedConnection(qc);
+                    }
+                }
+            }
+
+            if (pending_conn) |qc| {
+                return self.wrapAcceptedConnection(qc);
+            }
+            return QuicError.WouldBlock;
         }
-        logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_server\",\"msg\":\"no endpoint available for accept\"}}\n", .{});
-        return QuicError.ConnectionFailed;
+        return QuicError.InvalidState;
+    }
+
+    /// Attempt to accept without blocking.
+    pub fn tryAccept(self: *QuicTransport) ?*QuicConnection {
+        const ep = self.endpoint orelse return null;
+        self.poll_sync.enterPoll();
+        ep.poll(10) catch {
+            self.poll_sync.leavePoll();
+            return null;
+        };
+        self.poll_sync.leavePoll();
+        const qc = api.tryAccept(ep) orelse return null;
+        return self.wrapAcceptedConnection(qc) catch null;
+    }
+
+    /// Remove, close, and reclaim a connection wrapper.
+    pub fn destroyConnection(self: *QuicTransport, conn: *QuicConnection) void {
+        self.connections_mutex.lock();
+        var idx: usize = 0;
+        while (idx < self.connections.items.len) {
+            if (self.connections.items[idx] == conn) {
+                _ = self.connections.swapRemove(idx);
+                break;
+            }
+            idx += 1;
+        }
+        self.connections_mutex.unlock();
+
+        const inner = conn.quic_connection orelse conn.inner;
+        conn.close();
+        self.pending_destroy_mutex.lock();
+        self.pending_destroy.append(self.allocator, inner) catch {
+            inner.deinit();
+        };
+        self.pending_destroy_mutex.unlock();
+        self.allocator.destroy(conn);
     }
 
     /// Polls the endpoint for network events with the specified timeout in milliseconds.
@@ -315,7 +475,13 @@ pub const QuicTransport = struct {
     /// the endpoint so that PTO/idle timers managed by recovery (RFC 9002) fire.
     pub fn poll(self: *QuicTransport, timeout_ms: u32) !void {
         if (self.endpoint) |ep| {
-            try api.poll(ep, timeout_ms);
+            const timeout_i32: i32 = if (timeout_ms > std.math.maxInt(i32))
+                std.math.maxInt(i32)
+            else
+                @intCast(timeout_ms);
+            self.poll_sync.enterPoll();
+            defer self.poll_sync.leavePoll();
+            try api.poll(ep, timeout_i32);
         }
     }
 };
@@ -324,12 +490,20 @@ pub const QuicTransport = struct {
 pub const QuicConnection = struct {
     allocator: std.mem.Allocator,
     quic_connection: ?*api.QuicConnection,
+    /// Compatibility alias used by geode integration.
+    inner: *api.QuicConnection,
     streams: std.ArrayList(*QuicStream),
     streams_init: bool = false,
     next_stream_id: usize = 0,
+    poll_sync: ?*PollSync = null,
 
     /// Closes the connection and all associated streams.
     pub fn close(self: *QuicConnection) void {
+        if (self.poll_sync) |ps| ps.enterIo();
+        defer {
+            if (self.poll_sync) |ps| ps.leaveIo();
+        }
+
         // Close all streams (idempotent) if initialized
         if (self.streams_init) {
             for (self.streams.items) |s| {
@@ -339,9 +513,9 @@ pub const QuicConnection = struct {
             self.streams.deinit(self.allocator);
             self.streams_init = false;
         }
-        // Close underlying QUIC connection only once; avoid explicit vendor close to prevent double-frees
-        if (self.quic_connection) |_| {
-            // Passive close: let endpoint deinit/OS cleanup reclaim resources
+        // Send CONNECTION_CLOSE and keep endpoint-owned reclamation in transport.
+        if (self.quic_connection) |qc| {
+            api.closeConnection(qc, 0) catch {};
             self.quic_connection = null;
         }
     }
@@ -357,17 +531,23 @@ pub const QuicConnection = struct {
         const stream = try self.allocator.create(QuicStream);
         errdefer self.allocator.destroy(stream);
 
-        if (self.quic_connection == null) return QuicError.StreamFailed;
+        if (self.poll_sync) |ps| ps.enterIo();
+        defer {
+            if (self.poll_sync) |ps| ps.leaveIo();
+        }
+
+        const qc = self.quic_connection orelse return QuicError.StreamFailed;
 
         // Accept a QUIC stream - this will check for existing streams first
         // then fall back to waiting for new ones
-        const stream_id = try api.acceptStream(self.quic_connection.?);
+        const stream_id = try api.acceptStream(qc);
 
         stream.* = QuicStream{
             .allocator = self.allocator,
             .quic_stream_id = stream_id,
             .parent_connection = self,
             .stream_id = @intCast(stream_id),
+            .poll_sync = self.poll_sync,
         };
 
         if (!self.streams_init) {
@@ -388,13 +568,19 @@ pub const QuicConnection = struct {
         const stream = try self.allocator.create(QuicStream);
         errdefer self.allocator.destroy(stream);
 
-        if (self.quic_connection == null) return QuicError.StreamFailed;
-        const stream_id = try api.openStream(self.quic_connection.?, bidirectional);
+        if (self.poll_sync) |ps| ps.enterIo();
+        defer {
+            if (self.poll_sync) |ps| ps.leaveIo();
+        }
+
+        const qc = self.quic_connection orelse return QuicError.StreamFailed;
+        const stream_id = try api.openStream(qc, bidirectional);
         stream.* = QuicStream{
             .allocator = self.allocator,
             .quic_stream_id = stream_id,
             .parent_connection = self,
             .stream_id = @intCast(stream_id),
+            .poll_sync = self.poll_sync,
         };
 
         if (!self.streams_init) {
@@ -403,6 +589,41 @@ pub const QuicConnection = struct {
         }
         try self.streams.append(self.allocator, stream);
         return stream;
+    }
+
+    pub fn hasIncomingStreams(self: *QuicConnection) bool {
+        const qc = self.quic_connection orelse return false;
+        return api.hasIncomingStreams(qc);
+    }
+
+    pub fn isDrained(self: *QuicConnection) bool {
+        const qc = self.quic_connection orelse return true;
+        return api.isDrained(qc);
+    }
+
+    pub fn isHandshakeConfirmed(self: *QuicConnection) bool {
+        const qc = self.quic_connection orelse return false;
+        return api.isHandshakeConfirmed(qc);
+    }
+
+    pub fn getPeerCertificateDer(self: *QuicConnection) ?[]const u8 {
+        const qc = self.quic_connection orelse return null;
+        const tls_ctx = qc.tls_context orelse return null;
+        const chain = tls_ctx.peer_cert_chain orelse return null;
+        if (chain.len == 0) return null;
+        return chain[0];
+    }
+
+    pub fn destroyStream(self: *QuicConnection, stream: *QuicStream) void {
+        var idx: usize = 0;
+        while (idx < self.streams.items.len) {
+            if (self.streams.items[idx] == stream) {
+                _ = self.streams.swapRemove(idx);
+                break;
+            }
+            idx += 1;
+        }
+        self.allocator.destroy(stream);
     }
 };
 
@@ -413,6 +634,7 @@ pub const QuicStream = struct {
     parent_connection: *QuicConnection,
     stream_id: usize = 0,
     read_buffer: []u8 = &[_]u8{},
+    poll_sync: ?*PollSync = null,
 
     /// Closes the stream, releasing any associated resources.
     ///
@@ -420,6 +642,11 @@ pub const QuicStream = struct {
     /// (or FIN). This helper optionally forces RESET when an environment flag is
     /// set, enabling tests that exercise §19.4 error propagation.
     pub fn close(self: *QuicStream) void {
+        if (self.poll_sync) |ps| ps.enterIo();
+        defer {
+            if (self.poll_sync) |ps| ps.leaveIo();
+        }
+
         // Best-effort, idempotent: avoid vendor close by default to reduce teardown races.
         // Enable explicit stream close only when GEODE_QUIC_FORCE_STREAM_CLOSE=1.
         if (self.quic_stream_id) |sid| {
@@ -437,33 +664,41 @@ pub const QuicStream = struct {
     }
 
     /// Writes data to the stream.
-    pub fn write(self: *QuicStream, data: []const u8) !void {
-        if (self.quic_stream_id) |sid| {
-            _ = try api.writeStream(self.parent_connection.quic_connection.?, sid, data);
-        } else {
-            return QuicError.StreamFailed;
+    pub fn write(self: *QuicStream, data: []const u8) !usize {
+        if (self.poll_sync) |ps| ps.enterIo();
+        defer {
+            if (self.poll_sync) |ps| ps.leaveIo();
         }
+
+        if (self.quic_stream_id) |sid| {
+            const qc = self.parent_connection.quic_connection orelse return QuicError.StreamFailed;
+            return api.writeStream(qc, sid, data, false);
+        }
+        return QuicError.StreamFailed;
     }
 
     /// Writes all data to the stream, handling fragmentation internally.
     pub fn writeAll(self: *QuicStream, data: []const u8) !void {
-        if (self.quic_stream_id) |sid| {
-            // QUIC handles fragmentation internally
-            _ = try api.writeStream(self.parent_connection.quic_connection.?, sid, data);
-        } else {
-            return QuicError.StreamFailed;
+        var written: usize = 0;
+        while (written < data.len) {
+            const n = try self.write(data[written..]);
+            if (n == 0) return QuicError.WriteError;
+            written += n;
         }
     }
 
     /// Reads data from the stream into the provided buffer, returning the number of bytes read.
     pub fn read(self: *QuicStream, buf: []u8) !usize {
-        if (self.quic_stream_id) |sid| {
-            return api.readStream(self.parent_connection.quic_connection.?, sid, buf) catch {
-                return 0;
-            };
-        } else {
-            return QuicError.StreamFailed;
+        if (self.poll_sync) |ps| ps.enterIo();
+        defer {
+            if (self.poll_sync) |ps| ps.leaveIo();
         }
+
+        if (self.quic_stream_id) |sid| {
+            const qc = self.parent_connection.quic_connection orelse return QuicError.StreamFailed;
+            return api.readStream(qc, sid, buf);
+        }
+        return QuicError.StreamFailed;
     }
 
     /// Reads data until the buffer is full or the stream ends, returning total bytes read.
@@ -480,20 +715,47 @@ pub const QuicStream = struct {
     /// Reads a line of text from the stream, up to max_size bytes, returning an allocated buffer.
     pub fn readLine(self: *QuicStream, max_size: usize) ![]u8 {
         var buf = try self.allocator.alloc(u8, max_size);
-        var pos: usize = 0;
+        defer self.allocator.free(buf);
 
+        var pos: usize = 0;
+        var retry_count: usize = 0;
+        const max_retries: usize = 100;
         while (pos < max_size) {
-            const n = try self.read(buf[pos .. pos + 1]);
+            var one: [1]u8 = undefined;
+            const n = self.read(&one) catch |err| {
+                if (err == error.WouldBlock and pos == 0) return error.WouldBlock;
+                if (err == error.WouldBlock) {
+                    retry_count += 1;
+                    if (retry_count > max_retries) return error.UnexpectedEndOfStream;
+                    std.Thread.sleep(500 * std.time.ns_per_us);
+                    continue;
+                }
+                return err;
+            };
+
             if (n == 0) {
                 if (pos == 0) return error.EndOfStream;
-                break;
+                return error.UnexpectedEndOfStream;
             }
-            if (buf[pos] == '\n') {
-                return self.allocator.realloc(buf, pos + 1) catch buf[0 .. pos + 1];
-            }
+            buf[pos] = one[0];
             pos += 1;
+            retry_count = 0;
+            if (one[0] == '\n') break;
         }
-        return buf[0..pos];
+        if (pos == 0) return error.EndOfStream;
+        const out = try self.allocator.alloc(u8, pos);
+        @memcpy(out, buf[0..pos]);
+        return out;
+    }
+
+    pub fn finish(self: *QuicStream) !void {
+        if (self.poll_sync) |ps| ps.enterIo();
+        defer {
+            if (self.poll_sync) |ps| ps.leaveIo();
+        }
+        const sid = self.quic_stream_id orelse return QuicError.StreamFailed;
+        const qc = self.parent_connection.quic_connection orelse return QuicError.StreamFailed;
+        _ = try api.writeStream(qc, sid, &.{}, true);
     }
 };
 
@@ -524,7 +786,7 @@ pub const QuicClient = struct {
         } else |_| false;
         if (self.quic_connection) |conn| {
             if (force_close) {
-                api.closeConnectionSimple(conn) catch {};
+                api.closeConnection(conn, 0) catch {};
             }
             self.quic_connection = null;
         }
@@ -540,79 +802,18 @@ pub const QuicClient = struct {
 
     /// Connects to a QUIC server at the specified address and port.
     pub fn connect(self: *QuicClient, address: []const u8, port: u16) !void {
-        // CANARY: REQ=REQ-GQL-074; FEATURE="Network Transport"; ASPECT=QUICClientConnect; STATUS=TESTED; TEST=TestCANARY_REQ_GQL_074_QUICClientConnect; OWNER=wire; UPDATED=2025-09-22
-
-        const server_addr_str = try std.fmt.allocPrint(self.allocator, "{s}:{d}", .{ address, port });
-        defer self.allocator.free(server_addr_str);
-
-        logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"connecting to server\",\"address\":\"{s}\",\"port\":{}}}\n", .{ address, port });
-
-        // QUIC client configuration
-        const cert_path = "certs/ca.crt"; // Client CA cert (required for secure connect)
-        var has_ca_cert = true;
-        std.fs.cwd().access(cert_path, .{}) catch {
-            has_ca_cert = false;
-        };
-
-        logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"certificate configuration\",\"has_ca_cert\":{},\"cert_path\":\"{s}\"}}\n", .{ has_ca_cert, cert_path });
-        if (!has_ca_cert) {
-            logger.debugPrint("{{\"level\":\"ERROR\",\"component\":\"quic_client\",\"msg\":\"missing CA certificate for secure connect\",\"cert_path\":\"{s}\"}}\n", .{ cert_path });
-            return QuicError.CertificateError;
-        }
-
-        // Initialize QUIC config for client
-        const cfg = try self.allocator.create(api.QuicConfig);
-        cfg.* = .{
-            .version = .v1,
-            .alpn = &[_][]const u8{"quic-zig/1"},
-            .cc = .newreno,
-            .enable_datagram = false,
-            .enable_spin_bit = false,
-            .grease = true,
-            .compatible_vn = false,
-            .enable_retry = false,
-            .token_secret = null,
-            .token_expiry_ms = 60000,
-            .enable_pacing = false,
-            .max_datagram_size = 1200,
-            .max_idle_timeout_ms = 30000,
-            .max_udp_payload = 1350,
-            .cert_path = null,
-            .key_path = null,
-            .ca_path = cert_path,
-            .allow_insecure = false,
-            .aead_confidentiality_limit_override = null,
-            .aead_integrity_limit_override = null,
-            .inline_server_cert_der = null,
-            .inline_server_priv_p256 = null,
-        };
-        self.quic_config = cfg;
-
-        logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"QUIC config\",\"allow_insecure\":{}}}\n", .{cfg.allow_insecure});
-
-        // Create client endpoint
-        const bind_addr = "0.0.0.0:0"; // Bind to any available port
-        logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"initializing endpoint\",\"bind_addr\":\"{s}\"}}\n", .{bind_addr});
-        self.endpoint = try api.endpointInit(&self.allocator, bind_addr, cfg);
-
-        // Connect to server - use localhost as SNI when allow_insecure to match cert CN
-        const sni = if (cfg.allow_insecure) "localhost" else address;
-        logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"initiating connection\",\"server_addr\":\"{s}\",\"sni\":\"{s}\",\"allow_insecure\":{}}}\n", .{ server_addr_str, sni, cfg.allow_insecure });
-        self.quic_connection = try api.connect(self.endpoint.?, server_addr_str, sni);
-
-        self.is_quic = true;
-        self.server_addr = address;
-        self.server_port = port;
-
-        logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"connection initiated successfully\"}}\n", .{});
+        return self.connectInsecure(address, port, false);
     }
 
     /// Connects to a QUIC server with optional insecure mode (allows self-signed certificates).
     pub fn connectInsecure(self: *QuicClient, address: []const u8, port: u16, allow_insecure: bool) !void {
-        const server_addr_str = try std.fmt.allocPrint(self.allocator, "{s}:{d}", .{ address, port });
-        defer self.allocator.free(server_addr_str);
+        const normalized_address = if (std.mem.eql(u8, address, "localhost"))
+            "127.0.0.1"
+        else
+            address;
 
-        logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"connectInsecure called\",\"address\":\"{s}\",\"port\":{},\"allow_insecure\":{}}}\n", .{ address, port, allow_insecure });
+        const server_addr_str = try std.fmt.allocPrint(self.allocator, "{s}:{d}", .{ normalized_address, port });
+        defer self.allocator.free(server_addr_str);
 
         const cfg = try self.allocator.create(api.QuicConfig);
         cfg.* = .{
@@ -628,7 +829,7 @@ pub const QuicClient = struct {
             .token_expiry_ms = 60000,
             .enable_pacing = false,
             .max_datagram_size = 1200,
-            .max_idle_timeout_ms = 30000,
+            .max_idle_timeout_ms = 300000,
             .max_udp_payload = 1350,
             .cert_path = null,
             .key_path = null,
@@ -645,28 +846,35 @@ pub const QuicClient = struct {
         const bind_addr = "0.0.0.0:0";
         self.endpoint = try api.endpointInit(&self.allocator, bind_addr, cfg);
 
-        logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"QUIC config\",\"allow_insecure\":{}}}\n", .{cfg.allow_insecure});
-
-        // Connect to server
-        const sni = address; // Use server address as SNI
-        logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"initiating connection\",\"server_addr\":\"{s}\",\"sni\":\"{s}\"}}\n", .{ server_addr_str, sni });
+        // With insecure mode, use localhost SNI to match self-signed CN defaults.
+        const sni = if (allow_insecure) "localhost" else normalized_address;
         self.quic_connection = try api.connect(self.endpoint.?, server_addr_str, sni);
 
         self.is_quic = true;
-        self.server_addr = address;
+        self.server_addr = normalized_address;
         self.server_port = port;
-
-        logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"connection initiated successfully\"}}\n", .{});
     }
 
     /// Extended connection with custom CA, certificate, and key paths for mutual TLS authentication.
     pub fn connectEx(self: *QuicClient, address: []const u8, port: u16, ca: ?[]const u8, cert: ?[]const u8, key: ?[]const u8) !void {
-        const server_addr_str = try std.fmt.allocPrint(self.allocator, "{s}:{d}", .{ address, port });
+        const normalized_address = if (std.mem.eql(u8, address, "localhost"))
+            "127.0.0.1"
+        else
+            address;
+
+        const server_addr_str = try std.fmt.allocPrint(self.allocator, "{s}:{d}", .{ normalized_address, port });
         defer self.allocator.free(server_addr_str);
 
         const cfg = try self.allocator.create(api.QuicConfig);
+        errdefer self.allocator.destroy(cfg);
         const has_ca = ca != null;
-        const use_tls = has_ca or (cert != null and key != null);
+        if (!has_ca) {
+            // Fail closed: do not implicitly disable certificate verification.
+            // Callers must provide a CA bundle (recommended) or explicitly opt into
+            // insecure verification via `connectInsecure(...)` for testing only.
+            logger.err("quic_client: connectEx requires a CA certificate (use connectInsecure for insecure testing)\n", .{});
+            return QuicError.CertificateError;
+        }
         cfg.* = .{
             .version = .v1,
             .alpn = &[_][]const u8{"quic-zig/1"},
@@ -680,12 +888,12 @@ pub const QuicClient = struct {
             .token_expiry_ms = 60000,
             .enable_pacing = false,
             .max_datagram_size = 1200,
-            .max_idle_timeout_ms = 30000,
+            .max_idle_timeout_ms = 300000,
             .max_udp_payload = 1350,
             .cert_path = if (cert) |p| p else null,
             .key_path = if (key) |p| p else null,
-            .ca_path = if (has_ca) ca.? else null,
-            .allow_insecure = !use_tls,
+            .ca_path = ca.?,
+            .allow_insecure = false,
             .aead_confidentiality_limit_override = null,
             .aead_integrity_limit_override = null,
             .inline_server_cert_der = null,
@@ -697,96 +905,57 @@ pub const QuicClient = struct {
         const bind_addr = "0.0.0.0:0";
         self.endpoint = try api.endpointInit(&self.allocator, bind_addr, cfg);
 
-        // Connect to server - use localhost as SNI when allow_insecure to match cert CN
-        const sni = if (cfg.allow_insecure) "localhost" else address;
-        self.quic_connection = try api.connect(self.endpoint.?, server_addr_str, sni);
+        self.quic_connection = try api.connect(self.endpoint.?, server_addr_str, normalized_address);
 
         self.is_quic = true;
-        self.server_addr = address;
+        self.server_addr = normalized_address;
         self.server_port = port;
     }
 
     /// Waits for the TLS handshake to complete with a timeout.
-    pub fn waitForHandshake(self: *QuicClient) !void {
+    pub fn waitForHandshake(self: *QuicClient, timeout_secs: u32) !void {
         if (!self.is_quic or self.quic_connection == null) {
-            logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"waitForHandshake: no QUIC connection\"}}\n", .{});
-            return QuicError.ConnectionFailed;
+            return QuicError.InvalidState;
         }
 
-        // Wait for handshake to complete with timeout
-        const total_timeout_ms = 2000; // 2 second total timeout (reduced for faster failure)
-        const poll_timeout_ms = 50; // 50ms per poll
-        const start_time = std.time.milliTimestamp();
-
-        logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"waitForHandshake: starting handshake wait\",\"timeout_ms\":{}}}\n", .{total_timeout_ms});
-
-        var poll_count: u32 = 0;
-        while (std.time.milliTimestamp() - start_time < total_timeout_ms) {
-            poll_count += 1;
-
-            // Poll endpoint to process network events and advance handshake
-            api.poll(self.endpoint.?, poll_timeout_ms) catch |err| {
-                // Continue polling even if individual poll fails
-                logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"poll error\",\"error\":\"{}\"}}\n", .{err});
-            };
-
-            // Try to flush the endpoint to ensure packets are sent
-            api.flush(self.endpoint.?, 1);
-
-            // Check if handshake is complete - try multiple checks
-            const handshake_complete = api.handshakeComplete(self.quic_connection.?);
-            const handshake_confirmed = api.isHandshakeConfirmed(self.quic_connection.?);
-            const handshake_done = api.handshakeDoneSeen(self.quic_connection.?);
-
-            if (handshake_complete or handshake_confirmed or handshake_done) {
-                const elapsed_ms = std.time.milliTimestamp() - start_time;
-                logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"handshake completed\",\"elapsed_ms\":{},\"poll_count\":{},\"complete\":{},\"confirmed\":{},\"done\":{}}}\n", .{ elapsed_ms, poll_count, handshake_complete, handshake_confirmed, handshake_done });
-                return;
-            }
-
-            // Add detailed debugging for first few iterations
-            if (poll_count <= 5) {
-                logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"handshake check\",\"poll_count\":{},\"complete\":{},\"confirmed\":{},\"done\":{}}}\n", .{ poll_count, handshake_complete, handshake_confirmed, handshake_done });
-            }
-
-            // Log periodic progress
-            if (poll_count % 10 == 0) { // Every ~1 second
-                const elapsed_ms = std.time.milliTimestamp() - start_time;
-                logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"handshake in progress\",\"elapsed_ms\":{},\"poll_count\":{}}}\n", .{ elapsed_ms, poll_count });
-            }
+        const timeout_ns = @as(u64, timeout_secs) * std.time.ns_per_s;
+        const start = std.time.nanoTimestamp();
+        while (std.time.nanoTimestamp() - start < timeout_ns) {
+            try self.endpoint.?.poll(10);
+            if (api.isHandshakeConfirmed(self.quic_connection.?)) return;
+            std.Thread.sleep(1 * std.time.ns_per_ms);
         }
+        return QuicError.HandshakeError;
+    }
 
-        const elapsed_ms = std.time.milliTimestamp() - start_time;
-        logger.debugPrint("{{\"level\":\"ERROR\",\"component\":\"quic_client\",\"msg\":\"handshake timeout\",\"elapsed_ms\":{},\"poll_count\":{}}}\n", .{ elapsed_ms, poll_count });
-        return QuicError.HandshakeFailed;
+    pub fn openStream(self: *QuicClient, bidirectional: bool) !*QuicClientStream {
+        const qc = self.quic_connection orelse return QuicError.InvalidState;
+        const ep = self.endpoint orelse return QuicError.InvalidState;
+        const stream_id = try api.openStream(qc, bidirectional);
+        const stream = try self.allocator.create(QuicClientStream);
+        stream.* = .{
+            .allocator = self.allocator,
+            .quic_stream_id = stream_id,
+            .quic_connection = qc,
+            .client = self,
+            .endpoint = ep,
+        };
+        return stream;
     }
 
     /// Opens a new bidirectional stream on the connection.
     pub fn getStream(self: *QuicClient) !*QuicClientStream {
-        logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"getStream: starting\"}}\n", .{});
+        return self.openStream(true);
+    }
 
-        const stream = try self.allocator.create(QuicClientStream);
-        errdefer self.allocator.destroy(stream);
-
-        if (self.is_quic and self.quic_connection != null) {
-            // Don't wait for handshake here since we handle it externally
-            logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"getStream: opening stream (assuming handshake complete)\"}}\n", .{});
-            const stream_id = try api.openStream(self.quic_connection.?, true);
-            logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"getStream: stream opened\",\"stream_id\":{}}}\n", .{stream_id});
-
-            stream.* = QuicClientStream{
-                .allocator = self.allocator,
-                .quic_stream_id = stream_id,
-                .quic_connection = self.quic_connection,
-                .client = self,
-            };
-        } else {
-            logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"getStream: no QUIC connection available\"}}\n", .{});
-            return QuicError.ConnectionFailed;
+    pub fn poll(self: *QuicClient, timeout_ms: u32) !void {
+        if (self.endpoint) |ep| {
+            const timeout_i32: i32 = if (timeout_ms > std.math.maxInt(i32))
+                std.math.maxInt(i32)
+            else
+                @intCast(timeout_ms);
+            try api.poll(ep, timeout_i32);
         }
-
-        logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_client\",\"msg\":\"getStream: completed successfully\"}}\n", .{});
-        return stream;
     }
 };
 
@@ -794,118 +963,114 @@ pub const QuicClient = struct {
 pub const QuicClientStream = struct {
     allocator: std.mem.Allocator,
     quic_stream_id: ?api.QuicStreamId,
-    quic_connection: ?*api.QuicConnection,
+    quic_connection: *api.QuicConnection,
     client: ?*QuicClient,
+    endpoint: *api.QuicEndpoint,
+
+    pub fn write(self: *QuicClientStream, data: []const u8) !usize {
+        const sid = self.quic_stream_id orelse return QuicError.StreamFailed;
+        return api.writeStream(self.quic_connection, sid, data, false);
+    }
 
     /// Writes all data to the stream, polling to ensure delivery.
     pub fn writeAll(self: *QuicClientStream, data: []const u8) !void {
-        if (self.quic_stream_id) |sid| {
-            logger.debugPrint("DEBUG: QuicClientStream.writeAll called with {} bytes on stream {}\n", .{ data.len, sid });
-            const bytes_written = try api.writeStream(self.quic_connection.?, sid, data);
-            logger.debugPrint("DEBUG: writeStream returned {} bytes written\n", .{bytes_written});
-
-            // Poll multiple times to ensure data is sent
-            if (self.client) |c| {
-                if (c.endpoint) |ep| {
-                    var i: usize = 0;
-                    while (i < 5) : (i += 1) {
-                        api.poll(ep, 10) catch {};
-                        std.posix.nanosleep(0, 10 * std.time.ns_per_ms);
-                    }
-                }
-            }
-            logger.debugPrint("DEBUG: writeAll completed after polling\n", .{});
-        } else {
-            return QuicError.StreamFailed;
+        var written: usize = 0;
+        while (written < data.len) {
+            const n = try self.write(data[written..]);
+            if (n == 0) return QuicError.WriteError;
+            written += n;
         }
     }
 
     /// Reads data from the stream into the buffer with automatic retries and polling.
     pub fn read(self: *QuicClientStream, buf: []u8) !usize {
-        if (self.quic_stream_id) |sid| {
-            // Try reading with retries and polling
-            var attempts: usize = 0;
-            while (attempts < 20) : (attempts += 1) {
-                const n = api.readStream(self.quic_connection.?, sid, buf) catch |err| {
-                    // TRACE: readStream error
-                    // logger.debugPrint("DEBUG: readStream error: {}\n", .{err});
-                    if (err == error.WouldBlock) {
-                        // Poll the endpoint to process incoming packets
-                        if (self.client) |c| {
-                            if (c.endpoint) |ep| {
-                                // Poll multiple times to ensure we receive data
-                                var poll_i: usize = 0;
-                                while (poll_i < 3) : (poll_i += 1) {
-                                    // TRACE: read() polling endpoint
-                                    // logger.debugPrint("DEBUG: read() polling endpoint\n", .{});
-                                    api.poll(ep, 50) catch {};
-                                    std.posix.nanosleep(0, 10 * std.time.ns_per_ms);
-                                }
-                            } else {
-                                logger.debugPrint("DEBUG: read() no endpoint to poll!\n", .{});
-                            }
-                        } else {
-                            logger.debugPrint("DEBUG: read() no client reference!\n", .{});
-                        }
-                        continue;
-                    }
-                    return 0;
-                };
-                if (n > 0) return n;
+        const sid = self.quic_stream_id orelse return QuicError.StreamFailed;
+        const n = api.readStream(self.quic_connection, sid, buf) catch |err| {
+            if (err == error.WouldBlock) {
+                self.endpoint.poll(10) catch {};
+                return error.WouldBlock;
             }
-            return 0;
-        } else {
-            return QuicError.StreamFailed;
+            return err;
+        };
+        if (n == 0) {
+            self.endpoint.poll(10) catch {};
         }
+        return n;
     }
 
     /// Reads a line of text from the stream, up to max_size bytes, returning an allocated buffer.
     pub fn readLine(self: *QuicClientStream, max_size: usize) ![]u8 {
-        var buf = try self.allocator.alloc(u8, max_size);
-        errdefer self.allocator.free(buf);
+        return self.readLineWithInterrupt(max_size, null);
+    }
 
+    pub fn readLineWithInterrupt(
+        self: *QuicClientStream,
+        max_size: usize,
+        interrupt_check: ?*const fn () bool,
+    ) ![]u8 {
+        var temp = try self.allocator.alloc(u8, max_size);
+        defer self.allocator.free(temp);
         var pos: usize = 0;
+        var retry_count: usize = 0;
+        const max_retries: usize = 20;
+
         while (pos < max_size) {
-            const n = try self.read(buf[pos .. pos + 1]);
-            if (n == 0) break;
-            if (buf[pos] == '\n') {
-                // Resize to actual size (including newline)
-                if (self.allocator.resize(buf, pos + 1)) {
-                    return buf[0 .. pos + 1];
-                } else {
-                    // If resize fails, create a new smaller buffer
-                    const result = try self.allocator.alloc(u8, pos + 1);
-                    @memcpy(result, buf[0 .. pos + 1]);
-                    self.allocator.free(buf);
-                    return result;
-                }
+            if (interrupt_check) |check_fn| {
+                if (check_fn()) return error.Interrupted;
             }
+
+            var one: [1]u8 = undefined;
+            const n = self.read(&one) catch |err| {
+                if (err == error.WouldBlock and pos == 0) return error.WouldBlock;
+                if (err == error.WouldBlock) {
+                    retry_count += 1;
+                    if (retry_count > max_retries) {
+                        if (pos == 0) return error.WouldBlock;
+                        return error.UnexpectedEndOfStream;
+                    }
+                    self.endpoint.poll(10) catch {};
+                    std.Thread.sleep(5 * std.time.ns_per_ms);
+                    continue;
+                }
+                return err;
+            };
+
+            if (n == 0) {
+                if (pos == 0) return error.WouldBlock;
+                retry_count += 1;
+                if (retry_count > max_retries) return error.UnexpectedEndOfStream;
+                self.endpoint.poll(10) catch {};
+                std.Thread.sleep(5 * std.time.ns_per_ms);
+                continue;
+            }
+
+            temp[pos] = one[0];
             pos += 1;
+            retry_count = 0;
+            if (one[0] == '\n') break;
         }
-        // Resize to actual size
-        if (self.allocator.resize(buf, pos)) {
-            return buf[0..pos];
-        } else {
-            // If resize fails, create a new smaller buffer
-            const result = try self.allocator.alloc(u8, pos);
-            @memcpy(result, buf[0..pos]);
-            self.allocator.free(buf);
-            return result;
+
+        if (pos == 0) return error.EndOfStream;
+        const out = try self.allocator.alloc(u8, pos);
+        @memcpy(out, temp[0..pos]);
+        return out;
+    }
+
+    pub fn close(self: *QuicClientStream) void {
+        if (self.quic_stream_id) |sid| {
+            api.closeStream(self.quic_connection, sid, 0) catch {};
+            self.quic_stream_id = null;
         }
+        self.allocator.destroy(self);
     }
 
     /// Deinitializes the stream and frees its resources.
     pub fn deinit(self: *QuicClientStream) void {
-        // Avoid vendor close by default; env-gated for explicit shutdown.
-        if (self.quic_stream_id) |sid| {
-            const force_stream_close = if (std.process.getEnvVarOwned(self.allocator, "GEODE_QUIC_FORCE_STREAM_CLOSE")) |v| blk: {
-                defer self.allocator.free(v);
-                break :blk true;
-            } else |_| false;
-            if (force_stream_close) {
-                api.closeStream(self.quic_connection.?, sid, 0) catch {};
-            }
-        }
-        self.allocator.destroy(self);
+        self.close();
+    }
+
+    pub fn finish(self: *QuicClientStream) !void {
+        const sid = self.quic_stream_id orelse return QuicError.StreamFailed;
+        _ = try api.writeStream(self.quic_connection, sid, &.{}, true);
     }
 };
