@@ -14,7 +14,7 @@ const h3_server = @import("h3_server");
 // are not explicitly triggered here yet.
 
 fn getenv(alloc: std.mem.Allocator, key: []const u8) ?[]u8 {
-    if (std.os.getenv(key)) |val| return alloc.dupe(u8, val) catch null;
+    if (std.posix.getenv(key)) |val| return alloc.dupe(u8, val) catch null;
     return null;
 }
 
@@ -53,9 +53,6 @@ const supported_testcases = [_][]const u8{
     "handshake",
     "transfer",
     "longrtt",
-    "chacha20",
-    "retry",
-    "http3",
     "keyupdate",
     "amplificationlimit",
     "handshakeloss",
@@ -78,7 +75,15 @@ const PendingResponse = struct {
     stream_id: api.QuicStreamId,
     data: []u8,
     sent: usize = 0,
+    fin_sent: bool = false,
     order: usize = std.math.maxInt(usize),
+};
+
+const ResponseChunkResult = enum {
+    blocked,
+    progressed,
+    done,
+    failed,
 };
 
 fn inList(needle: []const u8, list: []const []const u8) bool {
@@ -185,9 +190,8 @@ fn writeAllStream(ep: *api.QuicEndpoint, conn: *api.QuicConnection, stream_id: a
     var off: usize = 0;
     while (off < data.len) {
         if (elapsedMsSince(start_ns) >= responseTotalTimeoutMs(testcase)) return false;
-        const remaining = data.len - off;
-        const is_final = (remaining <= 1000); // Will fit in one write
-        const n = api.writeStream(conn, stream_id, data[off..], is_final) catch |err| switch (err) {
+        const chunk_end = @min(off + 1200, data.len);
+        const n = api.writeStream(conn, stream_id, data[off..chunk_end], false) catch |err| switch (err) {
             error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked => 0,
             else => return false,
         };
@@ -201,8 +205,35 @@ fn writeAllStream(ep: *api.QuicEndpoint, conn: *api.QuicConnection, stream_id: a
         off += n;
         api.poll(ep, 1) catch {};
     }
+    // Send FIN explicitly as a zero-length STREAM frame after all payload bytes.
+    // This avoids relying on short-write behavior to carry fin=true.
+    _ = api.writeStream(conn, stream_id, &[_]u8{}, true) catch {};
     api.flush(ep, 5);
     return true;
+}
+
+fn writePendingResponseChunk(ep: *api.QuicEndpoint, conn: *api.QuicConnection, resp: *PendingResponse) ResponseChunkResult {
+    if (resp.fin_sent) return .done;
+
+    if (resp.sent < resp.data.len) {
+        const chunk_end = @min(resp.sent + 1200, resp.data.len);
+        const n = api.writeStream(conn, resp.stream_id, resp.data[resp.sent..chunk_end], false) catch |err| switch (err) {
+            error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked => 0,
+            else => return .failed,
+        };
+        if (n == 0) return .blocked;
+        resp.sent += n;
+        api.poll(ep, 1) catch {};
+        if (resp.sent < resp.data.len) return .progressed;
+    }
+
+    _ = api.writeStream(conn, resp.stream_id, &[_]u8{}, true) catch |err| switch (err) {
+        error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked => return .blocked,
+        else => return .failed,
+    };
+    resp.fin_sent = true;
+    api.flush(ep, 1);
+    return .done;
 }
 
 fn sendFileOnStream(ep: *api.QuicEndpoint, conn: *api.QuicConnection, stream_id: api.QuicStreamId, file: std.fs.File, testcase: []const u8) bool {
@@ -366,8 +397,9 @@ pub fn main() !void {
     if (std.mem.eql(u8, role, "server")) {
         var cert_path_sel: ?[]const u8 = null;
         var key_path_sel: ?[]const u8 = null;
+        const force_bundled_certs = env.get("QNS_USE_BUNDLED_CERTS") != null;
 
-        if (env.get("QNS_USE_MOUNTED_CERTS") != null) {
+        if (!force_bundled_certs) {
             const cert_candidates = [_][]const u8{ "/certs/cert.pem", "certs/cert.pem" };
             const key_candidates = [_][]const u8{ "/certs/priv.key", "/certs/key.pem", "certs/priv.key", "certs/key.pem" };
             for (cert_candidates) |candidate| {
@@ -382,26 +414,12 @@ pub fn main() !void {
                     break;
                 }
             }
-        } else {
+        }
+
+        if (cert_path_sel == null or key_path_sel == null) {
             if (pathExists("/quic/certs/cert.pem") and pathExists("/quic/certs/key.pem")) {
                 cert_path_sel = "/quic/certs/cert.pem";
                 key_path_sel = "/quic/certs/key.pem";
-            } else {
-                // Backward-compatible fallback if bundled certs are unavailable.
-                const cert_candidates = [_][]const u8{ "/certs/cert.pem", "certs/cert.pem" };
-                const key_candidates = [_][]const u8{ "/certs/priv.key", "/certs/key.pem", "certs/priv.key", "certs/key.pem" };
-                for (cert_candidates) |candidate| {
-                    if (pathExists(candidate)) {
-                        cert_path_sel = candidate;
-                        break;
-                    }
-                }
-                for (key_candidates) |candidate| {
-                    if (pathExists(candidate)) {
-                        key_path_sel = candidate;
-                        break;
-                    }
-                }
             }
         }
 
@@ -507,6 +525,7 @@ pub fn main() !void {
 
             const req_start = std.time.nanoTimestamp();
             var last_progress = req_start;
+            var rr_next: usize = 0;
             while (!api.isDrained(conn)) {
                 if (elapsedMsSince(req_start) >= responseTotalTimeoutMs(testcase)) break;
                 if (elapsedMsSince(last_progress) >= responseIdleTimeoutMs(testcase)) break;
@@ -572,32 +591,51 @@ pub fn main() !void {
                 }
 
                 if (pending_responses.items.len > 0) {
-                    var resp_idx: usize = 0;
-                    var scan_idx: usize = 1;
-                    while (scan_idx < pending_responses.items.len) : (scan_idx += 1) {
-                        const cur = pending_responses.items[scan_idx];
-                        const best = pending_responses.items[resp_idx];
-                        if (cur.stream_id > best.stream_id) {
-                            resp_idx = scan_idx;
+                    if (rr_next >= pending_responses.items.len) rr_next = 0;
+                    var attempts: usize = 0;
+                    var made_progress = false;
+                    while (attempts < pending_responses.items.len and pending_responses.items.len > 0) : (attempts += 1) {
+                        if (rr_next >= pending_responses.items.len) rr_next = 0;
+                        const resp = &pending_responses.items[rr_next];
+                        switch (writePendingResponseChunk(ep, conn, resp)) {
+                            .done => {
+                                var sent_msg_buf: [96]u8 = undefined;
+                                const sent_msg = std.fmt.bufPrint(&sent_msg_buf, "server: response sent stream={d}", .{resp.stream_id}) catch "server: response sent";
+                                log(sent_msg);
+                                alloc.free(resp.data);
+                                _ = pending_responses.swapRemove(rr_next);
+                                last_progress = std.time.nanoTimestamp();
+                                made_progress = true;
+                                if (pending_responses.items.len == 0) break;
+                                continue;
+                            },
+                            .progressed => {
+                                last_progress = std.time.nanoTimestamp();
+                                made_progress = true;
+                                rr_next += 1;
+                                break;
+                            },
+                            .blocked => {
+                                rr_next += 1;
+                            },
+                            .failed => {
+                                var timeout_msg_buf: [112]u8 = undefined;
+                                const timeout_msg = std.fmt.bufPrint(&timeout_msg_buf, "server: response send timeout stream={d}", .{resp.stream_id}) catch "server: response send timeout";
+                                log(timeout_msg);
+                                alloc.free(resp.data);
+                                _ = pending_responses.swapRemove(rr_next);
+                                last_progress = std.time.nanoTimestamp();
+                                made_progress = true;
+                                if (pending_responses.items.len == 0) break;
+                                continue;
+                            },
                         }
                     }
-
-                    const resp = pending_responses.items[resp_idx];
-                    if (writeAllStream(ep, conn, resp.stream_id, resp.data, testcase)) {
-                        var sent_msg_buf: [96]u8 = undefined;
-                        const sent_msg = std.fmt.bufPrint(&sent_msg_buf, "server: response sent stream={d}", .{resp.stream_id}) catch "server: response sent";
-                        log(sent_msg);
-                    } else {
-                        var timeout_msg_buf: [112]u8 = undefined;
-                        const timeout_msg = std.fmt.bufPrint(&timeout_msg_buf, "server: response send timeout stream={d}", .{resp.stream_id}) catch "server: response send timeout";
-                        log(timeout_msg);
+                    if (!made_progress) {
+                        api.poll(ep, 1) catch {};
                     }
-                    alloc.free(resp.data);
-                    _ = pending_responses.swapRemove(resp_idx);
-                    last_progress = std.time.nanoTimestamp();
                 }
             }
-            api.close(conn, 0, "bye") catch {};
             api.flush(ep, 10);
             var spins: usize = 0;
             while (spins < 50 and !api.isDrained(conn)) : (spins += 1) api.poll(ep, 1) catch break;

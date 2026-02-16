@@ -40,6 +40,9 @@ pub fn bind(comptime Connection: type) type {
 
         fn maybeTriggerKeyUpdateOnSend(self: *Connection, bytes_sent: usize) void {
             if (self.app_tx_keys == null or self.app_tx_secret == null) return;
+            if (std.posix.getenv("QUIC_DISABLE_AUTO_KEY_UPDATE")) |v| {
+                if (v.len == 0 or !std.mem.eql(u8, v, "0")) return;
+            }
             if (self.tx_update_in_progress) return;
             self.tx_sent_packets_since_key +%= 1;
             self.tx_sent_bytes_since_key +%= @intCast(bytes_sent);

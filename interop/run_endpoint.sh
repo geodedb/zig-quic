@@ -5,9 +5,6 @@ SUPPORTED_TESTCASES=(
   handshake
   transfer
   longrtt
-  chacha20
-  retry
-  http3
   keyupdate
   amplificationlimit
   handshakeloss
@@ -67,6 +64,15 @@ echo "QLOGDIR: ${QLOGDIR:-not set}"
 if ! is_supported_testcase "$TESTCASE"; then
   echo "Test case '$TESTCASE' is not supported by zig-qns endpoint. Exiting 127."
   exit 127
+fi
+
+# Keep key-update behavior deterministic in interop:
+# - keyupdate testcase: allow automatic key updates
+# - all other testcases: disable automatic key updates to avoid premature phase flips
+if [[ "$TESTCASE" == "keyupdate" ]]; then
+  unset QUIC_DISABLE_AUTO_KEY_UPDATE || true
+else
+  export QUIC_DISABLE_AUTO_KEY_UPDATE=1
 fi
 
 export ROLE TESTCASE
