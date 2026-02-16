@@ -42,6 +42,14 @@ inline fn hashBytes(b: []const u8) u64 {
     return h.final();
 }
 
+fn hashForSecret(secret: *const key_schedule.Secret) !key_schedule.Hash {
+    return switch (secret.len) {
+        32 => .sha256,
+        48 => .sha384,
+        else => error.InvalidSecretLength,
+    };
+}
+
 inline fn hashSockaddr(sa: *const posix.sockaddr.storage, len: u32) u64 {
     const bytes = std.mem.asBytes(sa)[0..@intCast(len)];
     return hashBytes(bytes);
@@ -597,11 +605,9 @@ fn decryptShortHeaderWithKeyRotationInternal(
     // Ensure NEXT keys are always pre-derived so we can decode peer-initiated key updates
     if (conn.app_rx_next_keys == null and conn.app_rx_secret != null) {
         const cur_secret = conn.app_rx_secret.?;
-        const next_secret = key_schedule.updateQuicSecret(cur_secret);
-        const next_mat = if (conn.version_v2)
-            key_schedule.deriveKeyIvHpV2(next_secret)
-        else
-            key_schedule.deriveKeyIvHp(next_secret);
+        const hash = hashForSecret(&cur_secret) catch return error.InvalidSecretLength;
+        const next_secret = key_schedule.updateQuicSecretHash(hash, &cur_secret);
+        const next_mat = key_schedule.deriveKeyIvHpHash(hash, &next_secret, conn.version_v2);
         conn.app_rx_next_secret = next_secret;
         conn.app_rx_next_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = next_mat.hp };
     }
@@ -866,11 +872,9 @@ fn tryForceKeyUpdateAndDecrypt(
         largest_pn,
     });
 
-    const forced_secret = key_schedule.updateQuicSecret(current_secret);
-    const forced_mat = if (conn.version_v2)
-        key_schedule.deriveKeyIvHpV2(forced_secret)
-    else
-        key_schedule.deriveKeyIvHp(forced_secret);
+    const hash = hashForSecret(&current_secret) catch return null;
+    const forced_secret = key_schedule.updateQuicSecretHash(hash, &current_secret);
+    const forced_mat = key_schedule.deriveKeyIvHpHash(hash, &forced_secret, conn.version_v2);
 
     logger.debugPrint("[PHASE57] Forced key derivation prepared (material redacted)\n", .{});
 
@@ -930,11 +934,11 @@ fn tryForceKeyUpdateAndDecrypt(
 ///
 /// Parameters:
 /// - conn: Connection to promote keys on
-/// - next_secret: NEXT RX traffic secret (32 bytes)
+/// - next_secret: NEXT RX traffic secret
 /// - next_keys: NEXT RX AEAD keys (key, iv, hp)
 pub fn promoteToNextKeys(
     conn: *conn_mod.Connection,
-    next_secret: [32]u8,
+    next_secret: key_schedule.Secret,
     next_keys: packet.AeadKeys,
 ) void {
     // PHASE 57: Log key promotion
@@ -948,11 +952,9 @@ pub fn promoteToNextKeys(
     // PHASE 57 Part 5: Re-derive NEXT keys from the current NEXT secret BEFORE promotion
     // This maintains the one-generation-ahead invariant (quic-go updatable_aead.go:120-123)
     // Derive NEXT from the NEXT secret (the one we're about to promote)
-    const new_next_secret = key_schedule.updateQuicSecret(next_secret);
-    const new_next_mat = if (conn.version_v2)
-        key_schedule.deriveKeyIvHpV2(new_next_secret)
-    else
-        key_schedule.deriveKeyIvHp(new_next_secret);
+    const hash = hashForSecret(&next_secret) catch return;
+    const new_next_secret = key_schedule.updateQuicSecretHash(hash, &next_secret);
+    const new_next_mat = key_schedule.deriveKeyIvHpHash(hash, &new_next_secret, conn.version_v2);
     logger.debugPrint("[PHASE57-KEY-PROMOTE] 🔄 Pre-derived new NEXT keys before promotion\n", .{});
 
     // Preserve current keys as previous (zeroize any older prev first)

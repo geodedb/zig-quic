@@ -42,15 +42,232 @@ fn extractPath(url: []const u8) []const u8 {
     return url[i..];
 }
 
-fn writeAllStream(ep: *api.QuicEndpoint, conn: *api.QuicConnection, data: []const u8) void {
+fn requestOrderIndex(path: []const u8, requests: []const []const u8) ?usize {
+    for (requests, 0..) |req, idx| {
+        if (std.mem.eql(u8, path, extractPath(req))) return idx;
+    }
+    return null;
+}
+
+const supported_testcases = [_][]const u8{
+    "handshake",
+    "transfer",
+    "longrtt",
+    "chacha20",
+    "retry",
+    "http3",
+    "keyupdate",
+    "amplificationlimit",
+    "handshakeloss",
+    "transferloss",
+    "handshakecorruption",
+    "transfercorruption",
+    "blackhole",
+    "multiconnect",
+    "ipv6",
+    "v2",
+    "rebind-port",
+    "rebind-addr",
+    "goodput",
+    "crosstraffic",
+};
+
+const default_alpns = [_][]const u8{ "hq-interop", "hq-29" };
+const http3_alpns = [_][]const u8{ "h3", "hq-interop", "hq-29" };
+const PendingResponse = struct {
+    stream_id: api.QuicStreamId,
+    data: []u8,
+    sent: usize = 0,
+    order: usize = std.math.maxInt(usize),
+};
+
+fn inList(needle: []const u8, list: []const []const u8) bool {
+    for (list) |item| {
+        if (std.mem.eql(u8, needle, item)) return true;
+    }
+    return false;
+}
+
+fn isSupportedTestcase(testcase: []const u8) bool {
+    if (testcase.len == 0) return true;
+    return inList(testcase, supported_testcases[0..]);
+}
+
+fn isStressTestcase(testcase: []const u8) bool {
+    return inList(testcase, &[_][]const u8{
+        "longrtt",
+        "handshakeloss",
+        "transferloss",
+        "handshakecorruption",
+        "transfercorruption",
+        "blackhole",
+    });
+}
+
+fn handshakeTimeoutMs(testcase: []const u8) i64 {
+    if (isStressTestcase(testcase)) return 60_000;
+    if (std.mem.eql(u8, testcase, "resumption") or std.mem.eql(u8, testcase, "zerortt")) return 30_000;
+    return 15_000;
+}
+
+fn responseIdleTimeoutMs(testcase: []const u8) i64 {
+    if (isStressTestcase(testcase)) return 20_000;
+    if (std.mem.eql(u8, testcase, "transfer") or std.mem.eql(u8, testcase, "multiplexing") or std.mem.eql(u8, testcase, "goodput")) return 30_000;
+    return 5_000;
+}
+
+fn responseTotalTimeoutMs(testcase: []const u8) i64 {
+    if (isStressTestcase(testcase)) return 120_000;
+    if (std.mem.eql(u8, testcase, "transfer") or std.mem.eql(u8, testcase, "multiplexing") or std.mem.eql(u8, testcase, "goodput")) return 55_000;
+    return 30_000;
+}
+
+fn connectionReady(conn: *api.QuicConnection) bool {
+    return api.handshakeComplete(conn) and api.getNegotiatedAlpn(conn) != null;
+}
+
+fn elapsedMsSince(start_ns: i128) i64 {
+    const now_ns: i128 = std.time.nanoTimestamp();
+    const delta_ns: i128 = now_ns - start_ns;
+    return @intCast(@divFloor(delta_ns, std.time.ns_per_ms));
+}
+
+fn pathExists(path: []const u8) bool {
+    if (std.fs.path.isAbsolute(path)) {
+        if (std.fs.openFileAbsolute(path, .{})) |f| {
+            f.close();
+            return true;
+        } else |_| {
+            return false;
+        }
+    }
+    if (std.fs.cwd().openFile(path, .{})) |f| {
+        f.close();
+        return true;
+    } else |_| {
+        return false;
+    }
+}
+
+fn openFileAny(path: []const u8) !std.fs.File {
+    if (std.fs.path.isAbsolute(path)) {
+        return std.fs.openFileAbsolute(path, .{});
+    }
+    return std.fs.cwd().openFile(path, .{});
+}
+
+fn readFileAlloc(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
+    const file = try openFileAny(path);
+    defer file.close();
+
+    const size_u64 = try file.getEndPos();
+    const size: usize = @intCast(size_u64);
+    const buf = try alloc.alloc(u8, size);
+    errdefer alloc.free(buf);
+
+    const n = try file.readAll(buf);
+    return buf[0..n];
+}
+
+fn loadInlineServerCredentials(alloc: std.mem.Allocator, cfg: *api.QuicConfig, cert_path: []const u8, key_path: []const u8) !void {
+    const cert_pem = try readFileAlloc(alloc, cert_path);
+    defer alloc.free(cert_pem);
+    const key_pem = try readFileAlloc(alloc, key_path);
+    defer alloc.free(key_pem);
+
+    cfg.inline_server_cert_der = try api.pem.parseCertificate(alloc, cert_pem);
+    cfg.inline_server_priv_p256 = try api.pem.parsePrivateKey(alloc, key_pem);
+}
+
+fn writeAllStream(ep: *api.QuicEndpoint, conn: *api.QuicConnection, stream_id: api.QuicStreamId, data: []const u8, testcase: []const u8) bool {
+    const start_ns = std.time.nanoTimestamp();
+    var stalled_polls: usize = 0;
     var off: usize = 0;
     while (off < data.len) {
+        if (elapsedMsSince(start_ns) >= responseTotalTimeoutMs(testcase)) return false;
         const remaining = data.len - off;
         const is_final = (remaining <= 1000); // Will fit in one write
-        const n = api.writeStream(conn, 0, data[off..], is_final) catch 0;
+        const n = api.writeStream(conn, stream_id, data[off..], is_final) catch |err| switch (err) {
+            error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked => 0,
+            else => return false,
+        };
+        if (n == 0) {
+            stalled_polls += 1;
+            if (stalled_polls >= 2000) return false;
+            api.poll(ep, 5) catch {};
+            continue;
+        }
+        stalled_polls = 0;
         off += n;
         api.poll(ep, 1) catch {};
     }
+    api.flush(ep, 5);
+    return true;
+}
+
+fn sendFileOnStream(ep: *api.QuicEndpoint, conn: *api.QuicConnection, stream_id: api.QuicStreamId, file: std.fs.File, testcase: []const u8) bool {
+    var buf: [16 * 1024]u8 = undefined;
+    const start_ns = std.time.nanoTimestamp();
+    var stalled_polls: usize = 0;
+    const stat = file.stat() catch null;
+    if (stat == null or stat.?.size == 0) {
+        _ = api.writeStream(conn, stream_id, &[_]u8{}, true) catch {};
+        return true;
+    }
+    var remaining: u64 = stat.?.size;
+    while (remaining > 0) {
+        if (elapsedMsSince(start_ns) >= responseTotalTimeoutMs(testcase)) return false;
+        const nread = file.read(buf[0..]) catch 0;
+        if (nread == 0) break;
+        var off: usize = 0;
+        while (off < nread) {
+            if (elapsedMsSince(start_ns) >= responseTotalTimeoutMs(testcase)) return false;
+            const still_in_chunk = nread - off;
+            const is_final = (remaining == still_in_chunk);
+            const wn = api.writeStream(conn, stream_id, buf[off..nread], is_final) catch |err| switch (err) {
+                error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked => 0,
+                else => return false,
+            };
+            if (wn == 0) {
+                stalled_polls += 1;
+                if (stalled_polls >= 4000) return false;
+                api.poll(ep, 5) catch {};
+                continue;
+            }
+            stalled_polls = 0;
+            off += wn;
+            remaining -= wn;
+            api.poll(ep, 1) catch {};
+        }
+        if (isStressTestcase(testcase)) {
+            api.poll(ep, 1) catch {};
+        }
+    }
+    api.flush(ep, 5);
+    return remaining == 0;
+}
+
+fn tcpReadinessLoop() void {
+    // The simulator does a TCP readiness probe against server:443.
+    // QUIC uses UDP, so we expose a minimal TCP listener to satisfy the probe.
+    const addr = std.net.Address.parseIp4("0.0.0.0", 443) catch return;
+    var listener = addr.listen(.{ .reuse_address = true }) catch return;
+    defer listener.deinit();
+
+    var accepted: usize = 0;
+    while (accepted < 4) : (accepted += 1) {
+        const conn = listener.accept() catch break;
+        conn.stream.close();
+    }
+}
+
+fn startTcpReadinessListener() void {
+    const t = std.Thread.spawn(.{}, tcpReadinessLoop, .{}) catch {
+        log("server: TCP readiness listener unavailable");
+        return;
+    };
+    t.detach();
+    log("server: TCP readiness listener active on 0.0.0.0:443");
 }
 
 var log_file: ?std.fs.File = null;
@@ -97,25 +314,13 @@ pub fn main() !void {
     var env = try std.process.getEnvMap(alloc);
     defer env.deinit();
     const role = env.get("ROLE") orelse return error.MissingROLE;
-    const testcase = env.get("TESTCASE") orelse "";
+    const testcase = env.get("TESTCASE") orelse "handshake";
     const verbose = env.get("ZIG_VERBOSE") != null;
-    // Feature gating: exit 127 for still unsupported advanced cases so runner marks unsupported.
-    // Now supporting: handshake, transfer, http3 (0.9 shim), retry, keyupdate, v2, chacha20, multiconnect
-    // Partially supporting: resumption, zerortt, connectionmigration, rebind-port, rebind-addr (basic structure)
-    // These features have basic implementation but may not pass all interop tests
-
-    // Log support for partially implemented features
-    if (std.mem.eql(u8, testcase, "resumption")) {
-        log("endpoint: session resumption enabled (basic support)");
-    }
-    if (std.mem.eql(u8, testcase, "zerortt")) {
-        log("endpoint: 0-RTT enabled (basic support)");
-    }
-    if (std.mem.eql(u8, testcase, "connectionmigration")) {
-        log("endpoint: connection migration enabled (PATH_CHALLENGE/RESPONSE supported)");
-    }
-    if (std.mem.eql(u8, testcase, "rebind-port") or std.mem.eql(u8, testcase, "rebind-addr")) {
-        log("endpoint: NAT rebinding detection enabled");
+    if (!isSupportedTestcase(testcase)) {
+        var unsupported_msg_buf: [160]u8 = undefined;
+        const unsupported_msg = std.fmt.bufPrint(&unsupported_msg_buf, "unsupported testcase={s}; exiting 127", .{testcase}) catch "unsupported testcase; exiting 127";
+        log(unsupported_msg);
+        std.process.exit(127);
     }
 
     // NOTE: allow_insecure=true is REQUIRED for QNS interop testing.
@@ -124,12 +329,15 @@ pub fn main() !void {
     // This is ONLY acceptable in the controlled interop test environment.
     log("WARNING: TLS certificate validation disabled for interop testing");
     var cfg = api.QuicConfig{
-        // Advertise common interop ALPNs: RFC h3 and HQ variants used by older runners
-        .alpn = &[_][]const u8{ "h3", "hq-29", "hq-interop" },
+        // Prefer HQ variants for classic interop tests. Restrict to h3 for
+        // the explicit http3 testcase.
+        .alpn = if (std.mem.eql(u8, testcase, "http3")) &http3_alpns else &default_alpns,
         // SECURITY: Insecure mode required for QNS interop - DO NOT use in production
         .allow_insecure = true,
         .enable_datagram = false,
-        .compatible_vn = false,
+        // Required by the simulator's wait-for-it-quic probe, which expects
+        // a Version Negotiation response to an unsupported version.
+        .compatible_vn = true,
         .enable_retry = false,
         .version = .v1, // Default to v1
     };
@@ -154,48 +362,98 @@ pub fn main() !void {
         if (sec.len > 0) cfg.token_secret = sec;
     }
 
-    // If server role and real TLS certs present, enable real TLS.
-    const cert_ok = std.fs.cwd().openFile("certs/cert.pem", .{}) catch null;
-    if (cert_ok) |f| f.close();
-    var key_path_sel: ?[]const u8 = null;
-    if (std.fs.cwd().openFile("certs/key.pem", .{})) |kf| {
-        kf.close();
-        key_path_sel = "/certs/key.pem";
-    } else |_| {
-        if (std.fs.cwd().openFile("certs/priv.key", .{})) |kf2| {
-            kf2.close();
-            key_path_sel = "/certs/priv.key";
-        } else |_| {}
-    }
-    if (cert_ok != null and key_path_sel != null) {
-        cfg.cert_path = "/certs/cert.pem";
-        cfg.key_path = key_path_sel;
-        // SECURITY: Insecure mode required for QNS interop - clients use self-signed certs
-        cfg.allow_insecure = true;
-        log("server: TLS enabled with provided certificate (insecure mode for interop)");
+    // If server role, load certificate + key into inline TLS config.
+    if (std.mem.eql(u8, role, "server")) {
+        var cert_path_sel: ?[]const u8 = null;
+        var key_path_sel: ?[]const u8 = null;
+
+        if (env.get("QNS_USE_MOUNTED_CERTS") != null) {
+            const cert_candidates = [_][]const u8{ "/certs/cert.pem", "certs/cert.pem" };
+            const key_candidates = [_][]const u8{ "/certs/priv.key", "/certs/key.pem", "certs/priv.key", "certs/key.pem" };
+            for (cert_candidates) |candidate| {
+                if (pathExists(candidate)) {
+                    cert_path_sel = candidate;
+                    break;
+                }
+            }
+            for (key_candidates) |candidate| {
+                if (pathExists(candidate)) {
+                    key_path_sel = candidate;
+                    break;
+                }
+            }
+        } else {
+            if (pathExists("/quic/certs/cert.pem") and pathExists("/quic/certs/key.pem")) {
+                cert_path_sel = "/quic/certs/cert.pem";
+                key_path_sel = "/quic/certs/key.pem";
+            } else {
+                // Backward-compatible fallback if bundled certs are unavailable.
+                const cert_candidates = [_][]const u8{ "/certs/cert.pem", "certs/cert.pem" };
+                const key_candidates = [_][]const u8{ "/certs/priv.key", "/certs/key.pem", "certs/priv.key", "certs/key.pem" };
+                for (cert_candidates) |candidate| {
+                    if (pathExists(candidate)) {
+                        cert_path_sel = candidate;
+                        break;
+                    }
+                }
+                for (key_candidates) |candidate| {
+                    if (pathExists(candidate)) {
+                        key_path_sel = candidate;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (cert_path_sel == null or key_path_sel == null) {
+            log("server: no usable TLS certificate/key found");
+            return error.MissingCertificate;
+        }
+
+        cfg.cert_path = cert_path_sel.?;
+        cfg.key_path = key_path_sel.?;
+        cfg.allow_insecure = true; // QNS interop only
+        loadInlineServerCredentials(alloc, &cfg, cert_path_sel.?, key_path_sel.?) catch |err| {
+            var msg_buf: [160]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "server: failed to load TLS credentials ({s})", .{@errorName(err)}) catch "server: failed to load TLS credentials";
+            log(msg);
+            return err;
+        };
+        if (std.mem.startsWith(u8, cert_path_sel.?, "/quic/certs/")) {
+            log("server: TLS enabled with bundled interop certificate");
+        } else {
+            log("server: TLS enabled with mounted interop certificate");
+        }
     }
 
     if (std.mem.eql(u8, role, "server")) {
+        startTcpReadinessListener();
         const ep = try api.endpointInit(&alloc, "0.0.0.0:443", &cfg);
         defer api.endpointDeinit(ep);
         log("server: started (listening 0.0.0.0:443)");
+        var request_order_urls: []const []const u8 = &[_][]const u8{};
+        var request_order_owned = false;
+        if (env.get("REQUESTS")) |request_env| {
+            request_order_urls = parseUrls(alloc, request_env) catch &[_][]const u8{};
+            request_order_owned = request_order_urls.len > 0;
+        }
+        defer if (request_order_owned) alloc.free(request_order_urls);
         // Single accept loop (serve sequentially) with coarse timeout budget.
         var served: usize = 0;
-        var poll_count: usize = 0;
-        while (served < 32) : (served += 1) {
-            // Poll with timeout to process incoming packets
-            if (poll_count < 1000) {
-                api.poll(ep, 100) catch {};
-                poll_count += 1;
-            }
+        var idle_polls: usize = 0;
+        while (served < 32) {
+            api.poll(ep, 100) catch {};
+            if (idle_polls < 1000) idle_polls += 1;
 
             const conn = api.accept(ep) catch |e| switch (e) {
                 else => {
                     // No connection ready, continue polling
-                    if (poll_count < 1000) continue;
+                    if (idle_polls < 1000) continue;
                     break;
                 },
             };
+            idle_polls = 0;
+            served += 1;
             log("server: accepted connection");
             if (verbose) log("server: verbose logging enabled");
             if (cfg.enable_retry) {
@@ -203,18 +461,18 @@ pub fn main() !void {
             }
             // Handle a single connection
             var buf: [4096]u8 = undefined;
-            var total_wait: usize = 0;
+            const hs_wait_start = std.time.nanoTimestamp();
             // Wait for handshake done before reading requests
-            while (!api.handshakeDoneSeen(conn) and total_wait < 2000) : (total_wait += 1) {
+            while (!connectionReady(conn) and elapsedMsSince(hs_wait_start) < handshakeTimeoutMs(testcase)) {
                 api.poll(ep, 5) catch {};
             }
-            if (api.handshakeDoneSeen(conn)) {
+            if (connectionReady(conn)) {
                 log("server: handshake complete");
                 if (api.getNegotiatedAlpn(conn)) |a| {
                     var alpn_buf: [128]u8 = undefined;
                     const msg = std.fmt.bufPrint(&alpn_buf, "server: negotiated alpn={s}", .{a}) catch "server: negotiated alpn=?";
                     log(msg);
-                    if (std.mem.eql(u8, a, "h3")) {
+                    if (std.mem.eql(u8, a, "h3") and std.mem.eql(u8, testcase, "http3")) {
                         const h3 = @import("h3_server");
                         var shim = h3.H3Server.init(alloc);
                         shim.serveConnection(ep, conn);
@@ -237,32 +495,106 @@ pub fn main() !void {
             } else {
                 log("server: handshake timeout");
             }
-            // Read simple lines until connection drained or timeout
-            var iters: usize = 0;
-            while (iters < 2000 and !api.isDrained(conn)) : (iters += 1) {
-                api.poll(ep, 2) catch {};
-                const n = api.readStream(conn, 0, buf[0..]) catch 0;
-                if (n == 0) continue;
-                // Assume we received a single GET line (no CRLF handling required for 0.9)
-                const line = std.mem.trim(u8, buf[0..n], " \r\n");
-                if (std.mem.startsWith(u8, line, "GET ")) {
-                    const path = line[4..];
-                    log("server: GET request received");
-                    var full_path_buf: [512]u8 = undefined;
-                    const full_path = try std.fmt.bufPrint(&full_path_buf, "/www{s}", .{path});
-                    if (std.fs.cwd().openFile(full_path, .{})) |file| {
-                        defer file.close();
-                        const size = file.getEndPos() catch 0;
-                        if (size > 0 and size <= 4 * 1024 * 1024) {
-                            const bytes = alloc.alloc(u8, @as(usize, @intCast(size))) catch null;
-                            if (bytes) |b| {
-                                const nread = file.readAll(b) catch 0;
-                                writeAllStream(ep, conn, b[0..nread]);
-                                alloc.free(b);
-                                log("server: response sent");
-                            }
+            // Read request lines and schedule responses. Send responses in
+            // non-blocking round-robin to avoid per-stream flow-control deadlocks.
+            var active_streams = std.ArrayList(api.QuicStreamId){};
+            defer active_streams.deinit(alloc);
+            var pending_responses = std.ArrayList(PendingResponse){};
+            defer {
+                for (pending_responses.items) |resp| alloc.free(resp.data);
+                pending_responses.deinit(alloc);
+            }
+
+            const req_start = std.time.nanoTimestamp();
+            var last_progress = req_start;
+            while (!api.isDrained(conn)) {
+                if (elapsedMsSince(req_start) >= responseTotalTimeoutMs(testcase)) break;
+                if (elapsedMsSince(last_progress) >= responseIdleTimeoutMs(testcase)) break;
+                api.poll(ep, 5) catch {};
+
+                while (api.hasIncomingStreams(conn)) {
+                    const sid = api.acceptStream(conn) catch break;
+                    var known = false;
+                    for (active_streams.items) |existing_sid| {
+                        if (existing_sid == sid) {
+                            known = true;
+                            break;
                         }
-                    } else |_| {}
+                    }
+                    if (!known) active_streams.append(alloc, sid) catch {};
+                }
+
+                var idx: usize = 0;
+                while (idx < active_streams.items.len) {
+                    const sid = active_streams.items[idx];
+                    const n = api.readStream(conn, sid, buf[0..]) catch 0;
+                    if (n == 0) {
+                        idx += 1;
+                        continue;
+                    }
+                    last_progress = std.time.nanoTimestamp();
+
+                    const line = std.mem.trim(u8, buf[0..n], " \r\n");
+                    if (std.mem.startsWith(u8, line, "GET ")) {
+                        const path = line[4..];
+                        var recv_msg_buf: [220]u8 = undefined;
+                        const recv_msg = std.fmt.bufPrint(&recv_msg_buf, "server: GET request received stream={d} path={s}", .{ sid, path }) catch "server: GET request received";
+                        log(recv_msg);
+
+                        var full_path_buf: [512]u8 = undefined;
+                        const full_path = try std.fmt.bufPrint(&full_path_buf, "/www{s}", .{path});
+                        var body = alloc.dupe(u8, &[_]u8{}) catch {
+                            _ = active_streams.swapRemove(idx);
+                            continue;
+                        };
+                        if (readFileAlloc(alloc, full_path)) |loaded_body| {
+                            alloc.free(body);
+                            body = loaded_body;
+                        } else |_| {
+                            var miss_msg_buf: [128]u8 = undefined;
+                            const miss_msg = std.fmt.bufPrint(&miss_msg_buf, "server: missing file stream={d}", .{sid}) catch "server: missing file";
+                            log(miss_msg);
+                        }
+                        pending_responses.append(alloc, .{
+                            .stream_id = sid,
+                            .data = body,
+                            .order = requestOrderIndex(path, request_order_urls) orelse std.math.maxInt(usize),
+                        }) catch {
+                            alloc.free(body);
+                        };
+                    } else {
+                        var invalid_msg_buf: [96]u8 = undefined;
+                        const invalid_msg = std.fmt.bufPrint(&invalid_msg_buf, "server: ignoring non-GET stream={d}", .{sid}) catch "server: ignoring non-GET";
+                        log(invalid_msg);
+                    }
+
+                    _ = active_streams.swapRemove(idx);
+                }
+
+                if (pending_responses.items.len > 0) {
+                    var resp_idx: usize = 0;
+                    var scan_idx: usize = 1;
+                    while (scan_idx < pending_responses.items.len) : (scan_idx += 1) {
+                        const cur = pending_responses.items[scan_idx];
+                        const best = pending_responses.items[resp_idx];
+                        if (cur.stream_id > best.stream_id) {
+                            resp_idx = scan_idx;
+                        }
+                    }
+
+                    const resp = pending_responses.items[resp_idx];
+                    if (writeAllStream(ep, conn, resp.stream_id, resp.data, testcase)) {
+                        var sent_msg_buf: [96]u8 = undefined;
+                        const sent_msg = std.fmt.bufPrint(&sent_msg_buf, "server: response sent stream={d}", .{resp.stream_id}) catch "server: response sent";
+                        log(sent_msg);
+                    } else {
+                        var timeout_msg_buf: [112]u8 = undefined;
+                        const timeout_msg = std.fmt.bufPrint(&timeout_msg_buf, "server: response send timeout stream={d}", .{resp.stream_id}) catch "server: response send timeout";
+                        log(timeout_msg);
+                    }
+                    alloc.free(resp.data);
+                    _ = pending_responses.swapRemove(resp_idx);
+                    last_progress = std.time.nanoTimestamp();
                 }
             }
             api.close(conn, 0, "bye") catch {};
@@ -278,6 +610,8 @@ pub fn main() !void {
         const req_env = env.get("REQUESTS") orelse return error.MissingREQUESTS;
         const urls = try parseUrls(alloc, req_env);
         defer alloc.free(urls);
+        const connect_addr = if (std.mem.eql(u8, testcase, "ipv6")) "[fd00:cafe:cafe:100::100]:443" else "193.167.100.100:443";
+        const connect_sni = if (std.mem.eql(u8, testcase, "ipv6")) "server6" else "server4";
 
         // For multiconnect test, establish a new connection for each request
         if (std.mem.eql(u8, testcase, "multiconnect")) {
@@ -290,18 +624,18 @@ pub fn main() !void {
                 const path = extractPath(url);
 
                 // Create new connection for each request
-                const conn = try api.connect(ep, "server4:443", "server4");
+                const conn = try api.connect(ep, connect_addr, connect_sni);
                 var conn_msg_buf: [128]u8 = undefined;
-                const conn_msg = std.fmt.bufPrint(&conn_msg_buf, "client: connection {d} connecting to server4:443", .{idx + 1}) catch "client: connecting";
+                const conn_msg = std.fmt.bufPrint(&conn_msg_buf, "client: connection {d} connecting to {s}", .{ idx + 1, connect_addr }) catch "client: connecting";
                 log(conn_msg);
 
                 // Wait for handshake
-                var wait: usize = 0;
-                while (!api.handshakeDoneSeen(conn) and wait < 2000) : (wait += 1) {
+                const hs_wait_start = std.time.nanoTimestamp();
+                while (!connectionReady(conn) and elapsedMsSince(hs_wait_start) < handshakeTimeoutMs(testcase)) {
                     api.poll(ep, 5) catch {};
                 }
 
-                if (!api.handshakeDoneSeen(conn)) {
+                if (!connectionReady(conn)) {
                     log("client: handshake timeout");
                     api.destroy(ep, conn);
                     success = false;
@@ -310,25 +644,32 @@ pub fn main() !void {
 
                 // Send request
                 var line_buf: [600]u8 = undefined;
-                const line = try std.fmt.bufPrint(&line_buf, "GET {s}", .{path});
+                const line = try std.fmt.bufPrint(&line_buf, "GET {s}\r\n", .{path});
                 log("client: sending GET request");
-                writeAllStream(ep, conn, line);
+                if (!writeAllStream(ep, conn, 0, line, testcase)) {
+                    log("client: write request timed out");
+                    success = false;
+                    api.destroy(ep, conn);
+                    continue;
+                }
 
                 // Read response
                 var file_bytes = std.ArrayList(u8){};
                 defer file_bytes.deinit(alloc);
-                var idle: usize = 0;
-                var loops: usize = 0;
                 var tmp: [4096]u8 = undefined;
-                while (idle < 200 and loops < 4000) : (loops += 1) {
-                    api.poll(ep, 2) catch {};
+                const read_start = std.time.nanoTimestamp();
+                var last_progress = read_start;
+                while (true) {
+                    if (elapsedMsSince(read_start) >= responseTotalTimeoutMs(testcase)) break;
+                    if (elapsedMsSince(last_progress) >= responseIdleTimeoutMs(testcase)) break;
+                    api.poll(ep, 5) catch {};
                     const n = api.readStream(conn, 0, tmp[0..]) catch 0;
                     if (n == 0) {
-                        idle += 1;
+                        continue;
                     } else {
-                        idle = 0;
+                        last_progress = std.time.nanoTimestamp();
                         try file_bytes.appendSlice(alloc, tmp[0..n]);
-                        if (file_bytes.items.len > 4 * 1024 * 1024) break;
+                        if (file_bytes.items.len > 128 * 1024 * 1024) break;
                     }
                 }
 
@@ -360,18 +701,20 @@ pub fn main() !void {
         // Normal mode: single connection for all requests
         const ep = try api.endpointInit(&alloc, "0.0.0.0:0", &cfg);
         defer api.endpointDeinit(ep);
-        const conn = try api.connect(ep, "server4:443", "server4");
-        log("client: connecting to server4:443");
+        const conn = try api.connect(ep, connect_addr, connect_sni);
+        var connect_msg_buf: [160]u8 = undefined;
+        const connect_msg = std.fmt.bufPrint(&connect_msg_buf, "client: connecting to {s}", .{connect_addr}) catch "client: connecting";
+        log(connect_msg);
         if (verbose) log("client: verbose logging enabled");
         if (cfg.enable_retry) {
             log("client: retry enabled (will process Retry if received)");
         }
         // Wait for handshake done
-        var wait: usize = 0;
-        while (!api.handshakeDoneSeen(conn) and wait < 2000) : (wait += 1) {
+        const hs_wait_start = std.time.nanoTimestamp();
+        while (!connectionReady(conn) and elapsedMsSince(hs_wait_start) < handshakeTimeoutMs(testcase)) {
             api.poll(ep, 5) catch {};
         }
-        if (api.handshakeDoneSeen(conn)) {
+        if (connectionReady(conn)) {
             log("client: handshake complete");
             if (api.getNegotiatedAlpn(conn)) |a| {
                 var alpn_buf: [128]u8 = undefined;
@@ -394,15 +737,24 @@ pub fn main() !void {
             }
         } else {
             log("client: handshake timeout");
+            api.close(conn, 0, "bye") catch {};
+            api.flush(ep, 10);
+            api.destroy(ep, conn);
+            std.process.exit(1);
         }
+
         var success: bool = true;
         var request_i: usize = 0;
         while (request_i < urls.len) : (request_i += 1) {
             const path = extractPath(urls[request_i]);
             var line_buf: [600]u8 = undefined;
-            const line = try std.fmt.bufPrint(&line_buf, "GET {s}", .{path});
+            const line = try std.fmt.bufPrint(&line_buf, "GET {s}\r\n", .{path});
             log("client: sending GET request");
-            writeAllStream(ep, conn, line);
+            if (!writeAllStream(ep, conn, 0, line, testcase)) {
+                log("client: write request timed out");
+                success = false;
+                break;
+            }
             // For keyupdate testcase, after first request send ~70KiB padding to force early key update.
             if (request_i == 0 and std.mem.eql(u8, testcase, "keyupdate")) {
                 var pad: [1024]u8 = undefined;
@@ -423,18 +775,20 @@ pub fn main() !void {
             // Read response until timeout or no progress; save to file
             var file_bytes = std.ArrayList(u8){};
             defer file_bytes.deinit(alloc);
-            var idle: usize = 0;
-            var loops: usize = 0;
             var tmp: [4096]u8 = undefined;
-            while (idle < 200 and loops < 4000) : (loops += 1) {
-                api.poll(ep, 2) catch {};
+            const read_start = std.time.nanoTimestamp();
+            var last_progress = read_start;
+            while (true) {
+                if (elapsedMsSince(read_start) >= responseTotalTimeoutMs(testcase)) break;
+                if (elapsedMsSince(last_progress) >= responseIdleTimeoutMs(testcase)) break;
+                api.poll(ep, 5) catch {};
                 const n = api.readStream(conn, 0, tmp[0..]) catch 0;
                 if (n == 0) {
-                    idle += 1;
+                    continue;
                 } else {
-                    idle = 0;
+                    last_progress = std.time.nanoTimestamp();
                     try file_bytes.appendSlice(alloc, tmp[0..n]);
-                    if (file_bytes.items.len > 4 * 1024 * 1024) break; // cap
+                    if (file_bytes.items.len > 128 * 1024 * 1024) break; // cap
                 }
             }
             // Write downloaded data

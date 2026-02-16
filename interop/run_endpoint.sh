@@ -1,86 +1,120 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Set up the routing needed for the simulation
+SUPPORTED_TESTCASES=(
+  handshake
+  transfer
+  longrtt
+  chacha20
+  retry
+  http3
+  keyupdate
+  amplificationlimit
+  handshakeloss
+  transferloss
+  handshakecorruption
+  transfercorruption
+  blackhole
+  multiconnect
+  ipv6
+  v2
+  rebind-port
+  rebind-addr
+  goodput
+  crosstraffic
+)
+
+is_supported_testcase() {
+  local testcase="$1"
+  local t
+  for t in "${SUPPORTED_TESTCASES[@]}"; do
+    if [[ "$t" == "$testcase" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+run_endpoint_bin() {
+  if [[ "${INTEROP_DROP_PRIVS:-0}" == "1" ]] && command -v setpriv >/dev/null 2>&1; then
+    setpriv --reuid=quic --regid=quic --clear-groups qns-endpoint "$@"
+  else
+    qns-endpoint "$@"
+  fi
+}
+
+# Set up simulator routing first (requires root + CAP_NET_ADMIN in container).
 /setup.sh
 
-# Print version info
-if [ -f /quic/version.txt ]; then
-    echo "=== Zig QUIC Implementation ==="
-    echo "Version: $(cat /quic/version.txt)"
+if [[ -f /quic/version.txt ]]; then
+  echo "=== Zig QUIC Implementation ==="
+  echo "Version: $(cat /quic/version.txt)"
 fi
 
-ROLE=${ROLE:-server}
-TESTCASE=${TESTCASE:-handshake}
+ROLE="${ROLE:-server}"
+TESTCASE="${TESTCASE:-handshake}"
 
-# Create log and output directories
 mkdir -p /logs /downloads /www
+if [[ -n "${QLOGDIR:-}" ]]; then
+  mkdir -p "$QLOGDIR"
+fi
 
 echo "Role: $ROLE"
 echo "Test case: $TESTCASE"
 echo "SSLKEYLOGFILE: ${SSLKEYLOGFILE:-not set}"
 echo "QLOGDIR: ${QLOGDIR:-not set}"
 
-# Set up environment variables for the test case
-export ROLE
-export TESTCASE
-
-# Export SSL key log file if specified (for Wireshark decryption)
-if [ -n "${SSLKEYLOGFILE}" ]; then
-    export SSLKEYLOGFILE
-    echo "SSL key logging enabled: $SSLKEYLOGFILE"
+if ! is_supported_testcase "$TESTCASE"; then
+  echo "Test case '$TESTCASE' is not supported by zig-qns endpoint. Exiting 127."
+  exit 127
 fi
 
-# Export QLOG directory if specified (for debugging)
-if [ -n "${QLOGDIR}" ]; then
-    export QLOGDIR
-    echo "QLOG directory: $QLOGDIR"
+export ROLE TESTCASE
+export LOG_LEVEL="${LOG_LEVEL:-debug}"
+if [[ -n "${SSLKEYLOGFILE:-}" ]]; then
+  export SSLKEYLOGFILE
+fi
+if [[ -n "${QLOGDIR:-}" ]]; then
+  export QLOGDIR
 fi
 
-if [ "$ROLE" == "client" ]; then
-    # Wait for the simulator to start up
-    echo "Waiting for simulator to be ready..."
-    for i in {1..30}; do
-        if /wait-for-it.sh sim:57832 -s -t 5; then
-            echo "Simulator ready!"
-            break
-        fi
-        if [ "$i" -eq 30 ]; then
-            echo "ERROR: Simulator failed to start after 30 attempts"
-            exit 1
-        fi
-        echo "Retry $i/30: Simulator not ready, waiting..."
-        sleep 2
+if [[ "$ROLE" == "client" ]]; then
+  client_start_delay="${INTEROP_CLIENT_START_DELAY:-5}"
+  if [[ "${client_start_delay}" =~ ^[0-9]+$ ]] && [[ "$client_start_delay" -gt 0 ]]; then
+    echo "Delaying client start by ${client_start_delay}s for simulator readiness..."
+    sleep "$client_start_delay"
+  fi
+
+  wait_target="${WAIT_FOR_TARGET:-${WAITFORSERVER:-}}"
+  if [[ -n "$wait_target" ]]; then
+    echo "Waiting for target to be ready: ${wait_target}"
+    for i in $(seq 1 30); do
+      if /wait-for-it.sh "${wait_target}" -s -t 5; then
+        echo "Target ready: ${wait_target}"
+        break
+      fi
+      if [[ "$i" -eq 30 ]]; then
+        echo "ERROR: target was not reachable at ${wait_target}" >&2
+        exit 1
+      fi
+      sleep 2
     done
+  fi
 
-    # Give extra time for server to be ready
-    sleep 5
+  run_endpoint_bin "$@" 2>&1 | tee /logs/client.log
+  exit "${PIPESTATUS[0]}"
+fi
 
-    echo "=== Starting QUIC Client ==="
-    echo "Test case: $TESTCASE"
-    echo "Requests: $REQUESTS"
-    echo "Additional params: $CLIENT_PARAMS"
+if [[ "$ROLE" == "server" ]]; then
+  # Fallback for local runs where /www may not be mounted by the runner.
+  if [[ -z "$(ls -A /www 2>/dev/null || true)" ]]; then
+    dd if=/dev/urandom of=/www/5000 bs=5000 count=1 status=none || true
+    dd if=/dev/urandom of=/www/10000 bs=10000 count=1 status=none || true
+  fi
 
-	    # Run client with output logging
-	    exec setpriv --reuid=quic --regid=quic --clear-groups qns-endpoint 2>&1 | tee /logs/client.log
-	else
-    echo "=== Starting QUIC Server ==="
-    echo "Test case: $TESTCASE"
+  run_endpoint_bin "$@" 2>&1 | tee /logs/server.log
+  exit "${PIPESTATUS[0]}"
+fi
 
-    # Populate www directory with test files for download tests
-    if [ "$TESTCASE" == "transfer" ] || [ "$TESTCASE" == "http3" ]; then
-        echo "Creating test files for download..."
-        # Create various sized files for testing
-        dd if=/dev/urandom of=/www/5000 bs=5000 count=1 2>/dev/null
-        dd if=/dev/urandom of=/www/10000 bs=10000 count=1 2>/dev/null
-        dd if=/dev/urandom of=/www/500000 bs=500000 count=1 2>/dev/null
-        dd if=/dev/urandom of=/www/1000000 bs=1000000 count=1 2>/dev/null
-        dd if=/dev/urandom of=/www/5000000 bs=1000000 count=5 2>/dev/null
-        dd if=/dev/urandom of=/www/10000000 bs=1000000 count=10 2>/dev/null
-        echo "Test files created in /www/"
-        ls -lh /www/
-    fi
-
-	# Run server with output logging
-	exec setpriv --reuid=quic --regid=quic --clear-groups qns-endpoint 2>&1 | tee /logs/server.log
-	fi
+echo "Unknown ROLE: '$ROLE'" >&2
+exit 1

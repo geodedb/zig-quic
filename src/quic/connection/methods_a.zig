@@ -260,12 +260,8 @@ pub fn bind(comptime Connection: type) type {
 
                 if (client_slot.valid and server_slot.valid) {
                     logger.debugPrint("{s}: Handshake secrets available, installing keys\n", .{if (self.role == .Server) "Server" else "Client"});
-                    var hs_c: [ks.H.digest_length]u8 = undefined;
-                    var hs_s: [ks.H.digest_length]u8 = undefined;
-                    @memcpy(&hs_c, client_slot.value.bytes[0..ks.H.digest_length]);
-                    @memcpy(&hs_s, server_slot.value.bytes[0..ks.H.digest_length]);
-                    self.hs_client = hs_c;
-                    self.hs_server = hs_s;
+                    self.hs_client = client_slot.value;
+                    self.hs_server = server_slot.value;
                     self.deriveHandshakeKeys(self.version_v2);
                 }
             }

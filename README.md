@@ -57,6 +57,7 @@ Test against other QUIC implementations:
 - Quick verification: `./scripts/interop_test.sh`
 - Core tests: `./scripts/interop_verify.sh`
 - Full matrix: `./scripts/interop_full.sh quick`
+- Official run-profile replay: `./scripts/interop_runner_replay.sh --run-url "https://interop.seemann.io/?run=2026-02-16T09:04" --client zig,quic-go --server zig,quic-go`
 
 See [examples/interop/README.md](examples/interop/README.md) for detailed interop testing documentation.
 

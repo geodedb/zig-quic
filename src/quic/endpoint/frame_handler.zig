@@ -228,6 +228,18 @@ pub fn handleMaxStreamData(
     ctx: *FrameContext,
     m: frame.MaxStreamData,
 ) FrameResult {
+    // Stream 0 uses dedicated flow-control state in Connection.peer_max_stream_data.
+    // Keep this in sync so legacy stream-0 senders can make forward progress.
+    if (m.stream_id == 0) {
+        if (m.max > ctx.conn.peer_max_stream_data) {
+            const old_max0 = ctx.conn.peer_max_stream_data;
+            ctx.conn.peer_max_stream_data = m.max;
+            logger.debugPrint("[FC-TX] Received MAX_STREAM_DATA(stream=0, max={}) increased conn stream0 window from {}\n", .{ m.max, old_max0 });
+        } else {
+            logger.debugPrint("[FC-TX] Received MAX_STREAM_DATA(stream=0, max={}) ignored (current={})\n", .{ m.max, ctx.conn.peer_max_stream_data });
+        }
+    }
+
     // PHASE 57 PART 11: Update per-stream send-side flow control window (RFC 9000 §4.2)
     // RFC 9000 §4.1: MAX_STREAM_DATA can only increase the limit
     // Check if stream_txs is initialized before accessing

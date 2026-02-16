@@ -40,17 +40,25 @@ Run full test matrix:
 
 ### Official QUIC Interop Runner
 
-Use the official quic-interop-runner:
+Replay the public run profile from `https://interop.seemann.io/?run=2026-02-16T09:04`
+against this implementation:
 
 ```bash
-./scripts/interop_full.sh runner
+./scripts/interop_runner_replay.sh \
+  --run-url "https://interop.seemann.io/?run=2026-02-16T09:04" \
+  --client zig,quic-go \
+  --server zig,quic-go
 ```
 
-Or with the --official flag:
+Run the full matrix while requiring every pair to include `zig`:
 
 ```bash
-./scripts/interop_full.sh --official
+./scripts/interop_runner_replay.sh \
+  --run-url "https://interop.seemann.io/?run=2026-02-16T09:04" \
+  --must-include zig
 ```
+
+`scripts/interop_full.sh runner` and `make interop-runner` now delegate to this workflow.
 
 ## Test Modes
 
@@ -61,31 +69,17 @@ The interop test script supports several modes:
 - **full** - Test against all available implementations in both directions
 - **runner** - Use the official quic-interop-runner
 
-## Supported Test Cases
+## Test Case Support Signaling
 
-According to `implementations.json`, the Zig QUIC implementation currently supports:
+The endpoint strictly follows current interop-runner behavior:
 
-✅ **Supported:**
-- handshake - Basic QUIC handshake
-- transfer - Data transfer
-- retry - Retry packet handling
-- http3 - HTTP/3 over QUIC
-- multiconnect - Multiple connections
-- keyupdate - TLS key updates
-- ipv6 - IPv6 support
+- Supported test cases are executed normally.
+- Unsupported test cases exit with status code `127`.
 
-❌ **Not Yet Supported:**
-- resumption - TLS session resumption
-- zerortt - 0-RTT data
-- ecn - ECN marking
-- amplificationlimit - Anti-amplification
-- handshakeloss - Handshake with packet loss
-- transferloss - Transfer with packet loss
-- handshakecorruption - Handshake with corruption
-- transfercorruption - Transfer with corruption
-- v2 - QUIC v2
-- blackhole - Blackhole detection
-- chacha20 - ChaCha20 cipher
+This is implemented in both endpoint entry scripts:
+
+- `interop/run_endpoint.sh`
+- `examples/interop/zig-qns/run_endpoint.sh`
 
 ## Building the Docker Image
 
@@ -113,50 +107,25 @@ make interop-build
 
 ## Manual Testing with Official Runner
 
-1. Clone the official runner:
+Use the automation script instead of invoking runner internals directly:
 
 ```bash
-git clone https://github.com/quic-interop/quic-interop-runner.git interop/quic-interop-runner
-cd interop/quic-interop-runner
+# Quick bidirectional smoke against quic-go
+scripts/interop_runner_replay.sh \
+  --run-url "https://interop.seemann.io/?run=2026-02-16T09:04" \
+  --client zig,quic-go \
+  --server zig,quic-go
+
+# Full current run profile with zig in every pair
+scripts/interop_runner_replay.sh \
+  --run-url "https://interop.seemann.io/?run=2026-02-16T09:04" \
+  --must-include zig
 ```
 
-2. Set up Python environment:
+To inspect what would run without executing it:
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-```
-
-3. Copy our implementations config:
-
-```bash
-cp ../implementations.json implementations.local.json
-```
-
-4. Run tests:
-
-```bash
-# Test Zig against itself
-.venv/bin/python interop.py \
-    --client zig \
-    --server zig \
-    --log-dir logs \
-    --implementations implementations.local.json \
-    --tests handshake,transfer
-
-# Test Zig client against quic-go server
-.venv/bin/python interop.py \
-    --client zig \
-    --server quic-go \
-    --log-dir logs \
-    --tests handshake,transfer
-
-# Test quic-go client against Zig server
-.venv/bin/python interop.py \
-    --client quic-go \
-    --server zig \
-    --log-dir logs \
-    --tests handshake,transfer
+scripts/interop_runner_replay.sh --dry-run
 ```
 
 ## Network Simulator
@@ -177,20 +146,22 @@ The endpoint script recognizes these environment variables:
 - `ROLE` - "server" or "client"
 - `TESTCASE` - Test case name (e.g., "handshake", "transfer")
 - `REQUESTS` - URLs to request (for client)
-- `CLIENT_PARAMS` - Additional client parameters
 - `SSLKEYLOGFILE` - Path to SSL key log file (for Wireshark decryption)
 - `QLOGDIR` - Directory for QLOG files
+- `INTEROP_CLIENT_START_DELAY` - Client startup delay in seconds (default: `5`)
+- `WAIT_FOR_TARGET` - Optional `host:port` readiness check before starting client
+- `INTEROP_DROP_PRIVS` - Set to `1` to run endpoint as `quic` user via `setpriv`
+- `QNS_USE_MOUNTED_CERTS` - Set to `1` to force `/certs/{cert.pem,priv.key}` usage
+
+By default the server uses bundled certs at `/quic/certs/{cert.pem,key.pem}` for
+deterministic local and runner behavior. Mounted runner certs are opt-in via
+`QNS_USE_MOUNTED_CERTS=1`.
 
 ## Test Files
 
-For download/transfer tests, the server automatically creates test files in `/www/`:
-
-- 5KB file: /www/5000
-- 10KB file: /www/10000
-- 500KB file: /www/500000
-- 1MB file: /www/1000000
-- 5MB file: /www/5000000
-- 10MB file: /www/10000000
+In official interop runs, `/www` is mounted by the runner and already contains
+the generated fixture files. The endpoint only creates tiny fallback files for
+local compose runs when `/www` is empty.
 
 ## Debugging
 

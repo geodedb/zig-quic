@@ -566,8 +566,8 @@ pub const Connection = struct {
     sender_ctx: ?*anyopaque = null,
     sender_fn: ?SendFn = null,
     // Derived handshake traffic secrets (once both hellos present)
-    hs_client: ?[ks.H.digest_length]u8 = null,
-    hs_server: ?[ks.H.digest_length]u8 = null,
+    hs_client: ?ks.Secret = null,
+    hs_server: ?ks.Secret = null,
     // Cached QUIC Handshake keys for RX/TX once derived
     hs_rx_keys: ?packet.InitialKeys = null,
     hs_tx_keys: ?packet.InitialKeys = null,
@@ -575,12 +575,12 @@ pub const Connection = struct {
     app_rx_keys: ?packet.AeadKeys = null,
     app_tx_keys: ?packet.AeadKeys = null,
     // Track current TLS application traffic secrets for RX/TX to support Key Update
-    app_rx_secret: ?[ks.H.digest_length]u8 = null,
-    app_tx_secret: ?[ks.H.digest_length]u8 = null,
+    app_rx_secret: ?ks.Secret = null,
+    app_tx_secret: ?ks.Secret = null,
     // PHASE 57 Part 5: Pre-derived NEXT generation keys (RFC 9001 §6)
     // These are derived when CURRENT keys are installed and updated when keys are promoted
     // This avoids per-packet derivation and maintains the one-generation-ahead invariant
-    app_rx_next_secret: ?[ks.H.digest_length]u8 = null,
+    app_rx_next_secret: ?ks.Secret = null,
     app_rx_next_keys: ?packet.AeadKeys = null,
     // Short header key phase tracking (false = phase 0, true = phase 1)
     rx_key_phase: bool = false,

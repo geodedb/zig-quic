@@ -39,6 +39,14 @@ inline fn hashBytes(b: []const u8) u64 {
     return h.final();
 }
 
+fn hashForSecretLen(secret_len: usize) !key_schedule.Hash {
+    return switch (secret_len) {
+        32 => .sha256,
+        48 => .sha384,
+        else => error.InvalidSecretLength,
+    };
+}
+
 /// Context for TLS handshake processing.
 /// Focused context pattern - only includes what's needed for TLS integration.
 pub const HandshakeContext = struct {
@@ -91,7 +99,7 @@ pub fn clearCurrentConnection() void {
 /// Parameters from vendor/ztls:
 /// - ctx: TLS Context (contains negotiated parameters)
 /// - level: EncryptionLevel (.Initial, .Handshake, .Application)
-/// - secret: Traffic secret bytes (32 bytes for SHA-256 cipher suites)
+/// - secret: Traffic secret bytes (32 bytes for SHA-256, 48 bytes for SHA-384)
 fn onSecretAvailable(
     ctx: *tls13.Context,
     level: tls13.EncryptionLevel,
@@ -104,13 +112,15 @@ fn onSecretAvailable(
         return error.NoConnectionContext;
     };
 
-    logger.debugPrint("onSecretAvailable: conn={*} role={s} level={s}\n", .{ conn, if (conn.role == .Server) "Server" else "Client", @tagName(level) });
+    logger.debugPrint("onSecretAvailable: conn={*} role={s} level={s} secret_len={}\n", .{
+        conn,
+        if (conn.role == .Server) "Server" else "Client",
+        @tagName(level),
+        secret.len,
+    });
 
-    // RFC 9001 §5.1: Secrets are 32 bytes for SHA-256-based cipher suites
-    if (secret.len != 32) return error.InvalidSecretLength;
-
-    var secret_bytes: [32]u8 = undefined;
-    @memcpy(&secret_bytes, secret[0..32]);
+    const secret_hash = try hashForSecretLen(secret.len);
+    const secret_value = key_schedule.Secret.fromSlice(secret_hash, secret);
 
     // Install keys based on encryption level
     switch (level) {
@@ -130,10 +140,10 @@ fn onSecretAvailable(
             if (conn.role == .Server) {
                 // Server: first call is server secret (.send), second is client secret (.recv)
                 if (conn.hs_server == null) {
-                    conn.hs_server = secret_bytes;
+                    conn.hs_server = secret_value;
                     logger.debugPrint("onSecretAvailable[Server]: Stored server HS secret (1st call)\n", .{});
                 } else if (conn.hs_client == null) {
-                    conn.hs_client = secret_bytes;
+                    conn.hs_client = secret_value;
                     logger.debugPrint("onSecretAvailable[Server]: Stored client HS secret (2nd call)\n", .{});
                     // Both secrets available - install keys
                     try installHandshakeKeys(conn, conn.hs_client.?, conn.hs_server.?);
@@ -141,10 +151,10 @@ fn onSecretAvailable(
             } else {
                 // Client: first call is client secret (.send), second is server secret (.recv)
                 if (conn.hs_client == null) {
-                    conn.hs_client = secret_bytes;
+                    conn.hs_client = secret_value;
                     logger.debugPrint("onSecretAvailable[Client]: Stored client HS secret (1st call)\n", .{});
                 } else if (conn.hs_server == null) {
-                    conn.hs_server = secret_bytes;
+                    conn.hs_server = secret_value;
                     logger.debugPrint("onSecretAvailable[Client]: Stored server HS secret (2nd call)\n", .{});
                     // Both secrets available - install keys
                     try installHandshakeKeys(conn, conn.hs_client.?, conn.hs_server.?);
@@ -159,18 +169,18 @@ fn onSecretAvailable(
             if (conn.role == .Server) {
                 // Server: first is server app secret (.send), second is client app secret (.recv)
                 if (conn.app_tx_secret == null) {
-                    conn.app_tx_secret = secret_bytes; // Server sends with server secret
+                    conn.app_tx_secret = secret_value; // Server sends with server secret
                 } else if (conn.app_rx_secret == null) {
-                    conn.app_rx_secret = secret_bytes; // Server receives with client secret
+                    conn.app_rx_secret = secret_value; // Server receives with client secret
                     // Both secrets available - install keys (order: client, server)
                     try installApplicationKeys(conn, conn.app_rx_secret.?, conn.app_tx_secret.?);
                 }
             } else {
                 // Client: first is client app secret (.send), second is server app secret (.recv)
                 if (conn.app_tx_secret == null) {
-                    conn.app_tx_secret = secret_bytes; // Client sends with client secret
+                    conn.app_tx_secret = secret_value; // Client sends with client secret
                 } else if (conn.app_rx_secret == null) {
-                    conn.app_rx_secret = secret_bytes; // Client receives with server secret
+                    conn.app_rx_secret = secret_value; // Client receives with server secret
                     // Both secrets available - install keys (order: client, server)
                     try installApplicationKeys(conn, conn.app_tx_secret.?, conn.app_rx_secret.?);
                 }
@@ -323,7 +333,6 @@ pub fn createTlsContext(
 ) !tls13.Context {
     // Create TLS configuration
     const tls_role: tls13.Role = if (role == .Client) .Client else .Server;
-
     // RFC 8446 §4.2.3: Supported signature schemes for certificate verification
     // Include ECDSA, Ed25519, and RSA-PSS for compatibility with different certificate types
     const supported_schemes = &[_]tls13.SignatureScheme{
@@ -337,6 +346,12 @@ pub fn createTlsContext(
     const config = tls13.Config{
         .allocator = allocator,
         .role = tls_role,
+        // QUIC key derivation in this module currently expects SHA-256 traffic secrets.
+        // Restrict suite negotiation to SHA-256 suites to avoid 48-byte SHA-384 secrets.
+        .supported_cipher_suites = &.{
+            .TLS_AES_128_GCM_SHA256,
+            .TLS_CHACHA20_POLY1305_SHA256,
+        },
         .alpn_protocols = if (alpn_list.len > 0) alpn_list else null,
         .quic_transport_parameters = if (transport_params_bytes.len > 0) transport_params_bytes else null,
         .server_cert_der = server_cert_der,
@@ -378,28 +393,30 @@ pub fn createTlsContext(
 ///
 /// Parameters:
 /// - conn: Connection to install keys on
-/// - client_secret: 32-byte client Handshake secret from TLS
-/// - server_secret: 32-byte server Handshake secret from TLS
+/// - client_secret: client Handshake secret from TLS
+/// - server_secret: server Handshake secret from TLS
 ///
 /// RFC 9001 §5.6: "Packets of each encryption level are protected with keys
 /// derived from the secrets specific to that level."
 pub fn installHandshakeKeys(
     conn: *conn_mod.Connection,
-    client_secret: [32]u8,
-    server_secret: [32]u8,
+    client_secret: key_schedule.Secret,
+    server_secret: key_schedule.Secret,
 ) !void {
     logger.debugPrint("installHandshakeKeys: CALLED with role={s}\n", .{if (conn.role == .Server) "Server" else "Client"});
 
+    if (client_secret.len != server_secret.len) return error.SecretHashMismatch;
+    const hash = try hashForSecretLen(client_secret.len);
+
     // Derive Handshake keys from secrets
     // Uses HKDF-Expand-Label per RFC 8446 §7.1 and RFC 9001 §5
-    // AES-128-GCM (TLS_AES_128_GCM_SHA256) is the default cipher suite for QUIC
 
     // Derive client Handshake keys
     // RFC 9001 §5.1: "key = HKDF-Expand-Label(Secret, "quic key", "", key_length)"
-    const client_keys = key_schedule.deriveKeyIvHp(client_secret);
+    const client_keys = key_schedule.deriveKeyIvHpHash(hash, &client_secret, conn.version_v2);
 
     // Derive server Handshake keys
-    const server_keys = key_schedule.deriveKeyIvHp(server_secret);
+    const server_keys = key_schedule.deriveKeyIvHpHash(hash, &server_secret, conn.version_v2);
 
     // Install based on connection role
     // Convert KeyMaterial to packet.InitialKeys by copying fields
@@ -432,28 +449,30 @@ pub fn installHandshakeKeys(
 ///
 /// Parameters:
 /// - conn: Connection to install keys on
-/// - client_secret: 32-byte client Application secret from TLS
-/// - server_secret: 32-byte server Application secret from TLS
+/// - client_secret: client Application secret from TLS
+/// - server_secret: server Application secret from TLS
 ///
 /// RFC 9001 §4.1.3: "Handshake and 1-RTT packets can be coalesced in the same
 /// UDP datagram" - both key sets may be used simultaneously.
 pub fn installApplicationKeys(
     conn: *conn_mod.Connection,
-    client_secret: [32]u8,
-    server_secret: [32]u8,
+    client_secret: key_schedule.Secret,
+    server_secret: key_schedule.Secret,
 ) !void {
+    if (client_secret.len != server_secret.len) return error.SecretHashMismatch;
+    const hash = try hashForSecretLen(client_secret.len);
+
     // Derive Application keys from secrets
     // Uses HKDF-Expand-Label per RFC 8446 §7.1 and RFC 9001 §5
-    // AES-128-GCM (TLS_AES_128_GCM_SHA256) is the default cipher suite for QUIC
 
     logger.debugPrint("\n[installApplicationKeys] Called for {s}\n", .{if (conn.role == .Server) "Server" else "Client"});
 
     // Derive client Application keys
     // RFC 9001 §5.1: "key = HKDF-Expand-Label(Secret, "quic key", "", key_length)"
-    const client_keys = key_schedule.deriveKeyIvHp(client_secret);
+    const client_keys = key_schedule.deriveKeyIvHpHash(hash, &client_secret, conn.version_v2);
 
     // Derive server Application keys
-    const server_keys = key_schedule.deriveKeyIvHp(server_secret);
+    const server_keys = key_schedule.deriveKeyIvHpHash(hash, &server_secret, conn.version_v2);
 
     // Install based on connection role
     // Convert KeyMaterial to packet.AeadKeys by copying fields
@@ -467,11 +486,8 @@ pub fn installApplicationKeys(
 
         // PHASE 57 Part 5: Pre-derive NEXT RX keys (RFC 9001 §6, quic-go updatable_aead.go:146-147)
         // Derive at installation time (NOT per-packet) to maintain one-generation-ahead invariant
-        conn.app_rx_next_secret = key_schedule.updateQuicSecret(server_secret);
-        const next_mat = if (conn.version_v2)
-            key_schedule.deriveKeyIvHpV2(conn.app_rx_next_secret.?)
-        else
-            key_schedule.deriveKeyIvHp(conn.app_rx_next_secret.?);
+        conn.app_rx_next_secret = key_schedule.updateQuicSecretHash(hash, &server_secret);
+        const next_mat = key_schedule.deriveKeyIvHpHash(hash, &conn.app_rx_next_secret.?, conn.version_v2);
         conn.app_rx_next_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = next_mat.hp };
         logger.debugPrint("[PHASE57-INSTALL] Client: pre-derived next RX keys\n", .{});
     } else {
@@ -484,11 +500,8 @@ pub fn installApplicationKeys(
 
         // PHASE 57 Part 5: Pre-derive NEXT RX keys (RFC 9001 §6, quic-go updatable_aead.go:146-147)
         // Derive at installation time (NOT per-packet) to maintain one-generation-ahead invariant
-        conn.app_rx_next_secret = key_schedule.updateQuicSecret(client_secret);
-        const next_mat = if (conn.version_v2)
-            key_schedule.deriveKeyIvHpV2(conn.app_rx_next_secret.?)
-        else
-            key_schedule.deriveKeyIvHp(conn.app_rx_next_secret.?);
+        conn.app_rx_next_secret = key_schedule.updateQuicSecretHash(hash, &client_secret);
+        const next_mat = key_schedule.deriveKeyIvHpHash(hash, &conn.app_rx_next_secret.?, conn.version_v2);
         conn.app_rx_next_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = next_mat.hp };
         logger.debugPrint("[PHASE57-INSTALL] Server: pre-derived next RX keys\n", .{});
     }

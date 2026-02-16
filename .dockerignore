@@ -13,3 +13,7 @@
 !examples/interop/zig-qns/
 !examples/interop/zig-qns/Dockerfile
 !examples/interop/zig-qns/run_endpoint.sh
+!tests/
+!tests/certs/
+!tests/certs/cert.pem
+!tests/certs/key.pem

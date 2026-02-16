@@ -21,6 +21,9 @@ COPY zig-out/bin/qns-endpoint /usr/local/bin/qns-endpoint
 
 # Copy run script
 COPY interop/run_endpoint.sh /run_endpoint.sh
+# Copy fallback TLS materials known to work with this implementation.
+COPY tests/certs/cert.pem /quic/certs/cert.pem
+COPY tests/certs/key.pem /quic/certs/key.pem
 RUN chmod +x /run_endpoint.sh /usr/local/bin/qns-endpoint
 
 # Version metadata

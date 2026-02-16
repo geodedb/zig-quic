@@ -68,7 +68,6 @@ pub fn processFrames(
 
     var result = FrameProcessResult{};
     var offset: usize = 0;
-    const now_ns: u64 = @intCast(std.time.nanoTimestamp());
 
     logger.debugPrint("Parsing frames from payload, total_len={}, role={s}\n", .{
         payload.len,
@@ -116,70 +115,6 @@ pub fn processFrames(
         result.saw_handshake_done,
         result.saw_close,
     });
-
-    // Record ack-eliciting reception if applicable
-    if (result.saw_ack_eliciting) {
-        conn.recordAckElicitingRx(.Application, now_ns);
-        if (conn.app_tx_keys) |tx_keys| {
-            var fb: [256]u8 = undefined;
-            var fbs = std.io.fixedBufferStream(&fb);
-            const w = fbs.writer();
-            const ack_desc = conn.buildAckApp();
-            const ack_frame = frame.Frame{ .ack = .{ .largest = ack_desc.largest, .ack_delay = 0, .first_range = ack_desc.first_range, .ranges = ack_desc.ranges } };
-            _ = ack_frame.write(w) catch 0;
-            const frames_data = fbs.getWritten();
-            const dcid_sh = conn.shortHeaderDcid();
-            const packet_storage = conn.packet_pool.checkout();
-            defer conn.packet_pool.release(packet_storage);
-            const pkt_len = packet.encodeShortProtectedInto(
-                packet_storage,
-                dcid_sh,
-                @as(u32, @truncate(conn.pn_app_tx)),
-                2,
-                frames_data,
-                tx_keys,
-                conn.tx_key_phase,
-            ) catch 0;
-            if (pkt_len != 0) {
-                const pkt = packet_storage[0..pkt_len];
-                _ = ctx.send_fn(peer, pkt) catch {};
-                conn.onShortHeaderPacketSent(pkt.len, false);
-                logger.debugPrint("[APP-ACK] immediate ack largest={} pn={} bytes={}\n", .{ ack_desc.largest, conn.pn_app_tx, pkt.len });
-                conn.pn_app_tx +%= 1;
-            }
-        }
-    }
-
-    // Handle HANDSHAKE_DONE: drop Handshake keys (with conditions)
-    if (result.saw_handshake_done) {
-        logger.debugPrint("[processApplicationFrames] Setting handshake_done_seen=true for {s}\n", .{
-            if (conn.role == .Server) "Server" else "Client",
-        });
-        conn.handshake_done_seen = true;
-
-        // RFC 9001 §4.1.2: Only drop Handshake keys if safe to do so
-        // Client (which receives HANDSHAKE_DONE): drop after first Handshake packet sent
-        const can_drop_hs_keys = if (conn.role == .Client) conn.handshake_packet_sent else false;
-
-        if (can_drop_hs_keys) {
-            logger.debugPrint("[processApplicationFrames] {s}: Dropping Handshake keys after HANDSHAKE_DONE\n", .{
-                if (conn.role == .Server) "Server" else "Client",
-            });
-            conn.hs_rx_keys = null;
-            conn.hs_tx_keys = null;
-        } else {
-            logger.debugPrint("[processApplicationFrames] {s}: Deferring Handshake key drop (handshake_packet_sent={})\n", .{
-                if (conn.role == .Server) "Server" else "Client",
-                conn.handshake_packet_sent,
-            });
-        }
-    }
-
-    // Handle CONNECTION_CLOSE: mark connection as closed
-    if (result.saw_close) {
-        logger.debugPrint("DEBUG: Received CONNECTION_CLOSE frame, closing connection\n", .{});
-        conn.closed = true;
-    }
 
     return result;
 }

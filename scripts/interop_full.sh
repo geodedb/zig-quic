@@ -246,60 +246,13 @@ run_generic_test() {
 
 # Function to run with official quic-interop-runner
 run_official_interop() {
-    echo -e "${GREEN}=== Setting up official quic-interop-runner ===${NC}"
-
-    # Clone official runner if not exists
-    if [ ! -d "interop/quic-interop-runner" ]; then
-        echo "Cloning quic-interop-runner..."
-        mkdir -p interop
-        git clone https://github.com/quic-interop/quic-interop-runner.git interop/quic-interop-runner
-    fi
-
-    # Build Docker image
-    echo -e "${YELLOW}Building Zig QUIC Docker image for interop...${NC}"
-    docker build -f interop/Dockerfile \
-        --build-arg QNS_TAG=latest \
-        --build-arg ZIG_VERSION=0.15.1 \
-        --build-arg VCS_REF="$(git rev-parse --short HEAD 2>/dev/null || echo dev)" \
-        --build-arg BUILD_DATE="$(date -u +%Y%m%d)" \
-        -t zig-quic:interop .
-
-    # Copy our implementations.json to the runner
-    cp interop/implementations.json interop/quic-interop-runner/implementations.local.json
-
-    # Run the official runner
-    cd interop/quic-interop-runner
-
-    # Setup Python venv if needed
-    if [ ! -d ".venv" ]; then
-        python3 -m venv .venv
-        .venv/bin/pip install -r requirements.txt
-    fi
-
-    # Run interop tests
-    echo -e "${GREEN}Running official interop tests...${NC}"
-    .venv/bin/python interop.py \
-        --client zig \
-        --server zig \
-        --log-dir logs \
-        --implementations implementations.local.json \
-        --tests handshake,transfer,retry,http3 || true
-
-    # Also test against other implementations
-    echo -e "${GREEN}Testing Zig against quic-go...${NC}"
-    .venv/bin/python interop.py \
-        --client zig \
-        --server quic-go \
-        --log-dir logs \
-        --tests handshake,transfer || true
-
-    .venv/bin/python interop.py \
-        --client quic-go \
-        --server zig \
-        --log-dir logs \
-        --tests handshake,transfer || true
-
-    cd "$ROOT"
+    echo -e "${GREEN}=== Running official quic-interop-runner replay workflow ===${NC}"
+    bash scripts/interop_runner_replay.sh \
+      --run-url "${INTEROP_RUN_URL:-https://interop.seemann.io/?run=2026-02-16T09:04}" \
+      --client "${INTEROP_CLIENTS:-zig,quic-go}" \
+      --server "${INTEROP_SERVERS:-zig,quic-go}" \
+      --must-include "${INTEROP_MUST_INCLUDE:-zig}" \
+      --image-tag "${INTEROP_IMAGE_TAG:-zig-quic:interop}"
 }
 
 # Main test execution

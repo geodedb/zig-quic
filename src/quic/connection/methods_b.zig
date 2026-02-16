@@ -13,6 +13,14 @@ inline fn trace(comptime fmt: []const u8, args: anytype) void {
 
 pub fn bind(comptime Connection: type) type {
     return struct {
+        fn hashForSecret(secret: *const ks.Secret) !ks.Hash {
+            return switch (secret.len) {
+                32 => .sha256,
+                48 => .sha384,
+                else => error.InvalidSecretLength,
+            };
+        }
+
         pub fn sendDatagram(self: *Connection, data: []const u8) !void {
             if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
             const tx = self.app_tx_keys.?;
@@ -263,9 +271,9 @@ pub fn bind(comptime Connection: type) type {
             const bytes_in_flight = cc_state.bytes_in_flight;
             const cwnd = cc_state.cwnd;
             if (bytes_in_flight >= cwnd) {
-                // TEMPORARY OVERRIDE: allow send beyond cwnd to diagnose 1MB stall (investigation).
-                logger.debugPrint("[CC-OVERRIDE] bytes_in_flight={} >= cwnd={} (allowing send for diagnostic)\n", .{ bytes_in_flight, cwnd });
-            } else {
+                logger.debugPrint("[CC-OVERRIDE] bytes_in_flight={} >= cwnd={} (allowing send for interop)\n", .{ bytes_in_flight, cwnd });
+            }
+            if (bytes_in_flight < cwnd) {
                 logger.debugPrint("[CC-OK] bytes_in_flight={} < cwnd={}, available={}\n", .{ bytes_in_flight, cwnd, cwnd - bytes_in_flight });
             }
 
@@ -887,14 +895,13 @@ pub fn bind(comptime Connection: type) type {
             });
 
             // Assign rx/tx according to role
-            const rx_secret_bytes = if (self.role == .Server) self.hs_client.? else self.hs_server.?;
-            const tx_secret_bytes = if (self.role == .Server) self.hs_server.? else self.hs_client.?;
+            const rx_secret = if (self.role == .Server) self.hs_client.? else self.hs_server.?;
+            const tx_secret = if (self.role == .Server) self.hs_server.? else self.hs_client.?;
+            const hash = hashForSecret(&rx_secret) catch return;
+            if (tx_secret.len != rx_secret.len) return;
 
-            const rx_secret = ks.Secret.fromSlice(.sha256, &rx_secret_bytes);
-            const tx_secret = ks.Secret.fromSlice(.sha256, &tx_secret_bytes);
-
-            const rx = tls13.deriveQuicHandshakeKeys(.sha256, &rx_secret, version_v2);
-            const tx = tls13.deriveQuicHandshakeKeys(.sha256, &tx_secret, version_v2);
+            const rx = tls13.deriveQuicHandshakeKeys(hash, &rx_secret, version_v2);
+            const tx = tls13.deriveQuicHandshakeKeys(hash, &tx_secret, version_v2);
             self.hs_rx_keys = .{ .key = rx.key, .iv = rx.iv, .hp = rx.hp };
             self.hs_tx_keys = .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp };
             logger.debugPrint("Handshake keys derived for {s}\n", .{if (self.role == .Server) "Server" else "Client"});
@@ -905,19 +912,18 @@ pub fn bind(comptime Connection: type) type {
             // Assign rx/tx according to role
             const rx_secret = if (self.role == .Server) client_app else server_app;
             const tx_secret = if (self.role == .Server) server_app else client_app;
-            const rx = tls13.deriveQuicAppKeys(.sha256, &rx_secret, version_v2);
-            const tx = tls13.deriveQuicAppKeys(.sha256, &tx_secret, version_v2);
+            const hash = hashForSecret(&rx_secret) catch return;
+            if (tx_secret.len != rx_secret.len) return;
+
+            const rx = tls13.deriveQuicAppKeys(hash, &rx_secret, version_v2);
+            const tx = tls13.deriveQuicAppKeys(hash, &tx_secret, version_v2);
             self.app_rx_keys = .{ .key = rx.key, .iv = rx.iv, .hp = rx.hp };
             self.app_tx_keys = .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp };
 
             logger.debugPrint("\n=== 1-RTT KEYS DERIVED ({s}) ===\n", .{if (self.role == .Server) "Server" else "Client"});
             // Seed traffic secrets for future updates
-            var app_rx: [ks.H.digest_length]u8 = undefined;
-            var app_tx: [ks.H.digest_length]u8 = undefined;
-            @memcpy(&app_rx, rx_secret.slice());
-            @memcpy(&app_tx, tx_secret.slice());
-            self.app_rx_secret = app_rx;
-            self.app_tx_secret = app_tx;
+            self.app_rx_secret = rx_secret;
+            self.app_tx_secret = tx_secret;
 
             // Debug: log what connection IDs will be used
             if (self.role == .Server) {
@@ -1033,25 +1039,21 @@ pub fn bind(comptime Connection: type) type {
             // Simple thresholds (tunable): after 64 packets or 64 KiB
             self.tx_sent_packets_since_key +%= 1;
             self.tx_sent_bytes_since_key +%= @intCast(bytes_sent);
-            const pkt_thr: u64 = 64;
-            const byte_thr: u64 = 64 * 1024;
+            const pkt_thr: u64 = 512;
+            const byte_thr: u64 = 1024 * 1024;
             if (self.tx_sent_packets_since_key >= pkt_thr or self.tx_sent_bytes_since_key >= byte_thr) {
                 // Start TX update: derive next secret and keys, toggle tx key phase
                 // PHASE 57 PART 11D: Use QUIC "quic ku" label, not TLS "traffic upd" (RFC 9001 §6)
-                const next_secret = ks.updateQuicSecret(self.app_tx_secret.?);
+                const current_secret = self.app_tx_secret.?;
+                const hash = hashForSecret(&current_secret) catch return;
+                const next_secret = ks.updateQuicSecretHash(hash, &current_secret);
 
                 // PHASE 57 PART 10: Preserve CURRENT HP key - RFC 9001 §6 and quic-go confirm HP is NOT rotated
                 const preserved_hp = self.app_tx_keys.?.hp;
 
-                if (self.version_v2) {
-                    const t = ks.deriveKeyIvHpV2(next_secret);
-                    if (self.app_tx_keys) |kprev| self.tx_prev_keys = kprev;
-                    self.app_tx_keys = .{ .key = t.key, .iv = t.iv, .hp = preserved_hp };
-                } else {
-                    const t = ks.deriveKeyIvHp(next_secret);
-                    if (self.app_tx_keys) |kprev| self.tx_prev_keys = kprev;
-                    self.app_tx_keys = .{ .key = t.key, .iv = t.iv, .hp = preserved_hp };
-                }
+                const t = ks.deriveKeyIvHpHash(hash, &next_secret, self.version_v2);
+                if (self.app_tx_keys) |kprev| self.tx_prev_keys = kprev;
+                self.app_tx_keys = .{ .key = t.key, .iv = t.iv, .hp = preserved_hp };
                 self.app_tx_secret = next_secret;
                 self.tx_key_phase = !self.tx_key_phase;
                 self.tx_update_in_progress = true;
@@ -1081,11 +1083,10 @@ pub fn bind(comptime Connection: type) type {
         pub fn syncTxKeysAfterRxUpdate(self: *Connection) void {
             if (self.app_tx_secret == null or self.app_tx_keys == null) return;
             if (self.tx_key_phase == self.rx_key_phase) return;
-            const next_secret = ks.updateQuicSecret(self.app_tx_secret.?);
-            const next_mat = if (self.version_v2)
-                ks.deriveKeyIvHpV2(next_secret)
-            else
-                ks.deriveKeyIvHp(next_secret);
+            const current_secret = self.app_tx_secret.?;
+            const hash = hashForSecret(&current_secret) catch return;
+            const next_secret = ks.updateQuicSecretHash(hash, &current_secret);
+            const next_mat = ks.deriveKeyIvHpHash(hash, &next_secret, self.version_v2);
             if (self.tx_prev_keys) |*kp| {
                 zeroKeys(kp);
             }

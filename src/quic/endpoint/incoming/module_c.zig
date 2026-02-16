@@ -177,9 +177,11 @@ pub fn processShortHeader(
     };
 
     const dec_res = decrypt_result.decoded;
+    const used_next = decrypt_result.used_next;
+    const used_prev = decrypt_result.used_prev;
     g_app_decrypt_success += 1;
-    logger.debugPrint("[APP-DECRYPT-SUCCESS] attempt={} pn={} payload_len={} used_next={} used_prev={} rx_phase={} success_ratio={}/{}\n", .{ g_app_decrypt_start, decrypt_result.decoded.packet_number, decrypt_result.decoded.payload.len, decrypt_result.used_next, decrypt_result.used_prev, conn.rx_key_phase, g_app_decrypt_success, g_app_decrypt_start });
-    // Frame parsing & ACK generation (Application)
+    logger.debugPrint("[APP-DECRYPT-SUCCESS] attempt={} pn={} payload_len={} used_next={} used_prev={} rx_phase={} success_ratio={}/{}\n", .{ g_app_decrypt_start, decrypt_result.decoded.packet_number, decrypt_result.decoded.payload.len, used_next, used_prev, conn.rx_key_phase, g_app_decrypt_success, g_app_decrypt_start });
+    // Frame parsing diagnostics (actual processing occurs after packet-number tracking)
     logger.debugPrint("[APP-DISPATCH] Parsing 1-RTT frames payload_len={} pn={}\n", .{ dec_res.payload.len, dec_res.packet_number });
     if (dec_res.payload.len == 0) logger.debugPrint("[APP-DISPATCH] EMPTY-PAYLOAD pn={} suspect header protection/DCID length issue\n", .{dec_res.packet_number});
     // Fallback manual STREAM frame scan if decodeOne misses
@@ -202,13 +204,6 @@ pub fn processShortHeader(
         while (di < dump_len) : (di += 1) logger.debugPrint("{X:0>2} ", .{dec_res.payload[di]});
         logger.debugPrint("\n", .{});
     }
-    const frames_result = processFrames(ctx, conn, peer, dec_res.payload, send_fn) catch {
-        logger.debugPrint("[APP-DISPATCH] processFrames error (payload_len={})\n", .{dec_res.payload.len});
-        return;
-    };
-    if (frames_result.saw_ack_eliciting) logger.debugPrint("[APP-DISPATCH] ack-eliciting pn={}\n", .{dec_res.packet_number});
-    const used_next = decrypt_result.used_next;
-    const used_prev = decrypt_result.used_prev;
     defer ctx.allocator.free(dec_res.payload);
 
     if (ctx.test_capture_enabled) {

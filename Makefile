@@ -291,6 +291,15 @@ interop-runner: interop-build
 	@echo "========== Running Official QUIC Interop Runner =========="
 	@bash scripts/interop_full.sh runner
 
+# Replay a specific online interop run profile locally
+interop-replay: interop-build
+	@echo "========== Replaying Online Interop Run Profile =========="
+	@bash scripts/interop_runner_replay.sh \
+		--run-url "$${RUN_URL:-https://interop.seemann.io/?run=2026-02-16T09:04}" \
+		--client "$${INTEROP_CLIENTS:-zig,quic-go}" \
+		--server "$${INTEROP_SERVERS:-zig,quic-go}" \
+		--must-include "$${INTEROP_MUST_INCLUDE:-zig}"
+
 # Clean up interop artifacts
 interop-clean:
 	@echo "Cleaning up interop artifacts..."
@@ -664,6 +673,7 @@ help:
 	@echo "  make interop-quick        - Test against 3 implementations (~15 min)"
 	@echo "  make interop-full         - Test against all 17 implementations (~60 min)"
 	@echo "  make interop-runner       - Use official QUIC interop runner"
+	@echo "  make interop-replay       - Replay online interop run profile (set RUN_URL=...)"
 	@echo "  make interop-clean        - Clean up interop artifacts"
 	@echo ""
 	@echo "E2E client testing:"

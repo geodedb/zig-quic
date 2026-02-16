@@ -8,6 +8,14 @@ const logger = @import("quic_logger");
 
 pub fn bind(comptime Connection: type) type {
     return struct {
+        fn hashForSecret(secret: *const ks.Secret) !ks.Hash {
+            return switch (secret.len) {
+                32 => .sha256,
+                48 => .sha384,
+                else => error.InvalidSecretLength,
+            };
+        }
+
         const StreamTxMap = @FieldType(Connection, "stream_txs");
         const StreamRxMap = @FieldType(Connection, "streams_rx");
         const StreamTx = @FieldType(StreamTxMap.KV, "value");
@@ -35,21 +43,17 @@ pub fn bind(comptime Connection: type) type {
             if (self.tx_update_in_progress) return;
             self.tx_sent_packets_since_key +%= 1;
             self.tx_sent_bytes_since_key +%= @intCast(bytes_sent);
-            const pkt_thr: u64 = 64;
-            const byte_thr: u64 = 64 * 1024;
+            const pkt_thr: u64 = 512;
+            const byte_thr: u64 = 1024 * 1024;
             if (self.tx_sent_packets_since_key >= pkt_thr or self.tx_sent_bytes_since_key >= byte_thr) {
-                const next_secret = ks.updateQuicSecret(self.app_tx_secret.?);
+                const current_secret = self.app_tx_secret.?;
+                const hash = hashForSecret(&current_secret) catch return;
+                const next_secret = ks.updateQuicSecretHash(hash, &current_secret);
                 const preserved_hp = self.app_tx_keys.?.hp;
 
-                if (self.version_v2) {
-                    const t = ks.deriveKeyIvHpV2(next_secret);
-                    if (self.app_tx_keys) |kprev| self.tx_prev_keys = kprev;
-                    self.app_tx_keys = .{ .key = t.key, .iv = t.iv, .hp = preserved_hp };
-                } else {
-                    const t = ks.deriveKeyIvHp(next_secret);
-                    if (self.app_tx_keys) |kprev| self.tx_prev_keys = kprev;
-                    self.app_tx_keys = .{ .key = t.key, .iv = t.iv, .hp = preserved_hp };
-                }
+                const t = ks.deriveKeyIvHpHash(hash, &next_secret, self.version_v2);
+                if (self.app_tx_keys) |kprev| self.tx_prev_keys = kprev;
+                self.app_tx_keys = .{ .key = t.key, .iv = t.iv, .hp = preserved_hp };
                 self.app_tx_secret = next_secret;
                 self.tx_key_phase = !self.tx_key_phase;
                 self.tx_update_in_progress = true;
@@ -624,7 +628,7 @@ pub fn bind(comptime Connection: type) type {
             if (any_non_zero) return;
             if (self.app_tx_secret) |secret| {
                 const label = "stateless reset base";
-                const prk = ks.extract(&secret, label);
+                const prk = ks.extract(secret.slice(), label);
                 @memcpy(self.stateless_reset_base[0..], prk[0..]);
             } else {
                 std.crypto.random.bytes(&self.stateless_reset_base);

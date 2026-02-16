@@ -93,6 +93,37 @@ fn nowMsMonotonic() i64 {
     return @as(i64, @intCast(ms));
 }
 
+fn encodeVersionNegotiationPacket(
+    dcid: []const u8,
+    scid: []const u8,
+    supported_versions: []const u32,
+    out_buf: []u8,
+) ![]u8 {
+    const min_len = 1 + 4 + 1 + dcid.len + 1 + scid.len + (supported_versions.len * 4);
+    if (out_buf.len < min_len) return error.BufferTooSmall;
+
+    var i: usize = 0;
+    // Long header with random type-specific bits.
+    out_buf[i] = 0b10000000 | @as(u8, @truncate(std.crypto.random.int(u8) & 0x3F));
+    i += 1;
+    // Version = 0x00000000 (Version Negotiation packet)
+    std.mem.writeInt(u32, out_buf[i..][0..4], 0, .big);
+    i += 4;
+    out_buf[i] = @intCast(dcid.len);
+    i += 1;
+    @memcpy(out_buf[i..][0..dcid.len], dcid);
+    i += dcid.len;
+    out_buf[i] = @intCast(scid.len);
+    i += 1;
+    @memcpy(out_buf[i..][0..scid.len], scid);
+    i += scid.len;
+    for (supported_versions) |v| {
+        std.mem.writeInt(u32, out_buf[i..][0..4], v, .big);
+        i += 4;
+    }
+    return out_buf[0..i];
+}
+
 // Use canonical Timer and TimerKind from endpoint/types.zig (imported as ep_types)
 const Timer = ep_types.Timer;
 const TimerKind = ep_types.TimerKind;
@@ -948,7 +979,33 @@ pub const Endpoint = struct {
             if (version == 0) {
                 incoming.processVersionNegotiation(&rx_ctx, peer, packet_bytes);
             } else if (packet_ty == 0) {
-                incoming.processInitial(&rx_ctx, peer, packet_bytes, version);
+                // Server-side version negotiation for unsupported versions.
+                // This is required by the interop simulator readiness probe
+                // (wait-for-it-quic), which sends an Initial-like packet with
+                // an unknown version and expects a Version Negotiation reply.
+                if (self.role == .Server and version != packet.QUIC_V1 and version != packet.QUIC_V2) {
+                    var dcid: []const u8 = &[_]u8{};
+                    var scid: []const u8 = &[_]u8{};
+                    if (packet_bytes.len >= 7) {
+                        const dcid_len = packet_bytes[5];
+                        if (packet_bytes.len >= 6 + dcid_len + 1) {
+                            dcid = packet_bytes[6 .. 6 + dcid_len];
+                            const scid_len_off = 6 + dcid_len;
+                            const scid_len = packet_bytes[scid_len_off];
+                            const scid_off = scid_len_off + 1;
+                            if (packet_bytes.len >= scid_off + scid_len) {
+                                scid = packet_bytes[scid_off .. scid_off + scid_len];
+                            }
+                        }
+                    }
+                    const supported_versions = [_]u32{ packet.QUIC_V1, packet.QUIC_V2 };
+                    var vn_buf: [256]u8 = undefined;
+                    if (encodeVersionNegotiationPacket(scid, dcid, &supported_versions, vn_buf[0..])) |vn_packet| {
+                        _ = self.sendTo(peer, vn_packet) catch {};
+                    } else |_| {}
+                } else {
+                    incoming.processInitial(&rx_ctx, peer, packet_bytes, version);
+                }
             } else if (packet_ty == 3) {
                 self.processRetryPacket(peer, packet_bytes, version);
             } else if (packet_ty == 2) {
