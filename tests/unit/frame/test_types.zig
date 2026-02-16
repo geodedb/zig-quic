@@ -232,7 +232,7 @@ test "RFC 3168 - ECN codepoints mapping" {
     // Simulate receiving packets with different ECN markings
     ecn.ect0 += 1; // Received packet with ECT(0)
     ecn.ect1 += 1; // Received packet with ECT(1)
-    ecn.ce += 1;   // Received packet with CE
+    ecn.ce += 1; // Received packet with CE
 
     try testing.expectEqual(@as(u64, 1), ecn.ect0);
     try testing.expectEqual(@as(u64, 1), ecn.ect1);

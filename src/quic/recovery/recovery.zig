@@ -37,6 +37,7 @@ pub const computePacingDelayNs = congestion.computePacingDelayNs;
 // Internal space state tracking
 const SpaceState = struct {
     sent: std.ArrayList(SentPacket),
+    sent_index: std.AutoHashMap(u64, usize),
     allocator: std.mem.Allocator,
     largest_acked: ?u64 = null,
     loss_time_ns: ?u64 = null,
@@ -47,10 +48,12 @@ const SpaceState = struct {
     fn init(alloc: std.mem.Allocator) SpaceState {
         return .{
             .sent = std.ArrayList(SentPacket).empty,
+            .sent_index = std.AutoHashMap(u64, usize).init(alloc),
             .allocator = alloc,
         };
     }
     fn deinit(self: *SpaceState) void {
+        self.sent_index.deinit();
         self.sent.deinit(self.allocator);
     }
 };
@@ -113,6 +116,8 @@ pub const Recovery = struct {
         const idx = spaceIdx(space);
         const alloc = self.spaces[idx].allocator;
         try self.spaces[idx].sent.append(alloc, .{ .pn = pn, .time_ns = now_ns, .size = bytes, .ack_eliciting = ack_eliciting });
+        const sent_slot = self.spaces[idx].sent.items.len - 1;
+        try self.spaces[idx].sent_index.put(pn, sent_slot);
 
         const old_inflight = self.cc.bytes_in_flight;
         if (ack_eliciting) self.cc.bytes_in_flight += bytes;
@@ -163,10 +168,15 @@ pub const Recovery = struct {
             sstate.largest_acked orelse 0,
         });
 
-        // Mark acked packets
+        // Mark acked packets using direct PN index lookups instead of nested scans.
         for (acked) |pn| {
-            for (sstate.sent.items) |*sp| {
-                if (sp.pn == pn and !sp.acked and !sp.declared_lost) {
+            if (sstate.sent_index.get(pn)) |sent_slot| {
+                if (sent_slot >= sstate.sent.items.len) {
+                    _ = sstate.sent_index.remove(pn);
+                    continue;
+                }
+                const sp = &sstate.sent.items[sent_slot];
+                if (!sp.acked and !sp.declared_lost) {
                     sp.acked = true;
                     bytes_acked += sp.size;
                     if (sp.ack_eliciting) ack_eliciting_acked = true;
@@ -174,8 +184,8 @@ pub const Recovery = struct {
                         largest_pn = pn;
                         largest_acked_pkt_time = sp.time_ns;
                     }
-                    break;
                 }
+                _ = sstate.sent_index.remove(pn);
             }
         }
         if (largest_acked_pkt_time) |t_ack| {
@@ -205,6 +215,7 @@ pub const Recovery = struct {
                 if (!sp.acked and !sp.declared_lost) {
                     if (self.loss.isPacketThresholdLost(la, sp.pn)) {
                         sp.declared_lost = true;
+                        _ = sstate.sent_index.remove(sp.pn);
                         bytes_lost += sp.size;
                         pkt_threshold_lost_count += 1;
                         if (first_lost_time == null or sp.time_ns < first_lost_time.?) first_lost_time = sp.time_ns;
@@ -235,6 +246,7 @@ pub const Recovery = struct {
                     // Check if packet has already exceeded time threshold
                     if (now_ns >= deadline) {
                         sp.declared_lost = true;
+                        _ = sstate.sent_index.remove(sp.pn);
                         bytes_lost += sp.size;
                         time_threshold_lost_count += 1;
                         const age_us = (now_ns - sp.time_ns) / 1000;
@@ -378,6 +390,7 @@ pub const Recovery = struct {
                             const deadline = sp.time_ns + tt_base;
                             if (now_ns >= deadline) {
                                 sp.declared_lost = true;
+                                _ = sstate.sent_index.remove(sp.pn);
                                 total_lost += sp.size;
                                 if (first_lost_time == null or sp.time_ns < first_lost_time.?) first_lost_time = sp.time_ns;
                                 if (last_lost_time == null or sp.time_ns > last_lost_time.?) last_lost_time = sp.time_ns;

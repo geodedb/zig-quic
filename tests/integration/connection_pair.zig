@@ -8,10 +8,11 @@
 //! - RFC 9001: Using TLS to Secure QUIC
 
 const std = @import("std");
-const harness = @import("harness");  // Module import (configured in build.zig)
-const loopback = @import("loopback");  // Module import (configured in build.zig)
-const tls_helpers = @import("tls_helpers");  // Module import (configured in build.zig)
-const endpoint_loopback_helpers = @import("endpoint_loopback_helpers");  // Module import (configured in build.zig)
+const testlog = @import("testlog");
+const harness = @import("harness"); // Module import (configured in build.zig)
+const loopback = @import("loopback"); // Module import (configured in build.zig)
+const tls_helpers = @import("tls_helpers"); // Module import (configured in build.zig)
+const endpoint_loopback_helpers = @import("endpoint_loopback_helpers"); // Module import (configured in build.zig)
 
 /// Configuration for connection pair
 pub const ConnectionPairConfig = struct {
@@ -87,8 +88,8 @@ pub const ConnectionPair = struct {
         self.* = .{
             .allocator = allocator,
             .transport = transport,
-            .client = undefined,  // Will initialize below
-            .server = undefined,  // Will initialize below
+            .client = undefined, // Will initialize below
+            .server = undefined, // Will initialize below
             .client_adapter = endpoint_loopback_helpers.LoopbackTransportAdapter.init(transport, .SideA),
             .server_adapter = endpoint_loopback_helpers.LoopbackTransportAdapter.init(transport, .SideB),
             .server_conn = null,
@@ -109,14 +110,14 @@ pub const ConnectionPair = struct {
         // This avoids dangling pointer bug where wrappers point to stack temporaries
         self.client = try endpoint_loopback_helpers.EndpointWrapper.init(
             allocator,
-            &self.client_adapter,  // Pointer to stored adapter
+            &self.client_adapter, // Pointer to stored adapter
             .Client,
         );
         errdefer self.client.deinit();
 
         self.server = try endpoint_loopback_helpers.EndpointWrapper.init(
             allocator,
-            &self.server_adapter,  // Pointer to stored adapter
+            &self.server_adapter, // Pointer to stored adapter
             .Server,
         );
         errdefer self.server.deinit();
@@ -171,20 +172,20 @@ pub const ConnectionPair = struct {
     pub fn connect(self: *ConnectionPair) !void {
         // Phase 14: Real connection establishment using production Endpoint!
 
-        std.debug.print("\n=== ConnectionPair.connect() STARTING ===\n", .{});
+        testlog.print("\n=== ConnectionPair.connect() STARTING ===\n", .{});
 
         // 1. Create client connection (doesn't send Initial packet yet)
-        std.debug.print("[ConnectionPair] Creating client connection...\n", .{});
+        testlog.print("[ConnectionPair] Creating client connection...\n", .{});
         const client_conn = try self.client.endpoint.connectClient("127.0.0.1:443");
-        std.debug.print("[ConnectionPair] Client connection created\n", .{});
+        testlog.print("[ConnectionPair] Client connection created\n", .{});
 
         // 2. Send Initial packet with ClientHello to start handshake
-        std.debug.print("[ConnectionPair] Sending Initial packet...\n", .{});
+        testlog.print("[ConnectionPair] Sending Initial packet...\n", .{});
         try self.client.endpoint.clientSendInitialProbe(client_conn);
-        std.debug.print("[ConnectionPair] Initial packet sent\n", .{});
+        testlog.print("[ConnectionPair] Initial packet sent\n", .{});
 
         // 3. Exchange Initial packets (triggers handshake)
-        std.debug.print("[ConnectionPair] Exchanging packets...\n", .{});
+        testlog.print("[ConnectionPair] Exchanging packets...\n", .{});
         try self.exchangePackets();
 
         // 4. Wait for server to accept connection
@@ -198,19 +199,19 @@ pub const ConnectionPair = struct {
             // Check if server has accepted
             if (self.server.endpoint.accepted.items.len > 0) {
                 self.server_conn = self.server.endpoint.accepted.items[0];
-                std.debug.print("[ConnectionPair] Server accepted connection after {} exchanges, {}ms\n", .{ exchange_count, waited_ms });
+                testlog.print("[ConnectionPair] Server accepted connection after {} exchanges, {}ms\n", .{ exchange_count, waited_ms });
                 break;
             }
 
             // Debug: Check connection state
             if (exchange_count % 10 == 0) {
-                std.debug.print("[ConnectionPair] Waiting for server... (exchanges: {}, time: {}ms)\n", .{ exchange_count, waited_ms });
+                testlog.print("[ConnectionPair] Waiting for server... (exchanges: {}, time: {}ms)\n", .{ exchange_count, waited_ms });
                 // Check if client has any connections
                 if (self.client.endpoint.conns.count() > 0) {
                     var iter = self.client.endpoint.conns.iterator();
                     if (iter.next()) |entry| {
                         const conn = entry.value_ptr.*;
-                        std.debug.print("  Client conn state: handshake_done_sent={}, pn_initial_tx={}, pn_handshake_tx={}\n", .{
+                        testlog.print("  Client conn state: handshake_done_sent={}, pn_initial_tx={}, pn_handshake_tx={}\n", .{
                             conn.handshake_done_sent,
                             conn.pn_initial_tx,
                             conn.pn_handshake_tx,
@@ -223,7 +224,7 @@ pub const ConnectionPair = struct {
         }
 
         if (self.server_conn == null) {
-            std.debug.print("[ConnectionPair] ERROR: Server connection timeout after {} exchanges, {}ms\n", .{ exchange_count, waited_ms });
+            testlog.print("[ConnectionPair] ERROR: Server connection timeout after {} exchanges, {}ms\n", .{ exchange_count, waited_ms });
             return error.ServerConnectionTimeout;
         }
 
@@ -280,10 +281,10 @@ pub const ConnectionPair = struct {
             // Check timeout
             const elapsed = std.time.milliTimestamp() - start_time;
             if (elapsed > timeout_ms) {
-                std.debug.print("[waitForHandshake] TIMEOUT after {} iterations\n", .{iteration});
+                testlog.print("[waitForHandshake] TIMEOUT after {} iterations\n", .{iteration});
                 if (self.client_conn) |client_conn| {
                     if (self.server_conn) |server_conn| {
-                        std.debug.print("[waitForHandshake] Final state: client_done={}, server_done={}\n", .{
+                        testlog.print("[waitForHandshake] Final state: client_done={}, server_done={}\n", .{
                             client_conn.handshake_done_seen,
                             server_conn.handshake_done_sent,
                         });

@@ -15,8 +15,8 @@ pub const PacketNumber = u64;
 /// Long header type discriminator used when encoding/decoding.
 /// RFC 9000 §17.2: Long Header Packet Types
 pub const LongHeaderType = enum {
-    Initial,    // 0x00 - RFC 9000 §17.2.2
-    Handshake,  // 0x02 - RFC 9000 §17.2.4
+    Initial, // 0x00 - RFC 9000 §17.2.2
+    Handshake, // 0x02 - RFC 9000 §17.2.4
 };
 
 // NOTE: AeadKeys and InitialKeys are defined in legacy packet.zig
@@ -25,9 +25,9 @@ pub const LongHeaderType = enum {
 /// Result of decoding a protected short header packet.
 /// RFC 9000 §17.3: Short Header Packets (1-RTT)
 pub const DecodedShort = struct {
-    packet_number: u64,      // Expanded packet number
-    packet_number_len: u3,   // Original encoded length (1-4 bytes)
-    payload: []u8,           // Decrypted payload
+    packet_number: u64, // Expanded packet number
+    packet_number_len: u3, // Original encoded length (1-4 bytes)
+    payload: []u8, // Decrypted payload
 };
 
 /// Result of decoding an Initial packet.
@@ -38,7 +38,7 @@ pub const DecodedInitial = struct {
     scid: []const u8,
     packet_number: u32,
     packet_number_len: u3,
-    payload: []u8,           // Decrypted payload
+    payload: []u8, // Decrypted payload
 };
 
 /// Result of decoding a Version Negotiation packet.

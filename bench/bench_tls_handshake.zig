@@ -10,16 +10,16 @@ const BenchConfig = struct {
 };
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){}; 
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
-    
+
     const config = BenchConfig{};
-    
+
     std.debug.print("TLS 1.3 Handshake Benchmarks\n", .{});
     std.debug.print("=============================\n", .{});
     std.debug.print("Iterations: {}\n\n", .{config.iterations});
-    
+
     try benchmarkKeyDerivation(config);
     try benchmarkTranscriptHash(config);
     try benchmarkHandshakeSecrets(config);
@@ -29,22 +29,22 @@ pub fn main() !void {
 fn benchmarkKeyDerivation(config: BenchConfig) !void {
     const ikm = [_]u8{0xAB} ** 32;
     const salt = [_]u8{0xCD} ** 20;
-    
+
     var i: usize = 0;
     while (i < config.warmup) : (i += 1) {
         _ = ks.extract(&salt, &ikm);
     }
-    
+
     const start = std.time.nanoTimestamp();
     i = 0;
     while (i < config.iterations) : (i += 1) {
         _ = ks.extract(&salt, &ikm);
     }
     const end = std.time.nanoTimestamp();
-    
+
     const total_ns = @as(u64, @intCast(end - start));
     const per_op_ns = total_ns / config.iterations;
-    
+
     std.debug.print("HKDF-Extract:        {} ns/op ({d:.2} µs)\n", .{
         per_op_ns,
         @as(f64, @floatFromInt(per_op_ns)) / 1000.0,
@@ -53,13 +53,13 @@ fn benchmarkKeyDerivation(config: BenchConfig) !void {
 
 fn benchmarkTranscriptHash(config: BenchConfig) !void {
     const message = [_]u8{ 0x01, 0x00, 0x00, 0x10 } ++ ([_]u8{0xFF} ** 16);
-    
+
     var transcript = tls13.Transcript.init();
     var i: usize = 0;
     while (i < config.warmup) : (i += 1) {
         transcript.update(&message);
     }
-    
+
     transcript = tls13.Transcript.init();
     const start = std.time.nanoTimestamp();
     i = 0;
@@ -67,10 +67,10 @@ fn benchmarkTranscriptHash(config: BenchConfig) !void {
         transcript.update(&message);
     }
     const end = std.time.nanoTimestamp();
-    
+
     const total_ns = @as(u64, @intCast(end - start));
     const per_op_ns = total_ns / config.iterations;
-    
+
     std.debug.print("Transcript Update:   {} ns/op ({d:.2} µs)\n", .{
         per_op_ns,
         @as(f64, @floatFromInt(per_op_ns)) / 1000.0,
@@ -119,10 +119,10 @@ fn benchmarkContextCreation(alloc: std.mem.Allocator, config: BenchConfig) !void
         ctx.deinit();
     }
     const end = std.time.nanoTimestamp();
-    
+
     const total_ns = @as(u64, @intCast(end - start));
     const per_op_ns = total_ns / config.iterations;
-    
+
     std.debug.print("Context Init/Deinit: {} ns/op ({d:.2} µs)\n", .{
         per_op_ns,
         @as(f64, @floatFromInt(per_op_ns)) / 1000.0,

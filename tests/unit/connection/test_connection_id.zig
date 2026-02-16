@@ -280,11 +280,7 @@ test "RFC 9000 §19.15 - NEW_CONNECTION_ID provides sequence and reset token" {
 
     // Derive reset token for this CID
     var base: [32]u8 = [_]u8{0x42} ** 32;
-    local_cid.reset_token = cid.deriveStatelessResetToken(
-        &base,
-        local_cid.sequence,
-        local_cid.cid.bytes[0..local_cid.cid.len]
-    );
+    local_cid.reset_token = cid.deriveStatelessResetToken(&base, local_cid.sequence, local_cid.cid.bytes[0..local_cid.cid.len]);
 
     try testing.expectEqual(@as(u64, 10), local_cid.sequence);
     try testing.expectEqual(@as(usize, 16), local_cid.reset_token.len);

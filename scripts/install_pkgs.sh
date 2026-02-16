@@ -112,6 +112,7 @@ source_nix_env() {
     "$HOME/.nix-profile/etc/profile.d/nix.sh" \
     /etc/profile.d/nix.sh
   do
+    # shellcheck disable=SC1090
     [ -r "$p" ] && . "$p" && return 0
   done
   return 1

@@ -7,6 +7,70 @@ fn parseU64Arg(args: []const [:0]u8, idx: usize, default: u64) u64 {
     return std.fmt.parseInt(u64, args[idx], 10) catch default;
 }
 
+const CountingAllocator = struct {
+    child: std.mem.Allocator,
+    alloc_calls: usize = 0,
+    resize_calls: usize = 0,
+    remap_calls: usize = 0,
+    free_calls: usize = 0,
+
+    const Self = @This();
+
+    const vtable = std.mem.Allocator.VTable{
+        .alloc = alloc,
+        .resize = resize,
+        .remap = remap,
+        .free = free,
+    };
+
+    pub fn init(child: std.mem.Allocator) Self {
+        return .{ .child = child };
+    }
+
+    pub fn allocator(self: *Self) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+
+    pub fn reset(self: *Self) void {
+        self.alloc_calls = 0;
+        self.resize_calls = 0;
+        self.remap_calls = 0;
+        self.free_calls = 0;
+    }
+
+    pub fn allocOps(self: *const Self) usize {
+        return self.alloc_calls + self.resize_calls + self.remap_calls;
+    }
+
+    fn fromPtr(ptr: *anyopaque) *Self {
+        return @ptrCast(@alignCast(ptr));
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self = fromPtr(ctx);
+        self.alloc_calls += 1;
+        return self.child.rawAlloc(len, alignment, ret_addr);
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const self = fromPtr(ctx);
+        self.resize_calls += 1;
+        return self.child.rawResize(memory, alignment, new_len, ret_addr);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self = fromPtr(ctx);
+        self.remap_calls += 1;
+        return self.child.rawRemap(memory, alignment, new_len, ret_addr);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self = fromPtr(ctx);
+        self.free_calls += 1;
+        self.child.rawFree(memory, alignment, ret_addr);
+    }
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -34,7 +98,7 @@ pub fn main() !void {
     var timer = try std.time.Timer.start();
     var buf: [8]u8 = undefined;
     var total: usize = 0;
-    const iters: usize = 100_000;
+    const iters: usize = 20_000;
     for (0..iters) |_| {
         total += try varint.encode(16383, &buf);
     }
@@ -46,7 +110,7 @@ pub fn main() !void {
     var nr = rec.NewReno{ .mds = 1200, .cwnd = 12000 };
     var sum_delay: u128 = 0;
     var delay_buf: u64 = 0;
-    const iters2: usize = 1_000_000;
+    const iters2: usize = 100_000;
     timer.reset();
     for (0..iters2) |i| {
         // sweep bytes_in_flight between 0..1.5*cwnd in a stable pattern
@@ -61,7 +125,7 @@ pub fn main() !void {
     std.debug.print("pacing delay compute: {d} ns/op (avg_delay={d} ns)\n", .{ per2, @as(u64, @intCast(sum_delay / iters2)) });
 
     // Micro-bench 3: simulate send pacing on/off (busy-loop emulate sleep cost 0)
-    const samples: usize = 200_000;
+    const samples: usize = 50_000;
     // Off: just call compute and ignore
     timer.reset();
     var sink: u64 = 0;
@@ -102,7 +166,7 @@ pub fn main() !void {
             var R = rec.Recovery.init(alloc_);
             defer R.deinit();
 
-            const pkts: usize = 200_000;
+            const pkts: usize = 20_000;
             const mds: usize = 1200;
             const ack_bytes: usize = mds;
             const dt_ack_ns: u64 = if (bdp_pkts > 0) rtt_ns / bdp_pkts else 0;
@@ -219,12 +283,13 @@ pub fn main() !void {
     var fbi = std.ArrayList(u8){};
     defer fbi.deinit(alloc);
     _ = fbi.writer(alloc).writeByte(0x01) catch {};
+    _ = fbi.writer(alloc).writeByte(0x02) catch {};
     const ip = try pkt.encodeInitialProtected(alloc, pkt.QUIC_V1, dcid, "S", &[_]u8{}, 1, 2, fbi.items, .{ .key = ik.client.key, .iv = ik.client.iv, .hp = ik.client.hp });
     defer alloc.free(ip);
     // Time decode loops
     timer.reset();
     var total_ns: u64 = 0;
-    const loops: usize = 10000;
+    const loops: usize = 2000;
     for (0..loops) |i| {
         const which = rng.int(u1);
         if (which == 0) {
@@ -239,4 +304,71 @@ pub fn main() !void {
     }
     total_ns = timer.read();
     std.debug.print("hp decode timing: {d} ns total for {d} ops\n", .{ total_ns, loops });
+
+    // Micro-bench 6: allocation gate for short-header hot path APIs.
+    var counting = CountingAllocator.init(alloc);
+    const counting_alloc = counting.allocator();
+    const alloc_loops: usize = 2000;
+
+    var into_packet_buf: [4096]u8 = undefined;
+    const into_packet_len = try pkt.encodeShortProtectedInto(
+        into_packet_buf[0..],
+        dcid,
+        9,
+        2,
+        payload,
+        keys,
+        false,
+    );
+    const into_packet = into_packet_buf[0..into_packet_len];
+    var into_decode_buf: [4096]u8 = undefined;
+
+    counting.reset();
+    for (0..alloc_loops) |idx| {
+        const out = try pkt.encodeShortProtected(counting_alloc, dcid, @as(u32, @intCast(idx + 1)), 2, payload, keys, false);
+        counting_alloc.free(out);
+    }
+    const legacy_encode_ops = counting.allocOps();
+
+    counting.reset();
+    for (0..alloc_loops) |_| {
+        const d = try pkt.decodeShortProtected(counting_alloc, into_packet, dcid.len, keys, 0);
+        counting_alloc.free(d.payload);
+    }
+    const legacy_decode_ops = counting.allocOps();
+
+    counting.reset();
+    for (0..alloc_loops) |idx| {
+        _ = try pkt.encodeShortProtectedInto(
+            into_packet_buf[0..],
+            dcid,
+            @as(u32, @intCast(idx + 1)),
+            2,
+            payload,
+            keys,
+            false,
+        );
+    }
+    const into_encode_ops = counting.allocOps();
+
+    counting.reset();
+    for (0..alloc_loops) |_| {
+        _ = try pkt.decodeShortProtectedInto(into_packet, dcid.len, keys, 0, into_decode_buf[0..]);
+    }
+    const into_decode_ops = counting.allocOps();
+
+    std.debug.print(
+        "short-header allocs/op: legacy encode={d:.4}, legacy decode={d:.4}, into encode={d:.4}, into decode={d:.4}\n",
+        .{
+            @as(f64, @floatFromInt(legacy_encode_ops)) / @as(f64, @floatFromInt(alloc_loops)),
+            @as(f64, @floatFromInt(legacy_decode_ops)) / @as(f64, @floatFromInt(alloc_loops)),
+            @as(f64, @floatFromInt(into_encode_ops)) / @as(f64, @floatFromInt(alloc_loops)),
+            @as(f64, @floatFromInt(into_decode_ops)) / @as(f64, @floatFromInt(alloc_loops)),
+        },
+    );
+
+    // Allocation guardrail: write-into/decode-into APIs must remain allocation free.
+    if (into_encode_ops != 0 or into_decode_ops != 0) {
+        return error.ShortHeaderAllocationRegression;
+    }
 }

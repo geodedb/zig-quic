@@ -21,8 +21,9 @@ const legacy = @import("../packet.zig");
 // Re-export types from types module and legacy implementations
 pub const PacketNumber = types.PacketNumber;
 pub const LongHeaderType = types.LongHeaderType;
-pub const DecodedShort = legacy.DecodedShort;  // Use legacy type to match decodeShortProtected return
-pub const DecodedInitial = legacy.DecodedInitial;  // Use legacy type to match decodeInitialProtected return
+pub const DecodedShort = legacy.DecodedShort; // Use legacy type to match decodeShortProtected return
+pub const DecodedShortView = legacy.DecodedShortView;
+pub const DecodedInitial = legacy.DecodedInitial; // Use legacy type to match decodeInitialProtected return
 pub const DecodedVN = types.DecodedVN;
 pub const QUIC_V1 = types.QUIC_V1;
 pub const QUIC_V2 = types.QUIC_V2;
@@ -61,10 +62,13 @@ pub const encodeHandshakeProtected = legacy.encodeHandshakeProtected;
 /// RFC 9000 §17.3: Short Header Packets
 /// RFC 9001 §5.4: Header Protection
 pub const encodeShortProtected = legacy.encodeShortProtected;
+pub const encodeShortProtectedInto = legacy.encodeShortProtectedInto;
 
 /// Decode and unprotect a short-header (1-RTT) packet.
 /// RFC 9000 §17.3: Short Header Packets
 pub const decodeShortProtected = legacy.decodeShortProtected;
+pub const decodeShortProtectedInto = legacy.decodeShortProtectedInto;
+pub const decodeShortProtectedWithHpInto = legacy.decodeShortProtectedWithHpInto;
 
 /// Legacy shim for older tests (uses largest_pn=0).
 pub const decodeShortProtectedLegacy = legacy.decodeShortProtectedLegacy;

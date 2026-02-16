@@ -86,10 +86,7 @@ test "Phase 22 - Address validation infrastructure" {
     try std.testing.expectEqual(@as(usize, 0), responses.items.len);
 
     // Test countSuccessfulPathValidations with no pairs
-    const count = try medium_priority_helpers.countSuccessfulPathValidations(
-        allocator,
-        captured
-    );
+    const count = try medium_priority_helpers.countSuccessfulPathValidations(allocator, captured);
 
     try std.testing.expectEqual(@as(usize, 0), count);
 }
@@ -181,13 +178,13 @@ test "Phase 22 - Flow control validation" {
         .{
             .frame_type = .max_data,
             .stream_id = null,
-            .limit =1000,
+            .limit = 1000,
             .timestamp_ms = 1000,
         },
         .{
             .frame_type = .max_data,
             .stream_id = null,
-            .limit =2000,
+            .limit = 2000,
             .timestamp_ms = 2000,
         },
     };
@@ -199,13 +196,13 @@ test "Phase 22 - Flow control validation" {
         .{
             .frame_type = .max_data,
             .stream_id = null,
-            .limit =2000,
+            .limit = 2000,
             .timestamp_ms = 1000,
         },
         .{
             .frame_type = .max_data,
             .stream_id = null,
-            .limit =1000, // Decrease!
+            .limit = 1000, // Decrease!
             .timestamp_ms = 2000,
         },
     };
@@ -225,9 +222,7 @@ test "Phase 22 - Flow control validation" {
     try std.testing.expectEqual(@as(usize, 0), updates.items.len);
 
     // findBlockedEvents filters from updates, not captured packets
-    const blocked_events = medium_priority_helpers.findBlockedEvents(
-        updates.items
-    );
+    const blocked_events = medium_priority_helpers.findBlockedEvents(updates.items);
 
     try std.testing.expectEqual(@as(usize, 0), blocked_events.len);
 }

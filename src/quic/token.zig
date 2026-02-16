@@ -118,7 +118,7 @@ pub fn verify(
     pos += dcid_len; // Skip DCID (we don't validate it, just include in HMAC)
 
     // Verify HMAC
-    const data_to_sign = token[0 .. pos]; // Everything before HMAC
+    const data_to_sign = token[0..pos]; // Everything before HMAC
     const expected_hmac = token[pos .. pos + 32];
 
     const Hmac = std.crypto.auth.hmac.sha2.HmacSha256;

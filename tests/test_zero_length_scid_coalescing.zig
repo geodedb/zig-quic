@@ -154,31 +154,35 @@ fn buildStandardClientHello(alloc: std.mem.Allocator) ![]u8 {
 
     // signature_algorithms extension (expanded with more algorithms)
     try ext_buf.appendSlice(alloc, &.{
-        0x00, 0x0d,  // Extension type: signature_algorithms
-        0x00, 0x08,  // Extension length
-        0x00, 0x06,  // List length
-        0x08, 0x04,  // RSA-PSS-RSAE-SHA256
-        0x04, 0x03,  // ECDSA-secp256r1-sha256
-        0x08, 0x07,  // ED25519
+        0x00, 0x0d, // Extension type: signature_algorithms
+        0x00, 0x08, // Extension length
+        0x00, 0x06, // List length
+        0x08, 0x04, // RSA-PSS-RSAE-SHA256
+        0x04, 0x03, // ECDSA-secp256r1-sha256
+        0x08, 0x07, // ED25519
     });
 
     // ALPN extension (16): Required for QUIC - advertise "h3"
     try ext_buf.appendSlice(alloc, &.{
-        0x00, 0x10,  // Extension type: ALPN
-        0x00, 0x05,  // Extension length
-        0x00, 0x03,  // ALPN list length
-        0x02,        // ALPN entry length
-        'h', '3',    // "h3" protocol
+        0x00, 0x10, // Extension type: ALPN
+        0x00, 0x05, // Extension length
+        0x00, 0x03, // ALPN list length
+        0x02, // ALPN entry length
+        'h', '3', // "h3" protocol
     });
 
     // QUIC transport parameters extension (57/0x39): Required for QUIC
     try ext_buf.appendSlice(alloc, &.{
-        0x00, 0x39,  // Extension type: quic_transport_params
-        0x00, 0x0c,  // Extension length (12 bytes)
+        0x00, 0x39, // Extension type: quic_transport_params
+        0x00, 0x0c, // Extension length (12 bytes)
         // Initial max data (param 0x04) = 1MB
-        0x04, 0x04, 0x80, 0x10, 0x00, 0x00,
+        0x04, 0x04,
+        0x80, 0x10,
+        0x00, 0x00,
         // Initial max stream data bidi local (param 0x05) = 256KB
-        0x05, 0x04, 0x80, 0x04, 0x00, 0x00,
+        0x05, 0x04,
+        0x80, 0x04,
+        0x00, 0x00,
     });
 
     // key_share extension

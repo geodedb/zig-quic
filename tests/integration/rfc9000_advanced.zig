@@ -83,10 +83,7 @@ test "Phase 21.5 - Transport parameter validation" {
 
     const found = advanced_features_helpers.findTransportParam(&params, .max_udp_payload_size);
     try std.testing.expect(found != null);
-    try std.testing.expectEqual(
-        advanced_features_helpers.TransportParamId.max_udp_payload_size,
-        found.?.id
-    );
+    try std.testing.expectEqual(advanced_features_helpers.TransportParamId.max_udp_payload_size, found.?.id);
 
     _ = allocator;
 }
@@ -115,18 +112,12 @@ test "Phase 21.5 - Connection ID management infrastructure" {
     // Test extraction helpers with empty capture
     const captured: []const harness.CapturedPacket = &[_]harness.CapturedPacket{};
 
-    var new_cids = try advanced_features_helpers.extractNewConnectionIdFrames(
-        allocator,
-        captured
-    );
+    var new_cids = try advanced_features_helpers.extractNewConnectionIdFrames(allocator, captured);
     defer new_cids.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 0), new_cids.items.len);
 
-    var retired_cids = try advanced_features_helpers.extractRetireConnectionIdFrames(
-        allocator,
-        captured
-    );
+    var retired_cids = try advanced_features_helpers.extractRetireConnectionIdFrames(allocator, captured);
     defer retired_cids.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 0), retired_cids.items.len);
@@ -152,10 +143,7 @@ test "Phase 21.5 - Error handling validation" {
     // Test CONNECTION_CLOSE extraction with empty capture
     const captured: []const harness.CapturedPacket = &[_]harness.CapturedPacket{};
 
-    var errors = try advanced_features_helpers.extractConnectionCloseFrames(
-        allocator,
-        captured
-    );
+    var errors = try advanced_features_helpers.extractConnectionCloseFrames(allocator, captured);
     defer errors.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 0), errors.items.len);

@@ -104,13 +104,7 @@ fn onSecretAvailable(
         return error.NoConnectionContext;
     };
 
-    // Log full secret for debugging (first 32 bytes in hex)
     logger.debugPrint("onSecretAvailable: conn={*} role={s} level={s}\n", .{ conn, if (conn.role == .Server) "Server" else "Client", @tagName(level) });
-    logger.debugPrint("  secret: ", .{});
-    for (secret) |byte| {
-        logger.debugPrint("{x:0>2}", .{byte});
-    }
-    logger.debugPrint("\n", .{});
 
     // RFC 9001 §5.1: Secrets are 32 bytes for SHA-256-based cipher suites
     if (secret.len != 32) return error.InvalidSecretLength;
@@ -137,10 +131,10 @@ fn onSecretAvailable(
                 // Server: first call is server secret (.send), second is client secret (.recv)
                 if (conn.hs_server == null) {
                     conn.hs_server = secret_bytes;
-                    logger.debugPrint("onSecretAvailable[Server]: Stored server HS secret (1st call): {X:0>2}{X:0>2}...\n", .{ secret_bytes[0], secret_bytes[1] });
+                    logger.debugPrint("onSecretAvailable[Server]: Stored server HS secret (1st call)\n", .{});
                 } else if (conn.hs_client == null) {
                     conn.hs_client = secret_bytes;
-                    logger.debugPrint("onSecretAvailable[Server]: Stored client HS secret (2nd call): {X:0>2}{X:0>2}...\n", .{ secret_bytes[0], secret_bytes[1] });
+                    logger.debugPrint("onSecretAvailable[Server]: Stored client HS secret (2nd call)\n", .{});
                     // Both secrets available - install keys
                     try installHandshakeKeys(conn, conn.hs_client.?, conn.hs_server.?);
                 }
@@ -148,10 +142,10 @@ fn onSecretAvailable(
                 // Client: first call is client secret (.send), second is server secret (.recv)
                 if (conn.hs_client == null) {
                     conn.hs_client = secret_bytes;
-                    logger.debugPrint("onSecretAvailable[Client]: Stored client HS secret (1st call): {X:0>2}{X:0>2}...\n", .{ secret_bytes[0], secret_bytes[1] });
+                    logger.debugPrint("onSecretAvailable[Client]: Stored client HS secret (1st call)\n", .{});
                 } else if (conn.hs_server == null) {
                     conn.hs_server = secret_bytes;
-                    logger.debugPrint("onSecretAvailable[Client]: Stored server HS secret (2nd call): {X:0>2}{X:0>2}...\n", .{ secret_bytes[0], secret_bytes[1] });
+                    logger.debugPrint("onSecretAvailable[Client]: Stored server HS secret (2nd call)\n", .{});
                     // Both secrets available - install keys
                     try installHandshakeKeys(conn, conn.hs_client.?, conn.hs_server.?);
                 }
@@ -395,8 +389,6 @@ pub fn installHandshakeKeys(
     server_secret: [32]u8,
 ) !void {
     logger.debugPrint("installHandshakeKeys: CALLED with role={s}\n", .{if (conn.role == .Server) "Server" else "Client"});
-    logger.debugPrint("  client_secret[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ client_secret[0], client_secret[1], client_secret[2], client_secret[3] });
-    logger.debugPrint("  server_secret[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ server_secret[0], server_secret[1], server_secret[2], server_secret[3] });
 
     // Derive Handshake keys from secrets
     // Uses HKDF-Expand-Label per RFC 8446 §7.1 and RFC 9001 §5
@@ -409,9 +401,6 @@ pub fn installHandshakeKeys(
     // Derive server Handshake keys
     const server_keys = key_schedule.deriveKeyIvHp(server_secret);
 
-    logger.debugPrint("  Derived client_keys: key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, hp[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ client_keys.key[0], client_keys.key[1], client_keys.key[2], client_keys.key[3], client_keys.hp[0], client_keys.hp[1], client_keys.hp[2], client_keys.hp[3] });
-    logger.debugPrint("  Derived server_keys: key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, hp[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ server_keys.key[0], server_keys.key[1], server_keys.key[2], server_keys.key[3], server_keys.hp[0], server_keys.hp[1], server_keys.hp[2], server_keys.hp[3] });
-
     // Install based on connection role
     // Convert KeyMaterial to packet.InitialKeys by copying fields
     if (conn.role == .Client) {
@@ -419,13 +408,11 @@ pub fn installHandshakeKeys(
         conn.hs_rx_keys = .{ .key = server_keys.key, .iv = server_keys.iv, .hp = server_keys.hp };
         conn.hs_tx_keys = .{ .key = client_keys.key, .iv = client_keys.iv, .hp = client_keys.hp };
         logger.debugPrint("installHandshakeKeys: Client installed Handshake keys (conn={*})\n", .{conn});
-        logger.debugPrint("  Client RX HP key: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ conn.hs_rx_keys.?.hp[0], conn.hs_rx_keys.?.hp[1], conn.hs_rx_keys.?.hp[2], conn.hs_rx_keys.?.hp[3] });
     } else {
         // Server receives with client keys, sends with server keys
         conn.hs_rx_keys = .{ .key = client_keys.key, .iv = client_keys.iv, .hp = client_keys.hp };
         conn.hs_tx_keys = .{ .key = server_keys.key, .iv = server_keys.iv, .hp = server_keys.hp };
         logger.debugPrint("installHandshakeKeys: Server installed Handshake keys (conn={*})\n", .{conn});
-        logger.debugPrint("  Server RX HP key: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ conn.hs_rx_keys.?.hp[0], conn.hs_rx_keys.?.hp[1], conn.hs_rx_keys.?.hp[2], conn.hs_rx_keys.?.hp[3] });
     }
 
     // Handshake keys are now installed (indicated by non-null hs_rx_keys/hs_tx_keys)
@@ -460,8 +447,6 @@ pub fn installApplicationKeys(
     // AES-128-GCM (TLS_AES_128_GCM_SHA256) is the default cipher suite for QUIC
 
     logger.debugPrint("\n[installApplicationKeys] Called for {s}\n", .{if (conn.role == .Server) "Server" else "Client"});
-    logger.debugPrint("  client_secret[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ client_secret[0], client_secret[1], client_secret[2], client_secret[3] });
-    logger.debugPrint("  server_secret[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ server_secret[0], server_secret[1], server_secret[2], server_secret[3] });
 
     // Derive client Application keys
     // RFC 9001 §5.1: "key = HKDF-Expand-Label(Secret, "quic key", "", key_length)"
@@ -469,9 +454,6 @@ pub fn installApplicationKeys(
 
     // Derive server Application keys
     const server_keys = key_schedule.deriveKeyIvHp(server_secret);
-
-    logger.debugPrint("  client_keys.key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ client_keys.key[0], client_keys.key[1], client_keys.key[2], client_keys.key[3] });
-    logger.debugPrint("  server_keys.key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ server_keys.key[0], server_keys.key[1], server_keys.key[2], server_keys.key[3] });
 
     // Install based on connection role
     // Convert KeyMaterial to packet.AeadKeys by copying fields
@@ -491,15 +473,7 @@ pub fn installApplicationKeys(
         else
             key_schedule.deriveKeyIvHp(conn.app_rx_next_secret.?);
         conn.app_rx_next_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = next_mat.hp };
-        logger.debugPrint("[PHASE57-INSTALL] Client: next_secret={s} key={s} iv={s} hp={s}\n", .{
-            std.fmt.bytesToHex(conn.app_rx_next_secret.?[0..], .lower),
-            std.fmt.bytesToHex(&next_mat.key, .lower),
-            std.fmt.bytesToHex(&next_mat.iv, .lower),
-            std.fmt.bytesToHex(&next_mat.hp, .lower),
-        });
-
-        logger.debugPrint("  Client: app_rx_keys (server) = {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ server_keys.key[0], server_keys.key[1], server_keys.key[2], server_keys.key[3] });
-        logger.debugPrint("  Client: app_tx_keys (client) = {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ client_keys.key[0], client_keys.key[1], client_keys.key[2], client_keys.key[3] });
+        logger.debugPrint("[PHASE57-INSTALL] Client: pre-derived next RX keys\n", .{});
     } else {
         // Server receives with client keys, sends with server keys
         conn.app_rx_keys = .{ .key = client_keys.key, .iv = client_keys.iv, .hp = client_keys.hp };
@@ -516,15 +490,7 @@ pub fn installApplicationKeys(
         else
             key_schedule.deriveKeyIvHp(conn.app_rx_next_secret.?);
         conn.app_rx_next_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = next_mat.hp };
-        logger.debugPrint("[PHASE57-INSTALL] Server: next_secret={s} key={s} iv={s} hp={s}\n", .{
-            std.fmt.bytesToHex(conn.app_rx_next_secret.?[0..], .lower),
-            std.fmt.bytesToHex(&next_mat.key, .lower),
-            std.fmt.bytesToHex(&next_mat.iv, .lower),
-            std.fmt.bytesToHex(&next_mat.hp, .lower),
-        });
-
-        logger.debugPrint("  Server: app_rx_keys (client) = {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ client_keys.key[0], client_keys.key[1], client_keys.key[2], client_keys.key[3] });
-        logger.debugPrint("  Server: app_tx_keys (server) = {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ server_keys.key[0], server_keys.key[1], server_keys.key[2], server_keys.key[3] });
+        logger.debugPrint("[PHASE57-INSTALL] Server: pre-derived next RX keys\n", .{});
     }
 
     // Application keys are now installed (indicated by non-null app_rx_keys/app_tx_keys)
@@ -819,10 +785,7 @@ fn sendHandshakePing(ctx: *HandshakeContext) !void {
         logger.debugPrint("sendHandshakePing: No hs_tx_keys\n", .{});
         return error.NoHandshakeKeys;
     };
-    logger.debugPrint("sendHandshakePing: Retrieved keys from conn - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
-        hs_tx_keys.key[0], hs_tx_keys.key[1], hs_tx_keys.key[2], hs_tx_keys.key[3],
-        hs_tx_keys.iv[0],  hs_tx_keys.iv[1],  hs_tx_keys.iv[2],  hs_tx_keys.iv[3],
-    });
+    logger.debugPrint("sendHandshakePing: Retrieved handshake TX keys (redacted)\n", .{});
 
     // Build a PING frame with padding
     // Need at least 3 bytes of payload for header protection with 2-byte PN
@@ -1033,7 +996,7 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
         const hs_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
 
         logger.debugPrint("sendHandshakePackets: Using DCID len={}, hash={X:0>16}, conn={*} role={s}\n", .{ hs_dcid.len, hashBytes(hs_dcid), conn, if (conn.role == .Client) "Client" else "Server" });
-        logger.debugPrint("  TX keys - key[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}, hp[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ hs_tx_keys.key[0], hs_tx_keys.key[1], hs_tx_keys.key[2], hs_tx_keys.key[3], hs_tx_keys.hp[0], hs_tx_keys.hp[1], hs_tx_keys.hp[2], hs_tx_keys.hp[3] });
+        logger.debugPrint("  TX keys present (redacted)\n", .{});
 
         // Encode Handshake packet
         const pkt = packet.encodeHandshakeProtected(
@@ -1148,9 +1111,11 @@ pub fn sendHandshakeDone(ctx: *HandshakeContext) !void {
     else
         &[_]u8{};
 
-    // Encode and send 1-RTT packet
-    const pkt = packet.encodeShortProtected(
-        ctx.allocator.*,
+    // Encode and send 1-RTT packet without heap allocation.
+    const packet_storage = conn.packet_pool.checkout();
+    defer conn.packet_pool.release(packet_storage);
+    const pkt_len = packet.encodeShortProtectedInto(
+        packet_storage,
         dcid,
         @as(u32, @truncate(conn.pn_app_tx)),
         2, // PN length
@@ -1159,7 +1124,7 @@ pub fn sendHandshakeDone(ctx: *HandshakeContext) !void {
         conn.tx_key_phase,
     ) catch return error.PacketEncodeFailed;
 
-    defer ctx.allocator.free(pkt);
+    const pkt = packet_storage[0..pkt_len];
     _ = ctx.send_fn(ctx.peer, pkt) catch return error.SendFailed;
 
     conn.onShortHeaderPacketSent(pkt.len, true);

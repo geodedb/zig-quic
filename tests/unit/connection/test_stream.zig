@@ -142,9 +142,9 @@ test "RFC 9000 §4 - StreamRx tryDrain multiple contiguous segments" {
     rx.bufs = std.ArrayList(stream.Segment){};
     defer rx.deinit(&test_allocator);
 
-    rx.insert(&test_allocator, 0, "AAA");   // 3 bytes
-    rx.insert(&test_allocator, 3, "BBB");   // 3 bytes
-    rx.insert(&test_allocator, 6, "CCC");   // 3 bytes
+    rx.insert(&test_allocator, 0, "AAA"); // 3 bytes
+    rx.insert(&test_allocator, 3, "BBB"); // 3 bytes
+    rx.insert(&test_allocator, 6, "CCC"); // 3 bytes
     rx.tryDrain(&test_allocator);
 
     try testing.expectEqual(@as(u64, 9), rx.recv_off);

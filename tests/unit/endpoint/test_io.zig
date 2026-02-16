@@ -299,7 +299,7 @@ test "RFC 9000 §13.3 - ProcessDatagramFn with mock datagram data" {
     const fn_ptr: io.ProcessDatagramFn = TestCallback.process;
 
     // Simulate calling the callback
-    const mock_data = [_]u8{0x01, 0x02, 0x03, 0x04};
+    const mock_data = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
     const mock_peer: conn_mod.SockAddr = .{};
     fn_ptr(mock_peer, &mock_data, 0b10); // ECT(0)
 }
@@ -322,7 +322,7 @@ test "RFC 9000 §14.2 - IcmpPtbFn with mock PTB data" {
     const fn_ptr: io.IcmpPtbFn = TestCallback.handle;
 
     // Simulate calling the callback with IPv6 minimum MTU
-    const mock_quoted = [_]u8{0xFF, 0xEE, 0xDD};
+    const mock_quoted = [_]u8{ 0xFF, 0xEE, 0xDD };
     const mock_peer: conn_mod.SockAddr = .{};
     fn_ptr(mock_peer, &mock_quoted, 1280);
 }
@@ -341,8 +341,9 @@ test "RFC 9000 §13.3 - Platform poll backend selection" {
     }
     // BSD/macOS should have kqueue
     else if (platform == .macos or platform == .freebsd or
-             platform == .netbsd or platform == .openbsd or
-             platform == .dragonfly) {
+        platform == .netbsd or platform == .openbsd or
+        platform == .dragonfly)
+    {
         try testing.expect(true); // kqueue available
     }
     // Windows should have IOCP
@@ -373,10 +374,10 @@ test "RFC 9000 §14.2 - ICMP PTB MTU values" {
     // RFC 9000 §14.2: Path MTU Discovery
     // Common MTU values that ICMP PTB might report
 
-    const ipv4_min: u16 = 576;   // RFC 791 minimum
-    const ipv6_min: u16 = 1280;  // RFC 8200 minimum
-    const ethernet: u16 = 1500;  // Typical Ethernet MTU
-    const jumbo: u16 = 9000;     // Jumbo frames
+    const ipv4_min: u16 = 576; // RFC 791 minimum
+    const ipv6_min: u16 = 1280; // RFC 8200 minimum
+    const ethernet: u16 = 1500; // Typical Ethernet MTU
+    const jumbo: u16 = 9000; // Jumbo frames
 
     try testing.expect(ipv4_min < ipv6_min);
     try testing.expect(ipv6_min < ethernet);

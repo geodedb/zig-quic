@@ -418,8 +418,8 @@ test "RttState tracks RTT evolution over time" {
     const samples = [_]u64{
         100_000_000, // 100ms
         110_000_000, // 110ms
-        90_000_000,  // 90ms
-        95_000_000,  // 95ms
+        90_000_000, // 90ms
+        95_000_000, // 95ms
         105_000_000, // 105ms
     };
 

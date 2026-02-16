@@ -6,7 +6,8 @@ const ks = @import("quic_tls");
 // Update. Confirm exporter stability once application secrets are installed and
 // that performKeyUpdate rotates send/receive traffic secrets as mandated.
 test "exporter produces stable prefix after application secrets" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){}; defer _ = gpa.deinit();
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     var ctx = try tls13.Context.init(.{ .allocator = alloc, .role = .Client }, .{});
     defer ctx.deinit();
@@ -21,13 +22,16 @@ test "exporter produces stable prefix after application secrets" {
     // Manually set exporter_master since we're not running full handshake
     ctx.secrets.exporter_master.store(.Application, .sha256, dummy_app_secret);
     // ctx.transcripts.finished_hash expects HashDigestCache, which is complex to construct for testing
-    var out1: [32]u8 = undefined; try ctx.exportSecret("test label", &out1);
-    var out2: [32]u8 = undefined; try ctx.exportSecret("test label", &out2);
+    var out1: [32]u8 = undefined;
+    try ctx.exportSecret("test label", &out1);
+    var out2: [32]u8 = undefined;
+    try ctx.exportSecret("test label", &out2);
     try std.testing.expectEqualSlices(u8, out1[0..], out2[0..]);
 }
 
 test "key update rotates send and recv secrets" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){}; defer _ = gpa.deinit();
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     var ctx = try tls13.Context.init(.{ .allocator = alloc, .role = .Client }, .{});
     defer ctx.deinit();

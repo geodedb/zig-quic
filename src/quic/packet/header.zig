@@ -20,7 +20,7 @@ pub const LongHeader = struct {
     scid: []const u8,
     packet_number: types.PacketNumber = 1,
     token: []const u8 = &[_]u8{}, // Initial only
-    payload: []const u8,           // already-encoded frames
+    payload: []const u8, // already-encoded frames
 
     /// Serialize this long header into the provided writer; returns bytes written.
     /// RFC 9000 §17.2: Long Header Packet Format

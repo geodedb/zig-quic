@@ -16,11 +16,11 @@ const SockAddr = conn_mod.SockAddr;
 // The recvFn signature is: *const fn (ctx: *anyopaque, buf: []u8) anyerror!RecvResult
 // So we need to extract the payload type from the error union
 const RecvFnType = @TypeOf(@as(Transport, undefined).recvFn);
-const RecvFnPtrInfo = @typeInfo(RecvFnType);  // TypeInfo with .pointer tag
-const RecvFnActualType = RecvFnPtrInfo.pointer.child;  // Get the function type
-const RecvFnTypeInfo = @typeInfo(RecvFnActualType);  // TypeInfo for the function
-const RecvFnReturnType = RecvFnTypeInfo.@"fn".return_type.?;  // Get the return type (error union)
-const RecvResult = @typeInfo(RecvFnReturnType).error_union.payload;  // Extract payload from error union
+const RecvFnPtrInfo = @typeInfo(RecvFnType); // TypeInfo with .pointer tag
+const RecvFnActualType = RecvFnPtrInfo.pointer.child; // Get the function type
+const RecvFnTypeInfo = @typeInfo(RecvFnActualType); // TypeInfo for the function
+const RecvFnReturnType = RecvFnTypeInfo.@"fn".return_type.?; // Get the return type (error union)
+const RecvResult = @typeInfo(RecvFnReturnType).error_union.payload; // Extract payload from error union
 
 /// No-op transport for testing - discards all packets
 const NoopTransport = struct {

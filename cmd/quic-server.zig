@@ -48,15 +48,15 @@ pub fn main() !void {
 
             // Parse PEM to DER
             cert_der = pem.parseCertificate(alloc, cert_pem_data) catch |err| blk: {
-                std.debug.print("Warning: Failed to parse certificate '{s}': {}\n", .{cp, err});
+                std.debug.print("Warning: Failed to parse certificate '{s}': {}\n", .{ cp, err });
                 std.debug.print("Continuing without certificate (insecure mode)\n", .{});
                 break :blk null;
             };
             if (cert_der) |cd| {
-                std.debug.print("Loaded and parsed certificate from '{s}' (DER: {} bytes)\n", .{cp, cd.len});
+                std.debug.print("Loaded and parsed certificate from '{s}' (DER: {} bytes)\n", .{ cp, cd.len });
             }
         } else |err| {
-            std.debug.print("Warning: Could not open certificate file '{s}': {}\n", .{cp, err});
+            std.debug.print("Warning: Could not open certificate file '{s}': {}\n", .{ cp, err });
             std.debug.print("Continuing without certificate (insecure mode)\n", .{});
         }
     }
@@ -69,15 +69,15 @@ pub fn main() !void {
 
             // Parse PEM private key (EC or RSA)
             key_p256 = pem.parsePrivateKey(alloc, key_pem_data) catch |err| blk: {
-                std.debug.print("Warning: Failed to parse private key '{s}': {}\n", .{kp, err});
+                std.debug.print("Warning: Failed to parse private key '{s}': {}\n", .{ kp, err });
                 std.debug.print("Continuing without private key (insecure mode)\n", .{});
                 break :blk null;
             };
             if (key_p256) |kd| {
-                std.debug.print("Loaded and parsed private key from '{s}' ({} bytes)\n", .{kp, kd.len});
+                std.debug.print("Loaded and parsed private key from '{s}' ({} bytes)\n", .{ kp, kd.len });
             }
         } else |err| {
-            std.debug.print("Warning: Could not open key file '{s}': {}\n", .{kp, err});
+            std.debug.print("Warning: Could not open key file '{s}': {}\n", .{ kp, err });
             std.debug.print("Continuing without private key (insecure mode)\n", .{});
         }
     }
@@ -102,11 +102,11 @@ pub fn main() !void {
 
     // PHASE 42 PART 12: Per-stream state tracking for flow control resilience
     const StreamState = struct {
-        pending_write: std.ArrayListUnmanaged(u8) = .{},  // Data waiting to be written
-        got_fin: bool = false,             // Received FIN from peer
-        sent_fin: bool = false,            // Sent FIN to peer
-        total_read: u64 = 0,               // PHASE 42 PART 13: Total bytes read from peer
-        total_written: u64 = 0,            // PHASE 42 PART 13: Total bytes written to peer
+        pending_write: std.ArrayListUnmanaged(u8) = .{}, // Data waiting to be written
+        got_fin: bool = false, // Received FIN from peer
+        sent_fin: bool = false, // Sent FIN to peer
+        total_read: u64 = 0, // PHASE 42 PART 13: Total bytes read from peer
+        total_written: u64 = 0, // PHASE 42 PART 13: Total bytes written to peer
 
         fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
             self.pending_write.deinit(allocator);
@@ -162,7 +162,7 @@ pub fn main() !void {
 
         // Log event loop iterations every 100ms during active processing
         if (active_conns.items.len > 0 and (now - last_debug_time) >= 100) {
-            std.debug.print("[P42-13-LOOP] Iteration {}, {} active connections\n", .{loop_count, active_conns.items.len});
+            std.debug.print("[P42-13-LOOP] Iteration {}, {} active connections\n", .{ loop_count, active_conns.items.len });
             last_debug_time = now;
         }
 
@@ -186,7 +186,7 @@ pub fn main() !void {
                 if (initial_burst > 0) {
                     const written = api.writeStream(conn, push_stream_id, push_buf.?[push_sent .. push_sent + initial_burst], false) catch 0;
                     push_sent += written;
-                    std.debug.print("[SERVER-PUSH] initial wrote={} total={} target={}\n", .{written, push_sent, push_target});
+                    std.debug.print("[SERVER-PUSH] initial wrote={} total={} target={}\n", .{ written, push_sent, push_target });
                 }
             }
         }
@@ -244,13 +244,13 @@ pub fn main() !void {
                 // Step 1: Try to flush pending writes first (flow control may have unblocked)
                 if (stream.pending_write.items.len > 0) {
                     while (stream.pending_write.items.len > 0) {
-                        std.debug.print("[P42-13] Stream {} flushing {} pending bytes (loop {})\n", .{stream_id, stream.pending_write.items.len, loop_count});
+                        std.debug.print("[P42-13] Stream {} flushing {} pending bytes (loop {})\n", .{ stream_id, stream.pending_write.items.len, loop_count });
                         const written: usize = api.writeStream(conn, stream_id, stream.pending_write.items, false) catch |err| blk: {
                             if (err == error.FlowControlBlocked) {
-                                std.debug.print("[P42-13-FC-BLOCKED] Stream {} still blocked, {} bytes pending (loop {})\n", .{stream_id, stream.pending_write.items.len, loop_count});
+                                std.debug.print("[P42-13-FC-BLOCKED] Stream {} still blocked, {} bytes pending (loop {})\n", .{ stream_id, stream.pending_write.items.len, loop_count });
                                 break;
                             }
-                            std.debug.print("[P42-13-ERROR] Stream {} write error: {} (loop {})\n", .{stream_id, err, loop_count});
+                            std.debug.print("[P42-13-ERROR] Stream {} write error: {} (loop {})\n", .{ stream_id, err, loop_count });
                             break :blk 0;
                         };
 
@@ -262,10 +262,8 @@ pub fn main() !void {
                             std.mem.copyForwards(u8, stream.pending_write.items[0..remaining], stream.pending_write.items[written..]);
                         }
                         stream.pending_write.shrinkRetainingCapacity(remaining);
-                        std.debug.print("[P42-13-FLUSH] Stream {} flushed {} bytes ({} total written, {} still pending)\n",
-                            .{stream_id, written, stream.total_written, stream.pending_write.items.len});
+                        std.debug.print("[P42-13-FLUSH] Stream {} flushed {} bytes ({} total written, {} still pending)\n", .{ stream_id, written, stream.total_written, stream.pending_write.items.len });
                     }
-
                 }
 
                 // Server push progression
@@ -274,7 +272,7 @@ pub fn main() !void {
                     const wrote = api.writeStream(conn, push_stream_id, push_buf.?[push_sent .. push_sent + chunk], false) catch 0;
                     if (wrote > 0) {
                         push_sent += wrote;
-                        std.debug.print("[SERVER-PUSH] wrote={} total={} target={}\n", .{wrote, push_sent, push_target});
+                        std.debug.print("[SERVER-PUSH] wrote={} total={} target={}\n", .{ wrote, push_sent, push_target });
                         if (push_sent == push_target) {
                             _ = api.writeStream(conn, push_stream_id, &[_]u8{}, true) catch {};
                             std.debug.print("[SERVER-PUSH] FIN sent total={}\n", .{push_sent});
@@ -301,8 +299,7 @@ pub fn main() !void {
                             if (n > 0) {
                                 reads_this_iter += 1;
                                 stream.total_read += n;
-                                std.debug.print("[P57-14-READ] Stream {} read {} bytes ({} total read, loop {}, reads_iter={}, pending_write={})\n",
-                                    .{stream_id, n, stream.total_read, loop_count, reads_this_iter, stream.pending_write.items.len});
+                                std.debug.print("[P57-14-READ] Stream {} read {} bytes ({} total read, loop {}, reads_iter={}, pending_write={})\n", .{ stream_id, n, stream.total_read, loop_count, reads_this_iter, stream.pending_write.items.len });
 
                                 // PHASE 57 PART 12: Only try immediate echo if no pending writes
                                 // If we're already blocked, buffer ALL new reads to prevent unbounded growth
@@ -312,13 +309,13 @@ pub fn main() !void {
                                     var write_off: usize = 0;
                                     while (write_off < n) {
                                         const slice_len = n - write_off;
-                                        const written: usize = api.writeStream(conn, stream_id, chunk[write_off .. n], false) catch |err| blk: {
+                                        const written: usize = api.writeStream(conn, stream_id, chunk[write_off..n], false) catch |err| blk: {
                                             if (err == error.FlowControlBlocked or err == error.CongestionControlBlocked) {
-                                                std.debug.print("[P42-13-FC/CC-BLOCKED] Stream {} blocked mid-chunk, buffering {} bytes (loop {})\n", .{stream_id, n - write_off, loop_count});
-                                                stream.pending_write.appendSlice(conn_state.allocator, chunk[write_off .. n]) catch {};
+                                                std.debug.print("[P42-13-FC/CC-BLOCKED] Stream {} blocked mid-chunk, buffering {} bytes (loop {})\n", .{ stream_id, n - write_off, loop_count });
+                                                stream.pending_write.appendSlice(conn_state.allocator, chunk[write_off..n]) catch {};
                                                 break :blk 0;
                                             }
-                                            std.debug.print("[P42-13-ERROR] Stream {} write error: {} (loop {})\n", .{stream_id, err, loop_count});
+                                            std.debug.print("[P42-13-ERROR] Stream {} write error: {} (loop {})\n", .{ stream_id, err, loop_count });
                                             break :blk 0;
                                         };
                                         if (written == 0) break; // blocked or error
@@ -326,32 +323,30 @@ pub fn main() !void {
                                         write_off += written;
                                         if (written < slice_len) {
                                             // Partial: buffer remainder
-                                            stream.pending_write.appendSlice(conn_state.allocator, chunk[write_off .. n]) catch {};
-                                            std.debug.print("[P42-13-PARTIAL] Stream {} partial echo, buffered {} bytes (loop {})\n", .{stream_id, n - write_off, loop_count});
+                                            stream.pending_write.appendSlice(conn_state.allocator, chunk[write_off..n]) catch {};
+                                            std.debug.print("[P42-13-PARTIAL] Stream {} partial echo, buffered {} bytes (loop {})\n", .{ stream_id, n - write_off, loop_count });
                                             break;
                                         }
                                     }
                                     const fully_echoed = write_off == n;
                                     if (fully_echoed) {
-                                        std.debug.print("[P42-13-ECHO] Stream {} echoed {} bytes ({} total written, loop {})\n", .{stream_id, n, stream.total_written, loop_count});
+                                        std.debug.print("[P42-13-ECHO] Stream {} echoed {} bytes ({} total written, loop {})\n", .{ stream_id, n, stream.total_written, loop_count });
                                     }
                                 } else {
                                     // Already blocked, buffer this read instead of trying to echo
                                     stream.pending_write.appendSlice(conn_state.allocator, chunk[0..n]) catch {};
-                                    std.debug.print("[P57-12-BUFFER] Stream {} buffered {} bytes (already blocked, pending={}, loop {})\n",
-                                        .{stream_id, n, stream.pending_write.items.len, loop_count});
+                                    std.debug.print("[P57-12-BUFFER] Stream {} buffered {} bytes (already blocked, pending={}, loop {})\n", .{ stream_id, n, stream.pending_write.items.len, loop_count });
                                 }
                             } else {
                                 // readStream returned 0 successfully - this is a real FIN
                                 stream.got_fin = true;
-                                std.debug.print("[P42-13-FIN] Stream {} received FIN (total read: {}, total written: {}, pending: {})\n",
-                                    .{stream_id, stream.total_read, stream.total_written, stream.pending_write.items.len});
+                                std.debug.print("[P42-13-FIN] Stream {} received FIN (total read: {}, total written: {}, pending: {})\n", .{ stream_id, stream.total_read, stream.total_written, stream.pending_write.items.len });
                                 break;
                             }
                         } else |err| {
                             // Error reading - WouldBlock just means no data available yet, continue
                             if (err != error.WouldBlock) {
-                                std.debug.print("[P42-13-ERROR] Stream {} read error: {} (loop {})\n", .{stream_id, err, loop_count});
+                                std.debug.print("[P42-13-ERROR] Stream {} read error: {} (loop {})\n", .{ stream_id, err, loop_count });
                             }
                             break;
                         }

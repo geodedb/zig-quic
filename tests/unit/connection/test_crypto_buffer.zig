@@ -107,7 +107,7 @@ test "RFC 9000 §4.9.2 - getContiguous returns multiple contiguous fragments" {
 
     try buffer.add(0, "Hello", test_allocator); // 5 bytes
     try buffer.add(5, "World", test_allocator); // 5 bytes
-    try buffer.add(10, "!", test_allocator);    // 1 byte
+    try buffer.add(10, "!", test_allocator); // 1 byte
 
     const result = buffer.getContiguous(0);
     try testing.expect(result != null);
@@ -118,8 +118,8 @@ test "RFC 9000 §4.9.2 - getContiguous stops at gap" {
     var buffer: CryptoBuffer = .{};
     defer buffer.clear(test_allocator);
 
-    try buffer.add(0, "AAA", test_allocator);  // offset 0, len 3
-    try buffer.add(3, "BBB", test_allocator);  // offset 3, len 3
+    try buffer.add(0, "AAA", test_allocator); // offset 0, len 3
+    try buffer.add(3, "BBB", test_allocator); // offset 3, len 3
     // Gap here - no data at offset 6
     try buffer.add(10, "CCC", test_allocator); // offset 10, len 3
 
@@ -132,8 +132,8 @@ test "RFC 9000 §4.9.2 - getContiguous handles overlapping fragments" {
     var buffer: CryptoBuffer = .{};
     defer buffer.clear(test_allocator);
 
-    try buffer.add(0, "AAAAA", test_allocator);  // offset 0, len 5
-    try buffer.add(3, "BBB", test_allocator);    // offset 3, len 3 (overlaps)
+    try buffer.add(0, "AAAAA", test_allocator); // offset 0, len 5
+    try buffer.add(3, "BBB", test_allocator); // offset 3, len 3 (overlaps)
 
     const result = buffer.getContiguous(0);
     try testing.expect(result != null);
@@ -263,8 +263,8 @@ test "boundary: CryptoBuffer adjacent fragments are contiguous" {
     var buffer: CryptoBuffer = .{};
     defer buffer.clear(test_allocator);
 
-    try buffer.add(0, "AAA", test_allocator);   // 3 bytes
-    try buffer.add(3, "BBB", test_allocator);   // 3 bytes at offset 3
+    try buffer.add(0, "AAA", test_allocator); // 3 bytes
+    try buffer.add(3, "BBB", test_allocator); // 3 bytes at offset 3
 
     const result = buffer.getContiguous(0);
     try testing.expect(result != null);

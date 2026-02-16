@@ -70,15 +70,17 @@ pub const Loop = struct {
     /// Wait for readiness and write up to events.len entries; returns count.
     pub fn wait(self: *Loop, events: []Event, timeout_ms: i32) !usize {
         var evs: [64]std.posix.Kevent = undefined;
-        if (builtin.target.os.tag == .macos or builtin.target.os.tag == .freebsd or builtin.target.os.tag == .netbsd or builtin.target.os.tag == .openbsd or builtin.target.os.tag == .dragonfly) {
-            if (timeout_ms > 0) std.Thread.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
-            return 0;
+        if (builtin.target.os.tag != .macos and builtin.target.os.tag != .freebsd and builtin.target.os.tag != .netbsd and builtin.target.os.tag != .openbsd and builtin.target.os.tag != .dragonfly) {
+            return error.UnsupportedPlatform;
         }
+
         var ts_storage: std.posix.timespec = std.mem.zeroes(std.posix.timespec);
         var tsp: ?*const std.posix.timespec = null;
         if (timeout_ms >= 0) {
-            // Fallback for non-Apple BSDs if available
-            tsp = &ts_storage; // zero timeout means nowait
+            const timeout_u64: u64 = @intCast(timeout_ms);
+            ts_storage.tv_sec = @intCast(timeout_u64 / 1000);
+            ts_storage.tv_nsec = @intCast((timeout_u64 % 1000) * std.time.ns_per_ms);
+            tsp = &ts_storage;
         }
         const n = try std.posix.kevent(self.kq, &[_]std.posix.Kevent{}, &evs, tsp);
         const out_n = @min(events.len, @as(usize, @intCast(n)));

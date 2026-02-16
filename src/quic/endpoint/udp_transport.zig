@@ -20,10 +20,16 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const transport_mod = @import("transport.zig");
+const posix = std.posix;
 
 pub const Transport = transport_mod.Transport;
 pub const SockAddr = transport_mod.SockAddr;
 pub const RecvResult = transport_mod.RecvResult;
+pub const RecvBatchSlot = transport_mod.RecvBatchSlot;
+pub const SendBatchItem = transport_mod.SendBatchItem;
+
+/// Maximum number of UDP datagrams processed per batched syscall.
+pub const UdpBatchCap: usize = 16;
 
 /// Parse bind address string into SockAddr
 ///
@@ -132,11 +138,22 @@ pub const UdpTransport = struct {
     pub fn asTransport(self: *UdpTransport) Transport {
         return Transport{
             .sendFn = sendFn,
+            .sendBatchFn = sendBatchFn,
             .recvFn = recvFn,
+            .recvBatchFn = recvBatchFn,
             .pollFn = pollFn,
             .closeFn = closeFn,
             .getLocalAddrFn = getLocalAddrFn,
             .context = @ptrCast(self),
+        };
+    }
+
+    fn linuxResultToCount(rc: usize) !usize {
+        const linux = std.os.linux;
+        return switch (linux.E.init(rc)) {
+            .SUCCESS => rc,
+            .AGAIN => error.WouldBlock,
+            else => |err| std.posix.unexpectedErrno(err),
         };
     }
 
@@ -152,6 +169,67 @@ pub const UdpTransport = struct {
             peer.len,
         );
         return sent;
+    }
+
+    fn sendBatchFallback(self: *UdpTransport, items: []const SendBatchItem) !usize {
+        var sent_items: usize = 0;
+        while (sent_items < items.len) : (sent_items += 1) {
+            const it = items[sent_items];
+            const sent = try posix.sendto(
+                self.fd,
+                it.data,
+                0,
+                @ptrCast(&it.peer.storage),
+                it.peer.len,
+            );
+            if (sent != it.data.len) return error.ShortWrite;
+        }
+        return sent_items;
+    }
+
+    fn sendBatchFn(ctx: *anyopaque, items: []const SendBatchItem) !usize {
+        const self: *UdpTransport = @ptrCast(@alignCast(ctx));
+        if (items.len == 0) return 0;
+        if (builtin.target.os.tag != .linux) {
+            return self.sendBatchFallback(items);
+        }
+
+        const linux = std.os.linux;
+        var sent_total: usize = 0;
+        while (sent_total < items.len) {
+            const chunk_len = @min(items.len - sent_total, UdpBatchCap);
+
+            var iovecs: [UdpBatchCap]posix.iovec_const = undefined;
+            var msgs: [UdpBatchCap]linux.mmsghdr_const = undefined;
+
+            var i: usize = 0;
+            while (i < chunk_len) : (i += 1) {
+                const it = items[sent_total + i];
+                iovecs[i] = .{
+                    .base = it.data.ptr,
+                    .len = it.data.len,
+                };
+                msgs[i] = .{
+                    .hdr = .{
+                        .name = @ptrCast(&it.peer.storage),
+                        .namelen = it.peer.len,
+                        .iov = @ptrCast(&iovecs[i]),
+                        .iovlen = 1,
+                        .control = null,
+                        .controllen = 0,
+                        .flags = 0,
+                    },
+                    .len = 0,
+                };
+            }
+
+            const rc = linux.sendmmsg(@intCast(self.fd), &msgs, @intCast(chunk_len), 0);
+            const sent = try linuxResultToCount(rc);
+            if (sent == 0) break;
+            sent_total += sent;
+            if (sent < chunk_len) break;
+        }
+        return sent_total;
     }
 
     fn recvFn(ctx: *anyopaque, buf: []u8) !RecvResult {
@@ -174,6 +252,102 @@ pub const UdpTransport = struct {
             .peer = .{ .storage = peer_storage, .len = peer_len },
             .ecn = null, // ECN extraction would require ancillary data (recvmsg)
         };
+    }
+
+    fn recvBatchFallback(self: *UdpTransport, slots: []RecvBatchSlot) !usize {
+        var received: usize = 0;
+        while (received < slots.len) : (received += 1) {
+            var peer_storage: posix.sockaddr.storage = undefined;
+            var peer_len: posix.socklen_t = @sizeOf(posix.sockaddr.storage);
+            const n = posix.recvfrom(
+                self.fd,
+                slots[received].buf,
+                @intCast(posix.MSG.DONTWAIT),
+                @ptrCast(&peer_storage),
+                &peer_len,
+            ) catch |err| {
+                if (err == error.WouldBlock) {
+                    if (received == 0) return error.WouldBlock;
+                    return received;
+                }
+                return err;
+            };
+
+            slots[received].n = n;
+            slots[received].peer = .{ .storage = peer_storage, .len = peer_len };
+            slots[received].ecn = null;
+        }
+        return received;
+    }
+
+    fn recvBatchFn(ctx: *anyopaque, slots: []RecvBatchSlot) !usize {
+        const self: *UdpTransport = @ptrCast(@alignCast(ctx));
+        if (slots.len == 0) return 0;
+        if (builtin.target.os.tag != .linux) {
+            return self.recvBatchFallback(slots);
+        }
+
+        const linux = std.os.linux;
+        var received_total: usize = 0;
+        while (received_total < slots.len) {
+            const chunk_len = @min(slots.len - received_total, UdpBatchCap);
+
+            var iovecs: [UdpBatchCap]posix.iovec = undefined;
+            var addrs: [UdpBatchCap]posix.sockaddr.storage = undefined;
+            var msgs: [UdpBatchCap]linux.mmsghdr = undefined;
+
+            var i: usize = 0;
+            while (i < chunk_len) : (i += 1) {
+                iovecs[i] = .{
+                    .base = slots[received_total + i].buf.ptr,
+                    .len = slots[received_total + i].buf.len,
+                };
+                msgs[i] = .{
+                    .hdr = .{
+                        .name = @ptrCast(&addrs[i]),
+                        .namelen = @sizeOf(posix.sockaddr.storage),
+                        .iov = @ptrCast(&iovecs[i]),
+                        .iovlen = 1,
+                        .control = null,
+                        .controllen = 0,
+                        .flags = 0,
+                    },
+                    .len = 0,
+                };
+            }
+
+            const rc = linux.recvmmsg(
+                @intCast(self.fd),
+                &msgs,
+                @intCast(chunk_len),
+                @intCast(posix.MSG.DONTWAIT),
+                null,
+            );
+            const got = linuxResultToCount(rc) catch |err| {
+                if (err == error.WouldBlock) {
+                    if (received_total == 0) return error.WouldBlock;
+                    return received_total;
+                }
+                return err;
+            };
+            if (got == 0) break;
+
+            var j: usize = 0;
+            while (j < got) : (j += 1) {
+                slots[received_total + j].n = msgs[j].len;
+                slots[received_total + j].peer = .{
+                    .storage = addrs[j],
+                    .len = msgs[j].hdr.namelen,
+                };
+                slots[received_total + j].ecn = null;
+            }
+
+            received_total += got;
+            if (got < chunk_len) break;
+        }
+
+        if (received_total == 0) return error.WouldBlock;
+        return received_total;
     }
 
     fn pollFn(ctx: *anyopaque, timeout_ms: i32) !void {

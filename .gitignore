@@ -32,8 +32,8 @@ __pycache__/
 clients/rust/target/
 test-clients/quinn-client/target/
 test-clients/quinn-client/target/
-test_clients/rust/target/release/
-test_clients/rust/target/release/
+test-clients/legacy-clients/rust/target/release/
+test-clients/legacy-clients/rust/target/release/
 
 
 .direnv/
@@ -77,6 +77,16 @@ server.crt
 server.key
 
 # Go client binaries (built locally)
-quic-test/quicgo-client
+test-clients/quic-test-legacy/quicgo-client
+test-clients/quic-test-legacy/quicgo-server
 test-clients/quic-go-client/quic-go-test-client
 test-clients/quic-go-client/main
+
+# Generated documentation and local logs
+docs/sources.tar
+logs/*.log
+
+# Legacy / backup scratch files
+*.legacy
+*.backup
+*_backup

@@ -15,6 +15,7 @@
 //! - RFC 9002 §6.2: Probe Timeout (PTO)
 
 const std = @import("std");
+const testlog = @import("testlog");
 const harness = @import("harness");
 const packet_inspector = @import("packet_inspector");
 
@@ -168,12 +169,12 @@ pub fn estimateRttFromCapture(
 /// Checks that RTT measurement is realistic (e.g., <1000ms for loopback).
 pub fn validateRttReasonable(rtt: RttMeasurement, max_ms: u64) !void {
     if (rtt.smoothed_rtt_ms > max_ms) {
-        std.debug.print("RTT too high: {}ms > {}ms\n", .{ rtt.smoothed_rtt_ms, max_ms });
+        testlog.print("RTT too high: {}ms > {}ms\n", .{ rtt.smoothed_rtt_ms, max_ms });
         return error.RttTooHigh;
     }
 
     if (rtt.min_rtt_ms > rtt.smoothed_rtt_ms) {
-        std.debug.print("min_rtt > smoothed_rtt: {}ms > {}ms\n", .{ rtt.min_rtt_ms, rtt.smoothed_rtt_ms });
+        testlog.print("min_rtt > smoothed_rtt: {}ms > {}ms\n", .{ rtt.min_rtt_ms, rtt.smoothed_rtt_ms });
         return error.InvalidRttState;
     }
 }
@@ -236,10 +237,7 @@ pub fn validatePtoCalculation(rtt: RttMeasurement, pto: PtoState) !void {
     const max_pto = expected_pto + tolerance;
 
     if (pto.pto_timeout_ms < min_pto or pto.pto_timeout_ms > max_pto) {
-        std.debug.print(
-            "PTO calculation incorrect: {}ms not in [{}, {}] (expected ~{}ms)\n",
-            .{ pto.pto_timeout_ms, min_pto, max_pto, expected_pto }
-        );
+        testlog.print("PTO calculation incorrect: {}ms not in [{}, {}] (expected ~{}ms)\n", .{ pto.pto_timeout_ms, min_pto, max_pto, expected_pto });
         return error.InvalidPtoCalculation;
     }
 }
@@ -259,10 +257,7 @@ pub fn expectLossDetected(
     defer loss_events.deinit();
 
     if (loss_events.items.len < min_loss_events) {
-        std.debug.print(
-            "Expected at least {} loss events, found {}\n",
-            .{ min_loss_events, loss_events.items.len }
-        );
+        testlog.print("Expected at least {} loss events, found {}\n", .{ min_loss_events, loss_events.items.len });
         return error.InsufficientLossEvents;
     }
 }
@@ -283,10 +278,7 @@ pub fn expectPtoFired(
     const pto_events = try detectPtoEvents(captured);
 
     if (pto_events < min_pto_events) {
-        std.debug.print(
-            "Expected at least {} PTO events, found {}\n",
-            .{ min_pto_events, pto_events }
-        );
+        testlog.print("Expected at least {} PTO events, found {}\n", .{ min_pto_events, pto_events });
         return error.InsufficientPtoEvents;
     }
 }
@@ -300,10 +292,7 @@ pub fn expectRetransmissions(
     const retx_count = try countRetransmissions(captured);
 
     if (retx_count < min_retransmissions) {
-        std.debug.print(
-            "Expected at least {} retransmissions, found {}\n",
-            .{ min_retransmissions, retx_count }
-        );
+        testlog.print("Expected at least {} retransmissions, found {}\n", .{ min_retransmissions, retx_count });
         return error.InsufficientRetransmissions;
     }
 }

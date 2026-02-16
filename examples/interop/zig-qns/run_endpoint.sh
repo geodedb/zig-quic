@@ -6,7 +6,7 @@ set -e
 
 # Print version info if available
 if [ -f /quic/version.txt ]; then
-    echo "Using version:" $(cat /quic/version.txt)
+    echo "Using version: $(cat /quic/version.txt)"
 fi
 
 ROLE=${ROLE:-server}
@@ -29,9 +29,9 @@ if [ "$ROLE" == "client" ]; then
     echo "Client params: $CLIENT_PARAMS"
     echo "Test case: $TESTCASE"
     echo "Requests: $REQUESTS"
-    exec qns-endpoint 2>&1 | tee /logs/client.log
+    exec setpriv --reuid=quic --regid=quic --clear-groups qns-endpoint 2>&1 | tee /logs/client.log
 else
     echo "Running QUIC server."
     echo "Test case: $TESTCASE"
-    exec qns-endpoint 2>&1 | tee /logs/server.log
+    exec setpriv --reuid=quic --regid=quic --clear-groups qns-endpoint 2>&1 | tee /logs/server.log
 fi

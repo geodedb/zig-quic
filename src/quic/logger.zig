@@ -12,7 +12,7 @@ const builtin = @import("builtin");
 /// Compile-time flag to enable/disable verbose debug prints.
 /// Set to false for production builds to eliminate all QUIC debug output.
 /// This controls the std.debug.print calls throughout the QUIC library.
-pub const enable_debug_prints: bool = true;
+pub const enable_debug_prints: bool = builtin.mode == .Debug;
 
 /// Debug print wrapper - compiles to nothing when debug prints are disabled.
 /// Use this instead of std.debug.print for QUIC library debugging.

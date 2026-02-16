@@ -123,8 +123,6 @@ run_test() {
     done
     
     # Check results
-    local client_exit_code=$(docker inspect qns-client --format='{{.State.ExitCode}}' 2>/dev/null || echo "999")
-    
     # Check for successful download
     local success=false
     if docker exec qns-server ls /www/index.html >/dev/null 2>&1; then

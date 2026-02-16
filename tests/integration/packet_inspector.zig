@@ -14,18 +14,19 @@
 //! - RFC 9000 §12.3: Packet Numbers
 
 const std = @import("std");
+const testlog = @import("testlog");
 const harness = @import("harness");
 const quic_frame = @import("quic_frame");
 const crypto_quic = @import("quic_crypto_quic");
 
 /// Packet type classification for testing
 pub const PacketType = enum {
-    Initial,        // RFC 9000 §17.2.2
-    Handshake,      // RFC 9000 §17.2.4
-    ZeroRTT,        // RFC 9000 §17.2.3
-    OneRTT,         // RFC 9000 §17.3 (short header)
-    VersionNegotiation,  // RFC 9000 §17.2.1
-    Retry,          // RFC 9000 §17.2.5
+    Initial, // RFC 9000 §17.2.2
+    Handshake, // RFC 9000 §17.2.4
+    ZeroRTT, // RFC 9000 §17.2.3
+    OneRTT, // RFC 9000 §17.3 (short header)
+    VersionNegotiation, // RFC 9000 §17.2.1
+    Retry, // RFC 9000 §17.2.5
     Unknown,
 };
 
@@ -83,10 +84,10 @@ fn decodeVarInt(data: []const u8) !VarIntResult {
     const prefix = (first_byte >> 6) & 0x03;
 
     const length: usize = switch (prefix) {
-        0 => 1,  // 0b00 - 1 byte
-        1 => 2,  // 0b01 - 2 bytes
-        2 => 4,  // 0b10 - 4 bytes
-        3 => 8,  // 0b11 - 8 bytes
+        0 => 1, // 0b00 - 1 byte
+        1 => 2, // 0b01 - 2 bytes
+        2 => 4, // 0b10 - 4 bytes
+        3 => 8, // 0b11 - 8 bytes
         else => unreachable,
     };
 
@@ -147,7 +148,7 @@ fn parseShortHeader(packet_bytes: []const u8) !PacketInfo {
 
     if (packet_bytes.len < 1 + dcid_len) return error.Truncated;
 
-    const dcid = packet_bytes[1..1 + dcid_len];
+    const dcid = packet_bytes[1 .. 1 + dcid_len];
 
     // Packet number length is in bits 0-1 of first byte
     const pn_len_bits = (first_byte & 0x03) + 1;
@@ -190,7 +191,7 @@ fn parseLongHeader(packet_bytes: []const u8) !PacketInfo {
     i += 1;
 
     if (i + dcid_len > packet_bytes.len) return error.Truncated;
-    const dcid = packet_bytes[i..i + dcid_len];
+    const dcid = packet_bytes[i .. i + dcid_len];
     i += dcid_len;
 
     // Extract SCID length and SCID
@@ -199,7 +200,7 @@ fn parseLongHeader(packet_bytes: []const u8) !PacketInfo {
     i += 1;
 
     if (i + scid_len > packet_bytes.len) return error.Truncated;
-    const scid = packet_bytes[i..i + scid_len];
+    const scid = packet_bytes[i .. i + scid_len];
     i += scid_len;
 
     // Determine packet type from bits 4-5 of first byte
@@ -207,10 +208,10 @@ fn parseLongHeader(packet_bytes: []const u8) !PacketInfo {
     const type_bits = (first_byte >> 4) & 0x03;
 
     const packet_type: PacketType = switch (type_bits) {
-        0x00 => .Initial,    // 0b00
-        0x01 => .ZeroRTT,    // 0b01
-        0x02 => .Handshake,  // 0b10
-        0x03 => .Retry,      // 0b11
+        0x00 => .Initial, // 0b00
+        0x01 => .ZeroRTT, // 0b01
+        0x02 => .Handshake, // 0b10
+        0x03 => .Retry, // 0b11
         else => .Unknown,
     };
 
@@ -248,7 +249,7 @@ fn parseLongHeader(packet_bytes: []const u8) !PacketInfo {
             i += token_len_bytes;
 
             if (i + token_len <= packet_bytes.len) {
-                token = packet_bytes[i..i + token_len];
+                token = packet_bytes[i .. i + token_len];
                 i += token_len;
             }
         }
@@ -288,7 +289,7 @@ fn parseVersionNegotiation(packet_bytes: []const u8) !PacketInfo {
     i += 1;
 
     if (i + dcid_len > packet_bytes.len) return error.Truncated;
-    const dcid = packet_bytes[i..i + dcid_len];
+    const dcid = packet_bytes[i .. i + dcid_len];
     i += dcid_len;
 
     // Extract SCID
@@ -297,7 +298,7 @@ fn parseVersionNegotiation(packet_bytes: []const u8) !PacketInfo {
     i += 1;
 
     if (i + scid_len > packet_bytes.len) return error.Truncated;
-    const scid = packet_bytes[i..i + scid_len];
+    const scid = packet_bytes[i .. i + scid_len];
 
     return PacketInfo{
         .packet_type = .VersionNegotiation,
@@ -361,8 +362,8 @@ pub fn extractScid(packet_bytes: []const u8) !?[]const u8 {
 pub const FrameInfo = struct {
     frame_type: quic_frame.FrameType,
     frame: quic_frame.Frame,
-    offset: usize,     // Offset in payload where frame starts
-    length: usize,     // Frame length in bytes
+    offset: usize, // Offset in payload where frame starts
+    length: usize, // Frame length in bytes
 };
 
 /// Extract all frames from a decrypted packet payload.
@@ -389,7 +390,7 @@ pub fn extractFrames(allocator: std.mem.Allocator, payload: []const u8) !std.Arr
         // Try to decode one frame
         const result = quic_frame.decodeOne(payload[offset..]) catch |err| {
             // If decoding fails, we've reached the end of valid frames or hit corruption
-            std.debug.print("extractFrames: decodeOne failed at offset {}: {}\n", .{ offset, err });
+            testlog.print("extractFrames: decodeOne failed at offset {}: {}\n", .{ offset, err });
             break;
         };
 
@@ -570,9 +571,9 @@ pub fn decryptInitialPacketWithDcid(
 
     // Parse version (skip for now - assume v1)
     const version = (@as(u32, packet_bytes[1]) << 24) |
-                   (@as(u32, packet_bytes[2]) << 16) |
-                   (@as(u32, packet_bytes[3]) << 8) |
-                   @as(u32, packet_bytes[4]);
+        (@as(u32, packet_bytes[2]) << 16) |
+        (@as(u32, packet_bytes[3]) << 8) |
+        @as(u32, packet_bytes[4]);
     const is_v2 = (version == 0x6b3343cf); // QUIC v2
 
     // Parse DCID length and DCID
@@ -580,7 +581,7 @@ pub fn decryptInitialPacketWithDcid(
     const dcid_len = packet_bytes[offset];
     offset += 1;
     if (offset + dcid_len > packet_bytes.len) return error.PacketTooShort;
-    const dcid_from_packet = packet_bytes[offset..offset + dcid_len];
+    const dcid_from_packet = packet_bytes[offset .. offset + dcid_len];
     offset += dcid_len;
 
     // Parse SCID length and skip SCID
@@ -623,12 +624,12 @@ pub fn decryptInitialPacketWithDcid(
     // If copy_len < 4, remaining bytes must be zero, not garbage
     var pn_bytes: [4]u8 = [_]u8{0} ** 4;
     const copy_len = @min(4, payload_len);
-    @memcpy(pn_bytes[0..copy_len], packet_bytes[pn_offset..pn_offset + copy_len]);
+    @memcpy(pn_bytes[0..copy_len], packet_bytes[pn_offset .. pn_offset + copy_len]);
 
     var header_first = packet_bytes[0];
     // Phase 35 fix: header_prefix should EXCLUDE byte 0 (header_first), just like production code
     const header_prefix = packet_bytes[1..pn_offset]; // Everything between header_first and PN
-    const ciphertext_and_tag = packet_bytes[pn_offset..pn_offset + payload_len];
+    const ciphertext_and_tag = packet_bytes[pn_offset .. pn_offset + payload_len];
 
     // Allocate buffer for plaintext
     var plaintext = try allocator.alloc(u8, ciphertext_and_tag.len);
@@ -785,7 +786,7 @@ pub fn extractInitialDcid(packet_bytes: []const u8) ![]const u8 {
     const dcid_len = packet_bytes[offset];
     offset += 1;
     if (offset + dcid_len > packet_bytes.len) return error.PacketTooShort;
-    return packet_bytes[offset..offset + dcid_len];
+    return packet_bytes[offset .. offset + dcid_len];
 }
 
 /// Check if an Initial packet contains a CRYPTO frame.
@@ -875,7 +876,7 @@ pub fn extractFramesFromInitial(
 pub fn expectPacketType(packet_bytes: []const u8, expected_type: PacketType) !void {
     const info = try parsePacketHeader(packet_bytes);
     if (info.packet_type != expected_type) {
-        std.debug.print("Expected packet type {}, got {}\n", .{ expected_type, info.packet_type });
+        testlog.print("Expected packet type {}, got {}\n", .{ expected_type, info.packet_type });
         return error.TestExpectedEqual;
     }
 }
@@ -884,7 +885,7 @@ pub fn expectPacketType(packet_bytes: []const u8, expected_type: PacketType) !vo
 pub fn expectPacketNumberSpace(packet_bytes: []const u8, expected_space: PacketNumberSpace) !void {
     const info = try parsePacketHeader(packet_bytes);
     if (info.pn_space != expected_space) {
-        std.debug.print("Expected PN space {}, got {}\n", .{ expected_space, info.pn_space });
+        testlog.print("Expected PN space {}, got {}\n", .{ expected_space, info.pn_space });
         return error.TestExpectedEqual;
     }
 }
@@ -893,7 +894,7 @@ pub fn expectPacketNumberSpace(packet_bytes: []const u8, expected_space: PacketN
 pub fn expectFrameType(allocator: std.mem.Allocator, payload: []const u8, expected_type: quic_frame.FrameType) !void {
     const has_frame = try containsFrameType(allocator, payload, expected_type);
     if (!has_frame) {
-        std.debug.print("Expected frame type {}, but not found in payload\n", .{expected_type});
+        testlog.print("Expected frame type {}, but not found in payload\n", .{expected_type});
         return error.TestExpectedEqual;
     }
 }
@@ -902,7 +903,7 @@ pub fn expectFrameType(allocator: std.mem.Allocator, payload: []const u8, expect
 pub fn expectFrameCount(allocator: std.mem.Allocator, payload: []const u8, frame_type: quic_frame.FrameType, min_count: usize) !void {
     const count = try countFrameType(allocator, payload, frame_type);
     if (count < min_count) {
-        std.debug.print("Expected at least {} frames of type {}, got {}\n", .{ min_count, frame_type, count });
+        testlog.print("Expected at least {} frames of type {}, got {}\n", .{ min_count, frame_type, count });
         return error.TestExpectedEqual;
     }
 }
@@ -911,7 +912,7 @@ pub fn expectFrameCount(allocator: std.mem.Allocator, payload: []const u8, frame
 pub fn expectNoFrameType(allocator: std.mem.Allocator, payload: []const u8, unexpected_type: quic_frame.FrameType) !void {
     const has_frame = try containsFrameType(allocator, payload, unexpected_type);
     if (has_frame) {
-        std.debug.print("Did not expect frame type {}, but found in payload\n", .{unexpected_type});
+        testlog.print("Did not expect frame type {}, but found in payload\n", .{unexpected_type});
         return error.TestUnexpectedResult;
     }
 }
@@ -938,7 +939,7 @@ pub fn parseCapture(allocator: std.mem.Allocator, captured: []const harness.Capt
 
     for (captured) |cap| {
         const info = parsePacketHeader(cap.data) catch |err| {
-            std.debug.print("Failed to parse captured packet: {}\n", .{err});
+            testlog.print("Failed to parse captured packet: {}\n", .{err});
             continue;
         };
         try results.append(allocator, info);
@@ -975,7 +976,7 @@ pub fn findPacketInCapture(captured: []const harness.CapturedPacket, packet_type
 pub fn expectPacketInCapture(captured: []const harness.CapturedPacket, packet_type: PacketType) !void {
     const found = try findPacketInCapture(captured, packet_type);
     if (found == null) {
-        std.debug.print("Expected packet type {} in capture, but not found\n", .{packet_type});
+        testlog.print("Expected packet type {} in capture, but not found\n", .{packet_type});
         return error.TestExpectedEqual;
     }
 }
@@ -1007,7 +1008,7 @@ test "parsePacketHeader - Initial packet" {
     i += 1;
 
     // DCID = 8 bytes of 0xAA
-    @memset(packet[i..i + 8], 0xAA);
+    @memset(packet[i .. i + 8], 0xAA);
     i += 8;
 
     // SCID length = 8
@@ -1015,7 +1016,7 @@ test "parsePacketHeader - Initial packet" {
     i += 1;
 
     // SCID = 8 bytes of 0xBB
-    @memset(packet[i..i + 8], 0xBB);
+    @memset(packet[i .. i + 8], 0xBB);
     i += 8;
 
     const info = try parsePacketHeader(packet[0..i]);
@@ -1045,13 +1046,13 @@ test "parsePacketHeader - Handshake packet" {
     // DCID length = 8
     packet[i] = 8;
     i += 1;
-    @memset(packet[i..i + 8], 0xCC);
+    @memset(packet[i .. i + 8], 0xCC);
     i += 8;
 
     // SCID length = 8
     packet[i] = 8;
     i += 1;
-    @memset(packet[i..i + 8], 0xDD);
+    @memset(packet[i .. i + 8], 0xDD);
     i += 8;
 
     const info = try parsePacketHeader(packet[0..i]);
@@ -1075,13 +1076,13 @@ test "parsePacketHeader - Version Negotiation" {
     // DCID
     packet[i] = 8;
     i += 1;
-    @memset(packet[i..i + 8], 0xEE);
+    @memset(packet[i .. i + 8], 0xEE);
     i += 8;
 
     // SCID
     packet[i] = 8;
     i += 1;
-    @memset(packet[i..i + 8], 0xFF);
+    @memset(packet[i .. i + 8], 0xFF);
     i += 8;
 
     const info = try parsePacketHeader(packet[0..i]);
@@ -1094,7 +1095,7 @@ test "isInitialPacket - convenience helper" {
     var packet: [30]u8 = undefined;
     packet[0] = 0xC0; // Initial packet
     std.mem.writeInt(u32, packet[1..][0..4], 0x00000001, .big);
-    packet[5] = 8;  // DCID len
+    packet[5] = 8; // DCID len
     @memset(packet[6..14], 0xAA);
     packet[14] = 8; // SCID len
     @memset(packet[15..23], 0xBB);
@@ -1109,8 +1110,8 @@ test "getPacketNumberSpace - helper" {
     // Initial packet
     packet[0] = 0xC0;
     std.mem.writeInt(u32, packet[1..][0..4], 0x00000001, .big);
-    packet[5] = 0;  // DCID len
-    packet[6] = 0;  // SCID len
+    packet[5] = 0; // DCID len
+    packet[6] = 0; // SCID len
 
     const pn_space = try getPacketNumberSpace(&packet);
     try std.testing.expectEqual(PacketNumberSpace.Initial, pn_space);

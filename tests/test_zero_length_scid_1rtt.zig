@@ -1,4 +1,5 @@
 const std = @import("std");
+const testlog = @import("testlog");
 const api = @import("quic_api");
 const endpoint = @import("quic_endpoint");
 const conn_mod = @import("quic_conn");
@@ -82,7 +83,7 @@ test "server uses zero-length DCID in 1-RTT packets when client sends zero-lengt
     const dcid = client_conn.shortHeaderDcid();
     try std.testing.expectEqual(@as(usize, 0), dcid.len);
 
-    std.debug.print("✓ Test passed: server correctly uses zero-length DCID in 1-RTT packets\n", .{});
+    testlog.print("✓ Test passed: server correctly uses zero-length DCID in 1-RTT packets\n", .{});
 }
 
 // Unit test for Connection.shortHeaderDcid() function
@@ -110,7 +111,7 @@ test "shortHeaderDcid returns empty slice for zero-length peer SCID" {
     const dcid = conn.shortHeaderDcid();
 
     try std.testing.expectEqual(@as(usize, 0), dcid.len);
-    std.debug.print("✓ Unit test passed: shortHeaderDcid() returns empty slice for zero-length peer SCID\n", .{});
+    testlog.print("✓ Unit test passed: shortHeaderDcid() returns empty slice for zero-length peer SCID\n", .{});
 }
 
 // Unit test for Connection.shortHeaderDcid() with non-zero peer SCID
@@ -141,5 +142,5 @@ test "shortHeaderDcid returns peer SCID when non-zero" {
 
     try std.testing.expectEqual(peer_scid.len, dcid.len);
     try std.testing.expectEqualSlices(u8, &peer_scid, dcid);
-    std.debug.print("✓ Unit test passed: shortHeaderDcid() returns peer SCID when non-zero\n", .{});
+    testlog.print("✓ Unit test passed: shortHeaderDcid() returns peer SCID when non-zero\n", .{});
 }

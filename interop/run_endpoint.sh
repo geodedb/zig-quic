@@ -45,7 +45,7 @@ if [ "$ROLE" == "client" ]; then
             echo "Simulator ready!"
             break
         fi
-        if [ $i -eq 30 ]; then
+        if [ "$i" -eq 30 ]; then
             echo "ERROR: Simulator failed to start after 30 attempts"
             exit 1
         fi
@@ -61,9 +61,9 @@ if [ "$ROLE" == "client" ]; then
     echo "Requests: $REQUESTS"
     echo "Additional params: $CLIENT_PARAMS"
 
-    # Run client with output logging
-    exec qns-endpoint 2>&1 | tee /logs/client.log
-else
+	    # Run client with output logging
+	    exec setpriv --reuid=quic --regid=quic --clear-groups qns-endpoint 2>&1 | tee /logs/client.log
+	else
     echo "=== Starting QUIC Server ==="
     echo "Test case: $TESTCASE"
 
@@ -81,6 +81,6 @@ else
         ls -lh /www/
     fi
 
-    # Run server with output logging
-    exec qns-endpoint 2>&1 | tee /logs/server.log
-fi
+	# Run server with output logging
+	exec setpriv --reuid=quic --regid=quic --clear-groups qns-endpoint 2>&1 | tee /logs/server.log
+	fi

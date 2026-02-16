@@ -320,9 +320,9 @@ test "RFC 9000 §19.8 - STREAM frame type byte range 0x08-0x0f" {
     // Test all combinations
     const test_cases = [_]struct { offset: ?u64, fin: bool }{
         .{ .offset = null, .fin = false }, // 0x08 | LEN
-        .{ .offset = null, .fin = true },  // 0x08 | LEN | FIN
-        .{ .offset = 0, .fin = false },    // 0x08 | OFF | LEN
-        .{ .offset = 0, .fin = true },     // 0x08 | OFF | LEN | FIN
+        .{ .offset = null, .fin = true }, // 0x08 | LEN | FIN
+        .{ .offset = 0, .fin = false }, // 0x08 | OFF | LEN
+        .{ .offset = 0, .fin = true }, // 0x08 | OFF | LEN | FIN
     };
 
     for (test_cases) |tc| {

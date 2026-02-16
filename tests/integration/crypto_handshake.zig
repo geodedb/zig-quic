@@ -427,8 +427,8 @@ test "CRYPTO frame and CryptoBuffer integration" {
         data: []const u8,
     }{
         .{ .offset = 18, .data = "Fragment3" }, // Third fragment (out of order)
-        .{ .offset = 0, .data = "Fragment1" },  // First fragment
-        .{ .offset = 9, .data = "Fragment2" },  // Second fragment
+        .{ .offset = 0, .data = "Fragment1" }, // First fragment
+        .{ .offset = 9, .data = "Fragment2" }, // Second fragment
     };
 
     // Encode, decode, and buffer each frame

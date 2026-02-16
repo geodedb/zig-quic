@@ -76,20 +76,20 @@ pub const VarInt = struct {
             4 => {
                 // 30 bits: first byte lower 6 bits then next 3 bytes
                 val = (@as(u64, first & 0x3f) << 24) |
-                      (@as(u64, data[1]) << 16) |
-                      (@as(u64, data[2]) << 8) |
-                      @as(u64, data[3]);
+                    (@as(u64, data[1]) << 16) |
+                    (@as(u64, data[2]) << 8) |
+                    @as(u64, data[3]);
             },
             8 => {
                 // 62 bits: first byte lower 6 bits then next 7 bytes
                 val = (@as(u64, first & 0x3f) << 56) |
-                      (@as(u64, data[1]) << 48) |
-                      (@as(u64, data[2]) << 40) |
-                      (@as(u64, data[3]) << 32) |
-                      (@as(u64, data[4]) << 24) |
-                      (@as(u64, data[5]) << 16) |
-                      (@as(u64, data[6]) << 8) |
-                      @as(u64, data[7]);
+                    (@as(u64, data[1]) << 48) |
+                    (@as(u64, data[2]) << 40) |
+                    (@as(u64, data[3]) << 32) |
+                    (@as(u64, data[4]) << 24) |
+                    (@as(u64, data[5]) << 16) |
+                    (@as(u64, data[6]) << 8) |
+                    @as(u64, data[7]);
             },
             else => unreachable,
         }
@@ -153,7 +153,7 @@ pub const VarInt = struct {
 ///【256754717438045†L4393-L4400】.
 pub const FrameType = enum(u8) {
     Padding = 0x00,
-    Ping    = 0x01,
+    Ping = 0x01,
     // 0x02..0x03 = ACK frames; we treat both types as AckRange for encoding
     AckRange = 0x02,
     ResetStream = 0x04,
@@ -541,7 +541,7 @@ pub fn writeFrame(frame: Frame, writer: anytype) !usize {
         .unknown => |u| {
             // Unknown frame: write the raw type using a variable‑length integer.
             var buf: [8]u8 = undefined;
-            const enc = try VarInt{ .value = u.type_value }.encode(&buf);
+            const enc = try (VarInt{ .value = u.type_value }).encode(&buf);
             try writer.writeAll(buf[0..enc]);
             total += enc;
             try writer.writeAll(u.payload);
@@ -588,11 +588,8 @@ pub const Packet = struct {
             size_estimate += switch (f) {
                 .padding => 1,
                 .ping => 1,
-                .stream => |s| {
-                    // type byte + stream_id + optional offset + length field + data
-                    const extra: usize = 1 + 8 + (if (s.offset != null) 8 else 0) + 8 + s.data.len;
-                    extra
-                },
+                // type byte + stream_id + optional offset + length field + data
+                .stream => |s| 1 + 8 + (if (s.offset != null) 8 else 0) + 8 + s.data.len,
                 .ack => 1 + 8 * 4,
                 .reset_stream => 1 + 8 * 3,
                 .stop_sending => 1 + 8 * 2,
@@ -628,7 +625,7 @@ pub const Packet = struct {
         // specifies truncation and protection of packet numbers; here we
         // encode the full value for demonstration purposes.
         var buf: [8]u8 = undefined;
-        const pn_len = try VarInt{ .value = self.packet_number }.encode(&buf);
+        const pn_len = try (VarInt{ .value = self.packet_number }).encode(&buf);
         try stream.writer().writeAll(buf[0..pn_len]);
         // Encode each frame into the stream
         for (self.frames) |frame| {
@@ -672,12 +669,12 @@ pub const Packet = struct {
         std.mem.copy(u8, &nonce, iv);
         const pn = self.packet_number;
         // XOR the lower eight bytes of the packet number into the nonce
-        for (nonce.len - 8 .. nonce.len) |i| {
+        for (nonce.len - 8..nonce.len) |i| {
             const shift = (nonce.len - 1 - i) * 8;
             nonce[i] ^= @intCast(u8, (pn >> @intCast(u6, shift)) & 0xff);
         }
         // Choose an AEAD implementation based on key length
-        var aead = blk: {
+        const aead = blk: {
             if (key.len == 16) {
                 break :blk std.crypto.aead.Aes128Gcm;
             } else if (key.len == 24) {
@@ -685,7 +682,7 @@ pub const Packet = struct {
             } else {
                 break :blk std.crypto.aead.Aes256Gcm;
             }
-        }{};
+        };
         // Allocate output: ciphertext length equals plaintext, plus 16‑byte tag
         const out_len = plaintext.len + aead.tag_length;
         const out_buf = try allocator.alloc(u8, out_len);
@@ -693,8 +690,7 @@ pub const Packet = struct {
         // Encrypt; no associated data is passed here.  If AES‑GCM support is
         // unavailable this call will fail.  We silence the unused value
         // warnings with a discard.
-        if (aead.seal(out_buf[0..plaintext.len], &nonce, &plaintext, &[_]u8{})) |_| {}
-        else |err| {
+        if (aead.seal(out_buf[0..plaintext.len], &nonce, &plaintext, &[_]u8{})) |_| {} else |err| {
             return err;
         }
         // Append the tag to the end of the ciphertext
@@ -704,10 +700,8 @@ pub const Packet = struct {
     }
 };
 
-/// A simple test demonstrating encoding of a PING frame and a STREAM frame
-/// into a packet.  Run using `zig test quic.zig` once Zig is available on
-/// your system.  This function is provided for completeness and is not
-/// executed in this environment.
+// A simple test demonstrating encoding of a PING frame and a STREAM frame
+// into a packet. Run using `zig test quic.zig` once Zig is available.
 test "encode ping and stream frames" {
     const alloc = std.testing.allocator;
     // Create a ping frame
@@ -734,7 +728,7 @@ test "encode ping and stream frames" {
     const index_ping = std.mem.indexOf(u8, encoded, &[_]u8{0x01}) orelse unreachable;
     // The STREAM frame type must be between 0x0a and 0x0f due to flags (LEN and FIN)
     var found = false;
-    for (encoded[index_ping+1..]) |b| {
+    for (encoded[index_ping + 1 ..]) |b| {
         if (b >= 0x0a and b <= 0x0f) {
             found = true;
             break;
@@ -743,10 +737,8 @@ test "encode ping and stream frames" {
     try std.testing.expect(found);
 }
 
-/// Additional unit tests exercising each defined frame type.  These tests
-/// ensure that the `writeFrame` function emits the correct frame type
-/// identifiers and that variable‑length integers are encoded according to
-/// specification.  Run with `zig test quic.zig`.
+// Additional unit tests exercising each defined frame type. These tests
+// ensure that `writeFrame` emits expected frame type identifiers and varints.
 test "encode ack frame" {
     var buffer: [64]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buffer);
@@ -901,7 +893,7 @@ test "encode streams_blocked frame" {
 }
 
 test "encode new_connection_id frame" {
-    var cid: [4]u8 = .{0x01, 0x02, 0x03, 0x04};
+    var cid: [4]u8 = .{ 0x01, 0x02, 0x03, 0x04 };
     var token: [16]u8 = .{0x00} ** 16;
     var buf: [64]u8 = undefined;
     var s = std.io.fixedBufferStream(&buf);
@@ -929,7 +921,7 @@ test "encode retire_connection_id frame" {
 }
 
 test "encode path_challenge and path_response frames" {
-    var pc_data = [8]u8{0xaa,0xbb,0xcc,0xdd,0xee,0xff,0x11,0x22};
+    var pc_data = [8]u8{ 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x11, 0x22 };
     var buf: [32]u8 = undefined;
     var s = std.io.fixedBufferStream(&buf);
     const pc_frame = Frame{ .path_challenge = .{ .data = pc_data } };
@@ -984,7 +976,7 @@ test "packet protection placeholder" {
     // available in this environment, so failures are tolerated by catching
     // errors.
     const alloc = std.testing.allocator;
-    var frames = [_]Frame{ Frame.ping };
+    var frames = [_]Frame{Frame.ping};
     const pkt = Packet{ .dest_connection_id = &[_]u8{}, .packet_number = 1, .frames = &frames };
     const key = [_]u8{0} ** 16;
     const iv = [_]u8{0} ** 12;

@@ -74,8 +74,8 @@ pub const InitialSecrets = struct {
 
 /// Packet protection keys (key, IV, header protection key)
 pub const PacketProtectionKeys = struct {
-    key: []const u8,    // 16 bytes for AES-128-GCM
-    iv: []const u8,     // 12 bytes
+    key: []const u8, // 16 bytes for AES-128-GCM
+    iv: []const u8, // 12 bytes
     hp_key: []const u8, // 16 bytes for header protection
 };
 
@@ -224,7 +224,7 @@ fn aeadEncrypt(
     out: []u8,
 ) !usize {
     std.debug.assert(key.len == 16); // AES-128
-    std.debug.assert(iv.len == 12);  // 96-bit IV
+    std.debug.assert(iv.len == 12); // 96-bit IV
 
     // Construct nonce: IV XOR packet_number
     var nonce: [12]u8 = undefined;

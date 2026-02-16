@@ -188,7 +188,7 @@ pub const LoopbackTransportAdapter = struct {
         return Transport{
             .sendFn = sendFn,
             .recvFn = recvFn,
-            .pollFn = null,  // Loopback is synchronous, no poll needed
+            .pollFn = null, // Loopback is synchronous, no poll needed
             .closeFn = closeFn,
             .getLocalAddrFn = getLocalAddrFn,
             .context = @ptrCast(self),
@@ -197,7 +197,7 @@ pub const LoopbackTransportAdapter = struct {
 
     fn sendFn(ctx: *anyopaque, peer: SockAddr, data: []const u8) !usize {
         const self: *LoopbackTransportAdapter = @ptrCast(@alignCast(ctx));
-        _ = peer;  // Loopback doesn't use explicit peer addressing
+        _ = peer; // Loopback doesn't use explicit peer addressing
 
         // Delegate to loopback transport based on side
         switch (self.side) {
@@ -205,7 +205,7 @@ pub const LoopbackTransportAdapter = struct {
             .B => try self.loopback.sendBtoA(data),
         }
 
-        return data.len;  // All data sent (or lost due to configured loss rate)
+        return data.len; // All data sent (or lost due to configured loss rate)
     }
 
     fn recvFn(ctx: *anyopaque, buf: []u8) !RecvResult {
@@ -222,8 +222,8 @@ pub const LoopbackTransportAdapter = struct {
 
         return RecvResult{
             .n = n,
-            .peer = self.peer_addr,  // Use peer address from adapter
-            .ecn = null,  // Loopback doesn't currently track ECN
+            .peer = self.peer_addr, // Use peer address from adapter
+            .ecn = null, // Loopback doesn't currently track ECN
         };
     }
 
@@ -564,8 +564,8 @@ test "LoopbackTransportAdapter: Packet loss simulation" {
     // With 50% loss, we expect roughly half the packets
     // Allow some variance due to RNG
     try testing.expect(recv_count < sent_count);
-    try testing.expect(recv_count > sent_count / 4);  // At least 25%
-    try testing.expect(recv_count < sent_count * 3 / 4);  // At most 75%
+    try testing.expect(recv_count > sent_count / 4); // At least 25%
+    try testing.expect(recv_count < sent_count * 3 / 4); // At most 75%
 }
 
 test "LoopbackTransportAdapter: Get local address" {

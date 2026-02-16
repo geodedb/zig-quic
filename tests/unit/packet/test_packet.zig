@@ -206,6 +206,15 @@ test "coordinator re-exports decodeShortProtected function" {
     _ = decode_fn;
 }
 
+test "coordinator re-exports short-header write-into decode-into functions" {
+    const encode_into_fn = packet.encodeShortProtectedInto;
+    const decode_into_fn = packet.decodeShortProtectedInto;
+    const decode_hp_into_fn = packet.decodeShortProtectedWithHpInto;
+    _ = encode_into_fn;
+    _ = decode_into_fn;
+    _ = decode_hp_into_fn;
+}
+
 test "coordinator re-exports decodeShortProtectedLegacy function" {
     const decode_fn = packet.decodeShortProtectedLegacy;
     _ = decode_fn;
@@ -244,6 +253,40 @@ test "coordinator re-exports encode0RTTProtected function" {
 test "coordinator re-exports decode0RTTProtected function" {
     const decode_fn = packet.decode0RTTProtected;
     _ = decode_fn;
+}
+
+test "short-header write-into/decode-into roundtrip" {
+    const dcid = "HPBM";
+    const keys = packet.AeadKeys{
+        .key = .{0} ** 16,
+        .iv = .{0} ** 12,
+        .hp = .{0} ** 16,
+    };
+
+    var packet_buf: [4096]u8 = undefined;
+    const payload = [_]u8{ 0x01, 0xAA, 0xBB };
+    const packet_len = try packet.encodeShortProtectedInto(
+        packet_buf[0..],
+        dcid,
+        7,
+        2,
+        payload[0..],
+        keys,
+        false,
+    );
+
+    var decode_buf: [4096]u8 = undefined;
+    const decoded = try packet.decodeShortProtectedInto(
+        packet_buf[0..packet_len],
+        dcid.len,
+        keys,
+        0,
+        decode_buf[0..],
+    );
+
+    try testing.expectEqual(@as(u64, 7), decoded.packet_number);
+    try testing.expectEqual(payload.len, decoded.payload.len);
+    try testing.expectEqualSlices(u8, payload[0..], decoded.payload);
 }
 
 // =============================================================================

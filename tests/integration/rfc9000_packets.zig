@@ -118,13 +118,13 @@ test "Phase 21.3 - Packet inspector header parsing" {
     // DCID
     packet[i] = 8;
     i += 1;
-    @memset(packet[i..i + 8], 0xAA);
+    @memset(packet[i .. i + 8], 0xAA);
     i += 8;
 
     // SCID
     packet[i] = 8;
     i += 1;
-    @memset(packet[i..i + 8], 0xBB);
+    @memset(packet[i .. i + 8], 0xBB);
     i += 8;
 
     const info = try packet_inspector.parsePacketHeader(packet[0..i]);
@@ -137,10 +137,10 @@ test "Phase 21.3 - Packet inspector header parsing" {
 test "Phase 21.3 - Packet type detection helpers" {
     // Build Initial packet
     var packet: [30]u8 = undefined;
-    packet[0] = 0xC0;  // Initial
+    packet[0] = 0xC0; // Initial
     std.mem.writeInt(u32, packet[1..][0..4], 0x00000001, .big);
-    packet[5] = 0;  // DCID len
-    packet[6] = 0;  // SCID len
+    packet[5] = 0; // DCID len
+    packet[6] = 0; // SCID len
 
     try std.testing.expect(packet_inspector.isInitialPacket(&packet));
     try std.testing.expect(!packet_inspector.isHandshakePacket(&packet));
@@ -153,13 +153,13 @@ test "Phase 21.3 - Packet type detection helpers" {
 test "Phase 21.3 - Packet capture integration" {
     // Simulate captured packets
     var packet1: [30]u8 = undefined;
-    packet1[0] = 0xC0;  // Initial
+    packet1[0] = 0xC0; // Initial
     std.mem.writeInt(u32, packet1[1..][0..4], 0x00000001, .big);
     packet1[5] = 0;
     packet1[6] = 0;
 
     var packet2: [30]u8 = undefined;
-    packet2[0] = 0xE0;  // Handshake
+    packet2[0] = 0xE0; // Handshake
     std.mem.writeInt(u32, packet2[1..][0..4], 0x00000001, .big);
     packet2[5] = 0;
     packet2[6] = 0;

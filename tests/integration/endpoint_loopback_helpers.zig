@@ -271,8 +271,8 @@
 
 const std = @import("std");
 const testing = std.testing;
-const loopback = @import("loopback");  // Module import (configured in build.zig)
-const adapter_mod = @import("loopback_transport_adapter");  // Module import (configured in build.zig)
+const loopback = @import("loopback"); // Module import (configured in build.zig)
+const adapter_mod = @import("loopback_transport_adapter"); // Module import (configured in build.zig)
 
 // Production endpoint imports (Phase 14: Real endpoint integration - ENABLED)
 // These imports are provided by build.zig module configuration
@@ -397,7 +397,7 @@ pub const LoopbackConfig = loopback.LoopbackTransport.Config;
 pub const EndpointConfig = struct {
     role: EndpointRole,
     max_idle_timeout_ms: u64 = 30000,
-    initial_max_data: u64 = 1048576,  // 1MB
+    initial_max_data: u64 = 1048576, // 1MB
     max_concurrent_bidi_streams: u64 = 100,
     enable_0rtt: bool = false,
     alpn: []const []const u8 = &[_][]const u8{"test"},

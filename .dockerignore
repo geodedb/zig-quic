@@ -1,0 +1,15 @@
+# Keep Docker build contexts minimal for interop images.
+# These images only need the prebuilt endpoint binary and the runtime scripts.
+**
+
+!zig-out/
+!zig-out/bin/
+!zig-out/bin/qns-endpoint
+!interop/
+!interop/Dockerfile
+!interop/run_endpoint.sh
+!examples/
+!examples/interop/
+!examples/interop/zig-qns/
+!examples/interop/zig-qns/Dockerfile
+!examples/interop/zig-qns/run_endpoint.sh

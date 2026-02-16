@@ -18,6 +18,7 @@
 //! - RFC 9000 §19.17-19.18: PATH_CHALLENGE/RESPONSE Frames
 
 const std = @import("std");
+const testlog = @import("testlog");
 const harness = @import("harness");
 const packet_inspector = @import("packet_inspector");
 
@@ -153,10 +154,7 @@ pub fn validatePathResponse(
     response: PathResponse,
 ) !void {
     if (!std.mem.eql(u8, &challenge.data, &response.data)) {
-        std.debug.print(
-            "PATH_RESPONSE data mismatch\n",
-            .{}
-        );
+        testlog.print("PATH_RESPONSE data mismatch\n", .{});
         return error.PathResponseMismatch;
     }
 }
@@ -229,20 +227,14 @@ pub fn validateMigration(events: []const MigrationEvent) !void {
             },
             .path_validation_started => {
                 if (!migration_started) {
-                    std.debug.print(
-                        "Path validation started before migration\n",
-                        .{}
-                    );
+                    testlog.print("Path validation started before migration\n", .{});
                     return error.InvalidMigrationSequence;
                 }
                 path_validation_started = true;
             },
             .migration_completed => {
                 if (!path_validation_started) {
-                    std.debug.print(
-                        "Migration completed without path validation\n",
-                        .{}
-                    );
+                    testlog.print("Migration completed without path validation\n", .{});
                     return error.MigrationWithoutValidation;
                 }
             },
@@ -324,10 +316,7 @@ pub fn validateFlowControlLimits(updates: []const FlowControlUpdate) !void {
         switch (update.frame_type) {
             .max_data => {
                 if (update.limit < connection_limit) {
-                    std.debug.print(
-                        "MAX_DATA decreased: {} -> {}\n",
-                        .{ connection_limit, update.limit }
-                    );
+                    testlog.print("MAX_DATA decreased: {} -> {}\n", .{ connection_limit, update.limit });
                     return error.FlowControlLimitDecrease;
                 }
                 connection_limit = update.limit;
@@ -336,10 +325,7 @@ pub fn validateFlowControlLimits(updates: []const FlowControlUpdate) !void {
                 const stream_id = update.stream_id orelse return error.MissingStreamId;
                 const old_limit = stream_limits.get(stream_id) orelse 0;
                 if (update.limit < old_limit) {
-                    std.debug.print(
-                        "MAX_STREAM_DATA decreased for stream {}: {} -> {}\n",
-                        .{ stream_id, old_limit, update.limit }
-                    );
+                    testlog.print("MAX_STREAM_DATA decreased for stream {}: {} -> {}\n", .{ stream_id, old_limit, update.limit });
                     return error.FlowControlLimitDecrease;
                 }
                 try stream_limits.put(stream_id, update.limit);
@@ -381,10 +367,7 @@ pub fn expectPathValidation(
     const validations = try countSuccessfulPathValidations(allocator, captured);
 
     if (validations < min_validations) {
-        std.debug.print(
-            "Expected at least {} path validations, found {}\n",
-            .{ min_validations, validations }
-        );
+        testlog.print("Expected at least {} path validations, found {}\n", .{ min_validations, validations });
         return error.InsufficientPathValidations;
     }
 }
@@ -399,7 +382,7 @@ pub fn expectSuccessfulMigration(
     defer events.deinit(allocator);
 
     if (events.items.len == 0) {
-        std.debug.print("No migration events found\n", .{});
+        testlog.print("No migration events found\n", .{});
         return error.NoMigrationEvents;
     }
 
@@ -431,10 +414,7 @@ pub fn expectFlowControlBlocked(
     const blocked = findBlockedEvents(updates.items);
 
     if (blocked.len < min_blocked_events) {
-        std.debug.print(
-            "Expected at least {} blocked events, found {}\n",
-            .{ min_blocked_events, blocked.len }
-        );
+        testlog.print("Expected at least {} blocked events, found {}\n", .{ min_blocked_events, blocked.len });
         return error.InsufficientBlockedEvents;
     }
 }

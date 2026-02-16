@@ -347,10 +347,7 @@ pub fn createServerConnection(
 
     logger.debugPrint("createServerConnection: Set peer_initial_dcid from client_dcid, len={}\n", .{c.peer_initial_dcid.len});
     if (c.peer_initial_dcid.len >= 4) {
-        logger.debugPrint("  peer_initial_dcid[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
-            c.peer_initial_dcid.bytes[0], c.peer_initial_dcid.bytes[1],
-            c.peer_initial_dcid.bytes[2], c.peer_initial_dcid.bytes[3]
-        });
+        logger.debugPrint("  peer_initial_dcid[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ c.peer_initial_dcid.bytes[0], c.peer_initial_dcid.bytes[1], c.peer_initial_dcid.bytes[2], c.peer_initial_dcid.bytes[3] });
     }
 
     // Set original_dcid to peer_initial_dcid (for Initial key derivation)
@@ -358,7 +355,6 @@ pub fn createServerConnection(
     if (c.original_dcid.len > 0) {
         @memcpy(c.original_dcid.bytes[0..c.original_dcid.len], c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]);
     }
-
 
     // Set peer_initial_scid from client's SCID
     // RFC 9000 §7.3: "Servers populate peer_initial_scid from client's SCID"
@@ -369,10 +365,7 @@ pub fn createServerConnection(
     }
     logger.debugPrint("createServerConnection: Set peer_initial_scid.len={}\n", .{c.peer_initial_scid.len});
     if (c.peer_initial_scid.len >= 4) {
-        logger.debugPrint("  peer_initial_scid[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
-            c.peer_initial_scid.bytes[0], c.peer_initial_scid.bytes[1],
-            c.peer_initial_scid.bytes[2], c.peer_initial_scid.bytes[3]
-        });
+        logger.debugPrint("  peer_initial_scid[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ c.peer_initial_scid.bytes[0], c.peer_initial_scid.bytes[1], c.peer_initial_scid.bytes[2], c.peer_initial_scid.bytes[3] });
     }
 
     // Configure congestion control

@@ -43,33 +43,41 @@ pub const QuicError = error{
 /// Handler threads doing read/write on the same connection tree must not race
 /// with poll's mutable map access.
 pub const PollSync = struct {
-    poll_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    active_io_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    mu: std.Thread.Mutex = .{},
+    cv: std.Thread.Condition = .{},
+    poll_requested: bool = false,
+    active_io_count: u32 = 0,
 
     pub fn enterIo(self: *PollSync) void {
-        while (true) {
-            _ = self.active_io_count.fetchAdd(1, .seq_cst);
-            if (!self.poll_requested.load(.seq_cst)) return;
-            _ = self.active_io_count.fetchSub(1, .seq_cst);
-            while (self.poll_requested.load(.seq_cst)) {
-                std.Thread.sleep(50 * std.time.ns_per_us);
-            }
+        self.mu.lock();
+        defer self.mu.unlock();
+        while (self.poll_requested) {
+            self.cv.wait(&self.mu);
         }
+        self.active_io_count += 1;
     }
 
     pub fn leaveIo(self: *PollSync) void {
-        _ = self.active_io_count.fetchSub(1, .seq_cst);
+        self.mu.lock();
+        defer self.mu.unlock();
+        if (self.active_io_count > 0) self.active_io_count -= 1;
+        if (self.active_io_count == 0) self.cv.signal();
     }
 
     pub fn enterPoll(self: *PollSync) void {
-        self.poll_requested.store(true, .seq_cst);
-        while (self.active_io_count.load(.seq_cst) > 0) {
-            std.Thread.sleep(50 * std.time.ns_per_us);
+        self.mu.lock();
+        defer self.mu.unlock();
+        self.poll_requested = true;
+        while (self.active_io_count > 0) {
+            self.cv.wait(&self.mu);
         }
     }
 
     pub fn leavePoll(self: *PollSync) void {
-        self.poll_requested.store(false, .seq_cst);
+        self.mu.lock();
+        defer self.mu.unlock();
+        self.poll_requested = false;
+        self.cv.broadcast();
     }
 };
 

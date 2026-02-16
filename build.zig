@@ -767,6 +767,12 @@ pub fn build(b: *std.Build) void {
             const run_test_timers_only = b.addRunArtifact(test_timers_only);
             test_step.dependOn(&run_test_timers_only.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "udp_batch_runtime_smoke")) {
+            const test_udp_batch_runtime_smoke = addTst(b, testlog_mod, "src/quic/endpoint/test_udp_batch_runtime_smoke.zig", target, optimize);
+            test_udp_batch_runtime_smoke.root_module.addImport("quic_conn", quic_conn_mod);
+            const run_test_udp_batch_runtime_smoke = b.addRunArtifact(test_udp_batch_runtime_smoke);
+            test_step.dependOn(&run_test_udp_batch_runtime_smoke.step);
+            return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "stream_fc") or std.mem.containsAtLeast(u8, f, 1, "streams")) {
             const test_stream_fc = addTst(b, testlog_mod, "tests/test_stream_flow_control.zig", target, optimize);
             test_stream_fc.root_module.addImport("quic_api", quic_api_mod);

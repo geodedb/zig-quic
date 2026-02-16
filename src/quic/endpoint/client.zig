@@ -169,8 +169,8 @@ pub fn createClientConnection(
         .Client,
         cfg.alpn,
         &[_]u8{}, // Transport params set separately before handshake
-        null,     // No server cert for client
-        null,     // No server key for client
+        null, // No server cert for client
+        null, // No server key for client
         cfg.allow_insecure,
         false, // Client doesn't request client certs
         cfg.inline_client_cert_der,
@@ -243,9 +243,7 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
         break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
     };
 
-    logger.debugPrint("[Client TX] Initial key[0..4]: ", .{});
-    for (tx_keys.key[0..4]) |b| logger.debugPrint("{X:0>2} ", .{b});
-    logger.debugPrint("\n", .{});
+    logger.debugPrint("[Client TX] Initial keys derived\n", .{});
 
     var frames = std.ArrayList(u8){};
     defer frames.deinit(ctx.allocator.*);

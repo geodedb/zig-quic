@@ -581,17 +581,32 @@ pub const Endpoint = struct {
         // Poll transport (blocks until data available or timeout)
         try self.transport.poll(eff_timeout);
 
-        // Drain all available packets
-        var buf: [4096]u8 = undefined;
+        // Drain all available packets (prefer transport-native batch receive).
+        var recv_bufs: [udp_transport_mod.UdpBatchCap][4096]u8 = undefined;
+        var recv_slots: [udp_transport_mod.UdpBatchCap]transport_mod.RecvBatchSlot = undefined;
+        for (&recv_slots, 0..) |*slot, i| {
+            slot.* = .{
+                .buf = recv_bufs[i][0..],
+                .n = 0,
+                .peer = .{},
+                .ecn = null,
+            };
+        }
         while (true) {
-            const result = self.recvFrom(&buf) catch |err| {
+            const batch_n = self.transport.recvBatch(recv_slots[0..]) catch |err| {
                 if (err == error.WouldBlock) break;
                 return err;
             };
+            if (batch_n == 0) break;
 
-            // Process the received packet
-            self.processIncomingDatagram(result.peer, buf[0..result.n], null);
-            stats.packets_processed += 1;
+            var i: usize = 0;
+            while (i < batch_n) : (i += 1) {
+                const slot = recv_slots[i];
+                self.processIncomingDatagram(slot.peer, slot.buf[0..slot.n], slot.ecn);
+                stats.packets_processed += 1;
+            }
+
+            if (batch_n < recv_slots.len) break;
         }
 
         // Process timers that may have fired during packet processing

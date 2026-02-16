@@ -17,28 +17,13 @@ description = "Allowlist for known test fixtures and false positives"
 
 # Only allow specific paths for test certificates - NOT blanket extensions
 paths = [
-  # Test data directories with known test fixtures
-  '''tests/certs/.*''',
-  '''tests/fixtures/.*''',
-  # Test certificate directories with development-only keys
-  '''certs/.*''',
-  '''data/.*''',
-  # Interop test certificates (clearly marked as test-only)
-  '''examples/interop/certs/.*''',
-  '''clients/python/examples/interop/certs/.*''',
   # PEM parsing source code (contains header string literals, not actual keys)
   '''src/quic/pem\.zig$''',
-  # Test files with test vectors (RFC-defined test data, not real secrets)
-  '''tests/test_.*\.zig$''',
-  '''tests/unit/.*\.zig$''',
-  '''.*_test\.zig$''',
   # Zig build artifacts (not source)
-  '''\.zig-cache''',
-  '''zig-out''',
+  '''\.zig-cache/.*''',
+  '''zig-out/.*''',
   # RFC specification documents (may contain example keys)
   '''specs/.*\.txt$''',
-  # Vendor directories
-  '''vendor''',
 ]
 
 # Stopwords for variable/function names that contain "secret" but are not secrets
@@ -72,6 +57,6 @@ stopwords = [
   "token_secret",
 ]
 
-# NOTE: No regex allowlist for private keys.
-# If you need to commit test keys, place them in tests/certs/ or tests/fixtures/
-# and ensure they are clearly documented as TEST ONLY.
+# NOTE: Do not commit private keys (even for tests).
+# Keep any locally generated certificates untracked via `.gitignore` and prefer
+# generating test certs at runtime (CI) or using public test vectors.

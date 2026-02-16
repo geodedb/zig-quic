@@ -238,7 +238,7 @@ test "RFC 9001 §4 - createTlsContext initializes Context with correct role" {
     const allocator = gpa.allocator();
 
     const alpn_list = [_][]const u8{"h3"};
-    const tp_bytes = [_]u8{0x00, 0x00}; // Minimal valid params
+    const tp_bytes = [_]u8{ 0x00, 0x00 }; // Minimal valid params
 
     // Create client context
     var client_ctx = try handshake.createTlsContext(
@@ -605,11 +605,11 @@ test "RFC 9000 §18.2 - setupServerTransportParams encodes server parameters" {
     defer conn.deinit();
 
     // Set connection IDs
-    const dcid_bytes = [_]u8{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
+    const dcid_bytes = [_]u8{ 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 };
     @memcpy(conn.peer_initial_dcid.bytes[0..8], &dcid_bytes);
     conn.peer_initial_dcid.len = 8;
 
-    const scid_bytes = [_]u8{0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18};
+    const scid_bytes = [_]u8{ 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18 };
     @memcpy(conn.our_scid.bytes[0..8], &scid_bytes);
     conn.our_scid.len = 8;
 

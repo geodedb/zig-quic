@@ -368,7 +368,6 @@ pub const TransportParams = struct {
         }
     }
 
-
     /// Get default value for max_udp_payload_size if not set.
     /// RFC 9000 §18.2: Default is 65527 (max IPv6 datagram - IPv6 header - UDP header)
     pub fn getMaxUdpPayloadSize(self: *const TransportParams) u64 {

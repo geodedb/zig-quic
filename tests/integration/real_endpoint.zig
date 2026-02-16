@@ -91,9 +91,9 @@ const Config = struct {
 /// Create a default test configuration for server
 fn createServerConfig() Config {
     return Config{
-        .cert_path = "test_cert.pem",  // TODO: Use actual test cert
-        .key_path = "test_key.pem",    // TODO: Use actual test key
-        .allow_insecure_tls = true,     // For testing without real certs
+        .cert_path = "test_cert.pem", // TODO: Use actual test cert
+        .key_path = "test_key.pem", // TODO: Use actual test key
+        .allow_insecure_tls = true, // For testing without real certs
         .max_idle_timeout_ms = 30000,
         .initial_max_data = 1048576,
         .initial_max_stream_data_bidi_local = 262144,
@@ -107,7 +107,7 @@ fn createServerConfig() Config {
 /// Create a default test configuration for client
 fn createClientConfig() Config {
     return Config{
-        .allow_insecure_tls = true,  // For testing
+        .allow_insecure_tls = true, // For testing
         .max_idle_timeout_ms = 30000,
         .initial_max_data = 1048576,
         .initial_max_stream_data_bidi_local = 262144,

@@ -147,20 +147,22 @@ pub fn handleDatagram(
             else
                 &[_]u8{};
 
-            const out = packet.encodeShortProtected(
-                ctx.allocator.*,
+            const packet_storage = ctx.conn.packet_pool.checkout();
+            defer ctx.conn.packet_pool.release(packet_storage);
+            const pkt_len = packet.encodeShortProtectedInto(
+                packet_storage,
                 dcid_sh,
                 @as(u32, @truncate(ctx.conn.pn_app_tx)),
                 2,
                 fb.items,
                 txk,
                 ctx.conn.tx_key_phase,
-            ) catch null;
+            ) catch 0;
 
-            if (out) |pkt_bytes| {
-                defer ctx.allocator.free(pkt_bytes);
-                _ = ctx.send_fn(ctx.peer, pkt_bytes) catch {};
-                ctx.conn.onShortHeaderPacketSent(pkt_bytes.len, true);
+            if (pkt_len != 0) {
+                const pkt = packet_storage[0..pkt_len];
+                _ = ctx.send_fn(ctx.peer, pkt) catch {};
+                ctx.conn.onShortHeaderPacketSent(pkt.len, true);
             }
         }
     }
@@ -230,25 +232,21 @@ pub fn handleMaxStreamData(
     // RFC 9000 §4.1: MAX_STREAM_DATA can only increase the limit
     // Check if stream_txs is initialized before accessing
     if (!ctx.conn.stream_txs_init) {
-        logger.debugPrint("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) but stream_txs not initialized\n",
-            .{m.stream_id, m.max});
+        logger.debugPrint("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) but stream_txs not initialized\n", .{ m.stream_id, m.max });
         return .{ .saw_ack_eliciting = true };
     }
     if (ctx.conn.stream_txs.getPtr(m.stream_id)) |tx| {
         if (m.max > tx.peer_max_stream_data) {
             const old_max = tx.peer_max_stream_data;
             tx.peer_max_stream_data = m.max;
-            logger.debugPrint("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) increased window from {}\n",
-                .{m.stream_id, m.max, old_max});
+            logger.debugPrint("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) increased window from {}\n", .{ m.stream_id, m.max, old_max });
         } else {
-            logger.debugPrint("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) ignored (current={})\n",
-                .{m.stream_id, m.max, tx.peer_max_stream_data});
+            logger.debugPrint("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) ignored (current={})\n", .{ m.stream_id, m.max, tx.peer_max_stream_data });
         }
     } else {
         // Stream not yet created on our side - store for when it is created
         // Create TX state entry with the advertised limit
-        logger.debugPrint("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) creating TX state\n",
-            .{m.stream_id, m.max});
+        logger.debugPrint("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) creating TX state\n", .{ m.stream_id, m.max });
         ctx.conn.stream_txs.put(m.stream_id, .{ .peer_max_stream_data = m.max }) catch {
             logger.debugPrint("[FC-TX] Failed to create TX state for stream {}\n", .{m.stream_id});
         };
@@ -269,11 +267,9 @@ pub fn handleMaxData(
     if (md.max > ctx.conn.peer_max_data) {
         const old_max = ctx.conn.peer_max_data;
         ctx.conn.peer_max_data = md.max;
-        logger.debugPrint("[FC-CONN] Received MAX_DATA(max={}) increased from {}\n",
-            .{md.max, old_max});
+        logger.debugPrint("[FC-CONN] Received MAX_DATA(max={}) increased from {}\n", .{ md.max, old_max });
     } else {
-        logger.debugPrint("[FC-CONN] Received MAX_DATA(max={}) ignored (current={})\n",
-            .{md.max, ctx.conn.peer_max_data});
+        logger.debugPrint("[FC-CONN] Received MAX_DATA(max={}) ignored (current={})\n", .{ md.max, ctx.conn.peer_max_data });
     }
     return .{ .saw_ack_eliciting = true };
 }
@@ -328,7 +324,7 @@ pub fn handleStreamDataBlocked(ctx: *FrameContext, sdb: frame.StreamDataBlocked)
 pub fn handlePathChallenge(
     ctx: *FrameContext,
     pcv: frame.PathChallenge,
-)! FrameResult {
+) !FrameResult {
     if (ctx.conn.app_tx_keys) |txk| {
         var fb = std.ArrayList(u8){};
         defer fb.deinit(ctx.allocator.*);
@@ -340,20 +336,22 @@ pub fn handlePathChallenge(
         else
             &[_]u8{};
 
-        const out = packet.encodeShortProtected(
-            ctx.allocator.*,
+        const packet_storage = ctx.conn.packet_pool.checkout();
+        defer ctx.conn.packet_pool.release(packet_storage);
+        const pkt_len = packet.encodeShortProtectedInto(
+            packet_storage,
             dcid_sh2,
             @as(u32, @truncate(ctx.conn.pn_app_tx)),
             2,
             fb.items,
             txk,
             ctx.conn.tx_key_phase,
-        ) catch null;
+        ) catch 0;
 
-        if (out) |pkt_bytes| {
-            defer ctx.allocator.free(pkt_bytes);
-            _ = ctx.send_fn(ctx.peer, pkt_bytes) catch {};
-            ctx.conn.onShortHeaderPacketSent(pkt_bytes.len, true);
+        if (pkt_len != 0) {
+            const pkt = packet_storage[0..pkt_len];
+            _ = ctx.send_fn(ctx.peer, pkt) catch {};
+            ctx.conn.onShortHeaderPacketSent(pkt.len, true);
         }
     }
 

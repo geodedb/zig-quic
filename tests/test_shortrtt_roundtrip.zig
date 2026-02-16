@@ -1,4 +1,5 @@
 const std = @import("std");
+const testlog = @import("testlog");
 const pkt = @import("quic_packet");
 const crypto = @import("quic_crypto");
 const tls13 = @import("quic_tls13");
@@ -50,8 +51,8 @@ test "short-header 1-RTT STREAM+PING roundtrip" {
     // Debug: Check if ECDHE secrets match
     if (eng_cli.ecdhe_secret) |cli_sec| {
         if (eng_srv.ecdhe_secret) |srv_sec| {
-            std.debug.print("Client ECDHE: {X:0>2}{X:0>2}{X:0>2}{X:0>2}...\n", .{ cli_sec[0], cli_sec[1], cli_sec[2], cli_sec[3] });
-            std.debug.print("Server ECDHE: {X:0>2}{X:0>2}{X:0>2}{X:0>2}...\n", .{ srv_sec[0], srv_sec[1], srv_sec[2], srv_sec[3] });
+            testlog.print("Client ECDHE: {X:0>2}{X:0>2}{X:0>2}{X:0>2}...\n", .{ cli_sec[0], cli_sec[1], cli_sec[2], cli_sec[3] });
+            testlog.print("Server ECDHE: {X:0>2}{X:0>2}{X:0>2}{X:0>2}...\n", .{ srv_sec[0], srv_sec[1], srv_sec[2], srv_sec[3] });
             try std.testing.expect(std.mem.eql(u8, cli_sec, srv_sec));
         }
     }
@@ -66,12 +67,12 @@ test "short-header 1-RTT STREAM+PING roundtrip" {
     const srv_rx = tls13.deriveQuicAppKeys(.sha256, &app_srv.client_app, false); // server read
 
     // Debug: Print the keys
-    std.debug.print("cli_tx.key: ", .{});
-    for (cli_tx.key) |b| std.debug.print("{X:0>2} ", .{b});
-    std.debug.print("\n", .{});
-    std.debug.print("srv_rx.key: ", .{});
-    for (srv_rx.key) |b| std.debug.print("{X:0>2} ", .{b});
-    std.debug.print("\n", .{});
+    testlog.print("cli_tx.key: ", .{});
+    for (cli_tx.key) |b| testlog.print("{X:0>2} ", .{b});
+    testlog.print("\n", .{});
+    testlog.print("srv_rx.key: ", .{});
+    for (srv_rx.key) |b| testlog.print("{X:0>2} ", .{b});
+    testlog.print("\n", .{});
 
     // client write keys must equal server read keys
     try std.testing.expect(std.mem.eql(u8, &cli_tx.key, &srv_rx.key));
@@ -81,8 +82,8 @@ test "short-header 1-RTT STREAM+PING roundtrip" {
 
     // Encode short protected from client to server
     const dcid = "servercid";
-    const pn: u32 = 1;  // Use a small packet number that doesn't need complex expansion
-    const pn_len: u3 = 1;  // Use 1-byte encoding for simplicity
+    const pn: u32 = 1; // Use a small packet number that doesn't need complex expansion
+    const pn_len: u3 = 1; // Use 1-byte encoding for simplicity
     const sh_bytes = try pkt.encodeShortProtected(alloc, dcid, pn, pn_len, payload, .{ .key = cli_tx.key, .iv = cli_tx.iv, .hp = cli_tx.hp }, false);
     defer alloc.free(sh_bytes);
 

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WRAPPER=../zig-wrapper/interop_runner_patch/run_wrapper.py
 # Local helper to run a subset of interop cases using the python interop runner.
 # Builds the zig-qns image and then invokes the runner pairing it with quic-go
 # (or any other implementation specified via IMPL env var).

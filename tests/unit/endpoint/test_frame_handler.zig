@@ -31,15 +31,15 @@ fn createTestConnection() !*conn_mod.Connection {
     // Only initialize fields that frame handlers actually modify
     conn.* = undefined;
     conn.role = .Client;
-    conn.allocator = &test_allocator;  // CRITICAL: needed for onNewConnectionId and pushStreamFrame
-    conn.reset_tokens = std.ArrayList([16]u8){};  // CRITICAL: needed for onNewConnectionId
-    conn.dgram_inbox = std.ArrayList([]u8){};  // CRITICAL: needed for pushDatagram
-    conn.streams_rx = std.AutoHashMap(u64, conn_mod.StreamRx).init(test_allocator);  // CRITICAL: needed for pushStreamFrame
-    conn.streams_rx_init = true;  // CRITICAL: init flag for streams_rx
-    conn.stream_txs = std.AutoHashMap(u64, conn_mod.StreamTx).init(test_allocator);  // CRITICAL: required for MAX_STREAM_DATA
-    conn.stream_txs_init = true;  // CRITICAL: init flag for stream_txs
-    conn.incoming_stream_queue = std.ArrayList(u64){};  // CRITICAL: needed for pushStreamFrame
-    conn.stream_recv_aborted = false;  // CRITICAL: needed for pushStreamFrame
+    conn.allocator = &test_allocator; // CRITICAL: needed for onNewConnectionId and pushStreamFrame
+    conn.reset_tokens = std.ArrayList([16]u8){}; // CRITICAL: needed for onNewConnectionId
+    conn.dgram_inbox = std.ArrayList([]u8){}; // CRITICAL: needed for pushDatagram
+    conn.streams_rx = std.AutoHashMap(u64, conn_mod.StreamRx).init(test_allocator); // CRITICAL: needed for pushStreamFrame
+    conn.streams_rx_init = true; // CRITICAL: init flag for streams_rx
+    conn.stream_txs = std.AutoHashMap(u64, conn_mod.StreamTx).init(test_allocator); // CRITICAL: required for MAX_STREAM_DATA
+    conn.stream_txs_init = true; // CRITICAL: init flag for stream_txs
+    conn.incoming_stream_queue = std.ArrayList(u64){}; // CRITICAL: needed for pushStreamFrame
+    conn.stream_recv_aborted = false; // CRITICAL: needed for pushStreamFrame
     conn.peer_initial_scid = .{ .len = 0 };
     conn.peer_max_data = 0;
     conn.peer_max_stream_data = 0;

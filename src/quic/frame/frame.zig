@@ -300,11 +300,13 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
     if (t == @intFromEnum(FrameType.APPLICATION_CLOSE)) {
         const result = try conn_mgmt.decodeApplicationClose(buf);
         return .{
-            .f = Frame{ .connection_close = .{
-                .error_code = result.error_code,
-                .frame_type = 0, // APPLICATION_CLOSE doesn't have frame_type
-                .reason = result.reason,
-            } },
+            .f = Frame{
+                .connection_close = .{
+                    .error_code = result.error_code,
+                    .frame_type = 0, // APPLICATION_CLOSE doesn't have frame_type
+                    .reason = result.reason,
+                },
+            },
             .n = result.n,
         };
     }

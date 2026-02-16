@@ -114,9 +114,9 @@ test "RFC 9000 §19.3 - ACK frame with multiple additional ranges" {
     const ack_delay: u64 = 20;
     const first_range: u64 = 10; // Acks 200-190
     const ranges = [_]types.AckRange{
-        .{ .gap = 5, .len = 8 },  // Range 1
+        .{ .gap = 5, .len = 8 }, // Range 1
         .{ .gap = 3, .len = 12 }, // Range 2
-        .{ .gap = 1, .len = 6 },  // Range 3
+        .{ .gap = 1, .len = 6 }, // Range 3
     };
 
     _ = try ack.writeAck(w, largest, ack_delay, first_range, &ranges, null);
@@ -237,8 +237,8 @@ test "RFC 3168 - ECN counts track congestion signals" {
     // CE = Congestion Experienced
     const ecn_counts = types.EcnCounts{
         .ect0 = 1000, // Most packets ECT(0)
-        .ect1 = 50,   // Some packets ECT(1)
-        .ce = 5,      // Few packets experienced congestion
+        .ect1 = 50, // Some packets ECT(1)
+        .ce = 5, // Few packets experienced congestion
     };
 
     _ = try ack.writeAck(w, 1100, 50, 100, &[_]types.AckRange{}, ecn_counts);
@@ -610,9 +610,9 @@ test "RFC 3168 - ACK_ECN frame reports ECN feedback" {
 
     // Receiver counts ECN markings on received packets
     const ecn_counts = types.EcnCounts{
-        .ect0 = 95,  // 95 packets marked ECT(0)
-        .ect1 = 3,   // 3 packets marked ECT(1)
-        .ce = 2,     // 2 packets marked CE (congestion experienced)
+        .ect0 = 95, // 95 packets marked ECT(0)
+        .ect1 = 3, // 3 packets marked ECT(1)
+        .ce = 2, // 2 packets marked CE (congestion experienced)
     };
 
     _ = try ack.writeAck(w, 100, 10, 99, &[_]types.AckRange{}, ecn_counts);

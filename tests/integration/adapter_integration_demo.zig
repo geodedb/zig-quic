@@ -23,6 +23,7 @@
 //! - Enabling actual RFC 9000 compliance tests
 
 const std = @import("std");
+const testlog = @import("testlog");
 const testing = std.testing;
 const loopback = @import("loopback.zig");
 const adapter_mod = @import("loopback_transport_adapter.zig");
@@ -44,7 +45,7 @@ const SimulatedEndpoint = struct {
     fn sendMessage(self: *SimulatedEndpoint, message: []const u8) !void {
         const peer_addr = adapter_mod.SockAddr.ipv4(127, 0, 0, 1, 443);
         const sent = try self.transport.send(peer_addr, message);
-        std.debug.print("[{s}] Sent {d} bytes: \"{s}\"\n", .{ self.name, sent, message });
+        testlog.print("[{s}] Sent {d} bytes: \"{s}\"\n", .{ self.name, sent, message });
     }
 
     fn receiveMessage(self: *SimulatedEndpoint, buf: []u8) !?[]const u8 {
@@ -54,13 +55,13 @@ const SimulatedEndpoint = struct {
             }
             return err;
         };
-        std.debug.print("[{s}] Received {d} bytes from peer\n", .{ self.name, result.n });
+        testlog.print("[{s}] Received {d} bytes from peer\n", .{ self.name, result.n });
         return buf[0..result.n];
     }
 };
 
 test "Adapter Integration Demo - Simple Message Exchange" {
-    std.debug.print("\n=== Adapter Integration Demo ===\n", .{});
+    testlog.print("\n=== Adapter Integration Demo ===\n", .{});
 
     // Create shared loopback transport
     var lb = try loopback.LoopbackTransport.init(testing.allocator, .{});
@@ -92,11 +93,11 @@ test "Adapter Integration Demo - Simple Message Exchange" {
     const msg3 = try client.receiveMessage(&buf);
     try testing.expect(msg3 == null);
 
-    std.debug.print("=== Demo Complete ===\n\n", .{});
+    testlog.print("=== Demo Complete ===\n\n", .{});
 }
 
 test "Adapter Integration Demo - Packet Loss Simulation" {
-    std.debug.print("\n=== Packet Loss Demo ===\n", .{});
+    testlog.print("\n=== Packet Loss Demo ===\n", .{});
 
     // Create loopback with 50% packet loss
     var lb = try loopback.LoopbackTransport.init(testing.allocator, .{
@@ -116,7 +117,7 @@ test "Adapter Integration Demo - Packet Loss Simulation" {
     var sent_count: usize = 0;
     var received_count: usize = 0;
 
-    std.debug.print("Sending 10 messages with 50% loss rate...\n", .{});
+    testlog.print("Sending 10 messages with 50% loss rate...\n", .{});
     var i: usize = 0;
     while (i < 10) : (i += 1) {
         const msg = try std.fmt.allocPrint(testing.allocator, "Message {d}", .{i});
@@ -130,14 +131,14 @@ test "Adapter Integration Demo - Packet Loss Simulation" {
         }
     }
 
-    std.debug.print("Sent: {d}, Received: {d}, Lost: {d}\n", .{ sent_count, received_count, sent_count - received_count });
+    testlog.print("Sent: {d}, Received: {d}, Lost: {d}\n", .{ sent_count, received_count, sent_count - received_count });
     try testing.expect(received_count < sent_count); // Some packets should be lost
 
-    std.debug.print("=== Loss Demo Complete ===\n\n", .{});
+    testlog.print("=== Loss Demo Complete ===\n\n", .{});
 }
 
 test "Adapter Integration Demo - Multiple Message Exchange" {
-    std.debug.print("\n=== Multiple Message Exchange Demo ===\n", .{});
+    testlog.print("\n=== Multiple Message Exchange Demo ===\n", .{});
 
     var lb = try loopback.LoopbackTransport.init(testing.allocator, .{});
     defer lb.deinit();
@@ -151,7 +152,7 @@ test "Adapter Integration Demo - Multiple Message Exchange" {
     var buf: [1500]u8 = undefined;
 
     // Send 5 messages from client to server
-    std.debug.print("Client sending 5 messages...\n", .{});
+    testlog.print("Client sending 5 messages...\n", .{});
     var i: usize = 0;
     while (i < 5) : (i += 1) {
         const msg = try std.fmt.allocPrint(testing.allocator, "Msg {d}", .{i});
@@ -160,23 +161,23 @@ test "Adapter Integration Demo - Multiple Message Exchange" {
     }
 
     // Server receives all 5 messages
-    std.debug.print("Server receiving messages...\n", .{});
+    testlog.print("Server receiving messages...\n", .{});
     i = 0;
     while (i < 5) : (i += 1) {
         const msg = try server.receiveMessage(&buf);
         try testing.expect(msg != null);
-        std.debug.print("  Received: \"{s}\"\n", .{msg.?});
+        testlog.print("  Received: \"{s}\"\n", .{msg.?});
     }
 
     // No more messages available
     const msg = try server.receiveMessage(&buf);
     try testing.expect(msg == null);
 
-    std.debug.print("=== Multiple Exchange Complete ===\n\n", .{});
+    testlog.print("=== Multiple Exchange Complete ===\n\n", .{});
 }
 
 test "Adapter Integration Demo - Bidirectional Simultaneous" {
-    std.debug.print("\n=== Bidirectional Simultaneous Demo ===\n", .{});
+    testlog.print("\n=== Bidirectional Simultaneous Demo ===\n", .{});
 
     var lb = try loopback.LoopbackTransport.init(testing.allocator, .{});
     defer lb.deinit();
@@ -190,7 +191,7 @@ test "Adapter Integration Demo - Bidirectional Simultaneous" {
     var buf: [1500]u8 = undefined;
 
     // Both sides send simultaneously
-    std.debug.print("Both sides sending simultaneously...\n", .{});
+    testlog.print("Both sides sending simultaneously...\n", .{});
     try client.sendMessage("From Client");
     try server.sendMessage("From Server");
 
@@ -206,5 +207,5 @@ test "Adapter Integration Demo - Bidirectional Simultaneous" {
     try testing.expectEqualStrings("From Client", msg_at_server.?);
     try testing.expectEqualStrings("From Server", msg_at_client.?);
 
-    std.debug.print("=== Bidirectional Demo Complete ===\n\n", .{});
+    testlog.print("=== Bidirectional Demo Complete ===\n\n", .{});
 }

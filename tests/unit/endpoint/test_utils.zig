@@ -45,7 +45,7 @@ test "RFC 9000 §5.2 - hashBytes handles empty data" {
     const data: []const u8 = &[_]u8{};
     const hash = utils.hashBytes(data);
 
-    _ = hash;  // Hash should be computed without error
+    _ = hash; // Hash should be computed without error
 }
 
 // =============================================================================
@@ -158,7 +158,7 @@ test "portToNetwork converts port to network byte order" {
 
     // On little-endian: 0x1151 -> 0x5111
     // On big-endian: 0x1151 -> 0x1151
-    _ = network_port;  // Verify it compiles and runs
+    _ = network_port; // Verify it compiles and runs
 }
 
 test "addrToNetwork converts address to network byte order" {
@@ -167,7 +167,7 @@ test "addrToNetwork converts address to network byte order" {
     const network_addr = utils.addrToNetwork(addr);
 
     // Should convert to network byte order
-    _ = network_addr;  // Verify it compiles and runs
+    _ = network_addr; // Verify it compiles and runs
 }
 
 test "sockToIsize converts socket descriptor" {

@@ -89,6 +89,7 @@ With datagram enabled, the server will echo any DATAGRAM payloads. When `--retry
 ## Docs
 
 - Gap analysis: `docs/GAP_ANALYSIS.md`
+- Performance targets and benchmark gates: `docs/PERFORMANCE_TARGETS.md`
 - Design: `docs/DESIGN.md`
 
 ## Using from another Zig project

@@ -21,6 +21,7 @@
 //! - RFC 9000 §18.2: Transport Parameters
 
 const std = @import("std");
+const testlog = @import("testlog");
 const harness = @import("harness");
 const packet_inspector = @import("packet_inspector");
 
@@ -72,10 +73,10 @@ pub const TransportParamError = error{
 
 /// Connection ID event type
 pub const CidEventType = enum {
-    new_cid_issued,      // NEW_CONNECTION_ID frame sent
-    retire_cid_issued,   // RETIRE_CONNECTION_ID frame sent
-    cid_used,            // CID used in packet header
-    cid_retired,         // CID retired from use
+    new_cid_issued, // NEW_CONNECTION_ID frame sent
+    retire_cid_issued, // RETIRE_CONNECTION_ID frame sent
+    cid_used, // CID used in packet header
+    cid_retired, // CID retired from use
 };
 
 /// Connection ID event
@@ -248,10 +249,7 @@ pub fn validateCidSequence(events: []const CidEvent) !void {
 
         if (!first) {
             if (event.sequence_number <= last_seq) {
-                std.debug.print(
-                    "CID sequence not monotonic: {} after {}\n",
-                    .{ event.sequence_number, last_seq }
-                );
+                testlog.print("CID sequence not monotonic: {} after {}\n", .{ event.sequence_number, last_seq });
                 return error.InvalidCidSequence;
             }
         }
@@ -441,15 +439,12 @@ pub fn expectConnectionError(
     defer errors.deinit();
 
     if (errors.items.len == 0) {
-        std.debug.print("Expected connection error, found none\n", .{});
+        testlog.print("Expected connection error, found none\n", .{});
         return error.NoConnectionError;
     }
 
     const err = findConnectionError(errors.items, expected_error_code) orelse {
-        std.debug.print(
-            "Expected error code 0x{X}, not found\n",
-            .{expected_error_code}
-        );
+        testlog.print("Expected error code 0x{X}, not found\n", .{expected_error_code});
         return error.ErrorCodeNotFound;
     };
 

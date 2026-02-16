@@ -14,8 +14,9 @@
 //! - RFC 9369: QUIC Version 2
 
 const std = @import("std");
-const scenarios = @import("scenarios");  // Module import (configured in build.zig)
-const connection_pair = @import("connection_pair");  // Module import (configured in build.zig)
+const testlog = @import("testlog");
+const scenarios = @import("scenarios"); // Module import (configured in build.zig)
+const connection_pair = @import("connection_pair"); // Module import (configured in build.zig)
 // Note: harness is available through scenarios and connection_pair if needed
 
 // NOTE: Many tests in this file are marked as "skip" because they require
@@ -241,17 +242,17 @@ test "RFC 9000 §7.2 - Server Initial contains CRYPTO frame with ServerHello" {
     const client_packets = pair.getClientPackets();
     try std.testing.expect(client_packets != null);
 
-    std.debug.print("[TEST §7.2 CRYPTO] Found {} client packets\n", .{client_packets.?.len});
+    testlog.print("[TEST §7.2 CRYPTO] Found {} client packets\n", .{client_packets.?.len});
 
     var client_dcid: ?[]const u8 = null;
     for (client_packets.?, 0..) |captured, i| {
-        std.debug.print("[TEST §7.2 CRYPTO] Client packet {}: direction={}, len={}\n", .{i, captured.direction, captured.data.len});
+        testlog.print("[TEST §7.2 CRYPTO] Client packet {}: direction={}, len={}\n", .{ i, captured.direction, captured.data.len });
         if (captured.direction != .sent) continue;
         if (packet_inspector.isInitialPacket(captured.data)) {
             client_dcid = try packet_inspector.extractInitialDcid(captured.data);
-            std.debug.print("[TEST §7.2 CRYPTO] Extracted client DCID len={}: ", .{client_dcid.?.len});
-            for (client_dcid.?) |b| std.debug.print("{X:0>2} ", .{b});
-            std.debug.print("\n", .{});
+            testlog.print("[TEST §7.2 CRYPTO] Extracted client DCID len={}: ", .{client_dcid.?.len});
+            for (client_dcid.?) |b| testlog.print("{X:0>2} ", .{b});
+            testlog.print("\n", .{});
             break;
         }
     }
@@ -270,10 +271,10 @@ test "RFC 9000 §7.2 - Server Initial contains CRYPTO frame with ServerHello" {
                 captured.data,
                 client_dcid.?, // Use client's DCID for key derivation
             ) catch |err| {
-                std.debug.print("ERROR: Failed to decrypt server Initial packet: {}\n", .{err});
-                std.debug.print("  Client DCID len={}: ", .{client_dcid.?.len});
-                for (client_dcid.?) |b| std.debug.print("{X:0>2} ", .{b});
-                std.debug.print("\n  Server packet len={}\n", .{captured.data.len});
+                testlog.print("ERROR: Failed to decrypt server Initial packet: {}\n", .{err});
+                testlog.print("  Client DCID len={}: ", .{client_dcid.?.len});
+                for (client_dcid.?) |b| testlog.print("{X:0>2} ", .{b});
+                testlog.print("\n  Server packet len={}\n", .{captured.data.len});
                 continue;
             };
 
@@ -641,7 +642,7 @@ test "Scenario builder supports connection establishment configuration" {
     defer scenario.deinit();
 
     _ = scenario
-        .withAlpn(&[_][]const u8{"h3", "h3-29"})
+        .withAlpn(&[_][]const u8{ "h3", "h3-29" })
         .with0Rtt()
         .withCapture()
         .withTimeControl();
@@ -981,15 +982,11 @@ test "TODO: Handshake completion clears Initial keys (§4.9.1)" {
 
     // RFC 9000 §4.9.1: Initial keys MUST be discarded after handshake confirmation
     // Check that Initial keys are either null or marked as dropped
-    try std.testing.expect(
-        pair.client_conn.?.initial_keys_dropped or
-            (pair.client_conn.?.initial_rx_keys == null and pair.client_conn.?.initial_tx_keys == null)
-    );
+    try std.testing.expect(pair.client_conn.?.initial_keys_dropped or
+        (pair.client_conn.?.initial_rx_keys == null and pair.client_conn.?.initial_tx_keys == null));
 
-    try std.testing.expect(
-        pair.server_conn.?.initial_keys_dropped or
-            (pair.server_conn.?.initial_rx_keys == null and pair.server_conn.?.initial_tx_keys == null)
-    );
+    try std.testing.expect(pair.server_conn.?.initial_keys_dropped or
+        (pair.server_conn.?.initial_rx_keys == null and pair.server_conn.?.initial_tx_keys == null));
 }
 
 test "TODO: Connection ID rotation works correctly (§5.1)" {

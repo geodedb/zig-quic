@@ -31,7 +31,7 @@ TARGETS = \
 # Default target runs full CI including cross-compilation
 all: ci cross-compile-quick interop e2e-test-all e2e-comprehensive
 
-build: kill clean
+build:
 	$(ZIG) build $(ZIG_FLAGS)
 	$(ZIG) build cli $(ZIG_FLAGS)
 
@@ -51,13 +51,10 @@ tools:
 	$(ZIG) build tools $(ZIG_FLAGS)
 
 kill:
-	@killall -9 quic-server quic-client 2>/dev/null || true
-	@echo "✓ All running quic-server and quic-client processes killed"
-	@killall -9 quicgo-client 2>/dev/null || true
-	@echo "✓ All running quicgo-client processes killed"
-	@killall -9 quic-* 2>/dev/null || true
-	@pgrep quic- | xargs -r kill -9 2>/dev/null || true
-	@echo "✓ All running quic-* processes killed"
+	@pkill -TERM -x quic-server quic-client quicgo-client 2>/dev/null || true
+	@sleep 1
+	@pkill -KILL -x quic-server quic-client quicgo-client 2>/dev/null || true
+	@echo "✓ Requested shutdown for local QUIC helper processes"
 
 # Run build, test, fuzz, bench, and tools sequentially
 ci: build test fuzz bench tools
@@ -87,92 +84,92 @@ cross-compile-quick:
 # Individual cross-compilation targets (debug)
 x86_64-linux-gnu:
 	@echo "Building for x86_64-linux-gnu..."
-	@$(ZIG) build -Dtarget=x86_64-linux-gnu $(ZIG_FLAGS) 2>&1 | tail -1
+	@$(ZIG) build -Dtarget=x86_64-linux-gnu $(ZIG_FLAGS)
 
 x86_64-linux-musl:
 	@echo "Building for x86_64-linux-musl..."
-	@$(ZIG) build -Dtarget=x86_64-linux-musl $(ZIG_FLAGS) 2>&1 | tail -1
+	@$(ZIG) build -Dtarget=x86_64-linux-musl $(ZIG_FLAGS)
 
 aarch64-linux-gnu:
 	@echo "Building for aarch64-linux-gnu..."
-	@$(ZIG) build -Dtarget=aarch64-linux-gnu $(ZIG_FLAGS) 2>&1 | tail -1
+	@$(ZIG) build -Dtarget=aarch64-linux-gnu $(ZIG_FLAGS)
 
 aarch64-linux-musl:
 	@echo "Building for aarch64-linux-musl..."
-	@$(ZIG) build -Dtarget=aarch64-linux-musl $(ZIG_FLAGS) 2>&1 | tail -1
+	@$(ZIG) build -Dtarget=aarch64-linux-musl $(ZIG_FLAGS)
 
 x86_64-macos:
 	@echo "Building for x86_64-macos..."
-	@$(ZIG) build -Dtarget=x86_64-macos $(ZIG_FLAGS) 2>&1 | tail -1
+	@$(ZIG) build -Dtarget=x86_64-macos $(ZIG_FLAGS)
 
 aarch64-macos:
 	@echo "Building for aarch64-macos..."
-	@$(ZIG) build -Dtarget=aarch64-macos $(ZIG_FLAGS) 2>&1 | tail -1
+	@$(ZIG) build -Dtarget=aarch64-macos $(ZIG_FLAGS)
 
 x86_64-windows-gnu:
 	@echo "Building for x86_64-windows-gnu..."
-	@$(ZIG) build -Dtarget=x86_64-windows-gnu $(ZIG_FLAGS) 2>&1 | tail -1
+	@$(ZIG) build -Dtarget=x86_64-windows-gnu $(ZIG_FLAGS)
 
 arm-linux-gnueabihf:
 	@echo "Building for arm-linux-gnueabihf..."
-	@$(ZIG) build -Dtarget=arm-linux-gnueabihf $(ZIG_FLAGS) 2>&1 | tail -1
+	@$(ZIG) build -Dtarget=arm-linux-gnueabihf $(ZIG_FLAGS)
 
 arm-linux-musleabihf:
 	@echo "Building for arm-linux-musleabihf..."
-	@$(ZIG) build -Dtarget=arm-linux-musleabihf $(ZIG_FLAGS) 2>&1 | tail -1
+	@$(ZIG) build -Dtarget=arm-linux-musleabihf $(ZIG_FLAGS)
 
 riscv64-linux-musl:
 	@echo "Building for riscv64-linux-musl..."
-	@$(ZIG) build -Dtarget=riscv64-linux-musl $(ZIG_FLAGS) 2>&1 | tail -1
+	@$(ZIG) build -Dtarget=riscv64-linux-musl $(ZIG_FLAGS)
 
 wasm32-wasi:
 	@echo "Building for wasm32-wasi..."
-	@$(ZIG) build -Dtarget=wasm32-wasi $(ZIG_FLAGS) 2>&1 | tail -1
+	@$(ZIG) build -Dtarget=wasm32-wasi $(ZIG_FLAGS)
 
 # Individual cross-compilation targets (release)
 x86_64-linux-gnu-release:
 	@echo "Building for x86_64-linux-gnu (release)..."
-	@$(ZIG) build -Dtarget=x86_64-linux-gnu $(RELEASE_FLAGS) $(ZIG_FLAGS) 2>&1 | tail -1
+	@$(ZIG) build -Dtarget=x86_64-linux-gnu $(RELEASE_FLAGS) $(ZIG_FLAGS)
 
 x86_64-linux-musl-release:
 	@echo "Building for x86_64-linux-musl (release)..."
-	@$(ZIG) build -Dtarget=x86_64-linux-musl $(RELEASE_FLAGS) $(ZIG_FLAGS) 2>&1 | tail -1
+	@$(ZIG) build -Dtarget=x86_64-linux-musl $(RELEASE_FLAGS) $(ZIG_FLAGS)
 
 aarch64-linux-gnu-release:
 	@echo "Building for aarch64-linux-gnu (release)..."
-	@$(ZIG) build -Dtarget=aarch64-linux-gnu $(RELEASE_FLAGS) $(ZIG_FLAGS) 2>&1 | tail -1
+	@$(ZIG) build -Dtarget=aarch64-linux-gnu $(RELEASE_FLAGS) $(ZIG_FLAGS)
 
 aarch64-linux-musl-release:
 	@echo "Building for aarch64-linux-musl (release)..."
-	@$(ZIG) build -Dtarget=aarch64-linux-musl $(RELEASE_FLAGS) $(ZIG_FLAGS) 2>&1 | tail -1
+	@$(ZIG) build -Dtarget=aarch64-linux-musl $(RELEASE_FLAGS) $(ZIG_FLAGS)
 
 x86_64-macos-release:
 	@echo "Building for x86_64-macos (release)..."
-	@$(ZIG) build -Dtarget=x86_64-macos $(RELEASE_FLAGS) $(ZIG_FLAGS) 2>&1 | tail -1
+	@$(ZIG) build -Dtarget=x86_64-macos $(RELEASE_FLAGS) $(ZIG_FLAGS)
 
 aarch64-macos-release:
 	@echo "Building for aarch64-macos (release)..."
-	@$(ZIG) build -Dtarget=aarch64-macos $(RELEASE_FLAGS) $(ZIG_FLAGS) 2>&1 | tail -1
+	@$(ZIG) build -Dtarget=aarch64-macos $(RELEASE_FLAGS) $(ZIG_FLAGS)
 
 x86_64-windows-gnu-release:
 	@echo "Building for x86_64-windows-gnu (release)..."
-	@$(ZIG) build -Dtarget=x86_64-windows-gnu $(RELEASE_FLAGS) $(ZIG_FLAGS) 2>&1 | tail -1
+	@$(ZIG) build -Dtarget=x86_64-windows-gnu $(RELEASE_FLAGS) $(ZIG_FLAGS)
 
 arm-linux-gnueabihf-release:
 	@echo "Building for arm-linux-gnueabihf (release)..."
-	@$(ZIG) build -Dtarget=arm-linux-gnueabihf $(RELEASE_FLAGS) $(ZIG_FLAGS) 2>&1 | tail -1
+	@$(ZIG) build -Dtarget=arm-linux-gnueabihf $(RELEASE_FLAGS) $(ZIG_FLAGS)
 
 arm-linux-musleabihf-release:
 	@echo "Building for arm-linux-musleabihf (release)..."
-	@$(ZIG) build -Dtarget=arm-linux-musleabihf $(RELEASE_FLAGS) $(ZIG_FLAGS) 2>&1 | tail -1
+	@$(ZIG) build -Dtarget=arm-linux-musleabihf $(RELEASE_FLAGS) $(ZIG_FLAGS)
 
 riscv64-linux-musl-release:
 	@echo "Building for riscv64-linux-musl (release)..."
-	@$(ZIG) build -Dtarget=riscv64-linux-musl $(RELEASE_FLAGS) $(ZIG_FLAGS) 2>&1 | tail -1
+	@$(ZIG) build -Dtarget=riscv64-linux-musl $(RELEASE_FLAGS) $(ZIG_FLAGS)
 
 wasm32-wasi-release:
 	@echo "Building for wasm32-wasi (release)..."
-	@$(ZIG) build -Dtarget=wasm32-wasi $(RELEASE_FLAGS) $(ZIG_FLAGS) 2>&1 | tail -1
+	@$(ZIG) build -Dtarget=wasm32-wasi $(RELEASE_FLAGS) $(ZIG_FLAGS)
 
 # Clean build artifacts
 clean:
@@ -188,7 +185,7 @@ interop: build interop-quic-go interop-zig
 interop-quic-go: build
 	@echo "========== Testing quic-go interop =========="
 	@echo "Building quic-go test client..."
-	@cd quic-test && go build -o quicgo-client test_client.go
+	@cd test-clients/quic-test-legacy && go build -o quicgo-client test_client.go
 	@echo ""
 	@echo "NOTE: quic-go interop is currently failing due to TLS handshake incompatibilities"
 	@echo "      The Zig server's minimal TLS implementation is not yet compatible with quic-go's full TLS 1.3"
@@ -199,14 +196,14 @@ interop-quic-go: build
 	@timeout 15 ./zig-out/bin/quic-server --bind 127.0.0.1:4433 --alpn hq-interop --insecure 2>&1 | grep -v "^DEBUG: poll\|^DEBUG: Using backend\|^DEBUG: Socket fd\|^DEBUG: About to call\|^DEBUG: epoll_wait\|^DEBUG: drainReadable" > /tmp/zig-server.log &
 	@sleep 2
 	@echo "Testing connection with quic-go client..."
-	@timeout 5 ./quic-test/quicgo-client -connect 127.0.0.1:4433 -insecure 2>&1 | head -3 && echo "✓ quic-go client connected successfully" || echo "✗ quic-go client failed (expected - TLS incompatibility)"
+	@timeout 5 ./test-clients/quic-test-legacy/quicgo-client -connect 127.0.0.1:4433 -insecure 2>&1 | head -3 && echo "✓ quic-go client connected successfully" || echo "✗ quic-go client failed (expected - TLS incompatibility)"
 	@killall -9 quic-server 2>/dev/null || true
 	@echo ""
 	@echo "Test 2: Server packet reception test"
 	@echo "Checking if server receives packets from quic-go client..."
 	@timeout 10 ./zig-out/bin/quic-server --bind 127.0.0.1:4433 --alpn hq-interop --insecure 2>&1 | grep -E "recvfrom got|processIncomingDatagram" > /tmp/server-rx.log &
 	@sleep 2
-	@timeout 3 ./quic-test/quicgo-client -connect 127.0.0.1:4433 -insecure > /dev/null 2>&1 || true
+	@timeout 3 ./test-clients/quic-test-legacy/quicgo-client -connect 127.0.0.1:4433 -insecure > /dev/null 2>&1 || true
 	@killall -9 quic-server 2>/dev/null || true
 	@if [ -s /tmp/server-rx.log ]; then \
 		echo "✓ Server receives packets from quic-go client"; \
@@ -378,7 +375,7 @@ e2e-test-go-comprehensive: build
 		echo "Server PID: $$SERVER_PID"; \
 		sleep 2; \
 		echo "Running comprehensive Go test suite..."; \
-		cd quic-test && timeout 60 ./test-client-comprehensive -connect 127.0.0.1:4433 -insecure 2>&1 | tee /tmp/e2e-go-comprehensive-client.log || true; \
+		cd test-clients/quic-test-legacy && timeout 60 ./test-client-comprehensive -connect 127.0.0.1:4433 -insecure 2>&1 | tee /tmp/e2e-go-comprehensive-client.log || true; \
 		kill $$SERVER_PID 2>/dev/null || true; \
 		sleep 1; \
 		echo ""; \

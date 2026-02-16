@@ -27,8 +27,9 @@
 //! ```
 
 const std = @import("std");
-const loopback = @import("loopback");  // Module import (configured in build.zig)
-const transport_mod = @import("transport");  // Module import (configured in build.zig)
+const testlog = @import("testlog");
+const loopback = @import("loopback"); // Module import (configured in build.zig)
+const transport_mod = @import("transport"); // Module import (configured in build.zig)
 
 // Import real types from transport module
 pub const Transport = transport_mod.Transport;
@@ -100,8 +101,8 @@ const _LegacySockAddr = struct {
 
 /// Which side of the loopback connection this adapter represents
 pub const Side = enum {
-    SideA,  // Sends via queue_a_to_b, receives from queue_b_to_a
-    SideB,  // Sends via queue_b_to_a, receives from queue_a_to_b
+    SideA, // Sends via queue_a_to_b, receives from queue_b_to_a
+    SideB, // Sends via queue_b_to_a, receives from queue_a_to_b
 };
 
 /// Adapter that implements Transport interface for LoopbackTransport
@@ -125,14 +126,14 @@ pub const LoopbackTransportAdapter = struct {
     ) LoopbackTransportAdapter {
         // Create synthetic addresses based on side
         const local_addr = if (side == .SideA)
-            SockAddr.ipv4(127, 0, 0, 1, 4433)  // Client
+            SockAddr.ipv4(127, 0, 0, 1, 4433) // Client
         else
-            SockAddr.ipv4(127, 0, 0, 1, 443);   // Server
+            SockAddr.ipv4(127, 0, 0, 1, 443); // Server
 
         const peer_addr = if (side == .SideA)
-            SockAddr.ipv4(127, 0, 0, 1, 443)    // Client sees server
+            SockAddr.ipv4(127, 0, 0, 1, 443) // Client sees server
         else
-            SockAddr.ipv4(127, 0, 0, 1, 4433);  // Server sees client
+            SockAddr.ipv4(127, 0, 0, 1, 4433); // Server sees client
 
         return LoopbackTransportAdapter{
             .loopback = lb,
@@ -157,19 +158,19 @@ pub const LoopbackTransportAdapter = struct {
     /// Send implementation
     fn sendFn(ctx: *anyopaque, peer: SockAddr, data: []const u8) anyerror!usize {
         const self: *LoopbackTransportAdapter = @ptrCast(@alignCast(ctx));
-        _ = peer;  // Ignore peer, we know where to send based on our side
+        _ = peer; // Ignore peer, we know where to send based on our side
 
         // DEBUG: Trace packet sending
         const side_name = if (self.side == .SideA) "Client(A)" else "Server(B)";
-        std.debug.print("[{s}] sendFn: sending {} bytes\n", .{ side_name, data.len });
+        testlog.print("[{s}] sendFn: sending {} bytes\n", .{ side_name, data.len });
 
         // Route packet through appropriate queue based on our side
         if (self.side == .SideA) {
             try self.loopback.sendAtoB(data);
-            std.debug.print("[{s}] sendFn: queued to A→B\n", .{side_name});
+            testlog.print("[{s}] sendFn: queued to A→B\n", .{side_name});
         } else {
             try self.loopback.sendBtoA(data);
-            std.debug.print("[{s}] sendFn: queued to B→A\n", .{side_name});
+            testlog.print("[{s}] sendFn: queued to B→A\n", .{side_name});
         }
 
         return data.len;
@@ -190,18 +191,18 @@ pub const LoopbackTransportAdapter = struct {
 
         // If no packet available, return WouldBlock
         const n = maybe_len orelse {
-            // std.debug.print("[{s}] recvFn: WouldBlock (no packets)\n", .{side_name});
+            // testlog.print("[{s}] recvFn: WouldBlock (no packets)\n", .{side_name});
             return error.WouldBlock;
         };
 
         // DEBUG: Log successful reception
-        std.debug.print("[{s}] recvFn: received {} bytes from peer\n", .{ side_name, n });
+        testlog.print("[{s}] recvFn: received {} bytes from peer\n", .{ side_name, n });
 
         // Return received packet with peer address
         return RecvResult{
             .n = n,
             .peer = self.peer_addr,
-            .ecn = null,  // ECN not yet implemented in loopback
+            .ecn = null, // ECN not yet implemented in loopback
         };
     }
 
@@ -241,8 +242,8 @@ test "LoopbackTransportAdapter initialization" {
     var adapter_b = LoopbackTransportAdapter.init(lb, .SideB);
 
     // Verify addresses are set correctly
-    try testing.expect(adapter_a.local_addr.getPort() == 4433);  // Client port
-    try testing.expect(adapter_b.local_addr.getPort() == 443);    // Server port
+    try testing.expect(adapter_a.local_addr.getPort() == 4433); // Client port
+    try testing.expect(adapter_b.local_addr.getPort() == 443); // Server port
 }
 
 test "LoopbackTransportAdapter asTransport" {

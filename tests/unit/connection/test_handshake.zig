@@ -295,8 +295,8 @@ test "RFC 9001 §8.2 - Handshake state tracks completion" {
     // - Peer params should be received
 
     const alpn = try test_allocator.dupe(u8, "h3");
-    const local = try test_allocator.dupe(u8, &[_]u8{ 0x01 });
-    const peer = try test_allocator.dupe(u8, &[_]u8{ 0x02 });
+    const local = try test_allocator.dupe(u8, &[_]u8{0x01});
+    const peer = try test_allocator.dupe(u8, &[_]u8{0x02});
 
     state.negotiated_alpn = alpn;
     state.local_transport_params_raw = local;

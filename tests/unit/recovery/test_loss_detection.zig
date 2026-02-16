@@ -449,9 +449,9 @@ test "LossDetector identifies losses in sequence" {
 
 test "timeThresholdNs consistently larger than base RTT" {
     const test_rtts = [_]u64{
-        1_000_000,   // 1ms
-        10_000_000,  // 10ms
-        50_000_000,  // 50ms
+        1_000_000, // 1ms
+        10_000_000, // 10ms
+        50_000_000, // 50ms
         100_000_000, // 100ms
         200_000_000, // 200ms
         500_000_000, // 500ms

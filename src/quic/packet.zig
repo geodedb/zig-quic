@@ -145,29 +145,20 @@ pub const AeadKeys = struct { key: [16]u8, iv: [12]u8, hp: [16]u8 };
 /// Encode a protected short-header packet carrying payload with given PN length (1..4).
 /// Implements the authenticated encryption and header protection steps from
 /// RFC 9001 §5.4.1/§5.4.3 for 1-RTT packets.
-pub fn encodeShortProtected(
-    alloc: std.mem.Allocator,
+pub fn encodeShortProtectedInto(
+    out: []u8,
     dcid: []const u8,
     packet_number: u32,
     packet_number_len: u3,
     payload_plaintext: []const u8,
     keys: AeadKeys,
     key_phase: bool,
-) ![]u8 {
+) !usize {
     if (packet_number_len < 1 or packet_number_len > 4) return error.InvalidPacketNumberLength;
-
-    var buf = std.ArrayList(u8){};
-    errdefer buf.deinit(alloc);
 
     const pn_bits: u8 = @as(u8, packet_number_len - 1) & 0x03;
     var header_first: u8 = 0x40 | pn_bits; // short header with pn len bits
     if (key_phase) header_first |= 0x04; // key phase bit (bit 2)
-
-    const w = buf.writer(alloc);
-    try w.writeByte(header_first);
-    // header_prefix for short = DCID (QUIC short header carries DCID)
-    try w.writeAll(dcid);
-    const header_prefix_len = dcid.len;
 
     // PN BE truncated
     var pn_be_full: [4]u8 = .{
@@ -177,37 +168,30 @@ pub fn encodeShortProtected(
         @as(u8, @intCast(packet_number & 0xff)),
     };
     const pn_slice = pn_be_full[4 - packet_number_len .. 4];
-    var pn_trunc_val: u32 = 0;
-    {
-        var k: usize = 0;
-        while (k < packet_number_len) : (k += 1) pn_trunc_val = (pn_trunc_val << 8) | pn_slice[k];
-    }
     var pn_mut: [4]u8 = .{0} ** 4;
     @memcpy(pn_mut[0..packet_number_len], pn_slice);
-    try w.writeAll(pn_slice);
 
     // RFC 9001 §5.4.3: Ensure minimum payload size for header protection sample extraction
     // For AES with n-byte PN, need at least (4 - n) bytes offset + 16 bytes sample
     const min_plaintext_len: usize = if (packet_number_len >= 4) 0 else (4 - packet_number_len);
-    var actual_payload = payload_plaintext;
-    var padded_payload: ?[]u8 = null;
-    defer if (padded_payload) |p| alloc.free(p);
-
+    var padded_payload_storage: [3]u8 = .{0} ** 3; // max padding needed when pn_len=1
+    var actual_payload: []const u8 = payload_plaintext;
     if (payload_plaintext.len < min_plaintext_len) {
-        // Need to pad the payload to meet minimum size
-        padded_payload = try alloc.alloc(u8, min_plaintext_len);
-        @memcpy(padded_payload.?[0..payload_plaintext.len], payload_plaintext);
-        // Fill rest with PADDING frames (0x00)
-        @memset(padded_payload.?[payload_plaintext.len..], 0x00);
-        actual_payload = padded_payload.?;
+        @memcpy(padded_payload_storage[0..payload_plaintext.len], payload_plaintext);
+        @memset(padded_payload_storage[payload_plaintext.len..min_plaintext_len], 0x00);
+        actual_payload = padded_payload_storage[0..min_plaintext_len];
     }
 
-    // AEAD encrypt payload
     const ct_len = actual_payload.len + 16;
-    const out_cipher_idx = buf.items.len;
-    try buf.ensureTotalCapacity(alloc, out_cipher_idx + ct_len);
-    try buf.appendNTimes(alloc, 0, ct_len);
-    const out_cipher = buf.items[out_cipher_idx .. out_cipher_idx + ct_len];
+    const total_len = 1 + dcid.len + packet_number_len + ct_len;
+    if (out.len < total_len) return error.BufferTooSmall;
+
+    out[0] = header_first;
+    if (dcid.len > 0) @memcpy(out[1 .. 1 + dcid.len], dcid);
+    const header_prefix_len = dcid.len;
+    const pn_offset = 1 + header_prefix_len;
+    @memcpy(out[pn_offset .. pn_offset + packet_number_len], pn_slice);
+    const out_cipher = out[pn_offset + packet_number_len .. total_len];
 
     const suite = crypto.AeadSuite.aes_128_gcm;
     // IMPORTANT (RFC 9001 §5.3): The AEAD nonce uses the FULL packet number, not the truncated value.
@@ -223,18 +207,36 @@ pub fn encodeShortProtected(
         @as(u64, packet_number), // use full packet number for nonce derivation
         &header_first,
         pn_mut[0..packet_number_len],
-        buf.items[1 .. 1 + header_prefix_len],
+        out[1 .. 1 + header_prefix_len],
         actual_payload,
         out_cipher,
     );
     std.debug.assert(written == ct_len);
 
     // Write back mutated header and PN
-    buf.items[0] = header_first;
-    const pn_offset = 1 + header_prefix_len;
-    @memcpy(buf.items[pn_offset .. pn_offset + packet_number_len], pn_mut[0..packet_number_len]);
+    out[0] = header_first;
+    @memcpy(out[pn_offset .. pn_offset + packet_number_len], pn_mut[0..packet_number_len]);
 
-    return buf.toOwnedSlice(alloc);
+    return total_len;
+}
+
+pub fn encodeShortProtected(
+    alloc: std.mem.Allocator,
+    dcid: []const u8,
+    packet_number: u32,
+    packet_number_len: u3,
+    payload_plaintext: []const u8,
+    keys: AeadKeys,
+    key_phase: bool,
+) ![]u8 {
+    if (packet_number_len < 1 or packet_number_len > 4) return error.InvalidPacketNumberLength;
+    const min_plaintext_len: usize = if (packet_number_len >= 4) 0 else (4 - packet_number_len);
+    const payload_len = if (payload_plaintext.len < min_plaintext_len) min_plaintext_len else payload_plaintext.len;
+    const total_len = 1 + dcid.len + packet_number_len + payload_len + 16;
+    const out = try alloc.alloc(u8, total_len);
+    errdefer alloc.free(out);
+    const written = try encodeShortProtectedInto(out, dcid, packet_number, packet_number_len, payload_plaintext, keys, key_phase);
+    return out[0..written];
 }
 
 /// Result of decoding a protected short header packet.
@@ -243,6 +245,14 @@ pub const DecodedShort = struct {
     packet_number_len: u3,
     payload: []u8,
     key_phase: bool, // PHASE 57: KEY_PHASE bit from short header (RFC 9001 §5.4)
+};
+
+/// Borrowed decode result that writes payload into caller-provided storage.
+pub const DecodedShortView = struct {
+    packet_number: u64,
+    packet_number_len: u3,
+    payload: []u8,
+    key_phase: bool,
 };
 
 /// Decode and unprotect a short-header packet given dcid_len for header parsing.
@@ -255,19 +265,31 @@ pub fn decodeShortProtected(
     keys: AeadKeys,
     largest_pn: u64,
 ) !DecodedShort {
-    logger.debugPrint("[SHORT-DECODE-ENTRY] bytes={} dcid_len={} largest_pn={} key0={X:0>2}\n", .{packet_bytes.len, dcid_len, largest_pn, keys.key[0]});
+    logger.debugPrint("[SHORT-DECODE-ENTRY] bytes={} dcid_len={} largest_pn={}\n", .{ packet_bytes.len, dcid_len, largest_pn });
     return decodeShortProtectedWithHp(alloc, packet_bytes, dcid_len, keys.hp, keys, largest_pn);
 }
 
-/// Decode short header using a custom HP key (useful for key-update hybrids).
-pub fn decodeShortProtectedWithHp(
-    alloc: std.mem.Allocator,
+/// Decode and unprotect a short header packet into caller-owned payload storage.
+pub fn decodeShortProtectedInto(
+    packet_bytes: []const u8,
+    dcid_len: usize,
+    keys: AeadKeys,
+    largest_pn: u64,
+    payload_out: []u8,
+) !DecodedShortView {
+    logger.debugPrint("[SHORT-DECODE-ENTRY] bytes={} dcid_len={} largest_pn={}\n", .{ packet_bytes.len, dcid_len, largest_pn });
+    return decodeShortProtectedWithHpInto(packet_bytes, dcid_len, keys.hp, keys, largest_pn, payload_out);
+}
+
+/// Decode short header using a custom HP key (useful for key-update hybrids) into caller-owned storage.
+pub fn decodeShortProtectedWithHpInto(
     packet_bytes: []const u8,
     dcid_len: usize,
     hp_key: [16]u8,
     keys: AeadKeys,
     largest_pn: u64,
-) !DecodedShort {
+    payload_out: []u8,
+) !DecodedShortView {
     const attempt_label_snapshot = phase57_attempt_label;
     if (packet_bytes.len < 1 + dcid_len + 1) return error.Truncated;
     var i: usize = 0;
@@ -321,11 +343,13 @@ pub fn decodeShortProtectedWithHp(
     // Ciphertext+tag begins after PN (using actual pn_len)
     const ct = packet_bytes[pn_start + pn_len ..];
     if (ct.len < 16) return error.Truncated;
+    const payload_len = ct.len - 16;
+    if (payload_out.len < payload_len) return error.BufferTooSmall;
 
     // Decrypt using already-unmasked header and PN
     // CRITICAL: unprotectInitial expects unmasked values, not masked ones
     // We already unmasked into tmp_first and tmp_pn above, so use those
-    const payload = try alloc.alloc(u8, ct.len - 16);
+    const payload = payload_out[0..payload_len];
 
     const decrypt_result = crypto.unprotectInitialNoUnmask(
         .aes_128_gcm,
@@ -355,18 +379,6 @@ pub fn decodeShortProtectedWithHp(
                 err,
             });
 
-            var nonce_log = keys.iv;
-            var pn_tmp = pn_val_expanded_preview;
-            var byte_idx: usize = 0;
-            while (byte_idx < 8) : (byte_idx += 1) {
-                const pos = nonce_log.len - 1 - byte_idx;
-                nonce_log[pos] ^= @as(u8, @truncate(pn_tmp & 0xff));
-                pn_tmp >>= 8;
-            }
-            logger.debugPrint("[PHASE57-AEAD] expect_nonce=", .{});
-            for (nonce_log) |b| logger.debugPrint("{X:0>2}", .{b});
-            logger.debugPrint("\n", .{});
-
             var aad_buf: [1 + 32 + 4]u8 = undefined;
             const aad_len = 1 + header_prefix.len + pn_len;
             aad_buf[0] = tmp_first;
@@ -377,14 +389,6 @@ pub fn decodeShortProtectedWithHp(
             while (aad_idx < aad_len) : (aad_idx += 1) {
                 logger.debugPrint("{X:0>2}", .{aad_buf[aad_idx]});
             }
-            logger.debugPrint("\n", .{});
-
-            logger.debugPrint("[PHASE57-AEAD] key_set_material key=", .{});
-            for (keys.key) |b| logger.debugPrint("{X:0>2}", .{b});
-            logger.debugPrint(" hp=", .{});
-            for (keys.hp) |b| logger.debugPrint("{X:0>2}", .{b});
-            logger.debugPrint(" iv=", .{});
-            for (keys.iv) |b| logger.debugPrint("{X:0>2}", .{b});
             logger.debugPrint("\n", .{});
 
             maybeDumpPhase57Failure(.{
@@ -403,7 +407,6 @@ pub fn decodeShortProtectedWithHp(
                 .dcid_candidate = @intCast(dcid_len),
             });
         }
-        alloc.free(payload);
         return err;
     }
 
@@ -415,6 +418,34 @@ pub fn decodeShortProtectedWithHp(
     logger.debugPrint("decodeShortProtected: KEY_PHASE bit = {} (header_first=0x{X:0>2})\n", .{ key_phase, tmp_first });
 
     return .{ .packet_number = pn_val_expanded, .packet_number_len = pn_len, .payload = payload, .key_phase = key_phase };
+}
+
+/// Decode short header using a custom HP key (useful for key-update hybrids).
+pub fn decodeShortProtectedWithHp(
+    alloc: std.mem.Allocator,
+    packet_bytes: []const u8,
+    dcid_len: usize,
+    hp_key: [16]u8,
+    keys: AeadKeys,
+    largest_pn: u64,
+) !DecodedShort {
+    const payload_storage = try alloc.alloc(u8, packet_bytes.len);
+    errdefer alloc.free(payload_storage);
+    const view = try decodeShortProtectedWithHpInto(packet_bytes, dcid_len, hp_key, keys, largest_pn, payload_storage);
+    const owned_payload = if (view.payload.len == payload_storage.len)
+        payload_storage
+    else blk: {
+        const exact = try alloc.alloc(u8, view.payload.len);
+        @memcpy(exact, view.payload);
+        alloc.free(payload_storage);
+        break :blk exact;
+    };
+    return .{
+        .packet_number = view.packet_number,
+        .packet_number_len = view.packet_number_len,
+        .payload = owned_payload,
+        .key_phase = view.key_phase,
+    };
 }
 
 /// Temporary legacy shim for older tests that haven't been updated to pass `largest_pn`.
@@ -726,7 +757,6 @@ pub fn encodeHandshakeProtected(
     keys: InitialKeys,
 ) ![]u8 {
     logger.debugPrint("encodeHandshakeProtected: CALLED with packet_number={} version=0x{X:0>8}\n", .{ packet_number, version });
-    logger.debugPrint("encodeHandshakeProtected: Keys at function entry - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ keys.key[0], keys.key[1], keys.key[2], keys.key[3], keys.iv[0], keys.iv[1], keys.iv[2], keys.iv[3] });
     logger.debugPrint("encodeHandshakeProtected: dcid.len={}, scid.len={}\n", .{ dcid.len, scid.len });
     if (dcid.len > 0) {
         logger.debugPrint("encodeHandshakeProtected: dcid bytes: ", .{});
@@ -816,19 +846,12 @@ pub fn encodeHandshakeProtected(
     try buf.ensureTotalCapacity(alloc, out_cipher_idx + ct_len);
     try buf.appendNTimes(alloc, 0, ct_len);
 
-    logger.debugPrint("encodeHandshakeProtected: Keys before header_first - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ keys.key[0], keys.key[1], keys.key[2], keys.key[3] });
     var header_first: u8 = first;
     var pn_mut: [4]u8 = .{0} ** 4;
     @memcpy(pn_mut[0..packet_number_len], pn_slice);
-    logger.debugPrint("encodeHandshakeProtected: Keys after memcpy - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ keys.key[0], keys.key[1], keys.key[2], keys.key[3] });
 
     const out_cipher = buf.items[out_cipher_idx .. out_cipher_idx + ct_len];
     const suite = crypto.AeadSuite.aes_128_gcm;
-    logger.debugPrint("encodeHandshakeProtected: Using keys - key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, hp[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{
-        keys.key[0], keys.key[1], keys.key[2], keys.key[3],
-        keys.iv[0], keys.iv[1], keys.iv[2], keys.iv[3],
-        keys.hp[0], keys.hp[1], keys.hp[2], keys.hp[3]
-    });
     // Use protectPacket for Handshake packets, not protectInitial
     const written = try crypto.protectPacket(
         suite,

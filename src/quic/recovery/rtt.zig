@@ -18,7 +18,7 @@ pub const RttState = struct {
     min_rtt_ns: u64 = 0,
     latest_rtt_ns: u64 = 0,
     smoothed_rtt_ns: u64 = kInitialRttNs, // RFC 9002 §6.2: Use initial RTT before first sample
-    rttvar_ns: u64 = kInitialRttNs / 2,   // RFC 9002: Initial rttvar = initial_rtt / 2
+    rttvar_ns: u64 = kInitialRttNs / 2, // RFC 9002: Initial rttvar = initial_rtt / 2
     max_ack_delay_ns: u64 = 0, // app space only; keep 0 for Initial/Handshake
 
     /// Update RTT estimator on ACK reception with measured RTT and ACK delay.

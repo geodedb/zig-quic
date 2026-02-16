@@ -12,11 +12,11 @@
 //! - RFC 9002: QUIC Loss Detection and Congestion Control
 
 const std = @import("std");
-const harness = @import("harness");  // Module import (configured in build.zig)
-const endpoint_loopback_helpers = @import("endpoint_loopback_helpers");  // Module import
-const connection_pair = @import("connection_pair");  // Module import (configured in build.zig)
-const loopback = @import("loopback");  // Module import (configured in build.zig)
-const tls_helpers = @import("tls_helpers");  // Module import (configured in build.zig)
+const harness = @import("harness"); // Module import (configured in build.zig)
+const endpoint_loopback_helpers = @import("endpoint_loopback_helpers"); // Module import
+const connection_pair = @import("connection_pair"); // Module import (configured in build.zig)
+const loopback = @import("loopback"); // Module import (configured in build.zig)
+const tls_helpers = @import("tls_helpers"); // Module import (configured in build.zig)
 
 /// Test scenario builder
 pub const Scenario = struct {

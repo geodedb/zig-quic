@@ -357,26 +357,34 @@ pub fn pollEpollBackend(ctx: *const IoContext, timeout_ms: i32) !void {
     drainReadable(ctx);
 }
 
-/// BSD/macOS kqueue backend for event loop.
-pub fn pollKqueueBackend(ctx: *const IoContext, timeout_ms: i32) !void {
-    // On non-kqueue platforms, just perform a sleep-based fallback
-    if (builtin.target.os.tag != .macos and builtin.target.os.tag != .freebsd and
-        builtin.target.os.tag != .netbsd and builtin.target.os.tag != .openbsd and
-        builtin.target.os.tag != .dragonfly) {
-        if (timeout_ms > 0) std.Thread.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
-        drainReadable(ctx);
+/// Readiness-driven fallback used by non-epoll backends on Unix-like targets.
+fn waitReadableFallback(sock_fd: posix.socket_t, timeout_ms: i32) !void {
+    if (sock_fd < 0) {
         return;
     }
-    // TODO: Import kqueue loop when module dependencies are resolved
-    // For now, just use sleep-based fallback
-    if (timeout_ms > 0) std.Thread.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
+
+    var fds = [1]posix.pollfd{
+        .{
+            .fd = sock_fd,
+            .events = posix.POLL.IN | posix.POLL.ERR | posix.POLL.HUP,
+            .revents = 0,
+        },
+    };
+    const timeout = if (timeout_ms < 0) -1 else timeout_ms;
+    _ = try posix.poll(&fds, timeout);
+}
+
+/// BSD/macOS kqueue backend for event loop.
+pub fn pollKqueueBackend(ctx: *const IoContext, timeout_ms: i32) !void {
+    // Phase 26: avoid sleep polling; block on fd readiness with bounded timeout.
+    try waitReadableFallback(ctx.sock_fd, timeout_ms);
     drainReadable(ctx);
 }
 
 /// Windows IOCP backend for event loop.
 pub fn pollIocpBackend(ctx: *const IoContext, timeout_ms: i32) !void {
     if (builtin.target.os.tag != .windows) {
-        if (timeout_ms > 0) std.Thread.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
+        try waitReadableFallback(ctx.sock_fd, timeout_ms);
         drainReadable(ctx);
         return;
     }

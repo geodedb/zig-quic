@@ -1,4 +1,5 @@
 const std = @import("std");
+const testlog = @import("testlog");
 const ks = @import("quic_tls");
 
 fn hexToBytes(comptime N: usize, s: []const u8) ![N]u8 {
@@ -45,7 +46,7 @@ test "tls_key_schedule_kat" {
     try std.testing.expectEqualSlices(u8, &shp, &sk.hp);
 
     // Acceptance marker
-    std.debug.print("PASSED tls_key_schedule_kat\n", .{});
+    testlog.print("PASSED tls_key_schedule_kat\n", .{});
 }
 
 // Additional QUIC v2 KAT from RFC 9369 A.1 using same dcid

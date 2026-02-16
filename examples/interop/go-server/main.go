@@ -95,7 +95,7 @@ func main() {
 	}
 }
 
-func handleConn(conn quic.Connection, dgram bool) {
+func handleConn(conn *quic.Conn, dgram bool) {
 	defer conn.CloseWithError(0, "bye")
 	// If datagrams enabled, echo them
 	if dgram {

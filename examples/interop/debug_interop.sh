@@ -55,6 +55,7 @@ docker compose -f $COMPOSE_FILE --profile quic-go up client 2>&1 | head -50
 
 # Stop tcpdump
 docker exec ${PROJECT}_server pkill tcpdump 2>/dev/null || true
+wait "$TCPDUMP_PID" 2>/dev/null || true
 
 echo ""
 echo "Analyzing packets..."
@@ -63,4 +64,3 @@ docker exec ${PROJECT}_server tcpdump -r /logs/server.pcap -n 2>&1 || echo "No p
 echo ""
 echo "Cleaning up..."
 COMPOSE_PROJECT_NAME=$PROJECT docker compose -f $COMPOSE_FILE down
-

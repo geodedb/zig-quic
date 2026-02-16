@@ -1,4 +1,5 @@
 const std = @import("std");
+const testlog = @import("testlog");
 const tls13 = @import("quic_tls13");
 const x509 = @import("x509");
 const sig = @import("sig");
@@ -24,7 +25,7 @@ test "reject self-signed cert without allow_insecure" {
     const der = pemToDer(std.testing.allocator, cert_pem) catch unreachable;
     defer std.testing.allocator.free(der);
     const cert = x509.parseCert(std.testing.allocator, der) catch |e| {
-        std.debug.print("parse failed: {}\n", .{e});
+        testlog.print("parse failed: {}\n", .{e});
         return std.testing.expect(false);
     };
     defer cert.deinit(std.testing.allocator);
