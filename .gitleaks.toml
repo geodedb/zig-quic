@@ -19,6 +19,20 @@ description = "Allowlist for known test fixtures and false positives"
 paths = [
   # PEM parsing source code (contains header string literals, not actual keys)
   '''src/quic/pem\.zig$''',
+  # Explicit test/local fixture keys used for TLS integration/e2e scaffolding.
+  # These are non-production development fixtures.
+  '''certs/key\.pem$''',
+  '''certs/server\.key$''',
+  '''clients/python/examples/interop/certs/key\.pem$''',
+  '''data/server\.key$''',
+  '''tests/certs/self-signed/key\.pem$''',
+  '''tests/certs/self-signed/key_rsa\.pem$''',
+  '''tests/certs/valid/key\.pem$''',
+  '''tests/certs/valid/key_rsa\.pem$''',
+  # RFC test vectors and token negative tests that trigger generic-api-key heuristics.
+  '''tests/test_tls_key_schedule\.zig$''',
+  '''tests/unit/endpoint/test_server\.zig$''',
+  '''tests/unit/endpoint/test_handshake_integration\.zig$''',
   # Zig build artifacts (not source)
   '''\.zig-cache/.*''',
   '''zig-out/.*''',
