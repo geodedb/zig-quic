@@ -80,6 +80,9 @@ fi
 # - all other testcases: disable guard to avoid false blocking on migrated/lossy paths
 if [[ "$TESTCASE" == "amplificationlimit" ]]; then
   unset QUIC_DISABLE_AMPLIFICATION_LIMIT || true
+  # Use bundled inflated cert for this test so Handshake CRYPTO volume matches
+  # interop-runner expectations even without multi-cert chain support.
+  export QNS_USE_BUNDLED_CERTS=1
 else
   export QUIC_DISABLE_AMPLIFICATION_LIMIT=1
 fi

@@ -343,6 +343,14 @@ pub fn processShortHeader(
             });
             conn.hs_rx_keys = null;
             conn.hs_tx_keys = null;
+            if (conn.crypto_retx_handshake) |buf| {
+                conn.allocator.free(buf);
+                conn.crypto_retx_handshake = null;
+            }
+            conn.crypto_retx_handshake_off = 0;
+            conn.pto_handshake_active = false;
+            conn.pto_handshake_id = 0;
+            conn.pto_handshake_count = 0;
 
             if (ctx.test_capture_enabled) {
                 logger.debugPrint("🤝 HANDSHAKE_DONE received, dropped Handshake keys\n", .{});

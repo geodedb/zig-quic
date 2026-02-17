@@ -260,6 +260,25 @@ fn onPeerFinished(ctx: *tls13.Context) !void {
 
     logger.debugPrint("[onPeerFinished] Set peer_finished_verified=true for {s}, conn={*}, value now={}\n", .{ if (conn.role == .Server) "Server" else "Client", conn, conn.peer_finished_verified });
 
+    // Server-side fast path: once peer Finished is verified and 1-RTT keys are
+    // available, immediately retire Handshake state to avoid stale Handshake PTO
+    // retransmissions interfering with migration/path validation.
+    if (conn.role == .Server and conn.handshake_packet_sent and conn.app_rx_keys != null and conn.app_tx_keys != null) {
+        if (conn.hs_rx_keys != null or conn.hs_tx_keys != null or conn.crypto_retx_handshake != null or conn.pto_handshake_active) {
+            conn.hs_rx_keys = null;
+            conn.hs_tx_keys = null;
+            if (conn.crypto_retx_handshake) |buf| {
+                conn.allocator.free(buf);
+                conn.crypto_retx_handshake = null;
+            }
+            conn.crypto_retx_handshake_off = 0;
+            conn.pto_handshake_active = false;
+            conn.pto_handshake_id = 0;
+            conn.pto_handshake_count = 0;
+            logger.debugPrint("[onPeerFinished] Server dropped Handshake keys/retransmit state\n", .{});
+        }
+    }
+
     // RFC 9001 §4.1.2: Client can drop handshake keys after sending Finished
     // Server must wait for peer Finished before dropping
     // This is handled by the Connection's existing lifecycle management
@@ -531,6 +550,14 @@ pub fn installApplicationKeys(
         logger.debugPrint("  {s}: Dropping Handshake keys (peer_finished_verified={})\n", .{ if (conn.role == .Server) "Server" else "Client", conn.peer_finished_verified });
         conn.hs_rx_keys = null;
         conn.hs_tx_keys = null;
+        if (conn.crypto_retx_handshake) |buf| {
+            conn.allocator.free(buf);
+            conn.crypto_retx_handshake = null;
+        }
+        conn.crypto_retx_handshake_off = 0;
+        conn.pto_handshake_active = false;
+        conn.pto_handshake_id = 0;
+        conn.pto_handshake_count = 0;
     } else {
         logger.debugPrint("  {s}: Deferring Handshake key drop (peer_finished_verified={}, handshake_packet_sent={})\n", .{ if (conn.role == .Server) "Server" else "Client", conn.peer_finished_verified, conn.handshake_packet_sent });
     }

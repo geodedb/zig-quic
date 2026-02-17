@@ -1029,6 +1029,47 @@ pub fn bind(comptime Connection: type) type {
         pub fn sendPtoProbeApp(self: *Connection) void {
             if (!self.hasConfirmedAppTxKeys()) return;
             const tx = self.app_tx_keys.?;
+
+            // Prefer probing with outstanding STREAM data when available.
+            // This prevents deadlocks where pure-PING probes keep the PTO loop
+            // alive but don't make application delivery progress under heavy
+            // loss/corruption.
+            if (self.app_stream_retx_init and self.app_stream_retx.count() > 0) {
+                var it = self.app_stream_retx.iterator();
+                if (it.next()) |entry| {
+                    const tracked = entry.value_ptr.*;
+                    var frame_storage: [2048]u8 = undefined;
+                    var frame_stream = std.io.fixedBufferStream(&frame_storage);
+                    _ = (frame.Frame{
+                        .stream = .{
+                            .stream_id = tracked.stream_id,
+                            .offset = tracked.offset,
+                            .fin = tracked.fin,
+                            .data = tracked.data,
+                        },
+                    }).write(frame_stream.writer()) catch 0;
+                    const frame_bytes = frame_stream.getWritten();
+
+                    const packet_storage = self.packet_pool.checkout();
+                    defer self.packet_pool.release(packet_storage);
+                    const pkt_len = packet.encodeShortProtectedInto(
+                        packet_storage,
+                        self.shortHeaderDcid(),
+                        @as(u32, @truncate(self.pn_app_tx)),
+                        2,
+                        frame_bytes,
+                        .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
+                        self.tx_key_phase,
+                    ) catch 0;
+                    if (pkt_len != 0) {
+                        const pkt = packet_storage[0..pkt_len];
+                        _ = self.send(pkt) catch {};
+                        self.onShortHeaderPacketSent(pkt.len, true);
+                        return;
+                    }
+                }
+            }
+
             var frames = std.ArrayList(u8){};
             defer frames.deinit(self.allocator.*);
             const w = frames.writer(self.allocator.*);
@@ -1172,6 +1213,14 @@ pub fn bind(comptime Connection: type) type {
                 logger.debugPrint("{s}: Dropping Handshake keys (peer_finished_verified={})\n", .{ if (self.role == .Server) "Server" else "Client", self.peer_finished_verified });
                 self.hs_rx_keys = null;
                 self.hs_tx_keys = null;
+                if (self.crypto_retx_handshake) |buf| {
+                    self.allocator.free(buf);
+                    self.crypto_retx_handshake = null;
+                }
+                self.crypto_retx_handshake_off = 0;
+                self.pto_handshake_active = false;
+                self.pto_handshake_id = 0;
+                self.pto_handshake_count = 0;
             } else {
                 logger.debugPrint("{s}: Deferring Handshake key drop (peer_finished_verified={}, handshake_packet_sent={})\n", .{ if (self.role == .Server) "Server" else "Client", self.peer_finished_verified, self.handshake_packet_sent });
             }

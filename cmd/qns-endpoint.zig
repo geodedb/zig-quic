@@ -135,6 +135,7 @@ fn isStressTestcase(testcase: []const u8) bool {
     return inList(testcase, &[_][]const u8{
         "longrtt",
         "amplificationlimit",
+        "multiconnect",
         "handshakeloss",
         "transferloss",
         "handshakecorruption",
@@ -564,10 +565,14 @@ pub fn main() !void {
             request_order_owned = request_order_urls.len > 0;
         }
         defer if (request_order_owned) alloc.free(request_order_urls);
+        const max_connections: usize = if (std.mem.eql(u8, testcase, "multiconnect"))
+            @max(@as(usize, 64), request_order_urls.len)
+        else
+            32;
         // Single accept loop (serve sequentially) with coarse timeout budget.
         var served: usize = 0;
         var idle_polls: usize = 0;
-        while (served < 32) {
+        while (served < max_connections) {
             api.poll(ep, 100) catch {};
             if (idle_polls < 1000) idle_polls += 1;
 
