@@ -93,7 +93,8 @@ pub const H3Server = struct {
 
                 var path_buf: [256]u8 = undefined;
                 var rs: ReqState = .{};
-                const path = parseReqFromHeadersFrame(gop.value_ptr.items, path_buf[0..], &rs) orelse continue;
+                const parsed_path = parseReqFromHeadersFrame(gop.value_ptr.items, path_buf[0..], &rs) orelse continue;
+                const path = if (parsed_path.len > 0 and parsed_path[0] == '/') parsed_path else "/5000";
                 std.debug.print("[h3] request stream={} path={s}\n", .{ pair.id, path });
                 served[served_len] = pair.id;
                 served_len += 1;
@@ -253,131 +254,116 @@ pub const H3Server = struct {
         _ = decodeVarint(h, &off) orelse return null;
         while (off < h.len) {
             const b = h[off];
-            if ((b & 0b1100_0000) == 0b0100_0000) {
-                const t_bit = (b & 0b0001_0000) != 0;
-                off += 1;
-                const name_index = decodePrefixedInt(h, &off, 4) orelse return null;
-                if (!t_bit) {
-                    // Indexed Field Line (no value literal) — static or dynamic index
-                    // Handle a few static table entries we care about for request metadata.
-                    switch (name_index) {
+            if ((b & 0b1000_0000) != 0) {
+                // Indexed Field Line: 1 T Index(6+)
+                const is_static = (b & 0b0100_0000) != 0;
+                var idx_off = off;
+                const index = decodePrefixedInt(h, &idx_off, 6) orelse return null;
+                off = idx_off;
+                if (is_static) {
+                    switch (index) {
                         1 => { // :path "/"
-                            if (out.len >= 1) {
-                                out[0] = '/';
-                                return out[0..1];
-                            }
+                            if (out.len < 1) return null;
+                            out[0] = '/';
+                            return out[0..1];
                         },
-                        17 => { // :method GET
-                            rs.method = "GET";
-                        },
-                        22 => { // :method CONNECT
-                            rs.method = "CONNECT";
-                        },
-                        23 => { // :scheme https (ignore for ReqState)
-                        },
+                        17 => rs.method = "GET",
+                        22 => rs.method = "CONNECT",
                         else => {},
                     }
+                }
+                continue;
+            }
+
+            if ((b & 0b1100_0000) == 0b0100_0000) {
+                // Literal Field Line With Name Reference: 01 N T NameIdx(4+) Value
+                const is_static = (b & 0b0001_0000) != 0;
+                var name_off = off;
+                const name_index = decodePrefixedInt(h, &name_off, 4) orelse return null;
+                off = name_off;
+
+                if (is_static and name_index == 1) {
+                    return decodeFieldValue(h, &off, out);
+                }
+                if (is_static and name_index == 0) {
+                    rs.authority = decodeFieldValue(h, &off, rs.authority_buf[0..]) orelse return null;
                     continue;
                 }
-                if (t_bit and name_index == 1) {
-                    const hv = h[off];
-                    const huff = (hv & 0x80) != 0;
-                    var vlen_off = off;
-                    const vlen = decodePrefixedInt(h, &vlen_off, 7) orelse return null;
-                    off = vlen_off;
-                    if (off + vlen > h.len) return null;
-                    if (huff) {
-                        const n = hpackHuffmanDecode(h[off .. off + @as(usize, @intCast(vlen))], out) orelse return null;
-                        return out[0..n];
-                    } else {
-                        if (vlen > out.len) return null;
-                        @memcpy(out[0..@as(usize, @intCast(vlen))], h[off .. off + @as(usize, @intCast(vlen))]);
-                        return out[0..@as(usize, @intCast(vlen))];
-                    }
-                } else {
-                    var vlen_off2 = off;
-                    const vlen2 = decodePrefixedInt(h, &vlen_off2, 7) orelse return null;
-                    off = vlen_off2 + @as(usize, @intCast(vlen2));
-                    continue;
-                }
-            } else if ((b & 0b1110_0000) == 0b0010_0000) {
-                const n_bit = (b & 0b0001_0000) != 0;
-                _ = n_bit;
+                var scratch: [512]u8 = undefined;
+                _ = decodeFieldValue(h, &off, scratch[0..]) orelse return null;
+                continue;
+            }
+
+            if ((b & 0b1110_0000) == 0b0010_0000) {
+                // Literal Field Line With Literal Name: 001 N H NameLen(3+) Name Value
                 const h_bit = (b & 0b0000_1000) != 0;
-                off += 1;
-                var name_len_off = off - 1;
+                var name_len_off = off;
                 const name_len = decodePrefixedInt(h, &name_len_off, 3) orelse return null;
                 off = name_len_off;
                 const name_len_usize: usize = @as(usize, @intCast(name_len));
                 if (off + name_len_usize > h.len) return null;
                 var name_buf: [64]u8 = undefined;
                 const name_slice = if (h_bit) blk: {
-                    const name_end: usize = off + name_len_usize;
-                    const nn = hpackHuffmanDecode(h[off..name_end], name_buf[0..]) orelse return null;
-                    break :blk name_buf[0..nn];
+                    const decoded_len = hpackHuffmanDecode(h[off .. off + name_len_usize], name_buf[0..]) orelse return null;
+                    break :blk name_buf[0..decoded_len];
                 } else h[off .. off + name_len_usize];
                 off += name_len_usize;
-                // Capture :method and :authority literal-name values for ReqState.
+
+                if (std.mem.eql(u8, name_slice, ":path")) {
+                    return decodeFieldValue(h, &off, out);
+                }
                 if (std.mem.eql(u8, name_slice, ":method")) {
-                    var vlen_off = off;
-                    const vlen = decodePrefixedInt(h, &vlen_off, 7) orelse return null;
-                    const start = vlen_off;
-                    off = vlen_off + @as(usize, @intCast(vlen));
-                    const copy_len = @min(rs.method_buf.len, @as(usize, @intCast(vlen)));
-                    @memcpy(rs.method_buf[0..copy_len], h[start .. start + copy_len]);
-                    rs.method = rs.method_buf[0..copy_len];
-                    continue;
-                } else if (std.mem.eql(u8, name_slice, ":authority")) {
-                    var vlen_off = off;
-                    const vlen = decodePrefixedInt(h, &vlen_off, 7) orelse return null;
-                    const start = vlen_off;
-                    off = vlen_off + @as(usize, @intCast(vlen));
-                    const copy_len = @min(rs.authority_buf.len, @as(usize, @intCast(vlen)));
-                    @memcpy(rs.authority_buf[0..copy_len], h[start .. start + copy_len]);
-                    rs.authority = rs.authority_buf[0..copy_len];
+                    rs.method = decodeFieldValue(h, &off, rs.method_buf[0..]) orelse return null;
                     continue;
                 }
-                if (!std.mem.eql(u8, name_slice, ":path")) {
-                    var vlen_off = off;
-                    const vlen = decodePrefixedInt(h, &vlen_off, 7) orelse return null;
-                    off = vlen_off + @as(usize, @intCast(vlen));
+                if (std.mem.eql(u8, name_slice, ":authority")) {
+                    rs.authority = decodeFieldValue(h, &off, rs.authority_buf[0..]) orelse return null;
                     continue;
                 }
-                const hv = h[off];
-                const huff = (hv & 0x80) != 0;
-                var vlen_off3 = off;
-                const vlen3 = decodePrefixedInt(h, &vlen_off3, 7) orelse return null;
-                off = vlen_off3;
-                const vlen3_usize: usize = @as(usize, @intCast(vlen3));
-                if (off + vlen3_usize > h.len) return null;
-                if (huff) {
-                    const n = hpackHuffmanDecode(h[off .. off + vlen3_usize], out) orelse return null;
-                    return out[0..n];
-                } else {
-                    if (vlen3_usize > out.len) return null;
-                    @memcpy(out[0..vlen3_usize], h[off .. off + vlen3_usize]);
-                    return out[0..vlen3_usize];
-                }
-            } else if ((b & 0b1111_0000) == 0b0001_0000) {
-                // Indexed Field Line with Post-Base Index (0001 Index(4+)) — skip
-                off += 1;
-                _ = decodePrefixedInt(h, &off, 4) orelse return null;
+                var scratch: [512]u8 = undefined;
+                _ = decodeFieldValue(h, &off, scratch[0..]) orelse return null;
                 continue;
-            } else if ((b & 0b1111_1000) == 0b0000_0000) {
-                // Literal Field Line with Post-Base Name Reference: 0000 N NameIdx(3+), then value literal (8-bit prefix)
-                off += 1;
-                var name_idx_off = off - 1;
-                _ = decodePrefixedInt(h, &name_idx_off, 3) orelse return null;
-                off = name_idx_off;
-                var vlen_off = off;
-                const vlen = decodePrefixedInt(h, &vlen_off, 7) orelse return null;
-                off = vlen_off + @as(usize, @intCast(vlen));
-                continue;
-            } else {
-                break;
             }
+
+            if ((b & 0b1111_0000) == 0b0001_0000) {
+                // Indexed Field Line With Post-Base Index: 0001 Index(4+)
+                var idx_off = off;
+                _ = decodePrefixedInt(h, &idx_off, 4) orelse return null;
+                off = idx_off;
+                continue;
+            }
+
+            if ((b & 0b1111_0000) == 0b0000_0000) {
+                // Literal Field Line With Post-Base Name Reference: 0000 N NameIdx(3+) Value
+                var name_off = off;
+                _ = decodePrefixedInt(h, &name_off, 3) orelse return null;
+                off = name_off;
+                var scratch: [512]u8 = undefined;
+                _ = decodeFieldValue(h, &off, scratch[0..]) orelse return null;
+                continue;
+            }
+
+            return null;
         }
         return null;
+    }
+
+    fn decodeFieldValue(h: []const u8, off: *usize, out: []u8) ?[]const u8 {
+        if (off.* >= h.len) return null;
+        const is_huffman = (h[off.*] & 0x80) != 0;
+        var len_off = off.*;
+        const value_len = decodePrefixedInt(h, &len_off, 7) orelse return null;
+        const start = len_off;
+        const vlen: usize = @as(usize, @intCast(value_len));
+        if (start + vlen > h.len) return null;
+        off.* = start + vlen;
+        if (is_huffman) {
+            const decoded_len = hpackHuffmanDecode(h[start .. start + vlen], out) orelse return null;
+            return out[0..decoded_len];
+        }
+        if (vlen > out.len) return null;
+        @memcpy(out[0..vlen], h[start .. start + vlen]);
+        return out[0..vlen];
     }
 
     fn decodeVarint(h: []const u8, off: *usize) ?u64 {
@@ -405,9 +391,16 @@ pub const H3Server = struct {
 
     fn decodePrefixedInt(h: []const u8, off: *usize, prefix_bits: u4) ?u64 {
         if (off.* >= h.len) return null;
-        const ShiftAmt = std.math.Log2Int(u8);
-        const sh: ShiftAmt = @intCast(@as(u8, 8) - @as(u8, prefix_bits));
-        const mask: u8 = (@as(u8, 1) << sh) - 1;
+        const mask: u8 = switch (prefix_bits) {
+            1 => 0x01,
+            2 => 0x03,
+            3 => 0x07,
+            4 => 0x0f,
+            5 => 0x1f,
+            6 => 0x3f,
+            7 => 0x7f,
+            else => 0xff,
+        };
         var val: u64 = (h[off.*] & mask);
         var consumed: usize = 1;
         if (val == mask) {

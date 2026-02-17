@@ -81,9 +81,15 @@ fn encodeIndexedStatic(index: u64, out: []u8) usize {
 }
 
 fn encPref(val: u64, out: []u8, prefix_bits: u3) usize {
-    const ShiftAmt = std.math.Log2Int(u8);
-    const sh: ShiftAmt = @intCast(@as(u8, 8) - @as(u8, prefix_bits));
-    const max: u8 = (@as(u8, 1) << sh) - 1;
+    const max: u8 = switch (prefix_bits) {
+        1 => 0x01,
+        2 => 0x03,
+        3 => 0x07,
+        4 => 0x0f,
+        5 => 0x1f,
+        6 => 0x3f,
+        else => 0x7f,
+    };
     var k: usize = 1;
     if (val < max) {
         out[0] |= @as(u8, @intCast(val));
@@ -116,16 +122,13 @@ pub fn buildSimpleGetHeaders(host: []const u8, path: []const u8, out: []u8) ?usi
     k += encodeIndexedStatic(23, out[k..]);
     // :authority host (literal with name reference to static idx 0)
     if (out.len < k + 1) return null;
-    out[k] = 0b0101_0000;
-    k += 1; // 01 N T; N=0, T=1 (name reference), prefix=4
-    var nb: [8]u8 = .{0} ** 8;
-    nb[0] = 0;
-    const nk = encPref(0, nb[0..], 4); // static index 0 = :authority
-    @memcpy(out[k .. k + nk], nb[0..nk]);
+    out[k] = 0b0101_0000; // 01 N T with T=1 (static name reference), 4-bit prefix for name index
+    const nk = encPref(0, out[k..], 4); // static index 0 = :authority
     k += nk;
     var vb_auth: [32]u8 = .{0} ** 32;
     vb_auth[0] = 0; // H=0
     const vk_auth = encPref(host.len, vb_auth[0..], 7);
+    if (out.len < k + vk_auth) return null;
     @memcpy(out[k .. k + vk_auth], vb_auth[0..vk_auth]);
     k += vk_auth;
     if (out.len < k + host.len) return null;
@@ -136,16 +139,13 @@ pub fn buildSimpleGetHeaders(host: []const u8, path: []const u8, out: []u8) ?usi
         k += encodeIndexedStatic(1, out[k..]);
     } else {
         if (out.len < k + 1) return null;
-        out[k] = 0b0101_0000;
-        k += 1; // name reference
-        var nb2: [8]u8 = .{0} ** 8;
-        nb2[0] = 0;
-        const nk2 = encPref(1, nb2[0..], 4);
-        @memcpy(out[k .. k + nk2], nb2[0..nk2]);
+        out[k] = 0b0101_0000; // literal with static name reference
+        const nk2 = encPref(1, out[k..], 4); // static index 1 = :path
         k += nk2;
         var vb: [16]u8 = .{0} ** 16;
         vb[0] = 0; // H=0
         const vk = encPref(path.len, vb[0..], 7);
+        if (out.len < k + vk) return null;
         @memcpy(out[k .. k + vk], vb[0..vk]);
         k += vk;
         if (out.len < k + path.len) return null;
@@ -214,6 +214,12 @@ pub fn h3Get(ep: *api.QuicEndpoint, conn: *api.QuicConnection, host: []const u8,
         n = encodeVarint(0x03, t[0..]);
         writeAll(ep, conn, sid, t[0..n]);
     } else |_| {}
+    // Ensure control and QPACK stream prefaces are flushed before the request stream.
+    api.flush(ep, 5);
+    var settle: usize = 0;
+    while (settle < 32) : (settle += 1) {
+        api.poll(ep, 1) catch {};
+    }
 
     const stream_id = try api.openStream(conn, true);
     var req: [512]u8 = undefined;
@@ -224,14 +230,24 @@ pub fn h3Get(ep: *api.QuicEndpoint, conn: *api.QuicConnection, host: []const u8,
     var buf = std.ArrayListUnmanaged(u8){};
     defer buf.deinit(std.heap.page_allocator);
     var tmp: [2048]u8 = undefined;
-    var spins: usize = 0;
-    while (!api.isStreamFinished(conn, stream_id) and spins < 20_000) : (spins += 1) {
+    var idle_spins: usize = 0;
+    while (idle_spins < 20_000) {
         const r = api.readStream(conn, stream_id, tmp[0..]) catch 0;
         if (r > 0) {
             _ = buf.appendSlice(std.heap.page_allocator, tmp[0..r]) catch {};
-        } else {
-            api.poll(ep, 1) catch {};
+            idle_spins = 0;
+            continue;
         }
+        if (api.isStreamFinished(conn, stream_id)) {
+            break;
+        }
+        api.poll(ep, 1) catch {};
+        idle_spins += 1;
+    }
+    while (true) {
+        const r = api.readStream(conn, stream_id, tmp[0..]) catch 0;
+        if (r == 0) break;
+        _ = buf.appendSlice(std.heap.page_allocator, tmp[0..r]) catch {};
     }
     const bytes = buf.toOwnedSlice(std.heap.page_allocator) catch try std.heap.page_allocator.dupe(u8, &[_]u8{});
     defer std.heap.page_allocator.free(bytes);
@@ -239,11 +255,21 @@ pub fn h3Get(ep: *api.QuicEndpoint, conn: *api.QuicConnection, host: []const u8,
 
     var off2: usize = 0;
     var copied: usize = 0;
+    var parse_error: bool = false;
     while (off2 < bytes.len) {
-        const typ = decodeVarint(bytes, &off2) orelse return error.ParseFailed;
-        const flen = decodeVarint(bytes, &off2) orelse return error.ParseFailed;
+        const typ = decodeVarint(bytes, &off2) orelse {
+            parse_error = true;
+            break;
+        };
+        const flen = decodeVarint(bytes, &off2) orelse {
+            parse_error = true;
+            break;
+        };
         const end = off2 + @as(usize, @intCast(flen));
-        if (end > bytes.len) return error.ParseFailed;
+        if (end > bytes.len) {
+            parse_error = true;
+            break;
+        }
 
         if (typ == 0x00 and copied < out.len) {
             const to_copy = @min(out.len - copied, @as(usize, @intCast(flen)));
@@ -253,5 +279,7 @@ pub fn h3Get(ep: *api.QuicEndpoint, conn: *api.QuicConnection, host: []const u8,
         off2 = end;
     }
 
-    return copied;
+    if (copied > 0) return copied;
+    if (parse_error) return error.ParseFailed;
+    return 0;
 }
