@@ -57,6 +57,7 @@ fn requestOrderIndex(path: []const u8, requests: []const []const u8) ?usize {
 const supported_testcases = [_][]const u8{
     "handshake",
     "transfer",
+    "http3",
     "retry",
     "longrtt",
     "keyupdate",
@@ -251,10 +252,12 @@ fn writeAllStream(ep: *api.QuicEndpoint, conn: *api.QuicConnection, stream_id: a
     const start_ns = std.time.nanoTimestamp();
     var stalled_polls: usize = 0;
     var off: usize = 0;
+    var fin_sent = false;
     while (off < data.len) {
         if (elapsedMsSince(start_ns) >= responseTotalTimeoutMs(testcase)) return false;
         const chunk_end = @min(off + 1200, data.len);
-        const n = api.writeStream(conn, stream_id, data[off..chunk_end], false) catch |err| switch (err) {
+        const is_last_chunk = (chunk_end == data.len);
+        const n = api.writeStream(conn, stream_id, data[off..chunk_end], is_last_chunk) catch |err| switch (err) {
             error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked, error.WouldBlock => 0,
             else => return false,
         };
@@ -266,11 +269,24 @@ fn writeAllStream(ep: *api.QuicEndpoint, conn: *api.QuicConnection, stream_id: a
         }
         stalled_polls = 0;
         off += n;
+        if (is_last_chunk and off == data.len) fin_sent = true;
         api.poll(ep, 1) catch {};
     }
-    // Send FIN explicitly as a zero-length STREAM frame after all payload bytes.
-    // This avoids relying on short-write behavior to carry fin=true.
-    _ = api.writeStream(conn, stream_id, &[_]u8{}, true) catch {};
+
+    // Ensure FIN is delivered even if the final payload write couldn't carry it.
+    while (!fin_sent) {
+        if (elapsedMsSince(start_ns) >= responseTotalTimeoutMs(testcase)) return false;
+        _ = api.writeStream(conn, stream_id, &[_]u8{}, true) catch |err| switch (err) {
+            error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked, error.WouldBlock => {
+                stalled_polls += 1;
+                if (stalled_polls >= 2000) return false;
+                api.poll(ep, 5) catch {};
+                continue;
+            },
+            else => return false,
+        };
+        fin_sent = true;
+    }
     api.flush(ep, 5);
     return true;
 }

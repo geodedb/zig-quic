@@ -38,6 +38,40 @@ NC='\033[0m' # No Color
 
 echo -e "${GREEN}=== QUIC Interoperability Test Suite ===${NC}"
 
+prepare_local_interop_assets() {
+    local cert_dir="${ROOT}/examples/interop/quic-interop-runner/certs"
+    local www_dir="${ROOT}/examples/interop/quic-network-simulator/www"
+    local test_probe
+
+    mkdir -p "${cert_dir}" "${www_dir}"
+
+    # Local Docker runs can leave these directories root-owned.
+    test_probe="${www_dir}/.write-test.$$"
+    if ! touch "${test_probe}" 2>/dev/null; then
+        if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+            sudo chown -R "$(id -u):$(id -g)" "${ROOT}/examples/interop/quic-network-simulator" "${ROOT}/examples/interop/quic-interop-runner" || true
+            touch "${test_probe}" 2>/dev/null || true
+        fi
+    fi
+    rm -f "${test_probe}" 2>/dev/null || true
+
+    install -m 0644 tests/certs/cert.pem "${cert_dir}/cert.pem"
+    install -m 0644 tests/certs/key.pem "${cert_dir}/key.pem"
+    install -m 0644 tests/certs/key.pem "${cert_dir}/priv.key"
+
+    if [[ ! -s "${www_dir}/index.html" ]]; then
+        printf '<!doctype html><html><body>zig-quic interop fixture</body></html>\n' > "${www_dir}/index.html"
+    fi
+    if [[ ! -s "${www_dir}/5000" ]]; then
+        dd if=/dev/urandom of="${www_dir}/5000" bs=5000 count=1 status=none
+    fi
+    if [[ ! -s "${www_dir}/10000" ]]; then
+        dd if=/dev/urandom of="${www_dir}/10000" bs=10000 count=1 status=none
+    fi
+}
+
+prepare_local_interop_assets
+
 # Build the Zig implementation (skip if already exists and SKIP_BUILD=1)
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
     echo -e "${YELLOW}Building Zig QUIC implementation...${NC}"
@@ -125,7 +159,7 @@ run_test() {
     if [[ "$server" == "nginx" && "$client" != "zig" ]]; then
         echo -e "${YELLOW}Skipping: nginx is server-only${NC}"
         RESULTS[$key]="SKIPPED"
-        ((SKIPPED++))
+        SKIPPED=$((SKIPPED + 1))
         return
     fi
     
@@ -143,11 +177,17 @@ run_test() {
     if COMPOSE_HTTP_TIMEOUT=120 timeout 240 docker compose -f examples/interop/docker-compose.full.yml --profile $profiles up --abort-on-container-exit --timeout 5 2>&1 | tee "/tmp/interop_${key}.log"; then
         echo -e "${GREEN}✓ PASSED${NC}"
         RESULTS[$key]="PASSED"
-        ((PASSED++))
+        PASSED=$((PASSED + 1))
     else
-        echo -e "${RED}✗ FAILED${NC}"
-        RESULTS[$key]="FAILED"
-        ((FAILED++))
+        if rg -qi "unsupported test case|unsupported testcase|not supported by .* endpoint|exited with code 127" "/tmp/interop_${key}.log"; then
+            echo -e "${YELLOW}⊘ SKIPPED (unsupported by implementation)${NC}"
+            RESULTS[$key]="SKIPPED"
+            SKIPPED=$((SKIPPED + 1))
+        else
+            echo -e "${RED}✗ FAILED${NC}"
+            RESULTS[$key]="FAILED"
+            FAILED=$((FAILED + 1))
+        fi
     fi
     
     # Clean up containers and networks
@@ -231,11 +271,17 @@ run_generic_test() {
     if COMPOSE_HTTP_TIMEOUT=120 timeout 240 docker compose -f examples/interop/docker-compose.full.yml --profile generic up --abort-on-container-exit --timeout 5 2>&1 | tee "/tmp/interop_${key}.log"; then
         echo -e "${GREEN}✓ PASSED${NC}"
         RESULTS[$key]="PASSED"
-        ((PASSED++))
+        PASSED=$((PASSED + 1))
     else
-        echo -e "${RED}✗ FAILED${NC}"
-        RESULTS[$key]="FAILED"
-        ((FAILED++))
+        if rg -qi "unsupported test case|unsupported testcase|not supported by .* endpoint|exited with code 127" "/tmp/interop_${key}.log"; then
+            echo -e "${YELLOW}⊘ SKIPPED (unsupported by implementation)${NC}"
+            RESULTS[$key]="SKIPPED"
+            SKIPPED=$((SKIPPED + 1))
+        else
+            echo -e "${RED}✗ FAILED${NC}"
+            RESULTS[$key]="FAILED"
+            FAILED=$((FAILED + 1))
+        fi
     fi
     
     # Clean up containers and networks

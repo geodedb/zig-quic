@@ -4,6 +4,7 @@ set -euo pipefail
 SUPPORTED_TESTCASES=(
   handshake
   transfer
+  http3
   retry
   longrtt
   keyupdate

@@ -4,6 +4,7 @@ set -euo pipefail
 SUPPORTED_TESTCASES=(
   handshake
   transfer
+  http3
   retry
   longrtt
   keyupdate
@@ -121,7 +122,7 @@ if [[ "$ROLE" == "client" ]]; then
 fi
 
 if [[ "$ROLE" == "server" ]]; then
-  if [[ -z "$(ls -A /www 2>/dev/null || true)" ]]; then
+  if [[ -w /www && -z "$(ls -A /www 2>/dev/null || true)" ]]; then
     dd if=/dev/urandom of=/www/5000 bs=5000 count=1 status=none || true
     dd if=/dev/urandom of=/www/10000 bs=10000 count=1 status=none || true
   fi
