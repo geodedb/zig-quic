@@ -239,14 +239,12 @@ pub const InitialKeys = struct {
     tx_keys: packet.AeadKeys,
 };
 
-/// Derive Initial packet protection keys from connection ID.
+/// Derive Initial packet protection keys from the current client Initial DCID.
 /// Extracted from endpoint.zig lines 1886-1938 (Phase 4b.5 Session 6).
 ///
-/// RFC 9001 §5.2: "The keys used for Initial packets are calculated using the
-/// Destination Connection ID field from the client's first Initial packet."
-///
-/// RFC 9000 §5.2: "After a Retry, the client changes the DCID but MUST continue
-/// to use the original DCID (ODCID) for key derivation."
+/// RFC 9001 §5.2: Initial keys are derived from the Destination Connection ID in
+/// the Initial packet sent by the client. If Retry is used, this changes to the
+/// server-selected connection ID carried in the client's post-Retry Initial.
 ///
 /// This function handles role-oriented key derivation:
 /// - Server: Derives client keys for RX, server keys for TX
@@ -254,7 +252,7 @@ pub const InitialKeys = struct {
 ///
 /// Parameters:
 /// - conn: Connection with role and ODCID information
-/// - dcid: Destination Connection ID from packet (used if ODCID not yet set)
+/// - dcid: Client Initial destination connection ID for this Initial key epoch
 /// - version: QUIC version (v1 or v2)
 ///
 /// Returns:
@@ -267,30 +265,12 @@ pub fn deriveInitialKeys(
     dcid: []const u8,
     version: u32,
 ) InitialKeys {
-    // Determine which DCID to use for key derivation (ODCID per RFC 9000 §5.2)
-    const derive_dcid = blk: {
-        if (conn.role == .Server) {
-            // Server: Use packet's DCID (client's original DCID)
-            // For first packet, original_dcid not yet set
-            if (conn.original_dcid.len > 0 and
-                conn.original_dcid.len <= conn.original_dcid.bytes.len)
-            {
-                break :blk conn.original_dcid.bytes[0..conn.original_dcid.len];
-            }
-            // First Initial packet from client - use packet's DCID
-            break :blk dcid;
-        } else {
-            // Client: Must use its own original DCID (never server's)
-            if (conn.original_dcid.len > 0 and
-                conn.original_dcid.len <= conn.original_dcid.bytes.len)
-            {
-                break :blk conn.original_dcid.bytes[0..conn.original_dcid.len];
-            }
-            // Error: Client without original_dcid is not properly initialized
-            // Return empty keys (caller should handle error)
-            break :blk dcid[0..0];
-        }
-    };
+    // Server uses the DCID from the current client Initial packet.
+    // Client uses the DCID it is currently sending in Initial packets.
+    const derive_dcid = if (conn.role == .Client)
+        conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len]
+    else
+        dcid;
 
     // Check for QUIC v2
     const is_v2 = (version == packet.QUIC_V2);

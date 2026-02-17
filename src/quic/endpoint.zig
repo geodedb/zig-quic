@@ -840,20 +840,83 @@ pub const Endpoint = struct {
             break;
         }
         const c = c_found orelse return;
+        if (c.role != .Client) return;
 
         // Verify Retry integrity using ODCID
+        // RFC 9001 §5.8: Retry integrity uses the DCID from the Initial that
+        // elicited this Retry. Track that as the client's current Initial DCID.
         const odcid = c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len];
         if (odcid.len == 0) return;
         if (!packet.verifyRetry(odcid, bytes)) return;
+        if (c.peer_finished_verified or c.app_rx_keys != null or c.handshake_done_seen) return;
+        if (c.retry_received and c.peer_initial_dcid.len == scid.len and
+            std.mem.eql(u8, c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len], scid))
+        {
+            return;
+        }
 
         // Store token and update version/DCID for next Initial
         c.initial_token.clearRetainingCapacity();
         _ = c.initial_token.appendSlice(self.allocator, token_bytes) catch {};
+        c.retry_received = true;
         c.version = version;
         c.version_v2 = (version == packet.QUIC_V2);
         c.initial_version = version;
         c.peer_initial_dcid.len = @intCast(@min(scid.len, c.peer_initial_dcid.bytes.len));
         if (c.peer_initial_dcid.len > 0) @memcpy(c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len], scid[0..c.peer_initial_dcid.len]);
+
+        // RFC 9000 §17.2.5: Client MUST restart Initial-space handshake state after Retry.
+        c.pn_initial_tx = 0;
+        c.pn_initial = .{};
+        c.initial_rx_keys = null;
+        c.initial_tx_keys = null;
+        c.hs_rx_keys = null;
+        c.hs_tx_keys = null;
+        c.app_rx_keys = null;
+        c.app_tx_keys = null;
+        c.app_rx_secret = null;
+        c.app_tx_secret = null;
+        c.crypto_tx_off_initial = 0;
+        c.crypto_rx_off_initial = 0;
+        c.crypto_retx_initial_off = 0;
+        if (c.crypto_retx_initial) |retx| {
+            self.allocator.free(retx);
+            c.crypto_retx_initial = null;
+        }
+        c.keylog_handshake_logged = false;
+        c.keylog_app_logged = false;
+        c.keylog_client_traffic_epoch = 0;
+        c.keylog_server_traffic_epoch = 0;
+        c.tls_inbox.clearRetainingCapacity();
+        c.peer_finished_verified = false;
+        c.server_hello_sent = false;
+        c.handshake_packet_sent = false;
+        c.handshake_done_sent = false;
+        c.handshake_done_seen = false;
+
+        // Recreate client TLS context so a fresh ClientHello is generated for the post-Retry Initial.
+        if (c.tls_context) |tls_ctx| {
+            tls_ctx.deinit();
+            const local_tp: []const u8 = c.local_transport_params_raw orelse &[_]u8{};
+            const fresh_tls = handshake_integration.createTlsContext(
+                self.allocator,
+                .Client,
+                self.cfg.alpn,
+                local_tp,
+                null,
+                null,
+                self.cfg.allow_insecure,
+                false,
+                self.cfg.inline_client_cert_der,
+                self.cfg.inline_client_priv_key,
+            ) catch return;
+            tls_ctx.* = fresh_tls;
+            if (c.server_name) |name| {
+                tls_ctx.config.server_name = name;
+            }
+        } else {
+            return;
+        }
 
         // Resend Initial with token
         self.clientSendInitialProbe(c) catch {};

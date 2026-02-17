@@ -215,22 +215,15 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
     const c = ctx.conn;
     const v2 = (c.version == packet.QUIC_V2);
 
-    // Initial secret derives from the immutable DCID per RFC 9001 §5.1/§5.2.
-    const dcid_for_secret = if (c.original_dcid.len > 0)
-        c.original_dcid.bytes[0..c.original_dcid.len]
-    else
-        c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len];
+    // RFC 9001 §5.2: derive Initial secrets from the Destination Connection ID
+    // in the Initial packet being sent by the client. This changes after Retry.
+    const dcid_for_secret = c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len];
 
     const initial = ks.deriveInitialSecret(v2, dcid_for_secret);
     const pair = ks.deriveClientServerInitial(initial);
 
-    logger.debugPrint("client: deriving Initial keys with dcid (peer_initial_dcid) len={}: ", .{c.peer_initial_dcid.len});
+    logger.debugPrint("client: deriving Initial keys with dcid len={}: ", .{c.peer_initial_dcid.len});
     for (c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]) |b| {
-        logger.debugPrint("{X:0>2} ", .{b});
-    }
-    logger.debugPrint("\n", .{});
-    logger.debugPrint("       original_dcid len={}: ", .{c.original_dcid.len});
-    for (c.original_dcid.bytes[0..c.original_dcid.len]) |b| {
         logger.debugPrint("{X:0>2} ", .{b});
     }
     logger.debugPrint("\n", .{});

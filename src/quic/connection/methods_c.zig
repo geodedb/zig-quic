@@ -445,7 +445,7 @@ pub fn bind(comptime Connection: type) type {
             // RFC 9000 §7.4: Validate required parameters are present
             // peer_is_server = true if we're a client receiving from server
             const peer_is_server = (self.role == .Client);
-            const retry_sent = false; // FIXME: Track if Retry was sent by server
+            const retry_sent = self.retry_received;
             tp_dec.validate(peer_is_server, retry_sent) catch return error.InvalidTransportParams;
 
             // RFC 9000 §18.2: Check that parameter values are within allowed ranges

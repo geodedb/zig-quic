@@ -99,3 +99,88 @@ test "server_issues_retry_and_client_retries" {
     const odcid = c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len];
     try std.testing.expect(packet.verifyRetry(odcid, b));
 }
+
+test "client_resets_initial_state_and_replays_retry_token" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    var alloc = gpa.allocator();
+
+    // Use server endpoint mode and capture ring so we can loop packets through
+    // server+client paths inside one endpoint instance.
+    var ep = try endpoint.Endpoint.init(alloc, "127.0.0.1:4433", &.{ .alpn = &[_][]const u8{} });
+    defer ep.deinit();
+    ep.cfg.enable_retry = true;
+    ep.cfg.token_secret = "test-secret";
+    ep.cfg.token_expiry_ms = 60000;
+    ep.test_capture_enabled = true;
+    ep.captureClear();
+
+    const c = try ep.connectClient("127.0.0.1:1");
+
+    // Send the first Initial through normal client path so TLS state and PN
+    // reflect a pre-Retry handshake attempt.
+    try ep.clientSendInitialProbe(c);
+    try std.testing.expectEqual(@as(u64, 1), c.pn_initial_tx);
+
+    const initial_cap = ep.capturePop() orelse return error.MissingInitial;
+    defer alloc.free(initial_cap.bytes);
+    ep.captureClear();
+
+    // Feed that Initial into the server path and capture Retry.
+    ep.testInject(c.peer, initial_cap.bytes);
+    try std.testing.expect(ep.captureLen() > 0);
+    const retry_cap = ep.capturePop() orelse return error.MissingRetry;
+    defer alloc.free(retry_cap.bytes);
+    ep.captureClear();
+
+    // Parse Retry token (bytes between SCID and integrity tag).
+    var ri: usize = 5;
+    try std.testing.expect(ri < retry_cap.bytes.len);
+    const retry_dcid_len = retry_cap.bytes[ri];
+    ri += 1;
+    try std.testing.expect(ri + retry_dcid_len <= retry_cap.bytes.len);
+    ri += retry_dcid_len;
+    try std.testing.expect(ri < retry_cap.bytes.len);
+    const retry_scid_len = retry_cap.bytes[ri];
+    ri += 1;
+    try std.testing.expect(ri + retry_scid_len <= retry_cap.bytes.len);
+    ri += retry_scid_len;
+    try std.testing.expect(retry_cap.bytes.len >= 16 and ri <= retry_cap.bytes.len - 16);
+    const retry_token = retry_cap.bytes[ri .. retry_cap.bytes.len - 16];
+    try std.testing.expect(retry_token.len > 0);
+
+    // Inject Retry into client path; client should reset Initial PN state and
+    // send a new Initial carrying the Retry token.
+    ep.testInject(c.peer, retry_cap.bytes);
+    try std.testing.expect(ep.captureLen() > 0);
+    const retried_initial_cap = ep.capturePop() orelse return error.MissingRetriedInitial;
+    defer alloc.free(retried_initial_cap.bytes);
+
+    // PN should have been reset to 0 for post-Retry Initial and incremented once.
+    try std.testing.expectEqual(@as(u64, 1), c.pn_initial_tx);
+
+    const b = retried_initial_cap.bytes;
+    try std.testing.expect(b.len >= 7);
+    try std.testing.expect((b[0] & 0x80) != 0); // long header
+    const typ: u2 = @intCast((b[0] >> 4) & 0x03);
+    try std.testing.expect(typ == 0); // Initial
+
+    // Parse token from client Initial header and verify exact echo.
+    var i: usize = 5;
+    const dcid_len = b[i];
+    i += 1;
+    try std.testing.expect(i + dcid_len <= b.len);
+    i += dcid_len;
+    try std.testing.expect(i < b.len);
+    const scid_len = b[i];
+    i += 1;
+    try std.testing.expect(i + scid_len <= b.len);
+    i += scid_len;
+    const tok_len_dec = try varint.decode(b[i..]);
+    i += tok_len_dec.n;
+    const tok_len: usize = @intCast(tok_len_dec.value);
+    try std.testing.expect(i + tok_len <= b.len);
+    const echoed_token = b[i .. i + tok_len];
+    try std.testing.expectEqual(retry_token.len, echoed_token.len);
+    try std.testing.expectEqualSlices(u8, retry_token, echoed_token);
+}

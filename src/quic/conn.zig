@@ -656,8 +656,8 @@ pub const Connection = struct {
     initial_tx_keys: ?packet.InitialKeys = null,
     // Connection IDs used during Initial/transport
     peer_initial_dcid: Cid = .{},
-    // Original Destination Connection ID chosen by client (ODCID). Remains constant
-    // across Retry; used for Initial secret derivation per RFC 9000 §5.2.
+    // Original Destination Connection ID chosen by client (ODCID).
+    // Used for Retry integrity validation/TP signaling (RFC 9001 §5.8, RFC 9000 §18.2).
     original_dcid: Cid = .{},
     peer_initial_scid: Cid = .{},
     our_scid: Cid = .{},
@@ -741,6 +741,9 @@ pub const Connection = struct {
     bytes_tx_unvalidated: u64 = 0,
     // Retry token buffer - use .empty for safe default (Zig 0.15 ArrayListUnmanaged)
     initial_token: std.ArrayList(u8) = .empty,
+    // Retry tracking (RFC 9000 §7.4.1 / RFC 9001 §5.8).
+    retry_sent: bool = false,
+    retry_received: bool = false,
     // Simple path validation & tokens
     /// PATH_CHALLENGE validation state per RFC 9000 §9; true until a matching
     /// PATH_RESPONSE arrives for the outstanding challenge data.
@@ -1155,6 +1158,8 @@ pub const Connection = struct {
         self.address_validated = (role == .Client); // Clients don't need address validation
         self.bytes_rx_unvalidated = 0;
         self.bytes_tx_unvalidated = 0;
+        self.retry_sent = false;
+        self.retry_received = false;
         // Initialize crypto offsets
         self.crypto_tx_off_initial = 0;
         self.crypto_tx_off_handshake = 0;

@@ -1325,6 +1325,9 @@ pub fn setupServerTransportParams(
     // Server MUST send original_destination_connection_id (RFC 9000 §18.2)
     tpp.original_destination_connection_id = conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len];
     tpp.initial_source_connection_id = conn.our_scid.bytes[0..conn.our_scid.len];
+    if (conn.retry_sent and conn.our_scid.len > 0) {
+        tpp.retry_source_connection_id = conn.our_scid.bytes[0..conn.our_scid.len];
+    }
 
     // Set timeouts and payload limits from config (RFC 9000 §10.1, §14.1)
     tpp.max_idle_timeout = quic_cfg.max_idle_timeout_ms;

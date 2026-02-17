@@ -499,10 +499,15 @@ pub fn processInitial(
         break :blk c_new;
     };
 
-    // For client connections, capture the peer's Initial DCID/SCID so short-header
-    // packets use the server-chosen SCID as the destination connection ID.
+    // For client connections, cache the server Initial SCID for subsequent short-header
+    // routing. Keep peer_initial_dcid unchanged: it tracks the client's current Initial
+    // destination CID and is used for Initial key derivation (RFC 9001 §5.2).
     if (conn.role == .Client) {
-        conn.setPeerInitialCids(header.dcid, header.scid);
+        conn.peer_initial_scid.len = @intCast(@min(header.scid.len, conn.peer_initial_scid.bytes.len));
+        if (conn.peer_initial_scid.len > 0) {
+            @memcpy(conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len], header.scid[0..conn.peer_initial_scid.len]);
+        }
+        conn.expected_rx_dcid_len = null;
     }
 
     // Parse token from packet (offset points to token length varint)
@@ -574,6 +579,16 @@ pub fn processInitial(
             retry_tok,
         ) catch return;
         defer ctx.allocator.free(retry_bytes);
+
+        // Mark Retry usage and refresh server transport parameters so the
+        // eventual handshake includes retry_source_connection_id (RFC 9000 §7.4.1).
+        conn.retry_sent = true;
+        handshake_integration.setupServerTransportParams(conn, ctx.cfg, ctx.allocator.*) catch {};
+        if (conn.tls_context) |tls_ctx| {
+            if (conn.local_transport_params_raw) |tp_bytes| {
+                tls_ctx.setTransportParameters(tp_bytes);
+            }
+        }
 
         // Send Retry packet
         _ = ctx.send_fn(peer, retry_bytes) catch {};
