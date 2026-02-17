@@ -41,9 +41,10 @@ echo -e "${GREEN}=== QUIC Interoperability Test Suite ===${NC}"
 prepare_local_interop_assets() {
     local cert_dir="${ROOT}/examples/interop/quic-interop-runner/certs"
     local www_dir="${ROOT}/examples/interop/quic-network-simulator/www"
+    local logs_dir="${ROOT}/examples/interop/quic-network-simulator/logs"
     local test_probe
 
-    mkdir -p "${cert_dir}" "${www_dir}"
+    mkdir -p "${cert_dir}" "${www_dir}" "${logs_dir}/server/qlog" "${logs_dir}/client/qlog" "${logs_dir}/sim"
 
     # Local Docker runs can leave these directories root-owned.
     test_probe="${www_dir}/.write-test.$$"

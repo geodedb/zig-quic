@@ -181,6 +181,7 @@ services:
     environment:
       - ROLE=server
       - TESTCASE=${TESTCASE:-handshake}
+      - QLOGDIR=/logs/qlog
     depends_on:
       - sim
     cap_add:
@@ -211,6 +212,7 @@ services:
       - ROLE=client
       - REQUESTS=${REQUESTS:-https://server4/index.html}
       - TESTCASE=${TESTCASE:-handshake}
+      - QLOGDIR=/logs/qlog
     depends_on:
       - sim
     cap_add:
@@ -511,6 +513,7 @@ services:
     environment:
       - ROLE=server
       - TESTCASE=${TESTCASE:-handshake}
+      - QLOGDIR=/logs/qlog
     depends_on:
       - sim
     cap_add:
@@ -541,6 +544,7 @@ services:
       - ROLE=client
       - REQUESTS=${REQUESTS:-https://server4/index.html}
       - TESTCASE=${TESTCASE:-handshake}
+      - QLOGDIR=/logs/qlog
     depends_on:
       - sim
     cap_add:
