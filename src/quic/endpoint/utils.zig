@@ -122,104 +122,117 @@ pub fn parseIpv4(s: []const u8) !u32 {
     return addrToNetwork(host_val);
 }
 
+fn splitHostPort(hostport: []const u8) !struct { host: []const u8, port: u16 } {
+    if (hostport.len == 0) return error.InvalidAddress;
+
+    if (hostport[0] == '[') {
+        const close_idx = std.mem.indexOfScalar(u8, hostport, ']') orelse return error.InvalidAddress;
+        if (close_idx + 1 >= hostport.len or hostport[close_idx + 1] != ':') return error.InvalidAddress;
+        const host = hostport[1..close_idx];
+        const port_str = hostport[close_idx + 2 ..];
+        const port = std.fmt.parseInt(u16, port_str, 10) catch return error.InvalidAddress;
+        return .{ .host = host, .port = port };
+    }
+
+    const colon_idx = std.mem.lastIndexOfScalar(u8, hostport, ':') orelse return error.InvalidAddress;
+    if (colon_idx == 0 or colon_idx + 1 >= hostport.len) return error.InvalidAddress;
+    // Require bracket notation for IPv6 literals.
+    if (std.mem.indexOfScalar(u8, hostport[0..colon_idx], ':') != null) return error.InvalidAddress;
+
+    const host = hostport[0..colon_idx];
+    const port_str = hostport[colon_idx + 1 ..];
+    const port = std.fmt.parseInt(u16, port_str, 10) catch return error.InvalidAddress;
+    return .{ .host = host, .port = port };
+}
+
+fn netAddressToSockAddr(addr: std.net.Address) conn_mod.SockAddr {
+    var out: conn_mod.SockAddr = .{};
+    const addr_len: usize = addr.getOsSockLen();
+    @memcpy(
+        @as([*]u8, @ptrCast(&out.storage))[0..addr_len],
+        @as([*]const u8, @ptrCast(&addr.any))[0..addr_len],
+    );
+    out.len = @intCast(addr_len);
+    return out;
+}
+
+fn lookupHosts(host: []const u8, port: u16, prefer_ipv6: bool) ?conn_mod.SockAddr {
+    const hosts_file = std.fs.openFileAbsolute("/etc/hosts", .{}) catch return null;
+    defer hosts_file.close();
+
+    var buf: [8192]u8 = undefined;
+    const bytes_read = hosts_file.readAll(&buf) catch return null;
+    const content = buf[0..bytes_read];
+
+    var fallback: ?conn_mod.SockAddr = null;
+    var lines = std.mem.tokenizeScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        var fields = std.mem.tokenizeAny(u8, line, " \t");
+        const ip_str = fields.next() orelse continue;
+
+        var matched = false;
+        while (fields.next()) |hostname| {
+            if (std.mem.eql(u8, hostname, host)) {
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) continue;
+
+        const addr = std.net.Address.parseIp(ip_str, port) catch continue;
+        const sock = netAddressToSockAddr(addr);
+        const is_v6 = sock.family() == posix.AF.INET6;
+
+        if ((prefer_ipv6 and is_v6) or (!prefer_ipv6 and !is_v6)) {
+            return sock;
+        }
+        if (fallback == null) fallback = sock;
+    }
+
+    return fallback;
+}
+
 /// Resolve hostname:port string to socket address.
 /// Handles:
 /// - "localhost" -> 127.0.0.1
 /// - "server4"/"server" -> resolves from /etc/hosts or defaults to test IP
-/// - IPv4 dotted-quad addresses
+/// - "server6" -> resolves from /etc/hosts or defaults to test IPv6
+/// - IPv4 / IPv6 literals (IPv6 must use bracket form in hostport)
 pub fn resolveAny(hostport: []const u8, proto: enum { udp }) !conn_mod.SockAddr {
     _ = proto;
-    var parts = std.mem.splitScalar(u8, hostport, ':');
-    const host = parts.next() orelse return error.InvalidAddress;
-    const port_s = parts.next() orelse return error.InvalidAddress;
-    const port = std.fmt.parseInt(u16, port_s, 10) catch return error.InvalidAddress;
+    const hp = try splitHostPort(hostport);
+    const host = hp.host;
+    const port = hp.port;
 
-    // Handle common hostnames used in tests
+    // Numeric literal fast path.
+    if (std.net.Address.parseIp(host, port)) |addr| {
+        return netAddressToSockAddr(addr);
+    } else |_| {}
+
     if (std.mem.eql(u8, host, "localhost")) {
         return conn_mod.SockAddr.ipv4(127, 0, 0, 1, port);
     }
+
+    if (std.mem.eql(u8, host, "server6")) {
+        if (lookupHosts(host, port, true)) |resolved| return resolved;
+        if (lookupHosts("server", port, true)) |resolved| return resolved;
+        const fallback = std.net.Address.parseIp("fd00:cafe:cafe:100::100", port) catch return error.InvalidAddress;
+        return netAddressToSockAddr(fallback);
+    }
+
     if (std.mem.eql(u8, host, "server4") or std.mem.eql(u8, host, "server")) {
-        // In Docker, server4 should resolve to the server container
-        // Try to use the IP from /etc/hosts if available
-        const hosts_file = std.fs.openFileAbsolute("/etc/hosts", .{}) catch {
-            // Fallback to a default IP used in tests
-            return conn_mod.SockAddr.ipv4(193, 167, 100, 100, port);
-        };
-        defer hosts_file.close();
-
-        var buf: [4096]u8 = undefined;
-        const bytes_read = hosts_file.readAll(&buf) catch {
-            return conn_mod.SockAddr.ipv4(193, 167, 100, 100, port);
-        };
-        const content = buf[0..bytes_read];
-
-        // Parse /etc/hosts for server4
-        var lines = std.mem.tokenizeScalar(u8, content, '\n');
-        while (lines.next()) |line| {
-            var parts_line = std.mem.tokenizeAny(u8, line, " \t");
-            const ip_str = parts_line.next() orelse continue;
-            while (parts_line.next()) |hostname| {
-                if (std.mem.eql(u8, hostname, "server4") or std.mem.eql(u8, hostname, "server")) {
-                    // Parse the IP address
-                    var ip_parts = std.mem.splitScalar(u8, ip_str, '.');
-                    var octets: [4]u8 = .{0} ** 4;
-                    var i: usize = 0;
-                    while (i < 4) : (i += 1) {
-                        const octet_str = ip_parts.next() orelse break;
-                        octets[i] = std.fmt.parseInt(u8, octet_str, 10) catch break;
-                    }
-                    if (i == 4) {
-                        return conn_mod.SockAddr.ipv4(octets[0], octets[1], octets[2], octets[3], port);
-                    }
-                }
-            }
+        if (lookupHosts(host, port, false)) |resolved| return resolved;
+        if (!std.mem.eql(u8, host, "server")) {
+            if (lookupHosts("server", port, false)) |resolved| return resolved;
         }
-        // Default fallback
         return conn_mod.SockAddr.ipv4(193, 167, 100, 100, port);
     }
 
-    // Try dotted-quad IPv4 parse
-    var it = std.mem.splitScalar(u8, host, '.');
-    var oct: [4]u8 = .{0} ** 4;
-    var i: usize = 0;
-    while (i < 4) : (i += 1) {
-        const seg = it.next() orelse break;
-        oct[i] = std.fmt.parseInt(u8, seg, 10) catch break;
-    }
-    if (i == 4 and it.next() == null) {
-        return conn_mod.SockAddr.ipv4(oct[0], oct[1], oct[2], oct[3], port);
-    }
+    // Generic /etc/hosts lookup for other hostnames.
+    if (lookupHosts(host, port, false)) |resolved| return resolved;
+    if (lookupHosts(host, port, true)) |resolved| return resolved;
 
-    // Fallback: Check /etc/hosts for ANY hostname
-    // In Docker, containers are in /etc/hosts
-    if (std.fs.openFileAbsolute("/etc/hosts", .{})) |hosts_file| {
-        defer hosts_file.close();
-
-        var buf: [4096]u8 = undefined;
-        if (hosts_file.readAll(&buf)) |bytes_read| {
-            const content = buf[0..bytes_read];
-            var lines = std.mem.tokenizeScalar(u8, content, '\n');
-            while (lines.next()) |line| {
-                var parts_line = std.mem.tokenizeAny(u8, line, " \t");
-                const ip_str = parts_line.next() orelse continue;
-                while (parts_line.next()) |hostname| {
-                    if (std.mem.eql(u8, hostname, host)) {
-                        // Found match, parse IP
-                        var ip_parts = std.mem.splitScalar(u8, ip_str, '.');
-                        var ip_octs: [4]u8 = .{0} ** 4;
-                        var j: usize = 0;
-                        while (j < 4) : (j += 1) {
-                            const oct_str = ip_parts.next() orelse break;
-                            ip_octs[j] = std.fmt.parseInt(u8, oct_str, 10) catch break;
-                        }
-                        if (j == 4) {
-                            return conn_mod.SockAddr.ipv4(ip_octs[0], ip_octs[1], ip_octs[2], ip_octs[3], port);
-                        }
-                    }
-                }
-            }
-        } else |_| {}
-    } else |_| {}
-
-    return error.InvalidAddress;
+    // Final fallback: resolver-backed lookup.
+    const resolved = std.net.Address.resolveIp(host, port) catch return error.InvalidAddress;
+    return netAddressToSockAddr(resolved);
 }

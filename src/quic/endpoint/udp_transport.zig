@@ -36,32 +36,52 @@ pub const UdpBatchCap: usize = 16;
 /// Supported formats:
 /// - "127.0.0.1:4433" (IPv4 dotted-quad + port)
 /// - "0.0.0.0:0" (wildcard IPv4 + OS-assigned port)
+/// - "[::]:4433" (IPv6 + port)
 /// - "localhost:8080" (resolves to 127.0.0.1)
-fn resolveBindAddr(bind_addr: []const u8) !SockAddr {
-    // Split host:port
-    var it = std.mem.splitScalar(u8, bind_addr, ':');
-    const host = it.next() orelse return error.InvalidAddress;
-    const port_str = it.next() orelse return error.InvalidAddress;
-    const port = try std.fmt.parseInt(u16, port_str, 10);
+fn splitHostPort(hostport: []const u8) !struct { host: []const u8, port: u16 } {
+    if (hostport.len == 0) return error.InvalidAddress;
 
-    // Determine IPv4 octets
-    var octets: [4]u8 = undefined;
-    if (std.mem.eql(u8, host, "localhost")) {
-        octets = .{ 127, 0, 0, 1 };
-    } else if (std.mem.eql(u8, host, "0.0.0.0")) {
-        octets = .{ 0, 0, 0, 0 };
-    } else {
-        // Parse IPv4 dotted-quad
-        var octet_it = std.mem.splitScalar(u8, host, '.');
-        var i: usize = 0;
-        while (i < 4) : (i += 1) {
-            const part = octet_it.next() orelse return error.InvalidAddress;
-            octets[i] = try std.fmt.parseInt(u8, part, 10);
-        }
+    if (hostport[0] == '[') {
+        const close_idx = std.mem.indexOfScalar(u8, hostport, ']') orelse return error.InvalidAddress;
+        if (close_idx + 1 >= hostport.len or hostport[close_idx + 1] != ':') return error.InvalidAddress;
+        const host = hostport[1..close_idx];
+        const port_str = hostport[close_idx + 2 ..];
+        const port = try std.fmt.parseInt(u16, port_str, 10);
+        return .{ .host = host, .port = port };
     }
 
-    // Use the SockAddr.ipv4() helper (re-exported from transport.zig at line 22)
-    return SockAddr.ipv4(octets[0], octets[1], octets[2], octets[3], port);
+    const colon_idx = std.mem.lastIndexOfScalar(u8, hostport, ':') orelse return error.InvalidAddress;
+    if (colon_idx == 0 or colon_idx + 1 >= hostport.len) return error.InvalidAddress;
+    // Require bracket notation for IPv6 literals.
+    if (std.mem.indexOfScalar(u8, hostport[0..colon_idx], ':') != null) return error.InvalidAddress;
+
+    const host = hostport[0..colon_idx];
+    const port_str = hostport[colon_idx + 1 ..];
+    const port = try std.fmt.parseInt(u16, port_str, 10);
+    return .{ .host = host, .port = port };
+}
+
+fn netAddressToSockAddr(addr: std.net.Address) SockAddr {
+    var out: SockAddr = .{};
+    const addr_len: usize = addr.getOsSockLen();
+    @memcpy(
+        @as([*]u8, @ptrCast(&out.storage))[0..addr_len],
+        @as([*]const u8, @ptrCast(&addr.any))[0..addr_len],
+    );
+    out.len = @intCast(addr_len);
+    return out;
+}
+
+fn resolveBindAddr(bind_addr: []const u8) !SockAddr {
+    // Fast path for numeric IP literals with port (supports bracketed IPv6).
+    if (std.net.Address.parseIpAndPort(bind_addr)) |addr| {
+        return netAddressToSockAddr(addr);
+    } else |_| {}
+
+    const hp = try splitHostPort(bind_addr);
+    const host = if (std.mem.eql(u8, hp.host, "localhost")) "127.0.0.1" else hp.host;
+    const addr = std.net.Address.parseIp(host, hp.port) catch return error.InvalidAddress;
+    return netAddressToSockAddr(addr);
 }
 
 /// UDP transport adapter for production use

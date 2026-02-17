@@ -643,8 +643,20 @@ pub const Endpoint = struct {
         // Process timers that may have fired during packet processing
         self.processExpiredTimers(nowMsMonotonic());
         self.pruneClosed();
+        self.armConnectionPtoTimers();
 
         return stats;
+    }
+
+    fn armConnectionPtoTimers(self: *Endpoint) void {
+        var it = self.conns.iterator();
+        while (it.next()) |entry| {
+            const c = entry.value_ptr.*;
+            if (c.closed) continue;
+            c.computeAndMaybeArmPtoInitial(self);
+            c.computeAndMaybeArmPtoHandshake(self);
+            c.computeAndMaybeArmPto(self);
+        }
     }
 
     fn drainReadable(self: *Endpoint) void {
