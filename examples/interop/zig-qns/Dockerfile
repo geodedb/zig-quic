@@ -16,10 +16,6 @@ RUN groupadd -r quic && useradd -r -g quic -d /nonexistent -s /usr/sbin/nologin 
 # Copy the endpoint binary
 COPY zig-out/bin/qns-endpoint /usr/local/bin/qns-endpoint
 
-# Bundle fallback certs for local runs where /certs isn't mounted.
-COPY tests/certs/cert.pem /quic/certs/cert.pem
-COPY tests/certs/key.pem /quic/certs/key.pem
-
 # Create version file from git if available
 RUN echo "zig-quic-$(date +%Y%m%d)" > /quic/version.txt || echo "zig-quic-dev" > /quic/version.txt
 

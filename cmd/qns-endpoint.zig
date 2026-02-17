@@ -977,7 +977,6 @@ pub fn main() !void {
                     log(done_msg);
                     break;
                 }
-
             }
             if (pending_responses.items.len > 0) {
                 var pending_msg_buf: [128]u8 = undefined;

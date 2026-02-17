@@ -1031,7 +1031,7 @@ pub fn bind(comptime Connection: type) type {
             const tx = self.hs_tx_keys orelse return;
             logger.debugPrint("sendPtoProbeHandshake: Sending PTO probe\n", .{});
 
-             if (self.crypto_retx_handshake) |retx| {
+            if (self.crypto_retx_handshake) |retx| {
                 const max_crypto_chunk: usize = @max(@as(usize, 256), @as(usize, self.path_mtu) - 80);
                 var sent_off: usize = 0;
                 var probes_sent: usize = 0;
