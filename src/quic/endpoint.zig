@@ -923,9 +923,9 @@ pub const Endpoint = struct {
             c.retry_reject_post_handshake +%= 1;
             return;
         }
-        if (c.retry_received and c.peer_initial_dcid.len == scid.len and
-            std.mem.eql(u8, c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len], scid))
-        {
+        // RFC 9000 §17.2.5: A client accepts at most one Retry for a connection.
+        // Once processed, all subsequent Retry packets are discarded.
+        if (c.retry_received) {
             c.retry_reject_duplicate +%= 1;
             return;
         }

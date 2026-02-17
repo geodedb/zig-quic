@@ -180,12 +180,30 @@ fn writeAll(ep: *api.QuicEndpoint, conn: *api.QuicConnection, sid: u64, data: []
     }
 }
 
+fn writeFin(ep: *api.QuicEndpoint, conn: *api.QuicConnection, sid: u64) void {
+    var spins: usize = 0;
+    while (spins < 2048) : (spins += 1) {
+        _ = api.writeStream(conn, sid, &[_]u8{}, true) catch |err| switch (err) {
+            error.WouldBlock, error.FlowControlBlocked, error.OutOfStreams, error.KeysNotReady => {
+                api.poll(ep, 1) catch {};
+                continue;
+            },
+            error.StreamStopped => return,
+            else => return,
+        };
+        return;
+    }
+}
+
 /// Perform a minimal HTTP/3 GET over an existing QUIC connection and copy response body into out.
 pub fn h3Get(ep: *api.QuicEndpoint, conn: *api.QuicConnection, host: []const u8, path: []const u8, out: []u8) !usize {
-    var t: [1]u8 = .{0};
+    var t: [16]u8 = undefined;
     var n: usize = 0;
     if (api.openUni(conn)) |sid| {
+        // Control stream: type=0x00 followed by SETTINGS frame (id=0x04, len=0).
         n = encodeVarint(0x00, t[0..]);
+        n += encodeVarint(0x04, t[n..]);
+        n += encodeVarint(0x00, t[n..]);
         writeAll(ep, conn, sid, t[0..n]);
     } else |_| {}
     if (api.openUni(conn)) |sid| {
@@ -201,12 +219,13 @@ pub fn h3Get(ep: *api.QuicEndpoint, conn: *api.QuicConnection, host: []const u8,
     var req: [512]u8 = undefined;
     const rn = buildRequestFrame(host, path, req[0..]) orelse return error.BuildRequestFailed;
     writeAll(ep, conn, stream_id, req[0..rn]);
+    writeFin(ep, conn, stream_id);
 
     var buf = std.ArrayListUnmanaged(u8){};
     defer buf.deinit(std.heap.page_allocator);
     var tmp: [2048]u8 = undefined;
     var spins: usize = 0;
-    while (!api.isStreamFinished(conn, stream_id) and spins < 5000) : (spins += 1) {
+    while (!api.isStreamFinished(conn, stream_id) and spins < 20_000) : (spins += 1) {
         const r = api.readStream(conn, stream_id, tmp[0..]) catch 0;
         if (r > 0) {
             _ = buf.appendSlice(std.heap.page_allocator, tmp[0..r]) catch {};
@@ -216,20 +235,23 @@ pub fn h3Get(ep: *api.QuicEndpoint, conn: *api.QuicConnection, host: []const u8,
     }
     const bytes = buf.toOwnedSlice(std.heap.page_allocator) catch try std.heap.page_allocator.dupe(u8, &[_]u8{});
     defer std.heap.page_allocator.free(bytes);
+    if (bytes.len == 0) return 0;
+
     var off2: usize = 0;
-    const typ = decodeVarint(bytes, &off2) orelse return error.ParseFailed;
-    if (typ != 0x01) return error.ParseFailed;
-    const hlen = decodeVarint(bytes, &off2) orelse return error.ParseFailed;
-    const end = off2 + @as(usize, @intCast(hlen));
-    if (end > bytes.len) return error.ParseFailed;
-    off2 = end;
-    if (off2 >= bytes.len) return 0;
-    const t2 = decodeVarint(bytes, &off2) orelse return 0;
-    if (t2 != 0x00) return 0;
-    const dlen = decodeVarint(bytes, &off2) orelse return 0;
-    const dend = off2 + @as(usize, @intCast(dlen));
-    if (dend > bytes.len) return 0;
-    const copy_len = @min(out.len, @as(usize, @intCast(dlen)));
-    @memcpy(out[0..copy_len], bytes[off2 .. off2 + copy_len]);
-    return copy_len;
+    var copied: usize = 0;
+    while (off2 < bytes.len) {
+        const typ = decodeVarint(bytes, &off2) orelse return error.ParseFailed;
+        const flen = decodeVarint(bytes, &off2) orelse return error.ParseFailed;
+        const end = off2 + @as(usize, @intCast(flen));
+        if (end > bytes.len) return error.ParseFailed;
+
+        if (typ == 0x00 and copied < out.len) {
+            const to_copy = @min(out.len - copied, @as(usize, @intCast(flen)));
+            @memcpy(out[copied .. copied + to_copy], bytes[off2 .. off2 + to_copy]);
+            copied += to_copy;
+        }
+        off2 = end;
+    }
+
+    return copied;
 }

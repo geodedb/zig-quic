@@ -1,6 +1,7 @@
 const std = @import("std");
 const api = @import("quic_api");
 const h3_server = @import("h3_server");
+const h3_client = @import("h3_client");
 
 // Minimal endpoint used inside the quic-network-simulator / interop runner.
 // Implements a tiny HTTP/0.9 style GET over a single connection per request
@@ -706,8 +707,7 @@ pub fn main() !void {
                     const msg = std.fmt.bufPrint(&alpn_buf, "server: negotiated alpn={s}", .{a}) catch "server: negotiated alpn=?";
                     log(msg);
                     if (std.mem.eql(u8, a, "h3") and std.mem.eql(u8, testcase, "http3")) {
-                        const h3 = @import("h3_server");
-                        var shim = h3.H3Server.init(alloc);
+                        var shim = h3_server.H3Server.init(alloc);
                         shim.serveConnection(ep, conn);
                     }
                 }
@@ -1000,6 +1000,7 @@ pub fn main() !void {
         const client_bind_addr = if (use_ipv6) "[::]:0" else "0.0.0.0:0";
         const connect_addr = if (use_ipv6) "[fd00:cafe:cafe:100::100]:443" else "193.167.100.100:443";
         const connect_sni = if (use_ipv6) "server6" else "server4";
+        const h3_authority = if (use_ipv6) "server6:443" else "server4:443";
 
         // For multiconnect test, establish a new connection for each request
         if (std.mem.eql(u8, testcase, "multiconnect")) {
@@ -1030,33 +1031,53 @@ pub fn main() !void {
                     continue;
                 }
 
-                // Send request
-                var line_buf: [600]u8 = undefined;
-                const line = try std.fmt.bufPrint(&line_buf, "GET {s}\r\n", .{path});
-                log("client: sending GET request");
-                const req_sid = openBidiStreamWithRetry(ep, conn, 512) catch {
-                    log("client: failed to open request stream");
-                    success = false;
-                    api.destroy(ep, conn);
-                    continue;
-                };
-                if (idx == 0 and std.mem.eql(u8, testcase, "keyupdate")) {
-                    conn.tx_sent_packets_since_key = 511;
-                    conn.tx_sent_bytes_since_key = 1024 * 1024;
-                    log("client: primed keyupdate threshold");
-                }
-                if (!writeAllStream(ep, conn, req_sid, line, testcase)) {
-                    log("client: write request timed out");
-                    success = false;
-                    api.destroy(ep, conn);
-                    continue;
-                }
-
                 // Read response
                 var file_bytes = std.ArrayList(u8){};
                 defer file_bytes.deinit(alloc);
-                const read_ok = try readResponseStream(alloc, ep, conn, req_sid, testcase, &file_bytes);
-                if (!read_ok) success = false;
+                if (std.mem.eql(u8, testcase, "http3")) {
+                    log("client: sending H3 GET request");
+                    const resp_buf = try alloc.alloc(u8, 4 * 1024 * 1024);
+                    defer alloc.free(resp_buf);
+                    const got = h3_client.h3Get(ep, conn, h3_authority, path, resp_buf) catch |err| {
+                        var err_msg_buf: [128]u8 = undefined;
+                        const err_msg = std.fmt.bufPrint(&err_msg_buf, "client: h3 request failed err={s}", .{@errorName(err)}) catch "client: h3 request failed";
+                        log(err_msg);
+                        success = false;
+                        api.destroy(ep, conn);
+                        continue;
+                    };
+                    if (got > 0) {
+                        file_bytes.appendSlice(alloc, resp_buf[0..got]) catch {
+                            success = false;
+                            api.destroy(ep, conn);
+                            continue;
+                        };
+                    }
+                } else {
+                    // Send request
+                    var line_buf: [600]u8 = undefined;
+                    const line = try std.fmt.bufPrint(&line_buf, "GET {s}\r\n", .{path});
+                    log("client: sending GET request");
+                    const req_sid = openBidiStreamWithRetry(ep, conn, 512) catch {
+                        log("client: failed to open request stream");
+                        success = false;
+                        api.destroy(ep, conn);
+                        continue;
+                    };
+                    if (idx == 0 and std.mem.eql(u8, testcase, "keyupdate")) {
+                        conn.tx_sent_packets_since_key = 511;
+                        conn.tx_sent_bytes_since_key = 1024 * 1024;
+                        log("client: primed keyupdate threshold");
+                    }
+                    if (!writeAllStream(ep, conn, req_sid, line, testcase)) {
+                        log("client: write request timed out");
+                        success = false;
+                        api.destroy(ep, conn);
+                        continue;
+                    }
+                    const read_ok = try readResponseStream(alloc, ep, conn, req_sid, testcase, &file_bytes);
+                    if (!read_ok) success = false;
+                }
 
                 // Save file
                 var sanitized = path;
@@ -1153,6 +1174,42 @@ pub fn main() !void {
             api.flush(ep, 10);
             api.destroy(ep, conn);
             std.process.exit(1);
+        }
+
+        if (std.mem.eql(u8, testcase, "http3")) {
+            var success: bool = true;
+            const resp_buf = try alloc.alloc(u8, 4 * 1024 * 1024);
+            defer alloc.free(resp_buf);
+            for (urls) |url| {
+                const path = extractPath(url);
+                log("client: sending H3 GET request");
+                const got = h3_client.h3Get(ep, conn, h3_authority, path, resp_buf) catch |err| {
+                    var err_msg_buf: [128]u8 = undefined;
+                    const err_msg = std.fmt.bufPrint(&err_msg_buf, "client: h3 request failed err={s}", .{@errorName(err)}) catch "client: h3 request failed";
+                    log(err_msg);
+                    success = false;
+                    break;
+                };
+
+                var sanitized = path;
+                if (sanitized.len > 0 and sanitized[0] == '/') sanitized = sanitized[1..];
+                var out_path_buf: [512]u8 = undefined;
+                const out_path = try std.fmt.bufPrint(&out_path_buf, "/downloads/{s}", .{sanitized});
+                if (std.fs.cwd().createFile(out_path, .{ .truncate = true })) |outf| {
+                    defer outf.close();
+                    if (got > 0) _ = outf.write(resp_buf[0..got]) catch {};
+                } else |_| {}
+
+                if (got == 0) success = false;
+                var msg_buf: [96]u8 = undefined;
+                const msg = std.fmt.bufPrint(&msg_buf, "client: response bytes={d}", .{got}) catch "client: response bytes=?";
+                log(msg);
+            }
+
+            api.close(conn, 0, "bye") catch {};
+            api.flush(ep, 10);
+            api.destroy(ep, conn);
+            if (!success) std.process.exit(1) else return;
         }
 
         const InflightRequest = struct {

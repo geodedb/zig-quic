@@ -1278,7 +1278,7 @@ pub fn setupClientTransportParams(
     tpp.initial_max_stream_data_bidi_local = conn.local_max_stream_data;
     tpp.initial_max_stream_data_bidi_remote = conn.local_max_stream_data;
     tpp.initial_max_streams_bidi = conn.local_max_streams_bidi;
-    tpp.initial_max_streams_uni = 0;
+    tpp.initial_max_streams_uni = conn.local_max_streams_uni;
 
     // Encode to TLV format for quic_transport_parameters extension
     const tp_bytes = try transport_params.TransportParams.encode(&tpp, allocator);

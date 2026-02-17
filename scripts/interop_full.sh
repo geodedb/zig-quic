@@ -72,6 +72,9 @@ prepare_local_interop_assets() {
 
 prepare_local_interop_assets
 
+# Preserve user-provided REQUESTS override (if any); otherwise derive per testcase.
+REQUESTS_OVERRIDE="${REQUESTS:-}"
+
 # Build the Zig implementation (skip if already exists and SKIP_BUILD=1)
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
     echo -e "${YELLOW}Building Zig QUIC implementation...${NC}"
@@ -113,6 +116,18 @@ fi
 # Test cases to run
 TESTCASES=("handshake" "transfer" "retry" "http3" "keyupdate")
 
+default_requests_for_testcase() {
+    local testcase="$1"
+    case "$testcase" in
+        transfer|goodput|crosstraffic)
+            echo "https://server4/5000 https://server4/10000"
+            ;;
+        *)
+            echo "https://server4/5000"
+            ;;
+    esac
+}
+
 # Results tracking
 declare -A RESULTS
 PASSED=0
@@ -133,6 +148,7 @@ run_test() {
     export SERVER=$server
     export CLIENT=$client
     export TESTCASE=$testcase
+    export REQUESTS="${REQUESTS_OVERRIDE:-$(default_requests_for_testcase "$testcase")}"
     
     # Determine which profiles to use
     local profiles=""
@@ -256,6 +272,7 @@ run_generic_test() {
     export SERVER_IMAGE="$server_image"
     export CLIENT_IMAGE="$client_image"
     export TESTCASE="$testcase"
+    export REQUESTS="${REQUESTS_OVERRIDE:-$(default_requests_for_testcase "$testcase")}"
     
     # Ensure clean slate for this project name
     docker compose -f examples/interop/docker-compose.full.yml --profile generic down -v >/dev/null 2>&1 || true

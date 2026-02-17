@@ -24,7 +24,6 @@ pub const H3Server = struct {
 
     /// Serve a single QUIC connection: send control streams and respond once per bidi request.
     pub fn serveConnection(self: *H3Server, ep: *api.QuicEndpoint, conn: *api.QuicConnection) void {
-        _ = self;
         // Control stream
         const ctrl = api.openUni(conn) catch return;
         var ctrl_buf: [24]u8 = undefined;
@@ -42,15 +41,28 @@ pub const H3Server = struct {
             var t: [1]u8 = .{0};
             _ = api.writeStream(conn, sid, t[0..encodeVarint(0x03, t[0..])], false) catch {}; // QPACK decoder stream stays open
         } else |_| {}
+        api.flush(ep, 5);
         // Event loop: serve each bidi request once
         var tmp: [4096]u8 = undefined;
         var served: [64]u64 = .{0} ** 64;
         var served_len: usize = 0;
+        var request_buffers = std.AutoHashMap(u64, std.ArrayList(u8)).init(self.allocator);
+        defer {
+            var it = request_buffers.iterator();
+            while (it.next()) |entry| entry.value_ptr.deinit(self.allocator);
+            request_buffers.deinit();
+        }
         var spins: usize = 0;
         while (spins < 4000) : (spins += 1) {
             api.poll(ep, 2) catch {};
             const got = readAny(conn, tmp[0..]) catch null;
             if (got) |pair| {
+                // HTTP/3 requests arrive on client-initiated bidirectional streams.
+                // Ignore unidirectional control / QPACK streams and server-initiated streams.
+                const is_bidi = ((pair.id >> 1) & 0x1) == 0;
+                const is_client_initiated = (pair.id & 0x1) == 0;
+                if (!is_bidi or !is_client_initiated) continue;
+
                 var already: bool = false;
                 var j: usize = 0;
                 while (j < served_len) : (j += 1) {
@@ -60,12 +72,37 @@ pub const H3Server = struct {
                     }
                 }
                 if (already) continue;
-                served[served_len] = pair.id;
-                served_len += 1;
+
+                const gop = request_buffers.getOrPut(pair.id) catch continue;
+                if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(u8){};
+                gop.value_ptr.appendSlice(self.allocator, tmp[0..pair.n]) catch {
+                    if (request_buffers.fetchRemove(pair.id)) |entry| {
+                        var buf_state = entry.value;
+                        buf_state.deinit(self.allocator);
+                    }
+                    continue;
+                };
+                std.debug.print("[h3] recv stream={} chunk={} buffered={}\n", .{ pair.id, pair.n, gop.value_ptr.items.len });
+                if (gop.value_ptr.items.len > 16 * 1024) {
+                    if (request_buffers.fetchRemove(pair.id)) |entry| {
+                        var buf_state = entry.value;
+                        buf_state.deinit(self.allocator);
+                    }
+                    continue;
+                }
+
                 var path_buf: [256]u8 = undefined;
                 var rs: ReqState = .{};
-                const path = parseReqFromHeadersFrame(tmp[0..pair.n], path_buf[0..], &rs) orelse "/index.html";
+                const path = parseReqFromHeadersFrame(gop.value_ptr.items, path_buf[0..], &rs) orelse continue;
+                std.debug.print("[h3] request stream={} path={s}\n", .{ pair.id, path });
+                served[served_len] = pair.id;
+                served_len += 1;
                 respondFile(ep, conn, pair.id, path) catch {};
+                std.debug.print("[h3] response stream={} sent\n", .{pair.id});
+                if (request_buffers.fetchRemove(pair.id)) |entry| {
+                    var buf_state = entry.value;
+                    buf_state.deinit(self.allocator);
+                }
             }
         }
     }
@@ -113,8 +150,6 @@ pub const H3Server = struct {
         k += 1; // Base
         // :status 200 (static idx 25)
         k += encodeIndexedStatic(25, out[k..]);
-        // content-type: text/html; charset=utf-8 (static idx 52)
-        k += encodeIndexedStatic(52, out[k..]);
         return k;
     }
 
@@ -142,9 +177,7 @@ pub const H3Server = struct {
     fn writeAll(ep: *api.QuicEndpoint, conn: *api.QuicConnection, sid: u64, data: []const u8) !void {
         var off: usize = 0;
         while (off < data.len) {
-            const remaining = data.len - off;
-            const is_final = (remaining <= 1000); // Will fit in one write
-            const n = api.writeStream(conn, sid, data[off..], is_final) catch 0;
+            const n = api.writeStream(conn, sid, data[off..], false) catch 0;
             if (n == 0) {
                 api.poll(ep, 1) catch {};
             } else {
