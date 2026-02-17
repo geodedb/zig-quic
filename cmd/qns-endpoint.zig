@@ -274,6 +274,53 @@ fn writeAllStream(ep: *api.QuicEndpoint, conn: *api.QuicConnection, stream_id: a
     return true;
 }
 
+fn openBidiStreamWithRetry(ep: *api.QuicEndpoint, conn: *api.QuicConnection, max_attempts: usize) !api.QuicStreamId {
+    var attempts: usize = 0;
+    while (attempts < max_attempts) : (attempts += 1) {
+        const sid = api.openStream(conn, true) catch |err| switch (err) {
+            error.OutOfStreams => {
+                api.poll(ep, 2) catch {};
+                continue;
+            },
+            else => return err,
+        };
+        return sid;
+    }
+    return error.OutOfStreams;
+}
+
+fn readResponseStream(
+    alloc: std.mem.Allocator,
+    ep: *api.QuicEndpoint,
+    conn: *api.QuicConnection,
+    stream_id: api.QuicStreamId,
+    testcase: []const u8,
+    file_bytes: *std.ArrayList(u8),
+) !bool {
+    var tmp: [4096]u8 = undefined;
+    const read_start = std.time.nanoTimestamp();
+    var last_progress = read_start;
+    while (true) {
+        if (elapsedMsSince(read_start) >= responseTotalTimeoutMs(testcase)) return false;
+        if (elapsedMsSince(last_progress) >= responseIdleTimeoutMs(testcase)) return false;
+
+        api.poll(ep, 5) catch {};
+
+        const n = api.readStream(conn, stream_id, tmp[0..]) catch |err| switch (err) {
+            error.WouldBlock, error.InvalidStream => 0,
+        };
+        if (n == 0) {
+            // readStream returns 0 when FIN is reached and the receive buffer is empty.
+            if (api.isStreamFinished(conn, stream_id)) return true;
+            continue;
+        }
+
+        last_progress = std.time.nanoTimestamp();
+        try file_bytes.appendSlice(alloc, tmp[0..n]);
+        if (file_bytes.items.len > 128 * 1024 * 1024) return false;
+    }
+}
+
 fn writePendingResponseChunk(ep: *api.QuicEndpoint, conn: *api.QuicConnection, resp: *PendingResponse) ResponseChunkResult {
     if (resp.fin_sent) return .done;
 
@@ -686,6 +733,12 @@ pub fn main() !void {
             var rr_next: usize = 0;
             const is_multiconnect = std.mem.eql(u8, testcase, "multiconnect");
             var responses_completed: usize = 0;
+            const expected_requests: usize = if (is_multiconnect)
+                1
+            else if (request_order_urls.len > 0)
+                request_order_urls.len
+            else
+                std.math.maxInt(usize);
             while (!api.isDrained(conn)) {
                 if (elapsedMsSince(req_start) >= responseTotalTimeoutMs(testcase)) {
                     log("server: response loop total timeout");
@@ -898,6 +951,13 @@ pub fn main() !void {
                     }
                 }
 
+                if (responses_completed >= expected_requests and pending_responses.items.len == 0 and active_streams.items.len == 0) {
+                    var done_msg_buf: [128]u8 = undefined;
+                    const done_msg = std.fmt.bufPrint(&done_msg_buf, "server: served all expected requests={d}", .{responses_completed}) catch "server: served all expected requests";
+                    log(done_msg);
+                    break;
+                }
+
             }
             if (pending_responses.items.len > 0) {
                 var pending_msg_buf: [128]u8 = undefined;
@@ -954,7 +1014,13 @@ pub fn main() !void {
                 var line_buf: [600]u8 = undefined;
                 const line = try std.fmt.bufPrint(&line_buf, "GET {s}\r\n", .{path});
                 log("client: sending GET request");
-                if (!writeAllStream(ep, conn, 0, line, testcase)) {
+                const req_sid = openBidiStreamWithRetry(ep, conn, 512) catch {
+                    log("client: failed to open request stream");
+                    success = false;
+                    api.destroy(ep, conn);
+                    continue;
+                };
+                if (!writeAllStream(ep, conn, req_sid, line, testcase)) {
                     log("client: write request timed out");
                     success = false;
                     api.destroy(ep, conn);
@@ -964,22 +1030,8 @@ pub fn main() !void {
                 // Read response
                 var file_bytes = std.ArrayList(u8){};
                 defer file_bytes.deinit(alloc);
-                var tmp: [4096]u8 = undefined;
-                const read_start = std.time.nanoTimestamp();
-                var last_progress = read_start;
-                while (true) {
-                    if (elapsedMsSince(read_start) >= responseTotalTimeoutMs(testcase)) break;
-                    if (elapsedMsSince(last_progress) >= responseIdleTimeoutMs(testcase)) break;
-                    api.poll(ep, 5) catch {};
-                    const n = api.readStream(conn, 0, tmp[0..]) catch 0;
-                    if (n == 0) {
-                        continue;
-                    } else {
-                        last_progress = std.time.nanoTimestamp();
-                        try file_bytes.appendSlice(alloc, tmp[0..n]);
-                        if (file_bytes.items.len > 128 * 1024 * 1024) break;
-                    }
-                }
+                const read_ok = try readResponseStream(alloc, ep, conn, req_sid, testcase, &file_bytes);
+                if (!read_ok) success = false;
 
                 // Save file
                 var sanitized = path;
@@ -1051,68 +1103,127 @@ pub fn main() !void {
             std.process.exit(1);
         }
 
+        const InflightRequest = struct {
+            stream_id: api.QuicStreamId,
+            path: []const u8,
+            file_bytes: std.ArrayList(u8),
+            start_ns: i128,
+            last_progress_ns: i128,
+        };
+
         var success: bool = true;
-        var request_i: usize = 0;
-        while (request_i < urls.len) : (request_i += 1) {
-            const path = extractPath(urls[request_i]);
-            var line_buf: [600]u8 = undefined;
-            const line = try std.fmt.bufPrint(&line_buf, "GET {s}\r\n", .{path});
-            log("client: sending GET request");
-            if (!writeAllStream(ep, conn, 0, line, testcase)) {
-                log("client: write request timed out");
+        const max_inflight: usize = if (urls.len >= 256) 256 else if (urls.len >= 32) 64 else @max(@as(usize, 1), urls.len);
+        var inflight = std.ArrayList(InflightRequest){};
+        defer {
+            for (inflight.items) |*req| req.file_bytes.deinit(alloc);
+            inflight.deinit(alloc);
+        }
+
+        var next_request: usize = 0;
+        var tmp: [4096]u8 = undefined;
+        const all_start = std.time.nanoTimestamp();
+        var global_last_progress = all_start;
+        request_loop: while ((next_request < urls.len or inflight.items.len > 0) and success) {
+            if (elapsedMsSince(all_start) >= responseTotalTimeoutMs(testcase)) {
+                log("client: overall response timeout");
                 success = false;
                 break;
             }
-            // For keyupdate testcase, after first request send ~70KiB padding to force early key update.
-            if (request_i == 0 and std.mem.eql(u8, testcase, "keyupdate")) {
-                var pad: [1024]u8 = undefined;
-                @memset(pad[0..], 'X');
-                var sent_total: usize = 0;
-                const total_to_send = 70 * 1024;
-                while (sent_total < total_to_send) {
-                    const is_final_padding = (sent_total + pad.len >= total_to_send);
-                    const wn = api.writeStream(conn, 0, pad[0..], is_final_padding) catch 0;
-                    if (wn == 0) {
-                        api.poll(ep, 1) catch {};
-                    } else {
-                        sent_total += wn;
+
+            while (next_request < urls.len and inflight.items.len < max_inflight) {
+                const path = extractPath(urls[next_request]);
+                var line_buf: [600]u8 = undefined;
+                const line = try std.fmt.bufPrint(&line_buf, "GET {s}\r\n", .{path});
+                log("client: sending GET request");
+
+                const req_sid = openBidiStreamWithRetry(ep, conn, 64) catch {
+                    break;
+                };
+
+                if (!writeAllStream(ep, conn, req_sid, line, testcase)) {
+                    log("client: write request timed out");
+                    success = false;
+                    break :request_loop;
+                }
+                if (next_request == 0 and std.mem.eql(u8, testcase, "keyupdate")) {
+                    log("client: keyupdate relies on transfer volume (no explicit padding stream)");
+                }
+
+                const now_ns = std.time.nanoTimestamp();
+                inflight.append(alloc, .{
+                    .stream_id = req_sid,
+                    .path = path,
+                    .file_bytes = .{},
+                    .start_ns = now_ns,
+                    .last_progress_ns = now_ns,
+                }) catch {
+                    log("client: failed to track in-flight request");
+                    success = false;
+                    break :request_loop;
+                };
+                next_request += 1;
+            }
+
+            api.poll(ep, 5) catch {};
+            var made_progress = false;
+            var idx: usize = 0;
+            while (idx < inflight.items.len) {
+                var req = &inflight.items[idx];
+                const n = api.readStream(conn, req.stream_id, tmp[0..]) catch |err| switch (err) {
+                    error.WouldBlock, error.InvalidStream => 0,
+                };
+                if (n > 0) {
+                    try req.file_bytes.appendSlice(alloc, tmp[0..n]);
+                    if (req.file_bytes.items.len > 128 * 1024 * 1024) {
+                        log("client: response exceeded max size");
+                        success = false;
+                        break :request_loop;
                     }
+                    const now_ns = std.time.nanoTimestamp();
+                    req.last_progress_ns = now_ns;
+                    global_last_progress = now_ns;
+                    made_progress = true;
                 }
-                log("client: padding sent for keyupdate testcase");
-            }
-            // Read response until timeout or no progress; save to file
-            var file_bytes = std.ArrayList(u8){};
-            defer file_bytes.deinit(alloc);
-            var tmp: [4096]u8 = undefined;
-            const read_start = std.time.nanoTimestamp();
-            var last_progress = read_start;
-            while (true) {
-                if (elapsedMsSince(read_start) >= responseTotalTimeoutMs(testcase)) break;
-                if (elapsedMsSince(last_progress) >= responseIdleTimeoutMs(testcase)) break;
-                api.poll(ep, 5) catch {};
-                const n = api.readStream(conn, 0, tmp[0..]) catch 0;
-                if (n == 0) {
+
+                if (n == 0 and api.isStreamFinished(conn, req.stream_id)) {
+                    var sanitized = req.path;
+                    if (sanitized.len > 0 and sanitized[0] == '/') sanitized = sanitized[1..];
+                    var out_path_buf: [512]u8 = undefined;
+                    const out_path = try std.fmt.bufPrint(&out_path_buf, "/downloads/{s}", .{sanitized});
+                    if (std.fs.cwd().createFile(out_path, .{ .truncate = true })) |outf| {
+                        defer outf.close();
+                        _ = outf.write(req.file_bytes.items) catch {};
+                    } else |_| {}
+                    if (req.file_bytes.items.len == 0) success = false;
+                    var msg_buf: [96]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&msg_buf, "client: response bytes={d}", .{req.file_bytes.items.len}) catch "client: response bytes=?";
+                    log(msg);
+                    req.file_bytes.deinit(alloc);
+                    _ = inflight.swapRemove(idx);
+                    global_last_progress = std.time.nanoTimestamp();
+                    made_progress = true;
                     continue;
-                } else {
-                    last_progress = std.time.nanoTimestamp();
-                    try file_bytes.appendSlice(alloc, tmp[0..n]);
-                    if (file_bytes.items.len > 128 * 1024 * 1024) break; // cap
                 }
+
+                if (elapsedMsSince(req.last_progress_ns) >= responseIdleTimeoutMs(testcase)) {
+                    log("client: per-stream response idle timeout");
+                    success = false;
+                    break :request_loop;
+                }
+                if (elapsedMsSince(req.start_ns) >= responseTotalTimeoutMs(testcase)) {
+                    log("client: per-stream response total timeout");
+                    success = false;
+                    break :request_loop;
+                }
+
+                idx += 1;
             }
-            // Write downloaded data
-            var sanitized = path;
-            if (sanitized.len > 0 and sanitized[0] == '/') sanitized = sanitized[1..];
-            var out_path_buf: [512]u8 = undefined;
-            const out_path = try std.fmt.bufPrint(&out_path_buf, "/downloads/{s}", .{sanitized});
-            // Ensure directory exists (flat)
-            if (std.fs.cwd().createFile(out_path, .{ .truncate = true })) |outf| {
-                defer outf.close();
-                _ = outf.write(file_bytes.items) catch {};
-            } else |_| {}
-            if (file_bytes.items.len == 0) success = false;
-            var msg_buf: [96]u8 = undefined;
-            const msg = std.fmt.bufPrint(&msg_buf, "client: response bytes={d}", .{file_bytes.items.len}) catch "client: response bytes=?";
-            log(msg);
+
+            if (!made_progress and inflight.items.len > 0 and elapsedMsSince(global_last_progress) >= responseIdleTimeoutMs(testcase)) {
+                log("client: global response idle timeout");
+                success = false;
+                break;
+            }
         }
         api.close(conn, 0, "bye") catch {};
         api.flush(ep, 10);
