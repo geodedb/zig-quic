@@ -381,11 +381,12 @@ pub fn handlePathResponse(
     ctx: *FrameContext,
     prv: frame.PathResponse,
 ) FrameResult {
-    // Validation check - caller must invoke endpoint.onPathValidated()
-    // if path_validation_pending and path_challenge_data matches
-    _ = ctx;
-    _ = prv;
-    // Path validation completion handled by caller with endpoint access
+    if (ctx.conn.path_validation_pending and std.mem.eql(u8, prv[0..], ctx.conn.path_challenge_data[0..])) {
+        ctx.conn.path_validation_pending = false;
+        ctx.conn.address_validated = true;
+        ctx.conn.bytes_rx_unvalidated = 0;
+        ctx.conn.bytes_tx_unvalidated = 0;
+    }
     return .{ .saw_ack_eliciting = true };
 }
 

@@ -37,6 +37,18 @@ pub fn hashSockaddr(sa: *const posix.sockaddr.storage, len: u32) u64 {
 /// Normalize IPv4-mapped IPv6 address to IPv4 for consistent hashing.
 /// This ensures that ::ffff:127.0.0.1 and 127.0.0.1 hash to the same value.
 pub fn normalizeAddr(sa: *const posix.sockaddr.storage, len: u32) conn_mod.SockAddr {
+    // Canonicalize native IPv4/IPv6 sockaddr lengths so hash/equality checks don't
+    // depend on kernel-provided padding bytes.
+    if (sa.family == posix.AF.INET) {
+        var out: conn_mod.SockAddr = .{};
+        out.storage = std.mem.zeroes(posix.sockaddr.storage);
+        out.len = @sizeOf(posix.sockaddr.in);
+        @memcpy(
+            @as([*]u8, @ptrCast(&out.storage))[0..out.len],
+            @as([*]const u8, @ptrCast(sa))[0..out.len],
+        );
+        return out;
+    }
     if (sa.family == posix.AF.INET6) {
         const sin6: *const posix.sockaddr.in6 = @ptrCast(@alignCast(sa));
         // Check if this is an IPv4-mapped IPv6 address (::ffff:a.b.c.d)
@@ -58,8 +70,17 @@ pub fn normalizeAddr(sa: *const posix.sockaddr.storage, len: u32) conn_mod.SockA
             const port = portFromNetwork(sin6.port);
             return conn_mod.SockAddr.ipv4(a, b, c, d, port);
         }
+
+        var out: conn_mod.SockAddr = .{};
+        out.storage = std.mem.zeroes(posix.sockaddr.storage);
+        out.len = @sizeOf(posix.sockaddr.in6);
+        @memcpy(
+            @as([*]u8, @ptrCast(&out.storage))[0..out.len],
+            @as([*]const u8, @ptrCast(sa))[0..out.len],
+        );
+        return out;
     }
-    // Return as-is if not IPv4-mapped
+    // Return as-is for unknown families.
     var result = conn_mod.SockAddr{};
     result.storage = sa.*;
     result.len = len;

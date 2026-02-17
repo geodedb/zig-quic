@@ -860,6 +860,7 @@ pub const Endpoint = struct {
     }
 
     fn processIncomingDatagram(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8, ecn_bits: ?u8) void {
+        const norm_peer = normalizeAddr(&peer.storage, peer.len);
         // Process all packets in the datagram (may be coalesced)
         // RFC 9000 §12.2: "Senders can coalesce multiple QUIC packets into one UDP datagram"
         var remaining = bytes;
@@ -917,14 +918,14 @@ pub const Endpoint = struct {
             // Short header: Process and consume entire remaining buffer
             if (!is_long) {
                 // Handle NAT rebinding detection
-                const lookup_result = lookup.findConnectionByDcid(&self.conns, peer, remaining, null);
-                if (lookup_result.nat_rebinding) {
-                    if (lookup_result.conn) |c| {
-                        const peer_h = hashSockaddr(&peer.storage, peer.len);
-                        self.onPathAddressChanged(c, peer, peer_h, lookup_result.dcid_len);
+                const lookup_result = lookup.findConnectionByDcid(&self.conns, norm_peer, remaining, null);
+                if (lookup_result.conn) |c| {
+                    if (lookup_result.nat_rebinding or !conn_mod.SockAddr.eq(&c.peer, &norm_peer)) {
+                        const peer_h = hashSockaddr(&norm_peer.storage, norm_peer.len);
+                        self.onPathAddressChanged(c, norm_peer, peer_h, lookup_result.dcid_len);
                     }
                 }
-                incoming.processShortHeader(&rx_ctx, peer, remaining, ecn_bits, rx_ctx.send_fn);
+                incoming.processShortHeader(&rx_ctx, norm_peer, remaining, ecn_bits, rx_ctx.send_fn);
                 break; // Short header packet consumes rest of datagram
             }
 
@@ -997,7 +998,7 @@ pub const Endpoint = struct {
             // Re-parse packet type from THIS packet's first byte (for coalesced packets)
 
             if (version == 0) {
-                incoming.processVersionNegotiation(&rx_ctx, peer, packet_bytes);
+                incoming.processVersionNegotiation(&rx_ctx, norm_peer, packet_bytes);
             } else if (packet_ty == 0) {
                 // Server-side version negotiation for unsupported versions.
                 // This is required by the interop simulator readiness probe
@@ -1021,15 +1022,15 @@ pub const Endpoint = struct {
                     const supported_versions = [_]u32{ packet.QUIC_V1, packet.QUIC_V2 };
                     var vn_buf: [256]u8 = undefined;
                     if (encodeVersionNegotiationPacket(scid, dcid, &supported_versions, vn_buf[0..])) |vn_packet| {
-                        _ = self.sendTo(peer, vn_packet) catch {};
+                        _ = self.sendTo(norm_peer, vn_packet) catch {};
                     } else |_| {}
                 } else {
-                    incoming.processInitial(&rx_ctx, peer, packet_bytes, version);
+                    incoming.processInitial(&rx_ctx, norm_peer, packet_bytes, version);
                 }
             } else if (packet_ty == 3) {
-                self.processRetryPacket(peer, packet_bytes, version);
+                self.processRetryPacket(norm_peer, packet_bytes, version);
             } else if (packet_ty == 2) {
-                incoming.processHandshake(&rx_ctx, peer, packet_bytes, version, ecn_bits, rx_ctx.send_fn);
+                incoming.processHandshake(&rx_ctx, norm_peer, packet_bytes, version, ecn_bits, rx_ctx.send_fn);
             }
 
             // Advance to next packet

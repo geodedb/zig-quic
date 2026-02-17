@@ -1333,6 +1333,9 @@ pub fn setupServerTransportParams(
     tpp.initial_max_stream_data_uni = conn.local_max_stream_data;
     tpp.initial_max_streams_bidi = conn.local_max_streams_bidi;
     tpp.initial_max_streams_uni = conn.local_max_streams_uni;
+    // Allow peers to issue additional connection IDs so migration-capable
+    // clients can rotate away from zero-length initial CIDs.
+    tpp.active_connection_id_limit = 8;
 
     // Encode to TLV format for quic_transport_parameters extension
     const tp_bytes = try transport_params.TransportParams.encode(&tpp, allocator);
