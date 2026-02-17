@@ -89,7 +89,7 @@ services:
       - ./quic-network-simulator/downloads:/downloads
     environment:
       - ROLE=client
-      - REQUESTS=${REQUESTS:-https://server4/index.html}
+      - REQUESTS=${REQUESTS:-https://server4/5000}
       - TESTCASE=${TESTCASE:-handshake}
       - QNS_H3_ALLOW_EMPTY=${QNS_H3_ALLOW_EMPTY:-0}
     depends_on:
@@ -151,7 +151,7 @@ services:
       - ./quic-network-simulator/downloads:/downloads
     environment:
       - ROLE=client
-      - REQUESTS=${REQUESTS:-https://server4/index.html}
+      - REQUESTS=${REQUESTS:-https://server4/5000}
       - TESTCASE=${TESTCASE:-handshake}
     depends_on:
       - sim
@@ -213,7 +213,7 @@ services:
       - ./quic-network-simulator/downloads:/downloads
     environment:
       - ROLE=client
-      - REQUESTS=${REQUESTS:-https://server4/index.html}
+      - REQUESTS=${REQUESTS:-https://server4/5000}
       - TESTCASE=${TESTCASE:-handshake}
       - QLOGDIR=/logs/qlog
       - QNS_H3_ALLOW_EMPTY=${QNS_H3_ALLOW_EMPTY:-0}
@@ -276,7 +276,7 @@ services:
       - ./quic-network-simulator/downloads:/downloads
     environment:
       - ROLE=client
-      - REQUESTS=${REQUESTS:-https://server4/index.html}
+      - REQUESTS=${REQUESTS:-https://server4/5000}
       - TESTCASE=${TESTCASE:-handshake}
     depends_on:
       - sim
@@ -337,7 +337,7 @@ services:
       - ./quic-network-simulator/downloads:/downloads
     environment:
       - ROLE=client
-      - REQUESTS=${REQUESTS:-https://server4/index.html}
+      - REQUESTS=${REQUESTS:-https://server4/5000}
       - TESTCASE=${TESTCASE:-handshake}
     depends_on:
       - sim
@@ -398,7 +398,7 @@ services:
       - ./quic-network-simulator/downloads:/downloads
     environment:
       - ROLE=client
-      - REQUESTS=${REQUESTS:-https://server4/index.html}
+      - REQUESTS=${REQUESTS:-https://server4/5000}
       - TESTCASE=${TESTCASE:-handshake}
     depends_on:
       - sim
@@ -459,7 +459,7 @@ services:
       - ./quic-network-simulator/downloads:/downloads
     environment:
       - ROLE=client
-      - REQUESTS=${REQUESTS:-https://server4/index.html}
+      - REQUESTS=${REQUESTS:-https://server4/5000}
       - TESTCASE=${TESTCASE:-handshake}
     depends_on:
       - sim
@@ -551,7 +551,7 @@ services:
       - ./quic-network-simulator/downloads:/downloads
     environment:
       - ROLE=client
-      - REQUESTS=${REQUESTS:-https://server4/index.html}
+      - REQUESTS=${REQUESTS:-https://server4/5000}
       - TESTCASE=${TESTCASE:-handshake}
       - QLOGDIR=/logs/qlog
       - QNS_H3_ALLOW_EMPTY=${QNS_H3_ALLOW_EMPTY:-0}

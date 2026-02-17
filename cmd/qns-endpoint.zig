@@ -43,6 +43,31 @@ fn extractPath(url: []const u8) []const u8 {
     return url[i..];
 }
 
+fn extractAuthority(url: []const u8) ?[]const u8 {
+    // Return the authority component from an absolute URL, e.g. "server4:443".
+    var i: usize = 0;
+    if (std.mem.indexOf(u8, url, "://")) |p| {
+        i = p + 3;
+    }
+    const start = i;
+    while (i < url.len and url[i] != '/' and url[i] != '?' and url[i] != '#') : (i += 1) {}
+    if (i <= start) return null;
+    return url[start..i];
+}
+
+fn hostFromAuthority(authority: []const u8) []const u8 {
+    // Strip optional :port from authority while preserving bracketed IPv6 hosts.
+    if (authority.len == 0) return authority;
+    if (authority[0] == '[') {
+        const close_idx = std.mem.indexOfScalar(u8, authority, ']') orelse return authority;
+        return authority[0 .. close_idx + 1];
+    }
+    if (std.mem.lastIndexOfScalar(u8, authority, ':')) |port_sep| {
+        return authority[0..port_sep];
+    }
+    return authority;
+}
+
 fn useIpv6Interop(testcase: []const u8, requests_env: []const u8) bool {
     if (std.mem.eql(u8, testcase, "ipv6")) return true;
     return std.mem.indexOf(u8, requests_env, "server6") != null;
@@ -1014,8 +1039,17 @@ pub fn main() !void {
         const use_ipv6 = useIpv6Interop(testcase, req_env);
         const client_bind_addr = if (use_ipv6) "[::]:0" else "0.0.0.0:0";
         const connect_addr = if (use_ipv6) "[fd00:cafe:cafe:100::100]:443" else "193.167.100.100:443";
-        const connect_sni = if (use_ipv6) "server6" else "server4";
-        const h3_authority = if (use_ipv6) "server6:443" else "server4:443";
+        const default_connect_sni = if (use_ipv6) "server6" else "server4";
+        const default_h3_authority = if (use_ipv6) "server6:443" else "server4:443";
+        const connect_sni = blk: {
+            if (urls.len > 0) {
+                if (extractAuthority(urls[0])) |authority| {
+                    const host = hostFromAuthority(authority);
+                    if (host.len > 0) break :blk host;
+                }
+            }
+            break :blk default_connect_sni;
+        };
 
         // For multiconnect test, establish a new connection for each request
         if (std.mem.eql(u8, testcase, "multiconnect")) {
@@ -1050,6 +1084,10 @@ pub fn main() !void {
                 var file_bytes = std.ArrayList(u8){};
                 defer file_bytes.deinit(alloc);
                 if (std.mem.eql(u8, testcase, "http3")) {
+                    const h3_authority = extractAuthority(url) orelse default_h3_authority;
+                    var h3_req_msg_buf: [256]u8 = undefined;
+                    const h3_req_msg = std.fmt.bufPrint(&h3_req_msg_buf, "client: H3 request authority={s} path={s}", .{ h3_authority, path }) catch "client: H3 request";
+                    log(h3_req_msg);
                     log("client: sending H3 GET request");
                     const resp_buf = try alloc.alloc(u8, 4 * 1024 * 1024);
                     defer alloc.free(resp_buf);
@@ -1197,6 +1235,10 @@ pub fn main() !void {
             defer alloc.free(resp_buf);
             for (urls) |url| {
                 const path = extractPath(url);
+                const h3_authority = extractAuthority(url) orelse default_h3_authority;
+                var h3_req_msg_buf: [256]u8 = undefined;
+                const h3_req_msg = std.fmt.bufPrint(&h3_req_msg_buf, "client: H3 request authority={s} path={s}", .{ h3_authority, path }) catch "client: H3 request";
+                log(h3_req_msg);
                 log("client: sending H3 GET request");
                 const got = h3_client.h3Get(ep, conn, h3_authority, path, resp_buf) catch |err| {
                     var err_msg_buf: [128]u8 = undefined;

@@ -123,10 +123,16 @@ if [[ -n "${INTEROP_TESTCASES:-}" ]]; then
 fi
 
 default_request_host_for_client() {
-    local client_impl="$1"
+    local server_impl="$1"
+    local client_impl="$2"
+    local testcase="$3"
     # kwik enforces certificate hostname verification for multiple testcases.
     # Our interop cert SAN includes "server", not "server4", so keep kwik on "server".
     if [[ "$client_impl" == "kwik" ]]; then
+        echo "server"
+    elif [[ "$client_impl" == "zig" && "$testcase" == "http3" ]]; then
+        # Some servers (e.g. quic-go) return empty-body responses for "server4" authority.
+        # Keep Zig's H3 authority on "server" for broader interop compatibility.
         echo "server"
     else
         echo "server4"
@@ -141,7 +147,7 @@ default_requests_for_testcase() {
             echo "https://${host}:443/5000 https://${host}:443/10000"
             ;;
         http3)
-            echo "https://${host}:443/index.html"
+            echo "https://${host}:443/5000"
             ;;
         *)
             echo "https://${host}:443/5000"
@@ -226,7 +232,7 @@ run_test() {
     export CLIENT=$client
     export TESTCASE=$testcase
     local request_host
-    request_host="$(default_request_host_for_client "$client")"
+    request_host="$(default_request_host_for_client "$server" "$client" "$testcase")"
     export REQUESTS="${REQUESTS_OVERRIDE:-$(default_requests_for_testcase "$testcase" "$request_host")}"
     
     # Determine which profiles to use
@@ -351,7 +357,7 @@ run_generic_test() {
     export CLIENT_IMAGE="$client_image"
     export TESTCASE="$testcase"
     local request_host
-    request_host="$(default_request_host_for_client "$client_impl")"
+    request_host="$(default_request_host_for_client "$server_impl" "$client_impl" "$testcase")"
     export REQUESTS="${REQUESTS_OVERRIDE:-$(default_requests_for_testcase "$testcase" "$request_host")}"
     export QNS_H3_ALLOW_EMPTY=0
     if [[ "$testcase" == "http3" && "$client_impl" == "zig" && ( "$server_impl" == "kwik" || "$server_impl" == "quiche" ) ]]; then
