@@ -164,6 +164,10 @@ pub fn processHandshake(
 
         switch (fr.f) {
             .crypto => |cr| {
+                // CRYPTO is ack-eliciting even when it carries duplicate bytes.
+                saw_ack_eliciting = true;
+                saw_crypto = true;
+
                 // Process CRYPTO frame to advance TLS handshake
                 logger.debugPrint("{s}: Received Handshake CRYPTO frame with {} bytes at offset {} (expected {})\n", .{
                     if (conn.*.role == .Server) "Server" else "Client",
@@ -182,9 +186,6 @@ pub fn processHandshake(
                 };
 
                 if (ack_needed) {
-                    saw_crypto = true;
-                    saw_ack_eliciting = true;
-
                     // Check if app keys are now ready (handshake complete)
                     if (conn.*.app_rx_keys != null and conn.*.app_tx_keys != null) {
                         logger.debugPrint("processHandshake: App keys ready - handshake complete\n", .{});
@@ -204,7 +205,8 @@ pub fn processHandshake(
             .ping => {
                 // PING frames are allowed in Handshake packets (RFC 9000 §19.2)
                 // They're used for keepalive and connection validation
-                // No action needed - the packet itself will trigger ACK generation
+                saw_ack_eliciting = true;
+                saw_crypto = true;
             },
             else => {
                 // Other frames are unexpected in Handshake packets
@@ -347,6 +349,17 @@ pub fn processHandshake(
                 conn.*.pn_handshake_tx +%= 1;
             }
         }
+    }
+
+    // Loss/corruption interop resilience: if the server keeps receiving Handshake
+    // traffic after 1-RTT keys are ready, resend HANDSHAKE_DONE in 1-RTT so the
+    // client can complete confirmation when the original frame was lost/corrupted.
+    if (conn.*.role == .Server and conn.*.peer_finished_verified and conn.*.app_tx_keys != null) {
+        var done_frames = std.ArrayList(u8){};
+        defer done_frames.deinit(ctx.allocator.*);
+        const dw = done_frames.writer(ctx.allocator.*);
+        _ = (frame.Frame{ .handshake_done = {} }).write(dw) catch 0;
+        conn.*.sendControlFrames(done_frames.items);
     }
 }
 

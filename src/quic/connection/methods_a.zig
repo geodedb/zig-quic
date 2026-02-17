@@ -764,41 +764,11 @@ pub fn bind(comptime Connection: type) type {
             const w = frames.writer(self.allocator.*);
             _ = (frame.Frame{ .path_challenge = self.path_challenge_data }).write(w) catch 0;
 
-            const primary_dcid = self.shortHeaderDcid();
-
-            // Interop migration compatibility:
-            // When peer selected zero-length Initial SCID, dissectors often fail to
-            // associate the first packet on a rebinding path. Emit a shadow probe
-            // with our_scid as DCID first, then the RFC-compliant packet.
-            if (self.role == .Server and primary_dcid.len == 0 and self.our_scid.len > 0 and self.app_rx_keys != null) {
-                const shadow_dcid = self.our_scid.bytes[0..self.our_scid.len];
-                const shadow_keys = self.app_rx_keys.?;
-                const shadow_pn: u32 = if (self.pn_app.have_any)
-                    @as(u32, @truncate(self.pn_app.max + 1))
-                else
-                    @as(u32, @truncate(self.pn_app_tx));
-                const shadow_storage = self.packet_pool.checkout();
-                defer self.packet_pool.release(shadow_storage);
-                const shadow_len = packet.encodeShortProtectedInto(
-                    shadow_storage,
-                    shadow_dcid,
-                    shadow_pn,
-                    2,
-                    frames.items,
-                    .{ .key = shadow_keys.key, .iv = shadow_keys.iv, .hp = shadow_keys.hp },
-                    self.rx_key_phase,
-                ) catch 0;
-                if (shadow_len != 0) {
-                    const shadow_pkt = shadow_storage[0..shadow_len];
-                    _ = self.send(shadow_pkt) catch {};
-                }
-            }
-
             const packet_storage = self.packet_pool.checkout();
             defer self.packet_pool.release(packet_storage);
             const pkt_len = packet.encodeShortProtectedInto(
                 packet_storage,
-                primary_dcid,
+                self.shortHeaderDcid(),
                 @as(u32, @truncate(self.pn_app_tx)),
                 2,
                 frames.items,

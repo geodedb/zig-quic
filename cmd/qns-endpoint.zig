@@ -279,7 +279,8 @@ fn writePendingResponseChunk(ep: *api.QuicEndpoint, conn: *api.QuicConnection, r
 
     if (resp.sent < resp.data.len) {
         const chunk_end = @min(resp.sent + 1200, resp.data.len);
-        const n = api.writeStream(conn, resp.stream_id, resp.data[resp.sent..chunk_end], false) catch |err| switch (err) {
+        const chunk_is_final = (chunk_end == resp.data.len);
+        const n = api.writeStream(conn, resp.stream_id, resp.data[resp.sent..chunk_end], chunk_is_final) catch |err| switch (err) {
             error.KeysNotReady => {
                 resp.blocked_reason = .keys_not_ready;
                 resp.blocked_count += 1;
@@ -316,6 +317,11 @@ fn writePendingResponseChunk(ep: *api.QuicEndpoint, conn: *api.QuicConnection, r
         resp.blocked_reason = .none;
         api.poll(ep, 1) catch {};
         if (resp.sent < resp.data.len) return .progressed;
+        if (chunk_is_final) {
+            resp.fin_sent = true;
+            api.flush(ep, 1);
+            return .done;
+        }
     }
 
     _ = api.writeStream(conn, resp.stream_id, &[_]u8{}, true) catch |err| switch (err) {
@@ -670,12 +676,19 @@ pub fn main() !void {
             const req_start = std.time.nanoTimestamp();
             var last_progress = req_start;
             var rr_next: usize = 0;
+            const is_multiconnect = std.mem.eql(u8, testcase, "multiconnect");
+            var responses_completed: usize = 0;
             while (!api.isDrained(conn)) {
                 if (elapsedMsSince(req_start) >= responseTotalTimeoutMs(testcase)) {
                     log("server: response loop total timeout");
                     break;
                 }
-                const idle_limit_ms = if (pending_responses.items.len > 0) responsePendingIdleTimeoutMs(testcase) else responseIdleTimeoutMs(testcase);
+                var idle_limit_ms = if (pending_responses.items.len > 0) responsePendingIdleTimeoutMs(testcase) else responseIdleTimeoutMs(testcase);
+                if (is_multiconnect and responses_completed > 0 and pending_responses.items.len == 0) {
+                    // In multiconnect stress cases, keep the connection around long
+                    // enough for retransmission recovery when packets are dropped.
+                    idle_limit_ms = @min(idle_limit_ms, 30_000);
+                }
                 if (elapsedMsSince(last_progress) >= idle_limit_ms) {
                     var idle_msg_buf: [128]u8 = undefined;
                     const idle_msg = std.fmt.bufPrint(&idle_msg_buf, "server: response loop idle timeout pending={d}", .{pending_responses.items.len}) catch "server: response loop idle timeout";
@@ -783,11 +796,25 @@ pub fn main() !void {
                         log(invalid_msg);
                     }
 
-                    if (request_buffers.fetchRemove(sid)) |entry| {
-                        var req_state = entry.value;
-                        req_state.deinit(alloc);
+                    const consumed = if (nl) |line_end| line_end + 1 else req_buf.items.len;
+                    if (consumed < req_buf.items.len) {
+                        const remain_len = req_buf.items.len - consumed;
+                        std.mem.copyForwards(u8, req_buf.items[0..remain_len], req_buf.items[consumed..]);
+                        req_buf.shrinkRetainingCapacity(remain_len);
+                    } else {
+                        req_buf.clearRetainingCapacity();
                     }
-                    _ = active_streams.swapRemove(idx);
+
+                    if (api.isStreamFinished(conn, sid) and req_buf.items.len == 0) {
+                        if (request_buffers.fetchRemove(sid)) |entry| {
+                            var req_state = entry.value;
+                            req_state.deinit(alloc);
+                        }
+                        _ = active_streams.swapRemove(idx);
+                        continue;
+                    }
+
+                    idx += 1;
                 }
 
                 if (pending_responses.items.len > 0) {
@@ -806,6 +833,7 @@ pub fn main() !void {
                                 _ = pending_responses.swapRemove(rr_next);
                                 last_progress = std.time.nanoTimestamp();
                                 made_progress = true;
+                                responses_completed += 1;
                                 if (pending_responses.items.len == 0) break;
                                 continue;
                             },
@@ -851,6 +879,7 @@ pub fn main() !void {
                         api.poll(ep, 1) catch {};
                     }
                 }
+
             }
             if (pending_responses.items.len > 0) {
                 var pending_msg_buf: [128]u8 = undefined;

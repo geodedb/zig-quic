@@ -53,7 +53,7 @@ pub fn bind(comptime Connection: type) type {
             }
         }
 
-        fn retransmitLostStreamPackets(self: *Connection) void {
+        fn retransmitLostStreamPackets(self: *Connection, largest_acked_opt: ?u64) void {
             if (!self.app_stream_retx_init) return;
             if (!self.hasConfirmedAppTxKeys()) return;
 
@@ -64,7 +64,12 @@ pub fn bind(comptime Connection: type) type {
             var it = self.app_stream_retx.iterator();
             while (it.next()) |entry| {
                 const pn = entry.key_ptr.*;
-                if (self.rec.getPacketDeliveryState(.Application, pn) == .lost) {
+                const rec_lost = (self.rec.getPacketDeliveryState(.Application, pn) == .lost);
+                const gap_lost = if (largest_acked_opt) |largest_acked|
+                    (pn < largest_acked)
+                else
+                    false;
+                if (rec_lost or gap_lost) {
                     lost_pns.append(self.allocator.*, pn) catch break;
                 }
             }
@@ -74,6 +79,10 @@ pub fn bind(comptime Connection: type) type {
                 if (retransmitted >= 16) break;
                 const removed = self.app_stream_retx.fetchRemove(lost_pn) orelse continue;
                 var tracked = removed.value;
+                if (tracked.retransmit_count >= 8) {
+                    self.allocator.free(tracked.data);
+                    continue;
+                }
 
                 var frame_storage: [2048]u8 = undefined;
                 var frame_stream = std.io.fixedBufferStream(&frame_storage);
@@ -688,7 +697,7 @@ pub fn bind(comptime Connection: type) type {
             // Promote time-threshold losses if any expired now
             _ = self.rec.onLossTimeExpired(now_ns);
             if (space == .Application) {
-                retransmitLostStreamPackets(self);
+                retransmitLostStreamPackets(self, largest);
             }
             // Reset per-space PTO backoff if any ack-eliciting was acked
             if (res.bytes_acked > 0) switch (space) {
