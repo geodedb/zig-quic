@@ -21,6 +21,119 @@ pub fn bind(comptime Connection: type) type {
             };
         }
 
+        fn trackAppStreamPacket(
+            self: *Connection,
+            pn: u64,
+            stream_id: u64,
+            offset: u64,
+            fin: bool,
+            data: []const u8,
+        ) void {
+            if (!self.app_stream_retx_init) return;
+            const owned = self.allocator.dupe(u8, data) catch return;
+            const StreamTxPacket = @FieldType(@TypeOf(self.app_stream_retx).KV, "value");
+            const entry: StreamTxPacket = .{
+                .stream_id = stream_id,
+                .offset = offset,
+                .fin = fin,
+                .data = owned,
+                .retransmit_count = @as(u16, 0),
+            };
+            self.app_stream_retx.put(pn, entry) catch {
+                self.allocator.free(owned);
+            };
+        }
+
+        fn dropAckedStreamTracking(self: *Connection, acked: []const u64) void {
+            if (!self.app_stream_retx_init) return;
+            for (acked) |pn| {
+                if (self.app_stream_retx.fetchRemove(pn)) |removed| {
+                    self.allocator.free(removed.value.data);
+                }
+            }
+        }
+
+        fn retransmitLostStreamPackets(self: *Connection) void {
+            if (!self.app_stream_retx_init) return;
+            if (!self.hasConfirmedAppTxKeys()) return;
+
+            const tx = self.app_tx_keys.?;
+            var lost_pns = std.ArrayList(u64){};
+            defer lost_pns.deinit(self.allocator.*);
+
+            var it = self.app_stream_retx.iterator();
+            while (it.next()) |entry| {
+                const pn = entry.key_ptr.*;
+                if (self.rec.getPacketDeliveryState(.Application, pn) == .lost) {
+                    lost_pns.append(self.allocator.*, pn) catch break;
+                }
+            }
+
+            var retransmitted: usize = 0;
+            for (lost_pns.items) |lost_pn| {
+                if (retransmitted >= 16) break;
+                const removed = self.app_stream_retx.fetchRemove(lost_pn) orelse continue;
+                var tracked = removed.value;
+
+                var frame_storage: [2048]u8 = undefined;
+                var frame_stream = std.io.fixedBufferStream(&frame_storage);
+                _ = (frame.Frame{
+                    .stream = .{
+                        .stream_id = tracked.stream_id,
+                        .offset = tracked.offset,
+                        .fin = tracked.fin,
+                        .data = tracked.data,
+                    },
+                }).write(frame_stream.writer()) catch {
+                    self.app_stream_retx.put(lost_pn, tracked) catch self.allocator.free(tracked.data);
+                    continue;
+                };
+                const frame_bytes = frame_stream.getWritten();
+                const packet_storage = self.packet_pool.checkout();
+                defer self.packet_pool.release(packet_storage);
+
+                const next_pn = self.pn_app_tx;
+                const pkt_len = packet.encodeShortProtectedInto(
+                    packet_storage,
+                    self.shortHeaderDcid(),
+                    @as(u32, @truncate(next_pn)),
+                    2,
+                    frame_bytes,
+                    .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
+                    self.tx_key_phase,
+                ) catch {
+                    self.app_stream_retx.put(lost_pn, tracked) catch self.allocator.free(tracked.data);
+                    continue;
+                };
+                const pkt = packet_storage[0..pkt_len];
+                _ = self.send(pkt) catch {
+                    self.app_stream_retx.put(lost_pn, tracked) catch self.allocator.free(tracked.data);
+                    continue;
+                };
+
+                tracked.retransmit_count +%= 1;
+                logger.debugPrint(
+                    "[stream-retx] pn={} -> pn={} stream={} off={} len={} fin={} attempt={}\n",
+                    .{
+                        lost_pn,
+                        next_pn,
+                        tracked.stream_id,
+                        tracked.offset,
+                        tracked.data.len,
+                        tracked.fin,
+                        tracked.retransmit_count,
+                    },
+                );
+                self.onShortHeaderPacketSent(pkt.len, true);
+                self.computeAndMaybeArmPto(self);
+
+                self.app_stream_retx.put(next_pn, tracked) catch {
+                    self.allocator.free(tracked.data);
+                };
+                retransmitted += 1;
+            }
+        }
+
         pub fn sendDatagram(self: *Connection, data: []const u8) !void {
             if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
             const tx = self.app_tx_keys.?;
@@ -310,9 +423,11 @@ pub fn bind(comptime Connection: type) type {
             );
             const pkt = packet_storage[0..pkt_len];
             logger.debugPrint("About to call send() with {} bytes\n", .{pkt.len});
+            const sent_pn = self.pn_app_tx;
             const bytes_sent = try self.send(pkt);
             logger.debugPrint("send() returned {} bytes\n", .{bytes_sent});
             logger.debugPrint("STREAM frame packet sent - {} bytes (pkt.len={})\n", .{ bytes_sent, pkt.len });
+            trackAppStreamPacket(self, sent_pn, id, cur_off, fin and to_send == data.len, data[0..to_send]);
             self.onShortHeaderPacketSent(pkt.len, true);
             self.computeAndMaybeArmPto(self);
             if (id == 0) {
@@ -563,12 +678,18 @@ pub fn bind(comptime Connection: type) type {
                 if (cursor == 0) break;
             }
             const acked = buf[0..count];
+            if (space == .Application) {
+                dropAckedStreamTracking(self, acked);
+            }
             // Update recovery for given space
             const now_i = std.time.nanoTimestamp();
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
             const res = self.rec.onAckReceivedWithEcn(space, acked, 0, now_ns, ecn);
             // Promote time-threshold losses if any expired now
             _ = self.rec.onLossTimeExpired(now_ns);
+            if (space == .Application) {
+                retransmitLostStreamPackets(self);
+            }
             // Reset per-space PTO backoff if any ack-eliciting was acked
             if (res.bytes_acked > 0) switch (space) {
                 .Initial => self.pto_initial_count = 0,
@@ -783,6 +904,40 @@ pub fn bind(comptime Connection: type) type {
             else
                 self.peer_initial_scid.bytes[0..self.peer_initial_scid.len];
 
+            if (self.crypto_retx_initial) |retx| {
+                const max_crypto_chunk: usize = @max(@as(usize, 256), @as(usize, self.path_mtu) - 80);
+                const chunk_len = @min(retx.len, max_crypto_chunk);
+
+                var crypto_frames = std.ArrayList(u8){};
+                defer crypto_frames.deinit(self.allocator.*);
+                const cw = crypto_frames.writer(self.allocator.*);
+                _ = (frame.Frame{
+                    .crypto = .{
+                        .offset = self.crypto_retx_initial_off,
+                        .data = retx[0..chunk_len],
+                    },
+                }).write(cw) catch {};
+
+                const crypto_pkt = packet.encodeInitialProtected(
+                    self.allocator.*,
+                    self.version,
+                    dest_cid,
+                    self.our_scid.bytes[0..self.our_scid.len],
+                    &[_]u8{},
+                    @as(u32, @truncate(self.pn_initial_tx)),
+                    2,
+                    crypto_frames.items,
+                    txk,
+                ) catch null;
+                if (crypto_pkt) |bytes_out| {
+                    defer self.allocator.free(bytes_out);
+                    _ = self.send(bytes_out) catch {};
+                    self.onPacketSent(.Initial, self.pn_initial_tx, bytes_out.len, true);
+                    self.pn_initial_tx +%= 1;
+                    return;
+                }
+            }
+
             const out = packet.encodeInitialProtected(
                 self.allocator.*,
                 self.version,
@@ -808,6 +963,45 @@ pub fn bind(comptime Connection: type) type {
         pub fn sendPtoProbeHandshake(self: *Connection) void {
             const tx = self.hs_tx_keys orelse return;
             logger.debugPrint("sendPtoProbeHandshake: Sending PTO probe\n", .{});
+
+             if (self.crypto_retx_handshake) |retx| {
+                const max_crypto_chunk: usize = @max(@as(usize, 256), @as(usize, self.path_mtu) - 80);
+                var sent_off: usize = 0;
+                var probes_sent: usize = 0;
+                while (sent_off < retx.len and probes_sent < 8) {
+                    const chunk_len = @min(retx.len - sent_off, max_crypto_chunk);
+                    var crypto_frames = std.ArrayList(u8){};
+                    defer crypto_frames.deinit(self.allocator.*);
+                    const cw = crypto_frames.writer(self.allocator.*);
+                    _ = (frame.Frame{
+                        .crypto = .{
+                            .offset = self.crypto_retx_handshake_off + sent_off,
+                            .data = retx[sent_off .. sent_off + chunk_len],
+                        },
+                    }).write(cw) catch {};
+
+                    const out_crypto = packet.encodeHandshakeProtected(
+                        self.allocator.*,
+                        self.version,
+                        self.peer_initial_scid.bytes[0..self.peer_initial_scid.len],
+                        self.our_scid.bytes[0..self.our_scid.len],
+                        @as(u32, @truncate(self.pn_handshake_tx)),
+                        2,
+                        crypto_frames.items,
+                        tx,
+                    ) catch null;
+                    if (out_crypto) |bytes_out| {
+                        defer self.allocator.free(bytes_out);
+                        _ = self.send(bytes_out) catch {};
+                        self.onPacketSent(.Handshake, self.pn_handshake_tx, bytes_out.len, true);
+                        self.pn_handshake_tx +%= 1;
+                        probes_sent += 1;
+                    }
+                    sent_off += chunk_len;
+                }
+                if (probes_sent > 0) return;
+            }
+
             var frames = std.ArrayList(u8){};
             defer frames.deinit(self.allocator.*);
             const w = frames.writer(self.allocator.*);

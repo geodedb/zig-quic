@@ -458,6 +458,40 @@ pub const Recovery = struct {
         return deadline;
     }
 
+    pub const PacketDeliveryState = enum {
+        unknown,
+        in_flight,
+        acked,
+        lost,
+    };
+
+    /// Return delivery state for a tracked packet number in the specified space.
+    pub fn getPacketDeliveryState(self: *Recovery, space: PacketNumberSpace, pn: u64) PacketDeliveryState {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const idx = spaceIdx(space);
+        const sstate = &self.spaces[idx];
+
+        if (sstate.sent_index.get(pn)) |sent_slot| {
+            if (sent_slot < sstate.sent.items.len) {
+                const sp = sstate.sent.items[sent_slot];
+                if (sp.acked) return .acked;
+                if (sp.declared_lost) return .lost;
+                return .in_flight;
+            }
+        }
+
+        for (sstate.sent.items) |sp| {
+            if (sp.pn != pn) continue;
+            if (sp.acked) return .acked;
+            if (sp.declared_lost) return .lost;
+            return .in_flight;
+        }
+
+        return .unknown;
+    }
+
     // Thread-safe accessors for congestion control state
 
     /// Get current bytes in flight (thread-safe).

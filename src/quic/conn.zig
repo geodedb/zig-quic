@@ -495,6 +495,14 @@ pub const StreamTx = struct {
     peer_max_stream_data: u64 = 0, // Peer's receive window limit for this stream
 };
 
+pub const StreamTxPacket = struct {
+    stream_id: u64,
+    offset: u64,
+    fin: bool,
+    data: []u8,
+    retransmit_count: u16 = 0,
+};
+
 const PacketBufferPool = struct {
     const slot_count: usize = 4;
     const slot_size: usize = 4096;
@@ -690,6 +698,9 @@ pub const Connection = struct {
     // Multi-stream TX state map (extended): track offset/flags per stream id
     stream_txs: std.AutoHashMap(u64, StreamTx) = undefined,
     stream_txs_init: bool = false,
+    // STREAM frames tracked by packet number for loss-triggered retransmission.
+    app_stream_retx: std.AutoHashMap(u64, StreamTxPacket) = undefined,
+    app_stream_retx_init: bool = false,
     // Queue of incoming peer-initiated streams waiting to be accepted
     incoming_stream_queue: std.ArrayList(u64) = .empty,
     // Streams needing MAX_STREAM_DATA emission; avoids full-map scans on ACK assembly.
@@ -1039,6 +1050,8 @@ pub const Connection = struct {
         self.stream_send_off = 0;
         self.stream_txs = std.AutoHashMap(u64, StreamTx).init(alloc.*);
         self.stream_txs_init = true;
+        self.app_stream_retx = std.AutoHashMap(u64, StreamTxPacket).init(alloc.*);
+        self.app_stream_retx_init = true;
         self.stream_send_aborted = false;
         self.stream_send_fin_sent = false;
         self.stream_recv_aborted = false;
@@ -1217,6 +1230,13 @@ pub const Connection = struct {
             self.streams_rx.deinit();
         }
         if (self.stream_txs_init) self.stream_txs.deinit();
+        if (self.app_stream_retx_init) {
+            var retx_it = self.app_stream_retx.iterator();
+            while (retx_it.next()) |entry| {
+                self.allocator.free(entry.value_ptr.data);
+            }
+            self.app_stream_retx.deinit();
+        }
         // Free incoming stream queue
         if (self.incoming_stream_queue.capacity != 0) self.incoming_stream_queue.deinit(self.allocator.*);
         if (self.pending_fc_streams.capacity != 0) self.pending_fc_streams.deinit(self.allocator.*);

@@ -216,43 +216,13 @@ fn readFileAlloc(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
     return buf[0..n];
 }
 
-fn parsePemCertificateChainConcat(alloc: std.mem.Allocator, cert_pem: []const u8) ![]u8 {
-    const begin_marker = "-----BEGIN CERTIFICATE-----";
-    const end_marker = "-----END CERTIFICATE-----";
-
-    var out = std.ArrayList(u8){};
-    errdefer out.deinit(alloc);
-
-    var rest = cert_pem;
-    var cert_count: usize = 0;
-    while (std.mem.indexOf(u8, rest, begin_marker)) |begin_idx| {
-        const from_begin = rest[begin_idx..];
-        const end_rel = std.mem.indexOf(u8, from_begin, end_marker) orelse break;
-        const block_end = end_rel + end_marker.len;
-        const block = from_begin[0..block_end];
-
-        const der = try api.pem.parseCertificate(alloc, block);
-        defer alloc.free(der);
-        try out.appendSlice(alloc, der);
-        cert_count += 1;
-
-        if (block_end >= from_begin.len) break;
-        rest = from_begin[block_end..];
-    }
-
-    if (cert_count == 0) return error.NoCertificateFound;
-    return try out.toOwnedSlice(alloc);
-}
-
 fn loadInlineServerCredentials(alloc: std.mem.Allocator, cfg: *api.QuicConfig, cert_path: []const u8, key_path: []const u8) !void {
     const cert_pem = try readFileAlloc(alloc, cert_path);
     defer alloc.free(cert_pem);
     const key_pem = try readFileAlloc(alloc, key_path);
     defer alloc.free(key_pem);
 
-    // Parse all PEM certificate blocks and concatenate DER to preserve mounted
-    // interop certificate-chain size in TLS Certificate CRYPTO payloads.
-    cfg.inline_server_cert_der = try parsePemCertificateChainConcat(alloc, cert_pem);
+    cfg.inline_server_cert_der = try api.pem.parseCertificate(alloc, cert_pem);
     cfg.inline_server_priv_p256 = try api.pem.parsePrivateKey(alloc, key_pem);
 }
 
