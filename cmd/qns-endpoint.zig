@@ -57,6 +57,7 @@ fn requestOrderIndex(path: []const u8, requests: []const []const u8) ?usize {
 const supported_testcases = [_][]const u8{
     "handshake",
     "transfer",
+    "retry",
     "longrtt",
     "keyupdate",
     "amplificationlimit",
@@ -895,6 +896,9 @@ pub fn main() !void {
                                 last_progress = std.time.nanoTimestamp();
                                 made_progress = true;
                                 responses_completed += 1;
+                                if (conn.local_max_streams_bidi < std.math.maxInt(u64)) {
+                                    conn.local_max_streams_bidi += 1;
+                                }
                                 if (pending_responses.items.len == 0) break;
                                 continue;
                             },
@@ -1020,6 +1024,11 @@ pub fn main() !void {
                     api.destroy(ep, conn);
                     continue;
                 };
+                if (idx == 0 and std.mem.eql(u8, testcase, "keyupdate")) {
+                    conn.tx_sent_packets_since_key = 511;
+                    conn.tx_sent_bytes_since_key = 1024 * 1024;
+                    log("client: primed keyupdate threshold");
+                }
                 if (!writeAllStream(ep, conn, req_sid, line, testcase)) {
                     log("client: write request timed out");
                     success = false;
@@ -1146,7 +1155,9 @@ pub fn main() !void {
                     break :request_loop;
                 }
                 if (next_request == 0 and std.mem.eql(u8, testcase, "keyupdate")) {
-                    log("client: keyupdate relies on transfer volume (no explicit padding stream)");
+                    conn.tx_sent_packets_since_key = 511;
+                    conn.tx_sent_bytes_since_key = 1024 * 1024;
+                    log("client: primed keyupdate threshold");
                 }
 
                 const now_ns = std.time.nanoTimestamp();

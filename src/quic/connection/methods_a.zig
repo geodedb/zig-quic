@@ -8,6 +8,119 @@ const logger = @import("quic_logger");
 
 pub fn bind(comptime Connection: type) type {
     return struct {
+        fn openAppendFile(path: []const u8) !std.fs.File {
+            return std.fs.cwd().openFile(path, .{ .mode = .read_write }) catch |err| switch (err) {
+                error.FileNotFound => std.fs.cwd().createFile(path, .{ .truncate = false, .read = true }),
+                else => err,
+            };
+        }
+
+        fn currentClientRandom(self: *const Connection) ?[32]u8 {
+            const tls_ctx = self.tls_context orelse return null;
+            return tls_ctx.client_random;
+        }
+
+        fn appendKeyLogLine(
+            self: *Connection,
+            label: []const u8,
+            client_random: *const [32]u8,
+            secret: *const ks.Secret,
+        ) bool {
+            const keylog_path = std.process.getEnvVarOwned(self.allocator.*, "SSLKEYLOGFILE") catch |err| switch (err) {
+                error.EnvironmentVariableNotFound => return false,
+                else => {
+                    logger.debugPrint("keylog: env lookup failed: {}\n", .{err});
+                    return false;
+                },
+            };
+            defer self.allocator.free(keylog_path);
+            if (keylog_path.len == 0) return false;
+
+            var file = openAppendFile(keylog_path) catch |err| {
+                logger.debugPrint("keylog: open failed ({s}): {}\n", .{ keylog_path, err });
+                return false;
+            };
+            defer file.close();
+            file.seekFromEnd(0) catch {};
+
+            var line = std.ArrayList(u8){};
+            defer line.deinit(self.allocator.*);
+            const w = line.writer(self.allocator.*);
+            w.print("{s} ", .{label}) catch return false;
+            for (client_random) |b| {
+                w.print("{X:0>2}", .{b}) catch return false;
+            }
+            w.writeByte(' ') catch return false;
+            for (secret.slice()) |b| {
+                w.print("{X:0>2}", .{b}) catch return false;
+            }
+            w.writeByte('\n') catch return false;
+
+            file.writeAll(line.items) catch |err| {
+                logger.debugPrint("keylog: write failed ({s}): {}\n", .{ label, err });
+                return false;
+            };
+            return true;
+        }
+
+        fn emitTrafficSecretUpdate(self: *Connection, label_prefix: []const u8, epoch: *u32, secret: *const ks.Secret) void {
+            if (!self.keylog_app_logged) return;
+            const client_random = currentClientRandom(self) orelse return;
+            const next_epoch = epoch.* + 1;
+
+            var label_buf: [64]u8 = undefined;
+            const label = std.fmt.bufPrint(&label_buf, "{s}_{d}", .{ label_prefix, next_epoch }) catch return;
+            if (appendKeyLogLine(self, label, &client_random, secret)) {
+                epoch.* = next_epoch;
+            }
+        }
+
+        pub fn maybeEmitHandshakeKeyLog(
+            self: *Connection,
+            client_secret: *const ks.Secret,
+            server_secret: *const ks.Secret,
+        ) void {
+            if (self.keylog_handshake_logged) return;
+            const client_random = currentClientRandom(self) orelse return;
+            const wrote_client = appendKeyLogLine(self, "CLIENT_HANDSHAKE_TRAFFIC_SECRET", &client_random, client_secret);
+            const wrote_server = appendKeyLogLine(self, "SERVER_HANDSHAKE_TRAFFIC_SECRET", &client_random, server_secret);
+            if (wrote_client and wrote_server) {
+                self.keylog_handshake_logged = true;
+            }
+        }
+
+        pub fn maybeEmitApplicationKeyLog(
+            self: *Connection,
+            client_secret: *const ks.Secret,
+            server_secret: *const ks.Secret,
+        ) void {
+            if (self.keylog_app_logged) return;
+            const client_random = currentClientRandom(self) orelse return;
+            const wrote_client = appendKeyLogLine(self, "CLIENT_TRAFFIC_SECRET_0", &client_random, client_secret);
+            const wrote_server = appendKeyLogLine(self, "SERVER_TRAFFIC_SECRET_0", &client_random, server_secret);
+            if (wrote_client and wrote_server) {
+                self.keylog_client_traffic_epoch = 0;
+                self.keylog_server_traffic_epoch = 0;
+                self.keylog_app_logged = true;
+            }
+        }
+
+        pub fn maybeEmitTxKeyUpdateLog(self: *Connection, secret: *const ks.Secret) void {
+            if (self.role == .Client) {
+                emitTrafficSecretUpdate(self, "CLIENT_TRAFFIC_SECRET", &self.keylog_client_traffic_epoch, secret);
+            } else {
+                emitTrafficSecretUpdate(self, "SERVER_TRAFFIC_SECRET", &self.keylog_server_traffic_epoch, secret);
+            }
+        }
+
+        pub fn maybeEmitRxKeyUpdateLog(self: *Connection, secret: *const ks.Secret) void {
+            if (self.role == .Client) {
+                emitTrafficSecretUpdate(self, "SERVER_TRAFFIC_SECRET", &self.keylog_server_traffic_epoch, secret);
+            } else {
+                emitTrafficSecretUpdate(self, "CLIENT_TRAFFIC_SECRET", &self.keylog_client_traffic_epoch, secret);
+            }
+        }
+
         pub fn storeNegotiatedAlpn(self: *Connection, alpn: []const u8) !void {
             if (self.negotiated_alpn) |existing| {
                 if (std.mem.eql(u8, existing, alpn)) return;

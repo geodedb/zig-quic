@@ -5,6 +5,7 @@ const recovery = @import("quic_recovery");
 const ks = @import("quic_tls");
 const tparams = @import("quic_transport_params");
 const logger = @import("quic_logger");
+const builtin = @import("builtin");
 
 pub fn bind(comptime Connection: type) type {
     return struct {
@@ -40,8 +41,10 @@ pub fn bind(comptime Connection: type) type {
 
         fn maybeTriggerKeyUpdateOnSend(self: *Connection, bytes_sent: usize) void {
             if (self.app_tx_keys == null or self.app_tx_secret == null) return;
-            if (std.posix.getenv("QUIC_DISABLE_AUTO_KEY_UPDATE")) |v| {
-                if (v.len == 0 or !std.mem.eql(u8, v, "0")) return;
+            if (comptime builtin.os.tag != .windows and builtin.os.tag != .wasi) {
+                if (std.posix.getenv("QUIC_DISABLE_AUTO_KEY_UPDATE")) |v| {
+                    if (v.len == 0 or !std.mem.eql(u8, v, "0")) return;
+                }
             }
             if (self.tx_update_in_progress) return;
             self.tx_sent_packets_since_key +%= 1;
@@ -58,6 +61,7 @@ pub fn bind(comptime Connection: type) type {
                 if (self.app_tx_keys) |kprev| self.tx_prev_keys = kprev;
                 self.app_tx_keys = .{ .key = t.key, .iv = t.iv, .hp = preserved_hp };
                 self.app_tx_secret = next_secret;
+                self.maybeEmitTxKeyUpdateLog(&next_secret);
                 self.tx_key_phase = !self.tx_key_phase;
                 self.tx_update_in_progress = true;
                 self.tx_update_start_pn = self.pn_app_tx;

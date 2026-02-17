@@ -585,6 +585,11 @@ pub const Connection = struct {
     // Track current TLS application traffic secrets for RX/TX to support Key Update
     app_rx_secret: ?ks.Secret = null,
     app_tx_secret: ?ks.Secret = null,
+    // Optional NSS-style keylog state (used by interop test harnesses via SSLKEYLOGFILE).
+    keylog_handshake_logged: bool = false,
+    keylog_app_logged: bool = false,
+    keylog_client_traffic_epoch: u32 = 0,
+    keylog_server_traffic_epoch: u32 = 0,
     // PHASE 57 Part 5: Pre-derived NEXT generation keys (RFC 9001 §6)
     // These are derived when CURRENT keys are installed and updated when keys are promoted
     // This avoids per-packet derivation and maintains the one-generation-ahead invariant
@@ -724,7 +729,7 @@ pub const Connection = struct {
     peer_max_streams_bidi: u64 = 4096,
     peer_max_streams_uni: u64 = 4096,
     opened_bidi: u64 = 0,
-    local_max_streams_bidi: u64 = 4096,
+    local_max_streams_bidi: u64 = 1000,
     local_max_streams_uni: u64 = 0,
     last_sent_max_streams_bidi: u64 = 0,
     opened_uni: u64 = 0,
@@ -1094,6 +1099,10 @@ pub const Connection = struct {
         // Initialize other fields that have defaults but might not be set
         self.app_rx_secret = null;
         self.app_tx_secret = null;
+        self.keylog_handshake_logged = false;
+        self.keylog_app_logged = false;
+        self.keylog_client_traffic_epoch = 0;
+        self.keylog_server_traffic_epoch = 0;
         self.rx_key_phase = false;
         self.tx_key_phase = false;
         self.rx_prev_keys = null;
@@ -1138,7 +1147,7 @@ pub const Connection = struct {
         self.peer_max_streams_bidi = 4096;
         self.peer_max_streams_uni = 4096;
         self.opened_bidi = 0;
-        self.local_max_streams_bidi = 4096;
+        self.local_max_streams_bidi = 1000;
         self.local_max_streams_uni = 0;
         self.opened_uni = 0;
         self.conn_send_off = 0;
@@ -1595,6 +1604,10 @@ pub const Connection = struct {
     pub const enable0RTT = methods_a.enable0RTT;
     pub const accept0RTT = methods_a.accept0RTT;
     pub const advertiseInitialFlowControl = methods_a.advertiseInitialFlowControl;
+    pub const maybeEmitHandshakeKeyLog = methods_a.maybeEmitHandshakeKeyLog;
+    pub const maybeEmitApplicationKeyLog = methods_a.maybeEmitApplicationKeyLog;
+    pub const maybeEmitTxKeyUpdateLog = methods_a.maybeEmitTxKeyUpdateLog;
+    pub const maybeEmitRxKeyUpdateLog = methods_a.maybeEmitRxKeyUpdateLog;
 
     pub const sendDatagram = methods_b.sendDatagram;
     pub const openStream = methods_b.openStream;

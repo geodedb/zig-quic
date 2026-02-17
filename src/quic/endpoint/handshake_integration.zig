@@ -451,6 +451,8 @@ pub fn installHandshakeKeys(
         logger.debugPrint("installHandshakeKeys: Server installed Handshake keys (conn={*})\n", .{conn});
     }
 
+    conn.maybeEmitHandshakeKeyLog(&client_secret, &server_secret);
+
     // Handshake keys are now installed (indicated by non-null hs_rx_keys/hs_tx_keys)
 }
 
@@ -524,6 +526,8 @@ pub fn installApplicationKeys(
         conn.app_rx_next_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = next_mat.hp };
         logger.debugPrint("[PHASE57-INSTALL] Server: pre-derived next RX keys\n", .{});
     }
+
+    conn.maybeEmitApplicationKeyLog(&client_secret, &server_secret);
 
     // Application keys are now installed (indicated by non-null app_rx_keys/app_tx_keys)
     // Note: HANDSHAKE_DONE frame will be sent by Connection.pushCrypto() after

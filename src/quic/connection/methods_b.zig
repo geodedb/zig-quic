@@ -5,6 +5,7 @@ const frame = @import("quic_frame");
 const recovery = @import("quic_recovery");
 const ks = @import("quic_tls");
 const logger = @import("quic_logger");
+const builtin = @import("builtin");
 
 const trace_enabled = false;
 inline fn trace(comptime fmt: []const u8, args: anytype) void {
@@ -1321,8 +1322,10 @@ pub fn bind(comptime Connection: type) type {
 
         pub fn maybeTriggerKeyUpdateOnSend(self: *Connection, bytes_sent: usize) void {
             if (self.app_tx_keys == null or self.app_tx_secret == null) return;
-            if (std.posix.getenv("QUIC_DISABLE_AUTO_KEY_UPDATE")) |v| {
-                if (v.len == 0 or !std.mem.eql(u8, v, "0")) return;
+            if (comptime builtin.os.tag != .windows and builtin.os.tag != .wasi) {
+                if (std.posix.getenv("QUIC_DISABLE_AUTO_KEY_UPDATE")) |v| {
+                    if (v.len == 0 or !std.mem.eql(u8, v, "0")) return;
+                }
             }
             // Do not trigger another while an update is in progress
             if (self.tx_update_in_progress) return;
@@ -1345,6 +1348,7 @@ pub fn bind(comptime Connection: type) type {
                 if (self.app_tx_keys) |kprev| self.tx_prev_keys = kprev;
                 self.app_tx_keys = .{ .key = t.key, .iv = t.iv, .hp = preserved_hp };
                 self.app_tx_secret = next_secret;
+                self.maybeEmitTxKeyUpdateLog(&next_secret);
                 self.tx_key_phase = !self.tx_key_phase;
                 self.tx_update_in_progress = true;
                 // First PN in the new phase is the next sent PN value
@@ -1386,6 +1390,7 @@ pub fn bind(comptime Connection: type) type {
             const preserved_hp = self.app_tx_keys.?.hp;
             self.app_tx_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = preserved_hp };
             self.app_tx_secret = next_secret;
+            self.maybeEmitTxKeyUpdateLog(&next_secret);
             self.tx_key_phase = self.rx_key_phase;
             self.tx_update_in_progress = true;
             self.tx_update_start_pn = self.pn_app_tx;

@@ -986,6 +986,7 @@ pub fn promoteToNextKeys(
     // Install NEXT keys/secret as current (AEAD only, HP preserved)
     conn.app_rx_keys = .{ .key = next_keys.key, .iv = next_keys.iv, .hp = preserved_hp };
     conn.app_rx_secret = next_secret;
+    conn.maybeEmitRxKeyUpdateLog(&next_secret);
     conn.rx_key_phase = !conn.rx_key_phase;
 
     logger.debugPrint("[PHASE57-HP-PRESERVE] HP key preserved during promotion (not rotated per RFC 9001 §6)\n", .{});
