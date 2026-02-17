@@ -777,6 +777,12 @@ pub fn bind(comptime Connection: type) type {
             ) catch 0;
             if (pkt_len != 0) {
                 const pkt = packet_storage[0..pkt_len];
+                // Path validation probes should be sent immediately on address change.
+                // Bypass pacing here so PATH_CHALLENGE is the first packet emitted
+                // on the new path.
+                const was_pacing_enabled = self.enable_pacing;
+                self.enable_pacing = false;
+                defer self.enable_pacing = was_pacing_enabled;
                 _ = self.send(pkt) catch {};
                 self.onShortHeaderPacketSent(pkt.len, true);
             }

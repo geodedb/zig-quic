@@ -572,7 +572,15 @@ pub const Endpoint = struct {
         if (delay_ms_u64 == 0) delay_ms_u64 = 1; // minimum 1ms to avoid busy spinning
         if (delay_ms_u64 > 100) delay_ms_u64 = 100; // keep deterministic and fast in tests
         const deadline: i64 = now_ms + @as(i64, @intCast(@min(delay_ms_u64, @as(u64, std.math.maxInt(u32)))));
-        try self.timers.append(self.allocator, .{ .deadline_ms = deadline, .id = id, .kind = .Generic, .conn = c, .paced = true, .payload = owned_bytes });
+        try self.timers.append(self.allocator, .{
+            .deadline_ms = deadline,
+            .id = id,
+            .kind = .Generic,
+            .conn = c,
+            .paced = true,
+            .payload = owned_bytes,
+            .paced_peer = c.peer,
+        });
         return id;
     }
 
@@ -1095,7 +1103,8 @@ pub const Endpoint = struct {
                             if (t.conn) |c| {
                                 if (t.payload) |bytes| {
                                     // Send the paced payload now and free it
-                                    _ = self.sendTo(c.peer, bytes) catch {};
+                                    const paced_peer = if (t.paced_peer) |peer| peer else c.peer;
+                                    _ = self.sendTo(paced_peer, bytes) catch {};
                                     self.allocator.free(bytes);
                                 }
                             }

@@ -495,6 +495,13 @@ pub fn main() !void {
         .version = .v1, // Default to v1
     };
 
+    // Stress interop scenarios regularly involve sustained loss/corruption and
+    // reordered control traffic. Give the transport enough idle budget to
+    // complete PTO-driven recovery before either endpoint times out.
+    if (isStressTestcase(testcase)) {
+        cfg.max_idle_timeout_ms = 120_000;
+    }
+
     // Enable v2 when requested
     if (std.mem.eql(u8, testcase, "v2")) {
         cfg.version = .v2;
@@ -675,6 +682,7 @@ pub fn main() !void {
 
             const req_start = std.time.nanoTimestamp();
             var last_progress = req_start;
+            var last_keepalive = req_start;
             var rr_next: usize = 0;
             const is_multiconnect = std.mem.eql(u8, testcase, "multiconnect");
             var responses_completed: usize = 0;
@@ -685,9 +693,9 @@ pub fn main() !void {
                 }
                 var idle_limit_ms = if (pending_responses.items.len > 0) responsePendingIdleTimeoutMs(testcase) else responseIdleTimeoutMs(testcase);
                 if (is_multiconnect and responses_completed > 0 and pending_responses.items.len == 0) {
-                    // In multiconnect stress cases, keep the connection around long
-                    // enough for retransmission recovery when packets are dropped.
-                    idle_limit_ms = @min(idle_limit_ms, 30_000);
+                    // Keep post-response idle budget aligned with stress timeout
+                    // policy so retransmission/PTO recovery can finish.
+                    idle_limit_ms = @max(idle_limit_ms, 90_000);
                 }
                 if (elapsedMsSince(last_progress) >= idle_limit_ms) {
                     var idle_msg_buf: [128]u8 = undefined;
@@ -877,6 +885,16 @@ pub fn main() !void {
                     }
                     if (!made_progress) {
                         api.poll(ep, 1) catch {};
+                    }
+                } else if (isStressTestcase(testcase) and connectionReady(conn)) {
+                    // Keep lossy/corrupt scenarios alive and drive retransmission
+                    // even when no new requests are queued. This prevents the
+                    // runner's 30s "no recent network activity" timeout from
+                    // tripping while recovery still has outstanding work.
+                    if (elapsedMsSince(last_keepalive) >= 1000) {
+                        conn.sendPtoProbeApp();
+                        api.flush(ep, 1);
+                        last_keepalive = std.time.nanoTimestamp();
                     }
                 }
 

@@ -65,18 +65,19 @@ pub fn bind(comptime Connection: type) type {
             while (it.next()) |entry| {
                 const pn = entry.key_ptr.*;
                 const rec_lost = (self.rec.getPacketDeliveryState(.Application, pn) == .lost);
-                const gap_lost = if (largest_acked_opt) |largest_acked|
-                    (pn < largest_acked)
+                const ack_gap_lost = if (largest_acked_opt) |largest_acked|
+                    (largest_acked > pn and (largest_acked - pn) >= 3)
                 else
                     false;
-                if (rec_lost or gap_lost) {
+                if (rec_lost or ack_gap_lost) {
                     lost_pns.append(self.allocator.*, pn) catch break;
                 }
             }
+            std.sort.pdq(u64, lost_pns.items, {}, std.sort.asc(u64));
 
             var retransmitted: usize = 0;
             for (lost_pns.items) |lost_pn| {
-                if (retransmitted >= 16) break;
+                if (retransmitted >= 2) break;
                 const removed = self.app_stream_retx.fetchRemove(lost_pn) orelse continue;
                 var tracked = removed.value;
                 if (tracked.retransmit_count >= 8) {
@@ -1044,37 +1045,59 @@ pub fn bind(comptime Connection: type) type {
             // alive but don't make application delivery progress under heavy
             // loss/corruption.
             if (self.app_stream_retx_init and self.app_stream_retx.count() > 0) {
+                var selected_pn: ?u64 = null;
                 var it = self.app_stream_retx.iterator();
-                if (it.next()) |entry| {
-                    const tracked = entry.value_ptr.*;
-                    var frame_storage: [2048]u8 = undefined;
-                    var frame_stream = std.io.fixedBufferStream(&frame_storage);
-                    _ = (frame.Frame{
-                        .stream = .{
-                            .stream_id = tracked.stream_id,
-                            .offset = tracked.offset,
-                            .fin = tracked.fin,
-                            .data = tracked.data,
-                        },
-                    }).write(frame_stream.writer()) catch 0;
-                    const frame_bytes = frame_stream.getWritten();
+                while (it.next()) |entry| {
+                    const pn = entry.key_ptr.*;
+                    if (selected_pn == null or pn < selected_pn.?) {
+                        selected_pn = pn;
+                    }
+                }
 
-                    const packet_storage = self.packet_pool.checkout();
-                    defer self.packet_pool.release(packet_storage);
-                    const pkt_len = packet.encodeShortProtectedInto(
-                        packet_storage,
-                        self.shortHeaderDcid(),
-                        @as(u32, @truncate(self.pn_app_tx)),
-                        2,
-                        frame_bytes,
-                        .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
-                        self.tx_key_phase,
-                    ) catch 0;
-                    if (pkt_len != 0) {
-                        const pkt = packet_storage[0..pkt_len];
-                        _ = self.send(pkt) catch {};
-                        self.onShortHeaderPacketSent(pkt.len, true);
-                        return;
+                if (selected_pn) |probe_pn| {
+                    if (self.app_stream_retx.fetchRemove(probe_pn)) |removed| {
+                        var tracked = removed.value;
+                        if (tracked.retransmit_count >= 8) {
+                            self.allocator.free(tracked.data);
+                        } else {
+                            var frame_storage: [2048]u8 = undefined;
+                            var frame_stream = std.io.fixedBufferStream(&frame_storage);
+                            _ = (frame.Frame{
+                                .stream = .{
+                                    .stream_id = tracked.stream_id,
+                                    .offset = tracked.offset,
+                                    .fin = tracked.fin,
+                                    .data = tracked.data,
+                                },
+                            }).write(frame_stream.writer()) catch {};
+                            const frame_bytes = frame_stream.getWritten();
+
+                            if (frame_bytes.len > 0) {
+                                const packet_storage = self.packet_pool.checkout();
+                                defer self.packet_pool.release(packet_storage);
+                                const next_pn = self.pn_app_tx;
+                                const pkt_len = packet.encodeShortProtectedInto(
+                                    packet_storage,
+                                    self.shortHeaderDcid(),
+                                    @as(u32, @truncate(next_pn)),
+                                    2,
+                                    frame_bytes,
+                                    .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
+                                    self.tx_key_phase,
+                                ) catch 0;
+                                if (pkt_len != 0) {
+                                    const pkt = packet_storage[0..pkt_len];
+                                    const sent = self.send(pkt) catch 0;
+                                    if (sent > 0) {
+                                        tracked.retransmit_count +%= 1;
+                                        self.onShortHeaderPacketSent(pkt.len, true);
+                                        self.app_stream_retx.put(next_pn, tracked) catch self.allocator.free(tracked.data);
+                                        return;
+                                    }
+                                }
+                            }
+                            self.app_stream_retx.put(probe_pn, tracked) catch self.allocator.free(tracked.data);
+                        }
                     }
                 }
             }

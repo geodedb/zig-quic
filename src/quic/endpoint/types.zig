@@ -20,6 +20,9 @@ pub const Timer = struct {
     // Pacing payload support (Generic kind): when paced is true and payload!=null, send on expiry
     paced: bool = false,
     payload: ?[]u8 = null,
+    // Snapshot of peer at pacing enqueue time; avoids replaying old-path packets
+    // to a newly migrated peer address.
+    paced_peer: ?conn_mod.SockAddr = null,
 };
 
 /// Endpoint timer kinds: generic app timers plus per-PN-space PTO and PMTUD timers.
