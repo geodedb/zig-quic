@@ -180,7 +180,7 @@ log_indicates_failure() {
     if rg -qi "client: response bytes=0" "$log_path" && ! rg -qi "client: empty H3 response accepted \\(QNS_H3_ALLOW_EMPTY\\)" "$log_path"; then
         return 0
     fi
-    rg -qi "At least one response failed|client: h3 request failed|I/O Error|ConnectException|Got IO error|handshake timeout|Could not parse URI|Could not open qlog file|Can't read trust store file|keytool error|servername does not match" "$log_path"
+    rg -qi "At least one response failed|client: h3 request failed|I/O Error|ConnectException|Got IO error|handshake timeout|Could not parse URI|Could not open qlog file|Can't read trust store file|keytool error|servername does not match|Failed to start sim|failed to create network|invalid pool request|Pool overlaps with other one on this address space|Error response from daemon" "$log_path"
 }
 
 record_result_from_log() {
@@ -269,7 +269,20 @@ run_test() {
     docker network rm interop_leftnet interop_rightnet >/dev/null 2>&1 || true
     sleep 1
     # Bring up the simulator first, then client+server to avoid race on sim readiness
-    if ! COMPOSE_HTTP_TIMEOUT=120 timeout 120 docker compose -f examples/interop/docker-compose.full.yml --profile $profiles up -d sim; then echo -e "${RED}Failed to start sim${NC}"; fi
+    local sim_started=1
+    if ! COMPOSE_HTTP_TIMEOUT=120 timeout 120 docker compose -f examples/interop/docker-compose.full.yml --profile $profiles up -d sim; then
+        echo -e "${RED}Failed to start sim${NC}"
+        sim_started=0
+    fi
+    if [[ "$sim_started" -eq 0 ]]; then
+        echo -e "${RED}✗ FAILED (sim startup)${NC}"
+        RESULTS[$key]="FAILED"
+        FAILED=$((FAILED + 1))
+        docker compose -f examples/interop/docker-compose.full.yml --profile $profiles down -v >/dev/null 2>&1 || true
+        docker network rm interop_leftnet interop_rightnet >/dev/null 2>&1 || true
+        sleep 1
+        return
+    fi
     sleep 15
     # Fix simulator iptables DROP rules
     docker exec ${COMPOSE_PROJECT_NAME}_sim iptables -D FORWARD -i eth0 -o eth1 -j DROP 2>/dev/null || true
@@ -369,7 +382,20 @@ run_generic_test() {
     docker network rm interop_leftnet interop_rightnet >/dev/null 2>&1 || true
     sleep 1
     # Bring up the simulator first, then client+server to avoid race on sim readiness
-    if ! COMPOSE_HTTP_TIMEOUT=120 timeout 120 docker compose -f examples/interop/docker-compose.full.yml --profile generic up -d sim; then echo -e "${RED}Failed to start sim${NC}"; fi
+    local sim_started=1
+    if ! COMPOSE_HTTP_TIMEOUT=120 timeout 120 docker compose -f examples/interop/docker-compose.full.yml --profile generic up -d sim; then
+        echo -e "${RED}Failed to start sim${NC}"
+        sim_started=0
+    fi
+    if [[ "$sim_started" -eq 0 ]]; then
+        echo -e "${RED}✗ FAILED (sim startup)${NC}"
+        RESULTS[$key]="FAILED"
+        FAILED=$((FAILED + 1))
+        docker compose -f examples/interop/docker-compose.full.yml --profile generic down -v >/dev/null 2>&1 || true
+        docker network rm interop_leftnet interop_rightnet >/dev/null 2>&1 || true
+        sleep 1
+        return
+    fi
     sleep 15
     # Fix simulator iptables DROP rules
     docker exec ${COMPOSE_PROJECT_NAME}_sim iptables -D FORWARD -i eth0 -o eth1 -j DROP 2>/dev/null || true
