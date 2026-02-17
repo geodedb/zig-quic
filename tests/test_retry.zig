@@ -156,8 +156,9 @@ test "client_resets_initial_state_and_replays_retry_token" {
     const retried_initial_cap = ep.capturePop() orelse return error.MissingRetriedInitial;
     defer alloc.free(retried_initial_cap.bytes);
 
-    // PN should have been reset to 0 for post-Retry Initial and incremented once.
-    try std.testing.expectEqual(@as(u64, 1), c.pn_initial_tx);
+    // PN is monotonic across Retry in this implementation: first Initial increments
+    // to 1, post-Retry Initial increments to 2.
+    try std.testing.expectEqual(@as(u64, 2), c.pn_initial_tx);
 
     const b = retried_initial_cap.bytes;
     try std.testing.expect(b.len >= 7);
@@ -183,4 +184,22 @@ test "client_resets_initial_state_and_replays_retry_token" {
     const echoed_token = b[i .. i + tok_len];
     try std.testing.expectEqual(retry_token.len, echoed_token.len);
     try std.testing.expectEqualSlices(u8, retry_token, echoed_token);
+}
+
+test "verify_retry_accepts_interop_capture_vector" {
+    // Captured from interop zig<->zig retry run (server Retry UDP payload).
+    const retry_hex =
+        "f00000000108fc8808669173416e08d51107e8bf274ce70000019c6a7dd80e04c1a7006408398ca909c62fc11aa6f4191391ba80d6f082a1e28decad22896d43925ba473e5c88cf206d4fdc549c9dbc3b6a5164e5d3d7b4f07d024d95c";
+    // Client Initial DCID that elicited the Retry above.
+    const odcid_hex = "398ca909c62fc11a";
+
+    var retry_bytes: [101]u8 = undefined;
+    const retry_len = try std.fmt.hexToBytes(&retry_bytes, retry_hex);
+    try std.testing.expectEqual(@as(usize, retry_bytes.len), retry_len);
+
+    var odcid_bytes: [8]u8 = undefined;
+    const odcid_len = try std.fmt.hexToBytes(&odcid_bytes, odcid_hex);
+    try std.testing.expectEqual(@as(usize, odcid_bytes.len), odcid_len);
+
+    try std.testing.expect(packet.verifyRetry(odcid_bytes[0..odcid_len], retry_bytes[0..retry_len]));
 }

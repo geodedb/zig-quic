@@ -744,6 +744,11 @@ pub const Connection = struct {
     // Retry tracking (RFC 9000 §7.4.1 / RFC 9001 §5.8).
     retry_sent: bool = false,
     retry_received: bool = false,
+    retry_packets_observed: u32 = 0,
+    retry_apply_count: u32 = 0,
+    retry_reject_integrity: u32 = 0,
+    retry_reject_post_handshake: u32 = 0,
+    retry_reject_duplicate: u32 = 0,
     // Simple path validation & tokens
     /// PATH_CHALLENGE validation state per RFC 9000 §9; true until a matching
     /// PATH_RESPONSE arrives for the outstanding challenge data.
@@ -1160,6 +1165,11 @@ pub const Connection = struct {
         self.bytes_tx_unvalidated = 0;
         self.retry_sent = false;
         self.retry_received = false;
+        self.retry_packets_observed = 0;
+        self.retry_apply_count = 0;
+        self.retry_reject_integrity = 0;
+        self.retry_reject_post_handshake = 0;
+        self.retry_reject_duplicate = 0;
         // Initialize crypto offsets
         self.crypto_tx_off_initial = 0;
         self.crypto_tx_off_handshake = 0;

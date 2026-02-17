@@ -269,6 +269,11 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
         defer ctx.allocator.free(data);
         const base_off = c.crypto_tx_off_initial;
         _ = (frame.Frame{ .crypto = .{ .offset = base_off, .data = data } }).write(frames.writer(ctx.allocator.*)) catch 0;
+        if (c.crypto_retx_initial) |prev| {
+            ctx.allocator.free(prev);
+            c.crypto_retx_initial = null;
+        }
+        c.crypto_retx_initial = ctx.allocator.dupe(u8, data) catch null;
         c.crypto_retx_initial_off = base_off;
         c.crypto_tx_off_initial += @intCast(data.len);
     } else {

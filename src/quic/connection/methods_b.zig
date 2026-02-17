@@ -894,8 +894,16 @@ pub fn bind(comptime Connection: type) type {
         /// Emit an Initial-space PTO probe (PING + optional padding) when timer fires.
         pub fn sendPtoProbeInitial(self: *Connection) void {
             if (self.initial_keys_dropped) return;
+            if (self.role == .Server and self.retry_sent and !self.address_validated) return;
+
             // Derive server initial TX keys on demand
-            const initial = ks.deriveInitialSecret(self.version_v2, self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len]);
+            const derive_dcid = if (self.role == .Client)
+                self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len]
+            else if (self.retry_sent and self.address_validated and self.our_scid.len > 0)
+                self.our_scid.bytes[0..self.our_scid.len]
+            else
+                self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len];
+            const initial = ks.deriveInitialSecret(self.version_v2, derive_dcid);
             const pair = ks.deriveClientServerInitial(initial);
             const keys = if (self.role == .Client) pair.client else pair.server;
             const txk: packet.InitialKeys = if (self.version_v2) blk: {
@@ -914,6 +922,10 @@ pub fn bind(comptime Connection: type) type {
                 self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len]
             else
                 self.peer_initial_scid.bytes[0..self.peer_initial_scid.len];
+            const token = if (self.role == .Client)
+                self.initial_token.items
+            else
+                &[_]u8{};
 
             if (self.crypto_retx_initial) |retx| {
                 const max_crypto_chunk: usize = @max(@as(usize, 256), @as(usize, self.path_mtu) - 80);
@@ -929,18 +941,40 @@ pub fn bind(comptime Connection: type) type {
                     },
                 }).write(cw) catch {};
 
-                const crypto_pkt = packet.encodeInitialProtected(
+                var crypto_pkt = packet.encodeInitialProtected(
                     self.allocator.*,
                     self.version,
                     dest_cid,
                     self.our_scid.bytes[0..self.our_scid.len],
-                    &[_]u8{},
+                    token,
                     @as(u32, @truncate(self.pn_initial_tx)),
                     2,
                     crypto_frames.items,
                     txk,
                 ) catch null;
-                if (crypto_pkt) |bytes_out| {
+                if (crypto_pkt) |bytes_out_initial| {
+                    var bytes_out = bytes_out_initial;
+                    if (self.role == .Client and bytes_out.len < 1200) {
+                        const pad_needed = 1200 - bytes_out.len;
+                        self.allocator.free(bytes_out);
+                        crypto_frames.appendNTimes(self.allocator.*, @intFromEnum(frame.FrameType.PADDING), pad_needed) catch {};
+                        crypto_pkt = packet.encodeInitialProtected(
+                            self.allocator.*,
+                            self.version,
+                            dest_cid,
+                            self.our_scid.bytes[0..self.our_scid.len],
+                            token,
+                            @as(u32, @truncate(self.pn_initial_tx)),
+                            2,
+                            crypto_frames.items,
+                            txk,
+                        ) catch null;
+                        if (crypto_pkt) |retry_out| {
+                            bytes_out = retry_out;
+                        } else {
+                            return;
+                        }
+                    }
                     defer self.allocator.free(bytes_out);
                     _ = self.send(bytes_out) catch {};
                     self.onPacketSent(.Initial, self.pn_initial_tx, bytes_out.len, true);
@@ -949,19 +983,41 @@ pub fn bind(comptime Connection: type) type {
                 }
             }
 
-            const out = packet.encodeInitialProtected(
+            var out = packet.encodeInitialProtected(
                 self.allocator.*,
                 self.version,
                 // DCID destination
                 dest_cid,
                 self.our_scid.bytes[0..self.our_scid.len],
-                &[_]u8{},
+                token,
                 @as(u32, @truncate(self.pn_initial_tx)),
                 2,
                 frames.items,
                 txk,
             ) catch null;
-            if (out) |bytes_out| {
+            if (out) |bytes_out_initial| {
+                var bytes_out = bytes_out_initial;
+                if (self.role == .Client and bytes_out.len < 1200) {
+                    const pad_needed = 1200 - bytes_out.len;
+                    self.allocator.free(bytes_out);
+                    frames.appendNTimes(self.allocator.*, @intFromEnum(frame.FrameType.PADDING), pad_needed) catch {};
+                    out = packet.encodeInitialProtected(
+                        self.allocator.*,
+                        self.version,
+                        dest_cid,
+                        self.our_scid.bytes[0..self.our_scid.len],
+                        token,
+                        @as(u32, @truncate(self.pn_initial_tx)),
+                        2,
+                        frames.items,
+                        txk,
+                    ) catch null;
+                    if (out) |retry_out| {
+                        bytes_out = retry_out;
+                    } else {
+                        return;
+                    }
+                }
                 defer self.allocator.free(bytes_out);
                 _ = self.send(bytes_out) catch {};
                 // Record via Recovery and bump PN

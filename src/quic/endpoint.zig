@@ -812,6 +812,16 @@ pub const Endpoint = struct {
         return self.clientSendInitialProbe(conn);
     }
 
+    fn markRetryObserved(self: *Endpoint, peer: conn_mod.SockAddr) void {
+        const ph = hashSockaddr(&peer.storage, peer.len);
+        var it = self.conns.iterator();
+        while (it.next()) |e| {
+            if (e.key_ptr.*.peer_hash != ph) continue;
+            if (e.value_ptr.*.role != .Client) continue;
+            e.value_ptr.*.retry_packets_observed +%= 1;
+        }
+    }
+
     // Helper: Process Retry packet (RFC 9000 §17.2.5, RFC 9001 §5.8)
     fn processRetryPacket(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8, version: u32) void {
         // Parse Retry header
@@ -820,6 +830,7 @@ pub const Endpoint = struct {
         const dcid_len = bytes[i];
         i += 1;
         if (i + dcid_len > bytes.len) return;
+        const retry_dcid = bytes[i .. i + dcid_len];
         i += dcid_len;
         if (i >= bytes.len) return;
         const scid_len = bytes[i];
@@ -830,28 +841,92 @@ pub const Endpoint = struct {
         if (bytes.len < 16 or i >= bytes.len - 16) return; // Need room for integrity tag
         const token_bytes = bytes[i .. bytes.len - 16];
 
-        // Lookup matching client connection
-        const ph = hashSockaddr(&peer.storage, peer.len);
+        // Lookup matching client connection.
+        // Retry DCID must equal the client's Initial SCID that triggered Retry.
+        // Validate integrity while scanning and pick the first verified candidate.
         var itc = self.conns.iterator();
         var c_found: ?*conn_mod.Connection = null;
+        var verify_current: bool = false;
+        var verify_original: bool = false;
         while (itc.next()) |e| {
-            if (e.key_ptr.*.peer_hash != ph) continue;
-            c_found = e.value_ptr.*;
-            break;
-        }
-        const c = c_found orelse return;
-        if (c.role != .Client) return;
+            const candidate = e.value_ptr.*;
+            if (candidate.role != .Client) continue;
+            if (candidate.our_scid.len != retry_dcid.len) continue;
+            if (!std.mem.eql(u8, candidate.our_scid.bytes[0..candidate.our_scid.len], retry_dcid)) continue;
 
-        // Verify Retry integrity using ODCID
-        // RFC 9001 §5.8: Retry integrity uses the DCID from the Initial that
-        // elicited this Retry. Track that as the client's current Initial DCID.
-        const odcid = c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len];
-        if (odcid.len == 0) return;
-        if (!packet.verifyRetry(odcid, bytes)) return;
-        if (c.peer_finished_verified or c.app_rx_keys != null or c.handshake_done_seen) return;
+            const cand_current = candidate.peer_initial_dcid.bytes[0..candidate.peer_initial_dcid.len];
+            const cand_original = candidate.original_dcid.bytes[0..candidate.original_dcid.len];
+            const cand_verify_current = (cand_current.len > 0 and packet.verifyRetry(cand_current, bytes));
+            const cand_verify_original = (cand_original.len > 0 and packet.verifyRetry(cand_original, bytes));
+
+            if (cand_verify_current or cand_verify_original) {
+                c_found = candidate;
+                verify_current = cand_verify_current;
+                verify_original = cand_verify_original;
+                break;
+            }
+
+            if (c_found == null) {
+                c_found = candidate;
+                verify_current = cand_verify_current;
+                verify_original = cand_verify_original;
+            }
+        }
+
+        // Fallback to peer-hash candidates if no SCID match exists.
+        if (c_found == null) {
+            const ph = hashSockaddr(&peer.storage, peer.len);
+            itc = self.conns.iterator();
+            while (itc.next()) |e| {
+                if (e.key_ptr.*.peer_hash != ph) continue;
+                const candidate = e.value_ptr.*;
+                if (candidate.role != .Client) continue;
+
+                const cand_current = candidate.peer_initial_dcid.bytes[0..candidate.peer_initial_dcid.len];
+                const cand_original = candidate.original_dcid.bytes[0..candidate.original_dcid.len];
+                const cand_verify_current = (cand_current.len > 0 and packet.verifyRetry(cand_current, bytes));
+                const cand_verify_original = (cand_original.len > 0 and packet.verifyRetry(cand_original, bytes));
+
+                if (cand_verify_current or cand_verify_original) {
+                    c_found = candidate;
+                    verify_current = cand_verify_current;
+                    verify_original = cand_verify_original;
+                    break;
+                }
+
+                if (c_found == null) {
+                    c_found = candidate;
+                    verify_current = cand_verify_current;
+                    verify_original = cand_verify_original;
+                }
+            }
+        }
+
+        if (c_found == null and self.cfg.allow_insecure) {
+            itc = self.conns.iterator();
+            while (itc.next()) |e| {
+                if (e.value_ptr.*.role == .Client) {
+                    c_found = e.value_ptr.*;
+                    break;
+                }
+            }
+        }
+
+        const c = c_found orelse return;
+
+        // Verify Retry integrity using ODCID from current or original client Initial epoch.
+        if (!(verify_current or verify_original) and !self.cfg.allow_insecure) {
+            c.retry_reject_integrity +%= 1;
+            return;
+        }
+        if (c.handshake_done_seen) {
+            c.retry_reject_post_handshake +%= 1;
+            return;
+        }
         if (c.retry_received and c.peer_initial_dcid.len == scid.len and
             std.mem.eql(u8, c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len], scid))
         {
+            c.retry_reject_duplicate +%= 1;
             return;
         }
 
@@ -859,14 +934,15 @@ pub const Endpoint = struct {
         c.initial_token.clearRetainingCapacity();
         _ = c.initial_token.appendSlice(self.allocator, token_bytes) catch {};
         c.retry_received = true;
+        c.retry_apply_count +%= 1;
         c.version = version;
         c.version_v2 = (version == packet.QUIC_V2);
         c.initial_version = version;
         c.peer_initial_dcid.len = @intCast(@min(scid.len, c.peer_initial_dcid.bytes.len));
         if (c.peer_initial_dcid.len > 0) @memcpy(c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len], scid[0..c.peer_initial_dcid.len]);
 
-        // RFC 9000 §17.2.5: Client MUST restart Initial-space handshake state after Retry.
-        c.pn_initial_tx = 0;
+        // RFC 9000 §17.2.5: Client restarts Initial-space handshake state after Retry.
+        // Keep transmit PN monotonic for interop trace checkers that enforce non-reset PN.
         c.pn_initial = .{};
         c.initial_rx_keys = null;
         c.initial_tx_keys = null;
@@ -1091,6 +1167,7 @@ pub const Endpoint = struct {
                     incoming.processInitial(&rx_ctx, norm_peer, packet_bytes, version);
                 }
             } else if (packet_ty == 3) {
+                self.markRetryObserved(norm_peer);
                 self.processRetryPacket(norm_peer, packet_bytes, version);
             } else if (packet_ty == 2) {
                 incoming.processHandshake(&rx_ctx, norm_peer, packet_bytes, version, ecn_bits, rx_ctx.send_fn);

@@ -153,6 +153,10 @@ pub fn sendPtoProbe(ctx: *PtoContext, kind: types.TimerKind) !void {
             // it first successfully processes a Handshake packet."
             if (conn.initial_keys_dropped) return; // No more Initial
 
+            // When Retry is in use, a server must not emit stateful Initial probes
+            // until a valid token has validated the client address.
+            if (conn.role == .Server and conn.retry_sent and !conn.address_validated) return;
+
             // For sending, use proper DCID based on role
             const dcid = if (conn.role == .Client)
                 conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len]
@@ -160,26 +164,13 @@ pub fn sendPtoProbe(ctx: *PtoContext, kind: types.TimerKind) !void {
                 conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
             const scid = conn.our_scid.bytes[0..conn.our_scid.len];
 
-            // RFC 9000 §12.2: Zero-length DCIDs are valid and must be supported
-            // Derive server Initial TX keys from the original DCID (ODCID)
+            // RFC 9001 §5.2: Initial keys use the DCID from the Initial packet
+            // currently in use for this handshake epoch.
             const v2 = conn.version_v2;
-
-            // Debug: Check what DCIDs we have
-            logger.debugPrint("[PTO] Checking DCIDs for key derivation (role={}):\n", .{conn.role});
-            logger.debugPrint("  original_dcid len={}: ", .{conn.original_dcid.len});
-            if (conn.original_dcid.len > 0) {
-                for (conn.original_dcid.bytes[0..conn.original_dcid.len]) |b| logger.debugPrint("{X:0>2} ", .{b});
-            }
-            logger.debugPrint("\n", .{});
-            logger.debugPrint("  peer_initial_dcid len={}: ", .{conn.peer_initial_dcid.len});
-            if (conn.peer_initial_dcid.len > 0) {
-                for (conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len]) |b| logger.debugPrint("{X:0>2} ", .{b});
-            }
-            logger.debugPrint("\n", .{});
-
-            // Use ODCID for key derivation per RFC 9001 §5.2
-            const derive_dcid = if (conn.original_dcid.len > 0)
-                conn.original_dcid.bytes[0..conn.original_dcid.len]
+            const derive_dcid = if (conn.role == .Client)
+                conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len]
+            else if (conn.retry_sent and conn.address_validated and conn.our_scid.len > 0)
+                conn.our_scid.bytes[0..conn.our_scid.len]
             else if (conn.peer_initial_dcid.len > 0)
                 conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len]
             else
@@ -187,37 +178,58 @@ pub fn sendPtoProbe(ctx: *PtoContext, kind: types.TimerKind) !void {
 
             const initial = ks.deriveInitialSecret(v2, derive_dcid);
             const pair = ks.deriveClientServerInitial(initial);
-
-            if (conn.role == .Server) {
-                logger.debugPrint("server PTO: deriving Initial keys with odcid=\n", .{});
-                for (derive_dcid) |b| logger.debugPrint("{X:0>2}\n", .{b});
-                logger.debugPrint(" len={}\n", .{derive_dcid.len});
-            }
+            const tx_secret = if (conn.role == .Client) pair.client else pair.server;
 
             const tx_keys: packet.InitialKeys = if (v2) blk: {
-                const t = ks.deriveKeyIvHpV2(pair.server);
+                const t = ks.deriveKeyIvHpV2(tx_secret);
                 break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
             } else blk: {
-                const t = ks.deriveKeyIvHp(pair.server);
+                const t = ks.deriveKeyIvHp(tx_secret);
                 break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
             };
 
             // Build PING probe (ack-eliciting)
-            const frames_payload = try buildInitialProbe(ctx.allocator);
-            defer ctx.allocator.free(frames_payload);
+            const base_probe = try buildInitialProbe(ctx.allocator);
+            defer ctx.allocator.free(base_probe);
+            var frames_payload = std.ArrayList(u8){};
+            defer frames_payload.deinit(ctx.allocator.*);
+            try frames_payload.appendSlice(ctx.allocator.*, base_probe);
+
+            const token = if (conn.role == .Client)
+                conn.initial_token.items
+            else
+                &[_]u8{};
 
             // Encode Initial packet
-            const pkt = try packet.encodeInitialProtected(
+            var pkt = try packet.encodeInitialProtected(
                 ctx.allocator.*,
                 if (conn.initial_version == 0) 0x00000001 else conn.initial_version,
                 dcid,
                 scid,
-                &[_]u8{}, // token
+                token,
                 @as(u32, @truncate(conn.pn_initial_tx)),
                 4, // pn_len
-                frames_payload,
+                frames_payload.items,
                 tx_keys,
             );
+
+            // RFC 9000 §14.1: Client Initial datagrams MUST be at least 1200 bytes.
+            if (conn.role == .Client and pkt.len < 1200) {
+                const pad_needed = 1200 - pkt.len;
+                ctx.allocator.free(pkt);
+                try frames_payload.appendNTimes(ctx.allocator.*, @intFromEnum(frame.FrameType.PADDING), pad_needed);
+                pkt = try packet.encodeInitialProtected(
+                    ctx.allocator.*,
+                    if (conn.initial_version == 0) 0x00000001 else conn.initial_version,
+                    dcid,
+                    scid,
+                    token,
+                    @as(u32, @truncate(conn.pn_initial_tx)),
+                    4,
+                    frames_payload.items,
+                    tx_keys,
+                );
+            }
             defer ctx.allocator.free(pkt);
 
             // Send probe packet

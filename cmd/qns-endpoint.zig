@@ -1074,6 +1074,15 @@ pub fn main() !void {
         var connect_msg_buf: [160]u8 = undefined;
         const connect_msg = std.fmt.bufPrint(&connect_msg_buf, "client: connecting to {s}", .{connect_addr}) catch "client: connecting";
         log(connect_msg);
+        {
+            var cid_msg_buf: [220]u8 = undefined;
+            const cid_msg = std.fmt.bufPrint(
+                &cid_msg_buf,
+                "client: initial cids dcid_len={d} scid_len={d} pn_initial_tx={d}",
+                .{ conn.peer_initial_dcid.len, conn.our_scid.len, conn.pn_initial_tx },
+            ) catch "client: initial cid state unavailable";
+            log(cid_msg);
+        }
         if (verbose) log("client: verbose logging enabled");
         if (cfg.enable_retry) {
             log("client: retry enabled (will process Retry if received)");
@@ -1106,6 +1115,24 @@ pub fn main() !void {
             }
         } else {
             log("client: handshake timeout");
+            var timeout_state_buf: [320]u8 = undefined;
+            const timeout_state = std.fmt.bufPrint(
+                &timeout_state_buf,
+                "client: timeout state retry_observed={d} retry_applied={d} retry_reject_integrity={d} retry_reject_post_hs={d} retry_reject_dup={d} retry_received={} token_len={d} pn_initial_tx={d} dcid_len={d} scid_len={d}",
+                .{
+                    conn.retry_packets_observed,
+                    conn.retry_apply_count,
+                    conn.retry_reject_integrity,
+                    conn.retry_reject_post_handshake,
+                    conn.retry_reject_duplicate,
+                    conn.retry_received,
+                    conn.initial_token.items.len,
+                    conn.pn_initial_tx,
+                    conn.peer_initial_dcid.len,
+                    conn.our_scid.len,
+                },
+            ) catch "client: timeout state unavailable";
+            log(timeout_state);
             api.close(conn, 0, "bye") catch {};
             api.flush(ep, 10);
             api.destroy(ep, conn);
