@@ -822,8 +822,12 @@ pub const Connection = struct {
     /// Active locally issued Connection IDs currently valid for use by peer (sequence space starts at 0).
     /// Index 0 corresponds to the original Source Connection ID (our_scid) used in Initial.
     local_cids: [8]LocalCid = [_]LocalCid{.{}} ** 8,
+    /// Peer-advertised destination Connection IDs received via NEW_CONNECTION_ID.
+    peer_cids: [8]PeerCid = [_]PeerCid{.{}} ** 8,
     /// Number of entries in local_cids that are considered active (<= active_connection_id_limit, <= local_cids.len).
     active_local_cids: u8 = 1,
+    /// Sequence number of currently preferred peer CID for short-header packets.
+    active_peer_cid_sequence: ?u64 = null,
     /// Next sequence number to allocate when issuing a new CID (monotonic, may exceed local_cids.len — older entries retired first).
     next_cid_sequence: u64 = 1,
     /// Pending NEW_CONNECTION_ID indices (into local_cids) waiting to be sent to peer.
@@ -1116,7 +1120,9 @@ pub const Connection = struct {
         self.app_echo_sent = false;
         // Initialize connection ID management
         self.local_cids = [_]LocalCid{.{}} ** 8;
+        self.peer_cids = [_]PeerCid{.{}} ** 8;
         self.active_local_cids = 1;
+        self.active_peer_cid_sequence = null;
         self.next_cid_sequence = 1;
         self.pending_new_cid = std.bit_set.IntegerBitSet(8).initEmpty();
         self.stateless_reset_base = [_]u8{0} ** 32;
@@ -1256,7 +1262,7 @@ pub const Connection = struct {
 
     /// Update/reset stateless reset tokens based on NEW_CONNECTION_ID retire_prior_to.
     /// Install/retire peer-advertised stateless reset tokens based on NEW_CONNECTION_ID frame sequencing.
-    pub fn onNewConnectionId(self: *Connection, sequence: u64, retire_prior_to: u64, stateless_reset_token: [16]u8) void {
+    pub fn onNewConnectionId(self: *Connection, sequence: u64, retire_prior_to: u64, connection_id: []const u8, stateless_reset_token: [16]u8) void {
         // Retire tokens with index < retire_prior_to
         var i: usize = 0;
         while (i < self.reset_tokens.items.len) {
@@ -1273,6 +1279,96 @@ pub const Connection = struct {
             while (k < need) : (k += 1) self.reset_tokens.append(self.allocator.*, .{0} ** 16) catch break;
         }
         if (sequence < self.reset_tokens.items.len) self.reset_tokens.items[@intCast(sequence)] = stateless_reset_token;
+
+        // Retire peer CIDs below retire_prior_to.
+        i = 0;
+        while (i < self.peer_cids.len) : (i += 1) {
+            if (self.peer_cids[i].in_use and self.peer_cids[i].sequence < retire_prior_to) {
+                self.peer_cids[i] = .{};
+            }
+        }
+
+        const cid_len = @min(connection_id.len, self.peer_cids[0].cid.bytes.len);
+        if (cid_len > 0) {
+            var slot: ?usize = null;
+            var free_slot: ?usize = null;
+            var oldest_slot: usize = 0;
+            var oldest_seq: u64 = std.math.maxInt(u64);
+
+            i = 0;
+            while (i < self.peer_cids.len) : (i += 1) {
+                const entry = self.peer_cids[i];
+                if (entry.in_use) {
+                    if (entry.sequence == sequence) {
+                        slot = i;
+                        break;
+                    }
+                    if (entry.sequence < oldest_seq) {
+                        oldest_seq = entry.sequence;
+                        oldest_slot = i;
+                    }
+                } else if (free_slot == null) {
+                    free_slot = i;
+                }
+            }
+
+            const idx = slot orelse free_slot orelse oldest_slot;
+            var entry = &self.peer_cids[idx];
+            entry.in_use = true;
+            entry.sequence = sequence;
+            entry.cid.len = @intCast(cid_len);
+            @memcpy(entry.cid.bytes[0..cid_len], connection_id[0..cid_len]);
+            if (cid_len < entry.cid.bytes.len) {
+                @memset(entry.cid.bytes[cid_len..], 0);
+            }
+
+            if (self.active_peer_cid_sequence == null or sequence >= self.active_peer_cid_sequence.?) {
+                self.active_peer_cid_sequence = sequence;
+            }
+        }
+
+        // Ensure active peer CID points at a live entry; prefer highest sequence.
+        if (self.active_peer_cid_sequence) |active_seq| {
+            var found_active = false;
+            i = 0;
+            while (i < self.peer_cids.len) : (i += 1) {
+                const entry = self.peer_cids[i];
+                if (entry.in_use and entry.cid.len > 0 and entry.sequence == active_seq) {
+                    found_active = true;
+                    break;
+                }
+            }
+            if (!found_active) self.active_peer_cid_sequence = null;
+        }
+
+        if (self.active_peer_cid_sequence == null) {
+            var best_seq: u64 = 0;
+            var have_best = false;
+            i = 0;
+            while (i < self.peer_cids.len) : (i += 1) {
+                const entry = self.peer_cids[i];
+                if (!entry.in_use or entry.cid.len == 0) continue;
+                if (!have_best or entry.sequence > best_seq) {
+                    best_seq = entry.sequence;
+                    have_best = true;
+                }
+            }
+            if (have_best) self.active_peer_cid_sequence = best_seq;
+        }
+    }
+
+    /// Returns the currently active peer-provided CID (NEW_CONNECTION_ID) if available.
+    pub fn activePeerCid(self: *const Connection) ?[]const u8 {
+        if (self.active_peer_cid_sequence) |seq| {
+            var i: usize = 0;
+            while (i < self.peer_cids.len) : (i += 1) {
+                const entry = self.peer_cids[i];
+                if (entry.in_use and entry.sequence == seq and entry.cid.len > 0) {
+                    return entry.cid.bytes[0..entry.cid.len];
+                }
+            }
+        }
+        return null;
     }
 
     /// Check if a trailing 16-byte token matches any known stateless reset token.
@@ -1570,6 +1666,12 @@ const LocalCid = struct {
     sequence: u64 = 0,
     cid: Cid = .{},
     reset_token: [16]u8 = [_]u8{0} ** 16,
+};
+
+const PeerCid = struct {
+    in_use: bool = false,
+    sequence: u64 = 0,
+    cid: Cid = .{},
 };
 
 const deriveStatelessResetToken = reset_token.deriveStatelessResetToken;

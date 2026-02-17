@@ -80,7 +80,7 @@ pub fn handleNewConnectionId(
     ncid: frame.NewConnectionId,
 ) FrameResult {
     // Record stateless reset token for later detection
-    ctx.conn.onNewConnectionId(ncid.sequence, ncid.retire_prior_to, ncid.stateless_reset_token);
+    ctx.conn.onNewConnectionId(ncid.sequence, ncid.retire_prior_to, ncid.connection_id, ncid.stateless_reset_token);
     return .{ .saw_ack_eliciting = true };
 }
 

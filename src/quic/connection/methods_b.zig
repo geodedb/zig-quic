@@ -1243,13 +1243,16 @@ pub fn bind(comptime Connection: type) type {
             }
         }
 
-        /// Destination Connection ID for short-header packets is always the peer-chosen ID.
-        /// Use peer_initial_scid (the SCID the peer used in its Initial). If the peer sent a
-        /// zero-length SCID, return an empty slice per RFC 9000 §7.2: "An endpoint that receives
-        /// a packet with a zero-length Source Connection ID field MUST use a zero-length
-        /// Destination Connection ID field for all packets in the connection."
+        /// Destination Connection ID for short-header packets is the peer-chosen ID.
+        /// Prefer the Initial SCID observed from peer; if that was zero-length, fall
+        /// back to peer-provided NEW_CONNECTION_ID values when available.
         pub fn shortHeaderDcid(self: *Connection) []const u8 {
-            const result = if (self.peer_initial_scid.len > 0) self.peer_initial_scid.bytes[0..self.peer_initial_scid.len] else &[_]u8{};
+            const result = if (self.peer_initial_scid.len > 0)
+                self.peer_initial_scid.bytes[0..self.peer_initial_scid.len]
+            else if (self.activePeerCid()) |peer_cid|
+                peer_cid
+            else
+                &[_]u8{};
 
             if (self.role == .Client) {
                 logger.debugPrint("Client: Using DCID for 1-RTT packet: ", .{});
