@@ -239,7 +239,7 @@ pub const InitialKeys = struct {
     tx_keys: packet.AeadKeys,
 };
 
-/// Derive Initial packet protection keys from the current client Initial DCID.
+/// Derive Initial packet protection keys from the active Initial key epoch DCID.
 /// Extracted from endpoint.zig lines 1886-1938 (Phase 4b.5 Session 6).
 ///
 /// RFC 9001 §5.2: Initial keys are derived from the Destination Connection ID in
@@ -252,7 +252,7 @@ pub const InitialKeys = struct {
 ///
 /// Parameters:
 /// - conn: Connection with role and ODCID information
-/// - dcid: Client Initial destination connection ID for this Initial key epoch
+/// - dcid: Current packet DCID (used for post-Retry re-keying on server)
 /// - version: QUIC version (v1 or v2)
 ///
 /// Returns:
@@ -265,12 +265,23 @@ pub fn deriveInitialKeys(
     dcid: []const u8,
     version: u32,
 ) InitialKeys {
-    // Server uses the DCID from the current client Initial packet.
-    // Client uses the DCID it is currently sending in Initial packets.
-    const derive_dcid = if (conn.role == .Client)
-        conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len]
-    else
-        dcid;
+    // RFC 9001 §5.2 keys are bound to the client's Initial key epoch DCID.
+    // In non-Retry handshakes this stays the first client Initial DCID even if
+    // subsequent packets change destination CID for routing. After a successful
+    // Retry token validation, the server re-keys to the post-Retry DCID.
+    const derive_dcid = blk: {
+        if (conn.role == .Server) {
+            if (conn.retry_sent and conn.address_validated) break :blk dcid;
+            if (conn.peer_initial_dcid.len > 0) {
+                break :blk conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len];
+            }
+            break :blk dcid;
+        }
+        if (conn.peer_initial_dcid.len > 0) {
+            break :blk conn.peer_initial_dcid.bytes[0..conn.peer_initial_dcid.len];
+        }
+        break :blk dcid;
+    };
 
     // Check for QUIC v2
     const is_v2 = (version == packet.QUIC_V2);

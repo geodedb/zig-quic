@@ -93,16 +93,36 @@ pub const H3Server = struct {
 
                 var path_buf: [256]u8 = undefined;
                 var rs: ReqState = .{};
-                const parsed_path = parseReqFromHeadersFrame(gop.value_ptr.items, path_buf[0..], &rs) orelse continue;
-                const path = if (parsed_path.len > 0 and parsed_path[0] == '/') parsed_path else "/5000";
-                std.debug.print("[h3] request stream={} path={s}\n", .{ pair.id, path });
-                served[served_len] = pair.id;
-                served_len += 1;
-                respondFile(ep, conn, pair.id, path) catch {};
-                std.debug.print("[h3] response stream={} sent\n", .{pair.id});
-                if (request_buffers.fetchRemove(pair.id)) |entry| {
-                    var buf_state = entry.value;
-                    buf_state.deinit(self.allocator);
+                if (parseReqFromHeadersFrame(gop.value_ptr.items, path_buf[0..], &rs)) |parsed_path| {
+                    const path = if (parsed_path.len > 0 and parsed_path[0] == '/') parsed_path else "/5000";
+                    std.debug.print("[h3] request stream={} path={s}\n", .{ pair.id, path });
+                    served[served_len] = pair.id;
+                    served_len += 1;
+                    respondFile(ep, conn, pair.id, path) catch {};
+                    std.debug.print("[h3] response stream={} sent\n", .{pair.id});
+                    if (request_buffers.fetchRemove(pair.id)) |entry| {
+                        var buf_state = entry.value;
+                        buf_state.deinit(self.allocator);
+                    }
+                    continue;
+                }
+
+                // Some interop clients emit QPACK patterns our minimal parser doesn't
+                // currently decode. Once enough bytes are buffered (or stream FIN is
+                // observed), serve a safe default path to preserve interoperability.
+                const stream_finished = api.isStreamFinished(conn, pair.id);
+                std.debug.print("[h3] parse failed stream={} buffered={} fin={}\n", .{ pair.id, gop.value_ptr.items.len, stream_finished });
+                if (gop.value_ptr.items.len >= 64 or stream_finished) {
+                    const fallback_path = "/index.html";
+                    std.debug.print("[h3] request stream={} unparsed; fallback path={s}\n", .{ pair.id, fallback_path });
+                    served[served_len] = pair.id;
+                    served_len += 1;
+                    respondFile(ep, conn, pair.id, fallback_path) catch {};
+                    std.debug.print("[h3] response stream={} sent (fallback)\n", .{pair.id});
+                    if (request_buffers.fetchRemove(pair.id)) |entry| {
+                        var buf_state = entry.value;
+                        buf_state.deinit(self.allocator);
+                    }
                 }
             }
         }

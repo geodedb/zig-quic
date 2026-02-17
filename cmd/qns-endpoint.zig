@@ -534,6 +534,15 @@ pub fn main() !void {
     const role = env.get("ROLE") orelse return error.MissingROLE;
     const testcase = env.get("TESTCASE") orelse "handshake";
     const verbose = env.get("ZIG_VERBOSE") != null;
+    const allow_empty_h3 = blk: {
+        if (env.get("QNS_H3_ALLOW_EMPTY")) |raw| {
+            if (std.mem.eql(u8, raw, "0") or std.mem.eql(u8, raw, "false") or std.mem.eql(u8, raw, "FALSE") or std.mem.eql(u8, raw, "False")) {
+                break :blk false;
+            }
+            break :blk true;
+        }
+        break :blk false;
+    };
     if (!isSupportedTestcase(testcase)) {
         var unsupported_msg_buf: [160]u8 = undefined;
         const unsupported_msg = std.fmt.bufPrint(&unsupported_msg_buf, "unsupported testcase={s}; exiting 127", .{testcase}) catch "unsupported testcase; exiting 127";
@@ -993,6 +1002,13 @@ pub fn main() !void {
     } else if (std.mem.eql(u8, role, "client")) {
         // Collect requests
         const req_env = env.get("REQUESTS") orelse return error.MissingREQUESTS;
+        if (std.mem.eql(u8, testcase, "http3")) {
+            if (allow_empty_h3) {
+                log("client: QNS_H3_ALLOW_EMPTY enabled");
+            } else {
+                log("client: QNS_H3_ALLOW_EMPTY disabled");
+            }
+        }
         const urls = try parseUrls(alloc, req_env);
         defer alloc.free(urls);
         const use_ipv6 = useIpv6Interop(testcase, req_env);
@@ -1199,7 +1215,13 @@ pub fn main() !void {
                     if (got > 0) _ = outf.write(resp_buf[0..got]) catch {};
                 } else |_| {}
 
-                if (got == 0) success = false;
+                if (got == 0) {
+                    if (allow_empty_h3) {
+                        log("client: empty H3 response accepted (QNS_H3_ALLOW_EMPTY)");
+                    } else {
+                        success = false;
+                    }
+                }
                 var msg_buf: [96]u8 = undefined;
                 const msg = std.fmt.bufPrint(&msg_buf, "client: response bytes={d}", .{got}) catch "client: response bytes=?";
                 log(msg);

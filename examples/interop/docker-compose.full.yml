@@ -91,6 +91,7 @@ services:
       - ROLE=client
       - REQUESTS=${REQUESTS:-https://server4/index.html}
       - TESTCASE=${TESTCASE:-handshake}
+      - QNS_H3_ALLOW_EMPTY=${QNS_H3_ALLOW_EMPTY:-0}
     depends_on:
       - sim
     cap_add:
@@ -100,6 +101,7 @@ services:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
+      - 'server:193.167.100.100'
       - 'server4:193.167.100.100'
       - 'server6:fd00:cafe:cafe:100::100'
       - 'server46:193.167.100.100'
@@ -160,6 +162,7 @@ services:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
+      - 'server:193.167.100.100'
       - 'server4:193.167.100.100'
       - 'server6:fd00:cafe:cafe:100::100'
       - 'server46:193.167.100.100'
@@ -213,6 +216,7 @@ services:
       - REQUESTS=${REQUESTS:-https://server4/index.html}
       - TESTCASE=${TESTCASE:-handshake}
       - QLOGDIR=/logs/qlog
+      - QNS_H3_ALLOW_EMPTY=${QNS_H3_ALLOW_EMPTY:-0}
     depends_on:
       - sim
     cap_add:
@@ -222,6 +226,7 @@ services:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
+      - 'server:193.167.100.100'
       - 'server4:193.167.100.100'
       - 'server6:fd00:cafe:cafe:100::100'
       - 'server46:193.167.100.100'
@@ -282,6 +287,7 @@ services:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
+      - 'server:193.167.100.100'
       - 'server4:193.167.100.100'
       - 'server6:fd00:cafe:cafe:100::100'
       - 'server46:193.167.100.100'
@@ -342,6 +348,7 @@ services:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
+      - 'server:193.167.100.100'
       - 'server4:193.167.100.100'
       - 'server6:fd00:cafe:cafe:100::100'
       - 'server46:193.167.100.100'
@@ -402,6 +409,7 @@ services:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
+      - 'server:193.167.100.100'
       - 'server4:193.167.100.100'
       - 'server6:fd00:cafe:cafe:100::100'
       - 'server46:193.167.100.100'
@@ -462,6 +470,7 @@ services:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
+      - 'server:193.167.100.100'
       - 'server4:193.167.100.100'
       - 'server6:fd00:cafe:cafe:100::100'
       - 'server46:193.167.100.100'
@@ -545,6 +554,7 @@ services:
       - REQUESTS=${REQUESTS:-https://server4/index.html}
       - TESTCASE=${TESTCASE:-handshake}
       - QLOGDIR=/logs/qlog
+      - QNS_H3_ALLOW_EMPTY=${QNS_H3_ALLOW_EMPTY:-0}
     depends_on:
       - sim
     cap_add:
@@ -554,6 +564,7 @@ services:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
+      - 'server:193.167.100.100'
       - 'server4:193.167.100.100'
       - 'server6:fd00:cafe:cafe:100::100'
       - 'server46:193.167.100.100'

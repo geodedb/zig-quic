@@ -62,6 +62,7 @@ echo "Role: $ROLE"
 echo "Test case: $TESTCASE"
 echo "SSLKEYLOGFILE: ${SSLKEYLOGFILE:-not set}"
 echo "QLOGDIR: ${QLOGDIR:-not set}"
+echo "QNS_H3_ALLOW_EMPTY: ${QNS_H3_ALLOW_EMPTY:-not set}"
 
 if ! is_supported_testcase "$TESTCASE"; then
   echo "Test case '$TESTCASE' is not supported by zig-qns endpoint. Exiting 127."
