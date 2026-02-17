@@ -42,6 +42,11 @@ fn extractPath(url: []const u8) []const u8 {
     return url[i..];
 }
 
+fn useIpv6Interop(testcase: []const u8, requests_env: []const u8) bool {
+    if (std.mem.eql(u8, testcase, "ipv6")) return true;
+    return std.mem.indexOf(u8, requests_env, "server6") != null;
+}
+
 fn requestOrderIndex(path: []const u8, requests: []const []const u8) ?usize {
     for (requests, 0..) |req, idx| {
         if (std.mem.eql(u8, path, extractPath(req))) return idx;
@@ -541,14 +546,21 @@ pub fn main() !void {
     }
 
     if (std.mem.eql(u8, role, "server")) {
+        const requests_env = env.get("REQUESTS") orelse "";
+        var server_bind_addr: []const u8 = "[::]:443";
         startTcpReadinessListener();
-        const ep = try api.endpointInit(&alloc, "0.0.0.0:443", &cfg);
+        const ep = api.endpointInit(&alloc, server_bind_addr, &cfg) catch blk: {
+            server_bind_addr = "0.0.0.0:443";
+            break :blk try api.endpointInit(&alloc, server_bind_addr, &cfg);
+        };
         defer api.endpointDeinit(ep);
-        log("server: started (listening 0.0.0.0:443)");
+        var server_listen_msg_buf: [128]u8 = undefined;
+        const server_listen_msg = std.fmt.bufPrint(&server_listen_msg_buf, "server: started (listening {s})", .{server_bind_addr}) catch "server: started";
+        log(server_listen_msg);
         var request_order_urls: []const []const u8 = &[_][]const u8{};
         var request_order_owned = false;
-        if (env.get("REQUESTS")) |request_env| {
-            request_order_urls = parseUrls(alloc, request_env) catch &[_][]const u8{};
+        if (requests_env.len > 0) {
+            request_order_urls = parseUrls(alloc, requests_env) catch &[_][]const u8{};
             request_order_owned = request_order_urls.len > 0;
         }
         defer if (request_order_owned) alloc.free(request_order_urls);
@@ -827,13 +839,15 @@ pub fn main() !void {
         const req_env = env.get("REQUESTS") orelse return error.MissingREQUESTS;
         const urls = try parseUrls(alloc, req_env);
         defer alloc.free(urls);
-        const connect_addr = if (std.mem.eql(u8, testcase, "ipv6")) "[fd00:cafe:cafe:100::100]:443" else "193.167.100.100:443";
-        const connect_sni = if (std.mem.eql(u8, testcase, "ipv6")) "server6" else "server4";
+        const use_ipv6 = useIpv6Interop(testcase, req_env);
+        const client_bind_addr = if (use_ipv6) "[::]:0" else "0.0.0.0:0";
+        const connect_addr = if (use_ipv6) "[fd00:cafe:cafe:100::100]:443" else "193.167.100.100:443";
+        const connect_sni = if (use_ipv6) "server6" else "server4";
 
         // For multiconnect test, establish a new connection for each request
         if (std.mem.eql(u8, testcase, "multiconnect")) {
             log("client: multiconnect mode - establishing separate connection per request");
-            const ep = try api.endpointInit(&alloc, "0.0.0.0:0", &cfg);
+            const ep = try api.endpointInit(&alloc, client_bind_addr, &cfg);
             defer api.endpointDeinit(ep);
 
             var success: bool = true;
@@ -916,7 +930,7 @@ pub fn main() !void {
         }
 
         // Normal mode: single connection for all requests
-        const ep = try api.endpointInit(&alloc, "0.0.0.0:0", &cfg);
+        const ep = try api.endpointInit(&alloc, client_bind_addr, &cfg);
         defer api.endpointDeinit(ep);
         const conn = try api.connect(ep, connect_addr, connect_sni);
         var connect_msg_buf: [160]u8 = undefined;
