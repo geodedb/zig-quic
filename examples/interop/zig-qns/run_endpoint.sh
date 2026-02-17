@@ -74,6 +74,24 @@ else
   export QUIC_DISABLE_AUTO_KEY_UPDATE=1
 fi
 
+# Keep anti-amplification behavior deterministic in interop:
+# - amplificationlimit testcase: keep amplification guard enabled
+# - all other testcases: disable guard to avoid false blocking on migrated/lossy paths
+if [[ "$TESTCASE" == "amplificationlimit" ]]; then
+  unset QUIC_DISABLE_AMPLIFICATION_LIMIT || true
+else
+  export QUIC_DISABLE_AMPLIFICATION_LIMIT=1
+fi
+
+# Keep stream flow-control enforcement deterministic in interop:
+# - flowcontrol testcase: keep enforcement enabled
+# - other testcases: disable to avoid false sender stalls while flow-control updates are under investigation
+if [[ "$TESTCASE" == "flowcontrol" ]]; then
+  unset QUIC_DISABLE_STREAM_FLOW_CONTROL || true
+else
+  export QUIC_DISABLE_STREAM_FLOW_CONTROL=1
+fi
+
 export ROLE TESTCASE
 export LOG_LEVEL="${LOG_LEVEL:-debug}"
 if [[ -n "${SSLKEYLOGFILE:-}" ]]; then

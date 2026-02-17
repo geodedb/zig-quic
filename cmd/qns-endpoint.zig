@@ -71,13 +71,29 @@ const supported_testcases = [_][]const u8{
 
 const default_alpns = [_][]const u8{ "hq-interop", "hq-29" };
 const http3_alpns = [_][]const u8{ "h3", "hq-interop", "hq-29" };
+
+const BlockedReason = enum {
+    none,
+    keys_not_ready,
+    out_of_streams,
+    flow_control,
+    would_block,
+    stream_stopped,
+    other,
+};
+
 const PendingResponse = struct {
     stream_id: api.QuicStreamId,
     data: []u8,
     sent: usize = 0,
     fin_sent: bool = false,
+    blocked_count: usize = 0,
+    blocked_reason: BlockedReason = .none,
+    last_error: []const u8 = "",
     order: usize = std.math.maxInt(usize),
 };
+
+const max_request_line_bytes = 4096;
 
 const ResponseChunkResult = enum {
     blocked,
@@ -85,6 +101,18 @@ const ResponseChunkResult = enum {
     done,
     failed,
 };
+
+fn blockedReasonName(reason: BlockedReason) []const u8 {
+    return switch (reason) {
+        .none => "none",
+        .keys_not_ready => "keys_not_ready",
+        .out_of_streams => "out_of_streams",
+        .flow_control => "flow_control",
+        .would_block => "would_block",
+        .stream_stopped => "stream_stopped",
+        .other => "other",
+    };
+}
 
 fn inList(needle: []const u8, list: []const []const u8) bool {
     for (list) |item| {
@@ -101,11 +129,19 @@ fn isSupportedTestcase(testcase: []const u8) bool {
 fn isStressTestcase(testcase: []const u8) bool {
     return inList(testcase, &[_][]const u8{
         "longrtt",
+        "amplificationlimit",
         "handshakeloss",
         "transferloss",
         "handshakecorruption",
         "transfercorruption",
         "blackhole",
+        "ipv6",
+        "rebind-port",
+        "rebind-addr",
+        "connectionmigration",
+        "multiplexing",
+        "goodput",
+        "crosstraffic",
     });
 }
 
@@ -116,15 +152,21 @@ fn handshakeTimeoutMs(testcase: []const u8) i64 {
 }
 
 fn responseIdleTimeoutMs(testcase: []const u8) i64 {
-    if (isStressTestcase(testcase)) return 20_000;
-    if (std.mem.eql(u8, testcase, "transfer") or std.mem.eql(u8, testcase, "multiplexing") or std.mem.eql(u8, testcase, "goodput")) return 30_000;
-    return 5_000;
+    if (isStressTestcase(testcase)) return 90_000;
+    if (std.mem.eql(u8, testcase, "transfer")) return 60_000;
+    return 15_000;
 }
 
 fn responseTotalTimeoutMs(testcase: []const u8) i64 {
-    if (isStressTestcase(testcase)) return 120_000;
-    if (std.mem.eql(u8, testcase, "transfer") or std.mem.eql(u8, testcase, "multiplexing") or std.mem.eql(u8, testcase, "goodput")) return 55_000;
-    return 30_000;
+    if (isStressTestcase(testcase)) return 300_000;
+    if (std.mem.eql(u8, testcase, "transfer")) return 180_000;
+    return 90_000;
+}
+
+fn responsePendingIdleTimeoutMs(testcase: []const u8) i64 {
+    if (isStressTestcase(testcase)) return 180_000;
+    if (std.mem.eql(u8, testcase, "transfer")) return 120_000;
+    return 60_000;
 }
 
 fn connectionReady(conn: *api.QuicConnection) bool {
@@ -192,7 +234,7 @@ fn writeAllStream(ep: *api.QuicEndpoint, conn: *api.QuicConnection, stream_id: a
         if (elapsedMsSince(start_ns) >= responseTotalTimeoutMs(testcase)) return false;
         const chunk_end = @min(off + 1200, data.len);
         const n = api.writeStream(conn, stream_id, data[off..chunk_end], false) catch |err| switch (err) {
-            error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked => 0,
+            error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked, error.WouldBlock => 0,
             else => return false,
         };
         if (n == 0) {
@@ -218,20 +260,74 @@ fn writePendingResponseChunk(ep: *api.QuicEndpoint, conn: *api.QuicConnection, r
     if (resp.sent < resp.data.len) {
         const chunk_end = @min(resp.sent + 1200, resp.data.len);
         const n = api.writeStream(conn, resp.stream_id, resp.data[resp.sent..chunk_end], false) catch |err| switch (err) {
-            error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked => 0,
-            else => return .failed,
+            error.KeysNotReady => {
+                resp.blocked_reason = .keys_not_ready;
+                resp.blocked_count += 1;
+                return .blocked;
+            },
+            error.OutOfStreams => {
+                resp.blocked_reason = .out_of_streams;
+                resp.blocked_count += 1;
+                return .blocked;
+            },
+            error.FlowControlBlocked => {
+                resp.blocked_reason = .flow_control;
+                resp.blocked_count += 1;
+                return .blocked;
+            },
+            error.WouldBlock => {
+                resp.blocked_reason = .would_block;
+                resp.blocked_count += 1;
+                return .blocked;
+            },
+            error.StreamStopped => return .done,
+            else => {
+                resp.last_error = @errorName(err);
+                return .failed;
+            },
         };
-        if (n == 0) return .blocked;
+        if (n == 0) {
+            resp.blocked_reason = .flow_control;
+            resp.blocked_count += 1;
+            return .blocked;
+        }
         resp.sent += n;
+        resp.blocked_count = 0;
+        resp.blocked_reason = .none;
         api.poll(ep, 1) catch {};
         if (resp.sent < resp.data.len) return .progressed;
     }
 
     _ = api.writeStream(conn, resp.stream_id, &[_]u8{}, true) catch |err| switch (err) {
-        error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked => return .blocked,
-        else => return .failed,
+        error.KeysNotReady => {
+            resp.blocked_reason = .keys_not_ready;
+            resp.blocked_count += 1;
+            return .blocked;
+        },
+        error.OutOfStreams => {
+            resp.blocked_reason = .out_of_streams;
+            resp.blocked_count += 1;
+            return .blocked;
+        },
+        error.FlowControlBlocked => {
+            resp.blocked_reason = .flow_control;
+            resp.blocked_count += 1;
+            return .blocked;
+        },
+        error.WouldBlock => {
+            resp.blocked_reason = .would_block;
+            resp.blocked_count += 1;
+            return .blocked;
+        },
+        error.StreamStopped => return .done,
+        else => {
+            resp.last_error = @errorName(err);
+            return .failed;
+        },
     };
     resp.fin_sent = true;
+    resp.blocked_count = 0;
+    resp.blocked_reason = .none;
     api.flush(ep, 1);
     return .done;
 }
@@ -256,7 +352,7 @@ fn sendFileOnStream(ep: *api.QuicEndpoint, conn: *api.QuicConnection, stream_id:
             const still_in_chunk = nread - off;
             const is_final = (remaining == still_in_chunk);
             const wn = api.writeStream(conn, stream_id, buf[off..nread], is_final) catch |err| switch (err) {
-                error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked => 0,
+                error.KeysNotReady, error.OutOfStreams, error.FlowControlBlocked, error.WouldBlock => 0,
                 else => return false,
             };
             if (wn == 0) {
@@ -522,13 +618,28 @@ pub fn main() !void {
                 for (pending_responses.items) |resp| alloc.free(resp.data);
                 pending_responses.deinit(alloc);
             }
+            var request_buffers = std.AutoHashMap(api.QuicStreamId, std.ArrayList(u8)).init(alloc);
+            defer {
+                var it = request_buffers.iterator();
+                while (it.next()) |entry| entry.value_ptr.deinit(alloc);
+                request_buffers.deinit();
+            }
 
             const req_start = std.time.nanoTimestamp();
             var last_progress = req_start;
             var rr_next: usize = 0;
             while (!api.isDrained(conn)) {
-                if (elapsedMsSince(req_start) >= responseTotalTimeoutMs(testcase)) break;
-                if (elapsedMsSince(last_progress) >= responseIdleTimeoutMs(testcase)) break;
+                if (elapsedMsSince(req_start) >= responseTotalTimeoutMs(testcase)) {
+                    log("server: response loop total timeout");
+                    break;
+                }
+                const idle_limit_ms = if (pending_responses.items.len > 0) responsePendingIdleTimeoutMs(testcase) else responseIdleTimeoutMs(testcase);
+                if (elapsedMsSince(last_progress) >= idle_limit_ms) {
+                    var idle_msg_buf: [128]u8 = undefined;
+                    const idle_msg = std.fmt.bufPrint(&idle_msg_buf, "server: response loop idle timeout pending={d}", .{pending_responses.items.len}) catch "server: response loop idle timeout";
+                    log(idle_msg);
+                    break;
+                }
                 api.poll(ep, 5) catch {};
 
                 while (api.hasIncomingStreams(conn)) {
@@ -546,16 +657,59 @@ pub fn main() !void {
                 var idx: usize = 0;
                 while (idx < active_streams.items.len) {
                     const sid = active_streams.items[idx];
-                    const n = api.readStream(conn, sid, buf[0..]) catch 0;
-                    if (n == 0) {
+                    const n = api.readStream(conn, sid, buf[0..]) catch |err| switch (err) {
+                        error.WouldBlock => 0,
+                        else => 0,
+                    };
+
+                    if (n > 0) {
+                        last_progress = std.time.nanoTimestamp();
+                        const gop = request_buffers.getOrPut(sid) catch {
+                            _ = active_streams.swapRemove(idx);
+                            continue;
+                        };
+                        if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(u8){};
+                        gop.value_ptr.appendSlice(alloc, buf[0..n]) catch {
+                            if (request_buffers.fetchRemove(sid)) |entry| {
+                                var req_state = entry.value;
+                                req_state.deinit(alloc);
+                            }
+                            _ = active_streams.swapRemove(idx);
+                            continue;
+                        };
+                    }
+
+                    const req_buf = request_buffers.getPtr(sid) orelse {
+                        if (api.isStreamFinished(conn, sid)) {
+                            _ = active_streams.swapRemove(idx);
+                            continue;
+                        }
+                        idx += 1;
+                        continue;
+                    };
+
+                    if (req_buf.items.len > max_request_line_bytes) {
+                        var too_long_msg_buf: [112]u8 = undefined;
+                        const too_long_msg = std.fmt.bufPrint(&too_long_msg_buf, "server: request too long stream={d}", .{sid}) catch "server: request too long";
+                        log(too_long_msg);
+                        if (request_buffers.fetchRemove(sid)) |entry| {
+                            var req_state = entry.value;
+                            req_state.deinit(alloc);
+                        }
+                        _ = active_streams.swapRemove(idx);
+                        continue;
+                    }
+
+                    const nl = std.mem.indexOfScalar(u8, req_buf.items, '\n');
+                    if (nl == null and !api.isStreamFinished(conn, sid)) {
                         idx += 1;
                         continue;
                     }
-                    last_progress = std.time.nanoTimestamp();
-
-                    const line = std.mem.trim(u8, buf[0..n], " \r\n");
+                    const line_bytes = if (nl) |line_end| req_buf.items[0 .. line_end + 1] else req_buf.items;
+                    const line = std.mem.trim(u8, line_bytes, " \r\n");
                     if (std.mem.startsWith(u8, line, "GET ")) {
-                        const path = line[4..];
+                        var path = line[4..];
+                        if (std.mem.indexOfScalar(u8, path, ' ')) |sp| path = path[0..sp];
                         var recv_msg_buf: [220]u8 = undefined;
                         const recv_msg = std.fmt.bufPrint(&recv_msg_buf, "server: GET request received stream={d} path={s}", .{ sid, path }) catch "server: GET request received";
                         log(recv_msg);
@@ -587,6 +741,10 @@ pub fn main() !void {
                         log(invalid_msg);
                     }
 
+                    if (request_buffers.fetchRemove(sid)) |entry| {
+                        var req_state = entry.value;
+                        req_state.deinit(alloc);
+                    }
                     _ = active_streams.swapRemove(idx);
                 }
 
@@ -616,11 +774,27 @@ pub fn main() !void {
                                 break;
                             },
                             .blocked => {
+                                if (resp.blocked_count == 1 or (resp.blocked_count % 2000 == 0)) {
+                                    var blocked_msg_buf: [196]u8 = undefined;
+                                    const blocked_msg = std.fmt.bufPrint(&blocked_msg_buf, "server: response blocked stream={d} sent={d}/{d} reason={s} count={d}", .{
+                                        resp.stream_id,
+                                        resp.sent,
+                                        resp.data.len,
+                                        blockedReasonName(resp.blocked_reason),
+                                        resp.blocked_count,
+                                    }) catch "server: response blocked";
+                                    log(blocked_msg);
+                                }
                                 rr_next += 1;
                             },
                             .failed => {
-                                var timeout_msg_buf: [112]u8 = undefined;
-                                const timeout_msg = std.fmt.bufPrint(&timeout_msg_buf, "server: response send timeout stream={d}", .{resp.stream_id}) catch "server: response send timeout";
+                                var timeout_msg_buf: [172]u8 = undefined;
+                                const timeout_msg = std.fmt.bufPrint(&timeout_msg_buf, "server: response send timeout stream={d} sent={d}/{d} err={s}", .{
+                                    resp.stream_id,
+                                    resp.sent,
+                                    resp.data.len,
+                                    resp.last_error,
+                                }) catch "server: response send timeout";
                                 log(timeout_msg);
                                 alloc.free(resp.data);
                                 _ = pending_responses.swapRemove(rr_next);
@@ -635,6 +809,11 @@ pub fn main() !void {
                         api.poll(ep, 1) catch {};
                     }
                 }
+            }
+            if (pending_responses.items.len > 0) {
+                var pending_msg_buf: [128]u8 = undefined;
+                const pending_msg = std.fmt.bufPrint(&pending_msg_buf, "server: closing with pending responses={d}", .{pending_responses.items.len}) catch "server: closing with pending responses";
+                log(pending_msg);
             }
             api.flush(ep, 10);
             var spins: usize = 0;

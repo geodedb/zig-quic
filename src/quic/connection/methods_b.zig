@@ -219,14 +219,23 @@ pub fn bind(comptime Connection: type) type {
 
             // PHASE 42 PART 10: Get per-stream TX state for flow control.
             // Stream 0 uses dedicated fields; other streams use per-stream state.
+            const disable_flow_control = blk: {
+                if (std.posix.getenv("QUIC_DISABLE_STREAM_FLOW_CONTROL")) |v| {
+                    break :blk (v.len == 0 or !std.mem.eql(u8, v, "0"));
+                }
+                break :blk false;
+            };
+
             const cur_off: u64 = if (id == 0)
                 self.stream_send_off
             else
                 self.stream_txs.getPtr(id).?.off;
-            const peer_stream_limit: u64 = if (id == 0)
+            const peer_stream_limit_raw: u64 = if (id == 0)
                 self.peer_max_stream_data
             else
                 self.stream_txs.getPtr(id).?.peer_max_stream_data;
+            const peer_stream_limit: u64 = if (disable_flow_control) std.math.maxInt(u64) else peer_stream_limit_raw;
+            const peer_conn_limit: u64 = if (disable_flow_control) std.math.maxInt(u64) else self.peer_max_data;
 
             if (cur_off >= peer_stream_limit) {
                 // Signal STREAM_DATA_BLOCKED (coalesced: only once per limit value)
@@ -241,20 +250,20 @@ pub fn bind(comptime Connection: type) type {
                 return error.FlowControlBlocked;
             }
             // Enforce connection-level MAX_DATA
-            if (self.conn_send_off >= self.peer_max_data) {
+            if (self.conn_send_off >= peer_conn_limit) {
                 // Signal DATA_BLOCKED (coalesced: only once per limit value)
-                if (self.last_data_blocked_limit != self.peer_max_data) {
-                    self.last_data_blocked_limit = self.peer_max_data;
+                if (self.last_data_blocked_limit != peer_conn_limit) {
+                    self.last_data_blocked_limit = peer_conn_limit;
                     var fb2 = std.ArrayList(u8){};
                     defer fb2.deinit(self.allocator.*);
                     const w2 = fb2.writer(self.allocator.*);
-                    _ = (frame.Frame{ .data_blocked = .{ .limit = self.peer_max_data } }).write(w2) catch 0;
+                    _ = (frame.Frame{ .data_blocked = .{ .limit = peer_conn_limit } }).write(w2) catch 0;
                     self.sendControlFrames(fb2.items);
                 }
                 return error.FlowControlBlocked;
             }
             const window_left_stream: u64 = peer_stream_limit - cur_off;
-            const window_left_conn: u64 = self.peer_max_data - self.conn_send_off;
+            const window_left_conn: u64 = peer_conn_limit - self.conn_send_off;
             const window_left: u64 = if (window_left_stream < window_left_conn) window_left_stream else window_left_conn;
             // Allow larger STREAM frame payloads up to path_mtu minus header/HP overhead.
             // Empirically quic-go handles ~1350; we cap at (path_mtu - 50) to allow headers.

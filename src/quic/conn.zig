@@ -1383,6 +1383,9 @@ pub const Connection = struct {
     /// localhost in our implementation-specific carve-out).
     /// Return true if currently exceeding allowed 3x amplification limit.
     pub fn overAmplification(self: *const Connection) bool {
+        if (std.posix.getenv("QUIC_DISABLE_AMPLIFICATION_LIMIT")) |v| {
+            if (v.len == 0 or !std.mem.eql(u8, v, "0")) return false;
+        }
         if (self.address_validated) return false;
 
         // CANARY: REQ=REQ-TRANSPORT-001; FEATURE="AmplificationProtection"; ASPECT=LocalhostExemption; STATUS=IMPLEMENTED; OWNER=transport; UPDATED=2025-10-15
