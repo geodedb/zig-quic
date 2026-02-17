@@ -219,28 +219,24 @@ pub fn bind(comptime Connection: type) type {
 
             // PHASE 42 PART 10: Get per-stream TX state for flow control.
             // Stream 0 uses dedicated fields; other streams use per-stream state.
-            const disable_flow_control = blk: {
-                if (std.posix.getenv("QUIC_DISABLE_STREAM_FLOW_CONTROL")) |v| {
-                    break :blk (v.len == 0 or !std.mem.eql(u8, v, "0"));
-                }
-                break :blk false;
-            };
-
             const cur_off: u64 = if (id == 0)
                 self.stream_send_off
             else
                 self.stream_txs.getPtr(id).?.off;
-            const peer_stream_limit_raw: u64 = if (id == 0)
+            const peer_stream_limit: u64 = if (id == 0)
                 self.peer_max_stream_data
             else
                 self.stream_txs.getPtr(id).?.peer_max_stream_data;
-            const peer_stream_limit: u64 = if (disable_flow_control) std.math.maxInt(u64) else peer_stream_limit_raw;
-            const peer_conn_limit: u64 = if (disable_flow_control) std.math.maxInt(u64) else self.peer_max_data;
+            const peer_conn_limit: u64 = self.peer_max_data;
 
             if (cur_off >= peer_stream_limit) {
-                // Signal STREAM_DATA_BLOCKED (coalesced: only once per limit value)
-                if (self.last_stream_data_blocked_limit != peer_stream_limit) {
+                // Signal STREAM_DATA_BLOCKED and re-emit periodically while blocked.
+                const now_ns = std.time.nanoTimestamp();
+                if (self.last_stream_data_blocked_limit != peer_stream_limit or
+                    now_ns - self.last_stream_data_blocked_at_ns >= 200 * std.time.ns_per_ms)
+                {
                     self.last_stream_data_blocked_limit = peer_stream_limit;
+                    self.last_stream_data_blocked_at_ns = now_ns;
                     var fb1 = std.ArrayList(u8){};
                     defer fb1.deinit(self.allocator.*);
                     const w1 = fb1.writer(self.allocator.*);
@@ -251,9 +247,13 @@ pub fn bind(comptime Connection: type) type {
             }
             // Enforce connection-level MAX_DATA
             if (self.conn_send_off >= peer_conn_limit) {
-                // Signal DATA_BLOCKED (coalesced: only once per limit value)
-                if (self.last_data_blocked_limit != peer_conn_limit) {
+                // Signal DATA_BLOCKED and re-emit periodically while blocked.
+                const now_ns = std.time.nanoTimestamp();
+                if (self.last_data_blocked_limit != peer_conn_limit or
+                    now_ns - self.last_data_blocked_at_ns >= 200 * std.time.ns_per_ms)
+                {
                     self.last_data_blocked_limit = peer_conn_limit;
+                    self.last_data_blocked_at_ns = now_ns;
                     var fb2 = std.ArrayList(u8){};
                     defer fb2.deinit(self.allocator.*);
                     const w2 = fb2.writer(self.allocator.*);

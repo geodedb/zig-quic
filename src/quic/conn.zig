@@ -596,6 +596,8 @@ pub const Connection = struct {
     /// Coalesce sustained *_BLOCKED noise: remember last advertised limits we signaled
     last_stream_data_blocked_limit: u64 = 0,
     last_data_blocked_limit: u64 = 0,
+    last_stream_data_blocked_at_ns: i128 = 0,
+    last_data_blocked_at_ns: i128 = 0,
     /// Pace MAX_* emission: remember last maxima we sent
     last_sent_max_stream_data: u64 = 0,
     last_sent_max_data: u64 = 0,
@@ -1085,6 +1087,8 @@ pub const Connection = struct {
         self.tx_sent_packets_since_key = 0;
         self.last_stream_data_blocked_limit = 0;
         self.last_data_blocked_limit = 0;
+        self.last_stream_data_blocked_at_ns = 0;
+        self.last_data_blocked_at_ns = 0;
         self.last_sent_max_stream_data = 0;
         self.last_sent_max_data = 0;
         self.last_sent_max_streams_bidi = 0;
