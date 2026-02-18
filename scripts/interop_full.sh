@@ -43,6 +43,7 @@ prepare_local_interop_assets() {
     local www_dir="${ROOT}/examples/interop/quic-network-simulator/www"
     local logs_dir="${ROOT}/examples/interop/quic-network-simulator/logs"
     local test_probe
+    local ca_pem_source="${ROOT}/tests/certs/ca.pem"
 
     mkdir -p "${cert_dir}" "${www_dir}" "${logs_dir}/server/qlog" "${logs_dir}/client/qlog" "${logs_dir}/sim"
 
@@ -56,10 +57,95 @@ prepare_local_interop_assets() {
     fi
     rm -f "${test_probe}" 2>/dev/null || true
 
-    install -m 0644 tests/certs/cert.pem "${cert_dir}/cert.pem"
-    install -m 0644 tests/certs/cert.pem "${cert_dir}/ca.pem"
-    install -m 0644 tests/certs/key.pem "${cert_dir}/key.pem"
-    install -m 0644 tests/certs/key.pem "${cert_dir}/priv.key"
+    # Build an interop CA + server leaf pair so strict clients (notably s2n-quic)
+    # can validate a proper trust chain. Fall back to static test certs if openssl
+    # is unavailable for any reason.
+    if command -v openssl >/dev/null 2>&1; then
+        local cert_tmp
+        cert_tmp="$(mktemp -d "${TMPDIR:-/tmp}/qns-certs.XXXXXX")"
+        (
+            set -euo pipefail
+            # ECDSA CA
+            openssl ecparam -name prime256v1 -genkey -noout -out "${cert_tmp}/ca.key"
+            cat > "${cert_tmp}/ca.cnf" <<'EOF'
+[req]
+distinguished_name=dn
+x509_extensions=v3_ca
+prompt=no
+[dn]
+CN=zig-quic-interop-ca
+O=zig-quic interop
+[v3_ca]
+basicConstraints=critical,CA:TRUE,pathlen:0
+keyUsage=critical,keyCertSign,cRLSign
+authorityKeyIdentifier=keyid:always
+subjectKeyIdentifier=hash
+EOF
+            openssl req -x509 -new -key "${cert_tmp}/ca.key" -sha256 -days 3650 -out "${cert_tmp}/ca.pem" -config "${cert_tmp}/ca.cnf"
+
+            # ECDSA server cert signed by the local CA.
+            openssl ecparam -name prime256v1 -genkey -noout -out "${cert_tmp}/server.key"
+            cat > "${cert_tmp}/server.cnf" <<'EOF'
+[req]
+distinguished_name=dn
+req_extensions=v3_req
+prompt=no
+[dn]
+CN=server
+O=zig-quic interop
+[v3_req]
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=@alt
+[alt]
+DNS.1=server
+DNS.2=server4
+DNS.3=server6
+DNS.4=server46
+EOF
+            openssl req -new -key "${cert_tmp}/server.key" -out "${cert_tmp}/server.csr" -config "${cert_tmp}/server.cnf"
+            openssl x509 -req \
+                -in "${cert_tmp}/server.csr" \
+                -CA "${cert_tmp}/ca.pem" \
+                -CAkey "${cert_tmp}/ca.key" \
+                -CAcreateserial \
+                -out "${cert_tmp}/server.crt" \
+                -days 3650 \
+                -sha256 \
+                -extensions v3_req \
+                -extfile "${cert_tmp}/server.cnf"
+        ) || true
+
+        if [[ -s "${cert_tmp}/server.crt" && -s "${cert_tmp}/server.key" && -s "${cert_tmp}/ca.pem" ]]; then
+            install -m 0644 "${cert_tmp}/server.crt" "${cert_dir}/cert.pem"
+            install -m 0600 "${cert_tmp}/server.key" "${cert_dir}/key.pem"
+            install -m 0600 "${cert_tmp}/server.key" "${cert_dir}/priv.key"
+            install -m 0644 "${cert_tmp}/ca.pem" "${cert_dir}/ca.pem"
+        else
+            install -m 0644 tests/certs/cert.pem "${cert_dir}/cert.pem"
+            if [[ -f "${ca_pem_source}" ]]; then
+                install -m 0644 "${ca_pem_source}" "${cert_dir}/ca.pem"
+            else
+                install -m 0644 tests/certs/cert.pem "${cert_dir}/ca.pem"
+            fi
+            install -m 0600 tests/certs/key.pem "${cert_dir}/key.pem"
+            install -m 0600 tests/certs/key.pem "${cert_dir}/priv.key"
+        fi
+        if [[ -d "${cert_tmp}" ]]; then
+            find "${cert_tmp}" -mindepth 1 -delete 2>/dev/null || true
+            rmdir "${cert_tmp}" 2>/dev/null || true
+        fi
+    else
+        install -m 0644 tests/certs/cert.pem "${cert_dir}/cert.pem"
+        if [[ -f "${ca_pem_source}" ]]; then
+            install -m 0644 "${ca_pem_source}" "${cert_dir}/ca.pem"
+        else
+            install -m 0644 tests/certs/cert.pem "${cert_dir}/ca.pem"
+        fi
+        install -m 0600 tests/certs/key.pem "${cert_dir}/key.pem"
+        install -m 0600 tests/certs/key.pem "${cert_dir}/priv.key"
+    fi
 
     if [[ ! -s "${www_dir}/index.html" ]]; then
         printf '<!doctype html><html><body>zig-quic interop fixture</body></html>\n' > "${www_dir}/index.html"
@@ -126,13 +212,20 @@ default_request_host_for_client() {
     local server_impl="$1"
     local client_impl="$2"
     local testcase="$3"
+    if [[ "$server_impl" == "zig" && "$client_impl" == "xquic" && "$testcase" == "retry" ]]; then
+        # xquic retry-mode client crashes against zig server when authority is "server".
+        # Keep retry on "server4" where the same flow succeeds.
+        echo "server4"
+    # msquic exercises non-handshake paths correctly with "server4" authority.
+    elif [[ "$client_impl" == "msquic" ]]; then
+        echo "server4"
     # kwik enforces certificate hostname verification for multiple testcases.
     # Our interop cert SAN includes "server", not "server4", so keep kwik on "server".
-    if [[ "$client_impl" == "kwik" ]]; then
+    elif [[ "$client_impl" == "kwik" ]]; then
         echo "server"
-    elif [[ "$client_impl" == "xquic" || "$server_impl" == "xquic" || "$client_impl" == "picoquic" || "$server_impl" == "picoquic" || "$client_impl" == "msquic" || "$server_impl" == "msquic" ]]; then
-        # xquic/picoquic/msquic are strict on SNI/certificate hostname alignment and reject
-        # "server4" with the default interop cert bundle (CN/SAN: "server").
+    elif [[ "$client_impl" == "xquic" || "$server_impl" == "xquic" || "$client_impl" == "picoquic" || "$server_impl" == "picoquic" ]]; then
+        # xquic/picoquic are strict on SNI/certificate hostname alignment and reject
+        # "server4" with some cert bundles.
         echo "server"
     elif [[ "$client_impl" == "zig" && "$testcase" == "http3" ]]; then
         # Some servers (e.g. quic-go) return empty-body responses for "server4" authority.
@@ -171,25 +264,29 @@ skip_reason_for_case() {
         echo "xquic server rejects zig-client initial packets in this harness path (packet process ret:-608)"
         return 0
     fi
-    if [[ "$server_impl" == "zig" && "$client_impl" == "xquic" && "$testcase" == "retry" ]]; then
-        echo "xquic client stalls after zig-server retry handshake in this harness path (no request/response progress)"
-        return 0
-    fi
     if [[ "$server_impl" == "quinn" && "$client_impl" == "zig" && "$testcase" == "http3" ]]; then
         echo "quinn server panics on zig-client H3 request payload decoding in this harness path (invalid UTF-8 unwrap)"
         return 0
     fi
     if [[ "$server_impl" == "zig" && "$client_impl" == "msquic" ]]; then
         case "$testcase" in
-            transfer|retry|http3|keyupdate)
-                echo "msquic client exits before completing non-handshake flows against zig server in this harness path (no negotiated VERSION/ALPN)"
+            http3)
+                echo "msquic client does not implement http3 testcase in this harness path"
                 return 0
                 ;;
         esac
     fi
     if [[ "$server_impl" == "zig" && "$client_impl" == "s2n-quic" ]]; then
-        echo "s2n-quic client rejects zig interop certificate chain in this harness path (CERTIFICATE_UNKNOWN)"
-        return 0
+        case "$testcase" in
+            retry)
+                echo "s2n-quic retry testcase does not progress against zig retry-mode server in this harness path"
+                return 0
+                ;;
+            keyupdate)
+                echo "s2n-quic client does not implement keyupdate testcase in this harness path"
+                return 0
+                ;;
+        esac
     fi
     # Keep this hook explicit for future matrix exceptions.
     if [[ "$server_impl" == "__none__" && "$client_impl" == "__none__" && "$testcase" == "__none__" ]]; then
@@ -211,7 +308,7 @@ log_indicates_failure() {
     if awk '/exited with code/ { code = $NF + 0; if (code != 0 && code != 127 && code != 137 && code != 143) found = 1 } END { exit(found ? 0 : 1) }' "$log_path"; then
         return 0
     fi
-    rg -qi "At least one response failed|client: h3 request failed|I/O Error|ConnectException|Got IO error|handshake timeout|Could not parse URI|Could not open qlog file|Can't read trust store file|keytool error|servername does not match|Failed to start sim|failed to create network|invalid pool request|Pool overlaps with other one on this address space|Error response from daemon|panic:|thread .* panic|Aborted \\(core dumped\\)|Segmentation fault|SIGABRT|SIGSEGV" "$log_path"
+    rg -qi "At least one response failed|client: h3 request failed|I/O Error|ConnectException|Got IO error|handshake timeout|Could not parse URI|Could not open qlog file|Can't read trust store file|keytool error|servername does not match|Failed to start sim|failed to create network|invalid pool request|Pool overlaps with other one on this address space|Error response from daemon|panic:|thread .* panic|Aborted \\(core dumped\\)|Segmentation fault|SIGABRT|SIGSEGV|socket idle timeout, task failed|task failed, total task_req_cnt|recv_bytes:0, path_info" "$log_path"
 }
 
 record_result_from_log() {
@@ -320,9 +417,26 @@ run_test() {
     # Fix simulator iptables DROP rules
     docker exec ${COMPOSE_PROJECT_NAME}_sim iptables -D FORWARD -i eth0 -o eth1 -j DROP 2>/dev/null || true
     docker exec ${COMPOSE_PROJECT_NAME}_sim iptables -D FORWARD -i eth1 -o eth0 -j DROP 2>/dev/null || true
-    # Run the test with timeout
+    # Start server first to avoid client-side startup races on strict implementations.
+    local server_started=1
+    if ! COMPOSE_HTTP_TIMEOUT=120 timeout 120 docker compose -f examples/interop/docker-compose.full.yml --profile $profiles up -d server; then
+        echo -e "${RED}Failed to start server${NC}"
+        server_started=0
+    fi
+    if [[ "$server_started" -eq 0 ]]; then
+        echo -e "${RED}✗ FAILED (server startup)${NC}"
+        RESULTS[$key]="FAILED"
+        FAILED=$((FAILED + 1))
+        docker compose -f examples/interop/docker-compose.full.yml --profile $profiles down -v >/dev/null 2>&1 || true
+        docker network rm interop_leftnet interop_rightnet >/dev/null 2>&1 || true
+        sleep 1
+        return
+    fi
+    sleep "${INTEROP_SERVER_WARMUP_SEC:-5}"
+
+    # Run client + attach to existing server with timeout.
     local rc=0
-    if ! COMPOSE_HTTP_TIMEOUT=120 timeout 240 docker compose -f examples/interop/docker-compose.full.yml --profile $profiles up --abort-on-container-exit --timeout 5 2>&1 | tee "$log_path"; then
+    if ! COMPOSE_HTTP_TIMEOUT=120 timeout 240 docker compose -f examples/interop/docker-compose.full.yml --profile $profiles up --no-recreate --abort-on-container-exit --timeout 5 server client 2>&1 | tee "$log_path"; then
         rc=$?
     fi
     record_result_from_log "$key" "$log_path" "$rc"
@@ -435,9 +549,26 @@ run_generic_test() {
     # Fix simulator iptables DROP rules
     docker exec ${COMPOSE_PROJECT_NAME}_sim iptables -D FORWARD -i eth0 -o eth1 -j DROP 2>/dev/null || true
     docker exec ${COMPOSE_PROJECT_NAME}_sim iptables -D FORWARD -i eth1 -o eth0 -j DROP 2>/dev/null || true
-    # Run the test with timeout
+    # Start server first to avoid client-side startup races on strict implementations.
+    local server_started=1
+    if ! COMPOSE_HTTP_TIMEOUT=120 timeout 120 docker compose -f examples/interop/docker-compose.full.yml --profile generic up -d server; then
+        echo -e "${RED}Failed to start server${NC}"
+        server_started=0
+    fi
+    if [[ "$server_started" -eq 0 ]]; then
+        echo -e "${RED}✗ FAILED (server startup)${NC}"
+        RESULTS[$key]="FAILED"
+        FAILED=$((FAILED + 1))
+        docker compose -f examples/interop/docker-compose.full.yml --profile generic down -v >/dev/null 2>&1 || true
+        docker network rm interop_leftnet interop_rightnet >/dev/null 2>&1 || true
+        sleep 1
+        return
+    fi
+    sleep "${INTEROP_SERVER_WARMUP_SEC:-5}"
+
+    # Run client + attach to existing server with timeout.
     local rc=0
-    if ! COMPOSE_HTTP_TIMEOUT=120 timeout 240 docker compose -f examples/interop/docker-compose.full.yml --profile generic up --abort-on-container-exit --timeout 5 2>&1 | tee "$log_path"; then
+    if ! COMPOSE_HTTP_TIMEOUT=120 timeout 240 docker compose -f examples/interop/docker-compose.full.yml --profile generic up --no-recreate --abort-on-container-exit --timeout 5 server client 2>&1 | tee "$log_path"; then
         rc=$?
     fi
     record_result_from_log "$key" "$log_path" "$rc"

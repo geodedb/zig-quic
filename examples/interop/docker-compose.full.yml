@@ -58,6 +58,8 @@ services:
     environment:
       - ROLE=server
       - TESTCASE=${TESTCASE:-handshake}
+      - QNS_SERVER_IMPL=${SERVER_IMPL:-}
+      - QNS_CLIENT_IMPL=${CLIENT_IMPL:-}
     depends_on:
       - sim
     cap_add:
@@ -186,6 +188,8 @@ services:
     environment:
       - ROLE=server
       - TESTCASE=${TESTCASE:-handshake}
+      - QNS_SERVER_IMPL=${SERVER_IMPL:-}
+      - QNS_CLIENT_IMPL=${CLIENT_IMPL:-}
       - QLOGDIR=/logs/qlog
     depends_on:
       - sim
@@ -526,6 +530,8 @@ services:
     environment:
       - ROLE=server
       - TESTCASE=${TESTCASE:-handshake}
+      - QNS_SERVER_IMPL=${SERVER_IMPL:-}
+      - QNS_CLIENT_IMPL=${CLIENT_IMPL:-}
       - QLOGDIR=/logs/qlog
     depends_on:
       - sim

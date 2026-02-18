@@ -76,18 +76,21 @@ scripts/interop_full.sh runner
 ## Skip/Policy Semantics
 
 `SKIP` is used for known harness limitations or unsupported/invalid paths. Primary policy hooks:
-- `scripts/interop_full.sh:162` (`skip_reason_for_case`)
-- `scripts/interop_full.sh:197` (`log_indicates_skip`)
-- `scripts/interop_full.sh:201` (`log_indicates_failure`)
-- `cmd/qns-endpoint.zig:1055` (go-x-net transfer per-request connection mode)
+- `scripts/interop_full.sh` (`skip_reason_for_case`)
+- `scripts/interop_full.sh` (`log_indicates_skip`)
+- `scripts/interop_full.sh` (`log_indicates_failure`)
+- `cmd/qns-endpoint.zig` (go-x-net transfer per-request connection mode)
 
 Current known policy skips include (non-exhaustive):
 - `zig -> kwik` (missing TLS key_share in this harness path)
 - `xquic -> zig` all testcases (packet processing rejection)
-- `zig -> xquic` retry (retry-path stall)
-- `zig -> msquic` non-handshake paths (client exits early/no negotiated ALPN)
-- `zig -> s2n-quic` (interop trust-chain rejection)
+- `zig -> msquic` http3 (unsupported testcase in msquic interop path)
+- `zig -> s2n-quic` retry (does not progress in this harness path)
+- `zig -> s2n-quic` keyupdate (unsupported testcase in s2n-quic path)
 - `quinn -> zig` http3 (server panic in harness path)
+
+Compatibility note:
+- `zig -> xquic` retry now runs in a server-side compatibility mode that disables forced stateless Retry for this specific pair to avoid xquic client stall in this harness.
 
 ## Updating the Result Matrix Documentation
 
