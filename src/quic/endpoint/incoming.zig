@@ -820,20 +820,48 @@ pub fn processInitial(
             // Use peer's SCID as DCID
             const initial_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
 
-            // Encode and send Initial ACK packet
-            const pkt = packet.encodeInitialProtected(
+            // RFC 9000 §14.1: client Initial datagrams MUST be at least 1200 bytes.
+            // RFC 9000 §8.1.2: client must echo Retry token on subsequent Initial packets.
+            const token = if (conn.role == .Client) conn.initial_token.items else &[_]u8{};
+            var ack_payload = std.ArrayList(u8){};
+            defer ack_payload.deinit(ctx.allocator.*);
+            ack_payload.appendSlice(ctx.allocator.*, frames_data) catch {};
+
+            var pkt = packet.encodeInitialProtected(
                 ctx.allocator.*,
                 version,
                 initial_dcid,
                 conn.our_scid.bytes[0..conn.our_scid.len],
-                &[_]u8{}, // No token in ACK packet
+                token,
                 @as(u32, @truncate(conn.pn_initial_tx)),
                 2,
-                frames_data,
+                ack_payload.items,
                 tx_keys,
             ) catch null;
 
-            if (pkt) |bytes_out| {
+            if (pkt) |bytes_out_initial| {
+                var bytes_out = bytes_out_initial;
+                if (conn.role == .Client and bytes_out.len < 1200) {
+                    const pad_needed = 1200 - bytes_out.len;
+                    ctx.allocator.free(bytes_out);
+                    ack_payload.appendNTimes(ctx.allocator.*, @intFromEnum(frame.FrameType.PADDING), pad_needed) catch {};
+                    pkt = packet.encodeInitialProtected(
+                        ctx.allocator.*,
+                        version,
+                        initial_dcid,
+                        conn.our_scid.bytes[0..conn.our_scid.len],
+                        token,
+                        @as(u32, @truncate(conn.pn_initial_tx)),
+                        2,
+                        ack_payload.items,
+                        tx_keys,
+                    ) catch null;
+                    if (pkt) |retry_out| {
+                        bytes_out = retry_out;
+                    } else {
+                        return;
+                    }
+                }
                 defer ctx.allocator.free(bytes_out);
                 _ = ctx.send_fn(peer, bytes_out) catch {};
                 conn.onPacketSent(.Initial, conn.pn_initial_tx, bytes_out.len, false);

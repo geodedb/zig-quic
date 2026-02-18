@@ -83,14 +83,13 @@ scripts/interop_full.sh runner
 
 Current known policy skips include (non-exhaustive):
 - `zig -> kwik` (missing TLS key_share in this harness path)
-- `xquic -> zig` all testcases (packet processing rejection)
 - `zig -> msquic` http3 (unsupported testcase in msquic interop path)
-- `zig -> s2n-quic` retry (does not progress in this harness path)
 - `zig -> s2n-quic` keyupdate (unsupported testcase in s2n-quic path)
 - `quinn -> zig` http3 (server panic in harness path)
 
 Compatibility note:
 - `zig -> xquic` retry now runs in a server-side compatibility mode that disables forced stateless Retry for this specific pair to avoid xquic client stall in this harness.
+- `xquic -> zig` major testcase coverage now passes in this harness after Initial-token/1200-byte fixes and ALPN-aware HTTP/3 fallback handling.
 
 ## Updating the Result Matrix Documentation
 

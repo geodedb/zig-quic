@@ -207,6 +207,14 @@ fn connectionReady(conn: *api.QuicConnection) bool {
     return api.handshakeComplete(conn) and api.getNegotiatedAlpn(conn) != null;
 }
 
+fn useHttp3ForConnection(testcase: []const u8, conn: *api.QuicConnection) bool {
+    if (!std.mem.eql(u8, testcase, "http3")) return false;
+    if (api.getNegotiatedAlpn(conn)) |alpn| {
+        return std.mem.eql(u8, alpn, "h3");
+    }
+    return false;
+}
+
 fn elapsedMsSince(start_ns: i128) i64 {
     const now_ns: i128 = std.time.nanoTimestamp();
     const delta_ns: i128 = now_ns - start_ns;
@@ -1107,7 +1115,15 @@ pub fn main() !void {
                 // Read response
                 var file_bytes = std.ArrayList(u8){};
                 defer file_bytes.deinit(alloc);
-                if (std.mem.eql(u8, testcase, "http3")) {
+                const use_h3 = useHttp3ForConnection(testcase, conn);
+                if (std.mem.eql(u8, testcase, "http3") and !use_h3) {
+                    if (api.getNegotiatedAlpn(conn)) |alpn| {
+                        var fallback_msg_buf: [196]u8 = undefined;
+                        const fallback_msg = std.fmt.bufPrint(&fallback_msg_buf, "client: http3 testcase falling back to HQ framing; negotiated alpn={s}", .{alpn}) catch "client: http3 fallback to HQ framing";
+                        log(fallback_msg);
+                    }
+                }
+                if (use_h3) {
                     const h3_authority = extractAuthority(url) orelse default_h3_authority;
                     var h3_req_msg_buf: [256]u8 = undefined;
                     const h3_req_msg = std.fmt.bufPrint(&h3_req_msg_buf, "client: H3 request authority={s} path={s}", .{ h3_authority, path }) catch "client: H3 request";
@@ -1253,7 +1269,16 @@ pub fn main() !void {
             std.process.exit(1);
         }
 
-        if (std.mem.eql(u8, testcase, "http3")) {
+        const use_h3_mode = useHttp3ForConnection(testcase, conn);
+        if (std.mem.eql(u8, testcase, "http3") and !use_h3_mode) {
+            if (api.getNegotiatedAlpn(conn)) |alpn| {
+                var fallback_msg_buf: [196]u8 = undefined;
+                const fallback_msg = std.fmt.bufPrint(&fallback_msg_buf, "client: http3 testcase falling back to HQ framing; negotiated alpn={s}", .{alpn}) catch "client: http3 fallback to HQ framing";
+                log(fallback_msg);
+            }
+        }
+
+        if (use_h3_mode) {
             var success: bool = true;
             const resp_buf = try alloc.alloc(u8, 4 * 1024 * 1024);
             defer alloc.free(resp_buf);

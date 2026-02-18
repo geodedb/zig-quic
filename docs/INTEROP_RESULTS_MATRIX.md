@@ -7,8 +7,8 @@ These results are from clean batch executions of `scripts/interop_full.sh full` 
 
 Focused revalidation on 2026-02-18:
 - `INTEROP_IMPLS=msquic,xquic,s2n-quic INTEROP_TESTCASES=handshake,transfer,retry,http3,keyupdate`
-- Log: `/tmp/interop_targeted_triplet.log`
-- Summary: `Passed: 20`, `Failed: 0`, `Skipped: 10`
+- Log: `/tmp/interop_targeted_triplet_20260218_postfix.log`
+- Summary: `Passed: 26`, `Failed: 0`, `Skipped: 4`
 
 ## Batch Summary
 
@@ -19,10 +19,12 @@ Focused revalidation on 2026-02-18:
 | Batch B | `msquic,xquic,lsquic` | `/tmp/interop_batch2_clean_20260217_205435.log` | 17 | 0 | 13 |
 | Batch C | `quinn,s2n-quic,go-x-net` | `/tmp/interop_batch3_clean_20260217_210533.log` | 19 | 0 | 11 |
 
-Aggregate across these four batches:
+Historical aggregate across these four batch logs:
 - Passed: **102**
 - Failed: **0**
 - Skipped: **38**
+
+Focused revalidation on 2026-02-18 supersedes the prior `msquic/xquic/s2n-quic` entries in the matrix below.
 
 ## Status Legend
 
@@ -79,11 +81,11 @@ Aggregate across these four batches:
 | msquic | retry | PASS | PASS |
 | msquic | http3 | SKIP | SKIP |
 | msquic | keyupdate | PASS | PASS |
-| xquic | handshake | PASS | SKIP |
-| xquic | transfer | PASS | SKIP |
-| xquic | retry | PASS | SKIP |
-| xquic | http3 | PASS | SKIP |
-| xquic | keyupdate | PASS | SKIP |
+| xquic | handshake | PASS | PASS |
+| xquic | transfer | PASS | PASS |
+| xquic | retry | PASS | PASS |
+| xquic | http3 | PASS | PASS |
+| xquic | keyupdate | PASS | PASS |
 | lsquic | handshake | PASS | PASS |
 | lsquic | transfer | PASS | PASS |
 | lsquic | retry | PASS | PASS |
@@ -96,7 +98,7 @@ Aggregate across these four batches:
 | quinn | keyupdate | PASS | PASS |
 | s2n-quic | handshake | PASS | PASS |
 | s2n-quic | transfer | PASS | PASS |
-| s2n-quic | retry | SKIP | PASS |
+| s2n-quic | retry | PASS | PASS |
 | s2n-quic | http3 | PASS | PASS |
 | s2n-quic | keyupdate | SKIP | SKIP |
 | go-x-net | handshake | PASS | PASS |
@@ -111,9 +113,9 @@ Skips are expected and policy-driven for known incompatibilities in this harness
 
 Key examples from this run set:
 - `zig -> kwik` all major testcases: skipped due to missing TLS key_share in kwik client path.
-- `xquic -> zig` all major testcases: skipped due to xquic server rejecting zig initial packets.
+- `xquic -> zig` major testcase coverage is now passing in the current harness (handshake/transfer/retry/http3/keyupdate).
 - `zig -> xquic` retry now passes with server-side compatibility mode that disables forced Retry only for this client path.
 - `zig -> msquic` transfer/retry/keyupdate now pass; `http3` remains unsupported.
-- `zig -> s2n-quic` handshake/transfer/http3 now pass; `retry` and `keyupdate` remain skipped by policy.
+- `zig -> s2n-quic` handshake/transfer/retry/http3 now pass; `keyupdate` remains skipped by policy (unsupported testcase in s2n-quic image).
 - `quinn -> zig` http3: skipped due to server panic in harness path.
 - Select `keyupdate` cases are skipped when the runner cannot verify key update progression in a testcase path.

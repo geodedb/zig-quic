@@ -228,18 +228,38 @@ pub fn bind(comptime Connection: type) type {
             } };
             _ = crypto_frame.write(w) catch return;
 
+            // RFC 9000 §14.1: client Initial datagrams MUST be at least 1200 bytes.
+            // RFC 9000 §8.1.2: client must echo Retry token on subsequent Initial packets.
+            const token = if (self.role == .Client) self.initial_token.items else &[_]u8{};
+
             // Encode Initial packet
-            const out = packet.encodeInitialProtected(
+            var out = packet.encodeInitialProtected(
                 self.allocator.*,
                 self.version,
                 self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len],
                 self.our_scid.bytes[0..self.our_scid.len],
-                &[_]u8{}, // token (empty for client Initial, populated for server if retry used)
+                token,
                 @as(u32, @truncate(self.pn_initial_tx)),
                 2, // pn_len
                 frames.items,
                 tx,
             ) catch return;
+            if (self.role == .Client and out.len < 1200) {
+                const pad_needed = 1200 - out.len;
+                self.allocator.free(out);
+                frames.appendNTimes(self.allocator.*, @intFromEnum(frame.FrameType.PADDING), pad_needed) catch return;
+                out = packet.encodeInitialProtected(
+                    self.allocator.*,
+                    self.version,
+                    self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len],
+                    self.our_scid.bytes[0..self.our_scid.len],
+                    token,
+                    @as(u32, @truncate(self.pn_initial_tx)),
+                    2,
+                    frames.items,
+                    tx,
+                ) catch return;
+            }
 
             defer self.allocator.free(out);
             _ = self.send(out) catch {};

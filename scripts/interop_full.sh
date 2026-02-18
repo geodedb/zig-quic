@@ -260,10 +260,6 @@ skip_reason_for_case() {
         echo "kwik client omits TLS key_share in this harness path (server-side MissingKeyShare)"
         return 0
     fi
-    if [[ "$server_impl" == "xquic" && "$client_impl" == "zig" ]]; then
-        echo "xquic server rejects zig-client initial packets in this harness path (packet process ret:-608)"
-        return 0
-    fi
     if [[ "$server_impl" == "quinn" && "$client_impl" == "zig" && "$testcase" == "http3" ]]; then
         echo "quinn server panics on zig-client H3 request payload decoding in this harness path (invalid UTF-8 unwrap)"
         return 0
@@ -278,10 +274,6 @@ skip_reason_for_case() {
     fi
     if [[ "$server_impl" == "zig" && "$client_impl" == "s2n-quic" ]]; then
         case "$testcase" in
-            retry)
-                echo "s2n-quic retry testcase does not progress against zig retry-mode server in this harness path"
-                return 0
-                ;;
             keyupdate)
                 echo "s2n-quic client does not implement keyupdate testcase in this harness path"
                 return 0
