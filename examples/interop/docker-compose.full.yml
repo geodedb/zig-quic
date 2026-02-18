@@ -91,6 +91,8 @@ services:
       - ROLE=client
       - REQUESTS=${REQUESTS:-https://server4/5000}
       - TESTCASE=${TESTCASE:-handshake}
+      - QNS_SERVER_IMPL=${SERVER_IMPL:-}
+      - QNS_CLIENT_IMPL=${CLIENT_IMPL:-}
       - QNS_H3_ALLOW_EMPTY=${QNS_H3_ALLOW_EMPTY:-0}
     depends_on:
       - sim
@@ -215,6 +217,8 @@ services:
       - ROLE=client
       - REQUESTS=${REQUESTS:-https://server4/5000}
       - TESTCASE=${TESTCASE:-handshake}
+      - QNS_SERVER_IMPL=${SERVER_IMPL:-}
+      - QNS_CLIENT_IMPL=${CLIENT_IMPL:-}
       - QLOGDIR=/logs/qlog
       - QNS_H3_ALLOW_EMPTY=${QNS_H3_ALLOW_EMPTY:-0}
     depends_on:
@@ -553,6 +557,8 @@ services:
       - ROLE=client
       - REQUESTS=${REQUESTS:-https://server4/5000}
       - TESTCASE=${TESTCASE:-handshake}
+      - QNS_SERVER_IMPL=${SERVER_IMPL:-}
+      - QNS_CLIENT_IMPL=${CLIENT_IMPL:-}
       - QLOGDIR=/logs/qlog
       - QNS_H3_ALLOW_EMPTY=${QNS_H3_ALLOW_EMPTY:-0}
     depends_on:

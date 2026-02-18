@@ -365,11 +365,11 @@ pub fn createTlsContext(
     const config = tls13.Config{
         .allocator = allocator,
         .role = tls_role,
-        // QUIC key derivation in this module currently expects SHA-256 traffic secrets.
-        // Restrict suite negotiation to SHA-256 suites to avoid 48-byte SHA-384 secrets.
+        // QUIC packet protection paths are currently wired for AES-128 key sizes.
+        // Keep TLS negotiation pinned to TLS_AES_128_GCM_SHA256 until full multi-suite
+        // runtime support (AES-256 / ChaCha20) is implemented end-to-end.
         .supported_cipher_suites = &.{
             .TLS_AES_128_GCM_SHA256,
-            .TLS_CHACHA20_POLY1305_SHA256,
         },
         .alpn_protocols = if (alpn_list.len > 0) alpn_list else null,
         .quic_transport_parameters = if (transport_params_bytes.len > 0) transport_params_bytes else null,
@@ -695,6 +695,7 @@ pub fn processCryptoFrame(
 pub fn sendServerHello(ctx: *HandshakeContext) !void {
     const conn = ctx.conn;
     const tls_ctx = conn.tls_context orelse return error.NoTlsContext;
+    const min_initial_datagram_size: usize = 1200;
 
     // Check if we have Initial TX keys
     const initial_tx_keys = conn.initial_tx_keys orelse return error.NoInitialKeys;
@@ -754,20 +755,19 @@ pub fn sendServerHello(ctx: *HandshakeContext) !void {
         const chunk = serverhello_data[crypto_offset .. crypto_offset + chunk_size];
         const is_last_chunk = (crypto_offset + chunk_size >= serverhello_len);
 
-        var frames_buf: [4096]u8 = undefined;
-        var frames_stream = std.io.fixedBufferStream(&frames_buf);
-        const w = frames_stream.writer();
+        var frames = std.ArrayList(u8){};
+        defer frames.deinit(ctx.allocator.*);
+        const fw = frames.writer(ctx.allocator.*);
 
         // Add CRYPTO frame
         const crypto_frame_offset = base_off + crypto_offset;
-        _ = (frame.Frame{ .crypto = .{ .offset = crypto_frame_offset, .data = chunk } }).write(w) catch 0;
-        const frames_data = frames_stream.getWritten();
+        _ = (frame.Frame{ .crypto = .{ .offset = crypto_frame_offset, .data = chunk } }).write(fw) catch 0;
 
         // Use peer's SCID as DCID for Initial response
         const initial_dcid = conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len];
 
         // Encode Initial packet
-        const pkt = packet.encodeInitialProtected(
+        var pkt = packet.encodeInitialProtected(
             ctx.allocator.*,
             0x00000001, // QUIC v1
             initial_dcid,
@@ -775,9 +775,28 @@ pub fn sendServerHello(ctx: *HandshakeContext) !void {
             &[_]u8{}, // No token in server Initial
             @as(u32, @truncate(conn.pn_initial_tx)),
             2, // PN length
-            frames_data,
+            frames.items,
             initial_tx_keys,
         ) catch return error.PacketEncodeFailed;
+
+        // RFC 9000 §14.1: Initial datagrams should be expanded to at least 1200 bytes.
+        // Interop peers like picoquic enforce this for server Initial flights (e.g. HRR).
+        if (pkt.len < min_initial_datagram_size) {
+            const pad_needed = min_initial_datagram_size - pkt.len;
+            ctx.allocator.free(pkt);
+            frames.appendNTimes(ctx.allocator.*, @intFromEnum(frame.FrameType.PADDING), pad_needed) catch return error.FrameEncodeFailed;
+            pkt = packet.encodeInitialProtected(
+                ctx.allocator.*,
+                0x00000001, // QUIC v1
+                initial_dcid,
+                conn.our_scid.bytes[0..conn.our_scid.len],
+                &[_]u8{}, // No token in server Initial
+                @as(u32, @truncate(conn.pn_initial_tx)),
+                2, // PN length
+                frames.items,
+                initial_tx_keys,
+            ) catch return error.PacketEncodeFailed;
+        }
 
         defer ctx.allocator.free(pkt);
 

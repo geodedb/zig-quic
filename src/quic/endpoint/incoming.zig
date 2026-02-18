@@ -510,6 +510,13 @@ pub fn processInitial(
         conn.expected_rx_dcid_len = null;
     }
 
+    // RFC 9001 §4.9.1: Once Initial keys are discarded, endpoints MUST drop
+    // all Initial packets. Never re-derive Initial keys after key discard.
+    if (conn.initial_keys_dropped) {
+        logger.debugPrint("processInitial: Initial keys already dropped for conn={*}; discarding packet\n", .{conn});
+        return;
+    }
+
     // Parse token from packet (offset points to token length varint)
     var i = header.offset;
     const tok_len_dec = varint.decode(bytes[i..]) catch return;
@@ -623,7 +630,9 @@ pub fn processInitial(
     }
 
     // Decrypt Initial packet
-    const largest_pn = if (conn.pn_initial.have_any) conn.pn_initial.max else 0;
+    // RFC 9000 §12.3: expected_pn is largest received in this packet number
+    // space plus one (or zero when no packet was received yet).
+    const largest_pn = if (conn.pn_initial.have_any) conn.pn_initial.max + 1 else 0;
     logger.debugPrint("[processInitial] Before decrypt: largest_pn_for_expansion={}\n", .{largest_pn});
     const decrypted = decryptInitialPacket(
         ctx.allocator.*,
@@ -689,7 +698,6 @@ pub fn processInitial(
                     cr.offset,
                     conn.crypto_rx_off_initial,
                 });
-
                 const ack_needed = conn.handleInitialCrypto(
                     ctx.allocator,
                     cr.offset,

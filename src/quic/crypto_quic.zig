@@ -535,42 +535,74 @@ pub fn unprotectInitialAutoSample(
     logger.debugPrint("\n", .{});
     logger.debugPrint("[unprotectInitial] truncated={} actual_pn_len={} largest_pn={}\n", .{ pn_trunc, actual_pn_len, largest_pn });
 
-    const full_pn = expandPacketNumber(pn_trunc, @intCast(actual_pn_len), largest_pn);
-
-    logger.debugPrint("[unprotectInitial] expanded to full_pn={}\n", .{full_pn});
-
     // ciphertext_and_tag buffer layout: [PN bytes (actual_pn_len)] [encrypted payload + tag]
     // Pass only the encrypted payload + tag portion to AEAD decrypt (skip the PN bytes)
     const actual_ciphertext = ciphertext_and_tag[actual_pn_len..];
+    const base_pn = expandPacketNumber(pn_trunc, @intCast(actual_pn_len), largest_pn);
+    const pn_nbits: u6 = @as(u6, @intCast(actual_pn_len)) * 8;
+    const pn_win: u64 = @as(u64, 1) << pn_nbits;
 
-    if (full_pn >= 80 or largest_pn >= 80) {
-        var nonce_preview: [12]u8 = undefined;
-        xorNonce(&nonce_preview, aead_iv, full_pn);
-        logger.debugPrint("[PHASE57-NONCE] pn={} nonce=", .{full_pn});
-        var nidx: usize = 0;
-        while (nidx < nonce_preview.len) : (nidx += 1) {
-            logger.debugPrint("{X:0>2}", .{nonce_preview[nidx]});
+    // RFC 9000 A.3 packet number reconstruction can be ambiguous when no packets
+    // have been successfully authenticated yet (largest_pn == 0). Some peers can
+    // start with large Initial packet numbers, so probe nearby reconstruction
+    // candidates in that first-packet case.
+    var pn_candidates: [4]u64 = undefined;
+    var candidate_count: usize = 0;
+    pn_candidates[candidate_count] = base_pn;
+    candidate_count += 1;
+    if (largest_pn == 0 and actual_pn_len < 4) {
+        var k: u64 = 1;
+        while (candidate_count < pn_candidates.len and k < 4) : (k += 1) {
+            const delta = k * pn_win;
+            if (delta > (std.math.maxInt(u64) - base_pn)) break;
+            const next = base_pn + delta;
+            if (next >= (1 << 62)) break;
+            pn_candidates[candidate_count] = next;
+            candidate_count += 1;
         }
-        logger.debugPrint(" aad_len={} header_first=0x{X:0>2}\n", .{ aad.len, header_first.* });
-        const aad_preview_len = @min(aad.len, 64);
-        logger.debugPrint("[PHASE57-AAD] pn={} aad_prefix=", .{full_pn});
-        var aidx: usize = 0;
-        while (aidx < aad_preview_len) : (aidx += 1) {
-            logger.debugPrint("{X:0>2}", .{aad[aidx]});
-        }
-        if (aad_preview_len < aad.len) {
-            logger.debugPrint("...", .{});
-        }
-        logger.debugPrint("\n", .{});
     }
 
-    _ = aeadDecrypt(suite, aead_key, aead_iv, full_pn, aad, actual_ciphertext, out_plaintext) catch |err| {
-        // Only print for non-zero packet numbers (likely real failures, not probing)
-        if (full_pn > 0 and full_pn < 1000) {
-            logger.debugPrint("AEAD decrypt failed: pn={} err={}\n", .{ full_pn, err });
+    var chosen_pn: ?u64 = null;
+    var last_err: anyerror = error.AuthenticationFailed;
+    var ci: usize = 0;
+    while (ci < candidate_count) : (ci += 1) {
+        const full_pn = pn_candidates[ci];
+        if (full_pn >= 80 or largest_pn >= 80) {
+            var nonce_preview: [12]u8 = undefined;
+            xorNonce(&nonce_preview, aead_iv, full_pn);
+            logger.debugPrint("[PHASE57-NONCE] pn={} nonce=", .{full_pn});
+            var nidx: usize = 0;
+            while (nidx < nonce_preview.len) : (nidx += 1) {
+                logger.debugPrint("{X:0>2}", .{nonce_preview[nidx]});
+            }
+            logger.debugPrint(" aad_len={} header_first=0x{X:0>2}\n", .{ aad.len, header_first.* });
+            const aad_preview_len = @min(aad.len, 64);
+            logger.debugPrint("[PHASE57-AAD] pn={} aad_prefix=", .{full_pn});
+            var aidx: usize = 0;
+            while (aidx < aad_preview_len) : (aidx += 1) {
+                logger.debugPrint("{X:0>2}", .{aad[aidx]});
+            }
+            if (aad_preview_len < aad.len) {
+                logger.debugPrint("...", .{});
+            }
+            logger.debugPrint("\n", .{});
         }
-        return err;
-    };
+
+        _ = aeadDecrypt(suite, aead_key, aead_iv, full_pn, aad, actual_ciphertext, out_plaintext) catch |err| {
+            last_err = err;
+            // Only print for non-zero packet numbers (likely real failures, not probing)
+            if (full_pn > 0 and full_pn < 1000) {
+                logger.debugPrint("AEAD decrypt failed: pn={} err={}\n", .{ full_pn, err });
+            }
+            continue;
+        };
+
+        chosen_pn = full_pn;
+        break;
+    }
+
+    const full_pn = chosen_pn orelse return last_err;
+    logger.debugPrint("[unprotectInitial] expanded to full_pn={}\n", .{full_pn});
 
     // Return the expanded packet number and actual PN length
     return UnprotectResult{

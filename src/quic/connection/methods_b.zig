@@ -954,7 +954,7 @@ pub fn bind(comptime Connection: type) type {
                 ) catch null;
                 if (crypto_pkt) |bytes_out_initial| {
                     var bytes_out = bytes_out_initial;
-                    if (self.role == .Client and bytes_out.len < 1200) {
+                    if (bytes_out.len < 1200) {
                         const pad_needed = 1200 - bytes_out.len;
                         self.allocator.free(bytes_out);
                         crypto_frames.appendNTimes(self.allocator.*, @intFromEnum(frame.FrameType.PADDING), pad_needed) catch {};

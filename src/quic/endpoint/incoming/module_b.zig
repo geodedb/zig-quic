@@ -132,6 +132,23 @@ pub fn processHandshake(
     };
     defer ctx.allocator.free(decrypted.payload);
 
+    // RFC 9001 §4.9.1:
+    // - Server discards Initial keys after successfully processing first Handshake packet.
+    // - Client discards Initial keys once Handshake sending starts (which follows here).
+    // In practice, dropping here prevents stale Initial PTO probes during active Handshake.
+    if (!conn.*.initial_keys_dropped) {
+        conn.*.initial_keys_dropped = true;
+        conn.*.initial_rx_keys = null;
+        conn.*.initial_tx_keys = null;
+        conn.*.pto_initial_active = false;
+        conn.*.pto_initial_id = 0;
+        conn.*.pto_initial_count = 0;
+        logger.debugPrint("processHandshake: Dropped Initial keys for conn={*} role={s}\n", .{
+            conn,
+            if (conn.*.role == .Client) "Client" else "Server",
+        });
+    }
+
     // Set connection context for TLS Context callbacks (Phase 21.2)
     handshake_integration.setCurrentConnection(if (@TypeOf(conn) == **conn_mod.Connection) conn.* else conn);
     defer handshake_integration.clearCurrentConnection();
@@ -406,144 +423,69 @@ fn decryptHandshakePacket(
     rx_keys: packet.InitialKeys,
     largest_pn: u64,
 ) !struct { payload: []u8, packet_number: u64 } {
-    // Parse length field
     var i = length_offset;
     const len_dec = varint.decode(bytes[i..]) catch return error.InvalidLength;
     i += len_dec.n;
 
     const end_total = i + @as(usize, @intCast(len_dec.value));
-
-    logger.debugPrint("decryptHandshakePacket: bytes.len={}, length_offset={}, payload_len={}, end_total={}\n", .{
-        bytes.len, length_offset, len_dec.value, end_total,
-    });
-
     if (end_total > bytes.len) return error.PacketTooShort;
 
     const first = bytes[0];
     const header_prefix = bytes[1..i];
     const full_pn_and_payload = bytes[i..end_total];
 
-    if (full_pn_and_payload.len < 20) return error.PayloadTooShort;
+    // Minimum long-header protected body: 1-byte PN + 16-byte AEAD tag.
+    if (full_pn_and_payload.len < 17) return error.PayloadTooShort;
 
-    // Step 1: Extract HP sample and unmask header byte to get PN length
-    // RFC 9001 §5.4.2: Sample always starts at offset 4 from PN field start
-    var sample16: [16]u8 = undefined;
-    @memcpy(&sample16, full_pn_and_payload[4..20]);
+    // Handshake packets use the same protection mechanics as Initial packets
+    // (different keys, same header-protection + AEAD workflow).
+    var pn_len_try: u3 = 1;
+    while (pn_len_try <= 4) : (pn_len_try += 1) {
+        if (@as(usize, pn_len_try) > full_pn_and_payload.len) break;
 
-    // Manually generate HP mask using AES-ECB
-    const Aes128 = std.crypto.core.aes.Aes128;
-    const aes = Aes128.initEnc(rx_keys.hp[0..16].*);
-    var mask: [16]u8 = undefined;
-    aes.encrypt(&mask, &sample16);
+        const payload_cap = full_pn_and_payload.len - 16;
+        const payload_buf = try allocator.alloc(u8, payload_cap);
+        errdefer allocator.free(payload_buf);
 
-    // Create a copy of first byte and unmask it to get PN length
-    var header_peek = first;
-    // For long header (Handshake), mask only lower 4 bits
-    const mask_bits = mask[0] & 0x0f;
-    header_peek ^= mask_bits;
+        var header_first = first;
+        var pn_masked: [4]u8 = [_]u8{0} ** 4;
+        const avail = @min(@as(usize, 4), full_pn_and_payload.len);
+        @memcpy(pn_masked[0..avail], full_pn_and_payload[0..avail]);
 
-    logger.debugPrint("decryptHandshakePacket: PN length detection - original=0x{X:0>2}, mask=0x{X:0>2}, unmasked=0x{X:0>2}\n", .{ first, mask_bits, header_peek });
+        const dec = crypto.unprotectInitialAutoSample(
+            .aes_128_gcm,
+            &rx_keys.key,
+            &rx_keys.iv,
+            &rx_keys.hp,
+            &header_first,
+            &pn_masked,
+            header_prefix,
+            full_pn_and_payload,
+            payload_buf,
+            largest_pn,
+        ) catch {
+            allocator.free(payload_buf);
+            continue;
+        };
 
-    const actual_pn_len: u3 = @intCast((header_peek & 0x03) + 1);
-    logger.debugPrint("  Detected PN length: {} (from bits 0x{X:0>2})\n", .{ actual_pn_len, header_peek & 0x03 });
+        const actual_pn_len: usize = @intCast(dec.pn_len);
+        if (full_pn_and_payload.len < actual_pn_len + 16) {
+            allocator.free(payload_buf);
+            continue;
+        }
+        const actual_payload_len = full_pn_and_payload.len - actual_pn_len - 16;
+        const resized = allocator.realloc(payload_buf, actual_payload_len) catch {
+            allocator.free(payload_buf);
+            return error.OutOfMemory;
+        };
 
-    // Step 2: Allocate plaintext buffer
-    const expected_pt_len = if (full_pn_and_payload.len > 16 + @as(usize, actual_pn_len))
-        full_pn_and_payload.len - 16 - @as(usize, actual_pn_len)
-    else
-        0;
-
-    const pt_slice = try allocator.alloc(u8, if (expected_pt_len > 0) expected_pt_len else 1);
-    errdefer allocator.free(pt_slice);
-
-    // Step 3: Unmask header and PN bytes using the already-generated mask
-    // We already have the mask from step 1, so we can just apply it directly
-    var unmasked_header = first; // Fresh copy of the original masked first byte
-    var unmasked_pn_bytes: [4]u8 = undefined;
-    // The packet number bytes are at the start of full_pn_and_payload
-    @memcpy(unmasked_pn_bytes[0..actual_pn_len], full_pn_and_payload[0..actual_pn_len]);
-
-    logger.debugPrint("decryptHandshakePacket: Attempting decrypt with pn_len={}, header_prefix.len={}, ciphertext.len={}\n", .{
-        actual_pn_len, header_prefix.len, full_pn_and_payload.len,
-    });
-
-    // Apply the mask we already generated
-    // For long header, mask only lower 4 bits of first byte
-    unmasked_header ^= mask[0] & 0x0f;
-
-    // Apply mask to packet number bytes
-    logger.debugPrint("decryptHandshakePacket: Unmasking PN bytes:\n", .{});
-    for (unmasked_pn_bytes[0..actual_pn_len], 0..) |*b, idx| {
-        const orig = b.*;
-        const mask_byte = mask[1 + idx];
-        b.* ^= mask_byte;
-        logger.debugPrint("  PN[{}]: 0x{X:0>2} XOR 0x{X:0>2} = 0x{X:0>2}\n", .{ idx, orig, mask_byte, b.* });
+        return .{
+            .payload = resized,
+            .packet_number = dec.packet_number,
+        };
     }
 
-    // Validate that the unmasked header has the correct format for a Handshake packet
-    const expected_first = 0xE0 | @as(u8, actual_pn_len - 1);
-    logger.debugPrint("decryptHandshakePacket: After HP removal: first=0x{X:0>2}, expected=0x{X:0>2}\n", .{ unmasked_header, expected_first });
-
-    // Check if the header byte looks correct (should match expected for Handshake packet)
-    if ((unmasked_header & 0xF0) != 0xE0) {
-        logger.debugPrint("decryptHandshakePacket: WARNING - First byte doesn't look like Handshake packet after HP removal\n", .{});
-    }
-
-    // Step 4: Build AAD with unmasked header
-    var aad_buf: [256]u8 = undefined;
-    aad_buf[0] = unmasked_header; // Now unmasked
-    @memcpy(aad_buf[1 .. 1 + header_prefix.len], header_prefix);
-    @memcpy(aad_buf[1 + header_prefix.len .. 1 + header_prefix.len + actual_pn_len], unmasked_pn_bytes[0..actual_pn_len]);
-    const aad = aad_buf[0 .. 1 + header_prefix.len + actual_pn_len];
-
-    // Debug: Print AAD components
-    logger.debugPrint("decryptHandshakePacket AAD: first_byte=0x{X:0>2} (should be ~0xE2-E3 for Handshake), header_prefix.len={}, pn_len={}\n", .{ aad[0], header_prefix.len, actual_pn_len });
-    logger.debugPrint("  AAD bytes: ", .{});
-    for (aad[0..@min(aad.len, 32)]) |b| {
-        logger.debugPrint("{X:0>2} ", .{b});
-    }
-    logger.debugPrint("\n", .{});
-
-    // Step 5: Expand packet number
-    var pn_trunc: u64 = 0;
-    var j: usize = 0;
-    while (j < actual_pn_len) : (j += 1) {
-        pn_trunc = (pn_trunc << 8) | unmasked_pn_bytes[j];
-    }
-    const full_pn = crypto.expandPacketNumber(pn_trunc, actual_pn_len, largest_pn);
-
-    logger.debugPrint("decryptHandshakePacket: PN expansion: truncated={}, pn_len={}, largest_pn={}, expanded={}\n", .{ pn_trunc, actual_pn_len, largest_pn, full_pn });
-    logger.debugPrint("  PN bytes (unmasked): ", .{});
-    for (unmasked_pn_bytes[0..actual_pn_len]) |b| {
-        logger.debugPrint("{X:0>2} ", .{b});
-    }
-    logger.debugPrint("\n", .{});
-
-    // Step 4: AEAD decrypt
-    const actual_ciphertext = full_pn_and_payload[actual_pn_len..];
-
-    logger.debugPrint("decryptHandshakePacket: Using keys for AEAD decrypt:\n", .{});
-    logger.debugPrint("  ciphertext_len={}\n", .{actual_ciphertext.len});
-
-    const dec = crypto.aeadDecrypt(
-        .aes_128_gcm,
-        &rx_keys.key,
-        &rx_keys.iv,
-        full_pn,
-        aad,
-        actual_ciphertext,
-        pt_slice,
-    ) catch |err| {
-        logger.debugPrint("decryptHandshakePacket: AEAD decrypt failed: {}\n", .{err});
-        logger.debugPrint("  Error details: pn={}, aad_len={}, ct_len={}\n", .{ full_pn, aad.len, actual_ciphertext.len });
-        return error.AeadDecryptFailed;
-    };
-
-    // Return decrypted payload and packet number
-    return .{
-        .payload = pt_slice[0..dec],
-        .packet_number = full_pn,
-    };
+    return error.AeadDecryptFailed;
 }
 
 // =============================================================================

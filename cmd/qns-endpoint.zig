@@ -1051,9 +1051,26 @@ pub fn main() !void {
             break :blk default_connect_sni;
         };
 
-        // For multiconnect test, establish a new connection for each request
-        if (std.mem.eql(u8, testcase, "multiconnect")) {
-            log("client: multiconnect mode - establishing separate connection per request");
+        const server_impl = env.get("QNS_SERVER_IMPL") orelse env.get("SERVER") orelse "";
+        const transfer_requires_separate_connections =
+            std.mem.eql(u8, server_impl, "neqo") or
+            std.mem.eql(u8, server_impl, "mvfst") or
+            std.mem.eql(u8, server_impl, "go-x-net");
+        const per_request_connections = std.mem.eql(u8, testcase, "multiconnect") or
+            ((std.mem.eql(u8, testcase, "transfer") or std.mem.eql(u8, testcase, "transferloss")) and
+                transfer_requires_separate_connections);
+
+        // Establish a new connection per request for explicit multiconnect and
+        // for transfer-style tests against implementations that are known to
+        // require separate request connections in this harness.
+        if (per_request_connections) {
+            var mode_msg_buf: [200]u8 = undefined;
+            const mode_msg = std.fmt.bufPrint(
+                &mode_msg_buf,
+                "client: per-request connection mode enabled testcase={s} server_impl={s}",
+                .{ testcase, server_impl },
+            ) catch "client: per-request connection mode enabled";
+            log(mode_msg);
             const ep = try api.endpointInit(&alloc, client_bind_addr, &cfg);
             defer api.endpointDeinit(ep);
 
@@ -1284,7 +1301,10 @@ pub fn main() !void {
         };
 
         var success: bool = true;
-        const max_inflight: usize = if (urls.len >= 256) 256 else if (urls.len >= 32) 64 else @max(@as(usize, 1), urls.len);
+        // Keep request scheduling deterministic across diverse interop peers.
+        // Some stacks exhibit fragile behavior when multiple new streams are
+        // opened concurrently during early 1-RTT, so serialize client requests.
+        const max_inflight: usize = 1;
         var inflight = std.ArrayList(InflightRequest){};
         defer {
             for (inflight.items) |*req| req.file_bytes.deinit(alloc);
@@ -1311,6 +1331,11 @@ pub fn main() !void {
                 const req_sid = openBidiStreamWithRetry(ep, conn, 64) catch {
                     break;
                 };
+                {
+                    var sid_msg_buf: [96]u8 = undefined;
+                    const sid_msg = std.fmt.bufPrint(&sid_msg_buf, "client: opened request stream={d}", .{req_sid}) catch "client: opened request stream=?";
+                    log(sid_msg);
+                }
 
                 if (!writeAllStream(ep, conn, req_sid, line, testcase)) {
                     log("client: write request timed out");

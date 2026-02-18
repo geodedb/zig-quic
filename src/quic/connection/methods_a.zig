@@ -283,6 +283,9 @@ pub fn bind(comptime Connection: type) type {
 
             // Update state
             self.crypto_tx_off_handshake += crypto_data.len;
+            // Mark that at least one Handshake packet has been transmitted.
+            // This gates RFC 9001 Handshake key discard on the client path.
+            self.handshake_packet_sent = true;
             self.onPacketSent(.Handshake, self.pn_handshake_tx, out.len, true);
             self.pn_handshake_tx +%= 1;
 
@@ -548,6 +551,11 @@ pub fn bind(comptime Connection: type) type {
                         try after(self);
                         try continuation(self, allocator);
                     }
+                } else if (data.len > 0) {
+                    // Full duplicate CRYPTO frame.
+                    // Keep this ack-eliciting so the endpoint can emit ACKs and
+                    // retransmit pending handshake flight data (e.g., lost HRR/SH).
+                    ack_eliciting = true;
                 }
             }
 

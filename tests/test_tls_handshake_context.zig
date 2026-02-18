@@ -45,16 +45,14 @@ fn buildServerTransportParams(alloc: std.mem.Allocator) ![]u8 {
     return try params.encode(alloc);
 }
 
-fn buildStandardClientHello(
+fn buildClientHelloWithKeyShare(
     alloc: std.mem.Allocator,
     alpn: ?[]const []const u8,
     signature_schemes: []const u16,
     psk_identity: ?[]const u8,
+    key_share_group: u16,
+    key_share_bytes: []const u8,
 ) ![]u8 {
-    var sk: [32]u8 = undefined;
-    std.crypto.random.bytes(&sk);
-    const pk = try std.crypto.dh.X25519.recoverPublicKey(sk);
-
     var body = try std.ArrayList(u8).initCapacity(alloc, 0);
     defer body.deinit(alloc);
 
@@ -75,7 +73,24 @@ fn buildStandardClientHello(
 
     try ext_buf.appendSlice(alloc, &.{ 0x00, 0x2b, 0x00, 0x03, 0x02, 0x03, 0x04 });
 
-    try ext_buf.appendSlice(alloc, &.{ 0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x1d });
+    var groups = try std.ArrayList(u8).initCapacity(alloc, 0);
+    defer groups.deinit(alloc);
+    try groups.appendSlice(alloc, &.{ @intCast(key_share_group >> 8), @intCast(key_share_group & 0xff) });
+    if (key_share_group != 0x001d) {
+        // Include x25519 as a fallback to exercise HRR upgrade paths.
+        try groups.appendSlice(alloc, &.{ 0x00, 0x1d });
+    }
+    const groups_len: u16 = @intCast(groups.items.len);
+    const groups_ext_len: u16 = groups_len + 2;
+    try ext_buf.appendSlice(alloc, &.{
+        0x00,
+        0x0a,
+        @intCast(groups_ext_len >> 8),
+        @intCast(groups_ext_len & 0xff),
+        @intCast(groups_len >> 8),
+        @intCast(groups_len & 0xff),
+    });
+    try ext_buf.appendSlice(alloc, groups.items);
 
     if (signature_schemes.len != 0) {
         const count_bytes = signature_schemes.len * 2;
@@ -100,13 +115,13 @@ fn buildStandardClientHello(
     }
 
     try ext_buf.appendSlice(alloc, &.{ 0x00, 0x33 });
-    const key_share_len: u16 = 2 + 2 + 32;
+    const key_share_len: u16 = @intCast(2 + 2 + key_share_bytes.len);
     const total_len: u16 = key_share_len + 2;
     try ext_buf.appendSlice(alloc, &.{ @intCast(total_len >> 8), @intCast(total_len & 0xff) });
     try ext_buf.appendSlice(alloc, &.{ @intCast(key_share_len >> 8), @intCast(key_share_len & 0xff) });
-    try ext_buf.appendSlice(alloc, &.{ 0x00, 0x1d });
-    try ext_buf.appendSlice(alloc, &.{ 0x00, 32 });
-    try ext_buf.appendSlice(alloc, &pk);
+    try ext_buf.appendSlice(alloc, &.{ @intCast(key_share_group >> 8), @intCast(key_share_group & 0xff) });
+    try ext_buf.appendSlice(alloc, &.{ @intCast(key_share_bytes.len >> 8), @intCast(key_share_bytes.len & 0xff) });
+    try ext_buf.appendSlice(alloc, key_share_bytes);
 
     if (alpn) |list| {
         if (list.len != 0) {
@@ -165,6 +180,25 @@ fn buildStandardClientHello(
     @memcpy(result[4..], body.items);
 
     return result;
+}
+
+fn buildStandardClientHello(
+    alloc: std.mem.Allocator,
+    alpn: ?[]const []const u8,
+    signature_schemes: []const u16,
+    psk_identity: ?[]const u8,
+) ![]u8 {
+    var sk: [32]u8 = undefined;
+    std.crypto.random.bytes(&sk);
+    const pk = try std.crypto.dh.X25519.recoverPublicKey(sk);
+    return buildClientHelloWithKeyShare(
+        alloc,
+        alpn,
+        signature_schemes,
+        psk_identity,
+        0x001d,
+        pk[0..],
+    );
 }
 
 fn computeTranscriptHash(data: []const u8) [ks.H.digest_length]u8 {
@@ -238,6 +272,65 @@ test "context captures ClientHello ALPN list" {
     for (client_alpn, alpn_view) |expected, got| {
         try std.testing.expectEqualSlices(u8, expected, got);
     }
+}
+
+test "context accepts second ClientHello after HelloRetryRequest" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const alloc = gpa.allocator();
+
+    const server_tp = try buildServerTransportParams(alloc);
+    defer alloc.free(server_tp);
+
+    const config = tls13.Config{
+        .allocator = alloc,
+        .role = .Server,
+        .quic_transport_parameters = server_tp,
+        .server_cert_der = test_certs.server_cert_der,
+        .server_key_der = test_certs.server_key_der,
+        .allow_insecure = true,
+    };
+    var ctx = try tls13.Context.init(config, .{});
+    defer ctx.deinit();
+
+    // First ClientHello uses P-256 key_share, forcing server HRR for x25519.
+    var p256_key: [65]u8 = undefined;
+    std.crypto.random.bytes(&p256_key);
+    p256_key[0] = 0x04; // Uncompressed EC point prefix.
+    const ch1 = try buildClientHelloWithKeyShare(
+        alloc,
+        null,
+        default_signature_schemes[0..],
+        null,
+        0x0017,
+        p256_key[0..],
+    );
+    defer alloc.free(ch1);
+
+    try ctx.processCrypto(.Initial, ch1);
+
+    const hrr_initial = try ctx.pollCrypto(alloc, .Initial);
+    defer alloc.free(hrr_initial);
+    const hrr_msg = (try tls13.parseHandshakeOne(hrr_initial)).?;
+    try std.testing.expectEqual(tls13.HsType.server_hello, hrr_msg.typ);
+    try std.testing.expectError(error.Unimplemented, ctx.pollCrypto(alloc, .Handshake));
+
+    // Second ClientHello (x25519) must replace CH1 state instead of DuplicateClientHello.
+    const ch2 = try buildStandardClientHello(alloc, null, default_signature_schemes[0..], null);
+    defer alloc.free(ch2);
+    try ctx.processCrypto(.Initial, ch2);
+
+    const view = ctx.clientHello().?;
+    try std.testing.expectEqual(@as(u16, 0x001d), @intFromEnum(view.key_share.group));
+
+    const sh_initial = try ctx.pollCrypto(alloc, .Initial);
+    defer alloc.free(sh_initial);
+    const sh_msg = (try tls13.parseHandshakeOne(sh_initial)).?;
+    try std.testing.expectEqual(tls13.HsType.server_hello, sh_msg.typ);
+
+    const hs_flight = try ctx.pollCrypto(alloc, .Handshake);
+    defer alloc.free(hs_flight);
+    try std.testing.expect(hs_flight.len > 0);
 }
 
 test "context captures pre_shared_key offer" {
