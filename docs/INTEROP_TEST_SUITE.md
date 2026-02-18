@@ -85,11 +85,17 @@ Current known policy skips include (non-exhaustive):
 - `zig -> kwik` (missing TLS key_share in this harness path)
 - `zig -> msquic` http3 (unsupported testcase in msquic interop path)
 - `zig -> s2n-quic` keyupdate (unsupported testcase in s2n-quic path)
-- `quinn -> zig` http3 (server panic in harness path)
+
+To force execution of policy-skipped paths for diagnostics:
+
+```bash
+INTEROP_FORCE_RUN_SKIPS=1 SKIP_BUILD=1 INTEROP_SKIP_EXTRAS=1 INTEROP_IMPLS=msquic,s2n-quic,quinn INTEROP_TESTCASES=http3,keyupdate scripts/interop_full.sh full
+```
 
 Compatibility note:
 - `zig -> xquic` retry now runs in a server-side compatibility mode that disables forced stateless Retry for this specific pair to avoid xquic client stall in this harness.
 - `xquic -> zig` major testcase coverage now passes in this harness after Initial-token/1200-byte fixes and ALPN-aware HTTP/3 fallback handling.
+- `quinn <-> zig` http3 now runs without policy skip in this harness (quinn server negotiates `hq-interop`; Zig client falls back to HQ framing for the `http3` testcase when ALPN is not `h3`).
 
 ## Updating the Result Matrix Documentation
 

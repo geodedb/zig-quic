@@ -9,6 +9,12 @@ Focused revalidation on 2026-02-18:
 - `INTEROP_IMPLS=msquic,xquic,s2n-quic INTEROP_TESTCASES=handshake,transfer,retry,http3,keyupdate`
 - Log: `/tmp/interop_targeted_triplet_20260218_postfix.log`
 - Summary: `Passed: 26`, `Failed: 0`, `Skipped: 4`
+- `INTEROP_FORCE_RUN_SKIPS=1 INTEROP_IMPLS=msquic,s2n-quic,quinn INTEROP_TESTCASES=http3,keyupdate`
+- Log: `/tmp/interop_forced_skips_20260218.log`
+- Summary: `Passed: 8`, `Failed: 0`, `Skipped: 4`
+- `INTEROP_IMPLS=quinn INTEROP_TESTCASES=http3`
+- Log: `/tmp/interop_quinn_http3_unskipped_20260218.log`
+- Summary: `Passed: 2`, `Failed: 0`, `Skipped: 0`
 
 ## Batch Summary
 
@@ -94,7 +100,7 @@ Focused revalidation on 2026-02-18 supersedes the prior `msquic/xquic/s2n-quic` 
 | quinn | handshake | PASS | PASS |
 | quinn | transfer | PASS | PASS |
 | quinn | retry | PASS | PASS |
-| quinn | http3 | PASS | SKIP |
+| quinn | http3 | PASS | PASS |
 | quinn | keyupdate | PASS | PASS |
 | s2n-quic | handshake | PASS | PASS |
 | s2n-quic | transfer | PASS | PASS |
@@ -117,5 +123,5 @@ Key examples from this run set:
 - `zig -> xquic` retry now passes with server-side compatibility mode that disables forced Retry only for this client path.
 - `zig -> msquic` transfer/retry/keyupdate now pass; `http3` remains unsupported.
 - `zig -> s2n-quic` handshake/transfer/retry/http3 now pass; `keyupdate` remains skipped by policy (unsupported testcase in s2n-quic image).
-- `quinn -> zig` http3: skipped due to server panic in harness path.
+- `quinn -> zig` http3 now passes in the current harness (`/tmp/interop_quinn_http3_unskipped_20260218.log`).
 - Select `keyupdate` cases are skipped when the runner cannot verify key update progression in a testcase path.

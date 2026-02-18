@@ -19,6 +19,7 @@ set -euo pipefail
 # Environment variables:
 #   SKIP_BUILD=1         - Skip building the Zig implementation
 #   SKIP_QNS_NET_PRUNE=1 - Skip pruning conflicting Docker networks
+#   INTEROP_FORCE_RUN_SKIPS=1 - Force execution of policy-skipped cases (diagnostic)
 
 # Fix DOCKER_HOST if it's set incorrectly (should be unix:// or unset for local socket)
 if [[ "${DOCKER_HOST:-}" == "/var/run/docker.sock" ]]; then
@@ -256,12 +257,11 @@ skip_reason_for_case() {
     local server_impl="$1"
     local client_impl="$2"
     local testcase="$3"
+    if [[ "${INTEROP_FORCE_RUN_SKIPS:-0}" == "1" ]]; then
+        return 1
+    fi
     if [[ "$server_impl" == "zig" && "$client_impl" == "kwik" ]]; then
         echo "kwik client omits TLS key_share in this harness path (server-side MissingKeyShare)"
-        return 0
-    fi
-    if [[ "$server_impl" == "quinn" && "$client_impl" == "zig" && "$testcase" == "http3" ]]; then
-        echo "quinn server panics on zig-client H3 request payload decoding in this harness path (invalid UTF-8 unwrap)"
         return 0
     fi
     if [[ "$server_impl" == "zig" && "$client_impl" == "msquic" ]]; then
