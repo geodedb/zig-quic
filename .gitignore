@@ -90,3 +90,6 @@ logs/*.log
 *.legacy
 *.backup
 *_backup
+
+# Local interop examples (generated/cloned, not committed)
+examples/interop/quic-network-simulator/
