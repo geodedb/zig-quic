@@ -316,10 +316,15 @@ pub fn bind(comptime Connection: type) type {
         pub fn pushCrypto(self: *Connection, hs: []const u8) !void {
             const tls_ctx = self.tls_context orelse return; // No-op if TLS Context not initialized (test scenarios)
 
-            // Determine encryption level based on which keys are installed
+            // Determine encryption level based on which keys are installed.
+            // NOTE: hs_rx_keys must be checked BEFORE app_rx_keys because the server
+            // installs Application rx keys during Initial processing (via onSecretAvailable),
+            // so when it later receives the client's Handshake Finished, both hs_rx_keys and
+            // app_rx_keys are non-null. The correct level is Handshake — that is what the
+            // caller (handleHandshakeCrypto) is processing.
             const level: tls13.EncryptionLevel = blk: {
-                if (self.app_rx_keys != null) break :blk .Application;
                 if (self.hs_rx_keys != null) break :blk .Handshake;
+                if (self.app_rx_keys != null) break :blk .Application;
                 break :blk .Initial;
             };
 

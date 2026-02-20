@@ -260,28 +260,9 @@ fn onPeerFinished(ctx: *tls13.Context) !void {
 
     logger.debugPrint("[onPeerFinished] Set peer_finished_verified=true for {s}, conn={*}, value now={}\n", .{ if (conn.role == .Server) "Server" else "Client", conn, conn.peer_finished_verified });
 
-    // Server-side fast path: once peer Finished is verified and 1-RTT keys are
-    // available, immediately retire Handshake state to avoid stale Handshake PTO
-    // retransmissions interfering with migration/path validation.
-    if (conn.role == .Server and conn.handshake_packet_sent and conn.app_rx_keys != null and conn.app_tx_keys != null) {
-        if (conn.hs_rx_keys != null or conn.hs_tx_keys != null or conn.crypto_retx_handshake != null or conn.pto_handshake_active) {
-            conn.hs_rx_keys = null;
-            conn.hs_tx_keys = null;
-            if (conn.crypto_retx_handshake) |buf| {
-                conn.allocator.free(buf);
-                conn.crypto_retx_handshake = null;
-            }
-            conn.crypto_retx_handshake_off = 0;
-            conn.pto_handshake_active = false;
-            conn.pto_handshake_id = 0;
-            conn.pto_handshake_count = 0;
-            logger.debugPrint("[onPeerFinished] Server dropped Handshake keys/retransmit state\n", .{});
-        }
-    }
-
-    // RFC 9001 §4.1.2: Client can drop handshake keys after sending Finished
-    // Server must wait for peer Finished before dropping
-    // This is handled by the Connection's existing lifecycle management
+    // RFC 9001 §4.9.3: Server MUST discard Handshake keys after sending HANDSHAKE_DONE,
+    // not here. Dropping keys here would prevent processHandshake from sending the
+    // Handshake ACK back to the client, stalling the handshake.
 }
 
 /// Callback invoked when TLS handshake completes successfully.
@@ -1296,6 +1277,7 @@ pub fn setupClientTransportParams(
     tpp.initial_max_data = conn.local_max_data;
     tpp.initial_max_stream_data_bidi_local = conn.local_max_stream_data;
     tpp.initial_max_stream_data_bidi_remote = conn.local_max_stream_data;
+    tpp.initial_max_stream_data_uni = conn.local_max_stream_data;
     tpp.initial_max_streams_bidi = conn.local_max_streams_bidi;
     tpp.initial_max_streams_uni = conn.local_max_streams_uni;
 

@@ -131,10 +131,12 @@ test "RFC 9001 §5 - installHandshakeKeys server role uses correct key orientati
     // - Receive with client keys (hs_rx_keys = client_keys)
     // - Send with server keys (hs_tx_keys = server_keys)
 
-    var client_secret: [32]u8 = undefined;
-    var server_secret: [32]u8 = undefined;
-    hexToBytes(test_handshake_client_secret_hex, &client_secret);
-    hexToBytes(test_handshake_server_secret_hex, &server_secret);
+    var client_secret_bytes: [32]u8 = undefined;
+    var server_secret_bytes: [32]u8 = undefined;
+    hexToBytes(test_handshake_client_secret_hex, &client_secret_bytes);
+    hexToBytes(test_handshake_server_secret_hex, &server_secret_bytes);
+    const client_secret = key_schedule.Secret.fromSlice(.sha256, &client_secret_bytes);
+    const server_secret = key_schedule.Secret.fromSlice(.sha256, &server_secret_bytes);
 
     // Create minimal mock server Connection
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -166,10 +168,12 @@ test "RFC 9001 §5 - installHandshakeKeys client role uses correct key orientati
     // - Receive with server keys (hs_rx_keys = server_keys)
     // - Send with client keys (hs_tx_keys = client_keys)
 
-    var client_secret: [32]u8 = undefined;
-    var server_secret: [32]u8 = undefined;
-    hexToBytes(test_handshake_client_secret_hex, &client_secret);
-    hexToBytes(test_handshake_server_secret_hex, &server_secret);
+    var client_secret_bytes: [32]u8 = undefined;
+    var server_secret_bytes: [32]u8 = undefined;
+    hexToBytes(test_handshake_client_secret_hex, &client_secret_bytes);
+    hexToBytes(test_handshake_server_secret_hex, &server_secret_bytes);
+    const client_secret = key_schedule.Secret.fromSlice(.sha256, &client_secret_bytes);
+    const server_secret = key_schedule.Secret.fromSlice(.sha256, &server_secret_bytes);
 
     // Create minimal mock client Connection
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -581,6 +585,39 @@ test "RFC 9000 §18.2 - setupClientTransportParams encodes client parameters" {
     // Note: We can't directly inspect the encoded params without TLS access,
     // but we verify the function completes successfully
     try testing.expect(true);
+}
+
+test "RFC 9000 §18.2 - setupClientTransportParams includes initial_max_stream_data_uni" {
+    // RFC 9000 §18.2: initial_max_stream_data_uni tells the server how many bytes
+    // it may send on server-initiated unidirectional streams (e.g. HTTP/3 control
+    // stream, QPACK encoder/decoder streams).  Without it the server has a flow
+    // control limit of 0 and immediately fails to open its control streams.
+    //
+    // Regression test: previously initial_max_stream_data_uni was not included in
+    // client transport parameters, causing quiche to close the connection with
+    // "Error opening control stream" (H3_INTERNAL_ERROR 0x102).
+
+    var allocator = testing.allocator;
+
+    var conn: conn_mod.Connection = undefined;
+    const peer = conn_mod.SockAddr{};
+    conn.init(&allocator, .Client, 0, peer);
+    defer conn.deinit();
+
+    conn.local_max_data = 1048576;
+    conn.local_max_stream_data = 262144;
+    conn.local_max_streams_bidi = 100;
+    conn.local_max_streams_uni = 100;
+
+    try handshake.setupClientTransportParams(&conn, allocator);
+
+    // Decode the cached encoded bytes and verify the parameter is present
+    const raw = conn.local_transport_params_raw orelse
+        return error.TransportParamsNotSet;
+
+    const decoded = try transport_params.TransportParams.decode(allocator, raw);
+
+    try testing.expectEqual(conn.local_max_stream_data, decoded.initial_max_stream_data_uni);
 }
 
 test "RFC 9000 §18.2 - setupServerTransportParams encodes server parameters" {

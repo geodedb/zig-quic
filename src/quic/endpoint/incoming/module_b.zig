@@ -368,6 +368,23 @@ pub fn processHandshake(
         }
     }
 
+    // RFC 9001 §4.9.3: Server MUST discard Handshake keys once HANDSHAKE_DONE is sent.
+    // We do this after sending the Handshake ACK above so the client gets acknowledged.
+    if (conn.*.role == .Server and conn.*.handshake_done_sent) {
+        if (conn.*.hs_rx_keys != null or conn.*.hs_tx_keys != null or conn.*.crypto_retx_handshake != null or conn.*.pto_handshake_active) {
+            conn.*.hs_rx_keys = null;
+            conn.*.hs_tx_keys = null;
+            if (conn.*.crypto_retx_handshake) |buf| {
+                ctx.allocator.free(buf);
+                conn.*.crypto_retx_handshake = null;
+            }
+            conn.*.crypto_retx_handshake_off = 0;
+            conn.*.pto_handshake_active = false;
+            conn.*.pto_handshake_id = 0;
+            conn.*.pto_handshake_count = 0;
+        }
+    }
+
     // Loss/corruption interop resilience: if the server keeps receiving Handshake
     // traffic after 1-RTT keys are ready, resend HANDSHAKE_DONE in 1-RTT so the
     // client can complete confirmation when the original frame was lost/corrupted.
