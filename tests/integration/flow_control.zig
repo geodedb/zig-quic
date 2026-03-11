@@ -527,3 +527,94 @@ test "TODO: Final size validation (§4.5)" {
 //
 // This test file establishes the structure for flow control testing.
 // Tests can be enabled as flow control mechanisms are implemented.
+
+// =============================================================================
+// Connection-Level Flow Control Window Update Tests
+// =============================================================================
+// These tests verify that local_max_data is updated as data is consumed,
+// preventing the "connection dies after ~75 chunks" bug where peers
+// hit the initial_max_data limit and never receive a MAX_DATA update.
+
+test "RFC 9000 §4.1 - readStream updates connection-level flow control" {
+    // Verify that consuming data via readStream updates local_max_data
+    // so the peer can send beyond the initial_max_data limit.
+    const allocator = std.testing.allocator;
+
+    var builder = connection_pair.ConnectionPairBuilder.init(allocator);
+    var pair = try builder.build();
+    defer pair.deinit();
+
+    try pair.connect();
+
+    const server = pair.server_conn orelse return error.SkipZigTest;
+
+    // Record initial connection flow control state
+    const initial_max_data = server.local_max_data;
+
+    // Simulate receiving data: set conn_recv_total to near the limit
+    server.conn_recv_total = initial_max_data - 1024;
+
+    // Create a stream with data to read
+    const stream_id: u64 = 0;
+    if (server.streams_rx_init) {
+        if (server.streams_rx.getPtr(stream_id)) |s| {
+            // Add test data to stream inbox
+            const test_data = "test data for flow control verification";
+            s.inbox.appendSlice(allocator, test_data) catch return error.SkipZigTest;
+
+            // Read the data (this should trigger local_max_data update)
+            var buf: [256]u8 = undefined;
+            const n = server.readStreamUnlocked(stream_id, &buf) catch return error.SkipZigTest;
+
+            try std.testing.expect(n > 0);
+
+            // After reading, local_max_data should have increased beyond initial value
+            // because conn_recv_total was near the limit and readStream now updates it
+            try std.testing.expect(server.local_max_data > initial_max_data);
+        }
+    }
+}
+
+test "RFC 9000 §4.1 - local_max_data tracks cumulative data consumption" {
+    // Verify that repeated reads keep expanding local_max_data
+    const allocator = std.testing.allocator;
+
+    var builder = connection_pair.ConnectionPairBuilder.init(allocator);
+    var pair = try builder.build();
+    defer pair.deinit();
+
+    try pair.connect();
+
+    const server = pair.server_conn orelse return error.SkipZigTest;
+
+    const initial_max_data = server.local_max_data;
+
+    // Simulate progressive data consumption
+    const stream_id: u64 = 0;
+    if (server.streams_rx_init) {
+        if (server.streams_rx.getPtr(stream_id)) |s| {
+            // First batch: consume data to push conn_recv_total past initial limit
+            server.conn_recv_total = initial_max_data + 1024 * 1024; // 1MB past initial
+
+            const test_data = "batch one";
+            s.inbox.appendSlice(allocator, test_data) catch return error.SkipZigTest;
+
+            var buf: [256]u8 = undefined;
+            _ = server.readStreamUnlocked(stream_id, &buf) catch return error.SkipZigTest;
+
+            const after_first = server.local_max_data;
+            try std.testing.expect(after_first > initial_max_data);
+
+            // Second batch: consume more, verify window keeps growing
+            server.conn_recv_total += 5 * 1024 * 1024; // 5MB more
+
+            const test_data2 = "batch two";
+            s.inbox.appendSlice(allocator, test_data2) catch return error.SkipZigTest;
+
+            _ = server.readStreamUnlocked(stream_id, &buf) catch return error.SkipZigTest;
+
+            // local_max_data should have grown further
+            try std.testing.expect(server.local_max_data > after_first);
+        }
+    }
+}

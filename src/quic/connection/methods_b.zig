@@ -509,6 +509,17 @@ pub fn bind(comptime Connection: type) type {
                 self.markStreamFlowControlDirty(id);
                 logger.debugPrint("[FC] Stream {} read {} bytes (total consumed: {}), max_stream_data: {} -> {} (receive_window={})\n", .{ id, bytes_consumed, s.bytes_consumed_total, old_max, s.local_max_stream_data, receive_window });
 
+                // Connection-level flow control: update local_max_data as data is consumed.
+                // RFC 9000 §4.1: The receiver MUST send MAX_DATA frames to allow the
+                // sender to continue sending. Without this, the peer gets DATA_BLOCKED
+                // after sending initial_max_data bytes and the connection stalls/resets.
+                // Quinn-style: local_max_data = conn_recv_total + connection_receive_window
+                const conn_receive_window: u64 = 10 * 1024 * 1024; // 10MB connection window
+                const new_max_data = self.conn_recv_total + conn_receive_window;
+                if (new_max_data > self.local_max_data) {
+                    self.local_max_data = new_max_data;
+                }
+
                 // PHASE 46: Trigger flow control frame generation after window update
                 // This ensures timely updates when data is consumed (quinn-style)
                 self.advertiseInitialFlowControl();

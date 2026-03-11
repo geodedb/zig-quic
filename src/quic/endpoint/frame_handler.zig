@@ -312,6 +312,29 @@ pub fn handleMaxStreamsUni(
     return .{ .saw_ack_eliciting = true };
 }
 
+/// Handle DATA_BLOCKED frame (RFC 9000 §19.12).
+/// Peer indicates it is blocked by connection-level flow control.
+///
+/// RFC 9000 §4.1: "A sender sends a DATA_BLOCKED frame when it wishes to
+/// send data but is unable to do so due to connection-level flow control."
+///
+/// When received, we proactively expand local_max_data and send MAX_DATA
+/// so the peer can continue sending. This prevents connection stalls when
+/// the peer has exhausted the initial_max_data allowance.
+pub fn handleDataBlocked(ctx: *FrameContext, db: frame.DataBlocked) FrameResult {
+    _ = db;
+    // Expand the connection-level receive window by the initial window size.
+    // This ensures the peer can always send more data.
+    const conn_receive_window: u64 = 10 * 1024 * 1024; // 10MB
+    const new_max = ctx.conn.conn_recv_total + conn_receive_window;
+    if (new_max > ctx.conn.local_max_data) {
+        ctx.conn.local_max_data = new_max;
+        // Trigger MAX_DATA frame emission
+        ctx.conn.advertiseInitialFlowControl();
+    }
+    return .{ .saw_ack_eliciting = true };
+}
+
 /// Handle STREAM_DATA_BLOCKED frame (RFC 9000 §19.13).
 /// Peer indicates it is blocked by stream flow control.
 ///
@@ -427,6 +450,7 @@ pub fn processFrame(ctx: *FrameContext, fr: frame.Frame) !FrameResult {
         .max_data => |md| handleMaxData(ctx, md),
         .max_streams_bidi => |msb| handleMaxStreamsBidi(ctx, msb),
         .max_streams_uni => |msu| handleMaxStreamsUni(ctx, msu),
+        .data_blocked => |db| handleDataBlocked(ctx, db),
         .stream_data_blocked => |sdb| handleStreamDataBlocked(ctx, sdb),
         .path_challenge => |pcv| try handlePathChallenge(ctx, pcv),
         .path_response => |prv| handlePathResponse(ctx, prv),
