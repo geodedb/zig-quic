@@ -177,10 +177,17 @@ pub const EndpointRole = enum {
 /// loss recovery as recommended by RFC 9002 §6.
 pub const Endpoint = struct {
 
-    // GAP-0200: Thread-safety mutex for protecting shared state
-    // This mutex protects: conns, accepted, retired, timers, next_timer_id
-    // Lock ordering: endpoint.mu -> connection.mu (never reverse)
+    // GAP-0200: Fine-grained locking for concurrent poll + handler throughput.
+    //
+    // mu: Primary lock protecting connection map (conns), accepted queue, retired list.
+    //     Also used by processIncomingDatagram which mutates connection state.
+    //     Lock ordering: endpoint.mu -> connection.mu (never reverse)
     mu: std.Thread.Mutex = .{},
+
+    // timer_mu: Separate lock for timer queue and next_timer_id.
+    //     Decoupled from mu so timer scheduling (senderPaced, scheduleConnPto)
+    //     doesn't contend with poll's packet processing or connection lookup.
+    timer_mu: std.Thread.Mutex = .{},
 
     // Transport abstraction (Phase 8c: required, wraps UDP or loopback)
     // All I/O operations go through this transport interface
@@ -195,13 +202,13 @@ pub const Endpoint = struct {
     // Memory allocator for endpoint resources
     allocator: std.mem.Allocator,
 
-    // Timer management for the endpoint (protected by mu)
+    // Timer management for the endpoint (protected by timer_mu)
     timers: std.ArrayList(Timer),
 
     // Connection Management Map (protected by mu)
     conns: std.AutoHashMap(Key, *conn_mod.Connection),
 
-    // Next timer identifier for scheduleTimer (protected by mu)
+    // Next timer identifier for scheduleTimer (protected by timer_mu)
     next_timer_id: u64 = 1,
     // Config copy
     cfg: cfg.QuicConfig,
@@ -227,11 +234,8 @@ pub const Endpoint = struct {
     // This replaces the hardcoded fallback to prevent predictable tokens.
     generated_token_secret: [32]u8 = undefined,
 
-    // Internal flag: thread ID of the thread currently holding mu (for re-entrant calls).
-    // Used by callbacks within processIncomingDatagram to avoid deadlocking on
-    // scheduleConnPto/cancelTimer when called from within the locked poll path.
-    // 0 means no thread holds the lock.
-    mu_owner: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    // Note: mu_owner removed — timer ops now use separate timer_mu so
+    // re-entrancy tracking is no longer needed.
 
     /// Initialize a UDP endpoint bound to bind_addr (e.g., "127.0.0.1:0").
     ///
@@ -422,6 +426,12 @@ pub const Endpoint = struct {
 
     /// Expire due timers without blocking on I/O (test helper).
     pub fn flushTimers(self: *Endpoint) void {
+        self.mu.lock();
+        self.timer_mu.lock();
+        defer {
+            self.timer_mu.unlock();
+            self.mu.unlock();
+        }
         self.processExpiredTimers(nowMsMonotonic());
     }
 
@@ -565,14 +575,10 @@ pub const Endpoint = struct {
     }
 
     /// Schedule generic timer firing after delay_ms.
-    /// Thread-safe: acquires endpoint mutex to protect timer queue and next_timer_id.
-    /// Re-entrant safe when called from within poll's locked context (same thread owns mu).
+    /// Thread-safe: acquires timer_mu to protect timer queue and next_timer_id.
     pub fn scheduleTimer(self: *Endpoint, delay_ms: u32) !u64 {
-        if (self.mu_owner.load(.acquire) != @as(usize, @intCast(std.Thread.getCurrentId()))) {
-            self.mu.lock();
-            defer self.mu.unlock();
-            return self.scheduleTimerLocked(delay_ms);
-        }
+        self.timer_mu.lock();
+        defer self.timer_mu.unlock();
         return self.scheduleTimerLocked(delay_ms);
     }
 
@@ -587,14 +593,10 @@ pub const Endpoint = struct {
     }
 
     /// Schedule connection-owned PTO/PMTUD timer tied to a specific connection and space.
-    /// Thread-safe: acquires endpoint mutex to protect timer queue and next_timer_id.
-    /// Re-entrant safe when called from within poll's locked context (same thread owns mu).
+    /// Thread-safe: acquires timer_mu to protect timer queue and next_timer_id.
     pub fn scheduleConnPto(self: *Endpoint, c: *conn_mod.Connection, kind: TimerKind, delay_ms: u32) !u64 {
-        if (self.mu_owner.load(.acquire) != @as(usize, @intCast(std.Thread.getCurrentId()))) {
-            self.mu.lock();
-            defer self.mu.unlock();
-            return self.scheduleConnPtoLocked(c, kind, delay_ms);
-        }
+        self.timer_mu.lock();
+        defer self.timer_mu.unlock();
         return self.scheduleConnPtoLocked(c, kind, delay_ms);
     }
 
@@ -610,13 +612,10 @@ pub const Endpoint = struct {
     }
 
     /// Schedule a paced send for a connection after delay_ns.
-    /// Thread-safe: acquires endpoint mutex to protect timer queue.
-    /// Re-entrant safe when called from within poll's locked context (same thread owns mu).
+    /// Thread-safe: acquires timer_mu to protect timer queue.
     fn schedulePaced(self: *Endpoint, c: *conn_mod.Connection, delay_ns: u64, owned_bytes: []u8) !u64 {
-        if (self.mu_owner.load(.acquire) != @as(usize, @intCast(std.Thread.getCurrentId()))) {
-            self.mu.lock();
-            defer self.mu.unlock();
-        }
+        self.timer_mu.lock();
+        defer self.timer_mu.unlock();
         const id = self.next_timer_id;
         self.next_timer_id +%= 1;
         const now_ms: i64 = nowMsMonotonic();
@@ -637,14 +636,10 @@ pub const Endpoint = struct {
     }
 
     /// Cancel a pending timer id.
-    /// Thread-safe: acquires endpoint mutex to protect timer queue.
-    /// Re-entrant safe when called from within poll's locked context (same thread owns mu).
+    /// Thread-safe: acquires timer_mu to protect timer queue.
     pub fn cancelTimer(self: *Endpoint, id: u64) bool {
-        if (self.mu_owner.load(.acquire) != @as(usize, @intCast(std.Thread.getCurrentId()))) {
-            self.mu.lock();
-            defer self.mu.unlock();
-            return self.cancelTimerLocked(id);
-        }
+        self.timer_mu.lock();
+        defer self.timer_mu.unlock();
         return self.cancelTimerLocked(id);
     }
 
@@ -677,44 +672,34 @@ pub const Endpoint = struct {
     pub fn pollWithStats(self: *Endpoint, timeout_ms: i32) !PollStats {
         var stats = PollStats{};
 
-        // Phase 1: Process expired timers (under lock - accesses timers + conns)
+        // Phase 1: Process expired timers (timer_mu + mu for firing callbacks)
         {
             self.mu.lock();
-            self.mu_owner.store(@intCast(std.Thread.getCurrentId()), .release);
+            self.timer_mu.lock();
             defer {
-                self.mu_owner.store(0, .release);
+                self.timer_mu.unlock();
                 self.mu.unlock();
             }
             self.processExpiredTimers(nowMsMonotonic());
         }
 
-        // Phase 2: Calculate effective timeout (under lock - reads timer deadlines)
+        // Phase 2: Calculate effective timeout (timer_mu only - reads timer deadlines)
         var eff_timeout: i32 = undefined;
         {
-            self.mu.lock();
-            self.mu_owner.store(@intCast(std.Thread.getCurrentId()), .release);
-            defer {
-                self.mu_owner.store(0, .release);
-                self.mu.unlock();
-            }
+            self.timer_mu.lock();
+            defer self.timer_mu.unlock();
             const now_ms: i64 = nowMsMonotonic();
             eff_timeout = self.nextTimeoutFromTimers(now_ms, timeout_ms);
             if (eff_timeout < 0) eff_timeout = -1;
         }
 
         // Phase 3: Poll transport (NO lock - blocks until data available or timeout)
-        // Transport I/O is inherently single-writer (OS socket) so no mutex needed.
         try self.transport.poll(eff_timeout);
 
-        // Phase 4: Drain all available packets (under lock - mutates conns + timers)
+        // Phase 4: Drain packets - receive batch then process each datagram.
+        // Lock is acquired per-batch and released between iterations so handler
+        // threads (popAccepted, scheduleTimer) get fair access.
         {
-            self.mu.lock();
-            self.mu_owner.store(@intCast(std.Thread.getCurrentId()), .release);
-            defer {
-                self.mu_owner.store(0, .release);
-                self.mu.unlock();
-            }
-
             var recv_bufs: [udp_transport_mod.UdpBatchCap][4096]u8 = undefined;
             var recv_slots: [udp_transport_mod.UdpBatchCap]transport_mod.RecvBatchSlot = undefined;
             for (&recv_slots, 0..) |*slot, i| {
@@ -726,33 +711,47 @@ pub const Endpoint = struct {
                 };
             }
             while (true) {
+                // 4a: Receive batch (no lock needed for transport recv)
                 const batch_n = self.transport.recvBatch(recv_slots[0..]) catch |err| {
                     if (err == error.WouldBlock) break;
                     return err;
                 };
                 if (batch_n == 0) break;
 
-                var i: usize = 0;
-                while (i < batch_n) : (i += 1) {
-                    const slot = recv_slots[i];
-                    self.processIncomingDatagram(slot.peer, slot.buf[0..slot.n], slot.ecn);
-                    stats.packets_processed += 1;
+                // 4b: Process each datagram under mu (mutates conns map)
+                {
+                    self.mu.lock();
+                    defer self.mu.unlock();
+                    var i: usize = 0;
+                    while (i < batch_n) : (i += 1) {
+                        const slot = recv_slots[i];
+                        self.processIncomingDatagram(slot.peer, slot.buf[0..slot.n], slot.ecn);
+                        stats.packets_processed += 1;
+                    }
                 }
+                // mu released here — handler threads get a chance to run
 
                 if (batch_n < recv_slots.len) break;
             }
         }
 
-        // Phase 5: Post-processing (under lock - mutates timers + conns)
+        // Phase 5a: Process expired timers (needs both mu + timer_mu)
+        // processExpiredTimers releases/reacquires timer_mu internally for callbacks.
         {
             self.mu.lock();
-            self.mu_owner.store(@intCast(std.Thread.getCurrentId()), .release);
+            self.timer_mu.lock();
             defer {
-                self.mu_owner.store(0, .release);
+                self.timer_mu.unlock();
                 self.mu.unlock();
             }
             self.processExpiredTimers(nowMsMonotonic());
-            self.pruneClosed();
+        }
+
+        // Phase 5b: Arm PTO timers (needs mu for conn iteration; scheduleConnPto
+        // acquires timer_mu independently — must NOT hold timer_mu here)
+        {
+            self.mu.lock();
+            defer self.mu.unlock();
             self.armConnectionPtoTimers();
         }
 
@@ -1333,52 +1332,77 @@ pub const Endpoint = struct {
         return eff;
     }
 
+    /// Process expired timers: collect under timer_mu, fire callbacks outside it.
+    ///
+    /// Caller must hold mu (for connection callbacks). Caller must hold timer_mu
+    /// on entry; this function releases timer_mu before firing callbacks (which
+    /// may call scheduleConnPto/cancelTimer that re-acquire timer_mu), then
+    /// re-acquires timer_mu before returning.
     fn processExpiredTimers(self: *Endpoint, now_ms: i64) void {
-        // Simple linear removal of expired timers; keep others.
+        // Collect expired timers under timer_mu (already held by caller)
+        var expired_buf: [64]Timer = undefined;
+        var expired_count: usize = 0;
+
         var i: usize = 0;
         while (i < self.timers.items.len) {
             if (self.timers.items[i].deadline_ms <= now_ms) {
-                const t = self.timers.items[i];
-                _ = self.timers.orderedRemove(i);
-                // Fire PTO flags if applicable and generate probes
-                switch (t.kind) {
-                    .Generic => {
-                        if (t.paced) {
-                            if (t.conn) |c| {
-                                if (t.payload) |bytes| {
-                                    // Send the paced payload now and free it
-                                    const paced_peer = if (t.paced_peer) |peer| peer else c.peer;
-                                    _ = self.sendTo(paced_peer, bytes) catch {};
-                                    self.allocator.free(bytes);
-                                }
-                            }
-                        }
-                    },
-                    .PtoInitial => if (t.conn) |c| {
-                        c.setPtoExpiredInitial();
-                        // Generate a PING probe in Initial space
-                        self.sendPtoProbe(c, .PtoInitial) catch {};
-                    },
-                    .PtoHandshake => if (t.conn) |c| {
-                        c.setPtoExpiredHandshake();
-                        self.sendPtoProbe(c, .PtoHandshake) catch {};
-                    },
-                    .PtoApp => if (t.conn) |c| c.setPtoExpiredApp(),
-                    .Pmtud => if (t.conn) |c| {
-                        // Drive DPLPMTUD state machine timer
-                        c.pmtudOnTimer(self);
-                    },
+                if (expired_count < expired_buf.len) {
+                    expired_buf[expired_count] = self.timers.items[i];
+                    expired_count += 1;
                 }
+                _ = self.timers.orderedRemove(i);
             } else {
                 i += 1;
             }
         }
-        // After firing timers, attempt pruning of closed connections (e.g., after PTO-driven close)
+
+        // Release timer_mu before firing callbacks (they may schedule new timers)
+        self.timer_mu.unlock();
+
+        // Fire callbacks under mu only (already held by caller)
+        for (expired_buf[0..expired_count]) |t| {
+            switch (t.kind) {
+                .Generic => {
+                    if (t.paced) {
+                        if (t.conn) |c| {
+                            if (t.payload) |bytes| {
+                                const paced_peer = if (t.paced_peer) |peer| peer else c.peer;
+                                _ = self.sendTo(paced_peer, bytes) catch {};
+                                self.allocator.free(bytes);
+                            }
+                        }
+                    }
+                },
+                .PtoInitial => if (t.conn) |c| {
+                    c.setPtoExpiredInitial();
+                    self.sendPtoProbe(c, .PtoInitial) catch {};
+                },
+                .PtoHandshake => if (t.conn) |c| {
+                    c.setPtoExpiredHandshake();
+                    self.sendPtoProbe(c, .PtoHandshake) catch {};
+                },
+                .PtoApp => if (t.conn) |c| c.setPtoExpiredApp(),
+                .Pmtud => if (t.conn) |c| {
+                    c.pmtudOnTimer(self);
+                },
+            }
+        }
+
+        // Prune closed connections (under mu, which caller holds)
         self.pruneClosed();
+
+        // Re-acquire timer_mu (caller expects it held on return)
+        self.timer_mu.lock();
     }
 
     /// TEST-ONLY: force all timers to expire immediately and process them once.
     pub fn forceExpireAllTimers(self: *Endpoint) void {
+        self.mu.lock();
+        self.timer_mu.lock();
+        defer {
+            self.timer_mu.unlock();
+            self.mu.unlock();
+        }
         const now_ms = nowMsMonotonic();
         var i: usize = 0;
         while (i < self.timers.items.len) : (i += 1) {
@@ -1423,7 +1447,10 @@ pub const Endpoint = struct {
 
     /// Remove all map entries / timers referencing connections that have transitioned to closed state.
     /// Delegates to lifecycle module (Phase 10).
+    /// Caller must hold mu. Acquires timer_mu internally for timer cleanup.
     fn pruneClosed(self: *Endpoint) void {
+        self.timer_mu.lock();
+        defer self.timer_mu.unlock();
         var ctx = lifecycle_mod.LifecycleContext{
             .allocator = self.allocator,
             .conns = &self.conns,

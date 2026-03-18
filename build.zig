@@ -828,6 +828,14 @@ pub fn build(b: *std.Build) void {
             const run_test_concurrent_load_only = b.addRunArtifact(test_concurrent_load_only);
             test_step.dependOn(&run_test_concurrent_load_only.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "contention_load")) {
+            const test_contention_load_only = addTst(b, testlog_mod, "tests/test_contention_load.zig", target, optimize);
+            test_contention_load_only.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+            test_contention_load_only.root_module.addImport("quic_conn", quic_conn_mod);
+            test_contention_load_only.root_module.addImport("quic_config", quic_config_mod);
+            const run_test_contention_load_only = b.addRunArtifact(test_contention_load_only);
+            test_step.dependOn(&run_test_contention_load_only.step);
+            return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "public_quic_exports")) {
             const test_public_exports = addTst(b, testlog_mod, "tests/test_public_quic_exports.zig", target, optimize);
             test_public_exports.root_module.addImport("quic", quic_mod);
@@ -1633,6 +1641,14 @@ pub fn build(b: *std.Build) void {
         test_concurrent_load.root_module.addImport("quic_config", quic_config_mod);
         const run_test_concurrent_load = b.addRunArtifact(test_concurrent_load);
         test_step.dependOn(&run_test_concurrent_load.step);
+
+        // Endpoint mutex contention load tests (Geode poll() contention pattern)
+        const test_contention_load = addTst(b, testlog_mod, "tests/test_contention_load.zig", target, optimize);
+        test_contention_load.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        test_contention_load.root_module.addImport("quic_conn", quic_conn_mod);
+        test_contention_load.root_module.addImport("quic_config", quic_config_mod);
+        const run_test_contention_load = b.addRunArtifact(test_contention_load);
+        test_step.dependOn(&run_test_contention_load.step);
 
         // Geode transport-compat coverage for high-level transport API parity.
         const test_transport_geode_compat = addTst(b, testlog_mod, "tests/test_transport_geode_compat.zig", target, optimize);
