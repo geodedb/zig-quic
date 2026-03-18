@@ -510,6 +510,10 @@ pub fn build(b: *std.Build) void {
     quic_endpoint_mod.addImport("endpoint/handshake_integration.zig", endpoint_handshake_integration_mod);
     quic_endpoint_mod.addImport("endpoint/client.zig", endpoint_client_mod);
     quic_endpoint_mod.addImport("endpoint/server.zig", endpoint_server_mod);
+    quic_endpoint_mod.addImport("build_options", build_options.createModule());
+    if (spice_mod) |sm| {
+        quic_endpoint_mod.addImport("spice", sm);
+    }
 
     // Public API module (reuse everywhere)
     const quic_api_mod = mkModule(b, "src/quic/api.zig");
@@ -815,6 +819,14 @@ pub fn build(b: *std.Build) void {
             test_h3_loop.root_module.addImport("h3_client", h3_client_mod);
             const run_test_h3_loop = b.addRunArtifact(test_h3_loop);
             test_step.dependOn(&run_test_h3_loop.step);
+            return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "concurrent_load")) {
+            const test_concurrent_load_only = addTst(b, testlog_mod, "tests/test_concurrent_load.zig", target, optimize);
+            test_concurrent_load_only.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+            test_concurrent_load_only.root_module.addImport("quic_conn", quic_conn_mod);
+            test_concurrent_load_only.root_module.addImport("quic_config", quic_config_mod);
+            const run_test_concurrent_load_only = b.addRunArtifact(test_concurrent_load_only);
+            test_step.dependOn(&run_test_concurrent_load_only.step);
             return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "public_quic_exports")) {
             const test_public_exports = addTst(b, testlog_mod, "tests/test_public_quic_exports.zig", target, optimize);
@@ -1613,6 +1625,14 @@ pub fn build(b: *std.Build) void {
         test_thread_safety.root_module.addImport("quic_config", quic_config_mod);
         const run_test_thread_safety = b.addRunArtifact(test_thread_safety);
         test_step.dependOn(&run_test_thread_safety.step);
+
+        // Concurrent load tests for thread-safety validation
+        const test_concurrent_load = addTst(b, testlog_mod, "tests/test_concurrent_load.zig", target, optimize);
+        test_concurrent_load.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        test_concurrent_load.root_module.addImport("quic_conn", quic_conn_mod);
+        test_concurrent_load.root_module.addImport("quic_config", quic_config_mod);
+        const run_test_concurrent_load = b.addRunArtifact(test_concurrent_load);
+        test_step.dependOn(&run_test_concurrent_load.step);
 
         // Geode transport-compat coverage for high-level transport API parity.
         const test_transport_geode_compat = addTst(b, testlog_mod, "tests/test_transport_geode_compat.zig", target, optimize);

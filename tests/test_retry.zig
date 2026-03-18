@@ -194,12 +194,12 @@ test "verify_retry_accepts_interop_capture_vector" {
     const odcid_hex = "398ca909c62fc11a";
 
     var retry_bytes: [101]u8 = undefined;
-    const retry_len = try std.fmt.hexToBytes(&retry_bytes, retry_hex);
-    try std.testing.expectEqual(@as(usize, retry_bytes.len), retry_len);
+    const retry_slice = try std.fmt.hexToBytes(&retry_bytes, retry_hex);
+    try std.testing.expectEqual(@as(usize, 93), retry_slice.len);
 
     var odcid_bytes: [8]u8 = undefined;
-    const odcid_len = try std.fmt.hexToBytes(&odcid_bytes, odcid_hex);
-    try std.testing.expectEqual(@as(usize, odcid_bytes.len), odcid_len);
+    const odcid_slice = try std.fmt.hexToBytes(&odcid_bytes, odcid_hex);
+    try std.testing.expectEqual(@as(usize, 8), odcid_slice.len);
 
-    try std.testing.expect(packet.verifyRetry(odcid_bytes[0..odcid_len], retry_bytes[0..retry_len]));
+    try std.testing.expect(packet.verifyRetry(odcid_slice, retry_slice));
 }

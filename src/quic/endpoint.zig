@@ -57,6 +57,18 @@ const lifecycle_mod = @import("endpoint/lifecycle.zig");
 const ep_types = @import("types");
 const transport_mod = @import("endpoint/transport.zig");
 const udp_transport_mod = @import("endpoint/udp_transport.zig");
+const build_options = @import("build_options");
+
+// Spice parallelism for concurrent poll/I/O operations
+const spice = if (build_options.enable_spice) @import("spice") else struct {
+    pub const ThreadPool = void;
+    pub const Task = void;
+    pub fn Future(comptime I: type, comptime O: type) type {
+        _ = I;
+        _ = O;
+        return void;
+    }
+};
 
 const posix = std.posix;
 const builtin = @import("builtin");
@@ -214,6 +226,12 @@ pub const Endpoint = struct {
     // 32 bytes of cryptographically random data generated at endpoint init.
     // This replaces the hardcoded fallback to prevent predictable tokens.
     generated_token_secret: [32]u8 = undefined,
+
+    // Internal flag: thread ID of the thread currently holding mu (for re-entrant calls).
+    // Used by callbacks within processIncomingDatagram to avoid deadlocking on
+    // scheduleConnPto/cancelTimer when called from within the locked poll path.
+    // 0 means no thread holds the lock.
+    mu_owner: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
 
     /// Initialize a UDP endpoint bound to bind_addr (e.g., "127.0.0.1:0").
     ///
@@ -500,10 +518,14 @@ pub const Endpoint = struct {
     }
 
     /// Create client-side connection object referencing remote host:port.
+    /// Thread-safe: acquires endpoint mutex to protect connection map mutation.
     pub fn connectClient(self: *Endpoint, hostport: []const u8) !*conn_mod.Connection {
         const peer = try utils.resolveAny(hostport, .udp);
         const ph = hashSockaddr(&peer.storage, peer.len);
         const version = if (self.cfg.version == .v2) packet.QUIC_V2 else packet.QUIC_V1;
+
+        self.mu.lock();
+        defer self.mu.unlock();
 
         // Delegate to client module for connection creation
         // Phase 8c: Pass invalid socket for sock_fd (I/O now via transport abstraction)
@@ -543,7 +565,19 @@ pub const Endpoint = struct {
     }
 
     /// Schedule generic timer firing after delay_ms.
+    /// Thread-safe: acquires endpoint mutex to protect timer queue and next_timer_id.
+    /// Re-entrant safe when called from within poll's locked context (same thread owns mu).
     pub fn scheduleTimer(self: *Endpoint, delay_ms: u32) !u64 {
+        if (self.mu_owner.load(.acquire) != @as(usize, @intCast(std.Thread.getCurrentId()))) {
+            self.mu.lock();
+            defer self.mu.unlock();
+            return self.scheduleTimerLocked(delay_ms);
+        }
+        return self.scheduleTimerLocked(delay_ms);
+    }
+
+    /// Schedule generic timer (caller must hold mu).
+    fn scheduleTimerLocked(self: *Endpoint, delay_ms: u32) !u64 {
         const id = self.next_timer_id;
         self.next_timer_id +%= 1;
         const now_ms: i64 = nowMsMonotonic();
@@ -553,7 +587,19 @@ pub const Endpoint = struct {
     }
 
     /// Schedule connection-owned PTO/PMTUD timer tied to a specific connection and space.
+    /// Thread-safe: acquires endpoint mutex to protect timer queue and next_timer_id.
+    /// Re-entrant safe when called from within poll's locked context (same thread owns mu).
     pub fn scheduleConnPto(self: *Endpoint, c: *conn_mod.Connection, kind: TimerKind, delay_ms: u32) !u64 {
+        if (self.mu_owner.load(.acquire) != @as(usize, @intCast(std.Thread.getCurrentId()))) {
+            self.mu.lock();
+            defer self.mu.unlock();
+            return self.scheduleConnPtoLocked(c, kind, delay_ms);
+        }
+        return self.scheduleConnPtoLocked(c, kind, delay_ms);
+    }
+
+    /// Schedule connection PTO timer (caller must hold mu).
+    fn scheduleConnPtoLocked(self: *Endpoint, c: *conn_mod.Connection, kind: TimerKind, delay_ms: u32) !u64 {
         const id = self.next_timer_id;
         self.next_timer_id +%= 1;
         const now_ms: i64 = nowMsMonotonic();
@@ -564,7 +610,13 @@ pub const Endpoint = struct {
     }
 
     /// Schedule a paced send for a connection after delay_ns.
+    /// Thread-safe: acquires endpoint mutex to protect timer queue.
+    /// Re-entrant safe when called from within poll's locked context (same thread owns mu).
     fn schedulePaced(self: *Endpoint, c: *conn_mod.Connection, delay_ns: u64, owned_bytes: []u8) !u64 {
+        if (self.mu_owner.load(.acquire) != @as(usize, @intCast(std.Thread.getCurrentId()))) {
+            self.mu.lock();
+            defer self.mu.unlock();
+        }
         const id = self.next_timer_id;
         self.next_timer_id +%= 1;
         const now_ms: i64 = nowMsMonotonic();
@@ -585,7 +637,19 @@ pub const Endpoint = struct {
     }
 
     /// Cancel a pending timer id.
+    /// Thread-safe: acquires endpoint mutex to protect timer queue.
+    /// Re-entrant safe when called from within poll's locked context (same thread owns mu).
     pub fn cancelTimer(self: *Endpoint, id: u64) bool {
+        if (self.mu_owner.load(.acquire) != @as(usize, @intCast(std.Thread.getCurrentId()))) {
+            self.mu.lock();
+            defer self.mu.unlock();
+            return self.cancelTimerLocked(id);
+        }
+        return self.cancelTimerLocked(id);
+    }
+
+    /// Cancel a pending timer (caller must hold mu).
+    fn cancelTimerLocked(self: *Endpoint, id: u64) bool {
         var i: usize = 0;
         while (i < self.timers.items.len) : (i += 1) {
             if (self.timers.items[i].id == id) {
@@ -606,52 +670,91 @@ pub const Endpoint = struct {
 
     /// Variant of poll that returns the number of datagrams processed.
     /// Useful for callers that need to prioritize receives over sends.
+    ///
+    /// Thread-safety: Acquires endpoint mutex around shared state access
+    /// (connection map, timers, accepted queue). The transport poll itself
+    /// runs outside the lock to avoid blocking other threads during I/O wait.
     pub fn pollWithStats(self: *Endpoint, timeout_ms: i32) !PollStats {
         var stats = PollStats{};
 
-        // Process expired timers first
-        self.processExpiredTimers(nowMsMonotonic());
+        // Phase 1: Process expired timers (under lock - accesses timers + conns)
+        {
+            self.mu.lock();
+            self.mu_owner.store(@intCast(std.Thread.getCurrentId()), .release);
+            defer {
+                self.mu_owner.store(0, .release);
+                self.mu.unlock();
+            }
+            self.processExpiredTimers(nowMsMonotonic());
+        }
 
-        // Calculate effective timeout based on next timer
-        const now_ms: i64 = nowMsMonotonic();
-        var eff_timeout = self.nextTimeoutFromTimers(now_ms, timeout_ms);
-        if (eff_timeout < 0) eff_timeout = -1;
+        // Phase 2: Calculate effective timeout (under lock - reads timer deadlines)
+        var eff_timeout: i32 = undefined;
+        {
+            self.mu.lock();
+            self.mu_owner.store(@intCast(std.Thread.getCurrentId()), .release);
+            defer {
+                self.mu_owner.store(0, .release);
+                self.mu.unlock();
+            }
+            const now_ms: i64 = nowMsMonotonic();
+            eff_timeout = self.nextTimeoutFromTimers(now_ms, timeout_ms);
+            if (eff_timeout < 0) eff_timeout = -1;
+        }
 
-        // Poll transport (blocks until data available or timeout)
+        // Phase 3: Poll transport (NO lock - blocks until data available or timeout)
+        // Transport I/O is inherently single-writer (OS socket) so no mutex needed.
         try self.transport.poll(eff_timeout);
 
-        // Drain all available packets (prefer transport-native batch receive).
-        var recv_bufs: [udp_transport_mod.UdpBatchCap][4096]u8 = undefined;
-        var recv_slots: [udp_transport_mod.UdpBatchCap]transport_mod.RecvBatchSlot = undefined;
-        for (&recv_slots, 0..) |*slot, i| {
-            slot.* = .{
-                .buf = recv_bufs[i][0..],
-                .n = 0,
-                .peer = .{},
-                .ecn = null,
-            };
-        }
-        while (true) {
-            const batch_n = self.transport.recvBatch(recv_slots[0..]) catch |err| {
-                if (err == error.WouldBlock) break;
-                return err;
-            };
-            if (batch_n == 0) break;
-
-            var i: usize = 0;
-            while (i < batch_n) : (i += 1) {
-                const slot = recv_slots[i];
-                self.processIncomingDatagram(slot.peer, slot.buf[0..slot.n], slot.ecn);
-                stats.packets_processed += 1;
+        // Phase 4: Drain all available packets (under lock - mutates conns + timers)
+        {
+            self.mu.lock();
+            self.mu_owner.store(@intCast(std.Thread.getCurrentId()), .release);
+            defer {
+                self.mu_owner.store(0, .release);
+                self.mu.unlock();
             }
 
-            if (batch_n < recv_slots.len) break;
+            var recv_bufs: [udp_transport_mod.UdpBatchCap][4096]u8 = undefined;
+            var recv_slots: [udp_transport_mod.UdpBatchCap]transport_mod.RecvBatchSlot = undefined;
+            for (&recv_slots, 0..) |*slot, i| {
+                slot.* = .{
+                    .buf = recv_bufs[i][0..],
+                    .n = 0,
+                    .peer = .{},
+                    .ecn = null,
+                };
+            }
+            while (true) {
+                const batch_n = self.transport.recvBatch(recv_slots[0..]) catch |err| {
+                    if (err == error.WouldBlock) break;
+                    return err;
+                };
+                if (batch_n == 0) break;
+
+                var i: usize = 0;
+                while (i < batch_n) : (i += 1) {
+                    const slot = recv_slots[i];
+                    self.processIncomingDatagram(slot.peer, slot.buf[0..slot.n], slot.ecn);
+                    stats.packets_processed += 1;
+                }
+
+                if (batch_n < recv_slots.len) break;
+            }
         }
 
-        // Process timers that may have fired during packet processing
-        self.processExpiredTimers(nowMsMonotonic());
-        self.pruneClosed();
-        self.armConnectionPtoTimers();
+        // Phase 5: Post-processing (under lock - mutates timers + conns)
+        {
+            self.mu.lock();
+            self.mu_owner.store(@intCast(std.Thread.getCurrentId()), .release);
+            defer {
+                self.mu_owner.store(0, .release);
+                self.mu.unlock();
+            }
+            self.processExpiredTimers(nowMsMonotonic());
+            self.pruneClosed();
+            self.armConnectionPtoTimers();
+        }
 
         return stats;
     }

@@ -134,8 +134,9 @@ test "transport geode compat: PollSync waits for active readers" {
             s.enterIo();
             entered.store(true, .release);
             std.Thread.sleep(30 * std.time.ns_per_ms);
-            s.leaveIo();
+            // Set flag BEFORE leaveIo so enterPoll's return guarantees visibility
             left.store(true, .release);
+            s.leaveIo();
         }
     }.run, .{ &sync, &io_entered, &io_left });
     defer worker.join();
