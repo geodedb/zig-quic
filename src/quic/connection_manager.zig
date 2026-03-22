@@ -83,6 +83,7 @@ pub const ConnectionState = struct {
             .deficit = 0,
             .quantum = quantum,
         });
+        errdefer _ = self.streams.pop();
         try self.stream_index.put(stream_id, idx);
     }
 
@@ -109,6 +110,7 @@ pub const ConnectionState = struct {
             .size = size,
             .acked = false,
         });
+        errdefer _ = self.sent_packets.pop();
         try self.sent_index.put(pn, idx);
         self.bytes_sent += size;
         self.last_active_us = now_us;
@@ -163,7 +165,7 @@ pub const ConnectionManager = struct {
     allocator: std.mem.Allocator,
     connections: std.StringHashMap(*ConnectionState),
     timers: timer_heap.TimerHeap,
-    shard_count: u32,
+    sharder: sharding.Sharder,
     next_timer_id: u64,
 
     pub fn init(allocator: std.mem.Allocator, shard_count: u32) !ConnectionManager {
@@ -171,7 +173,7 @@ pub const ConnectionManager = struct {
             .allocator = allocator,
             .connections = std.StringHashMap(*ConnectionState).init(allocator),
             .timers = timer_heap.TimerHeap.init(65536),
-            .shard_count = shard_count,
+            .sharder = try sharding.Sharder.init(shard_count),
             .next_timer_id = 1,
         };
     }
@@ -214,9 +216,9 @@ pub const ConnectionManager = struct {
         return self.connections.get(id);
     }
 
-    /// Choose shard for connection using consistent hashing
-    pub fn chooseShard(self: *ConnectionManager, conn_key: []const u8) !u32 {
-        return sharding.chooseLoop(conn_key, self.shard_count);
+    /// Choose shard for connection using CSPRNG-seeded consistent hashing
+    pub fn chooseShard(self: *const ConnectionManager, conn_key: []const u8) u32 {
+        return self.sharder.chooseLoop(conn_key);
     }
 
     /// Schedule a timer
@@ -341,8 +343,8 @@ test "ConnectionManager: connection sharding" {
     var mgr = try ConnectionManager.init(std.testing.allocator, 8);
     defer mgr.deinit();
 
-    const shard1 = try mgr.chooseShard("192.168.1.1:5000");
-    const shard2 = try mgr.chooseShard("192.168.1.1:5000");
+    const shard1 = mgr.chooseShard("192.168.1.1:5000");
+    const shard2 = mgr.chooseShard("192.168.1.1:5000");
 
     // Same key should map to same shard
     try std.testing.expectEqual(shard1, shard2);

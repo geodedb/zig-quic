@@ -33,7 +33,7 @@ pip install -r requirements.txt >/dev/null 2>&1 || {
 
 # Do not modify the submodule's implementations.json. Use a shim via PYTHONPATH and environment.
 export ZIG_IMAGE_TAG="$IMAGE_TAG"
-export ZIG_IMPL_URL="https://github.com/spyder/zig-quic"
+export ZIG_IMPL_URL="https://gitlab.com/devnw/zig/quic"
 
 TESTS=${TESTS:-handshake,transfer}
 # If IMPL is 'all', exercise all other known implementations as server with zig client.

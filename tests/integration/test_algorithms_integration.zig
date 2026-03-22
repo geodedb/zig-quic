@@ -185,8 +185,8 @@ test "ConnectionManager: shard assignment consistency" {
     defer mgr.deinit();
 
     // Test same connection key maps to same shard
-    const shard1a = try mgr.chooseShard("192.168.1.100:50000");
-    const shard1b = try mgr.chooseShard("192.168.1.100:50000");
+    const shard1a = mgr.chooseShard("192.168.1.100:50000");
+    const shard1b = mgr.chooseShard("192.168.1.100:50000");
     try std.testing.expectEqual(shard1a, shard1b);
 
     // Test distribution across shards
@@ -195,7 +195,7 @@ test "ConnectionManager: shard assignment consistency" {
     while (i < 100) : (i += 1) {
         var key_buf: [32]u8 = undefined;
         const key = try std.fmt.bufPrint(&key_buf, "192.168.1.{d}:5000", .{i});
-        const shard_val = try mgr.chooseShard(key);
+        const shard_val = mgr.chooseShard(key);
         shard_counts[shard_val] += 1;
     }
 

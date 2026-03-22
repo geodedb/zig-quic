@@ -6,7 +6,7 @@
 
 stdenv.mkDerivation rec {
   pname = "quic";
-  version = "0.1.0";
+  version = "0.1.10";
 
   src = ../.;
 
@@ -69,7 +69,7 @@ stdenv.mkDerivation rec {
 
   meta = with lib; {
     description = "Production-grade QUIC v1 transport implementation in Zig";
-    homepage = "https://github.com/spyderorg/quic";
+    homepage = "https://gitlab.com/devnw/zig/quic";
     platforms = platforms.all;
   };
 }

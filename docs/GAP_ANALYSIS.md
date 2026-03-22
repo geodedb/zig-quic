@@ -223,3 +223,17 @@ Security findings are tracked as ranks 12-21 in the Stack-Ranked Findings table 
 2. **Module consolidation required:** Before any production integration, resolve Q-1 (3x duplicate implementations) by deciding whether `algorithms/` replaces `recovery/` or wraps it. Do not maintain three parallel NewReno/loss-detection implementations.
 3. **Production-safe modules today:** The existing `src/quic/recovery/` subsystem (used by the protocol stack) has all the optimizations (PN-index, `declared_lost`, 3 PN spaces, mutex). The new `algorithms/` modules are simplified re-ports that lack these. Treat `algorithms/` as reusable building blocks for Geode consumers, not as replacements for `recovery/`.
 4. **Audit tooling gap:** No Zig-specific SAST exists (semgrep/bandit have no Zig rules). Manual code review is the only option for Zig security analysis. osv-scanner cannot scan Zig dependencies. These gaps are structural and not fixable at the repo level.
+
+### 2026-03-22 Re-Audit Findings (Post-Closure)
+
+Re-audit after gap closure commit `a06265d`. All 20 closure verifications passed. 5 new findings identified and immediately resolved:
+
+| # | Sev | Finding | Fix | Status |
+|---|-----|---------|-----|--------|
+| RA-1 | Medium | `ConnectionManager.chooseShard` used fixed-seed `chooseLoop(seed=0)` instead of CSPRNG-seeded `Sharder` | Replaced `shard_count` field with `Sharder` field; `init()` creates CSPRNG-seeded `Sharder`; `chooseShard()` calls `self.sharder.chooseLoop()` | Closed / Implemented |
+| RA-2 | Low | Missing `errdefer` in `addStream`/`onPacketSent` — index `put` failure after ArrayList append left orphan entries | Added `errdefer _ = self.streams.pop()` and `errdefer _ = self.sent_packets.pop()` after append, before put | Closed / Implemented |
+| RA-3 | Low | Stale URL `github.com/spyderorg/quic` in `nix/quic.nix:72` | Changed to `gitlab.com/devnw/zig/quic` | Closed / Implemented |
+| RA-4 | Low | Stale version `0.1.0` in `nix/quic.nix:9` (actual: `0.1.10`) | Updated to `0.1.10` | Closed / Implemented |
+| RA-5 | Low | Stale URL `github.com/spyder/zig-quic` in `scripts/interop_local.sh:36` | Changed to `gitlab.com/devnw/zig/quic` | Closed / Implemented |
+
+**Re-audit result:** 0 open findings. All previous closures verified. All new findings resolved.
