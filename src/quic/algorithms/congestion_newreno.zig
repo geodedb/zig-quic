@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2024-2025 CodePros
+
+//! NewReno congestion control algorithm (RFC 9002 S7.3).
+
 const std = @import("std");
 
 pub const NewReno = struct {
@@ -20,7 +25,7 @@ pub const NewReno = struct {
     }
 
     pub fn onPacketSent(self: *NewReno, pkt_size: usize) void {
-        self.bytes_in_flight += pkt_size;
+        self.bytes_in_flight = std.math.add(usize, self.bytes_in_flight, pkt_size) catch std.math.maxInt(usize);
     }
 
     pub fn onAckReceived(self: *NewReno, acked_bytes: usize, acked_pn: u64) void {
@@ -39,7 +44,8 @@ pub const NewReno = struct {
             if (self.cwnd >= self.ssthresh) self.cwnd = self.ssthresh;
         } else {
             // Congestion Avoidance ~ MSS^2 / cwnd per RTT (integer approx)
-            var inc: usize = (self.mss * acked_bytes) / @max(self.cwnd, @as(usize, 1));
+            const product = std.math.mul(usize, self.mss, acked_bytes) catch std.math.maxInt(usize);
+            var inc: usize = product / @max(self.cwnd, @as(usize, 1));
             if (inc < 1) inc = 1;
             self.cwnd += inc;
         }
@@ -82,4 +88,22 @@ test "newreno: invalid — zero MSS guarded by division clamp" {
     nr.cwnd = 0;
     nr.onAckReceived(10, 1);
     try std.testing.expect(nr.cwnd >= 1);
+}
+
+test "newreno: saturating add — bytes_in_flight does not overflow" {
+    var nr = NewReno.init(1200);
+    nr.bytes_in_flight = std.math.maxInt(usize) - 100;
+    nr.onPacketSent(200);
+    try std.testing.expectEqual(std.math.maxInt(usize), nr.bytes_in_flight);
+}
+
+test "newreno: saturating mul — large mss*acked_bytes does not overflow" {
+    var nr = NewReno.init(1200);
+    nr.mss = std.math.maxInt(usize) / 2;
+    nr.cwnd = 10000; // force congestion avoidance (cwnd >= ssthresh after manual set)
+    nr.ssthresh = 5000;
+    nr.bytes_in_flight = 1000;
+    // This should not panic even with huge mss * acked_bytes
+    nr.onAckReceived(1000, 1);
+    try std.testing.expect(nr.cwnd > 0);
 }

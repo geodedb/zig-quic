@@ -35,8 +35,10 @@ is_supported_testcase() {
 }
 
 run_endpoint_bin() {
-  if [[ "${INTEROP_DROP_PRIVS:-0}" == "1" ]] && command -v setpriv >/dev/null 2>&1; then
-    setpriv --reuid=quic --regid=quic --clear-groups qns-endpoint "$@"
+  # Drop to the unprivileged 'quic' user created in the Dockerfile.
+  # Fall back to running as current user only when setpriv is missing (e.g. local dev).
+  if command -v setpriv >/dev/null 2>&1; then
+    setpriv --reuid=quic --regid=quic --clear-groups -- qns-endpoint "$@"
   else
     qns-endpoint "$@"
   fi

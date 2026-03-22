@@ -108,7 +108,11 @@ pub fn verify(
     pos += 1;
     if (pos + ip_len > token.len - 1 - 32) return false; // Ensure space for dcid_len + hmac
     if (ip_len != client_ip.len) return false;
-    if (!std.mem.eql(u8, token[pos .. pos + ip_len], client_ip)) return false;
+    {
+        var diff: u8 = 0;
+        for (token[pos .. pos + ip_len], client_ip) |a, b| diff |= a ^ b;
+        if (diff != 0) return false;
+    }
     pos += ip_len;
 
     // Read DCID length

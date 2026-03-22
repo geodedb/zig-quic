@@ -1,12 +1,20 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2024-2025 CodePros
+
+//! Min-heap priority queue for timer scheduling.
+
 const std = @import("std");
 
 pub const Timer = struct { id: u64, deadline_us: u64 };
 
 pub const TimerHeap = struct {
-    a: std.ArrayList(Timer),
+    a: std.ArrayListUnmanaged(Timer),
+    max_capacity: usize,
 
-    pub fn init(allocator: std.mem.Allocator) !TimerHeap {
-        return .{ .a = try std.ArrayList(Timer).initCapacity(allocator, 0) };
+    pub const CapacityExceeded = error{CapacityExceeded};
+
+    pub fn init(max_capacity: usize) TimerHeap {
+        return .{ .a = .empty, .max_capacity = max_capacity };
     }
     pub fn deinit(self: *TimerHeap, allocator: std.mem.Allocator) void {
         self.a.deinit(allocator);
@@ -16,7 +24,8 @@ pub const TimerHeap = struct {
         return a.deadline_us < b.deadline_us;
     }
 
-    pub fn push(self: *TimerHeap, allocator: std.mem.Allocator, t: Timer) !void {
+    pub fn push(self: *TimerHeap, allocator: std.mem.Allocator, t: Timer) (CapacityExceeded || std.mem.Allocator.Error)!void {
+        if (self.a.items.len >= self.max_capacity) return error.CapacityExceeded;
         try self.a.append(allocator, t);
         var i = self.a.items.len - 1;
         // up-heap
@@ -54,7 +63,7 @@ pub const TimerHeap = struct {
 };
 
 test "timer: order by deadline" {
-    var th = try TimerHeap.init(std.testing.allocator);
+    var th = TimerHeap.init(65536);
     defer th.deinit(std.testing.allocator);
     try th.push(std.testing.allocator, .{ .id = 1, .deadline_us = 300 });
     try th.push(std.testing.allocator, .{ .id = 2, .deadline_us = 100 });
@@ -65,16 +74,25 @@ test "timer: order by deadline" {
 }
 
 test "timer: edge — empty peek/pop" {
-    var th = try TimerHeap.init(std.testing.allocator);
+    var th = TimerHeap.init(65536);
     defer th.deinit(std.testing.allocator);
     try std.testing.expect(th.peek() == null);
     try std.testing.expect(th.pop() == null);
 }
 
 test "timer: invalid — handles many inserts without overflow" {
-    var th = try TimerHeap.init(std.testing.allocator);
+    var th = TimerHeap.init(1024);
     defer th.deinit(std.testing.allocator);
     var i: usize = 0;
     while (i < 1024) : (i += 1) try th.push(std.testing.allocator, .{ .id = i, .deadline_us = @as(u64, 1024 - i) });
     try std.testing.expect(th.pop() != null);
+}
+
+test "timer: capacity exceeded" {
+    var th = TimerHeap.init(2);
+    defer th.deinit(std.testing.allocator);
+    try th.push(std.testing.allocator, .{ .id = 1, .deadline_us = 100 });
+    try th.push(std.testing.allocator, .{ .id = 2, .deadline_us = 200 });
+    const result = th.push(std.testing.allocator, .{ .id = 3, .deadline_us = 300 });
+    try std.testing.expectError(error.CapacityExceeded, result);
 }

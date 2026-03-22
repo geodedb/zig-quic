@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2024-2025 CodePros
+
+//! Deficit Round-Robin (DRR) stream scheduler for fair bandwidth allocation.
+
 const std = @import("std");
 
 pub const Stream = struct {
@@ -74,4 +79,19 @@ test "drr: invalid — out buffer too small" {
     };
     const err = scheduleOnce(streams[0..], 1200, out[0..]);
     try std.testing.expectError(ScheduleError.OutOfSpace, err);
+}
+
+test "drr: multi-round deficit accumulation" {
+    // Stream with quantum=500 and payload=1000 should NOT be scheduled in round 1
+    // (deficit=500 < payload=1000) but SHOULD be scheduled if deficit accumulates.
+    // Since scheduleOnce doesn't mutate deficits, test that a stream with pre-accumulated
+    // deficit gets scheduled.
+    var out: [4]Transmission = undefined;
+    const streams = [_]Stream{
+        .{ .id = 1, .send_buf = 1000, .flow_window = 1000, .blocked = false, .deficit = 500, .quantum = 500 },
+    };
+    // deficit=500, quantum=500 -> new_deficit=1000 >= payload=1000 -> scheduled
+    const n = try scheduleOnce(streams[0..], 1200, out[0..]);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(@as(u32, 1), out[0].stream_id);
 }

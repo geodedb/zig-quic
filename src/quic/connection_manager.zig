@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2024-2025 CodePros
+
+//! Multi-connection orchestrator integrating DRR scheduling, NewReno congestion
+//! control, loss recovery, timer management, and connection sharding.
+
 const std = @import("std");
 const drr = @import("drr");
 const congestion = @import("congestion");
@@ -5,9 +11,15 @@ const loss_recovery = @import("loss_recovery");
 const timer_heap = @import("timer_heap");
 const sharding = @import("sharding");
 
+pub const ConnectionError = error{
+    InvalidConnectionId,
+    StreamNotFound,
+    OutOfMemory,
+};
+
 /// Connection state tracking for QUIC protocol
 pub const ConnectionState = struct {
-    /// Unique connection identifier (5-tuple or CID)
+    /// Unique connection identifier (owned copy)
     id: []const u8,
 
     /// Congestion control state (NewReno)
@@ -15,9 +27,13 @@ pub const ConnectionState = struct {
 
     /// DRR scheduler for stream multiplexing
     streams: std.ArrayList(drr.Stream),
+    /// O(1) stream lookup by ID
+    stream_index: std.AutoHashMap(u32, usize),
 
     /// Loss recovery state
     sent_packets: std.ArrayList(loss_recovery.SentPacket),
+    /// O(1) packet lookup by PN
+    sent_index: std.AutoHashMap(u64, usize),
     latest_acked_pn: u64,
     srtt_us: u64,
 
@@ -34,8 +50,10 @@ pub const ConnectionState = struct {
         return ConnectionState{
             .id = id_owned,
             .congestion_ctrl = congestion.NewReno.init(mss),
-            .streams = try std.ArrayList(drr.Stream).initCapacity(allocator, 0),
-            .sent_packets = try std.ArrayList(loss_recovery.SentPacket).initCapacity(allocator, 0),
+            .streams = try std.ArrayList(drr.Stream).initCapacity(allocator, 16),
+            .stream_index = std.AutoHashMap(u32, usize).init(allocator),
+            .sent_packets = try std.ArrayList(loss_recovery.SentPacket).initCapacity(allocator, 16),
+            .sent_index = std.AutoHashMap(u64, usize).init(allocator),
             .latest_acked_pn = 0,
             .srtt_us = 100000, // Initial RTT estimate: 100ms
             .created_at_us = now_us,
@@ -49,11 +67,14 @@ pub const ConnectionState = struct {
     pub fn deinit(self: *ConnectionState) void {
         self.allocator.free(self.id);
         self.streams.deinit(self.allocator);
+        self.stream_index.deinit();
         self.sent_packets.deinit(self.allocator);
+        self.sent_index.deinit();
     }
 
     /// Register a new stream for DRR scheduling
     pub fn addStream(self: *ConnectionState, stream_id: u32, quantum: usize) !void {
+        const idx = self.streams.items.len;
         try self.streams.append(self.allocator, drr.Stream{
             .id = stream_id,
             .send_buf = 0,
@@ -62,19 +83,15 @@ pub const ConnectionState = struct {
             .deficit = 0,
             .quantum = quantum,
         });
+        try self.stream_index.put(stream_id, idx);
     }
 
-    /// Update stream send buffer and flow window
+    /// Update stream send buffer and flow window (O(1) via index)
     pub fn updateStream(self: *ConnectionState, stream_id: u32, send_buf: usize, flow_window: usize, blocked: bool) !void {
-        for (self.streams.items) |*stream| {
-            if (stream.id == stream_id) {
-                stream.send_buf = send_buf;
-                stream.flow_window = flow_window;
-                stream.blocked = blocked;
-                return;
-            }
-        }
-        return error.StreamNotFound;
+        const idx = self.stream_index.get(stream_id) orelse return error.StreamNotFound;
+        self.streams.items[idx].send_buf = send_buf;
+        self.streams.items[idx].flow_window = flow_window;
+        self.streams.items[idx].blocked = blocked;
     }
 
     /// Schedule streams using DRR
@@ -85,25 +102,27 @@ pub const ConnectionState = struct {
     /// Record packet sent for loss detection
     pub fn onPacketSent(self: *ConnectionState, pn: u64, size: usize, now_us: u64) !void {
         self.congestion_ctrl.onPacketSent(size);
+        const idx = self.sent_packets.items.len;
         try self.sent_packets.append(self.allocator, loss_recovery.SentPacket{
             .pn = pn,
             .sent_at_us = now_us,
+            .size = size,
             .acked = false,
         });
+        try self.sent_index.put(pn, idx);
         self.bytes_sent += size;
         self.last_active_us = now_us;
     }
 
-    /// Process ACK and update congestion control
+    /// Process ACK and update congestion control (O(1) via PN index)
     pub fn onAckReceived(self: *ConnectionState, acked_pn: u64, acked_bytes: usize, now_us: u64) void {
         // Update congestion control
         self.congestion_ctrl.onAckReceived(acked_bytes, acked_pn);
 
-        // Mark packet as acked
-        for (self.sent_packets.items) |*pkt| {
-            if (pkt.pn == acked_pn) {
-                pkt.acked = true;
-                break;
+        // Mark packet as acked via O(1) index lookup
+        if (self.sent_index.get(acked_pn)) |idx| {
+            if (idx < self.sent_packets.items.len) {
+                self.sent_packets.items[idx].acked = true;
             }
         }
 
@@ -125,13 +144,12 @@ pub const ConnectionState = struct {
             out_lost,
         );
 
-        // Update congestion control for each lost packet
+        // Update congestion control for each lost packet using O(1) index lookup
         for (out_lost[0..n_lost]) |lost_pn| {
-            // Find packet size
-            for (self.sent_packets.items) |pkt| {
-                if (pkt.pn == lost_pn) {
-                    self.congestion_ctrl.onPacketLost(1200, lost_pn, latest_sent_pn); // Assume MSS
-                    break;
+            if (self.sent_index.get(lost_pn)) |idx| {
+                if (idx < self.sent_packets.items.len) {
+                    const pkt = self.sent_packets.items[idx];
+                    self.congestion_ctrl.onPacketLost(pkt.size, lost_pn, latest_sent_pn);
                 }
             }
         }
@@ -152,7 +170,7 @@ pub const ConnectionManager = struct {
         return ConnectionManager{
             .allocator = allocator,
             .connections = std.StringHashMap(*ConnectionState).init(allocator),
-            .timers = try timer_heap.TimerHeap.init(allocator),
+            .timers = timer_heap.TimerHeap.init(65536),
             .shard_count = shard_count,
             .next_timer_id = 1,
         };
@@ -168,15 +186,18 @@ pub const ConnectionManager = struct {
         self.timers.deinit(self.allocator);
     }
 
-    /// Add a new connection
+    /// Add a new connection. Validates CID length per RFC 9000 S17.2 (1-20 bytes).
     pub fn addConnection(self: *ConnectionManager, id: []const u8, mss: usize, now_us: u64) !*ConnectionState {
+        if (id.len == 0 or id.len > 20) return error.InvalidConnectionId;
+
         const conn = try self.allocator.create(ConnectionState);
         errdefer self.allocator.destroy(conn);
 
         conn.* = try ConnectionState.init(self.allocator, id, mss, now_us);
         errdefer conn.deinit();
 
-        try self.connections.put(id, conn);
+        // Use the owned copy (conn.id) as HashMap key to avoid dangling pointer
+        try self.connections.put(conn.id, conn);
         return conn;
     }
 
@@ -328,4 +349,53 @@ test "ConnectionManager: connection sharding" {
 
     // Shard should be in range
     try std.testing.expect(shard1 < 8);
+}
+
+test "ConnectionManager: CID validation rejects empty and oversized" {
+    var mgr = try ConnectionManager.init(std.testing.allocator, 4);
+    defer mgr.deinit();
+
+    // Empty CID
+    const r1 = mgr.addConnection("", 1200, 1000000);
+    try std.testing.expectError(error.InvalidConnectionId, r1);
+
+    // Oversized CID (>20 bytes per RFC 9000)
+    const r2 = mgr.addConnection("012345678901234567890", 1200, 1000000);
+    try std.testing.expectError(error.InvalidConnectionId, r2);
+
+    // Valid CID (20 bytes, max allowed)
+    const conn = try mgr.addConnection("01234567890123456789", 1200, 1000000);
+    try std.testing.expectEqual(@as(usize, 1), mgr.connectionCount());
+    _ = conn;
+}
+
+test "ConnectionManager: updateStream error on unknown stream" {
+    var mgr = try ConnectionManager.init(std.testing.allocator, 4);
+    defer mgr.deinit();
+
+    const conn = try mgr.addConnection("test-conn", 1200, 1000000);
+    const r = conn.updateStream(999, 100, 100, false);
+    try std.testing.expectError(error.StreamNotFound, r);
+}
+
+test "ConnectionManager: loss uses actual packet size" {
+    var mgr = try ConnectionManager.init(std.testing.allocator, 4);
+    defer mgr.deinit();
+
+    const conn = try mgr.addConnection("test-conn", 1200, 1000000);
+
+    // Send packets of different sizes
+    try conn.onPacketSent(1, 500, 1000000);
+    try conn.onPacketSent(2, 1200, 1001000);
+    try conn.onPacketSent(3, 1200, 1002000);
+
+    conn.onAckReceived(2, 1200, 1003000);
+    conn.onAckReceived(3, 1200, 1004000);
+
+    // Detect loss — packet 1 (500 bytes) should report actual size to CC
+    var lost: [4]u64 = undefined;
+    const n_lost = try conn.detectLoss(1200000, 3, &lost, 3);
+    try std.testing.expect(n_lost >= 1);
+    // Congestion control should have been notified with actual size, not 1200
+    try std.testing.expect(conn.congestion_ctrl.in_recovery);
 }

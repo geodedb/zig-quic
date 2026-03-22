@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2024-2025 CodePros
+
+//! Connection-level stream scheduler using Deficit Round-Robin (DRR).
+
 const std = @import("std");
 
 /// Stream scheduling state for receive-side DRR
@@ -135,16 +140,19 @@ pub const StreamScheduler = struct {
         return best_stream;
     }
 
-    /// Get ordered list of streams to poll (priority order)
-    /// Fills the output buffer with stream IDs in priority order
-    /// Returns the number of streams written
-    pub fn getScheduledStreams(self: *Self, out: []u64) usize {
+    const DeficitEntry = struct { id: u64, deficit: u64 };
+
+    /// Get ordered list of streams to poll (priority order).
+    /// Fills the output buffer with stream IDs in priority order.
+    /// Returns the number of streams written, or error on allocation failure.
+    pub fn getScheduledStreams(self: *Self, out: []u64) error{OutOfMemory}!usize {
         const count = self.streams.count();
         if (count == 0) return 0;
 
-        // Collect all non-blocked streams with their deficits
-        var stream_deficits: [256]struct { id: u64, deficit: u64 } = undefined;
-        var num_active: usize = 0;
+        // Collect all non-blocked streams with their deficits.
+        var stream_list: std.ArrayListUnmanaged(DeficitEntry) = .empty;
+        defer stream_list.deinit(self.allocator);
+        try stream_list.ensureTotalCapacity(self.allocator, count);
 
         var iter = self.streams.iterator();
         while (iter.next()) |entry| {
@@ -152,26 +160,25 @@ pub const StreamScheduler = struct {
             // Add quantum to all streams
             state.addDeficit();
 
-            if (!state.blocked and num_active < stream_deficits.len) {
-                stream_deficits[num_active] = .{
+            if (!state.blocked) {
+                stream_list.appendAssumeCapacity(.{
                     .id = entry.key_ptr.*,
                     .deficit = state.deficit,
-                };
-                num_active += 1;
+                });
             }
         }
 
         // Sort by deficit (descending - highest deficit first)
-        std.mem.sort(@TypeOf(stream_deficits[0]), stream_deficits[0..num_active], {}, struct {
-            pub fn lessThan(_: void, a: @TypeOf(stream_deficits[0]), b: @TypeOf(stream_deficits[0])) bool {
+        std.mem.sort(DeficitEntry, stream_list.items, {}, struct {
+            pub fn lessThan(_: void, a: DeficitEntry, b: DeficitEntry) bool {
                 return a.deficit > b.deficit;
             }
         }.lessThan);
 
         // Copy to output
-        const num_to_copy = @min(num_active, out.len);
+        const num_to_copy = @min(stream_list.items.len, out.len);
         for (0..num_to_copy) |i| {
-            out[i] = stream_deficits[i].id;
+            out[i] = stream_list.items[i].id;
         }
 
         self.total_rounds += 1;
@@ -249,7 +256,7 @@ test "StreamScheduler: DRR fairness" {
 
     // Get next stream - should favor stream 1 (has more accumulated deficit)
     var order: [2]u64 = undefined;
-    const count = scheduler.getScheduledStreams(&order);
+    const count = try scheduler.getScheduledStreams(&order);
     try std.testing.expectEqual(@as(usize, 2), count);
 
     // Both streams should be scheduled
@@ -268,7 +275,7 @@ test "StreamScheduler: blocked stream handling" {
     scheduler.markBlocked(1);
 
     var order: [2]u64 = undefined;
-    const count = scheduler.getScheduledStreams(&order);
+    const count = try scheduler.getScheduledStreams(&order);
 
     // Only stream 2 should be in the output
     try std.testing.expectEqual(@as(usize, 1), count);
@@ -276,7 +283,7 @@ test "StreamScheduler: blocked stream handling" {
 
     // Unblock stream 1
     scheduler.markUnblocked(1);
-    const count2 = scheduler.getScheduledStreams(&order);
+    const count2 = try scheduler.getScheduledStreams(&order);
     try std.testing.expectEqual(@as(usize, 2), count2);
 }
 
@@ -305,7 +312,7 @@ test "StreamScheduler: empty scheduler" {
     try std.testing.expectEqual(@as(?u64, null), scheduler.getNextStream());
 
     var order: [2]u64 = undefined;
-    const count = scheduler.getScheduledStreams(&order);
+    const count = try scheduler.getScheduledStreams(&order);
     try std.testing.expectEqual(@as(usize, 0), count);
 }
 
@@ -319,7 +326,7 @@ test "StreamScheduler: quantum affects priority" {
 
     // After first round, stream 1 should have more deficit
     var order: [2]u64 = undefined;
-    const count = scheduler.getScheduledStreams(&order);
+    const count = try scheduler.getScheduledStreams(&order);
 
     try std.testing.expectEqual(@as(usize, 2), count);
     // Stream 1 should be first (higher quantum = more deficit)

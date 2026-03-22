@@ -1,6 +1,6 @@
 # QUIC
 
-Zig std-only QUIC v1/v2 implementation (Zig 0.15.1/0.14.x). **Production-grade** transport with comprehensive feature support and 63 tests passing.
+Zig QUIC v1/v2 implementation (Zig 0.15.1+). **Beta** transport with comprehensive feature support. Requires OpenSSL for TLS 1.3 cryptographic operations at link time.
 
 ## 🎆 Implementation Highlights
 
@@ -9,15 +9,15 @@ Zig std-only QUIC v1/v2 implementation (Zig 0.15.1/0.14.x). **Production-grade**
 - **Session resumption** with PSK (Pre-Shared Keys)
 - **Connection migration** with PATH_CHALLENGE/RESPONSE
 - **Preferred address** handling for server migration
-- **63 comprehensive tests** passing
+- **Comprehensive test suite** passing
 - **Interoperability tested** against 18 QUIC implementations
 
 ## Status
 
 | Aspect | Info |
 |--------|------|
-| API Stability | Production |
-| Zig Version | 0.14.0+ |
+| API Stability | Beta |
+| Zig Version | 0.15.1+ |
 | Platforms | Linux, macOS, Windows |
 
 ## Core Features
@@ -25,7 +25,7 @@ Zig std-only QUIC v1/v2 implementation (Zig 0.15.1/0.14.x). **Production-grade**
 - ✅ **Transport**: All frame types, connection ID management, path validation
 - ✅ **Crypto**: AES-128-GCM, ChaCha20-Poly1305, header protection
 - ✅ **TLS 1.3**: Full integration with key derivation, PSK, 0-RTT
-- ✅ **Signatures**: ECDSA (P-256/P-384), RSA-PSS, Ed25519 (vendored from vendor/ed25519/)
+- ✅ **Signatures**: ECDSA (P-256/P-384), RSA-PSS, Ed25519 (via external TLS dependency)
 - ✅ **Recovery**: Loss detection, PTO, congestion control (NewReno/CUBIC)
 - ✅ **Flow Control**: Connection and stream-level with dynamic limits
 - ✅ **Migration**: NAT rebinding, path validation, preferred address
@@ -103,7 +103,7 @@ This repo exports a module named `quic`. Consumers can import it via `@import("q
 .dependencies = .{
     // Use a pinned commit tarball
     .quic = .{
-        .url = "https://github.com/spyderorg/quic/archive/<commit>.tar.gz",
+        .url = "https://gitlab.com/devnw/zig/quic/-/archive/<commit>/quic-<commit>.tar.gz",
         .hash = "<sha256>",
     },
     // Or for local development
@@ -170,7 +170,7 @@ Using the transport module from a Zig project:
 ```zig
 // Add to build.zig.zon dependencies
 .quic = .{
-    .url = "https://github.com/spyderorg/quic/archive/<commit>.tar.gz",
+    .url = "https://gitlab.com/devnw/zig/quic/-/archive/<commit>/quic-<commit>.tar.gz",
     .hash = "<sha256>",
 },
 
@@ -256,7 +256,7 @@ GitLab CI runs Zig build/test components, cross-language e2e interop smoke tests
 - [`src/quic/conn.zig`](src/quic/conn.zig): Connection state machine with full packet processing
 - [`src/quic/endpoint.zig`](src/quic/endpoint.zig): UDP socket management and event loop
 - [`src/quic/frame.zig`](src/quic/frame.zig): All 20+ frame types encode/decode
-- [`src/quic/tls/tls13.zig`](src/quic/tls/tls13.zig): Complete TLS 1.3 handshake
+- TLS 1.3: Provided by external [`tls`](https://gitlab.com/devnw/zig/tls) dependency (see `build.zig.zon`)
 - [`src/quic/recovery.zig`](src/quic/recovery.zig): Loss detection and congestion control
 - [`src/h3/`](src/h3/): Basic HTTP/3 with static QPACK
 
@@ -267,7 +267,7 @@ GitLab CI runs Zig build/test components, cross-language e2e interop smoke tests
 
 ## Next Steps
 
-See [docs/NEXT.md](docs/NEXT.md) for the development roadmap including:
+See the [docs/](docs/) directory for the development roadmap including:
 - Interoperability validation with all implementations
 - Performance optimizations and benchmarking
 - Production readiness enhancements

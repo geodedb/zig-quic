@@ -1403,7 +1403,7 @@ pub const Connection = struct {
         const tail = pkt[pkt.len - 16 ..];
         var i: usize = 0;
         while (i < self.reset_tokens.items.len) : (i += 1) {
-            if (std.mem.eql(u8, &self.reset_tokens.items[i], tail)) return true;
+            if (std.crypto.timing_safe.eql([16]u8, self.reset_tokens.items[i], tail[0..16].*)) return true;
         }
         return false;
     }

@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2024-2025 CodePros
+
+//! Integration tests for QUIC algorithms: DRR, NewReno, loss recovery, timers, sharding.
+
 const std = @import("std");
 const drr = @import("drr");
 const congestion = @import("congestion");
@@ -41,9 +46,9 @@ test "QUIC algorithms: NewReno congestion control" {
 
 test "QUIC algorithms: Loss recovery with thresholds" {
     var pkts = [_]loss_recovery.SentPacket{
-        .{ .pn = 1, .sent_at_us = 1000, .acked = false },
-        .{ .pn = 2, .sent_at_us = 1010, .acked = true },
-        .{ .pn = 3, .sent_at_us = 1020, .acked = true },
+        .{ .pn = 1, .sent_at_us = 1000, .size = 1200, .acked = false },
+        .{ .pn = 2, .sent_at_us = 1010, .size = 1200, .acked = true },
+        .{ .pn = 3, .sent_at_us = 1020, .size = 1200, .acked = true },
     };
 
     var lost: [4]u64 = undefined;
@@ -55,7 +60,7 @@ test "QUIC algorithms: Loss recovery with thresholds" {
 }
 
 test "QUIC algorithms: Timer heap ordering" {
-    var heap = try timer_heap.TimerHeap.init(std.testing.allocator);
+    var heap = timer_heap.TimerHeap.init(65536);
     defer heap.deinit(std.testing.allocator);
 
     try heap.push(std.testing.allocator, .{ .id = 1, .deadline_us = 1000 });

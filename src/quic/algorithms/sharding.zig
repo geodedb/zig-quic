@@ -1,20 +1,43 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2024-2025 CodePros
+
+//! Connection-to-shard mapping using seeded hash for DoS resistance.
+
 const std = @import("std");
 
 pub const ShardError = error{InvalidShardCount};
 
-fn fnv1a64(bytes: []const u8) u64 {
-    var hash: u64 = 14695981039346656037; // FNV offset basis
-    for (bytes) |b| {
-        hash = hash ^ @as(u64, b);
-        hash = hash *% 1099511628211; // Use wrapping multiplication
-    }
-    return hash;
+fn seededHash(bytes: []const u8, seed: u64) u64 {
+    return std.hash.Wyhash.hash(seed, bytes);
 }
 
+pub const Sharder = struct {
+    seed: u64,
+    shard_count: u32,
+
+    pub fn init(shard_count: u32) ShardError!Sharder {
+        if (shard_count == 0) return ShardError.InvalidShardCount;
+        var buf: [8]u8 = undefined;
+        std.crypto.random.bytes(&buf);
+        return .{ .seed = std.mem.readInt(u64, &buf, .little), .shard_count = shard_count };
+    }
+
+    pub fn initWithSeed(shard_count: u32, seed: u64) ShardError!Sharder {
+        if (shard_count == 0) return ShardError.InvalidShardCount;
+        return .{ .seed = seed, .shard_count = shard_count };
+    }
+
+    pub fn chooseLoop(self: *const Sharder, key: []const u8) u32 {
+        const h = seededHash(key, self.seed);
+        return @as(u32, @intCast(h % @as(u64, self.shard_count)));
+    }
+};
+
 /// Choose loop index in [0, shard_count) using a 5-tuple or CID.
+/// WARNING: Uses fixed seed=0; prefer Sharder.init() for DoS resistance.
 pub fn chooseLoop(key: []const u8, shard_count: u32) ShardError!u32 {
     if (shard_count == 0) return ShardError.InvalidShardCount;
-    const h = fnv1a64(key);
+    const h = seededHash(key, 0);
     return @as(u32, @intCast(h % @as(u64, shard_count)));
 }
 
@@ -42,5 +65,29 @@ test "shard: edge — distribution over 64 flows" {
 
 test "shard: invalid — zero shard count" {
     const err = chooseLoop("x", 0);
+    try std.testing.expectError(ShardError.InvalidShardCount, err);
+}
+
+test "shard: Sharder — same key maps to same shard" {
+    const sharder = try Sharder.initWithSeed(8, 42);
+    const idx1 = sharder.chooseLoop("conn-abc");
+    const idx2 = sharder.chooseLoop("conn-abc");
+    try std.testing.expectEqual(idx1, idx2);
+}
+
+test "shard: Sharder — different seeds produce different mappings" {
+    const sharder_a = try Sharder.initWithSeed(256, 1);
+    const sharder_b = try Sharder.initWithSeed(256, 2);
+    // With 256 shards and different seeds, at least one of several keys should differ
+    var differ: usize = 0;
+    const keys = [_][]const u8{ "alpha", "beta", "gamma", "delta", "epsilon" };
+    for (keys) |key| {
+        if (sharder_a.chooseLoop(key) != sharder_b.chooseLoop(key)) differ += 1;
+    }
+    try std.testing.expect(differ >= 1);
+}
+
+test "shard: Sharder — zero shard count returns error" {
+    const err = Sharder.initWithSeed(0, 42);
     try std.testing.expectError(ShardError.InvalidShardCount, err);
 }

@@ -1,6 +1,7 @@
-// QUIC algorithm implementations extracted from Geode graph database
-//
-// Exports DRR scheduling, NewReno congestion control, loss recovery, timer heap, and connection sharding
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2024-2025 CodePros
+
+//! Re-exports for QUIC transport algorithm sub-modules.
 
 pub const drr = @import("algorithms/drr.zig");
 pub const congestion = @import("algorithms/congestion_newreno.zig");
