@@ -1,6 +1,6 @@
 # Security GAP Analysis
 
-Last updated: 2026-02-16
+Last updated: 2026-03-22
 
 Repository: `gitlab.com/devnw/zig/quic`  
 Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
@@ -104,36 +104,34 @@ The Geode review found additional reusable transport algorithms and connection-s
 
 ### Summary
 
-| Candidate | Geode evidence | Why it belongs in `quic` | Status |
+| Candidate | Geode evidence | Library implementation | Status |
 |---|---|---|---|
-| Deficit round-robin scheduler | `src/algorithms/drr.zig:23`, tests `src/algorithms/drr.zig:44`, `:62`, `:73` | Generic stream scheduling primitive | Open |
-| NewReno congestion control | `src/algorithms/congestion_newreno.zig:11`, tests `src/algorithms/congestion_newreno.zig:64`, `:74`, `:82` | Reusable transport congestion algorithm | Open |
-| Loss recovery | `src/algorithms/loss_recovery.zig:9`, tests `src/algorithms/loss_recovery.zig:33`, `:46`, `:57` | Reusable packet loss-detection logic | Open |
-| Timer heap | `src/algorithms/timer_heap.zig:8`, tests `src/algorithms/timer_heap.zig:56`, `:68`, `:76` | Generic timer scheduling helper used by transport code | Open |
-| Shard chooser | `src/algorithms/sharding.zig:15`, tests `src/algorithms/sharding.zig:21`, `:28`, `:45` | Reusable event-loop sharding heuristic | Open |
-| Stream scheduler | `src/transport/stream_scheduler.zig:45`, `src/transport/stream_scheduler.zig:53`, tests `src/transport/stream_scheduler.zig:226`, `:243`, `:265`, `:288`, `:305`, `:317` | Core QUIC stream prioritization behavior | Open |
-| Connection manager / connection state | `src/transport/connection_manager.zig:13`, `src/transport/connection_manager.zig:36`, `src/transport/connection_manager.zig:148`, `src/transport/connection_manager.zig:155`, `src/transport/connection_manager.zig:201`, tests `src/transport/connection_manager.zig:244`, `:256`, `:271`, `:287`, `:308`, `:323` | Generic connection-state management, not Geode database logic | Open |
+| Deficit round-robin scheduler | `src/algorithms/drr.zig:23`, tests `:44`, `:62`, `:73` | `src/quic/algorithms/drr.zig` (3 inline tests) | Closed / Implemented |
+| NewReno congestion control | `src/algorithms/congestion_newreno.zig:11`, tests `:64`, `:74`, `:82` | `src/quic/algorithms/congestion_newreno.zig` (3 inline tests) | Closed / Implemented |
+| Loss recovery | `src/algorithms/loss_recovery.zig:9`, tests `:33`, `:46`, `:57` | `src/quic/algorithms/loss_recovery.zig` (3 inline tests) | Closed / Implemented |
+| Timer heap | `src/algorithms/timer_heap.zig:8`, tests `:56`, `:68`, `:76` | `src/quic/algorithms/timer_heap.zig` (3 inline tests) | Closed / Implemented |
+| Shard chooser | `src/algorithms/sharding.zig:15`, tests `:21`, `:28`, `:45` | `src/quic/algorithms/sharding.zig` (3 inline tests) | Closed / Implemented |
+| Stream scheduler | `src/transport/stream_scheduler.zig:45`, tests `:226`, `:243`, `:265`, `:288`, `:305`, `:317` | `src/quic/stream_scheduler.zig` (6 inline tests) | Closed / Implemented |
+| Connection manager / connection state | `src/transport/connection_manager.zig:13`, tests `:244`, `:256`, `:271`, `:287`, `:308`, `:323` | `src/quic/connection_manager.zig` (6 inline tests) | Closed / Implemented |
 
-### Integration Coverage To Preserve
+### Integration Coverage Preserved
 
-| Geode test / benchmark | Why it matters |
-|---|---|
-| `tests/quic_algorithms_integration_test.zig:10`, `:24`, `:39`, `:54`, `:68`, `:81`, `:116`, `:147`, `:175` | End-to-end interactions between the scheduler, congestion, loss, timer, and sharding code |
-| `tests/test_performance_optimizations.zig:247`, `:282`, `:298`, `:321`, `:340` | Stream scheduler behavior in mixed transport scenarios |
-| `tests/test_performance_optimizations.zig:530` | Scheduler overhead benchmark reference |
-| `build.zig:1282` through `build.zig:1290` | Transport benchmark step that currently imports local `thread_pool` and `stream_scheduler` modules |
-
-### Gaps To Close Before Extraction
-
-| Gap | Evidence | Required action |
+| Geode test / benchmark | Library equivalent | Status |
 |---|---|---|
-| Some QUIC-adjacent code still compiles only inside Geode’s module layout | direct standalone review of `src/transport/connection_manager.zig` failed on module-path assumptions | Normalize imports so the code lives under the `quic` package root |
-| Geode still hosts reusable algorithms in `src/algorithms/*` rather than this repo | files listed above | Move them here and update Geode to import this repo |
-| Benchmark wiring still points at Geode-local transport modules | `build.zig:1282` through `build.zig:1290` | Rewire transport benchmark steps after extraction |
+| `tests/quic_algorithms_integration_test.zig` (9 tests) | `tests/integration/test_algorithms_integration.zig` (9 tests) | Ported |
+| `tests/test_performance_optimizations.zig:247-340` (stream scheduler tests) | `src/quic/stream_scheduler.zig` inline tests (6 tests) | Ported |
+| `tests/test_performance_optimizations.zig:530` (scheduler overhead bench) | Benchmarking deferred to future work | Deferred |
+| `build.zig:1282-1290` (transport bench step) | Benchmarking deferred to future work | Deferred |
 
-### Required Follow-Up
+### Gaps Closed
 
-1. Port the pure algorithm files first: DRR, NewReno, loss recovery, timer heap, and sharding.
-2. Port `stream_scheduler.zig` next, since it already has tight algorithm-level tests.
-3. Port `connection_manager.zig` after import cleanup.
-4. Update Geode to consume these modules from `../../../zig/quic` and remove the local copies.
+| Gap | Resolution |
+|---|---|
+| QUIC-adjacent code compiled only inside Geode’s module layout | Normalized imports to use build-system named imports (`@import("drr")`, etc.) instead of relative paths |
+| Geode hosted reusable algorithms in `src/algorithms/*` | All 7 files ported to `src/quic/algorithms/`, `src/quic/stream_scheduler.zig`, `src/quic/connection_manager.zig` |
+| Benchmark wiring pointed at Geode-local transport modules | Deferred — algorithm benchmarking can be added to `bench/` when needed |
+
+### Remaining Follow-Up
+
+1. Update Geode to consume these modules from `../../../zig/quic` and remove the local copies.
+2. Add algorithm-specific benchmarks to `bench/` if perf regression gating is desired.

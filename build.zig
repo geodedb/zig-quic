@@ -295,6 +295,24 @@ pub fn build(b: *std.Build) void {
     // Note: alert_mod, zero_rtt_mod, and tls logger are now imported from vendor/ztls above
 
     // ========================================================================
+    // Algorithm Sub-Modules (Geode Extraction)
+    // ========================================================================
+    // Pure algorithm modules — self-contained, only depend on std
+    const algo_drr_mod = mkModule(b, "src/quic/algorithms/drr.zig");
+    const algo_congestion_mod = mkModule(b, "src/quic/algorithms/congestion_newreno.zig");
+    const algo_loss_recovery_mod = mkModule(b, "src/quic/algorithms/loss_recovery.zig");
+    const algo_timer_heap_mod = mkModule(b, "src/quic/algorithms/timer_heap.zig");
+    const algo_sharding_mod = mkModule(b, "src/quic/algorithms/sharding.zig");
+
+    // Connection manager (orchestrates algorithms: DRR, CC, loss, timers, sharding)
+    const connection_manager_mod = mkModule(b, "src/quic/connection_manager.zig");
+    connection_manager_mod.addImport("drr", algo_drr_mod);
+    connection_manager_mod.addImport("congestion", algo_congestion_mod);
+    connection_manager_mod.addImport("loss_recovery", algo_loss_recovery_mod);
+    connection_manager_mod.addImport("timer_heap", algo_timer_heap_mod);
+    connection_manager_mod.addImport("sharding", algo_sharding_mod);
+
+    // ========================================================================
     // Connection Sub-Modules (Phase 1 Refactoring)
     // ========================================================================
     const conn_types_mod = mkModule(b, "src/quic/connection/types.zig");
@@ -1165,6 +1183,56 @@ pub fn build(b: *std.Build) void {
         test_recovery_recovery.root_module.addImport("frame", quic_frame_mod);
         const run_test_recovery_recovery = b.addRunArtifact(test_recovery_recovery);
         test_step.dependOn(&run_test_recovery_recovery.step);
+
+        // ====================================================================
+        // Algorithm Module Tests (Geode Extraction)
+        // ====================================================================
+        // Inline tests in each algorithm source file
+        const test_algo_drr = addTst(b, testlog_mod, "src/quic/algorithms/drr.zig", target, optimize);
+        const run_test_algo_drr = b.addRunArtifact(test_algo_drr);
+        test_step.dependOn(&run_test_algo_drr.step);
+
+        const test_algo_congestion = addTst(b, testlog_mod, "src/quic/algorithms/congestion_newreno.zig", target, optimize);
+        const run_test_algo_congestion = b.addRunArtifact(test_algo_congestion);
+        test_step.dependOn(&run_test_algo_congestion.step);
+
+        const test_algo_loss = addTst(b, testlog_mod, "src/quic/algorithms/loss_recovery.zig", target, optimize);
+        const run_test_algo_loss = b.addRunArtifact(test_algo_loss);
+        test_step.dependOn(&run_test_algo_loss.step);
+
+        const test_algo_timer = addTst(b, testlog_mod, "src/quic/algorithms/timer_heap.zig", target, optimize);
+        const run_test_algo_timer = b.addRunArtifact(test_algo_timer);
+        test_step.dependOn(&run_test_algo_timer.step);
+
+        const test_algo_shard = addTst(b, testlog_mod, "src/quic/algorithms/sharding.zig", target, optimize);
+        const run_test_algo_shard = b.addRunArtifact(test_algo_shard);
+        test_step.dependOn(&run_test_algo_shard.step);
+
+        // Stream scheduler (inline tests)
+        const test_stream_sched = addTst(b, testlog_mod, "src/quic/stream_scheduler.zig", target, optimize);
+        const run_test_stream_sched = b.addRunArtifact(test_stream_sched);
+        test_step.dependOn(&run_test_stream_sched.step);
+
+        // Connection manager (inline tests, needs algorithm imports)
+        const test_conn_mgr = addTst(b, testlog_mod, "src/quic/connection_manager.zig", target, optimize);
+        test_conn_mgr.root_module.addImport("drr", algo_drr_mod);
+        test_conn_mgr.root_module.addImport("congestion", algo_congestion_mod);
+        test_conn_mgr.root_module.addImport("loss_recovery", algo_loss_recovery_mod);
+        test_conn_mgr.root_module.addImport("timer_heap", algo_timer_heap_mod);
+        test_conn_mgr.root_module.addImport("sharding", algo_sharding_mod);
+        const run_test_conn_mgr = b.addRunArtifact(test_conn_mgr);
+        test_step.dependOn(&run_test_conn_mgr.step);
+
+        // Integration test for all algorithms working together
+        const test_algo_integration = addTst(b, testlog_mod, "tests/integration/test_algorithms_integration.zig", target, optimize);
+        test_algo_integration.root_module.addImport("drr", algo_drr_mod);
+        test_algo_integration.root_module.addImport("congestion", algo_congestion_mod);
+        test_algo_integration.root_module.addImport("loss_recovery", algo_loss_recovery_mod);
+        test_algo_integration.root_module.addImport("timer_heap", algo_timer_heap_mod);
+        test_algo_integration.root_module.addImport("sharding", algo_sharding_mod);
+        test_algo_integration.root_module.addImport("connection_manager", connection_manager_mod);
+        const run_test_algo_integration = b.addRunArtifact(test_algo_integration);
+        test_step.dependOn(&run_test_algo_integration.step);
 
         const test_tls_record = addTst(b, testlog_mod, "tests/test_tls_record_layer.zig", target, optimize);
         test_tls_record.root_module.addImport("tls_record", tls_record_mod);
