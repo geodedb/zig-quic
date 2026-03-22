@@ -97,3 +97,43 @@ Source usage reviewed in `~/src/devnw/codepros/geode/geode`. The items below tra
 | 9 | Localhost normalization and insecure-SNI compatibility behavior | `src/transport/quic.zig:724`, `src/transport/quic.zig:767`, `src/transport/quic.zig:774` | `src/quic/transport.zig:810`, `src/quic/transport.zig:849`, `src/quic/transport.zig:860` | Closed / Implemented |
 | 10 | Client idle-timeout parity for longer-running streams (300s) | `src/transport/quic.zig:746`, `src/transport/quic.zig:794` | `src/quic/transport.zig:832`, `src/quic/transport.zig:891` | Closed / Implemented |
 | 11 | Self-signed certificate generation alignment (ECDSA P-256) | `src/transport/quic.zig:459`, `src/transport/quic.zig:470` | `src/quic/transport.zig:321`, `src/quic/transport.zig:331` | Closed / Implemented |
+
+## Geode Extraction Backlog (Non-Security)
+
+The Geode review found additional reusable transport algorithms and connection-state code still living in the Geode tree instead of this library. These are not security findings; they are extraction backlog items for library growth.
+
+### Summary
+
+| Candidate | Geode evidence | Why it belongs in `quic` | Status |
+|---|---|---|---|
+| Deficit round-robin scheduler | `src/algorithms/drr.zig:23`, tests `src/algorithms/drr.zig:44`, `:62`, `:73` | Generic stream scheduling primitive | Open |
+| NewReno congestion control | `src/algorithms/congestion_newreno.zig:11`, tests `src/algorithms/congestion_newreno.zig:64`, `:74`, `:82` | Reusable transport congestion algorithm | Open |
+| Loss recovery | `src/algorithms/loss_recovery.zig:9`, tests `src/algorithms/loss_recovery.zig:33`, `:46`, `:57` | Reusable packet loss-detection logic | Open |
+| Timer heap | `src/algorithms/timer_heap.zig:8`, tests `src/algorithms/timer_heap.zig:56`, `:68`, `:76` | Generic timer scheduling helper used by transport code | Open |
+| Shard chooser | `src/algorithms/sharding.zig:15`, tests `src/algorithms/sharding.zig:21`, `:28`, `:45` | Reusable event-loop sharding heuristic | Open |
+| Stream scheduler | `src/transport/stream_scheduler.zig:45`, `src/transport/stream_scheduler.zig:53`, tests `src/transport/stream_scheduler.zig:226`, `:243`, `:265`, `:288`, `:305`, `:317` | Core QUIC stream prioritization behavior | Open |
+| Connection manager / connection state | `src/transport/connection_manager.zig:13`, `src/transport/connection_manager.zig:36`, `src/transport/connection_manager.zig:148`, `src/transport/connection_manager.zig:155`, `src/transport/connection_manager.zig:201`, tests `src/transport/connection_manager.zig:244`, `:256`, `:271`, `:287`, `:308`, `:323` | Generic connection-state management, not Geode database logic | Open |
+
+### Integration Coverage To Preserve
+
+| Geode test / benchmark | Why it matters |
+|---|---|
+| `tests/quic_algorithms_integration_test.zig:10`, `:24`, `:39`, `:54`, `:68`, `:81`, `:116`, `:147`, `:175` | End-to-end interactions between the scheduler, congestion, loss, timer, and sharding code |
+| `tests/test_performance_optimizations.zig:247`, `:282`, `:298`, `:321`, `:340` | Stream scheduler behavior in mixed transport scenarios |
+| `tests/test_performance_optimizations.zig:530` | Scheduler overhead benchmark reference |
+| `build.zig:1282` through `build.zig:1290` | Transport benchmark step that currently imports local `thread_pool` and `stream_scheduler` modules |
+
+### Gaps To Close Before Extraction
+
+| Gap | Evidence | Required action |
+|---|---|---|
+| Some QUIC-adjacent code still compiles only inside Geode’s module layout | direct standalone review of `src/transport/connection_manager.zig` failed on module-path assumptions | Normalize imports so the code lives under the `quic` package root |
+| Geode still hosts reusable algorithms in `src/algorithms/*` rather than this repo | files listed above | Move them here and update Geode to import this repo |
+| Benchmark wiring still points at Geode-local transport modules | `build.zig:1282` through `build.zig:1290` | Rewire transport benchmark steps after extraction |
+
+### Required Follow-Up
+
+1. Port the pure algorithm files first: DRR, NewReno, loss recovery, timer heap, and sharding.
+2. Port `stream_scheduler.zig` next, since it already has tight algorithm-level tests.
+3. Port `connection_manager.zig` after import cleanup.
+4. Update Geode to consume these modules from `../../../zig/quic` and remove the local copies.
