@@ -118,7 +118,7 @@ e2e-test-python:
 
 e2e-test-go:
   stage: e2e
-  image: golang:1.25.7
+  image: golang:1.25.8
   tags:
     - saas-linux-medium-amd64
   needs:
@@ -449,7 +449,7 @@ security-rust-cargo-audit:
 
 security-go-govulncheck:
   stage: security
-  image: golang:1.25.7
+  image: golang:1.25.8
   tags:
     - saas-linux-medium-amd64
   rules:
@@ -457,7 +457,7 @@ security-go-govulncheck:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
   variables:
-    GOTOOLCHAIN: "go1.25.7"
+    GOTOOLCHAIN: "go1.25.8"
   script:
     - go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
     - GOVULNCHECK="$(go env GOPATH)/bin/govulncheck"
@@ -474,7 +474,7 @@ security-go-govulncheck:
 # Scheduled job to update Go dependencies for interop testing
 update-go-dependencies:
   stage: maintenance
-  image: golang:1.25.7
+  image: golang:1.25.8
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $UPDATE_GO_DEPS == "true"
   before_script:
