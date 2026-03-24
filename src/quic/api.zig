@@ -152,10 +152,11 @@ pub fn handshakeDoneSeen(conn: *Connection) bool {
 
 /// Return true once the TLS handshake has fully completed.
 ///
-/// RFC 9001 §4 details the TLS handshake transcript. The underlying connection
-/// tracks that transcript and flips this flag when both sides confirmed keys.
+/// RFC 9000 §4.1.1: The handshake is complete when the endpoint has received
+/// and verified the peer's Finished message. This is distinct from handshake
+/// confirmation (§4.1.2) which additionally requires key confirmation.
 pub fn handshakeComplete(conn: *Connection) bool {
-    return conn.hasConfirmedAppTxKeys();
+    return conn.peer_finished_verified;
 }
 
 /// Determine if 1-RTT keys are confirmed per QUIC handshake rules.

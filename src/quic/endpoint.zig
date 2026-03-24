@@ -251,26 +251,12 @@ pub const Endpoint = struct {
         errdefer udp.deinit();
 
         // Convert to generic transport interface
-        var transport = udp.asTransport();
+        const transport = udp.asTransport();
 
-        // Get local address from transport
-        const local_addr = try transport.getLocalAddr();
-
-        // Determine endpoint role based on the bound port
-        const bound_port = if (local_addr.storage.family == posix.AF.INET) blk: {
-            const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&local_addr.storage));
-            break :blk portFromNetwork(sin.port);
-        } else if (local_addr.storage.family == posix.AF.INET6) blk: {
-            const sin6: *const posix.sockaddr.in6 = @ptrCast(@alignCast(&local_addr.storage));
-            break :blk portFromNetwork(sin6.port);
-        } else blk: {
-            break :blk @as(u16, 0);
-        };
-
-        // Server binds to specific port (4433, 443), client binds to 0 (random)
-        const is_server = std.mem.indexOf(u8, bind_addr, ":4433") != null or
-            std.mem.indexOf(u8, bind_addr, ":443") != null or
-            (std.mem.indexOf(u8, bind_addr, ":0") == null and bound_port != 0);
+        // Determine role from config: servers have TLS certificates configured.
+        // This replaces the previous port-number heuristic (checking :4433/:443)
+        // which was fragile and incorrect for non-standard ports.
+        const is_server = cfgp.cert_path != null or cfgp.inline_server_cert_der != null;
         const endpoint_role = if (is_server) EndpointRole.Server else EndpointRole.Client;
 
         logger.debugPrint("Endpoint role determined as: {any}\n", .{endpoint_role});

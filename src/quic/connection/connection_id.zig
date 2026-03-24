@@ -27,7 +27,7 @@ pub const LocalCid = struct {
 ///
 /// Uses HKDF-Extract with base as salt and (sequence || cid) as IKM,
 /// then HKDF-Expand-Label to derive the final 16-byte token.
-pub fn deriveStatelessResetToken(base: *const [32]u8, sequence: u64, cid_bytes: []const u8) [16]u8 {
+pub fn deriveStatelessResetToken(base: *const [32]u8, sequence: u64, cid_bytes: []const u8) error{InvalidCidLength}![16]u8 {
     // HKDF based derivation (implementation choice following RFC 9000 §10.3 guidance).
     // prk = HKDF-Extract(salt = base, ikm = sequence||cid)
     var ikm_buf: [8 + 20]u8 = undefined; // CID <= 20 bytes in this implementation
@@ -35,7 +35,7 @@ pub fn deriveStatelessResetToken(base: *const [32]u8, sequence: u64, cid_bytes: 
     std.mem.writeInt(u64, &seq_be, sequence, .big);
     @memcpy(ikm_buf[0..8], &seq_be);
     const cid_len = cid_bytes.len;
-    if (cid_len > 20) unreachable; // defensive (our Cid max 20)
+    if (cid_len > 20) return error.InvalidCidLength;
     @memcpy(ikm_buf[8 .. 8 + cid_len], cid_bytes);
     const prk = ks.extract(base, ikm_buf[0 .. 8 + cid_len]);
     var out: [16]u8 = undefined;
@@ -46,6 +46,6 @@ pub fn deriveStatelessResetToken(base: *const [32]u8, sequence: u64, cid_bytes: 
 }
 
 /// Test helper exposing reset token derivation (used only by unit tests).
-pub fn testDeriveStatelessResetToken(base: *const [32]u8, sequence: u64, cid: []const u8) [16]u8 {
+pub fn testDeriveStatelessResetToken(base: *const [32]u8, sequence: u64, cid: []const u8) error{InvalidCidLength}![16]u8 {
     return deriveStatelessResetToken(base, sequence, cid);
 }

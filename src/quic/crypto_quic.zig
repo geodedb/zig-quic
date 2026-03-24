@@ -667,8 +667,7 @@ pub fn unmaskLongHeaderAndPn(
 }
 
 fn dumpBytes(label: []const u8, bytes: []const u8) void {
-    // Temporarily always dump for debugging
-    // if (!builtin.is_test) return;
+    if (!builtin.is_test) return;
     var list = std.ArrayList(u8){};
     defer list.deinit(std.heap.page_allocator);
     var i: usize = 0;

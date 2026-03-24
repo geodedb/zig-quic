@@ -24,7 +24,7 @@ test "stateless_reset_token_hkdf_vector" {
     const sequence: u64 = 0x0102030405060708; // big-endian encoded inside derivation
     const cid = [_]u8{ 0xA1, 0xB2, 0xC3, 0xD4, 0x05, 0x06, 0x07, 0x08 };
 
-    const token = conn_mod.testDeriveStatelessResetToken(&base, sequence, &cid);
+    const token = try conn_mod.testDeriveStatelessResetToken(&base, sequence, &cid);
 
     const expected = [_]u8{
         // Pre-computed via same function (locked in as vector):
@@ -35,16 +35,16 @@ test "stateless_reset_token_hkdf_vector" {
     try std.testing.expectEqualSlices(u8, &expected, &token);
 
     // Spot-check invariance: re-derive with same inputs.
-    const token2 = conn_mod.testDeriveStatelessResetToken(&base, sequence, &cid);
+    const token2 = try conn_mod.testDeriveStatelessResetToken(&base, sequence, &cid);
     try std.testing.expect(std.mem.eql(u8, &token, &token2));
 
     // Changing sequence should change token.
-    const token_seq_delta = conn_mod.testDeriveStatelessResetToken(&base, sequence + 1, &cid);
+    const token_seq_delta = try conn_mod.testDeriveStatelessResetToken(&base, sequence + 1, &cid);
     try std.testing.expect(!std.mem.eql(u8, &token, &token_seq_delta));
 
     // Changing CID should change token.
     const cid2 = [_]u8{ 0xA1, 0xB2, 0xC3, 0xD4, 0x05, 0x06, 0x07, 0x09 };
-    const token_cid_delta = conn_mod.testDeriveStatelessResetToken(&base, sequence, &cid2);
+    const token_cid_delta = try conn_mod.testDeriveStatelessResetToken(&base, sequence, &cid2);
     try std.testing.expect(!std.mem.eql(u8, &token, &token_cid_delta));
 
     // Print (optional) for debugging when updating vectors.

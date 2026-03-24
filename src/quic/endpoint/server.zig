@@ -172,28 +172,12 @@ pub fn encodeRetryPacket(config: RetryConfig, out_buf: []u8) ![]u8 {
 
     // Compute Retry Integrity Tag (RFC 9001 §5.8)
     // Tag = AEAD(key, nonce, AAD=Pseudo-Retry Packet)
-    // Pseudo-Retry includes: ODCID length + ODCID + Retry packet (minus tag)
+    // computeRetryIntegrityTag builds AAD internally: ODCID Len || ODCID || retry_without_tag
     const tag_offset = i;
 
-    // Build Pseudo-Retry Packet for AAD
-    var pseudo_buf: [1500]u8 = undefined;
-    var p: usize = 0;
-
-    // ODCID Length (1 byte)
-    pseudo_buf[p] = @intCast(config.odcid.len);
-    p += 1;
-
-    // ODCID
-    @memcpy(pseudo_buf[p..][0..config.odcid.len], config.odcid);
-    p += config.odcid.len;
-
-    // Retry packet (first_byte through token, excluding tag)
-    @memcpy(pseudo_buf[p..][0..tag_offset], out_buf[0..tag_offset]);
-    p += tag_offset;
-
-    // Compute tag using crypto_quic.computeRetryIntegrityTag
     const crypto_quic = @import("crypto_quic");
-    const tag = crypto_quic.computeRetryIntegrityTag(config.version, pseudo_buf[0..p]);
+    const version_v2 = (config.version == packet.QUIC_V2);
+    const tag = crypto_quic.computeRetryIntegrityTag(version_v2, config.odcid, out_buf[0..tag_offset]);
 
     // Append tag to Retry packet
     @memcpy(out_buf[tag_offset..][0..16], &tag);

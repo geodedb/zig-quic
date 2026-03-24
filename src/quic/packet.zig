@@ -10,10 +10,12 @@ const crypto = @import("quic_crypto");
 const builtin = @import("builtin");
 const logger = @import("quic_logger");
 
+// Phase57 debug state: only active in test builds to avoid global mutable state in production.
 const phase57_dump_max: u8 = 3;
-var phase57_dump_count: u8 = 0;
+var phase57_dump_count: u8 = if (builtin.is_test) 0 else 0;
 var phase57_attempt_label: []const u8 = "UNSET";
 pub fn phase57SetAttemptLabel(label: []const u8) void {
+    if (!builtin.is_test) return;
     phase57_attempt_label = label;
 }
 
@@ -290,7 +292,7 @@ pub fn decodeShortProtectedWithHpInto(
     largest_pn: u64,
     payload_out: []u8,
 ) !DecodedShortView {
-    const attempt_label_snapshot = phase57_attempt_label;
+    const attempt_label_snapshot = if (builtin.is_test) phase57_attempt_label else "DISABLED";
     if (packet_bytes.len < 1 + dcid_len + 1) return error.Truncated;
     var i: usize = 0;
     const header_first_masked: u8 = packet_bytes[0];
@@ -696,11 +698,13 @@ pub fn decodeInitialProtected(
     const ct_and_tag = packet_bytes[ct_begin..ct_end];
 
     // AAD = unmasked first byte || header_prefix || unmasked PN bytes
-    var aad = std.ArrayList(u8){};
-    defer aad.deinit(std.heap.page_allocator);
-    try aad.append(std.heap.page_allocator, header_first);
-    try aad.appendSlice(std.heap.page_allocator, header_prefix);
-    try aad.appendSlice(std.heap.page_allocator, pn_masked4[0..pn_len_actual]);
+    // Stack-allocated: 1 byte header + up to ~40 bytes prefix + 4 PN bytes = well under 256.
+    var aad_buf: [256]u8 = undefined;
+    var aad_stream = std.io.fixedBufferStream(&aad_buf);
+    aad_stream.writer().writeByte(header_first) catch return error.Truncated;
+    aad_stream.writer().writeAll(header_prefix) catch return error.Truncated;
+    aad_stream.writer().writeAll(pn_masked4[0..pn_len_actual]) catch return error.Truncated;
+    const aad_items = aad_buf[0..aad_stream.pos];
 
     // Compute PN value (big-endian truncated)
     var pn_val: u32 = 0;
@@ -708,7 +712,7 @@ pub fn decodeInitialProtected(
     while (j2 < pn_len_actual) : (j2 += 1) pn_val = (pn_val << 8) | pn_masked4[j2];
 
     if (builtin.is_test) {
-        dumpBytes("DEC aad", aad.items);
+        dumpBytes("DEC aad", aad_items);
         var nonce: [12]u8 = undefined;
         // Compute nonce = iv XOR pn_val (big-endian in last 8 bytes)
         @memcpy(nonce[0..], &keys.iv);
@@ -736,7 +740,7 @@ pub fn decodeInitialProtected(
         &keys.key,
         &keys.iv,
         pn_val,
-        aad.items,
+        aad_items,
         ct_and_tag,
         pt,
     );
@@ -1161,11 +1165,13 @@ pub fn decode0RTTProtected(
     if (ct_end < ct_begin + 16) return error.CiphertextTooShort;
     const ct_and_tag = packet[ct_begin..ct_end];
 
-    var aad = std.ArrayList(u8){};
-    defer aad.deinit(std.heap.page_allocator);
-    try aad.append(std.heap.page_allocator, header_first);
-    try aad.appendSlice(std.heap.page_allocator, packet[1..i]);
-    try aad.appendSlice(std.heap.page_allocator, pn_masked4[0..pn_len_actual]);
+    // Stack-allocated AAD: 1 byte header + header prefix + up to 4 PN bytes = well under 256.
+    var aad_buf2: [256]u8 = undefined;
+    var aad_stream2 = std.io.fixedBufferStream(&aad_buf2);
+    aad_stream2.writer().writeByte(header_first) catch return error.CiphertextTooShort;
+    aad_stream2.writer().writeAll(packet[1..i]) catch return error.CiphertextTooShort;
+    aad_stream2.writer().writeAll(pn_masked4[0..pn_len_actual]) catch return error.CiphertextTooShort;
+    const aad_items2 = aad_buf2[0..aad_stream2.pos];
 
     var pn_val: u64 = 0;
     var j: usize = 0;
@@ -1179,7 +1185,7 @@ pub fn decode0RTTProtected(
         &keys.key,
         &keys.iv,
         pn_val,
-        aad.items,
+        aad_items2,
         ct_and_tag,
         plaintext,
     ) catch return error.DecryptionFailed;
@@ -1268,6 +1274,7 @@ const Phase57DumpContext = struct {
 };
 
 fn maybeDumpPhase57Failure(ctx: Phase57DumpContext) void {
+    if (!builtin.is_test) return;
     if (phase57_dump_count >= phase57_dump_max) return;
     phase57_dump_count += 1;
     const dump_id = phase57_dump_count;

@@ -98,6 +98,11 @@ build:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
+  cache:
+    key: "zig-cache-${ZIG_VERSION}"
+    paths:
+      - zig-cache/
+      - .zig-cache/
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends libssl-dev
     - *install-zig
@@ -120,6 +125,11 @@ test:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
+  cache:
+    key: "zig-cache-${ZIG_VERSION}"
+    paths:
+      - zig-cache/
+      - .zig-cache/
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends libssl-dev
     - *install-zig
@@ -138,6 +148,11 @@ test-release-safe:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
+  cache:
+    key: "zig-cache-${ZIG_VERSION}"
+    paths:
+      - zig-cache/
+      - .zig-cache/
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends libssl-dev
     - *install-zig
@@ -156,6 +171,11 @@ test-release-fast:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
+  cache:
+    key: "zig-cache-${ZIG_VERSION}"
+    paths:
+      - zig-cache/
+      - .zig-cache/
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends libssl-dev
     - *install-zig
@@ -174,6 +194,11 @@ test-release-small:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
+  cache:
+    key: "zig-cache-${ZIG_VERSION}"
+    paths:
+      - zig-cache/
+      - .zig-cache/
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends libssl-dev
     - *install-zig
@@ -481,6 +506,11 @@ quality-zig-gates:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
+  cache:
+    key: "zig-cache-${ZIG_VERSION}"
+    paths:
+      - zig-cache/
+      - .zig-cache/
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends git libssl-dev
     - *install-zig
@@ -502,7 +532,20 @@ runtime-smoke-macos-saas:
     - if: $ENABLE_NATIVE_RUNTIME_SMOKE == "true" && $CI_COMMIT_TAG
   before_script:
     - ZIG_ARCHIVE="zig-aarch64-macos-${ZIG_VERSION}.tar.xz"
+    - |
+      INDEX_FILE=$(mktemp)
+      curl -fsSL "https://ziglang.org/download/index.json" -o "${INDEX_FILE}"
+      EXPECTED_HASH=$(python3 -c "
+      import json, sys
+      idx = json.load(open('${INDEX_FILE}'))
+      pkg = idx.get('${ZIG_VERSION}', {}).get('aarch64-macos', {})
+      h = pkg.get('shasum', '')
+      if not h: sys.exit('SHA-256 not found for ${ZIG_VERSION}/aarch64-macos')
+      print(h)
+      ")
+      rm -f "${INDEX_FILE}"
     - curl -fsSLO "https://ziglang.org/download/${ZIG_VERSION}/${ZIG_ARCHIVE}"
+    - echo "${EXPECTED_HASH}  ${ZIG_ARCHIVE}" | shasum -a 256 --check
     - tar -xf "${ZIG_ARCHIVE}"
     - export PATH="$PWD/zig-aarch64-macos-${ZIG_VERSION}:$PATH"
   script:
@@ -519,7 +562,20 @@ runtime-smoke-windows-saas:
   script:
     - '$ErrorActionPreference = "Stop"'
     - '$zigArchive = "zig-x86_64-windows-$env:ZIG_VERSION.zip"'
+    - |
+      $indexFile = "$env:TEMP\zig-index.json"
+      Invoke-WebRequest -Uri "https://ziglang.org/download/index.json" -OutFile $indexFile
+      $index = Get-Content $indexFile | ConvertFrom-Json
+      $expectedHash = $index.$env:ZIG_VERSION."x86_64-windows".shasum
+      if (-not $expectedHash) { throw "SHA-256 not found for $env:ZIG_VERSION/x86_64-windows" }
+      Remove-Item $indexFile
     - 'Invoke-WebRequest -Uri "https://ziglang.org/download/$env:ZIG_VERSION/$zigArchive" -OutFile $zigArchive'
+    - |
+      $actualHash = (Get-FileHash -Path $zigArchive -Algorithm SHA256).Hash.ToLower()
+      if ($actualHash -ne $expectedHash) {
+        throw "SHA-256 mismatch: expected $expectedHash, got $actualHash"
+      }
+      Write-Host "SHA-256 verified: $actualHash"
     - 'Expand-Archive -Path $zigArchive -DestinationPath .'
     - '$env:Path = "$pwd\zig-x86_64-windows-$env:ZIG_VERSION;$env:Path"'
     - '.\scripts\native_runtime_smoke.ps1'
@@ -532,6 +588,11 @@ fuzz:
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  cache:
+    key: "zig-cache-${ZIG_VERSION}"
+    paths:
+      - zig-cache/
+      - .zig-cache/
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends libssl-dev
     - *install-zig

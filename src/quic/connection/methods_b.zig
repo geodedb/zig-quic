@@ -1450,11 +1450,7 @@ pub fn bind(comptime Connection: type) type {
 
         pub fn maybeTriggerKeyUpdateOnSend(self: *Connection, bytes_sent: usize) void {
             if (self.app_tx_keys == null or self.app_tx_secret == null) return;
-            if (comptime builtin.os.tag != .windows and builtin.os.tag != .wasi) {
-                if (std.posix.getenv("QUIC_DISABLE_AUTO_KEY_UPDATE")) |v| {
-                    if (v.len == 0 or !std.mem.eql(u8, v, "0")) return;
-                }
-            }
+            if (self.disable_auto_key_update) return;
             // Do not trigger another while an update is in progress
             if (self.tx_update_in_progress) return;
             // Simple thresholds (tunable): after 64 packets or 64 KiB

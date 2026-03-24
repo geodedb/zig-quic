@@ -83,10 +83,32 @@ Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
 - #60: Closed / Implemented.
 - Rank 21: run_endpoint.sh drops privileges to quic user. **Closed / Implemented** (2026-03-22).
 
+## Quality Quick-Wins (2026-03-24)
+
+| ID | Title | File(s) | Status |
+|----|-------|---------|--------|
+| E4+R4 | dumpBytes production leak in crypto_quic.zig | `src/quic/crypto_quic.zig:669` | Closed / Implemented |
+| E4+R4 | page_allocator AAD allocation in packet.zig | `src/quic/packet.zig:699,1164` | Closed / Implemented |
+| A7 | handshakeComplete vs isHandshakeConfirmed conflation | `src/quic/api.zig:157` | Closed / Implemented |
+| R9 | Port-number heuristic for endpoint role detection | `src/quic/endpoint.zig:271` | Closed / Implemented |
+| E9 | Global mutable debug state (phase57 vars) | `src/quic/packet.zig:14-18` | Closed / Implemented |
+| E6 | Missing Zig build cache in CI | `.gitlab-ci.yml` | Closed / Implemented |
+| E7 | Missing SHA-256 verification in macOS/Windows CI | `.gitlab-ci.yml:503-524` | Closed / Implemented |
+
+### Details
+
+- **E4+R4 (dumpBytes):** Uncommented `if (!builtin.is_test) return;` guard so production builds skip the function entirely (no page_allocator allocation).
+- **E4+R4 (AAD):** Replaced `std.ArrayList(u8)` with `std.heap.page_allocator` with stack-allocated `[256]u8` buffer via `std.io.fixedBufferStream` in both `decodeInitialProtected` and `decode0RTTProtected`.
+- **A7:** Changed `handshakeComplete` to return `conn.peer_finished_verified` (RFC 9000 S4.1.1) instead of `conn.hasConfirmedAppTxKeys()`. `isHandshakeConfirmed` retains `hasConfirmedAppTxKeys()` (RFC 9000 S4.1.2).
+- **R9:** Replaced port-number heuristic (`":4433"`, `":443"`) with config-based detection: server if `cert_path` or `inline_server_cert_der` is set. Removed dead `bound_port` computation.
+- **E9:** Gated `phase57_dump_count`, `phase57_attempt_label`, `phase57SetAttemptLabel`, and `maybeDumpPhase57Failure` behind `builtin.is_test` so they are no-ops in production builds.
+- **E6:** Added `cache:` blocks with key `"zig-cache-${ZIG_VERSION}"` to build, test, test-release-safe, test-release-fast, test-release-small, quality-zig-gates, and fuzz CI jobs.
+- **E7:** Added SHA-256 verification to macOS (via `shasum -a 256`) and Windows (via `Get-FileHash`) CI jobs, mirroring the existing Linux `install-zig` template pattern.
+
 ## Delivery Plan Status
 
 ### Quick Wins (<=30 days)
-- Completed: #51, #53, #56, #57, #58, #59, #60, #61, Rank 12, Rank 14, Rank 15, Rank 18.
+- Completed: #51, #53, #56, #57, #58, #59, #60, #61, Rank 12, Rank 14, Rank 15, Rank 18, E4+R4, A7, R9, E9, E6, E7.
 
 ### Medium (<=90 days)
 - Completed: Rank 13, Rank 16, Rank 17, Rank 21.

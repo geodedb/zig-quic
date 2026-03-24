@@ -41,11 +41,7 @@ pub fn bind(comptime Connection: type) type {
 
         fn maybeTriggerKeyUpdateOnSend(self: *Connection, bytes_sent: usize) void {
             if (self.app_tx_keys == null or self.app_tx_secret == null) return;
-            if (comptime builtin.os.tag != .windows and builtin.os.tag != .wasi) {
-                if (std.posix.getenv("QUIC_DISABLE_AUTO_KEY_UPDATE")) |v| {
-                    if (v.len == 0 or !std.mem.eql(u8, v, "0")) return;
-                }
-            }
+            if (self.disable_auto_key_update) return;
             if (self.tx_update_in_progress) return;
             self.tx_sent_packets_since_key +%= 1;
             self.tx_sent_bytes_since_key +%= @intCast(bytes_sent);
@@ -610,13 +606,13 @@ pub fn bind(comptime Connection: type) type {
             }
         }
 
-        fn deriveStatelessResetToken(base: *const [32]u8, sequence: u64, cid_bytes: []const u8) [16]u8 {
+        fn deriveStatelessResetToken(base: *const [32]u8, sequence: u64, cid_bytes: []const u8) error{InvalidCidLength}![16]u8 {
             var ikm_buf: [8 + 20]u8 = undefined;
             var seq_be: [8]u8 = undefined;
             std.mem.writeInt(u64, &seq_be, sequence, .big);
             @memcpy(ikm_buf[0..8], &seq_be);
             const cid_len = cid_bytes.len;
-            if (cid_len > 20) unreachable;
+            if (cid_len > 20) return error.InvalidCidLength;
             @memcpy(ikm_buf[8 .. 8 + cid_len], cid_bytes);
             const prk = ks.extract(base, ikm_buf[0 .. 8 + cid_len]);
             var out: [16]u8 = undefined;
@@ -660,7 +656,7 @@ pub fn bind(comptime Connection: type) type {
             lc.* = .{ .in_use = true, .sequence = seq, .cid = .{ .len = cid_bytes.len, .bytes = undefined }, .reset_token = undefined };
             @memcpy(lc.cid.bytes[0..cid_bytes.len], &cid_bytes);
             self.ensureStatelessResetBase();
-            lc.reset_token = deriveStatelessResetToken(&self.stateless_reset_base, seq, cid_bytes[0..]);
+            lc.reset_token = try deriveStatelessResetToken(&self.stateless_reset_base, seq, cid_bytes[0..]);
             if (i + 1 > self.active_local_cids) self.active_local_cids = @intCast(i + 1);
             return .{ .idx = @intCast(i), .sequence = seq };
         }

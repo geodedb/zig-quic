@@ -606,6 +606,8 @@ pub const Connection = struct {
     tx_update_in_progress: bool = false,
     tx_update_start_pn: u64 = 0,
     tx_sent_packets_since_key: u64 = 0,
+    // Disable automatic key update (replaces QUIC_DISABLE_AUTO_KEY_UPDATE env var)
+    disable_auto_key_update: bool = false,
     /// Coalesce sustained *_BLOCKED noise: remember last advertised limits we signaled
     last_stream_data_blocked_limit: u64 = 0,
     last_data_blocked_limit: u64 = 0,
@@ -1531,9 +1533,6 @@ pub const Connection = struct {
     /// localhost in our implementation-specific carve-out).
     /// Return true if currently exceeding allowed 3x amplification limit.
     pub fn overAmplification(self: *const Connection) bool {
-        if (std.posix.getenv("QUIC_DISABLE_AMPLIFICATION_LIMIT")) |v| {
-            if (v.len == 0 or !std.mem.eql(u8, v, "0")) return false;
-        }
         if (self.address_validated) return false;
 
         // CANARY: REQ=REQ-TRANSPORT-001; FEATURE="AmplificationProtection"; ASPECT=LocalhostExemption; STATUS=IMPLEMENTED; OWNER=transport; UPDATED=2025-10-15

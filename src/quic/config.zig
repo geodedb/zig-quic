@@ -27,7 +27,7 @@ pub const QuicConfig = struct {
     // RFC 9368 Compatible Version Negotiation toggle
     compatible_vn: bool = false,
     // Retry configuration (server) (RFC 9000 §8.1: stateless retry)
-    enable_retry: bool = false,
+    enable_retry: bool = true,
     // MAC secret for Retry/NEW_TOKEN tokens (RFC 9000 §8.1.4)
     token_secret: ?[]const u8 = null,
     token_expiry_ms: u32 = 60000,
