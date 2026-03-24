@@ -9,17 +9,16 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 ## Summary
 
 - Total findings: 31
-- Status counts: `Open=3`, `Partially Closed=2`, `Closed/Implemented=26`
+- Status counts: `Open=1`, `Closed/Implemented=30`
 - Severity totals:
   - Critical: 2 (`Open=0`, `Closed=2`)
   - High: 9 (`Open=0`, `Closed=9`)
-  - Medium: 14 (`Open=0`, `Partially Closed=1`, `Closed=13`)
-  - Low: 6 (`Open=1`, `Partially Closed=1`, `Closed=4`)
+  - Medium: 14 (`Open=0`, `Closed=14`)
+  - Low: 6 (`Open=1`, `Closed=5`)
 
 ### Top Active Risks
 
 1. **#115 (Low, PriorityScore 24)** -- Connection struct 1711 LOC, 160 fields + non-domain-aligned method split
-2. **#110 (Medium, Partially Closed)** -- 40+ state-corrupting `catch {}` patterns (phase 1 fixed ~15 most dangerous)
 
 ---
 
@@ -38,7 +37,7 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 | 9 | E7 | Medium | 36 | ci-cd | macOS/Windows CI downloads Zig without SHA-256 verification | CI / Platform | `.gitlab-ci.yml:503-524` | [#102](https://gitlab.com/devnw/zig/quic/-/issues/102) | Added SHA-256 verification for macOS/Windows CI jobs | CI | S (30 min) | Closed / Implemented |
 | 10 | R5-R6 | Medium | 36 | architecture | Parallel monolithic + modular frame/recovery modules | Transport | `endpoint/frame_handler.zig` vs `incoming/module_b*.zig` | [#103](https://gitlab.com/devnw/zig/quic/-/issues/103) | Documented: deprecated monolithic files with doc comments; build wires modular versions | Core QUIC | M-L (2-4h) | Closed / Implemented |
 | 11 | R9 | Medium | 36 | api-contract | Heuristic endpoint role detection by port number | Transport | `endpoint.zig:270-274` | [#107](https://gitlab.com/devnw/zig/quic/-/issues/107) | Replaced port heuristic with cert_path-based detection | Core QUIC | S (20 min) | Closed / Implemented |
-| 12 | E3 | Medium | 36 | maintainability | 40+ state-corrupting `catch {}` patterns in core modules | Transport | 287 occurrences across 63 files | [#110](https://gitlab.com/devnw/zig/quic/-/issues/110) | Phase 1: fixed ~15 most dangerous patterns in incoming.zig, methods_b.zig, endpoint.zig; remaining documented as tech debt | Core QUIC | L (4-8h) | Partially Closed |
+| 12 | E3 | Medium | 36 | maintainability | 40+ state-corrupting `catch {}` patterns in core modules | Transport | 287 occurrences across 63 files | [#110](https://gitlab.com/devnw/zig/quic/-/issues/110) | All 75 `catch {}` patterns in `src/quic/` eliminated (phases 1+2). Phase 1 fixed ~15 critical patterns; phase 2 fixed remaining 60 with proper logging. Commit bf8cf7f audited remaining catch sites. | Core QUIC | L (4-8h) | Closed / Implemented |
 | 13 | D1-D5 | Low | 24 | docs | Documentation gaps -- no architecture doc, sparse doc comments | Docs | No `docs/ARCHITECTURE.md`; many public fns undocumented | [#113](https://gitlab.com/devnw/zig/quic/-/issues/113) | Created `docs/ARCHITECTURE.md` covering module layout, mixin pattern, migration status, threading model, data flows | Docs | Ongoing | Closed / Implemented |
 | 14 | R7-R8 | Low | 24 | architecture | Connection struct 1711 LOC, 160 fields + non-domain-aligned method split | Transport | `conn.zig` (1711 lines), `methods_a/b/c.zig` | [#115](https://gitlab.com/devnw/zig/quic/-/issues/115) | Re-split by domain concern | Core QUIC | L | Open |
 | 15 | E9 | Low | 16 | cleanup | Global mutable debug state -- data race, debug scaffolding | Core | Module-level mutable `var` for debug control | [#117](https://gitlab.com/devnw/zig/quic/-/issues/117) | Gated phase57 vars behind `builtin.is_test`; no-ops in production | Core QUIC | S (5 min) | Closed / Implemented |
@@ -85,7 +84,7 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 - [#87](https://gitlab.com/devnw/zig/quic/-/issues/87) **Closed** -- unreachable on peer CID (Critical). Fixed in Batch A (error.InvalidCidLength).
 - [#96](https://gitlab.com/devnw/zig/quic/-/issues/96) **Closed** -- ghost connections from silent catch {}. Fixed in Batch B (proper cleanup on map put failure).
 - [#99](https://gitlab.com/devnw/zig/quic/-/issues/99) **Closed** -- triplicated crypto functions deduplicated into canonical locations.
-- [#110](https://gitlab.com/devnw/zig/quic/-/issues/110) **Partially Closed** -- Phase 1 fixed ~15 most dangerous catch {} patterns in incoming.zig, methods_b.zig, endpoint.zig. Remaining ~270 patterns documented as tech debt.
+- [#110](https://gitlab.com/devnw/zig/quic/-/issues/110) **Closed / Implemented** -- All 75 `catch {}` patterns in `src/quic/` eliminated across phases 1+2. Phase 1 fixed ~15 critical patterns; phase 2 fixed remaining 60 with proper logging (commits c7e8d6d, bf8cf7f).
 
 ### api-contract
 - [#98](https://gitlab.com/devnw/zig/quic/-/issues/98) **Closed** -- handshakeComplete == isHandshakeConfirmed. Fixed in Batch A (returns peer_finished_verified).
@@ -130,8 +129,8 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 - Completed: #67, #68, #69, #73, #76, #77, #96, #99, #103.
 
 ### Strategic (> 5 days)
-- **Partially Closed**: #110 (phase 1 complete, remaining ~270 patterns)
-- **Open**: #115 (Large, deferred)
+- **Closed**: #110 (all 75 patterns eliminated across phases 1+2)
+- **Open**: #115 (Large, deferred -- connection struct refactor)
 - Completed: #62, #70, #75, #113.
 
 ---
@@ -140,6 +139,6 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 
 1. CI/CD hash/toolchain pinning and Docker tag digest pinning are intentionally tracked as **won't do** at repo level (see security issues #54 and #55); controls are external. Note: #102 specifically addresses platform-specific (macOS/Windows) hash verification gaps that were not covered by the external controls.
 2. Pre-commit hook pinning/enforcement is also externalized; do not create repo-local gaps for that unless governance ownership changes.
-3. The `catch {}` audit (#110) can now proceed independently -- #96 (ghost connections) was fixed in Batch B with proper cleanup on map put failure.
+3. The `catch {}` audit (#110) is complete -- all 75 patterns in `src/quic/` eliminated. #96 (ghost connections) was fixed in Batch B with proper cleanup on map put failure.
 4. Code deduplication (#99) and the CID unreachable fix (#87) are both closed.
 5. The `dumpBytes` fix (#93) overlaps with the closed security issue #56 (debug logging leaks secrets). The #56 fix addressed the logger level; #93 addresses the separately-guarded `dumpBytes` function that bypasses the logger gate.

@@ -401,7 +401,6 @@ const stream_mod = @import("connection/stream.zig");
 const Segment = stream_mod.Segment;
 pub const StreamRx = stream_mod.StreamRx;
 
-
 // Per-space ECN counters for ACK_ECN emission
 const EcnCounter = struct {
     ect0: u64 = 0,

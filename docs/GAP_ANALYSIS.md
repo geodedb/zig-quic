@@ -141,6 +141,22 @@ Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
 
 - None.
 
+## Deferred Backlog
+
+Items below are intentionally deferred due to scope, effort, or architectural prerequisites. They are not blocked but require dedicated planning cycles.
+
+| Item | Domain | Effort | Reason for Deferral |
+|------|--------|--------|---------------------|
+| #108 CUBIC congestion control | Perf | 5-10 days | RFC 8312 implementation; NewReno is functional baseline |
+| #109 GSO/frame coalescing | Perf | 10-20 days | Major transport rewrite for PacketBuilder + Linux GSO |
+| #115 Connection struct refactor | Quality | Large (4970 LOC mixin pattern) | Domain-aligned re-split across methods_a/b/c.zig |
+| GAP-0004 Test stubs (#88) | Quality | XL (519 stubs) | 61% of integration tests are SkipZigTest placeholders |
+| Endpoint mutex per-connection locking | Perf | 5-10 days | Requires per-connection lock granularity change |
+| #90 sent_packets ring buffer | Perf | 2-3 days | Bounded pruning added (b501cba); ring buffer migration remaining |
+| #121 0-RTT anti-replay | Security | 5-10 days | RFC 8446 S8 / RFC 9001 S9.2 anti-replay cache |
+| #111 Frame alloc caps hardening | Security | 2-3 days | Partial caps added (Batch B); full hardening needed |
+| #114 allow_insecure Retry hardening | Security | 1-2 days | Scope narrowed (Batch B); further removal from Retry path |
+
 ## HTTP/3 Adapter Requirements
 
 The HTTP/3 library (`../http3`) depends on this QUIC library via the `QuicOps` vtable abstraction defined in `../http3/src/h3/core/events.zig`. The vtable has two operations (`poll` → `TransportEvent`, `apply` ← `Action`) that bridge the two libraries without a hard import dependency. The concrete adapter lives at `../http3/src/h3/interop/devnw_quic_adapter.zig`.

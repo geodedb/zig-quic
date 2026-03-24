@@ -15,20 +15,20 @@
 | Severity | Open | Partially Fixed | Closed / Implemented | Total |
 |----------|------|-----------------|----------------------|-------|
 | Critical | 0 | 0 | 0 | 0 |
-| High | 1 | 2 | 1 | 4 |
+| High | 0 | 2 | 2 | 4 |
 | Medium | 1 | 0 | 6 | 7 |
 | Low | 3 | 0 | 0 | 3 |
-| **Total** | **5** | **2** | **7** | **14** |
+| **Total** | **4** | **2** | **8** | **14** |
 
-Notes: #111 (High, frame alloc caps) partially fixed in Batch B. #114 (High, allow_insecure) partially fixed in Batch B (narrowed scope).
+Notes: #111 (High, frame alloc caps) partially fixed in Batch B. #114 (High, allow_insecure) partially fixed in Batch B (narrowed scope). #118 (High, mTLS wiring) closed in commit bf8cf7f.
 
-### Top 5 Risks
+### Top Residual Risks
 
-1. **Unbounded heap allocation from wire varint (OOM DoS)** -- Risk 80 -- A single crafted packet can trigger multi-GB allocation via `frame.decode` reader path.
-2. **`allow_insecure` bypasses Retry integrity and CID matching (connection hijack)** -- Risk 64 -- Attacker-crafted Retry packet redirects connections when insecure mode is active.
-3. **Env var `QUIC_DISABLE_AMPLIFICATION_LIMIT` disables RFC 9000 amplification protection (DDoS reflector)** -- Risk 60 -- Process-level env var turns server into a 100x+ amplification reflector.
-4. **mTLS `request_client_cert` silently ignored (false enforcement)** -- Risk 48 -- Operators believe mTLS is active, but all clients are accepted unauthenticated.
-5. **`unreachable` on CID > 20 bytes (crash via crafted frame)** -- Risk 48 -- Crafted NEW_CONNECTION_ID frame with oversized CID crashes the server process.
+1. **Unbounded heap allocation from wire varint (OOM DoS)** -- Risk 80 -- Partially fixed (Batch B caps); full mitigation may need further hardening. (#111)
+2. **`allow_insecure` bypasses Retry integrity and CID matching (connection hijack)** -- Risk 64 -- Partially fixed (Batch B narrowed scope); further hardening needed. (#114)
+3. **No 0-RTT anti-replay detection** -- Risk 36 -- RFC 8446 S8 / RFC 9001 S9.2 require anti-replay for 0-RTT data. (#121)
+4. **Global mutable state in crypto/debug code** -- Risk 16 -- Thread safety risk from unsynchronized debug variables. (Low)
+5. **Test certificates in Docker image** -- Risk 12 -- Ephemeral cert generation preferred. (Low)
 
 ---
 
@@ -39,7 +39,7 @@ Notes: #111 (High, frame alloc caps) partially fixed in Batch B. #114 (High, all
 | 1 | High | 80 | Unbounded heap alloc from wire varint -- OOM DoS | frame parser | CWE-770 / A06:2021 | `frame/frame.zig:367,380,422,435,487,529` | [#111](https://gitlab.com/devnw/zig/quic/-/issues/111) CONFIDENTIAL | Allocation caps added to frame/frame.zig (Batch B); full mitigation may need further hardening | TBD | 2026-04-23 | Partially Fixed |
 | 2 | High | 64 | `allow_insecure` bypasses Retry integrity + CID match -- connection hijack | endpoint | CWE-287 / A07:2021 | `endpoint.zig:1007-1020` | [#114](https://gitlab.com/devnw/zig/quic/-/issues/114) CONFIDENTIAL | Scope of `allow_insecure` narrowed in Batch B; further hardening needed | TBD | 2026-04-23 | Partially Fixed |
 | 3 | High | 60 | Env var disables amplification limit -- DDoS reflector | conn | CWE-1188 / A05:2021 | `conn.zig:1534` | [#116](https://gitlab.com/devnw/zig/quic/-/issues/116) CONFIDENTIAL | Env var removed entirely; config field used instead (Batch A, commit 7034861) | Core QUIC | 2026-03-24 | Closed / Implemented |
-| 4 | High | 48 | mTLS `request_client_cert` silently ignored | handshake | CWE-295 / A07:2021 | `handshake_integration.zig:334-336` | [#118](https://gitlab.com/devnw/zig/quic/-/issues/118) | Wire parameter through to TLS context; reject if unsupported | TBD | 2026-04-23 | Open |
+| 4 | High | 48 | mTLS `request_client_cert` silently ignored | handshake | CWE-295 / A07:2021 | `handshake_integration.zig:334-336` | [#118](https://gitlab.com/devnw/zig/quic/-/issues/118) | Removed `_ = ...` discards; wired `request_client_cert`, `client_cert_der`, `client_key_der` into `tls13.Config` struct literal (commit bf8cf7f) | Core QUIC | 2026-03-24 | Closed / Implemented |
 | 5 | Medium | 48 | `unreachable` on CID > 20 bytes -- server crash | connection | CWE-617 / A06:2021 | `reset_token.zig:10`, `connection_id.zig:38`, `methods_c.zig:619` | [#119](https://gitlab.com/devnw/zig/quic/-/issues/119) | Replaced `unreachable` with `error.InvalidCidLength` (Batch A, commit 7034861) | Core QUIC | 2026-03-24 | Closed / Implemented |
 | 6 | Medium | 48 | Retry integrity tag function signature mismatch -- broken retry | server | CWE-628 / A06:2021 | `server.zig:196` | [#120](https://gitlab.com/devnw/zig/quic/-/issues/120) | Fixed to 3-arg call (Batch A, commit 7034861) | Core QUIC | 2026-03-24 | Closed / Implemented |
 | 7 | Medium | 36 | No 0-RTT anti-replay detection | connection | CWE-294 / A08:2021 | `methods_a.zig:971-973` | [#121](https://gitlab.com/devnw/zig/quic/-/issues/121) | Implement server-side anti-replay cache (ticket age, strike register, or bloom filter) | TBD | 2026-06-22 | Open |
@@ -153,6 +153,8 @@ _ = client_key_der; // mTLS: deferred to TLS library support
 **Fix guidance**: Either (a) wire the mTLS parameters through to the TLS context when TLS library support is available, or (b) return an explicit error or emit a warning log when `request_client_cert` is set but the feature is not yet implemented, so operators are not silently misled.
 
 **How to verify**: Configure server with `request_client_cert = true`. Attempt connection without a client certificate. Connection should be rejected (or at minimum, a warning should be logged).
+
+**Resolution (2026-03-24, commit bf8cf7f):** Removed three `_ = ...` discard lines and added `.request_client_cert`, `.client_cert_der`, `.client_key_der` fields to the `tls13.Config` struct literal in `handshake_integration.zig`. mTLS parameters are now wired through to the TLS context. **Status: Closed / Implemented.**
 
 ---
 
@@ -404,10 +406,10 @@ if (out_len < ranges_buf.len) {
 
 ### Strategic (> 5 days)
 
-| Finding | Effort | Impact |
-|---------|--------|--------|
-| 1.2 -- Complete mTLS integration | 5--10 days | Enables mutual TLS enforcement |
-| 3.2 -- Implement 0-RTT anti-replay | 5--10 days | RFC compliance, prevents replay attacks |
+| Finding | Effort | Impact | Status |
+|---------|--------|--------|--------|
+| 1.2 -- Complete mTLS integration | 5--10 days | Enables mutual TLS enforcement | **Closed** (commit bf8cf7f) |
+| 3.2 -- Implement 0-RTT anti-replay | 5--10 days | RFC compliance, prevents replay attacks | Open |
 
 ---
 
