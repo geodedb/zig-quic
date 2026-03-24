@@ -93,3 +93,7 @@ logs/*.log
 
 # Local interop examples (generated/cloned, not committed)
 examples/interop/quic-network-simulator/
+
+# Build artifacts — Rust target dirs and local test binaries
+test-clients/legacy-clients/rust/target/
+quic-test/
