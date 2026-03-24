@@ -3,65 +3,62 @@
 # Copyright (c) 2024-2025 CodePros
 
 include:
-  # Zig build and test
-  - component: gitlab.com/devnw/ci-catalog/zig-build@v1.9.5
-    inputs:
-      stage: build
-      zig_version: '0.15.1'
-      build_options: '-Drelease-safe=true cli'
-      extra_packages: 'libssl-dev'
-
-  - component: gitlab.com/devnw/ci-catalog/zig-test@v1.9.5
-    inputs:
-      stage: test
-      zig_version: '0.15.1'
-      extra_packages: 'libssl-dev'
-
   # Security scanning
-  - component: gitlab.com/devnw/ci-catalog/security-sast@v1.9.5
-    inputs:
-      stage: security
+  - component: gitlab.com/devnw/ci-catalog/security-sast@v1.7.1
+  - component: gitlab.com/devnw/ci-catalog/security-dependency-scanning@v1.7.1
+  - component: gitlab.com/devnw/ci-catalog/security-secrets@v1.7.1
+  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@v1.7.1
 
-  - component: gitlab.com/devnw/ci-catalog/security-dependency-scanning@v1.9.5
-    inputs:
-      stage: security
+  # Code quality
+  - component: gitlab.com/devnw/ci-catalog/zig-format@v1.2.1
 
-  - component: gitlab.com/devnw/ci-catalog/security-secrets@v1.9.5
-    inputs:
-      stage: security
+  # SBOM
+  - component: gitlab.com/devnw/ci-catalog/sbom-generate@v1.7.1
+  - component: gitlab.com/devnw/ci-catalog/sbom-scan@v1.7.1
 
-  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@v1.9.5
-    inputs:
-      stage: security
-
-  # SBOM generation and scanning
-  - component: gitlab.com/devnw/ci-catalog/sbom-generate@v1.9.5
-    inputs:
-      stage: sbom
-
-  - component: gitlab.com/devnw/ci-catalog/sbom-scan@v1.9.5
-    inputs:
-      stage: sbom
-      allow_failure: false
-
-  # Release creation (with proper release notes from commits/tags)
-  - component: gitlab.com/devnw/ci-catalog/release-semantic@v1.9.7
-    inputs:
-      stage: release
-
-default:
-  tags:
-    - company
-    - linux
+  # Release
+  - component: gitlab.com/devnw/ci-catalog/release-semantic@v1.7.1
 
 stages:
+  - lint
   - build
   - test
   - e2e
+  - fuzz
   - security
   - sbom
   - release
   - maintenance
+
+variables:
+  ZIG_VERSION: "0.15.2"
+
+# Install Zig with SHA-256 verification via python3
+.install-zig: &install-zig
+  - apt-get update && apt-get install -y --no-install-recommends ca-certificates curl python3 xz-utils
+  - ZIG_ARCHIVE="zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+  - ZIG_URL="https://ziglang.org/download/${ZIG_VERSION}/${ZIG_ARCHIVE}"
+  - ZIG_SHA256_URL="https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz.minisig"
+  - curl -fsSLO "${ZIG_URL}"
+  - curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/sha256sums.txt" -o sha256sums.txt
+  - python3 -c "
+    import hashlib, sys
+    digest = hashlib.sha256(open('${ZIG_ARCHIVE}', 'rb').read()).hexdigest()
+    expected = [l.split()[0] for l in open('sha256sums.txt') if '${ZIG_ARCHIVE}' in l]
+    if not expected:
+        sys.exit('SHA-256 entry not found for ${ZIG_ARCHIVE}')
+    if digest != expected[0]:
+        sys.exit(f'SHA-256 mismatch: got {digest}, expected {expected[0]}')
+    print(f'SHA-256 verified: {digest}')
+    "
+  - tar -xf "${ZIG_ARCHIVE}"
+  - export PATH="$PWD/zig-x86_64-linux-${ZIG_VERSION}:$PATH"
+  - zig version
+
+# zig-format component override: inject Zig install before format check
+zig-format:
+  before_script:
+    - *install-zig
 
 # E2E tests with multiple QUIC client implementations
 # Tests Python (aioquic), Go (quic-go), Rust (quinn), and Zig clients
@@ -73,13 +70,104 @@ stages:
       -subj "/CN=localhost/O=Test/C=US" \
       -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
 
+build:
+  stage: build
+  image: debian:bookworm-slim
+  tags:
+    - saas-linux-medium-amd64
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends libssl-dev
+    - *install-zig
+  script:
+    - zig build
+  artifacts:
+    paths:
+      - zig-out/
+    expire_in: 1 day
+
+test:
+  stage: test
+  image: debian:bookworm-slim
+  tags:
+    - saas-linux-medium-amd64
+  needs:
+    - job: build
+      artifacts: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends libssl-dev
+    - *install-zig
+  script:
+    - zig build test --summary all
+
+test-release-safe:
+  stage: test
+  image: debian:bookworm-slim
+  tags:
+    - saas-linux-medium-amd64
+  needs:
+    - job: build
+      artifacts: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends libssl-dev
+    - *install-zig
+  script:
+    - zig build test -Doptimize=ReleaseSafe --summary all
+
+test-release-fast:
+  stage: test
+  image: debian:bookworm-slim
+  tags:
+    - saas-linux-medium-amd64
+  needs:
+    - job: build
+      artifacts: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends libssl-dev
+    - *install-zig
+  script:
+    - zig build test -Doptimize=ReleaseFast --summary all
+
+test-release-small:
+  stage: test
+  image: debian:bookworm-slim
+  tags:
+    - saas-linux-medium-amd64
+  needs:
+    - job: build
+      artifacts: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends libssl-dev
+    - *install-zig
+  script:
+    - zig build test -Doptimize=ReleaseSmall --summary all
+
 e2e-test-python:
   stage: e2e
   image: python:3.12-slim
   tags:
     - saas-linux-medium-amd64
   needs:
-    - job: "zig-build-0.15.1"
+    - job: build
       artifacts: true
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -98,7 +186,7 @@ e2e-test-python:
     # Generate test certificates
     - *generate-test-certs
   script:
-    # Server binary already built by zig-build job
+    # Server binary already built by build job
     - ls -la zig-out/bin/
     # Start server
     - ./zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server-cert.pem --key server-key.pem --insecure > /tmp/server.log 2>&1 &
@@ -122,7 +210,7 @@ e2e-test-go:
   tags:
     - saas-linux-medium-amd64
   needs:
-    - job: "zig-build-0.15.1"
+    - job: build
       artifacts: true
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -144,7 +232,7 @@ e2e-test-go:
     # Generate test certificates
     - *generate-test-certs
   script:
-    # Server binary already built by zig-build job
+    # Server binary already built by build job
     - ls -la zig-out/bin/
     # Start server
     - ./zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server-cert.pem --key server-key.pem --insecure > /tmp/server.log 2>&1 &
@@ -168,7 +256,7 @@ e2e-test-rust:
   tags:
     - saas-linux-medium-amd64
   needs:
-    - job: "zig-build-0.15.1"
+    - job: build
       artifacts: true
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -193,7 +281,7 @@ e2e-test-rust:
     # Generate test certificates
     - *generate-test-certs
   script:
-    # Server binary already built by zig-build job
+    # Server binary already built by build job
     - ls -la zig-out/bin/
     # Start server
     - ./zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server-cert.pem --key server-key.pem --insecure > /tmp/server.log 2>&1 &
@@ -217,7 +305,7 @@ e2e-test-zig:
   tags:
     - saas-linux-medium-amd64
   needs:
-    - job: "zig-build-0.15.1"
+    - job: build
       artifacts: true
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -228,7 +316,7 @@ e2e-test-zig:
     # Generate test certificates
     - *generate-test-certs
   script:
-    # Server and client binaries already built by zig-build job
+    # Server and client binaries already built by build job
     - ls -la zig-out/bin/
     # Start server
     - ./zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server-cert.pem --key server-key.pem --insecure > /tmp/server.log 2>&1 &
@@ -255,7 +343,7 @@ interop-test:
   tags:
     - saas-linux-medium-amd64
   needs:
-    - job: "zig-build-0.15.1"
+    - job: build
       artifacts: true
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -375,13 +463,8 @@ quality-zig-gates:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git libssl-dev xz-utils
-    - ZIG_VERSION="0.15.1"
-    - ZIG_ARCHIVE="zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
-    - curl -fsSLO "https://ziglang.org/download/${ZIG_VERSION}/${ZIG_ARCHIVE}"
-    - tar -xf "${ZIG_ARCHIVE}"
-    - export PATH="$PWD/zig-x86_64-linux-${ZIG_VERSION}:$PATH"
-    - zig version
+    - apt-get update && apt-get install -y --no-install-recommends git libssl-dev
+    - *install-zig
   script:
     - git ls-files '*.zig' | xargs -r zig fmt --check
     - zig build examples
@@ -399,7 +482,6 @@ runtime-smoke-macos-saas:
     - if: $ENABLE_NATIVE_RUNTIME_SMOKE == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $ENABLE_NATIVE_RUNTIME_SMOKE == "true" && $CI_COMMIT_TAG
   before_script:
-    - ZIG_VERSION="0.15.1"
     - ZIG_ARCHIVE="zig-aarch64-macos-${ZIG_VERSION}.tar.xz"
     - curl -fsSLO "https://ziglang.org/download/${ZIG_VERSION}/${ZIG_ARCHIVE}"
     - tar -xf "${ZIG_ARCHIVE}"
@@ -417,12 +499,31 @@ runtime-smoke-windows-saas:
     - if: $ENABLE_NATIVE_RUNTIME_SMOKE == "true" && $CI_COMMIT_TAG
   script:
     - '$ErrorActionPreference = "Stop"'
-    - '$zigVersion = "0.15.1"'
-    - '$zigArchive = "zig-x86_64-windows-$zigVersion.zip"'
-    - 'Invoke-WebRequest -Uri "https://ziglang.org/download/$zigVersion/$zigArchive" -OutFile $zigArchive'
+    - '$zigArchive = "zig-x86_64-windows-$env:ZIG_VERSION.zip"'
+    - 'Invoke-WebRequest -Uri "https://ziglang.org/download/$env:ZIG_VERSION/$zigArchive" -OutFile $zigArchive'
     - 'Expand-Archive -Path $zigArchive -DestinationPath .'
-    - '$env:Path = "$pwd\zig-x86_64-windows-$zigVersion;$env:Path"'
+    - '$env:Path = "$pwd\zig-x86_64-windows-$env:ZIG_VERSION;$env:Path"'
     - '.\scripts\native_runtime_smoke.ps1'
+
+fuzz:
+  stage: fuzz
+  image: debian:bookworm-slim
+  tags:
+    - saas-linux-medium-amd64
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends libssl-dev
+    - *install-zig
+  script:
+    - zig build fuzz --summary all
+  artifacts:
+    when: always
+    paths:
+      - zig-out/fuzz/
+    expire_in: 7 days
+  allow_failure: true
 
 security-rust-cargo-audit:
   stage: security
