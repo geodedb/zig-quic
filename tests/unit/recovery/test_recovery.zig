@@ -75,7 +75,8 @@ test "coordinator re-exports Cubic from congestion module" {
 }
 
 test "coordinator re-exports computePacingDelayNs function" {
-    const delay = recovery.computePacingDelayNs(10000, 5000);
+    // bytes_in_flight (5000) <= cwnd/2 (5000), so delay is 0
+    const delay = recovery.computePacingDelayNs(10000, 5000, 100_000, 1200);
     try testing.expectEqual(@as(u64, 0), delay);
 }
 

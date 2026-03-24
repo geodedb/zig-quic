@@ -74,7 +74,9 @@ const SpaceState = struct {
         // Rebuild sent_index after compaction
         self.sent_index.clearRetainingCapacity();
         for (self.sent.items, 0..) |sp, i| {
-            self.sent_index.put(sp.pn, i) catch {};
+            self.sent_index.put(sp.pn, i) catch |err| {
+                logger.err("sent_index rebuild put failed (OOM): {s}", .{@errorName(err)});
+            };
         }
     }
 
@@ -96,7 +98,9 @@ const SpaceState = struct {
         // Rebuild index with corrected positions
         self.sent_index.clearRetainingCapacity();
         for (self.sent.items, 0..) |sp, i| {
-            self.sent_index.put(sp.pn, i) catch {};
+            self.sent_index.put(sp.pn, i) catch |err| {
+                logger.err("sent_index rebuild put failed (OOM): {s}", .{@errorName(err)});
+            };
         }
     }
 };

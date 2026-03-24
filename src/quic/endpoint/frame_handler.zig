@@ -132,7 +132,9 @@ pub fn handleDatagram(
     d: frame.Datagram,
 ) !FrameResult {
     // Push datagram to receive queue
-    ctx.conn.pushDatagram(d.data) catch {};
+    ctx.conn.pushDatagram(d.data) catch |err| {
+        logger.warn("pushDatagram failed: {s}", .{@errorName(err)});
+    };
 
     // Optional DATAGRAM echo response (test/debugging feature)
     if (ctx.cfg.enable_datagram) {
@@ -161,7 +163,9 @@ pub fn handleDatagram(
 
             if (pkt_len != 0) {
                 const pkt = packet_storage[0..pkt_len];
-                _ = ctx.send_fn(ctx.peer, pkt) catch {};
+                _ = ctx.send_fn(ctx.peer, pkt) catch |err| {
+                    logger.warn("DATAGRAM echo send failed: {s}", .{@errorName(err)});
+                };
                 ctx.conn.onShortHeaderPacketSent(pkt.len, true);
             }
         }
@@ -254,7 +258,9 @@ pub fn handleMaxStreamData(
             logger.debugPrint("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) increased window from {}\n", .{ m.stream_id, m.max, old_max });
             // QUIC-H3-004: If the stream was blocked at the old limit, it is now writable.
             if (tx.off >= old_max and tx.off < m.max) {
-                ctx.conn.writable_streams.append(ctx.allocator.*, m.stream_id) catch {};
+                ctx.conn.writable_streams.append(ctx.allocator.*, m.stream_id) catch |err| {
+                    logger.err("writable_streams.append failed (OOM): {s}", .{@errorName(err)});
+                };
             }
         } else {
             logger.debugPrint("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) ignored (current={})\n", .{ m.stream_id, m.max, tx.peer_max_stream_data });
@@ -389,7 +395,9 @@ pub fn handlePathChallenge(
 
         if (pkt_len != 0) {
             const pkt = packet_storage[0..pkt_len];
-            _ = ctx.send_fn(ctx.peer, pkt) catch {};
+            _ = ctx.send_fn(ctx.peer, pkt) catch |err| {
+                logger.warn("PATH_RESPONSE send failed: {s}", .{@errorName(err)});
+            };
             ctx.conn.onShortHeaderPacketSent(pkt.len, true);
         }
     }
@@ -427,7 +435,9 @@ pub fn handleNewToken(
     nt: frame.NewToken,
 ) !FrameResult {
     ctx.conn.initial_token.clearRetainingCapacity();
-    _ = ctx.conn.initial_token.appendSlice(ctx.allocator.*, nt.token) catch {};
+    _ = ctx.conn.initial_token.appendSlice(ctx.allocator.*, nt.token) catch |err| {
+        logger.err("NEW_TOKEN appendSlice failed (OOM): {s}", .{@errorName(err)});
+    };
     return .{ .saw_ack_eliciting = true };
 }
 
@@ -440,7 +450,9 @@ pub fn handleNewToken(
 /// The peer is requesting that we stop sending on the identified stream.
 /// We respond by marking our TX as aborted and sending RESET_STREAM.
 fn handleStopSending(ctx: *FrameContext, ss: frame.StopSending) FrameResult {
-    ctx.conn.handleStopSending(ss.stream_id, ss.error_code) catch {};
+    ctx.conn.handleStopSending(ss.stream_id, ss.error_code) catch |err| {
+        logger.warn("handleStopSending failed for stream {d}: {s}", .{ ss.stream_id, @errorName(err) });
+    };
     return .{ .saw_ack_eliciting = true };
 }
 

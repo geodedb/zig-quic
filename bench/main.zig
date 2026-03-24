@@ -108,6 +108,7 @@ pub fn main() !void {
 
     // Micro-bench 2: pacing delay computation with varying in-flight levels
     var nr = rec.NewReno{ .mds = 1200, .cwnd = 12000 };
+    const bench_rtt_ns: u64 = 100_000; // 100us representative RTT for benchmark
     var sum_delay: u128 = 0;
     var delay_buf: u64 = 0;
     const iters2: usize = 100_000;
@@ -115,7 +116,7 @@ pub fn main() !void {
     for (0..iters2) |i| {
         // sweep bytes_in_flight between 0..1.5*cwnd in a stable pattern
         nr.bytes_in_flight = (@as(usize, (i % (nr.cwnd + nr.cwnd / 2))));
-        delay_buf = rec.computePacingDelayNs(nr.cwnd, nr.bytes_in_flight);
+        delay_buf = rec.computePacingDelayNs(nr.cwnd, nr.bytes_in_flight, bench_rtt_ns, nr.mds);
         sum_delay += delay_buf;
     }
     const dt2 = timer.read();
@@ -131,7 +132,7 @@ pub fn main() !void {
     var sink: u64 = 0;
     for (0..samples) |i| {
         const bif = @as(usize, i % (nr.cwnd + nr.cwnd / 2));
-        sink ^= rec.computePacingDelayNs(nr.cwnd, bif);
+        sink ^= rec.computePacingDelayNs(nr.cwnd, bif, bench_rtt_ns, nr.mds);
     }
     const off_ns = timer.read();
 
@@ -140,7 +141,7 @@ pub fn main() !void {
     var cnt_nonzero: usize = 0;
     for (0..samples) |i| {
         const bif = @as(usize, i % (nr.cwnd + nr.cwnd / 2));
-        const d = rec.computePacingDelayNs(nr.cwnd, bif);
+        const d = rec.computePacingDelayNs(nr.cwnd, bif, bench_rtt_ns, nr.mds);
         if (d != 0) cnt_nonzero += 1;
         sink ^= d;
     }

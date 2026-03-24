@@ -326,44 +326,84 @@ test "Cubic can be used as drop-in replacement for NewReno" {
 }
 
 // =============================================================================
-// Pacing Delay Tests
+// Pacing Delay Tests (RFC 9002 Section 7.7)
 // =============================================================================
 
-test "computePacingDelayNs returns 0 when bytes_in_flight < cwnd/2" {
+test "RFC 9002 §7.7 - computePacingDelayNs returns 0 when bytes_in_flight <= cwnd/2" {
     const cwnd: usize = 10000;
     const bytes_in_flight: usize = 4000; // Less than half
+    const smoothed_rtt_ns: u64 = 100_000; // 100us
+    const packet_size: usize = 1200;
 
-    const delay = computePacingDelayNs(cwnd, bytes_in_flight);
+    const delay = computePacingDelayNs(cwnd, bytes_in_flight, smoothed_rtt_ns, packet_size);
     try testing.expectEqual(@as(u64, 0), delay);
 }
 
-test "computePacingDelayNs returns 250us when bytes_in_flight between cwnd/2 and cwnd" {
-    const cwnd: usize = 10000;
+test "RFC 9002 §7.7 - computePacingDelayNs uses RTT-based formula when above half cwnd" {
+    const cwnd: usize = 12000;
     const bytes_in_flight: usize = 7000; // Between half and full
+    const smoothed_rtt_ns: u64 = 100_000; // 100us
+    const packet_size: usize = 1200;
 
-    const delay = computePacingDelayNs(cwnd, bytes_in_flight);
-    try testing.expectEqual(@as(u64, 250_000), delay); // 0.25ms
+    const delay = computePacingDelayNs(cwnd, bytes_in_flight, smoothed_rtt_ns, packet_size);
+    // Expected: packet_size * smoothed_rtt_ns / cwnd = 1200 * 100000 / 12000 = 10000 ns
+    try testing.expectEqual(@as(u64, 10_000), delay);
 }
 
-test "computePacingDelayNs returns 1ms when bytes_in_flight >= cwnd" {
-    const cwnd: usize = 10000;
-    const bytes_in_flight: usize = 10000; // At cwnd
+test "RFC 9002 §7.7 - computePacingDelayNs at cwnd returns RTT-based delay" {
+    const cwnd: usize = 12000;
+    const bytes_in_flight: usize = 12000; // At cwnd
+    const smoothed_rtt_ns: u64 = 100_000; // 100us
+    const packet_size: usize = 1200;
 
-    const delay = computePacingDelayNs(cwnd, bytes_in_flight);
-    try testing.expectEqual(@as(u64, 1_000_000), delay); // 1ms
+    const delay = computePacingDelayNs(cwnd, bytes_in_flight, smoothed_rtt_ns, packet_size);
+    // Expected: 1200 * 100000 / 12000 = 10000 ns
+    try testing.expectEqual(@as(u64, 10_000), delay);
 }
 
-test "computePacingDelayNs returns 1ms when bytes_in_flight > cwnd" {
-    const cwnd: usize = 10000;
+test "RFC 9002 §7.7 - computePacingDelayNs above cwnd returns RTT-based delay" {
+    const cwnd: usize = 12000;
     const bytes_in_flight: usize = 15000; // Over cwnd
+    const smoothed_rtt_ns: u64 = 100_000; // 100us
+    const packet_size: usize = 1200;
 
-    const delay = computePacingDelayNs(cwnd, bytes_in_flight);
-    try testing.expectEqual(@as(u64, 1_000_000), delay);
+    const delay = computePacingDelayNs(cwnd, bytes_in_flight, smoothed_rtt_ns, packet_size);
+    // Same formula regardless of how far over cwnd we are
+    try testing.expectEqual(@as(u64, 10_000), delay);
 }
 
-test "computePacingDelayNs returns 0 when cwnd is zero" {
-    const delay = computePacingDelayNs(0, 1000);
+test "RFC 9002 §7.7 - computePacingDelayNs returns 0 when cwnd is zero" {
+    const delay = computePacingDelayNs(0, 1000, 100_000, 1200);
     try testing.expectEqual(@as(u64, 0), delay);
+}
+
+test "RFC 9002 §7.7 - computePacingDelayNs returns 0 when smoothed_rtt is zero" {
+    const delay = computePacingDelayNs(12000, 8000, 0, 1200);
+    try testing.expectEqual(@as(u64, 0), delay);
+}
+
+test "RFC 9002 §7.7 - pacing delay scales linearly with RTT" {
+    const cwnd: usize = 12000;
+    const bytes_in_flight: usize = 8000; // Above half
+    const packet_size: usize = 1200;
+
+    const delay_100us = computePacingDelayNs(cwnd, bytes_in_flight, 100_000, packet_size);
+    const delay_200us = computePacingDelayNs(cwnd, bytes_in_flight, 200_000, packet_size);
+
+    // Doubling RTT should double the pacing delay
+    try testing.expectEqual(delay_100us * 2, delay_200us);
+}
+
+test "RFC 9002 §7.7 - pacing delay inversely proportional to cwnd" {
+    const bytes_in_flight: usize = 8000;
+    const smoothed_rtt_ns: u64 = 120_000; // 120us (chosen for clean division)
+    const packet_size: usize = 1200;
+
+    const delay_small_cwnd = computePacingDelayNs(12000, bytes_in_flight, smoothed_rtt_ns, packet_size);
+    const delay_large_cwnd = computePacingDelayNs(24000, bytes_in_flight, smoothed_rtt_ns, packet_size);
+
+    // Doubling cwnd should halve the pacing delay
+    try testing.expectEqual(delay_small_cwnd, delay_large_cwnd * 2);
 }
 
 // =============================================================================
@@ -573,14 +613,18 @@ test "Cubic maintains parity with NewReno in basic scenarios" {
 
 test "pacing delays scale with congestion window utilization" {
     const cwnd: usize = 20000;
+    const smoothed_rtt_ns: u64 = 100_000; // 100us
+    const packet_size: usize = 1200;
 
-    const delay_low = computePacingDelayNs(cwnd, cwnd / 4); // 25% full
-    const delay_med = computePacingDelayNs(cwnd, cwnd * 3 / 4); // 75% full
-    const delay_high = computePacingDelayNs(cwnd, cwnd + 1000); // Over full
+    const delay_low = computePacingDelayNs(cwnd, cwnd / 4, smoothed_rtt_ns, packet_size); // 25% full - below half, returns 0
+    const delay_med = computePacingDelayNs(cwnd, cwnd * 3 / 4, smoothed_rtt_ns, packet_size); // 75% full - above half, returns formula
+    const delay_high = computePacingDelayNs(cwnd, cwnd + 1000, smoothed_rtt_ns, packet_size); // Over full - same formula
 
-    // Delays should increase with utilization
-    try testing.expect(delay_low < delay_med);
-    try testing.expect(delay_med < delay_high);
+    // Low utilization returns 0 (slow-start exemption), medium returns non-zero
+    try testing.expectEqual(@as(u64, 0), delay_low);
+    try testing.expect(delay_med > 0);
+    // Above half-cwnd, the formula is constant (same packet_size, rtt, cwnd)
+    try testing.expectEqual(delay_med, delay_high);
 }
 
 test "NewReno handles rapid ACK and loss events" {

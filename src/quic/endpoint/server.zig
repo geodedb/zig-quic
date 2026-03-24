@@ -68,7 +68,9 @@ pub fn acceptFrom(allocator: *std.mem.Allocator, sock_fd: std.posix.socket_t, pe
 ///   - accepted: ArrayList of accepted connections
 ///   - c: Connection pointer to enqueue
 pub fn pushAccepted(allocator: std.mem.Allocator, accepted: *std.ArrayList(*conn_mod.Connection), c: *conn_mod.Connection) void {
-    accepted.append(allocator, c) catch {};
+    accepted.append(allocator, c) catch |err| {
+        logger.err("pushAccepted failed (OOM): {s}", .{@errorName(err)});
+    };
 }
 
 /// Pop next accepted server-side connection if available.

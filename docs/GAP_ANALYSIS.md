@@ -9,11 +9,11 @@ Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
 
 | Severity | Found | Closed/Implemented | Closed/Won't do | Blocked | Open |
 |----------|------:|-------------------:|----------------:|--------:|-----:|
-| Critical | 2 | 2 | 0 | 0 | 0 |
+| Critical | 3 | 3 | 0 | 0 | 0 |
 | High | 9 | 7 | 2 | 0 | 0 |
-| Medium | 9 | 8 | 0 | 0 | 1 |
+| Medium | 9 | 9 | 0 | 0 | 0 |
 | Low | 7 | 5 | 2 | 0 | 0 |
-| **Total** | **27** | **22** | **4** | **0** | **1** |
+| **Total** | **28** | **24** | **4** | **0** | **0** |
 
 **HTTP/3 adapter requirements:** 4 open items (1 High, 2 Medium, 1 Low) — see [HTTP/3 Adapter Requirements](#http3-adapter-requirements) below.
 
@@ -49,6 +49,7 @@ Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
 | 19 | Low | 24 | No fuzz harnesses for algorithm modules — 6 existing fuzzers cover frame/varint/TLS but none cover the 7 new algorithm modules that handle attacker-influenced input (`confidence::confirmed`) | Algorithms | CWE-20 | `fuzz/` (missing targets) | -- | Deferred until algorithm modules are integrated to production code paths | Test/QA | N/A | Closed / Won't do |
 | 20 | Low | 24 | Mutable dependency URLs — `build.zig.zon` fetches TLS/spice from `main` branch tarballs; content changes as branch evolves (hash verification prevents silent supply chain attack but breaks reproducibility) (`confidence::confirmed`) | Supply chain | CWE-494 | `build.zig.zon:18,23` | -- | Hash verification provides integrity; mutable URLs are an architectural decision for development velocity | Platform | N/A | Closed / Won't do |
 | 21 | Low | 16 | Dockerfiles create non-root user but never switch — `USER quic` instruction missing; entrypoint runs as root (`confidence::confirmed`) | Containers | CWE-250 | `interop/Dockerfile`, `examples/interop/zig-qns/Dockerfile` | -- | FIXED: run_endpoint.sh drops privileges to quic user at runtime | Interop | 2026-03-22 | Closed / Implemented |
+| 22 | Critical | 80 | mTLS parameters discarded in handshake wiring — `createTlsContext()` accepted `request_client_cert`, `client_cert_der`, `client_key_der` but discarded them with `_ = ...`; the `tls13.Config` struct literal never set these fields, so operators who configure mTLS believe it is active while clients connect without certificates (`confidence::confirmed`) | Application | CWE-295 | `src/quic/endpoint/handshake_integration.zig:334-336` | #118 | FIXED: Removed three `_ = ...` discard lines and added `.request_client_cert`, `.client_cert_der`, `.client_key_der` to `tls13.Config` struct literal | Core QUIC | 2026-03-24 | Closed / Implemented |
 
 ## Findings By Area
 
@@ -56,6 +57,7 @@ Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
 - #51: Closed / Implemented.
 - #56: Closed / Implemented.
 - Rank 14: Constant-time stateless reset token comparison. **Closed / Implemented** (2026-03-22).
+- Rank 22 (#118): mTLS parameters discarded in handshake wiring — `createTlsContext()` silently dropped `request_client_cert`, `client_cert_der`, `client_key_der`. **Closed / Implemented** (2026-03-24).
 
 ### Algorithms (Geode Extraction — 2026-03-22 Audit)
 - Rank 12: HashMap key aliasing fixed (`put(conn.id, conn)` + CID validation). **Closed / Implemented** (2026-03-22).
@@ -111,14 +113,14 @@ Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
 |----|-------|---------|--------|
 | #124 | Localhost amplification exemption configurable | `config.zig`, `conn.zig`, `incoming.zig`, `server.zig`, `client.zig` | Closed / Implemented |
 | #103 | Document parallel monolithic/modular modules | `frame.zig`, `recovery.zig` | Closed / Implemented |
-| #110 | Audit critical catch {} patterns (phase 1) | `incoming.zig`, `methods_b.zig`, `endpoint.zig` | Partially Closed |
+| #110 | Audit critical catch {} patterns (phase 1+2) | 19 files across `src/quic/` | Closed / Implemented |
 | #113 | Architecture documentation | `docs/ARCHITECTURE.md` | Closed / Implemented |
 
 ### Details
 
 - **#124:** Added `exempt_localhost: bool = true` to `QuicConfig` and `Connection`. `overAmplification()` now checks `self.exempt_localhost and self.isLocalhost()`. `processInitial()` auto-validation gated behind `ctx.cfg.exempt_localhost`. Propagated through `ServerConnectionConfig`, `createServerConnection`, and `createClientConnection`.
 - **#103:** Added DEPRECATED doc comments to monolithic `frame.zig` and `recovery.zig`. Verified `build.zig` wires modular `frame/frame.zig` and `recovery/recovery.zig` as the `quic_frame`/`quic_recovery` build modules.
-- **#110 (phase 1):** Fixed ~15 most dangerous `catch {}` patterns: `setupServerTransportParams` (propagate error, drop connection on failure), `stream_txs.put` (propagate OOM), `initial_token.appendSlice` (log + return), `pushAccepted` (log), `conns.put` in path migration (log), `setupClientTransportParams` (propagate), PTO probes (log), ACK assembly (log + return). Remaining ~270 patterns are documented tech debt.
+- **#110 (phase 1+2):** All 75 `catch {}` patterns in `src/quic/` eliminated (reduced from 75 to 0). Phase 1 fixed ~15 critical patterns. Phase 2 fixed the remaining 60: network sends log via `logger.warn`, OOM allocations log via `logger.err`, frame writes log via `logger.err`, debug I/O logs via `logger.debugPrint`, and `storeLocalTransportParams` now propagates via `try`. Added `quic_logger` imports and build.zig module wiring for `lifecycle.zig`, `lookup.zig`, `udp_transport.zig`, `stream.zig`, and `api.zig`.
 - **#113:** Created `docs/ARCHITECTURE.md` (~180 lines) covering module layout, mixin pattern, monolithic-vs-modular migration status, 3-tier thread safety model, and key data flows (RX, TX, loss recovery).
 
 ## Delivery Plan Status
@@ -128,7 +130,7 @@ Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
 
 ### Medium (<=90 days)
 - Completed: Rank 13, Rank 16, Rank 17, Rank 21, #103, #113.
-- Partially closed: #110 (phase 1 complete).
+- Completed: #110 (phases 1+2, all 75 patterns fixed).
 - Won't do: Rank 19 (fuzz harnesses deferred until production integration).
 
 ### Strategic
@@ -515,6 +517,7 @@ Security findings are tracked as ranks 12-21 in the Stack-Ranked Findings table 
 | P-7 | P3 | 24 | Zero-capacity `initCapacity(allocator, 0)` forces first-push allocation in timer heap and connection state ArrayLists. Pre-allocating to 16-64 would avoid first realloc chain. | Algorithms | `src/quic/algorithms/timer_heap.zig:9`, `src/quic/connection_manager.zig:37-38` | Closed / Implemented |
 | P-8 | P3 | 24 | No benchmarks for any new algorithm module — `bench/main.zig` only covers varint/pacing/CC/HP. No DRR, timer, sharding, loss, scheduler, or connection_manager benchmarks exist. `perf_gate.sh` will not catch regressions. | Bench/CI | `bench/main.zig` (missing targets) | Closed / Won't do |
 | P-9 | P3 | 16 | No thread safety in any algorithm module — production `recovery.zig` uses `std.Thread.Mutex`. New modules have no synchronization. Safe if caller serializes, but undocumented contract. | Algorithms | All `src/quic/algorithms/*.zig`, `connection_manager.zig`, `stream_scheduler.zig` | Closed / Won't do |
+| P-10 | P2 | 48 | Fixed magic-number pacing delays unrelated to RTT — `computePacingDelayNs` returned hardcoded 0/250us/1ms regardless of network conditions. RFC 9002 Section 7.7 requires `interval = packet_size * smoothed_rtt / cwnd`. | Recovery | `src/quic/recovery/congestion.zig:73-82`, `src/quic/recovery.zig:163-172` | Closed / Implemented |
 
 ### Gap (Requirements) Findings
 

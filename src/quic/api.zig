@@ -8,6 +8,7 @@
 //! extension). Inline comments reference the sections that motivated the
 //! implementation so consumers can trace behaviour back to the specification.
 const std = @import("std");
+const logger = @import("quic_logger");
 
 /// Re-export the PEM helpers used for TLS certificate handling.
 pub const pem = @import("pem.zig");
@@ -111,7 +112,9 @@ pub fn flush(ep: *QuicEndpoint, iterations: usize) void {
     var i: usize = 0;
     while (i < iterations) : (i += 1) {
         ep.flushTimers();
-        ep.poll(0) catch {};
+        ep.poll(0) catch |err| {
+            logger.warn("flush poll iteration failed: {s}", .{@errorName(err)});
+        };
     }
 }
 

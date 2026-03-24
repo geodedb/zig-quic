@@ -656,7 +656,9 @@ pub fn bind(comptime Connection: type) type {
             ) catch 0;
             if (pkt_len != 0) {
                 const pkt = packet_storage[0..pkt_len];
-                _ = self.send(pkt) catch {};
+                _ = self.send(pkt) catch |err| {
+                    logger.warn("send STOP_SENDING response failed: {s}", .{@errorName(err)});
+                };
                 self.onShortHeaderPacketSent(pkt.len, true);
             }
         }
@@ -903,7 +905,9 @@ pub fn bind(comptime Connection: type) type {
                 .ProbeStart => {
                     // Try a conservative step first, e.g., 1280
                     const target: u16 = 1280;
-                    _ = self.sendPmtudProbe(target) catch {};
+                    _ = self.sendPmtudProbe(target) catch |err| {
+                        logger.warn("PMTUD probe (start) failed: {s}", .{@errorName(err)});
+                    };
                     // Re-arm for search follow-up
                     self.pmtud_state = .ProbeSearch;
                     self.pmtudArm(ep, 20);
@@ -913,7 +917,9 @@ pub fn bind(comptime Connection: type) type {
                     var next: u16 = self.path_mtu;
                     if (next < 1400) next = 1400 else if (next < 1472) next = 1472 else if (next < 1492) next = 1492 else if (next < 1500) next = 1500;
                     if (next > self.path_mtu) {
-                        _ = self.sendPmtudProbe(next) catch {};
+                        _ = self.sendPmtudProbe(next) catch |err| {
+                            logger.warn("PMTUD probe (search) failed: {s}", .{@errorName(err)});
+                        };
                     }
                     // Re-arm periodic check until stable
                     self.pmtudArm(ep, 25);
@@ -1013,7 +1019,9 @@ pub fn bind(comptime Connection: type) type {
                         .offset = self.crypto_retx_initial_off,
                         .data = retx[0..chunk_len],
                     },
-                }).write(cw) catch {};
+                }).write(cw) catch |err| {
+                    logger.err("PTO Initial CRYPTO frame write failed: {s}", .{@errorName(err)});
+                };
 
                 var crypto_pkt = packet.encodeInitialProtected(
                     self.allocator.*,
@@ -1031,7 +1039,10 @@ pub fn bind(comptime Connection: type) type {
                     if (bytes_out.len < 1200) {
                         const pad_needed = 1200 - bytes_out.len;
                         self.allocator.free(bytes_out);
-                        crypto_frames.appendNTimes(self.allocator.*, @intFromEnum(frame.FrameType.PADDING), pad_needed) catch {};
+                        crypto_frames.appendNTimes(self.allocator.*, @intFromEnum(frame.FrameType.PADDING), pad_needed) catch |err| {
+                            logger.err("PTO Initial padding append failed (OOM): {s}", .{@errorName(err)});
+                            return;
+                        };
                         crypto_pkt = packet.encodeInitialProtected(
                             self.allocator.*,
                             self.version,
@@ -1050,7 +1061,9 @@ pub fn bind(comptime Connection: type) type {
                         }
                     }
                     defer self.allocator.free(bytes_out);
-                    _ = self.send(bytes_out) catch {};
+                    _ = self.send(bytes_out) catch |err| {
+                        logger.warn("PTO Initial CRYPTO retx send failed: {s}", .{@errorName(err)});
+                    };
                     self.onPacketSent(.Initial, self.pn_initial_tx, bytes_out.len, true);
                     self.pn_initial_tx +%= 1;
                     return;
@@ -1074,7 +1087,10 @@ pub fn bind(comptime Connection: type) type {
                 if (self.role == .Client and bytes_out.len < 1200) {
                     const pad_needed = 1200 - bytes_out.len;
                     self.allocator.free(bytes_out);
-                    frames.appendNTimes(self.allocator.*, @intFromEnum(frame.FrameType.PADDING), pad_needed) catch {};
+                    frames.appendNTimes(self.allocator.*, @intFromEnum(frame.FrameType.PADDING), pad_needed) catch |err| {
+                        logger.err("PTO Initial padding append failed (OOM): {s}", .{@errorName(err)});
+                        return;
+                    };
                     out = packet.encodeInitialProtected(
                         self.allocator.*,
                         self.version,
@@ -1093,7 +1109,9 @@ pub fn bind(comptime Connection: type) type {
                     }
                 }
                 defer self.allocator.free(bytes_out);
-                _ = self.send(bytes_out) catch {};
+                _ = self.send(bytes_out) catch |err| {
+                    logger.warn("PTO Initial send failed: {s}", .{@errorName(err)});
+                };
                 // Record via Recovery and bump PN
                 self.onPacketSent(.Initial, self.pn_initial_tx, bytes_out.len, true);
                 self.pn_initial_tx +%= 1;
@@ -1119,7 +1137,9 @@ pub fn bind(comptime Connection: type) type {
                             .offset = self.crypto_retx_handshake_off + sent_off,
                             .data = retx[sent_off .. sent_off + chunk_len],
                         },
-                    }).write(cw) catch {};
+                    }).write(cw) catch |err| {
+                        logger.err("PTO Handshake CRYPTO frame write failed: {s}", .{@errorName(err)});
+                    };
 
                     const out_crypto = packet.encodeHandshakeProtected(
                         self.allocator.*,
@@ -1133,7 +1153,9 @@ pub fn bind(comptime Connection: type) type {
                     ) catch null;
                     if (out_crypto) |bytes_out| {
                         defer self.allocator.free(bytes_out);
-                        _ = self.send(bytes_out) catch {};
+                        _ = self.send(bytes_out) catch |err| {
+                            logger.warn("PTO Handshake CRYPTO retx send failed: {s}", .{@errorName(err)});
+                        };
                         self.onPacketSent(.Handshake, self.pn_handshake_tx, bytes_out.len, true);
                         self.pn_handshake_tx +%= 1;
                         probes_sent += 1;
@@ -1160,7 +1182,9 @@ pub fn bind(comptime Connection: type) type {
             ) catch null;
             if (out) |bytes_out| {
                 defer self.allocator.free(bytes_out);
-                _ = self.send(bytes_out) catch {};
+                _ = self.send(bytes_out) catch |err| {
+                    logger.warn("PTO Handshake send failed: {s}", .{@errorName(err)});
+                };
                 self.onPacketSent(.Handshake, self.pn_handshake_tx, bytes_out.len, true);
                 self.pn_handshake_tx +%= 1;
             }
@@ -1200,7 +1224,9 @@ pub fn bind(comptime Connection: type) type {
                                     .fin = tracked.fin,
                                     .data = tracked.data,
                                 },
-                            }).write(frame_stream.writer()) catch {};
+                            }).write(frame_stream.writer()) catch |err| {
+                                logger.err("PTO App STREAM frame write failed: {s}", .{@errorName(err)});
+                            };
                             const frame_bytes = frame_stream.getWritten();
 
                             if (frame_bytes.len > 0) {
@@ -1250,7 +1276,9 @@ pub fn bind(comptime Connection: type) type {
             ) catch 0;
             if (pkt_len != 0) {
                 const pkt = packet_storage[0..pkt_len];
-                _ = self.send(pkt) catch {};
+                _ = self.send(pkt) catch |err| {
+                    logger.warn("PTO App send failed: {s}", .{@errorName(err)});
+                };
                 self.onShortHeaderPacketSent(pkt.len, true);
             }
         }

@@ -339,7 +339,9 @@ pub const Endpoint = struct {
             while (cit.next()) |e| {
                 const c = e.value_ptr.*;
                 const idx = unique.get(c) orelse 0;
-                _ = unique.put(c, idx + 1) catch {};
+                _ = unique.put(c, idx + 1) catch |err| {
+                    logger.debugPrint("endpoint.deinit: unique.put failed (OOM): {}\n", .{err});
+                };
             }
             if (unique.count() > 0) {
                 logger.debugPrint("endpoint.deinit: {d} unique conn(s) still referenced by map; dumping counts\n", .{unique.count()});
@@ -382,7 +384,9 @@ pub const Endpoint = struct {
         while (it.next()) |e| {
             const c = e.value_ptr.*;
             if (!seen.contains(c)) {
-                _ = seen.put(c, {}) catch {};
+                _ = seen.put(c, {}) catch |err| {
+                    logger.warn("endpoint.deinit: seen.put failed (OOM): {s}", .{@errorName(err)});
+                };
                 c.deinit();
                 self.allocator.destroy(c);
             }
@@ -456,7 +460,9 @@ pub const Endpoint = struct {
         if (self.test_capture_enabled) {
             const owned = try self.allocator.alloc(u8, data.len);
             @memcpy(owned, data);
-            _ = self.captures.append(self.allocator, .{ .peer = peer, .bytes = owned }) catch {};
+            _ = self.captures.append(self.allocator, .{ .peer = peer, .bytes = owned }) catch |err| {
+                logger.warn("test capture append failed (OOM): {s}", .{@errorName(err)});
+            };
         }
 
         // Phase 8c: Always use transport directly for sends (single-threaded event loop)
@@ -1492,7 +1498,7 @@ fn senderPaced(ctx: *anyopaque, c: *conn_mod.Connection, data: []const u8) !usiz
         }
         return self.sendTo(c.peer, data);
     }
-    const delay_ns = recovery.computePacingDelayNs(c.rec.cc.cwnd, c.rec.cc.bytes_in_flight);
+    const delay_ns = recovery.computePacingDelayNs(c.rec.cc.cwnd, c.rec.cc.bytes_in_flight, c.rec.rtt.smoothed_rtt_ns, c.rec.cc.mds);
     if (delay_ns == 0) {
         return self.sendTo(c.peer, data);
     }

@@ -328,6 +328,7 @@ pub fn build(b: *std.Build) void {
     conn_ack_mod.addImport("quic_frame", quic_frame_mod);
 
     const conn_stream_mod = mkModule(b, "src/quic/connection/stream.zig");
+    conn_stream_mod.addImport("quic_logger", quic_logger_mod);
 
     const conn_connection_id_mod = mkModule(b, "src/quic/connection/connection_id.zig");
     conn_connection_id_mod.addImport("types", conn_types_mod);
@@ -396,6 +397,7 @@ pub fn build(b: *std.Build) void {
     const endpoint_lookup_mod = mkModule(b, "src/quic/endpoint/lookup.zig");
     endpoint_lookup_mod.addImport("types", endpoint_types_mod);
     endpoint_lookup_mod.addImport("quic_conn", quic_conn_mod);
+    endpoint_lookup_mod.addImport("quic_logger", quic_logger_mod);
 
     const endpoint_io_mod = mkModule(b, "src/quic/endpoint/io.zig");
     endpoint_io_mod.addImport("quic_conn", quic_conn_mod);
@@ -429,6 +431,7 @@ pub fn build(b: *std.Build) void {
     const endpoint_udp_transport_mod = mkModule(b, "src/quic/endpoint/udp_transport.zig");
     endpoint_udp_transport_mod.addImport("transport.zig", endpoint_transport_mod);
     endpoint_udp_transport_mod.addImport("conn.zig", quic_conn_mod);
+    endpoint_udp_transport_mod.addImport("quic_logger", quic_logger_mod);
 
     const endpoint_incoming_mod = mkModule(b, "src/quic/endpoint/incoming.zig");
     endpoint_incoming_mod.addImport("quic_conn", quic_conn_mod);
@@ -470,6 +473,7 @@ pub fn build(b: *std.Build) void {
     const endpoint_lifecycle_mod = mkModule(b, "src/quic/endpoint/lifecycle.zig");
     endpoint_lifecycle_mod.addImport("types", endpoint_types_mod);
     endpoint_lifecycle_mod.addImport("quic_conn", quic_conn_mod);
+    endpoint_lifecycle_mod.addImport("quic_logger", quic_logger_mod);
 
     const endpoint_frame_handler_mod = mkModule(b, "src/quic/endpoint/frame_handler.zig");
     endpoint_frame_handler_mod.addImport("quic_conn", quic_conn_mod);

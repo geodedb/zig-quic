@@ -298,7 +298,9 @@ pub fn processHandshake(
 
                 if (pkt) |bytes_out| {
                     defer ctx.allocator.free(bytes_out);
-                    _ = send_fn(peer, bytes_out) catch {};
+                    _ = send_fn(peer, bytes_out) catch |err| {
+                        logger.warn("Handshake CRYPTO send failed: {s}", .{@errorName(err)});
+                    };
                     conn.*.onPacketSent(.Handshake, conn.*.pn_handshake_tx, bytes_out.len, true);
                     conn.*.pn_handshake_tx +%= 1;
                 }
@@ -361,7 +363,9 @@ pub fn processHandshake(
 
             if (pkt) |bytes_out| {
                 defer ctx.allocator.free(bytes_out);
-                _ = send_fn(peer, bytes_out) catch {};
+                _ = send_fn(peer, bytes_out) catch |err| {
+                    logger.warn("Handshake ACK send failed: {s}", .{@errorName(err)});
+                };
                 // ACK-only packet is not ack-eliciting
                 conn.*.pn_handshake_tx +%= 1;
             }

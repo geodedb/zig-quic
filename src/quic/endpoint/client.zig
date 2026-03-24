@@ -287,7 +287,9 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
         c.crypto_retx_initial_off = base_off;
         c.crypto_tx_off_initial += @intCast(data.len);
     } else {
-        frames.append(ctx.allocator.*, @intFromEnum(frame.FrameType.PING)) catch {};
+        frames.append(ctx.allocator.*, @intFromEnum(frame.FrameType.PING)) catch |err| {
+            logger.err("Initial PING frame append failed (OOM): {s}", .{@errorName(err)});
+        };
     }
 
     // Use any stored Retry token if present
@@ -324,7 +326,9 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
 
     // Add PADDING frames to reach minimum size
     while (frames.items.len < min_plaintext_size) {
-        frames.append(ctx.allocator.*, @intFromEnum(frame.FrameType.PADDING)) catch {};
+        frames.append(ctx.allocator.*, @intFromEnum(frame.FrameType.PADDING)) catch |err| {
+            logger.err("Initial PADDING append failed (OOM): {s}", .{@errorName(err)});
+        };
     }
 
     const pkt = try packet.encodeInitialProtected(

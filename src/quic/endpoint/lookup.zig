@@ -8,6 +8,7 @@
 //! RFC 9000 §9.3: Response to Address Change (NAT rebinding)
 
 const std = @import("std");
+const logger = @import("quic_logger");
 const types = @import("types");
 const conn_mod = @import("quic_conn");
 const posix = std.posix;
@@ -191,7 +192,9 @@ pub fn findConnectionByDcid(
 
                 // Notify caller of NAT rebinding for path validation
                 if (path_changed_fn) |callback| {
-                    callback(c, peer, peer_h, l) catch {};
+                    callback(c, peer, peer_h, l) catch |err| {
+                        logger.warn("NAT rebinding callback failed: {s}", .{@errorName(err)});
+                    };
                 }
 
                 return LookupResult{

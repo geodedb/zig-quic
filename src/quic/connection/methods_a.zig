@@ -41,7 +41,9 @@ pub fn bind(comptime Connection: type) type {
                 return false;
             };
             defer file.close();
-            file.seekFromEnd(0) catch {};
+            file.seekFromEnd(0) catch |err| {
+                logger.warn("keylog: seekFromEnd failed: {s}", .{@errorName(err)});
+            };
 
             var line = std.ArrayList(u8){};
             defer line.deinit(self.allocator.*);
@@ -163,7 +165,7 @@ pub fn bind(comptime Connection: type) type {
             if (self.tls_context) |tls_ctx| {
                 tls_ctx.setTransportParameters(encoded);
             }
-            storeLocalTransportParams(self, encoded) catch {};
+            try storeLocalTransportParams(self, encoded);
         }
 
         /// Returns true once the TLS stack has verified the peer's Finished and 1-RTT TX keys are ready.
@@ -262,7 +264,9 @@ pub fn bind(comptime Connection: type) type {
             }
 
             defer self.allocator.free(out);
-            _ = self.send(out) catch {};
+            _ = self.send(out) catch |err| {
+                logger.warn("sendInitialCrypto send failed: {s}", .{@errorName(err)});
+            };
 
             // Update state
             self.crypto_tx_off_initial += crypto_data.len;
@@ -299,7 +303,9 @@ pub fn bind(comptime Connection: type) type {
             ) catch return;
 
             defer self.allocator.free(out);
-            _ = self.send(out) catch {};
+            _ = self.send(out) catch |err| {
+                logger.warn("sendHandshakeCrypto send failed: {s}", .{@errorName(err)});
+            };
 
             // Update state
             self.crypto_tx_off_handshake += crypto_data.len;
@@ -471,7 +477,9 @@ pub fn bind(comptime Connection: type) type {
                 ) catch 0;
                 if (pkt_len != 0) {
                     const pkt = packet_storage[0..pkt_len];
-                    _ = self.send(pkt) catch {};
+                    _ = self.send(pkt) catch |err| {
+                        logger.warn("HANDSHAKE_DONE send failed: {s}", .{@errorName(err)});
+                    };
                     self.onShortHeaderPacketSent(pkt.len, true);
                 }
                 self.handshake_done_sent = true;
@@ -483,14 +491,18 @@ pub fn bind(comptime Connection: type) type {
                     self.applyPeerTransportParameters(peer_tp_bytes) catch {
                         // Ignore malformed transport parameters; retain defaults
                     };
-                    storePeerTransportParams(self, peer_tp_bytes) catch {};
+                    storePeerTransportParams(self, peer_tp_bytes) catch |err| {
+                        logger.err("storePeerTransportParams failed (OOM): {s}", .{@errorName(err)});
+                    };
                 }
             }
 
             // Store negotiated ALPN (ALPN validation removed - was incorrectly revoking peer_finished_verified)
             // Note: Applications should validate ALPN after handshake completion if needed
             if (tls_ctx.negotiatedAlpn()) |a| {
-                storeNegotiatedAlpn(self, a) catch {};
+                storeNegotiatedAlpn(self, a) catch |err| {
+                    logger.err("storeNegotiatedAlpn failed (OOM): {s}", .{@errorName(err)});
+                };
                 // REMOVED: ALPN mismatch should not revoke peer_finished_verified flag
                 // The peer's Finished message was cryptographically verified by TLS
                 // If ALPN validation is needed, it should be done at application level
@@ -930,7 +942,9 @@ pub fn bind(comptime Connection: type) type {
                 const was_pacing_enabled = self.enable_pacing;
                 self.enable_pacing = false;
                 defer self.enable_pacing = was_pacing_enabled;
-                _ = self.send(pkt) catch {};
+                _ = self.send(pkt) catch |err| {
+                    logger.warn("PATH_CHALLENGE send failed: {s}", .{@errorName(err)});
+                };
                 self.onShortHeaderPacketSent(pkt.len, true);
             }
         }
@@ -952,7 +966,9 @@ pub fn bind(comptime Connection: type) type {
             ) catch 0;
             if (pkt_len != 0) {
                 const pkt = packet_storage[0..pkt_len];
-                _ = self.send(pkt) catch {};
+                _ = self.send(pkt) catch |err| {
+                    logger.warn("sendControlFrames send failed: {s}", .{@errorName(err)});
+                };
                 self.onShortHeaderPacketSent(pkt.len, true);
             }
         }

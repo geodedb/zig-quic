@@ -909,7 +909,9 @@ pub const Connection = struct {
                         },
                     }).write(w) catch {
                         // No room in current packet; keep dirty for next attempt.
-                        self.pending_fc_streams.append(self.allocator.*, stream_id) catch {};
+                        self.pending_fc_streams.append(self.allocator.*, stream_id) catch |oom| {
+                            logger.err("pending_fc_streams.append failed (OOM): {s}", .{@errorName(oom)});
+                        };
                         break;
                     };
                     stream.last_sent_max_stream_data = stream.local_max_stream_data;

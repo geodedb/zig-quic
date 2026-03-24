@@ -19,6 +19,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const logger = @import("quic_logger");
 const transport_mod = @import("transport.zig");
 const posix = std.posix;
 
@@ -115,7 +116,9 @@ pub const UdpTransport = struct {
 
         // Set SO_REUSEADDR for fast rebinding
         var one: i32 = 1;
-        _ = std.posix.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.REUSEADDR, std.mem.asBytes(&one)) catch {};
+        _ = std.posix.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.REUSEADDR, std.mem.asBytes(&one)) catch |err| {
+            logger.warn("setsockopt SO_REUSEADDR failed: {s}", .{@errorName(err)});
+        };
 
         // Bind to address
         const bind_len: std.posix.socklen_t = switch (family) {

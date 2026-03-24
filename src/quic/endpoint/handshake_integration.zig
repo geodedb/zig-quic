@@ -331,10 +331,6 @@ pub fn createTlsContext(
     client_cert_der: ?[]const u8,
     client_key_der: ?[]const u8,
 ) !tls13.Context {
-    _ = request_client_cert; // mTLS: deferred to TLS library support
-    _ = client_cert_der; // mTLS: deferred to TLS library support
-    _ = client_key_der; // mTLS: deferred to TLS library support
-
     // Create TLS configuration
     const tls_role: tls13.Role = if (role == .Client) .Client else .Server;
     // RFC 8446 §4.2.3: Supported signature schemes for certificate verification
@@ -362,6 +358,9 @@ pub fn createTlsContext(
         .server_key_der = server_key_der,
         .supported_signature_schemes = supported_schemes,
         .allow_insecure = allow_insecure,
+        .request_client_cert = request_client_cert,
+        .client_cert_der = client_cert_der,
+        .client_key_der = client_key_der,
     };
 
     // Create callbacks struct with full QUIC integration
@@ -847,8 +846,12 @@ fn sendHandshakePing(ctx: *HandshakeContext) !void {
 
     // Add PADDING frame (at least 2 bytes to ensure enough ciphertext)
     // PADDING frame is just 0x00 bytes
-    _ = w.writeByte(0x00) catch {}; // PADDING frame type
-    _ = w.writeByte(0x00) catch {}; // Extra padding byte
+    _ = w.writeByte(0x00) catch |err| {
+        logger.warn("sendHandshakePing: PADDING write failed: {s}", .{@errorName(err)});
+    }; // PADDING frame type
+    _ = w.writeByte(0x00) catch |err| {
+        logger.warn("sendHandshakePing: extra PADDING write failed: {s}", .{@errorName(err)});
+    }; // Extra padding byte
 
     const frames_data = frames_stream.getWritten();
     logger.debugPrint("sendHandshakePing: Built PING + PADDING frames, {} bytes\n", .{frames_data.len});

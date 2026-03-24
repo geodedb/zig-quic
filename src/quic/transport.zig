@@ -523,7 +523,9 @@ pub const QuicConnection = struct {
         }
         // Send CONNECTION_CLOSE and keep endpoint-owned reclamation in transport.
         if (self.quic_connection) |qc| {
-            api.closeConnection(qc, 0) catch {};
+            api.closeConnection(qc, 0) catch |err| {
+                logger.warn("closeConnection during deinit failed: {s}", .{@errorName(err)});
+            };
             self.quic_connection = null;
         }
     }
@@ -664,7 +666,9 @@ pub const QuicStream = struct {
             } else |_| false;
             if (force_stream_close) {
                 if (self.parent_connection.quic_connection) |qc| {
-                    api.closeStream(qc, sid, 0) catch {};
+                    api.closeStream(qc, sid, 0) catch |err| {
+                        logger.warn("closeStream during deinit failed for stream {d}: {s}", .{ sid, @errorName(err) });
+                    };
                 }
             }
             self.quic_stream_id = null;
@@ -794,7 +798,9 @@ pub const QuicClient = struct {
         } else |_| false;
         if (self.quic_connection) |conn| {
             if (force_close) {
-                api.closeConnection(conn, 0) catch {};
+                api.closeConnection(conn, 0) catch |err| {
+                    logger.warn("closeConnection during QuicClient.deinit failed: {s}", .{@errorName(err)});
+                };
             }
             self.quic_connection = null;
         }
@@ -995,13 +1001,17 @@ pub const QuicClientStream = struct {
         const sid = self.quic_stream_id orelse return QuicError.StreamFailed;
         const n = api.readStream(self.quic_connection, sid, buf) catch |err| {
             if (err == error.WouldBlock) {
-                self.endpoint.poll(10) catch {};
+                self.endpoint.poll(10) catch |poll_err| {
+                    logger.warn("poll during read (WouldBlock) failed: {s}", .{@errorName(poll_err)});
+                };
                 return error.WouldBlock;
             }
             return err;
         };
         if (n == 0) {
-            self.endpoint.poll(10) catch {};
+            self.endpoint.poll(10) catch |poll_err| {
+                logger.warn("poll during read (zero-byte) failed: {s}", .{@errorName(poll_err)});
+            };
         }
         return n;
     }
@@ -1036,7 +1046,9 @@ pub const QuicClientStream = struct {
                         if (pos == 0) return error.WouldBlock;
                         return error.UnexpectedEndOfStream;
                     }
-                    self.endpoint.poll(10) catch {};
+                    self.endpoint.poll(10) catch |poll_err| {
+                        logger.warn("poll during readLine retry failed: {s}", .{@errorName(poll_err)});
+                    };
                     std.Thread.sleep(5 * std.time.ns_per_ms);
                     continue;
                 }
@@ -1047,7 +1059,9 @@ pub const QuicClientStream = struct {
                 if (pos == 0) return error.WouldBlock;
                 retry_count += 1;
                 if (retry_count > max_retries) return error.UnexpectedEndOfStream;
-                self.endpoint.poll(10) catch {};
+                self.endpoint.poll(10) catch |poll_err| {
+                    logger.warn("poll during readLine zero-byte retry failed: {s}", .{@errorName(poll_err)});
+                };
                 std.Thread.sleep(5 * std.time.ns_per_ms);
                 continue;
             }
@@ -1066,7 +1080,9 @@ pub const QuicClientStream = struct {
 
     pub fn close(self: *QuicClientStream) void {
         if (self.quic_stream_id) |sid| {
-            api.closeStream(self.quic_connection, sid, 0) catch {};
+            api.closeStream(self.quic_connection, sid, 0) catch |err| {
+                logger.warn("closeStream during QuicClientStream.close failed for stream {d}: {s}", .{ sid, @errorName(err) });
+            };
             self.quic_stream_id = null;
         }
         self.allocator.destroy(self);

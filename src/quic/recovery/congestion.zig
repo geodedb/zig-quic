@@ -67,16 +67,21 @@ pub const Cubic = struct {
     }
 };
 
-/// Optional pacing hook: given cwnd and bytes_in_flight, return an inter-packet pacing delay in ns.
-/// This minimal implementation returns a coarse delay based on how full cwnd is.
-/// Used only in tests right now; production pacing TBD.
-pub fn computePacingDelayNs(cwnd: usize, bytes_in_flight: usize) u64 {
-    // Very simple pacing heuristic:
-    // - No delay if at most half of cwnd is in flight.
-    // - Small delay if between 1/2 and full cwnd.
-    // - Larger delay if at or above cwnd.
-    if (cwnd == 0) return 0;
+/// RTT-based pacing delay per RFC 9002 Section 7.7.
+///
+/// Given the current congestion window, bytes in flight, smoothed RTT, and
+/// packet size (typically max_datagram_size), returns the inter-packet pacing
+/// delay in nanoseconds.
+///
+/// Formula: interval = packet_size * smoothed_rtt / cwnd
+///
+/// The slow-start exemption (no pacing when less than half of cwnd is in
+/// flight) follows the RFC recommendation to avoid under-utilising the link
+/// during ramp-up.
+pub fn computePacingDelayNs(cwnd: usize, bytes_in_flight: usize, smoothed_rtt_ns: u64, packet_size: usize) u64 {
+    if (cwnd == 0 or smoothed_rtt_ns == 0) return 0;
+    // No pacing when utilisation is low (slow-start ramp-up).
     if (bytes_in_flight <= cwnd / 2) return 0;
-    if (bytes_in_flight < cwnd) return 250_000; // 0.25 ms
-    return 1_000_000; // 1 ms
+    // RFC 9002 §7.7: interval = packet_size * smoothed_rtt / cwnd
+    return @as(u64, packet_size) * smoothed_rtt_ns / @as(u64, cwnd);
 }

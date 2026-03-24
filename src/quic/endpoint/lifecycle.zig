@@ -18,6 +18,7 @@
 //! Phase 10: Extract connection lifecycle management from endpoint.zig
 
 const std = @import("std");
+const logger = @import("quic_logger");
 const conn_mod = @import("quic_conn");
 const types = @import("types");
 
@@ -108,7 +109,9 @@ pub fn closeStaleConnectionsForPeer(ctx: *LifecycleContext, new_conn: *conn_mod.
 
     // Close all stale connections with appropriate error message
     for (to_close.items) |c| {
-        c.sendConnectionClose(0x00, "Replaced by new connection from same peer") catch {};
+        c.sendConnectionClose(0x00, "Replaced by new connection from same peer") catch |err| {
+            logger.warn("sendConnectionClose for stale conn failed: {s}", .{@errorName(err)});
+        };
         c.closed = true;
     }
 }
@@ -145,7 +148,9 @@ pub fn pruneClosed(ctx: *LifecycleContext) void {
         const c = e.value_ptr.*;
         if (c.closed) {
             closed_set.put(c, {}) catch continue;
-            keys.append(ctx.allocator, e.key_ptr.*) catch {};
+            keys.append(ctx.allocator, e.key_ptr.*) catch |err| {
+                logger.err("pruneClosedConnections: keys.append failed (OOM): {s}", .{@errorName(err)});
+            };
         }
     }
 
@@ -189,7 +194,9 @@ pub fn pruneClosed(ctx: *LifecycleContext) void {
         }
 
         if (!already) {
-            ctx.retired.append(ctx.allocator, cptr) catch {};
+            ctx.retired.append(ctx.allocator, cptr) catch |err| {
+                logger.err("retired.append failed (OOM): {s}", .{@errorName(err)});
+            };
         }
     }
 }
@@ -244,7 +251,9 @@ pub fn retireConnection(ctx: *LifecycleContext, conn: *conn_mod.Connection) void
     }
 
     if (!already) {
-        ctx.retired.append(ctx.allocator, conn) catch {};
+        ctx.retired.append(ctx.allocator, conn) catch |err| {
+            logger.err("retireConnection: retired.append failed (OOM): {s}", .{@errorName(err)});
+        };
     }
 }
 

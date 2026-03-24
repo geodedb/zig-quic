@@ -185,7 +185,9 @@ pub fn bind(comptime Connection: type) type {
             // Record via Recovery (authoritative)
             const now_i = std.time.nanoTimestamp();
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
-            _ = self.rec.onPacketSent(space, pn, bytes, ack_eliciting, now_ns) catch {};
+            _ = self.rec.onPacketSent(space, pn, bytes, ack_eliciting, now_ns) catch |err| {
+                logger.err("recovery onPacketSent failed: {s}", .{@errorName(err)});
+            };
             // Legacy maps retained for compatibility with tests expecting them
             // Use proper init flags to avoid accessing undefined HashMaps
             if (!self.sent_time_init) {
@@ -196,8 +198,12 @@ pub fn bind(comptime Connection: type) type {
                 self.sent_sizes = std.AutoHashMap(u64, u16).init(self.allocator.*);
                 self.sent_sizes_init = true;
             }
-            _ = self.sent_time.put(pn, @as(i128, @intCast(now_ns))) catch {};
-            _ = self.sent_sizes.put(pn, @intCast(@min(bytes, @as(usize, std.math.maxInt(u16))))) catch {};
+            _ = self.sent_time.put(pn, @as(i128, @intCast(now_ns))) catch |err| {
+                logger.err("sent_time.put failed (OOM): {s}", .{@errorName(err)});
+            };
+            _ = self.sent_sizes.put(pn, @intCast(@min(bytes, @as(usize, std.math.maxInt(u16))))) catch |err| {
+                logger.err("sent_sizes.put failed (OOM): {s}", .{@errorName(err)});
+            };
             self.ccOnPacketSent(bytes, ack_eliciting);
         }
 
@@ -223,7 +229,9 @@ pub fn bind(comptime Connection: type) type {
             sr.last_sent_max_stream_data = 0;
             // PHASE 46: Store initial window size for quinn-style threshold calculation
             sr.initial_window_size = self.local_max_stream_data;
-            self.streams_rx.put(id, sr) catch {};
+            self.streams_rx.put(id, sr) catch |err| {
+                logger.err("streams_rx.put failed for stream {d} (OOM): {s}", .{ id, @errorName(err) });
+            };
             return self.streams_rx.getPtr(id).?;
         }
 
@@ -390,7 +398,9 @@ pub fn bind(comptime Connection: type) type {
                 ensureStreamTxInit(self);
                 if (self.stream_txs.getPtr(stream_id) == null) {
                     // PHASE 42 PART 10: Initialize per-stream peer window from connection default
-                    _ = self.stream_txs.put(stream_id, .{ .peer_max_stream_data = self.peer_max_stream_data }) catch {};
+                    _ = self.stream_txs.put(stream_id, .{ .peer_max_stream_data = self.peer_max_stream_data }) catch |err| {
+                        logger.err("stream_txs.put failed for stream {d} (OOM): {s}", .{ stream_id, @errorName(err) });
+                    };
                 }
             }
 
@@ -416,7 +426,9 @@ pub fn bind(comptime Connection: type) type {
                     if (is_bidi and self.stream_txs_init) {
                         if (self.stream_txs.getPtr(stream_id) == null) {
                             // PHASE 42 PART 10: Initialize per-stream peer window from connection default
-                            _ = self.stream_txs.put(stream_id, .{ .peer_max_stream_data = self.peer_max_stream_data }) catch {};
+                            _ = self.stream_txs.put(stream_id, .{ .peer_max_stream_data = self.peer_max_stream_data }) catch |err| {
+                                logger.err("stream_txs.put failed for stream {d} (OOM): {s}", .{ stream_id, @errorName(err) });
+                            };
                         }
                     }
                     return stream_id;

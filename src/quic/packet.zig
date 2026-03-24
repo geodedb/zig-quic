@@ -1104,7 +1104,9 @@ pub fn encode0RTTProtected(
         // Apply header protection in place
         const header_first_ptr = &buf.items[0];
         const pn_slice = buf.items[pn_offset .. pn_offset + pn_len];
-        crypto.headerProtect(.aes_128_gcm, &keys.hp, &sample16, header_first_ptr, pn_slice) catch {};
+        crypto.headerProtect(.aes_128_gcm, &keys.hp, &sample16, header_first_ptr, pn_slice) catch |err| {
+            logger.err("header protection failed: {s}", .{@errorName(err)});
+        };
     }
 
     return buf.toOwnedSlice(alloc);
@@ -1321,7 +1323,9 @@ fn dumpPhase57Files(ctx: Phase57DumpContext, dump_id: u8) void {
 
     if (cwd.createFile(packet_path, .{ .truncate = true })) |file| {
         defer file.close();
-        file.writeAll(ctx.packet) catch {};
+        file.writeAll(ctx.packet) catch |werr| {
+            logger.debugPrint("[PHASE57-DUMP] failed to write packet data: {}\n", .{werr});
+        };
     } else |err| {
         logger.debugPrint("[PHASE57-DUMP] failed to write {s}: {}\n", .{ packet_path, err });
     }
@@ -1353,7 +1357,9 @@ fn copyPhase57File(data: []const u8, path: []const u8) void {
     const cwd = std.fs.cwd();
     if (cwd.createFile(path, .{ .truncate = true })) |file| {
         defer file.close();
-        file.writeAll(data) catch {};
+        file.writeAll(data) catch |werr| {
+            logger.debugPrint("[PHASE57-DUMP] copyPhase57File write failed: {}\n", .{werr});
+        };
     } else |_| {}
 }
 
@@ -1378,7 +1384,9 @@ fn copyPhase57Meta(ctx: Phase57DumpContext, path: []const u8) void {
 fn writeLine(file: std.fs.File, comptime fmt: []const u8, args: anytype) void {
     var buf: [160]u8 = undefined;
     const line = std.fmt.bufPrint(&buf, fmt, args) catch return;
-    file.writeAll(line) catch {};
+    file.writeAll(line) catch |werr| {
+        logger.debugPrint("[PHASE57-DUMP] writeLine failed: {}\n", .{werr});
+    };
 }
 
 fn writeHexLine(file: std.fs.File, label: []const u8, bytes: []const u8) void {
@@ -1389,5 +1397,7 @@ fn writeHexLine(file: std.fs.File, label: []const u8, bytes: []const u8) void {
         _ = std.fmt.bufPrint(&byte_buf, "{X:0>2}", .{bytes[idx]}) catch return;
         file.writeAll(&byte_buf) catch return;
     }
-    file.writeAll("\n") catch {};
+    file.writeAll("\n") catch |werr| {
+        logger.debugPrint("[PHASE57-DUMP] writeHexLine newline failed: {}\n", .{werr});
+    };
 }

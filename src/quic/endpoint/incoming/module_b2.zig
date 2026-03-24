@@ -207,7 +207,9 @@ pub fn generateAndSendAck(
 
         if (pkt_len != 0) {
             const pkt = packet_storage[0..pkt_len];
-            _ = ack_ctx.send_fn(ack_ctx.peer, pkt) catch {};
+            _ = ack_ctx.send_fn(ack_ctx.peer, pkt) catch |err| {
+                logger.warn("deferred ECN ACK send failed: {s}", .{@errorName(err)});
+            };
             conn.onShortHeaderPacketSent(pkt.len, false);
             conn.ecn_app_ack_pending = false;
             return; // Stop further processing
@@ -246,7 +248,9 @@ pub fn generateAndSendAck(
 
                 if (pkt_len != 0) {
                     const pkt = packet_storage[0..pkt_len];
-                    _ = ack_ctx.send_fn(ack_ctx.peer, pkt) catch {};
+                    _ = ack_ctx.send_fn(ack_ctx.peer, pkt) catch |err| {
+                        logger.warn("AEAD limit CONNECTION_CLOSE send failed: {s}", .{@errorName(err)});
+                    };
                     conn.onShortHeaderPacketSent(pkt.len, true);
                 }
             }
@@ -346,7 +350,9 @@ pub fn generateAndSendAck(
                     if (pkt_len != 0) {
                         const pkt = packet_storage[0..pkt_len];
                         const send_start_ns = std.time.nanoTimestamp();
-                        _ = ack_ctx.send_fn(ack_ctx.peer, pkt) catch {};
+                        _ = ack_ctx.send_fn(ack_ctx.peer, pkt) catch |err| {
+                            logger.warn("ECN ACK send failed: {s}", .{@errorName(err)});
+                        };
                         const send_end_ns = std.time.nanoTimestamp();
                         const send_duration_us = @as(u64, @intCast(@abs(send_end_ns - send_start_ns))) / 1000;
                         const total_delay_us = delay_since_rx_us + send_duration_us;
@@ -383,12 +389,16 @@ pub fn generateAndSendAck(
                     }
 
                     if (conn.local_max_data > conn.last_sent_max_data) {
-                        _ = (frame.Frame{ .max_data = .{ .max = conn.local_max_data } }).write(w) catch {};
+                        _ = (frame.Frame{ .max_data = .{ .max = conn.local_max_data } }).write(w) catch |err| {
+                            logger.err("MAX_DATA frame write failed: {s}", .{@errorName(err)});
+                        };
                         conn.last_sent_max_data = conn.local_max_data;
                     }
 
                     if (conn.local_max_streams_bidi > conn.last_sent_max_streams_bidi) {
-                        _ = (frame.Frame{ .max_streams_bidi = .{ .max = conn.local_max_streams_bidi } }).write(w) catch {};
+                        _ = (frame.Frame{ .max_streams_bidi = .{ .max = conn.local_max_streams_bidi } }).write(w) catch |err| {
+                            logger.err("MAX_STREAMS_BIDI frame write failed: {s}", .{@errorName(err)});
+                        };
                         conn.last_sent_max_streams_bidi = conn.local_max_streams_bidi;
                     }
 
@@ -427,7 +437,9 @@ pub fn generateAndSendAck(
                     if (pkt_len != 0) {
                         const pkt = packet_storage[0..pkt_len];
                         const send_start_ns = std.time.nanoTimestamp();
-                        _ = ack_ctx.send_fn(ack_ctx.peer, pkt) catch {};
+                        _ = ack_ctx.send_fn(ack_ctx.peer, pkt) catch |err| {
+                            logger.warn("normal ACK send failed: {s}", .{@errorName(err)});
+                        };
                         const send_end_ns = std.time.nanoTimestamp();
                         const send_duration_us = @as(u64, @intCast(@abs(send_end_ns - send_start_ns))) / 1000;
                         const total_delay_us = delay_since_rx_us + send_duration_us;
@@ -482,7 +494,9 @@ pub fn generateAndSendAck(
 
                 if (pkt_len != 0) {
                     const pkt = packet_storage[0..pkt_len];
-                    _ = ack_ctx.send_fn(ack_ctx.peer, pkt) catch {};
+                    _ = ack_ctx.send_fn(ack_ctx.peer, pkt) catch |err| {
+                        logger.warn("ACK-only send failed: {s}", .{@errorName(err)});
+                    };
                     // ACK-only is not ack-eliciting
                     conn.onShortHeaderPacketSent(pkt.len, false);
                 }

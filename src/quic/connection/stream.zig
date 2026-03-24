@@ -8,6 +8,7 @@
 //! RFC 9000 §4: Flow Control
 
 const std = @import("std");
+const logger = @import("quic_logger");
 
 /// Data segment for stream reassembly.
 pub const Segment = struct {
@@ -79,7 +80,9 @@ pub const StreamRx = struct {
                 const seg = self.bufs.items[i];
                 if (seg.off == self.recv_off) {
                     // append to inbox and advance
-                    _ = self.inbox.appendSlice(alloc.*, seg.data) catch {};
+                    _ = self.inbox.appendSlice(alloc.*, seg.data) catch |err| {
+                        logger.err("stream inbox appendSlice failed (OOM): {s}", .{@errorName(err)});
+                    };
                     self.recv_off +%= seg.data.len;
                     alloc.free(seg.data);
                     _ = self.bufs.swapRemove(i);
