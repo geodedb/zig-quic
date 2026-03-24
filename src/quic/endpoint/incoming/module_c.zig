@@ -547,9 +547,12 @@ pub const session_5_initial_header_parsing = true;
 /// Documentation skeleton for complete Initial packet processing (Sessions 5-6).
 /// RFC 9000 §17.2.2: Initial Packet Processing
 ///
-/// NOTE: This is a documentation-only skeleton. The actual processInitial() function
-/// exists at line 741 and is functional. This skeleton documents the intended modular
-/// structure for Phase 4b.5 Sessions 5-6 extraction work.
+/// NOTE: This modular extraction is INCOMPLETE (Sessions 5-6 pending).
+/// Production traffic uses the legacy path in incoming.zig.
+/// Do not call processInitialSkeleton() -- it returns error.NotImplemented.
+///
+/// This skeleton documents the intended modular structure for Phase 4b.5
+/// Sessions 5-6 extraction work.
 ///
 /// Planned processing steps (RFC 9000 §7, §8.1):
 /// 1. Parse Initial packet header (DCID, SCID, Token, Length) - DONE via parseCompleteInitialHeader()

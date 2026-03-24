@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2024-2025 CodePros
 
-//! QUIC recovery primitives: RTT estimator, PTO computation, and helpers.
+//! DEPRECATED: This monolithic module is superseded by the modular
+//! implementation in recovery/ (recovery/recovery.zig and sub-modules).
+//! New code should import from the modular version via the "quic_recovery"
+//! build module. This file is retained for backward compatibility during
+//! migration.
 //!
+//! Original description: QUIC recovery primitives: RTT estimator, PTO computation, and helpers.
 //! Implements the congestion control and loss detection pieces of RFC 9002.
 const std = @import("std");
 const frame = @import("quic_frame");

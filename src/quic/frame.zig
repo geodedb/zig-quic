@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2024-2025 CodePros
 
-//! QUIC frame codec (subset) used by tests and initial handshake.
+//! DEPRECATED: This monolithic module is superseded by the modular
+//! implementation in frame/ (frame/frame.zig and sub-modules). New code
+//! should import from the modular version via the "quic_frame" build
+//! module. This file is retained for backward compatibility during
+//! migration.
 //!
+//! Original description: QUIC frame codec (subset) used by tests and initial handshake.
 //! Implements encoders/decoders for the frame families described in RFC 9000
 //! §19 plus the DATAGRAM extension from RFC 9221.
 const std = @import("std");
@@ -72,7 +77,7 @@ pub const Frame = union(enum) {
         // When present, encode as ACK_ECN (0x03) and append ECT0/ECT1/CE counts
         ecn: ?EcnCounts = null,
         // Internal storage for parsed ranges (decodeOne fills this and points ranges to it)
-        ranges_buf: [16]AckRange = undefined,
+        ranges_buf: [64]AckRange = undefined,
         ranges_len: usize = 0,
     },
     // DATAGRAM frame from RFC 9221 (transport extension for unreliable datagrams).
@@ -618,9 +623,13 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
         i += range_count.n;
         const first_range = try varint.decode(buf[i..]);
         i += first_range.n;
-        // Parse additional ack ranges if present (gap,len pairs) up to a small fixed cap
-        var ranges_buf: [16]AckRange = undefined;
+        // Reject oversized ACK range counts to prevent resource exhaustion
+        if (range_count.value > 256) return error.TooManyAckRanges;
+        // Parse additional ack ranges if present (gap,len pairs) up to buffer capacity
+        var ranges_buf: [64]AckRange = undefined;
         var out_len: usize = 0;
+        // Reject if range count exceeds internal buffer capacity
+        if (range_count.value > ranges_buf.len) return error.TooManyAckRanges;
         var rc_left: u64 = range_count.value;
         while (rc_left > 0) : (rc_left -= 1) {
             const gap = try varint.decode(buf[i..]);
@@ -628,10 +637,8 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
             const lenv = try varint.decode(buf[i..]);
             i += lenv.n;
             if (i > buf.len) return error.Truncated;
-            if (out_len < ranges_buf.len) {
-                ranges_buf[out_len] = .{ .gap = gap.value, .len = lenv.value };
-                out_len += 1;
-            }
+            ranges_buf[out_len] = .{ .gap = gap.value, .len = lenv.value };
+            out_len += 1;
         }
         var ecn_counts: ?EcnCounts = null;
         if (t == @intFromEnum(FrameType.ACK_ECN)) {

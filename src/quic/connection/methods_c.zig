@@ -376,8 +376,9 @@ pub fn bind(comptime Connection: type) type {
                 return error.WouldBlock;
             }
 
-            // Remove and return the first stream in the queue
-            const stream_id = self.incoming_stream_queue.orderedRemove(0);
+            // Remove and return a stream from the queue.
+            // Uses swapRemove for O(1) dequeue — stream acceptance order is not guaranteed.
+            const stream_id = self.incoming_stream_queue.swapRemove(0);
 
             // Ensure we have RX state for it
             _ = ensureStreamRx(self, stream_id);

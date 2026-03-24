@@ -111,8 +111,9 @@ pub fn createClientConnection(
     // NOTE: allow_insecure is now handled via TLS Context configuration during creation
     c.allowed_alpns = cfg.alpn;
 
-    // Enable optional pacing and set CC max_datagram_size
+    // Enable optional pacing, localhost exemption, and set CC max_datagram_size
     c.enable_pacing = cfg.enable_pacing;
+    c.exempt_localhost = cfg.exempt_localhost;
     c.rec.cc.mds = @intCast(cfg.max_datagram_size);
 
     // Apply AEAD usage limit overrides

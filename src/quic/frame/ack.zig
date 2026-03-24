@@ -82,14 +82,24 @@ pub fn writeAck(
 }
 
 /// Decode ACK or ACK_ECN frame with embedded ranges buffer.
+/// Maximum number of ACK ranges stored in the internal buffer.
+/// Peers sending more than this many ranges per ACK frame are rejected.
+pub const max_ack_ranges = 64;
+
+/// Hard ceiling for ACK range count — any frame claiming more than 256 ranges
+/// is treated as a protocol violation to prevent resource exhaustion.
+const max_ack_range_count = 256;
+
 /// RFC 9000 §19.3: Returns ACK fields with ranges stored in internal buffer.
+/// Returns error.TooManyAckRanges if range count exceeds 256 (protocol ceiling)
+/// or exceeds the internal buffer capacity of 64.
 pub fn decodeAck(buf: []const u8) !struct {
     largest: u64,
     ack_delay: u64,
     first_range: u64,
     ranges: []const types.AckRange,
     ecn: ?types.EcnCounts,
-    ranges_buf: [16]types.AckRange, // Internal storage for ranges
+    ranges_buf: [max_ack_ranges]types.AckRange, // Internal storage for ranges
     ranges_len: usize,
     n: usize,
 } {
@@ -116,13 +126,20 @@ pub fn decodeAck(buf: []const u8) !struct {
     const range_count = try varint.decode(buf[i..]);
     i += range_count.n;
 
+    // Reject oversized ACK range counts to prevent resource exhaustion
+    if (range_count.value > max_ack_range_count) return error.TooManyAckRanges;
+
     // First ACK Range
     const first_range = try varint.decode(buf[i..]);
     i += first_range.n;
 
     // Parse additional ACK ranges (gap, length pairs)
-    var ranges_buf: [16]types.AckRange = undefined;
+    var ranges_buf: [max_ack_ranges]types.AckRange = undefined;
     var out_len: usize = 0;
+
+    // Reject if range count exceeds internal buffer capacity
+    if (range_count.value > max_ack_ranges) return error.TooManyAckRanges;
+
     var rc_left: u64 = range_count.value;
 
     while (rc_left > 0) : (rc_left -= 1) {
@@ -134,14 +151,11 @@ pub fn decodeAck(buf: []const u8) !struct {
 
         if (i > buf.len) return error.Truncated;
 
-        // Store up to buffer capacity
-        if (out_len < ranges_buf.len) {
-            ranges_buf[out_len] = .{
-                .gap = gap.value,
-                .len = lenv.value,
-            };
-            out_len += 1;
-        }
+        ranges_buf[out_len] = .{
+            .gap = gap.value,
+            .len = lenv.value,
+        };
+        out_len += 1;
     }
 
     // ECN Counts (only for ACK_ECN)

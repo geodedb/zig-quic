@@ -483,16 +483,22 @@ pub const Endpoint = struct {
     fn pushAccepted(self: *Endpoint, c: *conn_mod.Connection) void {
         self.mu.lock();
         defer self.mu.unlock();
-        self.accepted.append(self.allocator, c) catch {};
+        // OOM here drops the connection from the accept queue -- it will
+        // never be returned to the application.  Log so the operator can
+        // detect pressure on the allocator.
+        self.accepted.append(self.allocator, c) catch |err| {
+            logger.debugPrint("[ENDPOINT] pushAccepted failed: {s} -- connection lost\n", .{@errorName(err)});
+        };
     }
 
     /// Pop next accepted server-side connection if available.
-    /// GAP-0200: Thread-safe - acquires endpoint mutex
+    /// GAP-0200: Thread-safe - acquires endpoint mutex.
+    /// Uses swapRemove for O(1) dequeue — connection acceptance order is not guaranteed.
     pub fn popAccepted(self: *Endpoint) ?*conn_mod.Connection {
         self.mu.lock();
         defer self.mu.unlock();
         if (self.accepted.items.len == 0) return null;
-        return self.accepted.orderedRemove(0);
+        return self.accepted.swapRemove(0);
     }
 
     /// Inject inbound datagram into receive path (test helper, no ECN).
@@ -544,7 +550,9 @@ pub const Endpoint = struct {
     /// Transmit minimal Initial packet (PING) to elicit Version Negotiation or SH.
     pub fn clientSendInitialProbe(self: *Endpoint, c: *conn_mod.Connection) !void {
         // Set up client transport parameters for TLS handshake
-        handshake_integration.setupClientTransportParams(c, self.allocator) catch {};
+        // Transport parameter setup is critical -- without it the handshake
+        // will produce an invalid ClientHello.  Propagate the error.
+        try handshake_integration.setupClientTransportParams(c, self.allocator);
 
         // Delegate to client module for Initial packet construction and sending
         var ctx = client_mod.ClientContext{
@@ -630,11 +638,13 @@ pub const Endpoint = struct {
     }
 
     /// Cancel a pending timer (caller must hold mu).
+    /// Uses swapRemove for O(1) removal — timer ordering is not required since
+    /// we always scan for the minimum deadline.
     fn cancelTimerLocked(self: *Endpoint, id: u64) bool {
         var i: usize = 0;
         while (i < self.timers.items.len) : (i += 1) {
             if (self.timers.items[i].id == id) {
-                _ = self.timers.orderedRemove(i);
+                _ = self.timers.swapRemove(i);
                 return true;
             }
         }
@@ -1012,7 +1022,12 @@ pub const Endpoint = struct {
 
         // Store token and update version/DCID for next Initial
         c.initial_token.clearRetainingCapacity();
-        _ = c.initial_token.appendSlice(self.allocator, token_bytes) catch {};
+        // Token storage is critical for Retry flow -- without it the next Initial
+        // will be rejected by the server. Log and abandon Retry processing on OOM.
+        _ = c.initial_token.appendSlice(self.allocator, token_bytes) catch |err| {
+            logger.debugPrint("[ENDPOINT] Retry token storage failed: {s}\n", .{@errorName(err)});
+            return;
+        };
         c.retry_received = true;
         c.retry_apply_count +%= 1;
         c.version = version;
@@ -1074,8 +1089,11 @@ pub const Endpoint = struct {
             return;
         }
 
-        // Resend Initial with token
-        self.clientSendInitialProbe(c) catch {};
+        // Resend Initial with token -- failure here means the client cannot
+        // complete the handshake after Retry; log for diagnosis.
+        self.clientSendInitialProbe(c) catch |err| {
+            logger.debugPrint("[ENDPOINT] Initial probe resend after Retry failed: {s}\n", .{@errorName(err)});
+        };
     }
 
     fn processIncomingDatagram(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8, ecn_bits: ?u8) void {
@@ -1241,7 +1259,11 @@ pub const Endpoint = struct {
                     const supported_versions = [_]u32{ packet.QUIC_V1, packet.QUIC_V2 };
                     var vn_buf: [256]u8 = undefined;
                     if (encodeVersionNegotiationPacket(scid, dcid, &supported_versions, vn_buf[0..])) |vn_packet| {
-                        _ = self.sendTo(norm_peer, vn_packet) catch {};
+                        // Fire-and-forget: Version Negotiation is best-effort;
+                        // client will retry or time out.
+                        _ = self.sendTo(norm_peer, vn_packet) catch |err| {
+                            logger.debugPrint("[ENDPOINT] VN send failed: {s}\n", .{@errorName(err)});
+                        };
                     } else |_| {}
                 } else {
                     incoming.processInitial(&rx_ctx, norm_peer, packet_bytes, version);
@@ -1278,7 +1300,11 @@ pub const Endpoint = struct {
         c.bytes_tx_unvalidated = 0;
         // Insert/refresh mapping keyed by new peer and our DCID
         const new_key = Key{ .peer_hash = new_peer_hash, .dcid_hash = hashBytes(c.our_scid.bytes[0..dcid_len]) };
-        _ = self.conns.put(new_key, c) catch {};
+        // OOM prevents registering the migrated path -- the connection becomes
+        // unreachable for future inbound packets on the new address.
+        _ = self.conns.put(new_key, c) catch |err| {
+            logger.debugPrint("[ENDPOINT] path migration map insert failed: {s}\n", .{@errorName(err)});
+        };
         // Trigger PATH_CHALLENGE if 1-RTT keys are available (§9.3):
         c.sendPathChallenge();
         logger.debugPrint("path: change detected dcid_len={d} triggering validation (phase={d})\n", .{ dcid_len, @intFromBool(c.tx_key_phase) });
@@ -1321,6 +1347,8 @@ pub const Endpoint = struct {
         var expired_buf: [64]Timer = undefined;
         var expired_count: usize = 0;
 
+        // Uses swapRemove for O(1) removal — timer ordering is not required since
+        // we always scan the full list for expired entries.
         var i: usize = 0;
         while (i < self.timers.items.len) {
             if (self.timers.items[i].deadline_ms <= now_ms) {
@@ -1328,7 +1356,8 @@ pub const Endpoint = struct {
                     expired_buf[expired_count] = self.timers.items[i];
                     expired_count += 1;
                 }
-                _ = self.timers.orderedRemove(i);
+                _ = self.timers.swapRemove(i);
+                // Do not increment i — swapRemove moved the last element here
             } else {
                 i += 1;
             }
@@ -1345,7 +1374,10 @@ pub const Endpoint = struct {
                         if (t.conn) |c| {
                             if (t.payload) |bytes| {
                                 const paced_peer = if (t.paced_peer) |peer| peer else c.peer;
-                                _ = self.sendTo(paced_peer, bytes) catch {};
+                                // Fire-and-forget: paced send is best-effort; loss recovery handles retransmission.
+                                _ = self.sendTo(paced_peer, bytes) catch |err| {
+                                    logger.debugPrint("[ENDPOINT] paced send failed: {s}\n", .{@errorName(err)});
+                                };
                                 self.allocator.free(bytes);
                             }
                         }
@@ -1353,11 +1385,17 @@ pub const Endpoint = struct {
                 },
                 .PtoInitial => if (t.conn) |c| {
                     c.setPtoExpiredInitial();
-                    self.sendPtoProbe(c, .PtoInitial) catch {};
+                    // PTO probe failure is non-fatal; timer will fire again on next PTO expiry.
+                    self.sendPtoProbe(c, .PtoInitial) catch |err| {
+                        logger.debugPrint("[ENDPOINT] PTO Initial probe failed: {s}\n", .{@errorName(err)});
+                    };
                 },
                 .PtoHandshake => if (t.conn) |c| {
                     c.setPtoExpiredHandshake();
-                    self.sendPtoProbe(c, .PtoHandshake) catch {};
+                    // PTO probe failure is non-fatal; timer will fire again on next PTO expiry.
+                    self.sendPtoProbe(c, .PtoHandshake) catch |err| {
+                        logger.debugPrint("[ENDPOINT] PTO Handshake probe failed: {s}\n", .{@errorName(err)});
+                    };
                 },
                 .PtoApp => if (t.conn) |c| c.setPtoExpiredApp(),
                 .Pmtud => if (t.conn) |c| {

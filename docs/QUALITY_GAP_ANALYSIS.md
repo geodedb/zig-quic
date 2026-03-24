@@ -39,10 +39,10 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 | 7 | E5 | Medium | 40 | perf | `getenv` on every packet send for debug config | Transport | `conn.zig:1534`, `methods_c.zig:45`, `methods_b.zig:1454` | [#106](https://gitlab.com/devnw/zig/quic/-/issues/106) | Cache env lookup at init time | Core QUIC | S (15 min) | Open |
 | 8 | E6 | Medium | 40 | ci-cd | No Zig build cache in CI | CI | `.gitlab-ci.yml` (no cache directive for zig-cache) | [#112](https://gitlab.com/devnw/zig/quic/-/issues/112) | Add cache key for zig-cache directories | CI | S (15 min) | Open |
 | 9 | E7 | Medium | 36 | ci-cd | macOS/Windows CI downloads Zig without SHA-256 verification | CI / Platform | `.gitlab-ci.yml:503-524` | [#102](https://gitlab.com/devnw/zig/quic/-/issues/102) | Add hash verification matching Linux job pattern | CI | S (30 min) | Open |
-| 10 | R5-R6 | Medium | 36 | architecture | Parallel monolithic + modular frame/recovery modules | Transport | `endpoint/frame_handler.zig` vs `incoming/module_b*.zig` | [#103](https://gitlab.com/devnw/zig/quic/-/issues/103) | Remove non-canonical version; consolidate | Core QUIC | M-L (2-4h) | Open |
+| 10 | R5-R6 | Medium | 36 | architecture | Parallel monolithic + modular frame/recovery modules | Transport | `endpoint/frame_handler.zig` vs `incoming/module_b*.zig` | [#103](https://gitlab.com/devnw/zig/quic/-/issues/103) | Documented: deprecated monolithic files with doc comments; build wires modular versions | Core QUIC | M-L (2-4h) | Closed / Implemented |
 | 11 | R9 | Medium | 36 | api-contract | Heuristic endpoint role detection by port number | Transport | `endpoint.zig:270-274` | [#107](https://gitlab.com/devnw/zig/quic/-/issues/107) | Make role an explicit config parameter | Core QUIC | S (20 min) | Open |
-| 12 | E3 | Medium | 36 | maintainability | 40+ state-corrupting `catch {}` patterns in core modules | Transport | 287 occurrences across 63 files | [#110](https://gitlab.com/devnw/zig/quic/-/issues/110) | Phased audit: propagate or document each | Core QUIC | L (4-8h) | Open |
-| 13 | D1-D5 | Low | 24 | docs | Documentation gaps -- no architecture doc, sparse doc comments | Docs | No `docs/ARCHITECTURE.md`; many public fns undocumented | [#113](https://gitlab.com/devnw/zig/quic/-/issues/113) | Create architecture doc; add doc comments to public API | Docs | Ongoing | Open |
+| 12 | E3 | Medium | 36 | maintainability | 40+ state-corrupting `catch {}` patterns in core modules | Transport | 287 occurrences across 63 files | [#110](https://gitlab.com/devnw/zig/quic/-/issues/110) | Phase 1: fixed ~15 most dangerous patterns in incoming.zig, methods_b.zig, endpoint.zig; remaining documented as tech debt | Core QUIC | L (4-8h) | Partially Closed |
+| 13 | D1-D5 | Low | 24 | docs | Documentation gaps -- no architecture doc, sparse doc comments | Docs | No `docs/ARCHITECTURE.md`; many public fns undocumented | [#113](https://gitlab.com/devnw/zig/quic/-/issues/113) | Created `docs/ARCHITECTURE.md` covering module layout, mixin pattern, migration status, threading model, data flows | Docs | Ongoing | Closed / Implemented |
 | 14 | R7-R8 | Low | 24 | architecture | Connection struct 1711 LOC, 160 fields + non-domain-aligned method split | Transport | `conn.zig` (1711 lines), `methods_a/b/c.zig` | [#115](https://gitlab.com/devnw/zig/quic/-/issues/115) | Re-split by domain concern | Core QUIC | L | Open |
 | 15 | E9 | Low | 16 | cleanup | Global mutable debug state -- data race, debug scaffolding | Core | Module-level mutable `var` for debug control | [#117](https://gitlab.com/devnw/zig/quic/-/issues/117) | Replace with comptime flags or per-instance config | Core QUIC | S (5 min) | Open |
 
@@ -88,7 +88,7 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 - [#87](https://gitlab.com/devnw/zig/quic/-/issues/87) **Open** -- unreachable on peer CID (Critical).
 - [#96](https://gitlab.com/devnw/zig/quic/-/issues/96) **Open** -- ghost connections from silent catch {}.
 - [#99](https://gitlab.com/devnw/zig/quic/-/issues/99) **Closed** -- triplicated crypto functions deduplicated into canonical locations.
-- [#110](https://gitlab.com/devnw/zig/quic/-/issues/110) **Open** -- 287 catch {} patterns.
+- [#110](https://gitlab.com/devnw/zig/quic/-/issues/110) **Partially Closed** -- Phase 1 fixed ~15 most dangerous catch {} patterns in incoming.zig, methods_b.zig, endpoint.zig. Remaining ~270 patterns documented as tech debt.
 
 ### api-contract
 - [#98](https://gitlab.com/devnw/zig/quic/-/issues/98) **Open** -- handshakeComplete == isHandshakeConfirmed.
@@ -96,7 +96,7 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 
 ### architecture
 - [#75](https://gitlab.com/devnw/zig/quic/-/issues/75) Closed.
-- [#103](https://gitlab.com/devnw/zig/quic/-/issues/103) **Open** -- parallel monolithic/modular modules.
+- [#103](https://gitlab.com/devnw/zig/quic/-/issues/103) **Closed** -- documented monolithic files as deprecated; build wires modular versions.
 - [#115](https://gitlab.com/devnw/zig/quic/-/issues/115) **Open** -- Connection struct 1711 LOC.
 
 ### ci-cd
@@ -108,7 +108,7 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 
 ### docs
 - [#71](https://gitlab.com/devnw/zig/quic/-/issues/71) Closed.
-- [#113](https://gitlab.com/devnw/zig/quic/-/issues/113) **Open** -- architecture doc + doc comments.
+- [#113](https://gitlab.com/devnw/zig/quic/-/issues/113) **Closed** -- created `docs/ARCHITECTURE.md`.
 
 ### cleanup
 - [#66](https://gitlab.com/devnw/zig/quic/-/issues/66) Closed.
@@ -131,12 +131,12 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 - Completed: #63, #64, #65, #66, #71, #72, #74.
 
 ### Medium (1-5 days)
-- **Open**: #96 (1h), #103 (2-4h)
-- Completed: #67, #68, #69, #73, #76, #77, #99.
+- **Open**: #96 (1h)
+- Completed: #67, #68, #69, #73, #76, #77, #99, #103.
 
 ### Strategic (> 5 days)
-- **Open**: #110 (4-8h), #115 (Large), #113 (Ongoing)
-- Completed: #62, #70, #75.
+- **Open**: #110 (partially closed, remaining ~270 patterns), #115 (Large)
+- Completed: #62, #70, #75, #113.
 
 ---
 

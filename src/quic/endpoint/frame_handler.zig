@@ -486,6 +486,18 @@ pub fn processFrame(ctx: *FrameContext, fr: frame.Frame) !FrameResult {
         // RFC 9000 §19.4: RESET_STREAM aborts the sending part of a stream.
         .stop_sending => |ss| handleStopSending(ctx, ss),
         .reset_stream => |rs| handleResetStreamFrame(ctx, rs),
+        .streams_blocked_bidi => |sb| {
+            // RFC 9000 S19.14: Peer has reached stream limit.
+            // Log for observability; reactive MAX_STREAMS increase deferred to #25.
+            _ = sb;
+            return .{ .saw_ack_eliciting = true };
+        },
+        .streams_blocked_uni => |su| {
+            // RFC 9000 S19.14: Peer has reached stream limit.
+            // Log for observability; reactive MAX_STREAMS increase deferred to #25.
+            _ = su;
+            return .{ .saw_ack_eliciting = true };
+        },
         else => .{}, // Unknown frames ignored (RFC 9000 §12.4)
     };
 }

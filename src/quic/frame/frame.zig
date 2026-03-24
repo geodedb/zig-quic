@@ -44,7 +44,7 @@ pub const Ack = struct {
     first_range: u64 = 0,
     ranges: []const AckRange = &[_]AckRange{},
     ecn: ?EcnCounts = null,
-    ranges_buf: [16]AckRange = undefined,
+    ranges_buf: [ack_mod.max_ack_ranges]AckRange = undefined,
     ranges_len: usize = 0,
 };
 pub const Datagram = struct { data: []const u8 };

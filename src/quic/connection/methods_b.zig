@@ -214,7 +214,8 @@ pub fn bind(comptime Connection: type) type {
                 self.ensureStreamTxInit();
                 if (self.stream_txs.getPtr(stream_id) == null) {
                     // PHASE 42 PART 10: Initialize per-stream peer window from connection default
-                    _ = self.stream_txs.put(stream_id, .{ .peer_max_stream_data = self.peer_max_stream_data }) catch {};
+                    // Propagate OOM -- callers already handle errors from openStream.
+                    _ = try self.stream_txs.put(stream_id, .{ .peer_max_stream_data = self.peer_max_stream_data });
                 }
                 return stream_id;
             } else {
@@ -231,7 +232,8 @@ pub fn bind(comptime Connection: type) type {
                 self.ensureStreamTxInit();
                 if (self.stream_txs.getPtr(stream_id) == null) {
                     // PHASE 42 PART 10: Initialize per-stream peer window from connection default
-                    _ = self.stream_txs.put(stream_id, .{ .peer_max_stream_data = self.peer_max_stream_data }) catch {};
+                    // Propagate OOM -- callers already handle errors from openStream.
+                    _ = try self.stream_txs.put(stream_id, .{ .peer_max_stream_data = self.peer_max_stream_data });
                 }
                 return stream_id;
             }
@@ -295,7 +297,8 @@ pub fn bind(comptime Connection: type) type {
                         _ = self.ensureStreamRx(id);
                         self.ensureStreamTxInit();
                         if (self.stream_txs.getPtr(id) == null) {
-                            _ = self.stream_txs.put(id, .{ .peer_max_stream_data = self.peer_max_stream_data }) catch {};
+                            // Propagate OOM -- writeStream already returns errors.
+                            _ = try self.stream_txs.put(id, .{ .peer_max_stream_data = self.peer_max_stream_data });
                         }
                     } else {
                         // Client or server-initiated stream - normal openStream path
@@ -314,7 +317,8 @@ pub fn bind(comptime Connection: type) type {
                     if (self.role == .Server and is_client_initiated) {
                         // Server responding on client-initiated stream - initialize TX state
                         _ = self.ensureStreamRx(id);
-                        _ = self.stream_txs.put(id, .{ .peer_max_stream_data = self.peer_max_stream_data }) catch {};
+                        // Propagate OOM -- writeStream already returns errors.
+                        _ = try self.stream_txs.put(id, .{ .peer_max_stream_data = self.peer_max_stream_data });
                     } else {
                         trace("DEBUG writeStream: InvalidStream - no TX state for stream {}\n", .{id});
                         return error.InvalidStream;

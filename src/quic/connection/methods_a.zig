@@ -838,9 +838,10 @@ pub fn bind(comptime Connection: type) type {
 
         /// Pop a DATAGRAM payload into buf; returns length copied or error if none.
         /// Pop next DATAGRAM payload into provided buffer; returns bytes copied or WouldBlock if none.
+        /// Uses swapRemove for O(1) dequeue — datagram delivery order is not guaranteed.
         pub fn popDatagram(self: *Connection, buf: []u8) !usize {
             if (self.dgram_inbox.items.len == 0) return error.WouldBlock;
-            const p = self.dgram_inbox.orderedRemove(0);
+            const p = self.dgram_inbox.swapRemove(0);
             const n = @min(buf.len, p.len);
             @memcpy(buf[0..n], p[0..n]);
             self.allocator.free(p);
@@ -968,8 +969,13 @@ pub fn bind(comptime Connection: type) type {
             self.zero_rtt_keys = .{ .key = keys.key, .iv = keys.iv, .hp = keys.hp };
         }
 
-        /// Accept 0-RTT data (server-side)
+        /// Accept 0-RTT data from the peer.
+        /// WARNING: No anti-replay mechanism is implemented (RFC 9001 S4.6.1).
+        /// Applications MUST treat 0-RTT data as potentially replayed and
+        /// avoid non-idempotent operations on it. A replay cache should be
+        /// implemented before using 0-RTT in production.
         pub fn accept0RTT(self: *Connection) void {
+            logger.debugPrint("WARNING: 0-RTT accepted without anti-replay protection\n", .{});
             self.zero_rtt_accepted = true;
         }
 

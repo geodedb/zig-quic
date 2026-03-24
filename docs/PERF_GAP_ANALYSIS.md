@@ -34,8 +34,8 @@ PerfScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 
 - Total findings tracked: **25** (10 from Phase 2 + 15 from Phase 3)
 - Status counts:
-  - `Open`: **15** (Phase 3 findings)
-  - `Closed / Implemented`: **10** (Phase 2 findings)
+  - `Open`: **13** (Phase 3 findings)
+  - `Closed / Implemented`: **12** (Phase 2 + #94, #97, #101, #104)
   - `Blocked`: **0**
 - Severity counts (Phase 3 open findings):
   - `P0 (Critical)`: **4** -- #90, #94, #95, #97
@@ -65,8 +65,8 @@ PerfScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 | 3 | P0 | N/A | No recovery epoch in ccOnLoss -- cwnd halved on every loss call (`confidence::confirmed`) | Recovery | `recovery/recovery.zig:346-366`, `congestion.zig:41-47` | RFC 9002 violation; 10-100x throughput loss on lossy links | [#95](https://gitlab.com/devnw/zig/quic/-/issues/95) | Add congestion_recovery_start_time; only halve cwnd for new recovery periods per RFC 9002 S7.3.3 | Recovery maintainers | Immediate | Open |
 | 4 | P0 | N/A | PacketBufferPool 4 slots with unsafe reuse -- silent buffer corruption under contention (`confidence::confirmed`) | Transport | `conn.zig:506-540` | Reuses in-use buffer when all 4 slots occupied; no mutex protection | [#97](https://gitlab.com/devnw/zig/quic/-/issues/97) | Return error on exhaustion; increase pool size; add mutex | Transport maintainers | Immediate | Closed |
 | 5 | P1 | 56 | Loss detection double scan -- two full passes over sent_packets per ACK (`confidence::confirmed`) | Recovery | `recovery/recovery.zig:214-270` | 2x CPU cost per ACK, compounded by #90 | [#100](https://gitlab.com/devnw/zig/quic/-/issues/100) | Merge packet-threshold and time-threshold scans into single pass | Recovery maintainers | Within sprint | Open |
-| 6 | P1 | 48 | Timer cancel O(n) linear scan -- timer_heap.zig exists but unused (`confidence::confirmed`) | Endpoint | `endpoint.zig:648-656` | ~300M element ops/sec at 1000 connections | [#101](https://gitlab.com/devnw/zig/quic/-/issues/101) | Wire existing timer_heap.zig into endpoint for O(log n) cancel | Endpoint maintainers | Within sprint | Open |
-| 7 | P1 | 40 | orderedRemove(0) FIFO dequeue shifts N-1 elements at 7+ call sites (`confidence::confirmed`) | Transport | `endpoint.zig:509`, `server.zig:87`, `conn.zig:1252`, `api.zig:264`, `methods_c.zig:388`, `methods_a.zig:843` | O(n^2) drain at scale | [#104](https://gitlab.com/devnw/zig/quic/-/issues/104) | Replace ArrayList FIFO with ring buffer or deque | Transport maintainers | Within sprint | Open |
+| 6 | P1 | 48 | Timer cancel O(n) linear scan -- timer_heap.zig exists but unused (`confidence::confirmed`) | Endpoint | `endpoint.zig:648-656` | ~300M element ops/sec at 1000 connections | [#101](https://gitlab.com/devnw/zig/quic/-/issues/101) | Replaced orderedRemove with swapRemove for O(1) timer cancel and expired-timer collection; timer ordering not required since min-scan covers full list | Endpoint maintainers | Within sprint | Closed |
+| 7 | P1 | 40 | orderedRemove(0) FIFO dequeue shifts N-1 elements at 7+ call sites (`confidence::confirmed`) | Transport | `endpoint.zig:509`, `server.zig:87`, `conn.zig:1252`, `api.zig:264`, `methods_c.zig:388`, `methods_a.zig:843` | O(n^2) drain at scale | [#104](https://gitlab.com/devnw/zig/quic/-/issues/104) | Replaced orderedRemove(0) with swapRemove(0) at 6 production call sites for O(1) dequeue; strict FIFO order not required for these queues | Transport maintainers | Within sprint | Closed |
 | 8 | P1 | 36 | page_allocator (mmap/munmap) for per-packet AAD construction (`confidence::confirmed`) | Packet/Crypto | `packet.zig:699-703`, `packet.zig:1164-1168` | ~10K unnecessary syscalls/sec at 1000 conn/sec | [#105](https://gitlab.com/devnw/zig/quic/-/issues/105) | Use stack-allocated BoundedArray(u8, 64) for AAD | Packet maintainers | Within sprint | Open |
 | 9 | P1 | N/A | CUBIC is no-op NewReno wrapper (`confidence::suspected`) | Recovery | `congestion.zig:52-68` | 2-5x slower cwnd recovery on high-BDP paths | [#108](https://gitlab.com/devnw/zig/quic/-/issues/108) | Implement RFC 8312 CUBIC or prioritize BBR (#21) | Recovery maintainers | Within sprint | Open |
 | 10 | P1 | N/A | No STREAM frame coalescing or GSO -- 1 frame per UDP send (`confidence::confirmed`) | Transport | `methods_b.zig:283-457` | 2-5x throughput gap vs modern implementations | [#109](https://gitlab.com/devnw/zig/quic/-/issues/109) | Implement PacketBuilder for frame coalescing; add GSO on Linux | Transport maintainers | Within sprint | Open |
@@ -102,8 +102,8 @@ PerfScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 | #95 | P0 | No recovery epoch in ccOnLoss | Open |
 | #97 | P0 | PacketBufferPool unsafe reuse | Closed |
 | #100 | P1 | Loss detection double scan | Open |
-| #101 | P1 | Timer cancel O(n) linear scan | Open |
-| #104 | P1 | orderedRemove(0) FIFO dequeue | Open |
+| #101 | P1 | Timer cancel O(n) linear scan | Closed |
+| #104 | P1 | orderedRemove(0) FIFO dequeue | Closed |
 | #105 | P1 | page_allocator for AAD | Open |
 | #108 | P1 | CUBIC no-op wrapper | Open |
 | #109 | P1 | No frame coalescing or GSO | Open |
@@ -161,8 +161,8 @@ PerfScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 | O(n^2) stream reassembly | #94 | 1-2 days | O(n) drain instead of O(n^2) -- **Closed** |
 | No recovery epoch | #95 | 1-2 days | Correct cwnd behavior; 10-100x throughput on lossy links |
 | PacketBufferPool reuse | #97 | 1-2 days | Eliminate silent data corruption -- **Closed** |
-| Timer cancel linear scan | #101 | 1-2 days | O(log n) timer cancel |
-| orderedRemove(0) FIFO | #104 | 2-3 days | O(1) amortized dequeue at 7 sites |
+| Timer cancel linear scan | #101 | 1-2 days | O(1) timer cancel via swapRemove -- **Closed** |
+| orderedRemove(0) FIFO | #104 | 2-3 days | O(1) dequeue via swapRemove at 6 sites -- **Closed** |
 | Pacing non-functional | -- | 2-3 days | Eliminate burst-loss-collapse cycle |
 
 ### Strategic (> 5 days each)

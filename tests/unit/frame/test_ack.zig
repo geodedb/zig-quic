@@ -442,12 +442,12 @@ test "boundary: ACK frame bytes consumed matches written" {
     try testing.expectEqual(written, result.n);
 }
 
-test "boundary: ACK frame with maximum range count" {
+test "boundary: ACK frame with 16 ranges (within buffer)" {
     var buf: [512]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
     const w = fbs.writer();
 
-    // Create maximum ranges (buffer holds 16)
+    // 16 ranges — well within the 64-range buffer capacity
     var ranges: [16]types.AckRange = undefined;
     for (&ranges, 0..) |*r, i| {
         r.* = .{ .gap = @intCast(i + 1), .len = @intCast(i * 2) };
@@ -458,6 +458,58 @@ test "boundary: ACK frame with maximum range count" {
     const result = try ack.decodeAck(fbs.getWritten());
 
     try testing.expectEqual(@as(usize, 16), result.ranges.len);
+}
+
+test "boundary: ACK frame with maximum range count (64)" {
+    var buf: [2048]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    const w = fbs.writer();
+
+    // 64 ranges — exactly at buffer capacity
+    var ranges: [64]types.AckRange = undefined;
+    for (&ranges, 0..) |*r, i| {
+        r.* = .{ .gap = @intCast(i + 1), .len = @intCast(i % 8) };
+    }
+
+    _ = try ack.writeAck(w, 5000, 200, 100, &ranges, null);
+
+    const result = try ack.decodeAck(fbs.getWritten());
+
+    try testing.expectEqual(@as(usize, 64), result.ranges.len);
+}
+
+test "security: ACK frame with oversized range count (>256) is rejected" {
+    // Craft a raw ACK frame with range_count = 257 (exceeds hard ceiling of 256).
+    // ACK frame: type(0x02) + largest(varint) + ack_delay(varint) + range_count(varint) + first_range(varint) + ranges...
+    // We only need the header to trigger the rejection before any ranges are parsed.
+    var raw: [16]u8 = undefined;
+    raw[0] = 0x02; // ACK frame type
+    raw[1] = 0x00; // largest = 0 (1-byte varint)
+    raw[2] = 0x00; // ack_delay = 0 (1-byte varint)
+    // range_count = 257: 2-byte varint encoding: 0x41, 0x01
+    raw[3] = 0x41;
+    raw[4] = 0x01;
+    // first_range = 0 (1-byte varint)
+    raw[5] = 0x00;
+    // No actual range data needed — decoder should reject before parsing ranges
+
+    const result = ack.decodeAck(&raw);
+    try testing.expectError(error.TooManyAckRanges, result);
+}
+
+test "security: ACK frame with 65 ranges (exceeds buffer capacity) is rejected" {
+    // Craft a raw ACK frame with range_count = 65 (exceeds internal buffer of 64).
+    var raw: [16]u8 = undefined;
+    raw[0] = 0x02; // ACK frame type
+    raw[1] = 0x00; // largest = 0
+    raw[2] = 0x00; // ack_delay = 0
+    // range_count = 65: 2-byte varint: 0x40 (prefix 01 + high 6 bits = 0), 0x41 (low 8 bits = 65)
+    raw[3] = 0x40;
+    raw[4] = 0x41;
+    raw[5] = 0x00; // first_range = 0
+
+    const result = ack.decodeAck(&raw);
+    try testing.expectError(error.TooManyAckRanges, result);
 }
 
 test "boundary: ACK_ECN with all ECN counts zero" {

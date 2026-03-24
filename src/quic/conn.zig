@@ -572,6 +572,8 @@ pub const Connection = struct {
     peer_transport_params_raw: ?[]u8 = null,
     // Optional pacing flag (from endpoint cfg)
     enable_pacing: bool = false,
+    // Exempt localhost from anti-amplification / address validation (from endpoint cfg, #124)
+    exempt_localhost: bool = true,
     // Optional sender callback (set by Endpoint) for paced sending
     sender_ctx: ?*anyopaque = null,
     sender_fn: ?SendFn = null,
@@ -1334,7 +1336,7 @@ pub const Connection = struct {
         if (self.pending_hs_messages) |b| self.allocator.free(b);
         if (self.pending_initial_packet) |b| self.allocator.free(b);
         while (self.dgram_inbox.items.len > 0) {
-            const p = self.dgram_inbox.orderedRemove(0);
+            const p = self.dgram_inbox.swapRemove(0);
             self.allocator.free(p);
         }
         self.dgram_inbox.deinit(self.allocator.*);
@@ -1619,9 +1621,10 @@ pub const Connection = struct {
         if (self.address_validated) return false;
 
         // CANARY: REQ=REQ-TRANSPORT-001; FEATURE="AmplificationProtection"; ASPECT=LocalhostExemption; STATUS=IMPLEMENTED; OWNER=transport; UPDATED=2025-10-15
-        // Exempt localhost connections from amplification protection
-        // This is safe because localhost connections have no amplification risk
-        if (self.isLocalhost()) return false;
+        // Exempt localhost connections from amplification protection when configured (#124).
+        // Controlled by QuicConfig.exempt_localhost (default true) so operators can
+        // enforce strict RFC 9000 §8.1 even on loopback for conformance testing.
+        if (self.exempt_localhost and self.isLocalhost()) return false;
 
         // Apply standard amplification protection for non-localhost connections
         return (self.bytes_tx_unvalidated / 3) > self.bytes_rx_unvalidated;

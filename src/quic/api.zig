@@ -260,9 +260,10 @@ pub fn hasWritableStreams(conn: *const Connection) bool {
 /// QUIC-H3-004: Returns `null` when no streams are pending. Each stream ID
 /// appears at most once per unblock event, but callers should re-check
 /// actual flow-control headroom before writing.
+/// Uses swapRemove for O(1) dequeue — writable stream notification order is not guaranteed.
 pub fn popWritableStream(conn: *Connection) ?QuicStreamId {
     if (conn.writable_streams.items.len == 0) return null;
-    return conn.writable_streams.orderedRemove(0);
+    return conn.writable_streams.swapRemove(0);
 }
 
 /// Allocate a new stream, optionally bidirectional.

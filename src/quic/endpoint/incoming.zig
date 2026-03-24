@@ -341,8 +341,11 @@ pub fn processVersionNegotiation(
     c.version = chosen;
     c.version_v2 = (chosen == packet.QUIC_V2);
 
-    // Send new Initial packet with chosen version
-    ctx.send_initial_probe_fn(c) catch {};
+    // Send new Initial packet with chosen version -- failure is non-fatal;
+    // client will retransmit on PTO expiry.
+    ctx.send_initial_probe_fn(c) catch |err| {
+        logger.debugPrint("[INCOMING] Initial probe after VN failed: {s}\n", .{@errorName(err)});
+    };
 }
 
 /// DCID length enumeration result
@@ -455,6 +458,7 @@ pub fn processInitial(
             .aead_confidentiality_limit = ctx.cfg.aead_confidentiality_limit_override orelse 0,
             .aead_integrity_limit = ctx.cfg.aead_integrity_limit_override orelse 0,
             .require_client_cert = ctx.cfg.require_client_cert,
+            .exempt_localhost = ctx.cfg.exempt_localhost,
         };
 
         // Create and initialize server connection
@@ -473,7 +477,12 @@ pub fn processInitial(
 
         // Set up transport parameters for server (RFC 9000 §18.2)
         // IMPORTANT: Must be done AFTER connection creation but BEFORE TLS processing
-        handshake_integration.setupServerTransportParams(c_new, ctx.cfg, ctx.allocator.*) catch {};
+        handshake_integration.setupServerTransportParams(c_new, ctx.cfg, ctx.allocator.*) catch |err| {
+            logger.debugPrint("[INCOMING] setupServerTransportParams failed: {s} -- dropping connection\n", .{@errorName(err)});
+            c_new.deinit();
+            ctx.allocator.destroy(c_new);
+            return;
+        };
 
         // Set up sender callback so connection can send packets
         ctx.setup_sender_fn(c_new);
@@ -564,7 +573,9 @@ pub fn processInitial(
         ctx.cfg.enable_retry,
     });
     // Skip localhost auto-validation if retry is explicitly enabled (allows testing retry mechanism)
-    if (conn.role == .Server and !conn.address_validated and is_localhost and !ctx.cfg.enable_retry) {
+    // Gate behind exempt_localhost config flag (#124) so operators can enforce strict
+    // RFC 9000 §8.1 amplification limits on loopback for conformance testing.
+    if (conn.role == .Server and !conn.address_validated and is_localhost and !ctx.cfg.enable_retry and ctx.cfg.exempt_localhost) {
         logger.debugPrint("[LOCALHOST] Auto-validating localhost address - bypassing amplification limits\n", .{});
         conn.address_validated = true;
         conn.bytes_rx_unvalidated = 0;
@@ -603,15 +614,21 @@ pub fn processInitial(
         // Mark Retry usage and refresh server transport parameters so the
         // eventual handshake includes retry_source_connection_id (RFC 9000 §7.4.1).
         conn.retry_sent = true;
-        handshake_integration.setupServerTransportParams(conn, ctx.cfg, ctx.allocator.*) catch {};
+        handshake_integration.setupServerTransportParams(conn, ctx.cfg, ctx.allocator.*) catch |err| {
+            logger.debugPrint("[INCOMING] setupServerTransportParams (retry) failed: {s}\n", .{@errorName(err)});
+            // Non-fatal on retry path: connection continues with previous transport params.
+        };
         if (conn.tls_context) |tls_ctx| {
             if (conn.local_transport_params_raw) |tp_bytes| {
                 tls_ctx.setTransportParameters(tp_bytes);
             }
         }
 
-        // Send Retry packet
-        _ = ctx.send_fn(peer, retry_bytes) catch {};
+        // Send Retry packet -- fire-and-forget: UDP send failures are
+        // non-fatal; the client will retransmit its Initial.
+        _ = ctx.send_fn(peer, retry_bytes) catch |err| {
+            logger.debugPrint("[INCOMING] Retry send failed: {s}\n", .{@errorName(err)});
+        };
 
         // Don't continue processing this Initial
         return;
@@ -838,7 +855,10 @@ pub fn processInitial(
             const token = if (conn.role == .Client) conn.initial_token.items else &[_]u8{};
             var ack_payload = std.ArrayList(u8){};
             defer ack_payload.deinit(ctx.allocator.*);
-            ack_payload.appendSlice(ctx.allocator.*, frames_data) catch {};
+            ack_payload.appendSlice(ctx.allocator.*, frames_data) catch |err| {
+                logger.debugPrint("[INCOMING] ACK payload append failed: {s}\n", .{@errorName(err)});
+                return;
+            };
 
             var pkt = packet.encodeInitialProtected(
                 ctx.allocator.*,
@@ -857,7 +877,10 @@ pub fn processInitial(
                 if (conn.role == .Client and bytes_out.len < 1200) {
                     const pad_needed = 1200 - bytes_out.len;
                     ctx.allocator.free(bytes_out);
-                    ack_payload.appendNTimes(ctx.allocator.*, @intFromEnum(frame.FrameType.PADDING), pad_needed) catch {};
+                    ack_payload.appendNTimes(ctx.allocator.*, @intFromEnum(frame.FrameType.PADDING), pad_needed) catch |err| {
+                        logger.debugPrint("[INCOMING] PADDING append failed: {s}\n", .{@errorName(err)});
+                        return;
+                    };
                     pkt = packet.encodeInitialProtected(
                         ctx.allocator.*,
                         version,
@@ -876,7 +899,10 @@ pub fn processInitial(
                     }
                 }
                 defer ctx.allocator.free(bytes_out);
-                _ = ctx.send_fn(peer, bytes_out) catch {};
+                // Fire-and-forget: UDP send may fail transiently; loss recovery retransmits.
+                _ = ctx.send_fn(peer, bytes_out) catch |err| {
+                    logger.debugPrint("[INCOMING] ACK send failed: {s}\n", .{@errorName(err)});
+                };
                 conn.onPacketSent(.Initial, conn.pn_initial_tx, bytes_out.len, false);
                 conn.pn_initial_tx +%= 1;
             }

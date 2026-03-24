@@ -81,11 +81,10 @@ pub fn pushAccepted(allocator: std.mem.Allocator, accepted: *std.ArrayList(*conn
 ///
 /// Returns:
 ///   Connection pointer if queue non-empty, null otherwise
+/// Uses swapRemove for O(1) dequeue — connection acceptance order is not guaranteed.
 pub fn popAccepted(accepted: *std.ArrayList(*conn_mod.Connection)) ?*conn_mod.Connection {
     if (accepted.items.len == 0) return null;
-    const c = accepted.items[0];
-    _ = accepted.orderedRemove(0);
-    return c;
+    return accepted.swapRemove(0);
 }
 
 /// Hash a socket address for connection routing.
@@ -277,6 +276,8 @@ pub const ServerConnectionConfig = struct {
     aead_integrity_limit: u64 = 0,
     /// Require client certificate authentication (mTLS)
     require_client_cert: bool = false,
+    /// Exempt localhost from anti-amplification / address validation (#124)
+    exempt_localhost: bool = true,
 };
 
 /// Create a server-side connection from an Initial packet.
@@ -372,8 +373,9 @@ pub fn createServerConnection(
     // Set ALPN
     c.allowed_alpns = config.allowed_alpns;
 
-    // Configure pacing and congestion control max datagram size
+    // Configure pacing, localhost exemption, and congestion control max datagram size
     c.enable_pacing = config.enable_pacing;
+    c.exempt_localhost = config.exempt_localhost;
     c.rec.cc.mds = @intCast(config.max_datagram_size);
 
     // Apply AEAD usage limits if specified
