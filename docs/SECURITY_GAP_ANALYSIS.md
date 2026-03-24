@@ -12,13 +12,15 @@
 
 ## Summary
 
-| Severity | Count |
-|----------|-------|
-| Critical | 0 |
-| High | 4 |
-| Medium | 7 |
-| Low | 3 |
-| **Total** | **14** |
+| Severity | Open | Partially Fixed | Closed / Implemented | Total |
+|----------|------|-----------------|----------------------|-------|
+| Critical | 0 | 0 | 0 | 0 |
+| High | 1 | 2 | 1 | 4 |
+| Medium | 1 | 0 | 6 | 7 |
+| Low | 3 | 0 | 0 | 3 |
+| **Total** | **5** | **2** | **7** | **14** |
+
+Notes: #111 (High, frame alloc caps) partially fixed in Batch B. #114 (High, allow_insecure) partially fixed in Batch B (narrowed scope).
 
 ### Top 5 Risks
 
@@ -34,17 +36,17 @@
 
 | Rank | Severity | Risk Score | Finding | Component | CWE / OWASP | Evidence (file:line) | Issue | Fix | Owner | Due | Status |
 |------|----------|------------|---------|-----------|-------------|----------------------|-------|-----|-------|-----|--------|
-| 1 | High | 80 | Unbounded heap alloc from wire varint -- OOM DoS | frame parser | CWE-770 / A06:2021 | `frame/frame.zig:367,380,422,435,487,529` | [#111](https://gitlab.com/devnw/zig/quic/-/issues/111) CONFIDENTIAL | Cap allocation to `max_datagram_size`; reject frames exceeding limit | TBD | 2026-04-23 | Open |
-| 2 | High | 64 | `allow_insecure` bypasses Retry integrity + CID match -- connection hijack | endpoint | CWE-287 / A07:2021 | `endpoint.zig:1007-1020` | [#114](https://gitlab.com/devnw/zig/quic/-/issues/114) CONFIDENTIAL | Remove blanket `allow_insecure` fallback in Retry path; fail closed | TBD | 2026-04-23 | Open |
-| 3 | High | 60 | Env var disables amplification limit -- DDoS reflector | conn | CWE-1188 / A05:2021 | `conn.zig:1534` | [#116](https://gitlab.com/devnw/zig/quic/-/issues/116) CONFIDENTIAL | Remove env var entirely; use config field with audit log | TBD | 2026-04-23 | Open |
+| 1 | High | 80 | Unbounded heap alloc from wire varint -- OOM DoS | frame parser | CWE-770 / A06:2021 | `frame/frame.zig:367,380,422,435,487,529` | [#111](https://gitlab.com/devnw/zig/quic/-/issues/111) CONFIDENTIAL | Allocation caps added to frame/frame.zig (Batch B); full mitigation may need further hardening | TBD | 2026-04-23 | Partially Fixed |
+| 2 | High | 64 | `allow_insecure` bypasses Retry integrity + CID match -- connection hijack | endpoint | CWE-287 / A07:2021 | `endpoint.zig:1007-1020` | [#114](https://gitlab.com/devnw/zig/quic/-/issues/114) CONFIDENTIAL | Scope of `allow_insecure` narrowed in Batch B; further hardening needed | TBD | 2026-04-23 | Partially Fixed |
+| 3 | High | 60 | Env var disables amplification limit -- DDoS reflector | conn | CWE-1188 / A05:2021 | `conn.zig:1534` | [#116](https://gitlab.com/devnw/zig/quic/-/issues/116) CONFIDENTIAL | Env var removed entirely; config field used instead (Batch A, commit 7034861) | Core QUIC | 2026-03-24 | Closed / Implemented |
 | 4 | High | 48 | mTLS `request_client_cert` silently ignored | handshake | CWE-295 / A07:2021 | `handshake_integration.zig:334-336` | [#118](https://gitlab.com/devnw/zig/quic/-/issues/118) | Wire parameter through to TLS context; reject if unsupported | TBD | 2026-04-23 | Open |
-| 5 | Medium | 48 | `unreachable` on CID > 20 bytes -- server crash | connection | CWE-617 / A06:2021 | `reset_token.zig:10`, `connection_id.zig:38`, `methods_c.zig:619` | [#119](https://gitlab.com/devnw/zig/quic/-/issues/119) | Replace `unreachable` with `return error.InvalidCidLength` | TBD | 2026-06-22 | Open |
-| 6 | Medium | 48 | Retry integrity tag function signature mismatch -- broken retry | server | CWE-628 / A06:2021 | `server.zig:196` | [#120](https://gitlab.com/devnw/zig/quic/-/issues/120) | Pass all 3 required args: `version_v2`, `odcid`, `retry_without_tag` | TBD | 2026-06-22 | Open |
+| 5 | Medium | 48 | `unreachable` on CID > 20 bytes -- server crash | connection | CWE-617 / A06:2021 | `reset_token.zig:10`, `connection_id.zig:38`, `methods_c.zig:619` | [#119](https://gitlab.com/devnw/zig/quic/-/issues/119) | Replaced `unreachable` with `error.InvalidCidLength` (Batch A, commit 7034861) | Core QUIC | 2026-03-24 | Closed / Implemented |
+| 6 | Medium | 48 | Retry integrity tag function signature mismatch -- broken retry | server | CWE-628 / A06:2021 | `server.zig:196` | [#120](https://gitlab.com/devnw/zig/quic/-/issues/120) | Fixed to 3-arg call (Batch A, commit 7034861) | Core QUIC | 2026-03-24 | Closed / Implemented |
 | 7 | Medium | 36 | No 0-RTT anti-replay detection | connection | CWE-294 / A08:2021 | `methods_a.zig:971-973` | [#121](https://gitlab.com/devnw/zig/quic/-/issues/121) | Implement server-side anti-replay cache (ticket age, strike register, or bloom filter) | TBD | 2026-06-22 | Open |
-| 8 | Medium | 36 | Key material not zeroed on connection teardown | conn | CWE-244 / A02:2021 | `conn.zig:1227-1283` | [#122](https://gitlab.com/devnw/zig/quic/-/issues/122) | `@memset(key_buf, 0)` before free; use `secureZero` if available | TBD | 2026-06-22 | Open |
+| 8 | Medium | 36 | Key material not zeroed on connection teardown | conn | CWE-244 / A02:2021 | `conn.zig:1227-1283` | [#122](https://gitlab.com/devnw/zig/quic/-/issues/122) | Added `@memset` before free (Batch B, commit f470ea5) | Core QUIC | 2026-03-24 | Closed / Implemented |
 | 9 | Medium | 32 | ACK range count silently truncated to 16 -- CPU exhaustion | frame/ack | CWE-130 / A06:2021 | `frame/ack.zig:137-144` | [#123](https://gitlab.com/devnw/zig/quic/-/issues/123) | Buffer increased from 16 to 64 ranges; hard ceiling at 256; returns error.TooManyAckRanges instead of silent truncation | TBD | 2026-06-22 | Closed / Implemented |
 | 10 | Medium | 32 | Localhost exemption from amplification protection | conn / incoming | CWE-290 / A05:2021 | `conn.zig:1542`, `incoming.zig:544-558` | [#124](https://gitlab.com/devnw/zig/quic/-/issues/124) | Added `exempt_localhost` config flag (default true); `overAmplification()` and `processInitial()` now check the flag | Core QUIC | 2026-03-24 | Closed / Implemented |
-| 11 | Medium | 24 | Retry not enabled by default | config | CWE-1188 / A05:2021 | `config.zig:30` | [#125](https://gitlab.com/devnw/zig/quic/-/issues/125) | Default `enable_retry` to `true`; require explicit opt-out | TBD | 2026-06-22 | Open |
+| 11 | Medium | 24 | Retry not enabled by default | config | CWE-1188 / A05:2021 | `config.zig:30` | [#125](https://gitlab.com/devnw/zig/quic/-/issues/125) | Defaulted `enable_retry` to `true` (Batch A, commit 7034861) | Core QUIC | 2026-03-24 | Closed / Implemented |
 | 12 | Low | 16 | Global mutable state in crypto/debug code | packet / crypto | CWE-362 / A04:2021 | `packet.zig:14-18`, `crypto_quic.zig:179` | Doc only | Wrap in thread-local or remove; use `@threadlocal` or const | TBD | 2026-09-20 | Open |
 | 13 | Low | 12 | Test certificates baked into Docker image | interop | CWE-798 / A07:2021 | `interop/Dockerfile:25-26` | Doc only | Generate ephemeral certs at container startup | TBD | 2026-09-20 | Open |
 | 14 | Low | 8 | macOS CI downloads without hash verification | CI | CWE-494 / A08:2021 | `.gitlab-ci.yml:504-507` | Doc only | Pin download URLs and verify SHA-256 checksum | TBD | 2026-09-20 | Open |
@@ -382,23 +384,23 @@ if (out_len < ranges_buf.len) {
 
 ### Quick Wins (< 1 day)
 
-| Finding | Effort | Impact |
-|---------|--------|--------|
-| 3.3 -- Fix `computeRetryIntegrityTag` call signature | 30 min | Unblocks entire Retry path |
-| 4.4 -- Default `enable_retry` to `true` | 15 min | Enables amplification protection out of box |
-| 6.1 -- Replace `unreachable` with error return | 1 hr | Prevents crash from crafted CID |
-| 4.1 -- Remove `QUIC_DISABLE_AMPLIFICATION_LIMIT` env var | 30 min | Removes DDoS reflector vector |
-| 4.3 -- Annotate globals with `@threadlocal` or make const | 30 min | Thread safety |
+| Finding | Effort | Impact | Status |
+|---------|--------|--------|--------|
+| 3.3 -- Fix `computeRetryIntegrityTag` call signature | 30 min | Unblocks entire Retry path | **Closed** (Batch A) |
+| 4.4 -- Default `enable_retry` to `true` | 15 min | Enables amplification protection out of box | **Closed** (Batch A) |
+| 6.1 -- Replace `unreachable` with error return | 1 hr | Prevents crash from crafted CID | **Closed** (Batch A) |
+| 4.1 -- Remove `QUIC_DISABLE_AMPLIFICATION_LIMIT` env var | 30 min | Removes DDoS reflector vector | **Closed** (Batch A) |
+| 4.3 -- Annotate globals with `@threadlocal` or make const | 30 min | Thread safety | Open |
 
 ### Medium Effort (1--5 days)
 
-| Finding | Effort | Impact |
-|---------|--------|--------|
-| 2.1 -- Add allocation caps to frame parser | 2 days | Eliminates OOM DoS |
-| 2.2 -- Validate ACK range count at parse time | 1 day | Prevents CPU exhaustion |
-| 1.1 -- Remove `allow_insecure` from Retry path | 1 day | Prevents connection hijack |
-| 3.1 -- Zero key material before free | 1 day | Protects against memory forensics |
-| 4.2 -- Remove localhost amplification exemption | 1 day | Prevents co-tenant spoofing |
+| Finding | Effort | Impact | Status |
+|---------|--------|--------|--------|
+| 2.1 -- Add allocation caps to frame parser | 2 days | Eliminates OOM DoS | **Partially Fixed** (Batch B) |
+| 2.2 -- Validate ACK range count at parse time | 1 day | Prevents CPU exhaustion | **Closed** (previously) |
+| 1.1 -- Remove `allow_insecure` from Retry path | 1 day | Prevents connection hijack | **Partially Fixed** (Batch B) |
+| 3.1 -- Zero key material before free | 1 day | Protects against memory forensics | **Closed** (Batch B) |
+| 4.2 -- Remove localhost amplification exemption | 1 day | Prevents co-tenant spoofing | **Closed** (previously) |
 
 ### Strategic (> 5 days)
 

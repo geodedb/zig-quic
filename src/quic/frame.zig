@@ -483,6 +483,8 @@ pub fn decode(r: anytype, alloc: std.mem.Allocator) !Frame {
         const seq = try varint.decodeReader(r);
         const retire = try varint.decodeReader(r);
         const len = try r.readByte();
+        // RFC 9000 §19.15: connection IDs MUST NOT exceed 20 bytes
+        if (len > 20) return error.FrameTooLarge;
         const cid = try alloc.alloc(u8, len);
         try r.readNoEof(cid);
         var token: [16]u8 = undefined;

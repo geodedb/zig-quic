@@ -22,6 +22,17 @@ pub const StreamRx = struct {
     inbox: std.ArrayList(u8),
     bufs: std.ArrayList(Segment),
     fin_off: ?u64 = null,
+    // PHASE 42 PART 9: Per-stream flow control tracking (RFC 9000 §4.2)
+    local_max_stream_data: u64 = 0, // Current receive window limit for this stream
+    last_sent_max_stream_data: u64 = 0, // Last MAX_STREAM_DATA value sent to peer
+    // PHASE 42 PART 18: RTT-based autotuning (RFC 9000 §4.3, quiche flowcontrol.rs)
+    last_window_update_time_us: u64 = 0, // Timestamp of last window expansion (microseconds)
+    // PHASE 46: Quinn-style flow control tracking
+    initial_window_size: u64 = 0, // Initial window size for threshold calculation
+    // PHASE 57 PART 11: Track bytes consumed by application (like quinn's assembler.bytes_read())
+    bytes_consumed_total: u64 = 0, // Total bytes consumed by application via readStream()
+    // Flow-control bookkeeping: stream needs MAX_STREAM_DATA emission.
+    fc_dirty: bool = false,
 
     pub fn init() StreamRx {
         return .{
@@ -29,6 +40,12 @@ pub const StreamRx = struct {
             .inbox = std.ArrayList(u8){},
             .bufs = std.ArrayList(Segment){},
             .fin_off = null,
+            .local_max_stream_data = 0,
+            .last_sent_max_stream_data = 0,
+            .last_window_update_time_us = 0,
+            .initial_window_size = 0,
+            .bytes_consumed_total = 0,
+            .fc_dirty = false,
         };
     }
 
@@ -91,4 +108,6 @@ pub const StreamTx = struct {
     off: u64 = 0,
     fin_sent: bool = false,
     aborted: bool = false,
+    // PHASE 42 PART 10: Per-stream send-side flow control (RFC 9000 §4.2)
+    peer_max_stream_data: u64 = 0, // Peer's receive window limit for this stream
 };

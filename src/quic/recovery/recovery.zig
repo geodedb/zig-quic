@@ -34,6 +34,10 @@ pub const NewReno = congestion.NewReno;
 pub const Cubic = congestion.Cubic;
 pub const computePacingDelayNs = congestion.computePacingDelayNs;
 
+/// Hard cap on sent_packets entries per space. If exceeded after compaction,
+/// the oldest (lowest-index) entries are dropped to stay within budget.
+const max_sent_packets: usize = 4096;
+
 // Internal space state tracking
 const SpaceState = struct {
     sent: std.ArrayList(SentPacket),
@@ -55,6 +59,45 @@ const SpaceState = struct {
     fn deinit(self: *SpaceState) void {
         self.sent_index.deinit();
         self.sent.deinit(self.allocator);
+    }
+
+    /// Remove acked/declared_lost entries from sent and rebuild sent_index.
+    fn compact(self: *SpaceState) void {
+        var write_idx: usize = 0;
+        for (self.sent.items) |sp| {
+            if (!sp.acked and !sp.declared_lost) {
+                self.sent.items[write_idx] = sp;
+                write_idx += 1;
+            }
+        }
+        self.sent.items.len = write_idx;
+        // Rebuild sent_index after compaction
+        self.sent_index.clearRetainingCapacity();
+        for (self.sent.items, 0..) |sp, i| {
+            self.sent_index.put(sp.pn, i) catch {};
+        }
+    }
+
+    /// Enforce hard capacity cap by dropping oldest entries when over limit.
+    fn enforceCapacity(self: *SpaceState) void {
+        if (self.sent.items.len <= max_sent_packets) return;
+        const excess = self.sent.items.len - max_sent_packets;
+        // Remove index entries for dropped packets
+        for (self.sent.items[0..excess]) |sp| {
+            _ = self.sent_index.remove(sp.pn);
+        }
+        // Shift remaining entries forward
+        std.mem.copyForwards(
+            SentPacket,
+            self.sent.items[0..max_sent_packets],
+            self.sent.items[excess..],
+        );
+        self.sent.items.len = max_sent_packets;
+        // Rebuild index with corrected positions
+        self.sent_index.clearRetainingCapacity();
+        for (self.sent.items, 0..) |sp, i| {
+            self.sent_index.put(sp.pn, i) catch {};
+        }
     }
 };
 
@@ -121,6 +164,12 @@ pub const Recovery = struct {
         try self.spaces[idx].sent.append(alloc, .{ .pn = pn, .time_ns = now_ns, .size = bytes, .ack_eliciting = ack_eliciting });
         const sent_slot = self.spaces[idx].sent.items.len - 1;
         try self.spaces[idx].sent_index.put(pn, sent_slot);
+
+        // Enforce hard capacity cap: compact first, then drop oldest if still over.
+        if (self.spaces[idx].sent.items.len > max_sent_packets) {
+            self.spaces[idx].compact();
+            self.spaces[idx].enforceCapacity();
+        }
 
         const old_inflight = self.cc.bytes_in_flight;
         if (ack_eliciting) self.cc.bytes_in_flight += bytes;
@@ -280,21 +329,7 @@ pub const Recovery = struct {
         }
 
         // Compact: remove fully-processed entries (acked or declared_lost)
-        {
-            var write_idx: usize = 0;
-            for (sstate.sent.items) |sp| {
-                if (!sp.acked and !sp.declared_lost) {
-                    sstate.sent.items[write_idx] = sp;
-                    write_idx += 1;
-                }
-            }
-            sstate.sent.items.len = write_idx;
-            // Rebuild sent_index after compaction
-            sstate.sent_index.clearRetainingCapacity();
-            for (sstate.sent.items, 0..) |sp, i| {
-                sstate.sent_index.put(sp.pn, i) catch {};
-            }
-        }
+        sstate.compact();
 
         // Congestion control accounting
         if (bytes_acked > 0) self.ccOnAck(bytes_acked, now_ns);
@@ -437,6 +472,8 @@ pub const Recovery = struct {
                         }
                     }
                     sstate.loss_time_ns = next_loss;
+                    // Compact declared_lost entries so sent list doesn't grow unbounded
+                    sstate.compact();
                 }
             }
         }

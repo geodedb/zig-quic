@@ -282,18 +282,18 @@ Several HTTP/3 features are **blocked** on missing QUIC adapter capabilities. Ea
 
 | Order | Gap ID | Title | Priority | Effort | Status |
 |-------|--------|-------|----------|--------|--------|
-| 1 | QUIC-H3-001 | `resetStream()` API | High | S | **Implemented** — `api.resetStream()`, frame handler wiring for `.stop_sending`/`.reset_stream` |
-| 2 | QUIC-H3-003 | Event-driven readiness | Medium | M-L | **Implemented** — `api.pollReady()` returning `ReadinessFlags` struct |
-| 3 | QUIC-H3-002 | Datagram API plumbing | Medium | M | **Implemented** — `api.hasDatagram()`, H3 server datagram echo loop |
-| 4 | QUIC-H3-004 | Flow-control signals | Low | M | **Implemented** — `api.hasWritableStreams()`/`popWritableStream()`, `writable_streams` queue |
+| 1 | QUIC-H3-001 | `resetStream()` API | High | S | **Implemented** (7c3fe95) — `api.resetStream()`, frame handler wiring for `.stop_sending`/`.reset_stream` |
+| 2 | QUIC-H3-003 | Event-driven readiness | Medium | M-L | **Implemented** (7c3fe95) — `api.pollReady()` returning `ReadinessFlags` struct |
+| 3 | QUIC-H3-002 | Datagram API plumbing | Medium | M | **Implemented** (7c3fe95) — `api.hasDatagram()`, H3 server datagram echo loop |
+| 4 | QUIC-H3-004 | Flow-control signals | Low | M | **Implemented** (7c3fe95) — `api.hasWritableStreams()`/`popWritableStream()`, `writable_streams` queue |
 
-All four QUIC-side changes are complete (2026-03-24). The HTTP/3 adapter (`../http3`) can now use these APIs.
+All four QUIC-side changes are complete (2026-03-24, commit 7c3fe95). The HTTP/3 adapter (`../http3`) can now use these APIs.
 
 ### Cross-Repository Coordination
 
 These changes span two repositories. The QUIC-side is now complete:
 
-1. **QUIC library changes** — ~~Add new API functions (`resetStream`, `pollReady`).~~ **Done.**
+1. **QUIC library changes** — ~~Add new API functions (`resetStream`, `pollReady`).~~ **Done** (commit 7c3fe95).
 2. **HTTP/3 adapter updates** — Extend `Action` union, update `DevnwQuicAdapter`, update `FakeQuic` test infrastructure.
 3. **HTTP/3 feature implementation** — Wire the new capabilities into `Client`, `Server`, and `core.Connection`.
 4. **Integration testing** — End-to-end interop tests validating stream reset, datagram round-trip, and event-driven polling.
