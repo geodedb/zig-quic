@@ -313,7 +313,9 @@ fn onHandshakeComplete(ctx: *tls13.Context) !void {
 /// - role: .Client or .Server
 /// - alpn_list: List of ALPNs to advertise (e.g., ["h3"])
 /// - transport_params_bytes: Encoded transport parameters (from setupClientTransportParams/setupServerTransportParams)
-/// - allow_insecure: Skip certificate validation (for testing with self-signed certs)
+/// - allow_insecure: Controls TLS certificate validation only (for testing with
+///   self-signed certs). Does NOT affect Retry integrity, CID matching, or
+///   amplification protection.
 ///
 /// Returns:
 /// - Initialized Context ready for processCrypto() calls

@@ -118,7 +118,10 @@ pub const QuicTransport = struct {
         key_path: ?[]const u8 = null,
         /// Optional path to CA certificate for client authentication (RFC 9001 §4.4.2).
         ca_path: ?[]const u8 = null,
-        /// Allow insecure TLS (skip certificate verification). For testing only.
+        /// Controls TLS certificate validation only. When true, self-signed and
+        /// expired certificates are accepted. Does NOT affect Retry integrity
+        /// verification, connection ID matching, or amplification protection.
+        /// For development and testing only — never enable in production.
         allow_insecure: bool = false,
         /// Auto-generate a self-signed certificate if cert/key are missing. Off by default.
         auto_generate_certs: bool = false,

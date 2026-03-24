@@ -25,6 +25,7 @@ const tparams = @import("quic_transport_params");
 const logger = @import("quic_logger");
 const byteorder = @import("byteorder");
 const reset_token = @import("connection/reset_token.zig");
+const anti_replay = @import("anti_replay.zig");
 
 // Connection ID (RFC-9000):  An identifier that is used to identify a QUIC
 //     connection at an endpoint.  Each endpoint selects one or more
@@ -268,6 +269,9 @@ pub const Cid = struct {
     len: u8 = 0,
     bytes: [20]u8 = [_]u8{0} ** 20, // Initialize to zeros to avoid undefined behavior
 };
+
+/// Re-export AntiReplayCache so endpoint modules can reference it via quic_conn.
+pub const AntiReplayCache = anti_replay.AntiReplayCache;
 
 /// Sender callback used by Endpoint to provide paced sending.
 pub const SendFn = *const fn (ctx: *anyopaque, c: *Connection, data: []const u8) anyerror!usize;
@@ -552,6 +556,11 @@ pub const Connection = struct {
     zero_rtt_keys: ?struct { key: [16]u8, iv: [12]u8, hp: [16]u8 } = null,
     zero_rtt_enabled: bool = false,
     zero_rtt_accepted: bool = false,
+    // Server-side 0-RTT anti-replay cache (RFC 8446 §8, RFC 9001 §9.2).
+    // Shared across connections on the same endpoint; set by the server
+    // endpoint when zero_rtt_anti_replay is enabled in QuicConfig.
+    // The cache is owned by the endpoint, not the connection.
+    anti_replay_cache: ?*anti_replay.AntiReplayCache = null,
     // Session resumption
     session_ticket: ?[]const u8 = null,
     resumption_secret: ?[32]u8 = null,

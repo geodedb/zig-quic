@@ -15,20 +15,19 @@
 | Severity | Open | Partially Fixed | Closed / Implemented | Total |
 |----------|------|-----------------|----------------------|-------|
 | Critical | 0 | 0 | 0 | 0 |
-| High | 0 | 2 | 2 | 4 |
+| High | 0 | 1 | 3 | 4 |
 | Medium | 1 | 0 | 6 | 7 |
 | Low | 3 | 0 | 0 | 3 |
-| **Total** | **4** | **2** | **8** | **14** |
+| **Total** | **4** | **1** | **9** | **14** |
 
-Notes: #111 (High, frame alloc caps) partially fixed in Batch B. #114 (High, allow_insecure) partially fixed in Batch B (narrowed scope). #118 (High, mTLS wiring) closed in commit bf8cf7f.
+Notes: #111 (High, frame alloc caps) partially fixed in Batch B. #114 (High, allow_insecure) closed -- audit confirmed flag only controls TLS certificate validation; Retry integrity, CID matching, and amplification protection are unconditionally enforced. #118 (High, mTLS wiring) closed in commit bf8cf7f.
 
 ### Top Residual Risks
 
 1. **Unbounded heap allocation from wire varint (OOM DoS)** -- Risk 80 -- Partially fixed (Batch B caps); full mitigation may need further hardening. (#111)
-2. **`allow_insecure` bypasses Retry integrity and CID matching (connection hijack)** -- Risk 64 -- Partially fixed (Batch B narrowed scope); further hardening needed. (#114)
-3. **No 0-RTT anti-replay detection** -- Risk 36 -- RFC 8446 S8 / RFC 9001 S9.2 require anti-replay for 0-RTT data. (#121)
-4. **Global mutable state in crypto/debug code** -- Risk 16 -- Thread safety risk from unsynchronized debug variables. (Low)
-5. **Test certificates in Docker image** -- Risk 12 -- Ephemeral cert generation preferred. (Low)
+2. **No 0-RTT anti-replay detection** -- Risk 36 -- RFC 8446 S8 / RFC 9001 S9.2 require anti-replay for 0-RTT data. (#121)
+3. **Global mutable state in crypto/debug code** -- Risk 16 -- Thread safety risk from unsynchronized debug variables. (Low)
+4. **Test certificates in Docker image** -- Risk 12 -- Ephemeral cert generation preferred. (Low)
 
 ---
 
@@ -37,7 +36,7 @@ Notes: #111 (High, frame alloc caps) partially fixed in Batch B. #114 (High, all
 | Rank | Severity | Risk Score | Finding | Component | CWE / OWASP | Evidence (file:line) | Issue | Fix | Owner | Due | Status |
 |------|----------|------------|---------|-----------|-------------|----------------------|-------|-----|-------|-----|--------|
 | 1 | High | 80 | Unbounded heap alloc from wire varint -- OOM DoS | frame parser | CWE-770 / A06:2021 | `frame/frame.zig:367,380,422,435,487,529` | [#111](https://gitlab.com/devnw/zig/quic/-/issues/111) CONFIDENTIAL | Allocation caps added to frame/frame.zig (Batch B); full mitigation may need further hardening | TBD | 2026-04-23 | Partially Fixed |
-| 2 | High | 64 | `allow_insecure` bypasses Retry integrity + CID match -- connection hijack | endpoint | CWE-287 / A07:2021 | `endpoint.zig:1007-1020` | [#114](https://gitlab.com/devnw/zig/quic/-/issues/114) CONFIDENTIAL | Scope of `allow_insecure` narrowed in Batch B; further hardening needed | TBD | 2026-04-23 | Partially Fixed |
+| 2 | High | 64 | `allow_insecure` bypasses Retry integrity + CID match -- connection hijack | endpoint | CWE-287 / A07:2021 | `endpoint.zig:1007-1020` | [#114](https://gitlab.com/devnw/zig/quic/-/issues/114) CONFIDENTIAL | Batch B removed `allow_insecure` from Retry/CID paths; flag now controls TLS cert validation only. Full audit confirmed scope (2026-03-24). Doc comments added to all 4 declaration sites. | Core QUIC | 2026-03-24 | Closed / Implemented |
 | 3 | High | 60 | Env var disables amplification limit -- DDoS reflector | conn | CWE-1188 / A05:2021 | `conn.zig:1534` | [#116](https://gitlab.com/devnw/zig/quic/-/issues/116) CONFIDENTIAL | Env var removed entirely; config field used instead (Batch A, commit 7034861) | Core QUIC | 2026-03-24 | Closed / Implemented |
 | 4 | High | 48 | mTLS `request_client_cert` silently ignored | handshake | CWE-295 / A07:2021 | `handshake_integration.zig:334-336` | [#118](https://gitlab.com/devnw/zig/quic/-/issues/118) | Removed `_ = ...` discards; wired `request_client_cert`, `client_cert_der`, `client_key_der` into `tls13.Config` struct literal (commit bf8cf7f) | Core QUIC | 2026-03-24 | Closed / Implemented |
 | 5 | Medium | 48 | `unreachable` on CID > 20 bytes -- server crash | connection | CWE-617 / A06:2021 | `reset_token.zig:10`, `connection_id.zig:38`, `methods_c.zig:619` | [#119](https://gitlab.com/devnw/zig/quic/-/issues/119) | Replaced `unreachable` with `error.InvalidCidLength` (Batch A, commit 7034861) | Core QUIC | 2026-03-24 | Closed / Implemented |
@@ -100,6 +99,8 @@ Notes: #111 (High, frame alloc caps) partially fixed in Batch B. #114 (High, all
 **Fix guidance**: Remove the `allow_insecure` fallback in the Retry processing path entirely. Retry integrity MUST always be verified per RFC 9000 section 17.2.5. If `allow_insecure` is needed for development, restrict it to non-Retry code paths.
 
 **How to verify**: With `allow_insecure=true`, send a Retry packet with an invalid integrity tag. Confirm it is rejected.
+
+**Resolution (2026-03-24)**: Batch B removed `allow_insecure` from the Retry processing path and CID matching logic. Full audit of all 18 `allow_insecure` references in `src/quic/` confirmed the flag now only controls TLS certificate validation via `tls13.Config.allow_insecure`. The Retry integrity enforcement at `endpoint.zig:1011-1017` is unconditional (explicit security comment present). Doc comments added to all 4 declaration sites (`config.zig:46`, `transport.zig:122`, `server.zig:268`, `handshake_integration.zig:316`) stating scope limits. Status: **Closed / Implemented**.
 
 ---
 

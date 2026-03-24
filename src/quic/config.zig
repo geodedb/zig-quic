@@ -42,7 +42,11 @@ pub const QuicConfig = struct {
     cert_path: ?[]const u8 = null,
     key_path: ?[]const u8 = null,
     ca_path: ?[]const u8 = null,
-    // Allow insecure (skip cert verify) — tests only (violates RFC 9001 §4.4)
+    /// Controls TLS certificate validation only. When true, self-signed and
+    /// expired certificates are accepted. Does NOT affect Retry integrity
+    /// verification, connection ID matching, or amplification protection.
+    /// For development and testing only — never enable in production.
+    /// (RFC 9001 §4.4)
     allow_insecure: bool = false,
     // AEAD usage limit overrides (tests/dev). RFC 9001 §6.6 supplies defaults.
     aead_confidentiality_limit_override: ?u64 = null,
@@ -62,4 +66,9 @@ pub const QuicConfig = struct {
     // Default true preserves existing behaviour; set false to enforce strict RFC 9000 §8.1
     // amplification limits even on loopback (useful for conformance testing). (#124)
     exempt_localhost: bool = true,
+    // RFC 8446 §8 / RFC 9001 §9.2: enable server-side 0-RTT anti-replay cache.
+    // When true the server maintains a bounded ticket-hash cache and rejects
+    // replayed 0-RTT data. Default true for production safety; set false only
+    // for testing or when the application layer handles replay protection.
+    zero_rtt_anti_replay: bool = true,
 };

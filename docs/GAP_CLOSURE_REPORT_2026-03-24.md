@@ -100,7 +100,7 @@ No items are blocked.
 | #90 ring buffer migration | Perf | 2-3 days | Bounded pruning done (b501cba); ring buffer remaining |
 | #121 0-RTT anti-replay | Security | 5-10 days | RFC 8446 S8 anti-replay cache |
 | #111 frame alloc hardening | Security | 2-3 days | Partial caps added; full hardening pending |
-| #114 allow_insecure Retry | Security | 1-2 days | Scope narrowed; further Retry path removal pending |
+| ~~#114 allow_insecure Retry~~ | Security | -- | **Closed / Implemented** (2026-03-24): Full audit confirmed flag only controls TLS cert validation |
 
 ### Tests Executed
 
@@ -114,7 +114,8 @@ No items are blocked.
 - mTLS parameters (#118) now wired through to TLS context -- operators configuring `request_client_cert` will have it honored by the TLS library.
 - All 75 `catch {}` patterns in `src/quic/` eliminated -- previously silent error suppression in critical protocol paths.
 - RTT-based pacing implemented per RFC 9002 S7.7 -- eliminates burst-loss-collapse cycles.
-- Remaining partially-fixed: #111 (frame alloc caps, needs full hardening), #114 (allow_insecure scope narrowed, Retry path still needs work).
+- Remaining partially-fixed: #111 (frame alloc caps, needs full hardening).
+- #114 (allow_insecure) closed: full audit confirmed flag only controls TLS certificate validation; Retry integrity, CID matching, and amplification protection are unconditionally enforced. Doc comments added to all 4 declaration sites.
 - No new secrets or credentials introduced. No hardcoded values found in changes.
 
 ### Remaining Blockers

@@ -916,6 +916,12 @@ pub fn build(b: *std.Build) void {
         const run_test_frame_streaming = b.addRunArtifact(test_frame_streaming);
         test_step.dependOn(&run_test_frame_streaming.step);
 
+        const test_frame_alloc_caps = addTst(b, testlog_mod, "tests/test_frame_alloc_caps.zig", target, optimize);
+        test_frame_alloc_caps.root_module.addImport("quic_frame", quic_frame_mod);
+        test_frame_alloc_caps.root_module.addImport("quic_varint", quic_varint_mod);
+        const run_test_frame_alloc_caps = b.addRunArtifact(test_frame_alloc_caps);
+        test_step.dependOn(&run_test_frame_alloc_caps.step);
+
         const test_path_validation = addTst(b, testlog_mod, "tests/test_path_validation.zig", target, optimize);
         test_path_validation.root_module.addImport("quic_api", quic_api_mod);
         test_path_validation.root_module.addImport("quic_endpoint", quic_endpoint_mod);

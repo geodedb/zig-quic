@@ -208,13 +208,11 @@ pub const Recovery = struct {
     rtt: RttState = .{},
     cc: CcState = .{},
     use_cubic: bool = false,
-    // CUBIC state (packet units)
-    cubic_c: f64 = CUBIC_C_DEFAULT,
-    cubic_beta: f64 = CUBIC_BETA_DEFAULT,
+    // CUBIC state (RFC 8312, bytes-based)
+    cubic_w_max: usize = 0,
     cubic_epoch_start_ns: ?u64 = null,
-    cubic_w_max_p: f64 = 0.0,
-    cubic_origin_point_p: f64 = 0.0,
     cubic_k: f64 = 0.0,
+    cubic_w_est: usize = 0,
 
     loss: LossDetector = .{},
     pto_count: u32 = 0,
@@ -240,12 +238,11 @@ pub const Recovery = struct {
     pub fn setCcMode(self: *Recovery, cubic: bool) void {
         self.use_cubic = cubic;
         if (cubic) {
-            // Initialize CUBIC reference point
-            const cwnd_p = @as(f64, @floatFromInt(self.cc.cwnd)) / @as(f64, @floatFromInt(self.cc.mds));
-            self.cubic_w_max_p = if (cwnd_p > 0) cwnd_p else 10.0; // default near initial window
-            self.cubic_origin_point_p = self.cubic_w_max_p;
+            // Initialize CUBIC state: W_max starts at current cwnd
+            self.cubic_w_max = self.cc.cwnd;
             self.cubic_k = 0.0;
             self.cubic_epoch_start_ns = null;
+            self.cubic_w_est = 0;
         }
     }
 

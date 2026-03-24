@@ -36,6 +36,9 @@ pub const computePacingDelayNs = congestion.computePacingDelayNs;
 
 /// Hard cap on sent_packets entries per space. If exceeded after compaction,
 /// the oldest (lowest-index) entries are dropped to stay within budget.
+///
+/// Ring buffer migration is a future optimization; the current bounded
+/// ArrayList with compaction is functionally correct.
 const max_sent_packets: usize = 4096;
 
 // Internal space state tracking
@@ -113,13 +116,15 @@ pub const Recovery = struct {
     rtt: RttState = .{},
     cc: CcState = .{},
     use_cubic: bool = false,
-    // CUBIC state (packet units)
-    cubic_c: f64 = CUBIC_C_DEFAULT,
-    cubic_beta: f64 = CUBIC_BETA_DEFAULT,
+    // CUBIC state (RFC 8312, bytes-based)
+    /// W_max: cwnd (bytes) at last loss event.
+    cubic_w_max: usize = 0,
+    /// Nanosecond timestamp when the current CUBIC epoch started.
     cubic_epoch_start_ns: ?u64 = null,
-    cubic_w_max_p: f64 = 0.0,
-    cubic_origin_point_p: f64 = 0.0,
+    /// Precomputed K value (seconds) for the current epoch.
     cubic_k: f64 = 0.0,
+    /// TCP-friendliness estimate W_est (bytes).
+    cubic_w_est: usize = 0,
 
     loss: LossDetector = .{},
     pto_count: u32 = 0,
@@ -150,12 +155,11 @@ pub const Recovery = struct {
         defer self.mutex.unlock();
         self.use_cubic = cubic;
         if (cubic) {
-            // Initialize CUBIC reference point
-            const cwnd_p = @as(f64, @floatFromInt(self.cc.cwnd)) / @as(f64, @floatFromInt(self.cc.mds));
-            self.cubic_w_max_p = if (cwnd_p > 0) cwnd_p else 10.0; // default near initial window
-            self.cubic_origin_point_p = self.cubic_w_max_p;
+            // Initialize CUBIC state: W_max starts at current cwnd
+            self.cubic_w_max = self.cc.cwnd;
             self.cubic_k = 0.0;
             self.cubic_epoch_start_ns = null;
+            self.cubic_w_est = 0;
         }
     }
 
@@ -366,38 +370,76 @@ pub const Recovery = struct {
         return .{ .bytes_acked = bytes_acked, .bytes_lost = bytes_lost };
     }
 
-    /// Increase cwnd on ACK, reduce bytes_in_flight; NewReno-style growth.
+    /// Increase cwnd on ACK; uses CUBIC (RFC 8312) when enabled, otherwise NewReno.
     fn ccOnAck(self: *Recovery, bytes_acked: usize, now_ns: u64) void {
-        _ = now_ns; // reserved for future pacing hooks
         if (bytes_acked == 0) return;
 
         const old_cwnd = self.cc.cwnd;
         const old_inflight = self.cc.bytes_in_flight;
 
+        if (self.cc.bytes_in_flight >= bytes_acked) self.cc.bytes_in_flight -= bytes_acked else self.cc.bytes_in_flight = 0;
+
         if (self.cc.cwnd < self.cc.ssthresh) {
-            // Slow start: cwnd grows by bytes_acked
+            // Slow start: cwnd grows by bytes_acked (same for both NewReno and CUBIC)
             self.cc.cwnd += bytes_acked;
+        } else if (self.use_cubic) {
+            // CUBIC congestion avoidance (RFC 8312)
+            const mds = self.cc.mds;
+            if (mds == 0) return;
+
+            // Initialize epoch on first ACK after loss
+            if (self.cubic_epoch_start_ns == null) {
+                self.cubic_epoch_start_ns = now_ns;
+                if (self.cubic_w_max == 0) {
+                    self.cubic_w_max = self.cc.cwnd;
+                }
+                self.cubic_k = Cubic.computeK(self.cubic_w_max, mds);
+                self.cubic_w_est = self.cc.cwnd;
+            }
+
+            const epoch_start = self.cubic_epoch_start_ns.?;
+            const elapsed_ns: u64 = if (now_ns > epoch_start) now_ns - epoch_start else 0;
+            const t_sec: f64 = @as(f64, @floatFromInt(elapsed_ns)) / @as(f64, @floatFromInt(std.time.ns_per_s));
+
+            // W_cubic(t)
+            const w_cubic = Cubic.wCubicBytes(t_sec, self.cubic_k, self.cubic_w_max, mds);
+
+            // W_est for TCP-friendliness
+            const rtt_ns = self.rtt.smoothed_rtt_ns;
+            const rtt_sec: f64 = @as(f64, @floatFromInt(rtt_ns)) / @as(f64, @floatFromInt(std.time.ns_per_s));
+            const w_est_val = Cubic.computeWEst(t_sec, rtt_sec, self.cubic_w_max, mds);
+
+            const target = @max(w_cubic, w_est_val);
+
+            if (target > self.cc.cwnd) {
+                self.cc.cwnd = target;
+            } else {
+                // Minimal growth: at least NewReno-equivalent
+                const inc = (mds * bytes_acked) / @max(self.cc.cwnd, @as(usize, 1));
+                if (inc > 0) {
+                    self.cc.cwnd += inc;
+                }
+            }
         } else {
-            // Congestion avoidance: cwnd += mds * bytes_acked / cwnd
+            // NewReno congestion avoidance: cwnd += mds * bytes_acked / cwnd
             const inc = (self.cc.mds * bytes_acked) / @max(self.cc.cwnd, @as(usize, 1));
             self.cc.cwnd += inc;
         }
-        if (self.cc.bytes_in_flight >= bytes_acked) self.cc.bytes_in_flight -= bytes_acked else self.cc.bytes_in_flight = 0;
 
-        // PHASE 49: Enhanced CC logging
-        logger.debugPrint("[PHASE49-CC] ✅ ACK: acked={d}B cwnd: {d}→{d} inflight: {d}→{d} ssthresh={d} mode={s} available={d}B\n", .{
+        // Enhanced CC logging
+        logger.debugPrint("[PHASE49-CC] ACK: acked={d}B cwnd: {d}->{d} inflight: {d}->{d} ssthresh={d} mode={s} available={d}B\n", .{
             bytes_acked,
             old_cwnd,
             self.cc.cwnd,
             old_inflight,
             self.cc.bytes_in_flight,
             self.cc.ssthresh,
-            if (old_cwnd < self.cc.ssthresh) "slow_start" else "cong_avoid",
+            if (old_cwnd < self.cc.ssthresh) "slow_start" else if (self.use_cubic) "cubic" else "cong_avoid",
             if (self.cc.cwnd > self.cc.bytes_in_flight) self.cc.cwnd - self.cc.bytes_in_flight else 0,
         });
     }
 
-    /// Cut cwnd on loss (1/2) with floor at 2*mds; reduce bytes_in_flight by lost bytes.
+    /// Reduce cwnd on loss; uses CUBIC beta=0.7 when enabled, otherwise NewReno beta=0.5.
     /// RFC 9002 S7.3.2: cwnd is only reduced once per congestion recovery period.
     /// `last_lost_sent_time` is the sent timestamp of the most recently sent lost packet.
     /// `now_ns` is the current time used to start a new recovery period.
@@ -412,7 +454,7 @@ pub const Recovery = struct {
         if (last_lost_sent_time) |sent_time| {
             if (self.congestion_recovery_start_time) |start| {
                 if (sent_time <= start) {
-                    logger.debugPrint("[P42-22-CC-LOSS] 🔁 skip cwnd reduction: sent_time={d}ns <= recovery_start={d}ns\n", .{
+                    logger.debugPrint("[CC-LOSS] skip cwnd reduction: sent_time={d}ns <= recovery_start={d}ns\n", .{
                         sent_time,
                         start,
                     });
@@ -425,27 +467,50 @@ pub const Recovery = struct {
         self.congestion_recovery_start_time = now_ns;
 
         const old_cwnd = self.cc.cwnd;
-
         const min_wnd: usize = 2 * self.cc.mds;
-        self.cc.cwnd = @max(self.cc.cwnd / 2, min_wnd);
-        self.cc.ssthresh = self.cc.cwnd;
 
-        // PHASE 42 PART 22: Log congestion control loss reaction
-        logger.debugPrint("[P42-22-CC-LOSS] 📉 lost={d}B cwnd: {d}→{d} inflight={d} ssthresh={d} recovery_start={d}ns\n", .{
+        if (self.use_cubic) {
+            // CUBIC: save W_max and apply beta=0.7
+            self.cubic_w_max = self.cc.cwnd;
+            self.cc.cwnd = @max(self.cc.cwnd * 7 / 10, min_wnd);
+            self.cc.ssthresh = self.cc.cwnd;
+            // Reset epoch for next CUBIC curve
+            self.cubic_epoch_start_ns = null;
+            self.cubic_k = 0.0;
+            self.cubic_w_est = 0;
+        } else {
+            // NewReno: beta=0.5
+            self.cc.cwnd = @max(self.cc.cwnd / 2, min_wnd);
+            self.cc.ssthresh = self.cc.cwnd;
+        }
+
+        // Log congestion control loss reaction
+        logger.debugPrint("[CC-LOSS] lost={d}B cwnd: {d}->{d} inflight={d} ssthresh={d} recovery_start={d}ns cubic={}\n", .{
             bytes_lost,
             old_cwnd,
             self.cc.cwnd,
             self.cc.bytes_in_flight,
             self.cc.ssthresh,
             now_ns,
+            self.use_cubic,
         });
     }
 
     /// React to ECN-CE by reducing cwnd like a loss event (without changing bytes_in_flight).
     fn ccOnEcn(self: *Recovery) void {
         const min_wnd: usize = 2 * self.cc.mds;
-        self.cc.cwnd = @max(self.cc.cwnd / 2, min_wnd);
-        self.cc.ssthresh = self.cc.cwnd;
+        if (self.use_cubic) {
+            // CUBIC: save W_max and apply beta=0.7
+            self.cubic_w_max = self.cc.cwnd;
+            self.cc.cwnd = @max(self.cc.cwnd * 7 / 10, min_wnd);
+            self.cc.ssthresh = self.cc.cwnd;
+            self.cubic_epoch_start_ns = null;
+            self.cubic_k = 0.0;
+            self.cubic_w_est = 0;
+        } else {
+            self.cc.cwnd = @max(self.cc.cwnd / 2, min_wnd);
+            self.cc.ssthresh = self.cc.cwnd;
+        }
     }
 
     /// Recompute loss detection timeouts and declare any time-threshold losses.

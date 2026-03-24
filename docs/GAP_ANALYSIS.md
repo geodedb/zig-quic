@@ -147,15 +147,15 @@ Items below are intentionally deferred due to scope, effort, or architectural pr
 
 | Item | Domain | Effort | Reason for Deferral |
 |------|--------|--------|---------------------|
-| #108 CUBIC congestion control | Perf | 5-10 days | RFC 8312 implementation; NewReno is functional baseline |
+| #108 CUBIC congestion control | Perf | 5-10 days | **Closed / Implemented** (2026-03-24): RFC 8312 CUBIC implemented in `recovery/congestion.zig` and integrated into `recovery/recovery.zig` ccOnAck/ccOnLoss. W_cubic, computeK, W_est functions, beta=0.7 loss, TCP-friendliness. 20+ unit tests added. |
 | #109 GSO/frame coalescing | Perf | 10-20 days | Major transport rewrite for PacketBuilder + Linux GSO |
 | #115 Connection struct refactor | Quality | Large (4970 LOC mixin pattern) | Domain-aligned re-split across methods_a/b/c.zig |
 | GAP-0004 Test stubs (#88) | Quality | XL (519 stubs) | 61% of integration tests are SkipZigTest placeholders |
 | Endpoint mutex per-connection locking | Perf | 5-10 days | Requires per-connection lock granularity change |
-| #90 sent_packets ring buffer | Perf | 2-3 days | Bounded pruning added (b501cba); ring buffer migration remaining |
-| #121 0-RTT anti-replay | Security | 5-10 days | RFC 8446 S8 / RFC 9001 S9.2 anti-replay cache |
-| #111 Frame alloc caps hardening | Security | 2-3 days | Partial caps added (Batch B); full hardening needed |
-| #114 allow_insecure Retry hardening | Security | 1-2 days | Scope narrowed (Batch B); further removal from Retry path |
+| ~~#90 sent_packets ring buffer~~ | Perf | -- | **Verified** (2026-03-24): `max_sent_packets = 4096` cap with compact+enforceCapacity confirmed via 3 tests (overflow, multi-batch, per-space independence). Ring buffer migration is a future optimization; bounded ArrayList is functionally correct. |
+| ~~#121 0-RTT anti-replay~~ | Security | -- | **Closed / Implemented** (2026-03-24): Bounded, time-windowed `AntiReplayCache` in `src/quic/anti_replay.zig` with mutex for thread safety. `accept0RTT` in `methods_a.zig` checks cache when attached; rejects replays per RFC 8446 S8 / RFC 9001 S9.2. Config field `zero_rtt_anti_replay` added to `QuicConfig`. 6 inline tests cover: first-seen acceptance, duplicate rejection, window expiry re-acceptance, capacity eviction, hash consistency, and independent-hash isolation. |
+| ~~#111 Frame alloc caps hardening~~ | Security | -- | **Closed / Implemented** (2026-03-24): Fuzz-style tests added in `tests/test_frame_alloc_caps.zig` verifying all 7 allocation caps (CRYPTO/STREAM/DATAGRAM max_frame_data_len=65536, ACK max_ack_ranges=256, CONNECTION_CLOSE/NEW_TOKEN max_reason_or_token_len=1024, NEW_CONNECTION_ID CID>20). Each test uses failing_allocator to prove rejection before allocation. Boundary tests confirm exact-cap values succeed. |
+| ~~#114 allow_insecure Retry hardening~~ | Security | -- | **Closed / Implemented** (2026-03-24): Full audit confirmed flag only controls TLS cert validation; Retry/CID/amplification paths are unconditionally enforced. Doc comments added. |
 
 ## HTTP/3 Adapter Requirements
 

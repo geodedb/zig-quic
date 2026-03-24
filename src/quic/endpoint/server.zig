@@ -264,7 +264,10 @@ pub const ServerConnectionConfig = struct {
     transport_params: ?*const tp.TransportParams = null,
     /// Congestion control: use CUBIC (true) or NewReno (false)
     use_cubic: bool = false,
-    /// Allow insecure connections (skip certificate validation)
+    /// Controls TLS certificate validation only. When true, self-signed and
+    /// expired certificates are accepted. Does NOT affect Retry integrity
+    /// verification, connection ID matching, or amplification protection.
+    /// For development and testing only — never enable in production.
     allow_insecure: bool = false,
     /// Allowed ALPN protocols
     allowed_alpns: []const []const u8 = &[_][]const u8{},

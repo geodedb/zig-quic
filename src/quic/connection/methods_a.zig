@@ -985,13 +985,43 @@ pub fn bind(comptime Connection: type) type {
             self.zero_rtt_keys = .{ .key = keys.key, .iv = keys.iv, .hp = keys.hp };
         }
 
-        /// Accept 0-RTT data from the peer.
-        /// WARNING: No anti-replay mechanism is implemented (RFC 9001 S4.6.1).
-        /// Applications MUST treat 0-RTT data as potentially replayed and
-        /// avoid non-idempotent operations on it. A replay cache should be
-        /// implemented before using 0-RTT in production.
+        /// Accept 0-RTT data from the peer (server-side).
+        ///
+        /// When an anti-replay cache is attached (see `anti_replay_cache`), the
+        /// peer's Initial DCID is hashed and checked against previously-seen
+        /// values. If the hash was already recorded within the time window the
+        /// 0-RTT data is rejected as a replay (RFC 8446 §8, RFC 9001 §9.2).
+        ///
+        /// When no cache is present (backwards-compatible path) the 0-RTT is
+        /// accepted unconditionally and a warning is emitted.
         pub fn accept0RTT(self: *Connection) void {
-            logger.debugPrint("WARNING: 0-RTT accepted without anti-replay protection\n", .{});
+            if (self.anti_replay_cache) |cache| {
+                // Build a ticket fingerprint from the peer's Initial DCID.
+                // This CID is chosen randomly by the client for each new
+                // connection attempt so it uniquely identifies the 0-RTT
+                // offer within the cache window.
+                const ticket_hash = std.hash.Wyhash.hash(
+                    0,
+                    self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len],
+                );
+
+                const now_ns: u64 = @intCast(@max(0, std.time.nanoTimestamp()));
+
+                const is_fresh = cache.checkAndRecord(ticket_hash, now_ns) catch {
+                    // On allocation failure, reject 0-RTT to be safe.
+                    logger.debugPrint("0-RTT rejected: anti-replay cache allocation failure\n", .{});
+                    return;
+                };
+
+                if (!is_fresh) {
+                    logger.debugPrint("0-RTT rejected: replay detected by anti-replay cache (RFC 8446 S8)\n", .{});
+                    return;
+                }
+
+                logger.debugPrint("0-RTT accepted: anti-replay cache check passed\n", .{});
+            } else {
+                logger.debugPrint("WARNING: 0-RTT accepted without anti-replay protection\n", .{});
+            }
             self.zero_rtt_accepted = true;
         }
 

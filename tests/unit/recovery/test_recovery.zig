@@ -71,7 +71,7 @@ test "coordinator re-exports NewReno from congestion module" {
 
 test "coordinator re-exports Cubic from congestion module" {
     const cubic: recovery.Cubic = .{};
-    try testing.expectEqual(@as(usize, 12000), cubic.inner.cwnd);
+    try testing.expectEqual(@as(usize, 12000), cubic.cwnd);
 }
 
 test "coordinator re-exports computePacingDelayNs function" {
@@ -220,12 +220,15 @@ test "onAckReceived marks packets as acked" {
     try rec.onPacketSent(.Initial, 2, 1200, true, 2000);
 
     const acked = [_]u64{1};
-    _ = rec.onAckReceived(.Initial, &acked, 0, 3000);
+    const result = rec.onAckReceived(.Initial, &acked, 0, 3000);
 
-    const sp1 = rec.spaces[0].sent.items[0];
-    const sp2 = rec.spaces[0].sent.items[1];
+    // After ACK processing, compact() removes acked entries from the sent list.
+    // Packet 1 was acked and compacted out; only packet 2 remains.
+    try testing.expectEqual(@as(usize, 1200), result.bytes_acked);
+    try testing.expectEqual(@as(usize, 1), rec.spaces[0].sent.items.len);
 
-    try testing.expect(sp1.acked);
+    const sp2 = rec.spaces[0].sent.items[0];
+    try testing.expectEqual(@as(u64, 2), sp2.pn);
     try testing.expect(!sp2.acked);
 }
 
@@ -711,4 +714,121 @@ test "Recovery CUBIC mode operates independently per space" {
     // Both spaces should have updated their state
     try testing.expect(rec.spaces[0].largest_acked != null);
     try testing.expect(rec.spaces[1].largest_acked != null);
+}
+
+// =============================================================================
+// Perf Gap #90: sent_packets bounded at 4096
+// =============================================================================
+
+test "sent_packets bounded at max_sent_packets (4096) after overflow" {
+    var rec = recovery.Recovery.init(testing.allocator);
+    defer rec.deinit();
+
+    const max_cap: usize = 4096;
+    const total_packets: u64 = max_cap + 512; // Send 4608 packets total
+    const space_idx = @intFromEnum(recovery.PacketNumberSpace.Application);
+
+    // Send more than max_sent_packets into the Application space.
+    var pn: u64 = 1;
+    while (pn <= total_packets) : (pn += 1) {
+        try rec.onPacketSent(.Application, pn, 100, true, pn * 1000);
+    }
+
+    // After all sends, the space must be bounded at max_sent_packets.
+    const sent_len = rec.spaces[space_idx].sent.items.len;
+    try testing.expect(sent_len <= max_cap);
+
+    // The most recent packets should be retained (newest, not oldest).
+    // The oldest retained packet number should be > 1 (oldest were dropped).
+    const oldest_retained = rec.spaces[space_idx].sent.items[0].pn;
+    try testing.expect(oldest_retained > 1);
+
+    // The newest retained packet should be the last one we sent.
+    const newest_retained = rec.spaces[space_idx].sent.items[sent_len - 1].pn;
+    try testing.expectEqual(total_packets, newest_retained);
+
+    // Verify sent_index is consistent with sent list:
+    // Every entry in sent list that is not acked/lost must have a matching sent_index entry.
+    for (rec.spaces[space_idx].sent.items, 0..) |sp, i| {
+        if (!sp.acked and !sp.declared_lost) {
+            const idx_val = rec.spaces[space_idx].sent_index.get(sp.pn);
+            try testing.expect(idx_val != null);
+            try testing.expectEqual(i, idx_val.?);
+        }
+    }
+
+    // The sent_index must not contain entries for dropped (oldest) packets.
+    // Packet 1 was dropped, so it must not be in the index.
+    try testing.expect(rec.spaces[space_idx].sent_index.get(1) == null);
+}
+
+test "sent_packets cap retains newest packets across multiple overflow batches" {
+    var rec = recovery.Recovery.init(testing.allocator);
+    defer rec.deinit();
+
+    const max_cap: usize = 4096;
+    const space_idx = @intFromEnum(recovery.PacketNumberSpace.Application);
+
+    // First batch: fill to exactly max_cap
+    var pn: u64 = 1;
+    while (pn <= max_cap) : (pn += 1) {
+        try rec.onPacketSent(.Application, pn, 100, true, pn * 1000);
+    }
+    try testing.expectEqual(max_cap, rec.spaces[space_idx].sent.items.len);
+
+    // Second batch: push 1024 more, triggering overflow + compaction twice
+    const second_batch_end = max_cap + 1024;
+    while (pn <= second_batch_end) : (pn += 1) {
+        try rec.onPacketSent(.Application, pn, 100, true, pn * 1000);
+    }
+    try testing.expect(rec.spaces[space_idx].sent.items.len <= max_cap);
+
+    // Third batch: push another 1024 more
+    const third_batch_end = second_batch_end + 1024;
+    while (pn <= third_batch_end) : (pn += 1) {
+        try rec.onPacketSent(.Application, pn, 100, true, pn * 1000);
+    }
+    try testing.expect(rec.spaces[space_idx].sent.items.len <= max_cap);
+
+    // The newest packet should always be the last one sent.
+    const sent_items = rec.spaces[space_idx].sent.items;
+    try testing.expectEqual(third_batch_end, sent_items[sent_items.len - 1].pn);
+
+    // Verify index consistency after multiple overflow cycles.
+    for (sent_items, 0..) |sp, i| {
+        if (!sp.acked and !sp.declared_lost) {
+            const idx_val = rec.spaces[space_idx].sent_index.get(sp.pn);
+            try testing.expect(idx_val != null);
+            try testing.expectEqual(i, idx_val.?);
+        }
+    }
+}
+
+test "sent_packets cap is independent per space" {
+    var rec = recovery.Recovery.init(testing.allocator);
+    defer rec.deinit();
+
+    const max_cap: usize = 4096;
+    const total_packets: u64 = max_cap + 256;
+
+    // Overflow only the Application space.
+    var pn: u64 = 1;
+    while (pn <= total_packets) : (pn += 1) {
+        try rec.onPacketSent(.Application, pn, 100, true, pn * 1000);
+    }
+
+    // Send a few into Initial space (should not be affected).
+    var ipn: u64 = 1;
+    while (ipn <= 10) : (ipn += 1) {
+        try rec.onPacketSent(.Initial, ipn, 100, true, ipn * 1000);
+    }
+
+    const app_idx = @intFromEnum(recovery.PacketNumberSpace.Application);
+    const init_idx = @intFromEnum(recovery.PacketNumberSpace.Initial);
+
+    // Application space is bounded.
+    try testing.expect(rec.spaces[app_idx].sent.items.len <= max_cap);
+
+    // Initial space is unaffected (only 10 packets).
+    try testing.expectEqual(@as(usize, 10), rec.spaces[init_idx].sent.items.len);
 }
