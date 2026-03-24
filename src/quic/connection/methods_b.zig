@@ -414,6 +414,24 @@ pub fn bind(comptime Connection: type) type {
 
             var frame_storage: [2048]u8 = undefined;
             var frame_stream = std.io.fixedBufferStream(&frame_storage);
+            // RFC 9000 S13.2.1: Piggyback an ACK frame into STREAM packets when
+            // we have received app-space packets to acknowledge.  This reduces
+            // standalone ACK-only datagrams and speeds peer-side loss recovery.
+            // The ACK is written first because non-ack-eliciting frames (ACK)
+            // should precede ack-eliciting frames (STREAM) per convention.
+            if (self.pn_app.have_any) {
+                const now_ns: u64 = @intCast(std.time.nanoTimestamp());
+                const ad = self.buildAckApp();
+                const ack_delay = self.getAckDelayEncoded(.Application, now_ns);
+                const ack_ecn = self.getAckEcn(.Application);
+                _ = (frame.Frame{ .ack = .{
+                    .largest = ad.largest,
+                    .ack_delay = ack_delay,
+                    .first_range = ad.first_range,
+                    .ranges = ad.ranges,
+                    .ecn = ack_ecn,
+                } }).write(frame_stream.writer()) catch 0;
+            }
             // Write STREAM frame with slice sized by to_send.
             _ = (frame.Frame{ .stream = .{ .stream_id = id, .offset = cur_off, .fin = fin and to_send == data.len, .data = data[0..to_send] } }).write(frame_stream.writer()) catch 0;
             const frame_bytes = frame_stream.getWritten();

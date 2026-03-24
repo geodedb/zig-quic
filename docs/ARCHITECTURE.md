@@ -145,11 +145,10 @@ UDP recv -> Endpoint.processIncomingDatagram()
 ```
 Application -> Connection.writeStream(id, data, fin)
   -> flow-control check (stream + connection level)
-  -> encode STREAM frame -> buffer in connection
-  -> Endpoint tick / send loop
-       -> assemble packet (ACK + STREAM + padding)
-       -> encrypt with current TX keys
-       -> UDP sendTo (direct or paced via timer)
+  -> if pn_app.have_any: prepend ACK frame (piggyback)
+  -> encode STREAM frame after ACK in same buffer
+  -> encrypt coalesced frames with current TX keys
+  -> UDP sendTo (direct or paced via sender callback)
   -> track SentPacket for loss detection / retransmission
 ```
 
@@ -166,6 +165,56 @@ ACK received -> Recovery.onAck()
   -> retransmit lost STREAM/CRYPTO frames
   -> update congestion window (NewReno or CUBIC)
 ```
+
+## Frame Coalescing
+
+RFC 9000 Section 13.2.1 recommends that endpoints include an ACK frame in
+every ACK-eliciting packet.  STREAM frames are ACK-eliciting, so every
+STREAM packet is an opportunity to piggyback acknowledgment information.
+
+### Current Implementation: ACK Piggybacking in STREAM Packets
+
+`writeStreamUnlocked` (methods_b.zig) prepends an ACK frame before the
+STREAM frame in every 1-RTT packet when `pn_app.have_any` is true (i.e.,
+when the connection has received at least one app-space packet to
+acknowledge).  The ACK frame is built from the same `buildAckApp()` and
+`getAckDelayEncoded()` helpers used by the standalone ACK path in
+`generateAndSendAck()`.
+
+This provides two benefits without changing the standalone ACK send path:
+
+1. **Redundant acknowledgment** -- if a standalone ACK packet is lost, the
+   piggybacked ACK in the next STREAM packet ensures the peer still
+   receives timely acknowledgment.  This speeds loss recovery at the peer.
+2. **Reduced ACK-only datagrams** -- once the peer receives the piggybacked
+   ACK, it may suppress its own redundant ACK-only sends, reducing overall
+   UDP datagram count.
+
+The ACK frame is written first in the frame buffer because non-ack-eliciting
+frames (ACK) should precede ack-eliciting frames (STREAM) by convention.
+Both frames share the 2048-byte `frame_storage` stack buffer; a typical ACK
+frame is 5-20 bytes, leaving ample room for the STREAM payload.
+
+### Future Coalescing Opportunities
+
+Additional frame types can be piggybacked into STREAM packets using the
+same pattern (write into `frame_stream` before the STREAM frame):
+
+| Frame Type         | Trigger Condition                          | Insertion Point          |
+|--------------------|--------------------------------------------|--------------------------|
+| MAX_DATA           | `local_max_data > last_sent_max_data`      | Before STREAM            |
+| MAX_STREAM_DATA    | Dirty per-stream FC via `pending_fc_streams`| Before STREAM            |
+| MAX_STREAMS_BIDI   | `local_max_streams_bidi` bumped            | Before STREAM            |
+| NEW_CONNECTION_ID  | `pending_new_cid` bitset has entries       | Before STREAM            |
+
+These follow the same approach used in `generateAndSendAck` (module_b2.zig)
+where MAX_DATA, MAX_STREAM_DATA, MAX_STREAMS, and NEW_CONNECTION_ID are
+already piggybacked into ACK packets.  Extending this to STREAM packets
+would further reduce standalone control datagrams.
+
+**Not planned:** Full PacketBuilder abstraction or GSO (Generic Segmentation
+Offload).  The per-frame piggybacking approach is sufficient for the current
+single-stream-per-packet architecture.
 
 ## Configuration
 

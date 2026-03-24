@@ -19,7 +19,7 @@ Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
 
 ### Top 4 Residual Risks
 
-1. **519 integration test stubs return SkipZigTest (GAP-0004)** -- 61% of test stubs are placeholders with no test logic. Critical RFC compliance paths are untested.
+1. **528 test stubs return SkipZigTest (GAP-0004)** -- ~61% of test stubs are placeholders with no test logic. 15 high-value stubs implemented 2026-03-24 (recovery, congestion, frame codec). Critical RFC compliance paths still have gaps.
 2. **3x duplicate algorithm implementations (Q-1)** -- `algorithms/congestion_newreno.zig`, `recovery/congestion.zig`, and `recovery.zig:88` coexist with differing APIs. Behavioral divergence risk when algorithm modules are wired to production.
 3. **Algorithm modules are dead code (Q-2)** -- All 7 Geode-extracted modules are not imported by any production path. They risk drifting from production behavior until integrated.
 4. Historical private key material remains recoverable from Git history as accepted external-control risk (`#36`, won't do).
@@ -150,7 +150,7 @@ Items below are intentionally deferred due to scope, effort, or architectural pr
 | #108 CUBIC congestion control | Perf | 5-10 days | **Closed / Implemented** (2026-03-24): RFC 8312 CUBIC implemented in `recovery/congestion.zig` and integrated into `recovery/recovery.zig` ccOnAck/ccOnLoss. W_cubic, computeK, W_est functions, beta=0.7 loss, TCP-friendliness. 20+ unit tests added. |
 | #109 GSO/frame coalescing | Perf | 10-20 days | Major transport rewrite for PacketBuilder + Linux GSO |
 | #115 Connection struct refactor | Quality | Large (4970 LOC mixin pattern) | Domain-aligned re-split across methods_a/b/c.zig |
-| GAP-0004 Test stubs (#88) | Quality | XL (519 stubs) | 61% of integration tests are SkipZigTest placeholders |
+| GAP-0004 Test stubs (#88) | Quality | XL (528 stubs remaining) | 15 high-value stubs implemented 2026-03-24; remaining stubs require deeper infrastructure |
 | Endpoint mutex per-connection locking | Perf | 5-10 days | Requires per-connection lock granularity change |
 | ~~#90 sent_packets ring buffer~~ | Perf | -- | **Verified** (2026-03-24): `max_sent_packets = 4096` cap with compact+enforceCapacity confirmed via 3 tests (overflow, multi-batch, per-space independence). Ring buffer migration is a future optimization; bounded ArrayList is functionally correct. |
 | ~~#121 0-RTT anti-replay~~ | Security | -- | **Closed / Implemented** (2026-03-24): Bounded, time-windowed `AntiReplayCache` in `src/quic/anti_replay.zig` with mutex for thread safety. `accept0RTT` in `methods_a.zig` checks cache when attached; rejects replays per RFC 8446 S8 / RFC 9001 S9.2. Config field `zero_rtt_anti_replay` added to `QuicConfig`. 6 inline tests cover: first-seen acceptance, duplicate rejection, window expiry re-acceptance, capacity eviction, hash consistency, and independent-hash isolation. |
@@ -397,6 +397,11 @@ Gap analysis phase 3 identified 6 new gaps. All are tracked as GitLab issues wit
 - **Recommended fix:** Prioritize test implementation for critical paths. Track stub-to-implementation progress per RFC section.
 - **Acceptance criteria:** SkipZigTest count below 50%. All critical RFC sections have non-stub tests.
 - **Effort:** XL
+- **Progress (2026-03-24):** Implemented 15 test stubs + 7 new frame streaming tests targeting recently-closed gaps:
+  - **rfc9002_recovery.zig** (15 stubs implemented): Time control, loss detection infrastructure, smoothed RTT, RTT variance, slow start, congestion avoidance, recovery period, PTO timer fires, PTO backoff, time threshold loss, packet threshold loss, Handshake PTO, Application Data PTO, ECN CC validation, persistent congestion detection. Reduced from 20 to 5 SkipZigTest.
+  - **test_frame_streaming.zig** (7 new tests): Round-trip encode/decode for HANDSHAKE_DONE, MAX_DATA, MAX_STREAM_DATA, PATH_CHALLENGE, PATH_RESPONSE, RESET_STREAM, STOP_SENDING. Validates frame codec correctness for alloc caps gap (#111).
+  - Total SkipZigTest count: 543 -> 528 (15 reduction). All tests pass.
+- **Status: Open (partial progress)**
 
 ### GAP-0005: module_c.zig processInitial returns NotImplemented
 - **Issue:** [#91](https://gitlab.com/devnw/zig/quic/-/issues/91)

@@ -1155,6 +1155,11 @@ pub fn build(b: *std.Build) void {
         const run_test_frame_datagram = b.addRunArtifact(test_frame_datagram);
         test_step.dependOn(&run_test_frame_datagram.step);
 
+        const test_frame_coalescing = addTst(b, testlog_mod, "tests/unit/frame/test_ack_stream_coalescing.zig", target, optimize);
+        test_frame_coalescing.root_module.addImport("quic_frame", quic_frame_mod);
+        const run_test_frame_coalescing = b.addRunArtifact(test_frame_coalescing);
+        test_step.dependOn(&run_test_frame_coalescing.step);
+
         // Packet module tests
         const test_packet_types = addTst(b, testlog_mod, "tests/unit/packet/test_types.zig", target, optimize);
         test_packet_types.root_module.addImport("types", packet_types_mod);
