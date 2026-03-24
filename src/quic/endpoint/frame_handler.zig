@@ -252,6 +252,10 @@ pub fn handleMaxStreamData(
             const old_max = tx.peer_max_stream_data;
             tx.peer_max_stream_data = m.max;
             logger.debugPrint("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) increased window from {}\n", .{ m.stream_id, m.max, old_max });
+            // QUIC-H3-004: If the stream was blocked at the old limit, it is now writable.
+            if (tx.off >= old_max and tx.off < m.max) {
+                ctx.conn.writable_streams.append(ctx.allocator.*, m.stream_id) catch {};
+            }
         } else {
             logger.debugPrint("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) ignored (current={})\n", .{ m.stream_id, m.max, tx.peer_max_stream_data });
         }
@@ -428,6 +432,28 @@ pub fn handleNewToken(
 }
 
 // =============================================================================
+// STOP_SENDING / RESET_STREAM Handlers (QUIC-H3-001)
+// =============================================================================
+
+/// Handle incoming STOP_SENDING frame (RFC 9000 §19.5).
+///
+/// The peer is requesting that we stop sending on the identified stream.
+/// We respond by marking our TX as aborted and sending RESET_STREAM.
+fn handleStopSending(ctx: *FrameContext, ss: frame.StopSending) FrameResult {
+    ctx.conn.handleStopSending(ss.stream_id, ss.error_code) catch {};
+    return .{ .saw_ack_eliciting = true };
+}
+
+/// Handle incoming RESET_STREAM frame (RFC 9000 §19.4).
+///
+/// The peer is aborting its send side of the identified stream. We mark our
+/// RX state as aborted, cap final_size, and discard buffered data beyond it.
+fn handleResetStreamFrame(ctx: *FrameContext, rs: frame.ResetStream) FrameResult {
+    ctx.conn.handleResetStream(rs.stream_id, rs.error_code, rs.final_size);
+    return .{ .saw_ack_eliciting = true };
+}
+
+// =============================================================================
 // Frame Dispatcher
 // =============================================================================
 
@@ -455,6 +481,11 @@ pub fn processFrame(ctx: *FrameContext, fr: frame.Frame) !FrameResult {
         .path_challenge => |pcv| try handlePathChallenge(ctx, pcv),
         .path_response => |prv| handlePathResponse(ctx, prv),
         .new_token => |nt| try handleNewToken(ctx, nt),
+        // QUIC-H3-001: Wire STOP_SENDING and RESET_STREAM frame handling.
+        // RFC 9000 §19.5: STOP_SENDING requests the peer to stop sending on a stream.
+        // RFC 9000 §19.4: RESET_STREAM aborts the sending part of a stream.
+        .stop_sending => |ss| handleStopSending(ctx, ss),
+        .reset_stream => |rs| handleResetStreamFrame(ctx, rs),
         else => .{}, // Unknown frames ignored (RFC 9000 §12.4)
     };
 }

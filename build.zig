@@ -796,6 +796,13 @@ pub fn build(b: *std.Build) void {
             const run_test_udp_batch_runtime_smoke = b.addRunArtifact(test_udp_batch_runtime_smoke);
             test_step.dependOn(&run_test_udp_batch_runtime_smoke.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "reset_stream") or std.mem.containsAtLeast(u8, f, 1, "h3_api")) {
+            const test_reset_stream = addTst(b, testlog_mod, "tests/test_reset_stream_api.zig", target, optimize);
+            test_reset_stream.root_module.addImport("quic_api", quic_api_mod);
+            test_reset_stream.root_module.addImport("quic_conn", quic_conn_mod);
+            const run_test_reset_stream = b.addRunArtifact(test_reset_stream);
+            test_step.dependOn(&run_test_reset_stream.step);
+            return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "stream_fc") or std.mem.containsAtLeast(u8, f, 1, "streams")) {
             const test_stream_fc = addTst(b, testlog_mod, "tests/test_stream_flow_control.zig", target, optimize);
             test_stream_fc.root_module.addImport("quic_api", quic_api_mod);
@@ -806,6 +813,11 @@ pub fn build(b: *std.Build) void {
             test_stream_edges.root_module.addImport("quic_conn", quic_conn_mod);
             const run_test_stream_edges = b.addRunArtifact(test_stream_edges);
             test_step.dependOn(&run_test_stream_edges.step);
+            const test_reset_api = addTst(b, testlog_mod, "tests/test_reset_stream_api.zig", target, optimize);
+            test_reset_api.root_module.addImport("quic_api", quic_api_mod);
+            test_reset_api.root_module.addImport("quic_conn", quic_conn_mod);
+            const run_test_reset_api = b.addRunArtifact(test_reset_api);
+            test_step.dependOn(&run_test_reset_api.step);
             return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "migration_path") or std.mem.containsAtLeast(u8, f, 1, "path_reset")) {
             const test_migration = addTst(b, testlog_mod, "tests/test_migration_scenarios.zig", target, optimize);
@@ -1723,6 +1735,13 @@ pub fn build(b: *std.Build) void {
         test_transport_geode_compat.root_module.addImport("transport", transport_public);
         const run_test_transport_geode_compat = b.addRunArtifact(test_transport_geode_compat);
         test_step.dependOn(&run_test_transport_geode_compat.step);
+
+        // QUIC-H3-001..004: resetStream API, datagram plumbing, pollReady, writable signals
+        const test_reset_stream_api = addTst(b, testlog_mod, "tests/test_reset_stream_api.zig", target, optimize);
+        test_reset_stream_api.root_module.addImport("quic_api", quic_api_mod);
+        test_reset_stream_api.root_module.addImport("quic_conn", quic_conn_mod);
+        const run_test_reset_stream_api = b.addRunArtifact(test_reset_stream_api);
+        test_step.dependOn(&run_test_reset_stream_api.step);
     } else if (!legacy_tests) {
         // Fast default graph: grouped smoke suite keeps `zig build test` responsive.
         // Use `zig build -Dfull-test-graph=true test` for full per-file coverage.

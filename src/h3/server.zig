@@ -55,6 +55,20 @@ pub const H3Server = struct {
         var spins: usize = 0;
         while (spins < 4000) : (spins += 1) {
             api.poll(ep, 2) catch {};
+
+            // QUIC-H3-003: Use pollReady to detect connection-level events.
+            const ready = api.pollReady(conn);
+            if (ready.connection_closed) break;
+
+            // QUIC-H3-002: Drain any queued datagrams (echo back to peer).
+            if (ready.has_datagram) {
+                var dgram_buf: [1500]u8 = undefined;
+                while (true) {
+                    const dgram_len = api.recvDatagram(conn, dgram_buf[0..]) catch break;
+                    if (dgram_len == 0) break;
+                    _ = api.sendDatagram(conn, dgram_buf[0..dgram_len]) catch {};
+                }
+            }
             const got = readAny(conn, tmp[0..]) catch null;
             if (got) |pair| {
                 // HTTP/3 requests arrive on client-initiated bidirectional streams.

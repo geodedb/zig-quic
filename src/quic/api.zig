@@ -205,6 +205,65 @@ pub fn recvDatagram(conn: *Connection, buf: []u8) !usize {
     return conn.popDatagram(buf);
 }
 
+/// Check whether any unreceived DATAGRAM frames are queued.
+///
+/// QUIC-H3-002: Allows HTTP/3 adapters to poll for datagram availability
+/// without blocking.
+pub fn hasDatagram(conn: *const Connection) bool {
+    return conn.dgram_inbox.items.len > 0;
+}
+
+/// Per-connection readiness flags for event-driven dispatch.
+///
+/// QUIC-H3-003: Replaces busy-poll loops in HTTP/3 client/server with a
+/// single readiness query returning all actionable state at once.
+pub const ReadinessFlags = struct {
+    /// True when at least one remotely-initiated stream is waiting to be accepted.
+    has_incoming_streams: bool = false,
+    /// True when at least one unreceived DATAGRAM is queued.
+    has_datagram: bool = false,
+    /// True once the TLS handshake is fully confirmed and 1-RTT keys are ready.
+    handshake_complete: bool = false,
+    /// True when the connection has entered the draining/closed state.
+    connection_closed: bool = false,
+    /// True when at least one stream became writable after flow-control unblock.
+    has_writable_streams: bool = false,
+};
+
+/// Query per-connection readiness flags without blocking.
+///
+/// QUIC-H3-003: Returns a snapshot of connection state that HTTP/3 adapters
+/// can use to drive event loops without busy-polling. Callers should still
+/// call `poll` to advance IO; this helper only inspects cached state.
+pub fn pollReady(conn: *const Connection) ReadinessFlags {
+    return .{
+        .has_incoming_streams = conn.hasIncomingStreams(),
+        .has_datagram = conn.dgram_inbox.items.len > 0,
+        .handshake_complete = conn.hasConfirmedAppTxKeys(),
+        .connection_closed = conn.closed,
+        .has_writable_streams = conn.writable_streams.items.len > 0,
+    };
+}
+
+/// Check whether any streams became writable after flow-control unblock.
+///
+/// QUIC-H3-004: MAX_STREAM_DATA / MAX_DATA receipt may unblock previously
+/// stalled streams. This helper lets callers detect that without scanning
+/// the full stream map.
+pub fn hasWritableStreams(conn: *const Connection) bool {
+    return conn.writable_streams.items.len > 0;
+}
+
+/// Pop the next stream that became writable after flow-control unblock.
+///
+/// QUIC-H3-004: Returns `null` when no streams are pending. Each stream ID
+/// appears at most once per unblock event, but callers should re-check
+/// actual flow-control headroom before writing.
+pub fn popWritableStream(conn: *Connection) ?QuicStreamId {
+    if (conn.writable_streams.items.len == 0) return null;
+    return conn.writable_streams.orderedRemove(0);
+}
+
 /// Allocate a new stream, optionally bidirectional.
 ///
 /// RFC 9000 §2.1 permits endpoints to create bidirectional and unidirectional
@@ -263,12 +322,23 @@ pub fn isStreamFinished(conn: *Connection, stream_id: QuicStreamId) bool {
     return conn.isStreamFinished(stream_id);
 }
 
-/// Force close the stream with an application error code.
+/// Gracefully close a stream by sending a STREAM frame with FIN.
 ///
-/// The RESET_STREAM action maps to RFC 9000 §19.4. The helper lets API users
-/// apply the application error code required by §19.4.2.
+/// RFC 9000 §3.3: FIN signals the end of stream data. The peer can still read
+/// any data sent before FIN. For abrupt stream termination, use `resetStream`.
 pub fn closeStream(conn: *Connection, stream_id: QuicStreamId, app_error_code: u64) !void {
     return conn.closeStream(stream_id, app_error_code);
+}
+
+/// Abort a stream by sending RESET_STREAM with an application error code.
+///
+/// RFC 9000 §19.4: RESET_STREAM terminates sending on a stream and signals the
+/// peer that any data beyond final_size will never arrive. Unlike `closeStream`
+/// (graceful FIN), this immediately marks the stream as aborted.
+///
+/// QUIC-H3-001: Public API for HTTP/3 adapters to reset streams on error.
+pub fn resetStream(conn: *Connection, stream_id: QuicStreamId, app_error_code: u64) !void {
+    return conn.resetStream(stream_id, app_error_code);
 }
 
 /// Remove a connection from all endpoint bookkeeping and free it.

@@ -530,8 +530,10 @@ pub fn bind(comptime Connection: type) type {
             return n;
         }
 
-        /// Close a STREAM with RESET_STREAM using the given application error code.
-        /// Initiate graceful close of a stream (sends RESET/FIN depending on state) with app error code.
+        /// Gracefully close a stream by sending a STREAM frame with FIN.
+        ///
+        /// RFC 9000 §3.3: Signals the peer that no more data will be sent on this
+        /// stream. For abrupt termination with an error code, use `resetStream`.
         pub fn closeStream(self: *Connection, id: u64, app_error_code: u64) !void {
             _ = app_error_code;
             if (id == 0) {
@@ -563,6 +565,58 @@ pub fn bind(comptime Connection: type) type {
             self.onShortHeaderPacketSent(pkt.len, true);
         }
 
+        /// Abort a stream by sending RESET_STREAM with the given application error code.
+        ///
+        /// RFC 9000 §19.4: RESET_STREAM terminates sending on a stream, signalling
+        /// the peer that any data beyond `final_size` will never arrive. Unlike
+        /// `closeStream` (which sends a graceful FIN), this immediately marks the
+        /// stream TX as aborted so no further STREAM frames will be emitted.
+        ///
+        /// QUIC-H3-001: Public API for HTTP/3 adapters to reset streams on error.
+        pub fn resetStream(self: *Connection, id: u64, app_error_code: u64) !void {
+            // Validate stream exists
+            if (id == 0) {
+                if (self.stream_send_aborted) return error.StreamStopped;
+            } else {
+                if (!self.stream_txs_init) return error.InvalidStream;
+                if (self.stream_txs.getPtr(id) == null) return error.InvalidStream;
+            }
+            if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
+            const tx = self.app_tx_keys.?;
+            // Mark stream as aborted
+            if (id == 0) {
+                self.stream_send_aborted = true;
+            } else {
+                if (self.stream_txs.getPtr(id)) |st| {
+                    st.aborted = true;
+                }
+            }
+            // Use per-stream offset as final_size
+            const final_size: u64 = if (id == 0) self.stream_send_off else self.stream_txs.getPtr(id).?.off;
+            var frames_buf = std.ArrayList(u8){};
+            defer frames_buf.deinit(self.allocator.*);
+            const w = frames_buf.writer(self.allocator.*);
+            _ = (frame.Frame{ .reset_stream = .{
+                .stream_id = id,
+                .error_code = app_error_code,
+                .final_size = final_size,
+            } }).write(w) catch 0;
+            const packet_storage = self.packet_pool.checkout();
+            defer self.packet_pool.release(packet_storage);
+            const pkt_len = try packet.encodeShortProtectedInto(
+                packet_storage,
+                self.shortHeaderDcid(),
+                @as(u32, @truncate(self.pn_app_tx)),
+                2,
+                frames_buf.items,
+                .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
+                self.tx_key_phase,
+            );
+            const pkt = packet_storage[0..pkt_len];
+            _ = try self.send(pkt);
+            self.onShortHeaderPacketSent(pkt.len, true);
+        }
+
         /// Handle STOP_SENDING by responding with RESET_STREAM carrying our final size.
         /// Process incoming STOP_SENDING frame; respond with RESET_STREAM if not already closed.
         pub fn handleStopSending(self: *Connection, stream_id: u64, app_error_code: u64) !void {
@@ -576,10 +630,17 @@ pub fn bind(comptime Connection: type) type {
                     st.aborted = true;
                 }
             }
-            var frames = std.ArrayList(u8){};
-            defer frames.deinit(self.allocator.*);
-            const w = frames.writer(self.allocator.*);
-            _ = (frame.Frame{ .reset_stream = .{ .stream_id = stream_id, .error_code = app_error_code, .final_size = self.stream_send_off } }).write(w) catch 0;
+            // Use per-stream offset as final_size (not always stream 0's offset)
+            const final_size: u64 = if (stream_id == 0)
+                self.stream_send_off
+            else if (self.stream_txs_init and self.stream_txs.getPtr(stream_id) != null)
+                self.stream_txs.getPtr(stream_id).?.off
+            else
+                self.stream_send_off;
+            var frames_buf = std.ArrayList(u8){};
+            defer frames_buf.deinit(self.allocator.*);
+            const w = frames_buf.writer(self.allocator.*);
+            _ = (frame.Frame{ .reset_stream = .{ .stream_id = stream_id, .error_code = app_error_code, .final_size = final_size } }).write(w) catch 0;
             const packet_storage = self.packet_pool.checkout();
             defer self.packet_pool.release(packet_storage);
             const pkt_len = packet.encodeShortProtectedInto(
@@ -587,7 +648,7 @@ pub fn bind(comptime Connection: type) type {
                 self.shortHeaderDcid(),
                 @as(u32, @truncate(self.pn_app_tx)),
                 2,
-                frames.items,
+                frames_buf.items,
                 .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
                 self.tx_key_phase,
             ) catch 0;

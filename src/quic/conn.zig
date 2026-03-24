@@ -710,6 +710,8 @@ pub const Connection = struct {
     incoming_stream_queue: std.ArrayList(u64) = .empty,
     // Streams needing MAX_STREAM_DATA emission; avoids full-map scans on ACK assembly.
     pending_fc_streams: std.ArrayList(u64) = .empty,
+    // QUIC-H3-004: Streams that became writable after MAX_STREAM_DATA/MAX_DATA unblocked them.
+    writable_streams: std.ArrayList(u64) = .empty,
     // Track highest peer-initiated stream ID seen (for each type)
     highest_peer_bidi_stream: ?u64 = null,
     highest_peer_uni_stream: ?u64 = null,
@@ -1075,6 +1077,7 @@ pub const Connection = struct {
         // Init incoming stream queue - use .empty for Zig 0.15 ArrayListUnmanaged
         self.incoming_stream_queue = .empty;
         self.pending_fc_streams = .empty;
+        self.writable_streams = .empty;
         self.highest_peer_bidi_stream = null;
         self.highest_peer_uni_stream = null;
         self.stream_recv_fin = false;
@@ -1270,6 +1273,7 @@ pub const Connection = struct {
         // Free incoming stream queue
         if (self.incoming_stream_queue.capacity != 0) self.incoming_stream_queue.deinit(self.allocator.*);
         if (self.pending_fc_streams.capacity != 0) self.pending_fc_streams.deinit(self.allocator.*);
+        if (self.writable_streams.capacity != 0) self.writable_streams.deinit(self.allocator.*);
         // Free reset tokens / initial token buffers once (previous code double-deinited)
         if (self.reset_tokens.capacity != 0) self.reset_tokens.deinit(self.allocator.*);
         if (self.initial_token.capacity != 0) self.initial_token.deinit(self.allocator.*);
@@ -1631,6 +1635,7 @@ pub const Connection = struct {
     pub const readStream = methods_b.readStream;
     pub const readStreamUnlocked = methods_b.readStreamUnlocked;
     pub const closeStream = methods_b.closeStream;
+    pub const resetStream = methods_b.resetStream;
     pub const handleStopSending = methods_b.handleStopSending;
     pub const handleResetStream = methods_b.handleResetStream;
     pub const teardownStream = methods_b.teardownStream;

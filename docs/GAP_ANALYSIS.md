@@ -1,6 +1,6 @@
 # Security GAP Analysis
 
-Last updated: 2026-03-22
+Last updated: 2026-03-24
 
 Repository: `gitlab.com/devnw/zig/quic`  
 Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
@@ -9,19 +9,21 @@ Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
 
 | Severity | Found | Closed/Implemented | Closed/Won't do | Blocked | Open |
 |----------|------:|-------------------:|----------------:|--------:|-----:|
-| Critical | 1 | 1 | 0 | 0 | 0 |
-| High | 9 | 6 | 3 | 0 | 0 |
-| Medium | 7 | 7 | 0 | 0 | 0 |
-| Low | 4 | 2 | 2 | 0 | 0 |
-| **Total** | **21** | **16** | **5** | **0** | **0** |
+| Critical | 2 | 1 | 0 | 0 | 1 |
+| High | 9 | 7 | 2 | 0 | 0 |
+| Medium | 9 | 7 | 0 | 0 | 2 |
+| Low | 7 | 2 | 2 | 0 | 3 |
+| **Total** | **27** | **17** | **4** | **0** | **6** |
+
+**HTTP/3 adapter requirements:** 4 open items (1 High, 2 Medium, 1 Low) — see [HTTP/3 Adapter Requirements](#http3-adapter-requirements) below.
 
 ### Top 5 Residual Risks
 
-1. **3x duplicate algorithm implementations (Q-1)** — `algorithms/congestion_newreno.zig`, `recovery/congestion.zig`, and `recovery.zig:88` coexist with differing APIs. Behavioral divergence risk when algorithm modules are wired to production.
-2. **Algorithm modules are dead code (Q-2)** — All 7 Geode-extracted modules are not imported by any production path. They risk drifting from production behavior until integrated.
-3. Historical private key material remains recoverable from Git history as accepted external-control risk (`#36`, won't do).
-4. Mutable image/tag pinning remains accepted as external-control risk (`#55`, won't do).
-5. **No fuzz harnesses for algorithm modules (Rank 19)** — deferred until modules are integrated to production; accepted risk for now.
+1. **HEAD of main does not compile (GAP-0001)** — TLS dependency API break: `markLocalFinished()` and `onCryptoRecv()` changed from void to `!void`. 31 call sites across 14 files need `try`. Build is completely broken.
+2. **519 integration test stubs return SkipZigTest (GAP-0004)** — 61% of test stubs are placeholders with no test logic. Critical RFC compliance paths are untested.
+3. **3x duplicate algorithm implementations (Q-1)** — `algorithms/congestion_newreno.zig`, `recovery/congestion.zig`, and `recovery.zig:88` coexist with differing APIs. Behavioral divergence risk when algorithm modules are wired to production.
+4. **Algorithm modules are dead code (Q-2)** — All 7 Geode-extracted modules are not imported by any production path. They risk drifting from production behavior until integrated.
+5. Historical private key material remains recoverable from Git history as accepted external-control risk (`#36`, won't do).
 
 ## Stack-Ranked Findings
 
@@ -99,6 +101,266 @@ Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
 
 - None.
 
+## HTTP/3 Adapter Requirements
+
+The HTTP/3 library (`../http3`) depends on this QUIC library via the `QuicOps` vtable abstraction defined in `../http3/src/h3/core/events.zig`. The vtable has two operations (`poll` → `TransportEvent`, `apply` ← `Action`) that bridge the two libraries without a hard import dependency. The concrete adapter lives at `../http3/src/h3/interop/devnw_quic_adapter.zig`.
+
+Several HTTP/3 features are **blocked** on missing QUIC adapter capabilities. Each item below describes what the HTTP/3 library needs, what exists today in this QUIC library, and the implementation path.
+
+### QUIC-H3-001: `Action.reset_stream` — Stream Reset from HTTP/3 [High]
+
+- **HTTP/3 gap:** GAP-0057 / QC-057 in `../http3/docs/QUALITY_GAP_ANALYSIS.md`
+- **Problem:** When `Client.send()` fails (timeout, encoding error, body reader error), the errdefer cleans up local state (`stream_bufs`, `request_streams`) but cannot signal the peer to release its state for the orphaned stream. The `Action` union in `events.zig:85-108` has no `reset_stream` variant. The peer holds orphaned stream state indefinitely until the connection closes.
+- **RFC requirement:** RFC 9114 §4.1.1 requires sending RESET_STREAM with error code `H3_REQUEST_CANCELLED` (0x010c) when a client abandons a request. RFC 9000 §19.4 defines the RESET_STREAM frame.
+- **What exists today:** `api.closeStream(conn, stream_id, app_error_code)` at `src/quic/api.zig:270` already sends a FIN frame with the given error code. `methods_b.zig:535` implements this. However, the current implementation sends a FIN-flagged STREAM frame rather than a true RESET_STREAM frame (which carries `final_size` and `error_code` per RFC 9000 §19.4). The `handleStopSending` method at `methods_b.zig:568` does emit a proper RESET_STREAM frame, but only in response to peer STOP_SENDING.
+- **Required changes:**
+
+  1. **In this library (`../quic`):**
+     - Add a `resetStream(conn, stream_id, app_error_code)` function to `src/quic/api.zig` that sends a proper RESET_STREAM frame (not FIN) with the application error code and the stream's current send offset as `final_size`. The frame encoding already exists in `frame.Frame.reset_stream`.
+     - Ensure the stream's TX state is marked as reset (set `aborted = true`) so no further STREAM frames are sent.
+     - The implementation can reuse logic from `handleStopSending` in `methods_b.zig:568-599`, which already constructs and sends a RESET_STREAM frame.
+
+  2. **In the HTTP/3 library (`../http3`):**
+     - Add `reset_stream: ResetStream` variant to the `Action` union in `events.zig`:
+       ```zig
+       pub const ResetStream = struct {
+           stream_id: u64,
+           app_error_code: u64,
+       };
+       ```
+     - Update `DevnwQuicAdapter.applyWrapper` to handle the new action by calling `api.resetStream()`.
+     - Update `Client.send()` errdefer at `client.zig:271-278` to emit `Action.reset_stream` with error code 0x010c.
+     - Update FakeQuic test infrastructure to track reset_stream actions for test assertions.
+
+- **Evidence:** `../http3/src/h3/client.zig:271-277` (TODO comment), `../http3/src/h3/core/events.zig:85-108` (Action union), `src/quic/api.zig:270` (closeStream), `src/quic/connection/methods_b.zig:568-599` (handleStopSending with RESET_STREAM encoding)
+- **Effort:** S — The RESET_STREAM frame encoding and send path already exist; this is primarily a new API function that reuses existing logic, plus a union variant addition in the HTTP/3 events.
+- **Priority:** High — Orphaned peer state on every failed `send()` is a resource leak that scales with error rate.
+
+### QUIC-H3-002: Datagram API for HTTP/3 DATAGRAM Extension [Medium]
+
+- **HTTP/3 gap:** GAP-0028 in `../http3/docs/GAP_ANALYSIS.md`
+- **Problem:** HTTP/3 DATAGRAM extension (RFC 9297) requires sending and receiving QUIC DATAGRAM frames (RFC 9221) through the H3 connection. The `TransportEvent.datagram` variant exists in `events.zig:54` but carries no payload (`void`). The `Action` union has no `send_datagram` variant.
+- **RFC requirement:** RFC 9221 §4-5 defines DATAGRAM frame semantics (unreliable, unordered). RFC 9297 maps HTTP/3 datagrams onto QUIC datagrams with a quarter-stream-ID prefix.
+- **What exists today:** `api.sendDatagram(conn, data)` at `src/quic/api.zig:195` and `api.recvDatagram(conn, buf)` at `src/quic/api.zig:204` are fully implemented. The QUIC library already supports DATAGRAM frames end-to-end. The `max_datagram_frame_size` transport parameter negotiation exists in the handshake.
+- **Required changes:**
+
+  1. **In this library (`../quic`):**
+     - No new API functions needed — `sendDatagram` and `recvDatagram` already exist.
+     - Verify `max_datagram_frame_size` is correctly advertised and enforced during handshake (check transport parameter encoding in `src/quic/connection/`).
+
+  2. **In the HTTP/3 library (`../http3`):**
+     - Change `TransportEvent.datagram` from `void` to carry payload:
+       ```zig
+       datagram: Datagram,
+       pub const Datagram = struct {
+           payload: []const u8,
+       };
+       ```
+     - Add `send_datagram: SendDatagram` to the `Action` union:
+       ```zig
+       pub const SendDatagram = struct {
+           payload: []const u8,
+       };
+       ```
+     - Update `DevnwQuicAdapter` poll to call `api.recvDatagram()` and wrap the result in `TransportEvent.datagram`.
+     - Update `DevnwQuicAdapter` apply to handle `Action.send_datagram` by calling `api.sendDatagram()`.
+     - Implement RFC 9297 quarter-stream-ID prefix encoding/decoding in a new `src/h3/datagram.zig` module.
+     - Add `H3_DATAGRAM` SETTINGS parameter (0x33) to the SETTINGS frame handling in `connection.zig`.
+
+- **Evidence:** `src/quic/api.zig:195-206` (existing datagram API), `../http3/src/h3/core/events.zig:54` (void datagram event), `../http3/docs/GAP_ANALYSIS.md:123-126` (GAP-0028)
+- **Effort:** M — QUIC side is done; HTTP/3 side needs event/action plumbing plus RFC 9297 framing logic.
+- **Priority:** Medium — Required for WebTransport and HTTP/3 datagram use cases, but not for core HTTP request/response flows.
+
+### QUIC-H3-003: Event-Driven Readiness Notification [Medium]
+
+- **HTTP/3 gap:** PERF-017, PERF-018 in `../http3/docs/PERF_GAP_ANALYSIS.md`
+- **Problem:** The HTTP/3 interop binaries and the high-level `Client`/`Server` use busy-poll loops to wait for transport events. `Client.send()` polls in a tight loop with adaptive backoff (1ms → 50ms). Interop binaries poll with 2ms-50ms backoff. This wastes CPU and adds latency (average half the backoff interval).
+- **What exists today:** `api.poll(ep, timeout_ms)` at `src/quic/api.zig:100` blocks on epoll/kqueue for up to `timeout_ms` milliseconds, then processes all ready I/O. There is no mechanism to notify the caller *which* connections or streams became readable/writable — the caller must check all connections after each poll return.
+- **Required changes:**
+
+  1. **In this library (`../quic`):**
+     - Add a readiness notification API that reports which connections have pending events after a poll cycle. Two design options:
+
+       **Option A: Poll returns event list (simpler, recommended for v1)**
+       ```zig
+       pub const ReadyEvent = struct {
+           conn: *Connection,
+           flags: ReadyFlags,
+       };
+       pub const ReadyFlags = packed struct {
+           readable: bool = false,
+           writable: bool = false,
+           stream_opened: bool = false,
+           closed: bool = false,
+       };
+       /// Poll and return which connections have pending events.
+       pub fn pollReady(ep: *QuicEndpoint, timeout_ms: i32, out: []ReadyEvent) ![]ReadyEvent;
+       ```
+
+       **Option B: Callback/waker pattern (async-friendly, for v2)**
+       ```zig
+       pub const Waker = struct {
+           ctx: *anyopaque,
+           wake_fn: *const fn (ctx: *anyopaque) void,
+       };
+       /// Register a waker that fires when the connection has pending events.
+       pub fn setWaker(conn: *Connection, waker: Waker) void;
+       ```
+
+     - Option A is sufficient to eliminate busy-polling: the HTTP/3 adapter's `poll` implementation can call `pollReady`, find its connection in the results, and return the appropriate `TransportEvent`. If the connection has no events, return `null` without spinning.
+
+  2. **In the HTTP/3 library (`../http3`):**
+     - Update `DevnwQuicAdapter.poll_fn` to use `pollReady` instead of the current pattern of calling `api.poll(ep, timeout_ms)` followed by individual stream reads.
+     - Remove adaptive backoff logic from `Client.send()` and interop binaries (the transport poll will block efficiently).
+     - The `QuicOps` vtable interface (`poll` → `?TransportEvent`) does not need to change — the adapter translates internally.
+
+- **Evidence:** `src/quic/api.zig:100-105` (current poll API), `src/quic/endpoint.zig:662-672` (endpoint poll implementation), `src/quic/endpoint/io.zig:293` (epoll backend), `../http3/src/h3/client.zig:225-246` (busy-poll with backoff)
+- **Effort:** M-L — Requires changes to the endpoint poll loop to track per-connection readiness state and return it to the caller. The epoll/kqueue backends already know which sockets are ready; the gap is surfacing this at the connection level.
+- **Priority:** Medium — Current adaptive backoff is functional but wastes CPU under load. Critical for production HTTP/3 server deployments with many concurrent connections.
+
+### QUIC-H3-004: Flow-Control Signal Propagation [Low]
+
+- **HTTP/3 gap:** GAP-0024 in `../http3/docs/GAP_ANALYSIS.md`
+- **Problem:** HTTP/3 connection layer cannot distinguish between "no data available" and "flow-control blocked" when a stream write returns a short write or error. The `TransportEvent.stream_writable` event exists but is never emitted by the current adapter because the QUIC library has no callback mechanism for flow-control state changes.
+- **What exists today:** `api.writeStream()` returns `error.FlowControlBlocked` or short writes when the peer's flow-control window is exhausted. The HTTP/3 interop server handles this with a spin-retry loop (`h3-interop-server.zig:252-262`). The `stream_writable` event in `TransportEvent` is defined but has no triggering mechanism.
+- **Required changes:**
+
+  1. **In this library (`../quic`):**
+     - After processing an incoming MAX_STREAM_DATA or MAX_DATA frame that unblocks a previously blocked stream, emit a notification. This could be:
+       - A flag in the `pollReady` result (if QUIC-H3-003 is implemented)
+       - A new `getWritableStreams(conn, out: []QuicStreamId) []QuicStreamId` API
+       - An internal event queue that `poll` drains
+     - The key requirement is that after `writeStream` returns `FlowControlBlocked`, the caller can wait for a notification rather than polling.
+
+  2. **In the HTTP/3 library (`../http3`):**
+     - Update the adapter to translate QUIC flow-control unblock into `TransportEvent.stream_writable`.
+     - Update `core.Connection.onTransportEvent` to handle `stream_writable` by retrying pending stream writes.
+
+- **Evidence:** `../http3/src/h3/core/events.zig:50-51` (stream_writable event), `../http3/docs/GAP_ANALYSIS.md:110-113` (GAP-0024), `src/quic/connection/methods_b.zig:276-283` (writeStream with flow control)
+- **Effort:** M — Requires tracking flow-control state transitions in the QUIC connection and surfacing them as events.
+- **Priority:** Low — Current spin-retry with backoff works; this is an optimization for high-throughput scenarios.
+
+### Implementation Order
+
+| Order | Gap ID | Title | Priority | Effort | Status |
+|-------|--------|-------|----------|--------|--------|
+| 1 | QUIC-H3-001 | `resetStream()` API | High | S | **Implemented** — `api.resetStream()`, frame handler wiring for `.stop_sending`/`.reset_stream` |
+| 2 | QUIC-H3-003 | Event-driven readiness | Medium | M-L | **Implemented** — `api.pollReady()` returning `ReadinessFlags` struct |
+| 3 | QUIC-H3-002 | Datagram API plumbing | Medium | M | **Implemented** — `api.hasDatagram()`, H3 server datagram echo loop |
+| 4 | QUIC-H3-004 | Flow-control signals | Low | M | **Implemented** — `api.hasWritableStreams()`/`popWritableStream()`, `writable_streams` queue |
+
+All four QUIC-side changes are complete (2026-03-24). The HTTP/3 adapter (`../http3`) can now use these APIs.
+
+### Cross-Repository Coordination
+
+These changes span two repositories. The QUIC-side is now complete:
+
+1. **QUIC library changes** — ~~Add new API functions (`resetStream`, `pollReady`).~~ **Done.**
+2. **HTTP/3 adapter updates** — Extend `Action` union, update `DevnwQuicAdapter`, update `FakeQuic` test infrastructure.
+3. **HTTP/3 feature implementation** — Wire the new capabilities into `Client`, `Server`, and `core.Connection`.
+4. **Integration testing** — End-to-end interop tests validating stream reset, datagram round-trip, and event-driven polling.
+
+The `build.zig.zon` path dependency (`"../quic"`) means both repos must be updated in lockstep during development. CI for the HTTP/3 library will fail if it references QUIC API functions that don't exist yet.
+
+## Phase 3 Gap Findings (2026-03-24)
+
+Gap analysis phase 3 identified 6 new gaps. All are tracked as GitLab issues with the `gap` label.
+
+### Summary
+
+| Gap-ID | Severity | Category | Issue | Status |
+|--------|----------|----------|-------|--------|
+| GAP-0001 | Critical | Bug | [#84](https://gitlab.com/devnw/zig/quic/-/issues/84) | Open |
+| GAP-0002 | Medium | Docs | [#85](https://gitlab.com/devnw/zig/quic/-/issues/85) | Open |
+| GAP-0003 | Low | Requirement | [#86](https://gitlab.com/devnw/zig/quic/-/issues/86) | Open |
+| GAP-0004 | Medium | Test | [#88](https://gitlab.com/devnw/zig/quic/-/issues/88) | Open |
+| GAP-0005 | Low | Feature | [#91](https://gitlab.com/devnw/zig/quic/-/issues/91) | Open |
+| GAP-0006 | Low (Info) | Project hygiene | [#92](https://gitlab.com/devnw/zig/quic/-/issues/92) | Open |
+
+### GAP-0001: HEAD of main does not compile -- TLS dependency API break
+- **Issue:** [#84](https://gitlab.com/devnw/zig/quic/-/issues/84)
+- **Category:** Bug
+- **Severity:** Critical
+- **Requirement source:** RFC 9001 S4.1
+- **Current state (evidence):**
+  - `src/quic/connection/methods_a.zig:386` -- calls `markLocalFinished()` without `try`
+  - `src/quic/endpoint/handshake_integration.zig:640` -- calls `onCryptoRecv()` without `try`
+  - 12 test files with 31 total call sites missing `try`
+- **Why this is a gap:** Commit `babe36e` imported TLS library where `markLocalFinished()` and `onCryptoRecv()` changed return type from `void` to `!void`. All call sites must now use `try` or handle the error union.
+- **Impact/Risk:** Build is completely broken on HEAD of `main`. No CI, no tests, no development can proceed.
+- **Recommended fix:** Add `try` to all 31 call sites across 14 files. Verify with `zig build test`.
+- **Acceptance criteria:** `zig build` and `zig build test` succeed on HEAD (pre-existing test failures acceptable, compilation failures not).
+- **Effort:** S
+
+### GAP-0002: G-1 status stale -- RESET_STREAM/STOP_SENDING now implemented
+- **Issue:** [#85](https://gitlab.com/devnw/zig/quic/-/issues/85)
+- **Category:** Docs
+- **Severity:** Medium
+- **Requirement source:** RFC 9000 S19.4, S19.5
+- **Current state (evidence):**
+  - `src/quic/endpoint/frame_handler.zig:487-488` -- now dispatches `.reset_stream` and `.stop_sending` frames
+  - `src/quic/connection/methods_b.zig:622` -- `handleResetStream()` full handler
+  - `src/quic/connection/methods_b.zig:665` -- `handleStopSending()` full handler
+  - `docs/GAP_ANALYSIS.md` G-1 entry previously said "Closed / Won't do" (now corrected)
+- **Why this is a gap:** GAP_ANALYSIS.md G-1 was stale. The implementation exists. Issue #24 should be closeable.
+- **Impact/Risk:** Low. Documentation was misleading about project capabilities.
+- **Recommended fix:** G-1 status updated (done). Comment added to issue #24 with evidence (done). Maintainer to decide closure.
+- **Acceptance criteria:** G-1 status reflects "Closed / Implemented". Issue #24 has evidence comment.
+- **Effort:** S
+
+### GAP-0003: STREAMS_BLOCKED frames silently dropped -- no MAX_STREAMS response
+- **Issue:** [#86](https://gitlab.com/devnw/zig/quic/-/issues/86)
+- **Category:** Requirement
+- **Severity:** Low
+- **Requirement source:** RFC 9000 S19.14, S4.6
+- **Current state (evidence):**
+  - `src/quic/endpoint/frame_handler.zig:489` -- `streams_blocked_bidi` and `streams_blocked_uni` fall through to `else => {}` (silently dropped)
+- **Why this is a gap:** Peer endpoints that exhaust their stream limit will be permanently blocked. No MAX_STREAMS is sent in response to STREAMS_BLOCKED.
+- **Impact/Risk:** Peers hitting stream limits have no recovery path. Prerequisite for issue #25.
+- **Recommended fix:** Add handler for STREAMS_BLOCKED frames that evaluates current limits and sends MAX_STREAMS.
+- **Acceptance criteria:** STREAMS_BLOCKED frames are handled. MAX_STREAMS response is sent when appropriate.
+- **Effort:** M
+
+### GAP-0004: 519 integration test stubs (61%) return SkipZigTest
+- **Issue:** [#88](https://gitlab.com/devnw/zig/quic/-/issues/88)
+- **Category:** Test
+- **Severity:** Medium
+- **Requirement source:** RFC 9000 S3-S19, RFC 9001 S4-S5, RFC 9002 S5-S7
+- **Current state (evidence):**
+  - 539 total test stubs across 26 files
+  - 519 stubs (61%) return `error.SkipZigTest` immediately
+  - Critical RFC compliance paths (handshake, frame processing, stream lifecycle, loss detection) untested
+- **Why this is a gap:** No automated verification of RFC compliance for the majority of protocol behavior.
+- **Impact/Risk:** Regressions in frame handling, stream state, loss detection, and congestion control will not be caught by CI.
+- **Recommended fix:** Prioritize test implementation for critical paths. Track stub-to-implementation progress per RFC section.
+- **Acceptance criteria:** SkipZigTest count below 50%. All critical RFC sections have non-stub tests.
+- **Effort:** XL
+
+### GAP-0005: module_c.zig processInitial returns NotImplemented
+- **Issue:** [#91](https://gitlab.com/devnw/zig/quic/-/issues/91)
+- **Category:** Feature (internal)
+- **Severity:** Low
+- **Current state (evidence):**
+  - `module_c.zig:processInitial` returns `error.NotImplemented`
+  - Production uses legacy (non-modular) incoming packet path
+- **Why this is a gap:** Modular incoming pipeline extraction is incomplete. Creates confusion about canonical code path.
+- **Impact/Risk:** Low immediate impact. Blocks future modularization work.
+- **Recommended fix:** Complete the modular pipeline or explicitly mark as deferred with rationale.
+- **Acceptance criteria:** `processInitial` has working implementation or is explicitly documented as deferred.
+- **Effort:** L
+
+### GAP-0006: 30 closed GitLab issues retain stale status::triage labels
+- **Issue:** [#92](https://gitlab.com/devnw/zig/quic/-/issues/92)
+- **Category:** Project hygiene
+- **Severity:** Low (Info)
+- **Current state (evidence):**
+  - Issues #12, #26, #35-#54, #58-#59, #62, #74, #78-#83 are closed but carry `status::triage`
+- **Why this is a gap:** Closed issues should not be in triage state. Filtering by `status::triage` returns 30+ false positives.
+- **Impact/Risk:** Label hygiene only. No functional impact.
+- **Recommended fix:** Remove `status::triage` from all 30 closed issues.
+- **Acceptance criteria:** No closed issues carry the `status::triage` label.
+- **Effort:** S
+
 ## Future-Agent Notes
 
 1. CI/CD hash/toolchain pinning and Docker tag digest pinning are intentionally tracked as **won't do** in this repo (`#54`, `#55`) because control is managed outside the repository.
@@ -172,8 +434,8 @@ Audit scope: entire repository. Domains: security, quality, performance, require
 | Security | 10 | 1 | 1 | 5 | 3 | 8 | 2 | 0 |
 | Quality | 10 | 0 | 3 | 4 | 3 | 6 | 4 | 0 |
 | Performance | 9 | 0 | 2 | 4 | 3 | 5 | 4 | 0 |
-| Gap (requirements) | 6 | 0 | 2 | 1 | 3 | 2 | 4 | 0 |
-| **Total** | **35** | **1** | **8** | **14** | **12** | **21** | **14** | **0** |
+| Gap (requirements) | 6 | 0 | 2 | 1 | 3 | 3 | 3 | 0 |
+| **Total** | **35** | **1** | **8** | **14** | **12** | **22** | **13** | **0** |
 
 Security findings are tracked as ranks 12-21 in the Stack-Ranked Findings table above. Quality, performance, and gap findings are documented below. All 35 audit findings are now resolved (21 implemented, 14 accepted as won't-do with documented rationale).
 
@@ -210,7 +472,7 @@ Security findings are tracked as ranks 12-21 in the Stack-Ranked Findings table 
 
 | # | Sev | Finding | Evidence | Related Issue | Status |
 |---|-----|---------|----------|--------------|---|
-| G-1 | High | RESET_STREAM and STOP_SENDING silently dropped — frame encode/decode and connection handler methods exist, but `frame_handler.zig:processFrame` dispatches via `else => .{}` which catches and ignores these frames. RFC 9000 S19.4/S19.5 compliance gap. | `src/quic/endpoint/frame_handler.zig:458`, `src/quic/connection/methods_b.zig:568,604` | #24 | Closed / Won't do |
+| G-1 | High | RESET_STREAM and STOP_SENDING now dispatched — `frame_handler.zig:487-488` routes `.reset_stream` and `.stop_sending` to handlers in `methods_b.zig:622,665`. Previously caught by `else => {}`. RFC 9000 S19.4/S19.5 compliance restored. | `src/quic/endpoint/frame_handler.zig:487-488`, `src/quic/connection/methods_b.zig:622,665` | #24 | Closed / Implemented |
 | G-2 | High | No stream state machine per RFC 9000 S3 — states (Ready, Send, DataSent, ResetSent, DataRecvd, etc.) are not modeled as an explicit enum with transitions. Boolean flags (`fin_sent`, `aborted`) approximate behavior. | `src/quic/connection/stream.zig` | #23 | Closed / Won't do |
 | G-3 | Medium | README contains 9 factual inaccuracies — wrong Zig version (says 0.14.0+, requires 0.15.1+), nonexistent paths (`src/quic/tls/`, `vendor/ed25519/`, `docs/NEXT.md`), wrong git URL (`github.com/spyderorg/quic` vs `gitlab.com/devnw/zig/quic`), stale test count (63 vs 136+), "std-only" claim despite OpenSSL linkage. | `README.md:3,12,20,28,106,173,259,270` | #19 | Closed / Implemented |
 | G-4 | Low | 11 requirements in docs not tracked in issues — Geode module consumption, algorithm benchmarks, CID rotation heuristics, DCID wire-level verification, Windows IOCP full implementation, H3 server push/prioritization, and others. | `docs/GAP_ANALYSIS.md:136-137`, `docs/DESIGN.md:116-127`, `docs/H3_SHIM.md:23-26` | -- | Closed / Won't do |

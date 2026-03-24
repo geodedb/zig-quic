@@ -1,8 +1,8 @@
 # Performance Gap Analysis
 
-Last updated: 2026-02-16
+Last updated: 2026-03-24
 
-Repository: `gitlab.com/devnw/zig/quic`  
+Repository: `gitlab.com/devnw/zig/quic`
 PerfScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 
 ## Performance Context Snapshot
@@ -32,74 +32,179 @@ PerfScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 
 ## Summary
 
-- Total findings tracked: **10**
-- Final status counts:
-  - `Closed / Implemented`: **10**
+- Total findings tracked: **25** (10 from Phase 2 + 15 from Phase 3)
+- Status counts:
+  - `Open`: **15** (Phase 3 findings)
+  - `Closed / Implemented`: **10** (Phase 2 findings)
   - `Blocked`: **0**
-  - `Open`: **0**
-- Confidence counts:
-  - `confidence::confirmed`: 10
-  - `confidence::suspected`: 0
+- Severity counts (Phase 3 open findings):
+  - `P0 (Critical)`: **4** -- #90, #94, #95, #97
+  - `P1 (High)`: **6** -- #100, #101, #104, #105, #108, #109
+  - `P2 (Moderate)`: **4** -- getenv per send, pacing non-functional, endpoint mutex contention, no CI perf benchmarks
+  - `P3 (Minor)`: **1** -- duplicate StreamRx maintenance risk
+- Confidence counts (Phase 3):
+  - `confidence::confirmed`: 14
+  - `confidence::suspected`: 1 (#108 CUBIC)
 
-### Top 5 Residual Risks
+### Top 5 Risks (Phase 3)
 
-1. None.
-2. None.
-3. None.
-4. None.
-5. None.
+1. **#90 Unbounded sent_packets** -- Memory leak + ACK processing degrades to seconds after minutes of traffic. SLO breach guaranteed under sustained load.
+2. **#97 PacketBufferPool silent reuse** -- Data corruption under contention. Corrupted packets trigger retransmissions and potential connection resets.
+3. **#95 No recovery epoch** -- RFC 9002 violation. cwnd collapses to minimum on any burst loss, causing 10-100x throughput reduction.
+4. **#94 O(n^2) stream reassembly** -- CPU-bound stream delivery at 1000+ buffered segments. Causes head-of-line blocking.
+5. **#109 No frame coalescing** -- 2-5x throughput gap vs modern QUIC implementations (quiche, quinn, ngtcp2).
 
-## Stack-Ranked Findings
+## Stack-Ranked Findings (All)
+
+### Phase 3 Findings (Open)
 
 | Rank | PerfSeverity | PerfScore | Finding | Component | Evidence | Measurement | GitLab Issue | Fix Summary | Owner | SLA/Due | Status |
 |---:|---|---:|---|---|---|---|---|---|---|---|---|
-| 1 | P0 | 80 | Hot-path short-header TX allocations in ACK/control paths (`confidence::confirmed`) | App/Transport | `src/quic/endpoint/incoming/module_b2.zig:445`, `src/quic/connection/methods_b.zig:398`, `src/quic/endpoint/frame_handler.zig:152`, `bench/main.zig:370` | `zig build bench` reports `into encode=0.0000`, `into decode=0.0000` | https://gitlab.com/devnw/zig/quic/-/issues/62 | Migrated hot-path callsites to `encodeShortProtectedInto` with pooled packet buffers and allocation guardrail bench check | Core QUIC | 2026-02-16 | Closed / Implemented |
-| 2 | P1 | 64 | Recovery ACK handling O(acked×sent) (`confidence::confirmed`) | Recovery | `src/quic/recovery/recovery.zig:40`, `src/quic/recovery/recovery.zig:120`, `src/quic/recovery/recovery.zig:173` | `zig build test` pass after PN-index migration | https://gitlab.com/devnw/zig/quic/-/issues/78 | Added per-space `sent_index` map and switched ACK marking to direct PN lookups | Recovery maintainers | 2026-02-16 | Closed / Implemented |
-| 3 | P1 | 64 | ACK assembly full stream-map scan for flow-control updates (`confidence::confirmed`) | Endpoint RX/Flow control | `src/quic/conn.zig:693`, `src/quic/conn.zig:929`, `src/quic/conn.zig:942`, `src/quic/endpoint/incoming/module_b2.zig:445` | `zig build test` pass with dirty-stream queue path enabled | https://gitlab.com/devnw/zig/quic/-/issues/79 | Added dirty-stream queue (`pending_fc_streams`) and bounded FC frame emission path | Endpoint maintainers | 2026-02-16 | Closed / Implemented |
-| 4 | P1 | 64 | Sleep-based PollSync/accept coordination overhead (`confidence::confirmed`) | Transport API | `src/quic/transport.zig:45`, `src/quic/transport.zig:54`, `src/quic/transport.zig:71` | `zig build test` pass with mutex+condition synchronization | https://gitlab.com/devnw/zig/quic/-/issues/80 | Replaced sleep-spin sync with mutex/condition-variable coordination | Transport maintainers | 2026-02-16 | Closed / Implemented |
-| 5 | P2 | 48 | Benchmarks not regression-gated in CI (`confidence::confirmed`) | CI/CD | `.gitlab-ci.yml:388`, `scripts/perf_gate.sh:5`, `scripts/perf_gate.sh:50` | `scripts/perf_gate.sh` PASS locally; parses and enforces thresholds | https://gitlab.com/devnw/zig/quic/-/issues/12 | Added deterministic perf gate script and wired it into `quality-zig-gates` | CI maintainers | 2026-02-16 | Closed / Implemented |
-| 6 | P2 | 48 | Rust e2e lacked cache parity (`confidence::confirmed`) | CI/CD | `.gitlab-ci.yml:177`, `.gitlab-ci.yml:180`, `.gitlab-ci.yml:183` | CI config now includes cargo cache paths and lockfile-keyed cache | https://gitlab.com/devnw/zig/quic/-/issues/74 | Added cargo cache + target cache for Rust e2e job | CI maintainers | 2026-02-16 | Closed / Implemented |
-| 7 | P2 | 48 | Interop CI recreated stack repeatedly with fixed sleeps (`confidence::confirmed`) | CI/CD Interop | `.gitlab-ci.yml:320`, `.gitlab-ci.yml:334`, `.gitlab-ci.yml:353` | CI script now keeps simulator up once, uses readiness loop, and runs grouped cases | https://gitlab.com/devnw/zig/quic/-/issues/81 | Reworked interop job to reuse simulator lifecycle and remove repeated full down/up cycles | CI + Interop maintainers | 2026-02-16 | Closed / Implemented |
-| 8 | P2 | 40 | Non-Linux loop fallback readiness handling (`confidence::confirmed`) | Platform/Infra | `src/quic/endpoint/io.zig:360`, `src/quic/endpoint/io.zig:379`, `src/quic/io/loop_kqueue.zig:71`, `src/quic/io/loop_kqueue.zig:85` | `zig build test` pass after readiness-driven fallback implementation | https://gitlab.com/devnw/zig/quic/-/issues/26 | Replaced sleep fallback in kqueue/non-Windows paths with readiness-driven poll/kevent waits | Platform maintainers | 2026-02-16 | Closed / Implemented |
-| 9 | P3 | 32 | Batched UDP recv/send path (`confidence::confirmed`) | App/Transport | `src/quic/endpoint/transport.zig:31`, `src/quic/endpoint/udp_transport.zig:31`, `src/quic/endpoint/udp_transport.zig:205`, `src/quic/endpoint.zig:585`, `bench/udp_batch_bench.zig:1`, `src/quic/endpoint/test_udp_batch_runtime_smoke.zig:1`, `build.zig:770`, `scripts/perf_udp_batch_gate.sh:1`, `scripts/cross_platform_udp_batch_smoke.sh:1`, `scripts/native_runtime_smoke.sh:1`, `scripts/native_runtime_smoke.ps1:1`, `.gitlab-ci.yml:389`, `.gitlab-ci.yml:390`, `.gitlab-ci.yml:392`, `.gitlab-ci.yml:410` | `sudo perf stat` (640000 packets): single mode `sendto=640000`, `recvfrom=640000`; batch mode `sendmmsg=40000`, `recvmmsg=40000`; benchmark syscall/packet `2.0000 -> 0.1250` (16x reduction), pps `215311.74 -> 228844.46`; cross-target compile matrix PASS: macOS/windows (`x86_64`,`aarch64`) for `transport.zig`, `udp_transport.zig`, `endpoint.zig`, and `bench/udp_batch_bench.zig`; runtime smoke test added for non-Linux fallback behavior and wired to SaaS macOS/Windows jobs (variable-gated) | https://gitlab.com/devnw/zig/quic/-/issues/82 | Added Linux `sendmmsg/recvmmsg` backend with transport-level batching API and per-packet fallback; wired endpoint poll to `recvBatch`; added deterministic UDP-batch validation gate, cross-platform compile matrix gate, native runtime smoke test, and SaaS macOS/Windows runtime smoke jobs | Endpoint maintainers | 2026-02-16 | Closed / Implemented |
-| 10 | Info | 16 | Missing explicit SLO/workload performance contract (`confidence::confirmed`) | Platform/Infra | `docs/PERFORMANCE_TARGETS.md:1`, `.gitlab-ci.yml:388`, `README.md:92` | Contract doc added and wired to CI perf gate | https://gitlab.com/devnw/zig/quic/-/issues/83 | Added versioned performance target/workload contract and linked it from README | Core + CI maintainers | 2026-02-16 | Closed / Implemented |
+| 1 | P0 | 100 | Unbounded sent_packets growth -- ArrayList never pruned, loss scans entire list per ACK (`confidence::confirmed`) | Recovery | `recovery/recovery.zig:118` (append), `:214,243,388,426` (scans) | Memory grows without bound; scan cost proportional to total packets sent | [#90](https://gitlab.com/devnw/zig/quic/-/issues/90) | Prune acked/lost entries after ACK processing; switch to ring buffer or sliding window | Recovery maintainers | Immediate | Open |
+| 2 | P0 | 100 | O(n^2) stream reassembly -- tryDrain restarts from i=0 after orderedRemove (`confidence::confirmed`) | Streams | `conn.zig:448-468`, `connection/stream.zig:53-74` | ~500K element shifts at 1000 segments; ~800K at burst reassembly | [#94](https://gitlab.com/devnw/zig/quic/-/issues/94) | Sort bufs by offset; forward-only drain with swapRemove | Stream maintainers | Immediate | Open |
+| 3 | P0 | N/A | No recovery epoch in ccOnLoss -- cwnd halved on every loss call (`confidence::confirmed`) | Recovery | `recovery/recovery.zig:346-366`, `congestion.zig:41-47` | RFC 9002 violation; 10-100x throughput loss on lossy links | [#95](https://gitlab.com/devnw/zig/quic/-/issues/95) | Add congestion_recovery_start_time; only halve cwnd for new recovery periods per RFC 9002 S7.3.3 | Recovery maintainers | Immediate | Open |
+| 4 | P0 | N/A | PacketBufferPool 4 slots with unsafe reuse -- silent buffer corruption under contention (`confidence::confirmed`) | Transport | `conn.zig:506-540` | Reuses in-use buffer when all 4 slots occupied; no mutex protection | [#97](https://gitlab.com/devnw/zig/quic/-/issues/97) | Return error on exhaustion; increase pool size; add mutex | Transport maintainers | Immediate | Open |
+| 5 | P1 | 56 | Loss detection double scan -- two full passes over sent_packets per ACK (`confidence::confirmed`) | Recovery | `recovery/recovery.zig:214-270` | 2x CPU cost per ACK, compounded by #90 | [#100](https://gitlab.com/devnw/zig/quic/-/issues/100) | Merge packet-threshold and time-threshold scans into single pass | Recovery maintainers | Within sprint | Open |
+| 6 | P1 | 48 | Timer cancel O(n) linear scan -- timer_heap.zig exists but unused (`confidence::confirmed`) | Endpoint | `endpoint.zig:648-656` | ~300M element ops/sec at 1000 connections | [#101](https://gitlab.com/devnw/zig/quic/-/issues/101) | Wire existing timer_heap.zig into endpoint for O(log n) cancel | Endpoint maintainers | Within sprint | Open |
+| 7 | P1 | 40 | orderedRemove(0) FIFO dequeue shifts N-1 elements at 7+ call sites (`confidence::confirmed`) | Transport | `endpoint.zig:509`, `server.zig:87`, `conn.zig:1252`, `api.zig:264`, `methods_c.zig:388`, `methods_a.zig:843` | O(n^2) drain at scale | [#104](https://gitlab.com/devnw/zig/quic/-/issues/104) | Replace ArrayList FIFO with ring buffer or deque | Transport maintainers | Within sprint | Open |
+| 8 | P1 | 36 | page_allocator (mmap/munmap) for per-packet AAD construction (`confidence::confirmed`) | Packet/Crypto | `packet.zig:699-703`, `packet.zig:1164-1168` | ~10K unnecessary syscalls/sec at 1000 conn/sec | [#105](https://gitlab.com/devnw/zig/quic/-/issues/105) | Use stack-allocated BoundedArray(u8, 64) for AAD | Packet maintainers | Within sprint | Open |
+| 9 | P1 | N/A | CUBIC is no-op NewReno wrapper (`confidence::suspected`) | Recovery | `congestion.zig:52-68` | 2-5x slower cwnd recovery on high-BDP paths | [#108](https://gitlab.com/devnw/zig/quic/-/issues/108) | Implement RFC 8312 CUBIC or prioritize BBR (#21) | Recovery maintainers | Within sprint | Open |
+| 10 | P1 | N/A | No STREAM frame coalescing or GSO -- 1 frame per UDP send (`confidence::confirmed`) | Transport | `methods_b.zig:283-457` | 2-5x throughput gap vs modern implementations | [#109](https://gitlab.com/devnw/zig/quic/-/issues/109) | Implement PacketBuilder for frame coalescing; add GSO on Linux | Transport maintainers | Within sprint | Open |
+| 11 | P2 | 24 | getenv per packet send -- linear environ scan on every 1-RTT packet (`confidence::confirmed`) | Transport | `methods_c.zig:44-48` | 100-500ms/s CPU at 100K pps | -- | Cache env result at connection init or use comptime flag | Transport maintainers | Next quarter | Open |
+| 12 | P2 | N/A | Pacing non-functional -- fixed delays unrelated to RTT (`confidence::confirmed`) | Recovery | `congestion.zig:73-82` | Burst-loss-collapse cycle; no rate smoothing | -- | Implement RTT-based pacing per RFC 9002 S7.7 | Recovery maintainers | Next quarter | Open |
+| 13 | P2 | N/A | Endpoint mutex held during entire recv batch (`confidence::confirmed`) | Endpoint | `endpoint.zig:722-731` | >5ms tail latency under load; blocks all handler threads | -- | Process datagrams with per-connection locks; release endpoint mutex between packets | Endpoint maintainers | Next quarter | Open |
+| 14 | P2 | N/A | No QUIC-layer performance benchmarks in CI (`confidence::confirmed`) | CI | `scripts/perf_gate.sh`, `.gitlab-ci.yml` | Silent performance regressions | Extends [#12](https://gitlab.com/devnw/zig/quic/-/issues/12) | Add handshake/throughput/stream benchmarks to perf_gate.sh | CI maintainers | Next quarter | Open |
+| 15 | P3 | 12 | Duplicate StreamRx in conn.zig and connection/stream.zig (`confidence::confirmed`) | Streams | `conn.zig:399-474`, `connection/stream.zig:20-80` | Maintenance risk; divergent fixes | -- | Deduplicate; canonical version in connection/stream.zig | Stream maintainers | Backlog | Open |
+
+### Phase 2 Findings (Closed)
+
+| Rank | PerfSeverity | PerfScore | Finding | Component | GitLab Issue | Status |
+|---:|---|---:|---|---|---|---|
+| 1 | P0 | 80 | Hot-path short-header TX allocations in ACK/control paths | App/Transport | [#62](https://gitlab.com/devnw/zig/quic/-/issues/62) | Closed / Implemented |
+| 2 | P1 | 64 | Recovery ACK handling O(acked x sent) | Recovery | [#78](https://gitlab.com/devnw/zig/quic/-/issues/78) | Closed / Implemented |
+| 3 | P1 | 64 | ACK assembly full stream-map scan for flow-control updates | Endpoint | [#79](https://gitlab.com/devnw/zig/quic/-/issues/79) | Closed / Implemented |
+| 4 | P1 | 64 | Sleep-based PollSync/accept coordination overhead | Transport | [#80](https://gitlab.com/devnw/zig/quic/-/issues/80) | Closed / Implemented |
+| 5 | P2 | 48 | Benchmarks not regression-gated in CI | CI/CD | [#12](https://gitlab.com/devnw/zig/quic/-/issues/12) | Closed / Implemented |
+| 6 | P2 | 48 | Rust e2e lacked cache parity | CI/CD | [#74](https://gitlab.com/devnw/zig/quic/-/issues/74) | Closed / Implemented |
+| 7 | P2 | 48 | Interop CI recreated stack repeatedly | CI/CD | [#81](https://gitlab.com/devnw/zig/quic/-/issues/81) | Closed / Implemented |
+| 8 | P2 | 40 | Non-Linux loop fallback readiness handling | Platform | [#26](https://gitlab.com/devnw/zig/quic/-/issues/26) | Closed / Implemented |
+| 9 | P3 | 32 | Batched UDP recv/send path | Transport | [#82](https://gitlab.com/devnw/zig/quic/-/issues/82) | Closed / Implemented |
+| 10 | Info | 16 | Missing explicit SLO/workload performance contract | Governance | [#83](https://gitlab.com/devnw/zig/quic/-/issues/83) | Closed / Implemented |
 
 ## Findings By Area
 
-### area::app
+### area::app (Recovery, Transport, Streams)
 
-- `#62` Closed / Implemented.
-- `#78` Closed / Implemented.
-- `#79` Closed / Implemented.
-- `#80` Closed / Implemented.
-- `#82` Closed / Implemented.
+| Issue | Severity | Finding | Status |
+|---|---|---|---|
+| #90 | P0 | Unbounded sent_packets growth | Open |
+| #94 | P0 | O(n^2) stream reassembly | Open |
+| #95 | P0 | No recovery epoch in ccOnLoss | Open |
+| #97 | P0 | PacketBufferPool unsafe reuse | Open |
+| #100 | P1 | Loss detection double scan | Open |
+| #101 | P1 | Timer cancel O(n) linear scan | Open |
+| #104 | P1 | orderedRemove(0) FIFO dequeue | Open |
+| #105 | P1 | page_allocator for AAD | Open |
+| #108 | P1 | CUBIC no-op wrapper | Open |
+| #109 | P1 | No frame coalescing or GSO | Open |
+| -- | P2 | getenv per packet send | Open |
+| -- | P2 | Pacing non-functional | Open |
+| -- | P2 | Endpoint mutex held during batch | Open |
+| -- | P3 | Duplicate StreamRx | Open |
+| #62 | P0 | Hot-path TX allocations | Closed |
+| #78 | P1 | Recovery ACK O(acked x sent) | Closed |
+| #79 | P1 | ACK assembly stream-map scan | Closed |
+| #80 | P1 | Sleep-based PollSync/accept | Closed |
 
 ### area::ci
 
-- `#12` Closed / Implemented.
-- `#74` Closed / Implemented.
-- `#81` Closed / Implemented.
+| Issue | Severity | Finding | Status |
+|---|---|---|---|
+| -- | P2 | No QUIC-layer perf benchmarks in CI | Open |
+| #12 | P2 | Benchmarks not regression-gated | Closed |
+| #74 | P2 | Rust e2e cache parity | Closed |
+| #81 | P2 | Interop CI repeated setup | Closed |
 
 ### area::infra
 
-- `#26` Closed / Implemented.
-- `#83` Closed / Implemented.
+| Issue | Severity | Finding | Status |
+|---|---|---|---|
+| #26 | P2 | Non-Linux loop fallback | Closed |
+| #83 | Info | Performance contract | Closed |
 
-## Delivery Plan Status
+## Estimated Impact at Scale
 
-### Quick Wins (<= 30 days)
+| Scale | Current State | After P0 Fixes | After P0+P1 Fixes |
+|---|---|---|---|
+| 10 connections | Functional | No change | No change |
+| 100 connections | Timer overhead noticeable | Stable | O(log n) timers |
+| 1000 connections | sent_packets scan > 100ms; timer cancel > 1ms; buffer corruption possible | Bounded recovery; safe buffers | <1ms ACK processing; <0.1ms timers |
+| 10K connections | Unusable: seconds per ACK; memory exhaustion | Bounded at cwnd/mds entries | Production-viable with coalescing |
+| Lossy link (1%) | cwnd collapses to minimum | Correct RFC 9002 recovery | CUBIC/BBR recovery |
 
-- Completed: `#62`, `#78`, `#79`, `#80`.
+## Roadmap
 
-### Medium (<= 90 days)
+### Quick Wins (< 1 day each)
 
-- Completed: `#12`, `#74`, `#81`, `#26`.
+| Finding | Issue | Effort | Expected Impact |
+|---|---|---|---|
+| page_allocator for AAD | #105 | ~1 hour | Eliminate ~10K syscalls/sec at 1000 conn/sec |
+| Loss detection double scan | #100 | ~2 hours | 50% reduction in per-ACK scan cost |
+| getenv per packet send | -- | ~1 hour | Eliminate ~100K getenv calls/sec at 100K pps |
+| Duplicate StreamRx | -- | ~2 hours | Reduce maintenance risk |
 
-### Strategic (> 90 days)
+### Medium (1-5 days each)
 
-- Completed: `#83`.
-- Completed: `#82`.
+| Finding | Issue | Effort | Expected Impact |
+|---|---|---|---|
+| Unbounded sent_packets | #90 | 2-3 days | Bounded memory; O(1) ACK processing |
+| O(n^2) stream reassembly | #94 | 1-2 days | O(n) drain instead of O(n^2) |
+| No recovery epoch | #95 | 1-2 days | Correct cwnd behavior; 10-100x throughput on lossy links |
+| PacketBufferPool reuse | #97 | 1-2 days | Eliminate silent data corruption |
+| Timer cancel linear scan | #101 | 1-2 days | O(log n) timer cancel |
+| orderedRemove(0) FIFO | #104 | 2-3 days | O(1) amortized dequeue at 7 sites |
+| Pacing non-functional | -- | 2-3 days | Eliminate burst-loss-collapse cycle |
+
+### Strategic (> 5 days each)
+
+| Finding | Issue | Effort | Expected Impact |
+|---|---|---|---|
+| CUBIC implementation | #108 | 5-10 days | 2-5x faster cwnd recovery on high-BDP |
+| STREAM frame coalescing + GSO | #109 | 10-20 days | 2-5x throughput improvement |
+| Endpoint mutex contention | -- | 5-10 days | <1ms tail latency under load |
+| QUIC-layer CI benchmarks | Extends #12 | 3-5 days | Detect performance regressions automatically |
+
+## Additional Findings (Not Yet Issued)
+
+These findings are tracked here but do not yet have dedicated GitLab issues. They will be promoted to issues as capacity allows.
+
+| Finding | Severity | Evidence | Notes |
+|---|---|---|---|
+| Connection struct ~20KB not pooled | P2 | `conn.zig:546-900` | Related to #13 (connection pooling) |
+| ArrayList(u8) frame buffer alloc per sendDatagram | P2 | `methods_b.zig:151-152,199-200` | Related to #10 (memory allocation patterns) |
+| Recovery mutex serializes congestion reads | P2 | `recovery/recovery.zig:498-530` | 3 separate lock/unlock for reads that could be batched |
+| Verbose debug logging in hot paths | P3 | `recovery.zig`, `packet.zig`, `methods_b.zig` | Related to #56 (debug logging leaks) and #69 (quiet tests) |
+
+## Related Existing Issues
+
+The following pre-existing issues overlap with Phase 3 findings:
+
+| Existing Issue | Related Phase 3 Finding(s) | Relationship |
+|---|---|---|
+| #9 Optimize packet processing paths | #90, #94, #100, #101, #104, #109 | Umbrella issue; Phase 3 findings provide specific action items |
+| #10 Improve memory allocation patterns | #90, #97, #105 | Phase 3 findings specify exact allocation anti-patterns |
+| #11 Zero-copy packet processing | #94, #109 | Frame coalescing and stream reassembly are prerequisites |
+| #13 Connection pooling | #97 (PacketBufferPool), Connection struct pooling | Phase 3 identifies the specific pool that is broken |
+| #21 BBR congestion control | #95, #108 | Recovery epoch fix (#95) is prerequisite; #108 is intermediate step |
 
 ## Blocked Items
 
-- None.
+- None currently blocked. All findings have clear fix paths.
+
+## Unknowns and Confirmation Needed
+
+1. **#108 CUBIC** (`confidence::suspected`): The CUBIC struct is clearly a no-op wrapper, but the actual throughput impact depends on the target deployment environment (high-BDP or not). Measurement needed: run a bulk transfer benchmark over a simulated 100ms RTT link and compare throughput with a proper CUBIC implementation.
+
+2. **Endpoint mutex contention** (P2): The actual tail latency impact under load is estimated, not measured. Confirmation requires a load test with 100+ concurrent connections measuring p99 latency distribution.
+
+3. **getenv per packet send**: The actual CPU cost depends on environ size. Confirmation: `perf record` on a 100K pps workload to measure time spent in `std.posix.getenv`.
