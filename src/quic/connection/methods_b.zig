@@ -6,6 +6,7 @@ const recovery = @import("quic_recovery");
 const ks = @import("quic_tls");
 const logger = @import("quic_logger");
 const builtin = @import("builtin");
+const crypto_utils = @import("crypto_utils.zig");
 
 const trace_enabled = false;
 inline fn trace(comptime fmt: []const u8, args: anytype) void {
@@ -14,13 +15,7 @@ inline fn trace(comptime fmt: []const u8, args: anytype) void {
 
 pub fn bind(comptime Connection: type) type {
     return struct {
-        fn hashForSecret(secret: *const ks.Secret) !ks.Hash {
-            return switch (secret.len) {
-                32 => .sha256,
-                48 => .sha384,
-                else => error.InvalidSecretLength,
-            };
-        }
+        const hashForSecret = crypto_utils.hashForSecret;
 
         fn trackAppStreamPacket(
             self: *Connection,
@@ -100,7 +95,10 @@ pub fn bind(comptime Connection: type) type {
                     continue;
                 };
                 const frame_bytes = frame_stream.getWritten();
-                const packet_storage = self.packet_pool.checkout();
+                const packet_storage = self.packet_pool.checkout() catch {
+                    self.app_stream_retx.put(lost_pn, tracked) catch self.allocator.free(tracked.data);
+                    continue;
+                };
                 defer self.packet_pool.release(packet_storage);
 
                 const next_pn = self.pn_app_tx;
@@ -152,7 +150,7 @@ pub fn bind(comptime Connection: type) type {
             defer frames.deinit(self.allocator.*);
             const w = frames.writer(self.allocator.*);
             _ = (frame.Frame{ .datagram = .{ .data = data } }).write(w) catch 0;
-            const packet_storage = self.packet_pool.checkout();
+            const packet_storage = try self.packet_pool.checkout();
             defer self.packet_pool.release(packet_storage);
             const pkt_len = try packet.encodeShortProtectedInto(
                 packet_storage,
@@ -421,7 +419,7 @@ pub fn bind(comptime Connection: type) type {
             logger.debugPrint("\n", .{});
             const dcid = self.shortHeaderDcid();
             logger.debugPrint("Server sending STREAM with DCID len={}, first_byte={x}\n", .{ dcid.len, if (dcid.len > 0) dcid[0] else 0 });
-            const packet_storage = self.packet_pool.checkout();
+            const packet_storage = try self.packet_pool.checkout();
             defer self.packet_pool.release(packet_storage);
             const pkt_len = try packet.encodeShortProtectedInto(
                 packet_storage,
@@ -549,7 +547,7 @@ pub fn bind(comptime Connection: type) type {
             const w = frames.writer(self.allocator.*);
             const final_off: u64 = if (id == 0) self.stream_send_off else self.stream_txs.getPtr(id).?.off;
             _ = (frame.Frame{ .stream = .{ .stream_id = id, .offset = final_off, .fin = true, .data = &[_]u8{} } }).write(w) catch 0;
-            const packet_storage = self.packet_pool.checkout();
+            const packet_storage = try self.packet_pool.checkout();
             defer self.packet_pool.release(packet_storage);
             const pkt_len = try packet.encodeShortProtectedInto(
                 packet_storage,
@@ -601,7 +599,7 @@ pub fn bind(comptime Connection: type) type {
                 .error_code = app_error_code,
                 .final_size = final_size,
             } }).write(w) catch 0;
-            const packet_storage = self.packet_pool.checkout();
+            const packet_storage = try self.packet_pool.checkout();
             defer self.packet_pool.release(packet_storage);
             const pkt_len = try packet.encodeShortProtectedInto(
                 packet_storage,
@@ -641,7 +639,7 @@ pub fn bind(comptime Connection: type) type {
             defer frames_buf.deinit(self.allocator.*);
             const w = frames_buf.writer(self.allocator.*);
             _ = (frame.Frame{ .reset_stream = .{ .stream_id = stream_id, .error_code = app_error_code, .final_size = final_size } }).write(w) catch 0;
-            const packet_storage = self.packet_pool.checkout();
+            const packet_storage = try self.packet_pool.checkout();
             defer self.packet_pool.release(packet_storage);
             const pkt_len = packet.encodeShortProtectedInto(
                 packet_storage,
@@ -1202,7 +1200,7 @@ pub fn bind(comptime Connection: type) type {
                             const frame_bytes = frame_stream.getWritten();
 
                             if (frame_bytes.len > 0) {
-                                const packet_storage = self.packet_pool.checkout();
+                                const packet_storage = self.packet_pool.checkout() catch return;
                                 defer self.packet_pool.release(packet_storage);
                                 const next_pn = self.pn_app_tx;
                                 const pkt_len = packet.encodeShortProtectedInto(
@@ -1235,7 +1233,7 @@ pub fn bind(comptime Connection: type) type {
             defer frames.deinit(self.allocator.*);
             const w = frames.writer(self.allocator.*);
             _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
-            const packet_storage = self.packet_pool.checkout();
+            const packet_storage = self.packet_pool.checkout() catch return;
             defer self.packet_pool.release(packet_storage);
             const pkt_len = packet.encodeShortProtectedInto(
                 packet_storage,
@@ -1263,7 +1261,7 @@ pub fn bind(comptime Connection: type) type {
             defer frames.deinit(self.allocator.*);
             const w = frames.writer(self.allocator.*);
             _ = (frame.Frame{ .connection_close = .{ .error_code = app_error_code, .frame_type = 0, .reason = reason } }).write(w) catch 0;
-            const packet_storage = self.packet_pool.checkout();
+            const packet_storage = try self.packet_pool.checkout();
             defer self.packet_pool.release(packet_storage);
             const pkt_len = try packet.encodeShortProtectedInto(
                 packet_storage,

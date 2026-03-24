@@ -10,7 +10,7 @@
 
 const std = @import("std");
 const types = @import("types");
-const ks = @import("quic_tls");
+const reset_token_mod = @import("reset_token.zig");
 
 /// Local connection ID with sequence number and stateless reset token.
 /// RFC 9000 §5.3: Each endpoint maintains a set of CIDs it advertises to its peer.
@@ -22,30 +22,9 @@ pub const LocalCid = struct {
 };
 
 /// Derive stateless reset token using HKDF.
-/// RFC 9000 §10.3: Endpoints must be able to generate stateless reset tokens
-/// that are computationally difficult to guess.
-///
-/// Uses HKDF-Extract with base as salt and (sequence || cid) as IKM,
-/// then HKDF-Expand-Label to derive the final 16-byte token.
-pub fn deriveStatelessResetToken(base: *const [32]u8, sequence: u64, cid_bytes: []const u8) error{InvalidCidLength}![16]u8 {
-    // HKDF based derivation (implementation choice following RFC 9000 §10.3 guidance).
-    // prk = HKDF-Extract(salt = base, ikm = sequence||cid)
-    var ikm_buf: [8 + 20]u8 = undefined; // CID <= 20 bytes in this implementation
-    var seq_be: [8]u8 = undefined;
-    std.mem.writeInt(u64, &seq_be, sequence, .big);
-    @memcpy(ikm_buf[0..8], &seq_be);
-    const cid_len = cid_bytes.len;
-    if (cid_len > 20) return error.InvalidCidLength;
-    @memcpy(ikm_buf[8 .. 8 + cid_len], cid_bytes);
-    const prk = ks.extract(base, ikm_buf[0 .. 8 + cid_len]);
-    var out: [16]u8 = undefined;
-    // token = HKDF-Expand-Label(prk, "reset token", "", 16)
-    const empty_slice: []const u8 = &.{};
-    ks.expandLabel(&prk, "reset token", empty_slice, out[0..]) catch unreachable;
-    return out;
-}
+/// Delegates to the canonical implementation in reset_token.zig.
+/// RFC 9000 §10.3: Stateless Reset
+pub const deriveStatelessResetToken = reset_token_mod.deriveStatelessResetToken;
 
 /// Test helper exposing reset token derivation (used only by unit tests).
-pub fn testDeriveStatelessResetToken(base: *const [32]u8, sequence: u64, cid: []const u8) error{InvalidCidLength}![16]u8 {
-    return deriveStatelessResetToken(base, sequence, cid);
-}
+pub const testDeriveStatelessResetToken = reset_token_mod.testDeriveStatelessResetToken;

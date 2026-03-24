@@ -1157,7 +1157,7 @@ pub fn sendHandshakeDone(ctx: *HandshakeContext) !void {
         &[_]u8{};
 
     // Encode and send 1-RTT packet without heap allocation.
-    const packet_storage = conn.packet_pool.checkout();
+    const packet_storage = try conn.packet_pool.checkout();
     defer conn.packet_pool.release(packet_storage);
     const pkt_len = packet.encodeShortProtectedInto(
         packet_storage,

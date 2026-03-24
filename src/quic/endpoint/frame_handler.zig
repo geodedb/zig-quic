@@ -147,7 +147,7 @@ pub fn handleDatagram(
             else
                 &[_]u8{};
 
-            const packet_storage = ctx.conn.packet_pool.checkout();
+            const packet_storage = try ctx.conn.packet_pool.checkout();
             defer ctx.conn.packet_pool.release(packet_storage);
             const pkt_len = packet.encodeShortProtectedInto(
                 packet_storage,
@@ -375,7 +375,7 @@ pub fn handlePathChallenge(
         else
             &[_]u8{};
 
-        const packet_storage = ctx.conn.packet_pool.checkout();
+        const packet_storage = try ctx.conn.packet_pool.checkout();
         defer ctx.conn.packet_pool.release(packet_storage);
         const pkt_len = packet.encodeShortProtectedInto(
             packet_storage,

@@ -446,6 +446,9 @@ pub const StreamRx = struct {
     }
 
     pub fn tryDrain(self: *StreamRx, alloc: *std.mem.Allocator) void {
+        // Single forward pass using swapRemove to avoid O(n^2) shifting.
+        // Repeat until no progress is made (handles out-of-order segments
+        // that become contiguous after earlier drains).
         var progressed = true;
         while (progressed) {
             progressed = false;
@@ -457,13 +460,16 @@ pub const StreamRx = struct {
                     _ = self.inbox.appendSlice(alloc.*, seg.data) catch {};
                     self.recv_off +%= seg.data.len;
                     alloc.free(seg.data);
-                    _ = self.bufs.orderedRemove(i);
+                    _ = self.bufs.swapRemove(i);
                     progressed = true;
-                    // restart scan
-                    i = 0;
-                    continue;
+                    // Don't increment i; swapRemove moved the last element here
+                } else if (seg.off < self.recv_off) {
+                    // Overlapping or duplicate segment already consumed; discard
+                    alloc.free(seg.data);
+                    _ = self.bufs.swapRemove(i);
+                } else {
+                    i += 1;
                 }
-                i += 1;
             }
         }
     }
@@ -504,14 +510,14 @@ pub const StreamTxPacket = struct {
 };
 
 const PacketBufferPool = struct {
-    const slot_count: usize = 4;
+    const slot_count: usize = 16;
     const slot_size: usize = 4096;
 
     slots: [slot_count][slot_size]u8 = undefined,
     in_use: [slot_count]bool = [_]bool{false} ** slot_count,
     next_slot: usize = 0,
 
-    pub fn checkout(self: *PacketBufferPool) []u8 {
+    pub fn checkout(self: *PacketBufferPool) error{PoolExhausted}![]u8 {
         var i: usize = 0;
         while (i < slot_count) : (i += 1) {
             const idx = (self.next_slot + i) % slot_count;
@@ -521,11 +527,7 @@ const PacketBufferPool = struct {
                 return self.slots[idx][0..];
             }
         }
-        // Fallback under contention: reuse a slot deterministically.
-        const idx = self.next_slot;
-        self.next_slot = (idx + 1) % slot_count;
-        self.in_use[idx] = true;
-        return self.slots[idx][0..];
+        return error.PoolExhausted;
     }
 
     pub fn release(self: *PacketBufferPool, buf: []u8) void {
@@ -1229,6 +1231,87 @@ pub const Connection = struct {
     pub fn deinit(self: *Connection) void {
         if (self.deinit_called) return;
         self.deinit_called = true;
+
+        // Security: zero all key material before releasing memory to prevent
+        // residual secrets from persisting in freed heap pages.
+        if (self.app_tx_keys) |*k| {
+            @memset(&k.key, 0);
+            @memset(&k.iv, 0);
+            @memset(&k.hp, 0);
+        }
+        self.app_tx_keys = null;
+        if (self.app_rx_keys) |*k| {
+            @memset(&k.key, 0);
+            @memset(&k.iv, 0);
+            @memset(&k.hp, 0);
+        }
+        self.app_rx_keys = null;
+        if (self.initial_rx_keys) |*k| {
+            @memset(&k.key, 0);
+            @memset(&k.iv, 0);
+            @memset(&k.hp, 0);
+        }
+        self.initial_rx_keys = null;
+        if (self.initial_tx_keys) |*k| {
+            @memset(&k.key, 0);
+            @memset(&k.iv, 0);
+            @memset(&k.hp, 0);
+        }
+        self.initial_tx_keys = null;
+        if (self.hs_rx_keys) |*k| {
+            @memset(&k.key, 0);
+            @memset(&k.iv, 0);
+            @memset(&k.hp, 0);
+        }
+        self.hs_rx_keys = null;
+        if (self.hs_tx_keys) |*k| {
+            @memset(&k.key, 0);
+            @memset(&k.iv, 0);
+            @memset(&k.hp, 0);
+        }
+        self.hs_tx_keys = null;
+        if (self.zero_rtt_keys) |*k| {
+            @memset(&k.key, 0);
+            @memset(&k.iv, 0);
+            @memset(&k.hp, 0);
+        }
+        self.zero_rtt_keys = null;
+        if (self.hs_client) |*s| {
+            @memset(&s.bytes, 0);
+        }
+        self.hs_client = null;
+        if (self.hs_server) |*s| {
+            @memset(&s.bytes, 0);
+        }
+        self.hs_server = null;
+        if (self.app_tx_secret) |*s| {
+            @memset(&s.bytes, 0);
+        }
+        self.app_tx_secret = null;
+        if (self.app_rx_secret) |*s| {
+            @memset(&s.bytes, 0);
+        }
+        self.app_rx_secret = null;
+        if (self.app_rx_next_secret) |*s| {
+            @memset(&s.bytes, 0);
+        }
+        self.app_rx_next_secret = null;
+        if (self.app_rx_next_keys) |*k| {
+            @memset(&k.key, 0);
+            @memset(&k.iv, 0);
+            @memset(&k.hp, 0);
+        }
+        self.app_rx_next_keys = null;
+        if (self.resumption_secret) |*s| {
+            @memset(s, 0);
+        }
+        self.resumption_secret = null;
+        // session_ticket is a borrowed slice (not owned), so we cannot safely
+        // zero it -- the backing memory may be read-only or already freed.
+        // Simply drop the reference.
+        self.session_ticket = null;
+        @memset(&self.stateless_reset_base, 0);
+
         if (self.negotiated_alpn) |alpn| self.allocator.free(alpn);
         if (self.server_name) |name| self.allocator.free(name);
         if (self.local_transport_params_raw) |tp| self.allocator.free(tp);

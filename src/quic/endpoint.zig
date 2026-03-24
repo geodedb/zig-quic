@@ -990,20 +990,12 @@ pub const Endpoint = struct {
             }
         }
 
-        if (c_found == null and self.cfg.allow_insecure) {
-            itc = self.conns.iterator();
-            while (itc.next()) |e| {
-                if (e.value_ptr.*.role == .Client) {
-                    c_found = e.value_ptr.*;
-                    break;
-                }
-            }
-        }
-
         const c = c_found orelse return;
 
         // Verify Retry integrity using ODCID from current or original client Initial epoch.
-        if (!(verify_current or verify_original) and !self.cfg.allow_insecure) {
+        // Security: always enforce integrity verification regardless of allow_insecure;
+        // that flag only governs certificate validation, not Retry integrity or CID matching.
+        if (!(verify_current or verify_original)) {
             c.retry_reject_integrity +%= 1;
             return;
         }

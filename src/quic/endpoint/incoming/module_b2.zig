@@ -193,7 +193,7 @@ pub fn generateAndSendAck(
         else
             &[_]u8{};
 
-        const packet_storage = conn.packet_pool.checkout();
+        const packet_storage = try conn.packet_pool.checkout();
         defer conn.packet_pool.release(packet_storage);
         const pkt_len = packet.encodeShortProtectedInto(
             packet_storage,
@@ -232,7 +232,7 @@ pub fn generateAndSendAck(
                 else
                     &[_]u8{};
 
-                const packet_storage = conn.packet_pool.checkout();
+                const packet_storage = try conn.packet_pool.checkout();
                 defer conn.packet_pool.release(packet_storage);
                 const pkt_len = packet.encodeShortProtectedInto(
                     packet_storage,
@@ -331,7 +331,7 @@ pub fn generateAndSendAck(
                     else
                         &[_]u8{};
 
-                    const packet_storage = conn.packet_pool.checkout();
+                    const packet_storage = try conn.packet_pool.checkout();
                     defer conn.packet_pool.release(packet_storage);
                     const pkt_len = packet.encodeShortProtectedInto(
                         packet_storage,
@@ -412,7 +412,7 @@ pub fn generateAndSendAck(
                     else
                         &[_]u8{};
 
-                    const packet_storage = conn.packet_pool.checkout();
+                    const packet_storage = try conn.packet_pool.checkout();
                     defer conn.packet_pool.release(packet_storage);
                     const pkt_len = packet.encodeShortProtectedInto(
                         packet_storage,
@@ -468,7 +468,7 @@ pub fn generateAndSendAck(
                 else
                     &[_]u8{};
 
-                const packet_storage = conn.packet_pool.checkout();
+                const packet_storage = try conn.packet_pool.checkout();
                 defer conn.packet_pool.release(packet_storage);
                 const pkt_len = packet.encodeShortProtectedInto(
                     packet_storage,

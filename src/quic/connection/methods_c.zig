@@ -6,16 +6,12 @@ const ks = @import("quic_tls");
 const tparams = @import("quic_transport_params");
 const logger = @import("quic_logger");
 const builtin = @import("builtin");
+const reset_token_mod = @import("reset_token.zig");
+const crypto_utils = @import("crypto_utils.zig");
 
 pub fn bind(comptime Connection: type) type {
     return struct {
-        fn hashForSecret(secret: *const ks.Secret) !ks.Hash {
-            return switch (secret.len) {
-                32 => .sha256,
-                48 => .sha384,
-                else => error.InvalidSecretLength,
-            };
-        }
+        const hashForSecret = crypto_utils.hashForSecret;
 
         const StreamTxMap = @FieldType(Connection, "stream_txs");
         const StreamRxMap = @FieldType(Connection, "streams_rx");
@@ -141,7 +137,7 @@ pub fn bind(comptime Connection: type) type {
             // Record pending probe PN before send
             self.probe_pending_pn = self.pn_app_tx;
             self.probe_pending_size = target_udp_payload;
-            const packet_storage = self.packet_pool.checkout();
+            const packet_storage = try self.packet_pool.checkout();
             defer self.packet_pool.release(packet_storage);
             const pkt_len = try packet.encodeShortProtectedInto(
                 packet_storage,
@@ -606,19 +602,7 @@ pub fn bind(comptime Connection: type) type {
             }
         }
 
-        fn deriveStatelessResetToken(base: *const [32]u8, sequence: u64, cid_bytes: []const u8) error{InvalidCidLength}![16]u8 {
-            var ikm_buf: [8 + 20]u8 = undefined;
-            var seq_be: [8]u8 = undefined;
-            std.mem.writeInt(u64, &seq_be, sequence, .big);
-            @memcpy(ikm_buf[0..8], &seq_be);
-            const cid_len = cid_bytes.len;
-            if (cid_len > 20) return error.InvalidCidLength;
-            @memcpy(ikm_buf[8 .. 8 + cid_len], cid_bytes);
-            const prk = ks.extract(base, ikm_buf[0 .. 8 + cid_len]);
-            var out: [16]u8 = undefined;
-            ks.expandLabel(prk, "reset token", &[_]u8{}, out[0..]) catch unreachable;
-            return out;
-        }
+        const deriveStatelessResetToken = reset_token_mod.deriveStatelessResetToken;
 
         fn ensureStatelessResetBase(self: *Connection) void {
             var any_non_zero = false;

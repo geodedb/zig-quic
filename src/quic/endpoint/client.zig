@@ -153,8 +153,17 @@ pub fn createClientConnection(
         .peer_hash = peer_hash,
         .dcid_hash = hashBytes(c.our_scid.bytes[0..c.our_scid.len]),
     };
-    _ = conns_map.put(key_d, c) catch {};
-    _ = conns_map.put(key_s, c) catch {};
+    conns_map.put(key_d, c) catch {
+        c.deinit();
+        allocator.*.destroy(c);
+        return error.OutOfMemory;
+    };
+    conns_map.put(key_s, c) catch {
+        _ = conns_map.remove(key_d);
+        c.deinit();
+        allocator.*.destroy(c);
+        return error.OutOfMemory;
+    };
 
     logger.debugPrint("Client connection registered:\n", .{});
     logger.debugPrint("  peer_hash={X:0>16}\n", .{peer_hash});

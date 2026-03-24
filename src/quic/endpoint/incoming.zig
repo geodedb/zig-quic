@@ -487,14 +487,27 @@ pub fn processInitial(
 
         // Also register by peer + server SCID for Handshake packet lookup
         const our_key = endpoint_types.Key{ .peer_hash = ph, .dcid_hash = hashBytes(c_new.our_scid.bytes[0..c_new.our_scid.len]) };
-        _ = ctx.conns.put(our_key, c_new) catch {};
+        _ = ctx.conns.put(our_key, c_new) catch {
+            // Remove the first registration so the connection is not left half-registered.
+            _ = ctx.conns.remove(key);
+            c_new.deinit();
+            ctx.allocator.destroy(c_new);
+            return;
+        };
 
         logger.debugPrint("processInitial: Registered new server conn={*}\n", .{c_new});
         logger.debugPrint("  By client DCID hash={X:0>16}\n", .{hashBytes(header.dcid)});
         logger.debugPrint("  By server SCID hash={X:0>16}\n", .{hashBytes(c_new.our_scid.bytes[0..c_new.our_scid.len])});
 
         // Add newly created server connection to accepted list for accept() API
-        _ = ctx.accepted.append(ctx.allocator.*, c_new) catch {};
+        _ = ctx.accepted.append(ctx.allocator.*, c_new) catch {
+            // Remove both map registrations so the connection is not orphaned.
+            _ = ctx.conns.remove(key);
+            _ = ctx.conns.remove(our_key);
+            c_new.deinit();
+            ctx.allocator.destroy(c_new);
+            return;
+        };
 
         break :blk c_new;
     };

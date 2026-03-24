@@ -79,6 +79,9 @@ pub const Recovery = struct {
     timer_granularity_ns: u64 = std.time.ns_per_ms,
     spaces: [3]SpaceState,
     k_pc_threshold: u32 = 3,
+    /// RFC 9002 S7.3.2: start of the current congestion recovery period (sent_time of trigger).
+    /// cwnd is only reduced once per recovery period.
+    congestion_recovery_start_time: ?u64 = null,
 
     /// Initialize a Recovery instance with fresh per-space state.
     pub fn init(alloc: std.mem.Allocator) Recovery {
@@ -205,66 +208,62 @@ pub const Recovery = struct {
         }
         if (largest_pn != (sstate.largest_acked orelse 0)) sstate.largest_acked = largest_pn;
 
-        // Loss detection: packet-threshold only on ACK
+        // Loss detection: merged packet-threshold and time-threshold in a single pass
         var bytes_lost: usize = 0;
         var first_lost_time: ?u64 = null;
         var last_lost_time: ?u64 = null;
         var pkt_threshold_lost_count: usize = 0;
-        if (sstate.largest_acked) |la| {
-            for (sstate.sent.items) |*sp| {
-                if (!sp.acked and !sp.declared_lost) {
-                    if (self.loss.isPacketThresholdLost(la, sp.pn)) {
-                        sp.declared_lost = true;
-                        _ = sstate.sent_index.remove(sp.pn);
-                        bytes_lost += sp.size;
-                        pkt_threshold_lost_count += 1;
-                        if (first_lost_time == null or sp.time_ns < first_lost_time.?) first_lost_time = sp.time_ns;
-                        if (last_lost_time == null or sp.time_ns > last_lost_time.?) last_lost_time = sp.time_ns;
-
-                        // PHASE 42 PART 22: Log packet-threshold loss
-                        logger.debugPrint("[P42-22-LOSS-PKT] ❌ space={s} pn={d} largest_acked={d} gap={d} threshold={d} bytes={d}\n", .{
-                            @tagName(space),
-                            sp.pn,
-                            la,
-                            la - sp.pn,
-                            self.loss.packet_threshold,
-                            sp.size,
-                        });
-                    }
-                }
-            }
-        }
-
-        // Time-threshold loss detection and scheduling
         var earliest_loss_time: ?u64 = null;
         var time_threshold_lost_count: usize = 0;
-        if (self.rtt.have_sample) {
-            const tt_base = LossDetector.timeThresholdNs(self.rtt.smoothed_rtt_ns, self.rtt.latest_rtt_ns);
-            for (sstate.sent.items) |*sp| {
-                if (!sp.acked and !sp.declared_lost and sp.ack_eliciting) {
-                    const deadline = sp.time_ns + tt_base;
-                    // Check if packet has already exceeded time threshold
-                    if (now_ns >= deadline) {
-                        sp.declared_lost = true;
-                        _ = sstate.sent_index.remove(sp.pn);
-                        bytes_lost += sp.size;
-                        time_threshold_lost_count += 1;
-                        const age_us = (now_ns - sp.time_ns) / 1000;
+        const have_rtt = self.rtt.have_sample;
+        const tt_base: u64 = if (have_rtt) LossDetector.timeThresholdNs(self.rtt.smoothed_rtt_ns, self.rtt.latest_rtt_ns) else 0;
+        for (sstate.sent.items) |*sp| {
+            if (sp.acked or sp.declared_lost) continue;
 
-                        // PHASE 42 PART 22: Log time-threshold loss
-                        logger.debugPrint("[P42-22-LOSS-TIME] ⏱️  space={s} pn={d} age={d}us threshold={d}us bytes={d}\n", .{
-                            @tagName(space),
-                            sp.pn,
-                            age_us,
-                            tt_base / 1000,
-                            sp.size,
-                        });
+            // Packet-threshold loss (applies to all packets)
+            const pkt_lost = if (sstate.largest_acked) |la| self.loss.isPacketThresholdLost(la, sp.pn) else false;
 
-                        if (first_lost_time == null or sp.time_ns < first_lost_time.?) first_lost_time = sp.time_ns;
-                        if (last_lost_time == null or sp.time_ns > last_lost_time.?) last_lost_time = sp.time_ns;
-                    } else if (earliest_loss_time == null or deadline < earliest_loss_time.?) {
-                        earliest_loss_time = deadline;
-                    }
+            // Time-threshold loss (applies only to ack-eliciting packets)
+            var time_lost = false;
+            if (have_rtt and sp.ack_eliciting) {
+                const deadline = sp.time_ns + tt_base;
+                if (now_ns >= deadline) {
+                    time_lost = true;
+                } else if (earliest_loss_time == null or deadline < earliest_loss_time.?) {
+                    earliest_loss_time = deadline;
+                }
+            }
+
+            if (pkt_lost or time_lost) {
+                sp.declared_lost = true;
+                _ = sstate.sent_index.remove(sp.pn);
+                bytes_lost += sp.size;
+                if (pkt_lost) pkt_threshold_lost_count += 1;
+                if (time_lost) time_threshold_lost_count += 1;
+                if (first_lost_time == null or sp.time_ns < first_lost_time.?) first_lost_time = sp.time_ns;
+                if (last_lost_time == null or sp.time_ns > last_lost_time.?) last_lost_time = sp.time_ns;
+
+                if (pkt_lost) {
+                    // PHASE 42 PART 22: Log packet-threshold loss
+                    logger.debugPrint("[P42-22-LOSS-PKT] ❌ space={s} pn={d} largest_acked={d} gap={d} threshold={d} bytes={d}\n", .{
+                        @tagName(space),
+                        sp.pn,
+                        sstate.largest_acked orelse 0,
+                        (sstate.largest_acked orelse 0) - sp.pn,
+                        self.loss.packet_threshold,
+                        sp.size,
+                    });
+                }
+                if (time_lost) {
+                    const age_us = (now_ns - sp.time_ns) / 1000;
+                    // PHASE 42 PART 22: Log time-threshold loss
+                    logger.debugPrint("[P42-22-LOSS-TIME] ⏱️  space={s} pn={d} age={d}us threshold={d}us bytes={d}\n", .{
+                        @tagName(space),
+                        sp.pn,
+                        age_us,
+                        tt_base / 1000,
+                        sp.size,
+                    });
                 }
             }
         }
@@ -278,6 +277,23 @@ pub const Recovery = struct {
                 pkt_threshold_lost_count,
                 time_threshold_lost_count,
             });
+        }
+
+        // Compact: remove fully-processed entries (acked or declared_lost)
+        {
+            var write_idx: usize = 0;
+            for (sstate.sent.items) |sp| {
+                if (!sp.acked and !sp.declared_lost) {
+                    sstate.sent.items[write_idx] = sp;
+                    write_idx += 1;
+                }
+            }
+            sstate.sent.items.len = write_idx;
+            // Rebuild sent_index after compaction
+            sstate.sent_index.clearRetainingCapacity();
+            for (sstate.sent.items, 0..) |sp, i| {
+                sstate.sent_index.put(sp.pn, i) catch {};
+            }
         }
 
         // Congestion control accounting
@@ -295,7 +311,7 @@ pub const Recovery = struct {
             }
         }
         if (bytes_lost > 0) {
-            self.ccOnLoss(bytes_lost);
+            self.ccOnLoss(bytes_lost, last_lost_time, now_ns);
             if (first_lost_time != null and last_lost_time != null) {
                 const pto_base = self.rtt.computePtoNsWithBackoff(0, self.timer_granularity_ns);
                 const pc_period = pto_base * self.k_pc_threshold;
@@ -343,25 +359,46 @@ pub const Recovery = struct {
     }
 
     /// Cut cwnd on loss (1/2) with floor at 2*mds; reduce bytes_in_flight by lost bytes.
-    fn ccOnLoss(self: *Recovery, bytes_lost: usize) void {
+    /// RFC 9002 S7.3.2: cwnd is only reduced once per congestion recovery period.
+    /// `last_lost_sent_time` is the sent timestamp of the most recently sent lost packet.
+    /// `now_ns` is the current time used to start a new recovery period.
+    fn ccOnLoss(self: *Recovery, bytes_lost: usize, last_lost_sent_time: ?u64, now_ns: u64) void {
         if (bytes_lost == 0) return;
 
+        // Always account for lost bytes leaving the network
+        if (self.cc.bytes_in_flight >= bytes_lost) self.cc.bytes_in_flight -= bytes_lost else self.cc.bytes_in_flight = 0;
+
+        // RFC 9002 S7.3.2: skip cwnd reduction if the lost packet was sent
+        // before the current recovery period started (already in recovery).
+        if (last_lost_sent_time) |sent_time| {
+            if (self.congestion_recovery_start_time) |start| {
+                if (sent_time <= start) {
+                    logger.debugPrint("[P42-22-CC-LOSS] 🔁 skip cwnd reduction: sent_time={d}ns <= recovery_start={d}ns\n", .{
+                        sent_time,
+                        start,
+                    });
+                    return;
+                }
+            }
+        }
+
+        // Start a new recovery period
+        self.congestion_recovery_start_time = now_ns;
+
         const old_cwnd = self.cc.cwnd;
-        const old_inflight = self.cc.bytes_in_flight;
 
         const min_wnd: usize = 2 * self.cc.mds;
         self.cc.cwnd = @max(self.cc.cwnd / 2, min_wnd);
         self.cc.ssthresh = self.cc.cwnd;
-        if (self.cc.bytes_in_flight >= bytes_lost) self.cc.bytes_in_flight -= bytes_lost else self.cc.bytes_in_flight = 0;
 
         // PHASE 42 PART 22: Log congestion control loss reaction
-        logger.debugPrint("[P42-22-CC-LOSS] 📉 lost={d}B cwnd: {d}→{d} inflight: {d}→{d} ssthresh={d}\n", .{
+        logger.debugPrint("[P42-22-CC-LOSS] 📉 lost={d}B cwnd: {d}→{d} inflight={d} ssthresh={d} recovery_start={d}ns\n", .{
             bytes_lost,
             old_cwnd,
             self.cc.cwnd,
-            old_inflight,
             self.cc.bytes_in_flight,
             self.cc.ssthresh,
+            now_ns,
         });
     }
 
@@ -404,7 +441,7 @@ pub const Recovery = struct {
             }
         }
         if (total_lost > 0) {
-            self.ccOnLoss(total_lost);
+            self.ccOnLoss(total_lost, last_lost_time, now_ns);
             if (first_lost_time != null and last_lost_time != null) {
                 const pto_base = self.rtt.computePtoNsWithBackoff(0, self.timer_granularity_ns);
                 const pc_period = pto_base * self.k_pc_threshold;

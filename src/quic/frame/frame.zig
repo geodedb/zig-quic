@@ -346,6 +346,16 @@ pub fn encode(frame: Frame, w: anytype) !void {
     _ = try frame.write(w);
 }
 
+/// Maximum data payload size (64 KiB) accepted from the wire for CRYPTO,
+/// STREAM, DATAGRAM, and similar variable-length frames.  Anything larger
+/// is rejected with `error.FrameTooLarge` before allocation to prevent
+/// unbounded heap growth from a malicious varint.
+const max_frame_data_len: u64 = 65536;
+/// Maximum ACK range count accepted from the wire.
+const max_ack_ranges: u64 = 256;
+/// Maximum reason/token length for CONNECTION_CLOSE / NEW_TOKEN frames.
+const max_reason_or_token_len: u64 = 1024;
+
 /// Decode a frame from the reader. Allocates dynamic content using `alloc`.
 pub fn decode(r: anytype, alloc: std.mem.Allocator) !Frame {
     const t = try r.readByte();
@@ -364,6 +374,7 @@ pub fn decode(r: anytype, alloc: std.mem.Allocator) !Frame {
     if (t == @intFromEnum(FrameType.CRYPTO)) {
         const offset = try varint.decodeReader(r);
         const len = try varint.decodeReader(r);
+        if (len > max_frame_data_len) return error.FrameTooLarge;
         const data = try alloc.alloc(u8, @intCast(len));
         try r.readNoEof(data);
         return Frame{ .crypto = .{ .offset = offset, .data = data } };
@@ -376,6 +387,7 @@ pub fn decode(r: anytype, alloc: std.mem.Allocator) !Frame {
         const range_count = try varint.decodeReader(r);
         const first_range = try varint.decodeReader(r);
 
+        if (range_count > max_ack_ranges) return error.FrameTooLarge;
         // Allocate ranges
         const ranges = try alloc.alloc(AckRange, @intCast(range_count));
         var i: usize = 0;
@@ -419,11 +431,12 @@ pub fn decode(r: anytype, alloc: std.mem.Allocator) !Frame {
         var data: []u8 = undefined;
         if (has_len) {
             const len = try varint.decodeReader(r);
+            if (len > max_frame_data_len) return error.FrameTooLarge;
             data = try alloc.alloc(u8, @intCast(len));
             try r.readNoEof(data);
         } else {
             // Read until EOF (bounded)
-            data = try r.readAllAlloc(alloc, 65536);
+            data = try r.readAllAlloc(alloc, max_frame_data_len);
         }
 
         return Frame{ .stream = .{ .stream_id = stream_id, .offset = offset, .fin = fin, .data = data } };
@@ -432,6 +445,7 @@ pub fn decode(r: anytype, alloc: std.mem.Allocator) !Frame {
     // DATAGRAM
     if (t == @intFromEnum(FrameType.DATAGRAM)) {
         const len = try varint.decodeReader(r);
+        if (len > max_frame_data_len) return error.FrameTooLarge;
         const data = try alloc.alloc(u8, @intCast(len));
         try r.readNoEof(data);
         return Frame{ .datagram = .{ .data = data } };
@@ -484,6 +498,7 @@ pub fn decode(r: anytype, alloc: std.mem.Allocator) !Frame {
         const ec = try varint.decodeReader(r);
         const ft = try varint.decodeReader(r);
         const len = try varint.decodeReader(r);
+        if (len > max_reason_or_token_len) return error.FrameTooLarge;
         const reason = try alloc.alloc(u8, @intCast(len));
         try r.readNoEof(reason);
         return Frame{ .connection_close = .{ .error_code = ec, .frame_type = ft, .reason = reason } };
@@ -526,6 +541,7 @@ pub fn decode(r: anytype, alloc: std.mem.Allocator) !Frame {
     }
     if (t == @intFromEnum(FrameType.NEW_TOKEN)) {
         const len = try varint.decodeReader(r);
+        if (len > max_reason_or_token_len) return error.FrameTooLarge;
         const token = try alloc.alloc(u8, @intCast(len));
         try r.readNoEof(token);
         return Frame{ .new_token = .{ .token = token } };

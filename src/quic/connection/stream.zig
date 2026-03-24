@@ -51,6 +51,9 @@ pub const StreamRx = struct {
 
     /// Try to drain contiguous segments into the inbox.
     pub fn tryDrain(self: *StreamRx, alloc: *std.mem.Allocator) void {
+        // Single forward pass using swapRemove to avoid O(n^2) shifting.
+        // Repeat until no progress is made (handles out-of-order segments
+        // that become contiguous after earlier drains).
         var progressed = true;
         while (progressed) {
             progressed = false;
@@ -62,13 +65,16 @@ pub const StreamRx = struct {
                     _ = self.inbox.appendSlice(alloc.*, seg.data) catch {};
                     self.recv_off +%= seg.data.len;
                     alloc.free(seg.data);
-                    _ = self.bufs.orderedRemove(i);
+                    _ = self.bufs.swapRemove(i);
                     progressed = true;
-                    // restart scan
-                    i = 0;
-                    continue;
+                    // Don't increment i; swapRemove moved the last element here
+                } else if (seg.off < self.recv_off) {
+                    // Overlapping or duplicate segment already consumed; discard
+                    alloc.free(seg.data);
+                    _ = self.bufs.swapRemove(i);
+                } else {
+                    i += 1;
                 }
-                i += 1;
             }
         }
     }

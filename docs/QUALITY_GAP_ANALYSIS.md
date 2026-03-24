@@ -35,7 +35,7 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 | 3 | E4+R4 | High | 80 | perf, maintainability | `dumpBytes` production leak + duplication | Crypto | `crypto_quic.zig:669-680`, `packet.zig` | [#93](https://gitlab.com/devnw/zig/quic/-/issues/93) | Restore `is_test` guard; consolidate to single utility; remove page_allocator | Core QUIC | S (10 min) | Open |
 | 4 | A3 | High | 64 | maintainability | Silent `catch {}` on connection registration -- ghost connections | Transport | `endpoint.zig:500,473,561,1037` | [#96](https://gitlab.com/devnw/zig/quic/-/issues/96) | Propagate errors or cleanup on failure; log error context | Core QUIC | M (1h) | Open |
 | 5 | A7 | High | 64 | api-contract | `handshakeComplete == isHandshakeConfirmed` -- incorrect RFC 9000 semantics | Transport | `api.zig:157-167` | [#98](https://gitlab.com/devnw/zig/quic/-/issues/98) | Track completion and confirmation separately per RFC 9000 s4.1 | Core QUIC | S (30 min) | Open |
-| 6 | R1-R3 | Medium | 48 | maintainability | Triplicated `deriveStatelessResetToken` + `hashForSecret` + `maybeTriggerKeyUpdateOnSend` | Transport | `reset_token.zig`, `connection_id.zig`, `methods_c.zig`, `methods_b.zig` | [#99](https://gitlab.com/devnw/zig/quic/-/issues/99) | Extract each into single canonical location | Core QUIC | M (1h) | Open |
+| 6 | R1-R3 | Medium | 48 | maintainability | Triplicated `deriveStatelessResetToken` + `hashForSecret` + `maybeTriggerKeyUpdateOnSend` | Transport | `reset_token.zig`, `connection_id.zig`, `methods_c.zig`, `methods_b.zig` | [#99](https://gitlab.com/devnw/zig/quic/-/issues/99) | Extract each into single canonical location | Core QUIC | M (1h) | Closed |
 | 7 | E5 | Medium | 40 | perf | `getenv` on every packet send for debug config | Transport | `conn.zig:1534`, `methods_c.zig:45`, `methods_b.zig:1454` | [#106](https://gitlab.com/devnw/zig/quic/-/issues/106) | Cache env lookup at init time | Core QUIC | S (15 min) | Open |
 | 8 | E6 | Medium | 40 | ci-cd | No Zig build cache in CI | CI | `.gitlab-ci.yml` (no cache directive for zig-cache) | [#112](https://gitlab.com/devnw/zig/quic/-/issues/112) | Add cache key for zig-cache directories | CI | S (15 min) | Open |
 | 9 | E7 | Medium | 36 | ci-cd | macOS/Windows CI downloads Zig without SHA-256 verification | CI / Platform | `.gitlab-ci.yml:503-524` | [#102](https://gitlab.com/devnw/zig/quic/-/issues/102) | Add hash verification matching Linux job pattern | CI | S (30 min) | Open |
@@ -87,7 +87,7 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 - [#77](https://gitlab.com/devnw/zig/quic/-/issues/77) Closed.
 - [#87](https://gitlab.com/devnw/zig/quic/-/issues/87) **Open** -- unreachable on peer CID (Critical).
 - [#96](https://gitlab.com/devnw/zig/quic/-/issues/96) **Open** -- ghost connections from silent catch {}.
-- [#99](https://gitlab.com/devnw/zig/quic/-/issues/99) **Open** -- triplicated crypto functions.
+- [#99](https://gitlab.com/devnw/zig/quic/-/issues/99) **Closed** -- triplicated crypto functions deduplicated into canonical locations.
 - [#110](https://gitlab.com/devnw/zig/quic/-/issues/110) **Open** -- 287 catch {} patterns.
 
 ### api-contract
@@ -131,8 +131,8 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 - Completed: #63, #64, #65, #66, #71, #72, #74.
 
 ### Medium (1-5 days)
-- **Open**: #96 (1h), #99 (1h), #103 (2-4h)
-- Completed: #67, #68, #69, #73, #76, #77.
+- **Open**: #96 (1h), #103 (2-4h)
+- Completed: #67, #68, #69, #73, #76, #77, #99.
 
 ### Strategic (> 5 days)
 - **Open**: #110 (4-8h), #115 (Large), #113 (Ongoing)

@@ -458,7 +458,7 @@ pub fn bind(comptime Connection: type) type {
                 logger.debugPrint("\n", .{});
 
                 const tx = self.app_tx_keys.?;
-                const packet_storage = self.packet_pool.checkout();
+                const packet_storage = try self.packet_pool.checkout();
                 defer self.packet_pool.release(packet_storage);
                 const pkt_len = packet.encodeShortProtectedInto(
                     packet_storage,
@@ -910,7 +910,7 @@ pub fn bind(comptime Connection: type) type {
             const w = frames.writer(self.allocator.*);
             _ = (frame.Frame{ .path_challenge = self.path_challenge_data }).write(w) catch 0;
 
-            const packet_storage = self.packet_pool.checkout();
+            const packet_storage = self.packet_pool.checkout() catch return;
             defer self.packet_pool.release(packet_storage);
             const pkt_len = packet.encodeShortProtectedInto(
                 packet_storage,
@@ -938,7 +938,7 @@ pub fn bind(comptime Connection: type) type {
             if (!self.hasConfirmedAppTxKeys()) return;
             const tx = self.app_tx_keys.?;
             logger.debugPrint("{s}: Sending control frames ({d} bytes)\n", .{ if (self.role == .Server) "Server" else "Client", frames_bytes.len });
-            const packet_storage = self.packet_pool.checkout();
+            const packet_storage = self.packet_pool.checkout() catch return;
             defer self.packet_pool.release(packet_storage);
             const pkt_len = packet.encodeShortProtectedInto(
                 packet_storage,

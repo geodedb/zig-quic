@@ -61,9 +61,9 @@ PerfScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 | Rank | PerfSeverity | PerfScore | Finding | Component | Evidence | Measurement | GitLab Issue | Fix Summary | Owner | SLA/Due | Status |
 |---:|---|---:|---|---|---|---|---|---|---|---|---|
 | 1 | P0 | 100 | Unbounded sent_packets growth -- ArrayList never pruned, loss scans entire list per ACK (`confidence::confirmed`) | Recovery | `recovery/recovery.zig:118` (append), `:214,243,388,426` (scans) | Memory grows without bound; scan cost proportional to total packets sent | [#90](https://gitlab.com/devnw/zig/quic/-/issues/90) | Prune acked/lost entries after ACK processing; switch to ring buffer or sliding window | Recovery maintainers | Immediate | Open |
-| 2 | P0 | 100 | O(n^2) stream reassembly -- tryDrain restarts from i=0 after orderedRemove (`confidence::confirmed`) | Streams | `conn.zig:448-468`, `connection/stream.zig:53-74` | ~500K element shifts at 1000 segments; ~800K at burst reassembly | [#94](https://gitlab.com/devnw/zig/quic/-/issues/94) | Sort bufs by offset; forward-only drain with swapRemove | Stream maintainers | Immediate | Open |
+| 2 | P0 | 100 | O(n^2) stream reassembly -- tryDrain restarts from i=0 after orderedRemove (`confidence::confirmed`) | Streams | `conn.zig:448-468`, `connection/stream.zig:53-74` | ~500K element shifts at 1000 segments; ~800K at burst reassembly | [#94](https://gitlab.com/devnw/zig/quic/-/issues/94) | Sort bufs by offset; forward-only drain with swapRemove | Stream maintainers | Immediate | Closed |
 | 3 | P0 | N/A | No recovery epoch in ccOnLoss -- cwnd halved on every loss call (`confidence::confirmed`) | Recovery | `recovery/recovery.zig:346-366`, `congestion.zig:41-47` | RFC 9002 violation; 10-100x throughput loss on lossy links | [#95](https://gitlab.com/devnw/zig/quic/-/issues/95) | Add congestion_recovery_start_time; only halve cwnd for new recovery periods per RFC 9002 S7.3.3 | Recovery maintainers | Immediate | Open |
-| 4 | P0 | N/A | PacketBufferPool 4 slots with unsafe reuse -- silent buffer corruption under contention (`confidence::confirmed`) | Transport | `conn.zig:506-540` | Reuses in-use buffer when all 4 slots occupied; no mutex protection | [#97](https://gitlab.com/devnw/zig/quic/-/issues/97) | Return error on exhaustion; increase pool size; add mutex | Transport maintainers | Immediate | Open |
+| 4 | P0 | N/A | PacketBufferPool 4 slots with unsafe reuse -- silent buffer corruption under contention (`confidence::confirmed`) | Transport | `conn.zig:506-540` | Reuses in-use buffer when all 4 slots occupied; no mutex protection | [#97](https://gitlab.com/devnw/zig/quic/-/issues/97) | Return error on exhaustion; increase pool size; add mutex | Transport maintainers | Immediate | Closed |
 | 5 | P1 | 56 | Loss detection double scan -- two full passes over sent_packets per ACK (`confidence::confirmed`) | Recovery | `recovery/recovery.zig:214-270` | 2x CPU cost per ACK, compounded by #90 | [#100](https://gitlab.com/devnw/zig/quic/-/issues/100) | Merge packet-threshold and time-threshold scans into single pass | Recovery maintainers | Within sprint | Open |
 | 6 | P1 | 48 | Timer cancel O(n) linear scan -- timer_heap.zig exists but unused (`confidence::confirmed`) | Endpoint | `endpoint.zig:648-656` | ~300M element ops/sec at 1000 connections | [#101](https://gitlab.com/devnw/zig/quic/-/issues/101) | Wire existing timer_heap.zig into endpoint for O(log n) cancel | Endpoint maintainers | Within sprint | Open |
 | 7 | P1 | 40 | orderedRemove(0) FIFO dequeue shifts N-1 elements at 7+ call sites (`confidence::confirmed`) | Transport | `endpoint.zig:509`, `server.zig:87`, `conn.zig:1252`, `api.zig:264`, `methods_c.zig:388`, `methods_a.zig:843` | O(n^2) drain at scale | [#104](https://gitlab.com/devnw/zig/quic/-/issues/104) | Replace ArrayList FIFO with ring buffer or deque | Transport maintainers | Within sprint | Open |
@@ -98,9 +98,9 @@ PerfScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 | Issue | Severity | Finding | Status |
 |---|---|---|---|
 | #90 | P0 | Unbounded sent_packets growth | Open |
-| #94 | P0 | O(n^2) stream reassembly | Open |
+| #94 | P0 | O(n^2) stream reassembly | Closed |
 | #95 | P0 | No recovery epoch in ccOnLoss | Open |
-| #97 | P0 | PacketBufferPool unsafe reuse | Open |
+| #97 | P0 | PacketBufferPool unsafe reuse | Closed |
 | #100 | P1 | Loss detection double scan | Open |
 | #101 | P1 | Timer cancel O(n) linear scan | Open |
 | #104 | P1 | orderedRemove(0) FIFO dequeue | Open |
@@ -158,9 +158,9 @@ PerfScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 | Finding | Issue | Effort | Expected Impact |
 |---|---|---|---|
 | Unbounded sent_packets | #90 | 2-3 days | Bounded memory; O(1) ACK processing |
-| O(n^2) stream reassembly | #94 | 1-2 days | O(n) drain instead of O(n^2) |
+| O(n^2) stream reassembly | #94 | 1-2 days | O(n) drain instead of O(n^2) -- **Closed** |
 | No recovery epoch | #95 | 1-2 days | Correct cwnd behavior; 10-100x throughput on lossy links |
-| PacketBufferPool reuse | #97 | 1-2 days | Eliminate silent data corruption |
+| PacketBufferPool reuse | #97 | 1-2 days | Eliminate silent data corruption -- **Closed** |
 | Timer cancel linear scan | #101 | 1-2 days | O(log n) timer cancel |
 | orderedRemove(0) FIFO | #104 | 2-3 days | O(1) amortized dequeue at 7 sites |
 | Pacing non-functional | -- | 2-3 days | Eliminate burst-loss-collapse cycle |
