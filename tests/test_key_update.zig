@@ -19,11 +19,11 @@ test "key update: derive next secret and decrypt with toggled key phase" {
     _ = try eng_cli.queueMinimalClientHelloAuto();
     var buf: [256]u8 = undefined;
     const n1 = eng_cli.popCrypto(&buf);
-    eng_srv.onCryptoRecv(buf[0..n1]);
+    try eng_srv.onCryptoRecv(buf[0..n1]);
 
     _ = try eng_srv.queueMinimalServerHelloAuto();
     const n2 = eng_srv.popCrypto(&buf);
-    eng_cli.onCryptoRecv(buf[0..n2]);
+    try eng_cli.onCryptoRecv(buf[0..n2]);
 
     if (eng_cli.ecdhe_secret == null or eng_srv.ecdhe_secret == null) {
         var shared: [32]u8 = .{0} ** 32;
@@ -116,11 +116,11 @@ test "key update: header protection key preserved across updates" {
     _ = try eng_cli.queueMinimalClientHelloAuto();
     var buf: [256]u8 = undefined;
     const n1 = eng_cli.popCrypto(&buf);
-    eng_srv.onCryptoRecv(buf[0..n1]);
+    try eng_srv.onCryptoRecv(buf[0..n1]);
 
     _ = try eng_srv.queueMinimalServerHelloAuto();
     const n2 = eng_srv.popCrypto(&buf);
-    eng_cli.onCryptoRecv(buf[0..n2]);
+    try eng_cli.onCryptoRecv(buf[0..n2]);
 
     if (eng_cli.ecdhe_secret == null or eng_srv.ecdhe_secret == null) {
         var shared: [32]u8 = .{0} ** 32;

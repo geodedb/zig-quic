@@ -21,10 +21,10 @@ test "key update: rx promotes on next-phase, retains prev window; tx toggles and
     _ = try ec.queueMinimalClientHelloAuto();
     var buf: [512]u8 = undefined;
     var n = ec.popCrypto(&buf);
-    es.onCryptoRecv(buf[0..n]);
+    try es.onCryptoRecv(buf[0..n]);
     _ = try es.queueMinimalServerHelloAuto();
     n = es.popCrypto(&buf);
-    ec.onCryptoRecv(buf[0..n]);
+    try ec.onCryptoRecv(buf[0..n]);
 
     if (ec.ecdhe_secret == null or es.ecdhe_secret == null) {
         var shared: [32]u8 = .{0} ** 32;

@@ -25,7 +25,7 @@ test "short-header 1-RTT STREAM+PING roundtrip" {
     var buf: [256]u8 = undefined;
     const n1 = eng_cli.popCrypto(&buf);
     try std.testing.expect(n1 > 0);
-    eng_srv.onCryptoRecv(buf[0..n1]);
+    try eng_srv.onCryptoRecv(buf[0..n1]);
 
     // Server queues SH with its pubkey
     _ = try eng_srv.queueMinimalServerHelloAuto();
@@ -33,7 +33,7 @@ test "short-header 1-RTT STREAM+PING roundtrip" {
     // Deliver server's CRYPTO to client
     const n2 = eng_srv.popCrypto(&buf);
     try std.testing.expect(n2 > 0);
-    eng_cli.onCryptoRecv(buf[0..n2]);
+    try eng_cli.onCryptoRecv(buf[0..n2]);
 
     // Optional: deterministic fallback if X25519 didn't trigger
     if (eng_cli.ecdhe_secret == null or eng_srv.ecdhe_secret == null) {

@@ -21,10 +21,10 @@ test "key update: OOO prev-phase across PN gaps accepted only within window" {
     _ = try cli.queueMinimalClientHelloAuto();
     var tmp: [512]u8 = undefined;
     var n = cli.popCrypto(&tmp);
-    srv.onCryptoRecv(tmp[0..n]);
+    try srv.onCryptoRecv(tmp[0..n]);
     _ = try srv.queueMinimalServerHelloAuto();
     n = srv.popCrypto(&tmp);
-    cli.onCryptoRecv(tmp[0..n]);
+    try cli.onCryptoRecv(tmp[0..n]);
     if (cli.ecdhe_secret == null or srv.ecdhe_secret == null) {
         var shared: [32]u8 = .{0} ** 32;
         shared[0] = 7;

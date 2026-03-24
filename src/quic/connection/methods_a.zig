@@ -383,7 +383,7 @@ pub fn bind(comptime Connection: type) type {
                         // CRITICAL: Mark that we sent our Finished message so TLS Context knows
                         // This allows Application key derivation to proceed (requires both
                         // peer_finished_verified AND local_finished_sent to be true)
-                        tls_ctx.markLocalFinished();
+                        try tls_ctx.markLocalFinished();
                         logger.debugPrint("[pushCrypto] Client marked local_finished_sent=true\n", .{});
                     }
                 } else |err| {

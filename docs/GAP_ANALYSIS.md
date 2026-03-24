@@ -9,21 +9,20 @@ Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
 
 | Severity | Found | Closed/Implemented | Closed/Won't do | Blocked | Open |
 |----------|------:|-------------------:|----------------:|--------:|-----:|
-| Critical | 2 | 1 | 0 | 0 | 1 |
+| Critical | 2 | 2 | 0 | 0 | 0 |
 | High | 9 | 7 | 2 | 0 | 0 |
 | Medium | 9 | 7 | 0 | 0 | 2 |
 | Low | 7 | 2 | 2 | 0 | 3 |
-| **Total** | **27** | **17** | **4** | **0** | **6** |
+| **Total** | **27** | **18** | **4** | **0** | **5** |
 
 **HTTP/3 adapter requirements:** 4 open items (1 High, 2 Medium, 1 Low) — see [HTTP/3 Adapter Requirements](#http3-adapter-requirements) below.
 
-### Top 5 Residual Risks
+### Top 4 Residual Risks
 
-1. **HEAD of main does not compile (GAP-0001)** — TLS dependency API break: `markLocalFinished()` and `onCryptoRecv()` changed from void to `!void`. 31 call sites across 14 files need `try`. Build is completely broken.
-2. **519 integration test stubs return SkipZigTest (GAP-0004)** — 61% of test stubs are placeholders with no test logic. Critical RFC compliance paths are untested.
-3. **3x duplicate algorithm implementations (Q-1)** — `algorithms/congestion_newreno.zig`, `recovery/congestion.zig`, and `recovery.zig:88` coexist with differing APIs. Behavioral divergence risk when algorithm modules are wired to production.
-4. **Algorithm modules are dead code (Q-2)** — All 7 Geode-extracted modules are not imported by any production path. They risk drifting from production behavior until integrated.
-5. Historical private key material remains recoverable from Git history as accepted external-control risk (`#36`, won't do).
+1. **519 integration test stubs return SkipZigTest (GAP-0004)** -- 61% of test stubs are placeholders with no test logic. Critical RFC compliance paths are untested.
+2. **3x duplicate algorithm implementations (Q-1)** -- `algorithms/congestion_newreno.zig`, `recovery/congestion.zig`, and `recovery.zig:88` coexist with differing APIs. Behavioral divergence risk when algorithm modules are wired to production.
+3. **Algorithm modules are dead code (Q-2)** -- All 7 Geode-extracted modules are not imported by any production path. They risk drifting from production behavior until integrated.
+4. Historical private key material remains recoverable from Git history as accepted external-control risk (`#36`, won't do).
 
 ## Stack-Ranked Findings
 
@@ -270,7 +269,7 @@ Gap analysis phase 3 identified 6 new gaps. All are tracked as GitLab issues wit
 
 | Gap-ID | Severity | Category | Issue | Status |
 |--------|----------|----------|-------|--------|
-| GAP-0001 | Critical | Bug | [#84](https://gitlab.com/devnw/zig/quic/-/issues/84) | Open |
+| GAP-0001 | Critical | Bug | [#84](https://gitlab.com/devnw/zig/quic/-/issues/84) | Closed / Implemented |
 | GAP-0002 | Medium | Docs | [#85](https://gitlab.com/devnw/zig/quic/-/issues/85) | Open |
 | GAP-0003 | Low | Requirement | [#86](https://gitlab.com/devnw/zig/quic/-/issues/86) | Open |
 | GAP-0004 | Medium | Test | [#88](https://gitlab.com/devnw/zig/quic/-/issues/88) | Open |
@@ -284,13 +283,15 @@ Gap analysis phase 3 identified 6 new gaps. All are tracked as GitLab issues wit
 - **Requirement source:** RFC 9001 S4.1
 - **Current state (evidence):**
   - `src/quic/connection/methods_a.zig:386` -- calls `markLocalFinished()` without `try`
-  - `src/quic/endpoint/handshake_integration.zig:640` -- calls `onCryptoRecv()` without `try`
-  - 12 test files with 31 total call sites missing `try`
+  - `src/quic/endpoint/handshake_integration.zig:640` -- calls `markLocalFinished()` without `try`
+  - 12 test files with 31 total `onCryptoRecv()` call sites missing `try`
 - **Why this is a gap:** Commit `babe36e` imported TLS library where `markLocalFinished()` and `onCryptoRecv()` changed return type from `void` to `!void`. All call sites must now use `try` or handle the error union.
 - **Impact/Risk:** Build is completely broken on HEAD of `main`. No CI, no tests, no development can proceed.
-- **Recommended fix:** Add `try` to all 31 call sites across 14 files. Verify with `zig build test`.
+- **Recommended fix:** Add `try` to all 33 call sites across 14 files. Verify with `zig build test`.
 - **Acceptance criteria:** `zig build` and `zig build test` succeed on HEAD (pre-existing test failures acceptable, compilation failures not).
 - **Effort:** S
+- **Resolution (2026-03-24):** Added `try` to 2 production call sites (`markLocalFinished()` in methods_a.zig and handshake_integration.zig) and 31 test call sites (`onCryptoRecv()` across 12 test files). `zig build` exits 0, `zig build test` exits 0, `zig fmt --check` passes.
+- **Status: Closed / Implemented**
 
 ### GAP-0002: G-1 status stale -- RESET_STREAM/STOP_SENDING now implemented
 - **Issue:** [#85](https://gitlab.com/devnw/zig/quic/-/issues/85)

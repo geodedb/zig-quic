@@ -38,7 +38,7 @@ test "tls13 handshake traffic secrets transition (deterministic input)" {
     defer alloc.free(sh_msg);
 
     eng.queueCrypto(ch_msg) catch unreachable;
-    eng.onCryptoRecv(sh_msg);
+    try eng.onCryptoRecv(sh_msg);
 
     const hs = eng.computeHandshakeSecrets() orelse return error.TestExpectedSecrets;
 

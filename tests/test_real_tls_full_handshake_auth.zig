@@ -43,17 +43,17 @@ test "real_tls_full_handshake_auth_gating" {
     client.queueMinimalClientHello() catch {};
     var buf: [4096]u8 = undefined;
     const c_to_s = client.popCrypto(buf[0..]);
-    server.onCryptoRecv(buf[0..c_to_s]);
+    try server.onCryptoRecv(buf[0..c_to_s]);
 
     // Server sends SH + EE + (cert flight attempt) + Finished
     server.queueMinimalServerHello() catch {};
     server.queueEncryptedExtensions("h3", &[_]u8{ 0x00, 0x01 }) catch {}; // minimal TP bytes
     const s_to_c = server.popCrypto(buf[0..]);
-    client.onCryptoRecv(buf[0..s_to_c]);
+    try client.onCryptoRecv(buf[0..s_to_c]);
 
     // At this point client may or may not have peer_cert_ok; it must not send Finished unless peer_cert_ok or insecure.
     // Force evaluation of maybeAutoProgress by feeding zero bytes.
-    client.onCryptoRecv(&[_]u8{});
+    try client.onCryptoRecv(&[_]u8{});
 
     // Client should NOT have finished_sent if peer_cert_ok false.
     if (!client.peer_cert_ok) std.testing.expect(!client.finished_sent) catch unreachable;

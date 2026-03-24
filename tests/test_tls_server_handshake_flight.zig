@@ -20,7 +20,7 @@ test "tls_engine_server_handshake_flight_single_enqueue" {
     var buf: [2048]u8 = undefined;
     const ch_len = client.popCrypto(buf[0..]);
     try std.testing.expect(ch_len > 0);
-    server.onCryptoRecv(buf[0..ch_len]);
+    try server.onCryptoRecv(buf[0..ch_len]);
 
     // Server emits ServerHello, which should populate the Initial CRYPTO outbox
     // and derive handshake secrets needed for the Handshake flight.
@@ -83,7 +83,7 @@ test "tls_handshake_message_ordering_with_certificate_regression_266" {
     var buf: [4096]u8 = undefined;
     const ch_len = client.popCrypto(buf[0..]);
     try std.testing.expect(ch_len > 0);
-    server.onCryptoRecv(buf[0..ch_len]);
+    try server.onCryptoRecv(buf[0..ch_len]);
 
     // Server emits ServerHello and derives handshake secrets
     try server.queueRealServerHello();

@@ -16,10 +16,10 @@ test "rx key update: exhaust previous-key allowance then reject further prev-pha
     _ = try cli.queueMinimalClientHelloAuto();
     var buf: [512]u8 = undefined;
     var n = cli.popCrypto(&buf);
-    srv.onCryptoRecv(buf[0..n]);
+    try srv.onCryptoRecv(buf[0..n]);
     _ = try srv.queueMinimalServerHelloAuto();
     n = srv.popCrypto(&buf);
-    cli.onCryptoRecv(buf[0..n]);
+    try cli.onCryptoRecv(buf[0..n]);
     if (cli.ecdhe_secret == null or srv.ecdhe_secret == null) {
         var shared: [32]u8 = .{0} ** 32;
         shared[0] = 3;

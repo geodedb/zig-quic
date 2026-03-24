@@ -78,7 +78,7 @@ test "initial->handshake pipeline in-process" {
         const r = try frame.decodeOne(dec.payload[off..]);
         off += r.n;
         switch (r.f) {
-            .crypto => |cr| eng.onCryptoRecv(cr.data),
+            .crypto => |cr| try eng.onCryptoRecv(cr.data),
             else => {},
         }
     }

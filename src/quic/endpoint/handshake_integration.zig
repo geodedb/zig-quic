@@ -637,7 +637,7 @@ pub fn processCryptoFrame(
                         try conn.sendHandshakeCrypto(outgoing_crypto);
 
                         // Mark that we sent our Finished message so TLS Context knows
-                        tls_ctx.markLocalFinished();
+                        try tls_ctx.markLocalFinished();
                         logger.debugPrint("[processCryptoFrame] Client marked local_finished_sent=true\n", .{});
                     }
                 } else |err| {
