@@ -92,7 +92,7 @@ PerfScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 | 6 | P1 | 64 | 64KB PacketBufferPool per connection (`confidence::confirmed`) | Transport | `conn.zig:436-466` | 64MB at 1K conns; 640MB at 10K conns | [#167](https://gitlab.com/devnw/zig/quic/-/issues/167) | Shared endpoint-level pool or slab allocator | Transport maintainers | Within sprint | Open |
 | 7 | P1 | 48 | ECN bits hardcoded to 0; recvmsg path disabled (`confidence::confirmed`) | Endpoint | `endpoint/io.zig:79-81`, `udp_transport.zig:276` | 10-30% throughput loss on ECN-capable networks | [#172](https://gitlab.com/devnw/zig/quic/-/issues/172) | Set IP_RECVTOS/IPV6_RECVTCLASS; parse cmsg in recvmsg | Endpoint maintainers | Within sprint | Open |
 | 8 | P2 | 48 | readStreamUnlocked copyForwards shifts inbox per read (`confidence::confirmed`) | Streams | `methods_b.zig:512-516`, `methods_c.zig:31` | 63MB/sec memcpy at 64KB inbox + 1KB reads at 1K reads/sec | [#184](https://gitlab.com/devnw/zig/quic/-/issues/184) | Ring buffer or read-cursor for inbox | Stream maintainers | Next quarter | Open |
-| 9 | P2 | 36 | 6 remaining orderedRemove sites (`confidence::confirmed`) | Transport | `endpoint.zig:481`, `api.zig:354,361,385`, `conn.zig:1306`, `lifecycle.zig:175,237,271` | O(N) shift per removal at each site | [#185](https://gitlab.com/devnw/zig/quic/-/issues/185) | Replace with swapRemove where order not required | Transport maintainers | Next quarter | Open |
+| 9 | P2 | 36 | 6 remaining orderedRemove sites (`confidence::confirmed`) | Transport | `endpoint.zig:481`, `api.zig:354,361,385`, `conn.zig:1306`, `lifecycle.zig:175,237,271` | O(N) shift per removal at each site | [#185](https://gitlab.com/devnw/zig/quic/-/issues/185) | PARTIAL: 3/6 converted to swapRemove (endpoint.zig:481, api.zig:354, lifecycle.zig:271). Remaining 3 require orderedRemove (loop-continue patterns need stable indices). | Transport maintainers | 2026-03-25 | Closed / Implemented |
 | 10 | P3 | 20 | tryDrain O(N^2) on out-of-order reassembly (`confidence::confirmed`) | Streams | `connection/stream.zig:71-94` | ~500K comparisons at 1000 reordered segments | [#186](https://gitlab.com/devnw/zig/quic/-/issues/186) | Sort bufs before drain or use min-heap | Stream maintainers | Backlog | Open |
 | 11 | P3 | 12 | PacketBufferPool.release O(16) scan (`confidence::confirmed`) | Transport | `conn.zig:457-465` | 16 pointer comparisons per release | [#187](https://gitlab.com/devnw/zig/quic/-/issues/187) | Compute slot index from pointer arithmetic | Transport maintainers | Backlog | Open |
 
@@ -135,7 +135,7 @@ PerfScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 | #105 | P1 | page_allocator for AAD | Closed |
 | #108 | P1 | CUBIC (now RFC 8312 compliant) | Closed / Implemented |
 | #184 | P2 | readStreamUnlocked copyForwards | Open |
-| #185 | P2 | 6 remaining orderedRemove sites | Open |
+| #185 | P2 | 6 remaining orderedRemove sites (3/6 converted) | Closed / Implemented |
 | -- | P2 | getenv per packet send | Closed |
 | -- | P2 | Pacing non-functional | Closed |
 | #186 | P3 | tryDrain O(N^2) worst case | Open |

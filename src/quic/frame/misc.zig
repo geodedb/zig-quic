@@ -16,10 +16,6 @@ const varint = @import("quic_varint");
 /// CWE-770 mitigation: Bound padding to prevent amplification attacks.
 pub const MIN_INITIAL_PACKET_SIZE: usize = 1200;
 
-/// RFC 9000 §14: Maximum UDP payload size that should be sent without PMTU discovery.
-/// CWE-770 mitigation: Prevents unbounded packet sizes.
-pub const MAX_SAFE_PACKET_SIZE: usize = 1200;
-
 /// Absolute maximum packet size (64KB UDP limit).
 /// Used as a sanity check upper bound.
 pub const MAX_PACKET_SIZE: usize = 65535;

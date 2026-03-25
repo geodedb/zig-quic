@@ -209,24 +209,6 @@ pub fn isDrainingExpired(ctx: *const ErrorContext, now_ns: u64, pto_ns: u64) boo
     return now_ns >= close_time + timeout;
 }
 
-/// Generate CONNECTION_CLOSE frame payload (error code + frame type + reason).
-/// RFC 9000 §19.19: CONNECTION_CLOSE format.
-/// Returns a slice that can be written to a packet.
-pub fn formatCloseFrame(
-    error_code: ErrorCode,
-    frame_type: u64,
-    reason: []const u8,
-    buf: []u8,
-) ![]const u8 {
-    // Simple format: error_code(varint) + frame_type(varint) + reason_len(varint) + reason
-    // This is a helper; actual encoding uses frame module's writeConnectionClose.
-    _ = buf;
-    _ = error_code;
-    _ = frame_type;
-    _ = reason;
-    // Not implementing actual encoding here as it's handled by frame/connection_mgmt.zig
-    return error.NotImplemented;
-}
 
 /// Validate error code is in valid range.
 /// RFC 9000 §20: Error codes up to 2^62-1 are valid.

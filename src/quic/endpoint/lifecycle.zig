@@ -268,7 +268,8 @@ pub fn destroyConnection(ctx: *LifecycleContext, conn: *conn_mod.Connection) voi
     // Remove from retired list
     for (ctx.retired.items, 0..) |r, i| {
         if (r == conn) {
-            _ = ctx.retired.orderedRemove(i);
+            // PERF-P2b: O(1) removal — retired list order is not significant.
+            _ = ctx.retired.swapRemove(i);
             break;
         }
     }

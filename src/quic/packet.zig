@@ -11,9 +11,10 @@ const builtin = @import("builtin");
 const logger = @import("quic_logger");
 
 // Phase57 debug state: only active in test builds to avoid global mutable state in production.
+// SEC-12: Use threadlocal to prevent data races in multi-threaded contexts.
 const phase57_dump_max: u8 = 3;
-var phase57_dump_count: u8 = if (builtin.is_test) 0 else 0;
-var phase57_attempt_label: []const u8 = "UNSET";
+threadlocal var phase57_dump_count: u8 = 0;
+threadlocal var phase57_attempt_label: []const u8 = "UNSET";
 pub fn phase57SetAttemptLabel(label: []const u8) void {
     if (!builtin.is_test) return;
     phase57_attempt_label = label;

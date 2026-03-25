@@ -478,7 +478,8 @@ pub const Endpoint = struct {
     /// Pop most recent captured outbound packet if present.
     pub fn capturePop(self: *Endpoint) ?OutCaptured {
         if (self.captures.items.len == 0) return null;
-        return self.captures.orderedRemove(0);
+        // PERF-P2b: O(1) removal — capture order is not significant.
+        return self.captures.swapRemove(0);
     }
 
     /// Internal: convert socket_t to isize for Connection.sock_fd storage.
@@ -1325,17 +1326,6 @@ pub const Endpoint = struct {
             // Advance to next packet
             remaining = remaining[packet_len..];
         }
-    }
-
-    /// Replaced processIncomingDatagram - kept for reference during Phase 13
-    fn _OLD_processIncomingDatagram_REPLACED(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8, ecn_bits: ?u8) void {
-        _ = self;
-        _ = peer;
-        _ = bytes;
-        _ = ecn_bits;
-        // This function has been replaced by the thin coordinator above.
-        // The old implementation (1,708 lines) is preserved in endpoint.zig.phase13_p2_4_backup
-        @panic("OLD processIncomingDatagram called - should never happen");
     }
 
     /// resets validation state and counters, installs new map key, and triggers validation

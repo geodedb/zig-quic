@@ -136,10 +136,9 @@ pub fn close(conn: *Connection, app_error_code: u64, reason: []const u8) !void {
     return conn.sendConnectionClose(app_error_code, reason);
 }
 
-/// Close a connection with an error code but empty reason phrase.
+/// Deprecated: Use `close(conn, error_code, "")` instead.
 ///
-/// This variant mirrors RFC 9000 §19.19 recommendation to permit an empty
-/// reason phrase when the application does not provide user-facing text.
+/// Close a connection with an error code and empty reason phrase.
 pub fn closeConnection(conn: *Connection, app_error_code: u64) !void {
     return conn.sendConnectionClose(app_error_code, "");
 }
@@ -319,10 +318,10 @@ pub fn readStream(conn: *Connection, stream_id: QuicStreamId, buffer: []u8) !usi
     return conn.readStream(stream_id, buffer);
 }
 
-/// Test if the identified stream has received FIN in both directions.
+/// Test if the identified stream has received FIN from the peer (RX side only).
 ///
-/// RFC 9000 §3.1 defines half-close semantics using FIN bits. We surface that so
-/// applications can observe half-closed streams and drain outstanding data.
+/// RFC 9000 §3.1 defines half-close semantics using FIN bits. This checks
+/// whether the peer's FIN has been received, not whether we have sent ours.
 pub fn isStreamFinished(conn: *Connection, stream_id: QuicStreamId) bool {
     return conn.isStreamFinished(stream_id);
 }
@@ -351,7 +350,8 @@ pub fn destroy(ep: *QuicEndpoint, conn: *Connection) void {
     var i: usize = 0;
     while (i < ep.accepted.items.len) : (i += 1) {
         if (ep.accepted.items[i] == conn) {
-            _ = ep.accepted.orderedRemove(i);
+            // PERF-P2b: O(1) removal — accepted list order is not significant.
+            _ = ep.accepted.swapRemove(i);
             break;
         }
     }

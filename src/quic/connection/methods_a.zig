@@ -26,6 +26,10 @@ pub fn bind(comptime Connection: type) type {
             client_random: *const [32]u8,
             secret: *const ks.Secret,
         ) bool {
+            // SF-024: Compile out the entire keylog path in release builds.
+            // Only Debug and test builds may export key material.
+            if (comptime @import("builtin").mode != .Debug and !@import("builtin").is_test) return false;
+
             const keylog_path = std.process.getEnvVarOwned(self.allocator.*, "SSLKEYLOGFILE") catch |err| switch (err) {
                 error.EnvironmentVariableNotFound => return false,
                 else => {

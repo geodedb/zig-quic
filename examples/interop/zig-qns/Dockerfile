@@ -25,4 +25,7 @@ RUN chmod +x /run_endpoint.sh /usr/local/bin/qns-endpoint
 
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 CMD pgrep -x qns-endpoint >/dev/null || exit 1
 
+# SF-026: Drop to unprivileged user for the endpoint process.
+USER quic
+
 ENTRYPOINT ["/run_endpoint.sh"]

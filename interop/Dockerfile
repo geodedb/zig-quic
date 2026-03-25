@@ -33,4 +33,8 @@ RUN printf "zig-quic-%s-%s\n" "${BUILD_DATE:-$(date -u +%Y%m%d)}" "${VCS_REF}" >
 
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 CMD pgrep -x qns-endpoint >/dev/null || exit 1
 
+# SF-026: Drop to unprivileged user for the endpoint process.
+# NOTE: /run_endpoint.sh may need to call /setup.sh as root first via gosu/su-exec.
+USER quic
+
 ENTRYPOINT ["/run_endpoint.sh"]

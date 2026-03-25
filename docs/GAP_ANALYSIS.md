@@ -11,9 +11,9 @@ Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
 |----------|------:|-------------------:|----------------:|--------:|-----:|
 | Critical | 4 | 3 | 0 | 0 | 1 |
 | High | 24 | 8 | 2 | 0 | 14 |
-| Medium | 19 | 9 | 0 | 0 | 10 |
-| Low | 11 | 7 | 2 | 0 | 2 |
-| **Total** | **58** | **27** | **4** | **0** | **27** |
+| Medium | 19 | 11 | 0 | 0 | 8 |
+| Low | 11 | 8 | 2 | 0 | 1 |
+| **Total** | **58** | **30** | **4** | **0** | **24** |
 
 **HTTP/3 adapter requirements:** 4 open items (1 High, 2 Medium, 1 Low) -- see [HTTP/3 Adapter Requirements](#http3-adapter-requirements) below.
 **Phase 4 audit:** 13 open gaps (1 Critical, 10 High, 2 Medium, 0 Low) -- see [Phase 4 Audit](#phase-4-audit----2026-03-24) below. 2 gaps closed in Phase 4 closure (2026-03-25).
@@ -24,9 +24,9 @@ Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
 
 1. **Pre-Retry connection allocation exhaustion (#188, High, Risk 70, CONFIDENTIAL)** -- Full Connection+TLS (~80-100KB) allocated before Retry validation. 10K spoofed Initials = ~1GB DoS. Internet-facing, pre-auth.
 2. **Crypto audit not performed (GAP-0007, Critical)** -- ~~Non-timing-safe comparisons on cryptographic material (packet.zig:1259, Retry integrity tag)~~ (FIXED 2026-03-25, GAP-0018). ~~Anti-replay cache never wired to endpoint (0-RTT replay possible)~~ (FIXED 2026-03-25). ~~`catch unreachable` on page_allocator in crypto_quic.zig:187-189 (remote DoS vector)~~ (FIXED 2026-03-25, SF-016). Remaining: AEAD nonce test vectors, key update verification.
-3. **SSLKEYLOGFILE ungated in production builds (#189, Medium, Risk 55, CONFIDENTIAL)** -- TLS session keys written to disk via env var in all build modes. No `builtin.mode` gate.
-4. **Congestion window check is log-only (#190, Medium, Risk 50)** -- `[CC-OVERRIDE]` log but no send blocking when `bytes_in_flight >= cwnd`. RFC 9002 S7 violation + amplification risk.
-5. **Two conflicting CUBIC implementations (GAP-0017, High)** -- `recovery.zig:128` placeholder vs `recovery/congestion.zig:62` real CUBIC. Production code path may use wrong implementation.
+3. **Two conflicting CUBIC implementations (GAP-0017, High)** -- `recovery.zig:128` placeholder vs `recovery/congestion.zig:62` real CUBIC. Production code path may use wrong implementation.
+4. ~~**SSLKEYLOGFILE ungated in production builds (#189)**~~ -- FIXED (SF-024, 2026-03-25): Gated behind `comptime builtin.mode` check.
+5. ~~**Congestion window check is log-only (#190)**~~ -- FIXED (SF-025, 2026-03-25): `writeStream` returns 0 when `bytes_in_flight >= cwnd`.
 
 ## Stack-Ranked Findings
 
@@ -55,10 +55,10 @@ Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
 | 21 | Low | 16 | Dockerfiles create non-root user but never switch — `USER quic` instruction missing; entrypoint runs as root (`confidence::confirmed`) | Containers | CWE-250 | `interop/Dockerfile`, `examples/interop/zig-qns/Dockerfile` | -- | FIXED: run_endpoint.sh drops privileges to quic user at runtime | Interop | 2026-03-22 | Closed / Implemented |
 | 22 | Critical | 80 | mTLS parameters discarded in handshake wiring — `createTlsContext()` accepted `request_client_cert`, `client_cert_der`, `client_key_der` but discarded them with `_ = ...`; the `tls13.Config` struct literal never set these fields, so operators who configure mTLS believe it is active while clients connect without certificates (`confidence::confirmed`) | Application | CWE-295 | `src/quic/endpoint/handshake_integration.zig:334-336` | #118 | FIXED: Removed three `_ = ...` discard lines and added `.request_client_cert`, `.client_cert_der`, `.client_key_der` to `tls13.Config` struct literal | Core QUIC | 2026-03-24 | Closed / Implemented |
 | 23 | High | 70 | Pre-Retry connection allocation exhaustion — full Connection+TLS (~80-100KB) allocated before Retry validation; 10K limit = ~1GB DoS (`confidence::confirmed`, CONFIDENTIAL) | Transport | CWE-770 / OWASP A05:2021 | `src/quic/endpoint/incoming.zig:432-470` | [#188](https://gitlab.com/devnw/zig/quic/-/issues/188) | Retry-first architecture: send Retry from stack state, allocate Connection only after valid token | Core QUIC | 2026-04-24 | Open |
-| 24 | Medium | 55 | SSLKEYLOGFILE ungated in production builds — env var writes all TLS session keys to disk in ReleaseSafe/Fast/Small (`confidence::confirmed`, CONFIDENTIAL) | Application | CWE-532, CWE-312 / OWASP A02:2021 | `src/quic/connection/methods_a.zig:29` | [#189](https://gitlab.com/devnw/zig/quic/-/issues/189) | Gate behind `builtin.mode == .Debug` or explicit config flag | Core QUIC | 2026-06-23 | Open |
-| 25 | Medium | 50 | Unenforced cwnd + CC override — cwnd check is log-only (`[CC-OVERRIDE]`), server sends regardless; RFC 9002 S7 violation + reflective amplification risk (`confidence::confirmed`) | Transport | CWE-770, CWE-406 / OWASP A04:2021 | `src/quic/connection/methods_b.zig:411-416` | [#190](https://gitlab.com/devnw/zig/quic/-/issues/190) | Enforce cwnd: return error or 0 when `bytes_in_flight >= cwnd` | Core QUIC | 2026-06-23 | Open |
-| 26 | Low | 8 | Docker test containers run as root — `USER` directive missing after setup phase (`confidence::confirmed`) | Containers | CWE-250 / OWASP A05:2021 | `interop/Dockerfile`, `examples/interop/zig-qns/Dockerfile` | [#191](https://gitlab.com/devnw/zig/quic/-/issues/191) | Add `USER quic` after setup phase | Interop | 2026-09-21 | Open |
-| 27 | Info | 10 | @panic in dead code — `endpoint.zig:1338` unreachable code with `@panic("OLD processIncomingDatagram called")` (`confidence::confirmed`) | Transport | CWE-561 | `src/quic/endpoint.zig:1338` | -- | Remove dead function or replace @panic with @compileError | Core QUIC | Backlog | Open |
+| 24 | Medium | 55 | SSLKEYLOGFILE ungated in production builds — env var writes all TLS session keys to disk in ReleaseSafe/Fast/Small (`confidence::confirmed`, CONFIDENTIAL) | Application | CWE-532, CWE-312 / OWASP A02:2021 | `src/quic/connection/methods_a.zig:29` | [#189](https://gitlab.com/devnw/zig/quic/-/issues/189) | FIXED (SF-024): Gated behind `comptime builtin.mode != .Debug and !builtin.is_test` — keylog path compiled out in release builds | Core QUIC | 2026-03-25 | Closed / Implemented |
+| 25 | Medium | 50 | Unenforced cwnd + CC override — cwnd check is log-only (`[CC-OVERRIDE]`), server sends regardless; RFC 9002 S7 violation + reflective amplification risk (`confidence::confirmed`) | Transport | CWE-770, CWE-406 / OWASP A04:2021 | `src/quic/connection/methods_b.zig:411-416` | [#190](https://gitlab.com/devnw/zig/quic/-/issues/190) | FIXED (SF-025): `writeStream` returns 0 when `bytes_in_flight >= cwnd`, enforcing congestion window | Core QUIC | 2026-03-25 | Closed / Implemented |
+| 26 | Low | 8 | Docker test containers run as root — `USER` directive missing after setup phase (`confidence::confirmed`) | Containers | CWE-250 / OWASP A05:2021 | `interop/Dockerfile`, `examples/interop/zig-qns/Dockerfile` | [#191](https://gitlab.com/devnw/zig/quic/-/issues/191) | FIXED (SF-026): Added `USER quic` directive before ENTRYPOINT in both Dockerfiles | Interop | 2026-03-25 | Closed / Implemented |
+| 27 | Info | 10 | @panic in dead code — `endpoint.zig:1338` unreachable code with `@panic("OLD processIncomingDatagram called")` (`confidence::confirmed`) | Transport | CWE-561 | `src/quic/endpoint.zig:1338` | -- | FIXED (SF-027): Removed 11-line dead function `_OLD_processIncomingDatagram_REPLACED` | Core QUIC | 2026-03-25 | Closed / Implemented |
 
 ## Findings By Area
 
@@ -67,7 +67,7 @@ Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
 - #56: Closed / Implemented.
 - Rank 14: Constant-time stateless reset token comparison. **Closed / Implemented** (2026-03-22).
 - Rank 22 (#118): mTLS parameters discarded in handshake wiring — `createTlsContext()` silently dropped `request_client_cert`, `client_cert_der`, `client_key_der`. **Closed / Implemented** (2026-03-24).
-- Rank 24 (#189, CONFIDENTIAL): SSLKEYLOGFILE writes TLS session keys in production builds. **Open.**
+- Rank 24 (#189, CONFIDENTIAL): SSLKEYLOGFILE writes TLS session keys in production builds. **Closed / Implemented** (2026-03-25, SF-024).
 
 ### Algorithms (Geode Extraction — 2026-03-22 Audit)
 - Rank 12: HashMap key aliasing fixed (`put(conn.id, conn)` + CID validation). **Closed / Implemented** (2026-03-22).
@@ -1004,7 +1004,7 @@ Phase 5 security-reviewer and security-scanner audit identified 5 findings (4 ne
 - **Severity:** Medium
 - **Risk Score:** 55 (Impact 4 x Likelihood 3.4 x 4)
 - **Issue:** [#189](https://gitlab.com/devnw/zig/quic/-/issues/189) (confidential)
-- **Status:** Open
+- **Status:** Closed (2026-03-25)
 - **SLA:** 90 days (2026-06-23)
 - **CWE:** CWE-532 (Insertion of Sensitive Information into Log File), CWE-312 (Cleartext Storage)
 - **OWASP:** A02:2021 Cryptographic Failures
@@ -1012,6 +1012,7 @@ Phase 5 security-reviewer and security-scanner audit identified 5 findings (4 ne
 - **Evidence:** `src/quic/connection/methods_a.zig:29` -- `std.process.getEnvVarOwned(..., "SSLKEYLOGFILE")` with no build-mode gate
 - **How to verify:** Set `SSLKEYLOGFILE=/tmp/test.log`, run ReleaseSafe binary, check if file is created with session keys
 - **Fix:** Gate behind `builtin.mode == .Debug` or explicit `QuicConfig.enable_keylog` flag
+- **Resolution:** Added `comptime` guard at top of `appendKeyLogLine()` that returns `false` in non-Debug, non-test builds. The entire keylog code path is compiled out in release builds.
 
 ### SF-025: Unenforced cwnd + CC override
 - **Severity:** Medium

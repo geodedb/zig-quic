@@ -617,16 +617,19 @@ pub fn build(b: *std.Build) void {
 
     // QNS endpoint binary for interop docker image
     // Minimal HTTP/3 shim module (kept separate from QUIC core)
+    const h3_varint_mod = mkModule(b, "src/h3/varint.zig");
     const h3_server_mod = mkModule(b, "src/h3/server.zig");
     h3_server_mod.addImport("quic_api", quic_api_mod);
     h3_server_mod.addImport("quic_conn", quic_conn_mod);
+    h3_server_mod.addImport("h3_varint", h3_varint_mod);
     // Export for dependents as named imports
     const h3_mod = b.addModule("h3_server", .{ .root_source_file = b.path("src/h3/server.zig") });
     h3_mod.addImport("quic_api", quic_api_mod);
     h3_mod.addImport("quic_conn", quic_conn_mod);
+    h3_mod.addImport("h3_varint", h3_varint_mod);
     const h3_client_mod = b.addModule("h3_client", .{ .root_source_file = b.path("src/h3/client.zig") });
     h3_client_mod.addImport("quic_api", quic_api_mod);
-    h3_client_mod.addImport("quic_api", quic_api_mod);
+    h3_client_mod.addImport("h3_varint", h3_varint_mod);
     quic_mod.addImport("h3_server", h3_server_mod);
     quic_mod.addImport("h3_client", h3_client_mod);
 

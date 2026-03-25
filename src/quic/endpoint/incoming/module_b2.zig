@@ -83,7 +83,9 @@ pub fn processFrames(
             // unknown type as a connection error of type FRAME_ENCODING_ERROR."
             // Signal CONNECTION_CLOSE with FRAME_ENCODING_ERROR (0x07) for any
             // frame decode failure (Unsupported, Truncated, FrameTooLarge).
-            conn.sendConnectionClose(0x07, "FRAME_ENCODING_ERROR") catch {};
+            conn.sendConnectionClose(0x07, "FRAME_ENCODING_ERROR") catch |close_err| {
+                logger.debugPrint("Failed to send CONNECTION_CLOSE for frame error: {}\n", .{close_err});
+            };
             conn.closed = true;
             return FrameProcessResult{ .saw_close = true };
         };

@@ -403,17 +403,16 @@ pub fn bind(comptime Connection: type) type {
             // Allow to_send=0 ONLY if fin=true (FIN-only frame)
             if (to_send == 0 and !fin) return error.FlowControlBlocked;
 
-            // PHASE 57 PART 8: Check congestion control before sending (RFC 9002 §7)
+            // SF-025 / RFC 9002 §7: Enforce congestion window before sending.
             // msquic: forks/msquic/src/core/cubic.c:189 - if (BytesInFlight >= CongestionWindow) SendAllowance = 0
             const cc_state = self.rec.getCongestionState();
             const bytes_in_flight = cc_state.bytes_in_flight;
             const cwnd = cc_state.cwnd;
             if (bytes_in_flight >= cwnd) {
-                logger.debugPrint("[CC-OVERRIDE] bytes_in_flight={} >= cwnd={} (allowing send for interop)\n", .{ bytes_in_flight, cwnd });
+                logger.debugPrint("[CC-BLOCKED] bytes_in_flight={} >= cwnd={}, deferring send\n", .{ bytes_in_flight, cwnd });
+                return 0;
             }
-            if (bytes_in_flight < cwnd) {
-                logger.debugPrint("[CC-OK] bytes_in_flight={} < cwnd={}, available={}\n", .{ bytes_in_flight, cwnd, cwnd - bytes_in_flight });
-            }
+            logger.debugPrint("[CC-OK] bytes_in_flight={} < cwnd={}, available={}\n", .{ bytes_in_flight, cwnd, cwnd - bytes_in_flight });
 
             var frame_storage: [2048]u8 = undefined;
             var frame_stream = std.io.fixedBufferStream(&frame_storage);
@@ -894,10 +893,6 @@ pub fn bind(comptime Connection: type) type {
                 self.pto_app_id = ep.scheduleConnPto(self, .PtoApp, delay_ms) catch 0;
             }
         }
-
-        /// DPLPMTUD path MTU discovery state machine (RFC 9000 §14). Tracks probing lifecycle
-        /// from Disabled -> ProbeStart (first upward probe) -> ProbeSearch (iterative increases).
-        pub const PmtudState = enum { Disabled, ProbeStart, ProbeSearch };
 
         /// Begin DPLPMTUD probing from base (1200) upward. Requires app_tx_keys.
         /// Begin DPLPMTUD search phase (send first probe) if enabled.
