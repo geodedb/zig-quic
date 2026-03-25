@@ -5,7 +5,7 @@
 | **Repository** | `gitlab.com/devnw/zig/quic` |
 | **Scope** | Phase 3 security review of core QUIC transport, TLS integration, frame parsing, and CI/CD |
 | **Reviewer** | security-reviewer agent (Phase 3) |
-| **Last updated** | 2026-03-24 |
+| **Last updated** | 2026-03-25 |
 | **Status** | Active -- issues tracked on GitLab |
 
 ---
@@ -16,18 +16,18 @@
 |----------|------|-----------------|----------------------|-------|
 | Critical | 0 | 0 | 0 | 0 |
 | High | 0 | 1 | 3 | 4 |
-| Medium | 1 | 0 | 6 | 7 |
+| Medium | 0 | 0 | 7 | 7 |
 | Low | 3 | 0 | 0 | 3 |
-| **Total** | **4** | **1** | **9** | **14** |
+| **Total** | **3** | **1** | **10** | **14** |
 
-Notes: #111 (High, frame alloc caps) partially fixed in Batch B. #114 (High, allow_insecure) closed -- audit confirmed flag only controls TLS certificate validation; Retry integrity, CID matching, and amplification protection are unconditionally enforced. #118 (High, mTLS wiring) closed in commit bf8cf7f.
+Notes: #111 (High, frame alloc caps) partially fixed in Batch B. #114 (High, allow_insecure) closed -- audit confirmed flag only controls TLS certificate validation; Retry integrity, CID matching, and amplification protection are unconditionally enforced. #118 (High, mTLS wiring) closed in commit bf8cf7f. Phase 4 closure (2026-03-25): SF-015 anti-replay wired, SF-016 catch unreachable replaced, SF-017 Go binary removed, SF-018 secureZero, SF-019 unknown frames, SF-020 amplification consolidation, SF-021 ct_empty data race, SF-022 CID validation, GAP-0018 timing-safe Retry tag.
 
 ### Top Residual Risks
 
 1. **Unbounded heap allocation from wire varint (OOM DoS)** -- Risk 80 -- Partially fixed (Batch B caps); full mitigation may need further hardening. (#111)
-2. **No 0-RTT anti-replay detection** -- Risk 36 -- RFC 8446 S8 / RFC 9001 S9.2 require anti-replay for 0-RTT data. (#121)
-3. **Global mutable state in crypto/debug code** -- Risk 16 -- Thread safety risk from unsynchronized debug variables. (Low)
-4. **Test certificates in Docker image** -- Risk 12 -- Ephemeral cert generation preferred. (Low)
+2. **Global mutable state in crypto/debug code** -- Risk 16 -- Thread safety risk from unsynchronized debug variables. (Low)
+3. **Test certificates in Docker image** -- Risk 12 -- Ephemeral cert generation preferred. (Low)
+4. **macOS CI downloads without hash verification** -- Risk 8 -- Pin download URLs and verify SHA-256 checksum. (Low)
 
 ---
 
@@ -41,7 +41,7 @@ Notes: #111 (High, frame alloc caps) partially fixed in Batch B. #114 (High, all
 | 4 | High | 48 | mTLS `request_client_cert` silently ignored | handshake | CWE-295 / A07:2021 | `handshake_integration.zig:334-336` | [#118](https://gitlab.com/devnw/zig/quic/-/issues/118) | Removed `_ = ...` discards; wired `request_client_cert`, `client_cert_der`, `client_key_der` into `tls13.Config` struct literal (commit bf8cf7f) | Core QUIC | 2026-03-24 | Closed / Implemented |
 | 5 | Medium | 48 | `unreachable` on CID > 20 bytes -- server crash | connection | CWE-617 / A06:2021 | `reset_token.zig:10`, `connection_id.zig:38`, `methods_c.zig:619` | [#119](https://gitlab.com/devnw/zig/quic/-/issues/119) | Replaced `unreachable` with `error.InvalidCidLength` (Batch A, commit 7034861) | Core QUIC | 2026-03-24 | Closed / Implemented |
 | 6 | Medium | 48 | Retry integrity tag function signature mismatch -- broken retry | server | CWE-628 / A06:2021 | `server.zig:196` | [#120](https://gitlab.com/devnw/zig/quic/-/issues/120) | Fixed to 3-arg call (Batch A, commit 7034861) | Core QUIC | 2026-03-24 | Closed / Implemented |
-| 7 | Medium | 36 | No 0-RTT anti-replay detection | connection | CWE-294 / A08:2021 | `methods_a.zig:971-973` | [#121](https://gitlab.com/devnw/zig/quic/-/issues/121) | Implement server-side anti-replay cache (ticket age, strike register, or bloom filter) | TBD | 2026-06-22 | Open |
+| 7 | Medium | 36 | No 0-RTT anti-replay detection | connection | CWE-294 / A08:2021 | `methods_a.zig:971-973` | [#121](https://gitlab.com/devnw/zig/quic/-/issues/121) | AntiReplayCache wired from Endpoint.init() to connections via RxContext. accept0RTT() rejects replay when cache present. 5 endpoint-level tests. | Core QUIC | 2026-03-25 | Closed / Implemented |
 | 8 | Medium | 36 | Key material not zeroed on connection teardown | conn | CWE-244 / A02:2021 | `conn.zig:1227-1283` | [#122](https://gitlab.com/devnw/zig/quic/-/issues/122) | Added `@memset` before free (Batch B, commit f470ea5) | Core QUIC | 2026-03-24 | Closed / Implemented |
 | 9 | Medium | 32 | ACK range count silently truncated to 16 -- CPU exhaustion | frame/ack | CWE-130 / A06:2021 | `frame/ack.zig:137-144` | [#123](https://gitlab.com/devnw/zig/quic/-/issues/123) | Buffer increased from 16 to 64 ranges; hard ceiling at 256; returns error.TooManyAckRanges instead of silent truncation | TBD | 2026-06-22 | Closed / Implemented |
 | 10 | Medium | 32 | Localhost exemption from amplification protection | conn / incoming | CWE-290 / A05:2021 | `conn.zig:1542`, `incoming.zig:544-558` | [#124](https://gitlab.com/devnw/zig/quic/-/issues/124) | Added `exempt_localhost` config flag (default true); `overAmplification()` and `processInitial()` now check the flag | Core QUIC | 2026-03-24 | Closed / Implemented |
@@ -423,3 +423,20 @@ if (out_len < ranges_buf.len) {
 5. **Security issue tracking**: Previous security reviews (Phase 1, Phase 2) have already identified and tracked 30+ security findings, demonstrating an active security posture.
 6. **Supply chain awareness**: SBOM scanning, dependency pinning, and secret detection are configured in the CI pipeline (though some have gaps noted in prior findings).
 7. **Separation of concerns**: TLS integration is cleanly separated via `handshake_integration.zig`, making it possible to audit the TLS boundary independently.
+
+---
+
+## Phase 4 Gap Closure -- 2026-03-25
+
+### Closed Items
+- **SF-015 (#145):** Anti-replay cache wired from Endpoint.init() to connections -- Closed. `AntiReplayCache` heap-allocated when `role == Server && zero_rtt_anti_replay == true`; cache passed through `RxContext`; `accept0RTT()` rejects replays. 5 tests added.
+- **SF-016 (#153):** `catch unreachable` on page_allocator in crypto_quic.zig -- Closed. Replaced with 2048-byte stack buffer in `computeRetryIntegrityTag`. No more remote DoS vector.
+- **SF-017 (#157):** Go interop binary with Critical CVEs -- Closed. Binary removed from repository. Added to `.gitignore`.
+- **SF-018:** Key material `@memset` replaced with `std.crypto.secureZero` -- Closed. 36 call sites across `conn.zig`, `methods_b.zig`, `module_b.zig` use volatile-store `secureZero` preventing compiler dead-store elimination.
+- **SF-019:** Unknown frames now signal CONNECTION_CLOSE with FRAME_ENCODING_ERROR (0x07) -- Closed. `module_b2.zig:processFrames` sends FRAME_ENCODING_ERROR instead of silently breaking, per RFC 9000 S12.4.
+- **SF-020:** `canSendUnderAmplification` now checks `exempt_localhost` -- Closed. Consolidated with `overAmplification()` behavior. `amplification.zig` documented as deprecated/unused.
+- **SF-021 (#117):** `ct_empty` global mutable data race -- Closed. Replaced with function-local variable in `crypto_quic.zig`.
+- **SF-022:** CID >20 byte validation at parse boundary -- Closed. Validation occurs at frame decode before reaching connection state.
+- **GAP-0018 (#149):** Retry integrity tag timing-safe comparison -- Closed. Changed to `std.crypto.timing_safe.eql` in `packet.zig`.
+- **GAP-0047 (#155):** frame_handler comment corrected -- Closed. Replaced `else => .{}` with explicit `.padding => .{}` and `.crypto => .{}` arms.
+- **#121:** 0-RTT anti-replay detection -- Closed. `AntiReplayCache` wired end-to-end; `accept0RTT()` rejects replayed 0-RTT data.

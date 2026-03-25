@@ -22,4 +22,8 @@ pub const RxContext = struct {
     endpoint_ctx: ?*anyopaque = null,
     generated_token_secret: *const [32]u8 = undefined,
     max_connections: usize = 10000,
+    // Server-side 0-RTT anti-replay cache (RFC 8446 S8, RFC 9001 S9.2).
+    // Shared across all server connections on this endpoint.
+    // Null when anti-replay is disabled or endpoint is a client.
+    anti_replay_cache: ?*conn_mod.AntiReplayCache = null,
 };

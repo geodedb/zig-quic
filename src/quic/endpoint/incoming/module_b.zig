@@ -935,9 +935,10 @@ pub fn promoteToNextKeys(
 
     // Preserve current keys as previous (zeroize any older prev first)
     if (conn.rx_prev_keys) |*old_prev| {
-        @memset(&old_prev.key, 0);
-        @memset(&old_prev.iv, 0);
-        @memset(&old_prev.hp, 0);
+        const sz = std.crypto.secureZero;
+        sz(u8, &old_prev.key);
+        sz(u8, &old_prev.iv);
+        sz(u8, &old_prev.hp);
     }
     conn.rx_prev_keys = conn.app_rx_keys;
     conn.rx_prev_allow = 16; // bounded window for reordering
@@ -979,18 +980,20 @@ pub fn decrementPrevKeyAllowance(conn: *conn_mod.Connection) void {
         conn.rx_prev_allow -= 1;
         if (conn.rx_prev_allow == 0) {
             if (conn.rx_prev_keys) |*to_zero| {
-                @memset(&to_zero.key, 0);
-                @memset(&to_zero.iv, 0);
-                @memset(&to_zero.hp, 0);
+                const sz = std.crypto.secureZero;
+                sz(u8, &to_zero.key);
+                sz(u8, &to_zero.iv);
+                sz(u8, &to_zero.hp);
             }
             conn.rx_prev_keys = null;
         }
     } else {
         // Safety: if allowance already zero, drop prev immediately
         if (conn.rx_prev_keys) |*to_zero2| {
-            @memset(&to_zero2.key, 0);
-            @memset(&to_zero2.iv, 0);
-            @memset(&to_zero2.hp, 0);
+            const sz = std.crypto.secureZero;
+            sz(u8, &to_zero2.key);
+            sz(u8, &to_zero2.iv);
+            sz(u8, &to_zero2.hp);
         }
         conn.rx_prev_keys = null;
     }

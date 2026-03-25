@@ -204,6 +204,9 @@ pub fn parseInitialHeader(bytes: []const u8) !InitialHeader {
     const dcid_len = bytes[i];
     i += 1;
 
+    // RFC 9000 §17.2: CID length MUST NOT exceed 20 bytes (SF-022)
+    if (dcid_len > 20) return error.ProtocolViolation;
+
     // Parse DCID bytes (0-20 bytes per RFC 9000 §17.2)
     if (i + dcid_len > bytes.len) return error.InvalidPacket;
     const dcid = bytes[i .. i + dcid_len];
@@ -213,6 +216,9 @@ pub fn parseInitialHeader(bytes: []const u8) !InitialHeader {
     if (i >= bytes.len) return error.InvalidPacket;
     const scid_len = bytes[i];
     i += 1;
+
+    // RFC 9000 §17.2: CID length MUST NOT exceed 20 bytes (SF-022)
+    if (scid_len > 20) return error.ProtocolViolation;
 
     // Parse SCID bytes (0-20 bytes per RFC 9000 §17.2)
     if (i + scid_len > bytes.len) return error.InvalidPacket;

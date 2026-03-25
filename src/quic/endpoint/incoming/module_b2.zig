@@ -79,7 +79,13 @@ pub fn processFrames(
         const first_byte = if (payload[offset..].len > 0) payload[offset] else 0;
         const fr = frame.decodeOne(payload[offset..]) catch |err| {
             logger.debugPrint("Frame decode error at offset {}: {} (first_byte=0x{X:0>2})\n", .{ offset, err, first_byte });
-            break;
+            // RFC 9000 §12.4: "An endpoint MUST treat receipt of a frame of
+            // unknown type as a connection error of type FRAME_ENCODING_ERROR."
+            // Signal CONNECTION_CLOSE with FRAME_ENCODING_ERROR (0x07) for any
+            // frame decode failure (Unsupported, Truncated, FrameTooLarge).
+            conn.sendConnectionClose(0x07, "FRAME_ENCODING_ERROR") catch {};
+            conn.closed = true;
+            return FrameProcessResult{ .saw_close = true };
         };
         logger.debugPrint("Decoded frame at offset {}: type={s}\n", .{ offset, @tagName(fr.f) });
         if (fr.f == .stream) {

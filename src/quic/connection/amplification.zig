@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2024-2025 CodePros
 
-//! Anti-amplification limit tracking.
+//! Anti-amplification limit tracking (standalone/unused).
+//!
+//! DEPRECATED: The canonical amplification logic lives on Connection in conn.zig
+//! (canSendUnderAmplification, overAmplification, addRxUnvalidated, addTxUnvalidated).
+//! Those methods include localhost exemption and use division-based overflow-safe
+//! arithmetic.  This module is retained only for the re-exported AmplificationLimits
+//! type in connection.zig; its free functions are not called anywhere.
 //!
 //! RFC 9000 §8.1: Address Validation
 //! Servers must limit data sent to unvalidated addresses to prevent amplification attacks.

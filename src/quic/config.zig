@@ -15,7 +15,11 @@ const std = @import("std");
 pub const QuicConfig = struct {
     // Wire version selection (RFC 9000 §6: version negotiation)
     version: enum { v1, v2 } = .v1,
-    // Allowed ALPN protocol IDs (RFC 9001 §4.6: ALPN over TLS)
+    /// Required. Application-Layer Protocol Negotiation identifiers sent in the
+    /// TLS ClientHello/ServerHello (RFC 9001 §4.2). At least one ALPN must be
+    /// provided; the QUIC handshake will fail without it.
+    ///
+    /// Examples: `&.{"h3"}` for HTTP/3, `&.{"hq-interop"}` for interop testing.
     alpn: []const []const u8,
     // Congestion control selection (RFC 9002 §3)
     cc: enum { newreno, cubic } = .newreno,

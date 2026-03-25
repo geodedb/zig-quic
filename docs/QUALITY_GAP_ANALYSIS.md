@@ -1,6 +1,6 @@
 # Quality Gap Analysis
 
-Last updated: 2026-03-24
+Last updated: 2026-03-25
 
 Repository: `gitlab.com/devnw/zig/quic`
 Scope: Full codebase quality review (Phase 1-3)
@@ -142,3 +142,14 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 3. The `catch {}` audit (#110) is complete -- all 75 patterns in `src/quic/` eliminated. #96 (ghost connections) was fixed in Batch B with proper cleanup on map put failure.
 4. Code deduplication (#99) and the CID unreachable fix (#87) are both closed.
 5. The `dumpBytes` fix (#93) overlaps with the closed security issue #56 (debug logging leaks secrets). The #56 fix addressed the logger level; #93 addresses the separately-guarded `dumpBytes` function that bypasses the logger gate.
+
+---
+
+## Phase 4 Gap Closure -- 2026-03-25
+
+### Closed Items
+- **QF-E6:** `canSendUnderAmplification` duplicate computation -- Closed. Consolidated with `overAmplification()` to check `exempt_localhost` consistently.
+- **QF-R6:** 7 duplicate doc comments removed across `conn.zig`, `methods_a.zig`, `methods_b.zig`.
+- **QF-D6:** `trace_enabled` documented with purpose and usage context.
+- **QF-A4:** `alpn` field documented with RFC 7301 reference.
+- **GAP-0047 (#155):** frame_handler comment corrected -- Closed. Replaced catch-all `else => .{}` with explicit match arms; Zig compiler now flags unhandled variants.

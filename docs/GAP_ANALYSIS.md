@@ -1,6 +1,6 @@
 # Security GAP Analysis
 
-Last updated: 2026-03-24
+Last updated: 2026-03-25
 
 Repository: `gitlab.com/devnw/zig/quic`  
 Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
@@ -9,20 +9,22 @@ Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
 
 | Severity | Found | Closed/Implemented | Closed/Won't do | Blocked | Open |
 |----------|------:|-------------------:|----------------:|--------:|-----:|
-| Critical | 3 | 3 | 0 | 0 | 0 |
-| High | 9 | 7 | 2 | 0 | 0 |
-| Medium | 9 | 9 | 0 | 0 | 0 |
-| Low | 7 | 5 | 2 | 0 | 0 |
-| **Total** | **28** | **24** | **4** | **0** | **0** |
+| Critical | 4 | 3 | 0 | 0 | 1 |
+| High | 20 | 8 | 2 | 0 | 10 |
+| Medium | 11 | 9 | 0 | 0 | 2 |
+| Low | 8 | 6 | 2 | 0 | 0 |
+| **Total** | **43** | **26** | **4** | **0** | **13** |
 
-**HTTP/3 adapter requirements:** 4 open items (1 High, 2 Medium, 1 Low) — see [HTTP/3 Adapter Requirements](#http3-adapter-requirements) below.
+**HTTP/3 adapter requirements:** 4 open items (1 High, 2 Medium, 1 Low) -- see [HTTP/3 Adapter Requirements](#http3-adapter-requirements) below.
+**Phase 4 audit:** 13 open gaps (1 Critical, 10 High, 2 Medium, 0 Low) -- see [Phase 4 Audit](#phase-4-audit----2026-03-24) below. 2 gaps closed in Phase 4 closure (2026-03-25).
 
-### Top 4 Residual Risks
+### Top 5 Residual Risks
 
-1. **528 test stubs return SkipZigTest (GAP-0004)** -- ~61% of test stubs are placeholders with no test logic. 15 high-value stubs implemented 2026-03-24 (recovery, congestion, frame codec). Critical RFC compliance paths still have gaps.
-2. **3x duplicate algorithm implementations (Q-1)** -- `algorithms/congestion_newreno.zig`, `recovery/congestion.zig`, and `recovery.zig:88` coexist with differing APIs. Behavioral divergence risk when algorithm modules are wired to production.
-3. **Algorithm modules are dead code (Q-2)** -- All 7 Geode-extracted modules are not imported by any production path. They risk drifting from production behavior until integrated.
-4. Historical private key material remains recoverable from Git history as accepted external-control risk (`#36`, won't do).
+1. **Crypto audit not performed (GAP-0007, Critical)** -- ~~Non-timing-safe comparisons on cryptographic material (packet.zig:1259, Retry integrity tag)~~ (FIXED 2026-03-25, GAP-0018). ~~Anti-replay cache never wired to endpoint (0-RTT replay possible)~~ (FIXED 2026-03-25). ~~`catch unreachable` on page_allocator in crypto_quic.zig:187-189 (remote DoS vector)~~ (FIXED 2026-03-25, SF-016). Remaining: AEAD nonce test vectors, key update verification.
+2. **Two conflicting CUBIC implementations (GAP-0017, High)** -- `recovery.zig:128` placeholder vs `recovery/congestion.zig:62` real CUBIC. Production code path may use wrong implementation.
+3. **Connection migration unenforced (GAP-0008, High)** -- `disable_active_migration` parsed but never checked. No CID rotation on migration. Path validation has no timeout or retry.
+4. **528 test stubs return SkipZigTest (GAP-0004)** -- ~61% of test stubs are placeholders with no test logic. 15 high-value stubs implemented 2026-03-24 (recovery, congestion, frame codec). Critical RFC compliance paths still have gaps.
+5. Historical private key material remains recoverable from Git history as accepted external-control risk (`#36`, won't do).
 
 ## Stack-Ranked Findings
 
@@ -153,7 +155,7 @@ Items below are intentionally deferred due to scope, effort, or architectural pr
 | GAP-0004 Test stubs (#88) | Quality | XL (528 stubs remaining) | 15 high-value stubs implemented 2026-03-24; remaining stubs require deeper infrastructure |
 | Endpoint mutex per-connection locking | Perf | 5-10 days | Requires per-connection lock granularity change |
 | ~~#90 sent_packets ring buffer~~ | Perf | -- | **Verified** (2026-03-24): `max_sent_packets = 4096` cap with compact+enforceCapacity confirmed via 3 tests (overflow, multi-batch, per-space independence). Ring buffer migration is a future optimization; bounded ArrayList is functionally correct. |
-| ~~#121 0-RTT anti-replay~~ | Security | -- | **Closed / Implemented** (2026-03-24): Bounded, time-windowed `AntiReplayCache` in `src/quic/anti_replay.zig` with mutex for thread safety. `accept0RTT` in `methods_a.zig` checks cache when attached; rejects replays per RFC 8446 S8 / RFC 9001 S9.2. Config field `zero_rtt_anti_replay` added to `QuicConfig`. 6 inline tests cover: first-seen acceptance, duplicate rejection, window expiry re-acceptance, capacity eviction, hash consistency, and independent-hash isolation. |
+| ~~#121 0-RTT anti-replay~~ | Security | -- | **Closed / Implemented** (2026-03-24, wiring completed 2026-03-25): Bounded, time-windowed `AntiReplayCache` in `src/quic/anti_replay.zig` with mutex for thread safety. `accept0RTT` in `methods_a.zig` checks cache when attached; rejects replays per RFC 8446 S8 / RFC 9001 S9.2. Config field `zero_rtt_anti_replay` added to `QuicConfig`. Cache wired to endpoint: `Endpoint.init()` creates heap-allocated cache when server + `zero_rtt_anti_replay=true`; `processInitial()` assigns cache pointer to each new server connection. 6 inline cache tests + 5 endpoint wiring tests. |
 | ~~#111 Frame alloc caps hardening~~ | Security | -- | **Closed / Implemented** (2026-03-24): Fuzz-style tests added in `tests/test_frame_alloc_caps.zig` verifying all 7 allocation caps (CRYPTO/STREAM/DATAGRAM max_frame_data_len=65536, ACK max_ack_ranges=256, CONNECTION_CLOSE/NEW_TOKEN max_reason_or_token_len=1024, NEW_CONNECTION_ID CID>20). Each test uses failing_allocator to prove rejection before allocation. Boundary tests confirm exact-cap values succeed. |
 | ~~#114 allow_insecure Retry hardening~~ | Security | -- | **Closed / Implemented** (2026-03-24): Full audit confirmed flag only controls TLS cert validation; Retry/CID/amplification paths are unconditionally enforced. Doc comments added. |
 
@@ -571,3 +573,187 @@ Re-audit after gap closure commit `a06265d`. All 20 closure verifications passed
 | RA-5 | Low | Stale URL `github.com/spyder/zig-quic` in `scripts/interop_local.sh:36` | Changed to `gitlab.com/devnw/zig/quic` | Closed / Implemented |
 
 **Re-audit result:** 0 open findings. All previous closures verified. All new findings resolved.
+
+## Phase 4 Audit -- 2026-03-24
+
+Phase 4 gap detection identified 15 new open gaps. All are tracked as GitLab issues with the `gap` label. Includes security-reviewer critical findings (anti-replay cache unwired, `catch unreachable` on page_allocator, Go interop binary with Critical CVEs).
+
+### Phase 4 Summary
+
+| Gap-ID | Severity | Category | Issue | Status |
+|--------|----------|----------|-------|--------|
+| GAP-0007 | Critical | Security | [#136](https://gitlab.com/devnw/zig/quic/-/issues/136) | Open |
+| GAP-0008 | High | Feature | [#137](https://gitlab.com/devnw/zig/quic/-/issues/137) | Open |
+| GAP-0009 | High | Feature | [#138](https://gitlab.com/devnw/zig/quic/-/issues/138) | Open |
+| GAP-0010 | High | Feature | [#139](https://gitlab.com/devnw/zig/quic/-/issues/139) | Open |
+| GAP-0011 | High | Feature | [#140](https://gitlab.com/devnw/zig/quic/-/issues/140) | Open |
+| GAP-0012 | High | Feature | [#141](https://gitlab.com/devnw/zig/quic/-/issues/141) | Open |
+| GAP-0013 | High | Security | [#142](https://gitlab.com/devnw/zig/quic/-/issues/142) | Open |
+| GAP-0014 | High | Feature | [#143](https://gitlab.com/devnw/zig/quic/-/issues/143) | Open |
+| GAP-0015 | High | Test | [#144](https://gitlab.com/devnw/zig/quic/-/issues/144) | Open |
+| GAP-0016 | High | Test | [#146](https://gitlab.com/devnw/zig/quic/-/issues/146) | Open |
+| GAP-0017 | High | Bug | [#148](https://gitlab.com/devnw/zig/quic/-/issues/148) | Open |
+| GAP-0018 | High | Security | [#149](https://gitlab.com/devnw/zig/quic/-/issues/149) | Closed / Implemented |
+| GAP-0044 | Medium | Feature | [#151](https://gitlab.com/devnw/zig/quic/-/issues/151) | Open |
+| GAP-0045 | Medium | Feature | [#152](https://gitlab.com/devnw/zig/quic/-/issues/152) | Open |
+| GAP-0047 | Low | Bug | [#155](https://gitlab.com/devnw/zig/quic/-/issues/155) | Closed / Implemented |
+
+### Security-Reviewer Critical Findings
+
+The following critical security findings were surfaced by the security reviewer and are tracked within the relevant GAP issues above:
+
+- ~~**Anti-replay cache never wired to endpoint**~~ -- **FIXED (2026-03-25):** `Endpoint.init()` and `initWithTransport()` now create a heap-allocated `AntiReplayCache` (10s window, 10k max entries) when `role == Server` and `zero_rtt_anti_replay == true`. The cache pointer is passed through `RxContext` to `processInitial()` which assigns it to each new server connection's `anti_replay_cache` field. `accept0RTT()` in `methods_a.zig` now receives the cache and rejects replayed 0-RTT data. `Endpoint.deinit()` destroys the cache after all connections. 5 tests added covering: server cache creation, disabled-flag bypass, client-never-creates, replay rejection, and null-cache backwards-compat. (Tracked under GAP-0013.)
+- **`catch unreachable` on page_allocator in crypto_quic.zig:187-189** -- Remote attacker can trigger OOM and crash the process via allocation failure on the unchecked path. (Tracked under GAP-0013.)
+- **Go interop binary with Critical CVEs at examples/interop/main** -- Legacy Go binary has known vulnerabilities. Not a library issue but a supply chain risk for anyone running the interop suite. (Existing tracking via #59, supply chain domain.)
+
+### GAP-0007: Crypto audit not performed -- non-timing-safe comparison in packet.zig
+- **Severity:** Critical
+- **Issue:** [#136](https://gitlab.com/devnw/zig/quic/-/issues/136)
+- **Status:** Open
+- **Effort:** M
+- **Evidence:** `src/quic/packet.zig:1259` -- `std.mem.eql` used for cryptographic comparison; only 1 call to `std.crypto.timing_safe.eql` in entire codebase (`token.zig:129`)
+- **Acceptance Criteria:** All cryptographic comparisons use `std.crypto.timing_safe.eql`; audit documented with file:line evidence for each replacement
+
+### GAP-0008: Connection migration incomplete -- disable_active_migration unenforced
+- **Severity:** High
+- **Issue:** [#137](https://gitlab.com/devnw/zig/quic/-/issues/137)
+- **Status:** Open
+- **Effort:** L
+- **Evidence:** `src/quic/config.zig` -- `disable_active_migration` parsed but no enforcement code; no CID rotation on address change; path validation has no timeout/retry
+- **Acceptance Criteria:** `disable_active_migration` enforced; CID rotated on migration; path validation has PTO-based timeout and retry; integration test covers accept/reject
+
+### GAP-0009: Version negotiation incomplete -- compatible_vn dead code
+- **Severity:** High
+- **Issue:** [#138](https://gitlab.com/devnw/zig/quic/-/issues/138)
+- **Status:** Open
+- **Effort:** M
+- **Evidence:** `src/quic/config.zig` -- `compatible_vn: bool = false` field exists but no code path reads it
+- **Acceptance Criteria:** `compatible_vn` either functional (transport parameter encoding/decoding) or removed with deferral rationale documented
+
+### GAP-0010: QUIC v2 packet type remapping unverified
+- **Severity:** High
+- **Issue:** [#139](https://gitlab.com/devnw/zig/quic/-/issues/139)
+- **Status:** Open
+- **Effort:** M
+- **Evidence:** V2 packet type remapping untested; no interop test against v2 peer; v2 salt/key derivation status unknown
+- **Acceptance Criteria:** V2 packet type remapping verified with unit tests; v2 initial salt matches RFC 9369 S4 test vectors; interop test against v2 peer passes
+
+### GAP-0011: Stream state machine uses boolean flags not explicit enum
+- **Severity:** High
+- **Issue:** [#140](https://gitlab.com/devnw/zig/quic/-/issues/140)
+- **Status:** Open
+- **Effort:** L
+- **Evidence:** `src/quic/connection/stream.zig` -- boolean flags (`fin_sent`, `aborted`) approximate state machine; no `StreamState` enum
+- **Acceptance Criteria:** `StreamState` enum defined with all RFC 9000 S3 states; transitions validated; existing tests pass; one test per transition in Figures 2 and 3
+
+### GAP-0012: CID lifecycle management gaps -- no proactive issuance or rotation
+- **Severity:** High
+- **Issue:** [#141](https://gitlab.com/devnw/zig/quic/-/issues/141)
+- **Status:** Open
+- **Effort:** L
+- **Evidence:** No proactive CID issuance after handshake; no rotation strategy; `active_connection_id_limit` parsed but rotation logic absent
+- **Acceptance Criteria:** Server issues `active_connection_id_limit` CIDs after handshake; RETIRE_CONNECTION_ID triggers replacement; integration test covers migration using issued CID
+
+### GAP-0013: Full crypto hardening pass needed
+- **Severity:** High
+- **Issue:** [#142](https://gitlab.com/devnw/zig/quic/-/issues/142)
+- **Status:** Open (partial progress)
+- **Effort:** L
+- **Evidence:** Key material not zeroed on deallocation; AEAD nonce construction not verified against test vectors; key update (RFC 9001 S6) status unclear; `catch unreachable` on page_allocator in crypto_quic.zig:187-189
+- **Acceptance Criteria:** All key material zeroed before dealloc; AEAD nonce matches RFC 9001 S5.3 test vectors; key update functional and tested; `catch unreachable` replaced with proper error handling
+- **Partial resolution (2026-03-25) -- SF-018 key zeroing:** All `@memset(&k.key, 0)` / `@memset(&s.bytes, 0)` patterns on key and secret material replaced with `std.crypto.secureZero(u8, ...)` across `conn.zig:deinit()` (24 call sites), `connection/methods_b.zig:zeroKeys()` (3 call sites), and `endpoint/incoming/module_b.zig` key rotation/decrement (9 call sites). `secureZero` uses a volatile store that prevents the compiler from optimizing away the wipe. Remaining items: AEAD nonce test vectors, `catch unreachable` in crypto_quic.zig.
+- **Partial resolution (2026-03-25) -- SF-016 catch unreachable:** `page_allocator` in `computeRetryIntegrityTag` (crypto_quic.zig) replaced with 2048-byte stack buffer. `catch unreachable` removed -- no more remote DoS vector via allocation failure.
+- **Partial resolution (2026-03-25) -- SF-020 amplification consolidation:** `canSendUnderAmplification()` in `conn.zig` now checks `exempt_localhost` + `isLocalhost()` consistently with `overAmplification()`. `amplification.zig` documented as deprecated/unused.
+
+### GAP-0014: Stream state machine per RFC 9000 S3 needs explicit modeling
+- **Severity:** High
+- **Issue:** [#143](https://gitlab.com/devnw/zig/quic/-/issues/143)
+- **Status:** Open
+- **Effort:** L
+- **Evidence:** `src/quic/connection/stream.zig` -- no `StreamSendState` or `StreamRecvState` enum; transitions rely on boolean flag combinations
+- **Acceptance Criteria:** `StreamSendState` and `StreamRecvState` enums defined; transition functions with validation; all existing stream tests pass; tests cover every transition edge
+
+### GAP-0015: RESET_STREAM/STOP_SENDING needs integration tests
+- **Severity:** High
+- **Issue:** [#144](https://gitlab.com/devnw/zig/quic/-/issues/144)
+- **Status:** Open
+- **Effort:** M
+- **Evidence:** `src/quic/connection/methods_b.zig:622,665` -- handlers exist; `frame_handler.zig:487-488` -- dispatch wired; no end-to-end integration test
+- **Acceptance Criteria:** Integration tests for RESET_STREAM send/receive, STOP_SENDING triggering RESET_STREAM, and RESET_STREAM during active transfer; all pass in CI
+
+### GAP-0016: Loss detection edge cases untested
+- **Severity:** High
+- **Issue:** [#146](https://gitlab.com/devnw/zig/quic/-/issues/146)
+- **Status:** Open
+- **Effort:** M
+- **Evidence:** `src/quic/recovery/loss_detection.zig` -- time-threshold implemented; 15 test stubs done but edge cases remain (reordering, persistent congestion, multi-space, timer granularity)
+- **Acceptance Criteria:** Reordering tests for thresholds 1-4; persistent congestion boundary tests; multi-space simultaneous loss detection test; all pass in CI
+
+### GAP-0017: Two conflicting Cubic implementations
+- **Severity:** High
+- **Issue:** [#148](https://gitlab.com/devnw/zig/quic/-/issues/148)
+- **Status:** Open
+- **Effort:** M
+- **Evidence:** `src/quic/recovery.zig:128` -- placeholder CUBIC; `src/quic/recovery/congestion.zig:62` -- real CUBIC with W_cubic, computeK, W_est, beta=0.7
+- **Acceptance Criteria:** Single canonical CUBIC implementation; placeholder removed or deprecated; production code paths verified; CUBIC-specific tests cover W_cubic and beta=0.7
+
+### GAP-0018: Constant-time crypto audit -- Retry integrity tag uses std.mem.eql
+- **Severity:** High
+- **Issue:** [#149](https://gitlab.com/devnw/zig/quic/-/issues/149)
+- **Status:** Closed / Implemented
+- **Effort:** S
+- **Evidence:** Retry integrity tag comparison uses `std.mem.eql` (non-constant-time); processed before connection state exists (early attack surface)
+- **Acceptance Criteria:** Retry integrity tag uses `std.crypto.timing_safe.eql`; all pre-handshake cryptographic comparisons are constant-time; test asserts correct function
+- **Resolution (2026-03-25):** Retry integrity tag comparison changed from `std.mem.eql` to `std.crypto.timing_safe.eql` in `packet.zig`. Pre-handshake cryptographic comparison is now constant-time. Issue #149 closed.
+
+### GAP-0044: DPLPMTUD probe logic incomplete -- pmtud.zig types are dead code
+- **Severity:** Medium
+- **Issue:** [#151](https://gitlab.com/devnw/zig/quic/-/issues/151)
+- **Status:** Open
+- **Effort:** L
+- **Evidence:** `src/quic/pmtud.zig` -- types defined but never imported; `src/quic/connection/methods_b.zig` -- minimal PATH_CHALLENGE probe exists; no DPLPMTUD state machine
+- **Acceptance Criteria:** DPLPMTUD state machine per RFC 8899 S5.2; probe size escalation; dead code integrated or removed; integration test discovers >1200 byte MTU
+
+### GAP-0045: Path validation minimal -- no timeout, retry, or multi-path probing
+- **Severity:** Medium
+- **Issue:** [#152](https://gitlab.com/devnw/zig/quic/-/issues/152)
+- **Status:** Open
+- **Effort:** M
+- **Evidence:** PATH_CHALLENGE sent but no timer for PATH_RESPONSE; no retry on timeout; no concurrent path validation; no failure callback
+- **Acceptance Criteria:** PTO-based PATH_RESPONSE timeout; configurable retry limit; path validation failure triggers rollback; integration test covers timeout and retry
+
+### GAP-0047: frame_handler else comment misleading about RFC 9000 S12.4
+- **Severity:** Low
+- **Issue:** [#155](https://gitlab.com/devnw/zig/quic/-/issues/155)
+- **Status:** Closed / Implemented
+- **Effort:** S
+- **Evidence:** `src/quic/endpoint/frame_handler.zig` -- `else => {}` comment misleading about RFC 9000 S12.4; actual behavior (silently ignore unknown frames) is correct per RFC
+- **Acceptance Criteria:** Comment accurately describes RFC 9000 S12.4; states current behavior is correct; no functional code change
+- **Resolution (2026-03-25):** Replaced `else => .{}` catch-all with explicit `.padding => .{}` and `.crypto => .{}` arms in `frame_handler.zig:processFrame`. Added accurate comments explaining that PADDING is a no-op per RFC 9000 S19.1, CRYPTO is handled by the handshake integration layer, and unknown wire types are caught by `frame.decodeOne()` returning `error.Unsupported` before reaching this switch. The Zig compiler will now flag any new Frame variant that is not handled. Additionally, `module_b2.zig:processFrames` now signals CONNECTION_CLOSE with FRAME_ENCODING_ERROR (0x07) instead of silently breaking when `decodeOne` returns an error, per RFC 9000 S12.4.
+
+### Phase 4 Security-Reviewer Notes
+
+1. ~~**Anti-replay cache wiring:**~~ **RESOLVED (2026-03-25).** `Endpoint.init()` and `initWithTransport()` now create a heap-allocated `AntiReplayCache` when `role == Server && zero_rtt_anti_replay == true`. The cache is passed through `RxContext` to `processInitial()` which wires it to each new server connection. `accept0RTT()` checks the cache and rejects replayed 0-RTT data. 5 endpoint-level tests verify creation, bypass, client-skip, replay rejection, and null-cache backwards-compat.
+2. ~~**`catch unreachable` pattern:**~~ **RESOLVED (2026-03-25, SF-016).** `crypto_quic.zig:187-189` `page_allocator` replaced with 2048-byte stack buffer. `catch unreachable` removed.
+3. ~~**Go interop binary:**~~ **RESOLVED (2026-03-25, SF-017).** Binary removed from repository. Added to `.gitignore`. Users build from source via `go.mod`.
+
+### Phase 4 Gap Closure -- 2026-03-25
+
+14 items closed in this batch across security, quality, and performance domains.
+
+| ID | Title | Domain | Evidence |
+|----|-------|--------|----------|
+| SF-021 (#117) | ct_empty data race | Security | Function-local var in crypto_quic.zig |
+| SF-016 (#153) | catch unreachable on page_allocator | Security | 2048-byte stack buffer in computeRetryIntegrityTag |
+| SF-022 | CID >20 validation at parse boundary | Security | Validation in frame decode path |
+| GAP-0047 (#155) | frame_handler comment corrected | Quality | Explicit .padding/.crypto arms in processFrame |
+| GAP-0018 (#149) | Retry tag timing-safe comparison | Security | std.crypto.timing_safe.eql in packet.zig |
+| SF-017 (#157) | Go binary removed, .gitignore updated | Security | Binary deleted, .gitignore entry added |
+| QF-E6 | canSendUnderAmplification duplicate computation | Quality | Consolidated with overAmplification() |
+| QF-R6 | 7 duplicate doc comments removed | Quality | conn.zig, methods_a.zig, methods_b.zig |
+| QF-D6 | trace_enabled documented | Quality | Doc comment added |
+| QF-A4 | alpn field documented with RFC reference | Quality | RFC 7301 reference added |
+| SF-018 | 36 @memset to std.crypto.secureZero | Security | conn.zig, methods_b.zig, module_b.zig |
+| SF-019 | Unknown frames CONNECTION_CLOSE FRAME_ENCODING_ERROR | Security | module_b2.zig sends 0x07 per RFC 9000 S12.4 |
+| SF-020 | amplification canSendUnderAmplification exempt_localhost | Security | Consolidated with overAmplification() |
+| SF-015 (#145) | AntiReplayCache wired end-to-end | Security | Endpoint.init() to connections via RxContext; 5 tests |

@@ -94,6 +94,9 @@ logs/*.log
 # Local interop examples (generated/cloned, not committed)
 examples/interop/quic-network-simulator/
 
+# Compiled Go interop binary (build from source via go.mod, SF-017)
+examples/interop/main
+
 # Build artifacts — Rust target dirs and local test binaries
 test-clients/legacy-clients/rust/target/
 quic-test/

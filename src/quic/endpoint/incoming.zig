@@ -469,6 +469,10 @@ pub fn processInitial(
             config,
         ) catch return;
 
+        // Wire the shared anti-replay cache to the new server connection
+        // so that accept0RTT() can detect replayed 0-RTT data (RFC 8446 S8).
+        c_new.anti_replay_cache = ctx.anti_replay_cache;
+
         // Debug: Check peer_initial_dcid after server connection creation
         logger.debugPrint("processInitial: Server conn created, peer_initial_dcid len={}\n", .{c_new.peer_initial_dcid.len});
         if (c_new.peer_initial_dcid.len > 0) {

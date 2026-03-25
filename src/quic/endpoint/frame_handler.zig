@@ -510,7 +510,12 @@ pub fn processFrame(ctx: *FrameContext, fr: frame.Frame) !FrameResult {
             _ = su;
             return .{ .saw_ack_eliciting = true };
         },
-        else => .{}, // Unknown frames ignored (RFC 9000 §12.4)
+        // PADDING (RFC 9000 §19.1): no-op by definition.
+        // CRYPTO: handled by the handshake integration layer, not the 1-RTT frame dispatcher.
+        // Unknown wire types never reach here -- they are caught by frame.decodeOne()
+        // returning error.Unsupported before processFrame is called.
+        .padding => .{},
+        .crypto => .{},
     };
 }
 

@@ -1256,7 +1256,8 @@ pub fn verifyRetry(odcid: []const u8, retry_packet: []const u8) bool {
     const tag = retry_packet[end_wo_tag..];
     const version_v2 = (version == QUIC_V2);
     const calc = crypto.computeRetryIntegrityTag(version_v2, odcid, retry_wo_tag);
-    return std.mem.eql(u8, &calc, tag);
+    // Use constant-time comparison to prevent timing side-channel (GAP-0018/SF-018).
+    return std.crypto.timing_safe.eql([16]u8, calc, tag[0..16].*);
 }
 
 const Phase57DumpContext = struct {

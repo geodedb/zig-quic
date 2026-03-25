@@ -82,6 +82,9 @@ pub fn decodeNewConnectionId(buf: []const u8) !struct {
     const cid_len: usize = buf[i];
     i += 1;
 
+    // RFC 9000 §19.15: CID length MUST NOT exceed 20 bytes (SF-022)
+    if (cid_len > 20) return error.ProtocolViolation;
+
     // Connection ID + Token
     if (i + cid_len + 16 > buf.len) return error.Truncated;
     const cid = buf[i .. i + cid_len];

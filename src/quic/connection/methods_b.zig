@@ -8,6 +8,9 @@ const logger = @import("quic_logger");
 const builtin = @import("builtin");
 const crypto_utils = @import("crypto_utils.zig");
 
+/// Compile-time toggle for verbose method-level tracing in connection helpers.
+/// Set to `true` and rebuild (`zig build`) to emit detailed debug prints via
+/// `logger.debugPrint`. Requires recompilation; has no effect at runtime.
 const trace_enabled = false;
 inline fn trace(comptime fmt: []const u8, args: anytype) void {
     if (trace_enabled) logger.debugPrint(fmt, args);
@@ -1491,9 +1494,11 @@ pub fn bind(comptime Connection: type) type {
 
         // --- Key Update helpers ---
         pub fn zeroKeys(k: *packet.AeadKeys) void {
-            @memset(&k.key, 0);
-            @memset(&k.iv, 0);
-            @memset(&k.hp, 0);
+            // Use secureZero to prevent compiler from eliding the wipe.
+            const sz = std.crypto.secureZero;
+            sz(u8, &k.key);
+            sz(u8, &k.iv);
+            sz(u8, &k.hp);
         }
 
         pub fn maybeTriggerKeyUpdateOnSend(self: *Connection, bytes_sent: usize) void {

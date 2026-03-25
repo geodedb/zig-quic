@@ -413,6 +413,10 @@ const EcnCounter = struct {
     seen_any: bool = false,
 };
 
+/// Compile-time toggle for verbose connection-level tracing. Set to `true`
+/// and rebuild (`zig build`) to emit detailed debug prints via `logger.debugPrint`
+/// for packet processing, flow control, and state transitions. Requires
+/// recompilation; has no effect at runtime.
 const trace_enabled = false;
 inline fn trace(comptime fmt: []const u8, args: anytype) void {
     if (trace_enabled) logger.debugPrint(fmt, args);
@@ -818,24 +822,16 @@ pub const Connection = struct {
         return delay_us >> shift;
     }
 
-    /// Return whether a new Connection ID can be issued without rotation. This checks
-    /// the current `issued_cids` count against the peer's negotiated
-    /// `active_connection_id_limit` (minimum 2 per RFC 9000 §18.2). Rotation helpers
-    /// may still retire an existing non-zero sequence CID to free a slot when this
-    /// returns false.
-    /// Expand a truncated PN in Initial space using expected next PN.
     /// Expand truncated Initial-space packet number using expected next PN (RFC 9000 §12.3).
     pub fn expandPnInitial(self: *const Connection, trunc_val: u64, pn_len: u3) u64 {
         const expected: u64 = if (self.pn_initial.have_any) self.pn_initial.max + 1 else 0;
         return expandTruncatedPn(trunc_val, pn_len, expected);
     }
-    /// Expand a truncated PN in Handshake space using expected next PN.
     /// Expand truncated Handshake-space packet number using expected next PN.
     pub fn expandPnHandshake(self: *const Connection, trunc_val: u64, pn_len: u3) u64 {
         const expected: u64 = if (self.pn_handshake.have_any) self.pn_handshake.max + 1 else 0;
         return expandTruncatedPn(trunc_val, pn_len, expected);
     }
-    /// Expand a truncated PN in 1-RTT App space using expected next PN.
     /// Expand truncated Application-space packet number using expected next PN.
     pub fn expandPnApp(self: *const Connection, trunc_val: u64, pn_len: u3) u64 {
         const expected: u64 = if (self.pn_app.have_any) self.pn_app.max + 1 else 0;
@@ -859,20 +855,16 @@ pub const Connection = struct {
         self.pn_app.track(pn_full);
     }
 
-    /// Build ACK ranges for Initial/Handshake/App space using the sliding window.
-    /// Emits ACK metadata following RFC 9000 §19.3 semantics.
     /// Build ACK descriptor (largest + ranges) for Initial space using sliding window.
     pub fn buildAckInitial(self: *Connection) AckDesc {
         const d = self.pn_initial.buildAckRanges(self.ack_ranges_buf[0..]);
         return .{ .largest = self.pn_initial.max, .first_range = d.first_range, .ranges = self.ack_ranges_buf[0..d.ranges_len] };
     }
-    /// Build ACK ranges for Handshake space.
     /// Build ACK descriptor for Handshake space per RFC 9000 §19.3.
     pub fn buildAckHandshake(self: *Connection) AckDesc {
         const d = self.pn_handshake.buildAckRanges(self.ack_ranges_buf[0..]);
         return .{ .largest = self.pn_handshake.max, .first_range = d.first_range, .ranges = self.ack_ranges_buf[0..d.ranges_len] };
     }
-    /// Build ACK ranges for Application space.
     /// Build ACK descriptor for Application (1-RTT) space per RFC 9000 §19.3.
     pub fn buildAckApp(self: *Connection) AckDesc {
         const d = self.pn_app.buildAckRanges(self.ack_ranges_buf[0..]);
@@ -931,7 +923,6 @@ pub const Connection = struct {
         return sent;
     }
 
-    /// Initialize a Connection in the given role bound to a socket and peer address.
     /// Initialize connection object with allocator, role, socket fd, and peer address; sets defaults.
     pub fn init(self: *Connection, alloc: *std.mem.Allocator, role: Role, sock_fd: isize, peer: SockAddr) void {
         self.id = 0;
@@ -1163,83 +1154,86 @@ pub const Connection = struct {
 
         // Security: zero all key material before releasing memory to prevent
         // residual secrets from persisting in freed heap pages.
+        // Uses std.crypto.secureZero to prevent the compiler from optimizing
+        // away the zeroing of sensitive data (unlike plain @memset).
+        const sz = std.crypto.secureZero;
         if (self.app_tx_keys) |*k| {
-            @memset(&k.key, 0);
-            @memset(&k.iv, 0);
-            @memset(&k.hp, 0);
+            sz(u8, &k.key);
+            sz(u8, &k.iv);
+            sz(u8, &k.hp);
         }
         self.app_tx_keys = null;
         if (self.app_rx_keys) |*k| {
-            @memset(&k.key, 0);
-            @memset(&k.iv, 0);
-            @memset(&k.hp, 0);
+            sz(u8, &k.key);
+            sz(u8, &k.iv);
+            sz(u8, &k.hp);
         }
         self.app_rx_keys = null;
         if (self.initial_rx_keys) |*k| {
-            @memset(&k.key, 0);
-            @memset(&k.iv, 0);
-            @memset(&k.hp, 0);
+            sz(u8, &k.key);
+            sz(u8, &k.iv);
+            sz(u8, &k.hp);
         }
         self.initial_rx_keys = null;
         if (self.initial_tx_keys) |*k| {
-            @memset(&k.key, 0);
-            @memset(&k.iv, 0);
-            @memset(&k.hp, 0);
+            sz(u8, &k.key);
+            sz(u8, &k.iv);
+            sz(u8, &k.hp);
         }
         self.initial_tx_keys = null;
         if (self.hs_rx_keys) |*k| {
-            @memset(&k.key, 0);
-            @memset(&k.iv, 0);
-            @memset(&k.hp, 0);
+            sz(u8, &k.key);
+            sz(u8, &k.iv);
+            sz(u8, &k.hp);
         }
         self.hs_rx_keys = null;
         if (self.hs_tx_keys) |*k| {
-            @memset(&k.key, 0);
-            @memset(&k.iv, 0);
-            @memset(&k.hp, 0);
+            sz(u8, &k.key);
+            sz(u8, &k.iv);
+            sz(u8, &k.hp);
         }
         self.hs_tx_keys = null;
         if (self.zero_rtt_keys) |*k| {
-            @memset(&k.key, 0);
-            @memset(&k.iv, 0);
-            @memset(&k.hp, 0);
+            sz(u8, &k.key);
+            sz(u8, &k.iv);
+            sz(u8, &k.hp);
         }
         self.zero_rtt_keys = null;
         if (self.hs_client) |*s| {
-            @memset(&s.bytes, 0);
+            sz(u8, &s.bytes);
         }
         self.hs_client = null;
         if (self.hs_server) |*s| {
-            @memset(&s.bytes, 0);
+            sz(u8, &s.bytes);
         }
         self.hs_server = null;
         if (self.app_tx_secret) |*s| {
-            @memset(&s.bytes, 0);
+            sz(u8, &s.bytes);
         }
         self.app_tx_secret = null;
         if (self.app_rx_secret) |*s| {
-            @memset(&s.bytes, 0);
+            sz(u8, &s.bytes);
         }
         self.app_rx_secret = null;
         if (self.app_rx_next_secret) |*s| {
-            @memset(&s.bytes, 0);
+            sz(u8, &s.bytes);
         }
         self.app_rx_next_secret = null;
         if (self.app_rx_next_keys) |*k| {
-            @memset(&k.key, 0);
-            @memset(&k.iv, 0);
-            @memset(&k.hp, 0);
+            sz(u8, &k.key);
+            sz(u8, &k.iv);
+            sz(u8, &k.hp);
         }
         self.app_rx_next_keys = null;
         if (self.resumption_secret) |*s| {
-            @memset(s, 0);
+            sz(u8, s);
         }
         self.resumption_secret = null;
         // session_ticket is a borrowed slice (not owned), so we cannot safely
         // zero it -- the backing memory may be read-only or already freed.
         // Simply drop the reference.
         self.session_ticket = null;
-        @memset(&self.stateless_reset_base, 0);
+        sz(u8, &self.stateless_reset_base);
 
         if (self.negotiated_alpn) |alpn| self.allocator.free(alpn);
         if (self.server_name) |name| self.allocator.free(name);
@@ -1463,32 +1457,38 @@ pub const Connection = struct {
         return .{ .ect0 = ctr.ect0, .ect1 = ctr.ect1, .ce = ctr.ce };
     }
 
-    /// Install a custom sender callback (typically provided by Endpoint) for paced sending.
     /// Install sender callback (paced) used by endpoint for actual datagram emission.
     pub fn setSender(self: *Connection, ctx: *anyopaque, f: SendFn) void {
         self.sender_ctx = ctx;
         self.sender_fn = f;
     }
 
-    /// Configure AEAD usage limits based on endpoint config (optional overrides).
     /// Configure optional AEAD usage limits overriding cipher defaults (tests / policy tuning).
     pub fn setAeadUsageLimits(self: *Connection, conf_limit: ?u64, integ_limit: ?u64) void {
         if (conf_limit) |v| self.aead_confidentiality_limit = v;
         if (integ_limit) |v| self.aead_integrity_limit = v;
     }
 
-    /// Return true if sending is allowed under the anti-amplification limit.
+    /// Return true if anti-amplification budget permits sending (server before validation).
     /// RFC 9000 §8.1 caps a server's response to three times the amount of data
     /// received before the client address is validated. Uses division (tx/3 <=
     /// rx) to avoid overflow for very large counters.
-    /// Return true if anti-amplification budget permits sending (server before validation). Uses division to avoid overflow.
+    ///
+    /// Localhost exemption: when `exempt_localhost` is true (default), loopback
+    /// addresses are always permitted. This mirrors `overAmplification()`.
     pub fn canSendUnderAmplification(self: *const Connection) bool {
-        const validated = self.address_validated;
+        if (self.address_validated) return true;
+
+        // Exempt localhost connections from amplification protection when configured.
+        // Controlled by QuicConfig.exempt_localhost (default true) so operators can
+        // enforce strict RFC 9000 §8.1 even on loopback for conformance testing.
         const is_local = self.isLocalhost();
-        const result = if (validated) true else (self.bytes_tx_unvalidated / 3) <= self.bytes_rx_unvalidated;
+        if (self.exempt_localhost and is_local) return true;
+
+        const result = (self.bytes_tx_unvalidated / 3) <= self.bytes_rx_unvalidated;
 
         logger.debugPrint("[AMPLIFICATION] validated={} isLocalhost={} rx={} tx={} tx/3={} allow={}\n", .{
-            validated,
+            false,
             is_local,
             self.bytes_rx_unvalidated,
             self.bytes_tx_unvalidated,
@@ -1496,8 +1496,7 @@ pub const Connection = struct {
             result,
         });
 
-        if (validated) return true;
-        return (self.bytes_tx_unvalidated / 3) <= self.bytes_rx_unvalidated;
+        return result;
     }
 
     /// Check if the peer address is localhost (127.0.0.1 or ::1)

@@ -1,6 +1,6 @@
 # Performance Gap Analysis
 
-Last updated: 2026-03-24
+Last updated: 2026-03-25
 
 Repository: `gitlab.com/devnw/zig/quic`
 PerfScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
@@ -206,3 +206,10 @@ The following pre-existing issues overlap with Phase 3 findings:
 2. **Endpoint mutex contention** (P2): The actual tail latency impact under load is estimated, not measured. Confirmation requires a load test with 100+ concurrent connections measuring p99 latency distribution.
 
 3. **getenv per packet send**: Resolved -- env var removed entirely; config field used instead (commit 7034861).
+
+---
+
+## Phase 4 Gap Closure -- 2026-03-25
+
+### Closed Items
+- **QF-E6 (canSendUnderAmplification):** Duplicate computation consolidated -- `canSendUnderAmplification()` now checks `exempt_localhost` + `isLocalhost()` consistently with `overAmplification()`. No redundant evaluation.

@@ -170,24 +170,31 @@ fn deriveRetryKeyIv(version_v2: bool) struct { key: [16]u8, iv: [12]u8 } {
 /// Compute the Retry Integrity Tag over the provided pseudo-packet AAD using AES-128-GCM with fixed key/nonce.
 fn aesGcmTagFixedNonce(key16: [16]u8, nonce12: [12]u8, aad: []const u8) [16]u8 {
     var tag: [Aes128Gcm.tag_length]u8 = undefined;
-    // Empty plaintext; ciphertext buffer can be zero-length
-    const ct: []u8 = ct_empty[0..0];
-    Aes128Gcm.encrypt(ct, &tag, ct_empty[0..0], aad, nonce12, key16);
+    // Empty plaintext; ciphertext buffer can be zero-length.
+    // Use a function-local buffer to avoid a mutable global data race (SF-021).
+    var ct_local: [1]u8 = .{0};
+    const ct: []u8 = ct_local[0..0];
+    Aes128Gcm.encrypt(ct, &tag, ct_local[0..0], aad, nonce12, key16);
     return tag;
 }
 
-var ct_empty: [1]u8 = .{0};
-
 /// Public helper: compute Retry Integrity Tag for QUIC v1/v2.
+/// Uses a fixed stack buffer for AAD assembly (SF-016). The AAD is
+/// 1 + odcid.len + retry_without_tag.len which fits comfortably in 2048 bytes
+/// for any valid QUIC packet (max QUIC CID is 20, max UDP payload ~1472).
 pub fn computeRetryIntegrityTag(version_v2: bool, odcid: []const u8, retry_without_tag: []const u8) [16]u8 {
     const kiv = deriveRetryKeyIv(version_v2);
     // Build AAD = ODCID Len (1) || ODCID || retry_without_tag
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.heap.page_allocator);
-    buf.append(std.heap.page_allocator, @as(u8, @intCast(odcid.len))) catch unreachable;
-    buf.appendSlice(std.heap.page_allocator, odcid) catch unreachable;
-    buf.appendSlice(std.heap.page_allocator, retry_without_tag) catch unreachable;
-    return aesGcmTagFixedNonce(kiv.key, kiv.iv, buf.items);
+    var aad_buf: [2048]u8 = undefined;
+    const aad_len = 1 + odcid.len + retry_without_tag.len;
+    // Defensive check: if somehow the AAD exceeds the stack buffer, return
+    // a zeroed tag rather than panicking. In practice this cannot happen for
+    // valid QUIC packets.
+    if (aad_len > aad_buf.len) return .{0} ** 16;
+    aad_buf[0] = @as(u8, @intCast(odcid.len));
+    @memcpy(aad_buf[1 .. 1 + odcid.len], odcid);
+    @memcpy(aad_buf[1 + odcid.len .. aad_len], retry_without_tag);
+    return aesGcmTagFixedNonce(kiv.key, kiv.iv, aad_buf[0..aad_len]);
 }
 
 /// Generic protection function for Initial and Handshake packets.

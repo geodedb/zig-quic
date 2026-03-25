@@ -234,6 +234,13 @@ pub const Endpoint = struct {
     // This replaces the hardcoded fallback to prevent predictable tokens.
     generated_token_secret: [32]u8 = undefined,
 
+    // Server-side 0-RTT anti-replay cache (RFC 8446 S8, RFC 9001 S9.2).
+    // Heap-allocated when role == Server and config.zero_rtt_anti_replay == true.
+    // Shared across all connections on this endpoint; connections hold a pointer
+    // to this cache so the endpoint must outlive its connections.
+    // null when disabled or when the endpoint is a client.
+    anti_replay_cache: ?*conn_mod.AntiReplayCache = null,
+
     // Note: mu_owner removed — timer ops now use separate timer_mu so
     // re-entrancy tracking is no longer needed.
 
@@ -266,6 +273,18 @@ pub const Endpoint = struct {
         var generated_secret: [32]u8 = undefined;
         std.crypto.random.bytes(&generated_secret);
 
+        // Initialize 0-RTT anti-replay cache for server endpoints (RFC 8446 S8, RFC 9001 S9.2).
+        // Window: 10 seconds, max entries: 10000 -- reasonable defaults for production use.
+        const arc: ?*conn_mod.AntiReplayCache = if (is_server and cfgp.zero_rtt_anti_replay) blk: {
+            const cache = try alloc.create(conn_mod.AntiReplayCache);
+            cache.* = conn_mod.AntiReplayCache.init(alloc, 10_000, 10_000_000_000);
+            break :blk cache;
+        } else null;
+        errdefer if (arc) |c| {
+            c.deinit();
+            alloc.destroy(c);
+        };
+
         return Endpoint{
             .transport = transport,
             .owned_udp_transport = udp,
@@ -282,6 +301,7 @@ pub const Endpoint = struct {
             .epoll_fd = null, // Not used with transport abstraction
             .role = endpoint_role,
             .generated_token_secret = generated_secret,
+            .anti_replay_cache = arc,
         };
     }
 
@@ -300,6 +320,18 @@ pub const Endpoint = struct {
         var generated_secret: [32]u8 = undefined;
         std.crypto.random.bytes(&generated_secret);
 
+        // Initialize 0-RTT anti-replay cache for server endpoints (RFC 8446 S8, RFC 9001 S9.2).
+        const is_server = (endpoint_role == .Server);
+        const arc: ?*conn_mod.AntiReplayCache = if (is_server and cfgp.zero_rtt_anti_replay) blk: {
+            const cache = try alloc.create(conn_mod.AntiReplayCache);
+            cache.* = conn_mod.AntiReplayCache.init(alloc.*, 10_000, 10_000_000_000);
+            break :blk cache;
+        } else null;
+        errdefer if (arc) |c| {
+            c.deinit();
+            alloc.destroy(c);
+        };
+
         return Endpoint{
             .transport = transport,
             .loop_backend = lb.defaultLoopBackend(),
@@ -315,6 +347,7 @@ pub const Endpoint = struct {
             .epoll_fd = null, // No epoll with transport abstraction
             .role = endpoint_role,
             .generated_token_secret = generated_secret,
+            .anti_replay_cache = arc,
         };
     }
 
@@ -404,6 +437,13 @@ pub const Endpoint = struct {
         self.conns.deinit();
         self.accepted.deinit(self.allocator);
         self.timers.deinit(self.allocator);
+
+        // Destroy the anti-replay cache (must happen after all connections are destroyed
+        // because connections hold a pointer to this cache).
+        if (self.anti_replay_cache) |cache| {
+            cache.deinit();
+            self.allocator.destroy(cache);
+        }
 
         // Phase 8c: Close transport (which closes underlying socket)
         self.transport.close();
@@ -1149,6 +1189,7 @@ pub const Endpoint = struct {
             .endpoint_ctx = self,
             .generated_token_secret = &self.generated_token_secret,
             .max_connections = self.cfg.max_connections,
+            .anti_replay_cache = self.anti_replay_cache,
         };
 
         // Process packets until we've consumed all bytes
@@ -1513,3 +1554,97 @@ fn senderPaced(ctx: *anyopaque, c: *conn_mod.Connection, data: []const u8) !usiz
 // Legacy poll_* functions removed - dead code (never called)
 // Modern poll_*_backend() functions are used instead
 // Helper functions parseIpv4() and resolveAny() moved to utils.zig
+
+// =============================================================================
+// Tests: Anti-replay cache wiring (RFC 8446 S8, RFC 9001 S9.2)
+// =============================================================================
+
+test "anti-replay: server endpoint creates cache when zero_rtt_anti_replay is true" {
+    const alloc = std.testing.allocator;
+    const config = cfg.QuicConfig{
+        .alpn = &[_][]const u8{},
+        .inline_server_cert_der = &[_]u8{0}, // Makes role = Server
+        .zero_rtt_anti_replay = true,
+    };
+    var ep = try Endpoint.init(alloc, "127.0.0.1:0", &config);
+    defer ep.deinit();
+
+    // Server with zero_rtt_anti_replay=true must have a cache.
+    try std.testing.expect(ep.anti_replay_cache != null);
+}
+
+test "anti-replay: server endpoint skips cache when zero_rtt_anti_replay is false" {
+    const alloc = std.testing.allocator;
+    const config = cfg.QuicConfig{
+        .alpn = &[_][]const u8{},
+        .inline_server_cert_der = &[_]u8{0}, // Makes role = Server
+        .zero_rtt_anti_replay = false,
+    };
+    var ep = try Endpoint.init(alloc, "127.0.0.1:0", &config);
+    defer ep.deinit();
+
+    // Server with zero_rtt_anti_replay=false must NOT have a cache.
+    try std.testing.expect(ep.anti_replay_cache == null);
+}
+
+test "anti-replay: client endpoint never creates cache" {
+    const alloc = std.testing.allocator;
+    const config = cfg.QuicConfig{
+        .alpn = &[_][]const u8{},
+        // No cert -> client role
+        .zero_rtt_anti_replay = true,
+    };
+    var ep = try Endpoint.init(alloc, "127.0.0.1:0", &config);
+    defer ep.deinit();
+
+    // Clients never need an anti-replay cache (server-side only).
+    try std.testing.expect(ep.anti_replay_cache == null);
+}
+
+test "anti-replay: accept0RTT rejects replay when cache is wired" {
+    const alloc = std.testing.allocator;
+
+    // Create a shared anti-replay cache (as the endpoint would).
+    var cache = conn_mod.AntiReplayCache.init(alloc, 100, 10_000_000_000);
+    defer cache.deinit();
+
+    // Manually construct a minimal Connection on the stack. We only need the
+    // fields that accept0RTT reads: anti_replay_cache, peer_initial_dcid,
+    // and zero_rtt_accepted. Connection is a large struct so we zero-init
+    // via undefined + selective field setting.
+    var conn: conn_mod.Connection = undefined;
+    conn.anti_replay_cache = &cache;
+    conn.zero_rtt_accepted = false;
+
+    // Set a deterministic peer_initial_dcid (simulates client's random DCID).
+    conn.peer_initial_dcid.len = 8;
+    @memcpy(conn.peer_initial_dcid.bytes[0..8], &[8]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x12, 0x34 });
+
+    // First call: fresh ticket -- should accept.
+    conn.accept0RTT();
+    try std.testing.expect(conn.zero_rtt_accepted == true);
+
+    // Reset for second attempt (simulating a replayed 0-RTT with same DCID).
+    conn.zero_rtt_accepted = false;
+
+    // Second call with same DCID: replay -- must reject.
+    conn.accept0RTT();
+    try std.testing.expect(conn.zero_rtt_accepted == false);
+}
+
+test "anti-replay: accept0RTT accepts unconditionally when cache is null" {
+    var conn: conn_mod.Connection = undefined;
+    conn.anti_replay_cache = null;
+    conn.zero_rtt_accepted = false;
+    conn.peer_initial_dcid.len = 4;
+    @memcpy(conn.peer_initial_dcid.bytes[0..4], &[4]u8{ 0xAA, 0xBB, 0xCC, 0xDD });
+
+    // Without cache, accept0RTT always accepts (backwards-compat path).
+    conn.accept0RTT();
+    try std.testing.expect(conn.zero_rtt_accepted == true);
+
+    // Even a second call with the same DCID accepts (no replay detection).
+    conn.zero_rtt_accepted = false;
+    conn.accept0RTT();
+    try std.testing.expect(conn.zero_rtt_accepted == true);
+}
