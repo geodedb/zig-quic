@@ -1,6 +1,6 @@
 # Security GAP Analysis
 
-Last updated: 2026-03-25
+Last updated: 2026-03-25 (Phase 5 Security Audit)
 
 Repository: `gitlab.com/devnw/zig/quic`  
 Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
@@ -10,21 +10,23 @@ Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
 | Severity | Found | Closed/Implemented | Closed/Won't do | Blocked | Open |
 |----------|------:|-------------------:|----------------:|--------:|-----:|
 | Critical | 4 | 3 | 0 | 0 | 1 |
-| High | 20 | 8 | 2 | 0 | 10 |
-| Medium | 11 | 9 | 0 | 0 | 2 |
-| Low | 8 | 6 | 2 | 0 | 0 |
-| **Total** | **43** | **26** | **4** | **0** | **13** |
+| High | 24 | 8 | 2 | 0 | 14 |
+| Medium | 19 | 9 | 0 | 0 | 10 |
+| Low | 11 | 7 | 2 | 0 | 2 |
+| **Total** | **58** | **27** | **4** | **0** | **27** |
 
 **HTTP/3 adapter requirements:** 4 open items (1 High, 2 Medium, 1 Low) -- see [HTTP/3 Adapter Requirements](#http3-adapter-requirements) below.
 **Phase 4 audit:** 13 open gaps (1 Critical, 10 High, 2 Medium, 0 Low) -- see [Phase 4 Audit](#phase-4-audit----2026-03-24) below. 2 gaps closed in Phase 4 closure (2026-03-25).
+**Phase 5 audit:** 3 requirement gaps (2 High, 1 Medium) + 8 quality findings (1 High, 5 Medium, 2 Low) -- see [Phase 5 Audit](#phase-5-audit----2026-03-25) below.
+**Phase 5 security audit:** 4 new security findings (1 High, 2 Medium, 1 Low) + 1 verified closure (#102) -- see [Phase 5 Security Audit](#phase-5-security-audit----2026-03-25) below. Total open: 27.
 
 ### Top 5 Residual Risks
 
-1. **Crypto audit not performed (GAP-0007, Critical)** -- ~~Non-timing-safe comparisons on cryptographic material (packet.zig:1259, Retry integrity tag)~~ (FIXED 2026-03-25, GAP-0018). ~~Anti-replay cache never wired to endpoint (0-RTT replay possible)~~ (FIXED 2026-03-25). ~~`catch unreachable` on page_allocator in crypto_quic.zig:187-189 (remote DoS vector)~~ (FIXED 2026-03-25, SF-016). Remaining: AEAD nonce test vectors, key update verification.
-2. **Two conflicting CUBIC implementations (GAP-0017, High)** -- `recovery.zig:128` placeholder vs `recovery/congestion.zig:62` real CUBIC. Production code path may use wrong implementation.
-3. **Connection migration unenforced (GAP-0008, High)** -- `disable_active_migration` parsed but never checked. No CID rotation on migration. Path validation has no timeout or retry.
-4. **528 test stubs return SkipZigTest (GAP-0004)** -- ~61% of test stubs are placeholders with no test logic. 15 high-value stubs implemented 2026-03-24 (recovery, congestion, frame codec). Critical RFC compliance paths still have gaps.
-5. Historical private key material remains recoverable from Git history as accepted external-control risk (`#36`, won't do).
+1. **Pre-Retry connection allocation exhaustion (#188, High, Risk 70, CONFIDENTIAL)** -- Full Connection+TLS (~80-100KB) allocated before Retry validation. 10K spoofed Initials = ~1GB DoS. Internet-facing, pre-auth.
+2. **Crypto audit not performed (GAP-0007, Critical)** -- ~~Non-timing-safe comparisons on cryptographic material (packet.zig:1259, Retry integrity tag)~~ (FIXED 2026-03-25, GAP-0018). ~~Anti-replay cache never wired to endpoint (0-RTT replay possible)~~ (FIXED 2026-03-25). ~~`catch unreachable` on page_allocator in crypto_quic.zig:187-189 (remote DoS vector)~~ (FIXED 2026-03-25, SF-016). Remaining: AEAD nonce test vectors, key update verification.
+3. **SSLKEYLOGFILE ungated in production builds (#189, Medium, Risk 55, CONFIDENTIAL)** -- TLS session keys written to disk via env var in all build modes. No `builtin.mode` gate.
+4. **Congestion window check is log-only (#190, Medium, Risk 50)** -- `[CC-OVERRIDE]` log but no send blocking when `bytes_in_flight >= cwnd`. RFC 9002 S7 violation + amplification risk.
+5. **Two conflicting CUBIC implementations (GAP-0017, High)** -- `recovery.zig:128` placeholder vs `recovery/congestion.zig:62` real CUBIC. Production code path may use wrong implementation.
 
 ## Stack-Ranked Findings
 
@@ -52,6 +54,11 @@ Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
 | 20 | Low | 24 | Mutable dependency URLs — `build.zig.zon` fetches TLS/spice from `main` branch tarballs; content changes as branch evolves (hash verification prevents silent supply chain attack but breaks reproducibility) (`confidence::confirmed`) | Supply chain | CWE-494 | `build.zig.zon:18,23` | -- | Hash verification provides integrity; mutable URLs are an architectural decision for development velocity | Platform | N/A | Closed / Won't do |
 | 21 | Low | 16 | Dockerfiles create non-root user but never switch — `USER quic` instruction missing; entrypoint runs as root (`confidence::confirmed`) | Containers | CWE-250 | `interop/Dockerfile`, `examples/interop/zig-qns/Dockerfile` | -- | FIXED: run_endpoint.sh drops privileges to quic user at runtime | Interop | 2026-03-22 | Closed / Implemented |
 | 22 | Critical | 80 | mTLS parameters discarded in handshake wiring — `createTlsContext()` accepted `request_client_cert`, `client_cert_der`, `client_key_der` but discarded them with `_ = ...`; the `tls13.Config` struct literal never set these fields, so operators who configure mTLS believe it is active while clients connect without certificates (`confidence::confirmed`) | Application | CWE-295 | `src/quic/endpoint/handshake_integration.zig:334-336` | #118 | FIXED: Removed three `_ = ...` discard lines and added `.request_client_cert`, `.client_cert_der`, `.client_key_der` to `tls13.Config` struct literal | Core QUIC | 2026-03-24 | Closed / Implemented |
+| 23 | High | 70 | Pre-Retry connection allocation exhaustion — full Connection+TLS (~80-100KB) allocated before Retry validation; 10K limit = ~1GB DoS (`confidence::confirmed`, CONFIDENTIAL) | Transport | CWE-770 / OWASP A05:2021 | `src/quic/endpoint/incoming.zig:432-470` | [#188](https://gitlab.com/devnw/zig/quic/-/issues/188) | Retry-first architecture: send Retry from stack state, allocate Connection only after valid token | Core QUIC | 2026-04-24 | Open |
+| 24 | Medium | 55 | SSLKEYLOGFILE ungated in production builds — env var writes all TLS session keys to disk in ReleaseSafe/Fast/Small (`confidence::confirmed`, CONFIDENTIAL) | Application | CWE-532, CWE-312 / OWASP A02:2021 | `src/quic/connection/methods_a.zig:29` | [#189](https://gitlab.com/devnw/zig/quic/-/issues/189) | Gate behind `builtin.mode == .Debug` or explicit config flag | Core QUIC | 2026-06-23 | Open |
+| 25 | Medium | 50 | Unenforced cwnd + CC override — cwnd check is log-only (`[CC-OVERRIDE]`), server sends regardless; RFC 9002 S7 violation + reflective amplification risk (`confidence::confirmed`) | Transport | CWE-770, CWE-406 / OWASP A04:2021 | `src/quic/connection/methods_b.zig:411-416` | [#190](https://gitlab.com/devnw/zig/quic/-/issues/190) | Enforce cwnd: return error or 0 when `bytes_in_flight >= cwnd` | Core QUIC | 2026-06-23 | Open |
+| 26 | Low | 8 | Docker test containers run as root — `USER` directive missing after setup phase (`confidence::confirmed`) | Containers | CWE-250 / OWASP A05:2021 | `interop/Dockerfile`, `examples/interop/zig-qns/Dockerfile` | [#191](https://gitlab.com/devnw/zig/quic/-/issues/191) | Add `USER quic` after setup phase | Interop | 2026-09-21 | Open |
+| 27 | Info | 10 | @panic in dead code — `endpoint.zig:1338` unreachable code with `@panic("OLD processIncomingDatagram called")` (`confidence::confirmed`) | Transport | CWE-561 | `src/quic/endpoint.zig:1338` | -- | Remove dead function or replace @panic with @compileError | Core QUIC | Backlog | Open |
 
 ## Findings By Area
 
@@ -60,6 +67,7 @@ Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
 - #56: Closed / Implemented.
 - Rank 14: Constant-time stateless reset token comparison. **Closed / Implemented** (2026-03-22).
 - Rank 22 (#118): mTLS parameters discarded in handshake wiring — `createTlsContext()` silently dropped `request_client_cert`, `client_cert_der`, `client_key_der`. **Closed / Implemented** (2026-03-24).
+- Rank 24 (#189, CONFIDENTIAL): SSLKEYLOGFILE writes TLS session keys in production builds. **Open.**
 
 ### Algorithms (Geode Extraction — 2026-03-22 Audit)
 - Rank 12: HashMap key aliasing fixed (`put(conn.id, conn)` + CID validation). **Closed / Implemented** (2026-03-22).
@@ -70,12 +78,18 @@ Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
 - Rank 18: CID validation (0 < id.len <= 20) added. **Closed / Implemented** (2026-03-22).
 - Rank 19: No fuzz harnesses — deferred until modules integrated to production. **Closed / Won't do.**
 
+### Transport (Phase 5 Security Audit)
+- Rank 23 (#188, CONFIDENTIAL): Pre-Retry connection allocation exhaustion -- ~1GB DoS with 10K spoofed Initials. **Open.**
+- Rank 25 (#190): Unenforced cwnd + CC override -- send path ignores congestion window, RFC 9002 S7 violation. **Open.**
+- Rank 27: @panic in dead code at `endpoint.zig:1338` -- unreachable function, no production risk. **Open (Backlog).**
+
 ### CI/CD
 - #53: Closed / Implemented.
 - #54: Closed / Won't do (external controls).
 - #55: Closed / Won't do.
 - #57: Closed / Implemented.
 - #61: Closed / Implemented.
+- #102: macOS/Windows CI SHA-256 verification. **Closed / Implemented** (verified Phase 5, 2026-03-25).
 
 ### Supply Chain
 - #36: Closed / Won't do (external governance controls).
@@ -86,6 +100,7 @@ Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
 ### Containers
 - #60: Closed / Implemented.
 - Rank 21: run_endpoint.sh drops privileges to quic user. **Closed / Implemented** (2026-03-22).
+- Rank 26 (#191): Docker test containers still run as root -- `USER` directive missing. **Open.**
 
 ## Quality Quick-Wins (2026-03-24)
 
@@ -757,3 +772,320 @@ The following critical security findings were surfaced by the security reviewer 
 | SF-019 | Unknown frames CONNECTION_CLOSE FRAME_ENCODING_ERROR | Security | module_b2.zig sends 0x07 per RFC 9000 S12.4 |
 | SF-020 | amplification canSendUnderAmplification exempt_localhost | Security | Consolidated with overAmplification() |
 | SF-015 (#145) | AntiReplayCache wired end-to-end | Security | Endpoint.init() to connections via RxContext; 5 tests |
+
+## Phase 5 Audit -- 2026-03-25
+
+Phase 5 gap detection identified 3 new gaps. All are tracked as GitLab issues with the `gap` label.
+
+### Phase 5 Summary
+
+| Gap-ID | Severity | Category | Issue | Status |
+|--------|----------|----------|-------|--------|
+| GAP-0050 | High | Code Quality | [#159](https://gitlab.com/devnw/zig/quic/-/issues/159) | Open |
+| GAP-0051 | Medium | Docs | [#173](https://gitlab.com/devnw/zig/quic/-/issues/173) | Open |
+| GAP-0052 | High | Bug | [#148](https://gitlab.com/devnw/zig/quic/-/issues/148) (extends GAP-0017) | Open |
+
+### GAP-0050: 15 catch {} in H3 layer silently discard errors
+- **Severity:** High
+- **Issue:** [#159](https://gitlab.com/devnw/zig/quic/-/issues/159)
+- **Status:** Open
+- **Category:** Code Quality
+- **Effort:** M
+- **Requirement source:** RFC 9114 (HTTP/3), general error handling best practice
+- **Current state (evidence):**
+  - `src/h3/server.zig` -- 9 `catch {}` patterns: control stream setup (lines 34, 38, 42), poll (lines 57, 217), sendDatagram (line 69), respondFile (lines 115, 134), closeStream (line 175)
+  - `src/h3/client.zig` -- 6 `catch {}` patterns: poll (lines 176, 188, 221, 244), appendSlice (lines 237, 250)
+- **Why this is a gap:** Silent error swallowing in the H3 layer means failed stream writes, lost datagrams, and dropped responses with no diagnostic trace. H3 is the primary user-facing protocol layer. The Phase 2 `catch {}` audit (#110) explicitly scoped to `src/quic/`; the H3 modules were excluded.
+- **Impact/Risk:** Production H3 server/client will silently fail on control stream setup, response delivery, and body assembly. No error diagnostics for operators.
+- **Recommended fix:** Propagate errors on critical paths (control streams, response body). Log at warn level on optional paths (poll). Send H3 error response on respondFile failure.
+- **Acceptance criteria:** Zero `catch {}` in `src/h3/server.zig` and `src/h3/client.zig`; critical path errors propagated or logged; optional path errors logged at warn level
+
+### GAP-0051: requirements.md contains 6 factual inaccuracies
+- **Severity:** Medium
+- **Issue:** [#173](https://gitlab.com/devnw/zig/quic/-/issues/173)
+- **Status:** Open
+- **Category:** Docs
+- **Effort:** S
+- **Requirement source:** `docs/REQUIREMENTS.md` vs actual implementation state
+- **Current state (evidence):**
+  - DPLPMTUD claimed implemented but `pmtud.zig` types are dead code (GAP-0044 / #151)
+  - Path validation claimed complete but has no timeout/retry/multi-path (GAP-0045 / #152)
+  - QUIC v2 claimed supported but packet type remapping unverified (GAP-0010 / #139)
+  - Connection migration claimed complete but `disable_active_migration` unenforced (GAP-0008 / #137)
+  - Stream state machine claimed RFC-compliant but uses boolean flags (GAP-0011 / #140, GAP-0014 / #143)
+  - Loss detection edge cases claimed tested but multiple edge cases untested (GAP-0016 / #146)
+- **Why this is a gap:** Contributors and downstream consumers overestimate protocol compliance. Audit processes draw incorrect conclusions.
+- **Impact/Risk:** Misleading maturity assessment. Contributors may skip work on items incorrectly marked as done.
+- **Recommended fix:** Audit each requirement line against actual implementation status; mark incomplete items accurately; cross-reference open GAP issues; add header noting tracker is authoritative.
+- **Acceptance criteria:** All 6 inaccuracies corrected; each requirement reflects actual status with evidence; cross-references to open GAP issues added; file header notes tracker is authoritative
+
+### GAP-0052: Dual CC state machines per connection
+- **Severity:** High
+- **Issue:** [#148](https://gitlab.com/devnw/zig/quic/-/issues/148) (extends GAP-0017)
+- **Status:** Open
+- **Category:** Bug
+- **Effort:** M
+- **Requirement source:** RFC 9002 S7 (single congestion controller per connection)
+- **Current state (evidence):**
+  - `src/quic/recovery.zig:88-172` -- monolithic CC state (cwnd, ssthresh, bytes_in_flight, cc_state)
+  - `src/quic/recovery/congestion.zig:12-95` -- modular CC state (same fields, different struct)
+  - `src/quic/conn.zig` -- imports `recovery.zig` (monolithic path)
+  - `build.zig` -- wires `recovery/recovery.zig` as `quic_recovery` module (modular path)
+  - `#103` -- documented parallel modules but did not resolve the dual-state problem
+- **Why this is a gap:** A single connection can have both CC state machines active simultaneously if code paths cross module boundaries. Loss events processed through one path will not update the other's `cwnd`/`ssthresh`. This violates RFC 9002 S7 (single CC per connection) and causes spurious retransmissions, incorrect pacing, and divergent congestion windows.
+- **Impact/Risk:** Connections may use different congestion control algorithms depending on code path. Under loss, one CC thinks the window is open while the other thinks it is closed. Production traffic may experience throughput oscillation and unfairness.
+- **Recommended fix:** Audit the import graph to ensure `conn.zig` uses exactly one recovery module. Remove or gate behind `builtin.is_test` the monolithic `recovery.zig` CC state. Verify single CC state per connection with an integration test.
+- **Acceptance criteria:** Single CC state per connection verified; import graph audited; monolithic `recovery.zig` CC state removed or gated; CUBIC-specific tests cover W_cubic and beta=0.7
+
+### Phase 5 Open Gap Cross-Reference (All 16 Open Gaps)
+
+| Gap-ID | Severity | Issue | Title |
+|--------|----------|-------|-------|
+| GAP-0004 | Medium | [#88](https://gitlab.com/devnw/zig/quic/-/issues/88) | 528 test stubs return SkipZigTest |
+| GAP-0007 | Critical | [#136](https://gitlab.com/devnw/zig/quic/-/issues/136) | Crypto audit not performed |
+| GAP-0008 | High | [#137](https://gitlab.com/devnw/zig/quic/-/issues/137) | Connection migration incomplete |
+| GAP-0009 | High | [#138](https://gitlab.com/devnw/zig/quic/-/issues/138) | Version negotiation incomplete |
+| GAP-0010 | High | [#139](https://gitlab.com/devnw/zig/quic/-/issues/139) | QUIC v2 packet type remapping unverified |
+| GAP-0011 | High | [#140](https://gitlab.com/devnw/zig/quic/-/issues/140) | Stream state machine boolean flags |
+| GAP-0012 | High | [#141](https://gitlab.com/devnw/zig/quic/-/issues/141) | CID lifecycle management gaps |
+| GAP-0013 | High | [#142](https://gitlab.com/devnw/zig/quic/-/issues/142) | Full crypto hardening pass needed |
+| GAP-0014 | High | [#143](https://gitlab.com/devnw/zig/quic/-/issues/143) | Stream state machine explicit modeling |
+| GAP-0015 | High | [#144](https://gitlab.com/devnw/zig/quic/-/issues/144) | RESET_STREAM/STOP_SENDING integration tests |
+| GAP-0016 | High | [#146](https://gitlab.com/devnw/zig/quic/-/issues/146) | Loss detection edge cases untested |
+| GAP-0017 | High | [#148](https://gitlab.com/devnw/zig/quic/-/issues/148) | Two conflicting CUBIC implementations |
+| GAP-0044 | Medium | [#151](https://gitlab.com/devnw/zig/quic/-/issues/151) | DPLPMTUD probe logic incomplete |
+| GAP-0045 | Medium | [#152](https://gitlab.com/devnw/zig/quic/-/issues/152) | Path validation minimal |
+| GAP-0050 | High | [#159](https://gitlab.com/devnw/zig/quic/-/issues/159) | 15 catch {} in H3 layer |
+| GAP-0051 | Medium | [#173](https://gitlab.com/devnw/zig/quic/-/issues/173) | requirements.md 6 factual inaccuracies |
+| GAP-0052 | High | [#148](https://gitlab.com/devnw/zig/quic/-/issues/148) | Dual CC state machines per connection |
+
+## Phase 5 Quality Audit -- 2026-03-25
+
+Phase 5 quality-scanner and quality-reviewer audit identified 8 new quality findings across the codebase. All are tracked as GitLab issues with the `quality` and `phase::5` labels. Existing issues #150, #156, #159, #162, #151, and #115 received Phase 5 cross-reference comments.
+
+### Phase 5 Quality Summary
+
+| Severity | New Findings | Existing Issues Updated |
+|----------|:-----------:|:-----------------------:|
+| High | 1 | 3 (#150, #156, #159) |
+| Medium | 5 | 2 (#162, #151) |
+| Low | 2 | 1 (#115) |
+| **Total** | **8** | **6** |
+
+### Phase 5 Stack-Ranked Quality Findings
+
+| Rank | Severity | PriorityScore | Category | Finding | Component | Evidence | Issue | Fix Summary | Owner | Effort | Status |
+|------|----------|---:|----------|---------|-----------|----------|-------|-------------|-------|--------|--------|
+| 1 | High | 80 | maintainability | Silent error paths drop HANDSHAKE_DONE, transport params, ServerHello | Transport | `methods_a.zig:456,491`, `incoming.zig:809` | [#174](https://gitlab.com/devnw/zig/quic/-/issues/174) | Propagate errors per RFC 9000 S7.4, RFC 9001 S4.1.2; abort zombie connections | Core QUIC | M | Open |
+| 2 | Medium | 60 | cleanup | 1412 LOC dead code: deprecated frame.zig, recovery.zig, connection.zig, formatCloseFrame, unused constants | Transport | `frame.zig` (853), `recovery.zig` (468), `connection/connection.zig` (59), `connection/error.zig:215`, `frame/misc.zig:21` | [#175](https://gitlab.com/devnw/zig/quic/-/issues/175) | Delete deprecated files or gate with @compileError | Core QUIC | S | Open |
+| 3 | Medium | 60 | api-contract | isStreamFinished doc says "both directions" but checks RX only; close/closeConnection redundant | Transport | `api.zig:322-327`, `conn.zig:874-881`, `api.zig:135-144` | [#176](https://gitlab.com/devnw/zig/quic/-/issues/176) | Fix doc or extend implementation; deprecate closeConnection | Core QUIC | S | Open |
+| 4 | Medium | 48 | readability | methods_a/b/c.zig non-domain naming, 111-line forwarding table, trace_enabled duplication | Transport | `methods_a.zig` (1096), `methods_b.zig` (1582), `methods_c.zig` (688), `conn.zig:420`, `methods_b.zig:14` | [#177](https://gitlab.com/devnw/zig/quic/-/issues/177) | Rename by domain, dedup trace_enabled, reduce forwarding | Core QUIC | L | Open |
+| 5 | Medium | 48 | readability | Magic number 1200 hardcoded 30+ times; named constant exists but unused | Transport | 12+ files, `frame/misc.zig:21` (unused constant) | [#178](https://gitlab.com/devnw/zig/quic/-/issues/178) | Define canonical constant, replace all hardcoded 1200 | Core QUIC | S | Open |
+| 6 | Medium | 36 | readability | PmtudState defined 3x with incompatible types (struct vs enum) | Transport | `connection/pmtud.zig:22`, `methods_b.zig:900`, `conn.zig:468` | [#180](https://gitlab.com/devnw/zig/quic/-/issues/180) | Consolidate to single canonical type | Core QUIC | S | Open |
+| 7 | Low | 32 | readability | H3 encodeVarint/decodeVarint duplicated between server.zig and client.zig | H3 | `h3/server.zig:230,264`, `h3/client.zig:8,39` | [#179](https://gitlab.com/devnw/zig/quic/-/issues/179) | Extract shared h3/varint.zig | H3 | S | Open |
+| 8 | Low | 32 | tests | api.zig and conn.zig have zero colocated tests; stale architecture doc in connection.zig | Transport | `api.zig` (0 tests), `conn.zig` (0 tests), `connection/connection.zig` (stale comments) | [#181](https://gitlab.com/devnw/zig/quic/-/issues/181) | Add 5-10 inline tests per file, update stale docs | Core QUIC | M | Open |
+
+### Phase 5 Quality-Scanner Cross-Reference
+
+The quality-scanner (Phase 2) independently identified 10 findings (QS-1 through QS-10). Their disposition:
+
+| Scanner ID | Finding | PriorityScore | Disposition |
+|-----------|---------|---:|-------------|
+| QS-1 | hashBytes 12x duplication | 60 | Already tracked as [#156](https://gitlab.com/devnw/zig/quic/-/issues/156); Phase 5 comment added |
+| QS-2 | Role enum 3x | 48 | Already tracked as [#162](https://gitlab.com/devnw/zig/quic/-/issues/162); Phase 5 comment added |
+| QS-3 | PmtudState type confusion (3x, incompatible) | 36 | New issue [#180](https://gitlab.com/devnw/zig/quic/-/issues/180) |
+| QS-4 | pmtud.zig dead file | 36 | Already tracked as [#151](https://gitlab.com/devnw/zig/quic/-/issues/151) (GAP-0044); Phase 5 comment added |
+| QS-5 | formatCloseFrame dead stub | 60 | Grouped into [#175](https://gitlab.com/devnw/zig/quic/-/issues/175) (dead code umbrella) |
+| QS-6 | Magic number 1200 hardcoded 30+ times | 48 | New issue [#178](https://gitlab.com/devnw/zig/quic/-/issues/178) |
+| QS-7 | H3 encodeVarint/decodeVarint duplicated | 32 | New issue [#179](https://gitlab.com/devnw/zig/quic/-/issues/179) |
+| QS-8 | 15 catch {} in H3 | 64 | Already tracked as [#159](https://gitlab.com/devnw/zig/quic/-/issues/159); Phase 5 comment added |
+| QS-9 | MIN/MAX_SAFE_PACKET_SIZE unused constants | 60 | Grouped into [#175](https://gitlab.com/devnw/zig/quic/-/issues/175) (dead code umbrella) |
+| QS-10 | mds: usize = 1200 repeated in recovery structs | 48 | Grouped into [#178](https://gitlab.com/devnw/zig/quic/-/issues/178) (magic number 1200) |
+
+### Phase 5 Findings by Category
+
+**Maintainability (1 finding)**
+- #174: Silent error paths -- RFC-violating `catch {}` on transport parameters, ServerHello, HANDSHAKE_DONE. **Open.**
+
+**Cleanup (1 finding)**
+- #175: 1412 LOC dead code across 5 clusters. **Open.**
+
+**API Contract (1 finding)**
+- #176: isStreamFinished doc/behavior mismatch; close/closeConnection redundancy. **Open.**
+
+**Readability (4 findings)**
+- #177: methods_a/b/c.zig non-domain naming, forwarding table, trace_enabled duplication. **Open.**
+- #178: Magic number 1200 hardcoded 30+ times. **Open.**
+- #179: H3 varint encode/decode duplicated. **Open.**
+- #180: PmtudState defined 3x with incompatible types. **Open.**
+
+**Tests (1 finding)**
+- #181: api.zig/conn.zig zero colocated tests; stale architecture doc. **Open.**
+
+### Phase 5 Roadmap
+
+**Quick wins (< 1 day):**
+- #175: Delete deprecated frame.zig/recovery.zig, remove formatCloseFrame, clean unused constants (S)
+- #176: Fix isStreamFinished doc, deprecate closeConnection (S)
+- #178: Define canonical 1200 constant, search-and-replace (S)
+- #180: Consolidate PmtudState to single type (S)
+- #179: Extract shared h3/varint.zig (S)
+
+**Medium (1-5 days):**
+- #174: Fix 3 silent error paths with proper error propagation and tests (M)
+- #181: Add colocated tests to api.zig/conn.zig, update stale docs (M)
+
+**Strategic (> 5 days):**
+- #177: Rename methods_a/b/c.zig by domain, reduce forwarding table (L) -- prerequisite: #115 architectural decision
+
+### Phase 5 Open Gap Cross-Reference (All 24 Open Items)
+
+| Gap/Quality ID | Severity | Issue | Title |
+|----------------|----------|-------|-------|
+| GAP-0004 | Medium | [#88](https://gitlab.com/devnw/zig/quic/-/issues/88) | 528 test stubs return SkipZigTest |
+| GAP-0007 | Critical | [#136](https://gitlab.com/devnw/zig/quic/-/issues/136) | Crypto audit not performed |
+| GAP-0008 | High | [#137](https://gitlab.com/devnw/zig/quic/-/issues/137) | Connection migration incomplete |
+| GAP-0009 | High | [#138](https://gitlab.com/devnw/zig/quic/-/issues/138) | Version negotiation incomplete |
+| GAP-0010 | High | [#139](https://gitlab.com/devnw/zig/quic/-/issues/139) | QUIC v2 packet type remapping unverified |
+| GAP-0011 | High | [#140](https://gitlab.com/devnw/zig/quic/-/issues/140) | Stream state machine boolean flags |
+| GAP-0012 | High | [#141](https://gitlab.com/devnw/zig/quic/-/issues/141) | CID lifecycle management gaps |
+| GAP-0013 | High | [#142](https://gitlab.com/devnw/zig/quic/-/issues/142) | Full crypto hardening pass needed |
+| GAP-0014 | High | [#143](https://gitlab.com/devnw/zig/quic/-/issues/143) | Stream state machine explicit modeling |
+| GAP-0015 | High | [#144](https://gitlab.com/devnw/zig/quic/-/issues/144) | RESET_STREAM/STOP_SENDING integration tests |
+| GAP-0016 | High | [#146](https://gitlab.com/devnw/zig/quic/-/issues/146) | Loss detection edge cases untested |
+| GAP-0017 | High | [#148](https://gitlab.com/devnw/zig/quic/-/issues/148) | Two conflicting CUBIC implementations |
+| GAP-0044 | Medium | [#151](https://gitlab.com/devnw/zig/quic/-/issues/151) | DPLPMTUD probe logic incomplete |
+| GAP-0045 | Medium | [#152](https://gitlab.com/devnw/zig/quic/-/issues/152) | Path validation minimal |
+| GAP-0050 | High | [#159](https://gitlab.com/devnw/zig/quic/-/issues/159) | 15 catch {} in H3 layer |
+| GAP-0051 | Medium | [#173](https://gitlab.com/devnw/zig/quic/-/issues/173) | requirements.md 6 factual inaccuracies |
+| GAP-0052 | High | [#148](https://gitlab.com/devnw/zig/quic/-/issues/148) | Dual CC state machines per connection |
+| QF-001 | High | [#174](https://gitlab.com/devnw/zig/quic/-/issues/174) | Silent error paths (HANDSHAKE_DONE, transport params, ServerHello) |
+| QF-002 | Medium | [#175](https://gitlab.com/devnw/zig/quic/-/issues/175) | 1412 LOC dead code |
+| QF-003 | Medium | [#176](https://gitlab.com/devnw/zig/quic/-/issues/176) | API: isStreamFinished doc mismatch, close redundancy |
+| QF-004 | Medium | [#177](https://gitlab.com/devnw/zig/quic/-/issues/177) | methods_a/b/c naming, forwarding table, trace_enabled |
+| QF-005 | Medium | [#178](https://gitlab.com/devnw/zig/quic/-/issues/178) | Magic number 1200 hardcoded 30+ times |
+| QF-006 | Medium | [#180](https://gitlab.com/devnw/zig/quic/-/issues/180) | PmtudState 3x type confusion |
+| QF-007 | Low | [#179](https://gitlab.com/devnw/zig/quic/-/issues/179) | H3 varint duplication |
+| QF-008 | Low | [#181](https://gitlab.com/devnw/zig/quic/-/issues/181) | api.zig/conn.zig zero colocated tests |
+| SF-023 | High | [#188](https://gitlab.com/devnw/zig/quic/-/issues/188) | Pre-Retry connection allocation exhaustion (CONFIDENTIAL) |
+| SF-024 | Medium | [#189](https://gitlab.com/devnw/zig/quic/-/issues/189) | SSLKEYLOGFILE ungated in production (CONFIDENTIAL) |
+| SF-025 | Medium | [#190](https://gitlab.com/devnw/zig/quic/-/issues/190) | Unenforced cwnd + CC override |
+| SF-026 | Low | [#191](https://gitlab.com/devnw/zig/quic/-/issues/191) | Docker test containers run as root |
+
+## Phase 5 Security Audit -- 2026-03-25
+
+Phase 5 security-reviewer and security-scanner audit identified 5 findings (4 new, 1 verified closure). Combined with Phase 3 security-reviewer risk scoring. New findings tracked as GitLab issues with `security` and `phase::5` labels. Confidential issues created for findings that could enable active exploitation.
+
+### Phase 5 Security Summary
+
+| Finding ID | Severity | Risk Score | Category | Issue | Confidential | Status |
+|-----------|----------|---:|----------|-------|:------------:|--------|
+| SF-023 | High | 70 | DoS | [#188](https://gitlab.com/devnw/zig/quic/-/issues/188) | Yes | Open |
+| SF-024 | Medium | 55 | Crypto | [#189](https://gitlab.com/devnw/zig/quic/-/issues/189) | Yes | Open |
+| SF-025 | Medium | 50 | CC/Amplification | [#190](https://gitlab.com/devnw/zig/quic/-/issues/190) | No | Open |
+| SF-026 | Low | 8 | Containers | [#191](https://gitlab.com/devnw/zig/quic/-/issues/191) | No | Open |
+| SF-027 | Info | 10 | Dead code | -- | No | Open (Backlog) |
+| #102 | Medium | 36 | CI/CD | [#102](https://gitlab.com/devnw/zig/quic/-/issues/102) | No | Closed / Verified |
+
+### SF-023: Pre-Retry connection allocation exhaustion (CONFIDENTIAL)
+- **Severity:** High
+- **Risk Score:** 70 (Impact 4 x Likelihood 4.4 x 4)
+- **Issue:** [#188](https://gitlab.com/devnw/zig/quic/-/issues/188) (confidential)
+- **Status:** Open
+- **SLA:** 30 days (2026-04-24)
+- **CWE:** CWE-770 (Allocation of Resources Without Limits or Throttling)
+- **OWASP:** A05:2021 Security Misconfiguration
+- **Exploit surface:** Internet-facing, pre-auth
+- **Evidence:** `src/quic/endpoint/incoming.zig:432-470` -- `createServerConnection()` allocates full Connection+TLS before Retry validation
+- **How to verify:** Send 10K spoofed UDP Initials with unique source IPs; measure server heap growth
+- **Fix:** Retry-first architecture -- send Retry from stack-allocated state, allocate Connection only after valid token
+
+### SF-024: SSLKEYLOGFILE ungated in production builds (CONFIDENTIAL)
+- **Severity:** Medium
+- **Risk Score:** 55 (Impact 4 x Likelihood 3.4 x 4)
+- **Issue:** [#189](https://gitlab.com/devnw/zig/quic/-/issues/189) (confidential)
+- **Status:** Open
+- **SLA:** 90 days (2026-06-23)
+- **CWE:** CWE-532 (Insertion of Sensitive Information into Log File), CWE-312 (Cleartext Storage)
+- **OWASP:** A02:2021 Cryptographic Failures
+- **Exploit surface:** Requires env var set on production host (admin-only / misconfiguration)
+- **Evidence:** `src/quic/connection/methods_a.zig:29` -- `std.process.getEnvVarOwned(..., "SSLKEYLOGFILE")` with no build-mode gate
+- **How to verify:** Set `SSLKEYLOGFILE=/tmp/test.log`, run ReleaseSafe binary, check if file is created with session keys
+- **Fix:** Gate behind `builtin.mode == .Debug` or explicit `QuicConfig.enable_keylog` flag
+
+### SF-025: Unenforced cwnd + CC override
+- **Severity:** Medium
+- **Risk Score:** 50 (Impact 2.5 x Likelihood 5 x 4)
+- **Issue:** [#190](https://gitlab.com/devnw/zig/quic/-/issues/190)
+- **Status:** Open
+- **SLA:** 90 days (2026-06-23)
+- **CWE:** CWE-770, CWE-406
+- **OWASP:** A04:2021 Insecure Design
+- **Exploit surface:** Internet-facing (any connected peer)
+- **Evidence:** `src/quic/connection/methods_b.zig:411-416` -- `[CC-OVERRIDE]` log-only, no send blocking
+- **How to verify:** Establish connection, send large resource, capture packets -- server sends beyond cwnd without ACKs
+- **Fix:** Return error or 0 when `bytes_in_flight >= cwnd`; remove interop workaround
+- **Related:** #148 (dual CC), #108 (CUBIC no-op)
+
+### SF-026: Docker test containers run as root
+- **Severity:** Low
+- **Risk Score:** 8 (Impact 1 x Likelihood 2 x 4)
+- **Issue:** [#191](https://gitlab.com/devnw/zig/quic/-/issues/191)
+- **Status:** Open
+- **SLA:** 180 days (2026-09-21)
+- **CWE:** CWE-250
+- **OWASP:** A05:2021
+- **Exploit surface:** Containers only (interop/test)
+- **Evidence:** `interop/Dockerfile`, `examples/interop/zig-qns/Dockerfile` -- no `USER` directive
+- **Mitigating factor:** `run_endpoint.sh` drops privileges at runtime; test-only containers
+- **Fix:** Add `USER quic` after setup phase
+
+### SF-027: @panic in dead code (Info)
+- **Severity:** Info
+- **Risk Score:** 10 (Impact 1 x Likelihood 2.5 x 4)
+- **Status:** Open (Backlog)
+- **CWE:** CWE-561 (Dead Code)
+- **Evidence:** `src/quic/endpoint.zig:1338` -- `@panic("OLD processIncomingDatagram called - should never happen")`
+- **How to verify:** Confirmed unreachable via call graph analysis. No caller invokes this function.
+- **Fix:** Remove dead function or replace `@panic` with `@compileError`
+
+### #102 Verification: macOS CI hash verification (Closed)
+- **Original severity:** Medium (Risk 36)
+- **Issue:** [#102](https://gitlab.com/devnw/zig/quic/-/issues/102)
+- **Status:** Closed / Verified (2026-03-25)
+- **Evidence:** E7 quality quick-win (2026-03-24) added SHA-256 verification to macOS (via `shasum -a 256`) and Windows (via `Get-FileHash`) CI jobs. Verified in Phase 5 audit -- fix mirrors the existing Linux `install-zig` template pattern.
+
+### Phase 5 Security Scanner Additional Findings
+
+The security-scanner (Phase 2) independently identified 5 additional findings (NEW-1 through NEW-5). Their disposition:
+
+| Scanner ID | Finding | Risk Score | Disposition |
+|-----------|---------|---:|-------------|
+| NEW-1 | SSLKEYLOGFILE in methods_a.zig:29 | 36 | Merged into SF-024 (#189); scanner confirmed the code path |
+| NEW-2 | Test client Go binaries with Critical CVEs | 24 | Previously tracked as #157 (resolved 2026-03-25, binary removed + .gitignore) |
+| NEW-3 | Python test requirements unpinned | 12 | Verified: `test-clients/aioquic-client/requirements.txt` pins `aioquic==1.2.0`; CI (#57) also pins. **Not a finding** (false positive). |
+| NEW-4 | @panic dead code endpoint.zig:1338 | 8 | Tracked as SF-027 (Info, Backlog) |
+| NEW-5 | Docker containers run as root | 8 | Tracked as SF-026 (#191) |
+
+### Phase 5 Security Audit -- Existing Issue Updates
+
+| Issue | Action | Details |
+|-------|--------|---------|
+| #111 | Comment added | Phase 5 cross-reference: per-connection memory analysis (65KB cap per frame, ~11MB theoretical per connection). Original OOM fix verified. |
+| #102 | Verified closure | macOS/Windows SHA-256 verification confirmed implemented. Phase 5 verification comment added. |
+
+### Phase 5 Security Roadmap
+
+**Immediate (< 7 days):**
+- No critical findings requiring immediate action.
+
+**Quick wins (< 30 days):**
+- SF-023 (#188): Pre-Retry allocation exhaustion -- Retry-first architecture (M effort). High priority.
+
+**Medium (30-90 days):**
+- SF-024 (#189): SSLKEYLOGFILE production gate -- `builtin.mode` check (S effort). Easy fix but medium SLA.
+- SF-025 (#190): cwnd enforcement -- remove CC-OVERRIDE, return error on congestion (M effort). Intersects with #148 dual CC resolution.
+
+**Low priority (90-180 days):**
+- SF-026 (#191): Docker USER directive -- straightforward but test-only scope (S effort).
+- SF-027: Dead code @panic -- remove or replace with @compileError (S effort, Backlog).
