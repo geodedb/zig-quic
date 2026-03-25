@@ -167,7 +167,7 @@ pub fn bind(comptime Connection: type) type {
         /// Set locally advertised transport parameters on TLS and cache them for QUIC wiring.
         pub fn setLocalTransportParameters(self: *Connection, encoded: []const u8) !void {
             if (self.tls_context) |tls_ctx| {
-                tls_ctx.setTransportParameters(encoded);
+                try tls_ctx.setTransportParameters(encoded);
             }
             try storeLocalTransportParams(self, encoded);
         }

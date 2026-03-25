@@ -624,7 +624,9 @@ pub fn processInitial(
         };
         if (conn.tls_context) |tls_ctx| {
             if (conn.local_transport_params_raw) |tp_bytes| {
-                tls_ctx.setTransportParameters(tp_bytes);
+                tls_ctx.setTransportParameters(tp_bytes) catch |tp_err| {
+                    logger.debugPrint("[INCOMING] setTransportParameters failed: {s}\n", .{@errorName(tp_err)});
+                };
             }
         }
 

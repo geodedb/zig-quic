@@ -261,7 +261,7 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
 
     // Set transport parameters on TLS Context
     if (c.local_transport_params_raw) |tp_bytes| {
-        tls_ctx.setTransportParameters(tp_bytes);
+        try tls_ctx.setTransportParameters(tp_bytes);
     }
 
     // Start client handshake (generates ClientHello)
