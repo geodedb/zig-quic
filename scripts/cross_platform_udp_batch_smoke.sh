@@ -8,21 +8,17 @@ targets=(
   aarch64-windows-gnu
 )
 
-files=(
-  src/quic/endpoint/transport.zig
-  src/quic/endpoint/udp_transport.zig
-  src/quic/endpoint.zig
-)
 bench_files=(
   bench/udp_batch_bench.zig
 )
 
 echo "[cross-platform-udp-batch] starting compile-only matrix"
 for target in "${targets[@]}"; do
-  for file in "${files[@]}"; do
-    echo "[cross-platform-udp-batch] zig test ${file} --test-no-exec -target ${target}"
-    zig test "${file}" --test-no-exec -target "${target}"
-  done
+  # Use the build system's cross-smoke step so module dependencies resolve correctly.
+  # addObject produces object files only (no linking), so no system libraries are needed.
+  echo "[cross-platform-udp-batch] zig build cross-smoke -Dtarget=${target}"
+  zig build cross-smoke -Dtarget="${target}"
+
   for bench_file in "${bench_files[@]}"; do
     echo "[cross-platform-udp-batch] zig build-exe ${bench_file} -fno-emit-bin -target ${target}"
     zig build-exe "${bench_file}" -fno-emit-bin -target "${target}" -O ReleaseFast

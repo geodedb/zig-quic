@@ -1827,4 +1827,82 @@ pub fn build(b: *std.Build) void {
     const bench_tls_aead = addExe(b, "bench_tls_aead", "bench/bench_tls_aead.zig", target, .ReleaseFast);
     const install_bench_tls_aead = b.addInstallArtifact(bench_tls_aead, .{});
     bench_step.dependOn(&install_bench_tls_aead.step);
+
+    // ========================================================================
+    // Cross-platform compile smoke test
+    // Used by scripts/cross_platform_udp_batch_smoke.sh
+    // Compile-only (addObject, no linking) so cross-targets work without
+    // system libraries (OpenSSL, ws2_32, etc.).
+    // ========================================================================
+    const cross_smoke_step = b.step("cross-smoke", "Compile-only cross-platform transport smoke test");
+
+    // endpoint/transport.zig
+    {
+        const mod = b.createModule(.{
+            .root_source_file = b.path("src/quic/endpoint/transport.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        mod.addImport("quic_conn", quic_conn_mod);
+        const obj = b.addObject(.{ .name = "cross-smoke-transport", .root_module = mod });
+        cross_smoke_step.dependOn(&obj.step);
+    }
+
+    // endpoint/udp_transport.zig
+    {
+        const mod = b.createModule(.{
+            .root_source_file = b.path("src/quic/endpoint/udp_transport.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        mod.addImport("transport.zig", endpoint_transport_mod);
+        mod.addImport("conn.zig", quic_conn_mod);
+        mod.addImport("quic_logger", quic_logger_mod);
+        const obj = b.addObject(.{ .name = "cross-smoke-udp-transport", .root_module = mod });
+        cross_smoke_step.dependOn(&obj.step);
+    }
+
+    // endpoint.zig (full module graph — mirrors quic_endpoint_mod imports)
+    {
+        const mod = b.createModule(.{
+            .root_source_file = b.path("src/quic/endpoint.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        mod.addImport("types", endpoint_types_mod);
+        mod.addImport("quic_conn", quic_conn_mod);
+        mod.addImport("quic_packet", quic_packet_mod);
+        mod.addImport("quic_frame", quic_frame_mod);
+        mod.addImport("quic_tls13", tls13_mod);
+        mod.addImport("quic_crypto", quic_crypto_mod);
+        mod.addImport("quic_varint", quic_varint_mod);
+        mod.addImport("quic_tls", quic_tls_mod);
+        mod.addImport("sig", sig_mod);
+        mod.addImport("x509", x509_mod);
+        mod.addImport("quic_recovery", quic_recovery_mod);
+        mod.addImport("config.zig", quic_config_mod);
+        mod.addImport("loop_backend.zig", loop_backend_mod);
+        mod.addImport("quic_transport_params", quic_transport_params_mod);
+        mod.addImport("quic_logger", quic_logger_mod);
+        mod.addImport("byteorder", byteorder_mod);
+        mod.addImport("quic_version", quic_version_mod);
+        mod.addImport("quic_token", quic_token_mod);
+        mod.addImport("endpoint/utils.zig", endpoint_utils_mod);
+        mod.addImport("endpoint/transport.zig", endpoint_transport_mod);
+        mod.addImport("endpoint/udp_transport.zig", endpoint_udp_transport_mod);
+        mod.addImport("endpoint/incoming.zig", endpoint_incoming_mod);
+        mod.addImport("endpoint/frame_handler.zig", endpoint_frame_handler_mod);
+        mod.addImport("endpoint/lookup.zig", endpoint_lookup_mod);
+        mod.addImport("endpoint/pto.zig", endpoint_pto_mod);
+        mod.addImport("endpoint/lifecycle.zig", endpoint_lifecycle_mod);
+        mod.addImport("endpoint/handshake_integration.zig", endpoint_handshake_integration_mod);
+        mod.addImport("endpoint/client.zig", endpoint_client_mod);
+        mod.addImport("endpoint/server.zig", endpoint_server_mod);
+        mod.addImport("build_options", build_options.createModule());
+        if (spice_mod) |sm| {
+            mod.addImport("spice", sm);
+        }
+        const obj = b.addObject(.{ .name = "cross-smoke-endpoint", .root_module = mod });
+        cross_smoke_step.dependOn(&obj.step);
+    }
 }
