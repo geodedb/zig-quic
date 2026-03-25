@@ -209,7 +209,6 @@ pub fn isDrainingExpired(ctx: *const ErrorContext, now_ns: u64, pto_ns: u64) boo
     return now_ns >= close_time + timeout;
 }
 
-
 /// Validate error code is in valid range.
 /// RFC 9000 §20: Error codes up to 2^62-1 are valid.
 pub fn isValidErrorCode(code: u64) bool {

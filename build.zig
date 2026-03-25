@@ -748,6 +748,8 @@ pub fn build(b: *std.Build) void {
     qns_endpoint.root_module.addImport("h3_server", h3_server_mod);
     qns_endpoint.root_module.addImport("h3_client", h3_client_mod);
     const install_qns_endpoint = b.addInstallArtifact(qns_endpoint, .{});
+    // Include qns-endpoint in default install so interop-test CI job gets the artifact.
+    b.getInstallStep().dependOn(&install_qns_endpoint.step);
 
     const cli_step = b.step("cli", "Build QUIC CLI client/server");
     cli_step.dependOn(&install_quic_client.step);

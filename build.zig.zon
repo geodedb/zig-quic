@@ -16,7 +16,7 @@
         // TLS 1.3 implementation (used for QUIC-TLS integration)
         .tls = .{
             .url = "https://gitlab.com/devnw/zig/tls/-/archive/main/tls-main.tar.gz",
-            .hash = "tls-0.1.0-mtEaLH-4EQDE4IUgdrlrvY6ZuClhmUnZJGxSKJZ8THUI",
+            .hash = "tls-0.1.0-mtEaLDe5EQBbx87gjDcnWJU59LvQkNkx9BeDju0z67Eh",
         },
         // Spice heartbeat scheduling for parallel operations
         .spice = .{
