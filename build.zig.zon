@@ -15,8 +15,8 @@
     .dependencies = .{
         // TLS 1.3 implementation (used for QUIC-TLS integration)
         .tls = .{
-            .url = "git+https://gitlab.com/devnw/zig/tls.git#7ec244af7357d75b6eb8a5957e1f044169c5d28e",
-            .hash = "tls-0.1.0-mtEaLF-5EQCBqsJLDUY5YcwiZA1Kqlf76uV_6WSGJYXg",
+            .url = "git+https://gitlab.com/devnw/zig/tls.git#eaafc1c2f008270ebca070d92933710c94691d8a",
+            .hash = "tls-0.1.0-mtEaLEi5EQBlknKpEC7Zp948xif49Ci6zklODYUNIqc4",
         },
         // Spice heartbeat scheduling for parallel operations
         .spice = .{
