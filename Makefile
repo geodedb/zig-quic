@@ -47,6 +47,35 @@ fuzz:
 bench:
 	$(ZIG) build bench $(ZIG_FLAGS)
 
+bench-poll:
+	$(ZIG) build bench-poll $(ZIG_FLAGS)
+
+bench-scale:
+	$(ZIG) build bench-scale $(ZIG_FLAGS)
+
+bench-throughput:
+	$(ZIG) build bench-throughput $(ZIG_FLAGS)
+
+bench-handshake:
+	$(ZIG) build bench-handshake $(ZIG_FLAGS)
+
+bench-all: bench bench-poll bench-scale bench-throughput bench-handshake
+
+bench-save:
+	@echo "Running scale benchmark and saving results..."
+	@$(ZIG) build bench-scale $(ZIG_FLAGS) 2>/dev/null > benchmarks/results/$$(git rev-parse --short HEAD).json
+	@echo "Saved to benchmarks/results/$$(git rev-parse --short HEAD).json"
+
+bench-baseline:
+	@echo "Running scale benchmark and saving as baseline..."
+	@$(ZIG) build bench-scale $(ZIG_FLAGS) 2>/dev/null > benchmarks/results/baseline.json
+	@echo "Saved to benchmarks/results/baseline.json"
+
+bench-compare:
+	@echo "Running scale benchmark and comparing against baseline..."
+	@$(ZIG) build bench-scale $(ZIG_FLAGS) 2>/dev/null > /tmp/quic-current-bench.json
+	@$(ZIG) build bench-compare $(ZIG_FLAGS) -- benchmarks/results/baseline.json /tmp/quic-current-bench.json
+
 tools:
 	$(ZIG) build tools $(ZIG_FLAGS)
 
