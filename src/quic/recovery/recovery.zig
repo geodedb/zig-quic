@@ -84,12 +84,16 @@ const SpaceState = struct {
     }
 
     /// Enforce hard capacity cap by dropping oldest entries when over limit.
-    fn enforceCapacity(self: *SpaceState) void {
+    fn enforceCapacity(self: *SpaceState, cc: *CcState) void {
         if (self.sent.items.len <= max_sent_packets) return;
         const excess = self.sent.items.len - max_sent_packets;
-        // Remove index entries for dropped packets
+        // Remove index entries for dropped packets and adjust bytes_in_flight
         for (self.sent.items[0..excess]) |sp| {
             _ = self.sent_index.remove(sp.pn);
+            // Subtract orphaned packet bytes from congestion accounting
+            if (sp.ack_eliciting) {
+                if (cc.bytes_in_flight >= sp.size) cc.bytes_in_flight -= sp.size else cc.bytes_in_flight = 0;
+            }
         }
         // Shift remaining entries forward
         std.mem.copyForwards(
@@ -176,7 +180,7 @@ pub const Recovery = struct {
         // Enforce hard capacity cap: compact first, then drop oldest if still over.
         if (self.spaces[idx].sent.items.len > max_sent_packets) {
             self.spaces[idx].compact();
-            self.spaces[idx].enforceCapacity();
+            self.spaces[idx].enforceCapacity(&self.cc);
         }
 
         const old_inflight = self.cc.bytes_in_flight;
