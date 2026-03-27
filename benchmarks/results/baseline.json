@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "suite": "scale",
+  "timestamp": 1774627456,
+  "git_commit": "918d8e3",
+  "system": {
+    "os": "linux",
+    "arch": "x86_64"
+  },
+  "tiers": [
+    {
+      "name": "1c",
+      "params": {
+        "connections": 1,
+        "streams_per_conn": 1
+      },
+      "metrics": {
+        "conn_setup_ops_sec": 40213.93815096312,
+        "poll_us": 1.1526328000000001,
+        "accept_rate_ops_sec": 116520239.56561254
+      }
+    },
+    {
+      "name": "10c",
+      "params": {
+        "connections": 10,
+        "streams_per_conn": 10
+      },
+      "metrics": {
+        "conn_setup_ops_sec": 84542.28805248385,
+        "poll_us": 1.1518485,
+        "accept_rate_ops_sec": 115854718.18339801
+      }
+    },
+    {
+      "name": "100c",
+      "params": {
+        "connections": 100,
+        "streams_per_conn": 10
+      },
+      "metrics": {
+        "conn_setup_ops_sec": 112790.3081544009,
+        "poll_us": 2.43764,
+        "accept_rate_ops_sec": 117150890.34676665
+      }
+    },
+    {
+      "name": "1Kc",
+      "params": {
+        "connections": 1000,
+        "streams_per_conn": 10
+      },
+      "metrics": {
+        "conn_setup_ops_sec": 120018.56927303792,
+        "poll_us": 30.13046,
+        "accept_rate_ops_sec": 108459869.84815618
+      }
+    },
+    {
+      "name": "1Kc-100s",
+      "params": {
+        "connections": 1000,
+        "streams_per_conn": 100
+      },
+      "metrics": {
+        "conn_setup_ops_sec": 123082.37657299277,
+        "poll_us": 28.8074,
+        "accept_rate_ops_sec": 114678899.08256881
+      }
+    },
+    {
+      "name": "10Kc",
+      "params": {
+        "connections": 10000,
+        "streams_per_conn": 1
+      },
+      "metrics": {
+        "conn_setup_ops_sec": 108334.03669206655,
+        "poll_us": 1945.67172,
+        "accept_rate_ops_sec": 113378684.80725624
+      }
+    },
+    {
+      "name": "10Kc-10s",
+      "params": {
+        "connections": 10000,
+        "streams_per_conn": 10
+      },
+      "metrics": {
+        "conn_setup_ops_sec": 111014.24501487757,
+        "poll_us": 1942.1218000000001,
+        "accept_rate_ops_sec": 87565674.25569177
+      }
+    }
+  ]
+}
