@@ -1867,6 +1867,19 @@ pub fn build(b: *std.Build) void {
     bench_poll_step.dependOn(&install_bench_poll.step);
     bench_poll_step.dependOn(&run_bench_poll.step);
 
+    // Connection/stream scaling benchmark
+    const bench_scale = addExe(b, "bench-scale", "benchmarks/scale_bench.zig", target, .ReleaseFast);
+    bench_scale.root_module.addImport("bench_common", bench_common_mod);
+    bench_scale.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+    bench_scale.root_module.addImport("quic_conn", quic_conn_mod);
+    bench_scale.root_module.addImport("quic_config", quic_config_mod);
+    const install_bench_scale = b.addInstallArtifact(bench_scale, .{});
+    const run_bench_scale = b.addRunArtifact(bench_scale);
+    if (b.args) |args| run_bench_scale.addArgs(args);
+    const bench_scale_step = b.step("bench-scale", "Run connection/stream scaling benchmark");
+    bench_scale_step.dependOn(&install_bench_scale.step);
+    bench_scale_step.dependOn(&run_bench_scale.step);
+
     // ========================================================================
     // Cross-platform compile smoke test
     // Used by scripts/cross_platform_udp_batch_smoke.sh
