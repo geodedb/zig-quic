@@ -87,71 +87,63 @@ pub const TierResult = struct {
 /// }
 /// ```
 pub fn emitJson(allocator: std.mem.Allocator, suite: []const u8, tiers: []const TierResult) !void {
-    const stdout = std.io.getStdOut().writer();
-    var jw = std.json.writeStream(stdout, .{ .whitespace = .indent_2 });
-    defer jw.deinit();
-
     const git_commit = getGitCommit(allocator);
     defer allocator.free(git_commit);
 
     const timestamp = std.time.timestamp();
 
-    try jw.beginObject();
+    // Build JSON into a heap buffer, then write to stdout in one shot.
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(allocator);
 
-    try jw.objectField("version");
-    try jw.write(1);
+    const w = buf.writer(allocator);
 
-    try jw.objectField("suite");
-    try jw.write(suite);
+    try w.writeAll("{\n");
+    try w.print("  \"version\": 1,\n", .{});
+    try w.print("  \"suite\": \"{s}\",\n", .{suite});
+    try w.print("  \"timestamp\": {d},\n", .{timestamp});
+    try w.print("  \"git_commit\": \"{s}\",\n", .{git_commit});
+    try w.writeAll("  \"system\": {\n");
+    try w.print("    \"os\": \"{s}\",\n", .{@tagName(builtin.os.tag)});
+    try w.print("    \"arch\": \"{s}\"\n", .{@tagName(builtin.cpu.arch)});
+    try w.writeAll("  },\n");
+    try w.writeAll("  \"tiers\": [\n");
 
-    try jw.objectField("timestamp");
-    try jw.write(timestamp);
+    for (tiers, 0..) |tier, ti| {
+        try w.writeAll("    {\n");
+        try w.print("      \"name\": \"{s}\",\n", .{tier.name});
 
-    try jw.objectField("git_commit");
-    try jw.write(git_commit);
-
-    try jw.objectField("system");
-    try jw.beginObject();
-    try jw.objectField("os");
-    try jw.write(@tagName(builtin.os.tag));
-    try jw.objectField("arch");
-    try jw.write(@tagName(builtin.cpu.arch));
-    try jw.endObject();
-
-    try jw.objectField("tiers");
-    try jw.beginArray();
-
-    for (tiers) |tier| {
-        try jw.beginObject();
-
-        try jw.objectField("name");
-        try jw.write(tier.name);
-
-        try jw.objectField("params");
-        try jw.beginObject();
-        for (tier.params) |p| {
-            try jw.objectField(p.name);
-            try jw.write(p.value);
+        try w.writeAll("      \"params\": {\n");
+        for (tier.params, 0..) |p, pi| {
+            const comma: []const u8 = if (pi + 1 < tier.params.len) "," else "";
+            try w.print("        \"{s}\": {d}{s}\n", .{ p.name, p.value, comma });
         }
-        try jw.endObject();
+        try w.writeAll("      },\n");
 
-        try jw.objectField("metrics");
-        try jw.beginObject();
-        for (tier.metrics) |m| {
-            try jw.objectField(m.name);
-            try jw.write(m.value);
+        try w.writeAll("      \"metrics\": {\n");
+        for (tier.metrics, 0..) |m, mi| {
+            const comma: []const u8 = if (mi + 1 < tier.metrics.len) "," else "";
+            try w.print("        \"{s}\": {d}{s}\n", .{ m.name, m.value, comma });
         }
-        try jw.endObject();
+        try w.writeAll("      }\n");
 
-        try jw.endObject();
+        const tier_comma: []const u8 = if (ti + 1 < tiers.len) "," else "";
+        try w.print("    }}{s}\n", .{tier_comma});
     }
 
-    try jw.endArray();
+    try w.writeAll("  ]\n");
+    try w.writeAll("}\n");
 
-    try jw.endObject();
-
-    // Trailing newline for clean output
-    try stdout.writeByte('\n');
+    // Write to stdout via POSIX fd.
+    const stdout_fd = std.posix.STDOUT_FILENO;
+    var written: usize = 0;
+    while (written < buf.items.len) {
+        const n = std.posix.write(stdout_fd, buf.items[written..]) catch |err| switch (err) {
+            error.WouldBlock => continue,
+            else => return err,
+        };
+        written += n;
+    }
 }
 
 /// Best-effort retrieval of the short git commit hash.

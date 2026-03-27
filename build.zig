@@ -867,6 +867,14 @@ pub fn build(b: *std.Build) void {
             const run_test_concurrent_load_only = b.addRunArtifact(test_concurrent_load_only);
             test_step.dependOn(&run_test_concurrent_load_only.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "poll_perf")) {
+            const test_poll_perf_only = addTst(b, testlog_mod, "tests/test_poll_perf.zig", target, optimize);
+            test_poll_perf_only.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+            test_poll_perf_only.root_module.addImport("quic_conn", quic_conn_mod);
+            test_poll_perf_only.root_module.addImport("quic_config", quic_config_mod);
+            const run_test_poll_perf_only = b.addRunArtifact(test_poll_perf_only);
+            test_step.dependOn(&run_test_poll_perf_only.step);
+            return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "contention_load")) {
             const test_contention_load_only = addTst(b, testlog_mod, "tests/test_contention_load.zig", target, optimize);
             test_contention_load_only.root_module.addImport("quic_endpoint", quic_endpoint_mod);
@@ -1742,6 +1750,14 @@ pub fn build(b: *std.Build) void {
         const run_test_concurrent_load = b.addRunArtifact(test_concurrent_load);
         test_step.dependOn(&run_test_concurrent_load.step);
 
+        // Poll loop performance regression tests
+        const test_poll_perf = addTst(b, testlog_mod, "tests/test_poll_perf.zig", target, optimize);
+        test_poll_perf.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        test_poll_perf.root_module.addImport("quic_conn", quic_conn_mod);
+        test_poll_perf.root_module.addImport("quic_config", quic_config_mod);
+        const run_test_poll_perf = b.addRunArtifact(test_poll_perf);
+        test_step.dependOn(&run_test_poll_perf.step);
+
         // Endpoint mutex contention load tests (Geode poll() contention pattern)
         const test_contention_load = addTst(b, testlog_mod, "tests/test_contention_load.zig", target, optimize);
         test_contention_load.root_module.addImport("quic_endpoint", quic_endpoint_mod);
@@ -1827,6 +1843,29 @@ pub fn build(b: *std.Build) void {
     const bench_tls_aead = addExe(b, "bench_tls_aead", "bench/bench_tls_aead.zig", target, .ReleaseFast);
     const install_bench_tls_aead = b.addInstallArtifact(bench_tls_aead, .{});
     bench_step.dependOn(&install_bench_tls_aead.step);
+
+    // ========================================================================
+    // Macro benchmarks (benchmarks/ directory)
+    // ========================================================================
+
+    const bench_common_mod = b.createModule(.{
+        .root_source_file = b.path("benchmarks/common.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+
+    // Poll loop overhead benchmark
+    const bench_poll = addExe(b, "bench-poll", "benchmarks/poll_bench.zig", target, .ReleaseFast);
+    bench_poll.root_module.addImport("bench_common", bench_common_mod);
+    bench_poll.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+    bench_poll.root_module.addImport("quic_conn", quic_conn_mod);
+    bench_poll.root_module.addImport("quic_config", quic_config_mod);
+    const install_bench_poll = b.addInstallArtifact(bench_poll, .{});
+    const run_bench_poll = b.addRunArtifact(bench_poll);
+    if (b.args) |args| run_bench_poll.addArgs(args);
+    const bench_poll_step = b.step("bench-poll", "Run poll loop overhead benchmark");
+    bench_poll_step.dependOn(&install_bench_poll.step);
+    bench_poll_step.dependOn(&run_bench_poll.step);
 
     // ========================================================================
     // Cross-platform compile smoke test
