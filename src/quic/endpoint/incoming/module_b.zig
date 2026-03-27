@@ -103,6 +103,13 @@ pub fn processHandshake(
         return;
     };
 
+    // GAP-0200: Acquire conn.mu to protect PnWindow, ack_ranges_buf, and other
+    // connection state from concurrent access by worker threads.
+    // Handshake frame processing only handles CRYPTO/ACK/PING/PADDING (no
+    // pushStreamFrame calls), so holding the lock across the entire function is safe.
+    conn.*.mu.lock();
+    defer conn.*.mu.unlock();
+
     // Record ECN marking if present
     if (ecn_bits) |e| conn.*.onEcnMark(.Handshake, e);
 

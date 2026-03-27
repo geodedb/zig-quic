@@ -217,6 +217,12 @@ pub fn processShortHeader(
     // STEP 5: NEXT Key Promotion (RFC 9001 §6.1)
     // =============================================================================
 
+    // GAP-0200: Acquire conn.mu to protect PnWindow, ack_ranges_buf, key state,
+    // and packet-number tracking from concurrent access by worker threads.
+    // Released before processFrames() which calls pushStreamFrame() that acquires
+    // conn.mu internally (Zig mutexes are non-recursive).
+    conn.mu.lock();
+
     // Handle key promotion if NEXT keys were used
     // RFC 9001 §6.1: "After receiving a packet encrypted with the next keys,
     // an endpoint MUST update to the next keys."
@@ -303,6 +309,10 @@ pub fn processShortHeader(
     // STEP 8: Frame Processing Integration (RFC 9000 §12.4)
     // =============================================================================
 
+    // GAP-0200: Release conn.mu before processFrames() because frame_handler
+    // calls pushStreamFrame() which acquires conn.mu (non-recursive mutex).
+    conn.mu.unlock();
+
     // Parse and process all frames from the decrypted payload
     const frame_result = processFrames(
         ctx,
@@ -324,6 +334,11 @@ pub fn processShortHeader(
             frame_result.saw_close,
         });
     }
+
+    // GAP-0200: Re-acquire conn.mu for post-frame state mutations and ACK
+    // generation (buildAckApp reads PnWindow / writes ack_ranges_buf).
+    conn.mu.lock();
+    defer conn.mu.unlock();
 
     // Handle HANDSHAKE_DONE frame (RFC 9000 §19.20)
     // Client: drop Handshake keys after HANDSHAKE_DONE (with conditions)
