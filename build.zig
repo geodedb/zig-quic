@@ -1889,6 +1889,26 @@ pub fn build(b: *std.Build) void {
     bench_compare_step.dependOn(&install_bench_compare.step);
     bench_compare_step.dependOn(&run_bench_compare.step);
 
+    // Throughput benchmark (real UDP) - scaffold
+    const bench_throughput = addExe(b, "bench-throughput", "benchmarks/throughput_bench.zig", target, .ReleaseFast);
+    bench_throughput.root_module.addImport("bench_common", bench_common_mod);
+    const install_bench_throughput = b.addInstallArtifact(bench_throughput, .{});
+    const run_bench_throughput = b.addRunArtifact(bench_throughput);
+    if (b.args) |args| run_bench_throughput.addArgs(args);
+    const bench_throughput_step = b.step("bench-throughput", "Run payload throughput benchmark (real UDP)");
+    bench_throughput_step.dependOn(&install_bench_throughput.step);
+    bench_throughput_step.dependOn(&run_bench_throughput.step);
+
+    // Handshake latency benchmark (real UDP) - scaffold
+    const bench_handshake = addExe(b, "bench-handshake", "benchmarks/handshake_bench.zig", target, .ReleaseFast);
+    bench_handshake.root_module.addImport("bench_common", bench_common_mod);
+    const install_bench_handshake = b.addInstallArtifact(bench_handshake, .{});
+    const run_bench_handshake = b.addRunArtifact(bench_handshake);
+    if (b.args) |args| run_bench_handshake.addArgs(args);
+    const bench_handshake_step = b.step("bench-handshake", "Run TLS handshake latency benchmark (real UDP)");
+    bench_handshake_step.dependOn(&install_bench_handshake.step);
+    bench_handshake_step.dependOn(&run_bench_handshake.step);
+
     // ========================================================================
     // Cross-platform compile smoke test
     // Used by scripts/cross_platform_udp_batch_smoke.sh
