@@ -1880,6 +1880,15 @@ pub fn build(b: *std.Build) void {
     bench_scale_step.dependOn(&install_bench_scale.step);
     bench_scale_step.dependOn(&run_bench_scale.step);
 
+    // Regression comparison tool
+    const bench_compare = addExe(b, "bench-compare", "benchmarks/compare.zig", target, .ReleaseFast);
+    const install_bench_compare = b.addInstallArtifact(bench_compare, .{});
+    const run_bench_compare = b.addRunArtifact(bench_compare);
+    if (b.args) |args| run_bench_compare.addArgs(args);
+    const bench_compare_step = b.step("bench-compare", "Compare benchmark results against baseline");
+    bench_compare_step.dependOn(&install_bench_compare.step);
+    bench_compare_step.dependOn(&run_bench_compare.step);
+
     // ========================================================================
     // Cross-platform compile smoke test
     // Used by scripts/cross_platform_udp_batch_smoke.sh
