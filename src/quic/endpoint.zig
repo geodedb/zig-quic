@@ -715,16 +715,10 @@ pub const Endpoint = struct {
     pub fn pollWithStats(self: *Endpoint, timeout_ms: i32) !PollStats {
         var stats = PollStats{};
 
-        // Phase 1: Process expired timers (timer_mu + mu for firing callbacks)
-        {
-            self.mu.lock();
-            self.timer_mu.lock();
-            defer {
-                self.timer_mu.unlock();
-                self.mu.unlock();
-            }
-            self.processExpiredTimers(nowMsMonotonic());
-        }
+        // Phase 1 (removed): Timer processing consolidated into Phase 5 to
+        // eliminate one mu+timer_mu acquisition per poll cycle. Phase 2 already
+        // accounts for timer deadlines in the effective timeout, so expired
+        // timers are caught promptly after transport.poll() returns.
 
         // Phase 2: Calculate effective timeout (timer_mu only - reads timer deadlines)
         var eff_timeout: i32 = undefined;
@@ -778,24 +772,19 @@ pub const Endpoint = struct {
             }
         }
 
-        // Phase 5a: Process expired timers (needs both mu + timer_mu)
+        // Phase 5: Process expired timers + arm PTO timers (combined to reduce
+        // lock acquisitions from 2 to 1 for mu).
         // processExpiredTimers releases/reacquires timer_mu internally for callbacks.
         {
             self.mu.lock();
             self.timer_mu.lock();
-            defer {
-                self.timer_mu.unlock();
-                self.mu.unlock();
-            }
             self.processExpiredTimers(nowMsMonotonic());
-        }
-
-        // Phase 5b: Arm PTO timers (needs mu for conn iteration; scheduleConnPto
-        // acquires timer_mu independently — must NOT hold timer_mu here)
-        {
-            self.mu.lock();
-            defer self.mu.unlock();
+            // timer_mu is held on return from processExpiredTimers
+            self.timer_mu.unlock();
+            // Still holding mu — arm PTO timers for active connections.
+            // scheduleConnPto acquires timer_mu independently.
             self.armConnectionPtoTimers();
+            self.mu.unlock();
         }
 
         return stats;

@@ -878,6 +878,8 @@ pub fn bind(comptime Connection: type) type {
         /// Compute PTO for Application space and arm timer if not active.
         /// Recompute earliest PTO across spaces and (re)arm timer if needed.
         pub fn computeAndMaybeArmPto(self: *Connection, ep: anytype) void {
+            // Fast path: skip syscall + computation if timer already armed
+            if (self.pto_app_active) return;
             // Use Recovery to compute PTO deadline for Application space only
             const now_i = std.time.nanoTimestamp();
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
@@ -888,10 +890,8 @@ pub fn bind(comptime Connection: type) type {
             var delay_ms: u32 = @intCast(@min(delay_ns / std.time.ns_per_ms, @as(u64, std.math.maxInt(u32))));
             if (delay_ms == 0) delay_ms = 1;
             if (delay_ms > 100) delay_ms = 100; // keep deterministic and fast in tests
-            if (!self.pto_app_active) {
-                self.pto_app_active = true;
-                self.pto_app_id = ep.scheduleConnPto(self, .PtoApp, delay_ms) catch 0;
-            }
+            self.pto_app_active = true;
+            self.pto_app_id = ep.scheduleConnPto(self, .PtoApp, delay_ms) catch 0;
         }
 
         /// Begin DPLPMTUD probing from base (1200) upward. Requires app_tx_keys.
@@ -956,6 +956,8 @@ pub fn bind(comptime Connection: type) type {
         /// Compute PTO for Initial space and arm timer if not active.
         /// Recompute PTO for Initial space only and arm timer.
         pub fn computeAndMaybeArmPtoInitial(self: *Connection, ep: anytype) void {
+            // Fast path: skip syscall + computation if already armed or keys dropped
+            if (self.pto_initial_active or self.initial_keys_dropped) return;
             const now_i = std.time.nanoTimestamp();
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
             const next_deadline = self.rec.computeSpacePtoTimeNs(.Initial, now_ns);
@@ -964,14 +966,16 @@ pub fn bind(comptime Connection: type) type {
             var delay_ms: u32 = @intCast(@min(delay_ns / std.time.ns_per_ms, @as(u64, std.math.maxInt(u32))));
             if (delay_ms == 0) delay_ms = 1;
             if (delay_ms > 100) delay_ms = 100;
-            if (!self.pto_initial_active) {
-                self.pto_initial_active = true;
-                self.pto_initial_id = ep.scheduleConnPto(self, .PtoInitial, delay_ms) catch 0;
-            }
+            self.pto_initial_active = true;
+            self.pto_initial_id = ep.scheduleConnPto(self, .PtoInitial, delay_ms) catch 0;
         }
         /// Compute PTO for Handshake space and arm timer if not active.
         /// Recompute PTO for Handshake space only and arm timer.
         pub fn computeAndMaybeArmPtoHandshake(self: *Connection, ep: anytype) void {
+            // Fast path: skip syscall + computation if already armed or handshake keys gone
+            if (self.pto_handshake_active) return;
+            // Skip if handshake TX keys are already dropped (connection is established)
+            if (self.hs_tx_keys == null and self.app_tx_keys != null) return;
             const now_i = std.time.nanoTimestamp();
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
             const next_deadline = self.rec.computeSpacePtoTimeNs(.Handshake, now_ns);
@@ -980,10 +984,8 @@ pub fn bind(comptime Connection: type) type {
             var delay_ms: u32 = @intCast(@min(delay_ns / std.time.ns_per_ms, @as(u64, std.math.maxInt(u32))));
             if (delay_ms == 0) delay_ms = 1;
             if (delay_ms > 100) delay_ms = 100;
-            if (!self.pto_handshake_active) {
-                self.pto_handshake_active = true;
-                self.pto_handshake_id = ep.scheduleConnPto(self, .PtoHandshake, delay_ms) catch 0;
-            }
+            self.pto_handshake_active = true;
+            self.pto_handshake_id = ep.scheduleConnPto(self, .PtoHandshake, delay_ms) catch 0;
         }
 
         /// Send a minimal PTO probe for the Initial space (PING frame).
