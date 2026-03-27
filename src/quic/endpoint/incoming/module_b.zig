@@ -103,12 +103,10 @@ pub fn processHandshake(
         return;
     };
 
-    // GAP-0200: Acquire conn.mu to protect PnWindow, ack_ranges_buf, and other
-    // connection state from concurrent access by worker threads.
-    // Handshake frame processing only handles CRYPTO/ACK/PING/PADDING (no
-    // pushStreamFrame calls), so holding the lock across the entire function is safe.
-    conn.*.mu.lock();
-    defer conn.*.mu.unlock();
+    // GAP-0200: conn.mu is acquired in narrow scopes below around trackRecvPn*
+    // and buildAck* calls only. Holding it for the entire function blocks worker
+    // threads from writing to ANY stream on this connection for the duration of
+    // handshake processing, causing stalls under multiplexed load.
 
     // Record ECN marking if present
     if (ecn_bits) |e| conn.*.onEcnMark(.Handshake, e);
@@ -160,8 +158,10 @@ pub fn processHandshake(
     handshake_integration.setCurrentConnection(if (@TypeOf(conn) == **conn_mod.Connection) conn.* else conn);
     defer handshake_integration.clearCurrentConnection();
 
-    // Update packet number tracking
+    // Update packet number tracking (under conn.mu to prevent PnWindow race)
+    conn.*.mu.lock();
     conn.*.trackRecvPnHandshake(decrypted.packet_number);
+    conn.*.mu.unlock();
 
     // RFC 9000 §8.1: Successfully authenticating a packet at the Handshake level
     // proves the client received the server's Initial (which provided handshake keys).
@@ -338,9 +338,12 @@ pub fn processHandshake(
             defer frames_buf.deinit(ctx.allocator.*);
             const w = frames_buf.writer(ctx.allocator.*);
 
+            // GAP-0200: Lock conn.mu for ACK generation (reads PnWindow, writes ack_ranges_buf)
+            conn.*.mu.lock();
             const ack_desc = conn.*.buildAckHandshake();
             const ack_ecn = conn.*.getAckEcn(.Handshake);
             const ack_delay = conn.*.getAckDelayEncoded(.Handshake, now_ns);
+            conn.*.mu.unlock();
 
             if (ack_desc.largest != 0xFFFFFFFFFFFFFFFF) {
                 const ack_frame = frame.Frame{ .ack = .{
