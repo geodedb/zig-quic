@@ -1090,3 +1090,40 @@ The security-scanner (Phase 2) independently identified 5 additional findings (N
 **Low priority (90-180 days):**
 - SF-026 (#191): Docker USER directive -- straightforward but test-only scope (S effort).
 - SF-027: Dead code @panic -- remove or replace with @compileError (S effort, Backlog).
+
+---
+
+## Performance Issue: tryAccept causes ~40% idle CPU (2026-03-29)
+
+**Severity:** High (Performance)
+**Component:** `src/quic/endpoint.zig` (tryAccept / poll internals)
+**Reported by:** Storage audit of Geode graph database
+
+### Description
+
+When Geode's accept loop calls `tryAccept()` in a loop with 10ms sleep between iterations, the server process consumes ~40% CPU even when completely idle (no connections, no queries). A single thread (the accept loop thread) accounts for all the CPU usage.
+
+### Evidence
+
+- Idle CPU measured at 40-43% over 5-second intervals using `/proc/PID/stat` delta
+- `ps -L` shows only the main thread (accept loop) using CPU; poll thread and workers are idle
+- Increasing the sleep between `tryAccept` calls from 1ms to 10ms had no measurable effect
+- Removing the redundant `poll(0)` call from the accept loop also had no effect
+- The CPU usage is entirely within the `tryAccept` path
+
+### Root Cause Hypothesis
+
+`tryAccept()` likely performs a `recvfrom` syscall (or equivalent UDP socket read) on every call, even when no data is available. With non-blocking sockets, this returns immediately but the syscall overhead at 100 calls/sec still accumulates. Alternatively, `tryAccept` may be doing internal bookkeeping (timer processing, retransmission checks) that scales with endpoint state.
+
+### Suggested Fix
+
+1. **Event-driven accept:** Use epoll/kqueue to wait for socket readability instead of polling. `tryAccept` should only be called when the socket has data.
+2. **Separate timer processing:** If `tryAccept` processes internal timers, decouple that from the accept check so the accept loop can sleep longer.
+3. **Condition variable signaling:** The existing `PollSync.poll_cv` condition variable could be used to wake the accept loop only when the poll thread has processed new data, eliminating busy-wait entirely.
+
+### Impact on Geode
+
+- Server consumes 40%+ CPU at idle, rising to 100%+ under load
+- Under sustained load, the server becomes unresponsive to new QUIC connections
+- Shell-based integration tests experience intermittent query timeouts
+- The geodetestlab test harness (which manages server lifecycle carefully) is unaffected
