@@ -87,6 +87,13 @@ pub fn tryAccept(ep: *QuicEndpoint) ?*Connection {
     return ep.popAccepted();
 }
 
+/// Block until a connection is available or timeout expires.
+/// Returns the accepted connection, or null on timeout.
+/// Caller must ensure poll() is driven on another thread so packets are processed.
+pub fn waitForAccepted(ep: *QuicEndpoint, timeout_ms: u32) ?*Connection {
+    return ep.waitForAccepted(timeout_ms);
+}
+
 /// Schedule a QUIC timer relative to now, returning the timer handle.
 pub fn scheduleTimer(ep: *QuicEndpoint, delay_ms: u32) !u64 {
     return ep.scheduleTimer(delay_ms);

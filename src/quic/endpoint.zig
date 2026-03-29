@@ -215,6 +215,11 @@ pub const Endpoint = struct {
     // Accept queue for server (protected by mu)
     // GAP-0200: Thread-safe accept queue - poll() adds, accept() removes
     accepted: std.ArrayList(*conn_mod.Connection),
+
+    // Condition variable signaled when a new connection is pushed to the
+    // accepted queue.  Allows callers to block efficiently in accept() instead
+    // of busy-polling.  Protected by mu (waiters must hold mu).
+    accept_cv: std.Thread.Condition = .{},
     // TEST-ONLY: outbound capture ring (peer + owned bytes)
     captures: std.ArrayList(OutCaptured),
     // TEST-ONLY: runtime flag to enable outbound capture in tests
@@ -535,7 +540,10 @@ pub const Endpoint = struct {
         // detect pressure on the allocator.
         self.accepted.append(self.allocator, c) catch |err| {
             logger.debugPrint("[ENDPOINT] pushAccepted failed: {s} -- connection lost\n", .{@errorName(err)});
+            return;
         };
+        // Wake any thread blocked in waitForAccepted().
+        self.accept_cv.signal();
     }
 
     /// Pop next accepted server-side connection if available.
@@ -546,6 +554,32 @@ pub const Endpoint = struct {
         defer self.mu.unlock();
         if (self.accepted.items.len == 0) return null;
         return self.accepted.swapRemove(0);
+    }
+
+    /// Block until a connection is available or timeout expires.
+    /// Returns the accepted connection, or null on timeout.
+    /// The caller must ensure poll() is being called on another thread (or
+    /// interleaved) so that incoming packets are processed and connections
+    /// actually reach the accepted queue.
+    pub fn waitForAccepted(self: *Endpoint, timeout_ms: u32) ?*conn_mod.Connection {
+        self.mu.lock();
+        defer self.mu.unlock();
+
+        // Fast path: connection already queued.
+        if (self.accepted.items.len > 0) {
+            return self.accepted.swapRemove(0);
+        }
+
+        // Block on condition variable with timeout.
+        const timeout_ns: u64 = @as(u64, timeout_ms) * std.time.ns_per_ms;
+        self.accept_cv.timedWait(&self.mu, timeout_ns) catch {
+            // Timeout expired — check once more in case of spurious wake.
+        };
+
+        if (self.accepted.items.len > 0) {
+            return self.accepted.swapRemove(0);
+        }
+        return null;
     }
 
     /// Inject inbound datagram into receive path (test helper, no ECN).

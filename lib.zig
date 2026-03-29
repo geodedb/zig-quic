@@ -102,6 +102,7 @@ pub const endpointDeinit = api.endpointDeinit;
 pub const connect = api.connect;
 pub const accept = api.accept;
 pub const tryAccept = api.tryAccept;
+pub const waitForAccepted = api.waitForAccepted;
 pub const openStream = api.openStream;
 pub const openUni = api.openUni;
 pub const writeStream = api.writeStream;

@@ -1093,33 +1093,53 @@ The security-scanner (Phase 2) independently identified 5 additional findings (N
 
 ---
 
-## Performance Issue: tryAccept causes ~40% idle CPU (2026-03-29)
+## Performance Issue: tryAccept causes ~40% idle CPU (2026-03-29) — FIXED
 
 **Severity:** High (Performance)
 **Component:** `src/quic/endpoint.zig` (tryAccept / poll internals)
 **Reported by:** Storage audit of Geode graph database
+**Status:** Fixed (2026-03-29)
 
 ### Description
 
 When Geode's accept loop calls `tryAccept()` in a loop with 10ms sleep between iterations, the server process consumes ~40% CPU even when completely idle (no connections, no queries). A single thread (the accept loop thread) accounts for all the CPU usage.
 
-### Evidence
+### Root Cause
 
-- Idle CPU measured at 40-43% over 5-second intervals using `/proc/PID/stat` delta
-- `ps -L` shows only the main thread (accept loop) using CPU; poll thread and workers are idle
-- Increasing the sleep between `tryAccept` calls from 1ms to 10ms had no measurable effect
-- Removing the redundant `poll(0)` call from the accept loop also had no effect
-- The CPU usage is entirely within the `tryAccept` path
+`QuicTransport.tryAccept()` called `ep.poll(10)` on every invocation, running the full `pollWithStats` cycle: timer mutex acquisition, linear timer scan, `posix.poll()` syscall, receive batch drain, endpoint mutex acquisition, expired timer processing, and PTO timer arming for all connections. This heavyweight operation ran on every tryAccept call regardless of whether data was available.
 
-### Root Cause Hypothesis
+The `accept()` method compounded this with a 300-iteration busy loop (300 × `ep.poll(10)`), consuming up to 3 seconds of continuous polling per call.
 
-`tryAccept()` likely performs a `recvfrom` syscall (or equivalent UDP socket read) on every call, even when no data is available. With non-blocking sockets, this returns immediately but the syscall overhead at 100 calls/sec still accumulates. Alternatively, `tryAccept` may be doing internal bookkeeping (timer processing, retransmission checks) that scales with endpoint state.
+### Fix Applied
 
-### Suggested Fix
+1. **`tryAccept()` made truly non-blocking:** Removed `ep.poll(10)` — now just checks the accepted queue via `popAccepted()` (O(1) mutex + queue check). Callers must drive `poll()` separately.
 
-1. **Event-driven accept:** Use epoll/kqueue to wait for socket readability instead of polling. `tryAccept` should only be called when the socket has data.
-2. **Separate timer processing:** If `tryAccept` processes internal timers, decouple that from the accept check so the accept loop can sleep longer.
-3. **Condition variable signaling:** The existing `PollSync.poll_cv` condition variable could be used to wake the accept loop only when the poll thread has processed new data, eliminating busy-wait entirely.
+2. **`accept()` uses time-based deadline:** Replaced 300-iteration loop (300 × 10ms poll) with time-based 3-second deadline using 50ms poll intervals (~60 iterations vs 300).
+
+3. **`accept_cv` condition variable added to Endpoint:** `pushAccepted()` signals the CV when a new connection arrives. New `waitForAccepted(timeout_ms)` method blocks efficiently on the CV with near-zero idle CPU.
+
+4. **New `waitForAccepted()` API:** Available at all layers (`Endpoint`, `api`, `QuicTransport`, `lib.zig`). Enables efficient blocking accept when poll is driven on a separate thread.
+
+### Migration Guide for Callers
+
+**Before (busy-polling pattern):**
+```zig
+while (true) {
+    if (transport.tryAccept()) |conn| { handle(conn); }
+    std.Thread.sleep(10 * std.time.ns_per_ms);
+}
+```
+
+**After (event-driven pattern — recommended):**
+```zig
+// Poll thread:
+while (running) { try transport.poll(50); }
+
+// Accept thread:
+while (running) {
+    if (transport.waitForAccepted(1000)) |conn| { handle(conn); }
+}
+```
 
 ### Impact on Geode
 

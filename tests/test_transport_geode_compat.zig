@@ -342,3 +342,59 @@ test "transport geode compat: auto-generated cert is ECDSA P-256" {
             std.mem.containsAtLeast(u8, dump.stdout, 1, "prime256v1"),
     );
 }
+
+test "transport geode compat: tryAccept is non-blocking and does not call poll" {
+    // Regression test for idle CPU issue: tryAccept() should be a lightweight
+    // queue check, not a full poll cycle.  Previously tryAccept called ep.poll(10)
+    // which burned ~40% CPU when called in a loop.
+    const allocator = std.heap.page_allocator;
+    try ensureTestCertFiles(allocator);
+
+    var qt = try transport.QuicTransport.init(allocator, .{
+        .address = "localhost",
+        .port = allocatePort(),
+        .cert_path = "tests/certs/cert.pem",
+        .key_path = "tests/certs/key.pem",
+        .allow_insecure = true,
+    });
+    defer qt.deinit();
+    try qt.listen();
+
+    // Call tryAccept 1000 times and measure wall-clock time.
+    // With the old ep.poll(10) this would take 1000 * 10ms = 10+ seconds.
+    // With the fix it should complete in <100ms (just queue checks).
+    const start = std.time.milliTimestamp();
+    var i: usize = 0;
+    while (i < 1000) : (i += 1) {
+        try testing.expect(qt.tryAccept() == null);
+    }
+    const elapsed = std.time.milliTimestamp() - start;
+
+    // Must complete in under 500ms (generous margin; typically <10ms).
+    try testing.expect(elapsed < 500);
+}
+
+test "transport geode compat: waitForAccepted returns null on timeout" {
+    const allocator = std.heap.page_allocator;
+    try ensureTestCertFiles(allocator);
+
+    var qt = try transport.QuicTransport.init(allocator, .{
+        .address = "localhost",
+        .port = allocatePort(),
+        .cert_path = "tests/certs/cert.pem",
+        .key_path = "tests/certs/key.pem",
+        .allow_insecure = true,
+    });
+    defer qt.deinit();
+    try qt.listen();
+
+    // waitForAccepted with short timeout should return null when idle.
+    const start = std.time.milliTimestamp();
+    const result = qt.waitForAccepted(50);
+    const elapsed = std.time.milliTimestamp() - start;
+
+    try testing.expect(result == null);
+    // Should block for roughly the timeout period (±30ms for scheduling).
+    try testing.expect(elapsed >= 20);
+    try testing.expect(elapsed < 200);
+}

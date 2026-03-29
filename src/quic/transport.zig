@@ -409,18 +409,24 @@ pub const QuicTransport = struct {
 
     /// Accepts an incoming QUIC connection from a client.
     ///
-    /// Returns only after the API reports a completed handshake flight per
-    /// RFC 9000 §7.2, ensuring applications see connections that survived anti-
-    /// amplification and Retry handling.
+    /// Blocks for up to ~3 seconds waiting for a connection with incoming
+    /// streams (completed handshake per RFC 9000 §7.2).
+    ///
+    /// This method drives endpoint polling internally so it can be used as
+    /// the sole event driver.  For lower idle-CPU usage, prefer calling
+    /// poll() on a dedicated thread and using tryAccept() or
+    /// waitForAccepted() to dequeue connections.
     pub fn accept(self: *QuicTransport) !*QuicConnection {
         if (self.endpoint) |ep| {
-            var poll_count: usize = 0;
             var pending_conn: ?*api.QuicConnection = null;
+            const deadline = std.time.milliTimestamp() + 3000;
 
-            while (poll_count < 300) : (poll_count += 1) {
+            while (std.time.milliTimestamp() < deadline) {
                 self.drainPendingDestroy();
+
+                // Drive one poll cycle to process packets / advance handshakes.
                 self.poll_sync.enterPoll();
-                ep.poll(10) catch |err| {
+                ep.poll(50) catch |err| {
                     self.poll_sync.leavePoll();
                     return err;
                 };
@@ -445,15 +451,30 @@ pub const QuicTransport = struct {
     }
 
     /// Attempt to accept without blocking.
+    ///
+    /// This is a lightweight O(1) check of the accepted queue.  It does NOT
+    /// call poll() — the caller must ensure poll() is driven separately
+    /// (e.g. on a dedicated thread or interleaved in the event loop) so that
+    /// incoming packets are processed and connections reach the accepted queue.
+    ///
+    /// Previous behaviour called ep.poll(10) on every invocation, which caused
+    /// ~40% idle CPU when called in a loop due to repeated PollSync locking,
+    /// timer processing, and syscall overhead.
     pub fn tryAccept(self: *QuicTransport) ?*QuicConnection {
         const ep = self.endpoint orelse return null;
-        self.poll_sync.enterPoll();
-        ep.poll(10) catch {
-            self.poll_sync.leavePoll();
-            return null;
-        };
-        self.poll_sync.leavePoll();
         const qc = api.tryAccept(ep) orelse return null;
+        return self.wrapAcceptedConnection(qc) catch null;
+    }
+
+    /// Block until a connection is available or timeout expires.
+    ///
+    /// Unlike accept(), this does NOT drive endpoint polling.  The caller
+    /// must ensure poll() is called on a separate thread so that incoming
+    /// packets are processed and the handshake completes.  Uses a condition
+    /// variable internally so idle CPU is near zero.
+    pub fn waitForAccepted(self: *QuicTransport, timeout_ms: u32) ?*QuicConnection {
+        const ep = self.endpoint orelse return null;
+        const qc = api.waitForAccepted(ep, timeout_ms) orelse return null;
         return self.wrapAcceptedConnection(qc) catch null;
     }
 
