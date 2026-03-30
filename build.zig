@@ -59,11 +59,6 @@ pub fn build(b: *std.Build) void {
     // Spice parallelism option
     const enable_spice = b.option(bool, "spice", "Enable spice-based parallelism") orelse true;
 
-    // Build options module for compile-time feature flags
-    const build_options = b.addOptions();
-    build_options.addOption(bool, "enable_spice", enable_spice);
-    const build_options_mod = build_options.createModule();
-
     // Get spice dependency if enabled
     const spice_mod: ?*std.Build.Module = if (enable_spice) blk: {
         const spice_dep = b.dependency("spice", .{
@@ -72,6 +67,11 @@ pub fn build(b: *std.Build) void {
         });
         break :blk spice_dep.module("spice");
     } else null;
+
+    // Build options module (empty after enable_spice removal; kept because
+    // endpoint.zig still imports "quic_build_options")
+    const build_options = b.addOptions();
+    const build_options_mod = build_options.createModule();
 
     // Parse optional user args to support `zig build test --test-filter <substr>`.
     const raw_args = b.args orelse &[_][]const u8{};
@@ -563,24 +563,25 @@ pub fn build(b: *std.Build) void {
     quic_api_mod.addImport("quic_version", quic_version_mod);
 
     // Parallel module for spice-based parallelism
-    const parallel_mod = b.addModule("parallel", .{
+    const parallel_mod: ?*std.Build.Module = if (enable_spice) blk: {
+        break :blk b.addModule("parallel", .{
         .root_source_file = b.path("src/parallel.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "quic_build_options", .module = build_options_mod },
             .{ .name = "quic_crypto", .module = quic_crypto_mod },
         },
     });
-    if (spice_mod) |sm| {
-        parallel_mod.addImport("spice", sm);
-    }
+    } else null;
+    if (parallel_mod) |pm| {
+        if (spice_mod) |sm| pm.addImport("spice", sm);
 
-    // Wire parallel module into internal modules that need batch crypto/loss detection (PAR-009)
-    quic_packet_legacy_mod.addImport("parallel", parallel_mod);
-    quic_packet_mod.addImport("parallel", parallel_mod);
-    quic_recovery_mod.addImport("parallel", parallel_mod);
-    quic_endpoint_mod.addImport("parallel", parallel_mod);
+        // Wire parallel module into internal modules that need batch crypto/loss detection (PAR-009)
+        quic_packet_legacy_mod.addImport("parallel", pm);
+        quic_packet_mod.addImport("parallel", pm);
+        quic_recovery_mod.addImport("parallel", pm);
+        quic_endpoint_mod.addImport("parallel", pm);
+    }
 
     // Export named module for dependents: @import("quic")
     const quic_mod = b.addModule("quic", .{ .root_source_file = b.path("lib.zig") }); // aggregate export surface
@@ -597,7 +598,7 @@ pub fn build(b: *std.Build) void {
     quic_mod.addImport("quic_logger", quic_logger_mod);
     quic_mod.addImport("byteorder", byteorder_mod);
     quic_mod.addImport("quic_api", quic_api_mod);
-    quic_mod.addImport("parallel", parallel_mod);
+    if (parallel_mod) |pm| quic_mod.addImport("parallel", pm);
 
     // CLI binaries (scaffold): quic-client, quic-server + debug clients
     const quic_client = addExe(b, "quic-client", "cmd/quic-client.zig", target, optimize);
@@ -1987,7 +1988,7 @@ pub fn build(b: *std.Build) void {
         mod.addImport("endpoint/client.zig", endpoint_client_mod);
         mod.addImport("endpoint/server.zig", endpoint_server_mod);
         mod.addImport("quic_build_options", build_options_mod);
-        mod.addImport("parallel", parallel_mod);
+        if (parallel_mod) |pm| mod.addImport("parallel", pm);
         const obj = b.addObject(.{ .name = "cross-smoke-endpoint", .root_module = mod });
         cross_smoke_step.dependOn(&obj.step);
     }

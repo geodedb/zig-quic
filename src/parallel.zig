@@ -52,10 +52,9 @@
 //! | Loss Detection     | 64 packets| Yes              |
 
 const std = @import("std");
-const build_options = @import("quic_build_options");
 const crypto_zig = @import("quic_crypto");
 
-const spice = if (build_options.enable_spice) @import("spice") else struct {
+const spice = if (true) @import("spice") else struct {
     pub const ThreadPool = void;
     pub const Task = void;
     pub fn Future(comptime I: type, comptime O: type) type {
@@ -69,11 +68,11 @@ const spice = if (build_options.enable_spice) @import("spice") else struct {
 // Global Thread Pool
 // ============================================================================
 
-var global_pool: if (build_options.enable_spice) ?spice.ThreadPool else void = if (build_options.enable_spice) null else {};
+var global_pool: if (true) ?spice.ThreadPool else void = if (true) null else {};
 var pool_mutex: std.Thread.Mutex = .{};
 
-pub fn getPool() if (build_options.enable_spice) *spice.ThreadPool else void {
-    if (!build_options.enable_spice) return;
+pub fn getPool() if (true) *spice.ThreadPool else void {
+    // spice always enabled when this module is compiled
 
     pool_mutex.lock();
     defer pool_mutex.unlock();
@@ -86,7 +85,7 @@ pub fn getPool() if (build_options.enable_spice) *spice.ThreadPool else void {
 }
 
 pub fn deinitPool() void {
-    if (!build_options.enable_spice) return;
+    // spice always enabled when this module is compiled
 
     pool_mutex.lock();
     defer pool_mutex.unlock();
@@ -146,7 +145,7 @@ pub fn parallelAeadEncrypt(
     std.debug.assert(inputs.len == results.len);
 
     // Use sequential for small batches or when spice is disabled
-    if (!build_options.enable_spice or inputs.len < 4) {
+    if (!true or inputs.len < 4) {
         for (inputs, 0..) |input, i| {
             const len = crypto_zig.aeadEncrypt(
                 suite,
@@ -273,7 +272,7 @@ pub fn parallelAeadDecrypt(
     std.debug.assert(inputs.len == outputs.len);
     std.debug.assert(inputs.len == results.len);
 
-    if (!build_options.enable_spice or inputs.len < 4) {
+    if (!true or inputs.len < 4) {
         for (inputs, 0..) |input, i| {
             const len = crypto_zig.aeadDecrypt(
                 suite,
@@ -392,7 +391,7 @@ pub fn parallelHeaderProtect(
 ) void {
     std.debug.assert(inputs.len == masks.len);
 
-    if (!build_options.enable_spice or inputs.len < 8) {
+    if (!true or inputs.len < 8) {
         for (inputs, 0..) |input, i| {
             masks[i] = generateHeaderMask(suite, input.hp_key, input.sample);
         }
@@ -530,7 +529,7 @@ pub fn parallelLossDetect(
     time_threshold_ns: u64,
     now_ns: u64,
 ) LossDetectResult {
-    if (!build_options.enable_spice or sent_packets.len < 64) {
+    if (!true or sent_packets.len < 64) {
         return sequentialLossDetect(sent_packets, largest_acked, packet_threshold, time_threshold_ns, now_ns);
     }
 
@@ -647,7 +646,7 @@ fn sequentialLossDetectRange(
 // ============================================================================
 
 test "parallel aead encrypt" {
-    if (!build_options.enable_spice) return error.SkipZigTest;
+    // spice always enabled when this module is compiled
 
     const allocator = std.testing.allocator;
     const count = 8;
@@ -682,7 +681,7 @@ test "parallel aead encrypt" {
 }
 
 test "parallel loss detect" {
-    if (!build_options.enable_spice) return error.SkipZigTest;
+    // spice always enabled when this module is compiled
 
     var sent_packets: [100]SentPacketInfo = undefined;
     for (&sent_packets, 0..) |*sp, i| {
@@ -743,7 +742,7 @@ test "parallel aead encrypt - single item below threshold" {
 }
 
 test "parallel aead encrypt - at threshold boundary" {
-    if (!build_options.enable_spice) return error.SkipZigTest;
+    // spice always enabled when this module is compiled
 
     const allocator = std.testing.allocator;
     const count = 4; // Exactly at threshold
@@ -776,7 +775,7 @@ test "parallel aead encrypt - at threshold boundary" {
 }
 
 test "parallel aead decrypt - basic" {
-    if (!build_options.enable_spice) return error.SkipZigTest;
+    // spice always enabled when this module is compiled
 
     const allocator = std.testing.allocator;
     const count = 8;
@@ -832,7 +831,7 @@ test "parallel aead decrypt - basic" {
 }
 
 test "parallel header protect - basic" {
-    if (!build_options.enable_spice) return error.SkipZigTest;
+    // spice always enabled when this module is compiled
 
     var inputs: [16]HeaderProtectInput = undefined;
     var masks: [16][5]u8 = undefined;
@@ -863,7 +862,7 @@ test "parallel header protect - basic" {
 }
 
 test "parallel header protect - chacha20" {
-    if (!build_options.enable_spice) return error.SkipZigTest;
+    // spice always enabled when this module is compiled
 
     var inputs: [8]HeaderProtectInput = undefined;
     var masks: [8][5]u8 = undefined;
@@ -893,7 +892,7 @@ test "parallel header protect - chacha20" {
 }
 
 test "parallel loss detect - no losses" {
-    if (!build_options.enable_spice) return error.SkipZigTest;
+    // spice always enabled when this module is compiled
 
     var sent_packets: [64]SentPacketInfo = undefined;
     for (&sent_packets, 0..) |*sp, i| {
