@@ -57,7 +57,7 @@ const lifecycle_mod = @import("endpoint/lifecycle.zig");
 const ep_types = @import("types");
 const transport_mod = @import("endpoint/transport.zig");
 const udp_transport_mod = @import("endpoint/udp_transport.zig");
-const build_options = @import("build_options");
+const build_options = @import("quic_build_options");
 
 // Parallel batch operations (AEAD, header protection, loss detection)
 const parallel = @import("parallel");

@@ -52,7 +52,7 @@
 //! | Loss Detection     | 64 packets| Yes              |
 
 const std = @import("std");
-const build_options = @import("build_options");
+const build_options = @import("quic_build_options");
 const crypto_zig = @import("quic_crypto");
 
 const spice = if (build_options.enable_spice) @import("spice") else struct {

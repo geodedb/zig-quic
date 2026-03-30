@@ -536,7 +536,7 @@ pub fn build(b: *std.Build) void {
     quic_endpoint_mod.addImport("endpoint/handshake_integration.zig", endpoint_handshake_integration_mod);
     quic_endpoint_mod.addImport("endpoint/client.zig", endpoint_client_mod);
     quic_endpoint_mod.addImport("endpoint/server.zig", endpoint_server_mod);
-    quic_endpoint_mod.addImport("build_options", build_options_mod);
+    quic_endpoint_mod.addImport("quic_build_options", build_options_mod);
 
     // Public API module (reuse everywhere)
     const quic_api_mod = mkModule(b, "src/quic/api.zig");
@@ -568,7 +568,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "build_options", .module = build_options_mod },
+            .{ .name = "quic_build_options", .module = build_options_mod },
             .{ .name = "quic_crypto", .module = quic_crypto_mod },
         },
     });
@@ -1986,7 +1986,7 @@ pub fn build(b: *std.Build) void {
         mod.addImport("endpoint/handshake_integration.zig", endpoint_handshake_integration_mod);
         mod.addImport("endpoint/client.zig", endpoint_client_mod);
         mod.addImport("endpoint/server.zig", endpoint_server_mod);
-        mod.addImport("build_options", build_options_mod);
+        mod.addImport("quic_build_options", build_options_mod);
         mod.addImport("parallel", parallel_mod);
         const obj = b.addObject(.{ .name = "cross-smoke-endpoint", .root_module = mod });
         cross_smoke_step.dependOn(&obj.step);
