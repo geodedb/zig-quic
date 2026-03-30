@@ -11,6 +11,7 @@
 const std = @import("std");
 const logger = @import("quic_logger");
 const frame = @import("quic_frame");
+const parallel = @import("parallel");
 
 // Import recovery submodules
 pub const types = @import("types");
@@ -269,7 +270,12 @@ pub const Recovery = struct {
         }
         if (largest_pn != (sstate.largest_acked orelse 0)) sstate.largest_acked = largest_pn;
 
-        // Loss detection: merged packet-threshold and time-threshold in a single pass
+        // Loss detection: parallel scan for large windows (PAR-005), sequential for small.
+        //
+        // For 64+ unprocessed sent packets, use spice fork/join to mark packets as
+        // lost in parallel (parallel.parallelLossDetect). Then a sequential cleanup
+        // pass handles sent_index removal and detailed per-loss statistics/logging.
+        // Below threshold, the original merged single-pass is used.
         var bytes_lost: usize = 0;
         var first_lost_time: ?u64 = null;
         var last_lost_time: ?u64 = null;
@@ -278,24 +284,57 @@ pub const Recovery = struct {
         var time_threshold_lost_count: usize = 0;
         const have_rtt = self.rtt.have_sample;
         const tt_base: u64 = if (have_rtt) LossDetector.timeThresholdNs(self.rtt.smoothed_rtt_ns, self.rtt.latest_rtt_ns) else 0;
-        for (sstate.sent.items) |*sp| {
-            if (sp.acked or sp.declared_lost) continue;
 
-            // Packet-threshold loss (applies to all packets)
-            const pkt_lost = if (sstate.largest_acked) |la| self.loss.isPacketThresholdLost(la, sp.pn) else false;
+        // Count unprocessed packets to decide parallel vs sequential
+        var unprocessed_count: usize = 0;
+        for (sstate.sent.items) |sp| {
+            if (!sp.acked and !sp.declared_lost) unprocessed_count += 1;
+        }
 
-            // Time-threshold loss (applies only to ack-eliciting packets)
-            var time_lost = false;
-            if (have_rtt and sp.ack_eliciting) {
-                const deadline = sp.time_ns + tt_base;
-                if (now_ns >= deadline) {
-                    time_lost = true;
-                } else if (earliest_loss_time == null or deadline < earliest_loss_time.?) {
-                    earliest_loss_time = deadline;
-                }
+        if (unprocessed_count >= 64 and sstate.largest_acked != null) {
+            // Parallel path: build SentPacketInfo array, run parallel scan, then cleanup
+            var par_infos: [4096]parallel.SentPacketInfo = undefined;
+            const count = @min(sstate.sent.items.len, par_infos.len);
+            for (sstate.sent.items[0..count], 0..) |sp, i| {
+                par_infos[i] = .{
+                    .packet_number = sp.pn,
+                    .size = sp.size,
+                    .time_sent_ns = sp.time_ns,
+                    .ack_eliciting = sp.ack_eliciting,
+                    .declared_lost = sp.acked or sp.declared_lost, // pre-mark acked as "already handled"
+                };
             }
 
-            if (pkt_lost or time_lost) {
+            // Run parallel loss detection (marks declared_lost in par_infos)
+            const par_result = parallel.parallelLossDetect(
+                par_infos[0..count],
+                sstate.largest_acked.?,
+                self.loss.packet_threshold,
+                tt_base,
+                now_ns,
+            );
+            _ = par_result; // aggregate counts are recomputed below for accurate per-type stats
+
+            // Map parallel results back and do sequential cleanup (index removal, stats, logging)
+            for (sstate.sent.items[0..count], 0..) |*sp, i| {
+                if (sp.acked or sp.declared_lost) continue;
+                if (!par_infos[i].declared_lost) {
+                    // Not marked lost by parallel scan — check earliest_loss_time for timer
+                    if (have_rtt and sp.ack_eliciting) {
+                        const deadline = sp.time_ns + tt_base;
+                        if (now_ns < deadline) {
+                            if (earliest_loss_time == null or deadline < earliest_loss_time.?) {
+                                earliest_loss_time = deadline;
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                // Packet was marked lost by parallel scan — determine loss type for stats
+                const pkt_lost = self.loss.isPacketThresholdLost(sstate.largest_acked.?, sp.pn);
+                const time_lost = !pkt_lost; // if parallel marked it and not pkt_lost, must be time_lost
+
                 sp.declared_lost = true;
                 _ = sstate.sent_index.remove(sp.pn);
                 bytes_lost += sp.size;
@@ -305,26 +344,56 @@ pub const Recovery = struct {
                 if (last_lost_time == null or sp.time_ns > last_lost_time.?) last_lost_time = sp.time_ns;
 
                 if (pkt_lost) {
-                    // PHASE 42 PART 22: Log packet-threshold loss
-                    logger.debugPrint("[P42-22-LOSS-PKT] ❌ space={s} pn={d} largest_acked={d} gap={d} threshold={d} bytes={d}\n", .{
-                        @tagName(space),
-                        sp.pn,
-                        sstate.largest_acked orelse 0,
-                        (sstate.largest_acked orelse 0) - sp.pn,
-                        self.loss.packet_threshold,
-                        sp.size,
+                    logger.debugPrint("[P42-22-LOSS-PKT] space={s} pn={d} largest_acked={d} gap={d} threshold={d} bytes={d}\n", .{
+                        @tagName(space), sp.pn, sstate.largest_acked orelse 0,
+                        (sstate.largest_acked orelse 0) - sp.pn, self.loss.packet_threshold, sp.size,
                     });
                 }
                 if (time_lost) {
                     const age_us = (now_ns - sp.time_ns) / 1000;
-                    // PHASE 42 PART 22: Log time-threshold loss
-                    logger.debugPrint("[P42-22-LOSS-TIME] ⏱️  space={s} pn={d} age={d}us threshold={d}us bytes={d}\n", .{
-                        @tagName(space),
-                        sp.pn,
-                        age_us,
-                        tt_base / 1000,
-                        sp.size,
+                    logger.debugPrint("[P42-22-LOSS-TIME] space={s} pn={d} age={d}us threshold={d}us bytes={d}\n", .{
+                        @tagName(space), sp.pn, age_us, tt_base / 1000, sp.size,
                     });
+                }
+            }
+        } else {
+            // Sequential path: original merged single-pass for small windows
+            for (sstate.sent.items) |*sp| {
+                if (sp.acked or sp.declared_lost) continue;
+
+                const pkt_lost = if (sstate.largest_acked) |la| self.loss.isPacketThresholdLost(la, sp.pn) else false;
+
+                var time_lost = false;
+                if (have_rtt and sp.ack_eliciting) {
+                    const deadline = sp.time_ns + tt_base;
+                    if (now_ns >= deadline) {
+                        time_lost = true;
+                    } else if (earliest_loss_time == null or deadline < earliest_loss_time.?) {
+                        earliest_loss_time = deadline;
+                    }
+                }
+
+                if (pkt_lost or time_lost) {
+                    sp.declared_lost = true;
+                    _ = sstate.sent_index.remove(sp.pn);
+                    bytes_lost += sp.size;
+                    if (pkt_lost) pkt_threshold_lost_count += 1;
+                    if (time_lost) time_threshold_lost_count += 1;
+                    if (first_lost_time == null or sp.time_ns < first_lost_time.?) first_lost_time = sp.time_ns;
+                    if (last_lost_time == null or sp.time_ns > last_lost_time.?) last_lost_time = sp.time_ns;
+
+                    if (pkt_lost) {
+                        logger.debugPrint("[P42-22-LOSS-PKT] space={s} pn={d} largest_acked={d} gap={d} threshold={d} bytes={d}\n", .{
+                            @tagName(space), sp.pn, sstate.largest_acked orelse 0,
+                            (sstate.largest_acked orelse 0) - sp.pn, self.loss.packet_threshold, sp.size,
+                        });
+                    }
+                    if (time_lost) {
+                        const age_us = (now_ns - sp.time_ns) / 1000;
+                        logger.debugPrint("[P42-22-LOSS-TIME] space={s} pn={d} age={d}us threshold={d}us bytes={d}\n", .{
+                            @tagName(space), sp.pn, age_us, tt_base / 1000, sp.size,
+                        });
+                    }
                 }
             }
         }

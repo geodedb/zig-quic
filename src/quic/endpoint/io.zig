@@ -293,10 +293,10 @@ pub fn drainErrorQueue(ctx: *const IoContext) void {
 pub fn pollEpollBackend(ctx: *const IoContext, timeout_ms: i32) !void {
     logger.debugPrint("poll_epoll_backend called, timeout={}, epoll_fd={?}\n", .{ timeout_ms, ctx.epoll_fd });
 
-    // On non-Linux platforms, fallback to a simple sleep + drain
+    // On non-Linux platforms, fallback to poll(2) + drain (PAR-007: avoid Thread.sleep)
     if (builtin.target.os.tag != .linux or ctx.epoll_fd == null) {
-        logger.debugPrint("Falling back to sleep+drain\n", .{});
-        if (timeout_ms > 0) std.Thread.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
+        logger.debugPrint("Falling back to poll+drain\n", .{});
+        try waitReadableFallback(ctx.sock_fd, timeout_ms);
         drainReadable(ctx);
         return;
     }
@@ -389,7 +389,7 @@ pub fn pollIocpBackend(ctx: *const IoContext, timeout_ms: i32) !void {
         return;
     }
     // TODO: Import IOCP loop when module dependencies are resolved
-    // For now, just use sleep-based fallback
-    if (timeout_ms > 0) std.Thread.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
+    // For now, use poll(2) which works on Windows sockets (PAR-007)
+    try waitReadableFallback(ctx.sock_fd, timeout_ms);
     drainReadable(ctx);
 }

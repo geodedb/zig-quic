@@ -959,9 +959,9 @@ pub const QuicClient = struct {
         const timeout_ns = @as(u64, timeout_secs) * std.time.ns_per_s;
         const start = std.time.nanoTimestamp();
         while (std.time.nanoTimestamp() - start < timeout_ns) {
+            // poll(10) blocks on epoll/kqueue for up to 10ms — no additional sleep needed (PAR-007)
             try self.endpoint.?.poll(10);
             if (api.isHandshakeConfirmed(self.quic_connection.?)) return;
-            std.Thread.sleep(1 * std.time.ns_per_ms);
         }
         return QuicError.HandshakeError;
     }
@@ -1070,10 +1070,10 @@ pub const QuicClientStream = struct {
                         if (pos == 0) return error.WouldBlock;
                         return error.UnexpectedEndOfStream;
                     }
+                    // poll(10) blocks for up to 10ms — no additional sleep needed (PAR-007)
                     self.endpoint.poll(10) catch |poll_err| {
                         logger.warn("poll during readLine retry failed: {s}", .{@errorName(poll_err)});
                     };
-                    std.Thread.sleep(5 * std.time.ns_per_ms);
                     continue;
                 }
                 return err;
@@ -1083,10 +1083,10 @@ pub const QuicClientStream = struct {
                 if (pos == 0) return error.WouldBlock;
                 retry_count += 1;
                 if (retry_count > max_retries) return error.UnexpectedEndOfStream;
+                // poll(10) blocks for up to 10ms — no additional sleep needed (PAR-007)
                 self.endpoint.poll(10) catch |poll_err| {
                     logger.warn("poll during readLine zero-byte retry failed: {s}", .{@errorName(poll_err)});
                 };
-                std.Thread.sleep(5 * std.time.ns_per_ms);
                 continue;
             }
 

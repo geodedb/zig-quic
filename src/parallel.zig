@@ -53,7 +53,7 @@
 
 const std = @import("std");
 const build_options = @import("build_options");
-const crypto_zig = @import("quic/crypto_zig.zig");
+const crypto_zig = @import("quic_crypto");
 
 const spice = if (build_options.enable_spice) @import("spice") else struct {
     pub const ThreadPool = void;
@@ -467,7 +467,9 @@ fn generateHeaderMask(suite: crypto_zig.AeadSuite, hp_key: []const u8, sample: [
                 var nonce: [12]u8 = undefined;
                 @memcpy(&nonce, sample[4..16]);
                 var output: [5]u8 = undefined;
-                std.crypto.stream.chacha.ChaCha20IETF.xor(&output, &[_]u8{0} ** 5, counter, nonce, hp_key[0..32].*);
+                var key32: [32]u8 = undefined;
+                @memcpy(&key32, hp_key[0..32]);
+                std.crypto.stream.chacha.ChaCha20IETF.xor(&output, &[_]u8{0} ** 5, counter, key32, nonce);
                 mask = output;
             }
         },
@@ -484,7 +486,7 @@ fn generateHeaderMask(suite: crypto_zig.AeadSuite, hp_key: []const u8, sample: [
 pub const SentPacketInfo = struct {
     packet_number: u64,
     size: usize,
-    time_sent_ns: i128,
+    time_sent_ns: u64,
     ack_eliciting: bool,
     declared_lost: bool,
 };
@@ -494,8 +496,8 @@ pub const LossDetectContext = struct {
     sent_packets: []SentPacketInfo,
     largest_acked: u64,
     packet_threshold: u64,
-    time_threshold_ns: i128,
-    now_ns: i128,
+    time_threshold_ns: u64,
+    now_ns: u64,
     start_idx: usize,
     end_idx: usize,
 };
@@ -525,8 +527,8 @@ pub fn parallelLossDetect(
     sent_packets: []SentPacketInfo,
     largest_acked: u64,
     packet_threshold: u64,
-    time_threshold_ns: i128,
-    now_ns: i128,
+    time_threshold_ns: u64,
+    now_ns: u64,
 ) LossDetectResult {
     if (!build_options.enable_spice or sent_packets.len < 64) {
         return sequentialLossDetect(sent_packets, largest_acked, packet_threshold, time_threshold_ns, now_ns);
@@ -596,8 +598,8 @@ fn sequentialLossDetect(
     sent_packets: []SentPacketInfo,
     largest_acked: u64,
     packet_threshold: u64,
-    time_threshold_ns: i128,
-    now_ns: i128,
+    time_threshold_ns: u64,
+    now_ns: u64,
 ) LossDetectResult {
     return sequentialLossDetectRange(sent_packets, largest_acked, packet_threshold, time_threshold_ns, now_ns, 0, sent_packets.len);
 }
@@ -606,8 +608,8 @@ fn sequentialLossDetectRange(
     sent_packets: []SentPacketInfo,
     largest_acked: u64,
     packet_threshold: u64,
-    time_threshold_ns: i128,
-    now_ns: i128,
+    time_threshold_ns: u64,
+    now_ns: u64,
     start_idx: usize,
     end_idx: usize,
 ) LossDetectResult {

@@ -62,6 +62,7 @@ pub fn build(b: *std.Build) void {
     // Build options module for compile-time feature flags
     const build_options = b.addOptions();
     build_options.addOption(bool, "enable_spice", enable_spice);
+    const build_options_mod = build_options.createModule();
 
     // Get spice dependency if enabled
     const spice_mod: ?*std.Build.Module = if (enable_spice) blk: {
@@ -202,6 +203,7 @@ pub fn build(b: *std.Build) void {
     quic_packet_legacy_mod.addImport("quic_varint", quic_varint_mod);
     quic_packet_legacy_mod.addImport("quic_version", quic_version_mod);
     quic_packet_legacy_mod.addImport("quic_logger", quic_logger_mod);
+    // NOTE: parallel import wired after parallel_mod definition (see ~line 580)
     quic_packet_mod.addImport("../packet.zig", quic_packet_legacy_mod);
 
     // ========================================================================
@@ -291,6 +293,8 @@ pub fn build(b: *std.Build) void {
     quic_crypto_mod.addImport("quic_logger", quic_logger_mod);
     quic_packet_mod.addImport("quic_logger", quic_logger_mod);
     quic_recovery_mod.addImport("quic_logger", quic_logger_mod);
+
+    // NOTE: parallel_mod wiring deferred to after its definition (see below ~line 576)
 
     // Note: alert_mod, zero_rtt_mod, and tls logger are now imported from vendor/ztls above
 
@@ -532,10 +536,7 @@ pub fn build(b: *std.Build) void {
     quic_endpoint_mod.addImport("endpoint/handshake_integration.zig", endpoint_handshake_integration_mod);
     quic_endpoint_mod.addImport("endpoint/client.zig", endpoint_client_mod);
     quic_endpoint_mod.addImport("endpoint/server.zig", endpoint_server_mod);
-    quic_endpoint_mod.addImport("build_options", build_options.createModule());
-    if (spice_mod) |sm| {
-        quic_endpoint_mod.addImport("spice", sm);
-    }
+    quic_endpoint_mod.addImport("build_options", build_options_mod);
 
     // Public API module (reuse everywhere)
     const quic_api_mod = mkModule(b, "src/quic/api.zig");
@@ -567,13 +568,19 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "build_options", .module = build_options.createModule() },
-            .{ .name = "quic/crypto_zig.zig", .module = mkModule(b, "src/quic/crypto_zig.zig") },
+            .{ .name = "build_options", .module = build_options_mod },
+            .{ .name = "quic_crypto", .module = quic_crypto_mod },
         },
     });
     if (spice_mod) |sm| {
         parallel_mod.addImport("spice", sm);
     }
+
+    // Wire parallel module into internal modules that need batch crypto/loss detection (PAR-009)
+    quic_packet_legacy_mod.addImport("parallel", parallel_mod);
+    quic_packet_mod.addImport("parallel", parallel_mod);
+    quic_recovery_mod.addImport("parallel", parallel_mod);
+    quic_endpoint_mod.addImport("parallel", parallel_mod);
 
     // Export named module for dependents: @import("quic")
     const quic_mod = b.addModule("quic", .{ .root_source_file = b.path("lib.zig") }); // aggregate export surface
@@ -1979,10 +1986,8 @@ pub fn build(b: *std.Build) void {
         mod.addImport("endpoint/handshake_integration.zig", endpoint_handshake_integration_mod);
         mod.addImport("endpoint/client.zig", endpoint_client_mod);
         mod.addImport("endpoint/server.zig", endpoint_server_mod);
-        mod.addImport("build_options", build_options.createModule());
-        if (spice_mod) |sm| {
-            mod.addImport("spice", sm);
-        }
+        mod.addImport("build_options", build_options_mod);
+        mod.addImport("parallel", parallel_mod);
         const obj = b.addObject(.{ .name = "cross-smoke-endpoint", .root_module = mod });
         cross_smoke_step.dependOn(&obj.step);
     }

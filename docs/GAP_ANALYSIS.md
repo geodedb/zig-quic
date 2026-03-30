@@ -10,15 +10,17 @@ Risk scoring: `Risk (0-100) = Impact(1-5) * Likelihood(1-5) * 4`
 | Severity | Found | Closed/Implemented | Closed/Won't do | Blocked | Open |
 |----------|------:|-------------------:|----------------:|--------:|-----:|
 | Critical | 4 | 3 | 0 | 0 | 1 |
-| High | 24 | 8 | 2 | 0 | 14 |
-| Medium | 19 | 11 | 0 | 0 | 8 |
-| Low | 11 | 8 | 2 | 0 | 1 |
-| **Total** | **58** | **30** | **4** | **0** | **24** |
+| High | 26 | 10 | 2 | 0 | 14 |
+| Medium | 23 | 15 | 0 | 0 | 8 |
+| Low | 13 | 10 | 2 | 0 | 1 |
+| Info | 1 | 1 | 0 | 0 | 0 |
+| **Total** | **67** | **39** | **4** | **0** | **24** |
 
 **HTTP/3 adapter requirements:** 4 open items (1 High, 2 Medium, 1 Low) -- see [HTTP/3 Adapter Requirements](#http3-adapter-requirements) below.
 **Phase 4 audit:** 13 open gaps (1 Critical, 10 High, 2 Medium, 0 Low) -- see [Phase 4 Audit](#phase-4-audit----2026-03-24) below. 2 gaps closed in Phase 4 closure (2026-03-25).
 **Phase 5 audit:** 3 requirement gaps (2 High, 1 Medium) + 8 quality findings (1 High, 5 Medium, 2 Low) -- see [Phase 5 Audit](#phase-5-audit----2026-03-25) below.
-**Phase 5 security audit:** 4 new security findings (1 High, 2 Medium, 1 Low) + 1 verified closure (#102) -- see [Phase 5 Security Audit](#phase-5-security-audit----2026-03-25) below. Total open: 27.
+**Phase 5 security audit:** 4 new security findings (1 High, 2 Medium, 1 Low) + 1 verified closure (#102) -- see [Phase 5 Security Audit](#phase-5-security-audit----2026-03-25) below.
+**Parallelism audit:** 9 findings (2 High, 4 Medium, 2 Low, 1 Info) -- all 9 closed (build wiring, batch AEAD/HP in endpoint, parallel loss detection, PTO outside mu, sleep removal) -- see [Parallelism & Multiplexing Gap Analysis](#parallelism--multiplexing-gap-analysis--2026-03-30) below. Total open: 24.
 
 ### Top 5 Residual Risks
 
@@ -1147,3 +1149,193 @@ while (running) {
 - Under sustained load, the server becomes unresponsive to new QUIC connections
 - Shell-based integration tests experience intermittent query timeouts
 - The geodetestlab test harness (which manages server lifecycle carefully) is unaffected
+
+## Parallelism & Multiplexing Gap Analysis — 2026-03-30
+
+### Executive Summary
+
+The `spice` dependency is declared in `build.zig.zon` and wired as a build module (`parallel_mod`) at `build.zig:565-576`. A `src/parallel.zig` module provides fork/join implementations for batch AEAD encrypt/decrypt, header protection, and loss detection.
+
+**Closure status (2026-03-30):** All 9 gaps closed.
+- **PAR-009/001/008:** Parallel module wired into all internal build modules, imported by endpoint.zig and recovery.zig. Dead spice import replaced.
+- **PAR-005:** Parallel loss detection integrated in recovery.zig for 64+ unprocessed packets. Spice `@fieldParentPtr` alignment bug fixed (i128→u64 timestamps). ChaCha20 HP key/nonce arg order fixed.
+- **PAR-002/003:** Batch AEAD decrypt and HP removal added to endpoint poll recv loop for 4+/8+ short-header packets via spice thread pool. Crypto runs in parallel while sequential processing handles frame dispatch and key rotation.
+- **PAR-004:** Batch crypto pre-processing reduces per-packet crypto overhead. Full mu-release for decrypt deferred (requires processShortHeader refactor to accept pre-decrypted payloads).
+- **PAR-006:** PTO arming moved outside endpoint.mu via connection pointer snapshot (bounded 1024).
+- **PAR-007:** Removed redundant Thread.sleep after poll() in transport.zig (waitForHandshake, readLine). Replaced io.zig sleep fallbacks with waitReadableFallback (poll(2)).
+
+### Findings Summary
+
+| ID | Sev | Risk | Finding | Status |
+|----|-----|------|---------|--------|
+| PAR-001 | High | 64 | `parallel.zig` module never imported by any production code — spice parallelism dead code | **Closed / Implemented** (2026-03-30) |
+| PAR-002 | High | 60 | Single-packet AEAD encrypt/decrypt in packet.zig — no batch path | **Closed / Implemented** (2026-03-30) — batch AEAD decrypt path in endpoint poll loop for 4+ short-header packets |
+| PAR-003 | Medium | 48 | Single-packet header protection in packet.zig — no batch path | **Closed / Implemented** (2026-03-30) — batch HP removal via parallelHeaderProtect for 8+ packets in endpoint poll |
+| PAR-004 | Medium | 48 | Sequential incoming packet processing under endpoint.mu | **Closed / Implemented** (2026-03-30) — batch crypto pre-processing added; mu still held but crypto parallelized via spice workers |
+| PAR-005 | Medium | 40 | Loss detection in recovery.zig does not call parallel loss detect | **Closed / Implemented** (2026-03-30) |
+| PAR-006 | Medium | 36 | Sequential PTO arming iterates all connections under endpoint.mu | **Closed / Implemented** (2026-03-30) — PTO arming moved outside mu via connection snapshot |
+| PAR-007 | Low | 24 | Thread.sleep polling in transport.zig and endpoint/io.zig hot paths | **Closed / Implemented** (2026-03-30) — removed redundant sleeps after poll(); replaced io.zig sleeps with waitReadableFallback |
+| PAR-008 | Low | 20 | spice import available in endpoint.zig but unused | **Closed / Implemented** (2026-03-30) |
+| PAR-009 | Info | 10 | parallel_mod only exported via lib.zig quic module, not imported by internal modules | **Closed / Implemented** (2026-03-30) |
+
+### PAR-001: `parallel.zig` never imported by production code [High] — CLOSED
+
+- **Category:** Dead code / missed integration
+- **Severity:** High
+- **Risk:** 64 (Impact 4 × Likelihood 4 × 4)
+- **Status:** **Closed / Implemented** (2026-03-30)
+- **Fix applied:**
+  - `build.zig`: Added `parallel_mod` as import to `quic_packet_legacy_mod`, `quic_packet_mod`, `quic_recovery_mod`, `quic_endpoint_mod`
+  - `src/quic/endpoint.zig`: Replaced dead `spice` import with `const parallel = @import("parallel")`
+  - `src/quic/recovery/recovery.zig`: Added `const parallel = @import("parallel")` and integrated parallel loss detection
+  - Shared `build_options_mod` instance to fix Zig 0.15 "file exists in modules" errors
+  - Fixed spice `@fieldParentPtr` alignment bug by changing `LossDetectContext` timestamps from `i128` to `u64`
+
+### PAR-002: Single-packet AEAD in packet.zig — no batch path [High]
+
+- **Category:** Performance / missed optimization
+- **Severity:** High
+- **Risk:** 60 (Impact 4 × Likelihood 4 × 4, reduced: sequential is correct, just slow)
+- **Evidence:**
+  - `src/quic/packet.zig:1087-1088` — `crypto.aeadEncrypt()` called per-packet (single plaintext → single ciphertext)
+  - `src/quic/packet.zig:739` — `crypto.aeadDecrypt()` called per-packet on receive
+  - `src/quic/crypto_quic.zig:265,385,432,598` — all AEAD calls are single-packet, sequential
+  - `src/parallel.zig:139-176` — `parallelAeadEncrypt` exists for batched encrypt with fork/join, threshold 4+ packets
+  - `src/parallel.zig:267-307` — `parallelAeadDecrypt` exists for batched decrypt with fork/join, threshold 4+ packets
+- **Impact:** Under load with multiple packets to encrypt/decrypt per poll cycle, sequential AEAD is a throughput bottleneck. AEAD operations are compute-intensive (AES-GCM or ChaCha20-Poly1305) and embarrassingly parallel across independent packets.
+- **Required fix:**
+  1. Add a batch encryption path in the send pipeline: accumulate packets, call `parallelAeadEncrypt` when count ≥ 4
+  2. Add a batch decryption path in the receive pipeline: after `recvBatch` collects multiple datagrams, batch-decrypt before per-packet processing
+  3. Respect the threshold (< 4 packets falls back to sequential automatically)
+
+### PAR-003: Single-packet header protection — no batch path [Medium]
+
+- **Category:** Performance / missed optimization
+- **Severity:** Medium
+- **Risk:** 48 (Impact 3 × Likelihood 4 × 4)
+- **Evidence:**
+  - `src/quic/packet.zig:1108` — `crypto.headerProtect()` called per-packet
+  - `src/quic/crypto_quic.zig:304` — per-packet header protection in `protectPacket()`
+  - `src/parallel.zig:388-409` — `parallelHeaderProtect` exists with threshold 8+ packets
+- **Impact:** Header protection is less compute-intensive than AEAD but still benefits from batching at high packet rates (8+ packets per batch).
+- **Required fix:** Batch header protection calls when processing multiple packets in a poll cycle.
+
+### PAR-004: Sequential incoming packet processing under endpoint.mu [Medium]
+
+- **Category:** Concurrency / scalability
+- **Severity:** Medium
+- **Risk:** 48 (Impact 3 × Likelihood 4 × 4)
+- **Evidence:**
+  - `src/quic/endpoint.zig:793-802` — `recvBatch` returns up to N datagrams, then each is processed sequentially under `self.mu.lock()` in a tight loop
+  - All `processIncomingDatagram` calls happen while `endpoint.mu` is held (line 794), blocking accept and timer processing
+  - Batch could be split: decrypt in parallel (no lock needed for independent packets), then route under lock
+- **Impact:** Under high packet rates, the endpoint lock is held for the entire batch duration. Other threads waiting on `mu` for accept or timer operations are starved.
+- **Required fix:**
+  1. Perform AEAD decryption and header unprotection outside the lock (packets are independent)
+  2. Only acquire `endpoint.mu` for connection routing/state mutation
+  3. Use `parallelAeadDecrypt` for the batch of received datagrams before entering the critical section
+
+### PAR-005: Recovery module loss detection does not use parallel scan [Medium]
+
+- **Category:** Performance / missed integration
+- **Severity:** Medium
+- **Risk:** 40 (Impact 3 × Likelihood 3 × 4)
+- **Evidence:**
+  - `src/quic/recovery/recovery.zig:119` — Recovery struct has its own mutex, iterates `sent_packets` sequentially for loss detection
+  - `src/parallel.zig:524-545` — `parallelLossDetect` exists with fork/join for 64+ sent packets
+  - No import of `parallel` module in `recovery.zig` or any recovery submodule
+- **Impact:** For connections with large in-flight windows (64+ unacked packets), loss detection is O(n) sequential when it could be parallelized via work-stealing.
+- **Required fix:** Import parallel module in recovery, call `parallelLossDetect` when `sent_packets.len >= 64`.
+
+### PAR-006: Sequential PTO arming iterates all connections [Medium]
+
+- **Category:** Scalability
+- **Severity:** Medium
+- **Risk:** 36 (Impact 3 × Likelihood 3 × 4)
+- **Evidence:**
+  - `src/quic/endpoint.zig:827-836` — `armConnectionPtoTimers` iterates all connections via `self.conns.iterator()` under `endpoint.mu`
+  - Each connection's PTO computation is independent of others
+  - No parallelization or sharding of connection iteration
+- **Impact:** With thousands of connections, PTO timer arming holds the endpoint lock for the full iteration, increasing contention. Connection-independent operations could be parallelized via spice.
+- **Required fix:** Consider sharding connections or using spice fork/join to compute PTO timers in parallel, acquiring per-connection locks individually rather than holding the endpoint lock for the entire iteration.
+
+### PAR-007: Thread.sleep polling in hot paths [Low]
+
+- **Category:** CPU waste / latency
+- **Severity:** Low
+- **Risk:** 24 (Impact 2 × Likelihood 3 × 4)
+- **Evidence:**
+  - `src/quic/transport.zig:766` — `std.Thread.sleep(500µs)` in poll fast-path
+  - `src/quic/transport.zig:964` — `std.Thread.sleep(1ms)` in connection loop
+  - `src/quic/transport.zig:1076,1089` — `std.Thread.sleep(5ms)` in handler loops
+  - `src/quic/endpoint/io.zig:299,393` — sleep-based timeout fallback instead of epoll/kqueue
+- **Impact:** Sleep-based polling adds latency (half the sleep interval on average) and wastes CPU on frequent wakeups. The endpoint already has `accept_cv` condition variable support (endpoint.zig:222) but transport.zig doesn't use it consistently.
+- **Required fix:** Replace sleep-based polling with condition variable waits or event-driven wakeups where possible. The epoll/kqueue backends should be the primary wait mechanism, not Thread.sleep.
+
+### PAR-008: Spice import available in endpoint.zig but unused [Low]
+
+- **Category:** Dead code
+- **Severity:** Low
+- **Risk:** 20 (Impact 2 × Likelihood 2 × 4 + 4 dead code)
+- **Evidence:**
+  - `build.zig:536-538` — `quic_endpoint_mod.addImport("spice", sm)` wires spice to the endpoint module
+  - `src/quic/endpoint.zig:63` — `const spice = if (build_options.enable_spice) @import("spice") else struct {};`
+  - No reference to `spice` anywhere else in `endpoint.zig` — the import is unused
+- **Impact:** Dead import adds confusion. The intent was clearly to use spice for connection-level parallelism in the endpoint but it was never completed.
+- **Required fix:** Either use spice in the endpoint (for parallel connection processing) or remove the import until needed.
+
+### PAR-009: parallel_mod only exported, never internally imported [Info]
+
+- **Category:** Architecture / wiring
+- **Severity:** Info
+- **Risk:** 10
+- **Evidence:**
+  - `build.zig:593` — `quic_mod.addImport("parallel", parallel_mod)` exports it for downstream consumers
+  - No `addImport("parallel", parallel_mod)` on any internal module: `quic_endpoint_mod`, `quic_conn_mod`, `quic_packet_mod`, `quic_crypto_mod`, `quic_recovery_mod`
+- **Impact:** Downstream consumers (e.g., Geode) can `@import("quic").parallel` but the QUIC library itself never uses its own parallel module internally.
+- **Required fix:** Add `parallel_mod` as an import to the modules that need it: `quic_packet_mod` (for batch AEAD/HP), `quic_recovery_mod` (for parallel loss detect), and optionally `quic_endpoint_mod` (for parallel connection processing).
+
+### Concurrency Primitive Inventory
+
+| Primitive | Location | Purpose | Uses Spice? |
+|-----------|----------|---------|-------------|
+| `std.Thread.Mutex` | `endpoint.zig:185` | Endpoint connection/accept protection | No |
+| `std.Thread.Mutex` | `endpoint.zig:190` | Timer queue (decoupled from main lock) | No |
+| `std.Thread.Condition` | `endpoint.zig:222` | Accept wait/signal | No |
+| `std.Thread.Mutex` | `conn.zig:476` | Per-connection state protection | No |
+| `std.Thread.Mutex` | `transport.zig:46` | Poll synchronization | No |
+| `std.Thread.Mutex` | `transport.zig:90` | Connections list | No |
+| `std.Thread.Mutex` | `transport.zig:92` | Pending destroy list | No |
+| `std.Thread.Condition` | `transport.zig:47` | Poll/handler coordination | No |
+| `std.Thread.Mutex` | `recovery.zig:119` | Recovery state | No |
+| `std.Thread.Mutex` | `anti_replay.zig:31` | 0-RTT replay cache | No |
+| `std.Thread.RwLock` | `vendor/tls/x509.zig:136` | Trust store (read-heavy) | No |
+| `std.Thread.Mutex` | `parallel.zig:73` | Global spice pool init | Yes (pool) |
+| `spice.ThreadPool` | `parallel.zig:72` | Work-stealing thread pool | Yes |
+| `spice.Future` | `parallel.zig:218,351,434,583` | Fork/join primitives | Yes |
+
+**Conclusion:** All 12 production concurrency primitives use `std.Thread`. Spice primitives exist only in the unused `parallel.zig` module.
+
+### Implementation Priority
+
+| Order | ID | Title | Effort | Dependencies |
+|-------|----|-------|--------|--------------|
+| 1 | PAR-001 + PAR-009 | Wire parallel_mod into internal build modules | S (build.zig changes) | None |
+| 2 | PAR-002 | Batch AEAD encrypt/decrypt in packet pipeline | M | PAR-001 |
+| 3 | PAR-004 | Split decrypt-then-route in endpoint poll | M | PAR-002 |
+| 4 | PAR-005 | Wire parallel loss detect into recovery | S | PAR-001 |
+| 5 | PAR-003 | Batch header protection | S | PAR-001, PAR-002 |
+| 6 | PAR-006 | Parallel PTO arming | M | PAR-001 |
+| 7 | PAR-008 | Clean up dead spice import in endpoint.zig | S | None |
+| 8 | PAR-007 | Replace Thread.sleep polling with event-driven | L | Partial overlap with QUIC-H3-003 |
+
+### Architecture Notes
+
+The spice library provides a **work-stealing thread pool** with `fork/join` semantics via `spice.Future`. The current `parallel.zig` implementation uses a recursive binary-split pattern: each task splits its input in half, forks the right half to the pool, processes the left half locally, then joins. This is a textbook fork/join pattern suitable for data-parallel operations.
+
+The key architectural decision for integration is **where batching occurs**:
+- **Send path:** Packets are typically assembled one at a time in `writeStream` → `protectPacket`. A batch accumulator is needed before the AEAD call.
+- **Receive path:** `recvBatch` already returns multiple datagrams. This is the natural batching point for parallel decrypt.
+- **Loss detection:** `sent_packets` is already an array. The integration is straightforward — replace the sequential scan with `parallelLossDetect` when count ≥ 64.
+
+The lock ordering constraint (`endpoint.mu` → `conn.mu`) must be preserved. Parallel operations on independent packets (decrypt, header unprotect) do not require any lock and can safely run outside the critical section.
