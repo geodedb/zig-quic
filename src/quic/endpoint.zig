@@ -59,8 +59,9 @@ const transport_mod = @import("endpoint/transport.zig");
 const udp_transport_mod = @import("endpoint/udp_transport.zig");
 const build_options = @import("quic_build_options");
 
-// Parallel batch operations (AEAD, header protection, loss detection)
-const parallel = @import("parallel");
+// Parallel batch operations (used by recovery.zig for loss detection;
+// batch crypto in endpoint.zig disabled pending pre-decrypted fast path)
+// const parallel = @import("parallel");
 
 const posix = std.posix;
 const builtin = @import("builtin");
@@ -782,174 +783,15 @@ pub const Endpoint = struct {
                 if (batch_n == 0) break;
 
                 // 4b: Process each datagram under mu (mutates conns map).
-                // PAR-002/003: When batch has 4+ short-header packets to established
-                // connections with cached DCID and current keys, batch HP removal
-                // and AEAD decrypt via spice thread pool for parallel crypto throughput.
-                // Falls back to sequential processIncomingDatagram for long-header
-                // packets, new connections, or key rotation scenarios.
+                // NOTE: PAR-002/003 batch HP removal + AEAD decrypt was removed
+                // because it corrupted packet buffers — the batch path unmasked
+                // headers in-place, then the sequential fallthrough did HP removal
+                // again (double XOR = re-masked = AEAD auth failure = EOF).
+                // Batch crypto requires a pre-decrypted fast path in
+                // processShortHeader before it can be re-enabled.
                 {
                     self.mu.lock();
                     defer self.mu.unlock();
-
-                    // Count short-header packets eligible for batch crypto
-                    var short_count: usize = 0;
-                    var j: usize = 0;
-                    while (j < batch_n) : (j += 1) {
-                        const slot = recv_slots[j];
-                        if (slot.n > 0 and (slot.buf[0] & 0x80) == 0) short_count += 1;
-                    }
-
-                    // Batch path: when enough short-header packets, use parallel AEAD.
-                    // The crypto runs on spice worker threads while we hold mu.
-                    // This is safe because parallelAeadDecrypt only touches its input
-                    // buffers and the crypto primitives (no lock acquisition).
-                    if (short_count >= 4) {
-                        // Pre-resolve connections for short-header packets
-                        var batch_conns: [64]?*conn_mod.Connection = .{null} ** 64;
-                        var batch_dcid_lens: [64]u8 = .{0} ** 64;
-                        const cap = @min(batch_n, 64);
-
-                        var k: usize = 0;
-                        while (k < cap) : (k += 1) {
-                            const slot = recv_slots[k];
-                            if (slot.n == 0 or (slot.buf[0] & 0x80) != 0) continue;
-                            const norm = normalizeAddr(&slot.peer.storage, slot.peer.len);
-                            const lr = lookup.findConnectionByDcid(&self.conns, norm, slot.buf[0..slot.n], null);
-                            if (lr.conn) |c| {
-                                if (!c.closed and c.app_rx_keys != null and c.expected_rx_dcid_len != null) {
-                                    batch_conns[k] = c;
-                                    batch_dcid_lens[k] = c.expected_rx_dcid_len.?;
-                                }
-                            }
-                        }
-
-                        // Build parallel HP inputs for eligible packets
-                        var hp_inputs: [64]parallel.HeaderProtectInput = undefined;
-                        var hp_count: usize = 0;
-                        var hp_indices: [64]usize = undefined;
-
-                        k = 0;
-                        while (k < cap) : (k += 1) {
-                            const c = batch_conns[k] orelse continue;
-                            const slot = recv_slots[k];
-                            const dcid_len = batch_dcid_lens[k];
-                            const keys = c.app_rx_keys.?;
-                            // Extract HP sample: 4 bytes after PN start
-                            // Short header: 1 byte type + dcid_len bytes DCID + 4 bytes PN = sample start
-                            const sample_start = 1 + @as(usize, dcid_len) + 4;
-                            if (sample_start + 16 <= slot.n) {
-                                hp_inputs[hp_count] = .{
-                                    .hp_key = &keys.hp,
-                                    .sample = slot.buf[sample_start..][0..16].*,
-                                };
-                                hp_indices[hp_count] = k;
-                                hp_count += 1;
-                            }
-                        }
-
-                        // Batch HP removal (PAR-003: parallelHeaderProtect for 8+ packets)
-                        if (hp_count >= 8) {
-                            var masks: [64][5]u8 = undefined;
-                            parallel.parallelHeaderProtect(.aes_128_gcm, hp_inputs[0..hp_count], masks[0..hp_count]);
-                            // Apply masks to unmask first byte and PN bytes
-                            for (0..hp_count) |m| {
-                                const idx = hp_indices[m];
-                                const slot = &recv_slots[idx];
-                                const dcid_len = batch_dcid_lens[idx];
-                                const pn_offset = 1 + @as(usize, dcid_len);
-                                // Unmask first byte
-                                slot.buf[0] ^= (masks[m][0] & 0x1f);
-                                const pn_len: usize = (slot.buf[0] & 0x03) + 1;
-                                // Unmask PN bytes
-                                var p: usize = 0;
-                                while (p < pn_len and pn_offset + p < slot.n) : (p += 1) {
-                                    slot.buf[pn_offset + p] ^= masks[m][1 + p];
-                                }
-                            }
-                        }
-
-                        // Build parallel AEAD decrypt inputs for eligible packets
-                        var aead_inputs: [64]parallel.AeadDecryptInput = undefined;
-                        var aead_outputs: [64][]u8 = undefined;
-                        var aead_results: [64]parallel.AeadDecryptResult = undefined;
-                        var aead_count: usize = 0;
-                        var aead_indices: [64]usize = undefined;
-
-                        k = 0;
-                        while (k < cap) : (k += 1) {
-                            const c = batch_conns[k] orelse continue;
-                            const slot = recv_slots[k];
-                            const dcid_len = batch_dcid_lens[k];
-                            const keys = c.app_rx_keys.?;
-
-                            // Only batch if HP was already removed (hp_count >= 8) or skip
-                            // For the AEAD batch path, we need the unmasked PN
-                            if (hp_count < 8) continue; // HP not batched, skip AEAD batch too
-
-                            const pn_offset = 1 + @as(usize, dcid_len);
-                            const pn_len: usize = (slot.buf[0] & 0x03) + 1;
-                            const payload_start = pn_offset + pn_len;
-                            if (payload_start >= slot.n) continue;
-
-                            // Extract packet number
-                            var pn: u64 = 0;
-                            var p: usize = 0;
-                            while (p < pn_len) : (p += 1) {
-                                pn = (pn << 8) | slot.buf[pn_offset + p];
-                            }
-
-                            // Build AAD: header bytes up to and including PN
-                            const aad = slot.buf[0..payload_start];
-                            const ciphertext = slot.buf[payload_start..slot.n];
-
-                            aead_inputs[aead_count] = .{
-                                .key = &keys.key,
-                                .iv = &keys.iv,
-                                .packet_number = pn,
-                                .aad = aad,
-                                .ciphertext_and_tag = ciphertext,
-                            };
-                            // Allocate output buffer for plaintext
-                            if (ciphertext.len > 16) {
-                                aead_outputs[aead_count] = self.allocator.alloc(u8, ciphertext.len - 16) catch {
-                                    continue;
-                                };
-                            } else {
-                                continue;
-                            }
-                            aead_indices[aead_count] = k;
-                            aead_count += 1;
-                        }
-
-                        // PAR-002: Batch AEAD decrypt via spice thread pool
-                        if (aead_count >= 4) {
-                            parallel.parallelAeadDecrypt(
-                                .aes_128_gcm,
-                                aead_inputs[0..aead_count],
-                                aead_outputs[0..aead_count],
-                                aead_results[0..aead_count],
-                            );
-
-                            // Free allocated output buffers (frame dispatch will re-allocate as needed)
-                            for (0..aead_count) |m| {
-                                self.allocator.free(aead_outputs[m]);
-                            }
-
-                            // Mark successfully batch-decrypted packets so sequential path skips them
-                            // Note: For now, we still fall through to sequential processing
-                            // because the frame dispatch path in processShortHeader expects
-                            // raw encrypted bytes and does its own decrypt.
-                            // TODO: Add a pre-decrypted fast path to processShortHeader.
-                        } else {
-                            // Below threshold — free any allocated outputs
-                            for (0..aead_count) |m| {
-                                self.allocator.free(aead_outputs[m]);
-                            }
-                        }
-                    }
-
-                    // Sequential processing: handles all packets including those
-                    // that couldn't be batch-processed (long-header, key rotation, etc.)
                     var i: usize = 0;
                     while (i < batch_n) : (i += 1) {
                         const slot = recv_slots[i];
