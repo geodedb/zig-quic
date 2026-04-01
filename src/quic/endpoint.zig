@@ -425,14 +425,14 @@ pub const Endpoint = struct {
             }
             if (!dup) to_destroy.append(self.allocator, c) catch {};
         }
-        // Destroy collected connections only if this is a server endpoint.
-        // Client endpoints may have connections freed by transport-layer cleanup
-        // before deinit, leaving dangling pointers in the map. For server
-        // endpoints, connections are managed by the transport layer's
-        // destroyConnection/drainPendingDestroy and should not be double-freed
-        // here either. Skip connection destruction — the OS reclaims memory
-        // on process exit, and server shutdown drains via pending_destroy.
-        // TODO: Add proper connection ownership tracking to enable safe cleanup.
+        // Destroy collected connections. Connection.deinit() has a deinit_called
+        // guard so double-deinit is safe (no-op on second call). This ensures
+        // TLS buffers, stream arrays, and other connection state are freed even
+        // when the transport layer didn't drain them before endpoint shutdown.
+        for (to_destroy.items) |c| {
+            c.deinit();
+            self.allocator.destroy(c);
+        }
         self.retired.deinit(self.allocator);
         self.conns.deinit();
         self.accepted.deinit(self.allocator);
