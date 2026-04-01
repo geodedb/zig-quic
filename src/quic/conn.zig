@@ -971,7 +971,9 @@ pub const Connection = struct {
         self.pn_app = .{};
         self.rec = recovery.Recovery.init(alloc.*);
         self.sent_time = std.AutoHashMap(u64, i128).init(alloc.*);
+        self.sent_time_init = true;
         self.sent_sizes = std.AutoHashMap(u64, u16).init(alloc.*);
+        self.sent_sizes_init = true;
         self.largest_acked = 0;
         // Initialize PTO state deterministically
         self.pto_initial_active = false;
