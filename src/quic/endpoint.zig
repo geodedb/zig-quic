@@ -351,17 +351,9 @@ pub const Endpoint = struct {
 
     /// Deinitialize endpoint and free all associated connection state.
     pub fn deinit(self: *Endpoint) void {
-        // Attempt to prune any closed (or newly closed due to earlier failures) connections
-        // before emitting instrumentation so we only report genuinely still-open connections.
-        self.pruneClosed();
-        // Soft-close any remaining connections so they don't linger as leaks in debug builds.
-        var pre_it = self.conns.iterator();
-        while (pre_it.next()) |e| {
-            const c = e.value_ptr.*;
-            if (!c.closed) c.closed = true;
-        }
-        // Prune again after mass-closing.
-        self.pruneClosed();
+        // Skip pruneClosed() during deinit — connection pointers in the map
+        // may be in an inconsistent state (partially torn down by transport
+        // layer cleanup). Instead, destroy all connections directly below.
         // Instrumentation: list any remaining connection pointers (map values) before cleanup
         if (builtin.mode == .Debug) {
             var unique = std.AutoHashMap(*conn_mod.Connection, usize).init(self.allocator);
@@ -408,28 +400,38 @@ pub const Endpoint = struct {
                 if (t.payload) |p| self.allocator.free(p);
             }
         }
-        // Destroy unique connections referenced by map values
-        var seen = std.AutoHashMap(*conn_mod.Connection, void).init(self.allocator);
-        defer seen.deinit();
-        var it = self.conns.iterator();
-        while (it.next()) |e| {
-            const c = e.value_ptr.*;
-            if (!seen.contains(c)) {
-                _ = seen.put(c, {}) catch |err| {
-                    logger.warn("endpoint.deinit: seen.put failed (OOM): {s}", .{@errorName(err)});
-                };
-                c.deinit();
-                self.allocator.destroy(c);
+        // Collect unique connection pointers from map, then clear the map
+        // before destroying any connections. This avoids iterating the map
+        // while connection state may be inconsistent.
+        var to_destroy = std.ArrayList(*conn_mod.Connection){};
+        defer to_destroy.deinit(self.allocator);
+        {
+            var it = self.conns.iterator();
+            while (it.next()) |e| {
+                const c = e.value_ptr.*;
+                // Check if already collected (multiple CIDs may map to same conn)
+                var dup = false;
+                for (to_destroy.items) |existing| {
+                    if (existing == c) { dup = true; break; }
+                }
+                if (!dup) to_destroy.append(self.allocator, c) catch {};
             }
         }
-        // Also destroy any retired (already removed from map) connections not yet destroyed.
-        var ri: usize = 0;
-        while (ri < self.retired.items.len) : (ri += 1) {
-            const c = self.retired.items[ri];
-            if (!seen.contains(c)) { // skip if already destroyed above
-                c.deinit();
-                self.allocator.destroy(c);
+        // Also collect retired connections
+        for (self.retired.items) |c| {
+            var dup = false;
+            for (to_destroy.items) |existing| {
+                if (existing == c) { dup = true; break; }
             }
+            if (!dup) to_destroy.append(self.allocator, c) catch {};
+        }
+        // Clear map and retired list BEFORE destroying connections
+        self.conns.clearAndFree();
+        self.retired.clearAndFree(self.allocator);
+        // Now destroy all connections safely
+        for (to_destroy.items) |c| {
+            c.deinit();
+            self.allocator.destroy(c);
         }
         self.retired.deinit(self.allocator);
         self.conns.deinit();
