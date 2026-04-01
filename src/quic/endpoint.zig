@@ -425,10 +425,7 @@ pub const Endpoint = struct {
             }
             if (!dup) to_destroy.append(self.allocator, c) catch {};
         }
-        // Clear map and retired list BEFORE destroying connections
-        self.conns.clearAndFree();
-        self.retired.clearAndFree(self.allocator);
-        // Now destroy all connections safely
+        // Now destroy all collected connections
         for (to_destroy.items) |c| {
             c.deinit();
             self.allocator.destroy(c);
