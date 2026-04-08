@@ -100,3 +100,6 @@ examples/interop/main
 # Build artifacts — Rust target dirs and local test binaries
 test-clients/legacy-clients/rust/target/
 quic-test/
+
+# Vendored dependencies should not be committed
+vendor/
