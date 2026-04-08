@@ -19,12 +19,13 @@ func main() {
 	flag.BoolVar(&insecure, "insecure", false, "skip certificate verification")
 	flag.Parse()
 
-	// Create TLS key log file for debugging
-	keyLogFile, err := os.Create("/tmp/tls_keys.log")
+	// Create TLS key log file for debugging (secure temp file with 0600 permissions)
+	keyLogFile, err := os.CreateTemp("", "tls_keys-*.log")
 	if err != nil {
 		log.Printf("Warning: Could not create key log file: %v", err)
 	} else {
-		log.Printf("TLS keys will be logged to /tmp/tls_keys.log")
+		defer os.Remove(keyLogFile.Name())
+		log.Printf("TLS keys will be logged to %s", keyLogFile.Name())
 	}
 
 	tlsConf := &tls.Config{
