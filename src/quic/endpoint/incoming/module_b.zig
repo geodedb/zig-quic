@@ -159,9 +159,9 @@ pub fn processHandshake(
     defer handshake_integration.clearCurrentConnection();
 
     // Update packet number tracking (under conn.mu to prevent PnWindow race)
-    conn.*.mu.lock();
+    conn.*.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
     conn.*.trackRecvPnHandshake(decrypted.packet_number);
-    conn.*.mu.unlock();
+    conn.*.mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
     // RFC 9000 §8.1: Successfully authenticating a packet at the Handshake level
     // proves the client received the server's Initial (which provided handshake keys).
@@ -339,11 +339,11 @@ pub fn processHandshake(
             const w = frames_buf.writer(ctx.allocator.*);
 
             // GAP-0200: Lock conn.mu for ACK generation (reads PnWindow, writes ack_ranges_buf)
-            conn.*.mu.lock();
+            conn.*.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
             const ack_desc = conn.*.buildAckHandshake();
             const ack_ecn = conn.*.getAckEcn(.Handshake);
             const ack_delay = conn.*.getAckDelayEncoded(.Handshake, now_ns);
-            conn.*.mu.unlock();
+            conn.*.mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
             if (ack_desc.largest != 0xFFFFFFFFFFFFFFFF) {
                 const ack_frame = frame.Frame{ .ack = .{

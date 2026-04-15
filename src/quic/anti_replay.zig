@@ -47,8 +47,8 @@ pub const AntiReplayCache = struct {
 
     /// Release all memory held by the cache.
     pub fn deinit(self: *AntiReplayCache) void {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         self.entries.deinit(self.allocator);
     }
 
@@ -61,8 +61,8 @@ pub const AntiReplayCache = struct {
     /// Automatically evicts expired entries and enforces the capacity bound
     /// before recording.
     pub fn checkAndRecord(self: *AntiReplayCache, ticket_hash: u64, now_ns: u64) !bool {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
         // 1. Evict entries outside the time window.
         self.evictExpired(now_ns);

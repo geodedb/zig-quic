@@ -277,8 +277,8 @@ pub fn bind(comptime Connection: type) type {
         /// Write data to a stream (simplified slice, no FIN flag in this helper slice yet).
         /// GAP-0200: Thread-safe - acquires connection mutex
         pub fn writeStream(self: *Connection, id: u64, data: []const u8, fin: bool) !usize {
-            self.mu.lock();
-            defer self.mu.unlock();
+            self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
             return self.writeStreamUnlocked(id, data, fin);
         }
 
@@ -482,8 +482,8 @@ pub fn bind(comptime Connection: type) type {
         /// Read reassembled bytes from a stream into buf; returns number copied or WouldBlock.
         /// GAP-0200: Thread-safe - acquires connection mutex
         pub fn readStream(self: *Connection, id: u64, buf: []u8) !usize {
-            self.mu.lock();
-            defer self.mu.unlock();
+            self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
             return self.readStreamUnlocked(id, buf);
         }
 

@@ -377,8 +377,8 @@ pub fn bind(comptime Connection: type) type {
         /// Accept an incoming peer-initiated stream (non-blocking)
         /// GAP-0200: Thread-safe - acquires connection mutex
         pub fn acceptStream(self: *Connection) !u64 {
-            self.mu.lock();
-            defer self.mu.unlock();
+            self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
             if (self.incoming_stream_queue.items.len == 0) {
                 return error.WouldBlock;

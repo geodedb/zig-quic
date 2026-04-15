@@ -175,12 +175,12 @@ pub const Endpoint = struct {
     // mu: Primary lock protecting connection map (conns), accepted queue, retired list.
     //     Also used by processIncomingDatagram which mutates connection state.
     //     Lock ordering: endpoint.mu -> connection.mu (never reverse)
-    mu: std.Io.Mutex = .{},
+    mu: std.Io.Mutex = std.Io.Mutex.init,
 
     // timer_mu: Separate lock for timer queue and next_timer_id.
     //     Decoupled from mu so timer scheduling (senderPaced, scheduleConnPto)
     //     doesn't contend with poll's packet processing or connection lookup.
-    timer_mu: std.Io.Mutex = .{},
+    timer_mu: std.Io.Mutex = std.Io.Mutex.init,
 
     // Transport abstraction (Phase 8c: required, wraps UDP or loopback)
     // All I/O operations go through this transport interface
@@ -456,11 +456,11 @@ pub const Endpoint = struct {
 
     /// Expire due timers without blocking on I/O (test helper).
     pub fn flushTimers(self: *Endpoint) void {
-        self.mu.lock();
-        self.timer_mu.lock();
+        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        self.timer_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer {
-            self.timer_mu.unlock();
-            self.mu.unlock();
+            self.timer_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+            self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         }
         self.processExpiredTimers(nowMsMonotonic());
     }
@@ -528,8 +528,8 @@ pub const Endpoint = struct {
     /// Enqueue accepted server connection for accept().
     /// GAP-0200: Thread-safe - acquires endpoint mutex
     fn pushAccepted(self: *Endpoint, c: *conn_mod.Connection) void {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         // OOM here drops the connection from the accept queue -- it will
         // never be returned to the application.  Log so the operator can
         // detect pressure on the allocator.
@@ -545,8 +545,8 @@ pub const Endpoint = struct {
     /// GAP-0200: Thread-safe - acquires endpoint mutex.
     /// Uses swapRemove for O(1) dequeue — connection acceptance order is not guaranteed.
     pub fn popAccepted(self: *Endpoint) ?*conn_mod.Connection {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         if (self.accepted.items.len == 0) return null;
         return self.accepted.swapRemove(0);
     }
@@ -557,8 +557,8 @@ pub const Endpoint = struct {
     /// interleaved) so that incoming packets are processed and connections
     /// actually reach the accepted queue.
     pub fn waitForAccepted(self: *Endpoint, timeout_ms: u32) ?*conn_mod.Connection {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
         // Fast path: connection already queued.
         if (self.accepted.items.len > 0) {
@@ -602,8 +602,8 @@ pub const Endpoint = struct {
         const ph = hashSockaddr(&peer.storage, peer.len);
         const version = if (self.cfg.version == .v2) packet.QUIC_V2 else packet.QUIC_V1;
 
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
         // Delegate to client module for connection creation
         // Phase 8c: Pass invalid socket for sock_fd (I/O now via transport abstraction)
@@ -647,8 +647,8 @@ pub const Endpoint = struct {
     /// Schedule generic timer firing after delay_ms.
     /// Thread-safe: acquires timer_mu to protect timer queue and next_timer_id.
     pub fn scheduleTimer(self: *Endpoint, delay_ms: u32) !u64 {
-        self.timer_mu.lock();
-        defer self.timer_mu.unlock();
+        self.timer_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.timer_mu.unlock(std.Io.Threaded.global_single_threaded.io());
         return self.scheduleTimerLocked(delay_ms);
     }
 
@@ -665,8 +665,8 @@ pub const Endpoint = struct {
     /// Schedule connection-owned PTO/PMTUD timer tied to a specific connection and space.
     /// Thread-safe: acquires timer_mu to protect timer queue and next_timer_id.
     pub fn scheduleConnPto(self: *Endpoint, c: *conn_mod.Connection, kind: TimerKind, delay_ms: u32) !u64 {
-        self.timer_mu.lock();
-        defer self.timer_mu.unlock();
+        self.timer_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.timer_mu.unlock(std.Io.Threaded.global_single_threaded.io());
         return self.scheduleConnPtoLocked(c, kind, delay_ms);
     }
 
@@ -684,8 +684,8 @@ pub const Endpoint = struct {
     /// Schedule a paced send for a connection after delay_ns.
     /// Thread-safe: acquires timer_mu to protect timer queue.
     fn schedulePaced(self: *Endpoint, c: *conn_mod.Connection, delay_ns: u64, owned_bytes: []u8) !u64 {
-        self.timer_mu.lock();
-        defer self.timer_mu.unlock();
+        self.timer_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.timer_mu.unlock(std.Io.Threaded.global_single_threaded.io());
         const id = self.next_timer_id;
         self.next_timer_id +%= 1;
         const now_ms: i64 = nowMsMonotonic();
@@ -708,8 +708,8 @@ pub const Endpoint = struct {
     /// Cancel a pending timer id.
     /// Thread-safe: acquires timer_mu to protect timer queue.
     pub fn cancelTimer(self: *Endpoint, id: u64) bool {
-        self.timer_mu.lock();
-        defer self.timer_mu.unlock();
+        self.timer_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.timer_mu.unlock(std.Io.Threaded.global_single_threaded.io());
         return self.cancelTimerLocked(id);
     }
 
@@ -752,8 +752,8 @@ pub const Endpoint = struct {
         // Phase 2: Calculate effective timeout (timer_mu only - reads timer deadlines)
         var eff_timeout: i32 = undefined;
         {
-            self.timer_mu.lock();
-            defer self.timer_mu.unlock();
+            self.timer_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            defer self.timer_mu.unlock(std.Io.Threaded.global_single_threaded.io());
             const now_ms: i64 = nowMsMonotonic();
             eff_timeout = self.nextTimeoutFromTimers(now_ms, timeout_ms);
             if (eff_timeout < 0) eff_timeout = -1;
@@ -792,8 +792,8 @@ pub const Endpoint = struct {
                 // Batch crypto requires a pre-decrypted fast path in
                 // processShortHeader before it can be re-enabled.
                 {
-                    self.mu.lock();
-                    defer self.mu.unlock();
+                    self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+                    defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
                     var i: usize = 0;
                     while (i < batch_n) : (i += 1) {
                         const slot = recv_slots[i];
@@ -813,11 +813,11 @@ pub const Endpoint = struct {
         var conn_snapshot: [1024]*conn_mod.Connection = undefined;
         var snapshot_len: usize = 0;
         {
-            self.mu.lock();
-            self.timer_mu.lock();
+            self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            self.timer_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
             self.processExpiredTimers(nowMsMonotonic());
             // timer_mu is held on return from processExpiredTimers
-            self.timer_mu.unlock();
+            self.timer_mu.unlock(std.Io.Threaded.global_single_threaded.io());
             // Snapshot active connections for PTO arming outside mu.
             // Connection pointers remain valid — connections are only freed
             // in pruneClosed() which runs in subsequent poll cycles.
@@ -830,7 +830,7 @@ pub const Endpoint = struct {
                     snapshot_len += 1;
                 }
             }
-            self.mu.unlock();
+            self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         }
         // Arm PTO timers outside mu — each computeAndMaybeArmPto* reads only
         // per-connection state and calls scheduleConnPto which acquires timer_mu
@@ -1433,7 +1433,7 @@ pub const Endpoint = struct {
         }
 
         // Release timer_mu before firing callbacks (they may schedule new timers)
-        self.timer_mu.unlock();
+        self.timer_mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
         // Fire callbacks under mu only (already held by caller)
         for (expired_buf[0..expired_count]) |t| {
@@ -1477,16 +1477,16 @@ pub const Endpoint = struct {
         self.pruneClosed();
 
         // Re-acquire timer_mu (caller expects it held on return)
-        self.timer_mu.lock();
+        self.timer_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
     }
 
     /// TEST-ONLY: force all timers to expire immediately and process them once.
     pub fn forceExpireAllTimers(self: *Endpoint) void {
-        self.mu.lock();
-        self.timer_mu.lock();
+        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        self.timer_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer {
-            self.timer_mu.unlock();
-            self.mu.unlock();
+            self.timer_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+            self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         }
         const now_ms = nowMsMonotonic();
         var i: usize = 0;
@@ -1534,8 +1534,8 @@ pub const Endpoint = struct {
     /// Delegates to lifecycle module (Phase 10).
     /// Caller must hold mu. Acquires timer_mu internally for timer cleanup.
     fn pruneClosed(self: *Endpoint) void {
-        self.timer_mu.lock();
-        defer self.timer_mu.unlock();
+        self.timer_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.timer_mu.unlock(std.Io.Threaded.global_single_threaded.io());
         var ctx = lifecycle_mod.LifecycleContext{
             .allocator = self.allocator,
             .conns = &self.conns,

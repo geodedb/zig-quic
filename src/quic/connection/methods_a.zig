@@ -774,8 +774,8 @@ pub fn bind(comptime Connection: type) type {
         /// Ingest STREAM frame data (copy + reassembly); updates flow-control windows heuristically.
         /// CWE-366 mitigation: Thread-safe - acquires connection mutex to protect stream maps.
         pub fn pushStreamFrame(self: *Connection, stream_id: u64, offset: u64, data: []const u8, fin: bool) !void {
-            self.mu.lock();
-            defer self.mu.unlock();
+            self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
             logger.debugPrint("[CONN-PTR-PUSH] conn=0x{x} stream_id={}\n", .{ @intFromPtr(self), stream_id });
             logger.debugPrint("[STREAM-RX] id={} off={} len={} fin={} before recv_off={} inbox_len={} bufs={}\n", .{ stream_id, offset, data.len, fin, if (self.streams_rx.getPtr(stream_id)) |sr| sr.recv_off else 0, if (self.streams_rx.getPtr(stream_id)) |sr| sr.inbox.items.len else 0, if (self.streams_rx.getPtr(stream_id)) |sr| sr.bufs.items.len else 0 });

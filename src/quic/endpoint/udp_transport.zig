@@ -62,7 +62,7 @@ fn splitHostPort(hostport: []const u8) !struct { host: []const u8, port: u16 } {
     return .{ .host = host, .port = port };
 }
 
-fn netAddressToSockAddr(addr: std.Io.net.Address) SockAddr {
+fn netAddressToSockAddr(addr: std.Io.net.IpAddress) SockAddr {
     var out: SockAddr = .{};
     const addr_len: usize = addr.getOsSockLen();
     @memcpy(
@@ -75,13 +75,13 @@ fn netAddressToSockAddr(addr: std.Io.net.Address) SockAddr {
 
 fn resolveBindAddr(bind_addr: []const u8) !SockAddr {
     // Fast path for numeric IP literals with port (supports bracketed IPv6).
-    if (std.Io.net.Address.parseIpAndPort(bind_addr)) |addr| {
+    if (std.Io.net.IpAddress.parseIpAndPort(bind_addr)) |addr| {
         return netAddressToSockAddr(addr);
     } else |_| {}
 
     const hp = try splitHostPort(bind_addr);
     const host = if (std.mem.eql(u8, hp.host, "localhost")) "127.0.0.1" else hp.host;
-    const addr = std.Io.net.Address.parseIp(host, hp.port) catch return error.InvalidAddress;
+    const addr = std.Io.net.IpAddress.parseIp(host, hp.port) catch return error.InvalidAddress;
     return netAddressToSockAddr(addr);
 }
 

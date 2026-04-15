@@ -69,13 +69,13 @@ const spice = if (true) @import("spice") else struct {
 // ============================================================================
 
 var global_pool: if (true) ?spice.ThreadPool else void = if (true) null else {};
-var pool_mutex: std.Io.Mutex = .{};
+var pool_mutex: std.Io.Mutex = std.Io.Mutex.init;
 
 pub fn getPool() if (true) *spice.ThreadPool else void {
     // spice always enabled when this module is compiled
 
-    pool_mutex.lock();
-    defer pool_mutex.unlock();
+    pool_mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    defer pool_mutex.unlock(std.Io.Threaded.global_single_threaded.io());
 
     if (global_pool == null) {
         global_pool = spice.ThreadPool.init(std.heap.page_allocator);
@@ -87,8 +87,8 @@ pub fn getPool() if (true) *spice.ThreadPool else void {
 pub fn deinitPool() void {
     // spice always enabled when this module is compiled
 
-    pool_mutex.lock();
-    defer pool_mutex.unlock();
+    pool_mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    defer pool_mutex.unlock(std.Io.Threaded.global_single_threaded.io());
 
     if (global_pool) |*pool| {
         pool.deinit();

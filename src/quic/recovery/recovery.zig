@@ -117,7 +117,7 @@ const SpaceState = struct {
 /// Thread-safe: all public methods are protected by an internal mutex.
 pub const Recovery = struct {
     allocator: std.mem.Allocator,
-    mutex: std.Io.Mutex = .{},
+    mutex: std.Io.Mutex = std.Io.Mutex.init,
     rtt: RttState = .{},
     cc: CcState = .{},
     use_cubic: bool = false,
@@ -156,8 +156,8 @@ pub const Recovery = struct {
 
     /// Select congestion control mode (false = NewReno, true = CUBIC).
     pub fn setCcMode(self: *Recovery, cubic: bool) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
         self.use_cubic = cubic;
         if (cubic) {
             // Initialize CUBIC state: W_max starts at current cwnd
@@ -170,8 +170,8 @@ pub const Recovery = struct {
 
     /// Record a packet as sent in the given space.
     pub fn onPacketSent(self: *Recovery, space: PacketNumberSpace, pn: u64, bytes: usize, ack_eliciting: bool, now_ns: u64) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
         const idx = spaceIdx(space);
         const alloc = self.spaces[idx].allocator;
         try self.spaces[idx].sent.append(alloc, .{ .pn = pn, .time_ns = now_ns, .size = bytes, .ack_eliciting = ack_eliciting });
@@ -217,8 +217,8 @@ pub const Recovery = struct {
 
     /// Handle ACK frames for a given space with optional ECN counters.
     pub fn onAckReceivedWithEcn(self: *Recovery, space: PacketNumberSpace, acked: []const u64, ack_delay_ns: u64, now_ns: u64, ecn: ?frame.EcnCounts) AckResult {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
         const idx = spaceIdx(space);
         var sstate = &self.spaces[idx];
         var bytes_acked: usize = 0;
@@ -588,8 +588,8 @@ pub const Recovery = struct {
 
     /// Recompute loss detection timeouts and declare any time-threshold losses.
     pub fn onLossTimeExpired(self: *Recovery, now_ns: u64) usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
         var total_lost: usize = 0;
         var first_lost_time: ?u64 = null;
         var last_lost_time: ?u64 = null;
@@ -664,8 +664,8 @@ pub const Recovery = struct {
 
     /// Compute next PTO deadline for a given space relative to now.
     pub fn computeSpacePtoTimeNs(self: *Recovery, space: PacketNumberSpace, now_ns: u64) ?u64 {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
         const idx = spaceIdx(space);
         const pto = self.rtt.computePtoNs();
         const deadline = now_ns + pto;
@@ -683,8 +683,8 @@ pub const Recovery = struct {
 
     /// Return delivery state for a tracked packet number in the specified space.
     pub fn getPacketDeliveryState(self: *Recovery, space: PacketNumberSpace, pn: u64) PacketDeliveryState {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
 
         const idx = spaceIdx(space);
         const sstate = &self.spaces[idx];
@@ -712,36 +712,36 @@ pub const Recovery = struct {
 
     /// Get current bytes in flight (thread-safe).
     pub fn getBytesInFlight(self: *Recovery) usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
         return self.cc.bytes_in_flight;
     }
 
     /// Get current congestion window (thread-safe).
     pub fn getCwnd(self: *Recovery) usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
         return self.cc.cwnd;
     }
 
     /// Get maximum datagram size (thread-safe).
     pub fn getMds(self: *Recovery) usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
         return self.cc.mds;
     }
 
     /// Set maximum datagram size (thread-safe).
     pub fn setMds(self: *Recovery, mds: usize) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
         self.cc.mds = mds;
     }
 
     /// Get bytes in flight and cwnd atomically (thread-safe).
     pub fn getCongestionState(self: *Recovery) struct { bytes_in_flight: usize, cwnd: usize } {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
         return .{ .bytes_in_flight = self.cc.bytes_in_flight, .cwnd = self.cc.cwnd };
     }
 };

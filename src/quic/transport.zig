@@ -43,14 +43,14 @@ pub const QuicError = error{
 /// Handler threads doing read/write on the same connection tree must not race
 /// with poll's mutable map access.
 pub const PollSync = struct {
-    mu: std.Io.Mutex = .{},
+    mu: std.Io.Mutex = std.Io.Mutex.init,
     cv: std.Io.Condition = .{},
     poll_requested: bool = false,
     active_io_count: u32 = 0,
 
     pub fn enterIo(self: *PollSync) void {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         while (self.poll_requested) {
             self.cv.wait(&self.mu);
         }
@@ -58,15 +58,15 @@ pub const PollSync = struct {
     }
 
     pub fn leaveIo(self: *PollSync) void {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         if (self.active_io_count > 0) self.active_io_count -= 1;
         if (self.active_io_count == 0) self.cv.signal();
     }
 
     pub fn enterPoll(self: *PollSync) void {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         self.poll_requested = true;
         while (self.active_io_count > 0) {
             self.cv.wait(&self.mu);
@@ -74,8 +74,8 @@ pub const PollSync = struct {
     }
 
     pub fn leavePoll(self: *PollSync) void {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         self.poll_requested = false;
         self.cv.broadcast();
     }
@@ -87,9 +87,9 @@ pub const QuicTransport = struct {
     config: Config,
     endpoint: ?*api.QuicEndpoint = null,
     connections: std.ArrayList(*QuicConnection),
-    connections_mutex: std.Io.Mutex = .{},
+    connections_mutex: std.Io.Mutex = std.Io.Mutex.init,
     pending_destroy: std.ArrayList(*api.QuicConnection),
-    pending_destroy_mutex: std.Io.Mutex = .{},
+    pending_destroy_mutex: std.Io.Mutex = std.Io.Mutex.init,
     poll_sync: PollSync = .{},
     /// Path to the TLS certificate file.
     cert_path: ?[]const u8,
@@ -145,10 +145,10 @@ pub const QuicTransport = struct {
     pub fn deinit(self: *QuicTransport) void {
         self.drainPendingDestroy();
 
-        self.connections_mutex.lock();
+        self.connections_mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         var conns = self.connections;
         self.connections = .empty;
-        self.connections_mutex.unlock();
+        self.connections_mutex.unlock(std.Io.Threaded.global_single_threaded.io());
 
         for (conns.items) |conn| {
             const inner = conn.quic_connection orelse conn.inner;
@@ -374,8 +374,8 @@ pub const QuicTransport = struct {
     /// Process deferred connection destructions queued by worker threads.
     /// Must be called by the polling thread.
     pub fn drainPendingDestroy(self: *QuicTransport) void {
-        self.pending_destroy_mutex.lock();
-        defer self.pending_destroy_mutex.unlock();
+        self.pending_destroy_mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.pending_destroy_mutex.unlock(std.Io.Threaded.global_single_threaded.io());
         if (self.pending_destroy.items.len == 0) return;
 
         self.poll_sync.enterPoll();
@@ -401,8 +401,8 @@ pub const QuicTransport = struct {
             .poll_sync = &self.poll_sync,
         };
 
-        self.connections_mutex.lock();
-        defer self.connections_mutex.unlock();
+        self.connections_mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.connections_mutex.unlock(std.Io.Threaded.global_single_threaded.io());
         try self.connections.append(self.allocator, conn);
         return conn;
     }
@@ -480,7 +480,7 @@ pub const QuicTransport = struct {
 
     /// Remove, close, and reclaim a connection wrapper.
     pub fn destroyConnection(self: *QuicTransport, conn: *QuicConnection) void {
-        self.connections_mutex.lock();
+        self.connections_mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         var idx: usize = 0;
         while (idx < self.connections.items.len) {
             if (self.connections.items[idx] == conn) {
@@ -489,15 +489,15 @@ pub const QuicTransport = struct {
             }
             idx += 1;
         }
-        self.connections_mutex.unlock();
+        self.connections_mutex.unlock(std.Io.Threaded.global_single_threaded.io());
 
         const inner = conn.quic_connection orelse conn.inner;
         conn.close();
-        self.pending_destroy_mutex.lock();
+        self.pending_destroy_mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         self.pending_destroy.append(self.allocator, inner) catch {
             inner.deinit();
         };
-        self.pending_destroy_mutex.unlock();
+        self.pending_destroy_mutex.unlock(std.Io.Threaded.global_single_threaded.io());
         self.allocator.destroy(conn);
     }
 

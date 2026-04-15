@@ -221,7 +221,7 @@ pub fn processShortHeader(
     // and packet-number tracking from concurrent access by worker threads.
     // Released before processFrames() which calls pushStreamFrame() that acquires
     // conn.mu internally (Zig mutexes are non-recursive).
-    conn.mu.lock();
+    conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
 
     // Handle key promotion if NEXT keys were used
     // RFC 9001 §6.1: "After receiving a packet encrypted with the next keys,
@@ -311,7 +311,7 @@ pub fn processShortHeader(
 
     // GAP-0200: Release conn.mu before processFrames() because frame_handler
     // calls pushStreamFrame() which acquires conn.mu (non-recursive mutex).
-    conn.mu.unlock();
+    conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
     // Parse and process all frames from the decrypted payload
     const frame_result = processFrames(
@@ -337,8 +337,8 @@ pub fn processShortHeader(
 
     // GAP-0200: Re-acquire conn.mu for post-frame state mutations and ACK
     // generation (buildAckApp reads PnWindow / writes ack_ranges_buf).
-    conn.mu.lock();
-    defer conn.mu.unlock();
+    conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    defer conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
     // Handle HANDSHAKE_DONE frame (RFC 9000 §19.20)
     // Client: drop Handshake keys after HANDSHAKE_DONE (with conditions)
