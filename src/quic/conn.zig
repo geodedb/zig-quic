@@ -473,7 +473,7 @@ pub const Connection = struct {
     // GAP-0200: Per-connection mutex for thread-safe access to connection state
     // This protects all mutable state in this connection: streams, keys, flow control, etc.
     // Lock ordering: endpoint.mu -> connection.mu (never reverse)
-    mu: std.Thread.Mutex = .{},
+    mu: std.Io.Mutex = .{},
 
     id: u64,
     role: Role,

@@ -43,8 +43,8 @@ pub const QuicError = error{
 /// Handler threads doing read/write on the same connection tree must not race
 /// with poll's mutable map access.
 pub const PollSync = struct {
-    mu: std.Thread.Mutex = .{},
-    cv: std.Thread.Condition = .{},
+    mu: std.Io.Mutex = .{},
+    cv: std.Io.Condition = .{},
     poll_requested: bool = false,
     active_io_count: u32 = 0,
 
@@ -87,9 +87,9 @@ pub const QuicTransport = struct {
     config: Config,
     endpoint: ?*api.QuicEndpoint = null,
     connections: std.ArrayList(*QuicConnection),
-    connections_mutex: std.Thread.Mutex = .{},
+    connections_mutex: std.Io.Mutex = .{},
     pending_destroy: std.ArrayList(*api.QuicConnection),
-    pending_destroy_mutex: std.Thread.Mutex = .{},
+    pending_destroy_mutex: std.Io.Mutex = .{},
     poll_sync: PollSync = .{},
     /// Path to the TLS certificate file.
     cert_path: ?[]const u8,

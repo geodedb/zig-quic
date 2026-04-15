@@ -69,7 +69,7 @@ const spice = if (true) @import("spice") else struct {
 // ============================================================================
 
 var global_pool: if (true) ?spice.ThreadPool else void = if (true) null else {};
-var pool_mutex: std.Thread.Mutex = .{};
+var pool_mutex: std.Io.Mutex = .{};
 
 pub fn getPool() if (true) *spice.ThreadPool else void {
     // spice always enabled when this module is compiled

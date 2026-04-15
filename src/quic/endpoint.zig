@@ -18,7 +18,7 @@
 //!
 //! **Thread Safety Implementation**:
 //! - `current_io_endpoint` is `threadlocal` to support multiple endpoints in separate threads
-//! - Each `Connection` has a `mu: std.Thread.Mutex` protecting internal state
+//! - Each `Connection` has a `mu: std.Io.Mutex` protecting internal state
 //! - Stream maps (`streams_rx`, `stream_txs`) are protected by the connection mutex
 //! - All public stream APIs acquire the connection mutex before accessing state
 //!
@@ -175,12 +175,12 @@ pub const Endpoint = struct {
     // mu: Primary lock protecting connection map (conns), accepted queue, retired list.
     //     Also used by processIncomingDatagram which mutates connection state.
     //     Lock ordering: endpoint.mu -> connection.mu (never reverse)
-    mu: std.Thread.Mutex = .{},
+    mu: std.Io.Mutex = .{},
 
     // timer_mu: Separate lock for timer queue and next_timer_id.
     //     Decoupled from mu so timer scheduling (senderPaced, scheduleConnPto)
     //     doesn't contend with poll's packet processing or connection lookup.
-    timer_mu: std.Thread.Mutex = .{},
+    timer_mu: std.Io.Mutex = .{},
 
     // Transport abstraction (Phase 8c: required, wraps UDP or loopback)
     // All I/O operations go through this transport interface
@@ -212,7 +212,7 @@ pub const Endpoint = struct {
     // Condition variable signaled when a new connection is pushed to the
     // accepted queue.  Allows callers to block efficiently in accept() instead
     // of busy-polling.  Protected by mu (waiters must hold mu).
-    accept_cv: std.Thread.Condition = .{},
+    accept_cv: std.Io.Condition = .{},
     // TEST-ONLY: outbound capture ring (peer + owned bytes)
     captures: std.ArrayList(OutCaptured),
     // TEST-ONLY: runtime flag to enable outbound capture in tests

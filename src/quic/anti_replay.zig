@@ -28,7 +28,7 @@ pub const AntiReplayCache = struct {
     /// Allocator used for the internal hash map.
     allocator: std.mem.Allocator,
     /// Mutex protecting the entries map for concurrent access.
-    mu: std.Thread.Mutex,
+    mu: std.Io.Mutex,
 
     /// Initialize a new anti-replay cache.
     ///

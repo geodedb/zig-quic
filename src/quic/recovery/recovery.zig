@@ -117,7 +117,7 @@ const SpaceState = struct {
 /// Thread-safe: all public methods are protected by an internal mutex.
 pub const Recovery = struct {
     allocator: std.mem.Allocator,
-    mutex: std.Thread.Mutex = .{},
+    mutex: std.Io.Mutex = .{},
     rtt: RttState = .{},
     cc: CcState = .{},
     use_cubic: bool = false,
