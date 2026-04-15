@@ -166,7 +166,7 @@ fn splitHostPort(hostport: []const u8) !struct { host: []const u8, port: u16 } {
     return .{ .host = host, .port = port };
 }
 
-fn netAddressToSockAddr(addr: std.net.Address) conn_mod.SockAddr {
+fn netAddressToSockAddr(addr: std.Io.net.Address) conn_mod.SockAddr {
     var out: conn_mod.SockAddr = .{};
     const addr_len: usize = addr.getOsSockLen();
     @memcpy(
@@ -200,7 +200,7 @@ fn lookupHosts(host: []const u8, port: u16, prefer_ipv6: bool) ?conn_mod.SockAdd
         }
         if (!matched) continue;
 
-        const addr = std.net.Address.parseIp(ip_str, port) catch continue;
+        const addr = std.Io.net.Address.parseIp(ip_str, port) catch continue;
         const sock = netAddressToSockAddr(addr);
         const is_v6 = sock.family() == posix.AF.INET6;
 
@@ -226,7 +226,7 @@ pub fn resolveAny(hostport: []const u8, proto: enum { udp }) !conn_mod.SockAddr 
     const port = hp.port;
 
     // Numeric literal fast path.
-    if (std.net.Address.parseIp(host, port)) |addr| {
+    if (std.Io.net.Address.parseIp(host, port)) |addr| {
         return netAddressToSockAddr(addr);
     } else |_| {}
 
@@ -237,7 +237,7 @@ pub fn resolveAny(hostport: []const u8, proto: enum { udp }) !conn_mod.SockAddr 
     if (std.mem.eql(u8, host, "server6")) {
         if (lookupHosts(host, port, true)) |resolved| return resolved;
         if (lookupHosts("server", port, true)) |resolved| return resolved;
-        const fallback = std.net.Address.parseIp("fd00:cafe:cafe:100::100", port) catch return error.InvalidAddress;
+        const fallback = std.Io.net.Address.parseIp("fd00:cafe:cafe:100::100", port) catch return error.InvalidAddress;
         return netAddressToSockAddr(fallback);
     }
 
@@ -254,6 +254,6 @@ pub fn resolveAny(hostport: []const u8, proto: enum { udp }) !conn_mod.SockAddr 
     if (lookupHosts(host, port, true)) |resolved| return resolved;
 
     // Final fallback: resolver-backed lookup.
-    const resolved = std.net.Address.resolveIp(host, port) catch return error.InvalidAddress;
+    const resolved = std.Io.net.Address.resolveIp(host, port) catch return error.InvalidAddress;
     return netAddressToSockAddr(resolved);
 }
