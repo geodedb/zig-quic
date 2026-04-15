@@ -13,13 +13,13 @@ fn addExe(b: *std.Build, name: []const u8, path: []const u8, target: std.Build.R
     // Link OpenSSL for crypto operations (required for QUIC AEAD compatibility)
     // Note: On Windows, OpenSSL is optional since it may not be available on CI runners
     if (target.result.os.tag != .windows) {
-        exe.linkSystemLibrary("ssl");
-        exe.linkSystemLibrary("crypto");
+        exe.root_module.linkSystemLibrary("ssl", .{});
+        exe.root_module.linkSystemLibrary("crypto", .{});
     }
-    exe.linkLibC();
+    exe.root_module.link_libc = true;
 
     if (target.result.os.tag == .windows) {
-        exe.linkSystemLibrary("ws2_32");
+        exe.root_module.linkSystemLibrary("ws2_32", .{});
     }
     return exe;
 }
@@ -38,13 +38,13 @@ fn addTst(
     // Link OpenSSL for crypto operations (required for QUIC AEAD compatibility)
     // Note: On Windows, OpenSSL is optional since it may not be available on CI runners
     if (target.result.os.tag != .windows) {
-        tst.linkSystemLibrary("ssl");
-        tst.linkSystemLibrary("crypto");
+        tst.root_module.linkSystemLibrary("ssl", .{});
+        tst.root_module.linkSystemLibrary("crypto", .{});
     }
-    tst.linkLibC();
+    tst.root_module.link_libc = true;
 
     if (target.result.os.tag == .windows) {
-        tst.linkSystemLibrary("ws2_32");
+        tst.root_module.linkSystemLibrary("ws2_32", .{});
     }
     return tst;
 }
