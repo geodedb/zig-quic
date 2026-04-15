@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2024-2025 CodePros
 
-//! Parallel QUIC operations using spice heartbeat scheduling.
+//! Parallel QUIC operations using thread-pool scheduling.
 //!
 //! Provides high-performance parallel implementations of compute-intensive
 //! QUIC operations including AEAD encryption/decryption and header protection.
@@ -9,14 +9,14 @@
 //! ## Overview
 //!
 //! This module enables parallel processing of QUIC cryptographic operations
-//! using the spice thread pool with fork/join work-stealing. Operations
-//! automatically fall back to sequential processing when spice is disabled
-//! or input sizes are below thresholds.
+//! using the devnw thread-pool with submitBatch/WaitGroup. Operations
+//! automatically fall back to sequential processing when the pool is
+//! unavailable or input sizes are below thresholds.
 //!
 //! ## Build Configuration
 //!
-//! Enable parallel processing with `-Dspice=true` (default: enabled).
-//! Disable with `-Dspice=false` for sequential-only execution.
+//! Enable parallel processing with `-Dthread_pool=true` (default: enabled).
+//! Disable with `-Dthread_pool=false` for sequential-only execution.
 //!
 //! ## Usage Example
 //!
@@ -53,40 +53,33 @@
 
 const std = @import("std");
 const crypto_zig = @import("quic_crypto");
+const tp = @import("thread_pool");
 
-const spice = if (true) @import("spice") else struct {
-    pub const ThreadPool = void;
-    pub const Task = void;
-    pub fn Future(comptime I: type, comptime O: type) type {
-        _ = I;
-        _ = O;
-        return void;
-    }
-};
+// ============================================================================
+// Constants
+// ============================================================================
+
+/// Maximum number of chunks for flat parallel dispatch. Stack-allocated.
+const MAX_CHUNKS = 64;
 
 // ============================================================================
 // Global Thread Pool
 // ============================================================================
 
-var global_pool: if (true) ?spice.ThreadPool else void = if (true) null else {};
+var global_pool: ?tp.ThreadPool = null;
 var pool_mutex: std.Io.Mutex = std.Io.Mutex.init;
 
-pub fn getPool() if (true) *spice.ThreadPool else void {
-    // spice always enabled when this module is compiled
-
+pub fn getPool() ?*tp.ThreadPool {
     pool_mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
     defer pool_mutex.unlock(std.Io.Threaded.global_single_threaded.io());
 
     if (global_pool == null) {
-        global_pool = spice.ThreadPool.init(std.heap.page_allocator);
-        global_pool.?.start(.{});
+        global_pool = tp.ThreadPool.init(std.heap.page_allocator, .{}) catch return null;
     }
     return &global_pool.?;
 }
 
 pub fn deinitPool() void {
-    // spice always enabled when this module is compiled
-
     pool_mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
     defer pool_mutex.unlock(std.Io.Threaded.global_single_threaded.io());
 
@@ -115,13 +108,32 @@ pub const AeadEncryptResult = struct {
     length: usize,
 };
 
-/// Context for parallel AEAD encryption
-pub const AeadEncryptContext = struct {
+/// Context for parallel AEAD encryption (one chunk)
+const AeadEncryptChunk = struct {
     suite: crypto_zig.AeadSuite,
     inputs: []const AeadEncryptInput,
     outputs: [][]u8,
     results: []AeadEncryptResult,
 };
+
+fn aeadEncryptChunkFn(ctx: *anyopaque, _: *tp.TaskContext) void {
+    const chunk: *AeadEncryptChunk = @ptrCast(@alignCast(ctx));
+    for (chunk.inputs, 0..) |input, i| {
+        const len = crypto_zig.aeadEncrypt(
+            chunk.suite,
+            input.key,
+            input.iv,
+            input.packet_number,
+            input.aad,
+            input.plaintext,
+            chunk.outputs[i],
+        ) catch {
+            chunk.results[i] = .{ .success = false, .length = 0 };
+            continue;
+        };
+        chunk.results[i] = .{ .success = true, .length = len };
+    }
+}
 
 /// Encrypt multiple QUIC packets in parallel.
 ///
@@ -144,8 +156,9 @@ pub fn parallelAeadEncrypt(
     std.debug.assert(inputs.len == outputs.len);
     std.debug.assert(inputs.len == results.len);
 
-    // Use sequential for small batches or when spice is disabled
-    if (!true or inputs.len < 4) {
+    const pool = if (inputs.len >= 4) getPool() else null;
+
+    if (pool == null or inputs.len < 4) {
         for (inputs, 0..) |input, i| {
             const len = crypto_zig.aeadEncrypt(
                 suite,
@@ -164,26 +177,31 @@ pub fn parallelAeadEncrypt(
         return;
     }
 
-    const pool = getPool();
-    const ctx = AeadEncryptContext{
-        .suite = suite,
-        .inputs = inputs,
-        .outputs = outputs,
-        .results = results,
-    };
-    _ = pool.call(void, parallelAeadEncryptTask, ctx);
-}
+    const n_chunks = @min(inputs.len, MAX_CHUNKS);
+    var chunks: [MAX_CHUNKS]AeadEncryptChunk = undefined;
+    var batch: [MAX_CHUNKS]tp.BatchTask = undefined;
 
-fn parallelAeadEncryptTask(t: *spice.Task, ctx: AeadEncryptContext) void {
-    const inputs = ctx.inputs;
-    const outputs = ctx.outputs;
-    const results = ctx.results;
+    const chunk_size = (inputs.len + n_chunks - 1) / n_chunks;
+    var n: usize = 0;
+    var start: usize = 0;
+    while (start < inputs.len) : (n += 1) {
+        const end = @min(start + chunk_size, inputs.len);
+        chunks[n] = .{
+            .suite = suite,
+            .inputs = inputs[start..end],
+            .outputs = outputs[start..end],
+            .results = results[start..end],
+        };
+        batch[n] = .{ .task_fn = aeadEncryptChunkFn, .ctx = &chunks[n] };
+        start = end;
+    }
 
-    // Base case - process sequentially
-    if (inputs.len < 2) {
+    var wg = pool.?.waitGroup();
+    _ = pool.?.submitBatch(batch[0..n], .{ .wait_group = &wg }) catch {
+        // On submit failure, fall back to sequential
         for (inputs, 0..) |input, i| {
             const len = crypto_zig.aeadEncrypt(
-                ctx.suite,
+                suite,
                 input.key,
                 input.iv,
                 input.packet_number,
@@ -197,30 +215,8 @@ fn parallelAeadEncryptTask(t: *spice.Task, ctx: AeadEncryptContext) void {
             results[i] = .{ .success = true, .length = len };
         }
         return;
-    }
-
-    // Fork/join - split work
-    const mid = inputs.len / 2;
-    const left_ctx = AeadEncryptContext{
-        .suite = ctx.suite,
-        .inputs = inputs[0..mid],
-        .outputs = outputs[0..mid],
-        .results = results[0..mid],
     };
-    const right_ctx = AeadEncryptContext{
-        .suite = ctx.suite,
-        .inputs = inputs[mid..],
-        .outputs = outputs[mid..],
-        .results = results[mid..],
-    };
-
-    var fut = spice.Future(AeadEncryptContext, void).init();
-    fut.fork(t, parallelAeadEncryptTask, right_ctx);
-
-    t.call(void, parallelAeadEncryptTask, left_ctx);
-    if (fut.join(t) == null) {
-        t.call(void, parallelAeadEncryptTask, right_ctx);
-    }
+    wg.wait();
 }
 
 // ============================================================================
@@ -243,13 +239,36 @@ pub const AeadDecryptResult = struct {
     auth_failed: bool,
 };
 
-/// Context for parallel AEAD decryption
-pub const AeadDecryptContext = struct {
+/// Context for parallel AEAD decryption (one chunk)
+const AeadDecryptChunk = struct {
     suite: crypto_zig.AeadSuite,
     inputs: []const AeadDecryptInput,
     outputs: [][]u8,
     results: []AeadDecryptResult,
 };
+
+fn aeadDecryptChunkFn(ctx: *anyopaque, _: *tp.TaskContext) void {
+    const chunk: *AeadDecryptChunk = @ptrCast(@alignCast(ctx));
+    for (chunk.inputs, 0..) |input, i| {
+        const len = crypto_zig.aeadDecrypt(
+            chunk.suite,
+            input.key,
+            input.iv,
+            input.packet_number,
+            input.aad,
+            input.ciphertext_and_tag,
+            chunk.outputs[i],
+        ) catch |err| {
+            chunk.results[i] = .{
+                .success = false,
+                .length = 0,
+                .auth_failed = err == error.AuthenticationFailed,
+            };
+            continue;
+        };
+        chunk.results[i] = .{ .success = true, .length = len, .auth_failed = false };
+    }
+}
 
 /// Decrypt multiple QUIC packets in parallel.
 ///
@@ -272,7 +291,9 @@ pub fn parallelAeadDecrypt(
     std.debug.assert(inputs.len == outputs.len);
     std.debug.assert(inputs.len == results.len);
 
-    if (!true or inputs.len < 4) {
+    const pool = if (inputs.len >= 4) getPool() else null;
+
+    if (pool == null or inputs.len < 4) {
         for (inputs, 0..) |input, i| {
             const len = crypto_zig.aeadDecrypt(
                 suite,
@@ -295,25 +316,31 @@ pub fn parallelAeadDecrypt(
         return;
     }
 
-    const pool = getPool();
-    const ctx = AeadDecryptContext{
-        .suite = suite,
-        .inputs = inputs,
-        .outputs = outputs,
-        .results = results,
-    };
-    _ = pool.call(void, parallelAeadDecryptTask, ctx);
-}
+    const n_chunks = @min(inputs.len, MAX_CHUNKS);
+    var chunks: [MAX_CHUNKS]AeadDecryptChunk = undefined;
+    var batch: [MAX_CHUNKS]tp.BatchTask = undefined;
 
-fn parallelAeadDecryptTask(t: *spice.Task, ctx: AeadDecryptContext) void {
-    const inputs = ctx.inputs;
-    const outputs = ctx.outputs;
-    const results = ctx.results;
+    const chunk_size = (inputs.len + n_chunks - 1) / n_chunks;
+    var n: usize = 0;
+    var start: usize = 0;
+    while (start < inputs.len) : (n += 1) {
+        const end = @min(start + chunk_size, inputs.len);
+        chunks[n] = .{
+            .suite = suite,
+            .inputs = inputs[start..end],
+            .outputs = outputs[start..end],
+            .results = results[start..end],
+        };
+        batch[n] = .{ .task_fn = aeadDecryptChunkFn, .ctx = &chunks[n] };
+        start = end;
+    }
 
-    if (inputs.len < 2) {
+    var wg = pool.?.waitGroup();
+    _ = pool.?.submitBatch(batch[0..n], .{ .wait_group = &wg }) catch {
+        // On submit failure, fall back to sequential
         for (inputs, 0..) |input, i| {
             const len = crypto_zig.aeadDecrypt(
-                ctx.suite,
+                suite,
                 input.key,
                 input.iv,
                 input.packet_number,
@@ -331,29 +358,8 @@ fn parallelAeadDecryptTask(t: *spice.Task, ctx: AeadDecryptContext) void {
             results[i] = .{ .success = true, .length = len, .auth_failed = false };
         }
         return;
-    }
-
-    const mid = inputs.len / 2;
-    const left_ctx = AeadDecryptContext{
-        .suite = ctx.suite,
-        .inputs = inputs[0..mid],
-        .outputs = outputs[0..mid],
-        .results = results[0..mid],
     };
-    const right_ctx = AeadDecryptContext{
-        .suite = ctx.suite,
-        .inputs = inputs[mid..],
-        .outputs = outputs[mid..],
-        .results = results[mid..],
-    };
-
-    var fut = spice.Future(AeadDecryptContext, void).init();
-    fut.fork(t, parallelAeadDecryptTask, right_ctx);
-
-    t.call(void, parallelAeadDecryptTask, left_ctx);
-    if (fut.join(t) == null) {
-        t.call(void, parallelAeadDecryptTask, right_ctx);
-    }
+    wg.wait();
 }
 
 // ============================================================================
@@ -366,12 +372,19 @@ pub const HeaderProtectInput = struct {
     sample: [16]u8,
 };
 
-/// Context for parallel header protection
-pub const HeaderProtectContext = struct {
+/// Context for parallel header protection (one chunk)
+const HeaderProtectChunk = struct {
     suite: crypto_zig.AeadSuite,
     inputs: []const HeaderProtectInput,
     masks: [][5]u8,
 };
+
+fn headerProtectChunkFn(ctx: *anyopaque, _: *tp.TaskContext) void {
+    const chunk: *HeaderProtectChunk = @ptrCast(@alignCast(ctx));
+    for (chunk.inputs, 0..) |input, i| {
+        chunk.masks[i] = generateHeaderMask(chunk.suite, input.hp_key, input.sample);
+    }
+}
 
 /// Generate header protection masks for multiple packets in parallel.
 ///
@@ -391,52 +404,42 @@ pub fn parallelHeaderProtect(
 ) void {
     std.debug.assert(inputs.len == masks.len);
 
-    if (!true or inputs.len < 8) {
+    const pool = if (inputs.len >= 8) getPool() else null;
+
+    if (pool == null or inputs.len < 8) {
         for (inputs, 0..) |input, i| {
             masks[i] = generateHeaderMask(suite, input.hp_key, input.sample);
         }
         return;
     }
 
-    const pool = getPool();
-    const ctx = HeaderProtectContext{
-        .suite = suite,
-        .inputs = inputs,
-        .masks = masks,
-    };
-    _ = pool.call(void, parallelHeaderProtectTask, ctx);
-}
+    const n_chunks = @min(inputs.len, MAX_CHUNKS);
+    var chunks: [MAX_CHUNKS]HeaderProtectChunk = undefined;
+    var batch: [MAX_CHUNKS]tp.BatchTask = undefined;
 
-fn parallelHeaderProtectTask(t: *spice.Task, ctx: HeaderProtectContext) void {
-    const inputs = ctx.inputs;
-    const masks = ctx.masks;
+    const chunk_size = (inputs.len + n_chunks - 1) / n_chunks;
+    var n: usize = 0;
+    var start: usize = 0;
+    while (start < inputs.len) : (n += 1) {
+        const end = @min(start + chunk_size, inputs.len);
+        chunks[n] = .{
+            .suite = suite,
+            .inputs = inputs[start..end],
+            .masks = masks[start..end],
+        };
+        batch[n] = .{ .task_fn = headerProtectChunkFn, .ctx = &chunks[n] };
+        start = end;
+    }
 
-    if (inputs.len < 4) {
+    var wg = pool.?.waitGroup();
+    _ = pool.?.submitBatch(batch[0..n], .{ .wait_group = &wg }) catch {
+        // On submit failure, fall back to sequential
         for (inputs, 0..) |input, i| {
-            masks[i] = generateHeaderMask(ctx.suite, input.hp_key, input.sample);
+            masks[i] = generateHeaderMask(suite, input.hp_key, input.sample);
         }
         return;
-    }
-
-    const mid = inputs.len / 2;
-    const left_ctx = HeaderProtectContext{
-        .suite = ctx.suite,
-        .inputs = inputs[0..mid],
-        .masks = masks[0..mid],
     };
-    const right_ctx = HeaderProtectContext{
-        .suite = ctx.suite,
-        .inputs = inputs[mid..],
-        .masks = masks[mid..],
-    };
-
-    var fut = spice.Future(HeaderProtectContext, void).init();
-    fut.fork(t, parallelHeaderProtectTask, right_ctx);
-
-    t.call(void, parallelHeaderProtectTask, left_ctx);
-    if (fut.join(t) == null) {
-        t.call(void, parallelHeaderProtectTask, right_ctx);
-    }
+    wg.wait();
 }
 
 fn generateHeaderMask(suite: crypto_zig.AeadSuite, hp_key: []const u8, sample: [16]u8) [5]u8 {
@@ -490,22 +493,53 @@ pub const SentPacketInfo = struct {
     declared_lost: bool,
 };
 
-/// Context for parallel loss detection
-pub const LossDetectContext = struct {
-    sent_packets: []SentPacketInfo,
-    largest_acked: u64,
-    packet_threshold: u64,
-    time_threshold_ns: u64,
-    now_ns: u64,
-    start_idx: usize,
-    end_idx: usize,
-};
-
 /// Result of loss detection scan
 pub const LossDetectResult = struct {
     lost_count: usize,
     bytes_lost: usize,
 };
+
+/// Context for one parallel loss detection chunk.
+/// Stores partial results that are merged after wg.wait().
+const LossDetectChunk = struct {
+    sent_packets: []SentPacketInfo,
+    largest_acked: u64,
+    packet_threshold: u64,
+    time_threshold_ns: u64,
+    now_ns: u64,
+    // partial results written by the task function
+    lost_count: usize = 0,
+    bytes_lost: usize = 0,
+};
+
+fn lossDetectChunkFn(ctx: *anyopaque, _: *tp.TaskContext) void {
+    const chunk: *LossDetectChunk = @ptrCast(@alignCast(ctx));
+    var lost_count: usize = 0;
+    var bytes_lost: usize = 0;
+
+    for (chunk.sent_packets) |*sp| {
+        if (sp.declared_lost) continue;
+
+        // Packet threshold loss
+        if (sp.packet_number + chunk.packet_threshold <= chunk.largest_acked) {
+            sp.declared_lost = true;
+            lost_count += 1;
+            bytes_lost += sp.size;
+            continue;
+        }
+
+        // Time threshold loss
+        const deadline = sp.time_sent_ns + chunk.time_threshold_ns;
+        if (chunk.now_ns >= deadline and sp.packet_number < chunk.largest_acked) {
+            sp.declared_lost = true;
+            lost_count += 1;
+            bytes_lost += sp.size;
+        }
+    }
+
+    chunk.lost_count = lost_count;
+    chunk.bytes_lost = bytes_lost;
+}
 
 /// Scan sent packets for losses in parallel.
 ///
@@ -529,68 +563,45 @@ pub fn parallelLossDetect(
     time_threshold_ns: u64,
     now_ns: u64,
 ) LossDetectResult {
-    if (!true or sent_packets.len < 64) {
+    const pool = if (sent_packets.len >= 64) getPool() else null;
+
+    if (pool == null or sent_packets.len < 64) {
         return sequentialLossDetect(sent_packets, largest_acked, packet_threshold, time_threshold_ns, now_ns);
     }
 
-    const pool = getPool();
-    const ctx = LossDetectContext{
-        .sent_packets = sent_packets,
-        .largest_acked = largest_acked,
-        .packet_threshold = packet_threshold,
-        .time_threshold_ns = time_threshold_ns,
-        .now_ns = now_ns,
-        .start_idx = 0,
-        .end_idx = sent_packets.len,
-    };
-    return pool.call(LossDetectResult, parallelLossDetectTask, ctx);
-}
+    const n_chunks = @min(sent_packets.len, MAX_CHUNKS);
+    var chunks: [MAX_CHUNKS]LossDetectChunk = undefined;
+    var batch: [MAX_CHUNKS]tp.BatchTask = undefined;
 
-fn parallelLossDetectTask(t: *spice.Task, ctx: LossDetectContext) LossDetectResult {
-    const len = ctx.end_idx - ctx.start_idx;
-
-    if (len < 32) {
-        return sequentialLossDetectRange(
-            ctx.sent_packets,
-            ctx.largest_acked,
-            ctx.packet_threshold,
-            ctx.time_threshold_ns,
-            ctx.now_ns,
-            ctx.start_idx,
-            ctx.end_idx,
-        );
+    const chunk_size = (sent_packets.len + n_chunks - 1) / n_chunks;
+    var n: usize = 0;
+    var start: usize = 0;
+    while (start < sent_packets.len) : (n += 1) {
+        const end = @min(start + chunk_size, sent_packets.len);
+        chunks[n] = .{
+            .sent_packets = sent_packets[start..end],
+            .largest_acked = largest_acked,
+            .packet_threshold = packet_threshold,
+            .time_threshold_ns = time_threshold_ns,
+            .now_ns = now_ns,
+        };
+        batch[n] = .{ .task_fn = lossDetectChunkFn, .ctx = &chunks[n] };
+        start = end;
     }
 
-    const mid = ctx.start_idx + len / 2;
-    const left_ctx = LossDetectContext{
-        .sent_packets = ctx.sent_packets,
-        .largest_acked = ctx.largest_acked,
-        .packet_threshold = ctx.packet_threshold,
-        .time_threshold_ns = ctx.time_threshold_ns,
-        .now_ns = ctx.now_ns,
-        .start_idx = ctx.start_idx,
-        .end_idx = mid,
+    var wg = pool.?.waitGroup();
+    _ = pool.?.submitBatch(batch[0..n], .{ .wait_group = &wg }) catch {
+        return sequentialLossDetect(sent_packets, largest_acked, packet_threshold, time_threshold_ns, now_ns);
     };
-    const right_ctx = LossDetectContext{
-        .sent_packets = ctx.sent_packets,
-        .largest_acked = ctx.largest_acked,
-        .packet_threshold = ctx.packet_threshold,
-        .time_threshold_ns = ctx.time_threshold_ns,
-        .now_ns = ctx.now_ns,
-        .start_idx = mid,
-        .end_idx = ctx.end_idx,
-    };
+    wg.wait();
 
-    var fut = spice.Future(LossDetectContext, LossDetectResult).init();
-    fut.fork(t, parallelLossDetectTask, right_ctx);
-
-    const left_result = t.call(LossDetectResult, parallelLossDetectTask, left_ctx);
-    const right_result = if (fut.join(t)) |val| val else t.call(LossDetectResult, parallelLossDetectTask, right_ctx);
-
-    return LossDetectResult{
-        .lost_count = left_result.lost_count + right_result.lost_count,
-        .bytes_lost = left_result.bytes_lost + right_result.bytes_lost,
-    };
+    // Merge partial results
+    var total = LossDetectResult{ .lost_count = 0, .bytes_lost = 0 };
+    for (chunks[0..n]) |*chunk| {
+        total.lost_count += chunk.lost_count;
+        total.bytes_lost += chunk.bytes_lost;
+    }
+    return total;
 }
 
 fn sequentialLossDetect(
@@ -600,22 +611,10 @@ fn sequentialLossDetect(
     time_threshold_ns: u64,
     now_ns: u64,
 ) LossDetectResult {
-    return sequentialLossDetectRange(sent_packets, largest_acked, packet_threshold, time_threshold_ns, now_ns, 0, sent_packets.len);
-}
-
-fn sequentialLossDetectRange(
-    sent_packets: []SentPacketInfo,
-    largest_acked: u64,
-    packet_threshold: u64,
-    time_threshold_ns: u64,
-    now_ns: u64,
-    start_idx: usize,
-    end_idx: usize,
-) LossDetectResult {
     var lost_count: usize = 0;
     var bytes_lost: usize = 0;
 
-    for (sent_packets[start_idx..end_idx]) |*sp| {
+    for (sent_packets) |*sp| {
         if (sp.declared_lost) continue;
 
         // Packet threshold loss
@@ -646,8 +645,6 @@ fn sequentialLossDetectRange(
 // ============================================================================
 
 test "parallel aead encrypt" {
-    // spice always enabled when this module is compiled
-
     const allocator = std.testing.allocator;
     const count = 8;
 
@@ -681,8 +678,6 @@ test "parallel aead encrypt" {
 }
 
 test "parallel loss detect" {
-    // spice always enabled when this module is compiled
-
     var sent_packets: [100]SentPacketInfo = undefined;
     for (&sent_packets, 0..) |*sp, i| {
         sp.* = .{
@@ -742,8 +737,6 @@ test "parallel aead encrypt - single item below threshold" {
 }
 
 test "parallel aead encrypt - at threshold boundary" {
-    // spice always enabled when this module is compiled
-
     const allocator = std.testing.allocator;
     const count = 4; // Exactly at threshold
 
@@ -775,8 +768,6 @@ test "parallel aead encrypt - at threshold boundary" {
 }
 
 test "parallel aead decrypt - basic" {
-    // spice always enabled when this module is compiled
-
     const allocator = std.testing.allocator;
     const count = 8;
 
@@ -831,8 +822,6 @@ test "parallel aead decrypt - basic" {
 }
 
 test "parallel header protect - basic" {
-    // spice always enabled when this module is compiled
-
     var inputs: [16]HeaderProtectInput = undefined;
     var masks: [16][5]u8 = undefined;
 
@@ -862,8 +851,6 @@ test "parallel header protect - basic" {
 }
 
 test "parallel header protect - chacha20" {
-    // spice always enabled when this module is compiled
-
     var inputs: [8]HeaderProtectInput = undefined;
     var masks: [8][5]u8 = undefined;
 
@@ -892,8 +879,6 @@ test "parallel header protect - chacha20" {
 }
 
 test "parallel loss detect - no losses" {
-    // spice always enabled when this module is compiled
-
     var sent_packets: [64]SentPacketInfo = undefined;
     for (&sent_packets, 0..) |*sp, i| {
         sp.* = .{

@@ -56,19 +56,19 @@ pub fn build(b: *std.Build) void {
     const optimize: std.builtin.OptimizeMode = if (release_safe) .ReleaseSafe else optimize_base;
     _ = b.option(bool, "xdp", "Enable XDP path (no-op placeholder)") orelse false;
 
-    // Spice parallelism option
-    const enable_spice = b.option(bool, "spice", "Enable spice-based parallelism") orelse true;
+    // Thread pool parallelism option
+    const enable_tp = b.option(bool, "thread_pool", "Enable thread-pool-based parallelism") orelse true;
 
-    // Get spice dependency if enabled
-    const spice_mod: ?*std.Build.Module = if (enable_spice) blk: {
-        const spice_dep = b.dependency("spice", .{
+    // Get thread_pool dependency if enabled
+    const tp_mod: ?*std.Build.Module = if (enable_tp) blk: {
+        const tp_dep = b.dependency("thread_pool", .{
             .target = target,
             .optimize = optimize,
         });
-        break :blk spice_dep.module("spice");
+        break :blk tp_dep.module("thread_pool");
     } else null;
 
-    // Build options module (empty after enable_spice removal; kept because
+    // Build options module (empty after parallelism option simplification; kept because
     // endpoint.zig still imports "quic_build_options")
     const build_options = b.addOptions();
     const build_options_mod = build_options.createModule();
@@ -575,19 +575,19 @@ pub fn build(b: *std.Build) void {
     // Add version negotiation for endpoint.zig
     quic_api_mod.addImport("quic_version", quic_version_mod);
 
-    // Parallel module for spice-based parallelism
-    const parallel_mod: ?*std.Build.Module = if (enable_spice) blk: {
+    // Parallel module for thread-pool-based parallelism
+    const parallel_mod: ?*std.Build.Module = if (enable_tp) blk: {
         break :blk b.addModule("parallel", .{
-        .root_source_file = b.path("src/parallel.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "quic_crypto", .module = quic_crypto_mod },
-        },
-    });
+            .root_source_file = b.path("src/parallel.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "quic_crypto", .module = quic_crypto_mod },
+            },
+        });
     } else null;
     if (parallel_mod) |pm| {
-        if (spice_mod) |sm| pm.addImport("spice", sm);
+        if (tp_mod) |tm| pm.addImport("thread_pool", tm);
 
         // Wire parallel module into internal modules that need batch crypto/loss detection (PAR-009)
         quic_packet_legacy_mod.addImport("parallel", pm);

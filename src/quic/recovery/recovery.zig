@@ -272,7 +272,7 @@ pub const Recovery = struct {
 
         // Loss detection: parallel scan for large windows (PAR-005), sequential for small.
         //
-        // For 64+ unprocessed sent packets, use spice fork/join to mark packets as
+        // For 64+ unprocessed sent packets, use thread-pool fork/join to mark packets as
         // lost in parallel (parallel.parallelLossDetect). Then a sequential cleanup
         // pass handles sent_index removal and detailed per-loss statistics/logging.
         // Below threshold, the original merged single-pass is used.
@@ -345,7 +345,7 @@ pub const Recovery = struct {
 
                 if (pkt_lost) {
                     logger.debugPrint("[P42-22-LOSS-PKT] space={s} pn={d} largest_acked={d} gap={d} threshold={d} bytes={d}\n", .{
-                        @tagName(space), sp.pn, sstate.largest_acked orelse 0,
+                        @tagName(space),                         sp.pn,                      sstate.largest_acked orelse 0,
                         (sstate.largest_acked orelse 0) - sp.pn, self.loss.packet_threshold, sp.size,
                     });
                 }
@@ -384,7 +384,7 @@ pub const Recovery = struct {
 
                     if (pkt_lost) {
                         logger.debugPrint("[P42-22-LOSS-PKT] space={s} pn={d} largest_acked={d} gap={d} threshold={d} bytes={d}\n", .{
-                            @tagName(space), sp.pn, sstate.largest_acked orelse 0,
+                            @tagName(space),                         sp.pn,                      sstate.largest_acked orelse 0,
                             (sstate.largest_acked orelse 0) - sp.pn, self.loss.packet_threshold, sp.size,
                         });
                     }

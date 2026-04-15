@@ -420,7 +420,10 @@ pub const Endpoint = struct {
                 // Check if already collected (multiple CIDs may map to same conn)
                 var dup = false;
                 for (to_destroy.items) |existing| {
-                    if (existing == c) { dup = true; break; }
+                    if (existing == c) {
+                        dup = true;
+                        break;
+                    }
                 }
                 if (!dup) to_destroy.append(self.allocator, c) catch {};
             }
@@ -429,7 +432,10 @@ pub const Endpoint = struct {
         for (self.retired.items) |c| {
             var dup = false;
             for (to_destroy.items) |existing| {
-                if (existing == c) { dup = true; break; }
+                if (existing == c) {
+                    dup = true;
+                    break;
+                }
             }
             if (!dup) to_destroy.append(self.allocator, c) catch {};
         }
