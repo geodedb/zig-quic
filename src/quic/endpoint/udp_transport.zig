@@ -75,8 +75,11 @@ fn netAddressToSockAddr(addr: std.Io.net.IpAddress) SockAddr {
 
 fn resolveBindAddr(bind_addr: []const u8) !SockAddr {
     // Fast path for numeric IP literals with port (supports bracketed IPv6).
-    if (std.Io.net.IpAddress.parseIpAndPort(bind_addr)) |addr| {
-        return netAddressToSockAddr(addr);
+    // Split the bind address into host and port, then use parse().
+    if (splitHostPort(bind_addr)) |hp| {
+        if (std.Io.net.IpAddress.parse(hp.host, hp.port)) |addr| {
+            return netAddressToSockAddr(addr);
+        } else |_| {}
     } else |_| {}
 
     const hp = try splitHostPort(bind_addr);

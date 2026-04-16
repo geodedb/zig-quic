@@ -44,7 +44,7 @@ pub const QuicError = error{
 /// with poll's mutable map access.
 pub const PollSync = struct {
     mu: std.Io.Mutex = std.Io.Mutex.init,
-    cv: std.Io.Condition = .{},
+    cv: std.Io.Condition = .init,
     poll_requested: bool = false,
     active_io_count: u32 = 0,
 

@@ -566,11 +566,11 @@ pub fn bind(comptime Connection: type) type {
             }
             if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
             const tx = self.app_tx_keys.?;
-            var frames = std.ArrayList(u8){};
-            defer frames.deinit(self.allocator.*);
-            const w = frames.writer(self.allocator.*);
+            var frame_buf: [64]u8 = undefined;
+            var frame_w: std.Io.Writer = .fixed(&frame_buf);
             const final_off: u64 = if (id == 0) self.stream_send_off else self.stream_txs.getPtr(id).?.off;
-            _ = (frame.Frame{ .stream = .{ .stream_id = id, .offset = final_off, .fin = true, .data = &[_]u8{} } }).write(w) catch 0;
+            _ = (frame.Frame{ .stream = .{ .stream_id = id, .offset = final_off, .fin = true, .data = &[_]u8{} } }).write(&frame_w) catch 0;
+            const frame_bytes = frame_buf[0..frame_w.end];
             const packet_storage = try self.packet_pool.checkout();
             defer self.packet_pool.release(packet_storage);
             const pkt_len = try packet.encodeShortProtectedInto(
@@ -578,7 +578,7 @@ pub fn bind(comptime Connection: type) type {
                 self.shortHeaderDcid(),
                 @as(u32, @truncate(self.pn_app_tx)),
                 2,
-                frames.items,
+                frame_bytes,
                 .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
                 self.tx_key_phase,
             );

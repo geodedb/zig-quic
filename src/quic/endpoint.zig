@@ -212,7 +212,7 @@ pub const Endpoint = struct {
     // Condition variable signaled when a new connection is pushed to the
     // accepted queue.  Allows callers to block efficiently in accept() instead
     // of busy-polling.  Protected by mu (waiters must hold mu).
-    accept_cv: std.Io.Condition = .{},
+    accept_cv: std.Io.Condition = .init,
     // TEST-ONLY: outbound capture ring (peer + owned bytes)
     captures: std.ArrayList(OutCaptured),
     // TEST-ONLY: runtime flag to enable outbound capture in tests
