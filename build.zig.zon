@@ -20,8 +20,8 @@
         },
         // Spice heartbeat scheduling for parallel operations
         .spice = .{
-            .url = "git+https://gitlab.com/devnw/zig/spice.git#9a14823b90d6f49d5ac22feccba0cb90a3d64083",
-            .hash = "spice-0.0.0-HnDb5-bOAADpRxBLrxqMQwDl4OZPq0TFmJLq8KFcaEeN",
+            .url = "git+https://gitlab.com/devnw/zig/spice.git#d579a892a5c68ed15ecda1ae42fa2bc27446fec7",
+            .hash = "spice-0.0.0-HnDb5-LOAADQaCUIFidPdWMU8UgFpYd3rxY-WTO3PWCW",
         },
     },
 }
