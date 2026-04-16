@@ -398,7 +398,12 @@ pub fn processShortHeader(
 
     // Record ack-eliciting frame receipt for ACK generation
     if (frame_result.saw_ack_eliciting) {
-        const now_ns_ack: u64 = @intCast(std.time.nanoTimestamp());
+        const now_ns_ack: u64 = @intCast(blk: {
+            var ts: std.os.linux.timespec = undefined;
+            const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+            if (rc != 0) break :blk @as(i128, 0);
+            break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+        });
         conn.recordAckElicitingRx(.Application, now_ns_ack);
 
         if (ctx.test_capture_enabled) {

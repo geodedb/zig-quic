@@ -59,10 +59,10 @@ fn ensureInitialized() void {
     g_initialized = true;
 
     // Try to read LOG_LEVEL environment variable
-    if (std.process.getEnvVarOwned(std.heap.page_allocator, "LOG_LEVEL")) |level_str| {
-        defer std.heap.page_allocator.free(level_str);
+    if (std.c.getenv("LOG_LEVEL")) |v| {
+        const level_str = std.mem.span(v);
         g_level = parseLevel(level_str);
-    } else |_| {
+    } else {
         // If we can't get env var, stick with default (error)
     }
 }
@@ -118,24 +118,18 @@ fn levelToken(l: Level) []const u8 {
 pub fn log(comptime level: Level, comptime fmt: []const u8, args: anytype) void {
     if (!levelEnabled(level)) return;
 
-    // Build the log message in a buffer
+    // Build the log message in a buffer using bufPrint
     var buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const w = fbs.writer();
-
-    // Simple format: LEVEL: message\n
-    w.print("{s}: ", .{levelToken(level)}) catch return;
-    w.print(fmt, args) catch return;
-    w.writeByte('\n') catch return;
-
-    // Write to stderr
-    const out_slice = buf[0..fbs.pos];
-    const stderr_file = if (builtin.os.tag == .windows)
-        std.fs.File{ .handle = std.os.windows.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) catch unreachable }
-    else
-        std.fs.File{ .handle = std.posix.STDERR_FILENO };
-
-    stderr_file.writeAll(out_slice) catch return;
+    const prefix = std.fmt.bufPrint(&buf, "{s}: ", .{levelToken(level)}) catch return;
+    const prefix_len = prefix.len;
+    const msg = std.fmt.bufPrint(buf[prefix_len..], fmt, args) catch return;
+    const total_len = prefix_len + msg.len;
+    if (total_len < buf.len) {
+        buf[total_len] = '\n';
+        const out_slice = buf[0 .. total_len + 1];
+        // Write to stderr via Linux syscall
+        _ = std.os.linux.write(2, out_slice.ptr, out_slice.len);
+    }
 }
 
 /// Log a debug message

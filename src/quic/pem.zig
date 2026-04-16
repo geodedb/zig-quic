@@ -23,7 +23,7 @@ pub fn parseCertificate(allocator: std.mem.Allocator, pem_data: []const u8) ![]u
     const content_end = content_start + end_idx;
 
     // Extract base64 content (skip whitespace)
-    var base64_content = std.ArrayList(u8){};
+    var base64_content: std.ArrayList(u8) = .empty;
     defer base64_content.deinit(allocator);
 
     for (pem_data[content_start..content_end]) |ch| {
@@ -54,7 +54,7 @@ pub fn parseECPrivateKey(allocator: std.mem.Allocator, pem_data: []const u8) ![]
     const content_end = content_start + end_idx;
 
     // Extract base64 content (skip whitespace)
-    var base64_content = std.ArrayList(u8){};
+    var base64_content: std.ArrayList(u8) = .empty;
     defer base64_content.deinit(allocator);
 
     for (pem_data[content_start..content_end]) |ch| {
@@ -102,7 +102,7 @@ pub fn parseRSAPrivateKey(allocator: std.mem.Allocator, pem_data: []const u8) ![
     }
 
     // Extract base64 content (skip whitespace)
-    var base64_content = std.ArrayList(u8){};
+    var base64_content: std.ArrayList(u8) = .empty;
     defer base64_content.deinit(allocator);
 
     for (pem_data[content_start..content_end]) |ch| {

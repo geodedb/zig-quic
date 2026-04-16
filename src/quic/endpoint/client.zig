@@ -52,7 +52,7 @@ pub const ClientContext = struct {
 /// Helper: Generate random 8-byte Connection ID.
 /// RFC 9000 §5.1.1: "A client MUST choose a value for the Destination Connection ID field."
 pub fn generateRandomCid(bytes: []u8) void {
-    std.crypto.random.bytes(bytes);
+    _ = std.os.linux.getrandom(bytes.ptr, bytes.len, 0);
 }
 
 /// Create basic connection struct (not fully initialized).
@@ -67,7 +67,7 @@ pub fn connectTo(peer: conn_mod.SockAddr, sock_fd: std.posix.socket_t) conn_mod.
         .role = .Client,
         .sock_fd = sockToIsize(sock_fd),
         .peer = peer,
-        .tls_inbox = std.ArrayList(u8){},
+        .tls_inbox = .empty,
     };
 }
 
@@ -248,7 +248,7 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
 
     logger.debugPrint("[Client TX] Initial keys derived\n", .{});
 
-    var frames = std.ArrayList(u8){};
+    var frames: std.ArrayList(u8) = .empty;
     defer frames.deinit(ctx.allocator.*);
 
     // Build CRYPTO frame carrying ClientHello

@@ -472,7 +472,7 @@ pub fn unprotectInitialAutoSample(
     // Commented out verbose debug output
     // const debug_len = @min(32, ciphertext_and_tag.len);
     // var hex_buf: [96]u8 = undefined; // 32 bytes * 3 chars per byte (2 hex + 1 space)
-    // var hex_stream = std.io.fixedBufferStream(&hex_buf);
+    // var hex_stream = std.Io.fixedBufferStream(&hex_buf);
     // const hex_writer = hex_stream.writer();
     // for (ciphertext_and_tag[0..debug_len]) |b| {
     //     _ = hex_writer.print("{X:0>2} ", .{b}) catch break;
@@ -483,7 +483,7 @@ pub fn unprotectInitialAutoSample(
 
     // // Debug: Show the masked packet number bytes
     // var pn_hex_buf: [12]u8 = undefined; // 4 bytes max * 3 chars
-    // var pn_hex_stream = std.io.fixedBufferStream(&pn_hex_buf);
+    // var pn_hex_stream = std.Io.fixedBufferStream(&pn_hex_buf);
     // const pn_hex_writer = pn_hex_stream.writer();
     // for (pn_bytes[0..pn_len]) |b| {
     //     _ = pn_hex_writer.print("{X:0>2} ", .{b}) catch break;
@@ -675,7 +675,7 @@ pub fn unmaskLongHeaderAndPn(
 
 fn dumpBytes(label: []const u8, bytes: []const u8) void {
     if (!builtin.is_test) return;
-    var list = std.ArrayList(u8){};
+    var list: std.ArrayList(u8) = .empty;
     defer list.deinit(std.heap.page_allocator);
     var i: usize = 0;
     while (i < bytes.len) : (i += 1) {

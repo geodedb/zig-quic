@@ -13,6 +13,14 @@ const logger = @import("quic_logger");
 const builtin = @import("builtin");
 const api = @import("quic_api");
 
+/// Zig 0.16 compat: replacement for removed std.time.nanoTimestamp().
+fn nanoTimestampCompat() i128 {
+    var ts: std.os.linux.timespec = undefined;
+    const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+    if (rc != 0) return 0;
+    return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+}
+
 /// Errors that can occur during QUIC operations.
 pub const QuicError = error{
     InitFailed,
@@ -684,10 +692,7 @@ pub const QuicStream = struct {
         // Best-effort, idempotent: avoid vendor close by default to reduce teardown races.
         // Enable explicit stream close only when GEODE_QUIC_FORCE_STREAM_CLOSE=1.
         if (self.quic_stream_id) |sid| {
-            const force_stream_close = if (std.process.getEnvVarOwned(self.parent_connection.allocator, "GEODE_QUIC_FORCE_STREAM_CLOSE")) |v| blk: {
-                defer self.parent_connection.allocator.free(v);
-                break :blk true;
-            } else |_| false;
+            const force_stream_close = if (std.c.getenv("GEODE_QUIC_FORCE_STREAM_CLOSE")) |_| true else false;
             if (force_stream_close) {
                 if (self.parent_connection.quic_connection) |qc| {
                     api.closeStream(qc, sid, 0) catch |err| {
@@ -816,10 +821,7 @@ pub const QuicClient = struct {
     pub fn deinit(self: *QuicClient) void {
         // Close connection first, then endpoint. The vendored QUIC may crash if closed during handshake;
         // skip active close by default and rely on endpoint teardown/OS to reclaim unless forced via env.
-        const force_close = if (std.process.getEnvVarOwned(self.allocator, "GEODE_QUIC_FORCE_CLOSE")) |v| blk: {
-            defer self.allocator.free(v);
-            break :blk true;
-        } else |_| false;
+        const force_close = if (std.c.getenv("GEODE_QUIC_FORCE_CLOSE")) |_| true else false;
         if (self.quic_connection) |conn| {
             if (force_close) {
                 api.closeConnection(conn, 0) catch |err| {
@@ -957,8 +959,8 @@ pub const QuicClient = struct {
         }
 
         const timeout_ns = @as(u64, timeout_secs) * std.time.ns_per_s;
-        const start = std.time.nanoTimestamp();
-        while (std.time.nanoTimestamp() - start < timeout_ns) {
+        const start = nanoTimestampCompat();
+        while (nanoTimestampCompat() - start < timeout_ns) {
             // poll(10) blocks on epoll/kqueue for up to 10ms — no additional sleep needed (PAR-007)
             try self.endpoint.?.poll(10);
             if (api.isHandshakeConfirmed(self.quic_connection.?)) return;

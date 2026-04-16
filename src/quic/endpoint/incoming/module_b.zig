@@ -177,7 +177,12 @@ pub fn processHandshake(
     var offset: usize = 0;
     var saw_crypto: bool = false;
     var saw_ack_eliciting: bool = false;
-    const now_ns: u64 = @intCast(std.time.nanoTimestamp());
+    const now_ns: u64 = @intCast(blk: {
+        var ts: std.os.linux.timespec = undefined;
+        const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+        if (rc != 0) break :blk @as(i128, 0);
+        break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+    });
 
     while (offset < decrypted.payload.len) {
         const fr = frame.decodeOne(decrypted.payload[offset..]) catch |err| {
@@ -280,7 +285,7 @@ pub fn processHandshake(
                 const chunk_size = @min(max_crypto_per_packet, n - crypto_offset);
                 const chunk = data[crypto_offset .. crypto_offset + chunk_size];
 
-                var frames_buf = std.ArrayList(u8){};
+                var frames_buf: std.ArrayList(u8) = .empty;
                 defer frames_buf.deinit(ctx.allocator.*);
                 const w = frames_buf.writer(ctx.allocator.*);
 
@@ -334,7 +339,7 @@ pub fn processHandshake(
     // Send ACK for received Handshake packet
     if (saw_crypto) {
         if (conn.*.hs_tx_keys) |tx_keys| {
-            var frames_buf = std.ArrayList(u8){};
+            var frames_buf: std.ArrayList(u8) = .empty;
             defer frames_buf.deinit(ctx.allocator.*);
             const w = frames_buf.writer(ctx.allocator.*);
 
@@ -403,7 +408,7 @@ pub fn processHandshake(
     // traffic after 1-RTT keys are ready, resend HANDSHAKE_DONE in 1-RTT so the
     // client can complete confirmation when the original frame was lost/corrupted.
     if (conn.*.role == .Server and conn.*.peer_finished_verified and conn.*.app_tx_keys != null) {
-        var done_frames = std.ArrayList(u8){};
+        var done_frames: std.ArrayList(u8) = .empty;
         defer done_frames.deinit(ctx.allocator.*);
         const dw = done_frames.writer(ctx.allocator.*);
         _ = (frame.Frame{ .handshake_done = {} }).write(dw) catch 0;

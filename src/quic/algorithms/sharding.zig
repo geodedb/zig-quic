@@ -18,7 +18,7 @@ pub const Sharder = struct {
     pub fn init(shard_count: u32) ShardError!Sharder {
         if (shard_count == 0) return ShardError.InvalidShardCount;
         var buf: [8]u8 = undefined;
-        std.crypto.random.bytes(&buf);
+        _ = std.os.linux.getrandom(&buf, buf.len, 0);
         return .{ .seed = std.mem.readInt(u64, &buf, .little), .shard_count = shard_count };
     }
 

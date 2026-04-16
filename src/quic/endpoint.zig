@@ -91,9 +91,13 @@ inline fn addrToNetwork(value: u32) u32 {
 }
 
 fn nowMsMonotonic() i64 {
-    // Prefer a monotonic source; nanoTimestamp is monotonic on supported platforms.
-    // Use explicit truncating integer division for signed integers (Zig 0.14 requirement).
-    const ns: i128 = std.time.nanoTimestamp();
+    // Use clock_gettime for monotonic time (Zig 0.16 removed std.time.nanoTimestamp).
+    const ns: i128 = blk: {
+        var ts: std.os.linux.timespec = undefined;
+        const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+        if (rc != 0) break :blk @as(i128, 0);
+        break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+    };
     const ms: i128 = @divTrunc(ns, std.time.ns_per_ms);
     return @as(i64, @intCast(ms));
 }
@@ -109,7 +113,11 @@ fn encodeVersionNegotiationPacket(
 
     var i: usize = 0;
     // Long header with random type-specific bits.
-    out_buf[i] = 0b10000000 | @as(u8, @truncate(std.crypto.random.int(u8) & 0x3F));
+    out_buf[i] = 0b10000000 | @as(u8, @truncate(blk: {
+        var seed: [1]u8 = undefined;
+        _ = std.os.linux.getrandom(&seed, seed.len, 0);
+        break :blk seed[0];
+    } & 0x3F));
     i += 1;
     // Version = 0x00000000 (Version Negotiation packet)
     std.mem.writeInt(u32, out_buf[i..][0..4], 0, .big);
@@ -269,7 +277,7 @@ pub const Endpoint = struct {
         // Generate cryptographically random token secret if not provided in config.
         // This prevents using a hardcoded fallback which would be predictable.
         var generated_secret: [32]u8 = undefined;
-        std.crypto.random.bytes(&generated_secret);
+        _ = std.os.linux.getrandom(&generated_secret, generated_secret.len, 0);
 
         // Initialize 0-RTT anti-replay cache for server endpoints (RFC 8446 S8, RFC 9001 S9.2).
         // Window: 10 seconds, max entries: 10000 -- reasonable defaults for production use.
@@ -288,14 +296,14 @@ pub const Endpoint = struct {
             .owned_udp_transport = udp,
             .loop_backend = lb.defaultLoopBackend(),
             .allocator = alloc,
-            .timers = std.ArrayList(Timer){},
+            .timers = .empty,
             .conns = std.AutoHashMap(Key, *conn_mod.Connection).init(alloc),
             .next_timer_id = 1,
             .cfg = cfgp.*,
-            .accepted = std.ArrayList(*conn_mod.Connection){},
-            .captures = std.ArrayList(OutCaptured){},
+            .accepted = .empty,
+            .captures = .empty,
             .test_capture_enabled = false,
-            .retired = std.ArrayList(*conn_mod.Connection){},
+            .retired = .empty,
             .epoll_fd = null, // Not used with transport abstraction
             .role = endpoint_role,
             .generated_token_secret = generated_secret,
@@ -316,7 +324,7 @@ pub const Endpoint = struct {
 
         // Generate cryptographically random token secret if not provided in config.
         var generated_secret: [32]u8 = undefined;
-        std.crypto.random.bytes(&generated_secret);
+        _ = std.os.linux.getrandom(&generated_secret, generated_secret.len, 0);
 
         // Initialize 0-RTT anti-replay cache for server endpoints (RFC 8446 S8, RFC 9001 S9.2).
         const is_server = (endpoint_role == .Server);
@@ -334,14 +342,14 @@ pub const Endpoint = struct {
             .transport = transport,
             .loop_backend = lb.defaultLoopBackend(),
             .allocator = alloc.*,
-            .timers = std.ArrayList(Timer){},
+            .timers = .empty,
             .conns = std.AutoHashMap(Key, *conn_mod.Connection).init(alloc.*),
             .next_timer_id = 1,
             .cfg = cfgp.*,
-            .accepted = std.ArrayList(*conn_mod.Connection){},
-            .captures = std.ArrayList(OutCaptured){},
+            .accepted = .empty,
+            .captures = .empty,
             .test_capture_enabled = false,
-            .retired = std.ArrayList(*conn_mod.Connection){},
+            .retired = .empty,
             .epoll_fd = null, // No epoll with transport abstraction
             .role = endpoint_role,
             .generated_token_secret = generated_secret,
@@ -403,7 +411,7 @@ pub const Endpoint = struct {
         // Collect unique connection pointers from map, then clear the map
         // before destroying any connections. This avoids iterating the map
         // while connection state may be inconsistent.
-        var to_destroy = std.ArrayList(*conn_mod.Connection){};
+        var to_destroy: std.ArrayList(*conn_mod.Connection) = .empty;
         defer to_destroy.deinit(self.allocator);
         {
             var it = self.conns.iterator();
@@ -522,7 +530,7 @@ pub const Endpoint = struct {
     /// Phase 8c: sock_fd set to -1 (I/O goes through endpoint transport)
     pub fn acceptFrom(self: *Endpoint, peer: conn_mod.SockAddr) conn_mod.Connection {
         _ = self; // unused
-        return .{ .id = 0, .role = .Server, .sock_fd = -1, .peer = peer, .tls_inbox = std.ArrayList(u8){} };
+        return .{ .id = 0, .role = .Server, .sock_fd = -1, .peer = peer, .tls_inbox = .empty };
     }
 
     /// Enqueue accepted server connection for accept().
@@ -592,7 +600,7 @@ pub const Endpoint = struct {
     pub fn connectTo(self: *Endpoint, hostport: []const u8) !conn_mod.Connection {
         _ = self; // unused
         const peer = try utils.resolveAny(hostport, .udp);
-        return .{ .id = 0, .role = .Client, .sock_fd = -1, .peer = peer, .tls_inbox = std.ArrayList(u8){} };
+        return .{ .id = 0, .role = .Client, .sock_fd = -1, .peer = peer, .tls_inbox = .empty };
     }
 
     /// Create client-side connection object referencing remote host:port.

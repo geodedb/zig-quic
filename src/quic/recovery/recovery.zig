@@ -142,7 +142,7 @@ pub const Recovery = struct {
 
     /// Initialize a Recovery instance with fresh per-space state.
     pub fn init(alloc: std.mem.Allocator) Recovery {
-        return .{ .allocator = alloc, .mutex = .{}, .spaces = .{ SpaceState.init(alloc), SpaceState.init(alloc), SpaceState.init(alloc) } };
+        return .{ .allocator = alloc, .mutex = .init, .spaces = .{ SpaceState.init(alloc), SpaceState.init(alloc), SpaceState.init(alloc) } };
     }
 
     /// Free per-space arrays and internal allocations.

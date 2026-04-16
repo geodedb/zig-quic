@@ -72,7 +72,7 @@ pub const DecodedVN = struct {
 /// RFC 9000 §17.2.1: Version Negotiation Packet Format
 /// Returned slice is owned by alloc.
 pub fn encodeVersionNegotiation(alloc: std.mem.Allocator, dcid: []const u8, scid: []const u8, versions: []const u32) ![]u8 {
-    var buf = std.ArrayList(u8){};
+    var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(alloc);
     const w = buf.writer(alloc);
 

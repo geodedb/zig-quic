@@ -215,7 +215,11 @@ pub fn encodeVersionNegotiation(config: VNConfig, out_buf: []u8) ![]u8 {
     var i: usize = 0;
 
     // Byte 0: Long header form (0b10xxxxxx), unused bits set to random
-    const first_byte: u8 = 0b10000000 | @as(u8, @truncate(std.crypto.random.int(u8) & 0x3F));
+    const first_byte: u8 = 0b10000000 | @as(u8, @truncate(blk: {
+        var seed: [1]u8 = undefined;
+        _ = std.os.linux.getrandom(&seed, seed.len, 0);
+        break :blk seed[0];
+    } & 0x3F));
     out_buf[i] = first_byte;
     i += 1;
 
@@ -326,7 +330,7 @@ pub fn createServerConnection(
 
     // Generate random SCID for server (RFC 9000 §5.1)
     c.our_scid.len = 8;
-    std.crypto.random.bytes(c.our_scid.bytes[0..c.our_scid.len]);
+    _ = std.os.linux.getrandom(c.our_scid.bytes[0..c.our_scid.len].ptr, c.our_scid.len, 0);
 
     // Set peer CIDs from client's Initial packet
     // RFC 9000 §5.2: "The server uses the client's DCID as the ODCID"

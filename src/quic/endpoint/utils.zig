@@ -167,22 +167,48 @@ fn splitHostPort(hostport: []const u8) !struct { host: []const u8, port: u16 } {
 }
 
 fn netAddressToSockAddr(addr: std.Io.net.IpAddress) conn_mod.SockAddr {
-    var out: conn_mod.SockAddr = .{};
-    const addr_len: usize = addr.getOsSockLen();
-    @memcpy(
-        @as([*]u8, @ptrCast(&out.storage))[0..addr_len],
-        @as([*]const u8, @ptrCast(&addr.any))[0..addr_len],
-    );
-    out.len = @intCast(addr_len);
-    return out;
+    switch (addr) {
+        .ip4 => |ip4| {
+            var out: conn_mod.SockAddr = .{};
+            out.storage = std.mem.zeroes(posix.sockaddr.storage);
+            var sin: posix.sockaddr.in = .{
+                .family = posix.AF.INET,
+                .port = std.mem.nativeToBig(u16, ip4.port),
+                .addr = std.mem.readInt(u32, &ip4.bytes, .big),
+                .zero = .{0} ** 8,
+            };
+            out.len = @intCast(@sizeOf(posix.sockaddr.in));
+            @memcpy(@as([*]u8, @ptrCast(&out.storage))[0..out.len], @as([*]const u8, @ptrCast(&sin))[0..out.len]);
+            return out;
+        },
+        .ip6 => |ip6| {
+            var out: conn_mod.SockAddr = .{};
+            out.storage = std.mem.zeroes(posix.sockaddr.storage);
+            var sin6: posix.sockaddr.in6 = .{
+                .family = posix.AF.INET6,
+                .port = std.mem.nativeToBig(u16, ip6.port),
+                .flowinfo = ip6.flow,
+                .addr = ip6.bytes,
+                .scope_id = ip6.interface.index,
+            };
+            out.len = @intCast(@sizeOf(posix.sockaddr.in6));
+            @memcpy(@as([*]u8, @ptrCast(&out.storage))[0..out.len], @as([*]const u8, @ptrCast(&sin6))[0..out.len]);
+            return out;
+        },
+    }
 }
 
 fn lookupHosts(host: []const u8, port: u16, prefer_ipv6: bool) ?conn_mod.SockAddr {
-    const hosts_file = std.fs.openFileAbsolute("/etc/hosts", .{}) catch return null;
-    defer hosts_file.close();
+    const linux = std.os.linux;
+    const fd_rc = linux.open("/etc/hosts", .{ .ACCMODE = .RDONLY }, 0);
+    if (linux.errno(fd_rc) != .SUCCESS) return null;
+    const fd: linux.fd_t = @intCast(fd_rc);
+    defer _ = linux.close(fd);
 
     var buf: [8192]u8 = undefined;
-    const bytes_read = hosts_file.readAll(&buf) catch return null;
+    const read_rc = linux.read(fd, &buf, buf.len);
+    if (linux.errno(read_rc) != .SUCCESS) return null;
+    const bytes_read: usize = read_rc;
     const content = buf[0..bytes_read];
 
     var fallback: ?conn_mod.SockAddr = null;
@@ -200,7 +226,7 @@ fn lookupHosts(host: []const u8, port: u16, prefer_ipv6: bool) ?conn_mod.SockAdd
         }
         if (!matched) continue;
 
-        const addr = std.Io.net.IpAddress.parseIp(ip_str, port) catch continue;
+        const addr = std.Io.net.IpAddress.parse(ip_str, port) catch continue;
         const sock = netAddressToSockAddr(addr);
         const is_v6 = sock.family() == posix.AF.INET6;
 
@@ -226,7 +252,7 @@ pub fn resolveAny(hostport: []const u8, proto: enum { udp }) !conn_mod.SockAddr 
     const port = hp.port;
 
     // Numeric literal fast path.
-    if (std.Io.net.IpAddress.parseIp(host, port)) |addr| {
+    if (std.Io.net.IpAddress.parse(host, port)) |addr| {
         return netAddressToSockAddr(addr);
     } else |_| {}
 
@@ -237,7 +263,7 @@ pub fn resolveAny(hostport: []const u8, proto: enum { udp }) !conn_mod.SockAddr 
     if (std.mem.eql(u8, host, "server6")) {
         if (lookupHosts(host, port, true)) |resolved| return resolved;
         if (lookupHosts("server", port, true)) |resolved| return resolved;
-        const fallback = std.Io.net.IpAddress.parseIp("fd00:cafe:cafe:100::100", port) catch return error.InvalidAddress;
+        const fallback = std.Io.net.IpAddress.parse("fd00:cafe:cafe:100::100", port) catch return error.InvalidAddress;
         return netAddressToSockAddr(fallback);
     }
 
@@ -253,7 +279,7 @@ pub fn resolveAny(hostport: []const u8, proto: enum { udp }) !conn_mod.SockAddr 
     if (lookupHosts(host, port, false)) |resolved| return resolved;
     if (lookupHosts(host, port, true)) |resolved| return resolved;
 
-    // Final fallback: resolver-backed lookup.
-    const resolved = std.Io.net.IpAddress.resolveIp(host, port) catch return error.InvalidAddress;
+    // Final fallback: try numeric IP parse (DNS resolution requires Io instance).
+    const resolved = std.Io.net.IpAddress.parse(host, port) catch return error.InvalidAddress;
     return netAddressToSockAddr(resolved);
 }

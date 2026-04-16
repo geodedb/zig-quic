@@ -191,7 +191,7 @@ pub fn sendPtoProbe(ctx: *PtoContext, kind: types.TimerKind) !void {
             // Build PING probe (ack-eliciting)
             const base_probe = try buildInitialProbe(ctx.allocator);
             defer ctx.allocator.free(base_probe);
-            var frames_payload = std.ArrayList(u8){};
+            var frames_payload: std.ArrayList(u8) = .empty;
             defer frames_payload.deinit(ctx.allocator.*);
             try frames_payload.appendSlice(ctx.allocator.*, base_probe);
 

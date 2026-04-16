@@ -103,7 +103,7 @@ pub const H3Server = struct {
                 if (already) continue;
 
                 const gop = request_buffers.getOrPut(pair.id) catch continue;
-                if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(u8){};
+                if (!gop.found_existing) gop.value_ptr.* = .empty;
                 gop.value_ptr.appendSlice(self.allocator, tmp[0..pair.n]) catch {
                     if (request_buffers.fetchRemove(pair.id)) |entry| {
                         var buf_state = entry.value;

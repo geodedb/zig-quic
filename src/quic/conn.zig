@@ -929,7 +929,7 @@ pub const Connection = struct {
         self.role = role;
         self.sock_fd = sock_fd;
         self.peer = peer;
-        self.tls_inbox = std.ArrayList(u8){};
+        self.tls_inbox = .empty;
         // NOTE: tls_context must be initialized by caller (client/server modules)
         // Connection.init() no longer manages TLS initialization
         self.tls_context = null;

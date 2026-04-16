@@ -168,7 +168,12 @@ pub fn generateAndSendAck(
     ecn_bits: ?u8,
 ) !void {
     const conn = ack_ctx.conn;
-    const now_ns: u64 = @intCast(std.time.nanoTimestamp());
+    const now_ns: u64 = @intCast(blk: {
+        var ts: std.os.linux.timespec = undefined;
+        const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+        if (rc != 0) break :blk @as(i128, 0);
+        break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+    });
 
     // Test-only debug logging
     if (ack_ctx.test_capture_enabled) {
@@ -182,7 +187,7 @@ pub fn generateAndSendAck(
 
     // If deferred ECN ACK is pending and amplification allows, emit it now
     if (conn.ecn_app_ack_pending and conn.app_tx_keys != null and conn.canSendUnderAmplification()) {
-        var ack_buf = std.ArrayList(u8){};
+        var ack_buf: std.ArrayList(u8) = .empty;
         defer ack_buf.deinit(ack_ctx.allocator.*);
         const w = ack_buf.writer(ack_ctx.allocator.*);
         const ad = conn.buildAckApp();
@@ -227,7 +232,7 @@ pub fn generateAndSendAck(
     // Enforce AEAD integrity limit: send CONNECTION_CLOSE if limit reached
     if (conn.closed) {
         if (conn.app_tx_keys) |tx_keys| {
-            var fb = std.ArrayList(u8){};
+            var fb: std.ArrayList(u8) = .empty;
             defer fb.deinit(ack_ctx.allocator.*);
             const w = fb.writer(ack_ctx.allocator.*);
 
@@ -325,7 +330,7 @@ pub fn generateAndSendAck(
             if (allow_send) {
                 // Emit immediate ACK_ECN if ECN observed
                 if (ack_ecn_common != null) {
-                    var ack_only = std.ArrayList(u8){};
+                    var ack_only: std.ArrayList(u8) = .empty;
                     defer ack_only.deinit(ack_ctx.allocator.*);
                     const wa = ack_only.writer(ack_ctx.allocator.*);
                     const ad = conn.buildAckApp();
@@ -357,11 +362,21 @@ pub fn generateAndSendAck(
 
                     if (pkt_len != 0) {
                         const pkt = packet_storage[0..pkt_len];
-                        const send_start_ns = std.time.nanoTimestamp();
+                        const send_start_ns = nts: {
+                            var ts: std.os.linux.timespec = undefined;
+                            const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+                            if (rc != 0) break :nts @as(i128, 0);
+                            break :nts @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+                        };
                         _ = ack_ctx.send_fn(ack_ctx.peer, pkt) catch |err| {
                             logger.warn("ECN ACK send failed: {s}", .{@errorName(err)});
                         };
-                        const send_end_ns = std.time.nanoTimestamp();
+                        const send_end_ns = nts2: {
+                            var ts: std.os.linux.timespec = undefined;
+                            const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+                            if (rc != 0) break :nts2 @as(i128, 0);
+                            break :nts2 @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+                        };
                         const send_duration_us = @as(u64, @intCast(@abs(send_end_ns - send_start_ns))) / 1000;
                         const total_delay_us = delay_since_rx_us + send_duration_us;
 
@@ -377,7 +392,7 @@ pub fn generateAndSendAck(
                     return; // Stop further processing
                 } else {
                     // Build ACK with MAX_* frame piggybacking
-                    var frames_buf = std.ArrayList(u8){};
+                    var frames_buf: std.ArrayList(u8) = .empty;
                     defer frames_buf.deinit(ack_ctx.allocator.*);
                     const w = frames_buf.writer(ack_ctx.allocator.*);
                     const ack_desc = conn.buildAckApp();
@@ -444,11 +459,21 @@ pub fn generateAndSendAck(
 
                     if (pkt_len != 0) {
                         const pkt = packet_storage[0..pkt_len];
-                        const send_start_ns = std.time.nanoTimestamp();
+                        const send_start_ns = nts3: {
+                            var ts: std.os.linux.timespec = undefined;
+                            const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+                            if (rc != 0) break :nts3 @as(i128, 0);
+                            break :nts3 @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+                        };
                         _ = ack_ctx.send_fn(ack_ctx.peer, pkt) catch |err| {
                             logger.warn("normal ACK send failed: {s}", .{@errorName(err)});
                         };
-                        const send_end_ns = std.time.nanoTimestamp();
+                        const send_end_ns = nts4: {
+                            var ts: std.os.linux.timespec = undefined;
+                            const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+                            if (rc != 0) break :nts4 @as(i128, 0);
+                            break :nts4 @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+                        };
                         const send_duration_us = @as(u64, @intCast(@abs(send_end_ns - send_start_ns))) / 1000;
                         const total_delay_us = delay_since_rx_us + send_duration_us;
 
@@ -465,7 +490,7 @@ pub fn generateAndSendAck(
             } else {
                 // RFC 9000 §8.1: Send ACK-only when under amplification limit
                 logger.debugPrint("[P42-21-ACK-BLOCKED] ⚠️  ACK blocked by amplification limit\n", .{});
-                var ack_only = std.ArrayList(u8){};
+                var ack_only: std.ArrayList(u8) = .empty;
                 defer ack_only.deinit(ack_ctx.allocator.*);
                 const w2 = ack_only.writer(ack_ctx.allocator.*);
                 const ack_desc2 = conn.buildAckApp();

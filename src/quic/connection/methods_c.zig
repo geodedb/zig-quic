@@ -67,7 +67,12 @@ pub fn bind(comptime Connection: type) type {
         /// Bookkeeping when a short-header packet (1-RTT) is sent: CC accounting & key update thresholds.
         pub fn onShortHeaderPacketSent(self: *Connection, bytes_sent: usize, ack_eliciting: bool) void {
             // Track recovery for Application space
-            const now_i = std.time.nanoTimestamp();
+            const now_i = blk: {
+                var ts: std.os.linux.timespec = undefined;
+                const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+                if (rc != 0) break :blk @as(i128, 0);
+                break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+            };
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
 
             // PHASE 51: Debug logging to verify this function is called
@@ -126,7 +131,7 @@ pub fn bind(comptime Connection: type) type {
             // Frames: 1 byte for PING + N bytes of PADDING
             if (target_udp_payload < header_overhead + aead_tag + 1) return error.InvalidProbeSize;
             const needed_padding: usize = target_udp_payload - header_overhead - aead_tag - 1;
-            var frames = std.ArrayList(u8){};
+            var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
             const w = frames.writer(self.allocator.*);
             _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
@@ -183,7 +188,12 @@ pub fn bind(comptime Connection: type) type {
         /// Notify recovery of sent packet (per-space) for loss tracking & congestion control.
         pub fn onPacketSent(self: *Connection, space: recovery.PacketNumberSpace, pn: u64, bytes: usize, ack_eliciting: bool) void {
             // Record via Recovery (authoritative)
-            const now_i = std.time.nanoTimestamp();
+            const now_i = blk: {
+                var ts: std.os.linux.timespec = undefined;
+                const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+                if (rc != 0) break :blk @as(i128, 0);
+                break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+            };
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
             _ = self.rec.onPacketSent(space, pn, bytes, ack_eliciting, now_ns) catch |err| {
                 logger.err("recovery onPacketSent failed: {s}", .{@errorName(err)});
@@ -542,7 +552,7 @@ pub fn bind(comptime Connection: type) type {
             if (self.app_tx_keys == null) return 0;
             if (!self.canSendUnderAmplification()) return 0;
             if (self.pending_new_cid.isEmpty()) return 0;
-            var fb = std.ArrayList(u8){};
+            var fb: std.ArrayList(u8) = .empty;
             defer fb.deinit(self.allocator.*);
             const w = fb.writer(self.allocator.*);
             const wrote = try self.writePendingNewConnectionIds(w, 4);
@@ -631,7 +641,7 @@ pub fn bind(comptime Connection: type) type {
                 const prk = ks.extract(secret.slice(), label);
                 @memcpy(self.stateless_reset_base[0..], prk[0..]);
             } else {
-                std.crypto.random.bytes(&self.stateless_reset_base);
+                _ = std.os.linux.getrandom(&self.stateless_reset_base, self.stateless_reset_base.len, 0);
             }
         }
 

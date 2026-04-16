@@ -41,7 +41,7 @@ pub const AntiReplayCache = struct {
             .window_ns = window_ns,
             .max_entries = max_entries,
             .allocator = allocator,
-            .mu = .{},
+            .mu = .init,
         };
     }
 

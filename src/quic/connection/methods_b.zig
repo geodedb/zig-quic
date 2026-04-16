@@ -57,7 +57,7 @@ pub fn bind(comptime Connection: type) type {
             if (!self.hasConfirmedAppTxKeys()) return;
 
             const tx = self.app_tx_keys.?;
-            var lost_pns = std.ArrayList(u64){};
+            var lost_pns: std.ArrayList(u64) = .empty;
             defer lost_pns.deinit(self.allocator.*);
 
             var it = self.app_stream_retx.iterator();
@@ -85,7 +85,7 @@ pub fn bind(comptime Connection: type) type {
                 }
 
                 var frame_storage: [2048]u8 = undefined;
-                var frame_stream = std.io.fixedBufferStream(&frame_storage);
+                var frame_stream = std.Io.fixedBufferStream(&frame_storage);
                 _ = (frame.Frame{
                     .stream = .{
                         .stream_id = tracked.stream_id,
@@ -149,7 +149,7 @@ pub fn bind(comptime Connection: type) type {
         pub fn sendDatagram(self: *Connection, data: []const u8) !void {
             if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
             const tx = self.app_tx_keys.?;
-            var frames = std.ArrayList(u8){};
+            var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
             const w = frames.writer(self.allocator.*);
             _ = (frame.Frame{ .datagram = .{ .data = data } }).write(w) catch 0;
@@ -197,7 +197,7 @@ pub fn bind(comptime Connection: type) type {
         pub fn openStream(self: *Connection, bidi: bool) !u64 {
             if (bidi) {
                 if (self.opened_bidi >= self.peer_max_streams_bidi) {
-                    var fb = std.ArrayList(u8){};
+                    var fb: std.ArrayList(u8) = .empty;
                     defer fb.deinit(self.allocator.*);
                     const w = fb.writer(self.allocator.*);
                     _ = (frame.Frame{ .streams_blocked_bidi = .{ .max = self.peer_max_streams_bidi } }).write(w) catch 0;
@@ -360,13 +360,18 @@ pub fn bind(comptime Connection: type) type {
 
             if (cur_off >= peer_stream_limit) {
                 // Signal STREAM_DATA_BLOCKED and re-emit periodically while blocked.
-                const now_ns = std.time.nanoTimestamp();
+                const now_ns = blk: {
+                    var ts: std.os.linux.timespec = undefined;
+                    const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+                    if (rc != 0) break :blk @as(i128, 0);
+                    break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+                };
                 if (self.last_stream_data_blocked_limit != peer_stream_limit or
                     now_ns - self.last_stream_data_blocked_at_ns >= 200 * std.time.ns_per_ms)
                 {
                     self.last_stream_data_blocked_limit = peer_stream_limit;
                     self.last_stream_data_blocked_at_ns = now_ns;
-                    var fb1 = std.ArrayList(u8){};
+                    var fb1: std.ArrayList(u8) = .empty;
                     defer fb1.deinit(self.allocator.*);
                     const w1 = fb1.writer(self.allocator.*);
                     _ = (frame.Frame{ .stream_data_blocked = .{ .stream_id = id, .limit = peer_stream_limit } }).write(w1) catch 0;
@@ -377,13 +382,18 @@ pub fn bind(comptime Connection: type) type {
             // Enforce connection-level MAX_DATA
             if (self.conn_send_off >= peer_conn_limit) {
                 // Signal DATA_BLOCKED and re-emit periodically while blocked.
-                const now_ns = std.time.nanoTimestamp();
+                const now_ns = blk2: {
+                    var ts: std.os.linux.timespec = undefined;
+                    const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+                    if (rc != 0) break :blk2 @as(i128, 0);
+                    break :blk2 @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+                };
                 if (self.last_data_blocked_limit != peer_conn_limit or
                     now_ns - self.last_data_blocked_at_ns >= 200 * std.time.ns_per_ms)
                 {
                     self.last_data_blocked_limit = peer_conn_limit;
                     self.last_data_blocked_at_ns = now_ns;
-                    var fb2 = std.ArrayList(u8){};
+                    var fb2: std.ArrayList(u8) = .empty;
                     defer fb2.deinit(self.allocator.*);
                     const w2 = fb2.writer(self.allocator.*);
                     _ = (frame.Frame{ .data_blocked = .{ .limit = peer_conn_limit } }).write(w2) catch 0;
@@ -415,14 +425,19 @@ pub fn bind(comptime Connection: type) type {
             logger.debugPrint("[CC-OK] bytes_in_flight={} < cwnd={}, available={}\n", .{ bytes_in_flight, cwnd, cwnd - bytes_in_flight });
 
             var frame_storage: [2048]u8 = undefined;
-            var frame_stream = std.io.fixedBufferStream(&frame_storage);
+            var frame_stream = std.Io.fixedBufferStream(&frame_storage);
             // RFC 9000 S13.2.1: Piggyback an ACK frame into STREAM packets when
             // we have received app-space packets to acknowledge.  This reduces
             // standalone ACK-only datagrams and speeds peer-side loss recovery.
             // The ACK is written first because non-ack-eliciting frames (ACK)
             // should precede ack-eliciting frames (STREAM) per convention.
             if (self.pn_app.have_any) {
-                const now_ns: u64 = @intCast(std.time.nanoTimestamp());
+                const now_ns: u64 = @intCast(blk3: {
+                    var ts: std.os.linux.timespec = undefined;
+                    const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+                    if (rc != 0) break :blk3 @as(i128, 0);
+                    break :blk3 @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+                });
                 const ad = self.buildAckApp();
                 const ack_delay = self.getAckDelayEncoded(.Application, now_ns);
                 const ack_ecn = self.getAckEcn(.Application);
@@ -615,7 +630,7 @@ pub fn bind(comptime Connection: type) type {
             }
             // Use per-stream offset as final_size
             const final_size: u64 = if (id == 0) self.stream_send_off else self.stream_txs.getPtr(id).?.off;
-            var frames_buf = std.ArrayList(u8){};
+            var frames_buf: std.ArrayList(u8) = .empty;
             defer frames_buf.deinit(self.allocator.*);
             const w = frames_buf.writer(self.allocator.*);
             _ = (frame.Frame{ .reset_stream = .{
@@ -659,7 +674,7 @@ pub fn bind(comptime Connection: type) type {
                 self.stream_txs.getPtr(stream_id).?.off
             else
                 self.stream_send_off;
-            var frames_buf = std.ArrayList(u8){};
+            var frames_buf: std.ArrayList(u8) = .empty;
             defer frames_buf.deinit(self.allocator.*);
             const w = frames_buf.writer(self.allocator.*);
             _ = (frame.Frame{ .reset_stream = .{ .stream_id = stream_id, .error_code = app_error_code, .final_size = final_size } }).write(w) catch 0;
@@ -789,7 +804,12 @@ pub fn bind(comptime Connection: type) type {
                 dropAckedStreamTracking(self, acked);
             }
             // Update recovery for given space
-            const now_i = std.time.nanoTimestamp();
+            const now_i = blk4: {
+                var ts: std.os.linux.timespec = undefined;
+                const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+                if (rc != 0) break :blk4 @as(i128, 0);
+                break :blk4 @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+            };
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
             const res = self.rec.onAckReceivedWithEcn(space, acked, 0, now_ns, ecn);
             // Promote time-threshold losses if any expired now
@@ -881,7 +901,12 @@ pub fn bind(comptime Connection: type) type {
             // Fast path: skip syscall + computation if timer already armed
             if (self.pto_app_active) return;
             // Use Recovery to compute PTO deadline for Application space only
-            const now_i = std.time.nanoTimestamp();
+            const now_i = blk: {
+                var ts: std.os.linux.timespec = undefined;
+                const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+                if (rc != 0) break :blk @as(i128, 0);
+                break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+            };
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
             const next_deadline = self.rec.computeSpacePtoTimeNs(.Application, now_ns);
             if (next_deadline == null) return;
@@ -958,7 +983,12 @@ pub fn bind(comptime Connection: type) type {
         pub fn computeAndMaybeArmPtoInitial(self: *Connection, ep: anytype) void {
             // Fast path: skip syscall + computation if already armed or keys dropped
             if (self.pto_initial_active or self.initial_keys_dropped) return;
-            const now_i = std.time.nanoTimestamp();
+            const now_i = blk: {
+                var ts: std.os.linux.timespec = undefined;
+                const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+                if (rc != 0) break :blk @as(i128, 0);
+                break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+            };
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
             const next_deadline = self.rec.computeSpacePtoTimeNs(.Initial, now_ns);
             if (next_deadline == null) return;
@@ -976,7 +1006,12 @@ pub fn bind(comptime Connection: type) type {
             if (self.pto_handshake_active) return;
             // Skip if handshake TX keys are already dropped (connection is established)
             if (self.hs_tx_keys == null and self.app_tx_keys != null) return;
-            const now_i = std.time.nanoTimestamp();
+            const now_i = blk: {
+                var ts: std.os.linux.timespec = undefined;
+                const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+                if (rc != 0) break :blk @as(i128, 0);
+                break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+            };
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
             const next_deadline = self.rec.computeSpacePtoTimeNs(.Handshake, now_ns);
             if (next_deadline == null) return;
@@ -1011,7 +1046,7 @@ pub fn bind(comptime Connection: type) type {
                 const t = ks.deriveKeyIvHp(keys);
                 break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
             };
-            var frames = std.ArrayList(u8){};
+            var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
             const w = frames.writer(self.allocator.*);
             _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
@@ -1029,7 +1064,7 @@ pub fn bind(comptime Connection: type) type {
                 const max_crypto_chunk: usize = @max(@as(usize, 256), @as(usize, self.path_mtu) - 80);
                 const chunk_len = @min(retx.len, max_crypto_chunk);
 
-                var crypto_frames = std.ArrayList(u8){};
+                var crypto_frames: std.ArrayList(u8) = .empty;
                 defer crypto_frames.deinit(self.allocator.*);
                 const cw = crypto_frames.writer(self.allocator.*);
                 _ = (frame.Frame{
@@ -1147,7 +1182,7 @@ pub fn bind(comptime Connection: type) type {
                 var probes_sent: usize = 0;
                 while (sent_off < retx.len and probes_sent < 8) {
                     const chunk_len = @min(retx.len - sent_off, max_crypto_chunk);
-                    var crypto_frames = std.ArrayList(u8){};
+                    var crypto_frames: std.ArrayList(u8) = .empty;
                     defer crypto_frames.deinit(self.allocator.*);
                     const cw = crypto_frames.writer(self.allocator.*);
                     _ = (frame.Frame{
@@ -1183,7 +1218,7 @@ pub fn bind(comptime Connection: type) type {
                 if (probes_sent > 0) return;
             }
 
-            var frames = std.ArrayList(u8){};
+            var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
             const w = frames.writer(self.allocator.*);
             _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
@@ -1234,7 +1269,7 @@ pub fn bind(comptime Connection: type) type {
                             self.allocator.free(tracked.data);
                         } else {
                             var frame_storage: [2048]u8 = undefined;
-                            var frame_stream = std.io.fixedBufferStream(&frame_storage);
+                            var frame_stream = std.Io.fixedBufferStream(&frame_storage);
                             _ = (frame.Frame{
                                 .stream = .{
                                     .stream_id = tracked.stream_id,
@@ -1277,7 +1312,7 @@ pub fn bind(comptime Connection: type) type {
                 }
             }
 
-            var frames = std.ArrayList(u8){};
+            var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
             const w = frames.writer(self.allocator.*);
             _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
@@ -1307,7 +1342,7 @@ pub fn bind(comptime Connection: type) type {
             logger.debugPrint("DEBUG: sendConnectionClose called with error_code={}, reason=\"{s}\"\n", .{ app_error_code, reason });
             if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
             const tx = self.app_tx_keys.?;
-            var frames = std.ArrayList(u8){};
+            var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
             const w = frames.writer(self.allocator.*);
             _ = (frame.Frame{ .connection_close = .{ .error_code = app_error_code, .frame_type = 0, .reason = reason } }).write(w) catch 0;
@@ -1438,7 +1473,7 @@ pub fn bind(comptime Connection: type) type {
             if (self.role == .Server and !self.handshake_done_sent) {
                 logger.debugPrint("[deriveAppKeys] Server: Will send HANDSHAKE_DONE now!\n", .{});
 
-                var frames = std.ArrayList(u8){};
+                var frames: std.ArrayList(u8) = .empty;
                 defer frames.deinit(self.allocator.*);
                 const w = frames.writer(self.allocator.*);
                 _ = (frame.Frame{ .handshake_done = {} }).write(w) catch 0;

@@ -38,8 +38,8 @@ pub const StreamRx = struct {
     pub fn init() StreamRx {
         return .{
             .recv_off = 0,
-            .inbox = std.ArrayList(u8){},
-            .bufs = std.ArrayList(Segment){},
+            .inbox = .empty,
+            .bufs = .empty,
             .fin_off = null,
             .local_max_stream_data = 0,
             .last_sent_max_stream_data = 0,

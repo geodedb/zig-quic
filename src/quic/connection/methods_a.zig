@@ -8,11 +8,18 @@ const logger = @import("quic_logger");
 
 pub fn bind(comptime Connection: type) type {
     return struct {
-        fn openAppendFile(path: []const u8) !std.fs.File {
-            return std.fs.cwd().openFile(path, .{ .mode = .read_write }) catch |err| switch (err) {
-                error.FileNotFound => std.fs.cwd().createFile(path, .{ .truncate = false, .read = true }),
-                else => err,
-            };
+        const linux = std.os.linux;
+
+        fn openAppendFd(path_str: []const u8) !linux.fd_t {
+            // Path must be null-terminated for the syscall; copy to a stack buffer.
+            var path_buf: [4096]u8 = undefined;
+            if (path_str.len >= path_buf.len) return error.NameTooLong;
+            @memcpy(path_buf[0..path_str.len], path_str);
+            path_buf[path_str.len] = 0;
+            const path_z: [*:0]const u8 = @ptrCast(path_buf[0..path_str.len :0]);
+            const fd_rc = linux.open(path_z, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true }, 0o644);
+            if (linux.errno(fd_rc) != .SUCCESS) return error.FileOpenFailed;
+            return @intCast(fd_rc);
         }
 
         fn currentClientRandom(self: *const Connection) ?[32]u8 {
@@ -30,42 +37,32 @@ pub fn bind(comptime Connection: type) type {
             // Only Debug and test builds may export key material.
             if (comptime @import("builtin").mode != .Debug and !@import("builtin").is_test) return false;
 
-            const keylog_path = std.process.getEnvVarOwned(self.allocator.*, "SSLKEYLOGFILE") catch |err| switch (err) {
-                error.EnvironmentVariableNotFound => return false,
-                else => {
-                    logger.debugPrint("keylog: env lookup failed: {}\n", .{err});
-                    return false;
-                },
-            };
-            defer self.allocator.free(keylog_path);
+            const keylog_path = if (std.c.getenv("SSLKEYLOGFILE")) |v| std.mem.span(v) else return false;
             if (keylog_path.len == 0) return false;
 
-            var file = openAppendFile(keylog_path) catch |err| {
+            const fd = openAppendFd(keylog_path) catch |err| {
                 logger.debugPrint("keylog: open failed ({s}): {}\n", .{ keylog_path, err });
                 return false;
             };
-            defer file.close();
-            file.seekFromEnd(0) catch |err| {
-                logger.warn("keylog: seekFromEnd failed: {s}", .{@errorName(err)});
-            };
+            defer _ = linux.close(fd);
 
-            var line = std.ArrayList(u8){};
+            var line: std.ArrayList(u8) = .empty;
             defer line.deinit(self.allocator.*);
-            const w = line.writer(self.allocator.*);
-            w.print("{s} ", .{label}) catch return false;
+            line.print(self.allocator.*, "{s} ", .{label}) catch return false;
             for (client_random) |b| {
-                w.print("{X:0>2}", .{b}) catch return false;
+                line.print(self.allocator.*, "{X:0>2}", .{b}) catch return false;
             }
-            w.writeByte(' ') catch return false;
+            line.append(self.allocator.*, ' ') catch return false;
             for (secret.slice()) |b| {
-                w.print("{X:0>2}", .{b}) catch return false;
+                line.print(self.allocator.*, "{X:0>2}", .{b}) catch return false;
             }
-            w.writeByte('\n') catch return false;
+            line.append(self.allocator.*, '\n') catch return false;
 
-            file.writeAll(line.items) catch |err| {
-                logger.debugPrint("keylog: write failed ({s}): {}\n", .{ label, err });
+            const write_rc = linux.write(fd, line.items.ptr, line.items.len);
+            if (linux.errno(write_rc) != .SUCCESS) {
+                logger.debugPrint("keylog: write failed ({s})\n", .{label});
                 return false;
-            };
+            }
             return true;
         }
 
@@ -225,7 +222,7 @@ pub fn bind(comptime Connection: type) type {
             const tx = self.initial_tx_keys orelse return error.NoKeys;
 
             // Build CRYPTO frame
-            var frames = std.ArrayList(u8){};
+            var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
             const w = frames.writer(self.allocator.*);
             const crypto_frame = frame.Frame{ .crypto = .{
@@ -285,7 +282,7 @@ pub fn bind(comptime Connection: type) type {
             const tx = self.hs_tx_keys orelse return error.NoKeys;
 
             // Build CRYPTO frame
-            var frames = std.ArrayList(u8){};
+            var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
             const w = frames.writer(self.allocator.*);
             const crypto_frame = frame.Frame{ .crypto = .{
@@ -454,7 +451,7 @@ pub fn bind(comptime Connection: type) type {
                 self.initial_tx_keys = null;
 
                 // Build and send HANDSHAKE_DONE frame
-                var frames_list = std.ArrayList(u8){};
+                var frames_list: std.ArrayList(u8) = .empty;
                 defer frames_list.deinit(self.allocator.*);
                 const w = frames_list.writer(self.allocator.*);
                 _ = (frame.Frame{ .handshake_done = {} }).write(w) catch 0;
@@ -914,15 +911,15 @@ pub fn bind(comptime Connection: type) type {
         pub fn sendPathChallenge(self: *Connection) void {
             if (!self.hasConfirmedAppTxKeys()) {
                 // No confirmed 1-RTT keys yet (e.g. test setup); still mark validation pending and seed challenge data.
-                std.crypto.random.bytes(&self.path_challenge_data);
+                _ = std.os.linux.getrandom(&self.path_challenge_data, self.path_challenge_data.len, 0);
                 self.path_validation_pending = true;
                 return;
             }
             const tx = self.app_tx_keys.?;
             // Generate opaque 8-byte data and remember for validation
-            std.crypto.random.bytes(&self.path_challenge_data);
+            _ = std.os.linux.getrandom(&self.path_challenge_data, self.path_challenge_data.len, 0);
             self.path_validation_pending = true;
-            var frames = std.ArrayList(u8){};
+            var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
             const w = frames.writer(self.allocator.*);
             _ = (frame.Frame{ .path_challenge = self.path_challenge_data }).write(w) catch 0;
@@ -1009,7 +1006,12 @@ pub fn bind(comptime Connection: type) type {
                     self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len],
                 );
 
-                const now_ns: u64 = @intCast(@max(0, std.time.nanoTimestamp()));
+                const now_ns: u64 = @intCast(@max(0, blk: {
+                    var ts: std.os.linux.timespec = undefined;
+                    const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+                    if (rc != 0) break :blk @as(i128, 0);
+                    break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+                }));
 
                 const is_fresh = cache.checkAndRecord(ticket_hash, now_ns) catch {
                     // On allocation failure, reject 0-RTT to be safe.
@@ -1033,7 +1035,7 @@ pub fn bind(comptime Connection: type) type {
         pub fn advertiseInitialFlowControl(self: *Connection) void {
             if (!self.hasConfirmedAppTxKeys()) return;
             if (!self.canSendUnderAmplification()) return;
-            var frames = std.ArrayList(u8){};
+            var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
             const w = frames.writer(self.allocator.*);
             var wrote: bool = false;

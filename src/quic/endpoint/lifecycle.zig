@@ -91,7 +91,7 @@ pub fn closeStaleConnectionsForPeer(ctx: *LifecycleContext, new_conn: *conn_mod.
     const peer_hash = hashSockaddr(&new_conn.peer.storage, new_conn.peer.len);
 
     // Collect connections to close
-    var to_close = std.ArrayList(*conn_mod.Connection){};
+    var to_close: std.ArrayList(*conn_mod.Connection) = .empty;
     defer to_close.deinit(ctx.allocator);
 
     // Find all connections from same peer
@@ -136,7 +136,7 @@ pub fn closeStaleConnectionsForPeer(ctx: *LifecycleContext, new_conn: *conn_mod.
 /// Retired connections are kept for a draining period before final deallocation.
 pub fn pruneClosed(ctx: *LifecycleContext) void {
     // Collect keys referencing closed connections
-    var keys = std.ArrayList(types.Key){};
+    var keys: std.ArrayList(types.Key) = .empty;
     defer keys.deinit(ctx.allocator);
 
     var closed_set = std.AutoHashMap(*conn_mod.Connection, void).init(ctx.allocator);

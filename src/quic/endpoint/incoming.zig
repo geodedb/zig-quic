@@ -558,7 +558,12 @@ pub fn processInitial(
         // Use user-provided secret if available, otherwise use the cryptographically
         // random secret generated at endpoint init (never use a hardcoded fallback)
         const secret = ctx.cfg.token_secret orelse ctx.generated_token_secret;
-        const now_ns: i128 = std.time.nanoTimestamp();
+        const now_ns: i128 = blk: {
+            var ts: std.os.linux.timespec = undefined;
+            const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+            if (rc != 0) break :blk @as(i128, 0);
+            break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+        };
         const now_ms: u64 = @intCast(if (now_ns > 0) @as(u128, @intCast(now_ns)) / std.time.ns_per_ms else 0);
 
         if (token_mod.verify(token_bytes, client_ip_bytes, secret, now_ms)) {
@@ -706,7 +711,12 @@ pub fn processInitial(
     var offset: usize = 0;
     var saw_crypto: bool = false;
     var saw_ack_eliciting: bool = false;
-    const now_ns: u64 = @intCast(std.time.nanoTimestamp());
+    const now_ns: u64 = @intCast(blk: {
+        var ts: std.os.linux.timespec = undefined;
+        const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+        if (rc != 0) break :blk @as(i128, 0);
+        break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+    });
 
     logger.debugPrint("[processInitial] Decrypted payload length: {} bytes\n", .{decrypted.payload.len});
 
@@ -824,7 +834,7 @@ pub fn processInitial(
         if (conn.initial_tx_keys) |tx_keys| {
             // Build ACK frame
             var frames_buf: [4096]u8 = undefined;
-            var frames_stream = std.io.fixedBufferStream(&frames_buf);
+            var frames_stream = std.Io.fixedBufferStream(&frames_buf);
             const w = frames_stream.writer();
 
             const ack_desc = conn.buildAckInitial();
@@ -859,7 +869,7 @@ pub fn processInitial(
             // RFC 9000 §14.1: client Initial datagrams MUST be at least 1200 bytes.
             // RFC 9000 §8.1.2: client must echo Retry token on subsequent Initial packets.
             const token = if (conn.role == .Client) conn.initial_token.items else &[_]u8{};
-            var ack_payload = std.ArrayList(u8){};
+            var ack_payload: std.ArrayList(u8) = .empty;
             defer ack_payload.deinit(ctx.allocator.*);
             ack_payload.appendSlice(ctx.allocator.*, frames_data) catch |err| {
                 logger.debugPrint("[INCOMING] ACK payload append failed: {s}\n", .{@errorName(err)});

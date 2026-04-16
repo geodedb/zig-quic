@@ -18,7 +18,7 @@ pub const TimerManager = struct {
 
     pub fn init(allocator: std.mem.Allocator) TimerManager {
         return .{
-            .timers = std.ArrayList(types.Timer){},
+            .timers = .empty,
             .allocator = allocator,
         };
     }
@@ -76,7 +76,7 @@ pub const TimerManager = struct {
     /// Flush expired timers and return them.
     pub fn flush(self: *TimerManager, allocator: std.mem.Allocator) !std.ArrayList(types.Timer) {
         const now = nowMsMonotonic();
-        var expired = std.ArrayList(types.Timer){};
+        var expired: std.ArrayList(types.Timer) = .empty;
 
         while (self.timers.items.len > 0 and self.timers.items[0].deadline_ms <= now) {
             try expired.append(allocator, self.timers.items[0]);
@@ -118,7 +118,12 @@ pub const TimerManager = struct {
 };
 
 fn nowMsMonotonic() i64 {
-    const ns: i128 = std.time.nanoTimestamp();
+    const ns: i128 = blk: {
+        var ts: std.os.linux.timespec = undefined;
+        const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+        if (rc != 0) break :blk @as(i128, 0);
+        break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+    };
     const ms: i128 = @divTrunc(ns, std.time.ns_per_ms);
     return @as(i64, @intCast(ms));
 }

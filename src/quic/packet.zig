@@ -27,7 +27,7 @@ pub fn phase57SetAttemptLabel(label: []const u8) void {
 /// Debug helper: dump bytes when running inside tests.
 fn dumpBytes(label: []const u8, bytes: []const u8) void {
     if (!builtin.is_test) return;
-    var list = std.ArrayList(u8){};
+    var list: std.ArrayList(u8) = .empty;
     defer list.deinit(std.heap.page_allocator);
     var i: usize = 0;
     while (i < bytes.len) : (i += 1) {
@@ -519,7 +519,7 @@ pub fn encodeInitialProtected(
 ) ![]u8 {
     if (packet_number_len < 1 or packet_number_len > 4) return error.InvalidPacketNumberLength;
 
-    var buf = std.ArrayList(u8){};
+    var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(alloc);
 
     // Header first byte: Long header with fixed bit, Initial type, PN len bits
@@ -701,7 +701,7 @@ pub fn decodeInitialProtected(
     // AAD = unmasked first byte || header_prefix || unmasked PN bytes
     // Stack-allocated: 1 byte header + up to ~40 bytes prefix + 4 PN bytes = well under 256.
     var aad_buf: [256]u8 = undefined;
-    var aad_stream = std.io.fixedBufferStream(&aad_buf);
+    var aad_stream = std.Io.fixedBufferStream(&aad_buf);
     aad_stream.writer().writeByte(header_first) catch return error.Truncated;
     aad_stream.writer().writeAll(header_prefix) catch return error.Truncated;
     aad_stream.writer().writeAll(pn_masked4[0..pn_len_actual]) catch return error.Truncated;
@@ -775,7 +775,7 @@ pub fn encodeHandshakeProtected(
     }
     if (packet_number_len < 1 or packet_number_len > 4) return error.InvalidPacketNumberLength;
 
-    var buf = std.ArrayList(u8){};
+    var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(alloc);
 
     // Header first byte: Long header with fixed bit, Handshake type, PN len bits
@@ -929,7 +929,7 @@ pub const DecodedVN = struct {
 /// Encode a Version Negotiation (VN) packet with Version=0 and provided version list.
 /// Returned slice is owned by alloc.
 pub fn encodeVersionNegotiation(alloc: std.mem.Allocator, dcid: []const u8, scid: []const u8, versions: []const u32) ![]u8 {
-    var buf = std.ArrayList(u8){};
+    var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(alloc);
     const w = buf.writer(alloc);
     // Simplest VN first byte with Long Header bit set and fixed bit set (0x80)
@@ -1023,7 +1023,7 @@ pub fn encode0RTTProtected(
 ) ![]u8 {
     // 0-RTT uses long header type 0x01
     const ty: u2 = 0x01;
-    var buf = std.ArrayList(u8){};
+    var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(alloc);
     const w = buf.writer(alloc);
 
@@ -1170,7 +1170,7 @@ pub fn decode0RTTProtected(
 
     // Stack-allocated AAD: 1 byte header + header prefix + up to 4 PN bytes = well under 256.
     var aad_buf2: [256]u8 = undefined;
-    var aad_stream2 = std.io.fixedBufferStream(&aad_buf2);
+    var aad_stream2 = std.Io.fixedBufferStream(&aad_buf2);
     aad_stream2.writer().writeByte(header_first) catch return error.CiphertextTooShort;
     aad_stream2.writer().writeAll(packet[1..i]) catch return error.CiphertextTooShort;
     aad_stream2.writer().writeAll(pn_masked4[0..pn_len_actual]) catch return error.CiphertextTooShort;
@@ -1201,7 +1201,7 @@ pub fn decode0RTTProtected(
 /// scid = Source Connection ID chosen by server
 /// odcid = client's Original DCID (from the Initial that prompted this Retry)
 pub fn encodeRetry(alloc: std.mem.Allocator, version: u32, dcid: []const u8, scid: []const u8, odcid: []const u8, token: []const u8) ![]u8 {
-    var buf = std.ArrayList(u8){};
+    var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(alloc);
     const w = buf.writer(alloc);
     // First byte: Long header, Retry type (0x30); PN length bits are 0 for Retry

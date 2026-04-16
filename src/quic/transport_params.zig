@@ -145,7 +145,7 @@ pub const TransportParams = struct {
     /// is emitted using QUIC varints for the identifier and value length as
     /// mandated by RFC 9000 §18.1.
     pub fn encode(self: *const TransportParams, alloc: std.mem.Allocator) ![]u8 {
-        var out = std.ArrayList(u8){};
+        var out: std.ArrayList(u8) = .empty;
         errdefer out.deinit(alloc);
         const w = out.writer(alloc);
         var tmp: [16]u8 = undefined;
