@@ -14,6 +14,13 @@ const std = @import("std");
 
 const Allocator = std.mem.Allocator;
 
+/// Zig 0.16.0 compat: std.time.milliTimestamp() was removed.
+fn milliTimestamp() i64 {
+    var ts: std.os.linux.timespec = undefined;
+    _ = std.os.linux.clock_gettime(.REALTIME, &ts);
+    return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
+}
+
 // =============================================================================
 // Test Result Types and Aggregation
 // =============================================================================
@@ -56,7 +63,7 @@ pub fn aggregateResults(test_cases: []const TestCase) TestSuiteResults {
         .skipped = 0,
         .timeout = 0,
         .total_duration_ms = 0,
-        .timestamp = std.time.milliTimestamp(),
+        .timestamp = milliTimestamp(),
     };
 
     for (test_cases) |test_case| {
@@ -432,27 +439,9 @@ pub const CiEnvironment = enum {
 
 /// Detect current CI environment from environment variables
 pub fn detectCiEnvironment() CiEnvironment {
-    if (std.process.getEnvVarOwned(
-        std.heap.page_allocator,
-        "GITHUB_ACTIONS",
-    )) |_| {
-        return .github_actions;
-    } else |_| {}
-
-    if (std.process.getEnvVarOwned(
-        std.heap.page_allocator,
-        "GITLAB_CI",
-    )) |_| {
-        return .gitlab_ci;
-    } else |_| {}
-
-    if (std.process.getEnvVarOwned(
-        std.heap.page_allocator,
-        "JENKINS_HOME",
-    )) |_| {
-        return .jenkins;
-    } else |_| {}
-
+    if (std.c.getenv("GITHUB_ACTIONS")) |_| return .github_actions;
+    if (std.c.getenv("GITLAB_CI")) |_| return .gitlab_ci;
+    if (std.c.getenv("JENKINS_HOME")) |_| return .jenkins;
     return .local;
 }
 

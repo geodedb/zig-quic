@@ -70,7 +70,7 @@ fn netAddressToSockAddr(addr: std.Io.net.IpAddress) SockAddr {
             var sin: posix.sockaddr.in = .{
                 .family = posix.AF.INET,
                 .port = std.mem.nativeToBig(u16, ip4.port),
-                .addr = std.mem.readInt(u32, &ip4.bytes, .big),
+                .addr = std.mem.readInt(u32, &ip4.bytes, .little),
                 .zero = .{0} ** 8,
             };
             out.len = @intCast(@sizeOf(posix.sockaddr.in));
@@ -265,7 +265,7 @@ pub const UdpTransport = struct {
                 };
                 msgs[i] = .{
                     .hdr = .{
-                        .name = @constCast(@ptrCast(&it.peer.storage)),
+                        .name = @ptrCast(@constCast(&it.peer.storage)),
                         .namelen = it.peer.len,
                         .iov = @ptrCast(&iovecs[i]),
                         .iovlen = 1,

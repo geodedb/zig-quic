@@ -74,7 +74,8 @@ pub const DecodedVN = struct {
 pub fn encodeVersionNegotiation(alloc: std.mem.Allocator, dcid: []const u8, scid: []const u8, versions: []const u32) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(alloc);
-    const w = buf.writer(alloc);
+    const compat = @import("compat");
+    const w = compat.arrayListWriter(&buf, alloc);
 
     // Long Header bit set + fixed bit set (0x80)
     try w.writeByte(0x80);

@@ -137,7 +137,7 @@ pub fn h3Get(ep: *api.QuicEndpoint, conn: *api.QuicConnection, host: []const u8,
     writeAll(ep, conn, stream_id, req[0..rn]);
     writeFin(ep, conn, stream_id);
 
-    var buf = std.ArrayListUnmanaged(u8){};
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(std.heap.page_allocator);
     var tmp: [2048]u8 = undefined;
     var idle_spins: usize = 0;

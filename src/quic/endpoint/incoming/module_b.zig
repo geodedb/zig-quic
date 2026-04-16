@@ -287,7 +287,7 @@ pub fn processHandshake(
 
                 var frames_buf: std.ArrayList(u8) = .empty;
                 defer frames_buf.deinit(ctx.allocator.*);
-                const w = frames_buf.writer(ctx.allocator.*);
+                const w = @import("compat").arrayListWriter(&frames_buf, ctx.allocator.*);
 
                 // Add CRYPTO frame
                 const crypto_frame_offset = base_off + crypto_offset;
@@ -341,7 +341,7 @@ pub fn processHandshake(
         if (conn.*.hs_tx_keys) |tx_keys| {
             var frames_buf: std.ArrayList(u8) = .empty;
             defer frames_buf.deinit(ctx.allocator.*);
-            const w = frames_buf.writer(ctx.allocator.*);
+            const w = @import("compat").arrayListWriter(&frames_buf, ctx.allocator.*);
 
             // GAP-0200: Lock conn.mu for ACK generation (reads PnWindow, writes ack_ranges_buf)
             conn.*.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
@@ -410,7 +410,7 @@ pub fn processHandshake(
     if (conn.*.role == .Server and conn.*.peer_finished_verified and conn.*.app_tx_keys != null) {
         var done_frames: std.ArrayList(u8) = .empty;
         defer done_frames.deinit(ctx.allocator.*);
-        const dw = done_frames.writer(ctx.allocator.*);
+        const dw = @import("compat").arrayListWriter(&done_frames, ctx.allocator.*);
         _ = (frame.Frame{ .handshake_done = {} }).write(dw) catch 0;
         conn.*.sendControlFrames(done_frames.items);
     }

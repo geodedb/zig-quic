@@ -11,13 +11,35 @@ fn allocatePort() u16 {
     return next_port.fetchAdd(1, .seq_cst);
 }
 
+/// Zig 0.16.0 compat: std.time.milliTimestamp() was removed.
+fn milliTimestamp() i64 {
+    var ts: std.os.linux.timespec = undefined;
+    _ = std.os.linux.clock_gettime(.REALTIME, &ts);
+    return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
+}
+
+/// Zig 0.16.0 compat: std.time.nanoTimestamp() was removed.
+fn nanoTimestamp() i128 {
+    var ts: std.os.linux.timespec = undefined;
+    _ = std.os.linux.clock_gettime(.REALTIME, &ts);
+    return @as(i128, ts.sec) * 1_000_000_000 + @as(i128, ts.nsec);
+}
+
+fn threadSleep(ns: u64) void {
+    var ts: std.os.linux.timespec = .{
+        .sec = @intCast(ns / std.time.ns_per_s),
+        .nsec = @intCast(ns % std.time.ns_per_s),
+    };
+    _ = std.os.linux.nanosleep(&ts, &ts);
+}
+
 fn waitForFlag(flag: *std.atomic.Value(bool), timeout_ms: u64) !void {
-    const start = std.time.milliTimestamp();
+    const start = milliTimestamp();
     while (!flag.load(.acquire)) {
-        if (std.time.milliTimestamp() - start > @as(i64, @intCast(timeout_ms))) {
+        if (milliTimestamp() - start > @as(i64, @intCast(timeout_ms))) {
             return error.Timeout;
         }
-        std.Thread.sleep(1 * std.time.ns_per_ms);
+        threadSleep(1 * std.time.ns_per_ms);
     }
 }
 
@@ -30,51 +52,47 @@ fn interruptAlways() bool {
 }
 
 fn requireOpenSsl(allocator: std.mem.Allocator) !void {
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const result = std.process.run(allocator, io, .{
         .argv = &[_][]const u8{ "openssl", "version" },
-    }) catch |err| switch (err) {
-        error.FileNotFound => return error.SkipZigTest,
-        else => return err,
+    }) catch {
+        return error.SkipZigTest;
     };
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
-
-    if (result.term != .Exited or result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         return error.SkipZigTest;
     }
 }
 
 fn pathExists(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
 }
 
 fn runOpenSsl(allocator: std.mem.Allocator, argv: []const []const u8) !void {
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const result = std.process.run(allocator, io, .{
         .argv = argv,
-    }) catch |err| switch (err) {
-        error.FileNotFound => return error.SkipZigTest,
-        else => return err,
+    }) catch {
+        return error.SkipZigTest;
     };
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
-    if (result.term != .Exited or result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         return error.TestCertsUnavailable;
     }
 }
 
 fn ensureTestCertFiles(allocator: std.mem.Allocator) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
     const cert_path = "tests/certs/cert.pem";
     const key_path = "tests/certs/key.pem";
 
     if (pathExists(cert_path) and pathExists(key_path)) return;
 
-    std.fs.cwd().makePath("tests/certs") catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => return err,
-    };
+    std.Io.Dir.cwd().createDirPath(io, "tests/certs") catch {};
 
     try runOpenSsl(allocator, &[_][]const u8{
         "openssl",
@@ -133,7 +151,7 @@ test "transport geode compat: PollSync waits for active readers" {
         fn run(s: *transport.PollSync, entered: *std.atomic.Value(bool), left: *std.atomic.Value(bool)) void {
             s.enterIo();
             entered.store(true, .release);
-            std.Thread.sleep(30 * std.time.ns_per_ms);
+            threadSleep(30 * std.time.ns_per_ms);
             // Set flag BEFORE leaveIo so enterPoll's return guarantees visibility
             left.store(true, .release);
             s.leaveIo();
@@ -162,7 +180,7 @@ test "transport geode compat: PollSync blocks new readers while polling" {
         }
     }.run, .{ &sync, &io_entered });
 
-    std.Thread.sleep(10 * std.time.ns_per_ms);
+    threadSleep(10 * std.time.ns_per_ms);
     try testing.expect(!io_entered.load(.acquire));
 
     sync.leavePoll();
@@ -214,12 +232,12 @@ test "transport geode compat: client-server migration path over localhost" {
     try testing.expectEqual(@as(u64, 300000), client.quic_config.?.max_idle_timeout_ms);
 
     var server_conn: ?*transport.QuicConnection = null;
-    const handshake_start = std.time.milliTimestamp();
-    while (std.time.milliTimestamp() - handshake_start < 5000 and server_conn == null) {
+    const handshake_start = milliTimestamp();
+    while (milliTimestamp() - handshake_start < 5000 and server_conn == null) {
         try qt.poll(1);
         try client.poll(1);
         server_conn = qt.tryAccept();
-        std.Thread.sleep(500 * std.time.ns_per_us);
+        threadSleep(500 * std.time.ns_per_us);
     }
     if (server_conn == null) return error.Timeout;
     const conn = server_conn.?;
@@ -238,11 +256,11 @@ test "transport geode compat: client-server migration path over localhost" {
     try client.poll(10);
     try qt.poll(10);
 
-    const stream_wait_start = std.time.milliTimestamp();
-    while (std.time.milliTimestamp() - stream_wait_start < 3000 and !conn.hasIncomingStreams()) {
+    const stream_wait_start = milliTimestamp();
+    while (milliTimestamp() - stream_wait_start < 3000 and !conn.hasIncomingStreams()) {
         try qt.poll(1);
         try client.poll(1);
-        std.Thread.sleep(500 * std.time.ns_per_us);
+        threadSleep(500 * std.time.ns_per_us);
     }
     if (!conn.hasIncomingStreams()) return error.Timeout;
 
@@ -257,13 +275,13 @@ test "transport geode compat: client-server migration path over localhost" {
     try testing.expectEqual(@as(usize, 0), conn.streams.items.len);
 
     var response: ?[]u8 = null;
-    const response_wait_start = std.time.milliTimestamp();
-    while (std.time.milliTimestamp() - response_wait_start < 3000 and response == null) {
+    const response_wait_start = milliTimestamp();
+    while (milliTimestamp() - response_wait_start < 3000 and response == null) {
         response = stream.readLineWithInterrupt(256, &interruptNever) catch |err| {
             if (err == error.WouldBlock) {
                 try client.poll(1);
                 try qt.poll(1);
-                std.Thread.sleep(500 * std.time.ns_per_us);
+                threadSleep(500 * std.time.ns_per_us);
                 continue;
             }
             return err;
@@ -286,24 +304,25 @@ test "transport geode compat: auto-generated cert is ECDSA P-256" {
     const allocator = std.heap.page_allocator;
     try requireOpenSsl(allocator);
 
+    const io = std.Io.Threaded.global_single_threaded.io();
     const cert_path = try std.fmt.allocPrint(
         allocator,
         "/tmp/quic-transport-cert-{d}.pem",
-        .{@as(u64, @intCast(std.time.nanoTimestamp()))},
+        .{@as(u64, @intCast(@as(i64, @truncate(nanoTimestamp()))))},
     );
     defer allocator.free(cert_path);
 
     const key_path = try std.fmt.allocPrint(
         allocator,
         "/tmp/quic-transport-key-{d}.pem",
-        .{@as(u64, @intCast(std.time.nanoTimestamp()))},
+        .{@as(u64, @intCast(@as(i64, @truncate(nanoTimestamp()))))},
     );
     defer allocator.free(key_path);
 
-    std.fs.cwd().deleteFile(cert_path) catch {};
-    std.fs.cwd().deleteFile(key_path) catch {};
-    defer std.fs.cwd().deleteFile(cert_path) catch {};
-    defer std.fs.cwd().deleteFile(key_path) catch {};
+    std.Io.Dir.cwd().deleteFile(io, cert_path) catch {};
+    std.Io.Dir.cwd().deleteFile(io, key_path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(io, cert_path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(io, key_path) catch {};
 
     var qt = try transport.QuicTransport.init(allocator, .{
         .address = "127.0.0.1",
@@ -316,11 +335,10 @@ test "transport geode compat: auto-generated cert is ECDSA P-256" {
     defer qt.deinit();
 
     try qt.listen();
-    try std.fs.cwd().access(cert_path, .{});
-    try std.fs.cwd().access(key_path, .{});
+    try std.Io.Dir.cwd().access(io, cert_path, .{});
+    try std.Io.Dir.cwd().access(io, key_path, .{});
 
-    const dump = try std.process.Child.run(.{
-        .allocator = allocator,
+    const dump = std.process.run(allocator, io, .{
         .argv = &[_][]const u8{
             "openssl",
             "x509",
@@ -329,11 +347,11 @@ test "transport geode compat: auto-generated cert is ECDSA P-256" {
             "-noout",
             "-text",
         },
-    });
+    }) catch return error.SkipZigTest;
     defer allocator.free(dump.stdout);
     defer allocator.free(dump.stderr);
 
-    if (dump.term != .Exited or dump.term.Exited != 0) {
+    if (dump.term != .exited or dump.term.exited != 0) {
         return error.CertificateDumpFailed;
     }
 
@@ -363,12 +381,12 @@ test "transport geode compat: tryAccept is non-blocking and does not call poll" 
     // Call tryAccept 1000 times and measure wall-clock time.
     // With the old ep.poll(10) this would take 1000 * 10ms = 10+ seconds.
     // With the fix it should complete in <100ms (just queue checks).
-    const start = std.time.milliTimestamp();
+    const start = milliTimestamp();
     var i: usize = 0;
     while (i < 1000) : (i += 1) {
         try testing.expect(qt.tryAccept() == null);
     }
-    const elapsed = std.time.milliTimestamp() - start;
+    const elapsed = milliTimestamp() - start;
 
     // Must complete in under 500ms (generous margin; typically <10ms).
     try testing.expect(elapsed < 500);
@@ -389,12 +407,12 @@ test "transport geode compat: waitForAccepted returns null on timeout" {
     try qt.listen();
 
     // waitForAccepted with short timeout should return null when idle.
-    const start = std.time.milliTimestamp();
+    const start = milliTimestamp();
     const result = qt.waitForAccepted(50);
-    const elapsed = std.time.milliTimestamp() - start;
+    const elapsed = milliTimestamp() - start;
 
     try testing.expect(result == null);
-    // Should block for roughly the timeout period (±30ms for scheduling).
+    // Should block for roughly the timeout period (plus/minus 30ms for scheduling).
     try testing.expect(elapsed >= 20);
     try testing.expect(elapsed < 200);
 }

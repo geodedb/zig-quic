@@ -1317,34 +1317,34 @@ fn printBytesHex(label: []const u8, bytes: []const u8, limit: usize) void {
 }
 
 fn dumpPhase57Files(ctx: Phase57DumpContext, dump_id: u8) void {
-    const cwd = std.fs.cwd();
+    const io = std.Io.Threaded.global_single_threaded.io();
     var packet_path_buf: [64]u8 = undefined;
     var meta_path_buf: [64]u8 = undefined;
     const packet_path = std.fmt.bufPrint(&packet_path_buf, "/tmp/phase57-short-header-{d}.bin", .{dump_id}) catch return;
     const meta_path = std.fmt.bufPrint(&meta_path_buf, "/tmp/phase57-short-header-{d}.meta", .{dump_id}) catch return;
 
-    if (cwd.createFile(packet_path, .{ .truncate = true })) |file| {
-        defer file.close();
-        file.writeAll(ctx.packet) catch |werr| {
+    if (std.Io.Dir.createFileAbsolute(io, packet_path, .{ .truncate = true })) |file| {
+        defer file.close(io);
+        file.writeStreamingAll(io, ctx.packet) catch |werr| {
             logger.debugPrint("[PHASE57-DUMP] failed to write packet data: {}\n", .{werr});
         };
     } else |err| {
         logger.debugPrint("[PHASE57-DUMP] failed to write {s}: {}\n", .{ packet_path, err });
     }
 
-    if (cwd.createFile(meta_path, .{ .truncate = true })) |file| {
-        defer file.close();
-        writeLine(file, "pn_preview={}\n", .{ctx.pn_preview});
-        writeLine(file, "key_phase={}\n", .{ctx.key_phase});
-        writeLine(file, "largest_pn={}\n", .{ctx.largest_pn});
-        writeLine(file, "header_first_masked=0x{X:0>2}\n", .{ctx.header_first_masked});
-        writeLine(file, "dcid_len={}\n", .{ctx.dcid_len});
-        writeLine(file, "pn_len={}\n", .{ctx.pn_len});
-        writeLine(file, "pn_start={}\n", .{ctx.pn_start});
-        writeLine(file, "attempt_label={s}\n", .{ctx.key_set_label});
-        writeLine(file, "dcid_candidate={}\n", .{ctx.dcid_candidate});
-        writeHexLine(file, "dcid_hex=", ctx.header_prefix);
-        writeHexLine(file, "pn_masked_hex=", ctx.pn_masked);
+    if (std.Io.Dir.createFileAbsolute(io, meta_path, .{ .truncate = true })) |file| {
+        defer file.close(io);
+        writeLine(file, io, "pn_preview={}\n", .{ctx.pn_preview});
+        writeLine(file, io, "key_phase={}\n", .{ctx.key_phase});
+        writeLine(file, io, "largest_pn={}\n", .{ctx.largest_pn});
+        writeLine(file, io, "header_first_masked=0x{X:0>2}\n", .{ctx.header_first_masked});
+        writeLine(file, io, "dcid_len={}\n", .{ctx.dcid_len});
+        writeLine(file, io, "pn_len={}\n", .{ctx.pn_len});
+        writeLine(file, io, "pn_start={}\n", .{ctx.pn_start});
+        writeLine(file, io, "attempt_label={s}\n", .{ctx.key_set_label});
+        writeLine(file, io, "dcid_candidate={}\n", .{ctx.dcid_candidate});
+        writeHexLine(file, io, "dcid_hex=", ctx.header_prefix);
+        writeHexLine(file, io, "pn_masked_hex=", ctx.pn_masked);
     } else |err| {
         logger.debugPrint("[PHASE57-DUMP] failed to write {s}: {}\n", .{ meta_path, err });
     }
@@ -1356,50 +1356,50 @@ fn dumpPhase57Files(ctx: Phase57DumpContext, dump_id: u8) void {
 }
 
 fn copyPhase57File(data: []const u8, path: []const u8) void {
-    const cwd = std.fs.cwd();
-    if (cwd.createFile(path, .{ .truncate = true })) |file| {
-        defer file.close();
-        file.writeAll(data) catch |werr| {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    if (std.Io.Dir.createFileAbsolute(io, path, .{ .truncate = true })) |file| {
+        defer file.close(io);
+        file.writeStreamingAll(io, data) catch |werr| {
             logger.debugPrint("[PHASE57-DUMP] copyPhase57File write failed: {}\n", .{werr});
         };
     } else |_| {}
 }
 
 fn copyPhase57Meta(ctx: Phase57DumpContext, path: []const u8) void {
-    const cwd = std.fs.cwd();
-    if (cwd.createFile(path, .{ .truncate = true })) |file| {
-        defer file.close();
-        writeLine(file, "pn_preview={}\n", .{ctx.pn_preview});
-        writeLine(file, "key_phase={}\n", .{ctx.key_phase});
-        writeLine(file, "largest_pn={}\n", .{ctx.largest_pn});
-        writeLine(file, "header_first_masked=0x{X:0>2}\n", .{ctx.header_first_masked});
-        writeLine(file, "dcid_len={}\n", .{ctx.dcid_len});
-        writeLine(file, "pn_len={}\n", .{ctx.pn_len});
-        writeLine(file, "pn_start={}\n", .{ctx.pn_start});
-        writeLine(file, "attempt_label={s}\n", .{ctx.key_set_label});
-        writeLine(file, "dcid_candidate={}\n", .{ctx.dcid_candidate});
-        writeHexLine(file, "dcid_hex=", ctx.header_prefix);
-        writeHexLine(file, "pn_masked_hex=", ctx.pn_masked);
+    const io = std.Io.Threaded.global_single_threaded.io();
+    if (std.Io.Dir.createFileAbsolute(io, path, .{ .truncate = true })) |file| {
+        defer file.close(io);
+        writeLine(file, io, "pn_preview={}\n", .{ctx.pn_preview});
+        writeLine(file, io, "key_phase={}\n", .{ctx.key_phase});
+        writeLine(file, io, "largest_pn={}\n", .{ctx.largest_pn});
+        writeLine(file, io, "header_first_masked=0x{X:0>2}\n", .{ctx.header_first_masked});
+        writeLine(file, io, "dcid_len={}\n", .{ctx.dcid_len});
+        writeLine(file, io, "pn_len={}\n", .{ctx.pn_len});
+        writeLine(file, io, "pn_start={}\n", .{ctx.pn_start});
+        writeLine(file, io, "attempt_label={s}\n", .{ctx.key_set_label});
+        writeLine(file, io, "dcid_candidate={}\n", .{ctx.dcid_candidate});
+        writeHexLine(file, io, "dcid_hex=", ctx.header_prefix);
+        writeHexLine(file, io, "pn_masked_hex=", ctx.pn_masked);
     } else |_| {}
 }
 
-fn writeLine(file: std.fs.File, comptime fmt: []const u8, args: anytype) void {
+fn writeLine(file: std.Io.File, io: std.Io, comptime fmt: []const u8, args: anytype) void {
     var buf: [160]u8 = undefined;
     const line = std.fmt.bufPrint(&buf, fmt, args) catch return;
-    file.writeAll(line) catch |werr| {
+    file.writeStreamingAll(io, line) catch |werr| {
         logger.debugPrint("[PHASE57-DUMP] writeLine failed: {}\n", .{werr});
     };
 }
 
-fn writeHexLine(file: std.fs.File, label: []const u8, bytes: []const u8) void {
-    file.writeAll(label) catch return;
+fn writeHexLine(file: std.Io.File, io: std.Io, label: []const u8, bytes: []const u8) void {
+    file.writeStreamingAll(io, label) catch return;
     var idx: usize = 0;
     var byte_buf: [2]u8 = undefined;
     while (idx < bytes.len) : (idx += 1) {
         _ = std.fmt.bufPrint(&byte_buf, "{X:0>2}", .{bytes[idx]}) catch return;
-        file.writeAll(&byte_buf) catch return;
+        file.writeStreamingAll(io, &byte_buf) catch return;
     }
-    file.writeAll("\n") catch |werr| {
+    file.writeStreamingAll(io, "\n") catch |werr| {
         logger.debugPrint("[PHASE57-DUMP] writeHexLine newline failed: {}\n", .{werr});
     };
 }

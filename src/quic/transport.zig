@@ -13,12 +13,28 @@ const logger = @import("quic_logger");
 const builtin = @import("builtin");
 const api = @import("quic_api");
 
+/// Zig 0.16.0 compat: milliTimestamp() was removed.
+fn milliTimestamp() i64 {
+    var ts: std.os.linux.timespec = undefined;
+    _ = std.os.linux.clock_gettime(.REALTIME, &ts);
+    return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
+}
+
 /// Zig 0.16 compat: replacement for removed std.time.nanoTimestamp().
 fn nanoTimestampCompat() i128 {
     var ts: std.os.linux.timespec = undefined;
     const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
     if (rc != 0) return 0;
     return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+}
+
+/// Zig 0.16.0 compat: std.Thread.sleep() was removed.
+fn nanosleep(ns: u64) void {
+    var ts: std.os.linux.timespec = .{
+        .sec = @intCast(ns / std.time.ns_per_s),
+        .nsec = @intCast(ns % std.time.ns_per_s),
+    };
+    _ = std.os.linux.nanosleep(&ts, &ts);
 }
 
 /// Errors that can occur during QUIC operations.
@@ -57,35 +73,39 @@ pub const PollSync = struct {
     active_io_count: u32 = 0,
 
     pub fn enterIo(self: *PollSync) void {
-        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+        const io = std.Io.Threaded.global_single_threaded.io();
+        self.mu.lockUncancelable(io);
+        defer self.mu.unlock(io);
         while (self.poll_requested) {
-            self.cv.wait(&self.mu);
+            self.cv.wait(io, &self.mu) catch break;
         }
         self.active_io_count += 1;
     }
 
     pub fn leaveIo(self: *PollSync) void {
-        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+        const io = std.Io.Threaded.global_single_threaded.io();
+        self.mu.lockUncancelable(io);
+        defer self.mu.unlock(io);
         if (self.active_io_count > 0) self.active_io_count -= 1;
-        if (self.active_io_count == 0) self.cv.signal();
+        if (self.active_io_count == 0) self.cv.signal(io);
     }
 
     pub fn enterPoll(self: *PollSync) void {
-        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+        const io = std.Io.Threaded.global_single_threaded.io();
+        self.mu.lockUncancelable(io);
+        defer self.mu.unlock(io);
         self.poll_requested = true;
         while (self.active_io_count > 0) {
-            self.cv.wait(&self.mu);
+            self.cv.wait(io, &self.mu) catch break;
         }
     }
 
     pub fn leavePoll(self: *PollSync) void {
-        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+        const io = std.Io.Threaded.global_single_threaded.io();
+        self.mu.lockUncancelable(io);
+        defer self.mu.unlock(io);
         self.poll_requested = false;
-        self.cv.broadcast();
+        self.cv.broadcast(io);
     }
 };
 
@@ -210,11 +230,11 @@ pub const QuicTransport = struct {
 
         // Check if certificates exist
         var cert_exists = true;
-        std.fs.cwd().access(cert_path, .{}) catch {
+        std.Io.Dir.cwd().access(std.Io.Threaded.global_single_threaded.io(), cert_path, .{}) catch {
             cert_exists = false;
         };
         var key_exists = true;
-        std.fs.cwd().access(key_path, .{}) catch {
+        std.Io.Dir.cwd().access(std.Io.Threaded.global_single_threaded.io(), key_path, .{}) catch {
             key_exists = false;
         };
 
@@ -247,16 +267,18 @@ pub const QuicTransport = struct {
         var inline_priv_key: ?[]u8 = null;
         logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_server\",\"msg\":\"loading certificate files\",\"cert_path\":\"{s}\",\"key_path\":\"{s}\"}}\n", .{ cert_path, key_path });
 
-        const cert_file = std.fs.cwd().openFile(cert_path, .{}) catch |err| {
+        const tls_io = std.Io.Threaded.global_single_threaded.io();
+        const cert_file = std.Io.Dir.cwd().openFile(tls_io, cert_path, .{}) catch |err| {
             logger.debugPrint("{{\"level\":\"ERROR\",\"component\":\"quic_server\",\"msg\":\"failed to open certificate file\",\"path\":\"{s}\",\"error\":\"{}\"}}\n", .{ cert_path, err });
             return QuicError.CertificateError;
         };
-        defer cert_file.close();
+        defer cert_file.close(tls_io);
 
-        const cert_size = try cert_file.getEndPos();
+        const cert_stat = try cert_file.stat(tls_io);
+        const cert_size = cert_stat.size;
         const cert_pem = try self.allocator.alloc(u8, cert_size);
         defer self.allocator.free(cert_pem);
-        _ = try cert_file.readAll(cert_pem);
+        _ = try cert_file.readPositionalAll(tls_io, cert_pem, 0);
         logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_server\",\"msg\":\"loaded certificate\",\"size\":{}}}\n", .{cert_size});
 
         inline_cert_der = api.pem.parseCertificate(self.allocator, cert_pem) catch |err| {
@@ -264,17 +286,18 @@ pub const QuicTransport = struct {
             return QuicError.CertificateError;
         };
 
-        const key_file = std.fs.cwd().openFile(key_path, .{}) catch |err| {
+        const key_file = std.Io.Dir.cwd().openFile(tls_io, key_path, .{}) catch |err| {
             logger.debugPrint("{{\"level\":\"ERROR\",\"component\":\"quic_server\",\"msg\":\"failed to open private key file\",\"path\":\"{s}\",\"error\":\"{}\"}}\n", .{ key_path, err });
             if (inline_cert_der) |cert| self.allocator.free(cert);
             return QuicError.CertificateError;
         };
-        defer key_file.close();
+        defer key_file.close(tls_io);
 
-        const key_size = try key_file.getEndPos();
+        const key_stat = try key_file.stat(tls_io);
+        const key_size = key_stat.size;
         const key_pem = try self.allocator.alloc(u8, key_size);
         defer self.allocator.free(key_pem);
-        _ = try key_file.readAll(key_pem);
+        _ = try key_file.readPositionalAll(tls_io, key_pem, 0);
         logger.debugPrint("{{\"level\":\"DEBUG\",\"component\":\"quic_server\",\"msg\":\"loaded private key\",\"size\":{}}}\n", .{key_size});
 
         inline_priv_key = api.pem.parsePrivateKey(self.allocator, key_pem) catch |err| {
@@ -324,22 +347,16 @@ pub const QuicTransport = struct {
     }
 
     fn generateSelfSignedCert(self: *QuicTransport, cert_path: []const u8, key_path: []const u8) !void {
+        const gen_io = std.Io.Threaded.global_single_threaded.io();
         if (std.fs.path.dirname(cert_path)) |dir| {
-            std.fs.cwd().makePath(dir) catch |err| switch (err) {
-                error.PathAlreadyExists => {},
-                else => return err,
-            };
+            std.Io.Dir.cwd().createDirPath(gen_io, dir) catch {};
         }
         if (std.fs.path.dirname(key_path)) |dir| {
-            std.fs.cwd().makePath(dir) catch |err| switch (err) {
-                error.PathAlreadyExists => {},
-                else => return err,
-            };
+            std.Io.Dir.cwd().createDirPath(gen_io, dir) catch {};
         }
 
         // Generate self-signed certificate using OpenSSL command
-        const result = try std.process.Child.run(.{
-            .allocator = self.allocator,
+        const result = try std.process.run(self.allocator, gen_io, .{
             .argv = &[_][]const u8{
                 "openssl",
                 "req",
@@ -362,20 +379,20 @@ pub const QuicTransport = struct {
         defer self.allocator.free(result.stdout);
         defer self.allocator.free(result.stderr);
 
-        if (result.term != .Exited or result.term.Exited != 0) {
+        if (result.term != .exited or result.term.exited != 0) {
             return QuicError.CertificateError;
         }
 
         // Set secure permissions (0600)
         // On Windows, chmod is not supported, so we skip permission changes
         if (builtin.os.tag != .windows) {
-            const cert_file = try std.fs.cwd().openFile(cert_path, .{});
-            defer cert_file.close();
-            try cert_file.chmod(0o600);
+            const cert_file = try std.Io.Dir.cwd().openFile(gen_io, cert_path, .{});
+            defer cert_file.close(gen_io);
+            try cert_file.setPermissions(gen_io, std.Io.File.Permissions.fromMode(0o600));
 
-            const key_file = try std.fs.cwd().openFile(key_path, .{});
-            defer key_file.close();
-            try key_file.chmod(0o600);
+            const key_file = try std.Io.Dir.cwd().openFile(gen_io, key_path, .{});
+            defer key_file.close(gen_io);
+            try key_file.setPermissions(gen_io, std.Io.File.Permissions.fromMode(0o600));
         }
     }
 
@@ -427,9 +444,9 @@ pub const QuicTransport = struct {
     pub fn accept(self: *QuicTransport) !*QuicConnection {
         if (self.endpoint) |ep| {
             var pending_conn: ?*api.QuicConnection = null;
-            const deadline = std.time.milliTimestamp() + 3000;
+            const deadline = milliTimestamp() + 3000;
 
-            while (std.time.milliTimestamp() < deadline) {
+            while (milliTimestamp() < deadline) {
                 self.drainPendingDestroy();
 
                 // Drive one poll cycle to process packets / advance handshakes.
@@ -768,7 +785,7 @@ pub const QuicStream = struct {
                 if (err == error.WouldBlock) {
                     retry_count += 1;
                     if (retry_count > max_retries) return error.UnexpectedEndOfStream;
-                    std.Thread.sleep(500 * std.time.ns_per_us);
+                    nanosleep(500 * std.time.ns_per_us);
                     continue;
                 }
                 return err;

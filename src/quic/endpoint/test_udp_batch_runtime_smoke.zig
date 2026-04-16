@@ -46,7 +46,10 @@ test "udp transport batch API round-trip smoke" {
     while (received_total < items.len and attempts < 200) : (attempts += 1) {
         const got = recv_transport.recvBatch(recv_slots[0..]) catch |err| {
             if (err == error.WouldBlock) {
-                std.Thread.sleep(1 * std.time.ns_per_ms);
+                {
+                    var sleep_ts: std.os.linux.timespec = .{ .sec = 0, .nsec = @intCast(1 * std.time.ns_per_ms) };
+                    _ = std.os.linux.nanosleep(&sleep_ts, &sleep_ts);
+                }
                 continue;
             }
             return err;

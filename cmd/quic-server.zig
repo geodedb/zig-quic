@@ -2,16 +2,18 @@ const std = @import("std");
 const api = @import("quic_api");
 const pem = @import("quic_api").pem;
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    var alloc = gpa.allocator();
+/// Zig 0.16.0 compat: std.time.milliTimestamp() was removed.
+fn milliTimestamp() i64 {
+    var ts: std.os.linux.timespec = undefined;
+    _ = std.os.linux.clock_gettime(.REALTIME, &ts);
+    return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
+}
 
-    var args_it = try std.process.ArgIterator.initWithAllocator(alloc);
-    defer args_it.deinit();
+pub fn main(proc_init: std.process.Init) !void {
+    var alloc = proc_init.gpa;
 
-    // Skip program name
-    _ = args_it.next();
+    var args_it = std.process.Args.Iterator.init(proc_init.minimal.args);
+    _ = args_it.skip();
 
     var bind_addr: []const u8 = "127.0.0.1:4433";
     var cert_path: ?[]const u8 = null;
@@ -40,11 +42,15 @@ pub fn main() !void {
     var cert_der: ?[]const u8 = null;
     var key_p256: ?[]const u8 = null;
 
+    const io = proc_init.io;
+
     if (cert_path) |cp| {
-        if (std.fs.cwd().openFile(cp, .{})) |cert_file| {
-            defer cert_file.close();
-            const cert_pem_data = try cert_file.readToEndAlloc(alloc, 1024 * 1024);
+        if (std.Io.Dir.cwd().openFile(io, cp, .{})) |cert_file| {
+            defer cert_file.close(io);
+            const file_size = (try cert_file.stat(io)).size;
+            const cert_pem_data = try alloc.alloc(u8, file_size);
             defer alloc.free(cert_pem_data);
+            _ = try cert_file.readPositionalAll(io, cert_pem_data, 0);
 
             // Parse PEM to DER
             cert_der = pem.parseCertificate(alloc, cert_pem_data) catch |err| blk: {
@@ -62,10 +68,12 @@ pub fn main() !void {
     }
 
     if (key_path) |kp| {
-        if (std.fs.cwd().openFile(kp, .{})) |key_file| {
-            defer key_file.close();
-            const key_pem_data = try key_file.readToEndAlloc(alloc, 1024 * 1024);
+        if (std.Io.Dir.cwd().openFile(io, kp, .{})) |key_file| {
+            defer key_file.close(io);
+            const file_size = (try key_file.stat(io)).size;
+            const key_pem_data = try alloc.alloc(u8, file_size);
             defer alloc.free(key_pem_data);
+            _ = try key_file.readPositionalAll(io, key_pem_data, 0);
 
             // Parse PEM private key (EC or RSA)
             key_p256 = pem.parsePrivateKey(alloc, key_pem_data) catch |err| blk: {
@@ -102,7 +110,7 @@ pub fn main() !void {
 
     // PHASE 42 PART 12: Per-stream state tracking for flow control resilience
     const StreamState = struct {
-        pending_write: std.ArrayListUnmanaged(u8) = .{}, // Data waiting to be written
+        pending_write: std.ArrayListUnmanaged(u8) = .empty, // Data waiting to be written
         got_fin: bool = false, // Received FIN from peer
         sent_fin: bool = false, // Sent FIN to peer
         total_read: u64 = 0, // PHASE 42 PART 13: Total bytes read from peer
@@ -136,7 +144,7 @@ pub fn main() !void {
     };
 
     // Keep track of active connections
-    var active_conns = std.ArrayListUnmanaged(ConnState){};
+    var active_conns: std.ArrayListUnmanaged(ConnState) = .empty;
     defer {
         for (active_conns.items) |*conn_state| {
             api.destroy(ep, conn_state.conn);
@@ -147,7 +155,7 @@ pub fn main() !void {
 
     // PHASE 42 PART 13: Deep debug logging for event loop analysis
     var loop_count: u64 = 0;
-    var last_debug_time = std.time.milliTimestamp();
+    var last_debug_time = milliTimestamp();
 
     // Server push is disabled for now; keep knobs in place for future experiments.
     const enable_server_push = false;
@@ -158,7 +166,7 @@ pub fn main() !void {
     var push_buf: ?[]u8 = null;
     while (true) {
         loop_count += 1;
-        const now = std.time.milliTimestamp();
+        const now = milliTimestamp();
 
         // Log event loop iterations every 100ms during active processing
         if (active_conns.items.len > 0 and (now - last_debug_time) >= 100) {

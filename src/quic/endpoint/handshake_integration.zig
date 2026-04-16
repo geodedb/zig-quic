@@ -740,7 +740,7 @@ pub fn sendServerHello(ctx: *HandshakeContext) !void {
 
         var frames: std.ArrayList(u8) = .empty;
         defer frames.deinit(ctx.allocator.*);
-        const fw = frames.writer(ctx.allocator.*);
+        const fw = @import("compat").arrayListWriter(&frames, ctx.allocator.*);
 
         // Add CRYPTO frame
         const crypto_frame_offset = base_off + crypto_offset;
@@ -837,7 +837,7 @@ fn sendHandshakePing(ctx: *HandshakeContext) !void {
     // Need at least 3 bytes of payload for header protection with 2-byte PN
     // (sample_offset=2 + 16 sample bytes = 18 bytes needed, tag adds 16, so need 2+ payload bytes)
     var frames_buf: [32]u8 = undefined;
-    var frames_stream = std.Io.fixedBufferStream(&frames_buf);
+    var frames_stream = @import("compat").fixedBufWriter(&frames_buf);
     const w = frames_stream.writer();
 
     // Write PING frame (1 byte)
@@ -1034,7 +1034,7 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
         const chunk = pending_data[crypto_offset .. crypto_offset + chunk_size];
 
         var frames_buf: [4096]u8 = undefined;
-        var frames_stream = std.Io.fixedBufferStream(&frames_buf);
+        var frames_stream = @import("compat").fixedBufWriter(&frames_buf);
         const w = frames_stream.writer();
 
         // Add CRYPTO frame
@@ -1148,7 +1148,7 @@ pub fn sendHandshakeDone(ctx: *HandshakeContext) !void {
 
     // Build HANDSHAKE_DONE frame
     var frames_buf: [4096]u8 = undefined;
-    var frames_stream = std.Io.fixedBufferStream(&frames_buf);
+    var frames_stream = @import("compat").fixedBufWriter(&frames_buf);
     const w = frames_stream.writer();
 
     // HANDSHAKE_DONE frame has no payload, just the type byte

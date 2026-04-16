@@ -834,7 +834,7 @@ pub fn processInitial(
         if (conn.initial_tx_keys) |tx_keys| {
             // Build ACK frame
             var frames_buf: [4096]u8 = undefined;
-            var frames_stream = std.Io.fixedBufferStream(&frames_buf);
+            var frames_stream = @import("compat").fixedBufWriter(&frames_buf);
             const w = frames_stream.writer();
 
             const ack_desc = conn.buildAckInitial();

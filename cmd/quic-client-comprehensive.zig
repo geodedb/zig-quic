@@ -4,6 +4,13 @@ const api = @import("quic_api");
 const Connection = api.Connection;
 const QuicEndpoint = api.QuicEndpoint;
 
+/// Zig 0.16.0 compat: milliTimestamp() was removed.
+fn milliTimestamp() i64 {
+    var ts: std.os.linux.timespec = undefined;
+    _ = std.os.linux.clock_gettime(.REALTIME, &ts);
+    return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
+}
+
 const TestResult = struct {
     name: []const u8,
     success: bool,
@@ -27,13 +34,11 @@ fn openBidiStreamWithRetry(ep: *QuicEndpoint, conn: *Connection, max_attempts: u
     return error.OutOfStreams;
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    var alloc = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    var alloc = init.gpa;
 
-    var args = try std.process.argsWithAllocator(alloc);
-    defer args.deinit();
+    var args = std.process.Args.Iterator.init(init.minimal.args);
+    _ = args.skip();
 
     var connect: []const u8 = "127.0.0.1:4433";
     var sni: []const u8 = "test.local";
@@ -131,7 +136,7 @@ pub fn main() !void {
 
 fn testSingleStreamEcho(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Connection) !TestResult {
     std.debug.print("📝 Test 1: Single stream echo\n", .{});
-    const start = std.time.milliTimestamp();
+    const start = milliTimestamp();
 
     const stream_id = try openBidiStreamWithRetry(ep, conn, 50, 10);
     const msg = "Hello from Zig!";
@@ -163,7 +168,7 @@ fn testSingleStreamEcho(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Con
         if (n > 0) total = n;
     }
 
-    const elapsed = @as(u64, @intCast(std.time.milliTimestamp() - start));
+    const elapsed = @as(u64, @intCast(milliTimestamp() - start));
     const details = try std.fmt.allocPrint(alloc.*, "Sent {d} bytes, received {d} bytes in {d}ms", .{ msg.len, total, elapsed });
 
     std.debug.print("✅ {s}\n\n", .{details});
@@ -177,7 +182,7 @@ fn testSingleStreamEcho(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Con
 
 fn testMultipleStreams(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Connection, num_streams: usize) !TestResult {
     std.debug.print("📝 Test 2: Multiple concurrent streams ({d} streams)\n", .{num_streams});
-    const start = std.time.milliTimestamp();
+    const start = milliTimestamp();
 
     var stream_idx: usize = 0;
     while (stream_idx < num_streams) : (stream_idx += 1) {
@@ -217,7 +222,7 @@ fn testMultipleStreams(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Conn
         }
     }
 
-    const elapsed = @as(u64, @intCast(std.time.milliTimestamp() - start));
+    const elapsed = @as(u64, @intCast(milliTimestamp() - start));
     const details = try std.fmt.allocPrint(alloc.*, "{d} concurrent streams completed in {d}ms", .{ num_streams, elapsed });
 
     std.debug.print("✅ {s}\n\n", .{details});
@@ -239,7 +244,7 @@ fn testLargeDataTransfer(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Co
     defer alloc.free(size_name);
 
     std.debug.print("📝 Test: Large data transfer ({s})\n", .{size_name});
-    const start = std.time.milliTimestamp();
+    const start = milliTimestamp();
 
     const stream_id = try openBidiStreamWithRetry(ep, conn, 100, 10); // Allocate a fresh bidi stream for large transfers
 
@@ -289,7 +294,7 @@ fn testLargeDataTransfer(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Co
         if (n > 0) total += n;
     }
 
-    const elapsed = @as(u64, @intCast(std.time.milliTimestamp() - start));
+    const elapsed = @as(u64, @intCast(milliTimestamp() - start));
     const throughput_mbps = if (elapsed > 0)
         @as(f64, @floatFromInt(size)) / @as(f64, @floatFromInt(elapsed)) * 1000.0 / (1024.0 * 1024.0)
     else
@@ -311,7 +316,7 @@ fn testLargeDataTransfer(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Co
 
 fn testMultipleRoundTrips(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Connection, num_rounds: usize) !TestResult {
     std.debug.print("📝 Test: Multiple round-trips ({d} cycles)\n", .{num_rounds});
-    const start = std.time.milliTimestamp();
+    const start = milliTimestamp();
 
     const stream_id = try openBidiStreamWithRetry(ep, conn, 100, 5);
     var round: usize = 0;
@@ -350,7 +355,7 @@ fn testMultipleRoundTrips(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *C
         }
     }
 
-    const elapsed = @as(u64, @intCast(std.time.milliTimestamp() - start));
+    const elapsed = @as(u64, @intCast(milliTimestamp() - start));
     const avg_latency = elapsed / num_rounds;
     const details = try std.fmt.allocPrint(alloc.*, "{d} round-trips in {d}ms (avg: {d}ms per round)", .{ num_rounds, elapsed, avg_latency });
 
@@ -365,7 +370,7 @@ fn testMultipleRoundTrips(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *C
 
 fn testStreamInterleaving(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Connection, num_streams: usize) !TestResult {
     std.debug.print("📝 Test: Stream interleaving ({d} streams)\n", .{num_streams});
-    const start = std.time.milliTimestamp();
+    const start = milliTimestamp();
 
     // Use only streams 0 and 4 to avoid hitting max_streams limit
     const actual_streams = @min(num_streams, 2);
@@ -420,7 +425,7 @@ fn testStreamInterleaving(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *C
         }
     }
 
-    const elapsed = @as(u64, @intCast(std.time.milliTimestamp() - start));
+    const elapsed = @as(u64, @intCast(milliTimestamp() - start));
     const details = try std.fmt.allocPrint(alloc.*, "{d} interleaved streams, 5 rounds in {d}ms", .{ actual_streams, elapsed });
 
     std.debug.print("✅ {s}\n\n", .{details});

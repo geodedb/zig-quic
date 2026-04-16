@@ -39,6 +39,7 @@ test-clients/legacy-clients/rust/target/release/
 .direnv/
 .zig-cache/
 zig-out/
+zig-pkg/
 
 .vscode/
 .rightnow/

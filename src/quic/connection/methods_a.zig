@@ -224,7 +224,8 @@ pub fn bind(comptime Connection: type) type {
             // Build CRYPTO frame
             var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
-            const compat = @import("compat"); const w = compat.arrayListWriter(&frames, self.allocator.*);
+            const compat = @import("compat");
+            const w = compat.arrayListWriter(&frames, self.allocator.*);
             const crypto_frame = frame.Frame{ .crypto = .{
                 .offset = self.crypto_tx_off_initial,
                 .data = crypto_data,
@@ -284,7 +285,8 @@ pub fn bind(comptime Connection: type) type {
             // Build CRYPTO frame
             var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
-            const compat = @import("compat"); const w = compat.arrayListWriter(&frames, self.allocator.*);
+            const compat = @import("compat");
+            const w = compat.arrayListWriter(&frames, self.allocator.*);
             const crypto_frame = frame.Frame{ .crypto = .{
                 .offset = self.crypto_tx_off_handshake,
                 .data = crypto_data,
@@ -453,7 +455,8 @@ pub fn bind(comptime Connection: type) type {
                 // Build and send HANDSHAKE_DONE frame
                 var frames_list: std.ArrayList(u8) = .empty;
                 defer frames_list.deinit(self.allocator.*);
-                const compat = @import("compat"); const w = compat.arrayListWriter(&frames_list, self.allocator.*);
+                const compat = @import("compat");
+                const w = compat.arrayListWriter(&frames_list, self.allocator.*);
                 _ = (frame.Frame{ .handshake_done = {} }).write(w) catch 0;
                 // FIXED: Do NOT send MAX_STREAM_DATA for stream 0 unconditionally.
                 // _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = self.local_max_stream_data } }).write(w) catch 0;
@@ -921,7 +924,8 @@ pub fn bind(comptime Connection: type) type {
             self.path_validation_pending = true;
             var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
-            const compat = @import("compat"); const w = compat.arrayListWriter(&frames, self.allocator.*);
+            const compat = @import("compat");
+            const w = compat.arrayListWriter(&frames, self.allocator.*);
             _ = (frame.Frame{ .path_challenge = self.path_challenge_data }).write(w) catch 0;
 
             const packet_storage = self.packet_pool.checkout() catch return;
@@ -1037,7 +1041,8 @@ pub fn bind(comptime Connection: type) type {
             if (!self.canSendUnderAmplification()) return;
             var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
-            const compat = @import("compat"); const w = compat.arrayListWriter(&frames, self.allocator.*);
+            const compat = @import("compat");
+            const w = compat.arrayListWriter(&frames, self.allocator.*);
             var wrote: bool = false;
 
             // PHASE 46: Quinn-style flow control with 1/8 threshold

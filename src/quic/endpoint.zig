@@ -552,7 +552,7 @@ pub const Endpoint = struct {
             return;
         };
         // Wake any thread blocked in waitForAccepted().
-        self.accept_cv.signal();
+        self.accept_cv.signal(std.Io.Threaded.global_single_threaded.io());
     }
 
     /// Pop next accepted server-side connection if available.
@@ -579,11 +579,23 @@ pub const Endpoint = struct {
             return self.accepted.swapRemove(0);
         }
 
-        // Block on condition variable with timeout.
+        // Zig 0.16.0: Io.Condition has no timedWait.  Simulate with a
+        // poll loop: release mutex, sleep a small slice, re-acquire, check.
         const timeout_ns: u64 = @as(u64, timeout_ms) * std.time.ns_per_ms;
-        self.accept_cv.timedWait(&self.mu, timeout_ns) catch {
-            // Timeout expired — check once more in case of spurious wake.
-        };
+        const slice_ns: u64 = 5 * std.time.ns_per_ms; // 5 ms per check
+        var remaining: u64 = timeout_ns;
+        while (remaining > 0 and self.accepted.items.len == 0) {
+            const sleep_ns = @min(remaining, slice_ns);
+            self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+            const ns_per_s: u64 = 1_000_000_000;
+            var ts: std.os.linux.timespec = .{
+                .sec = @intCast(sleep_ns / ns_per_s),
+                .nsec = @intCast(sleep_ns % ns_per_s),
+            };
+            _ = std.os.linux.nanosleep(&ts, &ts);
+            self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            remaining -|= sleep_ns;
+        }
 
         if (self.accepted.items.len > 0) {
             return self.accepted.swapRemove(0);

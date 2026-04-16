@@ -3,6 +3,17 @@ const api = @import("quic_api");
 const h3_server = @import("h3_server");
 const h3_client = @import("h3_client");
 
+// Zig 0.16.0 compat helpers
+fn globalIo() std.Io {
+    return std.Io.Threaded.global_single_threaded.io();
+}
+
+fn nanoTimestamp() i128 {
+    var ts: std.os.linux.timespec = undefined;
+    _ = std.os.linux.clock_gettime(.REALTIME, &ts);
+    return @as(i128, ts.sec) * 1_000_000_000 + @as(i128, ts.nsec);
+}
+
 // Minimal endpoint used inside the quic-network-simulator / interop runner.
 // Implements a tiny HTTP/0.9 style GET over a single connection per request
 // (client can pipeline multiple GETs sequentially on stream 0). The server
@@ -20,7 +31,7 @@ fn getenv(alloc: std.mem.Allocator, key: []const u8) ?[]u8 {
 }
 
 fn parseUrls(alloc: std.mem.Allocator, requests_env: []const u8) ![][]const u8 {
-    var list = std.ArrayList([]const u8){};
+    var list: std.ArrayListUnmanaged([]const u8) = .empty;
     errdefer list.deinit(alloc);
     var it = std.mem.tokenizeAny(u8, requests_env, " \n\r\t");
     while (it.next()) |tok| {
@@ -216,45 +227,33 @@ fn useHttp3ForConnection(testcase: []const u8, conn: *api.QuicConnection) bool {
 }
 
 fn elapsedMsSince(start_ns: i128) i64 {
-    const now_ns: i128 = std.time.nanoTimestamp();
+    const now_ns: i128 = nanoTimestamp();
     const delta_ns: i128 = now_ns - start_ns;
-    return @intCast(@divFloor(delta_ns, std.time.ns_per_ms));
+    return @intCast(@divFloor(delta_ns, 1_000_000));
 }
 
 fn pathExists(path: []const u8) bool {
-    if (std.fs.path.isAbsolute(path)) {
-        if (std.fs.openFileAbsolute(path, .{})) |f| {
-            f.close();
-            return true;
-        } else |_| {
-            return false;
-        }
-    }
-    if (std.fs.cwd().openFile(path, .{})) |f| {
-        f.close();
-        return true;
-    } else |_| {
-        return false;
-    }
+    const io = globalIo();
+    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
+    return true;
 }
 
-fn openFileAny(path: []const u8) !std.fs.File {
-    if (std.fs.path.isAbsolute(path)) {
-        return std.fs.openFileAbsolute(path, .{});
-    }
-    return std.fs.cwd().openFile(path, .{});
+fn openFileAny(path: []const u8) !std.Io.File {
+    const io = globalIo();
+    return std.Io.Dir.cwd().openFile(io, path, .{});
 }
 
 fn readFileAlloc(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
+    const io = globalIo();
     const file = try openFileAny(path);
-    defer file.close();
+    defer file.close(io);
 
-    const size_u64 = try file.getEndPos();
-    const size: usize = @intCast(size_u64);
+    const file_stat = try file.stat(io);
+    const size: usize = @intCast(file_stat.size);
     const buf = try alloc.alloc(u8, size);
     errdefer alloc.free(buf);
 
-    const n = try file.readAll(buf);
+    const n = try file.readPositionalAll(io, buf, 0);
     return buf[0..n];
 }
 
@@ -283,7 +282,7 @@ fn loadInlineServerCredentials(alloc: std.mem.Allocator, cfg: *api.QuicConfig, c
 }
 
 fn writeAllStream(ep: *api.QuicEndpoint, conn: *api.QuicConnection, stream_id: api.QuicStreamId, data: []const u8, testcase: []const u8) bool {
-    const start_ns = std.time.nanoTimestamp();
+    const start_ns = nanoTimestamp();
     var stalled_polls: usize = 0;
     var off: usize = 0;
     var fin_sent = false;
@@ -349,7 +348,7 @@ fn readResponseStream(
     file_bytes: *std.ArrayList(u8),
 ) !bool {
     var tmp: [4096]u8 = undefined;
-    const read_start = std.time.nanoTimestamp();
+    const read_start = nanoTimestamp();
     var last_progress = read_start;
     while (true) {
         if (elapsedMsSince(read_start) >= responseTotalTimeoutMs(testcase)) return false;
@@ -366,7 +365,7 @@ fn readResponseStream(
             continue;
         }
 
-        last_progress = std.time.nanoTimestamp();
+        last_progress = nanoTimestamp();
         try file_bytes.appendSlice(alloc, tmp[0..n]);
         if (file_bytes.items.len > 128 * 1024 * 1024) return false;
     }
@@ -456,19 +455,21 @@ fn writePendingResponseChunk(ep: *api.QuicEndpoint, conn: *api.QuicConnection, r
     return .done;
 }
 
-fn sendFileOnStream(ep: *api.QuicEndpoint, conn: *api.QuicConnection, stream_id: api.QuicStreamId, file: std.fs.File, testcase: []const u8) bool {
+fn sendFileOnStream(ep: *api.QuicEndpoint, conn: *api.QuicConnection, stream_id: api.QuicStreamId, file: std.Io.File, testcase: []const u8) bool {
+    const io = globalIo();
     var buf: [16 * 1024]u8 = undefined;
-    const start_ns = std.time.nanoTimestamp();
+    const start_ns = nanoTimestamp();
     var stalled_polls: usize = 0;
-    const stat = file.stat() catch null;
+    const stat = file.stat(io) catch null;
     if (stat == null or stat.?.size == 0) {
         _ = api.writeStream(conn, stream_id, &[_]u8{}, true) catch {};
         return true;
     }
     var remaining: u64 = stat.?.size;
+    var read_offset: u64 = 0;
     while (remaining > 0) {
         if (elapsedMsSince(start_ns) >= responseTotalTimeoutMs(testcase)) return false;
-        const nread = file.read(buf[0..]) catch 0;
+        const nread = file.readPositionalAll(io, buf[0..], read_offset) catch 0;
         if (nread == 0) break;
         var off: usize = 0;
         while (off < nread) {
@@ -490,6 +491,7 @@ fn sendFileOnStream(ep: *api.QuicEndpoint, conn: *api.QuicConnection, stream_id:
             remaining -= wn;
             api.poll(ep, 1) catch {};
         }
+        read_offset += nread;
         if (isStressTestcase(testcase)) {
             api.poll(ep, 1) catch {};
         }
@@ -501,14 +503,31 @@ fn sendFileOnStream(ep: *api.QuicEndpoint, conn: *api.QuicConnection, stream_id:
 fn tcpReadinessLoop() void {
     // The simulator does a TCP readiness probe against server:443.
     // QUIC uses UDP, so we expose a minimal TCP listener to satisfy the probe.
-    const addr = std.net.Address.parseIp4("0.0.0.0", 443) catch return;
-    var listener = addr.listen(.{ .reuse_address = true }) catch return;
-    defer listener.deinit();
+    const linux = std.os.linux;
+    const sock_rc = linux.socket(std.posix.AF.INET, linux.SOCK.STREAM, 0);
+    if (linux.errno(sock_rc) != .SUCCESS) return;
+    const fd: std.posix.socket_t = @intCast(sock_rc);
+    defer _ = linux.close(fd);
+
+    var one: i32 = 1;
+    _ = linux.setsockopt(fd, linux.SOL.SOCKET, linux.SO.REUSEADDR, @ptrCast(std.mem.asBytes(&one)), @sizeOf(i32));
+
+    var sin: std.posix.sockaddr.in = .{
+        .family = std.posix.AF.INET,
+        .port = std.mem.nativeToBig(u16, 443),
+        .addr = 0,
+        .zero = .{0} ** 8,
+    };
+    if (linux.errno(linux.bind(fd, @ptrCast(&sin), @sizeOf(std.posix.sockaddr.in))) != .SUCCESS) return;
+    if (linux.errno(linux.listen(fd, 4)) != .SUCCESS) return;
 
     var accepted: usize = 0;
     while (accepted < 4) : (accepted += 1) {
-        const conn = listener.accept() catch break;
-        conn.stream.close();
+        var peer_addr: std.posix.sockaddr.storage = undefined;
+        var peer_len: std.posix.socklen_t = @sizeOf(std.posix.sockaddr.storage);
+        const acc_rc = linux.accept4(fd, @ptrCast(&peer_addr), &peer_len, 0);
+        if (linux.errno(acc_rc) != .SUCCESS) break;
+        _ = linux.close(@intCast(acc_rc));
     }
 }
 
@@ -521,25 +540,17 @@ fn startTcpReadinessListener() void {
     log("server: TCP readiness listener active on 0.0.0.0:443");
 }
 
-var log_file: ?std.fs.File = null;
+var log_file: ?std.Io.File = null;
 
 fn ensureLogFile() void {
     if (log_file != null) return;
+    const io = globalIo();
     // Attempt to open /logs/endpoint.log (create dirs if needed)
-    if (std.fs.cwd().openDir("/logs", .{})) |_| {
-        // directory exists
-    } else |_| {
-        // try to create
-        _ = std.fs.cwd().makeDir("/logs") catch {};
-    }
-    log_file = std.fs.cwd().createFile("/logs/endpoint.log", .{ .truncate = false, .read = false }) catch null;
+    std.Io.Dir.cwd().createDirPath(io, "/logs") catch {};
+    log_file = std.Io.Dir.cwd().createFile(io, "/logs/endpoint.log", .{ .truncate = false }) catch null;
     // Also attempt to mirror into /endpoint_logs if that path is mounted
-    if (std.fs.cwd().openDir("/endpoint_logs", .{})) |_| {
-        // best-effort copy open by creating file (not stored separately; just create symlink-style second file handle?)
-        // Simplicity: ignore; runner will bind mount /endpoint_logs/endpoint.log if created by other layer.
-        // We'll just create the file if absent.
-        _ = std.fs.cwd().createFile("/endpoint_logs/endpoint.log", .{ .truncate = false, .read = false }) catch {};
-    } else |_| {}
+    std.Io.Dir.cwd().createDirPath(io, "/endpoint_logs") catch {};
+    _ = std.Io.Dir.cwd().createFile(io, "/endpoint_logs/endpoint.log", .{ .truncate = false }) catch {};
 }
 
 fn log(msg: []const u8) void {
@@ -552,18 +563,15 @@ fn log(msg: []const u8) void {
         // ignore errors
         var buf: [256]u8 = undefined;
         const line = std.fmt.bufPrint(&buf, "[qns] {s}\n", .{msg}) catch return;
-        _ = f.writeAll(line) catch {};
-        f.sync() catch {};
+        _ = f.writeStreamingAll(globalIo(), line) catch {};
+        // sync not available in 0.16.0 Io.File
     }
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    var alloc = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    var alloc = init.gpa;
 
-    var env = try std.process.getEnvMap(alloc);
-    defer env.deinit();
+    const env = init.environ_map;
     const role = env.get("ROLE") orelse return error.MissingROLE;
     const testcase = env.get("TESTCASE") orelse "handshake";
     const peer_client_impl = env.get("QNS_CLIENT_IMPL") orelse env.get("CLIENT_IMPL") orelse "";
@@ -744,7 +752,7 @@ pub fn main() !void {
             }
             // Handle a single connection
             var buf: [4096]u8 = undefined;
-            const hs_wait_start = std.time.nanoTimestamp();
+            const hs_wait_start = nanoTimestamp();
             // Wait for handshake done before reading requests
             while (!connectionReady(conn) and elapsedMsSince(hs_wait_start) < handshakeTimeoutMs(testcase)) {
                 api.poll(ep, 5) catch {};
@@ -779,9 +787,9 @@ pub fn main() !void {
             }
             // Read request lines and schedule responses. Send responses in
             // non-blocking round-robin to avoid per-stream flow-control deadlocks.
-            var active_streams = std.ArrayList(api.QuicStreamId){};
+            var active_streams: std.ArrayListUnmanaged(api.QuicStreamId) = .empty;
             defer active_streams.deinit(alloc);
-            var pending_responses = std.ArrayList(PendingResponse){};
+            var pending_responses: std.ArrayListUnmanaged(PendingResponse) = .empty;
             defer {
                 for (pending_responses.items) |resp| alloc.free(resp.data);
                 pending_responses.deinit(alloc);
@@ -793,7 +801,7 @@ pub fn main() !void {
                 request_buffers.deinit();
             }
 
-            const req_start = std.time.nanoTimestamp();
+            const req_start = nanoTimestamp();
             var last_progress = req_start;
             var last_keepalive = req_start;
             var rr_next: usize = 0;
@@ -845,12 +853,12 @@ pub fn main() !void {
                     };
 
                     if (n > 0) {
-                        last_progress = std.time.nanoTimestamp();
+                        last_progress = nanoTimestamp();
                         const gop = request_buffers.getOrPut(sid) catch {
                             _ = active_streams.swapRemove(idx);
                             continue;
                         };
-                        if (!gop.found_existing) gop.value_ptr.* = std.ArrayList(u8){};
+                        if (!gop.found_existing) gop.value_ptr.* = .empty;
                         gop.value_ptr.appendSlice(alloc, buf[0..n]) catch {
                             if (request_buffers.fetchRemove(sid)) |entry| {
                                 var req_state = entry.value;
@@ -958,7 +966,7 @@ pub fn main() !void {
                                 log(sent_msg);
                                 alloc.free(resp.data);
                                 _ = pending_responses.swapRemove(rr_next);
-                                last_progress = std.time.nanoTimestamp();
+                                last_progress = nanoTimestamp();
                                 made_progress = true;
                                 responses_completed += 1;
                                 if (conn.local_max_streams_bidi < std.math.maxInt(u64)) {
@@ -968,7 +976,7 @@ pub fn main() !void {
                                 continue;
                             },
                             .progressed => {
-                                last_progress = std.time.nanoTimestamp();
+                                last_progress = nanoTimestamp();
                                 made_progress = true;
                                 rr_next += 1;
                                 break;
@@ -998,7 +1006,7 @@ pub fn main() !void {
                                 log(timeout_msg);
                                 alloc.free(resp.data);
                                 _ = pending_responses.swapRemove(rr_next);
-                                last_progress = std.time.nanoTimestamp();
+                                last_progress = nanoTimestamp();
                                 made_progress = true;
                                 if (pending_responses.items.len == 0) break;
                                 continue;
@@ -1016,7 +1024,7 @@ pub fn main() !void {
                     if (elapsedMsSince(last_keepalive) >= 1000) {
                         conn.sendPtoProbeApp();
                         api.flush(ep, 1);
-                        last_keepalive = std.time.nanoTimestamp();
+                        last_keepalive = nanoTimestamp();
                     }
                 }
 
@@ -1100,7 +1108,7 @@ pub fn main() !void {
                 log(conn_msg);
 
                 // Wait for handshake
-                const hs_wait_start = std.time.nanoTimestamp();
+                const hs_wait_start = nanoTimestamp();
                 while (!connectionReady(conn) and elapsedMsSince(hs_wait_start) < handshakeTimeoutMs(testcase)) {
                     api.poll(ep, 5) catch {};
                 }
@@ -1113,7 +1121,7 @@ pub fn main() !void {
                 }
 
                 // Read response
-                var file_bytes = std.ArrayList(u8){};
+                var file_bytes: std.ArrayList(u8) = .empty;
                 defer file_bytes.deinit(alloc);
                 const use_h3 = useHttp3ForConnection(testcase, conn);
                 if (std.mem.eql(u8, testcase, "http3") and !use_h3) {
@@ -1177,9 +1185,9 @@ pub fn main() !void {
                 if (sanitized.len > 0 and sanitized[0] == '/') sanitized = sanitized[1..];
                 var out_path_buf: [512]u8 = undefined;
                 const out_path = try std.fmt.bufPrint(&out_path_buf, "/downloads/{s}", .{sanitized});
-                if (std.fs.cwd().createFile(out_path, .{ .truncate = true })) |outf| {
-                    defer outf.close();
-                    _ = outf.write(file_bytes.items) catch {};
+                if (std.Io.Dir.cwd().createFile(globalIo(), out_path, .{ .truncate = true })) |outf| {
+                    defer outf.close(globalIo());
+                    _ = outf.writeStreamingAll(globalIo(), file_bytes.items) catch {};
                 } else |_| {}
 
                 if (file_bytes.items.len == 0) success = false;
@@ -1218,7 +1226,7 @@ pub fn main() !void {
             log("client: retry enabled (will process Retry if received)");
         }
         // Wait for handshake done
-        const hs_wait_start = std.time.nanoTimestamp();
+        const hs_wait_start = nanoTimestamp();
         while (!connectionReady(conn) and elapsedMsSince(hs_wait_start) < handshakeTimeoutMs(testcase)) {
             api.poll(ep, 5) catch {};
         }
@@ -1301,9 +1309,9 @@ pub fn main() !void {
                 if (sanitized.len > 0 and sanitized[0] == '/') sanitized = sanitized[1..];
                 var out_path_buf: [512]u8 = undefined;
                 const out_path = try std.fmt.bufPrint(&out_path_buf, "/downloads/{s}", .{sanitized});
-                if (std.fs.cwd().createFile(out_path, .{ .truncate = true })) |outf| {
-                    defer outf.close();
-                    if (got > 0) _ = outf.write(resp_buf[0..got]) catch {};
+                if (std.Io.Dir.cwd().createFile(globalIo(), out_path, .{ .truncate = true })) |outf| {
+                    defer outf.close(globalIo());
+                    if (got > 0) _ = outf.writeStreamingAll(globalIo(), resp_buf[0..got]) catch {};
                 } else |_| {}
 
                 if (got == 0) {
@@ -1337,7 +1345,7 @@ pub fn main() !void {
         // Some stacks exhibit fragile behavior when multiple new streams are
         // opened concurrently during early 1-RTT, so serialize client requests.
         const max_inflight: usize = 1;
-        var inflight = std.ArrayList(InflightRequest){};
+        var inflight: std.ArrayList(InflightRequest) = .empty;
         defer {
             for (inflight.items) |*req| req.file_bytes.deinit(alloc);
             inflight.deinit(alloc);
@@ -1345,7 +1353,7 @@ pub fn main() !void {
 
         var next_request: usize = 0;
         var tmp: [4096]u8 = undefined;
-        const all_start = std.time.nanoTimestamp();
+        const all_start = nanoTimestamp();
         var global_last_progress = all_start;
         request_loop: while ((next_request < urls.len or inflight.items.len > 0) and success) {
             if (elapsedMsSince(all_start) >= responseTotalTimeoutMs(testcase)) {
@@ -1380,11 +1388,11 @@ pub fn main() !void {
                     log("client: primed keyupdate threshold");
                 }
 
-                const now_ns = std.time.nanoTimestamp();
+                const now_ns = nanoTimestamp();
                 inflight.append(alloc, .{
                     .stream_id = req_sid,
                     .path = path,
-                    .file_bytes = .{},
+                    .file_bytes = .empty,
                     .start_ns = now_ns,
                     .last_progress_ns = now_ns,
                 }) catch {
@@ -1410,7 +1418,7 @@ pub fn main() !void {
                         success = false;
                         break :request_loop;
                     }
-                    const now_ns = std.time.nanoTimestamp();
+                    const now_ns = nanoTimestamp();
                     req.last_progress_ns = now_ns;
                     global_last_progress = now_ns;
                     made_progress = true;
@@ -1421,9 +1429,9 @@ pub fn main() !void {
                     if (sanitized.len > 0 and sanitized[0] == '/') sanitized = sanitized[1..];
                     var out_path_buf: [512]u8 = undefined;
                     const out_path = try std.fmt.bufPrint(&out_path_buf, "/downloads/{s}", .{sanitized});
-                    if (std.fs.cwd().createFile(out_path, .{ .truncate = true })) |outf| {
-                        defer outf.close();
-                        _ = outf.write(req.file_bytes.items) catch {};
+                    if (std.Io.Dir.cwd().createFile(globalIo(), out_path, .{ .truncate = true })) |outf| {
+                        defer outf.close(globalIo());
+                        _ = outf.writeStreamingAll(globalIo(), req.file_bytes.items) catch {};
                     } else |_| {}
                     if (req.file_bytes.items.len == 0) success = false;
                     var msg_buf: [96]u8 = undefined;
@@ -1431,7 +1439,7 @@ pub fn main() !void {
                     log(msg);
                     req.file_bytes.deinit(alloc);
                     _ = inflight.swapRemove(idx);
-                    global_last_progress = std.time.nanoTimestamp();
+                    global_last_progress = nanoTimestamp();
                     made_progress = true;
                     continue;
                 }

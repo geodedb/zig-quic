@@ -278,7 +278,7 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
     if (crypto_data) |data| {
         defer ctx.allocator.free(data);
         const base_off = c.crypto_tx_off_initial;
-        _ = (frame.Frame{ .crypto = .{ .offset = base_off, .data = data } }).write(frames.writer(ctx.allocator.*)) catch 0;
+        _ = (frame.Frame{ .crypto = .{ .offset = base_off, .data = data } }).write(@import("compat").arrayListWriter(&frames, ctx.allocator.*)) catch 0;
         if (c.crypto_retx_initial) |prev| {
             ctx.allocator.free(prev);
             c.crypto_retx_initial = null;

@@ -176,12 +176,14 @@ pub const H3Server = struct {
         var path_s = path;
         if (path_s.len == 0 or path_s[0] != '/') path_s = "/index.html";
         const full = std.fmt.bufPrint(&full_path_buf, "/www{s}", .{path_s}) catch "/www/index.html";
-        if (std.fs.cwd().openFile(full, .{})) |f| {
-            defer f.close();
-            const sz = f.getEndPos() catch 0;
+        const h3_io = std.Io.Threaded.global_single_threaded.io();
+        if (std.Io.Dir.cwd().openFile(h3_io, full, .{})) |f| {
+            defer f.close(h3_io);
+            const file_stat = f.stat(h3_io) catch null;
+            const sz: u64 = if (file_stat) |s| s.size else 0;
             if (sz > 0 and sz <= 4 * 1024 * 1024) {
                 file_bytes = try std.heap.page_allocator.alloc(u8, @intCast(sz));
-                const r = f.readAll(file_bytes) catch 0;
+                const r = f.readPositionalAll(h3_io, file_bytes, 0) catch 0;
                 file_bytes = file_bytes[0..r];
             }
         } else |_| {}

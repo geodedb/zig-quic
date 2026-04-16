@@ -1,13 +1,11 @@
 const std = @import("std");
 const api = @import("quic_api");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    var alloc = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    var alloc = init.gpa;
 
-    var args = try std.process.argsWithAllocator(alloc);
-    defer args.deinit();
+    var args = std.process.Args.Iterator.init(init.minimal.args);
+    _ = args.skip();
 
     var connect: []const u8 = "127.0.0.1:4433";
     var sni: []const u8 = "test.local";
