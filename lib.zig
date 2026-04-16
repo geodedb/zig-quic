@@ -252,3 +252,14 @@ pub const h3 = struct {
     pub const buildRequestFrame = h3_client_mod.buildRequestFrame;
     pub const h3Get = h3_client_mod.h3Get;
 };
+
+// ============================================================================
+// Parallelism
+// ============================================================================
+
+/// Parallel QUIC operations (requires `thread_pool`).
+///
+/// Provides thread-pool-backed batch crypto and loss detection:
+/// `parallelAeadEncrypt`, `parallelAeadDecrypt`, parallel header protection,
+/// and pool lifecycle helpers.
+pub const parallel = @import("parallel");

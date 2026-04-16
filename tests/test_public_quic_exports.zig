@@ -37,3 +37,13 @@ test "public quic exports expose server/client helpers" {
     // This test was hanging because the server thread blocks on accept() indefinitely
     return error.SkipZigTest;
 }
+
+test "parallel re-export is reachable" {
+    // Smoke test: verify parallel.zig is reachable through the public
+    // quic root module. Parallel QUIC ops need real AEAD key material
+    // and packet state that are impractical in a public-API unit test,
+    // so assert the pool lifecycle entry points are exposed and call
+    // `deinitPool()` (always safe as a no-op).
+    _ = @TypeOf(quic.parallel.getPool);
+    quic.parallel.deinitPool();
+}
