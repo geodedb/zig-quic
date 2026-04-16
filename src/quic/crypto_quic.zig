@@ -679,8 +679,8 @@ fn dumpBytes(label: []const u8, bytes: []const u8) void {
     defer list.deinit(std.heap.page_allocator);
     var i: usize = 0;
     while (i < bytes.len) : (i += 1) {
-        _ = list.writer(std.heap.page_allocator).print("{x:0>2}", .{bytes[i]}) catch break;
-        if (i + 1 < bytes.len) _ = list.append(std.heap.page_allocator, ' ') catch break;
+        list.print(std.heap.page_allocator, "{x:0>2}", .{bytes[i]}) catch break;
+        if (i + 1 < bytes.len) list.append(std.heap.page_allocator, ' ') catch break;
     }
     logger.debugPrint("{s}: {s}\n", .{ label, list.items });
 }

@@ -31,8 +31,8 @@ fn dumpBytes(label: []const u8, bytes: []const u8) void {
     defer list.deinit(std.heap.page_allocator);
     var i: usize = 0;
     while (i < bytes.len) : (i += 1) {
-        _ = list.writer(std.heap.page_allocator).print("{x:0>2}", .{bytes[i]}) catch break;
-        if (i + 1 < bytes.len) _ = list.append(std.heap.page_allocator, ' ') catch break;
+        list.print(std.heap.page_allocator, "{x:0>2}", .{bytes[i]}) catch break;
+        if (i + 1 < bytes.len) list.append(std.heap.page_allocator, ' ') catch break;
     }
     logger.debugPrint("{s}: {s}\n", .{ label, list.items });
 }
@@ -531,7 +531,7 @@ pub fn encodeInitialProtected(
     const first: u8 = 0xc0 | type_bits | pn_bits;
 
     // We'll build header_prefix first to compute AAD
-    const w = buf.writer(alloc);
+    const w = @import("compat").arrayListWriter(&buf, alloc);
     try w.writeByte(first);
     var be_ver: [4]u8 = .{ @as(u8, @intCast(version >> 24)), @as(u8, @intCast((version >> 16) & 0xff)), @as(u8, @intCast((version >> 8) & 0xff)), @as(u8, @intCast(version & 0xff)) };
     try w.writeAll(&be_ver);
@@ -701,7 +701,7 @@ pub fn decodeInitialProtected(
     // AAD = unmasked first byte || header_prefix || unmasked PN bytes
     // Stack-allocated: 1 byte header + up to ~40 bytes prefix + 4 PN bytes = well under 256.
     var aad_buf: [256]u8 = undefined;
-    var aad_stream = std.Io.fixedBufferStream(&aad_buf);
+    var aad_stream = @import("compat").fixedBufWriter(&aad_buf);
     aad_stream.writer().writeByte(header_first) catch return error.Truncated;
     aad_stream.writer().writeAll(header_prefix) catch return error.Truncated;
     aad_stream.writer().writeAll(pn_masked4[0..pn_len_actual]) catch return error.Truncated;
@@ -786,7 +786,7 @@ pub fn encodeHandshakeProtected(
     const first: u8 = 0xe0 | pn_bits;
     logger.debugPrint("encodeHandshakeProtected: packet_number_len={}, pn_bits={}, first=0x{X:0>2}\n", .{ packet_number_len, pn_bits, first });
 
-    const w = buf.writer(alloc);
+    const w = @import("compat").arrayListWriter(&buf, alloc);
     try w.writeByte(first);
     var be_ver: [4]u8 = .{
         @as(u8, @intCast((version >> 24) & 0xff)),
@@ -931,7 +931,7 @@ pub const DecodedVN = struct {
 pub fn encodeVersionNegotiation(alloc: std.mem.Allocator, dcid: []const u8, scid: []const u8, versions: []const u32) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(alloc);
-    const w = buf.writer(alloc);
+    const w = @import("compat").arrayListWriter(&buf, alloc);
     // Simplest VN first byte with Long Header bit set and fixed bit set (0x80)
     try w.writeByte(0x80);
     // Version = 0x00000000
@@ -1025,7 +1025,7 @@ pub fn encode0RTTProtected(
     const ty: u2 = 0x01;
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(alloc);
-    const w = buf.writer(alloc);
+    const w = @import("compat").arrayListWriter(&buf, alloc);
 
     // First byte: long header (0x80) | fixed bit (0x40) | type (0x01 << 4) | reserved | pn_len
     const first: u8 = 0xc0 | (@as(u8, ty) << 4) | ((pn_len - 1) & 0x03);
@@ -1170,7 +1170,7 @@ pub fn decode0RTTProtected(
 
     // Stack-allocated AAD: 1 byte header + header prefix + up to 4 PN bytes = well under 256.
     var aad_buf2: [256]u8 = undefined;
-    var aad_stream2 = std.Io.fixedBufferStream(&aad_buf2);
+    var aad_stream2 = @import("compat").fixedBufWriter(&aad_buf2);
     aad_stream2.writer().writeByte(header_first) catch return error.CiphertextTooShort;
     aad_stream2.writer().writeAll(packet[1..i]) catch return error.CiphertextTooShort;
     aad_stream2.writer().writeAll(pn_masked4[0..pn_len_actual]) catch return error.CiphertextTooShort;
@@ -1203,7 +1203,7 @@ pub fn decode0RTTProtected(
 pub fn encodeRetry(alloc: std.mem.Allocator, version: u32, dcid: []const u8, scid: []const u8, odcid: []const u8, token: []const u8) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(alloc);
-    const w = buf.writer(alloc);
+    const w = @import("compat").arrayListWriter(&buf, alloc);
     // First byte: Long header, Retry type (0x30); PN length bits are 0 for Retry
     try w.writeByte(0xf0 | 0x30);
     // Version

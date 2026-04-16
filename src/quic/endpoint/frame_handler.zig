@@ -141,7 +141,7 @@ pub fn handleDatagram(
         if (ctx.conn.app_tx_keys) |txk| {
             var fb: std.ArrayList(u8) = .empty;
             defer fb.deinit(ctx.allocator.*);
-            const w = fb.writer(ctx.allocator.*);
+            const w = @import("compat").arrayListWriter(&fb, ctx.allocator.*);
             _ = (frame.Frame{ .datagram = .{ .data = d.data } }).write(w) catch 0;
 
             const dcid_sh = if (ctx.conn.peer_initial_scid.len > 0)
@@ -373,7 +373,7 @@ pub fn handlePathChallenge(
     if (ctx.conn.app_tx_keys) |txk| {
         var fb: std.ArrayList(u8) = .empty;
         defer fb.deinit(ctx.allocator.*);
-        const w = fb.writer(ctx.allocator.*);
+        const w = @import("compat").arrayListWriter(&fb, ctx.allocator.*);
         _ = (frame.Frame{ .path_response = pcv }).write(w) catch 0;
 
         const dcid_sh2 = if (ctx.conn.peer_initial_scid.len > 0)

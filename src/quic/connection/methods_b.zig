@@ -85,7 +85,7 @@ pub fn bind(comptime Connection: type) type {
                 }
 
                 var frame_storage: [2048]u8 = undefined;
-                var frame_stream = std.Io.fixedBufferStream(&frame_storage);
+                var frame_stream = @import("compat").fixedBufWriter(&frame_storage);
                 _ = (frame.Frame{
                     .stream = .{
                         .stream_id = tracked.stream_id,
@@ -97,7 +97,7 @@ pub fn bind(comptime Connection: type) type {
                     self.app_stream_retx.put(lost_pn, tracked) catch self.allocator.free(tracked.data);
                     continue;
                 };
-                const frame_bytes = frame_stream.getWritten();
+                const frame_bytes = frame_storage[0..frame_stream.pos];
                 const packet_storage = self.packet_pool.checkout() catch {
                     self.app_stream_retx.put(lost_pn, tracked) catch self.allocator.free(tracked.data);
                     continue;
@@ -151,7 +151,7 @@ pub fn bind(comptime Connection: type) type {
             const tx = self.app_tx_keys.?;
             var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
-            const w = frames.writer(self.allocator.*);
+            const compat = @import("compat"); const w = compat.arrayListWriter(&frames, self.allocator.*);
             _ = (frame.Frame{ .datagram = .{ .data = data } }).write(w) catch 0;
             const packet_storage = try self.packet_pool.checkout();
             defer self.packet_pool.release(packet_storage);
@@ -199,7 +199,7 @@ pub fn bind(comptime Connection: type) type {
                 if (self.opened_bidi >= self.peer_max_streams_bidi) {
                     var fb: std.ArrayList(u8) = .empty;
                     defer fb.deinit(self.allocator.*);
-                    const w = fb.writer(self.allocator.*);
+                    const compat = @import("compat"); const w = compat.arrayListWriter(&fb, self.allocator.*);
                     _ = (frame.Frame{ .streams_blocked_bidi = .{ .max = self.peer_max_streams_bidi } }).write(w) catch 0;
                     self.sendControlFrames(fb.items);
                     return error.OutOfStreams;
@@ -373,7 +373,7 @@ pub fn bind(comptime Connection: type) type {
                     self.last_stream_data_blocked_at_ns = now_ns;
                     var fb1: std.ArrayList(u8) = .empty;
                     defer fb1.deinit(self.allocator.*);
-                    const w1 = fb1.writer(self.allocator.*);
+                    const w1 = @import("compat").arrayListWriter(&fb1, self.allocator.*);
                     _ = (frame.Frame{ .stream_data_blocked = .{ .stream_id = id, .limit = peer_stream_limit } }).write(w1) catch 0;
                     self.sendControlFrames(fb1.items);
                 }
@@ -395,7 +395,7 @@ pub fn bind(comptime Connection: type) type {
                     self.last_data_blocked_at_ns = now_ns;
                     var fb2: std.ArrayList(u8) = .empty;
                     defer fb2.deinit(self.allocator.*);
-                    const w2 = fb2.writer(self.allocator.*);
+                    const w2 = @import("compat").arrayListWriter(&fb2, self.allocator.*);
                     _ = (frame.Frame{ .data_blocked = .{ .limit = peer_conn_limit } }).write(w2) catch 0;
                     self.sendControlFrames(fb2.items);
                 }
@@ -425,7 +425,7 @@ pub fn bind(comptime Connection: type) type {
             logger.debugPrint("[CC-OK] bytes_in_flight={} < cwnd={}, available={}\n", .{ bytes_in_flight, cwnd, cwnd - bytes_in_flight });
 
             var frame_storage: [2048]u8 = undefined;
-            var frame_stream = std.Io.fixedBufferStream(&frame_storage);
+            var frame_stream = @import("compat").fixedBufWriter(&frame_storage);
             // RFC 9000 S13.2.1: Piggyback an ACK frame into STREAM packets when
             // we have received app-space packets to acknowledge.  This reduces
             // standalone ACK-only datagrams and speeds peer-side loss recovery.
@@ -451,7 +451,7 @@ pub fn bind(comptime Connection: type) type {
             }
             // Write STREAM frame with slice sized by to_send.
             _ = (frame.Frame{ .stream = .{ .stream_id = id, .offset = cur_off, .fin = fin and to_send == data.len, .data = data[0..to_send] } }).write(frame_stream.writer()) catch 0;
-            const frame_bytes = frame_stream.getWritten();
+            const frame_bytes = frame_storage[0..frame_stream.pos];
             logger.debugPrint("DEBUG STREAM frame bytes ({} bytes): ", .{frame_bytes.len});
             for (frame_bytes[0..@min(frame_bytes.len, 40)]) |b| logger.debugPrint("{x:0>2} ", .{b});
             if (frame_bytes.len > 40) logger.debugPrint("...", .{});
@@ -632,7 +632,7 @@ pub fn bind(comptime Connection: type) type {
             const final_size: u64 = if (id == 0) self.stream_send_off else self.stream_txs.getPtr(id).?.off;
             var frames_buf: std.ArrayList(u8) = .empty;
             defer frames_buf.deinit(self.allocator.*);
-            const w = frames_buf.writer(self.allocator.*);
+            const compat = @import("compat"); const w = compat.arrayListWriter(&frames_buf, self.allocator.*);
             _ = (frame.Frame{ .reset_stream = .{
                 .stream_id = id,
                 .error_code = app_error_code,
@@ -676,7 +676,7 @@ pub fn bind(comptime Connection: type) type {
                 self.stream_send_off;
             var frames_buf: std.ArrayList(u8) = .empty;
             defer frames_buf.deinit(self.allocator.*);
-            const w = frames_buf.writer(self.allocator.*);
+            const compat = @import("compat"); const w = compat.arrayListWriter(&frames_buf, self.allocator.*);
             _ = (frame.Frame{ .reset_stream = .{ .stream_id = stream_id, .error_code = app_error_code, .final_size = final_size } }).write(w) catch 0;
             const packet_storage = try self.packet_pool.checkout();
             defer self.packet_pool.release(packet_storage);
@@ -1048,7 +1048,7 @@ pub fn bind(comptime Connection: type) type {
             };
             var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
-            const w = frames.writer(self.allocator.*);
+            const compat = @import("compat"); const w = compat.arrayListWriter(&frames, self.allocator.*);
             _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
 
             const dest_cid = if (self.role == .Client)
@@ -1066,7 +1066,7 @@ pub fn bind(comptime Connection: type) type {
 
                 var crypto_frames: std.ArrayList(u8) = .empty;
                 defer crypto_frames.deinit(self.allocator.*);
-                const cw = crypto_frames.writer(self.allocator.*);
+                const compat_cw = @import("compat"); const cw = compat_cw.arrayListWriter(&crypto_frames, self.allocator.*);
                 _ = (frame.Frame{
                     .crypto = .{
                         .offset = self.crypto_retx_initial_off,
@@ -1184,7 +1184,7 @@ pub fn bind(comptime Connection: type) type {
                     const chunk_len = @min(retx.len - sent_off, max_crypto_chunk);
                     var crypto_frames: std.ArrayList(u8) = .empty;
                     defer crypto_frames.deinit(self.allocator.*);
-                    const cw = crypto_frames.writer(self.allocator.*);
+                    const compat_cw = @import("compat"); const cw = compat_cw.arrayListWriter(&crypto_frames, self.allocator.*);
                     _ = (frame.Frame{
                         .crypto = .{
                             .offset = self.crypto_retx_handshake_off + sent_off,
@@ -1220,7 +1220,7 @@ pub fn bind(comptime Connection: type) type {
 
             var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
-            const w = frames.writer(self.allocator.*);
+            const compat = @import("compat"); const w = compat.arrayListWriter(&frames, self.allocator.*);
             _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
             const out = packet.encodeHandshakeProtected(
                 self.allocator.*,
@@ -1269,7 +1269,7 @@ pub fn bind(comptime Connection: type) type {
                             self.allocator.free(tracked.data);
                         } else {
                             var frame_storage: [2048]u8 = undefined;
-                            var frame_stream = std.Io.fixedBufferStream(&frame_storage);
+                            var frame_stream = @import("compat").fixedBufWriter(&frame_storage);
                             _ = (frame.Frame{
                                 .stream = .{
                                     .stream_id = tracked.stream_id,
@@ -1280,7 +1280,7 @@ pub fn bind(comptime Connection: type) type {
                             }).write(frame_stream.writer()) catch |err| {
                                 logger.err("PTO App STREAM frame write failed: {s}", .{@errorName(err)});
                             };
-                            const frame_bytes = frame_stream.getWritten();
+                            const frame_bytes = frame_storage[0..frame_stream.pos];
 
                             if (frame_bytes.len > 0) {
                                 const packet_storage = self.packet_pool.checkout() catch return;
@@ -1314,7 +1314,7 @@ pub fn bind(comptime Connection: type) type {
 
             var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
-            const w = frames.writer(self.allocator.*);
+            const compat = @import("compat"); const w = compat.arrayListWriter(&frames, self.allocator.*);
             _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
             const packet_storage = self.packet_pool.checkout() catch return;
             defer self.packet_pool.release(packet_storage);
@@ -1344,7 +1344,7 @@ pub fn bind(comptime Connection: type) type {
             const tx = self.app_tx_keys.?;
             var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
-            const w = frames.writer(self.allocator.*);
+            const compat = @import("compat"); const w = compat.arrayListWriter(&frames, self.allocator.*);
             _ = (frame.Frame{ .connection_close = .{ .error_code = app_error_code, .frame_type = 0, .reason = reason } }).write(w) catch 0;
             const packet_storage = try self.packet_pool.checkout();
             defer self.packet_pool.release(packet_storage);
@@ -1475,7 +1475,7 @@ pub fn bind(comptime Connection: type) type {
 
                 var frames: std.ArrayList(u8) = .empty;
                 defer frames.deinit(self.allocator.*);
-                const w = frames.writer(self.allocator.*);
+                const compat = @import("compat"); const w = compat.arrayListWriter(&frames, self.allocator.*);
                 _ = (frame.Frame{ .handshake_done = {} }).write(w) catch 0;
                 // FIXED: Do NOT send MAX_STREAM_DATA for stream 0 unconditionally. It violates RFC 9000 if stream 0 is not open.
                 // _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = self.local_max_stream_data } }).write(w) catch 0;

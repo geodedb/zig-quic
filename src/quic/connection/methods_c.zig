@@ -133,7 +133,7 @@ pub fn bind(comptime Connection: type) type {
             const needed_padding: usize = target_udp_payload - header_overhead - aead_tag - 1;
             var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
-            const w = frames.writer(self.allocator.*);
+            const compat = @import("compat"); const w = compat.arrayListWriter(&frames, self.allocator.*);
             _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
             if (needed_padding > 0) {
                 // Frame.padding counts total padding bytes to emit (writes that many 0x00)
@@ -554,7 +554,7 @@ pub fn bind(comptime Connection: type) type {
             if (self.pending_new_cid.isEmpty()) return 0;
             var fb: std.ArrayList(u8) = .empty;
             defer fb.deinit(self.allocator.*);
-            const w = fb.writer(self.allocator.*);
+            const compat = @import("compat"); const w = compat.arrayListWriter(&fb, self.allocator.*);
             const wrote = try self.writePendingNewConnectionIds(w, 4);
             if (wrote == 0) return 0;
             self.sendControlFrames(fb.items);

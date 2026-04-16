@@ -147,7 +147,7 @@ pub const TransportParams = struct {
     pub fn encode(self: *const TransportParams, alloc: std.mem.Allocator) ![]u8 {
         var out: std.ArrayList(u8) = .empty;
         errdefer out.deinit(alloc);
-        const w = out.writer(alloc);
+        const w = @import("compat").arrayListWriter(&out, alloc);
         var tmp: [16]u8 = undefined;
 
         // Helper to write a TLV with raw value bytes

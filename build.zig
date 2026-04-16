@@ -173,8 +173,12 @@ pub fn build(b: *std.Build) void {
     const quic_varint_mod = mkModule(b, "src/quic/varint.zig");
     quic_varint_mod.addImport("byteorder", byteorder_mod);
 
+    // Zig 0.16 compatibility helpers (ArrayList writer adapter, etc.)
+    const compat_mod = mkModule(b, "src/quic/compat.zig");
+
     // Version negotiation module (needed by packet and connection modules)
     const quic_version_mod = mkModule(b, "src/quic/version.zig");
+    quic_version_mod.addImport("compat", compat_mod);
 
     // Token module (Retry token encode/verify)
     const quic_token_mod = mkModule(b, "src/quic/token.zig");
@@ -203,6 +207,7 @@ pub fn build(b: *std.Build) void {
     quic_packet_legacy_mod.addImport("quic_varint", quic_varint_mod);
     quic_packet_legacy_mod.addImport("quic_version", quic_version_mod);
     quic_packet_legacy_mod.addImport("quic_logger", quic_logger_mod);
+    quic_packet_legacy_mod.addImport("compat", compat_mod);
     // NOTE: parallel import wired after parallel_mod definition (see ~line 580)
     quic_packet_mod.addImport("../packet.zig", quic_packet_legacy_mod);
 
@@ -260,6 +265,7 @@ pub fn build(b: *std.Build) void {
     // Local QUIC transport params (separate from vendored TLS transport params)
     const quic_transport_params_mod = mkModule(b, "src/quic/transport_params.zig");
     quic_transport_params_mod.addImport("quic_varint", quic_varint_mod);
+    quic_transport_params_mod.addImport("compat", compat_mod);
 
     // QUIC configuration module
     const quic_config_mod = mkModule(b, "src/quic/config.zig");
@@ -291,7 +297,9 @@ pub fn build(b: *std.Build) void {
 
     // Add logger to modules that need it
     quic_crypto_mod.addImport("quic_logger", quic_logger_mod);
+    quic_crypto_mod.addImport("compat", compat_mod);
     quic_packet_mod.addImport("quic_logger", quic_logger_mod);
+    quic_packet_mod.addImport("compat", compat_mod);
     quic_recovery_mod.addImport("quic_logger", quic_logger_mod);
 
     // NOTE: parallel_mod wiring deferred to after its definition (see below ~line 576)
@@ -389,6 +397,7 @@ pub fn build(b: *std.Build) void {
     quic_conn_mod.addImport("quic_version", quic_version_mod);
     // Make transport params available to connection and endpoint modules
     quic_conn_mod.addImport("quic_transport_params", quic_transport_params_mod);
+    quic_conn_mod.addImport("compat", compat_mod);
     // Phase 5: conn.zig now imports connection/* modules directly via file paths to avoid diamond dependencies
 
     // Now define endpoint modules (they need quic_conn_mod)
@@ -414,6 +423,7 @@ pub fn build(b: *std.Build) void {
     endpoint_client_mod.addImport("quic_tls", quic_tls_mod);
     endpoint_client_mod.addImport("types", endpoint_types_mod);
     endpoint_client_mod.addImport("quic_logger", quic_logger_mod);
+    endpoint_client_mod.addImport("compat", compat_mod);
     // Note: handshake_integration import added later after endpoint_handshake_integration_mod is declared
 
     const endpoint_server_mod = mkModule(b, "src/quic/endpoint/server.zig");
@@ -451,6 +461,7 @@ pub fn build(b: *std.Build) void {
     endpoint_incoming_mod.addImport("sig", sig_mod);
     endpoint_incoming_mod.addImport("lookup", endpoint_lookup_mod);
     endpoint_incoming_mod.addImport("quic_logger", quic_logger_mod);
+    endpoint_incoming_mod.addImport("compat", compat_mod);
 
     const endpoint_handshake_integration_mod = mkModule(b, "src/quic/endpoint/handshake_integration.zig");
     endpoint_handshake_integration_mod.addImport("quic_conn", quic_conn_mod);
@@ -461,6 +472,7 @@ pub fn build(b: *std.Build) void {
     endpoint_handshake_integration_mod.addImport("vendor_ztls_tls13", tls13_mod);
     endpoint_handshake_integration_mod.addImport("vendor_ztls_key_schedule", quic_tls_mod);
     endpoint_handshake_integration_mod.addImport("quic_logger", quic_logger_mod);
+    endpoint_handshake_integration_mod.addImport("compat", compat_mod);
 
     // Add handshake_integration import to endpoint_client_mod (declared earlier at line ~388)
     endpoint_client_mod.addImport("handshake_integration", endpoint_handshake_integration_mod);
@@ -484,6 +496,7 @@ pub fn build(b: *std.Build) void {
     endpoint_frame_handler_mod.addImport("frame", quic_frame_mod);
     endpoint_frame_handler_mod.addImport("packet", quic_packet_legacy_mod);
     endpoint_frame_handler_mod.addImport("quic_logger", quic_logger_mod);
+    endpoint_frame_handler_mod.addImport("compat", compat_mod);
 
     const endpoint_endpoint_mod = mkModule(b, "src/quic/endpoint/endpoint.zig");
     // Endpoint coordinator imports all sub-modules

@@ -189,7 +189,7 @@ pub fn generateAndSendAck(
     if (conn.ecn_app_ack_pending and conn.app_tx_keys != null and conn.canSendUnderAmplification()) {
         var ack_buf: std.ArrayList(u8) = .empty;
         defer ack_buf.deinit(ack_ctx.allocator.*);
-        const w = ack_buf.writer(ack_ctx.allocator.*);
+        const w = @import("compat").arrayListWriter(&ack_buf, ack_ctx.allocator.*);
         const ad = conn.buildAckApp();
         const ack_ecn_now = conn.getAckEcn(.Application);
 
@@ -234,7 +234,7 @@ pub fn generateAndSendAck(
         if (conn.app_tx_keys) |tx_keys| {
             var fb: std.ArrayList(u8) = .empty;
             defer fb.deinit(ack_ctx.allocator.*);
-            const w = fb.writer(ack_ctx.allocator.*);
+            const w = @import("compat").arrayListWriter(&fb, ack_ctx.allocator.*);
 
             // AEAD_LIMIT_REACHED = 0x0f per RFC 9000 §20
             _ = (frame.Frame{ .connection_close = .{ .error_code = 0x0f, .frame_type = 0, .reason = "AEAD integrity limit reached" } }).write(w) catch 0;
@@ -332,7 +332,7 @@ pub fn generateAndSendAck(
                 if (ack_ecn_common != null) {
                     var ack_only: std.ArrayList(u8) = .empty;
                     defer ack_only.deinit(ack_ctx.allocator.*);
-                    const wa = ack_only.writer(ack_ctx.allocator.*);
+                    const wa = @import("compat").arrayListWriter(&ack_only, ack_ctx.allocator.*);
                     const ad = conn.buildAckApp();
 
                     if (ack_ctx.test_capture_enabled) {
@@ -394,7 +394,7 @@ pub fn generateAndSendAck(
                     // Build ACK with MAX_* frame piggybacking
                     var frames_buf: std.ArrayList(u8) = .empty;
                     defer frames_buf.deinit(ack_ctx.allocator.*);
-                    const w = frames_buf.writer(ack_ctx.allocator.*);
+                    const w = @import("compat").arrayListWriter(&frames_buf, ack_ctx.allocator.*);
                     const ack_desc = conn.buildAckApp();
 
                     if (ack_ctx.test_capture_enabled) {
@@ -492,7 +492,7 @@ pub fn generateAndSendAck(
                 logger.debugPrint("[P42-21-ACK-BLOCKED] ⚠️  ACK blocked by amplification limit\n", .{});
                 var ack_only: std.ArrayList(u8) = .empty;
                 defer ack_only.deinit(ack_ctx.allocator.*);
-                const w2 = ack_only.writer(ack_ctx.allocator.*);
+                const w2 = @import("compat").arrayListWriter(&ack_only, ack_ctx.allocator.*);
                 const ack_desc2 = conn.buildAckApp();
 
                 if (ack_ctx.test_capture_enabled) {
