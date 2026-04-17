@@ -820,6 +820,18 @@ pub fn build(b: *std.Build) void {
             const run_test_timers_only = b.addRunArtifact(test_timers_only);
             test_step.dependOn(&run_test_timers_only.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "pto_handshake_uaf")) {
+            // Regression test for the UAF in processExpiredTimers when a
+            // PtoHandshake / PtoInitial timer fires after its captured
+            // *Connection has been freed. See
+            // docs/audit/bugfix-quic-handshake-triage.md (secondary defect).
+            const test_pto_uaf = addTst(b, testlog_mod, "tests/test_endpoint_pto_handshake_uaf_regression.zig", target, optimize);
+            test_pto_uaf.root_module.addImport("quic_api", quic_api_mod);
+            test_pto_uaf.root_module.addImport("quic_conn", quic_conn_mod);
+            test_pto_uaf.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+            const run_test_pto_uaf = b.addRunArtifact(test_pto_uaf);
+            test_step.dependOn(&run_test_pto_uaf.step);
+            return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "udp_batch_runtime_smoke")) {
             const test_udp_batch_runtime_smoke = addTst(b, testlog_mod, "src/quic/endpoint/test_udp_batch_runtime_smoke.zig", target, optimize);
             test_udp_batch_runtime_smoke.root_module.addImport("quic_conn", quic_conn_mod);
