@@ -1431,6 +1431,21 @@ pub const Endpoint = struct {
         return eff;
     }
 
+    /// Returns true if `c` still appears in either the live `conns` map or the
+    /// `retired` list. Used by processExpiredTimers to guard against UAF when a
+    /// Timer-captured *Connection has been freed before its deadline fires.
+    /// Caller must hold mu.
+    fn isConnectionLive(self: *Endpoint, c: *conn_mod.Connection) bool {
+        var it = self.conns.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.* == c) return true;
+        }
+        for (self.retired.items) |rc| {
+            if (rc == c) return true;
+        }
+        return false;
+    }
+
     /// Process expired timers: collect under timer_mu, fire callbacks outside it.
     ///
     /// Caller must hold mu (for connection callbacks). Caller must hold timer_mu
@@ -1461,12 +1476,24 @@ pub const Endpoint = struct {
         // Release timer_mu before firing callbacks (they may schedule new timers)
         self.timer_mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
-        // Fire callbacks under mu only (already held by caller)
+        // Fire callbacks under mu only (already held by caller).
+        //
+        // UAF guard: a Timer captures a raw `*Connection`. If the connection
+        // was freed between schedule and fire (e.g. client goes silent
+        // mid-handshake and the server tears down the Connection in a prior
+        // poll cycle), dereferencing `t.conn` would be a use-after-free.
+        // Validate the pointer against the live connection set (`conns`) and
+        // the retired-but-not-destroyed list (`retired`) before touching it.
+        // Dead connections produce a no-op; live ones still PTO-expire.
         for (expired_buf[0..expired_count]) |t| {
             switch (t.kind) {
                 .Generic => {
                     if (t.paced) {
                         if (t.conn) |c| {
+                            if (!self.isConnectionLive(c)) {
+                                if (t.payload) |bytes| self.allocator.free(bytes);
+                                continue;
+                            }
                             if (t.payload) |bytes| {
                                 const paced_peer = if (t.paced_peer) |peer| peer else c.peer;
                                 // Fire-and-forget: paced send is best-effort; loss recovery handles retransmission.
@@ -1479,6 +1506,7 @@ pub const Endpoint = struct {
                     }
                 },
                 .PtoInitial => if (t.conn) |c| {
+                    if (!self.isConnectionLive(c)) continue;
                     c.setPtoExpiredInitial();
                     // PTO probe failure is non-fatal; timer will fire again on next PTO expiry.
                     self.sendPtoProbe(c, .PtoInitial) catch |err| {
@@ -1486,14 +1514,19 @@ pub const Endpoint = struct {
                     };
                 },
                 .PtoHandshake => if (t.conn) |c| {
+                    if (!self.isConnectionLive(c)) continue;
                     c.setPtoExpiredHandshake();
                     // PTO probe failure is non-fatal; timer will fire again on next PTO expiry.
                     self.sendPtoProbe(c, .PtoHandshake) catch |err| {
                         logger.debugPrint("[ENDPOINT] PTO Handshake probe failed: {s}\n", .{@errorName(err)});
                     };
                 },
-                .PtoApp => if (t.conn) |c| c.setPtoExpiredApp(),
+                .PtoApp => if (t.conn) |c| {
+                    if (!self.isConnectionLive(c)) continue;
+                    c.setPtoExpiredApp();
+                },
                 .Pmtud => if (t.conn) |c| {
+                    if (!self.isConnectionLive(c)) continue;
                     c.pmtudOnTimer(self);
                 },
             }
