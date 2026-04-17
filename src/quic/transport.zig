@@ -785,7 +785,13 @@ pub const QuicStream = struct {
                 if (err == error.WouldBlock) {
                     retry_count += 1;
                     if (retry_count > max_retries) return error.UnexpectedEndOfStream;
-                    nanosleep(500 * std.time.ns_per_us);
+                    // Zig 0.16.0: Io.Condition has no timedWait. Simulate with a
+                    // poll loop: sleep a small slice, then retry the read. 5 ms
+                    // matches the waitForAccepted (endpoint.zig:~582) and
+                    // PollSync.waitForPoll (geode src/transport/quic.zig:~119)
+                    // cadences — sub-ms slices starve the main thread of
+                    // ep.poll() calls and stall the handshake.
+                    nanosleep(5 * std.time.ns_per_ms);
                     continue;
                 }
                 return err;
