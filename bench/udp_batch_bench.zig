@@ -3,9 +3,8 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const posix = std.posix;
-
 const linux = std.os.linux;
+const posix = std.posix;
 
 const Mode = enum { single, batch, both };
 
@@ -33,12 +32,12 @@ const Result = struct {
 };
 
 const SocketPair = struct {
-    send_fd: posix.socket_t,
-    recv_fd: posix.socket_t,
+    send_fd: i32,
+    recv_fd: i32,
 
     fn deinit(self: SocketPair) void {
-        posix.close(self.send_fd);
-        posix.close(self.recv_fd);
+        _ = linux.close(self.send_fd);
+        _ = linux.close(self.recv_fd);
     }
 };
 
@@ -49,10 +48,11 @@ fn parseMode(name: []const u8) !Mode {
     return error.InvalidMode;
 }
 
-fn parseArgs() !Config {
+fn parseArgs(init_arg: std.process.Init, allocator: std.mem.Allocator) !Config {
     var cfg = Config{};
-    var args = std.process.args();
-    _ = args.skip();
+    var args = try std.process.Args.Iterator.initAllocator(init_arg.minimal.args, allocator);
+    defer args.deinit();
+    _ = args.next(); // skip program name
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--iters")) {
             cfg.iters = try std.fmt.parseInt(usize, args.next() orelse return error.MissingValue, 10);
@@ -69,37 +69,77 @@ fn parseArgs() !Config {
     return cfg;
 }
 
+fn expectOk(rc: usize, comptime op: []const u8) !usize {
+    // Linux raw syscalls return -errno as a small negative (i.e. huge usize).
+    // If rc is within the errno range, convert and bail out.
+    const signed: isize = @bitCast(rc);
+    if (signed < 0) {
+        const errno: u32 = @intCast(-signed);
+        const e: posix.E = @enumFromInt(errno);
+        switch (e) {
+            .SUCCESS => return rc,
+            .AGAIN => return error.WouldBlock,
+            else => {
+                std.debug.print("syscall {s} failed: errno={s}\n", .{ op, @tagName(e) });
+                return error.SyscallFailed;
+            },
+        }
+    }
+    return rc;
+}
+
 fn setupSockets() !SocketPair {
-    const recv_fd = try posix.socket(posix.AF.INET, posix.SOCK.DGRAM, posix.IPPROTO.UDP);
-    errdefer posix.close(recv_fd);
+    const sock_recv_rc = linux.socket(linux.AF.INET, linux.SOCK.DGRAM, linux.IPPROTO.UDP);
+    _ = try expectOk(sock_recv_rc, "socket(recv)");
+    const recv_fd: i32 = @intCast(sock_recv_rc);
+    errdefer _ = linux.close(recv_fd);
 
-    const bind_addr = std.net.Address.initIp4([4]u8{ 127, 0, 0, 1 }, 0);
-    try posix.bind(recv_fd, &bind_addr.any, bind_addr.getOsSockLen());
+    // 127.0.0.1:0 — kernel picks an ephemeral port.
+    const bind_addr = linux.sockaddr.in{
+        .port = 0,
+        .addr = std.mem.nativeToBig(u32, 0x7F000001), // 127.0.0.1 in network byte order
+    };
+    const bind_len: linux.socklen_t = @sizeOf(linux.sockaddr.in);
+    const bind_rc = linux.bind(recv_fd, @ptrCast(&bind_addr), bind_len);
+    _ = try expectOk(bind_rc, "bind");
 
-    var recv_addr: posix.sockaddr.storage = undefined;
-    var recv_len: posix.socklen_t = @sizeOf(posix.sockaddr.storage);
-    try posix.getsockname(recv_fd, @ptrCast(&recv_addr), &recv_len);
+    var recv_addr_storage: linux.sockaddr.storage = undefined;
+    var recv_len: linux.socklen_t = @sizeOf(linux.sockaddr.storage);
+    const getname_rc = linux.getsockname(recv_fd, @ptrCast(&recv_addr_storage), &recv_len);
+    _ = try expectOk(getname_rc, "getsockname");
 
-    const send_fd = try posix.socket(posix.AF.INET, posix.SOCK.DGRAM, posix.IPPROTO.UDP);
-    errdefer posix.close(send_fd);
-    try posix.connect(send_fd, @ptrCast(&recv_addr), recv_len);
+    const sock_send_rc = linux.socket(linux.AF.INET, linux.SOCK.DGRAM, linux.IPPROTO.UDP);
+    _ = try expectOk(sock_send_rc, "socket(send)");
+    const send_fd: i32 = @intCast(sock_send_rc);
+    errdefer _ = linux.close(send_fd);
+
+    const connect_rc = linux.connect(send_fd, @ptrCast(&recv_addr_storage), recv_len);
+    _ = try expectOk(connect_rc, "connect");
 
     return .{ .send_fd = send_fd, .recv_fd = recv_fd };
 }
 
-fn linuxResultToCount(rc: usize) !usize {
-    return switch (linux.E.init(rc)) {
-        .SUCCESS => rc,
-        .AGAIN => error.WouldBlock,
-        else => |err| posix.unexpectedErrno(err),
-    };
+fn nanoTimestamp() i128 {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    return std.Io.Clock.Timestamp.now(io, .real).raw.nanoseconds;
 }
+
+const Timer = struct {
+    start_ns: i128,
+    fn start() !Timer {
+        return .{ .start_ns = nanoTimestamp() };
+    }
+    fn read(self: *Timer) u64 {
+        const diff = nanoTimestamp() - self.start_ns;
+        return if (diff > 0) @intCast(diff) else 0;
+    }
+};
 
 fn runSingle(cfg: Config, payload: []const u8, recv_buf: []u8) !Result {
     const sockets = try setupSockets();
     defer sockets.deinit();
 
-    var timer = try std.time.Timer.start();
+    var timer = try Timer.start();
     var send_syscalls: usize = 0;
     var recv_syscalls: usize = 0;
 
@@ -107,13 +147,15 @@ fn runSingle(cfg: Config, payload: []const u8, recv_buf: []u8) !Result {
     while (iter < cfg.iters) : (iter += 1) {
         var i: usize = 0;
         while (i < cfg.batch) : (i += 1) {
-            const sent = try posix.send(sockets.send_fd, payload, 0);
+            const rc = linux.sendto(sockets.send_fd, payload.ptr, payload.len, 0, null, 0);
+            const sent = try expectOk(rc, "sendto");
             if (sent != payload.len) return error.ShortWrite;
             send_syscalls += 1;
         }
         i = 0;
         while (i < cfg.batch) : (i += 1) {
-            _ = try posix.recv(sockets.recv_fd, recv_buf, 0);
+            const rc = linux.recvfrom(sockets.recv_fd, recv_buf.ptr, recv_buf.len, 0, null, null);
+            _ = try expectOk(rc, "recvfrom");
             recv_syscalls += 1;
         }
     }
@@ -132,15 +174,16 @@ fn runBatch(cfg: Config, payload: []const u8, recv_packet_bufs: [][2048]u8) !Res
     const sockets = try setupSockets();
     defer sockets.deinit();
 
-    var send_iov: [64]posix.iovec_const = undefined;
-    var send_msgs: [64]linux.mmsghdr_const = undefined;
+    var send_iov: [64]posix.iovec = undefined;
+    var send_msgs: [64]linux.mmsghdr = undefined;
     var recv_iov: [64]posix.iovec = undefined;
     var recv_msgs: [64]linux.mmsghdr = undefined;
 
     var i: usize = 0;
     while (i < cfg.batch) : (i += 1) {
+        // send_iov holds the const payload; kernel reads, never writes.
         send_iov[i] = .{
-            .base = payload.ptr,
+            .base = @constCast(payload.ptr),
             .len = payload.len,
         };
         send_msgs[i] = .{
@@ -174,7 +217,7 @@ fn runBatch(cfg: Config, payload: []const u8, recv_packet_bufs: [][2048]u8) !Res
         };
     }
 
-    var timer = try std.time.Timer.start();
+    var timer = try Timer.start();
     var send_syscalls: usize = 0;
     var recv_syscalls: usize = 0;
 
@@ -183,12 +226,12 @@ fn runBatch(cfg: Config, payload: []const u8, recv_packet_bufs: [][2048]u8) !Res
         var send_idx: usize = 0;
         while (send_idx < cfg.batch) {
             const rc = linux.sendmmsg(
-                @intCast(sockets.send_fd),
+                sockets.send_fd,
                 send_msgs[send_idx..].ptr,
                 @intCast(cfg.batch - send_idx),
                 0,
             );
-            const sent = try linuxResultToCount(rc);
+            const sent = try expectOk(rc, "sendmmsg");
             if (sent == 0) return error.SendMmsgReturnedZero;
             send_idx += sent;
             send_syscalls += 1;
@@ -197,13 +240,13 @@ fn runBatch(cfg: Config, payload: []const u8, recv_packet_bufs: [][2048]u8) !Res
         var recv_idx: usize = 0;
         while (recv_idx < cfg.batch) {
             const rc = linux.recvmmsg(
-                @intCast(sockets.recv_fd),
+                sockets.recv_fd,
                 recv_msgs[recv_idx..].ptr,
                 @intCast(cfg.batch - recv_idx),
                 0,
                 null,
             );
-            const got = try linuxResultToCount(rc);
+            const got = try expectOk(rc, "recvmmsg");
             if (got == 0) return error.RecvMmsgReturnedZero;
             recv_idx += got;
             recv_syscalls += 1;
@@ -235,19 +278,19 @@ fn printResult(r: Result) void {
     );
 }
 
-pub fn main() !void {
+pub fn main(init_arg: std.process.Init) !void {
     if (builtin.target.os.tag != .linux) {
         std.debug.print("udp_batch_bench requires linux target\n", .{});
         return;
     }
 
-    const cfg = try parseArgs();
-    if (cfg.batch == 0 or cfg.batch > 64) return error.InvalidBatchSize;
-    if (cfg.payload == 0 or cfg.payload > 2048) return error.InvalidPayloadSize;
-
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
+
+    const cfg = try parseArgs(init_arg, alloc);
+    if (cfg.batch == 0 or cfg.batch > 64) return error.InvalidBatchSize;
+    if (cfg.payload == 0 or cfg.payload > 2048) return error.InvalidPayloadSize;
 
     const payload = try alloc.alloc(u8, cfg.payload);
     defer alloc.free(payload);
