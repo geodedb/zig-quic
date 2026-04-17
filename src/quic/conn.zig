@@ -925,6 +925,14 @@ pub const Connection = struct {
 
     /// Initialize connection object with allocator, role, socket fd, and peer address; sets defaults.
     pub fn init(self: *Connection, alloc: *std.mem.Allocator, role: Role, sock_fd: isize, peer: SockAddr) void {
+        // CRITICAL (GitLab #745): Initialize the mutex explicitly.
+        // The struct-level default `mu: std.Io.Mutex = std.Io.Mutex.init` is only
+        // applied under struct-literal construction; `allocator.create(Connection)`
+        // + per-field init() bypasses it, leaving `mu.state.raw` holding whatever
+        // bytes the allocator returned. If those bytes decode to `State.contended`
+        // (0x02), the first `lockUncancelable` call enters `futexWait(expect=contended)`
+        // with no thread ever posting a wake -- classic handshake deadlock.
+        self.mu = std.Io.Mutex.init;
         self.id = 0;
         self.role = role;
         self.sock_fd = sock_fd;
