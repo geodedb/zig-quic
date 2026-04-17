@@ -2,14 +2,22 @@ const std = @import("std");
 const transport = @import("quic");
 
 // Example QUIC client using the high-level transport API
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init) !void {
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     // Get server address from command line args or use default
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    var args_buf: [8][]const u8 = undefined;
+    var args_len: usize = 0;
+    var iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+    defer iter.deinit();
+    while (iter.next()) |arg| {
+        if (args_len >= args_buf.len) break;
+        args_buf[args_len] = arg;
+        args_len += 1;
+    }
+    const args = args_buf[0..args_len];
 
     const server_addr = if (args.len > 1) args[1] else "127.0.0.1";
     const server_port = if (args.len > 2) try std.fmt.parseInt(u16, args[2], 10) else 4433;

@@ -2,14 +2,15 @@ const std = @import("std");
 const transport = @import("quic");
 
 // Example QUIC server using the high-level transport API
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init) !void {
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     // Parse command-line arguments
-    var args = std.process.args();
-    _ = args.skip(); // Skip program name
+    var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+    defer args.deinit();
+    _ = args.next(); // Skip program name
 
     var addr: []const u8 = "0.0.0.0";
     var port: u16 = 4433;
