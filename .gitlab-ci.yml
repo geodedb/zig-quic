@@ -31,7 +31,7 @@ stages:
   - maintenance
 
 variables:
-  ZIG_VERSION: "0.15.2"
+  ZIG_VERSION: "0.16.0"
 
 # Zig installation template (SEC-R6-02: SHA-256 verified via ziglang.org index)
 .install-zig: &install-zig
