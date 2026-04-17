@@ -832,6 +832,18 @@ pub fn build(b: *std.Build) void {
             const run_test_pto_uaf = b.addRunArtifact(test_pto_uaf);
             test_step.dependOn(&run_test_pto_uaf.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "conn_init_mutex")) {
+            // Regression test for the uninitialized std.Io.Mutex on
+            // Connection.mu — Connection.init at conn.zig:927 omits
+            // `self.mu = std.Io.Mutex.init;`, so the struct-literal
+            // default is bypassed by allocator.create() + per-field
+            // init(). See
+            // /home/benji/src/devnw/codepros/geode/geode/docs/audit/bugfix-quic-deadlock-triage.md
+            const test_conn_init_mutex = addTst(b, testlog_mod, "tests/test_conn_init_mutex.zig", target, optimize);
+            test_conn_init_mutex.root_module.addImport("quic_conn", quic_conn_mod);
+            const run_test_conn_init_mutex = b.addRunArtifact(test_conn_init_mutex);
+            test_step.dependOn(&run_test_conn_init_mutex.step);
+            return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "udp_batch_runtime_smoke")) {
             const test_udp_batch_runtime_smoke = addTst(b, testlog_mod, "src/quic/endpoint/test_udp_batch_runtime_smoke.zig", target, optimize);
             test_udp_batch_runtime_smoke.root_module.addImport("quic_conn", quic_conn_mod);
