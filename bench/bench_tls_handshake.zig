@@ -9,7 +9,6 @@ const BenchConfig = struct {
     warmup: usize = 1000,
 };
 
-
 // Zig 0.16 removed std.time.nanoTimestamp; inline the Io.Clock equivalent.
 fn nanoTimestamp() i128 {
     const io = std.Io.Threaded.global_single_threaded.io();

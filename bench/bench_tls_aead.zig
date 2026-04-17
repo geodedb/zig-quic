@@ -8,7 +8,6 @@ const BenchConfig = struct {
     payload_sizes: []const usize = &.{ 64, 256, 1024, 1500 },
 };
 
-
 // Zig 0.16 removed std.time.nanoTimestamp; inline the Io.Clock equivalent.
 fn nanoTimestamp() i128 {
     const io = std.Io.Threaded.global_single_threaded.io();

@@ -71,7 +71,6 @@ const CountingAllocator = struct {
     }
 };
 
-
 // Zig 0.16 compat: std.time.Timer removed. Use Io.Clock-based polyfill.
 const Timer = struct {
     start_ns: i128,
