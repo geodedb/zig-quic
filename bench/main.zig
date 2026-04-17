@@ -2,7 +2,7 @@ const std = @import("std");
 const varint = @import("quic_varint");
 const rec = @import("quic_recovery");
 
-fn parseU64Arg(args: []const [:0]u8, idx: usize, default: u64) u64 {
+fn parseU64Arg(args: []const [:0]const u8, idx: usize, default: u64) u64 {
     if (idx >= args.len) return default;
     return std.fmt.parseInt(u64, args[idx], 10) catch default;
 }
@@ -71,14 +71,38 @@ const CountingAllocator = struct {
     }
 };
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+
+// Zig 0.16 compat: std.time.Timer removed. Use Io.Clock-based polyfill.
+const Timer = struct {
+    start_ns: i128,
+    fn start() error{}!Timer {
+        return .{ .start_ns = nanoTimestamp() };
+    }
+    fn read(self: *Timer) u64 {
+        const diff = nanoTimestamp() - self.start_ns;
+        return if (diff > 0) @intCast(diff) else 0;
+    }
+    fn reset(self: *Timer) void {
+        self.start_ns = nanoTimestamp();
+    }
+    fn nanoTimestamp() i128 {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        return std.Io.Clock.Timestamp.now(io, .real).raw.nanoseconds;
+    }
+};
+
+pub fn main(init: std.process.Init) !void {
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
     // Optional args: [rtt_ns] [bdp_packets] [loss_every] or flags: --grid [--csv]
-    const args = try std.process.argsAlloc(alloc);
-    defer std.process.argsFree(alloc, args);
+    var args_list = std.ArrayList([:0]const u8).empty;
+    defer args_list.deinit(alloc);
+    var arg_it = try std.process.Args.Iterator.initAllocator(init.minimal.args, alloc);
+    defer arg_it.deinit();
+    while (arg_it.next()) |a| try args_list.append(alloc, a);
+    const args = args_list.items;
 
     var grid: bool = false;
     var csv: bool = false;
@@ -95,7 +119,7 @@ pub fn main() !void {
     const loss_every_cfg: u64 = if (!grid) parseU64Arg(args, 3, 0) else 0; // 0 = no loss
 
     // Micro-bench 1: varint encode (existing)
-    var timer = try std.time.Timer.start();
+    var timer = try Timer.start();
     var buf: [8]u8 = undefined;
     var total: usize = 0;
     const iters: usize = 20_000;
@@ -181,7 +205,7 @@ pub fn main() !void {
                 }
             }.f;
 
-            var timer_local = try std.time.Timer.start();
+            var timer_local = try Timer.start();
             var now_ns: u64 = 0;
             var pn: u64 = 0;
 
@@ -268,12 +292,12 @@ pub fn main() !void {
     const rng = prng.random();
     const dcid = "HPBM";
     const keys = pkt.AeadKeys{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
-    var frames = std.ArrayList(u8){};
-    defer frames.deinit(alloc);
+    var frames_aw: std.Io.Writer.Allocating = .init(alloc);
+    defer frames_aw.deinit();
     std.debug.print("hp bench: generating...\n", .{});
-    frames.clearRetainingCapacity();
-    _ = (pkt.ShortHeader{ .dcid = dcid, .packet_number = 1, .payload = &[_]u8{0x01} }).encode(frames.writer(alloc)) catch {};
-    const payload = frames.items[frames.items.len - 1 ..];
+    _ = (pkt.ShortHeader{ .dcid = dcid, .packet_number = 1, .payload = &[_]u8{0x01} }).encode(&frames_aw.writer) catch {};
+    const frames_items = frames_aw.writer.buffered();
+    const payload = frames_items[frames_items.len - 1 ..];
     // Build two short protected packets for phase 0/1
     const sp0 = try pkt.encodeShortProtected(alloc, dcid, 1, 2, payload, keys, false);
     defer alloc.free(sp0);
@@ -281,11 +305,11 @@ pub fn main() !void {
     defer alloc.free(sp1);
     // Build an Initial packet too
     const ik = pkt.derive_initial_keys(false, dcid);
-    var fbi = std.ArrayList(u8){};
-    defer fbi.deinit(alloc);
-    _ = fbi.writer(alloc).writeByte(0x01) catch {};
-    _ = fbi.writer(alloc).writeByte(0x02) catch {};
-    const ip = try pkt.encodeInitialProtected(alloc, pkt.QUIC_V1, dcid, "S", &[_]u8{}, 1, 2, fbi.items, .{ .key = ik.client.key, .iv = ik.client.iv, .hp = ik.client.hp });
+    var fbi_aw: std.Io.Writer.Allocating = .init(alloc);
+    defer fbi_aw.deinit();
+    _ = fbi_aw.writer.writeByte(0x01) catch {};
+    _ = fbi_aw.writer.writeByte(0x02) catch {};
+    const ip = try pkt.encodeInitialProtected(alloc, pkt.QUIC_V1, dcid, "S", &[_]u8{}, 1, 2, fbi_aw.writer.buffered(), .{ .key = ik.client.key, .iv = ik.client.iv, .hp = ik.client.hp });
     defer alloc.free(ip);
     // Time decode loops
     timer.reset();

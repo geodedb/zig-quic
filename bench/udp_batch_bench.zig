@@ -245,7 +245,7 @@ pub fn main() !void {
     if (cfg.batch == 0 or cfg.batch > 64) return error.InvalidBatchSize;
     if (cfg.payload == 0 or cfg.payload > 2048) return error.InvalidPayloadSize;
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

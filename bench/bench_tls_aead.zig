@@ -8,8 +8,15 @@ const BenchConfig = struct {
     payload_sizes: []const usize = &.{ 64, 256, 1024, 1500 },
 };
 
+
+// Zig 0.16 removed std.time.nanoTimestamp; inline the Io.Clock equivalent.
+fn nanoTimestamp() i128 {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    return std.Io.Clock.Timestamp.now(io, .real).raw.nanoseconds;
+}
+
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -54,7 +61,7 @@ fn benchmarkAesGcm(alloc: std.mem.Allocator, config: BenchConfig, payload_size: 
     }
 
     // Benchmark encryption
-    const enc_start = std.time.nanoTimestamp();
+    const enc_start = nanoTimestamp();
     i = 0;
     while (i < config.iterations) : (i += 1) {
         std.crypto.aead.aes_gcm.Aes128Gcm.encrypt(
@@ -66,10 +73,10 @@ fn benchmarkAesGcm(alloc: std.mem.Allocator, config: BenchConfig, payload_size: 
             key,
         );
     }
-    const enc_end = std.time.nanoTimestamp();
+    const enc_end = nanoTimestamp();
 
     // Benchmark decryption
-    const dec_start = std.time.nanoTimestamp();
+    const dec_start = nanoTimestamp();
     i = 0;
     while (i < config.iterations) : (i += 1) {
         std.crypto.aead.aes_gcm.Aes128Gcm.decrypt(
@@ -81,7 +88,7 @@ fn benchmarkAesGcm(alloc: std.mem.Allocator, config: BenchConfig, payload_size: 
             key,
         ) catch {};
     }
-    const dec_end = std.time.nanoTimestamp();
+    const dec_end = nanoTimestamp();
 
     const enc_ns = @as(u64, @intCast(enc_end - enc_start)) / config.iterations;
     const dec_ns = @as(u64, @intCast(dec_end - dec_start)) / config.iterations;
@@ -118,7 +125,7 @@ fn benchmarkChaCha20Poly1305(alloc: std.mem.Allocator, config: BenchConfig, payl
     }
 
     // Benchmark encryption
-    const enc_start = std.time.nanoTimestamp();
+    const enc_start = nanoTimestamp();
     i = 0;
     while (i < config.iterations) : (i += 1) {
         std.crypto.aead.chacha_poly.ChaCha20Poly1305.encrypt(
@@ -130,10 +137,10 @@ fn benchmarkChaCha20Poly1305(alloc: std.mem.Allocator, config: BenchConfig, payl
             key,
         );
     }
-    const enc_end = std.time.nanoTimestamp();
+    const enc_end = nanoTimestamp();
 
     // Benchmark decryption
-    const dec_start = std.time.nanoTimestamp();
+    const dec_start = nanoTimestamp();
     i = 0;
     while (i < config.iterations) : (i += 1) {
         std.crypto.aead.chacha_poly.ChaCha20Poly1305.decrypt(
@@ -145,7 +152,7 @@ fn benchmarkChaCha20Poly1305(alloc: std.mem.Allocator, config: BenchConfig, payl
             key,
         ) catch {};
     }
-    const dec_end = std.time.nanoTimestamp();
+    const dec_end = nanoTimestamp();
 
     const enc_ns = @as(u64, @intCast(enc_end - enc_start)) / config.iterations;
     const dec_ns = @as(u64, @intCast(dec_end - dec_start)) / config.iterations;

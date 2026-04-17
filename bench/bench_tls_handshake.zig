@@ -9,8 +9,15 @@ const BenchConfig = struct {
     warmup: usize = 1000,
 };
 
+
+// Zig 0.16 removed std.time.nanoTimestamp; inline the Io.Clock equivalent.
+fn nanoTimestamp() i128 {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    return std.Io.Clock.Timestamp.now(io, .real).raw.nanoseconds;
+}
+
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -35,12 +42,12 @@ fn benchmarkKeyDerivation(config: BenchConfig) !void {
         _ = ks.extract(&salt, &ikm);
     }
 
-    const start = std.time.nanoTimestamp();
+    const start = nanoTimestamp();
     i = 0;
     while (i < config.iterations) : (i += 1) {
         _ = ks.extract(&salt, &ikm);
     }
-    const end = std.time.nanoTimestamp();
+    const end = nanoTimestamp();
 
     const total_ns = @as(u64, @intCast(end - start));
     const per_op_ns = total_ns / config.iterations;
@@ -61,12 +68,12 @@ fn benchmarkTranscriptHash(config: BenchConfig) !void {
     }
 
     transcript = tls13.Transcript.init();
-    const start = std.time.nanoTimestamp();
+    const start = nanoTimestamp();
     i = 0;
     while (i < config.iterations) : (i += 1) {
         transcript.update(&message);
     }
-    const end = std.time.nanoTimestamp();
+    const end = nanoTimestamp();
 
     const total_ns = @as(u64, @intCast(end - start));
     const per_op_ns = total_ns / config.iterations;
@@ -89,12 +96,12 @@ fn benchmarkHandshakeSecrets(config: BenchConfig) !void {
         _ = tls13.deriveHandshakeTraffic(hash, &ecdhe_secret, transcript_hash, &early_secret);
     }
 
-    const start = std.time.nanoTimestamp();
+    const start = nanoTimestamp();
     i = 0;
     while (i < config.iterations) : (i += 1) {
         _ = tls13.deriveHandshakeTraffic(hash, &ecdhe_secret, transcript_hash, &early_secret);
     }
-    const end = std.time.nanoTimestamp();
+    const end = nanoTimestamp();
 
     const total_ns = @as(u64, @intCast(end - start));
     const per_op_ns = total_ns / config.iterations;
@@ -112,13 +119,13 @@ fn benchmarkContextCreation(alloc: std.mem.Allocator, config: BenchConfig) !void
         ctx.deinit();
     }
 
-    const start = std.time.nanoTimestamp();
+    const start = nanoTimestamp();
     i = 0;
     while (i < config.iterations) : (i += 1) {
         var ctx = try tls13.Context.init(.{ .allocator = alloc, .role = .Server }, .{});
         ctx.deinit();
     }
-    const end = std.time.nanoTimestamp();
+    const end = nanoTimestamp();
 
     const total_ns = @as(u64, @intCast(end - start));
     const per_op_ns = total_ns / config.iterations;
