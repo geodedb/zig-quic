@@ -2,6 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2024-2025 CodePros
 
+default:
+  tags:
+    - company
+
 include:
   # Security scanning
   - component: gitlab.com/devnw/ci-catalog/security-sast@v1.7.1
@@ -93,7 +97,7 @@ build:
   stage: build
   image: debian:bookworm-slim
   tags:
-    - saas-linux-medium-amd64
+    - company
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
@@ -117,7 +121,7 @@ test:
   stage: test
   image: debian:bookworm-slim
   tags:
-    - saas-linux-medium-amd64
+    - company
   needs:
     - job: build
       artifacts: true
@@ -140,7 +144,7 @@ test-release-safe:
   stage: test
   image: debian:bookworm-slim
   tags:
-    - saas-linux-medium-amd64
+    - company
   needs:
     - job: build
       artifacts: true
@@ -163,7 +167,7 @@ test-release-fast:
   stage: test
   image: debian:bookworm-slim
   tags:
-    - saas-linux-medium-amd64
+    - company
   needs:
     - job: build
       artifacts: true
@@ -186,7 +190,7 @@ test-release-small:
   stage: test
   image: debian:bookworm-slim
   tags:
-    - saas-linux-medium-amd64
+    - company
   # ReleaseSmall compile on the full quic test graph consistently brushes the
   # default 1h runner timeout on shared runners. Extend to 2h.
   timeout: 2h
@@ -212,7 +216,7 @@ e2e-test-python:
   stage: e2e
   image: python:3.12-slim
   tags:
-    - saas-linux-medium-amd64
+    - company
   needs:
     - job: build
       artifacts: true
@@ -255,7 +259,7 @@ e2e-test-go:
   stage: e2e
   image: golang:1.26.2
   tags:
-    - saas-linux-medium-amd64
+    - company
   needs:
     - job: build
       artifacts: true
@@ -301,7 +305,7 @@ e2e-test-rust:
   stage: e2e
   image: rust:1.83
   tags:
-    - saas-linux-medium-amd64
+    - company
   needs:
     - job: build
       artifacts: true
@@ -350,7 +354,7 @@ e2e-test-zig:
   stage: e2e
   image: debian:bookworm-slim
   tags:
-    - saas-linux-medium-amd64
+    - company
   needs:
     - job: build
       artifacts: true
@@ -388,7 +392,7 @@ interop-test:
   services:
     - docker:27-dind
   tags:
-    - saas-linux-medium-amd64
+    - company
   needs:
     - job: build
       artifacts: true
@@ -504,7 +508,7 @@ quality-zig-gates:
   stage: test
   image: debian:bookworm-slim
   tags:
-    - saas-linux-medium-amd64
+    - company
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
@@ -587,7 +591,7 @@ fuzz:
   stage: fuzz
   image: debian:bookworm-slim
   tags:
-    - saas-linux-medium-amd64
+    - company
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
@@ -612,7 +616,7 @@ security-rust-cargo-audit:
   stage: security
   image: rust:1.91
   tags:
-    - saas-linux-medium-amd64
+    - company
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
@@ -635,7 +639,7 @@ security-go-govulncheck:
   stage: security
   image: golang:1.26.2
   tags:
-    - saas-linux-medium-amd64
+    - company
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
