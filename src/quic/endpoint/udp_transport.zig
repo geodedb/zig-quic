@@ -199,10 +199,16 @@ pub const UdpTransport = struct {
 
     fn linuxResultToCount(rc: usize) !usize {
         const linux = std.os.linux;
+        // Note: returning error.Unexpected directly (rather than going through
+        // std.posix.unexpectedErrno) keeps this helper cross-compilable. On
+        // non-Linux targets std.posix.E maps to the host libc's errno enum
+        // (e.g. c.darwin.E), so passing a std.os.linux.E there would fail to
+        // compile. UdpTransport itself only runs on Linux; this helper is only
+        // referenced from Linux-gated call sites.
         return switch (linux.errno(rc)) {
             .SUCCESS => rc,
             .AGAIN => error.WouldBlock,
-            else => |err| std.posix.unexpectedErrno(err),
+            else => error.Unexpected,
         };
     }
 
