@@ -393,6 +393,7 @@ interop-test:
     - docker:27-dind
   tags:
     - company
+    - dedicated
   needs:
     - job: build
       artifacts: true
