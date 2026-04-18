@@ -187,6 +187,9 @@ test-release-small:
   image: debian:bookworm-slim
   tags:
     - saas-linux-medium-amd64
+  # ReleaseSmall compile on the full quic test graph consistently brushes the
+  # default 1h runner timeout on shared runners. Extend to 2h.
+  timeout: 2h
   needs:
     - job: build
       artifacts: true
