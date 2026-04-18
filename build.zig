@@ -1959,74 +1959,85 @@ pub fn build(b: *std.Build) void {
     // Used by scripts/cross_platform_udp_batch_smoke.sh
     // Compile-only (addObject, no linking) so cross-targets work without
     // system libraries (OpenSSL, ws2_32, etc.).
+    //
+    // Only defined when quic is built as the root package. When consumed as a
+    // dependency (e.g. by geode), creating additional modules rooted at
+    // src/quic/endpoint{,/transport,/udp_transport}.zig produces diamond
+    // "file exists in modules 'X' and 'X0'" errors in Zig 0.16 because the
+    // same source files also root the public `quic_endpoint_mod` /
+    // `endpoint_transport_mod` / `endpoint_udp_transport_mod` that downstream
+    // consumers import. Skipping the step under a dep prefix keeps the graph
+    // clean without blocking quic's own cross-smoke CI script.
     // ========================================================================
-    const cross_smoke_step = b.step("cross-smoke", "Compile-only cross-platform transport smoke test");
+    if (b.dep_prefix.len == 0) {
+        const cross_smoke_step = b.step("cross-smoke", "Compile-only cross-platform transport smoke test");
 
-    // endpoint/transport.zig
-    {
-        const mod = b.createModule(.{
-            .root_source_file = b.path("src/quic/endpoint/transport.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        mod.addImport("quic_conn", quic_conn_mod);
-        const obj = b.addObject(.{ .name = "cross-smoke-transport", .root_module = mod });
-        cross_smoke_step.dependOn(&obj.step);
-    }
+        // endpoint/transport.zig
+        {
+            const mod = b.createModule(.{
+                .root_source_file = b.path("src/quic/endpoint/transport.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            mod.addImport("quic_conn", quic_conn_mod);
+            const obj = b.addObject(.{ .name = "cross-smoke-transport", .root_module = mod });
+            cross_smoke_step.dependOn(&obj.step);
+        }
 
-    // endpoint/udp_transport.zig
-    {
-        const mod = b.createModule(.{
-            .root_source_file = b.path("src/quic/endpoint/udp_transport.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        mod.addImport("transport.zig", endpoint_transport_mod);
-        mod.addImport("conn.zig", quic_conn_mod);
-        mod.addImport("quic_logger", quic_logger_mod);
-        const obj = b.addObject(.{ .name = "cross-smoke-udp-transport", .root_module = mod });
-        cross_smoke_step.dependOn(&obj.step);
-    }
+        // endpoint/udp_transport.zig
+        {
+            const mod = b.createModule(.{
+                .root_source_file = b.path("src/quic/endpoint/udp_transport.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            mod.addImport("transport.zig", endpoint_transport_mod);
+            mod.addImport("conn.zig", quic_conn_mod);
+            mod.addImport("quic_logger", quic_logger_mod);
+            const obj = b.addObject(.{ .name = "cross-smoke-udp-transport", .root_module = mod });
+            cross_smoke_step.dependOn(&obj.step);
+        }
 
-    // endpoint.zig (full module graph — mirrors quic_endpoint_mod imports)
-    {
-        const mod = b.createModule(.{
-            .root_source_file = b.path("src/quic/endpoint.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        mod.addImport("types", endpoint_types_mod);
-        mod.addImport("quic_conn", quic_conn_mod);
-        mod.addImport("quic_packet", quic_packet_mod);
-        mod.addImport("quic_frame", quic_frame_mod);
-        mod.addImport("quic_tls13", tls13_mod);
-        mod.addImport("quic_crypto", quic_crypto_mod);
-        mod.addImport("quic_varint", quic_varint_mod);
-        mod.addImport("quic_tls", quic_tls_mod);
-        mod.addImport("sig", sig_mod);
-        mod.addImport("x509", x509_mod);
-        mod.addImport("quic_recovery", quic_recovery_mod);
-        mod.addImport("config.zig", quic_config_mod);
-        mod.addImport("loop_backend.zig", loop_backend_mod);
-        mod.addImport("quic_transport_params", quic_transport_params_mod);
-        mod.addImport("quic_logger", quic_logger_mod);
-        mod.addImport("byteorder", byteorder_mod);
-        mod.addImport("quic_version", quic_version_mod);
-        mod.addImport("quic_token", quic_token_mod);
-        mod.addImport("endpoint/utils.zig", endpoint_utils_mod);
-        mod.addImport("endpoint/transport.zig", endpoint_transport_mod);
-        mod.addImport("endpoint/udp_transport.zig", endpoint_udp_transport_mod);
-        mod.addImport("endpoint/incoming.zig", endpoint_incoming_mod);
-        mod.addImport("endpoint/frame_handler.zig", endpoint_frame_handler_mod);
-        mod.addImport("endpoint/lookup.zig", endpoint_lookup_mod);
-        mod.addImport("endpoint/pto.zig", endpoint_pto_mod);
-        mod.addImport("endpoint/lifecycle.zig", endpoint_lifecycle_mod);
-        mod.addImport("endpoint/handshake_integration.zig", endpoint_handshake_integration_mod);
-        mod.addImport("endpoint/client.zig", endpoint_client_mod);
-        mod.addImport("endpoint/server.zig", endpoint_server_mod);
-        mod.addImport("quic_build_options", build_options_mod);
-        if (parallel_mod) |pm| mod.addImport("parallel", pm);
-        const obj = b.addObject(.{ .name = "cross-smoke-endpoint", .root_module = mod });
-        cross_smoke_step.dependOn(&obj.step);
+        // endpoint.zig (full module graph — mirrors quic_endpoint_mod imports)
+        {
+            const mod = b.createModule(.{
+                .root_source_file = b.path("src/quic/endpoint.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            mod.addImport("types", endpoint_types_mod);
+            mod.addImport("quic_conn", quic_conn_mod);
+            mod.addImport("quic_packet", quic_packet_mod);
+            mod.addImport("quic_frame", quic_frame_mod);
+            mod.addImport("quic_tls13", tls13_mod);
+            mod.addImport("quic_crypto", quic_crypto_mod);
+            mod.addImport("quic_varint", quic_varint_mod);
+            mod.addImport("quic_tls", quic_tls_mod);
+            mod.addImport("sig", sig_mod);
+            mod.addImport("x509", x509_mod);
+            mod.addImport("quic_recovery", quic_recovery_mod);
+            mod.addImport("config.zig", quic_config_mod);
+            mod.addImport("loop_backend.zig", loop_backend_mod);
+            mod.addImport("quic_transport_params", quic_transport_params_mod);
+            mod.addImport("quic_logger", quic_logger_mod);
+            mod.addImport("byteorder", byteorder_mod);
+            mod.addImport("quic_version", quic_version_mod);
+            mod.addImport("quic_token", quic_token_mod);
+            mod.addImport("endpoint/utils.zig", endpoint_utils_mod);
+            mod.addImport("endpoint/transport.zig", endpoint_transport_mod);
+            mod.addImport("endpoint/udp_transport.zig", endpoint_udp_transport_mod);
+            mod.addImport("endpoint/incoming.zig", endpoint_incoming_mod);
+            mod.addImport("endpoint/frame_handler.zig", endpoint_frame_handler_mod);
+            mod.addImport("endpoint/lookup.zig", endpoint_lookup_mod);
+            mod.addImport("endpoint/pto.zig", endpoint_pto_mod);
+            mod.addImport("endpoint/lifecycle.zig", endpoint_lifecycle_mod);
+            mod.addImport("endpoint/handshake_integration.zig", endpoint_handshake_integration_mod);
+            mod.addImport("endpoint/client.zig", endpoint_client_mod);
+            mod.addImport("endpoint/server.zig", endpoint_server_mod);
+            mod.addImport("quic_build_options", build_options_mod);
+            if (parallel_mod) |pm| mod.addImport("parallel", pm);
+            const obj = b.addObject(.{ .name = "cross-smoke-endpoint", .root_module = mod });
+            cross_smoke_step.dependOn(&obj.step);
+        }
     }
 }
