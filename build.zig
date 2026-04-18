@@ -639,33 +639,23 @@ pub fn build(b: *std.Build) void {
     // QNS endpoint binary for interop docker image
     // Minimal HTTP/3 shim module (kept separate from QUIC core)
     const h3_varint_mod = mkModule(b, "src/h3/varint.zig");
-    const h3_server_mod = mkModule(b, "src/h3/server.zig");
-    h3_server_mod.addImport("quic_api", quic_api_mod);
-    h3_server_mod.addImport("quic_conn", quic_conn_mod);
-    h3_server_mod.addImport("h3_varint", h3_varint_mod);
-    // Export for dependents as named imports
+    // Export for dependents as named imports. Use a single module per source
+    // root and reuse it for both the public module table and internal
+    // wiring; creating parallel private `mkModule` copies of the same file
+    // produces "file exists in modules 'X' and 'X0'" diamonds in Zig 0.16
+    // once a downstream consumer's graph is instantiated.
     const h3_mod = b.addModule("h3_server", .{ .root_source_file = b.path("src/h3/server.zig") });
     h3_mod.addImport("quic_api", quic_api_mod);
     h3_mod.addImport("quic_conn", quic_conn_mod);
     h3_mod.addImport("h3_varint", h3_varint_mod);
+    const h3_server_mod = h3_mod;
     const h3_client_mod = b.addModule("h3_client", .{ .root_source_file = b.path("src/h3/client.zig") });
     h3_client_mod.addImport("quic_api", quic_api_mod);
     h3_client_mod.addImport("h3_varint", h3_varint_mod);
     quic_mod.addImport("h3_server", h3_server_mod);
     quic_mod.addImport("h3_client", h3_client_mod);
 
-    // High-level transport API module
-    const transport_mod = mkModule(b, "src/quic/transport.zig");
-    transport_mod.addImport("quic_api", quic_api_mod);
-    transport_mod.addImport("quic_endpoint", quic_endpoint_mod);
-    transport_mod.addImport("quic_conn", quic_conn_mod);
-    transport_mod.addImport("quic_crypto", quic_crypto_mod);
-    transport_mod.addImport("quic_frame", quic_frame_mod);
-    transport_mod.addImport("quic_varint", quic_varint_mod);
-    transport_mod.addImport("quic_tls", quic_tls_mod);
-    transport_mod.addImport("quic_packet", quic_packet_mod);
-    transport_mod.addImport("config.zig", quic_config_mod);
-    transport_mod.addImport("loop_backend.zig", loop_backend_mod);
+    // High-level transport API module (single instance, public-facing)
     const transport_public = b.addModule("transport", .{ .root_source_file = b.path("src/quic/transport.zig") });
     transport_public.addImport("quic_api", quic_api_mod);
     transport_public.addImport("quic_endpoint", quic_endpoint_mod);
