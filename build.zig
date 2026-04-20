@@ -1948,6 +1948,7 @@ pub fn build(b: *std.Build) void {
     bench_runner.root_module.addImport("quic_endpoint", quic_endpoint_mod);
     bench_runner.root_module.addImport("quic_conn", quic_conn_mod);
     bench_runner.root_module.addImport("quic_config", quic_config_mod);
+    bench_runner.root_module.addImport("quic_api", quic_api_mod);
     const install_bench_runner = b.addInstallArtifact(bench_runner, .{});
 
     // Primary `bench` step. User-supplied args (via `zig build bench -- ...`)

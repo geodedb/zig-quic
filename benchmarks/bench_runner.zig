@@ -34,6 +34,7 @@ const loss_detection_scan_bench = @import("micro/loss_detection_scan.zig");
 const udp_batch_bench = @import("integration/udp_batch.zig");
 const poll_overhead_bench = @import("integration/poll_overhead.zig");
 const conn_scale_bench = @import("integration/conn_scale.zig");
+const handshake_e2e_bench = @import("integration/handshake_e2e.zig");
 
 pub const SuiteEntry = struct {
     name: []const u8, // fully-qualified: "micro/varint"
@@ -54,6 +55,7 @@ pub const registry: []const SuiteEntry = &.{
     .{ .name = "integration/udp_batch", .tier = "integration", .scenarios = &udp_batch_bench.scenarios, .runFn = udp_batch_bench.run },
     .{ .name = "integration/poll_overhead", .tier = "integration", .scenarios = &poll_overhead_bench.scenarios, .runFn = poll_overhead_bench.run },
     .{ .name = "integration/conn_scale", .tier = "integration", .scenarios = &conn_scale_bench.scenarios, .runFn = conn_scale_bench.run },
+    .{ .name = "integration/handshake_e2e", .tier = "integration", .scenarios = &handshake_e2e_bench.scenarios, .runFn = handshake_e2e_bench.run },
 };
 
 pub fn main(init: std.process.Init) !void {
