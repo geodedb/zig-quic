@@ -30,6 +30,7 @@ const aead_bench = @import("micro/aead.zig");
 const tls_keygen_bench = @import("micro/tls_keygen.zig");
 const frame_serialization_bench = @import("micro/frame_serialization.zig");
 const connection_lookup_bench = @import("micro/connection_lookup.zig");
+const loss_detection_scan_bench = @import("micro/loss_detection_scan.zig");
 const udp_batch_bench = @import("integration/udp_batch.zig");
 const poll_overhead_bench = @import("integration/poll_overhead.zig");
 const conn_scale_bench = @import("integration/conn_scale.zig");
@@ -49,6 +50,7 @@ pub const registry: []const SuiteEntry = &.{
     .{ .name = "micro/tls_keygen", .tier = "micro", .scenarios = &tls_keygen_bench.scenarios, .runFn = tls_keygen_bench.run },
     .{ .name = "micro/frame_serialization", .tier = "micro", .scenarios = &frame_serialization_bench.scenarios, .runFn = frame_serialization_bench.run },
     .{ .name = "micro/connection_lookup", .tier = "micro", .scenarios = &connection_lookup_bench.scenarios, .runFn = connection_lookup_bench.run },
+    .{ .name = "micro/loss_detection_scan", .tier = "micro", .scenarios = &loss_detection_scan_bench.scenarios, .runFn = loss_detection_scan_bench.run },
     .{ .name = "integration/udp_batch", .tier = "integration", .scenarios = &udp_batch_bench.scenarios, .runFn = udp_batch_bench.run },
     .{ .name = "integration/poll_overhead", .tier = "integration", .scenarios = &poll_overhead_bench.scenarios, .runFn = poll_overhead_bench.run },
     .{ .name = "integration/conn_scale", .tier = "integration", .scenarios = &conn_scale_bench.scenarios, .runFn = conn_scale_bench.run },
