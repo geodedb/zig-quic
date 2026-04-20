@@ -562,7 +562,8 @@ runtime-smoke-macos-saas:
 runtime-smoke-windows-saas:
   stage: test
   tags:
-    - saas-windows-medium-amd64
+    - company
+    - windows
   rules:
     - if: $ENABLE_NATIVE_RUNTIME_SMOKE == "true" && $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $ENABLE_NATIVE_RUNTIME_SMOKE == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
