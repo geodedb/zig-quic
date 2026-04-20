@@ -1855,32 +1855,34 @@ pub fn build(b: *std.Build) void {
     fuzz_step.dependOn(&install_fuzz_tls_hello.step);
     fuzz_step.dependOn(&install_fuzz_tls_cert.step);
 
-    // Benchmarks
-    const bench = addExe(b, "quic-bench", "bench/main.zig", target, optimize);
-    bench.root_module.addImport("quic_varint", quic_varint_mod);
-    bench.root_module.addImport("quic_recovery", quic_recovery_mod);
-    bench.root_module.addImport("quic_packet", quic_packet_mod);
-    bench.root_module.addImport("quic_crypto", quic_crypto_mod);
-    bench.root_module.addImport("quic_tls", quic_tls_mod);
-    const install_bench = b.addInstallArtifact(bench, .{});
-    const run_bench = b.addRunArtifact(bench);
-    const bench_step = b.step("bench", "Run benchmark gate and build benchmark binaries");
-    bench_step.dependOn(&install_bench.step);
-    bench_step.dependOn(&run_bench.step);
-
-    // TLS benchmarks
-    const bench_tls_hs = addExe(b, "bench_tls_handshake", "bench/bench_tls_handshake.zig", target, .ReleaseFast);
-    bench_tls_hs.root_module.addImport("quic_tls13", tls13_mod);
-    bench_tls_hs.root_module.addImport("quic_tls", quic_tls_mod);
-    const install_bench_tls_hs = b.addInstallArtifact(bench_tls_hs, .{});
-    bench_step.dependOn(&install_bench_tls_hs.step);
-
-    const bench_tls_aead = addExe(b, "bench_tls_aead", "bench/bench_tls_aead.zig", target, .ReleaseFast);
-    const install_bench_tls_aead = b.addInstallArtifact(bench_tls_aead, .{});
-    bench_step.dependOn(&install_bench_tls_aead.step);
-
     // ========================================================================
-    // Macro benchmarks (benchmarks/ directory)
+    // Benchmark suite (benchmarks/ directory)
+    //
+    // Phase 3 rewire: the legacy `bench/` directory (quic-bench, bench_tls_*,
+    // udp_batch_bench) and its independent v1 scaffolds (poll_bench, scale_bench,
+    // throughput_bench, handshake_bench) have been retired. All measurement
+    // logic now lives under benchmarks/{micro,integration}/ and is dispatched
+    // by benchmarks/bench_runner.zig via --suite=<tier>|<scenario>|all.
+    //
+    // Step names exposed:
+    //   bench                -- primary (was bench-v2). Accepts --list,
+    //                           --suite=<filter>, --output=<path> via `-- ...`.
+    //   bench-micro          -- shortcut for --suite=micro
+    //   bench-integration    -- shortcut for --suite=integration
+    //   bench-external       -- shortcut for --suite=external
+    //   bench-v2             -- DEPRECATED alias to bench.
+    //   bench-poll           -- DEPRECATED alias to --suite=poll_overhead.
+    //   bench-scale          -- DEPRECATED alias to --suite=conn_scale.
+    //   bench-throughput     -- DEPRECATED alias to --suite=stream_throughput
+    //                           (scenario is scheduled for Phase 5 Task 5.2;
+    //                           until then the alias exits with "no scenarios
+    //                           matched suite='stream_throughput'" (rc=3)).
+    //   bench-handshake      -- DEPRECATED alias to --suite=handshake_e2e
+    //                           (scheduled for Phase 5 Task 5.1; same behavior
+    //                           as bench-throughput until it lands).
+    //   bench-compare        -- regression comparator (reads ResultDocument JSON).
+    //   test-bench-common    -- bench harness unit tests.
+    //   test-bench-compare   -- bench comparator unit tests.
     // ========================================================================
 
     const bench_common_mod = b.createModule(.{
@@ -1901,33 +1903,7 @@ pub fn build(b: *std.Build) void {
     const bench_common_test_step = b.step("test-bench-common", "Run bench harness tests");
     bench_common_test_step.dependOn(&run_bench_common_test.step);
 
-    // Poll loop overhead benchmark
-    const bench_poll = addExe(b, "bench-poll", "benchmarks/poll_bench.zig", target, .ReleaseFast);
-    bench_poll.root_module.addImport("bench_common", bench_common_mod);
-    bench_poll.root_module.addImport("quic_endpoint", quic_endpoint_mod);
-    bench_poll.root_module.addImport("quic_conn", quic_conn_mod);
-    bench_poll.root_module.addImport("quic_config", quic_config_mod);
-    const install_bench_poll = b.addInstallArtifact(bench_poll, .{});
-    const run_bench_poll = b.addRunArtifact(bench_poll);
-    if (b.args) |args| run_bench_poll.addArgs(args);
-    const bench_poll_step = b.step("bench-poll", "Run poll loop overhead benchmark");
-    bench_poll_step.dependOn(&install_bench_poll.step);
-    bench_poll_step.dependOn(&run_bench_poll.step);
-
-    // Connection/stream scaling benchmark
-    const bench_scale = addExe(b, "bench-scale", "benchmarks/scale_bench.zig", target, .ReleaseFast);
-    bench_scale.root_module.addImport("bench_common", bench_common_mod);
-    bench_scale.root_module.addImport("quic_endpoint", quic_endpoint_mod);
-    bench_scale.root_module.addImport("quic_conn", quic_conn_mod);
-    bench_scale.root_module.addImport("quic_config", quic_config_mod);
-    const install_bench_scale = b.addInstallArtifact(bench_scale, .{});
-    const run_bench_scale = b.addRunArtifact(bench_scale);
-    if (b.args) |args| run_bench_scale.addArgs(args);
-    const bench_scale_step = b.step("bench-scale", "Run connection/stream scaling benchmark");
-    bench_scale_step.dependOn(&install_bench_scale.step);
-    bench_scale_step.dependOn(&run_bench_scale.step);
-
-    // Regression comparison tool (tier-aware v2 -- reads ResultDocument JSON)
+    // Regression comparison tool (tier-aware -- reads ResultDocument JSON)
     const bench_compare = addExe(b, "bench-compare", "benchmarks/compare.zig", target, .ReleaseFast);
     bench_compare.root_module.addImport("bench_common", bench_common_mod);
     const install_bench_compare = b.addInstallArtifact(bench_compare, .{});
@@ -1957,31 +1933,10 @@ pub fn build(b: *std.Build) void {
     const bench_compare_test_step = b.step("test-bench-compare", "Run bench comparator tests");
     bench_compare_test_step.dependOn(&run_bench_compare_test.step);
 
-    // Throughput benchmark (real UDP) - scaffold
-    const bench_throughput = addExe(b, "bench-throughput", "benchmarks/throughput_bench.zig", target, .ReleaseFast);
-    bench_throughput.root_module.addImport("bench_common", bench_common_mod);
-    const install_bench_throughput = b.addInstallArtifact(bench_throughput, .{});
-    const run_bench_throughput = b.addRunArtifact(bench_throughput);
-    if (b.args) |args| run_bench_throughput.addArgs(args);
-    const bench_throughput_step = b.step("bench-throughput", "Run payload throughput benchmark (real UDP)");
-    bench_throughput_step.dependOn(&install_bench_throughput.step);
-    bench_throughput_step.dependOn(&run_bench_throughput.step);
-
-    // Handshake latency benchmark (real UDP) - scaffold
-    const bench_handshake = addExe(b, "bench-handshake", "benchmarks/handshake_bench.zig", target, .ReleaseFast);
-    bench_handshake.root_module.addImport("bench_common", bench_common_mod);
-    const install_bench_handshake = b.addInstallArtifact(bench_handshake, .{});
-    const run_bench_handshake = b.addRunArtifact(bench_handshake);
-    if (b.args) |args| run_bench_handshake.addArgs(args);
-    const bench_handshake_step = b.step("bench-handshake", "Run TLS handshake latency benchmark (real UDP)");
-    bench_handshake_step.dependOn(&install_bench_handshake.step);
-    bench_handshake_step.dependOn(&run_bench_handshake.step);
-
-    // Benchmark suite dispatcher (v2). Registry is empty until Phase 2 migrates
-    // existing scenarios into benchmarks/{micro,integration,external}/. The
-    // step is named `bench-v2` until Phase 3 renames it to `bench` after the
-    // old scripts/Makefile targets are cut over.
-    const bench_runner = addExe(b, "bench-v2", "benchmarks/bench_runner.zig", target, .ReleaseFast);
+    // Benchmark suite dispatcher. Scenarios are registered in
+    // benchmarks/bench_runner.zig's `registry`; each registry entry picks a
+    // tier ("micro"|"integration"|"external") and a list of ScenarioSpec.
+    const bench_runner = addExe(b, "bench", "benchmarks/bench_runner.zig", target, .ReleaseFast);
     bench_runner.root_module.addImport("bench_common", bench_common_mod);
     bench_runner.root_module.addImport("quic_varint", quic_varint_mod);
     bench_runner.root_module.addImport("quic_recovery", quic_recovery_mod);
@@ -1992,11 +1947,70 @@ pub fn build(b: *std.Build) void {
     bench_runner.root_module.addImport("quic_endpoint", quic_endpoint_mod);
     bench_runner.root_module.addImport("quic_config", quic_config_mod);
     const install_bench_runner = b.addInstallArtifact(bench_runner, .{});
+
+    // Primary `bench` step. User-supplied args (via `zig build bench -- ...`)
+    // are forwarded verbatim so --list/--suite=<filter>/--output=<path> work.
     const run_bench_runner = b.addRunArtifact(bench_runner);
     if (b.args) |args| run_bench_runner.addArgs(args);
-    const bench_v2_step = b.step("bench-v2", "Run v2 benchmark suite (--suite=all|micro|integration|external|<scenario>, --list, --output=<path>)");
+    const bench_step = b.step("bench", "Run benchmark suite (--suite=all|micro|integration|external|<scenario>, --list, --output=<path>)");
+    bench_step.dependOn(&install_bench_runner.step);
+    bench_step.dependOn(&run_bench_runner.step);
+
+    // DEPRECATED alias: bench-v2 -> bench. Kept for one release so existing
+    // MRs / tooling referencing the pre-rename name keep working.
+    const run_bench_v2_alias = b.addRunArtifact(bench_runner);
+    if (b.args) |args| run_bench_v2_alias.addArgs(args);
+    const bench_v2_step = b.step("bench-v2", "DEPRECATED: use 'bench'. Alias to bench.");
     bench_v2_step.dependOn(&install_bench_runner.step);
-    bench_v2_step.dependOn(&run_bench_runner.step);
+    bench_v2_step.dependOn(&run_bench_v2_alias.step);
+
+    // Tier shortcuts -- invoke the runner with a fixed --suite filter.
+    const bench_micro_run = b.addRunArtifact(bench_runner);
+    bench_micro_run.addArgs(&.{"--suite=micro"});
+    const bench_micro_step = b.step("bench-micro", "Run micro-tier benchmarks");
+    bench_micro_step.dependOn(&install_bench_runner.step);
+    bench_micro_step.dependOn(&bench_micro_run.step);
+
+    const bench_integration_run = b.addRunArtifact(bench_runner);
+    bench_integration_run.addArgs(&.{"--suite=integration"});
+    const bench_integration_step = b.step("bench-integration", "Run integration-tier benchmarks");
+    bench_integration_step.dependOn(&install_bench_runner.step);
+    bench_integration_step.dependOn(&bench_integration_run.step);
+
+    const bench_external_run = b.addRunArtifact(bench_runner);
+    bench_external_run.addArgs(&.{"--suite=external"});
+    const bench_external_step = b.step("bench-external", "Run external-impl compare benchmarks");
+    bench_external_step.dependOn(&install_bench_runner.step);
+    bench_external_step.dependOn(&bench_external_run.step);
+
+    // DEPRECATED retired-name aliases. Each invokes the runner with a fixed
+    // --suite=<scenario_short_name>. bench-throughput and bench-handshake
+    // point at scenarios that will be introduced by Phase 5 Tasks 5.1/5.2;
+    // until then they exit cleanly with rc=3 "no scenarios matched" (benign
+    // failure preferred over a missing alias that breaks external callers).
+    const bench_poll_run = b.addRunArtifact(bench_runner);
+    bench_poll_run.addArgs(&.{"--suite=poll_overhead"});
+    const bench_poll_step = b.step("bench-poll", "DEPRECATED: use 'bench -- --suite=poll_overhead'");
+    bench_poll_step.dependOn(&install_bench_runner.step);
+    bench_poll_step.dependOn(&bench_poll_run.step);
+
+    const bench_scale_run = b.addRunArtifact(bench_runner);
+    bench_scale_run.addArgs(&.{"--suite=conn_scale"});
+    const bench_scale_step = b.step("bench-scale", "DEPRECATED: use 'bench -- --suite=conn_scale'");
+    bench_scale_step.dependOn(&install_bench_runner.step);
+    bench_scale_step.dependOn(&bench_scale_run.step);
+
+    const bench_throughput_run = b.addRunArtifact(bench_runner);
+    bench_throughput_run.addArgs(&.{"--suite=stream_throughput"});
+    const bench_throughput_step = b.step("bench-throughput", "DEPRECATED: use 'bench -- --suite=stream_throughput' (scenario pending Phase 5)");
+    bench_throughput_step.dependOn(&install_bench_runner.step);
+    bench_throughput_step.dependOn(&bench_throughput_run.step);
+
+    const bench_handshake_run = b.addRunArtifact(bench_runner);
+    bench_handshake_run.addArgs(&.{"--suite=handshake_e2e"});
+    const bench_handshake_step = b.step("bench-handshake", "DEPRECATED: use 'bench -- --suite=handshake_e2e' (scenario pending Phase 5)");
+    bench_handshake_step.dependOn(&install_bench_runner.step);
+    bench_handshake_step.dependOn(&bench_handshake_run.step);
 
     // ========================================================================
     // Cross-platform compile smoke test

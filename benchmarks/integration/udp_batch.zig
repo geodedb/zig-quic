@@ -72,7 +72,7 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
     if (builtin.os.tag != .linux) {
         // Non-Linux: emit a compile-ok placeholder so the suite runs
         // cross-platform. Phase 7's gate script skips this bench on
-        // non-Linux hosts; the row exists so `bench-v2 --suite=all`
+        // non-Linux hosts; the row exists so `bench --suite=all`
         // on macOS/Windows produces a complete JSON document.
         const latencies = try allocator.alloc(u64, 1);
         latencies[0] = 0;

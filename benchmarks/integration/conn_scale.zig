@@ -29,16 +29,24 @@
 // "Accept/s" via `popAccepted()` spins. That metric is dropped here on
 // purpose -- these loopback connections never complete a handshake, so
 // the accept counter always drained to zero + a synthetic rate number.
-// The meaningful signal is connection setup rate (derived from
-// throughput_ops_per_sec == N / wall_time) plus per-poll latency
-// distribution (p50/p95/p99). If Phase 5 introduces a real-accept
-// benchmark, it belongs next to handshake_bench, not here.
+// The meaningful signal captured on each row is:
+//   - wall_time_ns = connection-setup elapsed for N connections
+//   - throughput_ops_per_sec = iterations / setup_wall_ns (the harness
+//     formula in bench_common.RunOutput). This is an *iter-normalized*
+//     setup-throughput signal -- useful for regression detection but
+//     NOT a true "Setup/s" rate (the legacy conn_setup_ops_sec column
+//     was `n_connections / setup_wall_ns`, a different computation).
+//     If a literal Setup/s metric is needed later, it should be
+//     surfaced via a dedicated QUIC-optional RunOutput field.
+//   - latencies_ns[i] = per-poll wall cost (p50/p95/p99).
+// If Phase 5 introduces a real-accept benchmark, it belongs next to
+// handshake_bench, not here.
 //
 // Cross-platform note: unlike the micro benches, conn_scale needs a
 // real UDP socket (Endpoint.init binds one via UdpTransport). On
 // non-Linux targets the quic_endpoint module is compile-gated; we
 // follow the udp_batch.zig + poll_overhead.zig convention and emit a
-// placeholder RunOutput so `zig build bench-v2 --suite=all` stays
+// placeholder RunOutput so `zig build bench --suite=all` stays
 // cross-compilable.
 
 const std = @import("std");
@@ -109,8 +117,12 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
         latencies[i] = common.nowNs() - t0;
     }
 
-    // wall_time_ns = connection setup elapsed. Primary metric matches
-    // the legacy "Setup/s" column (conn_setup_ops_sec).
+    // wall_time_ns = connection-setup elapsed for N connections.
+    // Note: the harness computes throughput_ops_per_sec as
+    // iterations / setup_wall_ns -- this is an iter-normalized setup
+    // throughput signal, suitable for regression detection but NOT a
+    // true Setup/s rate (the legacy scale_bench conn_setup_ops_sec
+    // column was `n_connections / setup_wall_ns`, a different ratio).
     const setup_wall_ns = setup_end - setup_start;
     return .{
         .iterations = iters,

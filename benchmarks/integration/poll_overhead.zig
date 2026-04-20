@@ -29,7 +29,7 @@
 // non-Linux targets the quic_endpoint module is compile-gated; rather
 // than special-casing that here, we follow the pattern established in
 // udp_batch.zig and emit a placeholder RunOutput on non-Linux so
-// `zig build bench-v2 --suite=all` stays cross-compilable.
+// `zig build bench --suite=all` stays cross-compilable.
 
 const std = @import("std");
 const builtin = @import("builtin");

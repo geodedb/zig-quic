@@ -47,6 +47,18 @@ fuzz:
 bench:
 	$(ZIG) build bench $(ZIG_FLAGS)
 
+# Tier shortcuts (Phase 3): each wraps `bench --suite=<tier>`.
+bench-micro:
+	$(ZIG) build bench-micro $(ZIG_FLAGS)
+
+bench-integration:
+	$(ZIG) build bench-integration $(ZIG_FLAGS)
+
+bench-external:
+	$(ZIG) build bench-external $(ZIG_FLAGS)
+
+# Deprecated retired-name aliases. Kept so external callers (CI, tooling)
+# that still invoke the pre-Phase-3 names keep working.
 bench-poll:
 	$(ZIG) build bench-poll $(ZIG_FLAGS)
 
@@ -59,22 +71,33 @@ bench-throughput:
 bench-handshake:
 	$(ZIG) build bench-handshake $(ZIG_FLAGS)
 
-bench-all: bench bench-poll bench-scale bench-throughput bench-handshake
+# Run every registered scenario in one pass.
+bench-all:
+	$(ZIG) build bench $(ZIG_FLAGS) -- --suite=all
 
 bench-save:
-	@echo "Running scale benchmark and saving results..."
-	@$(ZIG) build bench-scale $(ZIG_FLAGS) 2>/dev/null > benchmarks/results/$$(git rev-parse --short HEAD).json
+	@mkdir -p benchmarks/results
+	@echo "Running full benchmark suite and saving results..."
+	@$(ZIG) build bench $(ZIG_FLAGS) -- --suite=all --output=benchmarks/results/$$(git rev-parse --short HEAD).json
 	@echo "Saved to benchmarks/results/$$(git rev-parse --short HEAD).json"
 
 bench-baseline:
-	@echo "Running scale benchmark and saving as baseline..."
-	@$(ZIG) build bench-scale $(ZIG_FLAGS) 2>/dev/null > benchmarks/results/baseline.json
+	@mkdir -p benchmarks/results
+	@echo "Running full benchmark suite and saving as baseline..."
+	@$(ZIG) build bench $(ZIG_FLAGS) -- --suite=all --output=benchmarks/results/baseline.json
 	@echo "Saved to benchmarks/results/baseline.json"
 
 bench-compare:
-	@echo "Running scale benchmark and comparing against baseline..."
-	@$(ZIG) build bench-scale $(ZIG_FLAGS) 2>/dev/null > /tmp/quic-current-bench.json
-	@$(ZIG) build bench-compare $(ZIG_FLAGS) -- benchmarks/results/baseline.json /tmp/quic-current-bench.json
+	@echo "Running benchmark suite and comparing against baseline..."
+	@$(ZIG) build bench $(ZIG_FLAGS) -- --suite=all --output=/tmp/quic-current-bench.json
+	@$(ZIG) build bench-compare $(ZIG_FLAGS) -- --baseline=benchmarks/results/baseline.json --current=/tmp/quic-current-bench.json
+
+# Unified perf gate. scripts/perf-gate.sh is introduced by Phase 7 Task 7.1;
+# until that lands this target fails loudly (rather than silently masking the
+# pre-Phase-7 perf_gate.sh / perf_udp_batch_gate.sh scripts, which remain in
+# the tree as-is per the plan's transition policy).
+perf-gate:
+	@scripts/perf-gate.sh --baseline=benchmarks/results/baseline.json
 
 tools:
 	$(ZIG) build tools $(ZIG_FLAGS)
@@ -93,7 +116,7 @@ ci-github: ci cross-compile-quick
 	@echo "✓ GitHub Actions CI completed successfully"
 
 # Cross-compilation for all targets (debug builds)
-cross-compile: 
+cross-compile:
 	@echo "Starting cross-compilation for all targets (debug)..."
 	@$(MAKE) -j$(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) $(TARGETS)
 	@echo "✓ All cross-compilation targets built successfully (debug)"
