@@ -525,18 +525,17 @@ quality-zig-gates:
   script:
     - git ls-files '*.zig' | xargs -r zig fmt --check
     - zig build examples
-    # DISABLED pending Phase 7 perf-gate.sh (Task 7.1). The legacy
-    # scripts/perf_gate.sh + scripts/perf_udp_batch_gate.sh both invoke
-    # files under bench/ which was retired in Phase 3 Task 3.1. Re-enable
-    # (or replace with the unified scripts/perf-gate.sh) once Phase 7
-    # lands. The scripts themselves remain in-tree so their history /
-    # env-var contract is preserved for the Phase 7 rewrite.
-    # - scripts/perf_gate.sh
-    # - scripts/perf_udp_batch_gate.sh
-    # DISABLED pending Phase 3 bench/ cleanup: the smoke script also
-    # references bench/udp_batch_bench.zig. Phase 7 re-enables a
-    # cross-platform variant after the file moves under benchmarks/.
-    # - scripts/cross_platform_udp_batch_smoke.sh
+    # Unified tiered perf gate (Phase 7 Task 7.1). Runs `zig build bench`
+    # to capture current-HEAD JSON, then `zig build bench-compare` against
+    # benchmarks/results/baseline.json. compare.zig enforces the absolute
+    # gates (varint <=250ns p99, pacing <=400ns p99, hp <=400k ns p99,
+    # short-header alloc_bytes==0) that the legacy scripts/perf_gate.sh
+    # used to enforce inline; the batch/single ratio gate from
+    # scripts/perf_udp_batch_gate.sh is absorbed as a post-compare jq
+    # check in perf-gate.sh itself.
+    - apt-get install -y --no-install-recommends jq
+    - scripts/perf-gate.sh --baseline=benchmarks/results/baseline.json --current=/tmp/perf-gate-current.json
+    - scripts/cross_platform_udp_batch_smoke.sh
 
 runtime-smoke-macos-saas:
   stage: test

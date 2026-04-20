@@ -92,12 +92,13 @@ bench-compare:
 	@$(ZIG) build bench $(ZIG_FLAGS) -- --suite=all --output=/tmp/quic-current-bench.json
 	@$(ZIG) build bench-compare $(ZIG_FLAGS) -- --baseline=benchmarks/results/baseline.json --current=/tmp/quic-current-bench.json
 
-# Unified perf gate. scripts/perf-gate.sh is introduced by Phase 7 Task 7.1;
-# until that lands this target fails loudly (rather than silently masking the
-# pre-Phase-7 perf_gate.sh / perf_udp_batch_gate.sh scripts, which remain in
-# the tree as-is per the plan's transition policy).
+# Unified perf gate (Phase 7 Task 7.1). Captures current-HEAD bench JSON
+# and compares against benchmarks/results/baseline.json via
+# `zig build bench-compare`, absorbing the absolute gates from the retired
+# scripts/perf_gate.sh (varint/pacing/hp/alloc) and the batch/single ratio
+# gate from the retired scripts/perf_udp_batch_gate.sh.
 perf-gate:
-	@scripts/perf-gate.sh --baseline=benchmarks/results/baseline.json
+	@scripts/perf-gate.sh --baseline=benchmarks/results/baseline.json --current=/tmp/quic-perf-gate-current.json
 
 tools:
 	$(ZIG) build tools $(ZIG_FLAGS)

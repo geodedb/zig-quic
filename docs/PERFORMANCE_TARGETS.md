@@ -11,47 +11,62 @@ This document defines the repository's minimum performance contract for QUIC hot
 The repository uses these bounded reference profiles for regression checks:
 
 1. Microbench profile (CI-safe)
+
 - Command: `zig build bench`
 - Focus: packet encode/decode hot path, pacing arithmetic, header-protection decode path.
 - Data sizes: short-header payloads and handshake payloads used by `bench/main.zig`.
 
-2. Functional profile (correctness under performance changes)
+1. Functional profile (correctness under performance changes)
+
 - Command: `zig build test`
 - Focus: protocol correctness and no-regression behavior with optimized code paths.
 
-3. Full graph profile (periodic)
+1. Full graph profile (periodic)
+
 - Command: `zig build -Dfull-test-graph=true test`
 - Focus: broad integration coverage for refactors touching core packet/recovery/transport code.
 
 ## CI Performance Budgets
 
-`scripts/perf_gate.sh` enforces deterministic upper bounds from benchmark output:
+`scripts/perf-gate.sh` is the unified tiered A/B regression gate (Phase 7
+Task 7.1). It runs `zig build bench` to capture current-HEAD JSON and
+invokes `zig build bench-compare` against
+`benchmarks/results/baseline.json`. Absolute upper bounds are enforced by
+`benchmarks/compare.zig`'s `absolute_gates` table:
 
-- `varint encode` <= `250 ns/op`
-- `pacing delay compute` <= `400 ns/op`
-- `hp decode timing` <= `800000000 ns total` (for the bench loop count)
-- `short-header allocs/op` for `into encode` must equal `0`
-- `short-header allocs/op` for `into decode` must equal `0`
+- `micro/varint / encode` — `latency_p99_ns <= 250`
+- `micro/pacing / delay_compute` — `latency_p99_ns <= 400`
+- `micro/header_protection / decode` — `latency_p99_ns <= 400000`
+- `micro/frame_serialization / short_header_encode` — `alloc_bytes == 0`
+- `micro/frame_serialization / short_header_decode` — `alloc_bytes == 0`
 
-Thresholds are intentionally conservative to avoid host-noise flakiness while still catching material regressions.
+Thresholds are intentionally conservative to avoid host-noise flakiness
+while still catching material regressions.
 
-`scripts/perf_udp_batch_gate.sh` enforces Linux UDP batching guardrails:
+`scripts/perf-gate.sh` also enforces the Linux UDP batching guardrail as
+a post-compare ratio check (absorbed from the retired
+`scripts/perf_udp_batch_gate.sh`):
 
-- Runs `zig run bench/udp_batch_bench.zig -- --mode both`
-- Parses `mode=single` and `mode=batch` syscall-per-packet and speedup outputs
-- Requires syscall reduction factor >= `4.0x` (`single_spp / batch_spp`)
-- Requires throughput speedup >= `0.95x` (noise-tolerant non-regression floor)
+- Reads `integration/udp_batch` rows for `single` + `batch` variants
+- Computes `speedup = batch / single` (throughput_ops_per_sec)
+- Requires `speedup >= 0.95x` (default; override via
+  `UDP_BATCH_SPEEDUP_MIN=<float>`)
+- Skipped on non-Linux hosts (bench emits placeholder rows there)
 
-`scripts/cross_platform_udp_batch_smoke.sh` enforces compile-only portability guardrails for the batched transport path:
+`scripts/cross_platform_udp_batch_smoke.sh` enforces compile-only
+portability guardrails for the batched transport path by driving the
+`zig build cross-smoke` step (see `build.zig:cross_smoke_step`):
 
-- Runs `zig test --test-no-exec` for `src/quic/endpoint/transport.zig`, `src/quic/endpoint/udp_transport.zig`, and `src/quic/endpoint.zig`
-- Runs `zig build-exe -fno-emit-bin` for `bench/udp_batch_bench.zig` to guarantee benchmark portability (non-Linux builds skip runtime execution but must compile)
+- Compiles `src/quic/endpoint/transport.zig`,
+  `src/quic/endpoint/udp_transport.zig`, and `src/quic/endpoint.zig` via
+  `addObject` (no linking) for each target
 - Targets matrix:
   - `x86_64-macos-none`
   - `aarch64-macos-none`
   - `x86_64-windows-gnu`
   - `aarch64-windows-gnu`
-- Verifies that Linux batched syscalls remain behind fallback-safe abstractions and compile cleanly for non-Linux targets
+- Verifies that Linux batched syscalls remain behind fallback-safe
+  abstractions and compile cleanly for non-Linux targets
 
 Native runtime smoke coverage is also available on GitLab SaaS non-Linux runners:
 
@@ -64,18 +79,17 @@ Native runtime smoke coverage is also available on GitLab SaaS non-Linux runners
 
 ## Validation Commands
 
-- Local perf gate: `scripts/perf_gate.sh`
-- Local UDP batch gate: `scripts/perf_udp_batch_gate.sh`
+- Unified perf gate (manual mode): `scripts/perf-gate.sh --baseline=benchmarks/results/baseline.json`
+- Unified perf gate (paired-commit mode): `scripts/perf-gate.sh --baseline-commit=<sha>`
+- Unified perf gate (phased mode): `scripts/perf-gate.sh <step-name> before` then `... after`
 - Local cross-platform compile matrix gate: `scripts/cross_platform_udp_batch_smoke.sh`
 - Native runtime smoke (portable): `zig build test -- --test-filter udp_batch_runtime_smoke`
-- Baseline bench output capture: `zig build bench | tee /tmp/bench.txt`
-- Allocation regression verification: confirm bench line
-  `short-header allocs/op: ... into encode=0.0000, into decode=0.0000`
+- Baseline bench JSON capture: `zig build bench -- --suite=all --output=benchmarks/results/baseline.json`
 
 ## Change Management
 
 Any PR that changes packet encoding/decoding, recovery ACK processing, event-loop polling, or CI benchmark logic must:
 
-1. Run `scripts/perf_gate.sh`.
+1. Run `scripts/perf-gate.sh --baseline=benchmarks/results/baseline.json`.
 2. Include updated benchmark evidence in MR notes when thresholds are adjusted.
 3. Update this document if workloads or budgets change.
