@@ -14,15 +14,32 @@ const TierThresholds = struct {
     throughput_pct: f64,
     latency_p95_pct: f64,
     alloc_bytes_pct: ?f64,
+    // Max permissible rise in wait-bound fraction (permille = parts per 1000).
+    // Applied only when both baseline and current rows populate
+    // `mutex_hold_wall_ns` and have non-zero `wall_time_ns`. See
+    // `computeWaitBoundPermille` + derived gate in main().
+    wait_bound_permille: u64,
 };
 
 fn thresholds(t: Tier) TierThresholds {
     return switch (t) {
-        .micro => .{ .throughput_pct = 15.0, .latency_p95_pct = 10.0, .alloc_bytes_pct = 0.0 },
-        .integration => .{ .throughput_pct = 20.0, .latency_p95_pct = 25.0, .alloc_bytes_pct = 30.0 },
-        .external => .{ .throughput_pct = 25.0, .latency_p95_pct = 30.0, .alloc_bytes_pct = null },
-        .unknown => .{ .throughput_pct = 20.0, .latency_p95_pct = 25.0, .alloc_bytes_pct = null },
+        .micro => .{ .throughput_pct = 15.0, .latency_p95_pct = 10.0, .alloc_bytes_pct = 0.0, .wait_bound_permille = 100 },
+        .integration => .{ .throughput_pct = 20.0, .latency_p95_pct = 25.0, .alloc_bytes_pct = 30.0, .wait_bound_permille = 200 },
+        .external => .{ .throughput_pct = 25.0, .latency_p95_pct = 30.0, .alloc_bytes_pct = null, .wait_bound_permille = 300 },
+        .unknown => .{ .throughput_pct = 20.0, .latency_p95_pct = 25.0, .alloc_bytes_pct = null, .wait_bound_permille = 200 },
     };
+}
+
+/// Derive wait-bound fraction in permille (parts per 1000).
+/// Returns null if `mutex_hold_wall_ns` is null or `wall_time_ns` is zero.
+/// Uses a u128 intermediate so the multiplication `hold * 1000` cannot
+/// overflow (u64 * 1000 would saturate at ~18.4 s of mutex-hold time).
+pub fn computeWaitBoundPermille(mutex_hold_wall_ns: ?u64, wall_time_ns: u64) ?u64 {
+    const hold = mutex_hold_wall_ns orelse return null;
+    if (wall_time_ns == 0) return null;
+    const num: u128 = @as(u128, hold) * 1000;
+    const den: u128 = @as(u128, wall_time_ns);
+    return @intCast(num / den);
 }
 
 pub fn classify(name: []const u8) Tier {
@@ -153,6 +170,40 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
+        // Derived wait-bound gate. Flush-cadence + datagram-batch populate
+        // `mutex_hold_wall_ns`; compute permille of wall time and flag
+        // regressions where the fraction rose by more than the tier budget.
+        // Only meaningful when BOTH rows carry the field.
+        const base_permille_opt = computeWaitBoundPermille(base.mutex_hold_wall_ns, base.wall_time_ns);
+        const cur_permille_opt = computeWaitBoundPermille(cur.mutex_hold_wall_ns, cur.wall_time_ns);
+        var wait_bound_note: ?[]u8 = null;
+        defer if (wait_bound_note) |n| allocator.free(n);
+        if (base_permille_opt != null and cur_permille_opt != null) {
+            const base_permille = base_permille_opt.?;
+            const cur_permille = cur_permille_opt.?;
+            // Signed delta (cur - base) as i64. Permille fits easily in i64.
+            const delta_permille: i64 = @as(i64, @intCast(cur_permille)) - @as(i64, @intCast(base_permille));
+            const gate_permille: i64 = @intCast(thr.wait_bound_permille);
+            var wb_status: []const u8 = "PASS";
+            if (delta_permille > gate_permille) {
+                wb_status = "FAIL";
+                // Upgrade main row status so summary reports the failure.
+                if (!std.mem.eql(u8, status, "ABSOLUTE-FAIL")) status = "WAIT-BOUND-FAIL";
+                failures += 1;
+            } else if (delta_permille > @divTrunc(gate_permille, 2)) {
+                wb_status = "WARN";
+                if (std.mem.eql(u8, status, "PASS")) status = "WARN";
+                warns += 1;
+            }
+            const d_sign: u8 = if (delta_permille >= 0) '+' else '-';
+            const d_abs: u64 = @intCast(@abs(delta_permille));
+            wait_bound_note = try std.fmt.allocPrint(
+                allocator,
+                "|   wait_bound | {s} | {s} | base {d} permille | cur {d} permille | {c}{d} permille | (gate {d}) | {s} |\n",
+                .{ cur.scenario_name, cur.variant, base_permille, cur_permille, d_sign, d_abs, thr.wait_bound_permille, wb_status },
+            );
+        }
+
         // Zig 0.16 dropped `+` from format specifiers; emit sign manually.
         const t_sign: u8 = if (t_delta >= 0) '+' else '-';
         const p95_sign: u8 = if (p95_delta >= 0) '+' else '-';
@@ -168,6 +219,7 @@ pub fn main(init: std.process.Init) !void {
         );
         defer allocator.free(line);
         try stdout.writeStreamingAll(init.io, line);
+        if (wait_bound_note) |n| try stdout.writeStreamingAll(init.io, n);
     }
 
     const summary = try std.fmt.allocPrint(allocator, "\nSummary: {d} FAIL, {d} WARN\n", .{ failures, warns });

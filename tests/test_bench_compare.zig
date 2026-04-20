@@ -28,3 +28,36 @@ test "pctChange: positive improvement + regression" {
 test "pctChange: zero baseline returns 0 (divide-by-zero guard)" {
     try std.testing.expectEqual(@as(f64, 0.0), compare.pctChange(0.0, 1234.5));
 }
+
+test "computeWaitBoundPermille: null mutex_hold_wall_ns returns null" {
+    // Benches that don't populate the field must not show up in wait-bound row.
+    try std.testing.expectEqual(
+        @as(?u64, null),
+        compare.computeWaitBoundPermille(null, 1_000_000_000),
+    );
+}
+
+test "computeWaitBoundPermille: zero wall_time guards against divide-by-zero" {
+    try std.testing.expectEqual(
+        @as(?u64, null),
+        compare.computeWaitBoundPermille(@as(?u64, 500), 0),
+    );
+}
+
+test "computeWaitBoundPermille: 25 percent wait-bound yields 250 permille" {
+    // 25_000_000 ns hold / 100_000_000 ns wall = 0.25 -> 250 permille.
+    try std.testing.expectEqual(
+        @as(?u64, 250),
+        compare.computeWaitBoundPermille(@as(?u64, 25_000_000), 100_000_000),
+    );
+}
+
+test "computeWaitBoundPermille: avoids u64 overflow beyond ~18s mutex hold" {
+    // hold = 20 s; naive u64 * 1000 would overflow. u128 path returns 1000
+    // when hold == wall (100 percent wait-bound).
+    const hold: u64 = 20 * std.time.ns_per_s;
+    try std.testing.expectEqual(
+        @as(?u64, 1000),
+        compare.computeWaitBoundPermille(@as(?u64, hold), hold),
+    );
+}
