@@ -26,6 +26,8 @@ const common = @import("bench_common");
 const varint_bench = @import("micro/varint.zig");
 const pacing_bench = @import("micro/pacing.zig");
 const hp_bench = @import("micro/header_protection.zig");
+const aead_bench = @import("micro/aead.zig");
+const tls_keygen_bench = @import("micro/tls_keygen.zig");
 
 pub const SuiteEntry = struct {
     name: []const u8, // fully-qualified: "micro/varint"
@@ -38,6 +40,8 @@ pub const registry: []const SuiteEntry = &.{
     .{ .name = "micro/varint", .tier = "micro", .scenarios = &varint_bench.scenarios, .runFn = varint_bench.run },
     .{ .name = "micro/pacing", .tier = "micro", .scenarios = &pacing_bench.scenarios, .runFn = pacing_bench.run },
     .{ .name = "micro/header_protection", .tier = "micro", .scenarios = &hp_bench.scenarios, .runFn = hp_bench.run },
+    .{ .name = "micro/aead", .tier = "micro", .scenarios = &aead_bench.scenarios, .runFn = aead_bench.run },
+    .{ .name = "micro/tls_keygen", .tier = "micro", .scenarios = &tls_keygen_bench.scenarios, .runFn = tls_keygen_bench.run },
 };
 
 pub fn main(init: std.process.Init) !void {
