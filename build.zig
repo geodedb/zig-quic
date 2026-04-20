@@ -1977,6 +1977,19 @@ pub fn build(b: *std.Build) void {
     bench_handshake_step.dependOn(&install_bench_handshake.step);
     bench_handshake_step.dependOn(&run_bench_handshake.step);
 
+    // Benchmark suite dispatcher (v2). Registry is empty until Phase 2 migrates
+    // existing scenarios into benchmarks/{micro,integration,external}/. The
+    // step is named `bench-v2` until Phase 3 renames it to `bench` after the
+    // old scripts/Makefile targets are cut over.
+    const bench_runner = addExe(b, "bench-v2", "benchmarks/bench_runner.zig", target, .ReleaseFast);
+    bench_runner.root_module.addImport("bench_common", bench_common_mod);
+    const install_bench_runner = b.addInstallArtifact(bench_runner, .{});
+    const run_bench_runner = b.addRunArtifact(bench_runner);
+    if (b.args) |args| run_bench_runner.addArgs(args);
+    const bench_v2_step = b.step("bench-v2", "Run v2 benchmark suite (--suite=all|micro|integration|external|<scenario>, --list, --output=<path>)");
+    bench_v2_step.dependOn(&install_bench_runner.step);
+    bench_v2_step.dependOn(&run_bench_runner.step);
+
     // ========================================================================
     // Cross-platform compile smoke test
     // Used by scripts/cross_platform_udp_batch_smoke.sh

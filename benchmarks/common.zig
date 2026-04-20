@@ -180,7 +180,7 @@ pub fn runRepeated(
 
     return ResultRow{
         .git_sha = try gitSha(allocator, io),
-        .run_timestamp_unix_s = @as(i64, @intCast(@divTrunc(std.time.nanoTimestamp(), std.time.ns_per_s))),
+        .run_timestamp_unix_s = @as(i64, @intCast(@divTrunc(nanoTimestamp(), std.time.ns_per_s))),
         .zig_version = builtin.zig_version_string,
         .os = @tagName(builtin.os.tag),
         .arch = @tagName(builtin.cpu.arch),
@@ -223,7 +223,7 @@ pub fn writeDocument(
     output_path: ?[]const u8,
 ) !void {
     const doc = ResultDocument{
-        .generated_at_unix_s = @as(i64, @intCast(@divTrunc(std.time.nanoTimestamp(), std.time.ns_per_s))),
+        .generated_at_unix_s = @as(i64, @intCast(@divTrunc(nanoTimestamp(), std.time.ns_per_s))),
         .zig_version = builtin.zig_version_string,
         .quic_git_sha = try gitSha(allocator, io),
         .host = .{
@@ -278,8 +278,24 @@ fn percentile(values: []const u64, pct: u8) u64 {
 }
 
 pub fn nowNs() u64 {
-    const ts = std.time.nanoTimestamp();
+    const ts = nanoTimestamp();
     return if (ts < 0) 0 else @intCast(ts);
+}
+
+/// Zig 0.16.0 compat: std.time.nanoTimestamp() was removed. Mirrors the shim
+/// used in tests/test_transport_geode_compat.zig so timestamps can be emitted
+/// without a platform-specific branch on every caller.
+fn nanoTimestamp() i128 {
+    if (builtin.os.tag == .linux) {
+        var ts: std.os.linux.timespec = undefined;
+        _ = std.os.linux.clock_gettime(.REALTIME, &ts);
+        return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+    }
+    // Fallback: monotonic-ish but non-epoch on unsupported hosts. Callers
+    // treat timestamps as opaque comparators; absolute epoch only matters
+    // inside ResultDocument.generated_at_unix_s which divides by ns_per_s.
+    var timer = std.time.Timer.start() catch return 0;
+    return @as(i128, @intCast(timer.read()));
 }
 
 // ---------- Environment helpers ----------
