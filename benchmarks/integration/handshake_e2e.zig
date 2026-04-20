@@ -57,103 +57,20 @@ const common = @import("bench_common");
 const api = @import("quic_api");
 const endpoint_mod = @import("quic_endpoint");
 const cfg = @import("quic_config");
+const h = @import("_helpers.zig");
 
 const test_alpn = [_][]const u8{"h3"};
-const CERT_PATH = "tests/certs/cert.pem";
-const KEY_PATH = "tests/certs/key.pem";
 const SERVER_SNI = "localhost";
 
-/// Cached parsed-DER cert + private key for the server endpoint.
-/// Loaded once on first run() call -- runRepeated calls us 7 times
-/// per scenario, so caching saves 7 PEM parses per scenario.
-/// (Also ensures both runs of the same scenario use identical cert
-/// bytes -- avoids differential handshake cost from cert variation.)
-var cert_cache_mu: std.Io.Mutex = std.Io.Mutex.init;
-var cert_cache_cert_der: ?[]const u8 = null;
-var cert_cache_priv_p256: ?[]const u8 = null;
-
-/// Load cert.pem + key.pem, parse to DER / P-256 raw scalar, cache in
-/// process-global globals. Subsequent calls short-circuit. Returns
-/// null on any IO or parse failure (caller falls back to placeholder).
-fn loadServerCreds(allocator: std.mem.Allocator) ?struct { cert: []const u8, key: []const u8 } {
-    cert_cache_mu.lockUncancelable(benchIo());
-    defer cert_cache_mu.unlock(benchIo());
-
-    if (cert_cache_cert_der) |cert_der| {
-        if (cert_cache_priv_p256) |priv| {
-            return .{ .cert = cert_der, .key = priv };
-        }
-    }
-
-    const io = benchIo();
-
-    // Read + parse cert.pem
-    const cert_file = std.Io.Dir.cwd().openFile(io, CERT_PATH, .{}) catch return null;
-    defer cert_file.close(io);
-    const cert_size = (cert_file.stat(io) catch return null).size;
-    const cert_pem = allocator.alloc(u8, cert_size) catch return null;
-    defer allocator.free(cert_pem);
-    _ = cert_file.readPositionalAll(io, cert_pem, 0) catch return null;
-    const cert_der = api.pem.parseCertificate(allocator, cert_pem) catch return null;
-
-    // Read + parse key.pem
-    const key_file = std.Io.Dir.cwd().openFile(io, KEY_PATH, .{}) catch {
-        allocator.free(cert_der);
-        return null;
-    };
-    defer key_file.close(io);
-    const key_size = (key_file.stat(io) catch {
-        allocator.free(cert_der);
-        return null;
-    }).size;
-    const key_pem = allocator.alloc(u8, key_size) catch {
-        allocator.free(cert_der);
-        return null;
-    };
-    defer allocator.free(key_pem);
-    _ = key_file.readPositionalAll(io, key_pem, 0) catch {
-        allocator.free(cert_der);
-        return null;
-    };
-    const priv = api.pem.parsePrivateKey(allocator, key_pem) catch {
-        allocator.free(cert_der);
-        return null;
-    };
-
-    cert_cache_cert_der = cert_der;
-    cert_cache_priv_p256 = priv;
-    return .{ .cert = cert_der, .key = priv };
-}
-
-// Atomic port allocator. Starts at 18900 to avoid collisions with the
-// 18000-range used by tests/test_transport_geode_compat.zig, and to
-// give headroom for the 7-iteration runRepeated loop -- each run needs
-// a distinct port so the previous run's TIME_WAIT doesn't block bind.
-var next_port = std.atomic.Value(u16).init(18900);
-
+// Port allocator, cert cache, nanosleep, h.benchIo(), loadServerCreds()
+// live in _helpers.zig so 5.2/5.3/5.4 reuse them without copying. The
+// port counter there starts at 19400; handshake_e2e still uses the
+// 18900-range via a private allocator below to preserve the documented
+// "one range per bench" convention from Phase 5 planning (handshake
+// range in the 18xxx band; 19xxx+ reserved for the stream benches).
+var hs_next_port = std.atomic.Value(u16).init(18900);
 fn allocatePort() u16 {
-    return next_port.fetchAdd(1, .seq_cst);
-}
-
-/// Linux-only nanosleep wrapper. Matches the helper used across the
-/// test suite (tests/test_transport_geode_compat.zig:28-34).
-fn threadSleep(ns: u64) void {
-    if (builtin.os.tag == .linux) {
-        var ts: std.os.linux.timespec = .{
-            .sec = @intCast(ns / std.time.ns_per_s),
-            .nsec = @intCast(ns % std.time.ns_per_s),
-        };
-        _ = std.os.linux.nanosleep(&ts, &ts);
-    } else {
-        std.Thread.sleep(ns);
-    }
-}
-
-/// Shorthand: 0.16 removed `std.Thread.Mutex` in favour of `std.Io.Mutex`,
-/// which takes a `std.Io` instance on lock/unlock. We grab the single-
-/// threaded default IO (same pattern used throughout src/quic/endpoint.zig).
-fn benchIo() std.Io {
-    return std.Io.Threaded.global_single_threaded.io();
+    return hs_next_port.fetchAdd(1, .seq_cst);
 }
 
 const ServerCtx = struct {
@@ -173,9 +90,9 @@ fn serverThread(ctx: ServerCtx) void {
     while (!ctx.done.load(.acquire)) {
         _ = ctx.ep.pollWithStats(1) catch {};
         while (api.tryAccept(ctx.ep)) |c| {
-            ctx.accepted_list_mu.lockUncancelable(benchIo());
+            ctx.accepted_list_mu.lockUncancelable(h.benchIo());
             ctx.accepted_list.append(ctx.allocator, c) catch {};
-            ctx.accepted_list_mu.unlock(benchIo());
+            ctx.accepted_list_mu.unlock(h.benchIo());
             _ = ctx.accepted_count.fetchAdd(1, .seq_cst);
         }
     }
@@ -184,9 +101,9 @@ fn serverThread(ctx: ServerCtx) void {
     while (drain_ticks < 5) : (drain_ticks += 1) {
         _ = ctx.ep.pollWithStats(1) catch {};
         while (api.tryAccept(ctx.ep)) |c| {
-            ctx.accepted_list_mu.lockUncancelable(benchIo());
+            ctx.accepted_list_mu.lockUncancelable(h.benchIo());
             ctx.accepted_list.append(ctx.allocator, c) catch {};
-            ctx.accepted_list_mu.unlock(benchIo());
+            ctx.accepted_list_mu.unlock(h.benchIo());
             _ = ctx.accepted_count.fetchAdd(1, .seq_cst);
         }
     }
@@ -237,9 +154,9 @@ fn clientThread(ctx: ClientCtx) void {
     while (i < ctx.handshakes_to_do) : (i += 1) {
         const result = runHandshake(ctx.allocator, ctx.server_addr, timeout_ns);
         if (result) |dt| {
-            ctx.mu.lockUncancelable(benchIo());
+            ctx.mu.lockUncancelable(h.benchIo());
             ctx.latencies.append(ctx.allocator, dt) catch {};
-            ctx.mu.unlock(benchIo());
+            ctx.mu.unlock(h.benchIo());
             _ = ctx.done_count.fetchAdd(1, .seq_cst);
         } else {
             _ = ctx.fail_count.fetchAdd(1, .seq_cst);
@@ -263,7 +180,7 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
     // Load server credentials. On failure (cert files missing or
     // malformed) we emit a placeholder so the bench suite remains
     // runnable even without cert infrastructure.
-    const creds = loadServerCreds(allocator) orelse {
+    const creds = h.loadServerCreds(allocator) orelse {
         const latencies = try allocator.alloc(u64, 1);
         latencies[0] = 0;
         return .{
@@ -352,9 +269,9 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
         while (i < iters) : (i += 1) {
             const r = runHandshake(allocator, server_target, timeout_ns);
             if (r) |dt| {
-                lat_mu.lockUncancelable(benchIo());
+                lat_mu.lockUncancelable(h.benchIo());
                 latencies.append(allocator, dt) catch {};
-                lat_mu.unlock(benchIo());
+                lat_mu.unlock(h.benchIo());
                 _ = done_count.fetchAdd(1, .seq_cst);
             } else {
                 _ = fail_count.fetchAdd(1, .seq_cst);
@@ -398,7 +315,7 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
 
     // Signal server thread to stop and give it a moment to finalize.
     done.store(true, .release);
-    threadSleep(50 * std.time.ns_per_ms);
+    h.threadSleep(50 * std.time.ns_per_ms);
 
     // Build output slices owned by runRepeated's allocator.
     const final_count = done_count.load(.acquire);
