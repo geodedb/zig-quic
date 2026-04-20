@@ -649,6 +649,31 @@ pub const Endpoint = struct {
         return c;
     }
 
+    /// Look up a connection by peer address + short-header packet bytes.
+    ///
+    /// Thin public wrapper over `endpoint/lookup.findConnectionByDcid` that
+    /// exposes the connection-table routing path (RFC 9000 §5.1 / §5.2) for
+    /// benchmarks and observability tooling without requiring direct access
+    /// to the endpoint's internal connection map.
+    ///
+    /// `packet_bytes` must be the raw short-header packet (the first byte is
+    /// the header form; DCID starts at byte 1). Passing `null` for the NAT
+    /// rebinding callback means rebinding is detected-but-not-actioned here;
+    /// the real packet ingress path still drives path validation.
+    ///
+    /// Returns the matching Connection, or null if no entry routes. This is
+    /// read-only and holds no mutex -- the caller is responsible for ensuring
+    /// the connection table is stable (e.g., no concurrent connectClient /
+    /// accept during the lookup window). Benchmarks satisfy this implicitly
+    /// by running single-threaded against a pre-populated endpoint.
+    pub fn findConnectionByDcid(
+        self: *Endpoint,
+        peer: conn_mod.SockAddr,
+        packet_bytes: []const u8,
+    ) ?*conn_mod.Connection {
+        return lookup.findConnectionByDcid(&self.conns, peer, packet_bytes, null).conn;
+    }
+
     /// Transmit minimal Initial packet (PING) to elicit Version Negotiation or SH.
     pub fn clientSendInitialProbe(self: *Endpoint, c: *conn_mod.Connection) !void {
         // Set up client transport parameters for TLS handshake
