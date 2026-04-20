@@ -23,6 +23,9 @@ const std = @import("std");
 const common = @import("bench_common");
 
 // Phase 2+ will add scenario imports here as files arrive.
+const varint_bench = @import("micro/varint.zig");
+const pacing_bench = @import("micro/pacing.zig");
+const hp_bench = @import("micro/header_protection.zig");
 
 pub const SuiteEntry = struct {
     name: []const u8, // fully-qualified: "micro/varint"
@@ -31,8 +34,11 @@ pub const SuiteEntry = struct {
     runFn: common.RunFn,
 };
 
-// Registry starts empty -- Tasks 2.1+ populate this.
-pub const registry: []const SuiteEntry = &.{};
+pub const registry: []const SuiteEntry = &.{
+    .{ .name = "micro/varint", .tier = "micro", .scenarios = &varint_bench.scenarios, .runFn = varint_bench.run },
+    .{ .name = "micro/pacing", .tier = "micro", .scenarios = &pacing_bench.scenarios, .runFn = pacing_bench.run },
+    .{ .name = "micro/header_protection", .tier = "micro", .scenarios = &hp_bench.scenarios, .runFn = hp_bench.run },
+};
 
 pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);

@@ -1983,6 +1983,10 @@ pub fn build(b: *std.Build) void {
     // old scripts/Makefile targets are cut over.
     const bench_runner = addExe(b, "bench-v2", "benchmarks/bench_runner.zig", target, .ReleaseFast);
     bench_runner.root_module.addImport("bench_common", bench_common_mod);
+    bench_runner.root_module.addImport("quic_varint", quic_varint_mod);
+    bench_runner.root_module.addImport("quic_recovery", quic_recovery_mod);
+    bench_runner.root_module.addImport("quic_crypto", quic_crypto_mod);
+    bench_runner.root_module.addImport("quic_packet", quic_packet_mod);
     const install_bench_runner = b.addInstallArtifact(bench_runner, .{});
     const run_bench_runner = b.addRunArtifact(bench_runner);
     if (b.args) |args| run_bench_runner.addArgs(args);
