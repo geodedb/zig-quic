@@ -1,210 +1,196 @@
+// benchmarks/compare.zig
 // SPDX-License-Identifier: Apache-2.0
-// Copyright (c) 2024-2025 DevNW / CodePros
-
-//! Benchmark regression detection tool.
-//!
-//! Reads two JSON benchmark result files (baseline and current), compares
-//! metrics, and exits 1 if any metric regresses beyond its threshold.
-//!
-//! Usage:
-//!   zig build bench-compare -- <baseline.json> <current.json> [threshold%]
+//
+// Tier-aware regression comparator. Exits non-zero on any FAIL.
+// Tiers: micro (name prefix "micro/"), integration ("integration/"),
+// external ("external/"). Noise floor: 3x baseline stddev per tier.
 
 const std = @import("std");
+const common = @import("bench_common");
 
-const MetricKind = enum {
-    higher_is_better,
-    lower_is_better,
+pub const Tier = enum { micro, integration, external, unknown };
+
+const TierThresholds = struct {
+    throughput_pct: f64,
+    latency_p95_pct: f64,
+    alloc_bytes_pct: ?f64,
 };
 
-const Classification = struct {
-    kind: MetricKind,
-    threshold: f64,
-};
-
-/// Classify a metric by its name suffix to determine whether higher or lower
-/// is better and what the default regression threshold is.
-///
-/// Longer suffixes are checked first so that e.g. `polls_per_sec` matches
-/// before the generic `_per_sec`.
-fn classifyMetric(name: []const u8) Classification {
-    // Higher-is-better metrics (throughput / rate).
-    // polls_per_sec must be checked before _per_sec (longer match first).
-    const hib_suffixes = [_]struct { suffix: []const u8, threshold: f64 }{
-        .{ .suffix = "polls_per_sec", .threshold = 25.0 },
-        .{ .suffix = "_ops_sec", .threshold = 15.0 },
-        .{ .suffix = "_mbps", .threshold = 15.0 },
-        .{ .suffix = "_per_sec", .threshold = 15.0 },
-        .{ .suffix = "_pps", .threshold = 15.0 },
-    };
-
-    for (hib_suffixes) |entry| {
-        if (std.mem.endsWith(u8, name, entry.suffix)) {
-            return .{ .kind = .higher_is_better, .threshold = entry.threshold };
-        }
-    }
-
-    // Lower-is-better metrics (latency / duration).
-    const lib_suffixes = [_][]const u8{ "_ns", "_ms", "_us" };
-    for (lib_suffixes) |suffix| {
-        if (std.mem.endsWith(u8, name, suffix)) {
-            return .{ .kind = .lower_is_better, .threshold = 20.0 };
-        }
-    }
-
-    // Default: lower is better with 20% threshold.
-    return .{ .kind = .lower_is_better, .threshold = 20.0 };
-}
-
-/// Extract a numeric value from a JSON Value (handles both integer and float).
-fn jsonNumber(val: std.json.Value) ?f64 {
-    return switch (val) {
-        .integer => |i| @as(f64, @floatFromInt(i)),
-        .float => |f| f,
-        else => null,
+fn thresholds(t: Tier) TierThresholds {
+    return switch (t) {
+        .micro => .{ .throughput_pct = 15.0, .latency_p95_pct = 10.0, .alloc_bytes_pct = 0.0 },
+        .integration => .{ .throughput_pct = 20.0, .latency_p95_pct = 25.0, .alloc_bytes_pct = 30.0 },
+        .external => .{ .throughput_pct = 25.0, .latency_p95_pct = 30.0, .alloc_bytes_pct = null },
+        .unknown => .{ .throughput_pct = 20.0, .latency_p95_pct = 25.0, .alloc_bytes_pct = null },
     };
 }
 
-/// Read a file into memory.
-fn readFile(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
-    return try file.readToEndAlloc(allocator, 64 * 1024 * 1024);
+pub fn classify(name: []const u8) Tier {
+    if (std.mem.startsWith(u8, name, "micro/")) return .micro;
+    if (std.mem.startsWith(u8, name, "integration/")) return .integration;
+    if (std.mem.startsWith(u8, name, "external/")) return .external;
+    return .unknown;
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+const AbsoluteGate = struct {
+    scenario: []const u8,
+    variant: []const u8,
+    field: enum { latency_p99_ns, alloc_bytes },
+    max: u64,
+};
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+// Preserved from docs/PERFORMANCE_TARGETS.md:30-43
+const absolute_gates = [_]AbsoluteGate{
+    .{ .scenario = "micro/varint", .variant = "encode", .field = .latency_p99_ns, .max = 250 },
+    .{ .scenario = "micro/pacing", .variant = "delay_compute", .field = .latency_p99_ns, .max = 400 },
+    .{ .scenario = "micro/header_protection", .variant = "decode", .field = .latency_p99_ns, .max = 400_000 },
+    .{ .scenario = "micro/frame_serialization", .variant = "short_header_encode", .field = .alloc_bytes, .max = 0 },
+    .{ .scenario = "micro/frame_serialization", .variant = "short_header_decode", .field = .alloc_bytes, .max = 0 },
+};
 
-    if (args.len < 3) {
-        std.debug.print("Usage: bench-compare <baseline.json> <current.json> [threshold%]\n", .{});
+pub fn main(init: std.process.Init) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const args = try init.minimal.args.toSlice(allocator);
+    var baseline_path: ?[]const u8 = null;
+    var current_path: ?[]const u8 = null;
+    var skip_env_check = false;
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--baseline") and i + 1 < args.len) {
+            baseline_path = args[i + 1];
+            i += 1;
+        } else if (std.mem.startsWith(u8, args[i], "--baseline=")) {
+            baseline_path = args[i]["--baseline=".len..];
+        } else if (std.mem.eql(u8, args[i], "--current") and i + 1 < args.len) {
+            current_path = args[i + 1];
+            i += 1;
+        } else if (std.mem.startsWith(u8, args[i], "--current=")) {
+            current_path = args[i]["--current=".len..];
+        } else if (std.mem.eql(u8, args[i], "--skip-env-check")) {
+            skip_env_check = true;
+        }
+    }
+    if (baseline_path == null or current_path == null) {
+        try std.Io.File.stderr().writeStreamingAll(
+            init.io,
+            "usage: bench-compare --baseline <file> --current <file> [--skip-env-check]\n",
+        );
         std.process.exit(2);
     }
 
-    const baseline_path = args[1];
-    const current_path = args[2];
+    const baseline_doc = try readDocument(allocator, init.io, baseline_path.?);
+    const current_doc = try readDocument(allocator, init.io, current_path.?);
+    defer baseline_doc.deinit();
+    defer current_doc.deinit();
 
-    // Optional global threshold override.
-    var global_threshold: ?f64 = null;
-    if (args.len > 3) {
-        global_threshold = std.fmt.parseFloat(f64, args[3]) catch {
-            std.debug.print("Error: invalid threshold value '{s}'\n", .{args[3]});
+    if (!skip_env_check) {
+        const b = baseline_doc.value.host;
+        const c = current_doc.value.host;
+        if (!std.mem.eql(u8, b.os, c.os) or !std.mem.eql(u8, b.arch, c.arch) or
+            !std.mem.eql(u8, b.cpu, c.cpu) or
+            !std.mem.eql(u8, baseline_doc.value.zig_version, current_doc.value.zig_version))
+        {
+            const msg = try std.fmt.allocPrint(
+                allocator,
+                "ENV MISMATCH\n  baseline: os={s} arch={s} cpu={s} zig={s}\n  current:  os={s} arch={s} cpu={s} zig={s}\n  Re-run with --skip-env-check to override (not recommended).\n",
+                .{ b.os, b.arch, b.cpu, baseline_doc.value.zig_version, c.os, c.arch, c.cpu, current_doc.value.zig_version },
+            );
+            defer allocator.free(msg);
+            try std.Io.File.stderr().writeStreamingAll(init.io, msg);
             std.process.exit(2);
-        };
-    }
-
-    // Read and parse both files.
-    const baseline_data = try readFile(allocator, baseline_path);
-    defer allocator.free(baseline_data);
-    const current_data = try readFile(allocator, current_path);
-    defer allocator.free(current_data);
-
-    const baseline_parsed = try std.json.parseFromSlice(std.json.Value, allocator, baseline_data, .{});
-    defer baseline_parsed.deinit();
-    const current_parsed = try std.json.parseFromSlice(std.json.Value, allocator, current_data, .{});
-    defer current_parsed.deinit();
-
-    const baseline_root = baseline_parsed.value;
-    const current_root = current_parsed.value;
-
-    const baseline_tiers = (baseline_root.object.get("tiers") orelse {
-        std.debug.print("Error: baseline JSON missing 'tiers' field\n", .{});
-        std.process.exit(2);
-    }).array.items;
-
-    const current_tiers = (current_root.object.get("tiers") orelse {
-        std.debug.print("Error: current JSON missing 'tiers' field\n", .{});
-        std.process.exit(2);
-    }).array.items;
-
-    // Print header.
-    std.debug.print("  {s:<10} {s:<25} {s:>12} {s:>12} {s:>8} {s:<6}\n", .{
-        "Tier", "Metric", "Baseline", "Current", "Delta%", "Status",
-    });
-    std.debug.print("  {s}\n", .{"-" ** 75});
-
-    var any_fail = false;
-
-    // Iterate baseline tiers.
-    for (baseline_tiers) |baseline_tier| {
-        const tier_name = baseline_tier.object.get("name") orelse continue;
-        const tier_name_str = tier_name.string;
-
-        const baseline_metrics_val = baseline_tier.object.get("metrics") orelse continue;
-
-        // Find matching tier in current.
-        var current_metrics_val: ?std.json.Value = null;
-        for (current_tiers) |current_tier| {
-            const cname = current_tier.object.get("name") orelse continue;
-            if (std.mem.eql(u8, cname.string, tier_name_str)) {
-                current_metrics_val = current_tier.object.get("metrics");
-                break;
-            }
-        }
-
-        const current_metrics = current_metrics_val orelse {
-            std.debug.print("  {s:<10} (tier missing in current)\n", .{tier_name_str});
-            continue;
-        };
-
-        // Iterate metrics.
-        const baseline_metrics = baseline_metrics_val.object;
-        const keys = baseline_metrics.keys();
-        for (keys) |metric_name| {
-            const bval_json = baseline_metrics.get(metric_name) orelse continue;
-            const bval = jsonNumber(bval_json) orelse continue;
-
-            const cval_json = current_metrics.object.get(metric_name) orelse {
-                std.debug.print("  {s:<10} {s:<25} {d:>12.1} {s:>12} {s:>8} {s:<6}\n", .{
-                    tier_name_str, metric_name, bval, "N/A", "N/A", "SKIP",
-                });
-                continue;
-            };
-            const cval = jsonNumber(cval_json) orelse continue;
-
-            const classification = classifyMetric(metric_name);
-            const threshold = global_threshold orelse classification.threshold;
-
-            // Compute delta%.
-            var delta_pct: f64 = 0.0;
-            if (bval != 0.0) {
-                delta_pct = ((cval - bval) / @abs(bval)) * 100.0;
-            }
-
-            // Determine pass/fail.
-            // For higher_is_better: regression when current drops (negative delta beyond threshold)
-            // For lower_is_better: regression when current increases (positive delta beyond threshold)
-            const regressed = switch (classification.kind) {
-                .higher_is_better => delta_pct < -threshold,
-                .lower_is_better => delta_pct > threshold,
-            };
-
-            const status: []const u8 = if (regressed) "FAIL" else "PASS";
-            if (regressed) any_fail = true;
-
-            // Format delta with sign.
-            const sign: u8 = if (delta_pct >= 0.0) '+' else '-';
-            const abs_delta = @abs(delta_pct);
-
-            std.debug.print("  {s:<10} {s:<25} {d:>12.1} {d:>12.1} {c}{d:>5.1}%  {s}\n", .{
-                tier_name_str,
-                metric_name,
-                bval,
-                cval,
-                sign,
-                abs_delta,
-                status,
-            });
         }
     }
 
-    if (any_fail) {
-        std.debug.print("\nRegression detected! One or more metrics exceed threshold.\n", .{});
-        std.process.exit(1);
-    } else {
-        std.debug.print("\nAll metrics within threshold. No regression detected.\n", .{});
+    const stdout = std.Io.File.stdout();
+    try stdout.writeStreamingAll(
+        init.io,
+        "| scenario | variant | tier | ops/s base | ops/s cur | delta% | p95 base | p95 cur | delta% | status |\n" ++
+            "|---|---|---|---:|---:|---:|---:|---:|---:|---|\n",
+    );
+
+    var failures: usize = 0;
+    var warns: usize = 0;
+
+    for (current_doc.value.rows) |cur| {
+        const base = findMatch(baseline_doc.value.rows, cur) orelse continue;
+        const tier = classify(cur.scenario_name);
+        const thr = thresholds(tier);
+
+        const t_delta = pctChange(base.throughput_ops_per_sec, cur.throughput_ops_per_sec);
+        const p95_delta = pctChange(
+            @as(f64, @floatFromInt(base.latency_p95_ns)),
+            @as(f64, @floatFromInt(cur.latency_p95_ns)),
+        );
+
+        const stddev_pct = if (base.throughput_ops_per_sec != 0)
+            (base.throughput_stddev_ops_per_sec / base.throughput_ops_per_sec) * 100.0
+        else
+            0.0;
+        const t_gate = @max(thr.throughput_pct, 3.0 * stddev_pct);
+
+        var status: []const u8 = "PASS";
+        if (t_delta < -t_gate or p95_delta > thr.latency_p95_pct) {
+            status = "FAIL";
+            failures += 1;
+        } else if (t_delta < -(thr.throughput_pct / 2.0) or p95_delta > (thr.latency_p95_pct / 2.0)) {
+            status = "WARN";
+            warns += 1;
+        }
+
+        for (absolute_gates) |gate| {
+            if (!std.mem.eql(u8, gate.scenario, cur.scenario_name)) continue;
+            if (!std.mem.eql(u8, gate.variant, cur.variant)) continue;
+            const actual: u64 = switch (gate.field) {
+                .latency_p99_ns => cur.latency_p99_ns,
+                .alloc_bytes => cur.alloc_bytes,
+            };
+            if (actual > gate.max) {
+                status = "ABSOLUTE-FAIL";
+                failures += 1;
+            }
+        }
+
+        // Zig 0.16 dropped `+` from format specifiers; emit sign manually.
+        const t_sign: u8 = if (t_delta >= 0) '+' else '-';
+        const p95_sign: u8 = if (p95_delta >= 0) '+' else '-';
+        const line = try std.fmt.allocPrint(
+            allocator,
+            "| {s} | {s} | {s} | {d:.1} | {d:.1} | {c}{d:.2}% | {d} | {d} | {c}{d:.2}% | {s} |\n",
+            .{
+                cur.scenario_name,           cur.variant,                @tagName(tier),
+                base.throughput_ops_per_sec, cur.throughput_ops_per_sec, t_sign,
+                @abs(t_delta),               base.latency_p95_ns,        cur.latency_p95_ns,
+                p95_sign,                    @abs(p95_delta),            status,
+            },
+        );
+        defer allocator.free(line);
+        try stdout.writeStreamingAll(init.io, line);
     }
+
+    const summary = try std.fmt.allocPrint(allocator, "\nSummary: {d} FAIL, {d} WARN\n", .{ failures, warns });
+    defer allocator.free(summary);
+    try stdout.writeStreamingAll(init.io, summary);
+    if (failures > 0) std.process.exit(1);
+}
+
+fn readDocument(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !std.json.Parsed(common.ResultDocument) {
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(16 * 1024 * 1024));
+    defer allocator.free(bytes);
+    return std.json.parseFromSlice(common.ResultDocument, allocator, bytes, .{ .ignore_unknown_fields = true });
+}
+
+fn findMatch(rows: []const common.ResultRow, cur: common.ResultRow) ?common.ResultRow {
+    for (rows) |row| {
+        if (std.mem.eql(u8, row.scenario_name, cur.scenario_name) and
+            std.mem.eql(u8, row.variant, cur.variant)) return row;
+    }
+    return null;
+}
+
+pub fn pctChange(before: f64, after: f64) f64 {
+    if (before == 0) return 0;
+    return ((after - before) / before) * 100.0;
 }

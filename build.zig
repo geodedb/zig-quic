@@ -1927,14 +1927,35 @@ pub fn build(b: *std.Build) void {
     bench_scale_step.dependOn(&install_bench_scale.step);
     bench_scale_step.dependOn(&run_bench_scale.step);
 
-    // Regression comparison tool
+    // Regression comparison tool (tier-aware v2 -- reads ResultDocument JSON)
     const bench_compare = addExe(b, "bench-compare", "benchmarks/compare.zig", target, .ReleaseFast);
+    bench_compare.root_module.addImport("bench_common", bench_common_mod);
     const install_bench_compare = b.addInstallArtifact(bench_compare, .{});
     const run_bench_compare = b.addRunArtifact(bench_compare);
     if (b.args) |args| run_bench_compare.addArgs(args);
     const bench_compare_step = b.step("bench-compare", "Compare benchmark results against baseline");
     bench_compare_step.dependOn(&install_bench_compare.step);
     bench_compare_step.dependOn(&run_bench_compare.step);
+
+    // Bench comparator unit tests -- exposes compare.zig's helpers (Tier,
+    // classify, pctChange) via a module import because Zig 0.16 rejects the
+    // direct cross-module `@import("../benchmarks/compare.zig")` form.
+    const bench_compare_mod = b.createModule(.{
+        .root_source_file = b.path("benchmarks/compare.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    bench_compare_mod.addImport("bench_common", bench_common_mod);
+    const bench_compare_test_mod = b.createModule(.{
+        .root_source_file = b.path("tests/test_bench_compare.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    bench_compare_test_mod.addImport("bench_compare", bench_compare_mod);
+    const bench_compare_test = b.addTest(.{ .root_module = bench_compare_test_mod });
+    const run_bench_compare_test = b.addRunArtifact(bench_compare_test);
+    const bench_compare_test_step = b.step("test-bench-compare", "Run bench comparator tests");
+    bench_compare_test_step.dependOn(&run_bench_compare_test.step);
 
     // Throughput benchmark (real UDP) - scaffold
     const bench_throughput = addExe(b, "bench-throughput", "benchmarks/throughput_bench.zig", target, .ReleaseFast);
