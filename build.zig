@@ -1928,6 +1928,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     bench_compare_test_mod.addImport("bench_compare", bench_compare_mod);
+    bench_compare_test_mod.addImport("bench_common", bench_common_mod);
     const bench_compare_test = b.addTest(.{ .root_module = bench_compare_test_mod });
     const run_bench_compare_test = b.addRunArtifact(bench_compare_test);
     const bench_compare_test_step = b.step("test-bench-compare", "Run bench comparator tests");

@@ -61,3 +61,77 @@ test "computeWaitBoundPermille: avoids u64 overflow beyond ~18s mutex hold" {
         compare.computeWaitBoundPermille(@as(?u64, hold), hold),
     );
 }
+
+test "isSkipRow: external_impl ending -SKIP detected" {
+    const common_mod = @import("bench_common");
+    const skip_row = common_mod.ResultRow{
+        .git_sha = "x",
+        .run_timestamp_unix_s = 0,
+        .zig_version = "0.16.0",
+        .os = "linux",
+        .arch = "x86_64",
+        .cpu = "x86_64",
+        .hostname = "h",
+        .kernel = "k",
+        .scenario_name = "external/aioquic/handshake",
+        .variant = "loopback",
+        .iterations = 1,
+        .throughput_ops_per_sec = 1000.0,
+        .latency_p50_ns = 0,
+        .latency_p95_ns = 0,
+        .latency_p99_ns = 0,
+        .cpu_time_ns = 0,
+        .wall_time_ns = 1_000_000,
+        .external_impl = "aioquic-SKIP",
+    };
+    try std.testing.expect(compare.isSkipRow(skip_row));
+}
+
+test "isSkipRow: normal external row is not a skip" {
+    const common_mod = @import("bench_common");
+    const real_row = common_mod.ResultRow{
+        .git_sha = "x",
+        .run_timestamp_unix_s = 0,
+        .zig_version = "0.16.0",
+        .os = "linux",
+        .arch = "x86_64",
+        .cpu = "x86_64",
+        .hostname = "h",
+        .kernel = "k",
+        .scenario_name = "external/quic-go/handshake",
+        .variant = "loopback",
+        .iterations = 20,
+        .throughput_ops_per_sec = 9.14,
+        .latency_p50_ns = 100_000_000,
+        .latency_p95_ns = 110_000_000,
+        .latency_p99_ns = 111_000_000,
+        .cpu_time_ns = 0,
+        .wall_time_ns = 2_000_000_000,
+        .external_impl = "quic-go",
+    };
+    try std.testing.expect(!compare.isSkipRow(real_row));
+}
+
+test "isSkipRow: null external_impl is not a skip" {
+    const common_mod = @import("bench_common");
+    const micro_row = common_mod.ResultRow{
+        .git_sha = "x",
+        .run_timestamp_unix_s = 0,
+        .zig_version = "0.16.0",
+        .os = "linux",
+        .arch = "x86_64",
+        .cpu = "x86_64",
+        .hostname = "h",
+        .kernel = "k",
+        .scenario_name = "micro/varint",
+        .variant = "encode",
+        .iterations = 200_000,
+        .throughput_ops_per_sec = 5_000_000.0,
+        .latency_p50_ns = 100,
+        .latency_p95_ns = 150,
+        .latency_p99_ns = 200,
+        .cpu_time_ns = 0,
+        .wall_time_ns = 40_000_000,
+    };
+    try std.testing.expect(!compare.isSkipRow(micro_row));
+}

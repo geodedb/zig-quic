@@ -132,7 +132,14 @@ pub fn main(init: std.process.Init) !void {
     var warns: usize = 0;
 
     for (current_doc.value.rows) |cur| {
+        // Skip external rows whose toolchain was unavailable — the placeholder
+        // (iterations=1, wall_time_ns=1ms, latencies=[0]) produces garbage
+        // numbers that would false-positive against a real baseline.
+        if (isSkipRow(cur)) continue;
+
         const base = findMatch(baseline_doc.value.rows, cur) orelse continue;
+        if (isSkipRow(base)) continue;
+
         const tier = classify(cur.scenario_name);
         const thr = thresholds(tier);
 
@@ -240,6 +247,14 @@ fn findMatch(rows: []const common.ResultRow, cur: common.ResultRow) ?common.Resu
             std.mem.eql(u8, row.variant, cur.variant)) return row;
     }
     return null;
+}
+
+/// External rows whose toolchain was unavailable land here with an
+/// `external_impl` ending in "-SKIP" and placeholder numbers. Filter
+/// them out of comparison so they don't false-positive as regressions.
+pub fn isSkipRow(row: common.ResultRow) bool {
+    const impl = row.external_impl orelse return false;
+    return std.mem.endsWith(u8, impl, "-SKIP");
 }
 
 pub fn pctChange(before: f64, after: f64) f64 {
