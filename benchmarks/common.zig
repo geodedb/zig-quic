@@ -102,6 +102,11 @@ pub const RunOutput = struct {
     cwnd_final_bytes: u64 = 0,
     rtt_smoothed_ns: u64 = 0,
     mutex_hold_wall_ns: u64 = 0,
+    /// Populated only by external-tier scenarios. Suffix "-SKIP" marks a
+    /// row that was skipped (toolchain missing / build failed / server
+    /// failed to start); downstream compare/gate treats skip rows as
+    /// non-contributing rather than regressions.
+    external_impl: ?[]const u8 = null,
 };
 
 pub const RunFn = *const fn (allocator: std.mem.Allocator, spec: ScenarioSpec) anyerror!RunOutput;
@@ -213,6 +218,7 @@ pub fn runRepeated(
         .cwnd_final_bytes = if (rep.cwnd_final_bytes == 0) null else rep.cwnd_final_bytes,
         .rtt_smoothed_ns = if (rep.rtt_smoothed_ns == 0) null else rep.rtt_smoothed_ns,
         .mutex_hold_wall_ns = if (rep.mutex_hold_wall_ns == 0) null else rep.mutex_hold_wall_ns,
+        .external_impl = rep.external_impl,
     };
 }
 

@@ -38,6 +38,15 @@ const handshake_e2e_bench = @import("integration/handshake_e2e.zig");
 const stream_throughput_bench = @import("integration/stream_throughput.zig");
 const datagram_batch_bench = @import("integration/datagram_batch.zig");
 const flush_cadence_bench = @import("integration/flush_cadence.zig");
+const external_scenarios = @import("external/scenarios.zig");
+
+/// Module-level `std.Io` populated in main() before any registry entry runs.
+/// The external-tier harness needs io to drive `std.process.run`, but the
+/// `RunFn` signature is `(allocator, spec)` only -- threading io through
+/// every bench's signature would churn 15 files for a 3-scenario need.
+/// Other tiers ignore this var; they synthesize their own io via
+/// `_helpers.benchIo()`.
+pub var bench_io: std.Io = undefined;
 
 pub const SuiteEntry = struct {
     name: []const u8, // fully-qualified: "micro/varint"
@@ -62,12 +71,20 @@ pub const registry: []const SuiteEntry = &.{
     .{ .name = "integration/stream_throughput", .tier = "integration", .scenarios = &stream_throughput_bench.scenarios, .runFn = stream_throughput_bench.run },
     .{ .name = "integration/datagram_batch", .tier = "integration", .scenarios = &datagram_batch_bench.scenarios, .runFn = datagram_batch_bench.run },
     .{ .name = "integration/flush_cadence", .tier = "integration", .scenarios = &flush_cadence_bench.scenarios, .runFn = flush_cadence_bench.run },
+    .{ .name = "external/quic-go", .tier = "external", .scenarios = &external_scenarios.scenarios_quic_go, .runFn = external_scenarios.runQuicGoHandshake },
+    .{ .name = "external/quinn", .tier = "external", .scenarios = &external_scenarios.scenarios_quinn, .runFn = external_scenarios.runQuinnHandshake },
+    .{ .name = "external/aioquic", .tier = "external", .scenarios = &external_scenarios.scenarios_aioquic, .runFn = external_scenarios.runAioquicHandshake },
 };
 
 pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
+
+    // Publish io to the module-level var so external/harness.zig can read
+    // it without refactoring the RunFn signature. Must happen before any
+    // registry entry executes.
+    bench_io = init.io;
 
     const args = try init.minimal.args.toSlice(allocator);
     const suite = common.parseSuiteArg(args) orelse "all";
