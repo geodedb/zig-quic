@@ -100,7 +100,7 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("✅ Connection established\n", .{});
     std.debug.print("✅ TLS handshake complete\n\n", .{});
 
-    var results = std.ArrayList(TestResult){};
+    var results: std.ArrayList(TestResult) = .empty;
     defer {
         for (results.items) |result| {
             alloc.free(result.details);
@@ -248,10 +248,13 @@ fn testLargeDataTransfer(alloc: *std.mem.Allocator, ep: *QuicEndpoint, conn: *Co
 
     const stream_id = try openBidiStreamWithRetry(ep, conn, 100, 10); // Allocate a fresh bidi stream for large transfers
 
-    // Generate random data
+    // Generate random data. Zig 0.16 removed std.crypto.random; use a
+    // seeded DefaultPrng since payload contents don't need cryptographic
+    // randomness (echo test just wants varied bytes).
     const data = try alloc.alloc(u8, size);
     defer alloc.free(data);
-    std.crypto.random.bytes(data);
+    var prng = std.Random.DefaultPrng.init(@intCast(milliTimestamp()));
+    prng.random().bytes(data);
 
     // Write data in chunks
     var written: usize = 0;
