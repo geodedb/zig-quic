@@ -1,316 +1,382 @@
+// benchmarks/common.zig
 // SPDX-License-Identifier: Apache-2.0
-// Copyright (c) 2024-2025 DevNW / CodePros
-
-//! Shared benchmark harness for the QUIC benchmark suite.
-//!
-//! Provides timing, JSON output, table printing, and math helpers
-//! used by all benchmark executables (poll, scale, throughput, handshake).
+//
+// Shared benchmark harness for zig-quic performance work.
+// Adapted from ../../thread-pool/benchmarks/common.zig — same median-of-6
+// sampling + CPU pinning helpers + JSON schema, restructured so benchmarks
+// supply their own measurement functions.
 
 const std = @import("std");
 const builtin = @import("builtin");
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-/// High-resolution timer backed by `std.time.nanoTimestamp`.
-pub const Timer = struct {
-    start_ns: i128,
-    stop_ns: ?i128,
-
-    /// Start a new timer, capturing the current timestamp.
-    pub fn start() Timer {
-        return .{
-            .start_ns = std.time.nanoTimestamp(),
-            .stop_ns = null,
-        };
-    }
-
-    /// Stop the timer, capturing the end timestamp.
-    pub fn stop(self: *Timer) void {
-        self.stop_ns = std.time.nanoTimestamp();
-    }
-
-    /// Elapsed time in nanoseconds.
-    /// If stop() has not been called, measures up to now.
-    pub fn elapsed_ns(self: Timer) u64 {
-        const end = self.stop_ns orelse std.time.nanoTimestamp();
-        const diff = end - self.start_ns;
-        return @intCast(@max(0, diff));
-    }
-
-    /// Elapsed time in microseconds.
-    pub fn elapsed_us(self: Timer) u64 {
-        return self.elapsed_ns() / std.time.ns_per_us;
-    }
-
-    /// Elapsed time in milliseconds.
-    pub fn elapsed_ms(self: Timer) u64 {
-        return self.elapsed_ns() / std.time.ns_per_ms;
-    }
-};
-
-/// A single named metric (e.g. "ops_per_sec", 1234.5).
-pub const Metric = struct {
+pub const ScenarioSpec = struct {
     name: []const u8,
-    value: f64,
+    variant: []const u8 = "default",
+    iterations: u64 = 1,
+    warmup_iterations: u64 = 0,
+    payload_bytes: u32 = 0,
+    connection_count: u32 = 1,
+    streams_count: u32 = 1,
+    extra: ?*const anyopaque = null,
 };
 
-/// A single named parameter (e.g. "connections", 100).
-pub const Param = struct {
-    name: []const u8,
-    value: u64,
+pub const ResultRow = struct {
+    git_sha: []const u8,
+    run_timestamp_unix_s: i64,
+    zig_version: []const u8,
+    os: []const u8,
+    arch: []const u8,
+    cpu: []const u8,
+    hostname: []const u8,
+    kernel: []const u8,
+    scenario_name: []const u8,
+    variant: []const u8,
+    iterations: u64,
+    throughput_ops_per_sec: f64,
+    throughput_stddev_ops_per_sec: f64 = 0,
+    latency_p50_ns: u64,
+    latency_p95_ns: u64,
+    latency_p99_ns: u64,
+    cpu_time_ns: u64,
+    wall_time_ns: u64,
+    alloc_count: u64 = 0,
+    alloc_bytes: u64 = 0,
+    peak_live_bytes: u64 = 0,
+    rss_current_bytes: u64 = 0,
+    rss_peak_bytes: u64 = 0,
+
+    // QUIC-specific optional fields
+    bytes_per_sec: ?u64 = null,
+    packets_per_sec: ?u64 = null,
+    handshake_latency_p50_ns: ?u64 = null,
+    handshake_latency_p99_ns: ?u64 = null,
+    connection_count: ?u32 = null,
+    streams_count: ?u32 = null,
+    payload_bytes: ?u32 = null,
+    retransmit_count: ?u64 = null,
+    loss_rate_permille: ?u16 = null,
+    cwnd_final_bytes: ?u64 = null,
+    rtt_smoothed_ns: ?u64 = null,
+    external_impl: ?[]const u8 = null,
+    mutex_hold_wall_ns: ?u64 = null,
 };
 
-/// Result for one benchmark tier (a named configuration with params and metrics).
-pub const TierResult = struct {
-    name: []const u8,
-    params: []const Param,
-    metrics: []const Metric,
+pub const HostInfo = struct {
+    os: []const u8,
+    arch: []const u8,
+    cpu: []const u8,
+    hostname: []const u8,
+    kernel: []const u8,
 };
 
-// ---------------------------------------------------------------------------
-// JSON output (stdout)
-// ---------------------------------------------------------------------------
+pub const ResultDocument = struct {
+    generated_at_unix_s: i64,
+    zig_version: []const u8,
+    quic_git_sha: []const u8,
+    host: HostInfo,
+    rows: []ResultRow,
+};
 
-/// Emit benchmark results as JSON to stdout.
-///
-/// Format:
-/// ```json
-/// {
-///   "version": 1,
-///   "suite": "<suite-name>",
-///   "timestamp": <unix-seconds>,
-///   "git_commit": "<short-sha or unknown>",
-///   "system": { "os": "<os>", "arch": "<arch>" },
-///   "tiers": [ { "name": "...", "params": {...}, "metrics": {...} } ]
-/// }
-/// ```
-pub fn emitJson(allocator: std.mem.Allocator, suite: []const u8, tiers: []const TierResult) !void {
-    const git_commit = getGitCommit(allocator);
-    defer allocator.free(git_commit);
+pub const LatencySummary = struct {
+    count: usize,
+    min_ns: u64,
+    mean_ns: u64,
+    p50_ns: u64,
+    p95_ns: u64,
+    p99_ns: u64,
+    max_ns: u64,
+};
 
-    const timestamp = std.time.timestamp();
+pub const RunOutput = struct {
+    iterations: u64,
+    wall_time_ns: u64,
+    cpu_time_ns: u64,
+    latencies_ns: []u64,
+    alloc_count: u64 = 0,
+    alloc_bytes: u64 = 0,
+    peak_live_bytes: u64 = 0,
+    bytes_transferred: u64 = 0,
+    packets_transferred: u64 = 0,
+    handshake_latencies_ns: ?[]u64 = null,
+    retransmit_count: u64 = 0,
+    cwnd_final_bytes: u64 = 0,
+    rtt_smoothed_ns: u64 = 0,
+    mutex_hold_wall_ns: u64 = 0,
+};
 
-    // Build JSON into a heap buffer, then write to stdout in one shot.
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(allocator);
+pub const RunFn = *const fn (allocator: std.mem.Allocator, spec: ScenarioSpec) anyerror!RunOutput;
 
-    const w = buf.writer(allocator);
+pub fn parseOutputArg(args: []const []const u8) ?[]const u8 {
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.startsWith(u8, args[i], "--output=")) return args[i]["--output=".len..];
+        if (std.mem.eql(u8, args[i], "--output") and i + 1 < args.len) return args[i + 1];
+    }
+    return null;
+}
 
-    try w.writeAll("{\n");
-    try w.print("  \"version\": 1,\n", .{});
-    try w.print("  \"suite\": \"{s}\",\n", .{suite});
-    try w.print("  \"timestamp\": {d},\n", .{timestamp});
-    try w.print("  \"git_commit\": \"{s}\",\n", .{git_commit});
-    try w.writeAll("  \"system\": {\n");
-    try w.print("    \"os\": \"{s}\",\n", .{@tagName(builtin.os.tag)});
-    try w.print("    \"arch\": \"{s}\"\n", .{@tagName(builtin.cpu.arch)});
-    try w.writeAll("  },\n");
-    try w.writeAll("  \"tiers\": [\n");
+pub fn parseSuiteArg(args: []const []const u8) ?[]const u8 {
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.startsWith(u8, args[i], "--suite=")) return args[i]["--suite=".len..];
+        if (std.mem.eql(u8, args[i], "--suite") and i + 1 < args.len) return args[i + 1];
+    }
+    return null;
+}
 
-    for (tiers, 0..) |tier, ti| {
-        try w.writeAll("    {\n");
-        try w.print("      \"name\": \"{s}\",\n", .{tier.name});
+/// Run `runFn` 7 times, discard run #1, return ResultRow with median-of-6 + stddev.
+pub fn runRepeated(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    spec: ScenarioSpec,
+    runFn: RunFn,
+) !ResultRow {
+    const RUN_COUNT: usize = 7;
+    const WARMUP: usize = 1;
+    const SAMPLES: usize = RUN_COUNT - WARMUP;
 
-        try w.writeAll("      \"params\": {\n");
-        for (tier.params, 0..) |p, pi| {
-            const comma: []const u8 = if (pi + 1 < tier.params.len) "," else "";
-            try w.print("        \"{s}\": {d}{s}\n", .{ p.name, p.value, comma });
+    var outputs: [RUN_COUNT]RunOutput = undefined;
+    for (&outputs) |*o| o.* = try runFn(allocator, spec);
+    defer {
+        for (&outputs) |*o| {
+            allocator.free(o.latencies_ns);
+            if (o.handshake_latencies_ns) |h| allocator.free(h);
         }
-        try w.writeAll("      },\n");
-
-        try w.writeAll("      \"metrics\": {\n");
-        for (tier.metrics, 0..) |m, mi| {
-            const comma: []const u8 = if (mi + 1 < tier.metrics.len) "," else "";
-            try w.print("        \"{s}\": {d}{s}\n", .{ m.name, m.value, comma });
-        }
-        try w.writeAll("      }\n");
-
-        const tier_comma: []const u8 = if (ti + 1 < tiers.len) "," else "";
-        try w.print("    }}{s}\n", .{tier_comma});
     }
 
-    try w.writeAll("  ]\n");
-    try w.writeAll("}\n");
+    const warm_samples = outputs[WARMUP..];
+    var throughputs: [SAMPLES]f64 = undefined;
+    for (warm_samples, 0..) |o, i| {
+        throughputs[i] = @as(f64, @floatFromInt(o.iterations)) /
+            (@as(f64, @floatFromInt(o.wall_time_ns)) / std.time.ns_per_s);
+    }
+    std.sort.heap(f64, &throughputs, {}, comptime std.sort.asc(f64));
+    const median_throughput = throughputs[SAMPLES / 2];
+    var sum_sq: f64 = 0;
+    for (throughputs) |t| {
+        const d = t - median_throughput;
+        sum_sq += d * d;
+    }
+    const stddev = std.math.sqrt(sum_sq / @as(f64, @floatFromInt(SAMPLES)));
 
-    // Write to stdout via POSIX fd.
-    const stdout_fd = std.posix.STDOUT_FILENO;
-    var written: usize = 0;
-    while (written < buf.items.len) {
-        const n = std.posix.write(stdout_fd, buf.items[written..]) catch |err| switch (err) {
-            error.WouldBlock => continue,
-            else => return err,
-        };
-        written += n;
+    var median_idx: usize = WARMUP;
+    var best_diff: f64 = std.math.inf(f64);
+    for (warm_samples, WARMUP..) |o, i| {
+        const t = @as(f64, @floatFromInt(o.iterations)) /
+            (@as(f64, @floatFromInt(o.wall_time_ns)) / std.time.ns_per_s);
+        const d = @abs(t - median_throughput);
+        if (d < best_diff) {
+            best_diff = d;
+            median_idx = i;
+        }
+    }
+    const rep = outputs[median_idx];
+
+    const summary = summarizeLatencies(rep.latencies_ns);
+    const handshake_summary: ?LatencySummary = if (rep.handshake_latencies_ns) |h|
+        summarizeLatencies(h)
+    else
+        null;
+
+    return ResultRow{
+        .git_sha = try gitSha(allocator, io),
+        .run_timestamp_unix_s = @as(i64, @intCast(@divTrunc(std.time.nanoTimestamp(), std.time.ns_per_s))),
+        .zig_version = builtin.zig_version_string,
+        .os = @tagName(builtin.os.tag),
+        .arch = @tagName(builtin.cpu.arch),
+        .cpu = try allocator.dupe(u8, @tagName(builtin.cpu.arch)),
+        .hostname = try hostnameAlloc(allocator, io),
+        .kernel = try kernelAlloc(allocator, io),
+        .scenario_name = spec.name,
+        .variant = spec.variant,
+        .iterations = rep.iterations,
+        .throughput_ops_per_sec = median_throughput,
+        .throughput_stddev_ops_per_sec = stddev,
+        .latency_p50_ns = summary.p50_ns,
+        .latency_p95_ns = summary.p95_ns,
+        .latency_p99_ns = summary.p99_ns,
+        .cpu_time_ns = rep.cpu_time_ns,
+        .wall_time_ns = rep.wall_time_ns,
+        .alloc_count = rep.alloc_count,
+        .alloc_bytes = rep.alloc_bytes,
+        .peak_live_bytes = rep.peak_live_bytes,
+        .rss_current_bytes = rssCurrentBytes() catch 0,
+        .rss_peak_bytes = rssPeakBytes() catch 0,
+        .bytes_per_sec = if (rep.bytes_transferred == 0) null else @intFromFloat(@as(f64, @floatFromInt(rep.bytes_transferred)) * 1e9 / @as(f64, @floatFromInt(rep.wall_time_ns))),
+        .packets_per_sec = if (rep.packets_transferred == 0) null else @intFromFloat(@as(f64, @floatFromInt(rep.packets_transferred)) * 1e9 / @as(f64, @floatFromInt(rep.wall_time_ns))),
+        .handshake_latency_p50_ns = if (handshake_summary) |h| h.p50_ns else null,
+        .handshake_latency_p99_ns = if (handshake_summary) |h| h.p99_ns else null,
+        .connection_count = spec.connection_count,
+        .streams_count = spec.streams_count,
+        .payload_bytes = spec.payload_bytes,
+        .retransmit_count = if (rep.retransmit_count == 0) null else rep.retransmit_count,
+        .cwnd_final_bytes = if (rep.cwnd_final_bytes == 0) null else rep.cwnd_final_bytes,
+        .rtt_smoothed_ns = if (rep.rtt_smoothed_ns == 0) null else rep.rtt_smoothed_ns,
+        .mutex_hold_wall_ns = if (rep.mutex_hold_wall_ns == 0) null else rep.mutex_hold_wall_ns,
+    };
+}
+
+pub fn writeDocument(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    rows: []const ResultRow,
+    output_path: ?[]const u8,
+) !void {
+    const doc = ResultDocument{
+        .generated_at_unix_s = @as(i64, @intCast(@divTrunc(std.time.nanoTimestamp(), std.time.ns_per_s))),
+        .zig_version = builtin.zig_version_string,
+        .quic_git_sha = try gitSha(allocator, io),
+        .host = .{
+            .os = @tagName(builtin.os.tag),
+            .arch = @tagName(builtin.cpu.arch),
+            .cpu = @tagName(builtin.cpu.arch),
+            .hostname = try hostnameAlloc(allocator, io),
+            .kernel = try kernelAlloc(allocator, io),
+        },
+        .rows = @constCast(rows),
+    };
+    const json = try std.json.Stringify.valueAlloc(allocator, doc, .{ .whitespace = .indent_2 });
+    defer allocator.free(json);
+    if (output_path) |path| {
+        var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+        defer file.close(io);
+        try file.writeStreamingAll(io, json);
+        try file.writeStreamingAll(io, "\n");
+    } else {
+        const out = std.Io.File.stdout();
+        try out.writeStreamingAll(io, json);
+        try out.writeStreamingAll(io, "\n");
     }
 }
 
-/// Best-effort retrieval of the short git commit hash.
-/// Returns "unknown" on any failure.
-fn getGitCommit(allocator: std.mem.Allocator) []const u8 {
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &.{ "git", "rev-parse", "--short", "HEAD" },
-    }) catch return allocator.dupe(u8, "unknown") catch return "unknown";
+// ---------- Latency + timing helpers ----------
+
+pub fn summarizeLatencies(values: []u64) LatencySummary {
+    std.sort.heap(u64, values, {}, comptime std.sort.asc(u64));
+    return .{
+        .count = values.len,
+        .min_ns = if (values.len == 0) 0 else values[0],
+        .mean_ns = mean(values),
+        .p50_ns = percentile(values, 50),
+        .p95_ns = percentile(values, 95),
+        .p99_ns = percentile(values, 99),
+        .max_ns = if (values.len == 0) 0 else values[values.len - 1],
+    };
+}
+
+fn mean(values: []const u64) u64 {
+    if (values.len == 0) return 0;
+    var total: u128 = 0;
+    for (values) |v| total += v;
+    return @intCast(total / values.len);
+}
+
+fn percentile(values: []const u64, pct: u8) u64 {
+    if (values.len == 0) return 0;
+    const idx = @min((values.len - 1) * pct / 100, values.len - 1);
+    return values[idx];
+}
+
+pub fn nowNs() u64 {
+    const ts = std.time.nanoTimestamp();
+    return if (ts < 0) 0 else @intCast(ts);
+}
+
+// ---------- Environment helpers ----------
+
+pub fn gitSha(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "git", "rev-parse", "HEAD" },
+        .stdout_limit = .limited(128),
+        .stderr_limit = .limited(512),
+    }) catch return allocator.dupe(u8, "unknown");
     defer allocator.free(result.stderr);
-
-    if (result.term.Exited != 0) {
-        allocator.free(result.stdout);
-        return allocator.dupe(u8, "unknown") catch return "unknown";
-    }
-
-    // Trim trailing newline
-    const trimmed = std.mem.trimRight(u8, result.stdout, "\n\r ");
-    if (trimmed.len == 0) {
-        allocator.free(result.stdout);
-        return allocator.dupe(u8, "unknown") catch return "unknown";
-    }
-
-    // result.stdout is allocator-owned; we need to return just the trimmed slice.
-    // Since trimmed is a sub-slice of result.stdout, we dupe and free the original.
-    const commit = allocator.dupe(u8, trimmed) catch {
-        allocator.free(result.stdout);
-        return "unknown";
+    defer allocator.free(result.stdout);
+    const exited = switch (result.term) {
+        .exited => |c| c,
+        else => 1,
     };
-    allocator.free(result.stdout);
-    return commit;
+    if (exited != 0) return allocator.dupe(u8, "unknown");
+    return allocator.dupe(u8, std.mem.trim(u8, result.stdout, " \r\n\t"));
 }
 
-// ---------------------------------------------------------------------------
-// Human-readable table output (stderr via std.debug.print)
-// ---------------------------------------------------------------------------
-
-/// Print a header line to stderr.
-pub fn printHeader(comptime fmt: []const u8, args: anytype) void {
-    std.debug.print(fmt ++ "\n", args);
+pub fn hostnameAlloc(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{"hostname"},
+        .stdout_limit = .limited(256),
+        .stderr_limit = .limited(256),
+    }) catch return allocator.dupe(u8, "unknown");
+    defer allocator.free(result.stderr);
+    defer allocator.free(result.stdout);
+    return allocator.dupe(u8, std.mem.trim(u8, result.stdout, " \r\n\t"));
 }
 
-/// Print a table row to stderr.
-pub fn printTableRow(comptime fmt: []const u8, args: anytype) void {
-    std.debug.print(fmt ++ "\n", args);
+pub fn kernelAlloc(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "uname", "-r" },
+        .stdout_limit = .limited(256),
+        .stderr_limit = .limited(256),
+    }) catch return allocator.dupe(u8, "unknown");
+    defer allocator.free(result.stderr);
+    defer allocator.free(result.stdout);
+    return allocator.dupe(u8, std.mem.trim(u8, result.stdout, " \r\n\t"));
 }
 
-/// Print a separator line to stderr.
-pub fn printSeparator() void {
-    std.debug.print("{s}\n", .{"-" ** 78});
+pub fn rssCurrentBytes() !u64 {
+    if (builtin.os.tag != .linux) return 0;
+    const page_size = std.heap.pageSize();
+    const posix = std.posix;
+    const fd = try posix.openat(posix.AT.FDCWD, "/proc/self/statm", .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
+    defer _ = std.os.linux.close(fd);
+    var buf: [128]u8 = undefined;
+    const n = try posix.read(fd, &buf);
+    const contents = buf[0..n];
+    var it = std.mem.tokenizeScalar(u8, contents, ' ');
+    _ = it.next();
+    const resident_str = it.next() orelse return 0;
+    const resident_pages = std.fmt.parseInt(u64, std.mem.trim(u8, resident_str, " \n\r"), 10) catch return 0;
+    return resident_pages * page_size;
 }
 
-// ---------------------------------------------------------------------------
-// Math helpers
-// ---------------------------------------------------------------------------
-
-/// Calculate operations per second from a count and elapsed nanoseconds.
-pub fn opsPerSec(count: u64, elapsed_ns: u64) f64 {
-    if (elapsed_ns == 0) return 0;
-    const count_f: f64 = @floatFromInt(count);
-    const ns_f: f64 = @floatFromInt(elapsed_ns);
-    return count_f / (ns_f / 1_000_000_000.0);
+pub fn rssPeakBytes() !u64 {
+    if (builtin.os.tag != .linux) return 0;
+    const posix = std.posix;
+    const fd = try posix.openat(posix.AT.FDCWD, "/proc/self/status", .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
+    defer _ = std.os.linux.close(fd);
+    var buf: [4096]u8 = undefined;
+    var total: usize = 0;
+    while (total < buf.len) {
+        const n = try posix.read(fd, buf[total..]);
+        if (n == 0) break;
+        total += n;
+    }
+    const contents = buf[0..total];
+    var lines = std.mem.tokenizeScalar(u8, contents, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "VmHWM:")) {
+            var parts = std.mem.tokenizeScalar(u8, line, ' ');
+            _ = parts.next();
+            const kb_str = parts.next() orelse return 0;
+            const kb = std.fmt.parseInt(u64, kb_str, 10) catch return 0;
+            return kb * 1024;
+        }
+    }
+    return 0;
 }
 
-/// Calculate nanoseconds per operation from a count and elapsed nanoseconds.
-pub fn nsPerOp(count: u64, elapsed_ns: u64) f64 {
-    if (count == 0) return 0;
-    const ns_f: f64 = @floatFromInt(elapsed_ns);
-    const count_f: f64 = @floatFromInt(count);
-    return ns_f / count_f;
+// ---------- CPU affinity (Linux only) ----------
+
+pub fn pinCurrentThreadToCpu(cpu_id: u32) !void {
+    if (builtin.os.tag != .linux) return error.Unsupported;
+    var set: std.os.linux.cpu_set_t = std.mem.zeroes(std.os.linux.cpu_set_t);
+    const bits_per_word = @sizeOf(usize) * 8;
+    const word_idx: usize = cpu_id / bits_per_word;
+    if (word_idx >= set.len) return error.CpuIdOutOfRange;
+    const bit_idx: u6 = @intCast(cpu_id % bits_per_word);
+    set[word_idx] |= @as(usize, 1) << bit_idx;
+    try std.os.linux.sched_setaffinity(0, &set);
 }
 
-/// Calculate throughput in megabytes per second from bytes and elapsed nanoseconds.
-pub fn mbps(bytes: u64, elapsed_ns: u64) f64 {
-    if (elapsed_ns == 0) return 0;
-    const bytes_f: f64 = @floatFromInt(bytes);
-    const ns_f: f64 = @floatFromInt(elapsed_ns);
-    const seconds = ns_f / 1_000_000_000.0;
-    return (bytes_f / (1024.0 * 1024.0)) / seconds;
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-test "Timer basic usage" {
-    var t = Timer.start();
-    // Minimal spin to ensure elapsed > 0
-    std.Thread.sleep(1_000);
-    t.stop();
-    const ns = t.elapsed_ns();
-    try std.testing.expect(ns > 0);
-    // elapsed_us and elapsed_ms should not error
-    _ = t.elapsed_us();
-    _ = t.elapsed_ms();
-}
-
-test "Timer without stop measures to now" {
-    const t = Timer.start();
-    std.Thread.sleep(1_000);
-    const ns = t.elapsed_ns();
-    try std.testing.expect(ns > 0);
-}
-
-test "opsPerSec" {
-    // 1000 ops in 1 second = 1000 ops/sec
-    const result = opsPerSec(1000, 1_000_000_000);
-    try std.testing.expectApproxEqRel(result, 1000.0, 0.001);
-}
-
-test "opsPerSec zero elapsed" {
-    try std.testing.expectEqual(@as(f64, 0), opsPerSec(100, 0));
-}
-
-test "nsPerOp" {
-    // 1_000_000 ns for 100 ops = 10_000 ns/op
-    const result = nsPerOp(100, 1_000_000);
-    try std.testing.expectApproxEqRel(result, 10_000.0, 0.001);
-}
-
-test "nsPerOp zero count" {
-    try std.testing.expectEqual(@as(f64, 0), nsPerOp(0, 1_000_000));
-}
-
-test "mbps" {
-    // 1 MiB in 1 second = 1.0 MB/s
-    const result = mbps(1024 * 1024, 1_000_000_000);
-    try std.testing.expectApproxEqRel(result, 1.0, 0.001);
-}
-
-test "mbps zero elapsed" {
-    try std.testing.expectEqual(@as(f64, 0), mbps(1024, 0));
-}
-
-test "Metric struct" {
-    const m = Metric{ .name = "ops_per_sec", .value = 42.0 };
-    try std.testing.expectEqualStrings("ops_per_sec", m.name);
-    try std.testing.expectEqual(@as(f64, 42.0), m.value);
-}
-
-test "Param struct" {
-    const p = Param{ .name = "connections", .value = 100 };
-    try std.testing.expectEqualStrings("connections", p.name);
-    try std.testing.expectEqual(@as(u64, 100), p.value);
-}
-
-test "TierResult struct" {
-    const params = [_]Param{.{ .name = "n", .value = 10 }};
-    const metrics = [_]Metric{.{ .name = "ops", .value = 500.0 }};
-    const tier = TierResult{
-        .name = "small",
-        .params = &params,
-        .metrics = &metrics,
-    };
-    try std.testing.expectEqualStrings("small", tier.name);
-    try std.testing.expectEqual(@as(usize, 1), tier.params.len);
-    try std.testing.expectEqual(@as(usize, 1), tier.metrics.len);
-}
-
-test "printSeparator does not crash" {
-    printSeparator();
-}
-
-test "printHeader does not crash" {
-    printHeader("  {s:<20} {s:>10}", .{ "Benchmark", "Value" });
-}
-
-test "printTableRow does not crash" {
-    printTableRow("  {s:<20} {d:>10.2}", .{ "test_row", 42.5 });
+pub fn cpuCount() u32 {
+    return @intCast(std.Thread.getCpuCount() catch 1);
 }

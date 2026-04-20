@@ -1889,6 +1889,18 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseFast,
     });
 
+    // Bench harness unit tests
+    const bench_common_test_mod = b.createModule(.{
+        .root_source_file = b.path("tests/test_bench_common.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    bench_common_test_mod.addImport("bench_common", bench_common_mod);
+    const bench_common_test = b.addTest(.{ .root_module = bench_common_test_mod });
+    const run_bench_common_test = b.addRunArtifact(bench_common_test);
+    const bench_common_test_step = b.step("test-bench-common", "Run bench harness tests");
+    bench_common_test_step.dependOn(&run_bench_common_test.step);
+
     // Poll loop overhead benchmark
     const bench_poll = addExe(b, "bench-poll", "benchmarks/poll_bench.zig", target, .ReleaseFast);
     bench_poll.root_module.addImport("bench_common", bench_common_mod);
