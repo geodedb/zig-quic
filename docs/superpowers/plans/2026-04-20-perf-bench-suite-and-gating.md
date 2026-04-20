@@ -55,6 +55,16 @@
 
 ---
 
+## Known Pre-existing Issues (Discovered During Phase 0 Execution)
+
+These are NOT regressions introduced by this plan; they existed before Phase 0 and were uncovered during verification. They are tracked here so future phases can reference them.
+
+1. **`cmd/quic-client-comprehensive.zig:103` — outstanding ArrayList migration.** Uses `std.ArrayList(TestResult){}` instead of the 0.16.0-idiomatic `.empty`. Blocks `zig build cli` and therefore every Makefile interop target (`interop-basic`, `interop-quick`, `interop-full`). The commit `0c5f1a7` explicitly migrated other files but missed this one. **Fixed by Task 0.8 below** so Phase 6 (external harness) has a working interop foundation.
+2. **`tests/test_transport_geode_compat.zig:246` — `connectEx` asserts CA cert.** Runtime test failure: `connectEx requires a CA certificate (use connectInsecure for insecure testing)`. Pre-existing functional bug, unrelated to the 0.16.0 upgrade. Out of scope for this plan; **track as a separate follow-up**. Every phase's verification step should note "110/113 test pass + 1 known pre-existing fail" rather than flag it as a regression.
+3. **No lightweight `make interop_local` target.** The existing `interop-*` Makefile targets chain through `zig build cli` (blocked by issue #1 pre-Task-0.8) and require docker for full containerized runs. Task 0.8's fix restores the existing targets. Phase 6 Task 6.1 additionally verifies a lightweight local path exists (adds one if not).
+
+---
+
 ## Phase 0: Zig 0.16.0 Upgrade (Prerequisite)
 
 Every downstream phase assumes 0.16.0. This phase migrates the repo incrementally, commit-per-subsystem.
@@ -313,6 +323,48 @@ Run: `make interop_local 2>&1 | tail -20` (or appropriate target from Makefile).
 
 ```bash
 git commit --allow-empty -m "chore(zig-0.16): verify test + bench + interop pass on 0.16.0"
+```
+
+---
+
+### Task 0.8: Fix pre-existing ArrayList miss in cmd/quic-client-comprehensive.zig
+
+**Files:**
+
+- Modify: `cmd/quic-client-comprehensive.zig:103`
+
+**Context:** Discovered during Task 0.7 interop verification. Commit `0c5f1a7` ("fix: zig 0.16.0 compat") migrated `std.ArrayList(T){}` → `.empty` across the tree but missed this file. Without this fix, `zig build cli` fails and every Makefile interop target is blocked, which blocks Phase 6 (external harness) from running locally.
+
+- [ ] **Step 1: Confirm the bug is at line 103**
+
+Run: `grep -n "std.ArrayList(TestResult){}" cmd/quic-client-comprehensive.zig`
+Expected: a line number (101-105 range) matching the pre-0.16 pattern. If the file has drifted and the pattern is no longer there, report DONE (already fixed) — don't invent a change.
+
+- [ ] **Step 2: Apply the `.empty` migration**
+
+Replace `var <name> = std.ArrayList(TestResult){};` with `var <name>: std.ArrayList(TestResult) = .empty;`. Update adjacent `.deinit()` / `.append(item)` calls to take `allocator` per the 0.16 pattern if they exist in the same function. Use `grep -n "TestResult\|\.append\|\.deinit" cmd/quic-client-comprehensive.zig` to find the callsites.
+
+- [ ] **Step 3: Verify `zig build cli` now passes**
+
+Run: `zig build cli 2>&1 | tail -10`
+Expected: success (binary built).
+
+- [ ] **Step 4: Verify interop is at least reachable**
+
+Run: `make interop-quick 2>&1 | head -30` (or the lightest available target from `grep -E "^interop" Makefile`).
+
+If interop-quick needs docker/network and you can't run it here, that's fine — the goal is to prove the BUILD path reaches interop, not to successfully run the interop tests. Run at least `make interop-build` (or equivalent build-only target) to prove `zig build cli` is no longer a blocker.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add cmd/quic-client-comprehensive.zig
+git commit -m "fix(cli): finish zig 0.16 ArrayList migration in quic-client-comprehensive
+
+Missed by 0c5f1a7. Restores zig build cli and unblocks Makefile
+interop targets so Phase 6 external harness has a working foundation.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -2937,6 +2989,26 @@ git commit -m "feat(bench): add datagram_batch integration bench (#126 endpoint-
 
 **Purpose:** Cross-impl compare (handshake + throughput) against quic-go, quinn, aioquic. Wraps existing `test-clients/*` via `interop/run_endpoint.sh` — does not re-implement clients.
 
+**Prerequisite:** Task 0.8 must have landed (restores `zig build cli` and Makefile interop targets). Verify:
+
+```bash
+zig build cli 2>&1 | tail -5
+grep -E "^interop" Makefile
+```
+
+- [ ] **Step 0: Ensure a lightweight local interop target exists**
+
+Per the "Known Pre-existing Issues" section: there's no `make interop_local`. Task 0.8 restored the existing heavier targets (`interop-basic`, `interop-quick`, `interop-full`). If a lightweight target that runs a single client-server round-trip without docker or external networking would help benchmark development, add it to the Makefile now:
+
+```makefile
+# Lightweight local interop — one client/server round-trip, no docker, no external network.
+# Used by benchmarks/external/ scenarios when the harness wants a quick smoke.
+interop_local:
+ @./scripts/interop_local.sh
+```
+
+If the Makefile already gained this target in an unrelated MR, don't duplicate.
+
 - [ ] **Step 1: Inventory test-clients capabilities**
 
 Run these to understand what each client can do:
@@ -3981,10 +4053,10 @@ git commit --allow-empty -m "chore(bench): v2 perf suite + gating protocol compl
 
 ## Completion Checklist
 
-After all 29 tasks:
+After all 30 tasks (29 original + Task 0.8 added post-Phase-0):
 
 - [ ] Repo builds on Zig 0.16.0 (`zig build`)
-- [ ] Tests pass (`zig build test`)
+- [ ] Tests pass (`zig build test`) — 1 known pre-existing failure at `tests/test_transport_geode_compat.zig:246` is acceptable (see "Known Pre-existing Issues"); all other tests pass
 - [ ] Interop smoke passes (`make interop_local`)
 - [ ] `zig build bench -- --list` shows all 14+ scenarios
 - [ ] `zig build bench -- --suite=all --output=/tmp/run.json` completes in 5-15 min
