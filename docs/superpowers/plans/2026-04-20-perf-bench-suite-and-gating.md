@@ -22,7 +22,7 @@
 | 2 | 5 | Migrate existing benches onto new harness (varint/pacing/hp, TLS, udp_batch, poll, scale) |
 | 3 | 1 | Rewire build.zig + Makefile + .gitlab-ci.yml |
 | 4 | 3 | New micro benches: frame_serialization, connection_lookup, loss_detection_scan |
-| 5 | 3 | New integration benches: handshake_e2e, stream_throughput, datagram_batch |
+| 5 | 4 | New integration benches: handshake_e2e, stream_throughput, datagram_batch, flush_cadence (geode) |
 | 6 | 1 | External harness wrapping test-clients/* |
 | 7 | 1 | scripts/perf-gate.sh (paired A/B, tiered) — retires old scripts |
 | 8 | 1 | Extend PERFORMANCE_TARGETS.md; write PERFORMANCE_TRACKING.md + BENCHMARKS.md |
@@ -62,6 +62,14 @@ These are NOT regressions introduced by this plan; they existed before Phase 0 a
 1. **`cmd/quic-client-comprehensive.zig:103` — outstanding ArrayList migration.** Uses `std.ArrayList(TestResult){}` instead of the 0.16.0-idiomatic `.empty`. Blocks `zig build cli` and therefore every Makefile interop target (`interop-basic`, `interop-quick`, `interop-full`). The commit `0c5f1a7` explicitly migrated other files but missed this one. **Fixed by Task 0.8 below** so Phase 6 (external harness) has a working interop foundation.
 2. **`tests/test_transport_geode_compat.zig:246` — `connectEx` asserts CA cert.** Runtime test failure: `connectEx requires a CA certificate (use connectInsecure for insecure testing)`. Pre-existing functional bug, unrelated to the 0.16.0 upgrade. Out of scope for this plan; **track as a separate follow-up**. Every phase's verification step should note "110/113 test pass + 1 known pre-existing fail" rather than flag it as a regression.
 3. **No lightweight `make interop_local` target.** The existing `interop-*` Makefile targets chain through `zig build cli` (blocked by issue #1 pre-Task-0.8) and require docker for full containerized runs. Task 0.8's fix restores the existing targets. Phase 6 Task 6.1 additionally verifies a lightweight local path exists (adds one if not).
+
+---
+
+## Downstream Consumer Motivations
+
+This plan is written from the zig-quic repo's perspective, but certain benchmarks are motivated by concrete perf issues in downstream consumers. Capturing the motivation keeps those benchmarks from looking gratuitous.
+
+1. **geode graph database — two_hop flush cadence.** Located at `~/src/devnw/zig/geode`. Step-4 profiling of geode's `two_hop` query pattern documented that **~80% of the remaining 1s p50 latency is wait-bound on QUIC flush cadence** — the time between when geode's query engine submits a request/response and when QUIC actually delivers the bytes over the wire. Fixing this requires changes inside zig-quic's send path (pacing, stream-write coalescing, flush triggers). Task 5.4 establishes the baseline benchmark so geode-motivated QUIC perf work can be A/B-tested and regressions caught.
 
 ---
 
@@ -2977,6 +2985,247 @@ git commit -m "feat(bench): add datagram_batch integration bench (#126 endpoint-
 
 ---
 
+### Task 5.4: Write integration/flush_cadence.zig (geode two_hop wait)
+
+**Files:**
+
+- Create: `benchmarks/integration/flush_cadence.zig`
+- Modify: `benchmarks/bench_runner.zig`
+
+**Purpose:** Measure QUIC flush cadence — the latency from when a write is submitted on a stream to when the bytes actually land on the wire. Motivated by geode graph database's `two_hop` query pattern (`~/src/devnw/zig/geode`) whose step-4 profile documented **~80% of the remaining 1s p50 latency is wait-bound on QUIC flush cadence** inside zig-quic's send path.
+
+Establishes a baseline so geode-motivated QUIC work (flush-trigger heuristics, pacing tuning, stream-write coalescing) can be A/B-tested against this benchmark and regressions caught.
+
+- [ ] **Step 1: Identify the stream-write + flush API**
+
+Run: `grep -rn "pub fn write\|pub fn flush\|flushStream\|streamWrite\|pushFrame" src/quic/ lib.zig 2>/dev/null | head -20`
+
+Record the actual stream-write function (produces ACK-eliciting stream frames on the send path) and the internal flush primitive that drives datagram emission. The benchmark needs to time both.
+
+- [ ] **Step 2: Add instrumentation hook (if not exposed)**
+
+Submit-to-wire latency is an internal measurement. If the endpoint doesn't already expose a hook, add a minimal instrumentation point in `src/quic/endpoint.zig` (or wherever the send loop resolves stream bytes → UDP datagrams):
+
+- An atomic `u64 last_wire_ns` updated each time the send loop writes a datagram
+- A per-stream "queued-at-ns" timestamp that the benchmark can read at submit time
+- The benchmark computes `wire_ns - queued_ns` per write
+
+If instrumentation is invasive, fall back to coarse measurement: post a write, spin-check an internal counter or poll the wire via a loopback receive and time-to-first-byte — less precise but captures the core wait-bound behavior.
+
+- [ ] **Step 3: Write the benchmark**
+
+```zig
+// benchmarks/integration/flush_cadence.zig
+// SPDX-License-Identifier: Apache-2.0
+// QUIC flush-cadence benchmark. Measures time from stream.write() return
+// to actual wire emission. Motivated by geode two_hop's 800ms wait-bound
+// on flush cadence.
+
+const std = @import("std");
+const common = @import("../common.zig");
+const api = @import("quic_api");
+const cfg = @import("quic_config");
+
+const test_alpn = [_][]const u8{"h3"};
+
+const Variant = enum {
+    small_writes_1_stream,  // 1 stream, many 128B writes, per-write submit→wire
+    fanout_two_hop,          // N streams, small req/resp pairs (geode two_hop shape)
+    burst_flush,             // burst of 100 writes, time to full flush
+    sustained_writes,        // steady writes for 10s, flush-to-flush jitter
+};
+
+fn variantFromString(v: []const u8) Variant {
+    if (std.mem.eql(u8, v, "small_writes_1_stream")) return .small_writes_1_stream;
+    if (std.mem.eql(u8, v, "fanout_two_hop")) return .fanout_two_hop;
+    if (std.mem.eql(u8, v, "burst_flush")) return .burst_flush;
+    if (std.mem.eql(u8, v, "sustained_writes")) return .sustained_writes;
+    return .small_writes_1_stream;
+}
+
+pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunOutput {
+    // Reuse cert setup helper from handshake_e2e.
+    const certs = try @import("./handshake_e2e.zig").makeTestCerts(allocator);
+    defer certs.cleanup();
+
+    var server = try api.QuicServer.init(allocator, .{
+        .listen_addr = "127.0.0.1:0",
+        .cert_path = certs.cert_path,
+        .key_path = certs.key_path,
+        .alpn = &test_alpn,
+    });
+    defer server.deinit();
+    const server_addr = try server.localAddr(allocator);
+    defer allocator.free(server_addr);
+
+    // Server echo loop
+    var server_done = std.atomic.Value(bool).init(false);
+    const srv_thread = try std.Thread.spawn(.{}, struct {
+        fn run(s: *api.QuicServer, done: *std.atomic.Value(bool)) void {
+            while (!done.load(.seq_cst)) {
+                s.poll(1_000_000) catch {};
+                if (s.acceptStream()) |stream| {
+                    var buf: [4096]u8 = undefined;
+                    while (true) {
+                        const n = stream.read(&buf) catch break;
+                        if (n == 0) break;
+                        _ = stream.write(buf[0..n]) catch break;
+                    }
+                }
+            }
+        }
+    }.run, .{ &server, &server_done });
+    defer {
+        server_done.store(true, .seq_cst);
+        srv_thread.join();
+    }
+
+    var client = try api.QuicClient.init(allocator, .{
+        .alpn = &test_alpn, .ca_path = certs.cert_path,
+    });
+    defer client.deinit();
+    _ = try client.connectAndHandshake(server_addr);
+
+    const variant = variantFromString(spec.variant);
+    const N = spec.iterations;
+    var latencies = try allocator.alloc(u64, N);
+
+    var stream = try client.openStream();
+    defer stream.close();
+
+    const wall_start = common.nowNs();
+    var wait_bound_total_ns: u64 = 0;
+    const total_start = common.nowNs();
+
+    switch (variant) {
+        .small_writes_1_stream => {
+            const payload = [_]u8{0x55} ** 128;
+            for (0..N) |i| {
+                const t_submit = common.nowNs();
+                _ = try stream.write(&payload);
+                // Poll the client send-loop until the write is on-wire.
+                // If the endpoint exposes a "last-wire-ns" counter post-send,
+                // read it here; otherwise spin-poll recv (echo) as proxy.
+                var echo_buf: [128]u8 = undefined;
+                _ = try stream.read(&echo_buf);
+                const t_wire = common.nowNs();
+                latencies[i] = t_wire - t_submit;
+                wait_bound_total_ns += latencies[i];
+            }
+        },
+        .fanout_two_hop => {
+            // N streams, request-response per stream, measure e2e round-trip.
+            const fanout = spec.connection_count;
+            const per_stream = N / fanout;
+            const payload_req = [_]u8{0x66} ** 64;
+            for (0..per_stream) |i| {
+                var fanout_streams = try allocator.alloc(@TypeOf(stream), fanout);
+                defer allocator.free(fanout_streams);
+                for (fanout_streams) |*s| s.* = try client.openStream();
+                defer for (fanout_streams) |*s| s.close();
+
+                const t_submit = common.nowNs();
+                for (fanout_streams) |*s| _ = try s.write(&payload_req);
+                var buf: [64]u8 = undefined;
+                for (fanout_streams) |*s| _ = try s.read(&buf);
+                const t_done = common.nowNs();
+                latencies[i] = t_done - t_submit;
+                wait_bound_total_ns += latencies[i];
+            }
+        },
+        .burst_flush => {
+            const payload = [_]u8{0x77} ** 256;
+            for (0..N) |i| {
+                const t_submit = common.nowNs();
+                // burst 100 writes
+                for (0..100) |_| _ = try stream.write(&payload);
+                // wait for all echos
+                var buf: [256]u8 = undefined;
+                for (0..100) |_| _ = try stream.read(&buf);
+                const t_done = common.nowNs();
+                latencies[i] = t_done - t_submit;
+                wait_bound_total_ns += latencies[i];
+            }
+        },
+        .sustained_writes => {
+            const payload = [_]u8{0x88} ** 1024;
+            const deadline_ns = common.nowNs() + 10 * std.time.ns_per_s;
+            var prev_flush = common.nowNs();
+            var i: usize = 0;
+            while (common.nowNs() < deadline_ns and i < N) : (i += 1) {
+                _ = try stream.write(&payload);
+                var buf: [1024]u8 = undefined;
+                _ = try stream.read(&buf);
+                const now = common.nowNs();
+                latencies[i] = now - prev_flush;  // flush-to-flush jitter
+                prev_flush = now;
+            }
+            // Truncate if we hit the deadline before N iterations
+            if (i < N) {
+                const shrunk = try allocator.realloc(latencies, i);
+                latencies = shrunk;
+            }
+        },
+    }
+
+    const wall_end = common.nowNs();
+    const total_ns = wall_end - total_start;
+    const wait_fraction_permille: u16 = if (total_ns == 0) 0
+        else @intCast((wait_bound_total_ns * 1000) / total_ns);
+
+    return .{
+        .iterations = latencies.len,
+        .wall_time_ns = wall_end - wall_start,
+        .cpu_time_ns = wall_end - wall_start,
+        .latencies_ns = latencies,
+        .loss_rate_permille = wait_fraction_permille,  // reuse optional field as "wait_bound_fraction"
+    };
+}
+
+pub const scenarios = [_]common.ScenarioSpec{
+    .{ .name = "integration/flush_cadence", .variant = "small_writes_1_stream", .iterations = 10_000, .warmup_iterations = 100, .payload_bytes = 128,  .connection_count = 1 },
+    .{ .name = "integration/flush_cadence", .variant = "fanout_two_hop",        .iterations = 1000,   .warmup_iterations = 20,  .payload_bytes = 64,   .connection_count = 10 },
+    .{ .name = "integration/flush_cadence", .variant = "burst_flush",           .iterations = 100,    .warmup_iterations = 5,   .payload_bytes = 256,  .connection_count = 1 },
+    .{ .name = "integration/flush_cadence", .variant = "sustained_writes",      .iterations = 10_000, .warmup_iterations = 100, .payload_bytes = 1024, .connection_count = 1 },
+};
+```
+
+**Note on metric reuse:** The benchmark reuses `loss_rate_permille` for `wait_bound_fraction_permille` because both are parts-per-thousand measurements. If this becomes confusing, add a dedicated optional field `wait_bound_fraction_permille: ?u16` to `common.ResultRow` in a follow-up.
+
+- [ ] **Step 4: Register**
+
+```zig
+// bench_runner.zig
+const flush_cadence_bench = @import("integration/flush_cadence.zig");
+// registry:
+.{ .name = "integration/flush_cadence", .tier = "integration", .scenarios = &flush_cadence_bench.scenarios, .runFn = flush_cadence_bench.run },
+```
+
+- [ ] **Step 5: Run — small_writes_1_stream first (fastest)**
+
+Run: `zig build bench -- --suite=integration/flush_cadence --output=/tmp/flush.json` (or limit to one variant initially: `--suite=flush_cadence`)
+Expected: 4 variants. `small_writes_1_stream` p50 baseline in the tens-to-hundreds of µs range (exact value populates PERFORMANCE_TARGETS.md integration-tier table).
+
+- [ ] **Step 6: Cross-reference to geode**
+
+Add a line to `docs/PERFORMANCE_TARGETS.md` integration-tier targets section (after existing rows):
+
+```markdown
+| integration/flush_cadence | small_writes_1_stream | p99 < target µs (geode two_hop motivation) | *populated at baseline* |
+| integration/flush_cadence | fanout_two_hop | p99 < target µs (geode two_hop motivation) | *populated at baseline* |
+```
+
+Note geode's requirement: step-4 profile target is reducing the ~800ms wait-bound portion of two_hop's 1s p50. Post-improvement, `small_writes_1_stream` p99 should drop proportionally.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add benchmarks/integration/flush_cadence.zig benchmarks/bench_runner.zig
+git commit -m "feat(bench): add flush_cadence integration bench (geode two_hop wait)"
+```
+
+---
+
 ## Phase 6: External Harness
 
 ### Task 6.1: Write external/harness.zig + scenarios.zig
@@ -4053,7 +4302,7 @@ git commit --allow-empty -m "chore(bench): v2 perf suite + gating protocol compl
 
 ## Completion Checklist
 
-After all 30 tasks (29 original + Task 0.8 added post-Phase-0):
+After all 31 tasks (29 original + Task 0.8 + Task 5.4 flush_cadence):
 
 - [ ] Repo builds on Zig 0.16.0 (`zig build`)
 - [ ] Tests pass (`zig build test`) — 1 known pre-existing failure at `tests/test_transport_geode_compat.zig:246` is acceptable (see "Known Pre-existing Issues"); all other tests pass
