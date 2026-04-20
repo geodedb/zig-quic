@@ -37,6 +37,7 @@ const conn_scale_bench = @import("integration/conn_scale.zig");
 const handshake_e2e_bench = @import("integration/handshake_e2e.zig");
 const stream_throughput_bench = @import("integration/stream_throughput.zig");
 const datagram_batch_bench = @import("integration/datagram_batch.zig");
+const flush_cadence_bench = @import("integration/flush_cadence.zig");
 
 pub const SuiteEntry = struct {
     name: []const u8, // fully-qualified: "micro/varint"
@@ -60,6 +61,7 @@ pub const registry: []const SuiteEntry = &.{
     .{ .name = "integration/handshake_e2e", .tier = "integration", .scenarios = &handshake_e2e_bench.scenarios, .runFn = handshake_e2e_bench.run },
     .{ .name = "integration/stream_throughput", .tier = "integration", .scenarios = &stream_throughput_bench.scenarios, .runFn = stream_throughput_bench.run },
     .{ .name = "integration/datagram_batch", .tier = "integration", .scenarios = &datagram_batch_bench.scenarios, .runFn = datagram_batch_bench.run },
+    .{ .name = "integration/flush_cadence", .tier = "integration", .scenarios = &flush_cadence_bench.scenarios, .runFn = flush_cadence_bench.run },
 };
 
 pub fn main(init: std.process.Init) !void {
