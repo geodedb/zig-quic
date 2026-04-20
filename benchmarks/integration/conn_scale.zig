@@ -1,0 +1,134 @@
+// benchmarks/integration/conn_scale.zig
+// SPDX-License-Identifier: Apache-2.0
+//
+// Integration benchmark: QUIC endpoint connection/stream scaling sweep
+// on a loopback endpoint (no real network I/O).
+//
+// Seven-tier sweep preserved verbatim from the legacy
+// benchmarks/scale_bench.zig (2026-03-27): 1c, 10c, 100c, 1Kc,
+// 1Kc-100s, 10Kc, 10Kc-10s -- where `Nc` is connection count and
+// `Ms` is streams-per-connection (streams_count in v2 is recorded as
+// metadata; the legacy file tracked streams only via the total count
+// at report time, so we just surface it on the row).
+//
+// Per variant:
+//   1. init a loopback endpoint bound to 127.0.0.1:0 with
+//      `allow_insecure = true, max_connections = 0` (client role --
+//      no cert configured).
+//   2. open N client connections via `connectClient("127.0.0.1:<port>")`
+//      using `port = (c % 55000) + 10000` (matches legacy scale_bench
+//      + poll_overhead to avoid ephemeral-port exhaustion at N=10Kc).
+//      The wall_time_ns returned is the connection-setup elapsed time
+//      -- this is the primary metric the legacy "Setup/s" column
+//      captured (conn_setup_ops_sec).
+//   3. warm up with `warmup_iterations` non-blocking polls.
+//   4. measure `iterations` polls, timing each via `common.nowNs()`
+//      deltas so `latencies_ns[i]` captures per-poll wall cost.
+//
+// Scope note vs legacy scale_bench: the legacy tool also emitted
+// "Accept/s" via `popAccepted()` spins. That metric is dropped here on
+// purpose -- these loopback connections never complete a handshake, so
+// the accept counter always drained to zero + a synthetic rate number.
+// The meaningful signal is connection setup rate (derived from
+// throughput_ops_per_sec == N / wall_time) plus per-poll latency
+// distribution (p50/p95/p99). If Phase 5 introduces a real-accept
+// benchmark, it belongs next to handshake_bench, not here.
+//
+// Cross-platform note: unlike the micro benches, conn_scale needs a
+// real UDP socket (Endpoint.init binds one via UdpTransport). On
+// non-Linux targets the quic_endpoint module is compile-gated; we
+// follow the udp_batch.zig + poll_overhead.zig convention and emit a
+// placeholder RunOutput so `zig build bench-v2 --suite=all` stays
+// cross-compilable.
+
+const std = @import("std");
+const builtin = @import("builtin");
+const common = @import("bench_common");
+const endpoint_mod = @import("quic_endpoint");
+const cfg = @import("quic_config");
+
+const test_alpn = [_][]const u8{"h3"};
+
+pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunOutput {
+    if (builtin.os.tag != .linux) {
+        // Non-Linux placeholder: keeps the suite cross-platform
+        // compilable. Real measurement only runs on Linux where the
+        // endpoint's UDP transport is supported.
+        const latencies = try allocator.alloc(u64, 1);
+        latencies[0] = 0;
+        return .{
+            .iterations = 1,
+            .wall_time_ns = 1_000_000,
+            .cpu_time_ns = 0,
+            .latencies_ns = latencies,
+        };
+    }
+
+    var config = cfg.QuicConfig{
+        .alpn = &test_alpn,
+        .allow_insecure = true,
+        .max_connections = 0,
+    };
+
+    var ep = try endpoint_mod.Endpoint.init(allocator, "127.0.0.1:0", &config);
+    defer ep.deinit();
+
+    // Open N client connections using port = (c % 55000) + 10000 to
+    // avoid exhausting the ephemeral range at N=10_000. These
+    // connections never complete a handshake (no server listening on
+    // those ports); they just populate the endpoint's connection table
+    // so pollWithStats() walks N entries, and we can time the setup
+    // cost of building N Conn objects.
+    const n: u64 = spec.connection_count;
+    const setup_start = common.nowNs();
+    var c: u64 = 0;
+    while (c < n) : (c += 1) {
+        const port: u16 = @intCast((c % 55000) + 10000);
+        var addr_buf: [32]u8 = undefined;
+        const addr = std.fmt.bufPrint(&addr_buf, "127.0.0.1:{d}", .{port}) catch continue;
+        _ = ep.connectClient(addr) catch continue;
+    }
+    const setup_end = common.nowNs();
+
+    // Warmup: flush transient setup costs (first-time timer insert,
+    // initial PTO arming) before we sample poll latencies.
+    var w: u64 = 0;
+    while (w < spec.warmup_iterations) : (w += 1) {
+        _ = ep.pollWithStats(0) catch {};
+    }
+
+    // Measure: per-iteration poll latency via paired nowNs() reads.
+    const iters = spec.iterations;
+    const latencies = try allocator.alloc(u64, iters);
+    @memset(latencies, 0);
+
+    var i: u64 = 0;
+    while (i < iters) : (i += 1) {
+        const t0 = common.nowNs();
+        _ = ep.pollWithStats(0) catch {};
+        latencies[i] = common.nowNs() - t0;
+    }
+
+    // wall_time_ns = connection setup elapsed. Primary metric matches
+    // the legacy "Setup/s" column (conn_setup_ops_sec).
+    const setup_wall_ns = setup_end - setup_start;
+    return .{
+        .iterations = iters,
+        .wall_time_ns = setup_wall_ns,
+        .cpu_time_ns = setup_wall_ns,
+        .latencies_ns = latencies,
+    };
+}
+
+// Seven-tier sweep preserved verbatim from legacy
+// benchmarks/scale_bench.zig. Iteration counts drop as connection
+// count rises so wall-clock stays bounded at 10Kc.
+pub const scenarios = [_]common.ScenarioSpec{
+    .{ .name = "integration/conn_scale", .variant = "1c", .iterations = 5_000, .warmup_iterations = 500, .connection_count = 1, .streams_count = 1 },
+    .{ .name = "integration/conn_scale", .variant = "10c", .iterations = 2_000, .warmup_iterations = 200, .connection_count = 10, .streams_count = 10 },
+    .{ .name = "integration/conn_scale", .variant = "100c", .iterations = 500, .warmup_iterations = 50, .connection_count = 100, .streams_count = 10 },
+    .{ .name = "integration/conn_scale", .variant = "1Kc", .iterations = 200, .warmup_iterations = 20, .connection_count = 1_000, .streams_count = 10 },
+    .{ .name = "integration/conn_scale", .variant = "1Kc-100s", .iterations = 100, .warmup_iterations = 10, .connection_count = 1_000, .streams_count = 100 },
+    .{ .name = "integration/conn_scale", .variant = "10Kc", .iterations = 50, .warmup_iterations = 5, .connection_count = 10_000, .streams_count = 1 },
+    .{ .name = "integration/conn_scale", .variant = "10Kc-10s", .iterations = 50, .warmup_iterations = 5, .connection_count = 10_000, .streams_count = 10 },
+};
