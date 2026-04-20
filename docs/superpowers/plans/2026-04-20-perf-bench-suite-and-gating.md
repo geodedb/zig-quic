@@ -2489,11 +2489,34 @@ git commit -m "feat(bench): add loss_detection_scan micro-bench at 100/1K/10K/10
 
 **Purpose:** Real Initial→Handshake-complete latency at 5 concurrency tiers. Replaces the 2026-03-27 scaffold that emitted `{handshake_avg_ms: 0}`.
 
-- [ ] **Step 1: Identify the server + client handshake APIs**
+**API correction (post-Task-4.3 investigation):** The plan's `api.QuicServer.init`/`QuicClient.init`/`connectAndHandshake` symbols do NOT exist in `src/quic/api.zig`. The real public API surface is:
 
-Run: `grep -rn "pub fn connect\|pub fn accept\|handshake.*complete\|HandshakeState\|onHandshakeComplete" src/quic/ lib.zig cmd/quic-server.zig cmd/quic-client.zig 2>/dev/null | head -30`
+- `quic_api.endpointInit(allocator, addr_str, &config)` → `*QuicEndpoint`
+- `quic_api.connect(endpoint, server_addr_str, sni)` → `*QuicConnection`
+- `quic_api.accept` / `tryAccept` / `waitForAccepted` (server-side)
+- `endpoint.pollWithStats(timeout_ms)` drives the event loop
+- Handshake-complete signal: `conn.isHandshakeConfirmed()` (same pattern as `tests/test_transport_geode_compat.zig:246`)
 
-Record the entry points. The cmd/ binaries show the correct setup pattern — mirror them in the bench.
+**Higher-level wrappers** at `clients/zig/{server,client}.zig` also exist but the bench benefits from raw `api.zig` for timing precision.
+
+**Precedent files to pattern-match** (preferred reading order):
+
+1. `tests/test_real_tls_full_handshake.zig` — simplest `api.connect(ep, addr, sni)` real-UDP handshake example
+2. `tests/integration/connection_pair.zig` — server+client loopback setup pattern
+3. `cmd/quic-server.zig` — production server loop (cert loading, accept, poll)
+4. `cmd/quic-client.zig` — production client loop
+
+**DO NOT** use `api.QuicServer` / `api.QuicClient` — those names are placeholders from the plan's initial drafting and will fail to compile.
+
+- [ ] **Step 1: Read the precedent files + grep real APIs**
+
+```bash
+grep -rn "pub fn endpointInit\|pub fn connect\|pub fn accept\|pub fn tryAccept\|pub fn isHandshakeConfirmed" src/quic/api.zig src/quic/endpoint.zig lib.zig 2>/dev/null | head
+cat tests/test_real_tls_full_handshake.zig | head -80
+cat tests/integration/connection_pair.zig | head -80
+```
+
+Record the exact function signatures. They inform Step 3's code template.
 
 - [ ] **Step 2: Cert setup helper**
 
