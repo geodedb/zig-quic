@@ -478,7 +478,7 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
 // `iters_per_client = iterations / connection_count` inside run().
 //
 // Cap on per-client iterations: the transport's default
-// `peer_max_streams_bidi` is 1000 (see src/quic/conn.zig:666) and the
+// `local_max_streams_bidi` is 1000 (see src/quic/conn.zig:669) and the
 // opened-bidi counter is cumulative per RFC 9000 §4.6 -- closed
 // streams do NOT decrement it. Until MAX_STREAMS_BIDI auto-raise is
 // wired up, each client can only open ~1000 streams over the lifetime
