@@ -1989,6 +1989,8 @@ pub fn build(b: *std.Build) void {
     bench_runner.root_module.addImport("quic_packet", quic_packet_mod);
     bench_runner.root_module.addImport("quic_tls", quic_tls_mod);
     bench_runner.root_module.addImport("quic_tls13", tls13_mod);
+    bench_runner.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+    bench_runner.root_module.addImport("quic_config", quic_config_mod);
     const install_bench_runner = b.addInstallArtifact(bench_runner, .{});
     const run_bench_runner = b.addRunArtifact(bench_runner);
     if (b.args) |args| run_bench_runner.addArgs(args);

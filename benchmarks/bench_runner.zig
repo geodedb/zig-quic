@@ -29,6 +29,7 @@ const hp_bench = @import("micro/header_protection.zig");
 const aead_bench = @import("micro/aead.zig");
 const tls_keygen_bench = @import("micro/tls_keygen.zig");
 const udp_batch_bench = @import("integration/udp_batch.zig");
+const poll_overhead_bench = @import("integration/poll_overhead.zig");
 
 pub const SuiteEntry = struct {
     name: []const u8, // fully-qualified: "micro/varint"
@@ -44,6 +45,7 @@ pub const registry: []const SuiteEntry = &.{
     .{ .name = "micro/aead", .tier = "micro", .scenarios = &aead_bench.scenarios, .runFn = aead_bench.run },
     .{ .name = "micro/tls_keygen", .tier = "micro", .scenarios = &tls_keygen_bench.scenarios, .runFn = tls_keygen_bench.run },
     .{ .name = "integration/udp_batch", .tier = "integration", .scenarios = &udp_batch_bench.scenarios, .runFn = udp_batch_bench.run },
+    .{ .name = "integration/poll_overhead", .tier = "integration", .scenarios = &poll_overhead_bench.scenarios, .runFn = poll_overhead_bench.run },
 };
 
 pub fn main(init: std.process.Init) !void {
