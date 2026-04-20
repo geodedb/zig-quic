@@ -69,6 +69,15 @@
 // port-range reservations. 500-port headroom above the stream_throughput
 // range (19400+) prevents collisions when --suite=integration sweeps
 // both benches back-to-back.
+//
+// Numeric improvement target (geode-motivated):
+//   Baseline (2026-04-20, this commit): burst_flush p50 ~128ms for 100
+//   writes vs small_writes_1_stream p50 ~130us for 1 write.
+//   Per-write overhead ratio = burst / (small * 100) ~= 9.85x.
+//   Post-pipelining fix in the send path: target ratio -> 1.0-1.5x
+//   (bursts land in a single aggregate flush). A compare.zig derived
+//   gate on this ratio (follow-up) will catch both improvement wins
+//   and future regressions.
 
 const std = @import("std");
 const builtin = @import("builtin");
