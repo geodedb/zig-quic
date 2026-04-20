@@ -1,6 +1,25 @@
 # Performance Targets
 
-Last updated: 2026-02-16
+Last updated: 2026-04-20
+
+## Tier Threshold Table (v2 — 2026-04-20)
+
+Relative regression thresholds applied by `scripts/perf-gate.sh` +
+`benchmarks/compare.zig`. A scenario FAILs if the observed delta exceeds
+the tier %-threshold **and** the 3× baseline-stddev noise floor. The
+`wait_bound_fraction_permille` column is an annotation-only budget
+(logged, not gated) for integration scenarios that track how much of the
+total wall-clock sat in `poll`-bound waits vs. the inner hot path.
+
+| Tier | Throughput regression | Latency p95 regression | Allocation regression | Noise floor | wait_bound_fraction_permille |
+|---|---|---|---|---|---|
+| Micro (`micro/`) | -15% | -10% | Zero-delta hard gate | 3x stddev | -100‰ |
+| Integration (`integration/`) | -20% | -25% | -30% | 3x stddev | -200‰ |
+| External (`external/`) | -25% | -30% | N/A | 3x stddev | -300‰ |
+
+Micro-tier scenarios may ALSO carry absolute gates; see
+"CI Performance Budgets" below. Absolute gates trigger ABSOLUTE-FAIL
+regardless of baseline delta.
 
 ## Purpose
 
@@ -93,3 +112,50 @@ Any PR that changes packet encoding/decoding, recovery ACK processing, event-loo
 1. Run `scripts/perf-gate.sh --baseline=benchmarks/results/baseline.json`.
 2. Include updated benchmark evidence in MR notes when thresholds are adjusted.
 3. Update this document if workloads or budgets change.
+
+## Integration Tier Targets (Aspirational)
+
+Measured from v2 baseline capture (2026-04-20). Revised only alongside a
+`docs/PERFORMANCE_TRACKING.md` entry explaining the change.
+
+| Scenario | Variant | Target | Measured at baseline |
+|---|---|---|---|
+| `integration/poll_overhead` | `100c` | p99 < 50µs | *populated at baseline* |
+| `integration/poll_overhead` | `10Kc` | p99 < 500µs (post-#182 fix) | *populated at baseline* |
+| `integration/conn_scale` | `1c` | > 10K handshakes/sec (loopback, no TLS) | *populated at baseline* |
+| `integration/handshake_e2e` | `serial` | > 500 handshakes/sec | *populated at baseline* |
+| `integration/handshake_e2e` | `10p` | p99 < 20ms | *populated at baseline* |
+| `integration/stream_throughput` | `1KB-c1` | > 100 MB/s | *populated at baseline* |
+| `integration/datagram_batch` | `batch_16` | mutex_hold <= 2x `batch_1` (post-#126 fix) | *populated at baseline* |
+| `integration/flush_cadence` | `burst_flush` | burst / single ratio <= 1.5x (post-flush-cadence fix, geode) | *currently 9.85x* |
+| `integration/udp_batch` | `batch` | syscall reduction >= 4.0x vs `single` | *preserved from legacy `perf_udp_batch_gate.sh`* |
+| `integration/udp_batch` | `batch` | throughput speedup >= 0.95x vs `single` | *preserved from legacy `perf_udp_batch_gate.sh`* |
+
+## External Tier Targets (Informational)
+
+Cross-implementation comparison. External targets are **not gated
+independently** of the tier-% + noise-floor regression rule. Populated
+at first external baseline capture (Phase 10 Task 10.2).
+
+| Scenario | Variant | Notes |
+|---|---|---|
+| `external/quic-go/handshake` | `loopback` | Median handshake time vs. quic-go |
+| `external/quinn/handshake` | `loopback` | Median handshake time vs. quinn |
+| `external/aioquic/handshake` | `loopback` | Median handshake time vs. aioquic |
+
+## Revision Protocol (v2)
+
+Targets in this document are revised only when all three of the
+following hold:
+
+1. A `docs/PERFORMANCE_TRACKING.md` decision-log entry explains the
+   reason (new measurement reveals tighter achievable target; platform
+   change invalidates the prior number; fixed issue closes the
+   regression that motivated a wider threshold; etc.).
+2. A fresh baseline is captured AFTER the revision and committed to
+   `benchmarks/results/baseline.json`.
+3. The MR body includes the `scripts/perf-gate.sh` diff table and links
+   to the `docs/PERFORMANCE_TRACKING.md` entry.
+
+"Temporary" waivers are not permitted. If a target cannot be met, revise
+it; do not bypass the gate.
