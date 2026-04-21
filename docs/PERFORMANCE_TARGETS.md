@@ -59,6 +59,15 @@ invokes `zig build bench-compare` against
 - `micro/frame_serialization / short_header_encode` — `alloc_bytes == 0`
 - `micro/frame_serialization / short_header_decode` — `alloc_bytes == 0`
 
+Note: `micro/send_buffer_alloc` measures the `ArrayList(u8)` growth in the
+packet-assembly layer (issue #163) and intentionally does NOT carry an
+absolute gate. `alloc_bytes` is non-zero at the current baseline (see
+"Integration Tier Targets" table below for per-variant baseline numbers),
+so any absolute gate would perma-fail. A future #163 fix that replaces
+the per-call `ArrayList.empty` with a preallocated reusable buffer will
+show up as a negative delta through the standard micro-tier threshold
+gate (-15% significant, -10% pass/warn, zero-delta hard gate).
+
 Thresholds are intentionally conservative to avoid host-noise flakiness
 while still catching material regressions.
 
@@ -130,6 +139,12 @@ Measured from v2 baseline capture (2026-04-20). Revised only alongside a
 | `integration/flush_cadence` | `burst_flush` | burst / single ratio <= 1.5x (post-flush-cadence fix, geode) | *currently 9.85x* |
 | `integration/udp_batch` | `batch` | syscall reduction >= 4.0x vs `single` | *preserved from legacy `perf_udp_batch_gate.sh`* |
 | `integration/udp_batch` | `batch` | throughput speedup >= 0.95x vs `single` | *preserved from legacy `perf_udp_batch_gate.sh`* |
+| `micro/send_buffer_alloc` | `stream_only` | `alloc_bytes` ↘ 0 post-#163 fix | `alloc_count=1`, `alloc_bytes=129` per op at 2026-04-20 baseline |
+| `micro/send_buffer_alloc` | `stream_plus_ack` | `alloc_bytes` ↘ 0 post-#163 fix | `alloc_count=1`, `alloc_bytes=129` per op |
+| `micro/send_buffer_alloc` | `crypto_handshake` | `alloc_bytes` ↘ 0 post-#163 fix | `alloc_count=5`, `alloc_bytes=1097` per op (includes `encodeInitialProtected` output buffer) |
+| `micro/send_buffer_alloc` | `initial_padded` | `alloc_bytes` ↘ 0 post-#163 fix | `alloc_count=6`, `alloc_bytes=3382` per op (CRYPTO + PADDING to 1024B plaintext + protected buffer) |
+| `micro/send_buffer_alloc` | `pto_probe` | `alloc_bytes` ↘ 0 post-#163 fix | `alloc_count=5`, `alloc_bytes=3382` per op (PING + PADDING + protected buffer) |
+| `micro/send_buffer_alloc` | `multi_stream_batch` | `alloc_bytes` ↘ 0 post-#163 fix | `alloc_count=2`, `alloc_bytes=343` per op (4× STREAM frame growth) |
 
 ## External Tier Targets (Informational)
 

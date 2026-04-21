@@ -1944,6 +1944,7 @@ pub fn build(b: *std.Build) void {
     bench_runner.root_module.addImport("quic_crypto", quic_crypto_mod);
     bench_runner.root_module.addImport("quic_packet", quic_packet_mod);
     bench_runner.root_module.addImport("quic_frame", quic_frame_mod);
+    bench_runner.root_module.addImport("compat", compat_mod);
     bench_runner.root_module.addImport("quic_tls", quic_tls_mod);
     bench_runner.root_module.addImport("quic_tls13", tls13_mod);
     bench_runner.root_module.addImport("quic_endpoint", quic_endpoint_mod);

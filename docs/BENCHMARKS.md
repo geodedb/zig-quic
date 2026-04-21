@@ -69,6 +69,7 @@ Pure-function microbenchmarks. No UDP, no TLS, no subprocesses.
 | `micro/frame_serialization` | `stream`, `ack`, `padding`, `crypto`, `reset_stream`, `stop_sending`, `ping`, `goaway`, `window_update`, `max_stream_id`, `connection_close`, `short_header_encode`, `short_header_decode` | Per-frame encode / decode cost + alloc budget | < 30s | Absolute gate: `short_header_{encode,decode}` must have `alloc_bytes == 0` |
 | `micro/connection_lookup` | `10`, `100`, `1000`, `10000` | `Endpoint.findConnectionByDcid` cost | < 60s | Guards issue #154 regression |
 | `micro/loss_detection_scan` | `100`, `1000`, `10000`, `100000` | ACK processing scan cost | < 60s | Guards issue #90 regression |
+| `micro/send_buffer_alloc` | `stream_only`, `stream_plus_ack`, `crypto_handshake`, `initial_padded`, `pto_probe`, `multi_stream_batch` | Per-send-call `ArrayList(u8)` alloc budget for the packet-assembly layer that wraps `Frame.write` (covers `handshake_integration.zig:741-770`, `client.zig:251-332`, `pto.zig:194-231`, `methods_a.zig:220-294`) | < 30s | Guards issue #163 regression; `alloc_bytes` is NON-ZERO pre-fix (no absolute gate; the micro-tier threshold gate is sufficient) |
 
 ### Integration tier (`benchmarks/integration/`)
 
