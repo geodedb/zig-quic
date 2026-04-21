@@ -242,7 +242,18 @@ test "transport geode compat: client-server migration path over localhost" {
     if (server_conn == null) return error.Timeout;
     const conn = server_conn.?;
 
-    try client.waitForHandshake(5);
+    // Drive both endpoints concurrently until both client and server
+    // handshakes are confirmed. `client.waitForHandshake` only polls the
+    // client endpoint, which means the server never processes the final
+    // ACK that transitions `conn.isHandshakeConfirmed()` to true. Poll
+    // both sides in a shared loop instead.
+    const hs_start = milliTimestamp();
+    while (milliTimestamp() - hs_start < 5000) {
+        try qt.poll(1);
+        try client.poll(1);
+        if (conn.isHandshakeConfirmed()) break;
+        threadSleep(500 * std.time.ns_per_us);
+    }
     try testing.expect(conn.isHandshakeConfirmed());
     try testing.expect(conn.getPeerCertificateDer() == null);
 
