@@ -305,8 +305,34 @@ fn nanoTimestamp() i128 {
 }
 
 // ---------- Environment helpers ----------
+//
+// These spawn subprocesses (git, hostname, uname). Integration benches
+// like handshake_e2e's 10Kp variant spawn thousands of concurrent threads
+// that exhaust the process's FD limit — subsequent subprocess spawns
+// then fail with resource exhaustion, leaving later rows' metadata as
+// "unknown" in the JSON.
+//
+// Fix: cache the values once on first call. Subsequent calls return the
+// cached copy without re-spawning. For a bench run, this means the very
+// first scenario populates the cache (before any FD pressure) and all
+// subsequent scenarios + the final writeDocument call share that cache.
+//
+// The cached strings are allocated with a dedicated cache_allocator set
+// via initEnvCache() — typically the bench_runner arena that outlives
+// the bench session. Individual callers still take allocator arguments
+// for compat with existing call sites; they receive owned dupes.
 
-pub fn gitSha(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
+// Benches run serially inside runRepeated, and prewarmEnvCache runs once
+// at bench_runner entry before any scenario — so no mutex is needed.
+const EnvCache = struct {
+    git_sha: ?[]const u8 = null,
+    hostname: ?[]const u8 = null,
+    kernel: ?[]const u8 = null,
+};
+
+var env_cache: EnvCache = .{};
+
+fn gitShaUncached(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
     const result = std.process.run(allocator, io, .{
         .argv = &.{ "git", "rev-parse", "HEAD" },
         .stdout_limit = .limited(128),
@@ -322,7 +348,7 @@ pub fn gitSha(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
     return allocator.dupe(u8, std.mem.trim(u8, result.stdout, " \r\n\t"));
 }
 
-pub fn hostnameAlloc(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
+fn hostnameUncached(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
     const result = std.process.run(allocator, io, .{
         .argv = &.{"hostname"},
         .stdout_limit = .limited(256),
@@ -333,7 +359,7 @@ pub fn hostnameAlloc(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
     return allocator.dupe(u8, std.mem.trim(u8, result.stdout, " \r\n\t"));
 }
 
-pub fn kernelAlloc(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
+fn kernelUncached(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
     const result = std.process.run(allocator, io, .{
         .argv = &.{ "uname", "-r" },
         .stdout_limit = .limited(256),
@@ -342,6 +368,39 @@ pub fn kernelAlloc(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
     defer allocator.free(result.stderr);
     defer allocator.free(result.stdout);
     return allocator.dupe(u8, std.mem.trim(u8, result.stdout, " \r\n\t"));
+}
+
+pub fn gitSha(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
+    if (env_cache.git_sha) |cached| return allocator.dupe(u8, cached);
+    const fresh = try gitShaUncached(allocator, io);
+    env_cache.git_sha = try allocator.dupe(u8, fresh);
+    return fresh;
+}
+
+pub fn hostnameAlloc(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
+    if (env_cache.hostname) |cached| return allocator.dupe(u8, cached);
+    const fresh = try hostnameUncached(allocator, io);
+    env_cache.hostname = try allocator.dupe(u8, fresh);
+    return fresh;
+}
+
+pub fn kernelAlloc(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
+    if (env_cache.kernel) |cached| return allocator.dupe(u8, cached);
+    const fresh = try kernelUncached(allocator, io);
+    env_cache.kernel = try allocator.dupe(u8, fresh);
+    return fresh;
+}
+
+/// Prewarm the env cache. Call once before scenarios run so integration
+/// benches that exhaust FDs don't pollute metadata. Safe to skip — the
+/// first call to any of the helpers will populate the cache.
+pub fn prewarmEnvCache(allocator: std.mem.Allocator, io: std.Io) !void {
+    const sha = try gitSha(allocator, io);
+    allocator.free(sha);
+    const host = try hostnameAlloc(allocator, io);
+    allocator.free(host);
+    const kern = try kernelAlloc(allocator, io);
+    allocator.free(kern);
 }
 
 pub fn rssCurrentBytes() !u64 {

@@ -86,6 +86,12 @@ pub fn main(init: std.process.Init) !void {
     // registry entry executes.
     bench_io = init.io;
 
+    // Prewarm env-metadata cache before integration benches (handshake_e2e
+    // 10Kp spawns 10K threads -> FD exhaustion) can poison subsequent
+    // git/hostname/uname subprocess spawns. Without this, ~25% of rows
+    // land with quic_git_sha="unknown" in the JSON.
+    common.prewarmEnvCache(allocator, init.io) catch {};
+
     const args = try init.minimal.args.toSlice(allocator);
     const suite = common.parseSuiteArg(args) orelse "all";
     const output = common.parseOutputArg(args);
