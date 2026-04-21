@@ -4,9 +4,20 @@ Last Updated: 2025-09-07
 
 This directory contains the infrastructure for testing the Zig QUIC implementation against other QUIC implementations using the [QUIC Interop Runner](https://github.com/quic-interop/quic-interop-runner) framework.
 
+## First-Time Setup
+
+Before any of the `scripts/interop_*.sh` helpers will run on a fresh developer checkout, bootstrap the external runner + simulator layout (CI does this automatically; devs run it once):
+
+```bash
+scripts/interop_local_bootstrap.sh
+```
+
+The script shallow-clones `quic-interop-runner` at a pinned SHA (see `QUIC_INTEROP_RUNNER_COMMIT` in `.gitlab-ci.yml` — keep the two values in lock-step) and seeds `quic-network-simulator/www/{index.html,5000,10000}` with random byte payloads matching the CI layout. Re-runs are idempotent.
+
 ## Quick Start
 
 ### Build First
+
 ```bash
 # Build the Zig implementation
 zig build -Drelease-safe=true install
@@ -18,11 +29,13 @@ docker compose -f examples/interop/docker-compose.full.yml --profile zig build z
 ### Test Options
 
 #### Single Handshake Test (Quick Verification)
+
 ```bash
 scripts/interop_test.sh
 ```
 
 #### Verification Suite (Core Tests)
+
 ```bash
 scripts/interop_verify.sh
 # Extended: EXTENDED=1 scripts/interop_verify.sh
@@ -31,6 +44,7 @@ scripts/interop_verify.sh
 #### Full Interoperability Suite
 
 Test against all available implementations:
+
 ```bash
 # Quick mode: handshake and transfer tests against major implementations
 scripts/interop_full.sh quick
@@ -45,6 +59,7 @@ scripts/interop_full.sh
 ### Manual Docker Compose Testing
 
 For debugging specific scenarios:
+
 ```bash
 # Build the Zig implementation
 docker compose -f examples/interop/docker-compose.full.yml build zig-server zig-client
@@ -61,6 +76,7 @@ SERVER_IMAGE=ghcr.io/ngtcp2/ngtcp2-interop:latest CLIENT_IMAGE=zig-qns:local TES
 ## Available Implementations
 
 ### Both Client and Server
+
 - **zig**: Our Zig QUIC implementation (local build)
 - **quic-go**: Go implementation by Lucas Clemente and Marten Seemann
 - **ngtcp2**: C implementation by Tatsuhiro Tsujikawa
@@ -78,10 +94,12 @@ SERVER_IMAGE=ghcr.io/ngtcp2/ngtcp2-interop:latest CLIENT_IMAGE=zig-qns:local TES
 - **go-x-net**: Google's experimental Go implementation
 
 ### Server Only
+
 - **nginx**: NGINX with QUIC support
 - **haproxy**: HAProxy with QUIC support
 
 ### Client Only
+
 - **chrome**: Chrome browser QUIC client
 
 ## Test Cases
@@ -115,47 +133,55 @@ All test cases are now supported with the recent implementation updates:
 
 ## Directory Structure
 
-```
+```text
 examples/interop/
 ├── docker-compose.qns.yml      # Simple compose for zig-only testing
 ├── docker-compose.full.yml     # Full suite with all implementations
 ├── zig-qns/                    # Zig QUIC Network Simulator endpoint
 │   ├── Dockerfile              # Container build for zig implementation
 │   └── run_endpoint.sh         # Endpoint runner script
-├── quic-interop-runner/        # Submodule: official interop test runner
-├── quic-network-simulator/     # Submodule: network simulation environment
+├── quic-interop-runner/        # Bootstrapped by scripts/interop_local_bootstrap.sh
+├── quic-network-simulator/     # Bootstrapped by scripts/interop_local_bootstrap.sh
 └── certs/                      # Test certificates
 ```
 
 ## Docker Compose Files
 
 ### docker-compose.qns.yml
+
 Simple configuration for testing zig implementation on both client and server sides.
 
 ### docker-compose.full.yml
+
 Comprehensive configuration with all available QUIC implementations. Uses Docker Compose profiles to selectively run specific implementations.
 
 ## Scripts
 
 ### scripts/interop_test.sh
+
 Single handshake test for quick verification. Tests zig server with quic-go client.
 
 ### scripts/interop_verify.sh  
+
 Comprehensive verification suite with detailed reporting. Tests core functionality against major implementations.
 
 ### scripts/interop_local.sh
+
 Local test runner that builds the zig-qns image and runs tests using the Python interop runner.
 
 Features:
+
 - Automatic Python virtualenv setup
 - Dynamic implementations.json patching
 - Support for all implementations via IMPL environment variable
 - Retry token secret propagation
 
 ### scripts/interop_full.sh
+
 Comprehensive test runner using docker-compose directly.
 
 Modes:
+
 - **basic**: Test against quic-go only (default)
 - **quick**: Test handshake and transfer against major implementations
 - **full**: Complete matrix testing against all implementations
@@ -163,6 +189,7 @@ Modes:
 ## Environment Variables
 
 ### For Docker Compose
+
 - `SERVER_IMAGE`: Docker image for server implementation
 - `CLIENT_IMAGE`: Docker image for client implementation
 - `TESTCASE`: Test case to run (handshake, transfer, etc.)
@@ -170,6 +197,7 @@ Modes:
 - `REQUESTS`: URLs to request (client only)
 
 ### For Scripts
+
 - `IMPL`: Implementation to test against (default: quic-go)
 - `TESTS`: Comma-separated test cases (default: handshake,transfer)
 - `RETRY_TOKEN_SECRET`: Secret for retry token validation
@@ -178,6 +206,7 @@ Modes:
 ## Logs
 
 Test logs are stored in:
+
 - `examples/interop/quic-interop-runner/logs/` - When using interop_local.sh
 - `examples/interop/quic-network-simulator/logs/` - When using docker-compose directly
 - `/tmp/interop_*.log` - When using interop_full.sh
@@ -185,6 +214,7 @@ Test logs are stored in:
 ## Debugging
 
 ### View Container Logs
+
 ```bash
 # While containers are running
 docker logs sim
@@ -193,13 +223,16 @@ docker logs client
 ```
 
 ### Inspect Network Traffic
+
 Packet captures are saved in the sim logs directory:
+
 ```bash
 tcpdump -r examples/interop/quic-network-simulator/logs/sim/trace_node_left.pcap
 tcpdump -r examples/interop/quic-network-simulator/logs/sim/trace_node_right.pcap
 ```
 
 ### Interactive Container Access
+
 ```bash
 # Start containers without auto-exit
 docker compose -f examples/interop/docker-compose.full.yml --profile generic up -d
@@ -220,28 +253,33 @@ docker exec -it client /bin/bash
 ## Recent Fixes (2025-09-07)
 
 ### Sim Container Readiness
+
 - **Fixed**: run_generic_test() now pre-starts sim container with 3-second wait
 - **Result**: Tests properly wait for network simulator readiness
 - **Impact**: Eliminates "wait-for-it.sh: timeout" errors
 
 ### Test Scripts Added
+
 - **interop_test.sh**: Quick single handshake verification
 - **interop_verify.sh**: Comprehensive test suite with detailed reporting
 
 ## Troubleshooting
 
 ### Build Failures
+
 - Ensure Docker is running and has sufficient resources
 - Check that submodules are initialized: `git submodule update --init`
 - Verify Zig version compatibility in Dockerfile
 
 ### Test Failures
+
 - Check logs in the appropriate directory
 - Use verbose mode: `ZIG_VERBOSE=1 scripts/interop_local.sh`
 - Run specific test in isolation using docker-compose
 - Inspect packet captures for protocol issues
 
 ### Network Issues
+
 - Ensure no conflicting Docker networks: `docker network prune`
 - Check firewall settings aren't blocking Docker
 - Verify Docker compose version supports profiles (3.5+)
@@ -249,6 +287,7 @@ docker exec -it client /bin/bash
 ## Contributing
 
 When implementing new features:
+
 1. Start with basic handshake test against quic-go
 2. Gradually test against other implementations
 3. Use packet captures to debug protocol issues
@@ -260,11 +299,13 @@ When implementing new features:
 For manual localhost testing without Docker:
 
 ### Generate Certificates
+
 ```bash
 bash ./examples/interop/certs/generate.sh
 ```
 
 ### Build Zig CLIs
+
 ```bash
 zig build cli tools
 ```
@@ -272,13 +313,14 @@ zig build cli tools
 ### Test Scenarios
 
 1. **Zig server, Go client**:
+
    ```bash
    # Start Zig server
    ./zig-out/bin/quic-server --bind 127.0.0.1:4433 \
      --cert ./examples/interop/certs/cert.pem \
      --key ./examples/interop/certs/key.pem \
      --alpn h3 --insecure
-   
+
    # Run Go client
    go run ./examples/interop/go-client \
      --addr 127.0.0.1:4433 --alpn h3 \
@@ -286,13 +328,14 @@ zig build cli tools
    ```
 
 2. **Go server, Zig client**:
+
    ```bash
    # Start Go server
    go run ./examples/interop/go-server \
      --addr 127.0.0.1:4433 --alpn h3 \
      --cert ./examples/interop/certs/cert.pem \
      --key ./examples/interop/certs/key.pem
-   
+
    # Run Zig client
    ./zig-out/bin/quic-client \
      --connect 127.0.0.1:4433 \

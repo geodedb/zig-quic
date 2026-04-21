@@ -537,6 +537,70 @@ quality-zig-gates:
     - scripts/perf-gate.sh --baseline=benchmarks/results/baseline.json --current=/tmp/perf-gate-current.json
     - scripts/cross_platform_udp_batch_smoke.sh
 
+# 20x stress follow-up for perf-accepted changes.
+# Runs the integration scenarios that exercise the send-path production code
+# (handshake_e2e, stream_throughput, conn_scale) 20 times each and uploads the
+# per-round JSON as artifacts. Per native-benchmarks methodology, a single
+# non-zero exit or a SKIP row across the 20 rounds rejects the run.
+#
+# NOT on every MR: this is a ~30-60 min job. Triggers:
+#   - scheduled pipelines (configure in GitLab UI -> CI/CD -> Schedules)
+#   - manual on MRs when a perf change is involved
+#   - manual on main after a perf-affecting merge
+stress-integration-20x:
+  stage: test
+  image: debian:bookworm-slim
+  tags:
+    - company
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: manual
+      allow_failure: true
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+  cache:
+    key: "zig-cache-${ZIG_VERSION}"
+    paths:
+      - zig-cache/
+      - .zig-cache/
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends git libssl-dev jq
+    - *install-zig
+  script:
+    - mkdir -p stress-results
+    - zig build
+    - |
+      set -e
+      FAILED=0
+      for suite in handshake_e2e stream_throughput conn_scale; do
+        echo "=== 20x stress: ${suite} ==="
+        for i in $(seq -w 1 20); do
+          OUT="stress-results/${suite}_round_${i}.json"
+          if ! zig build bench -- --suite=${suite} --output=${OUT}; then
+            echo "[stress] FAIL: ${suite} round ${i} exited non-zero"
+            FAILED=$((FAILED+1))
+            continue
+          fi
+          # Reject any SKIP row (indicates setup / toolchain failure).
+          if jq -e '.rows[] | select(.variant | endswith("-SKIP"))' "${OUT}" >/dev/null; then
+            echo "[stress] FAIL: ${suite} round ${i} produced SKIP row(s) -- setup failure"
+            FAILED=$((FAILED+1))
+          fi
+        done
+      done
+      if [ "${FAILED}" -gt 0 ]; then
+        echo "[stress] REJECT: ${FAILED} round(s) failed across 60 total (3 suites x 20 rounds)"
+        exit 1
+      fi
+      echo "[stress] PASS: all 60 rounds completed cleanly"
+  artifacts:
+    when: always
+    paths:
+      - stress-results/
+    expire_in: 30 days
+
 runtime-smoke-macos-saas:
   stage: test
   image: macos-15-xcode-16
