@@ -13,6 +13,17 @@ const handshake_integration = @import("handshake_integration");
 const lookup = @import("lookup");
 const varint = @import("varint");
 const shared = @import("shared.zig");
+
+/// Local shim for the removed upstream `key_schedule.updateQuicSecretHash`.
+/// The new tls library (7510c5c0) dropped this helper (GAP-0122 in its
+/// key_schedule.zig:316) and directs QUIC key-update callers to derive via
+/// expandLabelHash with RFC 9001 §6 label "quic ku".
+fn quicSecretUpdateHash(hash: key_schedule.Hash, current_secret: *const key_schedule.Secret) key_schedule.Secret {
+    var next = key_schedule.Secret.empty();
+    next.len = @intCast(key_schedule.digestLength(hash));
+    key_schedule.expandLabelHash(hash, current_secret, "quic ku", &[_]u8{}, next.sliceMut()) catch unreachable;
+    return next;
+}
 const incoming_a = @import("module_a.zig");
 const enumerateDcidLength = incoming_a.enumerateDcidLength;
 const RxContext = shared.RxContext;
@@ -597,7 +608,7 @@ fn decryptShortHeaderWithKeyRotationInternal(
     if (conn.app_rx_next_keys == null and conn.app_rx_secret != null) {
         const cur_secret = conn.app_rx_secret.?;
         const hash = hashForSecret(&cur_secret) catch return error.InvalidSecretLength;
-        const next_secret = key_schedule.updateQuicSecretHash(hash, &cur_secret);
+        const next_secret = quicSecretUpdateHash(hash, &cur_secret);
         const next_mat = key_schedule.deriveKeyIvHpHash(hash, &next_secret, conn.version_v2);
         conn.app_rx_next_secret = next_secret;
         conn.app_rx_next_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = next_mat.hp };
@@ -864,7 +875,7 @@ fn tryForceKeyUpdateAndDecrypt(
     });
 
     const hash = hashForSecret(&current_secret) catch return null;
-    const forced_secret = key_schedule.updateQuicSecretHash(hash, &current_secret);
+    const forced_secret = quicSecretUpdateHash(hash, &current_secret);
     const forced_mat = key_schedule.deriveKeyIvHpHash(hash, &forced_secret, conn.version_v2);
 
     logger.debugPrint("[PHASE57] Forced key derivation prepared (material redacted)\n", .{});
@@ -944,7 +955,7 @@ pub fn promoteToNextKeys(
     // This maintains the one-generation-ahead invariant (quic-go updatable_aead.go:120-123)
     // Derive NEXT from the NEXT secret (the one we're about to promote)
     const hash = hashForSecret(&next_secret) catch return;
-    const new_next_secret = key_schedule.updateQuicSecretHash(hash, &next_secret);
+    const new_next_secret = quicSecretUpdateHash(hash, &next_secret);
     const new_next_mat = key_schedule.deriveKeyIvHpHash(hash, &new_next_secret, conn.version_v2);
     logger.debugPrint("[PHASE57-KEY-PROMOTE] 🔄 Pre-derived new NEXT keys before promotion\n", .{});
 

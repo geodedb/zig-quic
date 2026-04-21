@@ -9,6 +9,17 @@ const builtin = @import("builtin");
 const reset_token_mod = @import("reset_token.zig");
 const crypto_utils = @import("crypto_utils.zig");
 
+/// Local shim for the removed upstream `ks.updateQuicSecretHash`.
+/// The new tls library (7510c5c0) dropped this helper (GAP-0122 in its
+/// key_schedule.zig:316) and directs QUIC key-update callers to derive via
+/// expandLabelHash with RFC 9001 §6 label "quic ku".
+fn quicSecretUpdateHash(hash: ks.Hash, current_secret: *const ks.Secret) ks.Secret {
+    var next = ks.Secret.empty();
+    next.len = @intCast(ks.digestLength(hash));
+    ks.expandLabelHash(hash, current_secret, "quic ku", &[_]u8{}, next.sliceMut()) catch unreachable;
+    return next;
+}
+
 pub fn bind(comptime Connection: type) type {
     return struct {
         const hashForSecret = crypto_utils.hashForSecret;
@@ -46,7 +57,11 @@ pub fn bind(comptime Connection: type) type {
             if (self.tx_sent_packets_since_key >= pkt_thr or self.tx_sent_bytes_since_key >= byte_thr) {
                 const current_secret = self.app_tx_secret.?;
                 const hash = hashForSecret(&current_secret) catch return;
-                const next_secret = ks.updateQuicSecretHash(hash, &current_secret);
+                // Local shim: upstream tls removed updateQuicSecretHash in
+                // tls@7510c5c0 (GAP-0122) per the removal note in its
+                // key_schedule.zig:316. RFC 9001 §6 specifies label "quic ku";
+                // derive directly via expandLabelHash.
+                const next_secret = quicSecretUpdateHash(hash, &current_secret);
                 const preserved_hp = self.app_tx_keys.?.hp;
 
                 const t = ks.deriveKeyIvHpHash(hash, &next_secret, self.version_v2);

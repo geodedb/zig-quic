@@ -32,6 +32,17 @@ const transport_params = @import("transport_params");
 const tls13 = @import("vendor_ztls_tls13");
 const key_schedule = @import("vendor_ztls_key_schedule");
 
+/// Local shim for the removed upstream `key_schedule.updateQuicSecretHash`.
+/// The new tls library (7510c5c0) dropped this helper (GAP-0122 in its
+/// key_schedule.zig:316) and directs QUIC key-update callers to derive via
+/// expandLabelHash with RFC 9001 §6 label "quic ku".
+fn quicSecretUpdateHash(hash: key_schedule.Hash, current_secret: *const key_schedule.Secret) key_schedule.Secret {
+    var next = key_schedule.Secret.empty();
+    next.len = @intCast(key_schedule.digestLength(hash));
+    key_schedule.expandLabelHash(hash, current_secret, "quic ku", &[_]u8{}, next.sliceMut()) catch unreachable;
+    return next;
+}
+
 // Helper function to hash bytes
 inline fn hashBytes(b: []const u8) u64 {
     var h = std.hash.Wyhash.init(0);
@@ -490,7 +501,7 @@ pub fn installApplicationKeys(
 
         // PHASE 57 Part 5: Pre-derive NEXT RX keys (RFC 9001 §6, quic-go updatable_aead.go:146-147)
         // Derive at installation time (NOT per-packet) to maintain one-generation-ahead invariant
-        conn.app_rx_next_secret = key_schedule.updateQuicSecretHash(hash, &server_secret);
+        conn.app_rx_next_secret = quicSecretUpdateHash(hash, &server_secret);
         const next_mat = key_schedule.deriveKeyIvHpHash(hash, &conn.app_rx_next_secret.?, conn.version_v2);
         conn.app_rx_next_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = next_mat.hp };
         logger.debugPrint("[PHASE57-INSTALL] Client: pre-derived next RX keys\n", .{});
@@ -504,7 +515,7 @@ pub fn installApplicationKeys(
 
         // PHASE 57 Part 5: Pre-derive NEXT RX keys (RFC 9001 §6, quic-go updatable_aead.go:146-147)
         // Derive at installation time (NOT per-packet) to maintain one-generation-ahead invariant
-        conn.app_rx_next_secret = key_schedule.updateQuicSecretHash(hash, &client_secret);
+        conn.app_rx_next_secret = quicSecretUpdateHash(hash, &client_secret);
         const next_mat = key_schedule.deriveKeyIvHpHash(hash, &conn.app_rx_next_secret.?, conn.version_v2);
         conn.app_rx_next_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = next_mat.hp };
         logger.debugPrint("[PHASE57-INSTALL] Server: pre-derived next RX keys\n", .{});

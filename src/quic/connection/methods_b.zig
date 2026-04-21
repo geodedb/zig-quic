@@ -8,6 +8,17 @@ const logger = @import("quic_logger");
 const builtin = @import("builtin");
 const crypto_utils = @import("crypto_utils.zig");
 
+/// Local shim for the removed upstream `ks.updateQuicSecretHash`.
+/// The new tls library (7510c5c0) dropped this helper (GAP-0122 in its
+/// key_schedule.zig:316) and directs QUIC key-update callers to derive via
+/// expandLabelHash with RFC 9001 §6 label "quic ku".
+fn quicSecretUpdateHash(hash: ks.Hash, current_secret: *const ks.Secret) ks.Secret {
+    var next = ks.Secret.empty();
+    next.len = @intCast(ks.digestLength(hash));
+    ks.expandLabelHash(hash, current_secret, "quic ku", &[_]u8{}, next.sliceMut()) catch unreachable;
+    return next;
+}
+
 /// Compile-time toggle for verbose method-level tracing in connection helpers.
 /// Set to `true` and rebuild (`zig build`) to emit detailed debug prints via
 /// `logger.debugPrint`. Requires recompilation; has no effect at runtime.
@@ -1563,7 +1574,7 @@ pub fn bind(comptime Connection: type) type {
                 // PHASE 57 PART 11D: Use QUIC "quic ku" label, not TLS "traffic upd" (RFC 9001 §6)
                 const current_secret = self.app_tx_secret.?;
                 const hash = hashForSecret(&current_secret) catch return;
-                const next_secret = ks.updateQuicSecretHash(hash, &current_secret);
+                const next_secret = quicSecretUpdateHash(hash, &current_secret);
 
                 // PHASE 57 PART 10: Preserve CURRENT HP key - RFC 9001 §6 and quic-go confirm HP is NOT rotated
                 const preserved_hp = self.app_tx_keys.?.hp;
@@ -1603,7 +1614,7 @@ pub fn bind(comptime Connection: type) type {
             if (self.tx_key_phase == self.rx_key_phase) return;
             const current_secret = self.app_tx_secret.?;
             const hash = hashForSecret(&current_secret) catch return;
-            const next_secret = ks.updateQuicSecretHash(hash, &current_secret);
+            const next_secret = quicSecretUpdateHash(hash, &current_secret);
             const next_mat = ks.deriveKeyIvHpHash(hash, &next_secret, self.version_v2);
             if (self.tx_prev_keys) |*kp| {
                 zeroKeys(kp);
