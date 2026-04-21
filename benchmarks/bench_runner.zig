@@ -39,6 +39,7 @@ const stream_throughput_bench = @import("integration/stream_throughput.zig");
 const datagram_batch_bench = @import("integration/datagram_batch.zig");
 const flush_cadence_bench = @import("integration/flush_cadence.zig");
 const external_scenarios = @import("external/scenarios.zig");
+const external_harness = @import("external/harness.zig");
 
 /// Module-level `std.Io` populated in main() before any registry entry runs.
 /// The external-tier harness needs io to drive `std.process.run`, but the
@@ -91,6 +92,12 @@ pub fn main(init: std.process.Init) !void {
     // git/hostname/uname subprocess spawns. Without this, ~25% of rows
     // land with quic_git_sha="unknown" in the JSON.
     common.prewarmEnvCache(allocator, init.io) catch {};
+
+    // Same FD-exhaustion rationale: prewarm toolchain-availability checks
+    // (go / cargo / python3) so that `zig build bench -- --suite=all` runs
+    // external scenarios against real binaries instead of landing SKIP
+    // rows when handshake_e2e 10Kp has burned through FDs.
+    external_harness.prewarmToolchains(allocator);
 
     const args = try init.minimal.args.toSlice(allocator);
     const suite = common.parseSuiteArg(args) orelse "all";

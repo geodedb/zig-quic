@@ -113,9 +113,21 @@ fn warmupInvoke(allocator: std.mem.Allocator, external: ExternalSpec) void {
 
 /// Returns true iff `which <tool>` exits 0. Used by scenarios' entry to
 /// short-circuit to a placeholder RunOutput when the needed toolchain
-/// isn't installed. We don't `which` in a hot loop -- check once per
-/// scenario and cache at the caller.
-pub fn checkToolchain(allocator: std.mem.Allocator, tool: []const u8) bool {
+/// isn't installed. Backed by a module-level cache so that FD pressure
+/// from earlier scenarios (notably handshake_e2e 10Kp exhausting the
+/// process's file descriptor limit) doesn't cause a false-negative
+/// `which` call and land external rows as SKIP despite the toolchain
+/// being present. Callers can prewarm via `prewarmToolchains` at
+/// bench_runner startup before any FD-heavy integration scenario runs.
+const ToolchainCache = struct {
+    go: ?bool = null,
+    cargo: ?bool = null,
+    python3: ?bool = null,
+};
+
+var toolchain_cache: ToolchainCache = .{};
+
+fn checkToolchainUncached(allocator: std.mem.Allocator, tool: []const u8) bool {
     const result = std.process.run(allocator, runner.bench_io, .{
         .argv = &.{ "which", tool },
         .stdout_limit = .limited(256),
@@ -127,6 +139,37 @@ pub fn checkToolchain(allocator: std.mem.Allocator, tool: []const u8) bool {
         .exited => |c| c == 0,
         else => false,
     };
+}
+
+pub fn checkToolchain(allocator: std.mem.Allocator, tool: []const u8) bool {
+    if (std.mem.eql(u8, tool, "go")) {
+        if (toolchain_cache.go) |cached| return cached;
+        const fresh = checkToolchainUncached(allocator, tool);
+        toolchain_cache.go = fresh;
+        return fresh;
+    }
+    if (std.mem.eql(u8, tool, "cargo")) {
+        if (toolchain_cache.cargo) |cached| return cached;
+        const fresh = checkToolchainUncached(allocator, tool);
+        toolchain_cache.cargo = fresh;
+        return fresh;
+    }
+    if (std.mem.eql(u8, tool, "python3")) {
+        if (toolchain_cache.python3) |cached| return cached;
+        const fresh = checkToolchainUncached(allocator, tool);
+        toolchain_cache.python3 = fresh;
+        return fresh;
+    }
+    // Unknown tool — don't cache; fall through to uncached path.
+    return checkToolchainUncached(allocator, tool);
+}
+
+/// Prewarm the toolchain cache. Call once at bench_runner entry before
+/// any FD-heavy integration scenario runs.
+pub fn prewarmToolchains(allocator: std.mem.Allocator) void {
+    _ = checkToolchain(allocator, "go");
+    _ = checkToolchain(allocator, "cargo");
+    _ = checkToolchain(allocator, "python3");
 }
 
 /// Returns true iff `python3 -c "import <module>"` exits 0. Used so the
