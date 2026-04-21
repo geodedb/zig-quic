@@ -26,6 +26,12 @@ RUN chmod +x /run_endpoint.sh /usr/local/bin/qns-endpoint
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 CMD pgrep -x qns-endpoint >/dev/null || exit 1
 
 # SF-026: Drop to unprivileged user for the endpoint process.
-USER quic
+#
+# NOTE: The container MUST start as root so the base image's /setup.sh can
+# configure routes (CAP_NET_ADMIN netlink / SIOCADDRT ops). The privilege
+# drop to 'quic' happens AFTER /setup.sh in run_endpoint.sh via
+# `setpriv --reuid=quic --regid=quic --clear-groups -- qns-endpoint ...`.
+# A `USER quic` directive here would short-circuit /setup.sh's netlink
+# calls and break interop at container start.
 
 ENTRYPOINT ["/run_endpoint.sh"]

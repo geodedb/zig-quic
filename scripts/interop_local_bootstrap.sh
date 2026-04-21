@@ -73,11 +73,105 @@ mkdir -p "${QNS_DIR}/logs/client"
 mkdir -p "${QNS_DIR}/www"
 mkdir -p "${QNS_DIR}/downloads"
 
+# Bind-mount perms: the zig-qns container runs qns-endpoint as the
+# unprivileged 'quic' user (UID 999 inside the image). When the host's
+# logs/ and downloads/ are bind-mounted into the container, host ownership
+# (the invoking developer's UID) is exposed -- 'quic' typically cannot
+# write. World-writable on the host is the pragmatic local-dev fix; CI
+# runs as root inside Docker-in-Docker and is unaffected.
+chmod -R a+rwX "${QNS_DIR}/logs" "${QNS_DIR}/downloads" 2>/dev/null || true
+
 # Seed test payloads (same sizes as CI). Regenerate every run so a corrupted
 # prior payload does not silently poison the test.
 dd if=/dev/urandom of="${QNS_DIR}/www/index.html" bs=1024  count=1 2>/dev/null
 dd if=/dev/urandom of="${QNS_DIR}/www/5000"       bs=5000  count=1 2>/dev/null
 dd if=/dev/urandom of="${QNS_DIR}/www/10000"      bs=10000 count=1 2>/dev/null
+
+# Generate interop CA + server leaf and install under quic-interop-runner/certs
+# so strict clients (s2n-quic et al.) can validate a trust chain. Logic is
+# copied from scripts/interop_full.sh:prepare_local_interop_assets.
+CERT_DIR="${RUNNER_DIR}/certs"
+mkdir -p "${CERT_DIR}"
+if command -v openssl >/dev/null 2>&1; then
+  echo "[bootstrap] generating interop CA + server cert"
+  CERT_TMP="$(mktemp -d "${TMPDIR:-/tmp}/qns-certs.XXXXXX")"
+  (
+    set -euo pipefail
+    openssl ecparam -name prime256v1 -genkey -noout -out "${CERT_TMP}/ca.key"
+    cat > "${CERT_TMP}/ca.cnf" <<'EOF'
+[req]
+distinguished_name=dn
+x509_extensions=v3_ca
+prompt=no
+[dn]
+CN=zig-quic-interop-ca
+O=zig-quic interop
+[v3_ca]
+basicConstraints=critical,CA:TRUE,pathlen:0
+keyUsage=critical,keyCertSign,cRLSign
+authorityKeyIdentifier=keyid:always
+subjectKeyIdentifier=hash
+EOF
+    openssl req -x509 -new -key "${CERT_TMP}/ca.key" -sha256 -days 3650 \
+      -out "${CERT_TMP}/ca.pem" -config "${CERT_TMP}/ca.cnf"
+
+    openssl ecparam -name prime256v1 -genkey -noout -out "${CERT_TMP}/server.key"
+    cat > "${CERT_TMP}/server.cnf" <<'EOF'
+[req]
+distinguished_name=dn
+req_extensions=v3_req
+prompt=no
+[dn]
+CN=server
+O=zig-quic interop
+[v3_req]
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=@alt
+[alt]
+DNS.1=server
+DNS.2=server4
+DNS.3=server6
+DNS.4=server46
+EOF
+    openssl req -new -key "${CERT_TMP}/server.key" -out "${CERT_TMP}/server.csr" \
+      -config "${CERT_TMP}/server.cnf"
+    openssl x509 -req \
+      -in "${CERT_TMP}/server.csr" \
+      -CA "${CERT_TMP}/ca.pem" \
+      -CAkey "${CERT_TMP}/ca.key" \
+      -CAcreateserial \
+      -out "${CERT_TMP}/server.crt" \
+      -days 3650 -sha256 \
+      -extensions v3_req \
+      -extfile "${CERT_TMP}/server.cnf"
+  ) >/dev/null 2>&1
+
+  if [[ -s "${CERT_TMP}/server.crt" && -s "${CERT_TMP}/server.key" && -s "${CERT_TMP}/ca.pem" ]]; then
+    install -m 0644 "${CERT_TMP}/server.crt" "${CERT_DIR}/cert.pem"
+    install -m 0644 "${CERT_TMP}/server.key" "${CERT_DIR}/key.pem"
+    install -m 0644 "${CERT_TMP}/server.key" "${CERT_DIR}/priv.key"
+    install -m 0644 "${CERT_TMP}/ca.pem"     "${CERT_DIR}/ca.pem"
+    echo "[bootstrap] interop certs installed at ${CERT_DIR}/{cert,key,priv,ca}.{pem,key}"
+  else
+    echo "[bootstrap] WARN: openssl cert generation failed; falling back to tests/certs/"
+    install -m 0644 tests/certs/cert.pem "${CERT_DIR}/cert.pem"
+    install -m 0644 tests/certs/cert.pem "${CERT_DIR}/ca.pem"
+    install -m 0644 tests/certs/key.pem  "${CERT_DIR}/key.pem"
+    install -m 0644 tests/certs/key.pem  "${CERT_DIR}/priv.key"
+  fi
+  rm -rf "${CERT_TMP}"
+else
+  echo "[bootstrap] openssl not found; using static tests/certs/ fixtures"
+  install -m 0644 tests/certs/cert.pem "${CERT_DIR}/cert.pem"
+  install -m 0644 tests/certs/cert.pem "${CERT_DIR}/ca.pem"
+  install -m 0644 tests/certs/key.pem  "${CERT_DIR}/key.pem"
+  install -m 0644 tests/certs/key.pem  "${CERT_DIR}/priv.key"
+fi
+
+# World-readable so the container's `quic` user can read the cert/key files.
+chmod -R a+rX "${CERT_DIR}" 2>/dev/null || true
 
 echo "[bootstrap] done."
 echo
