@@ -26,20 +26,27 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./quic-network-simulator/logs/sim:/logs
+    - ./quic-network-simulator/logs/sim:/logs
     environment:
-      - SCENARIO=${SCENARIO:-simple-p2p --delay=10ms --bandwidth=10Mbps --queue=25}
+    - SCENARIO=${SCENARIO:-simple-p2p --delay=10ms --bandwidth=10Mbps --queue=25}
     cap_add:
-      - NET_ADMIN
+    - NET_ADMIN
     expose:
-      - '57832'
+    - '57832'
+    # IMPORTANT: interface_name pins eth0=leftnet, eth1=rightnet. The ns-3
+    # EmuFdNetDevice binary (./scratch/$SCENARIO) hard-codes those names
+    # for its left/right nodes; without this, Docker assigns interfaces
+    # in arbitrary order and ns-3 silently fails to forward traffic.
+    # (Upstream quic-interop-runner/docker-compose.yml sets the same pins.)
     networks:
       leftnet:
         ipv4_address: 193.167.0.2
         ipv6_address: fd00:cafe:cafe:0::2
+        interface_name: eth0
       rightnet:
         ipv4_address: 193.167.100.2
         ipv6_address: fd00:cafe:cafe:100::2
+        interface_name: eth1
 
   # Zig QUIC implementation (local build)
   zig-server:
@@ -52,29 +59,29 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./quic-network-simulator/logs/server:/logs
-      - ./quic-interop-runner/certs:/certs:ro
-      - ./quic-network-simulator/www:/www:ro
+    - ./quic-network-simulator/logs/server:/logs
+    - ./quic-interop-runner/certs:/certs:ro
+    - ./quic-network-simulator/www:/www:ro
     environment:
-      - ROLE=server
-      - TESTCASE=${TESTCASE:-handshake}
-      - QNS_SERVER_IMPL=${SERVER_IMPL:-}
-      - QNS_CLIENT_IMPL=${CLIENT_IMPL:-}
+    - ROLE=server
+    - TESTCASE=${TESTCASE:-handshake}
+    - QNS_SERVER_IMPL=${SERVER_IMPL:-}
+    - QNS_CLIENT_IMPL=${CLIENT_IMPL:-}
     depends_on:
-      - sim
+    - sim
     cap_add:
-      - NET_ADMIN
+    - NET_ADMIN
     networks:
       rightnet:
         ipv4_address: 193.167.100.100
         ipv6_address: fd00:cafe:cafe:100::100
     extra_hosts:
-      - 'client4:193.167.0.100'
-      - 'client6:fd00:cafe:cafe:0::100'
-      - 'client46:193.167.0.100'
-      - 'client46:fd00:cafe:cafe:0::100'
+    - client4:193.167.0.100
+    - client6:fd00:cafe:cafe:0::100
+    - client46:193.167.0.100
+    - client46:fd00:cafe:cafe:0::100
     profiles:
-      - zig
+    - zig
 
   zig-client:
     build:
@@ -86,32 +93,32 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./quic-network-simulator/logs/client:/logs
-      - ./quic-interop-runner/certs:/certs:ro
-      - ./quic-network-simulator/downloads:/downloads
+    - ./quic-network-simulator/logs/client:/logs
+    - ./quic-interop-runner/certs:/certs:ro
+    - ./quic-network-simulator/downloads:/downloads
     environment:
-      - ROLE=client
-      - REQUESTS=${REQUESTS:-https://server4/5000}
-      - TESTCASE=${TESTCASE:-handshake}
-      - QNS_SERVER_IMPL=${SERVER_IMPL:-}
-      - QNS_CLIENT_IMPL=${CLIENT_IMPL:-}
-      - QNS_H3_ALLOW_EMPTY=${QNS_H3_ALLOW_EMPTY:-0}
+    - ROLE=client
+    - REQUESTS=${REQUESTS:-https://server4/5000}
+    - TESTCASE=${TESTCASE:-handshake}
+    - QNS_SERVER_IMPL=${SERVER_IMPL:-}
+    - QNS_CLIENT_IMPL=${CLIENT_IMPL:-}
+    - QNS_H3_ALLOW_EMPTY=${QNS_H3_ALLOW_EMPTY:-0}
     depends_on:
-      - sim
+    - sim
     cap_add:
-      - NET_ADMIN
+    - NET_ADMIN
     networks:
       leftnet:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
-      - 'server:193.167.100.100'
-      - 'server4:193.167.100.100'
-      - 'server6:fd00:cafe:cafe:100::100'
-      - 'server46:193.167.100.100'
-      - 'server46:fd00:cafe:cafe:100::100'
+    - server:193.167.100.100
+    - server4:193.167.100.100
+    - server6:fd00:cafe:cafe:100::100
+    - server46:193.167.100.100
+    - server46:fd00:cafe:cafe:100::100
     profiles:
-      - zig
+    - zig
 
   # quic-go implementation
   quic-go-server:
@@ -121,27 +128,27 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./quic-network-simulator/logs/server:/logs
-      - ./quic-interop-runner/certs:/certs:ro
-      - ./quic-network-simulator/www:/www:ro
+    - ./quic-network-simulator/logs/server:/logs
+    - ./quic-interop-runner/certs:/certs:ro
+    - ./quic-network-simulator/www:/www:ro
     environment:
-      - ROLE=server
-      - TESTCASE=${TESTCASE:-handshake}
+    - ROLE=server
+    - TESTCASE=${TESTCASE:-handshake}
     depends_on:
-      - sim
+    - sim
     cap_add:
-      - NET_ADMIN
+    - NET_ADMIN
     networks:
       rightnet:
         ipv4_address: 193.167.100.100
         ipv6_address: fd00:cafe:cafe:100::100
     extra_hosts:
-      - 'client4:193.167.0.100'
-      - 'client6:fd00:cafe:cafe:0::100'
-      - 'client46:193.167.0.100'
-      - 'client46:fd00:cafe:cafe:0::100'
+    - client4:193.167.0.100
+    - client6:fd00:cafe:cafe:0::100
+    - client46:193.167.0.100
+    - client46:fd00:cafe:cafe:0::100
     profiles:
-      - quic-go
+    - quic-go
 
   quic-go-client:
     image: martenseemann/quic-go-interop@sha256:aa7949c0a4a036390aac69227264b48f114c3467776cb047ba5c1cde671e021b
@@ -150,29 +157,29 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./quic-network-simulator/logs/client:/logs
-      - ./quic-interop-runner/certs:/certs:ro
-      - ./quic-network-simulator/downloads:/downloads
+    - ./quic-network-simulator/logs/client:/logs
+    - ./quic-interop-runner/certs:/certs:ro
+    - ./quic-network-simulator/downloads:/downloads
     environment:
-      - ROLE=client
-      - REQUESTS=${REQUESTS:-https://server4/5000}
-      - TESTCASE=${TESTCASE:-handshake}
+    - ROLE=client
+    - REQUESTS=${REQUESTS:-https://server4/5000}
+    - TESTCASE=${TESTCASE:-handshake}
     depends_on:
-      - sim
+    - sim
     cap_add:
-      - NET_ADMIN
+    - NET_ADMIN
     networks:
       leftnet:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
-      - 'server:193.167.100.100'
-      - 'server4:193.167.100.100'
-      - 'server6:fd00:cafe:cafe:100::100'
-      - 'server46:193.167.100.100'
-      - 'server46:fd00:cafe:cafe:100::100'
+    - server:193.167.100.100
+    - server4:193.167.100.100
+    - server6:fd00:cafe:cafe:100::100
+    - server46:193.167.100.100
+    - server46:fd00:cafe:cafe:100::100
     profiles:
-      - quic-go
+    - quic-go
 
   # ngtcp2 implementation
   ngtcp2-server:
@@ -182,30 +189,30 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./quic-network-simulator/logs/server:/logs
-      - ./quic-interop-runner/certs:/certs:ro
-      - ./quic-network-simulator/www:/www:ro
+    - ./quic-network-simulator/logs/server:/logs
+    - ./quic-interop-runner/certs:/certs:ro
+    - ./quic-network-simulator/www:/www:ro
     environment:
-      - ROLE=server
-      - TESTCASE=${TESTCASE:-handshake}
-      - QNS_SERVER_IMPL=${SERVER_IMPL:-}
-      - QNS_CLIENT_IMPL=${CLIENT_IMPL:-}
-      - QLOGDIR=/logs/qlog
+    - ROLE=server
+    - TESTCASE=${TESTCASE:-handshake}
+    - QNS_SERVER_IMPL=${SERVER_IMPL:-}
+    - QNS_CLIENT_IMPL=${CLIENT_IMPL:-}
+    - QLOGDIR=/logs/qlog
     depends_on:
-      - sim
+    - sim
     cap_add:
-      - NET_ADMIN
+    - NET_ADMIN
     networks:
       rightnet:
         ipv4_address: 193.167.100.100
         ipv6_address: fd00:cafe:cafe:100::100
     extra_hosts:
-      - 'client4:193.167.0.100'
-      - 'client6:fd00:cafe:cafe:0::100'
-      - 'client46:193.167.0.100'
-      - 'client46:fd00:cafe:cafe:0::100'
+    - client4:193.167.0.100
+    - client6:fd00:cafe:cafe:0::100
+    - client46:193.167.0.100
+    - client46:fd00:cafe:cafe:0::100
     profiles:
-      - ngtcp2
+    - ngtcp2
 
   ngtcp2-client:
     image: ghcr.io/ngtcp2/ngtcp2-interop:latest
@@ -214,33 +221,33 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./quic-network-simulator/logs/client:/logs
-      - ./quic-interop-runner/certs:/certs:ro
-      - ./quic-network-simulator/downloads:/downloads
+    - ./quic-network-simulator/logs/client:/logs
+    - ./quic-interop-runner/certs:/certs:ro
+    - ./quic-network-simulator/downloads:/downloads
     environment:
-      - ROLE=client
-      - REQUESTS=${REQUESTS:-https://server4/5000}
-      - TESTCASE=${TESTCASE:-handshake}
-      - QNS_SERVER_IMPL=${SERVER_IMPL:-}
-      - QNS_CLIENT_IMPL=${CLIENT_IMPL:-}
-      - QLOGDIR=/logs/qlog
-      - QNS_H3_ALLOW_EMPTY=${QNS_H3_ALLOW_EMPTY:-0}
+    - ROLE=client
+    - REQUESTS=${REQUESTS:-https://server4/5000}
+    - TESTCASE=${TESTCASE:-handshake}
+    - QNS_SERVER_IMPL=${SERVER_IMPL:-}
+    - QNS_CLIENT_IMPL=${CLIENT_IMPL:-}
+    - QLOGDIR=/logs/qlog
+    - QNS_H3_ALLOW_EMPTY=${QNS_H3_ALLOW_EMPTY:-0}
     depends_on:
-      - sim
+    - sim
     cap_add:
-      - NET_ADMIN
+    - NET_ADMIN
     networks:
       leftnet:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
-      - 'server:193.167.100.100'
-      - 'server4:193.167.100.100'
-      - 'server6:fd00:cafe:cafe:100::100'
-      - 'server46:193.167.100.100'
-      - 'server46:fd00:cafe:cafe:100::100'
+    - server:193.167.100.100
+    - server4:193.167.100.100
+    - server6:fd00:cafe:cafe:100::100
+    - server46:193.167.100.100
+    - server46:fd00:cafe:cafe:100::100
     profiles:
-      - ngtcp2
+    - ngtcp2
 
   # quiche implementation
   quiche-server:
@@ -250,27 +257,27 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./quic-network-simulator/logs/server:/logs
-      - ./quic-interop-runner/certs:/certs:ro
-      - ./quic-network-simulator/www:/www:ro
+    - ./quic-network-simulator/logs/server:/logs
+    - ./quic-interop-runner/certs:/certs:ro
+    - ./quic-network-simulator/www:/www:ro
     environment:
-      - ROLE=server
-      - TESTCASE=${TESTCASE:-handshake}
+    - ROLE=server
+    - TESTCASE=${TESTCASE:-handshake}
     depends_on:
-      - sim
+    - sim
     cap_add:
-      - NET_ADMIN
+    - NET_ADMIN
     networks:
       rightnet:
         ipv4_address: 193.167.100.100
         ipv6_address: fd00:cafe:cafe:100::100
     extra_hosts:
-      - 'client4:193.167.0.100'
-      - 'client6:fd00:cafe:cafe:0::100'
-      - 'client46:193.167.0.100'
-      - 'client46:fd00:cafe:cafe:0::100'
+    - client4:193.167.0.100
+    - client6:fd00:cafe:cafe:0::100
+    - client46:193.167.0.100
+    - client46:fd00:cafe:cafe:0::100
     profiles:
-      - quiche
+    - quiche
 
   quiche-client:
     image: cloudflare/quiche-qns:latest
@@ -279,29 +286,29 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./quic-network-simulator/logs/client:/logs
-      - ./quic-interop-runner/certs:/certs:ro
-      - ./quic-network-simulator/downloads:/downloads
+    - ./quic-network-simulator/logs/client:/logs
+    - ./quic-interop-runner/certs:/certs:ro
+    - ./quic-network-simulator/downloads:/downloads
     environment:
-      - ROLE=client
-      - REQUESTS=${REQUESTS:-https://server4/5000}
-      - TESTCASE=${TESTCASE:-handshake}
+    - ROLE=client
+    - REQUESTS=${REQUESTS:-https://server4/5000}
+    - TESTCASE=${TESTCASE:-handshake}
     depends_on:
-      - sim
+    - sim
     cap_add:
-      - NET_ADMIN
+    - NET_ADMIN
     networks:
       leftnet:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
-      - 'server:193.167.100.100'
-      - 'server4:193.167.100.100'
-      - 'server6:fd00:cafe:cafe:100::100'
-      - 'server46:193.167.100.100'
-      - 'server46:fd00:cafe:cafe:100::100'
+    - server:193.167.100.100
+    - server4:193.167.100.100
+    - server6:fd00:cafe:cafe:100::100
+    - server46:193.167.100.100
+    - server46:fd00:cafe:cafe:100::100
     profiles:
-      - quiche
+    - quiche
 
   # picoquic implementation
   picoquic-server:
@@ -311,27 +318,27 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./quic-network-simulator/logs/server:/logs
-      - ./quic-interop-runner/certs:/certs:ro
-      - ./quic-network-simulator/www:/www:ro
+    - ./quic-network-simulator/logs/server:/logs
+    - ./quic-interop-runner/certs:/certs:ro
+    - ./quic-network-simulator/www:/www:ro
     environment:
-      - ROLE=server
-      - TESTCASE=${TESTCASE:-handshake}
+    - ROLE=server
+    - TESTCASE=${TESTCASE:-handshake}
     depends_on:
-      - sim
+    - sim
     cap_add:
-      - NET_ADMIN
+    - NET_ADMIN
     networks:
       rightnet:
         ipv4_address: 193.167.100.100
         ipv6_address: fd00:cafe:cafe:100::100
     extra_hosts:
-      - 'client4:193.167.0.100'
-      - 'client6:fd00:cafe:cafe:0::100'
-      - 'client46:193.167.0.100'
-      - 'client46:fd00:cafe:cafe:0::100'
+    - client4:193.167.0.100
+    - client6:fd00:cafe:cafe:0::100
+    - client46:193.167.0.100
+    - client46:fd00:cafe:cafe:0::100
     profiles:
-      - picoquic
+    - picoquic
 
   picoquic-client:
     image: privateoctopus/picoquic:latest
@@ -340,29 +347,29 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./quic-network-simulator/logs/client:/logs
-      - ./quic-interop-runner/certs:/certs:ro
-      - ./quic-network-simulator/downloads:/downloads
+    - ./quic-network-simulator/logs/client:/logs
+    - ./quic-interop-runner/certs:/certs:ro
+    - ./quic-network-simulator/downloads:/downloads
     environment:
-      - ROLE=client
-      - REQUESTS=${REQUESTS:-https://server4/5000}
-      - TESTCASE=${TESTCASE:-handshake}
+    - ROLE=client
+    - REQUESTS=${REQUESTS:-https://server4/5000}
+    - TESTCASE=${TESTCASE:-handshake}
     depends_on:
-      - sim
+    - sim
     cap_add:
-      - NET_ADMIN
+    - NET_ADMIN
     networks:
       leftnet:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
-      - 'server:193.167.100.100'
-      - 'server4:193.167.100.100'
-      - 'server6:fd00:cafe:cafe:100::100'
-      - 'server46:193.167.100.100'
-      - 'server46:fd00:cafe:cafe:100::100'
+    - server:193.167.100.100
+    - server4:193.167.100.100
+    - server6:fd00:cafe:cafe:100::100
+    - server46:193.167.100.100
+    - server46:fd00:cafe:cafe:100::100
     profiles:
-      - picoquic
+    - picoquic
 
   # aioquic implementation
   aioquic-server:
@@ -372,27 +379,27 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./quic-network-simulator/logs/server:/logs
-      - ./quic-interop-runner/certs:/certs:ro
-      - ./quic-network-simulator/www:/www:ro
+    - ./quic-network-simulator/logs/server:/logs
+    - ./quic-interop-runner/certs:/certs:ro
+    - ./quic-network-simulator/www:/www:ro
     environment:
-      - ROLE=server
-      - TESTCASE=${TESTCASE:-handshake}
+    - ROLE=server
+    - TESTCASE=${TESTCASE:-handshake}
     depends_on:
-      - sim
+    - sim
     cap_add:
-      - NET_ADMIN
+    - NET_ADMIN
     networks:
       rightnet:
         ipv4_address: 193.167.100.100
         ipv6_address: fd00:cafe:cafe:100::100
     extra_hosts:
-      - 'client4:193.167.0.100'
-      - 'client6:fd00:cafe:cafe:0::100'
-      - 'client46:193.167.0.100'
-      - 'client46:fd00:cafe:cafe:0::100'
+    - client4:193.167.0.100
+    - client6:fd00:cafe:cafe:0::100
+    - client46:193.167.0.100
+    - client46:fd00:cafe:cafe:0::100
     profiles:
-      - aioquic
+    - aioquic
 
   aioquic-client:
     image: aiortc/aioquic-qns:latest
@@ -401,29 +408,29 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./quic-network-simulator/logs/client:/logs
-      - ./quic-interop-runner/certs:/certs:ro
-      - ./quic-network-simulator/downloads:/downloads
+    - ./quic-network-simulator/logs/client:/logs
+    - ./quic-interop-runner/certs:/certs:ro
+    - ./quic-network-simulator/downloads:/downloads
     environment:
-      - ROLE=client
-      - REQUESTS=${REQUESTS:-https://server4/5000}
-      - TESTCASE=${TESTCASE:-handshake}
+    - ROLE=client
+    - REQUESTS=${REQUESTS:-https://server4/5000}
+    - TESTCASE=${TESTCASE:-handshake}
     depends_on:
-      - sim
+    - sim
     cap_add:
-      - NET_ADMIN
+    - NET_ADMIN
     networks:
       leftnet:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
-      - 'server:193.167.100.100'
-      - 'server4:193.167.100.100'
-      - 'server6:fd00:cafe:cafe:100::100'
-      - 'server46:193.167.100.100'
-      - 'server46:fd00:cafe:cafe:100::100'
+    - server:193.167.100.100
+    - server4:193.167.100.100
+    - server6:fd00:cafe:cafe:100::100
+    - server46:193.167.100.100
+    - server46:fd00:cafe:cafe:100::100
     profiles:
-      - aioquic
+    - aioquic
 
   # msquic implementation
   msquic-server:
@@ -433,27 +440,27 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./quic-network-simulator/logs/server:/logs
-      - ./quic-interop-runner/certs:/certs:ro
-      - ./quic-network-simulator/www:/www:ro
+    - ./quic-network-simulator/logs/server:/logs
+    - ./quic-interop-runner/certs:/certs:ro
+    - ./quic-network-simulator/www:/www:ro
     environment:
-      - ROLE=server
-      - TESTCASE=${TESTCASE:-handshake}
+    - ROLE=server
+    - TESTCASE=${TESTCASE:-handshake}
     depends_on:
-      - sim
+    - sim
     cap_add:
-      - NET_ADMIN
+    - NET_ADMIN
     networks:
       rightnet:
         ipv4_address: 193.167.100.100
         ipv6_address: fd00:cafe:cafe:100::100
     extra_hosts:
-      - 'client4:193.167.0.100'
-      - 'client6:fd00:cafe:cafe:0::100'
-      - 'client46:193.167.0.100'
-      - 'client46:fd00:cafe:cafe:0::100'
+    - client4:193.167.0.100
+    - client6:fd00:cafe:cafe:0::100
+    - client46:193.167.0.100
+    - client46:fd00:cafe:cafe:0::100
     profiles:
-      - msquic
+    - msquic
 
   msquic-client:
     image: ghcr.io/microsoft/msquic/qns:main
@@ -462,29 +469,29 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./quic-network-simulator/logs/client:/logs
-      - ./quic-interop-runner/certs:/certs:ro
-      - ./quic-network-simulator/downloads:/downloads
+    - ./quic-network-simulator/logs/client:/logs
+    - ./quic-interop-runner/certs:/certs:ro
+    - ./quic-network-simulator/downloads:/downloads
     environment:
-      - ROLE=client
-      - REQUESTS=${REQUESTS:-https://server4/5000}
-      - TESTCASE=${TESTCASE:-handshake}
+    - ROLE=client
+    - REQUESTS=${REQUESTS:-https://server4/5000}
+    - TESTCASE=${TESTCASE:-handshake}
     depends_on:
-      - sim
+    - sim
     cap_add:
-      - NET_ADMIN
+    - NET_ADMIN
     networks:
       leftnet:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
-      - 'server:193.167.100.100'
-      - 'server4:193.167.100.100'
-      - 'server6:fd00:cafe:cafe:100::100'
-      - 'server46:193.167.100.100'
-      - 'server46:fd00:cafe:cafe:100::100'
+    - server:193.167.100.100
+    - server4:193.167.100.100
+    - server6:fd00:cafe:cafe:100::100
+    - server46:193.167.100.100
+    - server46:fd00:cafe:cafe:100::100
     profiles:
-      - msquic
+    - msquic
 
   # nginx server-only implementation
   nginx-server:
@@ -494,27 +501,27 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./quic-network-simulator/logs/server:/logs
-      - ./quic-interop-runner/certs:/certs:ro
-      - ./quic-network-simulator/www:/www:ro
+    - ./quic-network-simulator/logs/server:/logs
+    - ./quic-interop-runner/certs:/certs:ro
+    - ./quic-network-simulator/www:/www:ro
     environment:
-      - ROLE=server
-      - TESTCASE=${TESTCASE:-handshake}
+    - ROLE=server
+    - TESTCASE=${TESTCASE:-handshake}
     depends_on:
-      - sim
+    - sim
     cap_add:
-      - NET_ADMIN
+    - NET_ADMIN
     networks:
       rightnet:
         ipv4_address: 193.167.100.100
         ipv6_address: fd00:cafe:cafe:100::100
     extra_hosts:
-      - 'client4:193.167.0.100'
-      - 'client6:fd00:cafe:cafe:0::100'
-      - 'client46:193.167.0.100'
-      - 'client46:fd00:cafe:cafe:0::100'
+    - client4:193.167.0.100
+    - client6:fd00:cafe:cafe:0::100
+    - client46:193.167.0.100
+    - client46:fd00:cafe:cafe:0::100
     profiles:
-      - nginx
+    - nginx
 
   # Generic server/client services that use environment variables
   server:
@@ -524,30 +531,30 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./quic-network-simulator/logs/server:/logs
-      - ./quic-interop-runner/certs:/certs:ro
-      - ./quic-network-simulator/www:/www:ro
+    - ./quic-network-simulator/logs/server:/logs
+    - ./quic-interop-runner/certs:/certs:ro
+    - ./quic-network-simulator/www:/www:ro
     environment:
-      - ROLE=server
-      - TESTCASE=${TESTCASE:-handshake}
-      - QNS_SERVER_IMPL=${SERVER_IMPL:-}
-      - QNS_CLIENT_IMPL=${CLIENT_IMPL:-}
-      - QLOGDIR=/logs/qlog
+    - ROLE=server
+    - TESTCASE=${TESTCASE:-handshake}
+    - QNS_SERVER_IMPL=${SERVER_IMPL:-}
+    - QNS_CLIENT_IMPL=${CLIENT_IMPL:-}
+    - QLOGDIR=/logs/qlog
     depends_on:
-      - sim
+    - sim
     cap_add:
-      - NET_ADMIN
+    - NET_ADMIN
     networks:
       rightnet:
         ipv4_address: 193.167.100.100
         ipv6_address: fd00:cafe:cafe:100::100
     extra_hosts:
-      - 'client4:193.167.0.100'
-      - 'client6:fd00:cafe:cafe:0::100'
-      - 'client46:193.167.0.100'
-      - 'client46:fd00:cafe:cafe:0::100'
+    - client4:193.167.0.100
+    - client6:fd00:cafe:cafe:0::100
+    - client46:193.167.0.100
+    - client46:fd00:cafe:cafe:0::100
     profiles:
-      - generic
+    - generic
 
   client:
     image: ${CLIENT_IMAGE:-zig-qns:local}
@@ -556,33 +563,33 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./quic-network-simulator/logs/client:/logs
-      - ./quic-interop-runner/certs:/certs:ro
-      - ./quic-network-simulator/downloads:/downloads
+    - ./quic-network-simulator/logs/client:/logs
+    - ./quic-interop-runner/certs:/certs:ro
+    - ./quic-network-simulator/downloads:/downloads
     environment:
-      - ROLE=client
-      - REQUESTS=${REQUESTS:-https://server4/5000}
-      - TESTCASE=${TESTCASE:-handshake}
-      - QNS_SERVER_IMPL=${SERVER_IMPL:-}
-      - QNS_CLIENT_IMPL=${CLIENT_IMPL:-}
-      - QLOGDIR=/logs/qlog
-      - QNS_H3_ALLOW_EMPTY=${QNS_H3_ALLOW_EMPTY:-0}
+    - ROLE=client
+    - REQUESTS=${REQUESTS:-https://server4/5000}
+    - TESTCASE=${TESTCASE:-handshake}
+    - QNS_SERVER_IMPL=${SERVER_IMPL:-}
+    - QNS_CLIENT_IMPL=${CLIENT_IMPL:-}
+    - QLOGDIR=/logs/qlog
+    - QNS_H3_ALLOW_EMPTY=${QNS_H3_ALLOW_EMPTY:-0}
     depends_on:
-      - sim
+    - sim
     cap_add:
-      - NET_ADMIN
+    - NET_ADMIN
     networks:
       leftnet:
         ipv4_address: 193.167.0.100
         ipv6_address: fd00:cafe:cafe:0::100
     extra_hosts:
-      - 'server:193.167.100.100'
-      - 'server4:193.167.100.100'
-      - 'server6:fd00:cafe:cafe:100::100'
-      - 'server46:193.167.100.100'
-      - 'server46:fd00:cafe:cafe:100::100'
+    - server:193.167.100.100
+    - server4:193.167.100.100
+    - server6:fd00:cafe:cafe:100::100
+    - server46:193.167.100.100
+    - server46:fd00:cafe:cafe:100::100
     profiles:
-      - generic
+    - generic
 
 networks:
   leftnet:
@@ -592,8 +599,8 @@ networks:
     enable_ipv6: true
     ipam:
       config:
-        - subnet: 193.167.0.0/24
-        - subnet: fd00:cafe:cafe:0::/64
+      - subnet: 193.167.0.0/24
+      - subnet: fd00:cafe:cafe:0::/64
   rightnet:
     driver: bridge
     driver_opts:
@@ -601,5 +608,5 @@ networks:
     enable_ipv6: true
     ipam:
       config:
-        - subnet: 193.167.100.0/24
-        - subnet: fd00:cafe:cafe:100::/64
+      - subnet: 193.167.100.0/24
+      - subnet: fd00:cafe:cafe:100::/64
