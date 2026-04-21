@@ -127,24 +127,52 @@ ISO-8601 `YYYY-MM-DD`.
 
 <!-- New entries go above this line -->
 
-### 2026-04-20 — Initial v2 baseline capture (placeholder — populated in Phase 10)
+### 2026-04-20 — Initial v2 baseline capture
 
-- **Commit:** *filled in at Task 10.2*
-- **Hardware:** *filled in at Task 10.2 (host, CPU model, RAM, kernel
-  version)*
+- **Commit:** `2916974` (parent of baseline commit; baseline JSON
+  captured on top of this)
+- **Hardware:** host `haleth`, Intel Xeon E5-2680 v4 @ 2.40GHz,
+  251 GiB RAM, Linux 6.12.74+deb13+1-amd64 (Debian 13)
 - **Zig version:** 0.16.0
-- **Summary:** First capture on the consolidated v2 benchmark suite
-  (8 micro + 7 integration + 3 external scenarios). Establishes the
-  reference point for all subsequent A/B comparisons. Replaces the
-  retired v1 `bench/` tree and its ad-hoc `perf_gate.sh` /
-  `perf_udp_batch_gate.sh` scripts (absorbed into
+- **Suite:** `--suite=all` (64 ResultRow rows across 18 scenario names:
+  8 micro + 7 integration + 3 external)
+- **Summary:** First capture on the consolidated v2 benchmark suite.
+  Establishes the reference point for all subsequent A/B comparisons.
+  Replaces the retired v1 `bench/` tree and its ad-hoc `perf_gate.sh`
+  / `perf_udp_batch_gate.sh` scripts (absorbed into
   `scripts/perf-gate.sh` + `benchmarks/compare.zig`).
-- **Notes:** Integration-tier targets in
-  `docs/PERFORMANCE_TARGETS.md` are populated from this capture when
-  Task 10.2 runs. External-tier capture is deferred if the required
-  toolchains (`go` / `cargo` / `python3` + `aioquic`) are not
-  available at capture time — skipped rows land with
-  `external_impl=<name>-SKIP` and are listed here. Phase 10 Task 10.2
-  fills in the commit SHA, hardware inventory, and the final
-  per-variant numbers for the Integration Tier Targets table.
+- **Notable baseline numbers** (full per-variant matrix in
+  `benchmarks/results/baseline.json`):
+  - `micro/varint encode` p99=2ns (absolute gate ≤250ns — large margin)
+  - `micro/pacing delay_compute` p99=1ns (gate ≤400ns)
+  - `micro/header_protection decode` p99=1.2µs (gate ≤400µs)
+  - `micro/frame_serialization short_header_encode/decode` alloc_bytes=0 (hard gate)
+  - `micro/connection_lookup` p99: 152ns → 731ns → 15.6µs → 152µs
+    (10 → 10K conns; O(N) scan signature for #154)
+  - `micro/loss_detection_scan` p99: 2µs → 284µs → 589µs → 4.05ms
+    (100 → 100K entries; O(N) scan signature for #90)
+  - `integration/poll_overhead 100c` p99=8µs; `10Kc` p99=674µs (#182 target)
+  - `integration/conn_scale 1c` setup-throughput normalized (doc note)
+  - `integration/handshake_e2e serial` p50=2.5ms, `10Kp` p50=1.03s
+  - `integration/stream_throughput 1KB-c1` 5.5K ops/s, `1KB-c10` 7.2K ops/s
+  - `integration/datagram_batch` batch_64/batch_1 p99 ratio ≈3× (#126 signal)
+  - `integration/flush_cadence burst_flush` p50=130ms, `small_writes_1_stream`
+    p50=133µs — burst/single per-write ratio ≈9.85× (geode target: ≤1.5×)
+  - `integration/udp_batch batch/single` throughput ratio 1.57× (preserves
+    ≥0.95× absolute gate; syscall-reduction ratio check in `perf-gate.sh`)
+- **External tier:** all 3 scenarios (quic-go, quinn, aioquic) landed as
+  SKIP rows (`external_impl=<impl>-SKIP`) despite toolchains being
+  available on this machine. Likely capture-time subprocess/server
+  lifecycle issue inside full-suite dispatch. `compare.zig`'s SKIP-row
+  filter (see commit `8b5b5df`) prevents these from triggering false
+  regressions. Future re-capture needed to populate real external
+  baseline; tracked as follow-up.
+- **Harness metadata gaps:** `quic_git_sha`, `hostname`, `kernel` fields
+  in the JSON landed as `"unknown"` — the harness's `std.process.run`
+  calls to `git`/`hostname`/`uname -r` failed during bench execution
+  (likely a subprocess error-handling path in `common.zig:gitSha` /
+  `hostnameAlloc` / `kernelAlloc`). Not a correctness issue for gating
+  (env check in `compare.zig` uses `os`/`arch`/`cpu`/`zig_version`
+  which ARE populated), but future compare runs will log the "unknown"
+  strings. Track as hygiene follow-up.
 </content>

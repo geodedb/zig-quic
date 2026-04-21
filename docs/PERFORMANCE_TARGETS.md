@@ -120,13 +120,13 @@ Measured from v2 baseline capture (2026-04-20). Revised only alongside a
 
 | Scenario | Variant | Target | Measured at baseline |
 |---|---|---|---|
-| `integration/poll_overhead` | `100c` | p99 < 50µs | *populated at baseline* |
-| `integration/poll_overhead` | `10Kc` | p99 < 500µs (post-#182 fix) | *populated at baseline* |
-| `integration/conn_scale` | `1c` | > 10K handshakes/sec (loopback, no TLS) | *populated at baseline* |
-| `integration/handshake_e2e` | `serial` | > 500 handshakes/sec | *populated at baseline* |
-| `integration/handshake_e2e` | `10p` | p99 < 20ms | *populated at baseline* |
-| `integration/stream_throughput` | `1KB-c1` | > 100 MB/s | *populated at baseline* |
-| `integration/datagram_batch` | `batch_16` | mutex_hold <= 2x `batch_1` (post-#126 fix) | *populated at baseline* |
+| `integration/poll_overhead` | `100c` | p99 < 50µs | p99=8µs (well under target; #182 still manifests at 10Kc) |
+| `integration/poll_overhead` | `10Kc` | p99 < 500µs (post-#182 fix) | p99=674µs (currently exceeds; regression-gate tracks) |
+| `integration/conn_scale` | `1c` | > 10K handshakes/sec (loopback, no TLS) | 361M ops/s (iter-normalized setup throughput, not true handshake rate — see file doc) |
+| `integration/handshake_e2e` | `serial` | > 500 handshakes/sec | 382 hs/s (under target; full TLS 1.3 handshake overhead) |
+| `integration/handshake_e2e` | `10p` | p99 < 20ms | p99=14.8ms (under target) |
+| `integration/stream_throughput` | `1KB-c1` | > 100 MB/s | 5562 ops/s × 1KB ≈ 5.6 MB/s (under target; server-thread bound — see file doc) |
+| `integration/datagram_batch` | `batch_16` | mutex_hold <= 2x `batch_1` (post-#126 fix) | mutex_hold_wall_ns ratio currently ~3x (tracks #126 signal) |
 | `integration/flush_cadence` | `burst_flush` | burst / single ratio <= 1.5x (post-flush-cadence fix, geode) | *currently 9.85x* |
 | `integration/udp_batch` | `batch` | syscall reduction >= 4.0x vs `single` | *preserved from legacy `perf_udp_batch_gate.sh`* |
 | `integration/udp_batch` | `batch` | throughput speedup >= 0.95x vs `single` | *preserved from legacy `perf_udp_batch_gate.sh`* |
