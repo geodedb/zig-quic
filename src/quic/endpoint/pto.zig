@@ -191,9 +191,12 @@ pub fn sendPtoProbe(ctx: *PtoContext, kind: types.TimerKind) !void {
             // Build PING probe (ack-eliciting)
             const base_probe = try buildInitialProbe(ctx.allocator);
             defer ctx.allocator.free(base_probe);
-            var frames_payload: std.ArrayList(u8) = .empty;
-            defer frames_payload.deinit(ctx.allocator.*);
-            try frames_payload.appendSlice(ctx.allocator.*, base_probe);
+
+            // #163: stack buffer; no per-probe ArrayList growth.
+            var frame_buf: [2048]u8 = undefined;
+            var fbs = @import("compat").fixedBufWriter(&frame_buf);
+            const fw = fbs.writer();
+            try fw.writeAll(base_probe);
 
             const token = if (conn.role == .Client)
                 conn.initial_token.items
@@ -209,7 +212,7 @@ pub fn sendPtoProbe(ctx: *PtoContext, kind: types.TimerKind) !void {
                 token,
                 @as(u32, @truncate(conn.pn_initial_tx)),
                 4, // pn_len
-                frames_payload.items,
+                fbs.getWritten(),
                 tx_keys,
             );
 
@@ -217,7 +220,7 @@ pub fn sendPtoProbe(ctx: *PtoContext, kind: types.TimerKind) !void {
             if (conn.role == .Client and pkt.len < 1200) {
                 const pad_needed = 1200 - pkt.len;
                 ctx.allocator.free(pkt);
-                try frames_payload.appendNTimes(ctx.allocator.*, @intFromEnum(frame.FrameType.PADDING), pad_needed);
+                try fw.writeByteNTimes(@intFromEnum(frame.FrameType.PADDING), pad_needed);
                 pkt = try packet.encodeInitialProtected(
                     ctx.allocator.*,
                     if (conn.initial_version == 0) 0x00000001 else conn.initial_version,
@@ -226,7 +229,7 @@ pub fn sendPtoProbe(ctx: *PtoContext, kind: types.TimerKind) !void {
                     token,
                     @as(u32, @truncate(conn.pn_initial_tx)),
                     4,
-                    frames_payload.items,
+                    fbs.getWritten(),
                     tx_keys,
                 );
             }

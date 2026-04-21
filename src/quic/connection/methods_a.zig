@@ -221,11 +221,10 @@ pub fn bind(comptime Connection: type) type {
         pub fn sendInitialCrypto(self: *Connection, crypto_data: []const u8) !void {
             const tx = self.initial_tx_keys orelse return error.NoKeys;
 
-            // Build CRYPTO frame
-            var frames: std.ArrayList(u8) = .empty;
-            defer frames.deinit(self.allocator.*);
-            const compat = @import("compat");
-            const w = compat.arrayListWriter(&frames, self.allocator.*);
+            // #163: stack buffer replaces per-call ArrayList assembly.
+            var frame_buf: [2048]u8 = undefined;
+            var fbs = @import("compat").fixedBufWriter(&frame_buf);
+            const w = fbs.writer();
             const crypto_frame = frame.Frame{ .crypto = .{
                 .offset = self.crypto_tx_off_initial,
                 .data = crypto_data,
@@ -245,13 +244,13 @@ pub fn bind(comptime Connection: type) type {
                 token,
                 @as(u32, @truncate(self.pn_initial_tx)),
                 2, // pn_len
-                frames.items,
+                fbs.getWritten(),
                 tx,
             ) catch return;
             if (self.role == .Client and out.len < 1200) {
                 const pad_needed = 1200 - out.len;
                 self.allocator.free(out);
-                frames.appendNTimes(self.allocator.*, @intFromEnum(frame.FrameType.PADDING), pad_needed) catch return;
+                w.writeByteNTimes(@intFromEnum(frame.FrameType.PADDING), pad_needed) catch return;
                 out = packet.encodeInitialProtected(
                     self.allocator.*,
                     self.version,
@@ -260,7 +259,7 @@ pub fn bind(comptime Connection: type) type {
                     token,
                     @as(u32, @truncate(self.pn_initial_tx)),
                     2,
-                    frames.items,
+                    fbs.getWritten(),
                     tx,
                 ) catch return;
             }
@@ -282,11 +281,10 @@ pub fn bind(comptime Connection: type) type {
         pub fn sendHandshakeCrypto(self: *Connection, crypto_data: []const u8) !void {
             const tx = self.hs_tx_keys orelse return error.NoKeys;
 
-            // Build CRYPTO frame
-            var frames: std.ArrayList(u8) = .empty;
-            defer frames.deinit(self.allocator.*);
-            const compat = @import("compat");
-            const w = compat.arrayListWriter(&frames, self.allocator.*);
+            // #163: stack buffer replaces per-call ArrayList assembly.
+            var frame_buf: [2048]u8 = undefined;
+            var fbs = @import("compat").fixedBufWriter(&frame_buf);
+            const w = fbs.writer();
             const crypto_frame = frame.Frame{ .crypto = .{
                 .offset = self.crypto_tx_off_handshake,
                 .data = crypto_data,
@@ -301,7 +299,7 @@ pub fn bind(comptime Connection: type) type {
                 self.our_scid.bytes[0..self.our_scid.len],
                 @as(u32, @truncate(self.pn_handshake_tx)),
                 2, // pn_len
-                frames.items,
+                fbs.getWritten(),
                 tx,
             ) catch return;
 

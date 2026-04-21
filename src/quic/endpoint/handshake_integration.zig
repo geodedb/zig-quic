@@ -738,9 +738,11 @@ pub fn sendServerHello(ctx: *HandshakeContext) !void {
         const chunk = serverhello_data[crypto_offset .. crypto_offset + chunk_size];
         const is_last_chunk = (crypto_offset + chunk_size >= serverhello_len);
 
-        var frames: std.ArrayList(u8) = .empty;
-        defer frames.deinit(ctx.allocator.*);
-        const fw = @import("compat").arrayListWriter(&frames, ctx.allocator.*);
+        // #163: assemble frames into a stack buffer; no per-call ArrayList growth.
+        // 2048 is safely above the RFC 9000 §14.1 1200-byte Initial floor + CRYPTO chunk.
+        var frame_buf: [2048]u8 = undefined;
+        var fbs = @import("compat").fixedBufWriter(&frame_buf);
+        const fw = fbs.writer();
 
         // Add CRYPTO frame
         const crypto_frame_offset = base_off + crypto_offset;
@@ -758,7 +760,7 @@ pub fn sendServerHello(ctx: *HandshakeContext) !void {
             &[_]u8{}, // No token in server Initial
             @as(u32, @truncate(conn.pn_initial_tx)),
             2, // PN length
-            frames.items,
+            fbs.getWritten(),
             initial_tx_keys,
         ) catch return error.PacketEncodeFailed;
 
@@ -767,7 +769,7 @@ pub fn sendServerHello(ctx: *HandshakeContext) !void {
         if (pkt.len < min_initial_datagram_size) {
             const pad_needed = min_initial_datagram_size - pkt.len;
             ctx.allocator.free(pkt);
-            frames.appendNTimes(ctx.allocator.*, @intFromEnum(frame.FrameType.PADDING), pad_needed) catch return error.FrameEncodeFailed;
+            fw.writeByteNTimes(@intFromEnum(frame.FrameType.PADDING), pad_needed) catch return error.FrameEncodeFailed;
             pkt = packet.encodeInitialProtected(
                 ctx.allocator.*,
                 0x00000001, // QUIC v1
@@ -776,7 +778,7 @@ pub fn sendServerHello(ctx: *HandshakeContext) !void {
                 &[_]u8{}, // No token in server Initial
                 @as(u32, @truncate(conn.pn_initial_tx)),
                 2, // PN length
-                frames.items,
+                fbs.getWritten(),
                 initial_tx_keys,
             ) catch return error.PacketEncodeFailed;
         }

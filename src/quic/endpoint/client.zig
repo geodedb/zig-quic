@@ -248,8 +248,11 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
 
     logger.debugPrint("[Client TX] Initial keys derived\n", .{});
 
-    var frames: std.ArrayList(u8) = .empty;
-    defer frames.deinit(ctx.allocator.*);
+    // #163: stack buffer for frame assembly; no heap churn per send.
+    // 2048 covers CRYPTO chunk + PADDING to the RFC 9000 §14.1 1200 B floor.
+    var frame_buf: [2048]u8 = undefined;
+    var fbs = @import("compat").fixedBufWriter(&frame_buf);
+    const fw = fbs.writer();
 
     // Build CRYPTO frame carrying ClientHello
     // Note: Transport parameters must be set up by caller before calling sendInitialProbe
@@ -278,7 +281,7 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
     if (crypto_data) |data| {
         defer ctx.allocator.free(data);
         const base_off = c.crypto_tx_off_initial;
-        _ = (frame.Frame{ .crypto = .{ .offset = base_off, .data = data } }).write(@import("compat").arrayListWriter(&frames, ctx.allocator.*)) catch 0;
+        _ = (frame.Frame{ .crypto = .{ .offset = base_off, .data = data } }).write(fw) catch 0;
         if (c.crypto_retx_initial) |prev| {
             ctx.allocator.free(prev);
             c.crypto_retx_initial = null;
@@ -287,8 +290,8 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
         c.crypto_retx_initial_off = base_off;
         c.crypto_tx_off_initial += @intCast(data.len);
     } else {
-        frames.append(ctx.allocator.*, @intFromEnum(frame.FrameType.PING)) catch |err| {
-            logger.err("Initial PING frame append failed (OOM): {s}", .{@errorName(err)});
+        fw.writeByte(@intFromEnum(frame.FrameType.PING)) catch |err| {
+            logger.err("Initial PING frame append failed: {s}", .{@errorName(err)});
         };
     }
 
@@ -324,10 +327,11 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
     // Calculate required plaintext size
     const min_plaintext_size = if (overhead < min_packet_size) min_packet_size - overhead else 0;
 
-    // Add PADDING frames to reach minimum size
-    while (frames.items.len < min_plaintext_size) {
-        frames.append(ctx.allocator.*, @intFromEnum(frame.FrameType.PADDING)) catch |err| {
-            logger.err("Initial PADDING append failed (OOM): {s}", .{@errorName(err)});
+    // Add PADDING frames to reach minimum size. RFC 9000 §14.1 requires
+    // client Initial datagrams to be >= 1200 bytes.
+    if (fbs.pos < min_plaintext_size) {
+        fw.writeByteNTimes(@intFromEnum(frame.FrameType.PADDING), min_plaintext_size - fbs.pos) catch |err| {
+            logger.err("Initial PADDING append failed: {s}", .{@errorName(err)});
         };
     }
 
@@ -341,7 +345,7 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
         token_slice,
         @as(u32, @truncate(c.pn_initial_tx)),
         2,
-        frames.items,
+        fbs.getWritten(),
         tx_keys,
     );
 
@@ -353,7 +357,7 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
     for (c.our_scid.bytes[0..c.our_scid.len]) |b| {
         logger.debugPrint("{X:0>2}\n", .{b});
     }
-    logger.debugPrint(" payload_len={}\n", .{frames.items.len});
+    logger.debugPrint(" payload_len={}\n", .{fbs.pos});
 
     defer ctx.allocator.free(pkt);
     const sent = try ctx.send_fn(ctx.sender_ctx, ctx.peer, pkt);

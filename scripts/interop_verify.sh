@@ -88,23 +88,25 @@ run_single_test() {
     local client=$2
     local testcase=$3
     local test_name="${server}_${client}_${testcase}"
-    
-    ((TOTAL_TESTS++))
+
+    # Guard against bash `set -e` + ((X++)) pitfall: when X==0, post-increment
+    # returns status 1 which terminates the function under `set -euo pipefail`.
+    ((TOTAL_TESTS++)) || :
     echo -e "\n${YELLOW}Test #${TOTAL_TESTS}: ${server} (server) <-> ${client} (client) - ${testcase}${NC}"
-    
+
     # Clean up any existing containers
     docker compose -f examples/interop/docker-compose.full.yml --profile generic down -v >/dev/null 2>&1 || true
     docker network rm interop_leftnet interop_rightnet >/dev/null 2>&1 || true
     sleep 1
-    
+
     # Set up test environment
     export COMPOSE_PROJECT_NAME="interop_verify_${test_name}_$$"
     export TESTCASE="$testcase"
-    
+
     # Map implementation to Docker image
     local server_image
     local client_image
-    
+
     case $server in
         zig) server_image="zig-qns:local" ;;
         quic-go) server_image="martenseemann/quic-go-interop:latest" ;;
@@ -112,7 +114,7 @@ run_single_test() {
         quiche) server_image="cloudflare/quiche-qns:latest" ;;
         *) echo -e "${RED}Unknown server: $server${NC}"; return 1 ;;
     esac
-    
+
     case $client in
         zig) client_image="zig-qns:local" ;;
         quic-go) client_image="martenseemann/quic-go-interop:latest" ;;
@@ -120,31 +122,31 @@ run_single_test() {
         quiche) client_image="cloudflare/quiche-qns:latest" ;;
         *) echo -e "${RED}Unknown client: $client${NC}"; return 1 ;;
     esac
-    
+
     export SERVER_IMAGE="$server_image"
     export CLIENT_IMAGE="$client_image"
-    
+
     # Start sim first
     if ! COMPOSE_HTTP_TIMEOUT=120 timeout 60 docker compose -f examples/interop/docker-compose.full.yml --profile generic up -d sim >/dev/null 2>&1; then
         echo -e "${RED}✗ Failed to start sim${NC}"
         TEST_RESULTS[$test_name]="FAILED (sim start)"
-        ((FAILED_TESTS++))
+        ((FAILED_TESTS++)) || :
         return 1
     fi
-    
+
     # Wait for sim
     sleep 15
 
     # Fix simulator iptables DROP rules
     docker exec ${COMPOSE_PROJECT_NAME}_sim iptables -D FORWARD -i eth0 -o eth1 -j DROP 2>/dev/null || true
     docker exec ${COMPOSE_PROJECT_NAME}_sim iptables -D FORWARD -i eth1 -o eth0 -j DROP 2>/dev/null || true
-    
+
     # Run the test
     local log_file="/tmp/interop_verify_${test_name}.log"
     if COMPOSE_HTTP_TIMEOUT=120 timeout 120 docker compose -f examples/interop/docker-compose.full.yml --profile generic up --abort-on-container-exit --timeout 5 &> "$log_file"; then
         echo -e "${GREEN}✓ PASSED${NC}"
         TEST_RESULTS[$test_name]="PASSED"
-        ((PASSED_TESTS++))
+        ((PASSED_TESTS++)) || :
     else
         echo -e "${RED}✗ FAILED${NC}"
         echo -e "${YELLOW}  Log: $log_file${NC}"
@@ -157,9 +159,9 @@ run_single_test() {
             echo -e "${YELLOW}  Issue: Connection refused${NC}"
         fi
         TEST_RESULTS[$test_name]="FAILED"
-        ((FAILED_TESTS++))
+        ((FAILED_TESTS++)) || :
     fi
-    
+
     # Clean up
     docker compose -f examples/interop/docker-compose.full.yml --profile generic down -v >/dev/null 2>&1 || true
     docker network rm interop_leftnet interop_rightnet >/dev/null 2>&1 || true

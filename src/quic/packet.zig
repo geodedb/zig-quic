@@ -519,8 +519,13 @@ pub fn encodeInitialProtected(
 ) ![]u8 {
     if (packet_number_len < 1 or packet_number_len > 4) return error.InvalidPacketNumberLength;
 
-    var buf: std.ArrayList(u8) = .empty;
-    errdefer buf.deinit(alloc);
+    // #163: assemble directly into a stack buffer so the only heap allocation
+    // is the single owned-output `alloc.dupe` at return. Max encoded size is
+    // RFC-bounded to ~MTU (1500 B) + ~100 B header overhead; 2048 covers
+    // every path this encoder is on. An oversized payload raises
+    // error.NoSpaceLeft via FixedBufWriter's bounds check.
+    var stack_buf: [2048]u8 = undefined;
+    var fbs = @import("compat").fixedBufWriter(&stack_buf);
 
     // Header first byte: Long header with fixed bit, Initial type, PN len bits
     // Per RFC 9000: Fixed bit (6) must be 1
@@ -531,7 +536,7 @@ pub fn encodeInitialProtected(
     const first: u8 = 0xc0 | type_bits | pn_bits;
 
     // We'll build header_prefix first to compute AAD
-    const w = @import("compat").arrayListWriter(&buf, alloc);
+    const w = fbs.writer();
     try w.writeByte(first);
     var be_ver: [4]u8 = .{ @as(u8, @intCast(version >> 24)), @as(u8, @intCast((version >> 16) & 0xff)), @as(u8, @intCast((version >> 8) & 0xff)), @as(u8, @intCast(version & 0xff)) };
     try w.writeAll(&be_ver);
@@ -561,7 +566,7 @@ pub fn encodeInitialProtected(
     try w.writeAll(lbuf[0..ll]);
 
     // Remember header_prefix length (after first header byte) to end of length varint
-    const header_prefix_len = buf.items.len - 1; // exclude first byte
+    const header_prefix_len = fbs.pos - 1; // exclude first byte
 
     // PN bytes big-endian truncated to packet_number_len
     var pn_be_full: [4]u8 = .{
@@ -574,18 +579,17 @@ pub fn encodeInitialProtected(
     const pn_slice = pn_be_full[4 - packet_number_len .. 4];
     try w.writeAll(pn_slice);
 
-    // Prepare ciphertext buffer
-    const out_cipher_idx = buf.items.len;
-    try buf.ensureTotalCapacity(alloc, out_cipher_idx + ct_len);
-    // Important: append zeros to reserve and then fill in place
-    try buf.appendNTimes(alloc, 0, ct_len);
+    // Reserve ciphertext region: advance fbs.pos by ct_len, zero-filled.
+    // writeByteNTimes returns error.NoSpaceLeft if the stack buffer is undersized.
+    const out_cipher_idx = fbs.pos;
+    try w.writeByteNTimes(0, ct_len);
 
     // Protect payload and apply header protection (mutates first byte and PN in-place)
     var header_first: u8 = first;
     var pn_mut: [4]u8 = .{0} ** 4;
     @memcpy(pn_mut[0..packet_number_len], pn_slice);
 
-    const out_cipher = buf.items[out_cipher_idx .. out_cipher_idx + ct_len];
+    const out_cipher = stack_buf[out_cipher_idx .. out_cipher_idx + ct_len];
     const suite = crypto.AeadSuite.aes_128_gcm;
     const written = try crypto.protectInitial(
         suite,
@@ -595,18 +599,19 @@ pub fn encodeInitialProtected(
         packet_number,
         &header_first,
         pn_mut[0..packet_number_len],
-        buf.items[1 .. 1 + header_prefix_len],
+        stack_buf[1 .. 1 + header_prefix_len],
         payload_plaintext,
         out_cipher,
     );
     std.debug.assert(written == ct_len);
 
     // Write back mutated header first byte and PN
-    buf.items[0] = header_first;
+    stack_buf[0] = header_first;
     const pn_offset = 1 + header_prefix_len; // after first + header_prefix
-    @memcpy(buf.items[pn_offset .. pn_offset + packet_number_len], pn_mut[0..packet_number_len]);
+    @memcpy(stack_buf[pn_offset .. pn_offset + packet_number_len], pn_mut[0..packet_number_len]);
 
-    return buf.toOwnedSlice(alloc);
+    // Single owned-output allocation (the contract of this function).
+    return try alloc.dupe(u8, stack_buf[0..fbs.pos]);
 }
 
 /// Result of decoding an Initial packet.
@@ -775,8 +780,10 @@ pub fn encodeHandshakeProtected(
     }
     if (packet_number_len < 1 or packet_number_len > 4) return error.InvalidPacketNumberLength;
 
-    var buf: std.ArrayList(u8) = .empty;
-    errdefer buf.deinit(alloc);
+    // #163: same stack-buffer pattern as encodeInitialProtected. One owned
+    // alloc at return; no intermediate ArrayList churn.
+    var stack_buf: [2048]u8 = undefined;
+    var fbs = @import("compat").fixedBufWriter(&stack_buf);
 
     // Header first byte: Long header with fixed bit, Handshake type, PN len bits
     // Per RFC 9000: Fixed bit (6) must be 1, Handshake packet type = 10 in bits 5-4
@@ -786,7 +793,7 @@ pub fn encodeHandshakeProtected(
     const first: u8 = 0xe0 | pn_bits;
     logger.debugPrint("encodeHandshakeProtected: packet_number_len={}, pn_bits={}, first=0x{X:0>2}\n", .{ packet_number_len, pn_bits, first });
 
-    const w = @import("compat").arrayListWriter(&buf, alloc);
+    const w = fbs.writer();
     try w.writeByte(first);
     var be_ver: [4]u8 = .{
         @as(u8, @intCast((version >> 24) & 0xff)),
@@ -830,7 +837,7 @@ pub fn encodeHandshakeProtected(
     const ll = try varint.encode(length_value, &lbuf);
     try w.writeAll(lbuf[0..ll]);
 
-    const header_prefix_len = buf.items.len - 1;
+    const header_prefix_len = fbs.pos - 1;
     logger.debugPrint("encodeHandshakeProtected: payload_len={}, ct_len={}, pn_len={}, length_value={}\n", .{ payload_plaintext.len, ct_len, packet_number_len, length_value });
 
     var pn_be_full: [4]u8 = .{
@@ -847,15 +854,14 @@ pub fn encodeHandshakeProtected(
     logger.debugPrint("]\n", .{});
     try w.writeAll(pn_slice);
 
-    const out_cipher_idx = buf.items.len;
-    try buf.ensureTotalCapacity(alloc, out_cipher_idx + ct_len);
-    try buf.appendNTimes(alloc, 0, ct_len);
+    const out_cipher_idx = fbs.pos;
+    try w.writeByteNTimes(0, ct_len);
 
     var header_first: u8 = first;
     var pn_mut: [4]u8 = .{0} ** 4;
     @memcpy(pn_mut[0..packet_number_len], pn_slice);
 
-    const out_cipher = buf.items[out_cipher_idx .. out_cipher_idx + ct_len];
+    const out_cipher = stack_buf[out_cipher_idx .. out_cipher_idx + ct_len];
     const suite = crypto.AeadSuite.aes_128_gcm;
     // Use protectPacket for Handshake packets, not protectInitial
     const written = try crypto.protectPacket(
@@ -866,7 +872,7 @@ pub fn encodeHandshakeProtected(
         packet_number,
         &header_first,
         pn_mut[0..packet_number_len],
-        buf.items[1 .. 1 + header_prefix_len],
+        stack_buf[1 .. 1 + header_prefix_len],
         actual_payload,
         out_cipher,
     );
@@ -883,40 +889,40 @@ pub fn encodeHandshakeProtected(
     }
     std.debug.assert(written == ct_len);
 
-    buf.items[0] = header_first;
+    stack_buf[0] = header_first;
     const pn_offset = 1 + header_prefix_len;
-    @memcpy(buf.items[pn_offset .. pn_offset + packet_number_len], pn_mut[0..packet_number_len]);
+    @memcpy(stack_buf[pn_offset .. pn_offset + packet_number_len], pn_mut[0..packet_number_len]);
 
     logger.debugPrint("encodeHandshakeProtected: AFTER header protection - first byte changed from 0x{X:0>2} to 0x{X:0>2}\n", .{ first, header_first });
-    logger.debugPrint("encodeHandshakeProtected: Final packet first 5 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ buf.items[0], buf.items[1], buf.items[2], buf.items[3], buf.items[4] });
+    logger.debugPrint("encodeHandshakeProtected: Final packet first 5 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ stack_buf[0], stack_buf[1], stack_buf[2], stack_buf[3], stack_buf[4] });
 
     // DIAGNOSTIC: Hexdump first 64 bytes of Handshake packet for analysis
     logger.debugPrint("=== HANDSHAKE PACKET HEXDUMP (first 64 bytes) ===\n", .{});
-    const dump_len = @min(64, buf.items.len);
+    const dump_len = @min(@as(usize, 64), fbs.pos);
     var dump_idx: usize = 0;
     while (dump_idx < dump_len) : (dump_idx += 16) {
         const line_end = @min(dump_idx + 16, dump_len);
         logger.debugPrint("{X:0>4}: ", .{dump_idx});
         var line_idx = dump_idx;
         while (line_idx < line_end) : (line_idx += 1) {
-            logger.debugPrint("{X:0>2} ", .{buf.items[line_idx]});
+            logger.debugPrint("{X:0>2} ", .{stack_buf[line_idx]});
         }
         logger.debugPrint("", .{});
     }
-    logger.debugPrint("=== END HEXDUMP (total packet size: {} bytes) ===\n", .{buf.items.len});
+    logger.debugPrint("=== END HEXDUMP (total packet size: {} bytes) ===\n", .{fbs.pos});
 
     // FINAL VERIFICATION: Ensure packet length matches what we declared in the header
     const expected_total_len = (1 + header_prefix_len) + packet_number_len + written;
-    if (buf.items.len != expected_total_len) {
-        logger.debugPrint("FINAL PACKET LENGTH MISMATCH: buf.len={}, expected={} (header={}, pn={}, payload={})\n", .{ buf.items.len, expected_total_len, 1 + header_prefix_len, packet_number_len, written });
+    if (fbs.pos != expected_total_len) {
+        logger.debugPrint("FINAL PACKET LENGTH MISMATCH: buf.len={}, expected={} (header={}, pn={}, payload={})\n", .{ fbs.pos, expected_total_len, 1 + header_prefix_len, packet_number_len, written });
         // Strict length verification enabled
         return error.PacketLengthMismatch;
     }
 
     // Log successful packet construction with length verification
-    logger.debugPrint("encodeHandshakeProtected: SUCCESS - packet length verified: declared_in_header={}, actual_packet_len={}\n", .{ length_value, buf.items.len - (1 + header_prefix_len) });
+    logger.debugPrint("encodeHandshakeProtected: SUCCESS - packet length verified: declared_in_header={}, actual_packet_len={}\n", .{ length_value, fbs.pos - (1 + header_prefix_len) });
 
-    return buf.toOwnedSlice(alloc);
+    return try alloc.dupe(u8, stack_buf[0..fbs.pos]);
 }
 
 /// Decoded representation of a Version Negotiation packet.

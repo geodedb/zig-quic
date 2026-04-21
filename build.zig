@@ -485,6 +485,7 @@ pub fn build(b: *std.Build) void {
     endpoint_pto_mod.addImport("quic_frame", quic_frame_mod);
     endpoint_pto_mod.addImport("quic_tls", quic_tls_mod);
     endpoint_pto_mod.addImport("quic_logger", quic_logger_mod);
+    endpoint_pto_mod.addImport("compat", compat_mod);
 
     const endpoint_lifecycle_mod = mkModule(b, "src/quic/endpoint/lifecycle.zig");
     endpoint_lifecycle_mod.addImport("types", endpoint_types_mod);

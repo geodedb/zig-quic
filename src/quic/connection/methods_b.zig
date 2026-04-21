@@ -149,10 +149,10 @@ pub fn bind(comptime Connection: type) type {
         pub fn sendDatagram(self: *Connection, data: []const u8) !void {
             if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
             const tx = self.app_tx_keys.?;
-            var frames: std.ArrayList(u8) = .empty;
-            defer frames.deinit(self.allocator.*);
-            const compat = @import("compat");
-            const w = compat.arrayListWriter(&frames, self.allocator.*);
+            // #163: stack buffer replaces per-call ArrayList assembly.
+            var frame_buf: [2048]u8 = undefined;
+            var fbs = @import("compat").fixedBufWriter(&frame_buf);
+            const w = fbs.writer();
             _ = (frame.Frame{ .datagram = .{ .data = data } }).write(w) catch 0;
             const packet_storage = try self.packet_pool.checkout();
             defer self.packet_pool.release(packet_storage);
@@ -161,7 +161,7 @@ pub fn bind(comptime Connection: type) type {
                 self.shortHeaderDcid(),
                 @as(u32, @truncate(self.pn_app_tx)),
                 2,
-                frames.items,
+                fbs.getWritten(),
                 .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
                 self.tx_key_phase,
             );
@@ -198,12 +198,12 @@ pub fn bind(comptime Connection: type) type {
         pub fn openStream(self: *Connection, bidi: bool) !u64 {
             if (bidi) {
                 if (self.opened_bidi >= self.peer_max_streams_bidi) {
-                    var fb: std.ArrayList(u8) = .empty;
-                    defer fb.deinit(self.allocator.*);
-                    const compat = @import("compat");
-                    const w = compat.arrayListWriter(&fb, self.allocator.*);
+                    // #163: stack buffer for single STREAMS_BLOCKED_BIDI frame (< 16 bytes).
+                    var frame_buf: [64]u8 = undefined;
+                    var fbs = @import("compat").fixedBufWriter(&frame_buf);
+                    const w = fbs.writer();
                     _ = (frame.Frame{ .streams_blocked_bidi = .{ .max = self.peer_max_streams_bidi } }).write(w) catch 0;
-                    self.sendControlFrames(fb.items);
+                    self.sendControlFrames(fbs.getWritten());
                     return error.OutOfStreams;
                 }
                 const stream_num: u64 = self.opened_bidi;
@@ -373,11 +373,12 @@ pub fn bind(comptime Connection: type) type {
                 {
                     self.last_stream_data_blocked_limit = peer_stream_limit;
                     self.last_stream_data_blocked_at_ns = now_ns;
-                    var fb1: std.ArrayList(u8) = .empty;
-                    defer fb1.deinit(self.allocator.*);
-                    const w1 = @import("compat").arrayListWriter(&fb1, self.allocator.*);
+                    // #163: stack buffer for single STREAM_DATA_BLOCKED frame (< 24 bytes).
+                    var frame_buf: [64]u8 = undefined;
+                    var fbs1 = @import("compat").fixedBufWriter(&frame_buf);
+                    const w1 = fbs1.writer();
                     _ = (frame.Frame{ .stream_data_blocked = .{ .stream_id = id, .limit = peer_stream_limit } }).write(w1) catch 0;
-                    self.sendControlFrames(fb1.items);
+                    self.sendControlFrames(fbs1.getWritten());
                 }
                 return error.FlowControlBlocked;
             }
@@ -395,11 +396,12 @@ pub fn bind(comptime Connection: type) type {
                 {
                     self.last_data_blocked_limit = peer_conn_limit;
                     self.last_data_blocked_at_ns = now_ns;
-                    var fb2: std.ArrayList(u8) = .empty;
-                    defer fb2.deinit(self.allocator.*);
-                    const w2 = @import("compat").arrayListWriter(&fb2, self.allocator.*);
+                    // #163: stack buffer for single DATA_BLOCKED frame (< 16 bytes).
+                    var frame_buf: [64]u8 = undefined;
+                    var fbs2 = @import("compat").fixedBufWriter(&frame_buf);
+                    const w2 = fbs2.writer();
                     _ = (frame.Frame{ .data_blocked = .{ .limit = peer_conn_limit } }).write(w2) catch 0;
-                    self.sendControlFrames(fb2.items);
+                    self.sendControlFrames(fbs2.getWritten());
                 }
                 return error.FlowControlBlocked;
             }
@@ -632,10 +634,10 @@ pub fn bind(comptime Connection: type) type {
             }
             // Use per-stream offset as final_size
             const final_size: u64 = if (id == 0) self.stream_send_off else self.stream_txs.getPtr(id).?.off;
-            var frames_buf: std.ArrayList(u8) = .empty;
-            defer frames_buf.deinit(self.allocator.*);
-            const compat = @import("compat");
-            const w = compat.arrayListWriter(&frames_buf, self.allocator.*);
+            // #163: stack buffer for single RESET_STREAM frame (< 40 bytes).
+            var frame_buf: [64]u8 = undefined;
+            var fbs = @import("compat").fixedBufWriter(&frame_buf);
+            const w = fbs.writer();
             _ = (frame.Frame{ .reset_stream = .{
                 .stream_id = id,
                 .error_code = app_error_code,
@@ -648,7 +650,7 @@ pub fn bind(comptime Connection: type) type {
                 self.shortHeaderDcid(),
                 @as(u32, @truncate(self.pn_app_tx)),
                 2,
-                frames_buf.items,
+                fbs.getWritten(),
                 .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
                 self.tx_key_phase,
             );
@@ -677,10 +679,10 @@ pub fn bind(comptime Connection: type) type {
                 self.stream_txs.getPtr(stream_id).?.off
             else
                 self.stream_send_off;
-            var frames_buf: std.ArrayList(u8) = .empty;
-            defer frames_buf.deinit(self.allocator.*);
-            const compat = @import("compat");
-            const w = compat.arrayListWriter(&frames_buf, self.allocator.*);
+            // #163: stack buffer for single RESET_STREAM frame (< 40 bytes).
+            var frame_buf: [64]u8 = undefined;
+            var fbs = @import("compat").fixedBufWriter(&frame_buf);
+            const w = fbs.writer();
             _ = (frame.Frame{ .reset_stream = .{ .stream_id = stream_id, .error_code = app_error_code, .final_size = final_size } }).write(w) catch 0;
             const packet_storage = try self.packet_pool.checkout();
             defer self.packet_pool.release(packet_storage);
@@ -689,7 +691,7 @@ pub fn bind(comptime Connection: type) type {
                 self.shortHeaderDcid(),
                 @as(u32, @truncate(self.pn_app_tx)),
                 2,
-                frames_buf.items,
+                fbs.getWritten(),
                 .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
                 self.tx_key_phase,
             ) catch 0;
@@ -1050,10 +1052,10 @@ pub fn bind(comptime Connection: type) type {
                 const t = ks.deriveKeyIvHp(keys);
                 break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
             };
-            var frames: std.ArrayList(u8) = .empty;
-            defer frames.deinit(self.allocator.*);
-            const compat = @import("compat");
-            const w = compat.arrayListWriter(&frames, self.allocator.*);
+            // #163: stack buffer for PING+PADDING (fallback path, up to 1200 B).
+            var frame_buf: [2048]u8 = undefined;
+            var fbs = @import("compat").fixedBufWriter(&frame_buf);
+            const w = fbs.writer();
             _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
 
             const dest_cid = if (self.role == .Client)
@@ -1069,10 +1071,10 @@ pub fn bind(comptime Connection: type) type {
                 const max_crypto_chunk: usize = @max(@as(usize, 256), @as(usize, self.path_mtu) - 80);
                 const chunk_len = @min(retx.len, max_crypto_chunk);
 
-                var crypto_frames: std.ArrayList(u8) = .empty;
-                defer crypto_frames.deinit(self.allocator.*);
-                const compat_cw = @import("compat");
-                const cw = compat_cw.arrayListWriter(&crypto_frames, self.allocator.*);
+                // #163: stack buffer for CRYPTO + PADDING up to 1200 B.
+                var crypto_frame_buf: [2048]u8 = undefined;
+                var cfbs = @import("compat").fixedBufWriter(&crypto_frame_buf);
+                const cw = cfbs.writer();
                 _ = (frame.Frame{
                     .crypto = .{
                         .offset = self.crypto_retx_initial_off,
@@ -1090,7 +1092,7 @@ pub fn bind(comptime Connection: type) type {
                     token,
                     @as(u32, @truncate(self.pn_initial_tx)),
                     2,
-                    crypto_frames.items,
+                    cfbs.getWritten(),
                     txk,
                 ) catch null;
                 if (crypto_pkt) |bytes_out_initial| {
@@ -1098,8 +1100,8 @@ pub fn bind(comptime Connection: type) type {
                     if (bytes_out.len < 1200) {
                         const pad_needed = 1200 - bytes_out.len;
                         self.allocator.free(bytes_out);
-                        crypto_frames.appendNTimes(self.allocator.*, @intFromEnum(frame.FrameType.PADDING), pad_needed) catch |err| {
-                            logger.err("PTO Initial padding append failed (OOM): {s}", .{@errorName(err)});
+                        cw.writeByteNTimes(@intFromEnum(frame.FrameType.PADDING), pad_needed) catch |err| {
+                            logger.err("PTO Initial padding append failed: {s}", .{@errorName(err)});
                             return;
                         };
                         crypto_pkt = packet.encodeInitialProtected(
@@ -1110,7 +1112,7 @@ pub fn bind(comptime Connection: type) type {
                             token,
                             @as(u32, @truncate(self.pn_initial_tx)),
                             2,
-                            crypto_frames.items,
+                            cfbs.getWritten(),
                             txk,
                         ) catch null;
                         if (crypto_pkt) |retry_out| {
@@ -1138,7 +1140,7 @@ pub fn bind(comptime Connection: type) type {
                 token,
                 @as(u32, @truncate(self.pn_initial_tx)),
                 2,
-                frames.items,
+                fbs.getWritten(),
                 txk,
             ) catch null;
             if (out) |bytes_out_initial| {
@@ -1146,8 +1148,8 @@ pub fn bind(comptime Connection: type) type {
                 if (self.role == .Client and bytes_out.len < 1200) {
                     const pad_needed = 1200 - bytes_out.len;
                     self.allocator.free(bytes_out);
-                    frames.appendNTimes(self.allocator.*, @intFromEnum(frame.FrameType.PADDING), pad_needed) catch |err| {
-                        logger.err("PTO Initial padding append failed (OOM): {s}", .{@errorName(err)});
+                    w.writeByteNTimes(@intFromEnum(frame.FrameType.PADDING), pad_needed) catch |err| {
+                        logger.err("PTO Initial padding append failed: {s}", .{@errorName(err)});
                         return;
                     };
                     out = packet.encodeInitialProtected(
@@ -1158,7 +1160,7 @@ pub fn bind(comptime Connection: type) type {
                         token,
                         @as(u32, @truncate(self.pn_initial_tx)),
                         2,
-                        frames.items,
+                        fbs.getWritten(),
                         txk,
                     ) catch null;
                     if (out) |retry_out| {
@@ -1188,10 +1190,10 @@ pub fn bind(comptime Connection: type) type {
                 var probes_sent: usize = 0;
                 while (sent_off < retx.len and probes_sent < 8) {
                     const chunk_len = @min(retx.len - sent_off, max_crypto_chunk);
-                    var crypto_frames: std.ArrayList(u8) = .empty;
-                    defer crypto_frames.deinit(self.allocator.*);
-                    const compat_cw = @import("compat");
-                    const cw = compat_cw.arrayListWriter(&crypto_frames, self.allocator.*);
+                    // #163: stack buffer for CRYPTO chunk.
+                    var crypto_frame_buf: [2048]u8 = undefined;
+                    var cfbs = @import("compat").fixedBufWriter(&crypto_frame_buf);
+                    const cw = cfbs.writer();
                     _ = (frame.Frame{
                         .crypto = .{
                             .offset = self.crypto_retx_handshake_off + sent_off,
@@ -1208,7 +1210,7 @@ pub fn bind(comptime Connection: type) type {
                         self.our_scid.bytes[0..self.our_scid.len],
                         @as(u32, @truncate(self.pn_handshake_tx)),
                         2,
-                        crypto_frames.items,
+                        cfbs.getWritten(),
                         tx,
                     ) catch null;
                     if (out_crypto) |bytes_out| {
@@ -1225,10 +1227,10 @@ pub fn bind(comptime Connection: type) type {
                 if (probes_sent > 0) return;
             }
 
-            var frames: std.ArrayList(u8) = .empty;
-            defer frames.deinit(self.allocator.*);
-            const compat = @import("compat");
-            const w = compat.arrayListWriter(&frames, self.allocator.*);
+            // #163: stack buffer for single PING frame.
+            var frame_buf: [64]u8 = undefined;
+            var fbs = @import("compat").fixedBufWriter(&frame_buf);
+            const w = fbs.writer();
             _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
             const out = packet.encodeHandshakeProtected(
                 self.allocator.*,
@@ -1238,7 +1240,7 @@ pub fn bind(comptime Connection: type) type {
                 self.our_scid.bytes[0..self.our_scid.len],
                 @as(u32, @truncate(self.pn_handshake_tx)),
                 2,
-                frames.items,
+                fbs.getWritten(),
                 tx,
             ) catch null;
             if (out) |bytes_out| {
@@ -1320,10 +1322,10 @@ pub fn bind(comptime Connection: type) type {
                 }
             }
 
-            var frames: std.ArrayList(u8) = .empty;
-            defer frames.deinit(self.allocator.*);
-            const compat = @import("compat");
-            const w = compat.arrayListWriter(&frames, self.allocator.*);
+            // #163: stack buffer for single PING frame.
+            var frame_buf: [64]u8 = undefined;
+            var fbs = @import("compat").fixedBufWriter(&frame_buf);
+            const w = fbs.writer();
             _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
             const packet_storage = self.packet_pool.checkout() catch return;
             defer self.packet_pool.release(packet_storage);
@@ -1332,7 +1334,7 @@ pub fn bind(comptime Connection: type) type {
                 self.shortHeaderDcid(),
                 @as(u32, @truncate(self.pn_app_tx)),
                 2,
-                frames.items,
+                fbs.getWritten(),
                 .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
                 self.tx_key_phase,
             ) catch 0;
@@ -1351,10 +1353,12 @@ pub fn bind(comptime Connection: type) type {
             logger.debugPrint("DEBUG: sendConnectionClose called with error_code={}, reason=\"{s}\"\n", .{ app_error_code, reason });
             if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
             const tx = self.app_tx_keys.?;
-            var frames: std.ArrayList(u8) = .empty;
-            defer frames.deinit(self.allocator.*);
-            const compat = @import("compat");
-            const w = compat.arrayListWriter(&frames, self.allocator.*);
+            // #163: stack buffer for single CONNECTION_CLOSE frame. Reason string
+            // is unbounded in the protocol but practically capped; 2048 B covers
+            // typical reasons plus a hard error.NoSpaceLeft guard for unusually long ones.
+            var frame_buf: [2048]u8 = undefined;
+            var fbs = @import("compat").fixedBufWriter(&frame_buf);
+            const w = fbs.writer();
             _ = (frame.Frame{ .connection_close = .{ .error_code = app_error_code, .frame_type = 0, .reason = reason } }).write(w) catch 0;
             const packet_storage = try self.packet_pool.checkout();
             defer self.packet_pool.release(packet_storage);
@@ -1363,7 +1367,7 @@ pub fn bind(comptime Connection: type) type {
                 self.shortHeaderDcid(),
                 @as(u32, @truncate(self.pn_app_tx)),
                 2,
-                frames.items,
+                fbs.getWritten(),
                 .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
                 self.tx_key_phase,
             );
@@ -1483,17 +1487,17 @@ pub fn bind(comptime Connection: type) type {
             if (self.role == .Server and !self.handshake_done_sent) {
                 logger.debugPrint("[deriveAppKeys] Server: Will send HANDSHAKE_DONE now!\n", .{});
 
-                var frames: std.ArrayList(u8) = .empty;
-                defer frames.deinit(self.allocator.*);
-                const compat = @import("compat");
-                const w = compat.arrayListWriter(&frames, self.allocator.*);
+                // #163: stack buffer for HANDSHAKE_DONE + MAX_DATA + MAX_STREAMS_BIDI (< 64 B total).
+                var frame_buf: [128]u8 = undefined;
+                var fbs = @import("compat").fixedBufWriter(&frame_buf);
+                const w = fbs.writer();
                 _ = (frame.Frame{ .handshake_done = {} }).write(w) catch 0;
                 // FIXED: Do NOT send MAX_STREAM_DATA for stream 0 unconditionally. It violates RFC 9000 if stream 0 is not open.
                 // _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = self.local_max_stream_data } }).write(w) catch 0;
                 _ = (frame.Frame{ .max_data = .{ .max = self.local_max_data } }).write(w) catch 0;
                 _ = (frame.Frame{ .max_streams_bidi = .{ .max = self.local_max_streams_bidi } }).write(w) catch 0;
                 // NOTE: Session tickets removed - Context API doesn't support queueNewSessionTicket yet
-                self.sendControlFrames(frames.items);
+                self.sendControlFrames(fbs.getWritten());
                 self.handshake_done_sent = true;
             }
         }
