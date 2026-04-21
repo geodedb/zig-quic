@@ -404,10 +404,14 @@ pub fn destroy(ep: *QuicEndpoint, conn: *Connection) void {
 /// RFC 9000 §9.1 describes path validation using socket tuples; this helper is
 /// used by tests/tools that need to assert listener bindings.
 pub fn getPort(ep: *QuicEndpoint) u16 {
+    // Zig 0.16.0 removed std.posix.getsockname; the 0.16 path is
+    // std.os.linux.getsockname which returns `usize` with negative
+    // values encoding -errno (same shape as udp_batch bench).
     var addr = conn_mod.SockAddr{};
     addr.len = @intCast(@sizeOf(posix.sockaddr.storage));
     const sa_ptr: *posix.sockaddr = @ptrCast(@alignCast(&addr.storage));
-    posix.getsockname(ep.sock_fd, sa_ptr, &addr.len) catch return 0;
+    const rc = std.os.linux.getsockname(ep.sock_fd, sa_ptr, &addr.len);
+    if (@as(isize, @bitCast(rc)) < 0) return 0;
     return switch (addr.storage.family) {
         posix.AF.INET => blk: {
             const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&addr.storage));
