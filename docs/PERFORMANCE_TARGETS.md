@@ -135,13 +135,16 @@ Measured from v2 baseline capture (2026-04-20). Revised only alongside a
 
 Cross-implementation comparison. External targets are **not gated
 independently** of the tier-% + noise-floor regression rule. Populated
-at first external baseline capture (Phase 10 Task 10.2).
+at the 2026-04-20 re-capture (commit `9cbf3ac` era). Numbers reflect
+full-suite context (external handshakes run AFTER integration tier
+saturates FDs/CPU, producing ~10× slower latencies than isolated-tier
+runs — honest measurement, not noise).
 
-| Scenario | Variant | Notes |
-|---|---|---|
-| `external/quic-go/handshake` | `loopback` | Median handshake time vs. quic-go |
-| `external/quinn/handshake` | `loopback` | Median handshake time vs. quinn |
-| `external/aioquic/handshake` | `loopback` | Median handshake time vs. aioquic |
+| Scenario | Variant | Measured p50 | Notes |
+|---|---|---|---|
+| `external/quic-go/handshake` | `loopback` | 1285 ms | Median handshake time vs. quic-go (isolated: 109 ms) |
+| `external/quinn/handshake` | `loopback` | 1298 ms | Median handshake time vs. quinn (isolated: 103 ms) |
+| `external/aioquic/handshake` | `loopback` | 1533 ms | Median handshake time vs. aioquic (isolated: 335 ms) |
 
 ## Revision Protocol (v2)
 

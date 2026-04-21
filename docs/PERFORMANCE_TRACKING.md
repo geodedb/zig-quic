@@ -160,19 +160,23 @@ ISO-8601 `YYYY-MM-DD`.
     p50=133µs — burst/single per-write ratio ≈9.85× (geode target: ≤1.5×)
   - `integration/udp_batch batch/single` throughput ratio 1.57× (preserves
     ≥0.95× absolute gate; syscall-reduction ratio check in `perf-gate.sh`)
-- **External tier:** all 3 scenarios (quic-go, quinn, aioquic) landed as
-  SKIP rows (`external_impl=<impl>-SKIP`) despite toolchains being
-  available on this machine. Likely capture-time subprocess/server
-  lifecycle issue inside full-suite dispatch. `compare.zig`'s SKIP-row
-  filter (see commit `8b5b5df`) prevents these from triggering false
-  regressions. Future re-capture needed to populate real external
-  baseline; tracked as follow-up.
-- **Harness metadata gaps:** `quic_git_sha`, `hostname`, `kernel` fields
-  in the JSON landed as `"unknown"` — the harness's `std.process.run`
-  calls to `git`/`hostname`/`uname -r` failed during bench execution
-  (likely a subprocess error-handling path in `common.zig:gitSha` /
-  `hostnameAlloc` / `kernelAlloc`). Not a correctness issue for gating
-  (env check in `compare.zig` uses `os`/`arch`/`cpu`/`zig_version`
-  which ARE populated), but future compare runs will log the "unknown"
-  strings. Track as hygiene follow-up.
+- **External tier:** initial capture landed all 3 scenarios as SKIP
+  (`external_impl=<impl>-SKIP`) despite toolchains being available —
+  root cause: handshake_e2e 10Kp exhausted the process's FD limit,
+  breaking subsequent `which go`/`which cargo`/`which python3`
+  subprocess spawns. Fixed in commit `464adca` (toolchain-availability
+  cache prewarmed at bench_runner entry, before FD pressure builds).
+- **Harness metadata gaps (initial capture):** `quic_git_sha`,
+  `hostname`, `kernel` fields in 17/64 rows + document-level landed
+  as `"unknown"` — same FD-exhaustion root cause. Fixed in commit
+  `577dfe8` (env-metadata cache prewarmed at bench_runner entry).
+- **Re-capture on commit `9cbf3ac`** (2026-04-20, ~21 min runtime):
+  0 unknown rows, 0 SKIP rows, all 3 external impls produced real
+  numbers. External-tier p50 numbers captured AFTER integration
+  tier saturates FDs/CPU (quic-go 1285ms, quinn 1298ms, aioquic
+  1533ms) — ~10× slower than isolated-tier runs (109/103/335ms).
+  This is honest full-suite measurement with accumulated resource
+  pressure, not a fluke. Isolated-tier A/B against these numbers
+  will compare apples-to-apples. Integration-tier values remained
+  within ±5% of the initial capture (normal sample variance).
 </content>
