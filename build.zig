@@ -149,10 +149,18 @@ pub fn build(b: *std.Build) void {
     // ========================================================================
     // External TLS Library (from build.zig.zon dependency)
     // ========================================================================
-    // Import TLS modules from the external tls library instead of vendored implementation
+    // Import TLS modules from the external tls library instead of vendored implementation.
+    //
+    // SEC-077 (tls v0.1.2): `x509.InsecureValidation.testing_only_i_know_what_i_am_doing`
+    // runtime-panics unless the tls dep is built with `-Dtls-insecure-testing=true`.
+    // QUIC tests, benchmarks, and interop all exercise self-signed / peer-untrusted
+    // paths via `QuicConfig.allow_insecure = true`; forward the build flag so those
+    // targets compile & run. Production callers that set `allow_insecure = false`
+    // are unaffected (they flow to the `.secure` variant, which never panics).
     const tls_dep = b.dependency("tls", .{
         .target = target,
         .optimize = optimize,
+        .@"tls-insecure-testing" = true,
     });
 
     // Get TLS modules from the external dependency (only the ones actually used)

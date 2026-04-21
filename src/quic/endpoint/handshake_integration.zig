@@ -370,7 +370,11 @@ pub fn createTlsContext(
         .server_cert_der = server_cert_der,
         .server_key_der = server_key_der,
         .supported_signature_schemes = supported_schemes,
-        .allow_insecure = allow_insecure,
+        // SEC-077 (tls v0.1.2): upstream replaced the bool with an
+        // x509.InsecureValidation sentinel; `.testing_only_...` additionally
+        // requires `-Dtls-insecure-testing=true` at the tls-dep build level
+        // (wired in our build.zig), otherwise it panics at runtime.
+        .allow_insecure = if (allow_insecure) .testing_only_i_know_what_i_am_doing else .secure,
         .request_client_cert = request_client_cert,
         .client_cert_der = client_cert_der,
         .client_key_der = client_key_der,
