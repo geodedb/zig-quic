@@ -46,10 +46,19 @@
 //   100p   - 100 parallel client threads, 100 iterations (per_thread=1)
 //   1Kp    - 1000 parallel client threads, 1000 iterations (per_thread=1)
 //   10Kp   - 10000 parallel client threads, 10000 iterations
-//             (per_thread=1). At this scale a notable fraction of the
-//             handshakes exceed the 2s per-handshake timeout under
-//             scheduler pressure; the successful fraction's p50/p99 is
-//             what the regression gate tracks.
+//             (per_thread=1). At this scale ~23% of the 10K handshakes
+//             complete within the 2s per-handshake budget (~2300/10000
+//             on 20+ CPU hosts at 2026-04-20 baseline — the other
+//             ~77% hit the kernel's listen/accept or scheduler
+//             saturation and are recorded as timeouts). The bench
+//             records latency ONLY for the successful fraction, so
+//             p50/p99 characterize the worst-completed-handshake
+//             curve; the completion rate itself is in the iterations
+//             field (~2303 of a requested 10000). This is the expected
+//             regression signal: if a server-side concurrency fix
+//             lands, the completion rate rises toward 100% AND the
+//             p50/p99 within the completed set should stay flat or
+//             improve.
 
 const std = @import("std");
 const builtin = @import("builtin");
