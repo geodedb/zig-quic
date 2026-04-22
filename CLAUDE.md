@@ -15,6 +15,7 @@ zig build bench-micro           # micro tier only (<30s)
 zig build bench-integration     # integration tier only (<5min)
 zig build bench-external        # external tier (needs go/cargo/python3+aioquic)
 scripts/perf-gate.sh --help     # regression gate (3 modes: paired-commit / manual / phased)
+sudo scripts/tune-system.sh apply   # apply canonical UDP/network sysctl tuning (docs/SYSTEM_TUNING.md)
 ```
 
 ## Performance Work Protocol

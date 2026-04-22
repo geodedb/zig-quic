@@ -92,6 +92,7 @@ With datagram enabled, the server will echo any DATAGRAM payloads. When `--retry
 - Gap analysis: `docs/GAP_ANALYSIS.md`
 - Performance targets and benchmark gates: `docs/PERFORMANCE_TARGETS.md`
 - Design: `docs/DESIGN.md`
+- System tuning (sysctl / UDP buffers): `docs/SYSTEM_TUNING.md` — apply via `sudo scripts/tune-system.sh apply`
 
 ## Using from another Zig project
 
@@ -253,6 +254,7 @@ GitLab CI runs Zig build/test components, cross-language e2e interop smoke tests
 ## Implementation Details
 
 ### Code Architecture
+
 - [`src/quic/conn.zig`](src/quic/conn.zig): Connection state machine with full packet processing
 - [`src/quic/endpoint.zig`](src/quic/endpoint.zig): UDP socket management and event loop
 - [`src/quic/frame.zig`](src/quic/frame.zig): All 20+ frame types encode/decode
@@ -261,6 +263,7 @@ GitLab CI runs Zig build/test components, cross-language e2e interop smoke tests
 - [`src/h3/`](src/h3/): Basic HTTP/3 with static QPACK
 
 ### Platform Support
+
 - **Linux**: Full implementation with epoll, ECN, PMTUD
 - **macOS**: Full implementation with kqueue  
 - **Windows**: Basic support (IOCP stub)
@@ -268,6 +271,7 @@ GitLab CI runs Zig build/test components, cross-language e2e interop smoke tests
 ## Next Steps
 
 See the [docs/](docs/) directory for the development roadmap including:
+
 - Interoperability validation with all implementations
 - Performance optimizations and benchmarking
 - Production readiness enhancements
