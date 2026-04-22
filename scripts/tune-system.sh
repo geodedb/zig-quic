@@ -96,7 +96,7 @@ cmd_apply() {
                 if should_raise "$knob" "$cur" "$val"; then
                     log "raise $knob: $cur -> $val"
                     if [ "$dry" != "1" ]; then
-                        sysctl -w "$knob=$val" >/dev/null 2>&1 \
+                        "$SYSCTL" -w "$knob=$val" >/dev/null 2>&1 \
                             || warn "failed to set $knob (continuing)"
                     fi
                 else
