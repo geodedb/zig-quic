@@ -9,7 +9,7 @@ const ks = @import("quic_tls");
 const test_certs = @import("test_certs");
 
 test "server responds to client Initial" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 

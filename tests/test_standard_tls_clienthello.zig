@@ -3,7 +3,7 @@ const tls13 = @import("quic_tls13");
 
 // Test that TLS engine can parse standard TLS 1.3 ClientHello without explicit real_mode flag.
 test "TLS engine auto-detects and parses standard ClientHello" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -27,7 +27,7 @@ test "TLS engine auto-detects and parses standard ClientHello" {
 
 // Test that minimal "CH1" format still works (backward compatibility).
 test "TLS engine still accepts minimal CH1 format" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

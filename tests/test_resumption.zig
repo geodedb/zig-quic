@@ -11,7 +11,7 @@ test "session resumption with PSK" {
 }
 
 test "0-RTT data with resumption" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -37,7 +37,7 @@ test "0-RTT data with resumption" {
 }
 
 test "PSK binder computation" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     _ = alloc;

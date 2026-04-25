@@ -3,7 +3,7 @@ const conn_mod = @import("quic_conn");
 const tls13 = @import("quic_tls13");
 
 test "Connection.setServerName wires TLS SNI config" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 

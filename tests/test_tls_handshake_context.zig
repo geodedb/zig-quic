@@ -208,7 +208,7 @@ fn computeTranscriptHash(data: []const u8) [ks.H.digest_length]u8 {
 }
 
 test "context parses ClientHello and stores handshake view" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -246,7 +246,7 @@ test "context parses ClientHello and stores handshake view" {
 }
 
 test "context captures ClientHello ALPN list" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -283,7 +283,7 @@ test "context accepts second ClientHello after HelloRetryRequest" {
 }
 
 test "context captures pre_shared_key offer" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -315,7 +315,7 @@ test "context captures pre_shared_key offer" {
 }
 
 test "server emits ServerHello flight with Finished" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -382,7 +382,7 @@ test "server emits ServerHello flight with Finished" {
 }
 
 test "server verifies client Finished and derives application secrets" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -452,7 +452,7 @@ test "server verifies client Finished and derives application secrets" {
 }
 
 test "server rejects tampered client Finished" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -504,7 +504,7 @@ test "server rejects tampered client Finished" {
 }
 
 test "server records negotiated signature algorithm" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -525,7 +525,7 @@ test "server records negotiated signature algorithm" {
 }
 
 test "server rejects client without compatible signature algorithm" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -545,7 +545,7 @@ test "server rejects client without compatible signature algorithm" {
 }
 
 test "server negotiates ALPN when offered" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -641,7 +641,7 @@ test "server negotiates ALPN when offered" {
 }
 
 test "server errors when ALPN required but absent" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

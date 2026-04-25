@@ -4,8 +4,11 @@ const conn_mod = @import("quic_conn");
 const incoming = @import("incoming");
 const endpoint_types = @import("endpoint/types");
 const cfg_mod = @import("config");
+const api = @import("quic_api");
+const test_certs = @import("test_certs");
 
 var probe_count: usize = 0;
+var real_vn_client_endpoint: ?*api.QuicEndpoint = null;
 
 fn fakePeer() conn_mod.SockAddr {
     return conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433);
@@ -22,6 +25,11 @@ fn scheduleTimer(_: *conn_mod.Connection, _: endpoint_types.TimerKind, _: u32) a
 fn sendInitialProbe(conn: *conn_mod.Connection) anyerror!void {
     _ = conn;
     probe_count += 1;
+}
+
+fn sendInitialProbeViaEndpoint(conn: *conn_mod.Connection) anyerror!void {
+    const ep = real_vn_client_endpoint orelse return error.MissingEndpoint;
+    try ep.clientSendInitialProbe(conn);
 }
 
 fn setupSender(_: *conn_mod.Connection) void {}
@@ -168,4 +176,94 @@ test "endpoint VN rejects downgrade and disabled compatible VN" {
     incoming.processVersionNegotiation(&ctx, peer, vn_packet);
     try std.testing.expectEqual(@as(u32, 0x0a0a0a0a), conn.version);
     try std.testing.expectEqual(@as(usize, 0), probe_count);
+}
+
+test "compatible VN retries with selected version and completes full handshake" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    var alloc = gpa.allocator();
+
+    var srv_cfg = api.QuicConfig{
+        .alpn = &[_][]const u8{"h3"},
+        .allow_insecure = true,
+        .compatible_vn = true,
+        .enable_retry = false,
+        .inline_server_cert_der = test_certs.server_cert_der,
+        .inline_server_priv_p256 = test_certs.server_key_der,
+    };
+    var cli_cfg = api.QuicConfig{
+        .alpn = &[_][]const u8{"h3"},
+        .allow_insecure = true,
+        .compatible_vn = true,
+    };
+    const ep_server = try api.endpointInit(&alloc, "127.0.0.1:0", &srv_cfg);
+    defer api.endpointDeinit(ep_server);
+    const ep_client = try api.endpointInit(&alloc, "127.0.0.1:0", &cli_cfg);
+    defer api.endpointDeinit(ep_client);
+
+    var addr_buf: [64]u8 = undefined;
+    const server_port = api.getPort(ep_server);
+    const addr = try std.fmt.bufPrint(&addr_buf, "127.0.0.1:{d}", .{server_port});
+
+    const conn_client = try ep_client.connectClient(addr);
+    try conn_client.setServerName("test.local");
+    conn_client.initial_version = 0x0a0a0a0a;
+    conn_client.version = conn_client.initial_version;
+    conn_client.version_v2 = false;
+
+    const versions = [_]u32{pkt.QUIC_V1};
+    const vn_packet = try pkt.encodeVersionNegotiation(
+        alloc,
+        conn_client.our_scid.bytes[0..conn_client.our_scid.len],
+        conn_client.peer_initial_dcid.bytes[0..conn_client.peer_initial_dcid.len],
+        &versions,
+    );
+    defer alloc.free(vn_packet);
+
+    var secret = [_]u8{0} ** 32;
+    var ctx = incoming.RxContext{
+        .allocator = &alloc,
+        .conns = &ep_client.conns,
+        .accepted = &ep_client.accepted,
+        .cfg = &cli_cfg,
+        .send_fn = sendFn,
+        .schedule_timer_fn = scheduleTimer,
+        .send_initial_probe_fn = sendInitialProbe,
+        .setup_sender_fn = setupSender,
+        .test_capture_enabled = false,
+        .endpoint_role = .Client,
+        .generated_token_secret = &secret,
+    };
+    probe_count = 0;
+    incoming.processVersionNegotiation(&ctx, conn_client.peer, vn_packet);
+    try std.testing.expectEqual(pkt.QUIC_V1, conn_client.version);
+    try std.testing.expect(!conn_client.version_v2);
+    try std.testing.expectEqual(@as(usize, 1), probe_count);
+
+    try ep_client.clientSendInitialProbe(conn_client);
+
+    var accepted: ?*api.Connection = null;
+    var ticks: usize = 0;
+    while (ticks < 400) : (ticks += 1) {
+        _ = api.poll(ep_server, 5) catch {};
+        _ = api.poll(ep_client, 5) catch {};
+        if (accepted == null) {
+            accepted = api.accept(ep_server) catch |err| switch (err) {
+                error.WouldBlock => null,
+            };
+        }
+        if (accepted) |server_conn| {
+            if (api.handshakeComplete(conn_client) and api.handshakeComplete(server_conn)) break;
+        }
+    }
+
+    const server_conn = accepted orelse return error.TestExpectedAccept;
+    try std.testing.expectEqual(pkt.QUIC_V1, conn_client.version);
+    try std.testing.expect(!conn_client.version_v2);
+    try std.testing.expectEqual(pkt.QUIC_V1, server_conn.version);
+    try std.testing.expect(!server_conn.version_v2);
+    try std.testing.expect(api.handshakeComplete(conn_client));
+    try std.testing.expect(api.handshakeComplete(server_conn));
+    try std.testing.expect(api.getNegotiatedAlpn(conn_client) != null);
+    try std.testing.expect(api.getNegotiatedAlpn(server_conn) != null);
 }

@@ -6,7 +6,7 @@ const ks = @import("quic_tls");
 
 // Flip one byte in Retry payload/tag -> verifyRetry must fail and client must ignore.
 test "client_ignores_tampered_retry" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 

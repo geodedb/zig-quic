@@ -13,7 +13,7 @@ fn injectShort(a: std.mem.Allocator, ep: *endpoint.Endpoint, c: *conn_mod.Connec
 }
 
 test "multi-stream RX: independent FIN completion" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
     var ep = try endpoint.Endpoint.init(A, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });
@@ -40,7 +40,7 @@ test "multi-stream RX: independent FIN completion" {
 }
 
 test "multi-stream RX: RESET_STREAM aborts only target stream" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
     var c: conn_mod.Connection = undefined;

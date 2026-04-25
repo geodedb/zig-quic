@@ -20,7 +20,7 @@ const frame = @import("quic_frame");
 // fell back to our_scid when peer_initial_scid.len == 0, causing TLS alert
 // 0x010a (266) from strict QUIC implementations like quic-go.
 test "server uses zero-length DCID in 1-RTT packets when client sends zero-length SCID" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 
@@ -88,7 +88,7 @@ test "server uses zero-length DCID in 1-RTT packets when client sends zero-lengt
 
 // Unit test for Connection.shortHeaderDcid() function
 test "shortHeaderDcid returns empty slice for zero-length peer SCID" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 
@@ -116,7 +116,7 @@ test "shortHeaderDcid returns empty slice for zero-length peer SCID" {
 
 // Unit test for Connection.shortHeaderDcid() with non-zero peer SCID
 test "shortHeaderDcid returns peer SCID when non-zero" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 

@@ -4,7 +4,7 @@ const crypto = @import("quic_crypto");
 const ks = @import("quic_tls");
 
 test "0RTT packet encode and decode" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -49,7 +49,7 @@ test "0RTT packet encode and decode" {
 }
 
 test "0RTT with different packet number lengths" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -95,7 +95,7 @@ test "0RTT with different packet number lengths" {
 }
 
 test "0RTT decryption failure with wrong keys" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

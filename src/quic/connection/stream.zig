@@ -10,6 +10,36 @@
 const std = @import("std");
 const logger = @import("quic_logger");
 
+/// RFC 9000 §3.1 send-side states.
+pub const SendState = enum {
+    Ready,
+    Send,
+    DataSent,
+    ResetSent,
+
+    pub fn canWrite(self: SendState) bool {
+        return switch (self) {
+            .Ready, .Send => true,
+            .DataSent, .ResetSent => false,
+        };
+    }
+};
+
+/// RFC 9000 §3.2 receive-side states.
+pub const ReceiveState = enum {
+    Recv,
+    SizeKnown,
+    DataRead,
+    ResetRead,
+
+    pub fn terminal(self: ReceiveState) bool {
+        return switch (self) {
+            .DataRead, .ResetRead => true,
+            .Recv, .SizeKnown => false,
+        };
+    }
+};
+
 /// Data segment for stream reassembly.
 pub const Segment = struct {
     off: u64,
@@ -23,6 +53,7 @@ fn segmentLessThan(_: void, lhs: Segment, rhs: Segment) bool {
 /// Stream receive state - handles out-of-order delivery and reassembly.
 /// RFC 9000 §3: Stream States
 pub const StreamRx = struct {
+    state: ReceiveState = .Recv,
     recv_off: u64 = 0,
     inbox: std.ArrayList(u8),
     inbox_read_off: usize = 0,
@@ -42,6 +73,7 @@ pub const StreamRx = struct {
 
     pub fn init() StreamRx {
         return .{
+            .state = .Recv,
             .recv_off = 0,
             .inbox = .empty,
             .inbox_read_off = 0,
@@ -86,11 +118,40 @@ pub const StreamRx = struct {
             self.inbox_read_off = 0;
         }
 
+        self.refreshState();
         return n;
+    }
+
+    /// Record a FIN offset and reject conflicting final sizes.
+    pub fn recordFin(self: *StreamRx, final_off: u64) !void {
+        if (self.state == .ResetRead or self.state == .DataRead) return error.StreamStopped;
+        if (self.fin_off) |known| {
+            if (known != final_off) return error.FinalSizeError;
+        }
+        if (final_off < self.recv_off) return error.FinalSizeError;
+        self.fin_off = final_off;
+        self.refreshState();
+    }
+
+    /// Mark the receive side reset by the peer and cap the known final size.
+    pub fn recordReset(self: *StreamRx, final_size: u64) void {
+        self.fin_off = final_size;
+        self.state = .ResetRead;
+    }
+
+    /// Refresh the explicit receive state from offset/final-size bookkeeping.
+    pub fn refreshState(self: *StreamRx) void {
+        if (self.state == .ResetRead) return;
+        if (self.fin_off) |f| {
+            self.state = if (self.recv_off >= f and self.available() == 0) .DataRead else .SizeKnown;
+        } else {
+            self.state = .Recv;
+        }
     }
 
     /// Insert a data segment for potential reassembly.
     pub fn insert(self: *StreamRx, alloc: *std.mem.Allocator, off: u64, data: []const u8) void {
+        if (self.state == .ResetRead or self.state == .DataRead) return;
         // store a copy of segment
         const owned = alloc.alloc(u8, data.len) catch return;
         @memcpy(owned, data);
@@ -125,10 +186,12 @@ pub const StreamRx = struct {
             }
         }
         self.bufs.items.len = write_i;
+        self.refreshState();
     }
 
     /// Check if stream is finished (FIN received and all data delivered).
     pub fn isFinished(self: *const StreamRx) bool {
+        if (self.state.terminal()) return true;
         return if (self.fin_off) |f| self.recv_off >= f else false;
     }
 };
@@ -136,9 +199,38 @@ pub const StreamRx = struct {
 /// Stream transmit state - tracks send offset and FIN flag.
 /// RFC 9000 §3: Stream States
 pub const StreamTx = struct {
+    state: SendState = .Ready,
     off: u64 = 0,
     fin_sent: bool = false,
     aborted: bool = false,
     // PHASE 42 PART 10: Per-stream send-side flow control (RFC 9000 §4.2)
     peer_max_stream_data: u64 = 0, // Peer's receive window limit for this stream
+
+    pub fn canWrite(self: *const StreamTx) !void {
+        if (!self.state.canWrite()) return error.StreamStopped;
+        if (self.fin_sent or self.aborted) return error.StreamStopped;
+    }
+
+    pub fn recordDataSent(self: *StreamTx, bytes: u64, fin: bool) !void {
+        try self.canWrite();
+        self.off +%= bytes;
+        if (fin) {
+            self.fin_sent = true;
+            self.state = .DataSent;
+        } else if (bytes > 0) {
+            self.state = .Send;
+        }
+    }
+
+    pub fn recordFinSent(self: *StreamTx) !void {
+        try self.canWrite();
+        self.fin_sent = true;
+        self.state = .DataSent;
+    }
+
+    pub fn recordResetSent(self: *StreamTx) !void {
+        try self.canWrite();
+        self.aborted = true;
+        self.state = .ResetSent;
+    }
 };

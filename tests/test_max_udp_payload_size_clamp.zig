@@ -5,7 +5,7 @@ const tparams = @import("quic_transport_params");
 // Test that max_udp_payload_size from peer clamps path_mtu and congestion controller mds.
 
 test "max_udp_payload_size_clamp" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

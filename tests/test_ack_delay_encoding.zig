@@ -10,7 +10,7 @@ const quic = @import("../quic.zig");
 pub fn main() !void {}
 
 test "ack_delay_encoding_basic_and_cap" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

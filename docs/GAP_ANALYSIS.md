@@ -1,6 +1,6 @@
 # Gap Analysis
 
-Status note (2026-04-25): this file intentionally contains only open repository-level gaps. Closed items are moved to `docs/GAP_ANALYSIS_RESOLVED.md`. The 18 remaining entries below are unresolved and continue to be tracked by their linked open GitLab issues; large protocol/architecture items are effectively blocked on staged implementation plans and focused verification evidence.
+Status note (2026-04-25): this file intentionally contains only open repository-level gaps. Closed items are moved to `docs/GAP_ANALYSIS_RESOLVED.md`. The 10 remaining entries below are unresolved and continue to be tracked by their linked open GitLab issues.
 
 ## Gaps
 
@@ -32,50 +32,6 @@ Status note (2026-04-25): this file intentionally contains only open repository-
 - **Recommended fix:** Complete the crypto audit, remove or justify `catch unreachable` in crypto paths, and add RFC vector coverage for nonce, Retry, reset token, and key update behavior.
 - **Acceptance criteria:** Audit doc maps every crypto-sensitive operation to code and tests; crypto `catch unreachable` sites are eliminated or justified; CI runs the relevant KAT/vector tests.
 
-### GAP-0009: Version negotiation lacks RFC 9368 end-to-end verification
-- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/138
-- **Category:** Feature
-- **Severity:** High
-- **Requirement source:** GitLab issues #7 and #32; RFC 9000 version negotiation and RFC 9368 compatible VN.
-- **Current state (evidence):**
-  - `src/quic/config.zig:31-32` - exposes `compatible_vn`.
-  - `src/quic/endpoint/incoming.zig:311-348` - processes Version Negotiation only when `ctx.cfg.compatible_vn` is enabled and can switch between v1/v2.
-  - `tests/unit/version/test_version.zig` - covers version constants and helper behavior.
-  - `tests/test_version_negotiation.zig` - now covers endpoint VN processing for compatible-vn switch to v2, fresh Initial probe scheduling, downgrade rejection when the original version is listed, and disabled-compatible-vn ignore behavior.
-  - `zig build -Dtest-filter=version_negotiation test` - exited `0` on 2026-04-25.
-  - `tests/integration/rfc9000_section7.zig:554` - marks version negotiation as partial.
-- **Why this is a gap:** Unit helper coverage exists, but full endpoint compatible-VN and downgrade handling are not proven end to end.
-- **Impact/Risk:** Real client/server version negotiation may fail despite helper tests passing.
-- **Recommended fix:** Add endpoint and interop tests for compatible VN, original-version rejection, and downgrade detection.
-- **Acceptance criteria:** Compatible VN succeeds in a real handshake; downgrade/original-version rejection cases are tested; docs describe exact VN support.
-
-### GAP-0011: Stream state machine uses boolean flags not explicit enum
-- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/140
-- **Category:** Feature
-- **Severity:** High
-- **Requirement source:** GitLab issues #23, #24, #30, #31; RFC 9000 stream state requirements.
-- **Current state (evidence):**
-  - `src/quic/connection/stream.zig:108-116` - `StreamTx` is `off`, `fin_sent`, `aborted`, and `peer_max_stream_data`, with no explicit state enum.
-  - `src/quic/connection/methods_b.zig:620-724` - reset/stop paths mutate boolean-style state.
-- **Why this is a gap:** Boolean combinations can encode invalid or ambiguous RFC stream states.
-- **Impact/Risk:** FIN, RESET_STREAM, STOP_SENDING, and flow-control transitions can diverge under edge cases.
-- **Recommended fix:** Introduce explicit send/receive stream state enums and transition helpers.
-- **Acceptance criteria:** RFC stream states are represented by types; invalid transitions return defined errors; tests cover legal and illegal transitions.
-
-### GAP-0012: CID lifecycle management lacks proactive issuance and rotation integration
-- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/141
-- **Category:** Feature
-- **Severity:** High
-- **Requirement source:** GitLab issues #7, #20, #22; RFC 9000 connection ID lifecycle requirements.
-- **Current state (evidence):**
-  - `src/quic/connection/methods_c.zig:540-612` - implements CID issue/flush helpers.
-  - `src/quic/connection/methods_c.zig:688-713` - implements rotating issuance when at active CID limit.
-  - `rg -n 'flushPendingNewConnectionIds|issueNewConnectionIdRotating|issueNewConnectionId\(' src tests` - shows production exposure and tests, but no proactive endpoint/handshake integration call beyond manual helper usage.
-- **Why this is a gap:** CID helpers exist but are not wired into normal lifecycle events.
-- **Impact/Risk:** Migration and CID retirement can stall because peers may not receive replacement CIDs.
-- **Recommended fix:** Wire CID issuance into handshake completion, migration preparation, and retire handling.
-- **Acceptance criteria:** Endpoints proactively advertise CIDs according to limits; retirement triggers replacements when allowed; integration tests prove migration has usable CIDs.
-
 ### GAP-0013: Full crypto hardening pass needed
 - **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/142
 - **Category:** Security
@@ -89,75 +45,6 @@ Status note (2026-04-25): this file intentionally contains only open repository-
 - **Impact/Risk:** Security-sensitive regressions may escape CI.
 - **Recommended fix:** Complete the crypto review and enable key update/AEAD limit integration tests.
 - **Acceptance criteria:** Key lifecycle is documented and tested through teardown and key update; AEAD limit tests run in CI; remaining crypto skips are linked to scoped issues.
-
-### GAP-0014: Stream state machine per RFC 9000 needs explicit modeling
-- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/143
-- **Category:** Feature
-- **Severity:** High
-- **Requirement source:** GitLab issues #23, #24, #30, #31; RFC 9000 stream state requirements.
-- **Current state (evidence):**
-  - `src/quic/connection/stream.zig:21-106` - models receive reassembly and FIN offset.
-  - `src/quic/connection/stream.zig:108-116` - models transmit state with booleans.
-  - `src/quic/connection/methods_b.zig:620-724` - implements reset/stop behavior outside a central state model.
-- **Why this is a gap:** Stream behavior is distributed rather than governed by one explicit RFC state model.
-- **Impact/Risk:** Graceful close, reset, stop-sending, read/write, and flow-control paths can disagree.
-- **Recommended fix:** Create a stream state module with transition tables and route stream operations through it.
-- **Acceptance criteria:** Send and receive states are explicit; RESET/STOP/FIN/read/write paths share transition helpers; tests cover transition tables.
-
-### GAP-0015: RESET_STREAM/STOP_SENDING needs integration tests
-- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/144
-- **Category:** Test
-- **Severity:** High
-- **Requirement source:** GitLab issues #24 and #31; RFC 9000 RESET_STREAM and STOP_SENDING requirements.
-- **Current state (evidence):**
-  - `src/quic/endpoint/frame_handler.zig:448-500` - dispatches STOP_SENDING and RESET_STREAM frames.
-  - `src/quic/connection/methods_b.zig:620-724` - implements reset and stop handling.
-  - `tests/integration/flow_control.zig` - 58 skipped tests remain in a stream-adjacent integration suite.
-- **Why this is a gap:** Handler code exists, but real endpoint packet flow is not proven for reset/stop behavior.
-- **Impact/Risk:** API, packet protection, retransmission, or flow-control sequencing bugs may remain hidden.
-- **Recommended fix:** Add endpoint-level tests for peer RESET_STREAM and STOP_SENDING in both directions.
-- **Acceptance criteria:** CI verifies packet emission, stream state, and application-visible behavior for RESET_STREAM and STOP_SENDING.
-
-### GAP-0016: Loss detection edge cases untested
-- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/146
-- **Category:** Test
-- **Severity:** High
-- **Requirement source:** GitLab issues #5, #7, #21, #32; RFC 9002.
-- **Current state (evidence):**
-  - `tests/integration/rfc9002_recovery.zig` - 5 `return error.SkipZigTest` occurrences.
-  - `rg --hidden --glob '!.git/**' --glob '!.claude/worktrees/**' --glob '*.zig' -n 'return error\.SkipZigTest' tests src | wc -l` - `528` total skips.
-- **Why this is a gap:** Recovery implementation cannot be considered fully verified while edge-case recovery tests are skipped.
-- **Impact/Risk:** Persistent congestion, reordering, multi-space PTO, or fault-injection regressions may pass CI.
-- **Recommended fix:** Enable skipped RFC 9002 tests and add targeted loss/PTO assertions.
-- **Acceptance criteria:** CI covers packet-threshold loss, time-threshold loss, PTO backoff, persistent congestion, and multi-space interactions.
-
-### GAP-0017: Two conflicting CUBIC implementations remain in tree
-- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/148
-- **Category:** Bug
-- **Severity:** High
-- **Requirement source:** GitLab issues #21 and #108; congestion control implementation expectations.
-- **Current state (evidence):**
-  - `src/quic/recovery.zig:127-140` - legacy `Cubic` placeholder delegates to `NewReno`.
-  - `src/quic/recovery/recovery.zig:446-558` - active recovery implementation includes a real CUBIC branch.
-  - `src/quic/conn.zig:701-704` - keeps legacy `cc_nr` and `cc_cubic` fields marked as non-authoritative.
-- **Why this is a gap:** The tree exposes both placeholder and real CUBIC surfaces.
-- **Impact/Risk:** Maintainers can fix or test the wrong congestion controller.
-- **Recommended fix:** Remove or quarantine the legacy placeholder and ensure imports/tests reference the authoritative recovery module.
-- **Acceptance criteria:** Only one production CUBIC implementation remains reachable; legacy fields are removed or test-only; CUBIC tests assert the active path.
-
-### GAP-0045: Path validation minimal - no timeout, retry, or multi-path probing
-- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/152
-- **Category:** Feature
-- **Severity:** Medium
-- **Requirement source:** GitLab issues #7 and #20; RFC 9000 path validation and migration requirements.
-- **Current state (evidence):**
-  - `src/quic/connection/methods_a.zig:908-927` - seeds challenge data and marks `path_validation_pending`.
-  - `src/quic/endpoint/frame_handler.zig:408-425` - clears pending state on matching PATH_RESPONSE.
-  - `rg -n 'path_validation|path_challenge|PATH_RESPONSE|PATH_CHALLENGE|onPathValidated|disable_active_migration|migration' src/quic tests/integration` - shows skipped/TODO migration paths and no clear timeout/retry/failure callback implementation.
-- **Why this is a gap:** Basic challenge/response exists, but validation lifecycle behavior is not complete.
-- **Impact/Risk:** New paths can remain pending indefinitely or fail without visible policy handling.
-- **Recommended fix:** Add path validation timers, retry limits, failure callbacks, and multi-path tracking.
-- **Acceptance criteria:** PATH_CHALLENGE retry/timeout behavior is tested; failed validation prevents migration; NAT rebinding and migration scenarios have explicit tests.
 
 ### GAP-0053: Endpoint mutex held during receive batch
 - **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/126
@@ -219,9 +106,9 @@ Status note (2026-04-25): this file intentionally contains only open repository-
 - **Severity:** Medium
 - **Requirement source:** GitLab issues #75, #103, #115.
 - **Current state (evidence):**
-  - `src/quic/recovery.zig:127-140` - exposes placeholder CUBIC wrapper.
-  - `src/quic/connection/connection.zig:48-56` - re-exports modular types, including a PMTUD state that differs from the active enum.
-  - `src/quic/conn.zig:701-704` - keeps legacy recovery fields marked non-authoritative.
+  - `src/quic/connection/methods_a.zig:1162-1169` - keeps a legacy stream-0 flow-control compatibility block alongside map-backed stream state.
+  - `src/quic/connection/methods_c.zig:578-580` - still carries a stale placeholder comment on the active CID issuance path even though frame scheduling now exists.
+  - Previous CUBIC and PMTUD duplicate evidence was resolved by GAP-0017, GAP-0044, and GAP-0062 and is no longer part of this open item.
 - **Why this is a gap:** Dead or deprecated production-visible surfaces remain available.
 - **Impact/Risk:** Future fixes can target stale code and leave active paths unchanged.
 - **Recommended fix:** Remove, rename, or quarantine legacy modules behind test-only imports and document the authoritative module map.

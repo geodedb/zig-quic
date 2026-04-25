@@ -11,7 +11,7 @@ pub fn deriveStatelessResetToken(base: *const [32]u8, sequence: u64, cid_bytes: 
     @memcpy(ikm_buf[8 .. 8 + cid_len], cid_bytes);
     const prk = ks.extract(base, ikm_buf[0 .. 8 + cid_len]);
     var out: [16]u8 = undefined;
-    ks.expandLabel(prk, "reset token", &[_]u8{}, out[0..]) catch unreachable;
+    ks.expandLabel(prk[0..], "reset token", "", out[0..]) catch unreachable;
     return out;
 }
 

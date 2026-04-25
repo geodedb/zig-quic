@@ -9,7 +9,7 @@ fn make_conn(alloc: *std.mem.Allocator) conn_mod.Connection {
 }
 
 test "pn expansion edges per RFC 9000 §12.3" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
 
     var alloc = gpa.allocator();

@@ -6,7 +6,7 @@ const ks = @import("quic_tls");
 // Update. Confirm exporter stability once application secrets are installed and
 // that performKeyUpdate rotates send/receive traffic secrets as mandated.
 test "exporter produces stable prefix after application secrets" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     var ctx = try tls13.Context.init(.{ .allocator = alloc, .role = .Client }, .{});
@@ -30,7 +30,7 @@ test "exporter produces stable prefix after application secrets" {
 }
 
 test "key update rotates send and recv secrets" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     var ctx = try tls13.Context.init(.{ .allocator = alloc, .role = .Client }, .{});

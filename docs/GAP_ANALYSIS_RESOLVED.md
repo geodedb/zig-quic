@@ -36,7 +36,7 @@ GitLab is authoritative for issue status. This file mirrors resolved or invalida
 - **Resolution evidence:**
   - `src/quic/conn.zig:425-426` aliases `StreamTx` from the canonical stream module.
   - `src/quic/connection/stream.zig:21-106` contains the canonical `StreamRx` implementation.
-- **Notes:** Remaining stream-state modeling issues are tracked separately as GAP-0011 and GAP-0014.
+- **Notes:** Explicit stream-state modeling is now closed as GAP-0011 and GAP-0014.
 
 ### GitLab #128: No QUIC-layer performance benchmarks in CI
 - **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/128
@@ -146,7 +146,7 @@ GitLab is authoritative for issue status. This file mirrors resolved or invalida
   - `src/quic/endpoint.zig:1417-1421` rejects peer address changes after advertising `disable_active_migration`.
   - `tests/test_disable_active_migration.zig:12-83` covers transport-parameter encoding, endpoint address-change rejection, and peer parameter recording.
 - **Verification:** `zig build -Dtest-filter=disable_active_migration test` exited `0`.
-- **Notes:** Broader multipath/CID lifecycle work remains tracked separately by GAP-0012 and GAP-0045.
+- **Notes:** CID lifecycle and path-validation timeout/retry work are now closed as GAP-0012 and GAP-0045.
 
 ### GAP-0010: QUIC v2 packet type remapping unverified
 - **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/139
@@ -187,6 +187,84 @@ GitLab is authoritative for issue status. This file mirrors resolved or invalida
   - `src/quic/conn.zig:29-32` aliases `PmtudState` from the canonical module.
   - `tests/unit/connection/test_pmtud.zig:16-46` and `tests/test_pmtud.zig:32-40` prove tests and active connection code use the same state model.
 - **Verification:** `zig build -Dtest-filter=pmtud test` exited `0`.
+
+### GAP-0009: Version negotiation lacks RFC 9368 end-to-end verification
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/138
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - `tests/test_version_negotiation.zig:181-268` drives a compatible-VN selection from a grease initial version to QUIC v1, retransmits a real Initial through UDP endpoints, accepts the server connection, and asserts both endpoints completed the TLS handshake and negotiated ALPN.
+  - `tests/test_version_negotiation.zig:186-198` configures compatible VN on both endpoints and uses embedded test certificate material so the server endpoint is a real server role.
+  - `src/quic/endpoint/incoming.zig:284-348` validates VN acceptance, selects v1/v2, updates the connection version, and calls the Initial probe callback.
+- **Verification:** `zig build -Dtest-filter=version_negotiation test` exited `0`.
+
+### GAP-0011: Stream state machine uses boolean flags not explicit enum
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/140
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - `src/quic/connection/stream.zig:13-41` defines explicit RFC 9000 send and receive state enums.
+  - `src/quic/connection/stream.zig:125-149` transitions receive state through FIN/final-size handling and reset handling.
+  - `src/quic/connection/stream.zig:199-235` routes transmit writes, FIN, and reset through explicit state helpers.
+- **Verification:** `zig build -Dtest-filter=streams test` exited `0`.
+
+### GAP-0012: CID lifecycle management lacks proactive issuance and rotation integration
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/141
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - `src/quic/connection/methods_c.zig:548-576` adds proactive local CID supply filling up to the peer active connection ID limit.
+  - `src/quic/connection/methods_c.zig:640-675` triggers replacement CID issuance after `RETIRE_CONNECTION_ID` frees capacity.
+  - `src/quic/connection/methods_a.zig:177-195` piggybacks pending `NEW_CONNECTION_ID` frames in server handshake-completion control packets.
+  - `tests/test_connection_id_retire_and_reissue.zig:40-63` proves proactive filling and replacement after retirement.
+- **Verification:** `zig build -Dtest-filter=connection_id test` exited `0`.
+
+### GAP-0014: Stream state machine per RFC 9000 needs explicit modeling
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/143
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - `src/quic/connection/stream.zig:13-41` models RFC 9000 send/receive stream states explicitly.
+  - `src/quic/connection/methods_b.zig:619-624` records graceful FIN as `DataSent`.
+  - `src/quic/connection/methods_b.zig:635-680` records local reset as `ResetSent`.
+  - `src/quic/connection/methods_b.zig:732-740` records received reset as `ResetRead`.
+- **Verification:** `zig build -Dtest-filter=streams test` exited `0`.
+
+### GAP-0015: RESET_STREAM/STOP_SENDING needs integration tests
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/144
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - `src/quic/connection/methods_b.zig:635-680` sends `RESET_STREAM` and updates stream TX state.
+  - `src/quic/connection/methods_b.zig:682-727` handles `STOP_SENDING` by emitting `RESET_STREAM` with the correct final size.
+  - `tests/test_stream_flow_control.zig:232-268` proves `RESET_STREAM` trims buffered data beyond final size and blocks future reads.
+  - Focused stream/reset API tests cover packet emission and state transitions for reset/stop paths.
+- **Verification:** `zig build -Dtest-filter=streams test` exited `0`.
+
+### GAP-0016: Loss detection edge cases untested
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/146
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - `tests/test_recovery_protocol_gaps.zig:5-27` verifies application PTO expiry sends a probe and accounts bytes in flight.
+  - `tests/test_recovery_protocol_gaps.zig:29-41` verifies ACK-only packets do not reset PTO backoff.
+  - `tests/test_recovery_protocol_gaps.zig:43-63` verifies packet-number gaps trigger threshold loss.
+  - `tests/test_recovery_protocol_gaps.zig:65-88` verifies ACK delay affects RTT samples and underutilized congestion window suppresses pacing delay.
+- **Verification:** `zig build -Dtest-filter=loss_edge test` exited `0`.
+
+### GAP-0017: Two conflicting CUBIC implementations remain in tree
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/148
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - `src/quic/recovery.zig:127-128` now re-exports the authoritative `recovery/congestion.zig` CUBIC implementation instead of a NewReno placeholder wrapper.
+  - `src/quic/conn.zig:680-710` no longer carries the legacy `cc_nr` and `cc_cubic` fields.
+  - `src/quic/connection/methods_c.zig` no longer double-counts sent packets through the legacy congestion path.
+- **Verification:** `zig build -Dtest-filter=loss_edge test` exited `0`.
+
+### GAP-0045: Path validation minimal - no timeout, retry, or multi-path probing
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/152
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - `src/quic/conn.zig:755-772` tracks path-validation attempts, maximum attempts, deadline, and failed state.
+  - `src/quic/connection/methods_a.zig:939-999` starts PATH_CHALLENGE probes with retry deadlines and emits probes immediately on the new path.
+  - `src/quic/connection/methods_a.zig:1005-1034` clears validation only for matching PATH_RESPONSE and advances timeout retry/failure progression.
+  - `src/quic/endpoint/frame_handler.zig:415-420` delegates PATH_RESPONSE handling to connection validation state.
+  - `tests/test_path_validation.zig:336-395` covers timeout retry/failure and matching response cleanup.
+- **Verification:** `zig build -Dtest-filter=path_validation test` exited `0`.
 
 ## Previously Closed Gap Issues
 

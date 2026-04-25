@@ -8,7 +8,7 @@ const ks = @import("quic_tls");
 // This test synthesizes a client Initial without token to a server endpoint with retry enabled.
 // Expect server to send a Retry.
 test "server_issues_retry_and_client_retries" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 
@@ -101,7 +101,7 @@ test "server_issues_retry_and_client_retries" {
 }
 
 test "client_resets_initial_state_and_replays_retry_token" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 

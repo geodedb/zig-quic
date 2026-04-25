@@ -2,7 +2,7 @@ const std = @import("std");
 const conn_mod = @import("quic_conn");
 
 test "stateless reset detection closes connection" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 

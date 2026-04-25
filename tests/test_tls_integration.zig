@@ -17,7 +17,7 @@ test "alert mapping for handshake errors" {
 }
 
 test "zero-RTT replay detection in handshake flow" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -42,7 +42,7 @@ test "zero-RTT replay detection in handshake flow" {
 }
 
 test "context error handling with alert translation" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -67,7 +67,7 @@ test "context error handling with alert translation" {
 }
 
 test "complete TLS integration: Context with alert and replay protection" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

@@ -8,7 +8,7 @@ const api = @import("quic_api");
 pub fn main() !void {}
 
 test "multi-stream basic open/write" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var cfg = api.QuicConfig{ .alpn = &[_][]const u8{"hq-interop"}, .allow_insecure = true };

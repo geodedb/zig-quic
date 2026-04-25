@@ -6,7 +6,7 @@ const api = @import("quic_api");
 // earlier crash freeing uninitialized crypto_retx_initial buffer.
 
 test "real_tls_client_initial_probe_smoke" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var cfg = api.QuicConfig{

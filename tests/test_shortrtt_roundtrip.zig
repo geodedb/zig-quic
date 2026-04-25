@@ -8,7 +8,7 @@ const tls13 = @import("quic_tls13");
 // Not interoperable TLS, but exercises encodeShortProtected/decodeShortProtected.
 
 test "short-header 1-RTT STREAM+PING roundtrip" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

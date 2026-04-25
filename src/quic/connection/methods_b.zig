@@ -324,7 +324,7 @@ pub fn bind(comptime Connection: type) type {
                         };
                     }
                 }
-                if (self.stream_send_aborted or self.stream_send_fin_sent) return error.StreamStopped;
+                if (!self.stream_send_state.canWrite() or self.stream_send_aborted or self.stream_send_fin_sent) return error.StreamStopped;
             } else {
                 self.ensureStreamTxInit();
                 if (self.stream_txs.getPtr(id) == null) {
@@ -342,9 +342,9 @@ pub fn bind(comptime Connection: type) type {
                 }
                 // Safely inspect per-stream TX state (abort / FIN flags)
                 if (self.stream_txs.getPtr(id)) |st| {
-                    if (st.aborted or st.fin_sent) {
+                    if (st.canWrite()) |_| {} else |err| {
                         trace("DEBUG writeStream: StreamStopped - aborted={} fin_sent={}\n", .{ st.aborted, st.fin_sent });
-                        return error.StreamStopped;
+                        return err;
                     }
                 }
             }
@@ -494,15 +494,15 @@ pub fn bind(comptime Connection: type) type {
             self.onShortHeaderPacketSent(pkt.len, true);
             self.computeAndMaybeArmPto(self);
             if (id == 0) {
-                self.stream_send_off += to_send;
+                self.stream_send_off +%= to_send;
                 if (fin and to_send == data.len) {
                     self.stream_send_fin_sent = true;
+                    self.stream_send_state = .DataSent;
+                } else if (to_send > 0) {
+                    self.stream_send_state = .Send;
                 }
             } else if (self.stream_txs.getPtr(id)) |stx| {
-                stx.off += to_send;
-                if (fin and to_send == data.len) {
-                    stx.fin_sent = true;
-                }
+                try stx.recordDataSent(@intCast(to_send), fin and to_send == data.len);
             }
             self.conn_send_off += to_send;
             return to_send;
@@ -539,6 +539,10 @@ pub fn bind(comptime Connection: type) type {
                 return error.WouldBlock;
             }
             const n = s.readInto(buf);
+            if (id == 0) {
+                self.stream_recv_state = s.state;
+                self.stream_recv_fin = s.isFinished();
+            }
 
             // PHASE 57 PART 11: Quinn-style flow control - calculate max_stream_data from bytes consumed
             // Quinn uses: max_stream_data = bytes_read() + stream_receive_window
@@ -585,10 +589,11 @@ pub fn bind(comptime Connection: type) type {
         pub fn closeStream(self: *Connection, id: u64, app_error_code: u64) !void {
             _ = app_error_code;
             if (id == 0) {
-                if (self.stream_send_aborted) return error.StreamStopped;
+                if (!self.stream_send_state.canWrite() or self.stream_send_aborted) return error.StreamStopped;
             } else {
                 if (!self.stream_txs_init) return error.InvalidStream;
-                if (self.stream_txs.getPtr(id) == null) return error.InvalidStream;
+                const st = self.stream_txs.getPtr(id) orelse return error.InvalidStream;
+                try st.canWrite();
             }
             if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
             const tx = self.app_tx_keys.?;
@@ -611,6 +616,12 @@ pub fn bind(comptime Connection: type) type {
             const pkt = packet_storage[0..pkt_len];
             _ = try self.send(pkt);
             self.onShortHeaderPacketSent(pkt.len, true);
+            if (id == 0) {
+                self.stream_send_fin_sent = true;
+                self.stream_send_state = .DataSent;
+            } else if (self.stream_txs.getPtr(id)) |st| {
+                try st.recordFinSent();
+            }
         }
 
         /// Abort a stream by sending RESET_STREAM with the given application error code.
@@ -624,19 +635,21 @@ pub fn bind(comptime Connection: type) type {
         pub fn resetStream(self: *Connection, id: u64, app_error_code: u64) !void {
             // Validate stream exists
             if (id == 0) {
-                if (self.stream_send_aborted) return error.StreamStopped;
+                if (!self.stream_send_state.canWrite() or self.stream_send_aborted) return error.StreamStopped;
             } else {
                 if (!self.stream_txs_init) return error.InvalidStream;
-                if (self.stream_txs.getPtr(id) == null) return error.InvalidStream;
+                const st = self.stream_txs.getPtr(id) orelse return error.InvalidStream;
+                try st.canWrite();
             }
             if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
             const tx = self.app_tx_keys.?;
             // Mark stream as aborted
             if (id == 0) {
+                self.stream_send_state = .ResetSent;
                 self.stream_send_aborted = true;
             } else {
                 if (self.stream_txs.getPtr(id)) |st| {
-                    st.aborted = true;
+                    try st.recordResetSent();
                 }
             }
             // Use per-stream offset as final_size
@@ -673,10 +686,12 @@ pub fn bind(comptime Connection: type) type {
             const tx = self.app_tx_keys.?;
             // Mark stream as aborted for sending further STREAM frames
             if (stream_id == 0) {
+                if (!self.stream_send_state.canWrite()) return error.StreamStopped;
+                self.stream_send_state = .ResetSent;
                 self.stream_send_aborted = true;
             } else if (self.stream_txs_init) {
                 if (self.stream_txs.getPtr(stream_id)) |st| {
-                    st.aborted = true;
+                    try st.recordResetSent();
                 }
             }
             // Use per-stream offset as final_size (not always stream 0's offset)
@@ -718,8 +733,11 @@ pub fn bind(comptime Connection: type) type {
             _ = app_error_code; // surfaced to app layer out of scope here
             // Only stream 0 supported in this slice, but apply generically.
             var s = self.ensureStreamRx(stream_id);
-            if (stream_id == 0) self.stream_recv_aborted = true;
-            s.fin_off = final_size;
+            s.recordReset(final_size);
+            if (stream_id == 0) {
+                self.stream_recv_aborted = true;
+                self.stream_recv_state = .ResetRead;
+            }
             // Drop any buffered segment that starts at or beyond final_size
             var i: usize = 0;
             while (i < s.bufs.items.len) {
@@ -746,7 +764,7 @@ pub fn bind(comptime Connection: type) type {
                 // We didn't have contiguous data up to final_size; treat the gap as discarded.
                 s.recv_off = final_size;
             }
-            self.stream_recv_fin = true;
+            if (stream_id == 0) self.stream_recv_fin = true;
         }
 
         /// Explicitly tear down stream RX state and clear flags for the given stream.
@@ -765,6 +783,8 @@ pub fn bind(comptime Connection: type) type {
                 self.stream_send_fin_sent = false;
                 self.stream_recv_aborted = false;
                 self.stream_recv_fin = false;
+                self.stream_send_state = .Ready;
+                self.stream_recv_state = .Recv;
                 self.stream_send_off = 0;
             }
             if (stream_id != 0 and self.stream_txs_init) {

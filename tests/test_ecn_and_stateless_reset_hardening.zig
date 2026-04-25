@@ -5,7 +5,7 @@ const conn_mod = @import("quic_conn");
 // space, while §10.3 defines stateless reset token handling and spoof
 // resistance. Cover both behaviours here.
 test "ecn counters per space accumulate and ACK_ECN selection gating" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 
@@ -38,7 +38,7 @@ test "ecn counters per space accumulate and ACK_ECN selection gating" {
 }
 
 test "stateless reset spoof-resistance: random tail doesn't match and retire_prior_to removes tokens" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 

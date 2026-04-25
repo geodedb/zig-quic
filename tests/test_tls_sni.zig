@@ -197,7 +197,7 @@ fn now_unix() i64 {
 }
 
 test "tls_sni_mismatch_causes_validation_error" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -209,7 +209,7 @@ test "tls_sni_mismatch_causes_validation_error" {
 }
 
 test "tls_allow_insecure_bypasses_validation" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

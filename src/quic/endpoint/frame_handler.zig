@@ -416,12 +416,7 @@ pub fn handlePathResponse(
     ctx: *FrameContext,
     prv: frame.PathResponse,
 ) FrameResult {
-    if (ctx.conn.path_validation_pending and std.mem.eql(u8, prv[0..], ctx.conn.path_challenge_data[0..])) {
-        ctx.conn.path_validation_pending = false;
-        ctx.conn.address_validated = true;
-        ctx.conn.bytes_rx_unvalidated = 0;
-        ctx.conn.bytes_tx_unvalidated = 0;
-    }
+    _ = ctx.conn.onPathResponse(prv);
     return .{ .saw_ack_eliciting = true };
 }
 

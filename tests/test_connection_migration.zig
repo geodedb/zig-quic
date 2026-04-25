@@ -5,7 +5,7 @@ const frame = @import("quic_frame");
 const packet = @import("quic_packet");
 
 test "connection migration with PATH_CHALLENGE and PATH_RESPONSE" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -45,7 +45,7 @@ test "connection migration with PATH_CHALLENGE and PATH_RESPONSE" {
 }
 
 test "NAT rebinding detection" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 
@@ -77,7 +77,7 @@ test "NAT rebinding detection" {
 }
 
 test "connection migration state transitions" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     _ = alloc;
@@ -107,7 +107,7 @@ test "connection migration state transitions" {
 }
 
 test "multiple path management" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

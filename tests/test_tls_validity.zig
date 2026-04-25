@@ -152,7 +152,7 @@ const TS_2020_01_01: i64 = 1_577_836_800;
 const TS_2020_01_02: i64 = 1_577_923_200;
 
 test "tls_not_yet_valid_is_rejected" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     const cert = try buildCertWithSanValidity(alloc, "good.test", "20300101000000Z", "20350101000000Z");
@@ -162,7 +162,7 @@ test "tls_not_yet_valid_is_rejected" {
 }
 
 test "tls_expired_is_rejected" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     const cert = try buildCertWithSanValidity(alloc, "good.test", "20200101000000Z", "20200102000000Z");

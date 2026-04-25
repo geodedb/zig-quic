@@ -8,7 +8,7 @@ const tls13 = @import("quic_tls13");
 // packets that arrive out of order across a PN gap. Expect acceptance only within the
 // rx_prev_allow window, after which further prev-phase packets are dropped and counted.
 test "key update: OOO prev-phase across PN gaps accepted only within window" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 

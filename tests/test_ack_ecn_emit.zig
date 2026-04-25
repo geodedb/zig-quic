@@ -5,7 +5,7 @@ const frame = @import("quic_frame");
 
 // Verify that when ECN is observed on RX, the endpoint emits ACK_ECN with counts.
 test "endpoint emits ACK_ECN when ECN CE observed on incoming short packet" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

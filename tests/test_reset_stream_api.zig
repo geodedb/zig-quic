@@ -25,7 +25,7 @@ fn makeConn(a: *std.mem.Allocator) conn_mod.Connection {
 // =========================================================================
 
 test "resetStream: marks stream 0 TX as aborted" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var c = makeConn(&alloc);
@@ -41,7 +41,7 @@ test "resetStream: marks stream 0 TX as aborted" {
 }
 
 test "resetStream: marks per-stream TX as aborted" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var c = makeConn(&alloc);
@@ -57,7 +57,7 @@ test "resetStream: marks per-stream TX as aborted" {
 }
 
 test "resetStream: returns InvalidStream for unknown stream" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var c = makeConn(&alloc);
@@ -68,7 +68,7 @@ test "resetStream: returns InvalidStream for unknown stream" {
 }
 
 test "resetStream: returns StreamStopped if stream 0 already aborted" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var c = makeConn(&alloc);
@@ -80,7 +80,7 @@ test "resetStream: returns StreamStopped if stream 0 already aborted" {
 }
 
 test "handleResetStream: processes incoming reset for stream 0" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var c = makeConn(&alloc);
@@ -94,7 +94,7 @@ test "handleResetStream: processes incoming reset for stream 0" {
 }
 
 test "handleStopSending: marks stream TX aborted" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var c = makeConn(&alloc);
@@ -112,7 +112,7 @@ test "handleStopSending: marks stream TX aborted" {
 // =========================================================================
 
 test "hasDatagram: false when inbox empty" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var c = makeConn(&alloc);
@@ -122,7 +122,7 @@ test "hasDatagram: false when inbox empty" {
 }
 
 test "hasDatagram: true after pushDatagram" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var c = makeConn(&alloc);
@@ -137,7 +137,7 @@ test "hasDatagram: true after pushDatagram" {
 // =========================================================================
 
 test "pollReady: default flags on fresh connection" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var c = makeConn(&alloc);
@@ -151,7 +151,7 @@ test "pollReady: default flags on fresh connection" {
 }
 
 test "pollReady: connection_closed flag" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var c = makeConn(&alloc);
@@ -163,7 +163,7 @@ test "pollReady: connection_closed flag" {
 }
 
 test "pollReady: has_datagram flag" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var c = makeConn(&alloc);
@@ -179,7 +179,7 @@ test "pollReady: has_datagram flag" {
 // =========================================================================
 
 test "hasWritableStreams: false initially" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var c = makeConn(&alloc);
@@ -189,7 +189,7 @@ test "hasWritableStreams: false initially" {
 }
 
 test "popWritableStream: returns null when empty" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var c = makeConn(&alloc);
@@ -199,7 +199,7 @@ test "popWritableStream: returns null when empty" {
 }
 
 test "writable_streams: manual enqueue and dequeue" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var c = makeConn(&alloc);
@@ -221,7 +221,7 @@ test "writable_streams: manual enqueue and dequeue" {
 // =========================================================================
 
 test "api.resetStream: delegates to connection" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var c = makeConn(&alloc);

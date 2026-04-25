@@ -2,7 +2,7 @@ const std = @import("std");
 const tls = @import("../src/quic/tls/tls13.zig");
 
 test "session_ticket_store" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     var server = tls.Engine.init(alloc, .Server);

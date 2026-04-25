@@ -2,7 +2,7 @@ const std = @import("std");
 const tls = @import("../src/quic/tls/tls13.zig");
 
 test "psk_client_hello_offer" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     var client = tls.Engine.init(alloc, .Client);

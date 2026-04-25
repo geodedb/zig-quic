@@ -24,7 +24,7 @@ fn encode_path_response(a: std.mem.Allocator, c: *conn_mod.Connection) !?[]u8 {
 }
 
 test "migration: back-to-back rebinds then validate latest only (older stays gated)" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 
@@ -91,7 +91,7 @@ test "migration: back-to-back rebinds then validate latest only (older stays gat
 }
 
 test "migration: validation timeout keeps 3x gating on new path" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 
@@ -128,7 +128,7 @@ test "migration: validation timeout keeps 3x gating on new path" {
 }
 
 test "migration: server-initiated migration to preferred address with validation" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 
@@ -172,7 +172,7 @@ test "migration: server-initiated migration to preferred address with validation
 }
 
 test "migration: blackholed new path enforces <=3x across PTO retries" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 
@@ -215,7 +215,7 @@ test "migration: blackholed new path enforces <=3x across PTO retries" {
 }
 
 test "migration: rebind after PATH_RESPONSE reordered before another rebind" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 

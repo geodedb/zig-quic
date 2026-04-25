@@ -18,7 +18,7 @@ fn hex(comptime N: usize, s: []const u8) [N]u8 {
 }
 
 test "tls13 handshake traffic secrets transition (deterministic input)" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

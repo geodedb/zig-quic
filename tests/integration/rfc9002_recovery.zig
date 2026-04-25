@@ -17,6 +17,8 @@ const harness = @import("harness");
 const loopback = @import("loopback");
 const loss_recovery_helpers = @import("loss_recovery_helpers");
 const packet_inspector = @import("packet_inspector");
+const recovery = @import("quic_recovery");
+const conn_mod = @import("quic_conn");
 
 // =============================================================================
 // Infrastructure Tests
@@ -780,25 +782,69 @@ test "CUBIC congestion control" {
 }
 
 // =============================================================================
-// TODO Tests
+// Recovery edge-case tests
 // =============================================================================
 
-test "TODO: PTO sends probe packets (§6.2.4)" {
-    // Should verify that PTO expiry sends probe packets
-    return error.SkipZigTest;
+test "RFC 9002 §6.2.4 - PTO expiry sends probe packets" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    var alloc = gpa.allocator();
+
+    var conn: conn_mod.Connection = undefined;
+    conn.init(&alloc, .Client, 0, conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433));
+    defer conn.deinit();
+
+    conn.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
+    conn.peer_finished_verified = true;
+    conn.address_validated = true;
+    conn.pto_app_active = true;
+
+    const pn_before = conn.pn_app_tx;
+    conn.setPtoExpiredApp();
+
+    try std.testing.expect(!conn.pto_app_active);
+    try std.testing.expectEqual(@as(u32, 1), conn.pto_app_count);
+    try std.testing.expectEqual(pn_before + 1, conn.pn_app_tx);
+    try std.testing.expect(conn.rec.getBytesInFlight() > 0);
 }
 
-test "TODO: ACK-only packets don't reset PTO (§6.2)" {
-    // Should verify that receiving ACK-only packets doesn't reset PTO
-    return error.SkipZigTest;
+test "RFC 9002 §6.2 - ACK-only packets do not reset PTO backoff" {
+    var rec = recovery.Recovery.init(std.testing.allocator);
+    defer rec.deinit();
+
+    rec.pto_count = 2;
+    try rec.onPacketSent(.Application, 1, 64, false, 1_000);
+
+    const acked = [_]u64{1};
+    const result = rec.onAckReceived(.Application, &acked, 0, 10_000);
+
+    try std.testing.expectEqual(@as(usize, 64), result.bytes_acked);
+    try std.testing.expectEqual(@as(u32, 2), rec.pto_count);
 }
 
-test "TODO: Loss detection uses packet number gaps (§6.1.1)" {
-    // Should verify that gaps in PN space trigger loss detection
-    return error.SkipZigTest;
+test "RFC 9002 §6.1.1 - packet number gaps trigger loss detection" {
+    var rec = recovery.Recovery.init(std.testing.allocator);
+    defer rec.deinit();
+
+    const packet_size: usize = 1200;
+    try rec.onPacketSent(.Application, 1, packet_size, true, 1_000);
+    try rec.onPacketSent(.Application, 2, packet_size, true, 2_000);
+    try rec.onPacketSent(.Application, 3, packet_size, true, 3_000);
+    try rec.onPacketSent(.Application, 4, packet_size, true, 4_000);
+    try rec.onPacketSent(.Application, 5, packet_size, true, 5_000);
+
+    const acked = [_]u64{5};
+    const result = rec.onAckReceived(.Application, &acked, 0, 20_000);
+
+    try std.testing.expectEqual(packet_size, result.bytes_acked);
+    try std.testing.expectEqual(@as(usize, packet_size * 2), result.bytes_lost);
+    try std.testing.expectEqual(.unknown, rec.getPacketDeliveryState(.Application, 1));
+    try std.testing.expectEqual(.unknown, rec.getPacketDeliveryState(.Application, 2));
+    try std.testing.expectEqual(.in_flight, rec.getPacketDeliveryState(.Application, 3));
+    try std.testing.expectEqual(.in_flight, rec.getPacketDeliveryState(.Application, 4));
 }
 
-test "TODO: Persistent congestion detection (§7.6)" {
+test "RFC 9002 §7.6 - persistent congestion state is initialized" {
     // Validate that persistent congestion (PC) detection state is initialized
     // correctly on both endpoints after handshake. The PC threshold (k_pc_threshold)
     // determines how many PTO periods of sustained loss trigger minimum cwnd.
@@ -829,7 +875,7 @@ test "TODO: Persistent congestion detection (§7.6)" {
     try std.testing.expect(server.rec.cc.cwnd > min_cwnd);
 }
 
-test "TODO: ECN marking affects congestion control (§7.4)" {
+test "RFC 9002 §7.4 - ECN marking affects congestion control configuration" {
     // Validate that ECN Congestion Experienced (CE) marks reduce cwnd.
     // This test uses the connection_pair infrastructure to verify that
     // the ECN transport configuration flag exists and is properly defaulted.
@@ -856,14 +902,29 @@ test "TODO: ECN marking affects congestion control (§7.4)" {
     try std.testing.expect(pair2.transport.config.enable_ecn);
 }
 
-test "TODO: Ack frequency affects RTT samples (§13.2.1)" {
-    // Should verify that ACK frequency is considered in RTT calculation
-    return error.SkipZigTest;
+test "RFC 9002 §13.2.1 - ACK delay affects RTT samples" {
+    var rec = recovery.Recovery.init(std.testing.allocator);
+    defer rec.deinit();
+
+    try rec.onPacketSent(.Application, 1, 1200, true, 0);
+    const first = [_]u64{1};
+    _ = rec.onAckReceived(.Application, &first, 0, 100 * std.time.ns_per_ms);
+    try std.testing.expectEqual(@as(u64, 100 * std.time.ns_per_ms), rec.rtt.latest_rtt_ns);
+
+    try rec.onPacketSent(.Application, 2, 1200, true, 200 * std.time.ns_per_ms);
+    const second = [_]u64{2};
+    _ = rec.onAckReceived(.Application, &second, 50 * std.time.ns_per_ms, 350 * std.time.ns_per_ms);
+
+    try std.testing.expectEqual(@as(u64, 100 * std.time.ns_per_ms), rec.rtt.latest_rtt_ns);
 }
 
-test "TODO: Underutilization of congestion window (§7.8)" {
-    // Should verify handling of underutilized congestion window
-    return error.SkipZigTest;
+test "RFC 9002 §7.8 - underutilized congestion window suppresses pacing delay" {
+    const cwnd: usize = 12_000;
+    const rtt_ns: u64 = 100 * std.time.ns_per_ms;
+    const packet_size: usize = 1200;
+
+    try std.testing.expectEqual(@as(u64, 0), recovery.computePacingDelayNs(cwnd, cwnd / 2, rtt_ns, packet_size));
+    try std.testing.expect(recovery.computePacingDelayNs(cwnd, cwnd - packet_size, rtt_ns, packet_size) > 0);
 }
 
 // =============================================================================
@@ -872,8 +933,8 @@ test "TODO: Underutilization of congestion window (§7.8)" {
 
 // Phase 3 RFC 9002 Implementation Status:
 // - Infrastructure tests: 5/5 passing ✅
-// - Skip tests (require endpoint): 20+ tests documented 📝
-// - TODO tests: 7 additional tests documented for future implementation
+// - Skip tests (require endpoint): 20+ tests documented
+// - Recovery edge-case tests: packet gaps, PTO probes, ACK-only PTO, RTT ACK delay, ECN, underutilization
 //
 // This test file establishes the structure for loss recovery and congestion
 // control testing. Tests can be enabled as the recovery implementation progresses.

@@ -14,7 +14,7 @@ const test_certs = @import("test_certs");
 // preventing retransmission of Initial packets for clients using zero-length SCIDs.
 // This caused handshake failures manifesting as TLS alert 0x010a (266).
 test "server sends PTO probe with zero-length DCID" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 
@@ -123,7 +123,7 @@ test "server sends PTO probe with zero-length DCID" {
 
 // Test that Handshake PTO probes also work with zero-length DCID
 test "server sends Handshake PTO probe with zero-length DCID" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 

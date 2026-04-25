@@ -33,7 +33,7 @@ fn hex(comptime N: usize, s: []const u8) [N]u8 {
 // =============================================================================
 
 test "RFC 9000 §18.2 - transport parameters encode/decode roundtrip" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -111,7 +111,7 @@ test "RFC 9000 §7.4 - server validate requires initial_source_connection_id" {
 }
 
 test "RFC 9000 §7.4 - server validate requires stateless_reset_token" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -128,7 +128,7 @@ test "RFC 9000 §7.4 - server validate requires stateless_reset_token" {
 }
 
 test "RFC 9000 §7.4.1 - server with Retry requires retry_source_connection_id" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -146,7 +146,7 @@ test "RFC 9000 §7.4.1 - server with Retry requires retry_source_connection_id" 
 }
 
 test "RFC 9000 §7.4 - server validate success with all required parameters" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -162,7 +162,7 @@ test "RFC 9000 §7.4 - server validate success with all required parameters" {
 }
 
 test "RFC 9000 §7.4 - server validate success with Retry parameters" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

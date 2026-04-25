@@ -208,7 +208,7 @@ fn makeAlgorithmIdentifier(alloc: std.mem.Allocator) ![]u8 {
 const KU_DIGITAL_SIGNATURE_MASK: u16 = 0x8000;
 
 test "ku_missing_digital_signature_rejected" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     const der = try dummyCertWithKuEku(alloc, "good.test", 0x4000, true); // some other bit set, not digitalSignature
@@ -223,7 +223,7 @@ test "ku_missing_digital_signature_rejected" {
 }
 
 test "eku_server_auth_required_when_eku_present" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     // Build with KU ok but no EKU extension at all -> allowed; but if EKU exists and isn't serverAuth we would reject (not implemented here for brevity)

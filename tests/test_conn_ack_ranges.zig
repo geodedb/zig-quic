@@ -6,7 +6,7 @@ pub fn main() !void {}
 // RFC 9000 §19.3 example-style ACK encoding: largest=9, additional ranges
 // acknowledge 7-6 then 3-1 with appropriate gaps.
 test "conn ack ranges follow RFC 9000 multi-block example" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -35,7 +35,7 @@ test "conn ack ranges follow RFC 9000 multi-block example" {
 // When a new largest packet number extends beyond the 256-packet tracking
 // window, older acknowledgements fall outside RFC 9000 §19.3's encoded ranges.
 test "conn ack window drops stale packets beyond span" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

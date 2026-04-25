@@ -18,7 +18,7 @@ fn hexToBytesDyn(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
 // RFC 9001 Appendix A reference: verify hp sample application shape on dummy payload.
 // AES-128-GCM roundtrip through protectInitial/unprotectInitial.
 test "initial_protect_roundtrip_aes" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

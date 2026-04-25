@@ -4,7 +4,7 @@ const tls13 = @import("quic_tls13");
 
 // Test that when negotiated ALPN matches allowed list, getter returns it and enforcement does not flip peer_finished_verified.
 test "alpn accept and getter" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 
@@ -41,7 +41,7 @@ test "alpn accept and getter" {
 
 // Test that when negotiated ALPN is not allowed, enforcement flips peer_finished_verified to false.
 test "alpn reject not in allowed" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 

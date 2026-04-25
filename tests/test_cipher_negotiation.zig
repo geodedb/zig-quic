@@ -14,7 +14,7 @@ fn simulate_handshake_and_app_keys() !struct {
     client_keys: tls13.QuicKeys,
     server_keys: tls13.QuicKeys,
 } {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const a = gpa.allocator();
 
@@ -63,7 +63,7 @@ fn simulate_handshake_and_app_keys() !struct {
 }
 
 fn roundtrip_short(suite: crypto.AeadSuite, dcid: []const u8, pn: u32, pn_len: u3, payload: []const u8, keys_write: tls13.QuicKeys, keys_read: tls13.QuicKeys) !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const a = gpa.allocator();
 

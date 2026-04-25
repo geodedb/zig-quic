@@ -5,7 +5,7 @@ const api = @import("quic_api");
 // (real) without crashing. We don't validate full transcript yet.
 
 test "real_tls_server_hello_smoke" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var srv_cfg = api.QuicConfig{

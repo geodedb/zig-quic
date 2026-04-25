@@ -9,7 +9,7 @@ const ks = @import("quic_tls");
 // emit ACK_ECN.
 // End-to-end: when ECN CE is observed on an Initial, server emits ACK_ECN in Initial space.
 test "initial space: ECN CE triggers ACK_ECN in server Initial ACK" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 

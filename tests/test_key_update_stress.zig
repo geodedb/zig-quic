@@ -4,7 +4,7 @@ const pkt = @import("quic_packet");
 const tls13 = @import("quic_tls13");
 
 test "rx key update: exhaust previous-key allowance then reject further prev-phase" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var A = gpa.allocator();
 
@@ -75,7 +75,7 @@ test "rx key update: exhaust previous-key allowance then reject further prev-pha
 }
 
 test "tx key update: rapid trigger then finalize on ACK zeroizes prev keys" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var A = gpa.allocator();
     var ep = try endpoint.Endpoint.init(A, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });

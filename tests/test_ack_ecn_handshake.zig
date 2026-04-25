@@ -5,7 +5,7 @@ const frame = @import("quic_frame");
 
 // End-to-end: when ECN CE is observed on a Handshake packet, server emits ACK_ECN in Handshake space.
 test "handshake space: ECN CE triggers ACK_ECN in server Handshake ACK" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 

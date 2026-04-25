@@ -12,6 +12,7 @@ const endpoint_mod = @import("quic_endpoint");
 const frame = @import("quic_frame");
 const packet = @import("quic_packet");
 const api = @import("quic_api");
+const compat = @import("compat");
 
 // Helper to create SockAddr
 fn makePeer(port: u16) conn_mod.SockAddr {
@@ -25,9 +26,9 @@ fn makeAltPeer(port: u16) conn_mod.SockAddr {
 // Helper: encode a PATH_RESPONSE frame in a short header packet
 fn encodePathResponse(a: std.mem.Allocator, c: *conn_mod.Connection, challenge_data: [8]u8) !?[]u8 {
     if (c.app_rx_keys == null) return null;
-    var fb = std.ArrayList(u8){};
+    var fb: std.ArrayList(u8) = .empty;
     defer fb.deinit(a);
-    const w = fb.writer(a);
+    const w = compat.arrayListWriter(&fb, a);
     _ = (frame.Frame{ .path_response = challenge_data }).write(w) catch 0;
     return packet.encodeShortProtected(
         a,
@@ -43,9 +44,9 @@ fn encodePathResponse(a: std.mem.Allocator, c: *conn_mod.Connection, challenge_d
 // Helper: encode a PATH_CHALLENGE frame in a short header packet
 fn encodePathChallenge(a: std.mem.Allocator, c: *conn_mod.Connection, challenge_data: [8]u8) !?[]u8 {
     if (c.app_rx_keys == null) return null;
-    var fb = std.ArrayList(u8){};
+    var fb: std.ArrayList(u8) = .empty;
     defer fb.deinit(a);
-    const w = fb.writer(a);
+    const w = compat.arrayListWriter(&fb, a);
     _ = (frame.Frame{ .path_challenge = challenge_data }).write(w) catch 0;
     return packet.encodeShortProtected(
         a,
@@ -64,7 +65,7 @@ fn encodePathChallenge(a: std.mem.Allocator, c: *conn_mod.Connection, challenge_
 // RFC 9000 §9: An endpoint detects that a peer has migrated when it receives a packet
 // from a different network address. The endpoint MUST initiate path validation.
 test "path validation: migration triggers sendPathChallenge and PATH_CHALLENGE emission" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 
@@ -120,7 +121,7 @@ test "path validation: migration triggers sendPathChallenge and PATH_CHALLENGE e
 // RFC 9000 §8.2: An endpoint MUST send a PATH_RESPONSE frame containing the data
 // from a PATH_CHALLENGE frame.
 test "path validation: PATH_CHALLENGE triggers PATH_RESPONSE with matching data" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 
@@ -159,8 +160,8 @@ test "path validation: PATH_CHALLENGE triggers PATH_RESPONSE with matching data"
 
     // Unit test: verify the frame codec can round-trip PATH_CHALLENGE/PATH_RESPONSE
     var buf: [32]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const w = fbs.writer();
+    var fbs = compat.fixedBufWriter(&buf);
+    var w = fbs.writer();
 
     // Write PATH_CHALLENGE
     const challenge_frame = frame.Frame{ .path_challenge = challenge_data };
@@ -173,7 +174,8 @@ test "path validation: PATH_CHALLENGE triggers PATH_RESPONSE with matching data"
     try std.testing.expect(std.mem.eql(u8, &decoded.f.path_challenge, &challenge_data));
 
     // Write PATH_RESPONSE
-    fbs.reset();
+    fbs.pos = 0;
+    w = fbs.writer();
     const response_frame = frame.Frame{ .path_response = challenge_data };
     const resp_written = try response_frame.write(w);
     try std.testing.expect(resp_written > 0);
@@ -190,7 +192,7 @@ test "path validation: PATH_CHALLENGE triggers PATH_RESPONSE with matching data"
 // RFC 9000 §8.2: On receiving a PATH_RESPONSE frame, an endpoint can consider
 // the path validated.
 test "path validation: PATH_RESPONSE completes validation and resets counters" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 
@@ -234,13 +236,8 @@ test "path validation: PATH_RESPONSE completes validation and resets counters" {
     // In test harness with zero keys, full decryption may not work, but we can verify
     // the state machine directly
 
-    // Simulate what onPathValidated does (per endpoint.zig:921-926):
-    // When a PATH_RESPONSE matches path_challenge_data:
-    if (c.path_validation_pending and std.mem.eql(u8, &c.path_challenge_data, &challenge)) {
-        c.path_validation_pending = false;
-        c.address_validated = true;
-        c.bytes_rx_unvalidated = 0;
-        c.bytes_tx_unvalidated = 0;
+    if (c.path_validation_pending) {
+        try std.testing.expect(c.onPathResponse(challenge));
     }
 
     // Verify: path_validation_pending is cleared
@@ -256,7 +253,7 @@ test "path validation: PATH_RESPONSE completes validation and resets counters" {
 
 // Additional test: Non-matching PATH_RESPONSE does not complete validation
 test "path validation: non-matching PATH_RESPONSE does not validate" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 
@@ -286,9 +283,7 @@ test "path validation: non-matching PATH_RESPONSE does not validate" {
     const wrong_response: [8]u8 = .{ 0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0xF9, 0xF8 };
     try std.testing.expect(!std.mem.eql(u8, &wrong_response, &actual_challenge));
 
-    // Simulate processing non-matching PATH_RESPONSE
-    const matches = c.path_validation_pending and std.mem.eql(u8, &c.path_challenge_data, &wrong_response);
-    try std.testing.expect(!matches);
+    try std.testing.expect(!c.onPathResponse(wrong_response));
 
     // path_validation_pending should remain true
     try std.testing.expect(c.path_validation_pending);
@@ -296,7 +291,7 @@ test "path validation: non-matching PATH_RESPONSE does not validate" {
 
 // Additional test: Multiple PATH_CHALLENGE/PATH_RESPONSE pairs
 test "path validation: sequential migrations with validation" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 
@@ -321,10 +316,7 @@ test "path validation: sequential migrations with validation" {
     try std.testing.expect(c.path_validation_pending);
 
     // Validate first migration
-    if (c.path_validation_pending and std.mem.eql(u8, &c.path_challenge_data, &challenge1)) {
-        c.path_validation_pending = false;
-        c.address_validated = true;
-    }
+    try std.testing.expect(c.onPathResponse(challenge1));
     try std.testing.expect(!c.path_validation_pending);
     try std.testing.expect(c.address_validated);
 
@@ -336,10 +328,69 @@ test "path validation: sequential migrations with validation" {
     // Note: In rare cases, random might produce same bytes, but probability is negligible
 
     // Validate second migration
-    if (c.path_validation_pending and std.mem.eql(u8, &c.path_challenge_data, &challenge2)) {
-        c.path_validation_pending = false;
-        c.address_validated = true;
-    }
+    try std.testing.expect(c.onPathResponse(challenge2));
     try std.testing.expect(!c.path_validation_pending);
     try std.testing.expect(c.address_validated);
+}
+
+test "path validation: timeout retries until max attempts then fails" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    var A = gpa.allocator();
+
+    var c: conn_mod.Connection = undefined;
+    c.init(&A, .Client, 0, makePeer(4438));
+    defer c.deinit();
+
+    c.path_validation_max_attempts = 3;
+    c.sendPathChallengeAt(1_000);
+    try std.testing.expect(c.path_validation_pending);
+    try std.testing.expect(!c.path_validation_failed);
+    try std.testing.expectEqual(@as(u8, 1), c.path_validation_attempts);
+    try std.testing.expect(c.path_validation_deadline_ns > 1_000);
+
+    const deadline1 = c.path_validation_deadline_ns;
+    try std.testing.expect(!c.onPathValidationTimeout(deadline1 - 1));
+    try std.testing.expectEqual(@as(u8, 1), c.path_validation_attempts);
+
+    try std.testing.expect(c.onPathValidationTimeout(deadline1));
+    try std.testing.expect(c.path_validation_pending);
+    try std.testing.expectEqual(@as(u8, 2), c.path_validation_attempts);
+
+    const deadline2 = c.path_validation_deadline_ns;
+    try std.testing.expect(c.onPathValidationTimeout(deadline2));
+    try std.testing.expect(c.path_validation_pending);
+    try std.testing.expectEqual(@as(u8, 3), c.path_validation_attempts);
+
+    const deadline3 = c.path_validation_deadline_ns;
+    try std.testing.expect(!c.onPathValidationTimeout(deadline3));
+    try std.testing.expect(!c.path_validation_pending);
+    try std.testing.expect(c.path_validation_failed);
+    try std.testing.expectEqual(@as(u64, 0), c.path_validation_deadline_ns);
+}
+
+test "path validation: matching response clears retry state and validation counters" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    var A = gpa.allocator();
+
+    var c: conn_mod.Connection = undefined;
+    c.init(&A, .Client, 0, makePeer(4439));
+    defer c.deinit();
+
+    c.sendPathChallengeAt(10);
+    const challenge = c.path_challenge_data;
+    c.bytes_rx_unvalidated = 111;
+    c.bytes_tx_unvalidated = 222;
+    c.address_validated = false;
+
+    try std.testing.expect(c.onPathResponse(challenge));
+    try std.testing.expect(!c.path_validation_pending);
+    try std.testing.expect(!c.path_validation_failed);
+    try std.testing.expectEqual(@as(u8, 0), c.path_validation_attempts);
+    try std.testing.expectEqual(@as(u64, 0), c.path_validation_deadline_ns);
+    try std.testing.expect(c.address_validated);
+    try std.testing.expectEqual(@as(u64, 0), c.bytes_rx_unvalidated);
+    try std.testing.expectEqual(@as(u64, 0), c.bytes_tx_unvalidated);
+    try std.testing.expectEqualSlices(u8, &[_]u8{0} ** 8, c.path_challenge_data[0..]);
 }

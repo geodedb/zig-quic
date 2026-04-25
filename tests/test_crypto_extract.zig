@@ -22,7 +22,7 @@ fn decodeHex(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
 // and the prefix matches ClientHello handshake bytes ("\x01\x00\x00\xed\x03\x03...")
 // This validates endpoint/packet/frame integration for Initial decrypt + CRYPTO extraction.
 test "tls_key_schedule_kat: crypto extract from A.2 client initial" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

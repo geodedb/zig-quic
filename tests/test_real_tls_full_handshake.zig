@@ -5,7 +5,7 @@ const api = @import("quic_api");
 // We assert (indirectly) via ALPN negotiation that Finished exchange likely occurred.
 
 test "real_tls_full_handshake_finished_flags" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var srv_cfg = api.QuicConfig{

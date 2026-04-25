@@ -122,7 +122,7 @@ test "preferred address with only IPv4" {
 }
 
 test "preferred address integration with transport params" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

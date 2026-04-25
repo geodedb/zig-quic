@@ -8,7 +8,7 @@ const pkt = @import("quic_packet");
 //  - Stream window bumps after 75% consumption (local_max_stream_data += 50%).
 //  - Connection window bumps after 70% consumption (local_max_data += max(stream_window, conn_window/4)).
 test "flow control adaptive growth thresholds" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
     var ep = try endpoint.Endpoint.init(A, "127.0.0.1:0", &.{ .alpn = &[_][]const u8{} });

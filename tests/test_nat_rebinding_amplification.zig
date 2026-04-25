@@ -39,7 +39,7 @@ fn fake_peer(ip_last_octet: u8, port: u16) conn_mod.SockAddr {
 // (NAT rebinding) multiple times; each time, server must gate sends until PATH_RESPONSE validates.
 // We inject PATH_CHALLENGE to client and craft PATH_RESPONSE back to validate, repeating twice.
 test "nat rebinding enforces 3x before validation across repeated rebindings" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 

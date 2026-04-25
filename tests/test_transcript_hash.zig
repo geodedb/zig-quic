@@ -27,7 +27,7 @@ test "client Finished not included in app secret derivation" {
 
 // Test that multiple finalizations of transcript return same hash (idempotency)
 test "transcript hash idempotent finalization" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

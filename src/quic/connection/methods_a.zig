@@ -181,6 +181,7 @@ pub fn bind(comptime Connection: type) type {
         /// observable to callers and do not make the connection believe the frame was sent.
         pub fn sendHandshakeDoneControl(self: *Connection) !void {
             self.advertiseInitialFlowControl();
+            _ = try self.ensureLocalConnectionIdSupply();
 
             var frames_list: std.ArrayList(u8) = .empty;
             defer frames_list.deinit(self.allocator.*);
@@ -190,6 +191,7 @@ pub fn bind(comptime Connection: type) type {
             // Do not send MAX_STREAM_DATA for stream 0 unconditionally.
             _ = try (frame.Frame{ .max_data = .{ .max = self.local_max_data } }).write(w);
             _ = try (frame.Frame{ .max_streams_bidi = .{ .max = self.local_max_streams_bidi } }).write(w);
+            _ = try self.writePendingNewConnectionIds(w, 4);
 
             logger.debugPrint("Server: Sending control frames ({} bytes):", .{frames_list.items.len});
             for (frames_list.items) |b| logger.debugPrint(" 0x{X:0>2}", .{b});
@@ -222,6 +224,9 @@ pub fn bind(comptime Connection: type) type {
             self.peer_finished_verified = verified;
             if (self.peer_finished_verified) {
                 logger.debugPrint("{s}: Peer Finished verified; short-header transmission unlocked\n", .{if (self.role == .Server) "Server" else "Client"});
+                _ = self.ensureLocalConnectionIdSupply() catch |err| {
+                    logger.debugPrint("CID supply after peer Finished failed: {s}\n", .{@errorName(err)});
+                };
                 // NOTE: Do NOT drop Handshake keys here! maybeDropHandshakeKeys() will handle it safely
                 // after we finish processing the current packet.
             } else {
@@ -717,32 +722,24 @@ pub fn bind(comptime Connection: type) type {
 
         /// Congestion control shim: record packet sent.
         pub fn ccOnPacketSent(self: *Connection, bytes: usize, ack_eliciting: bool) void {
-            // Legacy shim retained for compatibility; Recovery.cc is authoritative for new paths.
-            if (self.use_cubic) {
-                self.cc_cubic.onPacketSent(bytes, ack_eliciting);
-            } else {
-                self.cc_nr.onPacketSent(bytes, ack_eliciting);
-            }
+            _ = self;
+            _ = bytes;
+            _ = ack_eliciting;
+            // Compatibility no-op: Recovery.cc is the single congestion-control state.
         }
 
         /// Congestion control shim: on ACK.
         pub fn ccOnAck(self: *Connection, bytes_acked: usize) void {
-            // Legacy shim retained for compatibility.
-            if (self.use_cubic) {
-                self.cc_cubic.onAck(bytes_acked);
-            } else {
-                self.cc_nr.onAck(bytes_acked);
-            }
+            _ = self;
+            _ = bytes_acked;
+            // Compatibility no-op: ACK processing flows through Recovery.onAckReceived*.
         }
 
         /// Congestion control shim: on loss.
         pub fn ccOnLoss(self: *Connection, bytes_lost: usize) void {
-            // Legacy shim retained for compatibility.
-            if (self.use_cubic) {
-                self.cc_cubic.onLoss(bytes_lost);
-            } else {
-                self.cc_nr.onLoss(bytes_lost);
-            }
+            _ = self;
+            _ = bytes_lost;
+            // Compatibility no-op: loss processing flows through Recovery.
         }
 
         /// Update peer Initial DCID/SCID (observed in Initial packet).
@@ -777,7 +774,7 @@ pub fn bind(comptime Connection: type) type {
 
             logger.debugPrint("[CONN-PTR-PUSH] conn=0x{x} stream_id={}\n", .{ @intFromPtr(self), stream_id });
             logger.debugPrint("[STREAM-RX] id={} off={} len={} fin={} before recv_off={} inbox_len={} bufs={}\n", .{ stream_id, offset, data.len, fin, if (self.streams_rx.getPtr(stream_id)) |sr| sr.recv_off else 0, if (self.streams_rx.getPtr(stream_id)) |sr| sr.inbox.items.len else 0, if (self.streams_rx.getPtr(stream_id)) |sr| sr.bufs.items.len else 0 });
-            if (self.stream_recv_aborted) return; // ignore further data after RESET_STREAM
+            if (stream_id == 0 and self.stream_recv_state == .ResetRead) return; // ignore stream 0 data after RESET_STREAM
 
             logger.debugPrint("\n=== PUSH_STREAM_FRAME ENTRY ===\n", .{});
             logger.debugPrint("stream_id={}, offset={}, len={}, fin={}, role={}\n", .{ stream_id, offset, data.len, fin, self.role });
@@ -790,6 +787,7 @@ pub fn bind(comptime Connection: type) type {
             logger.debugPrint("Calling ensureStreamRx({})...\n", .{stream_id});
             const s = self.ensureStreamRx(stream_id);
             logger.debugPrint("After ensureStreamRx: streams_rx now has {} entries\n", .{self.streams_rx.count()});
+            if (s.state == .ResetRead or s.state == .DataRead) return;
 
             // PHASE 57 PART 6: Always re-queue streams when new data arrives
             // This matches the design intent from Phase 42 Part 15 (see queueIncomingStream comment)
@@ -798,7 +796,7 @@ pub fn bind(comptime Connection: type) type {
 
             if (fin) {
                 const end_off: u64 = offset + @as(u64, data.len);
-                s.fin_off = end_off;
+                try s.recordFin(end_off);
             }
             if (data.len > 0) {
                 s.insert(self.allocator, offset, data);
@@ -806,8 +804,12 @@ pub fn bind(comptime Connection: type) type {
                 logger.debugPrint("[STREAM-RX-AFTER] id={} recv_off={} inbox_len={} bufs={} fin_off={?}\n", .{ stream_id, s.recv_off, s.inbox.items.len, s.bufs.items.len, s.fin_off });
             }
             if (s.isFinished()) {
-                self.stream_recv_fin = true;
+                if (stream_id == 0) {
+                    self.stream_recv_state = s.state;
+                    self.stream_recv_fin = true;
+                }
             } else if (stream_id == 0) {
+                self.stream_recv_state = s.state;
                 self.stream_recv_fin = false;
             }
 
@@ -909,21 +911,61 @@ pub fn bind(comptime Connection: type) type {
             self.sendPtoProbeApp();
         }
 
+        fn nowNs() u64 {
+            var ts: std.os.linux.timespec = undefined;
+            const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+            if (rc != 0) return 0;
+            const ns = @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+            return if (ns <= 0) 0 else @intCast(ns);
+        }
+
+        fn pathValidationPtoNs(self: *const Connection) u64 {
+            const pto = self.rec.rtt.computePtoNsWithBackoff(self.rec.pto_count, self.rec.timer_granularity_ns);
+            return if (pto == 0) std.time.ns_per_s else pto;
+        }
+
+        fn addNsSaturating(a: u64, b: u64) u64 {
+            const max = std.math.maxInt(u64);
+            return if (a > max - b) max else a + b;
+        }
+
+        fn seedPathChallengeData(self: *Connection) void {
+            _ = std.os.linux.getrandom(&self.path_challenge_data, self.path_challenge_data.len, 0);
+            if (!std.mem.eql(u8, &self.path_challenge_data, &[_]u8{0} ** 8)) return;
+            std.mem.writeInt(u64, &self.path_challenge_data, self.pn_app_tx ^ @as(u64, self.path_validation_attempts), .little);
+            if (std.mem.eql(u8, &self.path_challenge_data, &[_]u8{0} ** 8)) self.path_challenge_data[0] = 1;
+        }
+
+        fn beginPathValidationProbe(self: *Connection, now_ns: u64) bool {
+            if (!self.path_validation_pending or self.path_validation_failed) {
+                self.path_validation_attempts = 0;
+                self.path_validation_failed = false;
+            }
+            if (self.path_validation_attempts >= self.path_validation_max_attempts) {
+                self.path_validation_pending = false;
+                self.path_validation_failed = true;
+                self.path_validation_deadline_ns = 0;
+                return false;
+            }
+            seedPathChallengeData(self);
+            self.path_validation_pending = true;
+            self.path_validation_attempts += 1;
+            self.path_validation_deadline_ns = addNsSaturating(now_ns, pathValidationPtoNs(self));
+            return true;
+        }
+
         /// Send a PATH_CHALLENGE on the 1-RTT path to validate current peer path.
         /// RFC 9000 §9.1/§9.3 require endpoints to probe a new path using
-        /// PATH_CHALLENGE/RESPONSE pairs before migrating traffic; we mark
-        /// validation pending until a matching PATH_RESPONSE arrives.
-        pub fn sendPathChallenge(self: *Connection) void {
+        /// PATH_CHALLENGE/RESPONSE pairs before migrating traffic; we keep retry
+        /// state until a matching PATH_RESPONSE arrives or retries are exhausted.
+        pub fn sendPathChallengeAt(self: *Connection, now_ns: u64) void {
+            if (!beginPathValidationProbe(self, now_ns)) return;
             if (!self.hasConfirmedAppTxKeys()) {
-                // No confirmed 1-RTT keys yet (e.g. test setup); still mark validation pending and seed challenge data.
-                _ = std.os.linux.getrandom(&self.path_challenge_data, self.path_challenge_data.len, 0);
-                self.path_validation_pending = true;
+                // No confirmed 1-RTT keys yet (e.g. test setup); still track validation
+                // state so the caller can retry after keys are confirmed.
                 return;
             }
             const tx = self.app_tx_keys.?;
-            // Generate opaque 8-byte data and remember for validation
-            _ = std.os.linux.getrandom(&self.path_challenge_data, self.path_challenge_data.len, 0);
-            self.path_validation_pending = true;
             var frames: std.ArrayList(u8) = .empty;
             defer frames.deinit(self.allocator.*);
             const compat = @import("compat");
@@ -954,6 +996,41 @@ pub fn bind(comptime Connection: type) type {
                 };
                 self.onShortHeaderPacketSent(pkt.len, true);
             }
+        }
+
+        pub fn sendPathChallenge(self: *Connection) void {
+            sendPathChallengeAt(self, nowNs());
+        }
+
+        /// Process a PATH_RESPONSE payload and clear path-validation state only
+        /// when it matches the outstanding challenge bytes.
+        pub fn onPathResponse(self: *Connection, response_data: [8]u8) bool {
+            if (!self.path_validation_pending) return false;
+            if (!std.mem.eql(u8, response_data[0..], self.path_challenge_data[0..])) return false;
+            self.path_validation_pending = false;
+            self.path_validation_failed = false;
+            self.path_validation_attempts = 0;
+            self.path_validation_deadline_ns = 0;
+            self.path_challenge_data = .{0} ** 8;
+            self.address_validated = true;
+            self.bytes_rx_unvalidated = 0;
+            self.bytes_tx_unvalidated = 0;
+            return true;
+        }
+
+        /// Advance path validation when the outstanding PATH_CHALLENGE deadline
+        /// expires. Returns true if a retry probe was sent or scheduled.
+        pub fn onPathValidationTimeout(self: *Connection, now_ns: u64) bool {
+            if (!self.path_validation_pending) return false;
+            if (self.path_validation_deadline_ns != 0 and now_ns < self.path_validation_deadline_ns) return false;
+            if (self.path_validation_attempts >= self.path_validation_max_attempts) {
+                self.path_validation_pending = false;
+                self.path_validation_failed = true;
+                self.path_validation_deadline_ns = 0;
+                return false;
+            }
+            sendPathChallengeAt(self, now_ns);
+            return self.path_validation_pending and !self.path_validation_failed;
         }
 
         pub fn sendControlFrames(self: *Connection, frames_bytes: []const u8) void {

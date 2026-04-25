@@ -8,7 +8,7 @@ const varint = @import("quic_varint");
 // Drive ECN marks across Initial->Handshake->1-RTT; induce reordering and a loss; expect ACK_ECN
 // counts to monotonically accumulate per space and be reflected in multiple ACKs.
 test "ECN longitudinal: multi-ACK across spaces with reordering and one loss" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var A = gpa.allocator();
 

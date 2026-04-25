@@ -413,6 +413,7 @@ const AckDesc = struct { largest: u64, first_range: u64, ranges: []const frame.A
 const stream_mod = @import("connection/stream.zig");
 const Segment = stream_mod.Segment;
 pub const StreamRx = stream_mod.StreamRx;
+pub const StreamReceiveState = stream_mod.ReceiveState;
 
 // Per-space ECN counters for ACK_ECN emission
 const EcnCounter = struct {
@@ -433,6 +434,7 @@ inline fn trace(comptime fmt: []const u8, args: anytype) void {
 
 // Per-stream transmit bookkeeping – canonical definition in connection/stream.zig
 pub const StreamTx = stream_mod.StreamTx;
+pub const StreamSendState = stream_mod.SendState;
 
 pub const StreamTxPacket = struct {
     stream_id: u64,
@@ -713,6 +715,8 @@ pub const Connection = struct {
     highest_peer_bidi_stream: ?u64 = null,
     highest_peer_uni_stream: ?u64 = null,
     // Stream state flags (stream 0 in this slice)
+    stream_send_state: StreamSendState = .Ready,
+    stream_recv_state: StreamReceiveState = .Recv,
     stream_send_aborted: bool = false,
     stream_send_fin_sent: bool = false,
     stream_recv_aborted: bool = false,
@@ -758,16 +762,22 @@ pub const Connection = struct {
     peer_disable_active_migration: bool = false,
     /// Last PATH_CHALLENGE payload issued (8 bytes, §19.17).
     path_challenge_data: [8]u8 = .{0} ** 8,
+    /// Number of PATH_CHALLENGE probes sent for the current validation attempt.
+    path_validation_attempts: u8 = 0,
+    /// Maximum PATH_CHALLENGE probes before marking validation failed.
+    path_validation_max_attempts: u8 = 3,
+    /// Absolute retry/failure deadline in nanoseconds for the outstanding challenge.
+    path_validation_deadline_ns: u64 = 0,
+    /// True after retries are exhausted without a matching PATH_RESPONSE.
+    path_validation_failed: bool = false,
     /// Track NEW_TOKEN issuance per RFC 9000 §19.7 (servers advertise address validation tokens).
     new_token_pending: bool = false,
     new_token_sent: bool = false,
     // Stateless reset tokens advertised by peer via NEW_CONNECTION_ID
     /// Peer-advertised stateless reset tokens (RFC 9000 §10.3, §19.15).
     reset_tokens: std.ArrayList(ResetTokenEntry) = .empty,
-    // Congestion controllers and selection flag (legacy; Recovery.cc is authoritative)
+    // Congestion controller selection flag; Recovery.cc is authoritative.
     use_cubic: bool = false,
-    cc_nr: recovery.NewReno = .{},
-    cc_cubic: recovery.Cubic = .{},
 
     // Temporary buffer for building ACK ranges
     ack_ranges_buf: [32]frame.AckRange = undefined,
@@ -1071,6 +1081,8 @@ pub const Connection = struct {
         self.stream_txs_init = true;
         self.app_stream_retx = std.AutoHashMap(u64, StreamTxPacket).init(alloc.*);
         self.app_stream_retx_init = true;
+        self.stream_send_state = .Ready;
+        self.stream_recv_state = .Recv;
         self.stream_send_aborted = false;
         self.stream_send_fin_sent = false;
         self.stream_recv_aborted = false;
@@ -1091,13 +1103,15 @@ pub const Connection = struct {
         self.disable_active_migration_advertised = false;
         self.peer_disable_active_migration = false;
         self.path_challenge_data = .{0} ** 8;
+        self.path_validation_attempts = 0;
+        self.path_validation_max_attempts = 3;
+        self.path_validation_deadline_ns = 0;
+        self.path_validation_failed = false;
         self.new_token_pending = false;
         self.new_token_sent = false;
         self.reset_tokens = .empty;
-        // CC default to NewReno; endpoint can flip use_cubic
+        // CC default to NewReno; endpoint can flip use_cubic.
         self.use_cubic = false;
-        self.cc_nr = .{};
-        self.cc_cubic = .{};
         // ensure recovery knows CC mode
         self.rec.setCcMode(false);
         // Initialize retry token buffer to match deinit symmetry - use .empty for Zig 0.15
@@ -1718,6 +1732,9 @@ pub const Connection = struct {
     pub const setPtoExpiredHandshake = methods_a.setPtoExpiredHandshake;
     pub const setPtoExpiredApp = methods_a.setPtoExpiredApp;
     pub const sendPathChallenge = methods_a.sendPathChallenge;
+    pub const sendPathChallengeAt = methods_a.sendPathChallengeAt;
+    pub const onPathValidationTimeout = methods_a.onPathValidationTimeout;
+    pub const onPathResponse = methods_a.onPathResponse;
     pub const sendControlFrames = methods_a.sendControlFrames;
     pub const enable0RTT = methods_a.enable0RTT;
     pub const accept0RTT = methods_a.accept0RTT;
@@ -1784,6 +1801,7 @@ pub const Connection = struct {
     pub const canIssueNewConnectionId = methods_c.canIssueNewConnectionId;
     pub const onIssuedNewConnectionId = methods_c.onIssuedNewConnectionId;
     pub const issueNewConnectionId = methods_c.issueNewConnectionId;
+    pub const ensureLocalConnectionIdSupply = methods_c.ensureLocalConnectionIdSupply;
     pub const flushPendingNewConnectionIds = methods_c.flushPendingNewConnectionIds;
     pub const markPendingNewCid = methods_c.markPendingNewCid;
     pub const writePendingNewConnectionIds = methods_c.writePendingNewConnectionIds;

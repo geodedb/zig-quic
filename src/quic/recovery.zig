@@ -124,21 +124,8 @@ pub const NewReno = struct {
         if (self.bytes_in_flight >= bytes_lost) self.bytes_in_flight -= bytes_lost else self.bytes_in_flight = 0;
     }
 };
-/// CUBIC congestion controller placeholder wrapping NewReno behavior (future expansion).
-pub const Cubic = struct {
-    inner: NewReno = .{},
-    /// Track bytes in flight for ack-eliciting packets under CUBIC wrapper.
-    pub fn onPacketSent(self: *Cubic, bytes: usize, ack_eliciting: bool) void {
-        self.inner.onPacketSent(bytes, ack_eliciting);
-    }
-    /// Update congestion window on ACK (delegates to inner NewReno placeholder).
-    pub fn onAck(self: *Cubic, bytes_acked: usize) void {
-        self.inner.onAck(bytes_acked);
-    }
-    fn onLoss(self: *Cubic, bytes_lost: usize) void {
-        self.inner.onLoss(bytes_lost);
-    }
-};
+/// CUBIC congestion controller, re-exported from the modular implementation.
+pub const Cubic = @import("recovery/congestion.zig").Cubic;
 
 /// Loss detection helper implementing packet/time threshold loss logic (RFC 9002 §6.1).
 pub const LossDetector = struct {

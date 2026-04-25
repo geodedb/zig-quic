@@ -24,7 +24,7 @@ fn expectHasConfirmed(conn: *conn_mod.Connection, expected: bool) !void {
 }
 
 test "connection updates peer Finished gating via TLS callback (client role)" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 
@@ -50,7 +50,7 @@ test "connection updates peer Finished gating via TLS callback (client role)" {
 }
 
 test "connection updates peer Finished gating via TLS callback (server role)" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 

@@ -30,7 +30,7 @@ fn buildDowngradeServerHello(alloc: std.mem.Allocator, client_pub: []const u8) !
 }
 
 test "client derives handshake secrets after ServerHello and sends Finished" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -90,7 +90,7 @@ test "client derives handshake secrets after ServerHello and sends Finished" {
 }
 
 test "client detects downgrade attempt via random sentinel" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     const tp = try buildClientTp(alloc);

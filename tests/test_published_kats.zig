@@ -13,7 +13,7 @@ fn hex(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
 }
 
 test "kat: AES-128-GCM aead encrypt/decrypt fixed vectors" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const a = gpa.allocator();
 

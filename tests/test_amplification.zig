@@ -6,7 +6,7 @@ const ks = @import("quic_tls");
 
 // Verifies server anti-amplification counters update and enforce 3x limit before validation.
 test "anti_amplification_counters_update" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 

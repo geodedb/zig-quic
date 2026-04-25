@@ -1423,6 +1423,10 @@ pub const Endpoint = struct {
         c.address_validated = false;
         c.bytes_rx_unvalidated = 0;
         c.bytes_tx_unvalidated = 0;
+        c.path_validation_pending = false;
+        c.path_validation_attempts = 0;
+        c.path_validation_deadline_ns = 0;
+        c.path_validation_failed = false;
         // Insert/refresh mapping keyed by new peer and our DCID
         const new_key = Key{ .peer_hash = new_peer_hash, .dcid_hash = hashBytes(c.our_scid.bytes[0..dcid_len]) };
         // OOM prevents registering the migrated path -- the connection becomes
@@ -1440,6 +1444,9 @@ pub const Endpoint = struct {
     fn onPathValidated(self: *Endpoint, c: *conn_mod.Connection) void {
         _ = self; // unused
         c.path_validation_pending = false;
+        c.path_validation_attempts = 0;
+        c.path_validation_deadline_ns = 0;
+        c.path_validation_failed = false;
         c.address_validated = true;
         c.bytes_rx_unvalidated = 0;
         c.bytes_tx_unvalidated = 0;

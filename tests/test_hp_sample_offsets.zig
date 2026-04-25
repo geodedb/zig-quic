@@ -9,7 +9,7 @@ fn make_payload(alloc: std.mem.Allocator, n: usize) ![]u8 {
 }
 
 test "hp sample offset: short header decode succeeds for pn_len=1..4" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 
@@ -43,7 +43,7 @@ test "hp sample offset: short header decode succeeds for pn_len=1..4" {
 }
 
 test "hp sample offset: Initial long header decode succeeds for pn_len=1..4" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 

@@ -14,7 +14,7 @@ fn hex2(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
 // RFC 9001-style KATs for AEAD and HP sampling (constructed minimal vectors)
 
 test "kat_chacha20_poly1305_aead_encrypt_decrypt" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const a = gpa.allocator();
     const key = try hex2(a, "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
@@ -42,7 +42,7 @@ test "kat_chacha20_poly1305_aead_encrypt_decrypt" {
 }
 
 test "kat_aes_128_gcm_aead_encrypt_decrypt" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const a = gpa.allocator();
     const key = try hex2(a, "000102030405060708090a0b0c0d0e0f");

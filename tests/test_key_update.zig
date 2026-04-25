@@ -6,7 +6,7 @@ const pkt = @import("quic_packet");
 // Key Update scaffolding: derive next app traffic secret and verify decrypt with toggled key phase.
 
 test "key update: derive next secret and decrypt with toggled key phase" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const a = gpa.allocator();
 
@@ -103,7 +103,7 @@ test "key update: derive next secret and decrypt with toggled key phase" {
 // RFC 9001 §6: "The header protection key is not updated during key updates."
 // This is confirmed by reference implementations like quic-go.
 test "key update: header protection key preserved across updates" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const a = gpa.allocator();
 

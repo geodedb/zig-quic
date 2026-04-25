@@ -7,7 +7,7 @@ const frame = @import("quic_frame");
 const ks = @import("quic_tls");
 
 test "server processes Initial and queues response" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 

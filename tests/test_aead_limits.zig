@@ -8,7 +8,7 @@ const conn_mod = @import("quic_conn");
 // We set the limit override to a tiny number to make this fast.
 
 test "aead integrity limit triggers connection close" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 

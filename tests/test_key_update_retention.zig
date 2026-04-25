@@ -8,7 +8,7 @@ const pkt = @import("quic_packet");
 // for the previous keys to accept in-flight packets. Validate RX/TX phase toggling and
 // that a small retention window continues to decrypt packets from the prior phase.
 test "key update: rx promotes on next-phase, retains prev window; tx toggles and encrypts with new keys" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 

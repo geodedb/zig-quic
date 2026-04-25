@@ -28,7 +28,7 @@ fn expectLen(result: varint.Error!struct { n: usize, value: u64 }, expected_n: u
 // This suite verifies that each encode helper emits minimal encodings for small payloads.
 
 test "encodeInitialProtected uses minimal Length varint" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -61,7 +61,7 @@ test "encodeInitialProtected uses minimal Length varint" {
 }
 
 test "encodeHandshakeProtected uses minimal Length varint" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
@@ -89,7 +89,7 @@ test "encodeHandshakeProtected uses minimal Length varint" {
 }
 
 test "encode0RTTProtected uses minimal Length varint" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

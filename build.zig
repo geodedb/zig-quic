@@ -945,6 +945,10 @@ pub fn build(b: *std.Build) void {
             const test_stream_fc = addTst(b, testlog_mod, "tests/test_stream_flow_control.zig", target, optimize);
             test_stream_fc.root_module.addImport("quic_api", quic_api_mod);
             test_stream_fc.root_module.addImport("quic_conn", quic_conn_mod);
+            test_stream_fc.root_module.addImport("quic_packet", quic_packet_mod);
+            test_stream_fc.root_module.addImport("quic_frame", quic_frame_mod);
+            test_stream_fc.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+            test_stream_fc.root_module.addImport("compat", compat_mod);
             const run_test_stream_fc = b.addRunArtifact(test_stream_fc);
             test_step.dependOn(&run_test_stream_fc.step);
             const test_stream_edges = addTst(b, testlog_mod, "tests/test_stream_edge_cases.zig", target, optimize);
@@ -973,6 +977,63 @@ pub fn build(b: *std.Build) void {
             const run_test_v2_packet_types = b.addRunArtifact(test_v2_packet_types);
             test_step.dependOn(&run_test_v2_packet_types.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "connection_id") or std.mem.containsAtLeast(u8, f, 1, "active_connection_id_limit") or std.mem.containsAtLeast(u8, f, 1, "cid_lifecycle")) {
+            const test_active_cid = addTst(b, testlog_mod, "tests/test_active_connection_id_limit.zig", target, optimize);
+            test_active_cid.root_module.addImport("quic_conn", quic_conn_mod);
+            const run_test_active_cid = b.addRunArtifact(test_active_cid);
+            test_step.dependOn(&run_test_active_cid.step);
+
+            const test_issue_cid = addTst(b, testlog_mod, "tests/test_issue_new_connection_id.zig", target, optimize);
+            test_issue_cid.root_module.addImport("quic_conn", quic_conn_mod);
+            const run_test_issue_cid = b.addRunArtifact(test_issue_cid);
+            test_step.dependOn(&run_test_issue_cid.step);
+
+            const test_retire_cid = addTst(b, testlog_mod, "tests/test_connection_id_retire_and_reissue.zig", target, optimize);
+            test_retire_cid.root_module.addImport("quic_conn", quic_conn_mod);
+            const run_test_retire_cid = b.addRunArtifact(test_retire_cid);
+            test_step.dependOn(&run_test_retire_cid.step);
+
+            const test_rotate_cid = addTst(b, testlog_mod, "tests/test_connection_id_rotation_retire_prior_to.zig", target, optimize);
+            test_rotate_cid.root_module.addImport("quic_conn", quic_conn_mod);
+            const run_test_rotate_cid = b.addRunArtifact(test_rotate_cid);
+            test_step.dependOn(&run_test_rotate_cid.step);
+
+            const test_emit_cid = addTst(b, testlog_mod, "tests/test_new_connection_id_emit.zig", target, optimize);
+            test_emit_cid.root_module.addImport("quic_conn", quic_conn_mod);
+            const run_test_emit_cid = b.addRunArtifact(test_emit_cid);
+            test_step.dependOn(&run_test_emit_cid.step);
+            return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "path_validation")) {
+            const test_path_validation = addTst(b, testlog_mod, "tests/test_path_validation.zig", target, optimize);
+            test_path_validation.root_module.addImport("quic_api", quic_api_mod);
+            test_path_validation.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+            test_path_validation.root_module.addImport("quic_conn", quic_conn_mod);
+            test_path_validation.root_module.addImport("quic_packet", quic_packet_mod);
+            test_path_validation.root_module.addImport("quic_frame", quic_frame_mod);
+            test_path_validation.root_module.addImport("compat", compat_mod);
+            const run_test_path_validation = b.addRunArtifact(test_path_validation);
+            test_step.dependOn(&run_test_path_validation.step);
+            return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "loss_edge") or std.mem.containsAtLeast(u8, f, 1, "recovery_protocol")) {
+            const test_recovery_protocol_gaps = addTst(b, testlog_mod, "tests/test_recovery_protocol_gaps.zig", target, optimize);
+            test_recovery_protocol_gaps.root_module.addImport("quic_conn", quic_conn_mod);
+            test_recovery_protocol_gaps.root_module.addImport("quic_recovery", quic_recovery_mod);
+            const run_test_recovery_protocol_gaps = b.addRunArtifact(test_recovery_protocol_gaps);
+            test_step.dependOn(&run_test_recovery_protocol_gaps.step);
+            return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "rfc9002_recovery")) {
+            const test_rfc9002_recovery = addTst(b, testlog_mod, "tests/integration/rfc9002_recovery.zig", target, optimize);
+            test_rfc9002_recovery.root_module.addImport("scenarios", scenarios_mod);
+            test_rfc9002_recovery.root_module.addImport("connection_pair", connection_pair_mod);
+            test_rfc9002_recovery.root_module.addImport("loss_recovery_helpers", loss_recovery_helpers_mod);
+            test_rfc9002_recovery.root_module.addImport("packet_inspector", packet_inspector_mod);
+            test_rfc9002_recovery.root_module.addImport("harness", integration_harness_mod);
+            test_rfc9002_recovery.root_module.addImport("loopback", loopback_mod);
+            test_rfc9002_recovery.root_module.addImport("quic_recovery", quic_recovery_mod);
+            test_rfc9002_recovery.root_module.addImport("quic_conn", quic_conn_mod);
+            const run_test_rfc9002_recovery = b.addRunArtifact(test_rfc9002_recovery);
+            test_step.dependOn(&run_test_rfc9002_recovery.step);
+            return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "version_negotiation")) {
             const test_vn = addTst(b, testlog_mod, "tests/test_version_negotiation.zig", target, optimize);
             test_vn.root_module.addImport("quic_packet", quic_packet_mod);
@@ -980,6 +1041,8 @@ pub fn build(b: *std.Build) void {
             test_vn.root_module.addImport("incoming", endpoint_incoming_mod);
             test_vn.root_module.addImport("endpoint/types", endpoint_types_mod);
             test_vn.root_module.addImport("config", quic_config_mod);
+            test_vn.root_module.addImport("quic_api", quic_api_mod);
+            test_vn.root_module.addImport("test_certs", test_certs_mod);
             const run_test_vn = b.addRunArtifact(test_vn);
             test_step.dependOn(&run_test_vn.step);
             return;
@@ -1103,6 +1166,7 @@ pub fn build(b: *std.Build) void {
         test_path_validation.root_module.addImport("quic_conn", quic_conn_mod);
         test_path_validation.root_module.addImport("quic_packet", quic_packet_mod);
         test_path_validation.root_module.addImport("quic_frame", quic_frame_mod);
+        test_path_validation.root_module.addImport("compat", compat_mod);
         const run_test_path_validation = b.addRunArtifact(test_path_validation);
         const test_pv_step = b.step("test-path-validation", "Run path validation tests");
         test_pv_step.dependOn(&run_test_path_validation.step);
@@ -1582,6 +1646,8 @@ pub fn build(b: *std.Build) void {
         test_vn.root_module.addImport("incoming", endpoint_incoming_mod);
         test_vn.root_module.addImport("endpoint/types", endpoint_types_mod);
         test_vn.root_module.addImport("config", quic_config_mod);
+        test_vn.root_module.addImport("quic_api", quic_api_mod);
+        test_vn.root_module.addImport("test_certs", test_certs_mod);
         const run_test_vn = b.addRunArtifact(test_vn);
         test_step.dependOn(&run_test_vn.step);
 
@@ -1816,6 +1882,8 @@ pub fn build(b: *std.Build) void {
         test_rfc9002_recovery.root_module.addImport("packet_inspector", packet_inspector_mod);
         test_rfc9002_recovery.root_module.addImport("harness", integration_harness_mod);
         test_rfc9002_recovery.root_module.addImport("loopback", loopback_mod);
+        test_rfc9002_recovery.root_module.addImport("quic_recovery", quic_recovery_mod);
+        test_rfc9002_recovery.root_module.addImport("quic_conn", quic_conn_mod);
         const run_test_rfc9002_recovery = b.addRunArtifact(test_rfc9002_recovery);
         test_step.dependOn(&run_test_rfc9002_recovery.step);
 

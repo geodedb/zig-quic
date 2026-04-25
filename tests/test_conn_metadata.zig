@@ -8,7 +8,7 @@ fn initConn(alloc: *std.mem.Allocator) conn_mod.Connection {
 }
 
 test "connection caches negotiated ALPN independently" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 
@@ -30,7 +30,7 @@ test "connection caches negotiated ALPN independently" {
 }
 
 test "connection caches peer transport parameters copy" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 
@@ -50,7 +50,7 @@ test "connection caches peer transport parameters copy" {
 }
 
 test "connection setLocalTransportParameters caches encoded bytes" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 

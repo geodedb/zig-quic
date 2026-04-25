@@ -12,7 +12,7 @@ const test_certs = @import("test_certs");
 // Destination Connection ID, preserving RFC 9000 §12.2 invariants for coalesced
 // datagrams.
 test "server coalesces zero-length DCID handshakes" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 

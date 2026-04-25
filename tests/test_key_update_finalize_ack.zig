@@ -9,7 +9,7 @@ const quic = @import("../src/quic/conn.zig");
 test "key_update_finalize_ack" {
     // For now just ensure connection object compiles & can be initialized.
     // Full simulation will be added in later slice integrating ACK deferral.
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     var ep = try quic.Endpoint.init(alloc, .{ .is_server = false });

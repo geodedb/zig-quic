@@ -226,7 +226,6 @@ pub fn bind(comptime Connection: type) type {
             _ = self.sent_sizes.put(pn, @intCast(@min(bytes, @as(usize, std.math.maxInt(u16))))) catch |err| {
                 logger.err("sent_sizes.put failed (OOM): {s}", .{@errorName(err)});
             };
-            self.ccOnPacketSent(bytes, ack_eliciting);
         }
 
         /// Ensure stream_txs HashMap is initialized
@@ -546,11 +545,41 @@ pub fn bind(comptime Connection: type) type {
             self.issued_cids += 1;
         }
 
+        fn cidLifecyclePrng(self: *Connection) std.Random.DefaultPrng {
+            var seed_bytes: [8]u8 = undefined;
+            _ = std.os.linux.getrandom(&seed_bytes, seed_bytes.len, 0);
+            var seed = std.mem.readInt(u64, &seed_bytes, .little);
+            seed ^= self.next_cid_sequence;
+            seed ^= self.issued_cids << 32;
+            if (seed == 0) seed = 0xdecafbad_c1d5eed;
+            return std.Random.DefaultPrng.init(seed);
+        }
+
+        /// Fill local CID inventory up to the peer active_connection_id_limit.
+        ///
+        /// This is the proactive lifecycle hook used after 1-RTT key confirmation
+        /// and after RETIRE_CONNECTION_ID frees capacity. Newly allocated CIDs are
+        /// marked pending; packet builders flush or piggyback the resulting
+        /// NEW_CONNECTION_ID frames.
+        pub fn ensureLocalConnectionIdSupply(self: *Connection) !usize {
+            if (!self.hasConfirmedAppTxKeys()) return 0;
+            var prng = cidLifecyclePrng(self);
+            var issued: usize = 0;
+            while (self.canIssueNewConnectionId()) {
+                _ = self.issueNewConnectionId(&prng) catch |err| switch (err) {
+                    error.ConnectionIdInventoryFull, error.ActiveConnectionIdLimitReached => break,
+                    else => return err,
+                };
+                issued += 1;
+            }
+            return issued;
+        }
+
         /// Issue a new locally-generated Connection ID (placeholder implementation).
         /// In a full implementation this would also schedule a NEW_CONNECTION_ID frame for transmission.
         /// Returns the sequence number of the newly issued CID.
         /// Issue new local CID (no rotation); marks pending for advertisement and returns sequence.
-        pub fn issueNewConnectionId(self: *Connection, rand: *std.rand.DefaultPrng) !u64 {
+        pub fn issueNewConnectionId(self: *Connection, rand: *std.Random.DefaultPrng) !u64 {
             try self.onIssuedNewConnectionId();
             // Allocate new CID slot and mark pending for advertisement.
             const alloc = try self.acquireLocalCid(rand);
@@ -564,7 +593,7 @@ pub fn bind(comptime Connection: type) type {
         pub fn flushPendingNewConnectionIds(self: *Connection) !usize {
             if (self.app_tx_keys == null) return 0;
             if (!self.canSendUnderAmplification()) return 0;
-            if (self.pending_new_cid.isEmpty()) return 0;
+            if (self.pending_new_cid.count() == 0) return 0;
             var fb: std.ArrayList(u8) = .empty;
             defer fb.deinit(self.allocator.*);
             const compat = @import("compat");
@@ -611,11 +640,13 @@ pub fn bind(comptime Connection: type) type {
         /// Handle RETIRE_CONNECTION_ID received from peer; frees local CID with given sequence.
         /// Handle RETIRE_CONNECTION_ID from peer; updates inventory and retired_prior_to if contiguous prefix retired.
         pub fn onRetireConnectionId(self: *Connection, sequence: u64) void {
+            var retired = false;
             var i: usize = 0;
             while (i < self.local_cids.len) : (i += 1) {
                 if (self.local_cids[i].in_use and self.local_cids[i].sequence == sequence) {
                     self.local_cids[i].in_use = false;
                     self.pending_new_cid.unset(@intCast(i));
+                    retired = true;
                     // Decrement active issued count (sequence 0 initial SCID still counts until retired by policy).
                     if (self.issued_cids > 0 and sequence != 0) {
                         self.issued_cids -= 1;
@@ -636,6 +667,11 @@ pub fn bind(comptime Connection: type) type {
                     }
                     break;
                 }
+            }
+            if (retired) {
+                _ = self.ensureLocalConnectionIdSupply() catch |err| {
+                    logger.debugPrint("CID replacement after RETIRE_CONNECTION_ID failed: {s}\n", .{@errorName(err)});
+                };
             }
         }
 
@@ -660,8 +696,8 @@ pub fn bind(comptime Connection: type) type {
         }
 
         /// Acquire a free local CID slot, populate with random CID & derived token, return slot index and sequence.
-        pub fn acquireLocalCid(self: *Connection, rand: *std.rand.DefaultPrng) !struct { idx: u8, sequence: u64 } {
-            if (self.active_local_cids >= self.local_cids.len and !self.pending_new_cid.isEmpty()) {
+        pub fn acquireLocalCid(self: *Connection, rand: *std.Random.DefaultPrng) !struct { idx: u8, sequence: u64 } {
+            if (self.active_local_cids >= self.local_cids.len and self.pending_new_cid.count() != 0) {
                 return error.ConnectionIdInventoryFull;
             }
             var i: usize = 0;
@@ -676,14 +712,14 @@ pub fn bind(comptime Connection: type) type {
             const lc = &self.local_cids[i];
             lc.* = .{ .in_use = true, .sequence = seq, .cid = .{ .len = cid_bytes.len, .bytes = undefined }, .reset_token = undefined };
             @memcpy(lc.cid.bytes[0..cid_bytes.len], &cid_bytes);
-            self.ensureStatelessResetBase();
+            ensureStatelessResetBase(self);
             lc.reset_token = try deriveStatelessResetToken(&self.stateless_reset_base, seq, cid_bytes[0..]);
             if (i + 1 > self.active_local_cids) self.active_local_cids = @intCast(i + 1);
             return .{ .idx = @intCast(i), .sequence = seq };
         }
 
         /// Issue new CID performing rotation if at active limit (retires oldest non-zero sequence first).
-        pub fn issueNewConnectionIdRotating(self: *Connection, rand: *std.rand.DefaultPrng) !u64 {
+        pub fn issueNewConnectionIdRotating(self: *Connection, rand: *std.Random.DefaultPrng) !u64 {
             if (self.canIssueNewConnectionId()) {
                 return try self.issueNewConnectionId(rand);
             }

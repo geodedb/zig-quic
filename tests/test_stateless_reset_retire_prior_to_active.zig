@@ -2,7 +2,7 @@ const std = @import("std");
 const conn_mod = @import("quic_conn");
 
 test "stateless reset: retire_prior_to tears down tokens during active traffic" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const A = gpa.allocator();
 
