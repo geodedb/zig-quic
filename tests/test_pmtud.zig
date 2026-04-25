@@ -6,6 +6,13 @@ const packet = @import("quic_packet");
 const frame = @import("quic_frame");
 const endpoint_mod = @import("quic_endpoint");
 
+fn nanoTimestamp() i128 {
+    var ts: std.os.linux.timespec = undefined;
+    const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+    if (rc != 0) return 0;
+    return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+}
+
 // Extract Transport types from endpoint module
 // Access the transport field type from Endpoint struct
 const Endpoint = endpoint_mod.Endpoint;
@@ -21,6 +28,16 @@ const RecvFnActualType = RecvFnPtrInfo.pointer.child; // Get the function type
 const RecvFnTypeInfo = @typeInfo(RecvFnActualType); // TypeInfo for the function
 const RecvFnReturnType = RecvFnTypeInfo.@"fn".return_type.?; // Get the return type (error union)
 const RecvResult = @typeInfo(RecvFnReturnType).error_union.payload; // Extract payload from error union
+
+test "pmtud state model is exported by the active connection implementation" {
+    const ConnectionPmtudState = @TypeOf(@as(conn_mod.Connection, undefined).pmtud_state);
+    const state: ConnectionPmtudState = conn_mod.PmtudState.Disabled;
+
+    try std.testing.expectEqual(conn_mod.PmtudState.Disabled, state);
+    try std.testing.expect(!state.active());
+    try std.testing.expect(conn_mod.PmtudState.ProbeStart.active());
+    try std.testing.expect(conn_mod.PmtudState.ProbeSearch.active());
+}
 
 /// No-op transport for testing - discards all packets
 const NoopTransport = struct {
@@ -57,7 +74,7 @@ const NoopTransport = struct {
 };
 
 test "pmtud pacing: paced send occurs under NewReno and CUBIC when cwnd is partially full" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 
@@ -107,7 +124,7 @@ test "pmtud pacing: paced send occurs under NewReno and CUBIC when cwnd is parti
 }
 
 test "pmtud with cubic: single outstanding probe with backoff (blackhole)" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var cfg = api.QuicConfig{ .alpn = &[_][]const u8{} };
@@ -141,7 +158,7 @@ test "pmtud with cubic: single outstanding probe with backoff (blackhole)" {
 }
 
 test "pmtud with cubic: cwnd insufficient blocks probe and PTO backoff increases" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var cfg = api.QuicConfig{ .alpn = &[_][]const u8{} };
@@ -169,7 +186,7 @@ test "pmtud with cubic: cwnd insufficient blocks probe and PTO backoff increases
     const sent = try c.sendPmtudProbe(1280);
     try std.testing.expectEqual(@as(usize, 1280), sent);
     // PTO backoff should increase next deadline when pto_count increments
-    const now_i = std.time.nanoTimestamp();
+    const now_i = nanoTimestamp();
     const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
     const d1 = c.rec.computeNextPtoTimeNs(now_ns);
     c.setPtoExpiredApp();
@@ -178,7 +195,7 @@ test "pmtud with cubic: cwnd insufficient blocks probe and PTO backoff increases
 }
 
 test "pmtud probe builds PING+PADDING to exact UDP payload size" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 
@@ -203,7 +220,7 @@ test "pmtud probe builds PING+PADDING to exact UDP payload size" {
 }
 
 test "pmtud validation raises path_mtu on ACK of probe PN" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var c: conn_mod.Connection = undefined;
@@ -234,7 +251,7 @@ test "pmtud validation raises path_mtu on ACK of probe PN" {
 }
 
 test "icmp packet too big clamps path_mtu and clears oversize pending" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var c: conn_mod.Connection = undefined;
@@ -250,7 +267,7 @@ test "icmp packet too big clamps path_mtu and clears oversize pending" {
 }
 
 test "icmp ptb spoof-check: only applies when DCID matches known connection" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     // Build endpoint and a client connection mapping
@@ -283,7 +300,7 @@ test "icmp ptb spoof-check: only applies when DCID matches known connection" {
 }
 
 test "icmp ptb spoof corner: quoted header too short is ignored" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     var cfg = @import("quic_api").QuicConfig{ .alpn = &[_][]const u8{} };
@@ -302,7 +319,7 @@ test "icmp ptb spoof corner: quoted header too short is ignored" {
 }
 
 test "pmtud: send multiple probe sizes and accept only acked size" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
     var c: conn_mod.Connection = undefined;
@@ -334,7 +351,7 @@ test "pmtud: send multiple probe sizes and accept only acked size" {
 }
 
 test "pmtud state machine sends probes and raises mtu upon ack progression" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     // Use endpoint to drive timers; attach one connection with TX keys
@@ -365,7 +382,7 @@ test "pmtud state machine sends probes and raises mtu upon ack progression" {
 }
 
 test "icmp ptb ipv6 minimal quote length required" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     var cfg = api.QuicConfig{ .alpn = &[_][]const u8{} };
@@ -385,7 +402,7 @@ test "icmp ptb ipv6 minimal quote length required" {
 }
 
 test "icmp ptb ipv6 EH offset scan: accept DCID match beyond base header" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     var cfg = api.QuicConfig{ .alpn = &[_][]const u8{} };
@@ -408,7 +425,7 @@ test "icmp ptb ipv6 EH offset scan: accept DCID match beyond base header" {
 }
 
 test "pmtud pacing: single outstanding probe with backoff on blackhole" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     var cfg = api.QuicConfig{ .alpn = &[_][]const u8{} };
@@ -441,7 +458,7 @@ test "pmtud pacing: single outstanding probe with backoff on blackhole" {
 }
 
 test "pmtud pacing: do not send probe when cwnd insufficient; respects PTO backoff" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
     var cfg = api.QuicConfig{ .alpn = &[_][]const u8{} };
@@ -471,7 +488,7 @@ test "pmtud pacing: do not send probe when cwnd insufficient; respects PTO backo
 
     // Verify PTO backoff interaction: on PTO expiry, pto_count increases
     // and subsequent computeNextPtoTimeNs reflects backoff via a larger deadline delta.
-    const now_i = std.time.nanoTimestamp();
+    const now_i = nanoTimestamp();
     const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
     const d1 = c.rec.computeNextPtoTimeNs(now_ns);
     // Simulate PTO expiry in App space

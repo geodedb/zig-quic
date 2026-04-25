@@ -21,6 +21,9 @@ const legacy = @import("../packet.zig");
 // Re-export types from types module and legacy implementations
 pub const PacketNumber = types.PacketNumber;
 pub const LongHeaderType = types.LongHeaderType;
+pub const LongHeaderPacketType = legacy.LongHeaderPacketType;
+pub const longHeaderTypeBits = legacy.longHeaderTypeBits;
+pub const longHeaderPacketType = legacy.longHeaderPacketType;
 pub const DecodedShort = legacy.DecodedShort; // Use legacy type to match decodeShortProtected return
 pub const DecodedShortView = legacy.DecodedShortView;
 pub const DecodedInitial = legacy.DecodedInitial; // Use legacy type to match decodeInitialProtected return

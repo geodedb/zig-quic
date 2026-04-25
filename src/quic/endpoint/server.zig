@@ -376,6 +376,7 @@ pub fn createServerConnection(
         tp_bytes = try tp.TransportParams.encode(tpp, allocator.*);
         tp_allocated = true;
         try c.setLocalTransportParameters(tp_bytes);
+        c.disable_active_migration_advertised = tpp.disable_active_migration;
     }
     defer if (tp_allocated) allocator.free(tp_bytes);
 

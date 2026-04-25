@@ -23,36 +23,33 @@ pub const H3Server = struct {
         return .{ .allocator = allocator };
     }
 
+    /// Transport write errors that mean "retry after polling" rather than
+    /// a terminal stream/connection failure.
+    pub fn isRetryableTransportError(err: anyerror) bool {
+        return switch (err) {
+            error.WouldBlock, error.FlowControlBlocked, error.KeysNotReady => true,
+            else => false,
+        };
+    }
+
     /// Serve a single QUIC connection: send control streams and respond once per bidi request.
-    pub fn serveConnection(self: *H3Server, ep: *api.QuicEndpoint, conn: *api.QuicConnection) void {
+    pub fn serveConnection(self: *H3Server, ep: *api.QuicEndpoint, conn: *api.QuicConnection) !void {
         // Control stream
-        const ctrl = api.openUni(conn) catch return;
+        const ctrl = try api.openUni(conn);
         var ctrl_buf: [24]u8 = undefined;
         var i: usize = 0;
         i += encodeVarint(0x00, ctrl_buf[i..]); // uni stream type: control
         i += encodeVarint(0x04, ctrl_buf[i..]); // SETTINGS
         i += encodeVarint(0, ctrl_buf[i..]); // len=0
-        _ = api.writeStream(conn, ctrl, ctrl_buf[0..i], false) catch |err| {
-            std.debug.print("[h3] control stream write failed: {}\n", .{err});
-            return;
-        };
+        try writeAll(ep, conn, ctrl, ctrl_buf[0..i]);
         // QPACK encoder/decoder streams
-        if (api.openUni(conn)) |sid| {
-            var t: [1]u8 = .{0};
-            _ = api.writeStream(conn, sid, t[0..encodeVarint(0x02, t[0..])], false) catch |err| {
-                std.debug.print("[h3] QPACK encoder stream write failed: {}\n", .{err});
-            };
-        } else |err| {
-            std.debug.print("[h3] failed to open QPACK encoder stream: {}\n", .{err});
-        }
-        if (api.openUni(conn)) |sid| {
-            var t: [1]u8 = .{0};
-            _ = api.writeStream(conn, sid, t[0..encodeVarint(0x03, t[0..])], false) catch |err| {
-                std.debug.print("[h3] QPACK decoder stream write failed: {}\n", .{err});
-            };
-        } else |err| {
-            std.debug.print("[h3] failed to open QPACK decoder stream: {}\n", .{err});
-        }
+        const enc_sid = try api.openUni(conn);
+        var enc_type: [1]u8 = .{0};
+        try writeAll(ep, conn, enc_sid, enc_type[0..encodeVarint(0x02, enc_type[0..])]);
+
+        const dec_sid = try api.openUni(conn);
+        var dec_type: [1]u8 = .{0};
+        try writeAll(ep, conn, dec_sid, dec_type[0..encodeVarint(0x03, dec_type[0..])]);
         api.flush(ep, 5);
         // Event loop: serve each bidi request once
         var tmp: [4096]u8 = undefined;
@@ -66,7 +63,7 @@ pub const H3Server = struct {
         }
         var spins: usize = 0;
         while (spins < 4000) : (spins += 1) {
-            api.poll(ep, 2) catch {};
+            try api.poll(ep, 2);
 
             // QUIC-H3-003: Use pollReady to detect connection-level events.
             const ready = api.pollReady(conn);
@@ -78,13 +75,13 @@ pub const H3Server = struct {
                 while (true) {
                     const dgram_len = api.recvDatagram(conn, dgram_buf[0..]) catch break;
                     if (dgram_len == 0) break;
-                    _ = api.sendDatagram(conn, dgram_buf[0..dgram_len]) catch |err| {
-                        std.debug.print("[h3] datagram echo failed: {}\n", .{err});
-                        break;
-                    };
+                    _ = try api.sendDatagram(conn, dgram_buf[0..dgram_len]);
                 }
             }
-            const got = readAny(conn, tmp[0..]) catch null;
+            const got = readAny(conn, tmp[0..]) catch |err| switch (err) {
+                error.WouldBlock => null,
+                else => return err,
+            };
             if (got) |pair| {
                 // HTTP/3 requests arrive on client-initiated bidirectional streams.
                 // Ignore unidirectional control / QPACK streams and server-initiated streams.
@@ -102,14 +99,14 @@ pub const H3Server = struct {
                 }
                 if (already) continue;
 
-                const gop = request_buffers.getOrPut(pair.id) catch continue;
+                const gop = try request_buffers.getOrPut(pair.id);
                 if (!gop.found_existing) gop.value_ptr.* = .empty;
                 gop.value_ptr.appendSlice(self.allocator, tmp[0..pair.n]) catch {
                     if (request_buffers.fetchRemove(pair.id)) |entry| {
                         var buf_state = entry.value;
                         buf_state.deinit(self.allocator);
                     }
-                    continue;
+                    return error.OutOfMemory;
                 };
                 std.debug.print("[h3] recv stream={} chunk={} buffered={}\n", .{ pair.id, pair.n, gop.value_ptr.items.len });
                 if (gop.value_ptr.items.len > 16 * 1024) {
@@ -127,9 +124,7 @@ pub const H3Server = struct {
                     std.debug.print("[h3] request stream={} path={s}\n", .{ pair.id, path });
                     served[served_len] = pair.id;
                     served_len += 1;
-                    respondFile(ep, conn, pair.id, path) catch |err| {
-                        std.debug.print("[h3] respondFile failed stream={} path={s}: {}\n", .{ pair.id, path, err });
-                    };
+                    try respondFile(ep, conn, pair.id, path);
                     std.debug.print("[h3] response stream={} sent\n", .{pair.id});
                     if (request_buffers.fetchRemove(pair.id)) |entry| {
                         var buf_state = entry.value;
@@ -148,9 +143,7 @@ pub const H3Server = struct {
                     std.debug.print("[h3] request stream={} unparsed; fallback path={s}\n", .{ pair.id, fallback_path });
                     served[served_len] = pair.id;
                     served_len += 1;
-                    respondFile(ep, conn, pair.id, fallback_path) catch |err| {
-                        std.debug.print("[h3] respondFile fallback failed stream={}: {}\n", .{ pair.id, err });
-                    };
+                    try respondFile(ep, conn, pair.id, fallback_path);
                     std.debug.print("[h3] response stream={} sent (fallback)\n", .{pair.id});
                     if (request_buffers.fetchRemove(pair.id)) |entry| {
                         var buf_state = entry.value;
@@ -193,9 +186,7 @@ pub const H3Server = struct {
         dn += encodeVarint(file_bytes.len, data_head[dn..]);
         try writeAll(ep, conn, stream_id, data_head[0..dn]);
         if (file_bytes.len > 0) try writeAll(ep, conn, stream_id, file_bytes);
-        _ = api.closeStream(conn, stream_id, 0) catch |err| {
-            std.debug.print("[h3] closeStream failed stream={}: {}\n", .{ stream_id, err });
-        };
+        try api.closeStream(conn, stream_id, 0);
         api.flush(ep, 5);
     }
 
@@ -215,23 +206,38 @@ pub const H3Server = struct {
 
     fn writeAll(ep: *api.QuicEndpoint, conn: *api.QuicConnection, sid: u64, data: []const u8) !void {
         var off: usize = 0;
+        var idle_spins: usize = 0;
         while (off < data.len) {
-            const n = api.writeStream(conn, sid, data[off..], false) catch 0;
+            const n = api.writeStream(conn, sid, data[off..], false) catch |err| blk: {
+                if (isRetryableTransportError(err)) break :blk 0;
+                return err;
+            };
             if (n == 0) {
-                api.poll(ep, 1) catch {};
+                idle_spins += 1;
+                if (idle_spins > 20_000) return error.H3WriteTimeout;
+                try api.poll(ep, 1);
             } else {
+                idle_spins = 0;
                 off += n;
             }
         }
     }
 
-    fn readAny(conn: *api.QuicConnection, buf: []u8) !?struct { id: u64, n: usize } {
+    fn readAny(conn: *api.QuicConnection, buf: []u8) anyerror!?struct { id: u64, n: usize } {
         const c: *@import("quic_conn").Connection = @ptrCast(@alignCast(conn));
         const res = c.readAnyStream(buf) catch |e| return e;
         return .{ .id = res.id, .n = res.n };
     }
 
     const encodeVarint = h3v.encodeVarint;
+
+    test "write retry policy treats only flow-control/key readiness as transient" {
+        const transient = [_]anyerror{ error.WouldBlock, error.FlowControlBlocked, error.KeysNotReady };
+        for (transient) |err| {
+            try std.testing.expect(isRetryableTransportError(err));
+        }
+        try std.testing.expect(!isRetryableTransportError(error.ConnectionClosed));
+    }
 
     /// Parse an HTTP/3 HEADERS frame payload (QPACK block) and extract :path.
     pub fn parseReqFromHeadersFrame(data: []const u8, out: []u8, rs: *ReqState) ?[]const u8 {

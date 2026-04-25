@@ -30,6 +30,9 @@ pub const QuicConfig = struct {
     grease: bool = true,
     // RFC 9368 Compatible Version Negotiation toggle
     compatible_vn: bool = false,
+    // RFC 9000 §18.2: advertise disable_active_migration and reject peer
+    // address changes that violate the advertised local policy.
+    disable_active_migration: bool = false,
     // Retry configuration (server) (RFC 9000 §8.1: stateless retry)
     enable_retry: bool = true,
     // MAC secret for Retry/NEW_TOKEN tokens (RFC 9000 §8.1.4)

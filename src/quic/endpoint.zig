@@ -679,7 +679,7 @@ pub const Endpoint = struct {
         // Set up client transport parameters for TLS handshake
         // Transport parameter setup is critical -- without it the handshake
         // will produce an invalid ClientHello.  Propagate the error.
-        try handshake_integration.setupClientTransportParams(c, self.allocator);
+        try handshake_integration.setupClientTransportParams(c, &self.cfg, self.allocator);
 
         // Delegate to client module for Initial packet construction and sending
         var ctx = client_mod.ClientContext{
@@ -1290,7 +1290,7 @@ pub const Endpoint = struct {
                 if (lookup_result.conn) |c| {
                     if (lookup_result.nat_rebinding or !conn_mod.SockAddr.eq(&c.peer, &norm_peer)) {
                         const peer_h = hashSockaddr(&norm_peer.storage, norm_peer.len);
-                        self.onPathAddressChanged(c, norm_peer, peer_h, lookup_result.dcid_len);
+                        if (!self.onPathAddressChanged(c, norm_peer, peer_h, lookup_result.dcid_len)) break;
                     }
                 }
                 incoming.processShortHeader(&rx_ctx, norm_peer, remaining, ecn_bits, rx_ctx.send_fn);
@@ -1321,13 +1321,13 @@ pub const Endpoint = struct {
                             packet_len = remaining.len; // Use entire buffer for VN
                         }
                         // Retry packets also don't have a length field
-                        else if (((first >> 4) & 0x03) == 3) {
+                        else if (packet.longHeaderPacketType(version, first) == .Retry) {
                             packet_len = remaining.len; // Use entire buffer for Retry
                         }
                         // Initial, Handshake, and 0-RTT packets have length field
                         else {
                             // For Initial packets, skip token length varint
-                            if (((first >> 4) & 0x03) == 0 and remaining.len > offset) {
+                            if (packet.longHeaderPacketType(version, first) == .Initial and remaining.len > offset) {
                                 // Read token length as varint
                                 const token_len_result = varint.decode(remaining[offset..]) catch {
                                     break; // Can't parse, treat as single packet
@@ -1356,6 +1356,7 @@ pub const Endpoint = struct {
 
             // Debug: log packet extraction
             const packet_ty = (packet_bytes[0] >> 4) & 0x03;
+            const packet_kind = packet.longHeaderPacketType(version, packet_bytes[0]);
             logger.debugPrint("processIncomingDatagram: Extracted type {} packet, len={} from datagram offset={}\n", .{
                 packet_ty,
                 packet_len,
@@ -1367,7 +1368,7 @@ pub const Endpoint = struct {
 
             if (version == 0) {
                 incoming.processVersionNegotiation(&rx_ctx, norm_peer, packet_bytes);
-            } else if (packet_ty == 0) {
+            } else if (packet_kind == .Initial) {
                 // Server-side version negotiation for unsupported versions.
                 // This is required by the interop simulator readiness probe
                 // (wait-for-it-quic), which sends an Initial-like packet with
@@ -1399,10 +1400,10 @@ pub const Endpoint = struct {
                 } else {
                     incoming.processInitial(&rx_ctx, norm_peer, packet_bytes, version);
                 }
-            } else if (packet_ty == 3) {
+            } else if (packet_kind == .Retry) {
                 self.markRetryObserved(norm_peer);
                 self.processRetryPacket(norm_peer, packet_bytes, version);
-            } else if (packet_ty == 2) {
+            } else if (packet_kind == .Handshake) {
                 incoming.processHandshake(&rx_ctx, norm_peer, packet_bytes, version, ecn_bits, rx_ctx.send_fn);
             }
 
@@ -1413,7 +1414,11 @@ pub const Endpoint = struct {
 
     /// resets validation state and counters, installs new map key, and triggers validation
     /// as described in RFC 9000 §9.4/§9.5 for path migration.
-    fn onPathAddressChanged(self: *Endpoint, c: *conn_mod.Connection, new_peer: conn_mod.SockAddr, new_peer_hash: u64, dcid_len: usize) void {
+    fn onPathAddressChanged(self: *Endpoint, c: *conn_mod.Connection, new_peer: conn_mod.SockAddr, new_peer_hash: u64, dcid_len: usize) bool {
+        if (c.disable_active_migration_advertised) {
+            logger.debugPrint("path: rejected address change after advertising disable_active_migration (dcid_len={d})\n", .{dcid_len});
+            return false;
+        }
         c.setPeer(new_peer);
         c.address_validated = false;
         c.bytes_rx_unvalidated = 0;
@@ -1428,6 +1433,7 @@ pub const Endpoint = struct {
         // Trigger PATH_CHALLENGE if 1-RTT keys are available (§9.3):
         c.sendPathChallenge();
         logger.debugPrint("path: change detected dcid_len={d} triggering validation (phase={d})\n", .{ dcid_len, @intFromBool(c.tx_key_phase) });
+        return true;
     }
 
     /// Mark path validated and clear unvalidated counters consistently.

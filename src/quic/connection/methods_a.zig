@@ -174,6 +174,49 @@ pub fn bind(comptime Connection: type) type {
             return self.peer_finished_verified and self.app_tx_keys != null;
         }
 
+        /// Send the server HANDSHAKE_DONE control packet.
+        ///
+        /// This mutates handshake completion state only after packet protection and
+        /// datagram transmission succeed, so injected encode/send failures remain
+        /// observable to callers and do not make the connection believe the frame was sent.
+        pub fn sendHandshakeDoneControl(self: *Connection) !void {
+            self.advertiseInitialFlowControl();
+
+            var frames_list: std.ArrayList(u8) = .empty;
+            defer frames_list.deinit(self.allocator.*);
+            const compat = @import("compat");
+            const w = compat.arrayListWriter(&frames_list, self.allocator.*);
+            _ = try (frame.Frame{ .handshake_done = {} }).write(w);
+            // Do not send MAX_STREAM_DATA for stream 0 unconditionally.
+            _ = try (frame.Frame{ .max_data = .{ .max = self.local_max_data } }).write(w);
+            _ = try (frame.Frame{ .max_streams_bidi = .{ .max = self.local_max_streams_bidi } }).write(w);
+
+            logger.debugPrint("Server: Sending control frames ({} bytes):", .{frames_list.items.len});
+            for (frames_list.items) |b| logger.debugPrint(" 0x{X:0>2}", .{b});
+            logger.debugPrint("\n", .{});
+
+            const tx = self.app_tx_keys orelse return error.NoApplicationKeys;
+            const packet_storage = try self.packet_pool.checkout();
+            defer self.packet_pool.release(packet_storage);
+            const pkt_len = try packet.encodeShortProtectedInto(
+                packet_storage,
+                self.shortHeaderDcid(),
+                @as(u32, @truncate(self.pn_app_tx)),
+                2,
+                frames_list.items,
+                .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
+                self.tx_key_phase,
+            );
+            const pkt = packet_storage[0..pkt_len];
+            _ = try self.send(pkt);
+            self.onShortHeaderPacketSent(pkt.len, true);
+
+            self.initial_keys_dropped = true;
+            self.initial_rx_keys = null;
+            self.initial_tx_keys = null;
+            self.handshake_done_sent = true;
+        }
+
         pub fn updatePeerFinishedStatus(self: *Connection, verified: bool) void {
             if (self.peer_finished_verified == verified) return;
             self.peer_finished_verified = verified;
@@ -445,57 +488,14 @@ pub fn bind(comptime Connection: type) type {
             // Server: Send HANDSHAKE_DONE if Application keys installed but not yet sent
             if (self.role == .Server and self.app_tx_keys != null and !self.handshake_done_sent and self.hasConfirmedAppTxKeys()) {
                 logger.debugPrint("Server: Sending HANDSHAKE_DONE\n", .{});
-                self.advertiseInitialFlowControl();
-                self.initial_keys_dropped = true;
-                self.initial_rx_keys = null;
-                self.initial_tx_keys = null;
-
-                // Build and send HANDSHAKE_DONE frame
-                var frames_list: std.ArrayList(u8) = .empty;
-                defer frames_list.deinit(self.allocator.*);
-                const compat = @import("compat");
-                const w = compat.arrayListWriter(&frames_list, self.allocator.*);
-                _ = (frame.Frame{ .handshake_done = {} }).write(w) catch 0;
-                // FIXED: Do NOT send MAX_STREAM_DATA for stream 0 unconditionally.
-                // _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = self.local_max_stream_data } }).write(w) catch 0;
-                _ = (frame.Frame{ .max_data = .{ .max = self.local_max_data } }).write(w) catch 0;
-                _ = (frame.Frame{ .max_streams_bidi = .{ .max = self.local_max_streams_bidi } }).write(w) catch 0;
-
-                logger.debugPrint("Server: Sending control frames ({} bytes):", .{frames_list.items.len});
-                for (frames_list.items) |b| logger.debugPrint(" 0x{X:0>2}", .{b});
-                logger.debugPrint("\n", .{});
-
-                const tx = self.app_tx_keys.?;
-                const packet_storage = try self.packet_pool.checkout();
-                defer self.packet_pool.release(packet_storage);
-                const pkt_len = packet.encodeShortProtectedInto(
-                    packet_storage,
-                    self.shortHeaderDcid(),
-                    @as(u32, @truncate(self.pn_app_tx)),
-                    2,
-                    frames_list.items,
-                    .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
-                    self.tx_key_phase,
-                ) catch 0;
-                if (pkt_len != 0) {
-                    const pkt = packet_storage[0..pkt_len];
-                    _ = self.send(pkt) catch |err| {
-                        logger.warn("HANDSHAKE_DONE send failed: {s}", .{@errorName(err)});
-                    };
-                    self.onShortHeaderPacketSent(pkt.len, true);
-                }
-                self.handshake_done_sent = true;
+                try self.sendHandshakeDoneControl();
             }
 
             // Apply peer transport parameters (once) when they first become available
             if (!self.transport_params_applied) {
                 if (tls_ctx.peer_quic_transport_parameters) |peer_tp_bytes| {
-                    self.applyPeerTransportParameters(peer_tp_bytes) catch {
-                        // Ignore malformed transport parameters; retain defaults
-                    };
-                    storePeerTransportParams(self, peer_tp_bytes) catch |err| {
-                        logger.err("storePeerTransportParams failed (OOM): {s}", .{@errorName(err)});
-                    };
+                    try self.applyPeerTransportParameters(peer_tp_bytes);
+                    try storePeerTransportParams(self, peer_tp_bytes);
                 }
             }
 

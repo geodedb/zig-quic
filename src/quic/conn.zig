@@ -26,8 +26,10 @@ const logger = @import("quic_logger");
 const byteorder = @import("byteorder");
 const reset_token = @import("connection/reset_token.zig");
 const anti_replay = @import("anti_replay.zig");
+const pmtud_mod = @import("connection/pmtud.zig");
 
 pub const AckRange = frame.AckRange;
+pub const PmtudState = pmtud_mod.PmtudState;
 
 pub const ResetTokenEntry = struct {
     sequence: u64,
@@ -525,8 +527,6 @@ test "stateless reset tokens retire by sequence without ordered removal" {
     try std.testing.expect(c.looksLikeStatelessReset(&pkt));
 }
 
-const PmtudState = enum { Disabled, ProbeStart, ProbeSearch };
-
 /// Connection state and helpers for QUIC handshake, recovery, and 1-RTT.
 /// GAP-0200: Thread-safe - each connection has its own mutex for concurrent access.
 pub const Connection = struct {
@@ -608,6 +608,8 @@ pub const Connection = struct {
     // Lifecycle flags
     handshake_done_sent: bool = false,
     handshake_done_seen: bool = false,
+    /// Last non-retryable handshake/path setup error observed by connection processing.
+    last_handshake_error: ?anyerror = null,
     // Temporary demo flag: whether server auto-echo response on stream 0 was sent
     app_echo_sent: bool = false,
     /// Tracks when the TLS engine has verified the peer's Finished, enabling short-header traffic.
@@ -750,6 +752,10 @@ pub const Connection = struct {
     /// PATH_CHALLENGE validation state per RFC 9000 §9; true until a matching
     /// PATH_RESPONSE arrives for the outstanding challenge data.
     path_validation_pending: bool = false,
+    /// True when this endpoint advertised disable_active_migration to the peer.
+    disable_active_migration_advertised: bool = false,
+    /// True when the peer advertised disable_active_migration to this endpoint.
+    peer_disable_active_migration: bool = false,
     /// Last PATH_CHALLENGE payload issued (8 bytes, §19.17).
     path_challenge_data: [8]u8 = .{0} ** 8,
     /// Track NEW_TOKEN issuance per RFC 9000 §19.7 (servers advertise address validation tokens).
@@ -1082,6 +1088,8 @@ pub const Connection = struct {
         self.ecn_app_ack_pending = false;
         // Flow-control connection-level defaults already set via field initializers
         self.path_validation_pending = false;
+        self.disable_active_migration_advertised = false;
+        self.peer_disable_active_migration = false;
         self.path_challenge_data = .{0} ** 8;
         self.new_token_pending = false;
         self.new_token_sent = false;
@@ -1125,6 +1133,7 @@ pub const Connection = struct {
         self.last_sent_max_streams_bidi = 0;
         self.tx_sent_bytes_since_key = 0;
         self.handshake_done_sent = false;
+        self.last_handshake_error = null;
         self.peer_finished_verified = false;
         self.server_hello_sent = false;
         self.handshake_packet_sent = false;
@@ -1676,6 +1685,7 @@ pub const Connection = struct {
     pub const cachePeerTransportParams = methods_a.cachePeerTransportParams;
     pub const setLocalTransportParameters = methods_a.setLocalTransportParameters;
     pub const hasConfirmedAppTxKeys = methods_a.hasConfirmedAppTxKeys;
+    pub const sendHandshakeDoneControl = methods_a.sendHandshakeDoneControl;
     pub const updatePeerFinishedStatus = methods_a.updatePeerFinishedStatus;
     pub const send = methods_a.send;
     pub const sendInitialCrypto = methods_a.sendInitialCrypto;

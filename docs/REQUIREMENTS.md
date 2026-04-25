@@ -14,7 +14,7 @@ GitLab issues are the authoritative source of truth for requirements and gap sta
 - Toolchain evidence: `.gitlab-ci.yml:37-38` sets `ZIG_VERSION: "0.16.0"`; local `zig version` returned `0.16.0`.
 - Formatting evidence: `zig fmt --check build.zig lib.zig quic.zig src tests benchmarks cmd tools clients examples fuzz` exited `0`.
 - Test evidence: `zig build test` exited `0` on 2026-04-25, but emitted `ERROR: quic_client: connectEx requires a CA certificate (use connectInsecure for insecure testing)` from the test binary, so the diagnostic should be investigated before treating test output as fully clean.
-- Focused closure evidence: `zig build -Dtest-filter=stream_edges test`, `zig build -Dtest-filter=packet_pool test`, and `bash -n interop/run_endpoint.sh` exited `0` on 2026-04-25.
+- Focused closure evidence: `zig build -Dtest-filter=stream_edges test`, `zig build -Dtest-filter=packet_pool test`, `zig build -Dtest-filter=h3_error test`, `zig build -Dtest-filter=h3_loopback test`, `zig build -Dtest-filter=api_colocated test`, `zig build -Dtest-filter=disable_active_migration test`, `zig build -Dtest-filter=v2_packet_types test`, `zig build -Dtest-filter=pmtud test`, `zig build -Dtest-filter=handshake_error test`, `zig build -Dtest-filter=version_negotiation test`, and `bash -n interop/run_endpoint.sh` exited `0` on 2026-04-25.
 - Coverage caveat: `rg --hidden --glob '!.git/**' --glob '!.claude/worktrees/**' --glob '*.zig' -n 'return error\.SkipZigTest' tests src | wc -l` returned `528`.
 
 ## Open Requirement Issues
@@ -84,9 +84,7 @@ Open gaps are mirrored in `docs/GAP_ANALYSIS.md`; GitLab remains authoritative.
 
 - [GAP-0004 #88](https://gitlab.com/devnw/zig/quic/-/issues/88) - 528 test stubs return `SkipZigTest`
 - [GAP-0007 #136](https://gitlab.com/devnw/zig/quic/-/issues/136) - crypto hardening audit incomplete
-- [GAP-0008 #137](https://gitlab.com/devnw/zig/quic/-/issues/137) - connection migration incomplete
 - [GAP-0009 #138](https://gitlab.com/devnw/zig/quic/-/issues/138) - version negotiation lacks end-to-end verification
-- [GAP-0010 #139](https://gitlab.com/devnw/zig/quic/-/issues/139) - QUIC v2 packet type remapping unverified
 - [GAP-0011 #140](https://gitlab.com/devnw/zig/quic/-/issues/140) - stream state machine uses boolean flags
 - [GAP-0012 #141](https://gitlab.com/devnw/zig/quic/-/issues/141) - CID lifecycle lacks proactive integration
 - [GAP-0013 #142](https://gitlab.com/devnw/zig/quic/-/issues/142) - full crypto hardening pass needed
@@ -94,19 +92,14 @@ Open gaps are mirrored in `docs/GAP_ANALYSIS.md`; GitLab remains authoritative.
 - [GAP-0015 #144](https://gitlab.com/devnw/zig/quic/-/issues/144) - RESET_STREAM/STOP_SENDING integration tests needed
 - [GAP-0016 #146](https://gitlab.com/devnw/zig/quic/-/issues/146) - loss detection edge cases untested
 - [GAP-0017 #148](https://gitlab.com/devnw/zig/quic/-/issues/148) - conflicting CUBIC implementations remain
-- [GAP-0044 #151](https://gitlab.com/devnw/zig/quic/-/issues/151) - DPLPMTUD state split and unverified
 - [GAP-0045 #152](https://gitlab.com/devnw/zig/quic/-/issues/152) - path validation minimal
-- [GAP-0050 #159](https://gitlab.com/devnw/zig/quic/-/issues/159) - H3 poll errors discarded
 - [GAP-0053 #126](https://gitlab.com/devnw/zig/quic/-/issues/126) - endpoint mutex held during receive batch
 - [GAP-0054 #129](https://gitlab.com/devnw/zig/quic/-/issues/129) - connection allocations not pooled
 - [GAP-0055 #188](https://gitlab.com/devnw/zig/quic/-/issues/188) - pre-Retry connection allocation exhaustion
 - [GAP-0056 #191](https://gitlab.com/devnw/zig/quic/-/issues/191) - QNS container runtime user hardening needs verification
-- [GAP-0057 #174](https://gitlab.com/devnw/zig/quic/-/issues/174) - silent transport error paths drop handshake data
 - [GAP-0058 #175](https://gitlab.com/devnw/zig/quic/-/issues/175) - deprecated/dead transport code remains
 - [GAP-0060 #177](https://gitlab.com/devnw/zig/quic/-/issues/177) - non-domain method module naming
 - [GAP-0061 #178](https://gitlab.com/devnw/zig/quic/-/issues/178) - minimum datagram size literal duplicated
-- [GAP-0062 #180](https://gitlab.com/devnw/zig/quic/-/issues/180) - PMTUD state defined in incompatible forms
-- [GAP-0064 #181](https://gitlab.com/devnw/zig/quic/-/issues/181) - core modules lack colocated tests
 
 ## Resolved Gap Issues
 

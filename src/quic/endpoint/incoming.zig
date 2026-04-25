@@ -762,7 +762,10 @@ pub fn processInitial(
                         break :blk true; // Treat as if we saw crypto data
                     }
 
-                    // For other errors, log and skip this frame
+                    // For other errors, retain the transport-visible failure so
+                    // callers/tests can distinguish a bad handshake from a normal
+                    // retransmission.
+                    conn.last_handshake_error = err;
                     break :blk false;
                 };
 
@@ -818,14 +821,16 @@ pub fn processInitial(
             .send_fn = ctx.send_fn,
             .cfg = ctx.cfg,
         };
-        handshake_integration.sendServerHello(&hs_ctx) catch {
-            // ServerHello sending failed - continue processing
+        handshake_integration.sendServerHello(&hs_ctx) catch |err| {
+            conn.last_handshake_error = err;
+            logger.err("processInitial: sendServerHello failed: {s}", .{@errorName(err)});
         };
 
         // Send Handshake packets if Handshake keys are available
         // RFC 9001 §4.1: "A server sends the first Handshake packet as soon as it has Handshake keys"
-        handshake_integration.sendHandshakePackets(&hs_ctx) catch {
-            // Handshake packet sending failed - continue processing
+        handshake_integration.sendHandshakePackets(&hs_ctx) catch |err| {
+            conn.last_handshake_error = err;
+            logger.err("processInitial: sendHandshakePackets failed: {s}", .{@errorName(err)});
         };
     }
 

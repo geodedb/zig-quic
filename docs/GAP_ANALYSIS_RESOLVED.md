@@ -112,6 +112,82 @@ GitLab is authoritative for issue status. This file mirrors resolved or invalida
 - **Resolution status:** Closed / Implemented.
 - **Resolution evidence:** `src/quic/packet.zig` uses `threadlocal` test-only debug state and `src/quic/crypto_quic.zig` uses function-local Retry tag temporary ciphertext storage.
 
+### GAP-0050: H3 layer silently discarded poll/read/write errors
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/159
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - `src/h3/server.zig:36-52` returns `!void` from `serveConnection` and propagates control/QPACK stream open/write failures.
+  - `src/h3/server.zig:65-84` propagates `api.poll` failures and non-`WouldBlock` read failures instead of swallowing them.
+  - `src/h3/server.zig:207-218` and `src/h3/client.zig:84-95` retry only bounded transient transport write errors and return unexpected failures.
+  - `src/h3/client.zig:123-148` propagates H3 control/QPACK open/write/poll failures to the caller.
+  - `cmd/qns-endpoint.zig:768-772` logs H3 serve failures from the QNS endpoint instead of ignoring them.
+- **Verification:**
+  - `zig build -Dtest-filter=h3_error test` exited `0`.
+  - `zig build -Dtest-filter=h3_loopback test` exited `0`; output included `[h3] request stream=0 path=/index.html` and `[h3] response stream=0 sent`.
+- **Notes:** The loopback test fixture now supplies embedded test server certificate material and polls until accept so it exercises the real server endpoint path.
+
+### GAP-0064: Core API and connection modules lacked colocated tests
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/181
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - `src/quic/api.zig:428-450` adds a colocated test for handshake completion versus confirmation state.
+  - `src/quic/api.zig:452-475` adds a colocated test proving `pollReady` reports cached readiness without mutating queues.
+  - `src/quic/conn.zig` already contains focused colocated coverage for packet-pool release and stateless reset token retirement from the previous closure pass.
+  - `build.zig:877-906` wires a focused `-Dtest-filter=api_colocated` target for `src/quic/api.zig`.
+- **Verification:** `zig build -Dtest-filter=api_colocated test` exited `0`.
+
+### GAP-0008: Connection migration incomplete - disable_active_migration unenforced
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/137
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - `src/quic/config.zig:31-35` exposes `QuicConfig.disable_active_migration`.
+  - `src/quic/endpoint/handshake_integration.zig` writes the configured value into client/server transport parameters and records `disable_active_migration_advertised`.
+  - `src/quic/connection/methods_c.zig:528` records peer `disable_active_migration`.
+  - `src/quic/endpoint.zig:1417-1421` rejects peer address changes after advertising `disable_active_migration`.
+  - `tests/test_disable_active_migration.zig:12-83` covers transport-parameter encoding, endpoint address-change rejection, and peer parameter recording.
+- **Verification:** `zig build -Dtest-filter=disable_active_migration test` exited `0`.
+- **Notes:** Broader multipath/CID lifecycle work remains tracked separately by GAP-0012 and GAP-0045.
+
+### GAP-0010: QUIC v2 packet type remapping unverified
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/139
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - `src/quic/packet.zig:59-96` defines version-aware long-header packet type mapping for QUIC v1 and v2.
+  - `src/quic/packet.zig:553-580`, `src/quic/packet.zig:1165-1178`, and `src/quic/packet.zig:1252-1289` use the mapping in Initial, 0-RTT, and Retry paths.
+  - `src/quic/endpoint.zig:1400-1407` dispatches long-header packets through the version-aware packet kind.
+  - `tests/test_quic_v2_packet_types.zig:10-58` covers v1/v2 type decoding plus v2 Initial, Handshake, 0-RTT, and Retry encoding/verification.
+- **Verification:** `zig build -Dtest-filter=v2_packet_types test` exited `0`.
+
+### GAP-0044: DPLPMTUD state is split and lacks end-to-end verification
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/151
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - `src/quic/connection/pmtud.zig:10-28` now owns the canonical DPLPMTUD phase enum.
+  - `src/quic/conn.zig:29-32` exports the connection PMTUD state from the canonical module instead of a local duplicate.
+  - `tests/unit/connection/test_pmtud.zig:16-46` verifies the canonical state model.
+  - `tests/test_pmtud.zig:32-40` verifies the active connection implementation exports and uses the same PMTUD state model.
+- **Verification:** `zig build -Dtest-filter=pmtud test` exited `0`.
+
+### GAP-0057: Silent transport error paths drop critical handshake data
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/174
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - `src/quic/connection/methods_a.zig:177-218` sends HANDSHAKE_DONE through `sendHandshakeDoneControl()` and only marks it sent after encode and send succeed.
+  - `src/quic/connection/methods_a.zig:488-498` now propagates peer transport-parameter apply/cache errors instead of swallowing them.
+  - `src/quic/connection/methods_c.zig:462-470` returns malformed transport parameter errors without setting `transport_params_applied`.
+  - `src/quic/endpoint/incoming.zig:765-768` records non-duplicate Initial CRYPTO failures; `src/quic/endpoint/incoming.zig:824-833` records ServerHello/Handshake packet send failures.
+  - `tests/test_handshake_error_propagation.zig:12-39` injects HANDSHAKE_DONE send failure and malformed transport parameters.
+- **Verification:** `zig build -Dtest-filter=handshake_error test` exited `0`.
+
+### GAP-0062: PMTUD state is defined in incompatible forms
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/180
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - `src/quic/connection/pmtud.zig:10-28` provides a single canonical `PmtudState` enum.
+  - `src/quic/conn.zig:29-32` aliases `PmtudState` from the canonical module.
+  - `tests/unit/connection/test_pmtud.zig:16-46` and `tests/test_pmtud.zig:32-40` prove tests and active connection code use the same state model.
+- **Verification:** `zig build -Dtest-filter=pmtud test` exited `0`.
+
 ## Previously Closed Gap Issues
 
 The following issues are closed in GitLab and were not reopened during the 2026-04-25 audit. Where implementation evidence was not re-collected in this pass, the resolution evidence is the GitLab closed state.

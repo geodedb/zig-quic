@@ -1286,9 +1286,12 @@ pub fn extractTransportParameters(
 /// - Calls conn.setLocalTransportParameters() with encoded parameters
 pub fn setupClientTransportParams(
     conn: *conn_mod.Connection,
+    quic_cfg: *const cfg.QuicConfig,
     allocator: std.mem.Allocator,
 ) !void {
     var tpp: transport_params.TransportParams = .{};
+    tpp.disable_active_migration = quic_cfg.disable_active_migration;
+    conn.disable_active_migration_advertised = quic_cfg.disable_active_migration;
 
     // RFC 9000 §18.2: Client MUST include initial_source_connection_id
     // This is the SCID the client is using (our_scid)
@@ -1356,6 +1359,8 @@ pub fn setupServerTransportParams(
     // Set timeouts and payload limits from config (RFC 9000 §10.1, §14.1)
     tpp.max_idle_timeout = quic_cfg.max_idle_timeout_ms;
     tpp.max_udp_payload_size = quic_cfg.max_udp_payload;
+    tpp.disable_active_migration = quic_cfg.disable_active_migration;
+    conn.disable_active_migration_advertised = quic_cfg.disable_active_migration;
 
     // Set flow control limits from connection defaults (RFC 9000 §4.1, §4.6)
     tpp.initial_max_data = conn.local_max_data;

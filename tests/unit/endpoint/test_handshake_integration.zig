@@ -579,7 +579,8 @@ test "RFC 9000 §18.2 - setupClientTransportParams encodes client parameters" {
     conn.local_max_streams_bidi = 100;
 
     // Call setupClientTransportParams
-    try handshake.setupClientTransportParams(&conn, allocator);
+    var quic_cfg = cfg.QuicConfig{ .alpn = &[_][]const u8{} };
+    try handshake.setupClientTransportParams(&conn, &quic_cfg, allocator);
 
     // Verify transport parameters were set
     // Note: We can't directly inspect the encoded params without TLS access,
@@ -609,7 +610,8 @@ test "RFC 9000 §18.2 - setupClientTransportParams includes initial_max_stream_d
     conn.local_max_streams_bidi = 100;
     conn.local_max_streams_uni = 100;
 
-    try handshake.setupClientTransportParams(&conn, allocator);
+    var quic_cfg = cfg.QuicConfig{ .alpn = &[_][]const u8{} };
+    try handshake.setupClientTransportParams(&conn, &quic_cfg, allocator);
 
     // Decode the cached encoded bytes and verify the parameter is present
     const raw = conn.local_transport_params_raw orelse

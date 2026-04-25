@@ -2,11 +2,11 @@ const std = @import("std");
 const quic = @import("quic");
 
 fn writeIndexHtml() void {
-    const cwd = std.fs.cwd();
-    _ = cwd.makeDir("www") catch {};
-    if (cwd.createFile("www/index.html", .{ .truncate = true })) |f| {
-        defer f.close();
-        _ = f.writeAll("<html>ok</html>") catch {};
+    const io = std.Io.Threaded.global_single_threaded.io();
+    _ = std.Io.Dir.cwd().createDirPath(io, "www") catch {};
+    if (std.Io.Dir.cwd().createFile(io, "www/index.html", .{ .truncate = true })) |f| {
+        defer f.close(io);
+        _ = f.writeStreamingAll(io, "<html>ok</html>") catch {};
     } else |_| {}
 }
 
@@ -25,7 +25,7 @@ fn spawnServer(alloc: *std.mem.Allocator, bind: []const u8) !*quic.QuicEndpoint 
         fn run(eptr: *quic.QuicEndpoint) void {
             var server = quic.h3.server.H3Server.init(std.heap.page_allocator);
             const conn = quic.accept(eptr) catch return;
-            server.serveConnection(eptr, conn);
+            server.serveConnection(eptr, conn) catch return;
         }
     }.run, .{ep});
     th.detach(); // Detach thread - it will exit after serving one connection

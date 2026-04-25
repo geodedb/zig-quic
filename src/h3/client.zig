@@ -72,31 +72,48 @@ pub fn buildRequestFrame(host: []const u8, path: []const u8, out: []u8) ?usize {
     return k;
 }
 
-fn writeAll(ep: *api.QuicEndpoint, conn: *api.QuicConnection, sid: u64, data: []const u8) void {
+/// Transport write errors that mean "retry after polling" rather than
+/// a terminal stream/connection failure.
+pub fn isRetryableTransportError(err: anyerror) bool {
+    return switch (err) {
+        error.WouldBlock, error.FlowControlBlocked, error.KeysNotReady => true,
+        else => false,
+    };
+}
+
+fn writeAll(ep: *api.QuicEndpoint, conn: *api.QuicConnection, sid: u64, data: []const u8) !void {
     var off: usize = 0;
+    var idle_spins: usize = 0;
     while (off < data.len) {
-        const n = api.writeStream(conn, sid, data[off..], false) catch 0;
+        const n = api.writeStream(conn, sid, data[off..], false) catch |err| blk: {
+            if (isRetryableTransportError(err)) break :blk 0;
+            return err;
+        };
         if (n == 0) {
-            api.poll(ep, 1) catch {};
+            idle_spins += 1;
+            if (idle_spins > 20_000) return error.H3WriteTimeout;
+            try api.poll(ep, 1);
         } else {
+            idle_spins = 0;
             off += n;
         }
     }
 }
 
-fn writeFin(ep: *api.QuicEndpoint, conn: *api.QuicConnection, sid: u64) void {
+fn writeFin(ep: *api.QuicEndpoint, conn: *api.QuicConnection, sid: u64) !void {
     var spins: usize = 0;
     while (spins < 2048) : (spins += 1) {
         _ = api.writeStream(conn, sid, &[_]u8{}, true) catch |err| switch (err) {
             error.WouldBlock, error.FlowControlBlocked, error.OutOfStreams, error.KeysNotReady => {
-                api.poll(ep, 1) catch {};
+                try api.poll(ep, 1);
                 continue;
             },
             error.StreamStopped => return,
-            else => return,
+            else => return err,
         };
         return;
     }
+    return error.H3WriteTimeout;
 }
 
 /// Perform a minimal HTTP/3 GET over an existing QUIC connection and copy response body into out.
@@ -108,41 +125,44 @@ pub fn h3Get(ep: *api.QuicEndpoint, conn: *api.QuicConnection, host: []const u8,
         n = encodeVarint(0x00, t[0..]);
         n += encodeVarint(0x04, t[n..]);
         n += encodeVarint(0x00, t[n..]);
-        writeAll(ep, conn, sid, t[0..n]);
+        try writeAll(ep, conn, sid, t[0..n]);
     } else |err| {
-        std.debug.print("[h3] failed to open control stream: {}\n", .{err});
+        return err;
     }
     if (api.openUni(conn)) |sid| {
         n = encodeVarint(0x02, t[0..]);
-        writeAll(ep, conn, sid, t[0..n]);
+        try writeAll(ep, conn, sid, t[0..n]);
     } else |err| {
-        std.debug.print("[h3] failed to open QPACK encoder stream: {}\n", .{err});
+        return err;
     }
     if (api.openUni(conn)) |sid| {
         n = encodeVarint(0x03, t[0..]);
-        writeAll(ep, conn, sid, t[0..n]);
+        try writeAll(ep, conn, sid, t[0..n]);
     } else |err| {
-        std.debug.print("[h3] failed to open QPACK decoder stream: {}\n", .{err});
+        return err;
     }
     // Ensure control and QPACK stream prefaces are flushed before the request stream.
     api.flush(ep, 5);
     var settle: usize = 0;
     while (settle < 32) : (settle += 1) {
-        api.poll(ep, 1) catch {};
+        try api.poll(ep, 1);
     }
 
     const stream_id = try api.openStream(conn, true);
     var req: [512]u8 = undefined;
     const rn = buildRequestFrame(host, path, req[0..]) orelse return error.BuildRequestFailed;
-    writeAll(ep, conn, stream_id, req[0..rn]);
-    writeFin(ep, conn, stream_id);
+    try writeAll(ep, conn, stream_id, req[0..rn]);
+    try writeFin(ep, conn, stream_id);
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(std.heap.page_allocator);
     var tmp: [2048]u8 = undefined;
     var idle_spins: usize = 0;
     while (idle_spins < 20_000) {
-        const r = api.readStream(conn, stream_id, tmp[0..]) catch 0;
+        const r = api.readStream(conn, stream_id, tmp[0..]) catch |err| switch (err) {
+            error.WouldBlock => 0,
+            else => return err,
+        };
         if (r > 0) {
             buf.appendSlice(std.heap.page_allocator, tmp[0..r]) catch |err| {
                 std.debug.print("[h3] appendSlice failed: {}\n", .{err});
@@ -154,11 +174,14 @@ pub fn h3Get(ep: *api.QuicEndpoint, conn: *api.QuicConnection, host: []const u8,
         if (api.isStreamFinished(conn, stream_id)) {
             break;
         }
-        api.poll(ep, 1) catch {};
+        try api.poll(ep, 1);
         idle_spins += 1;
     }
     while (true) {
-        const r = api.readStream(conn, stream_id, tmp[0..]) catch 0;
+        const r = api.readStream(conn, stream_id, tmp[0..]) catch |err| switch (err) {
+            error.WouldBlock => 0,
+            else => return err,
+        };
         if (r == 0) break;
         buf.appendSlice(std.heap.page_allocator, tmp[0..r]) catch |err| {
             std.debug.print("[h3] appendSlice failed: {}\n", .{err});
@@ -198,4 +221,12 @@ pub fn h3Get(ep: *api.QuicEndpoint, conn: *api.QuicConnection, host: []const u8,
     if (copied > 0) return copied;
     if (parse_error) return error.ParseFailed;
     return 0;
+}
+
+test "h3 client write retry policy surfaces unexpected errors" {
+    const transient = [_]anyerror{ error.WouldBlock, error.FlowControlBlocked, error.KeysNotReady };
+    for (transient) |err| {
+        try std.testing.expect(isRetryableTransportError(err));
+    }
+    try std.testing.expect(!isRetryableTransportError(error.ConnectionClosed));
 }

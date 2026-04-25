@@ -2,6 +2,7 @@ const std = @import("std");
 const api = @import("quic_api");
 const h3s = @import("h3_server");
 const h3c = @import("h3_client");
+const test_certs = @import("test_certs");
 
 fn spawnServer(alloc: *std.mem.Allocator, bind: []const u8) !struct { ep: *api.QuicEndpoint, th: std.Thread } {
     var cfg = api.QuicConfig{
@@ -12,31 +13,39 @@ fn spawnServer(alloc: *std.mem.Allocator, bind: []const u8) !struct { ep: *api.Q
         .enable_retry = false,
         .token_secret = null,
         .token_expiry_ms = 60000,
+        .inline_server_cert_der = test_certs.server_cert_der,
+        .inline_server_priv_p256 = test_certs.server_key_der,
     };
     const ep = try api.endpointInit(alloc, bind, &cfg);
     const th = try std.Thread.spawn(.{}, struct {
         fn run(eptr: *api.QuicEndpoint) void {
             var server = h3s.H3Server.init(std.heap.page_allocator);
-            const conn = api.accept(eptr) catch return;
-            server.serveConnection(eptr, conn);
+            var spins: usize = 0;
+            while (spins < 5000) : (spins += 1) {
+                if (api.tryAccept(eptr)) |conn| {
+                    server.serveConnection(eptr, conn) catch return;
+                    return;
+                }
+                api.poll(eptr, 1) catch return;
+            }
         }
     }.run, .{ep});
     return .{ .ep = ep, .th = th };
 }
 
 fn writeIndexHtml() void {
-    // Best-effort create a /www/index.html file; ignore errors in tests
-    const cwd = std.fs.cwd();
-    _ = cwd.makeDir("www") catch {};
-    if (cwd.createFile("www/index.html", .{ .truncate = true })) |f| {
-        defer f.close();
-        _ = f.writeAll("<html>ok</html>") catch {};
+    // Best-effort create a /www/index.html file; ignore errors in tests.
+    const io = std.Io.Threaded.global_single_threaded.io();
+    _ = std.Io.Dir.cwd().createDirPath(io, "www") catch {};
+    if (std.Io.Dir.cwd().createFile(io, "www/index.html", .{ .truncate = true })) |f| {
+        defer f.close(io);
+        _ = f.writeStreamingAll(io, "<html>ok</html>") catch {};
     } else |_| {}
 }
 
 test "h3 loopback GET /index.html" {
     writeIndexHtml();
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 

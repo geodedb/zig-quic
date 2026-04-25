@@ -874,6 +874,60 @@ pub fn build(b: *std.Build) void {
             const run_test_packet_pool = b.addRunArtifact(test_packet_pool);
             test_step.dependOn(&run_test_packet_pool.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "api_colocated")) {
+            const test_api_mod = b.createModule(.{ .root_source_file = b.path("src/quic/api.zig"), .target = target, .optimize = optimize });
+            test_api_mod.addImport("config.zig", quic_config_mod);
+            test_api_mod.addImport("loop_backend.zig", loop_backend_mod);
+            test_api_mod.addImport("quic_endpoint", quic_endpoint_mod);
+            test_api_mod.addImport("quic_crypto", quic_crypto_mod);
+            test_api_mod.addImport("quic_frame", quic_frame_mod);
+            test_api_mod.addImport("quic_varint", quic_varint_mod);
+            test_api_mod.addImport("tls/key_schedule.zig", quic_tls_mod);
+            test_api_mod.addImport("quic_tls", quic_tls_mod);
+            test_api_mod.addImport("quic_tls13", tls13_mod);
+            test_api_mod.addImport("quic_conn", quic_conn_mod);
+            test_api_mod.addImport("quic_packet", quic_packet_mod);
+            test_api_mod.addImport("quic_recovery", quic_recovery_mod);
+            test_api_mod.addImport("byteorder", byteorder_mod);
+            test_api_mod.addImport("quic_transport_params", quic_transport_params_mod);
+            test_api_mod.addImport("quic_logger", quic_logger_mod);
+            test_api_mod.addImport("quic_version", quic_version_mod);
+            const test_api = b.addTest(.{ .root_module = test_api_mod });
+            if (target.result.os.tag != .windows) {
+                test_api.root_module.linkSystemLibrary("ssl", .{});
+                test_api.root_module.linkSystemLibrary("crypto", .{});
+            }
+            test_api.root_module.link_libc = true;
+            if (target.result.os.tag == .windows) {
+                test_api.root_module.linkSystemLibrary("ws2_32", .{});
+            }
+            const run_test_api = b.addRunArtifact(test_api);
+            test_step.dependOn(&run_test_api.step);
+            return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "h3_error")) {
+            const test_h3_error = addTst(b, testlog_mod, "tests/test_h3_error_propagation.zig", target, optimize);
+            test_h3_error.root_module.addImport("h3_client", h3_client_mod);
+            test_h3_error.root_module.addImport("h3_server", h3_server_mod);
+            const run_test_h3_error = b.addRunArtifact(test_h3_error);
+            test_step.dependOn(&run_test_h3_error.step);
+            return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "pmtud")) {
+            const test_conn_pmtud = addTst(b, testlog_mod, "tests/unit/connection/test_pmtud.zig", target, optimize);
+            test_conn_pmtud.root_module.addImport("pmtud", conn_pmtud_mod);
+            const run_test_conn_pmtud = b.addRunArtifact(test_conn_pmtud);
+            test_step.dependOn(&run_test_conn_pmtud.step);
+
+            const test_pmtud = addTst(b, testlog_mod, "tests/test_pmtud.zig", target, optimize);
+            test_pmtud.root_module.addImport("quic_api", quic_api_mod);
+            test_pmtud.root_module.addImport("quic_conn", quic_conn_mod);
+            test_pmtud.root_module.addImport("quic_packet", quic_packet_mod);
+            test_pmtud.root_module.addImport("quic_frame", quic_frame_mod);
+            test_pmtud.root_module.addImport("quic_tls13", tls13_mod);
+            test_pmtud.root_module.addImport("quic_tls", quic_tls_mod);
+            test_pmtud.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+            const run_test_pmtud = b.addRunArtifact(test_pmtud);
+            test_step.dependOn(&run_test_pmtud.step);
+            return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "reset_stream") or std.mem.containsAtLeast(u8, f, 1, "h3_api")) {
             const test_reset_stream = addTst(b, testlog_mod, "tests/test_reset_stream_api.zig", target, optimize);
             test_reset_stream.root_module.addImport("quic_api", quic_api_mod);
@@ -903,6 +957,38 @@ pub fn build(b: *std.Build) void {
             const run_test_reset_api = b.addRunArtifact(test_reset_api);
             test_step.dependOn(&run_test_reset_api.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "disable_active_migration")) {
+            const test_disable_active_migration = addTst(b, testlog_mod, "tests/test_disable_active_migration.zig", target, optimize);
+            test_disable_active_migration.root_module.addImport("quic_api", quic_api_mod);
+            test_disable_active_migration.root_module.addImport("quic_conn", quic_conn_mod);
+            test_disable_active_migration.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+            test_disable_active_migration.root_module.addImport("handshake_integration", endpoint_handshake_integration_mod);
+            test_disable_active_migration.root_module.addImport("transport_params", quic_transport_params_mod);
+            const run_test_disable_active_migration = b.addRunArtifact(test_disable_active_migration);
+            test_step.dependOn(&run_test_disable_active_migration.step);
+            return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "v2_packet_types")) {
+            const test_v2_packet_types = addTst(b, testlog_mod, "tests/test_quic_v2_packet_types.zig", target, optimize);
+            test_v2_packet_types.root_module.addImport("quic_packet", quic_packet_mod);
+            const run_test_v2_packet_types = b.addRunArtifact(test_v2_packet_types);
+            test_step.dependOn(&run_test_v2_packet_types.step);
+            return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "version_negotiation")) {
+            const test_vn = addTst(b, testlog_mod, "tests/test_version_negotiation.zig", target, optimize);
+            test_vn.root_module.addImport("quic_packet", quic_packet_mod);
+            test_vn.root_module.addImport("quic_conn", quic_conn_mod);
+            test_vn.root_module.addImport("incoming", endpoint_incoming_mod);
+            test_vn.root_module.addImport("endpoint/types", endpoint_types_mod);
+            test_vn.root_module.addImport("config", quic_config_mod);
+            const run_test_vn = b.addRunArtifact(test_vn);
+            test_step.dependOn(&run_test_vn.step);
+            return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "handshake_error")) {
+            const test_handshake_error = addTst(b, testlog_mod, "tests/test_handshake_error_propagation.zig", target, optimize);
+            test_handshake_error.root_module.addImport("quic_conn", quic_conn_mod);
+            const run_test_handshake_error = b.addRunArtifact(test_handshake_error);
+            test_step.dependOn(&run_test_handshake_error.step);
+            return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "migration_path") or std.mem.containsAtLeast(u8, f, 1, "path_reset")) {
             const test_migration = addTst(b, testlog_mod, "tests/test_migration_scenarios.zig", target, optimize);
             test_migration.root_module.addImport("quic_endpoint", quic_endpoint_mod);
@@ -931,6 +1017,7 @@ pub fn build(b: *std.Build) void {
             test_h3_loop.root_module.addImport("quic_api", quic_api_mod);
             test_h3_loop.root_module.addImport("h3_server", h3_server_mod);
             test_h3_loop.root_module.addImport("h3_client", h3_client_mod);
+            test_h3_loop.root_module.addImport("test_certs", test_certs_mod);
             const run_test_h3_loop = b.addRunArtifact(test_h3_loop);
             test_step.dependOn(&run_test_h3_loop.step);
             return;
@@ -1491,6 +1578,10 @@ pub fn build(b: *std.Build) void {
 
         const test_vn = addTst(b, testlog_mod, "tests/test_version_negotiation.zig", target, optimize);
         test_vn.root_module.addImport("quic_packet", quic_packet_mod);
+        test_vn.root_module.addImport("quic_conn", quic_conn_mod);
+        test_vn.root_module.addImport("incoming", endpoint_incoming_mod);
+        test_vn.root_module.addImport("endpoint/types", endpoint_types_mod);
+        test_vn.root_module.addImport("config", quic_config_mod);
         const run_test_vn = b.addRunArtifact(test_vn);
         test_step.dependOn(&run_test_vn.step);
 

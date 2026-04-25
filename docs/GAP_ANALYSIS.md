@@ -1,6 +1,6 @@
 # Gap Analysis
 
-Status note (2026-04-25): this file intentionally contains only open repository-level gaps. Closed items are moved to `docs/GAP_ANALYSIS_RESOLVED.md`. The remaining entries below are unresolved and continue to be tracked by their linked open GitLab issues; large protocol/architecture items are effectively blocked on staged implementation plans and focused verification evidence.
+Status note (2026-04-25): this file intentionally contains only open repository-level gaps. Closed items are moved to `docs/GAP_ANALYSIS_RESOLVED.md`. The 18 remaining entries below are unresolved and continue to be tracked by their linked open GitLab issues; large protocol/architecture items are effectively blocked on staged implementation plans and focused verification evidence.
 
 ## Gaps
 
@@ -32,21 +32,6 @@ Status note (2026-04-25): this file intentionally contains only open repository-
 - **Recommended fix:** Complete the crypto audit, remove or justify `catch unreachable` in crypto paths, and add RFC vector coverage for nonce, Retry, reset token, and key update behavior.
 - **Acceptance criteria:** Audit doc maps every crypto-sensitive operation to code and tests; crypto `catch unreachable` sites are eliminated or justified; CI runs the relevant KAT/vector tests.
 
-### GAP-0008: Connection migration incomplete - disable_active_migration unenforced
-- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/137
-- **Category:** Feature
-- **Severity:** High
-- **Requirement source:** GitLab issues #20 and #7; RFC 9000 migration and transport parameter requirements.
-- **Current state (evidence):**
-  - `src/quic/transport_params.zig:129`, `src/quic/transport_params.zig:212-218`, `src/quic/transport_params.zig:270-272` - `disable_active_migration` is parsed and encoded.
-  - `src/quic/config.zig:15-78` - no runtime config field controls `disable_active_migration`.
-  - `rg -n 'disable_active_migration|disabled_active_migration' src tests` - shows transport parameter handling and tests, but no enforcement path.
-  - `tests/integration/migration.zig:146-186` - migration scenarios remain skipped/TODO.
-- **Why this is a gap:** The transport parameter exists on the wire but is not enforced by endpoint migration behavior.
-- **Impact/Risk:** Peers can receive policy signals that the implementation does not honor.
-- **Recommended fix:** Add configuration and endpoint enforcement for active migration policy, implement migration state transitions, and enable migration tests.
-- **Acceptance criteria:** `disable_active_migration` is configurable and enforced; NAT rebinding and active migration are distinguished; integration tests cover allowed and forbidden migration.
-
 ### GAP-0009: Version negotiation lacks RFC 9368 end-to-end verification
 - **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/138
 - **Category:** Feature
@@ -56,25 +41,13 @@ Status note (2026-04-25): this file intentionally contains only open repository-
   - `src/quic/config.zig:31-32` - exposes `compatible_vn`.
   - `src/quic/endpoint/incoming.zig:311-348` - processes Version Negotiation only when `ctx.cfg.compatible_vn` is enabled and can switch between v1/v2.
   - `tests/unit/version/test_version.zig` - covers version constants and helper behavior.
+  - `tests/test_version_negotiation.zig` - now covers endpoint VN processing for compatible-vn switch to v2, fresh Initial probe scheduling, downgrade rejection when the original version is listed, and disabled-compatible-vn ignore behavior.
+  - `zig build -Dtest-filter=version_negotiation test` - exited `0` on 2026-04-25.
   - `tests/integration/rfc9000_section7.zig:554` - marks version negotiation as partial.
 - **Why this is a gap:** Unit helper coverage exists, but full endpoint compatible-VN and downgrade handling are not proven end to end.
 - **Impact/Risk:** Real client/server version negotiation may fail despite helper tests passing.
 - **Recommended fix:** Add endpoint and interop tests for compatible VN, original-version rejection, and downgrade detection.
 - **Acceptance criteria:** Compatible VN succeeds in a real handshake; downgrade/original-version rejection cases are tested; docs describe exact VN support.
-
-### GAP-0010: QUIC v2 packet type remapping unverified
-- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/139
-- **Category:** Feature
-- **Severity:** High
-- **Requirement source:** GitLab issues #6, #7, #32; RFC 9369.
-- **Current state (evidence):**
-  - `src/quic/packet.zig:1013-1016` - defines `QUIC_V2` as `0x709a50c4`.
-  - `src/quic/crypto_quic.zig:150-165` - defines v2 Retry secrets and labels.
-  - `rg -n 'remap|packet type|QUIC_V2|quicv2|compatible_vn|Version Negotiation|shouldAcceptVersionNegotiation' src tests` - finds constants and VN tests, but no clear packet-type remapping implementation.
-- **Why this is a gap:** v2 constants are present, but v2 packet type mapping and interop behavior are not evidenced.
-- **Impact/Risk:** Advertising v2 support can break interop or overstate protocol support.
-- **Recommended fix:** Implement or identify packet type remapping per RFC 9369 and add v2 encode/decode and handshake tests.
-- **Acceptance criteria:** v2 long-header packet type mapping is unit tested; v2 handshake support is tested or explicitly unsupported; interop docs reflect actual status.
 
 ### GAP-0011: Stream state machine uses boolean flags not explicit enum
 - **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/140
@@ -172,21 +145,6 @@ Status note (2026-04-25): this file intentionally contains only open repository-
 - **Recommended fix:** Remove or quarantine the legacy placeholder and ensure imports/tests reference the authoritative recovery module.
 - **Acceptance criteria:** Only one production CUBIC implementation remains reachable; legacy fields are removed or test-only; CUBIC tests assert the active path.
 
-### GAP-0044: DPLPMTUD state is split and lacks end-to-end verification
-- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/151
-- **Category:** Feature
-- **Severity:** Medium
-- **Requirement source:** GitLab issues #7, #20, #32; RFC 9000 path MTU requirements.
-- **Current state (evidence):**
-  - `src/quic/connection/methods_b.zig:939-995` - implements PMTUD timer/probe state handling.
-  - `src/quic/connection/pmtud.zig:22-31` - defines a separate `PmtudState` struct.
-  - `src/quic/conn.zig:468` - defines active connection `PmtudState` as an enum.
-  - `src/quic/connection/connection.zig:53` - re-exports the struct state.
-- **Why this is a gap:** Tests or callers can target a PMTUD type that production logic does not use.
-- **Impact/Risk:** DPLPMTUD support status is ambiguous and can regress between modules.
-- **Recommended fix:** Consolidate PMTUD state and add endpoint-level probe, ACK, and ICMP validation tests.
-- **Acceptance criteria:** One PMTUD state model is used by production code and exports; tests cover probe start/search, ACK validation, ICMP handling, and the 1200-byte floor.
-
 ### GAP-0045: Path validation minimal - no timeout, retry, or multi-path probing
 - **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/152
 - **Category:** Feature
@@ -200,20 +158,6 @@ Status note (2026-04-25): this file intentionally contains only open repository-
 - **Impact/Risk:** New paths can remain pending indefinitely or fail without visible policy handling.
 - **Recommended fix:** Add path validation timers, retry limits, failure callbacks, and multi-path tracking.
 - **Acceptance criteria:** PATH_CHALLENGE retry/timeout behavior is tested; failed validation prevents migration; NAT rebinding and migration scenarios have explicit tests.
-
-### GAP-0050: H3 layer silently discards poll errors
-- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/159
-- **Category:** Bug
-- **Severity:** High
-- **Requirement source:** GitLab issue #28 and closed H3 plumbing issues #132-#135.
-- **Current state (evidence):**
-  - `src/h3/server.zig:69` - calls `api.poll(ep, 2) catch {}`.
-  - `src/h3/server.zig:219-221` - converts `api.writeStream(...)` failure to `0` and discards poll errors.
-  - `src/h3/client.zig:78-80`, `src/h3/client.zig:90-93`, `src/h3/client.zig:130-132`, `src/h3/client.zig:154-158` - catch poll/write/read errors and continue or return without surfacing root cause.
-- **Why this is a gap:** Transport errors are hidden from the HTTP/3 caller.
-- **Impact/Risk:** Applications see timeouts or empty responses instead of actionable transport failures.
-- **Recommended fix:** Propagate unexpected H3 polling/write/read errors and handle expected transient errors explicitly.
-- **Acceptance criteria:** H3 tests inject a transport error and assert caller-visible failure; expected transient errors are separately handled.
 
 ### GAP-0053: Endpoint mutex held during receive batch
 - **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/126
@@ -269,20 +213,6 @@ Status note (2026-04-25): this file intentionally contains only open repository-
 - **Recommended fix:** Add container build/runtime checks asserting endpoint user and required capabilities.
 - **Acceptance criteria:** CI builds both interop images and asserts endpoint process runs as `quic`; fallback behavior is tested or fails closed; docs identify hardening status by image.
 
-### GAP-0057: Silent transport error paths drop critical handshake data
-- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/174
-- **Category:** Bug
-- **Severity:** High
-- **Requirement source:** GitLab issues #14, #15, #32; QUIC handshake and transport parameter requirements.
-- **Current state (evidence):**
-  - `src/quic/connection/methods_a.zig:471-487` - converts HANDSHAKE_DONE packet encoding failure to `0`, then sets `handshake_done_sent = true`.
-  - `src/quic/connection/methods_a.zig:490-495` - ignores `applyPeerTransportParameters(...)` errors and retains defaults.
-  - `src/quic/endpoint/incoming.zig:821-829` - ignores `sendServerHello` and `sendHandshakePackets` failures.
-- **Why this is a gap:** Critical handshake failures can be treated as success or non-fatal defaulting.
-- **Impact/Risk:** Peers can stall or continue with incorrect transport parameters without observable errors.
-- **Recommended fix:** Return or record transport errors for critical handshake send/apply failures; ignore only explicitly recoverable errors.
-- **Acceptance criteria:** Malformed peer transport parameters fail/close correctly; HANDSHAKE_DONE is not marked sent after encode/send failure; injected failure tests assert observable errors.
-
 ### GAP-0058: Deprecated/dead transport code remains in production tree
 - **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/175
 - **Category:** Code Quality
@@ -323,31 +253,3 @@ Status note (2026-04-25): this file intentionally contains only open repository-
 - **Impact/Risk:** Packet sizing, PMTUD behavior, and test expectations can drift.
 - **Recommended fix:** Use a canonical constant for RFC 9000 minimum datagram size and document remaining unrelated literals.
 - **Acceptance criteria:** Production code uses a named constant; remaining `1200` literals are documented tests or unrelated values; packet sizing tests reference the constant.
-
-### GAP-0062: PMTUD state is defined in incompatible forms
-- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/180
-- **Category:** Bug
-- **Severity:** Medium
-- **Requirement source:** GitLab issues #32, #75, #115; RFC 9000 path MTU requirements.
-- **Current state (evidence):**
-  - `src/quic/connection/pmtud.zig:22-31` - defines `PmtudState` as a struct.
-  - `src/quic/connection/connection.zig:53` - re-exports that struct.
-  - `src/quic/conn.zig:468` - defines active connection `PmtudState` as an enum.
-- **Why this is a gap:** Public/modular PMTUD type and active production PMTUD type are not the same model.
-- **Impact/Risk:** API users or tests can exercise a type that production logic does not use.
-- **Recommended fix:** Consolidate PMTUD state definitions and route production code through the canonical module.
-- **Acceptance criteria:** One PMTUD state type is exported for production use; tests exercise the active type; dead/incompatible exports are removed or marked internal.
-
-### GAP-0064: Core API and connection modules lack colocated tests
-- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/181
-- **Category:** Test
-- **Severity:** Low
-- **Requirement source:** GitLab issues #30, #31, #32.
-- **Current state (evidence):**
-- **Current state (evidence):**
-  - `src/quic/conn.zig` now includes focused colocated tests for `PacketBufferPool.release` and stateless reset token retirement.
-  - `rg -n '^test ' src/quic/api.zig` still returns no colocated API tests.
-- **Why this is a gap:** `conn.zig` now has local invariant checks, but the public API module still relies on external tests only.
-- **Impact/Risk:** Helper and API invariants can regress without narrow, local diagnostics.
-- **Recommended fix:** Add focused colocated tests for pure/helper behavior in `api.zig` and `conn.zig`.
-- **Acceptance criteria:** `api.zig` and `conn.zig` include targeted colocated tests; external endpoint tests remain; CI runs both.

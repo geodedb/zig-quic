@@ -459,9 +459,9 @@ pub fn bind(comptime Connection: type) type {
             return null;
         }
 
-        /// Decode and apply peer-provided QUIC transport parameters (encoded TP extension payload).
-        /// Best-effort: on any error, defaults remain. Safe to call multiple times (idempotent after first success).
         /// Decode and apply peer transport parameters (limits, ack_delay_exponent, max_ack_delay, active_connection_id_limit).
+        /// On malformed or invalid parameters, returns an error and leaves
+        /// `transport_params_applied` false so callers can fail the handshake.
         pub fn applyPeerTransportParameters(self: *Connection, encoded: []const u8) !void {
             if (self.transport_params_applied) return; // already applied
             var arena = std.heap.ArenaAllocator.init(self.allocator.*);
@@ -525,6 +525,7 @@ pub fn bind(comptime Connection: type) type {
                     self.peer_max_udp_payload_size = lim;
                 }
             }
+            self.peer_disable_active_migration = tp_dec.disable_active_migration;
             if (tp_dec.active_connection_id_limit) |v| {
                 if (v >= 2) self.active_connection_id_limit = v;
             }

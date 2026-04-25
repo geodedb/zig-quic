@@ -765,7 +765,11 @@ pub fn main(init: std.process.Init) !void {
                     log(msg);
                     if (std.mem.eql(u8, a, "h3") and std.mem.eql(u8, testcase, "http3")) {
                         var shim = h3_server.H3Server.init(alloc);
-                        shim.serveConnection(ep, conn);
+                        shim.serveConnection(ep, conn) catch |err| {
+                            var h3_err_buf: [128]u8 = undefined;
+                            const h3_err = std.fmt.bufPrint(&h3_err_buf, "server: h3 serve failed err={s}", .{@errorName(err)}) catch "server: h3 serve failed";
+                            log(h3_err);
+                        };
                     }
                 }
                 if (api.getPeerTransportParams(conn)) |tp_raw| {

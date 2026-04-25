@@ -56,6 +56,50 @@ pub fn validateCidLength(len: usize) !u8 {
 /// Long header type discriminator used when encoding/decoding.
 pub const LongHeaderType = enum { Initial, Handshake };
 
+/// Version-aware long header packet kind, including long-header kinds not
+/// represented by the legacy `LongHeaderType` test helper.
+pub const LongHeaderPacketType = enum {
+    Initial,
+    ZeroRtt,
+    Handshake,
+    Retry,
+};
+
+/// Return the visible long-header Type field bits (bits 5..4) for QUIC v1/v2.
+/// RFC 9369 remaps every v2 long-header packet type to exercise version-aware
+/// parsing: Retry=0b00, Initial=0b01, 0-RTT=0b10, Handshake=0b11.
+pub fn longHeaderTypeBits(version: u32, ty: LongHeaderPacketType) u8 {
+    const value: u8 = if (version == QUIC_V2) switch (ty) {
+        .Retry => 0b00,
+        .Initial => 0b01,
+        .ZeroRtt => 0b10,
+        .Handshake => 0b11,
+    } else switch (ty) {
+        .Initial => 0b00,
+        .ZeroRtt => 0b01,
+        .Handshake => 0b10,
+        .Retry => 0b11,
+    };
+    return value << 4;
+}
+
+/// Decode visible long-header Type bits (bits 5..4) for QUIC v1/v2.
+pub fn longHeaderPacketType(version: u32, first_byte: u8) ?LongHeaderPacketType {
+    if ((first_byte & 0x80) == 0) return null;
+    const value: u2 = @intCast((first_byte >> 4) & 0x03);
+    return if (version == QUIC_V2) switch (value) {
+        0b00 => .Retry,
+        0b01 => .Initial,
+        0b10 => .ZeroRtt,
+        0b11 => .Handshake,
+    } else switch (value) {
+        0b00 => .Initial,
+        0b01 => .ZeroRtt,
+        0b10 => .Handshake,
+        0b11 => .Retry,
+    };
+}
+
 /// Serializable Long Header structure used by helpers for tests/tools. Layout
 /// matches RFC 9000 §17.2 including token length, Length varint, and packet
 /// number truncation bits in the first byte.
@@ -73,8 +117,8 @@ pub const LongHeader = struct {
         // First byte: Long Header (1), Fixed bit (1), Type (2 bits), PN length (2 bits)
         // Types: Initial=0, Handshake=2
         const type_bits: u8 = switch (self.ty) {
-            .Initial => 0x00,
-            .Handshake => 0x20,
+            .Initial => longHeaderTypeBits(self.version, .Initial),
+            .Handshake => longHeaderTypeBits(self.version, .Handshake),
         };
         const pn_len_bits: u8 = 0x01; // 2-byte PN (encoded as 01 -> length 2)
         const first = 0xc0 | type_bits | pn_len_bits; // 1100_0000 | type | pnlen
@@ -531,7 +575,7 @@ pub fn encodeInitialProtected(
     // Per RFC 9000: Fixed bit (6) must be 1
     // Initial packet type = 00 in bits 5-4
     // 0xc0 = 11000000 (Long header + fixed bit + Initial type 00)
-    const type_bits: u8 = 0x00; // Initial
+    const type_bits: u8 = longHeaderTypeBits(version, .Initial);
     const pn_bits: u8 = @as(u8, packet_number_len - 1) & 0x03;
     const first: u8 = 0xc0 | type_bits | pn_bits;
 
@@ -640,6 +684,7 @@ pub fn decodeInitialProtected(
     if (i + 4 > packet_bytes.len) return error.Truncated;
     const version: u32 = (@as(u32, packet_bytes[i]) << 24) | (@as(u32, packet_bytes[i + 1]) << 16) | (@as(u32, packet_bytes[i + 2]) << 8) | @as(u32, packet_bytes[i + 3]);
     i += 4;
+    if (longHeaderPacketType(version, first) != .Initial) return error.InvalidPacketType;
 
     // DCID
     if (i >= packet_bytes.len) return error.Truncated;
@@ -790,7 +835,7 @@ pub fn encodeHandshakeProtected(
     // 0xe0 = 11100000 (Long header + fixed bit + Handshake type 10)
     // We don't need to OR type_bits because 0xe0 already includes Handshake type
     const pn_bits: u8 = @as(u8, packet_number_len - 1) & 0x03;
-    const first: u8 = 0xe0 | pn_bits;
+    const first: u8 = 0xc0 | longHeaderTypeBits(version, .Handshake) | pn_bits;
     logger.debugPrint("encodeHandshakeProtected: packet_number_len={}, pn_bits={}, first=0x{X:0>2}\n", .{ packet_number_len, pn_bits, first });
 
     const w = fbs.writer();
@@ -1025,16 +1070,14 @@ pub fn encode0RTTProtected(
     packet_number: u64,
     pn_len: u8,
     payload: []const u8,
-    keys: struct { key: [16]u8, iv: [12]u8, hp: [16]u8 },
+    keys: InitialKeys,
 ) ![]u8 {
-    // 0-RTT uses long header type 0x01
-    const ty: u2 = 0x01;
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(alloc);
     const w = @import("compat").arrayListWriter(&buf, alloc);
 
-    // First byte: long header (0x80) | fixed bit (0x40) | type (0x01 << 4) | reserved | pn_len
-    const first: u8 = 0xc0 | (@as(u8, ty) << 4) | ((pn_len - 1) & 0x03);
+    // First byte: long header | fixed bit | version-aware 0-RTT type | PN length.
+    const first: u8 = 0xc0 | longHeaderTypeBits(version, .ZeroRtt) | ((pn_len - 1) & 0x03);
     try w.writeByte(first);
 
     // Version
@@ -1123,7 +1166,7 @@ pub fn encode0RTTProtected(
 pub fn decode0RTTProtected(
     alloc: std.mem.Allocator,
     packet: []const u8,
-    keys: struct { key: [16]u8, iv: [12]u8, hp: [16]u8 },
+    keys: InitialKeys,
 ) !struct {
     packet_number: u64,
     payload: []u8,
@@ -1132,7 +1175,8 @@ pub fn decode0RTTProtected(
 
     const first_masked = packet[0];
     if ((first_masked & 0x80) == 0) return error.NotLongHeader;
-    if (((first_masked >> 4) & 0x03) != 0x01) return error.Not0RTT;
+    const version: u32 = (@as(u32, packet[1]) << 24) | (@as(u32, packet[2]) << 16) | (@as(u32, packet[3]) << 8) | @as(u32, packet[4]);
+    if (longHeaderPacketType(version, first_masked) != .ZeroRtt) return error.Not0RTT;
 
     var i: usize = 5;
 
@@ -1210,8 +1254,8 @@ pub fn encodeRetry(alloc: std.mem.Allocator, version: u32, dcid: []const u8, sci
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(alloc);
     const w = @import("compat").arrayListWriter(&buf, alloc);
-    // First byte: Long header, Retry type (0x30); PN length bits are 0 for Retry
-    try w.writeByte(0xf0 | 0x30);
+    // First byte: long header | fixed bit | version-aware Retry type.
+    try w.writeByte(0xc0 | longHeaderTypeBits(version, .Retry));
     // Version
     var be_ver: [4]u8 = .{ @as(u8, @intCast(version >> 24)), @as(u8, @intCast((version >> 16) & 0xff)), @as(u8, @intCast((version >> 8) & 0xff)), @as(u8, @intCast(version & 0xff)) };
     try w.writeAll(&be_ver);
@@ -1242,10 +1286,8 @@ pub fn verifyRetry(odcid: []const u8, retry_packet: []const u8) bool {
     // Parse minimal fields to get Version, DCID/SCID lengths and locate tag
     const first = retry_packet[0];
     if ((first & 0x80) == 0) return false; // must be long
-    // type must be Retry (0x30 in bits 4..5)
-    const ty: u2 = @intCast((first >> 4) & 0x03);
-    if (ty != 3) return false;
     const version: u32 = (@as(u32, retry_packet[1]) << 24) | (@as(u32, retry_packet[2]) << 16) | (@as(u32, retry_packet[3]) << 8) | @as(u32, retry_packet[4]);
+    if (longHeaderPacketType(version, first) != .Retry) return false;
     var i: usize = 5;
     if (i >= retry_packet.len) return false;
     const dcid_len = retry_packet[i];

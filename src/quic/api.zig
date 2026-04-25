@@ -424,3 +424,54 @@ pub fn getPort(ep: *QuicEndpoint) u16 {
         else => 0,
     };
 }
+
+test "handshake status helpers distinguish completion from confirmation" {
+    var allocator = std.testing.allocator;
+    var c: Connection = undefined;
+    c.init(&allocator, .Client, -1, conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433));
+    defer c.deinit();
+
+    try std.testing.expect(!handshakeDoneSeen(&c));
+    try std.testing.expect(!handshakeComplete(&c));
+    try std.testing.expect(!isHandshakeConfirmed(&c));
+
+    c.handshake_done_seen = true;
+    c.peer_finished_verified = true;
+    try std.testing.expect(handshakeDoneSeen(&c));
+    try std.testing.expect(handshakeComplete(&c));
+    try std.testing.expect(!isHandshakeConfirmed(&c));
+
+    c.app_tx_keys = .{
+        .key = [_]u8{0x11} ** 16,
+        .iv = [_]u8{0x22} ** 12,
+        .hp = [_]u8{0x33} ** 16,
+    };
+    try std.testing.expect(isHandshakeConfirmed(&c));
+}
+
+test "pollReady reports cached connection readiness without mutating queues" {
+    var allocator = std.testing.allocator;
+    var c: Connection = undefined;
+    c.init(&allocator, .Server, -1, conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433));
+    defer c.deinit();
+
+    try c.pushDatagram("abc");
+    try c.incoming_stream_queue.append(allocator, 0);
+    try c.writable_streams.append(allocator, 4);
+    c.peer_finished_verified = true;
+    c.app_tx_keys = .{
+        .key = [_]u8{0x44} ** 16,
+        .iv = [_]u8{0x55} ** 12,
+        .hp = [_]u8{0x66} ** 16,
+    };
+
+    const ready = pollReady(&c);
+    try std.testing.expect(ready.has_datagram);
+    try std.testing.expect(ready.has_incoming_streams);
+    try std.testing.expect(ready.has_writable_streams);
+    try std.testing.expect(ready.handshake_complete);
+    try std.testing.expect(!ready.connection_closed);
+    try std.testing.expectEqual(@as(usize, 1), c.dgram_inbox.items.len);
+    try std.testing.expectEqual(@as(usize, 1), c.incoming_stream_queue.items.len);
+    try std.testing.expectEqual(@as(usize, 1), c.writable_streams.items.len);
+}

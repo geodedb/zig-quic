@@ -10,6 +10,19 @@ const std = @import("std");
 const types = @import("types");
 const varint = @import("quic_varint");
 
+fn longHeaderTypeBits(version: u32, ty: types.LongHeaderType) u8 {
+    if (version == types.QUIC_V2) {
+        return switch (ty) {
+            .Initial => 0x10,
+            .Handshake => 0x30,
+        };
+    }
+    return switch (ty) {
+        .Initial => 0x00,
+        .Handshake => 0x20,
+    };
+}
+
 /// Serializable Long Header structure used by helpers for tests/tools. Layout
 /// matches RFC 9000 §17.2 including token length, Length varint, and packet
 /// number truncation bits in the first byte.
@@ -27,10 +40,7 @@ pub const LongHeader = struct {
     pub fn encode(self: LongHeader, w: anytype) !usize {
         // First byte: Long Header (1), Fixed bit (1), Type (2 bits), PN length (2 bits)
         // Types: Initial=0, Handshake=2
-        const type_bits: u8 = switch (self.ty) {
-            .Initial => 0x00,
-            .Handshake => 0x20,
-        };
+        const type_bits: u8 = longHeaderTypeBits(self.version, self.ty);
         const pn_len_bits: u8 = 0x01; // 2-byte PN (encoded as 01 -> length 2)
         const first = 0xc0 | type_bits | pn_len_bits; // 1100_0000 | type | pnlen
         try w.writeByte(first);
