@@ -1508,6 +1508,65 @@ pub const Connection = struct {
         return null;
     }
 
+    /// Record the Initial Source Connection ID as local CID sequence 0.
+    ///
+    /// Peers can later retire sequence 0 and switch to CIDs we advertise with
+    /// NEW_CONNECTION_ID. Keeping sequence 0 in the same inventory as later
+    /// local CIDs lets lookup and lifecycle code reason over one active set.
+    pub fn installInitialLocalCid(self: *Connection) void {
+        self.local_cids[0] = .{};
+        self.local_cids[0].in_use = true;
+        self.local_cids[0].sequence = 0;
+        self.local_cids[0].cid.len = self.our_scid.len;
+        if (self.our_scid.len > 0) {
+            @memcpy(
+                self.local_cids[0].cid.bytes[0..self.our_scid.len],
+                self.our_scid.bytes[0..self.our_scid.len],
+            );
+        }
+        self.active_local_cids = @max(self.active_local_cids, 1);
+        self.next_cid_sequence = @max(self.next_cid_sequence, 1);
+        self.issued_cids = @max(self.issued_cids, 1);
+    }
+
+    /// Return the DCID length if a short-header packet targets any active local
+    /// CID: the original SCID or a later CID advertised via NEW_CONNECTION_ID.
+    /// Zero-length CID matching is valid only when the caller has already
+    /// matched the peer address tuple.
+    pub fn localDcidMatchLen(
+        self: *const Connection,
+        packet_bytes: []const u8,
+        allow_zero_length: bool,
+    ) ?usize {
+        if (packet_bytes.len == 0) return null;
+
+        var best_len: ?usize = null;
+
+        const initial_len: usize = self.our_scid.len;
+        if ((initial_len != 0 or allow_zero_length) and 1 + initial_len <= packet_bytes.len) {
+            if (initial_len == 0 or std.mem.eql(u8, self.our_scid.bytes[0..initial_len], packet_bytes[1 .. 1 + initial_len])) {
+                best_len = initial_len;
+            }
+        }
+
+        var i: usize = 0;
+        while (i < self.local_cids.len) : (i += 1) {
+            const lc = self.local_cids[i];
+            if (!lc.in_use) continue;
+
+            const cid_len: usize = lc.cid.len;
+            if (cid_len == 0 and !allow_zero_length) continue;
+            if (1 + cid_len > packet_bytes.len) continue;
+            if (cid_len != 0 and !std.mem.eql(u8, lc.cid.bytes[0..cid_len], packet_bytes[1 .. 1 + cid_len])) continue;
+
+            if (best_len == null or cid_len > best_len.?) {
+                best_len = cid_len;
+            }
+        }
+
+        return best_len;
+    }
+
     /// Check if a trailing 16-byte token matches any known stateless reset token.
     /// Heuristic detection of stateless reset (short header random body + 16-byte trailing token).
     pub fn looksLikeStatelessReset(self: *const Connection, pkt: []const u8) bool {

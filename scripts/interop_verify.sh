@@ -13,6 +13,8 @@ SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${SCRIPT_DIR}/.."
 pushd "$ROOT" >/dev/null
 
+source "${SCRIPT_DIR}/interop_assets.sh"
+
 # Color output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -22,6 +24,9 @@ NC='\033[0m'
 
 echo -e "${BLUE}=== QUIC Interop Verification Suite ===${NC}"
 echo -e "${BLUE}Testing Zig QUIC implementation interoperability${NC}\n"
+
+echo -e "${YELLOW}Preparing interop certificates and fixtures...${NC}"
+prepare_local_interop_assets "$ROOT"
 
 # Check prerequisites
 echo -e "${YELLOW}Checking prerequisites...${NC}"

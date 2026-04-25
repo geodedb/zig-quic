@@ -1308,10 +1308,12 @@ pub const Endpoint = struct {
             // The packet length is encoded after the connection IDs
             if (remaining.len >= 7) {
                 // Skip to DCID length at byte 5
-                const dcid_len = remaining[5];
+                const dcid_len: usize = remaining[5];
+                if (dcid_len > 20) break;
                 if (remaining.len >= 6 + dcid_len + 1) {
                     // Skip DCID and get SCID length
-                    const scid_len = remaining[6 + dcid_len];
+                    const scid_len: usize = remaining[6 + dcid_len];
+                    if (scid_len > 20) break;
                     if (remaining.len >= 7 + dcid_len + scid_len) {
                         // Now we're at the variable-length integer for packet length
                         var offset: usize = 7 + dcid_len + scid_len;
@@ -1377,11 +1379,13 @@ pub const Endpoint = struct {
                     var dcid: []const u8 = &[_]u8{};
                     var scid: []const u8 = &[_]u8{};
                     if (packet_bytes.len >= 7) {
-                        const dcid_len = packet_bytes[5];
+                        const dcid_len: usize = packet_bytes[5];
+                        if (dcid_len > 20) break;
                         if (packet_bytes.len >= 6 + dcid_len + 1) {
                             dcid = packet_bytes[6 .. 6 + dcid_len];
                             const scid_len_off = 6 + dcid_len;
-                            const scid_len = packet_bytes[scid_len_off];
+                            const scid_len: usize = packet_bytes[scid_len_off];
+                            if (scid_len > 20) break;
                             const scid_off = scid_len_off + 1;
                             if (packet_bytes.len >= scid_off + scid_len) {
                                 scid = packet_bytes[scid_off .. scid_off + scid_len];

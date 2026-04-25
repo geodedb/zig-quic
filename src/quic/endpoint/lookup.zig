@@ -140,14 +140,7 @@ pub fn findConnectionByDcid(
         if (entry.key_ptr.*.peer_hash != peer_h) continue;
 
         const c = entry.value_ptr.*;
-        const l: usize = c.our_scid.len;
-
-        // Skip zero-length DCID (ambiguous) and packets too short
-        if (l == 0) continue;
-        if (1 + l > packet_bytes.len) continue;
-
-        // Check if DCID matches our SCID
-        if (!std.mem.eql(u8, c.our_scid.bytes[0..l], packet_bytes[1 .. 1 + l])) continue;
+        const l = c.localDcidMatchLen(packet_bytes, true) orelse continue;
 
         // Record first match as fallback
         if (found == null) {
@@ -181,28 +174,23 @@ pub fn findConnectionByDcid(
         var it2 = conns.iterator();
         while (it2.next()) |entry| {
             const c = entry.value_ptr.*;
-            const l: usize = c.our_scid.len;
+            const l = c.localDcidMatchLen(packet_bytes, false) orelse continue;
 
-            if (l == 0) continue;
-            if (1 + l > packet_bytes.len) continue;
+            found = c;
+            dcid_len = l;
 
-            if (std.mem.eql(u8, c.our_scid.bytes[0..l], packet_bytes[1 .. 1 + l])) {
-                found = c;
-                dcid_len = l;
-
-                // Notify caller of NAT rebinding for path validation
-                if (path_changed_fn) |callback| {
-                    callback(c, peer, peer_h, l) catch |err| {
-                        logger.warn("NAT rebinding callback failed: {s}", .{@errorName(err)});
-                    };
-                }
-
-                return LookupResult{
-                    .conn = found,
-                    .dcid_len = dcid_len,
-                    .nat_rebinding = true,
+            // Notify caller of NAT rebinding for path validation
+            if (path_changed_fn) |callback| {
+                callback(c, peer, peer_h, l) catch |err| {
+                    logger.warn("NAT rebinding callback failed: {s}", .{@errorName(err)});
                 };
             }
+
+            return LookupResult{
+                .conn = found,
+                .dcid_len = dcid_len,
+                .nat_rebinding = true,
+            };
         }
     }
 

@@ -145,6 +145,7 @@ pub fn createClientConnection(
 
     c.our_scid.len = 8;
     generateRandomCid(c.our_scid.bytes[0..c.our_scid.len]);
+    c.installInitialLocalCid();
 
     // Map by both dcid and scid to find VN/HS
     const key_d = types.Key{

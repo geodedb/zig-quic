@@ -515,19 +515,16 @@ fn decryptHandshakePacket(
             continue;
         };
 
-        const actual_pn_len: usize = @intCast(dec.pn_len);
-        if (full_pn_and_payload.len < actual_pn_len + 16) {
+        if (dec.payload_len > payload_buf.len) {
             allocator.free(payload_buf);
-            continue;
+            return error.InvalidPacket;
         }
-        const actual_payload_len = full_pn_and_payload.len - actual_pn_len - 16;
-        const resized = allocator.realloc(payload_buf, actual_payload_len) catch {
-            allocator.free(payload_buf);
-            return error.OutOfMemory;
-        };
+        const exact_payload = try allocator.alloc(u8, dec.payload_len);
+        @memcpy(exact_payload, payload_buf[0..dec.payload_len]);
+        allocator.free(payload_buf);
 
         return .{
-            .payload = resized,
+            .payload = exact_payload,
             .packet_number = dec.packet_number,
         };
     }

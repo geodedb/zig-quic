@@ -331,6 +331,7 @@ pub fn createServerConnection(
     // Generate random SCID for server (RFC 9000 §5.1)
     c.our_scid.len = 8;
     _ = std.os.linux.getrandom(c.our_scid.bytes[0..c.our_scid.len].ptr, c.our_scid.len, 0);
+    c.installInitialLocalCid();
 
     // Set peer CIDs from client's Initial packet
     // RFC 9000 §5.2: "The server uses the client's DCID as the ODCID"

@@ -405,22 +405,17 @@ pub fn decryptInitialPacket(
             continue;
         };
 
-        // Calculate correct payload size: ciphertext - pn_len - 16 byte tag
-        // The allocated buffer is ciphertext.len - 16, but actual data is smaller
-        const actual_pn_len: usize = @intCast(result.pn_len);
-        const actual_payload_len = ciphertext.len - actual_pn_len - 16;
-
-        // Resize the buffer to match actual payload length
-        // This ensures free() works correctly with the returned slice
-        const resized_payload = allocator.realloc(payload, actual_payload_len) catch {
-            // Realloc failed - free original and return error
+        if (result.payload_len > payload.len) {
             allocator.free(payload);
-            return error.OutOfMemory;
-        };
+            return error.InvalidPacket;
+        }
+        const exact_payload = try allocator.alloc(u8, result.payload_len);
+        @memcpy(exact_payload, payload[0..result.payload_len]);
+        allocator.free(payload);
 
-        // Success! Return decrypted packet with correctly-sized payload
+        // Success! Return decrypted packet with an exactly-sized owned payload.
         return DecryptedInitial{
-            .payload = resized_payload,
+            .payload = exact_payload,
             .packet_number = result.packet_number,
             .pn_len = result.pn_len,
         };

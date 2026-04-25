@@ -44,6 +44,57 @@ run_endpoint_bin() {
   fi
 }
 
+ensure_fallback_tls_materials() {
+  local cert_dir="/quic/certs"
+  local cert_path="${cert_dir}/cert.pem"
+  local key_path="${cert_dir}/key.pem"
+  local openssl_config="${cert_dir}/openssl.cnf"
+  local cert_days="${QNS_FALLBACK_CERT_DAYS:-1}"
+
+  if [[ -f "$cert_path" && -f "$key_path" ]]; then
+    return 0
+  fi
+
+  if ! command -v openssl >/dev/null 2>&1; then
+    echo "WARNING: openssl is unavailable; mounted TLS certs are required." >&2
+    return 0
+  fi
+
+  mkdir -p "$cert_dir"
+  cat > "$openssl_config" <<'EOF'
+[req]
+prompt = no
+distinguished_name = dn
+x509_extensions = v3_req
+
+[dn]
+CN = server
+
+[v3_req]
+subjectAltName = @alt_names
+keyUsage = digitalSignature
+extendedKeyUsage = serverAuth
+
+[alt_names]
+DNS.1 = server
+DNS.2 = server4
+DNS.3 = server6
+DNS.4 = server46
+DNS.5 = localhost
+IP.1 = 127.0.0.1
+IP.2 = ::1
+EOF
+
+  echo "Generating ephemeral QNS fallback TLS certificate..."
+  umask 077
+  openssl ecparam -genkey -name prime256v1 -out "$key_path"
+  openssl req -new -x509 -sha256 -key "$key_path" -out "$cert_path" \
+    -days "$cert_days" -config "$openssl_config"
+  rm -f "$openssl_config"
+  chmod 600 "$key_path"
+  chmod 644 "$cert_path"
+}
+
 /setup.sh
 
 if [[ -f /quic/version.txt ]]; then
@@ -68,6 +119,10 @@ echo "QNS_H3_ALLOW_EMPTY: ${QNS_H3_ALLOW_EMPTY:-not set}"
 if ! is_supported_testcase "$TESTCASE"; then
   echo "Test case '$TESTCASE' is not supported by zig-qns endpoint. Exiting 127."
   exit 127
+fi
+
+if [[ "$ROLE" == "server" ]]; then
+  ensure_fallback_tls_materials
 fi
 
 # Keep key-update behavior deterministic in interop:

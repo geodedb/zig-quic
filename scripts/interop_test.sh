@@ -13,6 +13,8 @@ SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${SCRIPT_DIR}/.."
 pushd "$ROOT" >/dev/null
 
+source "${SCRIPT_DIR}/interop_assets.sh"
+
 # Color output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -20,6 +22,9 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 echo -e "${GREEN}=== QUIC Interop Test - Single Handshake ===${NC}"
+
+echo -e "${YELLOW}Preparing interop certificates and fixtures...${NC}"
+prepare_local_interop_assets "$ROOT"
 
 # Build if needed
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then

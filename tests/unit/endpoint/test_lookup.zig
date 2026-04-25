@@ -330,6 +330,12 @@ fn createMockConnection(
     c.* = undefined; // Initialize to undefined first
     c.our_scid.len = @intCast(our_scid.len);
     @memcpy(c.our_scid.bytes[0..our_scid.len], our_scid);
+    c.local_cids = .{.{}} ** 8;
+    c.active_local_cids = 1;
+    c.issued_cids = 1;
+    c.next_cid_sequence = 1;
+    c.pending_new_cid = std.bit_set.IntegerBitSet(8).initEmpty();
+    c.installInitialLocalCid();
     c.app_rx_keys = if (has_app_rx) dummy_keys else null;
     c.app_tx_keys = if (has_app_tx) dummy_keys else null;
     return c;
@@ -532,10 +538,11 @@ test "Phase 4b.5 Session 3 - findConnectionByDcid: No match returns null" {
     try testing.expectEqual(false, path_change_state.called);
 }
 
-test "Phase 4b.5 Session 3 - findConnectionByDcid: Zero-length DCID skipped" {
+test "Phase 4b.5 Session 3 - findConnectionByDcid: Zero-length DCID matches exact peer tuple" {
     const allocator = testing.allocator;
 
-    // Create connection with zero-length DCID (ambiguous, should be skipped)
+    // Create connection with zero-length DCID. RFC 9000 routes this by the
+    // peer address tuple because there are no CID bytes to inspect.
     const connection = try createMockConnection(allocator, &[_]u8{}, false, false);
     defer allocator.destroy(connection);
 
@@ -555,11 +562,84 @@ test "Phase 4b.5 Session 3 - findConnectionByDcid: Zero-length DCID skipped" {
 
     path_change_state = .{};
 
-    // Should not match zero-length DCID
     const result = lookup.findConnectionByDcid(&conns, peer, pkt_buf, mockPathChangedFn);
+
+    try testing.expect(result.conn != null);
+    try testing.expectEqual(connection, result.conn.?);
+    try testing.expectEqual(@as(usize, 0), result.dcid_len);
+    try testing.expectEqual(false, result.nat_rebinding);
+}
+
+test "Phase 4b.5 Session 3 - findConnectionByDcid: Zero-length DCID does not NAT-rebind" {
+    const allocator = testing.allocator;
+
+    const connection = try createMockConnection(allocator, &[_]u8{}, false, false);
+    defer allocator.destroy(connection);
+
+    var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(allocator);
+    defer conns.deinit();
+
+    const original_peer = makeTestAddr(1234);
+    const original_peer_h = hashSockaddr(&original_peer.storage, original_peer.len);
+    const key = endpoint_types.Key{
+        .peer_hash = original_peer_h,
+        .dcid_hash = hashBytes(&[_]u8{}),
+    };
+    try conns.put(key, connection);
+
+    const rebound_peer = makeTestAddr(4321);
+    const pkt_buf = try makeShortHeaderPacket(allocator, &[_]u8{});
+    defer allocator.free(pkt_buf);
+
+    path_change_state = .{};
+
+    const result = lookup.findConnectionByDcid(&conns, rebound_peer, pkt_buf, mockPathChangedFn);
 
     try testing.expect(result.conn == null);
     try testing.expectEqual(@as(usize, 0), result.dcid_len);
+    try testing.expectEqual(false, result.nat_rebinding);
+    try testing.expectEqual(false, path_change_state.called);
+}
+
+test "Phase 4b.5 Session 3 - findConnectionByDcid: matches advertised local CID" {
+    const allocator = testing.allocator;
+
+    const initial_dcid = [_]u8{ 0x11, 0x22, 0x33, 0x44 };
+    const issued_dcid = [_]u8{ 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11 };
+    const connection = try createMockConnection(allocator, &initial_dcid, true, true);
+    defer allocator.destroy(connection);
+
+    connection.local_cids[1] = .{
+        .in_use = true,
+        .sequence = 1,
+        .cid = .{ .len = issued_dcid.len, .bytes = undefined },
+        .reset_token = [_]u8{0x42} ** 16,
+    };
+    @memcpy(connection.local_cids[1].cid.bytes[0..issued_dcid.len], &issued_dcid);
+    connection.active_local_cids = 2;
+
+    var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(allocator);
+    defer conns.deinit();
+
+    const peer = makeTestAddr(1234);
+    const peer_h = hashSockaddr(&peer.storage, peer.len);
+    const key = endpoint_types.Key{
+        .peer_hash = peer_h,
+        .dcid_hash = hashBytes(&initial_dcid),
+    };
+    try conns.put(key, connection);
+
+    const pkt_buf = try makeShortHeaderPacket(allocator, &issued_dcid);
+    defer allocator.free(pkt_buf);
+
+    path_change_state = .{};
+
+    const result = lookup.findConnectionByDcid(&conns, peer, pkt_buf, mockPathChangedFn);
+
+    try testing.expect(result.conn != null);
+    try testing.expectEqual(connection, result.conn.?);
+    try testing.expectEqual(@as(usize, issued_dcid.len), result.dcid_len);
+    try testing.expectEqual(false, result.nat_rebinding);
 }
 
 test "Phase 4b.5 Session 3 - findConnectionByDcid: Longer DCID wins tie-break" {

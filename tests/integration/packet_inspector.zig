@@ -652,19 +652,13 @@ pub fn decryptInitialPacketWithDcid(
     ) catch |err| {
         return err;
     };
-    // ciphertext_and_tag = [PN bytes][ciphertext][16-byte tag]
-    const actual_pn_len: usize = @intCast(result.pn_len);
-    const tag_len: usize = 16;
-    if (ciphertext_and_tag.len < actual_pn_len + tag_len) return error.AuthenticationFailed;
-    const plaintext_len = ciphertext_and_tag.len - actual_pn_len - tag_len;
-
-    // Resize to actual plaintext length
-    if (plaintext_len < plaintext.len) {
-        plaintext = try allocator.realloc(plaintext, plaintext_len);
-    }
+    if (result.payload_len > plaintext.len) return error.AuthenticationFailed;
+    const exact_plaintext = try allocator.alloc(u8, result.payload_len);
+    @memcpy(exact_plaintext, plaintext[0..result.payload_len]);
+    allocator.free(plaintext);
 
     return DecryptedInitial{
-        .payload = plaintext,
+        .payload = exact_plaintext,
         .allocator = allocator,
     };
 }

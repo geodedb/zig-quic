@@ -59,6 +59,7 @@ pub const AeadSuite = crypto_impl.AeadSuite;
 pub const UnprotectResult = struct {
     packet_number: u64,
     pn_len: u3, // Actual PN length (1-4) determined from unmasked header
+    payload_len: usize,
 };
 
 /// Encrypt plaintext with associated data using the given suite.
@@ -569,7 +570,6 @@ pub fn unprotectInitialAutoSample(
         }
     }
 
-    var chosen_pn: ?u64 = null;
     var last_err: anyerror = error.AuthenticationFailed;
     var ci: usize = 0;
     while (ci < candidate_count) : (ci += 1) {
@@ -595,7 +595,7 @@ pub fn unprotectInitialAutoSample(
             logger.debugPrint("\n", .{});
         }
 
-        _ = aeadDecrypt(suite, aead_key, aead_iv, full_pn, aad, actual_ciphertext, out_plaintext) catch |err| {
+        const payload_len = aeadDecrypt(suite, aead_key, aead_iv, full_pn, aad, actual_ciphertext, out_plaintext) catch |err| {
             last_err = err;
             // Only print for non-zero packet numbers (likely real failures, not probing)
             if (full_pn > 0 and full_pn < 1000) {
@@ -604,18 +604,15 @@ pub fn unprotectInitialAutoSample(
             continue;
         };
 
-        chosen_pn = full_pn;
-        break;
+        logger.debugPrint("[unprotectInitial] expanded to full_pn={}\n", .{full_pn});
+        return UnprotectResult{
+            .packet_number = full_pn,
+            .pn_len = @intCast(actual_pn_len),
+            .payload_len = payload_len,
+        };
     }
 
-    const full_pn = chosen_pn orelse return last_err;
-    logger.debugPrint("[unprotectInitial] expanded to full_pn={}\n", .{full_pn});
-
-    // Return the expanded packet number and actual PN length
-    return UnprotectResult{
-        .packet_number = full_pn,
-        .pn_len = @intCast(actual_pn_len),
-    };
+    return last_err;
 }
 
 /// Unmask long header first byte and up to 4 PN bytes using the given hp_key and sample.

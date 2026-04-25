@@ -63,15 +63,15 @@ Focused revalidation on 2026-02-18 supersedes the prior `msquic/xquic/s2n-quic` 
 | mvfst | http3 | PASS | PASS |
 | mvfst | keyupdate | SKIP | SKIP |
 | kwik | handshake | SKIP | PASS |
-| kwik | transfer | SKIP | PASS |
+| kwik | transfer | SKIP | SKIP |
 | kwik | retry | SKIP | PASS |
 | kwik | http3 | SKIP | PASS |
 | kwik | keyupdate | SKIP | SKIP |
-| picoquic | handshake | PASS | PASS |
-| picoquic | transfer | PASS | PASS |
-| picoquic | retry | PASS | PASS |
-| picoquic | http3 | PASS | PASS |
-| picoquic | keyupdate | PASS | PASS |
+| picoquic | handshake | SKIP | PASS |
+| picoquic | transfer | SKIP | PASS |
+| picoquic | retry | SKIP | PASS |
+| picoquic | http3 | SKIP | PASS |
+| picoquic | keyupdate | SKIP | PASS |
 | aioquic | handshake | PASS | PASS |
 | aioquic | transfer | PASS | PASS |
 | aioquic | retry | PASS | PASS |
@@ -87,11 +87,11 @@ Focused revalidation on 2026-02-18 supersedes the prior `msquic/xquic/s2n-quic` 
 | msquic | retry | PASS | PASS |
 | msquic | http3 | SKIP | SKIP |
 | msquic | keyupdate | PASS | PASS |
-| xquic | handshake | PASS | PASS |
-| xquic | transfer | PASS | PASS |
-| xquic | retry | PASS | PASS |
-| xquic | http3 | PASS | PASS |
-| xquic | keyupdate | PASS | PASS |
+| xquic | handshake | SKIP | SKIP |
+| xquic | transfer | SKIP | SKIP |
+| xquic | retry | SKIP | SKIP |
+| xquic | http3 | SKIP | SKIP |
+| xquic | keyupdate | SKIP | SKIP |
 | lsquic | handshake | PASS | PASS |
 | lsquic | transfer | PASS | PASS |
 | lsquic | retry | PASS | PASS |
@@ -119,8 +119,11 @@ Skips are expected and policy-driven for known incompatibilities in this harness
 
 Key examples from this run set:
 - `zig -> kwik` all major testcases: skipped due to missing TLS key_share in kwik client path.
-- `xquic -> zig` major testcase coverage is now passing in the current harness (handshake/transfer/retry/http3/keyupdate).
-- `zig -> xquic` retry now passes with server-side compatibility mode that disables forced Retry only for this client path.
+- `kwik -> zig` transfer is skipped because the kwik server throws `java.lang.NullPointerException` after the first response in this harness, then the Zig client reaches a per-stream response idle timeout. Current evidence: `/tmp/interop_release_kwik_current_20260425.log`.
+- `kwik -> zig` keyupdate is skipped because the kwik server blocks on a `keytool` overwrite prompt. Current evidence: `/tmp/interop_release_kwik_current_20260425.log` records `Existing entry alias servercert exists, overwrite? [no]:` before the Zig client handshake timeout.
+- `zig -> picoquic` all major testcases: skipped because the picoquic client path does not expose an X25519 TLS key_share to the current pinned TLS dependency. Current evidence: `/tmp/interop_zig_picoquic_handshake.log` debug traces show repeated server-side `MissingKeyShare`, `/tmp/interop_release_picoquic_handshake_current_20260425.log` records repeated Zig server handshake timeouts, and the reverse `picoquic -> zig` handshake passes.
+- `neqo -> zig` keyupdate is skipped because the neqo server path blocks on an NSS certificate DB prompt in this harness. Current evidence: `/tmp/interop_release_neqo_current_20260425.log` records `Enter Password or Pin for "NSS Certificate DB":` before the Zig client handshake timeout; the reverse `zig -> neqo` keyupdate passes.
+- `zig -> xquic` and `xquic -> zig` are skipped for the current xquic image. Current evidence: `/tmp/interop_full_current_20260425.log` shows `zig -> xquic` handshake/transfer stalling with `socket idle timeout, task failed` and `recv_bytes:0`; the reverse `xquic -> zig` path logs `server_read_handler: packet process err, ret: -636` and `conn_err:336` before the Zig client handshake timeout.
 - `zig -> msquic` transfer/retry/keyupdate now pass; `http3` remains unsupported.
 - `zig -> s2n-quic` handshake/transfer/retry/http3 now pass; `keyupdate` remains skipped by policy (unsupported testcase in s2n-quic image).
 - `quinn -> zig` http3 now passes in the current harness (`/tmp/interop_quinn_http3_unskipped_20260218.log`).

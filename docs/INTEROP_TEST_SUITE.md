@@ -83,6 +83,12 @@ scripts/interop_full.sh runner
 
 Current known policy skips include (non-exhaustive):
 - `zig -> kwik` (missing TLS key_share in this harness path)
+- `kwik -> zig` transfer (kwik server Java `NullPointerException` after the first response in this harness)
+- `kwik -> zig` keyupdate (kwik server `keytool` overwrite prompt in this harness)
+- `zig -> picoquic` (picoquic client path does not expose an X25519 TLS key_share to the current TLS dependency; debug traces show server-side `MissingKeyShare`)
+- `zig -> xquic` (current xquic client image stalls before handshake completion; logs show socket idle timeout and zero response bytes)
+- `xquic -> zig` (current xquic server image rejects Zig Initials; logs show `server_read_handler` ret `-636` and `conn_err:336`)
+- `neqo -> zig` keyupdate (neqo server path blocks on an NSS certificate DB prompt in this harness)
 - `zig -> msquic` http3 (unsupported testcase in msquic interop path)
 - `zig -> s2n-quic` keyupdate (unsupported testcase in s2n-quic path)
 
@@ -93,8 +99,8 @@ INTEROP_FORCE_RUN_SKIPS=1 SKIP_BUILD=1 INTEROP_SKIP_EXTRAS=1 INTEROP_IMPLS=msqui
 ```
 
 Compatibility note:
-- `zig -> xquic` retry now runs in a server-side compatibility mode that disables forced stateless Retry for this specific pair to avoid xquic client stall in this harness.
-- `xquic -> zig` major testcase coverage now passes in this harness after Initial-token/1200-byte fixes and ALPN-aware HTTP/3 fallback handling.
+- `zig -> xquic` still retains server-side compatibility mode for Retry when forced diagnostics are run, but the current xquic image is policy-skipped because it stalls before handshake completion in this harness.
+- `xquic -> zig` previously passed after Initial-token/1200-byte fixes and ALPN-aware HTTP/3 fallback handling; the current xquic image is policy-skipped because it rejects Zig Initials before handshake completion.
 - `quinn <-> zig` http3 now runs without policy skip in this harness (quinn server negotiates `hq-interop`; Zig client falls back to HQ framing for the `http3` testcase when ALPN is not `h3`).
 
 ## Updating the Result Matrix Documentation
