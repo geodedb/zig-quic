@@ -365,7 +365,7 @@ pub fn destroy(ep: *QuicEndpoint, conn: *Connection) void {
     i = 0;
     while (i < ep.retired.items.len) {
         if (ep.retired.items[i] == conn) {
-            _ = ep.retired.orderedRemove(i);
+            _ = ep.retired.swapRemove(i);
             continue;
         }
         i += 1;
@@ -389,7 +389,7 @@ pub fn destroy(ep: *QuicEndpoint, conn: *Connection) void {
         if (timer.conn) |tc| {
             if (tc == conn) {
                 if (timer.paced) if (timer.payload) |p| ep.allocator.free(p);
-                _ = ep.timers.orderedRemove(i);
+                _ = ep.timers.swapRemove(i);
                 continue;
             }
         }

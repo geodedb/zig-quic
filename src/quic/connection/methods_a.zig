@@ -799,21 +799,25 @@ pub fn bind(comptime Connection: type) type {
             if (fin) {
                 const end_off: u64 = offset + @as(u64, data.len);
                 s.fin_off = end_off;
-                self.stream_recv_fin = true;
             }
             if (data.len > 0) {
                 s.insert(self.allocator, offset, data);
                 s.tryDrain(self.allocator);
                 logger.debugPrint("[STREAM-RX-AFTER] id={} recv_off={} inbox_len={} bufs={} fin_off={?}\n", .{ stream_id, s.recv_off, s.inbox.items.len, s.bufs.items.len, s.fin_off });
             }
+            if (s.isFinished()) {
+                self.stream_recv_fin = true;
+            } else if (stream_id == 0) {
+                self.stream_recv_fin = false;
+            }
 
             // Queue stream every time new data arrives (not just first time)
             const is_peer_initiated = self.isPeerInitiatedStream(stream_id);
-            const has_data_now = (s.inbox.items.len > 0);
+            const has_data_now = (s.available() > 0);
 
             if (is_peer_initiated and has_data_now) {
                 try self.queueIncomingStream(stream_id);
-                logger.debugPrint("[P57-6-QUEUE] Stream {} queued ({} bytes in inbox, {} total in queue)\n", .{ stream_id, s.inbox.items.len, self.incoming_stream_queue.items.len });
+                logger.debugPrint("[P57-6-QUEUE] Stream {} queued ({} bytes in inbox, {} total in queue)\n", .{ stream_id, s.available(), self.incoming_stream_queue.items.len });
             }
 
             // PHASE 57 PART 13: Send initial MAX_STREAM_DATA when stream receives first data

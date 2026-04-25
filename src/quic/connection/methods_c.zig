@@ -35,12 +35,8 @@ pub fn bind(comptime Connection: type) type {
             while (it2.next()) |e| {
                 const sid = e.key_ptr.*;
                 var sr = e.value_ptr; // pointer to StreamRx
-                if (sr.inbox.items.len == 0) continue;
-                const n = @min(buf.len, sr.inbox.items.len);
-                @memcpy(buf[0..n], sr.inbox.items[0..n]);
-                const rem = sr.inbox.items.len - n;
-                if (rem > 0) std.mem.copyForwards(u8, sr.inbox.items[0..rem], sr.inbox.items[n..]);
-                sr.inbox.shrinkRetainingCapacity(rem);
+                if (sr.available() == 0) continue;
+                const n = sr.readInto(buf);
                 return .{ .id = sid, .n = n };
             }
             return error.WouldBlock;

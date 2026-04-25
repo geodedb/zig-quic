@@ -13,7 +13,7 @@ WORKDIR /quic
 # networking for the simulator. We still run the actual endpoint binary as an
 # unprivileged user after setup.
 RUN groupadd -r quic && useradd -r -g quic -d /nonexistent -s /usr/sbin/nologin quic \
-    && mkdir -p /quic /logs/qlog /downloads /www \
+    && mkdir -p /quic/certs /logs/qlog /downloads /www \
     && chown -R quic:quic /quic /logs /downloads /www
 
 # Copy prebuilt binary from host
@@ -21,9 +21,6 @@ COPY zig-out/bin/qns-endpoint /usr/local/bin/qns-endpoint
 
 # Copy run script
 COPY interop/run_endpoint.sh /run_endpoint.sh
-# Copy fallback TLS materials known to work with this implementation.
-COPY tests/certs/cert.pem /quic/certs/cert.pem
-COPY tests/certs/key.pem /quic/certs/key.pem
 RUN chmod +x /run_endpoint.sh /usr/local/bin/qns-endpoint
 
 # Version metadata

@@ -152,10 +152,12 @@ The endpoint script recognizes these environment variables:
 - `WAIT_FOR_TARGET` - Optional `host:port` readiness check before starting client
 - `INTEROP_DROP_PRIVS` - Set to `1` to run endpoint as `quic` user via `setpriv`
 - `QNS_USE_MOUNTED_CERTS` - Set to `1` to force `/certs/{cert.pem,priv.key}` usage
+- `QNS_FALLBACK_CERT_DAYS` - Validity period for the ephemeral fallback certificate generated at startup (default: `1`)
 
-By default the server uses bundled certs at `/quic/certs/{cert.pem,key.pem}` for
-deterministic local and runner behavior. Mounted runner certs are opt-in via
-`QNS_USE_MOUNTED_CERTS=1`.
+By default the server prefers mounted runner certs at `/certs/`. When mounted
+certs are unavailable, the entrypoint generates an ephemeral self-signed ECDSA
+P-256 fallback at `/quic/certs/{cert.pem,key.pem}` during container startup.
+Static test keys are not baked into the interop image.
 
 ## Test Files
 

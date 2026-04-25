@@ -530,19 +530,15 @@ pub fn bind(comptime Connection: type) type {
                 logger.debugPrint("readStream - stream {} not found in RX map\n", .{id});
                 return error.InvalidStream;
             };
-            trace("[CONN-PTR-READ] inbox_len={} streams_rx_count={}\n", .{ s.inbox.items.len, self.streams_rx.count() });
+            trace("[CONN-PTR-READ] inbox_len={} streams_rx_count={}\n", .{ s.available(), self.streams_rx.count() });
             // TRACE: readStream inbox status
             // logger.debugPrint("readStream - inbox has {} bytes\n", .{s.inbox.items.len});
-            if (s.inbox.items.len == 0) {
+            if (s.available() == 0) {
                 // If FIN offset reached and no buffered data remains, surface FIN as 0-length read.
                 if (s.isFinished()) return 0;
                 return error.WouldBlock;
             }
-            const n: usize = @min(buf.len, s.inbox.items.len);
-            @memcpy(buf[0..n], s.inbox.items[0..n]);
-            const rem = s.inbox.items.len - n;
-            if (rem > 0) std.mem.copyForwards(u8, s.inbox.items[0..rem], s.inbox.items[n..]);
-            s.inbox.shrinkRetainingCapacity(rem);
+            const n = s.readInto(buf);
 
             // PHASE 57 PART 11: Quinn-style flow control - calculate max_stream_data from bytes consumed
             // Quinn uses: max_stream_data = bytes_read() + stream_receive_window
@@ -730,7 +726,7 @@ pub fn bind(comptime Connection: type) type {
                 const seg = s.bufs.items[i];
                 if (seg.off >= final_size) {
                     self.allocator.free(seg.data);
-                    _ = s.bufs.orderedRemove(i);
+                    _ = s.bufs.swapRemove(i);
                     continue;
                 }
                 // If a segment overlaps beyond final_size, trim it

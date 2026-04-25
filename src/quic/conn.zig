@@ -27,6 +27,13 @@ const byteorder = @import("byteorder");
 const reset_token = @import("connection/reset_token.zig");
 const anti_replay = @import("anti_replay.zig");
 
+pub const AckRange = frame.AckRange;
+
+pub const ResetTokenEntry = struct {
+    sequence: u64,
+    token: [16]u8,
+};
+
 // Connection ID (RFC-9000):  An identifier that is used to identify a QUIC
 //     connection at an endpoint.  Each endpoint selects one or more
 //     connection IDs for its peer to include in packets sent towards the
@@ -455,15 +462,68 @@ const PacketBufferPool = struct {
     }
 
     pub fn release(self: *PacketBufferPool, buf: []u8) void {
-        var i: usize = 0;
-        while (i < slot_count) : (i += 1) {
-            if (buf.ptr == self.slots[i][0..].ptr) {
-                self.in_use[i] = false;
-                return;
-            }
-        }
+        if (buf.len != slot_size) return;
+
+        const base = @intFromPtr(&self.slots[0][0]);
+        const end = base + slot_count * slot_size;
+        const ptr = @intFromPtr(buf.ptr);
+        if (ptr < base or ptr >= end) return;
+
+        const offset = ptr - base;
+        if (offset % slot_size != 0) return;
+
+        const idx = offset / slot_size;
+        self.in_use[idx] = false;
     }
 };
+
+test "PacketBufferPool release maps checked-out slot directly" {
+    var pool: PacketBufferPool = .{};
+
+    const first = try pool.checkout();
+    const second = try pool.checkout();
+    try std.testing.expect(pool.in_use[0]);
+    try std.testing.expect(pool.in_use[1]);
+
+    pool.release(first[1..]);
+    try std.testing.expect(pool.in_use[0]);
+
+    pool.release(first);
+    try std.testing.expect(!pool.in_use[0]);
+    try std.testing.expect(pool.in_use[1]);
+
+    pool.release(second);
+    try std.testing.expect(!pool.in_use[1]);
+}
+
+test "stateless reset tokens retire by sequence without ordered removal" {
+    var allocator = std.testing.allocator;
+    var c: Connection = undefined;
+    c.init(&allocator, .Client, -1, SockAddr.ipv4(127, 0, 0, 1, 4433));
+    defer c.deinit();
+
+    const tok0: [16]u8 = .{ 0xA0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    const tok1: [16]u8 = .{ 0xA1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    const tok2: [16]u8 = .{ 0xA2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    const tok3: [16]u8 = .{ 0xA3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
+    c.onNewConnectionId(0, 0, &[_]u8{}, tok0);
+    c.onNewConnectionId(1, 0, &[_]u8{}, tok1);
+    c.onNewConnectionId(2, 0, &[_]u8{}, tok2);
+    c.onNewConnectionId(3, 2, &[_]u8{}, tok3);
+
+    var pkt: [37]u8 = [_]u8{0x11} ** 37;
+    pkt[0] = 0x40;
+
+    @memcpy(pkt[pkt.len - 16 ..][0..16], &tok0);
+    try std.testing.expect(!c.looksLikeStatelessReset(&pkt));
+    @memcpy(pkt[pkt.len - 16 ..][0..16], &tok1);
+    try std.testing.expect(!c.looksLikeStatelessReset(&pkt));
+    @memcpy(pkt[pkt.len - 16 ..][0..16], &tok2);
+    try std.testing.expect(c.looksLikeStatelessReset(&pkt));
+    @memcpy(pkt[pkt.len - 16 ..][0..16], &tok3);
+    try std.testing.expect(c.looksLikeStatelessReset(&pkt));
+}
 
 const PmtudState = enum { Disabled, ProbeStart, ProbeSearch };
 
@@ -697,7 +757,7 @@ pub const Connection = struct {
     new_token_sent: bool = false,
     // Stateless reset tokens advertised by peer via NEW_CONNECTION_ID
     /// Peer-advertised stateless reset tokens (RFC 9000 §10.3, §19.15).
-    reset_tokens: std.ArrayList([16]u8) = .empty,
+    reset_tokens: std.ArrayList(ResetTokenEntry) = .empty,
     // Congestion controllers and selection flag (legacy; Recovery.cc is authoritative)
     use_cubic: bool = false,
     cc_nr: recovery.NewReno = .{},
@@ -1309,22 +1369,30 @@ pub const Connection = struct {
     /// Update/reset stateless reset tokens based on NEW_CONNECTION_ID retire_prior_to.
     /// Install/retire peer-advertised stateless reset tokens based on NEW_CONNECTION_ID frame sequencing.
     pub fn onNewConnectionId(self: *Connection, sequence: u64, retire_prior_to: u64, connection_id: []const u8, stateless_reset_token: [16]u8) void {
-        // Retire tokens with index < retire_prior_to
+        // Retire tokens by explicit sequence; list order is not significant.
         var i: usize = 0;
         while (i < self.reset_tokens.items.len) {
-            if (@as(u64, @intCast(i)) < retire_prior_to) {
-                _ = self.reset_tokens.orderedRemove(i);
+            if (self.reset_tokens.items[i].sequence < retire_prior_to) {
+                _ = self.reset_tokens.swapRemove(i);
                 continue;
             }
             i += 1;
         }
-        // Ensure capacity up to sequence index and store/replace
-        if (sequence >= self.reset_tokens.items.len) {
-            const need = sequence + 1 - self.reset_tokens.items.len;
-            var k: usize = 0;
-            while (k < need) : (k += 1) self.reset_tokens.append(self.allocator.*, .{0} ** 16) catch break;
+        var token_replaced = false;
+        i = 0;
+        while (i < self.reset_tokens.items.len) : (i += 1) {
+            if (self.reset_tokens.items[i].sequence == sequence) {
+                self.reset_tokens.items[i].token = stateless_reset_token;
+                token_replaced = true;
+                break;
+            }
         }
-        if (sequence < self.reset_tokens.items.len) self.reset_tokens.items[@intCast(sequence)] = stateless_reset_token;
+        if (!token_replaced) {
+            self.reset_tokens.append(self.allocator.*, .{
+                .sequence = sequence,
+                .token = stateless_reset_token,
+            }) catch {};
+        }
 
         // Retire peer CIDs below retire_prior_to.
         i = 0;
@@ -1425,7 +1493,7 @@ pub const Connection = struct {
         const tail = pkt[pkt.len - 16 ..];
         var i: usize = 0;
         while (i < self.reset_tokens.items.len) : (i += 1) {
-            if (std.crypto.timing_safe.eql([16]u8, self.reset_tokens.items[i], tail[0..16].*)) return true;
+            if (std.crypto.timing_safe.eql([16]u8, self.reset_tokens.items[i].token, tail[0..16].*)) return true;
         }
         return false;
     }

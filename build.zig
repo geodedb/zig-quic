@@ -849,12 +849,43 @@ pub fn build(b: *std.Build) void {
             const run_test_udp_batch_runtime_smoke = b.addRunArtifact(test_udp_batch_runtime_smoke);
             test_step.dependOn(&run_test_udp_batch_runtime_smoke.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "packet_pool")) {
+            const packet_pool_mod = b.createModule(.{ .root_source_file = b.path("src/quic/conn.zig"), .target = target, .optimize = optimize });
+            packet_pool_mod.addImport("quic_packet", quic_packet_mod);
+            packet_pool_mod.addImport("quic_frame", quic_frame_mod);
+            packet_pool_mod.addImport("quic_tls13", tls13_mod);
+            packet_pool_mod.addImport("quic_varint", quic_varint_mod);
+            packet_pool_mod.addImport("quic_tls", quic_tls_mod);
+            packet_pool_mod.addImport("quic_recovery", quic_recovery_mod);
+            packet_pool_mod.addImport("quic_logger", quic_logger_mod);
+            packet_pool_mod.addImport("byteorder", byteorder_mod);
+            packet_pool_mod.addImport("quic_version", quic_version_mod);
+            packet_pool_mod.addImport("quic_transport_params", quic_transport_params_mod);
+            packet_pool_mod.addImport("compat", compat_mod);
+            const test_packet_pool = b.addTest(.{ .root_module = packet_pool_mod });
+            if (target.result.os.tag != .windows) {
+                test_packet_pool.root_module.linkSystemLibrary("ssl", .{});
+                test_packet_pool.root_module.linkSystemLibrary("crypto", .{});
+            }
+            test_packet_pool.root_module.link_libc = true;
+            if (target.result.os.tag == .windows) {
+                test_packet_pool.root_module.linkSystemLibrary("ws2_32", .{});
+            }
+            const run_test_packet_pool = b.addRunArtifact(test_packet_pool);
+            test_step.dependOn(&run_test_packet_pool.step);
+            return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "reset_stream") or std.mem.containsAtLeast(u8, f, 1, "h3_api")) {
             const test_reset_stream = addTst(b, testlog_mod, "tests/test_reset_stream_api.zig", target, optimize);
             test_reset_stream.root_module.addImport("quic_api", quic_api_mod);
             test_reset_stream.root_module.addImport("quic_conn", quic_conn_mod);
             const run_test_reset_stream = b.addRunArtifact(test_reset_stream);
             test_step.dependOn(&run_test_reset_stream.step);
+            return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "stream_edges")) {
+            const test_stream_edges = addTst(b, testlog_mod, "tests/test_stream_edge_cases.zig", target, optimize);
+            test_stream_edges.root_module.addImport("quic_conn", quic_conn_mod);
+            const run_test_stream_edges = b.addRunArtifact(test_stream_edges);
+            test_step.dependOn(&run_test_stream_edges.step);
             return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "stream_fc") or std.mem.containsAtLeast(u8, f, 1, "streams")) {
             const test_stream_fc = addTst(b, testlog_mod, "tests/test_stream_flow_control.zig", target, optimize);

@@ -172,7 +172,7 @@ pub fn pruneClosed(ctx: *LifecycleContext) void {
                 if (t.paced) {
                     if (t.payload) |p| ctx.allocator.free(p);
                 }
-                _ = timers.orderedRemove(ti);
+                _ = timers.swapRemove(ti);
                 continue; // Don't increment ti, check same index again
             }
         }
@@ -234,7 +234,7 @@ pub fn retireConnection(ctx: *LifecycleContext, conn: *conn_mod.Connection) void
                 if (t.paced) {
                     if (t.payload) |p| ctx.allocator.free(p);
                 }
-                _ = timers.orderedRemove(ti);
+                _ = timers.swapRemove(ti);
                 continue;
             }
         }

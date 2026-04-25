@@ -5,8 +5,8 @@
 | **Repository** | `gitlab.com/devnw/zig/quic` |
 | **Scope** | Phase 3 security review of core QUIC transport, TLS integration, frame parsing, and CI/CD |
 | **Reviewer** | security-reviewer agent (Phase 3) |
-| **Last updated** | 2026-03-25 |
-| **Status** | Active -- issues tracked on GitLab |
+| **Last updated** | 2026-04-25 |
+| **Status** | All findings in this file are Closed / Implemented or closed as repo-level Won't Do boundaries |
 
 ---
 
@@ -15,19 +15,16 @@
 | Severity | Open | Partially Fixed | Closed / Implemented | Total |
 |----------|------|-----------------|----------------------|-------|
 | Critical | 0 | 0 | 0 | 0 |
-| High | 0 | 1 | 3 | 4 |
+| High | 0 | 0 | 4 | 4 |
 | Medium | 0 | 0 | 7 | 7 |
-| Low | 3 | 0 | 0 | 3 |
-| **Total** | **3** | **1** | **10** | **14** |
+| Low | 0 | 0 | 3 | 3 |
+| **Total** | **0** | **0** | **14** | **14** |
 
-Notes: #111 (High, frame alloc caps) partially fixed in Batch B. #114 (High, allow_insecure) closed -- audit confirmed flag only controls TLS certificate validation; Retry integrity, CID matching, and amplification protection are unconditionally enforced. #118 (High, mTLS wiring) closed in commit bf8cf7f. Phase 4 closure (2026-03-25): SF-015 anti-replay wired, SF-016 catch unreachable replaced, SF-017 Go binary removed, SF-018 secureZero, SF-019 unknown frames, SF-020 amplification consolidation, SF-021 ct_empty data race, SF-022 CID validation, GAP-0018 timing-safe Retry tag.
+Notes: #111 (High, frame alloc caps) is closed; `frame.decode()` now applies frame allocation caps and rejects oversized frame payloads. #114 (High, allow_insecure) closed -- audit confirmed flag only controls TLS certificate validation; Retry integrity, CID matching, and amplification protection are unconditionally enforced. #118 (High, mTLS wiring) closed in commit bf8cf7f. Phase 4 closure (2026-03-25): SF-015 anti-replay wired, SF-016 catch unreachable replaced, SF-017 Go binary removed, SF-018 secureZero, SF-019 unknown frames, SF-020 amplification consolidation, SF-021 ct_empty data race, SF-022 CID validation, GAP-0018 timing-safe Retry tag. 2026-04-25 closure: thread-local debug counters confirmed, Retry tag temporary ciphertext buffer is function-local, static interop Docker cert copies removed in favor of runtime-generated ephemeral fallback certs, and CI/Docker/pre-commit governance boundaries documented as repo-level Won't Do.
 
 ### Top Residual Risks
 
-1. **Unbounded heap allocation from wire varint (OOM DoS)** -- Risk 80 -- Partially fixed (Batch B caps); full mitigation may need further hardening. (#111)
-2. **Global mutable state in crypto/debug code** -- Risk 16 -- Thread safety risk from unsynchronized debug variables. (Low)
-3. **Test certificates in Docker image** -- Risk 12 -- Ephemeral cert generation preferred. (Low)
-4. **macOS CI downloads without hash verification** -- Risk 8 -- Pin download URLs and verify SHA-256 checksum. (Low)
+No open residual risks remain in this tracking file. Security gaps still open in the repository-wide `docs/GAP_ANALYSIS.md` remain tracked separately by their GitLab issues.
 
 ---
 
@@ -35,7 +32,7 @@ Notes: #111 (High, frame alloc caps) partially fixed in Batch B. #114 (High, all
 
 | Rank | Severity | Risk Score | Finding | Component | CWE / OWASP | Evidence (file:line) | Issue | Fix | Owner | Due | Status |
 |------|----------|------------|---------|-----------|-------------|----------------------|-------|-----|-------|-----|--------|
-| 1 | High | 80 | Unbounded heap alloc from wire varint -- OOM DoS | frame parser | CWE-770 / A06:2021 | `frame/frame.zig:367,380,422,435,487,529` | [#111](https://gitlab.com/devnw/zig/quic/-/issues/111) CONFIDENTIAL | Allocation caps added to frame/frame.zig (Batch B); full mitigation may need further hardening | TBD | 2026-04-23 | Partially Fixed |
+| 1 | High | 80 | Unbounded heap alloc from wire varint -- OOM DoS | frame parser | CWE-770 / A06:2021 | `frame/frame.zig:367,380,422,435,487,529` | [#111](https://gitlab.com/devnw/zig/quic/-/issues/111) CONFIDENTIAL | Allocation caps added to frame/frame.zig; GitLab issue closed after verification | TBD | 2026-04-23 | Closed / Implemented |
 | 2 | High | 64 | `allow_insecure` bypasses Retry integrity + CID match -- connection hijack | endpoint | CWE-287 / A07:2021 | `endpoint.zig:1007-1020` | [#114](https://gitlab.com/devnw/zig/quic/-/issues/114) CONFIDENTIAL | Batch B removed `allow_insecure` from Retry/CID paths; flag now controls TLS cert validation only. Full audit confirmed scope (2026-03-24). Doc comments added to all 4 declaration sites. | Core QUIC | 2026-03-24 | Closed / Implemented |
 | 3 | High | 60 | Env var disables amplification limit -- DDoS reflector | conn | CWE-1188 / A05:2021 | `conn.zig:1534` | [#116](https://gitlab.com/devnw/zig/quic/-/issues/116) CONFIDENTIAL | Env var removed entirely; config field used instead (Batch A, commit 7034861) | Core QUIC | 2026-03-24 | Closed / Implemented |
 | 4 | High | 48 | mTLS `request_client_cert` silently ignored | handshake | CWE-295 / A07:2021 | `handshake_integration.zig:334-336` | [#118](https://gitlab.com/devnw/zig/quic/-/issues/118) | Removed `_ = ...` discards; wired `request_client_cert`, `client_cert_der`, `client_key_der` into `tls13.Config` struct literal (commit bf8cf7f) | Core QUIC | 2026-03-24 | Closed / Implemented |
@@ -46,9 +43,9 @@ Notes: #111 (High, frame alloc caps) partially fixed in Batch B. #114 (High, all
 | 9 | Medium | 32 | ACK range count silently truncated to 16 -- CPU exhaustion | frame/ack | CWE-130 / A06:2021 | `frame/ack.zig:137-144` | [#123](https://gitlab.com/devnw/zig/quic/-/issues/123) | Buffer increased from 16 to 64 ranges; hard ceiling at 256; returns error.TooManyAckRanges instead of silent truncation | TBD | 2026-06-22 | Closed / Implemented |
 | 10 | Medium | 32 | Localhost exemption from amplification protection | conn / incoming | CWE-290 / A05:2021 | `conn.zig:1542`, `incoming.zig:544-558` | [#124](https://gitlab.com/devnw/zig/quic/-/issues/124) | Added `exempt_localhost` config flag (default true); `overAmplification()` and `processInitial()` now check the flag | Core QUIC | 2026-03-24 | Closed / Implemented |
 | 11 | Medium | 24 | Retry not enabled by default | config | CWE-1188 / A05:2021 | `config.zig:30` | [#125](https://gitlab.com/devnw/zig/quic/-/issues/125) | Defaulted `enable_retry` to `true` (Batch A, commit 7034861) | Core QUIC | 2026-03-24 | Closed / Implemented |
-| 12 | Low | 16 | Global mutable state in crypto/debug code | packet / crypto | CWE-362 / A04:2021 | `packet.zig:14-18`, `crypto_quic.zig:179` | Doc only | Wrap in thread-local or remove; use `@threadlocal` or const | TBD | 2026-09-20 | Open |
-| 13 | Low | 12 | Test certificates baked into Docker image | interop | CWE-798 / A07:2021 | `interop/Dockerfile:25-26` | Doc only | Generate ephemeral certs at container startup | TBD | 2026-09-20 | Open |
-| 14 | Low | 8 | macOS CI downloads without hash verification | CI | CWE-494 / A08:2021 | `.gitlab-ci.yml:504-507` | Doc only | Pin download URLs and verify SHA-256 checksum | TBD | 2026-09-20 | Open |
+| 12 | Low | 16 | Global mutable state in crypto/debug code | packet / crypto | CWE-362 / A04:2021 | `packet.zig:14-18`, `crypto_quic.zig:179` | [#194](https://gitlab.com/devnw/zig/quic/-/issues/194) | `phase57_*` debug state is `threadlocal` and test-only; Retry tag temporary ciphertext buffer is function-local | Core QUIC | 2026-04-25 | Closed / Implemented |
+| 13 | Low | 12 | Test certificates baked into Docker image | interop | CWE-798 / A07:2021 | `interop/Dockerfile:25-26` | [#193](https://gitlab.com/devnw/zig/quic/-/issues/193) | Removed static cert/key COPY; `run_endpoint.sh` generates ephemeral fallback TLS material at startup | Interop | 2026-04-25 | Closed / Implemented |
+| 14 | Low | 8 | macOS/Windows CI downloads without hash verification | CI | CWE-494 / A08:2021 | `.gitlab-ci.yml:618-659` | [#102](https://gitlab.com/devnw/zig/quic/-/issues/102) | Platform-specific Zig download SHA-256 verification added; generic CI/toolchain hash pinning remains [#54](https://gitlab.com/devnw/zig/quic/-/issues/54) repo-level won't-do under external controls | CI | N/A | Closed / Implemented + Won't Do boundary documented |
 
 ---
 
@@ -313,13 +310,15 @@ if (out_len < ranges_buf.len) {
 ### 12. LOW -- Global Mutable State in Crypto/Debug Code
 
 - **ID**: 4.3
+- **GitLab issue**: [#194](https://gitlab.com/devnw/zig/quic/-/issues/194)
 - **Risk Score**: 16 (Impact 2 x Likelihood 2 x 4)
 - **CWE**: [CWE-362](https://cwe.mitre.org/data/definitions/362.html) -- Concurrent Execution Using Shared Resource with Improper Synchronization
 - **OWASP**: A04:2021 Insecure Design
 - **Evidence**:
-  - `src/quic/packet.zig:14-18`: `var phase57_dump_count`, `var phase57_attempt_label`
-  - `src/quic/crypto_quic.zig:179`: `var ct_empty: [1]u8 = .{0};`
-- **Fix**: Use `@threadlocal` annotation or convert to const. Remove debug counters from production builds.
+  - `src/quic/packet.zig:14-18`: `phase57_dump_count` and `phase57_attempt_label` are `threadlocal` and `phase57SetAttemptLabel()` is test-only via `if (!builtin.is_test) return`.
+  - `src/quic/crypto_quic.zig:179`: Retry tag helper uses function-local `ct_local`; no shared mutable ciphertext buffer remains.
+- **Status**: Closed / Implemented.
+- **Fix evidence**: Thread-local debug state prevents cross-thread races in tests, production builds return before mutating debug labels, and Retry tag temporary storage is stack-local.
 
 ---
 
@@ -329,19 +328,24 @@ if (out_len < ranges_buf.len) {
 - **Risk Score**: 12 (Impact 2 x Likelihood 1.5 x 4)
 - **CWE**: [CWE-798](https://cwe.mitre.org/data/definitions/798.html) -- Use of Hard-coded Credentials
 - **OWASP**: A07:2021 Identification and Authentication Failures
-- **Evidence**: `interop/Dockerfile:25-26`
-- **Fix**: Generate ephemeral certificates at container startup instead of baking them into the image.
+- **GitLab issue**: [#193](https://gitlab.com/devnw/zig/quic/-/issues/193)
+- **Evidence**:
+  - `interop/Dockerfile:21-24`: copies the endpoint binary and run script only; no `tests/certs/*.pem` COPY remains.
+  - `interop/run_endpoint.sh:47-93`: `ensure_fallback_tls_materials()` generates an ephemeral ECDSA P-256 certificate/key at startup with key mode `0600`.
+  - `interop/README.md:152-163`: documents `QNS_FALLBACK_CERT_DAYS` and states static test keys are not baked into the image.
+- **Status**: Closed / Implemented.
 
 ---
 
-### 14. LOW -- macOS CI Downloads Without Hash Verification
+### 14. LOW -- macOS/Windows CI Downloads Without Hash Verification
 
 - **ID**: 5.2
 - **Risk Score**: 8 (Impact 2 x Likelihood 1 x 4)
 - **CWE**: [CWE-494](https://cwe.mitre.org/data/definitions/494.html) -- Download of Code Without Integrity Check
 - **OWASP**: A08:2021 Software and Data Integrity Failures
-- **Evidence**: `.gitlab-ci.yml:504-507`
-- **Fix**: Pin download URLs to specific versions and verify SHA-256 checksums after download.
+- **Evidence**: `.gitlab-ci.yml:618-659`
+- **Resolution**: Closed / Implemented for project-owned platform-specific Zig downloads. macOS uses `shasum -a 256 --check`; Windows uses `Get-FileHash -Algorithm SHA256`.
+- **Governance boundary**: Generic CI/CD external-tool hash/toolchain pinning is closed as repo-level won't-do in GitLab issue #54 because external controls own that risk. Do not reopen this as a local repository gap unless governance ownership changes.
 
 ---
 
@@ -379,9 +383,16 @@ if (out_len < ranges_buf.len) {
 | # | Finding | Severity | Risk |
 |---|---------|----------|------|
 | 5.1 | Test certificates in Docker image | Low | 12 |
-| 5.2 | macOS CI downloads without hash verification | Low | 8 |
+| 5.2 | macOS/Windows CI downloads without hash verification | Low | 8 |
 
 ---
+
+## Future-Agent Governance Notes
+
+1. CI/CD external-tool hash/toolchain pinning is closed as **Won't Do** at the repository level. GitLab issue #54 is the authoritative record; external controls own that risk.
+2. Docker tag/digest pinning is closed as **Won't Do** at the repository level. GitLab issue #55 is the authoritative record; external controls own that risk.
+3. Pre-commit hook pinning/enforcement is also externalized. Do not create or reopen a repo-local pre-commit governance gap unless ownership changes.
+4. Platform-specific Zig download verification in this repository is separate from the generic external-control boundary and is closed as implemented by #102.
 
 ## Remediation Roadmap
 
@@ -393,15 +404,15 @@ if (out_len < ranges_buf.len) {
 | 4.4 -- Default `enable_retry` to `true` | 15 min | Enables amplification protection out of box | **Closed** (Batch A) |
 | 6.1 -- Replace `unreachable` with error return | 1 hr | Prevents crash from crafted CID | **Closed** (Batch A) |
 | 4.1 -- Remove `QUIC_DISABLE_AMPLIFICATION_LIMIT` env var | 30 min | Removes DDoS reflector vector | **Closed** (Batch A) |
-| 4.3 -- Annotate globals with `@threadlocal` or make const | 30 min | Thread safety | Open |
+| 4.3 -- Annotate globals with `@threadlocal` or make const | 30 min | Thread safety | **Closed** (thread-local/test-only state confirmed) |
 
 ### Medium Effort (1--5 days)
 
 | Finding | Effort | Impact | Status |
 |---------|--------|--------|--------|
-| 2.1 -- Add allocation caps to frame parser | 2 days | Eliminates OOM DoS | **Partially Fixed** (Batch B) |
+| 2.1 -- Add allocation caps to frame parser | 2 days | Eliminates OOM DoS | **Closed** (#111) |
 | 2.2 -- Validate ACK range count at parse time | 1 day | Prevents CPU exhaustion | **Closed** (previously) |
-| 1.1 -- Remove `allow_insecure` from Retry path | 1 day | Prevents connection hijack | **Partially Fixed** (Batch B) |
+| 1.1 -- Remove `allow_insecure` from Retry path | 1 day | Prevents connection hijack | **Closed** (#114) |
 | 3.1 -- Zero key material before free | 1 day | Protects against memory forensics | **Closed** (Batch B) |
 | 4.2 -- Remove localhost amplification exemption | 1 day | Prevents co-tenant spoofing | **Closed** (previously) |
 
@@ -410,7 +421,7 @@ if (out_len < ranges_buf.len) {
 | Finding | Effort | Impact | Status |
 |---------|--------|--------|--------|
 | 1.2 -- Complete mTLS integration | 5--10 days | Enables mutual TLS enforcement | **Closed** (commit bf8cf7f) |
-| 3.2 -- Implement 0-RTT anti-replay | 5--10 days | RFC compliance, prevents replay attacks | Open |
+| 3.2 -- Implement 0-RTT anti-replay | 5--10 days | RFC compliance, prevents replay attacks | **Closed** (#121) |
 
 ---
 
