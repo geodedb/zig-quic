@@ -8,6 +8,11 @@
 //! transport (RFC 9000), TLS binding (RFC 9001), or recovery (RFC 9002) text.
 const std = @import("std");
 
+/// RFC 9000 §14.1 minimum Initial datagram size and RFC 9002 default
+/// max_datagram_size. Keep the field default named so packet sizing does not
+/// drift from the protocol floor.
+pub const MIN_INITIAL_DATAGRAM_SIZE: u16 = 1200;
+
 /// Configuration for a QUIC endpoint and connections.
 ///
 /// The defaults follow RFC 9000 §7 and §10 for handshake/path timeouts, RFC 9001
@@ -40,8 +45,8 @@ pub const QuicConfig = struct {
     token_expiry_ms: u32 = 60000,
     // Optional pacing (RFC 9002 §6.7 suggests pacing to reduce bursts)
     enable_pacing: bool = false,
-    // Congestion-control max_datagram_size per RFC 9002 §7.3. Default 1200.
-    max_datagram_size: u16 = 1200,
+    // Congestion-control max_datagram_size per RFC 9002 §7.3.
+    max_datagram_size: u16 = MIN_INITIAL_DATAGRAM_SIZE,
     // Transport idle timeout (RFC 9000 §10.1) and UDP payload limit (RFC 9000 §14.1)
     max_idle_timeout_ms: u32 = 30000,
     max_udp_payload: u16 = 1350,

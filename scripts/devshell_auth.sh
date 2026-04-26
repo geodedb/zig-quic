@@ -9,6 +9,10 @@ note() {
   printf '\033[1;34m[INFO]\033[0m %s\n' "$*" >&2
 }
 
+warn_secret_env() {
+  warn "This helper exports credentials into the current shell; child processes can inherit them. Source it only in a trusted local shell and unset tokens when finished."
+}
+
 if command -v gh >/dev/null 2>&1; then
   if ! gh auth status >/dev/null 2>&1; then
     if [[ -r "$HOME/.github_token" ]]; then
@@ -19,7 +23,10 @@ if command -v gh >/dev/null 2>&1; then
   fi
   GITHUB_TOKEN="$(gh auth token 2>/dev/null || true)"
   export GITHUB_TOKEN
-  [[ -n "${GITHUB_TOKEN:-}" ]] && note "GITHUB_TOKEN exported for this shell"
+  [[ -n "${GITHUB_TOKEN:-}" ]] && {
+    note "GITHUB_TOKEN exported for this shell"
+    warn_secret_env
+  }
 else
   warn "gh CLI not found; skipping GitHub token setup"
 fi
@@ -34,12 +41,14 @@ if command -v vault >/dev/null 2>&1; then
   if [[ -n "${OPENAI_API_KEY:-}" ]]; then
     export OPENAI_API_KEY
     note "OPENAI_API_KEY loaded into environment"
+    warn_secret_env
   fi
 
   CACHIX_AUTH_TOKEN="$(vault kv get -mount=secret -field=token /cicd/gh/cachix 2>/dev/null || true)"
   if [[ -n "${CACHIX_AUTH_TOKEN:-}" ]]; then
     export CACHIX_AUTH_TOKEN
     note "CACHIX_AUTH_TOKEN loaded into environment"
+    warn_secret_env
     if command -v cachix >/dev/null 2>&1; then
       cachix authtoken "$CACHIX_AUTH_TOKEN" >/dev/null 2>&1 || warn "cachix authtoken failed"
       cachix use spyder >/dev/null 2>&1 || warn "cachix use spyder failed"

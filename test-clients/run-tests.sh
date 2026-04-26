@@ -100,12 +100,12 @@ echo ""
 # Test 1: quic-go client (command executed directly, not via eval)
 run_test "quic-go (Go) client" \
     "${SCRIPT_DIR}/quic-go-client/quic-go-test-client" \
-    --addr "${SERVER_HOST}:${SERVER_PORT}"
+    --addr "${SERVER_HOST}:${SERVER_PORT}" --insecure
 
 # Test 2: aioquic client
 run_test "aioquic (Python) client" \
     python3 "${SCRIPT_DIR}/aioquic-client/test_client.py" \
-    --host "${SERVER_HOST}" --port "${SERVER_PORT}"
+    --host "${SERVER_HOST}" --port "${SERVER_PORT}" --insecure
 
 # Test 3: quinn client
 run_test "quinn (Rust) client" \

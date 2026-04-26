@@ -245,7 +245,7 @@ e2e-test-python:
     - sleep 3
     # Run Python client
     - cd test-clients/aioquic-client
-    - python test_client.py --host 127.0.0.1 --port 4433 2>&1 | tee /tmp/client.log
+    - python test_client.py --host 127.0.0.1 --port 4433 --insecure 2>&1 | tee /tmp/client.log
     - kill $SERVER_PID 2>/dev/null || true
     # Check for success
     - grep -q "Test completed successfully" /tmp/client.log
@@ -291,7 +291,7 @@ e2e-test-go:
     - sleep 3
     # Run Go client
     - cd test-clients/quic-go-client
-    - ./quic-go-test-client -addr 127.0.0.1:4433 -verbose 2>&1 | tee /tmp/client.log
+    - ./quic-go-test-client -addr 127.0.0.1:4433 -verbose -insecure 2>&1 | tee /tmp/client.log
     - kill $SERVER_PID 2>/dev/null || true
     # Check for success
     - grep -q "Test completed successfully" /tmp/client.log
@@ -446,6 +446,7 @@ interop-test:
     - dd if=/dev/urandom of=examples/interop/quic-network-simulator/www/10000 bs=10000 count=1 2>/dev/null
   script:
     - docker build -f examples/interop/zig-qns/Dockerfile -t zig-qns:local .
+    - test "$(docker run --rm -e INTEROP_PRIVILEGE_CHECK=1 zig-qns:local)" = "quic"
     - export QUIC_GO_IMAGE="martenseemann/quic-go-interop@sha256:aa7949c0a4a036390aac69227264b48f114c3467776cb047ba5c1cde671e021b"
     - export QNS_IMAGE="martenseemann/quic-network-simulator@sha256:c23d82a55caffe681b1bdae65d4d30d23e1283141a414a7f02ee56cf15f9c6b9"
     - docker pull "${QUIC_GO_IMAGE}"
@@ -708,6 +709,38 @@ security-rust-cargo-audit:
       done
     - cd clients/rust && cargo audit && cd ../..
     - cd test-clients/legacy-clients/rust && cargo audit && cd ../..
+    - cd test-clients/quinn-client && cargo audit && cd ../..
+
+security-repo-hygiene:
+  stage: security
+  image: debian:bookworm-slim
+  tags:
+    - company
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends file git
+  script:
+    - scripts/check-no-committed-binaries.sh
+
+security-python-safety:
+  stage: security
+  image: python:3.13-slim
+  tags:
+    - company
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  before_script:
+    - python -m pip install --upgrade pip
+    - python -m pip install 'safety==3.7.0'
+  script:
+    - safety check --full-report -r clients/python/requirements.txt
+    - safety check --full-report -r test-clients/aioquic-client/requirements.txt
+    - safety check --full-report -r test-clients/legacy-clients/python/requirements.txt
 
 security-go-govulncheck:
   stage: security
@@ -721,16 +754,15 @@ security-go-govulncheck:
   variables:
     GOTOOLCHAIN: "go1.26.2"
   script:
-    - go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
-    - GOVULNCHECK="$(go env GOPATH)/bin/govulncheck"
-    - for dir in examples/interop test-clients/quic-test-legacy/xnet-quic test-clients/quic-go-client test-clients/legacy-clients/go; do echo "Scanning $dir"; (cd "$dir" && "$GOVULNCHECK" ./...); done
+    - go version
+    - for dir in examples/interop test-clients/quic-test-legacy/xnet-quic test-clients/quic-go-client test-clients/legacy-clients/go; do echo "Scanning $dir"; (cd "$dir" && go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...); done
     - |
       echo "Scanning test-clients/quic-test-legacy (standalone binaries)"
       cd test-clients/quic-test-legacy
       for src in client.go server.go test_client.go test_client_comprehensive.go; do
         out="/tmp/quic-test-legacy-${src%.go}"
         go build -o "$out" "./$src"
-        "$GOVULNCHECK" -mode=binary "$out"
+        go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 -mode=binary "$out"
       done
 
 # Scheduled job to update Go dependencies for interop testing

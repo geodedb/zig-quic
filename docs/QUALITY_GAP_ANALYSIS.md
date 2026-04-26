@@ -16,13 +16,13 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
   - Medium: 14 (`Open=0`, `Closed=14`)
   - Low: 6 (`Blocked=1`, `Closed=5`)
 
-### Top Active Risks
+### Top Blocked Risks
 
 1. **#115 (Low, PriorityScore 24)** -- Connection struct 1711 LOC, 160 fields + non-domain-aligned method split. Blocked on staged architecture plan because this is a broad refactor with high regression surface.
 
 ---
 
-## Stack-Ranked Findings -- Phase 3 (Open)
+## Stack-Ranked Findings -- Phase 3 (Active)
 
 | Rank | ID | Severity | PriorityScore | Category | Finding | Component | Evidence | GitLab Issue | Fix Summary | Owner | Effort | Status |
 |---:|:---|:---|---:|:---|:---|:---|:---|:---|:---|:---|:---|:---|
@@ -93,7 +93,7 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 ### architecture
 - [#75](https://gitlab.com/devnw/zig/quic/-/issues/75) Closed.
 - [#103](https://gitlab.com/devnw/zig/quic/-/issues/103) **Closed** -- documented monolithic files as deprecated; build wires modular versions.
-- [#115](https://gitlab.com/devnw/zig/quic/-/issues/115) **Open** -- Connection struct 1711 LOC.
+- [#115](https://gitlab.com/devnw/zig/quic/-/issues/115) **Blocked / Deferred** -- Connection struct 1711 LOC; requires staged method-module refactor plan and full regression suite.
 
 ### ci-cd
 - [#64](https://gitlab.com/devnw/zig/quic/-/issues/64) Closed.

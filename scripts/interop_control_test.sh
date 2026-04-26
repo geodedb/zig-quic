@@ -57,10 +57,11 @@ export TESTCASE
 export SCENARIO="${SCENARIO:-simple-p2p --delay=10ms --bandwidth=10Mbps --queue=25}"
 
 LOG="/tmp/interop_control_test_${TESTCASE}.log"
-COMPOSE="docker compose -f examples/interop/docker-compose.full.yml --profile generic"
+COMPOSE=(docker compose -f examples/interop/docker-compose.full.yml --profile generic)
 
+# shellcheck disable=SC2317 # invoked by the EXIT trap.
 cleanup() {
-  $COMPOSE down -v >/dev/null 2>&1 || true
+  "${COMPOSE[@]}" down -v >/dev/null 2>&1 || true
   docker network rm interop_leftnet interop_rightnet >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -99,11 +100,11 @@ EOF
   fi
 fi
 
-$COMPOSE down -v >/dev/null 2>&1 || true
+"${COMPOSE[@]}" down -v >/dev/null 2>&1 || true
 docker network rm interop_leftnet interop_rightnet >/dev/null 2>&1 || true
 
 echo "[control] starting sim..."
-if ! timeout 60 $COMPOSE up -d sim >/dev/null 2>&1; then
+if ! timeout 60 "${COMPOSE[@]}" up -d sim >/dev/null 2>&1; then
   echo "[control] sim failed to start" >&2
   exit 2
 fi
@@ -115,7 +116,7 @@ docker exec "${COMPOSE_PROJECT_NAME}_sim" ip6tables -D FORWARD -i eth0 -o eth1 -
 docker exec "${COMPOSE_PROJECT_NAME}_sim" ip6tables -D FORWARD -i eth1 -o eth0 -j DROP 2>/dev/null || true
 
 echo "[control] running ${TESTCASE}..."
-if timeout 90 $COMPOSE up --abort-on-container-exit --timeout 5 server client &> "$LOG"; then
+if timeout 90 "${COMPOSE[@]}" up --abort-on-container-exit --timeout 5 server client &> "$LOG"; then
   if grep -qE 'timeout: no recent network activity|Downloading files failed' "$LOG"; then
     echo "[control] FAIL: handshake timed out (see $LOG)" >&2
     exit 1

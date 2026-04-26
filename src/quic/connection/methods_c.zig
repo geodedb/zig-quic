@@ -575,10 +575,8 @@ pub fn bind(comptime Connection: type) type {
             return issued;
         }
 
-        /// Issue a new locally-generated Connection ID (placeholder implementation).
-        /// In a full implementation this would also schedule a NEW_CONNECTION_ID frame for transmission.
-        /// Returns the sequence number of the newly issued CID.
-        /// Issue new local CID (no rotation); marks pending for advertisement and returns sequence.
+        /// Issue a new locally-generated Connection ID, mark it pending for
+        /// advertisement, and return its sequence number.
         pub fn issueNewConnectionId(self: *Connection, rand: *std.Random.DefaultPrng) !u64 {
             try self.onIssuedNewConnectionId();
             // Allocate new CID slot and mark pending for advertisement.

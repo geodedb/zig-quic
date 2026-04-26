@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -12,17 +13,20 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 3 {
+	insecure := flag.Bool("insecure", false, "skip certificate verification")
+	flag.Parse()
+	args := flag.Args()
+	if len(args) < 2 {
 		fmt.Printf("Usage: %s <server-address> <message>\n", os.Args[0])
-		fmt.Printf("Example: %s localhost:4242 hello\n", os.Args[0])
+		fmt.Printf("Example: %s -insecure localhost:4242 hello\n", os.Args[0])
 		os.Exit(1)
 	}
 
-	addr := os.Args[1]
-	message := os.Args[2]
+	addr := args[0]
+	message := args[1]
 
 	tlsConf := &tls.Config{
-		InsecureSkipVerify: true,
+		InsecureSkipVerify: *insecure,
 		NextProtos:         []string{"hq-interop"},
 	}
 

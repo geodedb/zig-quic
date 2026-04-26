@@ -1,0 +1,4 @@
+# Public RFC documents contain deliberately published PEM examples that trigger
+# generic private-key heuristics. Keep source and test code in scope.
+specs/x509/rfc7468.txt
+specs/x509/rfc8410.txt

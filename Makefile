@@ -411,7 +411,7 @@ e2e-test-go: build
 		sleep 2; \
 		echo "Running Go client..."; \
 		if [ -f test-clients/quic-go-client/quic-go-test-client ]; then \
-			cd test-clients/quic-go-client && timeout 10 ./quic-go-test-client -addr 127.0.0.1:4433 -verbose 2>&1 | tee /tmp/e2e-go-client.log || true; \
+			cd test-clients/quic-go-client && timeout 10 ./quic-go-test-client -addr 127.0.0.1:4433 -verbose -insecure 2>&1 | tee /tmp/e2e-go-client.log || true; \
 		else \
 			echo "Go client not found, skipping..."; \
 		fi; \
@@ -463,7 +463,7 @@ e2e-test-python: build
 		python3 -m venv $$VENV_DIR >/tmp/e2e-python-pip.log 2>&1 || true; \
 		$$VENV_DIR/bin/pip install -r $$CLIENT_DIR/requirements.txt >>/tmp/e2e-python-pip.log 2>&1 || true; \
 		echo "Running Python client..."; \
-		cd $$CLIENT_DIR && timeout 10 $$VENV_DIR/bin/python test_client.py --host 127.0.0.1 --port 4433 2>&1 | tee /tmp/e2e-python-client.log || true; \
+		cd $$CLIENT_DIR && timeout 10 $$VENV_DIR/bin/python test_client.py --host 127.0.0.1 --port 4433 --insecure 2>&1 | tee /tmp/e2e-python-client.log || true; \
 		kill $$SERVER_PID 2>/dev/null || true; \
 		sleep 1; \
 		echo ""; \
@@ -567,7 +567,7 @@ e2e-test-python-comprehensive: build
 		python3 -m venv $$VENV_DIR >/tmp/e2e-python-pip.log 2>&1 || true; \
 		$$VENV_DIR/bin/pip install -r $$CLIENT_DIR/requirements.txt >>/tmp/e2e-python-pip.log 2>&1 || true; \
 		echo "Running comprehensive Python test suite..."; \
-		cd $$CLIENT_DIR && timeout 60 $$VENV_DIR/bin/python test_client_comprehensive.py --host 127.0.0.1 --port 4433 2>&1 | tee /tmp/e2e-python-comprehensive-client.log || true; \
+		cd $$CLIENT_DIR && timeout 60 $$VENV_DIR/bin/python test_client_comprehensive.py --host 127.0.0.1 --port 4433 --insecure 2>&1 | tee /tmp/e2e-python-comprehensive-client.log || true; \
 		kill $$SERVER_PID 2>/dev/null || true; \
 		sleep 1; \
 		echo ""; \

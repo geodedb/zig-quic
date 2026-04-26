@@ -1,24 +1,27 @@
 # Security Review Notes
 
-Last updated: 2026-02-16
+Last updated: 2026-04-26
 
 ## Orientation
 
 - Repo root: `/home/benji/src/devnw/zig/quic`
 - Branch: `main`
-- HEAD: `da48742`
+- HEAD at review start: `18d49c8`
 - Remote: `origin git@gitlab.com:devnw/zig/quic.git`
-- `glab repo view`: succeeded
-- Worktree status: **dirty** (large pre-existing change set present before this review)
+- `glab repo view`: succeeded for `devnw/zig/quic`
+- Worktree status at review start: clean
 - File inventory snapshots:
-  - `find . -maxdepth 3 -type f` -> `/tmp/quic_find_maxdepth3.txt` (4542 entries)
-  - `git ls-files` -> `/tmp/quic_git_ls_files.txt` (482 tracked files)
+  - `find . -maxdepth 3 -type f` -> `/tmp/security_review_find_maxdepth3_20260426.txt` (`13021` entries; includes ignored/generated files)
+  - `git ls-files` -> `/tmp/security_review_git_ls_files_20260426.txt` (`568` tracked files)
+  - build/deploy inventory -> `/tmp/security_review_build_deploy_files_20260426.txt`
 
-## Tooling Inventory (command -v + version)
+## Tooling Inventory
 
-- `gitleaks`: `/usr/bin/gitleaks` (`version is set by build process`)
-- `trufflehog`: `/usr/local/bin/trufflehog` (`3.92.5`)
-- `osv-scanner`: `/usr/local/bin/osv-scanner` (`2.3.2`)
+Raw capture: `/tmp/security_review_tool_versions_20260426.txt`
+
+- `gitleaks`: `/usr/local/bin/gitleaks` (`8.30.0`)
+- `trufflehog`: `/usr/local/bin/trufflehog` (legacy CLI; `--version` prints usage)
+- `osv-scanner`: `/usr/local/bin/osv-scanner` (`1.9.2`)
 - `trivy`: `/home/benji/.local/bin/trivy` (`0.69.0`)
 - `grype`: `/home/benji/.local/bin/grype` (`0.107.0`)
 - `syft`: `/home/benji/.local/bin/syft` (`1.41.1`)
@@ -29,98 +32,100 @@ Last updated: 2026-02-16
 - `bandit`: `/home/benji/.local/bin/bandit` (`1.9.3`)
 - `safety`: `/home/benji/.local/bin/safety` (`3.7.0`)
 - `cargo-audit`: `/home/benji/.cargo/bin/cargo-audit` (`0.22.0`)
-- `govulncheck`: `/home/benji/go/bin/govulncheck` (`v1.1.4`, Go `1.25.6`)
-- `snyk`: `/home/benji/.config/nvm/versions/node/v24.11.1/bin/snyk` (`1.1302.1`)
-- `npm`: `/home/benji/.config/nvm/versions/node/v24.11.1/bin/npm` (`11.6.2`)
-- `pnpm`: `/home/benji/.config/nvm/versions/node/v24.11.1/bin/pnpm` (`10.28.2`)
-- `yarn`: not installed
-
-Raw capture: `/tmp/security_tool_versions.txt`
+- `govulncheck`: `/home/benji/go/bin/govulncheck` (`v1.1.4`, local Go `1.23.4`)
+- `snyk`: missing; not run
 
 ## Telemetry / Network Controls
 
-- `semgrep` run with `--metrics=off`.
-- `trivy` run with `TRIVY_DISABLE_ANALYTICS=true`.
-- `syft` run with `SYFT_CHECK_FOR_APP_UPDATE=false`.
-- `grype` run with `GRYPE_CHECK_FOR_APP_UPDATE=false`.
-- `trufflehog` rerun with `--no-update` after updater error.
+- Semgrep `auto` was not run with telemetry enabled. `semgrep scan --config auto --metrics=off` failed because this Semgrep version requires metrics for auto config creation, so named configs were used instead.
+- Trivy downloaded its vulnerability DB locally.
+- Snyk was skipped because it is not installed and would require SaaS/auth setup.
+- No scanner output containing secret values was copied into repository docs.
 
-## Automated Scan Runs (outputs in /tmp)
+## Automated Scan Runs
+
+All raw reports were written to `/tmp`.
 
 ### Secrets
 
-- `gitleaks detect --source . --redact --report-format json --report-path /tmp/gitleaks.json`
-  - Result: exit 1, `14` findings (historical/private-key + test-fixture patterns).
-- `trufflehog --no-update git file://$PWD --json > /tmp/trufflehog.json`
-  - Result: exit 0, `8` unverified findings (historical private-key hits).
+- `gitleaks detect --source . --redact --report-format json --report-path /tmp/gitleaks_20260426.json`
+  - Exit `0`; no leaks found.
+- `trufflehog --json file://$PWD > /tmp/trufflehog_20260426.json`
+  - Exit `1`; `179` high-entropy-only records.
+  - Manual summary showed lockfile hashes and historical/test certificate paths; values were not printed.
+- `trivy fs ... --skip-dirs ... --format json -o /tmp/trivy_fs_trackedish_20260426.json`
+  - Exit `0`; reported `10` private-key findings in public RFC spec files.
+- `semgrep scan --config p/security-audit --config p/secrets --metrics=off --json -o /tmp/semgrep_20260426.json`
+  - Exit `0`; reported `13` findings, including `10` private-key findings in public RFC spec files.
 
 ### SBOM / Dependency
 
-- `syft dir:. -o cyclonedx-json=/tmp/sbom.cdx.json`
-  - Result: success, CycloneDX components: `533`.
-- `grype sbom:/tmp/sbom.cdx.json -o json > /tmp/grype.json`
-  - Result: success, matches: `151` (`10 Critical`, `59 High`, `82 Medium`; 93 unique package+vuln tuples).
-- `osv-scanner scan --recursive . --format json > /tmp/osv.json`
-  - Result: exit 1 (govulncheck package-load failure on `test-clients/quic-test-legacy`), but JSON produced with vuln hits.
-- `trivy fs . --format json -o /tmp/trivy-fs.json`
-  - Result: success, vulnerabilities reported: `0`.
-- `trivy config . --format json -o /tmp/trivy-config.json`
-  - Result: success, misconfigurations: `2` (`DS-0002` on two Dockerfiles).
+- `syft dir:. -o cyclonedx-json=/tmp/sbom_20260426.cdx.json`
+  - Exit `0`; broad scan included generated/ignored files and was treated as triage-only.
+- `syft dir:. --exclude './.git/**' --exclude './.zig-cache/**' --exclude './.claude/**' --exclude './zig-out/**' --exclude './quic-test/**' --exclude './test-clients/*/target/**' --exclude './clients/*/target/**' -o cyclonedx-json=/tmp/sbom_trackedish_20260426.cdx.json`
+  - Exit `0`; used for Grype follow-up.
+- `grype sbom:/tmp/sbom_trackedish_20260426.cdx.json -o json > /tmp/grype_trackedish_20260426.json`
+  - Exit `0`; reported Go binary/runtime advisories on tracked committed test-client binaries.
+- `osv-scanner scan -r --format json . > /tmp/osv_20260426.json`
+  - Exit `1`; JSON produced. Call analysis failed for one legacy Go package layout and local Go 1.23.4 was older than some checked-in Go dependencies require.
+- `trivy fs ... --skip-dirs ... --format json -o /tmp/trivy_fs_trackedish_20260426.json`
+  - Exit `0`; reported Rust low-severity advisories and RFC spec private-key false positives.
 
 ### SAST / IaC / Lint
 
-- `semgrep scan --config auto --metrics=off --json -o /tmp/semgrep.json`
-  - Result: failed (`auto` config requires metrics); fallback used.
-- `semgrep scan --config p/default --metrics=off --json -o /tmp/semgrep.json`
-  - Result: success, findings: `51`.
-- `bandit -r . -f json -o /tmp/bandit.json`
-  - Result: exit 1, findings: `8` (all Low).
-- `checkov -d . -o json > /tmp/checkov.json`
-  - Result: exit 1, failed checks: `3` (Dockerfile checks).
+- `bandit` over tracked Python files:
+  - Exit `123`; `8` low-severity findings in interop Python wrapper code.
 - `git ls-files '*.sh' | xargs -r shellcheck -x`
-  - Result: exit 123, warnings/info in `/tmp/shellcheck.txt`.
+  - Exit `123`; info/warning output stored in `/tmp/shellcheck_20260426.txt`; SC2086 command-variable findings were carried forward as a suspected shell hardening gap.
 - `git ls-files '*Dockerfile*' | xargs -r hadolint`
-  - Result: exit 0.
+  - Exit `0`; no findings.
+- `checkov -d . -o json > /tmp/checkov_20260426.json`
+  - Exit `1`; Dockerfile checks only. Docker tag pinning is intentionally not tracked as a repo-local gap per governance boundary; runtime user check overlaps GAP-0056.
+- `trivy config ... --skip-dirs ... --format json -o /tmp/trivy_config_trackedish_20260426.json`
+  - Exit `0`; `DS-0002` on `examples/interop/zig-qns/Dockerfile`, matching GAP-0056.
 
 ### Language-Specific Audits
 
-- `safety scan --json > /tmp/safety.json`
-  - Result: failed (interactive/EOF in this environment).
-- Fallback:
-  - `safety check --full-report -r clients/python/requirements.txt`
-  - `safety check --full-report -r test-clients/legacy-clients/python/requirements.txt`
-  - `safety check --full-report -r test-clients/aioquic-client/requirements.txt`
-  - Result: 0 vulnerabilities reported in all three files.
-- `cargo audit --json > /tmp/cargo-audit-root.json`
-  - Result: failed at repo root (no root Cargo.lock); per-lock fallback used:
-    - `cargo audit --file clients/rust/Cargo.lock --json` -> warns `RUSTSEC-2025-0134` (unmaintained `rustls-pemfile`).
-    - `cargo audit --file test-clients/quinn-client/Cargo.lock --json` -> no advisories.
-    - `cargo audit --file test-clients/legacy-clients/rust/Cargo.lock --json` -> no advisories.
-- `govulncheck -json ./... > /tmp/govulncheck-root.json`
-  - Result: failed at repo root (no root go.mod); per-module fallback used:
-    - `examples/interop` -> success, no findings
-    - `test-clients/quic-go-client` -> success, no findings
-    - `test-clients/quic-test-legacy/xnet-quic` -> success, no findings
-    - `test-clients/legacy-clients/go` -> success, no findings
-    - `test-clients/quic-test-legacy` -> fails package load (`main redeclared`)
-- `snyk auth list`
-  - Result: interactive OAuth/login required; `snyk test` not run.
+- `safety scan --json`
+  - Exit `1`; failed with interactive EOF.
+- Fallback `safety check --full-report -r clients/python/requirements.txt -r test-clients/aioquic-client/requirements.txt -r test-clients/legacy-clients/python/requirements.txt`
+  - Exit `0`; `0` reported vulnerabilities, but warned that unpinned `aioquic`, `pytest`, and `pytest-asyncio` are not fully reported by default and ignored one pytest advisory due unpinned ranges.
+- Per-lock `cargo audit --json`
+  - `clients/rust`: exit `1`, `RUSTSEC-2026-0104` on `rustls-webpki 0.103.12`.
+  - `test-clients/legacy-clients/rust`: exit `1`, `RUSTSEC-2026-0104` on `rustls-webpki 0.103.12`.
+  - `test-clients/quinn-client`: exit `1`, `RUSTSEC-2026-0104`, `RUSTSEC-2026-0099`, and `RUSTSEC-2026-0098` on `rustls-webpki 0.103.10`.
+- Per-module `govulncheck -json ./...`
+  - `examples/interop`, `test-clients/legacy-clients/go`, `test-clients/quic-go-client`, and `test-clients/quic-test-legacy/xnet-quic`: exit `0`.
+  - `test-clients/quic-test-legacy`: exit `1`, package load failed because multiple standalone `main` files live in one directory.
 
 ## Manual Verification Highlights
 
-- Confirmed secret-history exposure persists (historical commits detectable by gitleaks/trufflehog).
-- Confirmed and implemented `#59` remediation:
-  - Upgraded `test-clients/quic-test-legacy/go.mod` to `go 1.25.0` with `toolchain go1.25.7`.
-  - Added explicit binary-mode govulncheck coverage for legacy standalone mains in `.gitlab-ci.yml`.
-- Confirmed and implemented `#58` remediation:
-  - Removed `rustls-pemfile` from `clients/rust/Cargo.toml`.
-  - Removed CI audit suppression (`--ignore RUSTSEC-2025-0134`) from `.gitlab-ci.yml`.
-- Applied policy decision for `#54`:
-  - Closed as won't-do under external controls (same governance boundary as digest/tag pinning and pre-commit enforcement).
-- Applied policy decision for `#36`:
-  - Closed as won't-do under external governance controls (same ownership boundary as CI/toolchain hash pinning and mutable image-tag pinning).
+- Confirmed tracked committed ELF binaries under `test-clients` and reopened #157.
+- Confirmed current Go module/toolchain/security-scan drift and reopened #59.
+- Confirmed unpinned Python dependency specs and reopened #57.
+- Confirmed developer shell secret export persists in `scripts/devshell_auth.sh` and reopened #43.
+- Confirmed QNS runtime-user verification remains open and commented on #191.
+- Created #195 for Rust test-client advisories and missing `quinn-client` CI cargo-audit coverage.
+- Created #196 for interop/test clients that disable TLS verification and write TLS key logs by default.
+- Created #197 for secret-scanner false positives on public RFC private-key examples.
+- Created #198 for suspected shell command-variable word splitting in interop scripts.
 
-## Files Updated by This Review
+## Closure Update
 
-- `docs/GAP_ANALYSIS.md`
-- `docs/SECURITY_REVIEW_NOTES.md`
+The implementation pass following this review closed the actionable security/delivery findings above:
+
+- #157: removed tracked Go ELF binaries and added `scripts/check-no-committed-binaries.sh` plus CI enforcement.
+- #59: aligned Go module toolchain metadata with CI and runs govulncheck through `go run` under `GOTOOLCHAIN=go1.26.2`, with binary-mode coverage for standalone Go clients.
+- #57: pinned tracked Python requirement specs and added Safety coverage in CI.
+- #195: bumped Rust client lockfiles to `rustls-webpki 0.103.13` and added `test-clients/quinn-client` to cargo-audit CI.
+- #196: made insecure TLS verification and TLS key logging explicit opt-ins in Go/Python interop clients.
+- #197: added narrow Semgrep and Trivy allowlists for public RFC PEM examples only.
+- #191 / GAP-0056: added a QNS runtime privilege-drop check and fail-closed `setpriv` handling.
+- #198: replaced the interop Compose command string with a Bash array.
+- #43: added explicit token-in-environment warnings to the dev shell helper.
+
+Closure evidence is mirrored in `docs/GAP_ANALYSIS_RESOLVED.md`; current open gaps remain in `docs/GAP_ANALYSIS.md`.
+
+## Governance Boundaries
+
+- CI external-tool hash/toolchain pinning, Docker tag/digest pinning, and pre-commit hook enforcement remain documented as external-control / won't-do boundaries from prior direction. This review did not reopen those as repo-local gaps.

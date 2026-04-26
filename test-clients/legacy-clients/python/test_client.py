@@ -19,7 +19,7 @@ class QuicTestClient:
     def __init__(self):
         self.received_data = []
 
-    async def run_client(self, host, port, message, insecure=True):
+    async def run_client(self, host, port, message, insecure=False):
         """Connect to QUIC server and send/receive message."""
 
         # Configure QUIC

@@ -26,21 +26,19 @@ type TestResult struct {
 func main() {
 	var connect string
 	var insecure bool
+	var keyLogPath string
 	flag.StringVar(&connect, "connect", "127.0.0.1:4433", "server address")
 	flag.BoolVar(&insecure, "insecure", false, "skip certificate verification")
+	flag.StringVar(&keyLogPath, "keylog", os.Getenv("SSLKEYLOGFILE"), "write TLS secrets to this file")
 	flag.Parse()
 
-	// Create TLS key log file for debugging
-	keyLogFile, err := os.Create("/tmp/tls_keys_comprehensive.log")
-	if err != nil {
-		log.Printf("Warning: Could not create key log file: %v", err)
-	} else {
+	keyLogFile := openKeyLog(keyLogPath)
+	if keyLogFile != nil {
 		defer keyLogFile.Close()
-		log.Printf("📝 TLS keys will be logged to /tmp/tls_keys_comprehensive.log")
 	}
 
 	tlsConf := &tls.Config{
-		InsecureSkipVerify: true,
+		InsecureSkipVerify: insecure,
 		NextProtos:         []string{"hq-interop"},
 		KeyLogWriter:       keyLogFile,
 	}
@@ -72,9 +70,9 @@ func main() {
 	results = append(results, testMultipleConcurrentStreams(ctx, conn))
 
 	// Test 3: Large data transfer
-	results = append(results, testLargeDataTransfer(ctx, conn, 10*1024))    // 10KB
-	results = append(results, testLargeDataTransfer(ctx, conn, 100*1024))   // 100KB
-	results = append(results, testLargeDataTransfer(ctx, conn, 1024*1024))  // 1MB
+	results = append(results, testLargeDataTransfer(ctx, conn, 10*1024))   // 10KB
+	results = append(results, testLargeDataTransfer(ctx, conn, 100*1024))  // 100KB
+	results = append(results, testLargeDataTransfer(ctx, conn, 1024*1024)) // 1MB
 
 	// Test 4: Multiple request-response cycles
 	results = append(results, testMultipleRoundTrips(ctx, conn, 10))
@@ -386,6 +384,19 @@ func printTestSummary(results []TestResult) {
 		log.Fatalf("\n❌ Some tests failed")
 	}
 	log.Printf("\n✅ All tests passed!")
+}
+
+func openKeyLog(path string) *os.File {
+	if path == "" {
+		return nil
+	}
+	keyLogFile, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		log.Printf("Warning: Could not create TLS key log file: %v", err)
+		return nil
+	}
+	log.Printf("TLS keys will be logged to %s", path)
+	return keyLogFile
 }
 
 func formatSize(bytes int) string {

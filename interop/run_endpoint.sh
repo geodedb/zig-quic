@@ -34,14 +34,27 @@ is_supported_testcase() {
   return 1
 }
 
+drop_to_quic() {
+  if [[ "$(id -un)" == "quic" ]]; then
+    "$@"
+    return
+  fi
+  if command -v setpriv >/dev/null 2>&1; then
+    setpriv --reuid=quic --regid=quic --clear-groups -- "$@"
+    return
+  fi
+  if [[ "${INTEROP_ALLOW_ROOT_ENDPOINT:-0}" == "1" ]]; then
+    echo "WARNING: setpriv unavailable; running endpoint as $(id -un) because INTEROP_ALLOW_ROOT_ENDPOINT=1" >&2
+    "$@"
+    return
+  fi
+  echo "ERROR: setpriv is required to drop qns-endpoint privileges; set INTEROP_ALLOW_ROOT_ENDPOINT=1 only for local debugging." >&2
+  exit 126
+}
+
 run_endpoint_bin() {
   # Drop to the unprivileged 'quic' user created in the Dockerfile.
-  # Fall back to running as current user only when setpriv is missing (e.g. local dev).
-  if command -v setpriv >/dev/null 2>&1; then
-    setpriv --reuid=quic --regid=quic --clear-groups -- qns-endpoint "$@"
-  else
-    qns-endpoint "$@"
-  fi
+  drop_to_quic qns-endpoint "$@"
 }
 
 ensure_fallback_tls_materials() {
@@ -90,6 +103,11 @@ EOF
   chmod 600 "$key_path"
   chmod 644 "$cert_path"
 }
+
+if [[ "${INTEROP_PRIVILEGE_CHECK:-0}" == "1" ]]; then
+  drop_to_quic id -un
+  exit 0
+fi
 
 # Set up simulator routing first (requires root + CAP_NET_ADMIN in container).
 /setup.sh

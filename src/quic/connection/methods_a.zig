@@ -1159,17 +1159,6 @@ pub fn bind(comptime Connection: type) type {
                 }
             }
 
-            // Also handle the legacy stream 0 fields for backward compatibility
-            if (self.local_max_stream_data > self.last_sent_max_stream_data) {
-                // Only send for stream 0 if not already handled above
-                if (!self.streams_rx_init or self.streams_rx.get(0) == null) {
-                    // FIXED: Do NOT send MAX_STREAM_DATA for stream 0 in legacy block.
-                    // _ = (frame.Frame{ .max_stream_data = .{ .stream_id = 0, .max = self.local_max_stream_data } }).write(w) catch 0;
-                    self.last_sent_max_stream_data = self.local_max_stream_data;
-                    wrote = true;
-                }
-            }
-
             if (self.local_max_data > self.last_sent_max_data) {
                 _ = (frame.Frame{ .max_data = .{ .max = self.local_max_data } }).write(w) catch 0;
                 self.last_sent_max_data = self.local_max_data;

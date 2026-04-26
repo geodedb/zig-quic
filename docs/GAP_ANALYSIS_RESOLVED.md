@@ -1,8 +1,98 @@
 # Resolved Gap Analysis Items
 
-Generated: 2026-04-25
+Generated: 2026-04-26
 
 GitLab is authoritative for issue status. This file mirrors resolved or invalidated items that were removed from `docs/GAP_ANALYSIS.md`.
+
+## Closed During 2026-04-26 Implementation Pass
+
+### GitLab #157: Compiled Go binaries with Critical CVEs committed to repository
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/157
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - Removed tracked native test-client binaries: `test-clients/legacy-clients/go/test-client`, `test-clients/quic-test-legacy/test-client`, `test-clients/quic-test-legacy/test-client-comprehensive`, `test-clients/quic-test-legacy/test-client-xnet`, `test-clients/quic-test-legacy/test_client`, and `test-clients/quic-test-legacy/test_comprehensive`.
+  - `.gitignore:81-89` now ignores rebuilt local Go test-client binaries.
+  - `scripts/check-no-committed-binaries.sh:18-37` rejects tracked ELF/Mach-O/PE native binaries.
+  - `.gitlab-ci.yml:714-726` runs the committed-binary gate in CI.
+- **Verification:** `scripts/check-no-committed-binaries.sh` exited `0`; standalone Go client builds succeeded to `/tmp`.
+
+### GitLab #59: Go toolchain/module vulnerability scan drift
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/59
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - Go modules now declare `go 1.25.0` and `toolchain go1.26.2`: `examples/interop/go.mod:3-5`, `test-clients/legacy-clients/go/go.mod:3-5`, `test-clients/quic-test-legacy/go.mod:3-5`, `test-clients/quic-test-legacy/xnet-quic/go.mod:3-5`, `test-clients/quic-go-client/go.mod:3-5`.
+  - `.gitlab-ci.yml:745-766` runs govulncheck through the configured Go toolchain and keeps binary-mode coverage for standalone files in `test-clients/quic-test-legacy`.
+- **Verification:** `GOTOOLCHAIN=go1.26.2 go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...` exited `0` for `examples/interop`, `test-clients/quic-test-legacy/xnet-quic`, `test-clients/quic-go-client`, and `test-clients/legacy-clients/go`; binary-mode govulncheck exited `0` for `client.go`, `server.go`, `test_client.go`, and `test_client_comprehensive.go`.
+
+### GitLab #57: Python dependency specs remained unpinned
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/57
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - `clients/python/requirements.txt:2-6` pins `aioquic==1.3.0`, `pytest==9.0.3`, and `pytest-asyncio==1.3.0`.
+  - `test-clients/aioquic-client/requirements.txt:1` and `test-clients/legacy-clients/python/requirements.txt:1` pin `aioquic==1.3.0`.
+  - `.gitlab-ci.yml:728-743` adds a Safety job over all tracked Python requirement files.
+- **Verification:** Safety `check --full-report` exited `0` for all three requirement files; Python clients compiled under a clean `/tmp/quic-aioquic-venv`.
+
+### GitLab #196: Interop clients disabled TLS verification and wrote TLS key logs by default
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/196
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - `test-clients/quic-go-client/main.go:19-39` makes `-insecure` and `-keylog` explicit opt-ins.
+  - `test-clients/quic-test-legacy/test_client.go:17-32`, `test_client_comprehensive.go`, and `xnet-quic/client.go` use the explicit `-insecure` flag and only write key logs when `-keylog` or `SSLKEYLOGFILE` is set.
+  - `clients/python/test_client.py:61-66` and `test-clients/aioquic-client/test_client.py:61-66` default to certificate verification and only set `ssl.CERT_NONE` for `--insecure`.
+  - `.gitlab-ci.yml:248` and `.gitlab-ci.yml:294`, `Makefile`, and `test-clients/run-tests.sh` now pass `--insecure` only in local/self-signed test paths.
+- **Verification:** Go standalone builds succeeded; Python clients compiled under `/tmp/quic-aioquic-venv`; `rg -n 'InsecureSkipVerify:\s*true|verify_mode\s*=\s*0|os\.Create\("/tmp/tls_keys|insecure\s*=.*true' test-clients clients` has no active insecure-default/keylog-default hits.
+
+### GitLab #195: Rust test clients carried rustls-webpki advisories and CI missed quinn-client audit
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/195
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - `clients/rust/Cargo.lock:535-538`, `test-clients/legacy-clients/rust/Cargo.lock`, and `test-clients/quinn-client/Cargo.lock:672-675` now use `rustls-webpki 0.103.13`.
+  - `.gitlab-ci.yml:710-712` audits `clients/rust`, `test-clients/legacy-clients/rust`, and `test-clients/quinn-client`.
+- **Verification:** `cargo audit` exited `0` in all three Rust client directories. `test-clients/quinn-client` still prints two allowed informational `rand` warnings, but no failing vulnerability remains.
+
+### GitLab #197: Secret scanners flagged public RFC private-key examples
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/197
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - `.semgrepignore:1-4` excludes only the two public RFC text files with published PEM examples.
+  - `trivy-secret.yaml:1-8` adds a narrow Trivy secret allow rule for `rfc7468.txt` and `rfc8410.txt`.
+- **Verification:** `trivy fs --scanners secret --secret-config trivy-secret.yaml --skip-db-update --format json specs/x509` reported `0` secrets; `semgrep scan --config p/secrets --metrics=off --include 'specs/x509/*.txt' .` reported `0` findings and explicitly skipped the two `.semgrepignore` paths.
+
+### GAP-0056 / GitLab #191: QNS container runtime user hardening needed verification
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/191
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - `examples/interop/zig-qns/run_endpoint.sh:37-58` and `interop/run_endpoint.sh` now fail closed if root cannot drop privileges with `setpriv`, unless `INTEROP_ALLOW_ROOT_ENDPOINT=1` is explicitly set for local debugging.
+  - `examples/interop/zig-qns/run_endpoint.sh:111-114` adds `INTEROP_PRIVILEGE_CHECK=1` to prove the drop target without running simulator setup.
+  - `.gitlab-ci.yml:448-449` builds `zig-qns:local` and asserts the privilege check returns `quic`.
+- **Verification:** `docker build -f examples/interop/zig-qns/Dockerfile -t zig-qns:local .` and `docker run --rm -e INTEROP_PRIVILEGE_CHECK=1 zig-qns:local` exited `0` with output `quic`; ShellCheck passed for both endpoint scripts.
+
+### GitLab #198: Interop shell command variables relied on word splitting
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/198
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:** `scripts/interop_control_test.sh:59-119` now stores the Docker Compose invocation in a Bash array and invokes it as `"${COMPOSE[@]}"`.
+- **Verification:** `shellcheck -x scripts/interop_control_test.sh scripts/check-no-committed-binaries.sh` exited `0`.
+
+### GitLab #43: Developer shell helper exported tokens into child-process environment
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/43
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:** `scripts/devshell_auth.sh:12-14`, `scripts/devshell_auth.sh:26-29`, `scripts/devshell_auth.sh:40-51` now emit an explicit warning whenever credentials are exported into the current shell.
+- **Verification:** `bash -n scripts/devshell_auth.sh` and `shellcheck -x scripts/devshell_auth.sh` exited `0`.
+
+### GAP-0058: Deprecated/dead transport code remained in production tree
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/175
+- **Resolution status:** Closed / Implemented.
+- **Resolution evidence:**
+  - `src/quic/connection/methods_a.zig:1162-1172` no longer contains the legacy stream-0 compatibility block that updated flow-control state without emitting a frame.
+  - `src/quic/connection/methods_c.zig:578-585` replaces the stale placeholder CID issuance comment with the active pending-advertisement behavior.
+- **Verification:** `zig build test --summary failures` exited `0`.
+
+### GAP-0061: QUIC minimum datagram size literal was duplicated in config default
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/178
+- **Resolution status:** Closed / Implemented for the tracked production default.
+- **Resolution evidence:** `src/quic/config.zig:11-14` names the RFC 9000 §14.1 floor as `MIN_INITIAL_DATAGRAM_SIZE`; `src/quic/config.zig:48-49` uses that named constant for the `max_datagram_size` default.
+- **Verification:** `zig build test --summary failures` exited `0`. Remaining `1200` literals in `src/quic` are protocol comments, test data, recovery defaults, or path/packet-size handling sites outside the tracked `config.zig` default.
 
 ## Re-audited and Closed During 2026-04-25 Analysis
 

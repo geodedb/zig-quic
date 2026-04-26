@@ -6,7 +6,7 @@ GitLab is the source of truth for issue state. This file is the flatfile mirror 
 
 ## Summary
 
-- Open / blocked performance issues: 12
+- Blocked performance issues: 12
 - Closed in this pass: 4 (`#184`, `#185`, `#186`, `#187`)
 - Baseline checks:
   - `zig build test` exited `0`; the test binary still prints `ERROR: quic_client: connectEx requires a CA certificate (use connectInsecure for insecure testing)`.
@@ -46,10 +46,10 @@ GitLab is the source of truth for issue state. This file is the flatfile mirror 
 
 ### area::app / transport
 
-- [#129](https://gitlab.com/devnw/zig/quic/-/issues/129) -- Broad connection allocation pooling remains open.
-- [#167](https://gitlab.com/devnw/zig/quic/-/issues/167) -- 64KB PacketBufferPool per connection remains open.
-- [#170](https://gitlab.com/devnw/zig/quic/-/issues/170) -- Double Initial encoding remains open.
-- [#109](https://gitlab.com/devnw/zig/quic/-/issues/109) -- STREAM coalescing/GSO remains open.
+- [#129](https://gitlab.com/devnw/zig/quic/-/issues/129) -- Broad connection allocation pooling remains blocked on allocator profile and pool ownership design.
+- [#167](https://gitlab.com/devnw/zig/quic/-/issues/167) -- 64KB PacketBufferPool per connection remains blocked on shared/slab lifetime design.
+- [#170](https://gitlab.com/devnw/zig/quic/-/issues/170) -- Double Initial encoding remains blocked on handshake path audit and CPU profile.
+- [#109](https://gitlab.com/devnw/zig/quic/-/issues/109) -- STREAM coalescing/GSO remains blocked on packetization redesign.
 - [#185](https://gitlab.com/devnw/zig/quic/-/issues/185) -- Closed. All `src/quic` `orderedRemove` sites removed; stateless reset token storage now carries explicit sequence numbers before unordered removal.
 - [#187](https://gitlab.com/devnw/zig/quic/-/issues/187) -- Closed. `PacketBufferPool.release` computes slot index from pointer offset with bounds/alignment checks.
 
@@ -60,7 +60,7 @@ GitLab is the source of truth for issue state. This file is the flatfile mirror 
 
 ### area::app / recovery
 
-- [#160](https://gitlab.com/devnw/zig/quic/-/issues/160) -- Recovery mutex critical section remains open and blocked on concurrency tests.
+- [#160](https://gitlab.com/devnw/zig/quic/-/issues/160) -- Recovery mutex critical section remains blocked on concurrency tests.
 
 ## Quick Wins / Medium / Strategic
 
@@ -72,11 +72,11 @@ GitLab is the source of truth for issue state. This file is the flatfile mirror 
 ### Medium
 
 - Closed: [#184](https://gitlab.com/devnw/zig/quic/-/issues/184), [#185](https://gitlab.com/devnw/zig/quic/-/issues/185).
-- Remaining: [#126](https://gitlab.com/devnw/zig/quic/-/issues/126), [#129](https://gitlab.com/devnw/zig/quic/-/issues/129), [#158](https://gitlab.com/devnw/zig/quic/-/issues/158), [#160](https://gitlab.com/devnw/zig/quic/-/issues/160), [#167](https://gitlab.com/devnw/zig/quic/-/issues/167), [#170](https://gitlab.com/devnw/zig/quic/-/issues/170), [#172](https://gitlab.com/devnw/zig/quic/-/issues/172), [#183](https://gitlab.com/devnw/zig/quic/-/issues/183).
+- Blocked: [#126](https://gitlab.com/devnw/zig/quic/-/issues/126), [#129](https://gitlab.com/devnw/zig/quic/-/issues/129), [#158](https://gitlab.com/devnw/zig/quic/-/issues/158), [#160](https://gitlab.com/devnw/zig/quic/-/issues/160), [#167](https://gitlab.com/devnw/zig/quic/-/issues/167), [#170](https://gitlab.com/devnw/zig/quic/-/issues/170), [#172](https://gitlab.com/devnw/zig/quic/-/issues/172), [#183](https://gitlab.com/devnw/zig/quic/-/issues/183).
 
 ### Strategic
 
-- [#154](https://gitlab.com/devnw/zig/quic/-/issues/154), [#182](https://gitlab.com/devnw/zig/quic/-/issues/182), and [#109](https://gitlab.com/devnw/zig/quic/-/issues/109) require architecture-level changes and scale validation.
+- Blocked: [#154](https://gitlab.com/devnw/zig/quic/-/issues/154), [#182](https://gitlab.com/devnw/zig/quic/-/issues/182), and [#109](https://gitlab.com/devnw/zig/quic/-/issues/109) require architecture-level changes and scale validation.
 
 ## Closed Items
 

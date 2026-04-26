@@ -15,7 +15,7 @@ import (
 func main() {
 	var (
 		addr     = flag.String("addr", "localhost:4433", "server address")
-		insecure = flag.Bool("insecure", true, "skip certificate verification")
+		insecure = flag.Bool("insecure", false, "skip certificate verification")
 		verbose  = flag.Bool("verbose", false, "enable verbose logging")
 		message  = flag.String("message", "Hello from Go QUIC client!", "message to send")
 	)
@@ -36,13 +36,13 @@ func main() {
 	// Setup QUIC config
 	quicConfig := &quic.Config{
 		MaxIdleTimeout:                 30 * time.Second,
-		InitialStreamReceiveWindow:    512 * 1024,
+		InitialStreamReceiveWindow:     512 * 1024,
 		InitialConnectionReceiveWindow: 512 * 1024,
-		MaxStreamReceiveWindow:        6 * 1024 * 1024,
-		MaxConnectionReceiveWindow:    15 * 1024 * 1024,
-		KeepAlivePeriod:               10 * time.Second,
-		HandshakeIdleTimeout:          10 * time.Second,
-		EnableDatagrams:               false,
+		MaxStreamReceiveWindow:         6 * 1024 * 1024,
+		MaxConnectionReceiveWindow:     15 * 1024 * 1024,
+		KeepAlivePeriod:                10 * time.Second,
+		HandshakeIdleTimeout:           10 * time.Second,
+		EnableDatagrams:                false,
 	}
 
 	log.Printf("Attempting to connect to %s\n", *addr)

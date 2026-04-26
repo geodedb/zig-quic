@@ -5,6 +5,7 @@ Comprehensive aioquic test client for QUIC interoperability testing.
 import argparse
 import asyncio
 import logging
+import ssl
 import sys
 import time
 from typing import cast, Optional
@@ -306,7 +307,7 @@ def format_size(bytes: int) -> str:
         return f"{bytes // (1024 * 1024)}MB"
 
 
-async def run_comprehensive_tests(host: str, port: int) -> int:
+async def run_comprehensive_tests(host: str, port: int, insecure: bool = False) -> int:
     """Run comprehensive QUIC test suite"""
     logger.info("🚀 Starting Comprehensive QUIC Test Suite (aioquic)")
     logger.info("=" * 60)
@@ -316,8 +317,9 @@ async def run_comprehensive_tests(host: str, port: int) -> int:
     configuration = QuicConfiguration(
         alpn_protocols=["hq-interop"],
         is_client=True,
-        verify_mode=0,  # Don't verify certificates for testing
     )
+    if insecure:
+        configuration.verify_mode = ssl.CERT_NONE
 
     try:
         # Connect to server
@@ -367,6 +369,11 @@ def main():
         action="store_true",
         help="Enable verbose logging"
     )
+    parser.add_argument(
+        "--insecure",
+        action="store_true",
+        help="Skip certificate verification for local self-signed interop tests"
+    )
     args = parser.parse_args()
 
     # Configure logging
@@ -377,7 +384,7 @@ def main():
 
     # Run comprehensive tests
     try:
-        exit_code = asyncio.run(run_comprehensive_tests(args.host, args.port))
+        exit_code = asyncio.run(run_comprehensive_tests(args.host, args.port, args.insecure))
         sys.exit(exit_code)
     except KeyboardInterrupt:
         logger.info("Interrupted")

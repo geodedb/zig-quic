@@ -79,8 +79,14 @@ server.crt
 server.key
 
 # Go client binaries (built locally)
+test-clients/legacy-clients/go/test-client
 test-clients/quic-test-legacy/quicgo-client
 test-clients/quic-test-legacy/quicgo-server
+test-clients/quic-test-legacy/test-client
+test-clients/quic-test-legacy/test-client-xnet
+test-clients/quic-test-legacy/test_client
+test-clients/quic-test-legacy/test-client-comprehensive
+test-clients/quic-test-legacy/test_comprehensive
 test-clients/quic-go-client/quic-go-test-client
 test-clients/quic-go-client/main
 

@@ -5,6 +5,7 @@ Simple aioquic test client for QUIC interoperability testing.
 import argparse
 import asyncio
 import logging
+import ssl
 import sys
 from typing import cast
 
@@ -52,7 +53,7 @@ class HttpClient(QuicConnectionProtocol):
         return self._response_data
 
 
-async def run_client(host: str, port: int, verbose: bool = False):
+async def run_client(host: str, port: int, verbose: bool = False, insecure: bool = False):
     """Run the QUIC client test"""
     logger.info(f"Connecting to {host}:{port}")
 
@@ -60,8 +61,9 @@ async def run_client(host: str, port: int, verbose: bool = False):
     configuration = QuicConfiguration(
         alpn_protocols=["hq-interop"],
         is_client=True,
-        verify_mode=0,  # Don't verify certificates for testing
     )
+    if insecure:
+        configuration.verify_mode = ssl.CERT_NONE
 
     try:
         # Connect to server
@@ -125,6 +127,11 @@ def main():
         action="store_true",
         help="Enable verbose logging"
     )
+    parser.add_argument(
+        "--insecure",
+        action="store_true",
+        help="Skip certificate verification for local self-signed interop tests"
+    )
     args = parser.parse_args()
 
     # Configure logging
@@ -135,7 +142,7 @@ def main():
 
     # Run client
     try:
-        exit_code = asyncio.run(run_client(args.host, args.port, args.verbose))
+        exit_code = asyncio.run(run_client(args.host, args.port, args.verbose, args.insecure))
         sys.exit(exit_code)
     except KeyboardInterrupt:
         logger.info("Interrupted")

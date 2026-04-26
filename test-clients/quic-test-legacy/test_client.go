@@ -15,30 +15,25 @@ import (
 func main() {
 	var connect string
 	var insecure bool
+	var keyLogPath string
 	flag.StringVar(&connect, "connect", "127.0.0.1:4433", "server address")
 	flag.BoolVar(&insecure, "insecure", false, "skip certificate verification")
+	flag.StringVar(&keyLogPath, "keylog", os.Getenv("SSLKEYLOGFILE"), "write TLS secrets to this file")
 	flag.Parse()
 
-	// Create TLS key log file for debugging
-	keyLogFile, err := os.Create("/tmp/tls_keys.log")
-	if err != nil {
-		log.Printf("Warning: Could not create key log file: %v", err)
-	} else {
-		log.Printf("TLS keys will be logged to /tmp/tls_keys.log")
+	keyLogFile := openKeyLog(keyLogPath)
+	if keyLogFile != nil {
+		defer keyLogFile.Close()
 	}
 
 	tlsConf := &tls.Config{
-		InsecureSkipVerify: true,  // Always use insecure for testing
+		InsecureSkipVerify: insecure,
 		NextProtos:         []string{"hq-interop"},
-		KeyLogWriter:       keyLogFile,  // Export TLS secrets for debugging
+		KeyLogWriter:       keyLogFile,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	if keyLogFile != nil {
-		defer keyLogFile.Close()
-	}
 
 	log.Printf("Connecting to %s", connect)
 	conn, err := quic.DialAddr(ctx, connect, tlsConf, &quic.Config{
@@ -50,7 +45,7 @@ func main() {
 	defer conn.CloseWithError(0, "")
 
 	log.Printf("Connected successfully!")
-	
+
 	// Open a stream
 	stream, err := conn.OpenStreamSync(ctx)
 	if err != nil {
@@ -75,4 +70,17 @@ func main() {
 	}
 
 	fmt.Println("Test completed successfully")
+}
+
+func openKeyLog(path string) *os.File {
+	if path == "" {
+		return nil
+	}
+	keyLogFile, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		log.Printf("Warning: Could not create TLS key log file: %v", err)
+		return nil
+	}
+	log.Printf("TLS keys will be logged to %s", path)
+	return keyLogFile
 }
