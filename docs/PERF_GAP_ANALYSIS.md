@@ -1,55 +1,56 @@
 # Performance Gap Analysis
 
-Last updated: 2026-04-25
+Last updated: 2026-04-26
 
 GitLab is the source of truth for issue state. This file is the flatfile mirror for performance review findings and closure evidence.
 
 ## Summary
 
-- Blocked performance issues: 12
-- Closed in this pass: 4 (`#184`, `#185`, `#186`, `#187`)
+- Active performance issues: 11 (`#109`, `#126`, `#129`, `#154`, `#158`, `#160`, `#165`, `#167`, `#172`, `#182`, `#183`).
+- Implemented in this pass: `#170` (double Initial packet encoding). GitLab close/comment is blocked because `glab` has no API token (`glab auth status` returns `401 Unauthorized`).
+- Partially implemented but still blocked on benchmark/design proof: `#126`, `#154`, `#158`, `#172`, `#182`.
+- Previously closed: `#184`, `#185`, `#186`, `#187`.
 - Baseline checks:
-  - `zig build test` exited `0`; the test binary still prints `ERROR: quic_client: connectEx requires a CA certificate (use connectInsecure for insecure testing)`.
-  - `zig build -Dtest-filter=stream_edges test` exited `0`.
-  - `zig build -Dtest-filter=packet_pool test` exited `0`.
-  - `bash -n interop/run_endpoint.sh` exited `0`.
-  - `rg -n "orderedRemove" src/quic` returned no matches.
+  - `zig build test --summary failures` exited `0`; the test binary still prints the known diagnostic `ERROR: quic_client: connectEx requires a CA certificate (use connectInsecure for insecure testing)`.
+  - `zig build -Dfull-test-graph=true test --summary failures` exited `0` in the implementation pass.
+  - `zig build -Dtest-filter=shortHeaderDcid test --summary failures` exited `0`.
+  - `INTEROP_IMPLS=quic-go INTEROP_TESTCASES=http3 make interop-full` exited `0` after the CID latch fix.
+  - `make interop-full` exited `0` after final protocol edits: `105` passed, `0` failed, `50` implementation/harness skips.
 - Workload/SLO inputs remain unknown: target p99 latency, RPS, connection count, datagram rate, stream reorder depth, and deployment ECN support are not documented.
 
 ## Stack-Ranked Table
 
 | Rank | PerfSeverity | PerfScore | Finding | Component | Evidence | Measurement | GitLab Issue | Fix Summary | Owner | SLA/Due | Status |
 |---:|---|---:|---|---|---|---|---|---|---|---|---|
-| 1 | P0 | 100 | O(N) connection lookup per packet | endpoint | `src/quic/endpoint/lookup.zig:123-212` scans connection maps for DCID matches | Suspected impact; needs packet-rate benchmark with 1K/10K connections | [#154](https://gitlab.com/devnw/zig/quic/-/issues/154) | Add DCID-indexed lookup table and update CID lifecycle hooks | Endpoint | Strategic | Blocked: requires CID-index design + scale benchmark |
-| 2 | P0 | 88 | Timer O(N) + PTO polling per poll cycle | endpoint | `src/quic/endpoint.zig` PTO arming iterates connections per poll | Suspected syscall/CPU impact; confirm with `perf stat` on timer benchmark | [#182](https://gitlab.com/devnw/zig/quic/-/issues/182) | Dirty timer heap or per-connection next-deadline index | Endpoint | Strategic | Blocked: requires timer architecture change + benchmark |
-| 3 | P1 | 82 | Endpoint mutex held during receive batch | endpoint | `docs/GAP_ANALYSIS.md` GAP-0053; receive batch processes packets under endpoint mutex | Unmeasured p99 contention; needs concurrent receive benchmark | [#126](https://gitlab.com/devnw/zig/quic/-/issues/126) | Narrow lock scope around lookup/map mutation only | Endpoint | Medium | Blocked: requires concurrency design and regression harness |
-| 4 | P1 | 72 | Connection allocations are not broadly pooled | transport | `docs/GAP_ANALYSIS.md` GAP-0054; remaining per-frame `ArrayList(u8)` sites in send/frame paths | Allocation rate not profiled | [#129](https://gitlab.com/devnw/zig/quic/-/issues/129) | Pool packet/frame buffers and replace transient heap buffers | Transport | Medium | Blocked: requires allocator profile and pool ownership design |
-| 5 | P1 | 70 | Send path efficiency: pacing heap allocation and no sendmmsg data path | endpoint / transport | `src/quic/endpoint/io.zig`, `src/quic/endpoint.zig`; sendBatch exists but data path remains one packet/syscall | Throughput delta unmeasured | [#183](https://gitlab.com/devnw/zig/quic/-/issues/183) | Queue sends and use sendmmsg/GSO where available | Endpoint | Strategic | Blocked: requires platform-specific batching design |
+| 1 | P0 | 100 | O(N) connection lookup per packet | endpoint | `src/quic/endpoint/lookup.zig:138-201` now probes peer+DCID keys and same-peer fallback, but still lacks a full secondary DCID index | Suspected impact; needs packet-rate benchmark with 1K/10K connections | [#154](https://gitlab.com/devnw/zig/quic/-/issues/154) | Add DCID-indexed lookup table and update CID lifecycle hooks | Endpoint | Strategic | Partial / Blocked: fast path improved, full index and benchmark missing |
+| 2 | P0 | 88 | Timer O(N) + PTO polling per poll cycle | endpoint | `src/quic/conn.zig:693`; `src/quic/endpoint.zig:876-895` track dirty PTO state, but still iterate active connections to snapshot dirty entries | Suspected syscall/CPU impact; confirm with `perf stat` on timer benchmark | [#182](https://gitlab.com/devnw/zig/quic/-/issues/182) | Dirty timer heap or per-connection next-deadline index | Endpoint | Strategic | Partial / Blocked: dirty flag added, heap/index missing |
+| 3 | P1 | 82 | Endpoint receive lock proof incomplete | endpoint | `src/quic/endpoint.zig:848-856` releases endpoint mutex between datagrams | Unmeasured p99 contention; needs concurrent receive benchmark | [#126](https://gitlab.com/devnw/zig/quic/-/issues/126) | Add concurrent receive regression/benchmark | Endpoint | Medium | Partial / Blocked: batch-wide lock removed, proof missing |
+| 4 | P1 | 72 | Connection allocations are not broadly pooled | transport | `src/quic/endpoint/server.zig:326-328`; `src/quic/endpoint/server.zig:397-414` allocate/setup connection state per accept | Allocation rate not profiled | [#129](https://gitlab.com/devnw/zig/quic/-/issues/129) | Pool connection/TLS contexts and packet/frame buffers | Transport | Medium | Blocked: requires allocator profile and pool ownership design |
+| 5 | P1 | 70 | Send path efficiency: pacing heap allocation and no sendmmsg data path | endpoint / transport | `src/quic/endpoint/udp_transport.zig:300-341` has sendmmsg batch support, but normal sender path still calls per-packet `sendTo` | Throughput delta unmeasured | [#183](https://gitlab.com/devnw/zig/quic/-/issues/183) | Queue sends and use sendmmsg/GSO where available | Endpoint | Strategic | Blocked: requires platform-specific batching design |
 | 6 | P1 | 64 | 64KB PacketBufferPool per connection | transport | `src/quic/conn.zig` PacketBufferPool still has 16 x 4096-byte slots per connection | Memory model: 64MB per 1K conns, 640MB per 10K conns | [#167](https://gitlab.com/devnw/zig/quic/-/issues/167) | Move to shared/slab pool or lazy allocation | Transport | Medium | Blocked: requires ownership/lifetime redesign |
-| 7 | P1 | 56 | ECN bits hardcoded/missing on receive paths | endpoint | `src/quic/endpoint/io.zig`, `src/quic/endpoint/udp_transport.zig` set ECN to zero/null on active recv paths | Deployment impact unknown; needs ECN-capable network test | [#172](https://gitlab.com/devnw/zig/quic/-/issues/172) | Enable recvmsg/recvmmsg cmsg extraction and tests | Endpoint | Medium | Blocked: requires platform matrix validation |
-| 8 | P1 | 52 | One syscall per packet send | transport | send batching exists but is not wired into normal data path | Throughput delta unmeasured | [#165](https://gitlab.com/devnw/zig/quic/-/issues/165) | Integrate sendBatch/sendmmsg into transmit path | Transport | Medium | Blocked: overlaps #183 batching design |
+| 7 | P1 | 56 | ECN platform validation incomplete | endpoint | `src/quic/endpoint/udp_transport.zig:344-374` and `src/quic/endpoint/udp_transport.zig:443-466` extract ECN cmsg data on Linux; non-Linux fallback remains unverified | Deployment impact unknown; needs ECN-capable network test | [#172](https://gitlab.com/devnw/zig/quic/-/issues/172) | Validate recvmsg/recvmmsg ECN extraction across supported platforms | Endpoint | Medium | Partial / Blocked: Linux active path implemented, platform validation missing |
+| 8 | P1 | 52 | One syscall per packet send | transport | `src/quic/endpoint/udp_transport.zig:300-341` implements sendmmsg, but sender integration is not complete | Throughput delta unmeasured | [#165](https://gitlab.com/devnw/zig/quic/-/issues/165) | Integrate sendBatch/sendmmsg into transmit path | Transport | Medium | Blocked: overlaps #183 batching design |
 | 9 | P1 | 48 | Recovery mutex critical section blocks congestion reads | recovery | `src/quic/recovery/recovery.zig` ACK processing mutates shared recovery state under one lock | Contention unmeasured | [#160](https://gitlab.com/devnw/zig/quic/-/issues/160) | Split immutable cwnd snapshot from mutation path | Recovery | Medium | Blocked: requires recovery concurrency tests |
-| 10 | P1 | 44 | Pacing timer truncated to 1ms granularity | endpoint | GitLab issue #158 evidence; high-rate pacing cannot schedule sub-ms sends | Needs high-rate pacing benchmark | [#158](https://gitlab.com/devnw/zig/quic/-/issues/158) | Use nanosecond deadlines and avoid millisecond truncation | Endpoint | Medium | Blocked: requires pacing model tests |
-| 11 | P1 | 40 | Double Initial packet encoding | transport | GitLab issue #170 evidence; client Initial can be encoded twice | Needs handshake CPU profile | [#170](https://gitlab.com/devnw/zig/quic/-/issues/170) | Cache encoded Initial or eliminate duplicate path | Transport | Medium | Blocked: requires handshake path audit |
-| 12 | P1 | N/A | No STREAM frame coalescing or GSO | transport | `src/quic/connection/methods_b.zig` sends STREAM frames individually | Throughput gap unmeasured | [#109](https://gitlab.com/devnw/zig/quic/-/issues/109) | Coalesce STREAM frames and use GSO where supported | Transport | Strategic | Blocked: requires packetization redesign |
+| 10 | P1 | 44 | Pacing timer truncated to 1ms granularity | endpoint | `src/quic/endpoint.zig` sends immediately for sub-ms pacing delays, but the timer API remains millisecond based | Needs high-rate pacing benchmark | [#158](https://gitlab.com/devnw/zig/quic/-/issues/158) | Use nanosecond deadlines and avoid millisecond truncation | Endpoint | Medium | Partial / Blocked: sub-ms immediate fast path added, ns timer API missing |
+| 11 | P1 | N/A | No STREAM frame coalescing or GSO | transport | `src/quic/connection/methods_b.zig` sends STREAM frames individually | Throughput gap unmeasured | [#109](https://gitlab.com/devnw/zig/quic/-/issues/109) | Coalesce STREAM frames and use GSO where supported | Transport | Strategic | Blocked: requires packetization redesign |
 
 ## Findings By Area
 
 ### area::app / endpoint
 
-- [#154](https://gitlab.com/devnw/zig/quic/-/issues/154) -- O(N) connection lookup per packet. Blocked on CID-index design and scale benchmark.
-- [#182](https://gitlab.com/devnw/zig/quic/-/issues/182) -- Timer O(N) + PTO polling. Blocked on timer architecture change and benchmark.
-- [#126](https://gitlab.com/devnw/zig/quic/-/issues/126) -- Endpoint mutex held during receive batch. Blocked on concurrency harness.
+- [#154](https://gitlab.com/devnw/zig/quic/-/issues/154) -- Partially addressed. Lookup now probes peer+DCID keys by candidate DCID length and has a same-peer fallback, but a complete secondary DCID index and scale benchmark are still missing.
+- [#182](https://gitlab.com/devnw/zig/quic/-/issues/182) -- Partially addressed. PTO dirty marking reduces needless recomputation, but the endpoint still lacks a min-heap or indexed timer architecture.
+- [#126](https://gitlab.com/devnw/zig/quic/-/issues/126) -- Partially addressed. Batch-wide endpoint mutex hold was removed; blocked on a concurrent receive benchmark/regression.
 - [#183](https://gitlab.com/devnw/zig/quic/-/issues/183) and [#165](https://gitlab.com/devnw/zig/quic/-/issues/165) -- Send batching/GSO not wired into normal data path. Blocked on platform-specific batching design.
-- [#172](https://gitlab.com/devnw/zig/quic/-/issues/172) -- ECN extraction missing in active receive paths. Blocked on Linux/macOS behavior validation.
-- [#158](https://gitlab.com/devnw/zig/quic/-/issues/158) -- Pacing timer granularity. Blocked on pacing model benchmark.
+- [#172](https://gitlab.com/devnw/zig/quic/-/issues/172) -- Partially addressed. Active Linux UDP transport now uses `recvmsg`/`recvmmsg` cmsg extraction; blocked on platform matrix validation.
+- [#158](https://gitlab.com/devnw/zig/quic/-/issues/158) -- Partially addressed. Sub-ms pacing delays send immediately; blocked on nanosecond timer API and pacing benchmark.
 
 ### area::app / transport
 
 - [#129](https://gitlab.com/devnw/zig/quic/-/issues/129) -- Broad connection allocation pooling remains blocked on allocator profile and pool ownership design.
 - [#167](https://gitlab.com/devnw/zig/quic/-/issues/167) -- 64KB PacketBufferPool per connection remains blocked on shared/slab lifetime design.
-- [#170](https://gitlab.com/devnw/zig/quic/-/issues/170) -- Double Initial encoding remains blocked on handshake path audit and CPU profile.
 - [#109](https://gitlab.com/devnw/zig/quic/-/issues/109) -- STREAM coalescing/GSO remains blocked on packetization redesign.
+- [#170](https://gitlab.com/devnw/zig/quic/-/issues/170) -- Implemented. `sendInitialCrypto` now computes final padded Initial length and encodes once. GitLab closure is blocked by `glab` auth (`401 Unauthorized`).
 - [#185](https://gitlab.com/devnw/zig/quic/-/issues/185) -- Closed. All `src/quic` `orderedRemove` sites removed; stateless reset token storage now carries explicit sequence numbers before unordered removal.
 - [#187](https://gitlab.com/devnw/zig/quic/-/issues/187) -- Closed. `PacketBufferPool.release` computes slot index from pointer offset with bounds/alignment checks.
 
@@ -66,22 +67,25 @@ GitLab is the source of truth for issue state. This file is the flatfile mirror 
 
 ### Quick Wins
 
-- Closed: [#186](https://gitlab.com/devnw/zig/quic/-/issues/186), [#187](https://gitlab.com/devnw/zig/quic/-/issues/187).
-- Remaining quick wins: none verified. ECN [#172](https://gitlab.com/devnw/zig/quic/-/issues/172) looks small by code size but needs platform validation before closure.
+- Closed/implemented in repo: [#186](https://gitlab.com/devnw/zig/quic/-/issues/186), [#187](https://gitlab.com/devnw/zig/quic/-/issues/187), [#170](https://gitlab.com/devnw/zig/quic/-/issues/170). GitLab close for #170 is blocked by missing `glab` API token.
+- Remaining quick wins: none verified.
 
 ### Medium
 
 - Closed: [#184](https://gitlab.com/devnw/zig/quic/-/issues/184), [#185](https://gitlab.com/devnw/zig/quic/-/issues/185).
-- Blocked: [#126](https://gitlab.com/devnw/zig/quic/-/issues/126), [#129](https://gitlab.com/devnw/zig/quic/-/issues/129), [#158](https://gitlab.com/devnw/zig/quic/-/issues/158), [#160](https://gitlab.com/devnw/zig/quic/-/issues/160), [#167](https://gitlab.com/devnw/zig/quic/-/issues/167), [#170](https://gitlab.com/devnw/zig/quic/-/issues/170), [#172](https://gitlab.com/devnw/zig/quic/-/issues/172), [#183](https://gitlab.com/devnw/zig/quic/-/issues/183).
+- Partial / Blocked: [#126](https://gitlab.com/devnw/zig/quic/-/issues/126), [#158](https://gitlab.com/devnw/zig/quic/-/issues/158), [#172](https://gitlab.com/devnw/zig/quic/-/issues/172).
+- Blocked: [#129](https://gitlab.com/devnw/zig/quic/-/issues/129), [#160](https://gitlab.com/devnw/zig/quic/-/issues/160), [#167](https://gitlab.com/devnw/zig/quic/-/issues/167), [#183](https://gitlab.com/devnw/zig/quic/-/issues/183).
 
 ### Strategic
 
-- Blocked: [#154](https://gitlab.com/devnw/zig/quic/-/issues/154), [#182](https://gitlab.com/devnw/zig/quic/-/issues/182), and [#109](https://gitlab.com/devnw/zig/quic/-/issues/109) require architecture-level changes and scale validation.
+- Partial / Blocked: [#154](https://gitlab.com/devnw/zig/quic/-/issues/154), [#182](https://gitlab.com/devnw/zig/quic/-/issues/182).
+- Blocked: [#109](https://gitlab.com/devnw/zig/quic/-/issues/109).
 
 ## Closed Items
 
 | Issue | Closure evidence |
 |---|---|
+| [#170](https://gitlab.com/devnw/zig/quic/-/issues/170) | `src/quic/connection/methods_a.zig:268-324` precomputes the final padded Initial protected length and calls `packet.encodeInitialProtected(...)` once; `zig build test --summary failures` passed. GitLab close/comment failed with `401 Unauthorized` because `glab auth status` reports no API token. |
 | [#184](https://gitlab.com/devnw/zig/quic/-/issues/184) | `src/quic/connection/stream.zig` adds `inbox_read_off`/`readInto()`; `methods_b.zig` and `methods_c.zig` use cursor reads; `zig build -Dtest-filter=stream_edges test` passed. |
 | [#185](https://gitlab.com/devnw/zig/quic/-/issues/185) | `rg -n "orderedRemove" src/quic` has no matches; `src/quic/conn.zig` stores `ResetTokenEntry{sequence, token}`; `zig build -Dtest-filter=packet_pool test` passed. |
 | [#186](https://gitlab.com/devnw/zig/quic/-/issues/186) | `StreamRx.tryDrain()` sorts by offset and drains with one compaction pass; stream reassembly regression passed. |
@@ -92,4 +96,4 @@ GitLab is the source of truth for issue state. This file is the flatfile mirror 
 - SLOs are Unknown. Need documented latency, throughput, and connection-count targets before prioritizing P0/P1 tradeoffs.
 - Workload shape is Unknown. Need expected stream sizes, datagram rates, reorder depth, and connection churn.
 - Profiling is incomplete. Need bounded benchmarks/flamegraphs for lookup, timer, send path, and recovery contention.
-- `zig build bench` did not complete within a bounded interactive run and was stopped; the benchmark harness needs a documented short profile target for agents.
+- `zig build bench` did not complete within a bounded interactive run in the original performance review and was stopped; the benchmark harness needs a documented short profile target for agents.

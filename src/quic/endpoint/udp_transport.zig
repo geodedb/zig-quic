@@ -32,6 +32,54 @@ pub const SendBatchItem = transport_mod.SendBatchItem;
 /// Maximum number of UDP datagrams processed per batched syscall.
 pub const UdpBatchCap: usize = 16;
 
+fn cmsgAlign(len: usize) usize {
+    const align_to = @sizeOf(usize);
+    const mask: usize = align_to - 1;
+    return (len + mask) & ~mask;
+}
+
+fn ecnFromAncillary(control: []const u8, controllen: usize) ?u8 {
+    const linux = std.os.linux;
+    const hdr_len = @sizeOf(linux.cmsghdr);
+    const max_len = @min(control.len, controllen);
+    var off: usize = 0;
+    while (off + hdr_len <= max_len) {
+        const hdr = control[off..];
+        const cmsg_len = std.mem.readInt(usize, hdr[0..@sizeOf(usize)], .native);
+        if (cmsg_len < hdr_len or off + cmsg_len > max_len) break;
+        const level_off = @sizeOf(usize);
+        const type_off = level_off + @sizeOf(i32);
+        const level = std.mem.readInt(i32, hdr[level_off..][0..@sizeOf(i32)], .native);
+        const ctype = std.mem.readInt(i32, hdr[type_off..][0..@sizeOf(i32)], .native);
+        const data_off = off + cmsgAlign(hdr_len);
+        if (data_off < off + cmsg_len) {
+            const traffic_class = control[data_off];
+            if (level == linux.SOL.IP and ctype == linux.IP.TOS) return traffic_class & 0x03;
+            if (level == linux.SOL.IPV6 and ctype == linux.IPV6.TCLASS) return traffic_class & 0x03;
+        }
+        off += cmsgAlign(cmsg_len);
+    }
+    return null;
+}
+
+fn configureEcnSocket(fd: posix.socket_t, family: u16) void {
+    if (builtin.target.os.tag != .linux) return;
+    const linux = std.os.linux;
+    var one: i32 = 1;
+    var ect0: i32 = 0x02;
+    switch (family) {
+        posix.AF.INET => {
+            _ = linux.setsockopt(fd, linux.SOL.IP, linux.IP.RECVTOS, @ptrCast(std.mem.asBytes(&one)), @sizeOf(i32));
+            _ = linux.setsockopt(fd, linux.SOL.IP, linux.IP.TOS, @ptrCast(std.mem.asBytes(&ect0)), @sizeOf(i32));
+        },
+        posix.AF.INET6 => {
+            _ = linux.setsockopt(fd, linux.SOL.IPV6, linux.IPV6.RECVTCLASS, @ptrCast(std.mem.asBytes(&one)), @sizeOf(i32));
+            _ = linux.setsockopt(fd, linux.SOL.IPV6, linux.IPV6.TCLASS, @ptrCast(std.mem.asBytes(&ect0)), @sizeOf(i32));
+        },
+        else => {},
+    }
+}
+
 /// Parse bind address string into SockAddr
 ///
 /// Supported formats:
@@ -144,6 +192,7 @@ pub const UdpTransport = struct {
         // Set SO_REUSEADDR for fast rebinding
         var one: i32 = 1;
         _ = linux.setsockopt(fd, linux.SOL.SOCKET, linux.SO.REUSEADDR, @ptrCast(std.mem.asBytes(&one)), @sizeOf(i32));
+        configureEcnSocket(fd, family);
 
         // Bind to address
         const bind_len: posix.socklen_t = switch (family) {
@@ -296,24 +345,32 @@ pub const UdpTransport = struct {
         const self: *UdpTransport = @ptrCast(@alignCast(ctx));
         const linux = std.os.linux;
 
-        // Receive UDP datagram from any peer
         var peer_storage: posix.sockaddr.storage = undefined;
         var peer_len: posix.socklen_t = @sizeOf(posix.sockaddr.storage);
+        var iov = [1]posix.iovec{.{ .base = buf.ptr, .len = buf.len }};
+        var control: [64]u8 = undefined;
+        var msg: linux.msghdr = .{
+            .name = @ptrCast(&peer_storage),
+            .namelen = peer_len,
+            .iov = @ptrCast(&iov),
+            .iovlen = 1,
+            .control = &control,
+            .controllen = control.len,
+            .flags = 0,
+        };
 
-        const rc = linux.recvfrom(
+        const rc = linux.recvmsg(
             self.fd,
-            buf.ptr,
-            buf.len,
+            &msg,
             0,
-            @ptrCast(&peer_storage),
-            &peer_len,
         );
         const n = try linuxResultToCount(rc);
+        peer_len = msg.namelen;
 
         return RecvResult{
             .n = n,
             .peer = .{ .storage = peer_storage, .len = peer_len },
-            .ecn = null, // ECN extraction would require ancillary data (recvmsg)
+            .ecn = ecnFromAncillary(&control, msg.controllen),
         };
     }
 
@@ -360,6 +417,7 @@ pub const UdpTransport = struct {
 
             var iovecs: [UdpBatchCap]posix.iovec = undefined;
             var addrs: [UdpBatchCap]posix.sockaddr.storage = undefined;
+            var controls: [UdpBatchCap][64]u8 = undefined;
             var msgs: [UdpBatchCap]linux.mmsghdr = undefined;
 
             var i: usize = 0;
@@ -374,8 +432,8 @@ pub const UdpTransport = struct {
                         .namelen = @sizeOf(posix.sockaddr.storage),
                         .iov = @ptrCast(&iovecs[i]),
                         .iovlen = 1,
-                        .control = null,
-                        .controllen = 0,
+                        .control = &controls[i],
+                        .controllen = controls[i].len,
                         .flags = 0,
                     },
                     .len = 0,
@@ -405,7 +463,7 @@ pub const UdpTransport = struct {
                     .storage = addrs[j],
                     .len = msgs[j].hdr.namelen,
                 };
-                slots[received_total + j].ecn = null;
+                slots[received_total + j].ecn = ecnFromAncillary(&controls[j], msgs[j].hdr.controllen);
             }
 
             received_total += got;

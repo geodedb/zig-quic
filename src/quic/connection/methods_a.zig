@@ -265,6 +265,19 @@ pub fn bind(comptime Connection: type) type {
             return data.len;
         }
 
+        fn quicVarintLen(value: usize) usize {
+            if (value < 64) return 1;
+            if (value < 16384) return 2;
+            if (value < 1073741824) return 4;
+            return 8;
+        }
+
+        fn initialProtectedLen(dcid_len: usize, scid_len: usize, token_len: usize, pn_len: usize, plaintext_len: usize) usize {
+            const token_len_len = quicVarintLen(token_len);
+            const length_value = pn_len + plaintext_len + 16;
+            return 1 + 4 + 1 + dcid_len + 1 + scid_len + token_len_len + token_len + quicVarintLen(length_value) + pn_len + plaintext_len + 16;
+        }
+
         /// Send CRYPTO frame data in an Initial packet (Phase 24)
         pub fn sendInitialCrypto(self: *Connection, crypto_data: []const u8) !void {
             const tx = self.initial_tx_keys orelse return error.NoKeys;
@@ -283,8 +296,22 @@ pub fn bind(comptime Connection: type) type {
             // RFC 9000 §8.1.2: client must echo Retry token on subsequent Initial packets.
             const token = if (self.role == .Client) self.initial_token.items else &[_]u8{};
 
-            // Encode Initial packet
-            var out = packet.encodeInitialProtected(
+            if (self.role == .Client) {
+                const pn_len: usize = 2;
+                const encoded_len = initialProtectedLen(
+                    self.peer_initial_dcid.len,
+                    self.our_scid.len,
+                    token.len,
+                    pn_len,
+                    fbs.getWritten().len,
+                );
+                if (encoded_len < 1200) {
+                    w.writeByteNTimes(@intFromEnum(frame.FrameType.PADDING), 1200 - encoded_len) catch return;
+                }
+            }
+
+            // Encode Initial packet once with final padding already present.
+            const out = packet.encodeInitialProtected(
                 self.allocator.*,
                 self.version,
                 self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len],
@@ -295,22 +322,6 @@ pub fn bind(comptime Connection: type) type {
                 fbs.getWritten(),
                 tx,
             ) catch return;
-            if (self.role == .Client and out.len < 1200) {
-                const pad_needed = 1200 - out.len;
-                self.allocator.free(out);
-                w.writeByteNTimes(@intFromEnum(frame.FrameType.PADDING), pad_needed) catch return;
-                out = packet.encodeInitialProtected(
-                    self.allocator.*,
-                    self.version,
-                    self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len],
-                    self.our_scid.bytes[0..self.our_scid.len],
-                    token,
-                    @as(u32, @truncate(self.pn_initial_tx)),
-                    2,
-                    fbs.getWritten(),
-                    tx,
-                ) catch return;
-            }
 
             defer self.allocator.free(out);
             _ = self.send(out) catch |err| {
@@ -756,6 +767,7 @@ pub fn bind(comptime Connection: type) type {
             logger.debugPrint("setPeerInitialCids: Before setting peer_initial_scid, current len={}\n", .{self.peer_initial_scid.len});
             self.peer_initial_scid.len = @intCast(@min(scid.len, self.peer_initial_scid.bytes.len));
             if (self.peer_initial_scid.len > 0) @memcpy(self.peer_initial_scid.bytes[0..self.peer_initial_scid.len], scid[0..self.peer_initial_scid.len]);
+            self.peer_initial_scid_set = true;
 
             // Reset any cached DCID length hint. The peer may shorten the DCID once
             // the handshake completes, so defer caching until we successfully

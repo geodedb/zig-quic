@@ -6,6 +6,28 @@ GitLab is authoritative for issue status. This file mirrors resolved or invalida
 
 ## Closed During 2026-04-26 Implementation Pass
 
+### GAP-0007: Crypto hardening audit incomplete
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/136
+- **Resolution status:** Implemented in repository; GitLab close/comment blocked by `glab` auth (`401 Unauthorized`, no API token configured).
+- **Resolution evidence:**
+  - `docs/CRYPTO_AUDIT.md` maps current QUIC crypto-sensitive operations to code and tests.
+  - `src/quic/crypto_quic.zig:158-196` now derives Retry key/IV with fallible `try` calls, validates ODCID length, bounds the Retry pseudo-packet AAD, and returns explicit errors instead of using `catch unreachable`.
+  - `src/quic/connection/key_update.zig:1-14` centralizes RFC 9001 Section 6 `"quic ku"` derivation as a fallible helper.
+  - `src/quic/connection/methods_b.zig:1584-1628`, `src/quic/connection/methods_c.zig`, `src/quic/endpoint/handshake_integration.zig`, and `src/quic/endpoint/incoming/module_b.zig` now use the canonical key-update helper instead of duplicate local derivation helpers.
+  - `rg -n "catch unreachable|unreachable" src/quic/crypto_quic.zig src/quic/connection src/quic/endpoint/handshake_integration.zig src/quic/endpoint/incoming/module_b.zig src/quic/packet.zig` only matched the explanatory comment in `src/quic/connection/key_update.zig:8`.
+- **Verification:** `zig build test --summary failures` exited `0`; `zig build -Dfull-test-graph=true test --summary failures` exited `0` during the implementation pass; `make interop-full` exited `0` with `105` passed, `0` failed, `50` implementation/harness skips. Full advanced crypto lifecycle coverage remains open in GAP-0013 / #142.
+
+### GAP-0055: Pre-Retry connection allocation exhaustion
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/188 (historical URL; `glab issue view 188` returned `404 Not Found` on 2026-04-26)
+- **Resolution status:** Implemented in repository; GitLab source-of-truth update is blocked because the historical issue is inaccessible and `glab issue create` failed due project permissions/auth.
+- **Resolution evidence:**
+  - `src/quic/endpoint/incoming.zig:379-386` parses Initial token bytes before any new server connection allocation.
+  - `src/quic/endpoint/incoming.zig:438-483` validates Retry tokens and sends stateless Retry before `max_connections` checks and before `createServerConnection(...)`.
+  - `src/quic/endpoint/incoming.zig:502-508` passes verified Retry state into server creation only after token validation.
+  - `src/quic/endpoint/server.zig:338-340` restores the Retry SCID as the accepted server connection's local CID after a validated Retry.
+  - `tests/test_retry.zig:62-70` proves first Retry does not create an accepted/server connection; `tests/test_retry.zig:211-218` proves a validated Retry proceeds with restored SCID and ODCID.
+- **Verification:** `zig build test --summary failures` exited `0`; `zig build -Dfull-test-graph=true test --summary failures` exited `0` during the implementation pass; `make interop-full` exited `0` with `105` passed, `0` failed, `50` implementation/harness skips.
+
 ### GitLab #157: Compiled Go binaries with Critical CVEs committed to repository
 - **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/157
 - **Resolution status:** Closed / Implemented.

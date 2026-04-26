@@ -8,17 +8,7 @@ const logger = @import("quic_logger");
 const builtin = @import("builtin");
 const reset_token_mod = @import("reset_token.zig");
 const crypto_utils = @import("crypto_utils.zig");
-
-/// Local shim for the removed upstream `ks.updateQuicSecretHash`.
-/// The new tls library (7510c5c0) dropped this helper (GAP-0122 in its
-/// key_schedule.zig:316) and directs QUIC key-update callers to derive via
-/// expandLabelHash with RFC 9001 §6 label "quic ku".
-fn quicSecretUpdateHash(hash: ks.Hash, current_secret: *const ks.Secret) ks.Secret {
-    var next = ks.Secret.empty();
-    next.len = @intCast(ks.digestLength(hash));
-    ks.expandLabelHash(hash, current_secret, "quic ku", &[_]u8{}, next.sliceMut()) catch unreachable;
-    return next;
-}
+const key_update = @import("quic_key_update");
 
 pub fn bind(comptime Connection: type) type {
     return struct {
@@ -57,7 +47,7 @@ pub fn bind(comptime Connection: type) type {
                 // tls@7510c5c0 (GAP-0122) per the removal note in its
                 // key_schedule.zig:316. RFC 9001 §6 specifies label "quic ku";
                 // derive directly via expandLabelHash.
-                const next_secret = quicSecretUpdateHash(hash, &current_secret);
+                const next_secret = key_update.deriveNextTrafficSecret(hash, &current_secret) catch return;
                 const preserved_hp = self.app_tx_keys.?.hp;
 
                 const t = ks.deriveKeyIvHpHash(hash, &next_secret, self.version_v2);
@@ -199,6 +189,7 @@ pub fn bind(comptime Connection: type) type {
         /// Record a packet as sent in the given PN space for Recovery bookkeeping.
         /// Notify recovery of sent packet (per-space) for loss tracking & congestion control.
         pub fn onPacketSent(self: *Connection, space: recovery.PacketNumberSpace, pn: u64, bytes: usize, ack_eliciting: bool) void {
+            self.pto_dirty = true;
             // Record via Recovery (authoritative)
             const now_i = blk: {
                 var ts: std.os.linux.timespec = undefined;

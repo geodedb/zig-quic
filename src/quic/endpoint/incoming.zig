@@ -376,6 +376,15 @@ pub fn processInitial(
         return;
     };
 
+    // Parse token from packet before any new server connection allocation. This
+    // enables stateless Retry handling for unvalidated Initial packets.
+    var token_offset = header.offset;
+    const tok_len_dec = varint.decode(bytes[token_offset..]) catch return;
+    token_offset += tok_len_dec.n;
+    const tok_len_usize = @as(usize, @intCast(@min(tok_len_dec.value, bytes.len - token_offset)));
+    if (token_offset + tok_len_usize > bytes.len) return;
+    const token_bytes = bytes[token_offset .. token_offset + tok_len_usize];
+
     // Look up connection by peer hash + client DCID
     const ph = hashSockaddr(&peer.storage, peer.len);
     const key = endpoint_types.Key{ .peer_hash = ph, .dcid_hash = hashBytes(header.dcid) };
@@ -426,6 +435,53 @@ pub fn processInitial(
             return; // Client endpoints don't create server connections
         }
 
+        const token_mod = @import("token");
+        const client_ip_bytes = peer.getIpBytes();
+        const secret = ctx.cfg.token_secret orelse ctx.generated_token_secret;
+        const now_ns: i128 = now_block: {
+            var ts: std.os.linux.timespec = undefined;
+            const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+            if (rc != 0) break :now_block @as(i128, 0);
+            break :now_block @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+        };
+        const now_ms: u64 = @intCast(if (now_ns > 0) @as(u128, @intCast(now_ns)) / std.time.ns_per_ms else 0);
+        var retry_odcid_buf: [20]u8 = undefined;
+        const retry_odcid = if (ctx.cfg.enable_retry and token_bytes.len > 0)
+            token_mod.verifyAndExtractDcid(token_bytes, client_ip_bytes, secret, now_ms, &retry_odcid_buf)
+        else
+            null;
+
+        if (ctx.cfg.enable_retry and retry_odcid == null) {
+            if (client_ip_bytes.len == 0) return;
+
+            var retry_scid: [8]u8 = undefined;
+            _ = std.os.linux.getrandom(&retry_scid, retry_scid.len, 0);
+
+            const retry_tok = token_mod.encode(
+                ctx.allocator.*,
+                client_ip_bytes,
+                header.dcid,
+                secret,
+                ctx.cfg.token_expiry_ms,
+            ) catch return;
+            defer ctx.allocator.free(retry_tok);
+
+            const retry_bytes = packet.encodeRetry(
+                ctx.allocator.*,
+                version,
+                header.scid, // Retry DCID = client's SCID
+                retry_scid[0..], // Retry SCID = server-selected CID
+                header.dcid, // ODCID for integrity tag and token recovery
+                retry_tok,
+            ) catch return;
+            defer ctx.allocator.free(retry_bytes);
+
+            _ = ctx.send_fn(peer, retry_bytes) catch |err| {
+                logger.debugPrint("[INCOMING] stateless Retry send failed: {s}\n", .{@errorName(err)});
+            };
+            return;
+        }
+
         // CWE-400 mitigation: Enforce connection limit before creating new connections.
         // RFC 9000 §8.1 recommends servers implement rate-limiting to prevent DoS.
         // When at capacity, silently drop the Initial packet (do not send error to avoid amplification).
@@ -447,6 +503,9 @@ pub fn processInitial(
             .version = version,
             .client_dcid = header.dcid,
             .client_scid = header.scid,
+            .original_dcid_override = retry_odcid,
+            .server_scid_override = if (retry_odcid != null) header.dcid else null,
+            .retry_validated = retry_odcid != null,
             .server_cert_der = ctx.cfg.inline_server_cert_der,
             .server_priv_key_der = ctx.cfg.inline_server_priv_p256,
             .transport_params = null, // Will be set by setupServerTransportParams
@@ -528,11 +587,12 @@ pub fn processInitial(
     // For client connections, cache the server Initial SCID for subsequent short-header
     // routing. Keep peer_initial_dcid unchanged: it tracks the client's current Initial
     // destination CID and is used for Initial key derivation (RFC 9001 §5.2).
-    if (conn.role == .Client) {
+    if (conn.role == .Client and !conn.peer_initial_scid_set) {
         conn.peer_initial_scid.len = @intCast(@min(header.scid.len, conn.peer_initial_scid.bytes.len));
         if (conn.peer_initial_scid.len > 0) {
             @memcpy(conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len], header.scid[0..conn.peer_initial_scid.len]);
         }
+        conn.peer_initial_scid_set = true;
         conn.expected_rx_dcid_len = null;
     }
 
@@ -542,14 +602,6 @@ pub fn processInitial(
         logger.debugPrint("processInitial: Initial keys already dropped for conn={*}; discarding packet\n", .{conn});
         return;
     }
-
-    // Parse token from packet (offset points to token length varint)
-    var i = header.offset;
-    const tok_len_dec = varint.decode(bytes[i..]) catch return;
-    i += tok_len_dec.n;
-    const tok_len_usize = @as(usize, @intCast(@min(tok_len_dec.value, bytes.len - i)));
-    if (i + tok_len_usize > bytes.len) return;
-    const token_bytes = bytes[i .. i + tok_len_usize];
 
     // Address validation via token (RFC 9000 §8.1.4)
     if (conn.role == .Server and !conn.address_validated and token_bytes.len > 0) {

@@ -7,17 +7,7 @@ const ks = @import("quic_tls");
 const logger = @import("quic_logger");
 const builtin = @import("builtin");
 const crypto_utils = @import("crypto_utils.zig");
-
-/// Local shim for the removed upstream `ks.updateQuicSecretHash`.
-/// The new tls library (7510c5c0) dropped this helper (GAP-0122 in its
-/// key_schedule.zig:316) and directs QUIC key-update callers to derive via
-/// expandLabelHash with RFC 9001 §6 label "quic ku".
-fn quicSecretUpdateHash(hash: ks.Hash, current_secret: *const ks.Secret) ks.Secret {
-    var next = ks.Secret.empty();
-    next.len = @intCast(ks.digestLength(hash));
-    ks.expandLabelHash(hash, current_secret, "quic ku", &[_]u8{}, next.sliceMut()) catch unreachable;
-    return next;
-}
+const key_update = @import("quic_key_update");
 
 /// Compile-time toggle for verbose method-level tracing in connection helpers.
 /// Set to `true` and rebuild (`zig build`) to emit detailed debug prints via
@@ -803,6 +793,7 @@ pub fn bind(comptime Connection: type) type {
         /// Handle acknowledgment in a specific PN space including RTT update, loss detection,
         /// ECN counters, key update finalization, and PMTUD probe validation.
         pub fn onAckReceivedSpace(self: *Connection, space: recovery.PacketNumberSpace, largest: u64, first_range: u64, ranges: []const frame.AckRange, ecn: ?frame.EcnCounts) void {
+            self.pto_dirty = true;
             // Build list of acked PNs from ACK ranges per RFC 9000 §13.2.3
             var buf: [256]u64 = undefined; // supports reasonably many acked packets per event
             var count: usize = 0;
@@ -905,6 +896,7 @@ pub fn bind(comptime Connection: type) type {
 
         /// cancelPtoInitial: Stop active Initial PTO timer and reset its backoff.
         pub fn cancelPtoInitial(self: *Connection, ep: anytype) void {
+            self.pto_dirty = true;
             if (self.pto_initial_active) {
                 if (self.pto_initial_id != 0) _ = ep.cancelTimer(self.pto_initial_id);
                 self.pto_initial_active = false;
@@ -913,6 +905,7 @@ pub fn bind(comptime Connection: type) type {
         }
         /// cancelPtoHandshake: Stop active Handshake PTO timer and reset its backoff.
         pub fn cancelPtoHandshake(self: *Connection, ep: anytype) void {
+            self.pto_dirty = true;
             if (self.pto_handshake_active) {
                 if (self.pto_handshake_id != 0) _ = ep.cancelTimer(self.pto_handshake_id);
                 self.pto_handshake_active = false;
@@ -921,6 +914,7 @@ pub fn bind(comptime Connection: type) type {
         }
         /// cancelPtoApp: Stop active Application PTO timer and reset its backoff.
         pub fn cancelPtoApp(self: *Connection, ep: anytype) void {
+            self.pto_dirty = true;
             if (self.pto_app_active) {
                 if (self.pto_app_id != 0) _ = ep.cancelTimer(self.pto_app_id);
                 self.pto_app_active = false;
@@ -1530,10 +1524,11 @@ pub fn bind(comptime Connection: type) type {
         }
 
         /// Destination Connection ID for short-header packets is the peer-chosen ID.
-        /// Prefer the Initial SCID observed from peer; if that was zero-length, fall
-        /// back to peer-provided NEW_CONNECTION_ID values when available.
+        /// Prefer the Initial SCID observed from peer, including the valid
+        /// zero-length case. Peer-provided NEW_CONNECTION_ID values are a fallback
+        /// only before the Initial SCID has been latched.
         pub fn shortHeaderDcid(self: *Connection) []const u8 {
-            const result = if (self.peer_initial_scid.len > 0)
+            const result = if (self.peer_initial_scid_set or self.peer_initial_scid.len > 0)
                 self.peer_initial_scid.bytes[0..self.peer_initial_scid.len]
             else if (self.activePeerCid()) |peer_cid|
                 peer_cid
@@ -1590,7 +1585,7 @@ pub fn bind(comptime Connection: type) type {
                 // PHASE 57 PART 11D: Use QUIC "quic ku" label, not TLS "traffic upd" (RFC 9001 §6)
                 const current_secret = self.app_tx_secret.?;
                 const hash = hashForSecret(&current_secret) catch return;
-                const next_secret = quicSecretUpdateHash(hash, &current_secret);
+                const next_secret = key_update.deriveNextTrafficSecret(hash, &current_secret) catch return;
 
                 // PHASE 57 PART 10: Preserve CURRENT HP key - RFC 9001 §6 and quic-go confirm HP is NOT rotated
                 const preserved_hp = self.app_tx_keys.?.hp;
@@ -1630,7 +1625,7 @@ pub fn bind(comptime Connection: type) type {
             if (self.tx_key_phase == self.rx_key_phase) return;
             const current_secret = self.app_tx_secret.?;
             const hash = hashForSecret(&current_secret) catch return;
-            const next_secret = quicSecretUpdateHash(hash, &current_secret);
+            const next_secret = key_update.deriveNextTrafficSecret(hash, &current_secret) catch return;
             const next_mat = ks.deriveKeyIvHpHash(hash, &next_secret, self.version_v2);
             if (self.tx_prev_keys) |*kp| {
                 zeroKeys(kp);

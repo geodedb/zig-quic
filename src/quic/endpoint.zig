@@ -835,24 +835,25 @@ pub const Endpoint = struct {
                 };
                 if (batch_n == 0) break;
 
-                // 4b: Process each datagram under mu (mutates conns map).
+                // 4b: Process each datagram with a narrow endpoint lock. Do not
+                // hold the global mutex across the whole received batch; a slow
+                // packet path should not serialize unrelated accepts/timers for
+                // every datagram already drained from the socket.
                 // NOTE: PAR-002/003 batch HP removal + AEAD decrypt was removed
                 // because it corrupted packet buffers — the batch path unmasked
                 // headers in-place, then the sequential fallthrough did HP removal
                 // again (double XOR = re-masked = AEAD auth failure = EOF).
                 // Batch crypto requires a pre-decrypted fast path in
                 // processShortHeader before it can be re-enabled.
-                {
+                var i: usize = 0;
+                while (i < batch_n) : (i += 1) {
+                    const slot = recv_slots[i];
                     self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-                    defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
-                    var i: usize = 0;
-                    while (i < batch_n) : (i += 1) {
-                        const slot = recv_slots[i];
-                        self.processIncomingDatagram(slot.peer, slot.buf[0..slot.n], slot.ecn);
-                        stats.packets_processed += 1;
-                    }
+                    self.processIncomingDatagram(slot.peer, slot.buf[0..slot.n], slot.ecn);
+                    self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+                    stats.packets_processed += 1;
                 }
-                // mu released here — handler threads get a chance to run
+                // mu released between datagrams — handler threads get a chance to run.
 
                 if (batch_n < recv_slots.len) break;
             }
@@ -876,7 +877,7 @@ pub const Endpoint = struct {
             while (it.next()) |entry| {
                 if (snapshot_len >= conn_snapshot.len) break;
                 const c = entry.value_ptr.*;
-                if (!c.closed) {
+                if (!c.closed and c.pto_dirty) {
                     conn_snapshot[snapshot_len] = c;
                     snapshot_len += 1;
                 }
@@ -890,6 +891,7 @@ pub const Endpoint = struct {
             c.computeAndMaybeArmPtoInitial(self);
             c.computeAndMaybeArmPtoHandshake(self);
             c.computeAndMaybeArmPto(self);
+            c.pto_dirty = false;
         }
 
         return stats;
@@ -1663,7 +1665,11 @@ fn senderPaced(ctx: *anyopaque, c: *conn_mod.Connection, data: []const u8) !usiz
         return self.sendTo(c.peer, data);
     }
     const delay_ns = recovery.computePacingDelayNs(c.rec.cc.cwnd, c.rec.cc.bytes_in_flight, c.rec.rtt.smoothed_rtt_ns, c.rec.cc.mds);
-    if (delay_ns == 0) {
+    // The endpoint timer wheel is millisecond-based. A sub-millisecond pacing
+    // delay should not be rounded up to 1 ms because that throttles high-rate
+    // flows by an order of magnitude; send immediately and let congestion state
+    // compute the next pacing point.
+    if (delay_ns < std.time.ns_per_ms) {
         return self.sendTo(c.peer, data);
     }
     // Own the payload and schedule a paced timer

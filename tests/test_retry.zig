@@ -61,6 +61,14 @@ test "server_issues_retry_and_client_retries" {
 
     // Assert a Retry was captured and validate basic fields
     try std.testing.expect(ep.captureLen() > 0);
+    try std.testing.expectEqual(@as(usize, 0), ep.accepted.items.len);
+    var server_conn_count: usize = 0;
+    var conn_it = ep.conns.iterator();
+    while (conn_it.next()) |entry| {
+        if (entry.value_ptr.*.role == .Server) server_conn_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), server_conn_count);
+
     const cap_opt = ep.capturePop();
     try std.testing.expect(cap_opt != null);
     const cap = cap_opt.?;
@@ -127,6 +135,9 @@ test "client_resets_initial_state_and_replays_retry_token" {
     ep.captureClear();
 
     const c = try ep.connectClient("127.0.0.1:1");
+    var initial_odcid: [20]u8 = undefined;
+    const initial_odcid_len = c.peer_initial_dcid.len;
+    @memcpy(initial_odcid[0..initial_odcid_len], c.peer_initial_dcid.bytes[0..initial_odcid_len]);
 
     // Send the first Initial through normal client path so TLS state and PN
     // reflect a pre-Retry handshake attempt.
@@ -155,6 +166,7 @@ test "client_resets_initial_state_and_replays_retry_token" {
     const retry_scid_len = retry_cap.bytes[ri];
     ri += 1;
     try std.testing.expect(ri + retry_scid_len <= retry_cap.bytes.len);
+    const retry_scid = retry_cap.bytes[ri .. ri + retry_scid_len];
     ri += retry_scid_len;
     try std.testing.expect(retry_cap.bytes.len >= 16 and ri <= retry_cap.bytes.len - 16);
     const retry_token = retry_cap.bytes[ri .. retry_cap.bytes.len - 16];
@@ -195,6 +207,15 @@ test "client_resets_initial_state_and_replays_retry_token" {
     const echoed_token = b[i .. i + tok_len];
     try std.testing.expectEqual(retry_token.len, echoed_token.len);
     try std.testing.expectEqualSlices(u8, retry_token, echoed_token);
+
+    ep.captureClear();
+    ep.testInject(c.peer, retried_initial_cap.bytes);
+    try std.testing.expect(ep.accepted.items.len > 0);
+    const accepted = ep.accepted.items[0];
+    try std.testing.expect(accepted.retry_sent);
+    try std.testing.expect(accepted.address_validated);
+    try std.testing.expectEqualSlices(u8, retry_scid, accepted.our_scid.bytes[0..accepted.our_scid.len]);
+    try std.testing.expectEqualSlices(u8, initial_odcid[0..initial_odcid_len], accepted.original_dcid.bytes[0..accepted.original_dcid.len]);
 }
 
 test "verify_retry_accepts_interop_capture_vector" {

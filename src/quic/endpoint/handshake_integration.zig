@@ -31,16 +31,10 @@ const transport_params = @import("transport_params");
 // Import TLS from vendor/ztls
 const tls13 = @import("vendor_ztls_tls13");
 const key_schedule = @import("vendor_ztls_key_schedule");
+const key_update = @import("quic_key_update");
 
-/// Local shim for the removed upstream `key_schedule.updateQuicSecretHash`.
-/// The new tls library (7510c5c0) dropped this helper (GAP-0122 in its
-/// key_schedule.zig:316) and directs QUIC key-update callers to derive via
-/// expandLabelHash with RFC 9001 §6 label "quic ku".
-fn quicSecretUpdateHash(hash: key_schedule.Hash, current_secret: *const key_schedule.Secret) key_schedule.Secret {
-    var next = key_schedule.Secret.empty();
-    next.len = @intCast(key_schedule.digestLength(hash));
-    key_schedule.expandLabelHash(hash, current_secret, "quic ku", &[_]u8{}, next.sliceMut()) catch unreachable;
-    return next;
+fn advertisedMaxUdpPayload(quic_cfg: *const cfg.QuicConfig) u16 {
+    return @max(cfg.MIN_INITIAL_DATAGRAM_SIZE, @min(quic_cfg.max_udp_payload, quic_cfg.max_datagram_size));
 }
 
 // Helper function to hash bytes
@@ -505,7 +499,7 @@ pub fn installApplicationKeys(
 
         // PHASE 57 Part 5: Pre-derive NEXT RX keys (RFC 9001 §6, quic-go updatable_aead.go:146-147)
         // Derive at installation time (NOT per-packet) to maintain one-generation-ahead invariant
-        conn.app_rx_next_secret = quicSecretUpdateHash(hash, &server_secret);
+        conn.app_rx_next_secret = try key_update.deriveNextTrafficSecret(hash, &server_secret);
         const next_mat = key_schedule.deriveKeyIvHpHash(hash, &conn.app_rx_next_secret.?, conn.version_v2);
         conn.app_rx_next_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = next_mat.hp };
         logger.debugPrint("[PHASE57-INSTALL] Client: pre-derived next RX keys\n", .{});
@@ -519,7 +513,7 @@ pub fn installApplicationKeys(
 
         // PHASE 57 Part 5: Pre-derive NEXT RX keys (RFC 9001 §6, quic-go updatable_aead.go:146-147)
         // Derive at installation time (NOT per-packet) to maintain one-generation-ahead invariant
-        conn.app_rx_next_secret = quicSecretUpdateHash(hash, &client_secret);
+        conn.app_rx_next_secret = try key_update.deriveNextTrafficSecret(hash, &client_secret);
         const next_mat = key_schedule.deriveKeyIvHpHash(hash, &conn.app_rx_next_secret.?, conn.version_v2);
         conn.app_rx_next_keys = .{ .key = next_mat.key, .iv = next_mat.iv, .hp = next_mat.hp };
         logger.debugPrint("[PHASE57-INSTALL] Server: pre-derived next RX keys\n", .{});
@@ -1299,7 +1293,8 @@ pub fn setupClientTransportParams(
         tpp.initial_source_connection_id = conn.our_scid.bytes[0..conn.our_scid.len];
     }
 
-    // Encode initial limits from connection local defaults (RFC 9000 §4.1, §4.6)
+    // Encode UDP payload and flow-control limits from local defaults (RFC 9000 §14.1, §4.1, §4.6)
+    tpp.max_udp_payload_size = advertisedMaxUdpPayload(quic_cfg);
     tpp.initial_max_data = conn.local_max_data;
     tpp.initial_max_stream_data_bidi_local = conn.local_max_stream_data;
     tpp.initial_max_stream_data_bidi_remote = conn.local_max_stream_data;
@@ -1358,7 +1353,7 @@ pub fn setupServerTransportParams(
 
     // Set timeouts and payload limits from config (RFC 9000 §10.1, §14.1)
     tpp.max_idle_timeout = quic_cfg.max_idle_timeout_ms;
-    tpp.max_udp_payload_size = quic_cfg.max_udp_payload;
+    tpp.max_udp_payload_size = advertisedMaxUdpPayload(quic_cfg);
     tpp.disable_active_migration = quic_cfg.disable_active_migration;
     conn.disable_active_migration_advertised = quic_cfg.disable_active_migration;
 

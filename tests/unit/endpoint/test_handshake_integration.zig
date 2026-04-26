@@ -618,9 +618,31 @@ test "RFC 9000 §18.2 - setupClientTransportParams includes initial_max_stream_d
     const raw = conn.local_transport_params_raw orelse
         return error.TransportParamsNotSet;
 
-    const decoded = try transport_params.TransportParams.decode(allocator, raw);
+    var decoded = try transport_params.TransportParams.decode(allocator, raw);
+    defer decoded.deinit(allocator);
 
     try testing.expectEqual(conn.local_max_stream_data, decoded.initial_max_stream_data_uni);
+}
+
+test "RFC 9000 §14.1 - setupClientTransportParams advertises bounded max_udp_payload_size" {
+    var allocator = testing.allocator;
+
+    var conn: conn_mod.Connection = undefined;
+    const peer = conn_mod.SockAddr{};
+    conn.init(&allocator, .Client, 0, peer);
+    defer conn.deinit();
+
+    var quic_cfg = cfg.QuicConfig{ .alpn = &[_][]const u8{} };
+    quic_cfg.max_datagram_size = 1200;
+    quic_cfg.max_udp_payload = 1350;
+    try handshake.setupClientTransportParams(&conn, &quic_cfg, allocator);
+
+    const raw = conn.local_transport_params_raw orelse
+        return error.TransportParamsNotSet;
+    var decoded = try transport_params.TransportParams.decode(allocator, raw);
+    defer decoded.deinit(allocator);
+
+    try testing.expectEqual(@as(u64, 1200), decoded.max_udp_payload_size.?);
 }
 
 test "RFC 9000 §18.2 - setupServerTransportParams encodes server parameters" {
@@ -668,10 +690,12 @@ test "RFC 9000 §18.2 - setupServerTransportParams encodes server parameters" {
     // Call setupServerTransportParams
     try handshake.setupServerTransportParams(&conn, &quic_cfg, allocator);
 
-    // Verify transport parameters were set
-    // Note: We can't directly inspect the encoded params without TLS access,
-    // but we verify the function completes successfully
-    try testing.expect(true);
+    const raw = conn.local_transport_params_raw orelse
+        return error.TransportParamsNotSet;
+    var decoded = try transport_params.TransportParams.decode(allocator, raw);
+    defer decoded.deinit(allocator);
+
+    try testing.expectEqual(@as(u64, 1200), decoded.max_udp_payload_size.?);
 }
 
 // =============================================================================

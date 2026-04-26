@@ -659,6 +659,9 @@ pub const Connection = struct {
     // Used for Retry integrity validation/TP signaling (RFC 9001 §5.8, RFC 9000 §18.2).
     original_dcid: Cid = .{},
     peer_initial_scid: Cid = .{},
+    /// True once peer_initial_scid has been latched from the peer's Initial.
+    /// This is separate from len because zero-length SCIDs are valid.
+    peer_initial_scid_set: bool = false,
     our_scid: Cid = .{},
     // Expected DCID length in incoming 1-RTT packets (learned from negotiation)
     // Initially matches our_scid.len, but may be updated based on successful decryption
@@ -685,6 +688,9 @@ pub const Connection = struct {
     pto_initial_active: bool = false,
     pto_handshake_active: bool = false,
     pto_app_active: bool = false,
+    /// Dirty bit for event-driven PTO arming. Set by packet send/ACK/timer
+    /// progress so the endpoint poll loop can skip clean connections.
+    pto_dirty: bool = true,
     pto_initial_id: u64 = 0,
     pto_handshake_id: u64 = 0,
     pto_app_id: u64 = 0,
@@ -1037,6 +1043,7 @@ pub const Connection = struct {
         self.pn_app_tx = 0;
         self.peer_initial_dcid = .{};
         self.peer_initial_scid = .{};
+        self.peer_initial_scid_set = false;
         // Explicitly zero original_dcid (was left uninitialized when reusing a Connection object
         // before this field was added, leading to bogus large lengths and panics when slicing).
         self.original_dcid = .{};
@@ -1063,6 +1070,7 @@ pub const Connection = struct {
         self.pto_initial_active = false;
         self.pto_handshake_active = false;
         self.pto_app_active = false;
+        self.pto_dirty = true;
         self.pto_initial_id = 0;
         self.pto_handshake_id = 0;
         self.pto_app_id = 0;

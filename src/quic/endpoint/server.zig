@@ -179,7 +179,7 @@ pub fn encodeRetryPacket(config: RetryConfig, out_buf: []u8) ![]u8 {
 
     const crypto_quic = @import("crypto_quic");
     const version_v2 = (config.version == packet.QUIC_V2);
-    const tag = crypto_quic.computeRetryIntegrityTag(version_v2, config.odcid, out_buf[0..tag_offset]);
+    const tag = try crypto_quic.computeRetryIntegrityTag(version_v2, config.odcid, out_buf[0..tag_offset]);
 
     // Append tag to Retry packet
     @memcpy(out_buf[tag_offset..][0..16], &tag);
@@ -261,6 +261,12 @@ pub const ServerConnectionConfig = struct {
     client_dcid: []const u8,
     /// Source Connection ID from client's Initial packet
     client_scid: []const u8,
+    /// Original Destination Connection ID recovered from a validated Retry token.
+    original_dcid_override: ?[]const u8 = null,
+    /// Server SCID to install when the client returns after Retry.
+    server_scid_override: ?[]const u8 = null,
+    /// True when this connection is being allocated after a valid Retry token.
+    retry_validated: bool = false,
     /// Server certificate DER (optional, for TLS)
     server_cert_der: ?[]const u8 = null,
     /// Server private key DER (optional, for TLS)
@@ -329,16 +335,24 @@ pub fn createServerConnection(
     c.version_v2 = (config.version == packet.QUIC_V2);
     c.initial_version = config.version;
 
-    // Generate random SCID for server (RFC 9000 §5.1)
-    c.our_scid.len = 8;
-    _ = std.os.linux.getrandom(c.our_scid.bytes[0..c.our_scid.len].ptr, c.our_scid.len, 0);
+    // Generate or restore the server SCID (RFC 9000 §5.1). After Retry, the
+    // client's post-Retry Initial uses the Retry SCID as its DCID, so restore
+    // that value as the connection's local CID for routing and transport params.
+    if (config.server_scid_override) |scid| {
+        c.our_scid.len = @intCast(@min(scid.len, c.our_scid.bytes.len));
+        if (c.our_scid.len > 0) @memcpy(c.our_scid.bytes[0..c.our_scid.len], scid[0..c.our_scid.len]);
+    } else {
+        c.our_scid.len = 8;
+        _ = std.os.linux.getrandom(c.our_scid.bytes[0..c.our_scid.len].ptr, c.our_scid.len, 0);
+    }
     c.installInitialLocalCid();
 
     // Set peer CIDs from client's Initial packet
     // RFC 9000 §5.2: "The server uses the client's DCID as the ODCID"
-    c.peer_initial_dcid.len = @intCast(@min(config.client_dcid.len, c.peer_initial_dcid.bytes.len));
+    const initial_dcid = config.original_dcid_override orelse config.client_dcid;
+    c.peer_initial_dcid.len = @intCast(@min(initial_dcid.len, c.peer_initial_dcid.bytes.len));
     if (c.peer_initial_dcid.len > 0) {
-        @memcpy(c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len], config.client_dcid[0..c.peer_initial_dcid.len]);
+        @memcpy(c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len], initial_dcid[0..c.peer_initial_dcid.len]);
     }
 
     logger.debugPrint("createServerConnection: Set peer_initial_dcid from client_dcid, len={}\n", .{c.peer_initial_dcid.len});
@@ -351,6 +365,11 @@ pub fn createServerConnection(
     if (c.original_dcid.len > 0) {
         @memcpy(c.original_dcid.bytes[0..c.original_dcid.len], c.peer_initial_dcid.bytes[0..c.peer_initial_dcid.len]);
     }
+    if (config.retry_validated) {
+        c.retry_sent = true;
+        c.address_validated = true;
+        c.new_token_pending = true;
+    }
 
     // Set peer_initial_scid from client's SCID
     // RFC 9000 §7.3: "Servers populate peer_initial_scid from client's SCID"
@@ -359,6 +378,7 @@ pub fn createServerConnection(
     if (c.peer_initial_scid.len > 0) {
         @memcpy(c.peer_initial_scid.bytes[0..c.peer_initial_scid.len], config.client_scid[0..c.peer_initial_scid.len]);
     }
+    c.peer_initial_scid_set = true;
     logger.debugPrint("createServerConnection: Set peer_initial_scid.len={}\n", .{c.peer_initial_scid.len});
     if (c.peer_initial_scid.len >= 4) {
         logger.debugPrint("  peer_initial_scid[0..4]: {X:0>2}{X:0>2}{X:0>2}{X:0>2}\n", .{ c.peer_initial_scid.bytes[0], c.peer_initial_scid.bytes[1], c.peer_initial_scid.bytes[2], c.peer_initial_scid.bytes[3] });

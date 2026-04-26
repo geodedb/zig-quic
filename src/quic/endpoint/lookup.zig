@@ -135,11 +135,11 @@ pub fn findConnectionByDcid(
     var best: ?*conn_mod.Connection = null;
     var best_len: usize = 0;
 
-    var it = conns.iterator();
-    while (it.next()) |entry| {
-        if (entry.key_ptr.*.peer_hash != peer_h) continue;
-
-        const c = entry.value_ptr.*;
+    var candidate_len: usize = 0;
+    while (candidate_len <= 20 and 1 + candidate_len <= packet_bytes.len) : (candidate_len += 1) {
+        const candidate_dcid = packet_bytes[1 .. 1 + candidate_len];
+        const key = makeKey(peer_h, hashBytes(candidate_dcid));
+        const c = (conns.getPtr(key) orelse continue).*;
         const l = c.localDcidMatchLen(packet_bytes, true) orelse continue;
 
         // Record first match as fallback
@@ -166,6 +166,38 @@ pub fn findConnectionByDcid(
     if (best) |b| {
         found = b;
         dcid_len = best_len;
+    }
+
+    // Phase 1b: same-peer advertised CID fallback.
+    //
+    // Most packets are routed through the composite peer+DCID hash key above.
+    // Some tests and older issuance paths only register the connection's
+    // original DCID key while local_cids contains additional advertised CIDs.
+    // Keep those packets on the normal path, but only scan same-peer entries so
+    // this does not trigger NAT rebinding side effects.
+    if (found == null) {
+        var it_same_peer = conns.iterator();
+        while (it_same_peer.next()) |entry| {
+            if (entry.key_ptr.peer_hash != peer_h) continue;
+            const c = entry.value_ptr.*;
+            const l = c.localDcidMatchLen(packet_bytes, true) orelse continue;
+
+            if (found == null or l > dcid_len) {
+                found = c;
+                dcid_len = l;
+            }
+
+            const has_rx = (c.app_rx_keys != null);
+            const has_tx = (c.app_tx_keys != null);
+            if (has_rx and has_tx and (best == null or l > best_len)) {
+                best = c;
+                best_len = l;
+            }
+        }
+        if (best) |b| {
+            found = b;
+            dcid_len = best_len;
+        }
     }
 
     // Phase 2: NAT rebinding fallback (RFC 9000 §9.3)

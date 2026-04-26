@@ -343,6 +343,9 @@ pub fn build(b: *std.Build) void {
     const conn_crypto_buffer_mod = mkModule(b, "src/quic/connection/crypto_buffer.zig");
     conn_crypto_buffer_mod.addImport("quic_logger", quic_logger_mod);
 
+    const conn_key_update_mod = mkModule(b, "src/quic/connection/key_update.zig");
+    conn_key_update_mod.addImport("quic_tls", quic_tls_mod);
+
     const conn_packet_number_mod = mkModule(b, "src/quic/connection/packet_number.zig");
     conn_packet_number_mod.addImport("quic_frame", quic_frame_mod);
 
@@ -405,6 +408,7 @@ pub fn build(b: *std.Build) void {
     quic_conn_mod.addImport("quic_logger", quic_logger_mod);
     quic_conn_mod.addImport("byteorder", byteorder_mod);
     quic_conn_mod.addImport("quic_version", quic_version_mod);
+    quic_conn_mod.addImport("quic_key_update", conn_key_update_mod);
     // Make transport params available to connection and endpoint modules
     quic_conn_mod.addImport("quic_transport_params", quic_transport_params_mod);
     quic_conn_mod.addImport("compat", compat_mod);
@@ -462,6 +466,8 @@ pub fn build(b: *std.Build) void {
     endpoint_incoming_mod.addImport("packet", quic_packet_legacy_mod);
     endpoint_incoming_mod.addImport("types", endpoint_types_mod);
     endpoint_incoming_mod.addImport("vendor_ztls_key_schedule", quic_tls_mod);
+    endpoint_incoming_mod.addImport("quic_tls", quic_tls_mod);
+    endpoint_incoming_mod.addImport("quic_key_update", conn_key_update_mod);
     endpoint_incoming_mod.addImport("crypto_quic", quic_crypto_mod);
     endpoint_incoming_mod.addImport("frame", quic_frame_mod);
     endpoint_incoming_mod.addImport("varint", quic_varint_mod);
@@ -481,6 +487,8 @@ pub fn build(b: *std.Build) void {
     endpoint_handshake_integration_mod.addImport("transport_params", quic_transport_params_mod);
     endpoint_handshake_integration_mod.addImport("vendor_ztls_tls13", tls13_mod);
     endpoint_handshake_integration_mod.addImport("vendor_ztls_key_schedule", quic_tls_mod);
+    endpoint_handshake_integration_mod.addImport("quic_tls", quic_tls_mod);
+    endpoint_handshake_integration_mod.addImport("quic_key_update", conn_key_update_mod);
     endpoint_handshake_integration_mod.addImport("quic_logger", quic_logger_mod);
     endpoint_handshake_integration_mod.addImport("compat", compat_mod);
 

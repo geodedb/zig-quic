@@ -155,15 +155,15 @@ const retry_secret_v2: [32]u8 = .{
     0xf3, 0x8f, 0xc7, 0x41, 0x62, 0x15, 0x5e, 0x9f,
 };
 
-fn deriveRetryKeyIv(version_v2: bool) struct { key: [16]u8, iv: [12]u8 } {
+fn deriveRetryKeyIv(version_v2: bool) !struct { key: [16]u8, iv: [12]u8 } {
     var key: [16]u8 = undefined;
     var iv: [12]u8 = undefined;
     if (version_v2) {
-        ks.expandLabel(&retry_secret_v2, "quicv2 key", &[_]u8{}, &key) catch unreachable;
-        ks.expandLabel(&retry_secret_v2, "quicv2 iv", &[_]u8{}, &iv) catch unreachable;
+        try ks.expandLabel(&retry_secret_v2, "quicv2 key", &[_]u8{}, &key);
+        try ks.expandLabel(&retry_secret_v2, "quicv2 iv", &[_]u8{}, &iv);
     } else {
-        ks.expandLabel(&retry_secret_v1, "quic key", &[_]u8{}, &key) catch unreachable;
-        ks.expandLabel(&retry_secret_v1, "quic iv", &[_]u8{}, &iv) catch unreachable;
+        try ks.expandLabel(&retry_secret_v1, "quic key", &[_]u8{}, &key);
+        try ks.expandLabel(&retry_secret_v1, "quic iv", &[_]u8{}, &iv);
     }
     return .{ .key = key, .iv = iv };
 }
@@ -183,15 +183,13 @@ fn aesGcmTagFixedNonce(key16: [16]u8, nonce12: [12]u8, aad: []const u8) [16]u8 {
 /// Uses a fixed stack buffer for AAD assembly (SF-016). The AAD is
 /// 1 + odcid.len + retry_without_tag.len which fits comfortably in 2048 bytes
 /// for any valid QUIC packet (max QUIC CID is 20, max UDP payload ~1472).
-pub fn computeRetryIntegrityTag(version_v2: bool, odcid: []const u8, retry_without_tag: []const u8) [16]u8 {
-    const kiv = deriveRetryKeyIv(version_v2);
+pub fn computeRetryIntegrityTag(version_v2: bool, odcid: []const u8, retry_without_tag: []const u8) ![16]u8 {
+    const kiv = try deriveRetryKeyIv(version_v2);
     // Build AAD = ODCID Len (1) || ODCID || retry_without_tag
     var aad_buf: [2048]u8 = undefined;
     const aad_len = 1 + odcid.len + retry_without_tag.len;
-    // Defensive check: if somehow the AAD exceeds the stack buffer, return
-    // a zeroed tag rather than panicking. In practice this cannot happen for
-    // valid QUIC packets.
-    if (aad_len > aad_buf.len) return .{0} ** 16;
+    if (odcid.len > 20) return error.InvalidCidLength;
+    if (aad_len > aad_buf.len) return error.RetryPseudoPacketTooLarge;
     aad_buf[0] = @as(u8, @intCast(odcid.len));
     @memcpy(aad_buf[1 .. 1 + odcid.len], odcid);
     @memcpy(aad_buf[1 + odcid.len .. aad_len], retry_without_tag);

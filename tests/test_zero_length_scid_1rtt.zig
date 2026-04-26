@@ -115,6 +115,33 @@ test "shortHeaderDcid returns empty slice for zero-length peer SCID" {
     testlog.print("✓ Unit test passed: shortHeaderDcid() returns empty slice for zero-length peer SCID\n", .{});
 }
 
+test "shortHeaderDcid keeps latched zero-length peer SCID over advertised CIDs" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    var alloc = gpa.allocator();
+
+    var conn: conn_mod.Connection = undefined;
+    const storage: std.posix.sockaddr.storage = undefined;
+    const sock_addr = conn_mod.SockAddr{ .storage = storage, .len = @sizeOf(@TypeOf(storage)) };
+    conn.init(
+        &alloc,
+        .Client,
+        -1,
+        sock_addr,
+    );
+    defer conn.deinit();
+
+    conn.peer_initial_scid.len = 0;
+    conn.peer_initial_scid_set = true;
+
+    const peer_cid = [_]u8{ 0xde, 0xad, 0xbe, 0xef };
+    const token = [_]u8{0x42} ** 16;
+    conn.onNewConnectionId(1, 0, &peer_cid, token);
+
+    const dcid = conn.shortHeaderDcid();
+    try std.testing.expectEqual(@as(usize, 0), dcid.len);
+}
+
 // Unit test for Connection.shortHeaderDcid() with non-zero peer SCID
 test "shortHeaderDcid returns peer SCID when non-zero" {
     var gpa = std.heap.DebugAllocator(.{}){};

@@ -36,6 +36,9 @@ pub fn encode(
     secret: []const u8,
     validity_ms: u64,
 ) ![]u8 {
+    if (client_ip.len > 255) return error.InvalidIpLength;
+    if (dcid.len > 20) return error.InvalidCidLength;
+
     const now_ms = @as(u64, @intCast(@divTrunc(blk: {
         var ts: std.os.linux.timespec = undefined;
         const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
@@ -96,8 +99,32 @@ pub fn verify(
     secret: []const u8,
     now_ms: u64,
 ) bool {
+    return authenticatedDcid(token, client_ip, secret, now_ms) != null;
+}
+
+/// Verify a token and copy the embedded Original Destination Connection ID.
+/// The returned slice points into `dcid_out` and is valid until `dcid_out` is reused.
+pub fn verifyAndExtractDcid(
+    token: []const u8,
+    client_ip: []const u8,
+    secret: []const u8,
+    now_ms: u64,
+    dcid_out: *[20]u8,
+) ?[]const u8 {
+    const dcid = authenticatedDcid(token, client_ip, secret, now_ms) orelse return null;
+    if (dcid.len > dcid_out.len) return null;
+    if (dcid.len > 0) @memcpy(dcid_out[0..dcid.len], dcid);
+    return dcid_out[0..dcid.len];
+}
+
+fn authenticatedDcid(
+    token: []const u8,
+    client_ip: []const u8,
+    secret: []const u8,
+    now_ms: u64,
+) ?[]const u8 {
     // Minimum token size: timestamp(8) + ip_len(1) + ip(>=4) + dcid_len(1) + dcid(>=0) + hmac(32)
-    if (token.len < 8 + 1 + 4 + 1 + 0 + 32) return false;
+    if (token.len < 8 + 1 + 4 + 1 + 0 + 32) return null;
 
     var pos: usize = 0;
 
@@ -106,25 +133,27 @@ pub fn verify(
     pos += 8;
 
     // Check expiration
-    if (now_ms > expiry_ms) return false;
+    if (now_ms > expiry_ms) return null;
 
     // Read and verify IP address
     const ip_len = token[pos];
     pos += 1;
-    if (pos + ip_len > token.len - 1 - 32) return false; // Ensure space for dcid_len + hmac
-    if (ip_len != client_ip.len) return false;
+    if (pos + ip_len > token.len - 1 - 32) return null; // Ensure space for dcid_len + hmac
+    if (ip_len != client_ip.len) return null;
     {
         var diff: u8 = 0;
         for (token[pos .. pos + ip_len], client_ip) |a, b| diff |= a ^ b;
-        if (diff != 0) return false;
+        if (diff != 0) return null;
     }
     pos += ip_len;
 
     // Read DCID length
     const dcid_len = token[pos];
     pos += 1;
-    if (pos + dcid_len + 32 != token.len) return false; // Exact size check
-    pos += dcid_len; // Skip DCID (we don't validate it, just include in HMAC)
+    if (dcid_len > 20) return null;
+    if (pos + dcid_len + 32 != token.len) return null; // Exact size check
+    const dcid = token[pos .. pos + dcid_len];
+    pos += dcid_len;
 
     // Verify HMAC
     const data_to_sign = token[0..pos]; // Everything before HMAC
@@ -135,7 +164,8 @@ pub fn verify(
     Hmac.create(&computed_hmac, data_to_sign, secret);
 
     // Constant-time comparison
-    return std.crypto.timing_safe.eql([32]u8, computed_hmac, expected_hmac[0..32].*);
+    if (!std.crypto.timing_safe.eql([32]u8, computed_hmac, expected_hmac[0..32].*)) return null;
+    return dcid;
 }
 
 // =============================================================================
@@ -502,6 +532,23 @@ test "RFC 9000 §8.1.2 - generateRetryToken creates valid token" {
 
     // Verify the generated token is valid
     try testing.expect(validateInitialToken(token, addr, secret));
+}
+
+test "RFC 9000 §8.1.2 - verified token exposes embedded original DCID" {
+    const secret = "test-secret-for-dcid-extraction";
+    const client_ip = [_]u8{ 192, 0, 2, 44 };
+    const odcid = [_]u8{ 0xde, 0xad, 0xbe, 0xef, 0x01, 0x02 };
+    const token_bytes = try encode(test_allocator, &client_ip, &odcid, secret, 60_000);
+    defer test_allocator.free(token_bytes);
+
+    const now_ms = @as(u64, @intCast(@divTrunc(std.time.nanoTimestamp(), std.time.ns_per_ms)));
+    var extracted_buf: [20]u8 = undefined;
+    const extracted = verifyAndExtractDcid(token_bytes, &client_ip, secret, now_ms, &extracted_buf) orelse return error.ExpectedValidToken;
+
+    try testing.expectEqualSlices(u8, &odcid, extracted);
+
+    token_bytes[token_bytes.len - 1] ^= 0x01;
+    try testing.expect(verifyAndExtractDcid(token_bytes, &client_ip, secret, now_ms, &extracted_buf) == null);
 }
 
 test "RFC 9000 §8.1.2 - generateRetryToken fails for unsupported address family" {
