@@ -2,6 +2,7 @@
 // Copyright (c) 2024-2026 CodePros
 
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 const transport = @import("transport");
 
@@ -11,14 +12,14 @@ fn allocatePort() u16 {
     return next_port.fetchAdd(1, .seq_cst);
 }
 
-/// Zig 0.16.0 compat: std.time.milliTimestamp() was removed.
+/// Zig 0.16.0 compat: compat.milliTimestamp() was removed.
 fn milliTimestamp() i64 {
     var ts: std.os.linux.timespec = undefined;
     _ = std.os.linux.clock_gettime(.REALTIME, &ts);
     return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
 }
 
-/// Zig 0.16.0 compat: std.time.nanoTimestamp() was removed.
+/// Zig 0.16.0 compat: compat.nanoTimestamp() was removed.
 fn nanoTimestamp() i128 {
     var ts: std.os.linux.timespec = undefined;
     _ = std.os.linux.clock_gettime(.REALTIME, &ts);

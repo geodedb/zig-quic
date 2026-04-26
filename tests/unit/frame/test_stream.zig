@@ -12,6 +12,7 @@
 //! - RFC compliance: Frame format, stream semantics, flow control integration
 
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 
 const stream = @import("stream");
@@ -23,7 +24,7 @@ const types = @import("types");
 
 test "RFC 9000 §19.8 - writeStream encodes frame with stream ID and data" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 4;
@@ -39,7 +40,7 @@ test "RFC 9000 §19.8 - writeStream encodes frame with stream ID and data" {
 
 test "RFC 9000 §19.8 - decodeStream reads frame correctly" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 8;
@@ -58,7 +59,7 @@ test "RFC 9000 §19.8 - decodeStream reads frame correctly" {
 
 test "RFC 9000 §19.8 - STREAM frame round trip" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 12;
@@ -82,7 +83,7 @@ test "RFC 9000 §19.8 - STREAM frame round trip" {
 
 test "RFC 9000 §19.8 - STREAM frame with stream ID 0" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 0;
@@ -95,7 +96,7 @@ test "RFC 9000 §19.8 - STREAM frame with stream ID 0" {
 
 test "RFC 9000 §19.8 - STREAM frame with small stream ID" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 127; // 1-byte varint
@@ -108,7 +109,7 @@ test "RFC 9000 §19.8 - STREAM frame with small stream ID" {
 
 test "RFC 9000 §19.8 - STREAM frame with large stream ID" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 100000; // Multi-byte varint
@@ -121,7 +122,7 @@ test "RFC 9000 §19.8 - STREAM frame with large stream ID" {
 
 test "RFC 9000 §19.8 - STREAM frame with maximum stream ID" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = (1 << 62) - 1; // Max varint
@@ -138,7 +139,7 @@ test "RFC 9000 §19.8 - STREAM frame with maximum stream ID" {
 
 test "RFC 9000 §19.8 - STREAM frame with null offset" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const offset: ?u64 = null;
@@ -155,7 +156,7 @@ test "RFC 9000 §19.8 - STREAM frame with null offset" {
 
 test "RFC 9000 §19.8 - STREAM frame with zero offset" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const offset: ?u64 = 0;
@@ -172,7 +173,7 @@ test "RFC 9000 §19.8 - STREAM frame with zero offset" {
 
 test "RFC 9000 §19.8 - STREAM frame with small offset" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const offset: ?u64 = 1024;
@@ -185,7 +186,7 @@ test "RFC 9000 §19.8 - STREAM frame with small offset" {
 
 test "RFC 9000 §19.8 - STREAM frame with large offset" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const offset: ?u64 = 1 << 30; // 1 GB offset
@@ -202,7 +203,7 @@ test "RFC 9000 §19.8 - STREAM frame with large offset" {
 
 test "RFC 9000 §19.8 - STREAM frame with FIN flag set" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     _ = try stream.writeStream(w, 4, null, true, "Final data");
@@ -218,7 +219,7 @@ test "RFC 9000 §19.8 - STREAM frame with FIN flag set" {
 
 test "RFC 9000 §19.8 - STREAM frame with FIN flag clear" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     _ = try stream.writeStream(w, 4, null, false, "Not final");
@@ -234,7 +235,7 @@ test "RFC 9000 §19.8 - STREAM frame with FIN flag clear" {
 
 test "RFC 9000 §19.8 - STREAM frame with FIN and empty data" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data: []const u8 = "";
@@ -252,7 +253,7 @@ test "RFC 9000 §19.8 - STREAM frame with FIN and empty data" {
 
 test "RFC 9000 §19.8 - STREAM frame flags: no offset, no FIN" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     _ = try stream.writeStream(w, 4, null, false, "Data");
@@ -268,7 +269,7 @@ test "RFC 9000 §19.8 - STREAM frame flags: no offset, no FIN" {
 
 test "RFC 9000 §19.8 - STREAM frame flags: offset, no FIN" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     _ = try stream.writeStream(w, 4, 100, false, "Data");
@@ -283,7 +284,7 @@ test "RFC 9000 §19.8 - STREAM frame flags: offset, no FIN" {
 
 test "RFC 9000 §19.8 - STREAM frame flags: no offset, FIN" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     _ = try stream.writeStream(w, 4, null, true, "Data");
@@ -298,7 +299,7 @@ test "RFC 9000 §19.8 - STREAM frame flags: no offset, FIN" {
 
 test "RFC 9000 §19.8 - STREAM frame flags: offset, FIN" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     _ = try stream.writeStream(w, 4, 200, true, "Data");
@@ -326,7 +327,7 @@ test "RFC 9000 §19.8 - STREAM frame type byte range 0x08-0x0f" {
     };
 
     for (test_cases) |tc| {
-        var fbs = std.io.fixedBufferStream(&buf);
+        var fbs = compat.fixedBufferStream(&buf);
         const w = fbs.writer();
         _ = try stream.writeStream(w, 4, tc.offset, tc.fin, "X");
 
@@ -341,7 +342,7 @@ test "RFC 9000 §19.8 - STREAM frame type byte range 0x08-0x0f" {
 
 test "RFC 9000 §19.8 - STREAM frame with empty data" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data: []const u8 = "";
@@ -354,7 +355,7 @@ test "RFC 9000 §19.8 - STREAM frame with empty data" {
 
 test "RFC 9000 §19.8 - STREAM frame with single byte data" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = "X";
@@ -367,7 +368,7 @@ test "RFC 9000 §19.8 - STREAM frame with single byte data" {
 
 test "RFC 9000 §19.8 - STREAM frame with large data" {
     var buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     var large_data: [1024]u8 = undefined;
@@ -388,7 +389,7 @@ test "RFC 9000 §19.8 - STREAM frame with large data" {
 
 test "RFC 9000 §19.8 - Multiple STREAM frames for different streams" {
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Stream 0
@@ -410,7 +411,7 @@ test "RFC 9000 §19.8 - Multiple STREAM frames for different streams" {
 
 test "RFC 9000 §19.8 - Multiple STREAM frames same stream different offsets" {
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // First chunk at offset 0
@@ -492,7 +493,7 @@ test "negative: decodeStream length exceeds buffer" {
 
 test "boundary: STREAM frame bytes consumed matches written" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const written = try stream.writeStream(w, 8, 123, true, "Test");
@@ -504,7 +505,7 @@ test "boundary: STREAM frame bytes consumed matches written" {
 
 test "boundary: STREAM frame with all flags set" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // OFF + LEN + FIN
@@ -518,7 +519,7 @@ test "boundary: STREAM frame with all flags set" {
 
 test "boundary: STREAM frame offset + length require multi-byte varints" {
     var buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Large offset and large data
@@ -536,7 +537,7 @@ test "boundary: STREAM frame offset + length require multi-byte varints" {
 
 test "boundary: STREAM frame data slice is correct subset" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = "ABCDEFGH";
@@ -558,7 +559,7 @@ test "RFC 9000 §19.8 - STREAM frame type is 0x08-0x0f" {
     try testing.expectEqual(@as(u8, 0x08), @intFromEnum(types.FrameType.STREAM));
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     _ = try stream.writeStream(w, 4, null, false, "X");
@@ -569,7 +570,7 @@ test "RFC 9000 §19.8 - STREAM frame type is 0x08-0x0f" {
 
 test "RFC 9000 §19.8 - STREAM frame format: Type + StreamID + [Offset] + [Length] + Data" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     _ = try stream.writeStream(w, 12, 100, false, "Test");
@@ -590,19 +591,19 @@ test "RFC 9000 §19.8 - OFF bit indicates offset presence" {
     var buf: [256]u8 = undefined;
 
     // Without offset
-    var fbs1 = std.io.fixedBufferStream(&buf);
+    var fbs1 = compat.fixedBufferStream(&buf);
     _ = try stream.writeStream(fbs1.writer(), 4, null, false, "X");
     try testing.expect((buf[0] & stream.OFF) == 0);
 
     // With offset
-    var fbs2 = std.io.fixedBufferStream(&buf);
+    var fbs2 = compat.fixedBufferStream(&buf);
     _ = try stream.writeStream(fbs2.writer(), 4, 0, false, "X");
     try testing.expect((buf[0] & stream.OFF) != 0);
 }
 
 test "RFC 9000 §19.8 - LEN bit indicates length field presence" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // writeStream always sets LEN flag
@@ -615,19 +616,19 @@ test "RFC 9000 §19.8 - FIN bit indicates end of stream" {
     var buf: [256]u8 = undefined;
 
     // Without FIN
-    var fbs1 = std.io.fixedBufferStream(&buf);
+    var fbs1 = compat.fixedBufferStream(&buf);
     _ = try stream.writeStream(fbs1.writer(), 4, null, false, "X");
     try testing.expect((buf[0] & stream.FIN) == 0);
 
     // With FIN
-    var fbs2 = std.io.fixedBufferStream(&buf);
+    var fbs2 = compat.fixedBufferStream(&buf);
     _ = try stream.writeStream(fbs2.writer(), 4, null, true, "X");
     try testing.expect((buf[0] & stream.FIN) != 0);
 }
 
 test "RFC 9000 §2 - Stream IDs identify independent data flows" {
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Different streams can have same offset independently
@@ -651,7 +652,7 @@ test "RFC 9000 §2 - Stream IDs identify independent data flows" {
 
 test "RFC 9000 §3 - Stream offset enables reliable ordered delivery" {
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Send stream data with gaps (out of order)
@@ -678,7 +679,7 @@ test "RFC 9000 §3 - Stream offset enables reliable ordered delivery" {
 
 test "RFC 9000 §19.8 - FIN signals clean stream termination" {
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Stream data followed by FIN
@@ -705,7 +706,7 @@ test "RFC 9000 §19.8 - FIN signals clean stream termination" {
 test "RFC 9000 §4 - STREAM frames interact with flow control" {
     // STREAM frames respect MAX_STREAM_DATA limits
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 4;
@@ -723,7 +724,7 @@ test "RFC 9000 §4 - STREAM frames interact with flow control" {
 
 test "RFC 9000 §2 - Client-initiated streams have even IDs" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Client-initiated bidirectional: 0, 4, 8, ...
@@ -747,7 +748,7 @@ test "RFC 9000 §2 - Client-initiated streams have even IDs" {
 
 test "RFC 9000 §19.8 - STREAM frame supports zero-length data with FIN" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Empty STREAM frame with FIN (closes stream without more data)

@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const endpoint = @import("quic_endpoint");
 const packet = @import("quic_packet");
 const frame = @import("quic_frame");
@@ -27,9 +28,9 @@ test "handshake space: ECN CE triggers ACK_ECN in server Handshake ACK" {
     c.hs_tx_keys = .{ .key = client_keys.key, .iv = client_keys.iv, .hp = client_keys.hp };
 
     // Build a minimal incoming Handshake packet (PING) addressed to this connection (DCID = our_scid).
-    var frames = std.ArrayList(u8){};
+    var frames = std.ArrayList(u8).empty;
     defer frames.deinit(A);
-    _ = (frame.Frame{ .ping = {} }).write(frames.writer(A)) catch {};
+    _ = (frame.Frame{ .ping = {} }).write(compat.arrayListWriter(&frames, A)) catch {};
     const in_pkt = try packet.encodeHandshakeProtected(
         A,
         0x00000001,

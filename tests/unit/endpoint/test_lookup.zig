@@ -330,7 +330,7 @@ fn createMockConnection(
     c.* = undefined; // Initialize to undefined first
     c.our_scid.len = @intCast(our_scid.len);
     @memcpy(c.our_scid.bytes[0..our_scid.len], our_scid);
-    c.local_cids = .{.{}} ** 8;
+    c.local_cids = [_]@TypeOf(c.local_cids[0]){.{}} ** 8;
     c.active_local_cids = 1;
     c.issued_cids = 1;
     c.next_cid_sequence = 1;

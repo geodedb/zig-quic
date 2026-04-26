@@ -4,14 +4,14 @@ const x509 = @import("quic_x509");
 fn dummyCertWithKuEku(alloc: std.mem.Allocator, dns: []const u8, ku_bits: ?u16, eku_server_auth: bool) ![]u8 {
     // Minimal TBSCertificate with SAN and optional KU/EKU. Values are not signed; validateChain should fail
     // on KU/EKU before signature parsing when time and name match.
-    var tbs = std.ArrayList(u8){};
+    var tbs = std.ArrayList(u8).empty;
     defer tbs.deinit(alloc);
     const nb = "20200101000000Z";
     const na = "20300101000000Z";
 
     // Sequence wrappers
     const empty_seq = blk: {
-        var a = std.ArrayList(u8){};
+        var a = std.ArrayList(u8).empty;
         defer a.deinit(alloc);
         emitTLV(&a, alloc, 0x30, &[_]u8{});
         break :blk try a.toOwnedSlice(alloc);
@@ -32,7 +32,7 @@ fn dummyCertWithKuEku(alloc: std.mem.Allocator, dns: []const u8, ku_bits: ?u16, 
     defer alloc.free(nb_t);
     const na_t = try makeGeneralizedTime(alloc, na);
     defer alloc.free(na_t);
-    var validity_inner = std.ArrayList(u8){};
+    var validity_inner = std.ArrayList(u8).empty;
     defer validity_inner.deinit(alloc);
     validity_inner.appendSlice(alloc, nb_t) catch unreachable;
     validity_inner.appendSlice(alloc, na_t) catch unreachable;
@@ -48,7 +48,7 @@ fn dummyCertWithKuEku(alloc: std.mem.Allocator, dns: []const u8, ku_bits: ?u16, 
     const san_oid = &[_]u8{ 0x55, 0x1D, 0x11 };
     const oid_san = try makeOID(alloc, san_oid);
     defer alloc.free(oid_san);
-    var gn = std.ArrayList(u8){};
+    var gn = std.ArrayList(u8).empty;
     defer gn.deinit(alloc);
     emitTLV(&gn, alloc, 0x82, dns);
     const gns = try makeSeq(alloc, gn.items);
@@ -56,11 +56,11 @@ fn dummyCertWithKuEku(alloc: std.mem.Allocator, dns: []const u8, ku_bits: ?u16, 
     const san_oct = try makeOctet(alloc, gns);
     defer alloc.free(san_oct);
 
-    var ext_list = std.ArrayList(u8){};
+    var ext_list = std.ArrayList(u8).empty;
     defer ext_list.deinit(alloc);
     // Append SAN extension
     {
-        var ext = std.ArrayList(u8){};
+        var ext = std.ArrayList(u8).empty;
         defer ext.deinit(alloc);
         ext.appendSlice(alloc, oid_san) catch unreachable;
         ext.appendSlice(alloc, san_oct) catch unreachable;
@@ -74,7 +74,7 @@ fn dummyCertWithKuEku(alloc: std.mem.Allocator, dns: []const u8, ku_bits: ?u16, 
         defer alloc.free(oid_ku);
         // Encode 2-byte BIT STRING (unused bits = 0)
         var ku_val = [_]u8{ @intCast((bits >> 8) & 0xff), @intCast(bits & 0xff) };
-        var bs = std.ArrayList(u8){};
+        var bs = std.ArrayList(u8).empty;
         defer bs.deinit(alloc);
         bs.append(alloc, 0) catch unreachable; // unused bits count
         bs.appendSlice(alloc, &ku_val) catch unreachable;
@@ -82,7 +82,7 @@ fn dummyCertWithKuEku(alloc: std.mem.Allocator, dns: []const u8, ku_bits: ?u16, 
         defer alloc.free(bs_tlv);
         const ku_oct = try makeOctet(alloc, bs_tlv);
         defer alloc.free(ku_oct);
-        var ext = std.ArrayList(u8){};
+        var ext = std.ArrayList(u8).empty;
         defer ext.deinit(alloc);
         ext.appendSlice(alloc, oid_ku) catch unreachable;
         ext.appendSlice(alloc, ku_oct) catch unreachable;
@@ -100,7 +100,7 @@ fn dummyCertWithKuEku(alloc: std.mem.Allocator, dns: []const u8, ku_bits: ?u16, 
         defer alloc.free(seq_sa);
         const eku_oct = try makeOctet(alloc, seq_sa);
         defer alloc.free(eku_oct);
-        var ext = std.ArrayList(u8){};
+        var ext = std.ArrayList(u8).empty;
         defer ext.deinit(alloc);
         ext.appendSlice(alloc, oid_eku) catch unreachable;
         ext.appendSlice(alloc, eku_oct) catch unreachable;
@@ -118,7 +118,7 @@ fn dummyCertWithKuEku(alloc: std.mem.Allocator, dns: []const u8, ku_bits: ?u16, 
     defer alloc.free(tbs_seq);
 
     // Wrap into Certificate: Certificate ::= SEQUENCE { tbs, sigAlg, sigBits }
-    var outer = std.ArrayList(u8){};
+    var outer = std.ArrayList(u8).empty;
     defer outer.deinit(alloc);
     outer.appendSlice(alloc, tbs_seq) catch unreachable;
     const outer_sig_alg = try makeAlgorithmIdentifier(alloc);
@@ -150,37 +150,37 @@ fn putLen(out: *std.ArrayList(u8), allocator: std.mem.Allocator, len: usize) voi
     }
 }
 fn makeSeq(alloc: std.mem.Allocator, inner: []const u8) ![]u8 {
-    var a = std.ArrayList(u8){};
+    var a = std.ArrayList(u8).empty;
     defer a.deinit(alloc);
     emitTLV(&a, alloc, 0x30, inner);
     return try a.toOwnedSlice(alloc);
 }
 fn makeCtx(tagnum: u8, alloc: std.mem.Allocator, inner: []const u8) ![]u8 {
-    var a = std.ArrayList(u8){};
+    var a = std.ArrayList(u8).empty;
     defer a.deinit(alloc);
     emitTLV(&a, alloc, 0xA0 | (tagnum & 0x1f), inner);
     return try a.toOwnedSlice(alloc);
 }
 fn makeOctet(alloc: std.mem.Allocator, inner: []const u8) ![]u8 {
-    var a = std.ArrayList(u8){};
+    var a = std.ArrayList(u8).empty;
     defer a.deinit(alloc);
     emitTLV(&a, alloc, 0x04, inner);
     return try a.toOwnedSlice(alloc);
 }
 fn makeOID(alloc: std.mem.Allocator, bytes: []const u8) ![]u8 {
-    var a = std.ArrayList(u8){};
+    var a = std.ArrayList(u8).empty;
     defer a.deinit(alloc);
     emitTLV(&a, alloc, 0x06, bytes);
     return try a.toOwnedSlice(alloc);
 }
 fn makeGeneralizedTime(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
-    var a = std.ArrayList(u8){};
+    var a = std.ArrayList(u8).empty;
     defer a.deinit(alloc);
     emitTLV(&a, alloc, 0x18, s);
     return try a.toOwnedSlice(alloc);
 }
 fn makeBitString(alloc: std.mem.Allocator, v: []const u8) ![]u8 {
-    var a = std.ArrayList(u8){};
+    var a = std.ArrayList(u8).empty;
     defer a.deinit(alloc);
     emitTLV(&a, alloc, 0x03, v);
     return try a.toOwnedSlice(alloc);
@@ -194,7 +194,7 @@ fn makeAlgorithmIdentifier(alloc: std.mem.Allocator) ![]u8 {
     defer alloc.free(oid);
     // NULL parameters
     const null_tlv = &[_]u8{ 0x05, 0x00 };
-    var inner = std.ArrayList(u8){};
+    var inner = std.ArrayList(u8).empty;
     defer inner.deinit(alloc);
     inner.appendSlice(alloc, oid) catch unreachable;
     inner.appendSlice(alloc, null_tlv) catch unreachable;
@@ -215,11 +215,12 @@ test "ku_missing_digital_signature_rejected" {
     defer alloc.free(der);
     // Sanity: KU parsed and lacks digitalSignature
     const cert = try x509.parseCert(alloc, der);
+    defer cert.deinit(alloc);
     try std.testing.expect(cert.ku != null);
     try std.testing.expect((cert.ku.?.bits & 0x8000) == 0);
     try std.testing.expect((cert.ku.?.bits & 0x4000) != 0);
     var chain = [_][]const u8{der};
-    try std.testing.expectError(error.KuNotAllowed, x509.validateChain(alloc, &chain, 1_600_000_000, "good.test", false));
+    try std.testing.expectError(error.KuNotAllowed, x509.validateChain(alloc, &chain, 1_600_000_000, "good.test", .secure, .server_auth));
 }
 
 test "eku_server_auth_required_when_eku_present" {
@@ -232,6 +233,6 @@ test "eku_server_auth_required_when_eku_present" {
     var chain = [_][]const u8{der};
     // Should pass KU check and validity/name checks; then fail earlier due to signature parse since it's unsigned.
     // Use notBefore/After to ensure validity passes and Name matches; expect SignatureParse propagated as BadSignature or SignatureParse.
-    const err = x509.validateChain(alloc, &chain, 1_600_000_000, "good.test", false) catch |e| e;
+    const err = x509.validateChain(alloc, &chain, 1_600_000_000, "good.test", .secure, .server_auth) catch |e| e;
     try std.testing.expect(err == error.SignatureParse or err == error.BadSignature);
 }

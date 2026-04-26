@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const endpoint = @import("quic_endpoint");
 const conn_mod = @import("quic_conn");
 const packet = @import("quic_packet");
@@ -19,6 +20,7 @@ test "server coalesces zero-length DCID handshakes" {
     var cfg = @import("config.zig").QuicConfig{
         .alpn = &[_][]const u8{"h3"},
         .allow_insecure = true,
+        .enable_retry = false,
         .inline_server_cert_der = test_certs.server_cert_der,
         .inline_server_priv_p256 = test_certs.server_key_der,
     };
@@ -38,9 +40,9 @@ test "server coalesces zero-length DCID handshakes" {
     const ch_bytes = try buildStandardClientHello(alloc);
     defer alloc.free(ch_bytes);
 
-    var crypto_payload = std.ArrayList(u8){};
+    var crypto_payload = std.ArrayList(u8).empty;
     defer crypto_payload.deinit(alloc);
-    const w = crypto_payload.writer(alloc);
+    const w = compat.arrayListWriter(&crypto_payload, alloc);
     _ = try (frame.Frame{ .crypto = .{ .offset = 0, .data = ch_bytes } }).write(w);
 
     const initial_pkt = try packet.encodeInitialProtected(
@@ -56,14 +58,7 @@ test "server coalesces zero-length DCID handshakes" {
     );
     defer alloc.free(initial_pkt);
 
-    const client_addr = std.net.Address.initIp4([4]u8{ 127, 0, 0, 1 }, 40000);
-    var storage: std.posix.sockaddr.storage = undefined;
-    @memset(@as([*]u8, @ptrCast(&storage))[0..@sizeOf(@TypeOf(storage))], 0);
-    @memcpy(
-        @as([*]u8, @ptrCast(&storage))[0..client_addr.getOsSockLen()],
-        @as([*]const u8, @ptrCast(&client_addr.any)),
-    );
-    const peer = conn_mod.SockAddr{ .storage = storage, .len = client_addr.getOsSockLen() };
+    const peer = sockAddrIp4([4]u8{ 127, 0, 0, 1 }, 40000);
 
     ep.testInject(peer, initial_pkt);
 
@@ -127,7 +122,7 @@ test "server coalesces zero-length DCID handshakes" {
 
 fn buildStandardClientHello(alloc: std.mem.Allocator) ![]u8 {
     var sk: [32]u8 = undefined;
-    std.crypto.random.bytes(&sk);
+    compat.randomBytes(&sk);
     const pk = try std.crypto.dh.X25519.recoverPublicKey(sk);
 
     var body = try std.ArrayList(u8).initCapacity(alloc, 0);
@@ -136,7 +131,7 @@ fn buildStandardClientHello(alloc: std.mem.Allocator) ![]u8 {
     try body.appendSlice(alloc, &.{ 0x03, 0x03 });
 
     var rnd: [32]u8 = undefined;
-    std.crypto.random.bytes(&rnd);
+    compat.randomBytes(&rnd);
     try body.appendSlice(alloc, &rnd);
 
     try body.append(alloc, 0);
@@ -208,4 +203,18 @@ fn buildStandardClientHello(alloc: std.mem.Allocator) ![]u8 {
     @memcpy(result[4..], body.items);
 
     return result;
+}
+
+fn sockAddrIp4(ip: [4]u8, port: u16) conn_mod.SockAddr {
+    var out: conn_mod.SockAddr = .{};
+    out.storage = std.mem.zeroes(std.posix.sockaddr.storage);
+    var sin: std.posix.sockaddr.in = .{
+        .family = std.posix.AF.INET,
+        .port = std.mem.nativeToBig(u16, port),
+        .addr = std.mem.readInt(u32, &ip, .little),
+        .zero = .{0} ** 8,
+    };
+    out.len = @intCast(@sizeOf(std.posix.sockaddr.in));
+    @memcpy(@as([*]u8, @ptrCast(&out.storage))[0..out.len], @as([*]const u8, @ptrCast(&sin))[0..out.len]);
+    return out;
 }

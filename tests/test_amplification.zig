@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const endpoint = @import("quic_endpoint");
 const packet = @import("quic_packet");
 const frame = @import("quic_frame");
@@ -27,9 +28,9 @@ test "anti_amplification_counters_update" {
         break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
     };
 
-    var frames = std.ArrayList(u8){};
+    var frames = std.ArrayList(u8).empty;
     defer frames.deinit(alloc);
-    _ = (frame.Frame{ .ping = {} }).write(frames.writer(alloc)) catch {};
+    _ = (frame.Frame{ .ping = {} }).write(compat.arrayListWriter(&frames, alloc)) catch {};
 
     const pkt = try packet.encodeInitialProtected(
         alloc,

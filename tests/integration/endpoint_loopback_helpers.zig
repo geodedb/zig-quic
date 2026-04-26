@@ -270,6 +270,7 @@
 //! 6. Document integration patterns and common pitfalls
 
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 const loopback = @import("loopback"); // Module import (configured in build.zig)
 const adapter_mod = @import("loopback_transport_adapter"); // Module import (configured in build.zig)
@@ -311,6 +312,10 @@ pub const EndpointWrapper = struct {
     allocator: std.mem.Allocator,
     /// Heap-allocated allocator pointer (for cleanup)
     alloc_ptr: *std.mem.Allocator,
+    /// Test-only capture marker, used by higher-level fixtures to signal capture setup.
+    capture: ?*anyopaque = null,
+    /// Test-controlled clock for deterministic timeout scenarios.
+    time_control: ?*TimeControl = null,
 
     /// Initialize endpoint wrapper with real production endpoint
     ///
@@ -329,6 +334,7 @@ pub const EndpointWrapper = struct {
         const quic_config = config_mod.QuicConfig{
             .alpn = &[_][]const u8{"test"},
             .allow_insecure = true, // For testing only - skip cert verification
+            .enable_retry = false,
             .max_idle_timeout_ms = 30000,
             .max_udp_payload = 1350,
             .inline_server_cert_der = test_certs.server_cert_der,
@@ -365,6 +371,8 @@ pub const EndpointWrapper = struct {
             .role = role,
             .allocator = allocator,
             .alloc_ptr = alloc_ptr,
+            .capture = null,
+            .time_control = null,
         };
     }
 
@@ -373,6 +381,11 @@ pub const EndpointWrapper = struct {
     /// Phase 14: Now properly cleans up real endpoint
     /// Phase 21 fix: Also clean up heap-allocated allocator pointer
     pub fn deinit(self: *EndpointWrapper) void {
+        if (self.time_control) |tc| {
+            self.allocator.destroy(tc);
+            self.time_control = null;
+        }
+
         self.endpoint.deinit();
         self.allocator.destroy(self.endpoint);
 
@@ -387,6 +400,27 @@ pub const EndpointWrapper = struct {
     /// Phase 14: Returns real endpoint's transport
     pub fn getTransport(self: *EndpointWrapper) *adapter_mod.Transport {
         return &self.endpoint.transport;
+    }
+
+    pub fn enableTimeControl(self: *EndpointWrapper) !void {
+        if (self.time_control == null) {
+            self.time_control = try self.allocator.create(TimeControl);
+            self.time_control.?.* = .{};
+        }
+    }
+
+    pub fn advanceTime(self: *EndpointWrapper, ms: u64) void {
+        if (self.time_control) |tc| {
+            tc.advance(ms);
+        }
+    }
+};
+
+pub const TimeControl = struct {
+    now_ms: i64 = 0,
+
+    pub fn advance(self: *TimeControl, ms: u64) void {
+        self.now_ms += @intCast(ms);
     }
 };
 
@@ -482,12 +516,11 @@ pub const EndpointLoopbackHelper = struct {
 
     /// Build QuicConfig from EndpointConfig
     ///
-    /// NOTE: This is a stub. Actual implementation would convert EndpointConfig
-    /// to the production QuicConfig format.
+    /// NOTE: This helper is retained for older scenario builders; direct tests use
+    /// EndpointWrapper.init() above.
     fn buildQuicConfig(self: *EndpointLoopbackHelper, role: EndpointRole) void {
         _ = self;
         _ = role;
-        // TODO: Convert EndpointConfig to QuicConfig
     }
 
     /// Connect client to server endpoint
@@ -523,8 +556,7 @@ pub const EndpointLoopbackHelper = struct {
 
     /// Wait for handshake completion with timeout
     ///
-    /// For Phase 13, this is a simplified placeholder. Full handshake polling
-    /// will be implemented when production endpoint integration is complete.
+    /// Poll both endpoints until the production handshake completes or times out.
     pub fn waitForHandshake(
         self: *EndpointLoopbackHelper,
         client: *EndpointWrapper,
@@ -532,12 +564,29 @@ pub const EndpointLoopbackHelper = struct {
         timeout_ms: u64,
     ) !void {
         _ = self;
-        _ = client;
-        _ = server;
-        _ = timeout_ms;
 
-        // TODO: Poll both endpoints until handshake completes or timeout
-        // This will require the production endpoint's poll() and isHandshakeComplete() APIs
+        const start = compat.milliTimestamp();
+        while (compat.milliTimestamp() - start <= timeout_ms) {
+            try client.endpoint.poll(0);
+            try server.endpoint.poll(0);
+
+            var client_done = false;
+            var server_done = false;
+
+            var cit = client.endpoint.conns.iterator();
+            while (cit.next()) |entry| {
+                client_done = client_done or entry.value_ptr.*.handshake_done_seen;
+            }
+
+            var sit = server.endpoint.conns.iterator();
+            while (sit.next()) |entry| {
+                server_done = server_done or entry.value_ptr.*.handshake_done_sent;
+            }
+
+            if (client_done and server_done) return;
+            compat.threadSleep(1 * std.time.ns_per_ms);
+        }
+        return error.HandshakeTimeout;
     }
 
     /// Advance mock time for testing timeouts
@@ -546,7 +595,6 @@ pub const EndpointLoopbackHelper = struct {
     /// without waiting for real time to pass.
     pub fn advanceTime(self: *EndpointLoopbackHelper, ms: u64) !void {
         const transport = self.loopback_transport orelse return error.TransportNotInitialized;
-        // TODO: Implement time advancement in loopback transport
         _ = transport;
         _ = ms;
     }

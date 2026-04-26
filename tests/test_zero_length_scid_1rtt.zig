@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const testlog = @import("testlog");
 const api = @import("quic_api");
 const endpoint = @import("quic_endpoint");
@@ -70,7 +71,7 @@ test "server uses zero-length DCID in 1-RTT packets when client sends zero-lengt
             break;
         }
 
-        std.Thread.sleep(1_000_000); // 1ms
+        compat.threadSleep(1_000_000); // 1ms
     }
 
     // Verify that the client connection captured a zero-length peer_initial_scid

@@ -30,15 +30,18 @@ fn createTestConnection() !*conn_mod.Connection {
     // Use undefined for fields we don't care about in frame handler tests
     // Only initialize fields that frame handlers actually modify
     conn.* = undefined;
+    conn.mu = std.Io.Mutex.init;
     conn.role = .Client;
     conn.allocator = &test_allocator; // CRITICAL: needed for onNewConnectionId and pushStreamFrame
-    conn.reset_tokens = std.ArrayList([16]u8){}; // CRITICAL: needed for onNewConnectionId
-    conn.dgram_inbox = std.ArrayList([]u8){}; // CRITICAL: needed for pushDatagram
+    conn.reset_tokens = std.ArrayList(conn_mod.ResetTokenEntry).empty; // CRITICAL: needed for onNewConnectionId
+    conn.dgram_inbox = std.ArrayList([]u8).empty; // CRITICAL: needed for pushDatagram
     conn.streams_rx = std.AutoHashMap(u64, conn_mod.StreamRx).init(test_allocator); // CRITICAL: needed for pushStreamFrame
     conn.streams_rx_init = true; // CRITICAL: init flag for streams_rx
     conn.stream_txs = std.AutoHashMap(u64, conn_mod.StreamTx).init(test_allocator); // CRITICAL: required for MAX_STREAM_DATA
     conn.stream_txs_init = true; // CRITICAL: init flag for stream_txs
-    conn.incoming_stream_queue = std.ArrayList(u64){}; // CRITICAL: needed for pushStreamFrame
+    conn.incoming_stream_queue = std.ArrayList(u64).empty; // CRITICAL: needed for pushStreamFrame
+    conn.pending_fc_streams = std.ArrayList(u64).empty;
+    conn.writable_streams = std.ArrayList(u64).empty;
     conn.stream_recv_aborted = false; // CRITICAL: needed for pushStreamFrame
     conn.peer_initial_scid = .{ .len = 0 };
     conn.peer_max_data = 0;
@@ -56,7 +59,7 @@ fn createTestConnection() !*conn_mod.Connection {
     conn.path_mtu = 1200;
     conn.path_validation_pending = false;
     conn.path_challenge_data = [_]u8{0} ** 8;
-    conn.initial_token = std.ArrayList(u8){};
+    conn.initial_token = std.ArrayList(u8).empty;
     conn.pto_app_count = 0;
     conn.pto_app_active = false;
     conn.pto_app_id = 0;
@@ -81,6 +84,8 @@ fn destroyTestConnection(conn: *conn_mod.Connection) void {
     // StreamTx has no allocations, just deinit the hashmap
     conn.stream_txs.deinit();
     conn.incoming_stream_queue.deinit(test_allocator);
+    conn.pending_fc_streams.deinit(test_allocator);
+    conn.writable_streams.deinit(test_allocator);
     conn.rec.deinit();
     test_allocator.destroy(conn);
 }

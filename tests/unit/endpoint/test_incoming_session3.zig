@@ -283,7 +283,7 @@ test "Session 3 Integration - processShortHeader handles connection not found gr
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
     defer conns.deinit();
 
-    var accepted = std.ArrayList(*conn_mod.Connection){};
+    var accepted = std.ArrayList(*conn_mod.Connection).empty;
 
     const alpn = [_][]const u8{"h3"};
     const test_cfg = cfg.QuicConfig{
@@ -361,7 +361,7 @@ test "Session 3 Integration - Short header DCID length enumeration fallback" {
 
     try conns.put(.{ .peer_hash = peer_h, .dcid_hash = dcid_h }, test_conn);
 
-    var accepted = std.ArrayList(*conn_mod.Connection){};
+    var accepted = std.ArrayList(*conn_mod.Connection).empty;
 
     const alpn = [_][]const u8{"h3"};
     const test_cfg = cfg.QuicConfig{

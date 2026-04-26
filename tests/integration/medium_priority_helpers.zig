@@ -117,7 +117,7 @@ pub fn extractPathChallenges(
     allocator: std.mem.Allocator,
     captured: []const harness.CapturedPacket,
 ) !std.ArrayList(PathChallenge) {
-    var challenges = std.ArrayList(PathChallenge){};
+    var challenges = std.ArrayList(PathChallenge).empty;
     errdefer challenges.deinit(allocator);
 
     _ = captured;
@@ -134,7 +134,7 @@ pub fn extractPathResponses(
     allocator: std.mem.Allocator,
     captured: []const harness.CapturedPacket,
 ) !std.ArrayList(PathResponse) {
-    var responses = std.ArrayList(PathResponse){};
+    var responses = std.ArrayList(PathResponse).empty;
     errdefer responses.deinit(allocator);
 
     _ = captured;
@@ -200,7 +200,7 @@ pub fn extractMigrationEvents(
     allocator: std.mem.Allocator,
     captured: []const harness.CapturedPacket,
 ) !std.ArrayList(MigrationEvent) {
-    var events = std.ArrayList(MigrationEvent){};
+    var events = std.ArrayList(MigrationEvent).empty;
     errdefer events.deinit(allocator);
 
     _ = captured;
@@ -273,7 +273,7 @@ pub fn extractFlowControlUpdates(
     allocator: std.mem.Allocator,
     captured: []const harness.CapturedPacket,
 ) !std.ArrayList(FlowControlUpdate) {
-    var updates = std.ArrayList(FlowControlUpdate){};
+    var updates = std.ArrayList(FlowControlUpdate).empty;
     errdefer updates.deinit(allocator);
 
     _ = captured;
@@ -340,7 +340,7 @@ pub fn validateFlowControlLimits(updates: []const FlowControlUpdate) !void {
 pub fn findBlockedEvents(
     updates: []const FlowControlUpdate,
 ) []const FlowControlUpdate {
-    var blocked_events = std.ArrayList(FlowControlUpdate){};
+    var blocked_events = std.ArrayList(FlowControlUpdate).empty;
 
     for (updates) |update| {
         if (update.frame_type == .data_blocked or

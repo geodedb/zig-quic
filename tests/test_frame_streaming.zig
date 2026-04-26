@@ -1,17 +1,18 @@
 const std = @import("std");
+const compat = @import("compat");
 const frame = @import("quic_frame");
 const varint = @import("quic_varint");
 const testing = std.testing;
 
 test "streaming encode/decode PING" {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
-    const w = buf.writer(testing.allocator);
+    const w = compat.arrayListWriter(&buf, testing.allocator);
 
     const f = frame.Frame{ .ping = {} };
     try frame.encode(f, w);
 
-    var fbs = std.io.fixedBufferStream(buf.items);
+    var fbs = compat.fixedBufferStream(buf.items);
     const r = fbs.reader();
     const decoded = try frame.decode(r, testing.allocator);
 
@@ -19,15 +20,15 @@ test "streaming encode/decode PING" {
 }
 
 test "streaming encode/decode STREAM" {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
-    const w = buf.writer(testing.allocator);
+    const w = compat.arrayListWriter(&buf, testing.allocator);
 
     const data = "hello world";
     const f = frame.Frame{ .stream = .{ .stream_id = 123, .offset = 0, .fin = true, .data = data } };
     try frame.encode(f, w);
 
-    var fbs = std.io.fixedBufferStream(buf.items);
+    var fbs = compat.fixedBufferStream(buf.items);
     const r = fbs.reader();
     const decoded = try frame.decode(r, testing.allocator);
     defer {
@@ -43,9 +44,9 @@ test "streaming encode/decode STREAM" {
 }
 
 test "streaming encode/decode ACK" {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
-    const w = buf.writer(testing.allocator);
+    const w = compat.arrayListWriter(&buf, testing.allocator);
 
     var ranges = [_]frame.AckRange{.{ .gap = 1, .len = 2 }};
     const f = frame.Frame{ .ack = .{
@@ -57,7 +58,7 @@ test "streaming encode/decode ACK" {
     } };
     try frame.encode(f, w);
 
-    var fbs = std.io.fixedBufferStream(buf.items);
+    var fbs = compat.fixedBufferStream(buf.items);
     const r = fbs.reader();
     const decoded = try frame.decode(r, testing.allocator);
     defer {
@@ -74,15 +75,15 @@ test "streaming encode/decode ACK" {
 }
 
 test "streaming encode/decode CONNECTION_CLOSE" {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
-    const w = buf.writer(testing.allocator);
+    const w = compat.arrayListWriter(&buf, testing.allocator);
 
     const reason = "goodbye";
     const f = frame.Frame{ .connection_close = .{ .error_code = 1, .frame_type = 0, .reason = reason } };
     try frame.encode(f, w);
 
-    var fbs = std.io.fixedBufferStream(buf.items);
+    var fbs = compat.fixedBufferStream(buf.items);
     const r = fbs.reader();
     const decoded = try frame.decode(r, testing.allocator);
     defer {
@@ -95,14 +96,14 @@ test "streaming encode/decode CONNECTION_CLOSE" {
 }
 
 test "streaming encode/decode HANDSHAKE_DONE" {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
-    const w = buf.writer(testing.allocator);
+    const w = compat.arrayListWriter(&buf, testing.allocator);
 
     const f = frame.Frame{ .handshake_done = {} };
     try frame.encode(f, w);
 
-    var fbs = std.io.fixedBufferStream(buf.items);
+    var fbs = compat.fixedBufferStream(buf.items);
     const r = fbs.reader();
     const decoded = try frame.decode(r, testing.allocator);
 
@@ -110,14 +111,14 @@ test "streaming encode/decode HANDSHAKE_DONE" {
 }
 
 test "streaming encode/decode MAX_DATA" {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
-    const w = buf.writer(testing.allocator);
+    const w = compat.arrayListWriter(&buf, testing.allocator);
 
     const f = frame.Frame{ .max_data = .{ .max = 1048576 } };
     try frame.encode(f, w);
 
-    var fbs = std.io.fixedBufferStream(buf.items);
+    var fbs = compat.fixedBufferStream(buf.items);
     const r = fbs.reader();
     const decoded = try frame.decode(r, testing.allocator);
 
@@ -126,14 +127,14 @@ test "streaming encode/decode MAX_DATA" {
 }
 
 test "streaming encode/decode MAX_STREAM_DATA" {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
-    const w = buf.writer(testing.allocator);
+    const w = compat.arrayListWriter(&buf, testing.allocator);
 
     const f = frame.Frame{ .max_stream_data = .{ .stream_id = 42, .max = 65536 } };
     try frame.encode(f, w);
 
-    var fbs = std.io.fixedBufferStream(buf.items);
+    var fbs = compat.fixedBufferStream(buf.items);
     const r = fbs.reader();
     const decoded = try frame.decode(r, testing.allocator);
 
@@ -143,15 +144,15 @@ test "streaming encode/decode MAX_STREAM_DATA" {
 }
 
 test "streaming encode/decode PATH_CHALLENGE" {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
-    const w = buf.writer(testing.allocator);
+    const w = compat.arrayListWriter(&buf, testing.allocator);
 
     const challenge_data = [_]u8{ 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 };
     const f = frame.Frame{ .path_challenge = challenge_data };
     try frame.encode(f, w);
 
-    var fbs = std.io.fixedBufferStream(buf.items);
+    var fbs = compat.fixedBufferStream(buf.items);
     const r = fbs.reader();
     const decoded = try frame.decode(r, testing.allocator);
 
@@ -160,15 +161,15 @@ test "streaming encode/decode PATH_CHALLENGE" {
 }
 
 test "streaming encode/decode PATH_RESPONSE" {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
-    const w = buf.writer(testing.allocator);
+    const w = compat.arrayListWriter(&buf, testing.allocator);
 
     const response_data = [_]u8{ 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22 };
     const f = frame.Frame{ .path_response = response_data };
     try frame.encode(f, w);
 
-    var fbs = std.io.fixedBufferStream(buf.items);
+    var fbs = compat.fixedBufferStream(buf.items);
     const r = fbs.reader();
     const decoded = try frame.decode(r, testing.allocator);
 
@@ -177,14 +178,14 @@ test "streaming encode/decode PATH_RESPONSE" {
 }
 
 test "streaming encode/decode RESET_STREAM" {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
-    const w = buf.writer(testing.allocator);
+    const w = compat.arrayListWriter(&buf, testing.allocator);
 
     const f = frame.Frame{ .reset_stream = .{ .stream_id = 7, .error_code = 0x0a, .final_size = 4096 } };
     try frame.encode(f, w);
 
-    var fbs = std.io.fixedBufferStream(buf.items);
+    var fbs = compat.fixedBufferStream(buf.items);
     const r = fbs.reader();
     const decoded = try frame.decode(r, testing.allocator);
 
@@ -195,14 +196,14 @@ test "streaming encode/decode RESET_STREAM" {
 }
 
 test "streaming encode/decode STOP_SENDING" {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
-    const w = buf.writer(testing.allocator);
+    const w = compat.arrayListWriter(&buf, testing.allocator);
 
     const f = frame.Frame{ .stop_sending = .{ .stream_id = 15, .error_code = 0x0b } };
     try frame.encode(f, w);
 
-    var fbs = std.io.fixedBufferStream(buf.items);
+    var fbs = compat.fixedBufferStream(buf.items);
     const r = fbs.reader();
     const decoded = try frame.decode(r, testing.allocator);
 

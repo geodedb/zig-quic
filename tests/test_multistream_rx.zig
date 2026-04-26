@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const conn_mod = @import("quic_conn");
 const fr = @import("quic_frame");
 const pkt = @import("quic_packet");
@@ -27,10 +28,10 @@ test "multi-stream RX: independent FIN completion" {
     c.app_tx_keys = .{ .key = key, .iv = iv, .hp = hp };
 
     // Simulate two inbound streams (0 and 4). Push partial data + FIN for stream 0 only.
-    var fb = std.ArrayList(u8){};
+    var fb = std.ArrayList(u8).empty;
     defer fb.deinit(alloc);
-    _ = (fr.Frame{ .stream = .{ .stream_id = 0, .offset = 0, .fin = true, .data = "hello" } }).write(fb.writer(alloc)) catch 0;
-    _ = (fr.Frame{ .stream = .{ .stream_id = 4, .offset = 0, .fin = false, .data = "abc" } }).write(fb.writer(alloc)) catch 0;
+    _ = (fr.Frame{ .stream = .{ .stream_id = 0, .offset = 0, .fin = true, .data = "hello" } }).write(compat.arrayListWriter(&fb, alloc)) catch 0;
+    _ = (fr.Frame{ .stream = .{ .stream_id = 4, .offset = 0, .fin = false, .data = "abc" } }).write(compat.arrayListWriter(&fb, alloc)) catch 0;
     try injectShort(A, &ep, &c, fb.items);
     // Stream 0 should mark fin; stream 4 should not.
     const s0 = c.streams_rx.getPtr(0).?;

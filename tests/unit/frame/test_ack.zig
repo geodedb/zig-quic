@@ -13,6 +13,7 @@
 //! - RFC compliance: Frame format, range semantics, ECN handling, delay encoding
 
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 
 const ack = @import("ack");
@@ -24,7 +25,7 @@ const types = @import("types");
 
 test "RFC 9000 §19.3 - writeAck encodes basic ACK frame" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const largest: u64 = 100;
@@ -41,7 +42,7 @@ test "RFC 9000 §19.3 - writeAck encodes basic ACK frame" {
 
 test "RFC 9000 §19.3 - decodeAck reads basic ACK frame" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const largest: u64 = 50;
@@ -61,7 +62,7 @@ test "RFC 9000 §19.3 - decodeAck reads basic ACK frame" {
 
 test "RFC 9000 §19.3 - ACK frame round trip" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const largest: u64 = 1000;
@@ -84,7 +85,7 @@ test "RFC 9000 §19.3 - ACK frame round trip" {
 
 test "RFC 9000 §19.3 - ACK frame with single additional range" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const largest: u64 = 100;
@@ -107,7 +108,7 @@ test "RFC 9000 §19.3 - ACK frame with single additional range" {
 
 test "RFC 9000 §19.3 - ACK frame with multiple additional ranges" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const largest: u64 = 200;
@@ -134,7 +135,7 @@ test "RFC 9000 §19.3 - ACK frame with multiple additional ranges" {
 
 test "RFC 9000 §19.3 - ACK frame range semantics" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Acknowledge packets: 100-95 (first_range), then gap, then 92-90
@@ -164,7 +165,7 @@ test "RFC 9000 §19.3 - ACK frame range semantics" {
 
 test "RFC 9000 §19.3.2 - writeAck with ECN counts creates ACK_ECN frame" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const ecn_counts = types.EcnCounts{
@@ -180,7 +181,7 @@ test "RFC 9000 §19.3.2 - writeAck with ECN counts creates ACK_ECN frame" {
 
 test "RFC 9000 §19.3.2 - decodeAck reads ACK_ECN frame correctly" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const ecn_counts = types.EcnCounts{
@@ -201,7 +202,7 @@ test "RFC 9000 §19.3.2 - decodeAck reads ACK_ECN frame correctly" {
 
 test "RFC 9000 §19.3.2 - ACK_ECN frame round trip" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const largest: u64 = 300;
@@ -229,7 +230,7 @@ test "RFC 9000 §19.3.2 - ACK_ECN frame round trip" {
 
 test "RFC 3168 - ECN counts track congestion signals" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // ECT(0) = ECN-Capable Transport (0)
@@ -257,7 +258,7 @@ test "RFC 3168 - ECN counts track congestion signals" {
 
 test "RFC 9000 §19.3 - ACK frame with largest = 0" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     _ = try ack.writeAck(w, 0, 0, 0, &[_]types.AckRange{}, null);
@@ -269,7 +270,7 @@ test "RFC 9000 §19.3 - ACK frame with largest = 0" {
 
 test "RFC 9000 §19.3 - ACK frame with small largest" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     _ = try ack.writeAck(w, 127, 10, 5, &[_]types.AckRange{}, null);
@@ -281,7 +282,7 @@ test "RFC 9000 §19.3 - ACK frame with small largest" {
 
 test "RFC 9000 §19.3 - ACK frame with large largest" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const largest: u64 = 1_000_000;
@@ -298,7 +299,7 @@ test "RFC 9000 §19.3 - ACK frame with large largest" {
 
 test "RFC 9000 §19.3 - ACK frame with zero ack_delay" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     _ = try ack.writeAck(w, 100, 0, 5, &[_]types.AckRange{}, null);
@@ -310,7 +311,7 @@ test "RFC 9000 §19.3 - ACK frame with zero ack_delay" {
 
 test "RFC 9000 §19.3 - ACK frame with small ack_delay" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const ack_delay: u64 = 25; // 25 * 2^ack_delay_exponent microseconds
@@ -323,7 +324,7 @@ test "RFC 9000 §19.3 - ACK frame with small ack_delay" {
 
 test "RFC 9000 §19.3 - ACK frame with large ack_delay" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const ack_delay: u64 = 10000;
@@ -340,7 +341,7 @@ test "RFC 9000 §19.3 - ACK frame with large ack_delay" {
 
 test "RFC 9000 §19.3 - ACK frame with zero first_range" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // first_range = 0 means only largest packet is acknowledged
@@ -353,7 +354,7 @@ test "RFC 9000 §19.3 - ACK frame with zero first_range" {
 
 test "RFC 9000 §19.3 - ACK frame with large first_range" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Acknowledge many contiguous packets
@@ -407,7 +408,7 @@ test "negative: decodeAck truncated in additional ranges" {
 
 test "negative: decodeAck ACK_ECN truncated at ECN counts" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Write valid ACK_ECN frame
@@ -427,7 +428,7 @@ test "negative: decodeAck ACK_ECN truncated at ECN counts" {
 
 test "boundary: ACK frame bytes consumed matches written" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const ranges = [_]types.AckRange{
@@ -444,7 +445,7 @@ test "boundary: ACK frame bytes consumed matches written" {
 
 test "boundary: ACK frame with 16 ranges (within buffer)" {
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // 16 ranges — well within the 64-range buffer capacity
@@ -462,7 +463,7 @@ test "boundary: ACK frame with 16 ranges (within buffer)" {
 
 test "boundary: ACK frame with maximum range count (64)" {
     var buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // 64 ranges — exactly at buffer capacity
@@ -514,7 +515,7 @@ test "security: ACK frame with 65 ranges (exceeds buffer capacity) is rejected" 
 
 test "boundary: ACK_ECN with all ECN counts zero" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const ecn_counts = types.EcnCounts{ .ect0 = 0, .ect1 = 0, .ce = 0 };
@@ -530,7 +531,7 @@ test "boundary: ACK_ECN with all ECN counts zero" {
 
 test "boundary: ACK_ECN with large ECN counts" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const ecn_counts = types.EcnCounts{
@@ -554,7 +555,7 @@ test "boundary: ACK_ECN with large ECN counts" {
 
 test "RFC 9000 §19.3 - ACK frame type is 0x02" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     _ = try ack.writeAck(w, 100, 10, 5, &[_]types.AckRange{}, null);
@@ -565,7 +566,7 @@ test "RFC 9000 §19.3 - ACK frame type is 0x02" {
 
 test "RFC 9000 §19.3.2 - ACK_ECN frame type is 0x03" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const ecn_counts = types.EcnCounts{ .ect0 = 10, .ect1 = 5, .ce = 2 };
@@ -577,7 +578,7 @@ test "RFC 9000 §19.3.2 - ACK_ECN frame type is 0x03" {
 
 test "RFC 9000 §19.3 - ACK frame format: Type + Largest + Delay + RangeCount + FirstRange + [Ranges]" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const ranges = [_]types.AckRange{.{ .gap = 2, .len = 3 }};
@@ -598,7 +599,7 @@ test "RFC 9000 §19.3 - ACK frame format: Type + Largest + Delay + RangeCount + 
 
 test "RFC 9000 §13.2 - ACK frame acknowledges received packets" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Acknowledge packets 100-90 (first_range = 10)
@@ -616,7 +617,7 @@ test "RFC 9000 §13.2 - ACK frame acknowledges received packets" {
 
 test "RFC 9000 §13.2 - ACK ranges encode non-contiguous acknowledgments" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Ack packets: 100-98, skip 97-95, ack 94-92
@@ -639,7 +640,7 @@ test "RFC 9000 §13.2 - ACK ranges encode non-contiguous acknowledgments" {
 
 test "RFC 9000 §13.2.1 - ACK delay scaled by ack_delay_exponent" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // ack_delay is encoded scaled value
@@ -657,7 +658,7 @@ test "RFC 9000 §13.2.1 - ACK delay scaled by ack_delay_exponent" {
 
 test "RFC 3168 - ACK_ECN frame reports ECN feedback" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Receiver counts ECN markings on received packets
@@ -679,7 +680,7 @@ test "RFC 3168 - ACK_ECN frame reports ECN feedback" {
 
 test "RFC 9000 §19.3 - ACK frame must acknowledge at least one packet" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // first_range = 0 means only largest is acknowledged (1 packet)
@@ -694,7 +695,7 @@ test "RFC 9000 §19.3 - ACK frame must acknowledge at least one packet" {
 
 test "RFC 9000 §13.2 - Multiple ACK frames can acknowledge same packets" {
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // First ACK acknowledges packets 0-50
@@ -716,7 +717,7 @@ test "RFC 9000 §13.2 - Multiple ACK frames can acknowledge same packets" {
 
 test "RFC 9000 §19.3 - Range gap calculation" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Ack 100-98 (first_range=2)

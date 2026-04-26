@@ -13,6 +13,7 @@
 //! - RFC 9002: QUIC Loss Detection and Congestion Control
 
 const std = @import("std");
+const compat = @import("compat");
 const tls_helpers = @import("tls_helpers");
 
 // Phase 14: Stub types for harness (real endpoints via endpoint_loopback_helpers)
@@ -163,10 +164,10 @@ pub const TestConnection = struct {
 
     /// Wait for connection to complete handshake
     pub fn waitForHandshake(self: *TestConnection, timeout_ms: u64) !void {
-        const start = if (self.endpoint.time_control) |tc| tc.now_ms else std.time.milliTimestamp();
+        const start = if (self.endpoint.time_control) |tc| tc.now_ms else compat.milliTimestamp();
 
         while (!self.conn.isHandshakeComplete()) {
-            const now = if (self.endpoint.time_control) |tc| tc.now_ms else std.time.milliTimestamp();
+            const now = if (self.endpoint.time_control) |tc| tc.now_ms else compat.milliTimestamp();
             if (now - start > timeout_ms) {
                 return error.HandshakeTimeout;
             }
@@ -200,7 +201,7 @@ pub const PacketCapture = struct {
     /// Initialize packet capture
     pub fn init(allocator: std.mem.Allocator) !PacketCapture {
         return .{
-            .packets = std.ArrayList(CapturedPacket){},
+            .packets = std.ArrayList(CapturedPacket).empty,
             .allocator = allocator,
         };
     }
@@ -219,7 +220,7 @@ pub const PacketCapture = struct {
         errdefer self.allocator.free(pkt_data);
 
         try self.packets.append(self.allocator, .{
-            .timestamp_ms = std.time.milliTimestamp(),
+            .timestamp_ms = compat.milliTimestamp(),
             .direction = direction,
             .data = pkt_data,
         });
@@ -371,10 +372,10 @@ pub fn waitFor(
     timeout_ms: u64,
     check_interval_ms: u64,
 ) !void {
-    const start = std.time.milliTimestamp();
+    const start = compat.milliTimestamp();
 
     while (!condition_fn()) {
-        const now = std.time.milliTimestamp();
+        const now = compat.milliTimestamp();
         if (now - start > timeout_ms) {
             return error.Timeout;
         }
@@ -385,7 +386,7 @@ pub fn waitFor(
 /// Generate random test data
 pub fn generateTestData(allocator: std.mem.Allocator, size: usize) ![]u8 {
     const data = try allocator.alloc(u8, size);
-    std.crypto.random.bytes(data);
+    compat.randomBytes(data);
     return data;
 }
 

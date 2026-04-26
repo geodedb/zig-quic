@@ -68,12 +68,44 @@ pub const FixedBufWriter = struct {
     }
 };
 
-/// Owning wrapper for FixedBufWriter that stores the position counter.
+/// Reader adapter for a fixed buffer.
+pub const FixedBufReader = struct {
+    buf: []const u8,
+    pos_ptr: *usize,
+
+    pub fn readByte(self: FixedBufReader) !u8 {
+        if (self.pos_ptr.* >= self.buf.len) return error.EndOfStream;
+        const byte = self.buf[self.pos_ptr.*];
+        self.pos_ptr.* += 1;
+        return byte;
+    }
+
+    pub fn readNoEof(self: FixedBufReader, out: []u8) !void {
+        if (self.pos_ptr.* + out.len > self.buf.len) return error.EndOfStream;
+        @memcpy(out, self.buf[self.pos_ptr.*..][0..out.len]);
+        self.pos_ptr.* += out.len;
+    }
+
+    pub fn readAllAlloc(self: FixedBufReader, allocator: std.mem.Allocator, max_size: usize) ![]u8 {
+        const remaining = self.buf.len - self.pos_ptr.*;
+        if (remaining > max_size) return error.StreamTooLong;
+        const out = try allocator.alloc(u8, remaining);
+        @memcpy(out, self.buf[self.pos_ptr.*..]);
+        self.pos_ptr.* = self.buf.len;
+        return out;
+    }
+};
+
+/// Owning wrapper for fixed buffer reader/writer state.
 pub const FixedBufStream = struct {
     buf: []u8,
     pos: usize,
 
     pub fn writer(self: *FixedBufStream) FixedBufWriter {
+        return .{ .buf = self.buf, .pos_ptr = &self.pos };
+    }
+
+    pub fn reader(self: *FixedBufStream) FixedBufReader {
         return .{ .buf = self.buf, .pos_ptr = &self.pos };
     }
 
@@ -85,4 +117,50 @@ pub const FixedBufStream = struct {
 /// Create a fixed buffer stream (replaces removed std.io.fixedBufferStream).
 pub fn fixedBufWriter(buf: []u8) FixedBufStream {
     return .{ .buf = buf, .pos = 0 };
+}
+
+/// Compatibility alias matching the removed std.io.fixedBufferStream name.
+pub fn fixedBufferStream(buf: []u8) FixedBufStream {
+    return fixedBufWriter(buf);
+}
+
+/// Zig 0.16 compatibility replacement for removed std.time.nanoTimestamp().
+pub fn nanoTimestamp() i128 {
+    var ts: std.os.linux.timespec = undefined;
+    const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+    if (rc != 0) return 0;
+    return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+}
+
+/// Zig 0.16 compatibility replacement for removed std.time.milliTimestamp().
+pub fn milliTimestamp() i64 {
+    var ts: std.os.linux.timespec = undefined;
+    const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+    if (rc != 0) return 0;
+    return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), std.time.ns_per_ms);
+}
+
+/// Zig 0.16 compatibility replacement for removed std.Thread.sleep().
+pub fn threadSleep(ns: u64) void {
+    var ts: std.os.linux.timespec = .{
+        .sec = @intCast(ns / std.time.ns_per_s),
+        .nsec = @intCast(ns % std.time.ns_per_s),
+    };
+    _ = std.os.linux.nanosleep(&ts, &ts);
+}
+
+/// Lock a Zig 0.16 std.Io.Mutex using the global test I/O context.
+pub fn mutexLock(mu: *std.Io.Mutex) void {
+    mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+}
+
+/// Unlock a Zig 0.16 std.Io.Mutex using the global test I/O context.
+pub fn mutexUnlock(mu: *std.Io.Mutex) void {
+    mu.unlock(std.Io.Threaded.global_single_threaded.io());
+}
+
+/// Zig 0.16 compatibility replacement for removed std.crypto.random.bytes().
+pub fn randomBytes(buf: []u8) void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    io.random(buf);
 }

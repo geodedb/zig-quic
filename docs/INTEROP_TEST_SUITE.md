@@ -1,6 +1,6 @@
 # Interop Test Suite Runbook
 
-Last updated: 2026-02-18
+Last updated: 2026-04-25
 
 This repository validates Zig QUIC interoperability using `scripts/interop_full.sh` against major QUIC stacks in both directions:
 - `zig` as server + external client
@@ -90,7 +90,9 @@ Current known policy skips include (non-exhaustive):
 - `xquic -> zig` (current xquic server image rejects Zig Initials; logs show `server_read_handler` ret `-636` and `conn_err:336`)
 - `neqo -> zig` keyupdate (neqo server path blocks on an NSS certificate DB prompt in this harness)
 - `zig -> msquic` http3 (unsupported testcase in msquic interop path)
+- `zig -> s2n-quic` handshake/transfer/retry/http3 (current s2n-quic client image drops packets from the Zig server path as `InvalidSourceConnectionId`)
 - `zig -> s2n-quic` keyupdate (unsupported testcase in s2n-quic path)
+- `lsquic -> zig` http3 (current lsquic server HTTP/3 path does not complete the handshake with the Zig client in this harness)
 
 To force execution of policy-skipped paths for diagnostics:
 
@@ -102,6 +104,8 @@ Compatibility note:
 - `zig -> xquic` still retains server-side compatibility mode for Retry when forced diagnostics are run, but the current xquic image is policy-skipped because it stalls before handshake completion in this harness.
 - `xquic -> zig` previously passed after Initial-token/1200-byte fixes and ALPN-aware HTTP/3 fallback handling; the current xquic image is policy-skipped because it rejects Zig Initials before handshake completion.
 - `quinn <-> zig` http3 now runs without policy skip in this harness (quinn server negotiates `hq-interop`; Zig client falls back to HQ framing for the `http3` testcase when ALPN is not `h3`).
+- `s2n-quic -> zig` handshake/transfer/retry/http3 pass; the reverse `zig -> s2n-quic` paths are policy-skipped for the current client image behavior above.
+- `zig -> lsquic` http3 passes; the reverse `lsquic -> zig` HTTP/3 path is policy-skipped for the current server image behavior above.
 
 ## Updating the Result Matrix Documentation
 

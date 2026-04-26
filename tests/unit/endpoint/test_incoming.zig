@@ -46,7 +46,7 @@ const MockState = struct {
     probe_version: u32 = 0,
     fn init(_: std.mem.Allocator) MockState {
         return .{
-            .send_data = std.ArrayList(u8){},
+            .send_data = std.ArrayList(u8).empty,
         };
     }
     fn deinit(self: *MockState) void {
@@ -122,7 +122,7 @@ test "RFC 9000 §12 - RxContext initializes with allocator" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
     defer conns.deinit();
-    var accepted: std.ArrayList(*conn_mod.Connection) = .{};
+    var accepted: std.ArrayList(*conn_mod.Connection) = .empty;
     defer accepted.deinit(test_allocator);
     var test_cfg = cfg.QuicConfig{ .alpn = &[_][]const u8{"test"} };
     const ctx = createTestRxContext(&alloc, &conns, &accepted, &test_cfg);
@@ -132,7 +132,7 @@ test "RFC 9000 §12 - RxContext holds connection routing table" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
     defer conns.deinit();
-    var accepted: std.ArrayList(*conn_mod.Connection) = .{};
+    var accepted: std.ArrayList(*conn_mod.Connection) = .empty;
     defer accepted.deinit(test_allocator);
     var test_cfg = cfg.QuicConfig{ .alpn = &[_][]const u8{"test"} };
     const ctx = createTestRxContext(&alloc, &conns, &accepted, &test_cfg);
@@ -142,7 +142,7 @@ test "RFC 9000 §12 - RxContext holds accepted connections queue" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
     defer conns.deinit();
-    var accepted: std.ArrayList(*conn_mod.Connection) = .{};
+    var accepted: std.ArrayList(*conn_mod.Connection) = .empty;
     defer accepted.deinit(test_allocator);
     var test_cfg = cfg.QuicConfig{ .alpn = &[_][]const u8{"test"} };
     const ctx = createTestRxContext(&alloc, &conns, &accepted, &test_cfg);
@@ -152,7 +152,7 @@ test "RFC 9000 §12 - RxContext holds endpoint configuration" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
     defer conns.deinit();
-    var accepted: std.ArrayList(*conn_mod.Connection) = .{};
+    var accepted: std.ArrayList(*conn_mod.Connection) = .empty;
     defer accepted.deinit(test_allocator);
     var test_cfg = cfg.QuicConfig{ .alpn = &[_][]const u8{"test"} };
     const ctx = createTestRxContext(&alloc, &conns, &accepted, &test_cfg);
@@ -162,7 +162,7 @@ test "RFC 9000 §12 - RxContext holds send callback" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
     defer conns.deinit();
-    var accepted: std.ArrayList(*conn_mod.Connection) = .{};
+    var accepted: std.ArrayList(*conn_mod.Connection) = .empty;
     defer accepted.deinit(test_allocator);
     var test_cfg = cfg.QuicConfig{ .alpn = &[_][]const u8{"test"} };
     const ctx = createTestRxContext(&alloc, &conns, &accepted, &test_cfg);
@@ -173,7 +173,7 @@ test "RFC 9000 §12 - RxContext holds timer scheduling callback" {
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
     defer conns.deinit();
-    var accepted: std.ArrayList(*conn_mod.Connection) = .{};
+    var accepted: std.ArrayList(*conn_mod.Connection) = .empty;
     defer accepted.deinit(test_allocator);
     var test_cfg = cfg.QuicConfig{ .alpn = &[_][]const u8{"test"} };
     const ctx = createTestRxContext(&alloc, &conns, &accepted, &test_cfg);
@@ -281,7 +281,7 @@ test "RFC 9000 §10.2 - processFrames returns empty result for closed connection
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
     defer conns.deinit();
-    var accepted: std.ArrayList(*conn_mod.Connection) = .{};
+    var accepted: std.ArrayList(*conn_mod.Connection) = .empty;
     defer accepted.deinit(test_allocator);
     var test_cfg = cfg.QuicConfig{ .alpn = &[_][]const u8{"test"} };
     var ctx = createTestRxContext(&alloc, &conns, &accepted, &test_cfg);
@@ -313,7 +313,7 @@ test "RFC 9000 §10.2 - processFrames processes frames for non-closed connection
     var alloc = test_allocator;
     var conns = std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection).init(test_allocator);
     defer conns.deinit();
-    var accepted: std.ArrayList(*conn_mod.Connection) = .{};
+    var accepted: std.ArrayList(*conn_mod.Connection) = .empty;
     defer accepted.deinit(test_allocator);
     var test_cfg = cfg.QuicConfig{ .alpn = &[_][]const u8{"test"} };
     var ctx = createTestRxContext(&alloc, &conns, &accepted, &test_cfg);

@@ -57,7 +57,7 @@ pub fn extractKeyUpdateEvents(
     allocator: Allocator,
     captured: []const harness.CapturedPacket,
 ) !std.ArrayList(KeyUpdateEvent) {
-    var events = std.ArrayList(KeyUpdateEvent){};
+    var events = std.ArrayList(KeyUpdateEvent).empty;
     errdefer events.deinit(allocator);
 
     // TODO: Iterate through captured packets
@@ -143,7 +143,7 @@ pub fn extractZeroRttEvents(
     allocator: Allocator,
     captured: []const harness.CapturedPacket,
 ) !std.ArrayList(ZeroRttEvent) {
-    var events = std.ArrayList(ZeroRttEvent){};
+    var events = std.ArrayList(ZeroRttEvent).empty;
     errdefer events.deinit(allocator);
 
     // TODO: Iterate through captured packets
@@ -269,7 +269,7 @@ pub fn generateConnectionIds(
     allocator: Allocator,
     count: u32,
 ) !std.ArrayList([8]u8) {
-    var ids = std.ArrayList([8]u8){};
+    var ids = std.ArrayList([8]u8).empty;
     errdefer ids.deinit(allocator);
 
     var i: u32 = 0;
@@ -319,7 +319,7 @@ pub fn extractFaultEvents(
     allocator: Allocator,
     captured: []const harness.CapturedPacket,
 ) !std.ArrayList(FaultEvent) {
-    var events = std.ArrayList(FaultEvent){};
+    var events = std.ArrayList(FaultEvent).empty;
     errdefer events.deinit(allocator);
 
     // TODO: Detect retransmissions (indicates packet loss recovery)

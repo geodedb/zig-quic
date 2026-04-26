@@ -8,6 +8,7 @@
 // timer queue, and accept queue when accessed from multiple threads.
 
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 
 const endpoint_mod = @import("quic_endpoint");
@@ -96,9 +97,9 @@ fn runMutexStress(comptime num_threads: usize, comptime iterations: usize) !void
             fn run(ep_ptr: *Endpoint, cnt: *std.atomic.Value(u64)) void {
                 var i: usize = 0;
                 while (i < iterations) : (i += 1) {
-                    ep_ptr.mu.lock();
+                    compat.mutexLock(&ep_ptr.mu);
                     _ = cnt.fetchAdd(1, .monotonic);
-                    ep_ptr.mu.unlock();
+                    compat.mutexUnlock(&ep_ptr.mu);
                 }
             }
         }.run, .{ &ep, &counter });
@@ -129,10 +130,10 @@ test "load: concurrent connection map access - 8 threads" {
                 var i: usize = 0;
                 while (i < iterations) : (i += 1) {
                     // Simulate connection lookup pattern (read path)
-                    ep_ptr.mu.lock();
+                    compat.mutexLock(&ep_ptr.mu);
                     const count = ep_ptr.conns.count();
                     _ = count;
-                    ep_ptr.mu.unlock();
+                    compat.mutexUnlock(&ep_ptr.mu);
 
                     _ = ops.fetchAdd(1, .monotonic);
                 }
@@ -181,16 +182,16 @@ test "load: concurrent map iteration with mutation - 4 reader + 2 writer threads
             fn run(c: WriterCtx) void {
                 var i: usize = 0;
                 while (i < iterations) : (i += 1) {
-                    c.ep_ptr.mu.lock();
+                    compat.mutexLock(&c.ep_ptr.mu);
                     // Simulate write contention: count + iterator under lock
                     _ = c.ep_ptr.conns.count();
                     var it = c.ep_ptr.conns.iterator();
                     while (it.next()) |_| {}
-                    c.ep_ptr.mu.unlock();
+                    compat.mutexUnlock(&c.ep_ptr.mu);
 
                     _ = c.writes.fetchAdd(1, .monotonic);
                 }
-                _ = c.stop.swap(true, .release);
+                _ = c.stop;
             }
         }.run, .{ctx});
     }
@@ -200,10 +201,10 @@ test "load: concurrent map iteration with mutation - 4 reader + 2 writer threads
         t.* = try std.Thread.spawn(.{}, struct {
             fn run(ep_ptr: *Endpoint, reads: *std.atomic.Value(u64), stop: *std.atomic.Value(bool)) void {
                 while (!stop.load(.acquire)) {
-                    ep_ptr.mu.lock();
+                    compat.mutexLock(&ep_ptr.mu);
                     var it = ep_ptr.conns.iterator();
                     while (it.next()) |_| {}
-                    ep_ptr.mu.unlock();
+                    compat.mutexUnlock(&ep_ptr.mu);
 
                     _ = reads.fetchAdd(1, .monotonic);
                 }
@@ -212,6 +213,7 @@ test "load: concurrent map iteration with mutation - 4 reader + 2 writer threads
     }
 
     for (&writer_threads) |*t| t.join();
+    _ = stop_flag.swap(true, .release);
     for (&reader_threads) |*t| t.join();
 
     try testing.expectEqual(@as(u64, num_writers * iterations), writes_done.load(.monotonic));
@@ -238,10 +240,10 @@ test "load: concurrent timer access - 8 threads" {
                 var i: usize = 0;
                 while (i < iterations) : (i += 1) {
                     // Simulate timer queue read access
-                    ep_ptr.mu.lock();
+                    compat.mutexLock(&ep_ptr.mu);
                     const timer_count = ep_ptr.timers.items.len;
                     _ = timer_count;
-                    ep_ptr.mu.unlock();
+                    compat.mutexUnlock(&ep_ptr.mu);
 
                     _ = ops.fetchAdd(1, .monotonic);
                 }
@@ -488,10 +490,10 @@ test "load: massive mixed operations - 16 threads poll+accept+timer" {
                         },
                         3 => {
                             // Connection map reader
-                            c.ep_ptr.mu.lock();
+                            compat.mutexLock(&c.ep_ptr.mu);
                             var it = c.ep_ptr.conns.iterator();
                             while (it.next()) |_| {}
-                            c.ep_ptr.mu.unlock();
+                            compat.mutexUnlock(&c.ep_ptr.mu);
                         },
                         else => unreachable,
                     }

@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const tls13 = @import("quic_tls13");
 
 // Test that TLS engine can parse standard TLS 1.3 ClientHello without explicit real_mode flag.
@@ -36,7 +37,7 @@ test "TLS engine still accepts minimal CH1 format" {
 
     // Generate a keypair for minimal format
     var client_priv: [32]u8 = undefined;
-    std.crypto.random.bytes(&client_priv);
+    compat.randomBytes(&client_priv);
     const client_pub = try std.crypto.dh.X25519.recoverPublicKey(client_priv);
 
     // Build minimal "CH1" format
@@ -56,10 +57,10 @@ test "TLS engine still accepts minimal CH1 format" {
 fn buildStandardClientHello(alloc: std.mem.Allocator) ![]u8 {
     // Generate X25519 keypair
     var sk: [32]u8 = undefined;
-    std.crypto.random.bytes(&sk);
+    compat.randomBytes(&sk);
     const pk = try std.crypto.dh.X25519.recoverPublicKey(sk);
 
-    var body = std.ArrayList(u8).init(alloc);
+    var body = std.array_list.Managed(u8).init(alloc);
     defer body.deinit();
 
     // ClientHello structure (RFC 8446):
@@ -68,7 +69,7 @@ fn buildStandardClientHello(alloc: std.mem.Allocator) ![]u8 {
 
     // - random (32 bytes)
     var rnd: [32]u8 = undefined;
-    std.crypto.random.bytes(&rnd);
+    compat.randomBytes(&rnd);
     try body.appendSlice(&rnd);
 
     // - session_id (1 byte length + data): empty
@@ -81,7 +82,7 @@ fn buildStandardClientHello(alloc: std.mem.Allocator) ![]u8 {
     try body.appendSlice(&.{ 0x01, 0x00 });
 
     // Build extensions
-    var ext_buf = std.ArrayList(u8).init(alloc);
+    var ext_buf = std.array_list.Managed(u8).init(alloc);
     defer ext_buf.deinit();
 
     // supported_versions extension (43): TLS 1.3 (0x0304)

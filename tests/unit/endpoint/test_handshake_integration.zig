@@ -15,6 +15,7 @@
 //! Phase 4b.5 Session 6: TLS Handshake Integration Tests
 
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 const handshake = @import("quic_endpoint_handshake_integration");
 const conn_mod = @import("quic_conn");
@@ -139,7 +140,7 @@ test "RFC 9001 §5 - installHandshakeKeys server role uses correct key orientati
     const server_secret = key_schedule.Secret.fromSlice(.sha256, &server_secret_bytes);
 
     // Create minimal mock server Connection
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var allocator = gpa.allocator();
 
@@ -176,7 +177,7 @@ test "RFC 9001 §5 - installHandshakeKeys client role uses correct key orientati
     const server_secret = key_schedule.Secret.fromSlice(.sha256, &server_secret_bytes);
 
     // Create minimal mock client Connection
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var allocator = gpa.allocator();
 
@@ -237,7 +238,7 @@ test "RFC 9001 §5 - installApplicationKeys client role uses correct key orienta
 
 test "RFC 9001 §4 - createTlsContext initializes Context with correct role" {
     // Verify createTlsContext creates a vendor/ztls Context with proper configuration
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -283,7 +284,7 @@ test "RFC 9001 §4 - createTlsContext initializes Context with correct role" {
 
 test "RFC 9001 §4 - createTlsContext registers callbacks" {
     // Verify that createTlsContext registers all required callbacks
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

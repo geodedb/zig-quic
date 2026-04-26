@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const x509 = @import("quic_x509");
 
 // RFC 8446 §4.2.6 requires clients to validate the "server_name" extension
@@ -34,42 +35,42 @@ fn emitTLV(buf: *std.ArrayList(u8), tag: u8, val: []const u8) void {
 }
 
 fn makeSeq(alloc: std.mem.Allocator, inner: []const u8) ![]u8 {
-    var out = std.ArrayList(u8){};
+    var out = std.ArrayList(u8).empty;
     try out.ensureTotalCapacity(alloc, inner.len + 4);
     emitTLV(&out, 0x30, inner);
     return out.toOwnedSlice(alloc);
 }
 
 fn makeCtx(tagnum: u8, alloc: std.mem.Allocator, inner: []const u8) ![]u8 {
-    var out = std.ArrayList(u8){};
+    var out = std.ArrayList(u8).empty;
     try out.ensureTotalCapacity(alloc, inner.len + 4);
     emitTLV(&out, 0xA0 | (tagnum & 0x1f), inner);
     return out.toOwnedSlice(alloc);
 }
 
 fn makeOctet(alloc: std.mem.Allocator, inner: []const u8) ![]u8 {
-    var out = std.ArrayList(u8){};
+    var out = std.ArrayList(u8).empty;
     try out.ensureTotalCapacity(alloc, inner.len + 4);
     emitTLV(&out, 0x04, inner);
     return out.toOwnedSlice(alloc);
 }
 
 fn makeOID(alloc: std.mem.Allocator, oid_bytes: []const u8) ![]u8 {
-    var out = std.ArrayList(u8){};
+    var out = std.ArrayList(u8).empty;
     try out.ensureTotalCapacity(alloc, oid_bytes.len + 4);
     emitTLV(&out, 0x06, oid_bytes);
     return out.toOwnedSlice(alloc);
 }
 
 fn makeGeneralizedTime(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
-    var out = std.ArrayList(u8){};
+    var out = std.ArrayList(u8).empty;
     try out.ensureTotalCapacity(alloc, s.len + 4);
     emitTLV(&out, 0x18, s);
     return out.toOwnedSlice(alloc);
 }
 
 fn makeInteger1(alloc: std.mem.Allocator, v: u8) ![]u8 {
-    var out = std.ArrayList(u8){};
+    var out = std.ArrayList(u8).empty;
     try out.ensureTotalCapacity(alloc, 4);
     emitTLV(&out, 0x02, &[_]u8{v});
     return out.toOwnedSlice(alloc);
@@ -83,7 +84,7 @@ fn makeAlgorithmIdentifier(alloc: std.mem.Allocator) ![]u8 {
     defer alloc.free(oid);
     // NULL parameters
     const null_tlv = &[_]u8{ 0x05, 0x00 };
-    var inner = std.ArrayList(u8){};
+    var inner = std.ArrayList(u8).empty;
     defer inner.deinit(alloc);
     try inner.ensureTotalCapacity(alloc, oid.len + null_tlv.len);
     inner.appendSliceAssumeCapacity(oid);
@@ -92,12 +93,12 @@ fn makeAlgorithmIdentifier(alloc: std.mem.Allocator) ![]u8 {
 }
 
 fn buildCertWithSan(alloc: std.mem.Allocator, dns_name: []const u8) ![]u8 {
-    var b = std.ArrayList(u8){};
+    var b = std.ArrayList(u8).empty;
     defer b.deinit(alloc);
     try b.ensureTotalCapacity(alloc, 512);
 
     // --- tbsCertificate ---
-    var tbs = std.ArrayList(u8){};
+    var tbs = std.ArrayList(u8).empty;
     defer tbs.deinit(alloc);
     try tbs.ensureTotalCapacity(alloc, 512);
 
@@ -119,7 +120,7 @@ fn buildCertWithSan(alloc: std.mem.Allocator, dns_name: []const u8) ![]u8 {
     defer alloc.free(nb);
     const na = try makeGeneralizedTime(alloc, "20300101000000Z");
     defer alloc.free(na);
-    var validity_inner = std.ArrayList(u8){};
+    var validity_inner = std.ArrayList(u8).empty;
     defer validity_inner.deinit(alloc);
     try validity_inner.ensureTotalCapacity(alloc, nb.len + na.len + 4);
     validity_inner.appendSliceAssumeCapacity(nb);
@@ -145,7 +146,7 @@ fn buildCertWithSan(alloc: std.mem.Allocator, dns_name: []const u8) ![]u8 {
     defer alloc.free(oid);
 
     // GeneralNames ::= SEQUENCE { dNSName [2] IA5String }
-    var gn = std.ArrayList(u8){};
+    var gn = std.ArrayList(u8).empty;
     defer gn.deinit(alloc);
     try gn.ensureTotalCapacity(alloc, dns_name.len + 8);
     // context-specific primitive tag [2] is 0x82
@@ -157,7 +158,7 @@ fn buildCertWithSan(alloc: std.mem.Allocator, dns_name: []const u8) ![]u8 {
     defer alloc.free(extn_val_octet);
 
     // Extension ::= SEQUENCE { extnID, extnValue }
-    var ext_inner = std.ArrayList(u8){};
+    var ext_inner = std.ArrayList(u8).empty;
     defer ext_inner.deinit(alloc);
     try ext_inner.ensureTotalCapacity(alloc, oid.len + extn_val_octet.len + 8);
     ext_inner.appendSliceAssumeCapacity(oid);
@@ -178,7 +179,7 @@ fn buildCertWithSan(alloc: std.mem.Allocator, dns_name: []const u8) ![]u8 {
 
     // --- outer Certificate ---
     // Append tbs, then minimal signatureAlgorithm SEQUENCE and empty BIT STRING
-    var outer = std.ArrayList(u8){};
+    var outer = std.ArrayList(u8).empty;
     defer outer.deinit(alloc);
     try outer.ensureTotalCapacity(alloc, tbs_seq.len + 16);
     outer.appendSliceAssumeCapacity(tbs_seq);
@@ -193,7 +194,7 @@ fn buildCertWithSan(alloc: std.mem.Allocator, dns_name: []const u8) ![]u8 {
 }
 
 fn now_unix() i64 {
-    return @as(i64, @intCast(std.time.timestamp()));
+    return @divTrunc(compat.milliTimestamp(), 1000);
 }
 
 test "tls_sni_mismatch_causes_validation_error" {
@@ -205,7 +206,7 @@ test "tls_sni_mismatch_causes_validation_error" {
     defer alloc.free(cert);
 
     var chain = [_][]const u8{cert};
-    try std.testing.expectError(error.NameMismatch, x509.validateChain(alloc, &chain, now_unix(), "wrong.test", false));
+    try std.testing.expectError(error.NameMismatch, x509.validateChain(alloc, &chain, now_unix(), "wrong.test", .secure, .server_auth));
 }
 
 test "tls_allow_insecure_bypasses_validation" {
@@ -217,5 +218,5 @@ test "tls_allow_insecure_bypasses_validation" {
     defer alloc.free(cert);
 
     var chain = [_][]const u8{cert};
-    try x509.validateChain(alloc, &chain, now_unix(), "wrong.test", true);
+    try x509.validateChain(alloc, &chain, now_unix(), "wrong.test", .testing_only_i_know_what_i_am_doing, .server_auth);
 }

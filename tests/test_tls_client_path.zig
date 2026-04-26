@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const tls13 = @import("quic_tls13");
 const transport_params = @import("quic_transport_params");
 const tls13_full = @import("tls13_full.zig");
@@ -10,7 +11,7 @@ fn buildClientTp(alloc: std.mem.Allocator) ![]u8 {
 
 fn buildServerHello(alloc: std.mem.Allocator, client_pub: []const u8) ![]u8 {
     var server_random: [32]u8 = undefined;
-    std.crypto.random.bytes(&server_random);
+    compat.randomBytes(&server_random);
     // normal (non-downgrade) random, ensure last 8 bytes not sentinel
     if (std.mem.eql(u8, server_random[24..32], "DOWNGRD\x01")) server_random[31] ^= 0xFF;
     const body = try tls13_full.buildServerHello(alloc, server_random, .TLS_AES_128_GCM_SHA256, .x25519, client_pub, null, null);
@@ -20,7 +21,7 @@ fn buildServerHello(alloc: std.mem.Allocator, client_pub: []const u8) ![]u8 {
 
 fn buildDowngradeServerHello(alloc: std.mem.Allocator, client_pub: []const u8) ![]u8 {
     var rnd: [32]u8 = undefined;
-    std.crypto.random.bytes(&rnd);
+    compat.randomBytes(&rnd);
     // Inject TLS 1.2 downgrade sentinel ("DOWNGRD" + 0x01)
     const sentinel = "DOWNGRD\x01";
     @memcpy(rnd[24..32], sentinel);

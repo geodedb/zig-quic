@@ -1,8 +1,10 @@
 const std = @import("std");
+const compat = @import("compat");
 const endpoint = @import("quic_endpoint");
 const packet = @import("quic_packet");
 const frame = @import("quic_frame");
 const ks = @import("quic_tls");
+const test_certs = @import("test_certs");
 
 // Flip one byte in Retry payload/tag -> verifyRetry must fail and client must ignore.
 test "client_ignores_tampered_retry" {
@@ -10,8 +12,12 @@ test "client_ignores_tampered_retry" {
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 
-    // Create server endpoint - use port 4433 to ensure it's recognized as a server
-    var ep = try endpoint.Endpoint.init(alloc, "127.0.0.1:4433", &.{ .alpn = &[_][]const u8{} });
+    var cfg = @import("config.zig").QuicConfig{
+        .alpn = &[_][]const u8{},
+        .inline_server_cert_der = test_certs.server_cert_der,
+        .inline_server_priv_p256 = test_certs.server_key_der,
+    };
+    var ep = try endpoint.Endpoint.init(alloc, "127.0.0.1:4433", &cfg);
     defer ep.deinit();
     ep.cfg.enable_retry = true;
     ep.cfg.token_secret = "test-secret";
@@ -29,9 +35,9 @@ test "client_ignores_tampered_retry" {
     const txk = ks.deriveKeyIvHp(pair.client);
     const tx_keys: packet.InitialKeys = .{ .key = txk.key, .iv = txk.iv, .hp = txk.hp };
 
-    var frames_buf = std.ArrayList(u8){};
+    var frames_buf = std.ArrayList(u8).empty;
     defer frames_buf.deinit(alloc);
-    _ = (frame.Frame{ .ping = {} }).write(frames_buf.writer(alloc)) catch {};
+    _ = (frame.Frame{ .ping = {} }).write(compat.arrayListWriter(&frames_buf, alloc)) catch {};
 
     const initial_pkt = try packet.encodeInitialProtected(
         alloc,

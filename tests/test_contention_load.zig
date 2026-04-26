@@ -13,6 +13,7 @@
 // at higher concurrency would confirm the contention bottleneck.
 
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 
 const endpoint_mod = @import("quic_endpoint");
@@ -119,10 +120,10 @@ fn runContentionTest(comptime num_handlers: usize) !ContentionResult {
                         },
                         2 => {
                             // Connection map read (stream I/O contention)
-                            c.ep_ptr.mu.lock();
+                            compat.mutexLock(&c.ep_ptr.mu);
                             var it = c.ep_ptr.conns.iterator();
                             while (it.next()) |_| {}
-                            c.ep_ptr.mu.unlock();
+                            compat.mutexUnlock(&c.ep_ptr.mu);
                         },
                         else => unreachable,
                     }
@@ -133,11 +134,11 @@ fn runContentionTest(comptime num_handlers: usize) !ContentionResult {
     }
 
     // Run for the fixed test duration.
-    var timer = try std.time.Timer.start();
-    while (timer.read() < test_duration_ns) {
+    const start_ns = compat.nanoTimestamp();
+    while (compat.nanoTimestamp() - start_ns < test_duration_ns) {
         std.atomic.spinLoopHint();
     }
-    const elapsed = timer.read();
+    const elapsed: u64 = @intCast(compat.nanoTimestamp() - start_ns);
 
     // Signal all threads to stop.
     stop.store(true, .release);

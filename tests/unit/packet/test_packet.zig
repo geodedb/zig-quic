@@ -18,6 +18,7 @@
 //! - RFC compliance: All required types are re-exported, legacy function compatibility
 
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 
 const packet = @import("packet");
@@ -132,7 +133,7 @@ test "LongHeader encode is accessible through coordinator" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const written = try long_hdr.encode(fbs.writer());
 
     try testing.expect(written > 0);
@@ -148,7 +149,7 @@ test "ShortHeader encode is accessible through coordinator" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const written = try short_hdr.encode(fbs.writer());
 
     try testing.expect(written > 0);
@@ -378,7 +379,7 @@ test "can encode LongHeader and access packet number" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const written = try long_hdr.encode(fbs.writer());
 
     try testing.expect(written > 0);
@@ -395,7 +396,7 @@ test "coordinator types work with header encoding" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const written = try short_hdr.encode(fbs.writer());
 
     try testing.expect(written >= 4); // first byte + pn + payload
@@ -475,7 +476,7 @@ test "RFC 9000 §17.2 - coordinator provides long header encoding" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     _ = try long_hdr.encode(fbs.writer());
 }
 
@@ -489,7 +490,7 @@ test "RFC 9000 §17.3 - coordinator provides short header encoding" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     _ = try short_hdr.encode(fbs.writer());
 }
 

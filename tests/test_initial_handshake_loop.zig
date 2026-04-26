@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const pkt = @import("quic_packet");
 const frame = @import("quic_frame");
 const ks = @import("quic_tls");
@@ -24,6 +25,8 @@ fn hex(comptime N: usize, s: []const u8) [N]u8 {
 }
 
 test "initial->handshake pipeline in-process" {
+    if (comptime !@hasDecl(tls13, "Engine")) return error.SkipZigTest;
+
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
@@ -43,9 +46,9 @@ test "initial->handshake pipeline in-process" {
     const sh_msg = try tls13.encodeHandshake(alloc, .server_hello, sh_body);
     defer alloc.free(sh_msg);
 
-    var crypto_payload = std.ArrayList(u8){};
+    var crypto_payload = std.ArrayList(u8).empty;
     defer crypto_payload.deinit(alloc);
-    const w = crypto_payload.writer(alloc);
+    const w = compat.arrayListWriter(&crypto_payload, alloc);
     _ = try (frame.Frame{ .crypto = .{ .offset = 0, .data = ch_msg } }).write(w);
     _ = try (frame.Frame{ .crypto = .{ .offset = ch_msg.len, .data = sh_msg } }).write(w);
 
@@ -90,9 +93,9 @@ test "initial->handshake pipeline in-process" {
     const srv_hs = tls13.deriveQuicHandshakeKeys(.sha256, &hs.server, false);
 
     // Build a server Handshake packet carrying a CRYPTO PING payload
-    var hs_frames = std.ArrayList(u8){};
+    var hs_frames = std.ArrayList(u8).empty;
     defer hs_frames.deinit(alloc);
-    const w2 = hs_frames.writer(alloc);
+    const w2 = compat.arrayListWriter(&hs_frames, alloc);
     _ = try (frame.Frame{ .ping = {} }).write(w2);
 
     const hs_bytes = try pkt.encodeHandshakeProtected(

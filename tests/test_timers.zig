@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const testlog = @import("testlog");
 const api = @import("quic_api");
 
@@ -11,9 +12,9 @@ test "endpoint_timer_fire" {
     defer api.endpointDeinit(ep);
 
     _ = try api.scheduleTimer(ep, 20);
-    const t0 = std.time.milliTimestamp();
+    const t0 = compat.milliTimestamp();
     try api.poll(ep, 200);
-    const dt = std.time.milliTimestamp() - t0;
+    const dt = compat.milliTimestamp() - t0;
 
     // Should have waited at least a few milliseconds, but much less than the full poll timeout.
     try std.testing.expect(dt >= 5);
@@ -64,7 +65,7 @@ test "endpoint_pto_schedule_and_expire_flag" {
 
     // With Recovery-based PTO, timers are only armed when there is an outstanding
     // ack-eliciting packet. Record one such send now.
-    const now_ns_i128 = std.time.nanoTimestamp();
+    const now_ns_i128 = compat.nanoTimestamp();
     const now_ns_u64: u64 = @intCast(@max(@as(i128, 0), now_ns_i128));
     try conn.rec.onPacketSent(.Application, 1, 1200, true, now_ns_u64);
 
@@ -75,7 +76,9 @@ test "endpoint_pto_schedule_and_expire_flag" {
     try std.testing.expect(ep.timers.items.len >= 1);
 
     // Deterministically expire all timers and verify PTO flag clears
+    try ep.retired.append(gpa, &conn);
     ep.forceExpireAllTimers();
+    ep.retired.clearRetainingCapacity();
     testlog.print("DEBUG app after expire: active={any} timers={d} pto_count={d}\n", .{ conn.pto_app_active, ep.timers.items.len, conn.pto_app_count });
     try std.testing.expect(!conn.pto_app_active);
     try std.testing.expect(ep.timers.items.len == 0);
@@ -120,7 +123,9 @@ test "initial_space_pto_arm_and_probe_on_expire" {
     // Expire timers deterministically; this should send a PING probe
     const pn_before = conn.pn_initial_tx;
     const count_before = conn.pto_initial_count;
+    try ep.retired.append(gpa, &conn);
     ep.forceExpireAllTimers();
+    ep.retired.clearRetainingCapacity();
     testlog.print("DEBUG init after expire: active={any} timers={d} pn_tx={d}->{d} count={d}->{d}\n", .{ conn.pto_initial_active, ep.timers.items.len, pn_before, conn.pn_initial_tx, count_before, conn.pto_initial_count });
     try std.testing.expect(!conn.pto_initial_active);
     try std.testing.expect(conn.pn_initial_tx > pn_before);
@@ -165,7 +170,9 @@ test "handshake_space_pto_arm_cancel_on_ack_and_probe_on_expire" {
     // Expire timers deterministically; should send a PING probe
     const pn_before = conn.pn_handshake_tx;
     const count_before = conn.pto_handshake_count;
+    try ep.retired.append(gpa, &conn);
     ep.forceExpireAllTimers();
+    ep.retired.clearRetainingCapacity();
     testlog.print("DEBUG hs after expire: active={any} timers={d} pn_tx={d}->{d} count={d}->{d}\n", .{ conn.pto_handshake_active, ep.timers.items.len, pn_before, conn.pn_handshake_tx, count_before, conn.pto_handshake_count });
     try std.testing.expect(!conn.pto_handshake_active);
     try std.testing.expect(conn.pn_handshake_tx > pn_before);

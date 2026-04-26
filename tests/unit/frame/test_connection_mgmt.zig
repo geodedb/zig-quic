@@ -16,6 +16,7 @@
 //! - RFC compliance: Frame formats, CID lifecycle, connection closure, stream control
 
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 
 const conn_mgmt = @import("connection_mgmt");
@@ -27,7 +28,7 @@ const types = @import("types");
 
 test "RFC 9000 §19.15 - writeNewConnectionId encodes frame" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const sequence: u64 = 5;
@@ -44,7 +45,7 @@ test "RFC 9000 §19.15 - writeNewConnectionId encodes frame" {
 
 test "RFC 9000 §19.15 - decodeNewConnectionId reads frame correctly" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const sequence: u64 = 10;
@@ -67,7 +68,7 @@ test "RFC 9000 §19.15 - decodeNewConnectionId reads frame correctly" {
 
 test "RFC 9000 §19.15 - NEW_CONNECTION_ID round trip" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const sequence: u64 = 7;
@@ -91,7 +92,7 @@ test "RFC 9000 §5.1 - NEW_CONNECTION_ID with various CID lengths" {
     var buf: [256]u8 = undefined;
 
     // 4-byte CID
-    var fbs1 = std.io.fixedBufferStream(&buf);
+    var fbs1 = compat.fixedBufferStream(&buf);
     const cid1 = "\x01\x02\x03\x04";
     var token: [16]u8 = undefined;
     @memset(&token, 0xaa);
@@ -100,7 +101,7 @@ test "RFC 9000 §5.1 - NEW_CONNECTION_ID with various CID lengths" {
     try testing.expectEqual(@as(usize, 4), r1.connection_id.len);
 
     // 20-byte CID (maximum)
-    var fbs2 = std.io.fixedBufferStream(&buf);
+    var fbs2 = compat.fixedBufferStream(&buf);
     const cid2 = "\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10\x11\x12\x13\x14";
     _ = try conn_mgmt.writeNewConnectionId(fbs2.writer(), 2, 0, cid2, token);
     const r2 = try conn_mgmt.decodeNewConnectionId(fbs2.getWritten());
@@ -123,7 +124,7 @@ test "negative: decodeNewConnectionId with wrong frame type" {
 
 test "RFC 9000 §19.16 - writeRetireConnectionId encodes frame" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const sequence: u64 = 3;
@@ -135,7 +136,7 @@ test "RFC 9000 §19.16 - writeRetireConnectionId encodes frame" {
 
 test "RFC 9000 §19.16 - decodeRetireConnectionId reads frame correctly" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const sequence: u64 = 15;
@@ -148,7 +149,7 @@ test "RFC 9000 §19.16 - decodeRetireConnectionId reads frame correctly" {
 
 test "RFC 9000 §19.16 - RETIRE_CONNECTION_ID round trip" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const sequence: u64 = 42;
@@ -162,7 +163,7 @@ test "RFC 9000 §19.16 - RETIRE_CONNECTION_ID round trip" {
 
 test "RFC 9000 §5.1 - RETIRE_CONNECTION_ID with sequence 0" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     _ = try conn_mgmt.writeRetireConnectionId(w, 0);
@@ -188,7 +189,7 @@ test "negative: decodeRetireConnectionId with wrong frame type" {
 
 test "RFC 9000 §19.19 - writeConnectionClose encodes frame" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const error_code: u64 = 0x00; // NO_ERROR
@@ -203,7 +204,7 @@ test "RFC 9000 §19.19 - writeConnectionClose encodes frame" {
 
 test "RFC 9000 §19.19 - decodeConnectionClose reads frame correctly" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const error_code: u64 = 0x01; // INTERNAL_ERROR
@@ -221,7 +222,7 @@ test "RFC 9000 §19.19 - decodeConnectionClose reads frame correctly" {
 
 test "RFC 9000 §19.19 - CONNECTION_CLOSE round trip" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const error_code: u64 = 0x0a; // PROTOCOL_VIOLATION
@@ -240,7 +241,7 @@ test "RFC 9000 §19.19 - CONNECTION_CLOSE round trip" {
 
 test "RFC 9000 §19.19 - CONNECTION_CLOSE with empty reason" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const error_code: u64 = 0x00;
@@ -267,7 +268,7 @@ test "RFC 9000 §20 - CONNECTION_CLOSE with various error codes" {
     };
 
     for (error_codes) |code| {
-        var fbs = std.io.fixedBufferStream(&buf);
+        var fbs = compat.fixedBufferStream(&buf);
         _ = try conn_mgmt.writeConnectionClose(fbs.writer(), code, 0, "Test");
         const result = try conn_mgmt.decodeConnectionClose(fbs.getWritten());
         try testing.expectEqual(code, result.error_code);
@@ -290,7 +291,7 @@ test "negative: decodeConnectionClose with wrong frame type" {
 
 test "RFC 9000 §19.5 - writeStopSending encodes frame" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 4;
@@ -304,7 +305,7 @@ test "RFC 9000 §19.5 - writeStopSending encodes frame" {
 
 test "RFC 9000 §19.5 - decodeStopSending reads frame correctly" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 8;
@@ -320,7 +321,7 @@ test "RFC 9000 §19.5 - decodeStopSending reads frame correctly" {
 
 test "RFC 9000 §19.5 - STOP_SENDING round trip" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 12;
@@ -337,7 +338,7 @@ test "RFC 9000 §19.5 - STOP_SENDING round trip" {
 
 test "RFC 9000 §3.5 - STOP_SENDING with stream ID 0" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     _ = try conn_mgmt.writeStopSending(w, 0, 0x00);
@@ -363,7 +364,7 @@ test "negative: decodeStopSending with wrong frame type" {
 
 test "RFC 9000 §19.4 - writeResetStream encodes frame" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 4;
@@ -378,7 +379,7 @@ test "RFC 9000 §19.4 - writeResetStream encodes frame" {
 
 test "RFC 9000 §19.4 - decodeResetStream reads frame correctly" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 8;
@@ -396,7 +397,7 @@ test "RFC 9000 §19.4 - decodeResetStream reads frame correctly" {
 
 test "RFC 9000 §19.4 - RESET_STREAM round trip" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 12;
@@ -415,7 +416,7 @@ test "RFC 9000 §19.4 - RESET_STREAM round trip" {
 
 test "RFC 9000 §3.2 - RESET_STREAM with final_size 0" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     _ = try conn_mgmt.writeResetStream(w, 4, 0x00, 0);
@@ -453,7 +454,7 @@ test "RFC 9000 §19 - Frame types are distinct" {
 
 test "RFC 9000 §5.1 - NEW_CONNECTION_ID provides new CIDs for migration" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Endpoint provides new CID for peer to use
@@ -472,7 +473,7 @@ test "RFC 9000 §5.1 - NEW_CONNECTION_ID provides new CIDs for migration" {
 
 test "RFC 9000 §5.1 - NEW_CONNECTION_ID retire_prior_to indicates retirement" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const sequence: u64 = 10;
@@ -491,7 +492,7 @@ test "RFC 9000 §5.1 - NEW_CONNECTION_ID retire_prior_to indicates retirement" {
 
 test "RFC 9000 §5.1 - RETIRE_CONNECTION_ID indicates CID no longer used" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const sequence: u64 = 3; // Retire CID with sequence 3
@@ -506,7 +507,7 @@ test "RFC 9000 §5.1 - RETIRE_CONNECTION_ID indicates CID no longer used" {
 
 test "RFC 9000 §10.2 - CONNECTION_CLOSE signals graceful termination" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const error_code: u64 = 0x00; // NO_ERROR
@@ -522,7 +523,7 @@ test "RFC 9000 §10.2 - CONNECTION_CLOSE signals graceful termination" {
 
 test "RFC 9000 §10.2 - CONNECTION_CLOSE includes triggering frame type" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const error_code: u64 = 0x0a; // PROTOCOL_VIOLATION
@@ -538,7 +539,7 @@ test "RFC 9000 §10.2 - CONNECTION_CLOSE includes triggering frame type" {
 
 test "RFC 9000 §3.5 - STOP_SENDING requests peer stop transmission" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 4;
@@ -554,7 +555,7 @@ test "RFC 9000 §3.5 - STOP_SENDING requests peer stop transmission" {
 
 test "RFC 9000 §3.2 - RESET_STREAM aborts stream transmission" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 8;
@@ -572,7 +573,7 @@ test "RFC 9000 §3.2 - RESET_STREAM aborts stream transmission" {
 
 test "RFC 9000 §3.2 - RESET_STREAM final_size for flow control" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 4;
@@ -588,7 +589,7 @@ test "RFC 9000 §3.2 - RESET_STREAM final_size for flow control" {
 
 test "RFC 9000 §5 - CID lifecycle: NEW_CONNECTION_ID then RETIRE_CONNECTION_ID" {
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Provide new CID
@@ -613,7 +614,7 @@ test "RFC 9000 §5 - CID lifecycle: NEW_CONNECTION_ID then RETIRE_CONNECTION_ID"
 
 test "RFC 9000 §3 - Stream lifecycle: STOP_SENDING then RESET_STREAM" {
     var buf: [128]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 4;

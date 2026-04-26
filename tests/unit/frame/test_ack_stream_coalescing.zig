@@ -16,6 +16,7 @@
 //! - Boundary: Buffer fits both frames within 2048-byte packet limit
 
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 
 const frame = @import("quic_frame");
@@ -28,7 +29,7 @@ test "RFC 9000 S13.2.1 - ACK piggyback: ACK then STREAM in single buffer" {
     // Simulate what writeStreamUnlocked does: write ACK frame then STREAM frame
     // into a single fixedBufferStream, then decode both frames back.
     var buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Write ACK frame (largest=42, delay=10, first_range=2, no extra ranges)
@@ -85,7 +86,7 @@ test "RFC 9000 S13.2.1 - ACK piggyback: ACK then STREAM in single buffer" {
 
 test "RFC 9000 S13.2.1 - ACK_ECN piggyback: ACK_ECN then STREAM" {
     var buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Write ACK_ECN frame with ECN counters
@@ -136,7 +137,7 @@ test "RFC 9000 S13.2.1 - ACK_ECN piggyback: ACK_ECN then STREAM" {
 
 test "RFC 9000 S13.2.1 - ACK with ranges then STREAM" {
     var buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // ACK with additional ranges: [90-100] gap=2 [85-87]
@@ -188,7 +189,7 @@ test "RFC 9000 S13.2.1 - coalesced ACK+STREAM fits within packet limit" {
     // Verify that a typical ACK + max-size STREAM fits in the 2048-byte
     // frame_storage buffer used by writeStreamUnlocked.
     var buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Worst-case ACK: large PN values, multiple ranges

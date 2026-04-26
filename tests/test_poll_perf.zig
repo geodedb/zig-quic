@@ -15,6 +15,7 @@
 // skip these syscalls when PTO timers are already armed (common case).
 
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 
 const endpoint_mod = @import("quic_endpoint");
@@ -41,14 +42,14 @@ test "perf: poll cycle rate - 0 connections (baseline)" {
     defer ep.deinit();
 
     const iterations: usize = 10_000;
-    const start = std.time.nanoTimestamp();
+    const start = compat.nanoTimestamp();
 
     var i: usize = 0;
     while (i < iterations) : (i += 1) {
         _ = ep.pollWithStats(0) catch continue;
     }
 
-    const elapsed_ns: u64 = @intCast(std.time.nanoTimestamp() - start);
+    const elapsed_ns: u64 = @intCast(compat.nanoTimestamp() - start);
     const elapsed_ms = elapsed_ns / std.time.ns_per_ms;
     const polls_per_sec = if (elapsed_ms > 0) (iterations * 1000) / @as(usize, @intCast(elapsed_ms)) else iterations * 1_000_000;
 
@@ -69,14 +70,14 @@ test "perf: poll cycle rate - 1 connection" {
     _ = ep.connectClient("127.0.0.1:10001") catch {};
 
     const iterations: usize = 10_000;
-    const start = std.time.nanoTimestamp();
+    const start = compat.nanoTimestamp();
 
     var i: usize = 0;
     while (i < iterations) : (i += 1) {
         _ = ep.pollWithStats(0) catch continue;
     }
 
-    const elapsed_ns: u64 = @intCast(std.time.nanoTimestamp() - start);
+    const elapsed_ns: u64 = @intCast(compat.nanoTimestamp() - start);
     const elapsed_ms = elapsed_ns / std.time.ns_per_ms;
     const polls_per_sec = if (elapsed_ms > 0) (iterations * 1000) / @as(usize, @intCast(elapsed_ms)) else iterations * 1_000_000;
 
@@ -103,14 +104,14 @@ test "perf: poll cycle rate - 10 connections" {
     }
 
     const iterations: usize = 5_000;
-    const start = std.time.nanoTimestamp();
+    const start = compat.nanoTimestamp();
 
     i = 0;
     while (i < iterations) : (i += 1) {
         _ = ep.pollWithStats(0) catch continue;
     }
 
-    const elapsed_ns: u64 = @intCast(std.time.nanoTimestamp() - start);
+    const elapsed_ns: u64 = @intCast(compat.nanoTimestamp() - start);
     const elapsed_ms = elapsed_ns / std.time.ns_per_ms;
     const polls_per_sec = if (elapsed_ms > 0) (iterations * 1000) / @as(usize, @intCast(elapsed_ms)) else iterations * 1_000_000;
 
@@ -137,14 +138,14 @@ test "perf: poll cycle rate - 100 connections" {
     }
 
     const iterations: usize = 2_000;
-    const start = std.time.nanoTimestamp();
+    const start = compat.nanoTimestamp();
 
     i = 0;
     while (i < iterations) : (i += 1) {
         _ = ep.pollWithStats(0) catch continue;
     }
 
-    const elapsed_ns: u64 = @intCast(std.time.nanoTimestamp() - start);
+    const elapsed_ns: u64 = @intCast(compat.nanoTimestamp() - start);
     const elapsed_ms = elapsed_ns / std.time.ns_per_ms;
     const polls_per_sec = if (elapsed_ms > 0) (iterations * 1000) / @as(usize, @intCast(elapsed_ms)) else iterations * 1_000_000;
 
@@ -177,14 +178,14 @@ test "perf: per-poll overhead scaling" {
         }
 
         const iterations: usize = 5_000;
-        const start = std.time.nanoTimestamp();
+        const start = compat.nanoTimestamp();
 
         var i: usize = 0;
         while (i < iterations) : (i += 1) {
             _ = ep.pollWithStats(0) catch continue;
         }
 
-        const elapsed_ns: u64 = @intCast(std.time.nanoTimestamp() - start);
+        const elapsed_ns: u64 = @intCast(compat.nanoTimestamp() - start);
         us_per_poll_results[ci] = elapsed_ns / (std.time.ns_per_us * iterations);
     }
 

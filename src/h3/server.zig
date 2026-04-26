@@ -719,7 +719,7 @@ pub const H3Server = struct {
     pub fn hpackHuffmanEncode(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
         var bit_acc: u128 = 0;
         var bit_len: u32 = 0;
-        var buf = std.ArrayList(u8).init(alloc);
+        var buf = std.array_list.Managed(u8).init(alloc);
         defer buf.deinit();
         for (s) |ch| {
             const code = huff_table[ch].code;

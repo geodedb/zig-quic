@@ -13,6 +13,7 @@
 //! - RFC compliance: Frame format specifications, byte layouts
 
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 
 const misc = @import("misc");
@@ -24,7 +25,7 @@ const types = @import("types");
 
 test "RFC 9000 §19.1 - writePadding single byte" {
     var buf: [10]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
 
     const n = try misc.writePadding(fbs.writer(), 1);
 
@@ -34,7 +35,7 @@ test "RFC 9000 §19.1 - writePadding single byte" {
 
 test "RFC 9000 §19.1 - writePadding multiple bytes" {
     var buf: [10]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
 
     const n = try misc.writePadding(fbs.writer(), 5);
 
@@ -46,7 +47,7 @@ test "RFC 9000 §19.1 - writePadding multiple bytes" {
 
 test "RFC 9000 §19.1 - writePadding zero count" {
     var buf: [10]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
 
     const n = try misc.writePadding(fbs.writer(), 0);
 
@@ -100,7 +101,7 @@ test "RFC 9000 §19.1 - decodePadding no padding in buffer" {
 
 test "RFC 9000 §19.1 - PADDING round trip" {
     var buf: [10]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
 
     const write_count: usize = 7;
     const n = try misc.writePadding(fbs.writer(), write_count);
@@ -117,7 +118,7 @@ test "RFC 9000 §19.1 - PADDING round trip" {
 
 test "RFC 9000 §19.2 - writePing encodes single byte" {
     var buf: [10]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
 
     const n = try misc.writePing(fbs.writer());
 
@@ -151,7 +152,7 @@ test "RFC 9000 §19.2 - decodePing requires minimum length" {
 
 test "RFC 9000 §19.2 - PING round trip" {
     var buf: [10]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
 
     const n = try misc.writePing(fbs.writer());
     const result = try misc.decodePing(buf[0..n]);
@@ -162,7 +163,7 @@ test "RFC 9000 §19.2 - PING round trip" {
 test "RFC 9000 §19.2 - PING resets idle timeout" {
     // PING frames are ACK-eliciting and reset idle timer
     var buf: [1]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
 
     const n = try misc.writePing(fbs.writer());
 
@@ -177,7 +178,7 @@ test "RFC 9000 §19.2 - PING resets idle timeout" {
 
 test "RFC 9000 §19.7 - writeNewToken with simple token" {
     var buf: [100]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const token = [_]u8{ 0xAA, 0xBB, 0xCC, 0xDD };
 
     const n = try misc.writeNewToken(fbs.writer(), &token);
@@ -189,7 +190,7 @@ test "RFC 9000 §19.7 - writeNewToken with simple token" {
 
 test "RFC 9000 §19.7 - writeNewToken with empty token" {
     var buf: [100]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const token: []const u8 = &[_]u8{};
 
     const n = try misc.writeNewToken(fbs.writer(), token);
@@ -201,7 +202,7 @@ test "RFC 9000 §19.7 - writeNewToken with empty token" {
 
 test "RFC 9000 §19.7 - writeNewToken with large token" {
     var buf: [300]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     var token: [200]u8 = undefined;
     @memset(&token, 0x42);
 
@@ -213,7 +214,7 @@ test "RFC 9000 §19.7 - writeNewToken with large token" {
 
 test "RFC 9000 §19.7 - decodeNewToken reads token correctly" {
     var buf: [100]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const original_token = [_]u8{ 0x11, 0x22, 0x33, 0x44, 0x55 };
 
     const n = try misc.writeNewToken(fbs.writer(), &original_token);
@@ -258,7 +259,7 @@ test "RFC 9000 §19.7 - decodeNewToken truncated token data" {
 
 test "RFC 9000 §19.7 - NEW_TOKEN round trip" {
     var buf: [100]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const original_token = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE };
 
     const n = try misc.writeNewToken(fbs.writer(), &original_token);
@@ -274,7 +275,7 @@ test "RFC 9000 §19.7 - NEW_TOKEN round trip" {
 
 test "RFC 9000 §19.20 - writeHandshakeDone encodes single byte" {
     var buf: [10]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
 
     const n = try misc.writeHandshakeDone(fbs.writer());
 
@@ -308,7 +309,7 @@ test "RFC 9000 §19.20 - decodeHandshakeDone requires minimum length" {
 
 test "RFC 9000 §19.20 - HANDSHAKE_DONE round trip" {
     var buf: [10]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
 
     const n = try misc.writeHandshakeDone(fbs.writer());
     const result = try misc.decodeHandshakeDone(buf[0..n]);
@@ -319,7 +320,7 @@ test "RFC 9000 §19.20 - HANDSHAKE_DONE round trip" {
 test "RFC 9000 §19.20 - HANDSHAKE_DONE server-only frame" {
     // HANDSHAKE_DONE is sent by server to signal handshake completion
     var buf: [1]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
 
     const n = try misc.writeHandshakeDone(fbs.writer());
 
@@ -334,7 +335,7 @@ test "RFC 9000 §19.20 - HANDSHAKE_DONE server-only frame" {
 
 test "boundary: PADDING with maximum practical count" {
     var buf: [1500]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
 
     const count: usize = 1200; // MTU-sized padding
     const n = try misc.writePadding(fbs.writer(), count);
@@ -347,7 +348,7 @@ test "boundary: PADDING with maximum practical count" {
 
 test "boundary: NEW_TOKEN with 1-byte token" {
     var buf: [10]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const token = [_]u8{0x99};
 
     const n = try misc.writeNewToken(fbs.writer(), &token);
@@ -358,7 +359,7 @@ test "boundary: NEW_TOKEN with 1-byte token" {
 
 test "boundary: NEW_TOKEN with max-size token" {
     var buf: [2000]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     var token: [1024]u8 = undefined;
     for (0..1024) |i| {
         token[i] = @intCast(i & 0xFF);
@@ -372,7 +373,7 @@ test "boundary: NEW_TOKEN with max-size token" {
 
 test "boundary: Mixed frame sequence" {
     var buf: [100]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
 
     // Write: PADDING, PING, PADDING, HANDSHAKE_DONE
     var offset: usize = 0;
@@ -406,7 +407,7 @@ test "boundary: Mixed frame sequence" {
 test "RFC 9000 §19.1 - PADDING frame format" {
     // RFC 9000 §19.1: PADDING frame is type 0x00 with no additional data
     var buf: [1]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
 
     _ = try misc.writePadding(fbs.writer(), 1);
 
@@ -416,7 +417,7 @@ test "RFC 9000 §19.1 - PADDING frame format" {
 test "RFC 9000 §19.2 - PING frame format" {
     // RFC 9000 §19.2: PING frame is type 0x01 with no additional data
     var buf: [1]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
 
     _ = try misc.writePing(fbs.writer());
 
@@ -426,7 +427,7 @@ test "RFC 9000 §19.2 - PING frame format" {
 test "RFC 9000 §19.7 - NEW_TOKEN frame format" {
     // RFC 9000 §19.7: NEW_TOKEN = type(i) + token_length(i) + token(...)
     var buf: [100]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const token = [_]u8{ 0x01, 0x02, 0x03 };
 
     _ = try misc.writeNewToken(fbs.writer(), &token);
@@ -442,7 +443,7 @@ test "RFC 9000 §19.7 - NEW_TOKEN frame format" {
 test "RFC 9000 §19.20 - HANDSHAKE_DONE frame format" {
     // RFC 9000 §19.20: HANDSHAKE_DONE frame is type 0x1E with no additional data
     var buf: [1]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
 
     _ = try misc.writeHandshakeDone(fbs.writer());
 
@@ -452,7 +453,7 @@ test "RFC 9000 §19.20 - HANDSHAKE_DONE frame format" {
 test "RFC 9000 §19.1 - PADDING increases packet size" {
     // RFC 9000 §19.1: PADDING frames are used to increase packet size
     var buf: [100]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
 
     const initial_pos = fbs.pos;
     const padding_count: usize = 50;
@@ -466,7 +467,7 @@ test "RFC 9000 §19.2 - PING elicits ACK" {
     // RFC 9000 §19.2: PING frames are ACK-eliciting
     // This is a semantic property - verify frame is encoded correctly
     var buf: [1]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
 
     const n = try misc.writePing(fbs.writer());
 
@@ -478,7 +479,7 @@ test "RFC 9000 §19.2 - PING elicits ACK" {
 test "RFC 9000 §19.7 - NEW_TOKEN for address validation" {
     // RFC 9000 §19.7: Server sends NEW_TOKEN to provide address validation token
     var buf: [100]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const validation_token = [_]u8{ 0xDE, 0xAD, 0xC0, 0xDE };
 
     const n = try misc.writeNewToken(fbs.writer(), &validation_token);
@@ -492,7 +493,7 @@ test "RFC 9000 §19.20 - HANDSHAKE_DONE signals completion" {
     // RFC 9000 §19.20: Server sends HANDSHAKE_DONE to signal handshake complete
     // Client can send 1-RTT data after receiving this frame
     var buf: [1]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
 
     const n = try misc.writeHandshakeDone(fbs.writer());
 

@@ -14,6 +14,7 @@
 //! - RFC compliance: Reset token cryptographic properties, CID management
 
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 
 const cid = @import("connection_id");
@@ -73,7 +74,7 @@ test "RFC 9000 §10.3 - deriveStatelessResetToken basic derivation" {
     const sequence: u64 = 1;
     const cid_bytes = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
 
-    const token = cid.deriveStatelessResetToken(&base, sequence, &cid_bytes);
+    const token = try cid.deriveStatelessResetToken(&base, sequence, &cid_bytes);
 
     // Token should be 16 bytes
     try testing.expectEqual(@as(usize, 16), token.len);
@@ -94,8 +95,8 @@ test "RFC 9000 §10.3 - deriveStatelessResetToken deterministic" {
     const sequence: u64 = 5;
     const cid_bytes = [_]u8{ 0xAA, 0xBB, 0xCC, 0xDD };
 
-    const token1 = cid.deriveStatelessResetToken(&base, sequence, &cid_bytes);
-    const token2 = cid.deriveStatelessResetToken(&base, sequence, &cid_bytes);
+    const token1 = try cid.deriveStatelessResetToken(&base, sequence, &cid_bytes);
+    const token2 = try cid.deriveStatelessResetToken(&base, sequence, &cid_bytes);
 
     // Same inputs should produce same token
     try testing.expectEqualSlices(u8, &token1, &token2);
@@ -105,8 +106,8 @@ test "RFC 9000 §10.3 - deriveStatelessResetToken different sequences produce di
     var base: [32]u8 = [_]u8{0x42} ** 32;
     const cid_bytes = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
 
-    const token1 = cid.deriveStatelessResetToken(&base, 1, &cid_bytes);
-    const token2 = cid.deriveStatelessResetToken(&base, 2, &cid_bytes);
+    const token1 = try cid.deriveStatelessResetToken(&base, 1, &cid_bytes);
+    const token2 = try cid.deriveStatelessResetToken(&base, 2, &cid_bytes);
 
     // Different sequences should produce different tokens
     try testing.expect(!std.mem.eql(u8, &token1, &token2));
@@ -118,8 +119,8 @@ test "RFC 9000 §10.3 - deriveStatelessResetToken different CIDs produce differe
     const cid_bytes1 = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
     const cid_bytes2 = [_]u8{ 0x05, 0x06, 0x07, 0x08 };
 
-    const token1 = cid.deriveStatelessResetToken(&base, sequence, &cid_bytes1);
-    const token2 = cid.deriveStatelessResetToken(&base, sequence, &cid_bytes2);
+    const token1 = try cid.deriveStatelessResetToken(&base, sequence, &cid_bytes1);
+    const token2 = try cid.deriveStatelessResetToken(&base, sequence, &cid_bytes2);
 
     // Different CIDs should produce different tokens
     try testing.expect(!std.mem.eql(u8, &token1, &token2));
@@ -131,8 +132,8 @@ test "RFC 9000 §10.3 - deriveStatelessResetToken different bases produce differ
     const sequence: u64 = 1;
     const cid_bytes = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
 
-    const token1 = cid.deriveStatelessResetToken(&base1, sequence, &cid_bytes);
-    const token2 = cid.deriveStatelessResetToken(&base2, sequence, &cid_bytes);
+    const token1 = try cid.deriveStatelessResetToken(&base1, sequence, &cid_bytes);
+    const token2 = try cid.deriveStatelessResetToken(&base2, sequence, &cid_bytes);
 
     // Different bases should produce different tokens
     try testing.expect(!std.mem.eql(u8, &token1, &token2));
@@ -143,7 +144,7 @@ test "RFC 9000 §10.3 - deriveStatelessResetToken with zero-length CID" {
     const sequence: u64 = 1;
     const cid_bytes: []const u8 = &[_]u8{};
 
-    const token = cid.deriveStatelessResetToken(&base, sequence, cid_bytes);
+    const token = try cid.deriveStatelessResetToken(&base, sequence, cid_bytes);
 
     try testing.expectEqual(@as(usize, 16), token.len);
 }
@@ -153,7 +154,7 @@ test "RFC 9000 §10.3 - deriveStatelessResetToken with max-length CID" {
     const sequence: u64 = 1;
     const cid_bytes = [_]u8{0xFF} ** 20; // Max CID length is 20
 
-    const token = cid.deriveStatelessResetToken(&base, sequence, &cid_bytes);
+    const token = try cid.deriveStatelessResetToken(&base, sequence, &cid_bytes);
 
     try testing.expectEqual(@as(usize, 16), token.len);
 }
@@ -195,7 +196,7 @@ test "boundary: deriveStatelessResetToken sequence zero" {
     const sequence: u64 = 0;
     const cid_bytes = [_]u8{ 0x01, 0x02 };
 
-    const token = cid.deriveStatelessResetToken(&base, sequence, &cid_bytes);
+    const token = try cid.deriveStatelessResetToken(&base, sequence, &cid_bytes);
 
     try testing.expectEqual(@as(usize, 16), token.len);
 }
@@ -205,7 +206,7 @@ test "boundary: deriveStatelessResetToken sequence max" {
     const sequence: u64 = std.math.maxInt(u64);
     const cid_bytes = [_]u8{ 0x01, 0x02 };
 
-    const token = cid.deriveStatelessResetToken(&base, sequence, &cid_bytes);
+    const token = try cid.deriveStatelessResetToken(&base, sequence, &cid_bytes);
 
     try testing.expectEqual(@as(usize, 16), token.len);
 }
@@ -215,7 +216,7 @@ test "boundary: deriveStatelessResetToken all-zero base" {
     const sequence: u64 = 1;
     const cid_bytes = [_]u8{ 0x01, 0x02 };
 
-    const token = cid.deriveStatelessResetToken(&base, sequence, &cid_bytes);
+    const token = try cid.deriveStatelessResetToken(&base, sequence, &cid_bytes);
 
     try testing.expectEqual(@as(usize, 16), token.len);
 }
@@ -225,7 +226,7 @@ test "boundary: deriveStatelessResetToken all-0xFF base" {
     const sequence: u64 = 1;
     const cid_bytes = [_]u8{ 0x01, 0x02 };
 
-    const token = cid.deriveStatelessResetToken(&base, sequence, &cid_bytes);
+    const token = try cid.deriveStatelessResetToken(&base, sequence, &cid_bytes);
 
     try testing.expectEqual(@as(usize, 16), token.len);
 }
@@ -247,16 +248,16 @@ test "RFC 9000 §5.3 - Connection ID sequence numbers are unique" {
 
 test "RFC 9000 §10.3 - Stateless reset tokens are computationally difficult to guess" {
     var base: [32]u8 = undefined;
-    std.crypto.random.bytes(&base);
+    compat.randomBytes(&base);
 
     const sequence: u64 = 1;
     const cid_bytes = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
 
-    const token1 = cid.deriveStatelessResetToken(&base, sequence, &cid_bytes);
+    const token1 = try cid.deriveStatelessResetToken(&base, sequence, &cid_bytes);
 
     // Generate another token with slightly different input
     const cid_bytes2 = [_]u8{ 0x01, 0x02, 0x03, 0x05 };
-    const token2 = cid.deriveStatelessResetToken(&base, sequence, &cid_bytes2);
+    const token2 = try cid.deriveStatelessResetToken(&base, sequence, &cid_bytes2);
 
     // Tokens should be completely different (avalanche effect)
     try testing.expect(!std.mem.eql(u8, &token1, &token2));
@@ -280,7 +281,7 @@ test "RFC 9000 §19.15 - NEW_CONNECTION_ID provides sequence and reset token" {
 
     // Derive reset token for this CID
     var base: [32]u8 = [_]u8{0x42} ** 32;
-    local_cid.reset_token = cid.deriveStatelessResetToken(&base, local_cid.sequence, local_cid.cid.bytes[0..local_cid.cid.len]);
+    local_cid.reset_token = try cid.deriveStatelessResetToken(&base, local_cid.sequence, local_cid.cid.bytes[0..local_cid.cid.len]);
 
     try testing.expectEqual(@as(u64, 10), local_cid.sequence);
     try testing.expectEqual(@as(usize, 16), local_cid.reset_token.len);

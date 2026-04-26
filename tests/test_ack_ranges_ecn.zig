@@ -1,9 +1,10 @@
 const std = @import("std");
+const compat = @import("compat");
 const frame = @import("../src/quic/frame.zig");
 
 test "ack multi-range encode/decode with ECN counts" {
     var buf: [128]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const a = frame.Frame{
         .ack = .{
             .largest = 100,
@@ -14,7 +15,7 @@ test "ack multi-range encode/decode with ECN counts" {
             .ecn = .{ .ect0 = 10, .ect1 = 5, .ce = 1 },
         },
     };
-    const n = try a.write(fbs.writer(alloc));
+    const n = try a.write(fbs.writer());
     // First byte should be ACK_ECN (0x03)
     try std.testing.expect(buf[0] == @intFromEnum(frame.FrameType.ACK_ECN));
     const pr = try frame.parse(buf[0..n]);

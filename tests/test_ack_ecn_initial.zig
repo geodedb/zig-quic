@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const endpoint = @import("quic_endpoint");
 const packet = @import("quic_packet");
 const frame = @import("quic_frame");
@@ -25,9 +26,9 @@ test "initial space: ECN CE triggers ACK_ECN in server Initial ACK" {
     const pair = ks.deriveClientServerInitial(initial);
     const cli = ks.deriveKeyIvHp(pair.client);
     const srv = ks.deriveKeyIvHp(pair.server);
-    var fb = std.ArrayList(u8){};
+    var fb = std.ArrayList(u8).empty;
     defer fb.deinit(A);
-    _ = (frame.Frame{ .ping = {} }).write(fb.writer(A)) catch {};
+    _ = (frame.Frame{ .ping = {} }).write(compat.arrayListWriter(&fb, A)) catch {};
     const init_pkt = try packet.encodeInitialProtected(
         A,
         packet.QUIC_V1,

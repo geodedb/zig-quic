@@ -1,9 +1,11 @@
 const std = @import("std");
+const compat = @import("compat");
 const endpoint = @import("quic_endpoint");
 const packet = @import("quic_packet");
 const frame = @import("quic_frame");
 const varint = @import("quic_varint");
 const ks = @import("quic_tls");
+const test_certs = @import("test_certs");
 
 // This test synthesizes a client Initial without token to a server endpoint with retry enabled.
 // Expect server to send a Retry.
@@ -12,8 +14,12 @@ test "server_issues_retry_and_client_retries" {
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
 
-    // Create server endpoint - use port 4433 to ensure it's recognized as a server
-    var ep = try endpoint.Endpoint.init(alloc, "127.0.0.1:4433", &.{ .alpn = &[_][]const u8{} });
+    var cfg = @import("config.zig").QuicConfig{
+        .alpn = &[_][]const u8{},
+        .inline_server_cert_der = test_certs.server_cert_der,
+        .inline_server_priv_p256 = test_certs.server_key_der,
+    };
+    var ep = try endpoint.Endpoint.init(alloc, "127.0.0.1:4433", &cfg);
     defer ep.deinit();
     ep.cfg.enable_retry = true;
     ep.cfg.token_secret = "test-secret";
@@ -34,9 +40,9 @@ test "server_issues_retry_and_client_retries" {
         const t = ks.deriveKeyIvHp(pair.client);
         break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
     };
-    var frames = std.ArrayList(u8){};
+    var frames = std.ArrayList(u8).empty;
     defer frames.deinit(alloc);
-    _ = (frame.Frame{ .ping = {} }).write(frames.writer(alloc)) catch {};
+    _ = (frame.Frame{ .ping = {} }).write(compat.arrayListWriter(&frames, alloc)) catch {};
     const pkt = try packet.encodeInitialProtected(
         alloc,
         packet.QUIC_V1,
@@ -107,7 +113,12 @@ test "client_resets_initial_state_and_replays_retry_token" {
 
     // Use server endpoint mode and capture ring so we can loop packets through
     // server+client paths inside one endpoint instance.
-    var ep = try endpoint.Endpoint.init(alloc, "127.0.0.1:4433", &.{ .alpn = &[_][]const u8{} });
+    var cfg = @import("config.zig").QuicConfig{
+        .alpn = &[_][]const u8{},
+        .inline_server_cert_der = test_certs.server_cert_der,
+        .inline_server_priv_p256 = test_certs.server_key_der,
+    };
+    var ep = try endpoint.Endpoint.init(alloc, "127.0.0.1:4433", &cfg);
     defer ep.deinit();
     ep.cfg.enable_retry = true;
     ep.cfg.token_secret = "test-secret";

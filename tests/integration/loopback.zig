@@ -14,6 +14,7 @@
 //! - RFC 9000 §13.4: Explicit Congestion Notification
 
 const std = @import("std");
+const compat = @import("compat");
 
 /// Loopback transport for testing
 pub const LoopbackTransport = struct {
@@ -61,8 +62,12 @@ pub const LoopbackTransport = struct {
         /// Delay jitter in milliseconds
         jitter_ms: u32 = 0,
 
-        /// Maximum transmission unit
-        mtu: u16 = 1500,
+        /// Maximum loopback datagram size.
+        ///
+        /// The in-memory harness carries coalesced Initial+Handshake flights that
+        /// can exceed an Ethernet UDP MTU after Initial padding. Real UDP path
+        /// MTU enforcement is covered by tests that set an explicit smaller MTU.
+        mtu: u16 = 4096,
 
         /// Enable ECN marking
         enable_ecn: bool = false,
@@ -89,7 +94,7 @@ pub const LoopbackTransport = struct {
             .queue_a_to_b = try PacketQueue.init(allocator),
             .queue_b_to_a = try PacketQueue.init(allocator),
             .config = config,
-            .prng = std.Random.DefaultPrng.init(@intCast(std.time.milliTimestamp())),
+            .prng = std.Random.DefaultPrng.init(@intCast(compat.milliTimestamp())),
             .stats = .{},
             .capture_a_send_fn = null,
             .capture_b_send_fn = null,
@@ -110,7 +115,7 @@ pub const LoopbackTransport = struct {
     pub fn sendAtoB(self: *LoopbackTransport, data: []const u8) !void {
         // Capture if callback is registered
         if (self.capture_a_send_fn) |capture_fn| {
-            capture_fn(data, std.time.milliTimestamp(), self.capture_user_data);
+            capture_fn(data, compat.milliTimestamp(), self.capture_user_data);
         }
         try self.send(&self.queue_a_to_b, data);
     }
@@ -119,7 +124,7 @@ pub const LoopbackTransport = struct {
     pub fn sendBtoA(self: *LoopbackTransport, data: []const u8) !void {
         // Capture if callback is registered
         if (self.capture_b_send_fn) |capture_fn| {
-            capture_fn(data, std.time.milliTimestamp(), self.capture_user_data);
+            capture_fn(data, compat.milliTimestamp(), self.capture_user_data);
         }
         try self.send(&self.queue_b_to_a, data);
     }
@@ -169,7 +174,7 @@ pub const LoopbackTransport = struct {
             self.prng.random().uintLessThan(u32, self.config.jitter_ms)
         else
             0;
-        const delivery_time_ms = std.time.milliTimestamp() + base_delay + jitter;
+        const delivery_time_ms = compat.milliTimestamp() + base_delay + jitter;
 
         // Create packet
         var pkt_data = try self.allocator.dupe(u8, data);
@@ -192,7 +197,7 @@ pub const LoopbackTransport = struct {
 
     /// Internal receive implementation
     fn recv(self: *LoopbackTransport, queue: *PacketQueue, buffer: []u8) !?usize {
-        const now = std.time.milliTimestamp();
+        const now = compat.milliTimestamp();
 
         // Check if packet is ready for delivery
         const packet = queue.peek() orelse return null;
@@ -264,7 +269,7 @@ pub const PacketQueue = struct {
     /// Initialize packet queue
     pub fn init(allocator: std.mem.Allocator) !PacketQueue {
         return .{
-            .packets = std.ArrayList(Packet){},
+            .packets = std.ArrayList(Packet).empty,
             .allocator = allocator,
         };
     }

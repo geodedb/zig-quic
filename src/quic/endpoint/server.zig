@@ -83,10 +83,11 @@ pub fn pushAccepted(allocator: std.mem.Allocator, accepted: *std.ArrayList(*conn
 ///
 /// Returns:
 ///   Connection pointer if queue non-empty, null otherwise
-/// Uses swapRemove for O(1) dequeue — connection acceptance order is not guaranteed.
+/// Preserves FIFO acceptance order so application accept loops observe the same
+/// order in which server Initials were enqueued.
 pub fn popAccepted(accepted: *std.ArrayList(*conn_mod.Connection)) ?*conn_mod.Connection {
     if (accepted.items.len == 0) return null;
-    return accepted.swapRemove(0);
+    return accepted.orderedRemove(0);
 }
 
 /// Hash a socket address for connection routing.

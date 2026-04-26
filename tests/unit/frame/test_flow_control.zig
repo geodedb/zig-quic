@@ -16,6 +16,7 @@
 //! - RFC compliance: Frame formats, flow control semantics, blocked conditions
 
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 
 const fc = @import("flow_control");
@@ -27,7 +28,7 @@ const types = @import("types");
 
 test "RFC 9000 §19.10 - writeMaxData encodes frame" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const max: u64 = 1000;
@@ -39,7 +40,7 @@ test "RFC 9000 §19.10 - writeMaxData encodes frame" {
 
 test "RFC 9000 §19.10 - decodeMaxData reads frame correctly" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const max: u64 = 10000;
@@ -52,7 +53,7 @@ test "RFC 9000 §19.10 - decodeMaxData reads frame correctly" {
 
 test "RFC 9000 §19.10 - MAX_DATA round trip" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const max: u64 = 50000;
@@ -66,7 +67,7 @@ test "RFC 9000 §19.10 - MAX_DATA round trip" {
 
 test "RFC 9000 §4.1 - MAX_DATA with zero limit" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     _ = try fc.writeMaxData(w, 0);
@@ -92,7 +93,7 @@ test "negative: decodeMaxData with wrong frame type" {
 
 test "RFC 9000 §19.11 - writeMaxStreamData encodes frame" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 4;
@@ -105,7 +106,7 @@ test "RFC 9000 §19.11 - writeMaxStreamData encodes frame" {
 
 test "RFC 9000 §19.11 - decodeMaxStreamData reads frame correctly" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 8;
@@ -120,7 +121,7 @@ test "RFC 9000 §19.11 - decodeMaxStreamData reads frame correctly" {
 
 test "RFC 9000 §19.11 - MAX_STREAM_DATA round trip" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 12;
@@ -150,7 +151,7 @@ test "negative: decodeMaxStreamData with wrong frame type" {
 
 test "RFC 9000 §19.12 - writeMaxStreamsBidi encodes frame" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const max: u64 = 100;
@@ -162,7 +163,7 @@ test "RFC 9000 §19.12 - writeMaxStreamsBidi encodes frame" {
 
 test "RFC 9000 §19.12 - decodeMaxStreamsBidi reads frame correctly" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const max: u64 = 200;
@@ -175,7 +176,7 @@ test "RFC 9000 §19.12 - decodeMaxStreamsBidi reads frame correctly" {
 
 test "RFC 9000 §19.12 - MAX_STREAMS_BIDI round trip" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const max: u64 = 500;
@@ -203,7 +204,7 @@ test "negative: decodeMaxStreamsBidi with wrong frame type" {
 
 test "RFC 9000 §19.12 - writeMaxStreamsUni encodes frame" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const max: u64 = 150;
@@ -215,7 +216,7 @@ test "RFC 9000 §19.12 - writeMaxStreamsUni encodes frame" {
 
 test "RFC 9000 §19.12 - decodeMaxStreamsUni reads frame correctly" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const max: u64 = 300;
@@ -228,7 +229,7 @@ test "RFC 9000 §19.12 - decodeMaxStreamsUni reads frame correctly" {
 
 test "RFC 9000 §19.12 - MAX_STREAMS_UNI round trip" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const max: u64 = 1000;
@@ -256,7 +257,7 @@ test "negative: decodeMaxStreamsUni with wrong frame type" {
 
 test "RFC 9000 §19.13 - writeDataBlocked encodes frame" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const limit: u64 = 10000;
@@ -268,7 +269,7 @@ test "RFC 9000 §19.13 - writeDataBlocked encodes frame" {
 
 test "RFC 9000 §19.13 - decodeDataBlocked reads frame correctly" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const limit: u64 = 50000;
@@ -281,7 +282,7 @@ test "RFC 9000 §19.13 - decodeDataBlocked reads frame correctly" {
 
 test "RFC 9000 §19.13 - DATA_BLOCKED round trip" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const limit: u64 = 100000;
@@ -309,7 +310,7 @@ test "negative: decodeDataBlocked with wrong frame type" {
 
 test "RFC 9000 §19.14 - writeStreamDataBlocked encodes frame" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 4;
@@ -322,7 +323,7 @@ test "RFC 9000 §19.14 - writeStreamDataBlocked encodes frame" {
 
 test "RFC 9000 §19.14 - decodeStreamDataBlocked reads frame correctly" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 8;
@@ -337,7 +338,7 @@ test "RFC 9000 §19.14 - decodeStreamDataBlocked reads frame correctly" {
 
 test "RFC 9000 §19.14 - STREAM_DATA_BLOCKED round trip" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 12;
@@ -367,7 +368,7 @@ test "negative: decodeStreamDataBlocked with wrong frame type" {
 
 test "RFC 9000 §19.14 - writeStreamsBlockedBidi encodes frame" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const max: u64 = 100;
@@ -379,7 +380,7 @@ test "RFC 9000 §19.14 - writeStreamsBlockedBidi encodes frame" {
 
 test "RFC 9000 §19.14 - decodeStreamsBlockedBidi reads frame correctly" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const max: u64 = 250;
@@ -392,7 +393,7 @@ test "RFC 9000 §19.14 - decodeStreamsBlockedBidi reads frame correctly" {
 
 test "RFC 9000 §19.14 - STREAMS_BLOCKED_BIDI round trip" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const max: u64 = 500;
@@ -420,7 +421,7 @@ test "negative: decodeStreamsBlockedBidi with wrong frame type" {
 
 test "RFC 9000 §19.14 - writeStreamsBlockedUni encodes frame" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const max: u64 = 75;
@@ -432,7 +433,7 @@ test "RFC 9000 §19.14 - writeStreamsBlockedUni encodes frame" {
 
 test "RFC 9000 §19.14 - decodeStreamsBlockedUni reads frame correctly" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const max: u64 = 400;
@@ -445,7 +446,7 @@ test "RFC 9000 §19.14 - decodeStreamsBlockedUni reads frame correctly" {
 
 test "RFC 9000 §19.14 - STREAMS_BLOCKED_UNI round trip" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const max: u64 = 1000;
@@ -488,7 +489,7 @@ test "RFC 9000 §19 - Flow control frame types are distinct" {
 
 test "RFC 9000 §4.1 - MAX_DATA increases connection flow control limit" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Initial limit
@@ -511,7 +512,7 @@ test "RFC 9000 §4.1 - MAX_DATA increases connection flow control limit" {
 
 test "RFC 9000 §4.1 - MAX_STREAM_DATA increases stream flow control limit" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 4;
@@ -538,7 +539,7 @@ test "RFC 9000 §4.1 - MAX_STREAM_DATA increases stream flow control limit" {
 
 test "RFC 9000 §4.6 - MAX_STREAMS controls concurrent stream count" {
     var buf: [128]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Separate limits for bidirectional and unidirectional
@@ -556,7 +557,7 @@ test "RFC 9000 §4.6 - MAX_STREAMS controls concurrent stream count" {
 
 test "RFC 9000 §4.1 - DATA_BLOCKED signals connection limit reached" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const limit: u64 = 10000; // Current limit sender is blocked at
@@ -571,7 +572,7 @@ test "RFC 9000 §4.1 - DATA_BLOCKED signals connection limit reached" {
 
 test "RFC 9000 §4.1 - STREAM_DATA_BLOCKED signals stream limit reached" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const stream_id: u64 = 4;
@@ -588,7 +589,7 @@ test "RFC 9000 §4.1 - STREAM_DATA_BLOCKED signals stream limit reached" {
 
 test "RFC 9000 §4.6 - STREAMS_BLOCKED signals stream count limit" {
     var buf: [128]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Blocked on bidirectional streams
@@ -608,7 +609,7 @@ test "RFC 9000 §4.6 - STREAMS_BLOCKED signals stream count limit" {
 
 test "RFC 9000 §4 - Flow control interaction: BLOCKED then MAX" {
     var buf: [128]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Sender blocked at limit
@@ -632,7 +633,7 @@ test "RFC 9000 §4 - Flow control interaction: BLOCKED then MAX" {
 
 test "RFC 9000 §4 - Per-stream flow control independent" {
     var buf: [128]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Different limits for different streams
@@ -660,7 +661,7 @@ test "RFC 9000 §4 - Per-stream flow control independent" {
 
 test "RFC 9000 §4.1 - Connection limit applies to all streams" {
     var buf: [128]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Connection-wide limit
@@ -682,7 +683,7 @@ test "RFC 9000 §4.1 - Connection limit applies to all streams" {
 
 test "RFC 9000 §4.2 - AUTO_TUNING: Receiver increases limits proactively" {
     var buf: [128]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Initial conservative limit
@@ -712,7 +713,7 @@ test "RFC 9000 §4.2 - AUTO_TUNING: Receiver increases limits proactively" {
 
 test "RFC 9000 §4.6 - Bidirectional and unidirectional stream limits separate" {
     var buf: [128]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // MAX_STREAMS for both directions

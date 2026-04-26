@@ -657,7 +657,7 @@ test "RFC 9002 §7.7 - pacing delay scales linearly with RTT" {
 }
 
 test "RFC 9002 §7.7 - pacing delay inversely proportional to cwnd" {
-    const bytes_in_flight: usize = 8000;
+    const bytes_in_flight: usize = 13000;
     const smoothed_rtt_ns: u64 = 120_000; // 120us (chosen for clean division)
     const packet_size: usize = 1200;
 

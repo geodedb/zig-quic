@@ -16,7 +16,7 @@ fn hexToBytes(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
 }
 
 fn decodeHex(alloc: std.mem.Allocator, multi: []const []const u8) ![]u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(alloc);
     for (multi) |line| {
         var j: usize = 0;

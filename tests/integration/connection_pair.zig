@@ -8,6 +8,7 @@
 //! - RFC 9001: Using TLS to Secure QUIC
 
 const std = @import("std");
+const compat = @import("compat");
 const testlog = @import("testlog");
 const harness = @import("harness"); // Module import (configured in build.zig)
 const loopback = @import("loopback"); // Module import (configured in build.zig)
@@ -102,8 +103,8 @@ pub const ConnectionPair = struct {
         // Initialize capture lists if enabled
         if (config.enable_capture) {
             // Initialize empty ArrayLists using empty struct literal (Zig 0.15.1 pattern)
-            self.client_packets = std.ArrayList(harness.CapturedPacket){};
-            self.server_packets = std.ArrayList(harness.CapturedPacket){};
+            self.client_packets = std.ArrayList(harness.CapturedPacket).empty;
+            self.server_packets = std.ArrayList(harness.CapturedPacket).empty;
         }
 
         // Now create endpoint wrappers with pointers to STORED adapters
@@ -124,9 +125,16 @@ pub const ConnectionPair = struct {
 
         // Set up packet capture if enabled
         if (config.enable_capture) {
+            self.client.capture = @ptrCast(self);
+            self.server.capture = @ptrCast(self);
             transport.capture_a_send_fn = captureClientPacket;
             transport.capture_b_send_fn = captureServerPacket;
             transport.capture_user_data = @ptrCast(self);
+        }
+
+        if (config.enable_time_control) {
+            try self.client.enableTimeControl();
+            try self.server.enableTimeControl();
         }
 
         return self;
@@ -220,7 +228,7 @@ pub const ConnectionPair = struct {
                 }
             }
 
-            std.Thread.sleep(10 * std.time.ns_per_ms);
+            compat.threadSleep(10 * std.time.ns_per_ms);
         }
 
         if (self.server_conn == null) {
@@ -255,7 +263,7 @@ pub const ConnectionPair = struct {
     /// Wait for TLS handshake to complete on both sides (Phase 14: Real implementation!)
     pub fn waitForHandshake(self: *ConnectionPair, timeout_ms: u64) !void {
         // Phase 14: Poll real connections for handshake completion!
-        const start_time = std.time.milliTimestamp();
+        const start_time = compat.milliTimestamp();
         var iteration: u64 = 0;
 
         while (true) {
@@ -279,7 +287,7 @@ pub const ConnectionPair = struct {
             try self.exchangePackets();
 
             // Check timeout
-            const elapsed = std.time.milliTimestamp() - start_time;
+            const elapsed = compat.milliTimestamp() - start_time;
             if (elapsed > timeout_ms) {
                 testlog.print("[waitForHandshake] TIMEOUT after {} iterations\n", .{iteration});
                 if (self.client_conn) |client_conn| {
@@ -294,7 +302,7 @@ pub const ConnectionPair = struct {
             }
 
             // Small delay
-            std.Thread.sleep(10 * std.time.ns_per_ms);
+            compat.threadSleep(10 * std.time.ns_per_ms);
         }
     }
 
@@ -314,7 +322,7 @@ pub const ConnectionPair = struct {
             }
 
             // Small delay to allow packet delivery
-            std.Thread.sleep(1 * std.time.ns_per_ms);
+            compat.threadSleep(1 * std.time.ns_per_ms);
         }
 
         if (iterations >= max_iterations) {

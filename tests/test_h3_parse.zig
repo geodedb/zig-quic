@@ -42,7 +42,7 @@ fn encPref(val: u64, out: []u8, prefix_bits: u3) usize {
 }
 
 fn makeHeadersForPath(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
-    var blk = std.ArrayList(u8).init(alloc);
+    var blk = std.array_list.Managed(u8).init(alloc);
     defer blk.deinit();
     try blk.append(0);
     try blk.append(0);
@@ -59,7 +59,7 @@ fn makeHeadersForPath(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
     try blk.appendSlice(path);
     const block = try blk.toOwnedSlice();
 
-    var fr = std.ArrayList(u8).init(alloc);
+    var fr = std.array_list.Managed(u8).init(alloc);
     defer fr.deinit();
     var hdr: [16]u8 = .{0} ** 16;
     var i: usize = 0;
@@ -71,7 +71,7 @@ fn makeHeadersForPath(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
 }
 
 fn makeHeadersForPathHuffman(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
-    var blk = std.ArrayList(u8).init(alloc);
+    var blk = std.array_list.Managed(u8).init(alloc);
     defer blk.deinit();
     try blk.append(0);
     try blk.append(0);
@@ -90,7 +90,7 @@ fn makeHeadersForPathHuffman(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
     try blk.appendSlice(enc);
     const block = try blk.toOwnedSlice();
 
-    var fr = std.ArrayList(u8).init(alloc);
+    var fr = std.array_list.Managed(u8).init(alloc);
     defer fr.deinit();
     var hdr: [16]u8 = .{0} ** 16;
     var i: usize = 0;
@@ -102,7 +102,7 @@ fn makeHeadersForPathHuffman(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
 }
 
 fn makeHeadersLiteralName(alloc: std.mem.Allocator, name: []const u8, value: []const u8) ![]u8 {
-    var blk = std.ArrayList(u8).init(alloc);
+    var blk = std.array_list.Managed(u8).init(alloc);
     defer blk.deinit();
     try blk.append(0);
     try blk.append(0);
@@ -122,7 +122,7 @@ fn makeHeadersLiteralName(alloc: std.mem.Allocator, name: []const u8, value: []c
     try blk.appendSlice(value);
     const block = try blk.toOwnedSlice();
 
-    var fr = std.ArrayList(u8).init(alloc);
+    var fr = std.array_list.Managed(u8).init(alloc);
     defer fr.deinit();
     var hdr: [16]u8 = .{0} ** 16;
     var i: usize = 0;
@@ -164,7 +164,7 @@ test "h3 parses Huffman-coded literal name :path" {
     const alloc = std.testing.allocator;
     const name = ":path";
     const value = "/huff";
-    var blk = std.ArrayList(u8).init(alloc);
+    var blk = std.array_list.Managed(u8).init(alloc);
     defer blk.deinit();
     try blk.append(0);
     try blk.append(0);
@@ -186,7 +186,7 @@ test "h3 parses Huffman-coded literal name :path" {
     try blk.appendSlice(value);
     const block = try blk.toOwnedSlice();
 
-    var fr = std.ArrayList(u8).init(alloc);
+    var fr = std.array_list.Managed(u8).init(alloc);
     defer fr.deinit();
     var hdr: [16]u8 = .{0} ** 16;
     var i: usize = 0;
@@ -204,7 +204,7 @@ test "h3 parses Huffman-coded literal name :path" {
 test "h3 captures method and authority into ReqState" {
     const alloc = std.testing.allocator;
     // Build a block with literal :method POST and literal :authority example
-    var blk = std.ArrayList(u8).init(alloc);
+    var blk = std.array_list.Managed(u8).init(alloc);
     defer blk.deinit();
     try blk.append(0); // RIC
     try blk.append(0); // Base
@@ -248,7 +248,7 @@ test "h3 captures method and authority into ReqState" {
     try blk.appendSlice("/x");
     const block = try blk.toOwnedSlice();
 
-    var fr = std.ArrayList(u8).init(alloc);
+    var fr = std.array_list.Managed(u8).init(alloc);
     defer fr.deinit();
     var hdr: [16]u8 = .{0} ** 16;
     var i: usize = 0;
@@ -269,7 +269,7 @@ test "h3 captures method and authority into ReqState" {
 test "h3 parses post-base name reference (skip)" {
     const alloc = std.testing.allocator;
     // Minimal block: RIC=0, Base=0, Indexed with post-base index (0001 idx=0) then a literal with post-base name reference (0000 N idx=0) with value "/"
-    var blk = std.ArrayList(u8).init(alloc);
+    var blk = std.array_list.Managed(u8).init(alloc);
     defer blk.deinit();
     try blk.append(0);
     try blk.append(0);
@@ -285,7 +285,7 @@ test "h3 parses post-base name reference (skip)" {
     try blk.appendSlice(vbuf[0..vk]);
     try blk.append('/');
     const block = try blk.toOwnedSlice();
-    var fr = std.ArrayList(u8).init(alloc);
+    var fr = std.array_list.Managed(u8).init(alloc);
     defer fr.deinit();
     var hdr: [16]u8 = .{0} ** 16;
     var i: usize = 0;

@@ -6,7 +6,7 @@ const sig = @import("sig");
 
 fn pemToDer(alloc: std.mem.Allocator, pem: []const u8) ![]u8 {
     var lines = std.mem.tokenizeAny(u8, pem, "\n");
-    var body = std.ArrayList(u8).init(alloc);
+    var body = std.array_list.Managed(u8).init(alloc);
     defer body.deinit();
     while (lines.next()) |line| {
         if (line.len == 0) continue;
@@ -31,7 +31,7 @@ test "reject self-signed cert without allow_insecure" {
     defer cert.deinit(std.testing.allocator);
     // Self-signed: without allow_insecure, validity + chain checks should fail validateChain
     const now = std.time.timestamp();
-    const chain_ok = x509.validateChain(std.testing.allocator, &[_][]const u8{der}, now, "localhost", false) catch null;
+    const chain_ok = x509.validateChain(std.testing.allocator, &[_][]const u8{der}, now, "localhost", .secure, .server_auth) catch null;
     try std.testing.expect(chain_ok == null);
 }
 

@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const tls13 = @import("quic_tls13");
 const ks = @import("quic_tls");
 const transport_params = @import("quic_transport_params");
@@ -59,7 +60,7 @@ fn buildClientHelloWithKeyShare(
     try body.appendSlice(alloc, &.{ 0x03, 0x03 });
 
     var rnd: [32]u8 = undefined;
-    std.crypto.random.bytes(&rnd);
+    compat.randomBytes(&rnd);
     try body.appendSlice(alloc, &rnd);
 
     try body.append(alloc, 0);
@@ -189,7 +190,7 @@ fn buildStandardClientHello(
     psk_identity: ?[]const u8,
 ) ![]u8 {
     var sk: [32]u8 = undefined;
-    std.crypto.random.bytes(&sk);
+    compat.randomBytes(&sk);
     const pk = try std.crypto.dh.X25519.recoverPublicKey(sk);
     return buildClientHelloWithKeyShare(
         alloc,
@@ -215,7 +216,7 @@ test "context parses ClientHello and stores handshake view" {
     const server_tp = try buildServerTransportParams(alloc);
     defer alloc.free(server_tp);
 
-    const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp, .server_cert_der = test_certs.server_cert_der, .server_key_der = test_certs.server_key_der, .allow_insecure = true };
+    const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp, .server_cert_der = test_certs.server_cert_der, .server_key_der = test_certs.server_key_der, .allow_insecure = .testing_only_i_know_what_i_am_doing };
     var ctx = try tls13.Context.init(config, .{});
     defer ctx.deinit();
 
@@ -253,7 +254,7 @@ test "context captures ClientHello ALPN list" {
     const server_tp = try buildServerTransportParams(alloc);
     defer alloc.free(server_tp);
 
-    const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp, .server_cert_der = test_certs.server_cert_der, .server_key_der = test_certs.server_key_der, .allow_insecure = true };
+    const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp, .server_cert_der = test_certs.server_cert_der, .server_key_der = test_certs.server_key_der, .allow_insecure = .testing_only_i_know_what_i_am_doing };
     var ctx = try tls13.Context.init(config, .{});
     defer ctx.deinit();
 
@@ -290,7 +291,7 @@ test "context captures pre_shared_key offer" {
     const server_tp = try buildServerTransportParams(alloc);
     defer alloc.free(server_tp);
 
-    const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp, .server_cert_der = test_certs.server_cert_der, .server_key_der = test_certs.server_key_der, .allow_insecure = true };
+    const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp, .server_cert_der = test_certs.server_cert_der, .server_key_der = test_certs.server_key_der, .allow_insecure = .testing_only_i_know_what_i_am_doing };
     var ctx = try tls13.Context.init(config, .{});
     defer ctx.deinit();
 
@@ -322,7 +323,7 @@ test "server emits ServerHello flight with Finished" {
     const server_tp = try buildServerTransportParams(alloc);
     defer alloc.free(server_tp);
 
-    const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp, .server_cert_der = test_certs.server_cert_der, .server_key_der = test_certs.server_key_der, .allow_insecure = true };
+    const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp, .server_cert_der = test_certs.server_cert_der, .server_key_der = test_certs.server_key_der, .allow_insecure = .testing_only_i_know_what_i_am_doing };
     var ctx = try tls13.Context.init(config, .{});
     defer ctx.deinit();
 
@@ -408,7 +409,7 @@ test "server verifies client Finished and derives application secrets" {
         .alpn_protocols = server_alpn[0..],
         .server_cert_der = test_certs.server_cert_der,
         .server_key_der = test_certs.server_key_der,
-        .allow_insecure = true,
+        .allow_insecure = .testing_only_i_know_what_i_am_doing,
     };
     var ctx = try tls13.Context.init(config, callbacks);
     defer ctx.deinit();
@@ -467,7 +468,7 @@ test "server rejects tampered client Finished" {
         .alpn_protocols = server_alpn[0..],
         .server_cert_der = test_certs.server_cert_der,
         .server_key_der = test_certs.server_key_der,
-        .allow_insecure = true,
+        .allow_insecure = .testing_only_i_know_what_i_am_doing,
     };
     var ctx = try tls13.Context.init(config, .{});
     defer ctx.deinit();
@@ -511,7 +512,7 @@ test "server records negotiated signature algorithm" {
     const server_tp = try buildServerTransportParams(alloc);
     defer alloc.free(server_tp);
 
-    const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp, .server_cert_der = test_certs.server_cert_der, .server_key_der = test_certs.server_key_der, .allow_insecure = true };
+    const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp, .server_cert_der = test_certs.server_cert_der, .server_key_der = test_certs.server_key_der, .allow_insecure = .testing_only_i_know_what_i_am_doing };
     var ctx = try tls13.Context.init(config, .{});
     defer ctx.deinit();
 
@@ -532,7 +533,7 @@ test "server rejects client without compatible signature algorithm" {
     const server_tp = try buildServerTransportParams(alloc);
     defer alloc.free(server_tp);
 
-    const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp, .server_cert_der = test_certs.server_cert_der, .server_key_der = test_certs.server_key_der, .allow_insecure = true };
+    const config = tls13.Config{ .allocator = alloc, .role = .Server, .quic_transport_parameters = server_tp, .server_cert_der = test_certs.server_cert_der, .server_key_der = test_certs.server_key_der, .allow_insecure = .testing_only_i_know_what_i_am_doing };
     var ctx = try tls13.Context.init(config, .{});
     defer ctx.deinit();
 
@@ -560,7 +561,7 @@ test "server negotiates ALPN when offered" {
         .alpn_protocols = server_alpn[0..],
         .server_cert_der = test_certs.server_cert_der,
         .server_key_der = test_certs.server_key_der,
-        .allow_insecure = true,
+        .allow_insecure = .testing_only_i_know_what_i_am_doing,
     };
     var ctx = try tls13.Context.init(config, .{});
     defer ctx.deinit();
@@ -656,7 +657,7 @@ test "server errors when ALPN required but absent" {
         .alpn_protocols = server_alpn[0..],
         .server_cert_der = test_certs.server_cert_der,
         .server_key_der = test_certs.server_key_der,
-        .allow_insecure = true,
+        .allow_insecure = .testing_only_i_know_what_i_am_doing,
     };
     var ctx = try tls13.Context.init(config, .{});
     defer ctx.deinit();

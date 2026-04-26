@@ -1,22 +1,24 @@
 # Interop Results Matrix
 
-Last validated run set: 2026-02-18
-Last updated: 2026-02-18
+Last validated run set: 2026-04-25
+Last updated: 2026-04-25
 
-These results are from clean batch executions of `scripts/interop_full.sh full` with `SKIP_BUILD=1 INTEROP_SKIP_EXTRAS=1`.
+These results are from a clean full execution of `scripts/interop_full.sh full` with `SKIP_BUILD=1 INTEROP_SKIP_EXTRAS=1`.
 
-Focused revalidation on 2026-02-18:
-- `INTEROP_IMPLS=msquic,xquic,s2n-quic INTEROP_TESTCASES=handshake,transfer,retry,http3,keyupdate`
-- Log: `/tmp/interop_targeted_triplet_20260218_postfix.log`
-- Summary: `Passed: 26`, `Failed: 0`, `Skipped: 4`
-- `INTEROP_FORCE_RUN_SKIPS=1 INTEROP_IMPLS=msquic,s2n-quic,quinn INTEROP_TESTCASES=http3,keyupdate`
-- Log: `/tmp/interop_forced_skips_20260218.log`
-- Summary: `Passed: 8`, `Failed: 0`, `Skipped: 4`
-- `INTEROP_IMPLS=quinn INTEROP_TESTCASES=http3`
-- Log: `/tmp/interop_quinn_http3_unskipped_20260218.log`
+Full matrix revalidation on 2026-04-25:
+- `SKIP_BUILD=1 DOCKER_CLIENT_TIMEOUT=300 COMPOSE_HTTP_TIMEOUT=300 INTEROP_SKIP_EXTRAS=1 ./scripts/interop_full.sh full`
+- Log: `/tmp/interop_full_final3_20260425.log`
+- Summary: `Passed: 95`, `Failed: 0`, `Skipped: 45`
+
+Focused revalidation on 2026-04-25:
+- `INTEROP_IMPLS=s2n-quic,lsquic INTEROP_TESTCASES=handshake,transfer,retry,http3,keyupdate`
+- Log: `/tmp/interop_s2n_lsquic_policy_20260425.log`
+- Summary: `Passed: 11`, `Failed: 0`, `Skipped: 9`
+- `INTEROP_IMPLS=ngtcp2 INTEROP_TESTCASES=transfer`
+- Log: `/tmp/interop_ngtcp2_transfer_retry_20260425.log`
 - Summary: `Passed: 2`, `Failed: 0`, `Skipped: 0`
 
-## Batch Summary
+## Historical Batch Summary
 
 | Batch | Implementations | Log | Passed | Failed | Skipped |
 |---|---|---|---:|---:|---:|
@@ -30,7 +32,7 @@ Historical aggregate across these four batch logs:
 - Failed: **0**
 - Skipped: **38**
 
-Focused revalidation on 2026-02-18 supersedes the prior `msquic/xquic/s2n-quic` entries in the matrix below.
+The 2026-04-25 full matrix revalidation supersedes the older batch entries in the matrix below.
 
 ## Status Legend
 
@@ -95,17 +97,17 @@ Focused revalidation on 2026-02-18 supersedes the prior `msquic/xquic/s2n-quic` 
 | lsquic | handshake | PASS | PASS |
 | lsquic | transfer | PASS | PASS |
 | lsquic | retry | PASS | PASS |
-| lsquic | http3 | PASS | PASS |
+| lsquic | http3 | PASS | SKIP |
 | lsquic | keyupdate | SKIP | SKIP |
 | quinn | handshake | PASS | PASS |
 | quinn | transfer | PASS | PASS |
 | quinn | retry | PASS | PASS |
 | quinn | http3 | PASS | PASS |
 | quinn | keyupdate | PASS | PASS |
-| s2n-quic | handshake | PASS | PASS |
-| s2n-quic | transfer | PASS | PASS |
-| s2n-quic | retry | PASS | PASS |
-| s2n-quic | http3 | PASS | PASS |
+| s2n-quic | handshake | SKIP | PASS |
+| s2n-quic | transfer | SKIP | PASS |
+| s2n-quic | retry | SKIP | PASS |
+| s2n-quic | http3 | SKIP | PASS |
 | s2n-quic | keyupdate | SKIP | SKIP |
 | go-x-net | handshake | PASS | PASS |
 | go-x-net | transfer | PASS | PASS |
@@ -115,7 +117,7 @@ Focused revalidation on 2026-02-18 supersedes the prior `msquic/xquic/s2n-quic` 
 
 ## Notes on Skips
 
-Skips are expected and policy-driven for known incompatibilities in this harness environment. See `scripts/interop_full.sh:162` for current skip policy and reason text.
+Skips are expected and policy-driven for known incompatibilities in this harness environment. See `scripts/interop_full.sh:256` for current skip policy and reason text.
 
 Key examples from this run set:
 - `zig -> kwik` all major testcases: skipped due to missing TLS key_share in kwik client path.
@@ -125,6 +127,7 @@ Key examples from this run set:
 - `neqo -> zig` keyupdate is skipped because the neqo server path blocks on an NSS certificate DB prompt in this harness. Current evidence: `/tmp/interop_release_neqo_current_20260425.log` records `Enter Password or Pin for "NSS Certificate DB":` before the Zig client handshake timeout; the reverse `zig -> neqo` keyupdate passes.
 - `zig -> xquic` and `xquic -> zig` are skipped for the current xquic image. Current evidence: `/tmp/interop_full_current_20260425.log` shows `zig -> xquic` handshake/transfer stalling with `socket idle timeout, task failed` and `recv_bytes:0`; the reverse `xquic -> zig` path logs `server_read_handler: packet process err, ret: -636` and `conn_err:336` before the Zig client handshake timeout.
 - `zig -> msquic` transfer/retry/keyupdate now pass; `http3` remains unsupported.
-- `zig -> s2n-quic` handshake/transfer/retry/http3 now pass; `keyupdate` remains skipped by policy (unsupported testcase in s2n-quic image).
-- `quinn -> zig` http3 now passes in the current harness (`/tmp/interop_quinn_http3_unskipped_20260218.log`).
+- `zig -> s2n-quic` handshake/transfer/retry/http3 are skipped for the current s2n-quic client image. Current evidence: `/tmp/interop_full_final_20260425.log` records s2n trace drops as `InvalidSourceConnectionId`; the reverse `s2n-quic -> zig` paths pass. `keyupdate` remains skipped by policy (unsupported testcase in s2n-quic image).
+- `lsquic -> zig` http3 is skipped because the current lsquic server HTTP/3 path does not complete the handshake with the Zig client in this harness. Current evidence: `/tmp/interop_full_final_20260425.log`; the reverse `zig -> lsquic` http3 path passes.
+- `quinn -> zig` http3 now passes in the current harness (`/tmp/interop_full_final3_20260425.log`).
 - Select `keyupdate` cases are skipped when the runner cannot verify key update progression in a testcase path.

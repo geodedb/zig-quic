@@ -1,8 +1,9 @@
 const std = @import("std");
+const compat = @import("compat");
 const token = @import("quic_token");
 
 fn monotonicNowMs() u64 {
-    const ns: i128 = std.time.nanoTimestamp();
+    const ns: i128 = compat.nanoTimestamp();
     if (ns <= 0) return 0;
     return @intCast(@as(u128, @intCast(ns)) / std.time.ns_per_ms);
 }

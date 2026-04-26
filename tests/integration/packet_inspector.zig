@@ -382,7 +382,7 @@ pub const FrameInfo = struct {
 /// defer frames.deinit();
 /// ```
 pub fn extractFrames(allocator: std.mem.Allocator, payload: []const u8) !std.ArrayList(FrameInfo) {
-    var frames = std.ArrayList(FrameInfo){};
+    var frames = std.ArrayList(FrameInfo).empty;
     errdefer frames.deinit(allocator);
 
     var offset: usize = 0;
@@ -928,7 +928,7 @@ pub fn expectNoFrameType(allocator: std.mem.Allocator, payload: []const u8, unex
 /// }
 /// ```
 pub fn parseCapture(allocator: std.mem.Allocator, captured: []const harness.CapturedPacket) ![]PacketInfo {
-    var results = std.ArrayList(PacketInfo){};
+    var results = std.ArrayList(PacketInfo).empty;
     defer results.deinit(allocator);
 
     for (captured) |cap| {

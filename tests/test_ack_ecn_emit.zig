@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const endpoint = @import("quic_endpoint");
 const packet = @import("quic_packet");
 const frame = @import("quic_frame");
@@ -24,9 +25,9 @@ test "endpoint emits ACK_ECN when ECN CE observed on incoming short packet" {
     c.app_tx_keys = .{ .key = key, .iv = iv, .hp = hp };
 
     // Build an incoming short header packet (PING) addressed to this connection (DCID = our_scid).
-    var frames = std.ArrayList(u8){};
+    var frames = std.ArrayList(u8).empty;
     defer frames.deinit(alloc);
-    _ = (frame.Frame{ .ping = {} }).write(frames.writer(alloc)) catch {};
+    _ = (frame.Frame{ .ping = {} }).write(compat.arrayListWriter(&frames, alloc)) catch {};
     const in_pkt = try packet.encodeShortProtected(
         alloc,
         c.our_scid.bytes[0..c.our_scid.len],

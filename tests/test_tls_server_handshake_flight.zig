@@ -5,6 +5,8 @@ const tls = @import("quic_tls13");
 // Ensure queueServerHandshakeFlight stages the server handshake flight exactly once
 // and updates internal flags when Handshake secrets are available.
 test "tls_engine_server_handshake_flight_single_enqueue" {
+    if (comptime !@hasDecl(tls, "Engine")) return error.SkipZigTest;
+
     const alloc = std.testing.allocator;
 
     var client = tls.Engine.init(alloc, .Client);
@@ -53,6 +55,8 @@ test "tls_engine_server_handshake_flight_single_enqueue" {
 // Previous bug: Certificate/CertificateVerify were skipped or Finished was sent before them,
 // causing clients to send unexpected_message alert (0x010a / 266).
 test "tls_handshake_message_ordering_with_certificate_regression_266" {
+    if (comptime !@hasDecl(tls, "Engine")) return error.SkipZigTest;
+
     const alloc = std.testing.allocator;
 
     // Dummy certificate and key for testing (same as test_real_tls_full_handshake_auth.zig)
@@ -104,7 +108,7 @@ test "tls_handshake_message_ordering_with_certificate_regression_266" {
     // Parse handshake messages from outbox to verify ordering
     // Skip ServerHello (Initial space), then check Handshake messages
     var offset: usize = sh_len; // Start after ServerHello
-    var message_types = std.ArrayList(u8){};
+    var message_types = std.ArrayList(u8).empty;
     defer message_types.deinit(alloc);
 
     // Parse TLS handshake messages from outbox

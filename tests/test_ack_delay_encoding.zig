@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const quic = @import("../quic.zig");
 
 // RFC 9000 §13.2 defines ACK delay encoding using ack_delay_exponent with a cap
@@ -24,7 +25,7 @@ test "ack_delay_encoding_basic_and_cap" {
     conn.max_ack_delay_ms = 25; // default already
 
     // Set last ack eliciting reception 8ms ago in Application space.
-    const now_ns = std.time.nanoTimestamp();
+    const now_ns = compat.nanoTimestamp();
     const eight_ms_ns: u64 = 8 * std.time.ns_per_ms;
     conn.last_ack_eliciting_rx_app_ns = now_ns - eight_ms_ns;
     const enc = conn.getAckDelayEncoded(.Application, now_ns);

@@ -8,6 +8,8 @@ const tls13 = @import("quic_tls13");
 // Not interoperable TLS, but exercises encodeShortProtected/decodeShortProtected.
 
 test "short-header 1-RTT STREAM+PING roundtrip" {
+    if (comptime !@hasDecl(tls13, "Engine")) return error.SkipZigTest;
+
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();

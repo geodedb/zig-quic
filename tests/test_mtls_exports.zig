@@ -48,8 +48,9 @@ test "mTLS exports: TlsConfig type is accessible" {
 
 test "mTLS exports: pem module is accessible" {
     // Verify the pem module is re-exported
-    const P = @TypeOf(quic.pem);
-    try testing.expect(@sizeOf(P) >= 0); // Type exists
+    const P = quic.pem;
+    try testing.expect(@hasDecl(P, "parseCertificate"));
+    try testing.expect(@hasDecl(P, "parsePrivateKey"));
 }
 
 // ============================================================================

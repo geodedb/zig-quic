@@ -11,6 +11,7 @@
 //! - RFC compliance: Frame format, offset semantics, TLS handshake data carrier
 
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 
 const crypto = @import("crypto");
@@ -22,7 +23,7 @@ const types = @import("types");
 
 test "RFC 9000 §19.6 - writeCrypto encodes frame with offset and data" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const offset: u64 = 0;
@@ -36,7 +37,7 @@ test "RFC 9000 §19.6 - writeCrypto encodes frame with offset and data" {
 
 test "RFC 9000 §19.6 - decodeCrypto reads frame correctly" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const offset: u64 = 100;
@@ -51,7 +52,7 @@ test "RFC 9000 §19.6 - decodeCrypto reads frame correctly" {
 
 test "RFC 9000 §19.6 - CRYPTO frame round trip" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const offset: u64 = 42;
@@ -71,7 +72,7 @@ test "RFC 9000 §19.6 - CRYPTO frame round trip" {
 
 test "RFC 9000 §19.6 - CRYPTO frame with zero offset" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const offset: u64 = 0;
@@ -86,7 +87,7 @@ test "RFC 9000 §19.6 - CRYPTO frame with zero offset" {
 
 test "RFC 9000 §19.6 - CRYPTO frame with small offset" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const offset: u64 = 127; // Small varint
@@ -100,7 +101,7 @@ test "RFC 9000 §19.6 - CRYPTO frame with small offset" {
 
 test "RFC 9000 §19.6 - CRYPTO frame with large offset" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const offset: u64 = 100000; // Large varint
@@ -114,7 +115,7 @@ test "RFC 9000 §19.6 - CRYPTO frame with large offset" {
 
 test "RFC 9000 §19.6 - CRYPTO frame with maximum offset" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const offset: u64 = (1 << 62) - 1; // Max varint value
@@ -132,7 +133,7 @@ test "RFC 9000 §19.6 - CRYPTO frame with maximum offset" {
 
 test "RFC 9000 §19.6 - CRYPTO frame with empty data" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const offset: u64 = 0;
@@ -147,7 +148,7 @@ test "RFC 9000 §19.6 - CRYPTO frame with empty data" {
 
 test "RFC 9000 §19.6 - CRYPTO frame with single byte data" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const offset: u64 = 0;
@@ -161,7 +162,7 @@ test "RFC 9000 §19.6 - CRYPTO frame with single byte data" {
 
 test "RFC 9000 §19.6 - CRYPTO frame with small data" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const offset: u64 = 0;
@@ -175,7 +176,7 @@ test "RFC 9000 §19.6 - CRYPTO frame with small data" {
 
 test "RFC 9000 §19.6 - CRYPTO frame with large data" {
     var buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Create large payload (simulate TLS handshake message)
@@ -198,7 +199,7 @@ test "RFC 9000 §19.6 - CRYPTO frame with large data" {
 
 test "RFC 9000 §19.6 - Multiple CRYPTO frames with increasing offsets" {
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // First frame at offset 0
@@ -226,7 +227,7 @@ test "RFC 9000 §19.6 - Multiple CRYPTO frames with increasing offsets" {
 
 test "RFC 9000 §19.6 - Out-of-order CRYPTO frames" {
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Simulate out-of-order delivery (offset 100, then offset 0)
@@ -300,7 +301,7 @@ test "negative: decodeCrypto with partial varint length" {
 
 test "boundary: CRYPTO frame encodes to exact buffer size" {
     var buf: [16]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const offset: u64 = 0;
@@ -313,7 +314,7 @@ test "boundary: CRYPTO frame encodes to exact buffer size" {
 
 test "boundary: CRYPTO frame bytes consumed matches written" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const offset: u64 = 123;
@@ -327,7 +328,7 @@ test "boundary: CRYPTO frame bytes consumed matches written" {
 
 test "boundary: CRYPTO frame with offset requiring multi-byte varint" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Offset requires 2-byte varint (>= 64)
@@ -342,7 +343,7 @@ test "boundary: CRYPTO frame with offset requiring multi-byte varint" {
 
 test "boundary: CRYPTO frame with length requiring multi-byte varint" {
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Create data requiring 2-byte varint length (>= 64 bytes)
@@ -359,7 +360,7 @@ test "boundary: CRYPTO frame with length requiring multi-byte varint" {
 
 test "boundary: CRYPTO frame data slice is correct subset" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const offset: u64 = 0;
@@ -381,7 +382,7 @@ test "boundary: CRYPTO frame data slice is correct subset" {
 
 test "RFC 9000 §19.6 - CRYPTO frame type is 0x06" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     _ = try crypto.writeCrypto(w, 0, "X");
@@ -392,7 +393,7 @@ test "RFC 9000 §19.6 - CRYPTO frame type is 0x06" {
 
 test "RFC 9000 §19.6 - CRYPTO frame format: Type + Offset + Length + Data" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const offset: u64 = 42;
@@ -412,7 +413,7 @@ test "RFC 9000 §19.6 - CRYPTO frame format: Type + Offset + Length + Data" {
 
 test "RFC 9001 §4 - CRYPTO carries TLS handshake messages" {
     var buf: [1024]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Simulate TLS ClientHello message (simplified)
@@ -429,7 +430,7 @@ test "RFC 9001 §4 - CRYPTO carries TLS handshake messages" {
 
 test "RFC 9000 §19.6 - CRYPTO frame offset enables stream-like delivery" {
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Send fragments at different offsets
@@ -460,7 +461,7 @@ test "RFC 9000 §19.6 - CRYPTO frame offset enables stream-like delivery" {
 test "RFC 9000 §19.6 - CRYPTO frame used during handshake" {
     // CRYPTO frames are only sent in Initial and Handshake packets
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Initial packet: ClientHello
@@ -477,7 +478,7 @@ test "RFC 9000 §19.6 - CRYPTO frame used during handshake" {
 
 test "RFC 9000 §19.6 - CRYPTO frame offset supports retransmission" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Original transmission at offset 100
@@ -486,7 +487,7 @@ test "RFC 9000 §19.6 - CRYPTO frame offset supports retransmission" {
 
     // If lost, can retransmit same offset
     var buf2: [256]u8 = undefined;
-    var fbs2 = std.io.fixedBufferStream(&buf2);
+    var fbs2 = compat.fixedBufferStream(&buf2);
     const w2 = fbs2.writer();
     _ = try crypto.writeCrypto(w2, 100, data);
 
@@ -500,7 +501,7 @@ test "RFC 9000 §19.6 - CRYPTO frame offset supports retransmission" {
 
 test "RFC 9000 §19.6 - CRYPTO frame length is varint encoded" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Small length (1-byte varint)
@@ -523,7 +524,7 @@ test "RFC 9000 §19.6 - CRYPTO frame length is varint encoded" {
 
 test "RFC 9000 §7.5 - CRYPTO data processed in offset order" {
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Receive frames out of order

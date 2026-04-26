@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const endpoint = @import("quic_endpoint");
 const pkt = @import("quic_packet");
 const fr = @import("quic_frame");
@@ -26,9 +27,9 @@ test "aead integrity limit triggers connection close" {
     c.app_tx_keys = .{ .key = key, .iv = iv, .hp = hp };
 
     // Build two bogus short packets that won't authenticate: mutate ciphertext bytes randomly.
-    var frames = std.ArrayList(u8){};
+    var frames = std.ArrayList(u8).empty;
     defer frames.deinit(alloc);
-    _ = (fr.Frame{ .ping = {} }).write(frames.writer(alloc)) catch 0;
+    _ = (fr.Frame{ .ping = {} }).write(compat.arrayListWriter(&frames, alloc)) catch 0;
     const good = try pkt.encodeShortProtected(A, c.our_scid.bytes[0..c.our_scid.len], 1, 2, frames.items, .{ .key = key, .iv = iv, .hp = hp }, false);
     defer A.free(good);
 

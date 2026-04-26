@@ -51,8 +51,8 @@ test "RFC 9000 §3 - StreamRx initial state" {
 
 test "RFC 9000 §3 - StreamRx starts with empty buffers" {
     var rx = stream.StreamRx.init();
-    rx.inbox = std.ArrayList(u8){};
-    rx.bufs = std.ArrayList(stream.Segment){};
+    rx.inbox = std.ArrayList(u8).empty;
+    rx.bufs = std.ArrayList(stream.Segment).empty;
     defer {
         rx.inbox.deinit(test_allocator);
         rx.bufs.deinit(test_allocator);
@@ -68,8 +68,8 @@ test "RFC 9000 §3 - StreamRx starts with empty buffers" {
 
 test "RFC 9000 §4 - StreamRx insert data at offset 0" {
     var rx = stream.StreamRx.init();
-    rx.inbox = std.ArrayList(u8){};
-    rx.bufs = std.ArrayList(stream.Segment){};
+    rx.inbox = std.ArrayList(u8).empty;
+    rx.bufs = std.ArrayList(stream.Segment).empty;
     defer rx.deinit(&test_allocator);
 
     rx.insert(&test_allocator, 0, "Hello");
@@ -80,8 +80,8 @@ test "RFC 9000 §4 - StreamRx insert data at offset 0" {
 
 test "RFC 9000 §4 - StreamRx insert multiple segments" {
     var rx = stream.StreamRx.init();
-    rx.inbox = std.ArrayList(u8){};
-    rx.bufs = std.ArrayList(stream.Segment){};
+    rx.inbox = std.ArrayList(u8).empty;
+    rx.bufs = std.ArrayList(stream.Segment).empty;
     defer rx.deinit(&test_allocator);
 
     rx.insert(&test_allocator, 0, "First");
@@ -93,8 +93,8 @@ test "RFC 9000 §4 - StreamRx insert multiple segments" {
 
 test "RFC 9000 §4 - StreamRx insert out-of-order" {
     var rx = stream.StreamRx.init();
-    rx.inbox = std.ArrayList(u8){};
-    rx.bufs = std.ArrayList(stream.Segment){};
+    rx.inbox = std.ArrayList(u8).empty;
+    rx.bufs = std.ArrayList(stream.Segment).empty;
     defer rx.deinit(&test_allocator);
 
     rx.insert(&test_allocator, 10, "Third");
@@ -110,8 +110,8 @@ test "RFC 9000 §4 - StreamRx insert out-of-order" {
 
 test "RFC 9000 §4 - StreamRx tryDrain contiguous data" {
     var rx = stream.StreamRx.init();
-    rx.inbox = std.ArrayList(u8){};
-    rx.bufs = std.ArrayList(stream.Segment){};
+    rx.inbox = std.ArrayList(u8).empty;
+    rx.bufs = std.ArrayList(stream.Segment).empty;
     defer rx.deinit(&test_allocator);
 
     rx.insert(&test_allocator, 0, "Hello");
@@ -124,8 +124,8 @@ test "RFC 9000 §4 - StreamRx tryDrain contiguous data" {
 
 test "RFC 9000 §4 - StreamRx tryDrain stops at gap" {
     var rx = stream.StreamRx.init();
-    rx.inbox = std.ArrayList(u8){};
-    rx.bufs = std.ArrayList(stream.Segment){};
+    rx.inbox = std.ArrayList(u8).empty;
+    rx.bufs = std.ArrayList(stream.Segment).empty;
     defer rx.deinit(&test_allocator);
 
     rx.insert(&test_allocator, 0, "First");
@@ -138,8 +138,8 @@ test "RFC 9000 §4 - StreamRx tryDrain stops at gap" {
 
 test "RFC 9000 §4 - StreamRx tryDrain multiple contiguous segments" {
     var rx = stream.StreamRx.init();
-    rx.inbox = std.ArrayList(u8){};
-    rx.bufs = std.ArrayList(stream.Segment){};
+    rx.inbox = std.ArrayList(u8).empty;
+    rx.bufs = std.ArrayList(stream.Segment).empty;
     defer rx.deinit(&test_allocator);
 
     rx.insert(&test_allocator, 0, "AAA"); // 3 bytes
@@ -154,8 +154,8 @@ test "RFC 9000 §4 - StreamRx tryDrain multiple contiguous segments" {
 
 test "RFC 9000 §4 - StreamRx tryDrain fills gap when data arrives" {
     var rx = stream.StreamRx.init();
-    rx.inbox = std.ArrayList(u8){};
-    rx.bufs = std.ArrayList(stream.Segment){};
+    rx.inbox = std.ArrayList(u8).empty;
+    rx.bufs = std.ArrayList(stream.Segment).empty;
     defer rx.deinit(&test_allocator);
 
     rx.insert(&test_allocator, 0, "AAA");
@@ -178,8 +178,8 @@ test "RFC 9000 §4 - StreamRx tryDrain fills gap when data arrives" {
 
 test "RFC 9000 §3 - StreamRx FIN tracking" {
     var rx = stream.StreamRx.init();
-    rx.inbox = std.ArrayList(u8){};
-    rx.bufs = std.ArrayList(stream.Segment){};
+    rx.inbox = std.ArrayList(u8).empty;
+    rx.bufs = std.ArrayList(stream.Segment).empty;
     defer rx.deinit(&test_allocator);
 
     rx.fin_off = 10;
@@ -190,8 +190,8 @@ test "RFC 9000 §3 - StreamRx FIN tracking" {
 
 test "RFC 9000 §3 - StreamRx isFinished when all data received" {
     var rx = stream.StreamRx.init();
-    rx.inbox = std.ArrayList(u8){};
-    rx.bufs = std.ArrayList(stream.Segment){};
+    rx.inbox = std.ArrayList(u8).empty;
+    rx.bufs = std.ArrayList(stream.Segment).empty;
     defer rx.deinit(&test_allocator);
 
     rx.insert(&test_allocator, 0, "Data");
@@ -203,8 +203,8 @@ test "RFC 9000 §3 - StreamRx isFinished when all data received" {
 
 test "RFC 9000 §3 - StreamRx isFinished false when data pending" {
     var rx = stream.StreamRx.init();
-    rx.inbox = std.ArrayList(u8){};
-    rx.bufs = std.ArrayList(stream.Segment){};
+    rx.inbox = std.ArrayList(u8).empty;
+    rx.bufs = std.ArrayList(stream.Segment).empty;
     defer rx.deinit(&test_allocator);
 
     rx.fin_off = 10;
@@ -215,8 +215,8 @@ test "RFC 9000 §3 - StreamRx isFinished false when data pending" {
 
 test "RFC 9000 §3 - StreamRx isFinished false without FIN" {
     var rx = stream.StreamRx.init();
-    rx.inbox = std.ArrayList(u8){};
-    rx.bufs = std.ArrayList(stream.Segment){};
+    rx.inbox = std.ArrayList(u8).empty;
+    rx.bufs = std.ArrayList(stream.Segment).empty;
     defer rx.deinit(&test_allocator);
 
     rx.recv_off = 100;
@@ -266,8 +266,8 @@ test "RFC 9000 §3 - StreamTx abort flag" {
 
 test "boundary: StreamRx empty data insertion" {
     var rx = stream.StreamRx.init();
-    rx.inbox = std.ArrayList(u8){};
-    rx.bufs = std.ArrayList(stream.Segment){};
+    rx.inbox = std.ArrayList(u8).empty;
+    rx.bufs = std.ArrayList(stream.Segment).empty;
     defer rx.deinit(&test_allocator);
 
     rx.insert(&test_allocator, 0, "");
@@ -278,8 +278,8 @@ test "boundary: StreamRx empty data insertion" {
 
 test "boundary: StreamRx large offset" {
     var rx = stream.StreamRx.init();
-    rx.inbox = std.ArrayList(u8){};
-    rx.bufs = std.ArrayList(stream.Segment){};
+    rx.inbox = std.ArrayList(u8).empty;
+    rx.bufs = std.ArrayList(stream.Segment).empty;
     defer rx.deinit(&test_allocator);
 
     const large_offset: u64 = 1_000_000_000;
@@ -303,8 +303,8 @@ test "boundary: StreamTx offset near max" {
 
 test "RFC 9000 §2 - Stream data ordering" {
     var rx = stream.StreamRx.init();
-    rx.inbox = std.ArrayList(u8){};
-    rx.bufs = std.ArrayList(stream.Segment){};
+    rx.inbox = std.ArrayList(u8).empty;
+    rx.bufs = std.ArrayList(stream.Segment).empty;
     defer rx.deinit(&test_allocator);
 
     // Data must be delivered in order
@@ -317,8 +317,8 @@ test "RFC 9000 §2 - Stream data ordering" {
 
 test "RFC 9000 §3 - Stream state transitions via FIN" {
     var rx = stream.StreamRx.init();
-    rx.inbox = std.ArrayList(u8){};
-    rx.bufs = std.ArrayList(stream.Segment){};
+    rx.inbox = std.ArrayList(u8).empty;
+    rx.bufs = std.ArrayList(stream.Segment).empty;
     defer rx.deinit(&test_allocator);
 
     // Before FIN: not finished
@@ -335,8 +335,8 @@ test "RFC 9000 §3 - Stream state transitions via FIN" {
 
 test "RFC 9000 §4 - Flow control offset tracking" {
     var rx = stream.StreamRx.init();
-    rx.inbox = std.ArrayList(u8){};
-    rx.bufs = std.ArrayList(stream.Segment){};
+    rx.inbox = std.ArrayList(u8).empty;
+    rx.bufs = std.ArrayList(stream.Segment).empty;
     defer rx.deinit(&test_allocator);
 
     rx.insert(&test_allocator, 0, "Data1");
@@ -348,8 +348,8 @@ test "RFC 9000 §4 - Flow control offset tracking" {
 
 test "RFC 9000 §19.8 - STREAM frame reassembly" {
     var rx = stream.StreamRx.init();
-    rx.inbox = std.ArrayList(u8){};
-    rx.bufs = std.ArrayList(stream.Segment){};
+    rx.inbox = std.ArrayList(u8).empty;
+    rx.bufs = std.ArrayList(stream.Segment).empty;
     defer rx.deinit(&test_allocator);
 
     // Simulate receiving STREAM frames out of order

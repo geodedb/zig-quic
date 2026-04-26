@@ -13,6 +13,7 @@
 //! - RFC compliance: Frame format, path validation semantics, data echo requirement
 
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 
 const path = @import("path");
@@ -24,7 +25,7 @@ const types = @import("types");
 
 test "RFC 9000 §19.17 - writePathChallenge encodes frame with 8-byte data" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = [_]u8{ 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 };
@@ -36,7 +37,7 @@ test "RFC 9000 §19.17 - writePathChallenge encodes frame with 8-byte data" {
 
 test "RFC 9000 §19.17 - decodePathChallenge reads frame correctly" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = [_]u8{ 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x11, 0x22 };
@@ -50,7 +51,7 @@ test "RFC 9000 §19.17 - decodePathChallenge reads frame correctly" {
 
 test "RFC 9000 §19.17 - PATH_CHALLENGE round trip" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = [_]u8{ 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0 };
@@ -68,7 +69,7 @@ test "RFC 9000 §19.17 - PATH_CHALLENGE round trip" {
 
 test "RFC 9000 §19.18 - writePathResponse encodes frame with 8-byte data" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = [_]u8{ 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 };
@@ -80,7 +81,7 @@ test "RFC 9000 §19.18 - writePathResponse encodes frame with 8-byte data" {
 
 test "RFC 9000 §19.18 - decodePathResponse reads frame correctly" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = [_]u8{ 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x11, 0x22 };
@@ -94,7 +95,7 @@ test "RFC 9000 §19.18 - decodePathResponse reads frame correctly" {
 
 test "RFC 9000 §19.18 - PATH_RESPONSE round trip" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = [_]u8{ 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10 };
@@ -112,7 +113,7 @@ test "RFC 9000 §19.18 - PATH_RESPONSE round trip" {
 
 test "RFC 9000 §9 - PATH_RESPONSE echoes PATH_CHALLENGE data" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Sender sends PATH_CHALLENGE
@@ -138,7 +139,7 @@ test "RFC 9000 §9 - PATH_RESPONSE echoes PATH_CHALLENGE data" {
 
 test "RFC 9000 §8.2 - Multiple challenge-response pairs" {
     var buf: [128]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // First challenge-response pair
@@ -174,7 +175,7 @@ test "RFC 9000 §8.2 - Multiple challenge-response pairs" {
 
 test "RFC 9000 §9 - PATH_CHALLENGE data must match in PATH_RESPONSE" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const challenge_data = [_]u8{ 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0 };
@@ -183,7 +184,7 @@ test "RFC 9000 §9 - PATH_CHALLENGE data must match in PATH_RESPONSE" {
     const challenge = try path.decodePathChallenge(fbs.getWritten());
 
     // Response must use exact challenge data
-    var fbs2 = std.io.fixedBufferStream(&buf);
+    var fbs2 = compat.fixedBufferStream(&buf);
     const w2 = fbs2.writer();
     _ = try path.writePathResponse(w2, challenge.data);
 
@@ -198,7 +199,7 @@ test "RFC 9000 §9 - PATH_CHALLENGE data must match in PATH_RESPONSE" {
 
 test "RFC 9000 §19.17 - PATH_CHALLENGE with all-zero data" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = [_]u8{0} ** 8;
@@ -211,7 +212,7 @@ test "RFC 9000 §19.17 - PATH_CHALLENGE with all-zero data" {
 
 test "RFC 9000 §19.17 - PATH_CHALLENGE with all-ones data" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = [_]u8{0xff} ** 8;
@@ -224,7 +225,7 @@ test "RFC 9000 §19.17 - PATH_CHALLENGE with all-ones data" {
 
 test "RFC 9000 §19.17 - PATH_CHALLENGE with sequential data" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = [_]u8{ 0, 1, 2, 3, 4, 5, 6, 7 };
@@ -237,7 +238,7 @@ test "RFC 9000 §19.17 - PATH_CHALLENGE with sequential data" {
 
 test "RFC 9000 §19.17 - PATH_CHALLENGE with alternating pattern" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = [_]u8{ 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55 };
@@ -250,7 +251,7 @@ test "RFC 9000 §19.17 - PATH_CHALLENGE with alternating pattern" {
 
 test "RFC 9000 §19.18 - PATH_RESPONSE with random-looking data" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Simulate cryptographically random data
@@ -312,7 +313,7 @@ test "negative: decodePathResponse with wrong frame type" {
 
 test "boundary: PATH_CHALLENGE exact buffer size" {
     var buf: [9]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = [_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 };
@@ -324,7 +325,7 @@ test "boundary: PATH_CHALLENGE exact buffer size" {
 
 test "boundary: PATH_RESPONSE exact buffer size" {
     var buf: [9]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = [_]u8{ 8, 7, 6, 5, 4, 3, 2, 1 };
@@ -336,7 +337,7 @@ test "boundary: PATH_RESPONSE exact buffer size" {
 
 test "boundary: PATH_CHALLENGE bytes consumed matches written" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = [_]u8{ 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88 };
@@ -349,7 +350,7 @@ test "boundary: PATH_CHALLENGE bytes consumed matches written" {
 
 test "boundary: PATH_RESPONSE bytes consumed matches written" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = [_]u8{ 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22 };
@@ -362,7 +363,7 @@ test "boundary: PATH_RESPONSE bytes consumed matches written" {
 
 test "boundary: PATH_CHALLENGE data is exact 8 bytes" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = [_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 };
@@ -375,7 +376,7 @@ test "boundary: PATH_CHALLENGE data is exact 8 bytes" {
 
 test "boundary: PATH_RESPONSE data is exact 8 bytes" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = [_]u8{ 8, 7, 6, 5, 4, 3, 2, 1 };
@@ -392,7 +393,7 @@ test "boundary: PATH_RESPONSE data is exact 8 bytes" {
 
 test "RFC 9000 §19.17 - PATH_CHALLENGE frame type is 0x1a" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = [_]u8{1} ** 8;
@@ -404,7 +405,7 @@ test "RFC 9000 §19.17 - PATH_CHALLENGE frame type is 0x1a" {
 
 test "RFC 9000 §19.18 - PATH_RESPONSE frame type is 0x1b" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = [_]u8{1} ** 8;
@@ -416,7 +417,7 @@ test "RFC 9000 §19.18 - PATH_RESPONSE frame type is 0x1b" {
 
 test "RFC 9000 §19.17 - PATH_CHALLENGE format: Type (1 byte) + Data (8 bytes)" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = [_]u8{ 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0 };
@@ -431,7 +432,7 @@ test "RFC 9000 §19.17 - PATH_CHALLENGE format: Type (1 byte) + Data (8 bytes)" 
 
 test "RFC 9000 §19.18 - PATH_RESPONSE format: Type (1 byte) + Data (8 bytes)" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = [_]u8{ 0xf0, 0xed, 0xcb, 0xa9, 0x87, 0x65, 0x43, 0x21 };
@@ -448,14 +449,14 @@ test "RFC 9000 §9 - Path validation with challenge-response" {
     var buf: [64]u8 = undefined;
 
     // Endpoint A sends PATH_CHALLENGE on new path
-    var fbs1 = std.io.fixedBufferStream(&buf);
+    var fbs1 = compat.fixedBufferStream(&buf);
     const challenge_data = [_]u8{ 0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18 };
     _ = try path.writePathChallenge(fbs1.writer(), challenge_data);
 
     const challenge = try path.decodePathChallenge(fbs1.getWritten());
 
     // Endpoint B receives challenge and sends PATH_RESPONSE
-    var fbs2 = std.io.fixedBufferStream(&buf);
+    var fbs2 = compat.fixedBufferStream(&buf);
     _ = try path.writePathResponse(fbs2.writer(), challenge.data);
 
     const response = try path.decodePathResponse(fbs2.getWritten());
@@ -466,7 +467,7 @@ test "RFC 9000 §9 - Path validation with challenge-response" {
 
 test "RFC 9000 §8.2 - PATH_CHALLENGE contains unpredictable data" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // In practice, data should be cryptographically random
@@ -489,7 +490,7 @@ test "RFC 9000 §8.2 - PATH_CHALLENGE contains unpredictable data" {
 
 test "RFC 9000 §9.1 - Connection migration requires path validation" {
     var buf: [128]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Before migration, send PATH_CHALLENGE on new path
@@ -510,7 +511,7 @@ test "RFC 9000 §9.1 - Connection migration requires path validation" {
 
 test "RFC 9000 §9.4 - PATH_RESPONSE must echo PATH_CHALLENGE data exactly" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const challenge_data = [_]u8{ 0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe };
@@ -519,7 +520,7 @@ test "RFC 9000 §9.4 - PATH_RESPONSE must echo PATH_CHALLENGE data exactly" {
     const challenge = try path.decodePathChallenge(fbs.getWritten());
 
     // Response must use exact challenge data (byte-for-byte copy)
-    var fbs2 = std.io.fixedBufferStream(&buf);
+    var fbs2 = compat.fixedBufferStream(&buf);
     _ = try path.writePathResponse(fbs2.writer(), challenge.data);
 
     const response = try path.decodePathResponse(fbs2.getWritten());
@@ -532,7 +533,7 @@ test "RFC 9000 §9.4 - PATH_RESPONSE must echo PATH_CHALLENGE data exactly" {
 
 test "RFC 9000 §9 - Multiple outstanding PATH_CHALLENGE frames" {
     var buf: [128]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Send multiple challenges (probing multiple paths)
@@ -564,7 +565,7 @@ test "RFC 9000 §9 - Multiple outstanding PATH_CHALLENGE frames" {
 
 test "RFC 9000 §8.2 - PATH_CHALLENGE sent on untested path" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Before using a new path, validate it with challenge
@@ -574,7 +575,7 @@ test "RFC 9000 §8.2 - PATH_CHALLENGE sent on untested path" {
     const challenge = try path.decodePathChallenge(fbs.getWritten());
 
     // Endpoint must respond to prove path viability
-    var fbs2 = std.io.fixedBufferStream(&buf);
+    var fbs2 = compat.fixedBufferStream(&buf);
     _ = try path.writePathResponse(fbs2.writer(), challenge.data);
 
     const response = try path.decodePathResponse(fbs2.getWritten());
@@ -585,7 +586,7 @@ test "RFC 9000 §8.2 - PATH_CHALLENGE sent on untested path" {
 
 test "RFC 9000 §9.3 - PATH_RESPONSE sent in response to PATH_CHALLENGE" {
     var buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Receive PATH_CHALLENGE
@@ -595,7 +596,7 @@ test "RFC 9000 §9.3 - PATH_RESPONSE sent in response to PATH_CHALLENGE" {
     const challenge = try path.decodePathChallenge(fbs.getWritten());
 
     // Send PATH_RESPONSE with echoed data
-    var fbs2 = std.io.fixedBufferStream(&buf);
+    var fbs2 = compat.fixedBufferStream(&buf);
     _ = try path.writePathResponse(fbs2.writer(), challenge.data);
 
     const response = try path.decodePathResponse(fbs2.getWritten());

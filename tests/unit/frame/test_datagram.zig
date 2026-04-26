@@ -11,6 +11,7 @@
 //! - RFC compliance: Frame format, unreliable semantics, length encoding
 
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 
 const datagram = @import("datagram");
@@ -22,7 +23,7 @@ const types = @import("types");
 
 test "RFC 9221 §4 - writeDatagram encodes frame with data" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = "Hello datagram";
@@ -34,7 +35,7 @@ test "RFC 9221 §4 - writeDatagram encodes frame with data" {
 
 test "RFC 9221 §4 - decodeDatagram reads frame correctly" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = "Test datagram data";
@@ -47,7 +48,7 @@ test "RFC 9221 §4 - decodeDatagram reads frame correctly" {
 
 test "RFC 9221 §4 - DATAGRAM frame round trip" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = "Round trip datagram test";
@@ -65,7 +66,7 @@ test "RFC 9221 §4 - DATAGRAM frame round trip" {
 
 test "RFC 9221 §4 - DATAGRAM frame with empty data" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data: []const u8 = "";
@@ -78,7 +79,7 @@ test "RFC 9221 §4 - DATAGRAM frame with empty data" {
 
 test "RFC 9221 §4 - DATAGRAM frame with single byte" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = "X";
@@ -91,7 +92,7 @@ test "RFC 9221 §4 - DATAGRAM frame with single byte" {
 
 test "RFC 9221 §4 - DATAGRAM frame with small data" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = "Small payload";
@@ -104,7 +105,7 @@ test "RFC 9221 §4 - DATAGRAM frame with small data" {
 
 test "RFC 9221 §4 - DATAGRAM frame with large data" {
     var buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Create large payload
@@ -122,7 +123,7 @@ test "RFC 9221 §4 - DATAGRAM frame with large data" {
 
 test "RFC 9221 §4 - DATAGRAM frame with maximum practical size" {
     var buf: [4096]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Simulate MTU-sized datagram
@@ -142,7 +143,7 @@ test "RFC 9221 §4 - DATAGRAM frame with maximum practical size" {
 
 test "RFC 9221 §4 - Multiple DATAGRAM frames in sequence" {
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data1 = "First datagram";
@@ -174,7 +175,7 @@ test "RFC 9221 §4 - Multiple DATAGRAM frames in sequence" {
 
 test "RFC 9221 §4 - DATAGRAM frames with varying sizes" {
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Small datagram
@@ -246,7 +247,7 @@ test "negative: decodeDatagram with partial varint length" {
 
 test "boundary: DATAGRAM frame bytes consumed matches written" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = "Boundary test data";
@@ -259,7 +260,7 @@ test "boundary: DATAGRAM frame bytes consumed matches written" {
 
 test "boundary: DATAGRAM frame encodes to exact buffer size" {
     var buf: [32]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = "Exact"; // Frame type (1) + length (1) + data (5) = 7 bytes
@@ -270,7 +271,7 @@ test "boundary: DATAGRAM frame encodes to exact buffer size" {
 
 test "boundary: DATAGRAM frame with length requiring multi-byte varint" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Create data requiring 2-byte varint length (>= 64 bytes)
@@ -286,7 +287,7 @@ test "boundary: DATAGRAM frame with length requiring multi-byte varint" {
 
 test "boundary: DATAGRAM frame data slice is correct subset" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = "ABCDEFGH";
@@ -303,7 +304,7 @@ test "boundary: DATAGRAM frame data slice is correct subset" {
 
 test "boundary: DATAGRAM frame with zero-length data" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data: []const u8 = "";
@@ -321,7 +322,7 @@ test "boundary: DATAGRAM frame with zero-length data" {
 
 test "RFC 9221 §4 - DATAGRAM frame type is 0x30" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     _ = try datagram.writeDatagram(w, "X");
@@ -332,7 +333,7 @@ test "RFC 9221 §4 - DATAGRAM frame type is 0x30" {
 
 test "RFC 9221 §4 - DATAGRAM frame format: Type + Length + Data" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     const data = "Test";
@@ -350,7 +351,7 @@ test "RFC 9221 §4 - DATAGRAM frame format: Type + Length + Data" {
 
 test "RFC 9221 §1 - DATAGRAM frames provide unreliable delivery" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Datagrams are not retransmitted if lost
@@ -365,7 +366,7 @@ test "RFC 9221 §1 - DATAGRAM frames provide unreliable delivery" {
 
 test "RFC 9221 §2 - DATAGRAM frames do not guarantee ordering" {
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Send datagrams in order
@@ -393,7 +394,7 @@ test "RFC 9221 §2 - DATAGRAM frames do not guarantee ordering" {
 
 test "RFC 9221 §4 - DATAGRAM frame length is varint encoded" {
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Small length (1-byte varint)
@@ -416,7 +417,7 @@ test "RFC 9221 §4 - DATAGRAM frame length is varint encoded" {
 
 test "RFC 9221 §3 - DATAGRAM frames subject to congestion control" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Datagrams count toward congestion window
@@ -432,7 +433,7 @@ test "RFC 9221 §3 - DATAGRAM frames subject to congestion control" {
 
 test "RFC 9221 §5 - DATAGRAM frames may be dropped by implementation" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Implementation may drop datagrams (e.g., buffer full)
@@ -447,7 +448,7 @@ test "RFC 9221 §5 - DATAGRAM frames may be dropped by implementation" {
 
 test "RFC 9221 §4 - DATAGRAM frames are ACK-eliciting" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // DATAGRAM frames trigger ACK response
@@ -462,7 +463,7 @@ test "RFC 9221 §4 - DATAGRAM frames are ACK-eliciting" {
 
 test "RFC 9221 §2 - DATAGRAM frames do not provide flow control" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Datagrams not subject to MAX_DATA/MAX_STREAM_DATA
@@ -478,7 +479,7 @@ test "RFC 9221 §2 - DATAGRAM frames do not provide flow control" {
 test "RFC 9221 §1 - DATAGRAM extension must be negotiated" {
     // DATAGRAM frames only allowed if max_datagram_frame_size transport parameter set
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Assuming extension was negotiated, frames can be sent
@@ -492,7 +493,7 @@ test "RFC 9221 §1 - DATAGRAM extension must be negotiated" {
 
 test "RFC 9221 §3 - DATAGRAM frames respect MTU limits" {
     var buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Datagram should not exceed path MTU
@@ -510,7 +511,7 @@ test "RFC 9221 §3 - DATAGRAM frames respect MTU limits" {
 
 test "RFC 9221 §4 - Multiple DATAGRAM frames in same packet" {
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Multiple datagrams can be in one QUIC packet
@@ -535,7 +536,7 @@ test "RFC 9221 §4 - Multiple DATAGRAM frames in same packet" {
 
 test "RFC 9221 §2 - DATAGRAM frames do not use stream IDs" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     // Unlike STREAM frames, DATAGRAMs have no stream ID

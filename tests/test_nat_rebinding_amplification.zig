@@ -1,5 +1,6 @@
 // Tests NAT rebinding path-validation gating across repeated rebindings.
 const std = @import("std");
+const compat = @import("compat");
 const api = @import("quic_api");
 const endpoint = @import("quic_endpoint");
 const conn_mod = @import("quic_conn");
@@ -14,9 +15,9 @@ fn build_client_initial(alloc: std.mem.Allocator, c: *conn_mod.Connection) ![]u8
         const t = ks.deriveKeyIvHp(pair.client);
         break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
     };
-    var frames = std.ArrayList(u8){};
+    var frames = std.ArrayList(u8).empty;
     defer frames.deinit(alloc);
-    _ = (frame.Frame{ .ping = {} }).write(frames.writer(alloc)) catch {};
+    _ = (frame.Frame{ .ping = {} }).write(compat.arrayListWriter(&frames, alloc)) catch {};
     return packet.encodeInitialProtected(
         alloc,
         packet.QUIC_V1,
@@ -98,9 +99,9 @@ test "nat rebinding enforces 3x before validation across repeated rebindings" {
         var sent_bytes_on_new: usize = 0;
         // Server will have generated srv.path_challenge_data; respond with PATH_RESPONSE now.
         {
-            var fb = std.ArrayList(u8){};
+            var fb = std.ArrayList(u8).empty;
             defer fb.deinit(alloc);
-            const w = fb.writer(alloc);
+            const w = compat.arrayListWriter(&fb, alloc);
             _ = (frame.Frame{ .path_response = srv.path_challenge_data }).write(w) catch {};
             const out = packet.encodeShortProtected(alloc, srv.our_scid.bytes[0..srv.our_scid.len], @as(u32, @truncate(srv.pn_app_tx)), 2, fb.items, .{ .key = srv.app_rx_keys.?.key, .iv = srv.app_rx_keys.?.iv, .hp = srv.app_rx_keys.?.hp }, srv.tx_key_phase) catch null;
             if (out) |bytes_out| {

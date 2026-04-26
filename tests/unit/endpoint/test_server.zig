@@ -21,12 +21,12 @@
 //! Server functions extracted to server.zig.
 
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 const server = @import("server");
 const quic_conn = @import("quic_conn");
 const packet = @import("quic_packet");
 const token_mod = @import("quic_token");
-const cid_mod = @import("quic_connection_id");
 const cfg = @import("quic_config");
 const endpoint_types = @import("endpoint/types");
 
@@ -121,7 +121,7 @@ test "RFC 9000 §7 - acceptFrom initializes with endpoint socket" {
 
 test "RFC 9000 §7 - pushAccepted adds connection to accept queue" {
     // Internal queue for accepted connections
-    var accepted = std.ArrayList(*Connection){};
+    var accepted = std.ArrayList(*Connection).empty;
     defer accepted.deinit(test_allocator);
 
     // Create a test connection
@@ -139,7 +139,7 @@ test "RFC 9000 §7 - pushAccepted adds connection to accept queue" {
 
 test "RFC 9000 §7 - popAccepted returns oldest accepted connection" {
     // FIFO retrieval from accept queue
-    var accepted = std.ArrayList(*Connection){};
+    var accepted = std.ArrayList(*Connection).empty;
     defer accepted.deinit(test_allocator);
 
     var alloc = test_allocator;
@@ -162,7 +162,7 @@ test "RFC 9000 §7 - popAccepted returns oldest accepted connection" {
 
 test "RFC 9000 §7 - popAccepted returns null when queue empty" {
     // No connections ready to accept
-    var accepted = std.ArrayList(*Connection){};
+    var accepted = std.ArrayList(*Connection).empty;
     defer accepted.deinit(test_allocator);
 
     // Empty queue returns null
@@ -173,7 +173,7 @@ test "RFC 9000 §7 - popAccepted returns null when queue empty" {
 
 test "RFC 9000 §7 - multiple connections queued in FIFO order" {
     // Multiple clients connecting simultaneously should maintain FIFO order
-    var accepted = std.ArrayList(*Connection){};
+    var accepted = std.ArrayList(*Connection).empty;
     defer accepted.deinit(test_allocator);
 
     var alloc = test_allocator;
@@ -243,7 +243,7 @@ test "RFC 9000 §7 - acceptFrom with high port numbers" {
 
 test "RFC 9000 §7 - pushAccepted maintains insertion order under load" {
     // Stress test: many connections queued
-    var accepted = std.ArrayList(*Connection){};
+    var accepted = std.ArrayList(*Connection).empty;
     defer accepted.deinit(test_allocator);
 
     var alloc = test_allocator;
@@ -266,7 +266,7 @@ test "RFC 9000 §7 - pushAccepted maintains insertion order under load" {
 
 test "RFC 9000 §7 - popAccepted handles rapid push/pop cycles" {
     // Interleaved push/pop operations
-    var accepted = std.ArrayList(*Connection){};
+    var accepted = std.ArrayList(*Connection).empty;
     defer accepted.deinit(test_allocator);
 
     var alloc = test_allocator;
@@ -288,7 +288,7 @@ test "RFC 9000 §7 - popAccepted handles rapid push/pop cycles" {
 
 test "RFC 9000 §7 - popAccepted on empty queue is safe" {
     // Multiple pops on empty queue should all return null
-    var accepted = std.ArrayList(*Connection){};
+    var accepted = std.ArrayList(*Connection).empty;
     defer accepted.deinit(test_allocator);
 
     // Pop many times on empty queue
@@ -317,7 +317,7 @@ test "RFC 9000 §7 - acceptFrom creates independent connections" {
 
 test "RFC 9000 §7 - queue operations preserve connection identity" {
     // Verify pointers remain valid through queue operations
-    var accepted = std.ArrayList(*Connection){};
+    var accepted = std.ArrayList(*Connection).empty;
     defer accepted.deinit(test_allocator);
 
     var alloc = test_allocator;
@@ -351,7 +351,7 @@ test "RFC 9000 §7 - new connection has accepted_enqueued flag false" {
 test "RFC 9000 §7 - accepted_enqueued flag prevents duplicate queueing" {
     // The accepted_enqueued flag should be checked before queueing
     // to prevent the same connection from being added multiple times
-    var accepted = std.ArrayList(*Connection){};
+    var accepted = std.ArrayList(*Connection).empty;
     defer accepted.deinit(test_allocator);
 
     var alloc = test_allocator;
@@ -529,7 +529,7 @@ test "RFC 9000 §8.1.2 - token validation verifies HMAC" {
     defer test_allocator.free(token);
 
     // Verify token with correct parameters
-    const now_ms: u64 = @intCast(@divFloor(std.time.milliTimestamp(), 1));
+    const now_ms: u64 = @intCast(@divFloor(compat.milliTimestamp(), 1));
     const valid = token_mod.verify(token, &client_ip, secret, now_ms);
     try testing.expect(valid);
 

@@ -14,6 +14,7 @@
 //! - RFC compliance: Header format per spec, first byte encoding, field ordering
 
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 
 const header = @import("header");
@@ -137,7 +138,7 @@ test "RFC 9000 §17.2 - LongHeader Initial encoding basic" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const written = try long_hdr.encode(fbs.writer());
 
     try testing.expect(written > 0);
@@ -160,7 +161,7 @@ test "RFC 9000 §17.2.4 - LongHeader Handshake encoding" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const written = try long_hdr.encode(fbs.writer());
 
     try testing.expect(written > 0);
@@ -183,7 +184,7 @@ test "LongHeader encoding includes version" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     _ = try long_hdr.encode(fbs.writer());
 
     // Version is big-endian at bytes 1-4
@@ -208,7 +209,7 @@ test "LongHeader encoding includes DCID length and bytes" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     _ = try long_hdr.encode(fbs.writer());
 
     // After first byte (1) + version (4), DCID length should be at offset 5
@@ -234,7 +235,7 @@ test "LongHeader encoding includes SCID length and bytes" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     _ = try long_hdr.encode(fbs.writer());
 
     // After DCID section: first(1) + version(4) + dcid_len(1) + dcid(1) = 7
@@ -261,7 +262,7 @@ test "LongHeader encoding includes token for Initial" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const written = try long_hdr.encode(fbs.writer());
 
     try testing.expect(written > 10);
@@ -292,7 +293,7 @@ test "LongHeader encoding includes packet number" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const written = try long_hdr.encode(fbs.writer());
 
     // PN is 2 bytes, should be before payload
@@ -317,7 +318,7 @@ test "LongHeader encoding includes payload" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const written = try long_hdr.encode(fbs.writer());
 
     // Payload should be at the end
@@ -341,7 +342,7 @@ test "LongHeader encoding returns correct length" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const written = try long_hdr.encode(fbs.writer());
 
     // Expected: first(1) + version(4) + dcid_len(1) + dcid(2) + scid_len(1) + scid(3)
@@ -419,7 +420,7 @@ test "RFC 9000 §17.3 - ShortHeader encoding basic" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const written = try short_hdr.encode(fbs.writer());
 
     try testing.expect(written > 0);
@@ -438,7 +439,7 @@ test "ShortHeader encoding with DCID" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const written = try short_hdr.encode(fbs.writer());
 
     try testing.expect(written > 2);
@@ -454,7 +455,7 @@ test "ShortHeader encoding includes packet number as varint" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const written = try short_hdr.encode(fbs.writer());
 
     // Packet number should be encoded as varint after first byte
@@ -471,7 +472,7 @@ test "ShortHeader encoding includes payload" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const written = try short_hdr.encode(fbs.writer());
 
     // Payload should be at the end
@@ -492,7 +493,7 @@ test "ShortHeader encoding returns correct length" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const written = try short_hdr.encode(fbs.writer());
 
     // Expected: first(1) + pn_varint(1) + payload(2) = 4 bytes minimum
@@ -516,7 +517,7 @@ test "boundary: LongHeader with zero-length CIDs" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const written = try long_hdr.encode(fbs.writer());
     try testing.expect(written > 0);
 }
@@ -536,7 +537,7 @@ test "boundary: LongHeader with maximum CID lengths" {
     };
 
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const written = try long_hdr.encode(fbs.writer());
     try testing.expect(written > 40); // Should be large due to 20-byte CIDs
 }
@@ -555,7 +556,7 @@ test "boundary: LongHeader with empty payload" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const written = try long_hdr.encode(fbs.writer());
     try testing.expect(written > 0);
 }
@@ -568,7 +569,7 @@ test "boundary: ShortHeader with empty payload" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const written = try short_hdr.encode(fbs.writer());
     try testing.expect(written >= 1); // At least first byte
 }
@@ -590,7 +591,7 @@ test "boundary: LongHeader with large token" {
     };
 
     var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const written = try long_hdr.encode(fbs.writer());
     try testing.expect(written > 100);
 }
@@ -605,7 +606,7 @@ test "boundary: Packet number zero" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     const written = try short_hdr.encode(fbs.writer());
     try testing.expect(written > 0);
 }
@@ -630,7 +631,7 @@ test "RFC 9000 §17.2 - Long header first byte format" {
     };
 
     var buf1: [256]u8 = undefined;
-    var fbs1 = std.io.fixedBufferStream(&buf1);
+    var fbs1 = compat.fixedBufferStream(&buf1);
     _ = try initial.encode(fbs1.writer());
 
     // First byte: 1 1 | type | pn_len
@@ -649,7 +650,7 @@ test "RFC 9000 §17.2 - Long header first byte format" {
     };
 
     var buf2: [256]u8 = undefined;
-    var fbs2 = std.io.fixedBufferStream(&buf2);
+    var fbs2 = compat.fixedBufferStream(&buf2);
     _ = try handshake.encode(fbs2.writer());
 
     const first_handshake = buf2[0];
@@ -666,7 +667,7 @@ test "RFC 9000 §17.3 - Short header first byte format" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     _ = try short_hdr.encode(fbs.writer());
 
     // First byte should be 0x40 (0b0100_0000)
@@ -690,7 +691,7 @@ test "RFC 9000 §17.2 - Long header field ordering" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     _ = try long_hdr.encode(fbs.writer());
 
     // RFC 9000 §17.2: First byte, Version, DCID Len, DCID, SCID Len, SCID, ...
@@ -751,7 +752,7 @@ test "RFC 9000 §12.3 - Packet numbers are truncated in encoding" {
     };
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var fbs = compat.fixedBufferStream(&buf);
     _ = try long_hdr.encode(fbs.writer());
 
     // PN is truncated to 2 bytes (last 16 bits of 0x123456 = 0x3456)

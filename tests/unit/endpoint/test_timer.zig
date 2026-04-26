@@ -12,6 +12,7 @@
 //! - RFC compliance: PTO timer management, min-heap ordering
 
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 
 const timer = @import("timer");
@@ -220,7 +221,7 @@ test "RFC 9002 §6.2 - flush removes expired timers" {
     _ = try tm.schedule(0, .PtoInitial, null);
 
     // Give it a moment to ensure expiry
-    std.Thread.sleep(1 * std.time.ns_per_ms);
+    compat.threadSleep(1 * std.time.ns_per_ms);
 
     var expired = try tm.flush(test_allocator);
     defer expired.deinit(test_allocator);
@@ -402,7 +403,7 @@ test "RFC 9002 §6.2.1 - Timer scheduling uses monotonic time" {
     const id1 = try tm.schedule(100, .PtoInitial, null);
 
     // Small delay
-    std.Thread.sleep(2 * std.time.ns_per_ms);
+    compat.threadSleep(2 * std.time.ns_per_ms);
 
     const id2 = try tm.schedule(100, .PtoHandshake, null);
 

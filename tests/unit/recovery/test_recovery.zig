@@ -317,10 +317,10 @@ test "onAckReceived marks lost packets as declared_lost" {
     try rec.onPacketSent(.Initial, 5, 1200, true, 2000);
 
     const acked = [_]u64{5};
-    _ = rec.onAckReceived(.Initial, &acked, 0, 3000);
+    const result = rec.onAckReceived(.Initial, &acked, 0, 3000);
 
-    const sp1 = rec.spaces[0].sent.items[0];
-    try testing.expect(sp1.declared_lost);
+    try testing.expectEqual(@as(usize, 1200), result.bytes_lost);
+    try testing.expectEqual(recovery.Recovery.PacketDeliveryState.unknown, rec.getPacketDeliveryState(.Initial, 1));
 }
 
 test "RFC 9002 §7 - onAckReceived reduces cwnd on loss" {
@@ -486,10 +486,10 @@ test "onLossTimeExpired marks packets as declared_lost" {
 
     try rec.onPacketSent(.Initial, 1, 1200, true, 1000);
 
-    _ = rec.onLossTimeExpired(60_000_000);
+    const bytes_lost = rec.onLossTimeExpired(60_000_000);
 
-    const sp = rec.spaces[0].sent.items[0];
-    try testing.expect(sp.declared_lost);
+    try testing.expectEqual(@as(usize, 1200), bytes_lost);
+    try testing.expectEqual(recovery.Recovery.PacketDeliveryState.unknown, rec.getPacketDeliveryState(.Initial, 1));
 }
 
 test "onLossTimeExpired reduces cwnd on loss" {

@@ -11,10 +11,11 @@
 //! with CI/CD systems (GitHub Actions, GitLab CI, Jenkins, etc.).
 
 const std = @import("std");
+const compat = @import("compat");
 
 const Allocator = std.mem.Allocator;
 
-/// Zig 0.16.0 compat: std.time.milliTimestamp() was removed.
+/// Zig 0.16.0 compat: compat.milliTimestamp() was removed.
 fn milliTimestamp() i64 {
     var ts: std.os.linux.timespec = undefined;
     _ = std.os.linux.clock_gettime(.REALTIME, &ts);
@@ -96,7 +97,7 @@ pub fn findSlowestTests(
     test_cases: []const TestCase,
     limit: usize,
 ) !std.ArrayList(TestCase) {
-    var slowest = std.ArrayList(TestCase){};
+    var slowest = std.ArrayList(TestCase).empty;
     errdefer slowest.deinit(allocator);
 
     // TODO: Sort test cases by duration and return top N
@@ -279,7 +280,7 @@ pub fn findSlowTests(
     test_cases: []const TestCase,
     threshold_ms: u64,
 ) !std.ArrayList(TestCase) {
-    var slow_tests = std.ArrayList(TestCase){};
+    var slow_tests = std.ArrayList(TestCase).empty;
     errdefer slow_tests.deinit(allocator);
 
     for (test_cases) |test_case| {

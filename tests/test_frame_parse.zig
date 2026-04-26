@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const frame = @import("../src/quic/frame.zig");
 const varint = @import("../src/quic/varint.zig");
 
@@ -13,9 +14,9 @@ test "parse ping and padding" {
 test "encode+parse stream with len and fin" {
     const payload = "hi";
     var fb: [16]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&fb);
+    var fbs = compat.fixedBufferStream(&fb);
     const f = frame.Frame{ .stream = .{ .stream_id = 4, .offset = null, .fin = true, .data = payload } };
-    const n = try f.write(fbs.writer(alloc));
+    const n = try f.write(fbs.writer());
     const pr = try frame.parse(fb[0..n]);
     try std.testing.expect(std.mem.eql(u8, @tagName(pr.frame), "stream"));
 }

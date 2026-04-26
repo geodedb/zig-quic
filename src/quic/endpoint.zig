@@ -557,12 +557,12 @@ pub const Endpoint = struct {
 
     /// Pop next accepted server-side connection if available.
     /// GAP-0200: Thread-safe - acquires endpoint mutex.
-    /// Uses swapRemove for O(1) dequeue — connection acceptance order is not guaranteed.
+    /// Preserves FIFO order for application accept loops.
     pub fn popAccepted(self: *Endpoint) ?*conn_mod.Connection {
         self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         if (self.accepted.items.len == 0) return null;
-        return self.accepted.swapRemove(0);
+        return self.accepted.orderedRemove(0);
     }
 
     /// Block until a connection is available or timeout expires.
@@ -576,7 +576,7 @@ pub const Endpoint = struct {
 
         // Fast path: connection already queued.
         if (self.accepted.items.len > 0) {
-            return self.accepted.swapRemove(0);
+            return self.accepted.orderedRemove(0);
         }
 
         // Zig 0.16.0: Io.Condition has no timedWait.  Simulate with a
@@ -598,7 +598,7 @@ pub const Endpoint = struct {
         }
 
         if (self.accepted.items.len > 0) {
-            return self.accepted.swapRemove(0);
+            return self.accepted.orderedRemove(0);
         }
         return null;
     }

@@ -18,6 +18,7 @@
 //! allocation attempt would itself fail -- proving the cap check fires first.
 
 const std = @import("std");
+const compat = @import("compat");
 const frame = @import("quic_frame");
 const varint = @import("quic_varint");
 const testing = std.testing;
@@ -50,7 +51,7 @@ test "alloc cap: CRYPTO frame with data length 65537 returns FrameTooLarge" {
 
     // No actual data bytes needed -- the cap check fires before reading data.
 
-    var fbs = std.io.fixedBufferStream(buf[0..pos]);
+    var fbs = compat.fixedBufferStream(buf[0..pos]);
     const r = fbs.reader();
 
     // Use failing_allocator: any allocation attempt = immediate test failure.
@@ -84,7 +85,7 @@ test "alloc cap: ACK frame with range_count 257 returns FrameTooLarge" {
 
     // No actual range pairs needed -- the cap check fires before reading ranges.
 
-    var fbs = std.io.fixedBufferStream(buf[0..pos]);
+    var fbs = compat.fixedBufferStream(buf[0..pos]);
     const r = fbs.reader();
 
     const result = frame.decode(r, std.testing.failing_allocator);
@@ -114,7 +115,7 @@ test "alloc cap: STREAM frame with data length 65537 returns FrameTooLarge" {
 
     // No actual data bytes needed.
 
-    var fbs = std.io.fixedBufferStream(buf[0..pos]);
+    var fbs = compat.fixedBufferStream(buf[0..pos]);
     const r = fbs.reader();
 
     const result = frame.decode(r, std.testing.failing_allocator);
@@ -138,7 +139,7 @@ test "alloc cap: DATAGRAM frame with data length 65537 returns FrameTooLarge" {
 
     // No actual data bytes needed.
 
-    var fbs = std.io.fixedBufferStream(buf[0..pos]);
+    var fbs = compat.fixedBufferStream(buf[0..pos]);
     const r = fbs.reader();
 
     const result = frame.decode(r, std.testing.failing_allocator);
@@ -168,7 +169,7 @@ test "alloc cap: CONNECTION_CLOSE frame with reason length 1025 returns FrameToo
 
     // No actual reason bytes needed.
 
-    var fbs = std.io.fixedBufferStream(buf[0..pos]);
+    var fbs = compat.fixedBufferStream(buf[0..pos]);
     const r = fbs.reader();
 
     const result = frame.decode(r, std.testing.failing_allocator);
@@ -192,7 +193,7 @@ test "alloc cap: NEW_TOKEN frame with token length 1025 returns FrameTooLarge" {
 
     // No actual token bytes needed.
 
-    var fbs = std.io.fixedBufferStream(buf[0..pos]);
+    var fbs = compat.fixedBufferStream(buf[0..pos]);
     const r = fbs.reader();
 
     const result = frame.decode(r, std.testing.failing_allocator);
@@ -223,7 +224,7 @@ test "alloc cap: NEW_CONNECTION_ID frame with CID length 21 returns FrameTooLarg
 
     // No actual CID bytes or stateless reset token needed.
 
-    var fbs = std.io.fixedBufferStream(buf[0..pos]);
+    var fbs = compat.fixedBufferStream(buf[0..pos]);
     const r = fbs.reader();
 
     const result = frame.decode(r, std.testing.failing_allocator);
@@ -236,9 +237,9 @@ test "alloc cap: NEW_CONNECTION_ID frame with CID length 21 returns FrameTooLarg
 
 test "alloc cap: CRYPTO frame with data length exactly 65536 does not return FrameTooLarge" {
     // Build wire bytes: frame type + offset varint + length varint + 65536 data bytes
-    var buf_list = std.ArrayList(u8).init(testing.allocator);
-    defer buf_list.deinit();
-    const w = buf_list.writer();
+    var buf_list = std.ArrayList(u8).empty;
+    defer buf_list.deinit(testing.allocator);
+    const w = compat.arrayListWriter(&buf_list, testing.allocator);
 
     // Frame type: CRYPTO = 0x06
     try w.writeByte(0x06);
@@ -253,9 +254,9 @@ test "alloc cap: CRYPTO frame with data length exactly 65536 does not return Fra
     try w.writeAll(tmp[0..data_varint_len]);
 
     // Append 65536 zero bytes as data payload
-    try buf_list.appendNTimes(0xAA, 65536);
+    try buf_list.appendNTimes(testing.allocator, 0xAA, 65536);
 
-    var fbs = std.io.fixedBufferStream(buf_list.items);
+    var fbs = compat.fixedBufferStream(buf_list.items);
     const r = fbs.reader();
 
     // This should succeed (value is at cap, not over it)
@@ -270,9 +271,9 @@ test "alloc cap: CRYPTO frame with data length exactly 65536 does not return Fra
 
 test "alloc cap: ACK frame with range_count exactly 256 does not return FrameTooLarge" {
     // Build wire bytes for ACK with 256 ranges
-    var buf_list = std.ArrayList(u8).init(testing.allocator);
-    defer buf_list.deinit();
-    const w = buf_list.writer();
+    var buf_list = std.ArrayList(u8).empty;
+    defer buf_list.deinit(testing.allocator);
+    const w = compat.arrayListWriter(&buf_list, testing.allocator);
 
     // Frame type: ACK = 0x02
     try w.writeByte(0x02);
@@ -303,7 +304,7 @@ test "alloc cap: ACK frame with range_count exactly 256 does not return FrameToo
         try w.writeAll(tmp[0..n]); // len
     }
 
-    var fbs = std.io.fixedBufferStream(buf_list.items);
+    var fbs = compat.fixedBufferStream(buf_list.items);
     const r = fbs.reader();
 
     const decoded = try frame.decode(r, testing.allocator);
@@ -313,9 +314,9 @@ test "alloc cap: ACK frame with range_count exactly 256 does not return FrameToo
 }
 
 test "alloc cap: NEW_CONNECTION_ID with CID length exactly 20 does not return FrameTooLarge" {
-    var buf_list = std.ArrayList(u8).init(testing.allocator);
-    defer buf_list.deinit();
-    const w = buf_list.writer();
+    var buf_list = std.ArrayList(u8).empty;
+    defer buf_list.deinit(testing.allocator);
+    const w = compat.arrayListWriter(&buf_list, testing.allocator);
 
     // Frame type: NEW_CONNECTION_ID = 0x18
     try w.writeByte(0x18);
@@ -339,7 +340,7 @@ test "alloc cap: NEW_CONNECTION_ID with CID length exactly 20 does not return Fr
     // 16-byte stateless reset token
     try w.writeByteNTimes(0xDD, 16);
 
-    var fbs = std.io.fixedBufferStream(buf_list.items);
+    var fbs = compat.fixedBufferStream(buf_list.items);
     const r = fbs.reader();
 
     const decoded = try frame.decode(r, testing.allocator);

@@ -19,8 +19,8 @@
 //!
 //! ```zig
 //! // 1. Encode CRYPTO frame for transmission
-//! var buf = std.ArrayList(u8).init(allocator);
-//! _ = try writeCrypto(buf.writer(), offset, handshake_data);
+//! var buf = std.array_list.Managed(u8).init(allocator);
+//! _ = try writeCrypto(compat.arrayListWriter(&buf, ), offset, handshake_data);
 //!
 //! // 2. Decode received CRYPTO frame
 //! const decoded = try decodeCrypto(packet_payload);
@@ -43,6 +43,7 @@
 //! - RFC 9001 §4: QUIC-TLS integration
 
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 
 // These would normally be imported from production modules.
@@ -283,7 +284,7 @@ test "CRYPTO frame encode produces correct format (RFC 9000 §19.6)" {
     const test_data = "ClientHello";
     const offset: u64 = 0;
 
-    const written = try writeCrypto(buf.writer(testing.allocator), offset, test_data);
+    const written = try writeCrypto(compat.arrayListWriter(&buf, testing.allocator), offset, test_data);
 
     // Verify frame type
     try testing.expectEqual(@as(u8, 0x06), buf.items[0]);
@@ -300,7 +301,7 @@ test "CRYPTO frame decode reconstructs original data" {
     const original_data = "ServerHello";
     const original_offset: u64 = 100;
 
-    _ = try writeCrypto(buf.writer(testing.allocator), original_offset, original_data);
+    _ = try writeCrypto(compat.arrayListWriter(&buf, testing.allocator), original_offset, original_data);
 
     const decoded = try decodeCrypto(buf.items);
 
@@ -324,7 +325,7 @@ test "CRYPTO frame roundtrip preserves data" {
 
     for (test_cases) |tc| {
         buf.clearRetainingCapacity();
-        _ = try writeCrypto(buf.writer(testing.allocator), tc.offset, tc.data);
+        _ = try writeCrypto(compat.arrayListWriter(&buf, testing.allocator), tc.offset, tc.data);
 
         const decoded = try decodeCrypto(buf.items);
 
@@ -436,7 +437,7 @@ test "CRYPTO frame and CryptoBuffer integration" {
         var encode_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
         defer encode_buf.deinit(testing.allocator);
 
-        _ = try writeCrypto(encode_buf.writer(testing.allocator), frame.offset, frame.data);
+        _ = try writeCrypto(compat.arrayListWriter(&encode_buf, testing.allocator), frame.offset, frame.data);
         const decoded = try decodeCrypto(encode_buf.items);
 
         try buffer.add(decoded.offset, decoded.data);
@@ -463,7 +464,7 @@ test "Handshake flow simulation with CRYPTO frames" {
     // Client sends ClientHello at offset 0
     var client_hello_frame = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer client_hello_frame.deinit(testing.allocator);
-    _ = try writeCrypto(client_hello_frame.writer(testing.allocator), 0, "ClientHello");
+    _ = try writeCrypto(compat.arrayListWriter(&client_hello_frame, testing.allocator), 0, "ClientHello");
 
     // Server receives and buffers ClientHello
     {
@@ -482,7 +483,7 @@ test "Handshake flow simulation with CRYPTO frames" {
     // Server responds with ServerHello at offset 0
     var server_hello_frame = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer server_hello_frame.deinit(testing.allocator);
-    _ = try writeCrypto(server_hello_frame.writer(testing.allocator), 0, "ServerHello");
+    _ = try writeCrypto(compat.arrayListWriter(&server_hello_frame, testing.allocator), 0, "ServerHello");
 
     // Client receives and processes ServerHello
     {

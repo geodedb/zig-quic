@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const endpoint = @import("quic_endpoint");
 const packet = @import("quic_packet");
 const frame = @import("quic_frame");
@@ -28,9 +29,9 @@ test "ECN longitudinal: multi-ACK across spaces with reordering and one loss" {
     // Helper to send a minimal PING in Initial with a given PN and ECN marking
     const send_initial = struct {
         fn f(alloc: std.mem.Allocator, ep_: *endpoint.Endpoint, peer: @TypeOf(c.peer), dcid: []const u8, scid: []const u8, pn: u32, ecn_bits: u8, k: packet.InitialKeys) !void {
-            var fb = std.ArrayList(u8){};
+            var fb = std.ArrayList(u8).empty;
             defer fb.deinit(alloc);
-            _ = (frame.Frame{ .ping = {} }).write(fb.writer(alloc)) catch {};
+            _ = (frame.Frame{ .ping = {} }).write(compat.arrayListWriter(&fb, alloc)) catch {};
             const pktb = try packet.encodeInitialProtected(alloc, packet.QUIC_V1, dcid, scid, &[_]u8{}, pn, 4, fb.items, k);
             defer alloc.free(pktb);
             ep_.testInjectWithEcn(peer, pktb, ecn_bits);
@@ -71,9 +72,9 @@ test "ECN longitudinal: multi-ACK across spaces with reordering and one loss" {
     // Client receives with server keys, sends with client keys
     c.hs_rx_keys = .{ .key = server_keys.key, .iv = server_keys.iv, .hp = server_keys.hp };
     c.hs_tx_keys = .{ .key = client_keys.key, .iv = client_keys.iv, .hp = client_keys.hp };
-    var fb2 = std.ArrayList(u8){};
+    var fb2 = std.ArrayList(u8).empty;
     defer fb2.deinit(A);
-    _ = (frame.Frame{ .ping = {} }).write(fb2.writer(A)) catch {};
+    _ = (frame.Frame{ .ping = {} }).write(compat.arrayListWriter(&fb2, A)) catch {};
     const hs_pkt = try packet.encodeHandshakeProtected(
         A,
         packet.QUIC_V1,

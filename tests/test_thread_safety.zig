@@ -7,6 +7,7 @@
 // added to the QUIC library work correctly under concurrent access.
 
 const std = @import("std");
+const compat = @import("compat");
 const testing = std.testing;
 
 // Build system provides these imports
@@ -24,12 +25,12 @@ test "endpoint mutex initialization" {
     defer ep.deinit();
 
     // Test that we can lock and unlock the endpoint mutex
-    ep.mu.lock();
-    ep.mu.unlock();
+    compat.mutexLock(&ep.mu);
+    compat.mutexUnlock(&ep.mu);
 
     // Test double lock/unlock (simulating sequential access patterns)
-    ep.mu.lock();
-    ep.mu.unlock();
+    compat.mutexLock(&ep.mu);
+    compat.mutexUnlock(&ep.mu);
 }
 
 // Test concurrent accept queue operations
@@ -78,9 +79,9 @@ test "concurrent mutex stress test" {
             fn run(ep_ptr: *endpoint_mod.Endpoint, cnt: *std.atomic.Value(u64)) void {
                 var i: usize = 0;
                 while (i < iterations_per_thread) : (i += 1) {
-                    ep_ptr.mu.lock();
+                    compat.mutexLock(&ep_ptr.mu);
                     _ = cnt.fetchAdd(1, .monotonic);
-                    ep_ptr.mu.unlock();
+                    compat.mutexUnlock(&ep_ptr.mu);
                 }
             }
         }.run, .{ &ep, &counter });
