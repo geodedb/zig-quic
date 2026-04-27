@@ -761,9 +761,7 @@ pub const Endpoint = struct {
     /// Thread-safe: acquires timer_mu to protect timer queue.
     ///
     /// Preserves nanosecond precision of `delay_ns` via `Timer.deadline_ns_extra`
-    /// — see #158 closure. The 100 ms test ceiling and the >=1 ms floor on
-    /// `deadline_ms` are kept; sub-millisecond residual lives in
-    /// `deadline_ns_extra` and is checked by `timerExpired()` during expiry scan.
+    /// — see #158 closure.
     fn schedulePaced(self: *Endpoint, c: *conn_mod.Connection, delay_ns: u64, owned_bytes: []u8) !u64 {
         self.timer_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.timer_mu.unlock(std.Io.Threaded.global_single_threaded.io());
@@ -1587,8 +1585,7 @@ pub const Endpoint = struct {
         //
         // #165 + #183 closure: collect paced sends into a sendBatch buffer
         // so a single `sendmmsg` syscall flushes up to UdpBatchCap packets at
-        // once (Linux). On non-Linux, sendBatch falls back to per-packet
-        // posix.sendto which preserves correctness — see PLATFORM_SUPPORT.md.
+        // once (Linux).
         const transport_mod_ns = @import("endpoint/transport.zig");
         var paced_batch: [16]transport_mod_ns.SendBatchItem = undefined;
         var paced_payloads: [16][]u8 = undefined;
@@ -1597,9 +1594,6 @@ pub const Endpoint = struct {
             fn call(ep: *Endpoint, batch: []const transport_mod_ns.SendBatchItem, payloads: [][]u8, count: *usize) void {
                 if (count.* == 0) return;
                 if (ep.test_capture_enabled) {
-                    // Test capture path runs through sendTo so each packet is
-                    // captured for assertion. sendBatch bypasses the capture
-                    // hook, so we route through sendTo when capture is on.
                     for (batch[0..count.*]) |it| {
                         _ = ep.sendTo(it.peer, it.data) catch |err| {
                             logger.debugPrint("[ENDPOINT] paced send (capture path) failed: {s}\n", .{@errorName(err)});
@@ -1780,8 +1774,7 @@ fn senderPaced(ctx: *anyopaque, c: *conn_mod.Connection, data: []const u8) !usiz
         }
         return self.sendTo(c.peer, data);
     }
-    // Read recovery state lock-free via atomic mirrors (#160 closure). The
-    // pacing path no longer contends on the recovery mutex with ACK processing.
+    // Read recovery state lock-free via atomic mirrors (#160 closure).
     const delay_ns = recovery.computePacingDelayNs(
         c.rec.cwndSnapshot(),
         c.rec.bytesInFlightSnapshot(),
@@ -1789,17 +1782,13 @@ fn senderPaced(ctx: *anyopaque, c: *conn_mod.Connection, data: []const u8) !usiz
         c.rec.mdsSnapshot(),
     );
     // For very small pacing delays the cost of allocating + scheduling a timer
-    // exceeds the actual delay being enforced; send immediately and let the
-    // next packet's congestion state compute a fresh deadline. The threshold
-    // (10 µs) is chosen so a single-syscall sendmmsg amortizes the schedule
-    // overhead — see #158 closure note in PERFORMANCE_TRACKING.md.
+    // exceeds the actual delay being enforced; send immediately. (#158 closure)
     const inline_send_threshold_ns: u64 = 10_000;
     if (delay_ns < inline_send_threshold_ns) {
         return self.sendTo(c.peer, data);
     }
     // Own the payload and schedule a paced timer at full ns precision via
-    // schedulePaced, which now stores sub-ms residual in deadline_ns_extra
-    // (#158 closure: pacing timer no longer truncates to 1 ms).
+    // schedulePaced, which stores sub-ms residual in deadline_ns_extra.
     const owned = try self.allocator.alloc(u8, data.len);
     @memcpy(owned, data);
     _ = try self.schedulePaced(c, delay_ns, owned);

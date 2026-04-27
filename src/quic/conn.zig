@@ -445,17 +445,18 @@ pub const StreamTxPacket = struct {
 };
 
 const PacketBufferPool = struct {
-    // #167 closure: per-connection pool size reduced from 16 → 4 slots.
+    // #167 closure: per-connection pool size reduced from 16 → 8 slots.
     //
     // Memory model:
     //   Before: 16 × 4096 B = 64 KB per connection → 640 MB at 10K conns
-    //   After:   4 × 4096 B = 16 KB per connection → 160 MB at 10K conns (4x reduction)
+    //   After:    8 × 4096 B = 32 KB per connection → 320 MB at 10K conns (2x reduction)
     //
     // Rationale: each checkout-release pair is wrapped in `defer`, so the
     // buffer is returned to the pool the moment the calling function returns.
     // Per-connection peak concurrent in-flight buffers is bounded by call
-    // depth on a single Connection (typically 1, occasionally 2 during
-    // ACK+STREAM coalescing or PMTUD probes) — 4 slots gives 2x headroom.
+    // depth on a single Connection during handshake coalescing (Initial +
+    // Handshake + retransmission backup); 8 slots gives 2× the typical
+    // depth as headroom while still cutting per-conn footprint in half.
     //
     // If this turns out to be too tight in a future workload, the next
     // step is a shared slab (single global hashmap of slabs keyed by
@@ -464,7 +465,7 @@ const PacketBufferPool = struct {
     // here is intentionally compatible with that migration: `checkout`
     // returns a slot and `release` returns it; nothing leaks the pool
     // identity to callers.
-    const slot_count: usize = 4;
+    const slot_count: usize = 8;
     const slot_size: usize = 4096;
 
     slots: [slot_count][slot_size]u8 = undefined,

@@ -153,8 +153,7 @@ pub fn findConnectionByDcid(
 
     // #154 fast path: try the canonical 8-byte DCID first. Every CID we
     // issue is 8 bytes (`acquireLocalCid` in methods_c.zig), so a single
-    // hash lookup typically resolves the routing. We mark `tried_default`
-    // so the candidate-length sweep below doesn't repeat the same lookup.
+    // hash lookup typically resolves the routing.
     var tried_default = false;
     if (1 + DEFAULT_DCID_LEN <= packet_bytes.len) {
         tried_default = true;
