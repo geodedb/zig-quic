@@ -59,7 +59,7 @@ Authoritative references:
 
 See `docs/superpowers/plans/2026-04-20-perf-bench-suite-and-gating.md` → "Known Pre-existing Issues" for tracked items that pre-date the v2 benchmark work:
 
-1. `tests/test_transport_geode_compat.zig:246` — CA cert runtime assertion (pre-existing functional bug; blocks pre-push test hook — use `--no-verify` with explicit authorization when needed)
+1. ~~`tests/test_transport_geode_compat.zig:246` — CA cert runtime assertion~~ **RESOLVED.** The test always passed (exit 0, 111/113 pass + 2 skip), but the deliberate `expectError(CertificateError, connectEx(null...))` path emitted a `logger.err` line that turned Zig's build runner into a misleading `failed command:` diagnostic, which downstream pre-push hooks treated as failure. Downgraded the missing-CA log to `logger.warn` (gated out at default `LOG_LEVEL=err`) — `zig build test` is now silent and pre-push hooks are unblocked.
 2. `api.getPort(ep)` uses `posix.getsockname` removed in Zig 0.16 — bench sidesteps via atomic port counter; production callers need the fix
 3. No lightweight `make interop_local` target (existing targets chain through docker)
 

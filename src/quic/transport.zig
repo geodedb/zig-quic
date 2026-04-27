@@ -935,7 +935,16 @@ pub const QuicClient = struct {
             // Fail closed: do not implicitly disable certificate verification.
             // Callers must provide a CA bundle (recommended) or explicitly opt into
             // insecure verification via `connectInsecure(...)` for testing only.
-            logger.err("quic_client: connectEx requires a CA certificate (use connectInsecure for insecure testing)\n", .{});
+            //
+            // Use `warn` (not `err`): the returned `QuicError.CertificateError`
+            // is the API contract that callers act on, and at the default
+            // `LOG_LEVEL=err` the warn message is gated out — leaving test
+            // stderr clean (the geode-compat test deliberately exercises this
+            // path via `expectError`, and any stderr write turns Zig's build
+            // runner into emitting a misleading "failed command:" diagnostic
+            // even when the test exits 0). Operators tuning `LOG_LEVEL=warn`
+            // or lower still see the guidance.
+            logger.warn("quic_client: connectEx requires a CA certificate (use connectInsecure for insecure testing)", .{});
             return QuicError.CertificateError;
         }
         cfg.* = .{
