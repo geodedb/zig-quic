@@ -2,6 +2,24 @@ const std = @import("std");
 const api = @import("quic_api");
 const h3_server = @import("h3_server");
 const h3_client = @import("h3_client");
+const tls_logger = @import("tls_quic_logger");
+
+// Forward TLS-package log lines (notably the [TLS-HRR] interop diagnostics
+// from QUIC-INTEROP-HRR follow-up commits in the tls dep) to our stderr.
+// Without this sink, the tls package's quic_logger collapses to a no-op
+// in production builds and the diagnostic surface is invisible to the
+// interop runner. See tls/docs/QUIC_INTEROP_HRR_ISSUE.md.
+fn tlsLoggerSink(level: tls_logger.Level, message: []const u8) void {
+    const level_str = switch (level) {
+        .debug => "DEBUG",
+        .info => "INFO",
+        .warn => "WARN",
+        .err => "ERROR",
+    };
+    var buf: [2048]u8 = undefined;
+    const formatted = std.fmt.bufPrint(&buf, "[tls/{s}] {s}\n", .{ level_str, message }) catch return;
+    _ = std.os.linux.write(2, formatted.ptr, formatted.len);
+}
 
 // Zig 0.16.0 compat helpers
 fn globalIo() std.Io {
@@ -570,6 +588,13 @@ fn log(msg: []const u8) void {
 
 pub fn main(init: std.process.Init) !void {
     var alloc = init.gpa;
+
+    // Register a sink that forwards tls-package diagnostic logs (including
+    // [TLS-HRR] interop diagnostics) into our stderr. No-op in tls's default
+    // production build until the sink is registered. See
+    // ../tls/docs/QUIC_INTEROP_HRR_ISSUE.md for the diagnostic surface this
+    // exposes.
+    tls_logger.setTestSink(tlsLoggerSink);
 
     const env = init.environ_map;
     const role = env.get("ROLE") orelse return error.MissingROLE;

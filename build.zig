@@ -173,6 +173,10 @@ pub fn build(b: *std.Build) void {
     const x509_mod = tls_dep.module("x509");
     const zero_rtt_mod = tls_dep.module("zero_rtt");
     const tls_record_mod = tls_dep.module("record");
+    // TLS package's quic_logger (separate from our local src/quic/logger.zig).
+    // Used by cmd/qns-endpoint.zig to register a sink that forwards
+    // [TLS-HRR] diagnostics into our stderr logger for interop debugging.
+    const tls_quic_logger_mod = tls_dep.module("quic_logger");
 
     // QUIC crypto and packet modules
     const quic_crypto_mod = mkModule(b, "src/quic/crypto_quic.zig");
@@ -780,6 +784,7 @@ pub fn build(b: *std.Build) void {
     qns_endpoint.root_module.addImport("quic_api", quic_api_mod);
     qns_endpoint.root_module.addImport("h3_server", h3_server_mod);
     qns_endpoint.root_module.addImport("h3_client", h3_client_mod);
+    qns_endpoint.root_module.addImport("tls_quic_logger", tls_quic_logger_mod);
     const install_qns_endpoint = b.addInstallArtifact(qns_endpoint, .{});
     // Include qns-endpoint in default install so interop-test CI job gets the artifact.
     b.getInstallStep().dependOn(&install_qns_endpoint.step);
