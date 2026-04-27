@@ -773,9 +773,22 @@ pub fn sendServerHello(ctx: *HandshakeContext) !void {
             initial_tx_keys,
         ) catch return error.PacketEncodeFailed;
 
-        // RFC 9000 §14.1: Initial datagrams should be expanded to at least 1200 bytes.
-        // Interop peers like picoquic enforce this for server Initial flights (e.g. HRR).
-        if (pkt.len < min_initial_datagram_size) {
+        // RFC 9000 §14.1: UDP datagrams carrying ack-eliciting Initial packets
+        // MUST be at least 1200 bytes. We satisfy that on the *datagram* level,
+        // not by padding each Initial packet in isolation:
+        //
+        //   - If this Initial will be coalesced with a Handshake packet
+        //     (is_last_chunk and will_send_handshake), skip inner Initial padding.
+        //     sendHandshakePackets adds PADDING inside the Handshake packet so
+        //     the total coalesced datagram reaches the 1200-byte floor without
+        //     ballooning past the path MTU. Without this, the coalesced datagram
+        //     becomes Initial(1200) + Handshake(~800) ≈ 2000 bytes, which IP
+        //     fragments and the QNS / production network simulator drops the
+        //     fragments — causing quic-go / mvfst handshakes to time out.
+        //   - Otherwise (no Handshake to coalesce), pad the inner Initial up to
+        //     1200 bytes in-place, since it must be the entire datagram payload.
+        const will_coalesce_now = is_last_chunk and will_send_handshake;
+        if (pkt.len < min_initial_datagram_size and !will_coalesce_now) {
             const pad_needed = min_initial_datagram_size - pkt.len;
             ctx.allocator.free(pkt);
             fw.writeByteNTimes(@intFromEnum(frame.FrameType.PADDING), pad_needed) catch return error.FrameEncodeFailed;
@@ -1051,6 +1064,33 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
         // Add CRYPTO frame
         const crypto_frame_offset = base_off + crypto_offset;
         _ = (frame.Frame{ .crypto = .{ .offset = crypto_frame_offset, .data = chunk } }).write(w) catch 0;
+
+        // RFC 9000 §14.1 + §12.2: when this Handshake packet is the FIRST in a
+        // coalesced datagram with the buffered server Initial, pad inside this
+        // Handshake packet so the total datagram reaches the 1200-byte floor.
+        // Doing the padding here (rather than ballooning the inner Initial to
+        // 1200 like the previous implementation) keeps the coalesced datagram
+        // at 1200 bytes total instead of ~2000 bytes — which the QNS network
+        // simulator (and many production paths) drop because a 2000-byte UDP
+        // datagram fragments at IP layer and the receiver never reassembles
+        // it. quic-go and mvfst handshakes time out under that pattern.
+        const min_initial_datagram_size: usize = 1200;
+        if (first_packet and conn.pending_initial_packet != null) {
+            const initial_pending = conn.pending_initial_packet.?;
+            // Approximate Handshake packet overhead beyond the frames payload:
+            //   1B type + 4B version + 1B DCID len + DCID + 1B SCID len + SCID
+            //   + ≤2B length + 2B PN + 16B AEAD tag.
+            const hs_dcid_len = conn.peer_initial_scid.len;
+            const hs_scid_len = conn.our_scid.len;
+            const hs_overhead: usize = 1 + 4 + 1 + hs_dcid_len + 1 + hs_scid_len + 2 + 2 + 16;
+            const projected_pkt_len = hs_overhead + frames_stream.getWritten().len;
+            const projected_total = initial_pending.len + projected_pkt_len;
+            if (projected_total < min_initial_datagram_size) {
+                const pad_needed = min_initial_datagram_size - projected_total;
+                w.writeByteNTimes(@intFromEnum(frame.FrameType.PADDING), pad_needed) catch return error.FrameEncodeFailed;
+            }
+        }
+
         const frames_data = frames_stream.getWritten();
 
         // Use peer's Initial SCID as DCID for Handshake packets (RFC 9000 §7.2)
