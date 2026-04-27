@@ -15,8 +15,8 @@
     .dependencies = .{
         // TLS 1.3 implementation (used for QUIC-TLS integration)
         .tls = .{
-            .url = "git+https://gitlab.com/devnw/zig/tls.git#9f56b0e5b788377d148e82da807f487a11fdf5ed",
-            .hash = "tls-0.2.0-mtEaLOmlEgB6HdiExiqUwhtfVSDCxYwf4Pna6evzyDfe",
+            .url = "git+https://gitlab.com/devnw/zig/tls.git#7d9efd3b82eaf9911d8577fec8dce81d7d3d4e28",
+            .hash = "tls-0.2.0-mtEaLCwVEwDVETiPDxsK_BItEDQqXiap6CGGlPOboMi_",
         },
         // Thread pool for parallel operations
         .thread_pool = .{
