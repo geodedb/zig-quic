@@ -44,6 +44,16 @@ inline fn hashBytes(b: []const u8) u64 {
     return h.final();
 }
 
+/// Encoded byte length of a QUIC variable-length integer (RFC 9000 §16).
+/// Used for projecting the on-wire size of long-header packets when packing
+/// padded handshake flights — see sendHandshakePackets coalesce path.
+inline fn lengthVarintBytes(value: u64) usize {
+    if (value < (1 << 6)) return 1;
+    if (value < (1 << 14)) return 2;
+    if (value < (1 << 30)) return 4;
+    return 8;
+}
+
 fn hashForSecretLen(secret_len: usize) !key_schedule.Hash {
     return switch (secret_len) {
         32 => .sha256,
@@ -1077,17 +1087,48 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
         const min_initial_datagram_size: usize = 1200;
         if (first_packet and conn.pending_initial_packet != null) {
             const initial_pending = conn.pending_initial_packet.?;
-            // Approximate Handshake packet overhead beyond the frames payload:
-            //   1B type + 4B version + 1B DCID len + DCID + 1B SCID len + SCID
-            //   + ≤2B length + 2B PN + 16B AEAD tag.
+            // Long-header packet on-wire layout (RFC 9000 §17.2.4):
+            //   1B type | 4B version | 1B DCID len | DCID | 1B SCID len | SCID
+            //   | varint Length | PN (1-4B) | payload | 16B AEAD tag.
+            // We hardcode PN length to 2 (matches encodeHandshakeProtected).
+            // The Length varint encodes "PN length + payload + AEAD tag":
+            //   value < 64       -> 1 byte
+            //   value < 16384    -> 2 bytes  (typical for our flights)
+            //   value < 2^30     -> 4 bytes  (unreachable: max_crypto_per_packet=1100)
+            // Compute the exact varint length so the projection matches the
+            // encoded packet — assuming a fixed 2-byte length once produced a
+            // 1199-byte coalesced datagram for tiny payloads (<46B), violating
+            // §14.1's 1200-byte floor.
             const hs_dcid_len = conn.peer_initial_scid.len;
             const hs_scid_len = conn.our_scid.len;
-            const hs_overhead: usize = 1 + 4 + 1 + hs_dcid_len + 1 + hs_scid_len + 2 + 2 + 16;
-            const projected_pkt_len = hs_overhead + frames_stream.getWritten().len;
+            const fixed_overhead: usize = 1 + 4 + 1 + hs_dcid_len + 1 + hs_scid_len + 2 + 16; // header + PN + tag
+            const payload_no_pad = frames_stream.getWritten().len;
+            const length_value_no_pad: u64 = @intCast(2 + payload_no_pad + 16); // PN + payload + tag
+            const length_bytes_no_pad = lengthVarintBytes(length_value_no_pad);
+            const projected_pkt_len = fixed_overhead + length_bytes_no_pad + payload_no_pad;
             const projected_total = initial_pending.len + projected_pkt_len;
             if (projected_total < min_initial_datagram_size) {
-                const pad_needed = min_initial_datagram_size - projected_total;
-                w.writeByteNTimes(@intFromEnum(frame.FrameType.PADDING), pad_needed) catch return error.FrameEncodeFailed;
+                var pad_needed = min_initial_datagram_size - projected_total;
+                // Adding pad_needed bytes pushes the Length varint into a
+                // larger encoding range when we cross a varint boundary
+                // (1B->2B at value=64, 2B->4B at value=16384). Each extra
+                // varint byte makes the encoded packet bigger by that many
+                // bytes, so reduce pad_needed accordingly to land at exactly
+                // 1200 instead of overshooting. Worst case: shrink padding
+                // by 1 (1B->2B) or 2 (2B->4B); never push us under 1200.
+                const length_value_padded = length_value_no_pad + @as(u64, pad_needed);
+                const length_bytes_padded = lengthVarintBytes(length_value_padded);
+                const extra_length_bytes = length_bytes_padded - length_bytes_no_pad;
+                if (extra_length_bytes >= pad_needed) {
+                    // The varint growth alone already lifts us to/past 1200;
+                    // no PADDING frames needed.
+                    pad_needed = 0;
+                } else {
+                    pad_needed -= extra_length_bytes;
+                }
+                if (pad_needed > 0) {
+                    w.writeByteNTimes(@intFromEnum(frame.FrameType.PADDING), pad_needed) catch return error.FrameEncodeFailed;
+                }
             }
         }
 
