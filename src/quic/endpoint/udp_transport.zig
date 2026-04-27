@@ -174,7 +174,16 @@ pub const UdpTransport = struct {
     /// Initialize UDP transport by creating and binding a UDP socket
     ///
     /// bind_addr format: "host:port" (e.g., "127.0.0.1:4433", "0.0.0.0:0")
+    ///
+    /// Platform support:
+    ///   - Linux:        full path including ECN (IP_TOS / IPV6_TCLASS) and sendmmsg/recvmmsg
+    ///   - macOS/BSD:    posix fallback (no ECN, no batched send/recv); see docs/PLATFORM_SUPPORT.md
+    ///   - Windows:      not supported by this transport (use IO completion ports separately)
     pub fn init(bind_addr: []const u8) !UdpTransport {
+        if (builtin.target.os.tag != .linux) {
+            return initPosix(bind_addr);
+        }
+
         // Parse bind address
         var addr = try resolveBindAddr(bind_addr);
 
@@ -227,8 +236,48 @@ pub const UdpTransport = struct {
         };
     }
 
+    /// Cross-platform fallback init using std.posix. ECN is unsupported here -
+    /// recvFn returns null ECN and configureEcnSocket is a Linux-only no-op.
+    fn initPosix(bind_addr: []const u8) !UdpTransport {
+        var addr = try resolveBindAddr(bind_addr);
+        const sa: *const std.posix.sockaddr = @ptrCast(@alignCast(&addr.storage));
+        const family = sa.family;
+
+        const fd = try posix.socket(family, posix.SOCK.DGRAM, posix.IPPROTO.UDP);
+        errdefer posix.close(fd);
+
+        var one: i32 = 1;
+        _ = posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, std.mem.asBytes(&one)) catch {};
+
+        const bind_len: posix.socklen_t = switch (family) {
+            posix.AF.INET => @intCast(@sizeOf(posix.sockaddr.in)),
+            posix.AF.INET6 => @intCast(@sizeOf(posix.sockaddr.in6)),
+            else => return error.AddressFamilyNotSupported,
+        };
+        try posix.bind(fd, @ptrCast(&addr.storage), bind_len);
+
+        var actual_addr: posix.sockaddr.storage = undefined;
+        var actual_len: posix.socklen_t = @sizeOf(posix.sockaddr.storage);
+        try posix.getsockname(fd, @ptrCast(&actual_addr), &actual_len);
+
+        // Best-effort non-blocking via fcntl; some platforms expose only SOCK_NONBLOCK
+        // at socket() time which is not portable to all targets we care about.
+        const flags = posix.fcntl(fd, posix.F.GETFL, 0) catch 0;
+        _ = posix.fcntl(fd, posix.F.SETFL, flags | @as(usize, posix.SOCK.NONBLOCK)) catch {};
+
+        return UdpTransport{
+            .fd = fd,
+            .family = family,
+            .local_addr = .{ .storage = actual_addr, .len = actual_len },
+        };
+    }
+
     /// Deinitialize transport and close socket
     pub fn deinit(self: *UdpTransport) void {
+        if (builtin.target.os.tag != .linux) {
+            posix.close(self.fd);
+            return;
+        }
         _ = std.os.linux.close(self.fd);
     }
 
@@ -252,8 +301,7 @@ pub const UdpTransport = struct {
         // std.posix.unexpectedErrno) keeps this helper cross-compilable. On
         // non-Linux targets std.posix.E maps to the host libc's errno enum
         // (e.g. c.darwin.E), so passing a std.os.linux.E there would fail to
-        // compile. UdpTransport itself only runs on Linux; this helper is only
-        // referenced from Linux-gated call sites.
+        // compile. This helper is only referenced from Linux-gated call sites.
         return switch (linux.errno(rc)) {
             .SUCCESS => rc,
             .AGAIN => error.WouldBlock,
@@ -261,11 +309,48 @@ pub const UdpTransport = struct {
         };
     }
 
+    // Posix-based send for non-Linux platforms. Maps platform errno to error.WouldBlock
+    // for EAGAIN and propagates other errors. ECN/cmsg paths are not exercised here -
+    // ECN extraction is Linux-only via recvmsg ancillary data; non-Linux returns null ECN.
+    fn posixSendTo(fd: posix.socket_t, peer: SockAddr, data: []const u8) !usize {
+        return posix.sendto(
+            fd,
+            data,
+            0,
+            @ptrCast(&peer.storage),
+            peer.len,
+        ) catch |err| switch (err) {
+            error.WouldBlock => error.WouldBlock,
+            else => err,
+        };
+    }
+
+    fn posixRecvFrom(fd: posix.socket_t, buf: []u8) !RecvResult {
+        var peer_storage: posix.sockaddr.storage = undefined;
+        var peer_len: posix.socklen_t = @sizeOf(posix.sockaddr.storage);
+        const n = posix.recvfrom(
+            fd,
+            buf,
+            0,
+            @ptrCast(&peer_storage),
+            &peer_len,
+        ) catch |err| switch (err) {
+            error.WouldBlock => return error.WouldBlock,
+            else => return err,
+        };
+        return RecvResult{
+            .n = n,
+            .peer = .{ .storage = peer_storage, .len = peer_len },
+            .ecn = null, // ECN extraction is Linux-only; non-Linux callers see null
+        };
+    }
+
     fn sendFn(ctx: *anyopaque, peer: SockAddr, data: []const u8) !usize {
         const self: *UdpTransport = @ptrCast(@alignCast(ctx));
+        if (builtin.target.os.tag != .linux) {
+            return posixSendTo(self.fd, peer, data);
+        }
         const linux = std.os.linux;
-
-        // Send UDP datagram to peer
         const rc = linux.sendto(
             self.fd,
             data.ptr,
@@ -278,19 +363,12 @@ pub const UdpTransport = struct {
     }
 
     fn sendBatchFallback(self: *UdpTransport, items: []const SendBatchItem) !usize {
-        const linux = std.os.linux;
+        // Cross-platform per-packet fallback used when sendmmsg is unavailable
+        // (non-Linux) or when batch capacity is exceeded.
         var sent_items: usize = 0;
         while (sent_items < items.len) : (sent_items += 1) {
             const it = items[sent_items];
-            const rc = linux.sendto(
-                self.fd,
-                it.data.ptr,
-                it.data.len,
-                0,
-                @ptrCast(&it.peer.storage),
-                it.peer.len,
-            );
-            const sent = try linuxResultToCount(rc);
+            const sent = try posixSendTo(self.fd, it.peer, it.data);
             if (sent != it.data.len) return error.ShortWrite;
         }
         return sent_items;
@@ -343,6 +421,9 @@ pub const UdpTransport = struct {
 
     fn recvFn(ctx: *anyopaque, buf: []u8) !RecvResult {
         const self: *UdpTransport = @ptrCast(@alignCast(ctx));
+        if (builtin.target.os.tag != .linux) {
+            return posixRecvFrom(self.fd, buf);
+        }
         const linux = std.os.linux;
 
         var peer_storage: posix.sockaddr.storage = undefined;
@@ -375,30 +456,20 @@ pub const UdpTransport = struct {
     }
 
     fn recvBatchFallback(self: *UdpTransport, slots: []RecvBatchSlot) !usize {
-        const linux = std.os.linux;
+        // Cross-platform per-packet fallback used when recvmmsg is unavailable
+        // (non-Linux) or when the underlying batch syscall returned WouldBlock.
         var received: usize = 0;
         while (received < slots.len) : (received += 1) {
-            var peer_storage: posix.sockaddr.storage = undefined;
-            var peer_len: posix.socklen_t = @sizeOf(posix.sockaddr.storage);
-            const rc = linux.recvfrom(
-                self.fd,
-                slots[received].buf.ptr,
-                slots[received].buf.len,
-                linux.MSG.DONTWAIT,
-                @ptrCast(&peer_storage),
-                &peer_len,
-            );
-            const n = linuxResultToCount(rc) catch |err| {
+            const r = posixRecvFrom(self.fd, slots[received].buf) catch |err| {
                 if (err == error.WouldBlock) {
                     if (received == 0) return error.WouldBlock;
                     return received;
                 }
                 return err;
             };
-
-            slots[received].n = n;
-            slots[received].peer = .{ .storage = peer_storage, .len = peer_len };
-            slots[received].ecn = null;
+            slots[received].n = r.n;
+            slots[received].peer = r.peer;
+            slots[received].ecn = r.ecn; // null on non-Linux
         }
         return received;
     }
@@ -476,22 +547,30 @@ pub const UdpTransport = struct {
 
     fn pollFn(ctx: *anyopaque, timeout_ms: i32) !void {
         const self: *UdpTransport = @ptrCast(@alignCast(ctx));
+        if (builtin.target.os.tag != .linux) {
+            // Cross-platform poll: use std.posix.poll which dispatches to the host's poll()
+            var fds = [1]posix.pollfd{
+                .{ .fd = self.fd, .events = posix.POLL.IN, .revents = 0 },
+            };
+            const timeout: i32 = if (timeout_ms < 0) -1 else timeout_ms;
+            _ = posix.poll(&fds, timeout) catch {};
+            return;
+        }
         const linux = std.os.linux;
-
-        // Use poll syscall to wait for readable data
         var fds = [1]linux.pollfd{
             .{ .fd = self.fd, .events = linux.POLL.IN, .revents = 0 },
         };
-
-        // Convert timeout to match poll's expectation
         const timeout: i32 = if (timeout_ms < 0) -1 else timeout_ms;
-
         const rc = linux.poll(&fds, 1, timeout);
         _ = rc; // Number of ready FDs (we only care that poll returned)
     }
 
     fn closeFn(ctx: *anyopaque) void {
         const self: *UdpTransport = @ptrCast(@alignCast(ctx));
+        if (builtin.target.os.tag != .linux) {
+            posix.close(self.fd);
+            return;
+        }
         _ = std.os.linux.close(self.fd);
     }
 
@@ -500,3 +579,36 @@ pub const UdpTransport = struct {
         return self.local_addr;
     }
 };
+
+// Platform abstraction tests for #172. The cross-platform fallback path is
+// type-checked at comptime under both branches of the `builtin.target.os.tag`
+// switch; the runtime exercise here covers the Linux production path. See
+// docs/PLATFORM_SUPPORT.md for the full matrix.
+test "udp_transport: bind on Linux exposes non-zero port" {
+    if (builtin.target.os.tag != .linux) return error.SkipZigTest;
+
+    var transport = try UdpTransport.init("127.0.0.1:0");
+    defer transport.deinit();
+
+    try std.testing.expectEqual(@as(u16, posix.AF.INET), transport.family);
+
+    const sa: *const posix.sockaddr.in = @ptrCast(@alignCast(&transport.local_addr.storage));
+    try std.testing.expect(sa.port != 0);
+}
+
+test "udp_transport: posix fallback symbols compile under non-linux branch" {
+    // This test forces the compiler to materialize references to `initPosix`
+    // and the `posixSendTo` / `posixRecvFrom` helpers so any signature drift
+    // surfaces at compile time on Linux CI even though the branch is cold here.
+    const init_ptr: *const fn ([]const u8) anyerror!UdpTransport = &UdpTransport.initPosix;
+    const send_ptr: *const fn (posix.socket_t, SockAddr, []const u8) anyerror!usize = &UdpTransport.posixSendTo;
+    const recv_ptr: *const fn (posix.socket_t, []u8) anyerror!RecvResult = &UdpTransport.posixRecvFrom;
+    _ = init_ptr;
+    _ = send_ptr;
+    _ = recv_ptr;
+}
+
+test "udp_transport: ECN cmsg parser returns null on empty control buffer" {
+    var control: [0]u8 = .{};
+    try std.testing.expectEqual(@as(?u8, null), ecnFromAncillary(&control, 0));
+}

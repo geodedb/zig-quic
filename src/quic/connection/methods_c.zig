@@ -189,7 +189,7 @@ pub fn bind(comptime Connection: type) type {
         /// Record a packet as sent in the given PN space for Recovery bookkeeping.
         /// Notify recovery of sent packet (per-space) for loss tracking & congestion control.
         pub fn onPacketSent(self: *Connection, space: recovery.PacketNumberSpace, pn: u64, bytes: usize, ack_eliciting: bool) void {
-            self.pto_dirty = true;
+            self.markPtoDirty(); // #182: notify endpoint dirty-set
             // Record via Recovery (authoritative)
             const now_i = blk: {
                 var ts: std.os.linux.timespec = undefined;

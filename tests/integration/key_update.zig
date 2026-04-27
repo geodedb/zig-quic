@@ -107,11 +107,13 @@ test "RFC 9001 §6.1 - Key update initiation infrastructure" {
 }
 
 test "RFC 9001 §6.1 - Endpoint initiates key update" {
+    // SEE: tests/test_key_update_lifecycle.zig (maybeTriggerKeyUpdateOnSend toggles tx_key_phase past byte threshold)
     // SKIP: Requires key update triggering
     return error.SkipZigTest;
 }
 
 test "RFC 9001 §6.1 - Key phase bit flips on update" {
+    // SEE: tests/test_key_update_lifecycle.zig (maybeTriggerKeyUpdateOnSend toggles tx_key_phase past byte threshold)
     // SKIP: Requires key phase tracking
     return error.SkipZigTest;
 }
@@ -296,6 +298,7 @@ test "RFC 9001 §6.6 - Key update before confidentiality limit" {
 }
 
 test "RFC 9001 §6.6 - Key update before integrity limit" {
+    // SEE: tests/test_key_update_lifecycle.zig (setAeadUsageLimits writes aead_integrity_limit; endpoint config aead_integrity_limit_override flows into connection)
     // SKIP: Requires integrity limit tracking
     return error.SkipZigTest;
 }

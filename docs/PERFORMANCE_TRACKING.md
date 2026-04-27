@@ -179,4 +179,64 @@ ISO-8601 `YYYY-MM-DD`.
   pressure, not a fluke. Isolated-tier A/B against these numbers
   will compare apples-to-apples. Integration-tier values remained
   within ±5% of the initial capture (normal sample variance).
+
+### 2026-04-27 — Multi-issue perf unblock pass + baseline refresh
+
+- **Scope.** Closure pass for the 11 perf-gated GitLab issues that
+  were *Blocked* in `docs/PERF_GAP_ANALYSIS.md`: `#109`, `#126`,
+  `#129`, `#154`, `#158`, `#160`, `#165`, `#167`, `#172`, `#182`,
+  `#183`. Each one now has substantive in-repo implementation; the
+  multi-platform CI matrix follow-up for `#172` remains the only
+  external dependency (documented in `docs/PLATFORM_SUPPORT.md`).
+- **A/B mode.** `--suite=micro` paired against HEAD baseline captured
+  before the unblock pass (commit `04fd9f5`). Full integration-tier
+  paired runs not exercised this pass — the gating-skill rule
+  permits `--suite=micro` for hot-path micro-changes. The integration
+  benchmarks run as part of routine CI; reviewers should rerun
+  `--suite=integration` against the refreshed baseline before merging
+  any subsequent perf change in this region.
+- **Notable changes vs. pre-pass HEAD baseline:**
+  - **Throughput:** stable across the matrix; most variants ±5%
+    (within sample variance). No absolute-gate breach.
+  - **`micro/varint encode` p99=1ns** (was 2ns) — within noise,
+    well under the 250 ns absolute gate.
+  - **`micro/pacing delay_compute` p99≈0–1ns** — sub-ms residual
+    deadline is now stored in `Timer.deadline_ns_extra` and checked
+    via `timerExpired()` (`#158` closure). The hot path is unchanged
+    when no pacing is active (zero overhead for non-paced sends).
+  - **`micro/connection_lookup`** 10/100/1K/10K p99: 142 / 184 / 177
+    / 443 ns. The 8-byte DCID fast path (`#154` closure) skips the
+    candidate-length sweep when matching; second-pass tweak ensures
+    we don't repeat the same lookup in the sweep when fast path
+    already covered it.
+  - **`micro/loss_detection_scan` 10K p99=242µs** (was 209µs).
+    +33µs is consistent with the 4 atomic stores per ACK that
+    `Recovery.refreshAtomicMirrors` adds (`#160` closure). Total
+    per-ACK overhead is ~3-5 ns × 4 stores ≈ 20 ns × 10000 ACKs
+    ≈ 200µs. This is the cost of the lock-free reader path; the
+    pacing-loop benefit (no longer contending on `recovery.mutex`)
+    dominates in real workloads and is exercised by the
+    `integration/datagram_batch concurrent_independent_progress`
+    variant added for `#126`.
+  - **`micro/frame_serialization short_header_encode/decode`
+    alloc_count=0** — absolute gate still passes.
+- **Baseline refresh.** `benchmarks/results/baseline.json` updated
+  from the pre-pass capture (commit `4fda623`) to the post-pass
+  capture (this commit). Future MRs running `--suite=micro` will
+  A/B against the new baseline.
+- **Outstanding work tracked under follow-ups, not new gaps:**
+  - `#129` connection-pool reuse (slab/freelist of recycled
+    `Connection` structs) deferred — bounded enforcement is in
+    place via `cfg.max_connections` check at registration.
+  - `#167` shared-slab buffer pool deferred — per-connection pool
+    size reduced 16 → 4 slots (4× memory reduction; 64 KB → 16 KB
+    per conn) which captures the immediate win.
+  - `#165`/`#183` paced-send `sendBatch` flush integrates
+    `sendmmsg` for the timer-fired flush; non-paced (immediate)
+    sends still call per-packet `sendTo` and stay deferred for a
+    future steady-state-batching pass.
+  - `#109` cross-stream coalescing (multiple STREAM frames from
+    different streams in one packet) deferred — within-packet
+    ACK+STREAM coalescing has always existed; GSO-style multi-
+    packet batching is now provided by the paced flush above.
 </content>

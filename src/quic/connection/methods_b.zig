@@ -436,6 +436,18 @@ pub fn bind(comptime Connection: type) type {
             // standalone ACK-only datagrams and speeds peer-side loss recovery.
             // The ACK is written first because non-ack-eliciting frames (ACK)
             // should precede ack-eliciting frames (STREAM) per convention.
+            //
+            // #109 closure note (within-packet coalescing): we already coalesce
+            // ACK + STREAM here; the 2 KiB `frame_storage` buffer easily fits
+            // both a 4-range ACK (~50 B) and a 1300 B max-payload STREAM frame.
+            // GSO-style multi-packet batching is provided by the paced-send
+            // flush in `endpoint.processExpiredTimers` (#165/#183 closure)
+            // which collects up to 16 paced datagrams per `sendmmsg` call.
+            // Cross-stream coalescing (multiple STREAM frames from different
+            // streams in one packet) is a future enhancement — the frame
+            // builder already supports it, but `writeStream` currently emits
+            // exactly one STREAM frame per call. See PERF_GAP_ANALYSIS for
+            // the next step.
             if (self.pn_app.have_any) {
                 const now_ns: u64 = @intCast(blk3: {
                     var ts: std.os.linux.timespec = undefined;
@@ -793,7 +805,7 @@ pub fn bind(comptime Connection: type) type {
         /// Handle acknowledgment in a specific PN space including RTT update, loss detection,
         /// ECN counters, key update finalization, and PMTUD probe validation.
         pub fn onAckReceivedSpace(self: *Connection, space: recovery.PacketNumberSpace, largest: u64, first_range: u64, ranges: []const frame.AckRange, ecn: ?frame.EcnCounts) void {
-            self.pto_dirty = true;
+            self.markPtoDirty(); // #182: notify endpoint dirty-set
             // Build list of acked PNs from ACK ranges per RFC 9000 §13.2.3
             var buf: [256]u64 = undefined; // supports reasonably many acked packets per event
             var count: usize = 0;
@@ -896,7 +908,7 @@ pub fn bind(comptime Connection: type) type {
 
         /// cancelPtoInitial: Stop active Initial PTO timer and reset its backoff.
         pub fn cancelPtoInitial(self: *Connection, ep: anytype) void {
-            self.pto_dirty = true;
+            self.markPtoDirty(); // #182: notify endpoint dirty-set
             if (self.pto_initial_active) {
                 if (self.pto_initial_id != 0) _ = ep.cancelTimer(self.pto_initial_id);
                 self.pto_initial_active = false;
@@ -905,7 +917,7 @@ pub fn bind(comptime Connection: type) type {
         }
         /// cancelPtoHandshake: Stop active Handshake PTO timer and reset its backoff.
         pub fn cancelPtoHandshake(self: *Connection, ep: anytype) void {
-            self.pto_dirty = true;
+            self.markPtoDirty(); // #182: notify endpoint dirty-set
             if (self.pto_handshake_active) {
                 if (self.pto_handshake_id != 0) _ = ep.cancelTimer(self.pto_handshake_id);
                 self.pto_handshake_active = false;
@@ -914,7 +926,7 @@ pub fn bind(comptime Connection: type) type {
         }
         /// cancelPtoApp: Stop active Application PTO timer and reset its backoff.
         pub fn cancelPtoApp(self: *Connection, ep: anytype) void {
-            self.pto_dirty = true;
+            self.markPtoDirty(); // #182: notify endpoint dirty-set
             if (self.pto_app_active) {
                 if (self.pto_app_id != 0) _ = ep.cancelTimer(self.pto_app_id);
                 self.pto_app_active = false;

@@ -102,6 +102,11 @@ test "pmtud pacing: paced send occurs under NewReno and CUBIC when cwnd is parti
             // Arrange cwnd/bytes_in_flight to trigger pacing but not block on cwnd
             c.rec.cc.cwnd = 5000;
             c.rec.cc.bytes_in_flight = 3500; // >= cwnd/2 -> pacing delay; +1400 <= 5000 so not blocked
+            // Smoothed RTT must be non-zero for computePacingDelayNs to return >0.
+            c.rec.rtt.smoothed_rtt_ns = 50 * std.time.ns_per_ms;
+            // Refresh lock-free mirrors so senderPaced sees these values via
+            // cwndSnapshot()/bytesInFlightSnapshot() (#160 closure).
+            c.rec.refreshAtomicMirrors();
 
             // No datagrams captured yet
             try std.testing.expectEqual(@as(usize, 0), ep.captureLen());

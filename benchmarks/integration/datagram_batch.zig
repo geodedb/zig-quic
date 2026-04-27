@@ -564,4 +564,11 @@ pub const scenarios = [_]common.ScenarioSpec{
     .{ .name = "integration/datagram_batch", .variant = "batch_1", .iterations = 1024, .warmup_iterations = 0, .connection_count = 1 },
     .{ .name = "integration/datagram_batch", .variant = "batch_16", .iterations = 1024, .warmup_iterations = 0, .connection_count = 16 },
     .{ .name = "integration/datagram_batch", .variant = "batch_64", .iterations = 1024, .warmup_iterations = 0, .connection_count = 64 },
+    // #126 closure: explicit independent-progress variant. 32 concurrent
+    // flooder clients pumping 4096 packets total ensures that the endpoint
+    // mutex is contended across many independent connections; the per-
+    // datagram p99 stays bounded because mu is released between packets in
+    // the post-fix batch loop. This row is the regression evidence
+    // documented in PERF_GAP_ANALYSIS.md against a future #126 reopen.
+    .{ .name = "integration/datagram_batch", .variant = "concurrent_independent_progress", .iterations = 4096, .warmup_iterations = 0, .connection_count = 32 },
 };

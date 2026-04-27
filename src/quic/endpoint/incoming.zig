@@ -520,6 +520,16 @@ pub fn processInitial(
             .exempt_localhost = ctx.cfg.exempt_localhost,
         };
 
+        // #129 closure: enforce bounded connection allocation. `cfg.max_connections`
+        // sets the upper limit; once reached, drop the new Initial silently
+        // (RFC 9000 §10.1 allows servers to refuse new connections under
+        // overload). The drop is the controlled exhaustion path; the
+        // existing connection table size acts as the bound.
+        if (ctx.conns.count() >= ctx.cfg.max_connections) {
+            logger.debugPrint("[INCOMING] connection limit reached ({d}); dropping new Initial\n", .{ctx.cfg.max_connections});
+            return;
+        }
+
         // Create and initialize server connection
         const c_new = server_mod.createServerConnection(
             ctx.allocator,

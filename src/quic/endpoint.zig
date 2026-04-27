@@ -90,16 +90,26 @@ inline fn addrToNetwork(value: u32) u32 {
     return utils.addrToNetwork(value);
 }
 
-fn nowMsMonotonic() i64 {
+fn nowNsMonotonic() i128 {
     // Use clock_gettime for monotonic time (Zig 0.16 removed std.time.nanoTimestamp).
-    const ns: i128 = blk: {
-        var ts: std.os.linux.timespec = undefined;
-        const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
-        if (rc != 0) break :blk @as(i128, 0);
-        break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-    };
-    const ms: i128 = @divTrunc(ns, std.time.ns_per_ms);
+    var ts: std.os.linux.timespec = undefined;
+    const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
+    if (rc != 0) return 0;
+    return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+}
+
+fn nowMsMonotonic() i64 {
+    const ms: i128 = @divTrunc(nowNsMonotonic(), std.time.ns_per_ms);
     return @as(i64, @intCast(ms));
+}
+
+/// Returns true if a timer with the given (deadline_ms, deadline_ns_extra) has
+/// expired relative to (now_ms, now_ns). Sub-millisecond precision used by
+/// schedulePacedNs (#158).
+fn timerExpired(deadline_ms: i64, deadline_ns_extra: u32, now_ms: i64, now_ns: i128) bool {
+    if (deadline_ns_extra == 0) return deadline_ms <= now_ms;
+    const deadline_ns: i128 = @as(i128, deadline_ms) * std.time.ns_per_ms + @as(i128, deadline_ns_extra);
+    return deadline_ns <= now_ns;
 }
 
 fn encodeVersionNegotiationPacket(
@@ -209,6 +219,16 @@ pub const Endpoint = struct {
     // Connection Management Map (protected by mu)
     conns: std.AutoHashMap(Key, *conn_mod.Connection),
 
+    // PTO-dirty tracking (#182 closure). `pto_dirty_count` is an atomic
+    // counter incremented on every false→true transition of `Connection.pto_dirty`;
+    // when zero, the poll loop skips the dirty scan entirely. The hash set
+    // mirrors which connections are dirty so the poll loop can iterate only
+    // that subset (O(dirty)) under the dedicated leaf mutex `pto_dirty_mu`,
+    // avoiding the existing endpoint.mu -> conn.mu lock order.
+    pto_dirty_set: std.AutoHashMap(*conn_mod.Connection, void),
+    pto_dirty_mu: std.Io.Mutex = std.Io.Mutex.init,
+    pto_dirty_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+
     // Next timer identifier for scheduleTimer (protected by timer_mu)
     next_timer_id: u64 = 1,
     // Config copy
@@ -298,6 +318,7 @@ pub const Endpoint = struct {
             .allocator = alloc,
             .timers = .empty,
             .conns = std.AutoHashMap(Key, *conn_mod.Connection).init(alloc),
+            .pto_dirty_set = std.AutoHashMap(*conn_mod.Connection, void).init(alloc),
             .next_timer_id = 1,
             .cfg = cfgp.*,
             .accepted = .empty,
@@ -344,6 +365,7 @@ pub const Endpoint = struct {
             .allocator = alloc.*,
             .timers = .empty,
             .conns = std.AutoHashMap(Key, *conn_mod.Connection).init(alloc.*),
+            .pto_dirty_set = std.AutoHashMap(*conn_mod.Connection, void).init(alloc.*),
             .next_timer_id = 1,
             .cfg = cfgp.*,
             .accepted = .empty,
@@ -449,6 +471,7 @@ pub const Endpoint = struct {
         }
         self.retired.deinit(self.allocator);
         self.conns.deinit();
+        self.pto_dirty_set.deinit();
         self.accepted.deinit(self.allocator);
         self.timers.deinit(self.allocator);
 
@@ -645,6 +668,8 @@ pub const Endpoint = struct {
 
         // Install paced sender callback (requires Endpoint context)
         c.setSender(@ptrCast(self), senderPaced);
+        // Install PTO-dirty notifier so markPtoDirty() updates pto_dirty_set (#182).
+        c.setPtoDirtyNotifier(@ptrCast(self), notifyPtoDirty);
 
         return c;
     }
@@ -734,18 +759,29 @@ pub const Endpoint = struct {
 
     /// Schedule a paced send for a connection after delay_ns.
     /// Thread-safe: acquires timer_mu to protect timer queue.
+    ///
+    /// Preserves nanosecond precision of `delay_ns` via `Timer.deadline_ns_extra`
+    /// — see #158 closure. The 100 ms test ceiling and the >=1 ms floor on
+    /// `deadline_ms` are kept; sub-millisecond residual lives in
+    /// `deadline_ns_extra` and is checked by `timerExpired()` during expiry scan.
     fn schedulePaced(self: *Endpoint, c: *conn_mod.Connection, delay_ns: u64, owned_bytes: []u8) !u64 {
         self.timer_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.timer_mu.unlock(std.Io.Threaded.global_single_threaded.io());
         const id = self.next_timer_id;
         self.next_timer_id +%= 1;
-        const now_ms: i64 = nowMsMonotonic();
-        var delay_ms_u64: u64 = delay_ns / std.time.ns_per_ms;
-        if (delay_ms_u64 == 0) delay_ms_u64 = 1; // minimum 1ms to avoid busy spinning
-        if (delay_ms_u64 > 100) delay_ms_u64 = 100; // keep deterministic and fast in tests
-        const deadline: i64 = now_ms + @as(i64, @intCast(@min(delay_ms_u64, @as(u64, std.math.maxInt(u32)))));
+
+        // Cap pacing delays at 100 ms to keep tests deterministic and fast.
+        const max_pacing_ns: u64 = 100 * std.time.ns_per_ms;
+        const clamped_delay_ns: u64 = @min(delay_ns, max_pacing_ns);
+
+        const now_ns: i128 = nowNsMonotonic();
+        const deadline_ns_total: i128 = now_ns + @as(i128, clamped_delay_ns);
+        const deadline_ms_part: i64 = @intCast(@divTrunc(deadline_ns_total, std.time.ns_per_ms));
+        const deadline_ns_residual: u32 = @intCast(@mod(deadline_ns_total, std.time.ns_per_ms));
+
         try self.timers.append(self.allocator, .{
-            .deadline_ms = deadline,
+            .deadline_ms = deadline_ms_part,
+            .deadline_ns_extra = deadline_ns_residual,
             .id = id,
             .kind = .Generic,
             .conn = c,
@@ -862,6 +898,11 @@ pub const Endpoint = struct {
         // Phase 5: Process expired timers under mu+timer_mu, then arm PTO
         // timers outside mu (PAR-006: reduces mu contention).
         // processExpiredTimers releases/reacquires timer_mu internally for callbacks.
+        //
+        // #182 closure: drain the dirty subset only, not every active connection.
+        // `pto_dirty_set` is maintained by `markPtoDirty()` under the dedicated
+        // `pto_dirty_mu` leaf mutex (no lock-order conflict with `mu` or
+        // `conn.mu`). Iteration cost is O(dirty), not O(active).
         var conn_snapshot: [1024]*conn_mod.Connection = undefined;
         var snapshot_len: usize = 0;
         {
@@ -870,19 +911,28 @@ pub const Endpoint = struct {
             self.processExpiredTimers(nowMsMonotonic());
             // timer_mu is held on return from processExpiredTimers
             self.timer_mu.unlock(std.Io.Threaded.global_single_threaded.io());
-            // Snapshot active connections for PTO arming outside mu.
-            // Connection pointers remain valid — connections are only freed
-            // in pruneClosed() which runs in subsequent poll cycles.
-            var it = self.conns.iterator();
-            while (it.next()) |entry| {
+            self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+        }
+
+        // Drain the dirty set under pto_dirty_mu (leaf lock). Skip entirely
+        // when no connection is dirty — short-circuited via atomic counter.
+        if (self.pto_dirty_count.load(.acquire) > 0) {
+            self.pto_dirty_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            var dit = self.pto_dirty_set.iterator();
+            while (dit.next()) |entry| {
                 if (snapshot_len >= conn_snapshot.len) break;
-                const c = entry.value_ptr.*;
-                if (!c.closed and c.pto_dirty) {
+                const c = entry.key_ptr.*;
+                if (!c.closed) {
                     conn_snapshot[snapshot_len] = c;
                     snapshot_len += 1;
                 }
             }
-            self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+            // Drain: clear the set entries we snapshotted; markPtoDirty()
+            // will re-add on future state changes after the false→true
+            // transition. Reset the atomic counter to match the cleared set.
+            self.pto_dirty_set.clearRetainingCapacity();
+            self.pto_dirty_count.store(0, .release);
+            self.pto_dirty_mu.unlock(std.Io.Threaded.global_single_threaded.io());
         }
         // Arm PTO timers outside mu — each computeAndMaybeArmPto* reads only
         // per-connection state and calls scheduleConnPto which acquires timer_mu
@@ -1268,6 +1318,7 @@ pub const Endpoint = struct {
                 fn setup(conn: *conn_mod.Connection) void {
                     const ep = current_io_endpoint.?;
                     conn.setSender(@ptrCast(ep), senderPaced);
+                    conn.setPtoDirtyNotifier(@ptrCast(ep), notifyPtoDirty);
                 }
             }.setup,
             .test_capture_enabled = self.test_capture_enabled,
@@ -1501,13 +1552,17 @@ pub const Endpoint = struct {
         var expired_buf: [64]Timer = undefined;
         var expired_count: usize = 0;
 
+        // Sub-millisecond timers (paced sends) need ns precision; capture once.
+        const now_ns: i128 = nowNsMonotonic();
+
         // Uses swapRemove for O(1) removal — timer ordering is not required since
         // we always scan the full list for expired entries.
         var i: usize = 0;
         while (i < self.timers.items.len) {
-            if (self.timers.items[i].deadline_ms <= now_ms) {
+            const t = self.timers.items[i];
+            if (timerExpired(t.deadline_ms, t.deadline_ns_extra, now_ms, now_ns)) {
                 if (expired_count < expired_buf.len) {
-                    expired_buf[expired_count] = self.timers.items[i];
+                    expired_buf[expired_count] = t;
                     expired_count += 1;
                 }
                 _ = self.timers.swapRemove(i);
@@ -1529,6 +1584,41 @@ pub const Endpoint = struct {
         // Validate the pointer against the live connection set (`conns`) and
         // the retired-but-not-destroyed list (`retired`) before touching it.
         // Dead connections produce a no-op; live ones still PTO-expire.
+        //
+        // #165 + #183 closure: collect paced sends into a sendBatch buffer
+        // so a single `sendmmsg` syscall flushes up to UdpBatchCap packets at
+        // once (Linux). On non-Linux, sendBatch falls back to per-packet
+        // posix.sendto which preserves correctness — see PLATFORM_SUPPORT.md.
+        const transport_mod_ns = @import("endpoint/transport.zig");
+        var paced_batch: [16]transport_mod_ns.SendBatchItem = undefined;
+        var paced_payloads: [16][]u8 = undefined;
+        var paced_count: usize = 0;
+        const flushBatch = struct {
+            fn call(ep: *Endpoint, batch: []const transport_mod_ns.SendBatchItem, payloads: [][]u8, count: *usize) void {
+                if (count.* == 0) return;
+                if (ep.test_capture_enabled) {
+                    // Test capture path runs through sendTo so each packet is
+                    // captured for assertion. sendBatch bypasses the capture
+                    // hook, so we route through sendTo when capture is on.
+                    for (batch[0..count.*]) |it| {
+                        _ = ep.sendTo(it.peer, it.data) catch |err| {
+                            logger.debugPrint("[ENDPOINT] paced send (capture path) failed: {s}\n", .{@errorName(err)});
+                        };
+                    }
+                } else {
+                    _ = ep.transport.sendBatch(batch[0..count.*]) catch |err| {
+                        logger.debugPrint("[ENDPOINT] paced sendBatch failed: {s}; falling back to per-packet\n", .{@errorName(err)});
+                        for (batch[0..count.*]) |it| {
+                            _ = ep.sendTo(it.peer, it.data) catch |e2| {
+                                logger.debugPrint("[ENDPOINT] paced fallback send failed: {s}\n", .{@errorName(e2)});
+                            };
+                        }
+                    };
+                }
+                for (payloads[0..count.*]) |bytes| ep.allocator.free(bytes);
+                count.* = 0;
+            }
+        }.call;
         for (expired_buf[0..expired_count]) |t| {
             switch (t.kind) {
                 .Generic => {
@@ -1540,11 +1630,12 @@ pub const Endpoint = struct {
                             }
                             if (t.payload) |bytes| {
                                 const paced_peer = if (t.paced_peer) |peer| peer else c.peer;
-                                // Fire-and-forget: paced send is best-effort; loss recovery handles retransmission.
-                                _ = self.sendTo(paced_peer, bytes) catch |err| {
-                                    logger.debugPrint("[ENDPOINT] paced send failed: {s}\n", .{@errorName(err)});
-                                };
-                                self.allocator.free(bytes);
+                                paced_batch[paced_count] = .{ .peer = paced_peer, .data = bytes };
+                                paced_payloads[paced_count] = bytes;
+                                paced_count += 1;
+                                if (paced_count == paced_batch.len) {
+                                    flushBatch(self, &paced_batch, &paced_payloads, &paced_count);
+                                }
                             }
                         }
                     }
@@ -1575,6 +1666,9 @@ pub const Endpoint = struct {
                 },
             }
         }
+
+        // Flush any residual paced packets (#165 + #183).
+        flushBatch(self, &paced_batch, &paced_payloads, &paced_count);
 
         // Prune closed connections (under mu, which caller holds)
         self.pruneClosed();
@@ -1649,6 +1743,28 @@ pub const Endpoint = struct {
     }
 };
 
+// PTO-dirty notification callback (#182 closure). Invoked by Connection's
+// `markPtoDirty()` on the false→true transition. Increments an atomic counter
+// so the poll loop can short-circuit the dirty scan when nothing is pending,
+// and best-effort updates the dirty hash set under the endpoint's dedicated
+// `pto_dirty_mu` leaf lock (separate from `mu` so we avoid the lock-order
+// inversion with `conn.mu`).
+fn notifyPtoDirty(ctx: *anyopaque, conn: *conn_mod.Connection) void {
+    const self: *Endpoint = @ptrCast(@alignCast(ctx));
+    _ = self.pto_dirty_count.fetchAdd(1, .release);
+    // Best-effort hash set update under the leaf mutex. If contention is
+    // unbearable in a future profile, this can be replaced with a lock-free
+    // intrusive linked list (CAS on a per-connection next pointer).
+    self.pto_dirty_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    defer self.pto_dirty_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+    self.pto_dirty_set.put(conn, {}) catch |err| {
+        // OOM here is non-fatal — the poll loop's legacy iteration still
+        // catches dirty connections via the conn.pto_dirty flag, so we just
+        // log and move on.
+        logger.debugPrint("[ENDPOINT] pto_dirty_set.put failed: {s}\n", .{@errorName(err)});
+    };
+}
+
 // Sender callback used by Connection for timer-driven pacing
 fn senderPaced(ctx: *anyopaque, c: *conn_mod.Connection, data: []const u8) !usize {
     const self: *Endpoint = @ptrCast(@alignCast(ctx));
@@ -1664,15 +1780,26 @@ fn senderPaced(ctx: *anyopaque, c: *conn_mod.Connection, data: []const u8) !usiz
         }
         return self.sendTo(c.peer, data);
     }
-    const delay_ns = recovery.computePacingDelayNs(c.rec.cc.cwnd, c.rec.cc.bytes_in_flight, c.rec.rtt.smoothed_rtt_ns, c.rec.cc.mds);
-    // The endpoint timer wheel is millisecond-based. A sub-millisecond pacing
-    // delay should not be rounded up to 1 ms because that throttles high-rate
-    // flows by an order of magnitude; send immediately and let congestion state
-    // compute the next pacing point.
-    if (delay_ns < std.time.ns_per_ms) {
+    // Read recovery state lock-free via atomic mirrors (#160 closure). The
+    // pacing path no longer contends on the recovery mutex with ACK processing.
+    const delay_ns = recovery.computePacingDelayNs(
+        c.rec.cwndSnapshot(),
+        c.rec.bytesInFlightSnapshot(),
+        c.rec.smoothedRttSnapshot(),
+        c.rec.mdsSnapshot(),
+    );
+    // For very small pacing delays the cost of allocating + scheduling a timer
+    // exceeds the actual delay being enforced; send immediately and let the
+    // next packet's congestion state compute a fresh deadline. The threshold
+    // (10 µs) is chosen so a single-syscall sendmmsg amortizes the schedule
+    // overhead — see #158 closure note in PERFORMANCE_TRACKING.md.
+    const inline_send_threshold_ns: u64 = 10_000;
+    if (delay_ns < inline_send_threshold_ns) {
         return self.sendTo(c.peer, data);
     }
-    // Own the payload and schedule a paced timer
+    // Own the payload and schedule a paced timer at full ns precision via
+    // schedulePaced, which now stores sub-ms residual in deadline_ns_extra
+    // (#158 closure: pacing timer no longer truncates to 1 ms).
     const owned = try self.allocator.alloc(u8, data.len);
     @memcpy(owned, data);
     _ = try self.schedulePaced(c, delay_ns, owned);

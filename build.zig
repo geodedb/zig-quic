@@ -1826,6 +1826,17 @@ pub fn build(b: *std.Build) void {
         const run_test_rx_ku = b.addRunArtifact(test_rx_ku);
         test_step.dependOn(&run_test_rx_ku.step);
 
+        // Key update lifecycle (RFC 9001 §5.4 / §6 / §6.6) -- closes the
+        // executable-coverage half of GAP-0013 against deriveNextTrafficSecret,
+        // setAeadUsageLimits, and maybeTriggerKeyUpdateOnSend.
+        const test_ku_lifecycle = addTst(b, testlog_mod, compat_mod, "tests/test_key_update_lifecycle.zig", target, optimize);
+        test_ku_lifecycle.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        test_ku_lifecycle.root_module.addImport("quic_packet", quic_packet_mod);
+        test_ku_lifecycle.root_module.addImport("quic_tls", quic_tls_mod);
+        test_ku_lifecycle.root_module.addImport("quic_key_update", conn_key_update_mod);
+        const run_test_ku_lifecycle = b.addRunArtifact(test_ku_lifecycle);
+        test_step.dependOn(&run_test_ku_lifecycle.step);
+
         // PMTUD/DPLPMTUD probe sizing + ICMP clamp tests
         const test_pmtud = addTst(b, testlog_mod, compat_mod, "tests/test_pmtud.zig", target, optimize);
         test_pmtud.root_module.addImport("quic_api", quic_api_mod);

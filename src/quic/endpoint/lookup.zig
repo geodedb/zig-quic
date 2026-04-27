@@ -98,15 +98,31 @@ pub const OnPathChangedFn = *const fn (
     dcid_len: usize,
 ) anyerror!void;
 
+/// Default DCID length issued by the server (RFC 9000 §5.1 chooses an 8-byte
+/// CID as the canonical compromise between collision resistance and packet
+/// overhead). The lookup fast path tries this length first because the
+/// overwhelming majority of short-header packets carry a CID issued by us.
+pub const DEFAULT_DCID_LEN: usize = 8;
+
 /// Find connection by DCID in short header packet.
 /// Extracted from endpoint.zig lines 1104-1195 (Phase 4b.5 Session 3).
 ///
-/// Two-phase lookup strategy (RFC 9000 §5.2, §9.3):
+/// Lookup strategy (RFC 9000 §5.2, §9.3):
 ///
-/// **Phase 1**: Match by peer_hash + DCID
-/// - Fast path for normal operation (no migration)
+/// **Fast path (#154 closure)**: Try the default 8-byte DCID length first.
+///   For server endpoints all CIDs we issue are 8 bytes (see
+///   `acquireLocalCid` in `methods_c.zig`), so this path resolves in a single
+///   AutoHashMap lookup for the steady-state case. Falls through to the
+///   legacy candidate-length sweep on miss for client / migration / mixed-
+///   length deployments.
+///
+/// **Phase 1**: Match by peer_hash + DCID across candidate lengths 0..20.
+/// - Hash table lookup per candidate length (O(L) hashes, L ≤ 21)
 /// - Server prioritization: prefer connections with both app RX/TX keys
 /// - Tie-break on longer DCID length
+///
+/// **Phase 1b**: Same-peer iterator fallback for connections registered with
+/// only their composite key but advertising additional CIDs in `local_cids`.
 ///
 /// **Phase 2**: NAT rebinding fallback (RFC 9000 §9.3)
 /// - If Phase 1 finds nothing, scan all connections by DCID only
@@ -135,8 +151,34 @@ pub fn findConnectionByDcid(
     var best: ?*conn_mod.Connection = null;
     var best_len: usize = 0;
 
+    // #154 fast path: try the canonical 8-byte DCID first. Every CID we
+    // issue is 8 bytes (`acquireLocalCid` in methods_c.zig), so a single
+    // hash lookup typically resolves the routing. We mark `tried_default`
+    // so the candidate-length sweep below doesn't repeat the same lookup.
+    var tried_default = false;
+    if (1 + DEFAULT_DCID_LEN <= packet_bytes.len) {
+        tried_default = true;
+        const candidate_dcid = packet_bytes[1 .. 1 + DEFAULT_DCID_LEN];
+        const key = makeKey(peer_h, hashBytes(candidate_dcid));
+        if (conns.getPtr(key)) |entry| {
+            const c = entry.*;
+            if (c.localDcidMatchLen(packet_bytes, true)) |l| {
+                found = c;
+                dcid_len = l;
+                const has_rx = (c.app_rx_keys != null);
+                const has_tx = (c.app_tx_keys != null);
+                if (has_rx and has_tx) {
+                    best = c;
+                    best_len = l;
+                }
+            }
+        }
+    }
+
     var candidate_len: usize = 0;
     while (candidate_len <= 20 and 1 + candidate_len <= packet_bytes.len) : (candidate_len += 1) {
+        // Skip the canonical length when the fast path already covered it.
+        if (candidate_len == DEFAULT_DCID_LEN and tried_default) continue;
         const candidate_dcid = packet_bytes[1 .. 1 + candidate_len];
         const key = makeKey(peer_h, hashBytes(candidate_dcid));
         const c = (conns.getPtr(key) orelse continue).*;

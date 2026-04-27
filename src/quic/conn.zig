@@ -445,7 +445,26 @@ pub const StreamTxPacket = struct {
 };
 
 const PacketBufferPool = struct {
-    const slot_count: usize = 16;
+    // #167 closure: per-connection pool size reduced from 16 → 4 slots.
+    //
+    // Memory model:
+    //   Before: 16 × 4096 B = 64 KB per connection → 640 MB at 10K conns
+    //   After:   4 × 4096 B = 16 KB per connection → 160 MB at 10K conns (4x reduction)
+    //
+    // Rationale: each checkout-release pair is wrapped in `defer`, so the
+    // buffer is returned to the pool the moment the calling function returns.
+    // Per-connection peak concurrent in-flight buffers is bounded by call
+    // depth on a single Connection (typically 1, occasionally 2 during
+    // ACK+STREAM coalescing or PMTUD probes) — 4 slots gives 2x headroom.
+    //
+    // If this turns out to be too tight in a future workload, the next
+    // step is a shared slab (single global hashmap of slabs keyed by
+    // worker thread, with atomic free-list per slab) so memory scales
+    // with active sender count, not connection count. The interface
+    // here is intentionally compatible with that migration: `checkout`
+    // returns a slot and `release` returns it; nothing leaks the pool
+    // identity to callers.
+    const slot_count: usize = 4;
     const slot_size: usize = 4096;
 
     slots: [slot_count][slot_size]u8 = undefined,
@@ -563,6 +582,11 @@ pub const Connection = struct {
     // Optional sender callback (set by Endpoint) for paced sending
     sender_ctx: ?*anyopaque = null,
     sender_fn: ?SendFn = null,
+    // Optional PTO-dirty notification (set by Endpoint, #182 closure). Invoked
+    // by `markPtoDirty()` so the endpoint can maintain an O(dirty) iteration
+    // set instead of scanning every active connection per poll cycle.
+    pto_dirty_notify_ctx: ?*anyopaque = null,
+    pto_dirty_notify_fn: ?*const fn (ctx: *anyopaque, conn: *Connection) void = null,
     // Derived handshake traffic secrets (once both hellos present)
     hs_client: ?ks.Secret = null,
     hs_server: ?ks.Secret = null,
@@ -1629,6 +1653,35 @@ pub const Connection = struct {
     pub fn setSender(self: *Connection, ctx: *anyopaque, f: SendFn) void {
         self.sender_ctx = ctx;
         self.sender_fn = f;
+    }
+
+    /// Install PTO-dirty notification callback (#182). The endpoint sets this
+    /// so it can maintain an O(dirty) set of connections needing PTO arming
+    /// instead of scanning all active connections every poll cycle. The
+    /// callback is invoked by `markPtoDirty()` and should be cheap (insert
+    /// into a hashset under endpoint mu).
+    pub fn setPtoDirtyNotifier(
+        self: *Connection,
+        ctx: *anyopaque,
+        f: *const fn (ctx: *anyopaque, conn: *Connection) void,
+    ) void {
+        self.pto_dirty_notify_ctx = ctx;
+        self.pto_dirty_notify_fn = f;
+    }
+
+    /// Mark the connection as needing PTO timer recomputation. This is the
+    /// canonical setter for `pto_dirty`: it sets the flag and notifies the
+    /// endpoint via `pto_dirty_notify_fn` so the dirty-set is kept current.
+    /// All `pto_dirty = true` assignments in the codebase route through here.
+    pub fn markPtoDirty(self: *Connection) void {
+        // Setter-side memoization: only notify on the false→true transition.
+        // Repeated calls while already dirty are a no-op, which is what the
+        // hashset-based dirty list expects.
+        if (self.pto_dirty) return;
+        self.pto_dirty = true;
+        if (self.pto_dirty_notify_fn) |f| {
+            if (self.pto_dirty_notify_ctx) |ctx| f(ctx, self);
+        }
     }
 
     /// Configure optional AEAD usage limits overriding cipher defaults (tests / policy tuning).

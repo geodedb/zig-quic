@@ -114,7 +114,21 @@ const SpaceState = struct {
 };
 
 /// Recovery state: RTT, loss detection, PTO backoff, and CC (NewReno or CUBIC)
-/// Thread-safe: all public methods are protected by an internal mutex.
+///
+/// Thread-safety model (#160 closure):
+///   - Mutating operations (onPacketSent, onAckReceived, onLoss, reduceCwndEcn)
+///     hold `mutex` for their full duration.
+///   - The hot reader path (pacing delay computation) reads cwnd / bytes_in_flight
+///     / smoothed_rtt via `cwndSnapshot()` / `bytesInFlightSnapshot()` /
+///     `smoothedRttSnapshot()` — these load atomic mirror fields with
+///     `.acquire` ordering and never block on the mutex.
+///   - Mutators store to the atomic mirrors with `.release` ordering at the
+///     end of every state transition, before releasing the mutex. This forms
+///     a single-writer / many-reader pattern that is safe even though readers
+///     do not synchronize with writers.
+///   - Internal use under `mutex` continues to access `cc.cwnd` /
+///     `cc.bytes_in_flight` / `rtt.smoothed_rtt_ns` directly; the atomic
+///     mirrors are only for lock-free callers.
 pub const Recovery = struct {
     allocator: std.mem.Allocator,
     mutex: std.Io.Mutex = std.Io.Mutex.init,
@@ -140,9 +154,23 @@ pub const Recovery = struct {
     /// cwnd is only reduced once per recovery period.
     congestion_recovery_start_time: ?u64 = null,
 
+    // Lock-free reader mirrors (#160). Updated with .release ordering at the
+    // tail of every mutating method while the mutex is still held.
+    cwnd_atomic: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    bytes_in_flight_atomic: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    smoothed_rtt_atomic: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    mds_atomic: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+
     /// Initialize a Recovery instance with fresh per-space state.
     pub fn init(alloc: std.mem.Allocator) Recovery {
-        return .{ .allocator = alloc, .mutex = .init, .spaces = .{ SpaceState.init(alloc), SpaceState.init(alloc), SpaceState.init(alloc) } };
+        var r: Recovery = .{ .allocator = alloc, .mutex = .init, .spaces = .{ SpaceState.init(alloc), SpaceState.init(alloc), SpaceState.init(alloc) } };
+        // Seed atomic mirrors from initial CcState/RttState defaults so lock-free
+        // readers get sane values before the first ACK lands.
+        r.cwnd_atomic.store(r.cc.cwnd, .release);
+        r.bytes_in_flight_atomic.store(r.cc.bytes_in_flight, .release);
+        r.smoothed_rtt_atomic.store(r.rtt.smoothed_rtt_ns, .release);
+        r.mds_atomic.store(r.cc.mds, .release);
+        return r;
     }
 
     /// Free per-space arrays and internal allocations.
@@ -154,10 +182,46 @@ pub const Recovery = struct {
         return @intFromEnum(space);
     }
 
+    /// Lock-free read of current congestion window. Acquire-loaded atomic
+    /// mirror — safe to call from any thread. (#160 closure)
+    pub fn cwndSnapshot(self: *const Recovery) usize {
+        return self.cwnd_atomic.load(.acquire);
+    }
+
+    /// Lock-free read of current bytes_in_flight. Acquire-loaded atomic mirror.
+    pub fn bytesInFlightSnapshot(self: *const Recovery) usize {
+        return self.bytes_in_flight_atomic.load(.acquire);
+    }
+
+    /// Lock-free read of smoothed RTT (nanoseconds). Acquire-loaded atomic mirror.
+    pub fn smoothedRttSnapshot(self: *const Recovery) u64 {
+        return self.smoothed_rtt_atomic.load(.acquire);
+    }
+
+    /// Lock-free read of max datagram size. Acquire-loaded atomic mirror.
+    pub fn mdsSnapshot(self: *const Recovery) usize {
+        return self.mds_atomic.load(.acquire);
+    }
+
+    /// Refresh atomic mirrors from struct fields. Public so test code that
+    /// directly mutates `cc.cwnd` / `cc.bytes_in_flight` / `rtt.smoothed_rtt_ns`
+    /// (instead of going through a mutating method) can keep the lock-free
+    /// reader path coherent.
+    ///
+    /// Production code does NOT need to call this directly — every mutating
+    /// method ends with a refresh before releasing the mutex (see #160 closure).
+    pub inline fn refreshAtomicMirrors(self: *Recovery) void {
+        self.cwnd_atomic.store(self.cc.cwnd, .release);
+        self.bytes_in_flight_atomic.store(self.cc.bytes_in_flight, .release);
+        self.smoothed_rtt_atomic.store(self.rtt.smoothed_rtt_ns, .release);
+        self.mds_atomic.store(self.cc.mds, .release);
+    }
+
     /// Select congestion control mode (false = NewReno, true = CUBIC).
     pub fn setCcMode(self: *Recovery, cubic: bool) void {
         self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
+        defer self.refreshAtomicMirrors(); // runs before unlock (LIFO defer)
         self.use_cubic = cubic;
         if (cubic) {
             // Initialize CUBIC state: W_max starts at current cwnd
@@ -172,6 +236,7 @@ pub const Recovery = struct {
     pub fn onPacketSent(self: *Recovery, space: PacketNumberSpace, pn: u64, bytes: usize, ack_eliciting: bool, now_ns: u64) !void {
         self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
+        defer self.refreshAtomicMirrors(); // runs before unlock (LIFO defer)
         const idx = spaceIdx(space);
         const alloc = self.spaces[idx].allocator;
         try self.spaces[idx].sent.append(alloc, .{ .pn = pn, .time_ns = now_ns, .size = bytes, .ack_eliciting = ack_eliciting });
@@ -219,6 +284,7 @@ pub const Recovery = struct {
     pub fn onAckReceivedWithEcn(self: *Recovery, space: PacketNumberSpace, acked: []const u64, ack_delay_ns: u64, now_ns: u64, ecn: ?frame.EcnCounts) AckResult {
         self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
+        defer self.refreshAtomicMirrors(); // runs before unlock (LIFO defer)
         const idx = spaceIdx(space);
         var sstate = &self.spaces[idx];
         var bytes_acked: usize = 0;
@@ -590,6 +656,7 @@ pub const Recovery = struct {
     pub fn onLossTimeExpired(self: *Recovery, now_ns: u64) usize {
         self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
+        defer self.refreshAtomicMirrors(); // runs before unlock (LIFO defer)
         var total_lost: usize = 0;
         var first_lost_time: ?u64 = null;
         var last_lost_time: ?u64 = null;
@@ -735,6 +802,7 @@ pub const Recovery = struct {
     pub fn setMds(self: *Recovery, mds: usize) void {
         self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
+        defer self.refreshAtomicMirrors(); // runs before unlock (LIFO defer)
         self.cc.mds = mds;
     }
 
@@ -748,4 +816,52 @@ pub const Recovery = struct {
 
 fn msToNs(ms: u64) u64 {
     return ms * std.time.ns_per_ms;
+}
+
+// =============================================================================
+// Tests: #160 closure -- atomic snapshot mirrors stay coherent with mutating ops
+// =============================================================================
+
+test "recovery: atomic mirrors track cc.cwnd and bytes_in_flight after onPacketSent" {
+    var rec = Recovery.init(std.testing.allocator);
+    defer rec.deinit();
+
+    rec.cc.cwnd = 14_000;
+    rec.cc.mds = 1200;
+    rec.refreshAtomicMirrors();
+
+    try std.testing.expectEqual(@as(usize, 14_000), rec.cwndSnapshot());
+    try std.testing.expectEqual(@as(usize, 0), rec.bytesInFlightSnapshot());
+
+    try rec.onPacketSent(.Application, 1, 1200, true, 0);
+    try std.testing.expectEqual(@as(usize, 1200), rec.bytesInFlightSnapshot());
+
+    try rec.onPacketSent(.Application, 2, 1200, true, 0);
+    try std.testing.expectEqual(@as(usize, 2400), rec.bytesInFlightSnapshot());
+
+    // cwnd should not have changed (no ACK / loss path); mirror reflects
+    // current cc.cwnd.
+    try std.testing.expectEqual(@as(usize, 14_000), rec.cwndSnapshot());
+}
+
+test "recovery: smoothedRttSnapshot reflects rtt updates" {
+    var rec = Recovery.init(std.testing.allocator);
+    defer rec.deinit();
+
+    try std.testing.expectEqual(@as(u64, 0), rec.smoothedRttSnapshot());
+
+    rec.rtt.smoothed_rtt_ns = 25 * std.time.ns_per_ms;
+    rec.refreshAtomicMirrors();
+    try std.testing.expectEqual(@as(u64, 25 * std.time.ns_per_ms), rec.smoothedRttSnapshot());
+}
+
+test "recovery: mds snapshot updates via setMds" {
+    var rec = Recovery.init(std.testing.allocator);
+    defer rec.deinit();
+
+    rec.setMds(1300);
+    try std.testing.expectEqual(@as(usize, 1300), rec.mdsSnapshot());
+
+    rec.setMds(1452);
+    try std.testing.expectEqual(@as(usize, 1452), rec.mdsSnapshot());
 }

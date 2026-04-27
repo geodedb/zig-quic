@@ -12,11 +12,23 @@ const posix = std.posix;
 const conn_mod = @import("quic_conn");
 
 /// Timer structure for endpoint scheduling.
+///
+/// Most timers (PTO, PMTUD, generic) operate at millisecond resolution since
+/// they're driven by RTT-scale deadlines (RFC 9002 §6.2 PTO ranges from a few
+/// ms to seconds). The pacing timer can however need sub-millisecond precision
+/// at high send rates (multi-Gbps streams with line-rate pacing), so Timer
+/// carries a `deadline_ns_extra` residual that is added to the millisecond
+/// deadline when comparing against the current time. Setting `deadline_ns_extra`
+/// to 0 preserves the legacy ms-only behavior.
 pub const Timer = struct {
     deadline_ms: i64,
     id: u64,
     kind: TimerKind = .Generic,
     conn: ?*conn_mod.Connection = null,
+    // Sub-millisecond residual in nanoseconds (range: 0 .. 999_999). When non-zero,
+    // the effective deadline is `deadline_ms * ns_per_ms + deadline_ns_extra`.
+    // Used by schedulePacedNs for high-rate pacing (#158 closure).
+    deadline_ns_extra: u32 = 0,
     // Pacing payload support (Generic kind): when paced is true and payload!=null, send on expiry
     paced: bool = false,
     payload: ?[]u8 = null,

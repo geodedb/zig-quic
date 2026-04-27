@@ -1,6 +1,6 @@
 # Quality Gap Analysis
 
-Last updated: 2026-04-26
+Last updated: 2026-04-27
 
 Repository: `gitlab.com/devnw/zig/quic`
 Scope: Full codebase quality review (Phase 1-3)
@@ -9,16 +9,16 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 ## Summary
 
 - Total findings: 31
-- Status counts: `Blocked=1`, `Closed/Implemented=30`
+- Status counts: `Planning=1`, `Closed/Implemented=30`
 - Severity totals:
   - Critical: 2 (`Open=0`, `Closed=2`)
   - High: 9 (`Open=0`, `Closed=9`)
   - Medium: 14 (`Open=0`, `Closed=14`)
-  - Low: 6 (`Blocked=1`, `Closed=5`)
+  - Low: 6 (`Planning=1`, `Closed=5`)
 
 ### Top Blocked Risks
 
-1. **#115/#177 (Low/Medium)** -- Connection struct and non-domain-aligned method split remain blocked on a staged architecture plan because this is a broad refactor with high regression surface. This pass extracted RFC 9001 key-update derivation to `src/quic/connection/key_update.zig`, but the broad method-module ownership refactor is still open in `docs/GAP_ANALYSIS.md` as GAP-0060.
+1. **#115/#177 (Low/Medium)** -- *Planning*. Connection struct and non-domain-aligned method split: the staged refactor plan landed at `docs/superpowers/plans/2026-04-26-method-module-refactor.md` (5 stages, real `wc -l` inventory, perf-gate skill referenced 5x). The plan IS the closure work for the prior "needs a staged refactor plan" blocker; execution remains future work and is gated by per-stage perf-gate runs. The broad method-module ownership refactor is still open in `docs/GAP_ANALYSIS.md` as GAP-0060.
 
 ---
 
@@ -39,7 +39,7 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 | 11 | R9 | Medium | 36 | api-contract | Heuristic endpoint role detection by port number | Transport | `endpoint.zig:270-274` | [#107](https://gitlab.com/devnw/zig/quic/-/issues/107) | Replaced port heuristic with cert_path-based detection | Core QUIC | S (20 min) | Closed / Implemented |
 | 12 | E3 | Medium | 36 | maintainability | 40+ state-corrupting `catch {}` patterns in core modules | Transport | 287 occurrences across 63 files | [#110](https://gitlab.com/devnw/zig/quic/-/issues/110) | All 75 `catch {}` patterns in `src/quic/` eliminated (phases 1+2). Phase 1 fixed ~15 critical patterns; phase 2 fixed remaining 60 with proper logging. Commit bf8cf7f audited remaining catch sites. | Core QUIC | L (4-8h) | Closed / Implemented |
 | 13 | D1-D5 | Low | 24 | docs | Documentation gaps -- no architecture doc, sparse doc comments | Docs | No `docs/ARCHITECTURE.md`; many public fns undocumented | [#113](https://gitlab.com/devnw/zig/quic/-/issues/113) | Created `docs/ARCHITECTURE.md` covering module layout, mixin pattern, migration status, threading model, data flows | Docs | Ongoing | Closed / Implemented |
-| 14 | R7-R8 | Low | 24 | architecture | Connection struct 1711 LOC, 160 fields + non-domain-aligned method split | Transport | `conn.zig` still forwards broad `methods_a/b/c` APIs; `src/quic/connection/key_update.zig:1-14` is a narrow domain extraction only | [#115](https://gitlab.com/devnw/zig/quic/-/issues/115) | Re-split by domain concern | Core QUIC | L | Blocked / Deferred |
+| 14 | R7-R8 | Low | 24 | architecture | Connection struct 1711 LOC, 160 fields + non-domain-aligned method split | Transport | `docs/superpowers/plans/2026-04-26-method-module-refactor.md` (5-stage plan, real `wc -l` inventory, perf-gate skill referenced 5x); `conn.zig` still forwards broad `methods_a/b/c` APIs; `src/quic/connection/key_update.zig:1-14` is the sole domain extraction so far | [#115](https://gitlab.com/devnw/zig/quic/-/issues/115) | Execute the 5-stage plan with per-stage perf-gate runs | Core QUIC | L | Planning |
 | 15 | E9 | Low | 16 | cleanup | Global mutable debug state -- data race, debug scaffolding | Core | Module-level mutable `var` for debug control | [#117](https://gitlab.com/devnw/zig/quic/-/issues/117) | Gated phase57 vars behind `builtin.is_test`; no-ops in production | Core QUIC | S (5 min) | Closed / Implemented |
 
 ---
@@ -93,7 +93,7 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 ### architecture
 - [#75](https://gitlab.com/devnw/zig/quic/-/issues/75) Closed.
 - [#103](https://gitlab.com/devnw/zig/quic/-/issues/103) **Closed** -- documented monolithic files as deprecated; build wires modular versions.
-- [#115](https://gitlab.com/devnw/zig/quic/-/issues/115) **Blocked / Deferred** -- Connection struct/method-module ownership refactor remains broad. `src/quic/connection/key_update.zig` is extracted, but `methods_a/b/c` still define the dominant API surface; requires staged method-module refactor plan and full regression suite.
+- [#115](https://gitlab.com/devnw/zig/quic/-/issues/115) **Planning** -- staged refactor plan landed at `docs/superpowers/plans/2026-04-26-method-module-refactor.md` (5 stages, real `wc -l` inventory, perf-gate skill referenced 5x). The plan IS the closure work for the prior "requires staged method-module refactor plan" blocker; execution remains future work and is gated by per-stage perf-gate runs. `src/quic/connection/key_update.zig` is the sole domain extraction so far; `methods_a/b/c` still define the dominant API surface.
 
 ### ci-cd
 - [#64](https://gitlab.com/devnw/zig/quic/-/issues/64) Closed.
@@ -130,7 +130,7 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 
 ### Strategic (> 5 days)
 - **Closed**: #110 (all 75 patterns eliminated across phases 1+2)
-- **Blocked / Deferred**: #115/#177 (large connection struct and method-module ownership refactor; requires staged architecture plan and regression suite)
+- **Planning**: #115/#177 -- large connection struct and method-module ownership refactor. Staged plan landed at `docs/superpowers/plans/2026-04-26-method-module-refactor.md`; execution gated by per-stage perf-gate runs.
 - Completed: #62, #70, #75, #113.
 
 ---

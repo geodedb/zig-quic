@@ -1,14 +1,14 @@
 # Resolved Gap Analysis Items
 
-Generated: 2026-04-26
+Generated: 2026-04-26 (GitLab closures landed 2026-04-27)
 
 GitLab is authoritative for issue status. This file mirrors resolved or invalidated items that were removed from `docs/GAP_ANALYSIS.md`.
 
 ## Closed During 2026-04-26 Implementation Pass
 
 ### GAP-0007: Crypto hardening audit incomplete
-- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/136
-- **Resolution status:** Implemented in repository; GitLab close/comment blocked by `glab` auth (`401 Unauthorized`, no API token configured).
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/136 (closed 2026-04-27, closure note `note_3289087096`)
+- **Resolution status:** Closed / Implemented.
 - **Resolution evidence:**
   - `docs/CRYPTO_AUDIT.md` maps current QUIC crypto-sensitive operations to code and tests.
   - `src/quic/crypto_quic.zig:158-196` now derives Retry key/IV with fallible `try` calls, validates ODCID length, bounds the Retry pseudo-packet AAD, and returns explicit errors instead of using `catch unreachable`.
@@ -18,8 +18,8 @@ GitLab is authoritative for issue status. This file mirrors resolved or invalida
 - **Verification:** `zig build test --summary failures` exited `0`; `zig build -Dfull-test-graph=true test --summary failures` exited `0` during the implementation pass; `make interop-full` exited `0` with `105` passed, `0` failed, `50` implementation/harness skips. Full advanced crypto lifecycle coverage remains open in GAP-0013 / #142.
 
 ### GAP-0055: Pre-Retry connection allocation exhaustion
-- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/188 (historical URL; `glab issue view 188` returned `404 Not Found` on 2026-04-26)
-- **Resolution status:** Implemented in repository; GitLab source-of-truth update is blocked because the historical issue is inaccessible and `glab issue create` failed due project permissions/auth.
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/188 (closed 2026-04-27, closure note `note_3289087653`)
+- **Resolution status:** Closed / Implemented.
 - **Resolution evidence:**
   - `src/quic/endpoint/incoming.zig:379-386` parses Initial token bytes before any new server connection allocation.
   - `src/quic/endpoint/incoming.zig:438-483` validates Retry tokens and sends stateless Retry before `max_connections` checks and before `createServerConnection(...)`.
@@ -391,3 +391,61 @@ The following issues are closed in GitLab and were not reopened during the 2026-
 - **GAP-0018:** https://gitlab.com/devnw/zig/quic/-/issues/149 - Retry integrity tag timing-safe comparison. Current evidence: `src/quic/packet.zig:1267` uses `std.crypto.timing_safe.eql`.
 - **GAP-0047:** https://gitlab.com/devnw/zig/quic/-/issues/155 - misleading frame handler comment. Status evidence: GitLab issue is closed.
 - **H3 plumbing issues:** https://gitlab.com/devnw/zig/quic/-/issues/132, https://gitlab.com/devnw/zig/quic/-/issues/133, https://gitlab.com/devnw/zig/quic/-/issues/134, https://gitlab.com/devnw/zig/quic/-/issues/135 - closed in GitLab. Remaining H3 adapter gap is GAP-0050.
+
+## Closed During 2026-04-27 Performance Unblock Pass
+
+### GAP-0053: Endpoint receive lock-scope proof incomplete
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/126
+- **Resolution status:** Closed / Implemented (2026-04-27).
+- **Resolution evidence:**
+  - Per-datagram lock release in `src/quic/endpoint.zig:848-856` was already in place.
+  - New `concurrent_independent_progress` variant in `benchmarks/integration/datagram_batch.zig:572` (32 flooders × 4096-packet budget) is the missing concurrent-receive regression evidence.
+  - Existing `batch_1`, `batch_16`, `batch_64` variants cover the original tail-latency scaling story and remain green.
+
+### GitLab #154: O(N) connection lookup per packet
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/154
+- **Resolution status:** Closed / Implemented (2026-04-27).
+- **Resolution evidence:**
+  - 8-byte DCID fast path lands at `src/quic/endpoint/lookup.zig:139` ahead of the candidate-length sweep.
+  - The candidate-length sweep skips `DEFAULT_DCID_LEN` when `tried_default` is set, avoiding the redundant lookup.
+  - `connection_lookup` micro-bench covers 10/100/1K/10K variants; perf-gate run on 2026-04-27 shows 10K p99 = 443 ns within sample variance of pre-pass HEAD baseline.
+
+### GitLab #158: Pacing timer truncated to 1ms granularity
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/158
+- **Resolution status:** Closed / Implemented (2026-04-27).
+- **Resolution evidence:**
+  - `src/quic/endpoint/types.zig:21` adds `Timer.deadline_ns_extra: u32` for sub-millisecond residual.
+  - `src/quic/endpoint.zig:103-115` adds `nowNsMonotonic` and `timerExpired(deadline_ms, deadline_ns_extra, now_ms, now_ns)` helpers.
+  - `schedulePaced` (`endpoint.zig:741-769`) stores ns precision; `processExpiredTimers` checks ns when `deadline_ns_extra > 0`.
+  - `senderPaced` inline-send threshold tightened from 1 ms to 10 µs since timer scheduling now has true ns precision.
+  - `tests/test_pmtud.test.pmtud pacing: paced send occurs under NewReno and CUBIC when cwnd is partially full` passes with the updated atomic-mirror refresh.
+
+### GitLab #160: Recovery mutex critical section blocks congestion reads
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/160
+- **Resolution status:** Closed / Implemented (2026-04-27).
+- **Resolution evidence:**
+  - `src/quic/recovery/recovery.zig:157-211` adds `cwnd_atomic`, `bytes_in_flight_atomic`, `smoothed_rtt_atomic`, `mds_atomic` lock-free reader mirrors with `.acquire`/`.release` ordering.
+  - Public `cwndSnapshot()`, `bytesInFlightSnapshot()`, `smoothedRttSnapshot()`, `mdsSnapshot()` getters never block on `mutex`.
+  - Mutating methods (`onPacketSent`, `onAckReceivedWithEcn`, `onLossTimeExpired`, `setMds`, `setCcMode`) call `refreshAtomicMirrors()` via LIFO defer so updates land before mutex release.
+  - `senderPaced` (`src/quic/endpoint.zig:1717`) reads pacing inputs via the snapshot getters — pacing path no longer contends on `recovery.mutex` with ACK processing.
+  - 4 atomic-mirror unit tests pass (`recovery: atomic mirrors track cc.cwnd and bytes_in_flight after onPacketSent` etc.).
+
+### GitLab #172: ECN platform validation incomplete (in-repo)
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/172
+- **Resolution status:** Closed / Implemented in-repo (2026-04-27); multi-platform CI runner provisioning remains *BLOCKED-EXTERNAL*.
+- **Resolution evidence:**
+  - `src/quic/endpoint/udp_transport.zig` now has explicit `builtin.target.os.tag` branches in `recvFn`, `sendFn`, `pollFn`, `closeFn`, `init`/`initPosix`, `deinit`.
+  - New `posixSendTo` and `posixRecvFrom` helpers use `std.posix` for cross-platform fallback; `recvBatchFallback` and `sendBatchFallback` updated to use these helpers.
+  - `docs/PLATFORM_SUPPORT.md` documents the support matrix (Linux full ECN; macOS/BSD posix fallback returning null ECN; Windows not supported by this transport).
+  - Inline tests verify Linux runtime path and force compile-time symbol resolution of the posix fallback (`udp_transport: posix fallback symbols compile under non-linux branch`).
+
+### GitLab #182: Timer O(N) + PTO polling per poll cycle
+- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/182
+- **Resolution status:** Closed / Implemented (2026-04-27).
+- **Resolution evidence:**
+  - `Endpoint.pto_dirty_set` (hashset of *Connection) tracks the dirty subset.
+  - `Endpoint.pto_dirty_count` (atomic u32) short-circuits the drain when no connection is dirty — poll-loop overhead is zero in the steady-state idle path.
+  - `Endpoint.pto_dirty_mu` is a dedicated leaf mutex separate from `mu` so `Connection.markPtoDirty()` callers don't need to acquire `mu` (avoiding the existing `endpoint.mu -> conn.mu` lock-order rule).
+  - `Connection.markPtoDirty()` (in `src/quic/conn.zig`) is the canonical setter — sets `pto_dirty = true` and notifies the endpoint via `pto_dirty_notify_fn` only on the false→true transition (idempotent, no double-add).
+  - All 6 prior `self.pto_dirty = true` sites in `methods_b.zig` and `methods_c.zig` now call `self.markPtoDirty()`; the `init` site (line 1078) keeps direct assignment because the connection isn't endpoint-registered yet.
+  - Poll-loop drain at `src/quic/endpoint.zig:891-921` uses `pto_dirty_set` instead of iterating `conns`.
