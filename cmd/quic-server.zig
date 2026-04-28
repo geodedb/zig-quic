@@ -1,6 +1,24 @@
 const std = @import("std");
 const api = @import("quic_api");
 const pem = @import("quic_api").pem;
+const tls_logger = @import("tls_quic_logger");
+
+// Forward TLS-package log lines (notably the [TLS-HRR] / [TLS-HS] interop
+// diagnostics from the tls dep) to our stderr. Without this sink, the tls
+// package's quic_logger collapses to a no-op in production builds and the
+// diagnostic surface is invisible to anything that consumes quic-server's
+// stderr (e.g. the GitLab e2e-test-go interop job).
+fn tlsLoggerSink(level: tls_logger.Level, message: []const u8) void {
+    const level_str = switch (level) {
+        .debug => "DEBUG",
+        .info => "INFO",
+        .warn => "WARN",
+        .err => "ERROR",
+    };
+    var buf: [2048]u8 = undefined;
+    const formatted = std.fmt.bufPrint(&buf, "[tls/{s}] {s}\n", .{ level_str, message }) catch return;
+    _ = std.os.linux.write(2, formatted.ptr, formatted.len);
+}
 
 /// Zig 0.16.0 compat: std.time.milliTimestamp() was removed.
 fn milliTimestamp() i64 {
@@ -10,6 +28,7 @@ fn milliTimestamp() i64 {
 }
 
 pub fn main(proc_init: std.process.Init) !void {
+    tls_logger.setTestSink(tlsLoggerSink);
     var alloc = proc_init.gpa;
 
     var args_it = std.process.Args.Iterator.init(proc_init.minimal.args);

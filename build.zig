@@ -648,6 +648,7 @@ pub fn build(b: *std.Build) void {
 
     const quic_server = addExe(b, "quic-server", "cmd/quic-server.zig", target, optimize);
     quic_server.root_module.addImport("quic_api", quic_api_mod);
+    quic_server.root_module.addImport("tls_quic_logger", tls_quic_logger_mod);
     const install_quic_server = b.addInstallArtifact(quic_server, .{});
     b.getInstallStep().dependOn(&install_quic_server.step); // Add to default install
 

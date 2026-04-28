@@ -24,7 +24,14 @@ pub fn bind(comptime Connection: type) type {
 
         fn currentClientRandom(self: *const Connection) ?[32]u8 {
             const tls_ctx = self.tls_context orelse return null;
-            return tls_ctx.client_random;
+            // Client side stores its own freshly-generated random in
+            // `tls_ctx.client_random` (set in CH-build path). Server side
+            // does not populate that field — it stores the parsed peer
+            // random inside the parsed-CH state slot, accessed via
+            // `clientHello()`. Try both so keylog works in either role.
+            if (tls_ctx.client_random) |r| return r;
+            if (tls_ctx.clientHello()) |ch| return ch.random;
+            return null;
         }
 
         fn appendKeyLogLine(
