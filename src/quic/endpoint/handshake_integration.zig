@@ -979,17 +979,24 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
 
     logger.debugPrint("sendHandshakePackets: ENTER\n", .{});
 
-    // Check if we have Handshake TX keys
-    const hs_tx_keys = conn.hs_tx_keys orelse {
-        logger.debugPrint("sendHandshakePackets: No Handshake TX keys\n", .{});
-        return error.NoHandshakeKeys;
-    };
-    logger.debugPrint("sendHandshakePackets: Have Handshake TX keys\n", .{});
-
     // Server: If handshake flight not yet enqueued, queue it now
     // This generates EncryptedExtensions, Certificate, CertificateVerify, Finished
     // Get pending Handshake messages stored by sendServerHello
     // If there are no pending messages, try popping new data from TLS Context
+    //
+    // 2026-04-28: poll TLS for Handshake-level CRYPTO data BEFORE checking
+    // hs_tx_keys.  Reason: pollCrypto(.Handshake) advances the TLS state
+    // machine, and the .Handshake-level send-secret callback that installs
+    // conn.hs_tx_keys (via onSecretAvailable in this file) only fires once
+    // the TLS engine has consumed enough of the post-ClientHello state to
+    // derive both server-send and client-recv secrets.  Under concurrent
+    // fan-out (msft-graph --workers 16) the previous order — check
+    // hs_tx_keys first, poll second — meant the keys check raced the
+    // callback and lost on most connections, returning NoHandshakeKeys
+    // even though pollCrypto would have installed the keys microseconds
+    // later.  Symptom: 12 of 16 client connections never reach the accept
+    // queue, msft-graph stalls at flushed=281, and proto_reader sees only
+    // c=4 active connections.
     var pending_data: []const u8 = undefined;
     var owns_buffer = false;
 
@@ -1001,7 +1008,11 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
     } else {
         logger.debugPrint("sendHandshakePackets: No pending messages, checking TLS Context for new data\n", .{});
 
-        // Poll TLS Context for Handshake-level CRYPTO data
+        // Poll TLS Context for Handshake-level CRYPTO data.  This call also
+        // drives the TLS state machine, which fires onSecretAvailable
+        // callbacks that install conn.hs_tx_keys when both server-send and
+        // client-recv Handshake secrets are derived.  Must run before the
+        // hs_tx_keys check below to avoid a benign race.
         const hs_data = tls_ctx.pollCrypto(ctx.allocator.*, .Handshake) catch |err| blk: {
             logger.debugPrint("sendHandshakePackets: Context pollCrypto(.Handshake) returned error: {s}\n", .{@errorName(err)});
             break :blk null;
@@ -1012,11 +1023,34 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
             pending_data = data;
             owns_buffer = true; // Context allocates with allocator, we must free
         } else {
-            // No CRYPTO data from Context, send PING for coalescing
+            // No CRYPTO data from Context.  Re-check whether Handshake TX
+            // keys are now installed (they may have been derived by the
+            // pollCrypto above even when no fresh CRYPTO bytes are
+            // returned).  If keys are present, fall through to send a PING
+            // in a Handshake packet for coalescing.  If keys are still
+            // missing, surface NoHandshakeKeys to the caller — the caller
+            // (processInitial) just logs and returns, and the next inbound
+            // CRYPTO frame will trigger this path again with hopefully more
+            // state available.
+            if (conn.hs_tx_keys == null) {
+                logger.debugPrint("sendHandshakePackets: No Handshake TX keys after pollCrypto\n", .{});
+                return error.NoHandshakeKeys;
+            }
             logger.debugPrint("sendHandshakePackets: No CRYPTO data from Context, sending PING in Handshake packet\n", .{});
             return sendHandshakePing(ctx);
         }
     }
+
+    // Now that pollCrypto has driven the TLS state machine far enough to
+    // produce Handshake CRYPTO bytes, hs_tx_keys MUST be installed (the
+    // post-ServerHello secret derivation is a precondition for the TLS
+    // engine emitting Handshake-level CRYPTO).  Surface a clear error if
+    // not — this would indicate a TLS engine bug, not a timing race.
+    const hs_tx_keys = conn.hs_tx_keys orelse {
+        logger.debugPrint("sendHandshakePackets: No Handshake TX keys after Handshake CRYPTO data was produced\n", .{});
+        return error.NoHandshakeKeys;
+    };
+    logger.debugPrint("sendHandshakePackets: Have Handshake TX keys\n", .{});
 
     defer if (owns_buffer) {
         ctx.allocator.free(pending_data);
