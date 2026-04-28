@@ -225,6 +225,17 @@ pub fn createClientConnection(
 /// Initial packets to at least 1200 bytes."
 pub fn sendInitialProbe(ctx: *ClientContext) !void {
     const c = ctx.conn;
+
+    // Defensive: also wrap here -- not only at Endpoint.clientSendInitialProbe --
+    // so this public entry point is self-protecting if a future caller invokes
+    // it directly without going through the Endpoint wrapper. Initial-level
+    // onSecretAvailable callbacks are no-ops today (RFC 9001 §5.2: Initial keys
+    // are derived by the QUIC layer, not TLS), but 0-RTT or HelloRetryRequest
+    // work could install secrets via the TLS callback path. Idempotent under
+    // the outer wrap (sets/clears the same connection pointer).
+    handshake_integration.setCurrentConnection(c);
+    defer handshake_integration.clearCurrentConnection();
+
     const v2 = (c.version == packet.QUIC_V2);
 
     // RFC 9001 §5.2: derive Initial secrets from the Destination Connection ID
