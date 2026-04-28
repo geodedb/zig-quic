@@ -251,6 +251,54 @@ See [docs/TRANSPORT_LAYER.md](docs/TRANSPORT_LAYER.md) for complete API document
 
 GitLab CI runs Zig build/test components, cross-language e2e interop smoke tests, security scans, SBOM generation/scanning, and semantic release automation. Quality and security tracking live in `docs/GAP_ANALYSIS.md` and `docs/QUALITY_GAP_ANALYSIS.md`.
 
+## Observability
+
+`quic` ships an optional OpenTelemetry seam that wraps each QUIC
+connection in a span. The seam is **off by default** and adds zero
+runtime overhead when disabled — every helper collapses to a
+comptime-known no-op and the otel dependency is never resolved
+(verified by `otel/scripts/verify-consumer-noop.sh`).
+
+### Enabling otel
+
+```bash
+zig build -Dwith_otel=true                  # build with otel linked in
+zig build test -Dwith_otel=true             # run the seam smoke test
+```
+
+When enabled, application entry-point code (e.g. `cmd/quic-server.zig`)
+should bootstrap the providers once at process start:
+
+```zig
+const quic = @import("quic");
+
+pub fn main() !void {
+    var otel = try quic.observability_init.Otel.init(allocator, "my-service");
+    defer otel.deinit();
+    otel.installGlobals();
+
+    // ... regular QUIC server / client code follows. Each `quic.connect`
+    //     and `quic.accept` now opens a span; `quic.close` ends it.
+}
+```
+
+### Span shape
+
+- One span per connection (`"QUIC connection client"` / `"QUIC connection server"`).
+- Attributes: `network.protocol.name = "quic"`, `network.transport = "udp"`,
+  `network.peer.address = "<ip>:<port>"`, plus `quic.close_reason` set on close.
+- Sampling default: `parentbased_traceidratio` @ 5%
+  (override via `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG`).
+- Exporter default: `otlp/http/protobuf` to `http://localhost:4318`
+  (override via `OTEL_EXPORTER_OTLP_ENDPOINT` etc.).
+
+Stream-level spans are exposed in the seam (`startStreamSpan`) but not
+yet wired into `openStream` / `acceptStream` — high-volume call sites
+are deferred to a follow-up MR.
+
+The full integration recipe lives in
+[`otel/docs/integration/RECIPE.md`](https://gitlab.com/devnw/zig/otel/-/blob/main/docs/integration/RECIPE.md).
+
 ## Implementation Details
 
 ### Code Architecture
