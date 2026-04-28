@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "session_slug": "send-buffer-alloc-optimize",
+  "ref_a": "4770a34355bca3a2362b7096a1db41999bf2932b",
+  "ref_b": "8088289",
+  "rounds": 10,
+  "warmups_discarded": 1,
+  "scenario": "micro/send_buffer_alloc",
+  "per_variant": {
+    "stream_only": {
+      "A": {
+        "alloc_bytes": 129.0,
+        "alloc_count": 1.0,
+        "p50_ns": 121.5,
+        "p99_ns": 144.0,
+        "ops_per_sec": 6280820.440683659,
+        "ops_stddev_pct": 14.6
+      },
+      "B": {
+        "alloc_bytes": 129.0,
+        "alloc_count": 1.0,
+        "p50_ns": 143.5,
+        "p99_ns": 144.5,
+        "ops_per_sec": 5378860.651221468,
+        "ops_stddev_pct": 15.08
+      },
+      "delta_pct": {
+        "alloc_bytes": 0.0,
+        "alloc_count": 0.0,
+        "p50_ns": 18.11,
+        "p99_ns": 0.35,
+        "ops_per_sec": -14.36
+      }
+    },
+    "stream_plus_ack": {
+      "A": {
+        "alloc_bytes": 129.0,
+        "alloc_count": 1.0,
+        "p50_ns": 507.0,
+        "p99_ns": 665.0,
+        "ops_per_sec": 1774876.4570246437,
+        "ops_stddev_pct": 5.5
+      },
+      "B": {
+        "alloc_bytes": 129.0,
+        "alloc_count": 1.0,
+        "p50_ns": 549.5,
+        "p99_ns": 578.0,
+        "ops_per_sec": 1692472.658984724,
+        "ops_stddev_pct": 3.63
+      },
+      "delta_pct": {
+        "alloc_bytes": 0.0,
+        "alloc_count": 0.0,
+        "p50_ns": 8.38,
+        "p99_ns": -13.08,
+        "ops_per_sec": -4.64
+      }
+    },
+    "crypto_handshake": {
+      "A": {
+        "alloc_bytes": 1097.0,
+        "alloc_count": 5.0,
+        "p50_ns": 741.5,
+        "p99_ns": 1733.0,
+        "ops_per_sec": 1216675.4722942421,
+        "ops_stddev_pct": 3.81
+      },
+      "B": {
+        "alloc_bytes": 820.0,
+        "alloc_count": 3.0,
+        "p50_ns": 699.5,
+        "p99_ns": 1631.5,
+        "ops_per_sec": 1309595.943997012,
+        "ops_stddev_pct": 5.12
+      },
+      "delta_pct": {
+        "alloc_bytes": -25.25,
+        "alloc_count": -40.0,
+        "p50_ns": -5.66,
+        "p99_ns": -5.86,
+        "ops_per_sec": 7.64
+      }
+    },
+    "initial_padded": {
+      "A": {
+        "alloc_bytes": 3382.0,
+        "alloc_count": 6.0,
+        "p50_ns": 1641.5,
+        "p99_ns": 2713.0,
+        "ops_per_sec": 580799.444135285,
+        "ops_stddev_pct": 2.7
+      },
+      "B": {
+        "alloc_bytes": 2724.0,
+        "alloc_count": 4.0,
+        "p50_ns": 1534.5,
+        "p99_ns": 2633.5,
+        "ops_per_sec": 609658.2689424781,
+        "ops_stddev_pct": 5.45
+      },
+      "delta_pct": {
+        "alloc_bytes": -19.46,
+        "alloc_count": -33.33,
+        "p50_ns": -6.52,
+        "p99_ns": -2.93,
+        "ops_per_sec": 4.97
+      }
+    },
+    "pto_probe": {
+      "A": {
+        "alloc_bytes": 3382.0,
+        "alloc_count": 5.0,
+        "p50_ns": 1615.0,
+        "p99_ns": 3095.5,
+        "ops_per_sec": 571773.0649342786,
+        "ops_stddev_pct": 4.31
+      },
+      "B": {
+        "alloc_bytes": 2724.0,
+        "alloc_count": 3.0,
+        "p50_ns": 1519.5,
+        "p99_ns": 2615.5,
+        "ops_per_sec": 611370.8186663786,
+        "ops_stddev_pct": 4.68
+      },
+      "delta_pct": {
+        "alloc_bytes": -19.46,
+        "alloc_count": -40.0,
+        "p50_ns": -5.91,
+        "p99_ns": -15.51,
+        "ops_per_sec": 6.93
+      }
+    },
+    "multi_stream_batch": {
+      "A": {
+        "alloc_bytes": 343.0,
+        "alloc_count": 2.0,
+        "p50_ns": 232.0,
+        "p99_ns": 258.5,
+        "ops_per_sec": 3696506.1562699126,
+        "ops_stddev_pct": 4.99
+      },
+      "B": {
+        "alloc_bytes": 343.0,
+        "alloc_count": 2.0,
+        "p50_ns": 229.5,
+        "p99_ns": 260.0,
+        "ops_per_sec": 3710068.9186670147,
+        "ops_stddev_pct": 5.2
+      },
+      "delta_pct": {
+        "alloc_bytes": 0.0,
+        "alloc_count": 0.0,
+        "p50_ns": -1.08,
+        "p99_ns": 0.58,
+        "ops_per_sec": 0.37
+      }
+    }
+  }
+}

@@ -1,0 +1,1 @@
+{"timestamp_utc":"2026-04-21T18:11:08Z","os":"linux","kernel":"6.12.74+deb13+1-amd64","arch":"x86_64","cpu_model":"Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz","cpu_count":56,"memory_kb":263786292,"governor":"schedutil","git_sha_a":"4770a34","git_sha_b":"8088289"}

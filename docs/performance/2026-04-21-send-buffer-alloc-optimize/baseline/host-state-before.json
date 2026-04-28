@@ -1,0 +1,14 @@
+{
+  "timestamp_utc": "2026-04-21T12:23:19Z",
+  "os": "linux",
+  "kernel": "6.12.74+deb13+1-amd64",
+  "arch": "x86_64",
+  "cpu_model": "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+  "cpu_count": 56,
+  "cpu_cores_per_socket": 14,
+  "memory_kb": 263786292,
+  "governor": "schedutil",
+  "zig_version": "0.16.0",
+  "git_sha": "4770a34355bca3a2362b7096a1db41999bf2932b",
+  "git_branch": "main"
+}

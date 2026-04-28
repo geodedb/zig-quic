@@ -1,0 +1,296 @@
+{
+  "schema_version": 1,
+  "session_slug": "send-buffer-alloc-optimize",
+  "hypothesis_id": "h3",
+  "rounds": 10,
+  "per_variant": {
+    "stream_only": {
+      "alloc_bytes": {
+        "median": 129.0,
+        "mean": 129.0,
+        "stddev_pct": 0.0,
+        "min": 129,
+        "max": 129
+      },
+      "alloc_count": {
+        "median": 1.0,
+        "mean": 1.0,
+        "stddev_pct": 0.0,
+        "min": 1,
+        "max": 1
+      },
+      "latency_p50_ns": {
+        "median": 148.5,
+        "mean": 152.8,
+        "stddev_pct": 13.98,
+        "min": 136,
+        "max": 214
+      },
+      "latency_p95_ns": {
+        "median": 150.0,
+        "mean": 153.7,
+        "stddev_pct": 14.02,
+        "min": 136,
+        "max": 215
+      },
+      "latency_p99_ns": {
+        "median": 153.0,
+        "mean": 176.2,
+        "stddev_pct": 36.62,
+        "min": 138,
+        "max": 358
+      },
+      "throughput_ops_per_sec": {
+        "median": 5129706.899971353,
+        "mean": 5108471.11,
+        "stddev_pct": 10.92,
+        "min": 3607606.0963131622,
+        "max": 5692021.777675321
+      },
+      "delta_alloc_bytes_pct": 0.0,
+      "delta_alloc_count_pct": 0.0,
+      "delta_p50_pct": 6.45,
+      "delta_ops_pct": -6.55
+    },
+    "stream_plus_ack": {
+      "alloc_bytes": {
+        "median": 129.0,
+        "mean": 129.0,
+        "stddev_pct": 0.0,
+        "min": 129,
+        "max": 129
+      },
+      "alloc_count": {
+        "median": 1.0,
+        "mean": 1.0,
+        "stddev_pct": 0.0,
+        "min": 1,
+        "max": 1
+      },
+      "latency_p50_ns": {
+        "median": 558.0,
+        "mean": 557.7,
+        "stddev_pct": 5.01,
+        "min": 505,
+        "max": 626
+      },
+      "latency_p95_ns": {
+        "median": 579.0,
+        "mean": 603.7,
+        "stddev_pct": 13.31,
+        "min": 558,
+        "max": 832
+      },
+      "latency_p99_ns": {
+        "median": 589.0,
+        "mean": 684.5,
+        "stddev_pct": 40.98,
+        "min": 564,
+        "max": 1521
+      },
+      "throughput_ops_per_sec": {
+        "median": 1673493.2412280147,
+        "mean": 1654123.99,
+        "stddev_pct": 3.6,
+        "min": 1497592.8067622303,
+        "max": 1725006.3825236154
+      },
+      "delta_alloc_bytes_pct": 0.0,
+      "delta_alloc_count_pct": 0.0,
+      "delta_p50_pct": 2.76,
+      "delta_ops_pct": -0.6
+    },
+    "crypto_handshake": {
+      "alloc_bytes": {
+        "median": 820.0,
+        "mean": 820.0,
+        "stddev_pct": 0.0,
+        "min": 820,
+        "max": 820
+      },
+      "alloc_count": {
+        "median": 3.0,
+        "mean": 3.0,
+        "stddev_pct": 0.0,
+        "min": 3,
+        "max": 3
+      },
+      "latency_p50_ns": {
+        "median": 684.5,
+        "mean": 690.4,
+        "stddev_pct": 3.28,
+        "min": 664,
+        "max": 739
+      },
+      "latency_p95_ns": {
+        "median": 765.0,
+        "mean": 767.0,
+        "stddev_pct": 6.67,
+        "min": 712,
+        "max": 905
+      },
+      "latency_p99_ns": {
+        "median": 1624.0,
+        "mean": 1486.3,
+        "stddev_pct": 24.33,
+        "min": 776,
+        "max": 1850
+      },
+      "throughput_ops_per_sec": {
+        "median": 1343855.4990621451,
+        "mean": 1333956.94,
+        "stddev_pct": 4.62,
+        "min": 1210435.5888640531,
+        "max": 1398439.306772659
+      },
+      "delta_alloc_bytes_pct": -25.25,
+      "delta_alloc_count_pct": -40.0,
+      "delta_p50_pct": -6.62,
+      "delta_ops_pct": 7.73
+    },
+    "initial_padded": {
+      "alloc_bytes": {
+        "median": 2724.0,
+        "mean": 2724.0,
+        "stddev_pct": 0.0,
+        "min": 2724,
+        "max": 2724
+      },
+      "alloc_count": {
+        "median": 4.0,
+        "mean": 4.0,
+        "stddev_pct": 0.0,
+        "min": 4,
+        "max": 4
+      },
+      "latency_p50_ns": {
+        "median": 1484.5,
+        "mean": 1506.6,
+        "stddev_pct": 3.46,
+        "min": 1468,
+        "max": 1633
+      },
+      "latency_p95_ns": {
+        "median": 1673.5,
+        "mean": 1789.1,
+        "stddev_pct": 19.75,
+        "min": 1484,
+        "max": 2560
+      },
+      "latency_p99_ns": {
+        "median": 2585.5,
+        "mean": 2515.5,
+        "stddev_pct": 21.3,
+        "min": 1577,
+        "max": 3369
+      },
+      "throughput_ops_per_sec": {
+        "median": 633976.5127084367,
+        "mean": 629850.6,
+        "stddev_pct": 3.52,
+        "min": 585633.7882585403,
+        "max": 659130.3895032167
+      },
+      "delta_alloc_bytes_pct": -19.46,
+      "delta_alloc_count_pct": -33.33,
+      "delta_p50_pct": -3.51,
+      "delta_ops_pct": 3.11
+    },
+    "pto_probe": {
+      "alloc_bytes": {
+        "median": 2724.0,
+        "mean": 2724.0,
+        "stddev_pct": 0.0,
+        "min": 2724,
+        "max": 2724
+      },
+      "alloc_count": {
+        "median": 3.0,
+        "mean": 3.0,
+        "stddev_pct": 0.0,
+        "min": 3,
+        "max": 3
+      },
+      "latency_p50_ns": {
+        "median": 1514.0,
+        "mean": 1517.4,
+        "stddev_pct": 0.73,
+        "min": 1505,
+        "max": 1538
+      },
+      "latency_p95_ns": {
+        "median": 1651.0,
+        "mean": 1746.1,
+        "stddev_pct": 16.41,
+        "min": 1602,
+        "max": 2594
+      },
+      "latency_p99_ns": {
+        "median": 2545.0,
+        "mean": 2466.7,
+        "stddev_pct": 16.68,
+        "min": 1618,
+        "max": 3154
+      },
+      "throughput_ops_per_sec": {
+        "median": 630272.080663139,
+        "mean": 624249.8,
+        "stddev_pct": 3.41,
+        "min": 567665.0736329011,
+        "max": 642604.6566025139
+      },
+      "delta_alloc_bytes_pct": -19.46,
+      "delta_alloc_count_pct": -40.0,
+      "delta_p50_pct": -3.47,
+      "delta_ops_pct": 4.1
+    },
+    "multi_stream_batch": {
+      "alloc_bytes": {
+        "median": 343.0,
+        "mean": 343.0,
+        "stddev_pct": 0.0,
+        "min": 343,
+        "max": 343
+      },
+      "alloc_count": {
+        "median": 2.0,
+        "mean": 2.0,
+        "stddev_pct": 0.0,
+        "min": 2,
+        "max": 2
+      },
+      "latency_p50_ns": {
+        "median": 233.0,
+        "mean": 234.3,
+        "stddev_pct": 2.42,
+        "min": 229,
+        "max": 245
+      },
+      "latency_p95_ns": {
+        "median": 253.0,
+        "mean": 252.0,
+        "stddev_pct": 3.68,
+        "min": 235,
+        "max": 264
+      },
+      "latency_p99_ns": {
+        "median": 257.0,
+        "mean": 383.8,
+        "stddev_pct": 71.25,
+        "min": 236,
+        "max": 1160
+      },
+      "throughput_ops_per_sec": {
+        "median": 3645514.8123008404,
+        "mean": 3651965.65,
+        "stddev_pct": 2.58,
+        "min": 3454223.976200397,
+        "max": 3809215.4444640195
+      },
+      "delta_alloc_bytes_pct": 0.0,
+      "delta_alloc_count_pct": 0.0,
+      "delta_p50_pct": 1.08,
+      "delta_ops_pct": -2.39
+    }
+  }
+}

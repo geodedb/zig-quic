@@ -1,0 +1,43 @@
+{
+  "slug": "send-buffer-alloc-optimize",
+  "target_benchmarks": [
+    "micro/send_buffer_alloc"
+  ],
+  "goal_metrics": [
+    "alloc_bytes",
+    "alloc_count",
+    "throughput_ops_per_sec_median"
+  ],
+  "success_thresholds": {
+    "target_gain_pct": 50.0,
+    "max_regression_pct": -3.0
+  },
+  "allowed_paths": [
+    "src/quic/endpoint/handshake_integration.zig",
+    "src/quic/endpoint/client.zig",
+    "src/quic/endpoint/pto.zig",
+    "src/quic/connection/methods_a.zig",
+    "src/quic/connection/methods_b.zig",
+    "src/quic/packet.zig",
+    "src/quic/frame.zig",
+    "src/quic/connection/conn.zig"
+  ],
+  "forbidden_paths": [
+    "tests/**",
+    ".github/**",
+    "benchmarks/**",
+    "interop/**",
+    "test-clients/**"
+  ],
+  "max_hypotheses_per_session": 10,
+  "adjacent_bench_radius": [
+    "micro/frame_serialization",
+    "micro/varint",
+    "micro/header_protection",
+    "integration/handshake_e2e",
+    "integration/stream_throughput",
+    "integration/flush_cadence"
+  ],
+  "related_issue": "https://gitlab.com/devnw/zig/quic/-/issues/163",
+  "notes": "Issue #163 (P1, PerfScore 72) -- per-frame heap alloc at 15+ sites. Fix pattern: replace per-call `std.ArrayList(u8) = .empty` + `compat.arrayListWriter` with a stack-allocated fixed buffer (fixedBufferStream) or a preallocated reusable send buffer. 5 call sites in endpoint/handshake_integration.zig, endpoint/client.zig, endpoint/pto.zig, connection/methods_a.zig, connection/methods_b.zig. Also packet.encodeInitialProtected internally allocates another ArrayList (packet.zig:522). Six bench variants model each call-site shape."
+}
