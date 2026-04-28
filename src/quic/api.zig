@@ -9,6 +9,10 @@
 //! implementation so consumers can trace behaviour back to the specification.
 const std = @import("std");
 const logger = @import("quic_logger");
+// Observability seam (otel). When `-Dwith_otel=false` every helper
+// here collapses to a comptime-known no-op and the otel dep is never
+// resolved (verified by otel/scripts/verify-consumer-noop.sh).
+const observability = @import("observability");
 
 /// Re-export the PEM helpers used for TLS certificate handling.
 pub const pem = @import("pem.zig");
@@ -67,9 +71,21 @@ pub fn endpointDeinit(ep: *QuicEndpoint) void {
 pub fn connect(ep: *QuicEndpoint, server_addr: []const u8, server_name: []const u8) !*Connection {
     const conn = try ep.connectClient(server_addr);
     errdefer {
+        // Connection failed before we returned to the caller — end the
+        // span (if started) with an error status so the failure is
+        // captured even though the caller never sees `*Connection`.
+        if (conn.obs_span_active) {
+            observability.endConnectionSpan(conn.obs_span, false, "connect failed");
+            conn.obs_span_active = false;
+        }
         conn.deinit();
         ep.allocator.destroy(conn);
     }
+    // Observability: open one span per client connection. The seam's
+    // `enabled = false` path is a comptime no-op; the call below
+    // collapses to nothing in the disabled build.
+    conn.obs_span = observability.startConnectionSpan(.client, server_addr);
+    conn.obs_span_active = observability.enabled;
     if (server_name.len != 0) {
         try conn.setServerName(server_name);
     }
@@ -79,19 +95,63 @@ pub fn connect(ep: *QuicEndpoint, server_addr: []const u8, server_name: []const 
 
 /// Pop the next accepted connection or return `error.WouldBlock` when none are queued.
 pub fn accept(ep: *QuicEndpoint) AcceptError!*Connection {
-    return ep.popAccepted() orelse error.WouldBlock;
+    const conn = ep.popAccepted() orelse return error.WouldBlock;
+    startServerSpanIfNeeded(conn);
+    return conn;
 }
 
 /// Attempt to fetch an accepted connection without surfacing an error.
 pub fn tryAccept(ep: *QuicEndpoint) ?*Connection {
-    return ep.popAccepted();
+    const conn = ep.popAccepted() orelse return null;
+    startServerSpanIfNeeded(conn);
+    return conn;
 }
 
 /// Block until a connection is available or timeout expires.
 /// Returns the accepted connection, or null on timeout.
 /// Caller must ensure poll() is driven on another thread so packets are processed.
 pub fn waitForAccepted(ep: *QuicEndpoint, timeout_ms: u32) ?*Connection {
-    return ep.waitForAccepted(timeout_ms);
+    const conn = ep.waitForAccepted(timeout_ms) orelse return null;
+    startServerSpanIfNeeded(conn);
+    return conn;
+}
+
+/// Format a SockAddr to "ip:port" for the `network.peer.address`
+/// attribute. Best-effort — returns "unknown" on overflow rather than
+/// failing telemetry. Buffer is owned by the caller; the resulting
+/// slice is a view into `buf`.
+fn formatPeerAddr(buf: []u8, peer: conn_mod.SockAddr) []const u8 {
+    const family = peer.family();
+    if (family == std.posix.AF.INET) {
+        const sin: *const std.posix.sockaddr.in = @ptrCast(@alignCast(&peer.storage));
+        const port = std.mem.bigToNative(u16, sin.port);
+        const a = peer.getIpBytes();
+        return std.fmt.bufPrint(
+            buf,
+            "{d}.{d}.{d}.{d}:{d}",
+            .{ a[0], a[1], a[2], a[3], port },
+        ) catch "unknown";
+    } else if (family == std.posix.AF.INET6) {
+        const sin6: *const std.posix.sockaddr.in6 = @ptrCast(@alignCast(&peer.storage));
+        const port = std.mem.bigToNative(u16, sin6.port);
+        return std.fmt.bufPrint(buf, "[ipv6]:{d}", .{port}) catch "unknown";
+    }
+    return "unknown";
+}
+
+/// Best-effort: open a server-side span for an accepted connection
+/// the first time the application observes it. Idempotent — re-running
+/// against an already-spanned connection is a no-op. When
+/// `-Dwith_otel=false` the entire body collapses to a single load of
+/// `obs_span_active` (always false in that build) and the function
+/// returns immediately.
+fn startServerSpanIfNeeded(conn: *Connection) void {
+    if (!observability.enabled) return;
+    if (conn.obs_span_active) return;
+    var addr_buf: [64]u8 = undefined;
+    const peer_addr = formatPeerAddr(&addr_buf, conn.peer);
+    conn.obs_span = observability.startConnectionSpan(.server, peer_addr);
+    conn.obs_span_active = true;
 }
 
 /// Schedule a QUIC timer relative to now, returning the timer handle.
@@ -140,14 +200,27 @@ pub fn deriveInitialSecretsForConfig(dst_conn_id: []const u8, quic_version: u32,
 /// RFC 9000 §19.19 defines CONNECTION_CLOSE/Application. The connection helper
 /// exposes that behaviour verbatim so API users can surface application errors.
 pub fn close(conn: *Connection, app_error_code: u64, reason: []const u8) !void {
-    return conn.sendConnectionClose(app_error_code, reason);
+    const result = conn.sendConnectionClose(app_error_code, reason);
+    // Observability: end the connection span on graceful close. `ok`
+    // is true iff the application supplied error_code 0 (clean close).
+    // When `-Dwith_otel=false` this branch is comptime-eliminated.
+    if (conn.obs_span_active) {
+        observability.endConnectionSpan(conn.obs_span, app_error_code == 0, reason);
+        conn.obs_span_active = false;
+    }
+    return result;
 }
 
 /// Deprecated: Use `close(conn, error_code, "")` instead.
 ///
 /// Close a connection with an error code and empty reason phrase.
 pub fn closeConnection(conn: *Connection, app_error_code: u64) !void {
-    return conn.sendConnectionClose(app_error_code, "");
+    const result = conn.sendConnectionClose(app_error_code, "");
+    if (conn.obs_span_active) {
+        observability.endConnectionSpan(conn.obs_span, app_error_code == 0, "");
+        conn.obs_span_active = false;
+    }
+    return result;
 }
 
 /// Check if a peer has acknowledged the handshake via HANDSHAKE_DONE.

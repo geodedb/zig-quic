@@ -20,6 +20,10 @@ const packet = @import("quic_packet");
 const frame = @import("quic_frame");
 const recovery = @import("quic_recovery");
 const ks = @import("quic_tls");
+// Observability seam (otel). When `-Dwith_otel=false` the seam's `Span`
+// is a zero-sized empty struct, so the `obs_span` Connection field
+// below is comptime-elided from the layout. See src/observability.zig.
+const observability = @import("observability");
 // Import transport parameters module (registered as quic_transport_params in build.zig)
 const tparams = @import("quic_transport_params");
 const logger = @import("quic_logger");
@@ -663,6 +667,16 @@ pub const Connection = struct {
     accepted_enqueued: bool = false,
     // Guard flag to keep deinit idempotent across layered cleanup paths.
     deinit_called: bool = false,
+    // Observability span tracking the connection lifetime. When
+    // `-Dwith_otel=false` this is a zero-sized struct (no codegen
+    // change). When otel is enabled, api.zig populates this on
+    // `connect()` / `accept()` and api.zig / sendConnectionClose end
+    // it. Telemetry is non-fatal — every emit is `catch {}`-discarded.
+    obs_span: observability.Span = .{},
+    // Tracks whether `obs_span` is an active span that still needs
+    // ending. When `enabled = false` this field is `false` forever
+    // (the optimizer drops the read/write of a never-true bool).
+    obs_span_active: bool = false,
 
     // --- Missing transport/runtime state used by endpoint/tests ---
     // Packet number spaces: next PN to send in each space (RFC 9000 §12.3: MUST start at 0)
@@ -1256,6 +1270,11 @@ pub const Connection = struct {
         self.last_ack_eliciting_rx_initial_ns = 0;
         self.last_ack_eliciting_rx_handshake_ns = 0;
         self.last_ack_eliciting_rx_app_ns = 0;
+        // Observability — start with no active span. When `-Dwith_otel=false`
+        // these writes are no-ops (the field types are zero-sized /
+        // `bool=false` and the comptime path elides them).
+        self.obs_span = .{};
+        self.obs_span_active = false;
     }
 
     /// Set the expected server name (SNI) for TLS certificate validation on client connections.
@@ -1277,6 +1296,16 @@ pub const Connection = struct {
     pub fn deinit(self: *Connection) void {
         if (self.deinit_called) return;
         self.deinit_called = true;
+
+        // Observability: if a span is still active when the connection is
+        // torn down without an explicit close (caller dropped on the
+        // floor, abrupt teardown), end it here so it isn't leaked. When
+        // `-Dwith_otel=false` this branch is dead code (the comptime
+        // `enabled = false` short-circuits inside `endConnectionSpan`).
+        if (self.obs_span_active) {
+            observability.endConnectionSpan(self.obs_span, false, "connection deinit");
+            self.obs_span_active = false;
+        }
 
         // Security: zero all key material before releasing memory to prevent
         // residual secrets from persisting in freed heap pages.
