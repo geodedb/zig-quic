@@ -2165,6 +2165,26 @@ pub fn build(b: *std.Build) void {
         }
         const run_observability_enabled_tests = b.addRunArtifact(observability_enabled_tests);
         test_step.dependOn(&run_observability_enabled_tests.step);
+
+        // Regression: concurrent-HELLO NoHandshakeKeys race pinned by
+        // commit 4b246b2 ("fix(handshake): drive TLS state machine
+        // before checking hs_tx_keys"). N=10 client threads fan into
+        // one server endpoint; pre-fix ~12/16 such handshakes hit
+        // error.NoHandshakeKeys and never recovered. Lives in the
+        // default test graph (not behind --full-test-graph) so the
+        // regression is gated on every `zig build test` run.
+        const test_concurrent_handshake_race = addTst(
+            b,
+            testlog_mod,
+            compat_mod,
+            "tests/test_concurrent_handshake_race.zig",
+            target,
+            optimize,
+        );
+        test_concurrent_handshake_race.root_module.addImport("quic_api", quic_api_mod);
+        test_concurrent_handshake_race.root_module.addImport("quic_config", quic_config_mod);
+        const run_test_concurrent_handshake_race = b.addRunArtifact(test_concurrent_handshake_race);
+        test_step.dependOn(&run_test_concurrent_handshake_race.step);
     } else {
         const test_quic = addTst(b, testlog_mod, compat_mod, "quic.zig", target, optimize);
         const run_test_quic = b.addRunArtifact(test_quic);
