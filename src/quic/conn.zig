@@ -752,14 +752,20 @@ pub const Connection = struct {
     stream_send_fin_sent: bool = false,
     stream_recv_aborted: bool = false,
     stream_recv_fin: bool = false,
-    // Flow-control windows (connection and per-stream)
-    // Start with conservative windows; grow adaptively.
-    // Increased initial flow control windows to avoid 1MB+ stall during streaming tests.
-    // RFC 9000 §4.2 allows large initial_max_data/stream values; quic-go/quiche default to multi-MB.
-    local_max_stream_data: u64 = 2 * 1024 * 1024,
-    peer_max_stream_data: u64 = 2 * 1024 * 1024,
-    local_max_data: u64 = 10 * 1024 * 1024,
-    peer_max_data: u64 = 10 * 1024 * 1024,
+    // Flow-control windows (connection and per-stream).
+    // 2026-04-28: bumped from 2 MiB stream / 10 MiB conn to 16 MiB stream /
+    // 256 MiB conn.  The previous 10 MiB connection-level window stalled
+    // realistic batch-ingest workloads that send many KB-size statements
+    // back-to-back: a 1000-statement chunk averaging ~10 KiB on the wire is
+    // ~9.5 MiB and routinely tripped the 10 MiB ceiling, surfacing as
+    // "driver: bad connection" or "transport read_length: NO_ERROR
+    // (remote)" once the peer's MAX_DATA frame couldn't catch up to the
+    // sender.  16 MiB / 256 MiB matches quic-go / quinn defaults and is
+    // wire-compatible with all RFC 9000 clients.
+    local_max_stream_data: u64 = 16 * 1024 * 1024,
+    peer_max_stream_data: u64 = 16 * 1024 * 1024,
+    local_max_data: u64 = 256 * 1024 * 1024,
+    peer_max_data: u64 = 256 * 1024 * 1024,
     peer_max_streams_bidi: u64 = 4096,
     peer_max_streams_uni: u64 = 4096,
     opened_bidi: u64 = 0,
@@ -1198,13 +1204,16 @@ pub const Connection = struct {
         self.stateless_reset_base = [_]u8{0} ** 32;
         self.retired_prior_to = 0;
         self.issued_cids = 1;
-        // Initialize flow control defaults (aligned with quinn's defaults for good performance)
-        // Quinn uses: stream_receive_window = 1.25MB, receive_window = VarInt::MAX (essentially unlimited)
-        // This ensures large transfers (1MB+) don't get flow-control blocked
-        self.local_max_stream_data = 2 * 1024 * 1024; // 2MB per stream (vs quinn's 1.25MB)
-        self.peer_max_stream_data = 2 * 1024 * 1024; // 2MB per stream
-        self.local_max_data = 10 * 1024 * 1024; // 10MB connection-level (vs quinn's VarInt::MAX)
-        self.peer_max_data = 10 * 1024 * 1024; // 10MB connection-level
+        // Initialize flow-control defaults.
+        // 2026-04-28: bumped from 2 MiB / 10 MiB to 16 MiB / 256 MiB so
+        // realistic batch-ingest workloads (1000-stmt chunks ≈ 9.5 MiB)
+        // don't stall at the connection-level MAX_DATA window.  Matches
+        // quic-go / quinn defaults; wire-compatible with all RFC 9000
+        // peers.  Keep in sync with the field-level defaults above.
+        self.local_max_stream_data = 16 * 1024 * 1024; // 16 MiB per stream
+        self.peer_max_stream_data = 16 * 1024 * 1024;
+        self.local_max_data = 256 * 1024 * 1024; // 256 MiB connection-level
+        self.peer_max_data = 256 * 1024 * 1024;
         self.peer_max_streams_bidi = 4096;
         self.peer_max_streams_uni = 4096;
         self.opened_bidi = 0;
