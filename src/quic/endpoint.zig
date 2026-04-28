@@ -706,6 +706,15 @@ pub const Endpoint = struct {
         // will produce an invalid ClientHello.  Propagate the error.
         try handshake_integration.setupClientTransportParams(c, &self.cfg, self.allocator);
 
+        // Defensive: Initial-level onSecretAvailable callbacks are no-ops today
+        // (RFC 9001 §5.2 -- Initial keys are derived by the QUIC layer, not TLS),
+        // but future 0-RTT or HelloRetryRequest work could install secrets via
+        // the TLS callback path. Wrap here -- the outermost frame that owns the
+        // connection pointer for the duration of the TLS work driven by
+        // sendInitialProbe -- so callbacks always see a valid connection.
+        handshake_integration.setCurrentConnection(c);
+        defer handshake_integration.clearCurrentConnection();
+
         // Delegate to client module for Initial packet construction and sending
         var ctx = client_mod.ClientContext{
             .allocator = &self.allocator,
