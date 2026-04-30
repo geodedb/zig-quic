@@ -15,8 +15,8 @@
     .dependencies = .{
         // TLS 1.3 implementation (used for QUIC-TLS integration)
         .tls = .{
-            .url = "git+https://gitlab.com/devnw/zig/tls.git#40d1de8e3b695fc3b353a9b93fa98cfb7e852fb4",
-            .hash = "tls-0.2.0-mtEaLBxpEwDNTOdfMAjxRRkhOPUpqtByiuWSEDWuiifT",
+            .url = "git+https://gitlab.com/devnw/zig/tls.git#81a9d0faaeeb0c4192dbc338c25e62f0725226cd",
+            .hash = "tls-0.2.0-mtEaLBxpEwCyLogPHqiRA_Bz2maFU4cKI_hhQpyFurLc",
         },
         // Thread pool for parallel operations
         .thread_pool = .{
@@ -26,8 +26,8 @@
         // OpenTelemetry instrumentation (gated behind -Dwith_otel; lazy = true
         // so the dependency is never fetched when the flag is off).
         .otel = .{
-            .url = "git+https://gitlab.com/devnw/zig/otel.git#efe116b388d43472eaab5b6c24a13725156df417",
-            .hash = "otel-0.1.0-B0v3lrgNNAAbt_xZDbOsBAS1bFFkspiibIElaWuVMK4M",
+            .url = "git+https://gitlab.com/devnw/zig/otel.git#57ef1f221930e5fd85e50297588c253e04361733",
+            .hash = "otel-0.1.0-B0v3lrgNNAA5vn53MsLSUUunxIAdI88cPgcgpgg5JMKr",
             .lazy = true,
         },
     },
