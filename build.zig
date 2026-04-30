@@ -2185,6 +2185,28 @@ pub fn build(b: *std.Build) void {
         test_concurrent_handshake_race.root_module.addImport("quic_config", quic_config_mod);
         const run_test_concurrent_handshake_race = b.addRunArtifact(test_concurrent_handshake_race);
         test_step.dependOn(&run_test_concurrent_handshake_race.step);
+
+        // Regression: long server-initiated response stream stall pinned
+        // by docs/BUG_LONG_RESPONSE_STREAM_STALL.md. A server writing
+        // >20 KiB on a single bidi stream stalls because cwnd never
+        // grows past its initial value once bytes_in_flight catches up.
+        // The pre-fix symptom is that the client only reads ~12-18 KiB
+        // and never observes FIN. Lives in the default test graph
+        // (not gated on --full-test-graph) so the regression is caught
+        // on every `zig build test` run.
+        const test_long_response_stream_stall = addTst(
+            b,
+            testlog_mod,
+            compat_mod,
+            "tests/test_long_response_stream_stall.zig",
+            target,
+            optimize,
+        );
+        test_long_response_stream_stall.root_module.addImport("quic_api", quic_api_mod);
+        test_long_response_stream_stall.root_module.addImport("quic_config", quic_config_mod);
+        test_long_response_stream_stall.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        const run_test_long_response_stream_stall = b.addRunArtifact(test_long_response_stream_stall);
+        test_step.dependOn(&run_test_long_response_stream_stall.step);
     } else {
         const test_quic = addTst(b, testlog_mod, compat_mod, "quic.zig", target, optimize);
         const run_test_quic = b.addRunArtifact(test_quic);
