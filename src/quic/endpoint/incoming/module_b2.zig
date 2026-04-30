@@ -201,8 +201,17 @@ pub fn generateAndSendAck(
         const ackf = frame.Frame{ .ack = .{ .largest = ad.largest, .ack_delay = ack_delay, .first_range = ad.first_range, .ranges = ad.ranges, .ecn = ack_ecn_now } };
         _ = ackf.write(w) catch 0;
 
+        // BUG_LONG_RESPONSE_STREAM_STALL fix: the ACK packet's DCID must match
+        // a CID the peer recognises for its connection. `localDcidMatchLen`
+        // requires a full-length match against the peer's `our_scid`
+        // (8 bytes by default), so truncating to 4 bytes silently drops the
+        // packet at the receiver. The previous `@min(.., 4)` truncation broke
+        // routing for every standalone ACK once the deferred-ECN path fired,
+        // pinning the sender's cwnd at the initial value because no ACKs
+        // advanced largest_acked. Send the full peer-initial SCID exactly as
+        // the normal-ACK and ACK-only paths below already do.
         const dcid_ack = if (conn.peer_initial_scid.len > 0)
-            conn.peer_initial_scid.bytes[0..@min(conn.peer_initial_scid.len, 4)]
+            conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len]
         else
             &[_]u8{};
 
@@ -343,8 +352,13 @@ pub fn generateAndSendAck(
                     const ackf = frame.Frame{ .ack = .{ .largest = ad.largest, .ack_delay = ack_delay, .first_range = ad.first_range, .ranges = ad.ranges, .ecn = ack_ecn_common } };
                     _ = ackf.write(wa) catch 0;
 
+                    // BUG_LONG_RESPONSE_STREAM_STALL fix (paired with dcid_ack
+                    // above): same routing failure mode — a 4-byte truncated
+                    // DCID never matches the peer's full 8-byte `our_scid`,
+                    // so every immediate ACK_ECN was being silently dropped at
+                    // the receiver. Use the full peer-initial SCID.
                     const dcid_ack3 = if (conn.peer_initial_scid.len > 0)
-                        conn.peer_initial_scid.bytes[0..@min(conn.peer_initial_scid.len, 4)]
+                        conn.peer_initial_scid.bytes[0..conn.peer_initial_scid.len]
                     else
                         &[_]u8{};
 
