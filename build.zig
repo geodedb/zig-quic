@@ -2186,6 +2186,36 @@ pub fn build(b: *std.Build) void {
         const run_test_concurrent_handshake_race = b.addRunArtifact(test_concurrent_handshake_race);
         test_step.dependOn(&run_test_concurrent_handshake_race.step);
 
+        // Regression: server-side `pending_hs_send` retry path that pins
+        // the host-haleth fix for the
+        //   `ERROR: processInitial: sendHandshakePackets failed: NoHandshakeKeys`
+        // connection-stranding race. Pre-fix: processInitial logged the
+        // error and dropped the handshake-flight emission with no retry,
+        // so a single first-tick miss left the connection stalled past
+        // the QUIC idle timeout. Post-fix: processInitial sets
+        // `conn.pending_hs_send = true` and the endpoint poll loop's
+        // Phase 4.5 drain retries `sendHandshakePackets` on subsequent
+        // ticks. Lives in the default test graph (not behind
+        // --full-test-graph) so the regression is gated on every
+        // `zig build test` invocation.
+        const test_pending_hs_send = addTst(
+            b,
+            testlog_mod,
+            compat_mod,
+            "tests/test_pending_hs_send_retry.zig",
+            target,
+            optimize,
+        );
+        test_pending_hs_send.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        test_pending_hs_send.root_module.addImport("quic_conn", quic_conn_mod);
+        test_pending_hs_send.root_module.addImport("quic_packet", quic_packet_mod);
+        test_pending_hs_send.root_module.addImport("quic_frame", quic_frame_mod);
+        test_pending_hs_send.root_module.addImport("quic_tls", quic_tls_mod);
+        test_pending_hs_send.root_module.addImport("config.zig", quic_config_mod);
+        test_pending_hs_send.root_module.addImport("test_certs", test_certs_mod);
+        const run_test_pending_hs_send = b.addRunArtifact(test_pending_hs_send);
+        test_step.dependOn(&run_test_pending_hs_send.step);
+
         // Regression: long server-initiated response stream stall pinned
         // by docs/BUG_LONG_RESPONSE_STREAM_STALL.md. A server writing
         // >20 KiB on a single bidi stream stalls because cwnd never

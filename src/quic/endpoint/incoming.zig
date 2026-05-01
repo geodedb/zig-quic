@@ -890,9 +890,27 @@ pub fn processInitial(
 
         // Send Handshake packets if Handshake keys are available
         // RFC 9001 §4.1: "A server sends the first Handshake packet as soon as it has Handshake keys"
+        //
+        // 2026-04-30: NoHandshakeKeys is a transient race, not a fatal error.
+        // Even with the 4b246b2 reorder (pollCrypto before key check) the
+        // `onSecretAvailable` callback that installs `conn.hs_tx_keys` may
+        // not have fired yet on this tick. Under concurrent fan-out
+        // (msft-graph --workers 16) this stranded 12/16 connections behind
+        // a single first-tick miss until the QUIC idle timeout expired.
+        // Set `conn.pending_hs_send` so the endpoint poll loop retries the
+        // flush on subsequent ticks; demote the log to debug because the
+        // retry path makes this self-healing.
         handshake_integration.sendHandshakePackets(&hs_ctx) catch |err| {
-            conn.last_handshake_error = err;
-            logger.err("processInitial: sendHandshakePackets failed: {s}", .{@errorName(err)});
+            if (err == error.NoHandshakeKeys) {
+                conn.pending_hs_send = true;
+                logger.debugPrint(
+                    "processInitial: sendHandshakePackets deferred until handshake keys available (conn={*})\n",
+                    .{conn},
+                );
+            } else {
+                conn.last_handshake_error = err;
+                logger.err("processInitial: sendHandshakePackets failed: {s}", .{@errorName(err)});
+            }
         };
     }
 

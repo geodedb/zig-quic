@@ -641,6 +641,16 @@ pub const Connection = struct {
     handshake_done_seen: bool = false,
     /// Last non-retryable handshake/path setup error observed by connection processing.
     last_handshake_error: ?anyerror = null,
+    /// Server-side: deferred Handshake packet flush. Set when `processInitial`
+    /// calls `sendHandshakePackets` and gets `error.NoHandshakeKeys` — i.e.,
+    /// `pollCrypto(.Handshake)` did not derive `hs_tx_keys` in time. The
+    /// endpoint poll loop drains this flag on subsequent ticks (after the TLS
+    /// state machine has had more cycles via the next inbound CRYPTO frame or
+    /// a follow-up `pollCrypto`) and retries the flush. Without this retry,
+    /// a transient first-tick race strands the connection until the QUIC
+    /// idle timeout expires (the production msft-graph --workers 16
+    /// reproducer that surfaced this bug).
+    pending_hs_send: bool = false,
     // Temporary demo flag: whether server auto-echo response on stream 0 was sent
     app_echo_sent: bool = false,
     /// Tracks when the TLS engine has verified the peer's Finished, enabling short-header traffic.

@@ -902,6 +902,96 @@ pub const Endpoint = struct {
             }
         }
 
+        // Phase 4.5: Drain `pending_hs_send` retries. processInitial sets this
+        // flag when sendHandshakePackets returns error.NoHandshakeKeys — i.e.,
+        // the TLS state machine had not yet derived `hs_tx_keys` when the
+        // first ClientHello-bearing Initial was processed. The fix paired
+        // with this drain (incoming.zig:processInitial NoHandshakeKeys
+        // branch) defers instead of dropping; here we retry the flush every
+        // poll tick until it lands. This closes the production msft-graph
+        // --workers 16 reproducer where 12/16 connections stalled past the
+        // QUIC idle timeout because the server never re-attempted the
+        // Handshake send after the first-tick miss.
+        //
+        // Iteration walks self.conns under self.mu (same lock the receive
+        // path uses), snapshots server-role connections with the flag set,
+        // and retries outside the lock so a slow per-connection TLS poll
+        // doesn't serialize unrelated handlers. The retry uses the same
+        // sendToWrapper-style closure (current_io_endpoint thread-local)
+        // that processIncomingDatagram and clientSendInitialProbe already
+        // rely on, so no new lock-order surface is introduced.
+        {
+            var retry_snapshot: [1024]*conn_mod.Connection = undefined;
+            var retry_len: usize = 0;
+            self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            {
+                var it = self.conns.iterator();
+                while (it.next()) |entry| {
+                    if (retry_len >= retry_snapshot.len) break;
+                    const c = entry.value_ptr.*;
+                    if (c.role == .Server and !c.closed and c.pending_hs_send) {
+                        retry_snapshot[retry_len] = c;
+                        retry_len += 1;
+                    }
+                }
+            }
+            self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+
+            if (retry_len > 0) {
+                current_io_endpoint = self;
+                defer current_io_endpoint = null;
+
+                const RetrySend = struct {
+                    fn send(peer_addr: conn_mod.SockAddr, data: []const u8) anyerror!usize {
+                        const ep = current_io_endpoint.?;
+                        return ep.sendTo(peer_addr, data);
+                    }
+                };
+
+                var ri: usize = 0;
+                while (ri < retry_len) : (ri += 1) {
+                    const c = retry_snapshot[ri];
+                    // The TLS callback path (onSecretAvailable) reads the
+                    // current connection from a thread-local; install it
+                    // before calling sendHandshakePackets so a Handshake-
+                    // level secret derivation triggered by pollCrypto lands
+                    // on this connection's hs_tx_keys / hs_rx_keys.
+                    handshake_integration.setCurrentConnection(c);
+                    defer handshake_integration.clearCurrentConnection();
+
+                    var hs_ctx = handshake_integration.HandshakeContext{
+                        .conn = c,
+                        .peer = c.peer,
+                        .allocator = &self.allocator,
+                        .send_fn = RetrySend.send,
+                        .cfg = &self.cfg,
+                    };
+                    handshake_integration.sendHandshakePackets(&hs_ctx) catch |err| {
+                        if (err == error.NoHandshakeKeys) {
+                            // Still no keys — leave the flag set; next tick
+                            // will try again. pollCrypto inside
+                            // sendHandshakePackets above already drove the
+                            // TLS state machine; we just have to wait for
+                            // the next inbound CRYPTO frame to advance it.
+                            continue;
+                        }
+                        // Any other error is unexpected here; log it and
+                        // clear the flag so we don't loop on a permanent
+                        // failure (e.g., closed TLS context).
+                        c.last_handshake_error = err;
+                        c.pending_hs_send = false;
+                        logger.err(
+                            "pollWithStats: pending sendHandshakePackets failed: {s}",
+                            .{@errorName(err)},
+                        );
+                        continue;
+                    };
+                    // Success: clear the flag.
+                    c.pending_hs_send = false;
+                }
+            }
+        }
+
         // Phase 5: Process expired timers under mu+timer_mu, then arm PTO
         // timers outside mu (PAR-006: reduces mu contention).
         // processExpiredTimers releases/reacquires timer_mu internally for callbacks.
