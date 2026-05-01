@@ -29,7 +29,10 @@ pub const Loop = struct {
 
     /// Close the epoll fd.
     pub fn deinit(self: *Loop) void {
-        _ = posix.close(self.ep);
+        // Zig 0.16: std.posix.close was removed. epoll is Linux-only,
+        // so std.os.linux.close (raw syscall) is the canonical fit
+        // matching the rest of this module's linux.* usage.
+        _ = std.os.linux.close(self.ep);
     }
 
     /// Register interest in read/write readiness for fd.

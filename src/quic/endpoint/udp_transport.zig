@@ -236,15 +236,25 @@ pub const UdpTransport = struct {
         };
     }
 
-    /// Cross-platform fallback init using std.posix. ECN is unsupported here -
-    /// recvFn returns null ECN and configureEcnSocket is a Linux-only no-op.
+    /// Cross-platform fallback init using libc directly via std.c.*.
+    /// ECN is unsupported here - recvFn returns null ECN and
+    /// configureEcnSocket is a Linux-only no-op.
+    ///
+    /// 2026-05-01 (Zig 0.16): switched from `std.posix.{socket,close,bind,
+    /// getsockname,fcntl}` to `std.c.*` because std.posix dropped those
+    /// wrappers in 0.16 (only socket_t and setsockopt remain there). This
+    /// path runs on macOS/BSD which always link libc; std.c.socket etc.
+    /// dispatch to the correct platform syscalls. Surfaced by geode CI
+    /// pipeline #1011 cross-compiling to x86_64-macos.
     fn initPosix(bind_addr: []const u8) !UdpTransport {
         var addr = try resolveBindAddr(bind_addr);
         const sa: *const std.posix.sockaddr = @ptrCast(@alignCast(&addr.storage));
         const family = sa.family;
 
-        const fd = try posix.socket(family, posix.SOCK.DGRAM, posix.IPPROTO.UDP);
-        errdefer posix.close(fd);
+        const sock_rc = std.c.socket(family, posix.SOCK.DGRAM, posix.IPPROTO.UDP);
+        if (sock_rc < 0) return error.SocketCreateFailed;
+        const fd: posix.socket_t = @intCast(sock_rc);
+        errdefer _ = std.c.close(fd);
 
         var one: i32 = 1;
         _ = posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, std.mem.asBytes(&one)) catch {};
@@ -254,16 +264,18 @@ pub const UdpTransport = struct {
             posix.AF.INET6 => @intCast(@sizeOf(posix.sockaddr.in6)),
             else => return error.AddressFamilyNotSupported,
         };
-        try posix.bind(fd, @ptrCast(&addr.storage), bind_len);
+        if (std.c.bind(fd, @ptrCast(&addr.storage), bind_len) < 0) return error.BindFailed;
 
         var actual_addr: posix.sockaddr.storage = undefined;
         var actual_len: posix.socklen_t = @sizeOf(posix.sockaddr.storage);
-        try posix.getsockname(fd, @ptrCast(&actual_addr), &actual_len);
+        if (std.c.getsockname(fd, @ptrCast(&actual_addr), &actual_len) < 0) return error.GetSockNameFailed;
 
         // Best-effort non-blocking via fcntl; some platforms expose only SOCK_NONBLOCK
         // at socket() time which is not portable to all targets we care about.
-        const flags = posix.fcntl(fd, posix.F.GETFL, 0) catch 0;
-        _ = posix.fcntl(fd, posix.F.SETFL, flags | @as(usize, posix.SOCK.NONBLOCK)) catch {};
+        const flags = std.c.fcntl(fd, @intFromEnum(std.c.F.GETFL), @as(c_int, 0));
+        if (flags >= 0) {
+            _ = std.c.fcntl(fd, @intFromEnum(std.c.F.SETFL), flags | @as(c_int, @intCast(posix.SOCK.NONBLOCK)));
+        }
 
         return UdpTransport{
             .fd = fd,
@@ -275,7 +287,10 @@ pub const UdpTransport = struct {
     /// Deinitialize transport and close socket
     pub fn deinit(self: *UdpTransport) void {
         if (builtin.target.os.tag != .linux) {
-            posix.close(self.fd);
+            // Zig 0.16 dropped std.posix.close; use libc directly. The
+            // initPosix path above already opens via std.c.socket so
+            // closing via std.c.close keeps the fd ownership symmetric.
+            _ = std.c.close(self.fd);
             return;
         }
         _ = std.os.linux.close(self.fd);
@@ -568,7 +583,9 @@ pub const UdpTransport = struct {
     fn closeFn(ctx: *anyopaque) void {
         const self: *UdpTransport = @ptrCast(@alignCast(ctx));
         if (builtin.target.os.tag != .linux) {
-            posix.close(self.fd);
+            // Zig 0.16: std.posix.close removed; std.c.close is the
+            // libc passthrough for non-Linux paths.
+            _ = std.c.close(self.fd);
             return;
         }
         _ = std.os.linux.close(self.fd);

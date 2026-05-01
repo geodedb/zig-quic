@@ -32,7 +32,10 @@ pub const Loop = struct {
 
     /// Close the kqueue descriptor.
     pub fn deinit(self: *Loop) void {
-        _ = std.posix.close(self.kq);
+        // Zig 0.16: std.posix.close was removed; std.c.close is the
+        // libc passthrough. kqueue is a BSD/macOS facility so this
+        // module only compiles on libc-linked targets anyway.
+        _ = std.c.close(self.kq);
     }
 
     fn evSet(ch: *std.posix.Kevent, ident: usize, filter: i16, flags: u16) void {
