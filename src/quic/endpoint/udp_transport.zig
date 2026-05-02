@@ -32,6 +32,27 @@ pub const SendBatchItem = transport_mod.SendBatchItem;
 /// Maximum number of UDP datagrams processed per batched syscall.
 pub const UdpBatchCap: usize = 16;
 
+/// Coerce a `std.c.F.<X>` value to `c_int` for `fcntl(2)`.
+///
+/// Zig 0.16's stdlib defines `std.c.F` differently per OS:
+///   * Linux (and emscripten): `linux.F`/`emscripten.F` — an enum;
+///     `@intFromEnum` produces the integer value.
+///   * macOS/iOS/tvOS/visionOS/watchOS/driverkit/wasi: a `struct` of
+///     `pub const <NAME> = <comptime_int>;` constants that coerce
+///     directly via `@as`.
+///
+/// `@intFromEnum(std.c.F.GETFL)` therefore compiles on Linux but
+/// errors on macOS with "expected enum or tagged union, found
+/// 'comptime_int'". This helper unifies both shapes so the fcntl
+/// cmd argument is constructed correctly under cross-compile.
+inline fn fcntlCmd(comptime tag: anytype) c_int {
+    return switch (@typeInfo(@TypeOf(tag))) {
+        .@"enum" => @intCast(@intFromEnum(tag)),
+        .comptime_int, .int => @as(c_int, tag),
+        else => @compileError("std.c.F member must be an enum or integer; got " ++ @typeName(@TypeOf(tag))),
+    };
+}
+
 fn cmsgAlign(len: usize) usize {
     const align_to = @sizeOf(usize);
     const mask: usize = align_to - 1;
@@ -272,9 +293,11 @@ pub const UdpTransport = struct {
 
         // Best-effort non-blocking via fcntl; some platforms expose only SOCK_NONBLOCK
         // at socket() time which is not portable to all targets we care about.
-        const flags = std.c.fcntl(fd, @intFromEnum(std.c.F.GETFL), @as(c_int, 0));
+        // `fcntlCmd` handles the per-OS shape divergence of `std.c.F`
+        // (enum on Linux; struct of `pub const comptime_int` on macOS/BSD).
+        const flags = std.c.fcntl(fd, fcntlCmd(std.c.F.GETFL), @as(c_int, 0));
         if (flags >= 0) {
-            _ = std.c.fcntl(fd, @intFromEnum(std.c.F.SETFL), flags | @as(c_int, @intCast(posix.SOCK.NONBLOCK)));
+            _ = std.c.fcntl(fd, fcntlCmd(std.c.F.SETFL), flags | @as(c_int, @intCast(posix.SOCK.NONBLOCK)));
         }
 
         return UdpTransport{
@@ -325,36 +348,50 @@ pub const UdpTransport = struct {
     }
 
     // Posix-based send for non-Linux platforms. Maps platform errno to error.WouldBlock
-    // for EAGAIN and propagates other errors. ECN/cmsg paths are not exercised here -
-    // ECN extraction is Linux-only via recvmsg ancillary data; non-Linux returns null ECN.
+    // for EAGAIN and propagates other errors as error.Unexpected. ECN/cmsg paths are not
+    // exercised here — ECN extraction is Linux-only via recvmsg ancillary data; non-Linux
+    // returns null ECN.
+    //
+    // Zig 0.16 dropped `std.posix.sendto`/`std.posix.recvfrom` (only `socket_t` and
+    // `setsockopt` remain). We call the libc `sendto(2)`/`recvfrom(2)` directly via
+    // `std.c` and map errno manually, mirroring the prior std.posix error contract.
     fn posixSendTo(fd: posix.socket_t, peer: SockAddr, data: []const u8) !usize {
-        return posix.sendto(
+        const rc = std.c.sendto(
             fd,
-            data,
+            data.ptr,
+            data.len,
             0,
             @ptrCast(&peer.storage),
             peer.len,
-        ) catch |err| switch (err) {
-            error.WouldBlock => error.WouldBlock,
-            else => err,
-        };
+        );
+        if (rc < 0) {
+            return switch (std.c.errno(rc)) {
+                .AGAIN => error.WouldBlock,
+                else => error.Unexpected,
+            };
+        }
+        return @intCast(rc);
     }
 
     fn posixRecvFrom(fd: posix.socket_t, buf: []u8) !RecvResult {
         var peer_storage: posix.sockaddr.storage = undefined;
         var peer_len: posix.socklen_t = @sizeOf(posix.sockaddr.storage);
-        const n = posix.recvfrom(
+        const rc = std.c.recvfrom(
             fd,
-            buf,
+            buf.ptr,
+            buf.len,
             0,
             @ptrCast(&peer_storage),
             &peer_len,
-        ) catch |err| switch (err) {
-            error.WouldBlock => return error.WouldBlock,
-            else => return err,
-        };
+        );
+        if (rc < 0) {
+            return switch (std.c.errno(rc)) {
+                .AGAIN => error.WouldBlock,
+                else => error.Unexpected,
+            };
+        }
         return RecvResult{
-            .n = n,
+            .n = @intCast(rc),
             .peer = .{ .storage = peer_storage, .len = peer_len },
             .ecn = null, // ECN extraction is Linux-only; non-Linux callers see null
         };
