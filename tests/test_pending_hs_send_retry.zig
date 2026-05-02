@@ -106,8 +106,8 @@ fn buildStandardClientHello(alloc: std.mem.Allocator) ![]u8 {
         0x00, 0x10,
         0x00, 0x05,
         0x00, 0x03,
-        0x02,
-        'h',  '3',
+        0x02, 'h',
+        '3',
     });
     // quic_transport_params (minimal)
     try ext_buf.appendSlice(alloc, &.{
