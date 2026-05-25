@@ -4,14 +4,12 @@
 // Micro-benchmark: short-header connection-table routing cost
 // (endpoint.findConnectionByDcid) as a function of active connection count.
 //
-// Motivation (issue #154): today's lookup iterates the entire connection
-// hashmap per packet, matching peer_hash + DCID. That's O(N) per packet
-// and scales to O(N^2) when N connections each receive one packet. This
-// bench captures the regression signature -- p99 should grow roughly
-// linearly from the 10-conn variant to the 10K-conn variant -- so the
-// v2 gate can catch a drop to flat O(1) once a HashMap-backed index
-// lands. Post-fix, all four variants should settle near the tens-of-ns
-// range.
+// Motivation (issue #154): short-header lookup used to iterate the entire
+// connection hashmap per packet, matching peer_hash + DCID. That's O(N) per
+// packet and scales to O(N^2) when N connections each receive one packet.
+// The endpoint now uses a peer+DCID hash fast path; this bench keeps the
+// regression signature visible. p99 should stay roughly flat from 10
+// connections through 20K connections.
 //
 // Methodology:
 //   * Populate the endpoint with N client connections via connectClient.
@@ -40,10 +38,9 @@
 //     no mutex. Single-threaded bench driver + pre-populated endpoint
 //     means the table is stable for the duration of the measured loop.
 //
-// Variants (4): active connection count sweeps 10 / 100 / 1000 / 10000.
-// Iteration counts drop at higher N so wall-clock stays bounded even in
-// the O(N) regime (today's 10K variant is ~10-100us per lookup -> ~5s
-// over 50K iters).
+// Variants: active connection count sweeps 10 / 100 / 1000 / 10000 / 20000.
+// Iteration counts drop at higher N so wall-clock stays bounded if the
+// lookup ever regresses.
 //
 // BATCH amortization: the small variants (10 / 100) today have lookups
 // in the tens-to-hundreds of ns range -- comparable to the clock_gettime
@@ -208,14 +205,13 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
     };
 }
 
-// Four-variant sweep: 10 / 100 / 1000 / 10000 active connections.
-// Iteration counts step down at higher N so the 10K variant's O(N)
-// cost (~10-100us per lookup pre-#154-fix) still fits in bounded
-// wall-clock during a full-suite run. Warmup is ~10% of iterations
-// in each tier.
+// Sweep: 10 / 100 / 1000 / 10000 / 20000 active connections. Iteration counts
+// step down at higher N so a lookup regression still fits in bounded wall-clock.
+// Warmup is ~10% of iterations in each tier.
 pub const scenarios = [_]common.ScenarioSpec{
     .{ .name = "micro/connection_lookup", .variant = "10", .iterations = 10_000, .warmup_iterations = 1_000, .connection_count = 10 },
     .{ .name = "micro/connection_lookup", .variant = "100", .iterations = 10_000, .warmup_iterations = 1_000, .connection_count = 100 },
     .{ .name = "micro/connection_lookup", .variant = "1000", .iterations = 2_000, .warmup_iterations = 200, .connection_count = 1_000 },
     .{ .name = "micro/connection_lookup", .variant = "10000", .iterations = 500, .warmup_iterations = 50, .connection_count = 10_000 },
+    .{ .name = "micro/connection_lookup", .variant = "20000", .iterations = 200, .warmup_iterations = 20, .connection_count = 20_000 },
 };

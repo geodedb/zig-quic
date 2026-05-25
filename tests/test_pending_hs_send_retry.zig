@@ -30,10 +30,9 @@
 //      instead of logging an error and dropping.
 //   3. In the endpoint poll loop (`Endpoint.pollWithStats` in
 //      src/quic/endpoint.zig), add a Phase 4.5 drain that snapshots
-//      every server-role connection with `pending_hs_send == true`
-//      and retries `sendHandshakePackets`. On success, clear the flag.
-//      On a second `NoHandshakeKeys`, leave the flag set; the next
-//      tick tries again.
+//      the endpoint pending-hs-send set and retries `sendHandshakePackets`.
+//      On success, clear the flag. On a second `NoHandshakeKeys`, leave the
+//      flag set; the next tick tries again.
 //
 // What this test proves:
 //
@@ -229,7 +228,7 @@ test "pending_hs_send: poll drains the flag when hs_tx_keys are installed" {
 
     // Synthetically arm the flag — this is what processInitial would have
     // done on a NoHandshakeKeys-on-first-tick race.
-    conn.pending_hs_send = true;
+    ep.markPendingHandshakeSend(conn);
 
     // One poll tick. timeout=0 means: no transport wait, just drain pending
     // work and run the Phase 4.5 retry path.
@@ -278,7 +277,7 @@ test "pending_hs_send: poll leaves flag set when keys are still missing" {
     conn.hs_tx_keys = null;
     defer conn.hs_tx_keys = saved_hs_tx;
 
-    conn.pending_hs_send = true;
+    ep.markPendingHandshakeSend(conn);
 
     _ = try ep.pollWithStats(0);
 

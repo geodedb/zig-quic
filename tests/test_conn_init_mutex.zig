@@ -199,3 +199,30 @@ test "Connection.init produces a mutex that can actually be locked and unlocked 
     }
     t.join();
 }
+
+test "Connection.init clears PTO notifier callbacks from hostile backing bytes" {
+    const gpa_ref = std.heap.page_allocator;
+    var gpa_copy = gpa_ref;
+    const alloc_ptr: *std.mem.Allocator = &gpa_copy;
+
+    const conn_ptr = try gpa_copy.create(conn_mod.Connection);
+    defer gpa_copy.destroy(conn_ptr);
+
+    const conn_bytes: [*]u8 = @ptrCast(conn_ptr);
+    @memset(conn_bytes[0..@sizeOf(conn_mod.Connection)], 0x02);
+
+    conn_ptr.init(
+        alloc_ptr,
+        .Client,
+        -1,
+        conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433),
+    );
+    defer conn_ptr.deinit();
+
+    try std.testing.expect(conn_ptr.pto_dirty_notify_ctx == null);
+    try std.testing.expect(conn_ptr.pto_dirty_notify_fn == null);
+
+    conn_ptr.pto_dirty.store(false, .seq_cst);
+    conn_ptr.markPtoDirty();
+    try std.testing.expect(conn_ptr.pto_dirty.load(.seq_cst));
+}

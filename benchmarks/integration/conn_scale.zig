@@ -4,12 +4,11 @@
 // Integration benchmark: QUIC endpoint connection/stream scaling sweep
 // on a loopback endpoint (no real network I/O).
 //
-// Seven-tier sweep preserved verbatim from the legacy
-// benchmarks/scale_bench.zig (2026-03-27): 1c, 10c, 100c, 1Kc,
-// 1Kc-100s, 10Kc, 10Kc-10s -- where `Nc` is connection count and
-// `Ms` is streams-per-connection (streams_count in v2 is recorded as
-// metadata; the legacy file tracked streams only via the total count
-// at report time, so we just surface it on the row).
+// Scale sweep preserved from the legacy benchmarks/scale_bench.zig
+// (2026-03-27) and extended with 20Kc. `Nc` is connection count and `Ms`
+// is streams-per-connection (streams_count in v2 is recorded as metadata;
+// the legacy file tracked streams only via the total count at report time,
+// so we just surface it on the row).
 //
 // Per variant:
 //   1. init a loopback endpoint bound to 127.0.0.1:0 with
@@ -53,6 +52,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const common = @import("bench_common");
 const endpoint_mod = @import("quic_endpoint");
+const conn_mod = @import("quic_conn");
 const cfg = @import("quic_config");
 
 const test_alpn = [_][]const u8{"h3"};
@@ -82,19 +82,28 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
     defer ep.deinit();
 
     // Open N client connections using port = (c % 55000) + 10000 to
-    // avoid exhausting the ephemeral range at N=10_000. These
+    // avoid exhausting the ephemeral range at N=20_000. These
     // connections never complete a handshake (no server listening on
     // those ports); they just populate the endpoint's connection table
-    // so pollWithStats() walks N entries, and we can time the setup
-    // cost of building N Conn objects.
+    // so pollWithStats() sees N live connections, and we can time the
+    // setup cost of building N Conn objects. `*-close` variants keep the
+    // pointers so a single measured poll can prune a mass close event.
     const n: u64 = spec.connection_count;
+    const close_storm = std.mem.containsAtLeast(u8, spec.variant, 1, "close");
+    var close_conns: ?[]*conn_mod.Connection = null;
+    defer if (close_conns) |items| allocator.free(items);
+    if (close_storm) close_conns = try allocator.alloc(*conn_mod.Connection, @intCast(n));
+
     const setup_start = common.nowNs();
     var c: u64 = 0;
+    var opened: usize = 0;
     while (c < n) : (c += 1) {
         const port: u16 = @intCast((c % 55000) + 10000);
         var addr_buf: [32]u8 = undefined;
         const addr = std.fmt.bufPrint(&addr_buf, "127.0.0.1:{d}", .{port}) catch continue;
-        _ = ep.connectClient(addr) catch continue;
+        const conn = ep.connectClient(addr) catch continue;
+        if (close_conns) |items| items[opened] = conn;
+        opened += 1;
     }
     const setup_end = common.nowNs();
 
@@ -109,6 +118,10 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
     const iters = spec.iterations;
     const latencies = try allocator.alloc(u64, iters);
     @memset(latencies, 0);
+
+    if (close_conns) |items| {
+        for (items[0..opened]) |conn| conn.markClosed();
+    }
 
     var i: u64 = 0;
     while (i < iters) : (i += 1) {
@@ -132,9 +145,9 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
     };
 }
 
-// Seven-tier sweep preserved verbatim from legacy
-// benchmarks/scale_bench.zig. Iteration counts drop as connection
-// count rises so wall-clock stays bounded at 10Kc.
+// Scale sweep preserved from legacy benchmarks/scale_bench.zig and extended to
+// 20Kc for high-parallel contention coverage. Iteration counts drop as
+// connection count rises so wall-clock stays bounded.
 pub const scenarios = [_]common.ScenarioSpec{
     .{ .name = "integration/conn_scale", .variant = "1c", .iterations = 5_000, .warmup_iterations = 500, .connection_count = 1, .streams_count = 1 },
     .{ .name = "integration/conn_scale", .variant = "10c", .iterations = 2_000, .warmup_iterations = 200, .connection_count = 10, .streams_count = 10 },
@@ -143,4 +156,6 @@ pub const scenarios = [_]common.ScenarioSpec{
     .{ .name = "integration/conn_scale", .variant = "1Kc-100s", .iterations = 100, .warmup_iterations = 10, .connection_count = 1_000, .streams_count = 100 },
     .{ .name = "integration/conn_scale", .variant = "10Kc", .iterations = 50, .warmup_iterations = 5, .connection_count = 10_000, .streams_count = 1 },
     .{ .name = "integration/conn_scale", .variant = "10Kc-10s", .iterations = 50, .warmup_iterations = 5, .connection_count = 10_000, .streams_count = 10 },
+    .{ .name = "integration/conn_scale", .variant = "20Kc", .iterations = 20, .warmup_iterations = 2, .connection_count = 20_000, .streams_count = 1 },
+    .{ .name = "integration/conn_scale", .variant = "20Kc-close", .iterations = 1, .warmup_iterations = 2, .connection_count = 20_000, .streams_count = 1 },
 };

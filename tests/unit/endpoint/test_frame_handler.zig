@@ -63,6 +63,9 @@ fn createTestConnection() !*conn_mod.Connection {
     conn.pto_app_count = 0;
     conn.pto_app_active = false;
     conn.pto_app_id = 0;
+    conn.pto_dirty = std.atomic.Value(bool).init(false);
+    conn.pto_dirty_notify_ctx = null;
+    conn.pto_dirty_notify_fn = null;
     return conn;
 }
 

@@ -789,15 +789,31 @@ test "RFC 9002 §6.2.4 - PTO expiry sends probe packets" {
     conn.peer_finished_verified = true;
     conn.address_validated = true;
     conn.pto_app_active = true;
+    conn.pto_dirty.store(false, .seq_cst);
+
+    const Ctx = struct {
+        count: std.atomic.Value(u32) = .init(0),
+
+        fn notify(ctx: *anyopaque, c: *conn_mod.Connection) void {
+            _ = c;
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            _ = self.count.fetchAdd(1, .seq_cst);
+        }
+    };
+    var ctx = Ctx{};
+    conn.setPtoDirtyNotifier(@ptrCast(&ctx), Ctx.notify);
 
     const pn_before = conn.pn_app_tx;
     const bytes_before = conn.rec.getBytesInFlight();
     const pto_count_before = conn.rec.pto_count;
     conn.setPtoExpiredApp();
 
-    // Expiry clears the old active timer, sends an ack-eliciting probe, and the
-    // send path immediately re-arms the Application PTO while bytes are in flight.
-    try std.testing.expect(conn.pto_app_active);
+    // Expiry clears the old active timer and sends an ack-eliciting probe. The
+    // send path marks PTO dirty; the endpoint poll loop is responsible for
+    // re-arming the real Application PTO timer.
+    try std.testing.expect(!conn.pto_app_active);
+    try std.testing.expect(conn.pto_dirty.load(.seq_cst));
+    try std.testing.expectEqual(@as(u32, 1), ctx.count.load(.seq_cst));
     try std.testing.expectEqual(@as(u32, 1), conn.pto_app_count);
     try std.testing.expectEqual(pto_count_before + 1, conn.rec.pto_count);
     try std.testing.expectEqual(pn_before + 1, conn.pn_app_tx);

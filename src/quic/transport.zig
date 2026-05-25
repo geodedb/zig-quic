@@ -73,6 +73,11 @@ pub const PollSync = struct {
     active_io_count: u32 = 0,
 
     pub fn enterIo(self: *PollSync) void {
+        if (pollSyncIsEntered(self)) {
+            pollSyncPush(self, false);
+            return;
+        }
+
         const io = std.Io.Threaded.global_single_threaded.io();
         self.mu.lockUncancelable(io);
         defer self.mu.unlock(io);
@@ -80,9 +85,12 @@ pub const PollSync = struct {
             self.cv.wait(io, &self.mu) catch break;
         }
         self.active_io_count += 1;
+        pollSyncPush(self, true);
     }
 
     pub fn leaveIo(self: *PollSync) void {
+        if (!pollSyncPop(self)) return;
+
         const io = std.Io.Threaded.global_single_threaded.io();
         self.mu.lockUncancelable(io);
         defer self.mu.unlock(io);
@@ -108,6 +116,36 @@ pub const PollSync = struct {
         self.cv.broadcast(io);
     }
 };
+
+const PollSyncFrame = struct {
+    sync: *PollSync,
+    counted: bool,
+};
+
+threadlocal var poll_sync_stack: [16]PollSyncFrame = undefined;
+threadlocal var poll_sync_stack_len: usize = 0;
+
+fn pollSyncIsEntered(sync: *PollSync) bool {
+    var i: usize = 0;
+    while (i < poll_sync_stack_len) : (i += 1) {
+        if (poll_sync_stack[i].sync == sync) return true;
+    }
+    return false;
+}
+
+fn pollSyncPush(sync: *PollSync, counted: bool) void {
+    std.debug.assert(poll_sync_stack_len < poll_sync_stack.len);
+    poll_sync_stack[poll_sync_stack_len] = .{ .sync = sync, .counted = counted };
+    poll_sync_stack_len += 1;
+}
+
+fn pollSyncPop(sync: *PollSync) bool {
+    std.debug.assert(poll_sync_stack_len > 0);
+    poll_sync_stack_len -= 1;
+    const frame = poll_sync_stack[poll_sync_stack_len];
+    std.debug.assert(frame.sync == sync);
+    return frame.counted;
+}
 
 /// High-level QUIC transport for managing endpoints and connections.
 pub const QuicTransport = struct {

@@ -1,0 +1,24 @@
+services:
+  high-parallel-scale:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /workspace
+    user: ${UID:-1000}:${GID:-1000}
+    environment:
+      QUIC_HEAVY_SCALE: '1'
+      QUIC_HEAVY_CONNECTIONS: ${QUIC_HEAVY_CONNECTIONS:-20000}
+      QUIC_HEAVY_DIRTY_THREADS: ${QUIC_HEAVY_DIRTY_THREADS:-8}
+      QUIC_HEAVY_DIRTY_ROUNDS: ${QUIC_HEAVY_DIRTY_ROUNDS:-8}
+      QUIC_HEAVY_DURATION_MS: ${QUIC_HEAVY_DURATION_MS:-1000}
+      ZIG_LOCAL_CACHE_DIR: /tmp/zig-local-cache
+      ZIG_GLOBAL_CACHE_DIR: /tmp/zig-global-cache
+      HOME: /tmp
+    volumes:
+    - ../..:/workspace
+    ulimits:
+      nofile:
+        soft: 524288
+        hard: 524288
+    shm_size: 2gb
+    command: [bash, -lc, zig version && zig build test -Dtest-filter=high_parallel_scale]

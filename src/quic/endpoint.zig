@@ -150,6 +150,61 @@ fn encodeVersionNegotiationPacket(
 // Use canonical Timer and TimerKind from endpoint/types.zig (imported as ep_types)
 const Timer = ep_types.Timer;
 const TimerKind = ep_types.TimerKind;
+
+fn timerBefore(a: Timer, b: Timer) bool {
+    if (a.deadline_ms != b.deadline_ms) return a.deadline_ms < b.deadline_ms;
+    if (a.deadline_ns_extra != b.deadline_ns_extra) return a.deadline_ns_extra < b.deadline_ns_extra;
+    return a.id < b.id;
+}
+
+fn timerBubbleUp(timers: *std.ArrayList(Timer), start_idx: usize) void {
+    var idx = start_idx;
+    while (idx > 0) {
+        const parent = (idx - 1) / 2;
+        if (!timerBefore(timers.items[idx], timers.items[parent])) break;
+        std.mem.swap(Timer, &timers.items[idx], &timers.items[parent]);
+        idx = parent;
+    }
+}
+
+fn timerHeapifyDown(timers: *std.ArrayList(Timer), start_idx: usize) void {
+    var idx = start_idx;
+    while (true) {
+        const len = timers.items.len;
+        const left = 2 * idx + 1;
+        const right = left + 1;
+        var smallest = idx;
+
+        if (left < len and timerBefore(timers.items[left], timers.items[smallest])) smallest = left;
+        if (right < len and timerBefore(timers.items[right], timers.items[smallest])) smallest = right;
+        if (smallest == idx) break;
+
+        std.mem.swap(Timer, &timers.items[idx], &timers.items[smallest]);
+        idx = smallest;
+    }
+}
+
+fn timerFixAt(timers: *std.ArrayList(Timer), idx: usize) void {
+    if (idx >= timers.items.len) return;
+    if (idx > 0) {
+        const parent = (idx - 1) / 2;
+        if (timerBefore(timers.items[idx], timers.items[parent])) {
+            timerBubbleUp(timers, idx);
+            return;
+        }
+    }
+    timerHeapifyDown(timers, idx);
+}
+
+fn timerHeapifyAll(timers: *std.ArrayList(Timer)) void {
+    if (timers.items.len <= 1) return;
+    var idx = timers.items.len / 2;
+    while (idx > 0) {
+        idx -= 1;
+        timerHeapifyDown(timers, idx);
+    }
+}
+
 /// Observability for poll loops (number of datagrams drained per iteration).
 pub const PollStats = struct {
     packets_processed: usize = 0,
@@ -228,6 +283,20 @@ pub const Endpoint = struct {
     pto_dirty_set: std.AutoHashMap(*conn_mod.Connection, void),
     pto_dirty_mu: std.Io.Mutex = std.Io.Mutex.init,
     pto_dirty_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+
+    // Server-side deferred Handshake packet sends. This replaces the old
+    // poll-time full connection-map scan with an O(pending) set so clean polls
+    // stay bounded at high connection counts.
+    pending_hs_send_set: std.AutoHashMap(*conn_mod.Connection, void),
+    pending_hs_send_mu: std.Io.Mutex = std.Io.Mutex.init,
+    pending_hs_send_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+
+    // Closed-connection tracking. Connection.markClosed() notifies this set so
+    // pruneClosed() is O(closed) instead of scanning the full connection map on
+    // every poll tick.
+    closed_conn_set: std.AutoHashMap(*conn_mod.Connection, void),
+    closed_conn_mu: std.Io.Mutex = std.Io.Mutex.init,
+    closed_conn_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 
     // Next timer identifier for scheduleTimer (protected by timer_mu)
     next_timer_id: u64 = 1,
@@ -319,6 +388,8 @@ pub const Endpoint = struct {
             .timers = .empty,
             .conns = std.AutoHashMap(Key, *conn_mod.Connection).init(alloc),
             .pto_dirty_set = std.AutoHashMap(*conn_mod.Connection, void).init(alloc),
+            .pending_hs_send_set = std.AutoHashMap(*conn_mod.Connection, void).init(alloc),
+            .closed_conn_set = std.AutoHashMap(*conn_mod.Connection, void).init(alloc),
             .next_timer_id = 1,
             .cfg = cfgp.*,
             .accepted = .empty,
@@ -366,6 +437,8 @@ pub const Endpoint = struct {
             .timers = .empty,
             .conns = std.AutoHashMap(Key, *conn_mod.Connection).init(alloc.*),
             .pto_dirty_set = std.AutoHashMap(*conn_mod.Connection, void).init(alloc.*),
+            .pending_hs_send_set = std.AutoHashMap(*conn_mod.Connection, void).init(alloc.*),
+            .closed_conn_set = std.AutoHashMap(*conn_mod.Connection, void).init(alloc.*),
             .next_timer_id = 1,
             .cfg = cfgp.*,
             .accepted = .empty,
@@ -472,6 +545,8 @@ pub const Endpoint = struct {
         self.retired.deinit(self.allocator);
         self.conns.deinit();
         self.pto_dirty_set.deinit();
+        self.pending_hs_send_set.deinit();
+        self.closed_conn_set.deinit();
         self.accepted.deinit(self.allocator);
         self.timers.deinit(self.allocator);
 
@@ -670,8 +745,22 @@ pub const Endpoint = struct {
         c.setSender(@ptrCast(self), senderPaced);
         // Install PTO-dirty notifier so markPtoDirty() updates pto_dirty_set (#182).
         c.setPtoDirtyNotifier(@ptrCast(self), notifyPtoDirty);
+        c.setCloseNotifier(@ptrCast(self), notifyConnectionClosed);
 
         return c;
+    }
+
+    pub fn markPendingHandshakeSend(self: *Endpoint, c: *conn_mod.Connection) void {
+        c.pending_hs_send = true;
+        self.pending_hs_send_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        const already_pending = self.pending_hs_send_set.contains(c);
+        self.pending_hs_send_set.put(c, {}) catch |err| {
+            self.pending_hs_send_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+            logger.debugPrint("[ENDPOINT] pending_hs_send_set.put failed: {s}\n", .{@errorName(err)});
+            return;
+        };
+        self.pending_hs_send_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+        if (!already_pending) _ = self.pending_hs_send_count.fetchAdd(1, .release);
     }
 
     /// Look up a connection by peer address + short-header packet bytes.
@@ -737,13 +826,13 @@ pub const Endpoint = struct {
         return self.scheduleTimerLocked(delay_ms);
     }
 
-    /// Schedule generic timer (caller must hold mu).
+    /// Schedule generic timer (caller must hold timer_mu).
     fn scheduleTimerLocked(self: *Endpoint, delay_ms: u32) !u64 {
         const id = self.next_timer_id;
         self.next_timer_id +%= 1;
         const now_ms: i64 = nowMsMonotonic();
         const deadline: i64 = now_ms + @as(i64, @intCast(delay_ms));
-        try self.timers.append(self.allocator, .{ .deadline_ms = deadline, .id = id, .kind = .Generic, .conn = null });
+        try self.pushTimerLocked(.{ .deadline_ms = deadline, .id = id, .kind = .Generic, .conn = null });
         return id;
     }
 
@@ -755,15 +844,27 @@ pub const Endpoint = struct {
         return self.scheduleConnPtoLocked(c, kind, delay_ms);
     }
 
-    /// Schedule connection PTO timer (caller must hold mu).
+    /// Schedule connection PTO timer (caller must hold timer_mu).
     fn scheduleConnPtoLocked(self: *Endpoint, c: *conn_mod.Connection, kind: TimerKind, delay_ms: u32) !u64 {
         const id = self.next_timer_id;
         self.next_timer_id +%= 1;
         const now_ms: i64 = nowMsMonotonic();
         const deadline: i64 = now_ms + @as(i64, @intCast(delay_ms));
         // PTO and probe timers follow RFC 9002 §6 (loss detection) and §7 (PMTUD pacing).
-        try self.timers.append(self.allocator, .{ .deadline_ms = deadline, .id = id, .kind = kind, .conn = c });
+        try self.pushTimerLocked(.{ .deadline_ms = deadline, .id = id, .kind = kind, .conn = c });
         return id;
+    }
+
+    fn pushTimerLocked(self: *Endpoint, timer: Timer) !void {
+        try self.timers.append(self.allocator, timer);
+        timerBubbleUp(&self.timers, self.timers.items.len - 1);
+    }
+
+    fn removeTimerAtLocked(self: *Endpoint, idx: usize) Timer {
+        const removed = self.timers.items[idx];
+        _ = self.timers.swapRemove(idx);
+        timerFixAt(&self.timers, idx);
+        return removed;
     }
 
     /// Schedule a paced send for a connection after delay_ns.
@@ -786,7 +887,7 @@ pub const Endpoint = struct {
         const deadline_ms_part: i64 = @intCast(@divTrunc(deadline_ns_total, std.time.ns_per_ms));
         const deadline_ns_residual: u32 = @intCast(@mod(deadline_ns_total, std.time.ns_per_ms));
 
-        try self.timers.append(self.allocator, .{
+        try self.pushTimerLocked(.{
             .deadline_ms = deadline_ms_part,
             .deadline_ns_extra = deadline_ns_residual,
             .id = id,
@@ -807,18 +908,37 @@ pub const Endpoint = struct {
         return self.cancelTimerLocked(id);
     }
 
-    /// Cancel a pending timer (caller must hold mu).
-    /// Uses swapRemove for O(1) removal — timer ordering is not required since
-    /// we always scan for the minimum deadline.
+    /// Cancel a pending timer (caller must hold timer_mu).
     fn cancelTimerLocked(self: *Endpoint, id: u64) bool {
         var i: usize = 0;
         while (i < self.timers.items.len) : (i += 1) {
             if (self.timers.items[i].id == id) {
-                _ = self.timers.swapRemove(i);
+                _ = self.removeTimerAtLocked(i);
                 return true;
             }
         }
         return false;
+    }
+
+    pub fn removeTimersForConnection(self: *Endpoint, conn: *conn_mod.Connection) void {
+        self.timer_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.timer_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+        self.removeTimersForConnectionLocked(conn);
+    }
+
+    fn removeTimersForConnectionLocked(self: *Endpoint, conn: *conn_mod.Connection) void {
+        var i: usize = 0;
+        while (i < self.timers.items.len) {
+            const timer = self.timers.items[i];
+            if (timer.conn) |tc| {
+                if (tc == conn) {
+                    if (timer.paced) if (timer.payload) |p| self.allocator.free(p);
+                    _ = self.removeTimerAtLocked(i);
+                    continue;
+                }
+            }
+            i += 1;
+        }
     }
 
     /// Drive network I/O, timers, and paced send for up to timeout_ms milliseconds.
@@ -913,31 +1033,35 @@ pub const Endpoint = struct {
         // QUIC idle timeout because the server never re-attempted the
         // Handshake send after the first-tick miss.
         //
-        // Iteration walks self.conns under self.mu (same lock the receive
-        // path uses), snapshots server-role connections with the flag set,
-        // and retries outside the lock so a slow per-connection TLS poll
+        // The pending set snapshots server-role connections with the flag set,
+        // then retries outside the lock so a slow per-connection TLS poll
         // doesn't serialize unrelated handlers. The retry uses the same
         // sendToWrapper-style closure (current_io_endpoint thread-local)
         // that processIncomingDatagram and clientSendInitialProbe already
         // rely on, so no new lock-order surface is introduced.
         {
-            var retry_snapshot: [1024]*conn_mod.Connection = undefined;
-            var retry_len: usize = 0;
-            self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-            {
-                var it = self.conns.iterator();
+            var pending_hs_send_snapshot: std.ArrayList(*conn_mod.Connection) = .empty;
+            defer pending_hs_send_snapshot.deinit(self.allocator);
+
+            if (self.pending_hs_send_count.load(.acquire) > 0) {
+                self.pending_hs_send_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+                pending_hs_send_snapshot.ensureTotalCapacity(self.allocator, self.pending_hs_send_set.count()) catch |err| {
+                    self.pending_hs_send_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+                    return err;
+                };
+                var it = self.pending_hs_send_set.iterator();
                 while (it.next()) |entry| {
-                    if (retry_len >= retry_snapshot.len) break;
-                    const c = entry.value_ptr.*;
+                    const c = entry.key_ptr.*;
                     if (c.role == .Server and !c.closed and c.pending_hs_send) {
-                        retry_snapshot[retry_len] = c;
-                        retry_len += 1;
+                        pending_hs_send_snapshot.appendAssumeCapacity(c);
                     }
                 }
+                self.pending_hs_send_set.clearRetainingCapacity();
+                self.pending_hs_send_count.store(0, .release);
+                self.pending_hs_send_mu.unlock(std.Io.Threaded.global_single_threaded.io());
             }
-            self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
-            if (retry_len > 0) {
+            if (pending_hs_send_snapshot.items.len > 0) {
                 current_io_endpoint = self;
                 defer current_io_endpoint = null;
 
@@ -948,9 +1072,7 @@ pub const Endpoint = struct {
                     }
                 };
 
-                var ri: usize = 0;
-                while (ri < retry_len) : (ri += 1) {
-                    const c = retry_snapshot[ri];
+                for (pending_hs_send_snapshot.items) |c| {
                     // The TLS callback path (onSecretAvailable) reads the
                     // current connection from a thread-local; install it
                     // before calling sendHandshakePackets so a Handshake-
@@ -973,6 +1095,7 @@ pub const Endpoint = struct {
                             // sendHandshakePackets above already drove the
                             // TLS state machine; we just have to wait for
                             // the next inbound CRYPTO frame to advance it.
+                            self.markPendingHandshakeSend(c);
                             continue;
                         }
                         // Any other error is unexpected here; log it and
@@ -1000,8 +1123,6 @@ pub const Endpoint = struct {
         // `pto_dirty_set` is maintained by `markPtoDirty()` under the dedicated
         // `pto_dirty_mu` leaf mutex (no lock-order conflict with `mu` or
         // `conn.mu`). Iteration cost is O(dirty), not O(active).
-        var conn_snapshot: [1024]*conn_mod.Connection = undefined;
-        var snapshot_len: usize = 0;
         {
             self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
             self.timer_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
@@ -1013,15 +1134,20 @@ pub const Endpoint = struct {
 
         // Drain the dirty set under pto_dirty_mu (leaf lock). Skip entirely
         // when no connection is dirty — short-circuited via atomic counter.
+        var pto_dirty_snapshot: std.ArrayList(*conn_mod.Connection) = .empty;
+        defer pto_dirty_snapshot.deinit(self.allocator);
         if (self.pto_dirty_count.load(.acquire) > 0) {
             self.pto_dirty_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            pto_dirty_snapshot.ensureTotalCapacity(self.allocator, self.pto_dirty_set.count()) catch |err| {
+                self.pto_dirty_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+                return err;
+            };
             var dit = self.pto_dirty_set.iterator();
             while (dit.next()) |entry| {
-                if (snapshot_len >= conn_snapshot.len) break;
                 const c = entry.key_ptr.*;
                 if (!c.closed) {
-                    conn_snapshot[snapshot_len] = c;
-                    snapshot_len += 1;
+                    c.pto_dirty.store(false, .release);
+                    pto_dirty_snapshot.appendAssumeCapacity(c);
                 }
             }
             // Drain: clear the set entries we snapshotted; markPtoDirty()
@@ -1033,12 +1159,14 @@ pub const Endpoint = struct {
         }
         // Arm PTO timers outside mu — each computeAndMaybeArmPto* reads only
         // per-connection state and calls scheduleConnPto which acquires timer_mu
-        // independently. PTO fields are only mutated by the poll thread (us).
-        for (conn_snapshot[0..snapshot_len]) |c| {
+        // independently. The dirty bit was cleared while pto_dirty_mu was held
+        // above; if a handler thread makes new send/ACK progress during or after
+        // recompute, markPtoDirty() sees false and re-adds this connection to the
+        // dirty set for the next poll cycle.
+        for (pto_dirty_snapshot.items) |c| {
             c.computeAndMaybeArmPtoInitial(self);
             c.computeAndMaybeArmPtoHandshake(self);
             c.computeAndMaybeArmPto(self);
-            c.pto_dirty = false;
         }
 
         return stats;
@@ -1189,16 +1317,6 @@ pub const Endpoint = struct {
         return self.clientSendInitialProbe(conn);
     }
 
-    fn markRetryObserved(self: *Endpoint, peer: conn_mod.SockAddr) void {
-        const ph = hashSockaddr(&peer.storage, peer.len);
-        var it = self.conns.iterator();
-        while (it.next()) |e| {
-            if (e.key_ptr.*.peer_hash != ph) continue;
-            if (e.value_ptr.*.role != .Client) continue;
-            e.value_ptr.*.retry_packets_observed +%= 1;
-        }
-    }
-
     // Helper: Process Retry packet (RFC 9000 §17.2.5, RFC 9001 §5.8)
     fn processRetryPacket(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8, version: u32) void {
         // Parse Retry header
@@ -1218,68 +1336,63 @@ pub const Endpoint = struct {
         if (bytes.len < 16 or i >= bytes.len - 16) return; // Need room for integrity tag
         const token_bytes = bytes[i .. bytes.len - 16];
 
-        // Lookup matching client connection.
-        // Retry DCID must equal the client's Initial SCID that triggered Retry.
-        // Validate integrity while scanning and pick the first verified candidate.
-        var itc = self.conns.iterator();
+        const Candidate = struct {
+            fn retryIntegrity(candidate: *conn_mod.Connection, retry_packet: []const u8) struct { current: bool, original: bool } {
+                const cand_current = candidate.peer_initial_dcid.bytes[0..candidate.peer_initial_dcid.len];
+                const cand_original = candidate.original_dcid.bytes[0..candidate.original_dcid.len];
+                return .{
+                    .current = cand_current.len > 0 and packet.verifyRetry(cand_current, retry_packet),
+                    .original = cand_original.len > 0 and packet.verifyRetry(cand_original, retry_packet),
+                };
+            }
+        };
+
+        // Lookup matching client connection. Retry DCID must equal the client's
+        // Initial SCID that triggered Retry. Client connections are keyed by
+        // peer+our_scid when created, so normal Retry routing is one hash lookup
+        // even during very large fan-out.
+        const ph = hashSockaddr(&peer.storage, peer.len);
         var c_found: ?*conn_mod.Connection = null;
         var verify_current: bool = false;
         var verify_original: bool = false;
-        while (itc.next()) |e| {
-            const candidate = e.value_ptr.*;
-            if (candidate.role != .Client) continue;
-            if (candidate.our_scid.len != retry_dcid.len) continue;
-            if (!std.mem.eql(u8, candidate.our_scid.bytes[0..candidate.our_scid.len], retry_dcid)) continue;
 
-            const cand_current = candidate.peer_initial_dcid.bytes[0..candidate.peer_initial_dcid.len];
-            const cand_original = candidate.original_dcid.bytes[0..candidate.original_dcid.len];
-            const cand_verify_current = (cand_current.len > 0 and packet.verifyRetry(cand_current, bytes));
-            const cand_verify_original = (cand_original.len > 0 and packet.verifyRetry(cand_original, bytes));
-
-            if (cand_verify_current or cand_verify_original) {
-                c_found = candidate;
-                verify_current = cand_verify_current;
-                verify_original = cand_verify_original;
-                break;
-            }
-
-            if (c_found == null) {
-                c_found = candidate;
-                verify_current = cand_verify_current;
-                verify_original = cand_verify_original;
+        if (retry_dcid.len > 0) {
+            const key = Key{ .peer_hash = ph, .dcid_hash = hashBytes(retry_dcid) };
+            if (self.conns.getPtr(key)) |entry| {
+                const candidate = entry.*;
+                const dcid_matches = candidate.our_scid.len == retry_dcid.len and
+                    std.mem.eql(u8, candidate.our_scid.bytes[0..candidate.our_scid.len], retry_dcid);
+                if (candidate.role == .Client and dcid_matches) {
+                    const integrity = Candidate.retryIntegrity(candidate, bytes);
+                    c_found = candidate;
+                    verify_current = integrity.current;
+                    verify_original = integrity.original;
+                }
             }
         }
 
-        // Fallback to peer-hash candidates if no SCID match exists.
+        // Fallback to same-peer candidates if an older or test-only path failed
+        // to register the client's SCID key. This preserves compatibility while
+        // avoiding a whole-map scan for normal Retry handling.
         if (c_found == null) {
-            const ph = hashSockaddr(&peer.storage, peer.len);
-            itc = self.conns.iterator();
+            var itc = self.conns.iterator();
             while (itc.next()) |e| {
                 if (e.key_ptr.*.peer_hash != ph) continue;
                 const candidate = e.value_ptr.*;
                 if (candidate.role != .Client) continue;
+                if (candidate.our_scid.len != retry_dcid.len) continue;
+                if (!std.mem.eql(u8, candidate.our_scid.bytes[0..candidate.our_scid.len], retry_dcid)) continue;
 
-                const cand_current = candidate.peer_initial_dcid.bytes[0..candidate.peer_initial_dcid.len];
-                const cand_original = candidate.original_dcid.bytes[0..candidate.original_dcid.len];
-                const cand_verify_current = (cand_current.len > 0 and packet.verifyRetry(cand_current, bytes));
-                const cand_verify_original = (cand_original.len > 0 and packet.verifyRetry(cand_original, bytes));
-
-                if (cand_verify_current or cand_verify_original) {
-                    c_found = candidate;
-                    verify_current = cand_verify_current;
-                    verify_original = cand_verify_original;
-                    break;
-                }
-
-                if (c_found == null) {
-                    c_found = candidate;
-                    verify_current = cand_verify_current;
-                    verify_original = cand_verify_original;
-                }
+                const integrity = Candidate.retryIntegrity(candidate, bytes);
+                c_found = candidate;
+                verify_current = integrity.current;
+                verify_original = integrity.original;
+                break;
             }
         }
 
         const c = c_found orelse return;
+        c.retry_packets_observed +%= 1;
 
         // Verify Retry integrity using ODCID from current or original client Initial epoch.
         // Security: always enforce integrity verification regardless of allow_insecure;
@@ -1416,8 +1529,15 @@ pub const Endpoint = struct {
                     const ep = current_io_endpoint.?;
                     conn.setSender(@ptrCast(ep), senderPaced);
                     conn.setPtoDirtyNotifier(@ptrCast(ep), notifyPtoDirty);
+                    conn.setCloseNotifier(@ptrCast(ep), notifyConnectionClosed);
                 }
             }.setup,
+            .mark_pending_hs_send_fn = struct {
+                fn mark(conn: *conn_mod.Connection) void {
+                    const ep = current_io_endpoint.?;
+                    ep.markPendingHandshakeSend(conn);
+                }
+            }.mark,
             .test_capture_enabled = self.test_capture_enabled,
             .endpoint_role = role_converted,
             .endpoint_ctx = self,
@@ -1555,7 +1675,6 @@ pub const Endpoint = struct {
                     incoming.processInitial(&rx_ctx, norm_peer, packet_bytes, version);
                 }
             } else if (packet_kind == .Retry) {
-                self.markRetryObserved(norm_peer);
                 self.processRetryPacket(norm_peer, packet_bytes, version);
             } else if (packet_kind == .Handshake) {
                 incoming.processHandshake(&rx_ctx, norm_peer, packet_bytes, version, ecn_bits, rx_ctx.send_fn);
@@ -1609,16 +1728,11 @@ pub const Endpoint = struct {
 
     fn nextTimeoutFromTimers(self: *Endpoint, now_ms: i64, requested_timeout_ms: i32) i32 {
         var eff = requested_timeout_ms;
-        var i: usize = 0;
-        while (i < self.timers.items.len) : (i += 1) {
-            const t = self.timers.items[i];
+        if (self.timers.items.len > 0) {
+            const t = self.timers.items[0];
             const diff: i64 = t.deadline_ms - now_ms;
             const t_ms: i32 = if (diff <= 0) 0 else @intCast(@min(diff, @as(i64, std.math.maxInt(i32))));
-            if (eff < 0) {
-                eff = t_ms;
-            } else if (t_ms < eff) {
-                eff = t_ms;
-            }
+            if (eff < 0 or t_ms < eff) eff = t_ms;
         }
         return eff;
     }
@@ -1652,21 +1766,12 @@ pub const Endpoint = struct {
         // Sub-millisecond timers (paced sends) need ns precision; capture once.
         const now_ns: i128 = nowNsMonotonic();
 
-        // Uses swapRemove for O(1) removal — timer ordering is not required since
-        // we always scan the full list for expired entries.
-        var i: usize = 0;
-        while (i < self.timers.items.len) {
-            const t = self.timers.items[i];
-            if (timerExpired(t.deadline_ms, t.deadline_ns_extra, now_ms, now_ns)) {
-                if (expired_count < expired_buf.len) {
-                    expired_buf[expired_count] = t;
-                    expired_count += 1;
-                }
-                _ = self.timers.swapRemove(i);
-                // Do not increment i — swapRemove moved the last element here
-            } else {
-                i += 1;
-            }
+        while (self.timers.items.len > 0 and expired_count < expired_buf.len) {
+            const t = self.timers.items[0];
+            if (!timerExpired(t.deadline_ms, t.deadline_ns_extra, now_ms, now_ns)) break;
+            expired_buf[expired_count] = t;
+            expired_count += 1;
+            _ = self.removeTimerAtLocked(0);
         }
 
         // Release timer_mu before firing callbacks (they may schedule new timers)
@@ -1782,7 +1887,9 @@ pub const Endpoint = struct {
         var i: usize = 0;
         while (i < self.timers.items.len) : (i += 1) {
             self.timers.items[i].deadline_ms = now_ms;
+            self.timers.items[i].deadline_ns_extra = 0;
         }
+        timerHeapifyAll(&self.timers);
         self.processExpiredTimers(now_ms);
     }
 
@@ -1821,41 +1928,144 @@ pub const Endpoint = struct {
     }
 
     /// Remove all map entries / timers referencing connections that have transitioned to closed state.
-    /// Delegates to lifecycle module (Phase 10).
     /// Caller must hold mu. Acquires timer_mu internally for timer cleanup.
     fn pruneClosed(self: *Endpoint) void {
+        if (self.closed_conn_count.load(.acquire) == 0) return;
+
+        var closed_snapshot: std.ArrayList(*conn_mod.Connection) = .empty;
+        defer closed_snapshot.deinit(self.allocator);
+
+        self.closed_conn_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        closed_snapshot.ensureTotalCapacity(self.allocator, self.closed_conn_set.count()) catch |err| {
+            self.closed_conn_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+            logger.debugPrint("[ENDPOINT] closed snapshot allocation failed: {s}\n", .{@errorName(err)});
+            return;
+        };
+        var cit = self.closed_conn_set.iterator();
+        while (cit.next()) |entry| {
+            closed_snapshot.appendAssumeCapacity(entry.key_ptr.*);
+        }
+        self.closed_conn_set.clearRetainingCapacity();
+        self.closed_conn_count.store(0, .release);
+        self.closed_conn_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+
+        if (closed_snapshot.items.len == 0) return;
+
+        var closed_set = std.AutoHashMap(*conn_mod.Connection, void).init(self.allocator);
+        defer closed_set.deinit();
+        closed_set.ensureTotalCapacity(@intCast(closed_snapshot.items.len)) catch |err| {
+            logger.debugPrint("[ENDPOINT] closed set allocation failed: {s}\n", .{@errorName(err)});
+            return;
+        };
+        for (closed_snapshot.items) |conn| {
+            if (conn.closed) closed_set.putAssumeCapacity(conn, {});
+        }
+        if (closed_set.count() == 0) return;
+
+        var keys_to_remove: std.ArrayList(Key) = .empty;
+        defer keys_to_remove.deinit(self.allocator);
+        var map_it = self.conns.iterator();
+        while (map_it.next()) |entry| {
+            if (closed_set.contains(entry.value_ptr.*)) {
+                keys_to_remove.append(self.allocator, entry.key_ptr.*) catch |err| {
+                    logger.err("closed prune keys.append failed (OOM): {s}", .{@errorName(err)});
+                };
+            }
+        }
+        for (keys_to_remove.items) |key| {
+            _ = self.conns.remove(key);
+        }
+
         self.timer_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.timer_mu.unlock(std.Io.Threaded.global_single_threaded.io());
-        var ctx = lifecycle_mod.LifecycleContext{
-            .allocator = self.allocator,
-            .conns = &self.conns,
-            .timers = &self.timers,
-            .retired = &self.retired,
+
+        var ti: usize = 0;
+        while (ti < self.timers.items.len) {
+            const timer = self.timers.items[ti];
+            if (timer.conn) |timer_conn| {
+                if (closed_set.contains(timer_conn)) {
+                    if (timer.paced) if (timer.payload) |payload| self.allocator.free(payload);
+                    _ = self.timers.swapRemove(ti);
+                    continue;
+                }
+            }
+            ti += 1;
+        }
+        timerHeapifyAll(&self.timers);
+
+        var retired_seen = std.AutoHashMap(*conn_mod.Connection, void).init(self.allocator);
+        defer retired_seen.deinit();
+        const use_retired_seen = blk: {
+            retired_seen.ensureTotalCapacity(@intCast(self.retired.items.len + closed_set.count())) catch |err| {
+                logger.debugPrint("[ENDPOINT] retired seen allocation failed: {s}\n", .{@errorName(err)});
+                break :blk false;
+            };
+            for (self.retired.items) |retired_conn| retired_seen.putAssumeCapacity(retired_conn, {});
+            break :blk true;
         };
-        lifecycle_mod.pruneClosed(&ctx);
+
+        var closed_it = closed_set.iterator();
+        while (closed_it.next()) |entry| {
+            const conn = entry.key_ptr.*;
+            if (use_retired_seen) {
+                if (retired_seen.contains(conn)) continue;
+                self.retired.append(self.allocator, conn) catch |err| {
+                    logger.err("retired.append failed (OOM): {s}", .{@errorName(err)});
+                    continue;
+                };
+                retired_seen.putAssumeCapacity(conn, {});
+            } else {
+                var already_retired = false;
+                for (self.retired.items) |retired_conn| {
+                    if (retired_conn == conn) {
+                        already_retired = true;
+                        break;
+                    }
+                }
+                if (!already_retired) {
+                    self.retired.append(self.allocator, conn) catch |err| {
+                        logger.err("retired.append failed (OOM): {s}", .{@errorName(err)});
+                    };
+                }
+            }
+        }
     }
 };
 
 // PTO-dirty notification callback (#182 closure). Invoked by Connection's
-// `markPtoDirty()` on the false→true transition. Increments an atomic counter
-// so the poll loop can short-circuit the dirty scan when nothing is pending,
-// and best-effort updates the dirty hash set under the endpoint's dedicated
-// `pto_dirty_mu` leaf lock (separate from `mu` so we avoid the lock-order
-// inversion with `conn.mu`).
+// `markPtoDirty()` on the false→true transition. Updates the dirty hash set
+// under the endpoint's dedicated `pto_dirty_mu` leaf lock (separate from `mu`
+// so we avoid the lock-order inversion with `conn.mu`), then increments an
+// atomic counter so the poll loop can short-circuit the dirty scan when nothing
+// is pending. The order is important: publishing the count before the set entry
+// lets poll drain an empty set and reset the count before the insert lands.
 fn notifyPtoDirty(ctx: *anyopaque, conn: *conn_mod.Connection) void {
     const self: *Endpoint = @ptrCast(@alignCast(ctx));
-    _ = self.pto_dirty_count.fetchAdd(1, .release);
     // Best-effort hash set update under the leaf mutex. If contention is
     // unbearable in a future profile, this can be replaced with a lock-free
     // intrusive linked list (CAS on a per-connection next pointer).
     self.pto_dirty_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-    defer self.pto_dirty_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+    const already_dirty = self.pto_dirty_set.contains(conn);
     self.pto_dirty_set.put(conn, {}) catch |err| {
-        // OOM here is non-fatal — the poll loop's legacy iteration still
-        // catches dirty connections via the conn.pto_dirty flag, so we just
-        // log and move on.
+        self.pto_dirty_mu.unlock(std.Io.Threaded.global_single_threaded.io());
         logger.debugPrint("[ENDPOINT] pto_dirty_set.put failed: {s}\n", .{@errorName(err)});
+        return;
     };
+    self.pto_dirty_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+    if (!already_dirty) _ = self.pto_dirty_count.fetchAdd(1, .release);
+}
+
+fn notifyConnectionClosed(ctx: *anyopaque, conn: *conn_mod.Connection) void {
+    const self: *Endpoint = @ptrCast(@alignCast(ctx));
+    self.closed_conn_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    const already_closed = self.closed_conn_set.contains(conn);
+    self.closed_conn_set.put(conn, {}) catch |err| {
+        self.closed_conn_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+        logger.debugPrint("[ENDPOINT] closed_conn_set.put failed: {s}\n", .{@errorName(err)});
+        return;
+    };
+    self.closed_conn_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+    if (!already_closed) _ = self.closed_conn_count.fetchAdd(1, .release);
 }
 
 // Sender callback used by Connection for timer-driven pacing

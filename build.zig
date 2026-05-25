@@ -1181,6 +1181,22 @@ pub fn build(b: *std.Build) void {
             const run_test_concurrent_load_only = b.addRunArtifact(test_concurrent_load_only);
             test_step.dependOn(&run_test_concurrent_load_only.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "high_parallel")) {
+            const test_high_parallel_stream = addTst(b, testlog_mod, compat_mod, "tests/test_high_parallel_stream_progress.zig", target, optimize);
+            test_high_parallel_stream.root_module.addImport("quic_api", quic_api_mod);
+            test_high_parallel_stream.root_module.addImport("quic_config", quic_config_mod);
+            test_high_parallel_stream.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+            const run_test_high_parallel_stream = b.addRunArtifact(test_high_parallel_stream);
+            test_step.dependOn(&run_test_high_parallel_stream.step);
+            if (std.mem.containsAtLeast(u8, f, 1, "scale")) {
+                const test_high_parallel_scale = addTst(b, testlog_mod, compat_mod, "tests/test_high_parallel_scale_mutex.zig", target, optimize);
+                test_high_parallel_scale.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+                test_high_parallel_scale.root_module.addImport("quic_conn", quic_conn_mod);
+                test_high_parallel_scale.root_module.addImport("quic_config", quic_config_mod);
+                const run_test_high_parallel_scale = b.addRunArtifact(test_high_parallel_scale);
+                test_step.dependOn(&run_test_high_parallel_scale.step);
+            }
+            return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "poll_perf")) {
             const test_poll_perf_only = addTst(b, testlog_mod, compat_mod, "tests/test_poll_perf.zig", target, optimize);
             test_poll_perf_only.root_module.addImport("quic_endpoint", quic_endpoint_mod);
@@ -2088,6 +2104,13 @@ pub fn build(b: *std.Build) void {
         const run_test_concurrent_load = b.addRunArtifact(test_concurrent_load);
         test_step.dependOn(&run_test_concurrent_load.step);
 
+        const test_high_parallel = addTst(b, testlog_mod, compat_mod, "tests/test_high_parallel_stream_progress.zig", target, optimize);
+        test_high_parallel.root_module.addImport("quic_api", quic_api_mod);
+        test_high_parallel.root_module.addImport("quic_config", quic_config_mod);
+        test_high_parallel.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        const run_test_high_parallel = b.addRunArtifact(test_high_parallel);
+        test_step.dependOn(&run_test_high_parallel.step);
+
         // Poll loop performance regression tests
         const test_poll_perf = addTst(b, testlog_mod, compat_mod, "tests/test_poll_perf.zig", target, optimize);
         test_poll_perf.root_module.addImport("quic_endpoint", quic_endpoint_mod);
@@ -2237,6 +2260,20 @@ pub fn build(b: *std.Build) void {
         test_long_response_stream_stall.root_module.addImport("quic_endpoint", quic_endpoint_mod);
         const run_test_long_response_stream_stall = b.addRunArtifact(test_long_response_stream_stall);
         test_step.dependOn(&run_test_long_response_stream_stall.step);
+
+        const test_high_parallel_stream_progress = addTst(
+            b,
+            testlog_mod,
+            compat_mod,
+            "tests/test_high_parallel_stream_progress.zig",
+            target,
+            optimize,
+        );
+        test_high_parallel_stream_progress.root_module.addImport("quic_api", quic_api_mod);
+        test_high_parallel_stream_progress.root_module.addImport("quic_config", quic_config_mod);
+        test_high_parallel_stream_progress.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+        const run_test_high_parallel_stream_progress = b.addRunArtifact(test_high_parallel_stream_progress);
+        test_step.dependOn(&run_test_high_parallel_stream_progress.step);
     } else {
         const test_quic = addTst(b, testlog_mod, compat_mod, "quic.zig", target, optimize);
         const run_test_quic = b.addRunArtifact(test_quic);

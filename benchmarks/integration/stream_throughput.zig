@@ -36,6 +36,7 @@
 //   64KB-c1 65536 bytes, 1 client (large-payload stress)
 //   64B-c10   64 bytes, 10 clients
 //   1KB-c10 1024 bytes, 10 clients
+//   1KB-c32-progress 1024 bytes, 32 clients (parallel progress regression)
 //   1KB-c100 1024 bytes, 100 clients (wide concurrency)
 //
 // Port allocator: `_helpers.allocatePort` (starts 19400). handshake_e2e
@@ -499,5 +500,6 @@ pub const scenarios = [_]common.ScenarioSpec{
     .{ .name = "integration/stream_throughput", .variant = "64KB-c1", .iterations = 50, .warmup_iterations = 5, .payload_bytes = 65536, .connection_count = 1 },
     .{ .name = "integration/stream_throughput", .variant = "64B-c10", .iterations = 1_000, .warmup_iterations = 50, .payload_bytes = 64, .connection_count = 10 },
     .{ .name = "integration/stream_throughput", .variant = "1KB-c10", .iterations = 1_000, .warmup_iterations = 50, .payload_bytes = 1024, .connection_count = 10 },
+    .{ .name = "integration/stream_throughput", .variant = "1KB-c32-progress", .iterations = 96, .warmup_iterations = 0, .payload_bytes = 1024, .connection_count = 32 },
     .{ .name = "integration/stream_throughput", .variant = "1KB-c100", .iterations = 200, .warmup_iterations = 10, .payload_bytes = 1024, .connection_count = 100 },
 };

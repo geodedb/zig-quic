@@ -171,7 +171,7 @@ pub fn processShortHeader(
             if (ctx.test_capture_enabled) {
                 logger.debugPrint("stateless-reset: closing connection\n", .{});
             }
-            conn.closed = true;
+            conn.markClosed();
         }
         return;
     };
@@ -384,7 +384,7 @@ pub fn processShortHeader(
 
     // Handle CONNECTION_CLOSE frame (RFC 9000 §10.2)
     if (frame_result.saw_close) {
-        conn.closed = true;
+        conn.markClosed();
 
         if (ctx.test_capture_enabled) {
             logger.debugPrint("❌ CONNECTION_CLOSE received, closing connection\n", .{});

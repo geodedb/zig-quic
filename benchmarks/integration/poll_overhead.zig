@@ -6,7 +6,7 @@
 // network I/O).
 //
 // Measurement core is extracted from the legacy benchmarks/poll_bench.zig
-// six-tier sweep (0c, 1c, 10c, 100c, 1Kc, 10Kc). Each variant:
+// connection-count sweep (0c, 1c, 10c, 100c, 1Kc, 10Kc, 20Kc). Each variant:
 //   1. init a loopback endpoint bound to 127.0.0.1:0 with
 //      `allow_insecure = true, max_connections = 0` (client role --
 //      no cert configured).
@@ -17,12 +17,10 @@
 //   4. measure `iterations` polls, timing each via `common.nowNs()`
 //      deltas so `latencies_ns[i]` captures per-poll wall cost.
 //
-// This benchmark documents the known O(N) PTO polling behavior (#182):
-// 0c/1c p99 sits in the low-microsecond range, while 10Kc lands in the
-// hundreds of microseconds because the PTO walk scans every connection
-// on each poll. bench-compare uses the recorded latencies as the
-// regression baseline -- if #182 is ever fixed, the compare tool will
-// flag the improvement, and the baseline should be refreshed.
+// This benchmark documents endpoint poll overhead after the PTO dirty-set
+// fix (#182): clean polls should stay close to O(1) even when the endpoint
+// owns tens of thousands of connections. bench-compare uses the recorded
+// latencies as the regression baseline.
 //
 // Cross-platform note: unlike the micro benches, poll_overhead needs a
 // real UDP socket (Endpoint.init binds one via UdpTransport). On
@@ -67,7 +65,8 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
     // avoid exhausting the ephemeral range when N approaches 10k. These
     // connections never complete a handshake (no server listening on
     // those ports); they just populate the endpoint's connection table
-    // so pollWithStats() walks N entries.
+    // so pollWithStats() owns N live connections while clean-poll work
+    // should stay bounded.
     const n: u64 = spec.connection_count;
     var c: u64 = 0;
     while (c < n) : (c += 1) {
@@ -106,9 +105,9 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
     };
 }
 
-// Six-tier sweep preserved verbatim from legacy benchmarks/poll_bench.zig.
-// Iteration counts drop as connection_count rises so wall-clock stays
-// under ~1s per variant even at 10Kc.
+// Connection-count sweep preserved from legacy benchmarks/poll_bench.zig and
+// extended to 20Kc for high-parallel contention coverage. Iteration counts drop
+// as connection_count rises so wall-clock stays bounded.
 pub const scenarios = [_]common.ScenarioSpec{
     .{ .name = "integration/poll_overhead", .variant = "0c", .iterations = 20_000, .warmup_iterations = 2_000, .connection_count = 0 },
     .{ .name = "integration/poll_overhead", .variant = "1c", .iterations = 20_000, .warmup_iterations = 2_000, .connection_count = 1 },
@@ -116,4 +115,5 @@ pub const scenarios = [_]common.ScenarioSpec{
     .{ .name = "integration/poll_overhead", .variant = "100c", .iterations = 5_000, .warmup_iterations = 500, .connection_count = 100 },
     .{ .name = "integration/poll_overhead", .variant = "1Kc", .iterations = 2_000, .warmup_iterations = 200, .connection_count = 1_000 },
     .{ .name = "integration/poll_overhead", .variant = "10Kc", .iterations = 500, .warmup_iterations = 50, .connection_count = 10_000 },
+    .{ .name = "integration/poll_overhead", .variant = "20Kc", .iterations = 200, .warmup_iterations = 20, .connection_count = 20_000 },
 };

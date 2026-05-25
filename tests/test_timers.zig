@@ -2,6 +2,7 @@ const std = @import("std");
 const compat = @import("compat");
 const testlog = @import("testlog");
 const api = @import("quic_api");
+const conn_mod = @import("quic_conn");
 
 // Basic timing tests for endpoint timers.
 
@@ -46,6 +47,21 @@ test "endpoint_timer_cancel" {
     try std.testing.expect(ep.timers.items.len == 0);
 }
 
+test "endpoint_timer_heap_root_survives_insert_and_cancel" {
+    var gpa = std.heap.page_allocator;
+    const cfg = api.QuicConfig{ .alpn = &[_][]const u8{"h3"} };
+    const ep = try api.endpointInit(&gpa, "127.0.0.1:0", &cfg);
+    defer api.endpointDeinit(ep);
+
+    _ = try api.scheduleTimer(ep, 200);
+    const fast = try api.scheduleTimer(ep, 20);
+    const mid = try api.scheduleTimer(ep, 100);
+
+    try std.testing.expectEqual(fast, ep.timers.items[0].id);
+    try std.testing.expect(api.cancelTimer(ep, fast));
+    try std.testing.expectEqual(mid, ep.timers.items[0].id);
+}
+
 test "endpoint_pto_schedule_and_expire_flag" {
     var gpa = std.heap.page_allocator;
     const cfg = api.QuicConfig{ .alpn = &[_][]const u8{"h3"} };
@@ -82,6 +98,113 @@ test "endpoint_pto_schedule_and_expire_flag" {
     testlog.print("DEBUG app after expire: active={any} timers={d} pto_count={d}\n", .{ conn.pto_app_active, ep.timers.items.len, conn.pto_app_count });
     try std.testing.expect(!conn.pto_app_active);
     try std.testing.expect(ep.timers.items.len == 0);
+}
+
+test "pto dirty notifier is seeded when installed on already-dirty connection" {
+    var gpa = std.heap.page_allocator;
+    var conn: conn_mod.Connection = undefined;
+    conn.init(&gpa, .Client, -1, conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433));
+    defer conn.deinit();
+
+    const Ctx = struct {
+        count: std.atomic.Value(u32) = .init(0),
+
+        fn notify(ctx: *anyopaque, c: *conn_mod.Connection) void {
+            _ = c;
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            _ = self.count.fetchAdd(1, .seq_cst);
+        }
+    };
+
+    var ctx = Ctx{};
+    try std.testing.expect(conn.pto_dirty.load(.seq_cst));
+    conn.setPtoDirtyNotifier(@ptrCast(&ctx), Ctx.notify);
+    try std.testing.expectEqual(@as(u32, 1), ctx.count.load(.seq_cst));
+}
+
+test "short-header sends mark PTO dirty without arming connection shim timer" {
+    var gpa = std.heap.page_allocator;
+    var conn: conn_mod.Connection = undefined;
+    conn.init(&gpa, .Client, -1, conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433));
+    defer conn.deinit();
+
+    const Ctx = struct {
+        count: std.atomic.Value(u32) = .init(0),
+
+        fn notify(ctx: *anyopaque, c: *conn_mod.Connection) void {
+            _ = c;
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            _ = self.count.fetchAdd(1, .seq_cst);
+        }
+    };
+
+    var ctx = Ctx{};
+    conn.pto_dirty.store(false, .seq_cst);
+    conn.pto_app_active = false;
+    conn.pto_app_id = 0;
+    conn.setPtoDirtyNotifier(@ptrCast(&ctx), Ctx.notify);
+
+    conn.onShortHeaderPacketSent(1200, true);
+
+    try std.testing.expect(conn.pto_dirty.load(.seq_cst));
+    try std.testing.expectEqual(@as(u32, 1), ctx.count.load(.seq_cst));
+    try std.testing.expect(!conn.pto_app_active);
+    try std.testing.expectEqual(@as(u64, 0), conn.pto_app_id);
+}
+
+test "PTO arming skips spaces with no ack-eliciting packet in flight" {
+    var gpa = std.heap.page_allocator;
+    const cfg = api.QuicConfig{ .alpn = &[_][]const u8{"h3"} };
+    const ep = try api.endpointInit(&gpa, "127.0.0.1:0", &cfg);
+    defer api.endpointDeinit(ep);
+
+    var conn: conn_mod.Connection = undefined;
+    conn.init(&gpa, .Client, -1, conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433));
+    defer conn.deinit();
+
+    conn.computeAndMaybeArmPtoInitial(ep);
+    conn.computeAndMaybeArmPtoHandshake(ep);
+    conn.computeAndMaybeArmPto(ep);
+
+    try std.testing.expect(!conn.pto_initial_active);
+    try std.testing.expect(!conn.pto_handshake_active);
+    try std.testing.expect(!conn.pto_app_active);
+    try std.testing.expectEqual(@as(usize, 0), ep.timers.items.len);
+
+    const now_ns_i128 = compat.nanoTimestamp();
+    const now_ns_u64: u64 = @intCast(@max(@as(i128, 0), now_ns_i128));
+    try conn.rec.onPacketSent(.Application, 1, 1200, false, now_ns_u64);
+    conn.computeAndMaybeArmPto(ep);
+
+    try std.testing.expect(!conn.pto_app_active);
+    try std.testing.expectEqual(@as(usize, 0), ep.timers.items.len);
+}
+
+test "closed connection notification prunes only closed connections" {
+    var gpa = std.heap.page_allocator;
+    const cfg = api.QuicConfig{ .alpn = &[_][]const u8{"h3"} };
+    const ep = try api.endpointInit(&gpa, "127.0.0.1:0", &cfg);
+    defer api.endpointDeinit(ep);
+
+    const closed_conn = try ep.connectClient("127.0.0.1:10000");
+    const live_conn = try ep.connectClient("127.0.0.1:10001");
+    _ = try ep.pollWithStats(0);
+
+    closed_conn.markClosed();
+    try std.testing.expectEqual(@as(u32, 1), ep.closed_conn_count.load(.acquire));
+
+    _ = try ep.pollWithStats(0);
+    try std.testing.expectEqual(@as(u32, 0), ep.closed_conn_count.load(.acquire));
+
+    var found_closed = false;
+    var found_live = false;
+    var it = ep.conns.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.* == closed_conn) found_closed = true;
+        if (entry.value_ptr.* == live_conn) found_live = true;
+    }
+    try std.testing.expect(!found_closed);
+    try std.testing.expect(found_live);
 }
 
 // New: per-space PTO arming/cancel and probe generation tests

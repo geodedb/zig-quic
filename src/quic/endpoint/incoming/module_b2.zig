@@ -86,7 +86,7 @@ pub fn processFrames(
             conn.sendConnectionClose(0x07, "FRAME_ENCODING_ERROR") catch |close_err| {
                 logger.debugPrint("Failed to send CONNECTION_CLOSE for frame error: {}\n", .{close_err});
             };
-            conn.closed = true;
+            conn.markClosed();
             return FrameProcessResult{ .saw_close = true };
         };
         logger.debugPrint("Decoded frame at offset {}: type={s}\n", .{ offset, @tagName(fr.f) });

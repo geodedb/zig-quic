@@ -218,6 +218,52 @@ test "client_resets_initial_state_and_replays_retry_token" {
     try std.testing.expectEqualSlices(u8, initial_odcid[0..initial_odcid_len], accepted.original_dcid.bytes[0..accepted.original_dcid.len]);
 }
 
+test "client retry routes by Retry DCID among same-peer fanout" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    var alloc = gpa.allocator();
+
+    var cfg = @import("config.zig").QuicConfig{
+        .alpn = &[_][]const u8{},
+        .allow_insecure = true,
+    };
+    var ep = try endpoint.Endpoint.init(alloc, "127.0.0.1:0", &cfg);
+    defer ep.deinit();
+
+    const first = try ep.connectClient("127.0.0.1:1");
+    var conns: [64]@TypeOf(first) = undefined;
+    conns[0] = first;
+    var i: usize = 1;
+    while (i < conns.len) : (i += 1) {
+        conns[i] = try ep.connectClient("127.0.0.1:1");
+    }
+
+    const target_idx: usize = 37;
+    const target = conns[target_idx];
+    var retry_scid = [_]u8{ 0x52, 0x45, 0x54, 0x52, 0x59, 0x2d, 0x43, 0x49 };
+    const retry = try packet.encodeRetry(
+        alloc,
+        packet.QUIC_V1,
+        target.our_scid.bytes[0..target.our_scid.len],
+        retry_scid[0..],
+        target.original_dcid.bytes[0..target.original_dcid.len],
+        "retry-token",
+    );
+    defer alloc.free(retry);
+
+    ep.testInject(target.peer, retry);
+
+    try std.testing.expectEqual(@as(u32, 1), target.retry_packets_observed);
+    try std.testing.expect(target.retry_received);
+    try std.testing.expectEqualSlices(u8, retry_scid[0..], target.peer_initial_dcid.bytes[0..target.peer_initial_dcid.len]);
+
+    for (conns, 0..) |conn, idx| {
+        if (idx == target_idx) continue;
+        try std.testing.expectEqual(@as(u32, 0), conn.retry_packets_observed);
+        try std.testing.expect(!conn.retry_received);
+    }
+}
+
 test "verify_retry_accepts_interop_capture_vector" {
     // Captured from interop zig<->zig retry run (server Retry UDP payload).
     const retry_hex =

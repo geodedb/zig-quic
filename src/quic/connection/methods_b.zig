@@ -138,7 +138,6 @@ pub fn bind(comptime Connection: type) type {
                     },
                 );
                 self.onShortHeaderPacketSent(pkt.len, true);
-                self.computeAndMaybeArmPto(self);
 
                 self.app_stream_retx.put(next_pn, tracked) catch {
                     self.allocator.free(tracked.data);
@@ -494,7 +493,6 @@ pub fn bind(comptime Connection: type) type {
             logger.debugPrint("STREAM frame packet sent - {} bytes (pkt.len={})\n", .{ bytes_sent, pkt.len });
             trackAppStreamPacket(self, sent_pn, id, cur_off, fin and to_send == data.len, data[0..to_send]);
             self.onShortHeaderPacketSent(pkt.len, true);
-            self.computeAndMaybeArmPto(self);
             if (id == 0) {
                 self.stream_send_off +%= to_send;
                 if (fin and to_send == data.len) {
@@ -1408,7 +1406,7 @@ pub fn bind(comptime Connection: type) type {
             _ = try self.send(pkt);
             self.onShortHeaderPacketSent(pkt.len, true);
             logger.debugPrint("DEBUG: Connection marked as closed after CONNECTION_CLOSE sent\n", .{});
-            self.closed = true;
+            self.markClosed();
             // Drop any retransmit buffers no longer needed
             if (self.crypto_retx_initial) |b| {
                 self.allocator.free(b);

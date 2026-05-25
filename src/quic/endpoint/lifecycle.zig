@@ -25,6 +25,38 @@ const types = @import("types");
 // Use canonical Timer from types.zig (endpoint/types.zig)
 const Timer = types.Timer;
 
+fn timerBefore(a: Timer, b: Timer) bool {
+    if (a.deadline_ms != b.deadline_ms) return a.deadline_ms < b.deadline_ms;
+    if (a.deadline_ns_extra != b.deadline_ns_extra) return a.deadline_ns_extra < b.deadline_ns_extra;
+    return a.id < b.id;
+}
+
+fn timerHeapifyDown(timers: *std.ArrayList(Timer), start_idx: usize) void {
+    var idx = start_idx;
+    while (true) {
+        const len = timers.items.len;
+        const left = 2 * idx + 1;
+        const right = left + 1;
+        var smallest = idx;
+
+        if (left < len and timerBefore(timers.items[left], timers.items[smallest])) smallest = left;
+        if (right < len and timerBefore(timers.items[right], timers.items[smallest])) smallest = right;
+        if (smallest == idx) break;
+
+        std.mem.swap(Timer, &timers.items[idx], &timers.items[smallest]);
+        idx = smallest;
+    }
+}
+
+fn timerHeapifyAll(timers: *std.ArrayList(Timer)) void {
+    if (timers.items.len <= 1) return;
+    var idx = timers.items.len / 2;
+    while (idx > 0) {
+        idx -= 1;
+        timerHeapifyDown(timers, idx);
+    }
+}
+
 /// Context for lifecycle operations.
 /// Focused context pattern - only includes what's needed for lifecycle management.
 pub const LifecycleContext = struct {
@@ -112,7 +144,7 @@ pub fn closeStaleConnectionsForPeer(ctx: *LifecycleContext, new_conn: *conn_mod.
         c.sendConnectionClose(0x00, "Replaced by new connection from same peer") catch |err| {
             logger.warn("sendConnectionClose for stale conn failed: {s}", .{@errorName(err)});
         };
-        c.closed = true;
+        c.markClosed();
     }
 }
 
@@ -178,6 +210,7 @@ pub fn pruneClosed(ctx: *LifecycleContext) void {
         }
         ti += 1;
     }
+    timerHeapifyAll(timers);
 
     // Move to retired list for draining period
     var cit = closed_set.iterator();
@@ -212,7 +245,7 @@ pub fn pruneClosed(ctx: *LifecycleContext) void {
 pub fn retireConnection(ctx: *LifecycleContext, conn: *conn_mod.Connection) void {
     // Mark as closed if not already
     if (!conn.closed) {
-        conn.closed = true;
+        conn.markClosed();
     }
 
     // Remove from connection table
@@ -240,6 +273,7 @@ pub fn retireConnection(ctx: *LifecycleContext, conn: *conn_mod.Connection) void
         }
         ti += 1;
     }
+    timerHeapifyAll(timers);
 
     // Add to retired list
     var already = false;

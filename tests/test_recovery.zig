@@ -117,6 +117,20 @@ test "pto_deadline_computation_with_backoff" {
     try std.testing.expectEqual(expected_bo, backoff_deadline);
 }
 
+test "per-space PTO is not armed without ack-eliciting packet in flight" {
+    var r = rec.Recovery.init(std.testing.allocator);
+    defer r.deinit();
+
+    r.rtt.onAck(ms(50), 0);
+    try std.testing.expect(r.computeSpacePtoTimeNs(.Application, 1000) == null);
+
+    try r.onPacketSent(.Application, 1, 1200, false, 1000);
+    try std.testing.expect(r.computeSpacePtoTimeNs(.Application, 1000) == null);
+
+    try r.onPacketSent(.Application, 2, 1200, true, 1000);
+    try std.testing.expect(r.computeSpacePtoTimeNs(.Application, 1000) != null);
+}
+
 test "persistent_congestion_reduces_cwnd_to_min" {
     var r = rec.Recovery.init(std.testing.allocator);
     defer r.deinit();

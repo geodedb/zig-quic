@@ -44,6 +44,23 @@ fn waitForFlag(flag: *std.atomic.Value(bool), timeout_ms: u64) !void {
     }
 }
 
+fn isPollRequested(sync: *transport.PollSync) bool {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    sync.mu.lockUncancelable(io);
+    defer sync.mu.unlock(io);
+    return sync.poll_requested;
+}
+
+fn waitForPollRequested(sync: *transport.PollSync, timeout_ms: u64) !void {
+    const start = milliTimestamp();
+    while (!isPollRequested(sync)) {
+        if (milliTimestamp() - start > @as(i64, @intCast(timeout_ms))) {
+            return error.Timeout;
+        }
+        threadSleep(1 * std.time.ns_per_ms);
+    }
+}
+
 fn interruptNever() bool {
     return false;
 }
@@ -187,6 +204,31 @@ test "transport geode compat: PollSync blocks new readers while polling" {
     sync.leavePoll();
     worker.join();
     try waitForFlag(&io_entered, 500);
+}
+
+test "transport geode compat: PollSync permits same-thread nested IO while poll waits" {
+    var sync = transport.PollSync{};
+    var poll_entered = std.atomic.Value(bool).init(false);
+
+    sync.enterIo();
+
+    const worker = try std.Thread.spawn(.{}, struct {
+        fn run(s: *transport.PollSync, entered: *std.atomic.Value(bool)) void {
+            s.enterPoll();
+            entered.store(true, .release);
+            s.leavePoll();
+        }
+    }.run, .{ &sync, &poll_entered });
+
+    try waitForPollRequested(&sync, 500);
+
+    sync.enterIo();
+    sync.leaveIo();
+    try testing.expect(!poll_entered.load(.acquire));
+
+    sync.leaveIo();
+    worker.join();
+    try waitForFlag(&poll_entered, 500);
 }
 
 test "transport geode compat: listen applies config and tryAccept is null when idle" {

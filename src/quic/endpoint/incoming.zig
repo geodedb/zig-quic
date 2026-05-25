@@ -903,6 +903,7 @@ pub fn processInitial(
         handshake_integration.sendHandshakePackets(&hs_ctx) catch |err| {
             if (err == error.NoHandshakeKeys) {
                 conn.pending_hs_send = true;
+                if (ctx.mark_pending_hs_send_fn) |mark_pending| mark_pending(conn);
                 logger.debugPrint(
                     "processInitial: sendHandshakePackets deferred until handshake keys available (conn={*})\n",
                     .{conn},

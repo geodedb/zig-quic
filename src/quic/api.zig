@@ -456,18 +456,7 @@ pub fn destroy(ep: *QuicEndpoint, conn: *Connection) void {
         }
         if (!removed) break;
     }
-    i = 0;
-    while (i < ep.timers.items.len) {
-        const timer = ep.timers.items[i];
-        if (timer.conn) |tc| {
-            if (tc == conn) {
-                if (timer.paced) if (timer.payload) |p| ep.allocator.free(p);
-                _ = ep.timers.swapRemove(i);
-                continue;
-            }
-        }
-        i += 1;
-    }
+    ep.removeTimersForConnection(conn);
     conn.deinit();
     ep.allocator.destroy(conn);
 }

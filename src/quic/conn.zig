@@ -592,6 +592,11 @@ pub const Connection = struct {
     // set instead of scanning every active connection per poll cycle.
     pto_dirty_notify_ctx: ?*anyopaque = null,
     pto_dirty_notify_fn: ?*const fn (ctx: *anyopaque, conn: *Connection) void = null,
+    // Optional close notification (set by Endpoint). Invoked when the
+    // connection transitions to closed so the endpoint can prune only closed
+    // connections instead of scanning every active connection per poll.
+    close_notify_ctx: ?*anyopaque = null,
+    close_notify_fn: ?*const fn (ctx: *anyopaque, conn: *Connection) void = null,
     // Derived handshake traffic secrets (once both hellos present)
     hs_client: ?ks.Secret = null,
     hs_server: ?ks.Secret = null,
@@ -739,7 +744,7 @@ pub const Connection = struct {
     pto_app_active: bool = false,
     /// Dirty bit for event-driven PTO arming. Set by packet send/ACK/timer
     /// progress so the endpoint poll loop can skip clean connections.
-    pto_dirty: bool = true,
+    pto_dirty: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
     pto_initial_id: u64 = 0,
     pto_handshake_id: u64 = 0,
     pto_app_id: u64 = 0,
@@ -1087,6 +1092,10 @@ pub const Connection = struct {
         self.enable_pacing = false;
         self.sender_ctx = null;
         self.sender_fn = null;
+        self.pto_dirty_notify_ctx = null;
+        self.pto_dirty_notify_fn = null;
+        self.close_notify_ctx = null;
+        self.close_notify_fn = null;
         self.hs_client = null;
         self.hs_server = null;
         self.hs_rx_keys = null;
@@ -1125,7 +1134,7 @@ pub const Connection = struct {
         self.pto_initial_active = false;
         self.pto_handshake_active = false;
         self.pto_app_active = false;
-        self.pto_dirty = true;
+        self.pto_dirty = std.atomic.Value(bool).init(true);
         self.pto_initial_id = 0;
         self.pto_handshake_id = 0;
         self.pto_app_id = 0;
@@ -1708,7 +1717,7 @@ pub const Connection = struct {
     /// so it can maintain an O(dirty) set of connections needing PTO arming
     /// instead of scanning all active connections every poll cycle. The
     /// callback is invoked by `markPtoDirty()` and should be cheap (insert
-    /// into a hashset under endpoint mu).
+    /// into the endpoint's dirty set under its leaf mutex).
     pub fn setPtoDirtyNotifier(
         self: *Connection,
         ctx: *anyopaque,
@@ -1716,6 +1725,7 @@ pub const Connection = struct {
     ) void {
         self.pto_dirty_notify_ctx = ctx;
         self.pto_dirty_notify_fn = f;
+        if (self.pto_dirty.load(.acquire)) f(ctx, self);
     }
 
     /// Mark the connection as needing PTO timer recomputation. This is the
@@ -1725,12 +1735,34 @@ pub const Connection = struct {
     pub fn markPtoDirty(self: *Connection) void {
         // Setter-side memoization: only notify on the false→true transition.
         // Repeated calls while already dirty are a no-op, which is what the
-        // hashset-based dirty list expects.
-        if (self.pto_dirty) return;
-        self.pto_dirty = true;
+        // hashset-based dirty list expects. Atomic exchange pairs with the
+        // endpoint poll loop's clear-before-compute so concurrent send progress
+        // cannot be lost while the poll thread is re-arming timers.
+        if (self.pto_dirty.swap(true, .acq_rel)) return;
         if (self.pto_dirty_notify_fn) |f| {
             if (self.pto_dirty_notify_ctx) |ctx| f(ctx, self);
         }
+    }
+
+    pub fn setCloseNotifier(
+        self: *Connection,
+        ctx: *anyopaque,
+        f: *const fn (ctx: *anyopaque, conn: *Connection) void,
+    ) void {
+        self.close_notify_ctx = ctx;
+        self.close_notify_fn = f;
+        if (self.closed) self.notifyClosed();
+    }
+
+    pub fn markClosed(self: *Connection) void {
+        self.closed = true;
+        self.notifyClosed();
+    }
+
+    fn notifyClosed(self: *Connection) void {
+        const f = self.close_notify_fn orelse return;
+        const ctx = self.close_notify_ctx orelse return;
+        f(ctx, self);
     }
 
     /// Configure optional AEAD usage limits overriding cipher defaults (tests / policy tuning).

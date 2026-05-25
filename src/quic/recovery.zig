@@ -442,7 +442,18 @@ pub const Recovery = struct {
     /// Compute next PTO deadline for a given space relative to now.
     pub fn computeSpacePtoTimeNs(self: *Recovery, space: PacketNumberSpace, now_ns: u64) ?u64 {
         const idx = spaceIdx(space);
-        const pto = self.rtt.computePtoNs();
+        var any_in_flight = false;
+        for (self.spaces[idx].sent.items) |sp| {
+            if (sp.ack_eliciting and !sp.acked and !sp.declared_lost) {
+                any_in_flight = true;
+                break;
+            }
+        }
+        if (!any_in_flight) {
+            self.spaces[idx].loss_time_ns = null;
+            return null;
+        }
+        const pto = self.rtt.computePtoNsWithBackoff(self.pto_count, self.timer_granularity_ns);
         const deadline = now_ns + pto;
         const cur = self.spaces[idx].loss_time_ns;
         if (cur == null or deadline < cur.?) self.spaces[idx].loss_time_ns = deadline;

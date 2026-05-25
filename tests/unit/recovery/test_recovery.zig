@@ -449,6 +449,7 @@ test "computeSpacePtoTimeNs computes PTO for specific space" {
     rec.rtt.smoothed_rtt_ns = 100_000_000;
     rec.rtt.rttvar_ns = 25_000_000;
 
+    try rec.onPacketSent(.Handshake, 1, 1200, true, 1000);
     const pto_time = rec.computeSpacePtoTimeNs(.Handshake, 1000);
     try testing.expect(pto_time != null);
 }

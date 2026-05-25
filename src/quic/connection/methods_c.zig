@@ -89,7 +89,7 @@ pub fn bind(comptime Connection: type) type {
             // Legacy shim for back-compat
             if (ack_eliciting) maybeTriggerKeyUpdateOnSend(self, bytes_sent);
             self.pn_app_tx +%= 1;
-            self.computeAndMaybeArmPto(self);
+            self.markPtoDirty();
             // AEAD usage counting: increment total encrypted count for confidentiality limit
             self.aead_tx_encrypted_count +%= 1;
             // Proactive trigger: when within 1% of the limit, bias an immediate key update on next ack-eliciting
@@ -182,7 +182,7 @@ pub fn bind(comptime Connection: type) type {
             if (self.aead_rx_invalid_count >= self.aead_integrity_limit) {
                 // Enter closed state; in a full implementation we would send CONNECTION_CLOSE with AEAD_LIMIT_REACHED.
                 logger.debugPrint("DEBUG: AEAD integrity limit exceeded, closing connection\n", .{});
-                self.closed = true;
+                self.markClosed();
             }
         }
 

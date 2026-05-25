@@ -107,9 +107,10 @@ fn runContentionTest(comptime num_handlers: usize) !ContentionResult {
         };
         t.* = try std.Thread.spawn(.{}, struct {
             fn run(c: Ctx) void {
+                var local_ops: u64 = 0;
                 while (!c.stop_flag.load(.acquire)) {
                     // Rotate through the three operations Geode contends on:
-                    switch (c.thread_id % 3) {
+                    switch ((local_ops + c.thread_id) % 3) {
                         0 => {
                             // popAccepted path (accept queue contention)
                             _ = c.ep_ptr.popAccepted();
@@ -127,6 +128,7 @@ fn runContentionTest(comptime num_handlers: usize) !ContentionResult {
                         },
                         else => unreachable,
                     }
+                    local_ops +%= 1;
                     _ = c.ops.fetchAdd(1, .monotonic);
                 }
             }
