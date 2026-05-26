@@ -553,6 +553,44 @@ test "stateless reset tokens retire by sequence without ordered removal" {
     try std.testing.expect(c.looksLikeStatelessReset(&pkt));
 }
 
+test "connection init resets default-backed runtime fields from allocator fill bytes" {
+    var allocator = std.testing.allocator;
+    var c: Connection = undefined;
+    @memset(std.mem.asBytes(&c), 0xaa);
+
+    c.init(&allocator, .Client, -1, SockAddr.ipv4(127, 0, 0, 1, 4433));
+    defer c.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), c.rx_data_generation.load(.acquire));
+    try std.testing.expectEqual(@as(u32, 0), c.endpoint_rx_refs.load(.acquire));
+    try std.testing.expect(!c.endpoint_destroying.load(.acquire));
+    try std.testing.expectEqual(@as(u64, 0), c.rtt_initial.smoothed_rtt_ns);
+    try std.testing.expectEqual(@as(u64, 0), c.rtt_handshake.smoothed_rtt_ns);
+    try std.testing.expectEqual(@as(u64, 0), c.rtt_app.smoothed_rtt_ns);
+    try std.testing.expect(c.zero_rtt_keys == null);
+    try std.testing.expect(!c.zero_rtt_enabled);
+    try std.testing.expect(!c.handshake_done_seen);
+    try std.testing.expect(!c.pending_hs_send);
+    try std.testing.expect(!c.packet_pool.in_use[0]);
+}
+
+test "connection endpoint rx lifetime guard rejects refs after destroy begins" {
+    var allocator = std.testing.allocator;
+    var c: Connection = undefined;
+    c.init(&allocator, .Server, -1, SockAddr.ipv4(127, 0, 0, 1, 4433));
+    defer c.deinit();
+
+    try std.testing.expect(c.acquireEndpointRxRef());
+    try std.testing.expectEqual(@as(u32, 1), c.endpoint_rx_refs.load(.acquire));
+    c.releaseEndpointRxRef();
+    try std.testing.expectEqual(@as(u32, 0), c.endpoint_rx_refs.load(.acquire));
+
+    c.beginEndpointDestroy();
+    try std.testing.expect(c.endpoint_destroying.load(.acquire));
+    try std.testing.expect(!c.acquireEndpointRxRef());
+    try std.testing.expectEqual(@as(u32, 0), c.endpoint_rx_refs.load(.acquire));
+}
+
 /// Connection state and helpers for QUIC handshake, recovery, and 1-RTT.
 /// GAP-0200: Thread-safe - each connection has its own mutex for concurrent access.
 pub const Connection = struct {
@@ -767,6 +805,18 @@ pub const Connection = struct {
     app_stream_retx_init: bool = false,
     // Queue of incoming peer-initiated streams waiting to be accepted
     incoming_stream_queue: std.ArrayList(u64) = .empty,
+    // CANARY: REQ=REQ-QUIC-HC-037; FEATURE="QUIC High-Concurrency Requests"; ASPECT=PerConnectionRxWake; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
+    /// Incremented whenever endpoint polling delivers STREAM data or FIN to
+    /// this connection. Application readers can futex-wait on the generation
+    /// after a WouldBlock instead of joining the endpoint-wide poll wake herd.
+    rx_data_generation: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    // CANARY: REQ=REQ-QUIC-HC-051; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ShortHeaderRxLifetime; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
+    /// Number of endpoint poll workers currently processing a short-header
+    /// datagram for this connection outside the endpoint-global mutex.
+    endpoint_rx_refs: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    /// Set before endpoint destroy removes map entries and frees the
+    /// connection. New short-header workers refuse to acquire a ref once set.
+    endpoint_destroying: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     // Streams needing MAX_STREAM_DATA emission; avoids full-map scans on ACK assembly.
     pending_fc_streams: std.ArrayList(u64) = .empty,
     // QUIC-H3-004: Streams that became writable after MAX_STREAM_DATA/MAX_DATA unblocked them.
@@ -1090,6 +1140,7 @@ pub const Connection = struct {
         self.local_transport_params_raw = null;
         self.peer_transport_params_raw = null;
         self.enable_pacing = false;
+        self.exempt_localhost = true;
         self.sender_ctx = null;
         self.sender_fn = null;
         self.pto_dirty_notify_ctx = null;
@@ -1102,7 +1153,13 @@ pub const Connection = struct {
         self.hs_tx_keys = null;
         self.app_rx_keys = null;
         self.app_tx_keys = null;
+        self.app_rx_secret = null;
+        self.app_tx_secret = null;
+        self.app_rx_next_secret = null;
+        self.app_rx_next_keys = null;
+        self.disable_auto_key_update = false;
         self.pn_initial_tx = 0;
+        self.initial_debug_alloc = null;
         self.pn_handshake_tx = 0;
         self.pn_app_tx = 0;
         self.peer_initial_dcid = .{};
@@ -1130,6 +1187,9 @@ pub const Connection = struct {
         self.sent_sizes = std.AutoHashMap(u64, u16).init(alloc.*);
         self.sent_sizes_init = true;
         self.largest_acked = 0;
+        self.rtt_initial = .{};
+        self.rtt_handshake = .{};
+        self.rtt_app = .{};
         // Initialize PTO state deterministically
         self.pto_initial_active = false;
         self.pto_handshake_active = false;
@@ -1160,6 +1220,13 @@ pub const Connection = struct {
         self.stream_recv_aborted = false;
         // Init incoming stream queue - use .empty for Zig 0.15 ArrayListUnmanaged
         self.incoming_stream_queue = .empty;
+        // CANARY: REQ=REQ-QUIC-HC-046; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ConnectionDefaultFieldInitialization; STATUS=TESTED; TEST=connection_init_resets_default_backed_runtime_fields_from_allocator_fill_bytes; OWNER=transport; UPDATED=2026-05-26
+        // Field defaults are not applied when callers allocate Connection as
+        // undefined memory and then invoke init(); reset all wake/timer/runtime
+        // fields here so high-concurrency readers never observe allocator fill.
+        self.rx_data_generation = std.atomic.Value(u32).init(0);
+        self.endpoint_rx_refs = std.atomic.Value(u32).init(0);
+        self.endpoint_destroying = std.atomic.Value(bool).init(false);
         self.pending_fc_streams = .empty;
         self.writable_streams = .empty;
         self.highest_peer_bidi_stream = null;
@@ -1196,8 +1263,6 @@ pub const Connection = struct {
         // Initialize ack_ranges_buf array
         self.ack_ranges_buf = undefined;
         // Initialize other fields that have defaults but might not be set
-        self.app_rx_secret = null;
-        self.app_tx_secret = null;
         self.keylog_handshake_logged = false;
         self.keylog_app_logged = false;
         self.keylog_client_traffic_epoch = 0;
@@ -1219,7 +1284,16 @@ pub const Connection = struct {
         self.last_sent_max_streams_bidi = 0;
         self.tx_sent_bytes_since_key = 0;
         self.handshake_done_sent = false;
+        self.handshake_done_seen = false;
+        self.pending_hs_send = false;
         self.last_handshake_error = null;
+        self.session_ticket_sent = false;
+        self.zero_rtt_keys = null;
+        self.zero_rtt_enabled = false;
+        self.zero_rtt_accepted = false;
+        self.anti_replay_cache = null;
+        self.session_ticket = null;
+        self.resumption_secret = null;
         self.peer_finished_verified = false;
         self.server_hello_sent = false;
         self.handshake_packet_sent = false;
@@ -1275,6 +1349,7 @@ pub const Connection = struct {
         // Initialize crypto reassembly buffers
         self.crypto_buffer_initial = .{};
         self.crypto_buffer_handshake = .{};
+        self.packet_pool = .{};
         // Initialize PMTUD state
         // PHASE 57 PART 17: Use 1500 (Ethernet MTU) instead of 1200 (IPv6 minimum)
         self.path_mtu = 1500;
@@ -1471,6 +1546,55 @@ pub const Connection = struct {
         // Clear CRYPTO reassembly buffers
         self.crypto_buffer_initial.clear(self.allocator.*);
         self.crypto_buffer_handshake.clear(self.allocator.*);
+    }
+
+    pub fn acquireEndpointRxRef(self: *Connection) bool {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        while (true) {
+            if (self.endpoint_destroying.load(.acquire)) return false;
+            const refs = self.endpoint_rx_refs.load(.acquire);
+            if (refs == 0) {
+                if (self.endpoint_rx_refs.cmpxchgWeak(0, 1, .acq_rel, .acquire)) |_| {
+                    continue;
+                }
+                if (self.endpoint_destroying.load(.acquire)) {
+                    self.releaseEndpointRxRef();
+                    return false;
+                }
+                return true;
+            }
+            const timeout: std.Io.Timeout = .{ .duration = .{
+                .raw = std.Io.Duration.fromNanoseconds(std.time.ns_per_ms),
+                .clock = .awake,
+            } };
+            io.futexWaitTimeout(u32, &self.endpoint_rx_refs.raw, refs, timeout) catch |err| switch (err) {
+                error.Canceled => return false,
+            };
+        }
+    }
+
+    pub fn releaseEndpointRxRef(self: *Connection) void {
+        const prev = self.endpoint_rx_refs.fetchSub(1, .acq_rel);
+        if (prev == 1) {
+            const io = std.Io.Threaded.global_single_threaded.io();
+            io.futexWake(u32, &self.endpoint_rx_refs.raw, std.math.maxInt(u32));
+        }
+    }
+
+    pub fn beginEndpointDestroy(self: *Connection) void {
+        self.endpoint_destroying.store(true, .release);
+        const io = std.Io.Threaded.global_single_threaded.io();
+        while (true) {
+            const refs = self.endpoint_rx_refs.load(.acquire);
+            if (refs == 0) return;
+            const timeout: std.Io.Timeout = .{ .duration = .{
+                .raw = std.Io.Duration.fromNanoseconds(10 * std.time.ns_per_ms),
+                .clock = .awake,
+            } };
+            io.futexWaitTimeout(u32, &self.endpoint_rx_refs.raw, refs, timeout) catch |err| switch (err) {
+                error.Canceled => return,
+            };
+        }
     }
 
     /// Update peer address (used for NAT rebinding / migration detection).

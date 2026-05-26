@@ -50,21 +50,34 @@ pub fn processShortHeader(
     ecn_bits: ?u8,
     send_fn: SendFn,
 ) void {
-    // Phase 24 DEBUG: Unconditional logging to trace HANDSHAKE_DONE delivery
-    logger.debugPrint("[processShortHeader] Called for {} bytes\n", .{bytes.len});
-
-    // =============================================================================
-    // STEP 1: Connection Lookup (RFC 9000 §5.2)
-    // =============================================================================
-    // Find connection by peer address + DCID from packet
-    // Two-phase lookup: peer_hash + dcid_hash, then DCID-only for NAT rebinding
-
     const lookup_result = lookup.findConnectionByDcid(
         ctx.conns,
         peer,
         bytes,
         null, // No path_changed_fn callback - NAT rebinding handled by caller
     );
+
+    processShortHeaderResolved(ctx, peer, bytes, ecn_bits, send_fn, lookup_result);
+}
+
+// CANARY: REQ=REQ-QUIC-HC-049; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ShortHeaderLookupReuse; STATUS=TESTED; TEST=test_quic_short_header_reuses_endpoint_lookup; OWNER=transport; UPDATED=2026-05-26
+pub fn processShortHeaderResolved(
+    ctx: *RxContext,
+    peer: conn_mod.SockAddr,
+    bytes: []const u8,
+    ecn_bits: ?u8,
+    send_fn: SendFn,
+    lookup_result: lookup.LookupResult,
+) void {
+    // Phase 24 DEBUG: Unconditional logging to trace HANDSHAKE_DONE delivery
+    logger.debugPrint("[processShortHeader] Called for {} bytes\n", .{bytes.len});
+
+    // =============================================================================
+    // STEP 1: Connection Lookup (RFC 9000 §5.2)
+    // =============================================================================
+    // The endpoint already performs this lookup to detect NAT rebinding. Reuse
+    // that resolved result on the hot path so high-fanout application packets
+    // do not pay for two DCID hash sweeps before decryption.
 
     const conn = lookup_result.conn orelse {
         // No connection found for this peer + DCID combination

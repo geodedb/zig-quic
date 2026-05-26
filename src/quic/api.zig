@@ -427,6 +427,8 @@ pub fn resetStream(conn: *Connection, stream_id: QuicStreamId, app_error_code: u
 
 /// Remove a connection from all endpoint bookkeeping and free it.
 pub fn destroy(ep: *QuicEndpoint, conn: *Connection) void {
+    conn.beginEndpointDestroy();
+
     var i: usize = 0;
     while (i < ep.accepted.items.len) : (i += 1) {
         if (ep.accepted.items[i] == conn) {

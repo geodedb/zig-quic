@@ -1056,6 +1056,7 @@ pub const AckContext = incoming_b2.AckContext;
 pub const generateAndSendAck = incoming_b2.generateAndSendAck;
 
 pub const processShortHeader = incoming_c.processShortHeader;
+pub const processShortHeaderResolved = incoming_c.processShortHeaderResolved;
 pub const session_3_complete = incoming_c.session_3_complete;
 pub const session_3_version = incoming_c.session_3_version;
 pub const InitialHeaderInfo = incoming_c.InitialHeaderInfo;

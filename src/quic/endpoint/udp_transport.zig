@@ -32,6 +32,13 @@ pub const SendBatchItem = transport_mod.SendBatchItem;
 /// Maximum number of UDP datagrams processed per batched syscall.
 pub const UdpBatchCap: usize = 16;
 
+// CANARY: REQ=REQ-QUIC-HC-038; FEATURE="QUIC High-Concurrency Requests"; ASPECT=UdpSocketBuffers; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
+// High-fanout QUIC handshakes and one-shot query bursts can put hundreds of
+// UDP datagrams on the server socket before the single endpoint poller drains
+// them. Linux's default SO_RCVBUF is too small for that burst and forces QUIC
+// onto PTO recovery. Keep enough kernel queue for 1000s of small datagrams.
+const high_concurrency_socket_buffer_bytes: i32 = 16 * 1024 * 1024;
+
 /// Coerce a `std.c.F.<X>` value to `c_int` for `fcntl(2)`.
 ///
 /// Zig 0.16's stdlib defines `std.c.F` differently per OS:
@@ -51,6 +58,19 @@ inline fn fcntlCmd(comptime tag: anytype) c_int {
         .comptime_int, .int => @as(c_int, tag),
         else => @compileError("std.c.F member must be an enum or integer; got " ++ @typeName(@TypeOf(tag))),
     };
+}
+
+fn configureSocketBuffersLinux(fd: posix.socket_t) void {
+    const linux = std.os.linux;
+    var size: i32 = high_concurrency_socket_buffer_bytes;
+    _ = linux.setsockopt(fd, linux.SOL.SOCKET, linux.SO.RCVBUF, @ptrCast(std.mem.asBytes(&size)), @sizeOf(i32));
+    _ = linux.setsockopt(fd, linux.SOL.SOCKET, linux.SO.SNDBUF, @ptrCast(std.mem.asBytes(&size)), @sizeOf(i32));
+}
+
+fn configureSocketBuffersPosix(fd: posix.socket_t) void {
+    var size: i32 = high_concurrency_socket_buffer_bytes;
+    _ = posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.RCVBUF, std.mem.asBytes(&size)) catch {};
+    _ = posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.SNDBUF, std.mem.asBytes(&size)) catch {};
 }
 
 fn cmsgAlign(len: usize) usize {
@@ -222,6 +242,7 @@ pub const UdpTransport = struct {
         // Set SO_REUSEADDR for fast rebinding
         var one: i32 = 1;
         _ = linux.setsockopt(fd, linux.SOL.SOCKET, linux.SO.REUSEADDR, @ptrCast(std.mem.asBytes(&one)), @sizeOf(i32));
+        configureSocketBuffersLinux(fd);
         configureEcnSocket(fd, family);
 
         // Bind to address
@@ -279,6 +300,7 @@ pub const UdpTransport = struct {
 
         var one: i32 = 1;
         _ = posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, std.mem.asBytes(&one)) catch {};
+        configureSocketBuffersPosix(fd);
 
         const bind_len: posix.socklen_t = switch (family) {
             posix.AF.INET => @intCast(@sizeOf(posix.sockaddr.in)),

@@ -788,8 +788,21 @@ pub fn bind(comptime Connection: type) type {
         /// Ingest STREAM frame data (copy + reassembly); updates flow-control windows heuristically.
         /// CWE-366 mitigation: Thread-safe - acquires connection mutex to protect stream maps.
         pub fn pushStreamFrame(self: *Connection, stream_id: u64, offset: u64, data: []const u8, fin: bool) !void {
+            var wake_readers = false;
             self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-            defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+            defer {
+                self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+                if (wake_readers) {
+                    // CANARY: REQ=REQ-QUIC-HC-037; FEATURE="QUIC High-Concurrency Requests"; ASPECT=PerConnectionRxWake; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
+                    // Wake readers for this connection only. Geode's server
+                    // waits on rx_data_generation after a WouldBlock, avoiding
+                    // an endpoint-wide wake herd when unrelated connections get
+                    // packets in the same poll cycle.
+                    _ = self.rx_data_generation.fetchAdd(1, .release);
+                    const io = std.Io.Threaded.global_single_threaded.io();
+                    io.futexWake(u32, &self.rx_data_generation.raw, std.math.maxInt(u32));
+                }
+            }
 
             logger.debugPrint("[CONN-PTR-PUSH] conn=0x{x} stream_id={}\n", .{ @intFromPtr(self), stream_id });
             logger.debugPrint("[STREAM-RX] id={} off={} len={} fin={} before recv_off={} inbox_len={} bufs={}\n", .{ stream_id, offset, data.len, fin, if (self.streams_rx.getPtr(stream_id)) |sr| sr.recv_off else 0, if (self.streams_rx.getPtr(stream_id)) |sr| sr.inbox.items.len else 0, if (self.streams_rx.getPtr(stream_id)) |sr| sr.bufs.items.len else 0 });
@@ -816,10 +829,12 @@ pub fn bind(comptime Connection: type) type {
             if (fin) {
                 const end_off: u64 = offset + @as(u64, data.len);
                 try s.recordFin(end_off);
+                wake_readers = true;
             }
             if (data.len > 0) {
                 s.insert(self.allocator, offset, data);
                 s.tryDrain(self.allocator);
+                if (s.available() > 0) wake_readers = true;
                 logger.debugPrint("[STREAM-RX-AFTER] id={} recv_off={} inbox_len={} bufs={} fin_off={?}\n", .{ stream_id, s.recv_off, s.inbox.items.len, s.bufs.items.len, s.fin_off });
             }
             if (s.isFinished()) {
