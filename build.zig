@@ -10,12 +10,13 @@ fn mkModule(b: *std.Build, path: []const u8) *std.Build.Module {
 fn addExe(b: *std.Build, name: []const u8, path: []const u8, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
     var exe = b.addExecutable(.{ .name = name, .root_module = b.createModule(.{ .root_source_file = b.path(path), .target = target, .optimize = optimize }) });
 
-    // Link OpenSSL for crypto operations (required for QUIC AEAD compatibility)
-    // Note: On Windows, OpenSSL is optional since it may not be available on CI runners
-    if (target.result.os.tag != .windows) {
-        exe.root_module.linkSystemLibrary("ssl", .{});
-        exe.root_module.linkSystemLibrary("crypto", .{});
-    }
+    // NOTE: ssl/crypto were previously linked here for "QUIC AEAD compatibility"
+    // but the codebase has no @cImport/@extern referencing OpenSSL — the
+    // openssl CLI is only invoked at runtime via std.process.run for cert
+    // generation. `ldd` on the produced binary confirms libssl/libcrypto are
+    // not in the final ELF. Keeping the link broke cross-compile to any
+    // non-host target ("unable to find dynamic system library 'ssl'" /
+    // 'crypto' with `paths_first` strategy).
     exe.root_module.link_libc = true;
 
     if (target.result.os.tag == .windows) {
@@ -37,12 +38,7 @@ fn addTst(
     root_mod.addImport("compat", compat_mod);
     var tst = b.addTest(.{ .root_module = root_mod });
 
-    // Link OpenSSL for crypto operations (required for QUIC AEAD compatibility)
-    // Note: On Windows, OpenSSL is optional since it may not be available on CI runners
-    if (target.result.os.tag != .windows) {
-        tst.root_module.linkSystemLibrary("ssl", .{});
-        tst.root_module.linkSystemLibrary("crypto", .{});
-    }
+    // See addExe(): ssl/crypto were unreferenced symbols and broke cross-compile.
     tst.root_module.link_libc = true;
 
     if (target.result.os.tag == .windows) {

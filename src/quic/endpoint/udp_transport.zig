@@ -633,6 +633,11 @@ pub const UdpTransport = struct {
 
     fn pollFn(ctx: *anyopaque, timeout_ms: i32) !void {
         const self: *UdpTransport = @ptrCast(@alignCast(ctx));
+        // Windows: posix.pollfd resolves to std.c.pollfd which currently
+        // references the non-existent ws2_32.pollfd in Zig 0.16. UdpTransport
+        // is unsupported on Windows anyway (POSIX-shaped sendto/recvfrom +
+        // fcntl); short-circuit so the rest of this body stays dead-coded.
+        if (builtin.target.os.tag == .windows) return;
         if (builtin.target.os.tag != .linux) {
             // Cross-platform poll: use std.posix.poll which dispatches to the host's poll()
             var fds = [1]posix.pollfd{

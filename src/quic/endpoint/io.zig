@@ -359,6 +359,11 @@ pub fn pollEpollBackend(ctx: *const IoContext, timeout_ms: i32) !void {
 
 /// Readiness-driven fallback used by non-epoll backends on Unix-like targets.
 fn waitReadableFallback(sock_fd: posix.socket_t, timeout_ms: i32) !void {
+    // Windows: std.posix.pollfd resolves to std.c.pollfd which currently
+    // references the non-existent ws2_32.pollfd in Zig 0.16 — referencing
+    // the type at all aborts compilation. IOCP-based polling is the right
+    // path on Windows; this readiness fallback is a no-op there.
+    if (builtin.target.os.tag == .windows) return;
     if (sock_fd < 0) {
         return;
     }
