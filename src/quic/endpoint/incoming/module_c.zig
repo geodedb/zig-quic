@@ -21,8 +21,8 @@ const generateAndSendAck = incoming_b2.generateAndSendAck;
 const FrameProcessResult = incoming_b2.FrameProcessResult;
 const AckContext = incoming_b2.AckContext;
 
-var g_app_decrypt_start: u64 = 0;
-var g_app_decrypt_success: u64 = 0;
+var g_app_decrypt_start = std.atomic.Value(u64).init(0);
+var g_app_decrypt_success = std.atomic.Value(u64).init(0);
 
 fn invalidSocket() posix.socket_t {
     if (comptime @import("builtin").os.tag == .windows) {
@@ -73,6 +73,26 @@ pub fn processShortHeader(
     processShortHeaderResolved(ctx, peer, bytes, ecn_bits, send_fn, lookup_result);
 }
 
+// CANARY: REQ=REQ-QUIC-HC-112; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ShortHeaderFrameLockSplit; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27
+fn shortHeaderPayloadCanProcessWithoutRxSerial(payload: []const u8) bool {
+    if (payload.len == 0) return false;
+
+    var idx: usize = 0;
+    while (idx < payload.len) {
+        const decoded = frame.decodeOne(payload[idx..]) catch return false;
+        if (decoded.n == 0) return false;
+
+        switch (decoded.f) {
+            .padding, .stream, .ack => {},
+            else => return false,
+        }
+
+        idx += decoded.n;
+    }
+
+    return true;
+}
+
 // CANARY: REQ=REQ-QUIC-HC-049; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ShortHeaderLookupReuse; STATUS=TESTED; TEST=test_quic_short_header_reuses_endpoint_lookup; OWNER=transport; UPDATED=2026-05-26
 pub fn processShortHeaderResolved(
     ctx: *RxContext,
@@ -100,6 +120,14 @@ pub fn processShortHeaderResolved(
         }
         return;
     };
+
+    const rx_serial_wait_start_ns = if (ctx.short_header_timing != null) timingNsMonotonic() else 0;
+    conn.endpoint_rx_serial_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    if (ctx.short_header_timing) |timing| {
+        timing.rx_serial_wait_ns += elapsedTimingNsSince(rx_serial_wait_start_ns);
+    }
+    var rx_serial_locked = true;
+    defer if (rx_serial_locked) conn.endpoint_rx_serial_mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
     // RFC 9000 §10.2: Once a connection is closed, further packets MUST be
     // discarded. The connection will be removed from the tracking tables by
@@ -185,8 +213,17 @@ pub fn processShortHeaderResolved(
 
     // Use extracted decryption function with key rotation
     // Tries CURRENT → NEXT → PREV keys automatically
-    g_app_decrypt_start += 1;
-    logger.debugPrint("[APP-DECRYPT-START] attempt={} dcid_len={} bytes={} cached={?}\n", .{ g_app_decrypt_start, observed_dcid_len, bytes.len, conn.expected_rx_dcid_len });
+    // CANARY: REQ=REQ-QUIC-HC-116; FEATURE="High-Concurrency Requests"; ASPECT=ReleaseHotPathDiagnostics; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27
+    // Keep packet-level diagnostics off the ReleaseSafe receive path. The
+    // logger call itself compiles away, but standalone scans and counters must
+    // also sit behind the same compile-time guard.
+    const debug_decrypt_attempt = if (comptime logger.enable_debug_prints)
+        g_app_decrypt_start.fetchAdd(1, .monotonic) + 1
+    else
+        0;
+    if (comptime logger.enable_debug_prints) {
+        logger.debugPrint("[APP-DECRYPT-START] attempt={} dcid_len={} bytes={} cached={?}\n", .{ debug_decrypt_attempt, observed_dcid_len, bytes.len, conn.expected_rx_dcid_len });
+    }
     const decrypt_start_ns = if (ctx.short_header_timing != null) timingNsMonotonic() else 0;
     const decrypt_result = decryptShortHeaderWithKeyRotation(
         ctx.allocator.*,
@@ -209,30 +246,33 @@ pub fn processShortHeaderResolved(
     const dec_res = decrypt_result.decoded;
     const used_next = decrypt_result.used_next;
     const used_prev = decrypt_result.used_prev;
-    g_app_decrypt_success += 1;
-    logger.debugPrint("[APP-DECRYPT-SUCCESS] attempt={} pn={} payload_len={} used_next={} used_prev={} rx_phase={} success_ratio={}/{}\n", .{ g_app_decrypt_start, decrypt_result.decoded.packet_number, decrypt_result.decoded.payload.len, used_next, used_prev, conn.rx_key_phase, g_app_decrypt_success, g_app_decrypt_start });
-    // Frame parsing diagnostics (actual processing occurs after packet-number tracking)
-    logger.debugPrint("[APP-DISPATCH] Parsing 1-RTT frames payload_len={} pn={}\n", .{ dec_res.payload.len, dec_res.packet_number });
-    if (dec_res.payload.len == 0) logger.debugPrint("[APP-DISPATCH] EMPTY-PAYLOAD pn={} suspect header protection/DCID length issue\n", .{dec_res.packet_number});
-    // Fallback manual STREAM frame scan if decodeOne misses
-    var scan_i: usize = 0;
-    var stream_scan_hits: usize = 0;
-    while (scan_i < dec_res.payload.len) : (scan_i += 1) {
-        const b = dec_res.payload[scan_i];
-        if ((b & 0xF8) == 0x08) { // STREAM frame type range
-            stream_scan_hits += 1;
-            logger.debugPrint("[APP-STREAM-SCAN] hit at offset={} type_byte=0x{X:0>2}\n", .{ scan_i, b });
-            break; // only need first indication
+    if (comptime logger.enable_debug_prints) {
+        const debug_decrypt_success = g_app_decrypt_success.fetchAdd(1, .monotonic) + 1;
+        const debug_decrypt_total = g_app_decrypt_start.load(.monotonic);
+        logger.debugPrint("[APP-DECRYPT-SUCCESS] attempt={} pn={} payload_len={} used_next={} used_prev={} rx_phase={} success_ratio={}/{}\n", .{ debug_decrypt_attempt, decrypt_result.decoded.packet_number, decrypt_result.decoded.payload.len, used_next, used_prev, conn.rx_key_phase, debug_decrypt_success, debug_decrypt_total });
+        // Frame parsing diagnostics (actual processing occurs after packet-number tracking)
+        logger.debugPrint("[APP-DISPATCH] Parsing 1-RTT frames payload_len={} pn={}\n", .{ dec_res.payload.len, dec_res.packet_number });
+        if (dec_res.payload.len == 0) logger.debugPrint("[APP-DISPATCH] EMPTY-PAYLOAD pn={} suspect header protection/DCID length issue\n", .{dec_res.packet_number});
+        // Fallback manual STREAM frame scan if decodeOne misses
+        var scan_i: usize = 0;
+        var stream_scan_hits: usize = 0;
+        while (scan_i < dec_res.payload.len) : (scan_i += 1) {
+            const b = dec_res.payload[scan_i];
+            if ((b & 0xF8) == 0x08) { // STREAM frame type range
+                stream_scan_hits += 1;
+                logger.debugPrint("[APP-STREAM-SCAN] hit at offset={} type_byte=0x{X:0>2}\n", .{ scan_i, b });
+                break; // only need first indication
+            }
         }
-    }
-    if (stream_scan_hits == 0 and dec_res.payload.len > 0) logger.debugPrint("[APP-STREAM-SCAN] no STREAM type bytes found in first {} bytes\n", .{dec_res.payload.len});
-    // Hex dump first up to 64 bytes of decrypted payload for diagnostics
-    const dump_len: usize = @min(dec_res.payload.len, 64);
-    if (dump_len > 0) {
-        logger.debugPrint("[APP-PAYLOAD-HEX] ", .{});
-        var di: usize = 0;
-        while (di < dump_len) : (di += 1) logger.debugPrint("{X:0>2} ", .{dec_res.payload[di]});
-        logger.debugPrint("\n", .{});
+        if (stream_scan_hits == 0 and dec_res.payload.len > 0) logger.debugPrint("[APP-STREAM-SCAN] no STREAM type bytes found in first {} bytes\n", .{dec_res.payload.len});
+        // Hex dump first up to 64 bytes of decrypted payload for diagnostics
+        const dump_len: usize = @min(dec_res.payload.len, 64);
+        if (dump_len > 0) {
+            logger.debugPrint("[APP-PAYLOAD-HEX] ", .{});
+            var di: usize = 0;
+            while (di < dump_len) : (di += 1) logger.debugPrint("{X:0>2} ", .{dec_res.payload[di]});
+            logger.debugPrint("\n", .{});
+        }
     }
     defer ctx.allocator.free(dec_res.payload);
 
@@ -343,9 +383,21 @@ pub fn processShortHeaderResolved(
     // STEP 8: Frame Processing Integration (RFC 9000 §12.4)
     // =============================================================================
 
+    const can_process_frames_without_rx_serial = shortHeaderPayloadCanProcessWithoutRxSerial(dec_res.payload);
+
     // GAP-0200: Release conn.mu before processFrames() because frame_handler
     // calls pushStreamFrame() which acquires conn.mu (non-recursive mutex).
     conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+
+    // STREAM and ACK handlers already take the connection mutex around their
+    // shared state. Releasing the endpoint RX serializer here lets poll workers
+    // deliver application stream data for the same connection without queuing
+    // behind ACK generation. Control frames stay serialized because several
+    // handlers still mutate connection state directly.
+    if (can_process_frames_without_rx_serial) {
+        conn.endpoint_rx_serial_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+        rx_serial_locked = false;
+    }
 
     // Parse and process all frames from the decrypted payload
     const frame_start_ns = if (ctx.short_header_timing != null) timingNsMonotonic() else 0;

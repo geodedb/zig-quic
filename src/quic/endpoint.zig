@@ -71,10 +71,10 @@ const builtin = @import("builtin");
 // returning to Geode's poll wrapper. The wrapper wakes parked stream readers
 // after every pollWithStats() return; without this budget a high fan-out HELLO
 // storm can keep the I/O thread inside Phase 4 while handlers wait on
-// already-arrived stream data. Keep the cap intentionally small: in 512-way
-// fanout, a 16-batch cap produced 300ms+ poll cycles and delayed first-stream
-// wakeups long enough for client-side request timeouts.
-const max_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap * 2;
+// already-arrived stream data. Keep the cap to one UDP batch: 1024-way app
+// traffic showed 100+ packet cycles monopolizing short-header processing long
+// enough to push response recovery into client retry deadlines.
+const max_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap;
 
 // CANARY: REQ=REQ-QUIC-HC-059; FEATURE="QUIC High-Concurrency Requests"; ASPECT=LongHeaderPollBudget; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
 // Long-header Initial packets create new TLS state and are the slowest packet
@@ -99,7 +99,7 @@ const max_pending_hs_send_retries_per_poll_cycle: usize = udp_transport_mod.UdpB
 // Recomputing every dirty connection in a single endpoint poll call creates
 // multi-hundred-ms poll cycles that delay RX delivery for unrelated streams.
 // Keep the dirty set as the durable queue and drain a bounded slice per tick.
-const max_pto_dirty_recomputes_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap * 2;
+const max_pto_dirty_recomputes_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap;
 
 // Endpoint (RFC-9000):  An entity that can participate in a QUIC connection by
 //       generating, receiving, and processing QUIC packets.  There are
@@ -329,7 +329,14 @@ pub const PollStats = struct {
 /// this composite hash so multipath/path validation still find the right entry.
 pub const Key = ep_types.Key;
 
-const short_header_route_cache_slots: usize = 4096;
+// CANARY: REQ=REQ-QUIC-HC-117; FEATURE="High-Concurrency Requests"; ASPECT=RoleSizedRouteCache; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27
+// Server endpoints need enough direct-mapped short-header route slots for
+// tens of thousands of active CIDs without constant endpoint-map fallback.
+// Client endpoints usually carry one connection and are often created by the
+// thousands in fan-out tests, so keep their cache small to avoid per-client
+// memory blow-up.
+const short_header_route_cache_client_slots: usize = 256;
+const short_header_route_cache_server_slots: usize = 65536;
 
 const ShortHeaderRouteCacheSlot = struct {
     mu: std.Io.Mutex = std.Io.Mutex.init,
@@ -353,6 +360,13 @@ inline fn hashBytes(b: []const u8) u64 {
 inline fn routeCacheIndex(peer_hash: u64, dcid_hash: u64, slot_count: usize) usize {
     const mixed = peer_hash ^ (dcid_hash *% 0x9E37_79B9_7F4A_7C15);
     return @intCast(mixed & @as(u64, @intCast(slot_count - 1)));
+}
+
+inline fn shortHeaderRouteCacheSlotCount(role: EndpointRole) usize {
+    return switch (role) {
+        .Server => short_header_route_cache_server_slots,
+        .Client => short_header_route_cache_client_slots,
+    };
 }
 
 fn envFlag(name: [*:0]const u8) bool {
@@ -510,6 +524,11 @@ pub const Endpoint = struct {
     // Accept queue for server (protected by mu)
     // GAP-0200: Thread-safe accept queue - poll() adds, accept() removes
     accepted: std.ArrayList(*conn_mod.Connection),
+    // CANARY: REQ=REQ-QUIC-HC-106; FEATURE="High-Concurrency Connection Admission"; ASPECT=AcceptedQueueFutexWake; STATUS=TESTED; TEST=test_quic_condition_timedwait_cadence; OWNER=transport; UPDATED=2026-05-27
+    // Producers bump this generation after enqueueing an accepted connection
+    // so waitForAccepted() can park on a futex instead of a fixed 5ms
+    // nanosleep cadence during high fan-out handshakes.
+    accepted_generation: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 
     // Condition variable signaled when a new connection is pushed to the
     // accepted queue.  Allows callers to block efficiently in accept() instead
@@ -585,7 +604,7 @@ pub const Endpoint = struct {
             alloc.destroy(c);
         };
 
-        const short_route_cache = try alloc.alloc(ShortHeaderRouteCacheSlot, short_header_route_cache_slots);
+        const short_route_cache = try alloc.alloc(ShortHeaderRouteCacheSlot, shortHeaderRouteCacheSlotCount(endpoint_role));
         errdefer alloc.free(short_route_cache);
         for (short_route_cache) |*slot| slot.* = .{};
 
@@ -642,7 +661,7 @@ pub const Endpoint = struct {
             alloc.destroy(c);
         };
 
-        const short_route_cache = try alloc.alloc(ShortHeaderRouteCacheSlot, short_header_route_cache_slots);
+        const short_route_cache = try alloc.alloc(ShortHeaderRouteCacheSlot, shortHeaderRouteCacheSlotCount(endpoint_role));
         errdefer alloc.free(short_route_cache);
         for (short_route_cache) |*slot| slot.* = .{};
 
@@ -861,27 +880,34 @@ pub const Endpoint = struct {
     /// Enqueue accepted server connection for accept().
     /// GAP-0200: Thread-safe - acquires endpoint mutex
     fn pushAccepted(self: *Endpoint, c: *conn_mod.Connection) void {
+        var enqueued = false;
         self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         // OOM here drops the connection from the accept queue -- it will
         // never be returned to the application.  Log so the operator can
         // detect pressure on the allocator.
         self.accepted.append(self.allocator, c) catch |err| {
+            self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
             logger.debugPrint("[ENDPOINT] pushAccepted failed: {s} -- connection lost\n", .{@errorName(err)});
             return;
         };
+        enqueued = true;
         // Wake any thread blocked in waitForAccepted().
         self.accept_cv.signal(std.Io.Threaded.global_single_threaded.io());
+        self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+        if (enqueued) self.wakeAcceptedWaiter();
     }
 
     /// Pop next accepted server-side connection if available.
     /// GAP-0200: Thread-safe - acquires endpoint mutex.
-    /// Preserves FIFO order for application accept loops.
     pub fn popAccepted(self: *Endpoint) ?*conn_mod.Connection {
         self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         if (self.accepted.items.len == 0) return null;
-        return self.accepted.orderedRemove(0);
+        // CANARY: REQ=REQ-QUIC-HC-107; FEATURE="High-Concurrency Connection Admission"; ASPECT=AcceptedQueueO1Pop; STATUS=TESTED; TEST=test_quic_condition_timedwait_cadence; OWNER=transport; UPDATED=2026-05-27
+        // Accept order is not a protocol contract. Avoid O(n) front removal
+        // under the endpoint mutex when hundreds of completed handshakes enter
+        // the accepted queue at once.
+        return self.accepted.swapRemove(0);
     }
 
     /// Block until a connection is available or timeout expires.
@@ -890,46 +916,50 @@ pub const Endpoint = struct {
     /// interleaved) so that incoming packets are processed and connections
     /// actually reach the accepted queue.
     pub fn waitForAccepted(self: *Endpoint, timeout_ms: u32) ?*conn_mod.Connection {
-        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
-
-        // Fast path: connection already queued.
-        if (self.accepted.items.len > 0) {
-            return self.accepted.orderedRemove(0);
-        }
-
-        // Zig 0.16.0: Io.Condition has no timedWait.  Simulate with a
-        // poll loop: release mutex, sleep a small slice, re-acquire, check.
+        const start_ns = nowNsMonotonic();
         const timeout_ns: u64 = @as(u64, timeout_ms) * std.time.ns_per_ms;
-        const slice_ns: u64 = 5 * std.time.ns_per_ms; // 5 ms per check
-        var remaining: u64 = timeout_ns;
-        while (remaining > 0 and self.accepted.items.len == 0) {
-            const sleep_ns = @min(remaining, slice_ns);
-            self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
-            const ns_per_s: u64 = 1_000_000_000;
-            var ts: std.os.linux.timespec = .{
-                .sec = @intCast(sleep_ns / ns_per_s),
-                .nsec = @intCast(sleep_ns % ns_per_s),
-            };
-            _ = std.os.linux.nanosleep(&ts, &ts);
-            self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-            remaining -|= sleep_ns;
-        }
+        const deadline_ns = start_ns + @as(i128, @intCast(timeout_ns));
+        const io = std.Io.Threaded.global_single_threaded.io();
 
-        if (self.accepted.items.len > 0) {
-            return self.accepted.orderedRemove(0);
+        while (true) {
+            self.mu.lockUncancelable(io);
+            if (self.accepted.items.len > 0) {
+                const conn = self.accepted.swapRemove(0);
+                self.mu.unlock(io);
+                return conn;
+            }
+            const observed = self.accepted_generation.load(.acquire);
+            self.mu.unlock(io);
+
+            const now_ns = nowNsMonotonic();
+            if (now_ns >= deadline_ns) return null;
+            const remaining_ns: u64 = @intCast(deadline_ns - now_ns);
+            const timeout: std.Io.Timeout = .{ .duration = .{
+                .raw = std.Io.Duration.fromNanoseconds(@intCast(remaining_ns)),
+                .clock = .awake,
+            } };
+            io.futexWaitTimeout(u32, &self.accepted_generation.raw, observed, timeout) catch |err| switch (err) {
+                error.Canceled => return null,
+            };
         }
-        return null;
+    }
+
+    fn wakeAcceptedWaiter(self: *Endpoint) void {
+        _ = self.accepted_generation.fetchAdd(1, .release);
+        std.Io.Threaded.global_single_threaded.io().futexWake(u32, &self.accepted_generation.raw, 1);
     }
 
     // CANARY: REQ=REQ-QUIC-HC-063; FEATURE="QUIC High-Concurrency Requests"; ASPECT=DeferredServerAccept; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
     fn maybeQueueDeferredAccepted(self: *Endpoint, c: *conn_mod.Connection) void {
         if (self.role != .Server or !self.cfg.defer_accept_until_stream) return;
 
+        var enqueued = false;
         self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
-        if (c.closed or c.role != .Server) return;
+        if (c.closed or c.role != .Server) {
+            self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+            return;
+        }
 
         var should_queue = false;
         c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
@@ -943,16 +973,23 @@ pub const Endpoint = struct {
         }
         c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
-        if (!should_queue) return;
+        if (!should_queue) {
+            self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+            return;
+        }
 
         self.accepted.append(self.allocator, c) catch |err| {
             c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
             c.accepted_enqueued = false;
             c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+            self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
             logger.debugPrint("[ENDPOINT] deferred accept append failed: {s}\n", .{@errorName(err)});
             return;
         };
+        enqueued = true;
         self.accept_cv.signal(std.Io.Threaded.global_single_threaded.io());
+        self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+        if (enqueued) self.wakeAcceptedWaiter();
     }
 
     /// Inject inbound datagram into receive path (test helper, no ECN).
@@ -1317,11 +1354,6 @@ pub const Endpoint = struct {
             .short_header_timing = if (detailed_timing) &timing else null,
             .anti_replay_cache = self.anti_replay_cache,
         };
-
-        const serial_wait_start_ns = if (detailed_timing) nowNsMonotonic() else 0;
-        conn.endpoint_rx_serial_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-        if (detailed_timing) timing.rx_serial_wait_ns += elapsedNsSince(serial_wait_start_ns);
-        defer conn.endpoint_rx_serial_mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
         incoming.processShortHeaderResolved(&rx_ctx, norm_peer, bytes, ecn_bits, rx_ctx.send_fn, lookup_result);
         self.maybeQueueDeferredAccepted(conn);
@@ -2873,11 +2905,11 @@ test "endpoint timers keep index consistent across heap operations" {
 }
 
 test "endpoint poll cycle fairness budget stays below large burst drain" {
-    try std.testing.expectEqual(udp_transport_mod.UdpBatchCap * 2, max_packets_per_poll_cycle);
+    try std.testing.expectEqual(udp_transport_mod.UdpBatchCap, max_packets_per_poll_cycle);
 }
 
 test "endpoint pto dirty recompute has a poll cycle fairness budget" {
-    try std.testing.expectEqual(udp_transport_mod.UdpBatchCap * 2, max_pto_dirty_recomputes_per_poll_cycle);
+    try std.testing.expectEqual(udp_transport_mod.UdpBatchCap, max_pto_dirty_recomputes_per_poll_cycle);
     try std.testing.expect(max_pto_dirty_recomputes_per_poll_cycle >= udp_transport_mod.UdpBatchCap);
 }
 
