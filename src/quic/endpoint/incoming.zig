@@ -257,6 +257,7 @@ pub const ScheduleTimerFn = incoming_shared.ScheduleTimerFn;
 pub const SendInitialProbeFn = incoming_shared.SendInitialProbeFn;
 pub const SetupSenderFn = incoming_shared.SetupSenderFn;
 pub const RxContext = incoming_shared.RxContext;
+pub const ShortHeaderTimingStats = incoming_shared.ShortHeaderTimingStats;
 
 /// Helper: Placeholder for IncomingProcessor when needed
 pub const IncomingProcessor = struct {
@@ -365,31 +366,38 @@ pub const deriveInitialKeys = incoming_a.deriveInitialKeys;
 pub const DecryptedInitial = incoming_a.DecryptedInitial;
 pub const decryptInitialPacket = incoming_a.decryptInitialPacket;
 
-pub fn processInitial(
+pub const InitialPrepareResult = union(enum) {
+    ready: *conn_mod.Connection,
+    consumed,
+};
+
+// CANARY: REQ=REQ-QUIC-HC-082; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ConnectionLimitMapEntryBudget; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27
+//
+// Server connections are registered in the endpoint map under both the
+// client Initial DCID and the server SCID. Treat max_connections as a logical
+// connection limit, not a raw hash-map-entry limit, or 512 active connections
+// fill a 1024-entry map and all retry Initial packets get dropped.
+fn maxConnectionMapEntries(max_connections: usize) usize {
+    return std.math.mul(usize, max_connections, 2) catch std.math.maxInt(usize);
+}
+
+// CANARY: REQ=REQ-QUIC-HC-065; FEATURE="QUIC High-Concurrency Requests"; ASPECT=InitialAdmissionLockSplit; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
+// Prepare only the endpoint-wide connection-table side of Initial processing.
+// Callers that own Endpoint.mu can create/register the connection here, then
+// release the endpoint lock and drive the expensive TLS ClientHello/server-flight
+// work through processInitialResolved() under the connection-local RX mutex.
+pub fn prepareInitialConnection(
     ctx: *RxContext,
     peer: conn_mod.SockAddr,
-    bytes: []const u8,
+    header: InitialHeader,
+    token_bytes: []const u8,
     version: u32,
-) void {
-    // Parse Initial header to extract DCID and SCID
-    const header = parseInitialHeader(bytes) catch {
-        return;
-    };
-
-    // Parse token from packet before any new server connection allocation. This
-    // enables stateless Retry handling for unvalidated Initial packets.
-    var token_offset = header.offset;
-    const tok_len_dec = varint.decode(bytes[token_offset..]) catch return;
-    token_offset += tok_len_dec.n;
-    const tok_len_usize = @as(usize, @intCast(@min(tok_len_dec.value, bytes.len - token_offset)));
-    if (token_offset + tok_len_usize > bytes.len) return;
-    const token_bytes = bytes[token_offset .. token_offset + tok_len_usize];
-
+) InitialPrepareResult {
     // Look up connection by peer hash + client DCID
     const ph = hashSockaddr(&peer.storage, peer.len);
     const key = endpoint_types.Key{ .peer_hash = ph, .dcid_hash = hashBytes(header.dcid) };
 
-    var conn: *conn_mod.Connection = blk: {
+    const conn: *conn_mod.Connection = blk: {
         // Special case: Zero-length DCID requires peer-only lookup
         // RFC 9000 §5.2: Server may use zero-length CIDs
         if (header.dcid.len == 0) {
@@ -432,7 +440,7 @@ pub fn processInitial(
         // No suitable connection exists - create new server connection
         // Only server endpoints should create server connections
         if (ctx.endpoint_role == .Client) {
-            return; // Client endpoints don't create server connections
+            return .consumed; // Client endpoints don't create server connections
         }
 
         const token_mod = @import("token");
@@ -452,7 +460,7 @@ pub fn processInitial(
             null;
 
         if (ctx.cfg.enable_retry and retry_odcid == null) {
-            if (client_ip_bytes.len == 0) return;
+            if (client_ip_bytes.len == 0) return .consumed;
 
             var retry_scid: [8]u8 = undefined;
             _ = std.os.linux.getrandom(&retry_scid, retry_scid.len, 0);
@@ -463,7 +471,7 @@ pub fn processInitial(
                 header.dcid,
                 secret,
                 ctx.cfg.token_expiry_ms,
-            ) catch return;
+            ) catch return .consumed;
             defer ctx.allocator.free(retry_tok);
 
             const retry_bytes = packet.encodeRetry(
@@ -473,21 +481,22 @@ pub fn processInitial(
                 retry_scid[0..], // Retry SCID = server-selected CID
                 header.dcid, // ODCID for integrity tag and token recovery
                 retry_tok,
-            ) catch return;
+            ) catch return .consumed;
             defer ctx.allocator.free(retry_bytes);
 
             _ = ctx.send_fn(peer, retry_bytes) catch |err| {
                 logger.debugPrint("[INCOMING] stateless Retry send failed: {s}\n", .{@errorName(err)});
             };
-            return;
+            return .consumed;
         }
 
         // CWE-400 mitigation: Enforce connection limit before creating new connections.
         // RFC 9000 §8.1 recommends servers implement rate-limiting to prevent DoS.
         // When at capacity, silently drop the Initial packet (do not send error to avoid amplification).
-        if (ctx.max_connections > 0 and ctx.conns.count() >= ctx.max_connections) {
+        const max_map_entries = maxConnectionMapEntries(ctx.max_connections);
+        if (ctx.max_connections > 0 and ctx.conns.count() >= max_map_entries) {
             logger.debugPrint("processInitial: Connection limit reached ({}/{}), dropping Initial packet\n", .{ ctx.conns.count(), ctx.max_connections });
-            return; // Drop packet - do not create connection
+            return .consumed; // Drop packet - do not create connection
         }
 
         // Create server connection using Session 5 API
@@ -514,6 +523,7 @@ pub fn processInitial(
             .allowed_alpns = ctx.cfg.alpn,
             .enable_pacing = ctx.cfg.enable_pacing,
             .max_datagram_size = ctx.cfg.max_datagram_size,
+            .initial_congestion_window_packets = ctx.cfg.initial_congestion_window_packets,
             .aead_confidentiality_limit = ctx.cfg.aead_confidentiality_limit_override orelse 0,
             .aead_integrity_limit = ctx.cfg.aead_integrity_limit_override orelse 0,
             .require_client_cert = ctx.cfg.require_client_cert,
@@ -525,9 +535,9 @@ pub fn processInitial(
         // (RFC 9000 §10.1 allows servers to refuse new connections under
         // overload). The drop is the controlled exhaustion path; the
         // existing connection table size acts as the bound.
-        if (ctx.conns.count() >= ctx.cfg.max_connections) {
+        if (ctx.cfg.max_connections > 0 and ctx.conns.count() >= maxConnectionMapEntries(ctx.cfg.max_connections)) {
             logger.debugPrint("[INCOMING] connection limit reached ({d}); dropping new Initial\n", .{ctx.cfg.max_connections});
-            return;
+            return .consumed;
         }
 
         // Create and initialize server connection
@@ -536,7 +546,7 @@ pub fn processInitial(
             invalidSocket(), // sock_fd will be set by endpoint
             peer,
             config,
-        ) catch return;
+        ) catch return .consumed;
 
         // Wire the shared anti-replay cache to the new server connection
         // so that accept0RTT() can detect replayed 0-RTT data (RFC 8446 S8).
@@ -554,7 +564,7 @@ pub fn processInitial(
             logger.debugPrint("[INCOMING] setupServerTransportParams failed: {s} -- dropping connection\n", .{@errorName(err)});
             c_new.deinit();
             ctx.allocator.destroy(c_new);
-            return;
+            return .consumed;
         };
 
         // Set up sender callback so connection can send packets
@@ -564,7 +574,7 @@ pub fn processInitial(
         _ = ctx.conns.put(key, c_new) catch {
             c_new.deinit();
             ctx.allocator.destroy(c_new);
-            return;
+            return .consumed;
         };
 
         // Also register by peer + server SCID for Handshake packet lookup
@@ -574,26 +584,71 @@ pub fn processInitial(
             _ = ctx.conns.remove(key);
             c_new.deinit();
             ctx.allocator.destroy(c_new);
-            return;
+            return .consumed;
         };
 
         logger.debugPrint("processInitial: Registered new server conn={*}\n", .{c_new});
         logger.debugPrint("  By client DCID hash={X:0>16}\n", .{hashBytes(header.dcid)});
         logger.debugPrint("  By server SCID hash={X:0>16}\n", .{hashBytes(c_new.our_scid.bytes[0..c_new.our_scid.len])});
 
-        // Add newly created server connection to accepted list for accept() API
-        _ = ctx.accepted.append(ctx.allocator.*, c_new) catch {
-            // Remove both map registrations so the connection is not orphaned.
-            _ = ctx.conns.remove(key);
-            _ = ctx.conns.remove(our_key);
-            c_new.deinit();
-            ctx.allocator.destroy(c_new);
-            return;
-        };
+        if (!ctx.cfg.defer_accept_until_stream) {
+            // Add newly created server connection to accepted list for accept() API.
+            // High-fanout applications can opt into deferring this until the
+            // first peer STREAM frame arrives so handlers are only admitted for
+            // application-ready connections.
+            _ = ctx.accepted.append(ctx.allocator.*, c_new) catch {
+                // Remove both map registrations so the connection is not orphaned.
+                _ = ctx.conns.remove(key);
+                _ = ctx.conns.remove(our_key);
+                c_new.deinit();
+                ctx.allocator.destroy(c_new);
+                return .consumed;
+            };
+            c_new.accepted_enqueued = true;
+        }
 
         break :blk c_new;
     };
 
+    return .{ .ready = conn };
+}
+
+pub fn processInitial(
+    ctx: *RxContext,
+    peer: conn_mod.SockAddr,
+    bytes: []const u8,
+    version: u32,
+) void {
+    // Parse Initial header to extract DCID and SCID
+    const header = parseInitialHeader(bytes) catch {
+        return;
+    };
+
+    // Parse token from packet before any new server connection allocation. This
+    // enables stateless Retry handling for unvalidated Initial packets.
+    var token_offset = header.offset;
+    const tok_len_dec = varint.decode(bytes[token_offset..]) catch return;
+    token_offset += tok_len_dec.n;
+    const tok_len_usize = @as(usize, @intCast(@min(tok_len_dec.value, bytes.len - token_offset)));
+    if (token_offset + tok_len_usize > bytes.len) return;
+    const token_bytes = bytes[token_offset .. token_offset + tok_len_usize];
+
+    const conn = switch (prepareInitialConnection(ctx, peer, header, token_bytes, version)) {
+        .ready => |c| c,
+        .consumed => return,
+    };
+    processInitialResolved(ctx, peer, bytes, version, header, token_bytes, conn);
+}
+
+pub fn processInitialResolved(
+    ctx: *RxContext,
+    peer: conn_mod.SockAddr,
+    bytes: []const u8,
+    version: u32,
+    header: InitialHeader,
+    token_bytes: []const u8,
+    conn: *conn_mod.Connection,
+) void {
     // For client connections, cache the server Initial SCID for subsequent short-header
     // routing. Keep peer_initial_dcid unchanged: it tracks the client's current Initial
     // destination CID and is used for Initial key derivation (RFC 9001 §5.2).
@@ -1042,7 +1097,9 @@ pub fn processInitial(
 /// RFC 9000 §8.1: "Successfully processing any message encrypted with Handshake
 /// keys confirms that the peer successfully processed an Initial packet."
 pub const processHandshake = incoming_b.processHandshake;
-const parseHandshakeHeader = incoming_b.parseHandshakeHeader;
+pub const processHandshakeResolved = incoming_b.processHandshakeResolved;
+pub const HandshakeHeader = incoming_b.HandshakeHeader;
+pub const parseHandshakeHeader = incoming_b.parseHandshakeHeader;
 const decryptHandshakePacket = incoming_b.decryptHandshakePacket;
 pub const ShortDecryptResult = incoming_b.ShortDecryptResult;
 pub const decryptShortHeaderWithKeyRotation = incoming_b.decryptShortHeaderWithKeyRotation;

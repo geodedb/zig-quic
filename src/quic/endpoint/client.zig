@@ -115,7 +115,8 @@ pub fn createClientConnection(
     c.enable_pacing = cfg.enable_pacing;
     c.exempt_localhost = cfg.exempt_localhost;
     c.disable_active_migration_advertised = cfg.disable_active_migration;
-    c.rec.cc.mds = @intCast(cfg.max_datagram_size);
+    c.rec.setMds(@intCast(cfg.max_datagram_size));
+    c.rec.setInitialCongestionWindowPackets(cfg.initial_congestion_window_packets);
 
     // Apply AEAD usage limit overrides
     c.setAeadUsageLimits(cfg.aead_confidentiality_limit_override, cfg.aead_integrity_limit_override);

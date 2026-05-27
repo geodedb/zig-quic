@@ -286,6 +286,8 @@ pub const ServerConnectionConfig = struct {
     enable_pacing: bool = false,
     /// Maximum datagram size for congestion control
     max_datagram_size: u16 = 1200,
+    /// Initial congestion window in datagrams.
+    initial_congestion_window_packets: u16 = 10,
     /// AEAD confidentiality limit override (0 = use default)
     aead_confidentiality_limit: u64 = 0,
     /// AEAD integrity limit override (0 = use default)
@@ -408,7 +410,8 @@ pub fn createServerConnection(
     // Configure pacing, localhost exemption, and congestion control max datagram size
     c.enable_pacing = config.enable_pacing;
     c.exempt_localhost = config.exempt_localhost;
-    c.rec.cc.mds = @intCast(config.max_datagram_size);
+    c.rec.setMds(@intCast(config.max_datagram_size));
+    c.rec.setInitialCongestionWindowPackets(config.initial_congestion_window_packets);
 
     // Apply AEAD usage limits if specified
     if (config.aead_confidentiality_limit > 0 or config.aead_integrity_limit > 0) {

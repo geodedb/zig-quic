@@ -53,6 +53,12 @@ pub fn bind(comptime Connection: type) type {
             }
         }
 
+        fn recordAppStreamRetransmitAttempt(tracked: anytype) void {
+            if (tracked.retransmit_count < std.math.maxInt(u16)) {
+                tracked.retransmit_count += 1;
+            }
+        }
+
         fn retransmitLostStreamPackets(self: *Connection, largest_acked_opt: ?u64) void {
             if (!self.app_stream_retx_init) return;
             if (!self.hasConfirmedAppTxKeys()) return;
@@ -80,10 +86,6 @@ pub fn bind(comptime Connection: type) type {
                 if (retransmitted >= 2) break;
                 const removed = self.app_stream_retx.fetchRemove(lost_pn) orelse continue;
                 var tracked = removed.value;
-                if (tracked.retransmit_count >= 8) {
-                    self.allocator.free(tracked.data);
-                    continue;
-                }
 
                 var frame_storage: [2048]u8 = undefined;
                 var frame_stream = @import("compat").fixedBufWriter(&frame_storage);
@@ -119,12 +121,16 @@ pub fn bind(comptime Connection: type) type {
                     continue;
                 };
                 const pkt = packet_storage[0..pkt_len];
-                _ = self.send(pkt) catch {
+                const sent = self.send(pkt) catch {
                     self.app_stream_retx.put(lost_pn, tracked) catch self.allocator.free(tracked.data);
                     continue;
                 };
+                if (sent != pkt.len) {
+                    self.app_stream_retx.put(lost_pn, tracked) catch self.allocator.free(tracked.data);
+                    continue;
+                }
 
-                tracked.retransmit_count +%= 1;
+                recordAppStreamRetransmitAttempt(&tracked);
                 logger.debugPrint(
                     "[stream-retx] pn={} -> pn={} stream={} off={} len={} fin={} attempt={}\n",
                     .{
@@ -846,6 +852,10 @@ pub fn bind(comptime Connection: type) type {
             };
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
             const res = self.rec.onAckReceivedWithEcn(space, acked, 0, now_ns, ecn);
+            if (space == .Application and res.bytes_acked > 0) {
+                _ = self.tx_credit_generation.fetchAdd(1, .release);
+                std.Io.Threaded.global_single_threaded.io().futexWake(u32, &self.tx_credit_generation.raw, std.math.maxInt(u32));
+            }
             // Promote time-threshold losses if any expired now
             _ = self.rec.onLossTimeExpired(now_ns);
             if (space == .Application) {
@@ -1098,6 +1108,11 @@ pub fn bind(comptime Connection: type) type {
             else
                 &[_]u8{};
 
+            // CANARY: REQ=REQ-QUIC-HC-081; FEATURE="QUIC High-Concurrency Requests"; ASPECT=HandshakeSendAccounting; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27
+            //
+            // Initial/Handshake PTO probes are recovery state. Under high
+            // parallelism, a transient sender failure must not consume packet
+            // numbers or mark bytes in flight.
             if (self.crypto_retx_initial) |retx| {
                 const max_crypto_chunk: usize = @max(@as(usize, 256), @as(usize, self.path_mtu) - 80);
                 const chunk_len = @min(retx.len, max_crypto_chunk);
@@ -1153,9 +1168,14 @@ pub fn bind(comptime Connection: type) type {
                         }
                     }
                     defer self.allocator.free(bytes_out);
-                    _ = self.send(bytes_out) catch |err| {
+                    const sent = self.send(bytes_out) catch |err| {
                         logger.warn("PTO Initial CRYPTO retx send failed: {s}", .{@errorName(err)});
+                        return;
                     };
+                    if (sent != bytes_out.len) {
+                        logger.warn("PTO Initial CRYPTO retx short send: sent={} expected={}", .{ sent, bytes_out.len });
+                        return;
+                    }
                     self.onPacketSent(.Initial, self.pn_initial_tx, bytes_out.len, true);
                     self.pn_initial_tx +%= 1;
                     return;
@@ -1201,9 +1221,14 @@ pub fn bind(comptime Connection: type) type {
                     }
                 }
                 defer self.allocator.free(bytes_out);
-                _ = self.send(bytes_out) catch |err| {
+                const sent = self.send(bytes_out) catch |err| {
                     logger.warn("PTO Initial send failed: {s}", .{@errorName(err)});
+                    return;
                 };
+                if (sent != bytes_out.len) {
+                    logger.warn("PTO Initial short send: sent={} expected={}", .{ sent, bytes_out.len });
+                    return;
+                }
                 // Record via Recovery and bump PN
                 self.onPacketSent(.Initial, self.pn_initial_tx, bytes_out.len, true);
                 self.pn_initial_tx +%= 1;
@@ -1246,12 +1271,19 @@ pub fn bind(comptime Connection: type) type {
                     ) catch null;
                     if (out_crypto) |bytes_out| {
                         defer self.allocator.free(bytes_out);
-                        _ = self.send(bytes_out) catch |err| {
+                        const sent = self.send(bytes_out) catch |err| {
                             logger.warn("PTO Handshake CRYPTO retx send failed: {s}", .{@errorName(err)});
+                            return;
                         };
+                        if (sent != bytes_out.len) {
+                            logger.warn("PTO Handshake CRYPTO retx short send: sent={} expected={}", .{ sent, bytes_out.len });
+                            return;
+                        }
                         self.onPacketSent(.Handshake, self.pn_handshake_tx, bytes_out.len, true);
                         self.pn_handshake_tx +%= 1;
                         probes_sent += 1;
+                    } else {
+                        return;
                     }
                     sent_off += chunk_len;
                 }
@@ -1276,9 +1308,14 @@ pub fn bind(comptime Connection: type) type {
             ) catch null;
             if (out) |bytes_out| {
                 defer self.allocator.free(bytes_out);
-                _ = self.send(bytes_out) catch |err| {
+                const sent = self.send(bytes_out) catch |err| {
                     logger.warn("PTO Handshake send failed: {s}", .{@errorName(err)});
+                    return;
                 };
+                if (sent != bytes_out.len) {
+                    logger.warn("PTO Handshake short send: sent={} expected={}", .{ sent, bytes_out.len });
+                    return;
+                }
                 self.onPacketSent(.Handshake, self.pn_handshake_tx, bytes_out.len, true);
                 self.pn_handshake_tx +%= 1;
             }
@@ -1289,6 +1326,20 @@ pub fn bind(comptime Connection: type) type {
             if (!self.hasConfirmedAppTxKeys()) return;
             const tx = self.app_tx_keys.?;
 
+            // CANARY: REQ=REQ-QUIC-HC-079; FEATURE="QUIC High-Concurrency Requests"; ASPECT=AppPtoSendAccounting; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27
+            //
+            // App PTO recovery runs during high-fanout request bursts when the
+            // server socket can drop client STREAM datagrams. Do not advance the
+            // retransmit PN, packet-number accounting, or recovery bytes-in-flight
+            // unless the probe datagram was fully accepted by the UDP sender.
+            // A WouldBlock/short-send must keep the original tracking entry so the
+            // next PTO can retry the same application bytes.
+            // CANARY: REQ=REQ-QUIC-HC-080; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ReliableAppPtoRetxRetention; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27
+            //
+            // STREAM retransmit buffers are reliability state, not a best-effort
+            // retry queue. Keep unacked application data until ACK or connection
+            // teardown; an 8-attempt cap can silently abandon client requests
+            // during synchronized high-concurrency bursts.
             // Prefer probing with outstanding STREAM data when available.
             // This prevents deadlocks where pure-PING probes keep the PTO loop
             // alive but don't make application delivery progress under heavy
@@ -1306,49 +1357,50 @@ pub fn bind(comptime Connection: type) type {
                 if (selected_pn) |probe_pn| {
                     if (self.app_stream_retx.fetchRemove(probe_pn)) |removed| {
                         var tracked = removed.value;
-                        if (tracked.retransmit_count >= 8) {
-                            self.allocator.free(tracked.data);
-                        } else {
-                            var frame_storage: [2048]u8 = undefined;
-                            var frame_stream = @import("compat").fixedBufWriter(&frame_storage);
-                            _ = (frame.Frame{
-                                .stream = .{
-                                    .stream_id = tracked.stream_id,
-                                    .offset = tracked.offset,
-                                    .fin = tracked.fin,
-                                    .data = tracked.data,
-                                },
-                            }).write(frame_stream.writer()) catch |err| {
-                                logger.err("PTO App STREAM frame write failed: {s}", .{@errorName(err)});
-                            };
-                            const frame_bytes = frame_storage[0..frame_stream.pos];
+                        var frame_storage: [2048]u8 = undefined;
+                        var frame_stream = @import("compat").fixedBufWriter(&frame_storage);
+                        _ = (frame.Frame{
+                            .stream = .{
+                                .stream_id = tracked.stream_id,
+                                .offset = tracked.offset,
+                                .fin = tracked.fin,
+                                .data = tracked.data,
+                            },
+                        }).write(frame_stream.writer()) catch |err| {
+                            logger.err("PTO App STREAM frame write failed: {s}", .{@errorName(err)});
+                            self.app_stream_retx.put(probe_pn, tracked) catch self.allocator.free(tracked.data);
+                            return;
+                        };
+                        const frame_bytes = frame_storage[0..frame_stream.pos];
 
-                            if (frame_bytes.len > 0) {
-                                const packet_storage = self.packet_pool.checkout() catch return;
-                                defer self.packet_pool.release(packet_storage);
-                                const next_pn = self.pn_app_tx;
-                                const pkt_len = packet.encodeShortProtectedInto(
-                                    packet_storage,
-                                    self.shortHeaderDcid(),
-                                    @as(u32, @truncate(next_pn)),
-                                    2,
-                                    frame_bytes,
-                                    .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
-                                    self.tx_key_phase,
-                                ) catch 0;
-                                if (pkt_len != 0) {
-                                    const pkt = packet_storage[0..pkt_len];
-                                    const sent = self.send(pkt) catch 0;
-                                    if (sent > 0) {
-                                        tracked.retransmit_count +%= 1;
-                                        self.onShortHeaderPacketSent(pkt.len, true);
-                                        self.app_stream_retx.put(next_pn, tracked) catch self.allocator.free(tracked.data);
-                                        return;
-                                    }
+                        if (frame_bytes.len > 0) {
+                            const packet_storage = self.packet_pool.checkout() catch {
+                                self.app_stream_retx.put(probe_pn, tracked) catch self.allocator.free(tracked.data);
+                                return;
+                            };
+                            defer self.packet_pool.release(packet_storage);
+                            const next_pn = self.pn_app_tx;
+                            const pkt_len = packet.encodeShortProtectedInto(
+                                packet_storage,
+                                self.shortHeaderDcid(),
+                                @as(u32, @truncate(next_pn)),
+                                2,
+                                frame_bytes,
+                                .{ .key = tx.key, .iv = tx.iv, .hp = tx.hp },
+                                self.tx_key_phase,
+                            ) catch 0;
+                            if (pkt_len != 0) {
+                                const pkt = packet_storage[0..pkt_len];
+                                const sent = self.send(pkt) catch 0;
+                                if (sent == pkt.len) {
+                                    recordAppStreamRetransmitAttempt(&tracked);
+                                    self.onShortHeaderPacketSent(pkt.len, true);
+                                    self.app_stream_retx.put(next_pn, tracked) catch self.allocator.free(tracked.data);
+                                    return;
                                 }
                             }
-                            self.app_stream_retx.put(probe_pn, tracked) catch self.allocator.free(tracked.data);
                         }
+                        self.app_stream_retx.put(probe_pn, tracked) catch self.allocator.free(tracked.data);
                     }
                 }
             }
@@ -1371,10 +1423,13 @@ pub fn bind(comptime Connection: type) type {
             ) catch 0;
             if (pkt_len != 0) {
                 const pkt = packet_storage[0..pkt_len];
-                _ = self.send(pkt) catch |err| {
+                const sent = self.send(pkt) catch |err| {
                     logger.warn("PTO App send failed: {s}", .{@errorName(err)});
+                    return;
                 };
-                self.onShortHeaderPacketSent(pkt.len, true);
+                if (sent == pkt.len) {
+                    self.onShortHeaderPacketSent(pkt.len, true);
+                }
             }
         }
 

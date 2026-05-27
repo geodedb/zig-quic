@@ -162,6 +162,25 @@ pub const AckContext = struct {
 ///
 /// RFC 9000 §8.1: "A server MAY send a single packet containing only an ACK
 /// frame in response to each received datagram when under amplification limit."
+// CANARY: REQ=REQ-QUIC-HC-074; FEATURE="QUIC High-Concurrency Requests"; ASPECT=AckSendAccounting; STATUS=IMPL; TEST=test_quic_condition_timedwait_cadence; OWNER=transport; UPDATED=2026-05-27
+fn sendAppPacketAndTrack(
+    ack_ctx: *AckContext,
+    pkt: []const u8,
+    ack_eliciting: bool,
+    comptime label: []const u8,
+) bool {
+    const sent = ack_ctx.send_fn(ack_ctx.peer, pkt) catch |err| {
+        logger.warn(label ++ " send failed: {s}", .{@errorName(err)});
+        return false;
+    };
+    if (sent != pkt.len) {
+        logger.warn(label ++ " short send: sent={d} expected={d}", .{ sent, pkt.len });
+        return false;
+    }
+    ack_ctx.conn.onShortHeaderPacketSent(pkt.len, ack_eliciting);
+    return true;
+}
+
 pub fn generateAndSendAck(
     ack_ctx: *AckContext,
     frame_result: FrameProcessResult,
@@ -229,12 +248,10 @@ pub fn generateAndSendAck(
 
         if (pkt_len != 0) {
             const pkt = packet_storage[0..pkt_len];
-            _ = ack_ctx.send_fn(ack_ctx.peer, pkt) catch |err| {
-                logger.warn("deferred ECN ACK send failed: {s}", .{@errorName(err)});
-            };
-            conn.onShortHeaderPacketSent(pkt.len, false);
-            conn.ecn_app_ack_pending = false;
-            return; // Stop further processing
+            if (sendAppPacketAndTrack(ack_ctx, pkt, false, "deferred ECN ACK")) {
+                conn.ecn_app_ack_pending = false;
+                return; // Stop further processing
+            }
         }
     }
 
@@ -270,10 +287,7 @@ pub fn generateAndSendAck(
 
                 if (pkt_len != 0) {
                     const pkt = packet_storage[0..pkt_len];
-                    _ = ack_ctx.send_fn(ack_ctx.peer, pkt) catch |err| {
-                        logger.warn("AEAD limit CONNECTION_CLOSE send failed: {s}", .{@errorName(err)});
-                    };
-                    conn.onShortHeaderPacketSent(pkt.len, true);
+                    _ = sendAppPacketAndTrack(ack_ctx, pkt, true, "AEAD limit CONNECTION_CLOSE");
                 }
             }
         }
@@ -382,9 +396,7 @@ pub fn generateAndSendAck(
                             if (rc != 0) break :nts @as(i128, 0);
                             break :nts @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
                         };
-                        _ = ack_ctx.send_fn(ack_ctx.peer, pkt) catch |err| {
-                            logger.warn("ECN ACK send failed: {s}", .{@errorName(err)});
-                        };
+                        const sent_ok = sendAppPacketAndTrack(ack_ctx, pkt, false, "ECN ACK");
                         const send_end_ns = nts2: {
                             var ts: std.os.linux.timespec = undefined;
                             const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
@@ -401,7 +413,7 @@ pub fn generateAndSendAck(
                             send_duration_us,
                             total_delay_us,
                         });
-                        conn.onShortHeaderPacketSent(pkt.len, false);
+                        if (!sent_ok) conn.ecn_app_ack_pending = true;
                     }
                     return; // Stop further processing
                 } else {
@@ -425,18 +437,22 @@ pub fn generateAndSendAck(
                         logger.debugPrint("[P42-19-FC-SUMMARY] Sent {} MAX_STREAM_DATA frames in this ACK packet\n", .{fc_frames_sent});
                     }
 
+                    var sent_max_data: ?u64 = null;
+                    var sent_max_streams_bidi: ?u64 = null;
+                    const pending_new_cid_before = conn.pending_new_cid;
+
                     if (conn.local_max_data > conn.last_sent_max_data) {
                         _ = (frame.Frame{ .max_data = .{ .max = conn.local_max_data } }).write(w) catch |err| {
                             logger.err("MAX_DATA frame write failed: {s}", .{@errorName(err)});
                         };
-                        conn.last_sent_max_data = conn.local_max_data;
+                        sent_max_data = conn.local_max_data;
                     }
 
                     if (conn.local_max_streams_bidi > conn.last_sent_max_streams_bidi) {
                         _ = (frame.Frame{ .max_streams_bidi = .{ .max = conn.local_max_streams_bidi } }).write(w) catch |err| {
                             logger.err("MAX_STREAMS_BIDI frame write failed: {s}", .{@errorName(err)});
                         };
-                        conn.last_sent_max_streams_bidi = conn.local_max_streams_bidi;
+                        sent_max_streams_bidi = conn.local_max_streams_bidi;
                     }
 
                     // Append pending NEW_CONNECTION_ID frames
@@ -479,9 +495,11 @@ pub fn generateAndSendAck(
                             if (rc != 0) break :nts3 @as(i128, 0);
                             break :nts3 @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
                         };
-                        _ = ack_ctx.send_fn(ack_ctx.peer, pkt) catch |err| {
-                            logger.warn("normal ACK send failed: {s}", .{@errorName(err)});
-                        };
+                        // CANARY: REQ=REQ-QUIC-HC-086; FEATURE="QUIC High-Concurrency Requests"; ASPECT=AckOnlySingleSend; STATUS=IMPL; TEST=test_quic_condition_timedwait_cadence; OWNER=transport; UPDATED=2026-05-27
+                        // sendAppPacketAndTrack is the single send/accounting
+                        // path. Sending once here and once inside the helper
+                        // doubled normal ACK traffic during response fan-out.
+                        const sent_ok = sendAppPacketAndTrack(ack_ctx, pkt, false, "normal ACK");
                         const send_end_ns = nts4: {
                             var ts: std.os.linux.timespec = undefined;
                             const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
@@ -498,7 +516,12 @@ pub fn generateAndSendAck(
                             send_duration_us,
                             total_delay_us,
                         });
-                        conn.onShortHeaderPacketSent(pkt.len, false);
+                        if (sent_ok) {
+                            if (sent_max_data) |value| conn.last_sent_max_data = value;
+                            if (sent_max_streams_bidi) |value| conn.last_sent_max_streams_bidi = value;
+                        } else {
+                            conn.pending_new_cid = pending_new_cid_before;
+                        }
                     }
                 }
             } else {
@@ -541,11 +564,8 @@ pub fn generateAndSendAck(
 
                 if (pkt_len != 0) {
                     const pkt = packet_storage[0..pkt_len];
-                    _ = ack_ctx.send_fn(ack_ctx.peer, pkt) catch |err| {
-                        logger.warn("ACK-only send failed: {s}", .{@errorName(err)});
-                    };
                     // ACK-only is not ack-eliciting
-                    conn.onShortHeaderPacketSent(pkt.len, false);
+                    _ = sendAppPacketAndTrack(ack_ctx, pkt, false, "ACK-only");
                 }
             }
         }

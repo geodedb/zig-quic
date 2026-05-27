@@ -183,6 +183,14 @@ pub fn handleAck(
     ctx: *FrameContext,
     a: frame.Ack,
 ) FrameResult {
+    // CANARY: REQ=REQ-QUIC-HC-069; FEATURE="QUIC High-Concurrency Requests"; ASPECT=AckRecoveryMutex; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27
+    // ACK processing mutates recovery state and the application STREAM
+    // retransmission map. Keep it under the same per-connection mutex as
+    // writeStream()/PTO retransmission so a many-connection response burst
+    // cannot race ACK cleanup against a concurrent send or timer callback.
+    ctx.conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    defer ctx.conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+
     // PHASE 56 FIX: Re-enable ACK processing (was disabled for unit testing)
     // Forward Application ACK to recovery with actual ranges
     ctx.conn.onAckReceivedSpace(.Application, a.largest, a.first_range, a.ranges, a.ecn);

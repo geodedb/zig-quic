@@ -43,6 +43,19 @@ inline fn hashSockaddr(sa: *const posix.sockaddr.storage, len: u32) u64 {
     return hashBytes(bytes);
 }
 
+inline fn timingNsMonotonic() i128 {
+    var ts: std.os.linux.timespec = undefined;
+    const rc = std.os.linux.clock_gettime(.MONOTONIC, &ts);
+    if (rc != 0) return 0;
+    return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+}
+
+inline fn elapsedTimingNsSince(start_ns: i128) u64 {
+    const end_ns = timingNsMonotonic();
+    if (end_ns <= start_ns) return 0;
+    return @intCast(end_ns - start_ns);
+}
+
 pub fn processShortHeader(
     ctx: *RxContext,
     peer: conn_mod.SockAddr,
@@ -174,6 +187,7 @@ pub fn processShortHeaderResolved(
     // Tries CURRENT → NEXT → PREV keys automatically
     g_app_decrypt_start += 1;
     logger.debugPrint("[APP-DECRYPT-START] attempt={} dcid_len={} bytes={} cached={?}\n", .{ g_app_decrypt_start, observed_dcid_len, bytes.len, conn.expected_rx_dcid_len });
+    const decrypt_start_ns = if (ctx.short_header_timing != null) timingNsMonotonic() else 0;
     const decrypt_result = decryptShortHeaderWithKeyRotation(
         ctx.allocator.*,
         conn,
@@ -188,6 +202,9 @@ pub fn processShortHeaderResolved(
         }
         return;
     };
+    if (ctx.short_header_timing) |timing| {
+        timing.decrypt_ns += elapsedTimingNsSince(decrypt_start_ns);
+    }
 
     const dec_res = decrypt_result.decoded;
     const used_next = decrypt_result.used_next;
@@ -234,7 +251,11 @@ pub fn processShortHeaderResolved(
     // and packet-number tracking from concurrent access by worker threads.
     // Released before processFrames() which calls pushStreamFrame() that acquires
     // conn.mu internally (Zig mutexes are non-recursive).
+    const pn_lock_start_ns = if (ctx.short_header_timing != null) timingNsMonotonic() else 0;
     conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    if (ctx.short_header_timing) |timing| {
+        timing.conn_lock_wait_ns += elapsedTimingNsSince(pn_lock_start_ns);
+    }
 
     // Handle key promotion if NEXT keys were used
     // RFC 9001 §6.1: "After receiving a packet encrypted with the next keys,
@@ -327,6 +348,7 @@ pub fn processShortHeaderResolved(
     conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
     // Parse and process all frames from the decrypted payload
+    const frame_start_ns = if (ctx.short_header_timing != null) timingNsMonotonic() else 0;
     const frame_result = processFrames(
         ctx,
         conn,
@@ -339,6 +361,9 @@ pub fn processShortHeaderResolved(
         }
         return;
     };
+    if (ctx.short_header_timing) |timing| {
+        timing.frame_process_ns += elapsedTimingNsSince(frame_start_ns);
+    }
 
     if (ctx.test_capture_enabled) {
         logger.debugPrint("Frame processing result: saw_ack_eliciting={}, saw_handshake_done={}, saw_close={}\n", .{
@@ -350,7 +375,11 @@ pub fn processShortHeaderResolved(
 
     // GAP-0200: Re-acquire conn.mu for post-frame state mutations and ACK
     // generation (buildAckApp reads PnWindow / writes ack_ranges_buf).
+    const post_lock_start_ns = if (ctx.short_header_timing != null) timingNsMonotonic() else 0;
     conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    if (ctx.short_header_timing) |timing| {
+        timing.conn_lock_wait_ns += elapsedTimingNsSince(post_lock_start_ns);
+    }
     defer conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
     // Handle HANDSHAKE_DONE frame (RFC 9000 §19.20)
@@ -444,11 +473,15 @@ pub fn processShortHeaderResolved(
             .test_capture_enabled = ctx.test_capture_enabled,
         };
 
+        const ack_start_ns = if (ctx.short_header_timing != null) timingNsMonotonic() else 0;
         generateAndSendAck(&ack_ctx, frame_result, ecn_bits) catch {
             if (ctx.test_capture_enabled) {
                 logger.debugPrint("Failed to generate/send ACK\n", .{});
             }
         };
+        if (ctx.short_header_timing) |timing| {
+            timing.ack_send_ns += elapsedTimingNsSince(ack_start_ns);
+        }
 
         if (ctx.test_capture_enabled) {
             logger.debugPrint("📤 Sent ACK (ack_eliciting={}, ecn_pending={})\n", .{

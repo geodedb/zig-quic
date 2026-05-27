@@ -66,6 +66,9 @@ fn createTestConnection() !*conn_mod.Connection {
     conn.pto_dirty = std.atomic.Value(bool).init(false);
     conn.pto_dirty_notify_ctx = null;
     conn.pto_dirty_notify_fn = null;
+    conn.rx_ready_notify_ctx = null;
+    conn.rx_ready_notify_fn = null;
+    conn.endpoint_rx_serial_mu = std.Io.Mutex.init;
     return conn;
 }
 

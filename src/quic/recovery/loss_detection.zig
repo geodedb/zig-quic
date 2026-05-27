@@ -16,7 +16,8 @@ pub const LossDetector = struct {
     /// Return true if pn is considered lost using packet threshold relative to largest_acked.
     /// RFC 9002 §6.1.1: Packet Threshold
     pub fn isPacketThresholdLost(self: *const LossDetector, largest_acked: u64, pn: u64) bool {
-        return largest_acked >= pn + self.packet_threshold;
+        if (largest_acked < pn) return false;
+        return largest_acked - pn >= self.packet_threshold;
     }
 
     /// Time threshold as 1.125x of the larger of smoothed/latest RTT.
@@ -43,4 +44,11 @@ pub fn isAckElicitingFrame(fr: frame.Frame) bool {
         // DATAGRAM would be ack-eliciting if enabled; not present yet.
         else => true,
     };
+}
+
+test "loss detection packet threshold does not underflow near max packet numbers" {
+    const detector = LossDetector{};
+    try @import("std").testing.expect(!detector.isPacketThresholdLost(0, @import("std").math.maxInt(u64)));
+    try @import("std").testing.expect(!detector.isPacketThresholdLost(2, 5));
+    try @import("std").testing.expect(detector.isPacketThresholdLost(5, 2));
 }

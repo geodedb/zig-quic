@@ -47,6 +47,12 @@ pub const QuicConfig = struct {
     enable_pacing: bool = false,
     // Congestion-control max_datagram_size per RFC 9002 §7.3.
     max_datagram_size: u16 = MIN_INITIAL_DATAGRAM_SIZE,
+    // CANARY: REQ=REQ-QUIC-HC-088; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ConfigurableInitialCwnd; STATUS=IMPL; TEST=test_quic_condition_timedwait_cadence; OWNER=transport; UPDATED=2026-05-27
+    // RFC 9002 recommends 10 packets for Internet fairness, but embedded
+    // loopback/datacenter deployments with thousands of fresh connections can
+    // opt into a larger initial application window to avoid response fan-out
+    // stalls. Values below 2 are clamped by Recovery.
+    initial_congestion_window_packets: u16 = 10,
     // Transport idle timeout (RFC 9000 §10.1) and UDP payload limit (RFC 9000 §14.1)
     max_idle_timeout_ms: u32 = 30000,
     max_udp_payload: u16 = 1350,
@@ -66,6 +72,13 @@ pub const QuicConfig = struct {
     // Maximum concurrent connections (RFC 9000 §8.1 rate-limiting recommendation).
     // Protects against DoS via unbounded connection creation. 0 = unlimited.
     max_connections: usize = 10000,
+    // CANARY: REQ=REQ-QUIC-HC-063; FEATURE="QUIC High-Concurrency Requests"; ASPECT=DeferredServerAccept; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
+    // Server-side accept policy. When true, a newly created server connection
+    // is kept in endpoint state but is not returned from accept() until at
+    // least one peer-initiated stream has readable data. This lets high-fanout
+    // applications avoid spawning handlers for half-ready handshakes while
+    // preserving the default accept-on-Initial behavior for existing users.
+    defer_accept_until_stream: bool = false,
     // Inline test/server certificate and raw P-256 private key (DER cert, 32-byte scalar) (RFC 9001 §4.4)
     inline_server_cert_der: ?[]const u8 = null,
     inline_server_priv_p256: ?[]const u8 = null,

@@ -72,6 +72,68 @@ test "server processes Initial and queues response" {
     testlog.print("Test passed: Server processed Initial and queued ServerHello\n", .{});
 }
 
+test "server deferred accept keeps Initial-only connection off accept queue" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    var alloc = gpa.allocator();
+
+    var cfg = @import("config.zig").QuicConfig{
+        .alpn = &[_][]const u8{"h3"},
+        .allow_insecure = true,
+        .enable_retry = false,
+        .inline_server_cert_der = test_certs.server_cert_der,
+        .inline_server_priv_p256 = test_certs.server_key_der,
+        .defer_accept_until_stream = true,
+    };
+    var ep = try endpoint.Endpoint.init(alloc, "127.0.0.1:4433", &cfg);
+    defer ep.deinit();
+
+    const dcid = [_]u8{ 0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08 };
+    const scid = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
+    const initial = ks.deriveInitialSecret(false, &dcid);
+    const pair = ks.deriveClientServerInitial(initial);
+    const client_keys = ks.deriveKeyIvHp(pair.client);
+
+    const ch_bytes = try buildStandardClientHello(alloc);
+    defer alloc.free(ch_bytes);
+
+    var crypto_payload = std.ArrayList(u8).empty;
+    defer crypto_payload.deinit(alloc);
+    const w = compat.arrayListWriter(&crypto_payload, alloc);
+    _ = try (frame.Frame{ .crypto = .{ .offset = 0, .data = ch_bytes } }).write(w);
+
+    const initial_pkt = try packet.encodeInitialProtected(
+        alloc,
+        packet.QUIC_V1,
+        &dcid,
+        &scid,
+        &[_]u8{},
+        1,
+        2,
+        crypto_payload.items,
+        .{ .key = client_keys.key, .iv = client_keys.iv, .hp = client_keys.hp },
+    );
+    defer alloc.free(initial_pkt);
+
+    const peer = sockAddrIp4([4]u8{ 127, 0, 0, 1 }, 12345);
+    ep.testInject(peer, initial_pkt);
+
+    try std.testing.expectEqual(@as(usize, 0), ep.accepted.items.len);
+
+    var server_conn: ?*conn_mod.Connection = null;
+    var it = ep.conns.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.*.role == .Server) {
+            server_conn = entry.value_ptr.*;
+            break;
+        }
+    }
+
+    const conn = server_conn orelse return error.NoServerConnection;
+    try std.testing.expect(conn.hs_tx_keys != null);
+    try std.testing.expect(!conn.accepted_enqueued);
+}
+
 /// Build a standard TLS 1.3 ClientHello
 fn buildStandardClientHello(alloc: std.mem.Allocator) ![]u8 {
     // Generate X25519 keypair

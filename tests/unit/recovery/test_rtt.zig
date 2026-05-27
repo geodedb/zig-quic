@@ -390,6 +390,22 @@ test "RFC 9002 §6.2.1 - PTO includes max_ack_delay for Application space" {
     try testing.expectEqual(without_delay + rtt.max_ack_delay_ns, pto);
 }
 
+test "RFC 9002 §6.2.1 - PTO arithmetic saturates at u64 max" {
+    var rtt: RttState = .{
+        .have_sample = true,
+        .min_rtt_ns = 1,
+        .latest_rtt_ns = 1,
+        .smoothed_rtt_ns = std.math.maxInt(u64) - 1,
+        .rttvar_ns = std.math.maxInt(u64),
+        .max_ack_delay_ns = std.math.maxInt(u64),
+    };
+
+    try testing.expectEqual(std.math.maxInt(u64), rtt.computePtoNs());
+    rtt.onAck(std.math.maxInt(u64) - 4, 0);
+    try testing.expect(rtt.smoothed_rtt_ns <= std.math.maxInt(u64));
+    try testing.expect(rtt.rttvar_ns <= std.math.maxInt(u64));
+}
+
 test "RFC 9002 §6.2 - PTO uses exponential backoff on retransmission" {
     var rtt: RttState = .{
         .have_sample = true,

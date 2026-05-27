@@ -1398,6 +1398,11 @@ pub fn build(b: *std.Build) void {
         const run_test_conn_stream = b.addRunArtifact(test_conn_stream);
         test_step.dependOn(&run_test_conn_stream.step);
 
+        const test_rx_ready_notifier = addTst(b, testlog_mod, compat_mod, "tests/test_rx_ready_notifier.zig", target, optimize);
+        test_rx_ready_notifier.root_module.addImport("quic_conn", quic_conn_mod);
+        const run_test_rx_ready_notifier = b.addRunArtifact(test_rx_ready_notifier);
+        test_step.dependOn(&run_test_rx_ready_notifier.step);
+
         const test_connection_id_module = addTst(b, testlog_mod, compat_mod, "tests/unit/connection/test_connection_id.zig", target, optimize);
         test_connection_id_module.root_module.addImport("connection_id", conn_connection_id_mod);
         test_connection_id_module.root_module.addImport("types", conn_types_mod);

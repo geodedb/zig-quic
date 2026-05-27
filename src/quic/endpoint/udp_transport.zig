@@ -30,7 +30,12 @@ pub const RecvBatchSlot = transport_mod.RecvBatchSlot;
 pub const SendBatchItem = transport_mod.SendBatchItem;
 
 /// Maximum number of UDP datagrams processed per batched syscall.
-pub const UdpBatchCap: usize = 16;
+///
+/// CANARY: REQ=REQ-QUIC-HC-102; FEATURE="QUIC High-Concurrency Requests"; ASPECT=UdpBatchDrain; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27
+/// 512+ same-instant clients can queue thousands of small short-header
+/// datagrams. A 16-packet recvmmsg cap forces many poll cycles and increases
+/// PTO/retry tails; 64 keeps stack use bounded while draining bursts faster.
+pub const UdpBatchCap: usize = 64;
 
 // CANARY: REQ=REQ-QUIC-HC-038; FEATURE="QUIC High-Concurrency Requests"; ASPECT=UdpSocketBuffers; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
 // High-fanout QUIC handshakes and one-shot query bursts can put hundreds of

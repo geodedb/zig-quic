@@ -80,6 +80,22 @@ pub const HandshakeContext = struct {
 /// Function signature for sending UDP datagrams
 pub const SendFn = *const fn (peer: conn_mod.SockAddr, data: []const u8) anyerror!usize;
 
+// CANARY: REQ=REQ-QUIC-HC-081; FEATURE="QUIC High-Concurrency Requests"; ASPECT=HandshakeSendAccounting; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27
+//
+// High fan-out handshakes can hit transient UDP backpressure. Recovery state,
+// packet numbers, and buffered handshake flights must only advance after the
+// complete datagram is accepted by the sender.
+fn sendDatagramFull(ctx: *HandshakeContext, data: []const u8) !void {
+    const sent = ctx.send_fn(ctx.peer, data) catch |err| {
+        logger.warn("handshake send failed: {s}", .{@errorName(err)});
+        return error.SendFailed;
+    };
+    if (sent != data.len) {
+        logger.warn("handshake short send: sent={} expected={}", .{ sent, data.len });
+        return error.ShortWrite;
+    }
+}
+
 // =============================================================================
 // TLS Context Callbacks (Phase 6)
 // =============================================================================
@@ -829,11 +845,10 @@ pub fn sendServerHello(ctx: *HandshakeContext) !void {
             logger.debugPrint("sendServerHello: Buffered Initial packet ({} bytes) for coalescing\n", .{pkt.len});
         } else {
             // Send Initial packet immediately (not the last one or no Handshake to coalesce)
-            _ = ctx.send_fn(ctx.peer, pkt) catch return error.SendFailed;
+            try sendDatagramFull(ctx, pkt);
+            conn.onPacketSent(.Initial, conn.pn_initial_tx, pkt.len, true);
+            conn.pn_initial_tx +%= 1;
         }
-
-        conn.onPacketSent(.Initial, conn.pn_initial_tx, pkt.len, true);
-        conn.pn_initial_tx +%= 1;
 
         crypto_offset += chunk_size;
     }
@@ -918,11 +933,6 @@ fn sendHandshakePing(ctx: *HandshakeContext) !void {
 
     // Check if we have a pending Initial packet to coalesce
     if (conn.pending_initial_packet) |initial_pkt| {
-        defer {
-            ctx.allocator.free(initial_pkt);
-            conn.pending_initial_packet = null;
-        }
-
         // RFC 9000 §12.2: Initial and Handshake packets MUST be coalesced
         // Create coalesced packet buffer
         var coalesced_buf: [4096]u8 = undefined;
@@ -940,20 +950,18 @@ fn sendHandshakePing(ctx: *HandshakeContext) !void {
         logger.debugPrint("sendHandshakePing: Sending coalesced packet (Initial {} + Handshake {} = {} bytes)\n", .{ initial_pkt.len, hs_pkt.len, coalesced_len });
 
         // Send the coalesced packet
-        _ = ctx.send_fn(ctx.peer, coalesced_buf[0..coalesced_len]) catch |err| {
-            logger.debugPrint("sendHandshakePing: send_fn FAILED: {}\n", .{err});
-            return error.SendFailed;
-        };
+        try sendDatagramFull(ctx, coalesced_buf[0..coalesced_len]);
+        conn.onPacketSent(.Initial, conn.pn_initial_tx, initial_pkt.len, true);
+        conn.pn_initial_tx +%= 1;
+        ctx.allocator.free(initial_pkt);
+        conn.pending_initial_packet = null;
     } else {
         // No Initial packet to coalesce, send Handshake packet alone
         logger.debugPrint("sendHandshakePing: No pending Initial packet, sending Handshake alone\n", .{});
-        _ = ctx.send_fn(ctx.peer, hs_pkt) catch |err| {
-            logger.debugPrint("sendHandshakePing: send_fn FAILED: {}\n", .{err});
-            return error.SendFailed;
-        };
+        try sendDatagramFull(ctx, hs_pkt);
     }
 
-    conn.onPacketSent(.Handshake, conn.pn_handshake_tx, hs_pkt.len, false); // PING is not ack-eliciting
+    conn.onPacketSent(.Handshake, conn.pn_handshake_tx, hs_pkt.len, true);
     conn.pn_handshake_tx +%= 1;
     conn.handshake_packet_sent = true; // Mark that we've sent at least one Handshake packet
 
@@ -999,12 +1007,12 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
     // c=4 active connections.
     var pending_data: []const u8 = undefined;
     var owns_buffer = false;
+    var pending_is_connection_owned = false;
 
     if (conn.pending_hs_messages) |buffered| {
         logger.debugPrint("sendHandshakePackets: Using {} bytes of pending messages\n", .{buffered.len});
         pending_data = buffered;
-        owns_buffer = true;
-        conn.pending_hs_messages = null; // Clear immediately to avoid double-free
+        pending_is_connection_owned = true;
     } else {
         logger.debugPrint("sendHandshakePackets: No pending messages, checking TLS Context for new data\n", .{});
 
@@ -1089,6 +1097,13 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
     logger.debugPrint("sendHandshakePackets: Sending {} bytes of CRYPTO data\n", .{n});
     if (n == 0) {
         return;
+    }
+
+    if (!pending_is_connection_owned) {
+        if (conn.pending_hs_messages) |old_buf| ctx.allocator.free(old_buf);
+        const buffered = ctx.allocator.alloc(u8, n) catch return error.AllocFailed;
+        @memcpy(buffered[0..n], pending_data[0..n]);
+        conn.pending_hs_messages = buffered;
     }
 
     // Fragment CRYPTO data across multiple Handshake packets if needed
@@ -1191,10 +1206,6 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
         // For the first packet, check if we need to coalesce with pending Initial
         if (first_packet and conn.pending_initial_packet != null) {
             const initial_pkt = conn.pending_initial_packet.?;
-            defer {
-                ctx.allocator.free(initial_pkt);
-                conn.pending_initial_packet = null;
-            }
 
             // RFC 9000 §12.2: Initial and Handshake packets MUST be coalesced
             var coalesced_buf: [4096]u8 = undefined;
@@ -1212,14 +1223,15 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
             logger.debugPrint("sendHandshakePackets: Sending coalesced packet (Initial {} + Handshake {} = {} bytes)\n", .{ initial_pkt.len, pkt.len, coalesced_len });
 
             // Send the coalesced packet
-            const bytes_sent = ctx.send_fn(ctx.peer, coalesced_buf[0..coalesced_len]) catch |err| {
-                logger.debugPrint("sendHandshakePackets: send_fn FAILED with error: {}\n", .{err});
-                return error.SendFailed;
-            };
-            logger.debugPrint("sendHandshakePackets: send_fn returned {} bytes sent\n", .{bytes_sent});
+            try sendDatagramFull(ctx, coalesced_buf[0..coalesced_len]);
+            conn.onPacketSent(.Initial, conn.pn_initial_tx, initial_pkt.len, true);
+            conn.pn_initial_tx +%= 1;
+            ctx.allocator.free(initial_pkt);
+            conn.pending_initial_packet = null;
+            logger.debugPrint("sendHandshakePackets: send_fn returned {} bytes sent\n", .{coalesced_len});
         } else {
             // Send Handshake packet alone (not first or no Initial to coalesce)
-            _ = ctx.send_fn(ctx.peer, pkt) catch return error.SendFailed;
+            try sendDatagramFull(ctx, pkt);
         }
 
         conn.onPacketSent(.Handshake, conn.pn_handshake_tx, pkt.len, true);
@@ -1233,13 +1245,17 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
     // Save retransmit buffer
     if (conn.crypto_retx_handshake) |old_buf| ctx.allocator.free(old_buf);
     const owned = ctx.allocator.alloc(u8, n) catch {
-        conn.crypto_tx_off_handshake += n;
         return error.AllocFailed;
     };
     @memcpy(owned[0..n], pending_data[0..n]);
     conn.crypto_retx_handshake = owned;
     conn.crypto_retx_handshake_off = base_off;
     conn.crypto_tx_off_handshake += n;
+
+    if (conn.pending_hs_messages) |buffered| {
+        ctx.allocator.free(buffered);
+        conn.pending_hs_messages = null;
+    }
 }
 
 /// Send HANDSHAKE_DONE frame (server-only, RFC 9000 §4.1.2).
@@ -1301,7 +1317,7 @@ pub fn sendHandshakeDone(ctx: *HandshakeContext) !void {
     ) catch return error.PacketEncodeFailed;
 
     const pkt = packet_storage[0..pkt_len];
-    _ = ctx.send_fn(ctx.peer, pkt) catch return error.SendFailed;
+    try sendDatagramFull(ctx, pkt);
 
     conn.onShortHeaderPacketSent(pkt.len, true);
 

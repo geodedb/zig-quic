@@ -44,6 +44,12 @@ pub const PtoContext = struct {
     /// Peer socket address
     peer: conn_mod.SockAddr,
 };
+
+// CANARY: REQ=REQ-QUIC-HC-081; FEATURE="QUIC High-Concurrency Requests"; ASPECT=HandshakeSendAccounting; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27
+fn sendPtoDatagramFull(ctx: *PtoContext, data: []const u8) !void {
+    const sent = try ctx.send_fn(ctx.send_ctx, ctx.peer, data);
+    if (sent != data.len) return error.ShortWrite;
+}
 // =============================================================================
 // Module Status and Documentation
 // =============================================================================
@@ -236,7 +242,7 @@ pub fn sendPtoProbe(ctx: *PtoContext, kind: types.TimerKind) !void {
             defer ctx.allocator.free(pkt);
 
             // Send probe packet
-            _ = try ctx.send_fn(ctx.send_ctx, ctx.peer, pkt);
+            try sendPtoDatagramFull(ctx, pkt);
 
             // Update congestion control state
             // RFC 9002 §6.2.4: "A sender MAY send one or two packets when the PTO fires."
@@ -269,7 +275,7 @@ pub fn sendPtoProbe(ctx: *PtoContext, kind: types.TimerKind) !void {
             defer ctx.allocator.free(pkt);
 
             // Send probe packet
-            _ = try ctx.send_fn(ctx.send_ctx, ctx.peer, pkt);
+            try sendPtoDatagramFull(ctx, pkt);
 
             // Update congestion control state
             conn.onPacketSent(.Handshake, conn.pn_handshake_tx, pkt.len, true);

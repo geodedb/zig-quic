@@ -182,6 +182,23 @@ test "onPacketSent does not increase bytes_in_flight for non-ACK-eliciting" {
     try testing.expectEqual(@as(usize, 0), rec.cc.bytes_in_flight);
 }
 
+test "onPacketSent and PTO deadline saturate high counters" {
+    var rec = recovery.Recovery.init(testing.allocator);
+    defer rec.deinit();
+
+    try rec.onPacketSent(.Application, 1, std.math.maxInt(usize) - 4, true, std.math.maxInt(u64) - 32);
+    try rec.onPacketSent(.Application, 2, 16, true, std.math.maxInt(u64) - 16);
+    try testing.expectEqual(std.math.maxInt(usize), rec.bytesInFlightSnapshot());
+
+    const pto_opt = rec.computeNextPtoTimeNs(std.math.maxInt(u64) - 1);
+    try testing.expect(pto_opt != null);
+    try testing.expectEqual(std.math.maxInt(u64), pto_opt.?);
+
+    const app_pto_opt = rec.computeSpacePtoTimeNs(.Application, std.math.maxInt(u64) - 1);
+    try testing.expect(app_pto_opt != null);
+    try testing.expectEqual(std.math.maxInt(u64), app_pto_opt.?);
+}
+
 test "onPacketSent tracks multiple packets across spaces" {
     var rec = recovery.Recovery.init(testing.allocator);
     defer rec.deinit();

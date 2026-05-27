@@ -94,6 +94,14 @@ test "RFC 9002 §6.1.1 - isPacketThresholdLost with pn close to largest_acked" {
     try testing.expect(!ld.isPacketThresholdLost(largest_acked, pn));
 }
 
+test "RFC 9002 §6.1.1 - isPacketThresholdLost does not underflow when pn is greater" {
+    const ld: LossDetector = .{ .packet_threshold = 3 };
+
+    try testing.expect(!ld.isPacketThresholdLost(0, std.math.maxInt(u64)));
+    try testing.expect(!ld.isPacketThresholdLost(2, 5));
+    try testing.expect(ld.isPacketThresholdLost(5, 2));
+}
+
 test "RFC 9002 §6.1.1 - isPacketThresholdLost with custom threshold" {
     const ld: LossDetector = .{ .packet_threshold = 5 };
     const largest_acked: u64 = 20;

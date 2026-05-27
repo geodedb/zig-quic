@@ -9,6 +9,16 @@ pub const SendInitialProbeFn = *const fn (conn: *conn_mod.Connection) anyerror!v
 pub const SetupSenderFn = *const fn (conn: *conn_mod.Connection) void;
 pub const MarkPendingHsSendFn = *const fn (conn: *conn_mod.Connection) void;
 
+// CANARY: REQ=REQ-QUIC-HC-097; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ShortHeaderPhaseTiming; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27
+pub const ShortHeaderTimingStats = struct {
+    endpoint_map_ns: u64 = 0,
+    rx_serial_wait_ns: u64 = 0,
+    conn_lock_wait_ns: u64 = 0,
+    decrypt_ns: u64 = 0,
+    frame_process_ns: u64 = 0,
+    ack_send_ns: u64 = 0,
+};
+
 pub const RxContext = struct {
     allocator: *std.mem.Allocator,
     conns: *std.AutoHashMap(endpoint_types.Key, *conn_mod.Connection),
@@ -24,6 +34,7 @@ pub const RxContext = struct {
     endpoint_ctx: ?*anyopaque = null,
     generated_token_secret: *const [32]u8 = undefined,
     max_connections: usize = 10000,
+    short_header_timing: ?*ShortHeaderTimingStats = null,
     // Server-side 0-RTT anti-replay cache (RFC 8446 S8, RFC 9001 S9.2).
     // Shared across all server connections on this endpoint.
     // Null when anti-replay is disabled or endpoint is a client.

@@ -35,12 +35,39 @@ pub const NewReno = congestion.NewReno;
 pub const Cubic = congestion.Cubic;
 pub const computePacingDelayNs = congestion.computePacingDelayNs;
 
+fn deadlineAfter(now_ns: u64, delta_ns: u64) u64 {
+    return std.math.add(u64, now_ns, delta_ns) catch std.math.maxInt(u64);
+}
+
+fn mulSaturating(a: u64, b: u64) u64 {
+    return std.math.mul(u64, a, b) catch std.math.maxInt(u64);
+}
+
+fn addSaturatingUsize(a: usize, b: usize) usize {
+    return std.math.add(usize, a, b) catch std.math.maxInt(usize);
+}
+
+fn mulSaturatingUsize(a: usize, b: usize) usize {
+    return std.math.mul(usize, a, b) catch std.math.maxInt(usize);
+}
+
+fn elapsedSince(now_ns: u64, then_ns: u64) u64 {
+    return if (now_ns >= then_ns) now_ns - then_ns else 0;
+}
+
 /// Hard cap on sent_packets entries per space. If exceeded after compaction,
 /// the oldest (lowest-index) entries are dropped to stay within budget.
 ///
 /// Ring buffer migration is a future optimization; the current bounded
 /// ArrayList with compaction is functionally correct.
 const max_sent_packets: usize = 4096;
+// CANARY: REQ=REQ-QUIC-HC-095; FEATURE="QUIC High-Concurrency Requests"; ASPECT=AckRecoveryParallelThreshold; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27
+// ACK processing runs on the endpoint receive path. Fork/join parallel loss
+// detection at 64 packets made normal high-fanout short-header ACK bursts pay
+// thread-pool scheduling overhead while stream readers were waiting for poll
+// wakeups. Keep recovery sequential until the outstanding set is large enough
+// to amortize dispatch.
+const loss_detect_parallel_threshold: usize = 1024;
 
 // Internal space state tracking
 const SpaceState = struct {
@@ -250,7 +277,7 @@ pub const Recovery = struct {
         }
 
         const old_inflight = self.cc.bytes_in_flight;
-        if (ack_eliciting) self.cc.bytes_in_flight += bytes;
+        if (ack_eliciting) self.cc.bytes_in_flight = addSaturatingUsize(self.cc.bytes_in_flight, bytes);
 
         // PHASE 50: Always log to see if function is called
         logger.debugPrint("[PHASE50-CC] onPacketSent: space={s} pn={d} bytes={d} ack_eliciting={} inflight: {d}→{d} cwnd={d}\n", .{
@@ -266,7 +293,7 @@ pub const Recovery = struct {
         // Schedule time-threshold loss if we have an RTT sample; do not promote here.
         if (ack_eliciting and self.rtt.have_sample) {
             const tt_base = LossDetector.timeThresholdNs(self.rtt.smoothed_rtt_ns, self.rtt.latest_rtt_ns);
-            const deadline = now_ns + tt_base;
+            const deadline = deadlineAfter(now_ns, tt_base);
             const cur = self.spaces[idx].loss_time_ns;
             if (cur == null or deadline < cur.?) self.spaces[idx].loss_time_ns = deadline;
         }
@@ -309,7 +336,7 @@ pub const Recovery = struct {
                 const sp = &sstate.sent.items[sent_slot];
                 if (!sp.acked and !sp.declared_lost) {
                     sp.acked = true;
-                    bytes_acked += sp.size;
+                    bytes_acked = addSaturatingUsize(bytes_acked, sp.size);
                     if (sp.ack_eliciting) ack_eliciting_acked = true;
                     if (pn > largest_pn) {
                         largest_pn = pn;
@@ -338,7 +365,7 @@ pub const Recovery = struct {
 
         // Loss detection: parallel scan for large windows (PAR-005), sequential for small.
         //
-        // For 64+ unprocessed sent packets, use thread-pool fork/join to mark packets as
+        // For very large unprocessed sent-packet windows, use thread-pool fork/join to mark packets as
         // lost in parallel (parallel.parallelLossDetect). Then a sequential cleanup
         // pass handles sent_index removal and detailed per-loss statistics/logging.
         // Below threshold, the original merged single-pass is used.
@@ -357,7 +384,7 @@ pub const Recovery = struct {
             if (!sp.acked and !sp.declared_lost) unprocessed_count += 1;
         }
 
-        if (unprocessed_count >= 64 and sstate.largest_acked != null) {
+        if (unprocessed_count >= loss_detect_parallel_threshold and sstate.largest_acked != null) {
             // Parallel path: build SentPacketInfo array, run parallel scan, then cleanup
             var par_infos: [4096]parallel.SentPacketInfo = undefined;
             const count = @min(sstate.sent.items.len, par_infos.len);
@@ -387,7 +414,7 @@ pub const Recovery = struct {
                 if (!par_infos[i].declared_lost) {
                     // Not marked lost by parallel scan — check earliest_loss_time for timer
                     if (have_rtt and sp.ack_eliciting) {
-                        const deadline = sp.time_ns + tt_base;
+                        const deadline = deadlineAfter(sp.time_ns, tt_base);
                         if (now_ns < deadline) {
                             if (earliest_loss_time == null or deadline < earliest_loss_time.?) {
                                 earliest_loss_time = deadline;
@@ -403,7 +430,7 @@ pub const Recovery = struct {
 
                 sp.declared_lost = true;
                 _ = sstate.sent_index.remove(sp.pn);
-                bytes_lost += sp.size;
+                bytes_lost = addSaturatingUsize(bytes_lost, sp.size);
                 if (pkt_lost) pkt_threshold_lost_count += 1;
                 if (time_lost) time_threshold_lost_count += 1;
                 if (first_lost_time == null or sp.time_ns < first_lost_time.?) first_lost_time = sp.time_ns;
@@ -411,12 +438,12 @@ pub const Recovery = struct {
 
                 if (pkt_lost) {
                     logger.debugPrint("[P42-22-LOSS-PKT] space={s} pn={d} largest_acked={d} gap={d} threshold={d} bytes={d}\n", .{
-                        @tagName(space),                         sp.pn,                      sstate.largest_acked orelse 0,
-                        (sstate.largest_acked orelse 0) - sp.pn, self.loss.packet_threshold, sp.size,
+                        @tagName(space),                                                                              sp.pn,                      sstate.largest_acked orelse 0,
+                        if ((sstate.largest_acked orelse 0) >= sp.pn) (sstate.largest_acked orelse 0) - sp.pn else 0, self.loss.packet_threshold, sp.size,
                     });
                 }
                 if (time_lost) {
-                    const age_us = (now_ns - sp.time_ns) / 1000;
+                    const age_us = elapsedSince(now_ns, sp.time_ns) / 1000;
                     logger.debugPrint("[P42-22-LOSS-TIME] space={s} pn={d} age={d}us threshold={d}us bytes={d}\n", .{
                         @tagName(space), sp.pn, age_us, tt_base / 1000, sp.size,
                     });
@@ -431,7 +458,7 @@ pub const Recovery = struct {
 
                 var time_lost = false;
                 if (have_rtt and sp.ack_eliciting) {
-                    const deadline = sp.time_ns + tt_base;
+                    const deadline = deadlineAfter(sp.time_ns, tt_base);
                     if (now_ns >= deadline) {
                         time_lost = true;
                     } else if (earliest_loss_time == null or deadline < earliest_loss_time.?) {
@@ -442,7 +469,7 @@ pub const Recovery = struct {
                 if (pkt_lost or time_lost) {
                     sp.declared_lost = true;
                     _ = sstate.sent_index.remove(sp.pn);
-                    bytes_lost += sp.size;
+                    bytes_lost = addSaturatingUsize(bytes_lost, sp.size);
                     if (pkt_lost) pkt_threshold_lost_count += 1;
                     if (time_lost) time_threshold_lost_count += 1;
                     if (first_lost_time == null or sp.time_ns < first_lost_time.?) first_lost_time = sp.time_ns;
@@ -450,12 +477,12 @@ pub const Recovery = struct {
 
                     if (pkt_lost) {
                         logger.debugPrint("[P42-22-LOSS-PKT] space={s} pn={d} largest_acked={d} gap={d} threshold={d} bytes={d}\n", .{
-                            @tagName(space),                         sp.pn,                      sstate.largest_acked orelse 0,
-                            (sstate.largest_acked orelse 0) - sp.pn, self.loss.packet_threshold, sp.size,
+                            @tagName(space),                                                                              sp.pn,                      sstate.largest_acked orelse 0,
+                            if ((sstate.largest_acked orelse 0) >= sp.pn) (sstate.largest_acked orelse 0) - sp.pn else 0, self.loss.packet_threshold, sp.size,
                         });
                     }
                     if (time_lost) {
-                        const age_us = (now_ns - sp.time_ns) / 1000;
+                        const age_us = elapsedSince(now_ns, sp.time_ns) / 1000;
                         logger.debugPrint("[P42-22-LOSS-TIME] space={s} pn={d} age={d}us threshold={d}us bytes={d}\n", .{
                             @tagName(space), sp.pn, age_us, tt_base / 1000, sp.size,
                         });
@@ -496,9 +523,9 @@ pub const Recovery = struct {
             self.ccOnLoss(bytes_lost, last_lost_time, now_ns);
             if (first_lost_time != null and last_lost_time != null) {
                 const pto_base = self.rtt.computePtoNsWithBackoff(0, self.timer_granularity_ns);
-                const pc_period = pto_base * self.k_pc_threshold;
-                if (last_lost_time.? - first_lost_time.? >= pc_period) {
-                    const min_window: usize = 2 * self.cc.mds;
+                const pc_period = mulSaturating(pto_base, @intCast(self.k_pc_threshold));
+                if (elapsedSince(last_lost_time.?, first_lost_time.?) >= pc_period) {
+                    const min_window: usize = mulSaturatingUsize(2, self.cc.mds);
                     self.cc.cwnd = min_window;
                     self.cc.ssthresh = min_window;
                 }
@@ -520,7 +547,7 @@ pub const Recovery = struct {
 
         if (self.cc.cwnd < self.cc.ssthresh) {
             // Slow start: cwnd grows by bytes_acked (same for both NewReno and CUBIC)
-            self.cc.cwnd += bytes_acked;
+            self.cc.cwnd = addSaturatingUsize(self.cc.cwnd, bytes_acked);
         } else if (self.use_cubic) {
             // CUBIC congestion avoidance (RFC 8312)
             const mds = self.cc.mds;
@@ -554,15 +581,15 @@ pub const Recovery = struct {
                 self.cc.cwnd = target;
             } else {
                 // Minimal growth: at least NewReno-equivalent
-                const inc = (mds * bytes_acked) / @max(self.cc.cwnd, @as(usize, 1));
+                const inc = mulSaturatingUsize(mds, bytes_acked) / @max(self.cc.cwnd, @as(usize, 1));
                 if (inc > 0) {
-                    self.cc.cwnd += inc;
+                    self.cc.cwnd = addSaturatingUsize(self.cc.cwnd, inc);
                 }
             }
         } else {
             // NewReno congestion avoidance: cwnd += mds * bytes_acked / cwnd
-            const inc = (self.cc.mds * bytes_acked) / @max(self.cc.cwnd, @as(usize, 1));
-            self.cc.cwnd += inc;
+            const inc = mulSaturatingUsize(self.cc.mds, bytes_acked) / @max(self.cc.cwnd, @as(usize, 1));
+            self.cc.cwnd = addSaturatingUsize(self.cc.cwnd, inc);
         }
 
         // Enhanced CC logging
@@ -606,12 +633,12 @@ pub const Recovery = struct {
         self.congestion_recovery_start_time = now_ns;
 
         const old_cwnd = self.cc.cwnd;
-        const min_wnd: usize = 2 * self.cc.mds;
+        const min_wnd: usize = mulSaturatingUsize(2, self.cc.mds);
 
         if (self.use_cubic) {
             // CUBIC: save W_max and apply beta=0.7
             self.cubic_w_max = self.cc.cwnd;
-            self.cc.cwnd = @max(self.cc.cwnd * 7 / 10, min_wnd);
+            self.cc.cwnd = @max(mulSaturatingUsize(self.cc.cwnd, 7) / 10, min_wnd);
             self.cc.ssthresh = self.cc.cwnd;
             // Reset epoch for next CUBIC curve
             self.cubic_epoch_start_ns = null;
@@ -637,11 +664,11 @@ pub const Recovery = struct {
 
     /// React to ECN-CE by reducing cwnd like a loss event (without changing bytes_in_flight).
     fn ccOnEcn(self: *Recovery) void {
-        const min_wnd: usize = 2 * self.cc.mds;
+        const min_wnd: usize = mulSaturatingUsize(2, self.cc.mds);
         if (self.use_cubic) {
             // CUBIC: save W_max and apply beta=0.7
             self.cubic_w_max = self.cc.cwnd;
-            self.cc.cwnd = @max(self.cc.cwnd * 7 / 10, min_wnd);
+            self.cc.cwnd = @max(mulSaturatingUsize(self.cc.cwnd, 7) / 10, min_wnd);
             self.cc.ssthresh = self.cc.cwnd;
             self.cubic_epoch_start_ns = null;
             self.cubic_k = 0.0;
@@ -668,11 +695,11 @@ pub const Recovery = struct {
                     var next_loss: ?u64 = null;
                     for (sstate.sent.items) |*sp| {
                         if (!sp.acked and !sp.declared_lost and sp.ack_eliciting) {
-                            const deadline = sp.time_ns + tt_base;
+                            const deadline = deadlineAfter(sp.time_ns, tt_base);
                             if (now_ns >= deadline) {
                                 sp.declared_lost = true;
                                 _ = sstate.sent_index.remove(sp.pn);
-                                total_lost += sp.size;
+                                total_lost = addSaturatingUsize(total_lost, sp.size);
                                 if (first_lost_time == null or sp.time_ns < first_lost_time.?) first_lost_time = sp.time_ns;
                                 if (last_lost_time == null or sp.time_ns > last_lost_time.?) last_lost_time = sp.time_ns;
                             } else if (next_loss == null or deadline < next_loss.?) {
@@ -690,9 +717,9 @@ pub const Recovery = struct {
             self.ccOnLoss(total_lost, last_lost_time, now_ns);
             if (first_lost_time != null and last_lost_time != null) {
                 const pto_base = self.rtt.computePtoNsWithBackoff(0, self.timer_granularity_ns);
-                const pc_period = pto_base * self.k_pc_threshold;
-                if (last_lost_time.? - first_lost_time.? >= pc_period) {
-                    const min_window: usize = 2 * self.cc.mds;
+                const pc_period = mulSaturating(pto_base, @intCast(self.k_pc_threshold));
+                if (elapsedSince(last_lost_time.?, first_lost_time.?) >= pc_period) {
+                    const min_window: usize = mulSaturatingUsize(2, self.cc.mds);
                     self.cc.cwnd = min_window;
                     self.cc.ssthresh = min_window;
                 }
@@ -716,7 +743,7 @@ pub const Recovery = struct {
         }
         if (!any_in_flight) return null;
         const base = self.rtt.computePtoNsWithBackoff(self.pto_count, self.timer_granularity_ns);
-        const deadline = now_ns + base;
+        const deadline = deadlineAfter(now_ns, base);
 
         // PHASE 42 PART 22: Log PTO calculation
         logger.debugPrint("[P42-22-PTO-CALC] ⏰ pto_count={d} base={d}us deadline_from_now={d}us smoothed_rtt={d}us\n", .{
@@ -746,7 +773,7 @@ pub const Recovery = struct {
             return null;
         }
         const pto = self.rtt.computePtoNsWithBackoff(self.pto_count, self.timer_granularity_ns);
-        const deadline = now_ns + pto;
+        const deadline = deadlineAfter(now_ns, pto);
         const cur = self.spaces[idx].loss_time_ns;
         if (cur == null or deadline < cur.?) self.spaces[idx].loss_time_ns = deadline;
         return deadline;
@@ -817,6 +844,16 @@ pub const Recovery = struct {
         self.cc.mds = mds;
     }
 
+    pub fn setInitialCongestionWindowPackets(self: *Recovery, packets: u16) void {
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
+        defer self.refreshAtomicMirrors();
+        // CANARY: REQ=REQ-QUIC-HC-088; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ConfigurableInitialCwnd; STATUS=IMPL; TEST=test_quic_condition_timedwait_cadence; OWNER=transport; UPDATED=2026-05-27
+        const clamped_packets: usize = @max(@as(usize, packets), 2);
+        self.cc.cwnd = mulSaturatingUsize(self.cc.mds, clamped_packets);
+        self.cc.ssthresh = std.math.maxInt(usize) / 2;
+    }
+
     /// Get bytes in flight and cwnd atomically (thread-safe).
     pub fn getCongestionState(self: *Recovery) struct { bytes_in_flight: usize, cwnd: usize } {
         self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
@@ -875,4 +912,23 @@ test "recovery: mds snapshot updates via setMds" {
 
     rec.setMds(1452);
     try std.testing.expectEqual(@as(usize, 1452), rec.mdsSnapshot());
+}
+
+test "recovery: high packet counters saturate instead of overflowing" {
+    var rec = Recovery.init(std.testing.allocator);
+    defer rec.deinit();
+
+    try rec.onPacketSent(.Application, 1, std.math.maxInt(usize) - 4, true, std.math.maxInt(u64) - 32);
+    try rec.onPacketSent(.Application, 2, 16, true, std.math.maxInt(u64) - 16);
+    try std.testing.expectEqual(std.math.maxInt(usize), rec.bytesInFlightSnapshot());
+
+    const pto_opt = rec.computeNextPtoTimeNs(std.math.maxInt(u64) - 1);
+    try std.testing.expect(pto_opt != null);
+    const pto = pto_opt.?;
+    try std.testing.expectEqual(std.math.maxInt(u64), pto);
+
+    const app_pto_opt = rec.computeSpacePtoTimeNs(.Application, std.math.maxInt(u64) - 1);
+    try std.testing.expect(app_pto_opt != null);
+    const app_pto = app_pto_opt.?;
+    try std.testing.expectEqual(std.math.maxInt(u64), app_pto);
 }

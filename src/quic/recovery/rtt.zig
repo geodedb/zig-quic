@@ -8,6 +8,14 @@
 
 const std = @import("std");
 
+fn addSaturating(a: u64, b: u64) u64 {
+    return std.math.add(u64, a, b) catch std.math.maxInt(u64);
+}
+
+fn mulSaturating(a: u64, b: u64) u64 {
+    return std.math.mul(u64, a, b) catch std.math.maxInt(u64);
+}
+
 /// Round-trip time estimator state and PTO computation helpers (RFC 9002 §5-6).
 pub const RttState = struct {
     // All values are in nanoseconds for monotonic arithmetic
@@ -44,15 +52,16 @@ pub const RttState = struct {
         };
         self.latest_rtt_ns = adjusted;
         const abs_err = if (self.smoothed_rtt_ns > adjusted) self.smoothed_rtt_ns - adjusted else adjusted - self.smoothed_rtt_ns;
-        self.rttvar_ns = ((self.rttvar_ns * 3) / 4) + (abs_err / 4);
-        self.smoothed_rtt_ns = ((self.smoothed_rtt_ns * 7) / 8) + (adjusted / 8);
+        self.rttvar_ns = addSaturating(mulSaturating(self.rttvar_ns, 3) / 4, abs_err / 4);
+        self.smoothed_rtt_ns = addSaturating(mulSaturating(self.smoothed_rtt_ns, 7) / 8, adjusted / 8);
     }
 
     /// PTO = smoothed + 4*rttvar + max_ack_delay
     /// RFC 9002 §6.2.1: Computing PTO
     pub fn computePtoNs(self: *const RttState) u64 {
         // PTO = smoothed + 4*rttvar + max_ack_delay
-        return self.smoothed_rtt_ns + (self.rttvar_ns * 4) + self.max_ack_delay_ns;
+        const variance_ns = mulSaturating(self.rttvar_ns, 4);
+        return addSaturating(addSaturating(self.smoothed_rtt_ns, variance_ns), self.max_ack_delay_ns);
     }
 
     /// Compute PTO with exponential backoff and timer granularity.
@@ -68,3 +77,19 @@ pub const RttState = struct {
         return plus << shift;
     }
 };
+
+test "rtt pto arithmetic saturates instead of overflowing" {
+    var rtt = RttState{
+        .have_sample = true,
+        .min_rtt_ns = 1,
+        .latest_rtt_ns = 1,
+        .smoothed_rtt_ns = std.math.maxInt(u64) - 1,
+        .rttvar_ns = std.math.maxInt(u64),
+        .max_ack_delay_ns = std.math.maxInt(u64),
+    };
+
+    try std.testing.expectEqual(std.math.maxInt(u64), rtt.computePtoNs());
+    rtt.onAck(std.math.maxInt(u64) - 4, 0);
+    try std.testing.expect(rtt.smoothed_rtt_ns <= std.math.maxInt(u64));
+    try std.testing.expect(rtt.rttvar_ns <= std.math.maxInt(u64));
+}

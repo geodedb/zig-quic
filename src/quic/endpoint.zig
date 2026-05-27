@@ -70,9 +70,36 @@ const builtin = @import("builtin");
 // Do not let one endpoint poll call drain an unbounded UDP burst before
 // returning to Geode's poll wrapper. The wrapper wakes parked stream readers
 // after every pollWithStats() return; without this budget a high fan-out HELLO
-// storm can keep the I/O thread inside Phase 4 for seconds while handlers wait
-// on already-arrived stream data.
-const max_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap * 16;
+// storm can keep the I/O thread inside Phase 4 while handlers wait on
+// already-arrived stream data. Keep the cap intentionally small: in 512-way
+// fanout, a 16-batch cap produced 300ms+ poll cycles and delayed first-stream
+// wakeups long enough for client-side request timeouts.
+const max_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap * 2;
+
+// CANARY: REQ=REQ-QUIC-HC-059; FEATURE="QUIC High-Concurrency Requests"; ASPECT=LongHeaderPollBudget; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
+// Long-header Initial packets create new TLS state and are the slowest packet
+// class in a fan-in storm. Cap *new Initial* processing at the same bounded
+// packet-cycle budget as the rest of receive processing. The Initial and
+// Handshake paths now split endpoint-map admission from per-connection crypto,
+// so keeping the full cycle avoids forcing the connection-tail into PTO backoff
+// while still returning to the embedding poll wrapper at a predictable cadence.
+const max_initial_packets_per_poll_cycle: usize = max_packets_per_poll_cycle;
+
+// CANARY: REQ=REQ-QUIC-HC-058; FEATURE="QUIC High-Concurrency Requests"; ASPECT=PendingHandshakeRetryBudget; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
+// Retry deferred server Handshake flights in bounded batches. Under 128+
+// simultaneous clients, one poll tick can accumulate every connection in
+// pending_hs_send_set; retrying all of them before returning to Geode's poll
+// wrapper creates multi-second poll cycles and strands already-readable stream
+// data. Keep this aligned with the UDP batch size so handshake catch-up remains
+// progressive without monopolizing the poll loop.
+const max_pending_hs_send_retries_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap;
+
+// CANARY: REQ=REQ-QUIC-HC-090; FEATURE="QUIC High-Concurrency Requests"; ASPECT=PtoDirtyPollBudget; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27
+// ACK processing can mark hundreds of active connections PTO-dirty at once.
+// Recomputing every dirty connection in a single endpoint poll call creates
+// multi-hundred-ms poll cycles that delay RX delivery for unrelated streams.
+// Keep the dirty set as the durable queue and drain a bounded slice per tick.
+const max_pto_dirty_recomputes_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap * 2;
 
 // Endpoint (RFC-9000):  An entity that can participate in a QUIC connection by
 //       generating, receiving, and processing QUIC packets.  There are
@@ -104,6 +131,12 @@ fn nowNsMonotonic() i128 {
     const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
     if (rc != 0) return 0;
     return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+}
+
+fn elapsedNsSince(start_ns: i128) u64 {
+    const end_ns = nowNsMonotonic();
+    if (end_ns <= start_ns) return 0;
+    return @intCast(end_ns - start_ns);
 }
 
 fn nowMsMonotonic() i64 {
@@ -271,6 +304,23 @@ fn timerRemoveAtIndexed(
 /// Observability for poll loops (number of datagrams drained per iteration).
 pub const PollStats = struct {
     packets_processed: usize = 0,
+    // CANARY: REQ=REQ-QUIC-HC-092; FEATURE="QUIC High-Concurrency Requests"; ASPECT=PollPhaseTiming; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27
+    transport_poll_ns: u64 = 0,
+    recv_process_ns: u64 = 0,
+    // CANARY: REQ=REQ-QUIC-HC-094; FEATURE="QUIC High-Concurrency Requests"; ASPECT=RecvKindTiming; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27
+    recv_short_header_ns: u64 = 0,
+    recv_initial_ns: u64 = 0,
+    recv_handshake_ns: u64 = 0,
+    recv_fallback_ns: u64 = 0,
+    recv_short_endpoint_map_ns: u64 = 0,
+    recv_short_rx_serial_wait_ns: u64 = 0,
+    recv_short_conn_lock_wait_ns: u64 = 0,
+    recv_short_decrypt_ns: u64 = 0,
+    recv_short_frame_process_ns: u64 = 0,
+    recv_short_ack_send_ns: u64 = 0,
+    pending_hs_send_ns: u64 = 0,
+    timer_process_ns: u64 = 0,
+    pto_dirty_ns: u64 = 0,
 };
 
 /// Hash key combining peer address + destination CID for connection lookup.
@@ -279,10 +329,90 @@ pub const PollStats = struct {
 /// this composite hash so multipath/path validation still find the right entry.
 pub const Key = ep_types.Key;
 
+const short_header_route_cache_slots: usize = 4096;
+
+const ShortHeaderRouteCacheSlot = struct {
+    mu: std.Io.Mutex = std.Io.Mutex.init,
+    peer_hash: u64 = 0,
+    dcid_hash: u64 = 0,
+    dcid_len: u8 = 0,
+    conn: ?*conn_mod.Connection = null,
+};
+
+const CachedShortHeaderRoute = struct {
+    conn: *conn_mod.Connection,
+    lookup_result: lookup.LookupResult,
+};
+
 // Note: Utility functions moved to utils module
 // Kept as inline wrappers for backward compatibility
 inline fn hashBytes(b: []const u8) u64 {
     return utils.hashBytes(b);
+}
+
+inline fn routeCacheIndex(peer_hash: u64, dcid_hash: u64, slot_count: usize) usize {
+    const mixed = peer_hash ^ (dcid_hash *% 0x9E37_79B9_7F4A_7C15);
+    return @intCast(mixed & @as(u64, @intCast(slot_count - 1)));
+}
+
+fn envFlag(name: [*:0]const u8) bool {
+    const raw = std.c.getenv(name) orelse return false;
+    const value = std.mem.span(raw);
+    if (value.len == 0) return false;
+    if (std.mem.eql(u8, value, "0")) return false;
+    if (std.ascii.eqlIgnoreCase(value, "false")) return false;
+    if (std.ascii.eqlIgnoreCase(value, "no")) return false;
+    if (std.ascii.eqlIgnoreCase(value, "off")) return false;
+    return true;
+}
+
+fn classifyLongHeaderPacket(bytes: []const u8) ?packet.LongHeaderPacketType {
+    if (bytes.len < 5 or (bytes[0] & 0x80) == 0) return null;
+    const version: u32 = (@as(u32, bytes[1]) << 24) |
+        (@as(u32, bytes[2]) << 16) |
+        (@as(u32, bytes[3]) << 8) |
+        @as(u32, bytes[4]);
+    if (version == 0) return null;
+    return packet.longHeaderPacketType(version, bytes[0]);
+}
+
+fn parseLongHeaderVersion(bytes: []const u8) ?u32 {
+    if (bytes.len < 5 or (bytes[0] & 0x80) == 0) return null;
+    return (@as(u32, bytes[1]) << 24) |
+        (@as(u32, bytes[2]) << 16) |
+        (@as(u32, bytes[3]) << 8) |
+        @as(u32, bytes[4]);
+}
+
+fn longHeaderPacketLength(bytes: []const u8, version: u32) ?usize {
+    if (bytes.len < 7 or version == 0) return null;
+    const first = bytes[0];
+    if (packet.longHeaderPacketType(version, first) == .Retry) return null;
+
+    const dcid_len: usize = bytes[5];
+    if (dcid_len > 20) return null;
+    if (bytes.len < 6 + dcid_len + 1) return null;
+
+    const scid_len: usize = bytes[6 + dcid_len];
+    if (scid_len > 20) return null;
+    if (bytes.len < 7 + dcid_len + scid_len) return null;
+
+    var offset: usize = 7 + dcid_len + scid_len;
+    if (packet.longHeaderPacketType(version, first) == .Initial) {
+        if (bytes.len <= offset) return null;
+        const token_len = varint.decode(bytes[offset..]) catch return null;
+        offset += token_len.n;
+        const token_len_usize: usize = @intCast(token_len.value);
+        if (bytes.len < offset + token_len_usize) return null;
+        offset += token_len_usize;
+    }
+
+    if (bytes.len <= offset) return null;
+    const len_result = varint.decode(bytes[offset..]) catch return null;
+    offset += len_result.n;
+    const total_len = offset + @as(usize, @intCast(len_result.value));
+    if (total_len > bytes.len) return null;
+    return total_len;
 }
 
 inline fn normalizeAddr(sa: *const posix.sockaddr.storage, len: u32) conn_mod.SockAddr {
@@ -337,6 +467,16 @@ pub const Endpoint = struct {
 
     // Connection Management Map (protected by mu)
     conns: std.AutoHashMap(Key, *conn_mod.Connection),
+    // CANARY: REQ=REQ-QUIC-HC-098; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ShortHeaderRouteCache; STATUS=IMPL; TEST=test-quic-high-concurrency-e2e; OWNER=transport; UPDATED=2026-05-27
+    //
+    // Established 1-RTT packets dominate high-fanout workloads. Cache resolved
+    // peer+DCID routes behind sharded slot locks so steady-state short-header
+    // receive paths do not all serialize on the endpoint connection-map mutex.
+    short_header_route_cache: []ShortHeaderRouteCacheSlot,
+    // Detailed short-header subphase timings are diagnostic-only. Keep them
+    // opt-in so high-throughput ReleaseSafe runs do not pay multiple
+    // clock_gettime calls per packet.
+    short_header_timing_enabled: bool = false,
 
     // PTO-dirty tracking (#182 closure). `pto_dirty_count` is an atomic
     // counter incremented on every false→true transition of `Connection.pto_dirty`;
@@ -445,6 +585,10 @@ pub const Endpoint = struct {
             alloc.destroy(c);
         };
 
+        const short_route_cache = try alloc.alloc(ShortHeaderRouteCacheSlot, short_header_route_cache_slots);
+        errdefer alloc.free(short_route_cache);
+        for (short_route_cache) |*slot| slot.* = .{};
+
         return Endpoint{
             .transport = transport,
             .owned_udp_transport = udp,
@@ -453,6 +597,8 @@ pub const Endpoint = struct {
             .timers = .empty,
             .timer_index = std.AutoHashMap(u64, usize).init(alloc),
             .conns = std.AutoHashMap(Key, *conn_mod.Connection).init(alloc),
+            .short_header_route_cache = short_route_cache,
+            .short_header_timing_enabled = envFlag("GEODE_QUIC_SHORT_HEADER_TIMING"),
             .pto_dirty_set = std.AutoHashMap(*conn_mod.Connection, void).init(alloc),
             .pending_hs_send_set = std.AutoHashMap(*conn_mod.Connection, void).init(alloc),
             .closed_conn_set = std.AutoHashMap(*conn_mod.Connection, void).init(alloc),
@@ -496,6 +642,10 @@ pub const Endpoint = struct {
             alloc.destroy(c);
         };
 
+        const short_route_cache = try alloc.alloc(ShortHeaderRouteCacheSlot, short_header_route_cache_slots);
+        errdefer alloc.free(short_route_cache);
+        for (short_route_cache) |*slot| slot.* = .{};
+
         return Endpoint{
             .transport = transport,
             .loop_backend = lb.defaultLoopBackend(),
@@ -503,6 +653,8 @@ pub const Endpoint = struct {
             .timers = .empty,
             .timer_index = std.AutoHashMap(u64, usize).init(alloc.*),
             .conns = std.AutoHashMap(Key, *conn_mod.Connection).init(alloc.*),
+            .short_header_route_cache = short_route_cache,
+            .short_header_timing_enabled = envFlag("GEODE_QUIC_SHORT_HEADER_TIMING"),
             .pto_dirty_set = std.AutoHashMap(*conn_mod.Connection, void).init(alloc.*),
             .pending_hs_send_set = std.AutoHashMap(*conn_mod.Connection, void).init(alloc.*),
             .closed_conn_set = std.AutoHashMap(*conn_mod.Connection, void).init(alloc.*),
@@ -610,6 +762,7 @@ pub const Endpoint = struct {
             self.allocator.destroy(c);
         }
         self.retired.deinit(self.allocator);
+        self.allocator.free(self.short_header_route_cache);
         self.conns.deinit();
         self.pto_dirty_set.deinit();
         self.pending_hs_send_set.deinit();
@@ -769,6 +922,39 @@ pub const Endpoint = struct {
         return null;
     }
 
+    // CANARY: REQ=REQ-QUIC-HC-063; FEATURE="QUIC High-Concurrency Requests"; ASPECT=DeferredServerAccept; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
+    fn maybeQueueDeferredAccepted(self: *Endpoint, c: *conn_mod.Connection) void {
+        if (self.role != .Server or !self.cfg.defer_accept_until_stream) return;
+
+        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+
+        if (c.closed or c.role != .Server) return;
+
+        var should_queue = false;
+        c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        if (!c.accepted_enqueued and
+            c.app_rx_keys != null and
+            c.app_tx_keys != null and
+            c.incoming_stream_queue.items.len > 0)
+        {
+            c.accepted_enqueued = true;
+            should_queue = true;
+        }
+        c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+
+        if (!should_queue) return;
+
+        self.accepted.append(self.allocator, c) catch |err| {
+            c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            c.accepted_enqueued = false;
+            c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+            logger.debugPrint("[ENDPOINT] deferred accept append failed: {s}\n", .{@errorName(err)});
+            return;
+        };
+        self.accept_cv.signal(std.Io.Threaded.global_single_threaded.io());
+    }
+
     /// Inject inbound datagram into receive path (test helper, no ECN).
     pub fn testInject(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8) void {
         self.processIncomingDatagram(peer, bytes, null);
@@ -779,34 +965,18 @@ pub const Endpoint = struct {
         self.processIncomingDatagram(peer, bytes, ecn_bits);
     }
 
-    // CANARY: REQ=REQ-QUIC-HC-052; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ShortHeaderRxLifetimeGuard; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
-    fn processShortHeaderDatagramConcurrent(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8, ecn_bits: ?u8) void {
-        if (bytes.len == 0 or (bytes[0] & 0x80) != 0) return;
+    // CANARY: REQ=REQ-QUIC-HC-065; FEATURE="QUIC High-Concurrency Requests"; ASPECT=InitialAdmissionLockSplit; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
+    fn processInitialDatagramConcurrent(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8, version: u32) void {
+        if (bytes.len == 0 or (bytes[0] & 0x80) == 0) return;
 
         const norm_peer = normalizeAddr(&peer.storage, peer.len);
-        var lookup_result = lookup.LookupResult{
-            .conn = null,
-            .dcid_len = 0,
-            .nat_rebinding = false,
-        };
-
-        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
-
-        lookup_result = lookup.findConnectionByDcid(&self.conns, norm_peer, bytes, null);
-        if (lookup_result.conn) |c| {
-            if (lookup_result.nat_rebinding or !conn_mod.SockAddr.eq(&c.peer, &norm_peer)) {
-                const peer_h = hashSockaddr(&norm_peer.storage, norm_peer.len);
-                if (!self.onPathAddressChanged(c, norm_peer, peer_h, lookup_result.dcid_len)) {
-                    return;
-                }
-            }
-        } else {
-            return;
-        }
-        const conn = lookup_result.conn.?;
-        if (!conn.acquireEndpointRxRef()) return;
-        defer conn.releaseEndpointRxRef();
+        const header = incoming.parseInitialHeader(bytes) catch return;
+        var token_offset = header.offset;
+        const tok_len_dec = varint.decode(bytes[token_offset..]) catch return;
+        token_offset += tok_len_dec.n;
+        const tok_len_usize = @as(usize, @intCast(@min(tok_len_dec.value, bytes.len - token_offset)));
+        if (token_offset + tok_len_usize > bytes.len) return;
+        const token_bytes = bytes[token_offset .. token_offset + tok_len_usize];
 
         current_io_endpoint = self;
         defer current_io_endpoint = null;
@@ -857,7 +1027,305 @@ pub const Endpoint = struct {
             .anti_replay_cache = self.anti_replay_cache,
         };
 
+        const conn = blk: {
+            self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+
+            const prepared = incoming.prepareInitialConnection(&rx_ctx, norm_peer, header, token_bytes, version);
+            switch (prepared) {
+                .ready => |c| {
+                    if (!c.acquireEndpointRxRef()) return;
+                    break :blk c;
+                },
+                .consumed => return,
+            }
+        };
+        defer conn.releaseEndpointRxRef();
+
+        conn.endpoint_rx_serial_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer conn.endpoint_rx_serial_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+
+        incoming.processInitialResolved(&rx_ctx, norm_peer, bytes, version, header, token_bytes, conn);
+    }
+
+    // CANARY: REQ=REQ-QUIC-HC-066; FEATURE="QUIC High-Concurrency Requests"; ASPECT=HandshakeLockSplit; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
+    fn processHandshakeDatagramConcurrent(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8, version: u32, ecn_bits: ?u8) void {
+        if (bytes.len == 0 or (bytes[0] & 0x80) == 0) return;
+
+        const norm_peer = normalizeAddr(&peer.storage, peer.len);
+        const header = incoming.parseHandshakeHeader(bytes) catch return;
+
+        current_io_endpoint = self;
+        defer current_io_endpoint = null;
+
+        const role_converted = @as(ep_types.EndpointRole, @enumFromInt(@intFromEnum(self.role)));
+        var rx_ctx = incoming.RxContext{
+            .allocator = &self.allocator,
+            .conns = &self.conns,
+            .accepted = &self.accepted,
+            .cfg = &self.cfg,
+            .send_fn = struct {
+                fn send(peer_addr: conn_mod.SockAddr, data: []const u8) anyerror!usize {
+                    const ep = current_io_endpoint.?;
+                    return ep.sendTo(peer_addr, data);
+                }
+            }.send,
+            .schedule_timer_fn = struct {
+                fn schedule(conn_arg: *conn_mod.Connection, kind: ep_types.TimerKind, delay_ms: u32) anyerror!u64 {
+                    const ep = current_io_endpoint.?;
+                    return ep.scheduleConnPto(conn_arg, kind, delay_ms);
+                }
+            }.schedule,
+            .send_initial_probe_fn = struct {
+                fn probe(conn_arg: *conn_mod.Connection) anyerror!void {
+                    const ep = current_io_endpoint.?;
+                    return ep.clientSendInitialProbe(conn_arg);
+                }
+            }.probe,
+            .setup_sender_fn = struct {
+                fn setup(conn_arg: *conn_mod.Connection) void {
+                    const ep = current_io_endpoint.?;
+                    conn_arg.setSender(@ptrCast(ep), senderPaced);
+                    conn_arg.setPtoDirtyNotifier(@ptrCast(ep), notifyPtoDirty);
+                    conn_arg.setCloseNotifier(@ptrCast(ep), notifyConnectionClosed);
+                }
+            }.setup,
+            .mark_pending_hs_send_fn = struct {
+                fn mark(conn_arg: *conn_mod.Connection) void {
+                    const ep = current_io_endpoint.?;
+                    ep.markPendingHandshakeSend(conn_arg);
+                }
+            }.mark,
+            .test_capture_enabled = self.test_capture_enabled,
+            .endpoint_role = role_converted,
+            .endpoint_ctx = self,
+            .generated_token_secret = &self.generated_token_secret,
+            .max_connections = self.cfg.max_connections,
+            .anti_replay_cache = self.anti_replay_cache,
+        };
+
+        const conn = blk: {
+            self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+
+            const ph = hashSockaddr(&norm_peer.storage, norm_peer.len);
+            const key = Key{ .peer_hash = ph, .dcid_hash = hashBytes(header.dcid) };
+            var conn_opt: ?*conn_mod.Connection = null;
+            if (self.conns.getPtr(key)) |entry| {
+                conn_opt = entry.*;
+            } else if (header.dcid.len == 0) {
+                var iter = self.conns.iterator();
+                while (iter.next()) |entry| {
+                    if (entry.key_ptr.peer_hash == ph) {
+                        conn_opt = entry.value_ptr.*;
+                        break;
+                    }
+                }
+            }
+
+            const c = conn_opt orelse return;
+            if (!c.acquireEndpointRxRef()) return;
+            break :blk c;
+        };
+        defer conn.releaseEndpointRxRef();
+
+        conn.endpoint_rx_serial_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer conn.endpoint_rx_serial_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+
+        incoming.processHandshakeResolved(&rx_ctx, norm_peer, bytes, version, ecn_bits, rx_ctx.send_fn, conn);
+    }
+
+    fn tryShortHeaderRouteCacheLen(
+        self: *Endpoint,
+        norm_peer: conn_mod.SockAddr,
+        bytes: []const u8,
+        peer_hash: u64,
+        candidate_len: usize,
+    ) ?CachedShortHeaderRoute {
+        if (self.short_header_route_cache.len == 0) return null;
+        if (candidate_len > std.math.maxInt(u8) or 1 + candidate_len > bytes.len) return null;
+
+        const candidate_dcid = bytes[1 .. 1 + candidate_len];
+        const dcid_hash = hashBytes(candidate_dcid);
+        const idx = routeCacheIndex(peer_hash, dcid_hash, self.short_header_route_cache.len);
+        const slot = &self.short_header_route_cache[idx];
+
+        slot.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer slot.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+
+        if (slot.conn == null) return null;
+        if (slot.peer_hash != peer_hash or slot.dcid_hash != dcid_hash or slot.dcid_len != candidate_len) return null;
+
+        const c = slot.conn.?;
+        if (c.closed) return null;
+        if (!conn_mod.SockAddr.eq(&c.peer, &norm_peer)) return null;
+        const matched_len = c.localDcidMatchLen(bytes, true) orelse return null;
+        if (matched_len != candidate_len) return null;
+        if (!c.acquireEndpointRxRef()) return null;
+
+        return .{
+            .conn = c,
+            .lookup_result = .{
+                .conn = c,
+                .dcid_len = matched_len,
+                .nat_rebinding = false,
+            },
+        };
+    }
+
+    fn tryShortHeaderRouteCache(self: *Endpoint, norm_peer: conn_mod.SockAddr, bytes: []const u8, peer_hash: u64) ?CachedShortHeaderRoute {
+        return self.tryShortHeaderRouteCacheLen(norm_peer, bytes, peer_hash, lookup.DEFAULT_DCID_LEN);
+    }
+
+    fn rememberShortHeaderRoute(self: *Endpoint, norm_peer: conn_mod.SockAddr, bytes: []const u8, lookup_result: lookup.LookupResult) void {
+        const c = lookup_result.conn orelse return;
+        if (lookup_result.nat_rebinding) return;
+        if (lookup_result.dcid_len != lookup.DEFAULT_DCID_LEN) return;
+        if (!conn_mod.SockAddr.eq(&c.peer, &norm_peer)) return;
+        if (lookup_result.dcid_len > std.math.maxInt(u8) or 1 + lookup_result.dcid_len > bytes.len) return;
+        if (self.short_header_route_cache.len == 0) return;
+
+        const peer_hash = hashSockaddr(&norm_peer.storage, norm_peer.len);
+        const candidate_dcid = bytes[1 .. 1 + lookup_result.dcid_len];
+        const dcid_hash = hashBytes(candidate_dcid);
+        const idx = routeCacheIndex(peer_hash, dcid_hash, self.short_header_route_cache.len);
+        const slot = &self.short_header_route_cache[idx];
+
+        slot.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer slot.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+
+        slot.peer_hash = peer_hash;
+        slot.dcid_hash = dcid_hash;
+        slot.dcid_len = @intCast(lookup_result.dcid_len);
+        slot.conn = c;
+    }
+
+    pub fn clearShortHeaderRouteCacheForConnection(self: *Endpoint, conn: *conn_mod.Connection) void {
+        for (self.short_header_route_cache) |*slot| {
+            slot.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            if (slot.conn == conn) slot.conn = null;
+            slot.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+        }
+    }
+
+    // CANARY: REQ=REQ-QUIC-HC-052; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ShortHeaderRxLifetimeGuard; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
+    // CANARY: REQ=REQ-QUIC-HC-054; FEATURE="QUIC High-Concurrency Requests"; ASPECT=EndpointShortHeaderLockSplit; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
+    // CANARY: REQ=REQ-QUIC-HC-097; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ShortHeaderPhaseTiming; STATUS=IMPL; TEST=test_quic_condition_timedwait_cadence; OWNER=transport; UPDATED=2026-05-27
+    fn processShortHeaderDatagramConcurrent(
+        self: *Endpoint,
+        peer: conn_mod.SockAddr,
+        bytes: []const u8,
+        ecn_bits: ?u8,
+    ) incoming.ShortHeaderTimingStats {
+        var timing = incoming.ShortHeaderTimingStats{};
+        if (bytes.len == 0 or (bytes[0] & 0x80) != 0) return timing;
+
+        const detailed_timing = self.short_header_timing_enabled;
+        const norm_peer = normalizeAddr(&peer.storage, peer.len);
+        var lookup_result = lookup.LookupResult{
+            .conn = null,
+            .dcid_len = 0,
+            .nat_rebinding = false,
+        };
+
+        const conn = blk: {
+            const map_start_ns = if (detailed_timing) nowNsMonotonic() else 0;
+            const peer_h = hashSockaddr(&norm_peer.storage, norm_peer.len);
+
+            if (self.tryShortHeaderRouteCache(norm_peer, bytes, peer_h)) |cached| {
+                lookup_result = cached.lookup_result;
+                if (detailed_timing) timing.endpoint_map_ns += elapsedNsSince(map_start_ns);
+                break :blk cached.conn;
+            }
+
+            self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+
+            lookup_result = lookup.findConnectionByDcid(&self.conns, norm_peer, bytes, null);
+            if (lookup_result.conn) |c| {
+                if (lookup_result.nat_rebinding or !conn_mod.SockAddr.eq(&c.peer, &norm_peer)) {
+                    if (!self.onPathAddressChanged(c, norm_peer, peer_h, lookup_result.dcid_len)) {
+                        self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+                        if (detailed_timing) timing.endpoint_map_ns += elapsedNsSince(map_start_ns);
+                        return timing;
+                    }
+                }
+            } else {
+                self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+                if (detailed_timing) timing.endpoint_map_ns += elapsedNsSince(map_start_ns);
+                return timing;
+            }
+
+            const c = lookup_result.conn.?;
+            if (!c.acquireEndpointRxRef()) {
+                self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+                if (detailed_timing) timing.endpoint_map_ns += elapsedNsSince(map_start_ns);
+                return timing;
+            }
+            self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+            self.rememberShortHeaderRoute(norm_peer, bytes, lookup_result);
+            if (detailed_timing) timing.endpoint_map_ns += elapsedNsSince(map_start_ns);
+            break :blk c;
+        };
+        defer conn.releaseEndpointRxRef();
+
+        current_io_endpoint = self;
+        defer current_io_endpoint = null;
+
+        const role_converted = @as(ep_types.EndpointRole, @enumFromInt(@intFromEnum(self.role)));
+        var rx_ctx = incoming.RxContext{
+            .allocator = &self.allocator,
+            .conns = &self.conns,
+            .accepted = &self.accepted,
+            .cfg = &self.cfg,
+            .send_fn = struct {
+                fn send(peer_addr: conn_mod.SockAddr, data: []const u8) anyerror!usize {
+                    const ep = current_io_endpoint.?;
+                    return ep.sendTo(peer_addr, data);
+                }
+            }.send,
+            .schedule_timer_fn = struct {
+                fn schedule(conn_arg: *conn_mod.Connection, kind: ep_types.TimerKind, delay_ms: u32) anyerror!u64 {
+                    const ep = current_io_endpoint.?;
+                    return ep.scheduleConnPto(conn_arg, kind, delay_ms);
+                }
+            }.schedule,
+            .send_initial_probe_fn = struct {
+                fn probe(conn_arg: *conn_mod.Connection) anyerror!void {
+                    const ep = current_io_endpoint.?;
+                    return ep.clientSendInitialProbe(conn_arg);
+                }
+            }.probe,
+            .setup_sender_fn = struct {
+                fn setup(conn_arg: *conn_mod.Connection) void {
+                    const ep = current_io_endpoint.?;
+                    conn_arg.setSender(@ptrCast(ep), senderPaced);
+                    conn_arg.setPtoDirtyNotifier(@ptrCast(ep), notifyPtoDirty);
+                    conn_arg.setCloseNotifier(@ptrCast(ep), notifyConnectionClosed);
+                }
+            }.setup,
+            .mark_pending_hs_send_fn = struct {
+                fn mark(conn_arg: *conn_mod.Connection) void {
+                    const ep = current_io_endpoint.?;
+                    ep.markPendingHandshakeSend(conn_arg);
+                }
+            }.mark,
+            .test_capture_enabled = self.test_capture_enabled,
+            .endpoint_role = role_converted,
+            .endpoint_ctx = self,
+            .generated_token_secret = &self.generated_token_secret,
+            .max_connections = self.cfg.max_connections,
+            .short_header_timing = if (detailed_timing) &timing else null,
+            .anti_replay_cache = self.anti_replay_cache,
+        };
+
+        const serial_wait_start_ns = if (detailed_timing) nowNsMonotonic() else 0;
+        conn.endpoint_rx_serial_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        if (detailed_timing) timing.rx_serial_wait_ns += elapsedNsSince(serial_wait_start_ns);
+        defer conn.endpoint_rx_serial_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+
         incoming.processShortHeaderResolved(&rx_ctx, norm_peer, bytes, ecn_bits, rx_ctx.send_fn, lookup_result);
+        self.maybeQueueDeferredAccepted(conn);
+        return timing;
     }
 
     /// Create server-side represented connection (used by client dialing logic).
@@ -1118,12 +1586,16 @@ pub const Endpoint = struct {
         }
 
         // Phase 3: Poll transport (NO lock - blocks until data available or timeout)
+        const transport_poll_start_ns = nowNsMonotonic();
         try self.transport.poll(eff_timeout);
+        stats.transport_poll_ns = elapsedNsSince(transport_poll_start_ns);
 
         // Phase 4: Drain packets - receive batch then process each datagram.
         // Lock is acquired per-batch and released between iterations so handler
         // threads (popAccepted, scheduleTimer) get fair access.
         {
+            const recv_process_start_ns = nowNsMonotonic();
+            defer stats.recv_process_ns = elapsedNsSince(recv_process_start_ns);
             var recv_bufs: [udp_transport_mod.UdpBatchCap][4096]u8 = undefined;
             var recv_slots: [udp_transport_mod.UdpBatchCap]transport_mod.RecvBatchSlot = undefined;
             for (&recv_slots, 0..) |*slot, i| {
@@ -1134,9 +1606,14 @@ pub const Endpoint = struct {
                     .ecn = null,
                 };
             }
+            var initial_packets_processed: usize = 0;
             drain_loop: while (true) {
+                if (stats.packets_processed >= max_packets_per_poll_cycle) break :drain_loop;
+                const packet_budget_left = max_packets_per_poll_cycle - stats.packets_processed;
+                const recv_limit = @min(recv_slots.len, packet_budget_left);
+
                 // 4a: Receive batch (no lock needed for transport recv)
-                const batch_n = self.transport.recvBatch(recv_slots[0..]) catch |err| {
+                const batch_n = self.transport.recvBatch(recv_slots[0..recv_limit]) catch |err| {
                     if (err == error.WouldBlock) break;
                     return err;
                 };
@@ -1157,17 +1634,61 @@ pub const Endpoint = struct {
                     const slot = recv_slots[i];
                     const datagram = slot.buf[0..slot.n];
                     if (datagram.len > 0 and (datagram[0] & 0x80) == 0) {
-                        self.processShortHeaderDatagramConcurrent(slot.peer, datagram, slot.ecn);
+                        const short_header_start_ns = nowNsMonotonic();
+                        const short_timing = self.processShortHeaderDatagramConcurrent(slot.peer, datagram, slot.ecn);
+                        stats.recv_short_header_ns += elapsedNsSince(short_header_start_ns);
+                        stats.recv_short_endpoint_map_ns += short_timing.endpoint_map_ns;
+                        stats.recv_short_rx_serial_wait_ns += short_timing.rx_serial_wait_ns;
+                        stats.recv_short_conn_lock_wait_ns += short_timing.conn_lock_wait_ns;
+                        stats.recv_short_decrypt_ns += short_timing.decrypt_ns;
+                        stats.recv_short_frame_process_ns += short_timing.frame_process_ns;
+                        stats.recv_short_ack_send_ns += short_timing.ack_send_ns;
                     } else {
-                        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-                        self.processIncomingDatagram(slot.peer, datagram, slot.ecn);
-                        self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+                        const long_kind = classifyLongHeaderPacket(datagram);
+                        const long_version = parseLongHeaderVersion(datagram) orelse 0;
+                        // CANARY: REQ=REQ-QUIC-HC-064; FEATURE="QUIC High-Concurrency Requests"; ASPECT=InitialBurstBackpressure; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
+                        // A simultaneous connection wave places every client
+                        // Initial in the UDP FIFO before any client Handshake
+                        // response can arrive. If the poller stops reading
+                        // after a small Initial budget, those follow-up
+                        // Handshake packets remain stuck behind unprocessed
+                        // new-connection work and early clients time out even
+                        // though the server already sent their first flight.
+                        // Keep draining the socket, but shed surplus Initials
+                        // in this cycle; client PTO retransmits them later.
+                        if (long_kind == .Initial and initial_packets_processed >= max_initial_packets_per_poll_cycle) {
+                            stats.packets_processed += 1;
+                            continue;
+                        }
+                        if (self.role == .Server and
+                            long_kind == .Initial and
+                            (long_version == packet.QUIC_V1 or long_version == packet.QUIC_V2) and
+                            (longHeaderPacketLength(datagram, long_version) orelse 0) == datagram.len)
+                        {
+                            const initial_start_ns = nowNsMonotonic();
+                            self.processInitialDatagramConcurrent(slot.peer, datagram, long_version);
+                            stats.recv_initial_ns += elapsedNsSince(initial_start_ns);
+                        } else if (long_kind == .Handshake and
+                            (long_version == packet.QUIC_V1 or long_version == packet.QUIC_V2) and
+                            (longHeaderPacketLength(datagram, long_version) orelse 0) == datagram.len)
+                        {
+                            const handshake_start_ns = nowNsMonotonic();
+                            self.processHandshakeDatagramConcurrent(slot.peer, datagram, long_version, slot.ecn);
+                            stats.recv_handshake_ns += elapsedNsSince(handshake_start_ns);
+                        } else {
+                            const fallback_start_ns = nowNsMonotonic();
+                            self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+                            self.processIncomingDatagram(slot.peer, datagram, slot.ecn);
+                            self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+                            stats.recv_fallback_ns += elapsedNsSince(fallback_start_ns);
+                        }
+                        if (long_kind == .Initial) initial_packets_processed += 1;
                     }
                     stats.packets_processed += 1;
                 }
                 // mu released between datagrams — handler threads get a chance to run.
 
-                if (batch_n < recv_slots.len) break;
+                if (batch_n < recv_limit) break;
                 if (stats.packets_processed >= max_packets_per_poll_cycle) break :drain_loop;
             }
         }
@@ -1190,12 +1711,21 @@ pub const Endpoint = struct {
         // that processIncomingDatagram and clientSendInitialProbe already
         // rely on, so no new lock-order surface is introduced.
         {
+            const pending_hs_start_ns = nowNsMonotonic();
+            defer stats.pending_hs_send_ns = elapsedNsSince(pending_hs_start_ns);
             var pending_hs_send_snapshot: std.ArrayList(*conn_mod.Connection) = .empty;
             defer pending_hs_send_snapshot.deinit(self.allocator);
+            var stale_hs_send_snapshot: std.ArrayList(*conn_mod.Connection) = .empty;
+            defer stale_hs_send_snapshot.deinit(self.allocator);
 
             if (self.pending_hs_send_count.load(.acquire) > 0) {
                 self.pending_hs_send_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-                pending_hs_send_snapshot.ensureTotalCapacity(self.allocator, self.pending_hs_send_set.count()) catch |err| {
+                const pending_budget = @min(self.pending_hs_send_set.count(), max_pending_hs_send_retries_per_poll_cycle);
+                pending_hs_send_snapshot.ensureTotalCapacity(self.allocator, pending_budget) catch |err| {
+                    self.pending_hs_send_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+                    return err;
+                };
+                stale_hs_send_snapshot.ensureTotalCapacity(self.allocator, pending_budget) catch |err| {
                     self.pending_hs_send_mu.unlock(std.Io.Threaded.global_single_threaded.io());
                     return err;
                 };
@@ -1203,11 +1733,19 @@ pub const Endpoint = struct {
                 while (it.next()) |entry| {
                     const c = entry.key_ptr.*;
                     if (c.role == .Server and !c.closed and c.pending_hs_send) {
+                        if (pending_hs_send_snapshot.items.len >= max_pending_hs_send_retries_per_poll_cycle) break;
                         pending_hs_send_snapshot.appendAssumeCapacity(c);
+                    } else if (stale_hs_send_snapshot.items.len < pending_budget) {
+                        stale_hs_send_snapshot.appendAssumeCapacity(c);
                     }
                 }
-                self.pending_hs_send_set.clearRetainingCapacity();
-                self.pending_hs_send_count.store(0, .release);
+                for (pending_hs_send_snapshot.items) |c| {
+                    _ = self.pending_hs_send_set.remove(c);
+                }
+                for (stale_hs_send_snapshot.items) |c| {
+                    _ = self.pending_hs_send_set.remove(c);
+                }
+                self.pending_hs_send_count.store(self.pending_hs_send_set.count(), .release);
                 self.pending_hs_send_mu.unlock(std.Io.Threaded.global_single_threaded.io());
             }
 
@@ -1274,6 +1812,8 @@ pub const Endpoint = struct {
         // `pto_dirty_mu` leaf mutex (no lock-order conflict with `mu` or
         // `conn.mu`). Iteration cost is O(dirty), not O(active).
         {
+            const timer_start_ns = nowNsMonotonic();
+            defer stats.timer_process_ns = elapsedNsSince(timer_start_ns);
             self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
             self.timer_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
             self.processExpiredTimers(nowMsMonotonic());
@@ -1288,30 +1828,47 @@ pub const Endpoint = struct {
         // api.destroy(); this prevents a destroy racing a snapshotted pointer
         // without holding pto_dirty_mu during recovery/timer recompute.
         {
+            const pto_dirty_start_ns = nowNsMonotonic();
+            defer stats.pto_dirty_ns = elapsedNsSince(pto_dirty_start_ns);
             self.pto_lifetime_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
             defer self.pto_lifetime_mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
             var pto_dirty_snapshot: std.ArrayList(*conn_mod.Connection) = .empty;
             defer pto_dirty_snapshot.deinit(self.allocator);
+            var stale_pto_dirty_snapshot: std.ArrayList(*conn_mod.Connection) = .empty;
+            defer stale_pto_dirty_snapshot.deinit(self.allocator);
             if (self.pto_dirty_count.load(.acquire) > 0) {
                 self.pto_dirty_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-                pto_dirty_snapshot.ensureTotalCapacity(self.allocator, self.pto_dirty_set.count()) catch |err| {
+                const pto_dirty_budget = @min(self.pto_dirty_set.count(), max_pto_dirty_recomputes_per_poll_cycle);
+                pto_dirty_snapshot.ensureTotalCapacity(self.allocator, pto_dirty_budget) catch |err| {
+                    self.pto_dirty_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+                    return err;
+                };
+                stale_pto_dirty_snapshot.ensureTotalCapacity(self.allocator, pto_dirty_budget) catch |err| {
                     self.pto_dirty_mu.unlock(std.Io.Threaded.global_single_threaded.io());
                     return err;
                 };
                 var dit = self.pto_dirty_set.iterator();
                 while (dit.next()) |entry| {
                     const c = entry.key_ptr.*;
+                    if (pto_dirty_snapshot.items.len + stale_pto_dirty_snapshot.items.len >= pto_dirty_budget) break;
                     if (!c.closed) {
                         c.pto_dirty.store(false, .release);
                         pto_dirty_snapshot.appendAssumeCapacity(c);
+                    } else {
+                        stale_pto_dirty_snapshot.appendAssumeCapacity(c);
                     }
                 }
-                // Drain: clear the set entries we snapshotted; markPtoDirty()
-                // will re-add on future state changes after the false→true
-                // transition. Reset the atomic counter to match the cleared set.
-                self.pto_dirty_set.clearRetainingCapacity();
-                self.pto_dirty_count.store(0, .release);
+                // Drain the entries we snapshotted; connections past the budget
+                // remain in pto_dirty_set with pto_dirty=true, preserving their
+                // queued recompute for the next poll cycle.
+                for (pto_dirty_snapshot.items) |c| {
+                    _ = self.pto_dirty_set.remove(c);
+                }
+                for (stale_pto_dirty_snapshot.items) |c| {
+                    _ = self.pto_dirty_set.remove(c);
+                }
+                self.pto_dirty_count.store(self.pto_dirty_set.count(), .release);
                 self.pto_dirty_mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
                 for (pto_dirty_snapshot.items) |c| {
@@ -1993,6 +2550,13 @@ pub const Endpoint = struct {
                 },
                 .PtoInitial => if (t.conn) |c| {
                     if (!self.isConnectionLive(c)) continue;
+                    // CANARY: REQ=REQ-QUIC-HC-070; FEATURE="QUIC High-Concurrency Requests"; ASPECT=PtoRecoveryMutex; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27
+                    // PTO expiry touches recovery packet accounting,
+                    // retransmission buffers, and packet-number state. Serialize
+                    // it with application writes and ACK processing on the
+                    // connection mutex to keep burst-loss recovery deterministic.
+                    c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+                    defer c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
                     c.setPtoExpiredInitial();
                     // PTO probe failure is non-fatal; timer will fire again on next PTO expiry.
                     self.sendPtoProbe(c, .PtoInitial) catch |err| {
@@ -2001,6 +2565,8 @@ pub const Endpoint = struct {
                 },
                 .PtoHandshake => if (t.conn) |c| {
                     if (!self.isConnectionLive(c)) continue;
+                    c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+                    defer c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
                     c.setPtoExpiredHandshake();
                     // PTO probe failure is non-fatal; timer will fire again on next PTO expiry.
                     self.sendPtoProbe(c, .PtoHandshake) catch |err| {
@@ -2009,6 +2575,8 @@ pub const Endpoint = struct {
                 },
                 .PtoApp => if (t.conn) |c| {
                     if (!self.isConnectionLive(c)) continue;
+                    c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+                    defer c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
                     c.setPtoExpiredApp();
                 },
                 .Pmtud => if (t.conn) |c| {
@@ -2305,7 +2873,12 @@ test "endpoint timers keep index consistent across heap operations" {
 }
 
 test "endpoint poll cycle fairness budget stays below large burst drain" {
-    try std.testing.expectEqual(udp_transport_mod.UdpBatchCap * 16, max_packets_per_poll_cycle);
+    try std.testing.expectEqual(udp_transport_mod.UdpBatchCap * 2, max_packets_per_poll_cycle);
+}
+
+test "endpoint pto dirty recompute has a poll cycle fairness budget" {
+    try std.testing.expectEqual(udp_transport_mod.UdpBatchCap * 2, max_pto_dirty_recomputes_per_poll_cycle);
+    try std.testing.expect(max_pto_dirty_recomputes_per_poll_cycle >= udp_transport_mod.UdpBatchCap);
 }
 
 // =============================================================================

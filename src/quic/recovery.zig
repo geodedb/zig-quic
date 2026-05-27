@@ -12,6 +12,18 @@
 const std = @import("std");
 const frame = @import("quic_frame");
 
+fn deadlineAfter(now_ns: u64, delta_ns: u64) u64 {
+    return std.math.add(u64, now_ns, delta_ns) catch std.math.maxInt(u64);
+}
+
+fn addSaturating(a: u64, b: u64) u64 {
+    return std.math.add(u64, a, b) catch std.math.maxInt(u64);
+}
+
+fn mulSaturating(a: u64, b: u64) u64 {
+    return std.math.mul(u64, a, b) catch std.math.maxInt(u64);
+}
+
 /// Shared CC state used by Recovery for both NewReno and CUBIC (bytes units)
 pub const CcState = struct {
     mds: usize = 1200,
@@ -61,7 +73,8 @@ pub const RttState = struct {
     /// PTO = smoothed + 4*rttvar + max_ack_delay
     pub fn computePtoNs(self: *const RttState) u64 {
         // PTO = smoothed + 4*rttvar + max_ack_delay
-        return self.smoothed_rtt_ns + (self.rttvar_ns * 4) + self.max_ack_delay_ns;
+        const variance_ns = mulSaturating(self.rttvar_ns, 4);
+        return addSaturating(addSaturating(self.smoothed_rtt_ns, variance_ns), self.max_ack_delay_ns);
     }
 
     /// Compute PTO with exponential backoff and timer granularity.
@@ -241,7 +254,7 @@ pub const Recovery = struct {
         // Schedule time-threshold loss if we have an RTT sample; do not promote here.
         if (ack_eliciting and self.rtt.have_sample) {
             const tt_base = LossDetector.timeThresholdNs(self.rtt.smoothed_rtt_ns, self.rtt.latest_rtt_ns);
-            const deadline = now_ns + tt_base;
+            const deadline = deadlineAfter(now_ns, tt_base);
             const cur = self.spaces[idx].loss_time_ns;
             if (cur == null or deadline < cur.?) self.spaces[idx].loss_time_ns = deadline;
         }
@@ -334,7 +347,7 @@ pub const Recovery = struct {
             self.ccOnLoss(bytes_lost);
             if (first_lost_time != null and last_lost_time != null) {
                 const pto_base = self.rtt.computePtoNsWithBackoff(0, self.timer_granularity_ns);
-                const pc_period = pto_base * self.k_pc_threshold;
+                const pc_period = mulSaturating(pto_base, @intCast(self.k_pc_threshold));
                 if (last_lost_time.? - first_lost_time.? >= pc_period) {
                     const min_window: usize = 2 * self.cc.mds;
                     self.cc.cwnd = min_window;
@@ -410,7 +423,7 @@ pub const Recovery = struct {
             self.ccOnLoss(total_lost);
             if (first_lost_time != null and last_lost_time != null) {
                 const pto_base = self.rtt.computePtoNsWithBackoff(0, self.timer_granularity_ns);
-                const pc_period = pto_base * self.k_pc_threshold;
+                const pc_period = mulSaturating(pto_base, @intCast(self.k_pc_threshold));
                 if (last_lost_time.? - first_lost_time.? >= pc_period) {
                     const min_window: usize = 2 * self.cc.mds;
                     self.cc.cwnd = min_window;
@@ -436,7 +449,7 @@ pub const Recovery = struct {
         }
         if (!any_in_flight) return null;
         const base = self.rtt.computePtoNsWithBackoff(self.pto_count, self.timer_granularity_ns);
-        return now_ns + base;
+        return deadlineAfter(now_ns, base);
     }
 
     /// Compute next PTO deadline for a given space relative to now.
@@ -454,7 +467,7 @@ pub const Recovery = struct {
             return null;
         }
         const pto = self.rtt.computePtoNsWithBackoff(self.pto_count, self.timer_granularity_ns);
-        const deadline = now_ns + pto;
+        const deadline = deadlineAfter(now_ns, pto);
         const cur = self.spaces[idx].loss_time_ns;
         if (cur == null or deadline < cur.?) self.spaces[idx].loss_time_ns = deadline;
         return deadline;

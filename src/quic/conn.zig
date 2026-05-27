@@ -289,6 +289,12 @@ pub const AntiReplayCache = anti_replay.AntiReplayCache;
 /// Sender callback used by Endpoint to provide paced sending.
 pub const SendFn = *const fn (ctx: *anyopaque, c: *Connection, data: []const u8) anyerror!usize;
 
+/// Optional application callback fired when endpoint polling delivers readable
+/// STREAM data or FIN to a connection.  This lets embedders drive bounded,
+/// ready-queue based stream schedulers instead of parking one thread per live
+/// connection.
+pub const RxReadyFn = *const fn (ctx: *anyopaque, c: *Connection) void;
+
 /// Sliding ACK tracking window constrained to the most recent 256 packet
 /// numbers. RFC 9000 §13.2 recommends maintaining acknowledgement state per
 /// packet number space, while §19.3 defines how ACK ranges are encoded. This
@@ -564,6 +570,10 @@ test "connection init resets default-backed runtime fields from allocator fill b
     try std.testing.expectEqual(@as(u32, 0), c.rx_data_generation.load(.acquire));
     try std.testing.expectEqual(@as(u32, 0), c.endpoint_rx_refs.load(.acquire));
     try std.testing.expect(!c.endpoint_destroying.load(.acquire));
+    {
+        const state_ptr: *const u32 = @ptrCast(&c.endpoint_rx_serial_mu.state.raw);
+        try std.testing.expectEqual(@as(u32, 0), @atomicLoad(u32, state_ptr, .monotonic));
+    }
     try std.testing.expectEqual(@as(u64, 0), c.rtt_initial.smoothed_rtt_ns);
     try std.testing.expectEqual(@as(u64, 0), c.rtt_handshake.smoothed_rtt_ns);
     try std.testing.expectEqual(@as(u64, 0), c.rtt_app.smoothed_rtt_ns);
@@ -582,6 +592,10 @@ test "connection endpoint rx lifetime guard rejects refs after destroy begins" {
 
     try std.testing.expect(c.acquireEndpointRxRef());
     try std.testing.expectEqual(@as(u32, 1), c.endpoint_rx_refs.load(.acquire));
+    try std.testing.expect(c.acquireEndpointRxRef());
+    try std.testing.expectEqual(@as(u32, 2), c.endpoint_rx_refs.load(.acquire));
+    c.releaseEndpointRxRef();
+    try std.testing.expectEqual(@as(u32, 1), c.endpoint_rx_refs.load(.acquire));
     c.releaseEndpointRxRef();
     try std.testing.expectEqual(@as(u32, 0), c.endpoint_rx_refs.load(.acquire));
 
@@ -598,6 +612,12 @@ pub const Connection = struct {
     // This protects all mutable state in this connection: streams, keys, flow control, etc.
     // Lock ordering: endpoint.mu -> connection.mu (never reverse)
     mu: std.Io.Mutex = std.Io.Mutex.init,
+    // CANARY: REQ=REQ-QUIC-HC-053; FEATURE="QUIC High-Concurrency Requests"; ASPECT=PerConnectionShortHeaderRxSerialization; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
+    /// Serializes short-header packet processing for a single connection after
+    /// the endpoint-global map lock has been released. This keeps legacy
+    /// connection-local frame handlers single-threaded without letting one
+    /// active connection hold Endpoint.mu and block unrelated peers.
+    endpoint_rx_serial_mu: std.Io.Mutex = std.Io.Mutex.init,
 
     id: u64,
     role: Role,
@@ -630,6 +650,10 @@ pub const Connection = struct {
     // set instead of scanning every active connection per poll cycle.
     pto_dirty_notify_ctx: ?*anyopaque = null,
     pto_dirty_notify_fn: ?*const fn (ctx: *anyopaque, conn: *Connection) void = null,
+    // Optional RX-ready notification for embedders that multiplex many
+    // application streams over a bounded worker set.
+    rx_ready_notify_ctx: ?*anyopaque = null,
+    rx_ready_notify_fn: ?RxReadyFn = null,
     // Optional close notification (set by Endpoint). Invoked when the
     // connection transitions to closed so the endpoint can prune only closed
     // connections instead of scanning every active connection per poll.
@@ -810,9 +834,16 @@ pub const Connection = struct {
     /// this connection. Application readers can futex-wait on the generation
     /// after a WouldBlock instead of joining the endpoint-wide poll wake herd.
     rx_data_generation: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    // CANARY: REQ=REQ-QUIC-HC-087; FEATURE="QUIC High-Concurrency Requests"; ASPECT=PerConnectionTxCreditWake; STATUS=IMPL; TEST=test_quic_condition_timedwait_cadence; OWNER=transport; UPDATED=2026-05-27
+    /// Incremented whenever Application ACK processing frees congestion
+    /// credit. High-fanout writers can futex-wait on this per-connection word
+    /// after congestion-window zero returns instead of retrying on unrelated
+    /// endpoint poll cycles.
+    tx_credit_generation: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     // CANARY: REQ=REQ-QUIC-HC-051; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ShortHeaderRxLifetime; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
-    /// Number of endpoint poll workers currently processing a short-header
-    /// datagram for this connection outside the endpoint-global mutex.
+    /// Number of endpoint poll workers that hold a lifetime pin while they
+    /// process or wait to process a short-header datagram for this connection
+    /// outside the endpoint-global mutex.
     endpoint_rx_refs: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     /// Set before endpoint destroy removes map entries and frees the
     /// connection. New short-header workers refuse to acquire a ref once set.
@@ -1125,6 +1156,7 @@ pub const Connection = struct {
         // (0x02), the first `lockUncancelable` call enters `futexWait(expect=contended)`
         // with no thread ever posting a wake -- classic handshake deadlock.
         self.mu = std.Io.Mutex.init;
+        self.endpoint_rx_serial_mu = std.Io.Mutex.init;
         self.id = 0;
         self.role = role;
         self.sock_fd = sock_fd;
@@ -1145,6 +1177,8 @@ pub const Connection = struct {
         self.sender_fn = null;
         self.pto_dirty_notify_ctx = null;
         self.pto_dirty_notify_fn = null;
+        self.rx_ready_notify_ctx = null;
+        self.rx_ready_notify_fn = null;
         self.close_notify_ctx = null;
         self.close_notify_fn = null;
         self.hs_client = null;
@@ -1549,27 +1583,18 @@ pub const Connection = struct {
     }
 
     pub fn acquireEndpointRxRef(self: *Connection) bool {
-        const io = std.Io.Threaded.global_single_threaded.io();
         while (true) {
             if (self.endpoint_destroying.load(.acquire)) return false;
             const refs = self.endpoint_rx_refs.load(.acquire);
-            if (refs == 0) {
-                if (self.endpoint_rx_refs.cmpxchgWeak(0, 1, .acq_rel, .acquire)) |_| {
-                    continue;
-                }
-                if (self.endpoint_destroying.load(.acquire)) {
-                    self.releaseEndpointRxRef();
-                    return false;
-                }
-                return true;
+            if (refs == std.math.maxInt(u32)) return false;
+            if (self.endpoint_rx_refs.cmpxchgWeak(refs, refs + 1, .acq_rel, .acquire)) |_| {
+                continue;
             }
-            const timeout: std.Io.Timeout = .{ .duration = .{
-                .raw = std.Io.Duration.fromNanoseconds(std.time.ns_per_ms),
-                .clock = .awake,
-            } };
-            io.futexWaitTimeout(u32, &self.endpoint_rx_refs.raw, refs, timeout) catch |err| switch (err) {
-                error.Canceled => return false,
-            };
+            if (self.endpoint_destroying.load(.acquire)) {
+                self.releaseEndpointRxRef();
+                return false;
+            }
+            return true;
         }
     }
 
@@ -1866,6 +1891,29 @@ pub const Connection = struct {
         if (self.pto_dirty_notify_fn) |f| {
             if (self.pto_dirty_notify_ctx) |ctx| f(ctx, self);
         }
+    }
+
+    /// Install an optional readable-stream callback. The callback is invoked
+    /// after `pushStreamFrame()` releases `Connection.mu`, so it can enqueue
+    /// application work without participating in QUIC's connection lock order.
+    pub fn setRxReadyNotifier(
+        self: *Connection,
+        ctx: *anyopaque,
+        f: RxReadyFn,
+    ) void {
+        self.rx_ready_notify_ctx = ctx;
+        self.rx_ready_notify_fn = f;
+    }
+
+    pub fn clearRxReadyNotifier(self: *Connection) void {
+        self.rx_ready_notify_ctx = null;
+        self.rx_ready_notify_fn = null;
+    }
+
+    pub fn notifyRxReady(self: *Connection) void {
+        const f = self.rx_ready_notify_fn orelse return;
+        const ctx = self.rx_ready_notify_ctx orelse return;
+        f(ctx, self);
     }
 
     pub fn setCloseNotifier(

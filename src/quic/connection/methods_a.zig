@@ -331,9 +331,15 @@ pub fn bind(comptime Connection: type) type {
             ) catch return;
 
             defer self.allocator.free(out);
-            _ = self.send(out) catch |err| {
+            // CANARY: REQ=REQ-QUIC-HC-081; FEATURE="QUIC High-Concurrency Requests"; ASPECT=HandshakeSendAccounting; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27
+            const sent = self.send(out) catch |err| {
                 logger.warn("sendInitialCrypto send failed: {s}", .{@errorName(err)});
+                return error.SendFailed;
             };
+            if (sent != out.len) {
+                logger.warn("sendInitialCrypto short send: sent={} expected={}", .{ sent, out.len });
+                return error.ShortWrite;
+            }
 
             // Update state
             self.crypto_tx_off_initial += crypto_data.len;
@@ -370,9 +376,14 @@ pub fn bind(comptime Connection: type) type {
             ) catch return;
 
             defer self.allocator.free(out);
-            _ = self.send(out) catch |err| {
+            const sent = self.send(out) catch |err| {
                 logger.warn("sendHandshakeCrypto send failed: {s}", .{@errorName(err)});
+                return error.SendFailed;
             };
+            if (sent != out.len) {
+                logger.warn("sendHandshakeCrypto short send: sent={} expected={}", .{ sent, out.len });
+                return error.ShortWrite;
+            }
 
             // Update state
             self.crypto_tx_off_handshake += crypto_data.len;
@@ -801,6 +812,7 @@ pub fn bind(comptime Connection: type) type {
                     _ = self.rx_data_generation.fetchAdd(1, .release);
                     const io = std.Io.Threaded.global_single_threaded.io();
                     io.futexWake(u32, &self.rx_data_generation.raw, std.math.maxInt(u32));
+                    self.notifyRxReady();
                 }
             }
 

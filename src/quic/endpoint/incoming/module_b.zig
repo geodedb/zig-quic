@@ -56,6 +56,19 @@ inline fn hashSockaddr(sa: *const posix.sockaddr.storage, len: u32) u64 {
     return hashBytes(bytes);
 }
 
+// CANARY: REQ=REQ-QUIC-HC-081; FEATURE="QUIC High-Concurrency Requests"; ASPECT=HandshakeSendAccounting; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27
+fn sendHandshakeDatagramFull(send_fn: SendFn, peer: conn_mod.SockAddr, data: []const u8, comptime label: []const u8) bool {
+    const sent = send_fn(peer, data) catch |err| {
+        logger.warn("{s} send failed: {s}", .{ label, @errorName(err) });
+        return false;
+    };
+    if (sent != data.len) {
+        logger.warn("{s} short send: sent={} expected={}", .{ label, sent, data.len });
+        return false;
+    }
+    return true;
+}
+
 pub fn processHandshake(
     ctx: *RxContext,
     peer: conn_mod.SockAddr,
@@ -104,6 +117,33 @@ pub fn processHandshake(
         return;
     };
 
+    processHandshakeResolvedWithHeader(ctx, peer, bytes, ecn_bits, send_fn, conn, header);
+}
+
+// CANARY: REQ=REQ-QUIC-HC-066; FEATURE="QUIC High-Concurrency Requests"; ASPECT=HandshakeLockSplit; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
+pub fn processHandshakeResolved(
+    ctx: *RxContext,
+    peer: conn_mod.SockAddr,
+    bytes: []const u8,
+    version: u32,
+    ecn_bits: ?u8,
+    send_fn: SendFn,
+    conn: *conn_mod.Connection,
+) void {
+    _ = version;
+    const header = parseHandshakeHeader(bytes) catch return;
+    processHandshakeResolvedWithHeader(ctx, peer, bytes, ecn_bits, send_fn, conn, header);
+}
+
+fn processHandshakeResolvedWithHeader(
+    ctx: *RxContext,
+    peer: conn_mod.SockAddr,
+    bytes: []const u8,
+    ecn_bits: ?u8,
+    send_fn: SendFn,
+    conn: *conn_mod.Connection,
+    header: HandshakeHeader,
+) void {
     // GAP-0200: conn.mu is acquired in narrow scopes below around trackRecvPn*
     // and buildAck* calls only. Holding it for the entire function blocks worker
     // threads from writing to ANY stream on this connection for the duration of
@@ -282,6 +322,12 @@ pub fn processHandshake(
             var crypto_offset: usize = 0;
             const base_off = conn.*.crypto_tx_off_handshake;
 
+            if (conn.*.crypto_retx_handshake) |old_buf| ctx.allocator.free(old_buf);
+            const owned = ctx.allocator.alloc(u8, n) catch return;
+            @memcpy(owned[0..n], data[0..n]);
+            conn.*.crypto_retx_handshake = owned;
+            conn.*.crypto_retx_handshake_off = base_off;
+
             while (crypto_offset < n) {
                 const chunk_size = @min(max_crypto_per_packet, n - crypto_offset);
                 const chunk = data[crypto_offset .. crypto_offset + chunk_size];
@@ -311,25 +357,16 @@ pub fn processHandshake(
 
                 if (pkt) |bytes_out| {
                     defer ctx.allocator.free(bytes_out);
-                    _ = send_fn(peer, bytes_out) catch |err| {
-                        logger.warn("Handshake CRYPTO send failed: {s}", .{@errorName(err)});
-                    };
+                    if (!sendHandshakeDatagramFull(send_fn, peer, bytes_out, "Handshake CRYPTO")) return;
                     conn.*.onPacketSent(.Handshake, conn.*.pn_handshake_tx, bytes_out.len, true);
                     conn.*.pn_handshake_tx +%= 1;
+                } else {
+                    return;
                 }
 
                 crypto_offset += chunk_size;
             }
 
-            // Save retransmit buffer
-            if (conn.*.crypto_retx_handshake) |old_buf| ctx.allocator.free(old_buf);
-            const owned = ctx.allocator.alloc(u8, n) catch {
-                conn.*.crypto_tx_off_handshake += n;
-                return;
-            };
-            @memcpy(owned[0..n], data[0..n]);
-            conn.*.crypto_retx_handshake = owned;
-            conn.*.crypto_retx_handshake_off = base_off;
             conn.*.crypto_tx_off_handshake += n;
 
             // Attempt delayed 1-RTT key derivation after flushing TLS outbox
@@ -379,11 +416,10 @@ pub fn processHandshake(
 
             if (pkt) |bytes_out| {
                 defer ctx.allocator.free(bytes_out);
-                _ = send_fn(peer, bytes_out) catch |err| {
-                    logger.warn("Handshake ACK send failed: {s}", .{@errorName(err)});
-                };
-                // ACK-only packet is not ack-eliciting
-                conn.*.pn_handshake_tx +%= 1;
+                if (sendHandshakeDatagramFull(send_fn, peer, bytes_out, "Handshake ACK")) {
+                    // ACK-only packet is not ack-eliciting
+                    conn.*.pn_handshake_tx +%= 1;
+                }
             }
         }
     }
@@ -417,9 +453,11 @@ pub fn processHandshake(
     }
 }
 
+pub const HandshakeHeader = struct { dcid: []const u8, scid: []const u8, offset: usize };
+
 /// Parse Handshake packet header.
 /// Returns structure with DCID, SCID, and offset to payload+PN.
-fn parseHandshakeHeader(bytes: []const u8) !struct { dcid: []const u8, scid: []const u8, offset: usize } {
+pub fn parseHandshakeHeader(bytes: []const u8) !HandshakeHeader {
     if (bytes.len < 5) return error.PacketTooShort;
 
     const first = bytes[0];
