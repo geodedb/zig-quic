@@ -11,11 +11,11 @@ fn hasImmediateDoc(lines: []const []const u8, idx: usize) bool {
     return false;
 }
 
-fn collectPaths(alloc: std.mem.Allocator, base: []const u8, out: *std.ArrayListUnmanaged([]const u8)) !void {
-    var dir = try std.fs.cwd().openDir(base, .{ .iterate = true });
-    defer dir.close();
+fn collectPaths(io: std.Io, alloc: std.mem.Allocator, base: []const u8, out: *std.ArrayListUnmanaged([]const u8)) !void {
+    var dir = try std.Io.Dir.cwd().openDir(io, base, .{ .iterate = true });
+    defer dir.close(io);
     var it = dir.iterate();
-    while (try it.next()) |e| {
+    while (try it.next(io)) |e| {
         const child_path = try std.fs.path.join(alloc, &.{ base, e.name });
         switch (e.kind) {
             .file => {
@@ -26,7 +26,7 @@ fn collectPaths(alloc: std.mem.Allocator, base: []const u8, out: *std.ArrayListU
                 }
             },
             .directory => {
-                try collectPaths(alloc, child_path, out);
+                try collectPaths(io, alloc, child_path, out);
                 alloc.free(child_path);
             },
             else => alloc.free(child_path),
@@ -34,23 +34,33 @@ fn collectPaths(alloc: std.mem.Allocator, base: []const u8, out: *std.ArrayListU
     }
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+fn readFileAlloc(io: std.Io, alloc: std.mem.Allocator, path: []const u8, max: usize) ![]u8 {
+    var file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    const size: usize = @intCast((try file.stat(io)).size);
+    if (size > max) return error.FileTooBig;
+    const buf = try alloc.alloc(u8, size);
+    errdefer alloc.free(buf);
+    _ = try file.readPositionalAll(io, buf, 0);
+    return buf;
+}
+
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
-    var files = std.ArrayListUnmanaged([]const u8){};
+    var files: std.ArrayListUnmanaged([]const u8) = .empty;
     defer files.deinit(alloc);
-    try collectPaths(alloc, "src/quic", &files);
-    try collectPaths(alloc, "src/h3", &files);
+    try collectPaths(io, alloc, "src/quic", &files);
+    try collectPaths(io, alloc, "src/h3", &files);
 
     for (files.items) |path| {
-        var file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
-        const contents = try file.readToEndAlloc(alloc, 1 << 20);
+        const contents = try readFileAlloc(io, alloc, path, 1 << 20);
         defer alloc.free(contents);
         var lines_it = std.mem.tokenizeScalar(u8, contents, '\n');
-        var lines = std.ArrayListUnmanaged([]const u8){};
+        var lines: std.ArrayListUnmanaged([]const u8) = .empty;
         defer lines.deinit(alloc);
         while (lines_it.next()) |line| try lines.append(alloc, line);
         const arr = lines.items;

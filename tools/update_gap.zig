@@ -1,34 +1,31 @@
 // tools/update_gap.zig — append summary to docs/GAP.md with timestamp
 const std = @import("std");
 
+var tool_io: std.Io = undefined;
+
 fn writeStderr(bytes: []const u8) void {
-    if (@import("builtin").target.os.tag == .windows) {
-        const w = std.os.windows;
-        const h = w.GetStdHandle(w.STD_ERROR_HANDLE) catch return;
-        _ = std.posix.write(h, bytes) catch {};
-    } else {
-        _ = std.posix.write(std.posix.STDERR_FILENO, bytes) catch {};
-    }
+    std.Io.File.stderr().writeStreamingAll(tool_io, bytes) catch {};
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    tool_io = init.io;
+    var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
 
-    const args = try std.process.argsAlloc(alloc);
-    defer std.process.argsFree(alloc, args);
+    const args = try init.minimal.args.toSlice(alloc);
     if (args.len < 3 or !std.mem.eql(u8, args[1], "--summary")) {
         writeStderr("usage: update-gap --summary \"text\"\n");
         std.process.exit(2);
     }
     const summary = args[2];
     const path = "docs/GAP.md";
-    var file = try std.fs.cwd().openFile(path, .{ .mode = .read_write });
-    defer file.close();
-    try file.seekFromEnd(0);
+    var file = try std.Io.Dir.cwd().openFile(tool_io, path, .{ .mode = .read_write });
+    defer file.close(tool_io);
+    const end_offset = (try file.stat(tool_io)).size;
     var buf: [256]u8 = undefined;
-    const now = std.time.timestamp();
-    const s = std.fmt.bufPrint(&buf, "\n\n### {d} — {s}\n", .{ now, summary }) catch return;
-    _ = file.writeAll(s) catch {};
+    var ts: std.os.linux.timespec = undefined;
+    _ = std.os.linux.clock_gettime(.REALTIME, &ts);
+    const s = std.fmt.bufPrint(&buf, "\n\n### {d} — {s}\n", .{ ts.sec, summary }) catch return;
+    file.writePositionalAll(tool_io, s, end_offset) catch {};
 }

@@ -4,6 +4,8 @@
 //   quic-varint decode <hex-bytes...>
 const std = @import("std");
 
+var tool_io: std.Io = undefined;
+
 const QuicError = error{ VARINT_UNDERFLOW, VARINT_OVERFLOW, INVALID_ARG };
 
 fn toU8(v: u64) u8 {
@@ -73,32 +75,20 @@ fn parseHexByte(s: []const u8) !u8 {
 }
 
 fn writeStderr(bytes: []const u8) void {
-    if (@import("builtin").target.os.tag == .windows) {
-        const w = std.os.windows;
-        const h = w.GetStdHandle(w.STD_ERROR_HANDLE) catch return;
-        _ = std.posix.write(h, bytes) catch {};
-    } else {
-        _ = std.posix.write(std.posix.STDERR_FILENO, bytes) catch {};
-    }
+    std.Io.File.stderr().writeStreamingAll(tool_io, bytes) catch {};
 }
 
 fn writeStdout(bytes: []const u8) void {
-    if (@import("builtin").target.os.tag == .windows) {
-        const w = std.os.windows;
-        const h = w.GetStdHandle(w.STD_OUTPUT_HANDLE) catch return;
-        _ = std.posix.write(h, bytes) catch {};
-    } else {
-        _ = std.posix.write(std.posix.STDOUT_FILENO, bytes) catch {};
-    }
+    std.Io.File.stdout().writeStreamingAll(tool_io, bytes) catch {};
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    tool_io = init.io;
+    var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
 
-    const args = try std.process.argsAlloc(alloc);
-    defer std.process.argsFree(alloc, args);
+    const args = try init.minimal.args.toSlice(alloc);
     if (args.len < 3) {
         writeStderr("usage: quic-varint encode <u64> | decode <hex-bytes...>\n");
         std.process.exit(2);
