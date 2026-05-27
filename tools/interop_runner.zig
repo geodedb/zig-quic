@@ -331,7 +331,8 @@ pub fn main(init: std.process.Init) !void {
     var r = Runner.init(init.io);
     defer r.deinit();
 
-    var args = std.process.Args.Iterator.init(init.minimal.args);
+    var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa);
+    defer args.deinit();
 
     _ = args.next();
     const cmd = args.next() orelse "list";

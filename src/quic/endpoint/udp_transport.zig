@@ -294,6 +294,13 @@ pub const UdpTransport = struct {
     /// dispatch to the correct platform syscalls. Surfaced by geode CI
     /// pipeline #1011 cross-compiling to x86_64-macos.
     fn initPosix(bind_addr: []const u8) !UdpTransport {
+        // Windows: socket_t is *anyopaque (HANDLE), so the @intCast below
+        // cannot type-check. UdpTransport is also fundamentally POSIX-shaped
+        // (sendto/recvfrom + fcntl non-blocking). Return early so the rest
+        // of this function is comptime-dead-coded for Windows analysis.
+        if (builtin.target.os.tag == .windows) {
+            return error.UdpTransportNotSupportedOnWindows;
+        }
         var addr = try resolveBindAddr(bind_addr);
         const sa: *const std.posix.sockaddr = @ptrCast(@alignCast(&addr.storage));
         const family = sa.family;

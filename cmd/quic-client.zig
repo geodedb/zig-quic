@@ -4,7 +4,8 @@ const api = @import("quic_api");
 pub fn main(init: std.process.Init) !void {
     var alloc = init.gpa;
 
-    var args = std.process.Args.Iterator.init(init.minimal.args);
+    var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, alloc);
+    defer args.deinit();
     _ = args.skip();
 
     var connect: []const u8 = "127.0.0.1:4433";

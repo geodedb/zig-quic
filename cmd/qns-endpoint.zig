@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const api = @import("quic_api");
 const h3_server = @import("h3_server");
 const h3_client = @import("h3_client");
@@ -521,6 +522,9 @@ fn sendFileOnStream(ep: *api.QuicEndpoint, conn: *api.QuicConnection, stream_id:
 fn tcpReadinessLoop() void {
     // The simulator does a TCP readiness probe against server:443.
     // QUIC uses UDP, so we expose a minimal TCP listener to satisfy the probe.
+    // Windows: socket_t is *anyopaque (HANDLE), and linux syscall wrappers
+    // aren't valid there anyway. Skip — qns-endpoint is Linux-only by intent.
+    if (builtin.target.os.tag == .windows) return;
     const linux = std.os.linux;
     const sock_rc = linux.socket(std.posix.AF.INET, linux.SOCK.STREAM, 0);
     if (linux.errno(sock_rc) != .SUCCESS) return;

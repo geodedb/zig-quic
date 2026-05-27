@@ -31,7 +31,8 @@ pub fn main(proc_init: std.process.Init) !void {
     tls_logger.setTestSink(tlsLoggerSink);
     var alloc = proc_init.gpa;
 
-    var args_it = std.process.Args.Iterator.init(proc_init.minimal.args);
+    var args_it = try std.process.Args.Iterator.initAllocator(proc_init.minimal.args, alloc);
+    defer args_it.deinit();
     _ = args_it.skip();
 
     var bind_addr: []const u8 = "127.0.0.1:4433";
