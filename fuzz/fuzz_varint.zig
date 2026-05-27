@@ -4,10 +4,10 @@ const varint = @import("quic_varint");
 pub fn main() !void {
     // Simple standalone fuzzer harness compatible with libFuzzer-like runners.
     // Reads stdin to a buffer and attempts varint decode.
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
-    var out = std.ArrayList(u8){};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(alloc);
     var tmp: [4096]u8 = undefined;
     var infd: std.posix.fd_t = undefined;
