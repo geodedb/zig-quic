@@ -645,11 +645,15 @@ pub fn processCryptoFrame(
     // Step 1: Buffer out-of-order CRYPTO data (RFC 9000 §19.6)
     try crypto_buffer.insertFragment(ctx.allocator.*, offset, crypto_data);
 
-    // Step 2: Set threadlocal for callback access to Connection
+    // Step 2: Serialize TLS Context access and set threadlocal callback state.
+    conn.tls_context_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    defer conn.tls_context_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+
+    // Step 3: Set threadlocal for callback access to Connection
     current_tls_connection = conn;
     defer current_tls_connection = null;
 
-    // Step 3: Extract and process all contiguous chunks
+    // Step 4: Extract and process all contiguous chunks
     while (crypto_buffer.getContiguous(rx_off_ptr.*)) |fragments| {
         for (fragments) |frag| {
             if (frag.data.len == 0) continue;
@@ -718,25 +722,43 @@ pub fn sendServerHello(ctx: *HandshakeContext) !void {
     // Check if we have Initial TX keys
     const initial_tx_keys = conn.initial_tx_keys orelse return error.NoInitialKeys;
 
-    // Poll TLS Context for ServerHello at Initial level
-    const sh_data = tls_ctx.pollCrypto(ctx.allocator.*, .Initial) catch {
-        // No ServerHello available yet
-        logger.debugPrint("sendServerHello: Context has no Initial CRYPTO data\n", .{});
-        return;
+    const PolledCrypto = struct {
+        initial: []u8,
+        handshake: ?[]u8,
     };
+    const polled = blk: {
+        conn.tls_context_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer conn.tls_context_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+
+        setCurrentConnection(conn);
+        defer clearCurrentConnection();
+
+        // Poll TLS Context for ServerHello at Initial level.
+        const initial_data = tls_ctx.pollCrypto(ctx.allocator.*, .Initial) catch {
+            // No ServerHello available yet.
+            logger.debugPrint("sendServerHello: Context has no Initial CRYPTO data\n", .{});
+            return;
+        };
+
+        // Also poll Handshake level for Certificate+Finished messages.
+        const handshake_data = tls_ctx.pollCrypto(ctx.allocator.*, .Handshake) catch |err| hs_blk: {
+            // It's okay if no Handshake data is available yet.
+            logger.debugPrint("sendServerHello: No Handshake CRYPTO data (error: {})\n", .{err});
+            break :hs_blk null;
+        };
+
+        break :blk PolledCrypto{
+            .initial = initial_data,
+            .handshake = handshake_data,
+        };
+    };
+    const sh_data = polled.initial;
     defer ctx.allocator.free(sh_data);
 
     logger.debugPrint("sendServerHello: Context provided {} bytes at Initial level\n", .{sh_data.len});
 
-    // Also poll Handshake level for Certificate+Finished messages
-    // These are stored in pending_hs_messages for sendHandshakePackets to send later
-    const hs_data = tls_ctx.pollCrypto(ctx.allocator.*, .Handshake) catch |err| blk: {
-        // It's okay if no Handshake data is available yet
-        logger.debugPrint("sendServerHello: No Handshake CRYPTO data (error: {})\n", .{err});
-        break :blk null;
-    };
-
-    if (hs_data) |hs_msgs| {
+    // These are stored in pending_hs_messages for sendHandshakePackets to send later.
+    if (polled.handshake) |hs_msgs| {
         defer ctx.allocator.free(hs_msgs);
         logger.debugPrint("sendServerHello: Context provided {} bytes at Handshake level\n", .{hs_msgs.len});
 
@@ -1021,9 +1043,17 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
         // callbacks that install conn.hs_tx_keys when both server-send and
         // client-recv Handshake secrets are derived.  Must run before the
         // hs_tx_keys check below to avoid a benign race.
-        const hs_data = tls_ctx.pollCrypto(ctx.allocator.*, .Handshake) catch |err| blk: {
-            logger.debugPrint("sendHandshakePackets: Context pollCrypto(.Handshake) returned error: {s}\n", .{@errorName(err)});
-            break :blk null;
+        const hs_data = blk: {
+            conn.tls_context_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            defer conn.tls_context_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+
+            setCurrentConnection(conn);
+            defer clearCurrentConnection();
+
+            break :blk tls_ctx.pollCrypto(ctx.allocator.*, .Handshake) catch |err| err_blk: {
+                logger.debugPrint("sendHandshakePackets: Context pollCrypto(.Handshake) returned error: {s}\n", .{@errorName(err)});
+                break :err_blk null;
+            };
         };
 
         if (hs_data) |data| {

@@ -68,6 +68,11 @@ fn endpointRxSerialMutexStateRaw(conn: *const conn_mod.Connection) u32 {
     return @atomicLoad(u32, state_ptr, .monotonic);
 }
 
+fn tlsContextMutexStateRaw(conn: *const conn_mod.Connection) u32 {
+    const state_ptr: *const u32 = @ptrCast(&conn.tls_context_mu.state.raw);
+    return @atomicLoad(u32, state_ptr, .monotonic);
+}
+
 test "Connection.init zeroes mu.state even when backing bytes start as contended (0x02)" {
     // Use a raw page-allocator so we can control the initial byte
     // pattern deterministically. The std.heap.page_allocator is fine —
@@ -115,6 +120,7 @@ test "Connection.init zeroes mu.state even when backing bytes start as contended
     // `self.mu = std.Io.Mutex.init;` was added to the body.
     const state_after = mutexStateRaw(conn_ptr);
     const rx_serial_state_after = endpointRxSerialMutexStateRaw(conn_ptr);
+    const tls_context_state_after = tlsContextMutexStateRaw(conn_ptr);
     if (state_after != 0) {
         std.debug.print(
             "\n  FAIL: Connection.mu.state.raw = 0x{X:0>8} after init (expected 0x00000000)\n" ++
@@ -126,6 +132,7 @@ test "Connection.init zeroes mu.state even when backing bytes start as contended
     }
     try std.testing.expectEqual(@as(u32, 0), state_after);
     try std.testing.expectEqual(@as(u32, 0), rx_serial_state_after);
+    try std.testing.expectEqual(@as(u32, 0), tls_context_state_after);
 }
 
 test "Connection.init produces a mutex that can actually be locked and unlocked within 500ms" {

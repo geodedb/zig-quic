@@ -942,6 +942,48 @@ pub fn build(b: *std.Build) void {
             const run_test_conn_init_mutex = b.addRunArtifact(test_conn_init_mutex);
             test_step.dependOn(&run_test_conn_init_mutex.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "thread_safety")) {
+            const test_thread_safety = addTst(b, testlog_mod, compat_mod, "tests/test_thread_safety.zig", target, optimize);
+            test_thread_safety.root_module.addImport("quic", quic_api_mod);
+            test_thread_safety.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+            test_thread_safety.root_module.addImport("quic_conn", quic_conn_mod);
+            test_thread_safety.root_module.addImport("quic_config", quic_config_mod);
+            const run_test_thread_safety = b.addRunArtifact(test_thread_safety);
+            test_step.dependOn(&run_test_thread_safety.step);
+            return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "concurrent_handshake_race")) {
+            const test_concurrent_handshake_race = addTst(
+                b,
+                testlog_mod,
+                compat_mod,
+                "tests/test_concurrent_handshake_race.zig",
+                target,
+                optimize,
+            );
+            test_concurrent_handshake_race.root_module.addImport("quic_api", quic_api_mod);
+            test_concurrent_handshake_race.root_module.addImport("quic_config", quic_config_mod);
+            const run_test_concurrent_handshake_race = b.addRunArtifact(test_concurrent_handshake_race);
+            test_step.dependOn(&run_test_concurrent_handshake_race.step);
+            return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "pending_hs_send")) {
+            const test_pending_hs_send = addTst(
+                b,
+                testlog_mod,
+                compat_mod,
+                "tests/test_pending_hs_send_retry.zig",
+                target,
+                optimize,
+            );
+            test_pending_hs_send.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+            test_pending_hs_send.root_module.addImport("quic_conn", quic_conn_mod);
+            test_pending_hs_send.root_module.addImport("quic_packet", quic_packet_mod);
+            test_pending_hs_send.root_module.addImport("quic_frame", quic_frame_mod);
+            test_pending_hs_send.root_module.addImport("quic_tls", quic_tls_mod);
+            test_pending_hs_send.root_module.addImport("config.zig", quic_config_mod);
+            test_pending_hs_send.root_module.addImport("test_certs", test_certs_mod);
+            const run_test_pending_hs_send = b.addRunArtifact(test_pending_hs_send);
+            test_step.dependOn(&run_test_pending_hs_send.step);
+            return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "tx_credit_generation")) {
             const test_tx_credit_generation = addTst(b, testlog_mod, compat_mod, "tests/test_tx_credit_generation.zig", target, optimize);
             test_tx_credit_generation.root_module.addImport("quic_conn", quic_conn_mod);

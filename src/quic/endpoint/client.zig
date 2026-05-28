@@ -276,20 +276,25 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
         return error.NoTlsContext;
     };
 
-    // Set transport parameters on TLS Context
-    if (c.local_transport_params_raw) |tp_bytes| {
-        try tls_ctx.setTransportParameters(tp_bytes);
-    }
+    const crypto_data = blk: {
+        c.tls_context_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer c.tls_context_mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
-    // Start client handshake (generates ClientHello)
-    tls_ctx.startClientHandshake() catch |err| {
-        logger.debugPrint("sendInitialProbe: Context startClientHandshake error: {}\n", .{err});
-    };
+        // Set transport parameters on TLS Context.
+        if (c.local_transport_params_raw) |tp_bytes| {
+            try tls_ctx.setTransportParameters(tp_bytes);
+        }
 
-    // Poll for the generated ClientHello
-    const crypto_data = tls_ctx.pollCrypto(ctx.allocator.*, .Initial) catch |err| blk: {
-        logger.debugPrint("sendInitialProbe: Context pollCrypto error: {}\n", .{err});
-        break :blk null;
+        // Start client handshake (generates ClientHello).
+        tls_ctx.startClientHandshake() catch |err| {
+            logger.debugPrint("sendInitialProbe: Context startClientHandshake error: {}\n", .{err});
+        };
+
+        // Poll for the generated ClientHello.
+        break :blk tls_ctx.pollCrypto(ctx.allocator.*, .Initial) catch |err| err_blk: {
+            logger.debugPrint("sendInitialProbe: Context pollCrypto error: {}\n", .{err});
+            break :err_blk null;
+        };
     };
 
     if (crypto_data) |data| {

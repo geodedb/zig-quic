@@ -296,18 +296,23 @@ fn processHandshakeResolvedWithHeader(
         var crypto_data: ?[]const u8 = null;
         var owns_data = false;
 
-        // Set connection context for callbacks
-        handshake_integration.setCurrentConnection(conn);
-        defer handshake_integration.clearCurrentConnection();
-
-        // Poll for Handshake-level CRYPTO data
         const tls_ctx = conn.tls_context orelse return; // No TLS Context, skip processing
-        const hs_data = tls_ctx.pollCrypto(ctx.allocator.*, .Handshake) catch |err| blk: {
-            // Unimplemented means no data available (expected)
-            if (err != error.Unimplemented) {
-                logger.debugPrint("processHandshake: Context pollCrypto error: {}\n", .{err});
-            }
-            break :blk null;
+        const hs_data = blk: {
+            conn.tls_context_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            defer conn.tls_context_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+
+            // Set connection context for callbacks.
+            handshake_integration.setCurrentConnection(conn);
+            defer handshake_integration.clearCurrentConnection();
+
+            // Poll for Handshake-level CRYPTO data.
+            break :blk tls_ctx.pollCrypto(ctx.allocator.*, .Handshake) catch |err| err_blk: {
+                // Unimplemented means no data available (expected).
+                if (err != error.Unimplemented) {
+                    logger.debugPrint("processHandshake: Context pollCrypto error: {}\n", .{err});
+                }
+                break :err_blk null;
+            };
         };
         if (hs_data) |data| {
             crypto_data = data;

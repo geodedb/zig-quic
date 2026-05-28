@@ -439,6 +439,9 @@ pub fn bind(comptime Connection: type) type {
             // NOTE: Caller must set current connection context via handshake_integration.setCurrentConnection()
             // before calling this function for TLS Context callbacks to work properly
 
+            self.tls_context_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+            defer self.tls_context_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+
             // Process CRYPTO data through TLS Context
             tls_ctx.processCrypto(level, hs) catch |err| {
                 logger.debugPrint("pushCrypto: processCrypto failed with error: {}\n", .{err});

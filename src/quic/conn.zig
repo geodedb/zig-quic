@@ -621,6 +621,12 @@ pub const Connection = struct {
     /// connection-local frame handlers single-threaded without letting one
     /// active connection hold Endpoint.mu and block unrelated peers.
     endpoint_rx_serial_mu: std.Io.Mutex = std.Io.Mutex.init,
+    // CANARY: REQ=REQ-QUIC-HC-137; FEATURE="High-Concurrency Handshake"; ASPECT=TlsContextSerialization; STATUS=TESTED; TEST=pending_hs_send_retry_waits_for_rx_serial_mutex; OWNER=transport; UPDATED=2026-05-28
+    /// Serializes access to the vendor TLS Context. The TLS Context documents
+    /// processCrypto/pollCrypto as single-threaded and its outbound CRYPTO
+    /// queues are ArrayLists drained by ownership transfer, so QUIC must not
+    /// let concurrent poll workers drive the same connection's TLS state.
+    tls_context_mu: std.Io.Mutex = std.Io.Mutex.init,
 
     id: u64,
     role: Role,
@@ -1161,6 +1167,7 @@ pub const Connection = struct {
         self.mu = std.Io.Mutex.init;
         self.sent_history_mu = std.Io.Mutex.init;
         self.endpoint_rx_serial_mu = std.Io.Mutex.init;
+        self.tls_context_mu = std.Io.Mutex.init;
         self.id = 0;
         self.role = role;
         self.sock_fd = sock_fd;

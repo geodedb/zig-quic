@@ -1842,6 +1842,17 @@ pub const Endpoint = struct {
                 };
 
                 for (pending_hs_send_snapshot.items) |c| {
+                    // CANARY: REQ=REQ-QUIC-HC-137; FEATURE="High-Concurrency Handshake"; ASPECT=PendingHandshakeSendSerialization; STATUS=TESTED; TEST=pending_hs_send_retry_waits_for_rx_serial_mutex; OWNER=transport; UPDATED=2026-05-28
+                    //
+                    // The normal Initial/Handshake receive paths hold this
+                    // per-connection serial mutex while driving TLS
+                    // processCrypto/pollCrypto. The deferred retry path must
+                    // join that same serialization; otherwise one poll worker
+                    // can drain pollCrypto while another worker is appending
+                    // to the same TLS outbound CRYPTO ArrayList.
+                    c.endpoint_rx_serial_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+                    defer c.endpoint_rx_serial_mu.unlock(std.Io.Threaded.global_single_threaded.io());
+
                     // The TLS callback path (onSecretAvailable) reads the
                     // current connection from a thread-local; install it
                     // before calling sendHandshakePackets so a Handshake-

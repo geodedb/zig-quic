@@ -143,7 +143,8 @@ test "concurrent popAccepted calls are safe" {
 
 // Test that Connection has mutex field
 test "connection mutex field exists" {
-    // This test just verifies the Connection struct has the mu field
+    // This test verifies Connection keeps both general state and TLS-context
+    // serialization primitives.
     // A full connection test would require TLS setup which is complex
     const ConnType = conn_mod.Connection;
 
@@ -157,7 +158,62 @@ test "connection mutex field exists" {
         }
         break :blk false;
     };
+    const has_tls_context_mu = comptime blk: {
+        const info = @typeInfo(ConnType);
+        for (info.@"struct".fields) |field| {
+            if (std.mem.eql(u8, field.name, "tls_context_mu")) {
+                break :blk true;
+            }
+        }
+        break :blk false;
+    };
     try testing.expect(has_mu);
+    try testing.expect(has_tls_context_mu);
+}
+
+test "pending_hs_send_retry_waits_for_rx_serial_mutex" {
+    var config = cfg.QuicConfig{
+        .alpn = &test_alpn,
+        .allow_insecure = true,
+    };
+    var ep = try endpoint_mod.Endpoint.init(testing.allocator, "127.0.0.1:0", &config);
+    defer ep.deinit();
+
+    var conn: conn_mod.Connection = undefined;
+    var alloc = testing.allocator;
+    conn.init(&alloc, .Server, 0, conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433));
+    defer conn.deinit();
+    conn.pending_hs_send = true;
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    ep.pending_hs_send_mu.lockUncancelable(io);
+    try ep.pending_hs_send_set.put(&conn, {});
+    ep.pending_hs_send_count.store(1, .release);
+    ep.pending_hs_send_mu.unlock(io);
+
+    conn.endpoint_rx_serial_mu.lockUncancelable(io);
+
+    var poll_started = std.atomic.Value(bool).init(false);
+    var poll_done = std.atomic.Value(bool).init(false);
+    const poll_thread = try std.Thread.spawn(.{}, struct {
+        fn run(endpoint: *endpoint_mod.Endpoint, started: *std.atomic.Value(bool), done: *std.atomic.Value(bool)) void {
+            started.store(true, .release);
+            _ = endpoint.pollWithStats(0) catch {};
+            done.store(true, .release);
+        }
+    }.run, .{ &ep, &poll_started, &poll_done });
+
+    while (!poll_started.load(.acquire)) {
+        compat.threadSleep(std.time.ns_per_ms);
+    }
+    compat.threadSleep(50 * std.time.ns_per_ms);
+    const retry_waited = !poll_done.load(.acquire);
+
+    conn.endpoint_rx_serial_mu.unlock(io);
+    poll_thread.join();
+
+    try testing.expect(retry_waited);
+    try testing.expect(poll_done.load(.acquire));
 }
 
 test "onPacketSent legacy sent maps tolerate concurrent PTO accounting" {
