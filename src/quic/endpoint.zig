@@ -1917,9 +1917,20 @@ pub const Endpoint = struct {
                 self.pto_dirty_mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
                 for (pto_dirty_snapshot.items) |c| {
-                    c.computeAndMaybeArmPtoInitial(self);
-                    c.computeAndMaybeArmPtoHandshake(self);
-                    c.computeAndMaybeArmPto(self);
+                    // CANARY: REQ=REQ-QUIC-HC-136; FEATURE="QUIC High-Concurrency Requests"; ASPECT=PtoRecomputeConnectionMutex; STATUS=TESTED; TEST=pto_dirty_recompute_waits_for_connection_mutex; OWNER=transport; UPDATED=2026-05-28
+                    //
+                    // PTO recompute mutates per-connection active/id fields and
+                    // reads Recovery in-flight state. Geode response workers can
+                    // concurrently write STREAM frames for the same connection,
+                    // so serialize dirty recompute with writeStream(), ACK
+                    // handling, and PTO expiry on the connection mutex.
+                    c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+                    if (!c.closed) {
+                        c.computeAndMaybeArmPtoInitial(self);
+                        c.computeAndMaybeArmPtoHandshake(self);
+                        c.computeAndMaybeArmPto(self);
+                    }
+                    c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
                 }
             }
         }

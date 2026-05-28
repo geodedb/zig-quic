@@ -193,3 +193,40 @@ test "onPacketSent legacy sent maps tolerate concurrent PTO accounting" {
     try testing.expectEqual(@as(u32, num_threads * iterations), conn.sent_time.count());
     try testing.expectEqual(@as(u32, num_threads * iterations), conn.sent_sizes.count());
 }
+
+test "pto_dirty_recompute_waits_for_connection_mutex" {
+    var config = cfg.QuicConfig{
+        .alpn = &test_alpn,
+        .allow_insecure = true,
+    };
+    var ep = try endpoint_mod.Endpoint.init(testing.allocator, "127.0.0.1:0", &config);
+    defer ep.deinit();
+
+    const conn = try ep.connectClient("127.0.0.1:9");
+    _ = try ep.pollWithStats(0);
+
+    conn.markPtoDirty();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    conn.mu.lockUncancelable(io);
+
+    var poll_started = std.atomic.Value(bool).init(false);
+    var poll_done = std.atomic.Value(bool).init(false);
+    const poll_thread = try std.Thread.spawn(.{}, struct {
+        fn run(endpoint: *endpoint_mod.Endpoint, started: *std.atomic.Value(bool), done: *std.atomic.Value(bool)) void {
+            started.store(true, .release);
+            _ = endpoint.pollWithStats(0) catch {};
+            done.store(true, .release);
+        }
+    }.run, .{ &ep, &poll_started, &poll_done });
+
+    while (!poll_started.load(.acquire)) {
+        std.Thread.sleep(std.time.ns_per_ms);
+    }
+    std.Thread.sleep(25 * std.time.ns_per_ms);
+    const recompute_waited = !poll_done.load(.acquire);
+
+    conn.mu.unlock(io);
+    poll_thread.join();
+    try testing.expect(recompute_waited);
+    try testing.expect(poll_done.load(.acquire));
+}
