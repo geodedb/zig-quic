@@ -76,6 +76,14 @@ const builtin = @import("builtin");
 // enough to push response recovery into client retry deadlines.
 const max_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap;
 
+// CANARY: REQ=REQ-QUIC-HC-123; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ShortHeaderPollBudget; STATUS=TESTED; TEST=endpoint_short_header_poll_budget; OWNER=transport; UPDATED=2026-05-28
+// Application packets are cheaper than Initials individually, but a
+// same-instant request burst can put hundreds of them in the socket FIFO.
+// Returning after a smaller short-header slice wakes Geode's stream handlers
+// and response writers sooner instead of spending a full UDP batch inside one
+// poll cycle.
+const max_short_header_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap / 4;
+
 // CANARY: REQ=REQ-QUIC-HC-059; FEATURE="QUIC High-Concurrency Requests"; ASPECT=LongHeaderPollBudget; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
 // Long-header Initial packets create new TLS state and are the slowest packet
 // class in a fan-in storm. Cap *new Initial* processing at the same bounded
@@ -1639,6 +1647,7 @@ pub const Endpoint = struct {
                 };
             }
             var initial_packets_processed: usize = 0;
+            var short_header_packets_processed: usize = 0;
             drain_loop: while (true) {
                 if (stats.packets_processed >= max_packets_per_poll_cycle) break :drain_loop;
                 const packet_budget_left = max_packets_per_poll_cycle - stats.packets_processed;
@@ -1665,6 +1674,7 @@ pub const Endpoint = struct {
                 while (i < batch_n) : (i += 1) {
                     const slot = recv_slots[i];
                     const datagram = slot.buf[0..slot.n];
+                    var processed_short_header = false;
                     if (datagram.len > 0 and (datagram[0] & 0x80) == 0) {
                         const short_header_start_ns = nowNsMonotonic();
                         const short_timing = self.processShortHeaderDatagramConcurrent(slot.peer, datagram, slot.ecn);
@@ -1675,6 +1685,8 @@ pub const Endpoint = struct {
                         stats.recv_short_decrypt_ns += short_timing.decrypt_ns;
                         stats.recv_short_frame_process_ns += short_timing.frame_process_ns;
                         stats.recv_short_ack_send_ns += short_timing.ack_send_ns;
+                        short_header_packets_processed += 1;
+                        processed_short_header = true;
                     } else {
                         const long_kind = classifyLongHeaderPacket(datagram);
                         const long_version = parseLongHeaderVersion(datagram) orelse 0;
@@ -1717,6 +1729,7 @@ pub const Endpoint = struct {
                         if (long_kind == .Initial) initial_packets_processed += 1;
                     }
                     stats.packets_processed += 1;
+                    if (processed_short_header and short_header_packets_processed >= max_short_header_packets_per_poll_cycle) break :drain_loop;
                 }
                 // mu released between datagrams — handler threads get a chance to run.
 
@@ -2906,6 +2919,12 @@ test "endpoint timers keep index consistent across heap operations" {
 
 test "endpoint poll cycle fairness budget stays below large burst drain" {
     try std.testing.expectEqual(udp_transport_mod.UdpBatchCap, max_packets_per_poll_cycle);
+}
+
+test "endpoint short header poll budget returns before full burst drain" {
+    try std.testing.expectEqual(@as(usize, 16), max_short_header_packets_per_poll_cycle);
+    try std.testing.expect(max_short_header_packets_per_poll_cycle < max_packets_per_poll_cycle);
+    try std.testing.expect(max_short_header_packets_per_poll_cycle > 0);
 }
 
 test "endpoint pto dirty recompute has a poll cycle fairness budget" {
