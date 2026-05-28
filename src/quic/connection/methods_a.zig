@@ -879,8 +879,11 @@ pub fn bind(comptime Connection: type) type {
                 const receive_window = if (s.initial_window_size > 0) s.initial_window_size else self.local_max_stream_data;
                 s.local_max_stream_data = receive_window; // bytes_consumed_total is 0 for new streams
                 self.markStreamFlowControlDirty(stream_id);
-                // Send initial MAX_STREAM_DATA to advertise the window
-                self.advertiseInitialFlowControl();
+                // CANARY: REQ=REQ-QUIC-HC-145; FEATURE="QUIC High-Concurrency Requests"; ASPECT=DeferredReceivePathFlowControl; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-28
+                // Do not send a standalone flow-control packet from the
+                // receive path. The next ACK/STREAM send piggybacks dirty
+                // MAX_STREAM_DATA, which avoids blocking endpoint poll workers
+                // on UDP sends while application request data is waiting.
             }
             // Auto-echo implementation DISABLED: This conflicts with application-level echo servers.
             // The auto-echo would send "Hello QUIC\n" (11 bytes) on stream 0 with offset=0 and FIN=true,

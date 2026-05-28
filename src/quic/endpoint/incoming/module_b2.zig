@@ -24,6 +24,8 @@ fn invalidSocket() posix.socket_t {
 pub const FrameProcessResult = struct {
     /// Whether any ack-eliciting frames were seen (RFC 9000 §13.2.1)
     saw_ack_eliciting: bool = false,
+    /// Whether any STREAM frames delivered application-visible bytes.
+    saw_stream: bool = false,
     /// Whether HANDSHAKE_DONE was received (triggers key drop)
     saw_handshake_done: bool = false,
     /// Whether CONNECTION_CLOSE was received (terminates processing)
@@ -114,6 +116,7 @@ pub fn processFrames(
 
         // Accumulate flags
         result.saw_ack_eliciting = result.saw_ack_eliciting or frame_result.saw_ack_eliciting;
+        result.saw_stream = result.saw_stream or frame_result.saw_stream;
         result.saw_handshake_done = result.saw_handshake_done or frame_result.saw_handshake_done;
         result.saw_close = result.saw_close or frame_result.saw_close;
     }

@@ -497,6 +497,20 @@ pub fn bind(comptime Connection: type) type {
                     .ecn = ack_ecn,
                 } }).write(frame_stream.writer()) catch 0;
             }
+            // CANARY: REQ=REQ-QUIC-HC-145; FEATURE="QUIC High-Concurrency Requests"; ASPECT=DeferredReceivePathFlowControl; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-28
+            // Receive-path STREAM delivery only marks flow-control frames dirty.
+            // Piggyback them here on the application response instead of
+            // emitting standalone MAX_* packets while endpoint poll workers are
+            // trying to deliver request data.
+            _ = self.appendDirtyMaxStreamDataFrames(frame_stream.writer(), 64);
+            if (self.local_max_data > self.last_sent_max_data) {
+                const n = (frame.Frame{ .max_data = .{ .max = self.local_max_data } }).write(frame_stream.writer()) catch 0;
+                if (n > 0) self.last_sent_max_data = self.local_max_data;
+            }
+            if (self.local_max_streams_bidi > self.last_sent_max_streams_bidi) {
+                const n = (frame.Frame{ .max_streams_bidi = .{ .max = self.local_max_streams_bidi } }).write(frame_stream.writer()) catch 0;
+                if (n > 0) self.last_sent_max_streams_bidi = self.local_max_streams_bidi;
+            }
             // Write STREAM frame with slice sized by to_send.
             _ = (frame.Frame{ .stream = .{ .stream_id = id, .offset = cur_off, .fin = fin and to_send == data.len, .data = data[0..to_send] } }).write(frame_stream.writer()) catch 0;
             const frame_bytes = frame_storage[0..frame_stream.pos];

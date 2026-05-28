@@ -195,6 +195,7 @@ test "RFC 9000 §19.8 - STREAM frame is ack-eliciting" {
     const result = try frame_handler.handleStream(&ctx, s);
 
     try testing.expect(result.saw_ack_eliciting);
+    try testing.expect(result.saw_stream);
 }
 
 test "RFC 9000 §19.8 - STREAM frame with FIN flag" {
@@ -212,6 +213,7 @@ test "RFC 9000 §19.8 - STREAM frame with FIN flag" {
     const result = try frame_handler.handleStream(&ctx, s);
 
     try testing.expect(result.saw_ack_eliciting);
+    try testing.expect(result.saw_stream);
 }
 
 // =============================================================================
@@ -269,6 +271,28 @@ test "RFC 9000 §19.3 - ACK resets PTO count" {
     _ = frame_handler.handleAck(&ctx, a);
 
     try testing.expectEqual(@as(u32, 0), conn.pto_app_count);
+}
+
+test "frame_handler server ack skips when connection mutex is busy" {
+    const conn = try createTestConnection();
+    defer destroyTestConnection(conn);
+    conn.role = .Server;
+    conn.pto_app_count = 5;
+    var ctx = createTestContext(conn);
+
+    conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    defer conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+
+    const result = frame_handler.handleAck(&ctx, .{
+        .largest = 10,
+        .ack_delay = 0,
+        .first_range = 5,
+        .ranges = &[_]frame.AckRange{},
+        .ecn = null,
+    });
+
+    try testing.expect(!result.saw_ack_eliciting);
+    try testing.expectEqual(@as(u32, 5), conn.pto_app_count);
 }
 
 // =============================================================================

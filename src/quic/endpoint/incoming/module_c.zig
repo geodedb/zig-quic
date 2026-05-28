@@ -577,7 +577,19 @@ pub fn processShortHeaderResolved(
     //
     // RFC 9000 §8.1: "A server MUST NOT send more than three times as many bytes
     // as the number of bytes it has received prior to validating the client address."
-    if ((frame_result.saw_ack_eliciting or conn.ecn_app_ack_pending) and conn.app_tx_keys != null) {
+    const defer_server_stream_ack =
+        ctx.endpoint_role == .Server and
+        frame_result.saw_stream and
+        !conn.ecn_app_ack_pending and
+        ecn_bits == null;
+
+    // CANARY: REQ=REQ-QUIC-HC-144; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ServerStreamAckPiggyback; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-28
+    // Server request packets are normally followed by an application response.
+    // writeStream() already piggybacks app-space ACK ranges into that response,
+    // so emitting a standalone ACK here just extends the receive-path critical
+    // section and races the handler that was just woken by pushStreamFrame().
+    // ECN and non-STREAM ack-eliciting frames still use the immediate path.
+    if ((frame_result.saw_ack_eliciting or conn.ecn_app_ack_pending) and conn.app_tx_keys != null and !defer_server_stream_ack) {
         var ack_ctx = AckContext{
             .allocator = ctx.allocator,
             .conn = conn,

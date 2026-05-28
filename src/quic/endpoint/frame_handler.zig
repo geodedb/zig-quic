@@ -53,6 +53,8 @@ pub const SendFn = *const fn (peer: conn_mod.SockAddr, data: []const u8) anyerro
 pub const FrameResult = struct {
     /// Whether this frame is ack-eliciting (RFC 9000 §13.2.1)
     saw_ack_eliciting: bool = false,
+    /// Whether STREAM data was delivered to the application receive buffer.
+    saw_stream: bool = false,
     /// Whether HANDSHAKE_DONE was received (triggers key drop)
     saw_handshake_done: bool = false,
     /// Whether CONNECTION_CLOSE was received (terminates processing)
@@ -119,7 +121,7 @@ pub fn handleStream(
         return err;
     };
     logger.debugPrint("pushStreamFrame returned successfully\n", .{});
-    return .{ .saw_ack_eliciting = true };
+    return .{ .saw_ack_eliciting = true, .saw_stream = true };
 }
 
 /// Handle DATAGRAM frame (RFC 9221).
@@ -183,13 +185,27 @@ pub fn handleAck(
     ctx: *FrameContext,
     a: frame.Ack,
 ) FrameResult {
+    // CANARY: REQ=REQ-QUIC-HC-143; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ContendedAckFrameShedding; STATUS=TESTED; TEST=frame_handler_server_ack_skips_when_connection_mutex_is_busy; OWNER=transport; UPDATED=2026-05-28
+    // ACK-only work must not park endpoint poll workers behind response
+    // writers. ACK frames are non-ack-eliciting and future ACK ranges are
+    // cumulative, so under server-side contention it is better to drop this
+    // receive-path ACK sample than to block delivery of unrelated STREAM data.
+    const shed_if_busy = ctx.space == .Application and ctx.conn.role == .Server;
+    var locked = false;
+    if (shed_if_busy) {
+        if (!ctx.conn.mu.tryLock()) return .{};
+        locked = true;
+    } else {
+        ctx.conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        locked = true;
+    }
+
     // CANARY: REQ=REQ-QUIC-HC-069; FEATURE="QUIC High-Concurrency Requests"; ASPECT=AckRecoveryMutex; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27
     // ACK processing mutates recovery state and the application STREAM
     // retransmission map. Keep it under the same per-connection mutex as
     // writeStream()/PTO retransmission so a many-connection response burst
     // cannot race ACK cleanup against a concurrent send or timer callback.
-    ctx.conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-    defer ctx.conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+    defer if (locked) ctx.conn.mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
     // PHASE 56 FIX: Re-enable ACK processing (was disabled for unit testing)
     // Forward Application ACK to recovery with actual ranges
