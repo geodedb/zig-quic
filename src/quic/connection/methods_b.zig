@@ -852,7 +852,7 @@ pub fn bind(comptime Connection: type) type {
             };
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
             const res = self.rec.onAckReceivedWithEcn(space, acked, 0, now_ns, ecn);
-            if (space == .Application and res.bytes_acked > 0) {
+            if (res.bytes_acked > 0) {
                 _ = self.tx_credit_generation.fetchAdd(1, .release);
                 std.Io.Threaded.global_single_threaded.io().futexWake(u32, &self.tx_credit_generation.raw, std.math.maxInt(u32));
             }

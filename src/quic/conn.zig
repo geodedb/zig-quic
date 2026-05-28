@@ -566,7 +566,6 @@ test "connection init resets default-backed runtime fields from allocator fill b
 
     c.init(&allocator, .Client, -1, SockAddr.ipv4(127, 0, 0, 1, 4433));
     defer c.deinit();
-
     try std.testing.expectEqual(@as(u32, 0), c.rx_data_generation.load(.acquire));
     try std.testing.expectEqual(@as(u32, 0), c.endpoint_rx_refs.load(.acquire));
     try std.testing.expect(!c.endpoint_destroying.load(.acquire));
@@ -834,11 +833,11 @@ pub const Connection = struct {
     /// this connection. Application readers can futex-wait on the generation
     /// after a WouldBlock instead of joining the endpoint-wide poll wake herd.
     rx_data_generation: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
-    // CANARY: REQ=REQ-QUIC-HC-087; FEATURE="QUIC High-Concurrency Requests"; ASPECT=PerConnectionTxCreditWake; STATUS=IMPL; TEST=test_quic_condition_timedwait_cadence; OWNER=transport; UPDATED=2026-05-27
-    /// Incremented whenever Application ACK processing frees congestion
-    /// credit. High-fanout writers can futex-wait on this per-connection word
-    /// after congestion-window zero returns instead of retrying on unrelated
-    /// endpoint poll cycles.
+    // CANARY: REQ=REQ-QUIC-HC-087; FEATURE="QUIC High-Concurrency Requests"; ASPECT=PerConnectionTxCreditWake; STATUS=TESTED; TEST=tx_credit_generation_advances_for_handshake_space_ack_credit; OWNER=transport; UPDATED=2026-05-28
+    /// Incremented whenever ACK processing frees congestion credit in any
+    /// packet-number space. High-fanout writers can futex-wait on this
+    /// per-connection word after congestion-window zero returns instead of
+    /// retrying on unrelated endpoint poll cycles.
     tx_credit_generation: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     // CANARY: REQ=REQ-QUIC-HC-051; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ShortHeaderRxLifetime; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
     /// Number of endpoint poll workers that hold a lifetime pin while they
@@ -1259,6 +1258,7 @@ pub const Connection = struct {
         // undefined memory and then invoke init(); reset all wake/timer/runtime
         // fields here so high-concurrency readers never observe allocator fill.
         self.rx_data_generation = std.atomic.Value(u32).init(0);
+        self.tx_credit_generation = std.atomic.Value(u32).init(0);
         self.endpoint_rx_refs = std.atomic.Value(u32).init(0);
         self.endpoint_destroying = std.atomic.Value(bool).init(false);
         self.pending_fc_streams = .empty;

@@ -928,6 +928,12 @@ pub fn build(b: *std.Build) void {
             const run_test_conn_init_mutex = b.addRunArtifact(test_conn_init_mutex);
             test_step.dependOn(&run_test_conn_init_mutex.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "tx_credit_generation")) {
+            const test_tx_credit_generation = addTst(b, testlog_mod, compat_mod, "tests/test_tx_credit_generation.zig", target, optimize);
+            test_tx_credit_generation.root_module.addImport("quic_conn", quic_conn_mod);
+            const run_test_tx_credit_generation = b.addRunArtifact(test_tx_credit_generation);
+            test_step.dependOn(&run_test_tx_credit_generation.step);
+            return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "udp_batch_runtime_smoke")) {
             const test_udp_batch_runtime_smoke = addTst(b, testlog_mod, compat_mod, "src/quic/endpoint/test_udp_batch_runtime_smoke.zig", target, optimize);
             test_udp_batch_runtime_smoke.root_module.addImport("quic_conn", quic_conn_mod);
