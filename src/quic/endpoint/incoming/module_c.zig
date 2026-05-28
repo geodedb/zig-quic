@@ -24,6 +24,31 @@ const AckContext = incoming_b2.AckContext;
 var g_app_decrypt_start = std.atomic.Value(u64).init(0);
 var g_app_decrypt_success = std.atomic.Value(u64).init(0);
 
+fn shortHeaderDiagnosticsEnabled() bool {
+    const raw = std.c.getenv("GEODE_QUIC_SHORT_HEADER_DIAGNOSTICS") orelse return false;
+    const value = std.mem.span(raw);
+    if (value.len == 0) return true;
+    if (std.mem.eql(u8, value, "0")) return false;
+    if (std.ascii.eqlIgnoreCase(value, "false")) return false;
+    if (std.ascii.eqlIgnoreCase(value, "no")) return false;
+    if (std.ascii.eqlIgnoreCase(value, "off")) return false;
+    return true;
+}
+
+fn peerPort(peer: conn_mod.SockAddr) u16 {
+    return switch (peer.storage.family) {
+        posix.AF.INET => blk: {
+            const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&peer.storage));
+            break :blk std.mem.bigToNative(u16, sin.port);
+        },
+        posix.AF.INET6 => blk: {
+            const sin6: *const posix.sockaddr.in6 = @ptrCast(@alignCast(&peer.storage));
+            break :blk std.mem.bigToNative(u16, sin6.port);
+        },
+        else => 0,
+    };
+}
+
 fn invalidSocket() posix.socket_t {
     if (comptime @import("builtin").os.tag == .windows) {
         return @ptrFromInt(~@as(usize, 0));
@@ -115,6 +140,12 @@ pub fn processShortHeaderResolved(
     const conn = lookup_result.conn orelse {
         // No connection found for this peer + DCID combination
         logger.debugPrint("[processShortHeader] No connection found for short header packet from peer\n", .{});
+        if (shortHeaderDiagnosticsEnabled()) {
+            std.debug.print(
+                "short-header diag drop=lookup_miss peer_port={d} bytes={d} dcid_len={d}\n",
+                .{ peerPort(peer), bytes.len, lookup_result.dcid_len },
+            );
+        }
         if (ctx.test_capture_enabled) {
             logger.debugPrint("No connection found for short header packet from peer\n", .{});
         }
@@ -134,6 +165,12 @@ pub fn processShortHeaderResolved(
     // pruneClosed() at the end of the current poll() cycle.
     if (conn.closed) {
         logger.debugPrint("[processShortHeader] Dropping packet for closed connection\n", .{});
+        if (shortHeaderDiagnosticsEnabled()) {
+            std.debug.print(
+                "short-header diag drop=closed peer_port={d} bytes={d} dcid_len={d}\n",
+                .{ peerPort(peer), bytes.len, lookup_result.dcid_len },
+            );
+        }
         return;
     }
 
@@ -193,6 +230,12 @@ pub fn processShortHeaderResolved(
     // Check if we have application-level RX keys
     if (conn.app_rx_keys == null) {
         logger.debugPrint("[APP-SHORT-NO-KEYS] dropping short header packet (pn tracking can't proceed)\n", .{});
+        if (shortHeaderDiagnosticsEnabled()) {
+            std.debug.print(
+                "short-header diag drop=no_app_rx_keys peer_port={d} bytes={d} dcid_len={d} cached_dcid_len={d}\n",
+                .{ peerPort(peer), bytes.len, lookup_result.dcid_len, conn.expected_rx_dcid_len orelse 0 },
+            );
+        }
         // No RX keys yet - handshake not complete
         if (ctx.test_capture_enabled) {
             logger.debugPrint("No app_rx_keys available, dropping packet\n", .{});
@@ -231,6 +274,19 @@ pub fn processShortHeaderResolved(
         bytes,
         @intCast(observed_dcid_len),
     ) catch |err| {
+        if (shortHeaderDiagnosticsEnabled()) {
+            std.debug.print(
+                "short-header diag drop=decrypt err={s} peer_port={d} bytes={d} dcid_len={d} cached_dcid_len={d} largest_pn={d}\n",
+                .{
+                    @errorName(err),
+                    peerPort(peer),
+                    bytes.len,
+                    observed_dcid_len,
+                    conn.expected_rx_dcid_len orelse 0,
+                    conn.pn_app.max,
+                },
+            );
+        }
         if (err == error.StatelessReset) {
             if (ctx.test_capture_enabled) {
                 logger.debugPrint("stateless-reset: closing connection\n", .{});
@@ -407,7 +463,13 @@ pub fn processShortHeaderResolved(
         peer,
         dec_res.payload,
         send_fn,
-    ) catch {
+    ) catch |err| {
+        if (shortHeaderDiagnosticsEnabled()) {
+            std.debug.print(
+                "short-header diag drop=frame_process err={s} peer_port={d} payload={d} pn={d}\n",
+                .{ @errorName(err), peerPort(peer), dec_res.payload.len, dec_res.packet_number },
+            );
+        }
         if (ctx.test_capture_enabled) {
             logger.debugPrint("Frame processing failed\n", .{});
         }

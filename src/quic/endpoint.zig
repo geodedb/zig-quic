@@ -388,6 +388,24 @@ fn envFlag(name: [*:0]const u8) bool {
     return true;
 }
 
+fn shortHeaderDiagnosticsEnabled() bool {
+    return envFlag("GEODE_QUIC_SHORT_HEADER_DIAGNOSTICS");
+}
+
+fn peerPort(peer: conn_mod.SockAddr) u16 {
+    return switch (peer.storage.family) {
+        posix.AF.INET => blk: {
+            const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&peer.storage));
+            break :blk std.mem.bigToNative(u16, sin.port);
+        },
+        posix.AF.INET6 => blk: {
+            const sin6: *const posix.sockaddr.in6 = @ptrCast(@alignCast(&peer.storage));
+            break :blk std.mem.bigToNative(u16, sin6.port);
+        },
+        else => 0,
+    };
+}
+
 fn classifyLongHeaderPacket(bytes: []const u8) ?packet.LongHeaderPacketType {
     if (bytes.len < 5 or (bytes[0] & 0x80) == 0) return null;
     const version: u32 = (@as(u32, bytes[1]) << 24) |
@@ -1290,12 +1308,24 @@ pub const Endpoint = struct {
                 if (lookup_result.nat_rebinding or !conn_mod.SockAddr.eq(&c.peer, &norm_peer)) {
                     if (!self.onPathAddressChanged(c, norm_peer, peer_h, lookup_result.dcid_len)) {
                         self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+                        if (shortHeaderDiagnosticsEnabled()) {
+                            std.debug.print(
+                                "short-header diag drop=endpoint_path_change peer_port={d} bytes={d} dcid_len={d}\n",
+                                .{ peerPort(norm_peer), bytes.len, lookup_result.dcid_len },
+                            );
+                        }
                         if (detailed_timing) timing.endpoint_map_ns += elapsedNsSince(map_start_ns);
                         return timing;
                     }
                 }
             } else {
                 self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+                if (shortHeaderDiagnosticsEnabled()) {
+                    std.debug.print(
+                        "short-header diag drop=endpoint_lookup_miss peer_port={d} bytes={d} dcid_len={d}\n",
+                        .{ peerPort(norm_peer), bytes.len, lookup_result.dcid_len },
+                    );
+                }
                 if (detailed_timing) timing.endpoint_map_ns += elapsedNsSince(map_start_ns);
                 return timing;
             }
@@ -1303,6 +1333,12 @@ pub const Endpoint = struct {
             const c = lookup_result.conn.?;
             if (!c.acquireEndpointRxRef()) {
                 self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+                if (shortHeaderDiagnosticsEnabled()) {
+                    std.debug.print(
+                        "short-header diag drop=endpoint_rx_ref peer_port={d} bytes={d} dcid_len={d}\n",
+                        .{ peerPort(norm_peer), bytes.len, lookup_result.dcid_len },
+                    );
+                }
                 if (detailed_timing) timing.endpoint_map_ns += elapsedNsSince(map_start_ns);
                 return timing;
             }
