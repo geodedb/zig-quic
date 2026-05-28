@@ -74,7 +74,24 @@ const builtin = @import("builtin");
 // already-arrived stream data. Keep the cap to one UDP batch: 1024-way app
 // traffic showed 100+ packet cycles monopolizing short-header processing long
 // enough to push response recovery into client retry deadlines.
-const max_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap;
+const client_max_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap;
+
+// CANARY: REQ=REQ-QUIC-HC-142; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ServerBurstReceiveBudget; STATUS=TESTED; TEST=endpoint_server_poll_budget_drains_multiple_udp_batches; OWNER=transport; UPDATED=2026-05-28
+// Servers are the fan-in side of Geode's high-parallel workloads. With 1000s of
+// clients, a single 64-packet drain leaves request and retransmit datagrams in
+// the kernel FIFO long enough that clients enter PTO despite the query engine
+// being idle. Keep clients at one batch for fast app wakeups, but let servers
+// drain a bounded four-batch slice per poll call so the receive queue does not
+// become the loss source during synchronized request bursts.
+const server_poll_receive_batches: usize = 4;
+const server_max_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap * server_poll_receive_batches;
+
+fn maxPacketsPerPollCycleForRole(role: EndpointRole) usize {
+    return switch (role) {
+        .Client => client_max_packets_per_poll_cycle,
+        .Server => server_max_packets_per_poll_cycle,
+    };
+}
 
 // CANARY: REQ=REQ-QUIC-HC-123; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ShortHeaderPollBudget; STATUS=TESTED; TEST=endpoint_short_header_poll_budget; OWNER=transport; UPDATED=2026-05-28
 // Application packets are cheaper than Initials individually, but a
@@ -82,7 +99,9 @@ const max_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap;
 // Returning after a smaller short-header slice wakes Geode's stream handlers
 // and response writers sooner instead of spending a full UDP batch inside one
 // poll cycle.
-const max_short_header_packets_per_poll_cycle: usize = max_packets_per_poll_cycle;
+fn maxShortHeaderPacketsPerPollCycleForRole(role: EndpointRole) usize {
+    return maxPacketsPerPollCycleForRole(role);
+}
 
 // CANARY: REQ=REQ-QUIC-HC-059; FEATURE="QUIC High-Concurrency Requests"; ASPECT=LongHeaderPollBudget; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
 // Long-header Initial packets create new TLS state and are the slowest packet
@@ -91,7 +110,9 @@ const max_short_header_packets_per_poll_cycle: usize = max_packets_per_poll_cycl
 // Handshake paths now split endpoint-map admission from per-connection crypto,
 // so keeping the full cycle avoids forcing the connection-tail into PTO backoff
 // while still returning to the embedding poll wrapper at a predictable cadence.
-const max_initial_packets_per_poll_cycle: usize = max_packets_per_poll_cycle;
+fn maxInitialPacketsPerPollCycleForRole(role: EndpointRole) usize {
+    return maxPacketsPerPollCycleForRole(role);
+}
 
 // CANARY: REQ=REQ-QUIC-HC-058; FEATURE="QUIC High-Concurrency Requests"; ASPECT=PendingHandshakeRetryBudget; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
 // Retry deferred server Handshake flights in bounded batches. Under 128+
@@ -1672,6 +1693,9 @@ pub const Endpoint = struct {
         {
             const recv_process_start_ns = nowNsMonotonic();
             defer stats.recv_process_ns = elapsedNsSince(recv_process_start_ns);
+            const max_packets_this_poll = maxPacketsPerPollCycleForRole(self.role);
+            const max_short_header_packets_this_poll = maxShortHeaderPacketsPerPollCycleForRole(self.role);
+            const max_initial_packets_this_poll = maxInitialPacketsPerPollCycleForRole(self.role);
             var recv_bufs: [udp_transport_mod.UdpBatchCap][4096]u8 = undefined;
             var recv_slots: [udp_transport_mod.UdpBatchCap]transport_mod.RecvBatchSlot = undefined;
             for (&recv_slots, 0..) |*slot, i| {
@@ -1685,8 +1709,8 @@ pub const Endpoint = struct {
             var initial_packets_processed: usize = 0;
             var short_header_packets_processed: usize = 0;
             drain_loop: while (true) {
-                if (stats.packets_processed >= max_packets_per_poll_cycle) break :drain_loop;
-                const packet_budget_left = max_packets_per_poll_cycle - stats.packets_processed;
+                if (stats.packets_processed >= max_packets_this_poll) break :drain_loop;
+                const packet_budget_left = max_packets_this_poll - stats.packets_processed;
                 const recv_limit = @min(recv_slots.len, packet_budget_left);
 
                 // 4a: Receive batch (no lock needed for transport recv)
@@ -1736,7 +1760,7 @@ pub const Endpoint = struct {
                         // though the server already sent their first flight.
                         // Keep draining the socket, but shed surplus Initials
                         // in this cycle; client PTO retransmits them later.
-                        if (long_kind == .Initial and initial_packets_processed >= max_initial_packets_per_poll_cycle) {
+                        if (long_kind == .Initial and initial_packets_processed >= max_initial_packets_this_poll) {
                             stats.packets_processed += 1;
                             continue;
                         }
@@ -1765,12 +1789,12 @@ pub const Endpoint = struct {
                         if (long_kind == .Initial) initial_packets_processed += 1;
                     }
                     stats.packets_processed += 1;
-                    if (processed_short_header and short_header_packets_processed >= max_short_header_packets_per_poll_cycle) break :drain_loop;
+                    if (processed_short_header and short_header_packets_processed >= max_short_header_packets_this_poll) break :drain_loop;
                 }
                 // mu released between datagrams — handler threads get a chance to run.
 
                 if (batch_n < recv_limit) break;
-                if (stats.packets_processed >= max_packets_per_poll_cycle) break :drain_loop;
+                if (stats.packets_processed >= max_packets_this_poll) break :drain_loop;
             }
         }
 
@@ -2975,13 +2999,19 @@ test "endpoint timers keep index consistent across heap operations" {
     try Check(&timers, &timer_index);
 }
 
-test "endpoint poll cycle fairness budget stays below large burst drain" {
-    try std.testing.expectEqual(udp_transport_mod.UdpBatchCap, max_packets_per_poll_cycle);
+test "endpoint client poll cycle fairness budget stays at one UDP batch" {
+    try std.testing.expectEqual(udp_transport_mod.UdpBatchCap, maxPacketsPerPollCycleForRole(.Client));
+}
+
+test "endpoint server poll budget drains multiple UDP batches" {
+    try std.testing.expectEqual(udp_transport_mod.UdpBatchCap * server_poll_receive_batches, maxPacketsPerPollCycleForRole(.Server));
+    try std.testing.expect(maxPacketsPerPollCycleForRole(.Server) > maxPacketsPerPollCycleForRole(.Client));
 }
 
 test "endpoint short header poll budget follows the poll packet budget" {
-    try std.testing.expectEqual(max_packets_per_poll_cycle, max_short_header_packets_per_poll_cycle);
-    try std.testing.expect(max_short_header_packets_per_poll_cycle > 0);
+    try std.testing.expectEqual(maxPacketsPerPollCycleForRole(.Client), maxShortHeaderPacketsPerPollCycleForRole(.Client));
+    try std.testing.expectEqual(maxPacketsPerPollCycleForRole(.Server), maxShortHeaderPacketsPerPollCycleForRole(.Server));
+    try std.testing.expect(maxShortHeaderPacketsPerPollCycleForRole(.Server) > 0);
 }
 
 test "endpoint pto dirty recompute has a poll cycle fairness budget" {
