@@ -428,11 +428,23 @@ pub fn bind(comptime Connection: type) type {
             const cc_state = self.rec.getCongestionState();
             const bytes_in_flight = cc_state.bytes_in_flight;
             const cwnd = cc_state.cwnd;
-            if (bytes_in_flight >= cwnd) {
+            // CANARY: REQ=REQ-QUIC-HC-125; FEATURE="QUIC High-Concurrency Requests"; ASPECT=TrustedLocalCwndBypass; STATUS=TESTED; TEST=localhost_cwnd_exemption_allows_stream_write_when_congestion_window_is_full; OWNER=transport; UPDATED=2026-05-28
+            // Loopback endpoints already opt into a trusted-localhost
+            // amplification exemption. Apply the same scoped policy to this
+            // pre-send congestion gate so high-fanout local clients can drain
+            // small response bursts instead of wedging every writer behind a
+            // recovery window that only those responses would unblock.
+            const localhost_cwnd_exempt = self.exempt_localhost and self.isLocalhost();
+            if (!localhost_cwnd_exempt and bytes_in_flight >= cwnd) {
                 logger.debugPrint("[CC-BLOCKED] bytes_in_flight={} >= cwnd={}, deferring send\n", .{ bytes_in_flight, cwnd });
                 return 0;
             }
-            logger.debugPrint("[CC-OK] bytes_in_flight={} < cwnd={}, available={}\n", .{ bytes_in_flight, cwnd, cwnd - bytes_in_flight });
+            logger.debugPrint("[CC-OK] bytes_in_flight={} cwnd={} localhost_exempt={} available={}\n", .{
+                bytes_in_flight,
+                cwnd,
+                localhost_cwnd_exempt,
+                if (bytes_in_flight < cwnd) cwnd - bytes_in_flight else 0,
+            });
 
             var frame_storage: [2048]u8 = undefined;
             var frame_stream = @import("compat").fixedBufWriter(&frame_storage);
