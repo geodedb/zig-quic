@@ -159,3 +159,37 @@ test "connection mutex field exists" {
     };
     try testing.expect(has_mu);
 }
+
+test "onPacketSent legacy sent maps tolerate concurrent PTO accounting" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer std.testing.expect(gpa.deinit() == .ok) catch @panic("leak");
+    var alloc = gpa.allocator();
+
+    var conn: conn_mod.Connection = undefined;
+    conn.init(&alloc, .Server, 0, conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433));
+    defer conn.deinit();
+
+    const num_threads = 8;
+    const iterations = 256;
+    var threads: [num_threads]std.Thread = undefined;
+
+    for (&threads, 0..) |*t, tid| {
+        t.* = try std.Thread.spawn(.{}, struct {
+            fn run(c: *conn_mod.Connection, thread_id: usize) void {
+                var i: usize = 0;
+                while (i < iterations) : (i += 1) {
+                    const pn: u64 = @intCast(thread_id * iterations + i);
+                    c.onPacketSent(.Initial, pn, 1200, true);
+                }
+            }
+        }.run, .{ &conn, tid });
+    }
+
+    for (&threads) |*t| t.join();
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    conn.sent_history_mu.lockUncancelable(io);
+    defer conn.sent_history_mu.unlock(io);
+    try testing.expectEqual(@as(u32, num_threads * iterations), conn.sent_time.count());
+    try testing.expectEqual(@as(u32, num_threads * iterations), conn.sent_sizes.count());
+}

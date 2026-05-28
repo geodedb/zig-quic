@@ -201,8 +201,14 @@ pub fn bind(comptime Connection: type) type {
             _ = self.rec.onPacketSent(space, pn, bytes, ack_eliciting, now_ns) catch |err| {
                 logger.err("recovery onPacketSent failed: {s}", .{@errorName(err)});
             };
-            // Legacy maps retained for compatibility with tests expecting them
-            // Use proper init flags to avoid accessing undefined HashMaps
+            // Legacy maps retained for compatibility with tests expecting them.
+            // Endpoint poll workers can concurrently send PTO probes for the
+            // same connection, so protect the HashMaps independently from the
+            // broader connection mutex. Several call sites already hold
+            // self.mu and Zig mutexes are non-recursive.
+            const io = std.Io.Threaded.global_single_threaded.io();
+            self.sent_history_mu.lockUncancelable(io);
+            defer self.sent_history_mu.unlock(io);
             if (!self.sent_time_init) {
                 self.sent_time = std.AutoHashMap(u64, i128).init(self.allocator.*);
                 self.sent_time_init = true;

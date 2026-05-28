@@ -611,6 +611,10 @@ pub const Connection = struct {
     // This protects all mutable state in this connection: streams, keys, flow control, etc.
     // Lock ordering: endpoint.mu -> connection.mu (never reverse)
     mu: std.Io.Mutex = std.Io.Mutex.init,
+    // CANARY: REQ=REQ-QUIC-HC-134; FEATURE="High-Concurrency Requests"; ASPECT=SentPacketLegacyMapLock; STATUS=TESTED; TEST=onPacketSent legacy sent maps tolerate concurrent PTO accounting; OWNER=transport; UPDATED=2026-05-28
+    // Protects legacy sent_time/sent_sizes maps updated by onPacketSent from
+    // endpoint poll workers and PTO retransmission paths.
+    sent_history_mu: std.Io.Mutex = std.Io.Mutex.init,
     // CANARY: REQ=REQ-QUIC-HC-053; FEATURE="QUIC High-Concurrency Requests"; ASPECT=PerConnectionShortHeaderRxSerialization; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
     /// Serializes short-header packet processing for a single connection after
     /// the endpoint-global map lock has been released. This keeps legacy
@@ -1155,6 +1159,7 @@ pub const Connection = struct {
         // (0x02), the first `lockUncancelable` call enters `futexWait(expect=contended)`
         // with no thread ever posting a wake -- classic handshake deadlock.
         self.mu = std.Io.Mutex.init;
+        self.sent_history_mu = std.Io.Mutex.init;
         self.endpoint_rx_serial_mu = std.Io.Mutex.init;
         self.id = 0;
         self.role = role;
