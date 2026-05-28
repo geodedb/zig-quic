@@ -82,7 +82,7 @@ const max_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap;
 // Returning after a smaller short-header slice wakes Geode's stream handlers
 // and response writers sooner instead of spending a full UDP batch inside one
 // poll cycle.
-const max_short_header_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap / 2;
+const max_short_header_packets_per_poll_cycle: usize = max_packets_per_poll_cycle;
 
 // CANARY: REQ=REQ-QUIC-HC-059; FEATURE="QUIC High-Concurrency Requests"; ASPECT=LongHeaderPollBudget; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
 // Long-header Initial packets create new TLS state and are the slowest packet
@@ -2921,9 +2921,8 @@ test "endpoint poll cycle fairness budget stays below large burst drain" {
     try std.testing.expectEqual(udp_transport_mod.UdpBatchCap, max_packets_per_poll_cycle);
 }
 
-test "endpoint short header poll budget returns before full burst drain" {
-    try std.testing.expectEqual(@as(usize, 32), max_short_header_packets_per_poll_cycle);
-    try std.testing.expect(max_short_header_packets_per_poll_cycle < max_packets_per_poll_cycle);
+test "endpoint short header poll budget follows the poll packet budget" {
+    try std.testing.expectEqual(max_packets_per_poll_cycle, max_short_header_packets_per_poll_cycle);
     try std.testing.expect(max_short_header_packets_per_poll_cycle > 0);
 }
 
