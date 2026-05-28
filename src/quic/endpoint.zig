@@ -85,14 +85,7 @@ const client_max_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap;
 // become the loss source during synchronized request bursts.
 const server_poll_receive_batches: usize = 4;
 const server_max_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap * server_poll_receive_batches;
-// CANARY: REQ=REQ-QUIC-HC-146; FEATURE="High-Concurrency Requests"; ASPECT=ServerShortHeaderWakeCadence; STATUS=TESTED; TEST=endpoint_short_header_poll_budget; OWNER=transport; UPDATED=2026-05-28
-// Server Initial/Handshake fan-in needs the wider receive drain above, but
-// application short-header packets wake user-space request handlers. Draining
-// four UDP batches of STREAM/ACK traffic in one poll call can keep Geode's poll
-// wrapper from waking the first-stream scheduler for seconds at 4096+ ready
-// connections. Keep app delivery to one UDP batch per poll turn; the next poll
-// resumes the kernel FIFO immediately after handlers get a wakeup opportunity.
-const server_short_header_receive_batches: usize = 1;
+const server_short_header_receive_batches: usize = server_poll_receive_batches;
 const server_max_short_header_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap * server_short_header_receive_batches;
 
 fn maxPacketsPerPollCycleForRole(role: EndpointRole) usize {
@@ -105,9 +98,9 @@ fn maxPacketsPerPollCycleForRole(role: EndpointRole) usize {
 // CANARY: REQ=REQ-QUIC-HC-123; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ShortHeaderPollBudget; STATUS=TESTED; TEST=endpoint_short_header_poll_budget; OWNER=transport; UPDATED=2026-05-28
 // Application packets run decrypt, STREAM delivery, ACK/recovery, and ACK
 // generation on the endpoint receive path. Keep clients at the one-batch
-// fairness budget and keep server app packets at the same cadence so poll
-// wrappers can wake parked stream readers between bounded UDP drains.
-// Initial/Handshake server fan-in keeps its separate multi-batch receive budget.
+// fairness budget, but let servers use the bounded multi-batch drain so
+// synchronized request bursts do not remain in the kernel FIFO long enough to
+// enter PTO. Same-connection contention is shed inside the short-header handler.
 fn maxShortHeaderPacketsPerPollCycleForRole(role: EndpointRole) usize {
     return switch (role) {
         .Client => maxPacketsPerPollCycleForRole(role),
@@ -3022,8 +3015,8 @@ test "endpoint server poll budget drains multiple UDP batches" {
 
 test "endpoint short header poll budget keeps server app packets bounded" {
     try std.testing.expectEqual(maxPacketsPerPollCycleForRole(.Client), maxShortHeaderPacketsPerPollCycleForRole(.Client));
-    try std.testing.expectEqual(udp_transport_mod.UdpBatchCap, maxShortHeaderPacketsPerPollCycleForRole(.Server));
-    try std.testing.expect(maxShortHeaderPacketsPerPollCycleForRole(.Server) < maxPacketsPerPollCycleForRole(.Server));
+    try std.testing.expectEqual(udp_transport_mod.UdpBatchCap * server_short_header_receive_batches, maxShortHeaderPacketsPerPollCycleForRole(.Server));
+    try std.testing.expectEqual(maxPacketsPerPollCycleForRole(.Server), maxShortHeaderPacketsPerPollCycleForRole(.Server));
     try std.testing.expect(maxShortHeaderPacketsPerPollCycleForRole(.Server) > 0);
 }
 

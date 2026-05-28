@@ -153,7 +153,16 @@ pub fn processShortHeaderResolved(
     };
 
     const rx_serial_wait_start_ns = if (ctx.short_header_timing != null) timingNsMonotonic() else 0;
-    conn.endpoint_rx_serial_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    // CANARY: REQ=REQ-QUIC-HC-147; FEATURE="High-Concurrency Requests"; ASPECT=ServerShortHeaderContentionShedding; STATUS=TESTED; TEST=quic_endpoint_poll_cycle_has_a_receive_fairness_budget; OWNER=transport; UPDATED=2026-05-28
+    // A server poll worker must not wait behind another packet for the same
+    // connection while thousands of unrelated connections have datagrams ready.
+    // Drop before decrypt/PN tracking so the peer's normal QUIC retransmission
+    // machinery can recover the packet without us acknowledging undelivered data.
+    if (conn.role == .Server) {
+        if (!conn.endpoint_rx_serial_mu.tryLock()) return;
+    } else {
+        conn.endpoint_rx_serial_mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    }
     if (ctx.short_header_timing) |timing| {
         timing.rx_serial_wait_ns += elapsedTimingNsSince(rx_serial_wait_start_ns);
     }
@@ -348,7 +357,11 @@ pub fn processShortHeaderResolved(
     // Released before processFrames() which calls pushStreamFrame() that acquires
     // conn.mu internally (Zig mutexes are non-recursive).
     const pn_lock_start_ns = if (ctx.short_header_timing != null) timingNsMonotonic() else 0;
-    conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    if (conn.role == .Server) {
+        if (!conn.mu.tryLock()) return;
+    } else {
+        conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    }
     if (ctx.short_header_timing) |timing| {
         timing.conn_lock_wait_ns += elapsedTimingNsSince(pn_lock_start_ns);
     }
@@ -490,7 +503,11 @@ pub fn processShortHeaderResolved(
     // GAP-0200: Re-acquire conn.mu for post-frame state mutations and ACK
     // generation (buildAckApp reads PnWindow / writes ack_ranges_buf).
     const post_lock_start_ns = if (ctx.short_header_timing != null) timingNsMonotonic() else 0;
-    conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    if (conn.role == .Server and !frame_result.saw_handshake_done and !frame_result.saw_close) {
+        if (!conn.mu.tryLock()) return;
+    } else {
+        conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+    }
     if (ctx.short_header_timing) |timing| {
         timing.conn_lock_wait_ns += elapsedTimingNsSince(post_lock_start_ns);
     }
