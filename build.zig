@@ -904,6 +904,20 @@ pub fn build(b: *std.Build) void {
             const run_test_timers_only = b.addRunArtifact(test_timers_only);
             test_step.dependOn(&run_test_timers_only.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "udp_transport")) {
+            const udp_transport_test_mod = b.createModule(.{
+                .root_source_file = b.path("src/quic/endpoint/udp_transport.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            udp_transport_test_mod.addImport("transport.zig", endpoint_transport_mod);
+            udp_transport_test_mod.addImport("conn.zig", quic_conn_mod);
+            udp_transport_test_mod.addImport("quic_logger", quic_logger_mod);
+            const test_udp_transport_only = b.addTest(.{ .root_module = udp_transport_test_mod });
+            test_udp_transport_only.root_module.link_libc = true;
+            const run_test_udp_transport_only = b.addRunArtifact(test_udp_transport_only);
+            test_step.dependOn(&run_test_udp_transport_only.step);
+            return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "pto_handshake_uaf")) {
             // Regression test for the UAF in processExpiredTimers when a
             // PtoHandshake / PtoInitial timer fires after its captured

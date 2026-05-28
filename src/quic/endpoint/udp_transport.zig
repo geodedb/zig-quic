@@ -203,6 +203,24 @@ fn resolveBindAddr(bind_addr: []const u8) !SockAddr {
     return netAddressToSockAddr(addr);
 }
 
+fn socketPortHost(addr: *const SockAddr) u16 {
+    return switch (addr.storage.family) {
+        posix.AF.INET => blk: {
+            const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(&addr.storage));
+            break :blk std.mem.bigToNative(u16, sin.port);
+        },
+        posix.AF.INET6 => blk: {
+            const sin6: *const posix.sockaddr.in6 = @ptrCast(@alignCast(&addr.storage));
+            break :blk std.mem.bigToNative(u16, sin6.port);
+        },
+        else => 0,
+    };
+}
+
+fn shouldReuseBindPort(addr: *const SockAddr) bool {
+    return socketPortHost(addr) != 0;
+}
+
 /// UDP transport adapter for production use
 ///
 /// This UDP transport adapter wraps real UDP socket operations, enabling
@@ -244,9 +262,16 @@ pub const UdpTransport = struct {
         const fd: posix.socket_t = @intCast(sock_rc);
         errdefer _ = linux.close(fd);
 
-        // Set SO_REUSEADDR for fast rebinding
         var one: i32 = 1;
-        _ = linux.setsockopt(fd, linux.SOL.SOCKET, linux.SO.REUSEADDR, @ptrCast(std.mem.asBytes(&one)), @sizeOf(i32));
+        // CANARY: REQ=REQ-QUIC-HC-140; FEATURE="QUIC High-Concurrency Requests"; ASPECT=UniqueEphemeralClientPorts; STATUS=TESTED; TEST=udp_transport_ephemeral_binds_do_not_reuse_live_ports; OWNER=transport; UPDATED=2026-05-28
+        // SO_REUSEADDR is useful for servers rebinding a fixed listen port, but
+        // on Linux it also permits multiple live UDP sockets bound to port 0 to
+        // receive the same ephemeral port. High-fanout clients then receive
+        // packets for each other's connection IDs. Keep reuse scoped to explicit
+        // non-zero bind ports.
+        if (shouldReuseBindPort(&addr)) {
+            _ = linux.setsockopt(fd, linux.SOL.SOCKET, linux.SO.REUSEADDR, @ptrCast(std.mem.asBytes(&one)), @sizeOf(i32));
+        }
         configureSocketBuffersLinux(fd);
         configureEcnSocket(fd, family);
 
@@ -311,7 +336,9 @@ pub const UdpTransport = struct {
         errdefer _ = std.c.close(fd);
 
         var one: i32 = 1;
-        _ = posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, std.mem.asBytes(&one)) catch {};
+        if (shouldReuseBindPort(&addr)) {
+            _ = posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, std.mem.asBytes(&one)) catch {};
+        }
         configureSocketBuffersPosix(fd);
 
         const bind_len: posix.socklen_t = switch (family) {
@@ -473,18 +500,25 @@ pub const UdpTransport = struct {
             const chunk_len = @min(items.len - sent_total, UdpBatchCap);
 
             var iovecs: [UdpBatchCap]posix.iovec_const = undefined;
+            var names: [UdpBatchCap]posix.sockaddr.storage = undefined;
             var msgs: [UdpBatchCap]linux.mmsghdr = undefined;
 
             var i: usize = 0;
             while (i < chunk_len) : (i += 1) {
                 const it = items[sent_total + i];
+                names[i] = it.peer.storage;
                 iovecs[i] = .{
                     .base = it.data.ptr,
                     .len = it.data.len,
                 };
                 msgs[i] = .{
                     .hdr = .{
-                        .name = @ptrCast(@constCast(&it.peer.storage)),
+                        // CANARY: REQ=REQ-QUIC-HC-141; FEATURE="QUIC High-Concurrency Requests"; ASPECT=BatchSendPeerStability; STATUS=TESTED; TEST=udp_transport_send_batch_preserves_per_packet_peer_addresses; OWNER=transport; UPDATED=2026-05-28
+                        // Keep per-message sockaddr storage alive until
+                        // sendmmsg returns. Pointing at the loop-local `it`
+                        // copy makes every mmsghdr alias the same stack slot
+                        // under some builds, misrouting paced bursts.
+                        .name = @ptrCast(&names[i]),
                         .namelen = it.peer.len,
                         .iov = @ptrCast(&iovecs[i]),
                         .iovlen = 1,
@@ -687,6 +721,84 @@ test "udp_transport: bind on Linux exposes non-zero port" {
 
     const sa: *const posix.sockaddr.in = @ptrCast(@alignCast(&transport.local_addr.storage));
     try std.testing.expect(sa.port != 0);
+}
+
+test "udp_transport: ephemeral binds do not reuse live ports" {
+    if (builtin.target.os.tag != .linux) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const bind_count: usize = 512;
+    var transports: std.ArrayList(UdpTransport) = .empty;
+    defer {
+        for (transports.items) |*transport| transport.deinit();
+        transports.deinit(allocator);
+    }
+    try transports.ensureTotalCapacity(allocator, bind_count);
+
+    var ports = std.AutoHashMap(u16, void).init(allocator);
+    defer ports.deinit();
+
+    var i: usize = 0;
+    while (i < bind_count) : (i += 1) {
+        var transport = try UdpTransport.init("0.0.0.0:0");
+        const port = socketPortHost(&transport.local_addr);
+        if (port == 0) {
+            transport.deinit();
+            return error.TestExpectedNonZeroPort;
+        }
+
+        const entry = ports.getOrPut(port) catch |err| {
+            transport.deinit();
+            return err;
+        };
+        if (entry.found_existing) {
+            transport.deinit();
+            return error.TestExpectedUniquePort;
+        }
+
+        transports.appendAssumeCapacity(transport);
+    }
+}
+
+fn recvTestDatagram(transport: *Transport, buf: []u8) ![]const u8 {
+    var attempts: usize = 0;
+    while (attempts < 20) : (attempts += 1) {
+        try transport.poll(10);
+        const got = transport.recv(buf) catch |err| switch (err) {
+            error.WouldBlock => continue,
+            else => return err,
+        };
+        return buf[0..got.n];
+    }
+    return error.Timeout;
+}
+
+test "udp_transport: send batch preserves per-packet peer addresses" {
+    if (builtin.target.os.tag != .linux) return error.SkipZigTest;
+
+    var sender = try UdpTransport.init("127.0.0.1:0");
+    defer sender.deinit();
+    var recv_a = try UdpTransport.init("127.0.0.1:0");
+    defer recv_a.deinit();
+    var recv_b = try UdpTransport.init("127.0.0.1:0");
+    defer recv_b.deinit();
+
+    const payload_a = "a";
+    const payload_b = "b";
+    const items = [_]SendBatchItem{
+        .{ .peer = recv_a.local_addr, .data = payload_a },
+        .{ .peer = recv_b.local_addr, .data = payload_b },
+    };
+
+    var sender_transport = sender.asTransport();
+    try std.testing.expectEqual(@as(usize, 2), try sender_transport.sendBatch(items[0..]));
+
+    var recv_a_transport = recv_a.asTransport();
+    var recv_b_transport = recv_b.asTransport();
+    var buf_a: [8]u8 = undefined;
+    var buf_b: [8]u8 = undefined;
+    try std.testing.expectEqualStrings(payload_a, try recvTestDatagram(&recv_a_transport, buf_a[0..]));
+    try std.testing.expectEqualStrings(payload_b, try recvTestDatagram(&recv_b_transport, buf_b[0..]));
 }
 
 test "udp_transport: posix fallback symbols compile under non-linux branch" {
