@@ -59,7 +59,7 @@ pub fn bind(comptime Connection: type) type {
             }
         }
 
-        fn retransmitLostStreamPackets(self: *Connection, largest_acked_opt: ?u64) void {
+        fn retransmitLostStreamPackets(self: *Connection, largest_acked_opt: ?u64, recovery_reported_loss: bool) void {
             if (!self.app_stream_retx_init) return;
             if (!self.hasConfirmedAppTxKeys()) return;
 
@@ -75,7 +75,21 @@ pub fn bind(comptime Connection: type) type {
                     (largest_acked > pn and (largest_acked - pn) >= 3)
                 else
                     false;
-                if (rec_lost or ack_gap_lost) {
+                // CANARY: REQ=REQ-QUIC-HC-138; FEATURE="QUIC High-Concurrency Requests"; ASPECT=AppStreamTimeLossRetx; STATUS=TESTED; TEST=app_ack_time_threshold_loss_retransmits_retained_STREAM_data; OWNER=transport; UPDATED=2026-05-28
+                //
+                // Recovery compacts packets as soon as they are acked or
+                // declared lost. For time-threshold loss with only one or two
+                // newer packets ACKed, packet-threshold detection does not
+                // fire, and getPacketDeliveryState() can already return
+                // unknown by the time app STREAM retransmission runs. If
+                // recovery reported app loss on this ACK, any retained STREAM
+                // packet older than the largest ACK is still unacked
+                // application data and must be retransmitted.
+                const recovery_loss_older_than_largest = if (largest_acked_opt) |largest_acked|
+                    recovery_reported_loss and largest_acked > pn
+                else
+                    false;
+                if (rec_lost or ack_gap_lost or recovery_loss_older_than_largest) {
                     lost_pns.append(self.allocator.*, pn) catch break;
                 }
             }
@@ -871,7 +885,7 @@ pub fn bind(comptime Connection: type) type {
             // Promote time-threshold losses if any expired now
             _ = self.rec.onLossTimeExpired(now_ns);
             if (space == .Application) {
-                retransmitLostStreamPackets(self, largest);
+                retransmitLostStreamPackets(self, largest, res.bytes_lost > 0);
             }
             // Reset per-space PTO backoff if any ack-eliciting was acked
             if (res.bytes_acked > 0) switch (space) {

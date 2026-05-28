@@ -4,6 +4,45 @@ const testlog = @import("testlog");
 const api = @import("quic_api");
 const conn_mod = @import("quic_conn");
 
+const Endpoint = api.QuicEndpoint;
+const Transport = @TypeOf(@as(Endpoint, undefined).transport);
+const SockAddr = conn_mod.SockAddr;
+const RecvFnType = @TypeOf(@as(Transport, undefined).recvFn);
+const RecvFnPtrInfo = @typeInfo(RecvFnType);
+const RecvFnActualType = RecvFnPtrInfo.pointer.child;
+const RecvFnTypeInfo = @typeInfo(RecvFnActualType);
+const RecvFnReturnType = RecvFnTypeInfo.@"fn".return_type.?;
+const RecvResult = @typeInfo(RecvFnReturnType).error_union.payload;
+
+const NoopTransport = struct {
+    fn sendFn(_: *anyopaque, _: SockAddr, data: []const u8) !usize {
+        return data.len;
+    }
+
+    fn recvFn(_: *anyopaque, _: []u8) !RecvResult {
+        return error.WouldBlock;
+    }
+
+    fn pollFn(_: *anyopaque, _: i32) !void {}
+
+    fn closeFn(_: *anyopaque) void {}
+
+    fn getLocalAddrFn(_: *anyopaque) !SockAddr {
+        return error.Unsupported;
+    }
+
+    pub fn init() Transport {
+        return .{
+            .sendFn = sendFn,
+            .recvFn = recvFn,
+            .pollFn = pollFn,
+            .closeFn = closeFn,
+            .getLocalAddrFn = getLocalAddrFn,
+            .context = undefined,
+        };
+    }
+};
+
 // Basic timing tests for endpoint timers.
 
 test "endpoint_timer_fire" {
@@ -150,6 +189,85 @@ test "short-header sends mark PTO dirty without arming connection shim timer" {
     try std.testing.expectEqual(@as(u32, 1), ctx.count.load(.seq_cst));
     try std.testing.expect(!conn.pto_app_active);
     try std.testing.expectEqual(@as(u64, 0), conn.pto_app_id);
+}
+
+test "endpoint app PTO retransmits outstanding STREAM data" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    var allocator = gpa.allocator();
+
+    var cfg = api.QuicConfig{ .alpn = &[_][]const u8{"h3"} };
+    cfg.enable_pacing = false;
+    cfg.initial_congestion_window_packets = 64;
+    var ep = try api.QuicEndpoint.initWithTransport(&allocator, NoopTransport.init(), &cfg, .Client);
+    defer ep.deinit();
+    ep.test_capture_enabled = true;
+
+    const conn = try ep.connectClient("127.0.0.1:4433");
+    _ = try ep.pollWithStats(0);
+
+    conn.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
+    conn.peer_finished_verified = true;
+    conn.address_validated = true;
+    conn.peer_initial_scid.len = 4;
+    std.mem.copyForwards(u8, conn.peer_initial_scid.bytes[0..4], "PEER");
+    ep.captureClear();
+
+    const written = try conn.writeStream(0, "EXECUTE", false);
+    try std.testing.expectEqual(@as(usize, 7), written);
+    try std.testing.expectEqual(@as(usize, 1), conn.app_stream_retx.count());
+    try std.testing.expectEqual(@as(u64, 1), conn.pn_app_tx);
+
+    _ = try ep.pollWithStats(0);
+    try std.testing.expect(conn.pto_app_active);
+    try std.testing.expect(ep.timers.items.len >= 1);
+
+    ep.forceExpireAllTimers();
+
+    try std.testing.expectEqual(@as(u32, 1), conn.pto_app_count);
+    try std.testing.expectEqual(@as(u64, 2), conn.pn_app_tx);
+    try std.testing.expectEqual(@as(usize, 1), conn.app_stream_retx.count());
+    try std.testing.expect(conn.app_stream_retx.contains(1));
+    try std.testing.expect(ep.captureLen() >= 2);
+}
+
+test "app ack time-threshold loss retransmits retained STREAM data" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    var allocator = gpa.allocator();
+
+    var cfg = api.QuicConfig{ .alpn = &[_][]const u8{"h3"} };
+    cfg.enable_pacing = false;
+    cfg.initial_congestion_window_packets = 64;
+    var ep = try api.QuicEndpoint.initWithTransport(&allocator, NoopTransport.init(), &cfg, .Client);
+    defer ep.deinit();
+    ep.test_capture_enabled = true;
+
+    const conn = try ep.connectClient("127.0.0.1:4433");
+    conn.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
+    conn.peer_finished_verified = true;
+    conn.address_validated = true;
+    conn.peer_initial_scid.len = 4;
+    std.mem.copyForwards(u8, conn.peer_initial_scid.bytes[0..4], "PEER");
+    conn.rec.rtt.have_sample = true;
+    conn.rec.rtt.smoothed_rtt_ns = std.time.ns_per_ms;
+    conn.rec.rtt.latest_rtt_ns = std.time.ns_per_ms;
+    conn.rec.rtt.rttvar_ns = 0;
+    conn.rec.refreshAtomicMirrors();
+    ep.captureClear();
+
+    try std.testing.expectEqual(@as(usize, 4), try conn.writeStream(0, "AAAA", false));
+    try std.testing.expectEqual(@as(usize, 4), try conn.writeStream(0, "BBBB", false));
+    compat.threadSleep(8 * std.time.ns_per_ms);
+    try std.testing.expectEqual(@as(usize, 4), try conn.writeStream(0, "CCCC", false));
+    try std.testing.expectEqual(@as(u64, 3), conn.pn_app_tx);
+    try std.testing.expectEqual(@as(usize, 3), conn.app_stream_retx.count());
+
+    conn.onAckReceivedSpace(.Application, 2, 0, &.{}, null);
+
+    try std.testing.expect(conn.pn_app_tx > 3);
+    try std.testing.expect(conn.app_stream_retx.count() >= 2);
+    try std.testing.expect(ep.captureLen() > 3);
 }
 
 test "PTO arming skips spaces with no ack-eliciting packet in flight" {

@@ -220,9 +220,9 @@ test "pto_dirty_recompute_waits_for_connection_mutex" {
     }.run, .{ &ep, &poll_started, &poll_done });
 
     while (!poll_started.load(.acquire)) {
-        std.Thread.sleep(std.time.ns_per_ms);
+        compat.threadSleep(std.time.ns_per_ms);
     }
-    std.Thread.sleep(25 * std.time.ns_per_ms);
+    compat.threadSleep(25 * std.time.ns_per_ms);
     const recompute_waited = !poll_done.load(.acquire);
 
     conn.mu.unlock(io);
