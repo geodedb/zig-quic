@@ -270,6 +270,50 @@ test "app ack time-threshold loss retransmits retained STREAM data" {
     try std.testing.expect(ep.captureLen() > 3);
 }
 
+test "app PTO send failure rearms retransmission timer" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    var allocator = gpa.allocator();
+
+    const Sender = struct {
+        fail: bool = false,
+        sends: usize = 0,
+
+        fn send(ctx: *anyopaque, _: *conn_mod.Connection, data: []const u8) anyerror!usize {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            if (self.fail) return error.WouldBlock;
+            self.sends += 1;
+            return data.len;
+        }
+    };
+
+    var sender = Sender{};
+    var conn: conn_mod.Connection = undefined;
+    conn.init(&allocator, .Client, -1, conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433));
+    defer conn.deinit();
+    conn.setSender(@ptrCast(&sender), Sender.send);
+    conn.app_tx_keys = .{ .key = .{0} ** 16, .iv = .{0} ** 12, .hp = .{0} ** 16 };
+    conn.peer_finished_verified = true;
+    conn.address_validated = true;
+    conn.peer_initial_scid.len = 4;
+    std.mem.copyForwards(u8, conn.peer_initial_scid.bytes[0..4], "PEER");
+
+    try std.testing.expectEqual(@as(usize, 7), try conn.writeStream(0, "EXECUTE", false));
+    try std.testing.expectEqual(@as(usize, 1), sender.sends);
+    try std.testing.expectEqual(@as(u64, 1), conn.pn_app_tx);
+    try std.testing.expectEqual(@as(usize, 1), conn.app_stream_retx.count());
+
+    conn.pto_dirty.store(false, .seq_cst);
+    conn.pto_app_active = true;
+    sender.fail = true;
+    conn.setPtoExpiredApp();
+
+    try std.testing.expectEqual(@as(u32, 1), conn.pto_app_count);
+    try std.testing.expectEqual(@as(u64, 1), conn.pn_app_tx);
+    try std.testing.expectEqual(@as(usize, 1), conn.app_stream_retx.count());
+    try std.testing.expect(conn.pto_dirty.load(.seq_cst));
+}
+
 test "PTO arming skips spaces with no ack-eliciting packet in flight" {
     var gpa = std.heap.page_allocator;
     const cfg = api.QuicConfig{ .alpn = &[_][]const u8{"h3"} };

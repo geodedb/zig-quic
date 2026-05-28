@@ -1395,6 +1395,7 @@ pub fn bind(comptime Connection: type) type {
                         }).write(frame_stream.writer()) catch |err| {
                             logger.err("PTO App STREAM frame write failed: {s}", .{@errorName(err)});
                             self.app_stream_retx.put(probe_pn, tracked) catch self.allocator.free(tracked.data);
+                            self.markPtoDirty();
                             return;
                         };
                         const frame_bytes = frame_storage[0..frame_stream.pos];
@@ -1402,6 +1403,7 @@ pub fn bind(comptime Connection: type) type {
                         if (frame_bytes.len > 0) {
                             const packet_storage = self.packet_pool.checkout() catch {
                                 self.app_stream_retx.put(probe_pn, tracked) catch self.allocator.free(tracked.data);
+                                self.markPtoDirty();
                                 return;
                             };
                             defer self.packet_pool.release(packet_storage);
@@ -1426,7 +1428,15 @@ pub fn bind(comptime Connection: type) type {
                                 }
                             }
                         }
+                        // CANARY: REQ=REQ-QUIC-HC-139; FEATURE="QUIC High-Concurrency Requests"; ASPECT=AppPtoSendFailureRearm; STATUS=TESTED; TEST=app_PTO_send_failure_rearms_retransmission_timer; OWNER=transport; UPDATED=2026-05-28
+                        //
+                        // A nonblocking UDP WouldBlock/short-send during PTO
+                        // must not leave retained STREAM data without a future
+                        // timer. No packet was recorded via
+                        // onShortHeaderPacketSent(), so explicitly dirty the
+                        // connection after restoring the retransmit entry.
                         self.app_stream_retx.put(probe_pn, tracked) catch self.allocator.free(tracked.data);
+                        self.markPtoDirty();
                     }
                 }
             }
@@ -1436,7 +1446,10 @@ pub fn bind(comptime Connection: type) type {
             var fbs = @import("compat").fixedBufWriter(&frame_buf);
             const w = fbs.writer();
             _ = (frame.Frame{ .ping = {} }).write(w) catch 0;
-            const packet_storage = self.packet_pool.checkout() catch return;
+            const packet_storage = self.packet_pool.checkout() catch {
+                self.markPtoDirty();
+                return;
+            };
             defer self.packet_pool.release(packet_storage);
             const pkt_len = packet.encodeShortProtectedInto(
                 packet_storage,
@@ -1451,11 +1464,16 @@ pub fn bind(comptime Connection: type) type {
                 const pkt = packet_storage[0..pkt_len];
                 const sent = self.send(pkt) catch |err| {
                     logger.warn("PTO App send failed: {s}", .{@errorName(err)});
+                    self.markPtoDirty();
                     return;
                 };
                 if (sent == pkt.len) {
                     self.onShortHeaderPacketSent(pkt.len, true);
+                } else {
+                    self.markPtoDirty();
                 }
+            } else {
+                self.markPtoDirty();
             }
         }
 
