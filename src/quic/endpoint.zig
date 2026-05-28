@@ -85,7 +85,7 @@ const client_max_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap;
 // become the loss source during synchronized request bursts.
 const server_poll_receive_batches: usize = 4;
 const server_max_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap * server_poll_receive_batches;
-const server_short_header_receive_batches: usize = 1;
+const server_short_header_receive_batches: usize = server_poll_receive_batches;
 const server_max_short_header_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap * server_short_header_receive_batches;
 
 fn maxPacketsPerPollCycleForRole(role: EndpointRole) usize {
@@ -97,12 +97,10 @@ fn maxPacketsPerPollCycleForRole(role: EndpointRole) usize {
 
 // CANARY: REQ=REQ-QUIC-HC-123; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ShortHeaderPollBudget; STATUS=TESTED; TEST=endpoint_short_header_poll_budget; OWNER=transport; UPDATED=2026-05-28
 // Application packets run decrypt, STREAM delivery, ACK/recovery, and ACK
-// generation on the endpoint receive path. In server fan-in workloads, letting
-// every poll worker consume the full multi-batch server drain budget turns ACK
-// and stream mutex contention into multi-second poll cycles. Keep the server's
-// total receive drain high enough to keep the kernel FIFO moving, but return to
-// the embedding poll wrapper after one short-header batch so application
-// handlers and response writers get scheduling time between slices.
+// generation on the endpoint receive path. Keep clients at the one-batch
+// fairness budget, but let servers use the bounded multi-batch drain so
+// synchronized request bursts do not remain in the kernel FIFO long enough to
+// enter PTO. Per-connection ACK-frame contention is bounded in frame_handler.
 fn maxShortHeaderPacketsPerPollCycleForRole(role: EndpointRole) usize {
     return switch (role) {
         .Client => maxPacketsPerPollCycleForRole(role),
@@ -3015,10 +3013,10 @@ test "endpoint server poll budget drains multiple UDP batches" {
     try std.testing.expect(maxPacketsPerPollCycleForRole(.Server) > maxPacketsPerPollCycleForRole(.Client));
 }
 
-test "endpoint short header poll budget keeps server app packets to one batch" {
+test "endpoint short header poll budget keeps server app packets bounded" {
     try std.testing.expectEqual(maxPacketsPerPollCycleForRole(.Client), maxShortHeaderPacketsPerPollCycleForRole(.Client));
     try std.testing.expectEqual(udp_transport_mod.UdpBatchCap * server_short_header_receive_batches, maxShortHeaderPacketsPerPollCycleForRole(.Server));
-    try std.testing.expect(maxShortHeaderPacketsPerPollCycleForRole(.Server) < maxPacketsPerPollCycleForRole(.Server));
+    try std.testing.expectEqual(maxPacketsPerPollCycleForRole(.Server), maxShortHeaderPacketsPerPollCycleForRole(.Server));
     try std.testing.expect(maxShortHeaderPacketsPerPollCycleForRole(.Server) > 0);
 }
 
