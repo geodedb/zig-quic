@@ -560,24 +560,37 @@ pub fn processShortHeaderResolved(
             if (rc != 0) break :blk @as(i128, 0);
             break :blk @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
         });
-        conn.recordAckElicitingRx(.Application, now_ns_ack);
+        conn.recordAppAckElicitingRx(now_ns_ack);
 
         if (ctx.test_capture_enabled) {
             logger.debugPrint("📨 Recorded ack-eliciting frame receipt\n", .{});
         }
     }
 
-    // RFC 9000 §13.2.1: "An endpoint SHOULD send an ACK frame after receiving at least two
-    // ack-eliciting packets." For simplicity and immediate flow control feedback, send ACK
-    // immediately when ack-eliciting frames are received OR when ECN ACK is pending.
-    //
-    // CRITICAL FIX (Phase 42 Part 7): Send ACKs for ALL ack-eliciting packets, not just ECN!
-    // Previous bug: ACKs were only sent when ecn_app_ack_pending==true, causing flow control
-    // deadlock on large transfers where client exhausted send window waiting for ACKs.
+    // RFC 9000 §13.2.1: ACK after at least two ack-eliciting packets, and
+    // always within max_ack_delay. Server request/response traffic can defer
+    // the first STREAM-only standalone ACK because writeStream() piggybacks
+    // the pending ACK onto the response packet. ECN, control frames, clients,
+    // and every second server STREAM packet still ACK immediately; a delayed
+    // ACK timer covers upload-only users that do not produce a response.
     //
     // RFC 9000 §8.1: "A server MUST NOT send more than three times as many bytes
     // as the number of bytes it has received prior to validating the client address."
     if ((frame_result.saw_ack_eliciting or conn.ecn_app_ack_pending) and conn.app_tx_keys != null) {
+        const ecn_present_or_pending = (ecn_bits != null) or conn.ecn_app_ack_pending;
+        const send_immediate_ack = conn.shouldSendImmediateAppAck(
+            frame_result.saw_stream,
+            frame_result.saw_non_stream_ack_eliciting,
+            ecn_present_or_pending,
+        );
+        if (!send_immediate_ack) {
+            if (conn.app_ack_delay_timer_id == 0) {
+                const delay_ms: u32 = @max(@as(u32, 1), @as(u32, conn.max_ack_delay_ms));
+                conn.app_ack_delay_timer_id = ctx.schedule_timer_fn(conn, .AppAckDelay, delay_ms) catch 0;
+            }
+            return;
+        }
+
         var ack_ctx = AckContext{
             .allocator = ctx.allocator,
             .conn = conn,

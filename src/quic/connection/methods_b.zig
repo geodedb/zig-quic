@@ -479,7 +479,8 @@ pub fn bind(comptime Connection: type) type {
             // builder already supports it, but `writeStream` currently emits
             // exactly one STREAM frame per call. See PERF_GAP_ANALYSIS for
             // the next step.
-            if (self.pn_app.have_any) {
+            const include_app_ack = self.pn_app.have_any;
+            if (include_app_ack) {
                 const now_ns: u64 = @intCast(blk3: {
                     var ts: std.os.linux.timespec = undefined;
                     const rc = std.os.linux.clock_gettime(.REALTIME, &ts);
@@ -525,6 +526,7 @@ pub fn bind(comptime Connection: type) type {
             logger.debugPrint("STREAM frame packet sent - {} bytes (pkt.len={})\n", .{ bytes_sent, pkt.len });
             trackAppStreamPacket(self, sent_pn, id, cur_off, fin and to_send == data.len, data[0..to_send]);
             self.onShortHeaderPacketSent(pkt.len, true);
+            if (include_app_ack) self.markAppAckSent();
             if (id == 0) {
                 self.stream_send_off +%= to_send;
                 if (fin and to_send == data.len) {

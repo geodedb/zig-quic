@@ -89,7 +89,7 @@ pub const version = "Phase 4b.5 Session 9 - PTO Probe Extraction";
 pub fn isPtoTimer(kind: types.TimerKind) bool {
     return switch (kind) {
         .PtoInitial, .PtoHandshake, .PtoApp => true,
-        .Generic, .Pmtud => false,
+        .Generic, .AppAckDelay, .Pmtud => false,
     };
 }
 
@@ -100,7 +100,7 @@ pub fn ptoTimerSpace(kind: types.TimerKind) ?enum { Initial, Handshake, Applicat
         .PtoInitial => .Initial,
         .PtoHandshake => .Handshake,
         .PtoApp => .Application,
-        .Generic, .Pmtud => null,
+        .Generic, .AppAckDelay, .Pmtud => null,
     };
 }
 

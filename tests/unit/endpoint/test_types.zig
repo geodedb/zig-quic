@@ -100,12 +100,14 @@ test "RFC 9002 §6.2 - Timer with pacing enabled" {
 
 test "RFC 9002 §6.2 - TimerKind all variants" {
     const generic = types.TimerKind.Generic;
+    const app_ack_delay = types.TimerKind.AppAckDelay;
     const pto_initial = types.TimerKind.PtoInitial;
     const pto_handshake = types.TimerKind.PtoHandshake;
     const pto_app = types.TimerKind.PtoApp;
     const pmtud = types.TimerKind.Pmtud;
 
     try testing.expect(generic == .Generic);
+    try testing.expect(app_ack_delay == .AppAckDelay);
     try testing.expect(pto_initial == .PtoInitial);
     try testing.expect(pto_handshake == .PtoHandshake);
     try testing.expect(pto_app == .PtoApp);

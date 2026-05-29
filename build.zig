@@ -996,6 +996,17 @@ pub fn build(b: *std.Build) void {
             const run_test_udp_batch_runtime_smoke = b.addRunArtifact(test_udp_batch_runtime_smoke);
             test_step.dependOn(&run_test_udp_batch_runtime_smoke.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "app_ack_policy")) {
+            const test_app_ack_policy = addTst(b, testlog_mod, compat_mod, "tests/unit/endpoint/test_incoming_session3.zig", target, optimize);
+            test_app_ack_policy.root_module.addImport("incoming", endpoint_incoming_mod);
+            test_app_ack_policy.root_module.addImport("endpoint/types", endpoint_types_mod);
+            test_app_ack_policy.root_module.addImport("endpoint/lookup", endpoint_lookup_mod);
+            test_app_ack_policy.root_module.addImport("quic_conn", quic_conn_mod);
+            test_app_ack_policy.root_module.addImport("config", quic_config_mod);
+            test_app_ack_policy.root_module.addImport("packet", quic_packet_legacy_mod);
+            const run_test_app_ack_policy = b.addRunArtifact(test_app_ack_policy);
+            test_step.dependOn(&run_test_app_ack_policy.step);
+            return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "packet_pool")) {
             const packet_pool_mod = b.createModule(.{ .root_source_file = b.path("src/quic/conn.zig"), .target = target, .optimize = optimize });
             packet_pool_mod.addImport("quic_packet", quic_packet_mod);

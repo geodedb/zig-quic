@@ -24,6 +24,8 @@ fn invalidSocket() posix.socket_t {
 pub const FrameProcessResult = struct {
     /// Whether any ack-eliciting frames were seen (RFC 9000 §13.2.1)
     saw_ack_eliciting: bool = false,
+    /// Whether the packet included an ack-eliciting frame other than STREAM.
+    saw_non_stream_ack_eliciting: bool = false,
     /// Whether any STREAM frames delivered application-visible bytes.
     saw_stream: bool = false,
     /// Whether HANDSHAKE_DONE was received (triggers key drop)
@@ -116,6 +118,9 @@ pub fn processFrames(
 
         // Accumulate flags
         result.saw_ack_eliciting = result.saw_ack_eliciting or frame_result.saw_ack_eliciting;
+        if (frame_result.saw_ack_eliciting and fr.f != .stream) {
+            result.saw_non_stream_ack_eliciting = true;
+        }
         result.saw_stream = result.saw_stream or frame_result.saw_stream;
         result.saw_handshake_done = result.saw_handshake_done or frame_result.saw_handshake_done;
         result.saw_close = result.saw_close or frame_result.saw_close;
@@ -181,6 +186,7 @@ fn sendAppPacketAndTrack(
         return false;
     }
     ack_ctx.conn.onShortHeaderPacketSent(pkt.len, ack_eliciting);
+    ack_ctx.conn.markAppAckSent();
     return true;
 }
 

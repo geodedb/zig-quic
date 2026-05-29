@@ -42,6 +42,7 @@ test "RFC 9002 §6.2 - isPtoTimer identifies PTO timers" {
 test "RFC 9002 §6.2 - isPtoTimer rejects non-PTO timers" {
     // Generic and PMTUD timers are not PTO timers
     try testing.expect(!pto.isPtoTimer(.Generic));
+    try testing.expect(!pto.isPtoTimer(.AppAckDelay));
     try testing.expect(!pto.isPtoTimer(.Pmtud));
 }
 
@@ -69,6 +70,7 @@ test "RFC 9002 §6.2 - ptoTimerSpace maps Application timer" {
 test "RFC 9002 §6.2 - ptoTimerSpace returns null for non-PTO timers" {
     // Generic and PMTUD timers don't map to packet number spaces
     try testing.expect(pto.ptoTimerSpace(.Generic) == null);
+    try testing.expect(pto.ptoTimerSpace(.AppAckDelay) == null);
     try testing.expect(pto.ptoTimerSpace(.Pmtud) == null);
 }
 

@@ -2680,6 +2680,42 @@ pub const Endpoint = struct {
                         }
                     }
                 },
+                .AppAckDelay => if (t.conn) |c| {
+                    if (!self.isConnectionLive(c)) continue;
+                    // CANARY: REQ=REQ-QUIC-HC-149; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ServerDelayedAppAck; STATUS=IMPL; TEST=server_stream_ack_policy_defers_first_stream_ack_and_acks_second; OWNER=transport; UPDATED=2026-05-29
+                    // The receive path defers the first server-side STREAM-only
+                    // standalone ACK so request/response workloads can piggyback
+                    // it on the response packet. This timer is the RFC 9000
+                    // max_ack_delay fallback for upload-only or quiet peers.
+                    c.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+                    defer c.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+                    if (c.app_ack_delay_timer_id == t.id) c.app_ack_delay_timer_id = 0;
+                    if (c.app_ack_eliciting_since_ack == 0 or c.app_tx_keys == null) continue;
+
+                    current_io_endpoint = self;
+                    defer current_io_endpoint = null;
+
+                    var ack_ctx = incoming.AckContext{
+                        .allocator = &self.allocator,
+                        .conn = c,
+                        .peer = c.peer,
+                        .send_fn = struct {
+                            fn send(peer_addr: conn_mod.SockAddr, data: []const u8) anyerror!usize {
+                                const ep = current_io_endpoint.?;
+                                return ep.sendTo(peer_addr, data);
+                            }
+                        }.send,
+                        .cfg = &self.cfg,
+                        .test_capture_enabled = self.test_capture_enabled,
+                    };
+                    incoming.generateAndSendAck(
+                        &ack_ctx,
+                        .{ .saw_ack_eliciting = true },
+                        null,
+                    ) catch |err| {
+                        logger.debugPrint("[ENDPOINT] delayed Application ACK failed: {s}\n", .{@errorName(err)});
+                    };
+                },
                 .PtoInitial => if (t.conn) |c| {
                     if (!self.isConnectionLive(c)) continue;
                     // CANARY: REQ=REQ-QUIC-HC-070; FEATURE="QUIC High-Concurrency Requests"; ASPECT=PtoRecoveryMutex; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-27

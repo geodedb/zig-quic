@@ -1023,6 +1023,13 @@ pub const Connection = struct {
     last_ack_eliciting_rx_initial_ns: u64 = 0,
     last_ack_eliciting_rx_handshake_ns: u64 = 0,
     last_ack_eliciting_rx_app_ns: u64 = 0,
+    // CANARY: REQ=REQ-QUIC-HC-149; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ServerDelayedAppAck; STATUS=TESTED; TEST=server_stream_ack_policy_defers_first_stream_ack_and_acks_second; OWNER=transport; UPDATED=2026-05-29
+    /// Number of Application ack-eliciting packets received since this
+    /// endpoint last transmitted an ACK for the application packet-number space.
+    app_ack_eliciting_since_ack: u16 = 0,
+    /// Endpoint timer id for the delayed Application ACK fallback. A stale
+    /// timer is harmless because the callback re-checks app_ack_eliciting_since_ack.
+    app_ack_delay_timer_id: u64 = 0,
 
     /// recordAckElicitingRx: Timestamp most recent ack-eliciting RX in the given PN space.
     /// RFC 9000 §13.2.1 defines ack-eliciting packets and requires endpoints to
@@ -1033,6 +1040,39 @@ pub const Connection = struct {
             .Handshake => self.last_ack_eliciting_rx_handshake_ns = now_ns,
             .Application => self.last_ack_eliciting_rx_app_ns = now_ns,
         }
+    }
+
+    /// Record Application ack-eliciting RX and update delayed-ACK accounting.
+    pub fn recordAppAckElicitingRx(self: *Connection, now_ns: u64) void {
+        self.recordAckElicitingRx(.Application, now_ns);
+        if (self.app_ack_eliciting_since_ack < std.math.maxInt(u16)) {
+            self.app_ack_eliciting_since_ack += 1;
+        }
+    }
+
+    /// Mark Application ACK state clean after transmitting either a standalone
+    /// ACK or a STREAM packet carrying a piggybacked ACK.
+    pub fn markAppAckSent(self: *Connection) void {
+        self.app_ack_eliciting_since_ack = 0;
+    }
+
+    /// RFC 9000 §13.2.1 says an endpoint SHOULD ACK after at least two
+    /// ack-eliciting packets and MUST ACK within max_ack_delay. For server
+    /// request/response traffic, the first STREAM packet is normally followed
+    /// by a response packet that already piggybacks the ACK in writeStream().
+    /// Deferring that first standalone ACK removes a large fan-in hotspot
+    /// without delaying ECN/control ACKs or large uploads.
+    pub fn shouldSendImmediateAppAck(
+        self: *const Connection,
+        saw_stream: bool,
+        saw_non_stream_ack_eliciting: bool,
+        ecn_present_or_pending: bool,
+    ) bool {
+        if (ecn_present_or_pending) return true;
+        if (self.role != .Server) return true;
+        if (!saw_stream) return true;
+        if (saw_non_stream_ack_eliciting) return true;
+        return self.app_ack_eliciting_since_ack >= 2;
     }
 
     /// getAckDelayEncoded: Encode ACK delay per RFC 9000 §19.3 using ack_delay_exponent and max_ack_delay cap.
@@ -1419,6 +1459,8 @@ pub const Connection = struct {
         self.last_ack_eliciting_rx_initial_ns = 0;
         self.last_ack_eliciting_rx_handshake_ns = 0;
         self.last_ack_eliciting_rx_app_ns = 0;
+        self.app_ack_eliciting_since_ack = 0;
+        self.app_ack_delay_timer_id = 0;
         // Observability — start with no active span. When `-Dwith_otel=false`
         // these writes are no-ops (the field types are zero-sized /
         // `bool=false` and the comptime path elides them).

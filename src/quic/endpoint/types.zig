@@ -37,10 +37,11 @@ pub const Timer = struct {
     paced_peer: ?conn_mod.SockAddr = null,
 };
 
-/// Endpoint timer kinds: generic app timers plus per-PN-space PTO and PMTUD timers.
+/// Endpoint timer kinds: generic app timers, delayed ACK fallback,
+/// per-PN-space PTO, and PMTUD timers.
 ///
 /// PTO timers correspond to RFC 9002 §6.2, while PMTUD follows RFC 9000 §14.2.
-pub const TimerKind = enum { Generic, PtoInitial, PtoHandshake, PtoApp, Pmtud };
+pub const TimerKind = enum { Generic, AppAckDelay, PtoInitial, PtoHandshake, PtoApp, Pmtud };
 
 /// Hash key combining peer address + destination CID for connection lookup.
 ///

@@ -17,9 +17,48 @@ const lookup = @import("endpoint/lookup");
 
 var test_allocator = std.testing.allocator;
 
+fn initPolicyTestConnection(conn: *conn_mod.Connection, role: conn_mod.Role) void {
+    conn.init(&test_allocator, role, -1, conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433));
+}
+
 // =============================================================================
 // Unit Tests for findConnectionByDcid() - RFC 9000 §5.1 Connection Routing
 // =============================================================================
+
+test "server stream ACK policy defers first STREAM ack and ACKs second" {
+    var conn: conn_mod.Connection = undefined;
+    initPolicyTestConnection(&conn, .Server);
+    defer conn.deinit();
+
+    conn.recordAppAckElicitingRx(1_000);
+    try testing.expect(!conn.shouldSendImmediateAppAck(true, false, false));
+
+    conn.recordAppAckElicitingRx(2_000);
+    try testing.expect(conn.shouldSendImmediateAppAck(true, false, false));
+
+    conn.markAppAckSent();
+    try testing.expectEqual(@as(u16, 0), conn.app_ack_eliciting_since_ack);
+}
+
+test "server app ACK policy keeps ECN and control frames immediate" {
+    var conn: conn_mod.Connection = undefined;
+    initPolicyTestConnection(&conn, .Server);
+    defer conn.deinit();
+
+    conn.recordAppAckElicitingRx(1_000);
+    try testing.expect(conn.shouldSendImmediateAppAck(true, false, true));
+    try testing.expect(conn.shouldSendImmediateAppAck(true, true, false));
+    try testing.expect(conn.shouldSendImmediateAppAck(false, true, false));
+}
+
+test "client app ACK policy remains immediate" {
+    var conn: conn_mod.Connection = undefined;
+    initPolicyTestConnection(&conn, .Client);
+    defer conn.deinit();
+
+    conn.recordAppAckElicitingRx(1_000);
+    try testing.expect(conn.shouldSendImmediateAppAck(true, false, false));
+}
 
 test "Session 3 - findConnectionByDcid: normal connection lookup with peer_hash + dcid_hash" {
     // Test normal operation: connection found using composite key (peer_hash + dcid_hash)
