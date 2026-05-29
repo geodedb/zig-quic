@@ -88,12 +88,12 @@ const server_max_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap *
 const server_short_header_receive_batches: usize = server_poll_receive_batches;
 const server_max_short_header_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap * server_short_header_receive_batches;
 
-// CANARY: REQ=REQ-QUIC-HC-150; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ServerReceiveCadence; STATUS=TESTED; TEST=endpoint_server_receive_cadence_limits_batch_size_and_short_header_time; OWNER=transport; UPDATED=2026-05-29
-// Keep the server's total four-batch drain budget for cheap connection setup
-// bursts, but receive smaller slices so a contended short-header batch cannot
-// monopolize the embedding poll loop before stream readers are woken.
-const server_recv_batch_slots_per_poll_iteration: usize = udp_transport_mod.UdpBatchCap / 4;
-const server_short_header_receive_time_budget_ns: u64 = 2 * std.time.ns_per_ms;
+// CANARY: REQ=REQ-QUIC-HC-150; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ServerReceiveCadence; STATUS=TESTED; TEST=endpoint_server_receive_cadence_preserves_batch_size_and_limits_short_header_time; OWNER=transport; UPDATED=2026-05-29
+// Keep the server's full recv batch shape for handshake/HELLO setup bursts, but
+// add a short-header wall-clock yield so contended application receive cycles
+// cannot monopolize the embedding poll loop before stream readers are woken.
+const server_recv_batch_slots_per_poll_iteration: usize = udp_transport_mod.UdpBatchCap;
+const server_short_header_receive_time_budget_ns: u64 = 50 * std.time.ns_per_ms;
 
 fn maxPacketsPerPollCycleForRole(role: EndpointRole) usize {
     return switch (role) {
@@ -3085,10 +3085,9 @@ test "endpoint short header poll budget keeps server app packets bounded" {
     try std.testing.expect(maxShortHeaderPacketsPerPollCycleForRole(.Server) > 0);
 }
 
-test "endpoint server receive cadence limits batch size and short header time" {
+test "endpoint server receive cadence preserves batch size and limits short header time" {
     try std.testing.expectEqual(udp_transport_mod.UdpBatchCap, recvBatchSlotsPerPollIterationForRole(.Client));
-    try std.testing.expect(recvBatchSlotsPerPollIterationForRole(.Server) > 0);
-    try std.testing.expect(recvBatchSlotsPerPollIterationForRole(.Server) < udp_transport_mod.UdpBatchCap);
+    try std.testing.expectEqual(udp_transport_mod.UdpBatchCap, recvBatchSlotsPerPollIterationForRole(.Server));
     try std.testing.expectEqual(maxPacketsPerPollCycleForRole(.Server), maxShortHeaderPacketsPerPollCycleForRole(.Server));
 
     try std.testing.expect(!shortHeaderReceiveBudgetExpiredForElapsed(.Client, std.time.ns_per_s, 1));

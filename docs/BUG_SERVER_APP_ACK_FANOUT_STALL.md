@@ -47,8 +47,8 @@ contention. Response writes were healthy and stream-write timeouts stayed at
 zero, so the remaining issue was poll-loop cadence: one expensive receive cycle
 could delay wakeups for already-readable streams.
 
-The server receive path now keeps the total four-batch poll budget, but receives
-smaller per-iteration slices (`UdpBatchCap / 4`) and applies a short-header
+The server receive path now keeps the total four-batch poll budget and the full
+per-iteration `UdpBatchCap` receive shape, but applies a short-header
 wall-clock yield after application packets have started processing in the
 current poll call. This preserves cheap setup burst draining while preventing
 contended short-header work from monopolizing the embedding event loop.
@@ -57,6 +57,8 @@ The cadence fix is deliberately server-only:
 
 - Clients keep one full UDP batch per poll for app wakeup fairness.
 - Servers still have a 256-packet total poll budget when processing is cheap.
+- Servers keep full-size receive batches so handshake/HELLO setup bursts do not
+  regress to the rejected one-batch behavior.
 - Long-header setup packets are not time-yielded before short-header packets are
   observed, so handshake storms retain the prior drain shape.
 - No datagrams are dropped after `recvBatch()`: the loop only checks the time

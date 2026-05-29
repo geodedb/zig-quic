@@ -248,10 +248,10 @@ ISO-8601 `YYYY-MM-DD`.
   multi-second server `pollWithStats()` receive cycles while processing
   short-header application packets.
 - **Change.** `src/quic/endpoint.zig` keeps the server's 256-packet total poll
-  drain budget, but caps each server `recvBatch()` slice to `UdpBatchCap / 4`
-  and yields before the next receive slice once short-header processing has
-  consumed the configured wall-clock budget. Clients remain at one full UDP
-  batch, and server setup packets retain the total four-batch drain budget.
+  drain budget and full-size `UdpBatchCap` receive slices, but yields before the
+  next receive slice once short-header processing has consumed the configured
+  wall-clock budget. Clients remain at one full UDP batch, and server setup
+  packets retain the total four-batch drain budget.
 - **Regression gate.** `zig build test -Dtest-filter=receive_cadence --summary
   all` now runs only the endpoint-module cadence regression and passes 1/1.
 - **Compile smoke.** `zig build cross-smoke --summary all` passes for
