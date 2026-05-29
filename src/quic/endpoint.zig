@@ -85,6 +85,8 @@ const client_max_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap;
 // become the loss source during synchronized request bursts.
 const server_poll_receive_batches: usize = 4;
 const server_max_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap * server_poll_receive_batches;
+const server_short_header_receive_batches: usize = server_poll_receive_batches;
+const server_max_short_header_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap * server_short_header_receive_batches;
 
 fn maxPacketsPerPollCycleForRole(role: EndpointRole) usize {
     return switch (role) {
@@ -93,17 +95,17 @@ fn maxPacketsPerPollCycleForRole(role: EndpointRole) usize {
     };
 }
 
-// CANARY: REQ=REQ-QUIC-HC-123; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ShortHeaderPollBudget; STATUS=TESTED; TEST=endpoint_short_header_poll_budget; OWNER=transport; UPDATED=2026-05-29
+// CANARY: REQ=REQ-QUIC-HC-123; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ShortHeaderPollBudget; STATUS=TESTED; TEST=endpoint_short_header_poll_budget; OWNER=transport; UPDATED=2026-05-28
 // Application packets run decrypt, STREAM delivery, ACK/recovery, and ACK
-// generation on the endpoint receive path. Keep both clients and servers at
-// the one-batch short-header fairness budget; servers still keep the broader
-// receive cycle budget for long-header handshake catch-up, but application
-// packets can block on per-connection locks while response writers run.
-// Returning after one short-header batch keeps Geode's poll wrapper and stream
-// schedulers from being stranded inside a multi-second receive cycle.
+// generation on the endpoint receive path. Keep clients at the one-batch
+// fairness budget, but let servers use the bounded multi-batch drain so
+// synchronized request bursts do not remain in the kernel FIFO long enough to
+// enter PTO. Same-connection contention is shed inside the short-header handler.
 fn maxShortHeaderPacketsPerPollCycleForRole(role: EndpointRole) usize {
-    _ = role;
-    return udp_transport_mod.UdpBatchCap;
+    return switch (role) {
+        .Client => maxPacketsPerPollCycleForRole(role),
+        .Server => server_max_short_header_packets_per_poll_cycle,
+    };
 }
 
 // CANARY: REQ=REQ-QUIC-HC-059; FEATURE="QUIC High-Concurrency Requests"; ASPECT=LongHeaderPollBudget; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
@@ -3049,8 +3051,8 @@ test "endpoint server poll budget drains multiple UDP batches" {
 
 test "endpoint short header poll budget keeps server app packets bounded" {
     try std.testing.expectEqual(maxPacketsPerPollCycleForRole(.Client), maxShortHeaderPacketsPerPollCycleForRole(.Client));
-    try std.testing.expectEqual(udp_transport_mod.UdpBatchCap, maxShortHeaderPacketsPerPollCycleForRole(.Server));
-    try std.testing.expect(maxShortHeaderPacketsPerPollCycleForRole(.Server) < maxPacketsPerPollCycleForRole(.Server));
+    try std.testing.expectEqual(udp_transport_mod.UdpBatchCap * server_short_header_receive_batches, maxShortHeaderPacketsPerPollCycleForRole(.Server));
+    try std.testing.expectEqual(maxPacketsPerPollCycleForRole(.Server), maxShortHeaderPacketsPerPollCycleForRole(.Server));
     try std.testing.expect(maxShortHeaderPacketsPerPollCycleForRole(.Server) > 0);
 }
 
