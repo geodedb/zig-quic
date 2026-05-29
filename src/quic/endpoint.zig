@@ -88,16 +88,6 @@ const server_max_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap *
 const server_short_header_receive_batches: usize = server_poll_receive_batches;
 const server_max_short_header_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap * server_short_header_receive_batches;
 
-// CANARY: REQ=REQ-QUIC-HC-150; FEATURE="High-Concurrency Requests"; ASPECT=ServerShortHeaderCadence; STATUS=IMPL; TEST=endpoint_server_short_header_cadence_yields_after_full_slow_batch; OWNER=transport; UPDATED=2026-05-29
-// Preserve the server's four-batch app receive cap for ordinary fan-in, but do
-// not let one contended short-header receive cycle monopolize the embedding
-// poll loop for multiple seconds. The cadence check only applies after one
-// full UDP batch of short-header packets has been processed, so handshake and
-// cheap request bursts keep the proven broad drain while expensive frame
-// delivery yields to stream readers and timer/recovery work.
-const server_short_header_cadence_min_packets: usize = udp_transport_mod.UdpBatchCap;
-const server_short_header_cadence_budget_ns: u64 = 500 * std.time.ns_per_ms;
-
 fn maxPacketsPerPollCycleForRole(role: EndpointRole) usize {
     return switch (role) {
         .Client => client_max_packets_per_poll_cycle,
@@ -116,12 +106,6 @@ fn maxShortHeaderPacketsPerPollCycleForRole(role: EndpointRole) usize {
         .Client => maxPacketsPerPollCycleForRole(role),
         .Server => server_max_short_header_packets_per_poll_cycle,
     };
-}
-
-fn serverShortHeaderCadenceExpired(role: EndpointRole, elapsed_ns: u64, short_header_packets_processed: usize) bool {
-    if (role != .Server) return false;
-    if (short_header_packets_processed < server_short_header_cadence_min_packets) return false;
-    return elapsed_ns >= server_short_header_cadence_budget_ns;
 }
 
 // CANARY: REQ=REQ-QUIC-HC-059; FEATURE="QUIC High-Concurrency Requests"; ASPECT=LongHeaderPollBudget; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
@@ -1731,11 +1715,6 @@ pub const Endpoint = struct {
             var short_header_packets_processed: usize = 0;
             drain_loop: while (true) {
                 if (stats.packets_processed >= max_packets_this_poll) break :drain_loop;
-                if (serverShortHeaderCadenceExpired(
-                    self.role,
-                    elapsedNsSince(recv_process_start_ns),
-                    short_header_packets_processed,
-                )) break :drain_loop;
                 const packet_budget_left = max_packets_this_poll - stats.packets_processed;
                 const recv_limit = @min(recv_slots.len, packet_budget_left);
 
@@ -1816,11 +1795,6 @@ pub const Endpoint = struct {
                     }
                     stats.packets_processed += 1;
                     if (processed_short_header and short_header_packets_processed >= max_short_header_packets_this_poll) break :drain_loop;
-                    if (processed_short_header and serverShortHeaderCadenceExpired(
-                        self.role,
-                        elapsedNsSince(recv_process_start_ns),
-                        short_header_packets_processed,
-                    )) break :drain_loop;
                 }
                 // mu released between datagrams — handler threads get a chance to run.
 
@@ -3080,14 +3054,6 @@ test "endpoint short header poll budget keeps server app packets bounded" {
     try std.testing.expectEqual(udp_transport_mod.UdpBatchCap * server_short_header_receive_batches, maxShortHeaderPacketsPerPollCycleForRole(.Server));
     try std.testing.expectEqual(maxPacketsPerPollCycleForRole(.Server), maxShortHeaderPacketsPerPollCycleForRole(.Server));
     try std.testing.expect(maxShortHeaderPacketsPerPollCycleForRole(.Server) > 0);
-}
-
-test "endpoint server short header cadence yields after full slow batch" {
-    try std.testing.expectEqual(udp_transport_mod.UdpBatchCap, server_short_header_cadence_min_packets);
-    try std.testing.expect(!serverShortHeaderCadenceExpired(.Client, std.time.ns_per_s, server_short_header_cadence_min_packets));
-    try std.testing.expect(!serverShortHeaderCadenceExpired(.Server, server_short_header_cadence_budget_ns, server_short_header_cadence_min_packets - 1));
-    try std.testing.expect(!serverShortHeaderCadenceExpired(.Server, server_short_header_cadence_budget_ns - 1, server_short_header_cadence_min_packets));
-    try std.testing.expect(serverShortHeaderCadenceExpired(.Server, server_short_header_cadence_budget_ns, server_short_header_cadence_min_packets));
 }
 
 test "endpoint pto dirty recompute has a poll cycle fairness budget" {
