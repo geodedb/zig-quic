@@ -216,6 +216,10 @@ test "pending_hs_send_retry_waits_for_rx_serial_mutex" {
     try testing.expect(poll_done.load(.acquire));
 }
 
+test "generic_long_header_dispatch_uses_serialized_tls_wrappers" {
+    try testing.expect(endpoint_mod.generic_long_header_dispatch_serializes_tls_for_test);
+}
+
 test "onPacketSent legacy sent maps tolerate concurrent PTO accounting" {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer std.testing.expect(gpa.deinit() == .ok) catch @panic("leak");

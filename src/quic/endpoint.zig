@@ -88,6 +88,8 @@ const server_max_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap *
 const server_short_header_receive_batches: usize = server_poll_receive_batches;
 const server_max_short_header_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap * server_short_header_receive_batches;
 
+pub const generic_long_header_dispatch_serializes_tls_for_test = true;
+
 fn maxPacketsPerPollCycleForRole(role: EndpointRole) usize {
     return switch (role) {
         .Client => client_max_packets_per_poll_cycle,
@@ -1067,8 +1069,9 @@ pub const Endpoint = struct {
         if (token_offset + tok_len_usize > bytes.len) return;
         const token_bytes = bytes[token_offset .. token_offset + tok_len_usize];
 
+        const previous_io_endpoint = current_io_endpoint;
         current_io_endpoint = self;
-        defer current_io_endpoint = null;
+        defer current_io_endpoint = previous_io_endpoint;
 
         const role_converted = @as(ep_types.EndpointRole, @enumFromInt(@intFromEnum(self.role)));
         var rx_ctx = incoming.RxContext{
@@ -1144,8 +1147,9 @@ pub const Endpoint = struct {
         const norm_peer = normalizeAddr(&peer.storage, peer.len);
         const header = incoming.parseHandshakeHeader(bytes) catch return;
 
+        const previous_io_endpoint = current_io_endpoint;
         current_io_endpoint = self;
-        defer current_io_endpoint = null;
+        defer current_io_endpoint = previous_io_endpoint;
 
         const role_converted = @as(ep_types.EndpointRole, @enumFromInt(@intFromEnum(self.role)));
         var rx_ctx = incoming.RxContext{
@@ -1786,9 +1790,7 @@ pub const Endpoint = struct {
                             stats.recv_handshake_ns += elapsedNsSince(handshake_start_ns);
                         } else {
                             const fallback_start_ns = nowNsMonotonic();
-                            self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
                             self.processIncomingDatagram(slot.peer, datagram, slot.ecn);
-                            self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
                             stats.recv_fallback_ns += elapsedNsSince(fallback_start_ns);
                         }
                         if (long_kind == .Initial) initial_packets_processed += 1;
@@ -2018,7 +2020,9 @@ pub const Endpoint = struct {
         // Delegate to io module - but we need self for callbacks
         // Simple solution: use thread-local for now
         // TODO: Better solution would be to make IoContext accept an opaque user_data pointer
+        const previous_io_endpoint = current_io_endpoint;
         current_io_endpoint = self;
+        defer current_io_endpoint = previous_io_endpoint;
 
         const ProcessWrapper = struct {
             fn process(peer: conn_mod.SockAddr, data: []const u8, ecn_bits: ?u8) void {
@@ -2044,7 +2048,6 @@ pub const Endpoint = struct {
             .epoll_fd = self.epoll_fd,
         };
         io_mod.drainReadable(&ctx);
-        current_io_endpoint = null;
     }
 
     /// Linux-only: drain MSG_ERRQUEUE to handle ICMP PTB and apply DPLPMTUD clamps.
@@ -2107,8 +2110,9 @@ pub const Endpoint = struct {
 
     /// Helper: Create IoContext and call platform-specific poll backend.
     fn callPollBackend(self: *Endpoint, backend: lb.LoopBackend, timeout_ms: i32) !void {
+        const previous_io_endpoint = current_io_endpoint;
         current_io_endpoint = self;
-        defer current_io_endpoint = null;
+        defer current_io_endpoint = previous_io_endpoint;
 
         const ProcessWrapper = struct {
             fn process(peer: conn_mod.SockAddr, data: []const u8, ecn_bits: ?u8) void {
@@ -2337,8 +2341,9 @@ pub const Endpoint = struct {
         var remaining = bytes;
 
         // Temporarily set global endpoint pointer for callbacks
+        const previous_io_endpoint = current_io_endpoint;
         current_io_endpoint = self;
-        defer current_io_endpoint = null;
+        defer current_io_endpoint = previous_io_endpoint;
 
         // Create RxContext for delegation to incoming.zig modules
         const role_converted = @as(ep_types.EndpointRole, @enumFromInt(@intFromEnum(self.role)));
@@ -2514,12 +2519,23 @@ pub const Endpoint = struct {
                         };
                     } else |_| {}
                 } else {
-                    incoming.processInitial(&rx_ctx, norm_peer, packet_bytes, version);
+                    // CANARY: REQ=REQ-QUIC-HC-168; FEATURE="High-Concurrency Handshake"; ASPECT=GenericLongHeaderTlsSerialization; STATUS=TESTED; TEST=generic_long_header_dispatch_uses_serialized_tls_wrappers; OWNER=transport; UPDATED=2026-05-29
+                    //
+                    // `processIncomingDatagram` handles coalesced packets and
+                    // backend callback paths that do not already hold the
+                    // endpoint map lock. Route long-header handshake packets
+                    // through the same wrappers used by the burst receive
+                    // drain so prepareInitialConnection runs under Endpoint.mu
+                    // and TLS processCrypto/pollCrypto runs under the
+                    // per-connection RX serializer. Calling incoming.* directly
+                    // here reopened the pollCrypto ArrayList ownership race for
+                    // coalesced Initial/Handshake datagrams.
+                    self.processInitialDatagramConcurrent(norm_peer, packet_bytes, version);
                 }
             } else if (packet_kind == .Retry) {
                 self.processRetryPacket(norm_peer, packet_bytes, version);
             } else if (packet_kind == .Handshake) {
-                incoming.processHandshake(&rx_ctx, norm_peer, packet_bytes, version, ecn_bits, rx_ctx.send_fn);
+                self.processHandshakeDatagramConcurrent(norm_peer, packet_bytes, version, ecn_bits);
             }
 
             // Advance to next packet
