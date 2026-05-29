@@ -918,52 +918,6 @@ pub fn build(b: *std.Build) void {
             const run_test_udp_transport_only = b.addRunArtifact(test_udp_transport_only);
             test_step.dependOn(&run_test_udp_transport_only.step);
             return;
-        } else if (std.mem.containsAtLeast(u8, f, 1, "receive_cadence")) {
-            const endpoint_test_mod = b.createModule(.{
-                .root_source_file = b.path("src/quic/endpoint.zig"),
-                .target = target,
-                .optimize = optimize,
-            });
-            endpoint_test_mod.addImport("types", endpoint_types_mod);
-            endpoint_test_mod.addImport("quic_conn", quic_conn_mod);
-            endpoint_test_mod.addImport("quic_packet", quic_packet_mod);
-            endpoint_test_mod.addImport("quic_frame", quic_frame_mod);
-            endpoint_test_mod.addImport("quic_tls13", tls13_mod);
-            endpoint_test_mod.addImport("quic_crypto", quic_crypto_mod);
-            endpoint_test_mod.addImport("quic_varint", quic_varint_mod);
-            endpoint_test_mod.addImport("quic_tls", quic_tls_mod);
-            endpoint_test_mod.addImport("sig", sig_mod);
-            endpoint_test_mod.addImport("x509", x509_mod);
-            endpoint_test_mod.addImport("quic_recovery", quic_recovery_mod);
-            endpoint_test_mod.addImport("config.zig", quic_config_mod);
-            endpoint_test_mod.addImport("loop_backend.zig", loop_backend_mod);
-            endpoint_test_mod.addImport("quic_transport_params", quic_transport_params_mod);
-            endpoint_test_mod.addImport("quic_logger", quic_logger_mod);
-            endpoint_test_mod.addImport("byteorder", byteorder_mod);
-            endpoint_test_mod.addImport("quic_version", quic_version_mod);
-            endpoint_test_mod.addImport("quic_token", quic_token_mod);
-            endpoint_test_mod.addImport("endpoint/utils.zig", endpoint_utils_mod);
-            endpoint_test_mod.addImport("endpoint/transport.zig", endpoint_transport_mod);
-            endpoint_test_mod.addImport("endpoint/udp_transport.zig", endpoint_udp_transport_mod);
-            endpoint_test_mod.addImport("endpoint/incoming.zig", endpoint_incoming_mod);
-            endpoint_test_mod.addImport("endpoint/frame_handler.zig", endpoint_frame_handler_mod);
-            endpoint_test_mod.addImport("endpoint/lookup.zig", endpoint_lookup_mod);
-            endpoint_test_mod.addImport("endpoint/pto.zig", endpoint_pto_mod);
-            endpoint_test_mod.addImport("endpoint/lifecycle.zig", endpoint_lifecycle_mod);
-            endpoint_test_mod.addImport("endpoint/handshake_integration.zig", endpoint_handshake_integration_mod);
-            endpoint_test_mod.addImport("endpoint/client.zig", endpoint_client_mod);
-            endpoint_test_mod.addImport("endpoint/server.zig", endpoint_server_mod);
-            endpoint_test_mod.addImport("quic_build_options", build_options_mod);
-            if (parallel_mod) |pm| endpoint_test_mod.addImport("parallel", pm);
-
-            const test_endpoint_receive_cadence = b.addTest(.{
-                .root_module = endpoint_test_mod,
-                .filters = &.{"receive cadence"},
-            });
-            test_endpoint_receive_cadence.root_module.link_libc = true;
-            const run_test_endpoint_receive_cadence = b.addRunArtifact(test_endpoint_receive_cadence);
-            test_step.dependOn(&run_test_endpoint_receive_cadence.step);
-            return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "pto_handshake_uaf")) {
             // Regression test for the UAF in processExpiredTimers when a
             // PtoHandshake / PtoInitial timer fires after its captured

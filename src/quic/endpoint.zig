@@ -88,13 +88,6 @@ const server_max_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap *
 const server_short_header_receive_batches: usize = server_poll_receive_batches;
 const server_max_short_header_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap * server_short_header_receive_batches;
 
-// CANARY: REQ=REQ-QUIC-HC-150; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ServerReceiveCadence; STATUS=TESTED; TEST=endpoint_server_receive_cadence_preserves_batch_size_and_limits_short_header_time; OWNER=transport; UPDATED=2026-05-29
-// Keep the server's full recv batch shape for handshake/HELLO setup bursts, but
-// add a short-header wall-clock yield so contended application receive cycles
-// cannot monopolize the embedding poll loop before stream readers are woken.
-const server_recv_batch_slots_per_poll_iteration: usize = udp_transport_mod.UdpBatchCap;
-const server_short_header_receive_time_budget_ns: u64 = 50 * std.time.ns_per_ms;
-
 fn maxPacketsPerPollCycleForRole(role: EndpointRole) usize {
     return switch (role) {
         .Client => client_max_packets_per_poll_cycle,
@@ -113,19 +106,6 @@ fn maxShortHeaderPacketsPerPollCycleForRole(role: EndpointRole) usize {
         .Client => maxPacketsPerPollCycleForRole(role),
         .Server => server_max_short_header_packets_per_poll_cycle,
     };
-}
-
-fn recvBatchSlotsPerPollIterationForRole(role: EndpointRole) usize {
-    return switch (role) {
-        .Client => udp_transport_mod.UdpBatchCap,
-        .Server => server_recv_batch_slots_per_poll_iteration,
-    };
-}
-
-fn shortHeaderReceiveBudgetExpiredForElapsed(role: EndpointRole, elapsed_ns: u64, short_header_packets_processed: usize) bool {
-    if (role != .Server) return false;
-    if (short_header_packets_processed == 0) return false;
-    return elapsed_ns >= server_short_header_receive_time_budget_ns;
 }
 
 // CANARY: REQ=REQ-QUIC-HC-059; FEATURE="QUIC High-Concurrency Requests"; ASPECT=LongHeaderPollBudget; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
@@ -1735,17 +1715,8 @@ pub const Endpoint = struct {
             var short_header_packets_processed: usize = 0;
             drain_loop: while (true) {
                 if (stats.packets_processed >= max_packets_this_poll) break :drain_loop;
-                if (shortHeaderReceiveBudgetExpiredForElapsed(
-                    self.role,
-                    elapsedNsSince(recv_process_start_ns),
-                    short_header_packets_processed,
-                )) break :drain_loop;
-
                 const packet_budget_left = max_packets_this_poll - stats.packets_processed;
-                const recv_limit = @min(
-                    @min(recv_slots.len, recvBatchSlotsPerPollIterationForRole(self.role)),
-                    packet_budget_left,
-                );
+                const recv_limit = @min(recv_slots.len, packet_budget_left);
 
                 // 4a: Receive batch (no lock needed for transport recv)
                 const batch_n = self.transport.recvBatch(recv_slots[0..recv_limit]) catch |err| {
@@ -3083,25 +3054,6 @@ test "endpoint short header poll budget keeps server app packets bounded" {
     try std.testing.expectEqual(udp_transport_mod.UdpBatchCap * server_short_header_receive_batches, maxShortHeaderPacketsPerPollCycleForRole(.Server));
     try std.testing.expectEqual(maxPacketsPerPollCycleForRole(.Server), maxShortHeaderPacketsPerPollCycleForRole(.Server));
     try std.testing.expect(maxShortHeaderPacketsPerPollCycleForRole(.Server) > 0);
-}
-
-test "endpoint server receive cadence preserves batch size and limits short header time" {
-    try std.testing.expectEqual(udp_transport_mod.UdpBatchCap, recvBatchSlotsPerPollIterationForRole(.Client));
-    try std.testing.expectEqual(udp_transport_mod.UdpBatchCap, recvBatchSlotsPerPollIterationForRole(.Server));
-    try std.testing.expectEqual(maxPacketsPerPollCycleForRole(.Server), maxShortHeaderPacketsPerPollCycleForRole(.Server));
-
-    try std.testing.expect(!shortHeaderReceiveBudgetExpiredForElapsed(.Client, std.time.ns_per_s, 1));
-    try std.testing.expect(!shortHeaderReceiveBudgetExpiredForElapsed(.Server, std.time.ns_per_s, 0));
-    try std.testing.expect(!shortHeaderReceiveBudgetExpiredForElapsed(
-        .Server,
-        server_short_header_receive_time_budget_ns - 1,
-        1,
-    ));
-    try std.testing.expect(shortHeaderReceiveBudgetExpiredForElapsed(
-        .Server,
-        server_short_header_receive_time_budget_ns,
-        1,
-    ));
 }
 
 test "endpoint pto dirty recompute has a poll cycle fairness budget" {
