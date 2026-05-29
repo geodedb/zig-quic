@@ -38,12 +38,40 @@ The fix is intentionally scoped to server-side STREAM-only first packets. It
 does not delay ECN feedback, control frame acknowledgement, client ACK behavior,
 or large uploads.
 
+## 2026-05-29 Follow-up: Receive Cadence
+
+The first ACK fanout fix removed redundant response-path ACK work, but Geode's
+4096 x 8 request gate still showed multi-second `pollWithStats()` calls when a
+single server poll drained a large short-header burst under connection-lock
+contention. Response writes were healthy and stream-write timeouts stayed at
+zero, so the remaining issue was poll-loop cadence: one expensive receive cycle
+could delay wakeups for already-readable streams.
+
+The server receive path now keeps the total four-batch poll budget, but receives
+smaller per-iteration slices (`UdpBatchCap / 4`) and applies a short-header
+wall-clock yield after application packets have started processing in the
+current poll call. This preserves cheap setup burst draining while preventing
+contended short-header work from monopolizing the embedding event loop.
+
+The cadence fix is deliberately server-only:
+
+- Clients keep one full UDP batch per poll for app wakeup fairness.
+- Servers still have a 256-packet total poll budget when processing is cheap.
+- Long-header setup packets are not time-yielded before short-header packets are
+  observed, so handshake storms retain the prior drain shape.
+- No datagrams are dropped after `recvBatch()`: the loop only checks the time
+  budget before receiving the next slice.
+
 ## Files
 
 - `src/quic/conn.zig`: Application ACK accounting and immediate/deferred policy.
 - `src/quic/endpoint/incoming/module_c.zig`: receive-path policy decision and
   delayed ACK timer scheduling.
 - `src/quic/endpoint.zig`: `AppAckDelay` timer callback.
+- `src/quic/endpoint.zig`: server receive cadence constants and short-header
+  poll yield decision.
+- `build.zig`: focused `-Dtest-filter=receive_cadence` endpoint-module
+  regression target.
 - `src/quic/connection/methods_b.zig`: ACK counter reset when `writeStream()`
   piggybacks an ACK.
 - `tests/unit/endpoint/test_incoming_session3.zig`: policy regression tests.
@@ -54,6 +82,8 @@ Focused verification:
 
 ```sh
 zig build test -Dtest-filter=app_ack_policy --summary all
+zig build test -Dtest-filter=receive_cadence --summary all
+zig build cross-smoke --summary all
 zig build --summary all
 zig build -Doptimize=ReleaseFast --summary all
 ```
@@ -64,6 +94,17 @@ Known unrelated broad-test failures at the time this was fixed:
   `.terminated` instead of the older `.keys_installed` expectation.
 - `tests/unit/endpoint/test_server.zig`: FIFO queue expectation does not match
   the existing `swapRemove(0)` pop behavior.
+
+Observed during the 2026-05-29 cadence follow-up:
+
+- `zig build test -Dtest-filter=receive_cadence --summary all`: passes, 1/1.
+- `zig build cross-smoke --summary all`: passes, including endpoint compile.
+- `zig build test -Dtest-filter=high_parallel --summary all`: build succeeds;
+  the single high-parallel test is skipped by its own guard.
+- Broad `zig build test -Dtest-filter="endpoint server receive cadence"` and
+  `zig build test -Dfull-test-graph=false` still hit the two unrelated failures
+  above because the build graph includes those suites outside the requested
+  endpoint regression.
 
 ## Operational Notes
 

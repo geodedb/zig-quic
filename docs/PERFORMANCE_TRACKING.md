@@ -239,4 +239,26 @@ ISO-8601 `YYYY-MM-DD`.
     different streams in one packet) deferred — within-packet
     ACK+STREAM coalescing has always existed; GSO-style multi-
     packet batching is now provided by the paced flush above.
+
+### 2026-05-29 — Server short-header receive cadence
+
+- **Scope.** Follow-up to the Geode 4096 x 8 high-concurrency gate after the
+  server Application ACK fanout fix. The remaining symptom was not response
+  write backpressure (`stream_write_timeouts=0`) or mutation admission; it was
+  multi-second server `pollWithStats()` receive cycles while processing
+  short-header application packets.
+- **Change.** `src/quic/endpoint.zig` keeps the server's 256-packet total poll
+  drain budget, but caps each server `recvBatch()` slice to `UdpBatchCap / 4`
+  and yields before the next receive slice once short-header processing has
+  consumed the configured wall-clock budget. Clients remain at one full UDP
+  batch, and server setup packets retain the total four-batch drain budget.
+- **Regression gate.** `zig build test -Dtest-filter=receive_cadence --summary
+  all` now runs only the endpoint-module cadence regression and passes 1/1.
+- **Compile smoke.** `zig build cross-smoke --summary all` passes for
+  transport, UDP transport, and the full endpoint module graph.
+- **Known unrelated broad-test blockers.** Broad `zig build test` still hits
+  `tests/test_tls_handshake_context.zig` expecting `.keys_installed` where the
+  current TLS state is `.terminated`, and
+  `tests/unit/endpoint/test_server.zig` expecting FIFO behavior while the
+  server queue uses `swapRemove(0)`.
 </content>
