@@ -60,17 +60,6 @@ test "client app ACK policy remains immediate" {
     try testing.expect(conn.shouldSendImmediateAppAck(true, false, false));
 }
 
-test "server short-header receive sheds busy connection mutex before PN tracking" {
-    try testing.expect(incoming.server_short_header_busy_conn_shedding_for_test);
-
-    const source = @embedFile("../../../src/quic/endpoint/incoming/module_c.zig");
-    try testing.expect(std.mem.indexOf(u8, source, "REQ-QUIC-HC-177") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "conn.role == .Server") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "!conn.mu.tryLock()") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "drop=busy_conn") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "the peer will retransmit because no ACK is sent") != null);
-}
-
 test "Session 3 - findConnectionByDcid: normal connection lookup with peer_hash + dcid_hash" {
     // Test normal operation: connection found using composite key (peer_hash + dcid_hash)
     // RFC 9000 §5.1: Servers MUST route packets using peer address + DCID

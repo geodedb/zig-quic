@@ -21,8 +21,6 @@ const generateAndSendAck = incoming_b2.generateAndSendAck;
 const FrameProcessResult = incoming_b2.FrameProcessResult;
 const AckContext = incoming_b2.AckContext;
 
-pub const server_short_header_busy_conn_shedding_for_test = true;
-
 var g_app_decrypt_start = std.atomic.Value(u64).init(0);
 var g_app_decrypt_success = std.atomic.Value(u64).init(0);
 
@@ -349,31 +347,8 @@ pub fn processShortHeaderResolved(
     // and packet-number tracking from concurrent access by worker threads.
     // Released before processFrames() which calls pushStreamFrame() that acquires
     // conn.mu internally (Zig mutexes are non-recursive).
-    //
-    // CANARY: REQ=REQ-QUIC-HC-177; FEATURE="High-Concurrency Requests"; ASPECT=ServerShortHeaderBusyConnShedding; STATUS=IMPL; TEST=test_incoming_session3; OWNER=transport; UPDATED=2026-05-29
-    //
-    // On the server fan-in path, this mutex is also held by app writers sending
-    // responses. Parking a poll worker here lets one busy connection monopolize
-    // a UDP receive worker while thousands of unrelated request datagrams wait
-    // in the socket FIFO. If the lock is busy, drop this packet before PN
-    // tracking/ACK generation; the peer will retransmit because no ACK is sent.
     const pn_lock_start_ns = if (ctx.short_header_timing != null) timingNsMonotonic() else 0;
-    if (conn.role == .Server) {
-        if (!conn.mu.tryLock()) {
-            if (ctx.short_header_timing) |timing| {
-                timing.conn_lock_wait_ns += elapsedTimingNsSince(pn_lock_start_ns);
-            }
-            if (shortHeaderDiagnosticsEnabled()) {
-                std.debug.print(
-                    "short-header diag drop=busy_conn peer_port={d} bytes={d} dcid_len={d} pn={d}\n",
-                    .{ peerPort(peer), bytes.len, lookup_result.dcid_len, dec_res.packet_number },
-                );
-            }
-            return;
-        }
-    } else {
-        conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-    }
+    conn.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
     if (ctx.short_header_timing) |timing| {
         timing.conn_lock_wait_ns += elapsedTimingNsSince(pn_lock_start_ns);
     }
