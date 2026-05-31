@@ -363,6 +363,9 @@ pub fn createTlsContext(
     request_client_cert: bool,
     client_cert_der: ?[]const u8,
     client_key_der: ?[]const u8,
+    // Client trust anchors (DER CA chain). Added to the trust store and used to
+    // complete a leaf-only server chain before path validation (RFC 5280 §6.1).
+    trusted_ca_der: ?[]const []const u8,
 ) !tls13.Context {
     // Create TLS configuration
     const tls_role: tls13.Role = if (role == .Client) .Client else .Server;
@@ -398,6 +401,9 @@ pub fn createTlsContext(
         .request_client_cert = request_client_cert,
         .client_cert_der = client_cert_der,
         .client_key_der = client_key_der,
+        // GAP-0838: per-connection trust anchors. tls13 completes a leaf-only
+        // server chain with these and trusts their SPKIs during path validation.
+        .trusted_ca_der = trusted_ca_der,
     };
 
     // Create callbacks struct with full QUIC integration

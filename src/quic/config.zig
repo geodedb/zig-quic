@@ -87,6 +87,12 @@ pub const QuicConfig = struct {
     // mTLS: Client certificate and private key (DER-encoded) for mutual authentication
     inline_client_cert_der: ?[]const u8 = null,
     inline_client_priv_key: ?[]const u8 = null,
+    // Client trust anchors: DER-encoded CA certificate chain (RFC 9001 §4.4, RFC 5280 §6.1).
+    // When set, the client adds these to its trust store AND completes a leaf-only
+    // server chain with them before path validation. Loaded from `ca_path` by the
+    // caller (e.g. geode cluster TLS) so the api-client path actually honors the CA.
+    // Backing memory must outlive every TLS context created from this config.
+    inline_ca_chain_der: ?[]const []const u8 = null,
     // Exempt localhost (127.0.0.1 / ::1) from anti-amplification and address validation.
     // Default true preserves existing behaviour; set false to enforce strict RFC 9000 §8.1
     // amplification limits even on loopback (useful for conformance testing). (#124)

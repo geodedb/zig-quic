@@ -2318,6 +2318,7 @@ pub const Endpoint = struct {
                 false,
                 self.cfg.inline_client_cert_der,
                 self.cfg.inline_client_priv_key,
+                self.cfg.inline_ca_chain_der, // GAP-0838: CA trust anchors (post-Retry rebuild)
             ) catch return;
             tls_ctx.* = fresh_tls;
             if (c.server_name) |name| {

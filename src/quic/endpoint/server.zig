@@ -429,6 +429,7 @@ pub fn createServerConnection(
         config.require_client_cert,
         null, // Server doesn't need client cert/key
         null,
+        null, // Server has no client-side trust anchors (GAP-0838 is client→server)
     );
 
     const tls_ctx = try allocator.create(@TypeOf(ctx_value));

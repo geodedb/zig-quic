@@ -188,6 +188,7 @@ pub fn createClientConnection(
         false, // Client doesn't request client certs
         cfg.inline_client_cert_der,
         cfg.inline_client_priv_key,
+        cfg.inline_ca_chain_der, // GAP-0838: CA trust anchors for server-cert validation
     ) catch |err| blk: {
         logger.debugPrint("createClientConnection: Failed to create TLS Context: {}\n", .{err});
         break :blk null;
