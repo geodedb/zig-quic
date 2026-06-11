@@ -30,7 +30,18 @@ test "RFC 9221 §4 - writeDatagram encodes frame with data" {
     const n = try datagram.writeDatagram(w, data);
 
     try testing.expect(n > data.len);
-    try testing.expectEqual(@as(u8, 0x30), buf[0]); // DATAGRAM frame type
+    // RFC 9221 §4: the length-prefixed (self-delimiting) form is 0x31.
+    try testing.expectEqual(@as(u8, 0x31), buf[0]); // DATAGRAM_LEN frame type
+}
+
+test "RFC 9221 §4 - decodeDatagram accepts the 0x30 (data-to-end) form" {
+    // A 0x30 DATAGRAM has no length field; the data runs to the end of the
+    // buffer (packet). Hand-build one and confirm it decodes to the trailing
+    // bytes with all of them consumed.
+    const buf = [_]u8{ 0x30, 'h', 'i', '!' };
+    const result = try datagram.decodeDatagram(&buf);
+    try testing.expectEqualStrings("hi!", result.data);
+    try testing.expectEqual(@as(usize, buf.len), result.n);
 }
 
 test "RFC 9221 §4 - decodeDatagram reads frame correctly" {
@@ -219,25 +230,25 @@ test "negative: decodeDatagram with wrong frame type" {
 }
 
 test "negative: decodeDatagram truncated at length" {
-    const buf = [_]u8{0x30}; // Only frame type, missing length
+    const buf = [_]u8{0x31}; // Only frame type, missing length
     try testing.expectError(error.Truncated, datagram.decodeDatagram(&buf));
 }
 
 test "negative: decodeDatagram truncated data" {
     // Frame type + length (10) + only 2 bytes of data
-    const buf = [_]u8{ 0x30, 0x0a, 0xaa, 0xbb };
+    const buf = [_]u8{ 0x31, 0x0a, 0xaa, 0xbb };
     try testing.expectError(error.Truncated, datagram.decodeDatagram(&buf));
 }
 
 test "negative: decodeDatagram length exceeds buffer" {
     // Frame type + length (100) + short data
-    const buf = [_]u8{ 0x30, 0x64, 0x01, 0x02 };
+    const buf = [_]u8{ 0x31, 0x64, 0x01, 0x02 };
     try testing.expectError(error.Truncated, datagram.decodeDatagram(&buf));
 }
 
 test "negative: decodeDatagram with partial varint length" {
     // Frame type + partial 2-byte varint (missing second byte)
-    const buf = [_]u8{ 0x30, 0x40 };
+    const buf = [_]u8{ 0x31, 0x40 };
     try testing.expectError(error.Truncated, datagram.decodeDatagram(&buf));
 }
 
@@ -320,15 +331,17 @@ test "boundary: DATAGRAM frame with zero-length data" {
 // RFC Compliance Tests
 // =============================================================================
 
-test "RFC 9221 §4 - DATAGRAM frame type is 0x30" {
+test "RFC 9221 §4 - DATAGRAM frame type codes (0x30 / 0x31)" {
     var buf: [256]u8 = undefined;
     var fbs = compat.fixedBufferStream(&buf);
     const w = fbs.writer();
 
     _ = try datagram.writeDatagram(w, "X");
 
-    try testing.expectEqual(@as(u8, 0x30), buf[0]);
+    // The encoder emits the length-prefixed (0x31) form (RFC 9221 §4).
+    try testing.expectEqual(@as(u8, 0x31), buf[0]);
     try testing.expectEqual(@as(u8, 0x30), @intFromEnum(types.FrameType.DATAGRAM));
+    try testing.expectEqual(@as(u8, 0x31), @intFromEnum(types.FrameType.DATAGRAM_LEN));
 }
 
 test "RFC 9221 §4 - DATAGRAM frame format: Type + Length + Data" {
@@ -341,8 +354,8 @@ test "RFC 9221 §4 - DATAGRAM frame format: Type + Length + Data" {
 
     const written = fbs.getWritten();
 
-    // Verify format manually
-    try testing.expectEqual(@as(u8, 0x30), written[0]); // Type
+    // Verify format manually: length-prefixed form is type 0x31.
+    try testing.expectEqual(@as(u8, 0x31), written[0]); // Type (DATAGRAM_LEN)
 
     // The rest should decode correctly
     const result = try datagram.decodeDatagram(written);

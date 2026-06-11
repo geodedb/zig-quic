@@ -35,7 +35,8 @@ pub const FrameType = enum(u8) {
     CONNECTION_CLOSE = 0x1c,
     APPLICATION_CLOSE = 0x1d, // RFC 9000 §19.19 - application-level close (no frame_type field)
     HANDSHAKE_DONE = 0x1e,
-    DATAGRAM = 0x30, // RFC 9221 (optional)
+    DATAGRAM = 0x30, // RFC 9221 (optional) - LEN=0: data runs to end of packet
+    DATAGRAM_LEN = 0x31, // RFC 9221 - LEN=1: explicit Length varint precedes data
 };
 
 /// Ack range element used inside ACK frames (gap,len VarInts).

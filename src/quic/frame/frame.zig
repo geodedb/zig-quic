@@ -185,8 +185,8 @@ pub fn decodeOne(buf: []const u8) !struct { f: Frame, n: usize } {
         };
     }
 
-    // DATAGRAM
-    if (t == @intFromEnum(FrameType.DATAGRAM)) {
+    // DATAGRAM (RFC 9221: 0x30 = data-to-end, 0x31 = length-prefixed)
+    if (t == @intFromEnum(FrameType.DATAGRAM) or t == @intFromEnum(FrameType.DATAGRAM_LEN)) {
         const result = try datagram_mod.decodeDatagram(buf);
         return .{ .f = Frame{ .datagram = .{ .data = result.data } }, .n = result.n };
     }
@@ -442,8 +442,12 @@ pub fn decode(r: anytype, alloc: std.mem.Allocator) !Frame {
         return Frame{ .stream = .{ .stream_id = stream_id, .offset = offset, .fin = fin, .data = data } };
     }
 
-    // DATAGRAM
-    if (t == @intFromEnum(FrameType.DATAGRAM)) {
+    // DATAGRAM (reader-based path; test/legacy). 0x31 is length-prefixed; 0x30
+    // (data-to-end) cannot be framed from a bare reader without packet bounds,
+    // so it is not produced here — the production decoder is the slice-based
+    // decodeOne above. Both type codes are accepted as length-prefixed here to
+    // keep the allocation-cap check exercised.
+    if (t == @intFromEnum(FrameType.DATAGRAM) or t == @intFromEnum(FrameType.DATAGRAM_LEN)) {
         const len = try varint.decodeReader(r);
         if (len > max_frame_data_len) return error.FrameTooLarge;
         const data = try alloc.alloc(u8, @intCast(len));

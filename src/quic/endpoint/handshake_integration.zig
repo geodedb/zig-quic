@@ -1468,6 +1468,12 @@ pub fn setupClientTransportParams(
     tpp.initial_max_stream_data_uni = conn.local_max_stream_data;
     tpp.initial_max_streams_bidi = conn.local_max_streams_bidi;
     tpp.initial_max_streams_uni = conn.local_max_streams_uni;
+    // TP3-01: advertise the same active_connection_id_limit we actually enforce
+    // (onNewConnectionId rejects beyond peer_cids.len = 8). The client previously
+    // left this unset, advertising the default of 2 while tolerating 8 — an
+    // advertise-vs-enforce mismatch (RFC 9000 §5.1.1). Mirrors the server, which
+    // advertises 8.
+    tpp.active_connection_id_limit = 8;
 
     // Encode to TLV format for quic_transport_parameters extension
     const tp_bytes = try transport_params.TransportParams.encode(&tpp, allocator);
