@@ -541,10 +541,10 @@ test "stateless reset tokens retire by sequence without ordered removal" {
     const tok2: [16]u8 = .{ 0xA2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
     const tok3: [16]u8 = .{ 0xA3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
-    c.onNewConnectionId(0, 0, &[_]u8{}, tok0);
-    c.onNewConnectionId(1, 0, &[_]u8{}, tok1);
-    c.onNewConnectionId(2, 0, &[_]u8{}, tok2);
-    c.onNewConnectionId(3, 2, &[_]u8{}, tok3);
+    try c.onNewConnectionId(0, 0, &[_]u8{}, tok0);
+    try c.onNewConnectionId(1, 0, &[_]u8{}, tok1);
+    try c.onNewConnectionId(2, 0, &[_]u8{}, tok2);
+    try c.onNewConnectionId(3, 2, &[_]u8{}, tok3);
 
     var pkt: [37]u8 = [_]u8{0x11} ** 37;
     pkt[0] = 0x40;
@@ -1689,7 +1689,14 @@ pub const Connection = struct {
 
     /// Update/reset stateless reset tokens based on NEW_CONNECTION_ID retire_prior_to.
     /// Install/retire peer-advertised stateless reset tokens based on NEW_CONNECTION_ID frame sequencing.
-    pub fn onNewConnectionId(self: *Connection, sequence: u64, retire_prior_to: u64, connection_id: []const u8, stateless_reset_token: [16]u8) void {
+    ///
+    /// Returns error.ConnectionIdLimitError (NEWGAP-03) when the peer would hold
+    /// more concurrently active connection IDs than we advertised (RFC 9000
+    /// §5.1.1: a receiver that would exceed its advertised active_connection_id_limit
+    /// MUST close with CONNECTION_ID_LIMIT_ERROR). We advertise a limit equal to
+    /// peer_cids.len, so a real CID that cannot fit without evicting a still-live
+    /// entry is a protocol violation rather than something to silently absorb.
+    pub fn onNewConnectionId(self: *Connection, sequence: u64, retire_prior_to: u64, connection_id: []const u8, stateless_reset_token: [16]u8) error{ConnectionIdLimitError}!void {
         // Retire tokens by explicit sequence; list order is not significant.
         var i: usize = 0;
         while (i < self.reset_tokens.items.len) {
@@ -1727,8 +1734,6 @@ pub const Connection = struct {
         if (cid_len > 0) {
             var slot: ?usize = null;
             var free_slot: ?usize = null;
-            var oldest_slot: usize = 0;
-            var oldest_seq: u64 = std.math.maxInt(u64);
 
             i = 0;
             while (i < self.peer_cids.len) : (i += 1) {
@@ -1738,16 +1743,17 @@ pub const Connection = struct {
                         slot = i;
                         break;
                     }
-                    if (entry.sequence < oldest_seq) {
-                        oldest_seq = entry.sequence;
-                        oldest_slot = i;
-                    }
                 } else if (free_slot == null) {
                     free_slot = i;
                 }
             }
 
-            const idx = slot orelse free_slot orelse oldest_slot;
+            // RFC 9000 §5.1.1 (NEWGAP-03): if this is a new sequence and there is
+            // no free slot after retirement, the peer exceeded the active CID
+            // limit we advertised. Close the connection rather than evicting a
+            // still-active CID (which would silently absorb the violation and
+            // could cause CID confusion).
+            const idx = slot orelse free_slot orelse return error.ConnectionIdLimitError;
             var entry = &self.peer_cids[idx];
             entry.in_use = true;
             entry.sequence = sequence;

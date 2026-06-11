@@ -473,6 +473,31 @@ pub fn bind(comptime Connection: type) type {
 
             // RFC 9000 §18.2: Check that parameter values are within allowed ranges
             tp_dec.checkLimits() catch return error.InvalidTransportParams;
+
+            // RFC 9000 §7.3 (NEWGAP-01): authenticate the connection IDs carried
+            // in the peer's transport parameters against the connection IDs
+            // actually observed on the wire. A mismatch is a
+            // TRANSPORT_PARAMETER_ERROR. Without this, the CID-injection defense
+            // the RFC mandates is absent. Checks are gated on the on-wire value
+            // being known so they never false-fail a legitimate handshake.
+            if (tp_dec.initial_source_connection_id) |iscid| {
+                if (self.peer_initial_scid_set) {
+                    const observed = self.peer_initial_scid.bytes[0..self.peer_initial_scid.len];
+                    if (!std.mem.eql(u8, iscid, observed)) return error.TransportParameterCidMismatch;
+                }
+            }
+            // A client also verifies the server's original_destination_connection_id
+            // equals the DCID the client first sent. (The Retry path rederives
+            // CIDs, so restrict this to the non-Retry case we can verify.)
+            if (self.role == .Client and !self.retry_received) {
+                if (tp_dec.original_destination_connection_id) |odcid| {
+                    if (self.original_dcid.len > 0) {
+                        const observed = self.original_dcid.bytes[0..self.original_dcid.len];
+                        if (!std.mem.eql(u8, odcid, observed)) return error.TransportParameterCidMismatch;
+                    }
+                }
+            }
+
             // Flow control: peer's advertised maxima govern what we may send.
             if (tp_dec.initial_max_data) |v| self.peer_max_data = v;
             // PHASE 57 PART 11 FIX: Use correct transport parameter for stream direction

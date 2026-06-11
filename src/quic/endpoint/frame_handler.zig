@@ -81,8 +81,18 @@ pub fn handleNewConnectionId(
     ctx: *FrameContext,
     ncid: frame.NewConnectionId,
 ) FrameResult {
-    // Record stateless reset token for later detection
-    ctx.conn.onNewConnectionId(ncid.sequence, ncid.retire_prior_to, ncid.connection_id, ncid.stateless_reset_token);
+    // Record stateless reset token for later detection.
+    ctx.conn.onNewConnectionId(ncid.sequence, ncid.retire_prior_to, ncid.connection_id, ncid.stateless_reset_token) catch |err| switch (err) {
+        // RFC 9000 §5.1.1 (NEWGAP-03): peer exceeded our advertised
+        // active_connection_id_limit. Close with CONNECTION_ID_LIMIT_ERROR (0x09).
+        error.ConnectionIdLimitError => {
+            ctx.conn.sendConnectionClose(0x09, "CONNECTION_ID_LIMIT_ERROR") catch |close_err| {
+                logger.debugPrint("Failed to send CONNECTION_CLOSE for CID limit: {}\n", .{close_err});
+                ctx.conn.markClosed();
+            };
+            return .{ .saw_close = true };
+        },
+    };
     return .{ .saw_ack_eliciting = true };
 }
 

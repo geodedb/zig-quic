@@ -136,7 +136,7 @@ test "shortHeaderDcid keeps latched zero-length peer SCID over advertised CIDs" 
 
     const peer_cid = [_]u8{ 0xde, 0xad, 0xbe, 0xef };
     const token = [_]u8{0x42} ** 16;
-    conn.onNewConnectionId(1, 0, &peer_cid, token);
+    try conn.onNewConnectionId(1, 0, &peer_cid, token);
 
     const dcid = conn.shortHeaderDcid();
     try std.testing.expectEqual(@as(usize, 0), dcid.len);
