@@ -10,7 +10,6 @@ test "cid rotation advances retire_prior_to" {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var A = gpa.allocator();
-    var prng = std.Random.DefaultPrng.init(0x1234abcd);
 
     var conn: quic.Connection = undefined;
     const peer = quic.SockAddr.ipv4(127, 0, 0, 1, 4444);
@@ -20,17 +19,17 @@ test "cid rotation advances retire_prior_to" {
     try std.testing.expect(conn.active_connection_id_limit == 2);
     try std.testing.expect(conn.retired_prior_to == 0);
 
-    const s1 = try conn.issueNewConnectionId(&prng); // seq1
+    const s1 = try conn.issueNewConnectionId(); // seq1
     try std.testing.expect(s1 == 1);
     try std.testing.expect(conn.retired_prior_to == 0);
 
     // At limit now. Rotate (should retire seq1 locally, advance retired_prior_to to 2, issue seq2)
-    const s2 = try conn.issueNewConnectionIdRotating(&prng);
+    const s2 = try conn.issueNewConnectionIdRotating();
     try std.testing.expect(s2 == 2);
     try std.testing.expect(conn.retired_prior_to == 2);
 
     // Another rotation: retire seq2, advance retired_prior_to to 3, issue seq3
-    const s3 = try conn.issueNewConnectionIdRotating(&prng);
+    const s3 = try conn.issueNewConnectionIdRotating();
     try std.testing.expect(s3 == 3);
     try std.testing.expect(conn.retired_prior_to == 3);
 }

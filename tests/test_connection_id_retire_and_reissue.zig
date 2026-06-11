@@ -9,7 +9,6 @@ test "cid retirement frees slot for re-issuance" {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
-    var prng = std.Random.DefaultPrng.init(0xabcdef01);
 
     var conn: quic.Connection = undefined;
     const peer = quic.SockAddr.ipv4(127, 0, 0, 1, 4433);
@@ -19,11 +18,11 @@ test "cid retirement frees slot for re-issuance" {
     try std.testing.expect(conn.active_connection_id_limit == 2);
     try std.testing.expect(conn.issued_cids == 1); // initial
 
-    const seq1 = try conn.issueNewConnectionId(&prng);
+    const seq1 = try conn.issueNewConnectionId();
     try std.testing.expect(seq1 == 1);
     try std.testing.expect(conn.issued_cids == 2);
     // Further issuance should now fail due to limit.
-    const err1 = conn.issueNewConnectionId(&prng);
+    const err1 = conn.issueNewConnectionId();
     try std.testing.expect(err1 == error.ActiveConnectionIdLimitReached);
 
     // Simulate peer RETIRE_CONNECTION_ID for sequence 1
@@ -32,7 +31,7 @@ test "cid retirement frees slot for re-issuance" {
     try std.testing.expect(conn.issued_cids == 1);
 
     // Now issuance should succeed again (allocating sequence 2)
-    const seq2 = try conn.issueNewConnectionId(&prng);
+    const seq2 = try conn.issueNewConnectionId();
     try std.testing.expect(seq2 == 2);
     try std.testing.expect(conn.issued_cids == 2);
 }

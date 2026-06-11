@@ -463,7 +463,10 @@ pub fn prepareInitialConnection(
             if (client_ip_bytes.len == 0) return .consumed;
 
             var retry_scid: [8]u8 = undefined;
-            _ = std.os.linux.getrandom(&retry_scid, retry_scid.len, 0);
+            // Fail closed (QC-04): on entropy failure, drop rather than send a
+            // Retry with a predictable SCID. The client will retransmit its
+            // Initial and the Retry can be issued once entropy is available.
+            @import("compat").secureRandomBytes(&retry_scid) catch return .consumed;
 
             const retry_tok = token_mod.encode(
                 ctx.allocator.*,

@@ -5,10 +5,29 @@
 
 const std = @import("std");
 
-pub const ShardError = error{InvalidShardCount};
+pub const ShardError = error{ InvalidShardCount, RandomSourceUnavailable };
 
 fn seededHash(bytes: []const u8, seed: u64) u64 {
     return std.hash.Wyhash.hash(seed, bytes);
+}
+
+/// Fill `buf` from the OS CSPRNG, failing closed (QC-04). Inlined here rather
+/// than via the `compat` module so this leaf utility carries no extra module
+/// dependency; mirrors compat.secureRandomBytes.
+fn secureRandomBytes(buf: []u8) error{RandomSourceUnavailable}!void {
+    const linux = std.os.linux;
+    var off: usize = 0;
+    while (off < buf.len) {
+        const rc = linux.getrandom(buf[off..].ptr, buf.len - off, 0);
+        switch (linux.errno(rc)) {
+            .SUCCESS => {
+                if (rc == 0) return error.RandomSourceUnavailable;
+                off += rc;
+            },
+            .INTR => continue,
+            else => return error.RandomSourceUnavailable,
+        }
+    }
 }
 
 pub const Sharder = struct {
@@ -17,8 +36,10 @@ pub const Sharder = struct {
 
     pub fn init(shard_count: u32) ShardError!Sharder {
         if (shard_count == 0) return ShardError.InvalidShardCount;
+        // Fail closed (QC-04): the seed provides DoS resistance for shard
+        // mapping, so a predictable/zero seed on entropy failure is unsafe.
         var buf: [8]u8 = undefined;
-        _ = std.os.linux.getrandom(&buf, buf.len, 0);
+        try secureRandomBytes(&buf);
         return .{ .seed = std.mem.readInt(u64, &buf, .little), .shard_count = shard_count };
     }
 

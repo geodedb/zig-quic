@@ -199,10 +199,11 @@ fn encodeVersionNegotiationPacket(
     if (out_buf.len < min_len) return error.BufferTooSmall;
 
     var i: usize = 0;
-    // Long header with random type-specific bits.
+    // Long header with random type-specific bits. Decorative for Version
+    // Negotiation (RFC 9000 §17.2.1); a 0 fallback on entropy failure is fine.
     out_buf[i] = 0b10000000 | @as(u8, @truncate(blk: {
-        var seed: [1]u8 = undefined;
-        _ = std.os.linux.getrandom(&seed, seed.len, 0);
+        var seed: [1]u8 = .{0};
+        @import("compat").secureRandomBytes(&seed) catch {};
         break :blk seed[0];
     } & 0x3F));
     i += 1;
@@ -644,7 +645,9 @@ pub const Endpoint = struct {
         // Generate cryptographically random token secret if not provided in config.
         // This prevents using a hardcoded fallback which would be predictable.
         var generated_secret: [32]u8 = undefined;
-        _ = std.os.linux.getrandom(&generated_secret, generated_secret.len, 0);
+        // Fail closed (QC-04): this secret keys the Retry/address-validation
+        // token HMAC; a zero/stale fallback would make tokens forgeable.
+        try @import("compat").secureRandomBytes(&generated_secret);
 
         // Initialize 0-RTT anti-replay cache for server endpoints (RFC 8446 S8, RFC 9001 S9.2).
         // Window: 10 seconds, max entries: 10000 -- reasonable defaults for production use.
@@ -701,7 +704,9 @@ pub const Endpoint = struct {
 
         // Generate cryptographically random token secret if not provided in config.
         var generated_secret: [32]u8 = undefined;
-        _ = std.os.linux.getrandom(&generated_secret, generated_secret.len, 0);
+        // Fail closed (QC-04): this secret keys the Retry/address-validation
+        // token HMAC; a zero/stale fallback would make tokens forgeable.
+        try @import("compat").secureRandomBytes(&generated_secret);
 
         // Initialize 0-RTT anti-replay cache for server endpoints (RFC 8446 S8, RFC 9001 S9.2).
         const is_server = (endpoint_role == .Server);

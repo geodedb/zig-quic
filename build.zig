@@ -567,6 +567,7 @@ pub fn build(b: *std.Build) void {
 
     const quic_endpoint_mod = mkModule(b, "src/quic/endpoint.zig");
     quic_endpoint_mod.addImport("types", endpoint_types_mod);
+    quic_endpoint_mod.addImport("compat", compat_mod);
     quic_endpoint_mod.addImport("quic_conn", quic_conn_mod);
     quic_endpoint_mod.addImport("quic_packet", quic_packet_mod);
     quic_endpoint_mod.addImport("quic_frame", quic_frame_mod);

@@ -49,10 +49,11 @@ pub const ClientContext = struct {
     peer: conn_mod.SockAddr,
 };
 
-/// Helper: Generate random 8-byte Connection ID.
+/// Helper: Generate a random Connection ID from the OS CSPRNG, failing closed.
 /// RFC 9000 §5.1.1: "A client MUST choose a value for the Destination Connection ID field."
-pub fn generateRandomCid(bytes: []u8) void {
-    _ = std.os.linux.getrandom(bytes.ptr, bytes.len, 0);
+/// Fails (QC-04) rather than emit a predictable CID when entropy is unavailable.
+pub fn generateRandomCid(bytes: []u8) !void {
+    try @import("compat").secureRandomBytes(bytes);
 }
 
 /// Create basic connection struct (not fully initialized).
@@ -128,7 +129,7 @@ pub fn createClientConnection(
 
     // Client chooses DCID and SCID (RFC 9000 §5.1.1) prior to deriving Initial secrets.
     var dcid: [8]u8 = undefined;
-    generateRandomCid(&dcid);
+    try generateRandomCid(&dcid);
     c.peer_initial_dcid.len = @intCast(dcid.len);
     @memcpy(c.peer_initial_dcid.bytes[0..dcid.len], &dcid);
 
@@ -145,7 +146,7 @@ pub fn createClientConnection(
     logger.debugPrint("\n", .{});
 
     c.our_scid.len = 8;
-    generateRandomCid(c.our_scid.bytes[0..c.our_scid.len]);
+    try generateRandomCid(c.our_scid.bytes[0..c.our_scid.len]);
     c.installInitialLocalCid();
 
     // Map by both dcid and scid to find VN/HS

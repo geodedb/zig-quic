@@ -8,7 +8,6 @@ test "issue_new_connection_id_respects_limit" {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
-    var prng = std.Random.DefaultPrng.init(0x12345678);
 
     var conn: quic.Connection = undefined;
     const peer = quic.SockAddr.ipv4(127, 0, 0, 1, 4433);
@@ -16,9 +15,9 @@ test "issue_new_connection_id_respects_limit" {
     defer conn.deinit();
 
     // Default limit =2; initial SCID counts as one issued. We can issue one more.
-    const seq0 = try conn.issueNewConnectionId(&prng);
+    const seq0 = try conn.issueNewConnectionId();
     try std.testing.expect(seq0 == 1); // second CID sequence
     // Next issuance should fail.
-    const err = conn.issueNewConnectionId(&prng);
+    const err = conn.issueNewConnectionId();
     try std.testing.expect(err == error.ActiveConnectionIdLimitReached);
 }

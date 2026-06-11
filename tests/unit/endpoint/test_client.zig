@@ -34,7 +34,7 @@ var test_allocator = std.testing.allocator;
 test "RFC 9000 §5.1.1 - generateRandomCid generates 8-byte CID" {
     // Client must choose a Destination Connection ID
     var cid: [8]u8 = undefined;
-    client.generateRandomCid(&cid);
+    try client.generateRandomCid(&cid);
 
     // Verify length (all 8 bytes should be filled)
     try testing.expectEqual(@as(usize, 8), cid.len);
@@ -45,8 +45,8 @@ test "RFC 9000 §5.1.1 - generateRandomCid produces different values" {
     var cid1: [8]u8 = undefined;
     var cid2: [8]u8 = undefined;
 
-    client.generateRandomCid(&cid1);
-    client.generateRandomCid(&cid2);
+    try client.generateRandomCid(&cid1);
+    try client.generateRandomCid(&cid2);
 
     // While theoretically possible for two random 8-byte values to match,
     // probability is 1 in 2^64, which is negligible for testing
@@ -57,7 +57,7 @@ test "RFC 9000 §5.1.1 - generateRandomCid produces different values" {
 test "RFC 9000 §5.1.1 - generateRandomCid fills all bytes" {
     // Verify that all bytes in the CID are set (not left at zero)
     var cid: [8]u8 = [_]u8{0} ** 8;
-    client.generateRandomCid(&cid);
+    try client.generateRandomCid(&cid);
 
     // At least one byte should be non-zero (probability of all zeros: 1 in 2^64)
     var has_nonzero = false;
@@ -73,17 +73,17 @@ test "RFC 9000 §5.1.1 - generateRandomCid fills all bytes" {
 test "RFC 9000 §5.1.1 - generateRandomCid works with different sizes" {
     // Test with standard 8-byte CID
     var cid8: [8]u8 = undefined;
-    client.generateRandomCid(&cid8);
+    try client.generateRandomCid(&cid8);
     try testing.expectEqual(@as(usize, 8), cid8.len);
 
     // Test with 20-byte CID (maximum per RFC 9000 §5.1)
     var cid20: [20]u8 = undefined;
-    client.generateRandomCid(&cid20);
+    try client.generateRandomCid(&cid20);
     try testing.expectEqual(@as(usize, 20), cid20.len);
 
     // Test with 4-byte CID (shorter than standard)
     var cid4: [4]u8 = undefined;
-    client.generateRandomCid(&cid4);
+    try client.generateRandomCid(&cid4);
     try testing.expectEqual(@as(usize, 4), cid4.len);
 }
 

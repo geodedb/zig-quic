@@ -164,3 +164,27 @@ pub fn randomBytes(buf: []u8) void {
     const io = std.Io.Threaded.global_single_threaded.io();
     io.random(buf);
 }
+
+/// Fill `buf` with cryptographically secure random bytes from the OS CSPRNG,
+/// failing closed (QC-04). Unlike the bare `std.os.linux.getrandom` calls
+/// scattered through the codebase — whose `usize` return is commonly discarded,
+/// silently leaving `buf` with stale/zero stack contents on syscall failure —
+/// this checks the return, retries on EINTR/partial fills, and errors when the
+/// kernel entropy source is unavailable. Callers that use the result for
+/// connection IDs, reset tokens, path challenges, or derived secrets MUST
+/// propagate the error rather than emit predictable bytes.
+pub fn secureRandomBytes(buf: []u8) error{RandomSourceUnavailable}!void {
+    const linux = std.os.linux;
+    var off: usize = 0;
+    while (off < buf.len) {
+        const rc = linux.getrandom(buf[off..].ptr, buf.len - off, 0);
+        switch (linux.errno(rc)) {
+            .SUCCESS => {
+                if (rc == 0) return error.RandomSourceUnavailable;
+                off += rc;
+            },
+            .INTR => continue, // interrupted before reading any bytes; retry
+            else => return error.RandomSourceUnavailable,
+        }
+    }
+}

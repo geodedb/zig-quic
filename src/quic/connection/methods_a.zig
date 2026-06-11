@@ -1022,11 +1022,13 @@ pub fn bind(comptime Connection: type) type {
             return if (a > max - b) max else a + b;
         }
 
-        fn seedPathChallengeData(self: *Connection) void {
-            _ = std.os.linux.getrandom(&self.path_challenge_data, self.path_challenge_data.len, 0);
-            if (!std.mem.eql(u8, &self.path_challenge_data, &[_]u8{0} ** 8)) return;
-            std.mem.writeInt(u64, &self.path_challenge_data, self.pn_app_tx ^ @as(u64, self.path_validation_attempts), .little);
-            if (std.mem.eql(u8, &self.path_challenge_data, &[_]u8{0} ** 8)) self.path_challenge_data[0] = 1;
+        /// Seed the 8-byte PATH_CHALLENGE payload from the OS CSPRNG, failing
+        /// closed (QC-04/QC-10). The previous implementation discarded the
+        /// getrandom return and, on failure, derived the challenge from
+        /// `pn_app_tx ^ path_validation_attempts` — both observable/guessable,
+        /// which would let an off-path attacker forge a matching PATH_RESPONSE.
+        fn seedPathChallengeData(self: *Connection) !void {
+            try @import("compat").secureRandomBytes(&self.path_challenge_data);
         }
 
         fn beginPathValidationProbe(self: *Connection, now_ns: u64) bool {
@@ -1040,7 +1042,9 @@ pub fn bind(comptime Connection: type) type {
                 self.path_validation_deadline_ns = 0;
                 return false;
             }
-            seedPathChallengeData(self);
+            // Fail closed on entropy failure: abort this probe attempt rather
+            // than send a predictable PATH_CHALLENGE. The caller retries later.
+            seedPathChallengeData(self) catch return false;
             self.path_validation_pending = true;
             self.path_validation_attempts += 1;
             self.path_validation_deadline_ns = addNsSaturating(now_ns, pathValidationPtoNs(self));

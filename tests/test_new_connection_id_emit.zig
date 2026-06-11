@@ -9,7 +9,6 @@ test "pending_new_connection_id_flushed_on_ack" {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
-    var prng = std.Random.DefaultPrng.init(0xdeadbeef);
 
     var conn: quic.Connection = undefined;
     const peer = quic.SockAddr.ipv4(127, 0, 0, 1, 4433);
@@ -23,7 +22,7 @@ test "pending_new_connection_id_flushed_on_ack" {
     conn.address_validated = true; // bypass amplification guard
 
     // Issue a new CID (limit default 2 allows exactly one issuance).
-    _ = try conn.issueNewConnectionId(&prng);
+    _ = try conn.issueNewConnectionId();
     try std.testing.expect(conn.pending_new_cid.count() != 0);
 
     // Manually flush (unit test of helper)

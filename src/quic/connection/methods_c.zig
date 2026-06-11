@@ -542,16 +542,6 @@ pub fn bind(comptime Connection: type) type {
             self.issued_cids += 1;
         }
 
-        fn cidLifecyclePrng(self: *Connection) std.Random.DefaultPrng {
-            var seed_bytes: [8]u8 = undefined;
-            _ = std.os.linux.getrandom(&seed_bytes, seed_bytes.len, 0);
-            var seed = std.mem.readInt(u64, &seed_bytes, .little);
-            seed ^= self.next_cid_sequence;
-            seed ^= self.issued_cids << 32;
-            if (seed == 0) seed = 0xdecafbad_c1d5eed;
-            return std.Random.DefaultPrng.init(seed);
-        }
-
         /// Fill local CID inventory up to the peer active_connection_id_limit.
         ///
         /// This is the proactive lifecycle hook used after 1-RTT key confirmation
@@ -560,10 +550,9 @@ pub fn bind(comptime Connection: type) type {
         /// NEW_CONNECTION_ID frames.
         pub fn ensureLocalConnectionIdSupply(self: *Connection) !usize {
             if (!self.hasConfirmedAppTxKeys()) return 0;
-            var prng = cidLifecyclePrng(self);
             var issued: usize = 0;
             while (self.canIssueNewConnectionId()) {
-                _ = self.issueNewConnectionId(&prng) catch |err| switch (err) {
+                _ = self.issueNewConnectionId() catch |err| switch (err) {
                     error.ConnectionIdInventoryFull, error.ActiveConnectionIdLimitReached => break,
                     else => return err,
                 };
@@ -574,10 +563,10 @@ pub fn bind(comptime Connection: type) type {
 
         /// Issue a new locally-generated Connection ID, mark it pending for
         /// advertisement, and return its sequence number.
-        pub fn issueNewConnectionId(self: *Connection, rand: *std.Random.DefaultPrng) !u64 {
+        pub fn issueNewConnectionId(self: *Connection) !u64 {
             try self.onIssuedNewConnectionId();
             // Allocate new CID slot and mark pending for advertisement.
-            const alloc = try self.acquireLocalCid(rand);
+            const alloc = try self.acquireLocalCid();
             self.markPendingNewCid(alloc.idx);
             return alloc.sequence;
         }
@@ -672,7 +661,7 @@ pub fn bind(comptime Connection: type) type {
 
         const deriveStatelessResetToken = reset_token_mod.deriveStatelessResetToken;
 
-        fn ensureStatelessResetBase(self: *Connection) void {
+        fn ensureStatelessResetBase(self: *Connection) !void {
             var any_non_zero = false;
             for (self.stateless_reset_base) |b| {
                 if (b != 0) {
@@ -686,12 +675,18 @@ pub fn bind(comptime Connection: type) type {
                 const prk = ks.extract(secret.slice(), label);
                 @memcpy(self.stateless_reset_base[0..], prk[0..]);
             } else {
-                _ = std.os.linux.getrandom(&self.stateless_reset_base, self.stateless_reset_base.len, 0);
+                // Fail closed (QC-04): a discarded getrandom return previously let
+                // a zero/stale base through on entropy failure, making reset
+                // tokens predictable.
+                try @import("compat").secureRandomBytes(&self.stateless_reset_base);
             }
         }
 
-        /// Acquire a free local CID slot, populate with random CID & derived token, return slot index and sequence.
-        pub fn acquireLocalCid(self: *Connection, rand: *std.Random.DefaultPrng) !struct { idx: u8, sequence: u64 } {
+        /// Acquire a free local CID slot, populate with a CSPRNG-generated CID &
+        /// derived token, return slot index and sequence. CID bytes come straight
+        /// from the OS CSPRNG (QC-04) rather than a 64-bit-seeded Xoshiro PRNG, so
+        /// advertised CIDs are unpredictable and unlinkable (RFC 9000 §5.1).
+        pub fn acquireLocalCid(self: *Connection) !struct { idx: u8, sequence: u64 } {
             if (self.active_local_cids >= self.local_cids.len and self.pending_new_cid.count() != 0) {
                 return error.ConnectionIdInventoryFull;
             }
@@ -700,23 +695,23 @@ pub fn bind(comptime Connection: type) type {
                 if (!self.local_cids[i].in_use) break;
             }
             if (i == self.local_cids.len) return error.ConnectionIdInventoryFull;
+            var cid_bytes: [8]u8 = undefined;
+            try @import("compat").secureRandomBytes(&cid_bytes);
             const seq: u64 = self.next_cid_sequence;
             self.next_cid_sequence += 1;
-            var cid_bytes: [8]u8 = undefined;
-            rand.random().bytes(&cid_bytes);
             const lc = &self.local_cids[i];
             lc.* = .{ .in_use = true, .sequence = seq, .cid = .{ .len = cid_bytes.len, .bytes = undefined }, .reset_token = undefined };
             @memcpy(lc.cid.bytes[0..cid_bytes.len], &cid_bytes);
-            ensureStatelessResetBase(self);
+            try ensureStatelessResetBase(self);
             lc.reset_token = try deriveStatelessResetToken(&self.stateless_reset_base, seq, cid_bytes[0..]);
             if (i + 1 > self.active_local_cids) self.active_local_cids = @intCast(i + 1);
             return .{ .idx = @intCast(i), .sequence = seq };
         }
 
         /// Issue new CID performing rotation if at active limit (retires oldest non-zero sequence first).
-        pub fn issueNewConnectionIdRotating(self: *Connection, rand: *std.Random.DefaultPrng) !u64 {
+        pub fn issueNewConnectionIdRotating(self: *Connection) !u64 {
             if (self.canIssueNewConnectionId()) {
-                return try self.issueNewConnectionId(rand);
+                return try self.issueNewConnectionId();
             }
             var oldest_idx: ?usize = null;
             var oldest_seq: u64 = std.math.maxInt(u64);
@@ -737,7 +732,7 @@ pub fn bind(comptime Connection: type) type {
             } else {
                 return error.ActiveConnectionIdLimitReached;
             }
-            return try self.issueNewConnectionId(rand);
+            return try self.issueNewConnectionId();
         }
     };
 }

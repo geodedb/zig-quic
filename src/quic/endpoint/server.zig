@@ -213,10 +213,12 @@ pub fn encodeVersionNegotiation(config: VNConfig, out_buf: []u8) ![]u8 {
 
     var i: usize = 0;
 
-    // Byte 0: Long header form (0b10xxxxxx), unused bits set to random
+    // Byte 0: Long header form (0b10xxxxxx), unused bits set to random.
+    // These bits are decorative (RFC 9000 §17.2.1 leaves them unspecified for
+    // Version Negotiation), so on an entropy failure a 0 fallback is fine.
     const first_byte: u8 = 0b10000000 | @as(u8, @truncate(blk: {
-        var seed: [1]u8 = undefined;
-        _ = std.os.linux.getrandom(&seed, seed.len, 0);
+        var seed: [1]u8 = .{0};
+        @import("compat").secureRandomBytes(&seed) catch {};
         break :blk seed[0];
     } & 0x3F));
     out_buf[i] = first_byte;
@@ -349,7 +351,8 @@ pub fn createServerConnection(
         if (c.our_scid.len > 0) @memcpy(c.our_scid.bytes[0..c.our_scid.len], scid[0..c.our_scid.len]);
     } else {
         c.our_scid.len = 8;
-        _ = std.os.linux.getrandom(c.our_scid.bytes[0..c.our_scid.len].ptr, c.our_scid.len, 0);
+        // Fail closed (QC-04): the server SCID must be unpredictable.
+        try @import("compat").secureRandomBytes(c.our_scid.bytes[0..c.our_scid.len]);
     }
     c.installInitialLocalCid();
 
