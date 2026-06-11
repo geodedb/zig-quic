@@ -541,3 +541,13 @@ The 2026-06-11 SECOND-PASS review surfaced two further findings, both now Fixed.
 
 - **NEW-SEC-01 (Low) -- Fixed (`ad34e76`):** Rejects `..` and NUL paths. `H3Server` is a public library export, so the guard lives here, not only in the qns binary (QC-12).
 - **NEW-SEC-02 (Medium) -- Fixed (`ad34e76`):** `recordReset` rejects an inconsistent or below-`recv_off` final size with `error.FinalSizeError`; `handleResetStream` is fallible; the dispatcher closes with FINAL_SIZE_ERROR (0x06); a regression test was added.
+
+### Third-pass additions
+
+The 2026-06-11 THIRD-PASS review surfaced one further finding, now Fixed.
+
+| ID | Severity | Title | Location | RFC | Status | Fix Commit |
+|----|----------|-------|----------|-----|--------|------------|
+| TP3-01 | Low | Client advertised `active_connection_id_limit` default (2) but `onNewConnectionId` enforced against `peer_cids` capacity (8) -- advertise-vs-enforce mismatch | `src/quic/endpoint/handshake_integration.zig` (`setupClientTransportParams`) | RFC 9000 §5.1.1 | Fixed | `ddb3e1a` |
+
+- **TP3-01 (Low) -- Fixed (`ddb3e1a`):** Client now advertises `active_connection_id_limit = 8`, matching enforcement and the server.

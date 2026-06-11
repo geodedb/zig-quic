@@ -238,3 +238,19 @@ The 2026-06-11 SECOND-PASS review surfaced one further conformance/security find
 - **RFC:** RFC 9000 §14.1
 - **Location:** `src/quic/endpoint.zig` `processIncomingDatagram` + concurrent poll dispatch
 - **Status:** **Fixed** (commit `ad34e76`). The server discards supported-version Initials carried in datagrams smaller than 1200 bytes (anti-amplification); loopback is exempt when `cfg.exempt_localhost` is set (mirrors the amplification localhost exemption); the unknown-version Version-Negotiation probe path is unaffected.
+
+### Third-pass additions
+
+The 2026-06-11 THIRD-PASS review surfaced one further conformance finding, now Fixed.
+
+| ID | Sev | Category | Title | Location | RFC | Status |
+|---|---|---|---|---|---|---|
+| NEWGAP-11 | Medium | conformance/missing-feature | DATAGRAM frame only handled type 0x30 (with an incorrect length field) and rejected 0x31 as FRAME_ENCODING_ERROR | `src/quic/frame/datagram.zig`, `frame.zig`, `types.zig` | RFC 9221 §4 | **Fixed** (commit `ddb3e1a`) |
+
+### NEWGAP-11: DATAGRAM frame only handled type 0x30 and rejected 0x31
+
+- **Severity:** Medium
+- **Category:** conformance/missing-feature
+- **RFC:** RFC 9221 §4
+- **Location:** `src/quic/frame/datagram.zig`, `frame.zig`, `types.zig`
+- **Status:** **Fixed** (commit `ddb3e1a`). Decode now handles 0x30 (data-to-end) and 0x31 (length-prefixed); the encoder emits the self-delimiting 0x31 form; `FrameType.DATAGRAM_LEN` (0x31) was added; both type codes are routed in `frame.decodeOne`. Follow-up (still open): advertise the `max_datagram_frame_size` transport parameter when `enable_datagram` is set (datagrams default off, so not yet negotiated).
