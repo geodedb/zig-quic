@@ -118,10 +118,15 @@ EOF
                 -extfile "${cert_tmp}/server.cnf"
         ) || true
 
+        # NOTE: these ephemeral, per-run interop keys are 0644 on purpose. They
+        # are mounted read-only into the QUIC-interop Docker containers, where the
+        # endpoint runs as an unprivileged 'quic' user whose uid differs from the
+        # host's — so 0600 would make the key unreadable (server: AccessDenied).
+        # Do not "harden" these to 0600 (regressed once; see audit QC-15).
         if [[ -s "${cert_tmp}/server.crt" && -s "${cert_tmp}/server.key" && -s "${cert_tmp}/ca.pem" ]]; then
             install -m 0644 "${cert_tmp}/server.crt" "${cert_dir}/cert.pem"
-            install -m 0600 "${cert_tmp}/server.key" "${cert_dir}/key.pem"
-            install -m 0600 "${cert_tmp}/server.key" "${cert_dir}/priv.key"
+            install -m 0644 "${cert_tmp}/server.key" "${cert_dir}/key.pem"
+            install -m 0644 "${cert_tmp}/server.key" "${cert_dir}/priv.key"
             install -m 0644 "${cert_tmp}/ca.pem" "${cert_dir}/ca.pem"
         else
             install -m 0644 tests/certs/cert.pem "${cert_dir}/cert.pem"
@@ -130,8 +135,8 @@ EOF
             else
                 install -m 0644 tests/certs/cert.pem "${cert_dir}/ca.pem"
             fi
-            install -m 0600 tests/certs/key.pem "${cert_dir}/key.pem"
-            install -m 0600 tests/certs/key.pem "${cert_dir}/priv.key"
+            install -m 0644 tests/certs/key.pem "${cert_dir}/key.pem"
+            install -m 0644 tests/certs/key.pem "${cert_dir}/priv.key"
         fi
         if [[ -d "${cert_tmp}" ]]; then
             find "${cert_tmp}" -mindepth 1 -delete 2>/dev/null || true
@@ -144,8 +149,8 @@ EOF
         else
             install -m 0644 tests/certs/cert.pem "${cert_dir}/ca.pem"
         fi
-        install -m 0600 tests/certs/key.pem "${cert_dir}/key.pem"
-        install -m 0600 tests/certs/key.pem "${cert_dir}/priv.key"
+        install -m 0644 tests/certs/key.pem "${cert_dir}/key.pem"
+        install -m 0644 tests/certs/key.pem "${cert_dir}/priv.key"
     fi
 
     if [[ ! -s "${www_dir}/index.html" ]]; then

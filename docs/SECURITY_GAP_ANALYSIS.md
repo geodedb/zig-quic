@@ -506,7 +506,7 @@ A fresh OWASP-aligned application-security code review (2026-06-11) of the QUIC 
 | QC-12 | Low | Server-side path traversal in qns interop endpoint | `cmd/qns-endpoint.zig` | Fixed | `3edadae` |
 | QC-13 | Low | Anti-replay cache keyed on 64-bit Wyhash (fixed seed) -> targeted false-reject | `src/quic/anti_replay.zig` | Open | -- |
 | QC-14 | Low | TLS keylog file created world-readable (`0o644`) | `src/quic/connection/methods_a.zig` | Fixed | `fcd28ce` |
-| QC-15 | Low | Interop/test cert scripts install private keys world-readable | `create_test_certs.sh`, `scripts/interop_*.sh` | Fixed | `fcd28ce` |
+| QC-15 | Low | Interop/test cert scripts install private keys world-readable | `create_test_certs.sh` (umask 077) | Fixed (interop part reverted) | `fcd28ce` |
 | QC-16 | Low | `stateless_reset_base` derived from per-connection secret, not endpoint-static key | `src/quic/connection/methods_c.zig` | Open | -- |
 | QC-17 | Low | Nix dev-bootstrap installer executed without hash/signature verification | `scripts/install_pkgs.sh` | Open | -- |
 
@@ -526,7 +526,7 @@ A fresh OWASP-aligned application-security code review (2026-06-11) of the QUIC 
 - **QC-12 (Low) -- Fixed (`3edadae`):** Rejects `..`, NUL, and non-leading-`/` paths.
 - **QC-13 (Low) -- Open:** Use a >=128-bit cryptographic digest or randomly-seeded SipHash.
 - **QC-14 (Low) -- Fixed (`fcd28ce`):** Keylog file now created `0o600`.
-- **QC-15 (Low) -- Fixed (`fcd28ce`):** `umask 077`, `0600` key installs, re-restrict after recursive `chmod`.
+- **QC-15 (Low) -- Fixed partially (`fcd28ce`):** `create_test_certs.sh` now sets `umask 077`. The `scripts/interop_*.sh` `0600` key installs were **reverted to `0644`** afterward: those ephemeral, per-run keys are mounted read-only into QUIC-interop Docker containers whose unprivileged `quic` uid differs from the host's, so `0600` caused `server: AccessDenied` and broke the entire interop matrix. World-readable is required for that container-mount case (keys are throwaway, localhost-only); the scripts carry comments warning against re-hardening.
 - **QC-16 (Low) -- Open:** Low because no outbound stateless-reset send path exists yet; derive from a long-lived endpoint key per RFC 9000 section 10.3.1 when reset emission is added.
 - **QC-17 (Low) -- Open:** Dev tooling; pin and verify a SHA-256, use `mktemp`.
 
