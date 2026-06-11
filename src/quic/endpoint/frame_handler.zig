@@ -234,7 +234,9 @@ pub fn handleDatagram(
         }
     }
 
-    return .{ .saw_ack_eliciting = false }; // DATAGRAM is not ack-eliciting per RFC 9221
+    // RFC 9221 §5.2: "DATAGRAM frames are ack-eliciting" (they are not
+    // retransmitted on loss, but they do elicit an acknowledgement).
+    return .{ .saw_ack_eliciting = true };
 }
 
 /// Handle ACK frame (RFC 9000 §19.3).

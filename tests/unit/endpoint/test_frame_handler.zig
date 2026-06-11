@@ -233,7 +233,7 @@ test "RFC 9000 §19.8 - STREAM frame with FIN flag" {
 // DATAGRAM Frame Tests (RFC 9221)
 // =============================================================================
 
-test "RFC 9221 - DATAGRAM frame is not ack-eliciting" {
+test "RFC 9221 §5.2 - DATAGRAM frame is ack-eliciting" {
     const conn = try createTestConnection();
     defer destroyTestConnection(conn);
     var ctx = createTestContext(conn);
@@ -242,7 +242,8 @@ test "RFC 9221 - DATAGRAM frame is not ack-eliciting" {
 
     const result = try frame_handler.handleDatagram(&ctx, d);
 
-    try testing.expect(!result.saw_ack_eliciting);
+    // DATAGRAM frames are not retransmitted on loss but ARE ack-eliciting.
+    try testing.expect(result.saw_ack_eliciting);
 }
 
 // =============================================================================
