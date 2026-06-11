@@ -53,7 +53,7 @@ test "multi-stream RX: RESET_STREAM aborts only target stream" {
     try c.pushStreamFrame(0, 0, "hello", false);
     try c.pushStreamFrame(4, 0, "abcdef", false);
     // Apply RESET to stream 4 only
-    c.handleResetStream(4, 42, 6);
+    try c.handleResetStream(4, 42, 6);
     // Validate: stream 4 fin, stream 0 unaffected
     const s4 = c.streams_rx.getPtr(4).?;
     try std.testing.expect(s4.fin_off.? == 6);

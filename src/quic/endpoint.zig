@@ -453,6 +453,26 @@ fn parseLongHeaderVersion(bytes: []const u8) ?u32 {
         @as(u32, bytes[4]);
 }
 
+/// Address-level loopback check (127.0.0.0/8 or ::1), mirroring
+/// Connection.isLocalhost but operating on a bare SockAddr. Used to exempt
+/// loopback from the RFC 9000 §14.1 undersized-Initial discard, consistent with
+/// the anti-amplification localhost exemption.
+fn isLoopbackAddr(addr: conn_mod.SockAddr) bool {
+    const bytes = @as([*]const u8, @ptrCast(&addr.storage));
+    if (addr.storage.family == std.posix.AF.INET) {
+        if (addr.len >= 8) return bytes[4] == 127; // 127.0.0.0/8
+    } else if (addr.storage.family == std.posix.AF.INET6) {
+        if (addr.len >= 24) {
+            var i: usize = 8;
+            while (i < 23) : (i += 1) {
+                if (bytes[i] != 0) return false;
+            }
+            return bytes[23] == 1; // ::1
+        }
+    }
+    return false;
+}
+
 fn longHeaderPacketLength(bytes: []const u8, version: u32) ?usize {
     if (bytes.len < 7 or version == 0) return null;
     const first = bytes[0];
@@ -1781,6 +1801,11 @@ pub const Endpoint = struct {
                         if (self.role == .Server and
                             long_kind == .Initial and
                             (long_version == packet.QUIC_V1 or long_version == packet.QUIC_V2) and
+                            // RFC 9000 §14.1 (NEW-GAP-10): only the fast concurrent
+                            // path admits Initials >=1200 bytes; an undersized
+                            // Initial falls through to processIncomingDatagram,
+                            // which discards it (anti-amplification).
+                            datagram.len >= 1200 and
                             (longHeaderPacketLength(datagram, long_version) orelse 0) == datagram.len)
                         {
                             const initial_start_ns = nowNsMonotonic();
@@ -2342,6 +2367,29 @@ pub const Endpoint = struct {
 
     fn processIncomingDatagram(self: *Endpoint, peer: conn_mod.SockAddr, bytes: []const u8, ecn_bits: ?u8) void {
         const norm_peer = normalizeAddr(&peer.storage, peer.len);
+
+        // RFC 9000 §14.1 (NEW-GAP-10): a server MUST discard an Initial packet
+        // carried in a UDP datagram smaller than 1200 bytes. A conformant client
+        // pads such datagrams to >=1200; admitting an undersized Initial lets a
+        // spoofed packet elicit a larger handshake/Retry flight (amplification).
+        // Scope to supported versions so the unknown-version Version-Negotiation
+        // probe path (a bounded, non-amplifying VN reply) is unaffected, and
+        // exempt loopback when cfg.exempt_localhost is set — mirroring the
+        // anti-amplification localhost exemption (overAmplification/isLocalhost).
+        if (self.role == .Server and bytes.len < 1200 and bytes.len > 0 and (bytes[0] & 0x80) != 0) {
+            const localhost_exempt = self.cfg.exempt_localhost and isLoopbackAddr(norm_peer);
+            if (!localhost_exempt) {
+                if (parseLongHeaderVersion(bytes)) |ver| {
+                    if ((ver == packet.QUIC_V1 or ver == packet.QUIC_V2) and
+                        packet.longHeaderPacketType(ver, bytes[0]) == .Initial)
+                    {
+                        logger.debugPrint("RFC 9000 §14.1: discarding Initial in undersized datagram ({d} < 1200 bytes)\n", .{bytes.len});
+                        return;
+                    }
+                }
+            }
+        }
+
         // Process all packets in the datagram (may be coalesced)
         // RFC 9000 §12.2: "Senders can coalesce multiple QUIC packets into one UDP datagram"
         var remaining = bytes;

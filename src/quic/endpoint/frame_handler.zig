@@ -563,7 +563,17 @@ fn handleStopSending(ctx: *FrameContext, ss: frame.StopSending) FrameResult {
 /// The peer is aborting its send side of the identified stream. We mark our
 /// RX state as aborted, cap final_size, and discard buffered data beyond it.
 fn handleResetStreamFrame(ctx: *FrameContext, rs: frame.ResetStream) FrameResult {
-    ctx.conn.handleResetStream(rs.stream_id, rs.error_code, rs.final_size);
+    // RFC 9000 §4.5 (NEW-SEC-02): an inconsistent RESET_STREAM final size is a
+    // FINAL_SIZE_ERROR (0x06).
+    ctx.conn.handleResetStream(rs.stream_id, rs.error_code, rs.final_size) catch |err| switch (err) {
+        error.FinalSizeError => {
+            ctx.conn.sendConnectionClose(0x06, "FINAL_SIZE_ERROR") catch |close_err| {
+                logger.debugPrint("Failed to send CONNECTION_CLOSE (FINAL_SIZE_ERROR): {}\n", .{close_err});
+                ctx.conn.markClosed();
+            };
+            return .{ .saw_close = true };
+        },
+    };
     return .{ .saw_ack_eliciting = true };
 }
 

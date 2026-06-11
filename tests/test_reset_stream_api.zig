@@ -87,7 +87,7 @@ test "handleResetStream: processes incoming reset for stream 0" {
     defer c.deinit();
 
     try c.pushStreamFrame(0, 0, "hello", false);
-    c.handleResetStream(0, 0x01, 5);
+    try c.handleResetStream(0, 0x01, 5);
 
     try std.testing.expect(c.stream_recv_aborted);
     try std.testing.expect(c.stream_recv_fin);

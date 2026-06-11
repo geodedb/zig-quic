@@ -167,6 +167,16 @@ pub const H3Server = struct {
         var full_path_buf: [512]u8 = undefined;
         var path_s = path;
         if (path_s.len == 0 or path_s[0] != '/') path_s = "/index.html";
+        // NEW-SEC-01: contain the served path under /www. Reject any request
+        // containing ".." or a NUL so a peer cannot escape the document root
+        // (GET /../../etc/passwd -> /www/../../etc/passwd). H3Server is a public
+        // library export, so this guard must live here, not only in the qns
+        // interop binary (QC-12).
+        if (std.mem.indexOf(u8, path_s, "..") != null or
+            std.mem.indexOfScalar(u8, path_s, 0) != null)
+        {
+            path_s = "/index.html";
+        }
         const full = std.fmt.bufPrint(&full_path_buf, "/www{s}", .{path_s}) catch "/www/index.html";
         const h3_io = std.Io.Threaded.global_single_threaded.io();
         if (std.Io.Dir.cwd().openFile(h3_io, full, .{})) |f| {

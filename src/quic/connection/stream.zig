@@ -144,7 +144,17 @@ pub const StreamRx = struct {
     }
 
     /// Mark the receive side reset by the peer and cap the known final size.
-    pub fn recordReset(self: *StreamRx, final_size: u64) void {
+    ///
+    /// RFC 9000 §4.5 (NEW-SEC-02): the reset's final size MUST be consistent with
+    /// any final size already established (e.g. from a FIN) and MUST NOT be
+    /// smaller than data already received; otherwise it is a FINAL_SIZE_ERROR.
+    /// Previously this overwrote fin_off unconditionally, allowing a peer to
+    /// corrupt receive-state bookkeeping.
+    pub fn recordReset(self: *StreamRx, final_size: u64) !void {
+        if (self.fin_off) |known| {
+            if (known != final_size) return error.FinalSizeError;
+        }
+        if (final_size < self.recv_off) return error.FinalSizeError;
         self.fin_off = final_size;
         self.state = .ResetRead;
     }

@@ -68,11 +68,33 @@ test "stream rx explicit states cover FIN and RESET terminal transitions" {
     var reset_rx = conn_mod.StreamRx.init();
     defer reset_rx.deinit(&A);
     reset_rx.insert(&A, 0, "abc");
-    reset_rx.recordReset(3);
+    try reset_rx.recordReset(3);
     try std.testing.expectEqual(conn_mod.StreamReceiveState.ResetRead, reset_rx.state);
     const buffered_after_reset = reset_rx.bufs.items.len;
     reset_rx.insert(&A, 3, "ignored");
     try std.testing.expectEqual(buffered_after_reset, reset_rx.bufs.items.len);
+}
+
+test "recordReset rejects inconsistent final size (NEW-SEC-02)" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    var A = gpa.allocator();
+
+    // A RESET_STREAM final size that contradicts a previously established FIN
+    // offset is a FINAL_SIZE_ERROR (RFC 9000 §4.5).
+    var rx1 = conn_mod.StreamRx.init();
+    defer rx1.deinit(&A);
+    try rx1.recordFin(5);
+    try std.testing.expectError(error.FinalSizeError, rx1.recordReset(3));
+    // A consistent final size is accepted.
+    try rx1.recordReset(5);
+
+    // A final size below data already received is also a FINAL_SIZE_ERROR.
+    var rx2 = conn_mod.StreamRx.init();
+    defer rx2.deinit(&A);
+    rx2.insert(&A, 0, "hello");
+    rx2.tryDrain(&A); // recv_off advances to 5
+    try std.testing.expectError(error.FinalSizeError, rx2.recordReset(3));
 }
 
 test "stream tx explicit states reject writes after FIN or RESET" {
@@ -303,7 +325,7 @@ test "reset_stream rx trims buffered beyond final_size and finishes" {
     try c.pushStreamFrame(0, 5, seg, false); // offset 5, will not drain (recv_off=0)
 
     // Now deliver a RESET_STREAM with final_size=3
-    c.handleResetStream(0, 999, 3);
+    try c.handleResetStream(0, 999, 3);
 
     try std.testing.expect(c.stream_recv_aborted);
     try std.testing.expect(c.stream_recv_fin);

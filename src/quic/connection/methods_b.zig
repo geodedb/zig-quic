@@ -769,11 +769,14 @@ pub fn bind(comptime Connection: type) type {
         /// Handle a received RESET_STREAM for RX-side teardown. Marks RX aborted, caps final size,
         /// discards any buffered segments beyond final_size, and treats the stream as finished.
         /// Process incoming RESET_STREAM updating RX state and freeing buffers.
-        pub fn handleResetStream(self: *Connection, stream_id: u64, app_error_code: u64, final_size: u64) void {
+        pub fn handleResetStream(self: *Connection, stream_id: u64, app_error_code: u64, final_size: u64) error{FinalSizeError}!void {
             _ = app_error_code; // surfaced to app layer out of scope here
             // Only stream 0 supported in this slice, but apply generically.
             var s = self.ensureStreamRx(stream_id);
-            s.recordReset(final_size);
+            // Validate the final size BEFORE mutating receive state (RFC 9000
+            // §4.5). A FINAL_SIZE_ERROR aborts the connection; the dispatcher
+            // maps the returned error to CONNECTION_CLOSE 0x06.
+            try s.recordReset(final_size);
             if (stream_id == 0) {
                 self.stream_recv_aborted = true;
                 self.stream_recv_state = .ResetRead;
