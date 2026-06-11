@@ -529,3 +529,15 @@ A fresh OWASP-aligned application-security code review (2026-06-11) of the QUIC 
 - **QC-15 (Low) -- Fixed (`fcd28ce`):** `umask 077`, `0600` key installs, re-restrict after recursive `chmod`.
 - **QC-16 (Low) -- Open:** Low because no outbound stateless-reset send path exists yet; derive from a long-lived endpoint key per RFC 9000 section 10.3.1 when reset emission is added.
 - **QC-17 (Low) -- Open:** Dev tooling; pin and verify a SHA-256, use `mktemp`.
+
+### Second-pass additions
+
+The 2026-06-11 SECOND-PASS review surfaced two further findings, both now Fixed.
+
+| ID | Severity | Title | Location | RFC | Status | Fix Commit |
+|----|----------|-------|----------|-----|--------|------------|
+| NEW-SEC-01 | Low | Path traversal in HTTP/3 server `respondFile` (`/www{path}` with no `..`/NUL rejection) | `src/h3/server.zig` (`respondFile`) | -- | Fixed | `ad34e76` |
+| NEW-SEC-02 | Medium | RESET_STREAM final size not validated -> missing FINAL_SIZE_ERROR | `src/quic/connection/stream.zig` (`recordReset`), `connection/methods_b.zig` (`handleResetStream`), `endpoint/frame_handler.zig` | RFC 9000 §4.5 | Fixed | `ad34e76` |
+
+- **NEW-SEC-01 (Low) -- Fixed (`ad34e76`):** Rejects `..` and NUL paths. `H3Server` is a public library export, so the guard lives here, not only in the qns binary (QC-12).
+- **NEW-SEC-02 (Medium) -- Fixed (`ad34e76`):** `recordReset` rejects an inconsistent or below-`recv_off` final size with `error.FinalSizeError`; `handleResetStream` is fallible; the dispatcher closes with FINAL_SIZE_ERROR (0x06); a regression test was added.

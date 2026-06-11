@@ -222,3 +222,19 @@ This section records the 2026-06-11 requirements-to-code gap analysis focused on
 - **RFC:** RFC 9002 §6.2.4
 - **Location:** `src/quic/endpoint/pto.zig`
 - **Status:** **Open**. The `.PtoApp` branch returns "not implemented" and the dead module diverges from the live app-PTO path. App PTO IS sent via `connection/methods_b.sendPtoProbeApp`; either implement or delete the dead `pto.zig` branch to avoid a maintainer trap.
+
+### Second-pass additions
+
+The 2026-06-11 SECOND-PASS review surfaced one further conformance/security finding, now Fixed.
+
+| ID | Sev | Category | Title | Location | RFC | Status |
+|---|---|---|---|---|---|---|
+| NEW-GAP-10 | High | conformance/security | Server did not discard a client Initial packet carried in a UDP datagram smaller than 1200 bytes | `src/quic/endpoint.zig` `processIncomingDatagram` + concurrent poll dispatch | RFC 9000 §14.1 | **Fixed** (commit `ad34e76`) |
+
+### NEW-GAP-10: Server did not discard a client Initial in a UDP datagram <1200 bytes
+
+- **Severity:** High
+- **Category:** conformance/security
+- **RFC:** RFC 9000 §14.1
+- **Location:** `src/quic/endpoint.zig` `processIncomingDatagram` + concurrent poll dispatch
+- **Status:** **Fixed** (commit `ad34e76`). The server discards supported-version Initials carried in datagrams smaller than 1200 bytes (anti-amplification); loopback is exempt when `cfg.exempt_localhost` is set (mirrors the amplification localhost exemption); the unknown-version Version-Negotiation probe path is unaffected.
