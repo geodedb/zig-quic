@@ -1,6 +1,6 @@
 # Quality Gap Analysis
 
-Last updated: 2026-04-27
+Last updated: 2026-06-11
 
 Repository: `gitlab.com/devnw/zig/quic`
 Scope: Full codebase quality review (Phase 1-3)
@@ -70,6 +70,7 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 ## Findings By Category
 
 ### perf
+
 - [#62](https://gitlab.com/devnw/zig/quic/-/issues/62) Closed -- per-packet heap allocations in encode/decode.
 - [#70](https://gitlab.com/devnw/zig/quic/-/issues/70) Closed -- `zig build test` overhead.
 - [#89](https://gitlab.com/devnw/zig/quic/-/issues/89) **Closed** -- page_allocator syscall per packet (AAD). Fixed in Batch A (stack buffer).
@@ -77,6 +78,7 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 - [#106](https://gitlab.com/devnw/zig/quic/-/issues/106) **Closed** -- getenv per packet send. Fixed in Batch A (env var removed entirely).
 
 ### maintainability
+
 - [#63](https://gitlab.com/devnw/zig/quic/-/issues/63) Closed.
 - [#72](https://gitlab.com/devnw/zig/quic/-/issues/72) Closed.
 - [#76](https://gitlab.com/devnw/zig/quic/-/issues/76) Closed.
@@ -87,15 +89,18 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 - [#110](https://gitlab.com/devnw/zig/quic/-/issues/110) **Closed / Implemented** -- All 75 `catch {}` patterns in `src/quic/` eliminated across phases 1+2. Phase 1 fixed ~15 critical patterns; phase 2 fixed remaining 60 with proper logging (commits c7e8d6d, bf8cf7f).
 
 ### api-contract
+
 - [#98](https://gitlab.com/devnw/zig/quic/-/issues/98) **Closed** -- handshakeComplete == isHandshakeConfirmed. Fixed in Batch A (returns peer_finished_verified).
 - [#107](https://gitlab.com/devnw/zig/quic/-/issues/107) **Closed** -- port-based role detection heuristic. Fixed in Batch A (cert_path detection).
 
 ### architecture
+
 - [#75](https://gitlab.com/devnw/zig/quic/-/issues/75) Closed.
 - [#103](https://gitlab.com/devnw/zig/quic/-/issues/103) **Closed** -- documented monolithic files as deprecated; build wires modular versions.
 - [#115](https://gitlab.com/devnw/zig/quic/-/issues/115) **Planning** -- staged refactor plan landed at `docs/superpowers/plans/2026-04-26-method-module-refactor.md` (5 stages, real `wc -l` inventory, perf-gate skill referenced 5x). The plan IS the closure work for the prior "requires staged method-module refactor plan" blocker; execution remains future work and is gated by per-stage perf-gate runs. `src/quic/connection/key_update.zig` is the sole domain extraction so far; `methods_a/b/c` still define the dominant API surface.
 
 ### ci-cd
+
 - [#64](https://gitlab.com/devnw/zig/quic/-/issues/64) Closed.
 - [#65](https://gitlab.com/devnw/zig/quic/-/issues/65) Closed.
 - [#74](https://gitlab.com/devnw/zig/quic/-/issues/74) Closed.
@@ -103,19 +108,23 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 - [#112](https://gitlab.com/devnw/zig/quic/-/issues/112) **Closed** -- Zig build cache in CI. Fixed in Batch A (cache blocks added).
 
 ### docs
+
 - [#71](https://gitlab.com/devnw/zig/quic/-/issues/71) Closed.
 - [#113](https://gitlab.com/devnw/zig/quic/-/issues/113) **Closed** -- created `docs/ARCHITECTURE.md`.
 
 ### cleanup
+
 - [#66](https://gitlab.com/devnw/zig/quic/-/issues/66) Closed.
 - [#67](https://gitlab.com/devnw/zig/quic/-/issues/67) Closed.
 - [#73](https://gitlab.com/devnw/zig/quic/-/issues/73) Closed.
 - [#117](https://gitlab.com/devnw/zig/quic/-/issues/117) **Closed** -- global mutable debug state. Fixed in Batch A (phase57 behind is_test).
 
 ### readability
+
 - [#68](https://gitlab.com/devnw/zig/quic/-/issues/68) Closed.
 
 ### tests
+
 - [#69](https://gitlab.com/devnw/zig/quic/-/issues/69) Closed.
 
 ---
@@ -123,12 +132,15 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 ## Roadmap
 
 ### Quick Wins (< 1 day)
+
 - Completed: #63, #64, #65, #66, #71, #72, #74, #87, #89, #93, #98, #102, #106, #107, #112, #117.
 
 ### Medium (1-5 days)
+
 - Completed: #67, #68, #69, #73, #76, #77, #96, #99, #103.
 
 ### Strategic (> 5 days)
+
 - **Closed**: #110 (all 75 patterns eliminated across phases 1+2)
 - **Planning**: #115/#177 -- large connection struct and method-module ownership refactor. Staged plan landed at `docs/superpowers/plans/2026-04-26-method-module-refactor.md`; execution gated by per-stage perf-gate runs.
 - Completed: #62, #70, #75, #113.
@@ -149,8 +161,46 @@ PriorityScore formula: `Impact(1-5) * Likelihood(1-5) * 4`
 ## Phase 4 Gap Closure -- 2026-03-25
 
 ### Closed Items
+
 - **QF-E6:** `canSendUnderAmplification` duplicate computation -- Closed. Consolidated with `overAmplification()` to check `exempt_localhost` consistently.
 - **QF-R6:** 7 duplicate doc comments removed across `conn.zig`, `methods_a.zig`, `methods_b.zig`.
 - **QF-D6:** `trace_enabled` documented with purpose and usage context.
 - **QF-A4:** `alpn` field documented with RFC 7301 reference.
 - **GAP-0047 (#155):** frame_handler comment corrected -- Closed. Replaced catch-all `else => .{}` with explicit match arms; Zig compiler now flags unhandled variants.
+
+---
+
+## 2026-06-11 Quality Review Round (QUAL-series)
+
+Scope: Targeted quality review of H3 server, endpoint connection setup, client/server TLS context handling, CUBIC congestion control, and connection retransmission/CID bookkeeping. Memory-safety (out-of-bounds write), resource-leak, and robustness (panic/overflow) defects. Status legend: `Fixed` = closed in code with tests; `Open` = tracked, not yet implemented.
+
+### Summary
+
+- Total findings: 11
+- Status counts: `Fixed=10`, `Open=1`
+- Severity totals:
+  - High: 3 (`Open=0`, `Fixed=3`)
+  - Medium: 3 (`Open=0`, `Fixed=3`)
+  - Low: 5 (`Open=1`, `Fixed=4`)
+
+### Findings
+
+| ID | Severity | Title | Location | Status | Fixing Commit |
+|:---|:---|:---|:---|:---|:---|
+| QUAL-01 | High | H3 server `served[64]` out-of-bounds stack write from peer opening >64 bidi streams | `src/h3/server.zig` | Fixed | `2047925` -- replaced fixed array with an `AutoHashMap` set |
+| QUAL-02 | High | H3 response body allocation leaked on read failure / short read | `src/h3/server.zig` `respondFile` | Fixed | `2047925` -- free bound to the original allocation, not the resliced view |
+| QUAL-03 | High | `createServerConnection` missing `errdefer c.deinit()` -- leaks per-connection state on setup error | `src/quic/endpoint/server.zig` | Fixed | `2047925` |
+| QUAL-04 | Medium | Client TLS-context wrapper leak on OOM (`catch return c`) | `src/quic/endpoint/client.zig` | Fixed | `3edadae` -- deinits the dropped context on alloc failure |
+| QUAL-05 | Medium | `createServerConnection` leaks `ctx_value` (TLS context internals) if wrapper alloc fails | `src/quic/endpoint/server.zig` | Fixed | `2047925` -- `errdefer ctx_value.deinit()` |
+| QUAL-06 | Medium | CUBIC `@intFromFloat` panics on window overflow / NaN | `src/quic/recovery/congestion.zig` | Fixed | `75a597a` -- `cubicFloatToBytes` clamps to `[0, maxInt(usize)]` |
+| QUAL-07 | Low | H3 HPACK Huffman EOS symbol decoded as `0xFF` instead of rejected | `src/h3/server.zig` | Fixed | `fcd28ce` -- rejects the `0x3fffffff` EOS code |
+| QUAL-08 | Low | `app_stream_retx.put` overwrites existing PN entry without freeing prior `.data` (PN-reuse leak) | `src/quic/connection/methods_b.zig` | Fixed | `fcd28ce` -- `getOrPut` frees the displaced buffer |
+| QUAL-09 | Low | Endpoint `deinit` drops a connection pointer on append-OOM, leaking the whole `Connection` | `src/quic/endpoint.zig:815,827` | Open | -- only at process-shutdown teardown under OOM (OS reclaims anyway); fix by `ensureTotalCapacity` before the loop or inline `deinit`+`destroy` on append failure |
+| QUAL-10 | Low | `getPort` maps socket-query failure to port 0 (valid-looking wrong value) | `src/quic/api.zig` | Fixed/Documented | `3edadae` -- 0 documented as explicit sentinel; test/tooling-only helper |
+| QUAL-11 | Low | `NEW_CONNECTION_ID` stateless-reset token dropped on OOM via `catch {}` | `src/quic/conn.zig` | Fixed | `fcd28ce` -- logs at warn instead of silently dropping |
+
+### Notes
+
+- QUAL-01 and QUAL-02 are the highest-impact items: the former is a peer-triggerable out-of-bounds stack write (memory-safety/exploitability), the latter a remotely-reachable heap leak on the response path.
+- QUAL-09 is the only open item. It is bounded to process-shutdown teardown under allocator exhaustion, where the OS reclaims memory anyway, so it carries minimal operational risk. Suggested fix: `ensureTotalCapacity` ahead of the teardown loop, or inline `deinit`+`destroy` on append failure.
+- QUAL-10 is classified Fixed/Documented rather than code-changed: port `0` is now documented as an explicit failure sentinel, and the helper is test/tooling-only (consistent with the `api.getPort` caveat in `CLAUDE.md` "Known Pre-existing Issues").

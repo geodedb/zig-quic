@@ -1,6 +1,6 @@
 # Gap Analysis
 
-Last updated: 2026-04-27
+Last updated: 2026-06-11
 
 Status note (2026-04-27): this file intentionally contains open repository-level gaps only. Closed items are moved to `docs/GAP_ANALYSIS_RESOLVED.md`; *Partial* and *Planning* items remain here with the new status. GitLab issues are the authoritative status records; this file is the flatfile mirror for humans and agents. The 2026-04-26 status changes were written back to GitLab on 2026-04-27 (status comments posted to #88, #115, #142, #177; #170 closed with closure note).
 
@@ -16,6 +16,7 @@ Status note (2026-04-27): this file intentionally contains open repository-level
 - Scanner/report notes remain in `docs/SECURITY_REVIEW_NOTES.md`; raw scan reports are in `/tmp` and intentionally not committed.
 
 Top risks:
+
 - Crypto lifecycle in-repo executable coverage now lands via `tests/test_key_update_lifecycle.zig`, but full advanced-crypto integration coverage (49 skips across `key_update.zig` and `rfc9001_advanced.zig`) remains open under GAP-0013 / #142. Full interop itself is clean: `make interop-full` passed `105`, failed `0`, skipped `50` implementation/harness-unsupported cases.
 - Broad skipped integration-test coverage is now per-scenario triaged but still requires per-category remediation MRs: GAP-0004 / #88.
 - Endpoint-level receive contention proof and connection allocation pooling remain blocked on benchmark-backed design: GAP-0053 / #126 and GAP-0054 / #129.
@@ -25,11 +26,11 @@ Top risks:
 
 | Rank | Sev | Risk | Finding | Component | CWE/OWASP | Evidence(file:line) | Issue URL | Fix | Owner | Due | Status |
 |---:|---|---:|---|---|---|---|---|---|---|---|---|
-| 1 | High | 64 | Full crypto hardening pass needed | crypto / TLS | CWE-327 / OWASP A02 | `tests/test_key_update_lifecycle.zig` (5 RFC 9001 vectors); `build.zig:1832-1838`; `tests/integration/key_update.zig:110, 116, 301`; remaining: `tests/integration/key_update.zig` (52 skips) and `tests/integration/rfc9001_advanced.zig` (27 skips) | https://gitlab.com/devnw/zig/quic/-/issues/142 | Finish remaining advanced-crypto integration skips and AEAD vectors | Unassigned | 2026-05-26 | Partial: in-repo executable coverage added in `tests/test_key_update_lifecycle.zig`; remaining 49 advanced-crypto integration skips tracked in `docs/SKIPPED_TEST_INVENTORY.md` (rows for `key_update.zig`, `rfc9001_advanced.zig`) |
-| 2 | Medium | 48 | 529 test stubs return SkipZigTest | tests | Requirement coverage | `docs/SKIPPED_TEST_INVENTORY.md` per-file triage table (30 files, 5 categories, top-5 follow-ups); skip inventory command returned `529` | https://gitlab.com/devnw/zig/quic/-/issues/88 | Land per-category remediation MRs (stale-rationale unskips first, then impl-required) | Unassigned | Needs per-category remediation | Partial: per-scenario triage complete in `docs/SKIPPED_TEST_INVENTORY.md` (30 files, 5 categories, linked to GAPs); remaining work is per-category remediation MRs (top 5 follow-ups documented) |
-| 3 | Medium | 40 | Endpoint receive lock proof incomplete | endpoint | Performance / contention | `src/quic/endpoint.zig:848-856` releases endpoint mutex between datagrams; no concurrency benchmark committed | https://gitlab.com/devnw/zig/quic/-/issues/126 | Add concurrent receive benchmark and prove no cross-connection regression | Endpoint | Medium | Blocked: implementation is partial; validation is missing |
-| 4 | Medium | 40 | Connection allocations are not pooled | endpoint / server | Performance / allocation | `src/quic/endpoint/server.zig:326-328`; `src/quic/endpoint/server.zig:397-414`; `src/quic/config.zig:58-60` | https://gitlab.com/devnw/zig/quic/-/issues/129 | Add bounded connection/TLS-context pool | Endpoint | Medium | Blocked: requires allocator profile and pool design |
-| 5 | Medium | 36 | Non-domain method module naming obscures ownership | transport architecture | Maintainability | `docs/superpowers/plans/2026-04-26-method-module-refactor.md` (5-stage plan, real `wc -l` inventory, perf-gate skill referenced 5x); `src/quic/conn.zig` still forwards broad `methods_a/b/c` API; `src/quic/connection/key_update.zig:1-14` is the sole domain extraction so far | https://gitlab.com/devnw/zig/quic/-/issues/177 | Execute the staged plan with per-stage perf-gate runs | Core QUIC | Strategic | Planning: staged refactor plan landed at `docs/superpowers/plans/2026-04-26-method-module-refactor.md`; execution gated by per-stage perf-gate runs |
+| 1 | High | 64 | Full crypto hardening pass needed | crypto / TLS | CWE-327 / OWASP A02 | `tests/test_key_update_lifecycle.zig` (5 RFC 9001 vectors); `build.zig:1832-1838`; `tests/integration/key_update.zig:110, 116, 301`; remaining: `tests/integration/key_update.zig` (52 skips) and `tests/integration/rfc9001_advanced.zig` (27 skips) | <https://gitlab.com/devnw/zig/quic/-/issues/142> | Finish remaining advanced-crypto integration skips and AEAD vectors | Unassigned | 2026-05-26 | Partial: in-repo executable coverage added in `tests/test_key_update_lifecycle.zig`; remaining 49 advanced-crypto integration skips tracked in `docs/SKIPPED_TEST_INVENTORY.md` (rows for `key_update.zig`, `rfc9001_advanced.zig`) |
+| 2 | Medium | 48 | 529 test stubs return SkipZigTest | tests | Requirement coverage | `docs/SKIPPED_TEST_INVENTORY.md` per-file triage table (30 files, 5 categories, top-5 follow-ups); skip inventory command returned `529` | <https://gitlab.com/devnw/zig/quic/-/issues/88> | Land per-category remediation MRs (stale-rationale unskips first, then impl-required) | Unassigned | Needs per-category remediation | Partial: per-scenario triage complete in `docs/SKIPPED_TEST_INVENTORY.md` (30 files, 5 categories, linked to GAPs); remaining work is per-category remediation MRs (top 5 follow-ups documented) |
+| 3 | Medium | 40 | Endpoint receive lock proof incomplete | endpoint | Performance / contention | `src/quic/endpoint.zig:848-856` releases endpoint mutex between datagrams; no concurrency benchmark committed | <https://gitlab.com/devnw/zig/quic/-/issues/126> | Add concurrent receive benchmark and prove no cross-connection regression | Endpoint | Medium | Blocked: implementation is partial; validation is missing |
+| 4 | Medium | 40 | Connection allocations are not pooled | endpoint / server | Performance / allocation | `src/quic/endpoint/server.zig:326-328`; `src/quic/endpoint/server.zig:397-414`; `src/quic/config.zig:58-60` | <https://gitlab.com/devnw/zig/quic/-/issues/129> | Add bounded connection/TLS-context pool | Endpoint | Medium | Blocked: requires allocator profile and pool design |
+| 5 | Medium | 36 | Non-domain method module naming obscures ownership | transport architecture | Maintainability | `docs/superpowers/plans/2026-04-26-method-module-refactor.md` (5-stage plan, real `wc -l` inventory, perf-gate skill referenced 5x); `src/quic/conn.zig` still forwards broad `methods_a/b/c` API; `src/quic/connection/key_update.zig:1-14` is the sole domain extraction so far | <https://gitlab.com/devnw/zig/quic/-/issues/177> | Execute the staged plan with per-stage perf-gate runs | Core QUIC | Strategic | Planning: staged refactor plan landed at `docs/superpowers/plans/2026-04-26-method-module-refactor.md`; execution gated by per-stage perf-gate runs |
 
 ## Findings By Area
 
@@ -48,7 +49,8 @@ Top risks:
 ## Gaps
 
 ### GAP-0004: 529 test stubs return SkipZigTest
-- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/88
+
+- **GitLab issue:** <https://gitlab.com/devnw/zig/quic/-/issues/88>
 - **Category:** Test
 - **Severity:** Medium
 - **Requirement source:** GitLab issues #5, #7, #24, #27, #30, #31; prior `docs/requirements.md` test coverage claims.
@@ -64,7 +66,8 @@ Top risks:
 - **Status:** Partial: per-scenario triage complete in `docs/SKIPPED_TEST_INVENTORY.md` (30 files, 5 categories, linked to GAPs); remaining work is per-category remediation MRs (top 5 follow-ups documented).
 
 ### GAP-0013: Full crypto hardening pass needed
-- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/142
+
+- **GitLab issue:** <https://gitlab.com/devnw/zig/quic/-/issues/142>
 - **Category:** Security
 - **Severity:** High
 - **Requirement source:** GitLab issues #17, #18, #33; RFC 9001 key lifecycle and AEAD requirements.
@@ -83,7 +86,8 @@ Top risks:
 - **Status:** Partial: in-repo executable coverage added in `tests/test_key_update_lifecycle.zig`; remaining 49 advanced-crypto integration skips tracked in `docs/SKIPPED_TEST_INVENTORY.md` (rows for `key_update.zig`, `rfc9001_advanced.zig`).
 
 ### GAP-0053: Endpoint receive lock-scope proof incomplete
-- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/126
+
+- **GitLab issue:** <https://gitlab.com/devnw/zig/quic/-/issues/126>
 - **Category:** Performance
 - **Severity:** Medium
 - **Requirement source:** GitLab issues #9, #11, #109, #154, #165, #182.
@@ -97,7 +101,8 @@ Top risks:
 - **Status:** **Closed** (2026-04-27). Lock scope was already correct; the new `concurrent_independent_progress` variant is the regression test the gap required. See `docs/PERF_GAP_ANALYSIS.md` Closed Items table.
 
 ### GAP-0054: Connection allocations are not pooled
-- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/129
+
+- **GitLab issue:** <https://gitlab.com/devnw/zig/quic/-/issues/129>
 - **Category:** Performance
 - **Severity:** Medium
 - **Requirement source:** GitLab issues #10, #13, #167, #183.
@@ -112,7 +117,8 @@ Top risks:
 - **Status:** **Partial** (2026-04-27). Bounded enforcement landed; pool reuse design deferred. The deferred work is tracked under PERF_GAP_ANALYSIS.md `#129` Partial row.
 
 ### GAP-0060: Non-domain method module naming obscures ownership
-- **GitLab issue:** https://gitlab.com/devnw/zig/quic/-/issues/177
+
+- **GitLab issue:** <https://gitlab.com/devnw/zig/quic/-/issues/177>
 - **Category:** Code Quality
 - **Severity:** Medium
 - **Requirement source:** GitLab issues #75 and #115.
@@ -125,3 +131,94 @@ Top risks:
 - **Recommended fix:** Execute the 5-stage plan with per-stage perf-gate runs.
 - **Acceptance criteria:** Method modules are domain-named; forwarding is reduced or clearly owned; tests/imports use the new boundaries; perf-gate green on each stage.
 - **Status:** Planning: staged refactor plan landed at `docs/superpowers/plans/2026-04-26-method-module-refactor.md`; execution gated by per-stage perf-gate runs.
+
+## 2026-06-11 Conformance Gap Round (NEWGAP-series)
+
+This section records the 2026-06-11 requirements-to-code gap analysis focused on RFC 9000 / RFC 9001 / RFC 9002 conformance. Existing findings above are unchanged. Status legend: **Fixed** = closed in code with tests; **Open** = tracked, not yet implemented.
+
+### Stack-Ranked Findings (NEWGAP-series)
+
+| ID | Sev | Category | Title | Location | RFC | Status |
+|---|---|---|---|---|---|---|
+| NEWGAP-01 | High | conformance | Received CID transport parameters not authenticated against on-wire CIDs | `src/quic/connection/methods_c.zig` `applyPeerTransportParameters` | RFC 9000 §7.3 | **Fixed** (commit `0e7ede3`) |
+| NEWGAP-02 | High | conformance | RETIRE_CONNECTION_ID never sent outbound; `retire_prior_to` retires locally but peer never notified | `src/quic/conn.zig` `onNewConnectionId` | RFC 9000 §5.1.2 | **Open** |
+| NEWGAP-03 | High | conformance | No CONNECTION_ID_LIMIT_ERROR enforcement when peer exceeds `active_connection_id_limit` | `src/quic/conn.zig` `onNewConnectionId` | RFC 9000 §5.1.1 | **Fixed** (commit `0e7ede3`) |
+| NEWGAP-04 | Medium | conformance | Unknown/malformed frames in Initial space silently dropped instead of FRAME_ENCODING_ERROR | `src/quic/endpoint/incoming.zig` | RFC 9000 §12.4 | **Fixed** (commit `2047925`) |
+| NEWGAP-05 | Medium | missing-feature | Server `preferred_address` parsed to raw bytes only; never structurally parsed or migrated to | `src/quic/transport_params.zig` | RFC 9000 §9.6 | **Open** |
+| NEWGAP-06 | Medium | conformance | ECN validation failure does not disable ECN for the path; no ECT-acked vs counter cross-check | `src/quic/recovery/recovery.zig` | RFC 9000 §13.4.2.1 | **Open** |
+| NEWGAP-07 | Low | missing-feature | Reactive MAX_STREAMS on STREAMS_BLOCKED is log-only despite GAP-0003/#86 marked resolved | `src/quic/endpoint/frame_handler.zig` | RFC 9000 §4.6, §19.14 | **Open** |
+| NEWGAP-08 | Low | missing-feature | Server never issues NEW_TOKEN for future address validation | (absent) | RFC 9000 §8.1.3 | **Open** |
+| NEWGAP-09 | Low | conformance/code-quality | `pto.zig` `.PtoApp` branch returns "not implemented"; dead module diverges from the live app-PTO path | `src/quic/endpoint/pto.zig` | RFC 9002 §6.2.4 | **Open** |
+
+### NEWGAP-01: Received CID transport parameters not authenticated against on-wire CIDs
+
+- **Severity:** High
+- **Category:** conformance
+- **RFC:** RFC 9000 §7.3
+- **Location:** `src/quic/connection/methods_c.zig` `applyPeerTransportParameters`
+- **Status:** **Fixed** (commit `0e7ede3`). Both roles verify `initial_source_connection_id == peer Initial SCID`; the client verifies `original_destination_connection_id == its first DCID`; a mismatch aborts the handshake with TRANSPORT_PARAMETER_ERROR.
+- **Residual:** The Retry-path `retry_source_connection_id` check is not implemented (no stored Retry SCID) — minor residual.
+
+### NEWGAP-02: RETIRE_CONNECTION_ID never sent outbound
+
+- **Severity:** High
+- **Category:** conformance
+- **RFC:** RFC 9000 §5.1.2
+- **Location:** `src/quic/conn.zig` `onNewConnectionId`
+- **Status:** **Open**. `retire_prior_to` retires connection IDs locally but the peer is never notified. Needs a pending-retire queue plus send-path integration (the encoder `writeRetireConnectionId` exists; there is no outbound caller).
+
+### NEWGAP-03: No CONNECTION_ID_LIMIT_ERROR enforcement when peer exceeds active_connection_id_limit
+
+- **Severity:** High
+- **Category:** conformance
+- **RFC:** RFC 9000 §5.1.1
+- **Location:** `src/quic/conn.zig` `onNewConnectionId`
+- **Status:** **Fixed** (commit `0e7ede3`). `onNewConnectionId` returns `error.ConnectionIdLimitError` instead of evicting; `handleNewConnectionId` closes with CONNECTION_ID_LIMIT_ERROR (0x09); a regression test was added.
+
+### NEWGAP-04: Unknown/malformed frames in Initial space silently dropped instead of FRAME_ENCODING_ERROR
+
+- **Severity:** Medium
+- **Category:** conformance
+- **RFC:** RFC 9000 §12.4
+- **Location:** `src/quic/endpoint/incoming.zig`
+- **Status:** **Fixed** (commit `2047925`). Initial frame-decode errors now close with FRAME_ENCODING_ERROR, matching the 1-RTT path.
+
+### NEWGAP-05: Server preferred_address parsed to raw bytes only
+
+- **Severity:** Medium
+- **Category:** missing-feature
+- **RFC:** RFC 9000 §9.6
+- **Location:** `src/quic/transport_params.zig`
+- **Status:** **Open**. The server `preferred_address` transport parameter is parsed to raw bytes only; it is never structurally parsed or migrated to. This is also a `docs/IMPLEMENTATION_STATUS.md` overstatement ("Complete"); either implement structured parse + client migration or downgrade the status doc.
+
+### NEWGAP-06: ECN validation failure does not disable ECN for the path
+
+- **Severity:** Medium
+- **Category:** conformance
+- **RFC:** RFC 9000 §13.4.2.1
+- **Location:** `src/quic/recovery/recovery.zig`
+- **Status:** **Open**. ECN validation failure does not disable ECN for the path, and there is no ECT-acked vs counter cross-check. Add per-space ECN validation state and disable ECN on failure.
+
+### NEWGAP-07: Reactive MAX_STREAMS on STREAMS_BLOCKED is log-only
+
+- **Severity:** Low
+- **Category:** missing-feature
+- **RFC:** RFC 9000 §4.6, §19.14
+- **Location:** `src/quic/endpoint/frame_handler.zig`
+- **Status:** **Open**. Reactive MAX_STREAMS issuance on STREAMS_BLOCKED is log-only despite GAP-0003/#86 being marked resolved. Either implement the reactive grant or correct the GAP-0003 resolution note (tracking-accuracy issue).
+
+### NEWGAP-08: Server never issues NEW_TOKEN for future address validation
+
+- **Severity:** Low
+- **Category:** missing-feature
+- **RFC:** RFC 9000 §8.1.3
+- **Location:** (absent)
+- **Status:** **Open**. SHOULD-level; optional post-handshake NEW_TOKEN issuance is not implemented.
+
+### NEWGAP-09: pto.zig .PtoApp branch returns "not implemented" (dead module)
+
+- **Severity:** Low
+- **Category:** conformance/code-quality
+- **RFC:** RFC 9002 §6.2.4
+- **Location:** `src/quic/endpoint/pto.zig`
+- **Status:** **Open**. The `.PtoApp` branch returns "not implemented" and the dead module diverges from the live app-PTO path. App PTO IS sent via `connection/methods_b.sendPtoProbeApp`; either implement or delete the dead `pto.zig` branch to avoid a maintainer trap.

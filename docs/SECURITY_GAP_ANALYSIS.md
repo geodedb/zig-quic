@@ -5,8 +5,8 @@
 | **Repository** | `gitlab.com/devnw/zig/quic` |
 | **Scope** | Phase 3 security review of core QUIC transport, TLS integration, frame parsing, and CI/CD |
 | **Reviewer** | security-reviewer agent (Phase 3) |
-| **Last updated** | 2026-04-25 |
-| **Status** | All findings in this file are Closed / Implemented or closed as repo-level Won't Do boundaries |
+| **Last updated** | 2026-06-11 |
+| **Status** | Phase 3 findings (1--14) all Closed / Implemented or closed as repo-level Won't Do boundaries; 2026-06-11 AppSec Audit Round (QC-series) appended -- 10 Fixed, 2 Partial, 5 Open |
 
 ---
 
@@ -19,6 +19,18 @@
 | Medium | 0 | 0 | 7 | 7 |
 | Low | 0 | 0 | 3 | 3 |
 | **Total** | **0** | **0** | **14** | **14** |
+
+The summary table above covers the original Phase 3 findings (1--14). The 2026-06-11 AppSec Audit Round (QC-series) adds a fresh batch of findings; its counts are tracked separately below and detailed in the appended `## 2026-06-11 AppSec Audit Round (QC-series)` section.
+
+### 2026-06-11 AppSec Audit Round (QC-series) Summary
+
+| Severity | Open | Partial | Fixed | Total |
+|----------|------|---------|-------|-------|
+| Critical | 0 | 0 | 1 | 1 |
+| High | 0 | 1 | 2 | 3 |
+| Medium | 2 | 1 | 4 | 7 |
+| Low | 3 | 0 | 3 | 6 |
+| **Total** | **5** | **2** | **10** | **17** |
 
 Notes: #111 (High, frame alloc caps) is closed; `frame.decode()` now applies frame allocation caps and rejects oversized frame payloads. #114 (High, allow_insecure) closed -- audit confirmed flag only controls TLS certificate validation; Retry integrity, CID matching, and amplification protection are unconditionally enforced. #118 (High, mTLS wiring) closed in commit bf8cf7f. Phase 4 closure (2026-03-25): SF-015 anti-replay wired, SF-016 catch unreachable replaced, SF-017 Go binary removed, SF-018 secureZero, SF-019 unknown frames, SF-020 amplification consolidation, SF-021 ct_empty data race, SF-022 CID validation, GAP-0018 timing-safe Retry tag. 2026-04-25 closure: thread-local debug counters confirmed, Retry tag temporary ciphertext buffer is function-local, static interop Docker cert copies removed in favor of runtime-generated ephemeral fallback certs, and CI/Docker/pre-commit governance boundaries documented as repo-level Won't Do.
 
@@ -63,6 +75,7 @@ No open residual risks remain in this tracking file. Security gaps still open in
 **Summary**: The reader-based `frame.decode()` path in `frame/frame.zig` uses `alloc.alloc(u8, @intCast(len))` where `len` comes directly from a wire varint. A varint can encode values up to 2^62, allowing a single crafted QUIC packet to request a multi-gigabyte heap allocation.
 
 **Evidence** (file paths and lines):
+
 - `src/quic/frame/frame.zig:367` -- CRYPTO frame: `const data = try alloc.alloc(u8, @intCast(len));`
 - `src/quic/frame/frame.zig:380` -- ACK ranges: `const ranges = try alloc.alloc(AckRange, @intCast(range_count));`
 - `src/quic/frame/frame.zig:422,435` -- STREAM frame data allocation
@@ -88,6 +101,7 @@ No open residual risks remain in this tracking file. Security gaps still open in
 **Summary**: When `allow_insecure` is true, `endpoint.zig:1007-1020` skips CID matching for Retry packets and returns the first client connection found. Lines 1020-1023 also skip Retry integrity tag verification. An attacker can forge a Retry packet that redirects a victim's connection to an attacker-controlled CID.
 
 **Evidence**:
+
 - `src/quic/endpoint.zig:1007-1015` -- Falls back to iterating all connections and returning the first client
 - `src/quic/endpoint.zig:1020` -- Skips integrity verification when `allow_insecure` is set
 
@@ -113,7 +127,9 @@ No open residual risks remain in this tracking file. Security gaps still open in
 **Summary**: `conn.zig:1534` reads `QUIC_DISABLE_AMPLIFICATION_LIMIT` from the process environment. If set to any non-"0" value (including empty string), `overAmplification()` always returns `false`, completely disabling RFC 9000 section 8.1 amplification protection. The server becomes a DDoS amplification reflector.
 
 **Evidence**:
+
 - `src/quic/conn.zig:1534-1536`:
+
   ```zig
   if (std.posix.getenv("QUIC_DISABLE_AMPLIFICATION_LIMIT")) |v| {
       if (v.len == 0 or !std.mem.eql(u8, v, "0")) return false;
@@ -140,6 +156,7 @@ No open residual risks remain in this tracking file. Security gaps still open in
 **Summary**: `handshake_integration.zig:334-336` discards the `request_client_cert`, `client_cert_der`, and `client_key_der` parameters with `_ = request_client_cert`. Operators who configure mTLS believe client certificates are required, but the server accepts all connections regardless of client certificate status.
 
 **Evidence**:
+
 ```zig
 _ = request_client_cert; // mTLS: deferred to TLS library support
 _ = client_cert_der; // mTLS: deferred to TLS library support
@@ -168,6 +185,7 @@ _ = client_key_der; // mTLS: deferred to TLS library support
 **Summary**: Three locations use `unreachable` when CID length exceeds 20 bytes. In safe builds, `unreachable` triggers a panic. A crafted NEW_CONNECTION_ID frame with `cid_len > 20` reaches this code and crashes the server process.
 
 **Evidence**:
+
 - `src/quic/connection/reset_token.zig:10`: `if (cid_len > 20) unreachable;`
 - `src/quic/connection/connection_id.zig:38`: `if (cid_len > 20) unreachable;`
 - `src/quic/connection/methods_c.zig:619`: `if (cid_len > 20) unreachable;`
@@ -190,6 +208,7 @@ _ = client_key_der; // mTLS: deferred to TLS library support
 **Summary**: `server.zig:196` calls `computeRetryIntegrityTag(config.version, pseudo_buf[0..p])` with 2 arguments, but the function at `crypto_quic.zig:182` requires 3 arguments: `(version_v2: bool, odcid: []const u8, retry_without_tag: []const u8)`. This is a compile-time error that breaks the entire Retry packet generation path.
 
 **Evidence**:
+
 - Call site: `src/quic/endpoint/server.zig:196`
 - Function: `src/quic/crypto_quic.zig:182`
 
@@ -211,6 +230,7 @@ _ = client_key_der; // mTLS: deferred to TLS library support
 **Summary**: `accept0RTT()` at `methods_a.zig:971-973` simply sets `self.zero_rtt_accepted = true` without any replay detection. RFC 8446 section 8 and RFC 9001 section 9.2 require servers to implement anti-replay mechanisms for 0-RTT data.
 
 **Evidence**:
+
 ```zig
 pub fn accept0RTT(self: *Connection) void {
     self.zero_rtt_accepted = true;
@@ -254,6 +274,7 @@ pub fn accept0RTT(self: *Connection) void {
 **Summary**: `ack.zig:137-144` stores ACK ranges into a fixed-size buffer (`ranges_buf.len` = 16) but still reads all remaining varint pairs from the wire. A packet claiming thousands of ranges forces thousands of varint decodes (CPU exhaustion) while silently discarding all but 16 ranges, causing incorrect loss recovery.
 
 **Evidence**:
+
 ```zig
 if (out_len < ranges_buf.len) {
     ranges_buf[out_len] = .{ .gap = gap.value, .len = lenv.value };
@@ -279,6 +300,7 @@ if (out_len < ranges_buf.len) {
 **Summary**: `conn.zig:1542` (`self.isLocalhost()`) and `incoming.zig:544-558` auto-validate localhost addresses and bypass amplification limits. In containerized or multi-tenant environments, a co-tenant can spoof `127.0.0.1` source to bypass the 3x amplification limit.
 
 **Evidence**:
+
 - `src/quic/conn.zig:1542`: `if (self.isLocalhost()) return false;`
 - `src/quic/endpoint/incoming.zig:544-558`: Auto-validates localhost and resets byte counters
 
@@ -352,6 +374,7 @@ if (out_len < ranges_buf.len) {
 ## Findings by Area
 
 ### Authentication and TLS Integration
+
 | # | Finding | Severity | Risk |
 |---|---------|----------|------|
 | 1.1 | `allow_insecure` bypasses Retry integrity | High | 64 |
@@ -359,6 +382,7 @@ if (out_len < ranges_buf.len) {
 | 3.2 | No 0-RTT anti-replay detection | Medium | 36 |
 
 ### Input Validation and Frame Parsing
+
 | # | Finding | Severity | Risk |
 |---|---------|----------|------|
 | 2.1 | Unbounded heap allocation from wire varint | High | 80 |
@@ -366,6 +390,7 @@ if (out_len < ranges_buf.len) {
 | 6.1 | `unreachable` on CID > 20 bytes | Medium | 48 |
 
 ### Cryptographic Operations
+
 | # | Finding | Severity | Risk |
 |---|---------|----------|------|
 | 3.1 | Key material not zeroed on teardown | Medium | 36 |
@@ -373,6 +398,7 @@ if (out_len < ranges_buf.len) {
 | 4.3 | Global mutable state in crypto/debug | Low | 16 |
 
 ### Network and Amplification Protection
+
 | # | Finding | Severity | Risk |
 |---|---------|----------|------|
 | 4.1 | Env var disables amplification limit | High | 60 |
@@ -380,6 +406,7 @@ if (out_len < ranges_buf.len) {
 | 4.4 | Retry not enabled by default | Medium | 24 |
 
 ### Infrastructure and Supply Chain
+
 | # | Finding | Severity | Risk |
 |---|---------|----------|------|
 | 5.1 | Test certificates in Docker image | Low | 12 |
@@ -440,6 +467,7 @@ if (out_len < ranges_buf.len) {
 ## Phase 4 Gap Closure -- 2026-03-25
 
 ### Closed Items
+
 - **SF-015 (#145):** Anti-replay cache wired from Endpoint.init() to connections -- Closed. `AntiReplayCache` heap-allocated when `role == Server && zero_rtt_anti_replay == true`; cache passed through `RxContext`; `accept0RTT()` rejects replays. 5 tests added.
 - **SF-016 (#153):** `catch unreachable` on page_allocator in crypto_quic.zig -- Closed. Replaced with 2048-byte stack buffer in `computeRetryIntegrityTag`. No more remote DoS vector.
 - **SF-017 (#157):** Go interop binary with Critical CVEs -- Closed. Binary removed from repository. Added to `.gitignore`.
@@ -451,3 +479,53 @@ if (out_len < ranges_buf.len) {
 - **GAP-0018 (#149):** Retry integrity tag timing-safe comparison -- Closed. Changed to `std.crypto.timing_safe.eql` in `packet.zig`.
 - **GAP-0047 (#155):** frame_handler comment corrected -- Closed. Replaced `else => .{}` with explicit `.padding => .{}` and `.crypto => .{}` arms.
 - **#121:** 0-RTT anti-replay detection -- Closed. `AntiReplayCache` wired end-to-end; `accept0RTT()` rejects replayed 0-RTT data.
+
+---
+
+## 2026-06-11 AppSec Audit Round (QC-series)
+
+A fresh OWASP-aligned application-security code review (2026-06-11) of the QUIC transport, flow control, migration, token, key-update, and supporting tooling paths. Full per-finding analysis, attack scenarios, and fix evidence live in [`docs/APPSEC_REVIEW_2026-06-11.md`](APPSEC_REVIEW_2026-06-11.md).
+
+**Status legend:** `Fixed` = closed in code with tests; `Partial` = partially addressed, residual open; `Open` = tracked, not yet implemented.
+
+### Findings
+
+| ID | Severity | Title | Location | Status | Fix Commit |
+|----|----------|-------|----------|--------|------------|
+| QC-01 | Critical | Receive-side flow control not enforced (unbounded buffering DoS) | `src/quic/connection/methods_a.zig` (`pushStreamFrame`), `stream.zig` | Fixed | `2047925` |
+| QC-02 | High (residual Medium) | Connection migration committed before AEAD authentication | `src/quic/endpoint.zig` (`onPathAddressChanged`) | Partial | -- |
+| QC-03 | High | Anti-amplification RX budget credited with unauthenticated bytes (short-header path) | `src/quic/endpoint/incoming/module_c.zig` | Fixed | `2047925` |
+| QC-04 | High | Connection IDs / reset tokens from non-CSPRNG; all `getrandom()` returns discarded | `src/quic/connection/methods_c.zig` + 10 sites | Fixed | `e7762c8` |
+| QC-05 | Medium | Unbounded `stream_txs` map growth from peer MAX_STREAM_DATA | `src/quic/endpoint/frame_handler.zig` | Fixed | `75a597a` |
+| QC-06 | Medium | Retry/NEW_TOKEN tokens replayable; no type discriminator | `src/quic/token.zig`, `src/quic/endpoint/incoming.zig` | Open | -- |
+| QC-07 | Medium | Unbounded received-DATAGRAM queue | `src/quic/connection/methods_a.zig` (`pushDatagram`) | Fixed | `75a597a` |
+| QC-08 | Medium | Peer MAX_STREAMS accepted without 2^60 bound / monotonic check | `src/quic/endpoint/frame_handler.zig` | Fixed | `75a597a` |
+| QC-09 | Medium | 0-RTT encoder emits unprotected header on short ciphertext; swallows HP errors | `src/quic/packet.zig` (`encode0RTTProtected`) | Fixed | `3edadae` |
+| QC-10 | Medium | PATH_RESPONSE accepted from any address; non-constant-time compare; predictable challenge fallback | `src/quic/connection/methods_a.zig` | Partial | `e7762c8` |
+| QC-11 | Medium | RX-triggered key update has no rate limit / prior-update-confirmed gate | `src/quic/endpoint/incoming/module_b.zig`, `src/quic/connection/methods_b.zig` | Open | -- |
+| QC-12 | Low | Server-side path traversal in qns interop endpoint | `cmd/qns-endpoint.zig` | Fixed | `3edadae` |
+| QC-13 | Low | Anti-replay cache keyed on 64-bit Wyhash (fixed seed) -> targeted false-reject | `src/quic/anti_replay.zig` | Open | -- |
+| QC-14 | Low | TLS keylog file created world-readable (`0o644`) | `src/quic/connection/methods_a.zig` | Fixed | `fcd28ce` |
+| QC-15 | Low | Interop/test cert scripts install private keys world-readable | `create_test_certs.sh`, `scripts/interop_*.sh` | Fixed | `fcd28ce` |
+| QC-16 | Low | `stateless_reset_base` derived from per-connection secret, not endpoint-static key | `src/quic/connection/methods_c.zig` | Open | -- |
+| QC-17 | Low | Nix dev-bootstrap installer executed without hash/signature verification | `scripts/install_pkgs.sh` | Open | -- |
+
+### Residual / Open Detail
+
+- **QC-01 (Critical) -- Fixed (`2047925`):** Enforces per-stream window, out-of-order buffer caps, and connection-level `MAX_DATA`; violations raise `FLOW_CONTROL_ERROR`.
+- **QC-02 (High, residual Medium) -- Partial:** The High-severity amplification/reflection portion is closed by QC-03 (a spoofed non-decrypting packet now credits 0 anti-amplification bytes). The residual pre-auth `setPeer` redirect (transient response misrouting until a legitimate packet flaps it back) remains **Open**. Full fix needs authenticate-before-migrate: defer `setPeer` / counter-reset / `PATH_CHALLENGE` to the post-decrypt path, which requires wiring an endpoint reference into `RxContext` (`endpoint_ctx` is currently unset) plus concurrency validation.
+- **QC-03 (High) -- Fixed (`2047925`):** `addRxUnvalidated` moved to after successful decrypt.
+- **QC-04 (High) -- Fixed (`e7762c8`):** `compat.secureRandomBytes` (checked `getrandom`) replaces all sites; the Xoshiro CID generator was removed and all sites now fail closed.
+- **QC-05 (Medium) -- Fixed (`75a597a`):** `STREAM_STATE_ERROR` for peer-initiated uni streams; 16384-entry pre-creation cap.
+- **QC-06 (Medium) -- Open:** Needs a token-type byte (RETRY vs NEW_TOKEN) and a single-use/strike cache for Retry tokens.
+- **QC-07 (Medium) -- Fixed (`75a597a`):** `dgram_inbox` capped at 1024, drops oldest.
+- **QC-08 (Medium) -- Fixed (`75a597a`):** `FRAME_ENCODING_ERROR` above 2^60; monotonic updates.
+- **QC-09 (Medium) -- Fixed (`3edadae`):** Fails closed (returns error) instead of emitting an unprotected header.
+- **QC-10 (Medium) -- Partial (`e7762c8`):** The predictable `PATH_CHALLENGE` fallback was removed and seeding now fails closed via CSPRNG. The source-address binding of `PATH_RESPONSE` and constant-time compare remain **Open** (tied to the QC-02 authenticate-before-migrate work).
+- **QC-11 (Medium) -- Open:** Needs to gate forced TX rotation on prior-update confirmation and rate-limit to ~1/RTT.
+- **QC-12 (Low) -- Fixed (`3edadae`):** Rejects `..`, NUL, and non-leading-`/` paths.
+- **QC-13 (Low) -- Open:** Use a >=128-bit cryptographic digest or randomly-seeded SipHash.
+- **QC-14 (Low) -- Fixed (`fcd28ce`):** Keylog file now created `0o600`.
+- **QC-15 (Low) -- Fixed (`fcd28ce`):** `umask 077`, `0600` key installs, re-restrict after recursive `chmod`.
+- **QC-16 (Low) -- Open:** Low because no outbound stateless-reset send path exists yet; derive from a long-lived endpoint key per RFC 9000 section 10.3.1 when reset emission is added.
+- **QC-17 (Low) -- Open:** Dev tooling; pin and verify a SHA-256, use `mktemp`.

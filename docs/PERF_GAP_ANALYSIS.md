@@ -1,6 +1,6 @@
 # Performance Gap Analysis
 
-Last updated: 2026-04-27
+Last updated: 2026-06-11
 
 GitLab is the source of truth for issue state. This file is the flatfile mirror for performance review findings and closure evidence.
 
@@ -106,3 +106,40 @@ GitLab is the source of truth for issue state. This file is the flatfile mirror 
 - Workload shape is Unknown. Need expected stream sizes, datagram rates, reorder depth, and connection churn.
 - Profiling is incomplete. Need bounded benchmarks/flamegraphs for lookup, timer, send path, and recovery contention.
 - `zig build bench` did not complete within a bounded interactive run in the original performance review and was stopped; the benchmark harness needs a documented short profile target for agents.
+
+## 2026-06-11 Performance Review Round (PERF-series, static, A/B-pending)
+
+**These are STATIC review findings — no benchmarks were run.** Every item below was identified by reading source (file:line citations are ground truth), not by measurement. This repo gates *all* performance claims behind a paired A/B run via `scripts/perf-gate.sh` (see `CLAUDE.md` and `docs/PERFORMANCE_TRACKING.md`). Therefore **every item is Status = Open (A/B-pending)**: nothing here is claimed as a win, a regression, or a quantified improvement until it has been measured through the gate. Any implementation that acts on these findings MUST follow `.claude/skills/quic-performance-gating/SKILL.md` — pick the right suite (`micro` for pure-function changes, `integration` for endpoint/connection/stream/handshake paths), run the A/B, and record the result in `docs/PERFORMANCE_TRACKING.md` before claiming benefit.
+
+The `Hot-path` column states the cadence at which the cost recurs (per-packet, per-ack, per-frame, etc.) and is the reason each item is worth measuring; it is *not* a measured cost.
+
+| ID | PerfSeverity | Title | Location | Hot-path | Status |
+|---|---|---|---|---|---|
+| PERF-01 | P1 | Frame union inlines a 1 KB ranges_buf; ~1 KB copy + dangling slice per decoded frame | `src/quic/frame/frame.zig:41-49,159-172`; `ack.zig:96-105` | per-frame | Open (A/B-pending) |
+| PERF-02 | P1 | Loss detection: 3-4 full O(N) walks of `sent` per ACK (count + classify + compact + index rebuild) | `src/quic/recovery/recovery.zig:382-385,452-492,505-506,96-112` | per-ack | Open (A/B-pending) |
+| PERF-03 | P2 | `onLossTimeExpired` adds two more full per-space walks + 2nd compact | `src/quic/recovery/recovery.zig:683-729`; `connection/methods_b.zig:888` | per-ack | Open (A/B-pending) |
+| PERF-04 | P2 | `computeNextPtoTimeNs` scans full sent list to derive a boolean | `src/quic/recovery/recovery.zig:732-744,763-770` | per-ack/per-pto-arm | Open (A/B-pending) |
+| PERF-05 | P1 | Stream reassembly allocs+copies+sorts per STREAM frame; no in-order fast path | `src/quic/connection/stream.zig:153-190`; `methods_a.zig:849-851` | per-stream-frame | Open (A/B-pending) |
+| PERF-06 | P3 | `varint.decode` builds a temp array + `byteorder.decode` instead of direct shifts | `src/quic/varint.zig:83-118,136-154` | per-field | Open (A/B-pending) |
+| PERF-07 | P3 | `frame.decodeOne` dispatches via ~24-deep linear if-chain instead of a switch | `src/quic/frame/frame.zig:130-334` | per-frame | Open (A/B-pending) |
+| PERF-08 | P1 | Decrypted 1-RTT payload heap-alloc+memcpy+free within one call frame | `src/quic/endpoint/incoming/module_b.zig:649-663`; `module_c.zig:333` | per-packet | Open (A/B-pending) |
+| PERF-09 | P2 | Standalone ACK frame serialized into a growable ArrayList instead of a stack buffer | `src/quic/endpoint/incoming/module_b2.zig:365-367,218-220,271-272` | per-packet (ack) | Open (A/B-pending) |
+| PERF-10 | P2 | `trackAppStreamPacket` dupes full STREAM payload (~MTU) per send for retx tracking | `src/quic/connection/methods_b.zig:24-45,527` | per-stream-frame | Open (A/B-pending) |
+| PERF-11 | P2 | Duplicate `clock_gettime(REALTIME)` per ack-eliciting packet | `connection/methods_b.zig:484-489,875-881`; `methods_c.zig:71-77,194-200`; `incoming/module_c.zig:557-562`; `module_b2.zig:199-204` | per-packet | Open (A/B-pending) |
+| PERF-12 | P1 | AES/GCM + header-protection key schedule re-expanded every packet (key by value) | `src/quic/crypto_zig.zig:97-128,251-254,272-275` | per-packet | Open (A/B-pending) |
+| PERF-13 | P2 | `StreamScheduler.getScheduledStreams` allocs + full O(S log S) sort every scheduling round | `src/quic/stream_scheduler.zig:148-186` | per-send-round | Open (A/B-pending) |
+| PERF-14 | P2 | DRR `getNextStream` accrues deficit to blocked streams + double hashmap lookup per stream | `src/quic/stream_scheduler.zig:119-140` | per-send-round | Open (A/B-pending) |
+| PERF-15 | P2 | `connection_manager.detectLost` full O(N) scan of all packets per ACK | `src/quic/algorithms/loss_recovery.zig:16-40`; `connection_manager.zig:140` | per-ack | Open (A/B-pending) |
+| PERF-16 | P2 | H3 Huffman decode is O(output × 256) linear table search per symbol | `src/h3/server.zig:677-716` | per-h3-frame | Open (A/B-pending) |
+| PERF-17 | P2 | H3 server per-request ArrayList (no reuse) + O(N) served linear scan | `src/h3/server.zig:58,92-104,129-132` | per-request | Open (A/B-pending) — the served linear-scan/OOB half was already replaced with a hashmap set in QUAL-01 (commit `2047925`); the per-request ArrayList reuse remains Open |
+| PERF-18 | P3 | H3 QPACK decodes & 512 B-copies skipped header values instead of skipping by length | `src/h3/server.zig:307-308,338-339,356-357` | per-h3-frame | Open (A/B-pending) |
+| PERF-19 | P3 | `advertiseInitialFlowControl` full `streams_rx` scan on every readStream, duplicating dirty-set | `connection/methods_a.zig:1177-1208`; `methods_b.zig:611` | per-stream-read | Open (A/B-pending) |
+| PERF-20 | P3 | Legacy `sent_time`/`sent_sizes` maps written under a mutex on every long-header send | `src/quic/connection/methods_c.zig:204-226` | per-packet (long-hdr) | Open (A/B-pending) |
+| PERF-21 | P3 | `anti_replay.evictExpired` full O(N) map scan per `checkAndRecord`; 128-cap leaks expired entries | `src/quic/anti_replay.zig:68,91-112,116-131` | per-0-RTT | Open (A/B-pending) |
+| PERF-22 | P3 | Per-datagram by-value copy of `RecvBatchSlot`/`SockAddr` chain (~152 B / 128 B), copied 3x | `src/quic/endpoint.zig:1744`; dispatch fns | per-packet | Open (A/B-pending) |
+
+### Next steps for this round
+
+- None of the 22 items may be reported as a performance benefit, regression, or speedup until measured via `scripts/perf-gate.sh`. Static review establishes *candidates only*.
+- P1 candidates (PERF-01, -02, -05, -08, -12) target per-packet / per-frame / per-ack hot paths and are the suggested first A/B targets; route pure-function changes (e.g. PERF-06, PERF-07 varint/frame dispatch) through `--suite=micro` and endpoint/connection/stream changes through `--suite=integration`.
+- Workload/SLO inputs remain Unknown (see Blockers above); absent documented targets, prioritization among these candidates is by hot-path cadence and PerfSeverity only.
