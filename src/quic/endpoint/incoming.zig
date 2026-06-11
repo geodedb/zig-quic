@@ -841,12 +841,17 @@ pub fn processInitialResolved(
         logger.debugPrint("[processInitial] Decoding frame at offset {}/{}\n", .{ offset, decrypted.payload.len });
         const fr = frame.decodeOne(decrypted.payload[offset..]) catch |err| {
             const first_byte = if (offset < decrypted.payload.len) decrypted.payload[offset] else 0;
-            // RFC 9000 §12.4: Endpoints MUST ignore unknown frame types
-            if (err == error.Unsupported) {
-                logger.debugPrint("[processInitial] Ignoring unknown frame type 0x{X:0>2} at offset {} (RFC 9000 §12.4)\n", .{ first_byte, offset });
-                break; // Can't continue without knowing frame length
-            }
-            logger.debugPrint("[processInitial] Frame decode error at offset {}: {} (first_byte=0x{X:0>2})\n", .{ offset, err, first_byte });
+            // RFC 9000 §12.4: "An endpoint MUST treat the receipt of a frame of
+            // unknown type as a connection error of type FRAME_ENCODING_ERROR."
+            // The same applies to malformed/truncated frames. Unlike transport
+            // parameters or reserved bits, unknown frame *types* are not ignored.
+            // Mirror the 1-RTT path (module_b2.processFrames) instead of silently
+            // dropping the rest of the packet.
+            logger.debugPrint("[processInitial] Frame decode error at offset {}: {} (first_byte=0x{X:0>2}) -> FRAME_ENCODING_ERROR\n", .{ offset, err, first_byte });
+            conn.sendConnectionClose(0x07, "FRAME_ENCODING_ERROR") catch |close_err| {
+                logger.debugPrint("[processInitial] Failed to send CONNECTION_CLOSE for frame error: {}\n", .{close_err});
+            };
+            conn.markClosed();
             break;
         };
         logger.debugPrint("[processInitial] Decoded frame type: {}\n", .{std.meta.activeTag(fr.f)});

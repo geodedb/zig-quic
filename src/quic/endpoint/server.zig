@@ -329,6 +329,12 @@ pub fn createServerConnection(
 
     // Initialize connection with server role
     c.init(allocator, .Server, sockToIsize(sock_fd), peer);
+    // c.init allocates Recovery state plus several HashMaps and (below)
+    // setLocalTransportParameters dups bytes into the connection. If any `try`
+    // after this point fails, destroy(c) alone would leak all of that — deinit
+    // is idempotent (guarded by deinit_called) so it composes with the success
+    // path, where no fallible op remains after tls_context is attached.
+    errdefer c.deinit();
 
     // Set version fields (RFC 9000 §5.2: Version Negotiation)
     c.version = config.version;
@@ -418,7 +424,7 @@ pub fn createServerConnection(
 
     // Initialize TLS Context for modular TLS 1.3
     // TLS Context is always created (required, not optional)
-    const ctx_value = try handshake_integration.createTlsContext(
+    var ctx_value = try handshake_integration.createTlsContext(
         allocator.*,
         .Server,
         config.allowed_alpns,
@@ -431,9 +437,13 @@ pub fn createServerConnection(
         null,
         null, // Server has no client-side trust anchors (GAP-0838 is client→server)
     );
+    // Owns heap internals (ArrayLists, cert/ALPN buffers). Until ownership
+    // transfers into the heap-allocated tls_ctx below, a failure of
+    // allocator.create would drop it without deinit and leak those buffers.
+    // No `try` runs after the ownership transfer, so this never double-frees.
+    errdefer ctx_value.deinit();
 
     const tls_ctx = try allocator.create(@TypeOf(ctx_value));
-    errdefer allocator.destroy(tls_ctx);
     tls_ctx.* = ctx_value;
 
     c.tls_context = tls_ctx;

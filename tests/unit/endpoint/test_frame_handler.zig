@@ -44,6 +44,14 @@ fn createTestConnection() !*conn_mod.Connection {
     conn.writable_streams = std.ArrayList(u64).empty;
     conn.stream_recv_aborted = false; // CRITICAL: needed for pushStreamFrame
     conn.peer_initial_scid = .{ .len = 0 };
+    // Receive-side flow-control fields: pushStreamFrame now enforces RFC 9000
+    // §4.1-§4.2 limits (QC-01), so these must hold valid (not undefined) values
+    // or the accounting arithmetic reads garbage.
+    conn.local_max_stream_data = 16 * 1024 * 1024;
+    conn.local_max_data = 256 * 1024 * 1024;
+    conn.conn_recv_total = 0;
+    conn.conn_recv_highest_total = 0;
+    conn.last_sent_max_data = 0;
     conn.peer_max_data = 0;
     conn.peer_max_stream_data = 0;
     conn.peer_max_streams_bidi = 0;

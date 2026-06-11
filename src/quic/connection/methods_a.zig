@@ -10,6 +10,15 @@ pub fn bind(comptime Connection: type) type {
     return struct {
         const linux = std.os.linux;
 
+        // Maximum number of distinct out-of-order STREAM segments buffered per
+        // stream before further out-of-order data is rejected with
+        // FLOW_CONTROL_ERROR (RFC 9000 §4.2 receive-buffer bounding, QC-01).
+        // Comfortably exceeds the packet count of a full 16 MiB receive window
+        // of MTU-sized packets (~14k), so it never trips on legitimate
+        // reordering, while bounding per-segment struct overhead under a flood
+        // of tiny gapped segments.
+        const max_ooo_segments: usize = 16384;
+
         fn openAppendFd(path_str: []const u8) !linux.fd_t {
             // Path must be null-terminated for the syscall; copy to a stack buffer.
             var path_buf: [4096]u8 = undefined;
@@ -835,6 +844,42 @@ pub fn bind(comptime Connection: type) type {
             const s = self.ensureStreamRx(stream_id);
             logger.debugPrint("After ensureStreamRx: streams_rx now has {} entries\n", .{self.streams_rx.count()});
             if (s.state == .ResetRead or s.state == .DataRead) return;
+
+            // RFC 9000 §4.1-§4.2: enforce receive-side flow control. Without this
+            // a peer can drive unbounded heap allocation (CWE-770/CWE-400) by
+            // sending STREAM data past the advertised window or an endless stream
+            // of gapped out-of-order segments that are buffered forever. A
+            // violation is FLOW_CONTROL_ERROR (0x03); the caller turns the
+            // returned error into a CONNECTION_CLOSE and the data is not buffered.
+            {
+                const end_off = std.math.add(u64, offset, @as(u64, data.len)) catch return error.FlowControlError;
+
+                // Per-stream absolute offset ceiling: the largest MAX_STREAM_DATA
+                // we have granted, floored at the connection's initial stream
+                // window so a brand-new stream (whose per-stream grant is lazily
+                // initialized to 0) is still bounded.
+                const stream_window: u64 = if (s.initial_window_size > 0) s.initial_window_size else self.local_max_stream_data;
+                const stream_limit: u64 = @max(@max(s.local_max_stream_data, s.last_sent_max_stream_data), stream_window);
+                if (end_off > stream_limit) return error.FlowControlError;
+
+                // Bound out-of-order buffering: cap both the buffered byte count
+                // (to the receive window) and the number of distinct out-of-order
+                // segments (to bound per-segment struct overhead from a flood of
+                // tiny 1-byte gapped segments).
+                if (offset > s.recv_off and data.len > 0) {
+                    if (s.bufs.items.len >= max_ooo_segments) return error.FlowControlError;
+                    if (s.buffered_bytes + @as(u64, data.len) > stream_window) return error.FlowControlError;
+                }
+
+                // Connection-level flow control: the sum of the highest received
+                // offsets across all streams must not exceed our MAX_DATA.
+                if (end_off > s.highest_off) {
+                    const delta = end_off - s.highest_off;
+                    if (self.conn_recv_highest_total + delta > self.local_max_data) return error.FlowControlError;
+                    self.conn_recv_highest_total += delta;
+                    s.highest_off = end_off;
+                }
+            }
 
             // PHASE 57 PART 6: Always re-queue streams when new data arrives
             // This matches the design intent from Phase 42 Part 15 (see queueIncomingStream comment)

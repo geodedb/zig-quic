@@ -195,7 +195,6 @@ test "MAX_* thresholds bump on receive" {
 
     // initial limits
     const init_stream = c.local_max_stream_data;
-    const init_conn = c.local_max_data;
 
     // Push > 1/2 of stream window in one go
     const half_stream = init_stream / 2;
@@ -214,19 +213,79 @@ test "MAX_* thresholds bump on receive" {
     const rx0 = c.streams_rx.getPtr(0) orelse return error.InvalidStream;
     try std.testing.expect(rx0.local_max_stream_data > init_stream);
 
-    // Push to bump connection-level as well
-    const half_conn = init_conn / 2;
-    const more = try A.alloc(u8, @intCast(half_conn));
-    defer A.free(more);
-    @memset(more, 0x24);
-    try c.pushStreamFrame(0, big.len, more, false);
+    // Bump connection-level MAX_DATA. Use a fresh connection with a modest
+    // initial connection window so the quinn-style growth (consumed + 10 MiB)
+    // lifts local_max_data observably after a read, while every push stays
+    // within both the per-stream window (16 MiB) and the connection window
+    // (RFC 9000 §4.1; receive-side flow control is now enforced — QC-01).
+    var c2 = makeConn(&A);
+    defer c2.deinit();
+    c2.local_max_data = 12 * 1024 * 1024; // 12 MiB initial connection window
+    const init_conn2 = c2.local_max_data;
+    const chunk = try A.alloc(u8, 8 * 1024 * 1024); // 8 MiB: within stream and conn windows
+    defer A.free(chunk);
+    @memset(chunk, 0x24);
+    try c2.pushStreamFrame(0, 0, chunk, false);
     while (true) {
-        _ = c.readStream(0, &drain) catch |err| switch (err) {
+        _ = c2.readStream(0, &drain) catch |err| switch (err) {
             error.WouldBlock => break,
             else => return err,
         };
     }
-    try std.testing.expect(c.local_max_data > init_conn);
+    try std.testing.expect(c2.local_max_data > init_conn2);
+}
+
+test "receive-side flow control rejects data beyond the stream window (QC-01)" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    var A = gpa.allocator();
+    var c = makeConn(&A);
+    defer c.deinit();
+
+    // A single STREAM frame whose end offset exceeds the advertised per-stream
+    // window must be rejected with FlowControlError rather than buffered.
+    const window = c.local_max_stream_data;
+    const small = try A.alloc(u8, 16);
+    defer A.free(small);
+    @memset(small, 0x55);
+    const err = c.pushStreamFrame(0, window + 1, small, false) catch |e| e;
+    try std.testing.expect(err == error.FlowControlError);
+    // Nothing should have been buffered for the rejected frame.
+    if (c.streams_rx.getPtr(0)) |rx| {
+        try std.testing.expectEqual(@as(u64, 0), rx.buffered_bytes);
+    }
+}
+
+test "receive-side flow control bounds out-of-order buffering (QC-01)" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    var A = gpa.allocator();
+    var c = makeConn(&A);
+    defer c.deinit();
+
+    // Flooding gapped out-of-order segments must eventually be rejected once the
+    // buffered-byte cap (the receive window) is reached, instead of growing
+    // memory without bound. Use 1 MiB segments at increasing, non-contiguous
+    // offsets so recv_off never advances.
+    const seg = try A.alloc(u8, 1024 * 1024);
+    defer A.free(seg);
+    @memset(seg, 0x33);
+    var off: u64 = 1; // start past recv_off (0) so nothing drains
+    var rejected = false;
+    var i: usize = 0;
+    while (i < 64) : (i += 1) {
+        c.pushStreamFrame(0, off, seg, false) catch |e| {
+            try std.testing.expect(e == error.FlowControlError);
+            rejected = true;
+            break;
+        };
+        off += 2 * 1024 * 1024; // leave a 1 MiB hole between segments
+    }
+    try std.testing.expect(rejected);
+    // Buffered bytes must stay within the stream window, never unbounded.
+    if (c.streams_rx.getPtr(0)) |rx| {
+        try std.testing.expect(rx.buffered_bytes <= c.local_max_stream_data);
+    }
 }
 
 test "reset_stream rx trims buffered beyond final_size and finishes" {

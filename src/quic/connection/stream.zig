@@ -70,6 +70,14 @@ pub const StreamRx = struct {
     bytes_consumed_total: u64 = 0, // Total bytes consumed by application via readStream()
     // Flow-control bookkeeping: stream needs MAX_STREAM_DATA emission.
     fc_dirty: bool = false,
+    // RFC 9000 §4: receive-side flow control accounting (QC-01).
+    // `buffered_bytes` is the number of bytes currently held in `bufs` (i.e.
+    // received out-of-order and not yet drained into `inbox`), used to bound
+    // out-of-order buffering. `highest_off` is the highest absolute byte offset
+    // ever received on this stream (max of offset+len seen), used to compute the
+    // per-stream contribution to connection-level flow control.
+    buffered_bytes: u64 = 0,
+    highest_off: u64 = 0,
 
     pub fn init() StreamRx {
         return .{
@@ -85,6 +93,8 @@ pub const StreamRx = struct {
             .initial_window_size = 0,
             .bytes_consumed_total = 0,
             .fc_dirty = false,
+            .buffered_bytes = 0,
+            .highest_off = 0,
         };
     }
 
@@ -159,6 +169,7 @@ pub const StreamRx = struct {
             alloc.free(owned);
             return;
         };
+        self.buffered_bytes += data.len;
     }
 
     /// Try to drain contiguous segments into the inbox.
@@ -170,6 +181,7 @@ pub const StreamRx = struct {
         var write_i: usize = 0;
         for (self.bufs.items) |seg| {
             if (seg.off < self.recv_off) {
+                self.buffered_bytes -|= seg.data.len;
                 alloc.free(seg.data);
             } else if (seg.off == self.recv_off) {
                 self.inbox.appendSlice(alloc.*, seg.data) catch |err| {
@@ -179,6 +191,7 @@ pub const StreamRx = struct {
                     continue;
                 };
                 self.recv_off +%= seg.data.len;
+                self.buffered_bytes -|= seg.data.len;
                 alloc.free(seg.data);
             } else {
                 self.bufs.items[write_i] = seg;

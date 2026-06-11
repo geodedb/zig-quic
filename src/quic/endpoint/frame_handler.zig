@@ -118,6 +118,18 @@ pub fn handleStream(
     logger.debugPrint("Calling conn.pushStreamFrame()...\n", .{});
     ctx.conn.pushStreamFrame(s.stream_id, off, s.data, s.fin) catch |err| {
         logger.debugPrint("ERROR: pushStreamFrame failed: {}\n", .{err});
+        // RFC 9000 §4.1-§4.2: a receive-side flow-control violation is a
+        // connection error of type FLOW_CONTROL_ERROR (0x03). Emit the
+        // CONNECTION_CLOSE here (pushStreamFrame has released conn.mu by now,
+        // and sendConnectionClose does not take it) and report the close so the
+        // receive path stops processing this connection.
+        if (err == error.FlowControlError) {
+            ctx.conn.sendConnectionClose(0x03, "FLOW_CONTROL_ERROR") catch |close_err| {
+                logger.debugPrint("Failed to send CONNECTION_CLOSE for flow-control error: {}\n", .{close_err});
+                ctx.conn.markClosed();
+            };
+            return .{ .saw_close = true };
+        }
         return err;
     };
     logger.debugPrint("pushStreamFrame returned successfully\n", .{});

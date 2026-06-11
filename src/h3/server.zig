@@ -53,8 +53,11 @@ pub const H3Server = struct {
         api.flush(ep, 5);
         // Event loop: serve each bidi request once
         var tmp: [4096]u8 = undefined;
-        var served: [64]u64 = .{0} ** 64;
-        var served_len: usize = 0;
+        // Set of already-served client-initiated bidi stream ids. A growable map
+        // (not a fixed [64]u64) so a peer opening >64 streams cannot drive an
+        // out-of-bounds write, and membership is O(1) instead of O(N) per event.
+        var served = std.AutoHashMap(u64, void).init(self.allocator);
+        defer served.deinit();
         var request_buffers = std.AutoHashMap(u64, std.ArrayList(u8)).init(self.allocator);
         defer {
             var it = request_buffers.iterator();
@@ -89,15 +92,7 @@ pub const H3Server = struct {
                 const is_client_initiated = (pair.id & 0x1) == 0;
                 if (!is_bidi or !is_client_initiated) continue;
 
-                var already: bool = false;
-                var j: usize = 0;
-                while (j < served_len) : (j += 1) {
-                    if (served[j] == pair.id) {
-                        already = true;
-                        break;
-                    }
-                }
-                if (already) continue;
+                if (served.contains(pair.id)) continue;
 
                 const gop = try request_buffers.getOrPut(pair.id);
                 if (!gop.found_existing) gop.value_ptr.* = .empty;
@@ -122,8 +117,7 @@ pub const H3Server = struct {
                 if (parseReqFromHeadersFrame(gop.value_ptr.items, path_buf[0..], &rs)) |parsed_path| {
                     const path = if (parsed_path.len > 0 and parsed_path[0] == '/') parsed_path else "/5000";
                     std.debug.print("[h3] request stream={} path={s}\n", .{ pair.id, path });
-                    served[served_len] = pair.id;
-                    served_len += 1;
+                    try served.put(pair.id, {});
                     try respondFile(ep, conn, pair.id, path);
                     std.debug.print("[h3] response stream={} sent\n", .{pair.id});
                     if (request_buffers.fetchRemove(pair.id)) |entry| {
@@ -141,8 +135,7 @@ pub const H3Server = struct {
                 if (gop.value_ptr.items.len >= 64 or stream_finished) {
                     const fallback_path = "/index.html";
                     std.debug.print("[h3] request stream={} unparsed; fallback path={s}\n", .{ pair.id, fallback_path });
-                    served[served_len] = pair.id;
-                    served_len += 1;
+                    try served.put(pair.id, {});
                     try respondFile(ep, conn, pair.id, fallback_path);
                     std.debug.print("[h3] response stream={} sent (fallback)\n", .{pair.id});
                     if (request_buffers.fetchRemove(pair.id)) |entry| {
@@ -163,8 +156,14 @@ pub const H3Server = struct {
         n += encodeVarint(qpack_len, head[n..]);
         try writeAll(ep, conn, stream_id, head[0..n]);
         try writeAll(ep, conn, stream_id, hdr[0..qpack_len]);
-        var file_bytes: []u8 = &[_]u8{};
-        defer if (file_bytes.len > 0) std.heap.page_allocator.free(file_bytes);
+        // `owned` always references the full allocation so the defer frees the
+        // exact slice we allocated; `file_bytes` is a (possibly shorter) view of
+        // the bytes actually read. Reslicing `file_bytes` must never be what the
+        // allocator sees on free — a 0-byte read previously leaked the whole
+        // allocation, and a short read would unmap fewer pages than were mapped.
+        var owned: []u8 = &[_]u8{};
+        defer if (owned.len > 0) std.heap.page_allocator.free(owned);
+        var file_bytes: []const u8 = &[_]u8{};
         var full_path_buf: [512]u8 = undefined;
         var path_s = path;
         if (path_s.len == 0 or path_s[0] != '/') path_s = "/index.html";
@@ -175,9 +174,9 @@ pub const H3Server = struct {
             const file_stat = f.stat(h3_io) catch null;
             const sz: u64 = if (file_stat) |s| s.size else 0;
             if (sz > 0 and sz <= 4 * 1024 * 1024) {
-                file_bytes = try std.heap.page_allocator.alloc(u8, @intCast(sz));
-                const r = f.readPositionalAll(h3_io, file_bytes, 0) catch 0;
-                file_bytes = file_bytes[0..r];
+                owned = try std.heap.page_allocator.alloc(u8, @intCast(sz));
+                const r = f.readPositionalAll(h3_io, owned, 0) catch 0;
+                file_bytes = owned[0..r];
             }
         } else |_| {}
         var data_head: [24]u8 = undefined;

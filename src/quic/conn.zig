@@ -894,6 +894,10 @@ pub const Connection = struct {
     opened_uni: u64 = 0,
     conn_send_off: u64 = 0,
     conn_recv_total: u64 = 0,
+    // RFC 9000 §4.1 connection-level receive flow control (QC-01): running sum
+    // of the highest received offset across all streams. Enforced against
+    // local_max_data so a peer cannot pin unbounded buffered data connection-wide.
+    conn_recv_highest_total: u64 = 0,
     // Address validation / anti-amplification
     address_validated: bool = false,
     bytes_rx_unvalidated: u64 = 0,
@@ -1415,6 +1419,7 @@ pub const Connection = struct {
         self.opened_uni = 0;
         self.conn_send_off = 0;
         self.conn_recv_total = 0;
+        self.conn_recv_highest_total = 0;
         self.address_validated = (role == .Client); // Clients don't need address validation
         self.bytes_rx_unvalidated = 0;
         self.bytes_tx_unvalidated = 0;

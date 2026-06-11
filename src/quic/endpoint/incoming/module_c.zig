@@ -197,8 +197,11 @@ pub fn processShortHeaderResolved(
     // Process ECN bits if provided (RFC 3168)
     if (ecn_bits) |e| conn.onEcnMark(.Application, e);
 
-    // Track bytes received from unvalidated address for anti-amplification (RFC 9000 §8.1)
-    conn.addRxUnvalidated(bytes.len);
+    // Anti-amplification RX crediting is deferred until AFTER the packet's AEAD
+    // tag is verified (RFC 9000 §8.1: only bytes in successfully processed
+    // packets count toward the unvalidated-address budget). Crediting here,
+    // before decryption, would let an off-path spoofer inflate the 3x send
+    // allowance with unauthenticated datagrams. See the post-decrypt site below.
 
     // Test-only debug: log short-header match and ECN bits/keys state
     if (ctx.test_capture_enabled) {
@@ -298,6 +301,11 @@ pub fn processShortHeaderResolved(
     if (ctx.short_header_timing) |timing| {
         timing.decrypt_ns += elapsedTimingNsSince(decrypt_start_ns);
     }
+
+    // Anti-amplification: the packet authenticated above, so credit its bytes
+    // to the unvalidated-address RX budget now (RFC 9000 §8.1). This mirrors the
+    // Initial-packet path, which also credits only after a successful decrypt.
+    conn.addRxUnvalidated(bytes.len);
 
     const dec_res = decrypt_result.decoded;
     const used_next = decrypt_result.used_next;
