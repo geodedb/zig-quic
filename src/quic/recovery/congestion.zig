@@ -7,6 +7,17 @@
 
 const std = @import("std");
 
+/// Convert a CUBIC window value (f64) to bytes, clamping instead of panicking.
+/// `@intFromFloat` traps on NaN/Inf or out-of-range values in safe builds; on a
+/// long-lived CUBIC epoch the cubic curve can overflow usize, so clamp to
+/// [0, maxInt(usize)] and map NaN to 0 (QUAL-06).
+fn cubicFloatToBytes(x: f64) usize {
+    if (std.math.isNan(x) or x <= 0.0) return 0;
+    const max_f: f64 = @floatFromInt(std.math.maxInt(usize));
+    if (x >= max_f) return std.math.maxInt(usize);
+    return @intFromFloat(x);
+}
+
 /// NewReno congestion controller (bytes-based) implementing slow start and congestion avoidance per RFC 9002.
 /// RFC 9002 §7.3: NewReno and Appendix B.1
 pub const NewReno = struct {
@@ -119,8 +130,7 @@ pub const Cubic = struct {
         const diff = t_sec - k_sec_val;
         const w_cubic_mss = C * diff * diff * diff + w_max_mss;
         const w_bytes = w_cubic_mss * mds_f;
-        if (w_bytes < 0.0) return 0;
-        return @intFromFloat(@max(w_bytes, 0.0));
+        return cubicFloatToBytes(w_bytes);
     }
 
     /// Compute W_est (TCP-friendliness estimate) in bytes.
@@ -139,8 +149,7 @@ pub const Cubic = struct {
         const rtt_count = t_sec / rtt_sec;
         const growth = (3.0 * (1.0 - BETA) / (1.0 + BETA)) * rtt_count * mds_f;
         const result = base + growth;
-        if (result < 0.0) return 0;
-        return @intFromFloat(@max(result, 0.0));
+        return cubicFloatToBytes(result);
     }
 
     /// Increase cwnd on ACK using CUBIC congestion avoidance or slow start.

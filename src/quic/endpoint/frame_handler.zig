@@ -26,6 +26,45 @@ const cfg = @import("config");
 // PacketNumberSpace is defined in conn.zig via re-export from connection/types.zig
 const PacketNumberSpace = enum { Initial, Handshake, Application };
 
+/// RFC 9000 §4.6: a stream count may not exceed 2^60. A larger MAX_STREAMS /
+/// STREAMS_BLOCKED value is a FRAME_ENCODING_ERROR.
+const max_streams_limit: u64 = 1 << 60;
+
+/// Close the connection with FRAME_ENCODING_ERROR (0x07) and report the close.
+/// Used for malformed frame-level violations (e.g. MAX_STREAMS > 2^60).
+fn closeFrameEncodingError(ctx: *FrameContext) FrameResult {
+    ctx.conn.sendConnectionClose(0x07, "FRAME_ENCODING_ERROR") catch |err| {
+        logger.debugPrint("Failed to send CONNECTION_CLOSE (FRAME_ENCODING_ERROR): {}\n", .{err});
+        ctx.conn.markClosed();
+    };
+    return .{ .saw_close = true };
+}
+
+/// Close the connection with STREAM_STATE_ERROR (0x05) and report the close.
+fn closeStreamStateError(ctx: *FrameContext) FrameResult {
+    ctx.conn.sendConnectionClose(0x05, "STREAM_STATE_ERROR") catch |err| {
+        logger.debugPrint("Failed to send CONNECTION_CLOSE (STREAM_STATE_ERROR): {}\n", .{err});
+        ctx.conn.markClosed();
+    };
+    return .{ .saw_close = true };
+}
+
+/// True if `sid` is a unidirectional stream initiated by the peer — i.e. a
+/// stream on which we are the receiver and never the sender. MAX_STREAM_DATA for
+/// such a stream is a STREAM_STATE_ERROR (RFC 9000 §19.10).
+fn isPeerInitiatedUniStream(conn: *const conn_mod.Connection, sid: u64) bool {
+    const is_uni = (sid & 0x2) != 0;
+    if (!is_uni) return false;
+    const initiated_by_client = (sid & 0x1) == 0;
+    const peer_is_client = (conn.role == .Server);
+    return initiated_by_client == peer_is_client;
+}
+
+/// Upper bound on pre-created (not-yet-locally-opened) stream_txs entries, to
+/// bound memory against a peer flooding MAX_STREAM_DATA for stream IDs we will
+/// never open (QC-05). Comfortably exceeds realistic concurrent stream counts.
+const max_pre_created_stream_tx: usize = 16384;
+
 /// Context for frame processing.
 /// Focused context pattern - only includes what's needed for frame handling.
 pub const FrameContext = struct {
@@ -312,6 +351,18 @@ pub fn handleMaxStreamData(
             logger.debugPrint("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) ignored (current={})\n", .{ m.stream_id, m.max, tx.peer_max_stream_data });
         }
     } else {
+        // RFC 9000 §19.10 (QC-05): MAX_STREAM_DATA only applies to streams we can
+        // send on. A frame for a peer-initiated unidirectional stream (which is
+        // receive-only for us) is a STREAM_STATE_ERROR.
+        if (isPeerInitiatedUniStream(ctx.conn, m.stream_id)) {
+            return closeStreamStateError(ctx);
+        }
+        // QC-05: bound pre-created TX state so a peer cannot grow stream_txs
+        // without limit by advertising windows for streams we will never open.
+        if (ctx.conn.stream_txs.count() >= max_pre_created_stream_tx) {
+            logger.debugPrint("[FC-TX] stream_txs at cap ({}); ignoring MAX_STREAM_DATA for stream {}\n", .{ max_pre_created_stream_tx, m.stream_id });
+            return .{ .saw_ack_eliciting = true };
+        }
         // Stream not yet created on our side - store for when it is created
         // Create TX state entry with the advertised limit
         logger.debugPrint("[FC-TX] Received MAX_STREAM_DATA(stream={}, max={}) creating TX state\n", .{ m.stream_id, m.max });
@@ -351,7 +402,12 @@ pub fn handleMaxStreamsBidi(
     ctx: *FrameContext,
     msb: frame.MaxStreamsBidi,
 ) FrameResult {
-    ctx.conn.peer_max_streams_bidi = msb.max;
+    // RFC 9000 §4.6/§19.11 (QC-08): a MAX_STREAMS value greater than 2^60 is a
+    // FRAME_ENCODING_ERROR. Updates are also monotonic — ignore decreases.
+    if (msb.max > max_streams_limit) {
+        return closeFrameEncodingError(ctx);
+    }
+    if (msb.max > ctx.conn.peer_max_streams_bidi) ctx.conn.peer_max_streams_bidi = msb.max;
     return .{ .saw_ack_eliciting = true };
 }
 
@@ -364,7 +420,12 @@ pub fn handleMaxStreamsUni(
     ctx: *FrameContext,
     msu: frame.MaxStreamsUni,
 ) FrameResult {
-    ctx.conn.peer_max_streams_uni = msu.max;
+    // RFC 9000 §4.6/§19.11 (QC-08): values above 2^60 are a FRAME_ENCODING_ERROR;
+    // updates are monotonic.
+    if (msu.max > max_streams_limit) {
+        return closeFrameEncodingError(ctx);
+    }
+    if (msu.max > ctx.conn.peer_max_streams_uni) ctx.conn.peer_max_streams_uni = msu.max;
     return .{ .saw_ack_eliciting = true };
 }
 

@@ -352,6 +352,20 @@ test "RFC 8312 - wCubicBytes returns 0 for mds=0" {
     try testing.expectEqual(@as(usize, 0), w);
 }
 
+test "QUAL-06 - wCubicBytes clamps instead of panicking on window overflow" {
+    // A long-lived CUBIC epoch drives the cubic curve (C*(t-K)^3) far beyond
+    // usize. @intFromFloat would trap in safe builds; the result must clamp to
+    // maxInt(usize) rather than panic.
+    const huge_t: f64 = 1.0e6; // 1,000,000 seconds of congestion avoidance
+    const w = Cubic.wCubicBytes(huge_t, 0.5, 120000, 1200);
+    try testing.expectEqual(@as(usize, std.math.maxInt(usize)), w);
+
+    // Symmetric guard for computeWEst: an extreme elapsed time with a tiny RTT
+    // drives the linear growth term past usize, which must clamp, not trap.
+    const w_est = Cubic.computeWEst(1.0e30, 0.0001, 120000, 1200);
+    try testing.expectEqual(@as(usize, std.math.maxInt(usize)), w_est);
+}
+
 test "RFC 8312 - computeWEst provides TCP-friendly estimate" {
     const w_max: usize = 120000;
     const mds: usize = 1200;

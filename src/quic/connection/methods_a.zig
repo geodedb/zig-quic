@@ -19,6 +19,11 @@ pub fn bind(comptime Connection: type) type {
         // of tiny gapped segments.
         const max_ooo_segments: usize = 16384;
 
+        // Maximum number of received DATAGRAM frames buffered for the application
+        // before the oldest is dropped (RFC 9221 datagrams are not flow-controlled,
+        // QC-07).
+        const max_datagram_inbox: usize = 1024;
+
         fn openAppendFd(path_str: []const u8) !linux.fd_t {
             // Path must be null-terminated for the syscall; copy to a stack buffer.
             var path_buf: [4096]u8 = undefined;
@@ -943,9 +948,19 @@ pub fn bind(comptime Connection: type) type {
 
         /// Ingest a DATAGRAM frame payload (owned copy).
         /// Append an incoming DATAGRAM frame payload (owned copy) to inbox.
+        ///
+        /// RFC 9221 datagrams are not flow-controlled, so the receiver must bound
+        /// its own queue (QC-07). When the inbox is full we drop the oldest
+        /// payload (unreliable delivery permits loss) rather than grow without
+        /// bound, which a peer could otherwise exploit to exhaust memory.
         pub fn pushDatagram(self: *Connection, data: []const u8) !void {
             const owned = try self.allocator.alloc(u8, data.len);
+            errdefer self.allocator.free(owned);
             @memcpy(owned, data);
+            if (self.dgram_inbox.items.len >= max_datagram_inbox) {
+                const evicted = self.dgram_inbox.orderedRemove(0);
+                self.allocator.free(evicted);
+            }
             try self.dgram_inbox.append(self.allocator.*, owned);
         }
 

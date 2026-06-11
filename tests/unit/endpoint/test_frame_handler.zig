@@ -76,6 +76,11 @@ fn createTestConnection() !*conn_mod.Connection {
     conn.pto_dirty_notify_fn = null;
     conn.rx_ready_notify_ctx = null;
     conn.rx_ready_notify_fn = null;
+    // markClosed -> notifyClosed reads these; a frame handler that closes the
+    // connection (e.g. FRAME_ENCODING_ERROR / STREAM_STATE_ERROR) would call a
+    // garbage function pointer otherwise.
+    conn.close_notify_fn = null;
+    conn.close_notify_ctx = null;
     conn.endpoint_rx_serial_mu = std.Io.Mutex.init;
     return conn;
 }
@@ -416,6 +421,44 @@ test "RFC 9000 §19.11 - MAX_STREAMS (uni) updates limit" {
 
     try testing.expectEqual(@as(u64, 50), conn.peer_max_streams_uni);
     try testing.expect(result.saw_ack_eliciting);
+}
+
+test "QC-08 - MAX_STREAMS above 2^60 is a FRAME_ENCODING_ERROR" {
+    const conn = try createTestConnection();
+    defer destroyTestConnection(conn);
+    var ctx = createTestContext(conn);
+
+    const before = conn.peer_max_streams_bidi;
+    const msb = frame.MaxStreamsBidi{ .max = (@as(u64, 1) << 60) + 1 };
+    const result = frame_handler.handleMaxStreamsBidi(&ctx, msb);
+    try testing.expect(result.saw_close);
+    // The out-of-range value must not have been applied.
+    try testing.expectEqual(before, conn.peer_max_streams_bidi);
+}
+
+test "QC-08 - MAX_STREAMS updates are monotonic (decreases ignored)" {
+    const conn = try createTestConnection();
+    defer destroyTestConnection(conn);
+    var ctx = createTestContext(conn);
+
+    _ = frame_handler.handleMaxStreamsUni(&ctx, .{ .max = 100 });
+    try testing.expectEqual(@as(u64, 100), conn.peer_max_streams_uni);
+    // A subsequent smaller value must be ignored.
+    _ = frame_handler.handleMaxStreamsUni(&ctx, .{ .max = 10 });
+    try testing.expectEqual(@as(u64, 100), conn.peer_max_streams_uni);
+}
+
+test "QC-05 - MAX_STREAM_DATA for a peer-initiated uni stream is STREAM_STATE_ERROR" {
+    const conn = try createTestConnection();
+    defer destroyTestConnection(conn);
+    var ctx = createTestContext(conn);
+
+    // conn.role is Client, so the peer is the server. Stream 3 is a
+    // server-initiated unidirectional stream (receive-only for us); a
+    // MAX_STREAM_DATA for it is invalid.
+    const m = frame.MaxStreamData{ .stream_id = 3, .max = 1000 };
+    const result = frame_handler.handleMaxStreamData(&ctx, m);
+    try testing.expect(result.saw_close);
 }
 
 // =============================================================================
