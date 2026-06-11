@@ -1719,7 +1719,12 @@ pub const Connection = struct {
             self.reset_tokens.append(self.allocator.*, .{
                 .sequence = sequence,
                 .token = stateless_reset_token,
-            }) catch {};
+            }) catch |err| {
+                // QUAL-11: losing this token means we can no longer recognize a
+                // stateless reset for the corresponding CID (RFC 9000 §10.3).
+                // Surface it rather than silently dropping the capability.
+                logger.warn("failed to record stateless-reset token for seq {d}: {s}", .{ sequence, @errorName(err) });
+            };
         }
 
         // Retire peer CIDs below retire_prior_to.

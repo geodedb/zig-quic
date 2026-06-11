@@ -150,28 +150,29 @@ EOF
 
   if [[ -s "${CERT_TMP}/server.crt" && -s "${CERT_TMP}/server.key" && -s "${CERT_TMP}/ca.pem" ]]; then
     install -m 0644 "${CERT_TMP}/server.crt" "${CERT_DIR}/cert.pem"
-    install -m 0644 "${CERT_TMP}/server.key" "${CERT_DIR}/key.pem"
-    install -m 0644 "${CERT_TMP}/server.key" "${CERT_DIR}/priv.key"
+    install -m 0600 "${CERT_TMP}/server.key" "${CERT_DIR}/key.pem"
+    install -m 0600 "${CERT_TMP}/server.key" "${CERT_DIR}/priv.key"
     install -m 0644 "${CERT_TMP}/ca.pem"     "${CERT_DIR}/ca.pem"
     echo "[bootstrap] interop certs installed at ${CERT_DIR}/{cert,key,priv,ca}.{pem,key}"
   else
     echo "[bootstrap] WARN: openssl cert generation failed; falling back to tests/certs/"
     install -m 0644 tests/certs/cert.pem "${CERT_DIR}/cert.pem"
     install -m 0644 tests/certs/cert.pem "${CERT_DIR}/ca.pem"
-    install -m 0644 tests/certs/key.pem  "${CERT_DIR}/key.pem"
-    install -m 0644 tests/certs/key.pem  "${CERT_DIR}/priv.key"
+    install -m 0600 tests/certs/key.pem  "${CERT_DIR}/key.pem"
+    install -m 0600 tests/certs/key.pem  "${CERT_DIR}/priv.key"
   fi
   rm -rf "${CERT_TMP}"
 else
   echo "[bootstrap] openssl not found; using static tests/certs/ fixtures"
   install -m 0644 tests/certs/cert.pem "${CERT_DIR}/cert.pem"
   install -m 0644 tests/certs/cert.pem "${CERT_DIR}/ca.pem"
-  install -m 0644 tests/certs/key.pem  "${CERT_DIR}/key.pem"
-  install -m 0644 tests/certs/key.pem  "${CERT_DIR}/priv.key"
+  install -m 0600 tests/certs/key.pem  "${CERT_DIR}/key.pem"
+  install -m 0600 tests/certs/key.pem  "${CERT_DIR}/priv.key"
 fi
 
 # World-readable so the container's `quic` user can read the cert/key files.
 chmod -R a+rX "${CERT_DIR}" 2>/dev/null || true
+find "${CERT_DIR}" -type f \( -name "*.key" -o -name "priv.key" -o -name "key.pem" \) -exec chmod 600 {} + 2>/dev/null || true
 
 echo "[bootstrap] done."
 echo

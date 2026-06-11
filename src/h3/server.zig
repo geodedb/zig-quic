@@ -691,7 +691,12 @@ pub const H3Server = struct {
                     const mask: u64 = (@as(u64, 1) << l6) - 1;
                     const top = (acc >> (@as(u6, @intCast(nbits)) - l6)) & mask;
                     if (top == huff_table[s].code) {
-                        if (s == 256) return null;
+                        // RFC 7541 §5.2 (QUAL-07): a decoded EOS symbol (the
+                        // 30-bit 0x3fffffff code) inside a string is a decoding
+                        // error. The previous `s == 256` guard was dead because
+                        // this table only has indices 0..255, so EOS (the last
+                        // entry) was wrongly emitted as a byte. Reject it.
+                        if (huff_table[s].nbits == 30 and huff_table[s].code == 0x3fffffff) return null;
                         if (out_len >= dst.len) return null;
                         dst[out_len] = @intCast(s);
                         out_len += 1;

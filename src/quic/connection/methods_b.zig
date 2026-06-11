@@ -39,9 +39,15 @@ pub fn bind(comptime Connection: type) type {
                 .data = owned,
                 .retransmit_count = @as(u16, 0),
             };
-            self.app_stream_retx.put(pn, entry) catch {
+            // QUAL-08: getOrPut so a packet-number collision (e.g. PTO/probe
+            // paths reusing retransmission tracking) frees the displaced entry's
+            // buffer instead of leaking it.
+            const gop = self.app_stream_retx.getOrPut(pn) catch {
                 self.allocator.free(owned);
+                return;
             };
+            if (gop.found_existing) self.allocator.free(gop.value_ptr.data);
+            gop.value_ptr.* = entry;
         }
 
         fn dropAckedStreamTracking(self: *Connection, acked: []const u64) void {

@@ -31,7 +31,10 @@ pub fn bind(comptime Connection: type) type {
             @memcpy(path_buf[0..path_str.len], path_str);
             path_buf[path_str.len] = 0;
             const path_z: [*:0]const u8 = @ptrCast(path_buf[0..path_str.len :0]);
-            const fd_rc = linux.open(path_z, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true }, 0o644);
+            // QC-14: 0o600 — this fd backs the TLS keylog, which contains traffic
+            // secrets. It must not be world-readable. (The keylog is already
+            // compiled out of release builds and opt-in via SSLKEYLOGFILE.)
+            const fd_rc = linux.open(path_z, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true }, 0o600);
             if (linux.errno(fd_rc) != .SUCCESS) return error.FileOpenFailed;
             return @intCast(fd_rc);
         }

@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# QC-15: restrict permissions on generated material. openssl writes private keys
+# with the process umask, so without this the *.key/*.pem keys would be created
+# world-readable. 0077 makes new files owner-only (0600) and new dirs 0700.
+umask 077
+
 # Create test certificate directories
 mkdir -p tests/certs
 mkdir -p tests/certs/valid

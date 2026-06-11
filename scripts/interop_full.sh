@@ -120,8 +120,8 @@ EOF
 
         if [[ -s "${cert_tmp}/server.crt" && -s "${cert_tmp}/server.key" && -s "${cert_tmp}/ca.pem" ]]; then
             install -m 0644 "${cert_tmp}/server.crt" "${cert_dir}/cert.pem"
-            install -m 0644 "${cert_tmp}/server.key" "${cert_dir}/key.pem"
-            install -m 0644 "${cert_tmp}/server.key" "${cert_dir}/priv.key"
+            install -m 0600 "${cert_tmp}/server.key" "${cert_dir}/key.pem"
+            install -m 0600 "${cert_tmp}/server.key" "${cert_dir}/priv.key"
             install -m 0644 "${cert_tmp}/ca.pem" "${cert_dir}/ca.pem"
         else
             install -m 0644 tests/certs/cert.pem "${cert_dir}/cert.pem"
@@ -130,8 +130,8 @@ EOF
             else
                 install -m 0644 tests/certs/cert.pem "${cert_dir}/ca.pem"
             fi
-            install -m 0644 tests/certs/key.pem "${cert_dir}/key.pem"
-            install -m 0644 tests/certs/key.pem "${cert_dir}/priv.key"
+            install -m 0600 tests/certs/key.pem "${cert_dir}/key.pem"
+            install -m 0600 tests/certs/key.pem "${cert_dir}/priv.key"
         fi
         if [[ -d "${cert_tmp}" ]]; then
             find "${cert_tmp}" -mindepth 1 -delete 2>/dev/null || true
@@ -144,8 +144,8 @@ EOF
         else
             install -m 0644 tests/certs/cert.pem "${cert_dir}/ca.pem"
         fi
-        install -m 0644 tests/certs/key.pem "${cert_dir}/key.pem"
-        install -m 0644 tests/certs/key.pem "${cert_dir}/priv.key"
+        install -m 0600 tests/certs/key.pem "${cert_dir}/key.pem"
+        install -m 0600 tests/certs/key.pem "${cert_dir}/priv.key"
     fi
 
     if [[ ! -s "${www_dir}/index.html" ]]; then
@@ -396,10 +396,10 @@ run_test() {
         SKIPPED=$((SKIPPED + 1))
         return
     fi
-    
+
     echo -e "\n${YELLOW}Testing: ${server} (server) <-> ${client} (client) - ${testcase}${NC}"
     export COMPOSE_PROJECT_NAME="interop_${server}_${client}_${testcase}_$$"
-    
+
     # Set up environment variables
     export SERVER=$server
     export CLIENT=$client
@@ -409,7 +409,7 @@ run_test() {
     local request_host
     request_host="$(default_request_host_for_client "$server" "$client" "$testcase")"
     export REQUESTS="${REQUESTS_OVERRIDE:-$(default_requests_for_testcase "$testcase" "$request_host")}"
-    
+
     # Determine which profiles to use
     local profiles=""
     if [[ "$server" == "zig" ]]; then
@@ -430,7 +430,7 @@ run_test() {
             profiles="$client"
         fi
     fi
-    
+
     # Special handling for nginx (server-only)
     if [[ "$server" == "nginx" && "$client" != "zig" ]]; then
         echo -e "${YELLOW}Skipping: nginx is server-only${NC}"
@@ -438,7 +438,7 @@ run_test() {
         SKIPPED=$((SKIPPED + 1))
         return
     fi
-    
+
     # Ensure clean slate for this project name
     docker compose -f examples/interop/docker-compose.full.yml --profile $profiles down -v >/dev/null 2>&1 || true
     docker network rm interop_leftnet interop_rightnet >/dev/null 2>&1 || true
@@ -485,7 +485,7 @@ run_test() {
         rc=$?
     fi
     record_result_from_log "$key" "$log_path" "$rc"
-    
+
     # Clean up containers and networks
     docker compose -f examples/interop/docker-compose.full.yml --profile $profiles down -v >/dev/null 2>&1 || true
     # Also try to remove networks if they still exist
@@ -508,14 +508,14 @@ run_generic_test() {
         SKIPPED=$((SKIPPED + 1))
         return
     fi
-    
+
     echo -e "\n${YELLOW}Testing: ${server_impl} (server) <-> ${client_impl} (client) - ${testcase}${NC}"
     export COMPOSE_PROJECT_NAME="interop_${server_impl}_${client_impl}_${testcase}_$$"
-    
+
     # Map implementation names to Docker images
     local server_image
     local client_image
-    
+
     case $server_impl in
         zig) server_image="zig-qns:local" ;;
         quic-go) server_image="martenseemann/quic-go-interop:latest" ;;
@@ -536,7 +536,7 @@ run_generic_test() {
         go-x-net) server_image="us-central1-docker.pkg.dev/golang-interop-testing/quic/go-x-net:latest" ;;
         *) echo "Unknown server implementation: $server_impl"; return 1 ;;
     esac
-    
+
     case $client_impl in
         zig) client_image="zig-qns:local" ;;
         quic-go) client_image="martenseemann/quic-go-interop:latest" ;;
@@ -556,7 +556,7 @@ run_generic_test() {
         go-x-net) client_image="us-central1-docker.pkg.dev/golang-interop-testing/quic/go-x-net:latest" ;;
         *) echo "Unknown client implementation: $client_impl"; return 1 ;;
     esac
-    
+
     # Set up environment variables
     export SERVER_IMAGE="$server_image"
     export CLIENT_IMAGE="$client_image"
@@ -570,7 +570,7 @@ run_generic_test() {
     if [[ "$testcase" == "http3" && "$client_impl" == "zig" && ( "$server_impl" == "kwik" || "$server_impl" == "quiche" || "$server_impl" == "mvfst" || "$server_impl" == "neqo" || "$server_impl" == "lsquic" ) ]]; then
         export QNS_H3_ALLOW_EMPTY=1
     fi
-    
+
     # Ensure clean slate for this project name
     docker compose -f examples/interop/docker-compose.full.yml --profile generic down -v >/dev/null 2>&1 || true
     docker network rm interop_leftnet interop_rightnet >/dev/null 2>&1 || true
@@ -617,7 +617,7 @@ run_generic_test() {
         rc=$?
     fi
     record_result_from_log "$key" "$log_path" "$rc"
-    
+
     # Clean up containers and networks
     docker compose -f examples/interop/docker-compose.full.yml --profile generic down -v >/dev/null 2>&1 || true
     # Also try to remove networks if they still exist
@@ -670,7 +670,7 @@ if [[ "$MODE" == "full" ]]; then
     if [[ -n "${INTEROP_IMPLS:-}" ]]; then
         IFS=',' read -r -a ALL_IMPLS <<<"${INTEROP_IMPLS}"
     fi
-    
+
     for impl in "${ALL_IMPLS[@]}"; do
         for testcase in "${TESTCASES[@]}"; do
             # Zig as server
@@ -679,7 +679,7 @@ if [[ "$MODE" == "full" ]]; then
             run_generic_test "$impl" "zig" "$testcase"
         done
     done
-    
+
     if [[ "${INTEROP_SKIP_EXTRAS:-0}" != "1" ]]; then
         # Test server-only implementations
         for testcase in "${TESTCASES[@]}"; do
@@ -692,19 +692,19 @@ if [[ "$MODE" == "full" ]]; then
             run_generic_test "zig" "chrome" "$testcase"
         done
     fi
-    
+
 elif [[ "$MODE" == "quick" ]]; then
     # Quick test: just handshake and transfer against major implementations
     QUICK_IMPLS=("quic-go" "ngtcp2" "quiche")
     QUICK_TESTS=("handshake" "transfer")
-    
+
     for impl in "${QUICK_IMPLS[@]}"; do
         for testcase in "${QUICK_TESTS[@]}"; do
             run_generic_test "zig" "$impl" "$testcase"
             run_generic_test "$impl" "zig" "$testcase"
         done
     done
-    
+
 else
     # Basic mode: test against quic-go only
     for testcase in "${TESTCASES[@]}"; do
