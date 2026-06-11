@@ -468,6 +468,11 @@ pub fn destroy(ep: *QuicEndpoint, conn: *Connection) void {
 ///
 /// RFC 9000 §9.1 describes path validation using socket tuples; this helper is
 /// used by tests/tools that need to assert listener bindings.
+///
+/// QUAL-10: returns `0` as an explicit sentinel when the local address cannot be
+/// queried or the family is unrecognized. Callers that must distinguish "not yet
+/// bound / query failed" from a real port should not rely on this test/tooling
+/// helper.
 pub fn getPort(ep: *QuicEndpoint) u16 {
     const addr = ep.transport.getLocalAddr() catch return 0;
     return switch (addr.storage.family) {

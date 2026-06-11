@@ -1147,17 +1147,20 @@ pub fn encode0RTTProtected(
     // Apply header protection
     // For long headers, use pn_offset + 4 as constant sample start (permits hp removal without knowing PN len yet)
     const sample_offset = pn_offset + 4;
-    if (sample_offset + 16 <= buf.items.len) {
-        // Build HP sample (16 bytes)
-        var sample16: [16]u8 = undefined;
-        @memcpy(&sample16, buf.items[sample_offset .. sample_offset + 16]);
-        // Apply header protection in place
-        const header_first_ptr = &buf.items[0];
-        const pn_slice = buf.items[pn_offset .. pn_offset + pn_len];
-        crypto.headerProtect(.aes_128_gcm, &keys.hp, &sample16, header_first_ptr, pn_slice) catch |err| {
-            logger.err("header protection failed: {s}", .{@errorName(err)});
-        };
+    // QC-09: fail closed. Previously, a ciphertext too short for a 16-byte HP
+    // sample, or a headerProtect error, left the packet with an UNPROTECTED
+    // header (leaking the true PN length/low bits and breaking the AEAD/HP
+    // coupling, RFC 9001 §5.4). Both cases must return an error instead.
+    if (sample_offset + 16 > buf.items.len) {
+        return error.PacketTooShortForHeaderProtection;
     }
+    // Build HP sample (16 bytes)
+    var sample16: [16]u8 = undefined;
+    @memcpy(&sample16, buf.items[sample_offset .. sample_offset + 16]);
+    // Apply header protection in place
+    const header_first_ptr = &buf.items[0];
+    const pn_slice = buf.items[pn_offset .. pn_offset + pn_len];
+    try crypto.headerProtect(.aes_128_gcm, &keys.hp, &sample16, header_first_ptr, pn_slice);
 
     return buf.toOwnedSlice(alloc);
 }

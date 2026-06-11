@@ -178,7 +178,7 @@ pub fn createClientConnection(
     // Initialize TLS Context for modular TLS 1.3 (Phase 21.2)
     // Client doesn't need certificates (server auth only)
     const tls13 = @import("quic_tls13");
-    const ctx_value: ?tls13.Context = handshake_integration.createTlsContext(
+    var ctx_value: ?tls13.Context = handshake_integration.createTlsContext(
         allocator.*,
         .Client,
         cfg.alpn,
@@ -195,9 +195,15 @@ pub fn createClientConnection(
         break :blk null;
     };
 
-    if (ctx_value) |ctx_val| {
-        const tls_ctx = allocator.create(@TypeOf(ctx_val)) catch return c;
-        tls_ctx.* = ctx_val;
+    if (ctx_value) |*ctx_val| {
+        const tls_ctx = allocator.create(@TypeOf(ctx_val.*)) catch {
+            // QUAL-04: don't drop ctx_val on OOM — deinit it so its cert/ALPN/
+            // transport-param buffers aren't leaked. The connection proceeds
+            // without a TLS context and fails cleanly later with NoTlsContext.
+            ctx_val.deinit();
+            return c;
+        };
+        tls_ctx.* = ctx_val.*;
         c.tls_context = tls_ctx;
     }
 

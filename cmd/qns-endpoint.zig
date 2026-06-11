@@ -933,6 +933,17 @@ pub fn main(init: std.process.Init) !void {
                     if (std.mem.startsWith(u8, line, "GET ")) {
                         var path = line[4..];
                         if (std.mem.indexOfScalar(u8, path, ' ')) |sp| path = path[0..sp];
+                        // QC-12: contain the served path under /www. Reject any
+                        // request containing ".." or a NUL or not starting with
+                        // "/" so a peer cannot escape the document root
+                        // (GET /../../etc/passwd -> /www/../../etc/passwd).
+                        if (!std.mem.startsWith(u8, path, "/") or
+                            std.mem.indexOf(u8, path, "..") != null or
+                            std.mem.indexOfScalar(u8, path, 0) != null)
+                        {
+                            _ = active_streams.swapRemove(idx);
+                            continue;
+                        }
                         var recv_msg_buf: [220]u8 = undefined;
                         const recv_msg = std.fmt.bufPrint(&recv_msg_buf, "server: GET request received stream={d} path={s}", .{ sid, path }) catch "server: GET request received";
                         log(recv_msg);
