@@ -15,19 +15,19 @@
     .dependencies = .{
         // TLS 1.3 implementation (used for QUIC-TLS integration)
         .tls = .{
-            .url = "git+https://gitlab.com/devnw/zig/tls.git?ref=v0.1.10#5b0ec1b6e75b27a31ab4e14ab9fe1d6aad4c0395",
-            .hash = "tls-0.1.10-mtEaLP-8FADN53ZWpEMzOr8ka7MBgyWTzgTq_rm3uFtS",
+            .url = "git+https://gitlab.com/devnw/zig/tls.git?ref=v0.1.15#8eda112f3edc47c09cfdb060fca9ee505e6469a8",
+            .hash = "tls-0.1.10-mtEaLAq9FADX71B063Zz_xsX_FQoPP8zlqmcu-LrC5Fu",
         },
         // Thread pool for parallel operations
         .thread_pool = .{
-            .url = "git+https://gitlab.com/devnw/zig/thread-pool.git#39528a3e92212efab8ed5840bc20e619a419c0f5",
-            .hash = "thread_pool-0.2.4-11B1BnyUdgCUNlqgBwHNvE4plLwP1s1MAyCjODPafrpo",
+            .url = "git+https://gitlab.com/devnw/zig/thread-pool.git?ref=v0.2.6#aa4493781d962f42ba1dd37261e0e107be5f6ffe",
+            .hash = "thread_pool-0.2.5-11B1BiNceQDdiX2mLCg-blCuvBT0ZHh0_A_gH9j7t2Gl",
         },
         // OpenTelemetry instrumentation (gated behind -Dwith_otel; lazy = true
         // so the dependency is never fetched when the flag is off).
         .otel = .{
-            .url = "git+https://gitlab.com/devnw/zig/otel.git?ref=v0.1.8#a43c52592c3c131019fed264da8d8c532c23a531",
-            .hash = "otel-0.1.7-B0v3lvwMNADEHMtQzsmbCvC6qxWxlBtVcpdTX-Wb5BnV",
+            .url = "git+https://gitlab.com/devnw/zig/otel.git?ref=v0.1.13#31e4104d698c52758507e444edb1d770151239d6",
+            .hash = "otel-0.1.9-B0v3ltPiNQD_qlCLj0oUor4puasXR8KWGfPpaE48icHy",
             .lazy = true,
         },
     },
