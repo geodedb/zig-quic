@@ -1326,6 +1326,106 @@ pub const Endpoint = struct {
         }
     }
 
+    // CANARY: REQ=REQ-QUIC-HC-099; FEATURE="QUIC High-Concurrency Requests"; ASPECT=BatchConnectionTeardown; STATUS=TESTED; TEST=tests/test_endpoint_pto_handshake_uaf_regression.zig; OWNER=transport; UPDATED=2026-06-14
+    /// Tear down a *batch* of connections in a SINGLE sweep of the connection
+    /// map, instead of one O(map) scan per connection (the per-conn `destroy`
+    /// path). This is the acceptor-wedge fix: under sustained connection churn a
+    /// server frees a backlog of connections while holding `mu`; with per-conn
+    /// destroy each free re-scanned the whole `conns` map, so draining a backlog
+    /// of B connections from a map of N entries cost O(B × N) under the lock,
+    /// starving the poll workers that drain the listener UDP socket → the
+    /// `:PORT` rx_queue backs up past the watchdog threshold → AppendEntries are
+    /// dropped and a cluster node strands. This collapses the map work to a
+    /// single O(N + keys) pass.
+    ///
+    /// Exhaustive-removal semantics are IDENTICAL to calling per-conn `destroy`
+    /// on each member: every connection-map / accepted / retired / timer entry
+    /// whose owner is a batch member is removed before that connection is freed,
+    /// so a partially-removed connection can never leave a dangling map pointer.
+    ///
+    /// The caller MUST hold `self.mu` — same contract as the per-conn destroy
+    /// path; `conns`/`accepted`/`retired` are not internally synchronized, and
+    /// the `endpoint_destroying` flag set below is the batch-membership marker
+    /// for the sweep, which is only valid while no concurrent destroy can run.
+    pub fn destroyConnections(self: *Endpoint, batch: []const *conn_mod.Connection) void {
+        if (batch.len == 0) return;
+
+        // Phase 1: mark every member `endpoint_destroying` (which also drains its
+        // in-flight endpoint RX refs so no poll worker is mid-processing it) and
+        // clear its short-header route-cache slots. The flag is set only here and
+        // only under `mu`, so it uniquely identifies THIS batch for the sweeps
+        // below.
+        for (batch) |conn| {
+            conn.beginEndpointDestroy();
+            self.clearShortHeaderRouteCacheForConnection(conn);
+        }
+
+        // Phase 2: sweep the connection map ONCE, removing every key whose owner
+        // is a batch member.
+        self.sweepDestroyingFromConnMap(batch);
+
+        // Phase 3: drop members from the accepted + retired lists (one pass each).
+        dropDestroyingFromConnList(&self.accepted);
+        dropDestroyingFromConnList(&self.retired);
+
+        // Phase 4: per-member finalize — timers, then free. Order preserved from
+        // the per-conn destroy tail: all map/list removal happens before any
+        // deinit, so no freed pointer is ever reachable from the endpoint.
+        for (batch) |conn| {
+            self.removeTimersForConnection(conn);
+            conn.deinit();
+            self.allocator.destroy(conn);
+        }
+    }
+
+    /// Remove every `conns` entry whose owner is currently `endpoint_destroying`
+    /// in a single O(N + keys) pass. Zig hash maps forbid remove-during-iterate,
+    /// so the doomed keys are collected first. On allocation failure it falls
+    /// back to the allocation-free per-conn exhaustive scan so a destroy can
+    /// never be skipped under memory pressure (correctness over speed).
+    fn sweepDestroyingFromConnMap(self: *Endpoint, batch: []const *conn_mod.Connection) void {
+        var doomed: std.ArrayList(Key) = .empty;
+        defer doomed.deinit(self.allocator);
+        if (doomed.ensureTotalCapacity(self.allocator, self.conns.count())) |_| {
+            var it = self.conns.iterator();
+            while (it.next()) |entry| {
+                if (entry.value_ptr.*.endpoint_destroying.load(.acquire)) {
+                    doomed.appendAssumeCapacity(entry.key_ptr.*);
+                }
+            }
+            for (doomed.items) |k| _ = self.conns.remove(k);
+        } else |_| {
+            for (batch) |conn| {
+                while (true) {
+                    var it = self.conns.iterator();
+                    var removed = false;
+                    while (it.next()) |entry| {
+                        if (entry.value_ptr.* == conn) {
+                            _ = self.conns.remove(entry.key_ptr.*);
+                            removed = true;
+                            break;
+                        }
+                    }
+                    if (!removed) break;
+                }
+            }
+        }
+    }
+
+    /// Drop every `endpoint_destroying` member from a connection list in one
+    /// pass. Order is not significant for `accepted`/`retired`, so `swapRemove`
+    /// keeps it O(list-len).
+    fn dropDestroyingFromConnList(list: *std.ArrayList(*conn_mod.Connection)) void {
+        var i: usize = 0;
+        while (i < list.items.len) {
+            if (list.items[i].endpoint_destroying.load(.acquire)) {
+                _ = list.swapRemove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
     // CANARY: REQ=REQ-QUIC-HC-052; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ShortHeaderRxLifetimeGuard; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
     // CANARY: REQ=REQ-QUIC-HC-054; FEATURE="QUIC High-Concurrency Requests"; ASPECT=EndpointShortHeaderLockSplit; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
     // CANARY: REQ=REQ-QUIC-HC-097; FEATURE="QUIC High-Concurrency Requests"; ASPECT=ShortHeaderPhaseTiming; STATUS=IMPL; TEST=test_quic_condition_timedwait_cadence; OWNER=transport; UPDATED=2026-05-27

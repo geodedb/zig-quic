@@ -125,6 +125,7 @@ pub const cancelTimer = api.cancelTimer;
 pub const isHandshakeConfirmed = api.isHandshakeConfirmed;
 pub const close = api.close;
 pub const destroy = api.destroy;
+pub const destroyBatch = api.destroyBatch;
 pub const handshakeDoneSeen = api.handshakeDoneSeen;
 pub const isDrained = api.isDrained;
 pub const flush = api.flush;

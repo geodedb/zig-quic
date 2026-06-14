@@ -427,41 +427,18 @@ pub fn resetStream(conn: *Connection, stream_id: QuicStreamId, app_error_code: u
 
 /// Remove a connection from all endpoint bookkeeping and free it.
 pub fn destroy(ep: *QuicEndpoint, conn: *Connection) void {
-    conn.beginEndpointDestroy();
-    ep.clearShortHeaderRouteCacheForConnection(conn);
+    // Single-element batch — identical teardown to the historical inline body
+    // (mark + route-cache clear → remove from accepted/retired/conns → timers →
+    // deinit/free), now sharing the one O(N + keys) sweep with `destroyBatch`.
+    ep.destroyConnections(&[_]*Connection{conn});
+}
 
-    var i: usize = 0;
-    while (i < ep.accepted.items.len) : (i += 1) {
-        if (ep.accepted.items[i] == conn) {
-            // PERF-P2b: O(1) removal — accepted list order is not significant.
-            _ = ep.accepted.swapRemove(i);
-            break;
-        }
-    }
-    i = 0;
-    while (i < ep.retired.items.len) {
-        if (ep.retired.items[i] == conn) {
-            _ = ep.retired.swapRemove(i);
-            continue;
-        }
-        i += 1;
-    }
-    while (true) {
-        var it = ep.conns.iterator();
-        var removed = false;
-        while (it.next()) |entry| {
-            if (entry.value_ptr.* == conn) {
-                const key = entry.key_ptr.*;
-                _ = ep.conns.remove(key);
-                removed = true;
-                break;
-            }
-        }
-        if (!removed) break;
-    }
-    ep.removeTimersForConnection(conn);
-    conn.deinit();
-    ep.allocator.destroy(conn);
+/// Tear down many connections in one sweep of the endpoint connection map
+/// instead of one O(map) scan per connection. The server drain loop uses this to
+/// bound the `mu` hold while freeing a connection-churn backlog (acceptor-wedge
+/// fix). Caller MUST hold the endpoint mutex, exactly as for `destroy`.
+pub fn destroyBatch(ep: *QuicEndpoint, conns: []const *Connection) void {
+    ep.destroyConnections(conns);
 }
 
 /// Inspect the bound UDP socket and return its port number in host byte order.

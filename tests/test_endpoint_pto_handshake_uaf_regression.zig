@@ -92,3 +92,55 @@ test "processExpiredTimers does not UAF when PtoInitial conn was freed" {
     ep.forceExpireAllTimers();
     try std.testing.expect(ep.timers.items.len == 0);
 }
+
+// REQ-QUIC-HC-099 BatchConnectionTeardown: `api.destroyBatch` must evict EVERY
+// connection-map key of EVERY batch member (a connection holds several CIDs ->
+// several keys) in a SINGLE sweep, drop them from accepted/retired, free them,
+// and leave a non-member fully intact. This is the acceptor-wedge fix: per-conn
+// `destroy` re-scanned the whole map for each freed connection (O(backlog × N)
+// under `mu`), starving the poll workers that drain the listener UDP socket.
+test "destroyBatch evicts every key of all batch members in one sweep; spares non-members" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    var gpa = std.heap.page_allocator;
+    const cfg = api.QuicConfig{ .alpn = &[_][]const u8{"h3"} };
+    const ep = try api.endpointInit(&gpa, "127.0.0.1:0", &cfg);
+    defer api.endpointDeinit(ep);
+
+    const a = try gpa.create(conn_mod.Connection);
+    a.init(&gpa, .Client, -1, conn_mod.SockAddr.ipv4(127, 0, 0, 1, 1));
+    const b = try gpa.create(conn_mod.Connection);
+    b.init(&gpa, .Client, -1, conn_mod.SockAddr.ipv4(127, 0, 0, 1, 2));
+    const c = try gpa.create(conn_mod.Connection);
+    c.init(&gpa, .Client, -1, conn_mod.SockAddr.ipv4(127, 0, 0, 1, 3));
+
+    // A under 3 keys, B (survivor) under 2, C under 2 — multi-CID registration.
+    try ep.conns.put(.{ .peer_hash = 1, .dcid_hash = 10 }, a);
+    try ep.conns.put(.{ .peer_hash = 1, .dcid_hash = 11 }, a);
+    try ep.conns.put(.{ .peer_hash = 1, .dcid_hash = 12 }, a);
+    try ep.conns.put(.{ .peer_hash = 2, .dcid_hash = 20 }, b);
+    try ep.conns.put(.{ .peer_hash = 2, .dcid_hash = 21 }, b);
+    try ep.conns.put(.{ .peer_hash = 3, .dcid_hash = 30 }, c);
+    try ep.conns.put(.{ .peer_hash = 3, .dcid_hash = 31 }, c);
+    try ep.accepted.append(gpa, a);
+    try ep.accepted.append(gpa, b);
+    try ep.retired.append(gpa, c);
+    try std.testing.expectEqual(@as(usize, 7), ep.conns.count());
+
+    // Free A and C in ONE sweep; B must remain fully intact.
+    api.destroyBatch(ep, &[_]*conn_mod.Connection{ a, c });
+
+    try std.testing.expectEqual(@as(usize, 2), ep.conns.count());
+    try std.testing.expect(ep.conns.get(.{ .peer_hash = 2, .dcid_hash = 20 }).? == b);
+    try std.testing.expect(ep.conns.get(.{ .peer_hash = 2, .dcid_hash = 21 }).? == b);
+    try std.testing.expect(ep.conns.get(.{ .peer_hash = 1, .dcid_hash = 10 }) == null);
+    try std.testing.expect(ep.conns.get(.{ .peer_hash = 1, .dcid_hash = 12 }) == null);
+    try std.testing.expect(ep.conns.get(.{ .peer_hash = 3, .dcid_hash = 30 }) == null);
+    try std.testing.expect(ep.conns.get(.{ .peer_hash = 3, .dcid_hash = 31 }) == null);
+    // accepted: A dropped, B kept; retired: C dropped.
+    try std.testing.expectEqual(@as(usize, 1), ep.accepted.items.len);
+    try std.testing.expect(ep.accepted.items[0] == b);
+    try std.testing.expectEqual(@as(usize, 0), ep.retired.items.len);
+
+    // B is still owned by the conns map — endpointDeinit frees it.
+}
