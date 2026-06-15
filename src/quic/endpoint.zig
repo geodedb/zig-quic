@@ -105,13 +105,43 @@ const server_max_short_header_packets_per_poll_cycle: usize = udp_transport_mod.
 // can afford. Sized to drain a full 16 MiB SO_RCVBUF of ~1.4 KB datagrams in a
 // couple of cycles; runtime-tunable for k8s churn validation without a rebuild
 // (see setServerSocketDrainPackets / geode GEODE_QUIC_DRAIN_PACKETS).
-const server_socket_drain_batches: usize = 64;
+// Sized to drain a full 16 MiB SO_RCVBUF of ~1.4 KB datagrams in ONE cycle
+// (≈11.7k packets) so a single poll cycle empties the kernel buffer rather than
+// leaving a tail that the next storm-burst tops back up (acceptor-wedge RC-A
+// iteration 2, 2026-06-15: v0.1.28's 4-batch drain cap cut wedge frequency but
+// did NOT keep the kernel rx_queue under the 8 MiB watchdog threshold at k8s
+// scale — same ~11.4 MB magnitude — because draining was still gated behind the
+// 256-Initial ep.mu-serialized processing budget below).
+const server_socket_drain_batches: usize = 256;
 const server_max_socket_drain_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap * server_socket_drain_batches;
+
+// CANARY: REQ=REQ-QUIC-HC-151; FEATURE="QUIC High-Concurrency Requests"; ASPECT=InitialProcessingBudgetBackpressure; STATUS=TESTED; TEST=acceptor_drain_budget; OWNER=transport; UPDATED=2026-06-15
+// Per-poll-cycle server NEW-CONNECTION (Initial) PROCESSING budget — DECOUPLED
+// from server_max_packets_per_poll_cycle (acceptor-wedge RC-A iteration 2).
+// Processing an Initial creates TLS+connection state under the global endpoint
+// mutex; with 16 poll workers the per-cycle Initial budget is the dominant ep.mu
+// contention source. v0.1.28 left this at 256 (== the old master cap), so each
+// worker ground through 256 ep.mu-serialized Initial processings BEFORE it
+// reached the cheap lock-free shed phase — 16 workers all blocked on ep.mu meant
+// almost none were draining the socket, and the kernel rx_queue still wedged.
+// Drop it to ONE UDP batch: a worker processes ≤64 new Initials then SHEDS the
+// rest (read-and-discard, lock-free; client PTO retransmits) for the remainder
+// of the socket-drain cap. This is load-shedding backpressure under a reconnect
+// storm: the server accepts new connections at a steady bounded rate while the
+// lock-free shed keeps the kernel buffer drained. Normal load is unaffected (the
+// budget is only hit when Initials exceed one batch/cycle). Runtime-tunable for
+// k8s churn validation without a rebuild (setServerInitialProcessingBudget /
+// geode GEODE_QUIC_INITIAL_BUDGET).
+const server_initial_processing_budget_default: usize = udp_transport_mod.UdpBatchCap;
 
 // Runtime override of the server socket-drain cap. Set once at startup
 // (single-threaded) before poll workers start; read on the poll hot path. 0
 // restores the compiled default. Mirrors geode's GEODE_QUIC_DESTROY_BATCH knob.
 var server_socket_drain_packets_runtime: usize = server_max_socket_drain_packets_per_poll_cycle;
+
+// Runtime override of the server Initial-processing budget (see above). 0
+// restores the compiled default. Startup write; poll-hot-path read.
+var server_initial_processing_runtime: usize = server_initial_processing_budget_default;
 
 /// Override the per-cycle server socket-drain cap (0 = compiled default). Must
 /// stay strictly above the Initial/short-header processing budgets, or the
@@ -124,6 +154,14 @@ pub fn setServerSocketDrainPackets(n: usize) void {
 /// For observability / tests.
 pub fn serverSocketDrainPackets() usize {
     return server_socket_drain_packets_runtime;
+}
+
+/// Override the per-cycle server Initial (new-connection) PROCESSING budget
+/// (0 = compiled default = one UDP batch). Surplus Initials beyond it are shed
+/// (lock-free; client PTO retransmits) so the socket-drain stays cheap under a
+/// reconnect storm. Must stay BELOW the socket-drain cap or the shed never runs.
+pub fn setServerInitialProcessingBudget(n: usize) void {
+    server_initial_processing_runtime = if (n == 0) server_initial_processing_budget_default else n;
 }
 
 /// Per-poll-cycle server Initial PROCESSING budget (expensive new-connection
@@ -181,7 +219,14 @@ fn maxShortHeaderPacketsPerPollCycleForRole(role: EndpointRole) usize {
 // so keeping the full cycle avoids forcing the connection-tail into PTO backoff
 // while still returning to the embedding poll wrapper at a predictable cadence.
 fn maxInitialPacketsPerPollCycleForRole(role: EndpointRole) usize {
-    return maxPacketsPerPollCycleForRole(role);
+    return switch (role) {
+        // Client keeps the one-batch fairness budget (unchanged).
+        .Client => client_max_packets_per_poll_cycle,
+        // Server: small, decoupled new-connection processing budget so the
+        // lock-free shed-drain engages almost immediately and keeps the kernel
+        // rx_queue bounded under a reconnect storm (acceptor-wedge RC-A it. 2).
+        .Server => server_initial_processing_runtime,
+    };
 }
 
 // CANARY: REQ=REQ-QUIC-HC-058; FEATURE="QUIC High-Concurrency Requests"; ASPECT=PendingHandshakeRetryBudget; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26

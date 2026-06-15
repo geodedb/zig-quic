@@ -98,6 +98,7 @@ pub const AcceptError = api.AcceptError;
 pub const setServerSocketDrainPackets = api.setServerSocketDrainPackets;
 pub const serverSocketDrainPackets = api.serverSocketDrainPackets;
 pub const serverInitialProcessingBudget = api.serverInitialProcessingBudget;
+pub const setServerInitialProcessingBudget = api.setServerInitialProcessingBudget;
 
 pub const deriveInitialSecretsForConfig = api.deriveInitialSecretsForConfig;
 pub const defaultLoopBackend = api.defaultLoopBackend;

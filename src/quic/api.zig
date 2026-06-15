@@ -181,6 +181,7 @@ pub fn pollStats(ep: *QuicEndpoint, timeout_ms: i32) !PollStats {
 pub const setServerSocketDrainPackets = endpoint.setServerSocketDrainPackets;
 pub const serverSocketDrainPackets = endpoint.serverSocketDrainPackets;
 pub const serverInitialProcessingBudget = endpoint.serverInitialProcessingBudget;
+pub const setServerInitialProcessingBudget = endpoint.setServerInitialProcessingBudget;
 
 /// Poll repeatedly with zero timeout to advance outstanding work.
 pub fn flush(ep: *QuicEndpoint, iterations: usize) void {

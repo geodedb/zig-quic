@@ -19,6 +19,28 @@ test "server socket-drain cap exceeds the Initial processing budget (shed path a
     try std.testing.expect(quic.serverSocketDrainPackets() > quic.serverInitialProcessingBudget());
 }
 
+test "server Initial processing budget is small so the shed-drain engages quickly (RC-A it.2)" {
+    // RC-A iteration 2: v0.1.28 left the Initial PROCESSING budget at 256
+    // (== old master cap), so each poll worker ground through 256
+    // ep.mu-serialized Initial processings before reaching the cheap lock-free
+    // shed phase — the kernel rx_queue still wedged at k8s scale. The budget
+    // must be ≤ one UDP batch (64) so shedding engages almost immediately and
+    // the socket actually drains.
+    try std.testing.expect(quic.serverInitialProcessingBudget() <= 64);
+    // And the drain cap must dwarf it (large headroom to empty the kernel buffer).
+    try std.testing.expect(quic.serverSocketDrainPackets() >= quic.serverInitialProcessingBudget() * 16);
+}
+
+test "setServerInitialProcessingBudget overrides the budget and 0 restores the default" {
+    const default_budget = quic.serverInitialProcessingBudget();
+    quic.setServerInitialProcessingBudget(7);
+    try std.testing.expectEqual(@as(usize, 7), quic.serverInitialProcessingBudget());
+    quic.setServerInitialProcessingBudget(0);
+    try std.testing.expectEqual(default_budget, quic.serverInitialProcessingBudget());
+    // Default must remain below the drain cap (shed invariant).
+    try std.testing.expect(quic.serverInitialProcessingBudget() < quic.serverSocketDrainPackets());
+}
+
 test "setServerSocketDrainPackets overrides the cap and 0 restores the default" {
     const default_cap = quic.serverSocketDrainPackets();
     try std.testing.expect(default_cap > quic.serverInitialProcessingBudget());
