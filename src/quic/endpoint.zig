@@ -88,6 +88,69 @@ const server_max_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap *
 const server_short_header_receive_batches: usize = server_poll_receive_batches;
 const server_max_short_header_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap * server_short_header_receive_batches;
 
+// CANARY: REQ=REQ-QUIC-HC-150; FEATURE="QUIC High-Concurrency Requests"; ASPECT=SocketDrainCapVsProcessingBudget; STATUS=TESTED; TEST=endpoint_socket_drain_cap_exceeds_initial_processing_budget; OWNER=transport; UPDATED=2026-06-14
+// Acceptor-wedge RC-A: the per-cycle socket DRAIN cap must be strictly larger
+// than the Initial PROCESSING budget. pollWithStats processes up to
+// `server_max_packets_per_poll_cycle` expensive new-connection Initials per
+// cycle and SHEDS (cheaply discards; client PTO retransmits) any beyond that —
+// but only while it is still allowed to keep READING from the socket. When the
+// master read cap equalled the Initial processing budget, the loop stopped
+// reading at the same point it stopped processing, so the shed path never ran
+// and a connection-kill / reconnect storm let the kernel `:PORT` UDP rx_queue
+// back up to the geode acceptor-watchdog threshold (8 MiB) -> exit(70)
+// (geode docs/bugs/2026-06-03-acceptor-wedge-connection-burst-new-conns-refused.md
+// and 2026-06-04-cluster-raft-no-stable-quorum-writes-time-out.md). Draining a
+// much larger slice per cycle — cheap shedding of surplus Initials — keeps the
+// kernel buffer bounded INDEPENDENT of how much expensive processing the cycle
+// can afford. Sized to drain a full 16 MiB SO_RCVBUF of ~1.4 KB datagrams in a
+// couple of cycles; runtime-tunable for k8s churn validation without a rebuild
+// (see setServerSocketDrainPackets / geode GEODE_QUIC_DRAIN_PACKETS).
+const server_socket_drain_batches: usize = 64;
+const server_max_socket_drain_packets_per_poll_cycle: usize = udp_transport_mod.UdpBatchCap * server_socket_drain_batches;
+
+// Runtime override of the server socket-drain cap. Set once at startup
+// (single-threaded) before poll workers start; read on the poll hot path. 0
+// restores the compiled default. Mirrors geode's GEODE_QUIC_DESTROY_BATCH knob.
+var server_socket_drain_packets_runtime: usize = server_max_socket_drain_packets_per_poll_cycle;
+
+/// Override the per-cycle server socket-drain cap (0 = compiled default). Must
+/// stay strictly above the Initial/short-header processing budgets, or the
+/// rx-queue shed path in pollWithStats is defeated (see the const comment above).
+pub fn setServerSocketDrainPackets(n: usize) void {
+    server_socket_drain_packets_runtime = if (n == 0) server_max_socket_drain_packets_per_poll_cycle else n;
+}
+
+/// Current server socket-drain cap (datagrams READ per poll cycle).
+/// For observability / tests.
+pub fn serverSocketDrainPackets() usize {
+    return server_socket_drain_packets_runtime;
+}
+
+/// Per-poll-cycle server Initial PROCESSING budget (expensive new-connection
+/// work). Surplus Initials beyond this are shed; the socket-drain cap must stay
+/// strictly above it (acceptor-wedge RC-A). For observability / tests.
+pub fn serverInitialProcessingBudget() usize {
+    return maxInitialPacketsPerPollCycleForRole(.Server);
+}
+
+/// Master per-poll-cycle cap on datagrams READ from the socket (distinct from
+/// the per-class PROCESSING budgets). Clients keep the one-batch fairness budget
+/// (unchanged); servers drain a large slice so a reconnect storm cannot back the
+/// kernel rx_queue up while expensive processing stays bounded by the
+/// Initial/short-header budgets.
+fn maxSocketDrainPacketsForRole(role: EndpointRole) usize {
+    return switch (role) {
+        // Clients are not the fan-in side; keep the one-batch fairness budget so
+        // app wakeups stay prompt (unchanged behaviour).
+        .Client => client_max_packets_per_poll_cycle,
+        // Servers drain a large slice so a reconnect storm cannot back up the
+        // kernel rx_queue; expensive processing stays bounded by the separate
+        // per-class processing budgets (Initial/short-header), beyond which
+        // surplus Initials are shed instead of stalling the drain.
+        .Server => server_socket_drain_packets_runtime,
+    };
+}
+
 pub const generic_long_header_dispatch_serializes_tls_for_test = true;
 
 fn maxPacketsPerPollCycleForRole(role: EndpointRole) usize {
@@ -1827,7 +1890,13 @@ pub const Endpoint = struct {
         {
             const recv_process_start_ns = nowNsMonotonic();
             defer stats.recv_process_ns = elapsedNsSince(recv_process_start_ns);
-            const max_packets_this_poll = maxPacketsPerPollCycleForRole(self.role);
+            // Master cap on datagrams READ from the socket this cycle. Decoupled
+            // from the per-class PROCESSING budgets (acceptor-wedge RC-A): keep
+            // draining (cheaply shedding surplus Initials) past the Initial
+            // processing budget so a reconnect storm cannot back the kernel
+            // rx_queue up to the geode acceptor watchdog. Expensive work stays
+            // bounded by max_{initial,short_header}_packets_this_poll below.
+            const max_packets_this_poll = maxSocketDrainPacketsForRole(self.role);
             const max_short_header_packets_this_poll = maxShortHeaderPacketsPerPollCycleForRole(self.role);
             const max_initial_packets_this_poll = maxInitialPacketsPerPollCycleForRole(self.role);
             var recv_bufs: [udp_transport_mod.UdpBatchCap][4096]u8 = undefined;
@@ -3229,6 +3298,30 @@ test "endpoint short header poll budget keeps server app packets bounded" {
 test "endpoint pto dirty recompute has a poll cycle fairness budget" {
     try std.testing.expectEqual(udp_transport_mod.UdpBatchCap, max_pto_dirty_recomputes_per_poll_cycle);
     try std.testing.expect(max_pto_dirty_recomputes_per_poll_cycle >= udp_transport_mod.UdpBatchCap);
+}
+
+// REQ-QUIC-HC-150 (acceptor-wedge RC-A): the server socket-DRAIN cap must be
+// strictly larger than the per-class PROCESSING budgets, otherwise pollWithStats
+// stops READING the socket at the same point it stops PROCESSING and the shed
+// path never runs — letting a reconnect storm back the kernel rx_queue up to the
+// geode acceptor-watchdog 8 MiB threshold (exit(70)).
+test "endpoint socket drain cap exceeds initial processing budget" {
+    try std.testing.expect(maxSocketDrainPacketsForRole(.Server) > maxInitialPacketsPerPollCycleForRole(.Server));
+    try std.testing.expect(maxSocketDrainPacketsForRole(.Server) > maxShortHeaderPacketsPerPollCycleForRole(.Server));
+    try std.testing.expect(maxSocketDrainPacketsForRole(.Server) > maxPacketsPerPollCycleForRole(.Server));
+}
+
+test "endpoint client socket drain cap stays at one UDP batch (unchanged)" {
+    try std.testing.expectEqual(maxPacketsPerPollCycleForRole(.Client), maxSocketDrainPacketsForRole(.Client));
+    try std.testing.expectEqual(udp_transport_mod.UdpBatchCap, maxSocketDrainPacketsForRole(.Client));
+}
+
+test "setServerSocketDrainPackets overrides the cap and 0 restores the default" {
+    const default_cap = server_max_socket_drain_packets_per_poll_cycle;
+    setServerSocketDrainPackets(12345);
+    try std.testing.expectEqual(@as(usize, 12345), maxSocketDrainPacketsForRole(.Server));
+    setServerSocketDrainPackets(0);
+    try std.testing.expectEqual(default_cap, maxSocketDrainPacketsForRole(.Server));
 }
 
 // =============================================================================

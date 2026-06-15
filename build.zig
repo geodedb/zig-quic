@@ -1289,6 +1289,12 @@ pub fn build(b: *std.Build) void {
             const run_test_public_exports = b.addRunArtifact(test_public_exports);
             test_step.dependOn(&run_test_public_exports.step);
             return;
+        } else if (std.mem.containsAtLeast(u8, f, 1, "acceptor_drain_budget")) {
+            const test_acceptor_drain = addTst(b, testlog_mod, compat_mod, "tests/test_acceptor_drain_budget.zig", target, optimize);
+            test_acceptor_drain.root_module.addImport("quic", quic_mod);
+            const run_test_acceptor_drain = b.addRunArtifact(test_acceptor_drain);
+            test_step.dependOn(&run_test_acceptor_drain.step);
+            return;
         }
     }
 

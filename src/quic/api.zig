@@ -174,6 +174,14 @@ pub fn pollStats(ep: *QuicEndpoint, timeout_ms: i32) !PollStats {
     return ep.pollWithStats(timeout_ms);
 }
 
+/// Override the per-cycle server socket-drain cap (0 = compiled default).
+/// Bounds the kernel UDP rx_queue under a reconnect storm independent of the
+/// expensive per-class processing budgets (acceptor-wedge RC-A). Call once at
+/// startup, before poll workers start. See endpoint.setServerSocketDrainPackets.
+pub const setServerSocketDrainPackets = endpoint.setServerSocketDrainPackets;
+pub const serverSocketDrainPackets = endpoint.serverSocketDrainPackets;
+pub const serverInitialProcessingBudget = endpoint.serverInitialProcessingBudget;
+
 /// Poll repeatedly with zero timeout to advance outstanding work.
 pub fn flush(ep: *QuicEndpoint, iterations: usize) void {
     var i: usize = 0;

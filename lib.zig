@@ -95,6 +95,10 @@ pub const QuicStreamId = api.QuicStreamId;
 pub const PollStats = api.PollStats;
 pub const AcceptError = api.AcceptError;
 
+pub const setServerSocketDrainPackets = api.setServerSocketDrainPackets;
+pub const serverSocketDrainPackets = api.serverSocketDrainPackets;
+pub const serverInitialProcessingBudget = api.serverInitialProcessingBudget;
+
 pub const deriveInitialSecretsForConfig = api.deriveInitialSecretsForConfig;
 pub const defaultLoopBackend = api.defaultLoopBackend;
 pub const endpointInit = api.endpointInit;
