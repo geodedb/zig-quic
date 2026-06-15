@@ -98,6 +98,52 @@ fn hashSockaddr(storage: *const std.posix.sockaddr.storage, len: std.posix.sockl
 }
 
 // =============================================================================
+// Dead-connection reaping (RFC 9000 §10.1/§10.2) -- k8s pod-churn recovery
+// =============================================================================
+//
+// ROOT CAUSE (iter-3): the server endpoint never reaped a connection whose peer
+// silently vanished (a killed/rescheduled pod). `connection/idle.zig` implements
+// a full RFC 9000 §10.1 idle timer but it was never wired, and
+// `closeStaleConnectionsForPeer` (below) was never invoked. A dead pod's
+// connection therefore lingered in `endpoint.conns` forever (the ~12-minute
+// `proto_reader stall` symptom), and accumulated stale state blocked/starved the
+// replacement pod's fresh handshake -> repeating `HandshakeError`.
+//
+// The reaper is OPT-IN (`QuicConfig.dead_conn_reap_ms > 0`, default 0 = off) so
+// non-cluster endpoints (e.g. the long-idle client-facing server) are unaffected.
+// geode's raft transport opts in: raft peers exchange heartbeats every ~50ms, so
+// a connection silent for tens of seconds is provably dead, never merely quiet.
+
+/// True iff two connections terminate at the SAME peer transport address
+/// (sockaddr hash equality). Excluding self is the CALLER's responsibility --
+/// `samePeerConn(a, a)` is true. Used both by `closeStaleConnectionsForPeer` and
+/// by the endpoint reap sweep to find a churned pod's stale connection when its
+/// replacement reconnects from a recycled address.
+pub fn samePeerConn(a: *const conn_mod.Connection, b: *const conn_mod.Connection) bool {
+    return hashSockaddr(&a.peer.storage, a.peer.len) == hashSockaddr(&b.peer.storage, b.peer.len);
+}
+
+/// PURE decision for the server-side dead-connection reaper: should a connection
+/// whose last inbound packet arrived at `last_rx_ns` be reaped at `now_ns`?
+///
+/// `reap_ms == 0` disables reaping entirely (the default -- endpoints that do not
+/// opt in are never affected). `last_rx_ns == 0` means "no packet received yet"
+/// (a handshake still in flight); those are owned by the handshake/PTO timers,
+/// not the idle reaper, so they are never reaped here. Otherwise the connection
+/// is reaped once it has been silent for STRICTLY MORE than the budget.
+///
+/// RX-ONLY by design: this never resets on our own sends, so a leader that keeps
+/// blindly retransmitting AppendEntries to a vanished follower still reaps the
+/// dead connection (the RFC idle timer's reset-on-send is exactly what let the
+/// stale connection live forever).
+pub fn shouldReapIdleConnection(last_rx_ns: i128, now_ns: i128, reap_ms: u64) bool {
+    if (reap_ms == 0) return false;
+    if (last_rx_ns == 0) return false;
+    const budget_ns: i128 = @as(i128, @intCast(reap_ms)) * std.time.ns_per_ms;
+    return (now_ns - last_rx_ns) > budget_ns;
+}
+
+// =============================================================================
 // Stale Connection Detection (RFC 9000 §10)
 // =============================================================================
 

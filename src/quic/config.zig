@@ -72,6 +72,17 @@ pub const QuicConfig = struct {
     // Maximum concurrent connections (RFC 9000 §8.1 rate-limiting recommendation).
     // Protects against DoS via unbounded connection creation. 0 = unlimited.
     max_connections: usize = 10000,
+    // Server-side dead-connection reap budget, in milliseconds. 0 = DISABLED
+    // (default), which preserves legacy behavior for every endpoint that does not
+    // opt in. When > 0, the endpoint poll loop reaps any connection that has
+    // received no packet for this long (RFC 9000 §10.1/§10.2 idle close, applied
+    // RX-only so a peer we keep blindly sending to is still reaped) and closes
+    // same-peer stale connections when a fresh server handshake completes. This
+    // recovers a churned/rescheduled peer (e.g. a k8s pod that moved to a new IP
+    // or whose old pod vanished without a CONNECTION_CLOSE) instead of leaving its
+    // dead connection in the table forever. Only opt in on endpoints whose peers
+    // are never legitimately quiet for the budget (e.g. raft, ~50ms heartbeats).
+    dead_conn_reap_ms: u64 = 0,
     // CANARY: REQ=REQ-QUIC-HC-063; FEATURE="QUIC High-Concurrency Requests"; ASPECT=DeferredServerAccept; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
     // Server-side accept policy. When true, a newly created server connection
     // is kept in endpoint state but is not returned from accept() until at

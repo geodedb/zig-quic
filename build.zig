@@ -1374,6 +1374,15 @@ pub fn build(b: *std.Build) void {
         const run_test_endpoint_lookup = b.addRunArtifact(test_endpoint_lookup);
         test_step.dependOn(&run_test_endpoint_lookup.step);
 
+        const test_endpoint_lifecycle = addTst(b, testlog_mod, compat_mod, "tests/unit/endpoint/test_lifecycle.zig", target, optimize);
+        test_endpoint_lifecycle.root_module.addImport("lifecycle", endpoint_lifecycle_mod);
+        test_endpoint_lifecycle.root_module.addImport("quic_conn", quic_conn_mod);
+        test_endpoint_lifecycle.root_module.addImport("types", endpoint_types_mod);
+        const run_test_endpoint_lifecycle = b.addRunArtifact(test_endpoint_lifecycle);
+        test_step.dependOn(&run_test_endpoint_lifecycle.step);
+        const test_dead_conn_reap_step = b.step("test-dead-conn-reap", "Run dead-connection reaper (lifecycle) tests");
+        test_dead_conn_reap_step.dependOn(&run_test_endpoint_lifecycle.step);
+
         const test_endpoint_io = addTst(b, testlog_mod, compat_mod, "tests/unit/endpoint/test_io.zig", target, optimize);
         test_endpoint_io.root_module.addImport("io", endpoint_io_mod);
         test_endpoint_io.root_module.addImport("quic_conn", quic_conn_mod);

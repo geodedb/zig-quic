@@ -631,6 +631,12 @@ pub const EndpointRole = enum {
 /// Covers the UDP abstraction and anti-amplification logic described in RFC 9000
 /// §8, manages Retry/NEW_TOKEN (via config) per §8.1, and orchestrates timers for
 /// loss recovery as recommended by RFC 9002 §6.
+/// Minimum interval between dead-connection reap sweeps (opt-in via
+/// cfg.dead_conn_reap_ms). Bounds the O(conns) idle scan to once per second so it
+/// costs O(conns)/sec rather than O(conns)/poll. Well below any sane reap budget
+/// (raft opts in at tens of seconds), so recovery latency is unaffected.
+const dead_conn_reap_sweep_interval_ms: i64 = 1000;
+
 pub const Endpoint = struct {
 
     // GAP-0200: Fine-grained locking for concurrent poll + handler throughput.
@@ -699,6 +705,12 @@ pub const Endpoint = struct {
     closed_conn_set: std.AutoHashMap(*conn_mod.Connection, void),
     closed_conn_mu: std.Io.Mutex = std.Io.Mutex.init,
     closed_conn_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+
+    // Dead-connection reaper throttle (opt-in via cfg.dead_conn_reap_ms > 0).
+    // The poll loop runs `reapDeadConnections` at most once per
+    // dead_conn_reap_sweep_interval_ms so the per-connection idle scan costs
+    // O(conns) per second rather than per poll cycle. 0 = never swept yet.
+    last_reap_sweep_ms: i64 = 0,
 
     // Next timer identifier for scheduleTimer (protected by timer_mu)
     next_timer_id: u64 = 1,
@@ -1612,6 +1624,12 @@ pub const Endpoint = struct {
         };
         defer conn.releaseEndpointRxRef();
 
+        // Dead-connection reaper liveness (opt-in): stamp the last inbound-packet
+        // time so the reap sweep can tell a live peer from a vanished one. Gated
+        // on cfg.dead_conn_reap_ms so endpoints without reaping configured (the
+        // default) pay no per-packet clock read on the steady-state RX path.
+        if (self.cfg.dead_conn_reap_ms != 0) conn.last_rx_ns = nowNsMonotonic();
+
         current_io_endpoint = self;
         defer current_io_endpoint = null;
 
@@ -2187,6 +2205,18 @@ pub const Endpoint = struct {
             // timer_mu is held on return from processExpiredTimers
             self.timer_mu.unlock(std.Io.Threaded.global_single_threaded.io());
             self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+        }
+
+        // Phase 5.5: dead-connection reaper (opt-in via cfg.dead_conn_reap_ms).
+        // Throttled to one sweep per dead_conn_reap_sweep_interval_ms so the
+        // O(conns) idle scan costs O(conns)/sec, not O(conns)/poll. Disabled by
+        // default (reap_ms == 0), so non-cluster endpoints skip it entirely.
+        if (self.cfg.dead_conn_reap_ms != 0) {
+            const now_ms_reap = nowMsMonotonic();
+            if (now_ms_reap - self.last_reap_sweep_ms >= dead_conn_reap_sweep_interval_ms) {
+                self.last_reap_sweep_ms = now_ms_reap;
+                self.reapDeadConnections(nowNsMonotonic());
+            }
         }
 
         // CANARY: REQ=REQ-QUIC-HC-035; FEATURE="QUIC High-Concurrency Requests"; ASPECT=PtoDirtyDestroySerialization; STATUS=IMPL; OWNER=transport; UPDATED=2026-05-26
@@ -3092,12 +3122,73 @@ pub const Endpoint = struct {
     /// Delegates to lifecycle module (Phase 10).
     pub fn closeStaleConnectionsForPeer(self: *Endpoint, new_conn: *conn_mod.Connection) void {
         var ctx = lifecycle_mod.LifecycleContext{
-            .allocator = &self.allocator,
+            // LifecycleContext.allocator is an `Allocator` value, not a pointer.
+            // (Latent type error surfaced once this previously-dead path got a
+            // real caller via the dead-connection reaper.)
+            .allocator = self.allocator,
             .conns = &self.conns,
             .timers = &self.timers,
             .retired = &self.retired,
         };
         lifecycle_mod.closeStaleConnectionsForPeer(&ctx, new_conn);
+    }
+
+    /// Server-side dead-connection reaper (opt-in via cfg.dead_conn_reap_ms > 0;
+    /// default 0 = no-op). Closes connections whose peer has gone silent past the
+    /// reap budget (a vanished/churned pod that never sent CONNECTION_CLOSE) and
+    /// sweeps same-peer stale connections once a server connection completes its
+    /// handshake (a churned pod reconnecting from a recycled address). Without
+    /// this, a dead peer's connection lingered in `conns` forever — the
+    /// ~12-minute `proto_reader stall` symptom — and blocked the replacement
+    /// peer's fresh handshake (repeating HandshakeError).
+    ///
+    /// Locking mirrors `processExpiredTimers`: the whole sweep runs under `mu`
+    /// (which protects `conns`). `markClosed`/`sendConnectionClose` never remove
+    /// map entries (pruneClosed does that on a later tick, also under `mu`), and
+    /// connection removal/destroy is `mu`-serialized, so the snapshotted pointers
+    /// stay valid for the sweep. `closeStaleConnectionsForPeer` and
+    /// `sendConnectionClose` are called with `mu` held, matching their contract
+    /// and the documented `endpoint.mu -> connection.mu` lock order.
+    fn reapDeadConnections(self: *Endpoint, now_ns: i128) void {
+        const reap_ms = self.cfg.dead_conn_reap_ms;
+        if (reap_ms == 0) return;
+        const io = std.Io.Threaded.global_single_threaded.io();
+
+        var to_close: std.ArrayList(*conn_mod.Connection) = .empty;
+        defer to_close.deinit(self.allocator);
+        var to_sweep_stale: std.ArrayList(*conn_mod.Connection) = .empty;
+        defer to_sweep_stale.deinit(self.allocator);
+
+        self.mu.lockUncancelable(io);
+        defer self.mu.unlock(io);
+
+        var it = self.conns.iterator();
+        while (it.next()) |e| {
+            const c = e.value_ptr.*;
+            if (c.closed) continue;
+            // Fast same-peer recovery: a freshly-established SERVER connection
+            // closes older connections from the same peer address exactly once
+            // (stale_swept latch). Collected here; applied after the iterator is
+            // finished so the closeStale sub-iteration never nests a write.
+            if (c.role == .Server and c.app_rx_keys != null and !c.stale_swept) {
+                c.stale_swept = true;
+                to_sweep_stale.append(self.allocator, c) catch {};
+            }
+            // Idle reap: no inbound packet within the budget => peer is gone.
+            if (lifecycle_mod.shouldReapIdleConnection(c.last_rx_ns, now_ns, reap_ms)) {
+                to_close.append(self.allocator, c) catch {};
+            }
+        }
+
+        for (to_sweep_stale.items) |c| self.closeStaleConnectionsForPeer(c);
+        for (to_close.items) |c| {
+            if (c.closed) continue; // may have been closed by a stale sweep above
+            c.sendConnectionClose(0x00, "idle: no packets within dead_conn_reap budget") catch |err| {
+                logger.warn("reapDeadConnections: sendConnectionClose failed: {s}", .{@errorName(err)});
+            };
+            c.markClosed();
+            logger.warn("quic: reaped dead connection — peer silent past {d}ms reap budget", .{reap_ms});
+        }
     }
 
     /// Remove all map entries / timers referencing connections that have transitioned to closed state.

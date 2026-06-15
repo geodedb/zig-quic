@@ -749,6 +749,16 @@ pub const Connection = struct {
     resumption_secret: ?[32]u8 = null,
     // Connection close state
     closed: bool = false,
+    // Dead-connection reaper (RFC 9000 §10.1/§10.2), opt-in via
+    // QuicConfig.dead_conn_reap_ms. `last_rx_ns` is the monotonic timestamp of the
+    // last inbound packet routed to this connection (0 = none received yet);
+    // stamped on the steady-state short-header RX path. The endpoint reap sweep
+    // closes a connection silent past the budget so a vanished/churned peer's
+    // connection does not linger forever. `stale_swept` is a once-per-connection
+    // latch so a freshly-established server connection sweeps older same-peer
+    // connections exactly once (a churned pod reconnecting from a recycled IP).
+    last_rx_ns: i128 = 0,
+    stale_swept: bool = false,
     // Server-side: whether this connection has been enqueued for accept()
     accepted_enqueued: bool = false,
     // Guard flag to keep deinit idempotent across layered cleanup paths.
@@ -1388,6 +1398,8 @@ pub const Connection = struct {
         self.server_hello_sent = false;
         self.handshake_packet_sent = false;
         self.closed = false;
+        self.last_rx_ns = 0;
+        self.stale_swept = false;
         self.accepted_enqueued = false;
         self.deinit_called = false;
         self.app_echo_sent = false;
