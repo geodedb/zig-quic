@@ -170,6 +170,49 @@ pub fn bind(comptime Connection: type) type {
                 };
                 retransmitted += 1;
             }
+
+            // Cumulative-ACK prune. dropAckedStreamTracking only removes the PNs
+            // explicitly enumerated from this ACK's ranges, and that enumeration
+            // is capped at 256 PNs in onAckReceivedSpace. On a long-lived
+            // connection with sustained sequential request/response cycles, the
+            // span from the oldest tracked STREAM packet to `largest` eventually
+            // exceeds that cap, so cumulatively-acknowledged packets below the cap
+            // window are never removed — app_stream_retx then grows ~1 entry per
+            // request and retransmitLostStreamPackets re-scans the whole map on
+            // every ACK (the secondary O(n^2) accumulator).
+            //
+            // RFC 9000 §13.2.1 + RFC 9002 §6.1: a packet far enough below the
+            // largest acknowledged PN is either covered by the peer's cumulative
+            // ACK (delivered) or would already have been declared lost by
+            // recovery's packet-threshold detection (kPacketThreshold = 3). Any
+            // such packet that recovery no longer tracks as in-flight or lost has
+            // been fully resolved and can be dropped. We keep a generous reorder
+            // margin and never drop a packet recovery still reports as `.lost`
+            // (those are handled by the retransmit loop above), so this cannot
+            // discard application data that still needs retransmission.
+            if (largest_acked_opt) |largest_acked| {
+                const reorder_margin: u64 = 16; // >> kPacketThreshold (3)
+                if (largest_acked > reorder_margin) {
+                    const prune_below = largest_acked - reorder_margin;
+                    var stale: std.ArrayList(u64) = .empty;
+                    defer stale.deinit(self.allocator.*);
+                    var pit = self.app_stream_retx.iterator();
+                    while (pit.next()) |entry| {
+                        const pn = entry.key_ptr.*;
+                        if (pn >= prune_below) continue;
+                        // Leave anything recovery still considers unresolved.
+                        switch (self.rec.getPacketDeliveryState(.Application, pn)) {
+                            .lost, .in_flight => continue,
+                            .acked, .unknown => stale.append(self.allocator.*, pn) catch break,
+                        }
+                    }
+                    for (stale.items) |pn| {
+                        if (self.app_stream_retx.fetchRemove(pn)) |removed| {
+                            self.allocator.free(removed.value.data);
+                        }
+                    }
+                }
+            }
         }
 
         pub fn sendDatagram(self: *Connection, data: []const u8) !void {
