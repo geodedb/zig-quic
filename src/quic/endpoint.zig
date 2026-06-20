@@ -38,6 +38,7 @@ const ks = @import("quic_tls");
 const sig = @import("sig");
 const x509 = @import("x509");
 const crypto = @import("quic_crypto");
+const crypto_backend = @import("crypto_backend");
 const varint = @import("quic_varint");
 const token_mod = @import("quic_token");
 const recovery = @import("quic_recovery");
@@ -763,6 +764,11 @@ pub const Endpoint = struct {
     /// Phase 8c: Now uses UdpTransport internally for all socket operations.
     /// The endpoint creates a UDP socket via the transport abstraction layer.
     pub fn init(alloc: std.mem.Allocator, bind_addr: []const u8, cfgp: *const cfg.QuicConfig) !Endpoint {
+        // FIPS-140-3: hard-fail at endpoint construction if -Dfips=true and the
+        // OpenSSL FIPS provider is absent / failed self-test. No-op under
+        // -Dfips=false (comptime-folded to nothing).
+        crypto_backend.assertActive();
+
         // Create UDP transport (handles socket creation, binding, configuration)
         // IMPORTANT: Must heap-allocate because Transport stores a pointer to it
         const udp = try alloc.create(udp_transport_mod.UdpTransport);
@@ -841,6 +847,10 @@ pub const Endpoint = struct {
         endpoint_role: EndpointRole,
     ) !Endpoint {
         // Role now passed as parameter instead of hardcoded
+
+        // FIPS-140-3: hard-fail if -Dfips=true and the provider is absent.
+        // No-op under -Dfips=false.
+        crypto_backend.assertActive();
 
         // Generate cryptographically random token secret if not provided in config.
         var generated_secret: [32]u8 = undefined;

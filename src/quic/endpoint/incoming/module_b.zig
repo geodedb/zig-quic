@@ -991,6 +991,7 @@ pub fn promoteToNextKeys(
 
     // Preserve current keys as previous (zeroize any older prev first)
     if (conn.rx_prev_keys) |*old_prev| {
+        // fips-exempt: non-security — key-material zeroization, not a FIPS algorithm.
         const sz = std.crypto.secureZero;
         sz(u8, &old_prev.key);
         sz(u8, &old_prev.iv);
@@ -1036,6 +1037,7 @@ pub fn decrementPrevKeyAllowance(conn: *conn_mod.Connection) void {
         conn.rx_prev_allow -= 1;
         if (conn.rx_prev_allow == 0) {
             if (conn.rx_prev_keys) |*to_zero| {
+                // fips-exempt: non-security — key-material zeroization, not a FIPS algorithm.
                 const sz = std.crypto.secureZero;
                 sz(u8, &to_zero.key);
                 sz(u8, &to_zero.iv);
@@ -1046,6 +1048,7 @@ pub fn decrementPrevKeyAllowance(conn: *conn_mod.Connection) void {
     } else {
         // Safety: if allowance already zero, drop prev immediately
         if (conn.rx_prev_keys) |*to_zero2| {
+            // fips-exempt: non-security — key-material zeroization, not a FIPS algorithm.
             const sz = std.crypto.secureZero;
             sz(u8, &to_zero2.key);
             sz(u8, &to_zero2.iv);

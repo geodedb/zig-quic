@@ -656,6 +656,7 @@ pub fn build(b: *std.Build) void {
     quic_endpoint_mod.addImport("endpoint/client.zig", endpoint_client_mod);
     quic_endpoint_mod.addImport("endpoint/server.zig", endpoint_server_mod);
     quic_endpoint_mod.addImport("quic_build_options", build_options_mod);
+    quic_endpoint_mod.addImport("crypto_backend", crypto_backend_mod);
 
     // Public API module (reuse everywhere)
     const quic_api_mod = mkModule(b, "src/quic/api.zig");
@@ -2325,6 +2326,13 @@ pub fn build(b: *std.Build) void {
         if (parallel_mod) |pm| test_fips_aead.root_module.addImport("parallel", pm);
         const run_test_fips_aead = b.addRunArtifact(test_fips_aead);
         test_step.dependOn(&run_test_fips_aead.step);
+
+        // FIPS provider self-test assertion is reachable through the seam in
+        // both modes (no-op when off; verifies the provider when on).
+        const test_fips_assert = addTst(b, testlog_mod, compat_mod, "tests/test_fips_assert_active.zig", target, optimize);
+        test_fips_assert.root_module.addImport("crypto_backend", crypto_backend_mod);
+        const run_test_fips_assert = b.addRunArtifact(test_fips_assert);
+        test_step.dependOn(&run_test_fips_assert.step);
 
         // Observability seam tests. The disabled-mode test runs under
         // both flag values (skip-guarded internally). The enabled-mode
