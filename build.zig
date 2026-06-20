@@ -2,6 +2,7 @@
 // Copyright (c) 2024-2025 CodePros
 
 const std = @import("std");
+const link = @import("src/link.zig");
 
 fn mkModule(b: *std.Build, path: []const u8) *std.Build.Module {
     return b.createModule(.{ .root_source_file = b.path(path) });
@@ -76,11 +77,21 @@ pub fn build(b: *std.Build) void {
         "Compile in otel instrumentation (off by default; zero overhead when off)",
     ) orelse false;
 
+    // -Dfips: route security crypto through the linked FIPS-140-3 provider.
+    // OFF by default with zero overhead; the `fips` dependency is resolved
+    // only when true (mirrors the otel seam). HKDF + all PQC reach quic
+    // transitively via `quic_tls`; this flag governs AEAD/HMAC/CSPRNG that
+    // quic calls directly. Forces AES-GCM (ChaCha20-Poly1305 becomes
+    // error.Unsupported in the AEAD seam).
+    const fips = b.option(bool, "fips", "Route security crypto through the linked FIPS-140-3 provider (off by default; zero overhead when off)") orelse false;
+    const openssl_path = b.option([]const u8, "openssl_path", "OpenSSL install prefix for non-standard installs (e.g. /usr/local/ssl)");
+
     // Build options module. Kept because endpoint.zig still imports
     // "quic_build_options"; now also carries `with_otel` for the
-    // observability seam.
+    // observability seam and `fips` for the FIPS-140-3 crypto seam.
     const build_options = b.addOptions();
     build_options.addOption(bool, "with_otel", with_otel);
+    build_options.addOption(bool, "fips", fips);
     const build_options_mod = build_options.createModule();
 
     // Observability seam (otel). Declared as a SHARED NAMED MODULE so
@@ -206,6 +217,53 @@ pub fn build(b: *std.Build) void {
     // Ensure crypto module can import the key schedule
     quic_crypto_mod.addImport("quic_tls", quic_tls_mod);
 
+    // ====================================================================
+    // FIPS seam (crypto_backend) — shared named module wiring
+    // ====================================================================
+    // The non-fips backend is the LOCAL vendored std_shim (src/fips_backend/
+    // std_shim.zig), which imports its sibling policy.zig (src/fips_backend/
+    // policy.zig) via @import("policy.zig"). Because the canonical std_shim +
+    // policy are copied INTO this repo (Task 0), the -Dfips=false path needs
+    // NO fips dependency at all (no fetch, no OpenSSL). The crypto_backend
+    // seam imports the SINGLE build_options_mod plus std_shim (always) and the
+    // fips backend (only under -Dfips=true). All are SHARED NAMED MODULES so
+    // every consumer reaches one source identity (avoids GAP-0020 "file exists
+    // in modules X and Y").
+    const std_shim_mod = b.addModule("std_shim", .{
+        .root_source_file = b.path("src/fips_backend/std_shim.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const crypto_backend_mod = b.addModule("crypto_backend", .{
+        .root_source_file = b.path("src/crypto_backend.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = build_options_mod },
+            // std_shim is always reachable; the seam only selects it when
+            // -Dfips=false (the fips branch is comptime-dead in that build).
+            .{ .name = "std_shim", .module = std_shim_mod },
+        },
+    });
+    if (fips) {
+        // Resolved ONLY when -Dfips=true; the disabled build never reaches
+        // the fips dependency (which links OpenSSL). The fips package is a
+        // LOCAL PATH dependency (see build.zig.zon); the eventual published
+        // form is a git+https lazy dep documented there.
+        const fips_dep = b.dependency("fips", .{
+            .target = target,
+            .optimize = optimize,
+            .openssl_path = openssl_path orelse "/usr/local/ssl",
+        });
+        const fips_mod = fips_dep.module("fips");
+        crypto_backend_mod.addImport("fips", fips_mod);
+        // Link OpenSSL onto the fips backend module so it propagates to every
+        // consuming artifact. The fips package's own build.zig also links it,
+        // but linking here keeps the consumer artifact self-sufficient.
+        link.linkOpenssl(b, fips_mod, openssl_path orelse "/usr/local/ssl");
+    }
+    quic_crypto_mod.addImport("crypto_backend", crypto_backend_mod);
+
     // Varint module (needed by packet and frame modules)
     const quic_varint_mod = mkModule(b, "src/quic/varint.zig");
     quic_varint_mod.addImport("byteorder", byteorder_mod);
@@ -220,6 +278,7 @@ pub fn build(b: *std.Build) void {
     // Token module (Retry token encode/verify)
     const quic_token_mod = mkModule(b, "src/quic/token.zig");
     quic_token_mod.addImport("byteorder", byteorder_mod);
+    quic_token_mod.addImport("crypto_backend", crypto_backend_mod);
 
     // Logger module for QUIC library (local QUIC logger, not vendored TLS logger)
     const quic_logger_mod = mkModule(b, "src/quic/logger.zig");
@@ -630,6 +689,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "quic_crypto", .module = quic_crypto_mod },
+                .{ .name = "crypto_backend", .module = crypto_backend_mod },
             },
         });
     } else null;
@@ -2239,6 +2299,13 @@ pub fn build(b: *std.Build) void {
         test_smoke.root_module.addImport("version", quic_version_mod);
         const run_test_smoke = b.addRunArtifact(test_smoke);
         test_step.dependOn(&run_test_smoke.step);
+
+        // FIPS-140-3 seam test: proves the crypto_backend seam is reachable
+        // and resolves an approved SHA-256 KAT in BOTH -Dfips modes.
+        const test_fips_seam = addTst(b, testlog_mod, compat_mod, "tests/fips_seam_test.zig", target, optimize);
+        test_fips_seam.root_module.addImport("crypto_backend", crypto_backend_mod);
+        const run_test_fips_seam = b.addRunArtifact(test_fips_seam);
+        test_step.dependOn(&run_test_fips_seam.step);
 
         // Observability seam tests. The disabled-mode test runs under
         // both flag values (skip-guarded internally). The enabled-mode

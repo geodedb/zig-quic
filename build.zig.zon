@@ -30,5 +30,25 @@
             .hash = "otel-0.1.9-B0v3ltPiNQD_qlCLj0oUor4puasXR8KWGfPpaE48icHy",
             .lazy = true,
         },
+        // FIPS-140-3 / PQC backend. Resolved ONLY when a build reaches
+        // b.dependency("fips", ...) under -Dfips=true. The non-fips backend is
+        // the LOCAL vendored src/fips_backend/std_shim.zig + policy.zig
+        // (Task 0), so -Dfips=false pulls this dependency NOT AT ALL — no
+        // fetch, no OpenSSL link.
+        //
+        // LOCAL PATH dep (the fips package has no git remote yet). The path is
+        // build-root-relative (Zig 0.16 rejects absolute paths in .path); from
+        // this repo's physical build root it resolves to
+        // /home/benji/src/devnw/zig/fips.
+        //
+        // Eventual published form (replace .path with .url/.hash + .lazy):
+        //   .fips = .{
+        //       .url = "git+https://gitlab.com/devnw/zig/fips.git?ref=v0.1.0#<sha>",
+        //       .hash = "<fips-package-hash>",
+        //       .lazy = true,
+        //   },
+        .fips = .{
+            .path = "../../../../../devnw/zig/fips",
+        },
     },
 }
