@@ -2307,6 +2307,14 @@ pub fn build(b: *std.Build) void {
         const run_test_fips_seam = b.addRunArtifact(test_fips_seam);
         test_step.dependOn(&run_test_fips_seam.step);
 
+        // Token HMAC seam test: the address-validation HMAC now routes through
+        // crypto_backend.Mac. A dedicated test file imports the token module by
+        // name and pins the seam HMAC round-trip in BOTH -Dfips modes.
+        const test_token_seam = addTst(b, testlog_mod, compat_mod, "tests/test_fips_token.zig", target, optimize);
+        test_token_seam.root_module.addImport("quic_token", quic_token_mod);
+        const run_test_token_seam = b.addRunArtifact(test_token_seam);
+        test_step.dependOn(&run_test_token_seam.step);
+
         // Observability seam tests. The disabled-mode test runs under
         // both flag values (skip-guarded internally). The enabled-mode
         // test compiles cleanly under both flags too — its
