@@ -15,6 +15,7 @@
 
 const std = @import("std");
 const crypto = std.crypto;
+const backend = @import("crypto_backend");
 
 const Aes128Gcm = crypto.aead.aes_gcm.Aes128Gcm;
 const Aes256Gcm = crypto.aead.aes_gcm.Aes256Gcm;
@@ -94,29 +95,35 @@ pub fn aeadEncrypt(
     switch (suite) {
         .aes_128_gcm => {
             if (key.len != 16) return error.InvalidKeyLength;
-            Aes128Gcm.encrypt(
+            try backend.Aead.seal(
+                .aes_128_gcm,
+                key[0..16],
+                &nonce,
+                aad,
+                plaintext,
                 out_ciphertext_and_tag[0..ct_len],
                 out_ciphertext_and_tag[ct_len..][0..16],
-                plaintext,
-                aad,
-                nonce,
-                key[0..16].*,
             );
             return ct_len + 16;
         },
         .aes_256_gcm => {
             if (key.len != 32) return error.InvalidKeyLength;
-            Aes256Gcm.encrypt(
+            try backend.Aead.seal(
+                .aes_256_gcm,
+                key[0..32],
+                &nonce,
+                aad,
+                plaintext,
                 out_ciphertext_and_tag[0..ct_len],
                 out_ciphertext_and_tag[ct_len..][0..16],
-                plaintext,
-                aad,
-                nonce,
-                key[0..32].*,
             );
             return ct_len + 16;
         },
         .chacha20_poly1305 => {
+            // ChaCha20-Poly1305 is not FIPS-approved; reject under -Dfips.
+            // backend.fips_enabled is comptime-known, so this branch folds away
+            // entirely in the non-fips build.
+            if (backend.fips_enabled) return error.Unsupported;
             if (key.len != 32) return error.InvalidKeyLength;
             ChaCha20Poly1305.encrypt(
                 out_ciphertext_and_tag[0..ct_len],
@@ -183,33 +190,23 @@ pub fn aeadDecrypt(
     switch (suite) {
         .aes_128_gcm => {
             if (key.len != 16) return error.InvalidKeyLength;
-            Aes128Gcm.decrypt(
-                out_plaintext[0..ct_len],
-                ciphertext,
-                tag.*,
-                aad,
-                nonce,
-                key[0..16].*,
-            ) catch {
-                return error.AuthenticationFailed;
+            backend.Aead.open(.aes_128_gcm, key[0..16], &nonce, aad, ciphertext, tag, out_plaintext[0..ct_len]) catch |e| switch (e) {
+                error.AuthFailed => return error.AuthenticationFailed,
+                else => return e,
             };
             return ct_len;
         },
         .aes_256_gcm => {
             if (key.len != 32) return error.InvalidKeyLength;
-            Aes256Gcm.decrypt(
-                out_plaintext[0..ct_len],
-                ciphertext,
-                tag.*,
-                aad,
-                nonce,
-                key[0..32].*,
-            ) catch {
-                return error.AuthenticationFailed;
+            backend.Aead.open(.aes_256_gcm, key[0..32], &nonce, aad, ciphertext, tag, out_plaintext[0..ct_len]) catch |e| switch (e) {
+                error.AuthFailed => return error.AuthenticationFailed,
+                else => return e,
             };
             return ct_len;
         },
         .chacha20_poly1305 => {
+            // ChaCha20-Poly1305 is not FIPS-approved; reject under -Dfips.
+            if (backend.fips_enabled) return error.Unsupported;
             if (key.len != 32) return error.InvalidKeyLength;
             ChaCha20Poly1305.decrypt(
                 out_plaintext[0..ct_len],
@@ -247,6 +244,7 @@ pub fn headerProtect(
     switch (suite) {
         .aes_128_gcm => {
             if (hp_key.len != 16) return error.InvalidKeyLength;
+            // fips-exempt: non-security — RFC 9001 §5.4 AES-ECB header-protection mask (AES is FIPS-approved).
             // AES-128-ECB: encrypt the 16-byte sample
             const Aes128 = crypto.core.aes.Aes128;
             const aes = Aes128.initEnc(hp_key[0..16].*);
@@ -268,6 +266,7 @@ pub fn headerProtect(
         },
         .aes_256_gcm => {
             if (hp_key.len != 32) return error.InvalidKeyLength;
+            // fips-exempt: non-security — RFC 9001 §5.4 AES-ECB header-protection mask (AES is FIPS-approved).
             // AES-256-ECB: encrypt the 16-byte sample
             const Aes256 = crypto.core.aes.Aes256;
             const aes = Aes256.initEnc(hp_key[0..32].*);
@@ -288,6 +287,8 @@ pub fn headerProtect(
             }
         },
         .chacha20_poly1305 => {
+            // ChaCha20 header protection is not FIPS-approved; reject under -Dfips.
+            if (backend.fips_enabled) return error.Unsupported;
             if (hp_key.len != 32) return error.InvalidKeyLength;
             // ChaCha20 HP (RFC 9001 §5.4.4)
             // Use sample as counter(4) + nonce(12): counter=bytes[0..4], nonce=bytes[4..16]

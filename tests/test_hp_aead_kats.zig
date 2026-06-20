@@ -27,10 +27,11 @@ test "kat_chacha20_poly1305_aead_encrypt_decrypt" {
     var out = try a.alloc(u8, pt.len + 16);
     defer a.free(out);
 
-    // ChaCha20-Poly1305 may not be available in all OpenSSL versions
+    // ChaCha20-Poly1305 may not be available in all OpenSSL versions, and is
+    // rejected (error.Unsupported) under -Dfips=true (non-FIPS algorithm).
     const ct_len = crypto.aeadEncrypt(.chacha20_poly1305, key, iv, 0x1234, aad, pt, out) catch |err| {
-        if (err == error.CipherNotAvailable) {
-            return error.SkipZigTest; // Skip test if cipher not available
+        if (err == error.CipherNotAvailable or err == error.Unsupported) {
+            return error.SkipZigTest; // Skip test if cipher not available / non-FIPS
         }
         return err;
     };
@@ -82,8 +83,8 @@ test "kat_header_protection_chacha_and_aes" {
     var chacha_hp_key: [32]u8 = .{0} ** 32;
 
     crypto.headerProtect(.chacha20_poly1305, chacha_hp_key[0..], &s16, &header_first, pn_copy[0..]) catch |err| {
-        if (err == error.CipherNotAvailable) {
-            return error.SkipZigTest; // Skip test if cipher not available
+        if (err == error.CipherNotAvailable or err == error.Unsupported) {
+            return error.SkipZigTest; // Skip test if cipher not available / non-FIPS
         }
         return err;
     };

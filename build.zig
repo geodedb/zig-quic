@@ -2315,6 +2315,17 @@ pub fn build(b: *std.Build) void {
         const run_test_token_seam = b.addRunArtifact(test_token_seam);
         test_step.dependOn(&run_test_token_seam.step);
 
+        // FIPS AEAD selection test: AES-GCM routes through the seam; under
+        // -Dfips=true ChaCha20-Poly1305 is rejected (error.Unsupported);
+        // under -Dfips=false ChaCha still works. Also covers the parallel
+        // header-mask path (Task 4) in both modes.
+        const test_fips_aead = addTst(b, testlog_mod, compat_mod, "tests/test_fips_aead_select.zig", target, optimize);
+        test_fips_aead.root_module.addImport("quic_crypto", quic_crypto_mod);
+        test_fips_aead.root_module.addImport("crypto_backend", crypto_backend_mod);
+        if (parallel_mod) |pm| test_fips_aead.root_module.addImport("parallel", pm);
+        const run_test_fips_aead = b.addRunArtifact(test_fips_aead);
+        test_step.dependOn(&run_test_fips_aead.step);
+
         // Observability seam tests. The disabled-mode test runs under
         // both flag values (skip-guarded internally). The enabled-mode
         // test compiles cleanly under both flags too — its

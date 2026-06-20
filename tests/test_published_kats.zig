@@ -53,7 +53,12 @@ test "kat: ChaCha20-Poly1305 hp sampling invariant" {
     @memcpy(sample16[2..], &ct_prefix);
     s16_copy = sample16;
 
-    try crypto.headerProtect(.chacha20_poly1305, &hp_key, &sample16, &header_first, pn[0..]);
+    // ChaCha20 header protection is rejected (error.Unsupported) under
+    // -Dfips=true (non-FIPS algorithm); skip the KAT in that build.
+    crypto.headerProtect(.chacha20_poly1305, &hp_key, &sample16, &header_first, pn[0..]) catch |err| {
+        if (err == error.CipherNotAvailable or err == error.Unsupported) return error.SkipZigTest;
+        return err;
+    };
     try crypto.headerUnprotect(.chacha20_poly1305, &hp_key, &s16_copy, &header_first, pn[0..]);
     try std.testing.expectEqual(@as(u8, 0x43), header_first);
     try std.testing.expectEqual(@as(u8, 0xaa), pn[0]);
