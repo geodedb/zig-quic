@@ -442,7 +442,7 @@ pub fn bind(comptime Connection: type) type {
                     const mid_end: usize = if (hs.len < 112) hs.len else 112;
                     logger.debugPrint("[TLS-HS-CLIENT] Handshake bytes mid ({}..{}): {any}\n", .{ mid_start, mid_end, hs[mid_start..mid_end] });
                 }
-                var h = std.hash.Wyhash.init(0);
+                var h = std.hash.Wyhash.init(0); // fips-exempt: non-security — Wyhash debug-log fingerprint, not a FIPS algorithm.
                 h.update(hs);
                 const hash = h.final();
                 const tail_len: usize = if (hs.len < 16) hs.len else 16;
@@ -1199,7 +1199,7 @@ pub fn bind(comptime Connection: type) type {
                 // This CID is chosen randomly by the client for each new
                 // connection attempt so it uniquely identifies the 0-RTT
                 // offer within the cache window.
-                const ticket_hash = std.hash.Wyhash.hash(
+                const ticket_hash = std.hash.Wyhash.hash( // fips-exempt: non-security — Wyhash 0-RTT ticket cache key, not a FIPS algorithm.
                     0,
                     self.peer_initial_dcid.bytes[0..self.peer_initial_dcid.len],
                 );

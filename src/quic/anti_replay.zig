@@ -136,7 +136,7 @@ pub const AntiReplayCache = struct {
     /// keys. This is NOT a cryptographic hash -- it only needs to be
     /// collision-resistant enough for the bounded cache.
     pub fn hashBytes(data: []const u8) u64 {
-        return std.hash.Wyhash.hash(0, data);
+        return std.hash.Wyhash.hash(0, data); // fips-exempt: non-security — Wyhash anti-replay cache key, not a FIPS algorithm.
     }
 
     /// Convenience: hash a fixed-size connection ID (Cid-style struct with

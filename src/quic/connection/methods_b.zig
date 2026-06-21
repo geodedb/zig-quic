@@ -1727,7 +1727,7 @@ pub fn bind(comptime Connection: type) type {
         // --- Key Update helpers ---
         pub fn zeroKeys(k: *packet.AeadKeys) void {
             // Use secureZero to prevent compiler from eliding the wipe.
-            const sz = std.crypto.secureZero;
+            const sz = std.crypto.secureZero; // fips-exempt: non-security — memory zeroization helper, not a FIPS algorithm.
             sz(u8, &k.key);
             sz(u8, &k.iv);
             sz(u8, &k.hp);
