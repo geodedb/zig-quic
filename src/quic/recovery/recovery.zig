@@ -265,15 +265,28 @@ pub const Recovery = struct {
         defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
         defer self.refreshAtomicMirrors(); // runs before unlock (LIFO defer)
         const idx = spaceIdx(space);
-        const alloc = self.spaces[idx].allocator;
-        try self.spaces[idx].sent.append(alloc, .{ .pn = pn, .time_ns = now_ns, .size = bytes, .ack_eliciting = ack_eliciting });
-        const sent_slot = self.spaces[idx].sent.items.len - 1;
-        try self.spaces[idx].sent_index.put(pn, sent_slot);
 
-        // Enforce hard capacity cap: compact first, then drop oldest if still over.
-        if (self.spaces[idx].sent.items.len > max_sent_packets) {
-            self.spaces[idx].compact();
-            self.spaces[idx].enforceCapacity(&self.cc);
+        // RFC 9002 §A.1 / §2: Only ack-eliciting packets are tracked for loss
+        // recovery. Non-ack-eliciting (ACK-only) packets are never individually
+        // acknowledged by the peer, are never retransmitted, and do not count
+        // toward bytes_in_flight — so they can never become acked or
+        // declared_lost. Appending them to `sent` made the list grow ~1 entry
+        // per request on a long-lived connection (they only ever leave via the
+        // 4096 hard cap), and every received ACK re-scans `sent` (unprocessed
+        // count, loss detection, and the `sent_index` rebuild in compact()),
+        // yielding O(n) per-ACK and O(n^2) cumulative cost. Tracking only
+        // ack-eliciting packets keeps `sent` bounded by the in-flight window.
+        if (ack_eliciting) {
+            const alloc = self.spaces[idx].allocator;
+            try self.spaces[idx].sent.append(alloc, .{ .pn = pn, .time_ns = now_ns, .size = bytes, .ack_eliciting = ack_eliciting });
+            const sent_slot = self.spaces[idx].sent.items.len - 1;
+            try self.spaces[idx].sent_index.put(pn, sent_slot);
+
+            // Enforce hard capacity cap: compact first, then drop oldest if still over.
+            if (self.spaces[idx].sent.items.len > max_sent_packets) {
+                self.spaces[idx].compact();
+                self.spaces[idx].enforceCapacity(&self.cc);
+            }
         }
 
         const old_inflight = self.cc.bytes_in_flight;
@@ -859,6 +872,16 @@ pub const Recovery = struct {
         self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
         return .{ .bytes_in_flight = self.cc.bytes_in_flight, .cwnd = self.cc.cwnd };
+    }
+
+    /// Number of entries currently retained in the per-space `sent` list.
+    /// Exposed so callers/tests can assert the loss-recovery tracking set stays
+    /// bounded by the in-flight window (RFC 9002 §A.1) rather than growing with
+    /// the connection's total sent history.
+    pub fn sentLen(self: *Recovery, space: PacketNumberSpace) usize {
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
+        return self.spaces[spaceIdx(space)].sent.items.len;
     }
 };
 

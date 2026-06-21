@@ -38,6 +38,7 @@ const ks = @import("quic_tls");
 const sig = @import("sig");
 const x509 = @import("x509");
 const crypto = @import("quic_crypto");
+const crypto_backend = @import("crypto_backend");
 const varint = @import("quic_varint");
 const token_mod = @import("quic_token");
 const recovery = @import("quic_recovery");
@@ -763,6 +764,11 @@ pub const Endpoint = struct {
     /// Phase 8c: Now uses UdpTransport internally for all socket operations.
     /// The endpoint creates a UDP socket via the transport abstraction layer.
     pub fn init(alloc: std.mem.Allocator, bind_addr: []const u8, cfgp: *const cfg.QuicConfig) !Endpoint {
+        // FIPS-140-3: hard-fail at endpoint construction if -Dfips=true and the
+        // OpenSSL FIPS provider is absent / failed self-test. No-op under
+        // -Dfips=false (comptime-folded to nothing).
+        crypto_backend.assertActive();
+
         // Create UDP transport (handles socket creation, binding, configuration)
         // IMPORTANT: Must heap-allocate because Transport stores a pointer to it
         const udp = try alloc.create(udp_transport_mod.UdpTransport);
@@ -841,6 +847,10 @@ pub const Endpoint = struct {
         endpoint_role: EndpointRole,
     ) !Endpoint {
         // Role now passed as parameter instead of hardcoded
+
+        // FIPS-140-3: hard-fail if -Dfips=true and the provider is absent.
+        // No-op under -Dfips=false.
+        crypto_backend.assertActive();
 
         // Generate cryptographically random token secret if not provided in config.
         var generated_secret: [32]u8 = undefined;
@@ -1924,6 +1934,11 @@ pub const Endpoint = struct {
     /// Thread-safety: Acquires endpoint mutex around shared state access
     /// (connection map, timers, accepted queue). The transport poll itself
     /// runs outside the lock to avoid blocking other threads during I/O wait.
+    /// GAP-0900: per-thread receive scratch for pollWithStats (see use site).
+    /// 256 KiB of static TLS per poll thread; the `= undefined` fill happens
+    /// once per thread at TLS setup, not per poll cycle.
+    threadlocal var poll_recv_bufs: [udp_transport_mod.UdpBatchCap][4096]u8 = undefined;
+
     pub fn pollWithStats(self: *Endpoint, timeout_ms: i32) !PollStats {
         var stats = PollStats{};
 
@@ -1962,7 +1977,17 @@ pub const Endpoint = struct {
             const max_packets_this_poll = maxSocketDrainPacketsForRole(self.role);
             const max_short_header_packets_this_poll = maxShortHeaderPacketsPerPollCycleForRole(self.role);
             const max_initial_packets_this_poll = maxInitialPacketsPerPollCycleForRole(self.role);
-            var recv_bufs: [udp_transport_mod.UdpBatchCap][4096]u8 = undefined;
+            // GAP-0900: use a per-thread persistent scratch buffer instead of a
+            // 256 KiB stack `= undefined`. In ReleaseSafe (the shipped build)
+            // `= undefined` on a stack local is filled with the 0xAA sentinel on
+            // every call, so each poll cycle memset 256 KiB that recvBatch then
+            // immediately overwrites — profiling showed this single memset as
+            // ~31% of poll-loop CPU. Release builds run 16 poll worker threads
+            // polling the same endpoint concurrently, so the buffer must be
+            // per-thread (a shared buffer races and corrupts received packets).
+            // `threadlocal` static storage gives each poll thread its own buffer
+            // and pays the undefined-fill once per thread instead of per poll.
+            const recv_bufs = &poll_recv_bufs;
             var recv_slots: [udp_transport_mod.UdpBatchCap]transport_mod.RecvBatchSlot = undefined;
             for (&recv_slots, 0..) |*slot, i| {
                 slot.* = .{

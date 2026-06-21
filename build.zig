@@ -2,6 +2,7 @@
 // Copyright (c) 2024-2025 CodePros
 
 const std = @import("std");
+const link = @import("src/link.zig");
 
 fn mkModule(b: *std.Build, path: []const u8) *std.Build.Module {
     return b.createModule(.{ .root_source_file = b.path(path) });
@@ -76,11 +77,21 @@ pub fn build(b: *std.Build) void {
         "Compile in otel instrumentation (off by default; zero overhead when off)",
     ) orelse false;
 
+    // -Dfips: route security crypto through the linked FIPS-140-3 provider.
+    // OFF by default with zero overhead; the `fips` dependency is resolved
+    // only when true (mirrors the otel seam). HKDF + all PQC reach quic
+    // transitively via `quic_tls`; this flag governs AEAD/HMAC/CSPRNG that
+    // quic calls directly. Forces AES-GCM (ChaCha20-Poly1305 becomes
+    // error.Unsupported in the AEAD seam).
+    const fips = b.option(bool, "fips", "Route security crypto through the linked FIPS-140-3 provider (off by default; zero overhead when off)") orelse false;
+    const openssl_path = b.option([]const u8, "openssl_path", "OpenSSL install prefix for non-standard installs (e.g. /usr/local/ssl)");
+
     // Build options module. Kept because endpoint.zig still imports
     // "quic_build_options"; now also carries `with_otel` for the
-    // observability seam.
+    // observability seam and `fips` for the FIPS-140-3 crypto seam.
     const build_options = b.addOptions();
     build_options.addOption(bool, "with_otel", with_otel);
+    build_options.addOption(bool, "fips", fips);
     const build_options_mod = build_options.createModule();
 
     // Observability seam (otel). Declared as a SHARED NAMED MODULE so
@@ -182,10 +193,22 @@ pub fn build(b: *std.Build) void {
     // paths via `QuicConfig.allow_insecure = true`; forward the build flag so those
     // targets compile & run. Production callers that set `allow_insecure = false`
     // are unaffected (they flow to the `.secure` variant, which never panics).
+    //
+    // FIPS review (CRITICAL): propagate -Dfips and -Dopenssl_path DOWN to the
+    // tls dependency so its crypto_backend seam activates transitively. Without
+    // this, the TLS-layer crypto (handshake, key-schedule HKDF, PQC) that quic
+    // consumes via quic_tls/tls13/sig/x509 would run on tls's std_shim backend
+    // even under -Dfips=true, bypassing the FIPS provider. The local
+    // seam-enabled tls (build.zig.zon .tls = .{ .path = "../tls" }) accepts
+    // both options; passing them here flips its `if (fips)` lazyDependency wire
+    // so the SAME local fips package (single instance — GAP-0020) backs both
+    // quic's and tls's seam, and OpenSSL links onto the tls-derived modules.
     const tls_dep = b.dependency("tls", .{
         .target = target,
         .optimize = optimize,
         .@"tls-insecure-testing" = true,
+        .fips = fips,
+        .openssl_path = openssl_path orelse "/usr/local/ssl",
     });
 
     // Get TLS modules from the external dependency (only the ones actually used)
@@ -206,6 +229,53 @@ pub fn build(b: *std.Build) void {
     // Ensure crypto module can import the key schedule
     quic_crypto_mod.addImport("quic_tls", quic_tls_mod);
 
+    // ====================================================================
+    // FIPS seam (crypto_backend) — shared named module wiring
+    // ====================================================================
+    // The non-fips backend is the LOCAL vendored std_shim (src/fips_backend/
+    // std_shim.zig), which imports its sibling policy.zig (src/fips_backend/
+    // policy.zig) via @import("policy.zig"). Because the canonical std_shim +
+    // policy are copied INTO this repo (Task 0), the -Dfips=false path needs
+    // NO fips dependency at all (no fetch, no OpenSSL). The crypto_backend
+    // seam imports the SINGLE build_options_mod plus std_shim (always) and the
+    // fips backend (only under -Dfips=true). All are SHARED NAMED MODULES so
+    // every consumer reaches one source identity (avoids GAP-0020 "file exists
+    // in modules X and Y").
+    const std_shim_mod = b.addModule("std_shim", .{
+        .root_source_file = b.path("src/fips_backend/std_shim.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const crypto_backend_mod = b.addModule("crypto_backend", .{
+        .root_source_file = b.path("src/crypto_backend.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = build_options_mod },
+            // std_shim is always reachable; the seam only selects it when
+            // -Dfips=false (the fips branch is comptime-dead in that build).
+            .{ .name = "std_shim", .module = std_shim_mod },
+        },
+    });
+    if (fips) {
+        // Resolved ONLY when -Dfips=true; the disabled build never reaches
+        // the fips dependency (which links OpenSSL). The fips package is a
+        // LOCAL PATH dependency (see build.zig.zon); the eventual published
+        // form is a git+https lazy dep documented there.
+        const fips_dep = b.dependency("fips", .{
+            .target = target,
+            .optimize = optimize,
+            .openssl_path = openssl_path orelse "/usr/local/ssl",
+        });
+        const fips_mod = fips_dep.module("fips");
+        crypto_backend_mod.addImport("fips", fips_mod);
+        // Link OpenSSL onto the fips backend module so it propagates to every
+        // consuming artifact. The fips package's own build.zig also links it,
+        // but linking here keeps the consumer artifact self-sufficient.
+        link.linkOpenssl(b, fips_mod, openssl_path orelse "/usr/local/ssl");
+    }
+    quic_crypto_mod.addImport("crypto_backend", crypto_backend_mod);
+
     // Varint module (needed by packet and frame modules)
     const quic_varint_mod = mkModule(b, "src/quic/varint.zig");
     quic_varint_mod.addImport("byteorder", byteorder_mod);
@@ -220,6 +290,7 @@ pub fn build(b: *std.Build) void {
     // Token module (Retry token encode/verify)
     const quic_token_mod = mkModule(b, "src/quic/token.zig");
     quic_token_mod.addImport("byteorder", byteorder_mod);
+    quic_token_mod.addImport("crypto_backend", crypto_backend_mod);
 
     // Logger module for QUIC library (local QUIC logger, not vendored TLS logger)
     const quic_logger_mod = mkModule(b, "src/quic/logger.zig");
@@ -597,6 +668,7 @@ pub fn build(b: *std.Build) void {
     quic_endpoint_mod.addImport("endpoint/client.zig", endpoint_client_mod);
     quic_endpoint_mod.addImport("endpoint/server.zig", endpoint_server_mod);
     quic_endpoint_mod.addImport("quic_build_options", build_options_mod);
+    quic_endpoint_mod.addImport("crypto_backend", crypto_backend_mod);
 
     // Public API module (reuse everywhere)
     const quic_api_mod = mkModule(b, "src/quic/api.zig");
@@ -630,6 +702,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "quic_crypto", .module = quic_crypto_mod },
+                .{ .name = "crypto_backend", .module = crypto_backend_mod },
             },
         });
     } else null;
@@ -982,6 +1055,13 @@ pub fn build(b: *std.Build) void {
             test_pending_hs_send.root_module.addImport("quic_tls", quic_tls_mod);
             test_pending_hs_send.root_module.addImport("config.zig", quic_config_mod);
             test_pending_hs_send.root_module.addImport("test_certs", test_certs_mod);
+            // FIPS seam: the test's hardcoded x25519-only ClientHello is a
+            // non-FIPS key-share; under -Dfips the server CORRECTLY rejects it
+            // (UnsupportedKeyShareGroup — X25519 alone is not FIPS-approved,
+            // only the X25519MLKEM768 hybrid is). The pending_hs_send retry
+            // mechanics under test are crypto-agnostic and fully covered by
+            // the -Dfips=false gate, so the test skips under -Dfips=true.
+            test_pending_hs_send.root_module.addImport("quic_build_options", build_options_mod);
             const run_test_pending_hs_send = b.addRunArtifact(test_pending_hs_send);
             test_step.dependOn(&run_test_pending_hs_send.step);
             return;
@@ -2240,6 +2320,39 @@ pub fn build(b: *std.Build) void {
         const run_test_smoke = b.addRunArtifact(test_smoke);
         test_step.dependOn(&run_test_smoke.step);
 
+        // FIPS-140-3 seam test: proves the crypto_backend seam is reachable
+        // and resolves an approved SHA-256 KAT in BOTH -Dfips modes.
+        const test_fips_seam = addTst(b, testlog_mod, compat_mod, "tests/fips_seam_test.zig", target, optimize);
+        test_fips_seam.root_module.addImport("crypto_backend", crypto_backend_mod);
+        const run_test_fips_seam = b.addRunArtifact(test_fips_seam);
+        test_step.dependOn(&run_test_fips_seam.step);
+
+        // Token HMAC seam test: the address-validation HMAC now routes through
+        // crypto_backend.Mac. A dedicated test file imports the token module by
+        // name and pins the seam HMAC round-trip in BOTH -Dfips modes.
+        const test_token_seam = addTst(b, testlog_mod, compat_mod, "tests/test_fips_token.zig", target, optimize);
+        test_token_seam.root_module.addImport("quic_token", quic_token_mod);
+        const run_test_token_seam = b.addRunArtifact(test_token_seam);
+        test_step.dependOn(&run_test_token_seam.step);
+
+        // FIPS AEAD selection test: AES-GCM routes through the seam; under
+        // -Dfips=true ChaCha20-Poly1305 is rejected (error.Unsupported);
+        // under -Dfips=false ChaCha still works. Also covers the parallel
+        // header-mask path (Task 4) in both modes.
+        const test_fips_aead = addTst(b, testlog_mod, compat_mod, "tests/test_fips_aead_select.zig", target, optimize);
+        test_fips_aead.root_module.addImport("quic_crypto", quic_crypto_mod);
+        test_fips_aead.root_module.addImport("crypto_backend", crypto_backend_mod);
+        if (parallel_mod) |pm| test_fips_aead.root_module.addImport("parallel", pm);
+        const run_test_fips_aead = b.addRunArtifact(test_fips_aead);
+        test_step.dependOn(&run_test_fips_aead.step);
+
+        // FIPS provider self-test assertion is reachable through the seam in
+        // both modes (no-op when off; verifies the provider when on).
+        const test_fips_assert = addTst(b, testlog_mod, compat_mod, "tests/test_fips_assert_active.zig", target, optimize);
+        test_fips_assert.root_module.addImport("crypto_backend", crypto_backend_mod);
+        const run_test_fips_assert = b.addRunArtifact(test_fips_assert);
+        test_step.dependOn(&run_test_fips_assert.step);
+
         // Observability seam tests. The disabled-mode test runs under
         // both flag values (skip-guarded internally). The enabled-mode
         // test compiles cleanly under both flags too — its
@@ -2326,6 +2439,13 @@ pub fn build(b: *std.Build) void {
         test_pending_hs_send.root_module.addImport("quic_tls", quic_tls_mod);
         test_pending_hs_send.root_module.addImport("config.zig", quic_config_mod);
         test_pending_hs_send.root_module.addImport("test_certs", test_certs_mod);
+        // FIPS seam: the test's hardcoded x25519-only ClientHello is a
+        // non-FIPS key-share; under -Dfips the server CORRECTLY rejects it
+        // (UnsupportedKeyShareGroup — X25519 alone is not FIPS-approved, only
+        // the X25519MLKEM768 hybrid is). The pending_hs_send retry mechanics
+        // under test are crypto-agnostic and fully covered by the -Dfips=false
+        // gate, so the test skips under -Dfips=true.
+        test_pending_hs_send.root_module.addImport("quic_build_options", build_options_mod);
         const run_test_pending_hs_send = b.addRunArtifact(test_pending_hs_send);
         test_step.dependOn(&run_test_pending_hs_send.step);
 

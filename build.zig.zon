@@ -1,6 +1,6 @@
 .{
     .name = .quic,
-    .version = "0.1.30",
+    .version = "0.1.32",
     .fingerprint = 0xc0795252512a1280,
     .minimum_zig_version = "0.16.0",
     .paths = .{
@@ -13,10 +13,32 @@
         "tests",
     },
     .dependencies = .{
-        // TLS 1.3 implementation (used for QUIC-TLS integration)
+        // TLS 1.3 implementation (used for QUIC-TLS integration).
+        //
+        // CRITICAL (FIPS review): this MUST point at the LOCAL seam-enabled
+        // tls, NOT the PUBLISHED v0.1.15 (pre-seam). The published tarball
+        // predates the crypto_backend seam, so under -Dfips=true the TLS-layer
+        // crypto (handshake, key-schedule HKDF, PQC) would NOT route through
+        // the FIPS provider. The seam only activates when -Dfips/-Dopenssl_path
+        // are propagated DOWN to this tls dep (see build.zig: the
+        // b.dependency("tls", .{ .fips, .openssl_path }) call), which requires
+        // the local seam-enabled source.
+        //
+        // LOCAL PATH dep, build-root-relative (Zig 0.16 rejects absolute
+        // .path). quic's physical build root is
+        // .../gl/gitlab.com/devnw/zig/quic, so `../tls` resolves to the sibling
+        // seam-enabled tls (feat/fips-pqc, .../gl/gitlab.com/devnw/zig/tls,
+        // i.e. /home/benji/src/devnw/zig/tls via the workspace symlink). A
+        // single tls instance is shared across quic (and wireguard via quic),
+        // satisfying detect-diamond-deps / GAP-0020.
+        //
+        // Eventual published (seam-enabled) form — replace .path with:
+        //   .tls = .{
+        //       .url = "git+https://gitlab.com/devnw/zig/tls.git?ref=v0.1.16#<seam-sha>",
+        //       .hash = "<seam-enabled-tls-hash>",
+        //   },
         .tls = .{
-            .url = "git+https://gitlab.com/devnw/zig/tls.git?ref=v0.1.15#8eda112f3edc47c09cfdb060fca9ee505e6469a8",
-            .hash = "tls-0.1.10-mtEaLAq9FADX71B063Zz_xsX_FQoPP8zlqmcu-LrC5Fu",
+            .path = "../tls",
         },
         // Thread pool for parallel operations
         .thread_pool = .{
@@ -29,6 +51,26 @@
             .url = "git+https://gitlab.com/devnw/zig/otel.git?ref=v0.1.13#31e4104d698c52758507e444edb1d770151239d6",
             .hash = "otel-0.1.9-B0v3ltPiNQD_qlCLj0oUor4puasXR8KWGfPpaE48icHy",
             .lazy = true,
+        },
+        // FIPS-140-3 / PQC backend. Resolved ONLY when a build reaches
+        // b.dependency("fips", ...) under -Dfips=true. The non-fips backend is
+        // the LOCAL vendored src/fips_backend/std_shim.zig + policy.zig
+        // (Task 0), so -Dfips=false pulls this dependency NOT AT ALL — no
+        // fetch, no OpenSSL link.
+        //
+        // LOCAL PATH dep (the fips package has no git remote yet). The path is
+        // build-root-relative (Zig 0.16 rejects absolute paths in .path); from
+        // this repo's physical build root it resolves to
+        // /home/benji/src/devnw/zig/fips.
+        //
+        // Eventual published form (replace .path with .url/.hash + .lazy):
+        //   .fips = .{
+        //       .url = "git+https://gitlab.com/devnw/zig/fips.git?ref=v0.1.0#<sha>",
+        //       .hash = "<fips-package-hash>",
+        //       .lazy = true,
+        //   },
+        .fips = .{
+            .path = "../../../../../devnw/zig/fips",
         },
     },
 }

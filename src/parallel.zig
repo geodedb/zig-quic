@@ -53,6 +53,7 @@
 
 const std = @import("std");
 const crypto_zig = @import("quic_crypto");
+const backend = @import("crypto_backend");
 const tp = @import("thread_pool");
 
 // ============================================================================
@@ -443,26 +444,41 @@ pub fn parallelHeaderProtect(
 }
 
 fn generateHeaderMask(suite: crypto_zig.AeadSuite, hp_key: []const u8, sample: [16]u8) [5]u8 {
-    var mask: [5]u8 = undefined;
+    // Zero-initialized so the short-key fall-through (hp_key too small) is
+    // well-defined rather than returning garbage.
+    var mask: [5]u8 = [_]u8{0} ** 5;
 
     switch (suite) {
         .aes_128_gcm => {
+            // fips-exempt: non-security — RFC 9001 §5.4 AES-ECB header-protection mask (AES is FIPS-approved).
             if (hp_key.len >= 16) {
-                const aes = std.crypto.core.aes.Aes128.initEnc(hp_key[0..16].*);
+                const aes = std.crypto.core.aes.Aes128.initEnc(hp_key[0..16].*); // fips-exempt: non-security — RFC 9001 §5.4 AES-ECB header-protection mask (AES is FIPS-approved).
                 var block: [16]u8 = undefined;
                 aes.encrypt(&block, &sample);
                 @memcpy(&mask, block[0..5]);
             }
         },
         .aes_256_gcm => {
+            // fips-exempt: non-security — RFC 9001 §5.4 AES-ECB header-protection mask (AES is FIPS-approved).
             if (hp_key.len >= 32) {
-                const aes = std.crypto.core.aes.Aes256.initEnc(hp_key[0..32].*);
+                const aes = std.crypto.core.aes.Aes256.initEnc(hp_key[0..32].*); // fips-exempt: non-security — RFC 9001 §5.4 AES-ECB header-protection mask (AES is FIPS-approved).
                 var block: [16]u8 = undefined;
                 aes.encrypt(&block, &sample);
                 @memcpy(&mask, block[0..5]);
             }
         },
         .chacha20_poly1305 => {
+            if (backend.fips_enabled) {
+                // Comptime-eliminated under -Dfips=true: ChaCha20 header
+                // protection is non-FIPS. The AEAD seam (crypto_zig.zig,
+                // Task 3) returns error.Unsupported for every ChaCha suite
+                // BEFORE the pipeline computes any header mask, so a ChaCha
+                // packet can never reach this arm in a fips build. This
+                // function has no error channel ([5]u8 return), so the
+                // correct expression of "cannot happen" is `unreachable`,
+                // not a zero-mask return.
+                unreachable;
+            }
             if (hp_key.len >= 32) {
                 // ChaCha20 header protection uses counter from sample
                 const counter = std.mem.readInt(u32, sample[0..4], .little);
@@ -471,6 +487,7 @@ fn generateHeaderMask(suite: crypto_zig.AeadSuite, hp_key: []const u8, sample: [
                 var output: [5]u8 = undefined;
                 var key32: [32]u8 = undefined;
                 @memcpy(&key32, hp_key[0..32]);
+                // fips-exempt: non-security — RFC 9001 §5.4 ChaCha20 header-protection mask; non-FIPS arm, comptime-unreachable under -Dfips=true (guarded above).
                 std.crypto.stream.chacha.ChaCha20IETF.xor(&output, &[_]u8{0} ** 5, counter, key32, nonce);
                 mask = output;
             }
@@ -478,6 +495,11 @@ fn generateHeaderMask(suite: crypto_zig.AeadSuite, hp_key: []const u8, sample: [
     }
 
     return mask;
+}
+
+/// Test-only re-export of the private header-mask generator.
+pub fn generateHeaderMaskForTest(suite: crypto_zig.AeadSuite, hp_key: []const u8, sample: [16]u8) [5]u8 {
+    return generateHeaderMask(suite, hp_key, sample);
 }
 
 // ============================================================================

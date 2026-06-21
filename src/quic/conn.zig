@@ -1519,6 +1519,7 @@ pub const Connection = struct {
         // residual secrets from persisting in freed heap pages.
         // Uses std.crypto.secureZero to prevent the compiler from optimizing
         // away the zeroing of sensitive data (unlike plain @memset).
+        // fips-exempt: non-security — key-material zeroization, not a FIPS algorithm.
         const sz = std.crypto.secureZero;
         if (self.app_tx_keys) |*k| {
             sz(u8, &k.key);
@@ -1896,6 +1897,7 @@ pub const Connection = struct {
         const tail = pkt[pkt.len - 16 ..];
         var i: usize = 0;
         while (i < self.reset_tokens.items.len) : (i += 1) {
+            // fips-exempt: non-security — constant-time compare, not a FIPS algorithm.
             if (std.crypto.timing_safe.eql([16]u8, self.reset_tokens.items[i].token, tail[0..16].*)) return true;
         }
         return false;

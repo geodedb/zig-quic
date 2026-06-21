@@ -675,8 +675,12 @@ test "Recovery handles mixed ACK-eliciting and non-ACK-eliciting packets" {
     const acked = [_]u64{ 1, 2, 3 };
     const result = rec.onAckReceived(.Initial, &acked, 0, 4000);
 
-    // All 3 packets ACKed (2500 bytes total)
-    try testing.expectEqual(@as(usize, 2500), result.bytes_acked);
+    // RFC 9002 §A.1: only the two ACK-eliciting packets (1 and 3) are tracked in
+    // sent_packets and therefore contribute to acked bytes. The non-ACK-eliciting
+    // packet (2) is not in flight, is not tracked, and contributes nothing —
+    // matching `bytes_in_flight` only counting ACK-eliciting above. (Tracking it
+    // was the accumulator behind the O(n^2) sequential-request wedge.)
+    try testing.expectEqual(@as(usize, 2400), result.bytes_acked);
 
     // pto_count should reset (ACK-eliciting packets were ACKed)
     try testing.expectEqual(@as(u32, 0), rec.pto_count);
@@ -849,4 +853,62 @@ test "sent_packets cap is independent per space" {
 
     // Initial space is unaffected (only 10 packets).
     try testing.expectEqual(@as(usize, 10), rec.spaces[init_idx].sent.items.len);
+}
+
+test "Recovery sent list stays bounded over sequential ack-eliciting + ack-only cycles" {
+    // Regression for the O(n^2)-per-connection recovery wedge under sustained
+    // SEQUENTIAL request/response on one connection. Each cycle a server emits
+    // one ACK-eliciting response packet plus one or more non-ACK-eliciting
+    // ACK-only packets. Before the fix, EVERY sent packet — including the
+    // ACK-only ones, which the peer never acknowledges and which are never
+    // retransmitted — was appended to the per-space `sent` list. It therefore
+    // grew ~1 entry per request (only ever shrinking at the 4096 hard cap) and
+    // every received ACK re-scanned the growing list (unprocessed-count scan,
+    // loss detection, and the sent_index rebuild in compact()), yielding O(n)
+    // per ACK and O(n^2) over the connection.
+    //
+    // RFC 9002 §A.1 / §2: only ACK-eliciting packets are in flight and tracked
+    // for loss recovery. With the fix, `sent` is bounded by the in-flight
+    // window and MUST NOT grow with the number of completed cycles.
+    var rec = recovery.Recovery.init(testing.allocator);
+    defer rec.deinit();
+    rec.cc.mds = 1200;
+    rec.cc.cwnd = 100 * 1200;
+    rec.refreshAtomicMirrors();
+
+    const app_idx = @intFromEnum(recovery.PacketNumberSpace.Application);
+
+    var pn: u64 = 0;
+    const cycles: u64 = 500;
+    var i: u64 = 0;
+    while (i < cycles) : (i += 1) {
+        const now: u64 = (i + 1) * 1_000_000;
+
+        // One ACK-eliciting "response" packet.
+        const stream_pn = pn;
+        try rec.onPacketSent(.Application, stream_pn, 1200, true, now);
+        pn += 1;
+
+        // Two non-ACK-eliciting ACK-only packets (server draining a burst).
+        try rec.onPacketSent(.Application, pn, 40, false, now);
+        pn += 1;
+        try rec.onPacketSent(.Application, pn, 40, false, now);
+        pn += 1;
+
+        // Peer ACKs the ACK-eliciting packet; recovery compacts it out so the
+        // in-flight set returns to empty each cycle.
+        const acked = [_]u64{stream_pn};
+        _ = rec.onAckReceived(.Application, &acked, 0, now + 1_000_000);
+
+        // Invariant: the tracking set never accumulates. ACK-only packets must
+        // never have been added; the ACK-eliciting one is compacted after ACK.
+        try testing.expectEqual(@as(usize, 0), rec.spaces[app_idx].sent.items.len);
+        // Same assertion via the public accessor used by callers.
+        try testing.expectEqual(@as(usize, 0), rec.sentLen(.Application));
+    }
+
+    // After 500 cycles (1500 packets sent, 1000 of them ACK-only) the list is
+    // empty — not ~1000+ — and bytes-in-flight drained.
+    try testing.expectEqual(@as(usize, 0), rec.spaces[app_idx].sent.items.len);
+    try testing.expectEqual(@as(usize, 0), rec.bytesInFlightSnapshot());
 }

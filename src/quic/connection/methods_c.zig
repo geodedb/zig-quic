@@ -217,6 +217,20 @@ pub fn bind(comptime Connection: type) type {
                 self.sent_sizes = std.AutoHashMap(u64, u16).init(self.allocator.*);
                 self.sent_sizes_init = true;
             }
+            // These legacy maps are write-only retained-for-compat history (no
+            // production reader consults them; recovery.zig holds the
+            // authoritative per-packet time/size in its bounded `sent` list).
+            // Left unbounded they grew one entry per sent packet for the life of
+            // the connection — a per-connection accumulator whose `getOrPut`
+            // (Wyhash) cost showed up in the sustained-sequential-load profile.
+            // Cap them so they stay bounded: when the retained history exceeds
+            // `max_sent_history` we clear it (cheap, amortized O(1), and safe
+            // precisely because nothing reads the contents). The cap is far above
+            // any in-flight window and above the concurrency thread-safety test's
+            // working set, so observable behavior is unchanged.
+            const max_sent_history: u32 = 4096;
+            if (self.sent_time.count() >= max_sent_history) self.sent_time.clearRetainingCapacity();
+            if (self.sent_sizes.count() >= max_sent_history) self.sent_sizes.clearRetainingCapacity();
             _ = self.sent_time.put(pn, @as(i128, @intCast(now_ns))) catch |err| {
                 logger.err("sent_time.put failed (OOM): {s}", .{@errorName(err)});
             };

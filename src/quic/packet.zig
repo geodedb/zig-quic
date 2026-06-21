@@ -1309,6 +1309,7 @@ pub fn verifyRetry(odcid: []const u8, retry_packet: []const u8) bool {
     const version_v2 = (version == QUIC_V2);
     const calc = crypto.computeRetryIntegrityTag(version_v2, odcid, retry_wo_tag) catch return false;
     // Use constant-time comparison to prevent timing side-channel (GAP-0018/SF-018).
+    // fips-exempt: non-security — constant-time tag compare, not a FIPS algorithm.
     return std.crypto.timing_safe.eql([16]u8, calc, tag[0..16].*);
 }
 

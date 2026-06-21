@@ -830,7 +830,13 @@ test "RFC 9002 §6.2 - ACK-only packets do not reset PTO backoff" {
     const acked = [_]u64{1};
     const result = rec.onAckReceived(.Application, &acked, 0, 10_000);
 
-    try std.testing.expectEqual(@as(usize, 64), result.bytes_acked);
+    // RFC 9002 §A.1: ACK-only packets are not in flight and are NOT added to
+    // sent_packets, so there is nothing to acknowledge for recovery — acking the
+    // PN of an ACK-only packet yields zero acked bytes. (Previously this packet
+    // was tracked in `sent`, the accumulator that caused the O(n^2) wedge.)
+    try std.testing.expectEqual(@as(usize, 0), result.bytes_acked);
+    // Primary assertion (RFC 9002 §6.2): no ack-eliciting packet was acked, so
+    // the PTO backoff counter is unchanged.
     try std.testing.expectEqual(@as(u32, 2), rec.pto_count);
 }
 

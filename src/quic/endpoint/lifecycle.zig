@@ -94,7 +94,7 @@ pub const version = "Phase 10 - Connection Lifecycle Extraction";
 /// Extracted from endpoint.zig to support stale connection detection.
 fn hashSockaddr(storage: *const std.posix.sockaddr.storage, len: std.posix.socklen_t) u64 {
     const bytes = @as([*]const u8, @ptrCast(storage))[0..len];
-    return std.hash.Wyhash.hash(0, bytes);
+    return std.hash.Wyhash.hash(0, bytes); // fips-exempt: non-security — Wyhash sockaddr peer-compare key, not a FIPS algorithm.
 }
 
 // =============================================================================

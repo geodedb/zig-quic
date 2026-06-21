@@ -10,13 +10,17 @@ const std = @import("std");
 const builtin = @import("builtin");
 const ks = @import("quic_tls");
 const logger = @import("quic_logger");
+const backend = @import("crypto_backend");
 
 // Use Zig std.crypto for AEAD operations (matching vendored ztls approach)
 const crypto_impl = @import("crypto_zig.zig");
 
-// Keep Zig std.crypto for Retry Integrity Tag
-const Aes128Gcm = std.crypto.aead.aes_gcm.Aes128Gcm;
-const Poly1305 = std.crypto.onetimeauth.Poly1305;
+// ChaCha20 header-protection keystream (RFC 9001 §5.4). Non-FIPS arm only:
+// every consumer guards the .chacha20_poly1305 branch with
+// `if (backend.fips_enabled) return error.Unsupported;` BEFORE reaching this
+// alias, so under -Dfips=true the branch (and this alias' only op use) folds
+// away. Retry Integrity Tag (AES-128-GCM) routes through backend.Aead.seal.
+// fips-exempt: non-security — RFC 9001 §5.4 ChaCha20 header-protection keystream; non-FIPS arm, comptime-unreachable under -Dfips=true.
 const ChaCha20IETF = std.crypto.stream.chacha.ChaCha20IETF;
 
 /// Expand a truncated packet number using the largest received packet number.
@@ -169,13 +173,16 @@ fn deriveRetryKeyIv(version_v2: bool) !struct { key: [16]u8, iv: [12]u8 } {
 }
 
 /// Compute the Retry Integrity Tag over the provided pseudo-packet AAD using AES-128-GCM with fixed key/nonce.
-fn aesGcmTagFixedNonce(key16: [16]u8, nonce12: [12]u8, aad: []const u8) [16]u8 {
-    var tag: [Aes128Gcm.tag_length]u8 = undefined;
+/// Routed through the crypto_backend AEAD seam so the active backend (std shim or
+/// FIPS provider) performs the AES-128-GCM. AES-128-GCM is FIPS-approved and the
+/// key/nonce are RFC 9001 §5.8 fixed public constants, so behavior is identical in
+/// both modes; routing through the seam keeps the security path off direct std.crypto.
+fn aesGcmTagFixedNonce(key16: [16]u8, nonce12: [12]u8, aad: []const u8) ![16]u8 {
+    var tag: [16]u8 = undefined; // AES-128-GCM tag length (RFC 9001 §5.8 fixed 16-byte Retry tag).
     // Empty plaintext; ciphertext buffer can be zero-length.
     // Use a function-local buffer to avoid a mutable global data race (SF-021).
     var ct_local: [1]u8 = .{0};
-    const ct: []u8 = ct_local[0..0];
-    Aes128Gcm.encrypt(ct, &tag, ct_local[0..0], aad, nonce12, key16);
+    backend.Aead.seal(.aes_128_gcm, &key16, &nonce12, aad, ct_local[0..0], ct_local[0..0], &tag) catch return error.RetryTagFailed;
     return tag;
 }
 
@@ -193,7 +200,7 @@ pub fn computeRetryIntegrityTag(version_v2: bool, odcid: []const u8, retry_witho
     aad_buf[0] = @as(u8, @intCast(odcid.len));
     @memcpy(aad_buf[1 .. 1 + odcid.len], odcid);
     @memcpy(aad_buf[1 + odcid.len .. aad_len], retry_without_tag);
-    return aesGcmTagFixedNonce(kiv.key, kiv.iv, aad_buf[0..aad_len]);
+    return try aesGcmTagFixedNonce(kiv.key, kiv.iv, aad_buf[0..aad_len]);
 }
 
 /// Generic protection function for Initial and Handshake packets.
@@ -631,11 +638,16 @@ pub fn unmaskLongHeaderAndPn(
         .aes_128_gcm, .aes_256_gcm => {
             // Both AES-128-GCM and AES-256-GCM use AES-128-ECB for header protection (RFC 9001 §5.4.3)
             if (hp_key.len != 16) return error.InvalidKey;
+            // fips-exempt: non-security — RFC 9001 §5.4 AES-ECB header-protection mask (AES is FIPS-approved).
             const Aes128 = std.crypto.core.aes.Aes128;
             var ctx = Aes128.initEnc(hp_key[0..16].*);
             ctx.encrypt(&out_block, sample16);
         },
         .chacha20_poly1305 => {
+            // ChaCha20 header protection is not FIPS-approved; reject under -Dfips.
+            // backend.fips_enabled is comptime-known, so this branch folds away
+            // in a non-fips build and compiles out the ChaCha mask below under fips.
+            if (backend.fips_enabled) return error.Unsupported;
             if (hp_key.len != 32) return error.InvalidKey;
             var nonce: [12]u8 = undefined;
             @memcpy(nonce[0..], sample16.*[4..16]);

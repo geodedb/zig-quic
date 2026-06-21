@@ -14,6 +14,7 @@
 //! - HMAC-SHA256 (32 bytes) over all previous fields
 
 const std = @import("std");
+const backend = @import("crypto_backend");
 
 /// Encode a token for address validation.
 /// Returns allocated buffer containing the token.
@@ -70,11 +71,10 @@ pub fn encode(
     @memcpy(token[pos .. pos + dcid.len], dcid);
     pos += dcid.len;
 
-    // Compute HMAC-SHA256 over timestamp + ip + dcid
+    // Compute HMAC-SHA256 over timestamp + ip + dcid via the FIPS seam.
     const data_to_sign = token[0..pos];
-    const Hmac = std.crypto.auth.hmac.sha2.HmacSha256;
     var hmac_out: [32]u8 = undefined;
-    Hmac.create(&hmac_out, data_to_sign, secret);
+    _ = backend.Mac.hmac(.sha256, secret, data_to_sign, &hmac_out) catch return error.HmacFailed;
     @memcpy(token[pos .. pos + 32], &hmac_out);
 
     return token;
@@ -159,11 +159,11 @@ fn authenticatedDcid(
     const data_to_sign = token[0..pos]; // Everything before HMAC
     const expected_hmac = token[pos .. pos + 32];
 
-    const Hmac = std.crypto.auth.hmac.sha2.HmacSha256;
     var computed_hmac: [32]u8 = undefined;
-    Hmac.create(&computed_hmac, data_to_sign, secret);
+    _ = backend.Mac.hmac(.sha256, secret, data_to_sign, &computed_hmac) catch return null;
 
-    // Constant-time comparison
+    // Constant-time comparison.
+    // fips-exempt: non-security — constant-time compare, not a FIPS algorithm.
     if (!std.crypto.timing_safe.eql([32]u8, computed_hmac, expected_hmac[0..32].*)) return null;
     return dcid;
 }

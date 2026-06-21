@@ -8,7 +8,7 @@ const std = @import("std");
 pub const ShardError = error{ InvalidShardCount, RandomSourceUnavailable };
 
 fn seededHash(bytes: []const u8, seed: u64) u64 {
-    return std.hash.Wyhash.hash(seed, bytes);
+    return std.hash.Wyhash.hash(seed, bytes); // fips-exempt: non-security — Wyhash shard distribution, not a FIPS algorithm.
 }
 
 /// Fill `buf` from the OS CSPRNG, failing closed (QC-04). Inlined here rather
