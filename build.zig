@@ -193,10 +193,22 @@ pub fn build(b: *std.Build) void {
     // paths via `QuicConfig.allow_insecure = true`; forward the build flag so those
     // targets compile & run. Production callers that set `allow_insecure = false`
     // are unaffected (they flow to the `.secure` variant, which never panics).
+    //
+    // FIPS review (CRITICAL): propagate -Dfips and -Dopenssl_path DOWN to the
+    // tls dependency so its crypto_backend seam activates transitively. Without
+    // this, the TLS-layer crypto (handshake, key-schedule HKDF, PQC) that quic
+    // consumes via quic_tls/tls13/sig/x509 would run on tls's std_shim backend
+    // even under -Dfips=true, bypassing the FIPS provider. The local
+    // seam-enabled tls (build.zig.zon .tls = .{ .path = "../tls" }) accepts
+    // both options; passing them here flips its `if (fips)` lazyDependency wire
+    // so the SAME local fips package (single instance — GAP-0020) backs both
+    // quic's and tls's seam, and OpenSSL links onto the tls-derived modules.
     const tls_dep = b.dependency("tls", .{
         .target = target,
         .optimize = optimize,
         .@"tls-insecure-testing" = true,
+        .fips = fips,
+        .openssl_path = openssl_path orelse "/usr/local/ssl",
     });
 
     // Get TLS modules from the external dependency (only the ones actually used)
@@ -1043,6 +1055,13 @@ pub fn build(b: *std.Build) void {
             test_pending_hs_send.root_module.addImport("quic_tls", quic_tls_mod);
             test_pending_hs_send.root_module.addImport("config.zig", quic_config_mod);
             test_pending_hs_send.root_module.addImport("test_certs", test_certs_mod);
+            // FIPS seam: the test's hardcoded x25519-only ClientHello is a
+            // non-FIPS key-share; under -Dfips the server CORRECTLY rejects it
+            // (UnsupportedKeyShareGroup — X25519 alone is not FIPS-approved,
+            // only the X25519MLKEM768 hybrid is). The pending_hs_send retry
+            // mechanics under test are crypto-agnostic and fully covered by
+            // the -Dfips=false gate, so the test skips under -Dfips=true.
+            test_pending_hs_send.root_module.addImport("quic_build_options", build_options_mod);
             const run_test_pending_hs_send = b.addRunArtifact(test_pending_hs_send);
             test_step.dependOn(&run_test_pending_hs_send.step);
             return;
@@ -2420,6 +2439,13 @@ pub fn build(b: *std.Build) void {
         test_pending_hs_send.root_module.addImport("quic_tls", quic_tls_mod);
         test_pending_hs_send.root_module.addImport("config.zig", quic_config_mod);
         test_pending_hs_send.root_module.addImport("test_certs", test_certs_mod);
+        // FIPS seam: the test's hardcoded x25519-only ClientHello is a
+        // non-FIPS key-share; under -Dfips the server CORRECTLY rejects it
+        // (UnsupportedKeyShareGroup — X25519 alone is not FIPS-approved, only
+        // the X25519MLKEM768 hybrid is). The pending_hs_send retry mechanics
+        // under test are crypto-agnostic and fully covered by the -Dfips=false
+        // gate, so the test skips under -Dfips=true.
+        test_pending_hs_send.root_module.addImport("quic_build_options", build_options_mod);
         const run_test_pending_hs_send = b.addRunArtifact(test_pending_hs_send);
         test_step.dependOn(&run_test_pending_hs_send.step);
 
