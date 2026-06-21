@@ -20,7 +20,7 @@ const posix = std.posix;
 /// Used for connection routing by DCID.
 /// RFC 9000 §5.2: "Servers route packets to connections using the DCID."
 pub fn hashBytes(b: []const u8) u64 {
-    var h = std.hash.Wyhash.init(0);
+    var h = std.hash.Wyhash.init(0); // fips-exempt: non-security — Wyhash connection-ID map key, not a FIPS algorithm.
     h.update(b);
     return h.final();
 }

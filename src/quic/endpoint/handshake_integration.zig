@@ -39,7 +39,7 @@ fn advertisedMaxUdpPayload(quic_cfg: *const cfg.QuicConfig) u16 {
 
 // Helper function to hash bytes
 inline fn hashBytes(b: []const u8) u64 {
-    var h = std.hash.Wyhash.init(0);
+    var h = std.hash.Wyhash.init(0); // fips-exempt: non-security — Wyhash connection-ID map key, not a FIPS algorithm.
     h.update(b);
     return h.final();
 }
@@ -1102,7 +1102,7 @@ pub fn sendHandshakePackets(ctx: *HandshakeContext) !void {
 
     const n = pending_data.len;
     if (conn.role == .Server) {
-        var h = std.hash.Wyhash.init(0);
+        var h = std.hash.Wyhash.init(0); // fips-exempt: non-security — Wyhash pending-data fingerprint, not a FIPS algorithm.
         h.update(pending_data);
         const hash = h.final();
         logger.debugPrint("sendHandshakePackets: Handshake payload hash=0x{X:0>16}\n", .{hash});

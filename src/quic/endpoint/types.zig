@@ -60,7 +60,7 @@ pub const EndpointRole = enum {
 
 /// Hash bytes using Wyhash.
 pub fn hashBytes(b: []const u8) u64 {
-    var h = std.hash.Wyhash.init(0);
+    var h = std.hash.Wyhash.init(0); // fips-exempt: non-security — Wyhash connection-ID map key, not a FIPS algorithm.
     h.update(b);
     return h.final();
 }
