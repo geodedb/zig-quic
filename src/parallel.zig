@@ -452,7 +452,7 @@ fn generateHeaderMask(suite: crypto_zig.AeadSuite, hp_key: []const u8, sample: [
         .aes_128_gcm => {
             // fips-exempt: non-security — RFC 9001 §5.4 AES-ECB header-protection mask (AES is FIPS-approved).
             if (hp_key.len >= 16) {
-                const aes = std.crypto.core.aes.Aes128.initEnc(hp_key[0..16].*);
+                const aes = std.crypto.core.aes.Aes128.initEnc(hp_key[0..16].*); // fips-exempt: non-security — RFC 9001 §5.4 AES-ECB header-protection mask (AES is FIPS-approved).
                 var block: [16]u8 = undefined;
                 aes.encrypt(&block, &sample);
                 @memcpy(&mask, block[0..5]);
@@ -461,7 +461,7 @@ fn generateHeaderMask(suite: crypto_zig.AeadSuite, hp_key: []const u8, sample: [
         .aes_256_gcm => {
             // fips-exempt: non-security — RFC 9001 §5.4 AES-ECB header-protection mask (AES is FIPS-approved).
             if (hp_key.len >= 32) {
-                const aes = std.crypto.core.aes.Aes256.initEnc(hp_key[0..32].*);
+                const aes = std.crypto.core.aes.Aes256.initEnc(hp_key[0..32].*); // fips-exempt: non-security — RFC 9001 §5.4 AES-ECB header-protection mask (AES is FIPS-approved).
                 var block: [16]u8 = undefined;
                 aes.encrypt(&block, &sample);
                 @memcpy(&mask, block[0..5]);
@@ -487,6 +487,7 @@ fn generateHeaderMask(suite: crypto_zig.AeadSuite, hp_key: []const u8, sample: [
                 var output: [5]u8 = undefined;
                 var key32: [32]u8 = undefined;
                 @memcpy(&key32, hp_key[0..32]);
+                // fips-exempt: non-security — RFC 9001 §5.4 ChaCha20 header-protection mask; non-FIPS arm, comptime-unreachable under -Dfips=true (guarded above).
                 std.crypto.stream.chacha.ChaCha20IETF.xor(&output, &[_]u8{0} ** 5, counter, key32, nonce);
                 mask = output;
             }

@@ -15,9 +15,12 @@ const backend = @import("crypto_backend");
 // Use Zig std.crypto for AEAD operations (matching vendored ztls approach)
 const crypto_impl = @import("crypto_zig.zig");
 
-// Keep Zig std.crypto for Retry Integrity Tag
-const Aes128Gcm = std.crypto.aead.aes_gcm.Aes128Gcm;
-const Poly1305 = std.crypto.onetimeauth.Poly1305;
+// ChaCha20 header-protection keystream (RFC 9001 §5.4). Non-FIPS arm only:
+// every consumer guards the .chacha20_poly1305 branch with
+// `if (backend.fips_enabled) return error.Unsupported;` BEFORE reaching this
+// alias, so under -Dfips=true the branch (and this alias' only op use) folds
+// away. Retry Integrity Tag (AES-128-GCM) routes through backend.Aead.seal.
+// fips-exempt: non-security — RFC 9001 §5.4 ChaCha20 header-protection keystream; non-FIPS arm, comptime-unreachable under -Dfips=true.
 const ChaCha20IETF = std.crypto.stream.chacha.ChaCha20IETF;
 
 /// Expand a truncated packet number using the largest received packet number.
@@ -175,7 +178,7 @@ fn deriveRetryKeyIv(version_v2: bool) !struct { key: [16]u8, iv: [12]u8 } {
 /// key/nonce are RFC 9001 §5.8 fixed public constants, so behavior is identical in
 /// both modes; routing through the seam keeps the security path off direct std.crypto.
 fn aesGcmTagFixedNonce(key16: [16]u8, nonce12: [12]u8, aad: []const u8) ![16]u8 {
-    var tag: [Aes128Gcm.tag_length]u8 = undefined;
+    var tag: [16]u8 = undefined; // AES-128-GCM tag length (RFC 9001 §5.8 fixed 16-byte Retry tag).
     // Empty plaintext; ciphertext buffer can be zero-length.
     // Use a function-local buffer to avoid a mutable global data race (SF-021).
     var ct_local: [1]u8 = .{0};
