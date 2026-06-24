@@ -262,17 +262,21 @@ pub fn build(b: *std.Build) void {
         // the fips dependency (which links OpenSSL). The fips package is a
         // LOCAL PATH dependency (see build.zig.zon); the eventual published
         // form is a git+https lazy dep documented there.
-        const fips_dep = b.dependency("fips", .{
+        // fips is `.lazy = true` in build.zig.zon, so it MUST be accessed via
+        // lazyDependency (b.dependency panics on a lazy dep). We are inside
+        // `if (fips)`, so the dependency is requested + resolved here.
+        if (b.lazyDependency("fips", .{
             .target = target,
             .optimize = optimize,
             .openssl_path = openssl_path orelse "/usr/local/ssl",
-        });
-        const fips_mod = fips_dep.module("fips");
-        crypto_backend_mod.addImport("fips", fips_mod);
-        // Link OpenSSL onto the fips backend module so it propagates to every
-        // consuming artifact. The fips package's own build.zig also links it,
-        // but linking here keeps the consumer artifact self-sufficient.
-        link.linkOpenssl(b, fips_mod, openssl_path orelse "/usr/local/ssl");
+        })) |fips_dep| {
+            const fips_mod = fips_dep.module("fips");
+            crypto_backend_mod.addImport("fips", fips_mod);
+            // Link OpenSSL onto the fips backend module so it propagates to every
+            // consuming artifact. The fips package's own build.zig also links it,
+            // but linking here keeps the consumer artifact self-sufficient.
+            link.linkOpenssl(b, fips_mod, openssl_path orelse "/usr/local/ssl");
+        }
     }
     quic_crypto_mod.addImport("crypto_backend", crypto_backend_mod);
 
