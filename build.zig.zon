@@ -1,6 +1,6 @@
 .{
     .name = .quic,
-    .version = "0.1.33",
+    .version = "0.1.34",
     .fingerprint = 0xc0795252512a1280,
     .minimum_zig_version = "0.16.0",
     .paths = .{
@@ -38,8 +38,8 @@
         //       .hash = "<seam-enabled-tls-hash>",
         //   },
         .tls = .{
-            .url = "git+https://gitlab.com/devnw/zig/tls.git#v0.1.16",
-            .hash = "tls-0.1.16-mtEaLPssFgDXM8r7HPoDgZaqNfrAZbAhTQvk7SDmprqu",
+            .url = "git+https://gitlab.com/devnw/zig/tls.git#v0.1.17",
+            .hash = "tls-0.1.17-mtEaLPssFgDFFZ4Ol2lSApXtM7_jwPlxPmIXzogqih65",
         },
         // Thread pool for parallel operations
         .thread_pool = .{
@@ -49,8 +49,8 @@
         // OpenTelemetry instrumentation (gated behind -Dwith_otel; lazy = true
         // so the dependency is never fetched when the flag is off).
         .otel = .{
-            .url = "git+https://gitlab.com/devnw/zig/otel.git#v0.1.14",
-            .hash = "otel-0.1.14-B0v3lrz2NQCAGvsVnOnr7e2OUlUdIgZoFS8JHiMQAxNJ",
+            .url = "git+https://gitlab.com/devnw/zig/otel.git#v0.1.15",
+            .hash = "otel-0.1.15-B0v3lrz2NQDlzY3t-QLNpP4PE3UylgFDF__MoZZTWNJt",
             .lazy = true,
         },
         // FIPS-140-3 / PQC backend. Resolved ONLY when a build reaches
@@ -71,8 +71,8 @@
         //       .lazy = true,
         //   },
         .fips = .{
-            .url = "git+https://gitlab.com/devnw/zig/fips.git#v0.1.0",
-            .hash = "fips-0.1.0-1wf3nbxWBgAp6yAk6cPRrF5l_U1tbblcVcN9xcjJDddy",
+            .url = "git+https://gitlab.com/devnw/zig/fips.git#v0.1.1",
+            .hash = "fips-0.1.1-1wf3na01BwC3voljVu61_0g6DXp6BCedXrq4QMuMeQBq",
             .lazy = true,
         },
     },
