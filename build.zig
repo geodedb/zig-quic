@@ -92,6 +92,7 @@ pub fn build(b: *std.Build) void {
     const build_options = b.addOptions();
     build_options.addOption(bool, "with_otel", with_otel);
     build_options.addOption(bool, "fips", fips);
+    build_options.addOption([]const u8, "package_name", "quic");
     const build_options_mod = build_options.createModule();
 
     // Observability seam (otel). Declared as a SHARED NAMED MODULE so
