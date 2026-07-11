@@ -25,4 +25,12 @@ ENV HOME=/tmp \
     ZIG_LOCAL_CACHE_DIR=/tmp/zig-local-cache \
     ZIG_GLOBAL_CACHE_DIR=/tmp/zig-global-cache
 
+# Drop to an unprivileged user before running the test binary. /tmp is
+# world-writable (sticky bit) so ZIG_*_CACHE_DIR and HOME both remain usable
+# for a non-root user; /workspace is chowned in case sources are baked in
+# rather than bind-mounted at runtime.
+RUN groupadd -r zig && useradd -r -g zig -d /nonexistent -s /usr/sbin/nologin zig \
+    && chown -R zig:zig /workspace
+USER zig
+
 CMD ["bash", "-lc", "zig version && zig build test -Dtest-filter=high_parallel_scale"]
