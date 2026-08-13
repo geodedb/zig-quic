@@ -4,7 +4,7 @@ go 1.25.0
 
 toolchain go1.26.2
 
-require github.com/quic-go/quic-go v0.59.0
+require github.com/quic-go/quic-go v0.59.1
 
 require (
 	golang.org/x/crypto v0.47.0 // indirect
