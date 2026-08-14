@@ -2,7 +2,7 @@ module quic-go-test-client
 
 go 1.25.0
 
-toolchain go1.26.2
+toolchain go1.26.6
 
 require github.com/quic-go/quic-go v0.59.0
 

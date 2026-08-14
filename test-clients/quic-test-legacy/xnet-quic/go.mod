@@ -2,7 +2,7 @@ module xnet-quic-test
 
 go 1.25.0
 
-toolchain go1.26.2
+toolchain go1.26.6
 
 require golang.org/x/net v0.49.0
 
