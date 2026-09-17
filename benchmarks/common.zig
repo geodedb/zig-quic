@@ -102,6 +102,7 @@ pub const RunOutput = struct {
     cwnd_final_bytes: u64 = 0,
     rtt_smoothed_ns: u64 = 0,
     mutex_hold_wall_ns: u64 = 0,
+    /// Owned allocation, released by runRepeated after copying to its result.
     /// Populated only by external-tier scenarios. Suffix "-SKIP" marks a
     /// row that was skipped (toolchain missing / build failed / server
     /// failed to start); downstream compare/gate treats skip rows as
@@ -132,6 +133,7 @@ pub fn parseSuiteArg(args: []const []const u8) ?[]const u8 {
 /// Run `runFn` 7 times, discard run #1, return ResultRow with median-of-6 + stddev.
 pub fn runRepeated(
     allocator: std.mem.Allocator,
+    workload_allocator: std.mem.Allocator,
     io: std.Io,
     spec: ScenarioSpec,
     runFn: RunFn,
@@ -140,13 +142,20 @@ pub fn runRepeated(
     const WARMUP: usize = 1;
     const SAMPLES: usize = RUN_COUNT - WARMUP;
 
+    // Results may live in an arena until JSON serialization, but connection
+    // teardown must release workload memory between samples and scenarios.
     var outputs: [RUN_COUNT]RunOutput = undefined;
-    for (&outputs) |*o| o.* = try runFn(allocator, spec);
+    var completed: usize = 0;
     defer {
-        for (&outputs) |*o| {
-            allocator.free(o.latencies_ns);
-            if (o.handshake_latencies_ns) |h| allocator.free(h);
+        for (outputs[0..completed]) |o| {
+            workload_allocator.free(o.latencies_ns);
+            if (o.handshake_latencies_ns) |h| workload_allocator.free(h);
+            if (o.external_impl) |label| workload_allocator.free(label);
         }
+    }
+    for (&outputs) |*o| {
+        o.* = try runFn(workload_allocator, spec);
+        completed += 1;
     }
 
     const warm_samples = outputs[WARMUP..];
@@ -218,7 +227,7 @@ pub fn runRepeated(
         .cwnd_final_bytes = if (rep.cwnd_final_bytes == 0) null else rep.cwnd_final_bytes,
         .rtt_smoothed_ns = if (rep.rtt_smoothed_ns == 0) null else rep.rtt_smoothed_ns,
         .mutex_hold_wall_ns = if (rep.mutex_hold_wall_ns == 0) null else rep.mutex_hold_wall_ns,
-        .external_impl = rep.external_impl,
+        .external_impl = if (rep.external_impl) |label| try allocator.dupe(u8, label) else null,
     };
 }
 

@@ -125,7 +125,7 @@ pub fn main(init: std.process.Init) !void {
     for (registry) |entry| {
         if (!matches(suite, entry)) continue;
         for (entry.scenarios) |spec| {
-            const row = try common.runRepeated(allocator, init.io, spec, entry.runFn);
+            const row = try common.runRepeated(allocator, std.heap.smp_allocator, init.io, spec, entry.runFn);
             try rows.append(allocator, row);
         }
     }

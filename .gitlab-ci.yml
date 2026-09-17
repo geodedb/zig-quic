@@ -618,10 +618,6 @@ quality-zig-gates:
 #   - manual on main after a perf-affecting merge
 stress-integration-20x:
   stage: test
-  variables:
-    # Connection-scale stress exceeds the default 6Gi container limit.
-    KUBERNETES_MEMORY_REQUEST: "8Gi"
-    KUBERNETES_MEMORY_LIMIT: "12Gi"
   image: debian:bookworm-slim
   tags:
     - company
