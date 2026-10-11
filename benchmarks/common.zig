@@ -205,11 +205,11 @@ pub fn runRepeated(
     }
     const rep = outputs[median_idx];
 
-    const summary = summarizeLatencies(rep.latencies_ns);
-    const handshake_summary: ?LatencySummary = if (rep.handshake_latencies_ns) |h|
-        summarizeLatencies(h)
-    else
-        null;
+    // Preserve every retained observation. Selecting the median-throughput
+    // run for latency would discard five sixths of the measured samples.
+    const summary = try summarizeRetainedLatencies(workload_allocator, warm_samples, .operation);
+    const retained_handshakes = try summarizeRetainedLatencies(workload_allocator, warm_samples, .handshake);
+    const handshake_summary: ?LatencySummary = if (retained_handshakes.count == 0) null else retained_handshakes;
 
     return ResultRow{
         .git_sha = try gitSha(allocator, io),
@@ -290,6 +290,21 @@ pub fn writeDocument(
 }
 
 // ---------- Latency + timing helpers ----------
+
+const LatencyField = enum { operation, handshake };
+
+fn summarizeRetainedLatencies(allocator: std.mem.Allocator, outputs: []const RunOutput, field: LatencyField) !LatencySummary {
+    var values: std.ArrayList(u64) = .empty;
+    defer values.deinit(allocator);
+    for (outputs) |output| {
+        const samples = switch (field) {
+            .operation => output.latencies_ns,
+            .handshake => output.handshake_latencies_ns orelse &.{},
+        };
+        try values.appendSlice(allocator, samples);
+    }
+    return summarizeLatencies(values.items);
+}
 
 pub fn summarizeLatencies(values: []u64) LatencySummary {
     std.sort.heap(u64, values, {}, comptime std.sort.asc(u64));

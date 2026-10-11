@@ -145,3 +145,129 @@ test "SONNY-4798 unbatched runs retain existing latency units" {
     try std.testing.expectEqual(@as(u64, 3001), row.latency_p95_ns);
     try std.testing.expectEqual(@as(?common.LatencyBatch, null), row.latency_batch);
 }
+
+const RetainedLatencyScenario = struct {
+    var calls: usize = 0;
+    var reverse_throughput: bool = false;
+    var handshake_mode: enum { all, sparse, warmup_only, empty } = .all;
+
+    fn run(allocator: std.mem.Allocator, _: common.ScenarioSpec) !common.RunOutput {
+        const index = calls;
+        calls += 1;
+        const value: u64 = if (index == 0) 999_999 else @as(u64, @intCast(index)) * 10;
+        const latencies = try allocator.dupe(u64, &.{ value, value + 1 });
+        errdefer allocator.free(latencies);
+        const include_handshake = index == 0 or handshake_mode == .all or
+            (handshake_mode == .sparse and (index == 1 or index == 6));
+        const handshake: ?[]u64 = if (include_handshake)
+            try allocator.dupe(u64, &.{ value * 10, value * 10 + 1 })
+        else if (handshake_mode == .empty)
+            try allocator.alloc(u64, 0)
+        else
+            null;
+        const time_factor: u64 = if (index == 0) 1000 else if (reverse_throughput) 7 - index else index;
+        return .{
+            .iterations = 100,
+            .wall_time_ns = time_factor * 1000,
+            .cpu_time_ns = time_factor * 1000,
+            .latencies_ns = latencies,
+            .handshake_latencies_ns = handshake,
+            .alloc_count = @intCast(index),
+        };
+    }
+};
+
+test "SONNY-4784 latency percentiles include all retained runs regardless of throughput order" {
+    try prewarmBenchmarkEnv();
+    for ([_]bool{ false, true }) |reverse| {
+        var report = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer report.deinit();
+        RetainedLatencyScenario.calls = 0;
+        RetainedLatencyScenario.reverse_throughput = reverse;
+        RetainedLatencyScenario.handshake_mode = .all;
+        const row = try common.runRepeated(report.allocator(), std.testing.allocator, std.testing.io, .{ .name = "retained-latencies" }, RetainedLatencyScenario.run);
+        try std.testing.expectEqual(@as(usize, 7), RetainedLatencyScenario.calls);
+        // Six pairs 10/11 through 60/61; the warmup's 999999 must be absent.
+        try std.testing.expectEqual(@as(u64, 31), row.latency_p50_ns);
+        try std.testing.expectEqual(@as(u64, 60), row.latency_p95_ns);
+        try std.testing.expectEqual(@as(u64, 60), row.latency_p99_ns);
+        try std.testing.expectEqual(@as(?u64, 301), row.handshake_latency_p50_ns);
+        try std.testing.expectEqual(@as(?u64, 600), row.handshake_latency_p99_ns);
+        // Throughput and cost metadata still describe the representative run.
+        try std.testing.expectEqual(@as(u64, 3000), row.wall_time_ns);
+        try std.testing.expectEqual(@as(u64, if (reverse) 4 else 3), row.alloc_count);
+    }
+}
+
+test "SONNY-4784 handshake samples outside the representative run are retained" {
+    try prewarmBenchmarkEnv();
+    var report = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer report.deinit();
+    RetainedLatencyScenario.calls = 0;
+    RetainedLatencyScenario.reverse_throughput = false;
+    RetainedLatencyScenario.handshake_mode = .sparse;
+    const row = try common.runRepeated(report.allocator(), std.testing.allocator, std.testing.io, .{ .name = "sparse-handshakes" }, RetainedLatencyScenario.run);
+    try std.testing.expectEqual(@as(?u64, 101), row.handshake_latency_p50_ns);
+    try std.testing.expectEqual(@as(?u64, 600), row.handshake_latency_p99_ns);
+}
+
+test "SONNY-4784 absent or empty retained handshakes do not report warmup data" {
+    try prewarmBenchmarkEnv();
+    inline for (.{ .warmup_only, .empty }) |mode| {
+        var report = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer report.deinit();
+        RetainedLatencyScenario.calls = 0;
+        RetainedLatencyScenario.reverse_throughput = false;
+        RetainedLatencyScenario.handshake_mode = mode;
+        const row = try common.runRepeated(report.allocator(), std.testing.allocator, std.testing.io, .{ .name = "absent-handshakes" }, RetainedLatencyScenario.run);
+        try std.testing.expectEqual(@as(?u64, null), row.handshake_latency_p50_ns);
+        try std.testing.expectEqual(@as(?u64, null), row.handshake_latency_p99_ns);
+    }
+}
+
+fn retainedLatencyAllocationCheck(allocator: std.mem.Allocator) !void {
+    var report = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer report.deinit();
+    RetainedLatencyScenario.calls = 0;
+    RetainedLatencyScenario.reverse_throughput = false;
+    RetainedLatencyScenario.handshake_mode = .all;
+    _ = try common.runRepeated(report.allocator(), allocator, std.testing.io, .{ .name = "latency-allocation-failures" }, RetainedLatencyScenario.run);
+}
+
+test "SONNY-4784 every workload allocation failure releases retained samples" {
+    try prewarmBenchmarkEnv();
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, retainedLatencyAllocationCheck, .{});
+}
+
+const RetainedBatchScenario = struct {
+    fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunOutput {
+        var output = try RetainedLatencyScenario.run(allocator, spec);
+        for (output.latencies_ns) |*sample| sample.* = sample.* * 100 + 1;
+        output.latency_sample_operations = 1000;
+        return output;
+    }
+};
+
+test "SONNY-4784 SONNY-4798 retained raw batch percentiles keep fractional precision" {
+    try prewarmBenchmarkEnv();
+    for ([_]bool{ false, true }) |reverse| {
+        var report = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer report.deinit();
+        RetainedLatencyScenario.calls = 0;
+        RetainedLatencyScenario.reverse_throughput = reverse;
+        RetainedLatencyScenario.handshake_mode = .all;
+        const row = try common.runRepeated(report.allocator(), std.testing.allocator, std.testing.io, .{ .name = "retained-batches" }, RetainedBatchScenario.run);
+        // Pool 1001/1101 through 6001/6101; exclude warmup. Preserve the
+        // fractional ns/op data regardless of the representative run.
+        try std.testing.expectEqual(@as(u32, 1000), row.latency_batch.?.operations);
+        try std.testing.expectEqual(@as(u64, 3101), row.latency_batch.?.p50_ns);
+        try std.testing.expectEqual(@as(u64, 6001), row.latency_batch.?.p95_ns);
+        try std.testing.expectEqual(@as(u64, 6001), row.latency_batch.?.p99_ns);
+        try std.testing.expectEqual(@as(u64, 3), row.latency_p50_ns);
+        try std.testing.expectEqual(@as(u64, 6), row.latency_p95_ns);
+        // Handshake observations are unbatched and keep their own units.
+        try std.testing.expectEqual(@as(?u64, 301), row.handshake_latency_p50_ns);
+        try std.testing.expectEqual(@as(?u64, 600), row.handshake_latency_p99_ns);
+        try std.testing.expectEqual(@as(u64, 3000), row.wall_time_ns);
+    }
+}
