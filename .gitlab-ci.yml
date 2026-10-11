@@ -59,6 +59,9 @@ stages:
 
 variables:
   ZIG_VERSION: "0.16.0"
+  # Reused shallow worktrees have repeatedly failed before security scans run.
+  # Start each job from a fresh checkout; preserve each job's configured depth.
+  GIT_STRATEGY: clone
 
 # Zig installation template (SEC-R6-02: SHA-256 verified via ziglang.org index)
 .install-zig: &install-zig
