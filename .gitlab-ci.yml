@@ -64,6 +64,12 @@ variables:
 .install-zig: &install-zig
   - apt-get update && apt-get install -y curl xz-utils python3
   - |
+    # Keep the verified toolchain outside the source tree so paired benchmark
+    # provenance can require a clean checkout without ignoring runtime inputs.
+    QUIC_CI_CHECKOUT_DIR=$PWD
+    QUIC_CI_TOOLCHAIN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/quic-zig.XXXXXXXX")
+    export QUIC_CI_TOOLCHAIN_DIR
+    cd "${QUIC_CI_TOOLCHAIN_DIR}"
     if [ ! -f "zig-${ZIG_VERSION}/zig" ]; then
       ARCH=$(uname -m)
       case "$ARCH" in
@@ -98,7 +104,8 @@ variables:
       mv "${ARCHIVE_NAME}" "zig-${ZIG_VERSION}"
       rm -f "${TARBALL}"
     fi
-  - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
+    cd "${QUIC_CI_CHECKOUT_DIR}"
+  - export PATH="${QUIC_CI_TOOLCHAIN_DIR}/zig-${ZIG_VERSION}:$PATH"
   - zig version
   - |
     python3 - <<'PY'
