@@ -2565,6 +2565,24 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseFast,
     });
 
+    const bench_external_process_mod = b.createModule(.{
+        .root_source_file = b.path("benchmarks/external/process.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    bench_external_process_mod.addImport("bench_common", bench_common_mod);
+    const bench_external_test_mod = b.createModule(.{
+        .root_source_file = b.path("tests/test_bench_external.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    bench_external_test_mod.addImport("bench_common", bench_common_mod);
+    bench_external_test_mod.addImport("bench_external_process", bench_external_process_mod);
+    const bench_external_test = b.addTest(.{ .root_module = bench_external_test_mod });
+    const run_bench_external_test = b.addRunArtifact(bench_external_test);
+    b.step("test-bench-external", "Run external process and deadline regressions").dependOn(&run_bench_external_test.step);
+    test_step.dependOn(&run_bench_external_test.step);
+
     // Bench harness unit tests
     const bench_common_test_mod = b.createModule(.{
         .root_source_file = b.path("tests/test_bench_common.zig"),
@@ -2613,6 +2631,7 @@ pub fn build(b: *std.Build) void {
     // tier ("micro"|"integration"|"external") and a list of ScenarioSpec.
     const bench_runner = addExe(b, "bench", "benchmarks/bench_runner.zig", target, .ReleaseFast);
     bench_runner.root_module.addImport("bench_common", bench_common_mod);
+    bench_runner.root_module.addImport("bench_external_process", bench_external_process_mod);
     bench_runner.root_module.addImport("quic_varint", quic_varint_mod);
     bench_runner.root_module.addImport("quic_recovery", quic_recovery_mod);
     bench_runner.root_module.addImport("quic_crypto", quic_crypto_mod);

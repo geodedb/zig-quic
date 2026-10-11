@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"flag"
 	"fmt"
 	"io"
@@ -18,10 +19,12 @@ func main() {
 	var verbose bool
 	var insecure bool
 	var keyLogPath string
+	var caPath string
 	flag.StringVar(&addr, "addr", "127.0.0.1:4433", "Server address")
 	flag.BoolVar(&verbose, "verbose", false, "Enable verbose logging")
 	flag.BoolVar(&insecure, "insecure", false, "skip certificate verification")
 	flag.StringVar(&keyLogPath, "keylog", os.Getenv("SSLKEYLOGFILE"), "write TLS secrets to this file")
+	flag.StringVar(&caPath, "ca-file", "", "PEM CA certificates to trust for server verification")
 	flag.Parse()
 
 	if verbose {
@@ -36,7 +39,23 @@ func main() {
 	tlsConf := &tls.Config{
 		InsecureSkipVerify: insecure,
 		NextProtos:         []string{"hq-interop"},
-		KeyLogWriter:       keyLogFile,
+	}
+
+	// A typed nil *os.File in an io.Writer interface is non-nil and breaks
+	// TLS handshakes. Leave KeyLogWriter unset when logging is disabled.
+	if keyLogFile != nil {
+		tlsConf.KeyLogWriter = keyLogFile
+	}
+	if caPath != "" {
+		pem, err := os.ReadFile(caPath)
+		if err != nil {
+			log.Fatalf("Failed to read CA file: %v", err)
+		}
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(pem) {
+			log.Fatal("CA file contains no valid certificates")
+		}
+		tlsConf.RootCAs = roots
 	}
 
 	// QUIC config
@@ -75,17 +94,23 @@ func main() {
 	stream.Close()
 	log.Printf("✓ Sent request: %q", request)
 
-	// Read response
-	response := make([]byte, 4096)
-	n, err := stream.Read(response)
-	if err != nil && err != io.EOF {
+	// Require a nonempty, bounded response and its FIN before reporting success.
+	deadline, _ := ctx.Deadline()
+	if err := stream.SetReadDeadline(deadline); err != nil {
+		log.Fatalf("Failed to set response deadline: %v", err)
+	}
+	response, err := io.ReadAll(io.LimitReader(stream, 4097))
+	if err != nil {
 		log.Fatalf("Failed to read response: %v", err)
 	}
-
-	log.Printf("✓ Received response (%d bytes)", n)
-	if n > 0 {
-		fmt.Printf("\n--- Response ---\n%s\n--- End ---\n", response[:n])
+	if len(response) == 0 {
+		log.Fatal("empty response is not a successful exchange")
 	}
+	if len(response) > 4096 {
+		log.Fatal("response exceeds 4096 bytes")
+	}
+	log.Printf("✓ Received response (%d bytes)", len(response))
+	fmt.Printf("\n--- Response ---\n%s\n--- End ---\n", response)
 
 	log.Printf("✓ Test completed successfully!")
 }

@@ -479,28 +479,11 @@ e2e-test-python: build
 # E2E test with Rust client
 e2e-test-rust: build
 	@echo "========== E2E Test: Rust Client (quinn) =========="
-	@bash -c 'killall quic-server 2>/dev/null || true; sleep 1'
-	@echo "Starting Zig server..."
-	@bash -c './zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert tests/certs/self-signed/cert.pem --key tests/certs/self-signed/key.pem --insecure > /tmp/e2e-rust.log 2>&1 & \
-		SERVER_PID=$$!; \
-		echo "Server PID: $$SERVER_PID"; \
-		sleep 2; \
-		CLIENT_DIR=$$(pwd)/test-clients/quinn-client; \
-		echo "Building quinn test client..."; \
-		cd $$CLIENT_DIR && cargo build --release --bin quinn-test-client 2>&1 | grep -E "Compiling|Finished" || true; \
-		echo "Running Rust client..."; \
-		cd $$CLIENT_DIR && RUST_LOG=info timeout 10 ./target/release/quinn-test-client --addr 127.0.0.1:4433 --server-name test.local 2>&1 | tee /tmp/e2e-rust-client.log || true; \
-		kill $$SERVER_PID 2>/dev/null || true; \
-		sleep 1; \
-		echo ""; \
-		echo "=== Server Log Analysis ==="; \
-		if grep -q "processIncomingDatagram" /tmp/e2e-rust.log; then \
-			COUNT=$$(grep -c "processIncomingDatagram" /tmp/e2e-rust.log); \
-			echo "✅ Server received $$COUNT packets from Rust client"; \
-			grep "processIncomingDatagram" /tmp/e2e-rust.log | head -5 || true; \
-		else \
-			echo "❌ Server did not receive packets from Rust client"; \
-		fi'
+	bash scripts/generate_interop_certs.sh .interop-certs
+	cp .interop-certs/cert.pem server-cert.pem
+	cp .interop-certs/key.pem server-key.pem
+	cd test-clients/quinn-client && cargo build --locked --release --bin quinn-test-client
+	RUST_LOG=info python3 scripts/ci_interop.py --name rust -- ./test-clients/quinn-client/target/release/quinn-test-client --addr 127.0.0.1:4433 --server-name localhost --ca-file .interop-certs/ca.pem
 
 # E2E test with Zig client
 e2e-test-zig: build

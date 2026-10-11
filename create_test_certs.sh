@@ -98,3 +98,6 @@ echo "    - tests/certs/self-signed/cert.pem (ECDSA)"
 echo "    - tests/certs/self-signed/key.pem (ECDSA)"
 echo "    - tests/certs/self-signed/cert_rsa.pem (RSA)"
 echo "    - tests/certs/self-signed/key_rsa.pem (RSA)"
+
+# The external clients require a server leaf, not a CA used as an end entity.
+bash "$(dirname -- "${BASH_SOURCE[0]}")/scripts/generate_interop_certs.sh" tests/certs/external

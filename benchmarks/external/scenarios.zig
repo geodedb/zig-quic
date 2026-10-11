@@ -37,6 +37,9 @@ const h = @import("../integration/_helpers.zig");
 
 // All three clients advertise "hq-interop" (standard QUIC interop ALPN).
 const test_alpn = [_][]const u8{"hq-interop"};
+const external_ca_path = "tests/certs/external/ca.pem";
+const external_cert_path = "tests/certs/external/cert.pem";
+const external_key_path = "tests/certs/external/key.pem";
 
 // Dedicated port range to avoid collision with micro/integration benches.
 var ext_next_port = std.atomic.Value(u16).init(20500);
@@ -56,12 +59,9 @@ const ServerCtx = struct {
 /// stream bytes, and echoes a short HTTP/0.9 response on the first stream
 /// (enough to satisfy the external clients' read-to-end / FIN wait).
 fn serverThread(ctx: ServerCtx) void {
-    var conns: std.ArrayList(*api.Connection) = .empty;
+    const ConnectionState = struct { conn: *api.Connection, responded: bool = false };
+    var conns: std.ArrayList(ConnectionState) = .empty;
     defer conns.deinit(ctx.allocator);
-
-    // Per-connection state: has the first stream been responded to?
-    var responded: std.ArrayList(bool) = .empty;
-    defer responded.deinit(ctx.allocator);
 
     var scratch: [4096]u8 = undefined;
     const response = "HTTP/0.9 200 OK\r\nOK\n";
@@ -70,12 +70,12 @@ fn serverThread(ctx: ServerCtx) void {
         _ = ctx.ep.pollWithStats(1) catch {};
 
         while (api.tryAccept(ctx.ep)) |c| {
-            conns.append(ctx.allocator, c) catch continue;
-            responded.append(ctx.allocator, false) catch continue;
+            conns.append(ctx.allocator, .{ .conn = c }) catch continue;
         }
 
-        for (conns.items, responded.items, 0..) |conn, done_flag, idx| {
-            if (done_flag) continue;
+        for (conns.items) |*state| {
+            if (state.responded) continue;
+            const conn = state.conn;
             while (api.hasIncomingStreams(conn)) {
                 const sid = api.acceptStream(conn) catch break;
                 // Drain the request bytes (client sends "GET /\r\n" + FIN).
@@ -86,7 +86,7 @@ fn serverThread(ctx: ServerCtx) void {
                 // Write the tiny response and FIN. Ignore errors -- the
                 // client will observe connection close as end-of-stream.
                 _ = api.writeStream(conn, sid, response, true) catch {};
-                responded.items[idx] = true;
+                state.responded = true;
                 break;
             }
         }
@@ -105,6 +105,8 @@ const ServerHandle = struct {
     thread: std.Thread,
     server_target: []const u8,
     allocator: std.mem.Allocator,
+    certificate: []u8,
+    private_key: []u8,
 
     fn stop(self: *ServerHandle) void {
         self.done_flag.store(true, .release);
@@ -113,67 +115,55 @@ const ServerHandle = struct {
         self.allocator.destroy(self.ep);
         self.allocator.destroy(self.done_flag);
         self.allocator.free(self.server_target);
+        self.allocator.free(self.certificate);
+        self.allocator.free(self.private_key);
     }
 };
 
-/// Start a Zig QUIC server bound to 127.0.0.1:<fresh_port>. Returns null
-/// on any init failure (missing certs, port bind failure). The caller
-/// owns `stop()`.
-fn startZigServer(allocator: std.mem.Allocator) ?ServerHandle {
-    const creds = h.loadServerCreds(allocator) orelse return null;
-
-    const port = allocatePort();
-    const bind_addr = std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{port}) catch return null;
+/// Start a server or invalidate the scenario. Startup failures are not skips.
+fn startZigServer(allocator: std.mem.Allocator) !ServerHandle {
+    // External clients verify a proper CA-signed server leaf. Keep these
+    // credentials separate from the integration tier's existing fixtures.
+    const io = h.benchIo();
+    const cert_pem = try std.Io.Dir.cwd().readFileAlloc(io, external_cert_path, allocator, .limited(64 * 1024));
+    defer allocator.free(cert_pem);
+    const cert = try api.pem.parseCertificate(allocator, cert_pem);
+    errdefer allocator.free(cert);
+    const key_pem = try std.Io.Dir.cwd().readFileAlloc(io, external_key_path, allocator, .limited(16 * 1024));
+    defer allocator.free(key_pem);
+    const private_key = try api.pem.parsePrivateKey(allocator, key_pem);
+    errdefer allocator.free(private_key);
+    const bind_addr = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{allocatePort()});
     defer allocator.free(bind_addr);
-
     var server_cfg = cfg.QuicConfig{
         .alpn = &test_alpn,
-        .inline_server_cert_der = creds.cert,
-        .inline_server_priv_p256 = creds.key,
+        .inline_server_cert_der = cert,
+        .inline_server_priv_p256 = private_key,
         .allow_insecure = true,
     };
-
-    const ep_ptr = allocator.create(endpoint_mod.Endpoint) catch return null;
-    ep_ptr.* = endpoint_mod.Endpoint.init(allocator, bind_addr, &server_cfg) catch {
-        allocator.destroy(ep_ptr);
-        return null;
-    };
-
-    const done_ptr = allocator.create(std.atomic.Value(bool)) catch {
-        ep_ptr.deinit();
-        allocator.destroy(ep_ptr);
-        return null;
-    };
+    const ep_ptr = try allocator.create(endpoint_mod.Endpoint);
+    errdefer allocator.destroy(ep_ptr);
+    ep_ptr.* = try endpoint_mod.Endpoint.init(allocator, bind_addr, &server_cfg);
+    errdefer ep_ptr.deinit();
+    const done_ptr = try allocator.create(std.atomic.Value(bool));
+    errdefer allocator.destroy(done_ptr);
     done_ptr.* = std.atomic.Value(bool).init(false);
-
-    const server_target = std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{port}) catch {
-        ep_ptr.deinit();
-        allocator.destroy(ep_ptr);
-        allocator.destroy(done_ptr);
-        return null;
-    };
-
-    const thread = std.Thread.spawn(.{}, serverThread, .{ServerCtx{
+    const server_target = try allocator.dupe(u8, bind_addr);
+    errdefer allocator.free(server_target);
+    const thread = try std.Thread.spawn(.{}, serverThread, .{ServerCtx{
         .ep = ep_ptr,
         .done = done_ptr,
         .allocator = allocator,
-    }}) catch {
-        ep_ptr.deinit();
-        allocator.destroy(ep_ptr);
-        allocator.destroy(done_ptr);
-        allocator.free(server_target);
-        return null;
-    };
-
-    // Give the server a brief moment to start polling before clients hit it.
+    }});
     h.threadSleep(20 * std.time.ns_per_ms);
-
-    return ServerHandle{
+    return .{
         .ep = ep_ptr,
         .done_flag = done_ptr,
         .thread = thread,
         .server_target = server_target,
         .allocator = allocator,
+        .certificate = cert,
+        .private_key = private_key,
     };
 }
 
@@ -182,9 +172,8 @@ fn startZigServer(allocator: std.mem.Allocator) ?ServerHandle {
 const QUIC_GO_SRC = "test-clients/quic-go-client";
 const QUIC_GO_BIN = "test-clients/quic-go-client/quic-go-test-client";
 
-fn ensureQuicGoBuilt(allocator: std.mem.Allocator) bool {
-    if (harness.pathExists(QUIC_GO_BIN)) return true;
-    if (!harness.checkToolchain(allocator, "go")) return false;
+fn ensureQuicGoBuilt(allocator: std.mem.Allocator) !void {
+    if (harness.pathExists(QUIC_GO_BIN)) return;
     return harness.runBuild(
         allocator,
         &.{ "go", "build", "-o", "quic-go-test-client", "." },
@@ -195,17 +184,17 @@ fn ensureQuicGoBuilt(allocator: std.mem.Allocator) bool {
 
 pub fn runQuicGoHandshake(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunOutput {
     if (builtin.os.tag != .linux) return try harness.placeholderOutput(allocator, "quic-go");
-    if (!harness.checkToolchain(allocator, "go")) return try harness.placeholderOutput(allocator, "quic-go");
-    if (!ensureQuicGoBuilt(allocator)) return try harness.placeholderOutput(allocator, "quic-go");
+    if (!try harness.checkToolchain(allocator, "go")) return try harness.placeholderOutput(allocator, "quic-go");
+    try ensureQuicGoBuilt(allocator);
 
-    var server = startZigServer(allocator) orelse return try harness.placeholderOutput(allocator, "quic-go");
+    var server = try startZigServer(allocator);
     defer server.stop();
 
     const addr_arg = try std.fmt.allocPrint(allocator, "--addr={s}", .{server.server_target});
     defer allocator.free(addr_arg);
 
     // `./` prefix so it's treated as an explicit relative path.
-    const argv = [_][]const u8{ "./" ++ QUIC_GO_BIN, addr_arg };
+    const argv = [_][]const u8{ "./" ++ QUIC_GO_BIN, addr_arg, "--ca-file", external_ca_path };
 
     return try harness.runSubprocess(allocator, spec, .{
         .impl = "quic-go",
@@ -219,9 +208,8 @@ pub fn runQuicGoHandshake(allocator: std.mem.Allocator, spec: common.ScenarioSpe
 const QUINN_SRC = "test-clients/quinn-client";
 const QUINN_BIN = "test-clients/quinn-client/target/release/quinn-test-client";
 
-fn ensureQuinnBuilt(allocator: std.mem.Allocator) bool {
-    if (harness.pathExists(QUINN_BIN)) return true;
-    if (!harness.checkToolchain(allocator, "cargo")) return false;
+fn ensureQuinnBuilt(allocator: std.mem.Allocator) !void {
+    if (harness.pathExists(QUINN_BIN)) return;
     return harness.runBuild(
         allocator,
         &.{ "cargo", "build", "--release", "--bin", "quinn-test-client" },
@@ -232,10 +220,10 @@ fn ensureQuinnBuilt(allocator: std.mem.Allocator) bool {
 
 pub fn runQuinnHandshake(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunOutput {
     if (builtin.os.tag != .linux) return try harness.placeholderOutput(allocator, "quinn");
-    if (!harness.checkToolchain(allocator, "cargo")) return try harness.placeholderOutput(allocator, "quinn");
-    if (!ensureQuinnBuilt(allocator)) return try harness.placeholderOutput(allocator, "quinn");
+    if (!try harness.checkToolchain(allocator, "cargo")) return try harness.placeholderOutput(allocator, "quinn");
+    try ensureQuinnBuilt(allocator);
 
-    var server = startZigServer(allocator) orelse return try harness.placeholderOutput(allocator, "quinn");
+    var server = try startZigServer(allocator);
     defer server.stop();
 
     const addr_arg = try std.fmt.allocPrint(allocator, "--addr={s}", .{server.server_target});
@@ -246,6 +234,8 @@ pub fn runQuinnHandshake(allocator: std.mem.Allocator, spec: common.ScenarioSpec
         addr_arg,
         "--server-name",
         "localhost",
+        "--ca-file",
+        external_ca_path,
     };
 
     return try harness.runSubprocess(allocator, spec, .{
@@ -261,11 +251,11 @@ const AIOQUIC_SCRIPT = "test-clients/aioquic-client/test_client.py";
 
 pub fn runAioquicHandshake(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunOutput {
     if (builtin.os.tag != .linux) return try harness.placeholderOutput(allocator, "aioquic");
-    if (!harness.checkToolchain(allocator, "python3")) return try harness.placeholderOutput(allocator, "aioquic");
-    if (!harness.checkPythonModule(allocator, "aioquic")) return try harness.placeholderOutput(allocator, "aioquic");
-    if (!harness.pathExists(AIOQUIC_SCRIPT)) return try harness.placeholderOutput(allocator, "aioquic");
+    if (!try harness.checkToolchain(allocator, "python3")) return try harness.placeholderOutput(allocator, "aioquic");
+    if (!try harness.checkPythonModule(allocator, "aioquic")) return try harness.placeholderOutput(allocator, "aioquic");
+    if (!harness.pathExists(AIOQUIC_SCRIPT)) return error.MissingClient;
 
-    var server = startZigServer(allocator) orelse return try harness.placeholderOutput(allocator, "aioquic");
+    var server = try startZigServer(allocator);
     defer server.stop();
 
     // aioquic client uses --host/--port rather than --addr.
@@ -279,6 +269,8 @@ pub fn runAioquicHandshake(allocator: std.mem.Allocator, spec: common.ScenarioSp
         "127.0.0.1",
         "--port",
         port_str,
+        "--ca-file",
+        external_ca_path,
     };
 
     return try harness.runSubprocess(allocator, spec, .{

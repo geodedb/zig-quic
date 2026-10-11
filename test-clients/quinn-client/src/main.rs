@@ -1,7 +1,9 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use clap::Parser;
 use quinn::ClientConfig;
+use rustls::pki_types::{pem::PemObject, CertificateDer};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
 
@@ -16,6 +18,10 @@ struct Opt {
     /// Server name for TLS verification
     #[clap(long, default_value = "localhost")]
     server_name: String,
+
+    /// PEM CA certificates to trust for server verification
+    #[clap(long)]
+    ca_file: Option<PathBuf>,
 
     /// Enable verbose logging
     #[clap(short, long)]
@@ -33,20 +39,30 @@ async fn main() -> Result<()> {
         "quinn_test_client=info,quinn=info"
     };
 
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .init();
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     run_test(opt).await
 }
 
 async fn run_test(opt: Opt) -> Result<()> {
-    info!("Connecting to {} with server name: {}", opt.addr, opt.server_name);
+    info!(
+        "Connecting to {} with server name: {}",
+        opt.addr, opt.server_name
+    );
 
-    // Create TLS config that accepts self-signed certificates
+    // Trust only the explicitly supplied test CA. An empty store rejects an
+    // unknown peer; no certificate, hostname or handshake-signature bypass.
+    let mut roots = rustls::RootCertStore::empty();
+    if let Some(path) = &opt.ca_file {
+        for certificate in CertificateDer::pem_file_iter(path)? {
+            roots.add(certificate?)?;
+        }
+        if roots.is_empty() {
+            return Err(anyhow!("CA file contains no certificates"));
+        }
+    }
     let mut crypto = rustls::ClientConfig::builder()
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
+        .with_root_certificates(roots)
         .with_no_client_auth();
 
     // Set ALPN protocol (hq-interop is the standard QUIC interop protocol)
@@ -54,7 +70,7 @@ async fn run_test(opt: Opt) -> Result<()> {
 
     // Create quinn client config
     let client_config = ClientConfig::new(Arc::new(
-        quinn::crypto::rustls::QuicClientConfig::try_from(crypto)?
+        quinn::crypto::rustls::QuicClientConfig::try_from(crypto)?,
     ));
 
     // Create endpoint
@@ -86,7 +102,10 @@ async fn run_test(opt: Opt) -> Result<()> {
     send.finish()
         .map_err(|e| anyhow!("Failed to finish stream: {}", e))?;
 
-    info!("✓ Sent request: {:?}", std::str::from_utf8(request).unwrap());
+    info!(
+        "✓ Sent request: {:?}",
+        std::str::from_utf8(request).unwrap()
+    );
 
     // Read response
     let response = recv
@@ -94,6 +113,9 @@ async fn run_test(opt: Opt) -> Result<()> {
         .await
         .map_err(|e| anyhow!("Failed to read response: {}", e))?;
 
+    if response.is_empty() {
+        return Err(anyhow!("empty response is not a successful exchange"));
+    }
     info!("✓ Received response ({} bytes)", response.len());
 
     if !response.is_empty() {
@@ -111,47 +133,4 @@ async fn run_test(opt: Opt) -> Result<()> {
     info!("✓ Test completed successfully!");
 
     Ok(())
-}
-
-/// Certificate verifier that accepts all certificates (for testing only)
-#[derive(Debug)]
-struct SkipServerVerification;
-
-impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-        _server_name: &rustls::pki_types::ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        vec![
-            rustls::SignatureScheme::RSA_PKCS1_SHA256,
-            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-            rustls::SignatureScheme::ED25519,
-        ]
-    }
 }

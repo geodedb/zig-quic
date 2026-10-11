@@ -250,4 +250,52 @@ ISO-8601 `YYYY-MM-DD`.
   variant still regressed Geode's accepted 4096 single-op gate to 3053/4096
   first-response timeouts. The follow-up revert restores the proven
   `a68d36e`/`9a35274` behavior.
+
+### 2026-10-11 — SONNY-4788: verified external benchmark results
+
+The external harness now requires every configured warmup and measured client
+invocation to succeed. Whole-process deadlines include waiting after pipe EOF;
+failures, output overruns, missing clients, failed builds and failed server
+startup invalidate the run. Missing toolchains and unsupported platforms retain
+explicit skip rows. Go, Quinn and aioquic verify a separate test CA and server
+leaf, reject empty responses, and cannot count an unrelated stream as the reply.
+
+A full unchanged-parent capture at `56c0b977b4e861fad775b0cfff04a3cf98f8ba8f`
+completed before implementation (76 rows, 2434.655s). The candidate external
+capture completed on the same Linux host and CPU affinity 8–11 (161.500s,
+including compilation). Source files, fixtures and client binaries were
+fingerprinted and unchanged during the candidate run. All three rows contain
+20 successful measured iterations, with no skipped implementation. Each scenario
+ran seven times with two successful warmups before each set of 20 measurements.
+
+The existing manual performance gate returned **0 FAIL, 0 WARN**:
+
+| Implementation | Parent ops/s | Candidate ops/s | Parent p95 ns | Candidate p95 ns | Gate |
+|---|---:|---:|---:|---:|---|
+| quic-go | 1.066 | 148.532 | 10000000000 | 7876352 | PASS |
+| Quinn | 7.399 | 11.071 | 142360168 | 96071040 | PASS |
+| aioquic | 0.049 | 2.220 | 15000000000 | 457552894 | PASS |
+
+**Interpretation:** the parent fabricated one successful iteration for failed Go
+and aioquic exchanges and assigned timeout sentinel latencies; its Quinn client
+bypassed certificate and handshake-signature verification. Those rows are not
+valid speed comparisons. No performance improvement is claimed across these
+behaviors. Acceptance additionally requires the real authenticated exchanges,
+14 subprocess regressions, seven trust/response cases per client, Go race tests,
+and three real certificate-generation regressions. Integration fixtures remain
+separate and unchanged.
+
+The first candidate correctly rejected a CA used as a server leaf. The repaired
+fixture uses a distinct CA and `CA:FALSE` server certificate; no certificate or
+signature check was bypassed to pass the gate. Existing gate thresholds and
+failure policies are unchanged, and Go trust regressions are a new required CI
+job independent of the existing advisory Go CLI interoperability job.
+
+Evidence identifiers: parent `4788-baseline-full-275.json` (SHA-256
+`6b2396c0f8ba7e11b1d7fea3d849a87eda58c50f2a5ad279c69f77c04a1ad387`),
+candidate `4788-candidate-external-345.json` (SHA-256
+`5c4986c995c822bc3287c5c29037552a769926d9090a758181ec3dcb678e93c1`),
+and gate `4788-perf-gate-346.log`. Both captures are retained with the review's
+source fingerprints; the candidate was an uncommitted tree on the parent SHA.
+
 </content>

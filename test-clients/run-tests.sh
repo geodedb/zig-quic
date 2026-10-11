@@ -22,12 +22,13 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SERVER_HOST="127.0.0.1"
 SERVER_PORT="4433"
 SERVER_BINARY="${PROJECT_ROOT}/zig-out/bin/quic-server"
-CERT_PATH="${PROJECT_ROOT}/tests/certs/cert.pem"
-KEY_PATH="${PROJECT_ROOT}/tests/certs/key.pem"
+CERT_PATH="${PROJECT_ROOT}/tests/certs/external/cert.pem"
+CA_PATH="${PROJECT_ROOT}/tests/certs/external/ca.pem"
+KEY_PATH="${PROJECT_ROOT}/tests/certs/external/key.pem"
 
-if [[ ! -f "$CERT_PATH" || ! -f "$KEY_PATH" ]]; then
+if [[ ! -f "$CERT_PATH" || ! -f "$KEY_PATH" || ! -f "$CA_PATH" ]]; then
   echo "Test certificates missing; generating with create_test_certs.sh"
-  "${PROJECT_ROOT}/create_test_certs.sh"
+  bash "${PROJECT_ROOT}/scripts/generate_interop_certs.sh" "${PROJECT_ROOT}/tests/certs/external"
 fi
 
 # Test result tracking
@@ -100,17 +101,17 @@ echo ""
 # Test 1: quic-go client (command executed directly, not via eval)
 run_test "quic-go (Go) client" \
     "${SCRIPT_DIR}/quic-go-client/quic-go-test-client" \
-    --addr "${SERVER_HOST}:${SERVER_PORT}" --insecure
+    --addr "${SERVER_HOST}:${SERVER_PORT}" --ca-file "$CA_PATH"
 
 # Test 2: aioquic client
 run_test "aioquic (Python) client" \
     python3 "${SCRIPT_DIR}/aioquic-client/test_client.py" \
-    --host "${SERVER_HOST}" --port "${SERVER_PORT}" --insecure
+    --host "${SERVER_HOST}" --port "${SERVER_PORT}" --ca-file "$CA_PATH"
 
 # Test 3: quinn client
 run_test "quinn (Rust) client" \
     "${SCRIPT_DIR}/quinn-client/target/release/quinn-test-client" \
-    --addr "${SERVER_HOST}:${SERVER_PORT}" --server-name localhost
+    --addr "${SERVER_HOST}:${SERVER_PORT}" --server-name localhost --ca-file "$CA_PATH"
 
 # Stop server
 echo ""

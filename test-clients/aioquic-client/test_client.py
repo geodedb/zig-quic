@@ -2,17 +2,20 @@
 """
 Simple aioquic test client for QUIC interoperability testing.
 """
+
 import argparse
 import asyncio
 import logging
 import ssl
 import sys
+from pathlib import Path
 from typing import cast
 
 from aioquic.asyncio.client import connect
 from aioquic.asyncio.protocol import QuicConnectionProtocol
 from aioquic.quic.configuration import QuicConfiguration
 from aioquic.quic.events import QuicEvent, StreamDataReceived
+from cryptography.x509 import load_pem_x509_certificates
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +43,7 @@ class HttpClient(QuicConnectionProtocol):
 
     def quic_event_received(self, event: QuicEvent):
         """Handle QUIC events"""
-        if isinstance(event, StreamDataReceived):
+        if isinstance(event, StreamDataReceived) and event.stream_id == self._stream_id:
             logger.info(f"Received {len(event.data)} bytes on stream {event.stream_id}")
             self._response_data += event.data
             if event.end_stream:
@@ -53,7 +56,13 @@ class HttpClient(QuicConnectionProtocol):
         return self._response_data
 
 
-async def run_client(host: str, port: int, verbose: bool = False, insecure: bool = False):
+async def run_client(
+    host: str,
+    port: int,
+    verbose: bool = False,
+    insecure: bool = False,
+    ca_file: str | None = None,
+):
     """Run the QUIC client test"""
     logger.info(f"Connecting to {host}:{port}")
 
@@ -66,6 +75,13 @@ async def run_client(host: str, port: int, verbose: bool = False, insecure: bool
         configuration.verify_mode = ssl.CERT_NONE
 
     try:
+        if ca_file is not None:
+            # Reject malformed trust input before aioquic handles it inside an
+            # event-loop callback, where parse errors can strand the handshake.
+            ca_data = Path(ca_file).read_bytes()
+            if not load_pem_x509_certificates(ca_data):
+                raise ValueError("CA file contains no certificates")
+            configuration.load_verify_locations(cadata=ca_data)
         # Connect to server
         async with connect(
             host,
@@ -87,14 +103,16 @@ async def run_client(host: str, port: int, verbose: bool = False, insecure: bool
             # Wait for response
             try:
                 response = await asyncio.wait_for(
-                    client.wait_for_response(),
-                    timeout=5.0
+                    client.wait_for_response(), timeout=5.0
                 )
+                if not response:
+                    logger.error("empty response is not a successful exchange")
+                    return 1
                 logger.info(f"✓ Received response ({len(response)} bytes)")
 
                 if response:
                     print("\n--- Response ---")
-                    print(response.decode('utf-8', errors='replace'))
+                    print(response.decode("utf-8", errors="replace"))
                     print("--- End ---\n")
 
                 logger.info("✓ Test completed successfully!")
@@ -112,25 +130,21 @@ async def run_client(host: str, port: int, verbose: bool = False, insecure: bool
 def main():
     parser = argparse.ArgumentParser(description="aioquic test client")
     parser.add_argument(
-        "--host",
-        default="127.0.0.1",
-        help="Server host (default: 127.0.0.1)"
+        "--host", default="127.0.0.1", help="Server host (default: 127.0.0.1)"
     )
     parser.add_argument(
-        "--port",
-        type=int,
-        default=3141,
-        help="Server port (default: 3141)"
+        "--port", type=int, default=3141, help="Server port (default: 3141)"
     )
     parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        help="Enable verbose logging"
+        "-v", "--verbose", action="store_true", help="Enable verbose logging"
     )
     parser.add_argument(
         "--insecure",
         action="store_true",
-        help="Skip certificate verification for local self-signed interop tests"
+        help="Skip certificate verification for local self-signed interop tests",
+    )
+    parser.add_argument(
+        "--ca-file", help="PEM CA certificates to trust for server verification"
     )
     args = parser.parse_args()
 
@@ -142,7 +156,9 @@ def main():
 
     # Run client
     try:
-        exit_code = asyncio.run(run_client(args.host, args.port, args.verbose, args.insecure))
+        exit_code = asyncio.run(
+            run_client(args.host, args.port, args.verbose, args.insecure, args.ca_file)
+        )
         sys.exit(exit_code)
     except KeyboardInterrupt:
         logger.info("Interrupted")

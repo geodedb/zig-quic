@@ -121,11 +121,9 @@ sbom-scan:
 # Tests Python (aioquic), Go (quic-go), Rust (quinn), and Zig clients
 # Generate test certificates for E2E tests
 .generate-test-certs: &generate-test-certs
-  - |
-    openssl ecparam -genkey -name prime256v1 -out server-key.pem
-    openssl req -new -x509 -key server-key.pem -out server-cert.pem -days 1 \
-      -subj "/CN=localhost/O=Test/C=US" \
-      -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+  - bash scripts/generate_interop_certs.sh .interop-certs
+  - cp .interop-certs/cert.pem server-cert.pem
+  - cp .interop-certs/key.pem server-key.pem
 
 build:
   stage: build
@@ -328,7 +326,9 @@ e2e-test-python:
     # Generate test certificates
     - *generate-test-certs
   script:
-    - python3 scripts/ci_interop.py --name python -- python -u test-clients/aioquic-client/test_client.py --host 127.0.0.1 --port 4433 --insecure
+    - python3 scripts/test_interop_certs.py
+    - QUIC_TRUST_CLIENT=aioquic python3 test-clients/test_client_trust.py
+    - python3 scripts/ci_interop.py --name python -- python -u test-clients/aioquic-client/test_client.py --host 127.0.0.1 --port 4433 --ca-file .interop-certs/ca.pem
   artifacts:
     when: always
     paths:
@@ -365,7 +365,7 @@ e2e-test-go:
     # Generate test certificates
     - *generate-test-certs
   script:
-    - python3 scripts/ci_interop.py --name go -- ./test-clients/quic-go-client/quic-go-test-client -addr 127.0.0.1:4433 -verbose -insecure
+    - python3 scripts/ci_interop.py --name go -- ./test-clients/quic-go-client/quic-go-test-client -addr 127.0.0.1:4433 -verbose -ca-file .interop-certs/ca.pem
   artifacts:
     when: always
     paths:
@@ -378,6 +378,17 @@ e2e-test-go:
   # future TLS-engine work; allow_failure keeps the rest of the pipeline
   # informative until that lands.
   allow_failure: true
+
+# Trust regressions are required independently of the existing advisory
+# Go-vs-Zig HelloRetryRequest interoperability check.
+client-trust-go:
+  extends: e2e-test-go
+  needs: []
+  before_script: []
+  script:
+    - cd test-clients/quic-go-client && go test -race -count=1 -timeout=2m .
+  artifacts: null
+  allow_failure: false
 
 e2e-test-rust:
   stage: e2e
@@ -406,13 +417,16 @@ e2e-test-rust:
       - .cache/cargo/git/db
       - test-clients/quinn-client/target
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends openssl python3
+    - apt-get update && apt-get install -y --no-install-recommends openssl python3 python3-venv
+    - python3 -m venv .client-trust-venv
+    - .client-trust-venv/bin/pip install -r test-clients/aioquic-client/requirements.txt
     # Build Rust client
     - cd test-clients/quinn-client && cargo build --release && cd ../..
     # Generate test certificates
     - *generate-test-certs
   script:
-    - RUST_LOG=info python3 scripts/ci_interop.py --name rust -- ./test-clients/quinn-client/target/release/quinn-test-client --addr 127.0.0.1:4433 --server-name localhost
+    - QUIC_TRUST_CLIENT=quinn .client-trust-venv/bin/python test-clients/test_client_trust.py
+    - RUST_LOG=info python3 scripts/ci_interop.py --name rust -- ./test-clients/quinn-client/target/release/quinn-test-client --addr 127.0.0.1:4433 --server-name localhost --ca-file .interop-certs/ca.pem
   artifacts:
     when: always
     paths:

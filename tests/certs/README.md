@@ -20,6 +20,7 @@ You must generate them locally before running tests.
 ## Security Warning
 
 Generated test certificates are:
+
 - Self-signed with no chain of trust
 - NOT suitable for any production use
 - NOT secure for any real TLS communication
@@ -50,7 +51,21 @@ openssl req -new -x509 -key server-rsa.key -out server-rsa.crt -days 365 \
 ## Production Certificates
 
 For production deployments:
+
 1. Obtain certificates from a trusted Certificate Authority (CA)
 2. Use proper key management (HSM, secure key storage)
 3. Never commit private keys to version control
 4. Implement certificate rotation procedures
+
+## Verified external interoperability
+
+`bash scripts/generate_interop_certs.sh` creates `external/ca.pem`,
+`external/cert.pem` and `external/key.pem`. The CA signs a separate P-256 server
+leaf for `localhost` and `127.0.0.1`; the leaf has `CA:FALSE` and server-auth
+usage. External clients trust `external/ca.pem` and keep certificate, hostname
+and handshake-signature verification enabled. The generator removes the CA
+signing key and restricts the surviving server key to mode 0600.
+
+`create_test_certs.sh` also prepares these fixtures. They are separate from the
+existing integration fixtures at the root of this directory. CI uses the same
+generator in `.interop-certs` for its CLI interoperability tests.
