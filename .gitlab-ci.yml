@@ -110,6 +110,10 @@ zig-format:
 # Opt both SBOM jobs in together to preserve the scan's artifact dependency.
 security-gitleaks:
   rules: *component-verification-rules
+  # Use the required scanner's own image to verify the narrow public-key
+  # exception and negative controls before scanning repository history.
+  before_script:
+    - sh scripts/test_gitleaks_allowlist.sh
 
 sbom-generate:
   rules: *component-verification-rules
