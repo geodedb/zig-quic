@@ -2,7 +2,7 @@ module interop
 
 go 1.25.0
 
-toolchain go1.26.2
+toolchain go1.26.9
 
 require (
 	github.com/quic-go/quic-go v0.59.0
