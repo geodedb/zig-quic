@@ -3,11 +3,13 @@
 
 import importlib.util
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import unittest
 
@@ -83,6 +85,104 @@ class HarnessTests(unittest.TestCase):
         return HELPER.prepare(
             self.repo, self.baseline, revision or self.head, self.manifest
         )
+
+    def install_ci_toolchain(self, tampered=False):
+        """Exercise the actual CI anchor with a local, checksum-verified archive."""
+        fake_bin = self.directory / "download-fixture-bin"
+        fake_bin.mkdir()
+        temporary = self.directory / "temporary"
+        temporary.mkdir()
+        archive = self.directory / "zig-fixture.tar.xz"
+        executable = b'#!/bin/sh\nprintf "0.16.0\\n"\ntouch "$TEST_ZIG_EXECUTED"\n'
+        with tarfile.open(archive, "w:xz") as output:
+            entry = tarfile.TarInfo("zig-x86_64-linux-0.16.0/zig")
+            entry.size = len(executable)
+            entry.mode = 0o755
+            output.addfile(entry, io.BytesIO(executable))
+        index = self.directory / "download-index.json"
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        index.write_text(
+            json.dumps(
+                {
+                    "0.16.0": {
+                        "x86_64-linux": {
+                            "shasum": "0" * 64 if tampered else digest,
+                        }
+                    }
+                }
+            )
+        )
+        for name, content in {
+            "apt-get": "#!/bin/sh\nexit 0\n",
+            "uname": "#!/bin/sh\nprintf 'x86_64\\n'\n",
+            "curl": (
+                "#!/usr/bin/python3\nimport os, shutil, sys\n"
+                "url = next(x for x in sys.argv if x.startswith('https://'))\n"
+                "target = sys.argv[sys.argv.index('-o') + 1]\n"
+                "if url == 'https://ziglang.org/download/index.json':\n"
+                "    source = os.environ['TEST_ZIG_INDEX']\n"
+                "elif url == 'https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz':\n"
+                "    source = os.environ['TEST_ZIG_ARCHIVE']\n"
+                "else:\n    sys.exit('Unexpected download URL: ' + url)\n"
+                "shutil.copyfile(source, target)\n"
+            ),
+        }.items():
+            path = fake_bin / name
+            path.write_text(content)
+            path.chmod(0o755)
+        # This anchor deliberately uses only shell scalars and literal blocks.
+        # Run every command, including its PATH export and `zig version`, so
+        # installer side effects cannot be omitted from the clean-source test.
+        yaml = (SCRIPTS.parent / ".gitlab-ci.yml").read_text()
+        anchor = yaml.split(".install-zig: &install-zig\n", 1)[1].split(
+            "\n# zig-format component", 1
+        )[0]
+        commands = []
+        in_block = False
+        for line in anchor.splitlines():
+            if line.startswith("  - |"):
+                self.assertEqual(line, "  - |")
+                in_block = True
+            elif line.startswith("  - "):
+                in_block = False
+                commands.append(line[4:])
+            elif line.startswith("    ") and in_block:
+                commands.append(line[4:])
+            elif not line.strip() or line.lstrip().startswith("#"):
+                continue
+            else:
+                self.fail("Unsupported installer anchor syntax: " + line)
+        executed = self.directory / "zig-executed"
+        env = dict(
+            self.env,
+            PATH=str(fake_bin) + os.pathsep + os.defpath,
+            TMPDIR=str(temporary),
+            ZIG_VERSION="0.16.0",
+            TEST_ZIG_INDEX=str(index),
+            TEST_ZIG_ARCHIVE=str(archive),
+            TEST_ZIG_EXECUTED=str(executed),
+        )
+        result = subprocess.run(
+            ["sh", "-eu", "-c", "\n".join(commands)],
+            cwd=self.repo,
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+        return result, executed
+
+    def test_verified_ci_installer_preserves_clean_candidate_for_harness(self):
+        result, executed = self.install_ci_toolchain()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(executed.exists(), "CI PATH must select the verified toolchain")
+        self.assertEqual(self.git("status", "--porcelain"), "")
+        self.prepare()
+
+    def test_ci_installer_rejects_bad_checksum_before_running_toolchain(self):
+        result, executed = self.install_ci_toolchain(tampered=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("FAILED", result.stdout + result.stderr)
+        self.assertFalse(executed.exists())
 
     def test_same_harness_preserves_distinct_runtime_build_and_recorded_baseline(self):
         result = self.prepare()
