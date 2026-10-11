@@ -45,7 +45,8 @@ event = {'tool': pathlib.Path(sys.argv[0]).name,
 with open(root / 'events.jsonl', 'a') as output:
     output.write(json.dumps(event) + '\\n')
 needle = os.environ.get('FAIL_MATCH', '')
-if needle and needle in event['cwd'] + ' ' + ' '.join(event['args']):
+failed_cwd = os.environ.get('FAIL_CWD', '')
+if (failed_cwd and failed_cwd == event['cwd']) or (needle and needle in ' '.join(event['args'])):
     sys.exit(17)
 if sys.argv[1] == 'build':
     pathlib.Path(sys.argv[3]).write_text('fixture binary')
@@ -62,12 +63,13 @@ if '-mode=binary' in sys.argv:
             FIXTURE_ROOT=str(self.root),
         )
         self.env.pop("FAIL_MATCH", None)
+        self.env.pop("FAIL_CWD", None)
 
-    def run_driver(self, mode, failure=""):
+    def run_driver(self, mode, failure="", failure_cwd=""):
         result = subprocess.run(
             ["/bin/sh", str(self.root / "scripts/check-client-security.sh"), mode],
             cwd="/",
-            env=dict(self.env, FAIL_MATCH=failure),
+            env=dict(self.env, FAIL_MATCH=failure, FAIL_CWD=failure_cwd),
             capture_output=True,
             text=True,
         )
@@ -87,13 +89,14 @@ if '-mode=binary' in sys.argv:
         )
 
     def test_rust_failure_never_skips_or_redirects_remaining_clients(self):
-        for failed in [RUST_CLIENTS[0], RUST_CLIENTS[-1]]:
+        for failed in RUST_CLIENTS:
             with self.subTest(failed=failed):
                 self.events.unlink(missing_ok=True)
-                result, events = self.run_driver("rust", failed)
+                result, events = self.run_driver("rust", failure_cwd=failed)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual([e["cwd"] for e in events], RUST_CLIENTS)
                 self.assertIn("FAIL: " + failed, result.stderr)
+                self.assertEqual(result.stderr.count("FAIL:"), 1)
 
     def test_missing_client_directory_fails_but_later_clients_are_scanned(self):
         (self.root / RUST_CLIENTS[0]).rmdir()
@@ -115,7 +118,7 @@ if '-mode=binary' in sys.argv:
         )
 
     def test_go_first_scan_failure_still_scans_remaining_modules_and_binaries(self):
-        result, events = self.run_driver("go", GO_CLIENTS[0])
+        result, events = self.run_driver("go", failure_cwd=GO_CLIENTS[0])
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(len([e for e in events if e["args"][0] == "run"]), 8)
         self.assertEqual([e["cwd"] for e in events[:4]], GO_CLIENTS)
