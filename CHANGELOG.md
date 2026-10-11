@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Require complete payload and FIN acknowledgment in the datagram RX benchmark
+  (SONNY-4792). Exclude handshake setup and teardown from its measurement window,
+  retain partial writes, reject incomplete/corrupt transfers, and count received
+  packets separately from application chunks.
 - Retain client Handshake keys and Finished CRYPTO until server confirmation so
   a lost Finished can be retransmitted and application streams can progress
   (SONNY-4791). Preserve recovery state when transport submission or allocation

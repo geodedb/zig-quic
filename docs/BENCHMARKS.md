@@ -83,7 +83,7 @@ handshakes (where listed).
 | `integration/udp_batch` | `single`, `batch` | `sendto` vs. `sendmmsg` throughput + syscall count | < 30s | Linux-only (sendmmsg); placeholder rows on non-Linux |
 | `integration/handshake_e2e` | `serial`, `10p`, `100p`, `1Kp`, `10Kp` | Initial -> Handshake-complete wall-clock latency | < 300s | real UDP + TLS certs under `./test-certs/` |
 | `integration/stream_throughput` | `64B-c1`, `1KB-c1`, `64KB-c1`, `64B-c10`, `1KB-c10`, `1KB-c100` | MB/s + packets-per-second at varying payload / concurrency | < 300s | real UDP + TLS certs |
-| `integration/datagram_batch` | `batch_1`, `batch_16`, `batch_64` | Endpoint-mutex hold time under batch RX | < 60s | Guards issue #126 regression |
+| `integration/datagram_batch` | `batch_1`, `batch_16`, `batch_64`, `concurrent_independent_progress` | Poll wall time per processed datagram under RX load | Workload deadline: 5s/sample; setup additional | Requires complete payload and FIN acknowledgment |
 | `integration/flush_cadence` | `small_writes_1_stream`, `fanout_two_hop`, `burst_flush`, `sustained_writes` | Flush coalescing behaviour + burst / single ratio | < 60s | `burst_flush` currently 9.85x single-write baseline; target <= 1.5x post-fix (geode) |
 
 ### External tier (`benchmarks/external/`)
@@ -249,3 +249,32 @@ five-minute window on the same hardware.
    Add a `docs/PERFORMANCE_TRACKING.md` entry recording the new
    scenario, the hardware used, and any target you proposed.
 </content>
+
+### Datagram measurement validity (SONNY-4792)
+
+The datagram workload first establishes all 100 idle background connections and
+all active senders. It then starts one shared measurement window. Each sender
+retains partial-write offsets and keeps polling until the server acknowledges
+its complete stream with FIN. The server validates payload bytes, deduplicates
+stream data notifications, and counts each completed stream once. Missing
+credentials, failed setup, corruption, incomplete delivery, empty packet samples,
+and polling time outside the elapsed window fail the capture.
+
+`iterations` counts fully received 1-KiB application chunks. `bytes_per_sec`
+uses the exact received payload; `packets_per_sec` uses the endpoint's actual
+processed-datagram count. They are distinct: writes are not necessarily packets.
+The latency vector contains a poll's wall duration divided by the datagrams
+processed in that poll. Its percentiles describe those poll averages, not
+individual packet latency. `mutex_hold_wall_ns` retains the existing schema name
+but is cumulative polling wall time, an upper-bound proxy, not direct lock
+instrumentation. CPU time is not measured and is reported as zero.
+
+Run `zig build test-bench-datagram` for accounting checks and real-UDP completion,
+uneven-budget, missing-payload and corruption regressions. The same tests are
+included in `zig build test`. Non-Linux captures explicitly fail as unsupported;
+no placeholder measurement is emitted.
+
+Earlier datagram results counted client submissions even when delivery was
+incomplete and included connection setup in elapsed time. They cannot establish
+a speedup for this corrected measurement. Retain old failures and qualify
+transport changes with the same corrected harness on both compared revisions.

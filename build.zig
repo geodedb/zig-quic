@@ -2637,6 +2637,30 @@ pub fn build(b: *std.Build) void {
     const bench_compare_test_step = b.step("test-bench-compare", "Run bench comparator tests");
     bench_compare_test_step.dependOn(&run_bench_compare_test.step);
 
+    const datagram_mod = b.createModule(.{
+        .root_source_file = b.path("benchmarks/integration/datagram_batch.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    datagram_mod.addImport("bench_common", bench_common_mod);
+    datagram_mod.addImport("quic_api", quic_api_mod);
+    datagram_mod.addImport("quic_endpoint", quic_endpoint_mod);
+    datagram_mod.addImport("quic_config", quic_config_mod);
+    const datagram_test = addTst(b, testlog_mod, compat_mod, "tests/test_bench_datagram.zig", target, optimize);
+    datagram_test.root_module.addImport("datagram", datagram_mod);
+    const run_datagram_test = b.addRunArtifact(datagram_test);
+    const datagram_step = b.step("test-bench-datagram", "Run datagram completion and accounting regressions");
+    datagram_step.dependOn(&run_datagram_test.step);
+    test_step.dependOn(&run_datagram_test.step);
+    const accounting_test = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("benchmarks/integration/datagram_accounting.zig"),
+        .target = target,
+        .optimize = optimize,
+    }) });
+    const run_accounting_test = b.addRunArtifact(accounting_test);
+    datagram_step.dependOn(&run_accounting_test.step);
+    test_step.dependOn(&run_accounting_test.step);
+
     // Benchmark suite dispatcher. Scenarios are registered in
     // benchmarks/bench_runner.zig's `registry`; each registry entry picks a
     // tier ("micro"|"integration"|"external") and a list of ScenarioSpec.
