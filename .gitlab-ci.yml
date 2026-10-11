@@ -100,6 +100,17 @@ variables:
     fi
   - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
   - zig version
+  - |
+    python3 - <<'PY'
+    import json, os
+    from pathlib import Path
+    resources = {"cpu_affinity": sorted(os.sched_getaffinity(0))}
+    for name in ("cpu.max", "memory.max", "cpuset.cpus.effective"):
+        path = Path("/sys/fs/cgroup") / name
+        if path.exists():
+            resources[name] = path.read_text().strip()
+    print("CI resources: " + json.dumps(resources))
+    PY
 
 # zig-format component override: inject Zig install before format check
 zig-format:
@@ -185,7 +196,9 @@ test:
     - *install-zig
     - *generate-unit-test-certs
   script:
-    - zig build test --summary all
+    # Build/test subprocess concurrency must fit a small container CPU quota;
+    # the 32-client regression and every workload deadline stay unchanged.
+    - zig build test -j2 --summary all
 
 # FIPS-140-3 dual-mode gate. Builds the OpenSSL 3.x FIPS provider into
 # /usr/local/ssl (the same script the `fips` package ships), then runs the
@@ -229,7 +242,7 @@ test-fips:
     - zig build provision-fips -Dfips=true -Dopenssl_path=/usr/local/ssl --summary all
     - *generate-unit-test-certs
   script:
-    - OPENSSL_CONF=/usr/local/ssl/ssl/openssl.cnf zig build test -Dfips=true -Dopenssl_path=/usr/local/ssl --summary all
+    - OPENSSL_CONF=/usr/local/ssl/ssl/openssl.cnf zig build test -j2 -Dfips=true -Dopenssl_path=/usr/local/ssl --summary all
 
 test-release-safe:
   stage: test
@@ -255,7 +268,7 @@ test-release-safe:
     - *install-zig
     - *generate-unit-test-certs
   script:
-    - zig build test -Doptimize=ReleaseSafe --summary all
+    - zig build test -j2 -Doptimize=ReleaseSafe --summary all
 
 test-release-fast:
   stage: test
@@ -281,7 +294,7 @@ test-release-fast:
     - *install-zig
     - *generate-unit-test-certs
   script:
-    - zig build test -Doptimize=ReleaseFast --summary all
+    - zig build test -j2 -Doptimize=ReleaseFast --summary all
 
 test-release-small:
   stage: test
@@ -310,7 +323,7 @@ test-release-small:
     - *install-zig
     - *generate-unit-test-certs
   script:
-    - zig build test -Doptimize=ReleaseSmall --summary all
+    - zig build test -j2 -Doptimize=ReleaseSmall --summary all
 
 e2e-test-python:
   stage: e2e
@@ -615,6 +628,9 @@ quality-zig-gates:
       - .zig-cache/
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends git libssl-dev
+    # The checkout may belong to the runner helper UID. Trust only this exact
+    # checkout in the disposable job container, never a wildcard or runner host.
+    - git config --global --add safe.directory "$CI_PROJECT_DIR"
     - *install-zig
   script:
     - git ls-files '*.zig' | xargs -r zig fmt --check
