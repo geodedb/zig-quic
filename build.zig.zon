@@ -13,38 +13,16 @@
         "tests",
     },
     .dependencies = .{
-        // TLS 1.3 implementation (used for QUIC-TLS integration).
-        //
-        // CRITICAL (FIPS review): this MUST point at the LOCAL seam-enabled
-        // tls, NOT the PUBLISHED v0.1.15 (pre-seam). The published tarball
-        // predates the crypto_backend seam, so under -Dfips=true the TLS-layer
-        // crypto (handshake, key-schedule HKDF, PQC) would NOT route through
-        // the FIPS provider. The seam only activates when -Dfips/-Dopenssl_path
-        // are propagated DOWN to this tls dep (see build.zig: the
-        // b.dependency("tls", .{ .fips, .openssl_path }) call), which requires
-        // the local seam-enabled source.
-        //
-        // LOCAL PATH dep, build-root-relative (Zig 0.16 rejects absolute
-        // .path). quic's physical build root is
-        // .../gl/gitlab.com/devnw/zig/quic, so `../tls` resolves to the sibling
-        // seam-enabled tls (feat/fips-pqc, .../gl/gitlab.com/devnw/zig/tls,
-        // i.e. /home/benji/src/devnw/zig/tls via the workspace symlink). A
-        // single tls instance is shared across quic (and wireguard via quic),
-        // satisfying detect-diamond-deps / GAP-0020.
-        //
-        // Eventual published (seam-enabled) form — replace .path with:
-        //   .tls = .{
-        //       .url = "git+https://gitlab.com/devnw/zig/tls.git?ref=v0.1.16#<seam-sha>",
-        //       .hash = "<seam-enabled-tls-hash>",
-        //   },
+        // TLS 1.3 crypto seam; flags are propagated by build.zig.
+        // Keep its FIPS and thread-pool pins identical to the direct pins below.
         .tls = .{
-            .url = "git+https://gitlab.com/devnw/zig/tls.git?ref=v0.1.21#fad8b4a73ad7b1f8004e972f76695a1eac5d69fe",
-            .hash = "tls-0.1.21-mtEaLAY4FgA8prixchxXcq6T5lMKdb04B4WgJ_DyfJhN",
+            .url = "git+https://gitlab.com/devnw/zig/tls.git#b74424e2a66fa8ce5a5825a6dc9e41e2d1270c8d",
+            .hash = "tls-0.1.21-mtEaLKd2FgB2Es85SvqqtmphvfCGUlgR1V21VaLVcnfd",
         },
         // Thread pool for parallel operations
         .thread_pool = .{
-            .url = "git+https://gitlab.com/devnw/zig/thread-pool.git?ref=v0.2.7#54a2ddda1a356c32ba2e4df70691459570fb6339",
-            .hash = "thread_pool-0.2.7-11B1BvRneQBnMkDnRbKd76THvZn4ZhDhmlWQw-aziWQm",
+            .url = "git+https://gitlab.com/devnw/zig/thread-pool.git?ref=v0.2.8#2161d8e77beb6f9d6d8664b4406c739ef3a6cc81",
+            .hash = "thread_pool-0.2.8-11B1BrrSeQD3WHNJ-oyNkrfcHLp5AOW1Zgr4QTGu7pb4",
         },
         // OpenTelemetry instrumentation (gated behind -Dwith_otel; lazy = true
         // so the dependency is never fetched when the flag is off).
@@ -53,26 +31,11 @@
             .hash = "otel-0.1.19-B0v3liP3NQDyqyLnDV_6rFYepKA7MNgekcHFstany4dq",
             .lazy = true,
         },
-        // FIPS-140-3 / PQC backend. Resolved ONLY when a build reaches
-        // b.dependency("fips", ...) under -Dfips=true. The non-fips backend is
-        // the LOCAL vendored src/fips_backend/std_shim.zig + policy.zig
-        // (Task 0), so -Dfips=false pulls this dependency NOT AT ALL — no
-        // fetch, no OpenSSL link.
-        //
-        // LOCAL PATH dep (the fips package has no git remote yet). The path is
-        // build-root-relative (Zig 0.16 rejects absolute paths in .path); from
-        // this repo's physical build root it resolves to
-        // /home/benji/src/devnw/zig/fips.
-        //
-        // Eventual published form (replace .path with .url/.hash + .lazy):
-        //   .fips = .{
-        //       .url = "git+https://gitlab.com/devnw/zig/fips.git?ref=v0.1.0#<sha>",
-        //       .hash = "<fips-package-hash>",
-        //       .lazy = true,
-        //   },
+        // Published hash-pinned FIPS backend, resolved only under -Dfips=true.
+        // The disabled backend uses the local canonical policy/stdlib shim.
         .fips = .{
-            .url = "git+https://gitlab.com/devnw/zig/fips.git?ref=v0.1.1#4041d9cfdeadcab665644b3f4d3362c276f94bb7",
-            .hash = "fips-0.1.1-1wf3na01BwC3voljVu61_0g6DXp6BCedXrq4QMuMeQBq",
+            .url = "git+https://gitlab.com/devnw/zig/fips.git#571f09ca5277dbdfab0d103450eb1b0353e0c810",
+            .hash = "fips-0.1.2-1wf3naAACABLDDJ-ZoCElXmeDwwT-TU6zlj68xSWQ6Qi",
             .lazy = true,
         },
     },

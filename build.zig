@@ -260,9 +260,7 @@ pub fn build(b: *std.Build) void {
     });
     if (fips) {
         // Resolved ONLY when -Dfips=true; the disabled build never reaches
-        // the fips dependency (which links OpenSSL). The fips package is a
-        // LOCAL PATH dependency (see build.zig.zon); the eventual published
-        // form is a git+https lazy dep documented there.
+        // the published, hash-pinned fips dependency (which links OpenSSL).
         // fips is `.lazy = true` in build.zig.zon, so it MUST be accessed via
         // lazyDependency (b.dependency panics on a lazy dep). We are inside
         // `if (fips)`, so the dependency is requested + resolved here.
@@ -271,6 +269,16 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .openssl_path = openssl_path orelse "/usr/local/ssl",
         })) |fips_dep| {
+            // Explicit provisioning only: ordinary builds must never install
+            // system libraries. Zig verifies the dependency's package hash
+            // before executing its installer; no sibling checkout is required.
+            const provision = b.addSystemCommand(&.{"bash"});
+            provision.addFileArg(fips_dep.path("scripts/install-openssl-fips.sh"));
+            provision.setEnvironmentVariable("OPENSSL_PREFIX", openssl_path orelse "/usr/local/ssl");
+            provision.setEnvironmentVariable("REQUIRE_GPG", "1");
+            provision.has_side_effects = true;
+            b.step("provision-fips", "Install and verify the pinned dependency's OpenSSL FIPS provider (-Dfips=true)").dependOn(&provision.step);
+
             const fips_mod = fips_dep.module("fips");
             crypto_backend_mod.addImport("fips", fips_mod);
             // Link OpenSSL onto the fips backend module so it propagates to every
