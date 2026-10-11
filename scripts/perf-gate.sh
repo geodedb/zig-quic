@@ -16,7 +16,9 @@
 #        Checks out <sha> in a temp git worktree, builds + runs the suite
 #        there to capture baseline JSON, then runs the same suite on the
 #        working-tree HEAD and invokes `zig build bench-compare`.
-#        Cleans up the worktree on exit.
+#        Cleans up the worktree on exit. PERF_GATE_ROUNDS=N (default 1)
+#        captures both sides N times, interleaved, and compares the
+#        per-row best of each side.
 #
 #   2. Manual (two pre-captured JSONs):
 #      scripts/perf-gate.sh --baseline=<path.json> --current=<path.json>
@@ -195,13 +197,63 @@ mode_paired_commit() {
     current_json="$PAIRED_DIR/HEAD-current.json"
     mkdir -p "$PAIRED_DIR"
 
-    log "capturing baseline ($short_sha) — suite=$suite"
-    (cd "$worktree" && "${ZIG_RUNNER[@]}" build bench -- --suite="$suite" --output="$PROJECT_ROOT/$baseline_json")
+    # PERF_GATE_ROUNDS (default 1): capture baseline and HEAD that many
+    # times, interleaved (B,H,B,H,...), and reduce each side per row to its
+    # best round (max throughput, min latency percentiles). Thresholds are
+    # unchanged; this only damps one-off interference on shared/spot
+    # runners, where single captures of the same source swung rows by 20-40%.
+    local rounds="${PERF_GATE_ROUNDS:-1}"
+    [[ "$rounds" =~ ^[1-9][0-9]*$ ]] || die_invoke "PERF_GATE_ROUNDS must be a positive integer, got '$rounds'."
 
-    log "capturing current (HEAD) — suite=$suite"
-    run_bench "$suite" "$current_json"
+    if [[ "$rounds" -eq 1 ]]; then
+        log "capturing baseline ($short_sha) — suite=$suite"
+        (cd "$worktree" && "${ZIG_RUNNER[@]}" build bench -- --suite="$suite" --output="$PROJECT_ROOT/$baseline_json")
+
+        log "capturing current (HEAD) — suite=$suite"
+        run_bench "$suite" "$current_json"
+    else
+        require_jq
+        local r base_rounds=() cur_rounds=()
+        for ((r = 1; r <= rounds; r++)); do
+            log "round $r/$rounds: capturing baseline ($short_sha) — suite=$suite"
+            (cd "$worktree" && "${ZIG_RUNNER[@]}" build bench -- --suite="$suite" --output="$PROJECT_ROOT/$PAIRED_DIR/$short_sha-baseline.r$r.json")
+            base_rounds+=("$PAIRED_DIR/$short_sha-baseline.r$r.json")
+
+            log "round $r/$rounds: capturing current (HEAD) — suite=$suite"
+            run_bench "$suite" "$PAIRED_DIR/HEAD-current.r$r.json"
+            cur_rounds+=("$PAIRED_DIR/HEAD-current.r$r.json")
+        done
+        best_of_rounds "$baseline_json" "${base_rounds[@]}"
+        best_of_rounds "$current_json" "${cur_rounds[@]}"
+    fi
 
     run_compare "$baseline_json" "$current_json"
+}
+
+# best_of_rounds <out.json> <round1.json> [round2.json ...]
+# Keeps the first round's document and row order. Each row becomes the
+# round with the highest throughput for that scenario/variant, with the
+# latency percentiles replaced by their minimum across rounds.
+best_of_rounds() {
+    local out="$1"
+    shift
+    jq -s '
+        def key: [.scenario_name, .variant];
+        def lo(f): ([.[] | f | select(. != null)] | min);
+        (map(.rows) | add | group_by(key)) as $groups
+        | .[0] + {
+            rows: [
+                .[0].rows[] as $row
+                | ($groups[] | select(.[0] | key == ($row | key))) as $g
+                | ($g | max_by(.throughput_ops_per_sec // 0)) + {
+                    latency_p50_ns: ($g | lo(.latency_p50_ns)),
+                    latency_p95_ns: ($g | lo(.latency_p95_ns)),
+                    latency_p99_ns: ($g | lo(.latency_p99_ns))
+                  }
+            ]
+          }
+    ' "$@" > "$out"
+    log "best of $# rounds -> $out"
 }
 
 # ---------------------------------------------------------------------------
