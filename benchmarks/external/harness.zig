@@ -28,7 +28,8 @@ const builtin = @import("builtin");
 const common = @import("bench_common");
 const runner = @import("../bench_runner.zig");
 
-const process = @import("bench_external_process");
+// Keep the copied benchmark harness compatible with older build graphs.
+const process = @import("process.zig");
 pub const ExternalSpec = process.ExternalSpec;
 
 /// Every configured warmup and measured invocation must complete successfully.
