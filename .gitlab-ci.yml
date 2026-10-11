@@ -107,6 +107,7 @@ build:
   tags:
     - company
     - linux
+    - x86
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
@@ -120,7 +121,9 @@ build:
     - apt-get update && apt-get install -y --no-install-recommends libssl-dev
     - *install-zig
   script:
-    - zig build
+    - python3 scripts/test_ci_interop.py -v
+    # Shared executables run on other x86 runners; native CPU features are unsafe.
+    - zig build -Dtarget=x86_64-linux-gnu -Dcpu=baseline
   artifacts:
     paths:
       - zig-out/
@@ -132,6 +135,7 @@ test:
   tags:
     - company
     - linux
+    - x86
   needs:
     - job: build
       artifacts: true
@@ -168,6 +172,7 @@ test-fips:
   tags:
     - company
     - linux
+    - x86
   needs:
     - job: build
       artifacts: true
@@ -195,6 +200,7 @@ test-release-safe:
   tags:
     - company
     - linux
+    - x86
   needs:
     - job: build
       artifacts: true
@@ -219,6 +225,7 @@ test-release-fast:
   tags:
     - company
     - linux
+    - x86
   needs:
     - job: build
       artifacts: true
@@ -243,6 +250,7 @@ test-release-small:
   tags:
     - company
     - linux
+    - x86
   # ReleaseSmall compile on the full quic test graph consistently brushes the
   # default 1h runner timeout on shared runners. Extend to 2h.
   timeout: 2h
@@ -270,6 +278,7 @@ e2e-test-python:
   tags:
     - company
     - linux
+    - x86
   needs:
     - job: build
       artifacts: true
@@ -284,28 +293,17 @@ e2e-test-python:
     paths:
       - .cache/pip
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends openssl
+    - apt-get update && apt-get install -y --no-install-recommends openssl python3
     # Install pinned Python deps for aioquic test client
     - pip install -r test-clients/aioquic-client/requirements.txt
     # Generate test certificates
     - *generate-test-certs
   script:
-    # Server binary already built by build job
-    - ls -la zig-out/bin/
-    # Start server
-    - ./zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server-cert.pem --key server-key.pem --insecure > /tmp/server.log 2>&1 &
-    - SERVER_PID=$!
-    - sleep 3
-    # Run Python client
-    - cd test-clients/aioquic-client
-    - python test_client.py --host 127.0.0.1 --port 4433 --insecure 2>&1 | tee /tmp/client.log
-    - kill $SERVER_PID 2>/dev/null || true
-    # Check for success
-    - grep -q "Test completed successfully" /tmp/client.log
+    - python3 scripts/ci_interop.py --name python -- python test-clients/aioquic-client/test_client.py --host 127.0.0.1 --port 4433 --insecure
   artifacts:
     when: always
     paths:
-      - /tmp/*.log
+      - test-results/interop/
     expire_in: 7 days
 
 e2e-test-go:
@@ -314,6 +312,7 @@ e2e-test-go:
   tags:
     - company
     - linux
+    - x86
   needs:
     - job: build
       artifacts: true
@@ -331,28 +330,17 @@ e2e-test-go:
       - .cache/go/pkg/mod
       - .cache/go/build
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends openssl
+    - apt-get update && apt-get install -y --no-install-recommends openssl python3
     # Build Go client (GOTOOLCHAIN=auto allows downloading newer Go if needed)
     - cd test-clients/quic-go-client && go build -o quic-go-test-client . && cd ../..
     # Generate test certificates
     - *generate-test-certs
   script:
-    # Server binary already built by build job
-    - ls -la zig-out/bin/
-    # Start server
-    - ./zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server-cert.pem --key server-key.pem --insecure > /tmp/server.log 2>&1 &
-    - SERVER_PID=$!
-    - sleep 3
-    # Run Go client
-    - cd test-clients/quic-go-client
-    - ./quic-go-test-client -addr 127.0.0.1:4433 -verbose -insecure 2>&1 | tee /tmp/client.log
-    - kill $SERVER_PID 2>/dev/null || true
-    # Check for success
-    - grep -q "Test completed successfully" /tmp/client.log
+    - python3 scripts/ci_interop.py --name go -- ./test-clients/quic-go-client/quic-go-test-client -addr 127.0.0.1:4433 -verbose -insecure
   artifacts:
     when: always
     paths:
-      - /tmp/*.log
+      - test-results/interop/
     expire_in: 7 days
   # Pre-existing TLS-engine HelloRetryRequest interop bug with quic-go and
   # mvfst clients. Documented in docs/PERF_GAP_ANALYSIS.md and the commit
@@ -368,6 +356,7 @@ e2e-test-rust:
   tags:
     - company
     - linux
+    - x86
   needs:
     - job: build
       artifacts: true
@@ -388,28 +377,17 @@ e2e-test-rust:
       - .cache/cargo/git/db
       - test-clients/quinn-client/target
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends openssl
+    - apt-get update && apt-get install -y --no-install-recommends openssl python3
     # Build Rust client
     - cd test-clients/quinn-client && cargo build --release && cd ../..
     # Generate test certificates
     - *generate-test-certs
   script:
-    # Server binary already built by build job
-    - ls -la zig-out/bin/
-    # Start server
-    - ./zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server-cert.pem --key server-key.pem --insecure > /tmp/server.log 2>&1 &
-    - SERVER_PID=$!
-    - sleep 3
-    # Run Rust client
-    - cd test-clients/quinn-client
-    - RUST_LOG=info ./target/release/quinn-test-client --addr 127.0.0.1:4433 --server-name localhost 2>&1 | tee /tmp/client.log
-    - kill $SERVER_PID 2>/dev/null || true
-    # Check for success
-    - grep -q "Test completed successfully" /tmp/client.log
+    - python3 scripts/ci_interop.py --name rust -- ./test-clients/quinn-client/target/release/quinn-test-client --addr 127.0.0.1:4433 --server-name localhost
   artifacts:
     when: always
     paths:
-      - /tmp/*.log
+      - test-results/interop/
     expire_in: 7 days
 
 e2e-test-zig:
@@ -418,6 +396,7 @@ e2e-test-zig:
   tags:
     - company
     - linux
+    - x86
   needs:
     - job: build
       artifacts: true
@@ -426,25 +405,15 @@ e2e-test-zig:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends openssl
+    - apt-get update && apt-get install -y --no-install-recommends openssl python3
     # Generate test certificates
     - *generate-test-certs
   script:
-    # Server and client binaries already built by build job
-    - ls -la zig-out/bin/
-    # Start server
-    - ./zig-out/bin/quic-server --bind 127.0.0.1:4433 --cert server-cert.pem --key server-key.pem --insecure > /tmp/server.log 2>&1 &
-    - SERVER_PID=$!
-    - sleep 3
-    # Run Zig client
-    - timeout 30 ./zig-out/bin/quic-client --addr 127.0.0.1:4433 --insecure 2>&1 | tee /tmp/client.log || true
-    - kill $SERVER_PID 2>/dev/null || true
-    # Check server accepted connection
-    - grep -q "accepted connection" /tmp/server.log || grep -q "active connections" /tmp/server.log
+    - "python3 scripts/ci_interop.py --name zig --success-marker 'echo: sonny-ci-interop' -- ./zig-out/bin/quic-client --connect 127.0.0.1:4433 --sni localhost --alpn hq-interop --insecure --msg sonny-ci-interop"
   artifacts:
     when: always
     paths:
-      - /tmp/*.log
+      - test-results/interop/
     expire_in: 7 days
 
 # QUIC interoperability testing against other implementations
@@ -457,6 +426,7 @@ interop-test:
   tags:
     - company
     - linux
+    - x86
     - dedicated
   needs:
     - job: build
