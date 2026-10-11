@@ -210,6 +210,90 @@ test "Handshake CRYPTO short write preserves retained flight and packet accounti
     try expectRejectedSendPreservesRecovery(true);
 }
 
+const BlockedSend = struct {
+    blocked: bool = true,
+    short_write: bool = false,
+    permanent_failure: bool = false,
+    attempts: usize = 0,
+
+    fn send(raw: *anyopaque, _: *conn_mod.Connection, data: []const u8) !usize {
+        const self: *BlockedSend = @ptrCast(@alignCast(raw));
+        self.attempts += 1;
+        if (self.blocked) return error.WouldBlock;
+        if (self.permanent_failure) return error.InjectedSendFailure;
+        if (self.short_write) return data.len - 1;
+        return data.len;
+    }
+};
+
+test "client Finished retains pending ownership across repeated blocked submissions" {
+    var allocator = testing.allocator;
+    var c: conn_mod.Connection = undefined;
+    try prepare(&c, &allocator, .Client);
+    defer c.deinit();
+    var tls_ctx = try handshake.createTlsContext(allocator, .Client, &.{"h3"}, &.{}, null, null, false, false, null, null, null);
+    defer tls_ctx.deinit();
+    c.tls_context = &tls_ctx;
+    defer c.tls_context = null;
+    var sender = BlockedSend{};
+    c.setSender(&sender, BlockedSend.send);
+    c.pending_hs_messages = try allocator.dupe(u8, " suffix");
+    const pending = c.pending_hs_messages.?;
+    const retained = c.crypto_retx_handshake.?;
+    const offset = c.crypto_tx_off_handshake;
+    const pn = c.pn_handshake_tx;
+    for (0..2) |_| {
+        try c.flushClientHandshakeCrypto();
+        try testing.expect(c.pending_hs_send);
+        try testing.expect(c.pending_hs_messages.?.ptr == pending.ptr);
+        try testing.expectEqualStrings(" suffix", c.pending_hs_messages.?);
+        try testing.expect(c.crypto_retx_handshake.?.ptr == retained.ptr);
+        try testing.expectEqual(offset, c.crypto_tx_off_handshake);
+        try testing.expectEqual(pn, c.pn_handshake_tx);
+        try testing.expect(!tls_ctx.flags.local_finished_sent);
+        try testing.expect(c.app_tx_keys == null);
+    }
+    sender.blocked = false;
+    try c.flushClientHandshakeCrypto();
+    try testing.expect(!c.pending_hs_send);
+    try testing.expect(c.pending_hs_messages == null);
+    try testing.expectEqualStrings("client Finished CRYPTO suffix", c.crypto_retx_handshake.?);
+    try testing.expectEqual(offset + pending.len, c.crypto_tx_off_handshake);
+    try testing.expectEqual(pn + 1, c.pn_handshake_tx);
+    try testing.expect(tls_ctx.flags.local_finished_sent);
+    try c.flushClientHandshakeCrypto();
+    try testing.expectEqual(@as(usize, 3), sender.attempts);
+}
+
+test "client Finished permanent and short send failures preserve pending bytes without retrying" {
+    for ([_]bool{ false, true }) |short_write| {
+        var allocator = testing.allocator;
+        var c: conn_mod.Connection = undefined;
+        try prepare(&c, &allocator, .Client);
+        defer c.deinit();
+        var tls_ctx = try handshake.createTlsContext(allocator, .Client, &.{"h3"}, &.{}, null, null, false, false, null, null, null);
+        defer tls_ctx.deinit();
+        c.tls_context = &tls_ctx;
+        defer c.tls_context = null;
+        var sender = BlockedSend{ .blocked = false, .short_write = short_write, .permanent_failure = !short_write };
+        c.setSender(&sender, BlockedSend.send);
+        c.pending_hs_messages = try allocator.dupe(u8, " suffix");
+        const pending = c.pending_hs_messages.?;
+        c.pending_hs_send = true;
+        const offset = c.crypto_tx_off_handshake;
+        const pn = c.pn_handshake_tx;
+        try testing.expectError(if (short_write) error.ShortWrite else error.SendFailed, c.flushClientHandshakeCrypto());
+        try testing.expect(c.pending_hs_messages.?.ptr == pending.ptr);
+        try testing.expectEqualStrings(" suffix", c.pending_hs_messages.?);
+        try testing.expectEqualStrings("client Finished CRYPTO", c.crypto_retx_handshake.?);
+        try testing.expectEqual(offset, c.crypto_tx_off_handshake);
+        try testing.expectEqual(pn, c.pn_handshake_tx);
+        try testing.expect(!tls_ctx.flags.local_finished_sent);
+        try testing.expect(!c.pending_hs_send);
+        try testing.expect(c.app_tx_keys == null);
+    }
+}
+
 test "Handshake CRYPTO allocation failures preserve recovery and prevent submission" {
     // Fail retention allocation, then packet encoding allocation. Both must
     // report failure, free temporary ownership, and leave the old flight usable.

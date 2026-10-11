@@ -717,7 +717,8 @@ pub const Connection = struct {
     handshake_done_seen: bool = false,
     /// Last non-retryable handshake/path setup error observed by connection processing.
     last_handshake_error: ?anyerror = null,
-    /// Server-side: deferred Handshake packet flush. Set when `processInitial`
+    /// Deferred Handshake packet flush. Clients retain Finished here after a
+    /// temporary blocked submission. On the server, set when `processInitial`
     /// calls `sendHandshakePackets` and gets `error.NoHandshakeKeys` — i.e.,
     /// `pollCrypto(.Handshake)` did not derive `hs_tx_keys` in time. The
     /// endpoint poll loop drains this flag on subsequent ticks (after the TLS
@@ -972,7 +973,7 @@ pub const Connection = struct {
     crypto_retx_handshake_off: u64 = 0,
 
     // Pending Handshake-level TLS messages (EncryptedExtensions, Certificate, Finished)
-    // that were popped from TLS but haven't been sent yet (waiting for Handshake keys)
+    // popped from TLS but not sent yet (waiting for keys or client send capacity).
     pending_hs_messages: ?[]u8 = null,
 
     // Pending Initial packet for coalescing with Handshake packet (RFC 9000 §12.2)
@@ -2161,6 +2162,7 @@ pub const Connection = struct {
     pub const send = methods_a.send;
     pub const sendInitialCrypto = methods_a.sendInitialCrypto;
     pub const sendHandshakeCrypto = methods_a.sendHandshakeCrypto;
+    pub const flushClientHandshakeCrypto = methods_a.flushClientHandshakeCrypto;
     pub const pushCrypto = methods_a.pushCrypto;
     pub const afterInitialCryptoChunk = methods_a.afterInitialCryptoChunk;
     pub const processBufferedInitial = methods_a.processBufferedInitial;

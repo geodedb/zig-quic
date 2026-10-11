@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a lost Finished can be retransmitted and application streams can progress
   (SONNY-4791). Preserve recovery state when transport submission or allocation
   fails, and exercise dropped-Finished recovery with real client/server tests.
+  Keep unsent TLS output across temporary blocked sends and retry through the
+  endpoint queue before marking the client Finished as sent.
 
 ## [0.1.40] - 2026-09-12
 

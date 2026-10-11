@@ -2103,7 +2103,7 @@ pub const Endpoint = struct {
         // QUIC idle timeout because the server never re-attempted the
         // Handshake send after the first-tick miss.
         //
-        // The pending set snapshots server-role connections with the flag set,
+        // The pending set snapshots connections with the flag set,
         // then retries outside the lock so a slow per-connection TLS poll
         // doesn't serialize unrelated handlers. The retry uses the same
         // sendToWrapper-style closure (current_io_endpoint thread-local)
@@ -2131,7 +2131,7 @@ pub const Endpoint = struct {
                 var it = self.pending_hs_send_set.iterator();
                 while (it.next()) |entry| {
                     const c = entry.key_ptr.*;
-                    if (c.role == .Server and !c.closed and c.pending_hs_send) {
+                    if (!c.closed and c.pending_hs_send) {
                         if (pending_hs_send_snapshot.items.len >= max_pending_hs_send_retries_per_poll_cycle) break;
                         pending_hs_send_snapshot.appendAssumeCapacity(c);
                     } else if (stale_hs_send_snapshot.items.len < pending_budget) {
@@ -2178,6 +2178,16 @@ pub const Endpoint = struct {
                     // on this connection's hs_tx_keys / hs_rx_keys.
                     handshake_integration.setCurrentConnection(c);
                     defer handshake_integration.clearCurrentConnection();
+
+                    if (c.role == .Client) {
+                        c.flushClientHandshakeCrypto() catch |err| {
+                            c.last_handshake_error = err;
+                            c.pending_hs_send = false;
+                            continue;
+                        };
+                        if (c.pending_hs_send) self.markPendingHandshakeSend(c);
+                        continue;
+                    }
 
                     var hs_ctx = handshake_integration.HandshakeContext{
                         .conn = c,

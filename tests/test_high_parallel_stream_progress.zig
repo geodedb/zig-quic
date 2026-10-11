@@ -80,11 +80,15 @@ const StreamState = struct {
     pending: std.ArrayList(u8),
     client_fin: bool,
     server_fin_sent: bool,
+    read_total: usize = 0,
+    written_total: usize = 0,
+    last_error: ?anyerror = null,
 };
 
 const ServerCtx = struct {
     ep: *endpoint_mod.Endpoint,
     done: *std.atomic.Value(bool),
+    fail_counter: *std.atomic.Value(u32),
     allocator: std.mem.Allocator,
 };
 
@@ -113,9 +117,11 @@ fn pumpStreams(
             while (true) {
                 const n = api.readStream(conn, s.stream_id, scratch) catch |err| {
                     if (err == error.WouldBlock) break;
+                    s.last_error = err;
                     break;
                 };
                 if (n == 0) break;
+                s.read_total += n;
                 s.pending.appendSlice(allocator, scratch[0..n]) catch break;
                 progress = true;
             }
@@ -126,8 +132,12 @@ fn pumpStreams(
             }
 
             while (s.pending.items.len > 0) {
-                const written = api.writeStream(conn, s.stream_id, s.pending.items, false) catch break;
+                const written = api.writeStream(conn, s.stream_id, s.pending.items, false) catch |err| {
+                    s.last_error = err;
+                    break;
+                };
                 if (written == 0) break;
+                s.written_total += written;
                 const remaining = s.pending.items.len - written;
                 if (remaining > 0) {
                     std.mem.copyForwards(u8, s.pending.items[0..remaining], s.pending.items[written..]);
@@ -137,7 +147,9 @@ fn pumpStreams(
             }
 
             if (s.client_fin and s.pending.items.len == 0 and !s.server_fin_sent) {
-                _ = api.writeStream(conn, s.stream_id, &[_]u8{}, true) catch {};
+                _ = api.writeStream(conn, s.stream_id, &[_]u8{}, true) catch |err| {
+                    s.last_error = err;
+                };
                 s.server_fin_sent = true;
                 progress = true;
             }
@@ -176,7 +188,41 @@ fn serverThread(ctx: ServerCtx) void {
         _ = ctx.ep.pollWithStats(1) catch {};
         _ = pumpStreams(conns.items, states_by_conn.items, &scratch, ctx.allocator);
     }
+    if (ctx.fail_counter.load(.acquire) == 0) return;
+    std.debug.print("\n  server accepted {d} connections\n", .{conns.items.len});
+    for (conns.items, states_by_conn.items) |conn, states| {
+        if (conn.closed) continue;
+        const cid = std.mem.readInt(u64, conn.our_scid.bytes[0..8], .little);
+        if (states.items.len == 0) {
+            std.debug.print("  server cid={x} streams=0 confirmed={} closed={}\n", .{ cid, api.isHandshakeConfirmed(conn), conn.closed });
+        }
+        for (states.items) |s| {
+            if (s.read_total == PAYLOAD_BYTES and s.written_total == PAYLOAD_BYTES and s.server_fin_sent) continue;
+            std.debug.print("  server cid={x} stream={d} read={d} written={d} pending={d} client_fin={} server_fin={} error={s}\n", .{
+                cid,                                                 s.stream_id, s.read_total, s.written_total, s.pending.items.len, s.client_fin, s.server_fin_sent,
+                if (s.last_error) |err| @errorName(err) else "none",
+            });
+        }
+    }
 }
+
+const ClientDiagnostic = struct {
+    phase: []const u8 = "not started",
+    last_error: ?anyerror = null,
+    sent: usize = 0,
+    received: usize = 0,
+    elapsed_ms: i64 = 0,
+    server_cid: u64 = 0,
+    handshake_done: bool = false,
+    hs_keys: bool = false,
+    hs_retx_bytes: usize = 0,
+    hs_pto_count: u32 = 0,
+    hs_pto_active: bool = false,
+    hs_tx_pn: u64 = 0,
+    connection_error: ?anyerror = null,
+    application_keys: bool = false,
+    local_finished_sent: bool = false,
+};
 
 const ClientCtx = struct {
     allocator: std.mem.Allocator,
@@ -184,41 +230,66 @@ const ClientCtx = struct {
     index: usize,
     success_counter: *std.atomic.Value(u32),
     fail_counter: *std.atomic.Value(u32),
+    diagnostic: *ClientDiagnostic,
 };
 
 fn clientThread(ctx: ClientCtx) void {
+    const started = nowMs();
+    defer ctx.diagnostic.elapsed_ms = nowMs() - started;
+    ctx.diagnostic.phase = "endpoint init";
     var cli_cfg = cfg.QuicConfig{
         .alpn = &test_alpn,
         .allow_insecure = true,
     };
-    var ep = endpoint_mod.Endpoint.init(ctx.allocator, "127.0.0.1:0", &cli_cfg) catch {
+    var ep = endpoint_mod.Endpoint.init(ctx.allocator, "127.0.0.1:0", &cli_cfg) catch |err| {
+        ctx.diagnostic.last_error = err;
         _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
         return;
     };
     defer ep.deinit();
 
-    const conn = api.connect(&ep, ctx.server_addr, SERVER_SNI) catch {
+    ctx.diagnostic.phase = "connect";
+    const conn = api.connect(&ep, ctx.server_addr, SERVER_SNI) catch |err| {
+        ctx.diagnostic.last_error = err;
         _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
         return;
     };
 
+    defer {
+        ctx.diagnostic.handshake_done = conn.handshake_done_seen;
+        ctx.diagnostic.hs_keys = conn.hs_tx_keys != null;
+        ctx.diagnostic.hs_retx_bytes = if (conn.crypto_retx_handshake) |buf| buf.len else 0;
+        ctx.diagnostic.hs_pto_count = conn.pto_handshake_count;
+        ctx.diagnostic.hs_pto_active = conn.pto_handshake_active;
+        ctx.diagnostic.hs_tx_pn = conn.pn_handshake_tx;
+        ctx.diagnostic.connection_error = conn.last_handshake_error;
+        ctx.diagnostic.application_keys = conn.app_tx_keys != null;
+        ctx.diagnostic.local_finished_sent = if (conn.tls_context) |tls| tls.flags.local_finished_sent else false;
+    }
+    ctx.diagnostic.phase = "handshake";
     const hs_deadline = nowMs() + HANDSHAKE_TIMEOUT_MS;
     while (nowMs() < hs_deadline and !api.isHandshakeConfirmed(conn)) {
-        _ = ep.pollWithStats(1) catch {};
+        _ = ep.pollWithStats(1) catch |err| {
+            ctx.diagnostic.last_error = err;
+        };
     }
     if (!api.isHandshakeConfirmed(conn)) {
         _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
         return;
     }
+    ctx.diagnostic.server_cid = std.mem.readInt(u64, conn.peer_initial_scid.bytes[0..8], .little);
 
     var payload: [PAYLOAD_BYTES]u8 = undefined;
     for (&payload, 0..) |*b, i| b.* = @truncate(i + ctx.index);
 
-    const sid = api.openStream(conn, true) catch {
+    ctx.diagnostic.phase = "open stream";
+    const sid = api.openStream(conn, true) catch |err| {
+        ctx.diagnostic.last_error = err;
         _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
         return;
     };
 
+    ctx.diagnostic.phase = "send data";
     const rt_deadline = nowMs() + RT_TIMEOUT_MS;
     var sent: usize = 0;
     while (sent < payload.len) {
@@ -226,7 +297,8 @@ fn clientThread(ctx: ClientCtx) void {
             _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
             return;
         }
-        const n = api.writeStream(conn, sid, payload[sent..], false) catch {
+        const n = api.writeStream(conn, sid, payload[sent..], false) catch |err| {
+            ctx.diagnostic.last_error = err;
             _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
             return;
         };
@@ -235,24 +307,32 @@ fn clientThread(ctx: ClientCtx) void {
             continue;
         }
         sent += n;
+        ctx.diagnostic.sent = sent;
     }
 
-    _ = api.writeStream(conn, sid, &[_]u8{}, true) catch {
+    ctx.diagnostic.phase = "send FIN";
+    _ = api.writeStream(conn, sid, &[_]u8{}, true) catch |err| {
+        ctx.diagnostic.last_error = err;
         _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
         return;
     };
 
+    ctx.diagnostic.phase = "receive echo and FIN";
     var recv_scratch: [2048]u8 = undefined;
     var received: usize = 0;
     while (nowMs() < rt_deadline) {
-        _ = ep.pollWithStats(1) catch {};
+        _ = ep.pollWithStats(1) catch |err| {
+            ctx.diagnostic.last_error = err;
+        };
         const n = api.readStream(conn, sid, &recv_scratch) catch |err| {
             if (err == error.WouldBlock) continue;
+            ctx.diagnostic.last_error = err;
             _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
             return;
         };
         if (n == 0) {
             if (received == payload.len and api.isStreamFinished(conn, sid)) {
+                ctx.diagnostic.phase = "success";
                 _ = ctx.success_counter.fetchAdd(1, .seq_cst);
                 _ = api.close(conn, 0, "done") catch {};
                 _ = ep.pollWithStats(1) catch {};
@@ -261,17 +341,21 @@ fn clientThread(ctx: ClientCtx) void {
             continue;
         }
         if (received + n > payload.len) {
+            ctx.diagnostic.phase = "excess echo bytes";
             _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
             return;
         }
         for (recv_scratch[0..n], 0..) |b, i| {
             if (b != payload[received + i]) {
+                ctx.diagnostic.phase = "corrupted echo";
                 _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
                 return;
             }
         }
         received += n;
+        ctx.diagnostic.received = received;
         if (received == payload.len and api.isStreamFinished(conn, sid)) {
+            ctx.diagnostic.phase = "success";
             _ = ctx.success_counter.fetchAdd(1, .seq_cst);
             _ = api.close(conn, 0, "done") catch {};
             _ = ep.pollWithStats(1) catch {};
@@ -308,10 +392,13 @@ test "high-parallel connections complete stream echo and FIN without blocking" {
     var target_buf: [32]u8 = undefined;
     const server_target = try std.fmt.bufPrint(&target_buf, "127.0.0.1:{d}", .{port});
 
+    var success_counter = std.atomic.Value(u32).init(0);
+    var fail_counter = std.atomic.Value(u32).init(0);
     var server_done = std.atomic.Value(bool).init(false);
     const srv_ctx = ServerCtx{
         .ep = &server_ep,
         .done = &server_done,
+        .fail_counter = &fail_counter,
         .allocator = allocator,
     };
     const srv_thread = try std.Thread.spawn(.{}, serverThread, .{srv_ctx});
@@ -323,10 +410,9 @@ test "high-parallel connections complete stream echo and FIN without blocking" {
         }
     }
 
-    var success_counter = std.atomic.Value(u32).init(0);
-    var fail_counter = std.atomic.Value(u32).init(0);
     var threads: [PARALLEL_CLIENTS]std.Thread = undefined;
     var thread_ok = [_]bool{false} ** PARALLEL_CLIENTS;
+    var diagnostics = [_]ClientDiagnostic{.{}} ** PARALLEL_CLIENTS;
 
     for (&threads, &thread_ok, 0..) |*t, *ok, i| {
         const cctx = ClientCtx{
@@ -335,11 +421,13 @@ test "high-parallel connections complete stream echo and FIN without blocking" {
             .index = i,
             .success_counter = &success_counter,
             .fail_counter = &fail_counter,
+            .diagnostic = &diagnostics[i],
         };
         if (std.Thread.spawn(.{}, clientThread, .{cctx})) |spawned| {
             t.* = spawned;
             ok.* = true;
-        } else |_| {
+        } else |err| {
+            diagnostics[i].last_error = err;
             _ = fail_counter.fetchAdd(1, .seq_cst);
         }
     }
@@ -361,14 +449,31 @@ test "high-parallel connections complete stream echo and FIN without blocking" {
                 "  got      successes={d} failures={d}\n",
             .{ PARALLEL_CLIENTS, successes, failures },
         );
+        for (diagnostics, 0..) |diagnostic, index| {
+            if (std.mem.eql(u8, diagnostic.phase, "success")) continue;
+            std.debug.print("  client handshake_done={} hs_keys={} hs_retx={d} hs_pto_count={d} hs_pto_active={} hs_tx_pn={d}\n", .{ diagnostic.handshake_done, diagnostic.hs_keys, diagnostic.hs_retx_bytes, diagnostic.hs_pto_count, diagnostic.hs_pto_active, diagnostic.hs_tx_pn });
+            std.debug.print("  connection_error={s} app_keys={} local_finished_sent={}\n", .{ if (diagnostic.connection_error) |err| @errorName(err) else "none", diagnostic.application_keys, diagnostic.local_finished_sent });
+            std.debug.print("  client={d} phase={s} error={s} sent={d} received={d} elapsed_ms={d} server_cid={x}\n", .{
+                index,
+                diagnostic.phase,
+                if (diagnostic.last_error) |err| @errorName(err) else "none",
+                diagnostic.sent,
+                diagnostic.received,
+                diagnostic.elapsed_ms,
+                diagnostic.server_cid,
+            });
+        }
     }
     try testing.expectEqual(@as(u32, 0), failures);
     try testing.expectEqual(@as(u32, PARALLEL_CLIENTS), successes);
 }
 
 const DropClientFinished = struct {
+    const Mode = enum { lost, would_block };
+
     sender: *const fn (*anyopaque, *api.Connection, []const u8) anyerror!usize,
     context: *anyopaque,
+    mode: Mode = .lost,
     dropped: bool = false,
     handshake_packets: usize = 0,
 
@@ -380,6 +485,7 @@ const DropClientFinished = struct {
             self.handshake_packets += 1;
             if (!self.dropped) {
                 self.dropped = true;
+                if (self.mode == .would_block) return error.WouldBlock;
                 return bytes.len;
             }
         }
@@ -388,6 +494,14 @@ const DropClientFinished = struct {
 };
 
 test "lost client Finished recovers automatically and delivers stream data" {
+    try expectClientFinishedRecovery(.lost);
+}
+
+test "client Finished retries a temporary blocked send and delivers stream data" {
+    try expectClientFinishedRecovery(.would_block);
+}
+
+fn expectClientFinishedRecovery(mode: DropClientFinished.Mode) !void {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
     const allocator = std.heap.page_allocator;
     // This regression requires the same generated P-256 fixture as the existing
@@ -409,7 +523,7 @@ test "lost client Finished recovers automatically and delivers stream data" {
     var client = try endpoint_mod.Endpoint.init(allocator, "127.0.0.1:0", &client_cfg);
     defer client.deinit();
     const conn = try api.connect(&client, address, SERVER_SNI);
-    var drop = DropClientFinished{ .sender = conn.sender_fn.?, .context = conn.sender_ctx.? };
+    var drop = DropClientFinished{ .sender = conn.sender_fn.?, .context = conn.sender_ctx.?, .mode = mode };
     conn.setSender(&drop, DropClientFinished.send);
     defer conn.setSender(drop.context, drop.sender);
 

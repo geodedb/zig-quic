@@ -141,6 +141,25 @@ ISO-8601 `YYYY-MM-DD`.
   remain outstanding. Keep the MR draft until qualification completes; this
   entry makes no performance-improvement or release-readiness claim.
 
+### 2026-10-11 — SONNY-4791: blocked-send recovery and failed performance gate
+
+- The full `c9a5beb0` capture validated all 76 rows and all three external
+  implementations (20 measured invocations each); source and fixtures were unchanged.
+- Against the captured parent, the unchanged gate failed: **5 FAIL, 4 WARN**,
+  with no reported absolute failures. The four micro failures were frame
+  `window_update`/`max_stream_id` and send-buffer `stream_only`/`stream_plus_ack`.
+  Datagram `batch_16` throughput fell 70.95% and p95 rose 111.20%. All handshake,
+  stream-throughput and external rows passed. These failures remain blockers.
+- A new real-connection regression proves that one blocked Finished submission
+  loses the outgoing TLS bytes on the published runtime. Retaining those bytes
+  and retrying through the bounded endpoint queue passes that regression, all
+  14 ownership/recovery unit tests, and the normal full suite (161 passed, three
+  existing skips). The original concurrency assertions/deadlines remain unchanged.
+- The retry candidate still needs performance and hosted qualification. Required
+  FIPS live-handshake tests also fail because the pinned TLS client rejects FIPS
+  startup. Keep [MR !56](https://gitlab.com/devnw/zig/quic/-/merge_requests/56)
+  draft; neither local correctness results nor this entry establish release readiness.
+
 <!-- New entries go above this line -->
 
 ### 2026-04-20 — Initial v2 baseline capture

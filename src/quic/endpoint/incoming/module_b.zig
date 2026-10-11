@@ -251,9 +251,14 @@ fn processHandshakeResolvedWithHeader(
                     cr.offset,
                     cr.data,
                 ) catch |err| blk: {
+                    conn.last_handshake_error = err;
                     logger.debugPrint("processHandshake: Failed to process CRYPTO: {}\n", .{err});
                     break :blk false;
                 };
+
+                if (conn.role == .Client and conn.pending_hs_send) {
+                    if (ctx.mark_pending_hs_send_fn) |mark_pending| mark_pending(conn);
+                }
 
                 if (ack_needed) {
                     // Check if app keys are now ready (handshake complete)
