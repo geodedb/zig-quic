@@ -40,13 +40,13 @@ class HarnessTests(unittest.TestCase):
             "benchmarks/results/baseline.json": '{"reference":"preserve"}\n',
             "src/runtime": "100\n",
             "build.zig": "parent build configuration\n",
-            ".gitignore": "benchmarks/results/paired/\n",
+            ".gitignore": (SCRIPTS.parent / ".gitignore").read_text(),
         }.items():
             path = self.repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
         (self.repo / "scripts").mkdir()
-        for name in ["perf-gate.sh", "prepare_perf_harness.py"]:
+        for name in ["ci-perf-gate.sh", "perf-gate.sh", "prepare_perf_harness.py"]:
             shutil.copy2(SCRIPTS / name, self.repo / "scripts" / name)
         self.parent = self.commit("parent")
         (self.repo / "benchmarks/common.zig").write_text("precise measurement\n")
@@ -205,15 +205,14 @@ else:
 """)
         fake.chmod(0o755)
         result = subprocess.run(
-            [
-                "bash",
-                "scripts/perf-gate.sh",
-                f"--baseline-commit={self.parent}",
-                f"--harness-commit={self.head}",
-                "--suite=micro",
-            ],
+            ["bash", "scripts/ci-perf-gate.sh"],
             cwd=self.repo,
-            env=dict(self.env, ZIG=str(fake)),
+            env=dict(
+                self.env,
+                ZIG=str(fake),
+                CI_PIPELINE_SOURCE="merge_request_event",
+                CI_MERGE_REQUEST_DIFF_BASE_SHA=self.parent,
+            ),
             text=True,
             capture_output=True,
         )
