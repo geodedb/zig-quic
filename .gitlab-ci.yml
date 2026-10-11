@@ -573,6 +573,8 @@ interop-test:
 quality-zig-gates:
   stage: test
   image: debian:bookworm-slim
+  variables:
+    GIT_DEPTH: "0"
   tags:
     - company
     - linux
@@ -591,20 +593,23 @@ quality-zig-gates:
   script:
     - git ls-files '*.zig' | xargs -r zig fmt --check
     - zig build examples
-    # Unified tiered perf gate (Phase 7 Task 7.1). Runs `zig build bench`
-    # to capture current-HEAD JSON, then `zig build bench-compare` against
-    # benchmarks/results/baseline.json. compare.zig enforces the absolute
+    # Capture the actual baseline and candidate sequentially on this runner.
+    # compare.zig retains environment checks, relative thresholds and absolute
     # gates (varint <=250ns p99, pacing <=400ns p99, hp <=400k ns p99,
     # short-header alloc_bytes==0) that the legacy scripts/perf_gate.sh
     # used to enforce inline; the batch/single ratio gate from
     # scripts/perf_udp_batch_gate.sh is absorbed as a post-compare jq
     # check in perf-gate.sh itself.
     - apt-get install -y --no-install-recommends jq
-    # Capture current-HEAD bench JSON, then compare against the baseline.
-    # Using --suite=micro keeps this job under ~30s; integration/all are
-    # owned by `zig build bench-integration` / dedicated stress jobs.
-    - scripts/perf-gate.sh --baseline=benchmarks/results/baseline.json --suite=micro
+    # Micro remains the CI scope; integration/all retain their dedicated jobs.
+    - python3 scripts/test_ci_perf_gate.py
+    - bash scripts/ci-perf-gate.sh
     - scripts/cross_platform_udp_batch_smoke.sh
+  artifacts:
+    when: always
+    paths:
+      - benchmarks/results/paired/
+    expire_in: 7 days
 
 # 20x stress follow-up for perf-accepted changes.
 # Runs the integration scenarios that exercise the send-path production code
