@@ -2752,7 +2752,6 @@ pub fn build(b: *std.Build) void {
     // tier ("micro"|"integration"|"external") and a list of ScenarioSpec.
     const bench_runner = addExe(b, "bench", "benchmarks/bench_runner.zig", target, .ReleaseFast);
     bench_runner.root_module.addImport("bench_common", bench_common_mod);
-    bench_runner.root_module.addImport("bench_external_process", bench_external_process_mod);
     bench_runner.root_module.addImport("quic_varint", quic_varint_mod);
     bench_runner.root_module.addImport("quic_recovery", quic_recovery_mod);
     bench_runner.root_module.addImport("quic_crypto", quic_crypto_mod);
