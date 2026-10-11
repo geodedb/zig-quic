@@ -73,7 +73,11 @@ class BaselineSelectionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             (repo / "gate.args").read_text().splitlines(),
-            [f"--baseline-commit={baseline}", "--suite=micro"],
+            [
+                f"--baseline-commit={baseline}",
+                f"--harness-commit={self.head}",
+                "--suite=micro",
+            ],
         )
         self.assertEqual(
             (repo / "benchmarks/results/paired/ci-revisions.txt").read_text(),

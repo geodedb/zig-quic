@@ -63,6 +63,18 @@ legacy and precise rows, changing batch sizes between captures, or providing
 inconsistent metadata fails: recapture both sides with the same harness. Do not
 infer missing fractions in old measurements or rewrite their recorded outcomes.
 
+CI uses `--harness-commit=<candidate-HEAD>` with paired capture so both runtime
+revisions execute the same committed benchmark implementation. Only tracked
+regular `benchmarks/**/*.zig` sources are copied into the baseline worktree;
+its production sources, build configuration, and saved result documents stay
+unchanged. The paired artifact directory records both runtime revisions, the
+benchmark revision, and each copied source's hash in `*-harness.json`. Dirty,
+untracked, symlinked, or hard-linked benchmark sources fail before capture.
+The candidate worktree must also be clean so its runtime matches the recorded
+commit.
+If the current measurement code cannot compile against the parent runtime,
+qualification fails; it never substitutes candidate production code.
+
 ## Per-Suite Detail
 
 Typical runtimes below are wall-clock on an x86_64 Linux workstation
