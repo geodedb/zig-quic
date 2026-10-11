@@ -48,9 +48,9 @@
 // amortizes timer overhead so latency samples reflect the lookup rather
 // than the timing harness. For 1K / 10K the lookup is already well
 // above clock resolution, but we keep BATCH_SIZE uniform across
-// variants for shape consistency -- the only difference is that
-// latencies_ns[i] holds (batch_wall_ns / BATCH_SIZE), which matches
-// the per-op semantics of the tighter variants.
+// variants for shape consistency. latencies_ns[i] holds raw batch_wall_ns;
+// latency_sample_operations carries BATCH_SIZE so the harness/comparator
+// can preserve fractional ns-per-op through percentile aggregation.
 //
 // Cross-platform note: like conn_scale.zig and udp_batch.zig, this bench
 // requires a real UDP transport to construct the endpoint. On non-Linux
@@ -192,7 +192,7 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
             sink +%= if (found) |f| @intFromPtr(f) else 1;
         }
         const dt = common.nowNs() - t0;
-        latencies[i] = dt / BATCH_SIZE;
+        latencies[i] = dt;
     }
     const wall_end = common.nowNs();
     std.mem.doNotOptimizeAway(sink);
@@ -202,6 +202,7 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
         .wall_time_ns = wall_end - wall_start,
         .cpu_time_ns = wall_end - wall_start,
         .latencies_ns = latencies,
+        .latency_sample_operations = BATCH_SIZE,
     };
 }
 

@@ -10,9 +10,9 @@
 //
 // Because the primitive runs in well under 100 ns, per-iteration
 // `clock_gettime` sampling would be pure noise (the syscall dominates).
-// The harness instead times BATCHes of BATCH_SIZE inner ops and records
-// the amortised ns-per-op as the "latency" for that sample -- this
-// matches the legacy bench/main.zig methodology (single loop, ns/op).
+// The harness instead times BATCHes of BATCH_SIZE inner ops and retains
+// each raw batch duration with its operation count. Percentile comparisons
+// preserve the fractional ns-per-op instead of truncating each sample.
 // `spec.iterations` is the outer sample count.
 //
 // Absolute gate (docs/PERFORMANCE_TARGETS.md, benchmarks/compare.zig):
@@ -61,7 +61,7 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
             sink +%= varint.encode(v, &out_buf) catch 0;
         }
         const dt = common.nowNs() - t0;
-        latencies[i] = dt / BATCH_SIZE;
+        latencies[i] = dt;
     }
     const wall_end = common.nowNs();
     std.mem.doNotOptimizeAway(sink);
@@ -71,6 +71,7 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
         .wall_time_ns = wall_end - wall_start,
         .cpu_time_ns = wall_end - wall_start,
         .latencies_ns = latencies,
+        .latency_sample_operations = BATCH_SIZE,
     };
 }
 

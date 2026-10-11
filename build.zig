@@ -2700,6 +2700,9 @@ pub fn build(b: *std.Build) void {
     });
     bench_compare_test_mod.addImport("bench_compare", bench_compare_mod);
     bench_compare_test_mod.addImport("bench_common", bench_common_mod);
+    const bench_compare_test_options = b.addOptions();
+    bench_compare_test_options.addOptionPath("binary", bench_compare.getEmittedBin());
+    bench_compare_test_mod.addOptions("bench_compare_options", bench_compare_test_options);
     const bench_compare_test = b.addTest(.{ .root_module = bench_compare_test_mod });
     const run_bench_compare_test = b.addRunArtifact(bench_compare_test);
     const bench_compare_test_step = b.step("test-bench-compare", "Run bench comparator tests");
