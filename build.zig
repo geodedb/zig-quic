@@ -2589,6 +2589,8 @@ pub fn build(b: *std.Build) void {
         test_high_parallel_stream_progress.root_module.addImport("quic_endpoint", quic_endpoint_mod);
         const run_test_high_parallel_stream_progress = b.addRunArtifact(test_high_parallel_stream_progress);
         test_step.dependOn(&run_test_high_parallel_stream_progress.step);
+        const high_parallel_step = b.step("test-high-parallel-stream-progress", "Run real UDP stream progress and handshake recovery regressions");
+        high_parallel_step.dependOn(&run_test_high_parallel_stream_progress.step);
     } else {
         const test_quic = addTst(b, testlog_mod, compat_mod, "quic.zig", target, optimize);
         const run_test_quic = b.addRunArtifact(test_quic);
