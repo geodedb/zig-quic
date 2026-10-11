@@ -250,4 +250,28 @@ ISO-8601 `YYYY-MM-DD`.
   variant still regressed Geode's accepted 4096 single-op gate to 3053/4096
   first-response timeouts. The follow-up revert restores the proven
   `a68d36e`/`9a35274` behavior.
+
+### 2026-10-11 — Serialize terminal stream packets (SONNY-4776 / SONNY-4379)
+
+- Hold the connection writer mutex while FIN, RESET_STREAM, and STOP_SENDING
+  update stream state, emit protected packets, and advance packet numbers.
+- Baseline: parent `d73248c248908e09d58c821a4578cf6471a23085`, captured with
+  the unchanged full benchmark suite. The refreshed
+  `benchmarks/results/baseline.json` contains 76 validated measurements.
+- Candidate: `043028fe62b69d9f16a118398ede106fef8b2dc9` plus the
+  STOP_SENDING guard and two additional lifecycle tests. The measured
+  `src/quic/connection/methods_b.zig` SHA-256 is
+  `fecdee6ac2e1558a7b2027cbec3973deaaff7000b1663e3de8701622cc5b07f2`.
+  Source fingerprints were unchanged throughout capture.
+- Both captures used Zig 0.16.0 on the same host with the original workloads
+  and repetition counts. The candidate has all 38 expected integration rows;
+  neither capture substitutes placeholders for actual measurements.
+- `scripts/perf-gate.sh --suite=integration` completed with **0 FAIL, 1 WARN**.
+  The warning is `integration/conn_scale / 1c`: throughput -14.61%, p95 +2.21%.
+  UDP batch/single throughput was **1.3834**, passing the 0.95 minimum.
+  Other validation jobs were active on the host, so these results are gate
+  evidence, not a claim of a general performance improvement.
+- The complete comparison table and capture provenance accompany the MR.
+  Functional, native consumer, and CI qualification remain separate checks.
+
 </content>

@@ -774,6 +774,11 @@ pub fn bind(comptime Connection: type) type {
         /// Handle STOP_SENDING by responding with RESET_STREAM carrying our final size.
         /// Process incoming STOP_SENDING frame; respond with RESET_STREAM if not already closed.
         pub fn handleStopSending(self: *Connection, stream_id: u64, app_error_code: u64) !void {
+            // SONNY-4776 / SONNY-4379: frame dispatch releases mu before
+            // calling here; protect this RESET_STREAM packet like explicit resets.
+            const io = std.Io.Threaded.global_single_threaded.io();
+            self.mu.lockUncancelable(io);
+            defer self.mu.unlock(io);
             if (!self.hasConfirmedAppTxKeys()) return error.KeysNotReady;
             const tx = self.app_tx_keys.?;
             // Mark stream as aborted for sending further STREAM frames

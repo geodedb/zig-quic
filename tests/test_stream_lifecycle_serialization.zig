@@ -5,7 +5,7 @@ const std = @import("std");
 const conn_mod = @import("quic_conn");
 const packet = @import("quic_packet");
 
-const Operation = enum { close, reset };
+const Operation = enum { close, reset, stop_sending };
 
 const Capture = struct {
     packets: [2][512]u8 = undefined,
@@ -33,6 +33,7 @@ const Worker = struct {
         const result = switch (self.operation) {
             .close => self.conn.closeStream(self.stream_id, 0),
             .reset => self.conn.resetStream(self.stream_id, 7),
+            .stop_sending => self.conn.handleStopSending(self.stream_id, 7),
         };
         result catch |err| {
             self.result = err;
@@ -97,11 +98,11 @@ fn checkLifecycle(operation: Operation, stream_id: u64) !void {
     try std.testing.expectEqual(first_pn + 2, conn.pn_app_tx);
     if (stream_id == 0) {
         try std.testing.expectEqual(operation == .close, conn.stream_send_fin_sent);
-        try std.testing.expectEqual(operation == .reset, conn.stream_send_aborted);
+        try std.testing.expectEqual(operation != .close, conn.stream_send_aborted);
     } else {
         const tx = conn.stream_txs.get(stream_id).?;
         try std.testing.expectEqual(operation == .close, tx.fin_sent);
-        try std.testing.expectEqual(operation == .reset, tx.aborted);
+        try std.testing.expectEqual(operation != .close, tx.aborted);
     }
 }
 
@@ -121,18 +122,27 @@ test "SONNY-4776 reset sibling stream waits for the active writer and uses a dis
     try checkLifecycle(.reset, 4);
 }
 
+test "SONNY-4776 STOP_SENDING stream zero waits for the active writer and uses a distinct packet number" {
+    try checkLifecycle(.stop_sending, 0);
+}
+
+test "SONNY-4776 STOP_SENDING sibling stream waits for the active writer and uses a distinct packet number" {
+    try checkLifecycle(.stop_sending, 4);
+}
+
 test "SONNY-4776 lifecycle error paths release the connection mutex" {
     var allocator = std.testing.allocator;
     var conn: conn_mod.Connection = undefined;
     conn.init(&allocator, .Server, -1, conn_mod.SockAddr.ipv4(127, 0, 0, 1, 4433));
     defer conn.deinit();
     const io = std.Io.Threaded.global_single_threaded.io();
-    for ([_]Operation{ .close, .reset }) |operation| {
+    for ([_]Operation{ .close, .reset, .stop_sending }) |operation| {
         const result = switch (operation) {
             .close => conn.closeStream(4, 0),
             .reset => conn.resetStream(4, 7),
+            .stop_sending => conn.handleStopSending(4, 7),
         };
-        try std.testing.expectError(error.InvalidStream, result);
+        try std.testing.expectError(if (operation == .stop_sending) error.KeysNotReady else error.InvalidStream, result);
         try std.testing.expect(conn.mu.tryLock());
         conn.mu.unlock(io);
     }
