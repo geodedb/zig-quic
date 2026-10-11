@@ -46,6 +46,64 @@ pub const AckRange = struct {
     len: u64,
 };
 
+/// Validated, inclusive ACK intervals, in descending packet-number order.
+/// Numeric range width never determines the amount of work or storage.
+pub const AckIntervals = struct {
+    pub const max_additional_ranges = 64;
+    const Interval = struct { lower: u64, upper: u64 };
+    intervals: [max_additional_ranges + 1]Interval = undefined,
+    len: usize = 0,
+
+    pub fn init(largest: u64, first_range: u64, ranges: []const AckRange) !AckIntervals {
+        if (largest > std.math.maxInt(u62) or first_range > largest or ranges.len > max_additional_ranges)
+            return error.InvalidAckRange;
+        var result = AckIntervals{};
+        var lower = largest - first_range;
+        result.intervals[0] = .{ .lower = lower, .upper = largest };
+        result.len = 1;
+        for (ranges) |range| {
+            const skip = std.math.add(u64, range.gap, 2) catch return error.InvalidAckRange;
+            if (lower < skip) return error.InvalidAckRange;
+            const upper = lower - skip;
+            if (range.len > upper) return error.InvalidAckRange;
+            lower = upper - range.len;
+            result.intervals[result.len] = .{ .lower = lower, .upper = upper };
+            result.len += 1;
+        }
+        return result;
+    }
+
+    pub fn contains(self: *const AckIntervals, pn: u64) bool {
+        for (self.intervals[0..self.len]) |interval| {
+            if (pn > interval.upper) return false;
+            if (pn >= interval.lower) return true;
+        }
+        return false;
+    }
+
+    /// Keep the direct-index fast path for small ACKs. A larger ACK must be
+    /// matched against tracked packets, never truncated or fully expanded.
+    pub fn packetNumbers(self: *const AckIntervals, storage: []u64) ?[]const u64 {
+        var count: usize = 0;
+        for (self.intervals[0..self.len]) |interval| {
+            const width = interval.upper - interval.lower + 1;
+            if (width > storage.len - count) return null;
+            count += @intCast(width);
+        }
+        var index: usize = 0;
+        for (self.intervals[0..self.len]) |interval| {
+            var pn = interval.upper;
+            while (true) {
+                storage[index] = pn;
+                index += 1;
+                if (pn == interval.lower) break;
+                pn -= 1;
+            }
+        }
+        return storage[0..count];
+    }
+};
+
 /// ECN counters carried by ACK_ECN frame.
 /// RFC 9000 §19.3.2: ACK_ECN includes ECT0, ECT1, and CE counts.
 pub const EcnCounts = struct {

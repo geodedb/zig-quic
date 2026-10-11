@@ -32,11 +32,16 @@ test "RFC 9002 section 6.2 ACK-only packets do not reset PTO backoff" {
 
     rec.pto_count = 2;
     try rec.onPacketSent(.Application, 1, 64, false, 1_000);
+    const congestion_before = rec.getCongestionState();
 
     const acked = [_]u64{1};
     const result = rec.onAckReceived(.Application, &acked, 0, 10_000);
 
-    try std.testing.expectEqual(@as(usize, 64), result.bytes_acked);
+    // ACK-only packets are excluded from recovery's in-flight set. An ACK
+    // covering one must not manufacture congestion credit or reset backoff.
+    try std.testing.expectEqual(@as(usize, 0), result.bytes_acked);
+    try std.testing.expectEqual(@as(usize, 0), rec.getBytesInFlight());
+    try std.testing.expectEqual(congestion_before.cwnd, rec.getCongestionState().cwnd);
     try std.testing.expectEqual(@as(u32, 2), rec.pto_count);
 }
 

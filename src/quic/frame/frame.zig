@@ -26,6 +26,7 @@ const datagram_mod = @import("datagram");
 // Re-export types for convenience
 pub const FrameType = types.FrameType;
 pub const AckRange = types.AckRange;
+pub const AckIntervals = types.AckIntervals;
 pub const EcnCounts = types.EcnCounts;
 
 // Type aliases for frame data structures (used by frame_handler.zig)

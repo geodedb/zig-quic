@@ -59,6 +59,19 @@ pub fn bind(comptime Connection: type) type {
             }
         }
 
+        fn dropAckedStreamIntervals(self: *Connection, acked: *const frame.AckIntervals) void {
+            if (!self.app_stream_retx_init) return;
+            var keys: std.ArrayList(u64) = .empty;
+            defer keys.deinit(self.allocator.*);
+            // Snapshot keys before removing entries: map mutations invalidate
+            // iterators. On OOM preserve all payloads for a later ACK or PTO.
+            var it = self.app_stream_retx.keyIterator();
+            while (it.next()) |pn| {
+                if (acked.contains(pn.*)) keys.append(self.allocator.*, pn.*) catch return;
+            }
+            dropAckedStreamTracking(self, keys.items);
+        }
+
         fn recordAppStreamRetransmitAttempt(tracked: anytype) void {
             if (tracked.retransmit_count < std.math.maxInt(u16)) {
                 tracked.retransmit_count += 1;
@@ -171,48 +184,10 @@ pub fn bind(comptime Connection: type) type {
                 retransmitted += 1;
             }
 
-            // Cumulative-ACK prune. dropAckedStreamTracking only removes the PNs
-            // explicitly enumerated from this ACK's ranges, and that enumeration
-            // is capped at 256 PNs in onAckReceivedSpace. On a long-lived
-            // connection with sustained sequential request/response cycles, the
-            // span from the oldest tracked STREAM packet to `largest` eventually
-            // exceeds that cap, so cumulatively-acknowledged packets below the cap
-            // window are never removed — app_stream_retx then grows ~1 entry per
-            // request and retransmitLostStreamPackets re-scans the whole map on
-            // every ACK (the secondary O(n^2) accumulator).
-            //
-            // RFC 9000 §13.2.1 + RFC 9002 §6.1: a packet far enough below the
-            // largest acknowledged PN is either covered by the peer's cumulative
-            // ACK (delivered) or would already have been declared lost by
-            // recovery's packet-threshold detection (kPacketThreshold = 3). Any
-            // such packet that recovery no longer tracks as in-flight or lost has
-            // been fully resolved and can be dropped. We keep a generous reorder
-            // margin and never drop a packet recovery still reports as `.lost`
-            // (those are handled by the retransmit loop above), so this cannot
-            // discard application data that still needs retransmission.
-            if (largest_acked_opt) |largest_acked| {
-                const reorder_margin: u64 = 16; // >> kPacketThreshold (3)
-                if (largest_acked > reorder_margin) {
-                    const prune_below = largest_acked - reorder_margin;
-                    var stale: std.ArrayList(u64) = .empty;
-                    defer stale.deinit(self.allocator.*);
-                    var pit = self.app_stream_retx.iterator();
-                    while (pit.next()) |entry| {
-                        const pn = entry.key_ptr.*;
-                        if (pn >= prune_below) continue;
-                        // Leave anything recovery still considers unresolved.
-                        switch (self.rec.getPacketDeliveryState(.Application, pn)) {
-                            .lost, .in_flight => continue,
-                            .acked, .unknown => stale.append(self.allocator.*, pn) catch break,
-                        }
-                    }
-                    for (stale.items) |pn| {
-                        if (self.app_stream_retx.fetchRemove(pn)) |removed| {
-                            self.allocator.free(removed.value.data);
-                        }
-                    }
-                }
-            }
+            // Recovery compacts both ACKed and lost packet records. An unknown
+            // delivery state is not proof of receipt. Only the explicit ACK
+            // ranges above can retire retained STREAM data, including chunks
+            // left behind by this call's retransmission budget.
         }
 
         pub fn sendDatagram(self: *Connection, data: []const u8) !void {
@@ -889,39 +864,12 @@ pub fn bind(comptime Connection: type) type {
         /// Handle acknowledgment in a specific PN space including RTT update, loss detection,
         /// ECN counters, key update finalization, and PMTUD probe validation.
         pub fn onAckReceivedSpace(self: *Connection, space: recovery.PacketNumberSpace, largest: u64, first_range: u64, ranges: []const frame.AckRange, ecn: ?frame.EcnCounts) void {
+            const intervals = frame.AckIntervals.init(largest, first_range, ranges) catch return;
             self.markPtoDirty(); // #182: notify endpoint dirty-set
-            // Build list of acked PNs from ACK ranges per RFC 9000 §13.2.3
-            var buf: [256]u64 = undefined; // supports reasonably many acked packets per event
-            var count: usize = 0;
-            const add_range = struct {
-                fn f(dst: []u64, start: u64, len_inclusive: u64, idx: *usize) void {
-                    var pn: i128 = @intCast(start);
-                    var rem: u64 = len_inclusive + 1; // first_range is len-1
-                    while (rem > 0 and idx.* < dst.len) : (rem -= 1) {
-                        dst[idx.*] = @intCast(pn);
-                        idx.* += 1;
-                        pn -= 1;
-                    }
-                }
-            }.f;
-            // First range: [largest - first_range, largest]
-            const first_start = largest;
-            add_range(&buf, first_start, first_range, &count);
-            // Subsequent ranges
-            var cursor: u64 = if (largest >= first_range) largest - first_range else 0;
-            for (ranges) |r| {
-                // Gap: r.gap means skip (gap + 1) packet numbers
-                const gap_skip = r.gap + 1;
-                if (cursor > gap_skip) cursor -= gap_skip else cursor = 0;
-                if (cursor == 0) break;
-                const range_end = cursor - 1;
-                add_range(&buf, range_end, r.len, &count);
-                cursor = if (range_end >= r.len) range_end - r.len else 0;
-                if (cursor == 0) break;
-            }
-            const acked = buf[0..count];
+            var buf: [256]u64 = undefined;
+            const acked = intervals.packetNumbers(&buf);
             if (space == .Application) {
-                dropAckedStreamTracking(self, acked);
+                if (acked) |numbers| dropAckedStreamTracking(self, numbers) else dropAckedStreamIntervals(self, &intervals);
             }
             // Update recovery for given space
             const now_i = blk4: {
@@ -931,7 +879,10 @@ pub fn bind(comptime Connection: type) type {
                 break :blk4 @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
             };
             const now_ns: u64 = @intCast(if (now_i > 0) now_i else 0);
-            const res = self.rec.onAckReceivedWithEcn(space, acked, 0, now_ns, ecn);
+            const res = if (acked) |numbers|
+                self.rec.onAckReceivedWithEcn(space, numbers, 0, now_ns, ecn)
+            else
+                self.rec.onAckIntervalsReceivedWithEcn(space, &intervals, 0, now_ns, ecn);
             if (res.bytes_acked > 0) {
                 _ = self.tx_credit_generation.fetchAdd(1, .release);
                 std.Io.Threaded.global_single_threaded.io().futexWake(u32, &self.tx_credit_generation.raw, std.math.maxInt(u32));
@@ -953,15 +904,7 @@ pub fn bind(comptime Connection: type) type {
             // Note: This branch also serves as the authoritative place to advance PMTUD state on App acks.
             if (space == .Application) {
                 if (self.probe_pending_pn) |ppn| {
-                    var i: usize = 0;
-                    var got: bool = false;
-                    while (i < acked.len) : (i += 1) {
-                        if (acked[i] == ppn) {
-                            got = true;
-                            break;
-                        }
-                    }
-                    if (got) {
+                    if (intervals.contains(ppn)) {
                         // Accept new MTU but never below 1200 (defensive)
                         const new_sz: u16 = @max(@as(u16, 1200), self.probe_pending_size);
                         self.path_mtu = new_sz;

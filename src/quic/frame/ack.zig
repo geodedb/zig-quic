@@ -84,7 +84,7 @@ pub fn writeAck(
 /// Decode ACK or ACK_ECN frame with embedded ranges buffer.
 /// Maximum number of ACK ranges stored in the internal buffer.
 /// Peers sending more than this many ranges per ACK frame are rejected.
-pub const max_ack_ranges = 64;
+pub const max_ack_ranges = types.AckIntervals.max_additional_ranges;
 
 /// Hard ceiling for ACK range count — any frame claiming more than 256 ranges
 /// is treated as a protocol violation to prevent resource exhaustion.

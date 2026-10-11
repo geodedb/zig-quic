@@ -865,6 +865,19 @@ pub fn build(b: *std.Build) void {
     b.step("test-client-start", "Verify real TLS startup in the selected crypto mode").dependOn(&run_client_start.step);
     if (filter == null) test_step.dependOn(&run_client_start.step);
 
+    const stream_ack_tests = addTst(b, testlog_mod, compat_mod, "tests/test_stream_ack_retention.zig", target, optimize);
+    stream_ack_tests.root_module.addImport("quic_conn", quic_conn_mod);
+    stream_ack_tests.root_module.addImport("quic_frame", quic_frame_mod);
+    const run_stream_ack = b.addRunArtifact(stream_ack_tests);
+    b.step("test-stream-ack", "Verify selective ACK retention and bounded range handling").dependOn(&run_stream_ack.step);
+    if (filter == null) test_step.dependOn(&run_stream_ack.step);
+
+    const stream_loss_tests = addTst(b, testlog_mod, compat_mod, "tests/test_stream_ack_loss.zig", target, optimize);
+    stream_loss_tests.root_module.addImport("quic_api", quic_api_mod);
+    const run_stream_loss = b.addRunArtifact(stream_loss_tests);
+    b.step("test-stream-loss", "Verify authenticated UDP recovery after burst loss").dependOn(&run_stream_loss.step);
+    if (filter == null) test_step.dependOn(&run_stream_loss.step);
+
     const handshake_retention_tests = addTst(b, testlog_mod, compat_mod, "tests/test_handshake_key_retention.zig", target, optimize);
     handshake_retention_tests.root_module.addImport("quic_conn", quic_conn_mod);
     handshake_retention_tests.root_module.addImport("handshake_integration", endpoint_handshake_integration_mod);
