@@ -302,7 +302,7 @@ e2e-test-python:
     # Generate test certificates
     - *generate-test-certs
   script:
-    - python3 scripts/ci_interop.py --name python -- python test-clients/aioquic-client/test_client.py --host 127.0.0.1 --port 4433 --insecure
+    - python3 scripts/ci_interop.py --name python -- python -u test-clients/aioquic-client/test_client.py --host 127.0.0.1 --port 4433 --insecure
   artifacts:
     when: always
     paths:
@@ -386,7 +386,7 @@ e2e-test-rust:
     # Generate test certificates
     - *generate-test-certs
   script:
-    - python3 scripts/ci_interop.py --name rust -- ./test-clients/quinn-client/target/release/quinn-test-client --addr 127.0.0.1:4433 --server-name localhost
+    - RUST_LOG=info python3 scripts/ci_interop.py --name rust -- ./test-clients/quinn-client/target/release/quinn-test-client --addr 127.0.0.1:4433 --server-name localhost
   artifacts:
     when: always
     paths:
