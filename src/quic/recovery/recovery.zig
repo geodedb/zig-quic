@@ -322,16 +322,19 @@ pub const Recovery = struct {
 
     /// Handle ACK frames for a given space with optional ECN counters.
     pub fn onAckReceivedWithEcn(self: *Recovery, space: PacketNumberSpace, acked: []const u64, ack_delay_ns: u64, now_ns: u64, ecn: ?frame.EcnCounts) AckResult {
-        return self.processAck(space, acked, null, ack_delay_ns, now_ns, ecn);
+        return self.processAck(space, acked, ack_delay_ns, now_ns, ecn);
     }
 
     /// Large ACK ranges are matched against the bounded sent-packet set.
     /// Do not enumerate a peer-controlled numeric span or truncate its ACKs.
     pub fn onAckIntervalsReceivedWithEcn(self: *Recovery, space: PacketNumberSpace, acked: *const frame.AckIntervals, ack_delay_ns: u64, now_ns: u64, ecn: ?frame.EcnCounts) AckResult {
-        return self.processAck(space, null, acked, ack_delay_ns, now_ns, ecn);
+        return self.processAck(space, acked, ack_delay_ns, now_ns, ecn);
     }
 
-    fn processAck(self: *Recovery, space: PacketNumberSpace, explicit: ?[]const u64, intervals: ?*const frame.AckIntervals, ack_delay_ns: u64, now_ns: u64, ecn: ?frame.EcnCounts) AckResult {
+    fn processAck(self: *Recovery, space: PacketNumberSpace, acked: anytype, ack_delay_ns: u64, now_ns: u64, ecn: ?frame.EcnCounts) AckResult {
+        // Specialize the two representations at compile time so ordinary ACKs
+        // keep the original direct-index loop without a per-packet option test.
+        const use_intervals = @TypeOf(acked) == *const frame.AckIntervals;
         self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
         defer self.refreshAtomicMirrors(); // runs before unlock (LIFO defer)
@@ -343,7 +346,7 @@ pub const Recovery = struct {
         var largest_acked_pkt_time: ?u64 = null;
 
         // PHASE 42 PART 22: Log ACK reception
-        const candidate_count = if (explicit) |numbers| numbers.len else sstate.sent.items.len;
+        const candidate_count = if (use_intervals) sstate.sent.items.len else acked.len;
         logger.debugPrint("[P42-22-ACK-RX] 📥 space={s} ack_candidate_count={d} prev_largest={d}\n", .{
             @tagName(space),
             candidate_count,
@@ -353,8 +356,10 @@ pub const Recovery = struct {
         // Mark acked packets using direct PN index lookups instead of nested scans.
         var candidate_index: usize = 0;
         while (candidate_index < candidate_count) : (candidate_index += 1) {
-            const pn = if (explicit) |numbers| numbers[candidate_index] else sstate.sent.items[candidate_index].pn;
-            if (intervals) |ranges| if (!ranges.contains(pn)) continue;
+            const pn = if (use_intervals) sstate.sent.items[candidate_index].pn else acked[candidate_index];
+            if (use_intervals) {
+                if (!acked.contains(pn)) continue;
+            }
             if (sstate.sent_index.get(pn)) |sent_slot| {
                 if (sent_slot >= sstate.sent.items.len) {
                     _ = sstate.sent_index.remove(pn);
