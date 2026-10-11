@@ -61,10 +61,26 @@ pub fn runCommand(allocator: std.mem.Allocator, io: std.Io, options: std.process
     if (try boundedExitCode(allocator, io, options, timeout, true) != 0) return error.ChildFailed;
 }
 
-/// Probes may distinguish an absent tool (exit 1) from a failed probe. Spawn,
+/// Probes preserve exit status so callers can distinguish absence from failure. Spawn,
 /// signal, resource and timeout errors still propagate to the benchmark runner.
 pub fn probeExitCode(allocator: std.mem.Allocator, io: std.Io, options: std.process.RunOptions) !u8 {
     return boundedExitCode(allocator, io, options, .fromSeconds(10), false);
+}
+
+/// Probe the fixed command builtin with the tool as a quoted positional argument.
+/// Missing tools are optional; launch, signal, resource and timeout errors are not.
+pub fn checkToolchain(allocator: std.mem.Allocator, io: std.Io, tool: []const u8) !bool {
+    const code = try probeExitCode(allocator, io, .{
+        .argv = &.{ "/bin/sh", "-c", "command -v \"$1\"", "probe", tool },
+        .stdout_limit = .limited(4096),
+        .stderr_limit = .limited(4096),
+    });
+    return switch (code) {
+        0 => true,
+        // bash reports 1; dash (Debian/Ubuntu /bin/sh) reports 127.
+        1, 127 => false,
+        else => error.ToolchainProbeFailed,
+    };
 }
 
 pub fn runSubprocess(allocator: std.mem.Allocator, io: std.Io, spec: common.ScenarioSpec, external: ExternalSpec) !common.RunOutput {

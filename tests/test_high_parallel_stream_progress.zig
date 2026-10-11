@@ -102,6 +102,16 @@ fn pumpStreams(
     for (conns, states_by_conn) |conn, *states| {
         while (api.hasIncomingStreams(conn)) {
             const sid = api.acceptStream(conn) catch break;
+            // acceptStream also reports new data on an already accepted stream.
+            // Keep one echo/FIN state per stream instead of sending duplicate FINs.
+            var known = false;
+            for (states.items) |state| {
+                if (state.stream_id == sid) {
+                    known = true;
+                    break;
+                }
+            }
+            if (known) continue;
             states.append(allocator, .{
                 .stream_id = sid,
                 .pending = .empty,
@@ -195,6 +205,21 @@ fn serverThread(ctx: ServerCtx) void {
         const cid = std.mem.readInt(u64, conn.our_scid.bytes[0..8], .little);
         if (states.items.len == 0) {
             std.debug.print("  server cid={x} streams=0 confirmed={} closed={}\n", .{ cid, api.isHandshakeConfirmed(conn), conn.closed });
+            std.debug.print("  server peer_cid={x} initial_rx={} initial_tx={d} initial_crypto_rx={d} initial_retx={d} initial_dropped={} initial_pto={} initial_pto_count={d}\n", .{
+                std.mem.readInt(u64, conn.peer_initial_scid.bytes[0..8], .little),
+                conn.pn_initial.have_any,
+                conn.pn_initial_tx,
+                conn.crypto_rx_off_initial,
+                if (conn.crypto_retx_initial) |b| b.len else 0,
+                conn.initial_keys_dropped,
+                conn.pto_initial_active,
+                conn.pto_initial_count,
+            });
+            std.debug.print("  server hs_keys={} hs_rx={} hs_tx={d} hs_crypto_rx={d} hs_retx={d} app_keys={} error={s}\n", .{
+                conn.hs_tx_keys != null,                                          conn.pn_handshake.have_any,                       conn.pn_handshake_tx,
+                conn.crypto_rx_off_handshake,                                     if (conn.crypto_retx_handshake) |b| b.len else 0, conn.app_tx_keys != null,
+                if (conn.last_handshake_error) |err| @errorName(err) else "none",
+            });
         }
         for (states.items) |s| {
             if (s.read_total == PAYLOAD_BYTES and s.written_total == PAYLOAD_BYTES and s.server_fin_sent) continue;
@@ -222,6 +247,16 @@ const ClientDiagnostic = struct {
     connection_error: ?anyerror = null,
     application_keys: bool = false,
     local_finished_sent: bool = false,
+    client_cid: u64 = 0,
+    initial_rx: bool = false,
+    initial_tx: u64 = 0,
+    initial_crypto_rx: u64 = 0,
+    initial_retx: usize = 0,
+    initial_dropped: bool = false,
+    initial_pto: bool = false,
+    initial_pto_count: u32 = 0,
+    handshake_polls: usize = 0,
+    handshake_received_packets: usize = 0,
 };
 
 const ClientCtx = struct {
@@ -256,6 +291,17 @@ fn clientThread(ctx: ClientCtx) void {
     };
 
     defer {
+        // Capture both CIDs on failures too; the former server_cid assignment
+        // only ran after success, making every handshake timeout print zero.
+        ctx.diagnostic.client_cid = std.mem.readInt(u64, conn.our_scid.bytes[0..8], .little);
+        ctx.diagnostic.server_cid = std.mem.readInt(u64, conn.peer_initial_scid.bytes[0..8], .little);
+        ctx.diagnostic.initial_rx = conn.pn_initial.have_any;
+        ctx.diagnostic.initial_tx = conn.pn_initial_tx;
+        ctx.diagnostic.initial_crypto_rx = conn.crypto_rx_off_initial;
+        ctx.diagnostic.initial_retx = if (conn.crypto_retx_initial) |b| b.len else 0;
+        ctx.diagnostic.initial_dropped = conn.initial_keys_dropped;
+        ctx.diagnostic.initial_pto = conn.pto_initial_active;
+        ctx.diagnostic.initial_pto_count = conn.pto_initial_count;
         ctx.diagnostic.handshake_done = conn.handshake_done_seen;
         ctx.diagnostic.hs_keys = conn.hs_tx_keys != null;
         ctx.diagnostic.hs_retx_bytes = if (conn.crypto_retx_handshake) |buf| buf.len else 0;
@@ -269,16 +315,17 @@ fn clientThread(ctx: ClientCtx) void {
     ctx.diagnostic.phase = "handshake";
     const hs_deadline = nowMs() + HANDSHAKE_TIMEOUT_MS;
     while (nowMs() < hs_deadline and !api.isHandshakeConfirmed(conn)) {
-        _ = ep.pollWithStats(1) catch |err| {
+        ctx.diagnostic.handshake_polls += 1;
+        const stats = ep.pollWithStats(1) catch |err| {
             ctx.diagnostic.last_error = err;
+            continue;
         };
+        ctx.diagnostic.handshake_received_packets += stats.packets_processed;
     }
     if (!api.isHandshakeConfirmed(conn)) {
         _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
         return;
     }
-    ctx.diagnostic.server_cid = std.mem.readInt(u64, conn.peer_initial_scid.bytes[0..8], .little);
-
     var payload: [PAYLOAD_BYTES]u8 = undefined;
     for (&payload, 0..) |*b, i| b.* = @truncate(i + ctx.index);
 
@@ -453,6 +500,12 @@ test "high-parallel connections complete stream echo and FIN without blocking" {
             if (std.mem.eql(u8, diagnostic.phase, "success")) continue;
             std.debug.print("  client handshake_done={} hs_keys={} hs_retx={d} hs_pto_count={d} hs_pto_active={} hs_tx_pn={d}\n", .{ diagnostic.handshake_done, diagnostic.hs_keys, diagnostic.hs_retx_bytes, diagnostic.hs_pto_count, diagnostic.hs_pto_active, diagnostic.hs_tx_pn });
             std.debug.print("  connection_error={s} app_keys={} local_finished_sent={}\n", .{ if (diagnostic.connection_error) |err| @errorName(err) else "none", diagnostic.application_keys, diagnostic.local_finished_sent });
+            std.debug.print("  client_cid={x} initial_rx={} initial_tx={d} initial_crypto_rx={d} initial_retx={d} initial_dropped={} initial_pto={} initial_pto_count={d} polls={d} packets={d}\n", .{
+                diagnostic.client_cid,                 diagnostic.initial_rx,        diagnostic.initial_tx,
+                diagnostic.initial_crypto_rx,          diagnostic.initial_retx,      diagnostic.initial_dropped,
+                diagnostic.initial_pto,                diagnostic.initial_pto_count, diagnostic.handshake_polls,
+                diagnostic.handshake_received_packets,
+            });
             std.debug.print("  client={d} phase={s} error={s} sent={d} received={d} elapsed_ms={d} server_cid={x}\n", .{
                 index,
                 diagnostic.phase,
