@@ -620,6 +620,9 @@ interop-test:
 quality-zig-gates:
   stage: test
   image: debian:bookworm-slim
+  # This job builds both revisions itself. Upstream scanner reports would
+  # dirty its checkout and invalidate the strict benchmark provenance check.
+  dependencies: []
   variables:
     GIT_DEPTH: "0"
   tags:
