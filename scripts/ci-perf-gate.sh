@@ -33,4 +33,7 @@ git merge-base --is-ancestor "$baseline" "$head" \
 mkdir -p benchmarks/results/paired
 printf 'baseline=%s\ncandidate=%s\n' "$baseline" "$head" \
     > benchmarks/results/paired/ci-revisions.txt
-exec bash scripts/perf-gate.sh "--baseline-commit=$baseline" --suite=micro
+# Benchmark fixes change measurement semantics. Measure the parent production
+# code with the same committed harness as HEAD; record the overlay provenance.
+# Otherwise legacy rounded samples and precise batch samples are incomparable.
+exec bash scripts/perf-gate.sh "--baseline-commit=$baseline" "--harness-commit=$head" --suite=micro
