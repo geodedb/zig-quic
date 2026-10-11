@@ -865,25 +865,6 @@ pub fn build(b: *std.Build) void {
     b.step("test-client-start", "Verify real TLS startup in the selected crypto mode").dependOn(&run_client_start.step);
     if (filter == null) test_step.dependOn(&run_client_start.step);
 
-    const optional_reset_tests = addTst(b, testlog_mod, compat_mod, "tests/test_optional_reset_token.zig", target, optimize);
-    optional_reset_tests.root_module.addImport("quic_conn", quic_conn_mod);
-    optional_reset_tests.root_module.addImport("quic_transport_params", quic_transport_params_mod);
-    const run_optional_reset = b.addRunArtifact(optional_reset_tests);
-    b.step("test-optional-reset", "Verify optional reset tokens preserve transport parameter validation").dependOn(&run_optional_reset.step);
-    if (filter == null) test_step.dependOn(&run_optional_reset.step);
-
-    const tp_validation_tests = addTst(b, testlog_mod, compat_mod, "tests/test_transport_params.zig", target, optimize);
-    tp_validation_tests.root_module.addImport("quic_transport_params", quic_transport_params_mod);
-    b.step("test-transport-params", "Verify transport parameter encoding and validation").dependOn(&b.addRunArtifact(tp_validation_tests).step);
-
-    const tp_handshake_tests = addTst(b, testlog_mod, compat_mod, "tests/unit/endpoint/test_handshake_integration.zig", target, optimize);
-    tp_handshake_tests.root_module.addImport("quic_endpoint_handshake_integration", endpoint_handshake_integration_mod);
-    tp_handshake_tests.root_module.addImport("quic_conn", quic_conn_mod);
-    tp_handshake_tests.root_module.addImport("config", quic_config_mod);
-    tp_handshake_tests.root_module.addImport("vendor_ztls_key_schedule", quic_tls_mod);
-    tp_handshake_tests.root_module.addImport("transport_params", quic_transport_params_mod);
-    b.step("test-transport-handshake", "Verify handshake transport parameter validation").dependOn(&b.addRunArtifact(tp_handshake_tests).step);
-
     const crypto_reassembly_tests = addTst(b, testlog_mod, compat_mod, "tests/test_crypto_reassembly.zig", target, optimize);
     crypto_reassembly_tests.root_module.addImport("quic_conn", quic_conn_mod);
     const run_crypto_reassembly = b.addRunArtifact(crypto_reassembly_tests);
@@ -909,6 +890,25 @@ pub fn build(b: *std.Build) void {
     const run_pto_backoff = b.addRunArtifact(pto_backoff_tests);
     b.step("test-pto-backoff", "Verify actual PTO timer deadlines preserve recovery backoff").dependOn(&run_pto_backoff.step);
     if (filter == null) test_step.dependOn(&run_pto_backoff.step);
+
+    const optional_reset_tests = addTst(b, testlog_mod, compat_mod, "tests/test_optional_reset_token.zig", target, optimize);
+    optional_reset_tests.root_module.addImport("quic_conn", quic_conn_mod);
+    optional_reset_tests.root_module.addImport("quic_transport_params", quic_transport_params_mod);
+    const run_optional_reset = b.addRunArtifact(optional_reset_tests);
+    b.step("test-optional-reset", "Verify optional reset tokens preserve transport parameter validation").dependOn(&run_optional_reset.step);
+    if (filter == null) test_step.dependOn(&run_optional_reset.step);
+
+    const tp_validation_tests = addTst(b, testlog_mod, compat_mod, "tests/test_transport_params.zig", target, optimize);
+    tp_validation_tests.root_module.addImport("quic_transport_params", quic_transport_params_mod);
+    b.step("test-transport-params", "Verify transport parameter encoding and validation").dependOn(&b.addRunArtifact(tp_validation_tests).step);
+
+    const tp_handshake_tests = addTst(b, testlog_mod, compat_mod, "tests/unit/endpoint/test_handshake_integration.zig", target, optimize);
+    tp_handshake_tests.root_module.addImport("quic_endpoint_handshake_integration", endpoint_handshake_integration_mod);
+    tp_handshake_tests.root_module.addImport("quic_conn", quic_conn_mod);
+    tp_handshake_tests.root_module.addImport("config", quic_config_mod);
+    tp_handshake_tests.root_module.addImport("vendor_ztls_key_schedule", quic_tls_mod);
+    tp_handshake_tests.root_module.addImport("transport_params", quic_transport_params_mod);
+    b.step("test-transport-handshake", "Verify handshake transport parameter validation").dependOn(&b.addRunArtifact(tp_handshake_tests).step);
 
     const stream_ack_tests = addTst(b, testlog_mod, compat_mod, "tests/test_stream_ack_retention.zig", target, optimize);
     stream_ack_tests.root_module.addImport("quic_conn", quic_conn_mod);
