@@ -255,6 +255,13 @@ const ClientDiagnostic = struct {
     initial_dropped: bool = false,
     initial_pto: bool = false,
     initial_pto_count: u32 = 0,
+    retry_received: bool = false,
+    retry_observed: u32 = 0,
+    retry_applied: u32 = 0,
+    retry_integrity_rejected: u32 = 0,
+    retry_duplicate_rejected: u32 = 0,
+    retry_after_handshake_rejected: u32 = 0,
+    initial_token_bytes: usize = 0,
     handshake_polls: usize = 0,
     handshake_received_packets: usize = 0,
     receive_headers: [16]ReceiveHeader = undefined,
@@ -370,6 +377,13 @@ fn clientThread(ctx: ClientCtx) void {
         ctx.diagnostic.initial_dropped = conn.initial_keys_dropped;
         ctx.diagnostic.initial_pto = conn.pto_initial_active;
         ctx.diagnostic.initial_pto_count = conn.pto_initial_count;
+        ctx.diagnostic.retry_received = conn.retry_received;
+        ctx.diagnostic.retry_observed = conn.retry_packets_observed;
+        ctx.diagnostic.retry_applied = conn.retry_apply_count;
+        ctx.diagnostic.retry_integrity_rejected = conn.retry_reject_integrity;
+        ctx.diagnostic.retry_duplicate_rejected = conn.retry_reject_duplicate;
+        ctx.diagnostic.retry_after_handshake_rejected = conn.retry_reject_post_handshake;
+        ctx.diagnostic.initial_token_bytes = conn.initial_token.items.len;
         ctx.diagnostic.handshake_done = conn.handshake_done_seen;
         ctx.diagnostic.hs_keys = conn.hs_tx_keys != null;
         ctx.diagnostic.hs_retx_bytes = if (conn.crypto_retx_handshake) |buf| buf.len else 0;
@@ -582,6 +596,15 @@ test "high-parallel connections complete stream echo and FIN without blocking" {
                 diagnostic.received,
                 diagnostic.elapsed_ms,
                 diagnostic.server_cid,
+            });
+            std.debug.print("  retry_received={} observed={d} applied={d} integrity_rejected={d} duplicate_rejected={d} after_handshake_rejected={d} initial_token_bytes={d}\n", .{
+                diagnostic.retry_received,
+                diagnostic.retry_observed,
+                diagnostic.retry_applied,
+                diagnostic.retry_integrity_rejected,
+                diagnostic.retry_duplicate_rejected,
+                diagnostic.retry_after_handshake_rejected,
+                diagnostic.initial_token_bytes,
             });
             for (diagnostic.receive_headers[0..diagnostic.receive_header_count], 0..) |header, packet_index| {
                 std.debug.print("    rx[{d}] bytes={d} first={x} version={x} dcid_len={d} our_dcid={} expected_peer={} mapped={}\n", .{
