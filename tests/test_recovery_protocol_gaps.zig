@@ -2,6 +2,32 @@ const std = @import("std");
 const conn_mod = @import("quic_conn");
 const recovery = @import("quic_recovery");
 
+test "SONNY-4808 discarded packet number space releases only its outstanding credit once" {
+    var rec = recovery.Recovery.init(std.testing.allocator);
+    defer rec.deinit();
+    try rec.onPacketSent(.Initial, 0, 1200, true, 0);
+    try rec.onPacketSent(.Initial, 1, 1000, true, 100);
+    try rec.onPacketSent(.Handshake, 0, 800, true, 200);
+    try rec.onPacketSent(.Application, 0, 600, true, 300);
+    _ = rec.onAckReceived(.Initial, &.{1}, 0, 1000);
+    const cwnd = rec.getCwnd();
+    rec.pto_count = 3;
+    try std.testing.expectEqual(@as(usize, 1200), rec.discardSpace(.Initial));
+    try std.testing.expectEqual(@as(usize, 1400), rec.getBytesInFlight());
+    try std.testing.expectEqual(@as(usize, 1400), rec.bytesInFlightSnapshot());
+    try std.testing.expectEqual(cwnd, rec.getCwnd());
+    try std.testing.expectEqual(@as(u32, 0), rec.pto_count);
+    try std.testing.expectEqual(@as(?u64, null), rec.computeSpacePtoTimeNs(.Initial, 2000));
+    try std.testing.expectEqual(@as(usize, 0), rec.onLossTimeExpired(10 * std.time.ns_per_ms));
+    try std.testing.expectEqual(@as(usize, 0), rec.onAckReceived(.Initial, &.{0}, 0, 10 * std.time.ns_per_ms).bytes_acked);
+    try std.testing.expectEqual(@as(usize, 0), rec.discardSpace(.Initial));
+    try std.testing.expectEqual(@as(usize, 1400), rec.getBytesInFlight());
+    try std.testing.expectEqual(@as(usize, 800), rec.discardSpace(.Handshake));
+    try std.testing.expectEqual(@as(usize, 600), rec.getBytesInFlight());
+    try std.testing.expectEqual(recovery.Recovery.PacketDeliveryState.in_flight, rec.getPacketDeliveryState(.Application, 0));
+    try std.testing.expectEqual(cwnd, rec.getCwnd());
+}
+
 test "SONNY-4807 time loss cannot retire packets newer than the largest acknowledged packet" {
     var rec = recovery.Recovery.init(std.testing.allocator);
     defer rec.deinit();

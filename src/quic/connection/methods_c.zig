@@ -19,6 +19,32 @@ pub fn bind(comptime Connection: type) type {
         const StreamTx = @FieldType(StreamTxMap.KV, "value");
         const StreamRx = @FieldType(StreamRxMap.KV, "value");
 
+        /// Called at the existing key-discard points while connection state
+        /// is owned by the caller. Retire recovery credit and wake writers
+        /// just as an ACK releasing the same credit would do.
+        pub fn discardRecoverySpace(self: *Connection, comptime space: recovery.PacketNumberSpace) void {
+            if (space == .Application) @compileError("Application keys use key updates, not packet-number-space discard");
+            const released = self.rec.discardSpace(space);
+            switch (space) {
+                .Initial => {
+                    self.pto_initial_active = false;
+                    self.pto_initial_id = 0;
+                    self.pto_initial_count = 0;
+                },
+                .Handshake => {
+                    self.pto_handshake_active = false;
+                    self.pto_handshake_id = 0;
+                    self.pto_handshake_count = 0;
+                },
+                .Application => unreachable,
+            }
+            self.markPtoDirty();
+            if (released != 0) {
+                _ = self.tx_credit_generation.fetchAdd(1, .release);
+                std.Io.Threaded.global_single_threaded.io().futexWake(u32, &self.tx_credit_generation.raw, std.math.maxInt(u32));
+            }
+        }
+
         pub fn readAnyStream(self: *Connection, buf: []u8) !struct { id: u64, n: usize } {
             if (!self.streams_rx_init) return error.WouldBlock;
             var it2 = self.streams_rx.iterator();

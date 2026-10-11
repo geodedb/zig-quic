@@ -183,6 +183,7 @@ fn processHandshakeResolvedWithHeader(
     // - Client discards Initial keys once Handshake sending starts (which follows here).
     // In practice, dropping here prevents stale Initial PTO probes during active Handshake.
     if (!conn.*.initial_keys_dropped) {
+        conn.*.discardRecoverySpace(.Initial);
         conn.*.initial_keys_dropped = true;
         conn.*.initial_rx_keys = null;
         conn.*.initial_tx_keys = null;
@@ -438,6 +439,7 @@ fn processHandshakeResolvedWithHeader(
     // We do this after sending the Handshake ACK above so the client gets acknowledged.
     if (conn.*.role == .Server and conn.*.handshake_done_sent) {
         if (conn.*.hs_rx_keys != null or conn.*.hs_tx_keys != null or conn.*.crypto_retx_handshake != null or conn.*.pto_handshake_active) {
+            conn.*.discardRecoverySpace(.Handshake);
             conn.*.hs_rx_keys = null;
             conn.*.hs_tx_keys = null;
             if (conn.*.crypto_retx_handshake) |buf| {

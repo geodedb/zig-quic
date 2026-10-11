@@ -68,6 +68,12 @@ test "SONNY-4797 authenticated UDP stream recovers a 31-packet burst loss and FI
     try std.testing.expect(api.isHandshakeConfirmed(conn));
     const peer = accepted.?;
     try std.testing.expect(peer.peer_finished_verified);
+    // Initial and Handshake packets become unacknowledgeable after key
+    // discard; neither peer may keep their congestion credit in flight.
+    for ([_]*api.Connection{ conn, peer }) |established| {
+        try std.testing.expectEqual(@as(usize, 0), established.rec.spaces[0].sent.items.len);
+        try std.testing.expectEqual(@as(usize, 0), established.rec.spaces[1].sent.items.len);
+    }
 
     var loss = BurstLoss{ .forward_ctx = conn.sender_ctx.?, .forward_fn = conn.sender_fn.? };
     conn.setSender(&loss, BurstLoss.send);

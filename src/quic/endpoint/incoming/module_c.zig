@@ -520,6 +520,7 @@ pub fn processShortHeaderResolved(
             logger.debugPrint("[processShortHeader] {s}: Dropping Handshake keys after HANDSHAKE_DONE\n", .{
                 if (conn.role == .Server) "Server" else "Client",
             });
+            conn.discardRecoverySpace(.Handshake);
             conn.hs_rx_keys = null;
             conn.hs_tx_keys = null;
             if (conn.crypto_retx_handshake) |buf| {

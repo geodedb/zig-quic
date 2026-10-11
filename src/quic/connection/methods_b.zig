@@ -1596,6 +1596,7 @@ pub fn bind(comptime Connection: type) type {
             // After 1-RTT keys are ready, proactively advertise initial flow-control if allowed
             self.advertiseInitialFlowControl();
             // Drop Initial keys immediately; defer dropping Handshake keys until any pending Finished CRYPTO is sent.
+            self.discardRecoverySpace(.Initial);
             self.initial_keys_dropped = true;
             // Clear cached Initial keys when they're dropped
             self.initial_rx_keys = null;
@@ -1614,6 +1615,7 @@ pub fn bind(comptime Connection: type) type {
 
             if (can_drop_hs_keys) {
                 logger.debugPrint("{s}: Dropping Handshake keys (peer_finished_verified={})\n", .{ if (self.role == .Server) "Server" else "Client", self.peer_finished_verified });
+                self.discardRecoverySpace(.Handshake);
                 self.hs_rx_keys = null;
                 self.hs_tx_keys = null;
                 if (self.crypto_retx_handshake) |buf| {

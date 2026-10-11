@@ -205,6 +205,30 @@ pub const Recovery = struct {
         inline for (&self.spaces) |*s| s.deinit();
     }
 
+    /// RFC 9002 section 6.4: discarded packet protection keys make these
+    /// packets impossible to acknowledge. Release their credit without
+    /// treating the discard as an ACK or a congestion loss event.
+    pub fn discardSpace(self: *Recovery, space: PacketNumberSpace) usize {
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
+        defer self.refreshAtomicMirrors();
+        const state = &self.spaces[spaceIdx(space)];
+        var released: usize = 0;
+        for (state.sent.items) |sp| {
+            if (sp.ack_eliciting and !sp.acked and !sp.declared_lost)
+                released = addSaturatingUsize(released, sp.size);
+        }
+        self.cc.bytes_in_flight -|= released;
+        state.sent.clearRetainingCapacity();
+        state.sent_index.clearRetainingCapacity();
+        state.largest_acked = null;
+        state.loss_time_ns = null;
+        state.ecn_last = .{ .ect0 = 0, .ect1 = 0, .ce = 0 };
+        state.ecn_seen_any = false;
+        self.pto_count = 0;
+        return released;
+    }
+
     fn spaceIdx(space: PacketNumberSpace) usize {
         return @intFromEnum(space);
     }

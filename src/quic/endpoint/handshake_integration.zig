@@ -560,6 +560,7 @@ pub fn installApplicationKeys(
     // RFC 9000 §4.9.1: Initial keys MUST be discarded after handshake confirmation
     // Drop Initial keys immediately when Application keys are installed
     logger.debugPrint("  {s}: Dropping Initial keys (Application keys installed)\n", .{if (conn.role == .Server) "Server" else "Client"});
+    conn.discardRecoverySpace(.Initial);
     conn.initial_keys_dropped = true;
     conn.initial_rx_keys = null;
     conn.initial_tx_keys = null;
@@ -577,6 +578,7 @@ pub fn installApplicationKeys(
 
     if (can_drop_hs_keys) {
         logger.debugPrint("  {s}: Dropping Handshake keys (peer_finished_verified={})\n", .{ if (conn.role == .Server) "Server" else "Client", conn.peer_finished_verified });
+        conn.discardRecoverySpace(.Handshake);
         conn.hs_rx_keys = null;
         conn.hs_tx_keys = null;
         if (conn.crypto_retx_handshake) |buf| {

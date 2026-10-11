@@ -2241,6 +2241,7 @@ pub const Connection = struct {
     pub const syncTxKeysAfterRxUpdate = methods_b.syncTxKeysAfterRxUpdate;
 
     pub const readAnyStream = methods_c.readAnyStream;
+    pub const discardRecoverySpace = methods_c.discardRecoverySpace;
     pub const onShortHeaderPacketSent = methods_c.onShortHeaderPacketSent;
     pub const sendPmtudProbe = methods_c.sendPmtudProbe;
     pub const onIcmpPacketTooBig = methods_c.onIcmpPacketTooBig;

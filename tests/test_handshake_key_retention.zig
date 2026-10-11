@@ -7,6 +7,41 @@ const ks = @import("quic_tls");
 
 const Installer = enum { connection, callback };
 
+fn expectDiscardedCreditRetired(installer: Installer, confirmed: bool) !void {
+    var allocator = testing.allocator;
+    var c: conn_mod.Connection = undefined;
+    try prepare(&c, &allocator, .Client);
+    defer c.deinit();
+    c.handshake_done_seen = confirmed;
+    c.onPacketSent(.Initial, 7, 1200, true);
+    c.onPacketSent(.Handshake, 7, 1200, true);
+    c.onPacketSent(.Application, 7, 100, true);
+    const cwnd = c.rec.getCwnd();
+    const credit = c.tx_credit_generation.load(.acquire);
+    try install(&c, installer);
+    try testing.expect(c.initial_keys_dropped);
+    try testing.expectEqual(@as(usize, 0), c.rec.spaces[0].sent.items.len);
+    try testing.expectEqual(@as(usize, if (confirmed) 0 else 1), c.rec.spaces[1].sent.items.len);
+    // App key installation can advertise app-space control frames. Preserve
+    // their actual in-flight credit instead of assuming a fixed send count.
+    var app_bytes: usize = 0;
+    for (c.rec.spaces[2].sent.items) |sp| app_bytes += sp.size;
+    try testing.expect(app_bytes >= 100);
+    try testing.expectEqual(app_bytes + @as(usize, if (confirmed) 0 else 1200), c.rec.getBytesInFlight());
+    try testing.expectEqual(cwnd, c.rec.getCwnd());
+    try testing.expect(c.tx_credit_generation.load(.acquire) != credit);
+}
+
+test "SONNY-4808 discarded key spaces release congestion credit via connection installer" {
+    try expectDiscardedCreditRetired(.connection, false);
+    try expectDiscardedCreditRetired(.connection, true);
+}
+
+test "SONNY-4808 discarded key spaces release congestion credit via TLS callback" {
+    try expectDiscardedCreditRetired(.callback, false);
+    try expectDiscardedCreditRetired(.callback, true);
+}
+
 fn install(c: *conn_mod.Connection, installer: Installer) !void {
     const client = ks.Secret.fromSlice(.sha256, &([_]u8{0x31} ** 32));
     const server = ks.Secret.fromSlice(.sha256, &([_]u8{0x52} ** 32));

@@ -237,6 +237,7 @@ pub fn bind(comptime Connection: type) type {
             _ = try self.send(pkt);
             self.onShortHeaderPacketSent(pkt.len, true);
 
+            self.discardRecoverySpace(.Initial);
             self.initial_keys_dropped = true;
             self.initial_rx_keys = null;
             self.initial_tx_keys = null;
