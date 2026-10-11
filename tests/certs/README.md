@@ -61,7 +61,8 @@ For production deployments:
 
 `bash scripts/generate_interop_certs.sh` creates `external/ca.pem`,
 `external/cert.pem` and `external/key.pem`. The CA signs a separate P-256 server
-leaf for `localhost` and `127.0.0.1`; the leaf has `CA:FALSE` and server-auth
+leaf for `localhost`, `server`, `server4`, `server6`, `server46`, `127.0.0.1`
+and `::1`; the leaf has `CA:FALSE` and server-auth
 usage. External clients trust `external/ca.pem` and keep certificate, hostname
 and handshake-signature verification enabled. The generator removes the CA
 signing key and restricts the surviving server key to mode 0600.

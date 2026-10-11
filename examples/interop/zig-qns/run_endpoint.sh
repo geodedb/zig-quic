@@ -57,55 +57,23 @@ run_endpoint_bin() {
   drop_to_quic qns-endpoint "$@"
 }
 
-ensure_fallback_tls_materials() {
-  local cert_dir="/quic/certs"
-  local cert_path="${cert_dir}/cert.pem"
-  local key_path="${cert_dir}/key.pem"
-  local openssl_config="${cert_dir}/openssl.cnf"
-  local cert_days="${QNS_FALLBACK_CERT_DAYS:-1}"
-
-  if [[ -f "$cert_path" && -f "$key_path" ]]; then
-    return 0
+prepare_server_tls() {
+  local key=""
+  if [[ -z "${QNS_USE_BUNDLED_CERTS:-}" ]] &&
+     [[ -e /certs/cert.pem || -e /certs/priv.key || -e /certs/key.pem ]]; then
+    if [[ -f /certs/priv.key ]]; then
+      key=/certs/priv.key
+    else
+      key=/certs/key.pem
+    fi
+    # Only the root entrypoint opens the mounted private key. The child gets
+    # read-only descriptors, and all writes happen as quic in its private dir.
+    drop_to_quic /prepare_tls.sh mounted 3</certs/cert.pem 4<"$key"
+  else
+    drop_to_quic /prepare_tls.sh fallback
   fi
-
-  if ! command -v openssl >/dev/null 2>&1; then
-    echo "WARNING: openssl is unavailable; mounted TLS certs are required." >&2
-    return 0
-  fi
-
-  mkdir -p "$cert_dir"
-  cat > "$openssl_config" <<'EOF'
-[req]
-prompt = no
-distinguished_name = dn
-x509_extensions = v3_req
-
-[dn]
-CN = server
-
-[v3_req]
-subjectAltName = @alt_names
-keyUsage = digitalSignature
-extendedKeyUsage = serverAuth
-
-[alt_names]
-DNS.1 = server
-DNS.2 = server4
-DNS.3 = server6
-DNS.4 = server46
-DNS.5 = localhost
-IP.1 = 127.0.0.1
-IP.2 = ::1
-EOF
-
-  echo "Generating ephemeral QNS fallback TLS certificate..."
-  umask 077
-  openssl ecparam -genkey -name prime256v1 -out "$key_path"
-  openssl req -new -x509 -sha256 -key "$key_path" -out "$cert_path" \
-    -days "$cert_days" -config "$openssl_config"
-  rm -f "$openssl_config"
-  chmod 600 "$key_path"
-  chmod 644 "$cert_path"
+  # qns-endpoint must use the privately staged material, not the root-only mount.
+  export QNS_USE_BUNDLED_CERTS=1
 }
 
 if [[ "${INTEROP_PRIVILEGE_CHECK:-0}" == "1" ]]; then
@@ -113,7 +81,18 @@ if [[ "${INTEROP_PRIVILEGE_CHECK:-0}" == "1" ]]; then
   exit 0
 fi
 
+# Exercise the same credential path without configuring simulator networking.
+if [[ "${INTEROP_TLS_CHECK:-0}" == "1" ]]; then
+  prepare_server_tls
+  drop_to_quic openssl pkey -in /quic/certs/key.pem -noout
+  drop_to_quic stat -c '%U:%G %a' /quic/certs/key.pem
+  drop_to_quic openssl x509 -in /quic/certs/cert.pem -noout -fingerprint -sha256
+  drop_to_quic openssl x509 -in /quic/certs/cert.pem -noout -ext basicConstraints
+  exit 0
+fi
+
 /setup.sh
+umask 007
 
 if [[ -f /quic/version.txt ]]; then
   echo "=== Zig QUIC Implementation ==="
@@ -126,6 +105,16 @@ TESTCASE="${TESTCASE:-handshake}"
 mkdir -p /logs /downloads /www
 if [[ -n "${QLOGDIR:-}" ]]; then
   mkdir -p "$QLOGDIR"
+fi
+# Preserve the mount's group so the invoking user can inspect artifacts.
+# Setgid propagates that group to endpoint-created output without world access.
+if [[ "$(id -u)" == 0 ]]; then
+  chown quic /logs /downloads
+  chmod 2770 /logs /downloads
+  if [[ -n "${QLOGDIR:-}" ]]; then
+    chown quic "$QLOGDIR"
+    chmod 2770 "$QLOGDIR"
+  fi
 fi
 
 echo "Role: $ROLE"
@@ -140,7 +129,7 @@ if ! is_supported_testcase "$TESTCASE"; then
 fi
 
 if [[ "$ROLE" == "server" ]]; then
-  ensure_fallback_tls_materials
+  prepare_server_tls
 fi
 
 # Keep key-update behavior deterministic in interop:

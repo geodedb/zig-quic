@@ -53,6 +53,11 @@ class InteropCertificateTests(unittest.TestCase):
         result = self.generate(self.bundle)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.verify(self.bundle / "ca.pem").returncode, 0)
+        for hostname in ("server", "server4", "server6", "server46"):
+            with self.subTest(hostname=hostname):
+                self.assertEqual(
+                    self.verify(self.bundle / "ca.pem", hostname).returncode, 0
+                )
         self.assertNotEqual(
             self.verify(self.bundle / "ca.pem", "wrong.invalid").returncode, 0
         )

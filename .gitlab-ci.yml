@@ -172,6 +172,7 @@ build:
     - *install-zig
   script:
     - python3 scripts/test_ci_interop.py -v
+    - python3 scripts/test_ci_qns.py -v
     - python3 scripts/test_client_security.py -v
     # Shared executables run on other x86 runners; native CPU features are unsafe.
     - zig build -Dtarget=x86_64-linux-gnu -Dcpu=baseline
@@ -522,7 +523,7 @@ interop-test:
     DOCKER_CERT_PATH: "/certs/client"
     COMPOSE_PROJECT_NAME: "interop_ci_${CI_JOB_ID}"
   before_script:
-    - apk add --no-cache bash git curl
+    - apk add --no-cache bash git curl openssl python3
     - docker compose version
     # Validate with the actual job toolchain before builds or simulator startup.
     - docker compose -f examples/interop/docker-compose.full.yml --profile generic config --quiet
@@ -547,6 +548,8 @@ interop-test:
     - git -C examples/interop/quic-interop-runner fetch --depth 1 origin "${QUIC_INTEROP_RUNNER_COMMIT}"
     - git -C examples/interop/quic-interop-runner checkout --detach FETCH_HEAD
     - test "$(git -C examples/interop/quic-interop-runner rev-parse HEAD)" = "${QUIC_INTEROP_RUNNER_COMMIT}"
+    - bash scripts/generate_interop_certs.sh examples/interop/quic-interop-runner/certs
+    - install -m 0600 examples/interop/quic-interop-runner/certs/key.pem examples/interop/quic-interop-runner/certs/priv.key
     - mkdir -p examples/interop/quic-network-simulator/logs/sim
     - mkdir -p examples/interop/quic-network-simulator/logs/server
     - mkdir -p examples/interop/quic-network-simulator/logs/client
@@ -558,64 +561,18 @@ interop-test:
   script:
     - docker build -f examples/interop/zig-qns/Dockerfile -t zig-qns:local .
     - test "$(docker run --rm -e INTEROP_PRIVILEGE_CHECK=1 zig-qns:local)" = "quic"
+    - python3 scripts/test_qns_tls.py -v
     - export QUIC_GO_IMAGE="martenseemann/quic-go-interop@sha256:aa7949c0a4a036390aac69227264b48f114c3467776cb047ba5c1cde671e021b"
     - export QNS_IMAGE="martenseemann/quic-network-simulator@sha256:c23d82a55caffe681b1bdae65d4d30d23e1283141a414a7f02ee56cf15f9c6b9"
     - docker pull "${QUIC_GO_IMAGE}"
     - docker pull "${QNS_IMAGE}"
-    - |
-      COMPOSE_FILE="examples/interop/docker-compose.full.yml"
-
-      compose() {
-        docker compose -f "${COMPOSE_FILE}" --profile generic "$@"
-      }
-
-      wait_for_sim() {
-        i=1
-        while [ "${i}" -le 30 ]; do
-          if compose ps --status running --services sim | grep -q '^sim$'; then
-            return 0
-          fi
-          echo "Waiting for simulator readiness (${i}/30)..."
-          sleep 1
-          i=$((i + 1))
-        done
-        echo "Simulator failed to become ready within 30s" >&2
-        return 1
-      }
-
-      run_case() {
-        title="$1"
-        server_image="$2"
-        client_image="$3"
-        testcase="$4"
-
-        echo "=== Test: ${title} ==="
-        compose rm -fsv server client >/dev/null 2>&1 || true
-        export SERVER_IMAGE="${server_image}"
-        export CLIENT_IMAGE="${client_image}"
-        export TESTCASE="${testcase}"
-        timeout 120 docker compose -f "${COMPOSE_FILE}" --profile generic up --abort-on-container-exit --timeout 30 server client || true
-      }
-
-      cleanup() {
-        compose down -v >/dev/null 2>&1 || true
-      }
-      trap cleanup EXIT
-
-      compose up -d sim
-      wait_for_sim
-
-      run_case "Zig server <-> quic-go client (handshake)" "zig-qns:local" "${QUIC_GO_IMAGE}" "handshake"
-      run_case "quic-go server <-> Zig client (handshake)" "${QUIC_GO_IMAGE}" "zig-qns:local" "handshake"
-      run_case "Zig server <-> quic-go client (transfer)" "zig-qns:local" "${QUIC_GO_IMAGE}" "transfer"
-      run_case "quic-go server <-> Zig client (transfer)" "${QUIC_GO_IMAGE}" "zig-qns:local" "transfer"
-    - echo "Interop tests completed"
+    - python3 scripts/ci_qns.py
   artifacts:
     when: always
     paths:
       - examples/interop/quic-network-simulator/logs/
     expire_in: 7 days
-  allow_failure: true
+  allow_failure: false
 
 quality-zig-gates:
   stage: test

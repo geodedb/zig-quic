@@ -21,9 +21,10 @@ RUN echo "zig-quic-$(date +%Y%m%d)" > /quic/version.txt || echo "zig-quic-dev" >
 
 # Copy our custom run_endpoint.sh
 COPY examples/interop/zig-qns/run_endpoint.sh /run_endpoint.sh
-RUN chmod +x /run_endpoint.sh /usr/local/bin/qns-endpoint
+COPY examples/interop/zig-qns/prepare_tls.sh /prepare_tls.sh
+RUN chmod +x /run_endpoint.sh /prepare_tls.sh /usr/local/bin/qns-endpoint
 
-HEALTHCHECK --interval=10s --timeout=3s --retries=3 CMD pgrep -x qns-endpoint >/dev/null || exit 1
+HEALTHCHECK --interval=10s --timeout=3s --retries=3 CMD ["pgrep", "-x", "qns-endpoint"]
 
 # SF-026: Drop to unprivileged user for the endpoint process.
 #

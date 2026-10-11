@@ -27,12 +27,14 @@ printf '%s\n' \
     'basicConstraints=critical,CA:FALSE' \
     'keyUsage=critical,digitalSignature' \
     'extendedKeyUsage=serverAuth' \
-    'subjectAltName=DNS:localhost,IP:127.0.0.1' > "$temporary/server.ext"
+    'subjectAltName=DNS:localhost,DNS:server,DNS:server4,DNS:server6,DNS:server46,IP:127.0.0.1,IP:::1' > "$temporary/server.ext"
 openssl x509 -req -in "$temporary/server.csr" -CA "$temporary/ca.pem" \
     -CAkey "$temporary/ca-key.pem" -CAcreateserial -out "$temporary/cert.pem" \
     -days 365 -sha256 -extfile "$temporary/server.ext"
-openssl verify -CAfile "$temporary/ca.pem" -purpose sslserver \
-    -verify_hostname localhost "$temporary/cert.pem"
+for hostname in localhost server server4 server6 server46; do
+    openssl verify -CAfile "$temporary/ca.pem" -purpose sslserver \
+        -verify_hostname "$hostname" "$temporary/cert.pem"
+done
 openssl verify -CAfile "$temporary/ca.pem" -purpose sslserver \
     -verify_ip 127.0.0.1 "$temporary/cert.pem"
 
