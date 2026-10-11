@@ -198,3 +198,17 @@ test "external subprocess frees all allocations on every allocation failure" {
     try requirePosix();
     try std.testing.checkAllAllocationFailures(allocator, allocationCase, .{});
 }
+
+// Exercise the actual production probe and /bin/sh, including dash's exit 127.
+// The command is a shell builtin, so these tests need no optional toolchains.
+test "external tool discovery accepts an existing command and missing optional tool" {
+    try requirePosix();
+    try std.testing.expect(try process.checkToolchain(allocator, io, "command"));
+    try std.testing.expect(!try process.checkToolchain(allocator, io, "sonny4788-tool-that-does-not-exist"));
+}
+
+test "external tool discovery treats tool names literally and rejects probe errors" {
+    try requirePosix();
+    try std.testing.expect(!try process.checkToolchain(allocator, io, "sonny4788-missing; exit 0"));
+    try std.testing.expectError(error.ToolchainProbeFailed, process.checkToolchain(allocator, io, "-?"));
+}

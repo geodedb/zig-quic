@@ -298,4 +298,41 @@ candidate `4788-candidate-external-345.json` (SHA-256
 and gate `4788-perf-gate-346.log`. Both captures are retained with the review's
 source fingerprints; the candidate was an uncommitted tree on the parent SHA.
 
+### 2026-10-11 — SONNY-4788: POSIX missing-tool probe correction
+
+The command probe now recognizes both exit 1 and exit 127 as an absent optional
+tool. The tool name remains a quoted positional argument; process launch,
+timeout, signal and unexpected exit failures still invalidate the benchmark.
+Two production-probe regressions cover present/missing tools, literal shell
+metacharacters and invalid probe options. The full suite passes 165 tests with
+three existing skips. With an empty toolchain PATH, the parent executable fails
+with `ToolchainProbeFailed`; the candidate lists scenarios and runs the micro
+suite successfully.
+
+The full baseline at exact parent `884aa9dd1e03a37220f446247a4b7e35745b08ea`
+was verified unchanged. A new same-session parent/candidate capture on the same
+Linux host and CPU affinity 8–11 covered all 35 micro rows and all three external
+clients. Source files, fixtures and client binaries stayed unchanged. Every
+external row contains 20 successful measured exchanges across seven repeats.
+
+| Client | Parent ops/s | Candidate ops/s | Parent p95 ns | Candidate p95 ns | Gate |
+|---|---:|---:|---:|---:|---|
+| quic-go | 152.320 | 155.836 | 7117380 | 7439795 | PASS |
+| Quinn | 10.965 | 11.007 | 95113656 | 94643679 | PASS |
+| aioquic | 2.240 | 2.235 | 456279820 | 453514153 | PASS |
+
+The external gate passed with **0 FAIL, 0 WARN**. The micro gate reported
+**12 FAIL, 1 WARN**, including frame serialization, connection lookup and send
+buffer p95 regressions. Overall performance qualification remains **FAILED**;
+these results do not authorize merging the correction. No thresholds were
+changed and no speedup is claimed. Investigate measurement correctness and
+comparable runtime behavior before repeating qualification.
+
+Evidence: `4788-probe-qualification-590.json`; parent/candidate micro hashes
+`72e3284b8a81a408a512a67471936e193693e368158c2812b988740953a9200c` /
+`311cb0c6ef59e798f212d5d9913240f98c3a3ade41d845fec11e0848d7d96428`;
+parent/candidate external hashes
+`941da9e06668f09edc240943a6a4eea2a2a7e987e11460ca631d1afae9b3f278` /
+`68f475cc0d048f6f901ef7a4a4d621e6fcc99b88030f333b58f544f6d41ee604`.
+
 </content>
