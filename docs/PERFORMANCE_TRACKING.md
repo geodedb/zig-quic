@@ -416,3 +416,33 @@ not claim complete 10K admission or qualify unrelated throughput scenarios.
 | integration/handshake_e2e | 100p | integration | 394.7 | 384.2 | -2.64% | 215113817 | 216015940 | +0.42% | PASS |
 | integration/handshake_e2e | 1Kp | integration | 548.0 | 552.4 | +0.81% | 1441520262 | 1413167823 | -1.97% | PASS |
 | integration/handshake_e2e | 10Kp | integration | 245.3 | 243.5 | -0.72% | 1920832153 | 1920705225 | -0.01% | PASS |
+
+### 2026-10-11 — SONNY-4805 pacing workload coverage
+
+The default 200-by-1000 workload now advances by an entire batch and covers
+all utilization values 0–17999, including both sides of the pacing exemption.
+The production pacing function and measurement counts are unchanged.
+
+Same-session `micro/pacing` pair: parent runtime
+`f26121040dab0f099223b4ee5039e5998c9d6634` and candidate
+`578b0f396588a0eda53cf2b89940db8ff21d5d54`, both using the committed candidate
+benchmark harness. Both binaries were built before capture; captures used
+Zig 0.16.0 on the same Linux x86_64 host with CPU affinity 8–11. The normal
+warmup and six retained runs were unchanged. This pair did not use the
+experimental extra 500ms warmup. Source provenance was verified before and
+after capture; all thresholds remain unchanged.
+
+The relevant gate returned **0 FAIL, 0 WARN**. Latency values below are
+nanoseconds per operation, retaining raw batch precision. These measurements
+qualify this benchmark correction only; they are not a production speedup
+claim and do not clear other failed micro/integration gates.
+
+| scenario | variant | tier | ops/s base | ops/s cur | delta% | p95 base | p95 cur | delta% | status |
+|---|---|---|---:|---:|---:|---:|---:|---:|---|
+| micro/pacing | delay_compute | micro | 439484133.5 | 450591514.0 | +2.53% | 2.687 | 1.688 | -37.18% | PASS |
+
+Evidence: `quic-pacing-pair-973.json`, `quic-pacing-harness-973.json`, and
+`quic-pacing-gate-assessment-975.json`. Capture SHA-256 values:
+
+- baseline: `a80e9cc01079071beb26cd772bae5971310616d977658feeb8ac72621691305e`
+- current: `4c930681569305ea7a16b9c683fa13ac5511c9f6fc1685d75ce4453e4d63bc5d`
