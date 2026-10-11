@@ -257,6 +257,7 @@ test "RFC 9001 §4 - createTlsContext initializes Context with correct role" {
         false, // request_client_cert
         null, // client_cert_der
         null, // client_key_der
+        null, // trusted_ca_der; these context-construction tests do not exchange certificates
     );
     defer client_ctx.deinit();
 
@@ -276,6 +277,7 @@ test "RFC 9001 §4 - createTlsContext initializes Context with correct role" {
         false, // request_client_cert
         null, // client_cert_der
         null, // client_key_der
+        null, // trusted_ca_der; these context-construction tests do not exchange certificates
     );
     defer server_ctx.deinit();
 
@@ -302,6 +304,7 @@ test "RFC 9001 §4 - createTlsContext registers callbacks" {
         false, // request_client_cert
         null, // client_cert_der
         null, // client_key_der
+        null, // trusted_ca_der; these context-construction tests do not exchange certificates
     );
     defer ctx.deinit();
 
@@ -449,12 +452,12 @@ test "RFC 9000 §18.2 - extractTransportParameters validates required parameters
         var tp: transport_params.TransportParams = .{
             .initial_max_data = 1048576,
             .initial_source_connection_id = scid, // Required for server
-            .stateless_reset_token = [_]u8{0} ** 16, // Required for server
+            .stateless_reset_token = [_]u8{0} ** 16, // Optional for server
         };
         try tp.validate(true, false); // is_server=true, retry_sent=false - should pass
     }
 
-    // Test 3: Server without stateless_reset_token should fail
+    // Test 3: RFC 9000 section 18.2 permits omission of the server reset token.
     {
         const scid = try allocator.alloc(u8, 8);
         defer allocator.free(scid);
@@ -463,10 +466,9 @@ test "RFC 9000 §18.2 - extractTransportParameters validates required parameters
         var tp: transport_params.TransportParams = .{
             .initial_max_data = 1048576,
             .initial_source_connection_id = scid,
-            // Missing: stateless_reset_token (required for server)
+            // No stateless_reset_token: valid when the server does not advertise it.
         };
-        const result = tp.validate(true, false); // is_server=true
-        try testing.expectError(error.MissingRequiredParameter, result);
+        try tp.validate(true, false); // is_server=true
     }
 
     // Test 4: Client transport parameters (no required params) should pass

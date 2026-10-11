@@ -110,7 +110,7 @@ test "RFC 9000 §7.4 - server validate requires initial_source_connection_id" {
     try std.testing.expectError(error.MissingRequiredParameter, result);
 }
 
-test "RFC 9000 §7.4 - server validate requires stateless_reset_token" {
+test "RFC 9000 §18.2 - server may omit stateless_reset_token" {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
@@ -120,11 +120,10 @@ test "RFC 9000 §7.4 - server validate requires stateless_reset_token" {
 
     const params: tp.TransportParams = .{
         .initial_source_connection_id = iscid,
-        // Missing stateless_reset_token
+        // RFC 9000 section 18.2 makes this token optional for a server.
     };
 
-    const result = params.validate(true, false);
-    try std.testing.expectError(error.MissingRequiredParameter, result);
+    try params.validate(true, false);
 }
 
 test "RFC 9000 §7.4.1 - server with Retry requires retry_source_connection_id" {

@@ -314,10 +314,8 @@ pub const TransportParams = struct {
             return error.MissingRequiredParameter;
         }
 
-        // RFC 9000 §18.2: stateless_reset_token MUST be sent by servers
-        if (is_server and self.stateless_reset_token == null) {
-            return error.MissingRequiredParameter;
-        }
+        // RFC 9000 section 18.2 permits a server to omit its reset token.
+        // Presence is optional; decode still validates any supplied token.
     }
 
     /// Check that parameter values are within RFC-specified limits.
