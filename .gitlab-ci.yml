@@ -2,6 +2,21 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2024-2025 CodePros
 
+# Prefer the MR pipeline for feature branches with open MRs. Preserve
+# default-branch/tag releases and scheduled, API, and triggered pipelines.
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
+      when: never
+    - when: always
+
+# Catalog jobs without rules default to except:merge_requests. These gates
+# must also run in the MR pipeline that determines merge eligibility.
+.component-verification:
+  rules: &component-verification-rules
+    - when: on_success
+
 default:
   # Pin to Linux runners. Without the `linux` tag, jobs without an `image:`
   # directive (e.g. zig-format, gemnasium-dependency_scanning from included
@@ -88,8 +103,19 @@ variables:
 
 # zig-format component override: inject Zig install before format check
 zig-format:
+  rules: *component-verification-rules
   before_script:
     - *install-zig
+
+# Opt both SBOM jobs in together to preserve the scan's artifact dependency.
+security-gitleaks:
+  rules: *component-verification-rules
+
+sbom-generate:
+  rules: *component-verification-rules
+
+sbom-scan:
+  rules: *component-verification-rules
 
 # E2E tests with multiple QUIC client implementations
 # Tests Python (aioquic), Go (quic-go), Rust (quinn), and Zig clients
