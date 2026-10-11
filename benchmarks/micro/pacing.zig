@@ -46,7 +46,9 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
         const t0 = common.nowNs();
         var k: u64 = 0;
         while (k < BATCH_SIZE) : (k += 1) {
-            const bif = (i +% @as(usize, @intCast(k))) % sweep_modulus;
+            // Advance by a whole batch: i+k only reaches 1198 with the
+            // default 200 samples and never enters the paced branch.
+            const bif = ((i *% @as(usize, BATCH_SIZE)) +% @as(usize, @intCast(k))) % sweep_modulus;
             sink +%= rec.computePacingDelayNs(cwnd, bif, rtt_ns, mds);
         }
         const dt = common.nowNs() - t0;

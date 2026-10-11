@@ -2687,6 +2687,32 @@ pub fn build(b: *std.Build) void {
     const bench_common_test_step = b.step("test-bench-common", "Run bench harness tests");
     bench_common_test_step.dependOn(&run_bench_common_test.step);
 
+    // SONNY-4805: record the real pacing benchmark's input coverage while
+    // delegating every observed call to the production congestion function.
+    const pacing_recorder = b.createModule(.{
+        .root_source_file = b.path("tests/pacing_workload_recorder.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    pacing_recorder.addImport("real_congestion", recovery_congestion_mod);
+    const pacing_bench_test_mod = b.createModule(.{
+        .root_source_file = b.path("benchmarks/micro/pacing.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    pacing_bench_test_mod.addImport("bench_common", bench_common_mod);
+    pacing_bench_test_mod.addImport("quic_recovery", pacing_recorder);
+    const pacing_test_mod = b.createModule(.{
+        .root_source_file = b.path("tests/test_bench_pacing.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    pacing_test_mod.addImport("pacing_bench", pacing_bench_test_mod);
+    pacing_test_mod.addImport("pacing_recorder", pacing_recorder);
+    const run_pacing_test = b.addRunArtifact(b.addTest(.{ .root_module = pacing_test_mod }));
+    b.step("test-bench-pacing", "Run pacing benchmark workload coverage regression").dependOn(&run_pacing_test.step);
+    test_step.dependOn(&run_pacing_test.step);
+
     // Regression comparison tool (tier-aware -- reads ResultDocument JSON)
     const bench_compare = addExe(b, "bench-compare", "benchmarks/compare.zig", target, .ReleaseFast);
     bench_compare.root_module.addImport("bench_common", bench_common_mod);
