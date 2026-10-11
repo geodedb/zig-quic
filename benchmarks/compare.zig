@@ -49,6 +49,48 @@ pub fn classify(name: []const u8) Tier {
     return .unknown;
 }
 
+fn validateLatencyBatch(row: common.ResultRow) !void {
+    const batch = row.latency_batch orelse return;
+    if (batch.operations == 0) return error.InvalidLatencyBatch;
+    if (batch.p50_ns > batch.p95_ns or batch.p95_ns > batch.p99_ns)
+        return error.InvalidLatencyBatch;
+    if (row.latency_p50_ns != batch.p50_ns / batch.operations or
+        row.latency_p95_ns != batch.p95_ns / batch.operations or
+        row.latency_p99_ns != batch.p99_ns / batch.operations)
+        return error.InvalidLatencyBatch;
+}
+
+/// Compare raw durations when both captures retain batch precision. Mixing
+/// old rounded data with new raw data requires a fresh paired capture.
+pub fn latencyChangePercent(base: common.ResultRow, cur: common.ResultRow) !f64 {
+    try validateLatencyBatch(base);
+    try validateLatencyBatch(cur);
+    var before = base.latency_p95_ns;
+    var after = cur.latency_p95_ns;
+    if (base.latency_batch) |b| {
+        const c = cur.latency_batch orelse return error.IncompatibleLatencySamples;
+        if (b.operations != c.operations) return error.IncompatibleLatencySamples;
+        before = b.p95_ns;
+        after = c.p95_ns;
+    } else if (cur.latency_batch != null) return error.IncompatibleLatencySamples;
+    if (before == 0) return if (after == 0) 0 else std.math.inf(f64);
+    return pctChange(@floatFromInt(before), @floatFromInt(after));
+}
+
+pub fn latencyP95Ns(row: common.ResultRow) f64 {
+    if (row.latency_batch) |batch|
+        return @as(f64, @floatFromInt(batch.p95_ns)) / @as(f64, @floatFromInt(batch.operations));
+    return @floatFromInt(row.latency_p95_ns);
+}
+
+/// Cross-multiply exact integers so even a fractional-ns absolute breach fails.
+pub fn latencyP99Exceeds(row: common.ResultRow, limit_ns: u64) !bool {
+    try validateLatencyBatch(row);
+    if (row.latency_batch) |batch|
+        return @as(u128, batch.p99_ns) > @as(u128, limit_ns) * batch.operations;
+    return row.latency_p99_ns > limit_ns;
+}
+
 const AbsoluteGate = struct {
     scenario: []const u8,
     variant: []const u8,
@@ -144,10 +186,13 @@ pub fn main(init: std.process.Init) !void {
         const thr = thresholds(tier);
 
         const t_delta = pctChange(base.throughput_ops_per_sec, cur.throughput_ops_per_sec);
-        const p95_delta = pctChange(
-            @as(f64, @floatFromInt(base.latency_p95_ns)),
-            @as(f64, @floatFromInt(cur.latency_p95_ns)),
-        );
+        const p95_delta = latencyChangePercent(base, cur) catch |err| {
+            const msg = try std.fmt.allocPrint(allocator, "INVALID-LATENCY {s}/{s}: {s}; recapture both sides with the same measurement format.\n", .{ cur.scenario_name, cur.variant, @errorName(err) });
+            defer allocator.free(msg);
+            try stdout.writeStreamingAll(init.io, msg);
+            failures += 1;
+            continue;
+        };
 
         const stddev_pct = if (base.throughput_ops_per_sec != 0)
             (base.throughput_stddev_ops_per_sec / base.throughput_ops_per_sec) * 100.0
@@ -167,11 +212,11 @@ pub fn main(init: std.process.Init) !void {
         for (absolute_gates) |gate| {
             if (!std.mem.eql(u8, gate.scenario, cur.scenario_name)) continue;
             if (!std.mem.eql(u8, gate.variant, cur.variant)) continue;
-            const actual: u64 = switch (gate.field) {
-                .latency_p99_ns => cur.latency_p99_ns,
-                .alloc_bytes => cur.alloc_bytes,
+            const exceeded = switch (gate.field) {
+                .latency_p99_ns => try latencyP99Exceeds(cur, gate.max),
+                .alloc_bytes => cur.alloc_bytes > gate.max,
             };
-            if (actual > gate.max) {
+            if (exceeded) {
                 status = "ABSOLUTE-FAIL";
                 failures += 1;
             }
@@ -216,11 +261,11 @@ pub fn main(init: std.process.Init) !void {
         const p95_sign: u8 = if (p95_delta >= 0) '+' else '-';
         const line = try std.fmt.allocPrint(
             allocator,
-            "| {s} | {s} | {s} | {d:.1} | {d:.1} | {c}{d:.2}% | {d} | {d} | {c}{d:.2}% | {s} |\n",
+            "| {s} | {s} | {s} | {d:.1} | {d:.1} | {c}{d:.2}% | {d:.3} | {d:.3} | {c}{d:.2}% | {s} |\n",
             .{
                 cur.scenario_name,           cur.variant,                @tagName(tier),
                 base.throughput_ops_per_sec, cur.throughput_ops_per_sec, t_sign,
-                @abs(t_delta),               base.latency_p95_ns,        cur.latency_p95_ns,
+                @abs(t_delta),               latencyP95Ns(base),         latencyP95Ns(cur),
                 p95_sign,                    @abs(p95_delta),            status,
             },
         );

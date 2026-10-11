@@ -20,6 +20,15 @@ pub const ScenarioSpec = struct {
     extra: ?*const anyopaque = null,
 };
 
+/// Exact percentiles of measured batch durations, before division by the
+/// operation count. The legacy latency fields remain whole ns per operation.
+pub const LatencyBatch = struct {
+    operations: u32,
+    p50_ns: u64,
+    p95_ns: u64,
+    p99_ns: u64,
+};
+
 pub const ResultRow = struct {
     git_sha: []const u8,
     run_timestamp_unix_s: i64,
@@ -37,6 +46,7 @@ pub const ResultRow = struct {
     latency_p50_ns: u64,
     latency_p95_ns: u64,
     latency_p99_ns: u64,
+    latency_batch: ?LatencyBatch = null,
     cpu_time_ns: u64,
     wall_time_ns: u64,
     alloc_count: u64 = 0,
@@ -92,6 +102,9 @@ pub const RunOutput = struct {
     wall_time_ns: u64,
     cpu_time_ns: u64,
     latencies_ns: []u64,
+    /// Each latency is a raw duration for this many operations. Never divide
+    /// individual measurements before aggregation: that loses sub-ns precision.
+    latency_sample_operations: u32 = 1,
     alloc_count: u64 = 0,
     alloc_bytes: u64 = 0,
     peak_live_bytes: u64 = 0,
@@ -159,6 +172,12 @@ pub fn runRepeated(
     }
 
     const warm_samples = outputs[WARMUP..];
+    const sample_operations = warm_samples[0].latency_sample_operations;
+    if (sample_operations == 0) return error.InvalidLatencySampleOperations;
+    for (warm_samples) |sample| {
+        if (sample.latency_sample_operations != sample_operations)
+            return error.InconsistentLatencySampleOperations;
+    }
     var throughputs: [SAMPLES]f64 = undefined;
     for (warm_samples, 0..) |o, i| {
         throughputs[i] = @as(f64, @floatFromInt(o.iterations)) /
@@ -206,9 +225,15 @@ pub fn runRepeated(
         .iterations = rep.iterations,
         .throughput_ops_per_sec = median_throughput,
         .throughput_stddev_ops_per_sec = stddev,
-        .latency_p50_ns = summary.p50_ns,
-        .latency_p95_ns = summary.p95_ns,
-        .latency_p99_ns = summary.p99_ns,
+        .latency_p50_ns = summary.p50_ns / sample_operations,
+        .latency_p95_ns = summary.p95_ns / sample_operations,
+        .latency_p99_ns = summary.p99_ns / sample_operations,
+        .latency_batch = if (sample_operations == 1) null else .{
+            .operations = sample_operations,
+            .p50_ns = summary.p50_ns,
+            .p95_ns = summary.p95_ns,
+            .p99_ns = summary.p99_ns,
+        },
         .cpu_time_ns = rep.cpu_time_ns,
         .wall_time_ns = rep.wall_time_ns,
         .alloc_count = rep.alloc_count,

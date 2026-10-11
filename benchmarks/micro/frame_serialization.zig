@@ -278,7 +278,7 @@ fn runFrameEncode(
             sink +%= n;
         }
         const dt = common.nowNs() - t0;
-        latencies[i] = dt / BATCH_SIZE;
+        latencies[i] = dt;
     }
     const wall_end = common.nowNs();
     std.mem.doNotOptimizeAway(sink);
@@ -289,6 +289,7 @@ fn runFrameEncode(
         .wall_time_ns = wall_end - wall_start,
         .cpu_time_ns = wall_end - wall_start,
         .latencies_ns = latencies,
+        .latency_sample_operations = BATCH_SIZE,
         .alloc_count = @intCast(ca.alloc_calls + ca.resize_calls + ca.remap_calls),
         .alloc_bytes = ca.alloc_bytes,
     };

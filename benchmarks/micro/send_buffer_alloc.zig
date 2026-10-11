@@ -300,7 +300,7 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
             runOnce(counted, scenario, seed) catch {};
         }
         const dt = common.nowNs() - t0;
-        latencies[i] = dt / BATCH_SIZE;
+        latencies[i] = dt;
     }
     const wall_end = common.nowNs();
 
@@ -315,6 +315,7 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
         .wall_time_ns = wall_end - wall_start,
         .cpu_time_ns = wall_end - wall_start,
         .latencies_ns = latencies,
+        .latency_sample_operations = BATCH_SIZE,
         .alloc_count = per_op_count,
         .alloc_bytes = per_op_bytes,
     };

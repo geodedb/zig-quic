@@ -13,7 +13,7 @@
 //
 // The primitive is a couple of branches + divide -- far below clock_gettime
 // resolution, so the harness times BATCHes of BATCH_SIZE calls per sample
-// and records the amortised ns-per-op (matches legacy bench/main.zig).
+// and retains raw durations with the operation count for precise ns-per-op.
 //
 // Absolute gate (docs/PERFORMANCE_TARGETS.md, benchmarks/compare.zig):
 //   micro/pacing delay_compute -> latency_p99_ns <= 400
@@ -50,7 +50,7 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
             sink +%= rec.computePacingDelayNs(cwnd, bif, rtt_ns, mds);
         }
         const dt = common.nowNs() - t0;
-        latencies[i] = dt / BATCH_SIZE;
+        latencies[i] = dt;
     }
     const wall_end = common.nowNs();
     std.mem.doNotOptimizeAway(sink);
@@ -60,6 +60,7 @@ pub fn run(allocator: std.mem.Allocator, spec: common.ScenarioSpec) !common.RunO
         .wall_time_ns = wall_end - wall_start,
         .cpu_time_ns = wall_end - wall_start,
         .latencies_ns = latencies,
+        .latency_sample_operations = BATCH_SIZE,
     };
 }
 

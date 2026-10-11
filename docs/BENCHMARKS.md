@@ -49,6 +49,20 @@ row carries the scenario name, variant, iterations, wall / cpu times,
 p50 / p95 / p99 latencies, stddev, allocation bytes, and — for external
 rows — the implementation name.
 
+Batched microbenchmarks retain raw sample durations and their operation count.
+Their rows additionally carry `latency_batch`, with `operations` and the raw
+batch `p50_ns`, `p95_ns`, and `p99_ns`. Divide those percentiles by `operations`
+to obtain ns per operation without discarding fractional precision. The existing
+top-level latency fields remain whole ns per operation for older readers.
+These are percentiles of batch averages, not individual-operation tail latency.
+
+The comparator uses raw batch percentiles for relative checks and exact integer
+cross-multiplication for absolute limits. All thresholds remain unchanged.
+Legacy documents without batch metadata still compare with one another. Mixing
+legacy and precise rows, changing batch sizes between captures, or providing
+inconsistent metadata fails: recapture both sides with the same harness. Do not
+infer missing fractions in old measurements or rewrite their recorded outcomes.
+
 ## Per-Suite Detail
 
 Typical runtimes below are wall-clock on an x86_64 Linux workstation
