@@ -1,12 +1,10 @@
 module xnet-quic-test
 
-go 1.25.0
+go 1.27.2
 
-toolchain go1.26.2
-
-require golang.org/x/net v0.49.0
+require golang.org/x/net v0.61.0
 
 require (
-	golang.org/x/crypto v0.47.0 // indirect
-	golang.org/x/sys v0.40.0 // indirect
+	golang.org/x/crypto v0.58.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 )
