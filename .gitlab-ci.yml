@@ -165,6 +165,7 @@ build:
     - *install-zig
   script:
     - python3 scripts/test_ci_interop.py -v
+    - python3 scripts/test_client_security.py -v
     # Shared executables run on other x86 runners; native CPU features are unsafe.
     - zig build -Dtarget=x86_64-linux-gnu -Dcpu=baseline
   artifacts:
@@ -363,7 +364,7 @@ e2e-test-python:
 
 e2e-test-go:
   stage: e2e
-  image: golang:1.26.2
+  image: golang:1.26.9
   tags:
     - company
     - linux
@@ -418,7 +419,7 @@ client-trust-go:
 
 e2e-test-rust:
   stage: e2e
-  image: rust:1.83
+  image: rust:1.99
   tags:
     - company
     - linux
@@ -447,7 +448,7 @@ e2e-test-rust:
     - python3 -m venv .client-trust-venv
     - .client-trust-venv/bin/pip install -r test-clients/aioquic-client/requirements.txt
     # Build Rust client
-    - cd test-clients/quinn-client && cargo build --release && cd ../..
+    - (cd test-clients/quinn-client && cargo build --locked --release)
     # Generate test certificates
     - *generate-test-certs
   script:
@@ -807,7 +808,7 @@ fuzz:
 
 security-rust-cargo-audit:
   stage: security
-  image: rust:1.91
+  image: rust:1.99
   tags:
     - company
     - linux
@@ -826,9 +827,7 @@ security-rust-cargo-audit:
         echo "Retrying cargo-audit install (${attempt}/3)..." >&2
         sleep 5
       done
-    - cd clients/rust && cargo audit && cd ../..
-    - cd test-clients/legacy-clients/rust && cargo audit && cd ../..
-    - cd test-clients/quinn-client && cargo audit && cd ../..
+    - sh scripts/check-client-security.sh rust
 
 security-repo-hygiene:
   stage: security
@@ -865,7 +864,7 @@ security-python-safety:
 
 security-go-govulncheck:
   stage: security
-  image: golang:1.26.2
+  image: golang:1.26.9
   tags:
     - company
     - linux
@@ -874,23 +873,15 @@ security-go-govulncheck:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
   variables:
-    GOTOOLCHAIN: "go1.26.2"
+    GOTOOLCHAIN: "go1.26.9"
   script:
     - go version
-    - for dir in examples/interop test-clients/quic-test-legacy/xnet-quic test-clients/quic-go-client test-clients/legacy-clients/go; do echo "Scanning $dir"; (cd "$dir" && go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...); done
-    - |
-      echo "Scanning test-clients/quic-test-legacy (standalone binaries)"
-      cd test-clients/quic-test-legacy
-      for src in client.go server.go test_client.go test_client_comprehensive.go; do
-        out="/tmp/quic-test-legacy-${src%.go}"
-        go build -o "$out" "./$src"
-        go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 -mode=binary "$out"
-      done
+    - sh scripts/check-client-security.sh go
 
 # Scheduled job to update Go dependencies for interop testing
 update-go-dependencies:
   stage: maintenance
-  image: golang:1.26.2
+  image: golang:1.26.9
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $UPDATE_GO_DEPS == "true"
   before_script:
