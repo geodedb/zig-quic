@@ -865,6 +865,14 @@ pub fn build(b: *std.Build) void {
     b.step("test-client-start", "Verify real TLS startup in the selected crypto mode").dependOn(&run_client_start.step);
     if (filter == null) test_step.dependOn(&run_client_start.step);
 
+    const pto_backoff_tests = addTst(b, testlog_mod, compat_mod, "tests/test_pto_backoff_scheduling.zig", target, optimize);
+    pto_backoff_tests.root_module.addImport("quic_api", quic_api_mod);
+    pto_backoff_tests.root_module.addImport("quic_conn", quic_conn_mod);
+    pto_backoff_tests.root_module.addImport("quic_recovery", quic_recovery_mod);
+    const run_pto_backoff = b.addRunArtifact(pto_backoff_tests);
+    b.step("test-pto-backoff", "Verify actual PTO timer deadlines preserve recovery backoff").dependOn(&run_pto_backoff.step);
+    if (filter == null) test_step.dependOn(&run_pto_backoff.step);
+
     const stream_ack_tests = addTst(b, testlog_mod, compat_mod, "tests/test_stream_ack_retention.zig", target, optimize);
     stream_ack_tests.root_module.addImport("quic_conn", quic_conn_mod);
     stream_ack_tests.root_module.addImport("quic_frame", quic_frame_mod);
