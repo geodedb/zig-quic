@@ -257,6 +257,61 @@ const ClientDiagnostic = struct {
     initial_pto_count: u32 = 0,
     handshake_polls: usize = 0,
     handshake_received_packets: usize = 0,
+    receive_headers: [16]ReceiveHeader = undefined,
+    receive_header_count: usize = 0,
+};
+
+// Keep bounded, non-secret routing metadata from the actual UDP receive path.
+// The observer forwards the original callback/context without changing bytes,
+// addresses, batching, errors, or deadlines. Each client owns its poll thread.
+const Transport = @FieldType(endpoint_mod.Endpoint, "transport");
+const ReceiveBatchFn = @typeInfo(@FieldType(Transport, "recvBatchFn")).optional.child;
+const ReceiveSlots = @typeInfo(@typeInfo(ReceiveBatchFn).pointer.child).@"fn".params[1].type.?;
+const ReceiveHeader = struct {
+    bytes: usize,
+    first: u8,
+    version: u32,
+    dcid_len: usize,
+    our_dcid: bool,
+    expected_peer: bool,
+    mapped: bool,
+};
+const ReceiveObserver = struct {
+    endpoint: *endpoint_mod.Endpoint,
+    conn: *api.Connection,
+    diagnostic: *ClientDiagnostic,
+    original: ReceiveBatchFn,
+
+    threadlocal var active: ?*ReceiveObserver = null;
+
+    fn receive(context: *anyopaque, slots: ReceiveSlots) !usize {
+        const self = active.?;
+        const count = try self.original(context, slots);
+        for (slots[0..count]) |slot| {
+            if (self.diagnostic.receive_header_count == self.diagnostic.receive_headers.len) break;
+            const bytes = slot.buf[0..slot.n];
+            const long_header = bytes.len >= 6 and bytes[0] & 0x80 != 0;
+            const dcid_len: usize = if (long_header) bytes[5] else 0;
+            const valid_dcid = long_header and dcid_len <= 20 and bytes.len >= 6 + dcid_len;
+            const peer_hash = endpoint_mod.hashSockaddr(&slot.peer.storage, slot.peer.len);
+            const expected_hash = endpoint_mod.hashSockaddr(&self.conn.peer.storage, self.conn.peer.len);
+            const dcid = if (valid_dcid) bytes[6..][0..dcid_len] else &.{};
+            self.diagnostic.receive_headers[self.diagnostic.receive_header_count] = .{
+                .bytes = bytes.len,
+                .first = if (bytes.len > 0) bytes[0] else 0,
+                .version = if (long_header) std.mem.readInt(u32, bytes[1..5], .big) else 0,
+                .dcid_len = dcid_len,
+                .our_dcid = valid_dcid and std.mem.eql(u8, dcid, self.conn.our_scid.bytes[0..self.conn.our_scid.len]),
+                .expected_peer = peer_hash == expected_hash,
+                .mapped = valid_dcid and self.endpoint.conns.contains(.{
+                    .peer_hash = peer_hash,
+                    .dcid_hash = std.hash.Wyhash.hash(0, dcid),
+                }),
+            };
+            self.diagnostic.receive_header_count += 1;
+        }
+        return count;
+    }
 };
 
 const ClientCtx = struct {
@@ -289,6 +344,19 @@ fn clientThread(ctx: ClientCtx) void {
         _ = ctx.fail_counter.fetchAdd(1, .seq_cst);
         return;
     };
+
+    var observer = ReceiveObserver{
+        .endpoint = &ep,
+        .conn = conn,
+        .diagnostic = ctx.diagnostic,
+        .original = ep.transport.recvBatchFn.?,
+    };
+    ReceiveObserver.active = &observer;
+    ep.transport.recvBatchFn = ReceiveObserver.receive;
+    defer {
+        ep.transport.recvBatchFn = observer.original;
+        ReceiveObserver.active = null;
+    }
 
     defer {
         // Capture both CIDs on failures too; the former server_cid assignment
@@ -515,6 +583,12 @@ test "high-parallel connections complete stream echo and FIN without blocking" {
                 diagnostic.elapsed_ms,
                 diagnostic.server_cid,
             });
+            for (diagnostic.receive_headers[0..diagnostic.receive_header_count], 0..) |header, packet_index| {
+                std.debug.print("    rx[{d}] bytes={d} first={x} version={x} dcid_len={d} our_dcid={} expected_peer={} mapped={}\n", .{
+                    packet_index,    header.bytes,         header.first,  header.version, header.dcid_len,
+                    header.our_dcid, header.expected_peer, header.mapped,
+                });
+            }
         }
     }
     try testing.expectEqual(@as(u32, 0), failures);
