@@ -863,7 +863,7 @@ pub fn build(b: *std.Build) void {
     client_start_tests.root_module.addImport("endpoint_utils", endpoint_utils_mod);
     const run_client_start = b.addRunArtifact(client_start_tests);
     b.step("test-client-start", "Verify real TLS startup in the selected crypto mode").dependOn(&run_client_start.step);
-    test_step.dependOn(&run_client_start.step);
+    if (filter == null) test_step.dependOn(&run_client_start.step);
 
     const handshake_retention_tests = addTst(b, testlog_mod, compat_mod, "tests/test_handshake_key_retention.zig", target, optimize);
     handshake_retention_tests.root_module.addImport("quic_conn", quic_conn_mod);
