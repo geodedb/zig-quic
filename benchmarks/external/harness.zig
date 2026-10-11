@@ -36,12 +36,12 @@ pub fn runSubprocess(allocator: std.mem.Allocator, spec: common.ScenarioSpec, ex
     return process.runSubprocess(allocator, runner.bench_io, spec, external);
 }
 
-/// Returns true iff `which <tool>` exits 0. Used by scenarios' entry to
+/// Returns true iff the shell can resolve the tool. Used by scenarios' entry to
 /// short-circuit to a placeholder RunOutput when the needed toolchain
 /// isn't installed. Backed by a module-level cache so that FD pressure
 /// from earlier scenarios (notably handshake_e2e 10Kp exhausting the
 /// process's file descriptor limit) doesn't cause a false-negative
-/// `which` call and land external rows as SKIP despite the toolchain
+/// availability probe and land external rows as SKIP despite the toolchain
 /// being present. Callers can prewarm via `prewarmToolchains` at
 /// bench_runner startup before any FD-heavy integration scenario runs.
 const ToolchainCache = struct {
@@ -53,16 +53,7 @@ const ToolchainCache = struct {
 var toolchain_cache: ToolchainCache = .{};
 
 fn checkToolchainUncached(allocator: std.mem.Allocator, tool: []const u8) !bool {
-    const code = try process.probeExitCode(allocator, runner.bench_io, .{
-        .argv = &.{ "/bin/sh", "-c", "command -v \"$1\"", "probe", tool },
-        .stdout_limit = .limited(4096),
-        .stderr_limit = .limited(4096),
-    });
-    return switch (code) {
-        0 => true,
-        1 => false,
-        else => error.ToolchainProbeFailed,
-    };
+    return process.checkToolchain(allocator, runner.bench_io, tool);
 }
 
 pub fn checkToolchain(allocator: std.mem.Allocator, tool: []const u8) !bool {
