@@ -17,6 +17,8 @@
 #        there to capture baseline JSON, then runs the same suite on the
 #        working-tree HEAD and invokes `zig build bench-compare`.
 #        Cleans up the worktree on exit.
+#        --harness-commit=<HEAD-sha> applies the committed benchmark sources
+#        to the baseline too and records the separate measurement provenance.
 #
 #   2. Manual (two pre-captured JSONs):
 #      scripts/perf-gate.sh --baseline=<path.json> --current=<path.json>
@@ -176,6 +178,7 @@ run_compare() {
 mode_paired_commit() {
     local baseline_ref="$1"
     local suite="$2"
+    local harness_commit="${3:-}"
 
     git rev-parse --verify "$baseline_ref^{commit}" >/dev/null 2>&1 \
         || die_invoke "baseline commit '$baseline_ref' not found."
@@ -194,6 +197,14 @@ mode_paired_commit() {
     baseline_json="$PAIRED_DIR/$short_sha-baseline.json"
     current_json="$PAIRED_DIR/HEAD-current.json"
     mkdir -p "$PAIRED_DIR"
+
+    if [[ -n "$harness_commit" ]]; then
+        log "using committed benchmark harness $harness_commit for both runtimes"
+        python3 scripts/prepare_perf_harness.py \
+            --baseline-worktree "$worktree" \
+            --harness-commit "$harness_commit" \
+            --manifest "$PROJECT_ROOT/$PAIRED_DIR/$short_sha-harness.json"
+    fi
 
     log "capturing baseline ($short_sha) — suite=$suite"
     (cd "$worktree" && "${ZIG_RUNNER[@]}" build bench -- --suite="$suite" --output="$PROJECT_ROOT/$baseline_json")
@@ -314,7 +325,7 @@ mode_phased() {
 usage() {
     cat <<EOF >&2
 Usage:
-  scripts/perf-gate.sh --baseline-commit=<sha> [--suite=<name>]
+  scripts/perf-gate.sh --baseline-commit=<sha> [--harness-commit=<HEAD-sha>] [--suite=<name>]
   scripts/perf-gate.sh --baseline=<path.json> [--current=<path.json>] [--suite=<name>]
   scripts/perf-gate.sh <step-name> <before|after> [--suite=<name>]
 
@@ -330,6 +341,7 @@ if [[ $# -eq 0 ]]; then
 fi
 
 BASELINE_COMMIT=""
+HARNESS_COMMIT=""
 BASELINE_PATH=""
 CURRENT_PATH=""
 SUITE="all"
@@ -338,6 +350,7 @@ POSITIONAL=()
 for arg in "$@"; do
     case "$arg" in
         --baseline-commit=*) BASELINE_COMMIT="${arg#*=}" ;;
+        --harness-commit=*) HARNESS_COMMIT="${arg#*=}" ;;
         --baseline=*)        BASELINE_PATH="${arg#*=}" ;;
         --current=*)         CURRENT_PATH="${arg#*=}" ;;
         --suite=*)           SUITE="${arg#*=}" ;;
@@ -352,9 +365,11 @@ resolve_zig
 if [[ -n "$BASELINE_COMMIT" ]]; then
     [[ ${#POSITIONAL[@]} -eq 0 ]] || die_invoke "positional args not allowed with --baseline-commit"
     [[ -z "$BASELINE_PATH" && -z "$CURRENT_PATH" ]] || die_invoke "--baseline/--current not allowed with --baseline-commit"
-    mode_paired_commit "$BASELINE_COMMIT" "$SUITE"
+    mode_paired_commit "$BASELINE_COMMIT" "$SUITE" "$HARNESS_COMMIT"
     exit $?
 fi
+
+[[ -z "$HARNESS_COMMIT" ]] || die_invoke "--harness-commit requires --baseline-commit"
 
 if [[ -n "$BASELINE_PATH" ]]; then
     [[ ${#POSITIONAL[@]} -eq 0 ]] || die_invoke "positional args not allowed with --baseline"

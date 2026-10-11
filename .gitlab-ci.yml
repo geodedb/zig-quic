@@ -646,6 +646,7 @@ quality-zig-gates:
     - apt-get install -y --no-install-recommends jq
     # Micro remains the CI scope; integration/all retain their dedicated jobs.
     - python3 scripts/test_ci_perf_gate.py
+    - python3 scripts/test_perf_harness.py
     - bash scripts/ci-perf-gate.sh
     - scripts/cross_platform_udp_batch_smoke.sh
   artifacts:

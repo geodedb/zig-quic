@@ -42,6 +42,9 @@ test-clients/legacy-clients/rust/target/release/
 zig-out/
 zig-pkg/
 
+# Paired benchmark captures and provenance are CI artifacts.
+benchmarks/results/paired/
+
 # Local git worktrees (per-feature isolated checkouts)
 .worktrees/
 
