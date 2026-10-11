@@ -91,10 +91,13 @@ test "time_threshold_loss_and_loss_time_scheduling" {
     try r.onPacketSent(space, 1, 1200, true, 0);
     try r.onPacketSent(space, 2, 1200, true, ms(10));
 
-    // No ACKs, advance time beyond time-threshold to trigger loss
+    // A later packet ACK establishes eligibility for time-threshold loss.
+    const acknowledged = r.onAckReceived(space, &.{2}, 0, ms(50));
+    try std.testing.expectEqual(@as(usize, 1200), acknowledged.bytes_acked);
+    try std.testing.expectEqual(@as(usize, 0), acknowledged.bytes_lost);
     const thr = rec.LossDetector.timeThresholdNs(r.rtt.smoothed_rtt_ns, r.rtt.latest_rtt_ns);
     const lost = r.onLossTimeExpired(thr + 1);
-    try std.testing.expect(lost >= 1200);
+    try std.testing.expectEqual(@as(usize, 1200), lost);
     try std.testing.expect(r.cc.cwnd <= 12000 and r.cc.cwnd >= 2400);
 }
 
@@ -131,7 +134,7 @@ test "per-space PTO is not armed without ack-eliciting packet in flight" {
     try std.testing.expect(r.computeSpacePtoTimeNs(.Application, 1000) != null);
 }
 
-test "persistent_congestion_reduces_cwnd_to_min" {
+test "unacknowledged packet age alone cannot establish persistent congestion" {
     var r = rec.Recovery.init(std.testing.allocator);
     defer r.deinit();
 
@@ -149,14 +152,14 @@ test "persistent_congestion_reduces_cwnd_to_min" {
     try r.onPacketSent(space, 1, 1200, true, t0);
     try r.onPacketSent(space, 2, 1200, true, t1);
 
-    // Advance time past time-threshold for both, to declare them lost
+    // Even a long silent period cannot establish time loss or persistent
+    // congestion without a later ACK. PTO probes solicit that evidence.
     const thr = rec.LossDetector.timeThresholdNs(r.rtt.smoothed_rtt_ns, r.rtt.latest_rtt_ns);
     const now = t1 + thr + 1;
     const lost = r.onLossTimeExpired(now);
-    try std.testing.expect(lost >= 2400);
-
-    // Upon persistent congestion, cwnd collapses to 2 * max_datagram_size (assume 1200)
-    try std.testing.expectEqual(@as(usize, 2400), r.cc.cwnd);
+    try std.testing.expectEqual(@as(usize, 0), lost);
+    try std.testing.expectEqual(@as(usize, 2400), r.cc.bytes_in_flight);
+    try std.testing.expectEqual(@as(usize, 12000), r.cc.cwnd);
 }
 
 test "ack_driven_persistent_congestion_packet_threshold" {

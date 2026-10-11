@@ -2,6 +2,87 @@ const std = @import("std");
 const conn_mod = @import("quic_conn");
 const recovery = @import("quic_recovery");
 
+test "SONNY-4807 time loss cannot retire packets newer than the largest acknowledged packet" {
+    var rec = recovery.Recovery.init(std.testing.allocator);
+    defer rec.deinit();
+    try rec.onPacketSent(.Application, 1, 1200, true, 0);
+    _ = rec.onAckReceived(.Application, &.{1}, 0, std.time.ns_per_ms);
+    try rec.onPacketSent(.Application, 2, 1200, true, 2 * std.time.ns_per_ms);
+    const result = rec.onAckReceived(.Application, &.{1}, 0, 20 * std.time.ns_per_ms);
+    try std.testing.expectEqual(@as(usize, 0), result.bytes_lost);
+    try std.testing.expectEqual(@as(usize, 1200), rec.getBytesInFlight());
+    try std.testing.expectEqual(recovery.Recovery.PacketDeliveryState.in_flight, rec.getPacketDeliveryState(.Application, 2));
+}
+
+test "SONNY-4807 PTO deadline cannot become time loss without a later packet ACK" {
+    var rec = recovery.Recovery.init(std.testing.allocator);
+    defer rec.deinit();
+    rec.rtt.onAck(std.time.ns_per_ms, 0);
+    try rec.onPacketSent(.Application, 0, 1200, true, 0);
+    const pto = rec.computeSpacePtoTimeNs(.Application, 0).?;
+    try std.testing.expectEqual(@as(usize, 0), rec.onLossTimeExpired(pto + 1));
+    try std.testing.expectEqual(@as(usize, 1200), rec.getBytesInFlight());
+    try std.testing.expect(rec.computeSpacePtoTimeNs(.Application, pto + 1) != null);
+}
+
+test "SONNY-4807 time loss waits for the configured timer granularity after submillisecond RTT" {
+    var rec = recovery.Recovery.init(std.testing.allocator);
+    defer rec.deinit();
+    rec.timer_granularity_ns = 2 * std.time.ns_per_ms;
+    rec.rtt.onAck(10_000, 0);
+    try rec.onPacketSent(.Application, 1, 1200, true, 0);
+    try rec.onPacketSent(.Application, 2, 1200, true, 10_000);
+    const result = rec.onAckReceived(.Application, &.{2}, 0, 100_000);
+    try std.testing.expectEqual(@as(usize, 1200), result.bytes_acked);
+    try std.testing.expectEqual(@as(usize, 0), result.bytes_lost);
+    try std.testing.expectEqual(@as(usize, 0), rec.onLossTimeExpired(rec.timer_granularity_ns - 1));
+    try std.testing.expectEqual(@as(usize, 1200), rec.onLossTimeExpired(rec.timer_granularity_ns));
+    try std.testing.expectEqual(@as(usize, 0), rec.getBytesInFlight());
+}
+
+test "SONNY-4807 time loss timer retires only earlier packets in the acknowledged space" {
+    var rec = recovery.Recovery.init(std.testing.allocator);
+    defer rec.deinit();
+    rec.rtt.onAck(100 * std.time.ns_per_ms, 0);
+    try rec.onPacketSent(.Application, 1, 1200, true, 0);
+    try rec.onPacketSent(.Application, 2, 1200, true, std.time.ns_per_ms);
+    try rec.onPacketSent(.Application, 3, 1200, true, 2 * std.time.ns_per_ms);
+    try rec.onPacketSent(.Handshake, 0, 1200, true, 0);
+    const result = rec.onAckReceived(.Application, &.{2}, 0, 100 * std.time.ns_per_ms);
+    try std.testing.expectEqual(@as(usize, 0), result.bytes_lost);
+    try std.testing.expectEqual(@as(usize, 1200), rec.onLossTimeExpired(200 * std.time.ns_per_ms));
+    try std.testing.expectEqual(recovery.Recovery.PacketDeliveryState.in_flight, rec.getPacketDeliveryState(.Application, 3));
+    try std.testing.expectEqual(recovery.Recovery.PacketDeliveryState.in_flight, rec.getPacketDeliveryState(.Handshake, 0));
+    try std.testing.expectEqual(@as(usize, 2400), rec.getBytesInFlight());
+}
+
+test "SONNY-4807 packet zero ACK initializes RTT and protects newer packets" {
+    var rec = recovery.Recovery.init(std.testing.allocator);
+    defer rec.deinit();
+    try rec.onPacketSent(.Application, 0, 1200, true, 0);
+    try rec.onPacketSent(.Application, 1, 1200, true, 100_000);
+    const result = rec.onAckReceived(.Application, &.{0}, 0, std.time.ns_per_ms);
+    try std.testing.expectEqual(@as(usize, 1200), result.bytes_acked);
+    try std.testing.expect(rec.rtt.have_sample);
+    try std.testing.expectEqual(@as(u64, std.time.ns_per_ms), rec.rtt.latest_rtt_ns);
+    try std.testing.expectEqual(@as(?u64, 0), rec.spaces[@intFromEnum(recovery.PacketNumberSpace.Application)].largest_acked);
+    try std.testing.expectEqual(@as(usize, 0), rec.onLossTimeExpired(100 * std.time.ns_per_ms));
+    try std.testing.expectEqual(@as(usize, 1200), rec.getBytesInFlight());
+}
+
+test "SONNY-4807 parallel loss scan cannot schedule loss for newer packets" {
+    var rec = recovery.Recovery.init(std.testing.allocator);
+    defer rec.deinit();
+    try rec.onPacketSent(.Application, 1, 1200, true, 0);
+    _ = rec.onAckReceived(.Application, &.{1}, 0, std.time.ns_per_ms);
+    for (2..1030) |pn| try rec.onPacketSent(.Application, pn, 1200, true, 2 * std.time.ns_per_ms);
+    const result = rec.onAckReceived(.Application, &.{1}, 0, 2 * std.time.ns_per_ms);
+    try std.testing.expectEqual(@as(usize, 0), result.bytes_lost);
+    try std.testing.expectEqual(@as(?u64, null), rec.spaces[@intFromEnum(recovery.PacketNumberSpace.Application)].loss_time_ns);
+    try std.testing.expectEqual(@as(usize, 0), rec.onLossTimeExpired(20 * std.time.ns_per_ms));
+    try std.testing.expectEqual(@as(usize, 1028 * 1200), rec.getBytesInFlight());
+}
+
 test "RFC 9002 section 6.2.4 PTO expiry sends application probe packet" {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();

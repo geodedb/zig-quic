@@ -486,6 +486,10 @@ test "onLossTimeExpired detects time threshold losses" {
 
     // Send packet at time 1000
     try rec.onPacketSent(.Initial, 1, 1200, true, 1000);
+    // A later ACK establishes loss eligibility without yet crossing the delay.
+    try rec.onPacketSent(.Initial, 2, 1200, true, 2000);
+    const acknowledged = rec.onAckReceived(.Initial, &.{2}, 0, 50_002_000);
+    try testing.expectEqual(@as(usize, 0), acknowledged.bytes_lost);
 
     // Time threshold is 1.125 * 50ms = 56.25ms
     // Expire after threshold
@@ -503,6 +507,10 @@ test "onLossTimeExpired marks packets as declared_lost" {
     rec.rtt.latest_rtt_ns = 50_000_000;
 
     try rec.onPacketSent(.Initial, 1, 1200, true, 1000);
+    // A later ACK establishes loss eligibility without yet crossing the delay.
+    try rec.onPacketSent(.Initial, 2, 1200, true, 2000);
+    const acknowledged = rec.onAckReceived(.Initial, &.{2}, 0, 50_002_000);
+    try testing.expectEqual(@as(usize, 0), acknowledged.bytes_lost);
 
     const bytes_lost = rec.onLossTimeExpired(60_000_000);
 
@@ -520,6 +528,10 @@ test "onLossTimeExpired reduces cwnd on loss" {
     rec.cc.cwnd = 50000;
 
     try rec.onPacketSent(.Initial, 1, 1200, true, 1000);
+    // A later ACK establishes loss eligibility without yet crossing the delay.
+    try rec.onPacketSent(.Initial, 2, 1200, true, 2000);
+    const acknowledged = rec.onAckReceived(.Initial, &.{2}, 0, 50_002_000);
+    try testing.expectEqual(@as(usize, 0), acknowledged.bytes_lost);
 
     _ = rec.onLossTimeExpired(60_000_000);
 

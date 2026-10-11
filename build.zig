@@ -891,6 +891,22 @@ pub fn build(b: *std.Build) void {
     b.step("test-pto-backoff", "Verify actual PTO timer deadlines preserve recovery backoff").dependOn(&run_pto_backoff.step);
     if (filter == null) test_step.dependOn(&run_pto_backoff.step);
 
+    const recovery_protocol_tests = addTst(b, testlog_mod, compat_mod, "tests/test_recovery_protocol_gaps.zig", target, optimize);
+    recovery_protocol_tests.root_module.addImport("quic_conn", quic_conn_mod);
+    recovery_protocol_tests.root_module.addImport("quic_recovery", quic_recovery_mod);
+    const run_recovery_protocol = b.addRunArtifact(recovery_protocol_tests);
+    const recovery_loss_step = b.step("test-recovery-loss", "Verify ACK-qualified loss detection and recovery accounting");
+    recovery_loss_step.dependOn(&run_recovery_protocol.step);
+    if (filter == null) test_step.dependOn(&run_recovery_protocol.step);
+    const recovery_accounting_tests = addTst(b, testlog_mod, compat_mod, "tests/test_recovery.zig", target, optimize);
+    recovery_accounting_tests.root_module.addImport("quic_recovery", quic_recovery_mod);
+    recovery_accounting_tests.root_module.addImport("quic_frame", quic_frame_mod);
+    recovery_loss_step.dependOn(&b.addRunArtifact(recovery_accounting_tests).step);
+    const recovery_unit_tests = addTst(b, testlog_mod, compat_mod, "tests/unit/recovery/test_recovery.zig", target, optimize);
+    recovery_unit_tests.root_module.addImport("recovery", quic_recovery_mod);
+    recovery_unit_tests.root_module.addImport("frame", quic_frame_mod);
+    recovery_loss_step.dependOn(&b.addRunArtifact(recovery_unit_tests).step);
+
     const optional_reset_tests = addTst(b, testlog_mod, compat_mod, "tests/test_optional_reset_token.zig", target, optimize);
     optional_reset_tests.root_module.addImport("quic_conn", quic_conn_mod);
     optional_reset_tests.root_module.addImport("quic_transport_params", quic_transport_params_mod);
@@ -1359,11 +1375,7 @@ pub fn build(b: *std.Build) void {
             test_step.dependOn(&run_test_path_validation.step);
             return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "loss_edge") or std.mem.containsAtLeast(u8, f, 1, "recovery_protocol")) {
-            const test_recovery_protocol_gaps = addTst(b, testlog_mod, compat_mod, "tests/test_recovery_protocol_gaps.zig", target, optimize);
-            test_recovery_protocol_gaps.root_module.addImport("quic_conn", quic_conn_mod);
-            test_recovery_protocol_gaps.root_module.addImport("quic_recovery", quic_recovery_mod);
-            const run_test_recovery_protocol_gaps = b.addRunArtifact(test_recovery_protocol_gaps);
-            test_step.dependOn(&run_test_recovery_protocol_gaps.step);
+            test_step.dependOn(&run_recovery_protocol.step);
             return;
         } else if (std.mem.containsAtLeast(u8, f, 1, "rfc9002_recovery")) {
             const test_rfc9002_recovery = addTst(b, testlog_mod, compat_mod, "tests/integration/rfc9002_recovery.zig", target, optimize);

@@ -303,13 +303,9 @@ pub const Recovery = struct {
             self.cc.cwnd,
         });
 
-        // Schedule time-threshold loss if we have an RTT sample; do not promote here.
-        if (ack_eliciting and self.rtt.have_sample) {
-            const tt_base = LossDetector.timeThresholdNs(self.rtt.smoothed_rtt_ns, self.rtt.latest_rtt_ns);
-            const deadline = deadlineAfter(now_ns, tt_base);
-            const cur = self.spaces[idx].loss_time_ns;
-            if (cur == null or deadline < cur.?) self.spaces[idx].loss_time_ns = deadline;
-        }
+        // Sending alone cannot establish loss. RFC 9002 section 6.1.2
+        // requires a later packet ACK in this space; processAck sets the
+        // time-loss deadline only for packets satisfying that condition.
     }
 
     /// Result of ACK/loss processing with aggregate counters.
@@ -342,7 +338,7 @@ pub const Recovery = struct {
         var sstate = &self.spaces[idx];
         var bytes_acked: usize = 0;
         var ack_eliciting_acked = false;
-        var largest_pn: u64 = sstate.largest_acked orelse 0;
+        var largest_pn = sstate.largest_acked;
         var largest_acked_pkt_time: ?u64 = null;
 
         // PHASE 42 PART 22: Log ACK reception
@@ -370,7 +366,7 @@ pub const Recovery = struct {
                     sp.acked = true;
                     bytes_acked = addSaturatingUsize(bytes_acked, sp.size);
                     if (sp.ack_eliciting) ack_eliciting_acked = true;
-                    if (pn > largest_pn) {
+                    if (largest_pn == null or pn > largest_pn.?) {
                         largest_pn = pn;
                         largest_acked_pkt_time = sp.time_ns;
                     }
@@ -393,7 +389,7 @@ pub const Recovery = struct {
                 self.rtt.rttvar_ns / 1000,
             });
         }
-        if (largest_pn != (sstate.largest_acked orelse 0)) sstate.largest_acked = largest_pn;
+        sstate.largest_acked = largest_pn;
 
         // Loss detection: parallel scan for large windows (PAR-005), sequential for small.
         //
@@ -408,7 +404,7 @@ pub const Recovery = struct {
         var earliest_loss_time: ?u64 = null;
         var time_threshold_lost_count: usize = 0;
         const have_rtt = self.rtt.have_sample;
-        const tt_base: u64 = if (have_rtt) LossDetector.timeThresholdNs(self.rtt.smoothed_rtt_ns, self.rtt.latest_rtt_ns) else 0;
+        const tt_base: u64 = if (have_rtt) @max(self.timer_granularity_ns, LossDetector.timeThresholdNs(self.rtt.smoothed_rtt_ns, self.rtt.latest_rtt_ns)) else 0;
 
         // Count unprocessed packets to decide parallel vs sequential
         var unprocessed_count: usize = 0;
@@ -445,7 +441,7 @@ pub const Recovery = struct {
                 if (sp.acked or sp.declared_lost) continue;
                 if (!par_infos[i].declared_lost) {
                     // Not marked lost by parallel scan — check earliest_loss_time for timer
-                    if (have_rtt and sp.ack_eliciting) {
+                    if (have_rtt and sp.ack_eliciting and sp.pn < sstate.largest_acked.?) {
                         const deadline = deadlineAfter(sp.time_ns, tt_base);
                         if (now_ns < deadline) {
                             if (earliest_loss_time == null or deadline < earliest_loss_time.?) {
@@ -485,6 +481,9 @@ pub const Recovery = struct {
             // Sequential path: original merged single-pass for small windows
             for (sstate.sent.items) |*sp| {
                 if (sp.acked or sp.declared_lost) continue;
+                // Age is not evidence of loss until a later packet in this
+                // same number space has been acknowledged (RFC 9002 A.10).
+                if (sstate.largest_acked == null or sp.pn > sstate.largest_acked.?) continue;
 
                 const pkt_lost = if (sstate.largest_acked) |la| self.loss.isPacketThresholdLost(la, sp.pn) else false;
 
@@ -723,10 +722,12 @@ pub const Recovery = struct {
             if (sstate.loss_time_ns) |lt| {
                 if (now_ns >= lt) {
                     // Re-run time-threshold pass for this space
-                    const tt_base = LossDetector.timeThresholdNs(self.rtt.smoothed_rtt_ns, self.rtt.latest_rtt_ns);
+                    const tt_base = @max(self.timer_granularity_ns, LossDetector.timeThresholdNs(self.rtt.smoothed_rtt_ns, self.rtt.latest_rtt_ns));
                     var next_loss: ?u64 = null;
                     for (sstate.sent.items) |*sp| {
-                        if (!sp.acked and !sp.declared_lost and sp.ack_eliciting) {
+                        if (!sp.acked and !sp.declared_lost and sp.ack_eliciting and
+                            sstate.largest_acked != null and sp.pn < sstate.largest_acked.?)
+                        {
                             const deadline = deadlineAfter(sp.time_ns, tt_base);
                             if (now_ns >= deadline) {
                                 sp.declared_lost = true;
@@ -801,13 +802,12 @@ pub const Recovery = struct {
             }
         }
         if (!any_in_flight) {
-            self.spaces[idx].loss_time_ns = null;
             return null;
         }
         const pto = self.rtt.computePtoNsWithBackoff(self.pto_count, self.timer_granularity_ns);
         const deadline = deadlineAfter(now_ns, pto);
-        const cur = self.spaces[idx].loss_time_ns;
-        if (cur == null or deadline < cur.?) self.spaces[idx].loss_time_ns = deadline;
+        // A PTO is a probe deadline, never evidence that an unacknowledged
+        // packet is lost. Keep it separate from the ACK-driven loss timer.
         return deadline;
     }
 
