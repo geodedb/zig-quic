@@ -78,8 +78,11 @@ pub fn connect(ep: *QuicEndpoint, server_addr: []const u8, server_name: []const 
             observability.endConnectionSpan(conn.obs_span, false, "connect failed");
             conn.obs_span_active = false;
         }
-        conn.deinit();
-        ep.allocator.destroy(conn);
+        // connectClient has registered both CIDs. Remove every endpoint-owned
+        // reference under its mutex before freeing the failed connection.
+        ep.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer ep.mu.unlock(std.Io.Threaded.global_single_threaded.io());
+        ep.destroyConnections(&.{conn});
     }
     // Observability: open one span per client connection. The seam's
     // `enabled = false` path is a comptime no-op; the call below

@@ -371,3 +371,25 @@ parent/candidate external hashes
 `68f475cc0d048f6f901ef7a4a4d621e6fcc99b88030f333b58f544f6d41ee604`.
 
 </content>
+
+### 2026-10-11 — SONNY-4796 client startup and connection teardown
+
+Propagate TLS startup and Initial CRYPTO construction errors, unwind failed
+client registrations, and remove pending endpoint work before freeing a
+connection. Poll snapshots retain connection ownership through processing.
+The FIPS consumer now pins the provider-backed hybrid TLS implementation.
+
+Same-session paired `integration/handshake_e2e` capture against parent
+`4bb4eb89ca016d48323683af4b272ca7ddec73fc`, using Zig 0.16.0 on the same Linux
+host. The unchanged `scripts/perf-gate.sh` returned **0 FAIL, 0 WARN**.
+These rows measure completed handshakes; the existing 10K scenario completed
+2,951 baseline and 2,955 candidate handshakes within its deadline. This does
+not claim complete 10K admission or qualify unrelated throughput scenarios.
+
+| scenario | variant | tier | ops/s base | ops/s cur | delta% | p95 base | p95 cur | delta% | status |
+|---|---|---|---:|---:|---:|---:|---:|---:|---|
+| integration/handshake_e2e | serial | integration | 567.4 | 567.2 | -0.02% | 1756951 | 1768516 | +0.66% | PASS |
+| integration/handshake_e2e | 10p | integration | 741.9 | 729.7 | -1.65% | 13667917 | 13708598 | +0.30% | PASS |
+| integration/handshake_e2e | 100p | integration | 394.7 | 384.2 | -2.64% | 215113817 | 216015940 | +0.42% | PASS |
+| integration/handshake_e2e | 1Kp | integration | 548.0 | 552.4 | +0.81% | 1441520262 | 1413167823 | -1.97% | PASS |
+| integration/handshake_e2e | 10Kp | integration | 245.3 | 243.5 | -0.72% | 1920832153 | 1920705225 | -0.01% | PASS |

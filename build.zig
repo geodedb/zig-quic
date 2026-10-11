@@ -855,6 +855,16 @@ pub fn build(b: *std.Build) void {
     loopback_mod.addImport("compat", compat_mod);
     const testlog_mod = mkModule(b, "tests/helpers/testlog.zig");
 
+    const client_start_tests = addTst(b, testlog_mod, compat_mod, "tests/test_tls_client_start.zig", target, optimize);
+    client_start_tests.root_module.addImport("quic_api", quic_api_mod);
+    client_start_tests.root_module.addImport("quic_config", quic_config_mod);
+    client_start_tests.root_module.addImport("quic_endpoint", quic_endpoint_mod);
+    client_start_tests.root_module.addImport("client", endpoint_client_mod);
+    client_start_tests.root_module.addImport("endpoint_utils", endpoint_utils_mod);
+    const run_client_start = b.addRunArtifact(client_start_tests);
+    b.step("test-client-start", "Verify real TLS startup in the selected crypto mode").dependOn(&run_client_start.step);
+    test_step.dependOn(&run_client_start.step);
+
     const handshake_retention_tests = addTst(b, testlog_mod, compat_mod, "tests/test_handshake_key_retention.zig", target, optimize);
     handshake_retention_tests.root_module.addImport("quic_conn", quic_conn_mod);
     handshake_retention_tests.root_module.addImport("handshake_integration", endpoint_handshake_integration_mod);

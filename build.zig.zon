@@ -16,8 +16,8 @@
         // TLS 1.3 crypto seam; flags are propagated by build.zig.
         // Keep its FIPS and thread-pool pins identical to the direct pins below.
         .tls = .{
-            .url = "git+https://gitlab.com/devnw/zig/tls.git#b74424e2a66fa8ce5a5825a6dc9e41e2d1270c8d",
-            .hash = "tls-0.1.21-mtEaLKd2FgB2Es85SvqqtmphvfCGUlgR1V21VaLVcnfd",
+            .url = "git+https://gitlab.com/devnw/zig/tls.git#9f5b6d2ab4b374417105853ee58703dc49e41055",
+            .hash = "tls-0.1.21-mtEaLEluFgDpJMyPJ16Fyhuf6orBXjVfe1xWw-_0xeYy",
         },
         // Thread pool for parallel operations
         .thread_pool = .{
@@ -34,8 +34,8 @@
         // Published hash-pinned FIPS backend, resolved only under -Dfips=true.
         // The disabled backend uses the local canonical policy/stdlib shim.
         .fips = .{
-            .url = "git+https://gitlab.com/devnw/zig/fips.git#571f09ca5277dbdfab0d103450eb1b0353e0c810",
-            .hash = "fips-0.1.2-1wf3naAACABLDDJ-ZoCElXmeDwwT-TU6zlj68xSWQ6Qi",
+            .url = "git+https://gitlab.com/devnw/zig/fips.git#5cbc2113eb4143eaf8deb2c9b4fa7210a51e8558",
+            .hash = "fips-0.1.2-1wf3nUNuCAA6sYRjNCvUfOUJJe-MNRaGDZHODfYpoX1S",
             .lazy = true,
         },
     },

@@ -1498,14 +1498,35 @@ pub const Endpoint = struct {
         dropDestroyingFromConnList(&self.accepted);
         dropDestroyingFromConnList(&self.retired);
 
-        // Phase 4: per-member finalize — timers, then free. Order preserved from
-        // the per-conn destroy tail: all map/list removal happens before any
+        // Phase 4: per-member finalize — pending work and timers, then free.
+        // All map/list removal happens before any
         // deinit, so no freed pointer is ever reachable from the endpoint.
         for (batch) |conn| {
+            self.removePendingWorkForConnection(conn);
             self.removeTimersForConnection(conn);
             conn.deinit();
             self.allocator.destroy(conn);
         }
+    }
+
+    /// Caller has marked the connection destroying and drained its RX/work refs.
+    /// Remove pending pointers under the same leaf locks used by poll snapshots.
+    fn removePendingWorkForConnection(self: *Endpoint, conn: *conn_mod.Connection) void {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        self.pto_dirty_mu.lockUncancelable(io);
+        _ = self.pto_dirty_set.remove(conn);
+        self.pto_dirty_count.store(self.pto_dirty_set.count(), .release);
+        self.pto_dirty_mu.unlock(io);
+
+        self.pending_hs_send_mu.lockUncancelable(io);
+        _ = self.pending_hs_send_set.remove(conn);
+        self.pending_hs_send_count.store(self.pending_hs_send_set.count(), .release);
+        self.pending_hs_send_mu.unlock(io);
+
+        self.closed_conn_mu.lockUncancelable(io);
+        _ = self.closed_conn_set.remove(conn);
+        self.closed_conn_count.store(self.closed_conn_set.count(), .release);
+        self.closed_conn_mu.unlock(io);
     }
 
     /// Remove every `conns` entry whose owner is currently `endpoint_destroying`
@@ -1743,8 +1764,8 @@ pub const Endpoint = struct {
             logger.debugPrint("[ENDPOINT] pending_hs_send_set.put failed: {s}\n", .{@errorName(err)});
             return;
         };
-        self.pending_hs_send_mu.unlock(std.Io.Threaded.global_single_threaded.io());
         if (!already_pending) _ = self.pending_hs_send_count.fetchAdd(1, .release);
+        self.pending_hs_send_mu.unlock(std.Io.Threaded.global_single_threaded.io());
     }
 
     /// Look up a connection by peer address + short-header packet bytes.
@@ -2133,7 +2154,13 @@ pub const Endpoint = struct {
                     const c = entry.key_ptr.*;
                     if (!c.closed and c.pending_hs_send) {
                         if (pending_hs_send_snapshot.items.len >= max_pending_hs_send_retries_per_poll_cycle) break;
-                        pending_hs_send_snapshot.appendAssumeCapacity(c);
+                        // Retain while still under the set lock: teardown removes
+                        // the entry under this lock and waits for retained work.
+                        if (c.acquireEndpointRxRef()) {
+                            pending_hs_send_snapshot.appendAssumeCapacity(c);
+                        } else if (stale_hs_send_snapshot.items.len < pending_budget) {
+                            stale_hs_send_snapshot.appendAssumeCapacity(c);
+                        }
                     } else if (stale_hs_send_snapshot.items.len < pending_budget) {
                         stale_hs_send_snapshot.appendAssumeCapacity(c);
                     }
@@ -2160,6 +2187,7 @@ pub const Endpoint = struct {
                 };
 
                 for (pending_hs_send_snapshot.items) |c| {
+                    defer c.releaseEndpointRxRef();
                     // CANARY: REQ=REQ-QUIC-HC-137; FEATURE="High-Concurrency Handshake"; ASPECT=PendingHandshakeSendSerialization; STATUS=TESTED; TEST=pending_hs_send_retry_waits_for_rx_serial_mutex; OWNER=transport; UPDATED=2026-05-28
                     //
                     // The normal Initial/Handshake receive paths hold this
@@ -2284,7 +2312,7 @@ pub const Endpoint = struct {
                 while (dit.next()) |entry| {
                     const c = entry.key_ptr.*;
                     if (pto_dirty_snapshot.items.len + stale_pto_dirty_snapshot.items.len >= pto_dirty_budget) break;
-                    if (!c.closed) {
+                    if (!c.closed and c.acquireEndpointRxRef()) {
                         c.pto_dirty.store(false, .release);
                         pto_dirty_snapshot.appendAssumeCapacity(c);
                     } else {
@@ -2304,6 +2332,7 @@ pub const Endpoint = struct {
                 self.pto_dirty_mu.unlock(std.Io.Threaded.global_single_threaded.io());
 
                 for (pto_dirty_snapshot.items) |c| {
+                    defer c.releaseEndpointRxRef();
                     // CANARY: REQ=REQ-QUIC-HC-136; FEATURE="QUIC High-Concurrency Requests"; ASPECT=PtoRecomputeConnectionMutex; STATUS=TESTED; TEST=pto_dirty_recompute_waits_for_connection_mutex; OWNER=transport; UPDATED=2026-05-28
                     //
                     // PTO recompute mutates per-connection active/id fields and
@@ -3350,8 +3379,8 @@ fn notifyPtoDirty(ctx: *anyopaque, conn: *conn_mod.Connection) void {
         logger.debugPrint("[ENDPOINT] pto_dirty_set.put failed: {s}\n", .{@errorName(err)});
         return;
     };
-    self.pto_dirty_mu.unlock(std.Io.Threaded.global_single_threaded.io());
     if (!already_dirty) _ = self.pto_dirty_count.fetchAdd(1, .release);
+    self.pto_dirty_mu.unlock(std.Io.Threaded.global_single_threaded.io());
 }
 
 fn notifyConnectionClosed(ctx: *anyopaque, conn: *conn_mod.Connection) void {
@@ -3363,8 +3392,8 @@ fn notifyConnectionClosed(ctx: *anyopaque, conn: *conn_mod.Connection) void {
         logger.debugPrint("[ENDPOINT] closed_conn_set.put failed: {s}\n", .{@errorName(err)});
         return;
     };
-    self.closed_conn_mu.unlock(std.Io.Threaded.global_single_threaded.io());
     if (!already_closed) _ = self.closed_conn_count.fetchAdd(1, .release);
+    self.closed_conn_mu.unlock(std.Io.Threaded.global_single_threaded.io());
 }
 
 // Sender callback used by Connection for timer-driven pacing

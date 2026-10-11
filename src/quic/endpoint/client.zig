@@ -105,7 +105,9 @@ pub fn createClientConnection(
     peer_hash: u64,
 ) !*conn_mod.Connection {
     const c = try allocator.*.create(conn_mod.Connection);
+    errdefer allocator.*.destroy(c);
     c.init(allocator, .Client, sockToIsize(sock_fd), peer);
+    errdefer c.deinit();
 
     // Apply config flags
     c.setUseCubic(cfg.cc == .cubic);
@@ -158,17 +160,10 @@ pub fn createClientConnection(
         .peer_hash = peer_hash,
         .dcid_hash = hashBytes(c.our_scid.bytes[0..c.our_scid.len]),
     };
-    conns_map.put(key_d, c) catch {
-        c.deinit();
-        allocator.*.destroy(c);
-        return error.OutOfMemory;
-    };
-    conns_map.put(key_s, c) catch {
-        _ = conns_map.remove(key_d);
-        c.deinit();
-        allocator.*.destroy(c);
-        return error.OutOfMemory;
-    };
+    try conns_map.put(key_d, c);
+    errdefer _ = conns_map.remove(key_d);
+    try conns_map.put(key_s, c);
+    errdefer _ = conns_map.remove(key_s);
 
     logger.debugPrint("Client connection registered:\n", .{});
     logger.debugPrint("  peer_hash={X:0>16}\n", .{peer_hash});
@@ -178,7 +173,7 @@ pub fn createClientConnection(
     // Initialize TLS Context for modular TLS 1.3 (Phase 21.2)
     // Client doesn't need certificates (server auth only)
     const tls13 = @import("quic_tls13");
-    var ctx_value: ?tls13.Context = handshake_integration.createTlsContext(
+    var ctx_value = try handshake_integration.createTlsContext(
         allocator.*,
         .Client,
         cfg.alpn,
@@ -190,22 +185,11 @@ pub fn createClientConnection(
         cfg.inline_client_cert_der,
         cfg.inline_client_priv_key,
         cfg.inline_ca_chain_der, // GAP-0838: CA trust anchors for server-cert validation
-    ) catch |err| blk: {
-        logger.debugPrint("createClientConnection: Failed to create TLS Context: {}\n", .{err});
-        break :blk null;
-    };
-
-    if (ctx_value) |*ctx_val| {
-        const tls_ctx = allocator.create(@TypeOf(ctx_val.*)) catch {
-            // QUAL-04: don't drop ctx_val on OOM — deinit it so its cert/ALPN/
-            // transport-param buffers aren't leaked. The connection proceeds
-            // without a TLS context and fails cleanly later with NoTlsContext.
-            ctx_val.deinit();
-            return c;
-        };
-        tls_ctx.* = ctx_val.*;
-        c.tls_context = tls_ctx;
-    }
+    );
+    errdefer ctx_value.deinit();
+    const tls_ctx = try allocator.create(tls13.Context);
+    tls_ctx.* = ctx_value;
+    c.tls_context = tls_ctx;
 
     return c;
 }
@@ -294,32 +278,23 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
         }
 
         // Start client handshake (generates ClientHello).
-        tls_ctx.startClientHandshake() catch |err| {
-            logger.debugPrint("sendInitialProbe: Context startClientHandshake error: {}\n", .{err});
-        };
+        try tls_ctx.startClientHandshake();
 
         // Poll for the generated ClientHello.
-        break :blk tls_ctx.pollCrypto(ctx.allocator.*, .Initial) catch |err| err_blk: {
-            logger.debugPrint("sendInitialProbe: Context pollCrypto error: {}\n", .{err});
-            break :err_blk null;
-        };
+        break :blk try tls_ctx.pollCrypto(ctx.allocator.*, .Initial);
     };
 
-    if (crypto_data) |data| {
-        defer ctx.allocator.free(data);
+    {
+        defer ctx.allocator.free(crypto_data);
         const base_off = c.crypto_tx_off_initial;
-        _ = (frame.Frame{ .crypto = .{ .offset = base_off, .data = data } }).write(fw) catch 0;
+        _ = try (frame.Frame{ .crypto = .{ .offset = base_off, .data = crypto_data } }).write(fw);
         if (c.crypto_retx_initial) |prev| {
             ctx.allocator.free(prev);
             c.crypto_retx_initial = null;
         }
-        c.crypto_retx_initial = ctx.allocator.dupe(u8, data) catch null;
+        c.crypto_retx_initial = try ctx.allocator.dupe(u8, crypto_data);
         c.crypto_retx_initial_off = base_off;
-        c.crypto_tx_off_initial += @intCast(data.len);
-    } else {
-        fw.writeByte(@intFromEnum(frame.FrameType.PING)) catch |err| {
-            logger.err("Initial PING frame append failed: {s}", .{@errorName(err)});
-        };
+        c.crypto_tx_off_initial += @intCast(crypto_data.len);
     }
 
     // Use any stored Retry token if present
@@ -357,9 +332,7 @@ pub fn sendInitialProbe(ctx: *ClientContext) !void {
     // Add PADDING frames to reach minimum size. RFC 9000 §14.1 requires
     // client Initial datagrams to be >= 1200 bytes.
     if (fbs.pos < min_plaintext_size) {
-        fw.writeByteNTimes(@intFromEnum(frame.FrameType.PADDING), min_plaintext_size - fbs.pos) catch |err| {
-            logger.err("Initial PADDING append failed: {s}", .{@errorName(err)});
-        };
+        try fw.writeByteNTimes(@intFromEnum(frame.FrameType.PADDING), min_plaintext_size - fbs.pos);
     }
 
     const pkt = try packet.encodeInitialProtected(
