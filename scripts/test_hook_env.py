@@ -5,9 +5,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 
 
@@ -148,13 +152,75 @@ class HookEnvironmentTests(unittest.TestCase):
             ],
         )
 
-    def test_every_local_hook_uses_the_environment_boundary(self):
+    def test_missing_command_fails_without_printing_environment(self):
+        result = subprocess.run(
+            ["bash", str(WRAPPER)],
+            cwd=self.linked,
+            env={"PATH": os.defpath, "HOOK_TEST_SECRET": "do-not-print-sentinel"},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("usage:", result.stderr)
+        self.assertNotIn("do-not-print-sentinel", result.stderr)
+
+    def test_repository_local_todo_hook_reads_temporary_commit_index(self):
+        alternate_index = self.root / "temporary commit index"
+        shutil.copyfile(self.gitdir / "index", alternate_index)
+        marker = self.linked / "temporary-index-file"
+        marker.write_text("TODO: visible only in the temporary commit index\n")
+        env = dict(self.poisoned_env, GIT_INDEX_FILE=str(alternate_index))
+        subprocess.run(
+            ["git", "add", marker.name],
+            cwd=self.linked,
+            env=env,
+            check=True,
+            capture_output=True,
+        )
+        self.assertEqual(self.git(self.linked, "diff", "--cached", "--name-only"), "")
+        before = self.snapshot()
+        alternate_before = alternate_index.read_bytes()
+        # Run the actual configured hook, including its entry and shell body.
+        block = (
+            (ROOT / ".pre-commit-config.yaml")
+            .read_text()
+            .split("  - id: check-todos\n", 1)[1]
+            .split("\n- repo:", 1)[0]
+        )
+        entry = re.search(r"(?m)^    entry: (.+)$", block)
+        body = re.search(r"(?m)^    - \|\n((?:      .*\n)+)", block)
+        self.assertIsNotNone(entry)
+        self.assertIsNotNone(body)
+        (self.linked / "scripts").mkdir()
+        shutil.copyfile(WRAPPER, self.linked / "scripts/hook-env.sh")
+        result = subprocess.run(
+            [*shlex.split(entry[1]), "-c", textwrap.dedent(body[1])],
+            cwd=self.linked,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(marker.name, result.stdout)
+        self.assertIn("Warning: Found TODO/FIXME markers", result.stdout)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(alternate_index.read_bytes(), alternate_before)
+
+    def test_external_tool_hooks_use_the_environment_boundary(self):
         local = False
         entries = []
+        hook_id = None
         for line in (ROOT / ".pre-commit-config.yaml").read_text().splitlines():
             if line.startswith("- repo:"):
                 local = line.strip() == "- repo: local"
+            if local and line.strip().startswith("- id:"):
+                hook_id = line.strip().removeprefix("- id: ")
             if local and line.strip().startswith("entry:"):
+                if hook_id == "check-todos":
+                    continue  # This hook reads the enclosing repository's index.
                 entries.append(line.strip())
                 self.assertTrue(
                     line.strip().startswith("entry: bash scripts/hook-env.sh "), line

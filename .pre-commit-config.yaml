@@ -153,9 +153,10 @@ repos:
     stages: [pre-push]      # Only on push, may be slow
 
       # Check for TODO/FIXME in committed code (warning only)
+      # Keep Git's temporary commit index: this hook only reads this repository.
   - id: check-todos
     name: check for TODOs/FIXMEs
-    entry: bash scripts/hook-env.sh bash
+    entry: bash
     args:
     - -c
     - |

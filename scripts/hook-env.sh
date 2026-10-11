@@ -5,6 +5,10 @@
 # Pre-commit already runs entries from the repository root. Preserve ordinary
 # authentication/configuration environment and the command's arguments/status.
 set -euo pipefail
+if [ "$#" -eq 0 ]; then
+    echo "usage: hook-env.sh COMMAND [ARGS...]" >&2
+    exit 2
+fi
 exec env \
     -u GIT_DIR \
     -u GIT_WORK_TREE \
