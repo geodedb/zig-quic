@@ -965,6 +965,15 @@ pub fn bind(comptime Connection: type) type {
             self.resetPtoBackoffApp();
         }
 
+        // The endpoint scheduler uses whole milliseconds. Round up so a PTO
+        // never fires before recovery's deadline; only saturate at the public
+        // scheduler's representable bound, not a test-oriented timing cap.
+        fn ptoDelayMs(delay_ns: u64) u32 {
+            const whole = delay_ns / std.time.ns_per_ms;
+            const rounded = whole + @intFromBool(delay_ns % std.time.ns_per_ms != 0);
+            return @intCast(@min(@max(rounded, 1), std.math.maxInt(u32)));
+        }
+
         /// Compute PTO for Application space and arm timer if not active.
         /// Recompute earliest PTO across spaces and (re)arm timer if needed.
         pub fn computeAndMaybeArmPto(self: *Connection, ep: anytype) void {
@@ -982,9 +991,7 @@ pub fn bind(comptime Connection: type) type {
             if (next_deadline == null) return;
             const delay_ns: u64 = if (next_deadline.? <= now_ns) 0 else next_deadline.? - now_ns;
             // Note: computePtoNsWithBackoff already includes backoff via rec.pto_count.
-            var delay_ms: u32 = @intCast(@min(delay_ns / std.time.ns_per_ms, @as(u64, std.math.maxInt(u32))));
-            if (delay_ms == 0) delay_ms = 1;
-            if (delay_ms > 100) delay_ms = 100; // keep deterministic and fast in tests
+            const delay_ms = ptoDelayMs(delay_ns);
             self.pto_app_active = true;
             self.pto_app_id = ep.scheduleConnPto(self, .PtoApp, delay_ms) catch 0;
         }
@@ -1063,9 +1070,7 @@ pub fn bind(comptime Connection: type) type {
             const next_deadline = self.rec.computeSpacePtoTimeNs(.Initial, now_ns);
             if (next_deadline == null) return;
             const delay_ns: u64 = if (next_deadline.? <= now_ns) 0 else next_deadline.? - now_ns;
-            var delay_ms: u32 = @intCast(@min(delay_ns / std.time.ns_per_ms, @as(u64, std.math.maxInt(u32))));
-            if (delay_ms == 0) delay_ms = 1;
-            if (delay_ms > 100) delay_ms = 100;
+            const delay_ms = ptoDelayMs(delay_ns);
             self.pto_initial_active = true;
             self.pto_initial_id = ep.scheduleConnPto(self, .PtoInitial, delay_ms) catch 0;
         }
@@ -1086,9 +1091,7 @@ pub fn bind(comptime Connection: type) type {
             const next_deadline = self.rec.computeSpacePtoTimeNs(.Handshake, now_ns);
             if (next_deadline == null) return;
             const delay_ns: u64 = if (next_deadline.? <= now_ns) 0 else next_deadline.? - now_ns;
-            var delay_ms: u32 = @intCast(@min(delay_ns / std.time.ns_per_ms, @as(u64, std.math.maxInt(u32))));
-            if (delay_ms == 0) delay_ms = 1;
-            if (delay_ms > 100) delay_ms = 100;
+            const delay_ms = ptoDelayMs(delay_ns);
             self.pto_handshake_active = true;
             self.pto_handshake_id = ep.scheduleConnPto(self, .PtoHandshake, delay_ms) catch 0;
         }
