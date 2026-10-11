@@ -137,8 +137,11 @@ test "RFC 9000 §4.9.2 - getContiguous handles overlapping fragments" {
 
     const result = buffer.getContiguous(0);
     try testing.expect(result != null);
-    // Should handle overlap gracefully
-    try testing.expect(result.?.len > 0);
+    try testing.expectEqual(@as(usize, 2), result.?.len);
+    try testing.expectEqualStrings("AAAAA", result.?[0].data);
+    try testing.expectEqualStrings("B", result.?[1].data);
+    buffer.removeProcessed(result.?.len, test_allocator);
+    try testing.expectEqual(@as(usize, 0), buffer.count);
 }
 
 // =============================================================================
@@ -322,4 +325,35 @@ test "RFC 9001 §4 - CRYPTO frame data integrity" {
     // Verify data is not corrupted
     const stored = buffer.fragments[0].?.data;
     try testing.expectEqualStrings(original_data, stored);
+}
+
+test "duplicate future fragments preserve capacity without another allocation" {
+    var buffer: CryptoBuffer = .{};
+    defer buffer.clear(test_allocator);
+    try buffer.add(4, "EFGH", test_allocator);
+    for (0..16) |_| try buffer.add(4, "EFGH", test_allocator);
+    try testing.expectEqual(@as(usize, 1), buffer.count);
+    const data = buffer.getContiguous(4).?;
+    try testing.expectEqualStrings("EFGH", data[0].data);
+    buffer.removeProcessed(data.len, test_allocator);
+    try testing.expectEqual(@as(usize, 0), buffer.count);
+}
+
+test "already consumed queued fragments are removed without replaying bytes" {
+    var buffer: CryptoBuffer = .{};
+    defer buffer.clear(test_allocator);
+    try buffer.add(0, "ABCD", test_allocator);
+    try buffer.add(4, "EFGH", test_allocator);
+    const data = buffer.getContiguous(8).?;
+    try testing.expectEqual(@as(usize, 2), data.len);
+    for (data) |fragment| try testing.expectEqual(@as(usize, 0), fragment.data.len);
+    buffer.removeProcessed(data.len, test_allocator);
+    try testing.expectEqual(@as(usize, 0), buffer.count);
+}
+
+test "overflowed CRYPTO fragment cannot alter queue state" {
+    var buffer: CryptoBuffer = .{};
+    defer buffer.clear(test_allocator);
+    try testing.expectError(error.InvalidCryptoOffset, buffer.add(std.math.maxInt(u64), "X", test_allocator));
+    try testing.expectEqual(@as(usize, 0), buffer.count);
 }

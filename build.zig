@@ -884,6 +884,24 @@ pub fn build(b: *std.Build) void {
     tp_handshake_tests.root_module.addImport("transport_params", quic_transport_params_mod);
     b.step("test-transport-handshake", "Verify handshake transport parameter validation").dependOn(&b.addRunArtifact(tp_handshake_tests).step);
 
+    const crypto_reassembly_tests = addTst(b, testlog_mod, compat_mod, "tests/test_crypto_reassembly.zig", target, optimize);
+    crypto_reassembly_tests.root_module.addImport("quic_conn", quic_conn_mod);
+    const run_crypto_reassembly = b.addRunArtifact(crypto_reassembly_tests);
+    b.step("test-crypto-reassembly", "Verify complete CRYPTO reassembly across overlaps and duplicates").dependOn(&run_crypto_reassembly.step);
+    if (filter == null) test_step.dependOn(&run_crypto_reassembly.step);
+
+    const crypto_buffer_tests = addTst(b, testlog_mod, compat_mod, "tests/unit/connection/test_crypto_buffer.zig", target, optimize);
+    crypto_buffer_tests.root_module.addImport("crypto_buffer", conn_crypto_buffer_mod);
+    const run_crypto_buffer = b.addRunArtifact(crypto_buffer_tests);
+    b.step("test-crypto-buffer", "Verify the shared bounded CRYPTO fragment buffer").dependOn(&run_crypto_buffer.step);
+
+    const crypto_auth_tests = addTst(b, testlog_mod, compat_mod, "tests/test_crypto_reassembly_auth.zig", target, optimize);
+    crypto_auth_tests.root_module.addImport("quic_api", quic_api_mod);
+    crypto_auth_tests.root_module.addImport("handshake_integration", endpoint_handshake_integration_mod);
+    const run_crypto_auth = b.addRunArtifact(crypto_auth_tests);
+    b.step("test-crypto-auth", "Verify authenticated TLS and UDP streams after overlapping CRYPTO delivery").dependOn(&run_crypto_auth.step);
+    if (filter == null) test_step.dependOn(&run_crypto_auth.step);
+
     const stream_ack_tests = addTst(b, testlog_mod, compat_mod, "tests/test_stream_ack_retention.zig", target, optimize);
     stream_ack_tests.root_module.addImport("quic_conn", quic_conn_mod);
     stream_ack_tests.root_module.addImport("quic_frame", quic_frame_mod);

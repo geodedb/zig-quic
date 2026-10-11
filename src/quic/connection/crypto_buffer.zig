@@ -30,6 +30,13 @@ pub const CryptoBuffer = struct {
     /// Add a fragment to the buffer at the specified offset.
     /// Returns error.BufferFull if the fragment array is full.
     pub fn add(self: *CryptoBuffer, offset: u64, data: []const u8, allocator: std.mem.Allocator) !void {
+        _ = std.math.add(u64, offset, data.len) catch return error.InvalidCryptoOffset;
+        // Retransmitted future fragments must not exhaust the bounded queue.
+        // Exact duplicates already have an owned copy; keep that allocation.
+        for (self.fragments[0..self.count]) |entry| {
+            const fragment = entry orelse continue;
+            if (fragment.offset == offset and std.mem.eql(u8, fragment.data, data)) return;
+        }
         // If buffer is full, skip adding this fragment to prevent memory corruption
         // In normal operation with in-order CRYPTO frames, this should never happen
         if (self.count >= self.fragments.len) {
@@ -104,27 +111,19 @@ pub const CryptoBuffer = struct {
     pub fn getContiguous(self: *CryptoBuffer, start_offset: u64) ?[]const Fragment {
         var result_count: usize = 0;
         var expected_offset = start_offset;
-
-        var i: usize = 0;
-        while (i < self.count) : (i += 1) {
-            if (self.fragments[i]) |frag| {
-                if (frag.offset == expected_offset) {
-                    self.result_buffer[result_count] = frag;
-                    expected_offset += frag.data.len;
-                    result_count += 1;
-                } else if (frag.offset < expected_offset) {
-                    // Overlapping or duplicate fragment - skip
-                    continue;
-                } else {
-                    // Gap found
-                    break;
-                }
-            }
+        for (self.fragments[0..self.count]) |entry| {
+            const fragment = entry orelse unreachable;
+            if (fragment.offset > expected_offset) break;
+            const consumed: usize = @intCast(@min(expected_offset - fragment.offset, fragment.data.len));
+            const tail = fragment.data[consumed..];
+            // Keep an entry for every consumed queue slot, including a fully
+            // duplicate fragment with an empty tail. Callers skip empty data,
+            // then removeProcessed(result.len) frees exactly this prefix.
+            self.result_buffer[result_count] = .{ .offset = expected_offset, .data = tail };
+            result_count += 1;
+            expected_offset += tail.len;
         }
-
         if (result_count == 0) return null;
-
-        // Return slice of contiguous fragments
         return self.result_buffer[0..result_count];
     }
 
